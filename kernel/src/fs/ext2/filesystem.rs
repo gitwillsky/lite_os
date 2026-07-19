@@ -11,10 +11,13 @@ impl FileSystem for Ext2FileSystem {
         Ext2Inode::load(fs_arc, 2).map(|inode| inode as Arc<dyn Inode>)
     }
 
-    fn statistics(&self) -> FileSystemStatistics {
+    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         // 1. 与 allocator mutation 共锁取得 superblock 计数；缺少该锁会观察到
         // group descriptor 与 superblock 更新之间的中间状态。
-        let _mutation = self.mutation.lock();
+        let _mutation = self
+            .mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         let superblock = *self.superblock.lock();
         let group_count = self.groups.lock().len();
         // 2. 按 Linux ext2_statfs 排除 superblock、GDT、bitmap 与 inode table overhead。
@@ -32,7 +35,7 @@ impl FileSystem for Ext2FileSystem {
         let first = u64::from_le_bytes(superblock.s_uuid[..8].try_into().unwrap());
         let second = u64::from_le_bytes(superblock.s_uuid[8..].try_into().unwrap());
         let fsid = first ^ second;
-        FileSystemStatistics {
+        Ok(FileSystemStatistics {
             type_name: "ext2",
             magic: EXT2_SUPER_MAGIC as u64,
             block_size: self.block_size as u64,
@@ -47,6 +50,6 @@ impl FileSystem for Ext2FileSystem {
             name_length: 255,
             fragment_size: self.block_size as u64,
             flags: 0,
-        }
+        })
     }
 }

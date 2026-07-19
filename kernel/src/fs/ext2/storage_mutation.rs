@@ -91,10 +91,13 @@ impl Ext2Inode {
         if initial_contents.is_some_and(|contents| contents.len() != self.fs.block_size) {
             return Err(FileSystemError::IoError);
         }
-        let (root, path) = self.pointer_path(file_block)?;
+        let path = self
+            .block_path(file_block)
+            .ok_or(FileSystemError::NoSpace)?;
+        let root = path.root();
         let preferred = self.fs.group_index_and_local_inode(self.inode_num).0;
         let mut inode = mutation.inode(self)?;
-        if path.is_empty() {
+        if path.is_direct() {
             if inode.i_block[root] == 0 {
                 inode.i_block[root] = match initial_contents {
                     Some(contents) => self.fs.allocate_initialized_block(preferred, contents)?,
@@ -110,11 +113,12 @@ impl Ext2Inode {
             inode.i_blocks_lo += (self.fs.block_size / 512) as u32;
         }
         let mut pointer_block = inode.i_block[root];
-        for (depth, index) in path.iter().enumerate() {
-            let mut pointers = self.read_pointer_block(pointer_block)?;
-            if pointers[*index] == 0 {
-                let data_block = depth + 1 == path.len();
-                pointers[*index] = match (data_block, initial_contents) {
+        let depth = path.depth();
+        for (level, index) in path.indices().enumerate() {
+            let mut pointers = self.decode_pointer_block(pointer_block)?;
+            if pointers[index] == 0 {
+                let data_block = level + 1 == depth;
+                pointers[index] = match (data_block, initial_contents) {
                     (true, Some(contents)) => {
                         self.fs.allocate_initialized_block(preferred, contents)?
                     }
@@ -123,11 +127,11 @@ impl Ext2Inode {
                 inode.i_blocks_lo += (self.fs.block_size / 512) as u32;
                 self.write_pointer_block(pointer_block, &pointers)?;
                 if data_block {
-                    return Ok((pointers[*index], true));
+                    return Ok((pointers[index], true));
                 }
             }
-            pointer_block = pointers[*index];
-            if depth + 1 == path.len() {
+            pointer_block = pointers[index];
+            if level + 1 == depth {
                 return Ok((pointer_block, false));
             }
         }

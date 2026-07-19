@@ -10,6 +10,14 @@ pub(crate) struct AdvisoryLockKey {
     inode: u64,
 }
 
+impl AdvisoryLockKey {
+    /// @description 向 task wait registry 投影稳定、无 adapter 泄漏的 source identity。
+    /// @return mounted filesystem 与 inode identity。
+    pub(crate) const fn wait_identity(self) -> (usize, u64) {
+        (self.filesystem, self.inode)
+    }
+}
+
 /// @description Linux flock 的两种持有模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdvisoryLockMode {

@@ -1,10 +1,8 @@
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use super::{AccessIdentity, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeType};
+use crate::sync::TaskMutex;
 
 #[path = "vfs/mount_table.rs"]
 mod mount_table;
@@ -12,8 +10,11 @@ mod mount_table;
 mod mutation;
 #[path = "vfs/opened.rs"]
 mod opened;
+#[path = "vfs/opened_index.rs"]
+mod opened_index;
 use mount_table::write_mount_record;
 pub(crate) use opened::OpenedFile;
+use opened_index::OpenedIndex;
 #[path = "vfs/advisory_lock.rs"]
 mod advisory_lock;
 #[path = "vfs/record_lock.rs"]
@@ -30,10 +31,10 @@ pub(crate) struct VirtualFileSystem {
     mounts: Mutex<Vec<Mount>>,
     // OWNER: VFS namespace mutation lock serializes adapter commit with opened-entry publication；
     // 缺失时并发 A→B→C rename 可让磁盘停在 C、registry 因乱序停在 B。
-    namespace_mutation: Mutex<()>,
-    // OWNER: VFS 只以 Weak 注册 live opened-entry，供 namespace mutation 原子更新身份；
-    // 缺失该 registry 会使 rename/unlink 后的 OFD path 永久停留在旧目录项。
-    opened: Mutex<Vec<Weak<OpenedFile>>>,
+    namespace_mutation: TaskMutex<()>,
+    // OWNER: VFS 的 exact opened index 唯一路由 register、rename/unlink 和 final Drop；
+    // 缺失 exact lifecycle membership 会迫使每个路径组件扫描全部 live Weak entries。
+    opened: OpenedIndex,
     // OWNER: VFS inode identity → OFD-owned BSD flock state；若放进 fd table，fork 后的独立
     // table 会复制锁，若放进 ext2 adapter，devfs 与其他 mounted inode 会形成第二套语义。
     advisory_locks: Mutex<Vec<advisory_lock::AdvisoryFileLock>>,
@@ -114,16 +115,6 @@ impl VirtualFileSystem {
             .any(|mount| mount.point_identity == identity || mount.root_identity == identity)
     }
 
-    fn register(&self, opened: Arc<OpenedFile>) -> Result<Arc<OpenedFile>, FileSystemError> {
-        let mut registry = self.opened.lock();
-        registry.retain(|entry| entry.strong_count() != 0);
-        registry
-            .try_reserve(1)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        registry.push(Arc::downgrade(&opened));
-        Ok(opened)
-    }
-
     fn resolve_from(
         &self,
         start: Arc<OpenedFile>,
@@ -170,7 +161,9 @@ impl VirtualFileSystem {
                 name => {
                     let parent = opened.clone();
                     let inode = parent.inode().find_child(name)?;
-                    opened = self.register(OpenedFile::child(inode, parent.clone(), name)?)?;
+                    opened =
+                        self.opened
+                            .register(OpenedFile::child(inode, parent.clone(), name)?)?;
                     opened = self.enter_mount(opened)?;
                     let is_untrailed_final = index + 1 == component_count
                         && path.last().is_none_or(|byte| *byte != b'/');
@@ -293,8 +286,8 @@ impl VirtualFileSystem {
         Self {
             root_fs: Mutex::new(None),
             mounts: Mutex::new(Vec::new()),
-            namespace_mutation: Mutex::new(()),
-            opened: Mutex::new(Vec::new()),
+            namespace_mutation: TaskMutex::new(()),
+            opened: OpenedIndex::new(),
             advisory_locks: Mutex::new(Vec::new()),
             record_locks: Mutex::new(Vec::new()),
             advisory_lock_notifier: Mutex::new(None),
@@ -324,7 +317,7 @@ impl VirtualFileSystem {
         if root_fs.is_some() {
             return Err(FileSystemError::AlreadyExists);
         }
-        let root = self.register(OpenedFile::root(fs.root_inode()?)?)?;
+        let root = self.opened.register(OpenedFile::root(fs.root_inode()?)?)?;
         *root_fs = Some(RootMount {
             source,
             filesystem: fs,
@@ -361,7 +354,9 @@ impl VirtualFileSystem {
         let point_identity = Self::identity(&point.inode())?;
         let root_identity = Self::identity(&root_inode)?;
         let point_name = point.location_name()?;
-        let root = self.register(OpenedFile::child(root_inode, parent.clone(), &point_name)?)?;
+        let root =
+            self.opened
+                .register(OpenedFile::child(root_inode, parent.clone(), &point_name)?)?;
         let mut mounts = self.mounts.lock();
         if mounts.iter().any(|mount| {
             mount.point_identity == point_identity || mount.root_identity == root_identity
@@ -405,7 +400,7 @@ impl VirtualFileSystem {
         });
         let mut statistics = filesystem
             .ok_or(FileSystemError::InvalidFileSystem)?
-            .statistics();
+            .statistics()?;
         statistics.flags |= 0x20;
         Ok(statistics)
     }
@@ -435,10 +430,10 @@ impl VirtualFileSystem {
             snapshot
         };
         let mut output = Vec::new();
-        write_mount_record(&mut output, root.0, b"/", &root.1.statistics())?;
+        write_mount_record(&mut output, root.0, b"/", &root.1.statistics()?)?;
         for (source, point, filesystem) in mounts {
             let target = self.absolute_path(point)?;
-            write_mount_record(&mut output, source, &target, &filesystem.statistics())?;
+            write_mount_record(&mut output, source, &target, &filesystem.statistics()?)?;
         }
         Ok(output)
     }
@@ -485,7 +480,10 @@ impl VirtualFileSystem {
         path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
-        let start = start.unwrap_or(self.root_opened()?);
+        let start = match start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
         self.resolve_from(start, path, false, identity)
     }
 
@@ -501,7 +499,10 @@ impl VirtualFileSystem {
         path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let start = start.unwrap_or(self.root_opened()?);
+        let start = match start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
         self.resolve_from(start, path, true, identity)
             .map(|opened| opened.inode())
     }

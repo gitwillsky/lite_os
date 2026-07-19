@@ -1,12 +1,16 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
+
+mod rx_slots;
+
+use rx_slots::{ReceiveOutcome, ReceiveQueue, ReceiveSlots};
 
 use super::{
     InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
     VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
     VirtIODevice,
     network::{NetworkDevice, NetworkError, NetworkStatistics},
-    virtio_queue::VirtQueue,
+    virtio_queue::{DmaBuffer, VirtQueue},
 };
 
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
@@ -20,10 +24,6 @@ const RX_BUFFER_SIZE: usize = 2048;
 const MAX_ETHERNET_FRAME: usize = 1514;
 const TX_BUFFER_SIZE: usize = VIRTIO_NET_HEADER_SIZE + MAX_ETHERNET_FRAME;
 
-struct ReceiveSlot {
-    bytes: Box<[u8; RX_BUFFER_SIZE]>,
-}
-
 enum TransmitSlotState {
     Free { next: Option<u16> },
     Reserved,
@@ -31,15 +31,14 @@ enum TransmitSlotState {
 }
 
 struct TransmitSlot {
-    bytes: Box<[u8; TX_BUFFER_SIZE]>,
+    bytes: DmaBuffer<TX_BUFFER_SIZE>,
     state: TransmitSlotState,
 }
 
 struct QueueState {
     receive: VirtQueue,
     transmit: VirtQueue,
-    receive_slots: Vec<ReceiveSlot>,
-    receive_by_head: Vec<Option<u16>>,
+    receive_slots: ReceiveSlots<DmaBuffer<RX_BUFFER_SIZE>, RX_BUFFER_SIZE>,
     receive_reposted: bool,
     transmit_slots: Vec<TransmitSlot>,
     transmit_by_head: Vec<Option<u16>>,
@@ -47,6 +46,9 @@ struct QueueState {
     // OWNER: TX pool 0→nonzero edge 在同一 queue lock 下与 free-list transition 一起发布。
     // 缺失该 bit 会让 reservation cancellation 恢复容量时永久丢失 packet-writer wakeup。
     transmit_wakeup_pending: bool,
+    // OWNER: completion identity/length/recycle 任一损坏后永久关闭两个 queue；缺失该 latch
+    // 会让 reset 后的 adapter 继续消费 retained descriptor/free-list state。
+    failed: bool,
     statistics: NetworkStatistics,
 }
 
@@ -54,9 +56,11 @@ struct QueueState {
 pub(crate) struct VirtIONetworkDevice {
     device: VirtIODevice,
     mac: [u8; 6],
-    // OWNER: one IRQ-safe queue lock serializes descriptor recycling, RX repost and TX slot state.
-    // Splitting it would let cancellation/completion publish the same TX slot twice, or let RX reuse
-    // a DMA buffer before its old descriptor head has been consumed.
+    // OWNER: one queue lock serializes descriptor recycling, RX repost and TX slot state. IRQ only
+    // acknowledges MMIO and publishes a deferred bit; queue consumers run exclusively at the
+    // user-return/idle safe point, so no interrupt path may reenter this ordinary lock.
+    // Splitting it would let cancellation/completion publish the same TX slot twice, or let RX
+    // reuse a DMA buffer before its old descriptor head has been consumed.
     queues: Mutex<QueueState>,
 }
 
@@ -87,24 +91,16 @@ impl VirtIONetworkDevice {
         let mut receive = Self::create_queue(&device, RX_QUEUE)?;
         let transmit = Self::create_queue(&device, TX_QUEUE)?;
         let receive_capacity = receive.size / 2;
-        let mut receive_slots = Vec::new();
-        receive_slots
-            .try_reserve_exact(receive_capacity as usize)
-            .ok()?;
-        let mut receive_by_head = Vec::new();
-        receive_by_head
-            .try_reserve_exact(receive.size as usize)
-            .ok()?;
-        receive_by_head.resize(receive.size as usize, None);
-        for slot_index in 0..receive_capacity {
-            let mut bytes = Box::try_new([0u8; RX_BUFFER_SIZE]).ok()?;
-            let mut outputs: [&mut [u8]; 1] = [&mut bytes[..]];
-            let Some(head) = receive.add_buffer(&[], &mut outputs) else {
+        let mut receive_slots =
+            ReceiveSlots::try_new(receive_capacity as usize, receive.size as usize)?;
+        for _ in 0..receive_capacity {
+            let bytes = DmaBuffer::try_zeroed().ok()?;
+            let output = bytes.writable_all();
+            let Ok(head) = receive.add_dma(&[output]) else {
                 break;
             };
             receive.add_to_avail(head);
-            receive_by_head[head as usize] = Some(slot_index);
-            receive_slots.push(ReceiveSlot { bytes });
+            receive_slots.insert_posted(head, bytes).ok()?;
         }
         if receive_slots.len() != receive_capacity as usize {
             return None;
@@ -121,7 +117,7 @@ impl VirtIONetworkDevice {
         for slot_index in 0..transmit_capacity {
             let next = (slot_index + 1 < transmit_capacity).then_some(slot_index + 1);
             transmit_slots.push(TransmitSlot {
-                bytes: Box::try_new([0u8; TX_BUFFER_SIZE]).ok()?,
+                bytes: DmaBuffer::try_zeroed().ok()?,
                 state: TransmitSlotState::Free { next },
             });
         }
@@ -143,12 +139,12 @@ impl VirtIONetworkDevice {
                 receive,
                 transmit,
                 receive_slots,
-                receive_by_head,
                 receive_reposted: false,
                 transmit_slots,
                 transmit_by_head,
                 transmit_free: Some(0),
                 transmit_wakeup_pending: false,
+                failed: false,
                 statistics: NetworkStatistics::default(),
             }),
         })
@@ -168,6 +164,18 @@ impl VirtIONetworkDevice {
         Some(queue)
     }
 
+    fn fail_device(&self) -> NetworkError {
+        let first_failure = {
+            let mut queues = self.queues.lock();
+            !core::mem::replace(&mut queues.failed, true)
+        };
+        if first_failure {
+            // Reset is the only terminal transaction that revokes every retained RX/TX chain.
+            let _ = self.device.reset();
+        }
+        NetworkError::Device
+    }
+
     pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::try_new(VirtIONetworkIrqHandler {
             device: self.clone(),
@@ -183,61 +191,70 @@ impl NetworkDevice for VirtIONetworkDevice {
 
     fn receive(&self, frame: &mut [u8]) -> Result<usize, NetworkError> {
         let mut queues = self.queues.lock();
-        let (head, used_length) = queues
-            .receive
-            .used()
-            .map_err(|()| NetworkError::Device)?
-            .ok_or(NetworkError::WouldBlock)?;
-        let slot_index = queues.receive_by_head[head as usize]
-            .take()
-            .ok_or(NetworkError::Device)?;
-        let used_length = used_length as usize;
-        if !(VIRTIO_NET_HEADER_SIZE..=RX_BUFFER_SIZE).contains(&used_length) {
+        if queues.failed {
             return Err(NetworkError::Device);
         }
-        let payload_length = used_length - VIRTIO_NET_HEADER_SIZE;
-        if payload_length <= frame.len() {
-            frame[..payload_length].copy_from_slice(
-                &queues.receive_slots[slot_index as usize].bytes
-                    [VIRTIO_NET_HEADER_SIZE..VIRTIO_NET_HEADER_SIZE + payload_length],
-            );
+        let used = match queues.receive.used() {
+            Ok(Some(used)) => used,
+            Ok(None) => return Err(NetworkError::WouldBlock),
+            Err(()) => {
+                drop(queues);
+                return Err(self.fail_device());
+            }
+        };
+        let used_length = used.length() as usize;
+        let Some(claim) =
+            queues
+                .receive_slots
+                .claim(used.head(), used_length, VIRTIO_NET_HEADER_SIZE)
+        else {
+            drop(queues);
+            return Err(self.fail_device());
+        };
+        if queues.receive.recycle_used(used).is_err() {
+            drop(queues);
+            return Err(self.fail_device());
         }
-        queues.statistics.received_bytes = queues
-            .statistics
-            .received_bytes
-            .saturating_add(payload_length as u64);
-        queues.statistics.received_packets = queues.statistics.received_packets.saturating_add(1);
-
-        // 1. used() 已把旧 chain 还给 free list；2. 同一 slot 原地重新发布 DMA buffer；
-        // 3. 更新 head 映射并记录 batch notify。缺少第 2 步会让 RX ring 被逐包耗尽。
-        let new_head = {
+        let completion = {
             let QueueState {
                 receive,
                 receive_slots,
                 ..
             } = &mut *queues;
-            let mut outputs: [&mut [u8]; 1] = [&mut receive_slots[slot_index as usize].bytes[..]];
-            receive
-                .add_buffer(&[], &mut outputs)
-                .ok_or(NetworkError::Device)?
+            receive_slots.complete(receive, claim, used_length, VIRTIO_NET_HEADER_SIZE, frame)
         };
-        assert!(
-            queues.receive_by_head[new_head as usize]
-                .replace(slot_index)
-                .is_none(),
-            "VirtIO RX descriptor head published twice"
-        );
-        queues.receive.add_to_avail(new_head);
-        queues.receive_reposted = true;
-        if payload_length > frame.len() {
-            Err(NetworkError::FrameTooLarge)
-        } else {
-            Ok(payload_length)
+        queues.receive_reposted |= completion.reposted;
+        match completion.outcome {
+            ReceiveOutcome::Packet { length } => {
+                queues.statistics.received_bytes = queues
+                    .statistics
+                    .received_bytes
+                    .saturating_add(length as u64);
+                queues.statistics.received_packets =
+                    queues.statistics.received_packets.saturating_add(1);
+                Ok(length)
+            }
+            ReceiveOutcome::FrameTooLarge { length } => {
+                queues.statistics.received_bytes = queues
+                    .statistics
+                    .received_bytes
+                    .saturating_add(length as u64);
+                queues.statistics.received_packets =
+                    queues.statistics.received_packets.saturating_add(1);
+                Err(NetworkError::FrameTooLarge)
+            }
+            ReceiveOutcome::DeviceError => {
+                drop(queues);
+                Err(self.fail_device())
+            }
         }
     }
 
     fn reserve_transmit(&self) -> Result<u16, NetworkError> {
         let mut queues = self.queues.lock();
+        if queues.failed {
+            return Err(NetworkError::Device);
+        }
         let slot_index = queues.transmit_free.ok_or(NetworkError::WouldBlock)?;
         let slot = queues
             .transmit_slots
@@ -253,10 +270,12 @@ impl NetworkDevice for VirtIONetworkDevice {
 
     fn submit_transmit(&self, reservation: u16, frame: &[u8]) -> Result<(), NetworkError> {
         if frame.len() > MAX_ETHERNET_FRAME {
-            self.cancel_transmit(reservation);
             return Err(NetworkError::FrameTooLarge);
         }
         let mut queues = self.queues.lock();
+        if queues.failed {
+            return Err(NetworkError::Device);
+        }
         let QueueState {
             transmit,
             transmit_slots,
@@ -269,14 +288,17 @@ impl NetworkDevice for VirtIONetworkDevice {
         if !matches!(slot.state, TransmitSlotState::Reserved) {
             return Err(NetworkError::Device);
         }
-        slot.bytes[..VIRTIO_NET_HEADER_SIZE].fill(0);
-        slot.bytes[VIRTIO_NET_HEADER_SIZE..VIRTIO_NET_HEADER_SIZE + frame.len()]
+        slot.bytes.as_mut_slice()[..VIRTIO_NET_HEADER_SIZE].fill(0);
+        slot.bytes.as_mut_slice()[VIRTIO_NET_HEADER_SIZE..VIRTIO_NET_HEADER_SIZE + frame.len()]
             .copy_from_slice(frame);
         let total_length = VIRTIO_NET_HEADER_SIZE + frame.len();
-        let mut outputs: [&mut [u8]; 0] = [];
+        let buffer = slot
+            .bytes
+            .readable(0..total_length)
+            .map_err(|_| NetworkError::Device)?;
         let head = transmit
-            .add_buffer(&[&slot.bytes[..total_length]], &mut outputs)
-            .expect("reserved VirtIO TX slot exceeded descriptor capacity");
+            .add_dma(&[buffer])
+            .map_err(|_| NetworkError::Device)?;
         assert!(
             transmit_by_head[head as usize]
                 .replace(reservation)
@@ -289,9 +311,11 @@ impl NetworkDevice for VirtIONetworkDevice {
         };
         transmit.add_to_avail(head);
         drop(queues);
+        // descriptor 已经对 device 可见，doorbell 失败后无法证明 DMA quiesced，
+        // 因而不能返回可重试错误并让 NetworkTransmit Drop 取消 in-flight slot。
         self.device
             .notify_queue(TX_QUEUE)
-            .map_err(|_| NetworkError::Device)?;
+            .expect("VirtIO network doorbell failed after descriptor publication");
         Ok(())
     }
 
@@ -319,7 +343,8 @@ impl NetworkDevice for VirtIONetworkDevice {
     }
 
     fn transmit_available(&self) -> bool {
-        self.queues.lock().transmit_free.is_some()
+        let queues = self.queues.lock();
+        !queues.failed && queues.transmit_free.is_some()
     }
 
     fn poll_completions(
@@ -327,28 +352,41 @@ impl NetworkDevice for VirtIONetworkDevice {
         budget: usize,
     ) -> Result<super::network::NetworkCompletion, NetworkError> {
         let mut queues = self.queues.lock();
+        if queues.failed {
+            return Err(NetworkError::Device);
+        }
+        let mut corrupt = false;
         for _ in 0..budget {
-            let Some((head, _)) = queues.transmit.used().map_err(|()| NetworkError::Device)? else {
+            let completion = match queues.transmit.used() {
+                Ok(Some(completion)) => completion,
+                Ok(None) => break,
+                Err(()) => {
+                    corrupt = true;
+                    break;
+                }
+            };
+            let head = completion.head();
+            if completion.length() != 0 {
+                corrupt = true;
+                break;
+            }
+            let Some(slot_index) = queues.transmit_by_head[head as usize].take() else {
+                corrupt = true;
                 break;
             };
-            let slot_index = queues.transmit_by_head[head as usize]
-                .take()
-                .ok_or(NetworkError::Device)?;
-            let next = queues.transmit_free;
-            let old = core::mem::replace(
-                &mut queues.transmit_slots[slot_index as usize].state,
-                TransmitSlotState::Free { next },
-            );
-            let TransmitSlotState::InFlight {
-                head: expected,
-                length,
-            } = old
-            else {
-                return Err(NetworkError::Device);
+            let (expected, length) = match &queues.transmit_slots[slot_index as usize].state {
+                TransmitSlotState::InFlight { head, length } => (*head, *length),
+                _ => {
+                    corrupt = true;
+                    break;
+                }
             };
-            if expected != head {
-                return Err(NetworkError::Device);
+            if expected != head || queues.transmit.recycle_used(completion).is_err() {
+                corrupt = true;
+                break;
             }
+            let next = queues.transmit_free;
+            queues.transmit_slots[slot_index as usize].state = TransmitSlotState::Free { next };
             let was_full = queues.transmit_free.is_none();
             queues.transmit_free = Some(slot_index);
             queues.transmit_wakeup_pending |= was_full;
@@ -358,6 +396,10 @@ impl NetworkDevice for VirtIONetworkDevice {
                 .saturating_add(length as u64);
             queues.statistics.transmitted_packets =
                 queues.statistics.transmitted_packets.saturating_add(1);
+        }
+        if corrupt {
+            drop(queues);
+            return Err(self.fail_device());
         }
         let transmit_became_available = core::mem::take(&mut queues.transmit_wakeup_pending);
         Ok(super::network::NetworkCompletion {
@@ -369,18 +411,41 @@ impl NetworkDevice for VirtIONetworkDevice {
     fn finish_receive_batch(&self) -> Result<(), NetworkError> {
         let notify = {
             let mut queues = self.queues.lock();
+            if queues.failed {
+                return Err(NetworkError::Device);
+            }
             core::mem::take(&mut queues.receive_reposted)
         };
-        if notify {
-            self.device
-                .notify_queue(RX_QUEUE)
-                .map_err(|_| NetworkError::Device)?;
+        if notify && self.device.notify_queue(RX_QUEUE).is_err() {
+            return Err(self.fail_device());
         }
         Ok(())
     }
 
     fn statistics(&self) -> NetworkStatistics {
         self.queues.lock().statistics
+    }
+}
+
+impl ReceiveQueue<DmaBuffer<RX_BUFFER_SIZE>> for VirtQueue {
+    fn repost(&mut self, buffer: &DmaBuffer<RX_BUFFER_SIZE>) -> Option<u16> {
+        let output = buffer.writable_all();
+        self.add_dma(&[output]).ok()
+    }
+
+    fn publish(&mut self, head: u16) {
+        self.add_to_avail(head);
+    }
+
+    fn retire_unpublished(&mut self, head: u16) {
+        let _ = VirtQueue::retire_unpublished(self, head);
+    }
+}
+
+impl Drop for VirtIONetworkDevice {
+    fn drop(&mut self) {
+        // Reset revokes RX/TX descriptor ownership before permanent slot pools are released.
+        let _ = self.device.reset();
     }
 }
 

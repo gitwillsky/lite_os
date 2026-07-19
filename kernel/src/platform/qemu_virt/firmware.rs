@@ -8,8 +8,10 @@ const EID_BASE: usize = 0x10;
 
 const FID_SET_TIMER: usize = 0;
 const FID_SEND_IPI: usize = 0;
+const FID_REMOTE_FENCE_I: usize = 0;
 const FID_REMOTE_SFENCE_VMA: usize = 1;
 const FID_SYSTEM_RESET: usize = 0;
+const FID_CONSOLE_WRITE: usize = 0;
 const FID_CONSOLE_WRITE_BYTE: usize = 2;
 const FID_HART_START: usize = 0;
 const FID_PROBE_EXTENSION: usize = 3;
@@ -57,6 +59,16 @@ pub(crate) struct TlbShootdownError(FirmwareError);
 impl core::fmt::Display for TlbShootdownError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(formatter, "TLB shootdown failed: {}", self.0)
+    }
+}
+
+/// @description 同步远端 instruction fetch 失败。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InstructionFenceError(FirmwareError);
+
+impl core::fmt::Display for InstructionFenceError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "remote instruction fence failed: {}", self.0)
     }
 }
 
@@ -173,6 +185,30 @@ pub(crate) fn debug_console_write(byte: u8) -> Result<(), FirmwareError> {
     value_or_error(error, value).map(|_| ())
 }
 
+/// @description 通过 SBI DBCN bulk write 同步写出 identity-mapped kernel bytes。
+/// @param bytes 位于 platform DRAM identity mapping 内的非空/空连续字节。
+/// @return firmware 完整消费全部字节时成功；SBI error、零进度或越界进度时失败。
+pub(crate) fn debug_console_write_bytes(bytes: &[u8]) -> Result<(), FirmwareError> {
+    let mut written = 0usize;
+    while written < bytes.len() {
+        let address = bytes.as_ptr() as usize + written;
+        let remaining = bytes.len() - written;
+        let (error, value) = sbi_call(
+            EID_DEBUG_CONSOLE,
+            FID_CONSOLE_WRITE,
+            [remaining, address, 0, 0, 0, 0],
+        );
+        let count = value_or_error(error, value)?;
+        if count == 0 || count > remaining {
+            // Firmware violated the DBCN progress contract. Reusing a standard SBI error code
+            // keeps this failure inside the platform adapter; normal logging is best-effort.
+            return Err(FirmwareError { code: -1 });
+        }
+        written += count;
+    }
+    Ok(())
+}
+
 /// @description 通过 SBI TIME 设置当前 hart 的绝对 timer deadline。
 ///
 /// @param timer_value `time` CSR 同一计数域中的绝对值。
@@ -221,6 +257,20 @@ pub(crate) fn synchronize_tlb(
         value_or_error(error, value)
             .map(|_| ())
             .map_err(TlbShootdownError)
+    })
+}
+
+/// @description 请求目标 hart 同步完成 `FENCE.I`。
+/// @param cpus 需要观察 instruction publication 的 logical CPU 集合。
+/// @return SBI 在全部目标完成后返回成功；失败返回 firmware error。
+pub(crate) fn synchronize_instruction_cache(
+    cpus: crate::cpu::CpuSet,
+) -> Result<(), InstructionFenceError> {
+    for_each_hardware_mask(cpus, |mask, base| {
+        let (error, value) = sbi_call(EID_RFENCE, FID_REMOTE_FENCE_I, [mask, base, 0, 0, 0, 0]);
+        value_or_error(error, value)
+            .map(|_| ())
+            .map_err(InstructionFenceError)
     })
 }
 

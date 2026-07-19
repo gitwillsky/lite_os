@@ -1,22 +1,26 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use super::{FileSystemError, Inode, VirtualFileSystem};
+use super::{
+    FileSystemError, Inode,
+    opened_index::{OpenedIndexKey, OpenedPathKey},
+};
 
 struct OpenedLocation {
     parent: Option<Arc<OpenedFile>>,
     name: FileName,
     deleted: bool,
+    registration: Option<OpenedIndexKey>,
 }
 
-#[derive(Clone, Copy)]
-struct FileName {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct FileName {
     length: u8,
     bytes: [u8; 255],
 }
 
 impl FileName {
-    fn new(name: &[u8]) -> Result<Self, FileSystemError> {
+    pub(super) fn new(name: &[u8]) -> Result<Self, FileSystemError> {
         if name.len() > 255 {
             return Err(FileSystemError::InvalidPath);
         }
@@ -28,7 +32,7 @@ impl FileName {
         Ok(value)
     }
 
-    fn bytes(&self) -> &[u8] {
+    pub(super) fn bytes(&self) -> &[u8] {
         &self.bytes[..usize::from(self.length)]
     }
 }
@@ -49,6 +53,7 @@ impl OpenedFile {
                 parent: None,
                 name: FileName::new(&[])?,
                 deleted: false,
+                registration: None,
             }),
         })
         .map_err(|_| FileSystemError::OutOfMemory)
@@ -65,6 +70,7 @@ impl OpenedFile {
                 parent: Some(parent),
                 name: FileName::new(name)?,
                 deleted: false,
+                registration: None,
             }),
         })
         .map_err(|_| FileSystemError::OutOfMemory)
@@ -87,37 +93,61 @@ impl OpenedFile {
         Ok(name)
     }
 
-    pub(super) fn matches(
-        &self,
-        parent: &Arc<OpenedFile>,
-        name: &[u8],
-        inode_identity: (usize, u64),
-    ) -> bool {
+    pub(super) fn index_path(&self) -> Result<Option<OpenedPathKey>, FileSystemError> {
         let location = self.location.lock();
-        !location.deleted
-            && location.name.bytes() == name
-            && location
-                .parent
-                .as_ref()
-                .is_some_and(|candidate| candidate.same_inode(parent))
-            && self.inode_identity().ok() == Some(inode_identity)
+        let Some(parent) = location.parent.clone() else {
+            return Ok(None);
+        };
+        let name = location.name;
+        drop(location);
+        Ok(Some(OpenedPathKey {
+            parent: parent.inode_identity()?,
+            name,
+            inode: self.inode_identity()?,
+        }))
     }
 
-    pub(super) fn mark_deleted(&self) {
-        self.location.lock().deleted = true;
-    }
-
-    pub(super) fn move_to(&self, parent: Arc<OpenedFile>, name: &[u8]) {
+    pub(super) fn publish_registration(&self, key: OpenedIndexKey) {
         let mut location = self.location.lock();
-        location.parent = Some(parent);
-        location.name = FileName::new(name).expect("VFS accepted an overlong component");
+        assert!(
+            location.registration.is_none(),
+            "opened entry registered twice"
+        );
+        location.registration = Some(key);
+    }
+
+    pub(super) fn mark_deleted(&self, key: OpenedIndexKey) {
+        let mut location = self.location.lock();
+        assert_eq!(location.registration, Some(key));
+        location.deleted = true;
+    }
+
+    pub(super) fn move_to(
+        &self,
+        key: OpenedIndexKey,
+        parent: Arc<OpenedFile>,
+        name: FileName,
+        new_key: OpenedIndexKey,
+    ) -> Option<Arc<OpenedFile>> {
+        let mut location = self.location.lock();
+        assert_eq!(location.registration, Some(key));
+        if location.deleted {
+            return None;
+        }
+        let retired_parent = location
+            .parent
+            .replace(parent)
+            .expect("registered opened entry lost its parent");
+        location.name = name;
+        location.registration = Some(new_key);
+        Some(retired_parent)
     }
 
     pub(super) fn same_inode(&self, other: &Arc<OpenedFile>) -> bool {
         self.inode_identity().ok() == other.inode_identity().ok()
     }
 
-    fn inode_identity(&self) -> Result<(usize, u64), FileSystemError> {
+    pub(super) fn inode_identity(&self) -> Result<(usize, u64), FileSystemError> {
         Ok((self.inode.filesystem_id(), self.inode.metadata()?.inode))
     }
 
@@ -189,42 +219,13 @@ impl OpenedFile {
     }
 }
 
-impl VirtualFileSystem {
-    pub(super) fn mark_unlinked(
-        &self,
-        parent: &Arc<OpenedFile>,
-        name: &[u8],
-        inode_identity: (usize, u64),
-    ) {
-        let mut registry = self.opened.lock();
-        registry.retain(|entry| {
-            let Some(opened) = entry.upgrade() else {
-                return false;
-            };
-            if opened.matches(parent, name, inode_identity) {
-                opened.mark_deleted();
-            }
-            true
-        });
-    }
-
-    pub(super) fn move_opened_entries(
-        &self,
-        old_parent: &Arc<OpenedFile>,
-        old_name: &[u8],
-        source_identity: (usize, u64),
-        new_parent: Arc<OpenedFile>,
-        new_name: &[u8],
-    ) {
-        let mut registry = self.opened.lock();
-        registry.retain(|entry| {
-            let Some(opened) = entry.upgrade() else {
-                return false;
-            };
-            if opened.matches(old_parent, old_name, source_identity) {
-                opened.move_to(new_parent.clone(), new_name);
-            }
-            true
-        });
+impl Drop for OpenedFile {
+    fn drop(&mut self) {
+        let Some(key) = self.location.get_mut().registration.take() else {
+            return;
+        };
+        // Drop 在 Arc storage 解配前精确撤销 intrusive membership；缺失该步骤会
+        // 留下可被 pointer reuse 命中的悬垂 index entry。
+        super::vfs().opened.unregister(key);
     }
 }

@@ -128,6 +128,8 @@ pub(crate) fn entry_identity() -> usize {
 /// @return 无返回值。
 /// @errors 仅允许在 S-mode CPU-local 初始化路径调用。
 pub(crate) fn initialize_local_execution() {
+    super::mmu::initialize_address_space_identifiers();
+    super::instruction_cache::initialize_local();
     // SAFETY: kernel runs in S-mode and updates only the current CPU's floating-point status.
     unsafe { riscv::register::sstatus::set_fs(riscv::register::sstatus::FS::Dirty) };
 }

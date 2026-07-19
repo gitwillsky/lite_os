@@ -4,14 +4,18 @@ use alloc::{
 };
 use spin::{Mutex, Once};
 
-use super::{OpenFileDescription, OpenFileKind};
+use super::{OpenFileDescription, OpenFileKind, ReadinessSource, ReadinessSources};
 use crate::{
-    fallible_tree::FallibleMap,
+    fallible_tree::{FallibleMap, VacantEntry},
     ipc::{Pipe, PipeEnd},
 };
 
+#[path = "epoll/ready.rs"]
+mod ready;
+
 const MAX_NESTING_DEPTH: usize = 5;
 const EPOLL_EXCLUSIVE: u32 = 1 << 28;
+const EPOLL_EDGE: u32 = 1 << 31;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EpollChange {
@@ -30,31 +34,9 @@ pub(crate) struct EpollInterest {
     pub(crate) fd: usize,
     pub(crate) ofd: Arc<OpenFileDescription>,
     pub(crate) event: EpollEvent,
-    pub(crate) last_generation: u64,
+    pub(crate) ready_events: u32,
+    pub(crate) generation: u64,
     pub(crate) revision: u64,
-    pub(crate) disabled: bool,
-}
-
-struct Interest {
-    ofd: Arc<OpenFileDescription>,
-    event: EpollEvent,
-    last_generation: u64,
-    revision: u64,
-    disabled: bool,
-}
-
-impl Interest {
-    fn is_ready(&self) -> bool {
-        if self.disabled {
-            return false;
-        }
-        let current = self.ofd.poll_events(self.event.events as i16) as u32;
-        if current == 0 {
-            return false;
-        }
-        self.event.events & (1 << 31) == 0
-            || self.ofd.readiness_generation(self.event.events as i16) != self.last_generation
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -72,42 +54,98 @@ impl InterestKey {
     }
 }
 
-struct EpollState {
-    interests: FallibleMap<InterestKey, Interest>,
-    next_revision: u64,
-    delivery_cursor: Option<InterestKey>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SourceIndexKey {
+    source: ReadinessSource,
+    epoll_identity: usize,
+    interest: InterestKey,
 }
 
-// OWNER: registry 只保留 weak epoll lifetime，用于跨 fork/fd-table 的最后 descriptor close
-// 清理。若只扫描当前 fd table，另一个进程关闭最后引用后会留下可被 fd reuse 命中的 interest。
+struct SourceMembership {
+    epoll: Weak<Epoll>,
+    revision: u64,
+    exclusive: bool,
+}
+
+type SourceNode = VacantEntry<SourceIndexKey, SourceMembership>;
+type ReadyNode = VacantEntry<InterestKey, ()>;
+
+struct Interest {
+    ofd: Arc<OpenFileDescription>,
+    event: EpollEvent,
+    // None 表示 ET 尚未交付；不能用 0 作 sentinel，因为无异步 source 的
+    // 同步 ready generation 合法地为 0，否则首个 edge 会被误丢弃。
+    last_generation: Option<u64>,
+    revision: u64,
+    disabled: bool,
+    sources: ReadinessSources,
+    source_nodes: [Option<SourceNode>; 2],
+    ready_node: Option<ReadyNode>,
+}
+
+struct EpollState {
+    interests: FallibleMap<InterestKey, Interest>,
+    ready: FallibleMap<InterestKey, ()>,
+    next_revision: u64,
+    delivery_cursor: Option<InterestKey>,
+    ready_generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ReverseKey {
+    epoll_identity: usize,
+    fd: usize,
+}
+
+struct ReverseMembership {
+    epoll: Weak<Epoll>,
+    interest: InterestKey,
+}
+
+/// @description OFD 拥有的 epoll reverse-membership index。
+///
+/// ADD 在 interest 可观察前预分配并发布节点；最后 close 只取出该 OFD
+/// 的精确 memberships。缺失该 owner 会退化成 P×E 全局扫描。
+pub(crate) struct EpollMemberships {
+    entries: Mutex<FallibleMap<ReverseKey, ReverseMembership>>,
+}
+
+impl EpollMemberships {
+    pub(crate) const fn new() -> Self {
+        Self {
+            entries: Mutex::new(FallibleMap::new()),
+        }
+    }
+
+    fn take_first(&self) -> Option<ReverseMembership> {
+        let mut entries = self.entries.lock();
+        let key = *entries.first_key_value()?.0;
+        entries.remove(&key)
+    }
+}
+
+// OWNER: 持久 source index 将 Pipe/console edge 精确路由到 interest；节点只在
+// epoll_ctl ADD 预分配，wake/refresh 只回收并重用节点。
+static SOURCE_INDEX: Mutex<FallibleMap<SourceIndexKey, SourceMembership>> =
+    Mutex::new(FallibleMap::new());
+// OWNER: fs::Epoll 只用该 weak registry 做嵌套 cycle/depth 验证；close cleanup
+// 必须走 OFD reverse memberships，否则恢复 P×E 全局扫描。
 static EPOLLS: Once<Mutex<Vec<Weak<Epoll>>>> = Once::new();
-// OWNER: fs::Epoll 唯一拥有嵌套图 mutation serialization；所有图变更与 close cleanup 都先取此锁。
-// 所有嵌套图变更和最后引用清理遵循 graph -> registry -> epoll state 的锁序；缺少全局图锁会
-// 让两个并发 ADD 都在旧图上通过 cycle check，随后共同构成环并令 readiness 递归不终止。
+// OWNER: 串行化 ctl、source rebind 与 final-close graph mutation，避免并发 ADD 越过 cycle check。
 static EPOLL_GRAPH: Mutex<()> = Mutex::new(());
 
-/// @description epoll interest、ET generation 与 ONESHOT state 的唯一 owner。
+/// @description epoll interest、ready membership、ET generation 与 ONESHOT state 的唯一 owner。
 pub(crate) struct Epoll {
-    // 同一把锁原子提交 interest identity、MOD revision、ET generation 和 ONESHOT disable。
     state: Mutex<EpollState>,
     notification_read: Arc<PipeEnd>,
     notification_write: Arc<PipeEnd>,
 }
 
 impl Epoll {
-    /// @description 返回 source wake 用于合并同一 epoll instance waiters 的稳定 identity。
-    ///
-    /// @param epoll live epoll Arc。
-    /// @return Arc allocation lifetime 内稳定的地址 identity。
     pub(crate) fn identity(epoll: &Arc<Self>) -> usize {
         Arc::as_ptr(epoll) as usize
     }
 
-    /// @description 创建并注册一个只由 weak registry 跟踪的 epoll instance。
-    ///
-    /// @param notification_read 绑定统一 Poll registry 的内部 read endpoint。
-    /// @param notification_write ctl/close mutation 的内部 wake endpoint。
-    /// @return 新 epoll owner；registry 扩容失败返回错误。
     pub(crate) fn new(
         notification_read: Arc<PipeEnd>,
         notification_write: Arc<PipeEnd>,
@@ -115,8 +153,10 @@ impl Epoll {
         let epoll = Arc::try_new(Self {
             state: Mutex::new(EpollState {
                 interests: FallibleMap::new(),
+                ready: FallibleMap::new(),
                 next_revision: 1,
                 delivery_cursor: None,
+                ready_generation: 0,
             }),
             notification_read,
             notification_write,
@@ -130,13 +170,6 @@ impl Epoll {
         Ok(epoll)
     }
 
-    /// @description 按 Linux fd+OFD identity 原子修改 interest。
-    ///
-    /// @param operation ADD、DEL 或 MOD。
-    /// @param fd 注册时的 descriptor number。
-    /// @param ofd 本次 epoll_ctl 解析得到的 live OFD identity。
-    /// @param event ADD/MOD 的 event payload。
-    /// @return 修改成功，或精确的 identity、容量、pollability、嵌套错误。
     pub(crate) fn change(
         self: &Arc<Self>,
         operation: EpollChange,
@@ -147,206 +180,316 @@ impl Epoll {
         let _graph = EPOLL_GRAPH.lock();
         let key = InterestKey::new(fd, &ofd);
         match operation {
-            EpollChange::Add => {
-                if !ofd.epoll_pollable() {
-                    return Err(EpollChangeError::Permission);
-                }
-                let event = event.ok_or(EpollChangeError::Invalid)?;
-                if let OpenFileKind::Epoll(target) = &ofd.kind {
-                    if event.events & EPOLL_EXCLUSIVE != 0 {
-                        return Err(EpollChangeError::Invalid);
-                    }
-                    if Arc::ptr_eq(self, target) {
-                        return Err(EpollChangeError::Invalid);
-                    }
-                    self.validate_nested_add(target)?;
-                }
-                let mut state = self.state.lock();
-                if state.interests.contains_key(&key) {
-                    return Err(EpollChangeError::Exists);
-                }
-                // interest node 必须在 revision 与可观察 membership 变更前完成分配；
-                // 否则内存压力会把可返回 ENOMEM 的 epoll_ctl 变成 kernel panic。
-                let prepared = FallibleMap::try_prepare(
-                    key,
-                    Interest {
-                        ofd,
-                        event,
-                        last_generation: 0,
-                        revision: state.next_revision,
-                        disabled: false,
-                    },
-                )
-                .map_err(|_| EpollChangeError::NoMemory)?;
-                let revision = state.next_revision;
-                state.next_revision = state.next_revision.wrapping_add(1);
-                debug_assert_eq!(prepared.value().revision, revision);
-                state.interests.commit_vacant(prepared);
-            }
+            EpollChange::Add => self.add(key, fd, ofd, event.ok_or(EpollChangeError::Invalid)?)?,
             EpollChange::Delete => {
-                let mut state = self.state.lock();
-                let interest = state
-                    .interests
-                    .get(&key)
-                    .ok_or(EpollChangeError::NotFound)?;
-                if !Arc::ptr_eq(&interest.ofd, &ofd) {
+                if !self.detach(key, &ofd) {
                     return Err(EpollChangeError::NotFound);
                 }
-                state.interests.remove(&key);
             }
             EpollChange::Modify => {
-                let mut state = self.state.lock();
-                let revision = state.next_revision;
-                state.next_revision = state.next_revision.wrapping_add(1);
-                let interest = state
-                    .interests
-                    .get_mut(&key)
-                    .ok_or(EpollChangeError::NotFound)?;
-                if !Arc::ptr_eq(&interest.ofd, &ofd) {
-                    return Err(EpollChangeError::NotFound);
-                }
-                if interest.event.events & EPOLL_EXCLUSIVE != 0 {
-                    return Err(EpollChangeError::Invalid);
-                }
-                interest.event = event.ok_or(EpollChangeError::Invalid)?;
-                interest.last_generation = 0;
-                interest.revision = revision;
-                interest.disabled = false;
+                self.modify(key, &ofd, event.ok_or(EpollChangeError::Invalid)?)?
             }
         }
+        drop(_graph);
         self.notify_change();
         Ok(())
     }
 
-    /// @description 复制一个带 revision 的 interest 快照，供无锁 user-copy 阶段使用。
-    ///
-    /// @return 成功返回快照；kernel heap 不足返回错误。
-    pub(crate) fn snapshot(&self) -> Result<Vec<EpollInterest>, ()> {
-        let state = self.state.lock();
-        let mut snapshot = Vec::new();
-        snapshot
-            .try_reserve_exact(state.interests.len())
-            .map_err(|_| ())?;
-        snapshot.extend(state.interests.iter().map(|(key, interest)| EpollInterest {
-            fd: key.fd,
-            ofd: interest.ofd.clone(),
-            event: interest.event,
-            last_generation: interest.last_generation,
-            revision: interest.revision,
-            disabled: interest.disabled,
-        }));
-        if let Some(cursor) = state.delivery_cursor {
-            let split = snapshot
-                .iter()
-                .position(|interest| InterestKey::new(interest.fd, &interest.ofd) > cursor)
-                .unwrap_or(0);
-            snapshot.rotate_left(split);
-        }
-        Ok(snapshot)
-    }
-
-    /// @description 在 user-copy 完整成功后提交一次 delivery。
-    ///
-    /// 并发 MOD/DEL 或 fd reuse 会改变 revision/OFD identity；旧 snapshot 不得禁用或覆盖新 interest。
-    pub(crate) fn commit_delivery(
-        &self,
+    fn add(
+        self: &Arc<Self>,
+        key: InterestKey,
         fd: usize,
-        ofd: &Arc<OpenFileDescription>,
-        revision: u64,
-        generation: u64,
-        edge: bool,
-        oneshot: bool,
-    ) {
-        let mut state = self.state.lock();
-        let key = InterestKey::new(fd, ofd);
-        // 每次完整 copyout 后推进 cursor；缺失该状态时，永久 ready 的最小 key 会在
-        // maxevents 小于 ready 数量时饿死后续 interest。
-        state.delivery_cursor = Some(key);
-        let Some(interest) = state.interests.get_mut(&key) else {
-            return;
+        ofd: Arc<OpenFileDescription>,
+        event: EpollEvent,
+    ) -> Result<(), EpollChangeError> {
+        if !ofd.epoll_pollable() {
+            return Err(EpollChangeError::Permission);
+        }
+        if let OpenFileKind::Epoll(target) = &ofd.kind {
+            if event.events & EPOLL_EXCLUSIVE != 0 || Arc::ptr_eq(self, target) {
+                return Err(EpollChangeError::Invalid);
+            }
+            self.validate_nested_add(target)?;
+        }
+        let revision = {
+            let state = self.state.lock();
+            if state.interests.contains_key(&key) {
+                return Err(EpollChangeError::Exists);
+            }
+            state.next_revision
         };
-        if interest.revision != revision || !Arc::ptr_eq(&interest.ofd, ofd) {
-            return;
-        }
-        if edge {
-            interest.last_generation = generation;
-        }
-        if oneshot {
-            interest.disabled = true;
-        }
+        // interest、ready、两个 source 和 reverse 节点在发布前一次预分配。
+        // 任一分配失败都返回 ENOMEM，不留半发布 membership。
+        let ready_node =
+            FallibleMap::try_prepare(key, ()).map_err(|_| EpollChangeError::NoMemory)?;
+        let dummy_source = SourceIndexKey {
+            source: ReadinessSource::Console,
+            epoll_identity: Self::identity(self),
+            interest: key,
+        };
+        let prepare_source = || {
+            FallibleMap::try_prepare(
+                dummy_source,
+                SourceMembership {
+                    epoll: Arc::downgrade(self),
+                    revision,
+                    exclusive: false,
+                },
+            )
+        };
+        let source_nodes = [
+            Some(prepare_source().map_err(|_| EpollChangeError::NoMemory)?),
+            Some(prepare_source().map_err(|_| EpollChangeError::NoMemory)?),
+        ];
+        let reverse = FallibleMap::try_prepare(
+            ReverseKey {
+                epoll_identity: Self::identity(self),
+                fd,
+            },
+            ReverseMembership {
+                epoll: Arc::downgrade(self),
+                interest: key,
+            },
+        )
+        .map_err(|_| EpollChangeError::NoMemory)?;
+        let sources = ofd.readiness_sources(event.events as i16);
+        let prepared = FallibleMap::try_prepare(
+            key,
+            Interest {
+                ofd: ofd.clone(),
+                event,
+                last_generation: None,
+                revision,
+                disabled: false,
+                sources,
+                source_nodes,
+                ready_node: Some(ready_node),
+            },
+        )
+        .map_err(|_| EpollChangeError::NoMemory)?;
+        let mut state = self.state.lock();
+        state.next_revision = state.next_revision.wrapping_add(1);
+        state.interests.commit_vacant(prepared);
+        ofd.epoll_memberships.entries.lock().commit_vacant(reverse);
+        Self::publish_sources(self, key, state.interests.get_mut(&key).unwrap());
+        Self::refresh_locked(&mut state, key);
+        Ok(())
     }
 
-    /// @description 查询当前是否至少存在一个满足 LT/ET/ONESHOT 状态的 interest。
-    ///
-    /// @return 存在可交付事件返回 true。
-    pub(crate) fn has_ready(&self) -> bool {
-        self.state.lock().interests.values().any(Interest::is_ready)
-    }
-
-    /// @description 为嵌套 epoll 投影当前可交付子事件的最新全局 generation。
-    ///
-    /// @return 没有可交付事件返回零，否则返回最新 source generation。
-    pub(crate) fn readiness_generation(&self) -> u64 {
-        self.state
-            .lock()
+    fn modify(
+        self: &Arc<Self>,
+        key: InterestKey,
+        ofd: &Arc<OpenFileDescription>,
+        event: EpollEvent,
+    ) -> Result<(), EpollChangeError> {
+        let mut state = self.state.lock();
+        let revision = state.next_revision;
+        state.next_revision = state.next_revision.wrapping_add(1);
+        let interest = state
             .interests
-            .values()
-            .filter(|interest| interest.is_ready())
-            .map(|interest| {
-                interest
-                    .ofd
-                    .readiness_generation(interest.event.events as i16)
-            })
-            .max()
-            .unwrap_or(0)
+            .get_mut(&key)
+            .filter(|interest| Arc::ptr_eq(&interest.ofd, ofd))
+            .ok_or(EpollChangeError::NotFound)?;
+        if interest.event.events & EPOLL_EXCLUSIVE != 0 {
+            return Err(EpollChangeError::Invalid);
+        }
+        Self::unpublish_sources(Self::identity(self), key, interest);
+        interest.event = event;
+        interest.last_generation = None;
+        interest.revision = revision;
+        interest.disabled = false;
+        interest.sources = interest.ofd.readiness_sources(event.events as i16);
+        Self::publish_sources(self, key, interest);
+        Self::refresh_locked(&mut state, key);
+        Ok(())
     }
 
-    /// @description 返回用于唤醒旧 wait-key snapshot 的内部 notification pipe。
-    ///
-    /// @return read 方向 Pipe identity；只暴露给统一 Poll wait registration。
+    fn detach(&self, key: InterestKey, ofd: &Arc<OpenFileDescription>) -> bool {
+        let mut state = self.state.lock();
+        if state
+            .interests
+            .get(&key)
+            .is_none_or(|interest| !Arc::ptr_eq(&interest.ofd, ofd))
+        {
+            return false;
+        }
+        if let Some(node) = state.ready.take_entry(&key) {
+            state.interests.get_mut(&key).unwrap().ready_node = Some(node);
+        }
+        let mut interest = state.interests.remove(&key).unwrap();
+        Self::unpublish_sources(self as *const Self as usize, key, &mut interest);
+        ofd.epoll_memberships.entries.lock().remove(&ReverseKey {
+            epoll_identity: self as *const Self as usize,
+            fd: key.fd,
+        });
+        true
+    }
+
+    fn publish_sources(epoll: &Arc<Self>, key: InterestKey, interest: &mut Interest) {
+        let mut index = SOURCE_INDEX.lock();
+        for (slot, source) in interest.sources.iter().enumerate() {
+            let mut node = interest.source_nodes[slot]
+                .take()
+                .expect("interest lost preallocated source node");
+            node.set_key(SourceIndexKey {
+                source,
+                epoll_identity: Self::identity(epoll),
+                interest: key,
+            });
+            *node.value_mut() = SourceMembership {
+                epoll: Arc::downgrade(epoll),
+                revision: interest.revision,
+                exclusive: interest.event.events & EPOLL_EXCLUSIVE != 0,
+            };
+            index.commit_vacant(node);
+        }
+    }
+
+    fn unpublish_sources(epoll_identity: usize, key: InterestKey, interest: &mut Interest) {
+        let mut index = SOURCE_INDEX.lock();
+        for source in interest.sources.iter() {
+            let node = index
+                .take_entry(&SourceIndexKey {
+                    source,
+                    epoll_identity,
+                    interest: key,
+                })
+                .expect("published epoll source membership missing");
+            let slot = interest
+                .source_nodes
+                .iter_mut()
+                .find(|slot| slot.is_none())
+                .expect("interest source node overflow");
+            *slot = Some(node);
+        }
+    }
+
     pub(crate) fn notification_pipe(&self) -> Arc<Pipe> {
         self.notification_read.pipe()
     }
 
-    /// @description 在重新求值前排空 ctl/close notification 并取得 snapshot generation。
-    ///
-    /// @return 本次 interest snapshot 必须携带的 notification read generation。
     pub(crate) fn consume_notifications(&self) -> u64 {
         self.notification_read.drain_readiness()
     }
 
-    /// @description 在 wait-registry owner lock 内判断一份预建 interest snapshot 是否失效。
-    ///
-    /// notification generation 与 snapshot 不同表示 caller 预建的 source keys 已过期，
-    /// 即使 token 已被其他 waiter 消费也必须返回 true。该路径不得分配或 clone interest。
     pub(crate) fn recheck_changed(&self, snapshot_generation: u64) -> bool {
         self.notification_read.drain_readiness() != snapshot_generation
     }
 
-    /// @description 最后一个 descriptor 引用消失时，从所有 live epoll 删除目标 OFD。
+    /// @description 最后 descriptor close 只消费目标 OFD 的 reverse memberships。
     pub(crate) fn release_file(closed: &Arc<OpenFileDescription>) {
-        let _graph = EPOLL_GRAPH.lock();
-        let mut registry = EPOLLS.call_once(|| Mutex::new(Vec::new())).lock();
-        registry.retain(|entry| entry.strong_count() != 0);
-        for entry in registry.iter() {
-            if let Some(epoll) = entry.upgrade() {
-                let removed = {
-                    let mut state = epoll.state.lock();
-                    let previous = state.interests.len();
-                    state
-                        .interests
-                        .retain(|_, interest| !Arc::ptr_eq(&interest.ofd, closed));
-                    state.interests.len() != previous
-                };
-                if removed {
-                    epoll.notify_change();
-                }
+        while let Some(membership) = closed.epoll_memberships.take_first() {
+            let Some(epoll) = membership.epoll.upgrade() else {
+                continue;
+            };
+            let _graph = EPOLL_GRAPH.lock();
+            let removed = epoll.detach(membership.interest, closed);
+            drop(_graph);
+            if removed {
+                epoll.notify_change();
             }
         }
     }
 
+    /// @description Pipe state mutation 后精确 refresh 其持久 epoll memberships。
+    pub(crate) fn notify_pipe_source(pipe: &Arc<Pipe>) {
+        for direction in [
+            crate::ipc::PipeDirection::Read,
+            crate::ipc::PipeDirection::Write,
+        ] {
+            Self::notify_source(ReadinessSource::pipe(pipe, direction));
+        }
+    }
+
+    pub(crate) fn notify_console_source() {
+        Self::notify_source(ReadinessSource::Console);
+    }
+
+    fn notify_source(source: ReadinessSource) {
+        let mut cursor: Option<SourceIndexKey> = None;
+        let mut exclusive_selected = false;
+        loop {
+            let next = {
+                let index = SOURCE_INDEX.lock();
+                let entry = match cursor {
+                    Some(key) => index.successor(&key),
+                    None => index.ceiling(&SourceIndexKey {
+                        source,
+                        epoll_identity: 0,
+                        interest: InterestKey {
+                            fd: 0,
+                            ofd_identity: 0,
+                        },
+                    }),
+                };
+                entry.and_then(|(key, membership)| {
+                    (key.source == source).then(|| {
+                        (
+                            *key,
+                            membership.epoll.clone(),
+                            membership.revision,
+                            membership.exclusive,
+                        )
+                    })
+                })
+            };
+            let Some((key, epoll, revision, exclusive)) = next else {
+                break;
+            };
+            cursor = Some(key);
+            if exclusive && exclusive_selected {
+                continue;
+            }
+            let Some(epoll) = epoll.upgrade() else {
+                continue;
+            };
+            if epoll.source_changed(key.interest, revision) {
+                exclusive_selected |= exclusive;
+            }
+        }
+    }
+
+    fn source_changed(self: &Arc<Self>, key: InterestKey, revision: u64) -> bool {
+        let _graph = EPOLL_GRAPH.lock();
+        let mut state = self.state.lock();
+        let was_ready = state.ready.contains_key(&key);
+        let Some(interest) = state.interests.get_mut(&key) else {
+            return false;
+        };
+        if interest.revision != revision {
+            return false;
+        }
+        Self::unpublish_sources(Self::identity(self), key, interest);
+        interest.sources = interest.ofd.readiness_sources(interest.event.events as i16);
+        Self::publish_sources(self, key, interest);
+        Self::refresh_locked(&mut state, key);
+        let now_ready = state.ready.contains_key(&key);
+        let changed_ready = was_ready || now_ready;
+        if changed_ready {
+            drop(state);
+            drop(_graph);
+            self.notify_change();
+        }
+        now_ready
+    }
+
     fn notify_change(&self) {
         self.notification_write.signal_readiness();
+    }
+
+    fn nested_snapshot(&self) -> Result<Vec<Arc<OpenFileDescription>>, EpollChangeError> {
+        let state = self.state.lock();
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve_exact(state.interests.len())
+            .map_err(|_| EpollChangeError::NoMemory)?;
+        snapshot.extend(
+            state
+                .interests
+                .values()
+                .map(|interest| interest.ofd.clone()),
+        );
+        Ok(snapshot)
     }
 
     fn live_epolls() -> Result<Vec<Arc<Self>>, EpollChangeError> {
@@ -387,8 +530,8 @@ impl Epoll {
         if depth == MAX_NESTING_DEPTH {
             return Ok(None);
         }
-        for interest in current.snapshot().map_err(|_| EpollChangeError::NoMemory)? {
-            if let OpenFileKind::Epoll(child) = &interest.ofd.kind
+        for ofd in current.nested_snapshot()? {
+            if let OpenFileKind::Epoll(child) = &ofd.kind
                 && let Some(found) = Self::distance_to(child, needle, depth + 1)?
             {
                 return Ok(Some(found));
@@ -399,12 +542,38 @@ impl Epoll {
 
     fn nesting_depth(current: &Self, depth: usize) -> Result<usize, EpollChangeError> {
         let mut maximum = depth;
-        for interest in current.snapshot().map_err(|_| EpollChangeError::NoMemory)? {
-            if let OpenFileKind::Epoll(child) = &interest.ofd.kind {
+        for ofd in current.nested_snapshot()? {
+            if let OpenFileKind::Epoll(child) = &ofd.kind {
                 maximum = maximum.max(Self::nesting_depth(child, depth + 1)?);
             }
         }
         Ok(maximum)
+    }
+}
+
+impl Drop for Epoll {
+    fn drop(&mut self) {
+        // 最后 Arc 已消失，任何 source callback 都不能再 upgrade 本 epoll；因此不取 graph
+        // lock，避免父 epoll 在 graph transaction 内释放最后一个 nested interest 时自锁。
+        // 每个 cleanup 仍通过精确 key 更新两个外部 owner，不扫描全局 registry。
+        let identity = self as *const Self as usize;
+        let state = self.state.get_mut();
+        while let Some((&key, _)) = state.interests.first_key_value() {
+            if let Some(node) = state.ready.take_entry(&key) {
+                state.interests.get_mut(&key).unwrap().ready_node = Some(node);
+            }
+            let mut interest = state.interests.remove(&key).unwrap();
+            Self::unpublish_sources(identity, key, &mut interest);
+            interest
+                .ofd
+                .epoll_memberships
+                .entries
+                .lock()
+                .remove(&ReverseKey {
+                    epoll_identity: identity,
+                    fd: key.fd,
+                });
+        }
     }
 }
 

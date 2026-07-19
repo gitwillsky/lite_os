@@ -149,8 +149,7 @@ pub(super) fn update(now_us: u64) {
                     return None;
                 };
                 threads
-                    .iter_after(&tid)
-                    .next()
+                    .successor(&tid)
                     .map(|(&tid, task)| ((pid, tid), task.clone()))
             });
             same_process.or_else(|| {

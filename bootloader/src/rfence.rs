@@ -7,9 +7,16 @@ use crate::{clint, constants::HART_MASK_BITS, hart::hart_id, trap_stack::remote_
 
 pub(crate) const REQUEST_FENCE_I: usize = 1 << 0;
 pub(crate) const REQUEST_SFENCE_VMA: usize = 1 << 1;
+const PAGE_SIZE: usize = 4096;
 
 // OWNER: RFENCE module owns one pending request slot per representable hart.
 pub(crate) static REQUESTS: [AtomicUsize; HART_MASK_BITS] =
+    [const { AtomicUsize::new(0) }; HART_MASK_BITS];
+
+// OWNER: range slots are published before REQUESTS Release and consumed after its Acquire swap.
+pub(crate) static STARTS: [AtomicUsize; HART_MASK_BITS] =
+    [const { AtomicUsize::new(0) }; HART_MASK_BITS];
+pub(crate) static SIZES: [AtomicUsize; HART_MASK_BITS] =
     [const { AtomicUsize::new(0) }; HART_MASK_BITS];
 
 // OWNER: RFENCE module owns one acknowledgement slot per representable hart.
@@ -33,7 +40,9 @@ impl Rfence {
         if request == 0 {
             return;
         }
-        Self::execute_local(request);
+        let start = STARTS[current].load(Ordering::Relaxed);
+        let size = SIZES[current].load(Ordering::Relaxed);
+        Self::execute_local(request, start, size);
         ACKNOWLEDGED[current].store(1, Ordering::Release);
     }
 
@@ -81,7 +90,7 @@ impl Rfence {
         Ok(selected)
     }
 
-    fn execute_local(request: usize) {
+    fn execute_local(request: usize, start: usize, size: usize) {
         // SAFETY: firmware runs in M-mode and executes only architectural fence instructions;
         // request bits are internal constants selected under the RFENCE protocol.
         unsafe {
@@ -89,12 +98,28 @@ impl Rfence {
                 core::arch::asm!("fence.i", options(nostack));
             }
             if request & REQUEST_SFENCE_VMA != 0 {
-                core::arch::asm!("sfence.vma", options(nostack));
+                if start == 0 && size == 0 || size == usize::MAX {
+                    core::arch::asm!("sfence.vma", options(nostack));
+                } else if size != 0 {
+                    let first = start / PAGE_SIZE * PAGE_SIZE;
+                    let end = start + size;
+                    let mut address = first;
+                    while address < end {
+                        core::arch::asm!("sfence.vma {address}, x0", address = in(reg) address, options(nostack));
+                        address = address.saturating_add(PAGE_SIZE);
+                    }
+                }
             }
         }
     }
 
-    fn remote_fence(&self, hart_mask: HartMask, request: usize) -> SbiRet {
+    fn remote_fence(
+        &self,
+        hart_mask: HartMask,
+        request: usize,
+        start: usize,
+        size: usize,
+    ) -> SbiRet {
         // 1. 序列化 RFENCE，避免同一目标 hart 的单槽 request/ack 被并发调用覆盖。
         let _guard = Self::lock_with_progress();
         let selected = match Self::selected_harts(hart_mask) {
@@ -109,11 +134,13 @@ impl Rfence {
             let target = targets.trailing_zeros() as usize;
             targets &= targets - 1;
             if target == current {
-                Self::execute_local(request);
+                Self::execute_local(request, start, size);
             } else {
                 // 该清零只在 RFENCE_LOCK 内由唯一 sender 写；后续 request Release
                 // 把它排在目标 hart 的 ack 之前，因此无需单独承担发布语义。
                 ACKNOWLEDGED[target].store(0, Ordering::Relaxed);
+                STARTS[target].store(start, Ordering::Relaxed);
+                SIZES[target].store(size, Ordering::Relaxed);
                 REQUESTS[target].store(request, Ordering::Release);
                 clint::set_msip(target);
             }
@@ -134,21 +161,26 @@ impl Rfence {
 
 impl RfenceExtension for Rfence {
     fn remote_fence_i(&self, hart_mask: HartMask) -> SbiRet {
-        self.remote_fence(hart_mask, REQUEST_FENCE_I)
+        self.remote_fence(hart_mask, REQUEST_FENCE_I, 0, 0)
     }
 
-    fn remote_sfence_vma(&self, hart_mask: HartMask, _start_addr: usize, _size: usize) -> SbiRet {
-        // 全局 sfence.vma 覆盖任意请求区间；当前 ASID=0 模型无需保留范围优化。
-        self.remote_fence(hart_mask, REQUEST_SFENCE_VMA)
+    fn remote_sfence_vma(&self, hart_mask: HartMask, start_addr: usize, size: usize) -> SbiRet {
+        if size != usize::MAX && start_addr.checked_add(size).is_none() {
+            return SbiRet::invalid_address();
+        }
+        self.remote_fence(hart_mask, REQUEST_SFENCE_VMA, start_addr, size)
     }
 
     fn remote_sfence_vma_asid(
         &self,
         hart_mask: HartMask,
-        _start_addr: usize,
-        _size: usize,
+        start_addr: usize,
+        size: usize,
         _asid: usize,
     ) -> SbiRet {
-        self.remote_fence(hart_mask, REQUEST_SFENCE_VMA)
+        if size != usize::MAX && start_addr.checked_add(size).is_none() {
+            return SbiRet::invalid_address();
+        }
+        self.remote_fence(hart_mask, REQUEST_SFENCE_VMA, start_addr, size)
     }
 }

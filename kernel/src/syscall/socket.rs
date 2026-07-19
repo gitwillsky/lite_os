@@ -70,6 +70,7 @@ pub(super) fn socket_error(error: SocketError) -> isize {
         SocketError::AddressNotAvailable => errno::EADDRNOTAVAIL,
         SocketError::NotFound | SocketError::ConnectionRefused => errno::ECONNREFUSED,
         SocketError::ConnectionReset => errno::ECONNRESET,
+        SocketError::Device => errno::EIO,
         SocketError::NetworkUnreachable => errno::ENETUNREACH,
         SocketError::DestinationRequired => errno::EDESTADDRREQ,
         SocketError::MessageTooLarge => errno::EMSGSIZE,

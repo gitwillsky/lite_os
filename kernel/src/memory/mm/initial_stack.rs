@@ -140,9 +140,12 @@ impl MemorySet {
             .and_then(|address| address.checked_add(1))
             .ok_or(ElfLoadError::InvalidElf)?;
         let random_ptr = string_ptr;
-        let mut random = [0u8; RANDOM_BYTES];
-        crate::random::fill(&mut random).map_err(|_| ElfLoadError::InvalidElf)?;
-        self.copy_to_user(random_ptr, &random, fault_limits)
+        let mut random = crate::random::EntropyBatch::<RANDOM_BYTES>::try_new()
+            .ok_or(ElfLoadError::OutOfMemory)?;
+        let random = random
+            .fill(RANDOM_BYTES)
+            .map_err(|_| ElfLoadError::InvalidElf)?;
+        self.copy_to_user(random_ptr, random, fault_limits)
             .map_err(|_| ElfLoadError::InvalidElf)?;
 
         let mut writer = stack_ptr;

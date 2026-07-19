@@ -1,4 +1,4 @@
-use crate::{random, syscall::errno, task::current_task};
+use crate::{random::EntropyBatch, syscall::errno, task::current_task};
 
 /// @description 以 virtio-rng 为唯一 entropy source 实现 Linux getrandom。
 pub(crate) fn sys_getrandom(buffer: usize, length: usize, flags: usize) -> isize {
@@ -15,16 +15,22 @@ pub(crate) fn sys_getrandom(buffer: usize, length: usize, flags: usize) -> isize
     }
     let task = current_task().expect("getrandom requires a current task");
     let mut written = 0usize;
-    let mut chunk = [0u8; 256];
+    let mut chunk = match EntropyBatch::<4096>::try_new() {
+        Some(chunk) => chunk,
+        None => return -errno::ENOMEM,
+    };
     while written < length {
-        let count = chunk.len().min(length - written);
-        if random::fill(&mut chunk[..count]).is_err() {
-            return if written == 0 {
-                -errno::EIO
-            } else {
-                written as isize
-            };
-        }
+        let count = 4096.min(length - written);
+        let bytes = match chunk.fill(count) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return if written == 0 {
+                    -errno::EIO
+                } else {
+                    written as isize
+                };
+            }
+        };
         let Some(address) = buffer.checked_add(written) else {
             return if written == 0 {
                 -errno::EFAULT
@@ -32,7 +38,7 @@ pub(crate) fn sys_getrandom(buffer: usize, length: usize, flags: usize) -> isize
                 written as isize
             };
         };
-        if task.copy_to_user(address, &chunk[..count]).is_err() {
+        if task.copy_to_user(address, bytes).is_err() {
             return if written == 0 {
                 -errno::EFAULT
             } else {

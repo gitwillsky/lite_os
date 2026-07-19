@@ -5,6 +5,7 @@ use crate::{
     memory::{
         address::{PhysicalPageNumber, VirtualPageNumber},
         frame_allocator::{self, FrameTracker},
+        mm::shootdown::{TranslationCommit, TranslationTransition},
     },
 };
 
@@ -54,29 +55,89 @@ impl PageTable {
         self.0.token()
     }
 
+    /// @description 在全 CPU fence 完成后把 architecture ASID 交还唯一 allocator。
+    pub(crate) fn release_address_space_id_after_global_fence(&mut self) {
+        self.0.release_address_space_id_after_global_fence();
+    }
+
     pub(crate) fn reserve(&mut self, vpn: VirtualPageNumber) -> Result<(), PageTableError> {
         self.0.reserve(usize::from(vpn))
     }
 
-    pub(crate) fn map(
+    pub(in crate::memory) fn map(
         &mut self,
         vpn: VirtualPageNumber,
         ppn: PhysicalPageNumber,
         permissions: PagePermissions,
+        commit: &mut TranslationCommit,
     ) -> Result<(), PageTableError> {
-        self.0.map(usize::from(vpn), usize::from(ppn), permissions)
+        self.0
+            .map(usize::from(vpn), usize::from(ppn), permissions)?;
+        commit.record(vpn.as_usize(), TranslationTransition::Publish);
+        if permissions.contains(PagePermissions::EXECUTE) {
+            commit.record_instruction_publication();
+        }
+        Ok(())
     }
 
-    pub(crate) fn unmap(&mut self, vpn: VirtualPageNumber) -> Result<(), PageTableError> {
-        self.0.unmap(usize::from(vpn))
+    pub(in crate::memory) fn map_identity_range(
+        &mut self,
+        start: VirtualPageNumber,
+        end: VirtualPageNumber,
+        permissions: PagePermissions,
+        commit: &mut TranslationCommit,
+    ) -> Result<(), PageTableError> {
+        let start = start.as_usize();
+        let end = end.as_usize();
+        self.0.map_identity_range(start, end, permissions)?;
+        commit.record_range(start, end - start, TranslationTransition::Publish);
+        if permissions.contains(PagePermissions::EXECUTE) {
+            commit.record_instruction_publication();
+        }
+        Ok(())
     }
 
-    pub(crate) fn set_flags(
+    pub(in crate::memory) fn unmap(
+        &mut self,
+        vpn: VirtualPageNumber,
+        commit: &mut TranslationCommit,
+    ) -> Result<(), PageTableError> {
+        // active AVL node 与 frame owner 一起无分配移交给 fence commit；rollback/OOM 路径
+        // 不得在 PTE 已撤销后再次申请 retention storage。
+        let unmapped = self.0.unmap(usize::from(vpn))?;
+        let (first_page, page_count, retired) = unmapped.into_parts();
+        commit.retain_table_pages(retired);
+        commit.record_range(first_page, page_count, TranslationTransition::Revoke);
+        Ok(())
+    }
+
+    pub(in crate::memory) fn set_flags(
         &mut self,
         vpn: VirtualPageNumber,
         permissions: PagePermissions,
+        commit: &mut TranslationCommit,
     ) -> Result<(), PageTableError> {
-        self.0.set_flags(usize::from(vpn), permissions)
+        let old = self
+            .translate(vpn)
+            .ok_or(PageTableError::NotMapped)?
+            .permissions();
+        self.0.set_flags(usize::from(vpn), permissions)?;
+        if permissions != old {
+            commit.record(
+                vpn.as_usize(),
+                if permissions.contains(old) {
+                    TranslationTransition::Relax
+                } else {
+                    TranslationTransition::Revoke
+                },
+            );
+            if permissions.contains(PagePermissions::EXECUTE)
+                && !old.contains(PagePermissions::EXECUTE)
+            {
+                commit.record_instruction_publication();
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {

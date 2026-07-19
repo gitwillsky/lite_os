@@ -1,10 +1,13 @@
 use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::AtomicU8;
+use spin::Mutex;
 
 use super::{
-    IndexedWaitEntry, IndexedWaitKind, PollWaitKey, PreparedWait, WaitIndexKey, WaitTicket,
+    IndexedWaitKind, PollWaitKey, PreparedIndex, PreparedWait, WaitIndexKey, WaitRegistration,
+    WaitTicket, pipe_direction, registration::PREPARED,
 };
 use crate::{
-    fallible_tree::{FallibleMap, VacantEntry},
+    fallible_tree::FallibleMap,
     fs::AdvisoryLockKey,
     ipc::{Pipe, PipeWaitCondition},
     memory::FutexKey,
@@ -18,47 +21,46 @@ impl WaitTicket {
         kind: IndexedWaitKind,
         deadline: Option<u64>,
         poll_keys: Option<Vec<PollWaitKey>>,
-        index_count: usize,
-        prepare_indexes: impl FnOnce(u64, &mut Vec<VacantEntry<WaitIndexKey, ()>>) -> Result<(), ()>,
+        mut keys: Vec<WaitIndexKey>,
     ) -> Result<PreparedWait, ()> {
-        // 1. ticket 不在 registry 中；Vec 与全部 AVL node 在无 IrqMutex guard 时准备。
-        let mut indexes = Vec::new();
-        indexes.try_reserve_exact(index_count).map_err(|_| ())?;
-        prepare_indexes(self.id, &mut indexes)?;
-        debug_assert_eq!(indexes.len(), index_count);
-        let entry = FallibleMap::try_prepare(
-            self.id,
-            IndexedWaitEntry {
-                task,
-                kind,
-                deadline,
-                poll_keys,
-            },
-        )
-        .map_err(|_| ())?;
-        Ok(PreparedWait {
+        keys.push(WaitIndexKey::Task {
+            tid: task.tid(),
             id: self.id,
-            entry,
+        });
+        if let Some(deadline) = deadline {
+            keys.push(WaitIndexKey::Deadline {
+                deadline,
+                id: self.id,
+            });
+        }
+        let registration = Arc::try_new(WaitRegistration {
+            id: self.id,
+            task,
+            kind: Mutex::new(kind),
+            poll_keys,
+            keys: Mutex::new(keys),
+            state: AtomicU8::new(PREPARED),
+        })
+        .map_err(|_| ())?;
+        let key_count = registration.keys.lock().len();
+        let mut indexes = Vec::new();
+        indexes.try_reserve_exact(key_count).map_err(|_| ())?;
+        for key in registration.keys.lock().iter().copied() {
+            indexes.push(PreparedIndex {
+                shard: key.shard(),
+                node: FallibleMap::try_prepare(key, registration.clone()).map_err(|_| ())?,
+            });
+        }
+        Ok(PreparedWait {
+            registration,
             indexes,
         })
     }
 
-    fn prepare_index(
-        indexes: &mut Vec<VacantEntry<WaitIndexKey, ()>>,
-        key: WaitIndexKey,
-    ) -> Result<(), ()> {
-        indexes.push(FallibleMap::try_prepare(key, ()).map_err(|_| ())?);
-        Ok(())
-    }
-
-    fn prepare_optional_deadline(
-        indexes: &mut Vec<VacantEntry<WaitIndexKey, ()>>,
-        id: u64,
-        deadline: Option<u64>,
-    ) -> Result<(), ()> {
-        deadline.map_or(Ok(()), |deadline| {
-            Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })
-        })
+    fn keys(capacity: usize) -> Result<Vec<WaitIndexKey>, ()> {
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(capacity).map_err(|_| ())?;
+        Ok(keys)
     }
 
     pub(in crate::task::task_manager) fn prepare_deadline(
@@ -71,8 +73,7 @@ impl WaitTicket {
             IndexedWaitKind::Deadline,
             Some(deadline),
             None,
-            1,
-            |id, indexes| Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id }),
+            Self::keys(2)?,
         )
     }
 
@@ -83,16 +84,14 @@ impl WaitTicket {
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
+        let mut keys = Self::keys(2 + usize::from(deadline.is_some()))?;
+        keys.push(WaitIndexKey::Futex { key, id: self.id });
         self.prepare(
             task,
             IndexedWaitKind::Futex { key, bitset },
             deadline,
             None,
-            1 + usize::from(deadline.is_some()),
-            |id, indexes| {
-                Self::prepare_index(indexes, WaitIndexKey::Futex { key, id })?;
-                Self::prepare_optional_deadline(indexes, id, deadline)
-            },
+            keys,
         )
     }
 
@@ -101,23 +100,12 @@ impl WaitTicket {
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
-        self.prepare(
-            task,
-            IndexedWaitKind::Console,
-            deadline,
-            None,
-            1 + usize::from(deadline.is_some()),
-            |id, indexes| {
-                Self::prepare_index(
-                    indexes,
-                    WaitIndexKey::Console {
-                        exclusive: false,
-                        id,
-                    },
-                )?;
-                Self::prepare_optional_deadline(indexes, id, deadline)
-            },
-        )
+        let mut keys = Self::keys(2 + usize::from(deadline.is_some()))?;
+        keys.push(WaitIndexKey::Console {
+            exclusive: false,
+            id: self.id,
+        });
+        self.prepare(task, IndexedWaitKind::Console, deadline, None, keys)
     }
 
     pub(in crate::task::task_manager) fn prepare_signal(
@@ -131,8 +119,7 @@ impl WaitTicket {
             IndexedWaitKind::Signal { mask },
             deadline,
             None,
-            usize::from(deadline.is_some()),
-            |id, indexes| Self::prepare_optional_deadline(indexes, id, deadline),
+            Self::keys(1 + usize::from(deadline.is_some()))?,
         )
     }
 
@@ -144,7 +131,13 @@ impl WaitTicket {
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
         let identity = Pipe::identity(pipe);
-        let direction = condition.direction();
+        let mut keys = Self::keys(2 + usize::from(deadline.is_some()))?;
+        keys.push(WaitIndexKey::Pipe {
+            identity,
+            direction: pipe_direction(condition.direction()),
+            exclusive: true,
+            id: self.id,
+        });
         self.prepare(
             task,
             IndexedWaitKind::Pipe {
@@ -153,19 +146,7 @@ impl WaitTicket {
             },
             deadline,
             None,
-            1 + usize::from(deadline.is_some()),
-            |id, indexes| {
-                Self::prepare_index(
-                    indexes,
-                    WaitIndexKey::Pipe {
-                        identity,
-                        direction: direction as u8,
-                        exclusive: false,
-                        id,
-                    },
-                )?;
-                Self::prepare_optional_deadline(indexes, id, deadline)
-            },
+            keys,
         )
     }
 
@@ -174,14 +155,9 @@ impl WaitTicket {
         key: AdvisoryLockKey,
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
-        self.prepare(
-            task,
-            IndexedWaitKind::AdvisoryLock { key },
-            None,
-            None,
-            1,
-            |id, indexes| Self::prepare_index(indexes, WaitIndexKey::AdvisoryLock { key, id }),
-        )
+        let mut keys = Self::keys(2)?;
+        keys.push(WaitIndexKey::AdvisoryLock { key, id: self.id });
+        self.prepare(task, IndexedWaitKind::AdvisoryLock, None, None, keys)
     }
 
     pub(in crate::task::task_manager) fn prepare_poll(
@@ -190,12 +166,11 @@ impl WaitTicket {
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
-        let index_count = keys
+        let capacity = keys
             .len()
-            .checked_add(usize::from(deadline.is_some()))
+            .checked_add(1 + usize::from(deadline.is_some()))
             .ok_or(())?;
-        let mut indexes = Vec::new();
-        indexes.try_reserve_exact(index_count).map_err(|_| ())?;
+        let mut indexes = Self::keys(capacity)?;
         for key in &keys {
             let index = match *key {
                 PollWaitKey::Console { exclusive, .. } => WaitIndexKey::Console {
@@ -209,28 +184,18 @@ impl WaitTicket {
                     ..
                 } => WaitIndexKey::Pipe {
                     identity,
-                    direction: direction as u8,
+                    direction: pipe_direction(direction),
                     exclusive,
                     id: self.id,
                 },
             };
-            Self::prepare_index(&mut indexes, index)?;
+            // 多个 pollfd 可以指向同一 OFD/source；poll result 仍保留每个 key，
+            // 但 registry membership 必须只有一个 exact source node，否则 detach
+            // 会重复删除同一 key。
+            if !indexes.contains(&index) {
+                indexes.push(index);
+            }
         }
-        Self::prepare_optional_deadline(&mut indexes, self.id, deadline)?;
-        let entry = FallibleMap::try_prepare(
-            self.id,
-            IndexedWaitEntry {
-                task,
-                kind: IndexedWaitKind::Poll,
-                deadline,
-                poll_keys: Some(keys),
-            },
-        )
-        .map_err(|_| ())?;
-        Ok(PreparedWait {
-            id: self.id,
-            entry,
-            indexes,
-        })
+        self.prepare(task, IndexedWaitKind::Poll, deadline, Some(keys), indexes)
     }
 }

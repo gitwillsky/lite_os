@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import socket
+import ssl
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GATE_HOSTNAME = "liteos-gate.test"
+TLS_ACCEPT_ISOLATION_CLIENTS = 10
+TLS_ACCEPT_ISOLATION_DEADLINE_SECONDS = 2.0
 
 
 def _run(command: list[str]) -> None:
@@ -22,6 +27,43 @@ def _run(command: list[str]) -> None:
     if result.returncode != 0:
         tail = "\n".join(result.stdout.splitlines()[-40:])
         raise RuntimeError(f"TLS gate command failed: {' '.join(command)}\n{tail}")
+
+
+def _connect_gate(port: int, timeout: float) -> socket.socket:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        except ConnectionRefusedError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
+def _verify_accept_isolation(port: int, ca_cert: Path) -> None:
+    """证明停滞 ClientHello 不会阻塞后续合法 TLS handshake。"""
+    context = ssl.create_default_context(cafile=str(ca_cert))
+    stalled = _connect_gate(port, TLS_ACCEPT_ISOLATION_DEADLINE_SECONDS)
+    started = time.monotonic()
+    try:
+        for _ in range(TLS_ACCEPT_ISOLATION_CLIENTS):
+            remaining = TLS_ACCEPT_ISOLATION_DEADLINE_SECONDS - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("TLS accept isolation deadline expired")
+            with _connect_gate(port, remaining) as connection:
+                with context.wrap_socket(
+                    connection,
+                    server_hostname=GATE_HOSTNAME,
+                ):
+                    pass
+    finally:
+        stalled.close()
+    elapsed = time.monotonic() - started
+    if elapsed > TLS_ACCEPT_ISOLATION_DEADLINE_SECONDS:
+        raise RuntimeError(
+            f"TLS accept isolation exceeded {TLS_ACCEPT_ISOLATION_DEADLINE_SECONDS}s: "
+            f"{elapsed:.3f}s"
+        )
 
 
 def start_https_gate(
@@ -67,6 +109,10 @@ def start_https_gate(
             "1",
             "-subj",
             "/CN=LiteOS Gate CA",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
             "-keyout",
             str(ca_key),
             "-out",
@@ -131,6 +177,12 @@ def start_https_gate(
         try:
             server.wait(timeout=0.05)
         except subprocess.TimeoutExpired:
+            try:
+                _verify_accept_isolation(port, ca_cert)
+            except (OSError, TimeoutError, ssl.SSLError) as error:
+                server.terminate()
+                server.wait(timeout=3)
+                raise RuntimeError(f"TLS accept isolation failed: {error}") from error
             return server, port, ca_cert
     raise RuntimeError(f"no free HTTPS gate port in {ports.start}..{ports.stop - 1}")
 

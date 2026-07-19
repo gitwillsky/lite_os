@@ -18,7 +18,8 @@ pub(crate) enum FutexWaitError {
     OutOfMemory,
 }
 
-/// @description 按 memory-domain key 等待用户 u32 改变，队列锁覆盖 key/value 解析与发布。
+/// @description 按 memory-domain key 等待用户 u32 改变；先发布 Arming membership，
+/// 再在 memory owner 内复查 key/value，避免 memory 与 wait shard 互相嵌套。
 ///
 /// @param task 发起 syscall 且将被阻塞的 calling Thread owner。
 /// @param address 4-byte aligned 用户地址。
@@ -38,7 +39,7 @@ pub(crate) fn futex_wait(
     if address == 0 || address & 3 != 0 || bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let prepared = loop {
+    loop {
         let key = task
             .with_futex_word(address, private, |key, current_value| {
                 if current_value != expected {
@@ -53,16 +54,17 @@ pub(crate) fn futex_wait(
                 Ok(key)
             })
             .map_err(|_| FutexWaitError::Fault)??;
-        let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
-        let wait = ticket.prepare_futex(key, bitset, deadline, task.clone());
-
-        // queue→memory 的第二次解析是 publication linearization point；mapping key 在锁外
-        // staging 期间改变时，未发布节点由 PreparedWait 回收并按新 key 重试。
-        let queue = INDEXED_WAIT_QUEUE.lock();
-        let confirmed = task
-            .with_futex_word(address, private, |confirmed_key, current_value| {
+        let ticket = WAIT_REGISTRY.allocate_ticket();
+        let wait = ticket
+            .prepare_futex(key, bitset, deadline, task.clone())
+            .map_err(|()| FutexWaitError::OutOfMemory)?;
+        // Arming source node 先于第二次 value/key 复查发布。wake 若命中只记录
+        // Notified，不会唤醒仍为 Running 的 task；因此 memory callback 不再嵌套 registry lock。
+        let published = WAIT_REGISTRY.publish(wait);
+        let confirmed =
+            match task.with_futex_word(address, private, |confirmed_key, current_value| {
                 if confirmed_key != key {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 if current_value != expected {
                     return Err(FutexWaitError::Again);
@@ -73,32 +75,46 @@ pub(crate) fn futex_wait(
                 if task.has_deliverable_signal() {
                     return Err(FutexWaitError::Interrupted);
                 }
-                let wait = wait.map_err(|()| FutexWaitError::OutOfMemory)?;
-
-                Ok(Some(super::context_switch::prepare_current_block(
-                    &task,
-                    queue,
-                    move |queue, _| {
-                        let wait_id = queue.commit(wait);
-                        WaitMembership::Futex(wait_id)
-                    },
-                )))
-            })
-            .map_err(|_| FutexWaitError::Fault)??;
-        let Some(prepared) = confirmed else {
-            continue;
-        };
-        break prepared;
-    };
-    match prepared.suspend() {
-        WaitResult::Woken => Ok(()),
-        WaitResult::TimedOut => Err(FutexWaitError::TimedOut),
-        WaitResult::Interrupted => Err(FutexWaitError::Interrupted),
-        WaitResult::OutOfMemory => unreachable!("wait OOM is returned before blocking"),
+                Ok(true)
+            }) {
+                Ok(Ok(confirmed)) => Ok(confirmed),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(FutexWaitError::Fault),
+            };
+        match confirmed {
+            Ok(false) => match published.cancel() {
+                CancelOutcome::Cancelled => continue,
+                CancelOutcome::Notified(result) => return futex_notification(result),
+            },
+            Err(error) => match published.cancel() {
+                CancelOutcome::Cancelled => return Err(error),
+                CancelOutcome::Notified(result) => return futex_notification(result),
+            },
+            Ok(true) => {
+                let arm = match published.prepare_arm() {
+                    Ok(arm) => arm,
+                    Err(result) => return futex_notification(result),
+                };
+                let prepared =
+                    super::context_switch::prepare_current_block(&task, arm, |arm, _| {
+                        WaitMembership::Futex(arm.arm())
+                    });
+                return futex_notification(prepared.suspend());
+            }
+        }
     }
 }
 
-/// @description 在 queue→memory 固定锁序内解析 key，并唤醒最多 `count` 个 waiter。
+fn futex_notification(result: WaitResult) -> Result<(), FutexWaitError> {
+    match result {
+        WaitResult::Woken => Ok(()),
+        WaitResult::TimedOut => Err(FutexWaitError::TimedOut),
+        WaitResult::Interrupted => Err(FutexWaitError::Interrupted),
+        WaitResult::OutOfMemory => unreachable!("published wait cannot receive OOM"),
+    }
+}
+
+/// @description 在 memory owner 内解析稳定 key，释放 memory lock 后再唤醒最多 `count` 个 waiter。
 /// @param count 最大唤醒数。
 /// @param bitset wake 与 waiter mask 的非零交集条件。
 /// @param with_key 在 AddressSpace lock 内把稳定 FutexKey 交给 consume。
@@ -111,26 +127,20 @@ pub(in crate::task) fn futex_wake_with_key(
     if bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    let mut waiters = FallibleMap::new();
-    {
-        let mut consume = |key| {
-            for _ in 0..count {
-                let Some(waiter) = queue.take_futex(key, bitset) else {
-                    break;
-                };
-                waiters.commit_vacant(waiter);
-            }
+    let mut key = None;
+    with_key(&mut |resolved| key = Some(resolved)).map_err(|_| FutexWaitError::Fault)?;
+    let key = key.expect("futex key resolver did not publish an identity");
+    let mut consumed = 0;
+    for _ in 0..count {
+        let Some(wake) = WAIT_REGISTRY.wake_futex_one(key, bitset) else {
+            break;
         };
-        with_key(&mut consume).map_err(|_| FutexWaitError::Fault)?;
+        consumed += 1;
+        if let Some(waiter) = wake.claimed {
+            crate::task::processor::wake_futex_task(waiter.task, waiter.id, WaitResult::Woken);
+        }
     }
-    drop(queue);
-    let count = waiters.len();
-    while let Some((&wait_id, _)) = waiters.first_key_value() {
-        let entry = waiters.remove(&wait_id).expect("staged futex waiter");
-        crate::task::processor::wake_futex_task(entry.task, wait_id, WaitResult::Woken);
-    }
-    Ok(count)
+    Ok(consumed)
 }
 
 /// @description 唤醒同一 memory-domain key 上最多 `count` 个匹配 waiter。
@@ -178,8 +188,8 @@ pub(crate) fn futex_requeue(
     if source == 0 || source & 3 != 0 || target == 0 || target & 3 != 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    let (waiters, moved) = task
+    let mut waiters = wait_registry::ClaimedBatch::new();
+    let (woken, moved) = task
         .with_futex_requeue(
             source,
             target,
@@ -188,24 +198,23 @@ pub(crate) fn futex_requeue(
                 if compare.is_some_and(|expected| expected != current) {
                     return Err(FutexWaitError::Again);
                 }
-                let mut waiters = FallibleMap::new();
+                let mut woken = 0;
                 for _ in 0..wake_count {
-                    let Some(waiter) = queue.take_futex(source_key, u32::MAX) else {
+                    let Some(wake) = WAIT_REGISTRY.wake_futex_one(source_key, u32::MAX) else {
                         break;
                     };
-                    waiters.commit_vacant(waiter);
+                    woken += 1;
+                    if let Some(waiter) = wake.claimed {
+                        waiters.push(waiter);
+                    }
                 }
-                let moved = queue.requeue_futex(source_key, target_key, requeue_count);
-                Ok((waiters, moved))
+                let moved = WAIT_REGISTRY.requeue_futex(source_key, target_key, requeue_count);
+                Ok((woken, moved))
             },
         )
         .map_err(|_| FutexWaitError::Fault)??;
-    drop(queue);
-    let completed = waiters.len() + moved;
-    let mut waiters = waiters;
-    while let Some((&wait_id, _)) = waiters.first_key_value() {
-        let entry = waiters.remove(&wait_id).expect("staged futex waiter");
-        crate::task::processor::wake_futex_task(entry.task, wait_id, WaitResult::Woken);
+    while let Some(entry) = waiters.pop() {
+        crate::task::processor::wake_futex_task(entry.task, entry.id, WaitResult::Woken);
     }
-    Ok(completed)
+    Ok(woken + moved)
 }

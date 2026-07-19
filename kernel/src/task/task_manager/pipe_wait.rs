@@ -5,6 +5,7 @@ struct TaskPipeNotifier;
 
 impl PipeNotifier for TaskPipeNotifier {
     fn notify(&self, pipe: &Arc<Pipe>) {
+        crate::fs::Epoll::notify_pipe_source(pipe);
         wake_pipe_waiters(pipe);
     }
 }
@@ -34,11 +35,11 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
     const ERROR: i16 = 0x008;
     const HANGUP: i16 = 0x010;
     let identity = Pipe::identity(pipe);
-    let mut waiters = FallibleMap::new();
     let mut wake_groups = FallibleMap::new();
-    let mut exclusive_selected = false;
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let mut count = 0;
     'sources: for direction in [PipeDirection::Read, PipeDirection::Write] {
+        // Read and write conditions are independent wait sources. Each direction may wake all
+        // non-exclusive pollers plus one direct/EPOLLEXCLUSIVE registration.
         let state = pipe.poll_state(direction);
         let ready = match direction {
             PipeDirection::Read => {
@@ -51,59 +52,46 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
         if ready == 0 {
             continue;
         }
-        while let Some((entry, group)) =
-            queue.take_pipe(identity, direction, false, ready, state, &wake_groups)
+        while let Some(wake) =
+            WAIT_REGISTRY.wake_pipe_one(identity, direction, false, ready, state, &wake_groups)
         {
-            if let Some(group) = group {
-                // `entry` owns the waiter while the registry is unlocked, so the
-                // fallible group-node allocation cannot leave it published twice.
-                drop(queue);
-                let group_error = wake_groups.try_insert(group, ()).is_err();
-                waiters.commit_vacant(entry);
-                queue = INDEXED_WAIT_QUEUE.lock();
-                if group_error {
-                    break 'sources;
-                }
-            } else {
-                waiters.commit_vacant(entry);
+            let group_error = wake
+                .group
+                .is_some_and(|group| wake_groups.try_insert(group, ()).is_err());
+            count += 1;
+            wake_claimed_pipe(wake.claimed);
+            if group_error {
+                break 'sources;
             }
         }
-        if !exclusive_selected
-            && let Some((entry, group)) =
-                queue.take_pipe(identity, direction, true, ready, state, &wake_groups)
+        if let Some(wake) =
+            WAIT_REGISTRY.wake_pipe_one(identity, direction, true, ready, state, &wake_groups)
         {
-            if let Some(group) = group {
-                // Keep allocation outside the IRQ-safe registry lock. The detached
-                // entry remains exclusively owned until it is staged for wakeup.
-                drop(queue);
-                let group_error = wake_groups.try_insert(group, ()).is_err();
-                waiters.commit_vacant(entry);
-                queue = INDEXED_WAIT_QUEUE.lock();
-                if group_error {
-                    break 'sources;
-                }
-            } else {
-                waiters.commit_vacant(entry);
+            let group_error = wake
+                .group
+                .is_some_and(|group| wake_groups.try_insert(group, ()).is_err());
+            count += 1;
+            wake_claimed_pipe(wake.claimed);
+            if group_error {
+                break 'sources;
             }
-            exclusive_selected = true;
         }
     }
-    drop(queue);
-    let count = waiters.len();
-    let mut waiters = waiters;
-    while let Some((&wait_id, _)) = waiters.first_key_value() {
-        let entry = waiters.remove(&wait_id).expect("staged pipe waiter");
-        match entry.kind {
+    count
+}
+
+fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>) {
+    if let Some(claimed) = claimed {
+        match claimed.kind {
             IndexedWaitKind::Pipe { .. } => {
-                crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Woken);
+                crate::task::processor::wake_pipe_task(claimed.task, claimed.id, WaitResult::Woken);
             }
             IndexedWaitKind::Poll => {
-                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Woken);
+                crate::task::processor::wake_poll_task(claimed.task, claimed.id, WaitResult::Woken);
             }
             _ => panic!("pipe index contains non-pipe wait"),
         }
     }
-    count
 }
 
 /// @description 在统一 wait registry 阻塞到精确 pipe I/O 条件成立或 signal interruption。
@@ -126,24 +114,23 @@ pub(crate) fn wait_for_pipe_until(
     deadline: Option<u64>,
 ) -> WaitResult {
     let task = current_task().expect("pipe wait requires current task");
-    let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
+    let ticket = WAIT_REGISTRY.allocate_ticket();
     let prepared = ticket.prepare_pipe(pipe, condition, deadline, task.clone());
-    let queue = INDEXED_WAIT_QUEUE.lock();
-    if pipe.wait_ready(condition) {
-        return WaitResult::Woken;
-    }
-    if deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
-        return WaitResult::TimedOut;
-    }
-    if task.has_deliverable_signal() {
-        return WaitResult::Interrupted;
-    }
-    let Ok(prepared) = prepared else {
-        return WaitResult::OutOfMemory;
-    };
-    super::context_switch::prepare_current_block(&task, queue, move |queue, _| {
-        let wait_id = queue.commit(prepared);
-        WaitMembership::Pipe(wait_id)
-    })
-    .suspend()
+    arm_indexed_wait(
+        &task,
+        prepared,
+        || {
+            if pipe.wait_ready(condition) {
+                Some(WaitResult::Woken)
+            } else if deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
+                Some(WaitResult::TimedOut)
+            } else if task.has_deliverable_signal() {
+                Some(WaitResult::Interrupted)
+            } else {
+                None
+            }
+        },
+        WaitMembership::Pipe,
+    )
+    .map_or_else(core::convert::identity, |prepared| prepared.suspend())
 }

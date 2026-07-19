@@ -1,7 +1,94 @@
 #![cfg_attr(test, feature(allocator_api))]
+// Host fixtures load selected production leaves both alone and through their real parent module.
+#![cfg_attr(test, allow(clippy::duplicate_mod))]
 
 #[cfg(test)]
 extern crate alloc;
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InodeType {
+    File,
+    Directory,
+    SymLink,
+    CharacterDevice,
+    Fifo,
+    Socket,
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileSystemError {
+    AlreadyExists,
+    Busy,
+    CrossDevice,
+    DirectoryNotEmpty,
+    InvalidFileSystem,
+    InvalidOperation,
+    InvalidPath,
+    IoError,
+    IsDirectory,
+    NoSpace,
+    NotDirectory,
+    NotFound,
+    OutOfMemory,
+    PermissionDenied,
+    TooManyLinks,
+}
+
+#[cfg(test)]
+macro_rules! error {
+    ($($argument:tt)*) => {{ let _ = core::format_args!($($argument)*); }};
+}
+
+#[cfg(test)]
+#[allow(unused_macros)]
+macro_rules! debug {
+    ($($argument:tt)*) => {{ let _ = core::format_args!($($argument)*); }};
+}
+
+#[cfg(test)]
+#[allow(unused_macros)]
+macro_rules! info {
+    ($($argument:tt)*) => {{ let _ = core::format_args!($($argument)*); }};
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod drivers;
+
+#[cfg(test)]
+mod sync;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/ipc/receive_buffer.rs"]
+#[allow(dead_code)]
+mod receive_buffer;
+
+#[cfg(test)]
+mod timer {
+    pub(crate) fn get_realtime_ns() -> u64 {
+        1_800_000_000_000_000_000
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod fs;
+
+#[cfg(test)]
+mod ext2_cost_tests;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/directory.rs"]
+#[allow(dead_code)]
+mod directory_stream;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/ext2/directory_cursor.rs"]
+mod ext2_directory_cursor;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/fallible_tree.rs"]
@@ -12,8 +99,33 @@ mod fallible_tree;
 mod fallible_tree_tests;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/socket/inet/port_namespace.rs"]
+mod inet_port_namespace;
+
+#[cfg(test)]
+mod inet_port_namespace_tests;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/block.rs"]
+#[allow(dead_code)]
+mod block_device;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_blk/policy.rs"]
+mod virtio_blk_policy;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_rng/completion_policy.rs"]
+mod virtio_rng_completion_policy;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/fs/file/indexed_slots.rs"]
 mod indexed_slots;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/id.rs"]
+#[allow(dead_code)]
+mod kernel_id;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/file/position.rs"]
@@ -47,6 +159,19 @@ mod fault_preflight;
 mod memory_retire;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/task/model/user_context.rs"]
+mod task_user_context;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_net/rx_slots.rs"]
+mod virtio_net_rx_slots;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_gpu/sequence_policy.rs"]
+#[allow(dead_code)]
+mod virtio_gpu_sequence_policy;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/timer/deadline.rs"]
 mod timer_deadline;
 
@@ -63,6 +188,13 @@ mod sv39;
 mod riscv_pte;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/arch/riscv64/fp_instruction.rs"]
+mod riscv_fp_instruction;
+
+#[cfg(test)]
+mod riscv_page_table_fixture;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/socket/unix/datagram_queue.rs"]
 mod unix_datagram_queue;
 
@@ -72,7 +204,11 @@ mod unix_stream_backlog;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/syscall/user_iovec.rs"]
+#[allow(dead_code)]
 mod user_iovec;
+
+#[cfg(test)]
+mod user_iovec_tests;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/socket/message_limits.rs"]
@@ -85,6 +221,15 @@ mod socket_receive_publication;
 #[cfg(test)]
 #[path = "../../../kernel/src/drm/publication_order.rs"]
 mod drm_publication;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/socket/device_error.rs"]
+mod network_device_error;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/network.rs"]
+#[allow(dead_code)]
+mod network_transmit;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/file/terminal_flush.rs"]
@@ -130,6 +275,10 @@ mod snapshot_staging;
 #[cfg(test)]
 #[path = "../../../kernel/src/task/task_manager/timer_queue/preparation_policy.rs"]
 mod timer_preparation_policy;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/task/task_manager/timer_queue/transaction_loop.rs"]
+mod timer_transaction_loop;
 
 #[cfg(test)]
 #[path = "tests/terminal_output_order.rs"]

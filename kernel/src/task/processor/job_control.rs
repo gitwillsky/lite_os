@@ -3,7 +3,7 @@ use super::*;
 /// @description 撤销 Running membership 并进入 preemption 或既有 group-stop 交接状态。
 ///
 /// @param task 当前 CPU 唯一 running Task。
-/// @return 无返回值；Ready/Stopped 发布必须等源 CPU 切回 idle stack。
+/// @return 无返回值；Ready/Stopped 发布必须等 post-switch continuation 证明 source context 已保存。
 pub(in crate::task) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) {
     let source_cpu = cpu::current_id();
     let current =

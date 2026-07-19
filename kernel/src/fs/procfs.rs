@@ -6,7 +6,7 @@ mod node;
 mod process;
 mod snapshot;
 mod system;
-use lookup::{decimal_name, find_process, find_thread, parse_pid, push_directory_entry};
+use lookup::{decimal_name, find_process, find_thread, parse_pid};
 use node::ProcNode;
 use process::{
     format_io, format_process_comm, format_process_stat, format_process_statm,
@@ -22,8 +22,8 @@ use system::{
 };
 
 use super::{
-    DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata,
-    InodeType, vfs,
+    DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType, vfs,
 };
 
 const PROC_FILESYSTEM_ID: usize = 3;
@@ -274,7 +274,11 @@ impl Inode for ProcInode {
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
+    fn read_directory(
+        &self,
+        cursor: u64,
+        visitor: &mut dyn DirectoryVisitor,
+    ) -> Result<DirectoryRead, FileSystemError> {
         let parent_inode = match self.node {
             ProcNode::ProcessFdDir(pid) | ProcNode::ProcessTaskDir(pid) => {
                 ProcNode::ProcessDir(pid).inode()
@@ -282,9 +286,26 @@ impl Inode for ProcInode {
             ProcNode::ThreadDir(tgid, _) => ProcNode::ProcessTaskDir(tgid).inode(),
             _ => 1,
         };
-        let mut entries = Vec::new();
-        push_directory_entry(&mut entries, self.node.inode(), InodeType::Directory, b".")?;
-        push_directory_entry(&mut entries, parent_inode, InodeType::Directory, b"..")?;
+        let mut stream = IndexedDirectory::new(cursor, visitor);
+        let mut index = 0usize;
+        macro_rules! emit {
+            ($inode:expr, $kind:expr, $name:expr) => {{
+                let entry_index = index;
+                index += 1;
+                if !stream.emit(
+                    entry_index,
+                    DirectoryEntry {
+                        inode: $inode,
+                        kind: $kind,
+                        name: $name,
+                    },
+                )? {
+                    return Ok(stream.finish());
+                }
+            }};
+        }
+        emit!(self.node.inode(), InodeType::Directory, b".");
+        emit!(parent_inode, InodeType::Directory, b"..");
         match self.node {
             ProcNode::Root => {
                 for (inode, kind, name) in [
@@ -298,16 +319,17 @@ impl Inode for ProcInode {
                     (7, InodeType::Directory, &b"net"[..]),
                     (10, InodeType::SymLink, &b"self"[..]),
                 ] {
-                    push_directory_entry(&mut entries, inode, kind, name)?;
+                    emit!(inode, kind, name);
                 }
-                for process in self.source.snapshot()?.processes {
+                let start = stream.start_index().saturating_sub(index);
+                index += start;
+                for process in self.source.snapshot()?.processes.into_iter().skip(start) {
                     let mut name = [0u8; 20];
-                    push_directory_entry(
-                        &mut entries,
+                    emit!(
                         ProcNode::ProcessDir(process.pid).inode(),
                         InodeType::Directory,
-                        decimal_name(process.pid, &mut name),
-                    )?;
+                        decimal_name(process.pid, &mut name)
+                    );
                 }
             }
             ProcNode::ProcessDir(pid) => {
@@ -337,20 +359,21 @@ impl Inode for ProcInode {
                         &b"fd"[..],
                     ),
                 ] {
-                    push_directory_entry(&mut entries, node.inode(), kind, name)?;
+                    emit!(node.inode(), kind, name);
                 }
             }
             ProcNode::ProcessTaskDir(pid) => {
                 let snapshot = self.source.snapshot()?;
                 let process = find_process(&snapshot, pid)?;
-                for thread in &process.threads {
+                let start = stream.start_index().saturating_sub(index);
+                index += start;
+                for thread in process.threads.iter().skip(start) {
                     let mut name = [0u8; 20];
-                    push_directory_entry(
-                        &mut entries,
+                    emit!(
                         ProcNode::ThreadDir(pid, thread.tid).inode(),
                         InodeType::Directory,
-                        decimal_name(thread.tid, &mut name),
-                    )?;
+                        decimal_name(thread.tid, &mut name)
+                    );
                 }
             }
             ProcNode::ThreadDir(tgid, tid) => {
@@ -365,31 +388,33 @@ impl Inode for ProcInode {
                     (ProcNode::ThreadStatm(tgid, tid), &b"statm"[..]),
                     (ProcNode::ThreadIo(tgid, tid), &b"io"[..]),
                 ] {
-                    push_directory_entry(&mut entries, node.inode(), InodeType::File, name)?;
+                    emit!(node.inode(), InodeType::File, name);
                 }
             }
             ProcNode::ProcessFdDir(pid) => {
-                for entry in self
+                let descriptors = self
                     .source
                     .process_file_descriptors(pid)?
-                    .ok_or(FileSystemError::NotFound)?
-                {
+                    .ok_or(FileSystemError::NotFound)?;
+                let start = stream.start_index().saturating_sub(index);
+                index += start;
+                for entry in descriptors.into_iter().skip(start) {
                     let mut name = [0u8; 20];
-                    push_directory_entry(
-                        &mut entries,
+                    emit!(
                         ProcNode::ProcessFd(pid, entry.fd).inode(),
                         InodeType::SymLink,
-                        decimal_name(entry.fd, &mut name),
-                    )?;
+                        decimal_name(entry.fd, &mut name)
+                    );
                 }
             }
             ProcNode::NetDir => {
-                push_directory_entry(&mut entries, 8, InodeType::File, b"dev")?;
-                push_directory_entry(&mut entries, 9, InodeType::File, b"route")?;
+                emit!(8, InodeType::File, b"dev");
+                emit!(9, InodeType::File, b"route");
             }
             _ => return Err(FileSystemError::NotDirectory),
         }
-        Ok(entries)
+        let _ = index;
+        Ok(stream.finish())
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -519,8 +544,8 @@ impl FileSystem for ProcFileSystem {
         Ok(self.root.clone())
     }
 
-    fn statistics(&self) -> FileSystemStatistics {
-        FileSystemStatistics {
+    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
+        Ok(FileSystemStatistics {
             type_name: "proc",
             magic: 0x9fa0,
             block_size: 4096,
@@ -533,6 +558,6 @@ impl FileSystem for ProcFileSystem {
             name_length: 255,
             fragment_size: 4096,
             flags: 1,
-        }
+        })
     }
 }

@@ -9,12 +9,11 @@ pub(super) fn thread_by_tid(
     graph: &ProcessGraph,
     tid: usize,
 ) -> Option<(usize, Arc<TaskControlBlock>)> {
-    graph.nodes.iter().find_map(|(&tgid, node)| {
-        let ProcessState::Live(threads) = &node.state else {
-            return None;
-        };
-        threads.get(&tid).cloned().map(|thread| (tgid, thread))
-    })
+    let tgid = graph.threads.get(&tid)?.tgid;
+    let ProcessState::Live(threads) = &graph.nodes.get(&tgid)?.state else {
+        return None;
+    };
+    threads.get(&tid).cloned().map(|thread| (tgid, thread))
 }
 
 /// @description 解析 Linux scheduler 的零/current 或正数/global TID selector。

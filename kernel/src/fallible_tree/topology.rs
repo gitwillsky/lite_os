@@ -110,6 +110,7 @@ pub(super) fn remove_node<K: Ord, V>(root: Link<K, V>, key: &K) -> RemoveResult<
                 let (right, mut successor) = extract_min(right);
                 core::mem::swap(&mut root.key, &mut successor.key);
                 core::mem::swap(&mut root.value, &mut successor.value);
+                root.next = successor.next;
                 root.left = Some(left);
                 root.right = right;
                 (Some(rebalance(root)), Some(successor))
@@ -171,6 +172,58 @@ pub(super) fn count_nodes<K, V>(root: &Link<K, V>) -> usize {
     root.as_ref().map_or(0, |root| {
         1 + count_nodes(&root.left) + count_nodes(&root.right)
     })
+}
+
+/// 一次消费全部节点并保留匹配项，再从有序 node list 线性重建平衡树。
+pub(super) fn retain_linear<K, V>(
+    root: Link<K, V>,
+    keep: &mut impl FnMut(&K, &V) -> bool,
+) -> (Link<K, V>, usize) {
+    fn prepend_filtered<K, V>(
+        mut root: Box<Node<K, V>>,
+        head: &mut Link<K, V>,
+        kept: &mut usize,
+        keep: &mut impl FnMut(&K, &V) -> bool,
+    ) {
+        let left = root.left.take();
+        let right = root.right.take();
+        if let Some(right) = right {
+            prepend_filtered(right, head, kept, keep);
+        }
+        if keep(&root.key, &root.value) {
+            root.height = 1;
+            root.next = head.as_deref().map(core::ptr::NonNull::from);
+            root.right = head.take();
+            *head = Some(root);
+            *kept += 1;
+        }
+        if let Some(left) = left {
+            prepend_filtered(left, head, kept, keep);
+        }
+    }
+
+    fn build_balanced<K, V>(head: &mut Link<K, V>, count: usize) -> Link<K, V> {
+        if count == 0 {
+            return None;
+        }
+        let left_count = count / 2;
+        let left = build_balanced(head, left_count);
+        let mut root = head.take().expect("retained AVL list shorter than count");
+        *head = root.right.take();
+        root.left = left;
+        root.right = build_balanced(head, count - left_count - 1);
+        update_height(&mut root);
+        Some(root)
+    }
+
+    let mut head = None;
+    let mut kept = 0;
+    if let Some(root) = root {
+        prepend_filtered(root, &mut head, &mut kept, keep);
+    }
+    let root = build_balanced(&mut head, kept);
+    debug_assert!(head.is_none());
+    (root, kept)
 }
 
 /// 返回最大 key，只访问 AVL 的 right spine。

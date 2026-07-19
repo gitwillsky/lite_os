@@ -2,6 +2,10 @@ use alloc::{sync::Arc, vec::Vec};
 use core::num::NonZeroUsize;
 use spin::Mutex;
 
+#[path = "ipc/receive_buffer.rs"]
+mod receive_buffer;
+pub(crate) use receive_buffer::ReceiveBuffer;
+
 mod eventfd;
 pub(crate) use eventfd::{EventFd, EventFdRead, EventFdWrite};
 
@@ -207,7 +211,7 @@ impl Pipe {
         }
     }
 
-    fn read(self: &Arc<Self>, output: &mut [u8]) -> PipeRead {
+    fn read(self: &Arc<Self>, output: &mut ReceiveBuffer<'_>, maximum: usize) -> PipeRead {
         let result = {
             let mut state = self.state.lock();
             if state.length == 0 {
@@ -217,15 +221,15 @@ impl Pipe {
                     PipeRead::Empty
                 }
             } else {
-                let count = output.len().min(state.length);
+                let count = output.remaining().min(maximum).min(state.length);
                 if count != 0 {
                     let capacity = state.bytes.len();
                     let head = state.head;
                     let first = count.min(capacity - head);
-                    output[..first].copy_from_slice(&state.bytes[head..head + first]);
+                    assert_eq!(output.append(&state.bytes[head..head + first]), first);
                     let second = count - first;
                     if second != 0 {
-                        output[first..count].copy_from_slice(&state.bytes[..second]);
+                        assert_eq!(output.append(&state.bytes[..second]), second);
                     }
                     let next = head + count;
                     state.head = if next >= capacity {
@@ -362,8 +366,17 @@ impl PipeEnd {
         self.pipe.clone()
     }
 
-    pub(crate) fn read(&self, output: &mut [u8]) -> PipeRead {
-        self.pipe.read(output)
+    pub(crate) fn read(&self, output: &mut ReceiveBuffer<'_>) -> PipeRead {
+        let maximum = output.remaining();
+        self.pipe.read(output, maximum)
+    }
+
+    /// @description 从 pipe 读取至 receive sink，但不越过 protocol/control barrier。
+    /// @param output initialized-prefix owner。
+    /// @param maximum 本次最多追加的 byte count。
+    /// @return byte count、empty 或 EOF。
+    pub(crate) fn read_bounded(&self, output: &mut ReceiveBuffer<'_>, maximum: usize) -> PipeRead {
+        self.pipe.read(output, maximum)
     }
 
     pub(crate) fn write(&self, input: &[u8]) -> PipeWrite {

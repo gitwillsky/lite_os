@@ -37,14 +37,36 @@ pub(crate) use task_manager::*;
 
 const INIT_PROC_NAME: &[u8] = b"/bin/init";
 
+/// @description 在任何启动期 external/software trap 前构造 membarrier per-CPU state。
+///
+/// @return 无返回值。
+/// @errors 重复初始化或 allocation failure 时 fail-stop。
+pub(crate) fn initialize_interrupt_state() {
+    memory_barrier::initialize();
+}
+
+/// @description 首次 restore 的 task 在进入 architecture trap-return 前完成前一 outgoing
+/// task 的 handoff consequence；已有 task 在 context-switch continuation 中走同一 seam。
+fn resume_new_task() -> ! {
+    task_manager::context_switch::complete_pending_handoff();
+    let resume = current_task()
+        .expect("new task resumed without Processor current ownership")
+        .kernel_resume_target();
+    resume()
+}
+
 pub(crate) fn init(
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
     console: Arc<dyn Console>,
 ) {
-    install_advisory_lock_notifier();
-    memory_barrier::initialize();
+    // Bootstrap executable loading can issue block I/O before a current task exists. Build the
+    // processor topology first so the installed wait-target factory can safely observe `None`;
+    // reversing these calls makes `current_task()` wait forever on an uninitialized topology.
     processor::init_topology();
+    task_manager::initialize_driver_io_wait();
+    task_manager::task_mutex_wait::initialize();
+    install_advisory_lock_notifier();
     let mut path = Vec::new();
     path.try_reserve_exact(INIT_PROC_NAME.len())
         .expect("failed to allocate init pathname");

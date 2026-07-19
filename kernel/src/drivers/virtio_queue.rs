@@ -1,12 +1,50 @@
 use crate::memory::{
-    FrameAllocationClass, FrameTracker, KERNEL_SPACE, MemorySet, PAGE_SIZE, PhysicalAddress,
-    VirtualAddress, alloc_contiguous,
+    FrameAllocationClass, FrameTracker, PhysicalAddress, VirtualAddress, alloc_contiguous,
 };
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use super::hal::VirtQueueAddresses;
+
+#[path = "virtio_queue/dma.rs"]
+mod dma;
+#[cfg_attr(test, allow(unused_imports))]
+pub(super) use dma::{DeviceWriteBuffer, DmaBuffer, DmaSlice};
+use dma::{DmaChainRequirement, descriptor_requirement};
+
+/// Virtqueue descriptor chain 在 publication 前的可恢复构造错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VirtQueueError {
+    /// buffer 长度溢出或没有可发布的 segment。
+    InvalidBuffer,
+    /// 当前 free descriptor 不足。
+    NoDescriptors,
+}
+
+/// used ring 已摘取、但尚未由 concrete adapter owner 验证的 descriptor completion。
+///
+/// token 不回收 descriptor；adapter 必须先验证 head/generation/slot identity，再把唯一 token
+/// 交回 `VirtQueue::recycle_used`。验证失败时只能 reset/fail-stop，队列会保持 pending latch，
+/// 从而阻止 duplicate/unknown completion 继续污染 free list。
+#[must_use = "used completion must be owner-claimed then recycled, or terminate the queue"]
+pub(super) struct UsedDescriptor {
+    queue: u64,
+    head: u16,
+    length: u32,
+}
+
+impl UsedDescriptor {
+    /// @description 返回 device 声明完成的 descriptor chain head。
+    pub(super) fn head(&self) -> u16 {
+        self.head
+    }
+
+    /// @description 返回 device 声明写入的 completion length。
+    pub(super) fn length(&self) -> u32 {
+        self.length
+    }
+}
 
 // VirtIO Ring 描述符标志
 pub(super) const VIRTQ_DESC_F_NEXT: u16 = 1;
@@ -53,6 +91,11 @@ pub(super) struct VirtQueue {
     pub(super) num_free: u16,
     pub(super) last_used_idx: u16,
     pub(super) avail_idx: u16,
+    // OWNER: used ring 每次最多有一个已摘取但尚未由 adapter claim 的 completion。
+    // 缺失该 latch 会让 caller 丢弃 invalid token 后继续消费队列并复用未验证 descriptor。
+    pending_used: Option<u16>,
+    // OWNER: ring/token/chain corruption 后永久关闭本 queue；reset 是唯一退出策略。
+    failed: bool,
     // Shadow descriptors that device can't access - inspired by virtio-drivers
     desc_shadow: Vec<VirtqDesc>,
     _frame_tracker: FrameTracker,
@@ -143,6 +186,8 @@ impl VirtQueue {
             num_free: size,
             last_used_idx: 0,
             avail_idx: 0,
+            pending_used: None,
+            failed: false,
             desc_shadow,
             _frame_tracker: frame_tracker,
             addresses: VirtQueueAddresses {
@@ -176,43 +221,19 @@ impl VirtQueue {
         }
     }
 
-    fn segment_count(ptr: *const u8, len: usize) -> Option<usize> {
-        if len == 0 {
-            return Some(0);
-        }
-        (ptr as usize % PAGE_SIZE)
-            .checked_add(len)
-            .map(|span| span.div_ceil(PAGE_SIZE))
-    }
-
-    // Simple HAL-like buffer sharing following virtio-drivers pattern
     fn write_segments(
         &mut self,
-        kernel_space: &MemorySet,
-        ptr: *const u8,
-        len: usize,
-        writable: bool,
+        buffer: &DmaSlice<'_>,
         descriptor: &mut u16,
         remaining: &mut usize,
     ) {
-        let mut processed: usize = 0;
-        while processed < len {
-            let cur_va = VirtualAddress::from(ptr as usize + processed);
-            let page_off = cur_va.page_offset();
-            let remain = len - processed;
-            let to_page_end = PAGE_SIZE - page_off;
-            let chunk = core::cmp::min(remain, to_page_end);
-
-            let pa = match kernel_space.translate_kernel_address(cur_va) {
-                Some(pa) => pa,
-                None => panic!("VirtQueue: failed to translate VA {:#x}", cur_va.as_usize()),
-            };
+        buffer.for_each_segment(|physical, length, writable| {
             let current = *descriptor;
             let next = self.desc_shadow[current as usize].next;
             *remaining -= 1;
             let desc = &mut self.desc_shadow[current as usize];
-            desc.addr = pa.as_usize() as u64;
-            desc.len = chunk as u32;
+            desc.addr = physical;
+            desc.len = length as u32;
             desc.flags = if writable { VIRTQ_DESC_F_WRITE } else { 0 }
                 | if *remaining != 0 {
                     VIRTQ_DESC_F_NEXT
@@ -223,68 +244,30 @@ impl VirtQueue {
             if *remaining != 0 {
                 *descriptor = next;
             }
-            processed += chunk;
-        }
+        });
     }
 
-    pub(super) fn add_buffer(
-        &mut self,
-        inputs: &[&[u8]],
-        outputs: &mut [&mut [u8]],
-    ) -> Option<u16> {
-        // 1. 预计算全部物理分段，只在容量充足时开始修改 free chain。
-        //    若在 runtime 构造临时 Vec，网络和块 I/O 的每次提交都会分配，并在
-        //    memory pressure 下把本可返回的设备错误放大为 kernel-wide allocation abort。
-        let input_count = inputs.iter().try_fold(0usize, |count, input| {
-            count.checked_add(Self::segment_count(input.as_ptr(), input.len())?)
-        })?;
-        let output_count = outputs.iter().try_fold(0usize, |count, output| {
-            count.checked_add(Self::segment_count(output.as_ptr(), output.len())?)
-        })?;
-        let total_count = input_count.checked_add(output_count)?;
-        if total_count == 0 || total_count > usize::from(self.num_free) {
-            return None;
-        }
+    pub(super) fn add_dma(&mut self, buffers: &[DmaSlice<'_>]) -> Result<u16, VirtQueueError> {
+        let total_count = match descriptor_requirement(buffers, usize::from(self.num_free)) {
+            DmaChainRequirement::Required(count) => count,
+            DmaChainRequirement::Empty => return Err(VirtQueueError::InvalidBuffer),
+            DmaChainRequirement::ExceedsCapacity => {
+                return Err(VirtQueueError::NoDescriptors);
+            }
+        };
 
-        // 2. total_count 已不大于 u16 num_free；直接以固定局部状态遍历
-        //    buffer，避免为每次 descriptor submission 构造 heap collection。
         let total_needed = total_count as u16;
         let head = self.free_head;
         let mut desc_idx = head;
         let mut remaining = total_count;
-        // Buffer owners keep their mappings live through completion; this lock only stabilizes
-        // page-table traversal while the chain is translated.  Take it once for the whole chain
-        // instead of once per physical segment: block, network and display buffers commonly span
-        // several pages, and repeated spin-lock traffic provided no stronger lifetime proof.
-        let kernel_space = KERNEL_SPACE.wait().lock();
-        for input in inputs {
-            self.write_segments(
-                &kernel_space,
-                input.as_ptr(),
-                input.len(),
-                false,
-                &mut desc_idx,
-                &mut remaining,
-            );
-        }
-        for output in outputs {
-            self.write_segments(
-                &kernel_space,
-                output.as_ptr(),
-                output.len(),
-                true,
-                &mut desc_idx,
-                &mut remaining,
-            );
+        for buffer in buffers {
+            self.write_segments(buffer, &mut desc_idx, &mut remaining);
         }
         assert_eq!(remaining, 0, "VirtIO segment count diverged from fill");
-        drop(kernel_space);
-
-        // 3. 全部 descriptor 已完整写入，最后一次提交 free-list owner。
         self.free_head = self.desc_shadow[desc_idx as usize].next;
         self.num_free -= total_needed;
 
-        Some(head)
+        Ok(head)
     }
 
     pub(super) fn add_to_avail(&mut self, desc_idx: u16) {
@@ -308,7 +291,14 @@ impl VirtQueue {
         }
     }
 
-    pub(super) fn used(&mut self) -> Result<Option<(u16, u32)>, ()> {
+    /// @description 从 used ring 摘取一个尚未回收的 completion token。
+    ///
+    /// @return 无 completion 时为 `None`；成功 token 只暴露 head/length，不改变 free list。
+    /// @errors ring identity 越界，或上一个 token 未合法回收时返回错误；caller 必须 reset。
+    pub(super) fn used(&mut self) -> Result<Option<UsedDescriptor>, ()> {
+        if self.failed || self.pending_used.is_some() {
+            return Err(());
+        }
         // SAFETY: used ring 完整位于 `_frame_tracker` 保持存活的共享页内；
         // Acquire 读 used.idx 后才读取对应 ring slot，slot 通过 power-of-two size 限制。
         unsafe {
@@ -333,16 +323,40 @@ impl VirtQueue {
                     used_elem.id, self.size
                 );
                 self.last_used_idx = self.last_used_idx.wrapping_add(1);
+                self.failed = true;
                 return Err(());
             }
 
             self.last_used_idx = self.last_used_idx.wrapping_add(1);
-
-            // 释放描述符
-            self.recycle_descriptors(used_elem.id as u16)?;
-
-            Ok(Some((used_elem.id as u16, used_elem.len)))
+            let head = used_elem.id as u16;
+            self.pending_used = Some(head);
+            Ok(Some(UsedDescriptor {
+                queue: self.addresses.descriptor,
+                head,
+                length: used_elem.len,
+            }))
         }
+    }
+
+    /// @description 在 concrete adapter 已 exactly-once claim completion 后回收 descriptor。
+    ///
+    /// @param completion 当前 queue 的唯一 pending token。
+    /// @return chain 完整回到 free list时成功。
+    /// @errors token 不属于本 queue、不是当前 pending head 或 chain 损坏时返回错误；队列保持
+    /// terminal pending 状态，caller 必须 reset，禁止重试或局部回收。
+    pub(super) fn recycle_used(&mut self, completion: UsedDescriptor) -> Result<(), ()> {
+        if completion.queue != self.addresses.descriptor
+            || self.pending_used != Some(completion.head)
+        {
+            self.failed = true;
+            return Err(());
+        }
+        if self.recycle_descriptors(completion.head).is_err() {
+            self.failed = true;
+            return Err(());
+        }
+        self.pending_used = None;
+        Ok(())
     }
 
     /// @description 非破坏性检查 used ring 是否尚有未回收 completion。
@@ -405,8 +419,20 @@ impl VirtQueue {
             desc_idx = next;
         }
     }
+
+    /// @description 回收尚未发布到 available ring 的 descriptor chain。
+    ///
+    /// @param head `add_dma` 返回、但 adapter validation 拒绝发布的 chain head。
+    /// @return chain 完整回到 free list 时成功；queue ownership 已损坏时返回错误。
+    pub(super) fn retire_unpublished(&mut self, head: u16) -> Result<(), ()> {
+        self.recycle_descriptors(head)
+    }
 }
 
 // SAFETY: 队列指针都指向 `_frame_tracker` 独占且在对象销毁前有效的连续页；
 // 所有可变队列操作都要求 `&mut self`，设备实例又使用 `Mutex<VirtQueue>` 串行化访问。
 unsafe impl Send for VirtQueue {}
+
+#[cfg(test)]
+#[path = "virtio_queue/virtio_queue_tests.rs"]
+mod queue_tests;

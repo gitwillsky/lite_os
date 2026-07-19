@@ -1,4 +1,4 @@
-use core::cell::Cell;
+use core::{cell::Cell, mem::MaybeUninit};
 
 use crate::{
     regular_write_policy::{regular_write_allowance, regular_write_chunk},
@@ -164,15 +164,15 @@ fn faulted_user_prefix_is_not_advanced_until_backend_publication() {
         length: 2 * PAGE_SIZE,
     }];
     let cursor = UserIoCursor::new(&vectors);
-    let mut staging = [0u8; 2 * PAGE_SIZE];
+    let mut staging = [MaybeUninit::<u8>::uninit(); 2 * PAGE_SIZE];
     let mut copy_calls = 0;
-    let staged = cursor.stage_pagewise_with(&mut staging, |address, output| {
+    let staged = cursor.stage_uninit_pagewise_with(&mut staging, |address, output| {
         copy_calls += 1;
         assert!(output.len() <= PAGE_SIZE);
         if address == 2 * PAGE_SIZE {
             return Err(());
         }
-        output.fill(7);
+        output.fill(MaybeUninit::new(7));
         Ok(())
     });
     assert_eq!((staged.count, staged.faulted), (PAGE_SIZE, true));
@@ -256,14 +256,14 @@ fn final_staging_chunk_crosses_iovec_boundary_without_overrun() {
     ];
     let total_length = 300;
     let mut cursor = UserIoCursor::new(&vectors);
-    let mut staging = [0u8; 256];
+    let mut staging = [MaybeUninit::<u8>::uninit(); 256];
     let mut chunks = [0usize; 2];
     let mut chunk_count = 0;
     let mut completed = 0;
     while completed < total_length {
         let requested = regular_write_chunk(total_length, completed, staging.len());
-        let staged = cursor.stage_pagewise_with(&mut staging[..requested], |_, output| {
-            output.fill(1);
+        let staged = cursor.stage_uninit_pagewise_with(&mut staging[..requested], |_, output| {
+            output.fill(MaybeUninit::new(1));
             Ok(())
         });
         assert!(!staged.faulted);

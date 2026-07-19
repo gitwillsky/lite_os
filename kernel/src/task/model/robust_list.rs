@@ -15,12 +15,10 @@ impl AddressSpace {
         replacement: u32,
         fault_limits: UserFaultLimits,
     ) -> Result<Result<u32, u32>, crate::memory::UserAccessError> {
-        self.memory_set.lock().compare_exchange_user_u32(
-            address,
-            current,
-            replacement,
-            fault_limits,
-        )
+        self.memory_set
+            .lock()
+            .map_err(|_| crate::memory::UserAccessError::OutOfMemory)?
+            .compare_exchange_user_u32(address, current, replacement, fault_limits)
     }
 
     /// @description 用本次 cleanup 的 old-mm/limits snapshot 解析并唤醒一个 robust waiter。

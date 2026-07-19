@@ -54,19 +54,6 @@ fn writable_descriptor(
     Ok((task, ofd))
 }
 
-/// @description 为一次 non-regular I/O 分配精确长度的连续 kernel buffer。
-/// @param length buffer byte count。
-/// @return 已清零且长度等于 length 的 buffer。
-/// @error allocator 无法满足请求时返回 `ENOMEM`。
-fn buffer(length: usize) -> Result<Vec<u8>, isize> {
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| -errno::ENOMEM)?;
-    bytes.resize(length, 0);
-    Ok(bytes)
-}
-
 /// @description 将 scatter copy 结果翻译为 Linux partial-count/EFAULT 语义。
 /// @param cursor 本次 copyout 的唯一 progress owner。
 /// @param result copyout 结果。

@@ -1,10 +1,11 @@
-use super::{NETWORK_STACK, NetworkStack, now};
+use super::{NETWORK_STACK, NetworkStack, now, protocol_read};
 
 /// @description 判断 smoltcp 已发布的下一次协议 soft deadline 是否到期。
 ///
 /// @return ARP/UDP egress 需要 timer 驱动时返回 `true`；无设备或无 deadline 返回 `false`。
 /// @errors 无错误。
 pub(crate) fn network_work_due() -> bool {
+    let _protocol = protocol_read();
     let Some(stack) = NETWORK_STACK.get() else {
         return false;
     };

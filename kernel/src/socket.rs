@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use core::net::Ipv4Addr;
 
+use crate::ipc::ReceiveBuffer;
 use crate::ipc::{Pipe, PipeDirection, PipeEnd};
 
 #[path = "socket/inet.rs"]
@@ -116,6 +117,8 @@ pub(crate) enum SocketError {
     ConnectionRefused,
     /// established stream 被 peer reset。
     ConnectionReset,
+    /// Ethernet adapter 在异步协议推进期间报告设备 I/O failure。
+    Device,
     NetworkUnreachable,
     DestinationRequired,
     MessageTooLarge,
@@ -403,13 +406,13 @@ impl Socket {
         }
     }
 
-    pub(crate) fn read(&self, output: &mut [u8]) -> Result<usize, SocketError> {
+    pub(crate) fn read(&self, output: &mut ReceiveBuffer<'_>) -> Result<usize, SocketError> {
         self.receive(output).map(|(count, _)| count)
     }
 
     pub(crate) fn receive(
         &self,
-        output: &mut [u8],
+        output: &mut ReceiveBuffer<'_>,
     ) -> Result<(usize, Option<SocketAddress>), SocketError> {
         self.receive_message(output, false, false)
             .map(|message| (message.count, message.source))
@@ -417,7 +420,7 @@ impl Socket {
 
     pub(crate) fn receive_message(
         &self,
-        output: &mut [u8],
+        output: &mut ReceiveBuffer<'_>,
         peek: bool,
         receive_rights: bool,
     ) -> Result<ReceivedMessage, SocketError> {

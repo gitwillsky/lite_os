@@ -29,9 +29,10 @@ pub(crate) use readlink::sys_readlinkat;
 
 use crate::{
     fs::{
-        CharacterDevice, DeviceKind, InodeMetadata, InodeType, O_ACCMODE, O_APPEND, O_CLOEXEC,
-        O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, RegularFile,
-        RegularFileWrite, TerminalAccess, TerminalRead, character_write_chunk, vfs,
+        CharacterDevice, DeviceKind, Dirent64Batch, InodeMetadata, InodeType,
+        MAX_GETDENTS_BATCH_BYTES, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY,
+        OpenFileDescription, OpenFileKind, RegularFile, RegularFileWrite, TerminalAccess,
+        TerminalRead, character_write_chunk, vfs,
     },
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
@@ -478,48 +479,26 @@ pub(crate) fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isiz
     let Some(inode) = ofd.inode_ref() else {
         return -errno::ENOTDIR;
     };
-    let entries = match inode.list() {
-        Ok(entries) => entries,
+    let mut output = match Dirent64Batch::try_new(length.min(MAX_GETDENTS_BATCH_BYTES)) {
+        Ok(output) => output,
         Err(error) => return ferr(error),
     };
     ofd.with_position(|position| {
-        let mut index = *position as usize;
-        let mut output = Vec::new();
-        while let Some(entry) = entries.get(index) {
-            let record_length = (19 + entry.name.len() + 1 + 7) & !7;
-            if record_length > length.saturating_sub(output.len()) {
-                break;
-            }
-            if output.try_reserve_exact(record_length).is_err() {
-                if output.is_empty() {
-                    return -errno::ENOMEM;
-                }
-                break;
-            }
-            output.extend_from_slice(&entry.inode.to_ne_bytes());
-            output.extend_from_slice(&((index + 1) as i64).to_ne_bytes());
-            output.extend_from_slice(&(record_length as u16).to_ne_bytes());
-            output.push(match entry.kind {
-                InodeType::Directory => 4,
-                InodeType::Fifo => 1,
-                InodeType::SymLink => 10,
-                InodeType::CharacterDevice => 2,
-                InodeType::Socket => 12,
-                InodeType::File => 8,
-            });
-            output.extend_from_slice(&entry.name);
-            output.push(0);
-            output.resize(output.len() + record_length - 20 - entry.name.len(), 0);
-            index += 1;
-        }
-        if output.is_empty() && index < entries.len() {
+        let read = match inode.read_directory(*position, &mut output) {
+            Ok(read) => read,
+            Err(error) => return ferr(error),
+        };
+        if output.is_empty() && !read.eof {
             return -errno::EINVAL;
         }
-        if task.copy_to_user(pointer as usize, &output).is_err() {
+        if task
+            .copy_to_user(pointer as usize, output.as_slice())
+            .is_err()
+        {
             return -errno::EFAULT;
         }
-        *position = index as u64;
-        output.len() as isize
+        *position = read.cursor;
+        output.as_slice().len() as isize
     })
 }
 pub(crate) fn sys_dup(fd: usize) -> isize {

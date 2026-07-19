@@ -57,8 +57,10 @@ impl TaskControlBlock {
         let kernel_stack_top = self.thread.kernel_stack.get_top();
         let old_trap_context = self.user_context_va();
         let old_address_space = self.process.replace_address_space(new_address_space);
+        self.process
+            .address_space()
+            .rebind_user_context(&self.thread.user_context, TRAP_CONTEXT);
         *self.process.comm.lock() = new_comm;
-        *self.thread.user_cx_va.lock() = TRAP_CONTEXT;
         self.close_cloexec_files();
         self.process
             .signal_state
@@ -72,7 +74,7 @@ impl TaskControlBlock {
         );
 
         // 步骤3: 参数与环境只存在于新初始栈；地址空间由统一 trap return 激活。
-        self.set_user_context(UserContext::app_init_context(
+        self.replace_user_context(UserContext::app_init_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
@@ -82,7 +84,8 @@ impl TaskControlBlock {
         if old_trap_context != TRAP_CONTEXT {
             old_address_space
                 .memory_set
-                .lock()
+                .try_lock()
+                .expect("single-thread exec old address space is contended")
                 .remove_thread_trap_context(old_trap_context);
         }
         // vfork parent 只能在完整 exec commit 且 child 临时 trap page 已从共享 mm 删除后恢复；

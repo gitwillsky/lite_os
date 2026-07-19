@@ -38,6 +38,7 @@ impl TaskControlBlock {
             let memory_set = parent_address_space
                 .memory_set
                 .lock()
+                .map_err(|_| MemoryError::OutOfMemory)?
                 .try_clone_for_fork()?;
             AddressSpace::new(memory_set)?
         };
@@ -51,6 +52,7 @@ impl TaskControlBlock {
         let signal_actions = self.process.signal_state.lock().actions;
         let credentials = self.process.credentials.lock().clone();
         let resource_limits = self.process.resource_limits.lock().forked();
+        let cpu_limit_active = resource_limits.cpu_limit_active();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let cpu_runtime_us = Arc::try_new(core::sync::atomic::AtomicU64::new(0))
@@ -80,6 +82,7 @@ impl TaskControlBlock {
             files: Mutex::new(files),
             credentials: Mutex::new(credentials),
             resource_limits: Mutex::new(resource_limits),
+            cpu_limit_active: core::sync::atomic::AtomicBool::new(cpu_limit_active),
             cpu_runtime_us: cpu_runtime_us.clone(),
             io_accounting: io_accounting.clone(),
             terminal: Mutex::new(self.process.terminal.lock().clone()),
@@ -93,13 +96,17 @@ impl TaskControlBlock {
             address_space
                 .memory_set
                 .lock()
+                .map_err(|_| MemoryError::OutOfMemory)?
                 .allocate_thread_trap_context(tid)?
         } else {
             TRAP_CONTEXT
         };
+        let user_context = address_space.bind_user_context(user_cx_va)?;
+        let memory_retirement_wait =
+            TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?;
 
         // 3. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
-        let mut child_trap = self.load_user_context();
+        let mut child_trap = self.snapshot_user_context_for_clone();
         child_trap
             .prepare_process_clone((child_stack != 0).then_some(child_stack), kernel_stack_top);
         let child = Self {
@@ -108,13 +115,14 @@ impl TaskControlBlock {
                 tid,
                 start_time_us,
                 kernel_stack,
-                user_cx_va: Mutex::new(user_cx_va),
+                user_context,
                 kernel_cx: Mutex::new(KernelContext::goto_trap_return(
                     kernel_stack_top,
-                    self.thread.kernel_trap_return,
+                    crate::task::resume_new_task,
                 )),
                 kernel_trap_handler: self.thread.kernel_trap_handler,
                 kernel_trap_return: self.thread.kernel_trap_return,
+                memory_retirement_wait: Mutex::new(Some(memory_retirement_wait)),
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
@@ -131,7 +139,7 @@ impl TaskControlBlock {
                 last_cpu: AtomicUsize::new(last_cpu),
             },
         };
-        child.set_user_context(child_trap);
+        child.replace_user_context(child_trap);
         Ok(child)
     }
 }

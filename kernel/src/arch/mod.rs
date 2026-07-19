@@ -13,7 +13,7 @@ pub(crate) mod interrupt {
     pub(crate) use super::selected::interrupt::{
         LocalInterruptState, clear_software, disable_for_fail_stop, disable_for_transfer,
         disable_local, enable_scheduler_interrupts, enable_timer_source, raise_software,
-        restore_local, wait_for_interrupt as wait,
+        restore_local, wait_for_external_interrupt, wait_for_interrupt as wait,
     };
 }
 
@@ -44,7 +44,8 @@ pub(crate) mod mmu {
         AddressSpaceToken, ArchitecturePageTable, ArchitecturePageTableEntry, PAGE_SIZE,
         PagePermissions, PageTableError, SIGNAL_TRAMPOLINE_ADDRESS, TRAMPOLINE_ADDRESS,
         TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END, activate_address_space as activate,
-        canonicalize_virtual_address, flush_local_tlb as flush_local, normalize_physical_address,
+        canonicalize_virtual_address, flush_local_tlb as flush_local,
+        flush_local_tlb_range as flush_local_range, normalize_physical_address,
         normalize_physical_page, normalize_virtual_page,
     };
 }
@@ -52,9 +53,14 @@ pub(crate) mod mmu {
 /// Trap entry, decoding and return mechanism selected at compile time.
 pub(crate) mod trap {
     pub(crate) use super::selected::{
-        TrapEvent, UserTrapEntry, install_kernel_entry, kernel_exception, return_to_user,
-        trap_event as event, user_entry,
+        TrapEvent, UserTrapEntry, install_kernel_entry, is_floating_point_instruction_at,
+        kernel_exception, return_to_user, trap_event as event, user_entry,
     };
+}
+
+/// Instruction-write publication selected at compile time.
+pub(crate) mod instruction {
+    pub(crate) use super::selected::publish_instruction_writes as publish_local;
 }
 
 /// User-visible architecture conventions selected at compile time.

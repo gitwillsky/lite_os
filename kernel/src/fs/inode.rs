@@ -1,6 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{CreateMetadata, FileSystemError, OpenedFile, OwnerModeChange};
+use super::{
+    CreateMetadata, DirectoryRead, DirectoryVisitor, FileSystemError, OpenedFile, OwnerModeChange,
+};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,38 +96,6 @@ pub(crate) struct InodeMetadata {
     pub(crate) mtime: u64,
     pub(crate) ctime: u64,
     pub(crate) device: Option<DeviceKind>,
-}
-
-/// @description 一个目录项的原始字节名称与 inode identity。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DirectoryEntry {
-    pub(crate) inode: u64,
-    pub(crate) kind: InodeType,
-    pub(crate) name: Vec<u8>,
-}
-
-impl DirectoryEntry {
-    /// @description 构造一个拥有独立名称 bytes 的目录项。
-    /// @param inode filesystem-owned inode number。
-    /// @param kind inode 类型。
-    /// @param name 不含 NUL 的原始 component bytes。
-    /// @return 完整目录项；名称 storage 不足返回 OutOfMemory。
-    pub(crate) fn try_new(
-        inode: u64,
-        kind: InodeType,
-        name: &[u8],
-    ) -> Result<Self, FileSystemError> {
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(name.len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        owned.extend_from_slice(name);
-        Ok(Self {
-            inode,
-            kind,
-            name: owned,
-        })
-    }
 }
 
 /// @description 一次 filesystem-owned storage batch 内的顺序 byte writer。
@@ -241,7 +211,16 @@ pub(crate) trait Inode: Send + Sync {
         }
     }
 
-    fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError>;
+    /// @description 从 opaque directory cursor 开始向 visitor 投递 live entries。
+    /// @param cursor 上次成功发布的 `d_off`，零表示从头开始。
+    /// @param visitor 同步消费 borrowed entry；Stop 时当前 entry 不得推进 cursor。
+    /// @return 下一 cursor 与 EOF；adapter 不得先构造完整目录快照。
+    /// @errors 非目录、底层 I/O、损坏布局或 visitor 编码错误。
+    fn read_directory(
+        &self,
+        cursor: u64,
+        visitor: &mut dyn DirectoryVisitor,
+    ) -> Result<DirectoryRead, FileSystemError>;
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError>;
 

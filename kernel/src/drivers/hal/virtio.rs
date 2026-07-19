@@ -76,12 +76,20 @@ impl VirtIODevice {
         if magic != VIRTIO_MMIO_MAGIC || version != 2 || self.device_id == 0 {
             return Err(BusError::InvalidAddress);
         }
-        self.set_status(0)?;
-        if self.get_status()? != 0 {
-            return Err(BusError::InvalidAddress);
-        }
+        self.reset()?;
         self.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE)?;
         self.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER)
+    }
+
+    /// @description 发起 device reset，并等待 transport 读回完成状态。
+    /// @return device status 已为 0、queue 不再 live 时返回 unit。
+    /// @errors MMIO window 无效时返回 `InvalidAddress`；device 不完成 reset 时保活 DMA 并等待。
+    pub(in crate::drivers) fn reset(&self) -> Result<(), BusError> {
+        self.set_status(0)?;
+        while self.get_status()? != 0 {
+            core::hint::spin_loop();
+        }
+        Ok(())
     }
 
     /// @description 以 low/high selector 发布完整 64-bit driver feature set。

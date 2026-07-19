@@ -6,6 +6,7 @@
 - `platform::qemu_virt` 解析 DTB，发布 immutable machine facts，探测 firmware capability，并装配 PLIC、UART、RTC 与 VirtIO MMIO adapter。
 - cold boot CPU 完成全局初始化；secondary 由 platform HSM operation 启动。startup stack 与 hardware/logical entry projection 只存在于 RISC-V backend。
 - firmware status、DTB opaque 与 machine address 不穿过 platform seam；上层只接收 typed facts、operation error 和通用 device façade。
+- RFENCE 使用每 hart 单槽 request/range/ack mailbox；全局 sender lock 串行发布，目标 hart 按 SBI `[start,size)` 逐页 fence 后 ack。whole-address-space 只使用规范定义的两个 sentinel，不再丢弃 range 参数。
 
 ## RISC-V64 / QEMU virt backend
 

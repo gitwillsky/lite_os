@@ -1,5 +1,7 @@
 use core::arch::global_asm;
 
+mod fp_instruction;
+mod instruction_cache;
 pub(crate) mod interrupt;
 mod io;
 mod kernel_context;
@@ -14,12 +16,15 @@ mod trap;
 mod user;
 mod user_context;
 
+pub(crate) use fp_instruction::is_floating_point_instruction_at;
+pub(crate) use instruction_cache::publish_local as publish_instruction_writes;
 pub(crate) use io::before_mmio_write;
 pub(crate) use kernel_context::{KernelContext, KernelResume, switch_kernel_context};
 pub(crate) use mmu::{
     AddressSpaceToken, PAGE_SIZE, SIGNAL_TRAMPOLINE_ADDRESS, TRAMPOLINE_ADDRESS,
     TRAP_CONTEXT_ADDRESS, USER_ADDRESS_END, activate as activate_address_space,
-    canonicalize_virtual_address, flush_local as flush_local_tlb, normalize_physical_address,
+    canonicalize_virtual_address, flush_local as flush_local_tlb,
+    flush_local_range as flush_local_tlb_range, normalize_physical_address,
     normalize_physical_page, normalize_virtual_page,
 };
 pub(crate) use page_table::{

@@ -15,6 +15,7 @@ pub(crate) enum DeferredWork {
     TimerBacklog = 1 << 3,
     Display = 1 << 4,
     Input = 1 << 5,
+    DriverIo = 1 << 6,
 }
 
 #[repr(transparent)]
@@ -57,8 +58,18 @@ pub(crate) fn raise(work: DeferredWork) {
     crate::arch::interrupt::raise_software();
 }
 
-/// @description 原子取得 calling CPU 的全部 deferred work 并清除 local software interrupt。
+/// @description 原子取得 calling CPU 的全部 deferred work。
+///
+/// SSIP 同时承载 remote membarrier IPI，只能由 software-interrupt handler 按
+/// `clear SSIP -> complete barrier request` 的顺序确认。若在这里清除 SSIP，远端恰好
+/// 已发布 request、但 handler 尚未运行时会丢失唯一 edge 并永久等待 completion。
 pub(crate) fn take() -> DeferredWorkSet {
-    crate::arch::interrupt::clear_software();
-    DeferredWorkSet(pending(current_id()).swap(0, Ordering::AcqRel))
+    let pending = pending(current_id());
+    // user-return 每次都会经过 safe point；空路径只做一次 per-CPU Relaxed load。
+    // 非空路径只消费 bitmap，已经 pending 的 SSIP 随后进入唯一 trap ack owner；即使
+    // deferred bit 已先消费，该 trap 仍负责完成可能合并到同一 edge 的 membarrier。
+    if pending.load(Ordering::Relaxed) == 0 {
+        return DeferredWorkSet(0);
+    }
+    DeferredWorkSet(pending.swap(0, Ordering::AcqRel))
 }

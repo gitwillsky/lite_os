@@ -4,7 +4,7 @@ use riscv::register::sstatus::{self, SPP, Sstatus};
 
 /// @description U-mode 与 S-mode trap 路径之间共享的完整用户执行上下文。
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct UserContext {
     /// 用户通用寄存器 x0..x31，包括 psABI 的 gp(x3) 与 tp(x4)。
     pub(super) x: [usize; 32],
@@ -72,8 +72,9 @@ impl UserContext {
         sstatus.set_spie(true);
         sstatus.set_sum(false);
         sstatus.set_mxr(false);
-        // 当前采用 eager FP save/restore，因此用户上下文始终以 Dirty 状态进入。
-        sstatus.set_fs(sstatus::FS::Dirty);
+        // 首次 FP 指令由 FS=Off 精确触发 lazy activation；缺失该状态会让纯整数任务
+        // 也在每次 trap 保存/恢复 32 个浮点寄存器。
+        sstatus.set_fs(sstatus::FS::Off);
 
         let mut cx = Self {
             x: [0; 32],
@@ -90,5 +91,19 @@ impl UserContext {
 
         cx.set_sp(sp);
         cx
+    }
+
+    /// 激活首次使用的用户浮点上下文。
+    ///
+    /// 仅允许 `Off -> Initial`。返回 false 表示该上下文已经启用，caller 必须把当前
+    /// illegal instruction 按真正的 SIGILL 处理，避免重复 trap 被错误吞掉。
+    pub(crate) fn activate_floating_point(&mut self) -> bool {
+        if self.sstatus.fs() != sstatus::FS::Off {
+            return false;
+        }
+        self.f.fill(0);
+        self.fcsr = 0;
+        self.sstatus.set_fs(sstatus::FS::Initial);
+        true
     }
 }

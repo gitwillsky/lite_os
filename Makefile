@@ -117,6 +117,7 @@ verify-architecture-benchmark:
 verify-architecture-release:
 	cd kernel && cargo build --release && cd -
 	python3 scripts/verify_architecture_release.py
+	python3 scripts/check_trap_cost.py
 
 verify-runtime-gates: verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps
 

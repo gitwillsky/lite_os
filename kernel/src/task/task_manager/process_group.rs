@@ -21,13 +21,55 @@ pub(crate) enum SetProcessGroupError {
 pub(crate) fn create_session() -> Result<usize, ProcessGroupError> {
     let pid = current_task().expect("setsid requires current task").tgid();
     let mut graph = TASK_MANAGER.graph.lock();
-    if graph.nodes.values().any(|node| node.process_group == pid) {
+    if graph
+        .groups
+        .iter()
+        .any(|((_, pgid), group)| *pgid == pid && !group.members.is_empty())
+    {
         return Err(ProcessGroupError::Permission);
+    }
+    let old_group = {
+        let node = graph
+            .nodes
+            .get_mut(&pid)
+            .ok_or(ProcessGroupError::NotFound)?;
+        (node.session, node.process_group)
+    };
+    let member = graph
+        .groups
+        .get_mut(&old_group)
+        .expect("setsid old group missing")
+        .members
+        .take_entry(&pid)
+        .expect("setsid member missing from old group");
+    let new_group = (pid, pid);
+    if let Some(group) = graph.groups.get_mut(&new_group) {
+        debug_assert!(group.members.is_empty());
+        group.members.commit_vacant(member);
+    } else {
+        let group_slot = graph
+            .nodes
+            .get_mut(&pid)
+            .expect("setsid process disappeared under graph lock")
+            .group_slot
+            .take()
+            .expect("setsid group node not reserved");
+        let mut members = FallibleMap::new();
+        members.commit_vacant(member);
+        graph.groups.commit_vacant(group_slot.fill(
+            new_group,
+            ProcessGroupIndex {
+                members,
+                exit_check_pending: false,
+                exit_check_next: None,
+                was_orphaned_stopped: false,
+            },
+        ));
     }
     let node = graph
         .nodes
         .get_mut(&pid)
-        .ok_or(ProcessGroupError::NotFound)?;
+        .expect("setsid process disappeared under graph lock");
     node.session = pid;
     node.process_group = pid;
     Ok(pid)
@@ -100,11 +142,51 @@ pub(crate) fn set_process_group(pid: usize, pgid: usize) -> Result<(), SetProces
     }
     if desired != target
         && !graph
-            .nodes
-            .values()
-            .any(|node| node.session == caller_session && node.process_group == desired)
+            .groups
+            .get(&(caller_session, desired))
+            .is_some_and(|group| !group.members.is_empty())
     {
         return Err(SetProcessGroupError::Permission);
+    }
+    let old_group = (target_node.session, target_node.process_group);
+    if old_group.1 == desired {
+        return Ok(());
+    }
+    let member = graph
+        .groups
+        .get_mut(&old_group)
+        .expect("setpgid old group missing")
+        .members
+        .take_entry(&target)
+        .expect("setpgid member missing from old group");
+    let desired_group = (caller_session, desired);
+    if graph.groups.contains_key(&desired_group) {
+        graph
+            .groups
+            .get_mut(&desired_group)
+            .expect("validated process group disappeared")
+            .members
+            .commit_vacant(member);
+    } else {
+        debug_assert_eq!(desired, target);
+        let slot = graph
+            .nodes
+            .get_mut(&target)
+            .expect("validated process disappeared under graph lock")
+            .group_slot
+            .take()
+            .expect("new process-group node not reserved");
+        let mut members = FallibleMap::new();
+        members.commit_vacant(member);
+        graph.groups.commit_vacant(slot.fill(
+            desired_group,
+            ProcessGroupIndex {
+                members,
+                exit_check_pending: false,
+                exit_check_next: None,
+                was_orphaned_stopped: false,
+            },
+        ));
     }
     graph
         .nodes
@@ -185,9 +267,9 @@ pub(crate) fn set_terminal_foreground_group(
     let session = session_id(0)?;
     let graph = TASK_MANAGER.graph.lock();
     if !graph
-        .nodes
-        .values()
-        .any(|node| node.session == session && node.process_group == pgid)
+        .groups
+        .get(&(session, pgid))
+        .is_some_and(|group| !group.members.is_empty())
     {
         return Err(ProcessGroupError::Permission);
     }
@@ -208,12 +290,16 @@ pub(super) fn process_group_is_orphaned(
     session: usize,
     process_group: usize,
 ) -> bool {
+    let Some(group) = graph.groups.get(&(session, process_group)) else {
+        return false;
+    };
     let mut has_member = false;
-    for node in graph.nodes.values() {
-        if node.session != session
-            || node.process_group != process_group
-            || !matches!(node.state, ProcessState::Live(_))
-        {
+    for (&tgid, ()) in &group.members {
+        let node = graph
+            .nodes
+            .get(&tgid)
+            .expect("process-group index references missing process");
+        if !matches!(node.state, ProcessState::Live(_)) {
             continue;
         }
         has_member = true;

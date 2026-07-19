@@ -25,6 +25,8 @@
 - AF_INET 支持单 interface IPv4 UDP/TCP 与 effective-root raw ICMP；AF_PACKET datagram 提供当前 DHCP 路径。
 - AF_NETLINK 只开放 `NETLINK_KOBJECT_UEVENT` group 1 的只读 DRM hotplug multicast。
 - blocking、nonblocking、pselect/ppoll/epoll 共用 backend level recheck；notification edge 不是第二份 readiness state。
+- AF_INET/AF_PACKET 的 adapter `Device` failure 经 socket façade 稳定映射为 `EIO`；暂时无包或
+  无 TX capacity 仍为 `EAGAIN`，frame 超长仍为 `EMSGSIZE`。
 
 ## 已知缺口
 

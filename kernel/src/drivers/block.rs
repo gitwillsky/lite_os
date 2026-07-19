@@ -7,6 +7,7 @@ pub(crate) enum BlockError {
     InvalidBlock,
     IoError,
     DeviceError,
+    OutOfMemory,
     AlreadyRegistered,
 }
 
@@ -44,6 +45,9 @@ pub(crate) trait BlockDevice: Send + Sync {
 
     /// 返回逻辑块字节数。
     fn block_size(&self) -> usize;
+
+    /// Reclaim a bounded completion batch outside hardirq context.
+    fn dispatch_completions(&self) -> bool;
 }
 
 // OWNER: block layer owns the single root-device binding; platform discovery sets it once.
@@ -66,6 +70,11 @@ pub(crate) fn register_block_device(device: Arc<dyn BlockDevice>) -> Result<usiz
 /// 取得唯一启动块设备。
 pub(crate) fn get_primary_block_device() -> Option<Arc<dyn BlockDevice>> {
     primary_slot().lock().clone()
+}
+
+/// Dispatch primary-device completion work at a task/idle safe point.
+pub(crate) fn dispatch_completion_work() -> bool {
+    get_primary_block_device().is_some_and(|device| device.dispatch_completions())
 }
 
 pub(crate) const BLOCK_SIZE: usize = 4096;

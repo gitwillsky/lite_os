@@ -1,4 +1,3 @@
-use super::wait_registry::IndexedWaitEntry;
 use super::*;
 use crate::fs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
@@ -41,32 +40,22 @@ pub(crate) fn install_advisory_lock_notifier() {
 }
 
 fn wake_advisory_lock_waiters(key: AdvisoryLockKey) -> usize {
-    let mut waiters = FallibleMap::new();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    while let Some(entry) = queue.take_advisory_lock(key) {
-        waiters.commit_vacant(entry);
-    }
-    drop(queue);
-    let count = waiters.len();
-    let mut waiters = waiters;
-    while let Some((&wait_id, _)) = waiters.first_key_value() {
-        let entry = waiters.remove(&wait_id).expect("staged advisory waiter");
-        assert!(matches!(entry.kind, IndexedWaitKind::AdvisoryLock { .. }));
-        crate::task::processor::wake_flock_task(entry.task, wait_id, WaitResult::Woken);
+    let mut count = 0;
+    while let Some(wake) = WAIT_REGISTRY.wake_advisory_one(key) {
+        count += 1;
+        if let Some(claimed) = wake.claimed {
+            assert!(matches!(claimed.kind, IndexedWaitKind::AdvisoryLock));
+            crate::task::processor::wake_flock_task(claimed.task, claimed.id, WaitResult::Woken);
+        }
     }
     count
-}
-
-pub(super) fn interrupt_waiter(entry: IndexedWaitEntry, wait_id: u64, membership_id: u64) -> bool {
-    assert_eq!(membership_id, wait_id);
-    crate::task::processor::wake_flock_task(entry.task, wait_id, WaitResult::Interrupted)
 }
 
 /// @description 在统一 indexed wait owner 中执行任一种 inode advisory-lock 的阻塞竞争。
 ///
 /// @param transaction 持有稳定 inode identity 与全部锁外 staging storage。
 /// @param reserve_storage 仅在没有 registry/VFS owner guard 时扩充 transaction。
-/// @param attempt 在 registry→VFS 固定锁序内只复查并无分配提交的 closure。
+/// @param attempt 在 registry shard lock 外复查并无分配提交的 closure。
 /// @return 成功时 lock 已提交；signal、容量、backend 或 metadata 错误明确返回。
 fn wait_for_file_lock<Prepared>(
     mut transaction: Prepared,
@@ -75,24 +64,17 @@ fn wait_for_file_lock<Prepared>(
 ) -> Result<(), AdvisoryLockWaitError> {
     let task = current_task().expect("file-lock wait requires current task");
     loop {
-        // wait-registry → VFS lock-table 是唯一锁序。release 先放开 VFS table 再经 notifier
-        // 获取 registry，因此 unlock 不可能落在 conflict recheck 与 membership publication 之间。
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
-        let ticket = queue.allocate_ticket();
+        let ticket = WAIT_REGISTRY.allocate_ticket();
         let first_attempt = loop {
             match attempt(&mut transaction)? {
                 PreparedLockAttempt::Complete(attempt) => break attempt,
                 PreparedLockAttempt::NeedsStorage => {
-                    // transaction 尚未修改 VFS state；解锁后扩容再从同一 owner 重新验证。
-                    drop(queue);
                     reserve_storage(&mut transaction)?;
-                    queue = INDEXED_WAIT_QUEUE.lock();
                 }
             }
         };
         let (key, wake_waiters) = match first_attempt {
             AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
-                drop(queue);
                 if wake_waiters {
                     vfs().notify_advisory_lock(key);
                 }
@@ -100,26 +82,21 @@ fn wait_for_file_lock<Prepared>(
             }
             AdvisoryLockAttempt::Blocked { key, wake_waiters } => (key, wake_waiters),
         };
-        drop(queue);
         if wake_waiters {
             vfs().notify_advisory_lock(key);
         }
         let wait = match ticket.prepare_advisory_lock(key, task.clone()) {
             Ok(wait) => wait,
             Err(()) => {
-                let mut queue = INDEXED_WAIT_QUEUE.lock();
                 let attempt = loop {
                     match attempt(&mut transaction)? {
                         PreparedLockAttempt::Complete(attempt) => break attempt,
                         PreparedLockAttempt::NeedsStorage => {
-                            drop(queue);
                             reserve_storage(&mut transaction)?;
-                            queue = INDEXED_WAIT_QUEUE.lock();
                         }
                     }
                 };
                 let interrupted = task.has_deliverable_signal();
-                drop(queue);
                 match attempt {
                     AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
                         if wake_waiters {
@@ -141,22 +118,30 @@ fn wait_for_file_lock<Prepared>(
             }
         };
 
-        // staging 后必须在原锁序内再次竞争；key 改变或已经成功时丢弃未发布节点并重试/返回。
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        // 先发布 Arming node，再在全部 registry shard lock 外复查 VFS conflict；unlock
+        // notifier 若并发命中只把 registration 标记为 Notified，不会唤醒尚未 Blocking 的 task。
+        let published = WAIT_REGISTRY.publish(wait);
         let attempt = loop {
-            match attempt(&mut transaction)? {
+            let result = match attempt(&mut transaction) {
+                Ok(result) => result,
+                Err(error) => {
+                    let _ = published.cancel();
+                    return Err(error.into());
+                }
+            };
+            match result {
                 PreparedLockAttempt::Complete(attempt) => break attempt,
                 PreparedLockAttempt::NeedsStorage => {
-                    drop(queue);
-                    reserve_storage(&mut transaction)?;
-                    queue = INDEXED_WAIT_QUEUE.lock();
+                    if let Err(error) = reserve_storage(&mut transaction) {
+                        let _ = published.cancel();
+                        return Err(error.into());
+                    }
                 }
             }
         };
         let (confirmed_key, wake_waiters) = match attempt {
             AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
-                drop(queue);
-                drop(wait);
+                let _ = published.cancel();
                 if wake_waiters {
                     vfs().notify_advisory_lock(key);
                 }
@@ -165,25 +150,36 @@ fn wait_for_file_lock<Prepared>(
             AdvisoryLockAttempt::Blocked { key, wake_waiters } => (key, wake_waiters),
         };
         if confirmed_key != key {
-            drop(queue);
-            drop(wait);
+            let _ = published.cancel();
             if wake_waiters {
                 vfs().notify_advisory_lock(confirmed_key);
             }
             continue;
         }
         if task.has_deliverable_signal() {
-            drop(queue);
+            let result = published.cancel();
             if wake_waiters {
                 vfs().notify_advisory_lock(confirmed_key);
             }
-            return Err(AdvisoryLockWaitError::Interrupted);
+            match result {
+                CancelOutcome::Cancelled | CancelOutcome::Notified(WaitResult::Interrupted) => {
+                    return Err(AdvisoryLockWaitError::Interrupted);
+                }
+                CancelOutcome::Notified(WaitResult::Woken) => continue,
+                CancelOutcome::Notified(WaitResult::TimedOut | WaitResult::OutOfMemory) => {
+                    unreachable!("advisory wait has no deadline/OOM notification")
+                }
+            }
         }
-        let prepared =
-            super::context_switch::prepare_current_block(&task, queue, move |queue, _| {
-                let wait_id = queue.commit(wait);
-                WaitMembership::AdvisoryLock(wait_id)
-            });
+        let arm = match published.prepare_arm() {
+            Ok(arm) => arm,
+            Err(WaitResult::Woken) => continue,
+            Err(WaitResult::Interrupted) => return Err(AdvisoryLockWaitError::Interrupted),
+            Err(WaitResult::TimedOut | WaitResult::OutOfMemory) => unreachable!(),
+        };
+        let prepared = super::context_switch::prepare_current_block(&task, arm, |arm, _| {
+            WaitMembership::AdvisoryLock(arm.arm())
+        });
         if wake_waiters {
             vfs().notify_advisory_lock(confirmed_key);
         }

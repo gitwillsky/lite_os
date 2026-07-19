@@ -1,10 +1,21 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::MutexGuard;
 
+use super::allocation_dirty::AllocationDirty;
 use super::journal_layout::JournalLayout;
 use super::*;
 use crate::fallible_tree::FallibleMap;
 use crate::memory::PAGE_SIZE;
+use crate::sync::TaskMutexGuard;
+
+#[path = "journal/codec.rs"]
+mod codec;
+use codec::*;
+#[path = "journal/commit_owner.rs"]
+mod commit_owner;
+pub(super) use commit_owner::JournalOwner;
+#[path = "journal/inode_mutation.rs"]
+mod inode_mutation;
+use inode_mutation::InodeMutation;
 
 const JBD2_MAGIC: u32 = 0xC03B_3998;
 const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
@@ -25,8 +36,13 @@ pub(super) struct Journal {
     // 过高会让 commit 越界，过低只会提前拆分 transaction。
     layout: JournalLayout,
     sequence: u32,
-    active: Option<FallibleMap<u32, Vec<u8>>>,
+    active: Option<ActiveTransaction>,
     failed: bool,
+}
+
+struct ActiveTransaction {
+    writes: FallibleMap<u32, Vec<u8>>,
+    allocation_dirty: AllocationDirty,
 }
 
 impl Journal {
@@ -92,7 +108,11 @@ impl Journal {
     /// @param block filesystem home block number。
     /// @return 未 staged 返回 None，否则返回完整 block snapshot。
     pub(super) fn copy_staged(&self, block: u32, output: &mut [u8]) -> bool {
-        let Some(bytes) = self.active.as_ref().and_then(|writes| writes.get(&block)) else {
+        let Some(bytes) = self
+            .active
+            .as_ref()
+            .and_then(|active| active.writes.get(&block))
+        else {
             return false;
         };
         output.copy_from_slice(bytes);
@@ -114,15 +134,16 @@ impl Journal {
         if self.failed || bytes.len() != block_size {
             return Err(FileSystemError::IoError);
         }
-        let writes = self
+        let writes = &mut self
             .active
             .as_mut()
-            .ok_or(FileSystemError::InvalidOperation)?;
+            .ok_or(FileSystemError::InvalidOperation)?
+            .writes;
         if let Some(image) = writes.get_mut(&block) {
             image.copy_from_slice(bytes);
             return Ok(());
         }
-        if writes.len() >= self.layout.write_capacity() {
+        if writes.len() >= test_stage_capacity(self.layout.write_capacity()) {
             return Err(FileSystemError::NoSpace);
         }
         let mut image = Vec::new();
@@ -136,18 +157,46 @@ impl Journal {
         Ok(())
     }
 
-    fn begin(&mut self) -> Result<(), FileSystemError> {
+    fn begin(&mut self, group_count: usize) -> Result<(), FileSystemError> {
         if self.failed {
             return Err(FileSystemError::IoError);
         }
         if self.active.is_some() {
             return Err(FileSystemError::InvalidOperation);
         }
-        self.active = Some(FallibleMap::new());
+        self.active = Some(ActiveTransaction {
+            writes: FallibleMap::new(),
+            allocation_dirty: AllocationDirty::try_new(group_count)?,
+        });
         Ok(())
     }
 
-    fn abort(&mut self) {
+    pub(super) fn mark_allocation_dirty(&mut self, group: usize) -> Result<(), FileSystemError> {
+        self.active
+            .as_mut()
+            .ok_or(FileSystemError::InvalidOperation)?
+            .allocation_dirty
+            .mark(group)
+    }
+
+    fn take_allocation_dirty(&mut self) -> Result<AllocationDirty, FileSystemError> {
+        let active = self
+            .active
+            .as_mut()
+            .ok_or(FileSystemError::InvalidOperation)?;
+        Ok(core::mem::replace(
+            &mut active.allocation_dirty,
+            AllocationDirty::empty(),
+        ))
+    }
+
+    fn abort(&mut self, fs: &Ext2FileSystem) {
+        if let Some(writes) = &self.active {
+            let mut cache = fs.metadata_cache.lock();
+            for (block, _) in &writes.writes {
+                cache.invalidate(*block);
+            }
+        }
         self.active = None;
     }
 
@@ -170,6 +219,7 @@ impl Journal {
         logical: usize,
         bytes: &[u8],
     ) -> Result<(), FileSystemError> {
+        record_test_journal_write();
         let block = *self.blocks.get(logical).ok_or(FileSystemError::NoSpace)?;
         fs.write_fs_block_home(block, bytes)
     }
@@ -240,21 +290,22 @@ impl Journal {
             for (block, bytes) in replay {
                 fs.write_fs_block_home(block, &bytes)?;
             }
-            fs.device.flush().map_err(|_| FileSystemError::IoError)?;
+            fs.device.flush().map_err(block_error)?;
         }
         self.sequence = sequence.wrapping_add(1);
         self.write_state(fs, 0, self.sequence)?;
-        fs.device.flush().map_err(|_| FileSystemError::IoError)
+        fs.device.flush().map_err(block_error)
     }
 
-    fn commit_inner(&mut self, fs: &Ext2FileSystem) -> Result<(), FileSystemError> {
-        let writes = self
-            .active
-            .take()
-            .ok_or(FileSystemError::InvalidOperation)?;
+    fn commit_inner(
+        &mut self,
+        fs: &Ext2FileSystem,
+        writes: &FallibleMap<u32, Vec<u8>>,
+    ) -> Result<(), FileSystemError> {
         if writes.is_empty() {
             return Ok(());
         }
+        record_test_transaction();
         let tag_capacity = self.layout.tags_per_descriptor();
         let descriptor_count = writes.len().div_ceil(tag_capacity);
         assert!(
@@ -263,7 +314,7 @@ impl Journal {
         );
         let sequence = self.sequence;
         self.write_state(fs, 1, sequence)?;
-        fs.device.flush().map_err(|_| FileSystemError::IoError)?;
+        fs.device.flush().map_err(block_error)?;
         let uuid = fs.superblock.lock().s_uuid;
         let mut cursor = 1;
         // commit 已把 journal 标为 dirty；此后 descriptor/escape 复用同一固定栈 scratch。
@@ -312,30 +363,22 @@ impl Journal {
                 self.journal_write(fs, cursor, journal_bytes)?;
                 cursor += 1;
             }
-            next_block = writes
-                .iter_after(&last_block)
-                .next()
-                .map(|(&block, _)| block);
+            next_block = writes.successor(&last_block).map(|(&block, _)| block);
         }
         scratch.fill(0);
         put_header(&mut *scratch, JBD2_COMMIT_BLOCK, sequence)?;
         self.journal_write(fs, cursor, scratch)?;
-        fs.device.flush().map_err(|_| FileSystemError::IoError)?;
-        for (block, bytes) in &writes {
+        fs.device.flush().map_err(block_error)?;
+        for (block, bytes) in writes {
             fs.write_fs_block_home(*block, bytes)?;
         }
-        fs.device.flush().map_err(|_| FileSystemError::IoError)?;
+        fs.device.flush().map_err(block_error)?;
         self.sequence = sequence.wrapping_add(1);
         self.write_state(fs, 0, self.sequence)?;
-        fs.device.flush().map_err(|_| FileSystemError::IoError)
-    }
-
-    fn commit(&mut self, fs: &Ext2FileSystem) -> Result<(), FileSystemError> {
-        let result = self.commit_inner(fs);
-        if result.is_err() {
-            self.failed = true;
-        }
-        result
+        // Home blocks are already durable. Persisting clean state may lag: a crash can only replay
+        // the just-checkpointed transaction idempotently, while the next transaction's initial
+        // barrier also orders this clean marker before its commit record.
+        Ok(())
     }
 }
 
@@ -351,7 +394,7 @@ fn zeroed(length: usize) -> Result<Vec<u8>, FileSystemError> {
 /// @description mutation mutex、lazy runtime undo set 与 journal transaction 的唯一 RAII owner。
 pub(super) struct MutationGuard<'a> {
     fs: &'a Ext2FileSystem,
-    _lock: MutexGuard<'a, ()>,
+    _lock: TaskMutexGuard<'a, ()>,
     superblock: Ext2SuperBlock,
     groups: Vec<Ext2GroupDesc>,
     // OWNER: this guard exclusively owns runtime inode preimages until commit/abort. Four live
@@ -390,13 +433,16 @@ impl<'a> MutationGuard<'a> {
         fs: &'a Ext2FileSystem,
         prepare: impl FnOnce() -> Result<T, FileSystemError>,
     ) -> Result<(Self, T), FileSystemError> {
-        let lock = fs.mutation.lock();
+        let lock = fs
+            .mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         Self::begin_after_lock(fs, lock, prepare)
     }
 
     fn begin_after_lock<T>(
         fs: &'a Ext2FileSystem,
-        lock: MutexGuard<'a, ()>,
+        lock: TaskMutexGuard<'a, ()>,
         prepare: impl FnOnce() -> Result<T, FileSystemError>,
     ) -> Result<(Self, T), FileSystemError> {
         let prepared = prepare()?;
@@ -414,11 +460,7 @@ impl<'a> MutationGuard<'a> {
         };
         // 2. Only after the eager allocator rollback allocation succeeds may the journal publish
         // an active transaction. Inode undo is stack-resident and cannot add an OOM path.
-        fs.journal
-            .lock()
-            .as_mut()
-            .ok_or(FileSystemError::InvalidFileSystem)?
-            .begin()?;
+        fs.journal.lock().ready_mut()?.begin(groups.len())?;
         Ok((
             Self {
                 fs,
@@ -436,13 +478,17 @@ impl<'a> MutationGuard<'a> {
 
     /// @description 首次可变访问 live inode 时先捕获其唯一 rollback preimage。
     /// @param inode 当前 filesystem inode-cache 中由 caller 保活的 inode。
-    /// @return 已建立 abort 恢复证明的 inode disk lock。
+    /// @return 已建立 abort 恢复证明、锁外可修改的 inode working copy。
     /// @errors cache owner 分裂或超过当前事务已证明的四 inode 上限返回 invalid operation。
-    pub(super) fn inode<'inode>(
-        &mut self,
+    pub(super) fn inode<'mutation, 'inode>(
+        &'mutation mut self,
         inode: &'inode Ext2Inode,
-    ) -> Result<MutexGuard<'inode, Ext2InodeDisk>, FileSystemError> {
+    ) -> Result<InodeMutation<'mutation, 'inode>, FileSystemError> {
         let number = inode.inode_num;
+        // mutation mutex 是 live inode 的唯一 writer owner；短锁只取得完整 snapshot，绝不
+        // 穿过后续 journal 或 block I/O。否则单核 waiter 会在关中断 spin loop 中永久饿死
+        // 正在 DriverIo 中睡眠的 owner。
+        let disk = *inode.disk.lock();
         let discarded_on_abort = self.discarded_inode == Some(number);
         let captured = self
             .inodes
@@ -463,11 +509,10 @@ impl<'a> MutationGuard<'a> {
                 .and_then(Weak::upgrade)
                 .filter(|owner| core::ptr::eq(Arc::as_ptr(owner), inode))
                 .ok_or(FileSystemError::InvalidFileSystem)?;
-            let disk = *inode.disk.lock();
             *slot = Some((owner, disk));
             self.inode_count += 1;
         }
-        Ok(inode.disk.lock())
+        Ok(InodeMutation::new(inode, disk))
     }
 
     /// @description 在 transient inode 可能被修改前登记 abort 删除责任。
@@ -489,12 +534,14 @@ impl<'a> MutationGuard<'a> {
     /// @return 所有 home blocks 已 checkpoint 到 stable-storage capability 时成功。
     /// @errors journal 容量或 block I/O/FLUSH 失败时返回错误并 fail-stop 后续 mutation。
     pub(super) fn commit(mut self) -> Result<(), FileSystemError> {
-        self.fs
+        let allocation_dirty = self
+            .fs
             .journal
             .lock()
-            .as_mut()
-            .ok_or(FileSystemError::InvalidFileSystem)?
-            .commit(self.fs)?;
+            .ready_mut()?
+            .take_allocation_dirty()?;
+        self.fs.write_dirty_allocation_metadata(&allocation_dirty)?;
+        commit_owner::JournalCommit::begin(self.fs)?.commit()?;
         self.committed = true;
         Ok(())
     }
@@ -505,8 +552,8 @@ impl Drop for MutationGuard<'_> {
         if self.committed {
             return;
         }
-        if let Some(journal) = self.fs.journal.lock().as_mut() {
-            journal.abort();
+        if let Ok(journal) = self.fs.journal.lock().ready_mut() {
+            journal.abort(self.fs);
         }
         *self.fs.superblock.lock() = self.superblock;
         *self.fs.groups.lock() = core::mem::take(&mut self.groups);
@@ -517,40 +564,4 @@ impl Drop for MutationGuard<'_> {
             self.fs.inode_cache.lock().remove(&number);
         }
     }
-}
-
-fn be16(bytes: &[u8], offset: usize) -> Result<u16, FileSystemError> {
-    let raw = bytes
-        .get(offset..offset + 2)
-        .ok_or(FileSystemError::InvalidFileSystem)?;
-    Ok(u16::from_be_bytes([raw[0], raw[1]]))
-}
-
-fn be32(bytes: &[u8], offset: usize) -> Result<u32, FileSystemError> {
-    let raw = bytes
-        .get(offset..offset + 4)
-        .ok_or(FileSystemError::InvalidFileSystem)?;
-    Ok(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
-}
-
-fn put_be16(bytes: &mut [u8], offset: usize, value: u16) -> Result<(), FileSystemError> {
-    bytes
-        .get_mut(offset..offset + 2)
-        .ok_or(FileSystemError::InvalidFileSystem)?
-        .copy_from_slice(&value.to_be_bytes());
-    Ok(())
-}
-
-fn put_be32(bytes: &mut [u8], offset: usize, value: u32) -> Result<(), FileSystemError> {
-    bytes
-        .get_mut(offset..offset + 4)
-        .ok_or(FileSystemError::InvalidFileSystem)?
-        .copy_from_slice(&value.to_be_bytes());
-    Ok(())
-}
-
-fn put_header(bytes: &mut [u8], kind: u32, sequence: u32) -> Result<(), FileSystemError> {
-    put_be32(bytes, 0, JBD2_MAGIC)?;
-    put_be32(bytes, 4, kind)?;
-    put_be32(bytes, 8, sequence)
 }

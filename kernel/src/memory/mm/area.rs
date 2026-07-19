@@ -51,6 +51,53 @@ pub(crate) struct MapArea {
 }
 
 impl MapArea {
+    fn byte_len(&self) -> u64 {
+        let pages = self
+            .vpn_range
+            .end
+            .as_usize()
+            .checked_sub(self.vpn_range.start.as_usize())
+            .expect("VMA end precedes start");
+        u64::try_from(pages)
+            .expect("VMA page count exceeds u64")
+            .checked_mul(config::PAGE_SIZE as u64)
+            .expect("VMA byte length overflow")
+    }
+
+    fn virtual_accounted_bytes(&self) -> u64 {
+        if self.map_permission.contains(MapPermission::U) {
+            self.byte_len()
+        } else {
+            0
+        }
+    }
+
+    fn data_accounted_bytes(&self) -> u64 {
+        if self
+            .map_permission
+            .contains(MapPermission::U | MapPermission::W)
+            && self.shared_anonymous.is_none()
+            && self.shared_file.is_none()
+            && matches!(self.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File)
+        {
+            self.byte_len()
+        } else {
+            0
+        }
+    }
+
+    /// 返回 structural publication 同步提交的 stack identity 与 RLIMIT contribution。
+    ///
+    /// @return 由当前 range/kind/permission/backing 计算的完整 contribution。
+    pub(super) fn index_contribution(&self) -> VmaContribution {
+        VmaContribution {
+            start: self.vpn_range.start.as_usize(),
+            stack: matches!(self.kind, VmaKind::Stack { .. }),
+            virtual_bytes: self.virtual_accounted_bytes(),
+            data_bytes: self.data_accounted_bytes(),
+        }
+    }
+
     /// 判断 semantic permissions 是否发布 leaf PTE。
     ///
     /// `permission` 是 VMA 当前或目标权限；返回 false 表示保留 PROT_NONE translation slot。
@@ -191,9 +238,13 @@ impl MapArea {
     ///
     /// frame、resident index 或 page-table allocation 失败时返回对应 MemoryError；caller
     /// 仍拥有 area，并负责撤销已发布的 partial PTE。
-    pub(crate) fn map(&mut self, page_table: &mut PageTable) -> Result<(), MemoryError> {
+    pub(in crate::memory) fn map(
+        &mut self,
+        page_table: &mut PageTable,
+        commit: &mut TranslationCommit,
+    ) -> Result<(), MemoryError> {
         if self.device.is_some() {
-            return self.map_device_area(page_table);
+            return self.map_device_area(page_table, commit);
         }
         if self.shared_file.is_some() {
             let _ = page_table;
@@ -205,8 +256,25 @@ impl MapArea {
         if self.lazy_private {
             return Ok(());
         }
+        if self.map_type == MapType::Identical {
+            if !Self::has_leaf_permission(self.map_permission) {
+                return Err(MemoryError::InvalidRange);
+            }
+            let mut permissions = self.map_permission.into();
+            if self.global {
+                permissions |= PagePermissions::GLOBAL;
+            }
+            return page_table
+                .map_identity_range(
+                    self.vpn_range.start,
+                    self.vpn_range.end,
+                    permissions,
+                    commit,
+                )
+                .map_err(Into::into);
+        }
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn))?;
+            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn), commit)?;
         }
         Ok(())
     }
@@ -215,13 +283,14 @@ impl MapArea {
         &mut self,
         page_table: &mut PageTable,
         vpn: VirtualPageNumber,
+        commit: &mut TranslationCommit,
     ) -> Result<(), MemoryError> {
         let (ppn, frame) = match self.map_type {
             MapType::Framed => {
                 let frame = try_memory_arc(alloc().ok_or(MemoryError::OutOfMemory)?)?;
                 (frame.ppn, Some(frame))
             }
-            MapType::Identical => (vpn.as_usize().into(), None),
+            MapType::Identical => unreachable!("identity areas use range leaf selection"),
         };
 
         let resident = frame
@@ -237,7 +306,7 @@ impl MapArea {
             if self.global {
                 pte_flags |= PagePermissions::GLOBAL;
             }
-            page_table.map(vpn, ppn, pte_flags)?;
+            page_table.map(vpn, ppn, pte_flags, commit)?;
         } else if self.map_type == MapType::Framed {
             // PROT_NONE VMA 仍由 data_frames 唯一持有物理页，但 translation slot 必须保持 reserved。
             // 若发布无 leaf access 的 entry，部分 architecture 会把它解释成 table pointer。

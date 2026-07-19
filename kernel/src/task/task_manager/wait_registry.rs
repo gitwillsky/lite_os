@@ -1,73 +1,247 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
+use core::{
+    hint::spin_loop,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use super::{IndexedWaitKind, PollWaitKey};
 use crate::{
-    fallible_tree::{FallibleMap, VacantEntry},
+    fallible_tree::VacantEntry,
     fs::AdvisoryLockKey,
     ipc::{PipeDirection, PipePollState},
     memory::FutexKey,
     sync::IrqMutex,
-    task::TaskControlBlock,
+    task::WaitResult,
 };
 
+mod batch;
+mod key;
 mod preparation;
+mod publication;
+mod registration;
+mod requeue;
+mod shard;
+mod task_source;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum WaitIndexKey {
-    AdvisoryLock {
-        key: AdvisoryLockKey,
-        id: u64,
-    },
-    Console {
-        exclusive: bool,
-        id: u64,
-    },
-    Deadline {
-        deadline: u64,
-        id: u64,
-    },
-    Futex {
-        key: FutexKey,
-        id: u64,
-    },
-    Pipe {
-        identity: usize,
-        direction: u8,
-        exclusive: bool,
-        id: u64,
-    },
+pub(in crate::task::task_manager) use batch::ClaimedBatch;
+use key::{WaitIndexKey, pipe_direction};
+pub(super) use registration::ClaimedWait;
+use registration::{
+    ARMED, ARMING, ARMING_LOCKED, CANCELLED, CLAIMED, CLAIMING, NOTIFIED_INTERRUPTED,
+    NOTIFIED_TIMEOUT, NOTIFIED_WOKEN, NotifyOutcome, PREPARED, REQUEUEING, WaitRegistration,
+};
+use shard::{LockedWaitShards, WaitShard};
+
+pub(super) const WAIT_SHARD_COUNT: usize = 16;
+
+pub(super) struct PreparedIndex {
+    shard: usize,
+    node: VacantEntry<WaitIndexKey, Arc<WaitRegistration>>,
 }
 
-/// @description 已完成全部节点分配、尚未发布 scheduling membership 的 wait transaction。
-///
-/// @ownership 未提交时本对象唯一拥有 entry/index AVL nodes、Task Arc 与 poll keys；任一路径
-/// 提前返回都会由 Drop 回收这些未发布资源，不需要 registry cleanup。
 pub(super) struct PreparedWait {
-    id: u64,
-    entry: VacantEntry<u64, IndexedWaitEntry>,
-    indexes: Vec<VacantEntry<WaitIndexKey, ()>>,
+    registration: Arc<WaitRegistration>,
+    indexes: alloc::vec::Vec<PreparedIndex>,
 }
 
-/// @description registry 在短锁内签发的唯一 wait ID ticket。
-///
-/// @ownership ticket 尚未进入 registry；锁外准备失败或复查取消只会烧掉 ID，不留下 membership。
 pub(super) struct WaitTicket {
     id: u64,
 }
 
-/// @description 一个 Task 的唯一 indexed wait membership 与反向 index metadata。
-pub(super) struct IndexedWaitEntry {
-    pub(super) task: Arc<TaskControlBlock>,
-    pub(super) kind: IndexedWaitKind,
-    deadline: Option<u64>,
-    poll_keys: Option<Vec<PollWaitKey>>,
+#[must_use = "published waits must be armed or cancelled"]
+pub(super) struct PublishedWait {
+    registration: Option<Arc<WaitRegistration>>,
 }
 
-impl IndexedWaitEntry {
-    fn console_wake_group(&self, ready: i16) -> Option<Option<usize>> {
-        match self.kind {
+pub(super) struct WaitArmGuard<'a> {
+    registration: Arc<WaitRegistration>,
+    shards: LockedWaitShards<'a>,
+    armed: bool,
+}
+
+impl WaitArmGuard<'_> {
+    pub(super) fn arm(&mut self) -> u64 {
+        assert!(!self.armed, "wait registration armed twice");
+        self.registration.state.store(ARMED, Ordering::Release);
+        self.armed = true;
+        self.registration.id
+    }
+}
+
+impl Drop for WaitArmGuard<'_> {
+    fn drop(&mut self) {
+        assert!(
+            self.armed,
+            "wait arm guard dropped before scheduling publication"
+        );
+        let _ = &self.shards;
+    }
+}
+
+pub(super) enum CancelOutcome {
+    Cancelled,
+    Notified(WaitResult),
+}
+
+pub(super) struct SourceWake {
+    pub(super) claimed: Option<ClaimedWait>,
+    pub(super) group: Option<usize>,
+}
+
+/// @description 以稳定 source identity 分片的唯一 wait registration owner。
+pub(super) struct WaitRegistry {
+    next_id: AtomicU64,
+    // OWNER: 每个 source key 只进入唯一 shard；registration keys 是跨 shard transaction
+    // 的唯一反向 metadata。缺失固定升序会让 poll cancel 与 futex requeue 形成 ABBA。
+    shards: [IrqMutex<WaitShard>; WAIT_SHARD_COUNT],
+}
+
+impl WaitRegistry {
+    const fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(0),
+            shards: [const { IrqMutex::new(WaitShard::new()) }; WAIT_SHARD_COUNT],
+        }
+    }
+
+    pub(super) fn allocate_ticket(&self) -> WaitTicket {
+        let id = self
+            .next_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .expect("indexed wait ID wrapped")
+            + 1;
+        WaitTicket { id }
+    }
+
+    pub(super) fn publish(&'static self, prepared: PreparedWait) -> PublishedWait {
+        let registration = prepared.registration;
+        let keys = registration.keys.lock();
+        let mut shards = LockedWaitShards::lock(&self.shards, &keys);
+        for index in prepared.indexes {
+            shards
+                .shard_mut(index.shard)
+                .index
+                .commit_vacant(index.node);
+        }
+        assert_eq!(
+            registration.state.compare_exchange(
+                PREPARED,
+                ARMING,
+                Ordering::Release,
+                Ordering::Relaxed
+            ),
+            Ok(PREPARED),
+            "wait registration published twice"
+        );
+        drop(shards);
+        drop(keys);
+        PublishedWait {
+            registration: Some(registration),
+        }
+    }
+
+    fn detach(
+        &self,
+        registration: &WaitRegistration,
+    ) -> VacantEntry<WaitIndexKey, Arc<WaitRegistration>> {
+        let keys = registration.keys.lock();
+        let mut shards = LockedWaitShards::lock(&self.shards, &keys);
+        let mut staging = None;
+        for key in keys.iter().copied() {
+            if matches!(key, WaitIndexKey::Task { .. }) {
+                assert!(
+                    staging.is_none(),
+                    "wait registration has duplicate task index"
+                );
+                staging = Some(
+                    shards
+                        .shard_mut(key.shard())
+                        .index
+                        .take_entry(&key)
+                        .expect("wait registration lost its task source node"),
+                );
+            } else {
+                let removed = shards
+                    .shard_mut(key.shard())
+                    .index
+                    .remove(&key)
+                    .expect("wait registration lost an exact source node");
+                assert_eq!(
+                    removed.id, registration.id,
+                    "wait source node changed owner"
+                );
+            }
+        }
+        staging.expect("wait registration has no task staging node")
+    }
+
+    fn claimed(
+        registration: &WaitRegistration,
+        staging: VacantEntry<WaitIndexKey, Arc<WaitRegistration>>,
+    ) -> ClaimedWait {
+        ClaimedWait {
+            id: registration.id,
+            task: registration.task.clone(),
+            kind: *registration.kind.lock(),
+            staging: Some(staging),
+        }
+    }
+
+    fn notify(&self, registration: &Arc<WaitRegistration>, result: WaitResult) -> NotifyOutcome {
+        let notified = WaitRegistration::notified_state(result);
+        loop {
+            match registration.state() {
+                ARMING => {
+                    if registration
+                        .state
+                        .compare_exchange(ARMING, notified, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        drop(self.detach(registration));
+                        return NotifyOutcome::BeforeArm;
+                    }
+                }
+                ARMED => {
+                    if registration
+                        .state
+                        .compare_exchange(ARMED, CLAIMING, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        let staging = self.detach(registration);
+                        let claimed = Self::claimed(registration, staging);
+                        registration.state.store(CLAIMED, Ordering::Release);
+                        return NotifyOutcome::Armed(claimed);
+                    }
+                }
+                ARMING_LOCKED | REQUEUEING | CLAIMING => spin_loop(),
+                NOTIFIED_WOKEN | NOTIFIED_TIMEOUT | NOTIFIED_INTERRUPTED | CANCELLED | CLAIMED => {
+                    return NotifyOutcome::Stale;
+                }
+                state => panic!("invalid published wait state {state}"),
+            }
+        }
+    }
+
+    fn source_candidate(
+        &self,
+        lower: WaitIndexKey,
+        cursor: Option<WaitIndexKey>,
+    ) -> Option<(WaitIndexKey, Arc<WaitRegistration>)> {
+        let shard = lower.shard();
+        let entries = self.shards[shard].lock();
+        match cursor {
+            Some(cursor) => entries.index.successor(&cursor),
+            None => entries.index.ceiling(&lower),
+        }
+        .map(|(key, registration)| (*key, registration.clone()))
+    }
+
+    fn console_group(registration: &WaitRegistration, ready: i16) -> Option<Option<usize>> {
+        match *registration.kind.lock() {
             IndexedWaitKind::Console => Some(None),
-            IndexedWaitKind::Poll => self
+            IndexedWaitKind::Poll => registration
                 .poll_keys
                 .as_ref()
                 .and_then(|keys| keys.iter().find(|key| key.matches_console(ready)))
@@ -76,14 +250,14 @@ impl IndexedWaitEntry {
         }
     }
 
-    fn pipe_wake_group(
-        &self,
+    fn pipe_group(
+        registration: &WaitRegistration,
         identity: usize,
         direction: PipeDirection,
         ready: i16,
         state: PipePollState,
     ) -> Option<Option<usize>> {
-        match self.kind {
+        match *registration.kind.lock() {
             IndexedWaitKind::Pipe {
                 identity: candidate,
                 condition,
@@ -93,7 +267,7 @@ impl IndexedWaitEntry {
             {
                 Some(None)
             }
-            IndexedWaitKind::Poll => self
+            IndexedWaitKind::Poll => registration
                 .poll_keys
                 .as_ref()
                 .and_then(|keys| {
@@ -104,331 +278,250 @@ impl IndexedWaitEntry {
             _ => None,
         }
     }
-}
 
-/// @description deadline/futex/console/Pipe/Poll registration 的唯一 index owner。
-pub(super) struct IndexedWaitQueue {
-    next_id: u64,
-    entries: FallibleMap<u64, IndexedWaitEntry>,
-    // source/deadline membership 共用一个 ordered index；variant 是领域 discriminator，
-    // 缺失它会恢复五棵独立分配且无法原子 publication 的 tree。
-    index: FallibleMap<WaitIndexKey, ()>,
-}
-
-impl IndexedWaitQueue {
-    const fn new() -> Self {
-        Self {
-            next_id: 0,
-            entries: FallibleMap::new(),
-            index: FallibleMap::new(),
-        }
-    }
-
-    /// @description 在 registry 短锁内签发唯一 ID，不分配或发布 wait membership。
-    /// @return 可移到锁外完成 fallible staging 的唯一 ticket。
-    pub(super) fn allocate_ticket(&mut self) -> WaitTicket {
-        self.next_id = self.next_id.wrapping_add(1);
-        assert_ne!(self.next_id, 0, "indexed wait ID wrapped");
-        WaitTicket { id: self.next_id }
-    }
-
-    /// 在 scheduling lock 内零分配发布已准备的完整 wait membership。
-    pub(super) fn commit(&mut self, prepared: PreparedWait) -> u64 {
-        // 2. owner lock 尚未释放，entry/index 的提交顺序对外不可见且均不会失败。
-        self.entries.commit_vacant(prepared.entry);
-        for index in prepared.indexes {
-            self.index.commit_vacant(index);
-        }
-        prepared.id
-    }
-
-    /// @description 在 owner lock 内读取 signal membership 的等待 mask。
-    ///
-    /// @param id SchedulingState 记录的 wait ID。
-    /// @return entry 仍存活时返回 mask；已被其他完成路径消费时返回 None。
-    pub(super) fn signal_mask(&self, id: u64) -> Option<u64> {
-        match self.entries.get(&id)?.kind {
-            IndexedWaitKind::Signal { mask } => Some(mask),
-            _ => panic!("signal wait membership has divergent registry kind"),
-        }
-    }
-
-    pub(super) fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
-        self.take_detached(id).map(VacantEntry::into_value)
-    }
-
-    fn take_detached(&mut self, id: u64) -> Option<VacantEntry<u64, IndexedWaitEntry>> {
-        let entry = self.entries.take_entry(&id)?;
-        if let IndexedWaitKind::Futex { key, .. } = entry.value().kind {
-            self.remove_index(WaitIndexKey::Futex { key, id });
-        }
-        if matches!(entry.value().kind, IndexedWaitKind::Console) {
-            self.remove_index(WaitIndexKey::Console {
-                exclusive: false,
-                id,
-            });
-        }
-        if let IndexedWaitKind::Pipe {
-            identity,
-            condition,
-        } = entry.value().kind
-        {
-            let direction = condition.direction();
-            self.remove_index(WaitIndexKey::Pipe {
-                identity,
-                direction: direction as u8,
-                exclusive: false,
-                id,
-            });
-        }
-        if let IndexedWaitKind::AdvisoryLock { key } = entry.value().kind {
-            self.remove_index(WaitIndexKey::AdvisoryLock { key, id });
-        }
-        if let Some(keys) = &entry.value().poll_keys {
-            for key in keys {
-                match *key {
-                    PollWaitKey::Console { exclusive, .. } => {
-                        self.remove_index(WaitIndexKey::Console { exclusive, id })
-                    }
-                    PollWaitKey::Pipe {
-                        identity,
-                        direction,
-                        exclusive,
-                        ..
-                    } => self.remove_index(WaitIndexKey::Pipe {
-                        identity,
-                        direction: direction as u8,
-                        exclusive,
-                        id,
-                    }),
-                }
-            }
-        }
-        if let Some(deadline) = entry.value().deadline {
-            self.remove_index(WaitIndexKey::Deadline { deadline, id });
-        }
-        Some(entry)
-    }
-
-    fn remove_index(&mut self, key: WaitIndexKey) {
-        assert!(self.index.remove(&key).is_some(), "wait index diverged");
-    }
-
-    /// @description 取出指定 key 上最早且 bitset 相交的 waiter。
-    ///
-    /// @param key memory domain 已归一化的 futex identity。
-    /// @param bitset wake operation 的非零匹配 mask。
-    /// @return 命中时返回 wait ID 与 task，并从所有索引移除；否则返回 None。
-    pub(super) fn take_futex(
-        &mut self,
-        key: FutexKey,
-        bitset: u32,
-    ) -> Option<VacantEntry<u64, IndexedWaitEntry>> {
-        let start = WaitIndexKey::Futex { key, id: 0 };
-        let mut selected = None;
-        for (index, _) in self.index.iter_from(&start) {
-            let WaitIndexKey::Futex { key: candidate, id } = *index else {
-                break;
+    pub(super) fn wake_futex_one(&self, key: FutexKey, bitset: u32) -> Option<SourceWake> {
+        let lower = WaitIndexKey::Futex { key, id: 0 };
+        let mut cursor = None;
+        loop {
+            let (index, registration) = self.source_candidate(lower, cursor)?;
+            let WaitIndexKey::Futex { key: candidate, .. } = index else {
+                return None;
             };
             if candidate != key {
-                break;
+                return None;
             }
-            if matches!(
-                self.entries.get(&id).map(|entry| entry.kind),
-                Some(IndexedWaitKind::Futex { bitset: waiter, .. }) if waiter & bitset != 0
-            ) {
-                selected = Some(id);
-                break;
+            cursor = Some(index);
+            if !matches!(*registration.kind.lock(), IndexedWaitKind::Futex { bitset: waiter, .. } if waiter & bitset != 0)
+            {
+                continue;
+            }
+            match self.notify(&registration, WaitResult::Woken) {
+                NotifyOutcome::BeforeArm => {
+                    return Some(SourceWake {
+                        claimed: None,
+                        group: None,
+                    });
+                }
+                NotifyOutcome::Armed(claimed) => {
+                    return Some(SourceWake {
+                        claimed: Some(claimed),
+                        group: None,
+                    });
+                }
+                NotifyOutcome::Stale => {}
             }
         }
-        let id = selected?;
-        self.take_detached(id)
     }
 
-    pub(super) fn take_advisory_lock(
-        &mut self,
-        key: AdvisoryLockKey,
-    ) -> Option<VacantEntry<u64, IndexedWaitEntry>> {
-        let start = WaitIndexKey::AdvisoryLock { key, id: 0 };
-        let (index, _) = self.index.iter_from(&start).next()?;
-        let WaitIndexKey::AdvisoryLock { key: candidate, id } = *index else {
-            return None;
-        };
-        if candidate != key {
-            return None;
-        }
-        self.take_detached(id)
-    }
-
-    /// @description 在唯一 registry owner 内把 source key 的 waiter 改挂到 target key。
-    ///
-    /// @param source 原 futex key。
-    /// @param target 新 futex key。
-    /// @param count 最大迁移数。
-    /// @return 实际迁移数；wait ID、deadline、task membership 与 bitset 保持不变。
-    pub(super) fn requeue_futex(
-        &mut self,
-        source: FutexKey,
-        target: FutexKey,
-        count: usize,
-    ) -> usize {
-        if count == 0 || source == target {
-            return 0;
-        }
-        let mut moved = 0;
-        while moved < count {
-            let start = WaitIndexKey::Futex { key: source, id: 0 };
-            let Some((&index, _)) = self.index.iter_from(&start).next() else {
-                break;
+    pub(super) fn wake_advisory_one(&self, key: AdvisoryLockKey) -> Option<SourceWake> {
+        let lower = WaitIndexKey::AdvisoryLock { key, id: 0 };
+        let mut cursor = None;
+        loop {
+            let (index, registration) = self.source_candidate(lower, cursor)?;
+            let WaitIndexKey::AdvisoryLock { key: candidate, .. } = index else {
+                return None;
             };
-            let WaitIndexKey::Futex { key, id } = index else {
-                break;
-            };
-            if key != source {
-                break;
+            if candidate != key {
+                return None;
             }
-            let mut index = self
-                .index
-                .take_entry(&index)
-                .expect("selected futex index disappeared");
-            let entry = self
-                .entries
-                .get_mut(&id)
-                .expect("futex index must reference a live entry");
-            let IndexedWaitKind::Futex { key, .. } = &mut entry.kind else {
-                panic!("futex index referenced a non-futex entry");
-            };
-            assert_eq!(*key, source);
-            *key = target;
-            index.set_key(WaitIndexKey::Futex { key: target, id });
-            self.index.commit_vacant(index);
-            moved += 1;
+            cursor = Some(index);
+            match self.notify(&registration, WaitResult::Woken) {
+                NotifyOutcome::BeforeArm => {
+                    return Some(SourceWake {
+                        claimed: None,
+                        group: None,
+                    });
+                }
+                NotifyOutcome::Armed(claimed) => {
+                    return Some(SourceWake {
+                        claimed: Some(claimed),
+                        group: None,
+                    });
+                }
+                NotifyOutcome::Stale => {}
+            }
         }
-        moved
     }
 
-    /// @description 从唯一 deadline index 摘取一个已经到期的 registration。
-    ///
-    /// @param now 本批次固定的 absolute monotonic 纳秒时刻。
-    /// @return 最早 deadline 已到时返回完整 waiter ownership，否则返回 `None`。
-    pub(super) fn pop_expired(
-        &mut self,
-        now: u64,
-    ) -> Option<(u64, Arc<TaskControlBlock>, IndexedWaitKind)> {
-        let start = WaitIndexKey::Deadline { deadline: 0, id: 0 };
-        let (index, _) = self.index.iter_from(&start).next()?;
-        let WaitIndexKey::Deadline { deadline, id } = *index else {
-            return None;
-        };
-        if deadline > now {
-            return None;
-        }
-        self.remove(id).map(|entry| (id, entry.task, entry.kind))
-    }
-
-    /// @description 查询固定时刻是否仍有尚未摘取的到期 registration。
-    ///
-    /// @param now 与本批 `pop_expired` 共用的 absolute monotonic 纳秒时刻。
-    /// @return 最早 deadline 不晚于 `now` 时返回 true。
-    pub(super) fn has_expired_deadline(&self, now: u64) -> bool {
-        let start = WaitIndexKey::Deadline { deadline: 0, id: 0 };
-        self.index.iter_from(&start).next().is_some_and(
-            |(key, _)| matches!(key, WaitIndexKey::Deadline { deadline, .. } if *deadline <= now),
-        )
-    }
-
-    pub(super) fn take_console(
-        &mut self,
+    pub(super) fn wake_console_one(
+        &self,
         exclusive: bool,
         ready: i16,
         excluded_groups: &[Option<usize>],
-    ) -> Option<(u64, VacantEntry<u64, IndexedWaitEntry>, Option<usize>)> {
-        let start = WaitIndexKey::Console { exclusive, id: 0 };
-        let id = self
-            .index
-            .iter_from(&start)
-            .take_while(|(index, _)| {
-                matches!(
-                    index,
-                    WaitIndexKey::Console {
-                        exclusive: candidate,
-                        ..
-                    } if *candidate == exclusive
-                )
-            })
-            .find_map(|(index, _)| {
-                let WaitIndexKey::Console { exclusive: _, id } = *index else {
-                    return None;
-                };
-                self.entries
-                    .get(&id)
-                    .and_then(|entry| entry.console_wake_group(ready))
-                    .is_some_and(|group| {
-                        group.is_none_or(|group| !excluded_groups.contains(&Some(group)))
-                    })
-                    .then_some(id)
-            })?;
-        let group = self.entries.get(&id)?.console_wake_group(ready)?;
-        self.take_detached(id).map(|entry| (id, entry, group))
+    ) -> Option<SourceWake> {
+        let lower = WaitIndexKey::Console { exclusive, id: 0 };
+        let mut cursor = None;
+        loop {
+            let (index, registration) = self.source_candidate(lower, cursor)?;
+            let WaitIndexKey::Console {
+                exclusive: candidate,
+                ..
+            } = index
+            else {
+                return None;
+            };
+            if candidate != exclusive {
+                return None;
+            }
+            cursor = Some(index);
+            let Some(group) = Self::console_group(&registration, ready) else {
+                continue;
+            };
+            if group.is_some_and(|group| excluded_groups.contains(&Some(group))) {
+                continue;
+            }
+            match self.notify(&registration, WaitResult::Woken) {
+                NotifyOutcome::BeforeArm => {
+                    return Some(SourceWake {
+                        claimed: None,
+                        group,
+                    });
+                }
+                NotifyOutcome::Armed(claimed) => {
+                    return Some(SourceWake {
+                        claimed: Some(claimed),
+                        group,
+                    });
+                }
+                NotifyOutcome::Stale => {}
+            }
+        }
     }
 
-    pub(super) fn take_pipe(
-        &mut self,
+    pub(super) fn wake_pipe_one(
+        &self,
         identity: usize,
         direction: PipeDirection,
         exclusive: bool,
         ready: i16,
         state: PipePollState,
-        excluded_groups: &FallibleMap<usize, ()>,
-    ) -> Option<(VacantEntry<u64, IndexedWaitEntry>, Option<usize>)> {
-        let start = WaitIndexKey::Pipe {
+        excluded_groups: &crate::fallible_tree::FallibleMap<usize, ()>,
+    ) -> Option<SourceWake> {
+        let lower = WaitIndexKey::Pipe {
             identity,
-            direction: direction as u8,
+            direction: pipe_direction(direction),
             exclusive,
             id: 0,
         };
-        let id = self
-            .index
-            .iter_from(&start)
-            .take_while(|(index, _)| {
-                matches!(
-                    index,
-                    WaitIndexKey::Pipe {
-                        identity: candidate_identity,
-                        direction: candidate_direction,
-                        exclusive: candidate_exclusive,
-                        ..
-                    } if (*candidate_identity, *candidate_direction, *candidate_exclusive)
-                        == (identity, direction as u8, exclusive)
-                )
-            })
-            .find_map(|(index, _)| {
-                let WaitIndexKey::Pipe {
-                    identity: _,
-                    direction: _,
-                    exclusive: _,
-                    id,
-                } = *index
+        let mut cursor = None;
+        loop {
+            let (index, registration) = self.source_candidate(lower, cursor)?;
+            let WaitIndexKey::Pipe {
+                identity: candidate_identity,
+                direction: candidate_direction,
+                exclusive: candidate_exclusive,
+                ..
+            } = index
+            else {
+                return None;
+            };
+            if (candidate_identity, candidate_direction, candidate_exclusive)
+                != (identity, pipe_direction(direction), exclusive)
+            {
+                return None;
+            }
+            cursor = Some(index);
+            let Some(group) = Self::pipe_group(&registration, identity, direction, ready, state)
+            else {
+                continue;
+            };
+            if group.is_some_and(|group| excluded_groups.contains_key(&group)) {
+                continue;
+            }
+            match self.notify(&registration, WaitResult::Woken) {
+                NotifyOutcome::BeforeArm => {
+                    return Some(SourceWake {
+                        claimed: None,
+                        group,
+                    });
+                }
+                NotifyOutcome::Armed(claimed) => {
+                    return Some(SourceWake {
+                        claimed: Some(claimed),
+                        group,
+                    });
+                }
+                NotifyOutcome::Stale => {}
+            }
+        }
+    }
+
+    pub(super) fn expire_one(&self, now: u64) -> Option<SourceWake> {
+        loop {
+            let mut selected: Option<(WaitIndexKey, Arc<WaitRegistration>)> = None;
+            for shard in &self.shards {
+                let entries = shard.lock();
+                let lower = WaitIndexKey::Deadline { deadline: 0, id: 0 };
+                let Some((key @ WaitIndexKey::Deadline { deadline, .. }, registration)) =
+                    entries.index.ceiling(&lower)
                 else {
-                    return None;
+                    continue;
                 };
-                self.entries
-                    .get(&id)
-                    .and_then(|entry| entry.pipe_wake_group(identity, direction, ready, state))
-                    .is_some_and(|group| {
-                        group.is_none_or(|group| !excluded_groups.contains_key(&group))
-                    })
-                    .then_some(id)
-            })?;
-        let group = self
-            .entries
-            .get(&id)?
-            .pipe_wake_group(identity, direction, ready, state)?;
-        self.take_detached(id).map(|entry| (entry, group))
+                if *deadline > now {
+                    continue;
+                }
+                if selected
+                    .as_ref()
+                    .is_none_or(|(candidate, _)| key < candidate)
+                {
+                    selected = Some((*key, registration.clone()));
+                }
+            }
+            let (_, registration) = selected?;
+            match self.notify(&registration, WaitResult::TimedOut) {
+                NotifyOutcome::BeforeArm => {
+                    return Some(SourceWake {
+                        claimed: None,
+                        group: None,
+                    });
+                }
+                NotifyOutcome::Armed(claimed) => {
+                    return Some(SourceWake {
+                        claimed: Some(claimed),
+                        group: None,
+                    });
+                }
+                NotifyOutcome::Stale => {}
+            }
+        }
+    }
+
+    pub(super) fn has_expired_deadline(&self, now: u64) -> bool {
+        self.shards.iter().any(|shard| {
+            let entries = shard.lock();
+            let lower = WaitIndexKey::Deadline { deadline: 0, id: 0 };
+            entries.index.ceiling(&lower).is_some_and(
+                |(key, _)| matches!(key, WaitIndexKey::Deadline { deadline, .. } if *deadline <= now),
+            )
+        })
     }
 }
 
-// OWNER: wait registry owns one membership plus all source/deadline indexes；mode bit only
-// changes wake selection，缺失它会把 EPOLLEXCLUSIVE 退化为 wake-all。
-pub(super) static INDEXED_WAIT_QUEUE: IrqMutex<IndexedWaitQueue> =
-    IrqMutex::new(IndexedWaitQueue::new());
+pub(in crate::task::task_manager) fn arm_current(
+    task: &Arc<crate::task::TaskControlBlock>,
+    prepared: Result<PreparedWait, ()>,
+    recheck: impl FnOnce() -> Option<WaitResult>,
+    membership: impl FnOnce(u64) -> crate::task::WaitMembership,
+) -> Result<super::context_switch::PreparedBlock, WaitResult> {
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(()) => return Err(recheck().unwrap_or(WaitResult::OutOfMemory)),
+    };
+    let published = WAIT_REGISTRY.publish(prepared);
+    if let Some(result) = recheck() {
+        return Err(match published.cancel() {
+            CancelOutcome::Cancelled => result,
+            CancelOutcome::Notified(result) => result,
+        });
+    }
+    let arm = published.prepare_arm()?;
+    Ok(super::context_switch::prepare_current_block(
+        task,
+        arm,
+        move |arm, _| membership(arm.arm()),
+    ))
+}
+
+// OWNER: source shards and each registration's exact key list jointly own all live wait
+// memberships；不存在 global queue fallback 或 lazy stale source node。
+pub(super) static WAIT_REGISTRY: WaitRegistry = WaitRegistry::new();

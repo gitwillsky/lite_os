@@ -1,5 +1,3 @@
-use core::arch::asm;
-
 use riscv::{
     ExceptionNumber, InterruptNumber,
     interrupt::{Exception, Interrupt, Trap},
@@ -118,6 +116,7 @@ pub(crate) fn return_to_user(
     address_space: AddressSpaceToken,
     trampoline_address: usize,
 ) -> ! {
+    super::mmu::prepare_user_activation(address_space, super::startup::current_logical_id());
     // SAFETY: trap.S defines both symbols in one trampoline section with a stable relative offset.
     unsafe extern "C" {
         fn __restore();
@@ -134,8 +133,7 @@ pub(crate) fn return_to_user(
     // SAFETY: restore points into the linked trampoline; context and address-space token belong to
     // the current live task. The assembly switches address spaces and never returns to this frame.
     unsafe {
-        asm!(
-            "fence.i",
+        core::arch::asm!(
             "jr {restore}",
             restore = in(reg) restore,
             in("x10") context_address,

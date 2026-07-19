@@ -5,8 +5,11 @@ use crate::{
     memory::{DeviceBacking, PAGE_SIZE},
 };
 
-use super::wire::{ALTERNATE_RESOURCE_ID, BOOT_RESOURCE_ID};
-use super::{VIRTIO_GPU_CMD_RESOURCE_UNREF, VirtIOGpuDevice, prepare_unref};
+use super::{
+    VirtIOGpuDevice,
+    command::{GpuCommand, ScanoutPurpose, UnrefPurpose},
+    wire::{ALTERNATE_RESOURCE_ID, BOOT_RESOURCE_ID},
+};
 
 const RESOURCE_IDS: [u32; 2] = [BOOT_RESOURCE_ID, ALTERNATE_RESOURCE_ID];
 
@@ -34,23 +37,6 @@ pub(super) fn validate_backing(
     Ok(())
 }
 
-/// @description 一个 controlq command 在完整 display transaction 中的确定性阶段。
-#[derive(Clone, Copy)]
-pub(super) enum RuntimeStage {
-    DisplayInfo,
-    UnrefEvicted,
-    Create,
-    Attach,
-    TransferScanout,
-    SetScanout,
-    FlushScanout,
-    UnrefBoot,
-    FlushDamage,
-    UnrefReleased,
-    DisableScanout,
-    UnrefDisabled(u8),
-}
-
 /// @description 唯一在途 display transaction 及其资源生命周期 owner。
 pub(super) enum RuntimeOperation {
     Scanout(ResourceTarget),
@@ -61,14 +47,6 @@ pub(super) enum RuntimeOperation {
         evicted: Option<ResidentResource>,
     },
     Disable(ResourceSnapshot),
-}
-
-/// @description controlq 中唯一在途 command 的 descriptor 与 fence 凭据。
-pub(super) struct PendingCommand {
-    pub(super) head: u16,
-    pub(super) operation_fence: u64,
-    pub(super) command_fence: u64,
-    pub(super) stage: RuntimeStage,
 }
 
 /// @description 一个已 CREATE+ATTACH、可在后续 flip/damage 中复用的 host resource。
@@ -459,53 +437,24 @@ impl VirtIOGpuDevice {
         }
         let target = control.resources.prepare(identity, mode, backing)?;
         let resource_id = target.id(&control.resources);
-        let prepared = (|| {
-            if let Some(evicted) = target.evicted_id() {
-                prepare_unref(&mut control.request, evicted)?;
-                Ok((
-                    super::VIRTIO_GPU_CMD_RESOURCE_UNREF,
-                    32,
-                    RuntimeStage::UnrefEvicted,
-                ))
-            } else if target.is_new() {
-                super::prepare_create(&mut control.request, mode, resource_id)?;
-                Ok((
-                    super::VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-                    40,
-                    RuntimeStage::Create,
-                ))
-            } else if target.synchronized(&control.resources) {
-                super::prepare_set_scanout(&mut control.request, mode, resource_id)?;
-                Ok((
-                    super::VIRTIO_GPU_CMD_SET_SCANOUT,
-                    48,
-                    RuntimeStage::SetScanout,
-                ))
-            } else {
-                super::prepare_transfer(
-                    &mut control.request,
-                    mode,
-                    full_rectangle(mode),
-                    resource_id,
-                )?;
-                Ok((
-                    super::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
-                    56,
-                    RuntimeStage::TransferScanout,
-                ))
+        let command = if let Some(evicted) = target.evicted_id() {
+            GpuCommand::Unref {
+                resource_id: evicted,
+                purpose: UnrefPurpose::Evicted,
             }
-        })();
-        let (command, length, stage) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let unpublished = control.resources.cancel(target);
-                drop(control);
-                drop(unpublished);
-                return Err(error);
+        } else if target.is_new() {
+            GpuCommand::Create { mode, resource_id }
+        } else if target.synchronized(&control.resources) {
+            GpuCommand::SetScanout {
+                mode,
+                resource_id,
+                purpose: ScanoutPurpose::Activate,
             }
+        } else {
+            GpuCommand::TransferScanout { mode, resource_id }
         };
         control.operation = Some(RuntimeOperation::Scanout(target));
-        let result = self.publish_runtime(&mut control, command, length, None, stage);
+        let result = self.submit_command(&mut control, command, None);
         if result.is_err() {
             let target = match control.operation.take() {
                 Some(RuntimeOperation::Scanout(target)) => target,
@@ -530,18 +479,12 @@ impl VirtIOGpuDevice {
         let Some(release) = control.resources.release(identity)? else {
             return Ok(None);
         };
-        if let Err(error) = prepare_unref(&mut control.request, release.id()) {
-            control.resources.restore_release(release);
-            return Err(error);
-        }
+        let command = GpuCommand::Unref {
+            resource_id: release.id(),
+            purpose: UnrefPurpose::Released,
+        };
         control.operation = Some(RuntimeOperation::Release(release));
-        let result = self.publish_runtime(
-            &mut control,
-            VIRTIO_GPU_CMD_RESOURCE_UNREF,
-            32,
-            None,
-            RuntimeStage::UnrefReleased,
-        );
+        let result = self.submit_command(&mut control, command, None);
         if result.is_err() {
             let release = match control.operation.take() {
                 Some(RuntimeOperation::Release(release)) => release,
@@ -554,7 +497,7 @@ impl VirtIOGpuDevice {
 
     /// @description 以 resource_id=0 禁用 scanout 并移交全部 residency owner。
     /// @return SET_SCANOUT→UNREF transaction fence。
-    /// @errors 无 active resource、已有 operation 或 publication failure。
+    /// @errors 无 active resource、已有 operation 或 controlq publication failure。
     pub(super) fn disable_resident(&self) -> Result<u64, DisplayError> {
         let mut control = self.control.lock();
         if control.pending.is_some() || control.operation.is_some() {
@@ -564,15 +507,16 @@ impl VirtIOGpuDevice {
             .resources
             .active_mode()
             .ok_or(DisplayError::Device)?;
-        super::prepare_set_scanout(&mut control.request, mode, 0)?;
         let resources = control.resources.take_all();
         control.operation = Some(RuntimeOperation::Disable(resources));
-        let result = self.publish_runtime(
+        let result = self.submit_command(
             &mut control,
-            super::VIRTIO_GPU_CMD_SET_SCANOUT,
-            48,
+            GpuCommand::SetScanout {
+                mode,
+                resource_id: 0,
+                purpose: ScanoutPurpose::Disable,
+            },
             None,
-            RuntimeStage::DisableScanout,
         );
         if result.is_err() {
             let resources = match control.operation.take() {

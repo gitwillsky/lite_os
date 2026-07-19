@@ -100,13 +100,13 @@ fn positioned_write(
     let append = append_override.unwrap_or_else(|| *ofd.flags.lock() & O_APPEND != 0);
     let staging = PreparedRegularWriteStaging::prepare(total_length);
     let result = with_prepared_staging(staging, |staging| {
-        let staging = staging.as_mut_slice();
+        let mut staging = staging.as_input_staging();
         let mut position = offset as u64;
         let writer = match file.begin_write() {
             Ok(writer) => writer,
             Err(error) => return ferr(error),
         };
-        write_regular_vectors(&task, &writer, &mut position, vectors, append, staging)
+        write_regular_vectors(&task, &writer, &mut position, vectors, append, &mut staging)
     });
     task.account_write_result(result);
     result

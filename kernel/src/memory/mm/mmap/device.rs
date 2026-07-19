@@ -69,8 +69,6 @@ impl MemorySet {
             MapArea::device(start.into(), end.into(), permission, source),
             None,
         )?;
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after device mmap update");
         Ok(start)
     }
 }

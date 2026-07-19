@@ -18,12 +18,23 @@ pub(crate) enum PageFaultOutcome {
 }
 
 impl MemorySet {
-    fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
-        start < end
-            && !self
+    /// 使用 ordered neighbors 判断 `[start,end)` 是否与任意 live VMA 相交。
+    ///
+    /// @param start inclusive 起始 VPN。
+    /// @param end exclusive 结束 VPN。
+    /// @return 区间非空且 floor/ceiling 均不相交时为 true。
+    pub(super) fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
+        if start >= end
+            || self
                 .areas
-                .values()
-                .any(|area| start < area.vpn_range.end && area.vpn_range.start < end)
+                .floor(&start)
+                .is_some_and(|(_, area)| start < area.vpn_range.end)
+        {
+            return false;
+        }
+        self.areas
+            .ceiling(&start)
+            .is_none_or(|(key, _)| *key >= end)
     }
 
     fn find_free_user_range(
@@ -112,9 +123,7 @@ impl MemorySet {
             MapArea::anonymous(start_address.into(), end_address.into(), permission),
             None,
         )?;
-        self.merge_adjacent_anonymous();
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after mmap page-table update");
+        self.merge_anonymous_neighbors(range.start);
         Ok(start_address)
     }
 
@@ -167,8 +176,6 @@ impl MemorySet {
             MapArea::file(start.into(), end.into(), permission, backing),
             None,
         )?;
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after file mmap page-table update");
         Ok(start)
     }
 
@@ -220,8 +227,6 @@ impl MemorySet {
             MapArea::shared_file(start.into(), end.into(), permission, mapping, pages),
             None,
         )?;
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after shared mmap update");
         Ok(start)
     }
 
@@ -254,11 +259,9 @@ impl MemorySet {
     }
 
     pub(crate) fn invalidate_shared_file(&mut self, id: SharedFileId, size: u64) {
-        let memory = revoke_and_synchronize(
-            self,
-            |memory| memory.revoke_invalidated_file_translations(id, size),
-            |_| Self::flush_tlb_all_cpus(),
-        )
+        let memory = revoke_and_commit(self, |memory, commit| {
+            memory.revoke_invalidated_file_translations(id, size, commit);
+        })
         .expect("platform TLB synchronization failed after truncate invalidation");
         memory.release_invalidated_file_residents(id, size);
     }
@@ -284,7 +287,12 @@ impl MemorySet {
         (shared, private)
     }
 
-    fn revoke_invalidated_file_translations(&mut self, id: SharedFileId, size: u64) {
+    fn revoke_invalidated_file_translations(
+        &mut self,
+        id: SharedFileId,
+        size: u64,
+        commit: &mut TranslationCommit,
+    ) {
         let page_table = &mut self.page_table;
         self.areas.for_each_mut(|_, area| {
             let (shared_start, private_start) = Self::invalidated_file_starts(area, id, size);
@@ -292,12 +300,12 @@ impl MemorySet {
                 && let Some(shared) = &area.shared_file
             {
                 for (&vpn, _) in shared.resident.iter_from(&first_stale) {
-                    let _ = page_table.unmap(vpn);
+                    let _ = page_table.unmap(vpn, commit);
                 }
             }
             if let Some(first_stale) = private_start {
                 for (&vpn, _) in area.data_frames.iter_from(&first_stale) {
-                    let _ = page_table.unmap(vpn);
+                    let _ = page_table.unmap(vpn, commit);
                 }
             }
         });
@@ -309,16 +317,12 @@ impl MemorySet {
             if let Some(first_stale) = shared_start
                 && let Some(shared) = &mut area.shared_file
             {
-                while let Some((&vpn, _)) = shared.resident.iter_from(&first_stale).next() {
-                    shared.resident.remove(&vpn);
-                }
+                drop(shared.resident.split_off(&first_stale));
             }
             if let Some(first_stale) = private_start {
                 // Linux truncate 的 even_cows 语义撤销 EOF 外 private residency，包括
                 // operation snapshot 后、truncate callback 取得 mm lock 前发布的页。
-                while let Some((&vpn, _)) = area.data_frames.iter_from(&first_stale).next() {
-                    area.data_frames.remove(&vpn);
-                }
+                drop(area.data_frames.split_off(&first_stale));
             }
         });
     }
@@ -344,27 +348,45 @@ impl MemorySet {
         Ok(keys)
     }
 
-    fn merge_adjacent_anonymous(&mut self) {
-        loop {
-            let mut areas = self.areas.iter();
-            let Some((mut left_key, mut left)) = areas.next() else {
-                break;
-            };
-            let pair = areas.find_map(|(right_key, right)| {
-                let mergeable = left.anonymous_mergeable(right);
-                let result = mergeable.then_some((*left_key, *right_key));
-                left_key = right_key;
-                left = right;
-                result
-            });
-            let Some((left_key, right_key)) = pair else {
-                break;
-            };
-            let mut left = self.areas.take_entry(&left_key).unwrap();
-            let right = self.areas.remove(&right_key).unwrap();
-            left.value_mut().merge_anonymous(right);
-            self.areas.commit_vacant(left);
+    fn merge_anonymous_neighbors(&mut self, key: VirtualPageNumber) {
+        let Some(mut current_key) = self
+            .areas
+            .floor(&key)
+            .filter(|(_, area)| key < area.vpn_range.end)
+            .map(|(key, _)| *key)
+            .or_else(|| self.areas.ceiling(&key).map(|(key, _)| *key))
+        else {
+            return;
+        };
+
+        if let Some(left_key) = self
+            .areas
+            .predecessor(&current_key)
+            .filter(|(_, left)| left.anonymous_mergeable(&self.areas[&current_key]))
+            .map(|(key, _)| *key)
+        {
+            self.merge_anonymous_pair(left_key, current_key);
+            current_key = left_key;
         }
+        while let Some(right_key) = self
+            .areas
+            .successor(&current_key)
+            .filter(|(_, right)| self.areas[&current_key].anonymous_mergeable(right))
+            .map(|(key, _)| *key)
+        {
+            self.merge_anonymous_pair(current_key, right_key);
+        }
+    }
+
+    fn merge_anonymous_pair(&mut self, left_key: VirtualPageNumber, right_key: VirtualPageNumber) {
+        let mut left = self
+            .take_area_entry(&left_key)
+            .expect("merge left VMA must remain present");
+        let right = self
+            .remove_area(&right_key)
+            .expect("merge right VMA must remain present");
+        left.value_mut().merge_anonymous(right);
+        self.commit_area(left);
     }
 
     /// @description 解除 anonymous 或 file-backed private 页；未映射洞按 Linux 语义忽略。
@@ -417,19 +439,17 @@ impl MemorySet {
         }
         let mut segment_slots = segment_slots.into_iter();
         for key in keys {
-            let area = self.areas.remove(&key).unwrap();
+            let area = self.remove_area(&key).unwrap();
             let cut_start = range.start.max(area.vpn_range.start);
             let cut_end = range.end.min(area.vpn_range.end);
             let (left, middle, right) = area.partition_protectable(cut_start, cut_end);
             if let Some(left) = left {
                 let slot = segment_slots.next().expect("preflighted left VMA slot");
-                self.areas
-                    .commit_vacant(slot.fill(left.vpn_range.start, left));
+                self.commit_area(slot.fill(left.vpn_range.start, left));
             }
             if let Some(right) = right {
                 let slot = segment_slots.next().expect("preflighted right VMA slot");
-                self.areas
-                    .commit_vacant(slot.fill(right.vpn_range.start, right));
+                self.commit_area(slot.fill(right.vpn_range.start, right));
             }
             retired_areas.push(middle);
         }
@@ -437,15 +457,11 @@ impl MemorySet {
             self.range_is_free(range.start, range.end),
             "preflighted munmap range remained published"
         );
-        let retired_areas = revoke_and_synchronize(
-            retired_areas,
-            |areas| {
-                for area in areas {
-                    area.unmap(&mut self.page_table);
-                }
-            },
-            |_| Self::flush_tlb_all_cpus(),
-        )
+        let retired_areas = revoke_and_commit(retired_areas, |areas, commit| {
+            for area in areas {
+                area.unmap(&mut self.page_table, commit);
+            }
+        })
         .expect("platform TLB synchronization failed after munmap page-table update");
         drop(retired_areas);
         Ok(())

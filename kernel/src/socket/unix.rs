@@ -4,6 +4,7 @@ use alloc::{
 };
 use spin::Mutex;
 
+use crate::ipc::ReceiveBuffer;
 use crate::ipc::{PipeDirection, PipeEnd, PipeRead, PipeWrite};
 
 use super::{
@@ -249,7 +250,7 @@ impl UnixSocket {
 
     pub(crate) fn receive(
         &self,
-        output: &mut [u8],
+        output: &mut ReceiveBuffer<'_>,
         receive_rights: bool,
     ) -> Result<(usize, usize, Option<UnixAddress>, Option<UnixRights>), SocketError> {
         let mut state = self.state.lock();
@@ -274,8 +275,7 @@ impl UnixSocket {
                     self.notify();
                 }
                 let full_length = message.bytes.len();
-                let count = output.len().min(full_length);
-                output[..count].copy_from_slice(&message.bytes[..count]);
+                let count = output.append(&message.bytes);
                 Ok((count, full_length, message.source, message.rights))
             }
             _ => Err(SocketError::NotConnected),

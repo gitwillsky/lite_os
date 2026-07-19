@@ -1,4 +1,4 @@
-use super::{InetEndpoint, InetSocket, SocketError, stack};
+use super::{InetEndpoint, InetSocket, SocketError, protocol_read, stack};
 
 /// @description NetworkStack endpoint owner 保存的标准 SOL_SOCKET policy。
 #[derive(Clone, Copy, Default)]
@@ -20,23 +20,37 @@ impl InetSocket {
     /// @return endpoint 存在时返回 unit。
     /// @errors endpoint 已被删除时返回 NotConnected。
     pub(in crate::socket) fn set_reuse_address(&self, enabled: bool) -> Result<(), SocketError> {
+        let _operation = self.operation.lock();
+        let _protocol = protocol_read();
         let mut network = stack()?.lock();
         match self.endpoint {
             InetEndpoint::Udp(handle) => {
-                network
-                    .endpoints
+                let super::NetworkStack {
+                    endpoints,
+                    udp_ports,
+                    ..
+                } = &mut *network;
+                let state = endpoints
                     .get_mut(&handle)
-                    .ok_or(SocketError::NotConnected)?
-                    .options
-                    .reuse_address = enabled
+                    .ok_or(SocketError::NotConnected)?;
+                if let Some(lease) = state.port_lease {
+                    state.port_lease = Some(udp_ports.set_reuse(lease, enabled));
+                }
+                state.options.reuse_address = enabled;
             }
             InetEndpoint::Tcp(id) => {
-                network
-                    .tcp_endpoints
+                let super::NetworkStack {
+                    tcp_endpoints,
+                    tcp_ports,
+                    ..
+                } = &mut *network;
+                let state = tcp_endpoints
                     .get_mut(&id)
-                    .ok_or(SocketError::NotConnected)?
-                    .options
-                    .reuse_address = enabled
+                    .ok_or(SocketError::NotConnected)?;
+                if let Some(lease) = state.port_lease {
+                    state.port_lease = Some(tcp_ports.set_reuse(lease, enabled));
+                }
+                state.options.reuse_address = enabled;
             }
             InetEndpoint::Raw(_) => return Err(SocketError::OperationNotSupported),
         }
@@ -48,6 +62,8 @@ impl InetSocket {
     /// @return UDP endpoint 存在时返回 unit。
     /// @errors TCP 返回 OperationNotSupported；endpoint 消失返回 NotConnected。
     pub(in crate::socket) fn set_broadcast(&self, enabled: bool) -> Result<(), SocketError> {
+        let _operation = self.operation.lock();
+        let _protocol = protocol_read();
         if let InetEndpoint::Raw(handle) = self.endpoint {
             return super::raw_endpoint::set_broadcast(handle, enabled);
         }
@@ -70,6 +86,8 @@ impl InetSocket {
         if !name.is_empty() && name != b"eth0" {
             return Err(SocketError::NoDevice);
         }
+        let _operation = self.operation.lock();
+        let _protocol = protocol_read();
         if let InetEndpoint::Raw(handle) = self.endpoint {
             return super::raw_endpoint::bind_to_device(handle, name);
         }
@@ -96,6 +114,8 @@ impl InetSocket {
     }
 
     pub(in crate::socket) fn set_no_delay(&self, enabled: bool) -> Result<(), SocketError> {
+        let _operation = self.operation.lock();
+        let _protocol = protocol_read();
         super::tcp::set_no_delay(self, enabled)
     }
 }

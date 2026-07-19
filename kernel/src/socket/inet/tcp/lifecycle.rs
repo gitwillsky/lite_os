@@ -30,42 +30,46 @@ pub(in crate::socket::inet) fn drop_endpoint(id: usize) {
         for &handle in &state.handles {
             sockets.get_mut::<tcp::Socket<'static>>(handle).close();
         }
-        let NetworkStack {
-            interface,
-            device,
-            sockets,
-            ..
-        } = &mut *network;
-        interface.poll_egress(now(), device, sockets);
+        drop(network);
+        crate::drivers::network::request_poll();
         return;
     }
-    let state = network
-        .tcp_endpoints
-        .remove(&id)
-        .expect("TCP endpoint disappeared while stack lock is held");
-    let handles = state.handles;
-    let needs_reset = handles.iter().any(|handle| {
+    let needs_reset = network.tcp_endpoints[&id].handles.iter().any(|handle| {
         network
             .sockets
             .get::<tcp::Socket<'static>>(*handle)
             .remote_endpoint()
             .is_some()
     });
-    for &handle in &handles {
-        network
-            .sockets
-            .get_mut::<tcp::Socket<'static>>(handle)
-            .abort();
-    }
-    if needs_reset {
+    {
         let NetworkStack {
-            interface,
-            device,
+            tcp_endpoints,
             sockets,
             ..
         } = &mut *network;
-        interface.poll_egress(now(), device, sockets);
+        for &handle in &tcp_endpoints[&id].handles {
+            sockets.get_mut::<tcp::Socket<'static>>(handle).abort();
+        }
     }
+    if needs_reset {
+        let state = network
+            .tcp_endpoints
+            .get_mut(&id)
+            .expect("TCP endpoint disappeared while stack lock is held");
+        state.endpoint = Weak::new();
+        state.orphaned = true;
+        drop(network);
+        crate::drivers::network::request_poll();
+        return;
+    }
+    let state = network
+        .tcp_endpoints
+        .remove(&id)
+        .expect("TCP endpoint disappeared while stack lock is held");
+    if let Some(lease) = state.port_lease {
+        network.tcp_ports.release(lease);
+    }
+    let handles = state.handles;
     for handle in handles {
         network.sockets.remove(handle);
     }

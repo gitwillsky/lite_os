@@ -4,6 +4,7 @@ use alloc::{
 };
 use spin::Mutex;
 
+use crate::ipc::ReceiveBuffer;
 use crate::ipc::{PipeDirection, PipeEnd, PipeRead, PipeWrite};
 use crate::socket::SocketError;
 
@@ -43,7 +44,7 @@ impl StreamReceive {
     /// @return byte result 与至多一个 control message。
     pub(super) fn read(
         &self,
-        output: &mut [u8],
+        output: &mut ReceiveBuffer<'_>,
         receive_rights: bool,
     ) -> (PipeRead, Option<UnixRights>) {
         let mut state = self.direction.state.lock();
@@ -53,8 +54,10 @@ impl StreamReceive {
             .and_then(|marker| marker.offset.checked_sub(state.read_offset))
             .and_then(|distance| usize::try_from(distance).ok())
             .and_then(|distance| distance.checked_add(1))
-            .map_or(output.len(), |barrier| output.len().min(barrier));
-        let result = self.end.read(&mut output[..capacity]);
+            .map_or(output.remaining(), |barrier| {
+                output.remaining().min(barrier)
+            });
+        let result = self.end.read_bounded(output, capacity);
         let PipeRead::Bytes(count) = result else {
             return (result, None);
         };

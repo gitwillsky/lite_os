@@ -85,6 +85,8 @@ pub(crate) enum WaitMembership {
     Pipe(u64),
     AdvisoryLock(u64),
     Poll(u64),
+    DriverIo(crate::drivers::io_completion::IoWaitKey),
+    TaskMutex(crate::sync::TaskMutexWaitKey),
 }
 
 /// @description blocked task 恢复时由唯一 wait registration 发布的结果。
@@ -301,7 +303,7 @@ impl SchedulingState {
 
     /// @description 判断 Thread 是否仍在 affinity 排除的 CPU 上持有执行/切出 ownership。
     ///
-    /// @return Running 或尚未切回 idle stack 的过渡状态位于禁止 CPU 时返回 `true`。
+    /// @return Running 或尚未完成 scheduler handoff 的过渡状态位于禁止 CPU 时返回 `true`。
     pub(in crate::task) fn executes_outside_affinity(&self) -> bool {
         let cpu = match self.run_state {
             RunState::Running { cpu }

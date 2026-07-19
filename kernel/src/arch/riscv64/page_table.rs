@@ -1,13 +1,15 @@
-use alloc::vec::Vec;
-
 use super::{
-    mmu::AddressSpaceToken,
+    mmu::{
+        AddressSpaceToken, allocate_address_space_id, release_address_space_id_after_global_fence,
+    },
     pte::{self, PagePermissions, RiscvPteFlags},
     sv39,
 };
+use crate::fallible_tree::{FallibleMap, VacantEntry};
 
 const PTE_FLAGS_WIDTH: usize = 10;
 const PAGE_SHIFT: usize = 12;
+const SV39_LEVELS: usize = 3;
 
 /// @description Architecture page-table page allocation seam。
 ///
@@ -17,6 +19,55 @@ pub(crate) trait TablePage: Sized {
     fn physical_page(&self) -> usize;
 }
 
+/// @description leaf revoke 时从 active page-table topology 摘除、等待 fence 的 table owners。
+pub(crate) struct RetiredTablePages<Page> {
+    entries: [Option<VacantEntry<usize, Page>>; 2],
+}
+
+impl<Page> RetiredTablePages<Page> {
+    fn new() -> Self {
+        Self {
+            entries: [None, None],
+        }
+    }
+
+    fn push(&mut self, entry: VacantEntry<usize, Page>) {
+        let slot = self
+            .entries
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("Sv39 unmap retired more than two table levels");
+        *slot = Some(entry);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.iter().flatten().count()
+    }
+}
+
+impl<Page> IntoIterator for RetiredTablePages<Page> {
+    type Item = VacantEntry<usize, Page>;
+    type IntoIter = core::iter::Flatten<core::array::IntoIter<Option<Self::Item>, 2>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter().flatten()
+    }
+}
+
+/// @description 一次 leaf revoke 的完整 virtual span 与 fence-retained table owners。
+pub(crate) struct Unmapped<Page> {
+    first_page: usize,
+    page_count: usize,
+    retired: RetiredTablePages<Page>,
+}
+
+impl<Page> Unmapped<Page> {
+    pub(crate) fn into_parts(self) -> (usize, usize, RetiredTablePages<Page>) {
+        (self.first_page, self.page_count, self.retired)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageTableError {
     AlreadyMapped,
@@ -24,6 +75,7 @@ pub(crate) enum PageTableError {
     OutOfMemory,
     InvalidFlags,
     InvalidPageTable,
+    AddressSpaceIdentifiersExhausted,
 }
 
 impl core::fmt::Display for PageTableError {
@@ -34,6 +86,9 @@ impl core::fmt::Display for PageTableError {
             Self::OutOfMemory => write!(formatter, "page-table allocation failed"),
             Self::InvalidFlags => write!(formatter, "invalid RISC-V PTE flags"),
             Self::InvalidPageTable => write!(formatter, "invalid Sv39 page-table structure"),
+            Self::AddressSpaceIdentifiersExhausted => {
+                write!(formatter, "RISC-V address-space identifiers exhausted")
+            }
         }
     }
 }
@@ -89,35 +144,50 @@ impl PageTableEntry {
 /// @description Sv39 page-table mechanism parameterized by a static frame owner adapter。
 pub(crate) struct PageTable<Page: TablePage> {
     root_page: usize,
-    table_pages: Vec<Page>,
+    table_pages: FallibleMap<usize, Page>,
+    address_space_id: usize,
 }
 
 impl<Page: TablePage> PageTable<Page> {
     pub(crate) fn try_new() -> Result<Self, PageTableError> {
-        let mut table_pages = Vec::new();
-        table_pages
-            .try_reserve_exact(1)
-            .map_err(|_| PageTableError::OutOfMemory)?;
         let root = Page::allocate().ok_or(PageTableError::OutOfMemory)?;
         let root_page = root.physical_page();
-        table_pages.push(root);
+        let mut table_pages = FallibleMap::new();
+        assert!(
+            table_pages
+                .try_insert(root_page, root)
+                .map_err(|_| PageTableError::OutOfMemory)?
+                .is_none(),
+            "root page-table frame identity collided"
+        );
+        let address_space_id =
+            allocate_address_space_id().ok_or(PageTableError::AddressSpaceIdentifiersExhausted)?;
         Ok(Self {
             root_page,
             table_pages,
+            address_space_id,
         })
     }
 
     pub(crate) fn token(&self) -> AddressSpaceToken {
-        AddressSpaceToken::from_root_page(self.root_page)
+        AddressSpaceToken::from_root_page(self.root_page, self.address_space_id)
+    }
+
+    /// @description 在 generic owner 已完成 local/remote 全量 fence 后退休 ASID。
+    pub(crate) fn release_address_space_id_after_global_fence(&mut self) {
+        assert_ne!(self.address_space_id, 0, "page-table ASID retired twice");
+        release_address_space_id_after_global_fence(self.address_space_id);
+        self.address_space_id = 0;
     }
 
     fn allocate_table(&mut self) -> Result<usize, PageTableError> {
-        self.table_pages
-            .try_reserve(1)
-            .map_err(|_| PageTableError::OutOfMemory)?;
         let page = Page::allocate().ok_or(PageTableError::OutOfMemory)?;
         let physical_page = page.physical_page();
-        self.table_pages.push(page);
+        let entry = self
+            .table_pages
+            .try_prepare_vacant(physical_page, page)
+            .map_err(|_| PageTableError::OutOfMemory)?;
+        self.table_pages.commit_vacant(entry);
         Ok(physical_page)
     }
 
@@ -136,40 +206,59 @@ impl<Page: TablePage> PageTable<Page> {
         unsafe { pointer.add(index).write_volatile(entry) };
     }
 
-    fn find_or_create(&mut self, virtual_page: usize) -> Result<(usize, usize), PageTableError> {
+    fn find_or_create_level(
+        &mut self,
+        virtual_page: usize,
+        target_level: usize,
+    ) -> Result<(usize, usize), PageTableError> {
+        assert!(target_level < SV39_LEVELS);
         let indexes = sv39::indexes(virtual_page);
         let mut table_page = self.root_page;
-        for (level, index) in indexes.into_iter().enumerate() {
-            if level == 2 {
-                return Ok((table_page, index));
+        for level in 0..target_level {
+            let index = indexes[level];
+            let entry = Self::read_entry(table_page, index);
+            if entry.is_next_table() {
+                table_page = entry.physical_page();
+                continue;
             }
-            let mut entry = Self::read_entry(table_page, index);
-            if !entry.is_valid() {
-                let child = self.allocate_table()?;
-                entry = PageTableEntry::new(child, RiscvPteFlags::V);
-                Self::write_entry(table_page, index, entry);
-            } else if !entry.is_next_table() {
+            if entry.is_valid() {
                 return Err(PageTableError::InvalidPageTable);
             }
-            table_page = entry.physical_page();
+            // Missing suffix 的全部 page/node owners 在首个 parent PTE publication 前准备。
+            // 若任一分配失败，active map 精确回滚，hardware topology 保持原样。
+            let missing = target_level - level;
+            let mut pages = [None, None];
+            for slot in pages.iter_mut().take(missing) {
+                match self.allocate_table() {
+                    Ok(page) => *slot = Some(page),
+                    Err(error) => {
+                        for page in pages.into_iter().flatten() {
+                            drop(
+                                self.table_pages
+                                    .remove(&page)
+                                    .expect("unpublished table page lost owner"),
+                            );
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            let mut parent = table_page;
+            for (offset, child) in pages.into_iter().flatten().enumerate() {
+                Self::write_entry(
+                    parent,
+                    indexes[level + offset],
+                    PageTableEntry::new(child, RiscvPteFlags::V),
+                );
+                parent = child;
+            }
+            return Ok((parent, indexes[target_level]));
         }
-        Err(PageTableError::InvalidPageTable)
+        Ok((table_page, indexes[target_level]))
     }
 
-    fn find(&self, virtual_page: usize) -> Option<PageTableEntry> {
-        let indexes = sv39::indexes(virtual_page);
-        let mut table_page = self.root_page;
-        for (level, index) in indexes.into_iter().enumerate() {
-            let entry = Self::read_entry(table_page, index);
-            if level == 2 {
-                return Some(entry);
-            }
-            if !entry.is_next_table() {
-                return None;
-            }
-            table_page = entry.physical_page();
-        }
-        None
+    fn find_or_create(&mut self, virtual_page: usize) -> Result<(usize, usize), PageTableError> {
+        self.find_or_create_level(virtual_page, 2)
     }
 
     pub(crate) fn reserve(&mut self, virtual_page: usize) -> Result<(), PageTableError> {
@@ -186,8 +275,35 @@ impl<Page: TablePage> PageTable<Page> {
         physical_page: usize,
         permissions: PagePermissions,
     ) -> Result<(), PageTableError> {
+        self.map_leaf(virtual_page, physical_page, permissions, 2)
+    }
+
+    fn leaf_span(level: usize) -> usize {
+        1usize << (9 * (2 - level))
+    }
+
+    fn largest_identity_leaf(virtual_page: usize, remaining: usize) -> usize {
+        (0..SV39_LEVELS)
+            .find(|level| {
+                let span = Self::leaf_span(*level);
+                virtual_page.is_multiple_of(span) && remaining >= span
+            })
+            .unwrap_or(2)
+    }
+
+    fn map_leaf(
+        &mut self,
+        virtual_page: usize,
+        physical_page: usize,
+        permissions: PagePermissions,
+        level: usize,
+    ) -> Result<(), PageTableError> {
+        let span = Self::leaf_span(level);
+        if !virtual_page.is_multiple_of(span) || !physical_page.is_multiple_of(span) {
+            return Err(PageTableError::InvalidPageTable);
+        }
         let flags = pte::encode(permissions).ok_or(PageTableError::InvalidFlags)?;
-        let (table, index) = self.find_or_create(virtual_page)?;
+        let (table, index) = self.find_or_create_level(virtual_page, level)?;
         if Self::read_entry(table, index).is_valid() {
             return Err(PageTableError::AlreadyMapped);
         }
@@ -195,22 +311,72 @@ impl<Page: TablePage> PageTable<Page> {
         Ok(())
     }
 
-    pub(crate) fn unmap(&mut self, virtual_page: usize) -> Result<(), PageTableError> {
+    /// @description 用不跨 range 边界的最大 Sv39 leaf 映射 identity region。
+    pub(crate) fn map_identity_range(
+        &mut self,
+        start_page: usize,
+        end_page: usize,
+        permissions: PagePermissions,
+    ) -> Result<(), PageTableError> {
+        if start_page >= end_page {
+            return Err(PageTableError::InvalidPageTable);
+        }
+        let mut page = start_page;
+        while page < end_page {
+            let level = Self::largest_identity_leaf(page, end_page - page);
+            self.map_leaf(page, page, permissions, level)?;
+            page += Self::leaf_span(level);
+        }
+        Ok(())
+    }
+
+    fn table_is_empty(table_page: usize) -> bool {
+        (0..512).all(|index| !Self::read_entry(table_page, index).is_valid())
+    }
+
+    pub(crate) fn unmap(&mut self, virtual_page: usize) -> Result<Unmapped<Page>, PageTableError> {
         let indexes = sv39::indexes(virtual_page);
-        let mut table = self.root_page;
-        for index in &indexes[..2] {
-            let entry = Self::read_entry(table, *index);
-            if !entry.is_next_table() {
+        let mut tables = [self.root_page; 3];
+        for level in 0..SV39_LEVELS {
+            let entry = Self::read_entry(tables[level], indexes[level]);
+            if !entry.is_valid() {
                 return Err(PageTableError::NotMapped);
             }
-            table = entry.physical_page();
+            if entry.is_leaf() {
+                let span = Self::leaf_span(level);
+                let first_page = virtual_page & !(span - 1);
+                if virtual_page != first_page {
+                    return Err(PageTableError::NotMapped);
+                }
+                Self::write_entry(tables[level], indexes[level], PageTableEntry::empty());
+                let mut retired = RetiredTablePages::new();
+                for child_level in (1..=level).rev() {
+                    if !Self::table_is_empty(tables[child_level]) {
+                        break;
+                    }
+                    Self::write_entry(
+                        tables[child_level - 1],
+                        indexes[child_level - 1],
+                        PageTableEntry::empty(),
+                    );
+                    retired.push(
+                        self.table_pages
+                            .take_entry(&tables[child_level])
+                            .expect("empty table lost owner"),
+                    );
+                }
+                return Ok(Unmapped {
+                    first_page,
+                    page_count: span,
+                    retired,
+                });
+            }
+            if level == 2 || !entry.is_next_table() {
+                return Err(PageTableError::InvalidPageTable);
+            }
+            tables[level + 1] = entry.physical_page();
         }
-        let index = indexes[2];
-        if !Self::read_entry(table, index).is_valid() {
-            return Err(PageTableError::NotMapped);
-        }
-        Self::write_entry(table, index, PageTableEntry::empty());
-        Ok(())
+        Err(PageTableError::InvalidPageTable)
     }
 
     pub(crate) fn set_flags(
@@ -242,7 +408,27 @@ impl<Page: TablePage> PageTable<Page> {
     }
 
     pub(crate) fn translate(&self, virtual_page: usize) -> Option<PageTableEntry> {
-        self.find(virtual_page)
-            .filter(|entry| entry.is_valid() && entry.is_leaf())
+        let indexes = sv39::indexes(virtual_page);
+        let mut table_page = self.root_page;
+        for (level, index) in indexes.into_iter().enumerate() {
+            let entry = Self::read_entry(table_page, index);
+            if entry.is_leaf() {
+                let offset = virtual_page & (Self::leaf_span(level) - 1);
+                return Some(PageTableEntry::new(
+                    entry.physical_page() + offset,
+                    entry.flags(),
+                ));
+            }
+            if !entry.is_next_table() {
+                return None;
+            }
+            table_page = entry.physical_page();
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn table_page_count(&self) -> usize {
+        self.table_pages.len()
     }
 }

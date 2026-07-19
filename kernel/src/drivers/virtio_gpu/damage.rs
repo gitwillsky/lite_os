@@ -1,17 +1,20 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    drivers::{DisplayError, DisplayMode, DisplayRect, virtio_queue::VirtQueue},
+    drivers::{
+        DisplayError, DisplayMode, DisplayRect,
+        virtio_queue::{DmaBuffer, VirtQueue},
+    },
     memory::DeviceBacking,
 };
 
 use super::wire::{
-    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_UNREF,
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_RESP_OK_NODATA,
-    prepare_create, prepare_transfer, prepare_unref, read_u32, read_u64, write_u32, write_u64,
+    prepare_transfer, read_u32, read_u64, write_u32, write_u64,
 };
 use super::{
-    RuntimeOperation, RuntimeStage, VirtIOGpuDevice,
+    RuntimeOperation, VirtIOGpuDevice,
+    command::{GpuCommand, UnrefPurpose},
     resource::{full_rectangle, validate_backing},
 };
 
@@ -20,24 +23,12 @@ const DAMAGE_BATCH_CAPACITY: usize = 15;
 const TRANSFER_REQUEST_SIZE: usize = 56;
 const RESPONSE_SIZE: usize = 24;
 
-#[derive(Clone, Copy)]
-#[repr(C, align(64))]
 struct DamageCommand {
-    request: [u8; TRANSFER_REQUEST_SIZE],
-    response: [u8; RESPONSE_SIZE],
+    request: DmaBuffer<TRANSFER_REQUEST_SIZE>,
+    response: DmaBuffer<RESPONSE_SIZE>,
     fence: u64,
     head: u16,
     live: bool,
-}
-
-impl DamageCommand {
-    const EMPTY: Self = Self {
-        request: [0; TRANSFER_REQUEST_SIZE],
-        response: [0; RESPONSE_SIZE],
-        fence: 0,
-        head: 0,
-        live: false,
-    };
 }
 
 /// @description controlq 内无分配保存、批量发布并回收一次 DIRTYFB transaction。
@@ -51,14 +42,25 @@ pub(super) struct DamageTransition {
     completed: usize,
     // OWNER: request/response/head/fence 在同一固定槽中保持到 used-ring completion；
     // 若借用共享 command storage，多个同时在途的 TRANSFER 会互相覆盖 DMA 内容。
-    commands: [DamageCommand; DAMAGE_BATCH_CAPACITY],
+    commands: Vec<DamageCommand>,
 }
 
 impl DamageTransition {
     /// @description 构造尚未承载 active damage operation 的固定 scratch。
     /// @return clip、batch 与 fence cursor 全部为空的 state。
-    pub(super) const fn new() -> Self {
-        Self {
+    pub(super) fn try_new() -> Option<Self> {
+        let mut commands = Vec::new();
+        commands.try_reserve_exact(DAMAGE_BATCH_CAPACITY).ok()?;
+        for _ in 0..DAMAGE_BATCH_CAPACITY {
+            commands.push(DamageCommand {
+                request: DmaBuffer::try_zeroed().ok()?,
+                response: DmaBuffer::try_zeroed().ok()?,
+                fence: 0,
+                head: 0,
+                live: false,
+            });
+        }
+        Some(Self {
             rectangles: [DisplayRect {
                 x: 0,
                 y: 0,
@@ -76,8 +78,8 @@ impl DamageTransition {
             operation_fence: 0,
             batch_count: 0,
             completed: 0,
-            commands: [DamageCommand::EMPTY; DAMAGE_BATCH_CAPACITY],
-        }
+            commands,
+        })
     }
 
     /// @description 以已验证的 fixed clip copy 开始一次 damage operation。
@@ -147,16 +149,20 @@ impl DamageTransition {
             let command = &mut self.commands[index];
             let fence = first_fence + index as u64;
             prepare_transfer(
-                &mut command.request,
+                command.request.as_mut_slice(),
                 mode,
                 self.rectangles[self.next + index],
                 resource_id,
             )?;
-            write_u32(&mut command.request, 0, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D)
+            write_u32(
+                command.request.as_mut_slice(),
+                0,
+                VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+            )
+            .ok_or(DisplayError::Device)?;
+            write_u32(command.request.as_mut_slice(), 4, VIRTIO_GPU_FLAG_FENCE)
                 .ok_or(DisplayError::Device)?;
-            write_u32(&mut command.request, 4, VIRTIO_GPU_FLAG_FENCE)
-                .ok_or(DisplayError::Device)?;
-            write_u64(&mut command.request, 8, fence).ok_or(DisplayError::Device)?;
+            write_u64(command.request.as_mut_slice(), 8, fence).ok_or(DisplayError::Device)?;
             command.response.fill(0);
             command.fence = fence;
             command.live = false;
@@ -165,11 +171,11 @@ impl DamageTransition {
         // 2. 每个小于一页的 input/output 最坏各跨两个页；capacity 已按 free/4 收紧，
         //    因而固定 batch 从空闲计数到 descriptor chain 建立不再有可恢复错误。
         for command in &mut self.commands[..count] {
-            let inputs = [&command.request[..]];
-            let mut outputs = [&mut command.response[..]];
+            let request = command.request.readable_all();
+            let response = command.response.writable_all();
             command.head = queue
-                .add_buffer(&inputs, &mut outputs)
-                .expect("bounded GPU damage batch exhausted an empty controlq");
+                .add_dma(&[request, response])
+                .map_err(|_| DisplayError::Device)?;
             command.live = true;
         }
 
@@ -187,17 +193,22 @@ impl DamageTransition {
     }
 
     /// @description 验证并回收一个可乱序到达的 batch completion。
-    /// @param head used ring 返回且已经由 VirtQueue 归还 free list 的 descriptor head。
+    /// @param head used ring 返回、尚未由 VirtQueue 回收的 descriptor head。
+    /// @param length device 声明写入的 response bytes，必须精确覆盖 control header。
     /// @return 当前 batch 全部完成时为 true。
     /// @errors head、response type 或 fence 不匹配返回 Device。
-    pub(super) fn complete(&mut self, head: u16) -> Result<bool, DisplayError> {
+    pub(super) fn complete(&mut self, head: u16, length: usize) -> Result<bool, DisplayError> {
+        if length != RESPONSE_SIZE {
+            return Err(DisplayError::Device);
+        }
         let command = self.commands[..self.batch_count]
             .iter_mut()
             .find(|command| command.live && command.head == head)
             .ok_or(DisplayError::Device)?;
-        if read_u32(&command.response, 0) != Some(VIRTIO_GPU_RESP_OK_NODATA)
-            || read_u32(&command.response, 4).is_none_or(|flags| flags & VIRTIO_GPU_FLAG_FENCE == 0)
-            || read_u64(&command.response, 8) != Some(command.fence)
+        if read_u32(command.response.as_slice(), 0) != Some(VIRTIO_GPU_RESP_OK_NODATA)
+            || read_u32(command.response.as_slice(), 4)
+                .is_none_or(|flags| flags & VIRTIO_GPU_FLAG_FENCE == 0)
+            || read_u64(command.response.as_slice(), 8) != Some(command.fence)
         {
             return Err(DisplayError::Device);
         }
@@ -297,38 +308,19 @@ impl VirtIOGpuDevice {
             rectangles.len()
         };
         control.damage.begin(copied, damage_count);
-        let prepared = (|| {
-            if let Some(evicted) = target.evicted_id() {
-                prepare_unref(&mut control.request, evicted)?;
-                Ok(Some((
-                    VIRTIO_GPU_CMD_RESOURCE_UNREF,
-                    32,
-                    RuntimeStage::UnrefEvicted,
-                )))
-            } else if target.is_new() {
-                prepare_create(&mut control.request, mode, resource_id)?;
-                Ok(Some((
-                    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-                    40,
-                    RuntimeStage::Create,
-                )))
-            } else {
-                Ok(None)
-            }
-        })();
-        let first = match prepared {
-            Ok(first) => first,
-            Err(error) => {
-                control.damage.cancel();
-                let unpublished = control.resources.cancel(target);
-                drop(control);
-                drop(unpublished);
-                return Err(error);
-            }
+        let first = if let Some(evicted) = target.evicted_id() {
+            Some(GpuCommand::Unref {
+                resource_id: evicted,
+                purpose: UnrefPurpose::Evicted,
+            })
+        } else if target.is_new() {
+            Some(GpuCommand::Create { mode, resource_id })
+        } else {
+            None
         };
         control.operation = Some(RuntimeOperation::Damage(target));
-        let result = if let Some((command, length, stage)) = first {
-            self.publish_runtime(&mut control, command, length, None, stage)
+        let result = if let Some(command) = first {
+            self.submit_command(&mut control, command, None)
         } else {
             self.publish_damage_batch(&mut control, None, mode, resource_id)
         };

@@ -1,12 +1,13 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::{Mutex, MutexGuard, Once};
+use spin::{Mutex, Once};
 
 use crate::fallible_tree::FallibleMap;
 use crate::memory::{
     MemoryReclaimer, PAGE_SIZE, ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId,
     SharedFileMapping, SharedFrame, SharedPage, invalidate_shared_file, register_memory_reclaimer,
 };
+use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
 use super::{FileSystemError, Inode, InodeType};
 
@@ -135,11 +136,11 @@ struct CachedFile {
     inode: Arc<dyn Inode>,
     // OWNER: 单 inode operation lock 串行化 cache fill、write/append、truncate 与 writeback；
     // 缺失 fill 归属会让并发旧 storage read 在 write/truncate 后插入 stale cache page。
-    operation: Mutex<()>,
+    operation: TaskMutex<()>,
     // OWNER: 单 inode write_sequence gate 排序完整 regular write、truncate、allocate 与 fd/global sync；
     // 缺失时 512-byte user-copy chunks 可被另一 OFD write 穿插，破坏 writev/append 连续性。
     // page fault 不获取该 gate，只取内层 operation，因此同文件 mmap buffer fault 不会自死锁。
-    write_sequence: Mutex<()>,
+    write_sequence: TaskMutex<()>,
     pages: Mutex<CachedPages>,
 }
 
@@ -156,7 +157,7 @@ impl CachedFile {
     fn page_after_operation_lock(
         &self,
         index: u64,
-        _operation: &MutexGuard<'_, ()>,
+        _operation: &TaskMutexGuard<'_, ()>,
     ) -> Result<(Arc<CachedPage>, usize), FileSystemError> {
         // EOF 必须在任何 node/frame allocation 前、与 truncate 同一 operation domain 内判定。
         // private/shared fault 以返回的 Arc 作为 fault-before-truncate 的瞬时线性化凭据。
@@ -204,13 +205,19 @@ impl CachedFile {
             return Ok((page, 0));
         }
         // Regular read 保留 cache-hit fast path；miss 与 storage mutation 共用 operation domain。
-        let operation = self.operation.lock();
+        let operation = self
+            .operation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         self.page_after_operation_lock(index, &operation)
     }
 
     fn fault_page(&self, index: u64) -> Result<Arc<CachedPage>, FileSystemError> {
         // Fault 必须先与 truncate 串行化，即使 cache hit 也不能绕过稳定 EOF snapshot。
-        let operation = self.operation.lock();
+        let operation = self
+            .operation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         self.page_after_operation_lock(index, &operation)
             .map(|(page, _)| page)
     }
@@ -263,7 +270,10 @@ impl SharedFileMapping for CachedFile {
     fn sync_range(&self, offset: u64, length: u64) -> Result<(), SharedFileError> {
         // AddressSpace owner 在调用 mapping sync 时已持 mm lock；这里只取内层 operation，
         // 否则会与 write_sequence → user-copy(AddressSpace) 形成反向锁序。
-        let _operation = self.operation.lock();
+        let _operation = self
+            .operation
+            .lock()
+            .map_err(|_| SharedFileError::OutOfMemory)?;
         self.writeback_range(offset, length).map_err(fs_error)
     }
 }
@@ -297,8 +307,8 @@ fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError
     let file = Arc::try_new(CachedFile {
         id,
         inode,
-        operation: Mutex::new(()),
-        write_sequence: Mutex::new(()),
+        operation: TaskMutex::new(()),
+        write_sequence: TaskMutex::new(()),
         pages: Mutex::new(CachedPages::new()),
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
@@ -332,7 +342,7 @@ pub(crate) struct RegularFileRead {
 /// Drop 无条件释放 gate；error、signal 或 partial user-copy 都不会遗留 transaction owner。
 pub(crate) struct RegularFileWrite<'a> {
     file: &'a CachedFile,
-    _sequence: MutexGuard<'a, ()>,
+    _sequence: TaskMutexGuard<'a, ()>,
 }
 
 impl RegularFile {
@@ -423,7 +433,10 @@ impl RegularFile {
         };
         Ok(RegularFileWrite {
             file,
-            _sequence: file.write_sequence.lock(),
+            _sequence: file
+                .write_sequence
+                .lock()
+                .map_err(|_| FileSystemError::OutOfMemory)?,
         })
     }
 }
@@ -439,8 +452,18 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSyste
         return inode.truncate_storage(size);
     }
     let file = cached_file(inode)?;
-    let _sequence = file.write_sequence.lock();
-    let _operation = file.operation.lock();
+    // Post-storage PTE invalidation 不可回滚；在修改 inode/cache 前预分配唯一 waiter，
+    // 使遍历 live AddressSpace 时只阻塞、不再产生 OOM failure window。
+    let mut invalidation_wait =
+        TaskMutexWaitPreparation::prepare().map_err(|_| FileSystemError::OutOfMemory)?;
+    let _sequence = file
+        .write_sequence
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    let _operation = file
+        .operation
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
     file.inode.truncate_storage(size)?;
     let first_removed = size.div_ceil(PAGE_SIZE as u64);
     let mut pages = file.pages.lock();
@@ -452,7 +475,7 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSyste
     }
     drop(pages);
     drop(_operation);
-    invalidate_shared_file(file.id, size);
+    invalidate_shared_file(file.id, size, &mut invalidation_wait);
     Ok(())
 }
 
@@ -470,8 +493,14 @@ pub(crate) fn allocate(
         return inode.allocate_storage(offset, length);
     }
     let file = cached_file(inode)?;
-    let _sequence = file.write_sequence.lock();
-    let _operation = file.operation.lock();
+    let _sequence = file
+        .write_sequence
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    let _operation = file
+        .operation
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
     file.inode.allocate_storage(offset, length)
 }
 
@@ -480,8 +509,14 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
         return inode.sync_storage();
     }
     let file = cached_file(inode)?;
-    let _sequence = file.write_sequence.lock();
-    let _operation = file.operation.lock();
+    let _sequence = file
+        .write_sequence
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    let _operation = file
+        .operation
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
     file.writeback_range(0, u64::MAX)
 }
 
@@ -494,8 +529,14 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
     files.extend(registry.values().cloned());
     drop(registry);
     for file in files {
-        let _sequence = file.write_sequence.lock();
-        let _operation = file.operation.lock();
+        let _sequence = file
+            .write_sequence
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let _operation = file
+            .operation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         file.writeback_range(0, u64::MAX)?;
     }
     FILES

@@ -36,7 +36,8 @@ impl Ext2Inode {
             };
             let mut buf = try_zeroed(self.fs.block_size)?;
             if index < blocks {
-                self.fs.read_fs_block(block, &mut buf)?;
+                let cached = self.fs.read_metadata_block(block)?;
+                buf.copy_from_slice(&cached);
             }
             if index == blocks {
                 let header = Ext2DirEntry2Header {
@@ -117,7 +118,8 @@ impl Ext2Inode {
         for index in 0..blocks {
             let block = self.map_block(index as u32)?;
             let mut buf = try_zeroed(self.fs.block_size)?;
-            self.fs.read_fs_block(block, &mut buf)?;
+            let cached = self.fs.read_metadata_block(block)?;
+            buf.copy_from_slice(&cached);
             let mut pos = 0;
             let mut previous = None;
             while pos < self.fs.block_size {
@@ -156,24 +158,36 @@ impl Ext2Inode {
         Err(FileSystemError::NotFound)
     }
 
-    /// @description 逐块校验并遍历当前目录的全部 ext directory entry。
-    /// @param visit 收到按值 header 与本次调用内有效的 raw name；返回 false 提前结束。
-    /// @return 遍历完成或 callback 主动停止时成功。
+    /// @description 从 opaque byte cursor 所在块开始校验并遍历 ext directory entry。
+    /// @param cursor 上次消费 entry 的 next byte offset；stale/misaligned cursor 向后对齐到记录边界。
+    /// @param visit 收到 next byte cursor、按值 header 与本次调用内有效的 raw name。
+    /// @return 当前已消费 cursor 与 EOF；Stop 不消费当前 entry。
     /// @errors inode size、record layout、block mapping 或 I/O 无效时返回明确错误。
-    pub(super) fn dir_iterate_blocks<F: FnMut(Ext2DirEntry2Header, &[u8]) -> bool>(
+    pub(super) fn dir_iterate_from<F>(
         &self,
+        cursor: u64,
         mut visit: F,
-    ) -> Result<(), FileSystemError> {
+    ) -> Result<DirectoryRead, FileSystemError>
+    where
+        F: FnMut(u64, Ext2DirEntry2Header, &[u8]) -> Result<DirectoryVisit, FileSystemError>,
+    {
         let size = self.disk.lock().i_size_lo as usize;
         if !size.is_multiple_of(self.fs.block_size) {
             return Err(FileSystemError::InvalidFileSystem);
         }
-        for block_index in 0..size / self.fs.block_size {
+        let Ok(start) = usize::try_from(cursor) else {
+            return Ok(DirectoryRead { cursor, eof: true });
+        };
+        if start >= size {
+            return Ok(DirectoryRead { cursor, eof: true });
+        }
+        let mut directory_cursor = DirectoryCursor::new(start, cursor);
+        let first_block = directory_cursor.first_block(self.fs.block_size);
+        for block_index in first_block..size / self.fs.block_size {
             let block = self
                 .map_block(block_index as u32)
                 .map_err(|_| FileSystemError::InvalidFileSystem)?;
-            let mut bytes = super::try_zeroed(self.fs.block_size)?;
-            self.fs.read_fs_block(block, &mut bytes)?;
+            let bytes = self.fs.read_metadata_block(block)?;
             let mut offset = 0;
             while offset < self.fs.block_size {
                 let header = Ext2DirEntry2Header::decode(&bytes, offset)
@@ -194,13 +208,29 @@ impl Ext2Inode {
                 if name_length > 255 || name_start + name_length > end {
                     return Err(FileSystemError::InvalidFileSystem);
                 }
-                if !visit(header, &bytes[name_start..name_start + name_length]) {
-                    return Ok(());
+                let absolute = block_index * self.fs.block_size + offset;
+                let next = block_index * self.fs.block_size + end;
+                if directory_cursor.locate(absolute, next) == RecordPosition::Skip {
+                    offset = end;
+                    continue;
+                }
+                let next = next as u64;
+                match visit(next, header, &bytes[name_start..name_start + name_length])? {
+                    DirectoryVisit::Continue => directory_cursor.consume(next),
+                    DirectoryVisit::Stop => {
+                        return Ok(DirectoryRead {
+                            cursor: directory_cursor.published(),
+                            eof: false,
+                        });
+                    }
                 }
                 offset = end;
             }
         }
-        Ok(())
+        Ok(DirectoryRead {
+            cursor: size as u64,
+            eof: true,
+        })
     }
 
     /// @description 在同一 mutation transaction 中分配 inode、保存 target 并发布 symlink entry。
@@ -296,17 +326,17 @@ impl Ext2Inode {
         }
         let target_links =
             link_count::increment(target_disk.i_links_count).map_err(link_count_error)?;
-        self.add_dir_entry_locked(&mut mutation, target.inode_num, name, metadata.kind)?;
         let now = Self::now();
         target_disk.i_links_count = target_links;
         target_disk.i_ctime = now;
         self.fs.write_inode_disk(target.inode_num, &target_disk)?;
+        drop(target_disk);
+        self.add_dir_entry_locked(&mut mutation, target.inode_num, name, metadata.kind)?;
         let mut parent = mutation.inode(self)?;
         parent.i_mtime = now;
         parent.i_ctime = now;
         self.fs.write_inode_disk(self.inode_num, &parent)?;
         drop(parent);
-        drop(target_disk);
         mutation.commit()
     }
 
@@ -371,11 +401,7 @@ impl Ext2Inode {
             if existing_meta.kind != InodeType::Directory && metadata.kind == InodeType::Directory {
                 return Err(FileSystemError::NotDirectory);
             }
-            if existing_meta.kind == InodeType::Directory
-                && existing
-                    .list()?
-                    .iter()
-                    .any(|entry| entry.name != b"." && entry.name != b"..")
+            if existing_meta.kind == InodeType::Directory && directory_not_empty(existing.as_ref())?
             {
                 return Err(FileSystemError::DirectoryNotEmpty);
             }
@@ -453,6 +479,7 @@ impl Ext2Inode {
             disk.i_mtime = now;
             disk.i_ctime = now;
             self.fs.write_inode_disk(self.inode_num, &disk)?;
+            drop(disk);
         } else {
             let mut old_disk = mutation.inode(self)?;
             if let Some(link_count::ParentLinkPlan::CrossParent { old_parent, .. }) =
@@ -473,6 +500,7 @@ impl Ext2Inode {
             new_disk.i_mtime = now;
             new_disk.i_ctime = now;
             self.fs.write_inode_disk(new_parent.inode_num, &new_disk)?;
+            drop(new_disk);
         }
         mutation.commit()
     }

@@ -4,6 +4,7 @@ use core::fmt::{self, Write};
 
 mod devfs;
 mod devpts;
+mod directory;
 mod epoll;
 mod ext2;
 mod file;
@@ -12,12 +13,17 @@ mod page_cache;
 mod permission;
 mod procfs;
 mod pty;
+mod readiness;
 mod sysfs;
 mod vfs;
 
 pub(crate) use devfs::DevFileSystem;
 pub(crate) use devpts::DevPtsFileSystem;
-pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent};
+pub(crate) use directory::{
+    DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, Dirent64Batch,
+    IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
+};
+pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent, EpollMemberships};
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
     CancelledFileReservation, CharacterDevice, Console, DetachedFileDescriptor,
@@ -25,9 +31,7 @@ pub(crate) use file::{
     O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind,
     Terminal, TerminalAccess, TerminalRead, TerminalReadMode, character_write_chunk,
 };
-pub(crate) use inode::{
-    DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType, StorageWriter,
-};
+pub(crate) use inode::{DeviceKind, Inode, InodeMetadata, InodeType, StorageWriter};
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
     sync_all, sync_inode, truncate,
@@ -38,6 +42,7 @@ pub(crate) use procfs::{
     ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
 };
 pub(crate) use pty::{PtyMaster, PtySlave, init as init_pty};
+pub(crate) use readiness::{ReadinessSource, ReadinessSources};
 pub(crate) use sysfs::SysFileSystem;
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
@@ -129,5 +134,6 @@ pub(crate) trait FileSystem: Send + Sync {
     /// @description 取得一次 filesystem-owned 容量与 inode 统计快照。
     ///
     /// @return 当前统计；不得缓存或从 VFS/syscall 反向推导。
-    fn statistics(&self) -> FileSystemStatistics;
+    /// @errors snapshot 所需的 owner wait metadata 分配失败时返回 `OutOfMemory`。
+    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
 }

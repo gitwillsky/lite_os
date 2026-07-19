@@ -6,8 +6,15 @@ extern crate alloc;
 mod preallocated_heap;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/task/scheduler/preemption_policy.rs"]
+mod preemption_policy;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/task/task_manager/signal/selection_result.rs"]
 mod signal_selection_result;
+
+#[cfg(test)]
+mod handoff_model;
 
 #[cfg(test)]
 mod tests {
@@ -167,5 +174,23 @@ mod signal_selection_tests {
         }
 
         assert_eq!(result.finish(), SelectionOutcome::Success(4));
+    }
+}
+
+#[cfg(test)]
+mod preemption_policy_tests {
+    use super::preemption_policy::local_ready_preempts;
+
+    #[test]
+    fn only_an_earlier_live_ready_root_preempts() {
+        assert!(local_ready_preempts(Some(20_000), Some(1_000)));
+        assert!(!local_ready_preempts(Some(10_000), Some(1_000_000)));
+        assert!(!local_ready_preempts(Some(50_000), Some(50_000)));
+    }
+
+    #[test]
+    fn stale_or_idle_delivery_does_not_fabricate_policy_preemption() {
+        assert!(!local_ready_preempts(Some(20_000), None));
+        assert!(!local_ready_preempts(None, Some(1_000)));
     }
 }

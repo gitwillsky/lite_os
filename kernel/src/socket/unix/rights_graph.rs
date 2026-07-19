@@ -13,6 +13,10 @@ struct Edge {
 struct NodeState {
     edges: Vec<Edge>,
     incoming: usize,
+    // OWNER: graph lock 下唯一维护的 incident edge reference count，恒等于
+    // `incoming + edges.len()`。归零时该 node 才能从 topology index 精确摘除；缺失它会让
+    // 每次 detach 为寻找孤立节点扫描全图。
+    references: usize,
     index: Option<usize>,
     lowlink: usize,
     on_stack: bool,
@@ -76,6 +80,7 @@ impl GraphNode {
             state: Mutex::new(NodeState {
                 edges: Vec::new(),
                 incoming: 0,
+                references: 0,
                 index: None,
                 lowlink: 0,
                 on_stack: false,
@@ -213,19 +218,30 @@ impl RightsGraph {
         let target_node =
             (!sources.is_empty()).then(|| self.nodes.get(&target.node_id()).unwrap().clone());
         for source in sources {
-            self.nodes
+            let node = self
+                .nodes
                 .get(&source.id)
-                .unwrap()
-                .state
-                .lock()
-                .edges
-                .push(Edge {
-                    successor: target_node.as_ref().unwrap().clone(),
-                    batch_id,
-                });
+                .expect("reserved AF_UNIX source node disappeared");
+            let mut state = node.state.lock();
+            state.edges.push(Edge {
+                successor: target_node.as_ref().unwrap().clone(),
+                batch_id,
+            });
+            state.references = state
+                .references
+                .checked_add(1)
+                .expect("AF_UNIX graph reference overflow");
         }
         if let Some(target_node) = target_node {
-            target_node.state.lock().incoming += sources.len();
+            let mut state = target_node.state.lock();
+            state.incoming = state
+                .incoming
+                .checked_add(sources.len())
+                .expect("AF_UNIX graph incoming overflow");
+            state.references = state
+                .references
+                .checked_add(sources.len())
+                .expect("AF_UNIX graph reference overflow");
         }
         *self.uid_inflight.get_mut(&uid).unwrap() += count;
         Ok(())
@@ -245,7 +261,12 @@ impl RightsGraph {
             let mut state = node.state.lock();
             let before = state.edges.len();
             state.edges.retain(|edge| edge.batch_id != batch_id);
-            removed += before - state.edges.len();
+            let source_removed = before - state.edges.len();
+            state.references = state
+                .references
+                .checked_sub(source_removed)
+                .expect("AF_UNIX source reference underflow");
+            removed += source_removed;
         }
         if removed != 0
             && let Some(target) = self.nodes.get(&target)
@@ -255,6 +276,10 @@ impl RightsGraph {
                 .incoming
                 .checked_sub(removed)
                 .expect("AF_UNIX graph incoming underflow");
+            state.references = state
+                .references
+                .checked_sub(removed)
+                .expect("AF_UNIX target reference underflow");
         }
         let inflight = self
             .uid_inflight
@@ -266,10 +291,36 @@ impl RightsGraph {
         if *inflight == 0 {
             self.uid_inflight.remove(&uid);
         }
-        self.nodes.retain(|_, node| {
+        previous = None;
+        for source in sources {
+            if previous == Some(source.id) {
+                continue;
+            }
+            previous = Some(source.id);
+            self.remove_unreferenced(source.id);
+        }
+        self.remove_unreferenced(target);
+    }
+
+    fn remove_unreferenced(&mut self, id: u64) {
+        let remove = self.nodes.get(&id).is_some_and(|node| {
             let state = node.state.lock();
-            state.incoming != 0 || !state.edges.is_empty()
+            let incident = state
+                .incoming
+                .checked_add(state.edges.len())
+                .expect("AF_UNIX incident reference overflow");
+            assert_eq!(
+                state.references, incident,
+                "AF_UNIX incident reference count drifted"
+            );
+            state.references == 0
         });
+        if remove {
+            assert!(
+                self.nodes.remove(&id).is_some(),
+                "unreferenced AF_UNIX node disappeared"
+            );
+        }
     }
 
     fn discover(&mut self, node: Arc<GraphNode>, index: &mut usize) {

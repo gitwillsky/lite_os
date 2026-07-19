@@ -1,22 +1,4 @@
-use alloc::vec::Vec;
-
-use super::{
-    DirectoryEntry, FileSystemError, InodeType, ProcProcessSnapshot, ProcSnapshot,
-    ProcThreadSnapshot,
-};
-
-pub(super) fn push_directory_entry(
-    entries: &mut Vec<DirectoryEntry>,
-    inode: u64,
-    kind: InodeType,
-    name: &[u8],
-) -> Result<(), FileSystemError> {
-    entries
-        .try_reserve(1)
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    entries.push(DirectoryEntry::try_new(inode, kind, name)?);
-    Ok(())
-}
+use super::{FileSystemError, ProcProcessSnapshot, ProcSnapshot, ProcThreadSnapshot};
 
 pub(super) fn decimal_name(value: usize, output: &mut [u8; 20]) -> &[u8] {
     let mut value = value;

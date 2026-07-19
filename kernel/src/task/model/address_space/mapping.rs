@@ -14,6 +14,7 @@ impl TaskControlBlock {
             .address_space()
             .memory_set
             .lock()
+            .map_err(|_| MemoryError::OutOfMemory)?
             .set_program_break(new_break, address_space_limit, data_limit)
     }
 
@@ -186,13 +187,16 @@ impl AddressSpace {
         source: DeviceMappingSource,
         address_space_limit: u64,
     ) -> Result<usize, MemoryError> {
-        self.memory_set.lock().map_device(
-            address,
-            length,
-            permission,
-            fixed_noreplace,
-            source,
-            address_space_limit,
-        )
+        self.memory_set
+            .lock()
+            .map_err(|_| MemoryError::OutOfMemory)?
+            .map_device(
+                address,
+                length,
+                permission,
+                fixed_noreplace,
+                source,
+                address_space_limit,
+            )
     }
 }

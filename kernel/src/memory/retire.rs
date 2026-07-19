@@ -10,10 +10,10 @@
 pub(super) fn revoke_and_synchronize<T, E>(
     mut retained: T,
     revoke: impl FnOnce(&mut T),
-    synchronize: impl FnOnce(&T) -> Result<(), E>,
+    synchronize: impl FnOnce(&mut T) -> Result<(), E>,
 ) -> Result<T, E> {
     revoke(&mut retained);
-    match synchronize(&retained) {
+    match synchronize(&mut retained) {
         Ok(()) => Ok(retained),
         Err(error) => {
             // Fence 失败后，远端 CPU 仍可能通过 stale translation 访问 backing。

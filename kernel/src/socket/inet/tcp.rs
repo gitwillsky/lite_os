@@ -1,31 +1,33 @@
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::{sync::Weak, vec::Vec};
 use core::net::Ipv4Addr;
 
 use smoltcp::{
     iface::SocketHandle,
-    socket::tcp::{self, CongestionControl, State},
+    socket::tcp::{self, State},
     wire::{IpEndpoint, IpListenEndpoint},
 };
 
-use crate::{fallible_tree::FallibleMap, ipc::PipeEnd};
+use crate::fallible_tree::FallibleMap;
 
 use super::{
-    EPHEMERAL_END, EPHEMERAL_START, InetEndpoint, InetSocket, InetSocketOptions, NetworkStack,
-    SocketError, from_ip, ipv4, now, stack,
+    InetEndpoint, InetSocket, InetSocketOptions, NetworkStack, PortLease, SocketError, from_ip,
+    ipv4, port_error, stack,
 };
 use crate::socket::InetAddress;
 
+#[path = "tcp/accept.rs"]
+mod accept;
 #[path = "tcp/io.rs"]
 mod io;
 #[path = "tcp/lifecycle.rs"]
 mod lifecycle;
-pub(super) use io::{maintain, poll_state, receive, send, shutdown, take_error};
+#[path = "tcp/storage.rs"]
+mod storage;
+pub(super) use accept::accept;
+pub(super) use io::{maintain, poll_state, reap_orphans, receive, send, shutdown, take_error};
 pub(super) use lifecycle::drop_endpoint;
+use storage::{add_socket, placeholder_socket};
 
-const TCP_BUFFER_BYTES: usize = 32 * 1024;
 const TCP_BACKLOG_MAX: usize = 16;
 
 #[derive(Clone, Copy)]
@@ -51,6 +53,7 @@ pub(super) struct TcpEndpointState {
     handles: Vec<SocketHandle>,
     mode: TcpMode,
     pending_error: Option<SocketError>,
+    pub(super) port_lease: Option<PortLease>,
     // 最后一个 facade 释放后保留 endpoint state，直到 TCP close 完成；若改用独立 orphan
     // queue，析构路径会因 queue 扩容而出现无法返回 ENOMEM 的失败点。
     orphaned: bool,
@@ -60,25 +63,6 @@ pub(super) struct TcpEndpointState {
     pub(super) readiness: crate::socket::SocketPollState,
     // 只跨越 stack unlock 保存一次 transition；缺失会在持 stack lock 时反向进入 wait owner。
     pub(super) notification_pending: bool,
-}
-
-fn allocate_buffer() -> Result<Vec<u8>, SocketError> {
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(TCP_BUFFER_BYTES)
-        .map_err(|_| SocketError::NoMemory)?;
-    bytes.resize(TCP_BUFFER_BYTES, 0);
-    Ok(bytes)
-}
-
-fn add_socket(network: &mut NetworkStack) -> Result<SocketHandle, SocketError> {
-    let mut socket = tcp::Socket::new(
-        tcp::SocketBuffer::new(allocate_buffer()?),
-        tcp::SocketBuffer::new(allocate_buffer()?),
-    );
-    // Reno 不使用 kernel FPU context，且比关闭 congestion control 更符合共享网络语义。
-    socket.set_congestion_control(CongestionControl::Reno);
-    network.add_socket(socket)
 }
 
 fn allocate_endpoint_id(network: &mut NetworkStack) -> Result<usize, SocketError> {
@@ -115,6 +99,7 @@ pub(super) fn create_endpoint(
             handles,
             mode: TcpMode::Fresh { bound: None },
             pending_error: None,
+            port_lease: None,
             orphaned: false,
             options: InetSocketOptions::default(),
             readiness: crate::socket::SocketPollState::error(),
@@ -160,60 +145,6 @@ fn listen_endpoint(address: InetAddress) -> IpListenEndpoint {
     }
 }
 
-impl NetworkStack {
-    fn tcp_port_in_use(
-        &self,
-        address: Option<Ipv4Addr>,
-        port: u16,
-        except: usize,
-        reuse_address: bool,
-    ) -> bool {
-        self.tcp_endpoints.iter().any(|(&id, state)| {
-            if id == except {
-                return false;
-            }
-            let local = match state.mode {
-                TcpMode::Fresh { bound } => bound,
-                TcpMode::Listening { endpoint, .. } => Some(endpoint),
-                TcpMode::Connecting | TcpMode::Connected { .. } => state
-                    .handles
-                    .first()
-                    .and_then(|handle| {
-                        self.sockets
-                            .get::<tcp::Socket<'static>>(*handle)
-                            .local_endpoint()
-                    })
-                    .map(|endpoint| IpListenEndpoint {
-                        addr: Some(endpoint.addr),
-                        port: endpoint.port,
-                    }),
-            };
-            local.is_some_and(|local| {
-                local.port == port
-                    && (local.addr.is_none()
-                        || address.is_none()
-                        || local.addr == address.map(ipv4))
-                    && !(reuse_address && state.options.reuse_address)
-            })
-        })
-    }
-
-    fn allocate_tcp_ephemeral(&mut self, id: usize) -> Result<u16, SocketError> {
-        for _ in EPHEMERAL_START..=EPHEMERAL_END {
-            let candidate = self.next_tcp_ephemeral;
-            self.next_tcp_ephemeral = if candidate == EPHEMERAL_END {
-                EPHEMERAL_START
-            } else {
-                candidate + 1
-            };
-            if !self.tcp_port_in_use(None, candidate, id, false) {
-                return Ok(candidate);
-            }
-        }
-        Err(SocketError::AddressInUse)
-    }
-}
-
 /// @description 绑定 fresh TCP endpoint；port 0 经唯一 allocator 分配 ephemeral port。
 /// @param socket TCP facade identity。
 /// @param address 请求的 IPv4 address 与 port。
@@ -228,29 +159,37 @@ pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), Sock
     }) {
         return Err(SocketError::AddressNotAvailable);
     }
-    let port = if address.port == 0 {
-        network.allocate_tcp_ephemeral(id)?
-    } else {
-        address.port
-    };
-    let reuse_address = network.tcp_endpoints[&id].options.reuse_address;
-    if network.tcp_port_in_use(address_filter, port, id, reuse_address) {
-        return Err(SocketError::AddressInUse);
+    let state = network
+        .tcp_endpoints
+        .get(&id)
+        .ok_or(SocketError::NotConnected)?;
+    if !matches!(state.mode, TcpMode::Fresh { bound: None }) {
+        return Err(SocketError::Invalid);
     }
+    let reuse_address = state.options.reuse_address;
+    let lease = if address.port == 0 {
+        network
+            .tcp_ports
+            .acquire_ephemeral(address_filter, reuse_address)
+            .map_err(port_error)?
+    } else {
+        network
+            .tcp_ports
+            .acquire(address.port, address_filter, reuse_address)
+            .map_err(port_error)?
+    };
     let state = network
         .tcp_endpoints
         .get_mut(&id)
-        .ok_or(SocketError::NotConnected)?;
-    match state.mode {
-        TcpMode::Fresh { bound: None } => {
-            state.mode = TcpMode::Fresh {
-                bound: Some(listen_endpoint(InetAddress { port, ..address })),
-            };
-            Ok(())
-        }
-        TcpMode::Fresh { bound: Some(_) } => Err(SocketError::Invalid),
-        _ => Err(SocketError::Invalid),
-    }
+        .expect("TCP endpoint disappeared while stack lock is held");
+    state.mode = TcpMode::Fresh {
+        bound: Some(listen_endpoint(InetAddress {
+            port: lease.port(),
+            ..address
+        })),
+    };
+    state.port_lease = Some(lease);
+    Ok(())
 }
 
 /// @description 将 fresh TCP endpoint 原子转换为有界 passive listener。
@@ -261,18 +200,14 @@ pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), Sock
 pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let mut network = stack()?.lock();
-    let bound = match network.tcp_endpoints.get(&id).map(|state| state.mode) {
-        Some(TcpMode::Fresh { bound }) => bound,
-        Some(TcpMode::Listening { .. }) => return Ok(()),
-        Some(_) => return Err(SocketError::Invalid),
-        None => return Err(SocketError::NotConnected),
-    };
-    let endpoint = match bound {
-        Some(endpoint) => endpoint,
-        None => IpListenEndpoint {
-            addr: None,
-            port: network.allocate_tcp_ephemeral(id)?,
-        },
+    let state = network
+        .tcp_endpoints
+        .get(&id)
+        .ok_or(SocketError::NotConnected)?;
+    let (bound, reuse_address) = match state.mode {
+        TcpMode::Fresh { bound } => (bound, state.options.reuse_address),
+        TcpMode::Listening { .. } => return Ok(()),
+        _ => return Err(SocketError::Invalid),
     };
     let backlog = backlog.clamp(1, TCP_BACKLOG_MAX);
     network
@@ -297,6 +232,44 @@ pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketEr
             }
         }
     }
+    let new_lease = if bound.is_none() {
+        match network.tcp_ports.acquire_ephemeral(None, reuse_address) {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                for handle in extra {
+                    network.sockets.remove(handle);
+                }
+                return Err(port_error(error));
+            }
+        }
+    } else {
+        None
+    };
+    let endpoint = match (bound, new_lease) {
+        (Some(endpoint), _) => endpoint,
+        (None, Some(lease)) => IpListenEndpoint {
+            addr: None,
+            port: lease.port(),
+        },
+        (None, None) => return Err(SocketError::AddressNotAvailable),
+    };
+    let base_lease = new_lease.unwrap_or_else(|| {
+        network.tcp_endpoints[&id]
+            .port_lease
+            .expect("bound TCP endpoint lost local port lease")
+    });
+    let listener_lease = match network.tcp_ports.claim_listener(base_lease) {
+        Ok(lease) => lease,
+        Err(error) => {
+            for handle in extra {
+                network.sockets.remove(handle);
+            }
+            if let Some(lease) = new_lease {
+                network.tcp_ports.release(lease);
+            }
+            return Err(port_error(error));
+        }
+    };
     let first = network.tcp_endpoints[&id].handles[0];
     for handle in core::iter::once(first).chain(extra.iter().copied()) {
         if network
@@ -312,6 +285,10 @@ pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketEr
             for handle in extra {
                 network.sockets.remove(handle);
             }
+            network.tcp_ports.release_listener_claim(listener_lease);
+            if let Some(lease) = new_lease {
+                network.tcp_ports.release(lease);
+            }
             return Err(SocketError::AddressNotAvailable);
         }
     }
@@ -321,6 +298,7 @@ pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketEr
         .expect("TCP listener endpoint disappeared during atomic publication");
     state.handles.extend(extra);
     state.mode = TcpMode::Listening { endpoint, backlog };
+    state.port_lease = Some(listener_lease);
     Ok(())
 }
 
@@ -338,158 +316,81 @@ pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), Sock
     if !network.interface_state.up || network.interface_state.address.is_none() {
         return Err(SocketError::NetworkUnreachable);
     }
-    let bound = match network.tcp_endpoints.get(&id).map(|state| state.mode) {
-        Some(TcpMode::Fresh { bound }) => bound,
-        Some(TcpMode::Connecting) => return Err(SocketError::AlreadyInProgress),
-        Some(TcpMode::Connected { .. }) => return Err(SocketError::AlreadyConnected),
-        Some(TcpMode::Listening { .. }) => return Err(SocketError::Invalid),
+    let (bound, reuse_address, existing_lease) = match network.tcp_endpoints.get(&id) {
+        Some(state) => match state.mode {
+            TcpMode::Fresh { bound } => (bound, state.options.reuse_address, state.port_lease),
+            TcpMode::Connecting => return Err(SocketError::AlreadyInProgress),
+            TcpMode::Connected { .. } => return Err(SocketError::AlreadyConnected),
+            TcpMode::Listening { .. } => return Err(SocketError::Invalid),
+        },
         None => return Err(SocketError::NotConnected),
     };
-    let local = match bound {
-        Some(endpoint) => endpoint,
-        None => IpListenEndpoint {
+    let local_address = bound
+        .and_then(|endpoint| endpoint.addr)
+        .map(from_ip)
+        .or(network.interface_state.address)
+        .expect("up TCP interface lost source address");
+    let new_lease = if bound.is_none() {
+        Some(
+            network
+                .tcp_ports
+                .acquire_ephemeral(Some(local_address), reuse_address)
+                .map_err(port_error)?,
+        )
+    } else {
+        None
+    };
+    let prepared_readdress = existing_lease
+        .map(|lease| network.tcp_ports.prepare_readdress(lease, local_address))
+        .transpose()
+        .map_err(port_error)?;
+    let local = match (bound, new_lease) {
+        (Some(endpoint), _) => endpoint,
+        (None, Some(lease)) => IpListenEndpoint {
             addr: None,
-            port: network.allocate_tcp_ephemeral(id)?,
+            port: lease.port(),
         },
+        (None, None) => return Err(SocketError::AddressNotAvailable),
     };
     let handle = network.tcp_endpoints[&id].handles[0];
     let NetworkStack {
         interface, sockets, ..
     } = &mut *network;
-    sockets
-        .get_mut::<tcp::Socket<'static>>(handle)
-        .connect(
-            interface.context(),
-            IpEndpoint::new(ipv4(peer.address), peer.port),
-            local,
-        )
-        .map_err(|_| SocketError::AddressNotAvailable)?;
-    network
-        .tcp_endpoints
-        .get_mut(&id)
-        .expect("TCP endpoint disappeared during connect publication")
-        .mode = TcpMode::Connecting;
-    let NetworkStack {
-        interface,
-        device,
-        sockets,
-        ..
-    } = &mut *network;
-    interface.poll_egress(now(), device, sockets);
-    Err(SocketError::InProgress)
-}
-
-/// @description 把一个 established listener handle 转移给新 TCP Socket/OFD facade。
-/// @param socket listener identity。
-/// @param notify accepted endpoint 拥有的 notification Pipe。
-/// @return 持有原 established smoltcp handle 的 accepted endpoint。
-/// @errors 返回 `Again`、状态、地址或分配错误，且不会丢失已建立连接。
-pub(super) fn accept(
-    socket: &InetSocket,
-    notify: (Arc<PipeEnd>, Arc<PipeEnd>),
-) -> Result<Arc<InetSocket>, SocketError> {
-    let mut accepted_slot =
-        Arc::<InetSocket>::try_new_uninit().map_err(|_| SocketError::NoMemory)?;
-    let mut accepted_handles = Vec::new();
-    accepted_handles
-        .try_reserve_exact(1)
-        .map_err(|_| SocketError::NoMemory)?;
-    // accepted handle 从 listener 转移后不可无损回滚；先预留 endpoint membership，
-    // 缺失时 map node OOM 会丢失一个已经建立的 TCP 连接。
-    let endpoint_slot = FallibleMap::<usize, TcpEndpointState>::try_reserve_node()
-        .map_err(|_| SocketError::NoMemory)?;
-    let listener_id = endpoint_id(socket);
-    let mut network = stack()?.lock();
-    let (position, endpoint, backlog) = {
-        let state = network
-            .tcp_endpoints
-            .get(&listener_id)
-            .ok_or(SocketError::NotConnected)?;
-        let TcpMode::Listening { endpoint, backlog } = state.mode else {
-            return Err(SocketError::Invalid);
-        };
-        let position = state
-            .handles
-            .iter()
-            .position(|handle| {
-                matches!(
-                    network.sockets.get::<tcp::Socket<'static>>(*handle).state(),
-                    State::Established | State::CloseWait
-                )
-            })
-            .ok_or(SocketError::Again)?;
-        (position, endpoint, backlog)
-    };
-    let id = allocate_endpoint_id(&mut network)?;
-    let replacement = add_socket(&mut network)?;
-    if network
-        .sockets
-        .get_mut::<tcp::Socket<'static>>(replacement)
-        .listen(endpoint)
-        .is_err()
-    {
-        network.sockets.remove(replacement);
+    let connect = sockets.get_mut::<tcp::Socket<'static>>(handle).connect(
+        interface.context(),
+        IpEndpoint::new(ipv4(peer.address), peer.port),
+        local,
+    );
+    if connect.is_err() {
+        if let Some(lease) = new_lease {
+            network.tcp_ports.release(lease);
+        }
         return Err(SocketError::AddressNotAvailable);
     }
-    let handle = network
-        .tcp_endpoints
-        .get_mut(&listener_id)
-        .expect("TCP listener disappeared while stack lock is held")
-        .handles
-        .remove(position);
-    if network.tcp_endpoints[&listener_id].handles.len() < backlog {
+    debug_assert_eq!(
         network
-            .tcp_endpoints
-            .get_mut(&listener_id)
-            .expect("TCP listener disappeared while replenishing backlog")
-            .handles
-            .push(replacement);
-    } else {
-        network.sockets.remove(replacement);
-    }
-    let peer_closed = matches!(
-        network.sockets.get::<tcp::Socket<'static>>(handle).state(),
-        State::CloseWait
+            .sockets
+            .get::<tcp::Socket<'static>>(handle)
+            .local_endpoint()
+            .map(|endpoint| from_ip(endpoint.addr)),
+        Some(local_address)
     );
-    let options = network.tcp_endpoints[&listener_id].options;
-    network
-        .sockets
-        .get_mut::<tcp::Socket<'static>>(handle)
-        .set_nagle_enabled(!options.no_delay);
-    accepted_handles.push(handle);
-    network.tcp_endpoints.commit_vacant(endpoint_slot.fill(
-        id,
-        TcpEndpointState {
-            endpoint: Weak::new(),
-            handles: accepted_handles,
-            mode: TcpMode::Connected {
-                peer_closed,
-                shutdown_read: false,
-            },
-            pending_error: None,
-            orphaned: false,
-            options,
-            readiness: crate::socket::SocketPollState::error(),
-            notification_pending: false,
-        },
-    ));
-    Arc::get_mut(&mut accepted_slot)
-        .expect("new accepted endpoint Arc must be uniquely owned")
-        .write(InetSocket {
-            endpoint: InetEndpoint::Tcp(id),
-            notify_read: notify.0,
-            notify_write: notify.1,
-        });
-    // SAFETY: accepted_slot 尚未克隆，且上一行已完整初始化 InetSocket storage。
-    let accepted = unsafe { accepted_slot.assume_init() };
-    network
+    let connected_lease = if let Some(lease) = new_lease {
+        lease
+    } else {
+        network.tcp_ports.commit_readdress(
+            prepared_readdress.expect("bound TCP connect lost prepared port readdress"),
+        )
+    };
+    let state = network
         .tcp_endpoints
         .get_mut(&id)
-        .expect("accepted TCP endpoint disappeared before Arc publication")
-        .endpoint = Arc::downgrade(&accepted);
+        .expect("TCP endpoint disappeared during connect publication");
+    state.mode = TcpMode::Connecting;
+    state.port_lease = Some(connected_lease);
     drop(network);
-    socket.consume_notify();
-    Ok(accepted)
+    crate::drivers::network::request_poll();
+    Err(SocketError::InProgress)
 }
 
 /// @description 读取权威 local TCP endpoint。

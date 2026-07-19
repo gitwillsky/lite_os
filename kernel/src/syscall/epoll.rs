@@ -7,7 +7,7 @@ use crate::{
 
 use super::{
     errno,
-    poll::{PollWaitGuards, PollWaitKeys, PrepareError, PrepareIo, prepare_wait_sources},
+    poll::{PollWaitGuards, PollWaitKeys},
 };
 
 const EPOLL_CLOEXEC: usize = 0x80000;
@@ -167,51 +167,21 @@ pub(crate) fn sys_epoll_ctl(
 
 fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
     let mut keys = PollWaitKeys::new();
-    let wake_group = Some(Epoll::identity(epoll));
     keys.add_epoll_change_source(epoll)
         .map_err(|()| -errno::ENOMEM)?;
-    let snapshot = epoll.snapshot().map_err(|_| -errno::ENOMEM)?;
+    let snapshot = epoll.ready_snapshot(maximum).map_err(|_| -errno::ENOMEM)?;
     let mut ready = Vec::new();
     ready
         .try_reserve_exact(maximum.min(snapshot.len()))
         .map_err(|_| -errno::ENOMEM)?;
     for interest in snapshot {
-        keys.add_interest(
-            &interest.ofd,
-            interest.event.events as i16,
-            interest.event.events & EPOLLEXCLUSIVE != 0,
-            wake_group,
-        )
-        .map_err(|()| -errno::ENOMEM)?;
-        // Build nested snapshot guards before preparing their concrete
-        // adapters. A mutation during/after preparation then invalidates this
-        // exact key set at the registry-lock recheck.
-        prepare_wait_sources(&interest.ofd, PrepareIo::Propagate).map_err(
-            |error| -match error {
-                PrepareError::Io => errno::EIO,
-                PrepareError::NoMemory => errno::ENOMEM,
-            },
-        )?;
-        if interest.disabled {
-            continue;
-        }
-        let current = interest.ofd.poll_events(interest.event.events as i16) as u32;
-        if current == 0 {
-            continue;
-        }
         let edge = interest.event.events & EPOLLET != 0;
-        let generation = interest
-            .ofd
-            .readiness_generation(interest.event.events as i16);
-        if edge && generation == interest.last_generation {
-            continue;
-        }
         ready.push(ReadyEvent {
             fd: interest.fd,
             ofd: interest.ofd,
             revision: interest.revision,
-            generation,
-            flags: current,
+            generation: interest.generation,
+            flags: interest.ready_events,
             data: interest.event.data,
             edge,
             oneshot: interest.event.events & EPOLLONESHOT != 0,

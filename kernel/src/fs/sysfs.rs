@@ -1,8 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use super::{
-    DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata,
-    InodeType,
+    DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
 };
 
 const SYS_FILESYSTEM_ID: usize = 4;
@@ -115,8 +115,12 @@ impl SysInode {
         }
     }
 
-    fn entry(node: SysNode, name: &[u8]) -> Result<DirectoryEntry, FileSystemError> {
-        DirectoryEntry::try_new(node.inode(), node.kind(), name)
+    fn entry(node: SysNode, name: &[u8]) -> DirectoryEntry<'_> {
+        DirectoryEntry {
+            inode: node.inode(),
+            kind: node.kind(),
+            name,
+        }
     }
 
     fn child(&self, name: &[u8]) -> Result<SysNode, FileSystemError> {
@@ -243,37 +247,50 @@ impl Inode for SysInode {
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
+    fn read_directory(
+        &self,
+        cursor: u64,
+        visitor: &mut dyn DirectoryVisitor,
+    ) -> Result<DirectoryRead, FileSystemError> {
         let parent = self.child(b"..")?;
-        let capacity = 5usize.saturating_add(self.cpu_count);
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(capacity)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        entries.push(Self::entry(self.node, b".")?);
-        entries.push(Self::entry(parent, b"..")?);
+        let mut stream = IndexedDirectory::new(cursor, visitor);
+        let mut index = 0usize;
+        macro_rules! emit {
+            ($node:expr, $name:expr) => {{
+                let entry_index = index;
+                index += 1;
+                if !stream.emit(entry_index, Self::entry($node, $name))? {
+                    return Ok(stream.finish());
+                }
+            }};
+        }
+        emit!(self.node, b".");
+        emit!(parent, b"..");
         match self.node {
-            SysNode::Root => entries.push(Self::entry(SysNode::Devices, b"devices")?),
-            SysNode::Devices => entries.push(Self::entry(SysNode::System, b"system")?),
-            SysNode::System => entries.push(Self::entry(SysNode::CpuRoot, b"cpu")?),
+            SysNode::Root => emit!(SysNode::Devices, b"devices"),
+            SysNode::Devices => emit!(SysNode::System, b"system"),
+            SysNode::System => emit!(SysNode::CpuRoot, b"cpu"),
             SysNode::CpuRoot => {
-                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Possible), b"possible")?);
-                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Present), b"present")?);
-                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Online), b"online")?);
-                for cpu in 0..self.cpu_count {
+                emit!(SysNode::CpuSet(CpuSet::Possible), b"possible");
+                emit!(SysNode::CpuSet(CpuSet::Present), b"present");
+                emit!(SysNode::CpuSet(CpuSet::Online), b"online");
+                let start_cpu = stream.start_index().saturating_sub(index);
+                index += start_cpu;
+                for cpu in start_cpu..self.cpu_count {
                     let mut name = [0u8; 32];
                     let length = Self::decimal(&mut name, b"cpu", cpu, b"");
-                    entries.push(Self::entry(SysNode::Cpu(cpu), &name[..length])?);
+                    emit!(SysNode::Cpu(cpu), &name[..length]);
                 }
             }
             SysNode::Cpu(cpu) => {
-                entries.push(Self::entry(SysNode::CpuOnline(cpu), b"online")?);
+                emit!(SysNode::CpuOnline(cpu), b"online");
             }
             SysNode::CpuSet(_) | SysNode::CpuOnline(_) => {
                 return Err(FileSystemError::NotDirectory);
             }
         }
-        Ok(entries)
+        let _ = index;
+        Ok(stream.finish())
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -326,8 +343,8 @@ impl FileSystem for SysFileSystem {
         Ok(self.root.clone())
     }
 
-    fn statistics(&self) -> FileSystemStatistics {
-        FileSystemStatistics {
+    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
+        Ok(FileSystemStatistics {
             type_name: "sysfs",
             magic: SYSFS_MAGIC,
             block_size: 4096,
@@ -340,6 +357,6 @@ impl FileSystem for SysFileSystem {
             name_length: 255,
             fragment_size: 4096,
             flags: 1,
-        }
+        })
     }
 }

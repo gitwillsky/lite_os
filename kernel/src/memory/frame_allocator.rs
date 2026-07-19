@@ -53,12 +53,6 @@ impl FrameTracker {
         tracker
     }
 
-    fn new_contiguous(ppn: PhysicalPageNumber, pages: usize) -> Self {
-        let mut tracker = Self { ppn, pages };
-        tracker.bytes_mut().fill(0);
-        tracker
-    }
-
     /// @description 从已经撤销其他 owner publication 的物理 extent 重建唯一 RAII owner。
     /// @param ppn order-aligned extent 首个物理页号。
     /// @param pages 非零 2ⁿ 页数，frame allocator 中仍标记为 allocated。
@@ -438,6 +432,14 @@ fn alloc_raw() -> Option<FrameTracker> {
     res.map(FrameTracker::new)
 }
 
+fn alloc_unzeroed_raw() -> Option<FrameTracker> {
+    FRAME_ALLOCATOR
+        .wait()
+        .lock()
+        .alloc(FrameAllocationClass::Reclaimable)
+        .map(|ppn| FrameTracker { ppn, pages: 1 })
+}
+
 /// @description 从唯一 frame allocator 分配一页；触及 kernel progress 低水位时回收后重试。
 pub(crate) fn alloc() -> Option<FrameTracker> {
     if let Some(frame) = alloc_raw() {
@@ -447,6 +449,26 @@ pub(crate) fn alloc() -> Option<FrameTracker> {
     alloc_raw()
 }
 
+/// @description 分配一页并在 publication 前用完整 source page 覆盖其旧内容。
+/// @param source 必须恰好为一页；仅供 COW 等完整覆盖路径使用。
+/// @return 成功返回不经过 zero-fill、但已完全初始化的唯一 FrameTracker。
+/// @errors 内存回收后仍无空闲页时返回 None；长度不是一页表示 caller 破坏安全契约并 fail-stop。
+pub(crate) fn alloc_copy(source: &[u8]) -> Option<FrameTracker> {
+    assert_eq!(
+        source.len(),
+        super::config::PAGE_SIZE,
+        "full-overwrite frame source must be exactly one page"
+    );
+    let mut frame = alloc_unzeroed_raw().or_else(|| {
+        let _ = super::shared_file::reclaim_pages(64);
+        alloc_unzeroed_raw()
+    })?;
+    // OWNER: frame 尚未进入 page table、Arc 或 allocator free list；完整 copy 是唯一
+    // publication 前初始化。若改成 partial copy，旧进程数据会暴露给新映射。
+    frame.bytes_mut().copy_from_slice(source);
+    Some(frame)
+}
+
 /// @description 分配并清零指定数量的连续物理页。
 ///
 /// @param pages 非零页数。
@@ -454,6 +476,28 @@ pub(crate) fn alloc() -> Option<FrameTracker> {
 /// @return 成功返回唯一 `FrameTracker`，实际页数向上取整为 2ⁿ 以保证
 /// 同尺寸对齐；回收后仍无该 order 区间返回 `None`。
 pub(crate) fn alloc_contiguous(pages: usize, class: FrameAllocationClass) -> Option<FrameTracker> {
+    let mut tracker = alloc_contiguous_uninitialized(pages, class)?;
+    tracker.bytes_mut().fill(0);
+    Some(tracker)
+}
+
+/// @description 为 kernel global allocator 分配不做 dead zero-fill 的连续 extent。
+///
+/// @param pages 非零页数；实际页数按 buddy order 向上取整。
+/// @return 成功返回尚未发布、内容不可读的唯一 extent owner。
+/// @errors 回收后仍没有可用 `KernelHeap` extent 时返回 `None`。
+///
+/// Rust allocator 的成功分配结果本来就是 uninitialized storage；只有 heap owner
+/// 可以调用本 seam。若把它用于 user mapping、DMA read buffer 或任何 partial-init
+/// publication，旧物理页内容会被观察到。
+pub(in crate::memory) fn alloc_heap_extent(pages: usize) -> Option<FrameTracker> {
+    alloc_contiguous_uninitialized(pages, FrameAllocationClass::KernelHeap)
+}
+
+fn alloc_contiguous_uninitialized(
+    pages: usize,
+    class: FrameAllocationClass,
+) -> Option<FrameTracker> {
     if pages == 0 {
         return None;
     }
@@ -463,7 +507,7 @@ pub(crate) fn alloc_contiguous(pages: usize, class: FrameAllocationClass) -> Opt
         let _ = super::shared_file::reclaim_pages(allocation_pages.max(64));
         res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages, class);
     }
-    res.map(|(block, allocated_pages)| FrameTracker::new_contiguous(block, allocated_pages))
+    res.map(|(ppn, pages)| FrameTracker { ppn, pages })
 }
 
 /// @description 返回 frame allocator 管辖范围的总页数与当前空闲页数。

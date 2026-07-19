@@ -68,8 +68,34 @@ fn find_waitable_child(
 ) -> Result<Option<ChildExit>, WaitChildError> {
     let mut has_child = false;
     let mut selected = None;
-    for (pid, node) in &graph.nodes {
-        if node.parent != Some(parent) || !matching_child(graph, parent, *pid, node, selector)? {
+    let mut cursor = 0;
+    loop {
+        let pid = match selector {
+            value if value > 0 && cursor == 0 => Some(value as usize),
+            value if value > 0 => break,
+            _ => graph
+                .nodes
+                .get(&parent)
+                .and_then(|node| node.children.successor(&cursor))
+                .map(|(&pid, _)| pid),
+        };
+        let Some(pid) = pid else {
+            break;
+        };
+        cursor = pid;
+        let Some(node) = graph.nodes.get(&pid) else {
+            // Positive waitpid selector is a caller-supplied PID, not a parent-index node. A
+            // competing parent Thread may already have consumed that child's unique exit claim;
+            // Linux requires the loser to observe ECHILD, not an index-corruption panic.
+            if selector > 0 {
+                break;
+            }
+            panic!("parent child index references missing process");
+        };
+        if node.parent != Some(parent) || !matching_child(graph, parent, pid, node, selector)? {
+            if selector > 0 {
+                break;
+            }
             continue;
         }
         has_child = true;
@@ -78,7 +104,7 @@ fn find_waitable_child(
         }
         if let ProcessState::Exited(status) = node.state {
             selected = Some(ChildExit {
-                pid: *pid,
+                pid,
                 status: status.wait_status(),
                 kind: ChildStatusKind::Exited,
                 claimant,
@@ -87,7 +113,7 @@ fn find_waitable_child(
         }
         if include_stopped && let Some(signal) = node.child_events.stopped {
             selected = Some(ChildExit {
-                pid: *pid,
+                pid,
                 status: ((signal as i32) << 8) | 0x7f,
                 kind: ChildStatusKind::Stopped,
                 claimant,
@@ -96,7 +122,7 @@ fn find_waitable_child(
         }
         if include_continued && node.child_events.continued {
             selected = Some(ChildExit {
-                pid: *pid,
+                pid,
                 status: 0xffff,
                 kind: ChildStatusKind::Continued,
                 claimant,
@@ -143,25 +169,8 @@ pub(crate) fn wait_child(
     let task = current_task().expect("wait4 requires current task");
     let parent = task.tgid();
     loop {
-        let mut graph = TASK_MANAGER.graph.lock();
-        match find_waitable_child(
-            &mut graph,
-            parent,
-            task.tid(),
-            selector,
-            include_stopped,
-            include_continued,
-        )? {
-            Some(record) => return Ok(Some(record)),
-            None if nohang => return Ok(None),
-            None => {}
-        }
-        if task.has_deliverable_signal() {
-            return Err(WaitChildError::Interrupted);
-        }
-        drop(graph);
-
-        // Node storage 在 graph IrqMutex 外准备；最终同 owner 复查 event/signal 后才提交。
+        // Storage is prepared outside the graph owner. Event/nohang/signal decisions remain
+        // successful on OOM; only publishing a blocking waiter requires this allocation.
         let waiter = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node();
         let mut graph = TASK_MANAGER.graph.lock();
         let record = find_waitable_child(
@@ -255,7 +264,7 @@ pub(crate) fn release_child_status(record: ChildExit) {
 pub(crate) fn consume_child_status(record: ChildExit) {
     let waiters = {
         let mut graph = TASK_MANAGER.graph.lock();
-        let parent = {
+        let (parent, parent_thread, session, process_group) = {
             let node = graph
                 .nodes
                 .get_mut(&record.pid)
@@ -280,10 +289,36 @@ pub(crate) fn consume_child_status(record: ChildExit) {
                     assert!(core::mem::take(&mut node.child_events.continued));
                 }
             }
-            node.parent
+            (
+                node.parent,
+                node.parent_thread,
+                node.session,
+                node.process_group,
+            )
         };
         if record.kind == ChildStatusKind::Exited {
             graph.nodes.remove(&record.pid);
+            if let Some(parent) = parent {
+                graph
+                    .nodes
+                    .get_mut(&parent)
+                    .expect("reaped child parent missing from graph")
+                    .children
+                    .remove(&record.pid)
+                    .expect("reaped child missing from parent index");
+            }
+            if let Some(parent_thread) = parent_thread
+                && let Some(index) = graph.threads.get_mut(&parent_thread)
+            {
+                index.created_children.remove(&record.pid);
+            }
+            graph
+                .groups
+                .get_mut(&(session, process_group))
+                .expect("reaped child process group missing from graph")
+                .members
+                .remove(&record.pid)
+                .expect("reaped child missing from group index");
         }
         parent
             .and_then(|pid| graph.nodes.get_mut(&pid))

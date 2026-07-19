@@ -14,7 +14,7 @@ use super::{
     send_kernel_thread_signal_info,
     timer_queue::{ExpiredTimer, PosixTimerNotification},
     wait_key::IndexedWaitKind,
-    wait_registry::INDEXED_WAIT_QUEUE,
+    wait_registry::WAIT_REGISTRY,
     wake_console_waiters,
 };
 
@@ -77,17 +77,17 @@ fn expire_timers(now_ns: u64) {
 /// @return 无返回值；超过 batch 的已到期项由当前 CPU 的 timer backlog softirq 继续消费。
 fn wake_expired_tasks(now_ns: u64) {
     let mut batch: [Option<ExpiredWait>; TIMER_WORK_BATCH] = core::array::from_fn(|_| None);
-    // 1. 一次 registry owner lock 摘取完整 batch，避免每个 waiter 重复关中断和抢锁。
-    let backlog = {
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
-        for slot in &mut batch {
-            let Some(expired) = queue.pop_expired(now_ns) else {
-                break;
-            };
-            *slot = Some(expired);
+    // 1. 每次只锁 deadline 所在 source shard；跨 shard 的 registration 由 claim
+    // 精确摘除，独立 deadline 不再争用单一全局 owner。
+    for slot in &mut batch {
+        let Some(expired) = WAIT_REGISTRY.expire_one(now_ns) else {
+            break;
+        };
+        if let Some(claimed) = expired.claimed {
+            *slot = Some((claimed.id, claimed.task, claimed.kind));
         }
-        queue.has_expired_deadline(now_ns)
-    };
+    }
+    let backlog = WAIT_REGISTRY.has_expired_deadline(now_ns);
     // 2. wake 会获取 scheduling/runqueue owner，必须在释放 registry lock 后执行。
     for (wait_id, task, kind) in batch.into_iter().flatten() {
         let woke = match kind {
@@ -119,7 +119,10 @@ fn wake_expired_tasks(now_ns: u64) {
     }
 }
 
-/// @description 在 user-return 或 scheduler idle context 消费全部 deferred work。
+/// @description 仅在 user-return 或 local-IRQ-closed scheduler idle safe point 消费 deferred work。
+///
+/// kernel software-interrupt handler 不得调用本函数：它可重入持有普通 VirtIO queue、
+/// DRM completion 或 KERNEL_SPACE lock 的 syscall；在该栈上消费会永久自旋。
 pub(crate) fn dispatch_pending_deferred_work() {
     let work = cpu::take_deferred();
     if work.is_empty() {
@@ -150,6 +153,9 @@ pub(crate) fn dispatch_pending_deferred_work() {
     }
     if work.contains(DeferredWork::Input) && crate::input::dispatch_input_work() {
         cpu::raise_deferred(DeferredWork::Input);
+    }
+    if work.contains(DeferredWork::DriverIo) && crate::drivers::dispatch_io_completion_work() {
+        cpu::raise_deferred(DeferredWork::DriverIo);
     }
     let network_due = work.contains(DeferredWork::Network)
         || work.contains(DeferredWork::Timer) && crate::socket::network_work_due();

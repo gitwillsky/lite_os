@@ -3,7 +3,8 @@ use core::net::Ipv4Addr;
 use smoltcp::socket::tcp::{self, State};
 
 use super::{TcpEndpointState, TcpMode, endpoint_id};
-use crate::socket::inet::{InetSocket, NetworkStack, from_ip, now, stack};
+use crate::ipc::ReceiveBuffer;
+use crate::socket::inet::{InetSocket, NetworkStack, from_ip, stack};
 use crate::socket::{InetAddress, SocketError, SocketPollState};
 
 /// @description 向 TCP send buffer 排队 partial stream bytes，并有界推进 egress。
@@ -16,7 +17,8 @@ pub(in crate::socket::inet) fn send(
     input: &[u8],
 ) -> Result<usize, SocketError> {
     let id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let stack = stack()?;
+    let mut network = stack.lock();
     let state = network
         .tcp_endpoints
         .get(&id)
@@ -31,22 +33,33 @@ pub(in crate::socket::inet) fn send(
         });
     }
     let handle = state.handles[0];
-    let tcp = network.sockets.get_mut::<tcp::Socket<'static>>(handle);
-    if !tcp.may_send() {
-        return Err(SocketError::BrokenPipe);
+    let mut tcp = core::mem::replace(
+        network.sockets.get_mut::<tcp::Socket<'static>>(handle),
+        super::placeholder_socket(),
+    );
+    drop(network);
+    let result = if !tcp.may_send() {
+        Err(SocketError::BrokenPipe)
+    } else {
+        tcp.send_slice(input)
+            .map_err(|_| SocketError::BrokenPipe)
+            .and_then(|count| {
+                if count == 0 && !input.is_empty() {
+                    Err(SocketError::Again)
+                } else {
+                    Ok(count)
+                }
+            })
+    };
+    let placeholder = core::mem::replace(
+        stack.lock().sockets.get_mut::<tcp::Socket<'static>>(handle),
+        tcp,
+    );
+    debug_assert_eq!(placeholder.state(), State::Closed);
+    if result.is_ok() {
+        crate::drivers::network::request_poll();
     }
-    let count = tcp.send_slice(input).map_err(|_| SocketError::BrokenPipe)?;
-    if count == 0 && !input.is_empty() {
-        return Err(SocketError::Again);
-    }
-    let NetworkStack {
-        interface,
-        device,
-        sockets,
-        ..
-    } = &mut *network;
-    interface.poll_egress(now(), device, sockets);
-    Ok(count)
+    result
 }
 
 /// @description 接收或窥视 TCP stream bytes，并在 peer FIN 后投影 EOF。
@@ -57,11 +70,12 @@ pub(in crate::socket::inet) fn send(
 /// @errors 未连接、暂无数据或 reset 时返回标准 socket error。
 pub(in crate::socket::inet) fn receive(
     socket: &InetSocket,
-    output: &mut [u8],
+    output: &mut ReceiveBuffer<'_>,
     peek: bool,
 ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
     let id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let stack = stack()?;
+    let mut network = stack.lock();
     let state = network
         .tcp_endpoints
         .get(&id)
@@ -76,7 +90,6 @@ pub(in crate::socket::inet) fn receive(
     };
     let pending_error = state.pending_error;
     let handle = state.handles[0];
-    let tcp = network.sockets.get_mut::<tcp::Socket<'static>>(handle);
     if shutdown_read {
         return Ok((
             0,
@@ -88,41 +101,58 @@ pub(in crate::socket::inet) fn receive(
             None,
         ));
     }
-    let count = if tcp.can_recv() {
-        if peek {
-            tcp.peek_slice(output)
-                .map_err(|_| SocketError::ConnectionReset)?
-        } else {
-            tcp.recv_slice(output)
-                .map_err(|_| SocketError::ConnectionReset)?
-        }
-    } else if !tcp.may_recv() {
-        if let Some(error) = pending_error {
-            return Err(error);
-        }
-        if !peer_closed && tcp.state() == State::Closed {
-            return Err(SocketError::ConnectionReset);
-        }
-        0
-    } else {
-        return Err(SocketError::Again);
-    };
-    let peer = tcp.remote_endpoint().map_or(
-        InetAddress {
-            address: Ipv4Addr::UNSPECIFIED,
-            port: 0,
-        },
-        |endpoint| InetAddress {
-            address: from_ip(endpoint.addr),
-            port: endpoint.port,
-        },
+    let mut tcp = core::mem::replace(
+        network.sockets.get_mut::<tcp::Socket<'static>>(handle),
+        super::placeholder_socket(),
     );
-    let still_readable = tcp.can_recv() || !tcp.may_recv();
     drop(network);
+    let result = (|| {
+        let count = if tcp.can_recv() {
+            if peek {
+                let bytes = tcp
+                    .peek(output.remaining())
+                    .map_err(|_| SocketError::ConnectionReset)?;
+                output.append(bytes)
+            } else {
+                tcp.recv(|bytes| {
+                    let count = output.append(bytes);
+                    (count, count)
+                })
+                .map_err(|_| SocketError::ConnectionReset)?
+            }
+        } else if !tcp.may_recv() {
+            if let Some(error) = pending_error {
+                return Err(error);
+            }
+            if !peer_closed && tcp.state() == State::Closed {
+                return Err(SocketError::ConnectionReset);
+            }
+            0
+        } else {
+            return Err(SocketError::Again);
+        };
+        let peer = tcp.remote_endpoint().map_or(
+            InetAddress {
+                address: Ipv4Addr::UNSPECIFIED,
+                port: 0,
+            },
+            |endpoint| InetAddress {
+                address: from_ip(endpoint.addr),
+                port: endpoint.port,
+            },
+        );
+        Ok((count, count, peer, None))
+    })();
+    let still_readable = tcp.can_recv() || !tcp.may_recv();
+    let placeholder = core::mem::replace(
+        stack.lock().sockets.get_mut::<tcp::Socket<'static>>(handle),
+        tcp,
+    );
+    debug_assert_eq!(placeholder.state(), State::Closed);
     if !peek && !still_readable {
         socket.consume_notify();
     }
-    Ok((count, count, peer, None))
+    result
 }
 
 /// @description 从唯一 TCP endpoint state 投影 OFD readiness。
@@ -190,7 +220,7 @@ impl TcpEndpointState {
     }
 }
 
-/// @description 在协议 poll 内提交 connect/FIN/reset 状态并回收 Closed orphan。
+/// @description 在协议 poll 内提交 connect/FIN/reset 状态。
 /// @param network 唯一协议栈 owner。
 /// @return 无返回值。
 /// @errors 状态不变量破坏时 fail-stop。
@@ -247,6 +277,16 @@ pub(in crate::socket::inet) fn maintain(network: &mut NetworkStack) {
             TcpMode::Fresh { .. } | TcpMode::Listening { .. } => {}
         }
     });
+}
+
+/// @description egress 已观察 FIN/reset 后回收 Closed orphan 及其 socket handles。
+pub(in crate::socket::inet) fn reap_orphans(network: &mut NetworkStack) {
+    let NetworkStack {
+        tcp_endpoints,
+        sockets,
+        tcp_ports,
+        ..
+    } = network;
     tcp_endpoints.retain(|_, state| {
         if !state.orphaned
             || state
@@ -258,6 +298,9 @@ pub(in crate::socket::inet) fn maintain(network: &mut NetworkStack) {
         }
         for &handle in &state.handles {
             sockets.remove(handle);
+        }
+        if let Some(lease) = state.port_lease {
+            tcp_ports.release(lease);
         }
         false
     });
@@ -304,6 +347,10 @@ pub(in crate::socket::inet) fn shutdown(
             .sockets
             .get_mut::<tcp::Socket<'static>>(handle)
             .close();
+    }
+    drop(network);
+    if matches!(how, 1 | 2) {
+        crate::drivers::network::request_poll();
     }
     Ok(())
 }

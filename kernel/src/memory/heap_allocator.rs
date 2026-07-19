@@ -10,7 +10,6 @@ use core::{
 use spin::{Mutex, Once};
 
 use super::{
-    FrameAllocationClass,
     address::PhysicalPageNumber,
     config,
     frame_allocator::{self, FrameTracker},
@@ -368,8 +367,7 @@ fn direct_pages(layout: Layout) -> Option<usize> {
 
 fn allocate_direct(layout: Layout) -> Option<NonNull<u8>> {
     let requested_pages = direct_pages(layout)?;
-    let frames =
-        frame_allocator::alloc_contiguous(requested_pages, FrameAllocationClass::KernelHeap)?;
+    let frames = frame_allocator::alloc_heap_extent(requested_pages)?;
     let address = frames.ppn.as_usize().checked_mul(config::PAGE_SIZE)?;
     let allocation = align_up(address + size_of::<DirectHeader>(), layout.align())?;
     let extent_bytes = frames.pages.checked_mul(config::PAGE_SIZE)?;
@@ -397,7 +395,7 @@ fn grow_and_allocate(layout: Layout) -> Option<NonNull<u8>> {
     }
     if slab_layout(layout).is_some() {
         // Frame allocation/direct reclaim 必须在 IRQ-on 且不持 heap lock 时执行。
-        let frames = frame_allocator::alloc_contiguous(1, FrameAllocationClass::KernelHeap);
+        let frames = frame_allocator::alloc_heap_extent(1);
         let Some(frames) = frames else {
             // 另一 CPU 可能在 reclaim 窗口发布了同 class slab。
             return try_allocate_slab(layout);

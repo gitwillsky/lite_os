@@ -24,7 +24,6 @@ const POLLERR: i16 = 0x008;
 const POLLHUP: i16 = 0x010;
 
 struct PollDescriptor {
-    address: usize,
     fd: i32,
     events: i16,
     revents: i16,
@@ -70,69 +69,42 @@ fn any_ready(descriptors: &[PollDescriptor]) -> bool {
         .any(|descriptor| descriptor_revents(descriptor) != 0)
 }
 
-/// @description adapter preparation 遇到 console I/O 错误时的 caller policy。
-#[derive(Clone, Copy)]
-pub(super) enum PrepareIo {
-    Ignore,
-    Propagate,
-}
-
-/// @description source preparation 在 publication 前可返回的稳定失败类别。
-pub(super) enum PrepareError {
-    Io,
-    NoMemory,
-}
-
-fn copy_revents(task: &TaskControlBlock, descriptors: &[PollDescriptor]) -> Result<usize, ()> {
+fn copy_revents(
+    task: &TaskControlBlock,
+    poll_fds: usize,
+    raw: &mut [u8],
+    descriptors: &[PollDescriptor],
+) -> Result<usize, ()> {
     let mut count = 0;
-    for descriptor in descriptors {
+    for (index, descriptor) in descriptors.iter().enumerate() {
         if descriptor.revents != 0 {
             count += 1;
         }
-        task.copy_to_user(descriptor.address + 6, &descriptor.revents.to_ne_bytes())
-            .map_err(|_| ())?;
+        let offset = index * 8 + 6;
+        raw[offset..offset + 2].copy_from_slice(&descriptor.revents.to_ne_bytes());
     }
+    task.copy_to_user(poll_fds, raw).map_err(|_| ())?;
     Ok(count)
 }
 
-fn prepare_descriptors(descriptors: &[PollDescriptor]) -> Result<(), ()> {
+fn prepare_descriptors(descriptors: &[PollDescriptor]) {
     for descriptor in descriptors {
         if let Some(ofd) = &descriptor.ofd {
-            prepare_wait_sources(ofd, PrepareIo::Ignore).map_err(|_| ())?;
+            prepare_wait_sources(ofd);
         }
     }
-    Ok(())
-}
-
-fn prepare_descriptors_or_restore(
-    task: &TaskControlBlock,
-    descriptors: &[PollDescriptor],
-    temporary_mask: bool,
-) -> Result<(), isize> {
-    prepare_descriptors(descriptors).map_err(|()| {
-        if temporary_mask {
-            task.restore_temporary_signal_mask()
-                .expect("poll temporary mask disappeared");
-        }
-        -errno::ENOMEM
-    })
 }
 
 /// @description 在 wait-key snapshot 后准备同一 OFD tree 的 concrete adapters。
 /// @param ofd source tree root。
-/// @param io console adapter 失败由 epoll 传播，poll/direct blocking 保持既有忽略 policy。
-/// @return preparation 完成，或 snapshot OOM/被要求传播的 console I/O 错误。
-pub(super) fn prepare_wait_sources(
-    ofd: &Arc<OpenFileDescription>,
-    io: PrepareIo,
-) -> Result<(), PrepareError> {
+/// @return 无返回值；adapter preparation 不分配。
+pub(super) fn prepare_wait_sources(ofd: &Arc<OpenFileDescription>) {
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { terminal, pty, .. }) => {
             if let Some(slave) = pty {
                 let _ = slave.prepare_to_block();
-            } else if drain_terminal_input(terminal).is_err() && matches!(io, PrepareIo::Propagate)
-            {
-                return Err(PrepareError::Io);
+            } else {
+                let _ = drain_terminal_input(terminal);
             }
         }
         OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
@@ -144,15 +116,12 @@ pub(super) fn prepare_wait_sources(
         OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
             let _ = master.prepare_to_block();
         }
-        OpenFileKind::Epoll(epoll) => {
-            for interest in epoll.snapshot().map_err(|()| PrepareError::NoMemory)? {
-                prepare_wait_sources(&interest.ofd, io)?;
-            }
-        }
+        // epoll 的持久 source index 已由 ctl 路径准备；poll 只等待
+        // epoll 自身 notification，不重建嵌套 interest tree。
+        OpenFileKind::Epoll(_) => {}
         OpenFileKind::Socket(socket) => socket.prepare_wait(),
         _ => {}
     }
-    Ok(())
 }
 
 /// @description 通过统一 wait registry 等待一个 OFD 达到指定 level readiness。
@@ -166,9 +135,7 @@ pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitR
         return WaitResult::OutOfMemory;
     }
     let (keys, guards) = keys.finish();
-    if prepare_wait_sources(ofd, PrepareIo::Ignore).is_err() {
-        return WaitResult::OutOfMemory;
-    }
+    prepare_wait_sources(ofd);
     wait_for_poll(keys, None, || {
         guards.changed() || ofd.poll_events(events) != 0
     })
@@ -215,24 +182,29 @@ pub(crate) fn sys_ppoll(
     if count > task.file_descriptor_limit() {
         return -errno::EINVAL;
     }
+    let Some(raw_length) = count.checked_mul(8) else {
+        return -errno::EFAULT;
+    };
+    if poll_fds.checked_add(raw_length).is_none() {
+        return -errno::EFAULT;
+    }
+    let mut raw = Vec::new();
+    if raw.try_reserve_exact(raw_length).is_err() {
+        return -errno::ENOMEM;
+    }
+    raw.resize(raw_length, 0);
+    if task.copy_from_user(poll_fds, &mut raw).is_err() {
+        return -errno::EFAULT;
+    }
     let mut descriptors = Vec::new();
     if descriptors.try_reserve_exact(count).is_err() {
         return -errno::ENOMEM;
     }
-    for index in 0..count {
-        let Some(address) = index
-            .checked_mul(8)
-            .and_then(|offset| poll_fds.checked_add(offset))
-        else {
-            return -errno::EFAULT;
-        };
-        let mut bytes = [0u8; 8];
-        if task.copy_from_user(address, &mut bytes).is_err() {
-            return -errno::EFAULT;
-        }
+    let (poll_entries, remainder) = raw.as_chunks::<8>();
+    debug_assert!(remainder.is_empty());
+    for bytes in poll_entries {
         let fd = i32::from_ne_bytes(bytes[..4].try_into().unwrap());
         descriptors.push(PollDescriptor {
-            address,
             fd,
             events: i16::from_ne_bytes(bytes[4..6].try_into().unwrap()),
             revents: 0,
@@ -274,16 +246,14 @@ pub(crate) fn sys_ppoll(
         true
     };
     loop {
-        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
-            return error;
-        }
+        prepare_descriptors(&descriptors);
         let ready = evaluate(&mut descriptors);
         if ready != 0 || deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
             if temporary_mask {
                 task.restore_temporary_signal_mask()
                     .expect("ppoll temporary mask disappeared");
             }
-            return copy_revents(&task, &descriptors)
+            return copy_revents(&task, poll_fds, &mut raw, &descriptors)
                 .map_or(-errno::EFAULT, |count| count as isize);
         }
         let keys = match collect_wait_keys(&descriptors) {
@@ -300,9 +270,7 @@ pub(crate) fn sys_ppoll(
         // Key generations were captured first; adapter preparation that
         // observes a concurrent nested ctl cannot make those keys silently
         // stale because the registry-lock guard will detect the change.
-        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
-            return error;
-        }
+        prepare_descriptors(&descriptors);
         match wait_for_poll(keys, deadline, || {
             guards.changed() || any_ready(&descriptors)
         }) {
@@ -313,7 +281,7 @@ pub(crate) fn sys_ppoll(
                     task.restore_temporary_signal_mask()
                         .expect("ppoll temporary mask disappeared");
                 }
-                return copy_revents(&task, &descriptors)
+                return copy_revents(&task, poll_fds, &mut raw, &descriptors)
                     .map_or(-errno::EFAULT, |count| count as isize);
             }
             WaitResult::Interrupted => return -errno::EINTR,
@@ -365,7 +333,6 @@ pub(crate) fn sys_pselect6(
             return -errno::EBADF;
         };
         descriptors.push(PollDescriptor {
-            address: 0,
             fd: fd as i32,
             events,
             revents: 0,
@@ -381,9 +348,7 @@ pub(crate) fn sys_pselect6(
         Err(error) => return error,
     };
     loop {
-        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
-            return error;
-        }
+        prepare_descriptors(&descriptors);
         evaluate(&mut descriptors);
         if descriptors.iter().any(|descriptor| descriptor.revents != 0)
             || deadline.is_some_and(|value| value <= crate::timer::get_time_ns())
@@ -414,9 +379,7 @@ pub(crate) fn sys_pselect6(
             }
         };
         let (keys, guards) = keys;
-        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
-            return error;
-        }
+        prepare_descriptors(&descriptors);
         match wait_for_poll(keys, deadline, || {
             guards.changed() || any_ready(&descriptors)
         }) {

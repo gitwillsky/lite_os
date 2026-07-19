@@ -1,6 +1,12 @@
 use super::*;
 
 impl MemorySet {
+    fn complete_stale_translation_fault(vpn: VirtualPageNumber) {
+        TranslationCommit::stale_fault(vpn.as_usize())
+            .synchronize()
+            .expect("local translation fence failed while resolving a stale page fault");
+    }
+
     fn classify_page_fault(
         &self,
         vpn: VirtualPageNumber,
@@ -62,11 +68,21 @@ impl MemorySet {
         address_space_limit: u64,
     ) -> Result<(), MemoryError> {
         let target = VirtualAddress::from(address).floor();
-        let Some((key, top)) = self.areas.iter().find_map(|(key, area)| match area.kind {
-            VmaKind::Stack { top } => Some((*key, top)),
-            _ => None,
-        }) else {
+        let Some(key) = self
+            .vma_index_state
+            .stack_start()
+            .map(VirtualPageNumber::from_vpn)
+        else {
             return Ok(());
+        };
+        let top = match self
+            .areas
+            .get(&key)
+            .expect("stack VMA key must reference a live area")
+            .kind
+        {
+            VmaKind::Stack { top } => top,
+            _ => panic!("stack VMA key referenced a non-stack area"),
         };
         if target >= key {
             return Ok(());
@@ -86,12 +102,11 @@ impl MemorySet {
         // 复用原 VMA node 完成 rekey；若重新分配，stack fault 会在无物理页需求时
         // 仍可能因 metadata OOM 失败，并迫使 caller 维护回滚分支。
         let mut area = self
-            .areas
-            .take_entry(&key)
+            .take_area_entry(&key)
             .expect("stack key must remain live");
         area.value_mut().vpn_range.start = target;
         area.set_key(target);
-        self.areas.commit_vacant(area);
+        self.commit_area(area);
         Ok(())
     }
 
@@ -156,10 +171,12 @@ impl MemorySet {
         };
         debug_assert!(vpn < area.vpn_range.end);
         if area.device.is_some() {
-            return Ok(if self.page_table.translate(vpn).is_some() {
-                PageFaultOutcome::Handled
-            } else {
-                PageFaultOutcome::SegmentationFault
+            return Ok(match self.page_table.translate(vpn) {
+                Some(_) => {
+                    Self::complete_stale_translation_fault(vpn);
+                    PageFaultOutcome::Handled
+                }
+                None => PageFaultOutcome::SegmentationFault,
             });
         }
         if let Some(shared) = &area.shared_anonymous {
@@ -174,20 +191,25 @@ impl MemorySet {
                     .data_frames
                     .try_prepare_vacant(vpn, PrivateResident::new(frame))
                     .map_err(|_| MemoryError::OutOfMemory)?;
-                self.page_table.map(vpn, ppn, area.map_permission.into())?;
+                let mut commit = TranslationCommit::new();
+                self.page_table
+                    .map(vpn, ppn, area.map_permission.into(), &mut commit)?;
                 area.data_frames.commit_vacant(resident);
-                Self::flush_tlb_all_cpus().expect(
-                    "platform TLB synchronization failed after shared anonymous page fault",
-                );
+                commit
+                    .synchronize()
+                    .expect("local translation fence failed after shared anonymous page fault");
                 return Ok(PageFaultOutcome::Handled);
             }
             if self.page_table.translate(vpn).is_none() {
                 let frame = area.data_frames.get(&vpn).expect("resident shared page");
+                let mut commit = TranslationCommit::new();
                 self.page_table
-                    .map(vpn, frame.ppn, area.map_permission.into())?;
-                Self::flush_tlb_all_cpus().expect(
-                    "platform TLB synchronization failed after shared anonymous permission fault",
+                    .map(vpn, frame.ppn, area.map_permission.into(), &mut commit)?;
+                commit.synchronize().expect(
+                    "local translation fence failed after shared anonymous permission fault",
                 );
+            } else {
+                Self::complete_stale_translation_fault(vpn);
             }
             return Ok(PageFaultOutcome::Handled);
         }
@@ -229,10 +251,12 @@ impl MemorySet {
                     .data_frames
                     .try_prepare_vacant(vpn, resident)
                     .map_err(|_| MemoryError::OutOfMemory)?;
-                self.page_table.map(vpn, ppn, flags)?;
+                let mut commit = TranslationCommit::new();
+                self.page_table.map(vpn, ppn, flags, &mut commit)?;
                 area.data_frames.commit_vacant(resident);
-                Self::flush_tlb_all_cpus()
-                    .expect("platform TLB synchronization failed after private page fault");
+                commit
+                    .synchronize()
+                    .expect("local translation fence failed after private page fault");
                 return Ok(PageFaultOutcome::Handled);
             }
             if access == PageFaultAccess::Write && area.private_file.is_some() {
@@ -245,7 +269,10 @@ impl MemorySet {
                 PageFaultAccess::Write if self.handle_cow_fault(address)? => {
                     Ok(PageFaultOutcome::Handled)
                 }
-                _ if self.page_table.translate(vpn).is_some() => Ok(PageFaultOutcome::Handled),
+                _ if self.page_table.translate(vpn).is_some() => {
+                    Self::complete_stale_translation_fault(vpn);
+                    Ok(PageFaultOutcome::Handled)
+                }
                 _ => Ok(PageFaultOutcome::SegmentationFault),
             };
         }
@@ -261,14 +288,18 @@ impl MemorySet {
         };
         if let Some(resident) = shared.resident.get(&vpn) {
             if self.page_table.translate(vpn).is_none() {
+                let mut commit = TranslationCommit::new();
                 self.page_table.map(
                     vpn,
                     resident.page.frame().ppn(),
                     area.map_permission.into(),
+                    &mut commit,
                 )?;
-                Self::flush_tlb_all_cpus().expect(
-                    "platform TLB synchronization failed after shared file permission fault",
-                );
+                commit
+                    .synchronize()
+                    .expect("local translation fence failed after shared file permission fault");
+            } else {
+                Self::complete_stale_translation_fault(vpn);
             }
             return Ok(PageFaultOutcome::Handled);
         }
@@ -282,10 +313,12 @@ impl MemorySet {
             .try_prepare_vacant(vpn, resident)
             .map_err(|_| MemoryError::OutOfMemory)?;
         let flags = area.map_permission.into();
-        self.page_table.map(vpn, ppn, flags)?;
+        let mut commit = TranslationCommit::new();
+        self.page_table.map(vpn, ppn, flags, &mut commit)?;
         shared.resident.commit_vacant(resident);
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after shared page fault");
+        commit
+            .synchronize()
+            .expect("local translation fence failed after shared page fault");
         Ok(PageFaultOutcome::Handled)
     }
 

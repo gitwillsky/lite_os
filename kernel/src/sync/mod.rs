@@ -1,14 +1,22 @@
 //! @description 提供 kernel 执行上下文感知的同步原语。
 //!
-//! 普通 `spin` lock 只适用于中断路径不可达的数据；同时由 task context 和
-//! interrupt context 访问的数据必须使用本模块的 IRQ-safe lock。所有 guard 都是
-//! 非睡眠 guard，持有期间禁止调度、阻塞 I/O 或等待另一个可能睡眠的执行流。
+//! 普通 `spin` lock 只适用于中断路径不可达的短临界区；同时由 task context 和
+//! interrupt context 访问的数据必须使用本模块的 IRQ-safe lock。二者 guard 都禁止
+//! 调度或阻塞 I/O；明确需要跨可睡眠 I/O 保活的 task-only owner 使用 task mutex。
 
 use core::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU64, Ordering, compiler_fence},
 };
+
+mod task_mutex;
+mod wait_completion;
+pub(crate) use task_mutex::{
+    TaskMutex, TaskMutexGuard, TaskMutexWaitKey, TaskMutexWaitPreparation, TaskMutexWaitTarget,
+    install_wait_target_factory as install_task_mutex_wait_target_factory,
+};
+pub(crate) use wait_completion::WaitCompletion;
 
 // OWNER: 该原子只分配跨 I/O source 可比较的 readiness generation，不发布其他内存。
 // 缺少全局序列时，嵌套 epoll 无法区分不同 source 上数值相同的局部 generation，ET 会漏报。
@@ -31,7 +39,7 @@ pub(crate) fn next_readiness_generation() -> u64 {
 /// 嵌套 guard 的内层观察到中断已关闭，因此不会提前打开中断。
 #[must_use = "dropping the guard immediately re-enables local interrupts"]
 pub(crate) struct LocalIrqGuard {
-    state: crate::arch::interrupt::LocalInterruptState,
+    state: Option<crate::arch::interrupt::LocalInterruptState>,
     // guard 只能在创建它的 CPU 上释放；缺失该约束会在错误 CPU 上修改 local interrupt state。
     _not_send: PhantomData<*mut ()>,
 }
@@ -47,8 +55,17 @@ impl LocalIrqGuard {
         // 防止编译器把临界区内的普通内存访问移动到关闭 local interrupt 之前。
         compiler_fence(Ordering::SeqCst);
         Self {
-            state,
+            state: Some(state),
             _not_send: PhantomData,
+        }
+    }
+
+    /// @description 把 IRQ restore consequence 移交给同一 CPU 的另一个 kernel stack。
+    /// @return 可暂存于 per-CPU scheduler slot 的 transfer token。
+    pub(crate) fn into_transfer(mut self) -> LocalIrqTransfer {
+        LocalIrqTransfer {
+            state: self.state.take(),
+            cpu: crate::cpu::current_id(),
         }
     }
 }
@@ -58,8 +75,35 @@ impl Drop for LocalIrqGuard {
     fn drop(&mut self) {
         // 临界区写必须在重新允许本地中断前对编译器可见；跨 CPU 可见性仍由具体 lock/atomic 提供。
         compiler_fence(Ordering::SeqCst);
-        // SAFETY: PhantomData 使 guard 不可跨 CPU 发送，因此只恢复创建时读取的本地状态。
-        unsafe { crate::arch::interrupt::restore_local(self.state) };
+        if let Some(state) = self.state.take() {
+            // SAFETY: PhantomData 使 guard 不可跨 CPU 发送，因此只恢复创建时读取的本地状态。
+            unsafe { crate::arch::interrupt::restore_local(state) };
+        }
+    }
+}
+
+/// @description scheduler context switch 跨 kernel stack 携带的 local IRQ restore consequence。
+///
+/// token 可存入静态 per-CPU slot，但 Drop 会核对 logical CPU；若错误跨 CPU 移动会在修改
+/// interrupt state 前 fail-stop。缺失该 token 会把 task→task handoff 永久留在 IRQ-disabled。
+#[must_use = "dropping the token restores the originating CPU interrupt state"]
+pub(crate) struct LocalIrqTransfer {
+    state: Option<crate::arch::interrupt::LocalInterruptState>,
+    cpu: crate::cpu::CpuId,
+}
+
+impl Drop for LocalIrqTransfer {
+    fn drop(&mut self) {
+        compiler_fence(Ordering::SeqCst);
+        assert_eq!(
+            self.cpu,
+            crate::cpu::current_id(),
+            "local IRQ transfer crossed logical CPUs"
+        );
+        if let Some(state) = self.state.take() {
+            // SAFETY: logical CPU equality proves this is the originating local interrupt state.
+            unsafe { crate::arch::interrupt::restore_local(state) };
+        }
     }
 }
 

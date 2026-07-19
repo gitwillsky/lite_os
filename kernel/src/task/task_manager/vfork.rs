@@ -6,6 +6,31 @@ pub(crate) enum ProcessCloneError {
     ResourceLimit,
 }
 
+struct ChildGraphSlots {
+    thread: crate::fallible_tree::NodeSlot<usize, Arc<TaskControlBlock>>,
+    process: crate::fallible_tree::NodeSlot<usize, ProcessNode>,
+    thread_index: crate::fallible_tree::NodeSlot<usize, ThreadIndex>,
+    parent_child: crate::fallible_tree::NodeSlot<usize, ()>,
+    creator_child: crate::fallible_tree::NodeSlot<usize, ()>,
+    group_member: crate::fallible_tree::NodeSlot<usize, ()>,
+    future_group: crate::fallible_tree::NodeSlot<(usize, usize), ProcessGroupIndex>,
+}
+
+impl ChildGraphSlots {
+    fn try_new() -> Result<Self, ProcessCloneError> {
+        let oom = |_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory);
+        Ok(Self {
+            thread: FallibleMap::try_reserve_node().map_err(oom)?,
+            process: FallibleMap::try_reserve_node().map_err(oom)?,
+            thread_index: FallibleMap::try_reserve_node().map_err(oom)?,
+            parent_child: FallibleMap::try_reserve_node().map_err(oom)?,
+            creator_child: FallibleMap::try_reserve_node().map_err(oom)?,
+            group_member: FallibleMap::try_reserve_node().map_err(oom)?,
+            future_group: FallibleMap::try_reserve_node().map_err(oom)?,
+        })
+    }
+}
+
 /// @description 把已完整准备的 fork/vfork child 一次发布到唯一 process graph。
 ///
 /// @param parent parent TGID。
@@ -17,8 +42,7 @@ fn publish_child(
     parent_thread: usize,
     child: Arc<TaskControlBlock>,
     vfork_parent: Option<Arc<TaskControlBlock>>,
-    thread_slot: crate::fallible_tree::NodeSlot<usize, Arc<TaskControlBlock>>,
-    process_slot: crate::fallible_tree::NodeSlot<usize, ProcessNode>,
+    slots: ChildGraphSlots,
 ) {
     let pid = child.tgid();
     let mut graph = TASK_MANAGER.graph.lock();
@@ -29,26 +53,59 @@ fn publish_child(
     assert!(matches!(parent_node.state, ProcessState::Live(_)));
     let session = parent_node.session;
     let process_group = parent_node.process_group;
+    let child_tid = child.tid();
     let mut threads = FallibleMap::new();
-    threads.commit_vacant(thread_slot.fill(child.tid(), child));
-    graph.nodes.commit_vacant(process_slot.fill(
+    threads.commit_vacant(slots.thread.fill(child_tid, child));
+    graph.nodes.commit_vacant(slots.process.fill(
         pid,
         ProcessNode {
             parent: Some(parent),
             parent_thread: Some(parent_thread),
+            children: FallibleMap::new(),
             session,
             process_group,
+            group_slot: Some(slots.future_group),
             has_execed: false,
             state: ProcessState::Live(threads),
             group_exit: None,
             job_control: JobControlState::Running,
             exit_effects: 0,
+            exit_effect_next: [None; 2],
+            pdeath_enabled_threads: 0,
+            pdeath_pending: false,
+            pdeath_next: None,
+            pdeath_cursor: 0,
             child_events: ChildEvents::default(),
             child_waiters: FallibleMap::new(),
             child_wait_claim: None,
             vfork_parent,
         },
     ));
+    graph.threads.commit_vacant(slots.thread_index.fill(
+        child_tid,
+        ThreadIndex {
+            tgid: pid,
+            created_children: FallibleMap::new(),
+        },
+    ));
+    graph
+        .nodes
+        .get_mut(&parent)
+        .expect("fork parent disappeared during child publication")
+        .children
+        .commit_vacant(slots.parent_child.fill(pid, ()));
+    graph
+        .threads
+        .get_mut(&parent_thread)
+        .expect("fork creator thread disappeared during child publication")
+        .created_children
+        .commit_vacant(slots.creator_child.fill(pid, ()));
+    graph
+        .groups
+        .get_mut(&(session, process_group))
+        .expect("fork parent process group missing from graph")
+        .members
+        .commit_vacant(slots.group_member.fill(pid, ()));
     graph.processes_created = graph.processes_created.saturating_add(1);
 }
 
@@ -60,10 +117,7 @@ pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {
     let pid = TASK_MANAGER
         .allocate_pid()
         .ok_or(ProcessCloneError::ResourceLimit)?;
-    let thread_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
-        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
-    let process_slot = FallibleMap::<usize, ProcessNode>::try_reserve_node()
-        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
+    let graph_slots = ChildGraphSlots::try_new()?;
     let child = try_allocate_task(
         ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
         || parent.fork_process(pid).map_err(ProcessCloneError::Memory),
@@ -101,8 +155,7 @@ pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {
             parent.tid(),
             child.clone(),
             None,
-            thread_slot,
-            process_slot,
+            graph_slots,
         );
         drop(creation);
         break;
@@ -121,10 +174,7 @@ pub(crate) fn vfork_current_process(child_stack: usize) -> Result<usize, Process
     let pid = TASK_MANAGER
         .allocate_pid()
         .ok_or(ProcessCloneError::ResourceLimit)?;
-    let thread_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
-        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
-    let process_slot = FallibleMap::<usize, ProcessNode>::try_reserve_node()
-        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
+    let graph_slots = ChildGraphSlots::try_new()?;
     let child = try_allocate_task(
         ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
         || {
@@ -166,8 +216,7 @@ pub(crate) fn vfork_current_process(child_stack: usize) -> Result<usize, Process
             parent.tid(),
             child.clone(),
             Some(parent.clone()),
-            thread_slot,
-            process_slot,
+            graph_slots,
         );
         drop(creation);
         break;

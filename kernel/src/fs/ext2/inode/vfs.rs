@@ -147,49 +147,42 @@ impl Inode for Ext2Inode {
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
-        self.fs.device.flush().map_err(|_| FileSystemError::IoError)
+        self.fs.device.flush().map_err(block_error)
     }
 
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
         self.update_times(atime, mtime)
     }
 
-    fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
+    fn read_directory(
+        &self,
+        cursor: u64,
+        visitor: &mut dyn DirectoryVisitor,
+    ) -> Result<DirectoryRead, FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
-        let mut entries = Vec::new();
-        let mut allocation_failed = false;
-        self.dir_iterate_blocks(|header, name| {
-            if header.inode != 0 {
-                let kind = match header.file_type {
-                    2 => InodeType::Directory,
-                    7 => InodeType::SymLink,
-                    3 => InodeType::CharacterDevice,
-                    5 => InodeType::Fifo,
-                    6 => InodeType::Socket,
-                    _ => InodeType::File,
-                };
-                let mut owned_name = Vec::new();
-                if entries.try_reserve(1).is_err()
-                    || owned_name.try_reserve_exact(name.len()).is_err()
-                {
-                    allocation_failed = true;
-                    return false;
-                }
-                owned_name.extend_from_slice(name);
-                entries.push(DirectoryEntry {
+        self.dir_iterate_from(cursor, |next_cursor, header, name| {
+            if header.inode == 0 {
+                return Ok(DirectoryVisit::Continue);
+            }
+            let kind = match header.file_type {
+                2 => InodeType::Directory,
+                7 => InodeType::SymLink,
+                3 => InodeType::CharacterDevice,
+                5 => InodeType::Fifo,
+                6 => InodeType::Socket,
+                _ => InodeType::File,
+            };
+            visitor.visit(
+                next_cursor,
+                DirectoryEntry {
                     inode: header.inode as u64,
                     kind,
-                    name: owned_name,
-                });
-            }
-            true
-        })?;
-        if allocation_failed {
-            return Err(FileSystemError::OutOfMemory);
-        }
-        Ok(entries)
+                    name,
+                },
+            )
+        })
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -197,12 +190,12 @@ impl Inode for Ext2Inode {
             return Err(FileSystemError::NotDirectory);
         }
         let mut found: Option<u32> = None;
-        self.dir_iterate_blocks(|hdr, name_bytes| {
+        self.dir_iterate_from(0, |_next_cursor, hdr, name_bytes| {
             if hdr.inode != 0 && name_bytes == name {
                 found = Some(hdr.inode);
-                return false;
+                return Ok(DirectoryVisit::Stop);
             }
-            true
+            Ok(DirectoryVisit::Continue)
         })?;
         if let Some(ino) = found {
             return Ext2Inode::load(self.fs.clone(), ino).map(|x| x as Arc<dyn Inode>);
@@ -307,11 +300,7 @@ impl Inode for Ext2Inode {
             if !remove_directory {
                 return Err(FileSystemError::IsDirectory);
             }
-            if child
-                .list()?
-                .iter()
-                .any(|entry| entry.name != b"." && entry.name != b"..")
-            {
+            if directory_not_empty(child.as_ref())? {
                 return Err(FileSystemError::DirectoryNotEmpty);
             }
         } else if remove_directory {
@@ -330,6 +319,7 @@ impl Inode for Ext2Inode {
                 link_count::decrement(disk.i_links_count).map_err(link_count_error)?;
             disk.i_ctime = Self::now();
             self.fs.write_inode_disk(child.inode_num, &disk)?;
+            drop(disk);
         } else if metadata.kind != InodeType::Directory && externally_held {
             drop(disk);
             self.fs.defer_reclaim_locked(&mut mutation, &child)?;

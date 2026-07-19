@@ -7,19 +7,57 @@ use std::{
 
 use quote::ToTokens;
 use syn::{
-    Arm, Expr, ExprLit, ExprMatch, ExprRange, File, ForeignItemFn, ImplItemFn, ItemFn,
-    ItemForeignMod, ItemImpl, ItemStatic, ItemUse, Lit, Macro, Pat, PatIdent, Path as SynPath,
-    Signature, UseTree, spanned::Spanned, visit::Visit,
+    Expr, ExprLit, ExprRange, File, ForeignItemFn, ImplItemFn, ItemFn, ItemForeignMod, ItemImpl,
+    ItemStatic, ItemUse, Lit, Macro, Path as SynPath, Signature, UseTree, spanned::Spanned,
+    visit::Visit,
 };
 
+mod abi_contract;
+mod address_space_lock_contract;
+mod deferred_context_contract;
 mod documentation_contract;
+mod epoll_cost;
+#[cfg(test)]
+mod epoll_cost_tests;
+mod ext2_mapping_cost;
 mod fallible_collections_contract;
+mod fallible_map_cost;
+mod filesystem_blocking_lock_contract;
+mod fp_context_contract;
+mod getdents_cost;
+mod huge_page_cost;
+mod id_cost;
+mod io_copy_cost;
+mod log_cost;
+mod memory_copy_cost;
+mod network_stack_cost;
+mod packet_cost;
+mod page_table_cost;
+mod port_namespace_cost;
+mod process_graph_cost;
 mod ready_contract;
+mod receive_staging_cost;
+mod rng_io_cost;
+mod scheduler_cost;
+mod send_staging_cost;
 mod source_size;
 #[cfg(test)]
 mod source_size_tests;
 mod terminal_contract;
+mod timer_transaction_cost;
+mod translation_fence_contract;
 mod unix_connect_contract;
+mod user_context_cost;
+mod userspace_contract;
+mod vfs_opened_cost;
+#[cfg(test)]
+mod vfs_opened_cost_tests;
+mod virtio_blk_completion_contract;
+mod virtio_blk_cost;
+mod virtio_dma_cost;
+mod virtio_gpu_sequence_cost;
+mod virtio_net_contract;
+mod vma_hot_path;
 
 const KERNEL_MODULES: &[&str] = &[
     "arch",
@@ -104,14 +142,46 @@ fn main() -> ExitCode {
     source_size::check(&root, &sources, &mut errors, &mut review_notices);
     check_source_patterns(&root, &sources, &mut errors);
     check_architecture_boundaries(&root, &sources, &mut errors);
+    address_space_lock_contract::check(&sources, &mut errors);
+    deferred_context_contract::check(&sources, &mut errors);
+    epoll_cost::check(&root, &mut errors);
+    ext2_mapping_cost::check(&root, &mut errors);
+    fallible_map_cost::check(&sources, &mut errors);
+    fp_context_contract::check(&root, &mut errors);
+    filesystem_blocking_lock_contract::check(&sources, &mut errors);
     terminal_contract::check_terminal_contract(&sources, &mut errors);
+    timer_transaction_cost::check(&root, &mut errors);
+    translation_fence_contract::check(&sources, &mut errors);
     unix_connect_contract::check(&sources, &mut errors);
+    user_context_cost::check(&root, &sources, &mut errors);
+    virtio_blk_cost::check(&sources, &mut errors);
+    virtio_blk_completion_contract::check(&sources, &mut errors);
+    virtio_dma_cost::check(&sources, &mut errors);
+    virtio_gpu_sequence_cost::check(&sources, &mut errors);
+    getdents_cost::check(&root, &sources, &mut errors);
+    huge_page_cost::check(&root, &mut errors);
+    io_copy_cost::check(&root, &mut errors);
+    id_cost::check(&root, &mut errors);
+    log_cost::check(&root, &mut errors);
+    memory_copy_cost::check(&root, &mut errors);
+    network_stack_cost::check(&root, &mut errors);
+    packet_cost::check(&root, &mut errors);
+    page_table_cost::check(&root, &mut errors);
+    port_namespace_cost::check(&root, &mut errors);
+    process_graph_cost::check(&sources, &mut errors);
+    receive_staging_cost::check(&root, &mut errors);
+    rng_io_cost::check(&root, &mut errors);
+    scheduler_cost::check(&root, &mut errors);
+    send_staging_cost::check(&root, &mut errors);
+    vma_hot_path::check(&sources, &mut errors);
+    virtio_net_contract::check(&sources, &mut errors);
+    vfs_opened_cost::check(&root, &mut errors);
     ready_contract::check(&sources, &mut errors);
     fallible_collections_contract::check(&root, &sources, &mut errors);
     check_global_owners(&sources, &mut errors);
     check_unsafe_proofs(&sources, &mut errors);
-    check_abi(&root, &mut errors);
-    check_userspace_single_track(&root, &mut errors);
+    abi_contract::check(&root, &mut errors);
+    userspace_contract::check(&root, &mut errors);
     documentation_contract::check(&root, &sources, write_interface, &mut errors);
 
     if !review_notices.is_empty() {
@@ -139,184 +209,6 @@ fn repository_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("architecture-check must live under tools/")
         .to_path_buf()
-}
-
-fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
-    let allowed = BTreeSet::from(["README.md", "base", "console-session", "diagnostics"]);
-    let actual = match fs::read_dir(root.join("user")) {
-        Ok(entries) => entries
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect::<BTreeSet<_>>(),
-        Err(error) => {
-            errors.push(format!("failed to inspect user/: {error}"));
-            return;
-        }
-    };
-    let expected = allowed
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    if actual != expected {
-        errors.push(format!(
-            "user/: expected the single TUI track {expected:?}, found {actual:?}"
-        ));
-    }
-
-    for (directory, names) in [
-        (
-            "base",
-            &[
-                "busybox.config",
-                "group",
-                "inittab",
-                "liteos.terminfo",
-                "network-service",
-                "passwd",
-                "shutdown",
-                "udhcpc.script",
-            ][..],
-        ),
-        ("diagnostics", &["liteos-stress.c"][..]),
-    ] {
-        let expected = names
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect::<BTreeSet<_>>();
-        let actual = fs::read_dir(root.join("user").join(directory))
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        if actual != expected {
-            errors.push(format!(
-                "user/{directory}: expected exactly {expected:?}, found {actual:?}"
-            ));
-        }
-    }
-
-    let console = root.join("user/console-session");
-    let expected_crate = BTreeSet::from([
-        "Cargo.lock".to_owned(),
-        "Cargo.toml".to_owned(),
-        "src".to_owned(),
-    ]);
-    let actual_crate = fs::read_dir(&console)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
-    if actual_crate != expected_crate {
-        errors.push(format!(
-            "user/console-session: expected exactly {expected_crate:?}, found {actual_crate:?}"
-        ));
-    }
-
-    let expected_sources = BTreeSet::from([
-        "atlas.rs",
-        "display.rs",
-        "ffi.rs",
-        "lib.rs",
-        "model.rs",
-        "model/parser.rs",
-        "model/reflow.rs",
-        "model/screen.rs",
-        "model/style.rs",
-        "reactor.rs",
-        "reactor/evdev.rs",
-        "reactor/input.rs",
-        "reactor/pointer.rs",
-        "reactor/session.rs",
-    ]);
-    let mut source_paths = Vec::new();
-    if let Err(error) = rust_files(&console.join("src"), &mut source_paths) {
-        errors.push(error);
-    }
-    let actual_sources = source_paths
-        .iter()
-        .filter_map(|path| path.strip_prefix(console.join("src")).ok())
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .collect::<BTreeSet<_>>();
-    let expected_sources = expected_sources
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    if actual_sources != expected_sources {
-        errors.push(format!(
-            "user/console-session/src: expected exactly {expected_sources:?}, found {actual_sources:?}"
-        ));
-    }
-
-    let manifest = fs::read_to_string(console.join("Cargo.toml")).unwrap_or_default();
-    for required in [
-        "name = \"console-session\"",
-        "crate-type = [\"staticlib\"]",
-        "panic = \"abort\"",
-    ] {
-        if !manifest.contains(required) {
-            errors.push(format!(
-                "user/console-session/Cargo.toml: missing `{required}`"
-            ));
-        }
-    }
-    if manifest.contains("[dependencies]") || manifest.contains(" path = ") {
-        errors.push(
-            "user/console-session: the unique console Module must remain dependency-free"
-                .to_owned(),
-        );
-    }
-
-    let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
-    if !workspace.contains("exclude = [\"bootloader\", \"user/console-session\"]") {
-        errors.push(
-            "Cargo.toml: bootloader and console-session must be the only excluded Rust crates"
-                .to_owned(),
-        );
-    }
-
-    let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected_inittab = "::respawn:/bin/console-session\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
-    if inittab != expected_inittab {
-        errors.push(
-            "user/base/inittab: must supervise console, network and UART recovery exactly once"
-                .to_owned(),
-        );
-    }
-
-    let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
-    if !builder.contains("def build_console_session(")
-        || !builder.contains("/bin/console-session")
-        || !builder.contains("user/console-session/src")
-        || !builder.contains("/etc/terminfo/l/liteos")
-        || [
-            "liteui",
-            "quickjs",
-            "display-session",
-            "terminal-service",
-            "libseat",
-            "libdrm",
-        ]
-        .iter()
-        .any(|marker| builder.contains(marker))
-    {
-        errors.push(
-            "scripts/verify_busybox.py: rootfs must contain only the registered console session track"
-                .to_owned(),
-        );
-    }
-
-    let atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
-    if atlas.get(..8) != Some(b"LTA8\0\0\0\x02") || atlas.len() != 481_136 {
-        errors.push(
-            "assets/fonts/liteos-terminal.a8: expected the checked v2 terminal atlas".to_owned(),
-        );
-    }
 }
 
 fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -782,6 +674,40 @@ fn check_source_patterns(root: &Path, sources: &[SourceFile], errors: &mut Vec<S
         );
     }
 
+    let virtqueue = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drivers/virtio_queue.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    let ethernet_device = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/socket/device.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    let socket_syscall = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/syscall/socket.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    let inet = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/socket/inet.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    if !virtqueue.contains("Result<u16, VirtQueueError>")
+        || virtqueue.contains("failed to translate buffer address")
+        || !ethernet_device.contains("pending_error: Cell<Option<NetworkError>>")
+        || ethernet_device.contains("Ethernet adapter failed")
+        || ethernet_device.contains("unhandled error")
+        || !inet.contains("stack.lock().device.take_error()")
+        || !socket_syscall.contains("SocketError::Device => errno::EIO")
+    {
+        errors.push(
+            "recoverable VirtIO translation and Ethernet adapter failures must follow typed errors through the socket EIO seam"
+                .to_owned(),
+        );
+    }
+
     let garbage = [
         "common", "utils", "helpers", "misc", "manager", "base", "shared", "core",
     ];
@@ -1031,113 +957,5 @@ fn check_unsafe_proofs(sources: &[SourceFile], errors: &mut Vec<String>) {
                 ));
             }
         }
-    }
-}
-
-fn syscall_constants(file: &File) -> BTreeSet<String> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Const(item) if item.ident.to_string().starts_with("SYSCALL_") => {
-                Some(item.ident.to_string())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-fn syscall_entries(file: &File) -> BTreeMap<String, usize> {
-    file.items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Const(item) if item.ident.to_string().starts_with("SYSCALL_") => {
-                let Expr::Lit(ExprLit {
-                    lit: Lit::Int(number),
-                    ..
-                }) = item.expr.as_ref()
-                else {
-                    return None;
-                };
-                Some((
-                    item.ident
-                        .to_string()
-                        .trim_start_matches("SYSCALL_")
-                        .to_ascii_lowercase(),
-                    number
-                        .base10_parse()
-                        .expect("syscall number must be an integer"),
-                ))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-#[derive(Default)]
-struct DispatchVisitor {
-    constants: BTreeSet<String>,
-    numeric_arms: Vec<usize>,
-}
-
-impl<'ast> Visit<'ast> for DispatchVisitor {
-    fn visit_path(&mut self, path: &'ast SynPath) {
-        for segment in &path.segments {
-            let name = segment.ident.to_string();
-            if name.starts_with("SYSCALL_") {
-                self.constants.insert(name);
-            }
-        }
-        syn::visit::visit_path(self, path);
-    }
-
-    fn visit_arm(&mut self, arm: &'ast Arm) {
-        if matches!(
-            &arm.pat,
-            Pat::Lit(ExprLit {
-                lit: Lit::Int(_),
-                ..
-            })
-        ) {
-            self.numeric_arms
-                .push(arm.fat_arrow_token.spans[0].start().line);
-        }
-        syn::visit::visit_arm(self, arm);
-    }
-
-    fn visit_pat_ident(&mut self, pattern: &'ast PatIdent) {
-        let name = pattern.ident.to_string();
-        if name.starts_with("SYSCALL_") {
-            self.constants.insert(name);
-        }
-        syn::visit::visit_pat_ident(self, pattern);
-    }
-
-    fn visit_expr_match(&mut self, node: &'ast ExprMatch) {
-        syn::visit::visit_expr_match(self, node);
-    }
-}
-
-fn check_abi(root: &Path, errors: &mut Vec<String>) {
-    let abi_path = root.join("syscall-abi/src/lib.rs");
-    let dispatch_path = root.join("kernel/src/syscall/mod.rs");
-    let abi_text = fs::read_to_string(&abi_path).expect("syscall ABI source must exist");
-    let dispatch_text = fs::read_to_string(&dispatch_path).expect("syscall dispatch must exist");
-    let abi = syn::parse_file(&abi_text).expect("syscall ABI must parse");
-    let dispatch = syn::parse_file(&dispatch_text).expect("syscall dispatch must parse");
-    let constants = syscall_constants(&abi);
-    let mut visitor = DispatchVisitor::default();
-    visitor.visit_file(&dispatch);
-    for name in constants.difference(&visitor.constants) {
-        errors.push(format!("syscall ABI constant is not dispatched: {name}"));
-    }
-    for name in visitor.constants.difference(&constants) {
-        errors.push(format!(
-            "dispatcher uses a syscall absent from syscall-abi: {name}"
-        ));
-    }
-    for line in visitor.numeric_arms {
-        errors.push(format!(
-            "kernel/src/syscall/mod.rs:{line}: raw numeric syscall dispatch is forbidden"
-        ));
     }
 }

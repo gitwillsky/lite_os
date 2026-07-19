@@ -1,5 +1,8 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::{
+    mem::MaybeUninit,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use super::*;
 
@@ -137,6 +140,28 @@ impl MemorySet {
         destination: &mut [u8],
         limits: UserFaultLimits,
     ) -> Result<(), UserAccessError> {
+        // SAFETY: initialized u8 storage may always be viewed as MaybeUninit<u8>; the delegated
+        // operation writes every element before returning success and never changes slice layout.
+        let destination = unsafe {
+            core::slice::from_raw_parts_mut(
+                destination.as_mut_ptr().cast::<MaybeUninit<u8>>(),
+                destination.len(),
+            )
+        };
+        self.copy_from_user_uninit(address, destination, limits)
+    }
+
+    /// @description 完整 fault/校验后直接初始化 kernel destination，避免预清零 staging。
+    /// @param address 用户源范围首地址。
+    /// @param destination 尚未初始化、由 caller 独占的 kernel byte storage。
+    /// @param limits fault 可消耗的资源上限。
+    /// @return 成功时 destination 全部初始化；失败时 caller 不得读取其内容。
+    pub(crate) fn copy_from_user_uninit(
+        &mut self,
+        address: usize,
+        destination: &mut [MaybeUninit<u8>],
+        limits: UserFaultLimits,
+    ) -> Result<(), UserAccessError> {
         let end = self.prepare_user_read(address, destination.len(), limits)?;
         let mut current = address;
         let mut copied = 0;
@@ -144,6 +169,39 @@ impl MemorySet {
             let (ppn, offset) = self.user_page(current, PagePermissions::READ)?;
             let count = (config::PAGE_SIZE - offset).min(end - current);
             // SAFETY: user_page 证明源页存活且 U|R；destination 是有效独占切片。
+            unsafe {
+                core::ptr::copy(
+                    ppn.as_page_ptr().add(offset),
+                    destination.as_mut_ptr().cast::<u8>().add(copied),
+                    count,
+                )
+            };
+            current += count;
+            copied += count;
+        }
+        Ok(())
+    }
+
+    /// @description 从 U|X mapping 精确读取一个 RISC-V instruction halfword。
+    /// @param address 2-byte aligned 用户 instruction address。
+    /// @param destination 固定两字节 kernel buffer。
+    /// @return execute fault 完成且 U|X leaf 可读时成功；权限、地址或资源错误时失败。
+    pub(crate) fn copy_instruction_halfword(
+        &mut self,
+        address: usize,
+        destination: &mut [u8; 2],
+        limits: UserFaultLimits,
+    ) -> Result<(), UserAccessError> {
+        let end = Self::checked_user_end(address, destination.len())?;
+        let mut current = address;
+        let mut copied = 0;
+        while current < end {
+            if self.user_page(current, PagePermissions::EXECUTE).is_err() {
+                self.fault_in_user_page(current, PageFaultAccess::Execute, limits)?;
+            }
+            let (ppn, offset) = self.user_page(current, PagePermissions::EXECUTE)?;
+            let count = (config::PAGE_SIZE - offset).min(end - current);
+            // SAFETY: user_page 证明源页存活且 U|X；读取 instruction image 不要求 U|R。
             unsafe {
                 core::ptr::copy(
                     ppn.as_page_ptr().add(offset),
@@ -180,6 +238,30 @@ impl MemorySet {
             };
             current += count;
             copied += count;
+        }
+        Ok(())
+    }
+
+    /// @description 完整 fault/校验一次用户范围，并直接把目标页内容清零。
+    /// @param address 用户目标起点。
+    /// @param length 清零字节数。
+    /// @param limits lazy/COW fault 可使用的 Process 资源边界。
+    /// @return 完整范围清零成功返回 Ok。
+    /// @errors 地址、权限、fault、overflow 或资源失败返回 `UserAccessError`。
+    pub(crate) fn zero_user(
+        &mut self,
+        address: usize,
+        length: usize,
+        limits: UserFaultLimits,
+    ) -> Result<(), UserAccessError> {
+        let end = self.prepare_user_write(address, length, limits)?;
+        let mut current = address;
+        while current < end {
+            let (ppn, offset) = self.user_page(current, PagePermissions::WRITE)?;
+            let count = (config::PAGE_SIZE - offset).min(end - current);
+            // SAFETY: user_page 证明目标页存活且 U|W；范围不跨页，write_bytes 不读取旧内容。
+            unsafe { core::ptr::write_bytes(ppn.as_page_mut_ptr().add(offset), 0, count) };
+            current += count;
         }
         Ok(())
     }

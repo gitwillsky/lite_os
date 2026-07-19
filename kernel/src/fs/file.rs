@@ -24,8 +24,8 @@ use spin::Mutex;
 use position::FilePosition;
 
 use super::{
-    AccessIdentity, DeviceKind, Epoll, FileSystemError, FileSystemStatistics, Inode, OpenedFile,
-    vfs,
+    AccessIdentity, DeviceKind, Epoll, EpollMemberships, FileSystemError, FileSystemStatistics,
+    Inode, OpenedFile, ReadinessSource, ReadinessSources, vfs,
 };
 use crate::{
     ipc::{EventFd, PipeEnd},
@@ -98,6 +98,7 @@ pub(crate) struct OpenFileDescription {
     position: FilePosition,
     pub(crate) flags: Mutex<u32>,
     character_opened: Option<Arc<OpenedFile>>,
+    pub(super) epoll_memberships: EpollMemberships,
     // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
     // epoll 的 Linux close cleanup，缺失时会留下 fd reuse 可命中的旧 interest。
     descriptor_refs: AtomicUsize,
@@ -237,6 +238,88 @@ impl OpenFileDescription {
         }
     }
 
+    /// @description 把 OFD 投影为 epoll 持久 source index 使用的固定 source 集合。
+    /// @param events interest event mask；决定是否需要 read/write 两个方向。
+    /// @return 最多两个稳定 source identity；无异步 source 返回空集合。
+    pub(crate) fn readiness_sources(&self, events: i16) -> ReadinessSources {
+        const INPUT: i16 = 0x001;
+        const OUTPUT: i16 = 0x004;
+        let mut sources = ReadinessSources::new();
+        match &self.kind {
+            OpenFileKind::Character(CharacterDevice::Terminal { pty, .. }) => {
+                if let Some(slave) = pty {
+                    sources.push(ReadinessSource::pipe(
+                        &slave.notification_pipe(),
+                        crate::ipc::PipeDirection::Read,
+                    ));
+                    if events & OUTPUT != 0 {
+                        sources.push(ReadinessSource::pipe(
+                            &slave.output_pipe(),
+                            crate::ipc::PipeDirection::Write,
+                        ));
+                    }
+                } else {
+                    sources.push(ReadinessSource::Console);
+                }
+            }
+            OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
+                sources.push(ReadinessSource::pipe(
+                    &file.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                ));
+            }
+            OpenFileKind::Character(CharacterDevice::Drm(file)) => {
+                sources.push(ReadinessSource::pipe(
+                    &file.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                ));
+            }
+            OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
+                sources.push(ReadinessSource::pipe(
+                    &master.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                ));
+            }
+            OpenFileKind::Pipe(endpoint) => sources.push(ReadinessSource::pipe(
+                &endpoint.pipe(),
+                endpoint.direction(),
+            )),
+            OpenFileKind::Socket(socket) => {
+                let (socket_sources, _) = socket.wait_sources(events);
+                for source in socket_sources.into_iter().flatten() {
+                    match source {
+                        crate::socket::SocketWaitSource::Notification(pipe) => sources.push(
+                            ReadinessSource::pipe(&pipe, crate::ipc::PipeDirection::Read),
+                        ),
+                        crate::socket::SocketWaitSource::Data { pipe, direction } => {
+                            sources.push(ReadinessSource::pipe(&pipe, direction));
+                        }
+                    }
+                }
+            }
+            OpenFileKind::Epoll(epoll) => sources.push(ReadinessSource::pipe(
+                &epoll.notification_pipe(),
+                crate::ipc::PipeDirection::Read,
+            )),
+            OpenFileKind::EventFd(event) => {
+                if events & INPUT != 0 {
+                    sources.push(ReadinessSource::pipe(
+                        &event.notification_pipe(true),
+                        crate::ipc::PipeDirection::Read,
+                    ));
+                }
+                if events & OUTPUT != 0 {
+                    sources.push(ReadinessSource::pipe(
+                        &event.notification_pipe(false),
+                        crate::ipc::PipeDirection::Read,
+                    ));
+                }
+            }
+            _ => {}
+        }
+        sources
+    }
+
     /// @description 构造继承给 init 的 console OFD，并保留 devfs opened entry。
     ///
     /// @param terminal 共享 TTY owner。
@@ -257,6 +340,7 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: Some(backing_opened),
+            epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
         })
         .map_err(|_| ())
@@ -282,6 +366,7 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: Some(backing_opened),
+            epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
         })
         .map_err(|_| FileSystemError::OutOfMemory)
@@ -293,6 +378,7 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: None,
+            epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
         })
         .map_err(|_| ())
@@ -304,6 +390,7 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: None,
+            epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
         })
         .map_err(|_| ())
@@ -315,6 +402,7 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: None,
+            epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
         })
         .map_err(|_| ())?;
@@ -329,6 +417,7 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(O_RDWR),
             character_opened: None,
+            epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
         })
         .map_err(|_| ())
@@ -340,6 +429,7 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(O_RDWR | flags),
             character_opened: None,
+            epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
         })
         .map_err(|_| ())

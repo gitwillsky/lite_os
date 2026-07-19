@@ -52,7 +52,7 @@ pub(crate) fn stop_current_process(signal: usize) {
     crate::task::suspend_current_and_run_next();
 }
 
-/// @description 最后一个 StopPending Thread 切回 idle 后提交 parent-visible stopped event。
+/// @description 最后一个 StopPending Thread 的 post-switch handoff 完成后提交 parent-visible stopped event。
 ///
 /// @param tgid 刚完成 scheduler stop transition 的 Process ID。
 /// @return stop 尚未完成或已通知时不执行操作。

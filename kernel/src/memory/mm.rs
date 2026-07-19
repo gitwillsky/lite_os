@@ -14,17 +14,19 @@ mod process;
 mod resident;
 mod retire;
 mod shared_area;
+pub(super) mod shootdown;
 mod statistics;
 mod user_access;
+mod vma_index_state;
 use super::config;
 use super::permissions::MapPermission;
 use super::retire::{reclaim_release_decision, revoke_and_synchronize};
 use super::{address::VirtualPageNumber, page_table::PageTable};
-use crate::fallible_tree::FallibleMap;
+use crate::fallible_tree::{FallibleMap, VacantEntry};
 use crate::memory::{
     ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
-    frame_allocator::{FrameTracker, alloc},
+    frame_allocator::{FrameTracker, alloc, alloc_copy},
     page_table::{PagePermissions, PageTableEntry},
     strampoline,
 };
@@ -41,6 +43,11 @@ use file_page_range::{FilePageRange, FilePageRangeError};
 use private_area::{PrivateFaultPreparation, PrivateFileArea};
 use resident::PrivateResident;
 use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, SharedResident};
+use shootdown::{
+    TranslationCommit, TranslationSynchronizationError, revoke_and_commit,
+    synchronize_address_space_retirement,
+};
+use vma_index_state::{VmaContribution, VmaIndexState};
 pub(crate) use {
     error::{ElfLoadError, MemoryError, UserAccessError},
     fault_preflight::FaultAccess as PageFaultAccess,
@@ -67,6 +74,10 @@ struct ProgramBreak {
 pub(crate) struct MemorySet {
     page_table: PageTable,
     areas: FallibleMap<VirtualPageNumber, MapArea>,
+    // OWNER: 与 areas structural publication 同一事务维护；缺失会让每次 fault/mmap 为
+    // stack identity 和 RLIMIT totals 全表扫描。所有 structural mutation 必须经
+    // commit_area/take_area_entry/remove_area，禁止旁路更新或从表重算第二份真相。
+    vma_index_state: VmaIndexState,
     // OWNER: cursor 与 VMA residency 由同一 MemorySet lock 拥有，只表示下次
     // private direct reclaim 的起始 VPN。缺失它会让大 mm 中的 dirty/
     // non-discardable 前缀在每次 OOM 时重复被扫描，饿死后续 clean page。
@@ -86,6 +97,7 @@ impl MemorySet {
         Self {
             page_table: PageTable::new(),
             areas: FallibleMap::new(),
+            vma_index_state: VmaIndexState::new(),
             private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
             code_range: 0..0,
             program_break: None,
@@ -97,6 +109,7 @@ impl MemorySet {
         Ok(Self {
             page_table: PageTable::try_new()?,
             areas: FallibleMap::new(),
+            vma_index_state: VmaIndexState::new(),
             private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
             code_range: 0..0,
             program_break: None,
@@ -111,12 +124,7 @@ impl MemorySet {
     ) -> Result<(), MemoryError> {
         let start = map_area.vpn_range.start;
         let end = map_area.vpn_range.end;
-        if self
-            .areas
-            .values()
-            .any(|area| start < area.vpn_range.end && area.vpn_range.start < end)
-            || self.areas.contains_key(&start)
-        {
+        if !self.range_is_free(start, end) {
             return Err(MemoryError::AddressInUse);
         }
         // VMA node 必须先于 PTE publication 分配；缺少该 preflight 会在页表已经
@@ -125,16 +133,16 @@ impl MemorySet {
             .areas
             .try_prepare_vacant(start, map_area)
             .map_err(|_| MemoryError::OutOfMemory)?;
-        if let Err(e) = prepared.value_mut().map(&mut self.page_table) {
+        let mut publication = TranslationCommit::new();
+        if let Err(e) = prepared
+            .value_mut()
+            .map(&mut self.page_table, &mut publication)
+        {
             // VMA node 尚未发布，但 live shared mm 的 hardware walker 已可观察 partial PTE；
             // rollback 仍须保留 prepared area owner 直到所有 CPU 完成 fence。
-            let prepared = revoke_and_synchronize(
-                prepared,
-                |prepared| {
-                    prepared.value_mut().unmap(&mut self.page_table);
-                },
-                |_| Self::flush_tlb_all_cpus(),
-            )
+            let prepared = revoke_and_commit(prepared, |prepared, rollback| {
+                prepared.value_mut().unmap(&mut self.page_table, rollback);
+            })
             .expect("platform TLB synchronization failed during VMA map rollback");
             drop(prepared);
             return Err(e);
@@ -142,18 +150,17 @@ impl MemorySet {
         if let Some(data) = data
             && let Err(error) = prepared.value_mut().copy_data(data)
         {
-            let prepared = revoke_and_synchronize(
-                prepared,
-                |prepared| {
-                    prepared.value_mut().unmap(&mut self.page_table);
-                },
-                |_| Self::flush_tlb_all_cpus(),
-            )
+            let prepared = revoke_and_commit(prepared, |prepared, rollback| {
+                prepared.value_mut().unmap(&mut self.page_table, rollback);
+            })
             .expect("platform TLB synchronization failed during VMA data rollback");
             drop(prepared);
             return Err(error);
         }
-        self.areas.commit_vacant(prepared);
+        publication
+            .synchronize()
+            .expect("local translation fence failed during VMA publication");
+        self.commit_area(prepared);
         Ok(())
     }
 
@@ -174,31 +181,37 @@ impl MemorySet {
     }
 
     fn virtual_bytes(&self) -> u64 {
-        self.areas
-            .values()
-            .filter(|area| area.map_permission.contains(MapPermission::U))
-            .map(|area| {
-                (area.vpn_range.end.as_usize() - area.vpn_range.start.as_usize()) as u64
-                    * config::PAGE_SIZE as u64
-            })
-            .sum()
+        self.vma_index_state.virtual_bytes()
     }
 
     fn data_bytes(&self) -> u64 {
-        self.areas
-            .values()
-            .filter(|area| {
-                area.map_permission
-                    .contains(MapPermission::U | MapPermission::W)
-                    && area.shared_anonymous.is_none()
-                    && area.shared_file.is_none()
-                    && matches!(area.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File)
-            })
-            .map(|area| {
-                (area.vpn_range.end.as_usize() - area.vpn_range.start.as_usize()) as u64
-                    * config::PAGE_SIZE as u64
-            })
-            .sum()
+        self.vma_index_state.data_bytes()
+    }
+
+    fn account_area(&mut self, area: &MapArea) {
+        self.vma_index_state.publish(area.index_contribution());
+    }
+
+    fn unaccount_area(&mut self, area: &MapArea) {
+        self.vma_index_state.retire(area.index_contribution());
+    }
+
+    fn commit_area(&mut self, entry: VacantEntry<VirtualPageNumber, MapArea>) {
+        self.account_area(entry.value());
+        self.areas.commit_vacant(entry);
+    }
+
+    fn take_area_entry(
+        &mut self,
+        key: &VirtualPageNumber,
+    ) -> Option<VacantEntry<VirtualPageNumber, MapArea>> {
+        let entry = self.areas.take_entry(key)?;
+        self.unaccount_area(entry.value());
+        Some(entry)
+    }
+
+    fn remove_area(&mut self, key: &VirtualPageNumber) -> Option<MapArea> {
+        self.take_area_entry(key).map(VacantEntry::into_value)
     }
 
     fn ensure_resource_capacity(
@@ -219,38 +232,26 @@ impl MemorySet {
         let trampoline_va = VirtualAddress::from(config::TRAMPOLINE);
         let strampoline_pa = PhysicalAddress::from(strampoline as *const () as usize);
 
+        let mut commit = TranslationCommit::new();
         self.page_table.map(
             trampoline_va.into(),
             strampoline_pa.into(),
             // Trampoline 在所有地址空间通用，标记为 Global，避免跨进程切换时TLB混淆
             PagePermissions::READ | PagePermissions::EXECUTE | PagePermissions::GLOBAL,
+            &mut commit,
         )?;
         self.page_table.map(
             VirtualAddress::from(config::SIGNAL_TRAMPOLINE).into(),
             strampoline_pa.into(),
             PagePermissions::READ | PagePermissions::EXECUTE | PagePermissions::USER,
+            &mut commit,
         )?;
+        commit.finish_unpublished();
         Ok(())
     }
 
     pub(crate) fn active(&self) {
         crate::arch::mmu::activate(self.page_table.token());
-    }
-
-    /// @description 同步刷新所有 online CPU 的 userspace translation cache。
-    ///
-    /// @return 所有目标 CPU 完成 remote fence 后返回 `Ok(())`；platform 操作失败时返回错误。
-    pub(crate) fn flush_tlb_all_cpus() -> Result<(), crate::platform::TlbShootdownError> {
-        // 1. 当前 CPU 先完成 fence；当前页表写在后续 platform call 前保持程序顺序。
-        crate::arch::mmu::flush_local();
-        // 2. Acquire online set 只选择已发布可接收远端请求的 CPU。
-        let mut targets = crate::cpu::online() & crate::cpu::possible();
-        targets.remove(crate::cpu::current_id());
-        if targets.is_empty() {
-            return Ok(());
-        }
-        // 3. platform shootdown 是同步接口；返回即证明目标 CPU 已完成 fence。
-        crate::platform::synchronize_tlb(targets, 0, 0)
     }
 
     fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
@@ -348,8 +349,6 @@ impl MemorySet {
             (address + config::PAGE_SIZE).into(),
             MapPermission::R | MapPermission::W,
         )?;
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after thread trap-context mapping");
         Ok(address)
     }
 
@@ -368,6 +367,19 @@ impl MemorySet {
             .translate(VirtualAddress::from(trap_va).into())
             .expect("UserContext VA should be mapped")
             .ppn()
+    }
+}
+
+impl Drop for MemorySet {
+    fn drop(&mut self) {
+        // 1. 此时全部 mapping/frame 仍由 self 保活；同步清除所有 CPU translation 后
+        // ASID 才可复用。后上线 CPU 在 startup 执行
+        // full fence，因此从未观察过本 address space 的 CPU 不属于 retirement target。
+        synchronize_address_space_retirement()
+            .expect("platform TLB synchronization failed while retiring address space");
+        // 2. fence completion happens-before bitmap release；字段随后才析构并释放 frames。
+        self.page_table
+            .release_address_space_id_after_global_fence();
     }
 }
 

@@ -60,8 +60,6 @@ impl MemorySet {
             MapArea::shared_anonymous(start.into(), end.into(), permission, backing),
             None,
         )?;
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after anonymous shared mmap update");
         Ok(start)
     }
 }

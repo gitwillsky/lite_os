@@ -1,6 +1,37 @@
 use super::*;
 
 impl Ext2FileSystem {
+    /// Return one immutable directory/pointer metadata block under the filesystem-wide identity.
+    pub(super) fn read_metadata_block(
+        &self,
+        fs_block_id: u32,
+    ) -> Result<Arc<Vec<u8>>, FileSystemError> {
+        let generation = {
+            // Staged writes publish cache replacement/invalidation before releasing journal state;
+            // a cloned old Arc therefore linearizes before the write, while a miss rechecks the
+            // unique Ready/Committing journal owner in read_fs_block.
+            let mut cache = self.metadata_cache.lock();
+            if let Some(bytes) = cache.get(fs_block_id) {
+                return Ok(bytes);
+            }
+            cache.generation()
+        };
+        if fail_test_metadata_owner() {
+            return Err(FileSystemError::OutOfMemory);
+        }
+        record_test_allocation_attempt();
+        let mut bytes =
+            Arc::try_new(try_zeroed(self.block_size)?).map_err(|_| FileSystemError::OutOfMemory)?;
+        self.read_fs_block(
+            fs_block_id,
+            Arc::get_mut(&mut bytes).expect("new metadata block has one owner"),
+        )?;
+        self.metadata_cache
+            .lock()
+            .insert_if_unchanged(generation, fs_block_id, bytes.clone());
+        Ok(bytes)
+    }
+
     pub(super) fn read_fs_block(
         &self,
         fs_block_id: u32,
@@ -9,12 +40,7 @@ impl Ext2FileSystem {
         if fs_block_id >= self.superblock.lock().s_blocks_count {
             return Err(FileSystemError::InvalidFileSystem);
         }
-        if self
-            .journal
-            .lock()
-            .as_ref()
-            .is_some_and(|journal| journal.copy_staged(fs_block_id, buf))
-        {
+        if self.journal.lock().copy_staged(fs_block_id, buf) {
             return Ok(());
         }
         self.read_fs_block_home(fs_block_id, buf)
@@ -44,7 +70,7 @@ impl Ext2FileSystem {
             // Simple 1:1 mapping
             device
                 .read_block(fs_block_id as usize, buf)
-                .map_err(|_| FileSystemError::IoError)
+                .map_err(block_error)
                 .map(|_| ())
         } else if fs_block_size > dev_block_size {
             // Filesystem block spans multiple device blocks
@@ -58,7 +84,7 @@ impl Ext2FileSystem {
                         start_dev_block + i,
                         &mut buf[offset..offset + dev_block_size],
                     )
-                    .map_err(|_| FileSystemError::IoError)?;
+                    .map_err(block_error)?;
             }
             Ok(())
         } else {
@@ -71,7 +97,7 @@ impl Ext2FileSystem {
             let mut dev_buf = try_zeroed(dev_block_size)?;
             device
                 .read_block(dev_block, &mut dev_buf)
-                .map_err(|_| FileSystemError::IoError)?;
+                .map_err(block_error)?;
 
             buf.copy_from_slice(&dev_buf[offset_in_dev_block..offset_in_dev_block + fs_block_size]);
             Ok(())
@@ -83,12 +109,14 @@ impl Ext2FileSystem {
         fs_block_id: u32,
         buf: &[u8],
     ) -> Result<(), FileSystemError> {
-        let mut journal = self.journal.lock();
-        if let Some(journal) = journal.as_mut() {
-            return journal.stage(fs_block_id, buf, self.block_size);
-        }
-        drop(journal);
-        self.write_fs_block_home(fs_block_id, buf)
+        let mut owner = self.journal.lock();
+        owner
+            .ready_mut()?
+            .stage(fs_block_id, buf, self.block_size)?;
+        self.metadata_cache
+            .lock()
+            .update_if_present(fs_block_id, buf);
+        Ok(())
     }
 
     pub(super) fn write_fs_block_home(
@@ -96,6 +124,7 @@ impl Ext2FileSystem {
         fs_block_id: u32,
         buf: &[u8],
     ) -> Result<(), FileSystemError> {
+        record_test_home_write();
         if fs_block_id >= self.superblock.lock().s_blocks_count {
             return Err(FileSystemError::InvalidFileSystem);
         }
@@ -106,7 +135,7 @@ impl Ext2FileSystem {
         if self.block_size == device_block_size {
             self.device
                 .write_block(fs_block_id as usize, buf)
-                .map_err(|_| FileSystemError::IoError)?;
+                .map_err(block_error)?;
         } else if self.block_size > device_block_size {
             let count = self.block_size / device_block_size;
             let first = fs_block_id as usize * count;
@@ -114,7 +143,7 @@ impl Ext2FileSystem {
                 let offset = index * device_block_size;
                 self.device
                     .write_block(first + index, &buf[offset..offset + device_block_size])
-                    .map_err(|_| FileSystemError::IoError)?;
+                    .map_err(block_error)?;
             }
         } else {
             let count = device_block_size / self.block_size;
@@ -123,12 +152,15 @@ impl Ext2FileSystem {
             let mut device_buf = try_zeroed(device_block_size)?;
             self.device
                 .read_block(device_block, &mut device_buf)
-                .map_err(|_| FileSystemError::IoError)?;
+                .map_err(block_error)?;
             device_buf[offset..offset + self.block_size].copy_from_slice(buf);
             self.device
                 .write_block(device_block, &device_buf)
-                .map_err(|_| FileSystemError::IoError)?;
+                .map_err(block_error)?;
         }
+        self.metadata_cache
+            .lock()
+            .update_if_present(fs_block_id, buf);
         Ok(())
     }
 }

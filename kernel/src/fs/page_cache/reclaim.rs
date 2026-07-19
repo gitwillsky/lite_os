@@ -54,8 +54,7 @@ impl CachedPages {
             // 1. 每次从持久 cursor 定位下一个 entry；到 map 末尾只回绕一次。
             let next = self
                 .entries
-                .iter_from(&self.reclaim_cursor)
-                .next()
+                .ceiling(&self.reclaim_cursor)
                 .map(|(&index, page)| {
                     (
                         index,

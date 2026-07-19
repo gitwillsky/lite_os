@@ -88,7 +88,7 @@ fn init_virtio_devices(board_info: &PlatformInfo) {
             match device_id {
                 1 => init_virtio_net_device(board_info, virtio_dev.irq, base_addr),
                 2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
-                4 => init_virtio_rng_device(base_addr),
+                4 => init_virtio_rng_device(board_info, virtio_dev.irq, base_addr),
                 16 => init_virtio_gpu_device(board_info, virtio_dev.irq, base_addr),
                 18 => init_virtio_input_device(board_info, virtio_dev.irq, base_addr),
                 _ => info!(
@@ -133,10 +133,14 @@ fn init_virtio_net_device(board_info: &PlatformInfo, irq: u32, base_addr: usize)
     );
 }
 
-fn init_virtio_rng_device(base_addr: usize) {
+fn init_virtio_rng_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
     let device = VirtIORngDevice::new(base_addr).expect("DTB virtio-rng must initialize");
-    crate::drivers::register_entropy_device(device)
+    crate::drivers::register_entropy_device(device.clone())
         .expect("only one virtio-rng device is supported");
+    assert!(
+        maybe_register_irq(board_info, irq, device.irq_handler_for(), "rng"),
+        "virtio-rng requires a registered IRQ"
+    );
     info!("[Platform] VirtIO RNG registered at {:#x}", base_addr);
 }
 

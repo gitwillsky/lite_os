@@ -13,10 +13,12 @@ use crate::{
 
 #[inline(always)]
 fn handle_supervisor_soft_interrupt() {
-    // 同步 memory barrier 必须在 task deferred work 前确认；IPI 仅负责唤醒，
-    // address-space shootdown 使用独立的同步 platform operation。
+    // 1. 先清除 calling CPU 的 SSIP，再读取 barrier request。若反序，远端在
+    // completion 与 clear 之间发布的新 request 会丢失唯一 IPI edge 并永久等待。
+    arch::interrupt::clear_software();
+    // 2. kernel SSIP 可以打断持有普通 driver/KERNEL_SPACE lock 的任意 syscall；此处只
+    // 完成同步 trap-owned barrier，领域 deferred work 统一留给 user-return/idle safe point。
     crate::task::complete_pending_memory_barrier();
-    task::dispatch_pending_deferred_work();
 }
 
 pub(crate) fn init() {
@@ -44,15 +46,30 @@ pub(crate) fn handle_user_trap() -> ! {
         TrapEvent::UnsupportedInterrupt => panic!("unsupported user interrupt"),
         TrapEvent::IllegalInstruction => {
             if let Some(current) = task::current_task() {
-                let program_counter = current.load_user_context().program_counter();
-                error!(
-                    "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
-                    program_counter
-                );
+                let program_counter = current.user_program_counter();
+                if arch::trap::is_floating_point_instruction_at(
+                    program_counter,
+                    |address, destination| {
+                        let halfword: &mut [u8; 2] = destination
+                            .try_into()
+                            .expect("RISC-V decoder requests one instruction halfword");
+                        current.copy_instruction_halfword(address, halfword).is_ok()
+                    },
+                ) && current.activate_user_floating_point()
+                {
+                    // 保持 sepc 不变；return path 初始化 FP register file 后重试原指令。
+                    drop(current);
+                } else {
+                    error!(
+                        "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
+                        program_counter
+                    );
+                    exit_current_group_by_signal(4);
+                }
             } else {
                 error!("[kernel] IllegalInstruction with no current task");
+                exit_current_group_by_signal(4);
             }
-            exit_current_group_by_signal(4);
         }
         TrapEvent::Breakpoint => {
             // 在尚未实现标准 SIGTRAP frame 前不能猜测 16/32-bit 指令长度并跳过断点。
@@ -62,13 +79,9 @@ pub(crate) fn handle_user_trap() -> ! {
         }
         TrapEvent::UserEnvironmentCall => {
             if let Some(current) = task::current_task() {
-                // 1. 不允许 UserContext 引用跨越系统调用；execve 会替换其底层地址空间。
-                let mut cx = current.load_user_context();
-                let request = cx.take_syscall_request();
-                let syscall_id = request.number();
-                let args = request.arguments();
-                let ecall_pc = request.instruction();
-                current.set_user_context(cx);
+                // 1. transaction 只读取 a7/a0..a5/sepc 并原地推进 PC；不允许 context
+                // 引用跨 syscall，因为 execve 会把同一 owner rebind 到新 AddressSpace。
+                let (syscall_id, args, ecall_pc) = current.take_syscall_request();
                 // sys_exit 不返回；若保留该 Arc，它会永久留在即将释放的 task stack 上。
                 drop(current);
                 let result = syscall::syscall(syscall_id, args);
@@ -76,22 +89,19 @@ pub(crate) fn handle_user_trap() -> ! {
                     task::current_task().expect("returning syscall must still have a current task");
 
                 // 2. execve 成功时，新 UserContext 已包含新程序入口；覆盖它会让 PC 回到旧映像。
-                let mut cx = current.load_user_context();
                 match result {
                     SyscallOutcome::Return(result) => {
                         if syscall_id != SYSCALL_EXECVE || result != 0 {
-                            cx.complete_syscall(SyscallCompletion::Return(result));
+                            current.complete_syscall(SyscallCompletion::Return(result));
                         }
                     }
                     SyscallOutcome::Restart => {
-                        cx.complete_syscall(SyscallCompletion::Interrupted(
+                        current.complete_syscall(SyscallCompletion::Interrupted(
                             crate::syscall::INTERRUPTED_RESULT,
                         ));
                         current.arm_syscall_restart(syscall_id, args, ecall_pc);
                     }
                 }
-
-                current.set_user_context(cx);
             } else {
                 error!("[kernel] UserEnvCall with no current task, terminating");
                 panic!("UserEnvCall with no current task");
@@ -108,7 +118,7 @@ pub(crate) fn handle_user_trap() -> ! {
         }
         TrapEvent::LoadAccessFault { address } | TrapEvent::StoreAccessFault { address } => {
             if let Some(current) = task::current_task() {
-                let program_counter = current.load_user_context().program_counter();
+                let program_counter = current.user_program_counter();
                 error!(
                     "[kernel] access fault in application, bad addr = {address:#x}, pc = {program_counter:#x}, core dumped.",
                 );
@@ -124,6 +134,11 @@ pub(crate) fn handle_user_trap() -> ! {
             exit_current_group_by_signal(4);
         }
     }
+
+    // 所有 user trap 在领域 handler 已释放 syscall/page-table/driver lock 后汇入唯一
+    // deferred safe point。缺失此处会让 kernel 中确认过的 SSIP 永久留下 pending work；
+    // 若把它移回 kernel-trap arm，则普通 VirtIO queue lock 会发生同 CPU 重入死锁。
+    task::dispatch_pending_deferred_work();
 
     // kernel/user timer softirq 共用该 flag；只在即将返回用户态时切换，避免在 hardirq 中调度。
     if task::take_reschedule() && task::current_task().is_some() {
@@ -180,12 +195,7 @@ pub(crate) fn trap_return() -> ! {
     }
     let current_task = crate::task::current_task().expect("signal delivery lost current task");
     let user_address_space = current_task.user_token();
-    let user_context_va = current_task.user_context_va();
-    {
-        let mut trap_context = current_task.load_user_context();
-        trap_context.prepare_kernel_return(crate::cpu::current_id().index());
-        current_task.set_user_context(trap_context);
-    }
+    let user_context_va = current_task.prepare_user_return(crate::cpu::current_id().index());
     // 3. trap return 通过 noreturn trampoline 跳转，Rust frame 不会展开；若不在此显式释放，
     // 每次 syscall 都会把一个 TCB Arc 永久遗留在随后被覆盖的 task kernel stack 上。
     drop(current_task);

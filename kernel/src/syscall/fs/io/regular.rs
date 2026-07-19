@@ -68,13 +68,13 @@ pub(super) fn read_vectors(
 /// `prepare` 必须在 OFD position/write-sequence gate 外调用，`with_prepared_staging`
 /// 则保证 heap storage 也只在这些 gate 释放后析构。
 pub(super) struct PreparedRegularWriteStaging {
-    stack: [u8; crate::memory::PAGE_SIZE],
-    heap: Vec<u8>,
+    stack: [core::mem::MaybeUninit<u8>; crate::memory::PAGE_SIZE],
+    heap: Vec<core::mem::MaybeUninit<u8>>,
     length: usize,
 }
 
 impl PreparedRegularWriteStaging {
-    /// @description 在任何 regular-file gate 或 publication 前准备并清零 bounded staging。
+    /// @description 在任何 regular-file gate 或 publication 前准备未初始化 bounded staging。
     /// @param total_length 已检查的 syscall request 总长度。
     /// @return 小请求使用 stack；大请求最多使用 128 KiB heap，reserve 失败退回一页 stack。
     pub(super) fn prepare(total_length: usize) -> Self {
@@ -85,22 +85,22 @@ impl PreparedRegularWriteStaging {
         let length = fallible_staging_capacity(desired, crate::memory::PAGE_SIZE, heap_ready);
         if heap_ready {
             // reserve 已完成，resize 只建立已预留容量内的 initialized byte range。
-            heap.resize(length, 0);
+            heap.resize_with(length, core::mem::MaybeUninit::uninit);
         }
         Self {
-            stack: [0u8; crate::memory::PAGE_SIZE],
+            stack: [core::mem::MaybeUninit::uninit(); crate::memory::PAGE_SIZE],
             heap,
             length,
         }
     }
 
-    /// @description 借出已经分配、清零且不会在使用期间扩容的 staging slice。
-    /// @return 长度不超过 128 KiB 的 syscall-local buffer。
-    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
+    /// @description 借出已经分配、不会在使用期间扩容的 initialized-prefix owner。
+    /// @return capacity 不超过 128 KiB 的 syscall-local input staging。
+    pub(super) fn as_input_staging(&mut self) -> UserInputStaging<'_> {
         if self.heap.is_empty() {
-            &mut self.stack[..self.length]
+            UserInputStaging::from_slice(&mut self.stack[..self.length])
         } else {
-            &mut self.heap
+            UserInputStaging::from_slice(&mut self.heap)
         }
     }
 }
@@ -112,7 +112,7 @@ impl PreparedRegularWriteStaging {
 /// @param vectors 按序消费的 userspace buffers。
 /// @param append 本次 operation 是否按 O_APPEND/RWF_APPEND 选择 inode end；若逐 chunk 重读 flags，
 /// 并发 F_SETFL 会把一次 syscall 分裂为 append 与 positioned 两种语义。
-/// @param staging 在 position/write-sequence gate 外完成 allocation/zero-fill 的固定长度 slice。
+/// @param staging 在 position/write-sequence gate 外完成 allocation 的 initialized-prefix owner。
 /// @return 总写入字节数、首错负 errno 或已有进度后的 partial count。
 pub(super) fn write_vectors(
     task: &TaskControlBlock,
@@ -120,7 +120,7 @@ pub(super) fn write_vectors(
     position: &mut u64,
     vectors: &[UserIoVec],
     append: bool,
-    staging: &mut [u8],
+    staging: &mut UserInputStaging<'_>,
 ) -> isize {
     let total_length = vectors
         .iter()
@@ -130,14 +130,13 @@ pub(super) fn write_vectors(
         return 0;
     }
     assert!(
-        !staging.is_empty(),
+        staging.capacity() != 0,
         "non-empty regular write requires prepared staging"
     );
-    let chunk = staging;
     let mut cursor = UserIoCursor::new(vectors);
     let mut total = 0usize;
     while total < total_length {
-        let chunk_length = regular_write_chunk(total_length, total, chunk.len());
+        let chunk_length = regular_write_chunk(total_length, total, staging.capacity());
         assert_ne!(chunk_length, 0, "regular write staging made no progress");
         // 1. non-append range 在 copyin 前应用同一 syscall 的累计 limit accounting。
         let requested = if append {
@@ -148,7 +147,7 @@ pub(super) fn write_vectors(
                 Err(result) => return result,
             }
         };
-        let staged = cursor.stage_from_user_pagewise(task, &mut chunk[..requested]);
+        let staged = cursor.stage_from_user_pagewise_into(task, staging, requested);
         if staged.count == 0 {
             return if staged.faulted && total == 0 {
                 -errno::EFAULT
@@ -158,7 +157,7 @@ pub(super) fn write_vectors(
         }
         // 2. append 的 size selection 与 storage mutation 仍由 page-cache operation owner 原子提交。
         let written = if append {
-            match file.append(&chunk[..staged.count], task.file_size_limit()) {
+            match file.append(staging.initialized(), task.file_size_limit()) {
                 Ok((_, 0)) => {
                     return if total == 0 {
                         file_size_exceeded(task)
@@ -181,7 +180,7 @@ pub(super) fn write_vectors(
                 }
             }
         } else {
-            match file.write(*position, &chunk[..staged.count]) {
+            match file.write(*position, staging.initialized()) {
                 Ok(written) => {
                     *position += written as u64;
                     written

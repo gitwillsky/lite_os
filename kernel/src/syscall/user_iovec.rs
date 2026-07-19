@@ -1,5 +1,10 @@
 use alloc::vec::Vec;
-use core::mem;
+use core::mem::{self, MaybeUninit};
+
+#[path = "user_iovec/input_staging.rs"]
+mod input_staging;
+#[allow(unused_imports)]
+pub(super) use input_staging::UserInputStaging;
 
 #[cfg(not(test))]
 use crate::task::TaskControlBlock;
@@ -183,10 +188,10 @@ pub(super) fn fallible_staging_capacity(
 }
 
 /// @description 在 operation callback 外拥有并最终释放已准备好的 transient staging。
-/// @param prepared callback 开始前已完成分配与清零的 staging owner。
+/// @param prepared callback 开始前已完成 storage 分配的 staging owner。
 /// @param operation 可包含 OFD position/write-sequence gate；只能借用 prepared owner。
 /// @return operation 的原样结果；staging 在 callback 返回、相关 gate 释放后才析构。
-/// @note 这里只保证 staging reserve/zero-fill/drop 不与 gate 重叠；user fault 与 backend
+/// @note 这里只保证 staging reserve/drop 不与 gate 重叠；user fault 与 backend
 /// transaction 仍可按各自契约分配。若把 staging 生命周期操作移入 callback，allocator/reclaimer
 /// 可能在 filesystem spin lock 内重入。
 pub(super) fn with_prepared_staging<Staging, Output>(
@@ -267,15 +272,47 @@ impl<'a> UserIoCursor<'a> {
         }
     }
 
-    /// @description 不推进 progress 地按 userspace page 边界 gather prefix。
-    /// @param output kernel staging；单次 copy adapter 调用不会跨 user page。
-    /// @param copy page-bounded userspace copyin adapter。
-    /// @return 首个 fault 前已 staged byte 数与 fault 标志。
-    /// @note regular write 用它保留坏页前 partial progress；socket atomic stage 继续使用 `stage_with`。
-    pub(super) fn stage_pagewise_with(
+    fn stage_uninit_with(
         &self,
-        output: &mut [u8],
-        mut copy: impl FnMut(usize, &mut [u8]) -> Result<(), ()>,
+        output: &mut [MaybeUninit<u8>],
+        mut copy: impl FnMut(usize, &mut [MaybeUninit<u8>]) -> Result<(), ()>,
+    ) -> StagedCopy {
+        let mut index = self.index;
+        let mut offset = self.offset;
+        let mut copied = 0usize;
+        while copied < output.len() && index < self.vectors.len() {
+            let vector = self.vectors[index];
+            if offset == vector.length {
+                index += 1;
+                offset = 0;
+                continue;
+            }
+            let count = (vector.length - offset).min(output.len() - copied);
+            let Some(address) = vector.base.checked_add(offset) else {
+                return StagedCopy {
+                    count: copied,
+                    faulted: true,
+                };
+            };
+            if copy(address, &mut output[copied..copied + count]).is_err() {
+                return StagedCopy {
+                    count: copied,
+                    faulted: true,
+                };
+            }
+            offset += count;
+            copied += count;
+        }
+        StagedCopy {
+            count: copied,
+            faulted: false,
+        }
+    }
+
+    pub(super) fn stage_uninit_pagewise_with(
+        &self,
+        output: &mut [MaybeUninit<u8>],
+        mut copy: impl FnMut(usize, &mut [MaybeUninit<u8>]) -> Result<(), ()>,
     ) -> StagedCopy {
         let mut index = self.index;
         let mut offset = self.offset;
@@ -320,14 +357,35 @@ impl<'a> UserIoCursor<'a> {
     }
 
     #[cfg(not(test))]
-    pub(super) fn stage_from_user_pagewise(
+    pub(super) fn stage_from_user_into(
         &self,
         task: &TaskControlBlock,
-        output: &mut [u8],
+        staging: &mut UserInputStaging<'_>,
+        length: usize,
     ) -> StagedCopy {
-        self.stage_pagewise_with(output, |address, output| {
-            task.copy_from_user(address, output).map_err(|_| ())
-        })
+        let staged = self.stage_uninit_with(staging.prepare(length), |address, output| {
+            task.copy_from_user_uninit(address, output).map_err(|_| ())
+        });
+        // SAFETY: stage_uninit_with 只在 copy_from_user_uninit 完整初始化一个 chunk 后计入
+        // count；失败 chunk 不计入，故 staged prefix 的每个 byte 都已初始化。
+        unsafe { staging.publish(staged.count) };
+        staged
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn stage_from_user_pagewise_into(
+        &self,
+        task: &TaskControlBlock,
+        staging: &mut UserInputStaging<'_>,
+        length: usize,
+    ) -> StagedCopy {
+        let staged = self.stage_uninit_pagewise_with(staging.prepare(length), |address, output| {
+            task.copy_from_user_uninit(address, output).map_err(|_| ())
+        });
+        // SAFETY: pagewise cursor 只在 copy_from_user_uninit 完整初始化一个 page chunk 后
+        // 计入 count；失败 chunk 不计入，故 staged prefix 已完整初始化。
+        unsafe { staging.publish(staged.count) };
+        staged
     }
 
     /// @description 只提交 backend 已消费的 staged prefix，避免 short send 跳过 suffix。
@@ -346,6 +404,35 @@ impl<'a> UserIoCursor<'a> {
         }
     }
 
+    /// @description 按 iovec range 清零，并仅提交已经成功完成的 vector progress。
+    /// @param zero 接收 checked address 与该 vector 的剩余长度；一次调用覆盖完整连续 range。
+    /// @return 本次成功清零的总字节数；失败时保留先前 vector 的 partial progress。
+    pub(super) fn zero_with(
+        &mut self,
+        mut zero: impl FnMut(usize, usize) -> Result<(), ()>,
+    ) -> Result<usize, ()> {
+        let initial = self.completed;
+        while self.index < self.vectors.len() {
+            let vector = self.vectors[self.index];
+            if self.offset == vector.length {
+                self.index += 1;
+                self.offset = 0;
+                continue;
+            }
+            let count = vector.length - self.offset;
+            let address = vector.base.checked_add(self.offset).ok_or(())?;
+            zero(address, count)?;
+            self.offset += count;
+            self.completed += count;
+        }
+        Ok(self.completed - initial)
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn zero_to_user(&mut self, task: &TaskControlBlock) -> Result<usize, ()> {
+        self.zero_with(|address, count| task.zero_user(address, count).map_err(|_| ()))
+    }
+
     #[cfg(not(test))]
     pub(super) fn copy_from_user(
         &mut self,
@@ -353,6 +440,22 @@ impl<'a> UserIoCursor<'a> {
         output: &mut [u8],
     ) -> Result<usize, ()> {
         let staged = self.stage_from_user(task, output);
+        self.advance(staged.count);
+        if staged.faulted {
+            Err(())
+        } else {
+            Ok(staged.count)
+        }
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn copy_from_user_into(
+        &mut self,
+        task: &TaskControlBlock,
+        staging: &mut UserInputStaging<'_>,
+        length: usize,
+    ) -> Result<usize, ()> {
+        let staged = self.stage_from_user_into(task, staging, length);
         self.advance(staged.count);
         if staged.faulted {
             Err(())

@@ -46,6 +46,43 @@ pub(crate) unsafe fn enable_scheduler_interrupts() {
     }
 }
 
+/// @description 以不丢唤醒的顺序等待一次启动期外部中断。
+///
+/// architecture assembly 临时打开 SSIE/SIE 并执行带固定 resume label 的 WFI；
+/// hardirq 发布的 pending SSIP 是已确认 device edge 的耐久 wake token。若 external
+/// 或 software trap 命中 enable-to-WFI 窗口，kernel trap entry 把 `sepc` 精确推进到
+/// resume label，禁止确认唯一 IRQ edge 后重新睡眠。返回前精确恢复调用时
+/// 的 SEIE/SSIE/SIE；timer source 始终不变。
+///
+/// @return 一次 WFI 返回后无返回值。
+/// @errors local trap vector、interrupt controller 与 membarrier per-CPU state 必须已初始化；
+/// SSIE/timer source 必须在 scheduler owner 尚未初始化时保持关闭。
+pub(crate) fn wait_for_external_interrupt() {
+    let local = disable_local();
+    assert!(
+        !riscv::register::sie::read().ssoft(),
+        "bootstrap external wait requires scheduler software IRQ source disabled"
+    );
+    let external_enabled = riscv::register::sie::read().sext();
+    if !external_enabled {
+        // SAFETY: kernel runs in S-mode and changes only the calling CPU's SEIE source.
+        unsafe { riscv::register::sie::set_sext() };
+    }
+    // SAFETY: trap.S temporarily owns local SIE and its trap-entry resume fixup; caller established
+    // the trap/PLIC initialization and bootstrap source constraints documented above.
+    unsafe extern "C" {
+        fn __wait_for_external_interrupt();
+    }
+    // SAFETY: local SIE/SSIE are closed and SEIE is enabled; assembly restores SIE/SSIE before return.
+    unsafe { __wait_for_external_interrupt() };
+    if !external_enabled {
+        // SAFETY: kernel restores only the calling CPU's previously disabled SEIE source.
+        unsafe { riscv::register::sie::clear_sext() };
+    }
+    // SAFETY: local was captured on this CPU and no context switch occurs in bootstrap wait.
+    unsafe { restore_local(local) };
+}
+
 /// @description 启用 calling CPU 的 supervisor timer interrupt source。
 ///
 /// @return 无返回值。

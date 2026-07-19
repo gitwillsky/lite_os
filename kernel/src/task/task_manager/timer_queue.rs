@@ -4,9 +4,13 @@ mod period;
 mod posix_creation;
 mod preparation;
 mod preparation_policy;
+mod transaction;
+mod transaction_loop;
 use period::next_period;
 use preparation::{PreparedPosixCreate, PreparedPosixReplacement, PreparedRealReplacement};
 use preparation_policy::{TimerReplacementNeeds, posix_deadline_needed, real_replacement_needs};
+use transaction::{TimerTransactionPolicy, execute_timer_transaction};
+use transaction_loop::TimerTransactionCommit;
 
 #[derive(Clone, Copy)]
 struct RealTimer {
@@ -158,8 +162,7 @@ impl TimerQueue {
         loop {
             let Some(key) = self
                 .posix_timers
-                .iter_after(&cursor)
-                .next()
+                .successor(&cursor)
                 .map(|(&key, _)| key)
                 .filter(|key| key.0 == tgid)
             else {
@@ -440,28 +443,26 @@ pub(crate) fn set_real_timer(
     interval_ns: u64,
     now_ns: u64,
 ) -> Result<TimerSetting, TimerError> {
-    {
-        let graph = super::TASK_MANAGER.graph.lock();
-        live_process(&graph, tgid)?;
-    }
-    loop {
-        let needs = super::TASK_MANAGER.timers.lock().real_replacement_needs(
-            tgid,
-            value_ns != 0 || interval_ns != 0,
-            value_ns != 0,
-        );
-        let prepared =
-            PreparedRealReplacement::prepare(tgid, value_ns, interval_ns, now_ns, needs)?;
-        let graph = super::TASK_MANAGER.graph.lock();
-        live_process(&graph, tgid)?;
-        if let Some(previous) = super::TASK_MANAGER
-            .timers
-            .lock()
-            .replace_real(prepared, now_ns)
-        {
-            return Ok(previous);
-        }
-    }
+    execute_timer_transaction(
+        TimerTransactionPolicy::itimer_real(tgid),
+        |timers| {
+            Ok(timers.real_replacement_needs(
+                tgid,
+                value_ns != 0 || interval_ns != 0,
+                value_ns != 0,
+            ))
+        },
+        |needs, reusable| {
+            debug_assert!(reusable.is_none());
+            PreparedRealReplacement::prepare(tgid, value_ns, interval_ns, now_ns, needs)
+        },
+        |timers, prepared| {
+            Ok(match timers.replace_real(prepared, now_ns) {
+                Some(previous) => TimerTransactionCommit::Complete(previous),
+                None => TimerTransactionCommit::Retry(None),
+            })
+        },
+    )
 }
 
 /// 查询 Process 当前 ITIMER_REAL setting。
@@ -477,39 +478,23 @@ pub(crate) fn create_posix_timer(
     clock: PosixTimerClock,
     notification: PosixTimerNotification,
 ) -> Result<i32, TimerError> {
-    // 初次 lifecycle 检查维持 NotFound 优先；最终 graph→timer 复查是 publication point。
-    {
-        let graph = super::TASK_MANAGER.graph.lock();
-        let threads = live_process(&graph, tgid)?;
-        if let PosixTimerNotification::Thread { tid, .. } = notification
-            && !threads.contains_key(&tid)
-        {
-            return Err(TimerError::NotFound);
-        }
-    }
-    let mut id = super::TASK_MANAGER.timers.lock().next_posix_id(tgid)?;
-    let mut prepared = PreparedPosixCreate::prepare(tgid, id, clock, notification)?;
-    loop {
-        let graph = super::TASK_MANAGER.graph.lock();
-        let threads = live_process(&graph, tgid)?;
-        if let PosixTimerNotification::Thread { tid, .. } = notification
-            && !threads.contains_key(&tid)
-        {
-            return Err(TimerError::NotFound);
-        }
-        let commit = super::TASK_MANAGER
-            .timers
-            .lock()
-            .commit_posix_create(prepared);
-        match commit {
-            Ok(()) => return Ok(id),
-            Err(collision) => {
-                drop(graph);
-                id = super::TASK_MANAGER.timers.lock().next_posix_id(tgid)?;
-                prepared = collision.retarget(id);
-            }
-        }
-    }
+    execute_timer_transaction(
+        TimerTransactionPolicy::posix_create(tgid, notification),
+        |timers| timers.next_posix_id(tgid),
+        |id, reusable: Option<PreparedPosixCreate>| {
+            Ok(match reusable {
+                Some(prepared) => prepared.retarget(id),
+                None => PreparedPosixCreate::prepare(tgid, id, clock, notification)?,
+            })
+        },
+        |timers, prepared| {
+            let id = prepared.key.1;
+            Ok(match timers.commit_posix_create(prepared) {
+                Ok(()) => TimerTransactionCommit::Complete(id),
+                Err(collision) => TimerTransactionCommit::Retry(Some(collision)),
+            })
+        },
+    )
 }
 
 /// 原子替换一个 Process-owned POSIX timer，并返回旧 setting。
@@ -521,35 +506,27 @@ pub(crate) fn set_posix_timer(
     absolute: bool,
     now_ns: u64,
 ) -> Result<TimerSetting, TimerError> {
-    {
-        let graph = super::TASK_MANAGER.graph.lock();
-        live_process(&graph, tgid)?;
-        super::TASK_MANAGER.timers.lock().posix(tgid, id, now_ns)?;
-    }
-    loop {
-        let deadline_needed =
-            super::TASK_MANAGER
-                .timers
-                .lock()
-                .posix_deadline_needed(tgid, id, value_ns != 0)?;
-        let prepared = PreparedPosixReplacement::prepare(
-            tgid,
-            id,
-            value_ns,
-            interval_ns,
-            absolute,
-            deadline_needed,
-        )?;
-        let graph = super::TASK_MANAGER.graph.lock();
-        live_process(&graph, tgid)?;
-        if let Some(previous) = super::TASK_MANAGER
-            .timers
-            .lock()
-            .replace_posix(prepared, now_ns)?
-        {
-            return Ok(previous);
-        }
-    }
+    execute_timer_transaction(
+        TimerTransactionPolicy::posix_replace(tgid),
+        |timers| timers.posix_deadline_needed(tgid, id, value_ns != 0),
+        |deadline_needed, reusable| {
+            debug_assert!(reusable.is_none());
+            PreparedPosixReplacement::prepare(
+                tgid,
+                id,
+                value_ns,
+                interval_ns,
+                absolute,
+                deadline_needed,
+            )
+        },
+        |timers, prepared| {
+            Ok(match timers.replace_posix(prepared, now_ns)? {
+                Some(previous) => TimerTransactionCommit::Complete(previous),
+                None => TimerTransactionCommit::Retry(None),
+            })
+        },
+    )
 }
 
 /// 查询一个 Process-owned POSIX timer。

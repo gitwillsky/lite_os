@@ -3,78 +3,130 @@ use alloc::sync::Arc;
 
 const EXIT_EFFECT_HANGUP: u8 = 1 << 0;
 const EXIT_EFFECT_CONTINUE: u8 = 1 << 1;
-const EXIT_EFFECT_WAS_ORPHANED_STOPPED: u8 = 1 << 2;
 
-fn mark_orphaned_stopped_groups(graph: &mut ProcessGraph, effect: u8) {
+fn group_is_stopped(graph: &ProcessGraph, group: (usize, usize)) -> bool {
+    graph.groups.get(&group).is_some_and(|group| {
+        group.members.iter().any(|(&tgid, ())| {
+            graph.nodes.get(&tgid).is_some_and(|node| {
+                matches!(node.state, ProcessState::Live(_))
+                    && node.job_control == JobControlState::Stopped
+            })
+        })
+    })
+}
+
+fn stage_group_exit_check(graph: &mut ProcessGraph, group: (usize, usize)) {
+    if graph
+        .groups
+        .get(&group)
+        .is_none_or(|index| index.exit_check_pending)
+    {
+        return;
+    }
+    let was_orphaned_stopped =
+        super::process_group::process_group_is_orphaned(graph, group.0, group.1)
+            && group_is_stopped(graph, group);
+    let next = graph.exit_group_head;
+    let index = graph
+        .groups
+        .get_mut(&group)
+        .expect("staged process group disappeared");
+    index.exit_check_pending = true;
+    index.exit_check_next = next;
+    index.was_orphaned_stopped = was_orphaned_stopped;
+    graph.exit_group_head = Some(group);
+}
+
+fn mark_orphaned_stopped_groups(graph: &mut ProcessGraph, exiting: usize) {
+    let Some(node) = graph.nodes.get(&exiting) else {
+        return;
+    };
+    stage_group_exit_check(graph, (node.session, node.process_group));
     let mut cursor = 0;
     loop {
-        let candidate = graph.nodes.iter_after(&cursor).find_map(|(&tgid, node)| {
-            (matches!(node.state, ProcessState::Live(_))
-                && node.job_control == JobControlState::Stopped)
-                .then_some((tgid, node.session, node.process_group))
-        });
-        let Some((tgid, session, process_group)) = candidate else {
+        let child = graph
+            .nodes
+            .get(&exiting)
+            .and_then(|node| node.children.successor(&cursor))
+            .map(|(&child, ())| child);
+        let Some(child) = child else {
             break;
         };
-        cursor = tgid;
-        if !super::process_group::process_group_is_orphaned(graph, session, process_group) {
-            continue;
-        }
-        graph.nodes.for_each_mut(|_, node| {
-            if node.session == session
-                && node.process_group == process_group
-                && matches!(node.state, ProcessState::Live(_))
-            {
-                node.exit_effects |= effect;
-            }
-        });
+        cursor = child;
+        let node = graph
+            .nodes
+            .get(&child)
+            .expect("child index references missing process");
+        stage_group_exit_check(graph, (node.session, node.process_group));
     }
 }
 
+fn stage_exit_effect(graph: &mut ProcessGraph, tgid: usize, effect: u8) {
+    let index = effect.trailing_zeros() as usize;
+    let head = graph.exit_effect_heads[index];
+    let node = graph
+        .nodes
+        .get_mut(&tgid)
+        .expect("exit-effect process missing from graph");
+    if node.exit_effects & effect != 0 || !matches!(node.state, ProcessState::Live(_)) {
+        return;
+    }
+    node.exit_effects |= effect;
+    node.exit_effect_next[index] = head;
+    graph.exit_effect_heads[index] = Some(tgid);
+}
+
 fn mark_new_orphaned_stopped_groups(graph: &mut ProcessGraph) {
-    let mut cursor = 0;
-    loop {
-        let candidate = graph.nodes.iter_after(&cursor).find_map(|(&tgid, node)| {
-            (matches!(node.state, ProcessState::Live(_))
-                && node.job_control == JobControlState::Stopped)
-                .then_some((tgid, node.session, node.process_group))
-        });
-        let Some((tgid, session, process_group)) = candidate else {
-            break;
+    while let Some(group) = graph.exit_group_head {
+        let (next, was_orphaned_stopped) = {
+            let index = graph
+                .groups
+                .get_mut(&group)
+                .expect("queued process group disappeared");
+            index.exit_check_pending = false;
+            (
+                index.exit_check_next.take(),
+                core::mem::take(&mut index.was_orphaned_stopped),
+            )
         };
-        cursor = tgid;
-        if !super::process_group::process_group_is_orphaned(graph, session, process_group)
-            || graph.nodes.values().any(|node| {
-                node.session == session
-                    && node.process_group == process_group
-                    && node.exit_effects & EXIT_EFFECT_WAS_ORPHANED_STOPPED != 0
-            })
-        {
+        graph.exit_group_head = next;
+        let is_orphaned_stopped =
+            super::process_group::process_group_is_orphaned(graph, group.0, group.1)
+                && group_is_stopped(graph, group);
+        if was_orphaned_stopped || !is_orphaned_stopped {
             continue;
         }
-        graph.nodes.for_each_mut(|_, node| {
-            if node.session == session
-                && node.process_group == process_group
-                && matches!(node.state, ProcessState::Live(_))
-            {
-                node.exit_effects |= EXIT_EFFECT_HANGUP | EXIT_EFFECT_CONTINUE;
-            }
-        });
+        let mut cursor = 0;
+        loop {
+            let member = graph
+                .groups
+                .get(&group)
+                .and_then(|index| index.members.successor(&cursor))
+                .map(|(&tgid, ())| tgid);
+            let Some(tgid) = member else {
+                break;
+            };
+            cursor = tgid;
+            stage_exit_effect(graph, tgid, EXIT_EFFECT_HANGUP);
+            stage_exit_effect(graph, tgid, EXIT_EFFECT_CONTINUE);
+        }
     }
-    graph.nodes.for_each_mut(|_, node| {
-        node.exit_effects &= !EXIT_EFFECT_WAS_ORPHANED_STOPPED;
-    });
 }
 
 fn drain_exit_effect(effect: u8, signal: usize) {
     loop {
         let target = {
             let mut graph = TASK_MANAGER.graph.lock();
-            let target = graph
-                .nodes
-                .iter()
-                .find_map(|(&tgid, node)| (node.exit_effects & effect != 0).then_some(tgid));
+            let index = effect.trailing_zeros() as usize;
+            let target = graph.exit_effect_heads[index];
             if let Some(tgid) = target {
+                let next = graph
+                    .nodes
+                    .get_mut(&tgid)
+                    .expect("selected exit-effect process disappeared")
+                    .exit_effect_next[index]
+                    .take();
+                graph.exit_effect_heads[index] = next;
                 graph
                     .nodes
                     .get_mut(&tgid)
@@ -242,22 +294,10 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
 /// @param requested calling Thread 请求的退出原因。
 /// @return 依次为 task/idle raw context 地址；task 由 deferred-reap slot 保活。
 fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *mut KernelContext) {
-    let task = take_current_task().expect("No current task to exit");
-    let end_time = get_time_us();
-    task.scheduling.policy.lock().finish_runtime(end_time);
-
-    {
-        let mut scheduling = task.scheduling.state.lock();
-        assert!(
-            matches!(scheduling.run_state(), RunState::Running { .. }),
-            "only current running task can exit"
-        );
-        assert!(
-            scheduling.wait.is_none(),
-            "running task cannot retain wait membership"
-        );
-        scheduling.replace_non_ready_state(RunState::Exited);
-    }
+    // Memory/file cleanup can contend on task-context mutexes. Keep the exiting task installed as
+    // current until every blocking consequence completes; removing it earlier leaves no scheduler
+    // wait target and turns ordinary same-mm contention into a kernel panic.
+    let task = current_task().expect("No current task to exit");
     task.cleanup_robust_list();
     let (removed, process_status, parent_waiters, init_waiters, parent_signal_pid) = {
         let mut graph = TASK_MANAGER.graph.lock();
@@ -266,9 +306,9 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
             |node| matches!(&node.state, ProcessState::Live(threads) if threads.len() == 1),
         );
         if process_will_exit {
-            // 临时 bit 与 graph mutation 同锁：它冻结“退出前已 orphaned+stopped”的精确
-            // membership，避免不可失败的 exit 路径分配 group/member snapshot。
-            mark_orphaned_stopped_groups(&mut graph, EXIT_EFFECT_WAS_ORPHANED_STOPPED);
+            // Affected groups are the exiting process group plus its direct children's groups.
+            // The owner index freezes their old orphan/stopped state without a graph snapshot.
+            mark_orphaned_stopped_groups(&mut graph, exiting_pid);
         }
         let (removed, process_status, parent, session_leader, replacement_parent_tid) = {
             let node = graph
@@ -281,6 +321,9 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
             let removed = threads
                 .remove(&task.tid())
                 .expect("exiting thread missing from process graph");
+            if task.parent_death_signal(None) != 0 {
+                node.pdeath_enabled_threads -= 1;
+            }
             let process_status = threads
                 .is_empty()
                 .then(|| node.group_exit.take().unwrap_or(requested));
@@ -315,13 +358,39 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
         match process_status {
             None => (removed, None, FallibleMap::new(), FallibleMap::new(), None),
             Some(status) => {
-                // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
+                // orphan membership nodes move to init in the same owner transaction. No
+                // allocation can fail after the first edge has moved.
+                let mut adopted_exited = false;
                 if exiting_pid != INIT_PID {
-                    graph.nodes.for_each_mut(|_, child| {
-                        if child.parent == Some(exiting_pid) {
-                            child.parent = Some(INIT_PID);
-                        }
-                    });
+                    loop {
+                        let membership = {
+                            let exiting = graph
+                                .nodes
+                                .get_mut(&exiting_pid)
+                                .expect("exiting process disappeared during reparent");
+                            let Some((&child, ())) = exiting.children.first_key_value() else {
+                                break;
+                            };
+                            (
+                                child,
+                                exiting.children.take_entry(&child).expect("indexed child"),
+                            )
+                        };
+                        let (child, membership) = membership;
+                        let node = graph
+                            .nodes
+                            .get_mut(&child)
+                            .expect("child index references missing process");
+                        debug_assert_eq!(node.parent, Some(exiting_pid));
+                        node.parent = Some(INIT_PID);
+                        adopted_exited |= matches!(node.state, ProcessState::Exited(_));
+                        graph
+                            .nodes
+                            .get_mut(&INIT_PID)
+                            .expect("init missing during orphan reparent")
+                            .children
+                            .commit_vacant(membership);
+                    }
                 }
                 // 2. 取走 waiter owner 后释放 graph lock，再进入 scheduler seam，避免锁序反转。
                 let parent_waiters = parent
@@ -334,11 +403,6 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                         .get(pid)
                         .is_some_and(|node| matches!(node.state, ProcessState::Live(_)))
                 });
-                let adopted_exited = exiting_pid != INIT_PID
-                    && graph.nodes.values().any(|child| {
-                        child.parent == Some(INIT_PID)
-                            && matches!(child.state, ProcessState::Exited(_))
-                    });
                 let init_waiters = if adopted_exited {
                     graph
                         .nodes
@@ -356,14 +420,20 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                 if session_leader
                     && let Some(foreground) = task.terminal().release_session(exiting_pid)
                 {
-                    graph.nodes.for_each_mut(|_, node| {
-                        if node.session == exiting_pid
-                            && node.process_group == foreground
-                            && matches!(node.state, ProcessState::Live(_))
-                        {
-                            node.exit_effects |= EXIT_EFFECT_HANGUP;
-                        }
-                    });
+                    let group = (exiting_pid, foreground);
+                    let mut cursor = 0;
+                    loop {
+                        let member = graph
+                            .groups
+                            .get(&group)
+                            .and_then(|group| group.members.successor(&cursor))
+                            .map(|(&tgid, ())| tgid);
+                        let Some(tgid) = member else {
+                            break;
+                        };
+                        cursor = tgid;
+                        stage_exit_effect(&mut graph, tgid, EXIT_EFFECT_HANGUP);
+                    }
                 }
                 mark_new_orphaned_stopped_groups(&mut graph);
                 (
@@ -415,6 +485,22 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
             }
         };
         send_kernel_process_signal(parent, 17, info);
+    }
+    let current = take_current_task().expect("exiting task lost current ownership");
+    assert!(Arc::ptr_eq(&current, &task));
+    drop(current);
+    task.scheduling.policy.lock().finish_runtime(get_time_us());
+    {
+        let mut scheduling = task.scheduling.state.lock();
+        assert!(
+            matches!(scheduling.run_state(), RunState::Running { .. }),
+            "only current running task can exit"
+        );
+        assert!(
+            scheduling.wait.is_none(),
+            "running task cannot retain wait membership"
+        );
+        scheduling.replace_non_ready_state(RunState::Exited);
     }
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
     let task_cx_ptr = {

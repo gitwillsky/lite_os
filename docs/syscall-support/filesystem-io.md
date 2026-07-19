@@ -28,7 +28,7 @@
 | 55 | `fchown` | Complete | OFD inode owner mutation |
 | 56 | `openat` | Partial | ext2/devfs/devpts/procfs/sysfs objects |
 | 57 | `close` | Complete | detach 后锁外 consequence |
-| 61 | `getdents64` | Complete | directory cursor 与 Linux dirent64 |
+| 61 | `getdents64` | Complete | opaque directory `d_off` cursor、64 KiB bounded batch 与 copyout 后 publication |
 | 62 | `lseek` | Partial | seekable OFD types |
 | 63 | `read` | Partial | 已声明 OFD backend 与 partial/fault ordering |
 | 64 | `write` | Partial | 已声明 OFD backend 与 partial/fault ordering |

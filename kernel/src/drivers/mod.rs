@@ -3,9 +3,11 @@ mod display;
 mod goldfish_rtc;
 mod hal;
 mod input;
+pub(crate) mod io_completion;
 pub(crate) mod network;
 mod uart;
 mod virtio_blk;
+mod virtio_completion_irq;
 mod virtio_gpu;
 mod virtio_input;
 mod virtio_net;
@@ -48,6 +50,13 @@ pub(crate) fn register_network_device(
 
 pub(crate) fn register_entropy_device(device: alloc::sync::Arc<VirtIORngDevice>) -> Result<(), ()> {
     virtio_rng::register(device)
+}
+
+/// @description 在 task/idle safe point 各回收一批有界 driver I/O completion。
+///
+/// @return 任一设备仍有 backlog 时返回 `true`，caller 必须重新发布 `DriverIo` work。
+pub(crate) fn dispatch_io_completion_work() -> bool {
+    block::dispatch_completion_work() | virtio_rng::dispatch_completion_work()
 }
 
 pub(crate) fn register_display_device(

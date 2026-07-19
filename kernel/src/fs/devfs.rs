@@ -2,8 +2,8 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Once;
 
 use super::{
-    DeviceKind, DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode,
-    InodeMetadata, InodeType,
+    DeviceKind, DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
 };
 
 const DEVICE_FILESYSTEM_ID: usize = 2;
@@ -258,7 +258,11 @@ impl Inode for DevInode {
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
+    fn read_directory(
+        &self,
+        cursor: u64,
+        visitor: &mut dyn DirectoryVisitor,
+    ) -> Result<DirectoryRead, FileSystemError> {
         let root = [
             (1, InodeType::Directory, &b"."[..]),
             (1, InodeType::Directory, &b".."[..]),
@@ -288,46 +292,56 @@ impl Inode for DevInode {
             DevNode::Dri => &dri,
             DevNode::Input => {
                 let count = crate::input::device_count();
-                let mut entries = Vec::new();
-                entries
-                    .try_reserve_exact(count.saturating_add(2))
-                    .map_err(|_| FileSystemError::OutOfMemory)?;
-                entries.push(DirectoryEntry::try_new(14, InodeType::Directory, b".")?);
-                entries.push(DirectoryEntry::try_new(1, InodeType::Directory, b"..")?);
-                for index in 0..count {
+                let mut stream = IndexedDirectory::new(cursor, visitor);
+                for (index, inode, name) in [(0, 14, &b"."[..]), (1, 1, &b".."[..])] {
+                    if !stream.emit(
+                        index,
+                        DirectoryEntry {
+                            inode,
+                            kind: InodeType::Directory,
+                            name,
+                        },
+                    )? {
+                        return Ok(stream.finish());
+                    }
+                }
+                let start = stream.start_index().saturating_sub(2);
+                for ordinal in start..count {
+                    let index = ordinal;
                     let index =
                         u16::try_from(index).map_err(|_| FileSystemError::InvalidOperation)?;
                     let mut name = [0u8; 10];
                     let length = event_name(index, &mut name);
-                    entries.push(DirectoryEntry::try_new(
-                        DeviceKind::InputEvent(index).inode(),
-                        InodeType::CharacterDevice,
-                        &name[..length],
-                    )?);
+                    if !stream.emit(
+                        ordinal + 2,
+                        DirectoryEntry {
+                            inode: DeviceKind::InputEvent(index).inode(),
+                            kind: InodeType::CharacterDevice,
+                            name: &name[..length],
+                        },
+                    )? {
+                        break;
+                    }
                 }
-                return Ok(entries);
+                return Ok(stream.finish());
             }
-            DevNode::Pts => {
-                let mut entries = Vec::new();
-                entries
-                    .try_reserve_exact(2)
-                    .map_err(|_| FileSystemError::OutOfMemory)?;
-                entries.push(DirectoryEntry::try_new(16, InodeType::Directory, b".")?);
-                entries.push(DirectoryEntry::try_new(1, InodeType::Directory, b"..")?);
-                return Ok(entries);
-            }
+            DevNode::Pts => &[
+                (16, InodeType::Directory, &b"."[..]),
+                (1, InodeType::Directory, &b".."[..]),
+            ],
             DevNode::Device(_) | DevNode::Link(_) => {
                 return Err(FileSystemError::NotDirectory);
             }
         };
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(specifications.len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        for &(inode, kind, name) in specifications {
-            entries.push(DirectoryEntry::try_new(inode, kind, name)?);
+        let mut stream = IndexedDirectory::new(cursor, visitor);
+        for (index, &(inode, kind, name)) in
+            specifications.iter().enumerate().skip(stream.start_index())
+        {
+            if !stream.emit(index, DirectoryEntry { inode, kind, name })? {
+                break;
+            }
         }
-        Ok(entries)
+        Ok(stream.finish())
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -383,8 +397,8 @@ impl FileSystem for DevFileSystem {
         Ok(self.root.clone())
     }
 
-    fn statistics(&self) -> FileSystemStatistics {
-        FileSystemStatistics {
+    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
+        Ok(FileSystemStatistics {
             type_name: "devfs",
             magic: 0x8584_58f6,
             block_size: 4096,
@@ -397,6 +411,6 @@ impl FileSystem for DevFileSystem {
             name_length: 255,
             fragment_size: 4096,
             flags: 1,
-        }
+        })
     }
 }

@@ -24,12 +24,21 @@ use core::{ffi::c_int, panic::PanicInfo};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main(_argument_count: c_int, _arguments: *const *const u8) -> c_int {
-    match reactor::run() {
-        Ok(()) => 0,
-        Err(()) => {
-            let message = b"console-session: session failed\n";
-            unsafe { ffi::write(2, message.as_ptr().cast(), message.len()) };
-            1
+    let mut reported = false;
+    loop {
+        match reactor::run() {
+            Ok(()) => return 0,
+            Err(()) => {
+                if !reported {
+                    let message = b"console-session: unavailable; retrying\n";
+                    unsafe { ffi::write(2, message.as_ptr().cast(), message.len()) };
+                    reported = true;
+                }
+                // Headless boots intentionally lack DRM/input. Keeping the same process alive
+                // prevents init's respawn policy from turning absence into an exec/I/O storm;
+                // retrying still lets a later device/session reconstruction use the sole reactor.
+                unsafe { ffi::poll(core::ptr::null_mut(), 0, 5_000) };
+            }
         }
     }
 }

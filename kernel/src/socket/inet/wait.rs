@@ -3,10 +3,12 @@ use crate::{
     socket::{SocketPollState, SocketWaitSource},
 };
 
-use super::{InetEndpoint, InetSocket, raw_endpoint, tcp, udp_endpoint};
+use super::{InetEndpoint, InetSocket, protocol_read, raw_endpoint, tcp, udp_endpoint};
 
 impl InetSocket {
     pub(in crate::socket) fn poll_state(&self) -> SocketPollState {
+        let _operation = self.operation.lock();
+        let _protocol = protocol_read();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::poll_state(self);
         }

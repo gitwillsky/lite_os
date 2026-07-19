@@ -59,17 +59,16 @@ impl MemorySet {
         }
         if advice == MemoryAdvice::DontNeed {
             self.sync_shared_before_discard(&keys, range.clone())?;
-            let memory = revoke_and_synchronize(
-                self,
-                |memory| memory.revoke_dontneed_translations(&keys, &range),
-                |_| Self::flush_tlb_all_cpus(),
-            )
+            let memory = revoke_and_commit(self, |memory, commit| {
+                memory.revoke_dontneed_translations(&keys, &range, commit);
+            })
             .expect("platform TLB synchronization failed after MADV_DONTNEED");
             memory.release_dontneed_residents(&keys, &range);
             return Ok(());
         }
 
         debug_assert_eq!(advice, MemoryAdvice::Free);
+        let mut commit = TranslationCommit::new();
         for key in keys {
             let area = self.areas.get_mut(&key).expect("validated VMA key");
             let start = range.start.max(area.vpn_range.start);
@@ -81,13 +80,14 @@ impl MemorySet {
                     if self.page_table.translate(vpn).is_some() {
                         let mut flags: PagePermissions = area.map_permission.into();
                         flags.remove(PagePermissions::WRITE);
-                        self.page_table.set_flags(vpn, flags)?;
+                        self.page_table.set_flags(vpn, flags, &mut commit)?;
                     }
                 }
             }
         }
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after MADV_FREE permission update");
+        commit
+            .synchronize()
+            .expect("platform translation fence failed after MADV_FREE permission update");
         Ok(())
     }
 
@@ -95,6 +95,7 @@ impl MemorySet {
         &mut self,
         keys: &[VirtualPageNumber],
         range: &Range<VirtualPageNumber>,
+        commit: &mut TranslationCommit,
     ) {
         let page_table = &mut self.page_table;
         for key in keys {
@@ -102,7 +103,7 @@ impl MemorySet {
             let start = range.start.max(area.vpn_range.start);
             let end = range.end.min(area.vpn_range.end);
             for vpn in start.as_usize()..end.as_usize() {
-                let _ = page_table.unmap(VirtualPageNumber::from_vpn(vpn));
+                let _ = page_table.unmap(VirtualPageNumber::from_vpn(vpn), commit);
             }
         }
     }
@@ -151,7 +152,7 @@ impl MemorySet {
         let previous = self.areas.floor(&cursor);
         if let Some((&key, area)) = previous
             && cursor < area.vpn_range.end
-            && let Some((&vpn, _)) = area.data_frames.iter_from(&cursor).next()
+            && let Some((&vpn, _)) = area.data_frames.ceiling(&cursor)
         {
             return Some((key, vpn));
         }
@@ -196,7 +197,7 @@ struct PrivateReclaimTransaction<'memory> {
     final_cursor: VirtualPageNumber,
     scanned: usize,
     revoke_unique_candidates: usize,
-    unmapped: bool,
+    commit: TranslationCommit,
 }
 
 impl<'memory> PrivateReclaimTransaction<'memory> {
@@ -209,7 +210,7 @@ impl<'memory> PrivateReclaimTransaction<'memory> {
             final_cursor: initial_cursor,
             scanned: 0,
             revoke_unique_candidates: 0,
-            unmapped: false,
+            commit: TranslationCommit::new(),
         }
     }
 
@@ -254,8 +255,8 @@ impl<'memory> PrivateReclaimTransaction<'memory> {
             // 这里只用 revoke-time count 控制扫描节奏；其他 mm 可在 fence 期间释放同一
             // COW Arc，因此结果必须在 release replay 重新判定，不能把此值当作不变量。
             self.revoke_unique_candidates += usize::from(Arc::strong_count(&resident.frame) == 1);
-            match self.memory.page_table.unmap(vpn) {
-                Ok(()) => self.unmapped = true,
+            match self.memory.page_table.unmap(vpn, &mut self.commit) {
+                Ok(()) => {}
                 Err(PageTableError::NotMapped) => {}
                 Err(error) => panic!("private reclaim failed to unmap {vpn:?}: {error:?}"),
             }
@@ -263,12 +264,8 @@ impl<'memory> PrivateReclaimTransaction<'memory> {
         self.final_cursor = self.memory.private_reclaim_cursor;
     }
 
-    fn synchronize(&self) -> Result<(), crate::platform::TlbShootdownError> {
-        if self.unmapped {
-            MemorySet::flush_tlb_all_cpus()
-        } else {
-            Ok(())
-        }
+    fn synchronize(&mut self) -> Result<(), TranslationSynchronizationError> {
+        self.commit.synchronize()
     }
 
     fn release(self) -> ReclaimResult {

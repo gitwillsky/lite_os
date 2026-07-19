@@ -12,16 +12,15 @@ impl VirtIOGpuDevice {
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
     ) -> Option<DisplayMode> {
-        let mut response = [0u8; DISPLAY_INFO_SIZE];
+        control.lock().request[..CONTROL_HEADER_SIZE].fill(0);
         Self::execute_boot(
             device,
             control,
             VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
-            &mut [0u8; CONTROL_HEADER_SIZE],
-            &mut response,
+            CONTROL_HEADER_SIZE,
             VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
         )?;
-        Self::parse_display_mode(&response)
+        Self::parse_display_mode(&control.lock().response[..])
     }
 
     pub(super) fn parse_display_mode(response: &[u8]) -> Option<DisplayMode> {
@@ -51,79 +50,90 @@ impl VirtIOGpuDevice {
         mode: DisplayMode,
         framebuffer: &DeviceBacking,
     ) -> Option<()> {
-        let mut create = [0u8; 40];
-        write_u32(&mut create, 24, BOOT_RESOURCE_ID)?;
-        write_u32(&mut create, 28, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM)?;
-        write_u32(&mut create, 32, mode.width)?;
-        write_u32(&mut create, 36, mode.height)?;
-        Self::execute_ok(
-            device,
-            control,
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-            &mut create,
-        )?;
-
-        let mut attach = [0u8; ATTACH_REQUEST_SIZE];
-        write_u32(&mut attach, 24, BOOT_RESOURCE_ID)?;
-        write_u32(
-            &mut attach,
-            28,
-            u32::try_from(framebuffer.extent_count()).ok()?,
-        )?;
-        for index in 0..framebuffer.extent_count() {
-            let (ppn, pages) = framebuffer.extent(index)?;
-            let offset = 32 + index * 16;
-            write_u64(&mut attach, offset, (ppn.as_usize() * PAGE_SIZE) as u64)?;
+        {
+            let mut control = control.lock();
+            control.request[..40].fill(0);
+            write_u32(control.request.as_mut_slice(), 24, BOOT_RESOURCE_ID)?;
             write_u32(
-                &mut attach,
-                offset + 8,
-                u32::try_from(pages.checked_mul(PAGE_SIZE)?).ok()?,
+                control.request.as_mut_slice(),
+                28,
+                VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
             )?;
+            write_u32(control.request.as_mut_slice(), 32, mode.width)?;
+            write_u32(control.request.as_mut_slice(), 36, mode.height)?;
         }
+        Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 40)?;
+
         let attach_length = 32 + framebuffer.extent_count() * 16;
+        {
+            let mut control = control.lock();
+            control.request[..attach_length].fill(0);
+            write_u32(control.request.as_mut_slice(), 24, BOOT_RESOURCE_ID)?;
+            write_u32(
+                control.request.as_mut_slice(),
+                28,
+                u32::try_from(framebuffer.extent_count()).ok()?,
+            )?;
+            for index in 0..framebuffer.extent_count() {
+                let (ppn, pages) = framebuffer.extent(index)?;
+                let offset = 32 + index * 16;
+                write_u64(
+                    control.request.as_mut_slice(),
+                    offset,
+                    (ppn.as_usize() * PAGE_SIZE) as u64,
+                )?;
+                write_u32(
+                    control.request.as_mut_slice(),
+                    offset + 8,
+                    u32::try_from(pages.checked_mul(PAGE_SIZE)?).ok()?,
+                )?;
+            }
+        }
         Self::execute_ok(
             device,
             control,
             VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-            &mut attach[..attach_length],
+            attach_length,
         )?;
 
-        let mut scanout = [0u8; 48];
-        write_rect(&mut scanout, 24, mode)?;
-        write_u32(&mut scanout, 40, 0)?;
-        write_u32(&mut scanout, 44, BOOT_RESOURCE_ID)?;
-        Self::execute_ok(device, control, VIRTIO_GPU_CMD_SET_SCANOUT, &mut scanout)?;
+        {
+            let mut control = control.lock();
+            control.request[..48].fill(0);
+            write_rect(control.request.as_mut_slice(), 24, mode)?;
+            write_u32(control.request.as_mut_slice(), 40, 0)?;
+            write_u32(control.request.as_mut_slice(), 44, BOOT_RESOURCE_ID)?;
+        }
+        Self::execute_ok(device, control, VIRTIO_GPU_CMD_SET_SCANOUT, 48)?;
 
-        let mut transfer = [0u8; 56];
-        write_rect(&mut transfer, 24, mode)?;
-        write_u64(&mut transfer, 40, 0)?;
-        write_u32(&mut transfer, 48, BOOT_RESOURCE_ID)?;
-        Self::execute_ok(
-            device,
-            control,
-            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
-            &mut transfer,
-        )?;
+        {
+            let mut control = control.lock();
+            control.request[..56].fill(0);
+            write_rect(control.request.as_mut_slice(), 24, mode)?;
+            write_u64(control.request.as_mut_slice(), 40, 0)?;
+            write_u32(control.request.as_mut_slice(), 48, BOOT_RESOURCE_ID)?;
+        }
+        Self::execute_ok(device, control, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, 56)?;
 
-        let mut flush = [0u8; 48];
-        write_rect(&mut flush, 24, mode)?;
-        write_u32(&mut flush, 40, BOOT_RESOURCE_ID)?;
-        Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_FLUSH, &mut flush)
+        {
+            let mut control = control.lock();
+            control.request[..48].fill(0);
+            write_rect(control.request.as_mut_slice(), 24, mode)?;
+            write_u32(control.request.as_mut_slice(), 40, BOOT_RESOURCE_ID)?;
+        }
+        Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_FLUSH, 48)
     }
 
     fn execute_ok(
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
         command: u32,
-        request: &mut [u8],
+        request_length: usize,
     ) -> Option<()> {
-        let mut response = [0u8; CONTROL_HEADER_SIZE];
         Self::execute_boot(
             device,
             control,
             command,
-            request,
-            &mut response,
+            request_length,
             VIRTIO_GPU_RESP_OK_NODATA,
         )
     }
@@ -132,11 +142,10 @@ impl VirtIOGpuDevice {
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
         command: u32,
-        request: &mut [u8],
-        response: &mut [u8],
+        request_length: usize,
         expected_response: u32,
     ) -> Option<()> {
-        if request.len() < CONTROL_HEADER_SIZE || response.len() < CONTROL_HEADER_SIZE {
+        if !(CONTROL_HEADER_SIZE..=ATTACH_REQUEST_SIZE).contains(&request_length) {
             return None;
         }
         let mut control = control.lock();
@@ -144,19 +153,43 @@ impl VirtIOGpuDevice {
         control.next_fence = control.next_fence.checked_add(1)?;
 
         // 1. caller 提供固定 storage；common header 只在 descriptor 发布前写入。
-        write_u32(request, 0, command)?;
-        write_u32(request, 4, VIRTIO_GPU_FLAG_FENCE)?;
-        write_u64(request, 8, fence)?;
-        response.fill(0);
-        let mut outputs = [response];
-        let head = control.queue.add_buffer(&[request], &mut outputs)?;
+        write_u32(control.request.as_mut_slice(), 0, command)?;
+        write_u32(control.request.as_mut_slice(), 4, VIRTIO_GPU_FLAG_FENCE)?;
+        write_u64(control.request.as_mut_slice(), 8, fence)?;
+        control.response.fill(0);
+        let head = {
+            let ControlQueue {
+                queue,
+                request,
+                response,
+                ..
+            } = &mut *control;
+            let request = request.readable(0..request_length).ok()?;
+            let response = response.writable_all();
+            queue.add_dma(&[request, response]).ok()?
+        };
         control.queue.add_to_avail(head);
         device.notify_queue(CONTROL_QUEUE).ok()?;
 
         // 2. 这是 scheduler/IRQ publication 前的唯一 bootstrap spin path。
         loop {
             match control.queue.used() {
-                Ok(Some((completed, _))) if completed == head => break,
+                Ok(Some(completion))
+                    if completion.head() == head
+                        && completion.length() as usize
+                            == if expected_response == VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
+                                DISPLAY_INFO_SIZE
+                            } else {
+                                CONTROL_HEADER_SIZE
+                            }
+                        && read_u32(control.response.as_slice(), 0)? == expected_response
+                        && read_u32(control.response.as_slice(), 4)? & VIRTIO_GPU_FLAG_FENCE
+                            != 0
+                        && read_u64(control.response.as_slice(), 8)? == fence =>
+                {
+                    control.queue.recycle_used(completion).ok()?;
+                    break;
+                }
                 Ok(Some(_)) | Err(()) => return None,
                 Ok(None) => core::hint::spin_loop(),
             }
@@ -166,11 +199,6 @@ impl VirtIOGpuDevice {
         {
             device.interrupt_ack(status).ok()?;
         }
-
-        // 3. response type 与 fence 共同证明 completion 属于本次 command。
-        (read_u32(outputs[0], 0)? == expected_response
-            && read_u32(outputs[0], 4)? & VIRTIO_GPU_FLAG_FENCE != 0
-            && read_u64(outputs[0], 8)? == fence)
-            .then_some(())
+        Some(())
     }
 }

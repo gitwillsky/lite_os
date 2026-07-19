@@ -8,16 +8,23 @@ use smoltcp::{
 };
 
 use super::{
-    EPHEMERAL_END, EPHEMERAL_START, EndpointState, InetSocket, InetSocketOptions, NetworkStack,
-    from_ip, ipv4, now, stack,
+    EndpointState, InetSocket, InetSocketOptions, NetworkStack, from_ip, ipv4, port_error, stack,
 };
 use crate::{
     fallible_tree::FallibleMap,
+    ipc::ReceiveBuffer,
     socket::{InetAddress, SocketError, SocketPollState},
 };
 
 const UDP_PACKET_SLOTS: usize = 8;
 const UDP_BUFFER_BYTES: usize = 128 * 1024;
+
+fn placeholder_socket() -> udp::Socket<'static> {
+    udp::Socket::new(
+        udp::PacketBuffer::new(Vec::new(), Vec::new()),
+        udp::PacketBuffer::new(Vec::new(), Vec::new()),
+    )
+}
 
 /// @description 分配 UDP packet buffer，并在唯一 NetworkStack 注册 handle。
 /// @param network 唯一协议栈 owner。
@@ -62,6 +69,7 @@ pub(super) fn create_endpoint(
             peer: None,
             packet_info: false,
             options: InetSocketOptions::default(),
+            port_lease: None,
             readiness: SocketPollState::error(),
             notification_pending: false,
         },
@@ -70,50 +78,29 @@ pub(super) fn create_endpoint(
 }
 
 impl NetworkStack {
-    fn udp_port_in_use(
-        &self,
-        address: Option<Ipv4Addr>,
-        port: u16,
-        except: SocketHandle,
-        reuse_address: bool,
-    ) -> bool {
-        self.endpoints.iter().any(|(handle, state)| {
-            if *handle == except {
-                return false;
-            }
-            let endpoint = self.sockets.get::<udp::Socket<'static>>(*handle).endpoint();
-            endpoint.port == port
-                && (endpoint.addr.is_none()
-                    || address.is_none()
-                    || endpoint.addr == address.map(ipv4))
-                && !(reuse_address && state.options.reuse_address)
-        })
-    }
-
-    fn allocate_udp_ephemeral(&mut self, handle: SocketHandle) -> Result<u16, SocketError> {
-        for _ in EPHEMERAL_START..=EPHEMERAL_END {
-            let candidate = self.next_ephemeral;
-            self.next_ephemeral = if candidate == EPHEMERAL_END {
-                EPHEMERAL_START
-            } else {
-                candidate + 1
-            };
-            if !self.udp_port_in_use(None, candidate, handle, false) {
-                return Ok(candidate);
-            }
-        }
-        Err(SocketError::AddressInUse)
-    }
-
     fn ensure_udp_bound(&mut self, handle: SocketHandle) -> Result<(), SocketError> {
         if self.sockets.get::<udp::Socket<'static>>(handle).is_open() {
             return Ok(());
         }
-        let port = self.allocate_udp_ephemeral(handle)?;
-        self.sockets
+        let reuse_address = self.endpoints[&handle].options.reuse_address;
+        let lease = self
+            .udp_ports
+            .acquire_ephemeral(None, reuse_address)
+            .map_err(port_error)?;
+        if self
+            .sockets
             .get_mut::<udp::Socket<'static>>(handle)
-            .bind(port)
-            .map_err(|_| SocketError::AddressNotAvailable)
+            .bind(lease.port())
+            .is_err()
+        {
+            self.udp_ports.release(lease);
+            return Err(SocketError::AddressNotAvailable);
+        }
+        self.endpoints
+            .get_mut(&handle)
+            .expect("implicitly bound UDP endpoint disappeared")
+            .port_lease = Some(lease);
+        Ok(())
     }
 }
 
@@ -137,23 +124,36 @@ pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), Soc
     }) {
         return Err(SocketError::AddressNotAvailable);
     }
-    let port = if address.port == 0 {
-        network.allocate_udp_ephemeral(handle)?
-    } else {
-        address.port
-    };
     let reuse_address = network.endpoints[&handle].options.reuse_address;
-    if network.udp_port_in_use(address_filter, port, handle, reuse_address) {
-        return Err(SocketError::AddressInUse);
-    }
-    network
+    let lease = if address.port == 0 {
+        network
+            .udp_ports
+            .acquire_ephemeral(address_filter, reuse_address)
+            .map_err(port_error)?
+    } else {
+        network
+            .udp_ports
+            .acquire(address.port, address_filter, reuse_address)
+            .map_err(port_error)?
+    };
+    if network
         .sockets
         .get_mut::<udp::Socket<'static>>(handle)
         .bind(IpListenEndpoint {
             addr: address_filter.map(ipv4),
-            port,
+            port: lease.port(),
         })
-        .map_err(|_| SocketError::AddressNotAvailable)
+        .is_err()
+    {
+        network.udp_ports.release(lease);
+        return Err(SocketError::AddressNotAvailable);
+    }
+    network
+        .endpoints
+        .get_mut(&handle)
+        .expect("bound UDP endpoint disappeared")
+        .port_lease = Some(lease);
+    Ok(())
 }
 
 /// @description 为 UDP endpoint 记录默认 peer，并按需完成隐式 bind。
@@ -234,7 +234,8 @@ pub(super) fn send(
     if input.len() > crate::socket::message_limits::MAX_IPV4_UDP_BYTES {
         return Err(SocketError::MessageTooLarge);
     }
-    let mut network = stack()?.lock();
+    let stack = stack()?;
+    let mut network = stack.lock();
     if !network.interface_state.up || network.interface_state.address.is_none() {
         return Err(SocketError::NetworkUnreachable);
     }
@@ -249,21 +250,27 @@ pub(super) fn send(
     if is_broadcast(peer.address, network.interface_state) && !options.broadcast {
         return Err(SocketError::PermissionDenied);
     }
-    network
-        .sockets
-        .get_mut::<udp::Socket<'static>>(handle)
+    // The stable closed placeholder keeps SocketHandle valid while the real socket is loaned to
+    // this endpoint. PROTOCOL_GATE shared membership excludes Interface polling, while other
+    // endpoints may loan and copy concurrently.
+    let mut socket = core::mem::replace(
+        network.sockets.get_mut::<udp::Socket<'static>>(handle),
+        placeholder_socket(),
+    );
+    drop(network);
+    let result = socket
         .send_slice(input, IpEndpoint::new(ipv4(peer.address), peer.port))
         .map_err(|error| match error {
             udp::SendError::BufferFull => SocketError::Again,
             udp::SendError::Unaddressable => SocketError::NetworkUnreachable,
-        })?;
-    let NetworkStack {
-        interface,
-        device,
-        sockets,
-        ..
-    } = &mut *network;
-    interface.poll_egress(now(), device, sockets);
+        });
+    let placeholder = core::mem::replace(
+        stack.lock().sockets.get_mut::<udp::Socket<'static>>(handle),
+        socket,
+    );
+    debug_assert!(!placeholder.is_open());
+    result?;
+    crate::drivers::network::request_poll();
     Ok(input.len())
 }
 
@@ -277,11 +284,16 @@ pub(super) fn send(
 pub(super) fn receive(
     endpoint: &InetSocket,
     handle: SocketHandle,
-    output: &mut [u8],
+    output: &mut ReceiveBuffer<'_>,
     peek: bool,
 ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
-    let mut network = stack()?.lock();
-    let socket = network.sockets.get_mut::<udp::Socket<'static>>(handle);
+    let stack = stack()?;
+    let mut network = stack.lock();
+    let mut socket = core::mem::replace(
+        network.sockets.get_mut::<udp::Socket<'static>>(handle),
+        placeholder_socket(),
+    );
+    drop(network);
     let received = if peek {
         socket
             .peek()
@@ -291,8 +303,7 @@ pub(super) fn receive(
     };
     let result = received.map(|(payload, metadata)| {
         let full_length = payload.len();
-        let count = output.len().min(full_length);
-        output[..count].copy_from_slice(&payload[..count]);
+        let count = output.append(payload);
         (
             count,
             full_length,
@@ -304,7 +315,11 @@ pub(super) fn receive(
         )
     });
     let drained = result.is_ok() && !peek && !socket.can_recv();
-    drop(network);
+    let placeholder = core::mem::replace(
+        stack.lock().sockets.get_mut::<udp::Socket<'static>>(handle),
+        socket,
+    );
+    debug_assert!(!placeholder.is_open());
     let result = result.map_err(|_| SocketError::Again)?;
     if drained {
         endpoint.consume_notify();
@@ -368,7 +383,10 @@ pub(super) fn drop_endpoint(handle: SocketHandle) {
         return;
     };
     let mut network = stack.lock();
-    if network.endpoints.remove(&handle).is_some() {
+    if let Some(state) = network.endpoints.remove(&handle) {
+        if let Some(lease) = state.port_lease {
+            network.udp_ports.release(lease);
+        }
         network.sockets.remove(handle);
     }
 }

@@ -3,14 +3,24 @@ use super::*;
 /// @description 将已发布 Ready generation 的 entry 加入 owner CPU runqueue。
 /// @param processor 当前 CPU 独占的 scheduler 执行状态。
 /// @param entry 已属于 processor CPU 的 membership token。
-/// @return 同一 slot 当前是否已有 Running owner。
+/// @return Ready entity 的 vruntime 严格早于 current 时返回 true。
 pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -> bool {
     let slot = current_per_cpu();
     make_runqueue_room(processor, 1);
     processor.runqueue.push(entry);
     discard_stale_ready_roots(processor);
     publish_vruntime_floor(processor, slot);
-    slot.running_entries.load(Ordering::Relaxed) != 0
+    // Ready publication 与抢占 policy 是两个事实：handoff completion 会把高 vruntime
+    // outgoing 重新发布为 Ready，但它不得立刻反抢刚选中的低 vruntime successor。
+    // 比较清除 stale generation 后的真实 heap root，避免失效 delivery 产生伪抢占。
+    let current_vruntime = processor
+        .current
+        .as_ref()
+        .map(|current| current.scheduling.policy.lock().vruntime);
+    crate::task::scheduler::preemption_policy::local_ready_preempts(
+        current_vruntime,
+        processor.runqueue.minimum_vruntime(),
+    )
 }
 
 #[inline(always)]
@@ -116,7 +126,7 @@ pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
     publish_vruntime_floor(processor, slot);
 }
 
-/// @description 投递 Ready entry；busy target 同步 reschedule，避免 writer 饿死 Ready reader。
+/// @description 投递 Ready entry；本地按 CFS policy 抢占，远端只发布 mailbox wake edge。
 /// @param cpu_id 目标 logical CPU identity。
 /// @param entry 带 generation 的 membership token。
 /// @return 无返回值。
@@ -151,7 +161,11 @@ fn deliver_remote(cpu_id: CpuId, entry: RunQueueEntry) {
     );
     inbound.push_back(entry);
     drop(inbound);
-    publish_reschedule_at(cpu_id);
+    // Remote sender 不能读取 target 的 current/runqueue policy。这里只发 wake edge：idle
+    // target 立即 drain mailbox；busy target 由下一 timer tick 基于 Ready projection 调度。
+    // 强制 stop/affinity 的 reschedule flag 仍由各自独立控制路径发布。
+    platform::send_ipi(CpuSet::singleton(cpu_id))
+        .expect("platform IPI failed for remote Ready wake");
 }
 
 impl RunQueueEntry {

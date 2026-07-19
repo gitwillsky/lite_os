@@ -60,29 +60,67 @@ impl MemorySet {
         }
         // 3. 后续每个 segment 只消费预留 token，AVL rotation 与 commit 均不分配。
         let mut segment_slots = segment_slots.into_iter();
-        for key in keys {
-            let area = self.areas.remove(&key).unwrap();
+        let mut commit = TranslationCommit::new();
+        for key in &keys {
+            let area = self.remove_area(key).unwrap();
             let start = range.start.max(area.vpn_range.start);
             let end = range.end.min(area.vpn_range.end);
             let (left, mut middle, right) = area.partition_protectable(start, end);
             if middle.device.is_some() {
-                middle.protect_device_area(&mut self.page_table, start..end, permission)?;
+                middle.protect_device_area(
+                    &mut self.page_table,
+                    start..end,
+                    permission,
+                    &mut commit,
+                )?;
             } else if middle.shared_file.is_some() {
-                self.protect_shared_file(&mut middle, start, end, permission)?;
+                self.protect_shared_file(&mut middle, start, end, permission, &mut commit)?;
             } else {
-                self.protect_private(&mut middle, start, end, permission)?;
+                self.protect_private(&mut middle, start, end, permission, &mut commit)?;
             }
             middle.map_permission = permission;
             for segment in [left, Some(middle), right].into_iter().flatten() {
                 let slot = segment_slots.next().expect("preflighted split VMA slot");
-                self.areas
-                    .commit_vacant(slot.fill(segment.vpn_range.start, segment));
+                self.commit_area(slot.fill(segment.vpn_range.start, segment));
             }
         }
-        self.merge_adjacent_anonymous();
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after mprotect page-table update");
+        for key in keys {
+            self.merge_anonymous_neighbors(key);
+        }
+        commit
+            .synchronize()
+            .expect("platform translation fence failed after mprotect update");
+        self.release_restricted_shared_writers(range.start, range.end);
         Ok(())
+    }
+
+    /// 在 permission restriction 的 remote fence 完成后释放 shared-file writer claim。
+    ///
+    /// PTE 已撤销但远端 hart 仍可能使用旧 writable translation；提前释放 claim 会让
+    /// writeback 与该 stale writer 并发。权限增加在 PTE 发布前 acquire，权限收紧则由此
+    /// post-fence pass 释放，因而 writer 生命周期始终覆盖所有可写 translation。
+    fn release_restricted_shared_writers(
+        &mut self,
+        start: VirtualPageNumber,
+        end: VirtualPageNumber,
+    ) {
+        self.areas.for_each_mut(|_, area| {
+            if end <= area.vpn_range.start
+                || area.vpn_range.end <= start
+                || area.map_permission.contains(MapPermission::W)
+            {
+                return;
+            }
+            let Some(shared) = &mut area.shared_file else {
+                return;
+            };
+            shared.resident.for_each_mut(|_, resident| {
+                if resident.writer {
+                    resident.page.release_writer();
+                    resident.writer = false;
+                }
+            });
+        });
     }
 
     fn protect_shared_file(
@@ -91,6 +129,7 @@ impl MemorySet {
         start: VirtualPageNumber,
         end: VirtualPageNumber,
         permission: MapPermission,
+        commit: &mut TranslationCommit,
     ) -> Result<(), MemoryError> {
         let old_leaf = MapArea::has_leaf_permission(area.map_permission);
         let new_leaf = MapArea::has_leaf_permission(permission);
@@ -101,21 +140,18 @@ impl MemorySet {
                 continue;
             };
             let writer = permission.contains(MapPermission::W);
-            if resident.writer != writer {
-                if writer {
-                    resident.page.acquire_writer();
-                } else {
-                    resident.page.release_writer();
-                }
+            if writer && !resident.writer {
+                resident.page.acquire_writer();
                 resident.writer = writer;
             }
             let flags = permission.into();
             match (old_leaf, new_leaf) {
-                (true, true) => self.page_table.set_flags(vpn, flags)?,
-                (true, false) => self.page_table.unmap(vpn)?,
-                (false, true) => self
-                    .page_table
-                    .map(vpn, resident.page.frame().ppn(), flags)?,
+                (true, true) => self.page_table.set_flags(vpn, flags, commit)?,
+                (true, false) => self.page_table.unmap(vpn, commit)?,
+                (false, true) => {
+                    self.page_table
+                        .map(vpn, resident.page.frame().ppn(), flags, commit)?
+                }
                 (false, false) => {}
             }
         }
@@ -128,6 +164,7 @@ impl MemorySet {
         start: VirtualPageNumber,
         end: VirtualPageNumber,
         permission: MapPermission,
+        commit: &mut TranslationCommit,
     ) -> Result<(), MemoryError> {
         let old_leaf = MapArea::has_leaf_permission(area.map_permission);
         let new_leaf = MapArea::has_leaf_permission(permission);
@@ -145,9 +182,9 @@ impl MemorySet {
                 flags.remove(PagePermissions::WRITE);
             }
             match (old_leaf, new_leaf) {
-                (true, true) => self.page_table.set_flags(vpn, flags)?,
-                (true, false) => self.page_table.unmap(vpn)?,
-                (false, true) => self.page_table.map(vpn, frame.ppn, flags)?,
+                (true, true) => self.page_table.set_flags(vpn, flags, commit)?,
+                (true, false) => self.page_table.unmap(vpn, commit)?,
+                (false, true) => self.page_table.map(vpn, frame.ppn, flags, commit)?,
                 (false, false) => {}
             }
         }

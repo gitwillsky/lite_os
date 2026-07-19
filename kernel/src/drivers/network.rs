@@ -62,9 +62,14 @@ impl NetworkTransmit {
     pub(crate) fn submit(mut self, frame: &[u8]) -> Result<(), NetworkError> {
         let reservation = self
             .reservation
-            .take()
+            .as_ref()
+            .copied()
             .expect("network transmit reservation consumed twice");
-        self.device.submit_transmit(reservation, frame)
+        self.device.submit_transmit(reservation, frame)?;
+        // 只有 adapter 已成功把 reservation 转为 in-flight owner 后才解除 Drop rollback。
+        // 若提前 take，任一可恢复构造错误都会泄漏固定 TX slot 并最终永久 EAGAIN。
+        self.reservation.take();
+        Ok(())
     }
 }
 
@@ -100,7 +105,8 @@ pub(crate) trait NetworkDevice: Send + Sync {
     /// @param reservation `reserve_transmit` 返回且尚未消费的 slot ID。
     /// @param frame 不含 VirtIO header 的 Ethernet frame。
     /// @return descriptor 已发布返回 unit。
-    /// @errors frame 过长或 transport 失败返回对应错误。
+    /// @errors frame 过长或 publication 前 transport 失败返回对应错误；返回错误时
+    /// reservation 仍由 caller 持有，随后必须且只能取消一次。
     fn submit_transmit(&self, reservation: u16, frame: &[u8]) -> Result<(), NetworkError>;
 
     /// @description 取消尚未发布的 TX reservation。
@@ -161,4 +167,97 @@ pub(super) fn register_network_device(
 /// @return 已注册设备；平台没有 network device 时返回 `None`。
 pub(crate) fn network_device() -> Option<Arc<dyn NetworkDevice>> {
     binding().lock().clone()
+}
+
+/// @description 发布本 CPU 的 network deferred work，由 user-return/idle safe point 消费。
+/// @return 无返回值。
+#[cfg(not(test))]
+pub(crate) fn request_poll() {
+    crate::cpu::raise_deferred(crate::cpu::DeferredWork::Network);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics, NetworkTransmit,
+    };
+    use alloc::sync::Arc;
+    use spin::Mutex;
+
+    struct InjectedDevice {
+        submit_error: bool,
+        cancellations: Mutex<usize>,
+    }
+
+    impl NetworkDevice for InjectedDevice {
+        fn mac_address(&self) -> [u8; 6] {
+            [0; 6]
+        }
+
+        fn receive(&self, _frame: &mut [u8]) -> Result<usize, NetworkError> {
+            Err(NetworkError::WouldBlock)
+        }
+
+        fn reserve_transmit(&self) -> Result<u16, NetworkError> {
+            Ok(7)
+        }
+
+        fn submit_transmit(&self, _reservation: u16, _frame: &[u8]) -> Result<(), NetworkError> {
+            if self.submit_error {
+                Err(NetworkError::Device)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn cancel_transmit(&self, _reservation: u16) {
+            *self.cancellations.lock() += 1;
+        }
+
+        fn transmit_available(&self) -> bool {
+            true
+        }
+
+        fn poll_completions(&self, _budget: usize) -> Result<NetworkCompletion, NetworkError> {
+            Ok(NetworkCompletion::default())
+        }
+
+        fn finish_receive_batch(&self) -> Result<(), NetworkError> {
+            Ok(())
+        }
+
+        fn statistics(&self) -> NetworkStatistics {
+            NetworkStatistics::default()
+        }
+    }
+
+    #[test]
+    fn device_failure_rolls_back_transmit_reservation_once() {
+        let adapter = Arc::new(InjectedDevice {
+            submit_error: true,
+            cancellations: Mutex::new(0),
+        });
+        let device: Arc<dyn NetworkDevice> = adapter.clone();
+
+        assert_eq!(
+            NetworkTransmit::reserve(device).unwrap().submit(&[]),
+            Err(NetworkError::Device)
+        );
+        assert_eq!(*adapter.cancellations.lock(), 1);
+    }
+
+    #[test]
+    fn successful_submit_transfers_reservation_without_cancel() {
+        let adapter = Arc::new(InjectedDevice {
+            submit_error: false,
+            cancellations: Mutex::new(0),
+        });
+        let device: Arc<dyn NetworkDevice> = adapter.clone();
+
+        assert_eq!(
+            NetworkTransmit::reserve(device).unwrap().submit(&[]),
+            Ok(())
+        );
+        assert_eq!(*adapter.cancellations.lock(), 0);
+    }
 }

@@ -53,7 +53,7 @@ impl IdAllocator {
 
     pub(crate) fn dealloc(&mut self, id: usize) {
         assert!((self.initial..self.current).contains(&id));
-        assert!(
+        debug_assert!(
             !self.recycled.contains(&id),
             "id {id} is already deallocated"
         );
@@ -62,5 +62,29 @@ impl IdAllocator {
             "recycle capacity proof was violated"
         );
         self.recycled.push(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IdAllocator;
+
+    #[test]
+    fn recycled_identity_is_reissued_once() {
+        let mut allocator = IdAllocator::new(7);
+        let first = allocator.alloc().unwrap();
+        let second = allocator.alloc().unwrap();
+        allocator.dealloc(first);
+        assert_eq!(allocator.alloc(), Ok(first));
+        assert_ne!(second, first);
+    }
+
+    #[test]
+    #[should_panic(expected = "already deallocated")]
+    fn debug_build_rejects_duplicate_return() {
+        let mut allocator = IdAllocator::new(1);
+        let id = allocator.alloc().unwrap();
+        allocator.dealloc(id);
+        allocator.dealloc(id);
     }
 }

@@ -19,12 +19,13 @@ impl ConsoleWakeBatch {
         self.selected == CONSOLE_WAKE_BATCH
     }
 
-    pub(super) const fn selected(&self) -> usize {
-        self.selected
-    }
-
     pub(super) fn groups(&self) -> &[Option<usize>] {
         &self.groups[..self.selected]
+    }
+
+    #[cfg(test)]
+    pub(super) const fn selected(&self) -> usize {
+        self.selected
     }
 
     pub(super) fn record(&mut self, group: Option<usize>) {

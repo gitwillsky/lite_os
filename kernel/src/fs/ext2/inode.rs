@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "inode/block_mapping.rs"]
+mod block_mapping;
+#[path = "inode/vfs.rs"]
 mod vfs;
 
 #[derive(Debug)]
@@ -76,19 +79,6 @@ impl Ext2Inode {
         Ok(())
     }
 
-    pub(super) fn read_pointer_block(&self, block: u32) -> Result<Vec<u32>, FileSystemError> {
-        let mut raw = try_zeroed(self.fs.block_size)?;
-        self.fs.read_fs_block(block, &mut raw)?;
-        let mut pointers = Vec::new();
-        pointers
-            .try_reserve_exact(self.fs.block_size / 4)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        for chunk in raw.as_chunks::<4>().0 {
-            pointers.push(u32::from_le_bytes(*chunk));
-        }
-        Ok(pointers)
-    }
-
     pub(super) fn write_pointer_block(
         &self,
         block: u32,
@@ -101,41 +91,10 @@ impl Ext2Inode {
         self.fs.write_fs_block(block, &raw)
     }
 
-    pub(super) fn pointer_path(
-        &self,
-        file_block: u32,
-    ) -> Result<(usize, Vec<usize>), FileSystemError> {
-        let count = self.fs.block_size / 4;
-        let mut index = file_block as usize;
-        if index < 12 {
-            return Ok((index, Vec::new()));
-        }
-        index -= 12;
-        if index < count {
-            return Ok((12, try_indices(&[index])?));
-        }
-        index -= count;
-        if index < count * count {
-            return Ok((13, try_indices(&[index / count, index % count])?));
-        }
-        index -= count * count;
-        if index < count * count * count {
-            return Ok((
-                14,
-                try_indices(&[
-                    index / (count * count),
-                    index / count % count,
-                    index % count,
-                ])?,
-            ));
-        }
-        Err(FileSystemError::NoSpace)
-    }
-
     fn free_tree(&self, block: u32, level: usize) -> Result<u32, FileSystemError> {
         let mut sectors = (self.fs.block_size / 512) as u32;
         if level > 0 {
-            for pointer in self.read_pointer_block(block)? {
+            for pointer in self.decode_pointer_block(block)? {
                 if pointer != 0 {
                     sectors += self.free_tree(pointer, level - 1)?;
                 }
@@ -154,7 +113,7 @@ impl Ext2Inode {
     ) -> Result<(bool, u32), FileSystemError> {
         let count = self.fs.block_size / 4;
         let child_span = count.pow((level - 1) as u32);
-        let mut pointers = self.read_pointer_block(block)?;
+        let mut pointers = self.decode_pointer_block(block)?;
         let mut freed = 0;
         for (index, pointer) in pointers.iter_mut().enumerate() {
             if *pointer == 0 {
@@ -275,207 +234,5 @@ impl Ext2Inode {
         self.fs.write_inode_disk(self.inode_num, &disk)?;
         drop(disk);
         self.fs.free_inode(self.inode_num, directory)
-    }
-
-    pub(super) fn map_block(&self, file_block_index: u32) -> Result<u32, FileSystemError> {
-        let ino = self.disk.lock();
-        let ptrs_per_block = (self.fs.block_size / 4) as u32;
-
-        // Direct blocks (0-11)
-        if file_block_index < 12 {
-            let b = ino.i_block[file_block_index as usize];
-            if b == 0 {
-                return Err(FileSystemError::NotFound);
-            }
-            return Ok(b);
-        }
-
-        let mut idx = file_block_index - 12;
-
-        // Single indirect blocks (12 - 12 + ptrs_per_block - 1)
-        if idx < ptrs_per_block {
-            let ind = ino.i_block[12];
-            if ind == 0 {
-                return Err(FileSystemError::NotFound);
-            }
-            drop(ino);
-            return self.read_indirect_block_pointer(ind, idx);
-        }
-
-        idx -= ptrs_per_block;
-
-        // Double indirect blocks (12 + ptrs_per_block to 12 + ptrs_per_block + ptrs_per_block^2 - 1)
-        if idx < ptrs_per_block * ptrs_per_block {
-            let double_ind = ino.i_block[13];
-            if double_ind == 0 {
-                return Err(FileSystemError::NotFound);
-            }
-            drop(ino);
-
-            let first_level_idx = idx / ptrs_per_block;
-            let second_level_idx = idx % ptrs_per_block;
-
-            // Read first level indirect block to get second level indirect block
-            let single_ind = self.read_indirect_block_pointer(double_ind, first_level_idx)?;
-
-            // Read second level indirect block to get data block
-            return self.read_indirect_block_pointer(single_ind, second_level_idx);
-        }
-
-        idx -= ptrs_per_block * ptrs_per_block;
-
-        // Triple indirect blocks
-        if idx < ptrs_per_block * ptrs_per_block * ptrs_per_block {
-            let triple_ind = ino.i_block[14];
-            if triple_ind == 0 {
-                return Err(FileSystemError::NotFound);
-            }
-            drop(ino);
-
-            let first_level_idx = idx / (ptrs_per_block * ptrs_per_block);
-            let remaining = idx % (ptrs_per_block * ptrs_per_block);
-            let second_level_idx = remaining / ptrs_per_block;
-            let third_level_idx = remaining % ptrs_per_block;
-
-            // Read first level to get double indirect block
-            let double_ind = self.read_indirect_block_pointer(triple_ind, first_level_idx)?;
-
-            // Read second level to get single indirect block
-            let single_ind = self.read_indirect_block_pointer(double_ind, second_level_idx)?;
-
-            // Read third level to get data block
-            return self.read_indirect_block_pointer(single_ind, third_level_idx);
-        }
-
-        Err(FileSystemError::NotFound)
-    }
-
-    /// Helper function to read a pointer from an indirect block
-    fn read_indirect_block_pointer(
-        &self,
-        indirect_block: u32,
-        index: u32,
-    ) -> Result<u32, FileSystemError> {
-        let mut buf = try_zeroed(self.fs.block_size)?;
-        self.fs.read_fs_block(indirect_block, &mut buf)?;
-
-        let offset = index as usize * 4;
-        if offset + 4 > buf.len() {
-            return Err(FileSystemError::InvalidFileSystem);
-        }
-
-        let block_ptr = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
-
-        if block_ptr == 0 {
-            return Err(FileSystemError::NotFound);
-        }
-
-        Ok(block_ptr)
-    }
-
-    /// Map block for sparse files - returns Ok(0) for holes instead of error
-    pub(super) fn map_block_sparse(&self, file_block_index: u32) -> Result<u32, FileSystemError> {
-        let ino = self.disk.lock();
-        let ptrs_per_block = (self.fs.block_size / 4) as u32;
-
-        // Direct blocks (0-11)
-        if file_block_index < 12 {
-            let b = ino.i_block[file_block_index as usize];
-            return Ok(b); // Return 0 for holes, actual block number for allocated blocks
-        }
-
-        let mut idx = file_block_index - 12;
-
-        // Single indirect blocks
-        if idx < ptrs_per_block {
-            let ind = ino.i_block[12];
-            if ind == 0 {
-                return Ok(0); // Hole - indirect block not allocated
-            }
-            drop(ino);
-
-            match self.read_indirect_block_pointer(ind, idx) {
-                Ok(block_ptr) => Ok(block_ptr),
-                Err(FileSystemError::NotFound) => Ok(0), // Hole
-                Err(e) => Err(e),
-            }
-        }
-        // Double indirect blocks
-        else if idx < ptrs_per_block * ptrs_per_block {
-            idx -= ptrs_per_block;
-            let double_ind = ino.i_block[13];
-            if double_ind == 0 {
-                return Ok(0); // Hole - double indirect block not allocated
-            }
-            drop(ino);
-
-            let first_level_idx = idx / ptrs_per_block;
-            let second_level_idx = idx % ptrs_per_block;
-
-            // Read first level indirect block
-            let single_ind = match self.read_indirect_block_pointer(double_ind, first_level_idx) {
-                Ok(ptr) => ptr,
-                Err(FileSystemError::NotFound) => return Ok(0), // Hole
-                Err(e) => return Err(e),
-            };
-
-            if single_ind == 0 {
-                return Ok(0); // Hole
-            }
-
-            // Read second level indirect block
-            match self.read_indirect_block_pointer(single_ind, second_level_idx) {
-                Ok(block_ptr) => Ok(block_ptr),
-                Err(FileSystemError::NotFound) => Ok(0), // Hole
-                Err(e) => Err(e),
-            }
-        }
-        // Triple indirect blocks
-        else {
-            idx -= ptrs_per_block * ptrs_per_block;
-            if idx >= ptrs_per_block * ptrs_per_block * ptrs_per_block {
-                return Ok(0); // Beyond maximum file size
-            }
-
-            let triple_ind = ino.i_block[14];
-            if triple_ind == 0 {
-                return Ok(0); // Hole
-            }
-            drop(ino);
-
-            let first_level_idx = idx / (ptrs_per_block * ptrs_per_block);
-            let remaining = idx % (ptrs_per_block * ptrs_per_block);
-            let second_level_idx = remaining / ptrs_per_block;
-            let third_level_idx = remaining % ptrs_per_block;
-
-            // Read first level
-            let double_ind = match self.read_indirect_block_pointer(triple_ind, first_level_idx) {
-                Ok(ptr) => ptr,
-                Err(FileSystemError::NotFound) => return Ok(0), // Hole
-                Err(e) => return Err(e),
-            };
-
-            if double_ind == 0 {
-                return Ok(0); // Hole
-            }
-
-            // Read second level
-            let single_ind = match self.read_indirect_block_pointer(double_ind, second_level_idx) {
-                Ok(ptr) => ptr,
-                Err(FileSystemError::NotFound) => return Ok(0), // Hole
-                Err(e) => return Err(e),
-            };
-
-            if single_ind == 0 {
-                return Ok(0); // Hole
-            }
-
-            // Read third level
-            match self.read_indirect_block_pointer(single_ind, third_level_idx) {
-                Ok(block_ptr) => Ok(block_ptr),
-                Err(FileSystemError::NotFound) => Ok(0), // Hole
-                Err(e) => Err(e),
-            }
-        }
     }
 }

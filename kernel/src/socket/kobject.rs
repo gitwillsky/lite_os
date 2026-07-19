@@ -3,6 +3,7 @@ use spin::{Mutex, Once};
 
 use crate::{
     fallible_tree::FallibleMap,
+    ipc::ReceiveBuffer,
     ipc::{Pipe, PipeDirection, PipeEnd},
 };
 
@@ -159,7 +160,10 @@ impl KobjectSocket {
         })
     }
 
-    pub(super) fn receive(&self, output: &mut [u8]) -> Result<ReceivedMessage, SocketError> {
+    pub(super) fn receive(
+        &self,
+        output: &mut ReceiveBuffer<'_>,
+    ) -> Result<ReceivedMessage, SocketError> {
         let (event, source) = {
             let mut state = self.state.lock();
             if state.length == 0 {
@@ -177,8 +181,7 @@ impl KobjectSocket {
             )
         };
         let full_length = usize::from(event.length);
-        let count = output.len().min(full_length);
-        output[..count].copy_from_slice(&event.bytes[..count]);
+        let count = output.append(&event.bytes[..full_length]);
         Ok(ReceivedMessage {
             count,
             full_length,

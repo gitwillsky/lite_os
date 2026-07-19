@@ -48,7 +48,10 @@ impl MemoryError {
     pub(crate) fn is_out_of_memory(self) -> bool {
         matches!(
             self,
-            Self::OutOfMemory | Self::PageTableError(PageTableError::OutOfMemory)
+            Self::OutOfMemory
+                | Self::PageTableError(
+                    PageTableError::OutOfMemory | PageTableError::AddressSpaceIdentifiersExhausted
+                )
         )
     }
 }
@@ -93,9 +96,10 @@ pub(crate) enum ElfLoadError {
 impl From<MemoryError> for ElfLoadError {
     fn from(error: MemoryError) -> Self {
         match error {
-            MemoryError::OutOfMemory | MemoryError::PageTableError(PageTableError::OutOfMemory) => {
-                Self::OutOfMemory
-            }
+            MemoryError::OutOfMemory
+            | MemoryError::PageTableError(
+                PageTableError::OutOfMemory | PageTableError::AddressSpaceIdentifiersExhausted,
+            ) => Self::OutOfMemory,
             MemoryError::PageTableError(_)
             | MemoryError::InvalidRange
             | MemoryError::AddressInUse

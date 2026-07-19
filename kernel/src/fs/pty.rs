@@ -137,7 +137,8 @@ impl PtyMaster {
     }
 
     pub(crate) fn read(&self, output: &mut [u8]) -> PipeRead {
-        self.output.read(output)
+        let mut sink = crate::ipc::ReceiveBuffer::from_slice(output);
+        self.output.read(&mut sink)
     }
 
     pub(crate) fn notification_pipe(&self) -> Arc<Pipe> {

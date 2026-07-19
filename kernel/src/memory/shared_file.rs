@@ -1,3 +1,4 @@
+use crate::sync::TaskMutexWaitPreparation;
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
@@ -107,7 +108,17 @@ pub(crate) trait SharedFileMapping: Send + Sync + Debug {
 
 /// @description memory subsystem 对 live AddressSpace 的反向维护 interface。
 pub(crate) trait MemoryMappingOwner: Send + Sync {
-    fn invalidate_shared_file(&self, id: SharedFileId, size: u64);
+    /// @description 撤销指定文件新 EOF 外的全部 live translation。
+    /// @param id mounted inode identity。
+    /// @param size 已提交的文件长度。
+    /// @param wait truncate 在 storage mutation 前预分配、可跨 owner 复用的 waiter。
+    /// @return 无返回值；preparation 保证本提交尾部不再分配或失败。
+    fn invalidate_shared_file(
+        &self,
+        id: SharedFileId,
+        size: u64,
+        wait: &mut TaskMutexWaitPreparation,
+    );
 }
 
 /// @description 一次 direct-reclaim adapter 调用的页目标与扫描上限。
@@ -265,8 +276,13 @@ pub(crate) fn register_memory_reclaimer(
 /// @description 在不分配内存且不持有 registry lock 回调的前提下撤销所有 EOF 外 PTE。
 /// @param id 已完成 storage truncate 的 mounted inode identity。
 /// @param size 已提交的新文件字节长度。
+/// @param wait storage mutation 前已成功准备的 blocking-acquisition metadata。
 /// @return 所有本轮可见的 live AddressSpace 均已完成 invalidation。
-pub(crate) fn invalidate_shared_file(id: SharedFileId, size: u64) {
+pub(crate) fn invalidate_shared_file(
+    id: SharedFileId,
+    size: u64,
+    wait: &mut TaskMutexWaitPreparation,
+) {
     let registry = MEMORY_MAPPING_OWNERS.call_once(|| Mutex::new(Vec::new()));
     // 1. 固定本轮起点时已发布的 slot 数；随后注册的 AddressSpace 尚未拥有旧 EOF 映射。
     let slot_count = registry.lock().len();
@@ -277,7 +293,7 @@ pub(crate) fn invalidate_shared_file(id: SharedFileId, size: u64) {
         // 3. callback 前释放 registry lock，避免长时间 TLB shootdown 阻塞新 mm publication；
         // owner 在 clone 后退出是安全的，已经销毁的页表不再需要 invalidation。
         if let Some(owner) = owner.and_then(|owner| owner.upgrade()) {
-            owner.invalidate_shared_file(id, size);
+            owner.invalidate_shared_file(id, size, wait);
         }
     }
 }

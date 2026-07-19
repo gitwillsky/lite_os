@@ -1,7 +1,11 @@
 use super::*;
 
 impl MapArea {
-    fn try_clone_into(&self, page_table: &mut PageTable) -> Result<Self, MemoryError> {
+    fn try_clone_into(
+        &self,
+        page_table: &mut PageTable,
+        commit: &mut TranslationCommit,
+    ) -> Result<Self, MemoryError> {
         let mut cloned = Self {
             vpn_range: self.vpn_range.clone(),
             data_page_offset: self.data_page_offset,
@@ -16,10 +20,12 @@ impl MapArea {
             private_file: self.private_file.clone(),
             lazy_private: self.lazy_private,
         };
-        if let Err(error) = cloned.map(page_table) {
+        if let Err(error) = cloned.map(page_table, commit) {
             // Child page table 尚未发布或激活；撤销 translation 后可直接 Drop owner，
             // 不存在 remote stale translation retire 窗口。
-            cloned.unmap(page_table);
+            let mut rollback = TranslationCommit::new();
+            cloned.unmap(page_table, &mut rollback);
+            rollback.finish_unpublished();
             return Err(error);
         }
         for (vpn, source) in &self.data_frames {
@@ -52,6 +58,7 @@ impl MapArea {
 fn clone_shared_file_area(
     area: &MapArea,
     page_table: &mut PageTable,
+    commit: &mut TranslationCommit,
 ) -> Result<MapArea, MemoryError> {
     let shared = area
         .shared_file
@@ -65,7 +72,7 @@ fn clone_shared_file_area(
             .try_prepare_vacant(vpn, cloned_page)
             .map_err(|_| MemoryError::OutOfMemory)?;
         if MapArea::has_leaf_permission(area.map_permission) {
-            page_table.map(vpn, ppn, area.map_permission.into())?;
+            page_table.map(vpn, ppn, area.map_permission.into(), commit)?;
         }
         resident.commit_vacant(prepared);
     }
@@ -98,16 +105,18 @@ impl MemorySet {
         cloned.argument_range = self.argument_range.clone();
         cloned.map_trampoline()?;
         let page_table = &mut self.page_table;
-        self.areas.try_for_each_mut(|key, area| {
+        let mut parent_commit = TranslationCommit::new();
+        let mut child_commit = TranslationCommit::new();
+        let result = self.areas.try_for_each_mut(|key, area| {
             // 先预留 cloned VMA node；缺失它会在 parent COW PTE 与 child PTE
             // 已改变后才发现无法发布 child VMA owner。
             let area_slot =
                 FallibleMap::try_reserve_node().map_err(|_| MemoryError::OutOfMemory)?;
             let cloned_area = if area.map_permission.contains(MapPermission::U) {
                 if area.device.is_some() {
-                    area.try_clone_device_into(&mut cloned.page_table)?
+                    area.try_clone_device_into(&mut cloned.page_table, &mut child_commit)?
                 } else if area.shared_file.is_some() {
-                    clone_shared_file_area(area, &mut cloned.page_table)?
+                    clone_shared_file_area(area, &mut cloned.page_table, &mut child_commit)?
                 } else {
                     let cloned_area = MapArea {
                         vpn_range: area.vpn_range.clone(),
@@ -132,9 +141,11 @@ impl MemorySet {
                             if area.map_permission.contains(MapPermission::W)
                                 && area.shared_anonymous.is_none()
                             {
-                                page_table.set_flags(vpn, flags)?;
+                                page_table.set_flags(vpn, flags, &mut parent_commit)?;
                             }
-                            cloned.page_table.map(vpn, frame.ppn, flags)?;
+                            cloned
+                                .page_table
+                                .map(vpn, frame.ppn, flags, &mut child_commit)?;
                         }
                     } else {
                         for (&vpn, _) in &area.data_frames {
@@ -144,15 +155,16 @@ impl MemorySet {
                     cloned_area
                 }
             } else {
-                area.try_clone_into(&mut cloned.page_table)?
+                area.try_clone_into(&mut cloned.page_table, &mut child_commit)?
             };
-            cloned
-                .areas
-                .commit_vacant(area_slot.fill(*key, cloned_area));
+            cloned.commit_area(area_slot.fill(*key, cloned_area));
             Ok::<(), MemoryError>(())
-        })?;
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after fork COW publication");
+        });
+        child_commit.finish_unpublished();
+        parent_commit
+            .synchronize()
+            .expect("platform translation fence failed after fork COW restriction");
+        result?;
         Ok(cloned)
     }
 
@@ -171,10 +183,16 @@ impl MemorySet {
             return Ok(false);
         }
         if area.shared_anonymous.is_some() {
-            return Ok(self
+            let writable = self
                 .page_table
                 .translate(vpn)
-                .is_some_and(|pte| pte.permissions().contains(PagePermissions::WRITE)));
+                .is_some_and(|pte| pte.permissions().contains(PagePermissions::WRITE));
+            if writable {
+                TranslationCommit::stale_fault(vpn.as_usize())
+                    .synchronize()
+                    .expect("local translation fence failed after shared write fault");
+            }
+            return Ok(writable);
         }
         let Some(frame) = area.data_frames.get_mut(&vpn) else {
             return Ok(false);
@@ -184,21 +202,33 @@ impl MemorySet {
             .translate(vpn)
             .is_some_and(|pte| pte.permissions().contains(PagePermissions::WRITE))
         {
+            TranslationCommit::stale_fault(vpn.as_usize())
+                .synchronize()
+                .expect("local translation fence failed after stale COW write fault");
             return Ok(true);
         }
+        let mut commit = TranslationCommit::new();
         if Arc::strong_count(frame) > 1 {
-            let mut replacement = alloc().ok_or(MemoryError::OutOfMemory)?;
-            replacement.bytes_mut().copy_from_slice(frame.bytes());
+            let replacement = alloc_copy(frame.bytes()).ok_or(MemoryError::OutOfMemory)?;
             let replacement = try_memory_arc(replacement)?;
-            self.page_table.unmap(vpn)?;
-            self.page_table
-                .map(vpn, replacement.ppn, area.map_permission.into())?;
-            frame.frame = replacement;
+            self.page_table.unmap(vpn, &mut commit)?;
+            self.page_table.map(
+                vpn,
+                replacement.ppn,
+                area.map_permission.into(),
+                &mut commit,
+            )?;
+            let retired = core::mem::replace(&mut frame.frame, replacement);
+            let retired = revoke_and_synchronize(retired, |_| {}, |_| commit.synchronize())
+                .expect("platform translation fence failed after COW frame replacement");
+            drop(retired);
         } else {
-            self.page_table.set_flags(vpn, area.map_permission.into())?;
+            self.page_table
+                .set_flags(vpn, area.map_permission.into(), &mut commit)?;
+            commit
+                .synchronize()
+                .expect("local translation fence failed after COW permission increase");
         }
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after COW resolution");
         Ok(true)
     }
 }

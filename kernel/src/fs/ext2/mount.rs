@@ -211,12 +211,18 @@ impl Ext2FileSystem {
 
     /// Perform filesystem consistency checks
     fn check_filesystem_consistency(&self) -> Result<(), FileSystemError> {
-        let groups = self.groups.lock();
+        let group_count = self.groups.lock().len();
         let mut total_free_blocks = 0u32;
         let mut total_free_inodes = 0u32;
 
         // Check each group descriptor consistency
-        for (i, gd) in groups.iter().enumerate() {
+        for i in 0..group_count {
+            // Mount 尚未发布 filesystem，不存在并发 writer。每轮只在短临界区复制一个
+            // descriptor；bitmap block I/O 绝不保留普通 spin guard。
+            let gd = {
+                let groups = self.groups.lock();
+                *groups.get(i).ok_or(FileSystemError::InvalidFileSystem)?
+            };
             // Copy fields to avoid unaligned access
             let free_blocks = gd.bg_free_blocks_count;
             let free_inodes = gd.bg_free_inodes_count;
@@ -283,8 +289,6 @@ impl Ext2FileSystem {
                 return Err(FileSystemError::InvalidFileSystem);
             }
         }
-
-        drop(groups);
 
         // Check if group descriptor totals match superblock (copy to avoid unaligned access)
         let superblock = self.superblock.lock();
@@ -362,7 +366,7 @@ impl Ext2FileSystem {
                     i,
                     &mut sb_data[i * dev_block_size..(i + 1) * dev_block_size],
                 )
-                .map_err(|_| FileSystemError::IoError)?;
+                .map_err(block_error)?;
         }
 
         let superblock = Ext2SuperBlock::decode(&sb_data, superblock_offset)
@@ -441,8 +445,9 @@ impl Ext2FileSystem {
             blocks_per_group,
             first_data_block,
             groups: Mutex::new(groups),
-            mutation: Mutex::new(()),
-            journal: Mutex::new(None),
+            mutation: TaskMutex::new(()),
+            journal: Mutex::new(JournalOwner::unavailable()),
+            metadata_cache: Mutex::new(MetadataBlockCache::new()),
             inode_cache: Mutex::new(FallibleMap::new()),
             self_ref: spin::Mutex::new(Weak::new()),
         })
@@ -453,9 +458,9 @@ impl Ext2FileSystem {
         let mut journal = Journal::load(&fs)?;
         journal.recover(&fs)?;
         fs.superblock.lock().s_feature_incompat |= EXT2_FEATURE_INCOMPAT_RECOVER;
-        fs.write_primary_superblock()?;
-        fs.device.flush().map_err(|_| FileSystemError::IoError)?;
-        *fs.journal.lock() = Some(journal);
+        fs.write_primary_superblock_home()?;
+        fs.device.flush().map_err(block_error)?;
+        fs.journal.lock().install(journal);
         fs.recover_orphans()?;
         fs.check_filesystem_consistency()?;
 

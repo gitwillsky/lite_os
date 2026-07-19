@@ -28,6 +28,8 @@ pub(crate) fn clone_current_thread(
         .0;
     let graph_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
         .map_err(|_| ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
+    let thread_index_slot = FallibleMap::<usize, ThreadIndex>::try_reserve_node()
+        .map_err(|_| ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
     let child = try_allocate_task(
         ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
         || {
@@ -64,7 +66,14 @@ pub(crate) fn clone_current_thread(
             return Err(ThreadCloneError::ResourceLimit);
         }
         let membership = graph_slot.fill(tid, child.clone());
-        TASK_MANAGER.publish_thread(parent.tgid(), child.clone(), membership);
+        let thread_index = thread_index_slot.fill(
+            tid,
+            ThreadIndex {
+                tgid: parent.tgid(),
+                created_children: FallibleMap::new(),
+            },
+        );
+        TASK_MANAGER.publish_thread(parent.tgid(), child.clone(), membership, thread_index);
         drop(creation);
         break;
     }

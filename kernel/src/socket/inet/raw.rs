@@ -14,6 +14,7 @@ use super::{InetEndpoint, InetSocket, NetworkStack, stack, try_allocate_endpoint
 use crate::{
     fallible_tree::FallibleMap,
     ipc::PipeEnd,
+    ipc::ReceiveBuffer,
     socket::{InetAddress, SocketError, SocketPollState},
 };
 
@@ -21,6 +22,15 @@ const IPV4_HEADER_LENGTH: usize = 20;
 const RAW_PACKET_SLOTS: usize = 8;
 const RAW_PACKET_CAPACITY: usize = 2048;
 const DEFAULT_HOP_LIMIT: u8 = 64;
+
+fn placeholder_socket() -> raw::Socket<'static> {
+    raw::Socket::new(
+        Some(IpVersion::Ipv4),
+        Some(IpProtocol::Icmp),
+        raw::PacketBuffer::new(Vec::new(), Vec::new()),
+        raw::PacketBuffer::new(Vec::new(), Vec::new()),
+    )
+}
 
 pub(super) struct RawEndpointState {
     pub(super) endpoint: Weak<InetSocket>,
@@ -82,11 +92,13 @@ fn create_endpoint(
 }
 
 pub(super) fn new(notify: (Arc<PipeEnd>, Arc<PipeEnd>)) -> Result<Arc<InetSocket>, SocketError> {
-    let mut network = stack()?.lock();
+    let stack = stack()?;
+    let mut network = stack.lock();
     let endpoint = try_allocate_endpoint(|| {
         let handle = create_endpoint(&mut network, Weak::new())?;
         Ok(InetSocket {
             endpoint: InetEndpoint::Raw(handle),
+            operation: spin::Mutex::new(()),
             notify_read: notify.0,
             notify_write: notify.1,
         })
@@ -151,7 +163,8 @@ pub(super) fn send(
     if target.port != 0 || input.len() > crate::socket::message_limits::MAX_IPV4_RAW_BYTES {
         return Err(SocketError::MessageTooLarge);
     }
-    let mut network = stack()?.lock();
+    let stack = stack()?;
+    let network = stack.lock();
     let state = network
         .raw_endpoints
         .get(&handle)
@@ -168,6 +181,7 @@ pub(super) fn send(
         return Err(SocketError::NetworkUnreachable);
     }
     let hop_limit = state.hop_limit;
+    drop(network);
     let total_length = IPV4_HEADER_LENGTH + input.len();
     let mut packet = Vec::new();
     packet
@@ -182,40 +196,58 @@ pub(super) fn send(
     packet[12..16].copy_from_slice(&source.octets());
     packet[16..20].copy_from_slice(&target.address.octets());
     packet[IPV4_HEADER_LENGTH..].copy_from_slice(input);
-    network
-        .sockets
-        .get_mut::<raw::Socket<'static>>(handle)
-        .send_slice(&packet)
-        .map_err(|_| SocketError::Again)?;
+    let mut socket = core::mem::replace(
+        stack.lock().sockets.get_mut::<raw::Socket<'static>>(handle),
+        placeholder_socket(),
+    );
+    let result = socket.send_slice(&packet).map_err(|_| SocketError::Again);
+    let placeholder = core::mem::replace(
+        stack.lock().sockets.get_mut::<raw::Socket<'static>>(handle),
+        socket,
+    );
+    debug_assert!(!placeholder.can_send());
+    result?;
+    crate::drivers::network::request_poll();
     Ok(input.len())
 }
 
 pub(super) fn receive(
     endpoint: &InetSocket,
     handle: SocketHandle,
-    output: &mut [u8],
+    output: &mut ReceiveBuffer<'_>,
     peek: bool,
 ) -> Result<(usize, usize, InetAddress), SocketError> {
-    let mut network = stack()?.lock();
-    let socket = network.sockets.get_mut::<raw::Socket<'static>>(handle);
-    let packet =
-        if peek { socket.peek() } else { socket.recv() }.map_err(|_| SocketError::Again)?;
-    if packet.len() < IPV4_HEADER_LENGTH {
-        return Err(SocketError::Invalid);
-    }
-    let full_length = packet.len();
-    let count = output.len().min(full_length);
-    output[..count].copy_from_slice(&packet[..count]);
-    let source = InetAddress {
-        address: Ipv4Addr::from(<[u8; 4]>::try_from(&packet[12..16]).unwrap()),
-        port: 0,
-    };
-    let drained = !peek && !socket.can_recv();
+    let stack = stack()?;
+    let mut network = stack.lock();
+    let mut socket = core::mem::replace(
+        network.sockets.get_mut::<raw::Socket<'static>>(handle),
+        placeholder_socket(),
+    );
     drop(network);
+    let result = (|| {
+        let packet =
+            if peek { socket.peek() } else { socket.recv() }.map_err(|_| SocketError::Again)?;
+        if packet.len() < IPV4_HEADER_LENGTH {
+            return Err(SocketError::Invalid);
+        }
+        let full_length = packet.len();
+        let count = output.append(packet);
+        let source = InetAddress {
+            address: Ipv4Addr::from(<[u8; 4]>::try_from(&packet[12..16]).unwrap()),
+            port: 0,
+        };
+        Ok((count, full_length, source))
+    })();
+    let drained = result.is_ok() && !peek && !socket.can_recv();
+    let placeholder = core::mem::replace(
+        stack.lock().sockets.get_mut::<raw::Socket<'static>>(handle),
+        socket,
+    );
+    debug_assert!(!placeholder.can_recv());
     if drained {
         endpoint.consume_notify();
     }
-    Ok((count, full_length, source))
+    result
 }
 
 pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
@@ -268,6 +300,8 @@ pub(super) fn set_hop_limit(handle: SocketHandle, value: u8) -> Result<(), Socke
 
 impl InetSocket {
     pub(in crate::socket) fn set_hop_limit(&self, value: u8) -> Result<(), SocketError> {
+        let _operation = self.operation.lock();
+        let _protocol = super::protocol_read();
         if let super::InetEndpoint::Raw(handle) = self.endpoint {
             set_hop_limit(handle, value)
         } else {

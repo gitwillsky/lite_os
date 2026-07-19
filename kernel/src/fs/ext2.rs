@@ -6,29 +6,76 @@ use core::{cmp, mem};
 use spin::Mutex;
 
 use super::{
-    DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType, OwnerModeChange,
-    StorageWriter,
+    DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, FileSystem, FileSystemError,
+    Inode, InodeMetadata, InodeType, OwnerModeChange, StorageWriter,
 };
 use crate::{
-    drivers::block::{BLOCK_SIZE, BlockDevice},
+    drivers::block::{BLOCK_SIZE, BlockDevice, BlockError},
     fallible_tree::FallibleMap,
+    sync::TaskMutex,
 };
 
+fn block_error(error: BlockError) -> FileSystemError {
+    match error {
+        BlockError::OutOfMemory => FileSystemError::OutOfMemory,
+        _ => FileSystemError::IoError,
+    }
+}
+
+#[path = "ext2/allocation_dirty.rs"]
+mod allocation_dirty;
+#[path = "ext2/allocation_metadata.rs"]
+mod allocation_metadata;
+#[path = "ext2/block_io.rs"]
 mod block_io;
+#[cfg(test)]
+#[path = "ext2/cost_test_support.rs"]
+mod cost_test_support;
+#[path = "ext2/directory.rs"]
 mod directory;
+#[path = "ext2/directory_cursor.rs"]
+mod directory_cursor;
+#[path = "ext2/filesystem.rs"]
 mod filesystem;
+#[path = "ext2/inode.rs"]
 mod inode;
+#[path = "ext2/inode_kind.rs"]
 mod inode_kind;
+#[path = "ext2/journal.rs"]
 mod journal;
+#[path = "ext2/journal_layout.rs"]
 mod journal_layout;
+#[path = "ext2/layout.rs"]
 mod layout;
+#[path = "ext2/link_count.rs"]
 mod link_count;
+#[path = "ext2/metadata.rs"]
 mod metadata;
+#[path = "ext2/metadata_cache.rs"]
+mod metadata_cache;
+#[path = "ext2/mount.rs"]
 mod mount;
+#[path = "ext2/orphan.rs"]
 mod orphan;
+#[path = "ext2/storage_mutation.rs"]
 mod storage_mutation;
+#[cfg(test)]
+pub(crate) use cost_test_support::{
+    TestMappedInode, clear_test_metadata_cache, fail_next_test_metadata_owner,
+    reset_test_allocation_attempts, reset_test_stage_capacity, reset_test_write_costs,
+    set_test_stage_capacity, test_allocation_attempts, test_write_costs,
+};
+#[cfg(test)]
+use cost_test_support::{
+    fail_test_metadata_owner, record_test_allocation_attempt,
+    record_test_allocation_materialization, record_test_allocation_metadata_bytes,
+    record_test_home_write, record_test_journal_write, record_test_transaction,
+    test_stage_capacity,
+};
+use directory_cursor::{DirectoryCursor, RecordPosition};
 use inode::Ext2Inode;
-use journal::{Journal, MutationGuard};
+use journal::{Journal, JournalOwner, MutationGuard};
+use metadata_cache::MetadataBlockCache;
 
 fn link_count_error(error: link_count::LinkCountError) -> FileSystemError {
     match error {
@@ -37,7 +84,31 @@ fn link_count_error(error: link_count::LinkCountError) -> FileSystemError {
     }
 }
 
+struct NonDotVisitor(bool);
+
+impl DirectoryVisitor for NonDotVisitor {
+    fn visit(
+        &mut self,
+        _next_cursor: u64,
+        entry: DirectoryEntry<'_>,
+    ) -> Result<DirectoryVisit, FileSystemError> {
+        if entry.name == b"." || entry.name == b".." {
+            Ok(DirectoryVisit::Continue)
+        } else {
+            self.0 = true;
+            Ok(DirectoryVisit::Stop)
+        }
+    }
+}
+
+fn directory_not_empty(inode: &dyn Inode) -> Result<bool, FileSystemError> {
+    let mut visitor = NonDotVisitor(false);
+    inode.read_directory(0, &mut visitor)?;
+    Ok(visitor.0)
+}
+
 fn try_zeroed(length: usize) -> Result<Vec<u8>, FileSystemError> {
+    record_test_allocation_attempt();
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
@@ -46,13 +117,27 @@ fn try_zeroed(length: usize) -> Result<Vec<u8>, FileSystemError> {
     Ok(bytes)
 }
 
-fn try_indices(values: &[usize]) -> Result<Vec<usize>, FileSystemError> {
-    let mut indices = Vec::new();
-    indices
-        .try_reserve_exact(values.len())
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    indices.extend_from_slice(values);
-    Ok(indices)
+#[cfg(not(test))]
+fn record_test_allocation_attempt() {}
+
+#[cfg(not(test))]
+const fn fail_test_metadata_owner() -> bool {
+    false
+}
+
+#[cfg(not(test))]
+fn record_test_allocation_materialization() {}
+#[cfg(not(test))]
+fn record_test_allocation_metadata_bytes(_: usize) {}
+#[cfg(not(test))]
+fn record_test_home_write() {}
+#[cfg(not(test))]
+fn record_test_journal_write() {}
+#[cfg(not(test))]
+fn record_test_transaction() {}
+#[cfg(not(test))]
+const fn test_stage_capacity(capacity: usize) -> usize {
+    capacity
 }
 
 // Utility function to align value up to the next multiple of align_to
@@ -233,10 +318,16 @@ pub(crate) struct Ext2FileSystem {
     blocks_per_group: usize,
     first_data_block: u32,
     groups: Mutex<Vec<Ext2GroupDesc>>,
-    mutation: Mutex<()>,
+    // OWNER: transaction-wide mutation serialization may span block I/O and task handoff；普通
+    // spin mutex 会在同 CPU owner 睡眠后让另一个 task 永久自旋，阻止 completion 被消费。
+    mutation: TaskMutex<()>,
     // OWNER: ext2 journal 同时拥有唯一 active transaction write-set 与 recovery sequence；
     // 缺失该 owner 会让 home metadata 与 commit record 形成两套不可恢复的写入状态。
-    journal: Mutex<Option<Journal>>,
+    journal: Mutex<JournalOwner>,
+    // OWNER: this filesystem alone maps a filesystem block identity to reusable directory/pointer
+    // bytes. Writes update an existing identity; free/abort invalidate it, preventing block reuse
+    // from observing an old object's metadata.
+    metadata_cache: Mutex<MetadataBlockCache>,
     inode_cache: Mutex<FallibleMap<u32, Weak<Ext2Inode>>>,
     self_ref: spin::Mutex<Weak<Ext2FileSystem>>,
 }
@@ -276,100 +367,8 @@ impl Ext2FileSystem {
         self.write_fs_block(table_block + block_offset as u32, &buf)
     }
 
-    fn write_primary_superblock(&self) -> Result<(), FileSystemError> {
-        let block = if self.block_size == 1024 { 1 } else { 0 };
-        let offset = if self.block_size == 1024 { 0 } else { 1024 };
-        let mut buf = try_zeroed(self.block_size)?;
-        self.read_fs_block(block, &mut buf)?;
-        let superblock = *self.superblock.lock();
-        if !superblock.encode(&mut buf, offset) {
-            return Err(FileSystemError::InvalidFileSystem);
-        }
-        self.write_fs_block(block, &buf)
-    }
-
     fn begin_mutation(&self) -> Result<MutationGuard<'_>, FileSystemError> {
         MutationGuard::begin(self)
-    }
-
-    fn write_group_descriptor(&self, group: usize) -> Result<(), FileSystemError> {
-        let start = if self.block_size == 1024 { 2 } else { 1 };
-        let per_block = self.block_size / Ext2GroupDesc::SIZE;
-        let block = start + group / per_block;
-        let offset = group % per_block * Ext2GroupDesc::SIZE;
-        let descriptor = *self
-            .groups
-            .lock()
-            .get(group)
-            .ok_or(FileSystemError::InvalidFileSystem)?;
-        let mut buf = try_zeroed(self.block_size)?;
-        self.read_fs_block(block as u32, &mut buf)?;
-        if !descriptor.encode(&mut buf, offset) {
-            return Err(FileSystemError::InvalidFileSystem);
-        }
-        self.write_fs_block(block as u32, &buf)
-    }
-
-    fn group_has_superblock(&self, group: usize) -> bool {
-        if self.superblock.lock().s_feature_ro_compat & EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER == 0 {
-            return true;
-        }
-        fn is_power(mut value: usize, base: usize) -> bool {
-            if value == 0 {
-                return false;
-            }
-            while value.is_multiple_of(base) {
-                value /= base;
-            }
-            value == 1
-        }
-        group == 0 || group == 1 || is_power(group, 3) || is_power(group, 5) || is_power(group, 7)
-    }
-
-    fn write_backup_metadata(&self) -> Result<(), FileSystemError> {
-        let groups = {
-            let source = self.groups.lock();
-            let mut snapshot = Vec::new();
-            snapshot
-                .try_reserve_exact(source.len())
-                .map_err(|_| FileSystemError::OutOfMemory)?;
-            snapshot.extend_from_slice(&source);
-            snapshot
-        };
-        let descriptor_size = Ext2GroupDesc::SIZE;
-        let descriptor_blocks = ceil_div(groups.len() * descriptor_size, self.block_size);
-        for backup_group in 1..groups.len() {
-            if !self.group_has_superblock(backup_group) {
-                continue;
-            }
-            let group_start = self.first_data_block as usize + backup_group * self.blocks_per_group;
-            let mut superblock_block = try_zeroed(self.block_size)?;
-            self.read_fs_block(group_start as u32, &mut superblock_block)?;
-            let mut superblock = *self.superblock.lock();
-            superblock.s_block_group_nr = backup_group as u16;
-            if !superblock.encode(&mut superblock_block, 0) {
-                return Err(FileSystemError::InvalidFileSystem);
-            }
-            self.write_fs_block(group_start as u32, &superblock_block)?;
-            for block_index in 0..descriptor_blocks {
-                let mut block = try_zeroed(self.block_size)?;
-                let first = block_index * self.block_size / descriptor_size;
-                let count = cmp::min(self.block_size / descriptor_size, groups.len() - first);
-                for index in 0..count {
-                    if !groups[first + index].encode(&mut block, index * descriptor_size) {
-                        return Err(FileSystemError::InvalidFileSystem);
-                    }
-                }
-                self.write_fs_block((group_start + 1 + block_index) as u32, &block)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn sync_allocation_metadata(&self, group: usize) -> Result<(), FileSystemError> {
-        self.write_group_descriptor(group)?;
-        self.write_primary_superblock()?;
-        self.write_backup_metadata()
     }
 
     fn set_bitmap_bit(
@@ -416,7 +415,9 @@ impl Ext2FileSystem {
         self.set_bitmap_bit(bitmap, self.blocks_per_group, false, Some(local))?;
         self.groups.lock()[group].bg_free_blocks_count += 1;
         self.superblock.lock().s_free_blocks_count += 1;
-        self.sync_allocation_metadata(group)
+        self.sync_allocation_metadata(group)?;
+        self.metadata_cache.lock().invalidate(block);
+        Ok(())
     }
 
     fn allocate_inode(

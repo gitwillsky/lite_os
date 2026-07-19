@@ -6,7 +6,7 @@ use std::{
 
 use syn::parse_file;
 
-use super::{SourceFile, syscall_entries};
+use super::{SourceFile, abi_contract::syscall_entries};
 
 #[cfg(test)]
 mod documentation_contract_tests;

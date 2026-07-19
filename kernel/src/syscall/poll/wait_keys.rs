@@ -148,14 +148,6 @@ impl PollWaitKeys {
             OpenFileKind::Epoll(epoll) => {
                 debug_assert!(!exclusive, "EPOLLEXCLUSIVE cannot target an epoll fd");
                 self.add_epoll_change_source(epoll)?;
-                for interest in epoll.snapshot().map_err(|_| ())? {
-                    self.add_interest(
-                        &interest.ofd,
-                        interest.event.events as i16,
-                        interest.event.events & (1 << 28) != 0,
-                        wake_group,
-                    )?;
-                }
             }
             OpenFileKind::EventFd(event) => {
                 if events & POLLIN != 0 {

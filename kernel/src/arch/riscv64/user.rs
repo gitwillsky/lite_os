@@ -199,24 +199,24 @@ impl UserContext {
             return Err(InvalidSignalContext);
         }
 
-        let mut restored = self.clone();
-        restored.sepc = machine.registers[0];
-        restored.x[1..].copy_from_slice(&machine.registers[1..]);
+        self.sepc = machine.registers[0];
+        self.x[1..].copy_from_slice(&machine.registers[1..]);
         for index in 0..32 {
-            restored.f[index] = u64::from_ne_bytes(
+            self.f[index] = u64::from_ne_bytes(
                 machine.floating_point[index * 8..index * 8 + 8]
                     .try_into()
                     .expect("fixed signal FP register slice"),
             );
         }
-        restored.fcsr = u32::from_ne_bytes(
+        self.fcsr = u32::from_ne_bytes(
             machine.floating_point[256..260]
                 .try_into()
                 .expect("fixed signal FCSR slice"),
         ) as usize;
-        let result = restored.x[10];
-        *self = restored;
-        Ok(result)
+        // Signal frame 明确提供了完整 FP image；标为 Clean 使 restore path 在返回用户态前
+        // 安装它。若保持 Off，sigreturn 会静默丢弃用户修改后的 FP 寄存器。
+        self.sstatus.set_fs(riscv::register::sstatus::FS::Clean);
+        Ok(self.x[10])
     }
 
     /// @description 安装 Linux/RISC-V signal handler entry register state。

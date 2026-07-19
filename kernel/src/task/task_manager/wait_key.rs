@@ -1,10 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::fs::AdvisoryLockKey;
 use crate::ipc::{Pipe, PipeDirection, PipeWaitCondition};
 use crate::memory::FutexKey;
 
-/// @description IndexedWaitQueue entry 的唯一 wait kind discriminator。
+/// @description WaitRegistry registration 的唯一 wait kind discriminator。
 #[derive(Clone, Copy)]
 pub(super) enum IndexedWaitKind {
     Deadline,
@@ -20,9 +19,7 @@ pub(super) enum IndexedWaitKind {
         identity: usize,
         condition: PipeWaitCondition,
     },
-    AdvisoryLock {
-        key: AdvisoryLockKey,
-    },
+    AdvisoryLock,
     Poll,
 }
 

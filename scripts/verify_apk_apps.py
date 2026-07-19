@@ -7,7 +7,6 @@ import argparse
 import shutil
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from apk_apps_cache import cached_application_apks
@@ -183,21 +182,34 @@ def prepare_https_origin(directory: Path) -> tuple[Path, str]:
     return origin, main_commit
 
 
-def verify_curl(installed: Path, directory: Path, port: int, payload_hash: str) -> None:
-    image = directory / "curl.img"
+def verify_network_applications(
+    installed: Path,
+    directory: Path,
+    port: int,
+    payload_hash: str,
+    commit: str,
+) -> None:
+    """在一个 4-CPU guest 中验证 curl 与 Git 的完整 TLS/HTTP 竖切。"""
+    image = directory / "network-apps.img"
     shutil.copyfile(installed, image)
-    script = FIXTURES / "curl.sh"
+    script = FIXTURES / "network-apps.sh"
     inject_sysinit(
         image,
         directory,
         script,
-        f"/bin/sh /run/{script.name} {port} {payload_hash}",
+        f"/bin/sh /run/{script.name} {port} {payload_hash} {commit}",
         include_network_helper=True,
     )
     boot(
         image,
         4,
-        ("LITEOS_CURL_APPLICATION_READY",),
+        (
+            "LITEOS_APK_NETWORK_READY",
+            "LITEOS_CURL_APPLICATION_READY",
+            "LITEOS_GIT_LOCAL_READY",
+            "LITEOS_GIT_REMOTE_READY",
+            "LITEOS_GIT_APPLICATION_READY",
+        ),
         timeout_seconds=90,
         forbidden_markers=FORBIDDEN_MARKERS,
     )
@@ -236,26 +248,6 @@ def verify_sqlite(installed: Path, directory: Path) -> None:
     )
 
 
-def verify_git(installed: Path, directory: Path, port: int, commit: str) -> None:
-    image = directory / "git.img"
-    shutil.copyfile(installed, image)
-    script = FIXTURES / "git.sh"
-    inject_sysinit(
-        image,
-        directory,
-        script,
-        f"/bin/sh /run/{script.name} {port} {commit}",
-        include_network_helper=True,
-    )
-    boot(
-        image,
-        4,
-        ("LITEOS_GIT_APPLICATION_READY",),
-        timeout_seconds=60,
-        forbidden_markers=FORBIDDEN_MARKERS,
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, default=ROOT / "fs.img")
@@ -279,7 +271,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / "apk-apps.json"
         payload = runtime_gate_payload(
             "apk-applications-runtime",
-            1,
+            3,
             (
                 installed,
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
@@ -303,26 +295,20 @@ def main() -> int:
             trusted = directory / "trusted.img"
             shutil.copyfile(installed, trusted)
             install_runtime_tls_identity(trusted, gate_ca, directory, find_debugfs())
-            # 1. 三条 gate 只读取各自的输入镜像，并立即复制为独占 disposable image。
-            # 2. 并发启动可把冷验证墙钟时间压到最慢 gate；HTTPS origin 本身支持并发请求。
-            # 3. 逐个读取 future，确保任一断言失败都阻止 success stamp 发布。
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                gates = (
-                    executor.submit(
-                        verify_curl,
-                        trusted,
-                        directory,
-                        port,
-                        sha256(origin / "payload.bin"),
-                    ),
-                    executor.submit(verify_sqlite, installed, directory),
-                    executor.submit(verify_git, trusted, directory, port, commit),
-                )
-                for gate in gates:
-                    gate.result()
+            # 1. make verify 已并发运行四类 runtime gate；APK 内不得再并发 QEMU。
+            # 2. curl/Git 共用同一 TLS/HTTP guest，避免重复冷启动；SQLite 独占 crash image。
+            # 3. 全部成功后才发布统一 stamp，任一失败都不会留下部分成功状态。
+            verify_network_applications(
+                trusted,
+                directory,
+                port,
+                sha256(origin / "payload.bin"),
+                commit,
+            )
         finally:
             server.terminate()
             server.wait(timeout=3)
+        verify_sqlite(installed, directory)
         publish_runtime_gate(stamp, payload)
         print("APK curl/SQLite/Git application gates passed")
     return 0

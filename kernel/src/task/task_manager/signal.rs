@@ -330,8 +330,7 @@ fn wake_process_signal_waiter(tgid: usize) -> bool {
                 return false;
             };
             threads
-                .iter_after(&cursor)
-                .next()
+                .successor(&cursor)
                 .map(|(&tid, task)| (tid, task.clone()))
         };
         let Some((tid, task)) = next else {
@@ -346,84 +345,52 @@ fn wake_process_signal_waiter(tgid: usize) -> bool {
 
 /// @description signal 发布后从统一 registry 消费匹配的 `rt_sigtimedwait` registration。
 fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
-    let waiter = {
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
-        let Some(WaitMembership::Signal(id)) = task.scheduling.state.lock().wait else {
-            return false;
-        };
-        let Some(mask) = queue.signal_mask(id) else {
-            return false;
-        };
-        task.with_pending_signal(mask, || queue.remove(id))
-            .flatten()
+    let Some(wake) = WAIT_REGISTRY.wake_signal_registration(task) else {
+        return false;
     };
-    waiter.is_some_and(|entry| {
-        assert!(Arc::ptr_eq(&entry.task, task));
-        crate::task::processor::wake_signal_task(entry.task, WaitResult::Woken)
+    wake.claimed.is_none_or(|claimed| {
+        assert!(Arc::ptr_eq(&claimed.task, task));
+        crate::task::processor::wake_signal_task(claimed.task, WaitResult::Woken)
     })
 }
 
 /// @description 从当前唯一 wait owner 取消目标 task 的 interruptible wait。
 pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
-    let indexed = {
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
-        task.with_deliverable_signal(|| {
-            let membership = task.scheduling.state.lock().wait;
-            match membership {
-                Some(
-                    wait @ (WaitMembership::Deadline(id)
-                    | WaitMembership::Futex(id)
-                    | WaitMembership::Console(id)
-                    | WaitMembership::Signal(id)
-                    | WaitMembership::Pipe(id)
-                    | WaitMembership::AdvisoryLock(id)
-                    | WaitMembership::Poll(id)),
-                ) => queue.remove(id).map(|entry| (id, wait, entry)),
-                _ => None,
-            }
-        })
-        .flatten()
-    };
-    if let Some((wait_id, membership, entry)) = indexed {
+    if task.has_deliverable_signal()
+        && let Some(wake) = WAIT_REGISTRY.interrupt_task(task)
+    {
+        let Some(entry) = wake.claimed else {
+            return true;
+        };
+        let wait_id = entry.id;
         let interrupted = WaitResult::Interrupted;
         assert!(Arc::ptr_eq(&entry.task, task));
-        return match (membership, entry.kind) {
-            (WaitMembership::Deadline(id), IndexedWaitKind::Deadline) => {
-                assert_eq!(id, wait_id);
-                crate::task::processor::wake_deadline_task(
-                    entry.task,
-                    wait_id,
-                    WaitResult::Interrupted,
-                )
-            }
-            (WaitMembership::Futex(id), IndexedWaitKind::Futex { .. }) => {
-                assert_eq!(id, wait_id);
-                crate::task::processor::wake_futex_task(
-                    entry.task,
-                    wait_id,
-                    WaitResult::Interrupted,
-                )
-            }
-            (WaitMembership::Console(id), IndexedWaitKind::Console) => {
-                assert_eq!(id, wait_id);
+        return match entry.kind {
+            IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(
+                entry.task,
+                wait_id,
+                WaitResult::Interrupted,
+            ),
+            IndexedWaitKind::Futex { .. } => crate::task::processor::wake_futex_task(
+                entry.task,
+                wait_id,
+                WaitResult::Interrupted,
+            ),
+            IndexedWaitKind::Console => {
                 crate::task::processor::wake_console_task(entry.task, wait_id, interrupted)
             }
-            (WaitMembership::Signal(id), IndexedWaitKind::Signal { .. }) => {
-                assert_eq!(id, wait_id);
+            IndexedWaitKind::Signal { .. } => {
                 crate::task::processor::wake_signal_task(entry.task, WaitResult::Interrupted)
             }
-            (WaitMembership::Pipe(id), IndexedWaitKind::Pipe { .. }) => {
-                assert_eq!(id, wait_id);
+            IndexedWaitKind::Pipe { .. } => {
                 crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Interrupted)
             }
-            (WaitMembership::AdvisoryLock(id), IndexedWaitKind::AdvisoryLock { .. }) => {
-                super::advisory_lock::interrupt_waiter(entry, wait_id, id)
+            IndexedWaitKind::AdvisoryLock => {
+                crate::task::processor::wake_flock_task(entry.task, wait_id, interrupted)
             }
-            (WaitMembership::Poll(id), IndexedWaitKind::Poll) => {
-                assert_eq!(id, wait_id);
+            IndexedWaitKind::Poll => {
                 crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Interrupted)
             }
-            _ => panic!("indexed wait kind diverged from task membership"),
         };
     }
 

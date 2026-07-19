@@ -13,8 +13,14 @@ impl VirtualFileSystem {
         mode: u32,
         identity: &AccessIdentity,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
-        let _namespace = self.namespace_mutation.lock();
-        let start = start.unwrap_or(self.root_opened()?);
+        let _namespace = self
+            .namespace_mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let start = match start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
         // `/` 是已存在的 namespace entry；若继续交给 parent/name 分割，空末项会被
         // 误报为 EINVAL，导致标准 `mkdir -p /absolute/path` 无法跳过 root。
         if path.iter().all(|byte| *byte == b'/') {
@@ -47,7 +53,8 @@ impl VirtualFileSystem {
                 gid,
             },
         )?;
-        self.register(OpenedFile::child(inode, parent, &name)?)
+        self.opened
+            .register(OpenedFile::child(inode, parent, &name)?)
     }
 
     /// @description 校验 parent access 后创建 owner-aware symbolic link。
@@ -58,8 +65,14 @@ impl VirtualFileSystem {
         target: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let _namespace = self.namespace_mutation.lock();
-        let start = start.unwrap_or(self.root_opened()?);
+        let _namespace = self
+            .namespace_mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let start = match start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
         let (parent, name) = self.parent_from(start, path, identity)?;
         let parent_inode = parent.inode();
         let metadata = parent_inode.metadata()?;
@@ -88,8 +101,14 @@ impl VirtualFileSystem {
         new_path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        let _namespace = self.namespace_mutation.lock();
-        let new_start = new_start.unwrap_or(self.root_opened()?);
+        let _namespace = self
+            .namespace_mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let new_start = match new_start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
         let (parent, name) = self.parent_from(new_start, new_path, identity)?;
         let parent_inode = parent.inode();
         identity.require(parent_inode.metadata()?, 3)?;
@@ -115,8 +134,14 @@ impl VirtualFileSystem {
         directory: bool,
         identity: &AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        let _namespace = self.namespace_mutation.lock();
-        let start = start.unwrap_or(self.root_opened()?);
+        let _namespace = self
+            .namespace_mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let start = match start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
         let (parent, name) = self.parent_from(start, path, identity)?;
         let parent_inode = parent.inode();
         let parent_metadata = parent_inode.metadata()?;
@@ -135,7 +160,11 @@ impl VirtualFileSystem {
             return Err(FileSystemError::PermissionDenied);
         }
         parent_inode.unlink(&name, directory)?;
-        self.mark_unlinked(&parent, &name, (target_inode.filesystem_id(), target.inode));
+        self.opened.mark_unlinked(
+            (parent_inode.filesystem_id(), parent_metadata.inode),
+            &name,
+            (target_inode.filesystem_id(), target.inode),
+        );
         Ok(())
     }
 
@@ -149,9 +178,18 @@ impl VirtualFileSystem {
         no_replace: bool,
         identity: &AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        let _namespace = self.namespace_mutation.lock();
-        let old_start = old_start.unwrap_or(self.root_opened()?);
-        let new_start = new_start.unwrap_or(self.root_opened()?);
+        let _namespace = self
+            .namespace_mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let old_start = match old_start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
+        let new_start = match new_start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
         let (old_parent, old_name) = self.parent_from(old_start, old_path, identity)?;
         let (new_parent, new_name) = self.parent_from(new_start, new_path, identity)?;
         let old_parent_inode = old_parent.inode();
@@ -204,13 +242,18 @@ impl VirtualFileSystem {
             .transpose()?;
         old_parent_inode.rename(&old_name, new_metadata.inode, &new_name, no_replace)?;
         if let Some(identity) = replaced_identity {
-            self.mark_unlinked(&new_parent, &new_name, identity);
+            self.opened.mark_unlinked(
+                (new_parent_inode.filesystem_id(), new_metadata.inode),
+                &new_name,
+                identity,
+            );
         }
-        self.move_opened_entries(
-            &old_parent,
+        self.opened.move_entries(
+            (old_parent_inode.filesystem_id(), old_metadata.inode),
             &old_name,
             source_identity,
             new_parent,
+            (new_parent_inode.filesystem_id(), new_metadata.inode),
             &new_name,
         );
         Ok(())

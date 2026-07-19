@@ -1,8 +1,4 @@
-fn print_str(s: &str) {
-    for byte in s.bytes() {
-        let _ = super::debug_console_write(byte);
-    }
-}
+const CONSOLE_BATCH_BYTES: usize = 256;
 
 #[macro_export]
 macro_rules! print {
@@ -20,25 +16,52 @@ macro_rules! println {
 
 // print 宏可在中断上下文使用；IRQ-safe lock 防止 task 输出被打断后同 hart 再入。
 // OWNER: console module owns the unique kernel console endpoint.
-static CONSOLE: crate::sync::IrqMutex<ConsoleWriter> = crate::sync::IrqMutex::new(ConsoleWriter);
+static CONSOLE: crate::sync::IrqMutex<ConsoleWriter> =
+    crate::sync::IrqMutex::new(ConsoleWriter::new());
 
 pub(crate) fn _print_fmt(args: core::fmt::Arguments) {
     use core::fmt::Write;
     let mut writer = CONSOLE.lock();
+    let _ = writer.write_fmt(args);
+    writer.flush();
+}
 
-    match writer.write_fmt(args) {
-        Ok(_) => {}
-        Err(_) => {
-            print_str("Error: ");
-            print_str(args.as_str().unwrap_or("Unknown error"));
+struct ConsoleWriter {
+    bytes: [u8; CONSOLE_BATCH_BYTES],
+    length: usize,
+}
+
+impl ConsoleWriter {
+    const fn new() -> Self {
+        Self {
+            bytes: [0; CONSOLE_BATCH_BYTES],
+            length: 0,
         }
+    }
+
+    fn flush(&mut self) {
+        if self.length == 0 {
+            return;
+        }
+        // OWNER: CONSOLE guard uniquely owns this BSS buffer. Kernel image mappings are identity
+        // mapped, satisfying SBI DBCN's physical-address contract for the synchronous call.
+        let _ = super::debug_console_write_bytes(&self.bytes[..self.length]);
+        self.length = 0;
     }
 }
 
-struct ConsoleWriter;
 impl core::fmt::Write for ConsoleWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        print_str(s);
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        let mut bytes = text.as_bytes();
+        while !bytes.is_empty() {
+            let count = bytes.len().min(CONSOLE_BATCH_BYTES - self.length);
+            self.bytes[self.length..self.length + count].copy_from_slice(&bytes[..count]);
+            self.length += count;
+            bytes = &bytes[count..];
+            if self.length == CONSOLE_BATCH_BYTES {
+                self.flush();
+            }
+        }
         Ok(())
     }
 }

@@ -8,6 +8,7 @@ use spin::{Mutex, Once};
 use crate::{
     drivers::network::{NetworkDevice, NetworkError, NetworkTransmit, network_device},
     fallible_tree::FallibleMap,
+    ipc::ReceiveBuffer,
     ipc::{PipeDirection, PipeEnd},
 };
 
@@ -23,7 +24,7 @@ const PACKET_MULTICAST: u8 = 2;
 const PACKET_OTHERHOST: u8 = 3;
 const RECEIVE_QUEUE_LIMIT: usize = 64;
 
-struct Packet {
+struct SharedPacket {
     payload: Vec<u8>,
     source: PacketAddress,
 }
@@ -32,7 +33,7 @@ struct EndpointState {
     endpoint: Weak<PacketSocket>,
     protocol: u16,
     interface_index: i32,
-    queue: VecDeque<Packet>,
+    queue: VecDeque<Arc<SharedPacket>>,
     // empty → readable edge 已发布到 queue、尚未在 registry lock 外通知；缺失时长期
     // readable queue 会在每次网络 poll 重复唤醒 waiter。
     notification_pending: bool,
@@ -217,7 +218,7 @@ impl PacketSocket {
     /// @errors queue 为空返回 Again；registry 状态损坏返回 NotConnected。
     pub(super) fn receive(
         &self,
-        output: &mut [u8],
+        output: &mut ReceiveBuffer<'_>,
         peek: bool,
     ) -> Result<(usize, usize, PacketAddress), SocketError> {
         let mut registry = registry()?.lock();
@@ -227,8 +228,7 @@ impl PacketSocket {
             .ok_or(SocketError::NotConnected)?;
         let packet = state.queue.front().ok_or(SocketError::Again)?;
         let full_length = packet.payload.len();
-        let count = output.len().min(full_length);
-        output[..count].copy_from_slice(&packet.payload[..count]);
+        let count = output.append(&packet.payload);
         let source = packet.source;
         if !peek {
             state.queue.pop_front();
@@ -328,6 +328,28 @@ pub(super) fn deliver(frame: &[u8]) {
         address_length: 6,
         address: padded_address(frame[6..12].try_into().unwrap()),
     };
+    let has_receiver = registry.endpoints.values().any(|state| {
+        state.interface_index == INTERFACE_INDEX
+            && u16::from_be(state.protocol) == ETH_P_IP
+            && state.queue.len() < RECEIVE_QUEUE_LIMIT
+    });
+    if !has_receiver {
+        return;
+    }
+    let mut bytes = Vec::new();
+    if bytes
+        .try_reserve_exact(frame.len() - ETH_HEADER_LENGTH)
+        .is_err()
+    {
+        return;
+    }
+    bytes.extend_from_slice(&frame[ETH_HEADER_LENGTH..]);
+    let Ok(payload) = Arc::try_new(SharedPacket {
+        payload: bytes,
+        source,
+    }) else {
+        return;
+    };
     registry.endpoints.for_each_mut(|_, state| {
         if state.interface_index != INTERFACE_INDEX
             || u16::from_be(state.protocol) != ETH_P_IP
@@ -336,16 +358,10 @@ pub(super) fn deliver(frame: &[u8]) {
             return;
         }
         let was_empty = state.queue.is_empty();
-        let mut payload = Vec::new();
-        if payload
-            .try_reserve_exact(frame.len() - ETH_HEADER_LENGTH)
-            .is_err()
-            || state.queue.try_reserve(1).is_err()
-        {
+        if state.queue.try_reserve(1).is_err() {
             return;
         }
-        payload.extend_from_slice(&frame[ETH_HEADER_LENGTH..]);
-        state.queue.push_back(Packet { payload, source });
+        state.queue.push_back(payload.clone());
         state.notification_pending |= was_empty;
     });
 }
@@ -408,6 +424,6 @@ fn network_error(error: NetworkError) -> SocketError {
     match error {
         NetworkError::WouldBlock => SocketError::Again,
         NetworkError::FrameTooLarge => SocketError::MessageTooLarge,
-        NetworkError::Device => SocketError::NetworkUnreachable,
+        NetworkError::Device => SocketError::Device,
     }
 }

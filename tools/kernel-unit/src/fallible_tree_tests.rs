@@ -200,3 +200,119 @@ fn split_and_join_have_stable_key_comparison_bounds() {
     assert!(right.is_empty());
     map.test_assert_invariants();
 }
+
+#[test]
+fn ceiling_and_successor_match_ordered_neighbors_with_logarithmic_comparisons() {
+    const ENTRIES: usize = 16_384;
+    let comparisons = Rc::new(Cell::new(0));
+    let key = |value| CountingKey {
+        value,
+        comparisons: comparisons.clone(),
+    };
+    let mut map = FallibleMap::new();
+    for value in (0..ENTRIES).step_by(2) {
+        map.try_insert(key(value), value).unwrap();
+    }
+    let height = usize::from(map.test_root_height());
+
+    for (query, ceiling, successor) in [
+        (0, Some(0), Some(2)),
+        (1, Some(2), Some(2)),
+        (ENTRIES - 2, Some(ENTRIES - 2), None),
+        (ENTRIES - 1, None, None),
+    ] {
+        comparisons.set(0);
+        assert_eq!(map.ceiling(&key(query)).map(|(_, value)| *value), ceiling);
+        assert!(comparisons.get() <= height + 1);
+        comparisons.set(0);
+        assert_eq!(
+            map.successor(&key(query)).map(|(_, value)| *value),
+            successor
+        );
+        assert!(comparisons.get() <= height + 1);
+    }
+}
+
+#[test]
+fn ordered_scan_has_compact_stack_and_linear_comparison_budget() {
+    const ENTRIES: usize = 4_096;
+    let comparisons = Rc::new(Cell::new(0));
+    let key = |value| CountingKey {
+        value,
+        comparisons: comparisons.clone(),
+    };
+    let mut map = FallibleMap::new();
+    for value in 0..ENTRIES {
+        map.try_insert(key(value), value).unwrap();
+    }
+
+    comparisons.set(0);
+    let mut visited = 0;
+    for (expected, (_, value)) in map.iter().enumerate() {
+        assert_eq!(*value, expected);
+        visited += 1;
+    }
+    let iterator_bytes = core::mem::size_of_val(&map.iter());
+    let lookup_comparisons = comparisons.get();
+    assert!(
+        visited == ENTRIES && iterator_bytes <= 16 && lookup_comparisons <= 1,
+        "ordered scan visited {visited} entries with a {iterator_bytes}-byte iterator frame and {lookup_comparisons} key comparisons"
+    );
+}
+
+#[test]
+fn retain_matches_random_btree_models_without_replacing_kept_nodes() {
+    let mut map = FallibleMap::new();
+    let mut model = BTreeMap::new();
+    let mut state = 0x243f_6a88_85a3_08d3_u64;
+
+    for round in 0..64_i64 {
+        for _ in 0..96 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let key = ((state >> 19) % 2_049) as i32 - 1_024;
+            let value = round ^ i64::from(key);
+            assert_eq!(
+                map.try_insert(key, value).unwrap(),
+                model.insert(key, value)
+            );
+        }
+        let before = node_addresses(&map);
+        let salt = (state >> 32) as i32;
+        map.retain(|key, value| (key.wrapping_mul(31) ^ (*value as i32) ^ salt) & 3 != 0);
+        model.retain(|key, value| (key.wrapping_mul(31) ^ (*value as i32) ^ salt) & 3 != 0);
+        assert_model(&map, &model);
+        assert!(
+            node_addresses(&map).is_subset(&before),
+            "retain must reuse kept node ownership"
+        );
+    }
+}
+
+#[test]
+fn retain_calls_predicate_once_per_node_without_key_comparisons() {
+    const ENTRIES: usize = 4_096;
+    let comparisons = Rc::new(Cell::new(0));
+    let key = |value| CountingKey {
+        value,
+        comparisons: comparisons.clone(),
+    };
+    let mut map = FallibleMap::new();
+    for value in 0..ENTRIES {
+        map.try_insert(key(value), value).unwrap();
+    }
+    let before = node_addresses(&map);
+    let visits = Cell::new(0);
+
+    comparisons.set(0);
+    map.retain(|_, _| {
+        visits.set(visits.get() + 1);
+        true
+    });
+
+    assert_eq!(visits.get(), ENTRIES);
+    assert_eq!(comparisons.get(), 0);
+    assert_eq!(node_addresses(&map), before);
+    map.test_assert_invariants();
+}

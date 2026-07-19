@@ -18,7 +18,7 @@ use regular::{
 };
 
 use crate::syscall::user_iovec::{
-    ImportError, TotalLengthError, UserIoCursor, UserIoVec, checked_total_length,
+    ImportError, TotalLengthError, UserInputStaging, UserIoCursor, UserIoVec, checked_total_length,
     fallible_staging_capacity, import_iovecs as import_raw_iovecs, with_prepared_staging,
 };
 

@@ -1,11 +1,11 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use super::{
     InputAbsInfo, InputDevice, InputDeviceError, InputId, InterruptError, InterruptHandler,
     InterruptVector, RawInputEvent, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK,
     VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
-    virtio_queue::VirtQueue,
+    virtio_queue::{DmaBuffer, VirtQueue},
 };
 
 const EVENT_QUEUE: u32 = 0;
@@ -41,7 +41,7 @@ struct InputMetadata {
 }
 
 struct EventSlot {
-    bytes: Box<[u8; EVENT_SIZE]>,
+    bytes: DmaBuffer<EVENT_SIZE>,
 }
 
 struct EventQueueState {
@@ -49,14 +49,17 @@ struct EventQueueState {
     slots: Vec<EventSlot>,
     by_head: Vec<Option<u16>>,
     reposted: bool,
+    // OWNER: invalid completion permanently closes eventq until device reset.
+    failed: bool,
 }
 
 /// @description modern MMIO VirtIO input adapter；eventq DMA 与 metadata 由实例唯一拥有。
 pub(crate) struct VirtIOInputDevice {
     device: VirtIODevice,
     metadata: InputMetadata,
-    // OWNER: event queue lock 唯一串行 used recycle、slot/head 映射与 repost publication。
-    // 缺失该锁会让两个 consumer 把同一 DMA slot 同时重新交还 device。
+    // OWNER: event queue ordinary lock 唯一串行 used recycle、slot/head 映射与 repost。
+    // hardirq 只发布 deferred bit，consumer 只在 user-return/idle safe point 进入；若从
+    // kernel SSIP 直接消费，同 CPU 可重入本锁并永久自旋。
     events: Mutex<EventQueueState>,
 }
 
@@ -102,9 +105,9 @@ impl VirtIOInputDevice {
         by_head.try_reserve_exact(size as usize).ok()?;
         by_head.resize(size as usize, None);
         for slot_index in 0..capacity {
-            let mut bytes = Box::try_new([0u8; EVENT_SIZE]).ok()?;
-            let mut outputs: [&mut [u8]; 1] = [&mut bytes[..]];
-            let head = queue.add_buffer(&[], &mut outputs)?;
+            let bytes = DmaBuffer::try_zeroed().ok()?;
+            let output = bytes.writable_all();
+            let head = queue.add_dma(&[output]).ok()?;
             queue.add_to_avail(head);
             by_head[head as usize] = Some(slot_index);
             slots.push(EventSlot { bytes });
@@ -121,9 +124,21 @@ impl VirtIOInputDevice {
                 slots,
                 by_head,
                 reposted: false,
+                failed: false,
             }),
         })
         .ok()
+    }
+
+    fn fail_device(&self) -> InputDeviceError {
+        let first_failure = {
+            let mut events = self.events.lock();
+            !core::mem::replace(&mut events.failed, true)
+        };
+        if first_failure {
+            let _ = self.device.reset();
+        }
+        InputDeviceError::Device
     }
 
     fn query(device: &VirtIODevice, select: u8, subsel: u8) -> Option<Vec<u8>> {
@@ -296,38 +311,59 @@ impl InputDevice for VirtIOInputDevice {
 
     fn receive_event(&self) -> Result<Option<RawInputEvent>, InputDeviceError> {
         let mut events = self.events.lock();
-        let Some((head, used_length)) =
-            events.queue.used().map_err(|()| InputDeviceError::Device)?
-        else {
-            return Ok(None);
-        };
-        if used_length as usize != EVENT_SIZE {
+        if events.failed {
             return Err(InputDeviceError::Device);
         }
-        let slot_index = events.by_head[head as usize]
-            .take()
-            .ok_or(InputDeviceError::Device)?;
-        let bytes = *events.slots[slot_index as usize].bytes;
+        let completion = match events.queue.used() {
+            Ok(Some(completion)) => completion,
+            Ok(None) => return Ok(None),
+            Err(()) => {
+                drop(events);
+                return Err(self.fail_device());
+            }
+        };
+        let head = completion.head();
+        let Some(slot_index) = events.by_head[head as usize].take() else {
+            drop(events);
+            return Err(self.fail_device());
+        };
+        if completion.length() as usize != EVENT_SIZE {
+            drop(events);
+            return Err(self.fail_device());
+        }
+        if events.queue.recycle_used(completion).is_err() {
+            drop(events);
+            return Err(self.fail_device());
+        }
+        let bytes: [u8; EVENT_SIZE] = events.slots[slot_index as usize]
+            .bytes
+            .as_slice()
+            .try_into()
+            .unwrap();
         let event = RawInputEvent {
             event_type: u16::from_le_bytes(bytes[0..2].try_into().unwrap()),
             code: u16::from_le_bytes(bytes[2..4].try_into().unwrap()),
             value: i32::from_le_bytes(bytes[4..8].try_into().unwrap()),
         };
 
-        // 1. used() 已归还旧 chain；2. 原 slot 立即重新发布；3. batch 末尾统一 notify。
-        // 缺失第 2 步会让 device 在持续指针事件中耗尽 eventq 并静默丢包。
+        // Owner claim 与 length validation 均已完成，旧 chain 此时才回收并重新发布同一 slot。
         let new_head = {
             let EventQueueState { queue, slots, .. } = &mut *events;
-            let mut outputs: [&mut [u8]; 1] = [&mut slots[slot_index as usize].bytes[..]];
-            queue
-                .add_buffer(&[], &mut outputs)
-                .ok_or(InputDeviceError::Device)?
+            let output = slots[slot_index as usize].bytes.writable_all();
+            match queue.add_dma(&[output]) {
+                Ok(head) => head,
+                Err(_) => {
+                    drop(events);
+                    return Err(self.fail_device());
+                }
+            }
         };
         if events.by_head[new_head as usize]
             .replace(slot_index)
             .is_some()
         {
-            return Err(InputDeviceError::Device);
+            drop(events);
+            return Err(self.fail_device());
         }
         events.queue.add_to_avail(new_head);
         events.reposted = true;
@@ -335,17 +371,29 @@ impl InputDevice for VirtIOInputDevice {
     }
 
     fn finish_receive_batch(&self) -> Result<(), InputDeviceError> {
-        let notify = core::mem::take(&mut self.events.lock().reposted);
-        if notify {
-            self.device
-                .notify_queue(EVENT_QUEUE)
-                .map_err(|_| InputDeviceError::Device)?;
+        let notify = {
+            let mut events = self.events.lock();
+            if events.failed {
+                return Err(InputDeviceError::Device);
+            }
+            core::mem::take(&mut events.reposted)
+        };
+        if notify && self.device.notify_queue(EVENT_QUEUE).is_err() {
+            return Err(self.fail_device());
         }
         Ok(())
     }
 
     fn has_pending_event(&self) -> bool {
-        self.events.lock().queue.has_used()
+        let events = self.events.lock();
+        !events.failed && events.queue.has_used()
+    }
+}
+
+impl Drop for VirtIOInputDevice {
+    fn drop(&mut self) {
+        // Reset revokes device-writable event descriptors before cached mappings are released.
+        let _ = self.device.reset();
     }
 }
 

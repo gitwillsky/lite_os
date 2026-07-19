@@ -1,4 +1,5 @@
 use super::*;
+use core::mem::MaybeUninit;
 
 /// @description 执行 scalar/writev 共用的唯一 sequential write descriptor dispatch。
 /// @param task userspace address owner 与 SIGPIPE/RLIMIT source。
@@ -28,13 +29,13 @@ pub(super) fn write_descriptor(
             let append = *ofd.flags.lock() & O_APPEND != 0;
             let staging = PreparedRegularWriteStaging::prepare(total_length);
             with_prepared_staging(staging, |staging| {
-                let staging = staging.as_mut_slice();
+                let mut staging = staging.as_input_staging();
                 ofd.with_position(|offset| {
                     let writer = match file.begin_write() {
                         Ok(writer) => writer,
                         Err(error) => return ferr(error),
                     };
-                    write_regular_vectors(task, &writer, offset, vectors, append, staging)
+                    write_regular_vectors(task, &writer, offset, vectors, append, &mut staging)
                 })
             })
         }
@@ -43,12 +44,13 @@ pub(super) fn write_descriptor(
                 return -errno::EBADF;
             }
             let mut cursor = UserIoCursor::new(vectors);
-            let mut input = [0u8; PIPE_BUF];
+            let mut storage = [MaybeUninit::uninit(); PIPE_BUF];
+            let mut input = UserInputStaging::from_slice(&mut storage);
             let mut written = 0usize;
             while written < total_length {
                 // 1. 每次只 gather 一笔 PIPE_BUF 范围内的原子 payload。
-                let count = (total_length - written).min(input.len());
-                let copied = match cursor.copy_from_user(task, &mut input[..count]) {
+                let count = (total_length - written).min(input.capacity());
+                let copied = match cursor.copy_from_user_into(task, &mut input, count) {
                     Ok(copied) => copied,
                     Err(()) => {
                         return if written == 0 {
@@ -64,7 +66,7 @@ pub(super) fn write_descriptor(
                 );
                 loop {
                     // 2. 仅在整笔 payload 可提交时推进 pipe-visible progress。
-                    match endpoint.write(&input[..count]) {
+                    match endpoint.write(input.initialized()) {
                         PipeWrite::Bytes(count) => {
                             written += count;
                             break;
@@ -105,16 +107,16 @@ pub(super) fn write_descriptor(
             let capacity = socket
                 .stream_send_staging_capacity(total_length, 64 * 1024)
                 .unwrap_or(total_length);
-            let mut input = match buffer(capacity) {
+            let mut input = match UserInputStaging::try_new(capacity) {
                 Ok(input) => input,
-                Err(error) => return error,
+                Err(()) => return -errno::ENOMEM,
             };
             let mut cursor = UserIoCursor::new(vectors);
             let mut written = 0usize;
             while written < total_length {
                 // 2. stream 复用 bounded buffer，并在首次短写/阻塞后返回标准 partial count。
-                let requested = (total_length - written).min(input.len());
-                match cursor.copy_from_user(task, &mut input[..requested]) {
+                let requested = (total_length - written).min(input.capacity());
+                match cursor.copy_from_user_into(task, &mut input, requested) {
                     Ok(copied) => {
                         assert_eq!(copied, requested, "socket gather ended early")
                     }
@@ -127,7 +129,7 @@ pub(super) fn write_descriptor(
                     }
                 }
                 loop {
-                    match socket.write(&input[..requested]) {
+                    match socket.write(input.initialized()) {
                         Ok(count) => {
                             written += count;
                             if count < requested {

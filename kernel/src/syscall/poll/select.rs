@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 
-use crate::{syscall::errno, task::TaskControlBlock};
+use crate::{
+    syscall::{errno, user_iovec::UserInputStaging},
+    task::TaskControlBlock,
+};
 
 use super::{POLLERR, POLLHUP, POLLIN, POLLOUT, POLLPRI};
 use crate::syscall::timer::{TimeSpec, decode_timespec};
@@ -9,7 +12,7 @@ use crate::syscall::timer::{TimeSpec, decode_timespec};
 pub(super) struct SelectSets {
     byte_count: usize,
     addresses: [usize; 3],
-    input: [Vec<u8>; 3],
+    input: [UserInputStaging<'static>; 3],
 }
 
 impl SelectSets {
@@ -41,13 +44,13 @@ impl SelectSets {
     /// @return POLLIN/POLLOUT/POLLPRI 组合。
     pub(super) fn events(&self, fd: usize) -> i16 {
         let mut events = 0;
-        if fd_is_set(&self.input[0], fd) {
+        if fd_is_set(self.input[0].initialized(), fd) {
             events |= POLLIN;
         }
-        if fd_is_set(&self.input[1], fd) {
+        if fd_is_set(self.input[1].initialized(), fd) {
             events |= POLLOUT;
         }
-        if fd_is_set(&self.input[2], fd) {
+        if fd_is_set(self.input[2].initialized(), fd) {
             events |= POLLPRI;
         }
         events
@@ -156,14 +159,16 @@ fn copy_fd_set(
     task: &TaskControlBlock,
     address: usize,
     byte_count: usize,
-) -> Result<Vec<u8>, isize> {
-    if address == 0 {
-        return Ok(Vec::new());
+) -> Result<UserInputStaging<'static>, isize> {
+    let mut staging = UserInputStaging::try_new(if address == 0 { 0 } else { byte_count })
+        .map_err(|()| -errno::ENOMEM)?;
+    if address != 0 {
+        task.copy_from_user_uninit(address, staging.prepare(byte_count))
+            .map_err(|_| -errno::EFAULT)?;
+        // SAFETY: copy_from_user_uninit 返回成功时完整初始化 prepared fd-set storage。
+        unsafe { staging.publish(byte_count) };
     }
-    let mut bytes = zeroed_bytes(byte_count)?;
-    task.copy_from_user(address, &mut bytes)
-        .map_err(|_| -errno::EFAULT)?;
-    Ok(bytes)
+    Ok(staging)
 }
 
 fn fd_is_set(bits: &[u8], fd: usize) -> bool {

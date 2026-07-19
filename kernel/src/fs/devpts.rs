@@ -1,8 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use super::{
-    DeviceKind, DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode,
-    InodeMetadata, InodeType,
+    DeviceKind, DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
 };
 
 const DEVPTS_FILESYSTEM_ID: usize = 5;
@@ -169,26 +169,48 @@ impl Inode for DevPtsInode {
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
+    fn read_directory(
+        &self,
+        cursor: u64,
+        visitor: &mut dyn DirectoryVisitor,
+    ) -> Result<DirectoryRead, FileSystemError> {
         if !matches!(self.node, DevPtsNode::Root) {
             return Err(FileSystemError::NotDirectory);
         }
         let indices = super::pty::slave_indices()?;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(indices.len().saturating_add(2))
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        entries.push(DirectoryEntry::try_new(1, InodeType::Directory, b".")?);
-        entries.push(DirectoryEntry::try_new(1, InodeType::Directory, b"..")?);
-        for index in indices {
-            let mut storage = [0u8; 10];
-            entries.push(DirectoryEntry::try_new(
-                DevPtsNode::Slave(index).inode(),
-                InodeType::CharacterDevice,
-                index_name(index, &mut storage),
-            )?);
+        let mut stream = IndexedDirectory::new(cursor, visitor);
+        if !stream.emit(
+            0,
+            DirectoryEntry {
+                inode: 1,
+                kind: InodeType::Directory,
+                name: b".",
+            },
+        )? || !stream.emit(
+            1,
+            DirectoryEntry {
+                inode: 1,
+                kind: InodeType::Directory,
+                name: b"..",
+            },
+        )? {
+            return Ok(stream.finish());
         }
-        Ok(entries)
+        let start = stream.start_index().saturating_sub(2);
+        for (ordinal, index) in indices.into_iter().enumerate().skip(start) {
+            let mut storage = [0u8; 10];
+            if !stream.emit(
+                ordinal + 2,
+                DirectoryEntry {
+                    inode: DevPtsNode::Slave(index).inode(),
+                    kind: InodeType::CharacterDevice,
+                    name: index_name(index, &mut storage),
+                },
+            )? {
+                break;
+            }
+        }
+        Ok(stream.finish())
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -240,8 +262,8 @@ impl FileSystem for DevPtsFileSystem {
         Ok(self.root.clone())
     }
 
-    fn statistics(&self) -> FileSystemStatistics {
-        FileSystemStatistics {
+    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
+        Ok(FileSystemStatistics {
             type_name: "devpts",
             magic: DEVPTS_SUPER_MAGIC,
             block_size: 4096,
@@ -254,6 +276,6 @@ impl FileSystem for DevPtsFileSystem {
             name_length: 255,
             fragment_size: 4096,
             flags: 0,
-        }
+        })
     }
 }

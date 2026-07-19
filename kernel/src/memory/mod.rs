@@ -76,7 +76,9 @@ pub(crate) fn signal_trampoline_entry() -> usize {
         + (__signal_trampoline as *const () as usize - strampoline as *const () as usize)
 }
 
-// OWNER: memory module owns the canonical kernel address space after initialization.
+// OWNER: memory module owns the canonical kernel address space after initialization. VirtIO
+// descriptor translation may take this ordinary lock only from task or deferred safe-point context;
+// hardirq/kernel-SSIP paths must never traverse the page table, or same-CPU reentry will deadlock.
 pub(crate) static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 
 /// @description 初始化构造动态 logical CPU topology 所需的 kernel allocator。

@@ -1,5 +1,6 @@
 use super::*;
 use crate::fs::TerminalReadMode;
+use crate::ipc::ReceiveBuffer;
 
 /// @description 执行 scalar/readv 共用的唯一 sequential read descriptor dispatch。
 /// @param task userspace address owner。
@@ -34,9 +35,9 @@ pub(super) fn read_descriptor(
             if endpoint.direction() != PipeDirection::Read {
                 return -errno::EBADF;
             }
-            let mut input = match buffer(total_length.min(64 * 1024)) {
+            let mut input = match ReceiveBuffer::try_new(total_length.min(64 * 1024)) {
                 Ok(input) => input,
-                Err(error) => return error,
+                Err(()) => return -errno::ENOMEM,
             };
             let read = loop {
                 match endpoint.read(&mut input) {
@@ -55,15 +56,16 @@ pub(super) fn read_descriptor(
                 }
             };
             let mut cursor = UserIoCursor::new(vectors);
-            let result = cursor.copy_to_user(task, &input[..read]);
+            assert_eq!(read, input.len());
+            let result = cursor.copy_to_user(task, input.initialized());
             scatter_result(&cursor, result)
         }
         OpenFileKind::Socket(socket) => {
             // 1. Socket facade 从唯一 protocol policy 投影 bounded useful capacity。
             let capacity = socket.receive_staging_capacity(total_length, 64 * 1024);
-            let mut input = match buffer(capacity) {
+            let mut input = match ReceiveBuffer::try_new(capacity) {
                 Ok(input) => input,
-                Err(error) => return error,
+                Err(()) => return -errno::ENOMEM,
             };
             // 2. 一个 sequential read 只消费一次 socket receive operation；逐 chunk 调用
             // backend 会让 datagram 丢失消息边界，并让 stream 的 blocking 语义分裂。
@@ -88,7 +90,8 @@ pub(super) fn read_descriptor(
             };
             // 3. backend result 只由 cursor scatter 一次，partial copyout 不复制 progress state。
             let mut cursor = UserIoCursor::new(vectors);
-            let result = cursor.copy_to_user(task, &input[..read]);
+            assert_eq!(read, input.len());
+            let result = cursor.copy_to_user(task, input.initialized());
             scatter_result(&cursor, result)
         }
         OpenFileKind::EventFd(event) => {
@@ -129,33 +132,35 @@ pub(super) fn read_descriptor(
         OpenFileKind::Character(device) => match device {
             CharacterDevice::Null => 0,
             CharacterDevice::Zero => {
-                let zeroes = [0u8; 512];
                 let mut cursor = UserIoCursor::new(vectors);
-                while cursor.completed() < total_length {
-                    let count = (total_length - cursor.completed()).min(zeroes.len());
-                    if cursor.copy_to_user(task, &zeroes[..count]).is_err() {
-                        return if cursor.completed() == 0 {
-                            -errno::EFAULT
-                        } else {
-                            cursor.completed() as isize
-                        };
-                    }
+                if cursor.zero_to_user(task).is_err() {
+                    return if cursor.completed() == 0 {
+                        -errno::EFAULT
+                    } else {
+                        cursor.completed() as isize
+                    };
                 }
                 total_length as isize
             }
             CharacterDevice::Entropy => {
-                let mut bytes = [0u8; 256];
+                let mut bytes = match crate::random::EntropyBatch::<4096>::try_new() {
+                    Some(bytes) => bytes,
+                    None => return -errno::ENOMEM,
+                };
                 let mut cursor = UserIoCursor::new(vectors);
                 while cursor.completed() < total_length {
-                    let count = (total_length - cursor.completed()).min(bytes.len());
-                    if crate::random::fill(&mut bytes[..count]).is_err() {
-                        return if cursor.completed() == 0 {
-                            -errno::EIO
-                        } else {
-                            cursor.completed() as isize
-                        };
-                    }
-                    if cursor.copy_to_user(task, &bytes[..count]).is_err() {
+                    let count = (total_length - cursor.completed()).min(4096);
+                    let initialized = match bytes.fill(count) {
+                        Ok(initialized) => initialized,
+                        Err(_) => {
+                            return if cursor.completed() == 0 {
+                                -errno::EIO
+                            } else {
+                                cursor.completed() as isize
+                            };
+                        }
+                    };
+                    if cursor.copy_to_user(task, initialized).is_err() {
                         return if cursor.completed() == 0 {
                             -errno::EFAULT
                         } else {
@@ -184,6 +189,7 @@ pub(super) fn read_descriptor(
                 let nonblocking = *ofd.flags.lock() & O_NONBLOCK != 0;
                 let mut cursor = UserIoCursor::new(vectors);
                 let mut events = [crate::drm::DrmEvent::EMPTY; 16];
+                let mut encoded = [0u8; 16 * EVENT_SIZE];
                 let mut consumed = 0usize;
                 loop {
                     let readable = file.readable_event_count();
@@ -220,14 +226,19 @@ pub(super) fn read_descriptor(
                     if read == 0 {
                         continue;
                     }
-                    for event in events.iter().take(read) {
-                        if cursor.copy_to_user(task, &event.encode()).is_err() {
-                            return if cursor.completed() == 0 {
-                                -errno::EFAULT
-                            } else {
-                                cursor.completed() as isize
-                            };
-                        }
+                    for (index, event) in events.iter().take(read).enumerate() {
+                        let offset = index * EVENT_SIZE;
+                        encoded[offset..offset + EVENT_SIZE].copy_from_slice(&event.encode());
+                    }
+                    if cursor
+                        .copy_to_user(task, &encoded[..read * EVENT_SIZE])
+                        .is_err()
+                    {
+                        return if cursor.completed() == 0 {
+                            -errno::EFAULT
+                        } else {
+                            cursor.completed() as isize
+                        };
                     }
                     consumed += read;
                     if consumed == maximum || read < requested {
@@ -300,6 +311,7 @@ pub(super) fn read_descriptor(
                 let nonblocking = *ofd.flags.lock() & O_NONBLOCK != 0;
                 let mut cursor = UserIoCursor::new(vectors);
                 let mut events = [crate::input::InputEvent::default(); 16];
+                let mut encoded_events = [0u8; 16 * EVENT_SIZE];
                 let mut consumed = 0usize;
                 loop {
                     let available = match file.readable_count() {
@@ -358,15 +370,22 @@ pub(super) fn read_descriptor(
                         }
                         continue;
                     }
-                    // 3. ABI 只发布完整的 24-byte RV64 input_event，不暴露内部 raw event shape。
-                    for event in events.iter().take(read) {
-                        if cursor.copy_to_user(task, &event.encode()).is_err() {
-                            return if cursor.completed() == 0 {
-                                -errno::EFAULT
-                            } else {
-                                cursor.completed() as isize
-                            };
-                        }
+                    // 3. ABI 只发布完整的 24-byte RV64 input_event；整批编码后一次 scatter，
+                    // 避免每个 event 重走 user range fault/validation。
+                    for (index, event) in events.iter().take(read).enumerate() {
+                        let offset = index * EVENT_SIZE;
+                        encoded_events[offset..offset + EVENT_SIZE]
+                            .copy_from_slice(&event.encode());
+                    }
+                    if cursor
+                        .copy_to_user(task, &encoded_events[..read * EVENT_SIZE])
+                        .is_err()
+                    {
+                        return if cursor.completed() == 0 {
+                            -errno::EFAULT
+                        } else {
+                            cursor.completed() as isize
+                        };
                     }
                     consumed += read;
                     if consumed == maximum || read < requested {

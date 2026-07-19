@@ -12,8 +12,10 @@ mod resource_limits;
 mod robust_list;
 mod scheduling;
 mod signal_state;
+mod trap_context;
+mod user_context;
 
-use core::sync::atomic::{AtomicU64, AtomicUsize};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
@@ -27,7 +29,7 @@ use crate::{
         MemorySet, PageFaultAccess, PageFaultOutcome, SharedFileId, TRAP_CONTEXT, UserAccessError,
         UserFaultLimits, VirtualAddress,
     },
-    sync::IrqMutex,
+    sync::{IrqMutex, TaskMutex, TaskMutexWaitPreparation},
     task::{loader::LoadedExecutable, pid::ProcessId},
     timer::get_time_us,
 };
@@ -51,6 +53,7 @@ pub(in crate::task) use scheduling::{CpuAffinity, ReadyRetirement, ReadyTransiti
 pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState, WaitMembership, WaitResult};
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
+use user_context::ContextOwner;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum RunState {
@@ -103,10 +106,13 @@ struct ThreadContext {
     // `/proc/<tgid>/task/<tid>/stat` starttime 会错误回退到主线程启动时间。
     start_time_us: u64,
     kernel_stack: KernelStack,
-    user_cx_va: Mutex<usize>,
+    user_context: ContextOwner<UserContext>,
     kernel_cx: Mutex<KernelContext>,
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
+    // OWNER: Thread 预留唯一 memory-retirement waiter；exit/clone rollback 在任何新分配
+    // 都已不可依赖时取走。缺失它会让同 mm sibling 持锁时无法可靠删除临时 trap mapping。
+    memory_retirement_wait: Mutex<Option<TaskMutexWaitPreparation>>,
     clear_child_tid: Mutex<Option<usize>>,
     robust_list: Mutex<Option<usize>>,
     signal_mask: Mutex<u64>,
@@ -159,6 +165,9 @@ struct Process {
     // OWNER: Process 的单锁 limits 由所有 Thread 共享、fork 复制、exec 保留；若放入
     // AddressSpace，vfork parent/child 的独立 prlimit policy 会被错误合并。
     resource_limits: Mutex<ResourceLimits>,
+    // CACHE: ResourceLimits 仍是唯一 limit owner；false 只在 RLIMIT_CPU soft/hard 都无限时
+    // 发布。有限 limit 发布前先置 true，缺失该顺序会让 context switch 漏发 SIGXCPU/SIGKILL。
+    cpu_limit_active: AtomicBool,
     // OWNER: Process 的全部 Thread 只累计到这一份 CPU runtime；缺失时 RLIMIT_CPU 会被
     // 每个 Thread 单独计算，使多线程程序实际获得 limit 的倍数时间。
     cpu_runtime_us: Arc<AtomicU64>,
@@ -188,6 +197,7 @@ impl TaskControlBlock {
         console: alloc::sync::Arc<dyn Console>,
     ) -> Result<Self, ElfLoadError> {
         let resource_limits = ResourceLimits::defaults();
+        let cpu_limit_active = resource_limits.cpu_limit_active();
         let stack_limit = resource_limits.get(RLIMIT_STACK).unwrap().soft;
         let address_space_limit = resource_limits.get(RLIMIT_AS).unwrap().soft;
         let data_limit = resource_limits.get(RLIMIT_DATA).unwrap().soft;
@@ -200,6 +210,9 @@ impl TaskControlBlock {
         let terminal = Terminal::new(console, crate::fs::DeviceKind::Console)
             .map_err(|()| ElfLoadError::OutOfMemory)?;
         let address_space = AddressSpace::new(memory_set)?;
+        let user_context = address_space.bind_user_context(user_cx_va)?;
+        let memory_retirement_wait =
+            TaskMutexWaitPreparation::prepare().map_err(|_| ElfLoadError::OutOfMemory)?;
         let cpu_runtime_us = try_elf_arc(AtomicU64::new(0))?;
         let io_accounting = try_elf_arc(IoAccounting::default())?;
         let start_time_us = get_time_us();
@@ -215,6 +228,7 @@ impl TaskControlBlock {
             ),
             credentials: Mutex::new(Credentials::root()),
             resource_limits: Mutex::new(resource_limits),
+            cpu_limit_active: AtomicBool::new(cpu_limit_active),
             cpu_runtime_us: cpu_runtime_us.clone(),
             io_accounting: io_accounting.clone(),
             terminal: Mutex::new(terminal),
@@ -226,13 +240,14 @@ impl TaskControlBlock {
                 tid,
                 start_time_us,
                 kernel_stack,
-                user_cx_va: Mutex::new(user_cx_va),
+                user_context,
                 kernel_cx: Mutex::new(KernelContext::goto_trap_return(
                     kernel_stack_top,
-                    kernel_trap_return,
+                    crate::task::resume_new_task,
                 )),
                 kernel_trap_handler,
                 kernel_trap_return,
+                memory_retirement_wait: Mutex::new(Some(memory_retirement_wait)),
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(0),
@@ -251,7 +266,7 @@ impl TaskControlBlock {
         };
 
         // prepare UserContext in user space
-        tcb.set_user_context(UserContext::app_init_context(
+        tcb.replace_user_context(UserContext::app_init_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
@@ -280,14 +295,17 @@ impl TaskControlBlock {
         }
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let user_cx_va = self
-            .process
-            .address_space()
+        let address_space = self.process.address_space();
+        let user_cx_va = address_space
             .memory_set
             .lock()
+            .map_err(|_| MemoryError::OutOfMemory)?
             .allocate_thread_trap_context(tid)?;
+        let user_context = address_space.bind_user_context(user_cx_va)?;
+        let memory_retirement_wait =
+            TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?;
         let policy = self.scheduling.policy.lock();
-        let mut child_trap = self.load_user_context();
+        let mut child_trap = self.snapshot_user_context_for_clone();
         child_trap.prepare_thread_clone(user_stack, tls, kernel_stack_top);
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
         let child = Self {
@@ -296,13 +314,14 @@ impl TaskControlBlock {
                 tid,
                 start_time_us: get_time_us(),
                 kernel_stack,
-                user_cx_va: Mutex::new(user_cx_va),
+                user_context,
                 kernel_cx: Mutex::new(KernelContext::goto_trap_return(
                     kernel_stack_top,
-                    self.thread.kernel_trap_return,
+                    crate::task::resume_new_task,
                 )),
                 kernel_trap_handler: self.thread.kernel_trap_handler,
                 kernel_trap_return: self.thread.kernel_trap_return,
+                memory_retirement_wait: Mutex::new(Some(memory_retirement_wait)),
                 clear_child_tid: Mutex::new(clear_child_tid),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
@@ -324,7 +343,7 @@ impl TaskControlBlock {
             },
         };
         drop(policy);
-        child.set_user_context(child_trap);
+        child.replace_user_context(child_trap);
         Ok(child)
     }
 
@@ -364,7 +383,8 @@ impl TaskControlBlock {
     /// @description 按 Linux credential transition 规则清除 calling Thread 的 pdeath 设置。
     /// @return 无返回值；已生成的 pending event 不撤销。
     pub(in crate::task) fn clear_parent_death_signal(&self) {
-        self.thread.parent_death.lock().signal = 0;
+        super::task_manager::parent_death_signal(Some(0))
+            .expect("credential transition requires current live Thread");
     }
 
     /// @description 查询或原子替换当前 Process 共享的 signal disposition。
@@ -554,5 +574,10 @@ impl TaskControlBlock {
     /// @return KernelContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
     pub(crate) fn kernel_context(&self) -> &Mutex<KernelContext> {
         &self.thread.kernel_cx
+    }
+
+    /// @description 取得首次 scheduler continuation 完成后进入的 architecture trap-return。
+    pub(in crate::task) fn kernel_resume_target(&self) -> crate::arch::context::KernelResume {
+        self.thread.kernel_trap_return
     }
 }

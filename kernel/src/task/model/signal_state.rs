@@ -392,9 +392,9 @@ impl TaskControlBlock {
                     continue;
                 }
                 self.thread.suspend_restore_mask.lock().take();
-                let mut context = self.load_user_context();
-                self.apply_syscall_restart(&mut context);
-                self.set_user_context(context);
+                self.thread
+                    .user_context
+                    .with(|context| self.apply_syscall_restart(context));
                 return Ok(SignalDelivery::Stop(signal));
             }
             if action.handler == 0 {
@@ -410,15 +410,20 @@ impl TaskControlBlock {
                 .take()
                 .unwrap_or(selection_mask);
 
-            let mut context = self.load_user_context();
-            if action.flags & SA_RESTART != 0 {
-                self.apply_syscall_restart(&mut context);
-            } else {
-                self.thread.syscall_restart.lock().take();
-            }
+            let (user_stack_pointer, machine_context) = self.thread.user_context.with(|context| {
+                if action.flags & SA_RESTART != 0 {
+                    self.apply_syscall_restart(context);
+                } else {
+                    self.thread.syscall_restart.lock().take();
+                }
+                (
+                    context.stack_pointer(),
+                    context.capture_signal_machine_context(),
+                )
+            });
             let frame_size = core::mem::size_of::<RtSignalFrame>();
             let (frame_address, saved_stack) = self.signal_frame_stack(
-                context.stack_pointer(),
+                user_stack_pointer,
                 action.flags & SA_ONSTACK != 0,
                 frame_size,
             )?;
@@ -435,7 +440,7 @@ impl TaskControlBlock {
                     },
                     signal_mask: old_mask,
                     unused: [0; 120],
-                    context: context.capture_signal_machine_context(),
+                    context: machine_context,
                 },
             };
             // SAFETY: repr(C) frame contains no references or padding with uninitialized data.
@@ -455,13 +460,14 @@ impl TaskControlBlock {
             if action.flags & SA_RESETHAND != 0 {
                 self.process.signal_state.lock().actions[signal] = SignalAction::default();
             }
-            context.enter_signal_handler(
-                crate::memory::signal_trampoline_entry(),
-                frame_address,
-                signal,
-                action.handler,
-            );
-            self.set_user_context(context);
+            self.thread.user_context.with(|context| {
+                context.enter_signal_handler(
+                    crate::memory::signal_trampoline_entry(),
+                    frame_address,
+                    signal,
+                    action.handler,
+                );
+            });
             return Ok(SignalDelivery::None);
         }
     }
@@ -471,26 +477,27 @@ impl TaskControlBlock {
     /// @return 恢复后的用户 `a0`。
     /// @errors frame 不可读或包含未支持 extension 时返回 `UserAccessError`。
     pub(crate) fn restore_signal_frame(&self) -> Result<usize, UserAccessError> {
-        let frame_address = self.load_user_context().stack_pointer();
+        let frame_address = self.user_stack_pointer();
         let mut bytes = [0u8; core::mem::size_of::<RtSignalFrame>()];
         self.copy_from_user(frame_address, &mut bytes)?;
         // SAFETY: byte array has the exact size/alignment-independent representation; read_unaligned
         // produces an owned frame before any field is inspected.
         let frame = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<RtSignalFrame>()) };
-        let mut context = self.load_user_context();
-        let result = context
-            .restore_signal_machine_context(&frame.context.context)
-            .map_err(|_| UserAccessError::Fault)?;
+        let (result, restored_sp) = self.thread.user_context.with(|context| {
+            let result = context
+                .restore_signal_machine_context(&frame.context.context)
+                .map_err(|_| UserAccessError::Fault)?;
+            Ok::<_, UserAccessError>((result, context.stack_pointer()))
+        })?;
         *self.thread.signal_mask.lock() = normalize_signal_mask(frame.context.signal_mask);
         self.restore_signal_stack(
-            context.stack_pointer(),
+            restored_sp,
             SignalStack {
                 sp: frame.context.stack.sp,
                 flags: frame.context.stack.flags,
                 size: frame.context.stack.size,
             },
         );
-        self.set_user_context(context);
         Ok(result)
     }
 }

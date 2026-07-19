@@ -1,9 +1,11 @@
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::{println, sync::IrqMutex};
 
 /// Log levels in order of severity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub(crate) enum LogLevel {
     Debug = 0,
     Info = 1,
@@ -202,7 +204,6 @@ impl ModuleFilter {
 
 /// Global logger configuration
 pub(crate) struct Logger {
-    level: LogLevel,
     module_filters: [ModuleFilter; MAX_MODULE_FILTERS],
     filter_count: usize,
     default_enabled: bool, // Default state for modules not in filter list
@@ -215,7 +216,6 @@ pub(crate) struct Logger {
 impl Logger {
     const fn new() -> Self {
         Self {
-            level: LogLevel::Info, // Default log level
             module_filters: [ModuleFilter::new(); MAX_MODULE_FILTERS],
             filter_count: 0,
             default_enabled: true, // By default, all modules are enabled
@@ -227,10 +227,6 @@ impl Logger {
     fn oldest_sequence(&self) -> u64 {
         self.next_sequence
             .saturating_sub(KMSG_RECORD_CAPACITY as u64)
-    }
-
-    pub(crate) fn set_level(&mut self, level: LogLevel) {
-        self.level = level;
     }
 
     pub(crate) fn disable_module(&mut self, module: &str) -> bool {
@@ -265,7 +261,7 @@ impl Logger {
     }
 
     pub(crate) fn log(&mut self, level: LogLevel, module: &str, args: fmt::Arguments) {
-        if level >= self.level && self.is_module_enabled(module) {
+        if self.is_module_enabled(module) {
             let hart_id = crate::cpu::current_id().index();
             let mut message = FixedBytes::<KMSG_MESSAGE_CAPACITY>::new();
             write!(message, "[CPU-{hart_id}] [{module}] {args}")
@@ -290,10 +286,18 @@ impl Logger {
 // logger 可由 task、hardirq 和 softirq 调用；普通 spin lock 会在同 CPU 中断重入时自死锁。
 // OWNER: logging module owns the process-wide logger registered with the log facade.
 static LOGGER: IrqMutex<Logger> = IrqMutex::new(Logger::new());
+// OWNER: logging module owns the global severity threshold independently from ring/filter state.
+// Missing the macro-side load would evaluate filtered arguments and take LOGGER's IRQ lock.
+static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 
 /// Set the global log level
 fn set_log_level(level: LogLevel) {
-    LOGGER.lock().set_level(level);
+    LOG_LEVEL.store(level as u8, Ordering::Release);
+}
+
+/// @description 在构造 format arguments 前判断 severity threshold。
+pub(crate) fn enabled(level: LogLevel) -> bool {
+    level as u8 >= LOG_LEVEL.load(Ordering::Acquire)
 }
 
 /// Disable logging for a specific module
@@ -303,6 +307,7 @@ pub(crate) fn disable_module(module: &str) -> bool {
 
 /// Internal logging function
 pub(crate) fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
+    debug_assert!(enabled(level));
     LOGGER.lock().log(level, module, args);
 }
 
@@ -310,7 +315,9 @@ pub(crate) fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {
-        $crate::log::__log($crate::log::LogLevel::Debug, module_path!(), format_args!($($arg)*))
+        if $crate::log::enabled($crate::log::LogLevel::Debug) {
+            $crate::log::__log($crate::log::LogLevel::Debug, module_path!(), format_args!($($arg)*))
+        }
     };
 }
 
@@ -318,7 +325,9 @@ macro_rules! debug {
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {
-        $crate::log::__log($crate::log::LogLevel::Info, module_path!(), format_args!($($arg)*))
+        if $crate::log::enabled($crate::log::LogLevel::Info) {
+            $crate::log::__log($crate::log::LogLevel::Info, module_path!(), format_args!($($arg)*))
+        }
     };
 }
 
@@ -326,7 +335,9 @@ macro_rules! info {
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => {
-        $crate::log::__log($crate::log::LogLevel::Warn, module_path!(), format_args!($($arg)*))
+        if $crate::log::enabled($crate::log::LogLevel::Warn) {
+            $crate::log::__log($crate::log::LogLevel::Warn, module_path!(), format_args!($($arg)*))
+        }
     };
 }
 
@@ -334,7 +345,9 @@ macro_rules! warn {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
-        $crate::log::__log($crate::log::LogLevel::Error, module_path!(), format_args!($($arg)*))
+        if $crate::log::enabled($crate::log::LogLevel::Error) {
+            $crate::log::__log($crate::log::LogLevel::Error, module_path!(), format_args!($($arg)*))
+        }
     };
 }
 

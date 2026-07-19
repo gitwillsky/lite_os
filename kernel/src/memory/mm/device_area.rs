@@ -85,11 +85,20 @@ impl MapArea {
     }
 
     /// @description 将 device extent 直接映射到当前页表，不建立第二份 resident index。
-    pub(super) fn map_device_area(&self, page_table: &mut PageTable) -> Result<(), MemoryError> {
+    pub(super) fn map_device_area(
+        &self,
+        page_table: &mut PageTable,
+        commit: &mut TranslationCommit,
+    ) -> Result<(), MemoryError> {
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
             let vpn = VirtualPageNumber::from_vpn(vpn);
             if Self::has_leaf_permission(self.map_permission) {
-                page_table.map(vpn, self.device_ppn(vpn)?, self.map_permission.into())?;
+                page_table.map(
+                    vpn,
+                    self.device_ppn(vpn)?,
+                    self.map_permission.into(),
+                    commit,
+                )?;
             } else {
                 page_table.reserve(vpn)?;
             }
@@ -98,9 +107,13 @@ impl MapArea {
     }
 
     /// @description 撤销 device VMA 的全部 leaf/reserved slots；backing 由 Arc 独立保活。
-    pub(super) fn unmap_device_area(&self, page_table: &mut PageTable) {
+    pub(super) fn unmap_device_area(
+        &self,
+        page_table: &mut PageTable,
+        commit: &mut TranslationCommit,
+    ) {
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-            let _ = page_table.unmap(VirtualPageNumber::from_vpn(vpn));
+            let _ = page_table.unmap(VirtualPageNumber::from_vpn(vpn), commit);
         }
     }
 
@@ -110,6 +123,7 @@ impl MapArea {
         page_table: &mut PageTable,
         range: Range<VirtualPageNumber>,
         permission: MapPermission,
+        commit: &mut TranslationCommit,
     ) -> Result<(), MemoryError> {
         let old_leaf = Self::has_leaf_permission(self.map_permission);
         let new_leaf = Self::has_leaf_permission(permission);
@@ -117,9 +131,9 @@ impl MapArea {
         for vpn in range.start.as_usize()..range.end.as_usize() {
             let vpn = VirtualPageNumber::from_vpn(vpn);
             match (old_leaf, new_leaf) {
-                (true, true) => page_table.set_flags(vpn, flags)?,
-                (true, false) => page_table.unmap(vpn)?,
-                (false, true) => page_table.map(vpn, self.device_ppn(vpn)?, flags)?,
+                (true, true) => page_table.set_flags(vpn, flags, commit)?,
+                (true, false) => page_table.unmap(vpn, commit)?,
+                (false, true) => page_table.map(vpn, self.device_ppn(vpn)?, flags, commit)?,
                 (false, false) => {}
             }
         }
@@ -130,6 +144,7 @@ impl MapArea {
     pub(super) fn try_clone_device_into(
         &self,
         page_table: &mut PageTable,
+        commit: &mut TranslationCommit,
     ) -> Result<Self, MemoryError> {
         let cloned = Self {
             vpn_range: self.vpn_range.clone(),
@@ -145,8 +160,10 @@ impl MapArea {
             private_file: None,
             lazy_private: false,
         };
-        if let Err(error) = cloned.map_device_area(page_table) {
-            cloned.unmap_device_area(page_table);
+        if let Err(error) = cloned.map_device_area(page_table, commit) {
+            let mut rollback = TranslationCommit::new();
+            cloned.unmap_device_area(page_table, &mut rollback);
+            rollback.finish_unpublished();
             return Err(error);
         }
         Ok(cloned)

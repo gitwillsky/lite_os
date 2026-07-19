@@ -178,6 +178,10 @@ impl UnixSocket {
             peer: client_stream.peer,
             peer_credentials: Some(client_stream.peer_credentials),
         });
+        // connect 会把 persistent epoll source 从 socket notification 重绑到两个
+        // stream data Pipe。缺失该 edge 时，另一线程已阻塞的 epoll_wait
+        // 会继续等待 Initial-state source，永久错过新 transport。
+        client.notify();
         listener.notify();
         Ok(())
     }

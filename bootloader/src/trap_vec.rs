@@ -1,7 +1,7 @@
 use crate::aclint::SifiveClint as Clint;
 use crate::clint::CLINT;
 use crate::fast_trap::trap_entry;
-use crate::rfence::{ACKNOWLEDGED, REQUEST_FENCE_I, REQUEST_SFENCE_VMA, REQUESTS};
+use crate::rfence::{ACKNOWLEDGED, REQUEST_FENCE_I, REQUEST_SFENCE_VMA, REQUESTS, SIZES, STARTS};
 use core::arch::naked_asm;
 
 /// 中断向量表
@@ -104,11 +104,12 @@ unsafe extern "C" fn msoft() {
         // mscratch: S sp
         "   csrrw sp, mscratch, sp",
         // 保护
-        "   addi sp, sp, -4*8
+        "   addi sp, sp, -5*8
             sd   ra, 0*8(sp)
             sd   a0, 1*8(sp)
             sd   a1, 2*8(sp)
             sd   a2, 3*8(sp)
+            sd   a3, 4*8(sp)
         ",
         // 清除 msip
         "   la   a0, {clint_ptr}
@@ -130,7 +131,29 @@ unsafe extern "C" fn msoft() {
          1:
             andi a0, a2, {request_sfence_vma}
             beqz a0, 2f
+            la   a0, {rfence_starts}
+            add  a0, a0, a1
+            ld   a0, (a0)
+            la   a3, {rfence_sizes}
+            add  a3, a3, a1
+            ld   a3, (a3)
+            addi a2, zero, -1
+            beq  a3, a2, 6f
+            bnez a3, 4f
+            bnez a0, 2f
+         6:
             sfence.vma
+            j    2f
+         4:
+            add  a3, a0, a3
+            srli a0, a0, 12
+            slli a0, a0, 12
+            lui  a2, 1
+         5:
+            bgeu a0, a3, 2f
+            sfence.vma a0, x0
+            add  a0, a0, a2
+            j    5b
          2:
             # 2. rl ack 发布 fence 完成；sender Acquire 看到 ack 后才从 SBI 返回。
             la   a0, {rfence_acknowledged}
@@ -146,7 +169,8 @@ unsafe extern "C" fn msoft() {
             ld   a0, 1*8(sp)
             ld   a1, 2*8(sp)
             ld   a2, 3*8(sp)
-            addi sp, sp,  4*8
+            ld   a3, 4*8(sp)
+            addi sp, sp,  5*8
         ",
         // 换栈：
         // sp      : S sp
@@ -158,6 +182,8 @@ unsafe extern "C" fn msoft() {
         //               Clint::clear_msip_naked(&self, hart_idx)
         clear_msip = sym Clint::clear_msip_naked,
         rfence_requests = sym REQUESTS,
+        rfence_starts = sym STARTS,
+        rfence_sizes = sym SIZES,
         rfence_acknowledged = sym ACKNOWLEDGED,
         request_fence_i = const REQUEST_FENCE_I,
         request_sfence_vma = const REQUEST_SFENCE_VMA,

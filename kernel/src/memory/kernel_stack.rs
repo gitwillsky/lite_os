@@ -32,9 +32,6 @@ impl KernelStack {
             MapPermission::R | MapPermission::W,
         )?;
 
-        super::mm::MemorySet::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after kernel stack mapping");
-
         Ok(Self { handle })
     }
 

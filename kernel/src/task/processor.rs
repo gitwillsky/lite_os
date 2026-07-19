@@ -1,5 +1,5 @@
 use crate::arch::context::KernelContext;
-use crate::sync::{IrqMutex, LocalIrqGuard};
+use crate::sync::{IrqMutex, LocalIrqGuard, LocalIrqTransfer};
 use crate::{
     cpu::{self, CpuId, CpuSet},
     platform,
@@ -16,10 +16,14 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
+mod handoff;
 mod job_control;
 mod placement;
 mod ready_membership;
 mod ready_queue;
+pub(in crate::task) use handoff::{
+    publish_pending_handoff, resume_without_switch, take_pending_handoff,
+};
 pub(in crate::task) use job_control::request_tick_reschedule;
 pub(super) use job_control::{
     begin_preempt_running_task, continue_stopped_task, request_task_reschedule, request_task_stop,
@@ -41,6 +45,7 @@ pub(crate) struct Processor {
     pub(crate) current: Option<Arc<TaskControlBlock>>,
     idle_context: KernelContext,
     runqueue: CfsRunQueue,
+    pending_handoff: Option<handoff::PendingHandoff>,
     deferred_reap: Option<Arc<TaskControlBlock>>,
 }
 
@@ -54,6 +59,7 @@ impl Processor {
             idle_context,
             runqueue: CfsRunQueue::try_with_capacity(queue_capacity)
                 .expect("scheduler runqueue allocation failed"),
+            pending_handoff: None,
             deferred_reap: None,
         }
     }
@@ -68,7 +74,7 @@ impl Processor {
     /// @description 把已完成 Ready 状态转换的 entry 加入本地 runqueue。
     ///
     /// @param entry generation 必须对应 `Ready { cpu: self }`。
-    /// @return 当前 CPU 是否已有 Running owner，供 delivery 决定 reschedule。
+    /// @return Ready entity 的 vruntime 严格早于 current 时返回 true，供 delivery 决定 reschedule。
     pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) -> bool {
         ready_queue::add_ready_entry(self, entry)
     }
@@ -501,9 +507,9 @@ pub(in crate::task) fn wake_waiting_task(
     true
 }
 
-/// @description 在 idle stack 上完成 Blocking/WakePending/Preempting 的切出握手。
+/// @description 在 next task 或 idle continuation 上完成 Blocking/WakePending/Preempting handoff。
 ///
-/// @param task 刚从该 CPU 切回 idle 的 task。
+/// @param task context 已由该 CPU 保存、pending slot 唯一保活的 outgoing task。
 /// @return 无返回值；Ready 只在 task context 已停止执行后发布。
 pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool {
     let cpu = cpu::current_id();

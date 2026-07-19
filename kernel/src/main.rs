@@ -54,6 +54,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     platform::initialize(context.platform());
     platform::verify_firmware();
     cpu::initialize(platform::hardware_cpu_ids(), context.hardware_cpu());
+    task::initialize_interrupt_state();
     debug!(
         "logical CPU topology initialized: count={}, boot={:?}",
         cpu::count(),
@@ -84,7 +85,6 @@ fn kernel_main(context: entry::BootContext) -> ! {
         trap::trap_return,
         Arc::try_new(PlatformConsole).expect("platform console allocation failed"),
     );
-
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);
     for target in cpu::possible().iter() {
@@ -205,9 +205,9 @@ fn enter_scheduler() -> ! {
             cpu::online().native_word()
         );
     }
-    // 每个 CPU 上线时同步一次共享 kernel 页表；缺失会使其他 CPU 继续使用旧 translation。
-    memory::MemorySet::flush_tlb_all_cpus()
-        .expect("platform TLB synchronization failed during per-CPU activation");
+    // 每个 CPU 在发布 online 后只同步自己的共享 kernel translations；尚未 online 的 CPU
+    // 不可作为 remote-fence target，已 online CPU 已在各自 activation 路径完成本地 fence。
+    arch::mmu::flush_local();
 
     task::run_tasks();
 }

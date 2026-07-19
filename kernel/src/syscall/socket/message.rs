@@ -7,12 +7,13 @@ use super::{
 };
 use crate::{
     fs::OpenFileDescription,
+    ipc::ReceiveBuffer,
     socket::{Socket, SocketSendError},
     syscall::{
         poll::wait_for_socket_send,
         user_iovec::{
-            BufferError, ImportError, UserIoCursor, UserIoVec, bounded_staging_capacity,
-            import_iovecs, project_total_length, validate_user_buffers,
+            BufferError, ImportError, UserInputStaging, UserIoCursor, UserIoVec,
+            bounded_staging_capacity, import_iovecs, project_total_length, validate_user_buffers,
         },
     },
     task::{current_task, send_thread_signal},
@@ -73,15 +74,6 @@ fn import_message_iovecs(
         project_total_length(&mut vectors, SOCKET_MAX_RW_COUNT)
     };
     Ok((vectors, total))
-}
-
-fn message_buffer(length: usize) -> Result<Vec<u8>, isize> {
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| -errno::ENOMEM)?;
-    bytes.resize(length, 0);
-    Ok(bytes)
 }
 
 fn send_error(
@@ -167,14 +159,15 @@ fn send_stream_message(
         .socket
         .stream_send_staging_capacity(total_length, STREAM_STAGING_BYTES)
         .expect("stream send path must retain facade-selected staging policy");
-    let mut staging = match message_buffer(staging_capacity) {
+    let mut staging = match UserInputStaging::try_new(staging_capacity) {
         Ok(bytes) => bytes,
-        Err(error) => return error,
+        Err(()) => return -errno::ENOMEM,
     };
     let mut cursor = UserIoCursor::new(vectors);
     while cursor.completed() < total_length {
-        let capacity = bounded_staging_capacity(total_length - cursor.completed(), staging.len());
-        let staged = cursor.stage_from_user(context.task, &mut staging[..capacity]);
+        let capacity =
+            bounded_staging_capacity(total_length - cursor.completed(), staging.capacity());
+        let staged = cursor.stage_from_user_into(context.task, &mut staging, capacity);
         if staged.faulted {
             return if cursor.completed() == 0 {
                 -errno::EFAULT
@@ -191,7 +184,7 @@ fn send_stream_message(
         }
         loop {
             match context.socket.send_to_with_rights(
-                &staging[..staged.count],
+                staging.initialized(),
                 context.target.clone(),
                 &mut rights,
             ) {
@@ -250,18 +243,20 @@ fn send_message(
     {
         return send_stream_message(&context, vectors, total_length, rights);
     }
-    let mut bytes = match message_buffer(total_length) {
+    let mut bytes = match UserInputStaging::try_new(total_length) {
         Ok(bytes) => bytes,
-        Err(error) => return error,
+        Err(()) => return -errno::ENOMEM,
     };
     let mut cursor = UserIoCursor::new(vectors);
-    if cursor.copy_from_user(context.task, &mut bytes).is_err()
+    if cursor
+        .copy_from_user_into(context.task, &mut bytes, total_length)
+        .is_err()
         || cursor.completed() != total_length
     {
         return -errno::EFAULT;
     }
     let mut rights = rights;
-    send_one_message(&context, &bytes, &mut rights)
+    send_one_message(&context, bytes.initialized(), &mut rights)
 }
 
 /// @description Linux sendmsg scatter/gather ABI，复用唯一 socket send path。
@@ -380,18 +375,15 @@ pub(crate) fn sys_recvfrom(
         return -errno::EFAULT;
     }
     let capacity = socket.receive_staging_capacity(length, STREAM_STAGING_BYTES);
-    let mut output = match message_buffer(capacity) {
+    let mut output = match ReceiveBuffer::try_new(capacity) {
         Ok(output) => output,
-        Err(error) => return error,
+        Err(()) => return -errno::ENOMEM,
     };
     loop {
         match socket.receive_message(&mut output, flags & MSG_PEEK != 0, false) {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&vectors);
-                if cursor
-                    .copy_to_user(&task, &output[..received.count])
-                    .is_err()
-                {
+                if cursor.copy_to_user(&task, output.initialized()).is_err() {
                     return -errno::EFAULT;
                 }
                 if let Err(error) = write_address(received.source, address, address_length) {
@@ -438,18 +430,16 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
         Err(error) => return error,
     };
     let capacity = socket.receive_staging_capacity(total_length, STREAM_STAGING_BYTES);
-    let mut output = match message_buffer(capacity) {
+    let mut output = match ReceiveBuffer::try_new(capacity) {
         Ok(output) => output,
-        Err(error) => return error,
+        Err(()) => return -errno::ENOMEM,
     };
     let nonblocking = flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0;
     loop {
         match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true) {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&iovecs);
-                if cursor
-                    .copy_to_user(&task, &output[..received.count])
-                    .is_err()
+                if cursor.copy_to_user(&task, output.initialized()).is_err()
                     || cursor.completed() != received.count
                 {
                     return -errno::EFAULT;

@@ -11,8 +11,9 @@ mod plic_policy;
 pub(crate) use devices::{handle_external_interrupt, initialize as initialize_devices};
 pub(crate) use discovery::{BootInfo, hardware_cpu_ids, initialize, validate_boot_info};
 pub(crate) use firmware::{
-    ResetError, TlbShootdownError, arm_timer, debug_console_write, reset_system, send_ipi,
-    start_cpu, synchronize_tlb, verify_firmware,
+    InstructionFenceError, ResetError, TlbShootdownError, arm_timer, debug_console_write,
+    debug_console_write_bytes, reset_system, send_ipi, start_cpu, synchronize_instruction_cache,
+    synchronize_tlb, verify_firmware,
 };
 
 /// @description 投影 platform 可分配 physical memory 的 exclusive end。

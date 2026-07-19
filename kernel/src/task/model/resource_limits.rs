@@ -72,6 +72,11 @@ impl ResourceLimits {
         self.values.get(resource).copied()
     }
 
+    pub(super) fn cpu_limit_active(&self) -> bool {
+        let limit = self.values[RLIMIT_CPU];
+        limit.soft != RLIM_INFINITY || limit.hard != RLIM_INFINITY
+    }
+
     fn replace(
         &mut self,
         resource: usize,
@@ -184,13 +189,37 @@ impl TaskControlBlock {
         replacement: ResourceLimit,
         privileged: bool,
     ) -> Result<ResourceLimit, ResourceLimitError> {
-        self.process
-            .resource_limits
-            .lock()
-            .replace(resource, replacement, privileged)
+        use core::sync::atomic::Ordering;
+
+        let mut limits = self.process.resource_limits.lock();
+        let previous_cpu_active = limits.cpu_limit_active();
+        let replacement_cpu_active =
+            replacement.soft != RLIM_INFINITY || replacement.hard != RLIM_INFINITY;
+        if resource == RLIMIT_CPU && replacement_cpu_active {
+            // Publish the conservative true state before the finite limit becomes visible. A
+            // concurrent switch may take one harmless extra lock, but cannot skip enforcement.
+            self.process.cpu_limit_active.store(true, Ordering::Release);
+        }
+        let result = limits.replace(resource, replacement, privileged);
+        if resource == RLIMIT_CPU {
+            let active = if result.is_ok() {
+                replacement_cpu_active
+            } else {
+                previous_cpu_active
+            };
+            self.process
+                .cpu_limit_active
+                .store(active, Ordering::Release);
+        }
+        result
     }
 
     pub(in crate::task) fn resource_cpu_signal(&self, runtime_us: u64) -> Option<usize> {
+        use core::sync::atomic::Ordering;
+
+        if !self.process.cpu_limit_active.load(Ordering::Acquire) {
+            return None;
+        }
         self.process.resource_limits.lock().cpu_signal(runtime_us)
     }
 }

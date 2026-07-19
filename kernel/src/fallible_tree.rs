@@ -1,13 +1,16 @@
 use alloc::boxed::Box;
-use core::{cmp::Ordering, fmt, mem::MaybeUninit, ops::Index};
+use core::{cmp::Ordering, fmt, mem::MaybeUninit, ops::Index, ptr::NonNull};
 
 #[path = "fallible_tree/iter.rs"]
 mod iter;
+#[cfg(test)]
+#[path = "fallible_tree/test_support.rs"]
+mod test_support;
 #[path = "fallible_tree/topology.rs"]
 mod topology;
 use iter::Iter;
 use topology::{
-    count_nodes, insert_absent, join_ordered, join_with_root, last_key, remove_node, split,
+    count_nodes, insert_absent, join_ordered, last_key, remove_node, retain_linear, split,
 };
 
 type Link<K, V> = Option<Box<Node<K, V>>>;
@@ -22,6 +25,9 @@ struct Node<K, V> {
     height: u8,
     left: Link<K, V>,
     right: Link<K, V>,
+    // SAFETY OWNER: FallibleMap topology mutation alone maintains the in-order successor pointer.
+    // It never owns the target; immutable Iter lifetime excludes mutation while dereferenced.
+    next: Option<NonNull<Node<K, V>>>,
 }
 
 impl<K, V> Node<K, V> {
@@ -32,6 +38,7 @@ impl<K, V> Node<K, V> {
             height: 1,
             left: None,
             right: None,
+            next: None,
         }
     }
 }
@@ -42,11 +49,28 @@ pub(crate) struct FallibleMap<K, V> {
     len: usize,
 }
 
+// SAFETY: next pointers only target Box allocations owned by the same map. Moving the map between
+// threads does not move Box pointees; K/V Send is therefore the complete ownership requirement.
+unsafe impl<K: Send, V: Send> Send for FallibleMap<K, V> {}
+// SAFETY: shared access cannot mutate topology, and Iter only reads next pointers while borrowing
+// the map. K/V Sync is therefore sufficient for concurrent shared traversal.
+unsafe impl<K: Sync, V: Sync> Sync for FallibleMap<K, V> {}
+
 /// 已完成唯一节点分配、尚未发布到有序表的 entry token。
 pub(crate) struct VacantEntry<K, V>(Box<Node<K, V>>);
 
 /// 已分配但尚未初始化领域 key/value 的唯一节点 storage。
 pub(crate) struct NodeSlot<K, V>(Box<MaybeUninit<Node<K, V>>>);
+
+// SAFETY: unpublished tokens always have next=None; moving their stable Box is equivalent to
+// moving K/V ownership and cannot expose a topology pointer.
+unsafe impl<K: Send, V: Send> Send for VacantEntry<K, V> {}
+// SAFETY: shared token access only exposes &V, and the unpublished next field remains None.
+unsafe impl<K: Sync, V: Sync> Sync for VacantEntry<K, V> {}
+// SAFETY: NodeSlot owns uninitialized Box storage and contains no initialized self-reference.
+unsafe impl<K: Send, V: Send> Send for NodeSlot<K, V> {}
+// SAFETY: shared access to NodeSlot cannot initialize or publish its storage.
+unsafe impl<K: Sync, V: Sync> Sync for NodeSlot<K, V> {}
 
 impl<K, V> NodeSlot<K, V> {
     /// 用完整领域值初始化预留 storage。
@@ -252,6 +276,44 @@ impl<K: Ord, V> FallibleMap<K, V> {
         candidate
     }
 
+    /// 查询不小于 key 的最小 entry。
+    ///
+    /// @param key inclusive lower bound。
+    /// @return key/value 邻居；不存在时返回 None。
+    pub(crate) fn ceiling(&self, key: &K) -> Option<(&K, &V)> {
+        let mut cursor = self.root.as_deref();
+        let mut candidate = None;
+        while let Some(node) = cursor {
+            match key.cmp(&node.key) {
+                Ordering::Less => {
+                    candidate = Some((&node.key, &node.value));
+                    cursor = node.left.as_deref();
+                }
+                Ordering::Equal => return Some((&node.key, &node.value)),
+                Ordering::Greater => cursor = node.right.as_deref(),
+            }
+        }
+        candidate
+    }
+
+    /// 查询严格大于 key 的最小 entry。
+    ///
+    /// @param key exclusive lower bound。
+    /// @return key/value 邻居；不存在时返回 None。
+    pub(crate) fn successor(&self, key: &K) -> Option<(&K, &V)> {
+        let mut cursor = self.root.as_deref();
+        let mut candidate = None;
+        while let Some(node) = cursor {
+            if *key < node.key {
+                candidate = Some((&node.key, &node.value));
+                cursor = node.left.as_deref();
+            } else {
+                cursor = node.right.as_deref();
+            }
+        }
+        candidate
+    }
+
     /// 可变查询不大于 key 的最大 entry。
     pub(crate) fn floor_mut(&mut self, key: &K) -> Option<(&K, &mut V)> {
         fn find<'a, K: Ord, V>(node: &'a mut Link<K, V>, key: &K) -> Option<(&'a K, &'a mut V)> {
@@ -330,10 +392,30 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// @param entry 同一表在未发生结构 mutation 期间创建的 vacant token。
     /// @return 无返回值；重复 key 表示事务不变量损坏并 fail-stop。
     pub(crate) fn commit_vacant(&mut self, entry: VacantEntry<K, V>) {
+        let mut entry = entry;
         assert!(
             !self.contains_key(&entry.0.key),
             "prepared AVL key became occupied before commit"
         );
+        let entry_pointer = NonNull::from(&mut *entry.0);
+        let mut predecessor = None;
+        let mut successor = None;
+        let mut cursor = self.root.as_deref_mut();
+        while let Some(node) = cursor {
+            if entry.0.key < node.key {
+                successor = Some(NonNull::from(&mut *node));
+                cursor = node.left.as_deref_mut();
+            } else {
+                predecessor = Some(NonNull::from(&mut *node));
+                cursor = node.right.as_deref_mut();
+            }
+        }
+        entry.0.next = successor;
+        if let Some(mut predecessor) = predecessor {
+            // SAFETY: pointer came from this exclusively borrowed map and remains live; entry
+            // publication below preserves both Box allocations and restores the successor chain.
+            unsafe { predecessor.as_mut() }.next = Some(entry_pointer);
+        }
         self.root = Some(insert_absent(self.root.take(), entry.0));
         self.len += 1;
     }
@@ -353,9 +435,40 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// @param key 待删除 key。
     /// @return 可修改 key/value 后重新提交的 token；不存在时为 None。
     pub(crate) fn take_entry(&mut self, key: &K) -> Option<VacantEntry<K, V>> {
+        let (has_two_children, successor) = {
+            let mut cursor = self.root.as_deref();
+            loop {
+                let node = cursor?;
+                match key.cmp(&node.key) {
+                    Ordering::Less => cursor = node.left.as_deref(),
+                    Ordering::Greater => cursor = node.right.as_deref(),
+                    Ordering::Equal => {
+                        break (node.left.is_some() && node.right.is_some(), node.next);
+                    }
+                }
+            }
+        };
+        if !has_two_children {
+            let mut predecessor = None;
+            let mut cursor = self.root.as_deref_mut();
+            while let Some(node) = cursor {
+                if node.key < *key {
+                    predecessor = Some(NonNull::from(&mut *node));
+                    cursor = node.right.as_deref_mut();
+                } else {
+                    cursor = node.left.as_deref_mut();
+                }
+            }
+            if let Some(mut predecessor) = predecessor {
+                // SAFETY: pointer is the live strict predecessor in this exclusively borrowed tree.
+                // The target has at most one child, so removal splices successor after it.
+                unsafe { predecessor.as_mut() }.next = successor;
+            }
+        }
         let (root, removed) = remove_node(self.root.take(), key);
         self.root = root;
-        let removed = removed?;
+        let mut removed = removed.expect("located AVL entry disappeared during removal");
+        removed.next = None;
         self.len -= 1;
         Some(VacantEntry(removed))
     }
@@ -363,29 +476,9 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// 原地保留满足 predicate 的 entry，不分配遍历快照。
     ///
     /// @param keep 依次观察 key/value，返回 false 的 entry 会被删除。
-    /// @return 无返回值；删除过程复用现有树节点与旋转。
+    /// @return 无返回值；一次 ownership pass 与一次平衡重建均不分配节点。
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
-        fn retain_link<K: Ord, V>(
-            root: Link<K, V>,
-            keep: &mut impl FnMut(&K, &V) -> bool,
-            removed: &mut usize,
-        ) -> Link<K, V> {
-            let mut root = root?;
-            root.left = retain_link(root.left.take(), keep, removed);
-            root.right = retain_link(root.right.take(), keep, removed);
-            if keep(&root.key, &root.value) {
-                let left = root.left.take();
-                let right = root.right.take();
-                join_with_root(left, root, right)
-            } else {
-                *removed += 1;
-                join_ordered(root.left.take(), root.right.take())
-            }
-        }
-
-        let mut removed = 0;
-        self.root = retain_link(self.root.take(), &mut keep, &mut removed);
-        self.len -= removed;
+        (self.root, self.len) = retain_linear(self.root.take(), &mut keep);
     }
 
     /// 把 `at..` 的节点移动到新表，不分配节点。
@@ -394,7 +487,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// @return 拥有全部 `key >= at` entry 的表。
     pub(crate) fn split_off(&mut self, at: &K) -> Self {
         let original_len = self.len;
-        let (left, right) = split(self.root.take(), at);
+        let (mut left, right) = split(self.root.take(), at);
+        if let Some(mut left_last) = left.as_deref_mut() {
+            while left_last.right.is_some() {
+                left_last = left_last.right.as_deref_mut().unwrap();
+            }
+            left_last.next = None;
+        }
         // AVL 节点不携带 subtree cardinality；只线性访问被移出的右树一次，避免让
         // 每个 lookup/rotation 永久承担 size 字段的维护成本。
         let right_len = count_nodes(&right);
@@ -418,6 +517,21 @@ impl<K: Ord, V> FallibleMap<K, V> {
                 left_max < right_min,
                 "ordered-disjoint AVL join received overlapping or reversed keys"
             );
+        }
+        let right_first = {
+            let mut cursor = other.root.as_deref();
+            while let Some(left) = cursor.and_then(|node| node.left.as_deref()) {
+                cursor = Some(left);
+            }
+            cursor.map(NonNull::from)
+        };
+        if let Some(right_first) = right_first
+            && let Some(mut left_last) = self.root.as_deref_mut()
+        {
+            while left_last.right.is_some() {
+                left_last = left_last.right.as_deref_mut().unwrap();
+            }
+            left_last.next = Some(right_first);
         }
         self.root = join_ordered(self.root.take(), other.root.take());
         self.len = self
@@ -454,70 +568,5 @@ impl<'a, K, V> IntoIterator for &'a FallibleMap<K, V> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
-    }
-}
-
-#[cfg(test)]
-impl<K, V> FallibleMap<K, V> {
-    /// @description 向 host test 投影现有节点 identity，不分配或改变 topology。
-    /// @param visit 依次接收每个节点的稳定 storage address。
-    /// @return 无返回值；遍历顺序不属于 production contract。
-    pub(crate) fn test_visit_node_addresses(&self, mut visit: impl FnMut(usize)) {
-        fn walk<K, V>(root: &Link<K, V>, visit: &mut impl FnMut(usize)) {
-            let Some(root) = root else {
-                return;
-            };
-            visit(&**root as *const _ as usize);
-            walk(&root.left, visit);
-            walk(&root.right, visit);
-        }
-
-        walk(&self.root, &mut visit);
-    }
-
-    /// @description 向 deterministic complexity test 投影当前 AVL root height。
-    /// @return 空树为零，否则返回 root 维护的 height。
-    pub(crate) fn test_root_height(&self) -> u8 {
-        self.root.as_ref().map_or(0, |root| root.height)
-    }
-}
-
-#[cfg(test)]
-impl<K: Ord + fmt::Debug, V> FallibleMap<K, V> {
-    /// @description 验证 host model test 需要的 order、height、balance 与 length 不变量。
-    /// @return 无返回值；任一结构不变量损坏时 fail-stop。
-    pub(crate) fn test_assert_invariants(&self) {
-        fn walk<'a, K: Ord + fmt::Debug, V>(
-            root: &'a Link<K, V>,
-            lower: Option<&'a K>,
-            upper: Option<&'a K>,
-        ) -> (u8, usize) {
-            let Some(root) = root else {
-                return (0, 0);
-            };
-            if let Some(lower) = lower {
-                assert!(lower < &root.key, "AVL lower ordering bound violated");
-            }
-            if let Some(upper) = upper {
-                assert!(&root.key < upper, "AVL upper ordering bound violated");
-            }
-            let (left_height, left_len) = walk(&root.left, lower, Some(&root.key));
-            let (right_height, right_len) = walk(&root.right, Some(&root.key), upper);
-            assert!(
-                left_height.abs_diff(right_height) <= 1,
-                "AVL balance bound violated at {:?}",
-                root.key
-            );
-            let height = 1 + left_height.max(right_height);
-            assert!(root.height == height, "stale AVL height at {:?}", root.key);
-            (height, 1 + left_len + right_len)
-        }
-
-        let (_, structural_len) = walk(&self.root, None, None);
-        assert!(structural_len == self.len, "stale AVL map length");
-        assert!(
-            self.iter().count() == self.len,
-            "AVL iterator lost an entry"
-        );
     }
 }

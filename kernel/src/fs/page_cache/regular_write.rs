@@ -39,7 +39,11 @@ impl RegularFileWrite<'_> {
         if input.is_empty() {
             return Ok(0);
         }
-        let _operation = self.file.operation.lock();
+        let _operation = self
+            .file
+            .operation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         self.write_batched(input, |start, bytes| {
             let offset = offset
                 .checked_add(start as u64)
@@ -62,7 +66,11 @@ impl RegularFileWrite<'_> {
         input: &[u8],
         size_limit: u64,
     ) -> Result<(u64, usize), FileSystemError> {
-        let _operation = self.file.operation.lock();
+        let _operation = self
+            .file
+            .operation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         let offset = self.file.inode.size();
         let allowed = usize::try_from(size_limit.saturating_sub(offset))
             .unwrap_or(usize::MAX)
