@@ -7,7 +7,11 @@
 - `fs::Epoll` 独占 interest、incremental ready membership、ET/ONESHOT 与 nesting state；
   持久 source index 把 Pipe/console edge 精确路由到 interest，OFD reverse index 独占
   final-close detach membership；sharded WaitRegistry 只独占实际 task wait membership。
-- AF_UNIX socket、rights graph、IPv4 NetworkStack、AF_PACKET registry 与 kobject registry 分别独占各自 namespace、queue 和 protocol state。`NetworkStackOwner` 的 `Option` 只表示独占 poll loan，不是第二份协议状态；loan 必须在 protocol writer membership 释放前原样归还。
+- AF_UNIX socket、rights graph、IPv4 NetworkStack、AF_PACKET registry 与 kobject registry
+  分别独占各自 namespace、queue 和 protocol state。`NetworkStackOwner` 的
+  `TaskMutex<NetworkStackState>` 是 IPv4 protocol state 的唯一 owner；普通 task 竞争时睡眠，
+  deferred poll 只 `try_lock`。state 内的 payload-loan count 只证明 SocketSet 是否完整，
+  不复制 protocol state。
 - `NetworkStack.udp_ports/tcp_ports` 分别独占 UDP/TCP local tuple membership；
   `PortLease` 是 endpoint 释放的唯一 capability。per-port/exact-address 索引与 ephemeral
   bitmap 必须同一 transaction 更新，禁止恢复 endpoint 扫描或平行占用表。
@@ -27,10 +31,12 @@
 - protocol message limit 与 stream/atomic classification 由 `socket::message_limits` 唯一提供。
 - pipe 与所有 socket backend 只向 `ipc::ReceiveBuffer` 追加实际取得的 bytes；64KiB heap staging 只 reserve、不预清零，stream control barrier 通过 bounded append 保持，syscall 只 scatter initialized prefix。不得取得未初始化 capacity 的 Rust slice，也不保留 slice/zeroed 双轨。
 - smoltcp、VirtIO-net 与 Linux socket ABI 通过 network-device 和 socket façade 分隔，任何一层不得复制另一层状态。
-- 每个 `InetSocket` 独占自己的 operation membership；send/receive 在 shared protocol
-  membership 下用同类型 closed placeholder 保持 `SocketHandle` slot 稳定，把真实 smoltcp
-  socket 借到 stack mutex 外完成 payload copy 后原位归还。namespace mutation 与 deferred poll
-  使用 exclusive membership，禁止恢复全局 data-plane mutex、staging 协议副本或旧的锁内 fallback。
+- 每个 `InetSocket` 独占自己的 operation membership；send/receive 通过
+  `NetworkStackOwner::with_payload_loan` 在两个短 `TaskMutex` transaction 中用同类型 closed
+  placeholder 保持 `SocketHandle` slot 稳定，把真实 smoltcp socket 借到 owner 外完成 payload
+  copy 后原位归还。不同 endpoint 只共享 O(1) loan count，不共享互斥 guard；deferred poll 只在
+  loan count 为零时取得一次必要的 exclusive owner，否则 O(1) 回投。禁止恢复全局 data-plane
+  mutex、reader/writer spin gate、staging 协议副本或旧的锁内 fallback。
 - AF_PACKET RX tap 对一个 Ethernet frame 只构造一个不可变 `SharedPacket` owner；匹配 endpoint
   queue 只克隆 Arc membership。queue capacity/OOM 仍按 endpoint 独立丢包，禁止恢复逐 endpoint
   payload 分配与复制。
@@ -51,13 +57,15 @@
   capacity；backlog-full 必须在 transport factory 前返回，queue node、双向 Pipe 与 accepted endpoint
   全部在 listener/client lock 外准备，OOM 或并发失败由 reservation capability 自动回滚。
 - hardirq 不分配且只确认设备并发布 Network bit；deferred 网络处理有 batch 上限，并且只从
-  user-return/idle safe point 取得 exclusive protocol membership。poll 必须先把唯一 NetworkStack
-  从 mutex slot 借出、释放 mutex，再进入 VirtIO queue ordinary lock，结束后归还；kernel SSIP 不得
-  直接 poll 网络。poll loan 必须由 RAII owner 固定为“归还 stack 后释放 writer”，禁止暴露独立
-  take/restore 操作。readiness pending state 在 loan 内提取为最多 64 个 endpoint Arc，随后归还 loan
-  才进入 wait owner；满批次必须回投 Network bit。缺少前半段会与下一轮 poll loan 竞态访问空 slot，
-  持 writer 进入通知则会和持 wait owner 复查 level readiness 的线程形成反向等待。close/drop 不得
-  在 registry/graph lock 内反向调用 socket state。
+  user-return/idle safe point 调用 `try_poll`。owner 竞争或存在 payload loan 时不得等待/自旋，必须
+  O(1) 回投 Network bit；SocketSet 完整时 poll 持唯一可睡眠 owner 进入 VirtIO ordinary lock，其他
+  task 竞争者由 `TaskMutex` handoff 唤醒，kernel SSIP 不得直接 poll 网络。readiness pending state
+  在 poll owner 内提取为最多 64 个 endpoint Arc，释放 owner 后才进入 wait owner；满批次必须回投。
+  final `InetSocket` drop 只能 `try_lock`：失败时把唯一 endpoint identity 发布到与生产 SocketSet
+  capacity 同为 1024 的 fixed pending-cleanup ring；下一轮 poll 在协议推进前 O(1) pop 最多 64 项，
+  有余项则回投 Network bit。同一 endpoint 的 final Drop 唯一且 poll 持 owner 时不能创建/复用 slot，
+  因此 publish 不扫描查重，ring 不需要 heap 或 overflow fallback。
+  close/drop 不得在 registry/graph lock 内反向调用 socket state。
 - network-device receive seam 只消费 adapter 已完成 ownership transition 的 frame；VirtIO-net
   adapter 独占 RX slot/head mapping，畸形 completion 不得把 driver-owned slot 泄漏给协议层。
 - smoltcp `Device` callback 无法直接返回 adapter error；`EthernetDevice` 因而独占首个 pending

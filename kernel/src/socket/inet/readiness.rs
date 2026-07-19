@@ -208,7 +208,7 @@ impl NetworkStack {
         Some((id, endpoint))
     }
 
-    /// 在 poll loan 内提取固定上限的 endpoint Arc，并清除对应 pending edge。
+    /// 在 exclusive poll owner 内提取固定上限的 endpoint Arc，并清除对应 pending edge。
     pub(super) fn take_pending_notifications(&mut self) -> PendingNotifications {
         let mut pending = PendingNotifications::new();
         let mut udp_cursor = None;

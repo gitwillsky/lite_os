@@ -93,7 +93,7 @@ fn create_endpoint(
 
 pub(super) fn new(notify: (Arc<PipeEnd>, Arc<PipeEnd>)) -> Result<Arc<InetSocket>, SocketError> {
     let stack = stack()?;
-    let mut network = stack.lock();
+    let mut network = stack.lock()?;
     let endpoint = try_allocate_endpoint(|| {
         let handle = create_endpoint(&mut network, Weak::new())?;
         Ok(InetSocket {
@@ -129,7 +129,7 @@ pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), Soc
     if address.port != 0 {
         return Err(SocketError::Invalid);
     }
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     let configured = network.interface_state.address;
     if !address.address.is_unspecified() && Some(address.address) != configured {
         return Err(SocketError::AddressNotAvailable);
@@ -143,7 +143,7 @@ pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), Soc
 }
 
 pub(super) fn address(handle: SocketHandle) -> Result<InetAddress, SocketError> {
-    let network = stack()?.lock();
+    let network = stack()?.lock()?;
     let state = network
         .raw_endpoints
         .get(&handle)
@@ -164,7 +164,7 @@ pub(super) fn send(
         return Err(SocketError::MessageTooLarge);
     }
     let stack = stack()?;
-    let network = stack.lock();
+    let network = stack.lock()?;
     let state = network
         .raw_endpoints
         .get(&handle)
@@ -196,17 +196,22 @@ pub(super) fn send(
     packet[12..16].copy_from_slice(&source.octets());
     packet[16..20].copy_from_slice(&target.address.octets());
     packet[IPV4_HEADER_LENGTH..].copy_from_slice(input);
-    let mut socket = core::mem::replace(
-        stack.lock().sockets.get_mut::<raw::Socket<'static>>(handle),
-        placeholder_socket(),
-    );
-    let result = socket.send_slice(&packet).map_err(|_| SocketError::Again);
-    let placeholder = core::mem::replace(
-        stack.lock().sockets.get_mut::<raw::Socket<'static>>(handle),
-        socket,
-    );
-    debug_assert!(!placeholder.can_send());
-    result?;
+    stack.with_payload_loan(
+        |network| {
+            Ok(core::mem::replace(
+                network.sockets.get_mut::<raw::Socket<'static>>(handle),
+                placeholder_socket(),
+            ))
+        },
+        |socket| socket.send_slice(&packet).map_err(|_| SocketError::Again),
+        |network, socket| {
+            let placeholder = core::mem::replace(
+                network.sockets.get_mut::<raw::Socket<'static>>(handle),
+                socket,
+            );
+            debug_assert!(!placeholder.can_send());
+        },
+    )?;
     crate::drivers::network::request_poll();
     Ok(input.len())
 }
@@ -218,43 +223,48 @@ pub(super) fn receive(
     peek: bool,
 ) -> Result<(usize, usize, InetAddress), SocketError> {
     let stack = stack()?;
-    let mut network = stack.lock();
-    let mut socket = core::mem::replace(
-        network.sockets.get_mut::<raw::Socket<'static>>(handle),
-        placeholder_socket(),
-    );
-    drop(network);
-    let result = (|| {
-        let packet =
-            if peek { socket.peek() } else { socket.recv() }.map_err(|_| SocketError::Again)?;
-        if packet.len() < IPV4_HEADER_LENGTH {
-            return Err(SocketError::Invalid);
-        }
-        let full_length = packet.len();
-        let count = output.append(packet);
-        let source = InetAddress {
-            address: Ipv4Addr::from(<[u8; 4]>::try_from(&packet[12..16]).unwrap()),
-            port: 0,
-        };
-        Ok((count, full_length, source))
-    })();
-    let drained = result.is_ok() && !peek && !socket.can_recv();
-    let placeholder = core::mem::replace(
-        stack.lock().sockets.get_mut::<raw::Socket<'static>>(handle),
-        socket,
-    );
-    debug_assert!(!placeholder.can_recv());
+    let (result, drained) = stack.with_payload_loan(
+        |network| {
+            Ok(core::mem::replace(
+                network.sockets.get_mut::<raw::Socket<'static>>(handle),
+                placeholder_socket(),
+            ))
+        },
+        |socket| {
+            let packet =
+                if peek { socket.peek() } else { socket.recv() }.map_err(|_| SocketError::Again)?;
+            if packet.len() < IPV4_HEADER_LENGTH {
+                return Err(SocketError::Invalid);
+            }
+            let full_length = packet.len();
+            let count = output.append(packet);
+            let source = InetAddress {
+                address: Ipv4Addr::from(<[u8; 4]>::try_from(&packet[12..16]).unwrap()),
+                port: 0,
+            };
+            Ok(((count, full_length, source), !peek && !socket.can_recv()))
+        },
+        |network, socket| {
+            let placeholder = core::mem::replace(
+                network.sockets.get_mut::<raw::Socket<'static>>(handle),
+                socket,
+            );
+            debug_assert!(!placeholder.can_recv());
+        },
+    )?;
     if drained {
         endpoint.consume_notify();
     }
-    result
+    Ok(result)
 }
 
 pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
     let Ok(network) = stack() else {
         return SocketPollState::error();
     };
-    let network = network.lock();
+    let Ok(network) = network.lock() else {
+        return SocketPollState::error();
+    };
     let socket = network.sockets.get::<raw::Socket<'static>>(handle);
     SocketPollState {
         readable: socket.can_recv(),
@@ -265,7 +275,7 @@ pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
 }
 
 pub(super) fn set_broadcast(handle: SocketHandle, enabled: bool) -> Result<(), SocketError> {
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     network
         .raw_endpoints
         .get_mut(&handle)
@@ -275,7 +285,7 @@ pub(super) fn set_broadcast(handle: SocketHandle, enabled: bool) -> Result<(), S
 }
 
 pub(super) fn bind_to_device(handle: SocketHandle, name: &[u8]) -> Result<(), SocketError> {
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     let state = network
         .raw_endpoints
         .get_mut(&handle)
@@ -289,7 +299,7 @@ pub(super) fn bind_to_device(handle: SocketHandle, name: &[u8]) -> Result<(), So
 }
 
 pub(super) fn set_hop_limit(handle: SocketHandle, value: u8) -> Result<(), SocketError> {
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     network
         .raw_endpoints
         .get_mut(&handle)
@@ -301,7 +311,6 @@ pub(super) fn set_hop_limit(handle: SocketHandle, value: u8) -> Result<(), Socke
 impl InetSocket {
     pub(in crate::socket) fn set_hop_limit(&self, value: u8) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = super::protocol_read();
         if let super::InetEndpoint::Raw(handle) = self.endpoint {
             set_hop_limit(handle, value)
         } else {
@@ -310,10 +319,12 @@ impl InetSocket {
     }
 }
 
-pub(super) fn drop_endpoint(handle: SocketHandle) {
-    if let Some(network) = super::NETWORK_STACK.get() {
-        let mut network = network.lock();
-        network.raw_endpoints.remove(&handle);
-        network.sockets.remove(handle);
-    }
+/// @description 从完整 protocol state 精确删除 raw endpoint 与 SocketSet slot。
+/// @param network 已由 protocol owner 独占的完整 NetworkStack。
+/// @param handle final InetSocket 唯一持有的 raw handle。
+/// @return 无返回值。
+/// @errors 重复 identity 按幂等 remove 处理。
+pub(super) fn drop_endpoint(network: &mut NetworkStack, handle: SocketHandle) {
+    network.raw_endpoints.remove(&handle);
+    network.sockets.remove(handle);
 }

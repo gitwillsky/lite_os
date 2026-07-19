@@ -72,8 +72,8 @@ UDP/TCP ephemeral allocator 使用 16,384-bit 占用投影；固定 N=1,024 endp
 0 次 endpoint probe，耗尽时最多读取 257 个 bitmap word。`port_namespace_cost`
 同时阻止恢复 endpoint 扫描、丢失 exact-address 索引或 specific port-0 分类。
 
-未初始化 input staging gate 以两个 64 KiB socket buffer、一个 128 KiB regular-write
-buffer 和三个 1,024-fd pselect bitmap 为代表样本：copyin 前死写由 262,528 bytes 降为 0；
+未初始化 input staging gate 以两个 64 KiB socket buffer、一个 1 MiB regular-write
+buffer 和三个 1,024-fd pselect bitmap 为代表样本：copyin 前死写由 1,180,032 bytes 降为 0；
 publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁止恢复预清零双轨。
 
 ## 架构与产物门禁

@@ -1,14 +1,14 @@
 use super::{
-    FileSystemError, PAGE_SIZE, RegularFileWrite, WRITEBACK_BATCH_PAGES,
-    writeback_batch::commit_contiguous_prefix_with_backoff,
+    FileSystemError, PAGE_SIZE, RegularFileWrite,
+    writeback_batch::{REGULAR_WRITE_BATCH_PAGES, commit_contiguous_prefix_with_backoff},
 };
 
 impl RegularFileWrite<'_> {
     /// 一次 regular write transient staging 的硬上限。
     ///
-    /// 32 个 logical pages 与 page-cache writeback 共用同一 transaction/backoff policy；
-    /// 非对齐 byte range 可能触及 33 个 filesystem blocks，并由 storage capacity error 退避。
-    pub(crate) const MAX_STAGING_BYTES: usize = WRITEBACK_BATCH_PAGES * PAGE_SIZE;
+    /// 256 个 logical pages 让一次 1 MiB syscall 只进入一个 storage transaction；
+    /// 非对齐 byte range 可能触及 257 个 filesystem blocks，并由 storage capacity error 退避。
+    pub(crate) const MAX_STAGING_BYTES: usize = REGULAR_WRITE_BATCH_PAGES * PAGE_SIZE;
 
     fn write_batched(
         &self,

@@ -3,13 +3,15 @@ use core::{cell::Cell, mem::MaybeUninit};
 use crate::{
     regular_write_policy::{regular_write_allowance, regular_write_chunk},
     user_iovec::{UserIoCursor, UserIoVec, fallible_staging_capacity, with_prepared_staging},
-    writeback_batch::{WRITEBACK_BATCH_PAGES, commit_contiguous_prefix_with_backoff},
+    writeback_batch::{
+        REGULAR_WRITE_BATCH_PAGES, WRITEBACK_BATCH_PAGES, commit_contiguous_prefix_with_backoff,
+    },
 };
 
 const PAGE_SIZE: usize = 4096;
-const STAGING_BYTES: usize = WRITEBACK_BATCH_PAGES * PAGE_SIZE;
 const ONE_MIB: usize = 1024 * 1024;
-const FLUSHES_PER_JOURNAL_TRANSACTION: usize = 4;
+const STAGING_BYTES: usize = REGULAR_WRITE_BATCH_PAGES * PAGE_SIZE;
+const FLUSHES_PER_JOURNAL_TRANSACTION: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendError {
@@ -30,7 +32,7 @@ fn small_write_uses_stack_and_large_staging_oom_falls_back_to_one_page() {
     );
     assert_eq!(
         fallible_staging_capacity(STAGING_BYTES, PAGE_SIZE, true),
-        128 * 1024
+        ONE_MIB
     );
 }
 
@@ -86,7 +88,7 @@ fn run_sequential(
     let mut maximum_physical_pages = 0;
     let mut completed = 0;
     while completed < bytes {
-        let window = (bytes - completed).min(STAGING_BYTES);
+        let window = regular_write_chunk(bytes, completed, STAGING_BYTES);
         let window_offset = initial_offset + completed as u64;
         let committed = commit_contiguous_prefix_with_backoff(
             window,
@@ -124,37 +126,34 @@ fn run_sequential(
 }
 
 #[test]
-fn one_mib_aligned_sequential_write_reduces_transactions_and_flushes_32x() {
-    assert_eq!(STAGING_BYTES, 128 * 1024);
-    let legacy_transactions = ONE_MIB / PAGE_SIZE;
-    let legacy_flushes = legacy_transactions * FLUSHES_PER_JOURNAL_TRANSACTION;
-    assert_eq!((legacy_transactions, legacy_flushes), (256, 1024));
-
-    let counters = run_sequential(0, ONE_MIB, WRITEBACK_BATCH_PAGES);
+fn one_mib_aligned_sequential_write_is_one_transaction() {
+    assert_eq!(STAGING_BYTES, ONE_MIB);
+    assert_eq!(WRITEBACK_BATCH_PAGES, 32);
+    let counters = run_sequential(0, ONE_MIB, ONE_MIB / PAGE_SIZE);
     assert_eq!(
         counters,
         BackendCounters {
-            attempts: 8,
-            transactions: 8,
-            flushes: 32,
+            attempts: 1,
+            transactions: 1,
+            flushes: 3,
             published: ONE_MIB,
-            maximum_physical_pages: 32,
+            maximum_physical_pages: 256,
         }
     );
 }
 
 #[test]
-fn unaligned_128k_spans_33_pages_and_backs_off_without_publication() {
-    let counters = run_sequential(1, ONE_MIB, 32);
-    // 每个 128 KiB window 首次覆盖 33 pages 而失败，再以两个 64 KiB/17-page transaction 提交。
-    assert_eq!(counters.maximum_physical_pages, 33);
-    assert_eq!(counters.attempts, 24);
-    assert_eq!(counters.transactions, 16);
-    assert_eq!(counters.flushes, 64);
+fn unaligned_one_mib_spans_257_pages_and_backs_off_without_publication() {
+    let counters = run_sequential(1, ONE_MIB, 256);
+    // 1 MiB 非对齐 window 首次覆盖 257 pages 而失败，再以两个 512 KiB transaction 提交。
+    assert_eq!(counters.maximum_physical_pages, 257);
+    assert_eq!(counters.attempts, 3);
+    assert_eq!(counters.transactions, 2);
+    assert_eq!(counters.flushes, 6);
     assert_eq!(counters.published, ONE_MIB);
 
-    let fitting = run_sequential(1, ONE_MIB, 33);
-    assert_eq!((fitting.transactions, fitting.flushes), (8, 32));
+    let fitting = run_sequential(1, ONE_MIB, 257);
+    assert_eq!((fitting.transactions, fitting.flushes), (1, 3));
 }
 
 #[test]

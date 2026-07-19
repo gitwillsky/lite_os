@@ -5,7 +5,7 @@
 - kernel 只暴露固定 Linux/riscv64 UAPI 子集。syscall dispatcher 使用共享编号 crate，未接入编号返回 `ENOSYS`。
 - ELF loader 支持当前声明的 RV64 ET_EXEC、动态 PIE、PT_INTERP、TLS、RELRO、auxv 与 Linux script rewrite；filesystem 只提供 executable source seam，memory 拥有映射与 initial stack。
 - 产品 userspace 是固定 musl runtime、BusyBox `init + ash`、dependency-free Rust `console-session` 和单 ELF `liteos-stress` diagnostics。
-- write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。两条 64KiB socket staging 加一条 128KiB regular staging 的预清零成本从 262,144B 降为 0。
+- write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
 - rootfs 由固定 Alpine package/key 输入构造；应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
 
 ## Known limits

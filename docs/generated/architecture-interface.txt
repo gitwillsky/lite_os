@@ -529,12 +529,12 @@ kernel/src/drivers/io_completion.rs :: pub (in crate :: drivers) impl IoWaitKey 
 kernel/src/drivers/io_completion.rs :: pub (in crate :: drivers) mod request_owner
 kernel/src/drivers/io_completion.rs :: trait IoWaitTarget :: fn sleep (self : Arc < Self > , completion : & IoCompletion , request : IoWaitKey)
 kernel/src/drivers/io_completion.rs :: trait IoWaitTarget :: fn wake (self : Arc < Self > , request : IoWaitKey)
-kernel/src/drivers/io_completion/request_owner.rs :: enum CommitOrWait :: Reserved (RequestIdentity)
-kernel/src/drivers/io_completion/request_owner.rs :: enum CommitOrWait :: Waiting (Arc < CapacityWait >)
+kernel/src/drivers/io_completion/request_owner.rs :: enum CommitOrWait :: # [doc = " capacity 仍满，waiter 已进入 FIFO index，caller 必须等待 outcome。"] Waiting (Arc < CapacityWait >)
+kernel/src/drivers/io_completion/request_owner.rs :: enum CommitOrWait :: # [doc = " prepare window 内释放了 slot，prepared waiter 不发布并直接取得 identity。"] Reserved (RequestIdentity)
 kernel/src/drivers/io_completion/request_owner.rs :: enum RequestOwnerError :: # [doc = " device 已进入 terminal failure。"] DeviceFailed
 kernel/src/drivers/io_completion/request_owner.rs :: enum RequestOwnerError :: # [doc = " waiter metadata allocation failed。"] OutOfMemory
-kernel/src/drivers/io_completion/request_owner.rs :: enum ReserveOrWait :: Prepare (u64)
-kernel/src/drivers/io_completion/request_owner.rs :: enum ReserveOrWait :: Reserved (RequestIdentity)
+kernel/src/drivers/io_completion/request_owner.rs :: enum ReserveOrWait :: # [doc = " capacity 已满；携带待在锁外预分配 waiter 的 FIFO ticket。"] Prepare (u64)
+kernel/src/drivers/io_completion/request_owner.rs :: enum ReserveOrWait :: # [doc = " 已取得唯一 slot identity。"] Reserved (RequestIdentity)
 kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) RequestIdentity :: generation : u64
 kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) RequestIdentity :: slot : u16
 kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) enum CommitOrWait
@@ -1570,6 +1570,7 @@ kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn recla
 kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: bytes : usize
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: offset : u64
+kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) const REGULAR_WRITE_BATCH_PAGES : usize = 256
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) const WRITEBACK_BATCH_PAGES : usize = 32
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_contiguous_prefix_with_backoff < Error > (byte_count : usize , unit_bytes : usize , mut commit : impl FnMut (usize , usize) -> Result < (u64 , usize) , Error > , mut publish : impl FnMut (u64 , usize , usize) , mut capacity_error : impl FnMut (& Error) -> bool ,) -> Result < CommittedPrefix , Error >
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_with_backoff < T , Error > (entries : & [T] , mut commit : impl FnMut (& [T]) -> Result < () , Error > , mut publish : impl FnMut (& [T]) , mut capacity_error : impl FnMut (& Error) -> bool ,) -> Result < () , Error >
@@ -2736,17 +2737,21 @@ kernel/src/socket/inet/port_namespace/bitmap.rs :: pub (super) impl EphemeralPor
 kernel/src/socket/inet/port_namespace/bitmap.rs :: pub (super) impl EphemeralPorts :: fn mark_occupied (& mut self , port : u16)
 kernel/src/socket/inet/port_namespace/bitmap.rs :: pub (super) impl EphemeralPorts :: fn next_candidate (& mut self) -> Option < u16 >
 kernel/src/socket/inet/port_namespace/bitmap.rs :: pub (super) struct EphemeralPorts
-kernel/src/socket/inet/protocol_owner.rs :: pub (super) fn protocol_read () -> ProtocolReadGuard
-kernel/src/socket/inet/protocol_owner.rs :: pub (super) fn protocol_write () -> ProtocolWriteGuard
-kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn lock (& self) -> NetworkStackGuard < '_ >
+kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackGuard < '_ > :: const fn cleanup_backlog (& self) -> bool
+kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn cleanup_or_defer (& self , endpoint : InetEndpoint)
+kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn lock (& self) -> Result < NetworkStackGuard < '_ > , SocketError >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn new (stack : NetworkStack) -> Self
-kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn poll_loan (& self) -> NetworkPollLoan < '_ >
+kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn try_poll (& self) -> Option < NetworkStackGuard < '_ > >
+kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn with_payload_loan < T , R > (& self , take : impl FnOnce (& mut NetworkStack) -> Result < T , SocketError > , operation : impl FnOnce (& mut T) -> Result < R , SocketError > , restore : impl FnOnce (& mut NetworkStack , T) ,) -> Result < R , SocketError >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) static NETWORK_STACK : Once < NetworkStackOwner >
-kernel/src/socket/inet/protocol_owner.rs :: pub (super) struct NetworkPollLoan < 'a >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) struct NetworkStackGuard < 'a >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) struct NetworkStackOwner
-kernel/src/socket/inet/protocol_owner.rs :: pub (super) struct ProtocolReadGuard
-kernel/src/socket/inet/protocol_owner.rs :: pub (super) struct ProtocolWriteGuard
+kernel/src/socket/inet/protocol_owner/pending_cleanup.rs :: pub (super) impl PendingCleanup < T , N > :: const fn has_pending (& self) -> bool
+kernel/src/socket/inet/protocol_owner/pending_cleanup.rs :: pub (super) impl PendingCleanup < T , N > :: const fn new () -> Self
+kernel/src/socket/inet/protocol_owner/pending_cleanup.rs :: pub (super) impl PendingCleanup < T , N > :: fn pop (& mut self) -> Option < T >
+kernel/src/socket/inet/protocol_owner/pending_cleanup.rs :: pub (super) impl PendingCleanup < T , N > :: fn publish (& mut self , value : T) -> Result < () , Full >
+kernel/src/socket/inet/protocol_owner/pending_cleanup.rs :: pub (super) struct Full
+kernel/src/socket/inet/protocol_owner/pending_cleanup.rs :: pub (super) struct PendingCleanup < T : Copy , const N : usize >
 kernel/src/socket/inet/raw.rs :: pub (in crate :: socket) impl InetSocket :: fn set_hop_limit (& self , value : u8) -> Result < () , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) RawEndpointState :: endpoint : Weak < InetSocket >
 kernel/src/socket/inet/raw.rs :: pub (super) RawEndpointState :: notification_pending : bool
@@ -2754,7 +2759,7 @@ kernel/src/socket/inet/raw.rs :: pub (super) RawEndpointState :: readiness : Soc
 kernel/src/socket/inet/raw.rs :: pub (super) fn address (handle : SocketHandle) -> Result < InetAddress , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn bind (handle : SocketHandle , address : InetAddress) -> Result < () , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn bind_to_device (handle : SocketHandle , name : & [u8]) -> Result < () , SocketError >
-kernel/src/socket/inet/raw.rs :: pub (super) fn drop_endpoint (handle : SocketHandle)
+kernel/src/socket/inet/raw.rs :: pub (super) fn drop_endpoint (network : & mut NetworkStack , handle : SocketHandle)
 kernel/src/socket/inet/raw.rs :: pub (super) fn new (notify : (Arc < PipeEnd > , Arc < PipeEnd >)) -> Result < Arc < InetSocket > , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn poll_state (handle : SocketHandle) -> SocketPollState
 kernel/src/socket/inet/raw.rs :: pub (super) fn poll_state_locked (network : & NetworkStack , handle : SocketHandle) -> SocketPollState
@@ -2795,7 +2800,7 @@ kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn send (so
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn shutdown (socket : & InetSocket , how : usize ,) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn take_error (socket : & InetSocket) -> Option < SocketError >
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) impl TcpEndpointState :: fn poll_state (& self , network : & NetworkStack) -> SocketPollState
-kernel/src/socket/inet/tcp/lifecycle.rs :: pub (in crate :: socket :: inet) fn drop_endpoint (id : usize)
+kernel/src/socket/inet/tcp/lifecycle.rs :: pub (in crate :: socket :: inet) fn drop_endpoint (network : & mut NetworkStack , id : usize)
 kernel/src/socket/inet/tcp/storage.rs :: pub (super) fn add_socket (network : & mut NetworkStack) -> Result < SocketHandle , SocketError >
 kernel/src/socket/inet/tcp/storage.rs :: pub (super) fn placeholder_socket () -> tcp :: Socket < 'static >
 kernel/src/socket/inet/timing.rs :: pub (crate) fn network_work_due () -> bool
@@ -2803,13 +2808,13 @@ kernel/src/socket/inet/udp.rs :: pub (super) fn address (handle : SocketHandle) 
 kernel/src/socket/inet/udp.rs :: pub (super) fn bind (handle : SocketHandle , address : InetAddress) -> Result < () , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn connect (handle : SocketHandle , peer : InetAddress) -> Result < () , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn create_endpoint (network : & mut NetworkStack , endpoint : Weak < InetSocket > ,) -> Result < SocketHandle , SocketError >
-kernel/src/socket/inet/udp.rs :: pub (super) fn drop_endpoint (handle : SocketHandle)
+kernel/src/socket/inet/udp.rs :: pub (super) fn drop_endpoint (network : & mut NetworkStack , handle : SocketHandle)
 kernel/src/socket/inet/udp.rs :: pub (super) fn packet_info (handle : SocketHandle) -> bool
 kernel/src/socket/inet/udp.rs :: pub (super) fn peer_address (handle : SocketHandle) -> Result < InetAddress , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn poll_state (handle : SocketHandle) -> SocketPollState
 kernel/src/socket/inet/udp.rs :: pub (super) fn receive (endpoint : & InetSocket , handle : SocketHandle , output : & mut ReceiveBuffer < '_ > , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
-kernel/src/socket/inet/udp.rs :: pub (super) fn set_packet_info (handle : SocketHandle , enabled : bool)
+kernel/src/socket/inet/udp.rs :: pub (super) fn set_packet_info (handle : SocketHandle , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn consume_wait_notifications (& self)
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn poll_state (& self) -> SocketPollState
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn readiness_generation (& self) -> u64

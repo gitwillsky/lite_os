@@ -2,6 +2,8 @@ use core::cell::Cell;
 
 /// 单次 page-cache storage transaction 的最大 logical page 数。
 pub(super) const WRITEBACK_BATCH_PAGES: usize = 32;
+/// 单次 regular write storage transaction 的最大 logical page 数。
+pub(super) const REGULAR_WRITE_BATCH_PAGES: usize = 256;
 
 /// regular byte batch 已持久提交并可向 cache/syscall 发布的连续 prefix。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +48,7 @@ pub(super) fn commit_with_backoff<T, Error>(
 }
 
 /// @description 以固定 logical-unit 上限提交连续 byte prefix，并复用 capacity 二分退避。
-/// @param byte_count 非零 byte 数，最多 `WRITEBACK_BATCH_PAGES * unit_bytes`。
+/// @param byte_count 非零 byte 数，最多 `REGULAR_WRITE_BATCH_PAGES * unit_bytes`。
 /// @param unit_bytes 退避的最小 logical unit；通常为 page size。
 /// @param commit 接收当前已提交 byte 数与本次连续 byte 数，返回实际 storage offset/bytes。
 /// @param publish 每个成功 durable transaction 后发布对应 byte range。
@@ -61,8 +63,8 @@ pub(super) fn commit_contiguous_prefix_with_backoff<Error>(
 ) -> Result<CommittedPrefix, Error> {
     assert!(byte_count != 0);
     assert!(unit_bytes != 0);
-    assert!(byte_count <= WRITEBACK_BATCH_PAGES * unit_bytes);
-    let units = [(); WRITEBACK_BATCH_PAGES];
+    assert!(byte_count <= REGULAR_WRITE_BATCH_PAGES * unit_bytes);
+    let units = [(); REGULAR_WRITE_BATCH_PAGES];
     let unit_count = byte_count.div_ceil(unit_bytes);
     let committed = Cell::new(0usize);
     let first_offset = Cell::new(None::<u64>);

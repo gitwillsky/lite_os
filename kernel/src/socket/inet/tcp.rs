@@ -111,7 +111,7 @@ pub(super) fn create_endpoint(
 
 pub(super) fn set_no_delay(socket: &InetSocket, enabled: bool) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     let NetworkStack {
         tcp_endpoints,
         sockets,
@@ -152,7 +152,7 @@ fn listen_endpoint(address: InetAddress) -> IpListenEndpoint {
 /// @errors 返回地址、状态、冲突或分配错误。
 pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     let address_filter = (!address.address.is_unspecified()).then_some(address.address);
     if address_filter.is_some_and(|candidate| {
         network.interface_state.address != Some(candidate) || !network.interface_state.up
@@ -199,7 +199,7 @@ pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), Sock
 /// @errors 返回状态、地址或分配错误，且不会发布半初始化 listener。
 pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     let state = network
         .tcp_endpoints
         .get(&id)
@@ -312,7 +312,7 @@ pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), Sock
         return Err(SocketError::AddressNotAvailable);
     }
     let id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     if !network.interface_state.up || network.interface_state.address.is_none() {
         return Err(SocketError::NetworkUnreachable);
     }
@@ -399,7 +399,7 @@ pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), Sock
 /// @errors endpoint 删除后返回 `NotConnected`。
 pub(super) fn address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
     let id = endpoint_id(socket);
-    let network = stack()?.lock();
+    let network = stack()?.lock()?;
     let state = network
         .tcp_endpoints
         .get(&id)
@@ -436,7 +436,7 @@ pub(super) fn address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
 /// @errors tuple 尚未建立或 endpoint 已删除时返回 `NotConnected`。
 pub(super) fn peer_address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
     let id = endpoint_id(socket);
-    let network = stack()?.lock();
+    let network = stack()?.lock()?;
     let state = network
         .tcp_endpoints
         .get(&id)
@@ -458,7 +458,7 @@ pub(super) fn peer_address(socket: &InetSocket) -> Result<InetAddress, SocketErr
 /// @errors 返回 in-progress、refusal 或无效状态错误。
 pub(super) fn connection_result(socket: &InetSocket) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
-    let network = stack()?.lock();
+    let network = stack()?.lock()?;
     let state = network
         .tcp_endpoints
         .get(&id)

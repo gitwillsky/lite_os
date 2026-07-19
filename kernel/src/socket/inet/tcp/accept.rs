@@ -24,7 +24,7 @@ pub(in crate::socket::inet) fn accept(
     let endpoint_slot = FallibleMap::<usize, TcpEndpointState>::try_reserve_node()
         .map_err(|_| SocketError::NoMemory)?;
     let listener_id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     let (position, endpoint, backlog, port_lease) = {
         let state = network
             .tcp_endpoints

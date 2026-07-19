@@ -24,6 +24,9 @@ use crate::{
             test_allocation_attempts, test_write_costs,
         },
     },
+    regular_write_policy::regular_write_chunk,
+    user_iovec::fallible_staging_capacity,
+    writeback_batch::REGULAR_WRITE_BATCH_PAGES,
 };
 
 static COST_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -321,15 +324,28 @@ fn one_mibibyte_write_has_bounded_transaction_barriers() {
             },
         )
         .unwrap();
-    let chunk = vec![0x5a; 128 * 1024];
+    let input = vec![0x5a; 1024 * 1024];
+    let staging_capacity = fallible_staging_capacity(
+        input
+            .len()
+            .min(REGULAR_WRITE_BATCH_PAGES * crate::memory::PAGE_SIZE),
+        crate::memory::PAGE_SIZE,
+        true,
+    );
     image.reset_writes();
     reset_test_write_costs();
-    for batch in 0..8 {
+    let mut completed = 0usize;
+    let mut storage_calls = 0usize;
+    while completed < input.len() {
+        let count = regular_write_chunk(input.len(), completed, staging_capacity);
+        assert_ne!(count, 0, "regular syscall staging made no progress");
         assert_eq!(
-            file.write_storage((batch * chunk.len()) as u64, &chunk)
+            file.write_storage(completed as u64, &input[completed..completed + count])
                 .unwrap(),
-            chunk.len()
+            count
         );
+        completed += count;
+        storage_calls += 1;
     }
     let costs = test_write_costs();
     let checkpoint_writes = costs.home_writes - costs.journal_writes;
@@ -341,10 +357,14 @@ fn one_mibibyte_write_has_bounded_transaction_barriers() {
         costs.journal_writes,
         checkpoint_writes
     );
-    assert_eq!(costs.transactions, 8);
+    assert_eq!(
+        storage_calls, 1,
+        "1 MiB syscall staging split storage calls"
+    );
+    assert_eq!(costs.transactions, 1);
     assert!(
-        image.flushes() <= 24,
-        "eight transactions exceed three barriers each"
+        image.flushes() <= 3,
+        "one transaction exceeded the three journal barriers"
     );
 }
 

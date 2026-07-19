@@ -76,7 +76,7 @@ pub(super) struct PreparedRegularWriteStaging {
 impl PreparedRegularWriteStaging {
     /// @description 在任何 regular-file gate 或 publication 前准备未初始化 bounded staging。
     /// @param total_length 已检查的 syscall request 总长度。
-    /// @return 小请求使用 stack；大请求最多使用 128 KiB heap，reserve 失败退回一页 stack。
+    /// @return 小请求使用 stack；大请求最多使用 1 MiB heap，reserve 失败退回一页 stack。
     pub(super) fn prepare(total_length: usize) -> Self {
         let desired = total_length.min(RegularFileWrite::MAX_STAGING_BYTES);
         let mut heap = Vec::new();
@@ -95,7 +95,7 @@ impl PreparedRegularWriteStaging {
     }
 
     /// @description 借出已经分配、不会在使用期间扩容的 initialized-prefix owner。
-    /// @return capacity 不超过 128 KiB 的 syscall-local input staging。
+    /// @return capacity 不超过 1 MiB 的 syscall-local input staging。
     pub(super) fn as_input_staging(&mut self) -> UserInputStaging<'_> {
         if self.heap.is_empty() {
             UserInputStaging::from_slice(&mut self.stack[..self.length])

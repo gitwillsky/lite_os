@@ -79,14 +79,14 @@
   lookup 只把 sparse traversal 的零结果映射为 `NotFound`，allocation 使用同一 path。pointer metadata
   只能通过 `PointerBlock` load/decode，禁止恢复 `map_block`/`map_block_sparse` 或 full/single-pointer
   各自读取 block 的双轨实现。
-- regular write 以 32 logical pages/128 KiB 为最大 transient batch，并复用 page-cache
-  writeback 的 capacity backoff；非对齐 128 KiB 可触及 33 个 filesystem pages，必须由
+- regular write 以 256 logical pages/1 MiB 为最大 transient batch，并复用 page-cache
+  storage batch 的 capacity backoff；非对齐 1 MiB 可触及 257 个 filesystem pages，必须由
   实际 journal `NoSpace` 退避，禁止假定固定物理页数。
 - 小于等于 4 KiB 的 regular write 使用未初始化 stack staging；大请求 heap reserve 与最终
   deallocation 必须位于 OFD position/write-sequence gate 外，失败时退回 4 KiB stack
   progress，不得新增 `ENOMEM`。copyin 通过 `UserInputStaging` 的 unsafe initialized-prefix
   publication 边界发布已由完整 copy adapter 初始化的 prefix，不做预清零；heap staging
-  不得超过 128 KiB，且不形成 persistent state。
+  不得超过 1 MiB，且不形成 persistent state。
 
 ## Failure and cleanup
 
@@ -98,15 +98,17 @@
 - `FileSystem::statistics` 是 fallible snapshot；ext2 取得 transaction owner 失败必须返回
   `OutOfMemory`，不得忽略 lock 结果后读取跨 superblock/group 的无锁中间状态。
 - regular gather 必须按 user-page 边界 copy，使单个跨有效/坏页 iovec 仍可提交坏页前 prefix；backend short/error 后只推进 durable prefix。RLIMIT_FSIZE 在 non-append copyin 前裁剪，append 在 operation lock 内按 inode end 裁剪并保持 SIGXFSZ/EFBIG 与 position 语义。
-- regular batching 的 blocking metric 使用 deterministic backend counters：对齐 1 MiB sequential write 从 256 个 journal transactions/1024 次 flush 收敛为 8/24；33-page 非对齐形状必须证明 capacity failure 无 publication 且退避后连续提交。wall time 仅作诊断，不作为 host gate。
+- regular batching 的 blocking metric 使用 deterministic backend counters：对齐 1 MiB sequential
+  write 必须只产生 1 个 journal transaction、至多 3 次 flush；257-page 非对齐形状必须证明
+  capacity failure 无 publication 且退避后连续提交。wall time 仅作诊断，不作为 host gate。
 - metadata cache 使用真实 ext image 与 counting block device 作 deterministic gate：16 次重复 lookup、
   cold-first getdents 与 warm single-indirect mapping 测试窗口的 device read/allocation attempts 分别
   不得超过 `0/0`、`1/2`、`0/0`；固定 64-entry 线性 probe 的 CPU 成本有严格上界，当前不另设
   不稳定的 host wall-time benchmark。
 - journal barrier 保持 `dirty-start durable → descriptor/data/commit durable → home checkpoint durable`
   三阶段；最后 clean marker 可延迟到下一 transaction 的首 barrier，crash 只会幂等 replay 已 durable
-  home image。真实 counting-device gate 要求 1 MiB/8 个 128 KiB batch 保持 8 transaction 且最多
-  24 flush；固定 64 data block truncate（另含一个 indirect block）只允许一次 allocation metadata
+  home image。真实 counting-device gate 要求单次 1 MiB batch 保持 1 transaction 且最多
+  3 flush；固定 64 data block truncate（另含一个 indirect block）只允许一次 allocation metadata
   materialization，当前单-group fixture 上限为 8 KiB metadata preparation。
 - ext2 mapping structure gate 固定覆盖 direct/single/double/triple 的 96-block toy address space，并要求
   path classifier、metadata loader、heap path allocation、strict/sparse traversal 成本为 `1/1/0/1`。

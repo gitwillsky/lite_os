@@ -103,6 +103,10 @@ mod fallible_tree_tests;
 mod inet_port_namespace;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/socket/inet/protocol_owner/pending_cleanup.rs"]
+mod inet_pending_cleanup;
+
+#[cfg(test)]
 mod inet_port_namespace_tests;
 
 #[cfg(test)]

@@ -110,7 +110,7 @@ impl NetworkStack {
 /// @return 成功返回 unit。
 /// @errors 返回状态、地址、冲突或分配错误。
 pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), SocketError> {
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     if network
         .sockets
         .get::<udp::Socket<'static>>(handle)
@@ -165,7 +165,7 @@ pub(super) fn connect(handle: SocketHandle, peer: InetAddress) -> Result<(), Soc
     if peer.port == 0 || peer.address.is_unspecified() {
         return Err(SocketError::AddressNotAvailable);
     }
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     network.ensure_udp_bound(handle)?;
     network
         .endpoints
@@ -196,7 +196,7 @@ fn is_broadcast(address: Ipv4Addr, interface: super::InterfaceState) -> bool {
 /// @return 本地地址；未 bind 时为 unspecified:0。
 /// @errors NetworkStack 未初始化时返回错误。
 pub(super) fn address(handle: SocketHandle) -> Result<InetAddress, SocketError> {
-    let network = stack()?.lock();
+    let network = stack()?.lock()?;
     let endpoint = network
         .sockets
         .get::<udp::Socket<'static>>(handle)
@@ -213,7 +213,7 @@ pub(super) fn address(handle: SocketHandle) -> Result<InetAddress, SocketError> 
 /// @errors 未 connect 或 endpoint 已删除时返回 `NotConnected`。
 pub(super) fn peer_address(handle: SocketHandle) -> Result<InetAddress, SocketError> {
     stack()?
-        .lock()
+        .lock()?
         .endpoints
         .get(&handle)
         .and_then(|state| state.peer)
@@ -235,43 +235,47 @@ pub(super) fn send(
         return Err(SocketError::MessageTooLarge);
     }
     let stack = stack()?;
-    let mut network = stack.lock();
-    if !network.interface_state.up || network.interface_state.address.is_none() {
-        return Err(SocketError::NetworkUnreachable);
-    }
-    network.ensure_udp_bound(handle)?;
-    let peer = target
-        .or_else(|| network.endpoints.get(&handle).and_then(|state| state.peer))
-        .ok_or(SocketError::DestinationRequired)?;
-    if peer.port == 0 || peer.address.is_unspecified() {
-        return Err(SocketError::AddressNotAvailable);
-    }
-    let options = network.endpoints[&handle].options;
-    if is_broadcast(peer.address, network.interface_state) && !options.broadcast {
-        return Err(SocketError::PermissionDenied);
-    }
-    // The stable closed placeholder keeps SocketHandle valid while the real socket is loaned to
-    // this endpoint. PROTOCOL_GATE shared membership excludes Interface polling, while other
-    // endpoints may loan and copy concurrently.
-    let mut socket = core::mem::replace(
-        network.sockets.get_mut::<udp::Socket<'static>>(handle),
-        placeholder_socket(),
-    );
-    drop(network);
-    let result = socket
-        .send_slice(input, IpEndpoint::new(ipv4(peer.address), peer.port))
-        .map_err(|error| match error {
-            udp::SendError::BufferFull => SocketError::Again,
-            udp::SendError::Unaddressable => SocketError::NetworkUnreachable,
-        });
-    let placeholder = core::mem::replace(
-        stack.lock().sockets.get_mut::<udp::Socket<'static>>(handle),
-        socket,
-    );
-    debug_assert!(!placeholder.is_open());
-    result?;
+    let written = stack.with_payload_loan(
+        |network| {
+            if !network.interface_state.up || network.interface_state.address.is_none() {
+                return Err(SocketError::NetworkUnreachable);
+            }
+            network.ensure_udp_bound(handle)?;
+            let peer = target
+                .or_else(|| network.endpoints.get(&handle).and_then(|state| state.peer))
+                .ok_or(SocketError::DestinationRequired)?;
+            if peer.port == 0 || peer.address.is_unspecified() {
+                return Err(SocketError::AddressNotAvailable);
+            }
+            let options = network.endpoints[&handle].options;
+            if is_broadcast(peer.address, network.interface_state) && !options.broadcast {
+                return Err(SocketError::PermissionDenied);
+            }
+            let socket = core::mem::replace(
+                network.sockets.get_mut::<udp::Socket<'static>>(handle),
+                placeholder_socket(),
+            );
+            Ok((socket, peer))
+        },
+        |(socket, peer)| {
+            socket
+                .send_slice(input, IpEndpoint::new(ipv4(peer.address), peer.port))
+                .map(|()| input.len())
+                .map_err(|error| match error {
+                    udp::SendError::BufferFull => SocketError::Again,
+                    udp::SendError::Unaddressable => SocketError::NetworkUnreachable,
+                })
+        },
+        |network, (socket, _)| {
+            let placeholder = core::mem::replace(
+                network.sockets.get_mut::<udp::Socket<'static>>(handle),
+                socket,
+            );
+            debug_assert!(!placeholder.is_open());
+        },
+    )?;
     crate::drivers::network::request_poll();
-    Ok(input.len())
+    Ok(written)
 }
 
 /// @description 接收或窥视一个 UDP datagram，并保留原始 datagram 长度。
@@ -288,39 +292,46 @@ pub(super) fn receive(
     peek: bool,
 ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
     let stack = stack()?;
-    let mut network = stack.lock();
-    let mut socket = core::mem::replace(
-        network.sockets.get_mut::<udp::Socket<'static>>(handle),
-        placeholder_socket(),
-    );
-    drop(network);
-    let received = if peek {
-        socket
-            .peek()
-            .map(|(payload, metadata)| (payload, *metadata))
-    } else {
-        socket.recv()
-    };
-    let result = received.map(|(payload, metadata)| {
-        let full_length = payload.len();
-        let count = output.append(payload);
-        (
-            count,
-            full_length,
-            InetAddress {
-                address: from_ip(metadata.endpoint.addr),
-                port: metadata.endpoint.port,
-            },
-            metadata.local_address.map(from_ip),
-        )
-    });
-    let drained = result.is_ok() && !peek && !socket.can_recv();
-    let placeholder = core::mem::replace(
-        stack.lock().sockets.get_mut::<udp::Socket<'static>>(handle),
-        socket,
-    );
-    debug_assert!(!placeholder.is_open());
-    let result = result.map_err(|_| SocketError::Again)?;
+    let (result, drained) = stack.with_payload_loan(
+        |network| {
+            Ok(core::mem::replace(
+                network.sockets.get_mut::<udp::Socket<'static>>(handle),
+                placeholder_socket(),
+            ))
+        },
+        |socket| {
+            let received = if peek {
+                socket
+                    .peek()
+                    .map(|(payload, metadata)| (payload, *metadata))
+            } else {
+                socket.recv()
+            };
+            let result = received
+                .map(|(payload, metadata)| {
+                    let full_length = payload.len();
+                    let count = output.append(payload);
+                    (
+                        count,
+                        full_length,
+                        InetAddress {
+                            address: from_ip(metadata.endpoint.addr),
+                            port: metadata.endpoint.port,
+                        },
+                        metadata.local_address.map(from_ip),
+                    )
+                })
+                .map_err(|_| SocketError::Again)?;
+            Ok((result, !peek && !socket.can_recv()))
+        },
+        |network, socket| {
+            let placeholder = core::mem::replace(
+                network.sockets.get_mut::<udp::Socket<'static>>(handle),
+                socket,
+            );
+            debug_assert!(!placeholder.is_open());
+        },
+    )?;
     if drained {
         endpoint.consume_notify();
     }
@@ -330,16 +341,16 @@ pub(super) fn receive(
 /// @description 设置 UDP `IP_PKTINFO` ancillary 投影开关。
 /// @param handle UDP smoltcp handle。
 /// @param enabled 是否在 recvmsg 生成 pktinfo。
-/// @return 无返回值。
-/// @errors endpoint 状态丢失表示 owner 不变量破坏并 fail-stop。
-pub(super) fn set_packet_info(handle: SocketHandle, enabled: bool) {
-    stack()
-        .expect("AF_INET UDP endpoint lost network stack")
-        .lock()
+/// @return endpoint state 已更新时返回 unit。
+/// @errors stack/endpoint 不可用或 owner waiter OOM 时返回对应 socket error。
+pub(super) fn set_packet_info(handle: SocketHandle, enabled: bool) -> Result<(), SocketError> {
+    stack()?
+        .lock()?
         .endpoints
         .get_mut(&handle)
-        .expect("AF_INET UDP endpoint metadata disappeared")
+        .ok_or(SocketError::NotConnected)?
         .packet_info = enabled;
+    Ok(())
 }
 
 /// @description 查询 UDP `IP_PKTINFO` 开关。
@@ -348,11 +359,12 @@ pub(super) fn set_packet_info(handle: SocketHandle, enabled: bool) {
 /// @errors 无错误。
 pub(super) fn packet_info(handle: SocketHandle) -> bool {
     stack().is_ok_and(|stack| {
-        stack
-            .lock()
-            .endpoints
-            .get(&handle)
-            .is_some_and(|state| state.packet_info)
+        stack.lock().ok().is_some_and(|network| {
+            network
+                .endpoints
+                .get(&handle)
+                .is_some_and(|state| state.packet_info)
+        })
     })
 }
 
@@ -364,7 +376,9 @@ pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
     let Ok(stack) = stack() else {
         return SocketPollState::error();
     };
-    let network = stack.lock();
+    let Ok(network) = stack.lock() else {
+        return SocketPollState::error();
+    };
     let socket = network.sockets.get::<udp::Socket<'static>>(handle);
     SocketPollState {
         readable: socket.can_recv(),
@@ -375,14 +389,11 @@ pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
 }
 
 /// @description 删除 UDP metadata 与同一个 smoltcp handle。
+/// @param network 已由 protocol owner 独占的完整 NetworkStack。
 /// @param handle UDP smoltcp handle。
 /// @return 无返回值。
 /// @errors 重复删除或 stack 未初始化时幂等忽略。
-pub(super) fn drop_endpoint(handle: SocketHandle) {
-    let Some(stack) = super::NETWORK_STACK.get() else {
-        return;
-    };
-    let mut network = stack.lock();
+pub(super) fn drop_endpoint(network: &mut NetworkStack, handle: SocketHandle) {
     if let Some(state) = network.endpoints.remove(&handle) {
         if let Some(lease) = state.port_lease {
             network.udp_ports.release(lease);

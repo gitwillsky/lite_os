@@ -1,4 +1,4 @@
-use super::{InetEndpoint, InetSocket, SocketError, protocol_read, stack};
+use super::{InetEndpoint, InetSocket, SocketError, stack};
 
 /// @description NetworkStack endpoint owner 保存的标准 SOL_SOCKET policy。
 #[derive(Clone, Copy, Default)]
@@ -21,8 +21,7 @@ impl InetSocket {
     /// @errors endpoint 已被删除时返回 NotConnected。
     pub(in crate::socket) fn set_reuse_address(&self, enabled: bool) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
-        let mut network = stack()?.lock();
+        let mut network = stack()?.lock()?;
         match self.endpoint {
             InetEndpoint::Udp(handle) => {
                 let super::NetworkStack {
@@ -63,13 +62,12 @@ impl InetSocket {
     /// @errors TCP 返回 OperationNotSupported；endpoint 消失返回 NotConnected。
     pub(in crate::socket) fn set_broadcast(&self, enabled: bool) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if let InetEndpoint::Raw(handle) = self.endpoint {
             return super::raw_endpoint::set_broadcast(handle, enabled);
         }
         let handle = self.udp_handle()?;
         stack()?
-            .lock()
+            .lock()?
             .endpoints
             .get_mut(&handle)
             .ok_or(SocketError::NotConnected)?
@@ -87,11 +85,10 @@ impl InetSocket {
             return Err(SocketError::NoDevice);
         }
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if let InetEndpoint::Raw(handle) = self.endpoint {
             return super::raw_endpoint::bind_to_device(handle, name);
         }
-        let mut network = stack()?.lock();
+        let mut network = stack()?.lock()?;
         let options = match self.endpoint {
             InetEndpoint::Udp(handle) => {
                 &mut network
@@ -115,7 +112,6 @@ impl InetSocket {
 
     pub(in crate::socket) fn set_no_delay(&self, enabled: bool) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         super::tcp::set_no_delay(self, enabled)
     }
 }

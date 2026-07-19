@@ -7,7 +7,7 @@ const MESSAGE: &str = "kernel/src/syscall/socket/message.rs";
 const REGULAR: &str = "kernel/src/syscall/fs/io/regular.rs";
 const SELECT: &str = "kernel/src/syscall/poll/select.rs";
 const SOCKET_BYTES: usize = 64 * 1024;
-const REGULAR_BYTES: usize = 128 * 1024;
+const REGULAR_BYTES: usize = 1024 * 1024;
 const SELECT_SET_BYTES: usize = 1024usize.div_ceil(8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

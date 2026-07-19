@@ -2,7 +2,7 @@ use core::net::Ipv4Addr;
 
 use crate::{drivers::network::NetworkStatistics, socket::SocketError};
 
-use super::{NETWORK_STACK, protocol_read, protocol_write, stack};
+use super::{NETWORK_STACK, stack};
 
 /// @description standard interface ioctl 消费的不可变 Ethernet 配置快照。
 #[derive(Clone, Copy)]
@@ -24,8 +24,7 @@ pub(crate) struct NetworkSnapshot {
 }
 
 pub(crate) fn interface_snapshot() -> Result<InterfaceSnapshot, SocketError> {
-    let _protocol = protocol_read();
-    let network = stack()?.lock();
+    let network = stack()?.lock()?;
     Ok(InterfaceSnapshot {
         mac: network.device.mac_address(),
         address: network.interface_state.address,
@@ -35,8 +34,7 @@ pub(crate) fn interface_snapshot() -> Result<InterfaceSnapshot, SocketError> {
 }
 
 pub(crate) fn network_snapshot() -> Option<NetworkSnapshot> {
-    let _protocol = protocol_read();
-    let network = NETWORK_STACK.get()?.lock();
+    let network = NETWORK_STACK.get()?.lock().ok()?;
     Some(NetworkSnapshot {
         address: network.interface_state.address,
         prefix_length: network.interface_state.prefix_length,
@@ -50,8 +48,7 @@ pub(crate) fn configure_address(address: Ipv4Addr) -> Result<(), SocketError> {
     if address.is_broadcast() || address.is_multicast() || address.is_loopback() {
         return Err(SocketError::AddressNotAvailable);
     }
-    let _protocol = protocol_write();
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     network.interface_state.address = (!address.is_unspecified()).then_some(address);
     network.apply_interface_state();
     Ok(())
@@ -63,16 +60,14 @@ pub(crate) fn configure_netmask(mask: Ipv4Addr) -> Result<(), SocketError> {
     if bits != u32::MAX.checked_shl((32 - prefix) as u32).unwrap_or(0) {
         return Err(SocketError::Invalid);
     }
-    let _protocol = protocol_write();
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     network.interface_state.prefix_length = prefix;
     network.apply_interface_state();
     Ok(())
 }
 
 pub(crate) fn configure_up(up: bool) -> Result<(), SocketError> {
-    let _protocol = protocol_write();
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     network.interface_state.up = up;
     network.apply_interface_state();
     Ok(())
@@ -87,8 +82,7 @@ pub(crate) fn configure_gateway(gateway: Option<Ipv4Addr>) -> Result<(), SocketE
     }) {
         return Err(SocketError::AddressNotAvailable);
     }
-    let _protocol = protocol_write();
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     network.interface_state.gateway = gateway;
     network.apply_interface_state();
     Ok(())

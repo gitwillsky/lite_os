@@ -20,7 +20,7 @@ use crate::{
 use self::device::EthernetDevice;
 use self::options::InetSocketOptions;
 use self::port_namespace::{PortError, PortLease, PortNamespace};
-use self::protocol_owner::{NETWORK_STACK, NetworkStackOwner, protocol_read, protocol_write};
+use self::protocol_owner::{NETWORK_STACK, NetworkStackOwner};
 use self::tcp::TcpEndpointState;
 use super::{InetAddress, SocketError, SocketPollState, packet};
 
@@ -125,7 +125,7 @@ fn stack() -> Result<&'static NetworkStackOwner, SocketError> {
     let stack = NETWORK_STACK.get().ok_or(SocketError::NetworkUnreachable)?;
     // Device callback 不能通过 smoltcp trait 返回错误；由下一次 syscall seam 精确消费
     // 一次后恢复正常服务。只读取不清除会让单个畸形 completion 永久毒化整个网络栈。
-    if let Some(error) = stack.lock().device.take_error() {
+    if let Some(error) = stack.lock()?.device.take_error() {
         return Err(network_error(error));
     }
     Ok(stack)
@@ -243,7 +243,10 @@ pub(crate) fn init() {
 /// @errors stack 尚未初始化时返回 `false`，不产生错误。
 pub(crate) fn dispatch_network_work() -> bool {
     if let Some(stack) = NETWORK_STACK.get() {
-        let mut network = stack.poll_loan();
+        let Some(mut network) = stack.try_poll() else {
+            return true;
+        };
+        let cleanup_backlog = network.cleanup_backlog();
         let poll = network.poll();
         let notifications = network.take_pending_notifications();
         let notification_backlog = notifications.backlog();
@@ -253,16 +256,16 @@ pub(crate) fn dispatch_network_work() -> bool {
             if poll.transmit_became_available {
                 packet::publish_transmit_ready();
             }
-            poll.backlog || notification_backlog
+            poll.backlog || notification_backlog || cleanup_backlog
         } else {
-            notification_backlog
+            notification_backlog || cleanup_backlog
         }
     } else {
         false
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum InetEndpoint {
     Udp(SocketHandle),
     Tcp(usize),
@@ -289,9 +292,8 @@ impl InetSocket {
         socket_type: super::SocketType,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
     ) -> Result<Arc<Self>, SocketError> {
-        let _protocol = protocol_write();
         if socket_type == super::SocketType::Stream {
-            let mut network = stack()?.lock();
+            let mut network = stack()?.lock()?;
             let endpoint = try_allocate_endpoint(|| {
                 let id = tcp::create_endpoint(&mut network, Weak::new())?;
                 Ok(Self {
@@ -315,7 +317,7 @@ impl InetSocket {
         if socket_type == super::SocketType::Raw {
             return raw_endpoint::new(notify);
         }
-        let mut network = stack()?.lock();
+        let mut network = stack()?.lock()?;
         let endpoint = try_allocate_endpoint(|| {
             let handle = udp_endpoint::create_endpoint(&mut network, Weak::new())?;
             Ok(Self {
@@ -346,7 +348,6 @@ impl InetSocket {
 
     pub(super) fn bind(&self, address: InetAddress) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_write();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::bind(self, address);
         }
@@ -359,7 +360,6 @@ impl InetSocket {
 
     pub(super) fn connect(&self, peer: InetAddress) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_write();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::connect(self, peer);
         }
@@ -372,7 +372,6 @@ impl InetSocket {
 
     pub(super) fn address(&self) -> Result<InetAddress, SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::address(self);
         }
@@ -385,7 +384,6 @@ impl InetSocket {
 
     pub(super) fn peer_address(&self) -> Result<InetAddress, SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::peer_address(self);
         }
@@ -402,7 +400,6 @@ impl InetSocket {
         target: Option<InetAddress>,
     ) -> Result<usize, SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             if target.is_some() {
                 return Err(SocketError::AlreadyConnected);
@@ -422,7 +419,6 @@ impl InetSocket {
         peek: bool,
     ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::receive(self, output, peek);
         }
@@ -436,15 +432,12 @@ impl InetSocket {
 
     pub(super) fn set_packet_info(&self, enabled: bool) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         let handle = self.udp_handle()?;
-        udp_endpoint::set_packet_info(handle, enabled);
-        Ok(())
+        udp_endpoint::set_packet_info(handle, enabled)
     }
 
     pub(super) fn packet_info(&self) -> bool {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         let Ok(handle) = self.udp_handle() else {
             return false;
         };
@@ -457,7 +450,6 @@ impl InetSocket {
     /// @errors UDP、无效状态、地址或分配失败时返回错误。
     pub(super) fn listen(&self, backlog: usize) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_write();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             tcp::listen(self, backlog)
         } else {
@@ -474,7 +466,6 @@ impl InetSocket {
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
     ) -> Result<Arc<Self>, SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_write();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             tcp::accept(self, notify)
         } else {
@@ -487,7 +478,6 @@ impl InetSocket {
     /// @errors TCP 仍在进行、被拒绝或未连接时返回错误。
     pub(super) fn connection_result(&self) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             let result = tcp::connection_result(self);
             if !matches!(result, Err(SocketError::InProgress)) {
@@ -504,9 +494,9 @@ impl InetSocket {
     /// @errors 无错误。
     pub(super) fn take_error(&self) -> Option<SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if let Some(stack) = NETWORK_STACK.get()
-            && let Some(error) = stack.lock().device.take_error()
+            && let Ok(network) = stack.lock()
+            && let Some(error) = network.device.take_error()
         {
             return Some(network_error(error));
         }
@@ -521,7 +511,6 @@ impl InetSocket {
     /// @errors UDP 或未连接 TCP 返回错误。
     pub(super) fn shutdown(&self, how: usize) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
-        let _protocol = protocol_read();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             tcp::shutdown(self, how)
         } else {
@@ -532,18 +521,17 @@ impl InetSocket {
 
 impl Drop for InetSocket {
     fn drop(&mut self) {
-        let _protocol = protocol_write();
-        if let InetEndpoint::Tcp(id) = self.endpoint {
-            tcp::drop_endpoint(id);
-            return;
+        if let Some(stack) = NETWORK_STACK.get() {
+            stack.cleanup_or_defer(self.endpoint);
         }
-        if let InetEndpoint::Raw(handle) = self.endpoint {
-            raw_endpoint::drop_endpoint(handle);
-            return;
-        }
-        let InetEndpoint::Udp(handle) = self.endpoint else {
-            unreachable!();
-        };
-        udp_endpoint::drop_endpoint(handle);
+    }
+}
+
+/// final InetSocket cleanup 的唯一 protocol-state mutation path。
+fn cleanup_endpoint(network: &mut NetworkStack, endpoint: InetEndpoint) {
+    match endpoint {
+        InetEndpoint::Tcp(id) => tcp::drop_endpoint(network, id),
+        InetEndpoint::Raw(handle) => raw_endpoint::drop_endpoint(network, handle),
+        InetEndpoint::Udp(handle) => udp_endpoint::drop_endpoint(network, handle),
     }
 }

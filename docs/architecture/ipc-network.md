@@ -7,9 +7,10 @@
   sharded WaitRegistry 发布单个 epoll notification key；ppoll/pselect 与 blocking I/O
   仍使用 transient source-key seam，两者在唤醒后都复查 backend level state。
 - `socket` façade 拥有 domain dispatch；AF_UNIX namespace/queue/SCM graph、IPv4 stack、
-  AF_PACKET registry 与 kobject listener 各自拥有复合状态。IPv4 protocol owner 保持唯一
-  `SocketSet`，endpoint data-plane 通过稳定 placeholder slot 临时借出真实 socket，在全局 stack
-  mutex 外复制 payload；独立 endpoint 只共享 reader membership，不互相串行。
+  AF_PACKET registry 与 kobject listener 各自拥有复合状态。IPv4 `TaskMutex` protocol owner 保持
+  唯一 `SocketSet`；endpoint data-plane 通过稳定 placeholder slot 临时借出真实 socket，在 owner 外
+  复制 payload；独立 endpoint 只共享 O(1) loan count，不共享互斥 guard、也不互相串行。poll 只在
+  全部 loan 归还时 `try_lock` 完整 state，冲突立即回投而不 busy-wait。
 - pipe、AF_UNIX、IPv4、AF_PACKET 与 kobject receive 共同写入 `ipc::ReceiveBuffer` 的
   initialized prefix；短读、control barrier 与错误路径不暴露未初始化 capacity，syscall 不保留
   另一个 zeroed staging 路径。两条 64KiB heap receive 的预清零成本由 131,072B 降为 0。
@@ -21,10 +22,11 @@
   不参与 UDP/TCP port namespace。
 - network hardirq 只确认设备并发布 deferred work；packet processing、completion reclaim 与
   waiter notification 在 user-return/idle safe point 的有界 deferred batch 中执行。deferred poll
-  取得独占 protocol membership 后把唯一 stack 临时移出 mutex slot，再执行 device completion、
-  ingress 与 egress，并在同一 RAII loan 内提取最多 64 个 readiness endpoint Arc。归还 stack、释放
-  membership 后才进入 wait owner 发布 readiness，满批次重新投递 deferred work；设备 I/O 不持有
-  stack mutex，也不会在 poll loan 期间从第二条路径访问空 slot。
+  用一次 exclusive `TaskMutex` owner 推进 device completion、ingress/egress，并提取最多 64 个
+  readiness endpoint Arc；竞争 task 睡眠而非自旋，存在 endpoint payload loan 时 poll O(1) 回投。
+  释放 owner 后才进入 wait owner 发布 readiness。final socket cleanup 若与 poll 竞争，只发布到
+  1024-slot fixed cleanup ring，并由下一轮 poll 在协议推进前按 64 项固定预算精确 drain，不存在旧
+  protocol gate 或第二份 stack。
 
 ## Known limits
 

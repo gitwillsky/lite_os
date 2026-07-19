@@ -18,48 +18,50 @@ pub(in crate::socket::inet) fn send(
 ) -> Result<usize, SocketError> {
     let id = endpoint_id(socket);
     let stack = stack()?;
-    let mut network = stack.lock();
-    let state = network
-        .tcp_endpoints
-        .get(&id)
-        .ok_or(SocketError::NotConnected)?;
-    if let Some(error) = state.pending_error {
-        return Err(error);
-    }
-    if !matches!(state.mode, TcpMode::Connected { .. }) {
-        return Err(match state.mode {
-            TcpMode::Connecting => SocketError::Again,
-            _ => SocketError::NotConnected,
-        });
-    }
-    let handle = state.handles[0];
-    let mut tcp = core::mem::replace(
-        network.sockets.get_mut::<tcp::Socket<'static>>(handle),
-        super::placeholder_socket(),
-    );
-    drop(network);
-    let result = if !tcp.may_send() {
-        Err(SocketError::BrokenPipe)
-    } else {
-        tcp.send_slice(input)
-            .map_err(|_| SocketError::BrokenPipe)
-            .and_then(|count| {
-                if count == 0 && !input.is_empty() {
-                    Err(SocketError::Again)
-                } else {
-                    Ok(count)
-                }
-            })
-    };
-    let placeholder = core::mem::replace(
-        stack.lock().sockets.get_mut::<tcp::Socket<'static>>(handle),
-        tcp,
-    );
-    debug_assert_eq!(placeholder.state(), State::Closed);
-    if result.is_ok() {
-        crate::drivers::network::request_poll();
-    }
-    result
+    let written = stack.with_payload_loan(
+        |network| {
+            let state = network
+                .tcp_endpoints
+                .get(&id)
+                .ok_or(SocketError::NotConnected)?;
+            if let Some(error) = state.pending_error {
+                return Err(error);
+            }
+            if !matches!(state.mode, TcpMode::Connected { .. }) {
+                return Err(match state.mode {
+                    TcpMode::Connecting => SocketError::Again,
+                    _ => SocketError::NotConnected,
+                });
+            }
+            let handle = state.handles[0];
+            let tcp = core::mem::replace(
+                network.sockets.get_mut::<tcp::Socket<'static>>(handle),
+                super::placeholder_socket(),
+            );
+            Ok((handle, tcp))
+        },
+        |(_, tcp)| {
+            if !tcp.may_send() {
+                return Err(SocketError::BrokenPipe);
+            }
+            tcp.send_slice(input)
+                .map_err(|_| SocketError::BrokenPipe)
+                .and_then(|count| {
+                    if count == 0 && !input.is_empty() {
+                        Err(SocketError::Again)
+                    } else {
+                        Ok(count)
+                    }
+                })
+        },
+        |network, (handle, tcp)| {
+            let placeholder =
+                core::mem::replace(network.sockets.get_mut::<tcp::Socket<'static>>(handle), tcp);
+            debug_assert_eq!(placeholder.state(), State::Closed);
+        },
+    )?;
+    crate::drivers::network::request_poll();
+    Ok(written)
 }
 
 /// @description 接收或窥视 TCP stream bytes，并在 peer FIN 后投影 EOF。
@@ -75,84 +77,99 @@ pub(in crate::socket::inet) fn receive(
 ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
     let id = endpoint_id(socket);
     let stack = stack()?;
-    let mut network = stack.lock();
-    let state = network
-        .tcp_endpoints
-        .get(&id)
-        .ok_or(SocketError::NotConnected)?;
-    let (peer_closed, shutdown_read) = match state.mode {
-        TcpMode::Connected {
-            peer_closed,
-            shutdown_read,
-        } => (peer_closed, shutdown_read),
-        TcpMode::Connecting => return Err(SocketError::Again),
-        _ => return Err(SocketError::NotConnected),
-    };
-    let pending_error = state.pending_error;
-    let handle = state.handles[0];
-    if shutdown_read {
-        return Ok((
-            0,
-            0,
-            InetAddress {
-                address: Ipv4Addr::UNSPECIFIED,
-                port: 0,
-            },
-            None,
-        ));
-    }
-    let mut tcp = core::mem::replace(
-        network.sockets.get_mut::<tcp::Socket<'static>>(handle),
-        super::placeholder_socket(),
-    );
-    drop(network);
-    let result = (|| {
-        let count = if tcp.can_recv() {
-            if peek {
-                let bytes = tcp
-                    .peek(output.remaining())
-                    .map_err(|_| SocketError::ConnectionReset)?;
-                output.append(bytes)
+    let (result, still_readable) = stack.with_payload_loan(
+        |network| {
+            let state = network
+                .tcp_endpoints
+                .get(&id)
+                .ok_or(SocketError::NotConnected)?;
+            let (peer_closed, shutdown_read) = match state.mode {
+                TcpMode::Connected {
+                    peer_closed,
+                    shutdown_read,
+                } => (peer_closed, shutdown_read),
+                TcpMode::Connecting => return Err(SocketError::Again),
+                _ => return Err(SocketError::NotConnected),
+            };
+            let pending_error = state.pending_error;
+            if shutdown_read {
+                return Ok((None, pending_error, peer_closed));
+            }
+            let handle = state.handles[0];
+            let tcp = core::mem::replace(
+                network.sockets.get_mut::<tcp::Socket<'static>>(handle),
+                super::placeholder_socket(),
+            );
+            Ok((Some((handle, tcp)), pending_error, peer_closed))
+        },
+        |(loan, pending_error, peer_closed)| {
+            let Some((_, tcp)) = loan else {
+                return Ok((
+                    (
+                        0,
+                        0,
+                        InetAddress {
+                            address: Ipv4Addr::UNSPECIFIED,
+                            port: 0,
+                        },
+                        None,
+                    ),
+                    false,
+                ));
+            };
+            let count = if tcp.can_recv() {
+                if peek {
+                    let bytes = tcp
+                        .peek(output.remaining())
+                        .map_err(|_| SocketError::ConnectionReset)?;
+                    output.append(bytes)
+                } else {
+                    tcp.recv(|bytes| {
+                        let count = output.append(bytes);
+                        (count, count)
+                    })
+                    .map_err(|_| SocketError::ConnectionReset)?
+                }
+            } else if !tcp.may_recv() {
+                if let Some(error) = *pending_error {
+                    return Err(error);
+                }
+                if !*peer_closed && tcp.state() == State::Closed {
+                    return Err(SocketError::ConnectionReset);
+                }
+                0
             } else {
-                tcp.recv(|bytes| {
-                    let count = output.append(bytes);
-                    (count, count)
-                })
-                .map_err(|_| SocketError::ConnectionReset)?
+                return Err(SocketError::Again);
+            };
+            let peer = tcp.remote_endpoint().map_or(
+                InetAddress {
+                    address: Ipv4Addr::UNSPECIFIED,
+                    port: 0,
+                },
+                |endpoint| InetAddress {
+                    address: from_ip(endpoint.addr),
+                    port: endpoint.port,
+                },
+            );
+            Ok((
+                (count, count, peer, None),
+                tcp.can_recv() || !tcp.may_recv(),
+            ))
+        },
+        |network, (loan, _, _)| {
+            if let Some((handle, tcp)) = loan {
+                let placeholder = core::mem::replace(
+                    network.sockets.get_mut::<tcp::Socket<'static>>(handle),
+                    tcp,
+                );
+                debug_assert_eq!(placeholder.state(), State::Closed);
             }
-        } else if !tcp.may_recv() {
-            if let Some(error) = pending_error {
-                return Err(error);
-            }
-            if !peer_closed && tcp.state() == State::Closed {
-                return Err(SocketError::ConnectionReset);
-            }
-            0
-        } else {
-            return Err(SocketError::Again);
-        };
-        let peer = tcp.remote_endpoint().map_or(
-            InetAddress {
-                address: Ipv4Addr::UNSPECIFIED,
-                port: 0,
-            },
-            |endpoint| InetAddress {
-                address: from_ip(endpoint.addr),
-                port: endpoint.port,
-            },
-        );
-        Ok((count, count, peer, None))
-    })();
-    let still_readable = tcp.can_recv() || !tcp.may_recv();
-    let placeholder = core::mem::replace(
-        stack.lock().sockets.get_mut::<tcp::Socket<'static>>(handle),
-        tcp,
-    );
-    debug_assert_eq!(placeholder.state(), State::Closed);
+        },
+    )?;
     if !peek && !still_readable {
         socket.consume_notify();
     }
-    result
+    Ok(result)
 }
 
 /// @description 从唯一 TCP endpoint state 投影 OFD readiness。
@@ -163,7 +180,9 @@ pub(in crate::socket::inet) fn poll_state(socket: &InetSocket) -> SocketPollStat
     let Ok(stack) = stack() else {
         return SocketPollState::error();
     };
-    let network = stack.lock();
+    let Ok(network) = stack.lock() else {
+        return SocketPollState::error();
+    };
     network
         .tcp_endpoints
         .get(&endpoint_id(socket))
@@ -314,6 +333,7 @@ pub(in crate::socket::inet) fn take_error(socket: &InetSocket) -> Option<SocketE
     stack()
         .ok()?
         .lock()
+        .ok()?
         .tcp_endpoints
         .get_mut(&endpoint_id(socket))?
         .pending_error
@@ -330,7 +350,7 @@ pub(in crate::socket::inet) fn shutdown(
     how: usize,
 ) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
-    let mut network = stack()?.lock();
+    let mut network = stack()?.lock()?;
     let state = network
         .tcp_endpoints
         .get_mut(&id)
