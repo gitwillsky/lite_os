@@ -72,7 +72,7 @@ impl FrameTracker {
             .checked_mul(super::config::PAGE_SIZE)
             .expect("frame byte length overflow");
         // SAFETY: &mut FrameTracker 保证本 tracker 的 Rust 访问独占；tracker 在借用期间
-        // 持有完整连续页范围，物理内存由 kernel identity mapping 覆盖且满足页对齐。
+        // 持有完整连续页范围，物理内存由 kernel direct map 覆盖且满足页对齐。
         unsafe { core::slice::from_raw_parts_mut(self.ppn.as_page_mut_ptr(), len) }
     }
 

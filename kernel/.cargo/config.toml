@@ -1,6 +1,15 @@
 [build]
-target = "riscv64gc-unknown-none-elf"
+target = "aarch64-unknown-none-softfloat"
 
+[target.aarch64-unknown-none-softfloat]
+rustflags = [
+    "-C",
+    "link-arg=-Tkernel/linkers/aarch64.ld",
+    "-C",
+    "target-cpu=native",
+    "-C",
+    "force-frame-pointers=yes",
+]
 
 [target.riscv64gc-unknown-none-elf]
 rustflags = [

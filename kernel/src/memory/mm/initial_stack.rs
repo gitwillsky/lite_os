@@ -34,7 +34,7 @@ impl ElfAuxInfo {
 }
 
 impl MemorySet {
-    /// @description 构造 Linux RV64 argc/argv/envp/auxv 初始栈，并保持 16-byte alignment。
+    /// @description 构造 Linux ELF64 argc/argv/envp/auxv 初始栈，并保持 16-byte alignment。
     ///
     /// @param stack_top 已映射用户栈的 exclusive upper bound。
     /// @param args script rewrite 后且不含 NUL 的 argv strings。
@@ -59,9 +59,10 @@ impl MemorySet {
         const AT_PAGESZ: usize = 6;
         const AT_BASE: usize = 7;
         const AT_ENTRY: usize = 9;
+        const AT_HWCAP: usize = 16;
         const AT_RANDOM: usize = 25;
         const AT_EXECFN: usize = 31;
-        const AUX_WORDS: usize = 18;
+        const AUX_WORDS: usize = 20;
         const RANDOM_BYTES: usize = 16;
 
         let total_string_size = args
@@ -171,6 +172,7 @@ impl MemorySet {
             (AT_PAGESZ, config::PAGE_SIZE),
             (AT_BASE, aux.base),
             (AT_ENTRY, aux.entry),
+            (AT_HWCAP, crate::arch::user::ELF_HWCAP),
             (AT_RANDOM, random_ptr),
             (AT_EXECFN, execfn_ptr),
             (AT_NULL, 0),

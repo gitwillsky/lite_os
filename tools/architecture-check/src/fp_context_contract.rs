@@ -52,39 +52,25 @@ fn user_state_precedes_kernel_fp_enable(source: &str) -> bool {
 }
 
 fn bootstrap_wfi_has_exact_trap_resume(source: &str) -> bool {
-    let wait = source.find("__wait_for_external_interrupt:");
-    let software_enable = source.find("csrsi sie, 2");
+    let wait = source.find("__wait_with_local_irq_masked:");
     let enable = source.find("csrsi sstatus, 2");
-    let sleep = source.find("__bootstrap_external_wfi:\n    wfi");
-    let resume = source.find("__bootstrap_external_wfi_resume:");
+    let sleep = source.find("__local_irq_wait_wfi:\n    wfi");
+    let resume = source.find("__local_irq_wait_wfi_resume:");
     let disable = source.find("csrci sstatus, 2");
-    let software_disable = source.find("csrci sie, 2");
     let trap = source
         .find("__kernel_trap:")
         .zip(source.find("call __liteos_kernel_trap"))
         .map(|(start, end)| &source[start..end]);
-    wait.zip(software_enable)
-        .zip(enable)
+    wait.zip(enable)
         .zip(sleep)
         .zip(resume)
         .zip(disable)
-        .zip(software_disable)
-        .is_some_and(
-            |(
-                (((((wait, software_enable), enable), sleep), resume), disable),
-                software_disable,
-            )| {
-                wait < software_enable
-                    && software_enable < enable
-                    && enable < sleep
-                    && sleep < resume
-                    && resume < disable
-                    && disable < software_disable
-            },
-        )
+        .is_some_and(|((((wait, enable), sleep), resume), disable)| {
+            wait < enable && enable < sleep && sleep < resume && resume < disable
+        })
         && trap.is_some_and(|trap| {
-            trap.contains("la t1, __bootstrap_external_wfi")
-                && trap.contains("la t0, __bootstrap_external_wfi_resume")
+            trap.contains("la t1, __local_irq_wait_wfi")
+                && trap.contains("la t0, __local_irq_wait_wfi_resume")
                 && trap.contains("csrw sepc, t0")
         })
 }

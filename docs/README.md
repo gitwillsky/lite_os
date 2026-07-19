@@ -26,7 +26,7 @@
 - [设备与终端契约](architecture-contract/devices-terminal.md)
 - [用户态与 ABI 契约](architecture-contract/userspace-abi.md)
 
-## Linux/riscv64 ABI
+## Linux 64-bit 用户态 ABI
 
 - [syscall 支持总则](syscall-support.md)
 - [进程与身份](syscall-support/process-identity.md)

@@ -11,6 +11,13 @@ const PTE_FLAGS_WIDTH: usize = 10;
 const PAGE_SHIFT: usize = 12;
 const SV39_LEVELS: usize = 3;
 
+/// Sv39 root role；generic owner 必须显式声明 kernel 或 user 用途。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AddressSpaceKind {
+    Kernel,
+    User,
+}
+
 /// @description Architecture page-table page allocation seam。
 ///
 /// Implementor owns physical-frame policy and lifetime; the Sv39 walker owns only table layout。
@@ -111,7 +118,7 @@ impl PageTableEntry {
     }
 
     fn flags(self) -> RiscvPteFlags {
-        RiscvPteFlags::from_bits_truncate(self.0 as u8)
+        RiscvPteFlags::from_bits_truncate(self.0 as u16)
     }
 
     pub(crate) fn permissions(self) -> PagePermissions {
@@ -146,10 +153,11 @@ pub(crate) struct PageTable<Page: TablePage> {
     root_page: usize,
     table_pages: FallibleMap<usize, Page>,
     address_space_id: usize,
+    kind: AddressSpaceKind,
 }
 
 impl<Page: TablePage> PageTable<Page> {
-    pub(crate) fn try_new() -> Result<Self, PageTableError> {
+    pub(crate) fn try_new(kind: AddressSpaceKind) -> Result<Self, PageTableError> {
         let root = Page::allocate().ok_or(PageTableError::OutOfMemory)?;
         let root_page = root.physical_page();
         let mut table_pages = FallibleMap::new();
@@ -166,11 +174,24 @@ impl<Page: TablePage> PageTable<Page> {
             root_page,
             table_pages,
             address_space_id,
+            kind,
         })
     }
 
     pub(crate) fn token(&self) -> AddressSpaceToken {
         AddressSpaceToken::from_root_page(self.root_page, self.address_space_id)
+    }
+
+    /// @description 激活 RISC-V kernel Sv39 root；该 backend 保持单 root 契约。
+    pub(crate) fn activate_kernel(&self) {
+        assert_eq!(self.kind, AddressSpaceKind::Kernel);
+        super::mmu::activate_kernel(self.token());
+    }
+
+    /// @description 返回 RISC-V user trap 切回 kernel root 所需 token。
+    pub(crate) fn kernel_trap_token(&self) -> super::mmu::KernelTrapToken {
+        assert_eq!(self.kind, AddressSpaceKind::Kernel);
+        self.token()
     }
 
     /// @description 在 generic owner 已完成 local/remote 全量 fence 后退休 ASID。
@@ -282,11 +303,17 @@ impl<Page: TablePage> PageTable<Page> {
         1usize << (9 * (2 - level))
     }
 
-    fn largest_identity_leaf(virtual_page: usize, remaining: usize) -> usize {
+    fn largest_contiguous_leaf(
+        virtual_page: usize,
+        physical_page: usize,
+        remaining: usize,
+    ) -> usize {
         (0..SV39_LEVELS)
             .find(|level| {
                 let span = Self::leaf_span(*level);
-                virtual_page.is_multiple_of(span) && remaining >= span
+                virtual_page.is_multiple_of(span)
+                    && physical_page.is_multiple_of(span)
+                    && remaining >= span
             })
             .unwrap_or(2)
     }
@@ -311,21 +338,25 @@ impl<Page: TablePage> PageTable<Page> {
         Ok(())
     }
 
-    /// @description 用不跨 range 边界的最大 Sv39 leaf 映射 identity region。
-    pub(crate) fn map_identity_range(
+    /// @description 用最大 leaf 映射等长、物理连续的 Sv39 region。
+    pub(crate) fn map_contiguous_range(
         &mut self,
-        start_page: usize,
-        end_page: usize,
+        virtual_start_page: usize,
+        physical_start_page: usize,
+        page_count: usize,
         permissions: PagePermissions,
     ) -> Result<(), PageTableError> {
-        if start_page >= end_page {
+        if page_count == 0 {
             return Err(PageTableError::InvalidPageTable);
         }
-        let mut page = start_page;
-        while page < end_page {
-            let level = Self::largest_identity_leaf(page, end_page - page);
-            self.map_leaf(page, page, permissions, level)?;
-            page += Self::leaf_span(level);
+        let mut mapped = 0;
+        while mapped < page_count {
+            let virtual_page = virtual_start_page + mapped;
+            let physical_page = physical_start_page + mapped;
+            let level =
+                Self::largest_contiguous_leaf(virtual_page, physical_page, page_count - mapped);
+            self.map_leaf(virtual_page, physical_page, permissions, level)?;
+            mapped += Self::leaf_span(level);
         }
         Ok(())
     }

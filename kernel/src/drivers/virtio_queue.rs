@@ -1,6 +1,4 @@
-use crate::memory::{
-    FrameAllocationClass, FrameTracker, PhysicalAddress, VirtualAddress, alloc_contiguous,
-};
+use crate::memory::{FrameAllocationClass, FrameTracker, PhysicalAddress, alloc_contiguous};
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -139,11 +137,11 @@ impl VirtQueue {
         let frame_tracker = alloc_contiguous(pages_needed, FrameAllocationClass::KernelCritical)?;
 
         let base_pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * 4096);
-        let va = VirtualAddress::from(frame_tracker.ppn.as_usize() * 4096);
+        let base_va = base_pa.as_mut_ptr::<u8>() as usize;
 
-        let desc = va.as_usize() as *mut VirtqDesc;
-        let avail = (va.as_usize() + avail_offset) as *mut VirtqAvail;
-        let used = (va.as_usize() + used_offset) as *mut VirtqUsed;
+        let desc = base_va as *mut VirtqDesc;
+        let avail = (base_va + avail_offset) as *mut VirtqAvail;
+        let used = (base_va + used_offset) as *mut VirtqUsed;
 
         // SAFETY: 连续帧数按 `total_size` 向上取整，desc/avail/used 的偏移均在该区间内；
         // frame tracker 在队列生命周期内保持页存活，初始化期间设备尚未获得 PFN，不存在并发 DMA。

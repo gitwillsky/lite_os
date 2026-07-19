@@ -21,6 +21,56 @@ impl VirtualFileSystem {
             Some(start) => start,
             None => self.root_opened()?,
         };
+        self.create_at_locked(start, path, kind, mode, identity)
+    }
+
+    /// @description 在 namespace mutation transaction 中原子打开或创建普通文件。
+    ///
+    /// @param start relative path 的起始 opened entry；absolute path 会由 VFS 从 root 解析。
+    /// @param path 已从 userspace 复制并验证的 pathname bytes。
+    /// @param mode 创建时已经过 caller umask 收敛的 permission bits。
+    /// @param identity 本次 operation 的 effective credential snapshot。
+    /// @param exclusive true 表示已存在时返回 `AlreadyExists`，对应 `O_EXCL`。
+    /// @return 已存在或本事务新建文件的唯一 opened entry。
+    /// @errors 传播 lookup、permission、allocation 与 filesystem mutation 错误。
+    pub(crate) fn open_or_create_file_at(
+        &self,
+        start: Option<Arc<OpenedFile>>,
+        path: &[u8],
+        mode: u32,
+        identity: &AccessIdentity,
+        exclusive: bool,
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
+        let _namespace = self
+            .namespace_mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let start = match start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
+        match self.open_file_at(Some(start.clone()), path, identity) {
+            Ok(_) if exclusive => Err(FileSystemError::AlreadyExists),
+            Ok(opened) => Ok(opened),
+            Err(FileSystemError::NotFound) if path.last() == Some(&b'/') => {
+                Err(FileSystemError::NotDirectory)
+            }
+            Err(FileSystemError::NotFound) => {
+                self.create_at_locked(start, path, InodeType::File, mode, identity)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// namespace mutation lock 已由 caller 唯一持有的 create commit。
+    fn create_at_locked(
+        &self,
+        start: Arc<OpenedFile>,
+        path: &[u8],
+        kind: InodeType,
+        mode: u32,
+        identity: &AccessIdentity,
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
         // `/` 是已存在的 namespace entry；若继续交给 parent/name 分割，空末项会被
         // 误报为 EINVAL，导致标准 `mkdir -p /absolute/path` 无法跳过 root。
         if path.iter().all(|byte| *byte == b'/') {

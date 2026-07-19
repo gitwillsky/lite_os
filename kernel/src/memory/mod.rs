@@ -90,7 +90,10 @@ pub(crate) fn init_allocator() {
 }
 
 pub(crate) fn init() {
-    let kernel_end_addr: PhysicalAddress = (ekernel as *const () as usize).into();
+    let kernel_end_addr: PhysicalAddress =
+        crate::arch::mmu::virtual_to_physical(ekernel as *const () as usize)
+            .expect("kernel end is outside architecture direct map")
+            .into();
     let memory_end_addr: PhysicalAddress = platform::physical_memory_end().into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
@@ -105,7 +108,7 @@ pub(crate) fn init() {
 }
 
 fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
-    let mut memory_set = MemorySet::new();
+    let mut memory_set = MemorySet::new_kernel();
 
     memory_set
         .map_trampoline()
@@ -113,14 +116,17 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
 
     for region in platform::kernel_mmio_regions() {
         debug!("[init_kernel_space] platform MMIO: {region:#x?}");
+        let virtual_start = crate::arch::mmu::physical_to_virtual(region.start);
+        let virtual_end = crate::arch::mmu::physical_to_virtual(region.end);
         memory_set
             .push(
                 MapArea::new(
-                    region.start.into(),
-                    region.end.into(),
-                    mm::MapType::Identical,
-                    MapPermission::R | MapPermission::W,
-                ),
+                    virtual_start.into(),
+                    virtual_end.into(),
+                    mm::MapType::DirectMapped,
+                    MapPermission::R | MapPermission::W | MapPermission::DEVICE,
+                )
+                .set_global(true),
                 None,
             )
             .expect("failed to map platform MMIO region");
@@ -138,7 +144,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (stext as *const () as usize).into(),
                 (etext as *const () as usize).into(),
-                mm::MapType::Identical,
+                mm::MapType::DirectMapped,
                 MapPermission::R | MapPermission::X,
             )
             .set_global(true),
@@ -158,7 +164,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (srodata as *const () as usize).into(),
                 (erodata as *const () as usize).into(),
-                mm::MapType::Identical,
+                mm::MapType::DirectMapped,
                 MapPermission::R,
             )
             .set_global(true),
@@ -178,7 +184,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (sdata as *const () as usize).into(),
                 (edata as *const () as usize).into(),
-                mm::MapType::Identical,
+                mm::MapType::DirectMapped,
                 MapPermission::R | MapPermission::W,
             )
             .set_global(true),
@@ -198,7 +204,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (sbss as *const () as usize).into(),
                 (ebss as *const () as usize).into(),
-                mm::MapType::Identical,
+                mm::MapType::DirectMapped,
                 MapPermission::R | MapPermission::W,
             )
             .set_global(true),
@@ -220,29 +226,33 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 mapped_bottom.into(),
                 boot_stack_top_addr.into(),
-                mm::MapType::Identical,
+                mm::MapType::DirectMapped,
                 MapPermission::R | MapPermission::W,
-            ),
+            )
+            .set_global(true),
             None,
         )
         .expect("Failed to map kernel boot stack");
 
     // 后续可演进为受控的 physmap/kmap 方案，再逐步去除依赖。
     {
-        let ekernel_addr = ekernel as *const () as usize;
+        let ekernel_phys = crate::arch::mmu::virtual_to_physical(ekernel as *const () as usize)
+            .expect("kernel end is outside architecture direct map");
+        let direct_map_start = crate::arch::mmu::physical_to_virtual(ekernel_phys);
+        let direct_map_end = crate::arch::mmu::physical_to_virtual(memory_end_addr.as_usize());
         debug!(
             "[init_kernel_space] kernel physmap (RW, NX): {:#x} - {:#x}",
-            ekernel_addr,
-            memory_end_addr.as_usize()
+            direct_map_start, direct_map_end
         );
         memory_set
             .push(
                 MapArea::new(
-                    (ekernel as *const () as usize).into(),
-                    memory_end_addr.as_usize().into(),
-                    mm::MapType::Identical,
+                    direct_map_start.into(),
+                    direct_map_end.into(),
+                    mm::MapType::DirectMapped,
                     MapPermission::R | MapPermission::W,
-                ),
+                )
+                .set_global(true),
                 None,
             )
             .expect("Failed to map kernel phys memory area");

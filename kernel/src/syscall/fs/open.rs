@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use crate::{
     fs::{
-        AccessIdentity, DeviceKind, FileSystemError, InodeType, O_ACCMODE, O_CLOEXEC, O_RDONLY,
-        O_WRONLY, OpenFileDescription, OpenedFile, vfs,
+        AccessIdentity, DeviceKind, InodeType, O_ACCMODE, O_CLOEXEC, O_RDONLY, O_WRONLY,
+        OpenFileDescription, OpenedFile, vfs,
     },
     syscall::errno,
     task::{TaskControlBlock, current_task, session_id},
@@ -96,25 +96,22 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         Err(error) => return error,
     };
     let identity = task.access_identity(true);
-    let opened = match vfs().open_file_at(start.clone(), &path, &identity) {
-        Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => return -errno::EEXIST,
-        Ok(opened) => opened,
-        Err(FileSystemError::NotFound) if flags & O_CREAT != 0 => {
-            if path.last() == Some(&b'/') {
-                return -errno::ENOTDIR;
-            }
-            match vfs().create_at(
-                start,
-                &path,
-                InodeType::File,
-                task.creation_mode(mode),
-                &identity,
-            ) {
-                Ok(opened) => opened,
-                Err(error) => return ferr(error),
-            }
+    let opened = if flags & O_CREAT != 0 {
+        match vfs().open_or_create_file_at(
+            start,
+            &path,
+            task.creation_mode(mode),
+            &identity,
+            flags & O_EXCL != 0,
+        ) {
+            Ok(opened) => opened,
+            Err(error) => return ferr(error),
         }
-        Err(error) => return ferr(error),
+    } else {
+        match vfs().open_file_at(start, &path, &identity) {
+            Ok(opened) => opened,
+            Err(error) => return ferr(error),
+        }
     };
     let inode = opened.inode();
     let requested = match flags & O_ACCMODE {

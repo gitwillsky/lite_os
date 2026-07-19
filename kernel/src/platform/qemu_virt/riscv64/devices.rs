@@ -1,21 +1,20 @@
-use alloc::boxed::Box;
-
 use super::discovery::{PlatformInfo, info as platform_info};
 use super::plic::PlicInterruptController;
+use super::uart;
 #[cfg(debug_assertions)]
 use crate::debug;
 use crate::drivers::{
-    DisplayDevice, InputDevice, InterruptController, InterruptHandler, MmioBus, VirtIOBlockDevice,
-    VirtIOGpuDevice, VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice,
+    DisplayDevice, InputDevice, InterruptHandler, MmioBus, VirtIOBlockDevice, VirtIOGpuDevice,
+    VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice,
 };
 use crate::sync::IrqMutex;
 use crate::{error, info, warn};
 
 /// PLIC 是外部中断的唯一权威控制器，不经过通用设备 registry。
 // OWNER: platform layer owns the unique interrupt controller discovered from DTB.
-static INTERRUPT_CONTROLLER: spin::Once<IrqMutex<Box<dyn InterruptController>>> = spin::Once::new();
+static INTERRUPT_CONTROLLER: spin::Once<IrqMutex<PlicInterruptController>> = spin::Once::new();
 
-fn interrupt_controller() -> Option<&'static IrqMutex<Box<dyn InterruptController>>> {
+fn interrupt_controller() -> Option<&'static IrqMutex<PlicInterruptController>> {
     INTERRUPT_CONTROLLER.get()
 }
 
@@ -25,13 +24,6 @@ fn init_interrupt_controller() {
     };
     match PlicInterruptController::new(plic.base_addr, plic.size, crate::cpu::possible()) {
         Ok(controller) => {
-            let controller = match Box::try_new(controller) {
-                Ok(controller) => controller as Box<dyn InterruptController>,
-                Err(_) => {
-                    error!("[Platform] PLIC metadata allocation failed");
-                    return;
-                }
-            };
             INTERRUPT_CONTROLLER.call_once(|| IrqMutex::new(controller));
         }
         Err(error) => error!("[Platform] PLIC initialization failed: {:?}", error),
@@ -185,7 +177,7 @@ fn maybe_register_irq(
         } else if let Err(e) = ctrl.set_priority(irq) {
             error!("[Platform] Failed to set {} IRQ priority: {:?}", label, e);
             Err(())
-        } else if ctrl.supports_cpu_affinity() {
+        } else {
             let boot_cpu = crate::cpu::boot_id();
             if let Err(e) = ctrl.set_affinity(irq, crate::cpu::CpuSet::singleton(boot_cpu)) {
                 warn!("[Platform] Failed to set {} IRQ affinity: {:?}", label, e);
@@ -206,15 +198,6 @@ fn maybe_register_irq(
                 );
                 Ok(())
             }
-        } else if let Err(e) = ctrl.enable_interrupt(irq) {
-            error!("[Platform] Failed to enable {} IRQ {}: {:?}", label, irq, e);
-            Err(())
-        } else {
-            info!(
-                "[Platform] Registered {} IRQ handler on vector {}",
-                label, irq
-            );
-            Ok(())
         };
         drop(ctrl);
         return res.is_ok();
@@ -225,13 +208,14 @@ fn maybe_register_irq(
 fn init_uart_console() {
     let board = platform_info();
     let size = board.uart.end.saturating_sub(board.uart.start);
-    let handler = crate::drivers::initialize_console_uart(board.uart.start, size)
-        .expect("boot requires a valid DTB UART console");
+    crate::drivers::initialize_console_input().expect("console RX ring allocation failed");
+    let handler =
+        uart::initialize(board.uart.start, size).expect("boot requires a valid DTB 16550 console");
     assert!(
         maybe_register_irq(board, board.uart_irq, handler, "uart"),
         "boot requires a registered UART IRQ"
     );
-    crate::drivers::enable_console_uart_receive();
+    uart::enable_receive();
 }
 
 fn init_virtio_blk_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {

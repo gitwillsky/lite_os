@@ -1,24 +1,31 @@
 use super::*;
 
 impl AddressSpace {
-    /// @description 为 Thread owner 解析一次稳定 trap-context physical mapping。
-    /// @param address canonical 或按 TID 分配的 supervisor trap-context VA。
-    /// @return 与本 AddressSpace 生命周期绑定的唯一 context owner。
+    /// @description 为 Thread owner 解析一次 architecture-selected trap-context backing。
+    /// @param address AArch64 kernel-stack pointer，或 RISC-V supervisor trap-context VA。
+    /// @return 与 caller 保活的 KernelStack/AddressSpace 配对的唯一 context owner。
     pub(super) fn bind_user_context(
         &self,
         address: usize,
     ) -> Result<ContextOwner<UserContext>, MemoryError> {
-        let pointer = self.user_context_pointer(address)?;
-        // SAFETY: AddressSpace owns the mapped frame until exec rebind or explicit retire; pointer
-        // was derived under memory_set lock and ContextOwner serializes all mutable access.
+        let pointer = if crate::arch::context::is_kernel_stack_user_context(address) {
+            core::ptr::NonNull::new(address as *mut UserContext).ok_or(MemoryError::InvalidRange)?
+        } else {
+            self.user_context_pointer(address)?
+        };
+        // SAFETY: the caller keeps either the containing KernelStack or AddressSpace mapping live
+        // until retire. ContextOwner serializes all mutable access to the selected storage.
         Ok(unsafe { ContextOwner::bind(address, pointer) })
     }
 
-    /// @description exec commit 时把现有 Thread owner 重绑定到新 AddressSpace。
+    /// @description exec commit 时重绑定 AddressSpace-backed owner；kernel-stack owner 不变。
     /// @param owner 当前 Thread 的唯一 context owner。
     /// @param address 新映像中的 canonical trap-context VA。
     /// @return 无返回值；mapping 缺失属于 kernel invariant failure。
     pub(super) fn rebind_user_context(&self, owner: &ContextOwner<UserContext>, address: usize) {
+        if crate::arch::context::is_kernel_stack_user_context(owner.address()) {
+            return;
+        }
         // exec replacement 尚未对其他 task 发布，故这不是可竞争的 lock acquisition。
         let memory_set = self
             .memory_set
@@ -63,7 +70,7 @@ impl TaskControlBlock {
     /// @description 退休 Thread trap context，并删除非 canonical temporary mapping。
     pub(in crate::task) fn remove_thread_trap_context(&self) {
         let address = self.thread.user_context.retire();
-        if address == TRAP_CONTEXT {
+        if address == TRAP_CONTEXT || crate::arch::context::is_kernel_stack_user_context(address) {
             return;
         }
         let mut wait = self

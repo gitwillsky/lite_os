@@ -12,6 +12,7 @@ mod resource_limits;
 mod robust_list;
 mod scheduling;
 mod signal_state;
+mod synchronous_fault;
 mod trap_context;
 mod user_context;
 
@@ -105,13 +106,15 @@ struct ThreadContext {
     // OWNER: ThreadContext 独占线程创建时刻；若复用 Process 创建时刻，后建 pthread 的
     // `/proc/<tgid>/task/<tid>/stat` starttime 会错误回退到主线程启动时间。
     start_time_us: u64,
-    kernel_stack: KernelStack,
+    // OWNER: binding 字段先于 backing 字段析构；正常退出/rollback 还会显式 retire，字段顺序
+    // 保证任何兜底 Task drop 也先销毁裸 pointer wrapper，再解除 AArch64 kernel-stack mapping。
     user_context: ContextOwner<UserContext>,
+    kernel_stack: KernelStack,
     kernel_cx: Mutex<KernelContext>,
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
-    // OWNER: Thread 预留唯一 memory-retirement waiter；exit/clone rollback 在任何新分配
-    // 都已不可依赖时取走。缺失它会让同 mm sibling 持锁时无法可靠删除临时 trap mapping。
+    // OWNER: 仅 RISC-V 动态 trap VMA 预留 memory-retirement waiter；AArch64 kernel-stack
+    // backing 与 canonical context 为 None。缺失它会让同 mm sibling 持锁时无法可靠删除临时 VMA。
     memory_retirement_wait: Mutex<Option<TaskMutexWaitPreparation>>,
     clear_child_tid: Mutex<Option<usize>>,
     robust_list: Mutex<Option<usize>>,
@@ -205,14 +208,19 @@ impl TaskControlBlock {
             loaded.build_address_space(&[], stack_limit, address_space_limit, data_limit)?;
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let user_cx_va = TRAP_CONTEXT;
+        let user_cx_va = kernel_stack.user_context_address().unwrap_or(TRAP_CONTEXT);
         let tid = pid.0;
         let terminal = Terminal::new(console, crate::fs::DeviceKind::Console)
             .map_err(|()| ElfLoadError::OutOfMemory)?;
         let address_space = AddressSpace::new(memory_set)?;
         let user_context = address_space.bind_user_context(user_cx_va)?;
-        let memory_retirement_wait =
-            TaskMutexWaitPreparation::prepare().map_err(|_| ElfLoadError::OutOfMemory)?;
+        let memory_retirement_wait = if user_cx_va != TRAP_CONTEXT
+            && !crate::arch::context::is_kernel_stack_user_context(user_cx_va)
+        {
+            Some(TaskMutexWaitPreparation::prepare().map_err(|_| ElfLoadError::OutOfMemory)?)
+        } else {
+            None
+        };
         let cpu_runtime_us = try_elf_arc(AtomicU64::new(0))?;
         let io_accounting = try_elf_arc(IoAccounting::default())?;
         let start_time_us = get_time_us();
@@ -247,7 +255,7 @@ impl TaskControlBlock {
                 )),
                 kernel_trap_handler,
                 kernel_trap_return,
-                memory_retirement_wait: Mutex::new(Some(memory_retirement_wait)),
+                memory_retirement_wait: Mutex::new(memory_retirement_wait),
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(0),
@@ -269,7 +277,7 @@ impl TaskControlBlock {
         tcb.replace_user_context(UserContext::app_init_context(
             entry_point,
             user_sp,
-            KERNEL_SPACE.wait().lock().token(),
+            KERNEL_SPACE.wait().lock().kernel_trap_token(),
             kernel_stack_top,
             kernel_trap_handler,
         ));
@@ -296,14 +304,22 @@ impl TaskControlBlock {
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let address_space = self.process.address_space();
-        let user_cx_va = address_space
-            .memory_set
-            .lock()
-            .map_err(|_| MemoryError::OutOfMemory)?
-            .allocate_thread_trap_context(tid)?;
+        let user_cx_va = match kernel_stack.user_context_address() {
+            Some(address) => address,
+            None => address_space
+                .memory_set
+                .lock()
+                .map_err(|_| MemoryError::OutOfMemory)?
+                .allocate_thread_trap_context(tid)?,
+        };
         let user_context = address_space.bind_user_context(user_cx_va)?;
-        let memory_retirement_wait =
-            TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?;
+        let memory_retirement_wait = if user_cx_va != TRAP_CONTEXT
+            && !crate::arch::context::is_kernel_stack_user_context(user_cx_va)
+        {
+            Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?)
+        } else {
+            None
+        };
         let policy = self.scheduling.policy.lock();
         let mut child_trap = self.snapshot_user_context_for_clone();
         child_trap.prepare_thread_clone(user_stack, tls, kernel_stack_top);
@@ -315,13 +331,13 @@ impl TaskControlBlock {
                 start_time_us: get_time_us(),
                 kernel_stack,
                 user_context,
-                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
+                kernel_cx: Mutex::new(KernelContext::clone_for_trap_return(
                     kernel_stack_top,
                     crate::task::resume_new_task,
                 )),
                 kernel_trap_handler: self.thread.kernel_trap_handler,
                 kernel_trap_return: self.thread.kernel_trap_return,
-                memory_retirement_wait: Mutex::new(Some(memory_retirement_wait)),
+                memory_retirement_wait: Mutex::new(memory_retirement_wait),
                 clear_child_tid: Mutex::new(clear_child_tid),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),

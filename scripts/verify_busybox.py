@@ -17,6 +17,7 @@ from pathlib import Path
 
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
+from build_target import target_from_environment
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -47,19 +48,35 @@ from verify_musl import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "target" / "busybox-runtime"
+TARGET = target_from_environment()
+WORK = ROOT / "target" / "busybox-runtime" / TARGET.arch
 CONFIG_FRAGMENT = ROOT / "user" / "base" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 SOURCE_RECIPE_VERSION = 1
-BINARY_RECIPE_VERSION = 5
+BINARY_RECIPE_VERSION = 6
 # OWNER: verify_busybox 唯一发布 content-addressed rootfs image cache。
 # PROOF: 单一文件锁串行化 writer；create_image 完成全部 ownership 断言后才写 manifest，并把
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
 ROOTFS_RECIPE_VERSION = 9
+if TARGET.arch == "aarch64":
+    BUSYBOX_ARCH = "arm64"
+    BUSYBOX_TARGET_CFLAGS = "-march=armv8-a"
+    ELF_MACHINE = "AArch64"
+    RUST_USER_TARGET = "aarch64-unknown-linux-musl"
+else:
+    BUSYBOX_ARCH = "riscv"
+    BUSYBOX_TARGET_CFLAGS = "-march=rv64gc -mabi=lp64d"
+    ELF_MACHINE = "RISC-V"
+    RUST_USER_TARGET = "riscv64gc-unknown-linux-musl"
+# BusyBox 的 make-time `ARCH=arm64|riscv` 会覆盖 recipe 环境。CC/LD 必须在执行
+# LiteOS wrapper 前恢复 canonical selector；缺少该边界时 wrapper 会把 BusyBox 的
+# architecture spelling 当成公共 `ARCH` 并在编译第一项 target object 时 fail-stop。
+BUSYBOX_CC = f"env ARCH={TARGET.arch} {sys.executable} {ROOT / 'scripts/musl_clang.py'}"
+BUSYBOX_LD = f"env ARCH={TARGET.arch} {sys.executable} {ROOT / 'scripts/musl_ld.py'}"
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -485,6 +502,13 @@ def configure(source: Path, build: Path, env: dict[str, str]) -> None:
     config = build / ".config"
     lines = config.read_text().splitlines()
     assignments = fragment_assignments(CONFIG_FRAGMENT)
+    assignments["CONFIG_EXTRA_CFLAGS"] = (
+        f'CONFIG_EXTRA_CFLAGS="{BUSYBOX_TARGET_CFLAGS} -DBB_GLOBAL_CONST="'
+    )
+    assignments["CONFIG_EXTRA_LDFLAGS"] = (
+        f'CONFIG_EXTRA_LDFLAGS="{BUSYBOX_TARGET_CFLAGS} '
+        '-Wl,-z,relro,-z,now,-z,noexecstack"'
+    )
     replaced: set[str] = set()
     for index, line in enumerate(lines):
         if line.startswith("CONFIG_") and "=" in line:
@@ -531,7 +555,9 @@ def binary_payload(
         "config_sha256": sha256(CONFIG_FRAGMENT),
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "compiler": compiler_identity(compiler),
-        "architecture": "riscv",
+        "architecture": TARGET.arch,
+        "linux_target": TARGET.linux_triple,
+        "target_cflags": BUSYBOX_TARGET_CFLAGS,
         "drivers": {
             "compiler_sha256": sha256(ROOT / "scripts/musl_clang.py"),
             "linker_sha256": sha256(ROOT / "scripts/musl_ld.py"),
@@ -594,7 +620,7 @@ def build_busybox(
         env.update({
             "LITEOS_MUSL_CLANG": str(musl.compiler),
             "LITEOS_MUSL_LLD": str(musl.linker),
-            "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+            "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
             "LITEOS_MUSL_SYSROOT": str(musl.install),
         })
         run(
@@ -603,9 +629,9 @@ def build_busybox(
                 "-C",
                 str(source),
                 f"O={build}",
-                "ARCH=riscv",
-                f"CC={sys.executable} {ROOT / 'scripts/musl_clang.py'}",
-                f"LD={sys.executable} {ROOT / 'scripts/musl_ld.py'}",
+                f"ARCH={BUSYBOX_ARCH}",
+                f"CC={BUSYBOX_CC}",
+                f"LD={BUSYBOX_LD}",
                 f"AR={musl.archiver}",
                 "STRIP=/opt/homebrew/opt/llvm/bin/llvm-strip",
             ],
@@ -634,23 +660,28 @@ def verify_elf(
     required_libraries: tuple[str, ...] = ("libc.so",),
     identity: str = "BusyBox",
 ) -> None:
-    """要求动态 RISC-V PIE、标准 musl interpreter、RELRO、W^X 与 NX stack。"""
+    """要求目标架构动态 PIE、标准 musl interpreter、RELRO、W^X 与 NX stack。"""
     prefix = str(compiler)[: -len("gcc")]
     readelf = Path(f"{prefix}readelf")
     if not readelf.is_file():
         candidate = shutil.which("llvm-readelf") or "/opt/homebrew/opt/llvm/bin/llvm-readelf"
         readelf = Path(candidate)
     if not readelf.is_file():
-        raise RuntimeError("RISC-V readelf or llvm-readelf is required")
+        raise RuntimeError(f"{TARGET.arch} readelf or llvm-readelf is required")
     output = run(
         [str(readelf), "--file-header", "--program-headers", "--dynamic", "--wide", str(binary)], ROOT
     )
-    for marker in ("ELF64", "RISC-V", "DYN ("):
+    for marker in ("ELF64", ELF_MACHINE, "DYN ("):
         if marker not in output:
             raise RuntimeError(f"{identity} ELF lacks {marker!r}")
     headers = [line.split() for line in output.splitlines()]
-    if output.count("Requesting program interpreter:") != 1 or "/lib/ld-musl-riscv64.so.1" not in output:
-        raise RuntimeError(f"{identity} must use the standard RISC-V musl interpreter")
+    if (
+        output.count("Requesting program interpreter:") != 1
+        or TARGET.musl_loader not in output
+    ):
+        raise RuntimeError(
+            f"{identity} must use the standard {TARGET.arch} musl interpreter"
+        )
     for marker in ("DYNAMIC", "GNU_RELRO", "NOW PIE"):
         if marker not in output:
             raise RuntimeError(f"{identity} dynamic ELF lacks {marker!r}")
@@ -682,6 +713,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     payload = {
         "kind": "dynamic-loader-probe",
         "recipe_version": 2,
+        "arch": TARGET.arch,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
         "main_sha256": sha256(ROOT / "scripts/fixtures/musl/dynamic-smoke.c"),
@@ -696,7 +728,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     env.update({
         "LITEOS_MUSL_CLANG": str(musl.compiler),
         "LITEOS_MUSL_LLD": str(musl.linker),
-        "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+        "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
         "LITEOS_MUSL_SYSROOT": str(musl.install),
     })
     published = False
@@ -704,7 +736,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
         run(
             [
                 str(musl.compiler),
-                "--target=riscv64-linux-musl",
+                f"--target={TARGET.linux_triple}",
                 f"--ld-path={musl.linker}",
                 "-nostdlib",
                 "-shared",
@@ -798,9 +830,17 @@ def build_rust_user_program(
     rustc = shutil.which("rustc")
     if cargo is None or rustc is None:
         raise RuntimeError(f"nightly Cargo and rustc are required for {crate_name}")
+    available_targets = set(run([rustc, "--print", "target-list"], ROOT).splitlines())
+    if RUST_USER_TARGET not in available_targets:
+        raise RuntimeError(
+            f"rustc does not provide required {TARGET.arch} userspace target "
+            f"{RUST_USER_TARGET}; refusing to reuse another architecture"
+        )
     payload = {
         "kind": kind,
         "recipe_version": recipe_version,
+        "arch": TARGET.arch,
+        "rust_target": RUST_USER_TARGET,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
         "cargo": run([cargo, "--version"], ROOT).strip(),
@@ -831,7 +871,7 @@ def build_rust_user_program(
     env.update({
         "LITEOS_MUSL_CLANG": str(musl.compiler),
         "LITEOS_MUSL_LLD": str(musl.linker),
-        "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+        "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
         "LITEOS_MUSL_SYSROOT": str(musl.install),
         "CARGO_INCREMENTAL": "0",
         "CARGO_TARGET_DIR": str(generation / "cargo-target"),
@@ -848,7 +888,7 @@ def build_rust_user_program(
                 "--manifest-path",
                 str(crate / "Cargo.toml"),
                 "--target",
-                "riscv64gc-unknown-linux-musl",
+                RUST_USER_TARGET,
                 "--release",
                 "--locked",
             ],
@@ -857,7 +897,7 @@ def build_rust_user_program(
         )
         archive = (
             generation
-            / f"cargo-target/riscv64gc-unknown-linux-musl/release/lib{crate_name.replace('-', '_')}.a"
+            / f"cargo-target/{RUST_USER_TARGET}/release/lib{crate_name.replace('-', '_')}.a"
         )
         run(
             [
@@ -923,7 +963,7 @@ def build_stress_tools(musl: MuslCachePaths) -> Path:
     env.update({
         "LITEOS_MUSL_CLANG": str(musl.compiler),
         "LITEOS_MUSL_LLD": str(musl.linker),
-        "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+        "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
         "LITEOS_MUSL_SYSROOT": str(musl.install),
     })
     published = False
@@ -1019,7 +1059,7 @@ def create_image(
         "ln /bin/liteos-stress /bin/memtest",
         "ln /bin/liteos-stress /bin/cachetest",
         f"set_inode_field /bin/liteos-stress links_count {len(STRESS_LINKS) + 1}",
-        "symlink /lib/ld-musl-riscv64.so.1 /usr/lib/libc.so",
+        f"symlink {TARGET.musl_loader} /usr/lib/libc.so",
     ]
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
@@ -1085,7 +1125,10 @@ def create_image(
     )
     if "libliteos-smoke.so" in product_libraries:
         raise RuntimeError("product rootfs contains verification fixture: libliteos-smoke.so")
-    loader = run([str(find_debugfs()), "-R", "stat /lib/ld-musl-riscv64.so.1", str(image)], ROOT)
+    loader = run(
+        [str(find_debugfs()), "-R", f"stat {TARGET.musl_loader}", str(image)],
+        ROOT,
+    )
     if "Type: symlink" not in loader or "Size: 16" not in loader:
         raise RuntimeError("BusyBox rootfs lacks the standard musl loader symlink")
     network_service = run(
@@ -1109,6 +1152,16 @@ def create_image(
     if "Type: symlink" not in ca_bundle or "Type: regular" not in ca_store:
         raise RuntimeError("BusyBox rootfs lacks the package-owned Mozilla CA trust bundle")
     return image
+
+
+def target_runtime_artifacts() -> tuple[Path, ...]:
+    """返回 rootfs 与 runtime gate 必须绑定的目标 release 产物。"""
+    artifacts = [ROOT / f"target/{TARGET.kernel_triple}/release/kernel"]
+    if TARGET.requires_bootloader:
+        artifacts.append(
+            ROOT / f"bootloader/target/{TARGET.kernel_triple}/release/bootloader"
+        )
+    return tuple(artifacts)
 
 
 def create_published_image(
@@ -1142,8 +1195,7 @@ def create_published_image(
         sorted(path for path in bootstrap.alpine_keys.iterdir() if path.is_file())
     )
     inputs = (
-        ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
-        ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+        *target_runtime_artifacts(),
         binary,
         musl.install / "usr/lib/libc.so",
         console_session,
@@ -1183,6 +1235,7 @@ def create_published_image(
     payload = {
         "kind": "busybox-rootfs-image",
         "recipe_version": ROOTFS_RECIPE_VERSION,
+        "arch": TARGET.arch,
         "inputs": {str(path): sha256(path) for path in inputs},
     }
     identity = fingerprint(payload)
@@ -1245,13 +1298,12 @@ def main() -> int:
             return 0
         dynamic_probe, dynamic_library = build_dynamic_probe(musl)
         console_session = build_console_session(musl)
-        stamp = ROOT / "target/verify-gates/busybox.json"
+        stamp = ROOT / f"target/verify-gates/busybox-{TARGET.arch}.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
             12,
             (
-                ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
-                ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+                *target_runtime_artifacts(),
                 binary,
                 musl.install / "usr/lib/libc.so",
                 dynamic_probe,
@@ -1311,6 +1363,9 @@ def main() -> int:
         install_guest_gate_init(phase55_image, runtime_path, "/run/phase55.sh", "phase55")
         install_guest_gate_init(phase56_image, runtime_path, "/run/phase56.sh", "phase56")
         install_guest_gate_init(phase57_image, runtime_path, "/run/phase57.sh", "phase57")
+        # 该组合 gate 串行覆盖 50+ 次 UART interaction、TLS、archive、editor、并发 VFS 与
+        # job-control；90 秒只是不受 host 调度影响的 liveness bound，不是性能阈值。热路径
+        # 性能由 release instruction/count gates 独立约束，不能从这里删 marker 或 workload。
         boot(
             runtime_image,
             1,
@@ -1393,7 +1448,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DHCP_SINGLE_51",
-                    b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; while new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); [ -z \"$new\" ] || [ \"$new\" = \"$old\" ]; do /bin/sleep 1; done; /bin/sleep 2; count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n",
+                    # PID publication precedes DHCP lease/route commit. Poll the complete final
+                    # state for the same bounded 20 seconds as dhcp-gate.sh; a fixed sleep makes
+                    # normal host-network scheduling jitter look like a kernel regression.
+                    b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n",
                 ),
                 (
                     "LITEOS_DHCP_RESPAWN_51",
@@ -1501,7 +1559,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_CREDENTIALS_44",
-                    b"[ \"$(/bin/uname -s)\" = LiteOS ] && [ \"$(/bin/uname -n)\" = liteos ] && [ \"$(/bin/uname -m)\" = riscv64 ] && [ \"$(/bin/uname -o)\" = LiteOS ] && [ \"$(/bin/arch)\" = riscv64 ] && echo LITEOS_SYSTEM_IDENTITY_$((6*7))\n",
+                    (
+                        "[ \"$(/bin/uname -s)\" = LiteOS ] && "
+                        "[ \"$(/bin/uname -n)\" = liteos ] && "
+                        f"[ \"$(/bin/uname -m)\" = {TARGET.arch} ] && "
+                        "[ \"$(/bin/uname -o)\" = LiteOS ] && "
+                        f"[ \"$(/bin/arch)\" = {TARGET.arch} ] && "
+                        "echo LITEOS_SYSTEM_IDENTITY_$((6*7))\n"
+                    ).encode(),
                 ),
                 (
                     "LITEOS_SYSTEM_IDENTITY_42",
@@ -1517,7 +1582,11 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TOP_42",
-                    b"/bin/ls -l /lib | /bin/grep -q 'ld-musl-riscv64.so.1 -> /usr/lib/libc.so' && echo LITEOS_READLINK_$((6*7))\n",
+                    (
+                        f"/bin/ls -l /lib | /bin/grep -q "
+                        f"'{Path(TARGET.musl_loader).name} -> /usr/lib/libc.so' && "
+                        "echo LITEOS_READLINK_$((6*7))\n"
+                    ).encode(),
                 ),
                 (
                     "LITEOS_READLINK_42",
@@ -1797,6 +1866,7 @@ def main() -> int:
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            timeout_seconds=90,
             persistent_writes=True,
         )
         apk_crash_image = runtime_path / "apk-crash.img"

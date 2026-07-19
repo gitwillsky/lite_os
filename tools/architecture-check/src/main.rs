@@ -18,6 +18,7 @@ mod fallible_map_cost;
 mod filesystem_blocking_lock_contract;
 mod fp_context_contract;
 mod getdents_cost;
+mod high_half_contract;
 mod huge_page_cost;
 mod id_cost;
 mod io_copy_cost;
@@ -113,6 +114,7 @@ fn main() -> ExitCode {
     virtio_dma_cost::check(&sources, &mut errors);
     virtio_gpu_sequence_cost::check(&sources, &mut errors);
     getdents_cost::check(&root, &sources, &mut errors);
+    high_half_contract::check(&root, &mut errors);
     huge_page_cost::check(&root, &mut errors);
     io_copy_cost::check(&root, &mut errors);
     id_cost::check(&root, &mut errors);

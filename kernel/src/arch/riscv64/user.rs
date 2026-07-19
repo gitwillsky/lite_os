@@ -1,9 +1,28 @@
 //! @description Linux/RISC-V 用户执行约定与 raw register context 之间的唯一转换。
 
-use super::UserContext;
+use super::{
+    UserContext,
+    signal_frame::{SignalFrame, SignalMachineContext, SignalStack},
+};
 
 /// @description Linux utsname 使用的 architecture machine identity。
 pub(crate) const MACHINE_NAME: &str = "riscv64";
+pub(crate) const SUPPORTS_RISCV_HWPROBE: bool = true;
+pub(crate) const ELF_MACHINE: u16 = 243;
+pub(crate) const ELF_HWCAP: usize = (1 << 0)
+    | (1 << (b'C' - b'A'))
+    | (1 << (b'D' - b'A'))
+    | (1 << (b'F' - b'A'))
+    | (1 << (b'I' - b'A'))
+    | (1 << (b'M' - b'A'));
+
+/// @description 校验 Linux/RISC-V ELF header 的 architecture flags。
+///
+/// @param flags ELF64 header 的 `e_flags`。
+/// @return flags 仅包含当前支持的 RVC/float ABI 编码且没有保留编码时返回 true。
+pub(crate) const fn valid_elf_flags(flags: u32) -> bool {
+    flags & !0x7 == 0 && flags & 0x6 != 0x6
+}
 
 /// @description 投影所有 online CPU 共同成立的保守 Linux RISC-V hwprobe value。
 ///
@@ -57,16 +76,6 @@ pub(crate) enum SyscallCompletion {
     Return(isize),
     Interrupted(isize),
 }
-
-/// @description 不受 task module 解释的 Linux/RISC-V signal machine context。
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct SignalMachineContext {
-    registers: [usize; 32],
-    floating_point: [u8; 528],
-}
-
-const _: () = assert!(core::mem::size_of::<SignalMachineContext>() == 784);
 
 /// @description 用户提供的 signal machine context validation failure。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,8 +176,22 @@ impl UserContext {
         self.kernel_gp = kernel_gp;
     }
 
-    /// @description 捕获 Linux signal frame 使用的 RISC-V machine context。
-    pub(crate) fn capture_signal_machine_context(&self) -> SignalMachineContext {
+    /// @description 编码 byte-for-byte 保持既有 ABI 的 Linux/RISC-V `rt_sigframe`。
+    /// @param info 128-byte siginfo image。
+    /// @param stack delivery 前的 alternate stack state。
+    /// @param signal_mask delivery 前的 blocked mask。
+    /// @return architecture-owned 1080-byte frame。
+    pub(crate) fn capture_signal_frame(
+        &self,
+        info: [u8; 128],
+        stack: SignalStack,
+        signal_mask: u64,
+    ) -> SignalFrame {
+        let machine = self.capture_signal_machine_context();
+        SignalFrame::encode(info, stack, signal_mask, &machine)
+    }
+
+    fn capture_signal_machine_context(&self) -> SignalMachineContext {
         let mut registers = [0usize; 32];
         registers[0] = self.sepc;
         registers[1..].copy_from_slice(&self.x[1..]);
@@ -188,7 +211,7 @@ impl UserContext {
     /// @param machine 用户 frame 中的 owned machine context。
     /// @return 恢复后的 syscall result register a0。
     /// @errors unsupported extension header 非零时返回 `InvalidSignalContext`，context 不变。
-    pub(crate) fn restore_signal_machine_context(
+    fn restore_signal_machine_context(
         &mut self,
         machine: &SignalMachineContext,
     ) -> Result<usize, InvalidSignalContext> {
@@ -217,6 +240,19 @@ impl UserContext {
         // 安装它。若保持 Off，sigreturn 会静默丢弃用户修改后的 FP 寄存器。
         self.sstatus.set_fs(riscv::register::sstatus::FS::Clean);
         Ok(self.x[10])
+    }
+
+    /// @description 解码并恢复既有 Linux/RISC-V signal frame。
+    /// @param frame 从当前用户 SP 完整复制得到的 owned frame。
+    /// @return `(a0, signal_mask, alternate_stack)`。
+    /// @errors unsupported extension header 非零时 context 不变并返回错误。
+    pub(crate) fn restore_signal_frame(
+        &mut self,
+        frame: &SignalFrame,
+    ) -> Result<(usize, u64, SignalStack), InvalidSignalContext> {
+        let decoded = frame.decode();
+        let result = self.restore_signal_machine_context(&decoded.machine)?;
+        Ok((result, decoded.signal_mask, decoded.signal_stack))
     }
 
     /// @description 安装 Linux/RISC-V signal handler entry register state。

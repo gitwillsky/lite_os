@@ -2,13 +2,23 @@
 
 ## 当前设计
 
-- kernel 只暴露固定 Linux/riscv64 UAPI 子集。syscall dispatcher 使用共享编号 crate，未接入编号返回 `ENOSYS`。
-- ELF loader 支持当前声明的 RV64 ET_EXEC、动态 PIE、PT_INTERP、TLS、RELRO、auxv 与 Linux script rewrite；filesystem 只提供 executable source seam，memory 拥有映射与 initial stack。
-- 产品 userspace 是固定 musl runtime、BusyBox `init + ash`、dependency-free Rust `console-session` 和单 ELF `liteos-stress` diagnostics。
+- kernel 暴露固定 Linux 64-bit asm-generic UAPI 子集。syscall dispatcher 使用共享编号 crate；寄存器调用约定、signal frame、ELF machine/flags/HWCAP 与 architecture-specific query 由编译期静态 userspace ABI backend 提供，未接入编号返回 `ENOSYS`。
+- ELF loader 支持当前声明的 AArch64 与 RV64 ET_EXEC、动态 PIE、PT_INTERP、TLS、RELRO、
+  auxv 与 Linux script rewrite；filesystem 只提供 executable source seam，memory 拥有映射
+  与 initial stack。AArch64 只接受 `EM_AARCH64`（183），向 auxv 公布 FP 与 ASIMD HWCAP；
+  RISC-V 保留既有 ELF flags、HWCAP 与 hwprobe 投影。
+- Apple Silicon/HVF 可能让 EL0 probe 被 CPU decode 为 SVE/SME access trap，即使 auxv 未公布该能力；
+  backend 把 Unknown/SVE/SME probe 统一投递为可捕获的 `SIGILL/ILL_ILLOPC`，不保存或启用扩展 state。
+- Linux `riscv_hwprobe` 编号 258 只由 RISC-V backend 开放；AArch64 没有该 key space，必须返回 `ENOSYS`，不能伪造空 capability success。
+- 用户态非法指令生成 thread-directed forced SIGILL；首个可见 standard siginfo 使用
+  `ILL_ILLOPC` 与 fault PC (`si_addr`)。caught 且未屏蔽时进入已注册 handler；blocked 或
+  `SIG_IGN` 时恢复默认 disposition 并解除屏蔽，默认动作对 PID 1 也不豁免。RISC-V lazy FP
+  指令必须先由 architecture backend 激活并原 PC 重试，只有未被该机制消费的指令生成 SIGILL。
+- 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、dependency-free Rust `console-session` 和单 ELF `liteos-stress` diagnostics。kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
-- rootfs 由固定 Alpine package/key 输入构造；应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
+- rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
 
 ## Known limits
 
 - 支持矩阵只证明列出的 syscall、对象类型和 consumer，不宣称完整 Linux、POSIX 或任意 musl 程序兼容。
-- Linux/riscv64 calling convention、signal frame 与 hwprobe 是当前 backend ABI；其他 architecture 必须定义自己的 userspace ABI backend 和验证矩阵。
+- AArch64 与 RISC-V backend 只声明各自门禁覆盖的 register、signal、ELF/TLS 与 capability 语义；共享 asm-generic 编号不意味着 architecture-specific UAPI 可互换。

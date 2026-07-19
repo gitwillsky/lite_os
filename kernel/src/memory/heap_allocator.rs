@@ -339,7 +339,8 @@ fn try_allocate_slab(layout: Layout) -> Option<NonNull<u8>> {
 
 fn publish_slab_and_allocate(layout: Layout, frames: FrameTracker) -> Option<NonNull<u8>> {
     let (class, _) = slab_layout(layout)?;
-    let address = frames.ppn.as_usize().checked_mul(config::PAGE_SIZE)?;
+    let physical = frames.ppn.as_usize().checked_mul(config::PAGE_SIZE)?;
+    let address = crate::arch::mmu::physical_to_virtual(physical);
     // 1. free-chain construction scales with blocks/page, so keep it outside IRQ-off heap lock.
     prepare_slab(address, class);
     let allocation = {
@@ -368,7 +369,8 @@ fn direct_pages(layout: Layout) -> Option<usize> {
 fn allocate_direct(layout: Layout) -> Option<NonNull<u8>> {
     let requested_pages = direct_pages(layout)?;
     let frames = frame_allocator::alloc_heap_extent(requested_pages)?;
-    let address = frames.ppn.as_usize().checked_mul(config::PAGE_SIZE)?;
+    let physical = frames.ppn.as_usize().checked_mul(config::PAGE_SIZE)?;
+    let address = crate::arch::mmu::physical_to_virtual(physical);
     let allocation = align_up(address + size_of::<DirectHeader>(), layout.align())?;
     let extent_bytes = frames.pages.checked_mul(config::PAGE_SIZE)?;
     assert!(
@@ -414,10 +416,12 @@ fn deallocate_backend(ptr: NonNull<u8>, layout: Layout) {
             HEAP_STATE.lock().deallocate_slab_block(page, ptr, class)
         };
         if empty {
+            let physical = crate::arch::mmu::virtual_to_physical(page)
+                .expect("slab page is outside the architecture direct map");
             // SAFETY: empty transition removed the page from every slab list and no block remains
             // published; this recreates the unique frame owner outside the heap lock.
             drop(unsafe {
-                FrameTracker::from_raw(PhysicalPageNumber::from(page / config::PAGE_SIZE), 1)
+                FrameTracker::from_raw(PhysicalPageNumber::from(physical / config::PAGE_SIZE), 1)
             });
         }
         return;
@@ -433,9 +437,14 @@ fn deallocate_backend(ptr: NonNull<u8>, layout: Layout) {
     assert_eq!(header.magic, DIRECT_MAGIC, "heap pointer has no live owner");
     assert_eq!(header.pages, pages, "direct heap layout mismatch");
     header.magic = 0;
+    let physical = crate::arch::mmu::virtual_to_physical(base)
+        .expect("direct heap extent is outside the architecture direct map");
     // SAFETY: header proved this allocation uniquely owns the complete extent.
     drop(unsafe {
-        FrameTracker::from_raw(PhysicalPageNumber::from(base / config::PAGE_SIZE), pages)
+        FrameTracker::from_raw(
+            PhysicalPageNumber::from(physical / config::PAGE_SIZE),
+            pages,
+        )
     });
     DIRECT_PAGES
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {

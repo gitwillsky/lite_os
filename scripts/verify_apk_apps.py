@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from apk_apps_cache import cached_application_apks
+from build_target import target_from_environment
 from build_cache import (
     fingerprint,
     publish_runtime_gate,
@@ -18,18 +19,32 @@ from build_cache import (
     sha256,
 )
 from ext2_image import find_debugfs, run_debugfs
-from qemu_gate import boot, power_cut
+from qemu_gate import boot
 from tls_gate import install_runtime_tls_identity, start_https_gate
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "target" / "apk-apps-runtime"
+TARGET = target_from_environment()
+WORK = ROOT / "target" / "apk-apps-runtime" / TARGET.arch
 FIXTURES = ROOT / "scripts" / "fixtures" / "apk-apps"
 FORBIDDEN_MARKERS = (
     "unsupported syscall_id:",
     "panicked at",
     "[ERROR]",
     "Invalid argument",
+    "LITEOS_SQLITE_APPLICATION_FAILED",
+    "LITEOS_SQLITE_CRASH_FAILED",
+    "Assertion failed:",
 )
+
+
+def target_runtime_artifacts() -> tuple[Path, ...]:
+    """返回 APK image 与 runtime gate 必须绑定的目标 release 产物。"""
+    artifacts = [ROOT / f"target/{TARGET.kernel_triple}/release/kernel"]
+    if TARGET.requires_bootloader:
+        artifacts.append(
+            ROOT / f"bootloader/target/{TARGET.kernel_triple}/release/bootloader"
+        )
+    return tuple(artifacts)
 
 
 def run(command: list[str], cwd: Path = ROOT) -> str:
@@ -104,8 +119,7 @@ def install_applications(base_image: Path, directory: Path) -> Path:
         2,
         (
             base_image,
-            ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
-            ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+            *target_runtime_artifacts(),
             install_script,
             Path(__file__).resolve(),
             ROOT / "scripts/apk_apps_cache.py",
@@ -147,6 +161,21 @@ def install_applications(base_image: Path, directory: Path) -> Path:
         persistent_writes=True,
     )
     installed_database = run_debugfs(temporary, "cat /lib/apk/db/installed")
+    installed_arches = {
+        line.removeprefix("A:")
+        for line in installed_database.splitlines()
+        if line.startswith("A:")
+    }
+    foreign_arches = installed_arches - {TARGET.alpine_arch, "noarch"}
+    if foreign_arches:
+        raise RuntimeError(
+            f"guest APK transaction installed foreign architectures: "
+            f"{sorted(foreign_arches)}"
+        )
+    if TARGET.alpine_arch not in installed_arches:
+        raise RuntimeError(
+            f"guest APK transaction lacks {TARGET.alpine_arch} package ownership"
+        )
     for package in ("curl", "sqlite", "git"):
         if f"P:{package}\n" not in installed_database:
             raise RuntimeError(f"guest APK transaction did not own {package}")
@@ -224,25 +253,35 @@ def verify_sqlite(installed: Path, directory: Path) -> None:
     boot(
         persistent,
         4,
-        ("LITEOS_SQLITE_APPLICATION_READY", "LITEOS_SQLITE_RECOVERY_READY"),
+        ("LITEOS_SQLITE_APPLICATION_READY",),
         timeout_seconds=90,
+        forbidden_markers=FORBIDDEN_MARKERS,
+        persistent_writes=True,
+    )
+    # HVF 的同进程 system reset 会在有效 guest exception 上触发 QEMU isv assertion。
+    # 第一阶段已 sync；由 host 关闭该 VM 后冷启动同一镜像，仍完整验证落盘与恢复策略。
+    boot(
+        persistent,
+        4,
+        ("LITEOS_SQLITE_RECOVERY_READY",),
+        timeout_seconds=45,
         forbidden_markers=FORBIDDEN_MARKERS,
         persistent_writes=True,
     )
 
     crashed = directory / "sqlite-crash.img"
     shutil.copyfile(persistent, crashed)
-    mutation = (
-        b"cp /run/sqlite-recovery.inittab /etc/inittab; sync; "
-        b"echo LITEOS_SQLITE_MUTATION_ACTIVE; "
-        b"while :; do sqlite3 /root/sqlite-gate.db 'BEGIN IMMEDIATE; "
-        b"INSERT INTO records(value) VALUES(\"crash\"); COMMIT;' >/dev/null; done\n"
+    crash = FIXTURES / "sqlite-crash.sh"
+    inject_sysinit(
+        crashed,
+        directory,
+        crash,
+        f"/bin/sh /run/{crash.name}",
     )
-    power_cut(crashed, 4, mutation, "LITEOS_SQLITE_MUTATION_ACTIVE", 0.15, 45)
     boot(
         crashed,
         4,
-        ("LITEOS_SQLITE_RECOVERY_READY",),
+        ("LITEOS_SQLITE_CRASH_RECOVERY_READY",),
         timeout_seconds=45,
         forbidden_markers=FORBIDDEN_MARKERS,
     )
@@ -250,8 +289,16 @@ def verify_sqlite(installed: Path, directory: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", type=Path, default=ROOT / "fs.img")
-    parser.add_argument("--output", type=Path, default=ROOT / "target" / "apk-apps.img")
+    parser.add_argument(
+        "--image",
+        type=Path,
+        default=ROOT / "target" / "rootfs" / f"{TARGET.arch}.img",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT / "target" / "apk-apps" / f"{TARGET.arch}.img",
+    )
     parser.add_argument("--build-only", action="store_true")
     args = parser.parse_args()
     base_image = args.image.resolve()
@@ -268,14 +315,13 @@ def main() -> int:
             return 0
 
         scripts = tuple(sorted(FIXTURES.glob("*.sh")))
-        stamp = ROOT / "target" / "verify-gates" / "apk-apps.json"
+        stamp = ROOT / "target" / "verify-gates" / f"apk-apps-{TARGET.arch}.json"
         payload = runtime_gate_payload(
             "apk-applications-runtime",
             3,
             (
                 installed,
-                ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
-                ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+                *target_runtime_artifacts(),
                 Path(__file__).resolve(),
                 ROOT / "scripts/apk_apps_cache.py",
                 ROOT / "scripts/ext2_image.py",
@@ -295,7 +341,7 @@ def main() -> int:
             trusted = directory / "trusted.img"
             shutil.copyfile(installed, trusted)
             install_runtime_tls_identity(trusted, gate_ca, directory, find_debugfs())
-            # 1. make verify 已并发运行四类 runtime gate；APK 内不得再并发 QEMU。
+            # 1. make verify 串行运行四类 runtime gate；APK 内也保持单一 QEMU owner。
             # 2. curl/Git 共用同一 TLS/HTTP guest，避免重复冷启动；SQLite 独占 crash image。
             # 3. 全部成功后才发布统一 stamp，任一失败都不会留下部分成功状态。
             verify_network_applications(

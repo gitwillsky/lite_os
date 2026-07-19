@@ -1,26 +1,39 @@
+#[cfg(target_arch = "aarch64")]
+mod aarch64;
+#[cfg(target_arch = "aarch64")]
+use aarch64 as selected;
+
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 #[cfg(target_arch = "riscv64")]
 use riscv64 as selected;
 
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
 compile_error!("LiteOS currently has no architecture implementation for this target");
 
-pub(crate) use selected::{before_mmio_write, secondary_entry};
+pub(crate) use selected::{
+    before_mmio_write, read_mmio_u8, read_mmio_u32, secondary_entry, write_mmio_u8, write_mmio_u32,
+};
+#[cfg(target_arch = "aarch64")]
+pub(crate) use selected::{read_mmio_u64, write_mmio_u64};
 
 /// Local interrupt mechanism selected at compile time.
 pub(crate) mod interrupt {
+    #[cfg(target_arch = "riscv64")]
+    pub(crate) use super::selected::interrupt::raise_software;
     pub(crate) use super::selected::interrupt::{
         LocalInterruptState, clear_software, disable_for_fail_stop, disable_for_transfer,
-        disable_local, enable_scheduler_interrupts, enable_timer_source, raise_software,
-        restore_local, wait_for_external_interrupt, wait_for_interrupt as wait,
+        disable_local, enable_scheduler_interrupts, enable_timer_source, restore_local,
+        wait_for_external_interrupt, wait_for_interrupt as wait, wait_with_local_irq_masked,
     };
 }
 
 /// Kernel/user execution context selected at compile time.
 pub(crate) mod context {
     pub(crate) use super::selected::{
-        KernelContext, KernelResume, SignalMachineContext, SyscallCompletion, UserContext,
+        KERNEL_STACK_CONTEXT_RESERVE, KernelContext, KernelResume, MIN_SIGNAL_STACK_SIZE,
+        SIGNAL_FRAME_SIZE, SignalFrame, SignalStack, SyscallCompletion, UserContext,
+        is_kernel_stack_user_context, kernel_stack_user_context, reset_live_floating_point,
         switch_kernel_context,
     };
 }
@@ -36,17 +49,22 @@ pub(crate) mod cpu {
 /// Architecture monotonic counter selected at compile time.
 pub(crate) mod time {
     pub(crate) use super::selected::time_counter as counter;
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) use super::selected::{counter_frequency, program_virtual_timer};
 }
 
 /// MMU mechanism selected at compile time.
 pub(crate) mod mmu {
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) use super::selected::broadcast_tlb;
     pub(crate) use super::selected::{
-        AddressSpaceToken, ArchitecturePageTable, ArchitecturePageTableEntry, PAGE_SIZE,
+        AddressSpaceKind, AddressSpaceToken, ArchitecturePageTable, ArchitecturePageTableEntry,
+        KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken, PAGE_SIZE,
         PagePermissions, PageTableError, SIGNAL_TRAMPOLINE_ADDRESS, TRAMPOLINE_ADDRESS,
-        TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END, activate_address_space as activate,
+        TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END, USER_STACK_TOP,
         canonicalize_virtual_address, flush_local_tlb as flush_local,
         flush_local_tlb_range as flush_local_range, normalize_physical_address,
-        normalize_physical_page, normalize_virtual_page,
+        normalize_physical_page, normalize_virtual_page, physical_to_virtual, virtual_to_physical,
     };
 }
 
@@ -60,10 +78,15 @@ pub(crate) mod trap {
 
 /// Instruction-write publication selected at compile time.
 pub(crate) mod instruction {
-    pub(crate) use super::selected::publish_instruction_writes as publish_local;
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) use super::selected::broadcast_instruction_cache;
+    pub(crate) use super::selected::publish_instruction_range as publish_range;
 }
 
 /// User-visible architecture conventions selected at compile time.
 pub(crate) mod user {
-    pub(crate) use super::selected::{MACHINE_NAME, hardware_probe_value};
+    pub(crate) use super::selected::{
+        ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SUPPORTS_RISCV_HWPROBE, hardware_probe_value,
+        valid_elf_flags,
+    };
 }

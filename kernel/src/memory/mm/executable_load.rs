@@ -46,10 +46,7 @@ impl MemorySet {
         };
         let phdr_address = main.phdr.ok_or(ElfLoadError::InvalidElf)?;
         let heap_base = VirtualAddress::from(main.max_end).ceil().as_usize() * config::PAGE_SIZE;
-        let user_end = config::USER_ADDRESS_END;
-        let user_stack_top = user_end
-            .checked_sub(config::PAGE_SIZE)
-            .ok_or(ElfLoadError::InvalidElf)?;
+        let user_stack_top = config::USER_STACK_TOP;
         let heap_limit = user_stack_top
             .checked_sub(config::PAGE_SIZE)
             .ok_or(ElfLoadError::InvalidElf)?;
@@ -75,7 +72,6 @@ impl MemorySet {
                 None,
             )
             .map_err(ElfLoadError::from)?;
-
         if memory_set.handle_page_fault(phdr_address, PageFaultAccess::Read)?
             != PageFaultOutcome::Handled
         {

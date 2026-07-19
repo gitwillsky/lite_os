@@ -68,19 +68,41 @@ pub(crate) fn wait_for_external_interrupt() {
         // SAFETY: kernel runs in S-mode and changes only the calling CPU's SEIE source.
         unsafe { riscv::register::sie::set_sext() };
     }
+    // SSIP is the durable deferred-work token published by the external handler. Bootstrap owns
+    // this temporary source enable because the scheduler has not reached its permanent enable seam.
+    unsafe { riscv::register::sie::set_ssoft() };
     // SAFETY: trap.S temporarily owns local SIE and its trap-entry resume fixup; caller established
     // the trap/PLIC initialization and bootstrap source constraints documented above.
-    unsafe extern "C" {
-        fn __wait_for_external_interrupt();
-    }
-    // SAFETY: local SIE/SSIE are closed and SEIE is enabled; assembly restores SIE/SSIE before return.
-    unsafe { __wait_for_external_interrupt() };
+    wait_once_with_local_irq_masked();
+    // SAFETY: the bootstrap assertion above proved SSIE was disabled on entry.
+    unsafe { riscv::register::sie::clear_ssoft() };
     if !external_enabled {
         // SAFETY: kernel restores only the calling CPU's previously disabled SEIE source.
         unsafe { riscv::register::sie::clear_sext() };
     }
     // SAFETY: local was captured on this CPU and no context switch occurs in bootstrap wait.
     unsafe { restore_local(local) };
+}
+
+/// @description 在 caller 持有 local IRQ guard 时原子等待一次 interrupt。
+///
+/// assembly 临时打开 SIE，以固定 WFI/resume PC 关闭 enable-to-WFI 丢边沿窗口，返回前再次
+/// 关闭 SIE。interrupt source mask 保持不变，caller 可在 guard 恢复旧状态前重新检查调度状态。
+///
+/// @return 一次 WFI 返回后无返回值，local SIE 仍关闭。
+/// @errors caller 必须已在当前 CPU 关闭 local SIE，且不得在 assembly seam 内发生 context switch。
+pub(crate) fn wait_with_local_irq_masked() {
+    wait_once_with_local_irq_masked();
+}
+
+#[inline(always)]
+fn wait_once_with_local_irq_masked() {
+    // SAFETY: 此 symbol 由 trap.S 实现，保持 Rust ABI，并只临时修改 calling CPU 的 SIE。
+    unsafe extern "C" {
+        fn __wait_with_local_irq_masked();
+    }
+    // SAFETY: caller 保证 local SIE 已关闭；assembly 只临时开 SIE 并在返回前再次关闭。
+    unsafe { __wait_with_local_irq_masked() };
 }
 
 /// @description 启用 calling CPU 的 supervisor timer interrupt source。

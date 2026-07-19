@@ -4,7 +4,7 @@ pub(crate) enum BusError {
     InvalidAddress,
 }
 
-/// @description 提供有边界和对齐检查的 MMIO volatile 访问。
+/// @description 提供有边界和对齐检查、并由静态 arch façade 固定指令形态的 MMIO 访问。
 pub(crate) struct MmioBus {
     base_addr: usize,
     size: usize,
@@ -37,8 +37,8 @@ impl MmioBus {
     /// @errors offset 越界返回 `InvalidAddress`。
     pub(in crate::drivers) fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
         let address = self.address(offset, core::mem::size_of::<u8>())?;
-        // SAFETY: `address` 已完成边界检查；MMIO byte access 必须 volatile。
-        Ok(unsafe { core::ptr::read_volatile(address as *const u8) })
+        // SAFETY: `address` 已由本 window 完成范围检查；arch owner 保证单次 device access。
+        Ok(unsafe { crate::arch::read_mmio_u8(address) })
     }
 
     /// @description 向 MMIO window 写入一个 byte。
@@ -48,21 +48,21 @@ impl MmioBus {
     /// @errors offset 越界返回 `InvalidAddress`。
     pub(in crate::drivers) fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
         let address = self.address(offset, core::mem::size_of::<u8>())?;
-        // SAFETY: `address` 已完成边界检查；MMIO byte access 必须 volatile。
-        unsafe { core::ptr::write_volatile(address as *mut u8, value) };
+        // SAFETY: `address` 已由本 window 完成范围检查；arch owner 保证单次 device access。
+        unsafe { crate::arch::write_mmio_u8(address, value) };
         Ok(())
     }
 
     pub(crate) fn read_u32(&self, offset: usize) -> Result<u32, BusError> {
         let address = self.address(offset, core::mem::size_of::<u32>())?;
-        // SAFETY: `address` 已经边界、溢出和 32 位对齐检查；MMIO 必须 volatile。
-        Ok(unsafe { core::ptr::read_volatile(address as *const u32) })
+        // SAFETY: `address` 已完成边界、溢出与 32 位对齐检查。
+        Ok(unsafe { crate::arch::read_mmio_u32(address) })
     }
 
     pub(in crate::drivers) fn write_u32(&self, offset: usize, value: u32) -> Result<(), BusError> {
         let address = self.address(offset, core::mem::size_of::<u32>())?;
-        // SAFETY: `address` 已经边界、溢出和 32 位对齐检查；MMIO 必须 volatile。
-        unsafe { core::ptr::write_volatile(address as *mut u32, value) };
+        // SAFETY: `address` 已完成边界、溢出与 32 位对齐检查。
+        unsafe { crate::arch::write_mmio_u32(address, value) };
         Ok(())
     }
 }

@@ -87,7 +87,7 @@ impl Error for UserAccessError {}
 pub(crate) enum ElfLoadError {
     /// 物理页或页表页分配失败。
     OutOfMemory,
-    /// ELF header、segment、地址、权限、解释器或初始栈不满足 RV64 契约。
+    /// ELF header、segment、地址、权限、解释器或初始栈不满足当前架构契约。
     InvalidElf,
     /// executable source 在 transaction 构造期间发生 I/O error 或 short read。
     Io,
@@ -113,7 +113,7 @@ impl core::fmt::Display for ElfLoadError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::OutOfMemory => write!(formatter, "out of memory while loading ELF"),
-            Self::InvalidElf => write!(formatter, "invalid or unsupported RV64 ELF image"),
+            Self::InvalidElf => write!(formatter, "invalid or unsupported architecture ELF image"),
             Self::Io => write!(formatter, "I/O error while loading ELF"),
         }
     }

@@ -4,7 +4,6 @@ use syn::{Arm, Expr, ExprCall, ExprMatch, ImplItem, ImplItemFn, Item, ItemFn, Pa
 use super::SourceFile;
 
 const TRAP_SOURCE: &str = "kernel/src/trap/mod.rs";
-#[cfg(test)]
 const CPU_DEFERRED_SOURCE: &str = "kernel/src/cpu/deferred.rs";
 const TASK_MANAGER_SOURCE: &str = "kernel/src/task/task_manager.rs";
 const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/task/task_manager/context_switch.rs";
@@ -51,8 +50,35 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_idle_dispatch_is_irq_closed(task_manager, errors);
     check_task_handoff_dispatch_is_irq_closed(sources, errors);
     check_unique_dispatch_callers(sources, errors);
+    check_deferred_notification_coalescing(sources, errors);
     check_virtio_irq_and_lock_contract(sources, errors);
     check_kernel_space_lock_track(sources, errors);
+}
+
+fn check_deferred_notification_coalescing(sources: &[SourceFile], errors: &mut Vec<String>) {
+    let Some(source) = sources
+        .iter()
+        .find(|source| source.relative == CPU_DEFERRED_SOURCE)
+    else {
+        errors.push(format!(
+            "{CPU_DEFERRED_SOURCE}: missing deferred bitmap owner"
+        ));
+        return;
+    };
+    let Some(raise) = function(source, "raise") else {
+        errors.push(format!("{CPU_DEFERRED_SOURCE}: missing deferred publisher"));
+        return;
+    };
+    let body = raise.block.to_token_stream().to_string();
+    let publish = body.find("fetch_or");
+    let transition = body.find("if previous == 0");
+    let notify = body.find("notify_self");
+    if !matches!((publish, transition, notify), (Some(publish), Some(transition), Some(notify)) if publish < transition && transition < notify)
+    {
+        errors.push(format!(
+            "{CPU_DEFERRED_SOURCE}: local deferred notification must be issued only on the bitmap empty-to-nonempty transition"
+        ));
+    }
 }
 
 fn check_unique_ssip_acknowledger(sources: &[SourceFile], errors: &mut Vec<String>) {
@@ -385,10 +411,16 @@ fn check_idle_dispatch_is_irq_closed(source: &SourceFile, errors: &mut Vec<Strin
     let irq = body.find("LocalIrqGuard :: disable");
     let dispatch = body.find("scheduler_deferred_safe_point");
     let select = body.find("Processor :: select_task");
-    if !matches!((irq, dispatch, select), (Some(irq), Some(dispatch), Some(select)) if irq < dispatch && dispatch < select)
+    let wait = body.find("wait_with_local_irq_masked");
+    let restore = wait.and_then(|wait| {
+        body[wait..]
+            .find("drop (idle_irq)")
+            .map(|offset| wait + offset)
+    });
+    if !matches!((irq, dispatch, select, wait, restore), (Some(irq), Some(dispatch), Some(select), Some(wait), Some(restore)) if irq < dispatch && dispatch < select && select < wait && wait < restore)
     {
         errors.push(format!(
-            "{TASK_MANAGER_SOURCE}: idle scheduler safe point must run after local IRQ disable and before task selection"
+            "{TASK_MANAGER_SOURCE}: idle scheduler must select and enter the exact-PC WFI seam while the local IRQ guard remains held"
         ));
     }
 }
@@ -447,6 +479,7 @@ mod tests {
     #[derive(Default)]
     struct SoftwareInterruptModel {
         deferred: bool,
+        deferred_notifications: usize,
         request: u64,
         completion: u64,
         ssip: bool,
@@ -454,8 +487,11 @@ mod tests {
 
     impl SoftwareInterruptModel {
         fn publish_deferred(&mut self) {
+            if !self.deferred {
+                self.deferred_notifications += 1;
+                self.ssip = true;
+            }
             self.deferred = true;
-            self.ssip = true;
         }
 
         fn publish_remote_barrier(&mut self, generation: u64) {
@@ -520,6 +556,33 @@ mod tests {
         assert!(model.ssip, "safe point must preserve the shared IPI edge");
         model.handle_software_interrupt();
         assert_eq!(model.completion, 7);
+    }
+
+    #[test]
+    fn repeated_deferred_publication_coalesces_one_local_edge() {
+        let mut model = SoftwareInterruptModel::default();
+        model.publish_deferred();
+        model.publish_deferred();
+        assert_eq!(model.deferred_notifications, 1);
+        model.take_deferred();
+        model.publish_deferred();
+        assert_eq!(model.deferred_notifications, 2);
+    }
+
+    #[test]
+    fn deferred_publisher_cannot_notify_on_an_already_pending_bitmap() {
+        let mut sources = repository_sources();
+        mutate(
+            &mut sources,
+            CPU_DEFERRED_SOURCE,
+            "    if previous == 0 {",
+            "    if previous != 0 {",
+        );
+        assert!(
+            errors(&sources)
+                .iter()
+                .any(|error| { error.contains("empty-to-nonempty transition") })
+        );
     }
 
     #[test]

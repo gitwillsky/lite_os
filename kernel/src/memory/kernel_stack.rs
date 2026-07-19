@@ -37,7 +37,15 @@ impl KernelStack {
 
     pub(crate) fn get_top(&self) -> usize {
         let (_, top) = kernel_stack_position(self.handle.0);
-        top
+        top.checked_sub(crate::arch::context::KERNEL_STACK_CONTEXT_RESERVE)
+            .expect("kernel stack context reserve exceeds mapping")
+    }
+
+    /// @description 返回 architecture 选择的 kernel-stack-owned UserContext 地址。
+    /// @return AArch64 为保留顶页 metadata 后的 context；RISC-V 为 None。
+    pub(crate) fn user_context_address(&self) -> Option<usize> {
+        let (_, mapped_top) = kernel_stack_position(self.handle.0);
+        crate::arch::context::kernel_stack_user_context(mapped_top)
     }
 }
 
@@ -54,9 +62,23 @@ impl Drop for KernelStack {
 
 /// 获取应用内核栈的地址范围，返回 (bottom, top)
 fn kernel_stack_position(app_id: usize) -> (usize, usize) {
-    // 内核栈位于单一 UserContext 页之下，并在相邻栈之间保留一页守护间隔。
-    let top = super::TRAP_CONTEXT - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
-    let bottom = top - KERNEL_STACK_SIZE;
+    // architecture façade owns the TTBR-visible stack window. AArch64 uses the canonical TTBR1
+    // region above its bounded direct map; RISC-V preserves the Sv39 layout below trap context.
+    let stride = KERNEL_STACK_SIZE
+        .checked_add(PAGE_SIZE)
+        .expect("kernel stack stride overflow");
+    let offset = app_id
+        .checked_mul(stride)
+        .expect("kernel stack handle exceeds virtual window");
+    let top = crate::arch::mmu::KERNEL_STACK_REGION_TOP
+        .checked_sub(offset)
+        .expect("kernel stack virtual window exhausted");
+    let bottom = top
+        .checked_sub(KERNEL_STACK_SIZE)
+        .expect("kernel stack bottom underflow");
+    bottom
+        .checked_sub(crate::arch::mmu::KERNEL_STACK_REGION_START)
+        .expect("kernel stack virtual window exhausted");
     (bottom, top)
 }
 

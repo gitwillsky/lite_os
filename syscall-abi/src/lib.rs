@@ -19,6 +19,7 @@ pub const SYSCALL_MKDIRAT: usize = 34;
 pub const SYSCALL_UNLINKAT: usize = 35;
 pub const SYSCALL_SYMLINKAT: usize = 36;
 pub const SYSCALL_LINKAT: usize = 37;
+pub const SYSCALL_RENAMEAT: usize = 38;
 pub const SYSCALL_FACCESSAT: usize = 48;
 pub const SYSCALL_FCHMOD: usize = 52;
 pub const SYSCALL_FCHMODAT: usize = 53;
@@ -148,3 +149,13 @@ pub const SYSCALL_PRLIMIT64: usize = 261;
 pub const SYSCALL_ACCEPT4: usize = 242;
 pub const SYSCALL_RISCV_HWPROBE: usize = 258;
 pub const SYSCALL_RENAMEAT2: usize = 276;
+
+#[cfg(test)]
+mod tests {
+    use super::SYSCALL_RENAMEAT;
+
+    #[test]
+    fn renameat_uses_linux_asm_generic_number() {
+        assert_eq!(SYSCALL_RENAMEAT, 38);
+    }
+}

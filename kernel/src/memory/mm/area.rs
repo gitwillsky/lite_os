@@ -3,8 +3,8 @@ use super::*;
 /// page table leaf 的物理页来源。
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum MapType {
-    Identical, // PA <-> VA 恒等映射
-    Framed,    // 映射到分配的物理页帧
+    DirectMapped, // VA 经 architecture direct-map façade 唯一还原为 PA
+    Framed,       // 映射到分配的物理页帧
 }
 
 /// MemorySet 内部区分 VMA lifecycle 与统计语义的类别。
@@ -256,7 +256,7 @@ impl MapArea {
         if self.lazy_private {
             return Ok(());
         }
-        if self.map_type == MapType::Identical {
+        if self.map_type == MapType::DirectMapped {
             if !Self::has_leaf_permission(self.map_permission) {
                 return Err(MemoryError::InvalidRange);
             }
@@ -264,10 +264,15 @@ impl MapArea {
             if self.global {
                 permissions |= PagePermissions::GLOBAL;
             }
+            let virtual_start = usize::from(VirtualAddress::from(self.vpn_range.start));
+            let physical_start = crate::arch::mmu::virtual_to_physical(virtual_start)
+                .ok_or(MemoryError::InvalidRange)?;
+            let page_count = self.vpn_range.end.as_usize() - self.vpn_range.start.as_usize();
             return page_table
-                .map_identity_range(
+                .map_contiguous_range(
                     self.vpn_range.start,
-                    self.vpn_range.end,
+                    PhysicalAddress::from(physical_start).floor(),
+                    page_count,
                     permissions,
                     commit,
                 )
@@ -290,7 +295,7 @@ impl MapArea {
                 let frame = try_memory_arc(alloc().ok_or(MemoryError::OutOfMemory)?)?;
                 (frame.ppn, Some(frame))
             }
-            MapType::Identical => unreachable!("identity areas use range leaf selection"),
+            MapType::DirectMapped => unreachable!("direct-map areas use range leaf selection"),
         };
 
         let resident = frame

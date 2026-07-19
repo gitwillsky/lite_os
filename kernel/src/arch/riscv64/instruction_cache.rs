@@ -8,6 +8,14 @@ pub(crate) fn publish_local() {
     unsafe { core::arch::asm!("fence rw, rw", "fence.i", options(nostack)) };
 }
 
+/// 发布给定物理范围内的新 executable view。
+///
+/// RISC-V `fence.i` 不编码地址范围；参数只维持 generic transaction 的静态 seam，生产指令
+/// 序列仍严格复用原有 `fence rw, rw; fence.i`。
+pub(crate) fn publish_range(_physical_start: usize, _size: usize) {
+    publish_local();
+}
+
 /// 在 CPU 上线前丢弃 firmware/boot 阶段可能保留的 instruction-cache state。
 pub(crate) fn initialize_local() {
     // SAFETY: startup owns this hart and has not exposed it to the scheduler.

@@ -96,6 +96,7 @@ int main(int argc, char **argv, char **envp)
 	static const char pipe_failed[] = "LiteOS musl pipe readv failed\n";
 	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
+	static const char floating_point_failed[] = "LiteOS musl floating point ABI failed\n";
 	static const char exec_group_sync_failed[] = "LiteOS musl exec setpgid sync failed\n";
 	static const char exec_group_result_failed[] = "LiteOS musl exec setpgid result failed\n";
 	static const char exec_group_errno_failed[] = "LiteOS musl exec setpgid errno failed\n";
@@ -125,9 +126,16 @@ int main(int argc, char **argv, char **envp)
 	pthread_t thread;
 	void *thread_result;
 	void *allocation;
+	char *number_end;
+	double number;
 
 	if (argc != 1 || !argv || !argv[0] || !envp || envp[0]) return 1;
 	if (sysconf(_SC_PAGESIZE) != 4096 || getpid() <= 0) return 2;
+	number = strtod("1.5", &number_end);
+	if (*number_end != '\0' || number != 1.5 || number + 0.5 != 2.0) {
+		write(STDOUT_FILENO, floating_point_failed, sizeof floating_point_failed - 1);
+		return 2;
+	}
 	if (mkdir("/cwd", 0755) != 0 || chdir("/cwd") != 0
 	    || !getcwd(cwd, sizeof cwd) || strcmp(cwd, "/cwd") != 0
 	    || chdir("..") != 0 || !getcwd(cwd, sizeof cwd) || strcmp(cwd, "/") != 0

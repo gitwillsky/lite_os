@@ -11,13 +11,13 @@ enum ContextAccessError {
 
 /// 当前 Thread 的唯一 trap-context owner。
 ///
-/// pointer 只在 context mapping create/exec-rebind/retire seam 改变；普通 trap transaction
-/// 不再取得 AddressSpace lock 或重新 page-table walk。
+/// pointer 只在 architecture-selected backing create/exec-rebind/retire seam 改变；普通 trap
+/// transaction 不再取得 AddressSpace lock 或重新 page-table walk。
 #[derive(Debug)]
 pub(super) struct ContextOwner<T> {
     // OWNER: address/pointer 是同一 mapping binding，只能在 claimed transaction 内读取或替换；
     // atomic storage 使错误的跨 CPU claim 在 fail-stop 前也不产生 data race。缺失任一字段会让
-    // trampoline VA 与 Rust 访问的 physical context 分裂。
+    // trap entry 地址与 Rust 访问的 physical context 分裂。
     address: AtomicUsize,
     pointer: AtomicPtr<T>,
     // OWNER: claimed 把 scheduler 的 single-running-thread 不变量变成可执行检查，保证下面
@@ -26,7 +26,7 @@ pub(super) struct ContextOwner<T> {
 }
 
 impl<T> ContextOwner<T> {
-    /// 绑定一个由外部 AddressSpace 保活的 trap-context mapping。
+    /// 绑定一个由外部 KernelStack 或 AddressSpace 保活的 trap-context backing。
     ///
     /// # Safety
     /// pointer 必须对齐、可写，并在 rebind/retire 前始终指向 address 对应的唯一 live `T`。
@@ -63,7 +63,7 @@ impl<T> ContextOwner<T> {
             })
     }
 
-    /// 在同一 transaction 完成 context mutation 并取得配对 trampoline VA。
+    /// 在同一 transaction 完成 context mutation 并取得配对 trap-entry address。
     pub(super) fn with_address<R>(&self, operation: impl FnOnce(&mut T) -> R) -> (usize, R) {
         self.try_with_address(operation)
             .unwrap_or_else(|error| panic!("user-context publication failed: {error:?}"))
@@ -82,7 +82,7 @@ impl<T> ContextOwner<T> {
         self.with(|context| context.clone())
     }
 
-    /// 在 exec commit 中把同一 Thread owner 原子重绑定到新 AddressSpace mapping。
+    /// 在 exec commit 中把 AddressSpace-backed Thread owner 原子重绑定到新映像。
     ///
     /// # Safety
     /// 与 `bind` 相同；caller 还必须保活旧 mapping 到本方法返回，且不得并发执行 transaction。
@@ -99,7 +99,7 @@ impl<T> ContextOwner<T> {
         self.address.store(address, Ordering::Release);
     }
 
-    /// 退休 mapping 并返回随后可由 AddressSpace unmap 的 VA。
+    /// 退休 binding 并返回 architecture owner 用于清理 backing 的地址。
     pub(super) fn retire(&self) -> usize {
         let _claim = self.claim().unwrap_or_else(|error| {
             panic!("user-context retire violated owner contract: {error:?}")

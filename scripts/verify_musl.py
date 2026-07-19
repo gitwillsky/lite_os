@@ -12,6 +12,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from build_target import target_from_environment
+
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -33,7 +35,8 @@ from build_cache import (
 from qemu_gate import boot, cpu_topology_markers
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "target" / "musl-runtime"
+TARGET = target_from_environment()
+WORK = ROOT / "target" / "musl-runtime" / TARGET.arch
 MUSL_VERSION = "1.2.6"
 MUSL_REVISION = "9fa28ece75d8a2191de7c5bb53bed224c5947417"
 MUSL_URL = f"https://download.nus.edu.sg/mirror/gentoo/distfiles/9d/musl-{MUSL_VERSION}.tar.gz"
@@ -47,19 +50,33 @@ MAKE_SHA256 = "8814ba072182b605d156d7589c19a43b89fc58ea479b9355146160946f8cf6e9"
 SOURCE_RECIPE_VERSION = 1
 SYSROOT_RECIPE_VERSION = 4
 SMOKE_RECIPE_VERSION = 4
-CONFIGURE_ARGUMENTS = ("--target=riscv64", "--prefix=/usr", "--syslibdir=/lib")
-SMOKE_LINK_ARGUMENTS = (
+CONFIGURE_ARGUMENTS = (f"--target={TARGET.arch}", "--prefix=/usr", "--syslibdir=/lib")
+COMMON_SMOKE_LINK_ARGUMENTS = (
     "-static",
-    "-no-pie",
     "-nostdlib",
     "-nostartfiles",
     "-ffreestanding",
     "-fno-stack-protector",
-    "-march=rv64gc",
-    "-mabi=lp64d",
     "-Wl,--gc-sections",
-    "-Wl,-Ttext-segment=0x10000",
 )
+if TARGET.arch == "aarch64":
+    SMOKE_LINK_ARGUMENTS = (
+        *COMMON_SMOKE_LINK_ARGUMENTS,
+        "-Wl,--image-base=0x10000",
+        "-march=armv8-a",
+    )
+    LINUX_HEADER_ARCH = "arm64"
+    ELF_MACHINE = "AArch64"
+else:
+    SMOKE_LINK_ARGUMENTS = (
+        *COMMON_SMOKE_LINK_ARGUMENTS,
+        "-no-pie",
+        "-Wl,-Ttext-segment=0x10000",
+        "-march=rv64gc",
+        "-mabi=lp64d",
+    )
+    LINUX_HEADER_ARCH = "riscv"
+    ELF_MACHINE = "RISC-V"
 
 
 @dataclass(frozen=True)
@@ -71,7 +88,7 @@ class MuslCachePaths:
     linker: Path
     archiver: Path
     ranlib: Path
-    libgcc: Path
+    compiler_runtime: Path
 
 
 def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -207,28 +224,23 @@ def obtain_gnu_make(jobs_override: int | None) -> Path:
 
 
 def find_compiler() -> Path:
-    candidates = (
-        shutil.which("riscv64-linux-gnu-gcc"),
-        shutil.which("riscv64-unknown-linux-gnu-gcc"),
-        shutil.which("riscv64-unknown-elf-gcc"),
-        "/opt/homebrew/bin/riscv64-unknown-elf-gcc",
+    if TARGET.arch == "aarch64":
+        return find_clang()
+    names = (
+        "riscv64-linux-gnu-gcc",
+        "riscv64-unknown-linux-gnu-gcc",
+        "riscv64-unknown-elf-gcc",
     )
+    fallback = "/opt/homebrew/bin/riscv64-unknown-elf-gcc"
+    candidates = (*[shutil.which(name) for name in names], fallback)
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return Path(candidate).resolve()
-    raise RuntimeError("a RISC-V GCC cross compiler is required")
+    raise RuntimeError(f"an {TARGET.arch} GCC cross compiler is required")
 
 
-def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
-    """定位能产生 Linux ET_DYN 的 Clang/LLD，以及配套 LLVM archive 工具。
-
-    Returns:
-        Clang、pinned rust-lld、llvm-ar 与保留 argv[0] 的 llvm-ranlib 路径。
-
-    Raises:
-        RuntimeError: 任一固定工具不存在或 rustc 无法报告 sysroot。
-    """
-    clang: Path | None = None
+def find_clang() -> Path:
+    """定位包含当前 guest backend 的 Clang compiler driver。"""
     for candidate in (
         shutil.which("clang"),
         "/opt/homebrew/opt/llvm/bin/clang",
@@ -243,36 +255,95 @@ def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
             stderr=subprocess.STDOUT,
             text=True,
         )
-        # PATH 在 macOS 非交互 shell 中通常先命中 Apple Clang；它没有 RISC-V backend，
-        # 若只检查文件存在，configure 会在首次编译时才失败并污染一次无效 cache generation。
         if targets.returncode == 0 and any(
-            line.lstrip().startswith("riscv64 ") for line in targets.stdout.splitlines()
+            line.lstrip().startswith(f"{TARGET.arch} ")
+            for line in targets.stdout.splitlines()
         ):
-            clang = Path(candidate)
-            break
+            return Path(candidate).resolve()
+    raise RuntimeError(f"Clang with the {TARGET.arch} backend is required")
+
+
+def rustc_probe_environment() -> dict[str, str]:
+    """返回不携带失效 GNU Make jobserver capability 的 rustc 探测环境。
+
+    Python recipe 不继承 GNU Make 3.81 的 jobserver 文件描述符，但环境仍可能保留
+    ``MAKEFLAGS``/``MFLAGS``。若继续传给 rustc，bad-fd warning 会和被捕获的 stdout 合并，
+    从而把单行 sysroot 误解析成不存在的多行路径。
+    """
+    environment = os.environ.copy()
+    environment.pop("MAKEFLAGS", None)
+    environment.pop("MFLAGS", None)
+    return environment
+
+
+def find_compiler_runtime(compiler: Path) -> Path:
+    """返回目标 compiler runtime；AArch64 只接受 hard-float AAPCS64 Rust builtins。"""
+    if TARGET.arch == "riscv64":
+        runtime = Path(
+            run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()
+        ).resolve()
+        if not runtime.is_file():
+            raise RuntimeError(f"RISC-V libgcc compiler runtime is missing: {runtime}")
+        return runtime
+
+    rust_sysroot = Path(
+        run(
+            ["rustc", "--print", "sysroot"],
+            ROOT,
+            env=rustc_probe_environment(),
+        ).strip()
+    )
+    candidates = tuple(
+        sorted(
+            (
+                rust_sysroot
+                / "lib/rustlib/aarch64-unknown-none/lib"
+            ).glob("libcompiler_builtins-*.rlib")
+        )
+    )
+    if len(candidates) != 1 or not candidates[0].is_file():
+        raise RuntimeError(
+            "pinned Rust aarch64-unknown-none hard-float compiler_builtins runtime "
+            f"is missing or ambiguous under {rust_sysroot}"
+        )
+    return candidates[0].resolve()
+
+
+def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
+    """定位能产生 Linux ET_DYN 的 Clang/LLD，以及配套 LLVM archive 工具。
+
+    Returns:
+        Clang、pinned rust-lld、llvm-ar 与保留 argv[0] 的 llvm-ranlib 路径。
+
+    Raises:
+        RuntimeError: 任一固定工具不存在或 rustc 无法报告 sysroot。
+    """
+    clang = find_clang()
     archiver = shutil.which("llvm-ar") or "/opt/homebrew/opt/llvm/bin/llvm-ar"
     ranlib = shutil.which("llvm-ranlib") or "/opt/homebrew/opt/llvm/bin/llvm-ranlib"
-    rustc_environment = os.environ.copy()
-    # GNU Make 3.81 不向普通 recipe 传递 jobserver fd，却保留 MAKEFLAGS/MFLAGS；若继续传给
-    # rustc，它会把 bad-fd warning 混入 stdout，使 sysroot 路径解析为不存在的多行字符串。
-    rustc_environment.pop("MAKEFLAGS", None)
-    rustc_environment.pop("MFLAGS", None)
     rust_sysroot = Path(
-        run(["rustc", "--print", "sysroot"], ROOT, env=rustc_environment).strip()
+        run(
+            ["rustc", "--print", "sysroot"],
+            ROOT,
+            env=rustc_probe_environment(),
+        ).strip()
     )
     linkers = sorted(rust_sysroot.glob("lib/rustlib/*/bin/rust-lld"))
     tools = (clang, Path(archiver), Path(ranlib))
-    if clang is None or not all(tool.is_file() for tool in tools if tool) or not linkers:
+    if not all(tool.is_file() for tool in tools) or not linkers:
         raise RuntimeError("Clang, LLVM archive tools, and the pinned Rust rust-lld are required")
     # llvm-ranlib may be a symlink to llvm-ar; resolving it changes argv[0] and makes LLVM parse
     # the archive pathname as an ar operation string instead of selecting ranlib mode.
-    return clang.resolve(), linkers[0].resolve(), tools[1].resolve(), tools[2].absolute()
+    return clang, linkers[0].resolve(), tools[1].resolve(), tools[2].absolute()
 
 
 def compiler_identity(compiler: Path) -> dict[str, object]:
+    target_argument = []
+    if TARGET.arch == "aarch64":
+        target_argument = [f"--target={TARGET.linux_triple}"]
     return {
         "path": str(compiler),
-        "target": run([str(compiler), "-dumpmachine"], ROOT).strip(),
+        "target": run([str(compiler), *target_argument, "-dumpmachine"], ROOT).strip(),
         "version": run([str(compiler), "--version"], ROOT).splitlines()[0],
     }
 
@@ -283,13 +354,24 @@ def tool_identity(tool: Path, version_argument: str = "--version") -> dict[str, 
 
 def sysroot_payload(compiler: Path) -> dict[str, object]:
     clang, linker, archiver, ranlib = find_runtime_toolchain()
-    libgcc = Path(run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()).resolve()
+    compiler_runtime = find_compiler_runtime(compiler)
     return {
         "kind": "musl-runtime-sysroot",
         "recipe_version": SYSROOT_RECIPE_VERSION,
+        "arch": TARGET.arch,
+        "linux_target": TARGET.linux_triple,
         "source_fingerprint": fingerprint(source_payload()),
         "linux_uapi": {"version": LINUX_VERSION, "archive_sha256": LINUX_SHA256},
-        "compiler_runtime": {"compiler": compiler_identity(compiler), "libgcc": {"path": str(libgcc), "sha256": sha256(libgcc)}},
+        "compiler": compiler_identity(compiler),
+        "compiler_runtime": {
+            "kind": (
+                "pinned-rust-compiler-builtins"
+                if TARGET.arch == "aarch64"
+                else "gcc-libgcc"
+            ),
+            "path": str(compiler_runtime),
+            "sha256": sha256(compiler_runtime),
+        },
         "toolchain": {
             "clang": tool_identity(clang),
             "linker": {"path": str(linker), "sha256": sha256(linker)},
@@ -323,7 +405,7 @@ def build_musl(
     sysroot_fingerprint = fingerprint(payload)
     install = sysroot_cache_path(payload)
     required = ("usr/include/linux/vt.h", "usr/lib/libc.a", "usr/lib/libc.so", "usr/lib/crt1.o", "usr/lib/Scrt1.o", "usr/lib/crti.o", "usr/lib/crtn.o", "toolchain/ld.lld")
-    loader = install / "lib/ld-musl-riscv64.so.1"
+    loader = install / TARGET.musl_loader.removeprefix("/")
     if not rebuild and manifest_matches(install, payload, required) and loader.is_symlink() and os.readlink(loader) == "/usr/lib/libc.so":
         print(f"musl sysroot cache hit: {sysroot_fingerprint[:12]}")
         return install, sysroot_fingerprint
@@ -331,16 +413,16 @@ def build_musl(
     build = temporary_directory(WORK / "builds", "build")
     generation = generation_directory(WORK / "install-generations", sysroot_fingerprint)
     clang, linker, archiver, ranlib = find_runtime_toolchain()
-    libgcc = run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()
+    compiler_runtime = find_compiler_runtime(compiler)
     gmake = obtain_gnu_make(jobs_override)
     lld_alias = build / "ld.lld"
     lld_alias.symlink_to(linker)
     env = build_environment()
     env.update({
-        "CC": f"{clang} --target=riscv64-linux-musl --ld-path={lld_alias}",
+        "CC": f"{clang} --target={TARGET.linux_triple} --ld-path={lld_alias}",
         "AR": str(archiver),
         "RANLIB": str(ranlib),
-        "LIBCC": libgcc,
+        "LIBCC": str(compiler_runtime),
     })
     published = False
     try:
@@ -357,7 +439,7 @@ def build_musl(
             [
                 str(gmake),
                 *(make_command(jobs_override)[1:]),
-                "ARCH=riscv",
+                f"ARCH={LINUX_HEADER_ARCH}",
                 f"INSTALL_HDR_PATH={generation / 'usr'}",
                 "headers_install",
             ],
@@ -367,7 +449,7 @@ def build_musl(
         run(["make", f"DESTDIR={generation}", "install"], build, env)
         (generation / "toolchain").mkdir()
         (generation / "toolchain/ld.lld").symlink_to(linker)
-        generation_loader = generation / "lib/ld-musl-riscv64.so.1"
+        generation_loader = generation / TARGET.musl_loader.removeprefix("/")
         if not all((generation / relative).is_file() for relative in required) or not generation_loader.is_symlink() or os.readlink(generation_loader) != "/usr/lib/libc.so":
             raise RuntimeError("musl install is missing required runtime artifacts")
         write_manifest(generation, payload)
@@ -389,26 +471,39 @@ def cached_musl_paths(compiler: Path) -> MuslCachePaths:
     payload = sysroot_payload(compiler)
     install = sysroot_cache_path(payload)
     required = ("usr/include/linux/vt.h", "usr/lib/libc.a", "usr/lib/libc.so", "usr/lib/crt1.o", "usr/lib/Scrt1.o", "usr/lib/crti.o", "usr/lib/crtn.o", "toolchain/ld.lld")
-    loader = install / "lib/ld-musl-riscv64.so.1"
+    loader = install / TARGET.musl_loader.removeprefix("/")
     if not manifest_matches(install, payload, required) or not loader.is_symlink() or os.readlink(loader) != "/usr/lib/libc.so":
         raise RuntimeError("musl sysroot cache is missing; run verify_musl.py first")
     clang, linker, archiver, ranlib = find_runtime_toolchain()
-    libgcc = Path(run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()).resolve()
+    compiler_runtime = find_compiler_runtime(compiler)
     resolved_install = install.resolve()
-    return MuslCachePaths(source.resolve(), resolved_install, fingerprint(payload), clang, resolved_install / "toolchain/ld.lld", archiver, ranlib, libgcc)
+    return MuslCachePaths(
+        source.resolve(),
+        resolved_install,
+        fingerprint(payload),
+        clang,
+        resolved_install / "toolchain/ld.lld",
+        archiver,
+        ranlib,
+        compiler_runtime,
+    )
 
 
 def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> dict[str, object]:
-    libgcc = Path(run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()).resolve()
+    compiler_runtime = find_compiler_runtime(compiler)
     return {
         "kind": "musl-smoke",
         "recipe_version": SMOKE_RECIPE_VERSION,
+        "arch": TARGET.arch,
         "sysroot_fingerprint": sysroot_fingerprint,
         "compiler": compiler_identity(compiler),
         "source_sha256": sha256(ROOT / "scripts/fixtures/musl/musl-smoke.c"),
         "shared_sync_sha256": sha256(ROOT / "scripts/fixtures/musl/shared-sync.c"),
         "link_arguments": list(SMOKE_LINK_ARGUMENTS),
-        "libgcc": {"path": str(libgcc), "sha256": sha256(libgcc)},
+        "compiler_runtime": {
+            "path": str(compiler_runtime),
+            "sha256": sha256(compiler_runtime),
+        },
         "install": str(install),
     }
 
@@ -430,12 +525,20 @@ def link_smoke(
 
     generation = generation_directory(WORK / "smoke-generations", smoke_fingerprint)
     generation_output = generation / "musl-smoke"
-    libgcc = run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()
+    compiler_runtime = find_compiler_runtime(compiler)
+    compiler_arguments = [str(compiler)]
+    if TARGET.arch == "aarch64":
+        compiler_arguments.extend(
+            [
+                f"--target={TARGET.linux_triple}",
+                f"--ld-path={install / 'toolchain/ld.lld'}",
+            ]
+        )
     published = False
     try:
         run(
             [
-                str(compiler),
+                *compiler_arguments,
                 *SMOKE_LINK_ARGUMENTS,
                 f"-I{install / 'usr/include'}",
                 "-o",
@@ -447,7 +550,7 @@ def link_smoke(
                 f"-L{install / 'usr/lib'}",
                 "-Wl,--start-group",
                 str(install / "usr/lib/libc.a"),
-                libgcc,
+                str(compiler_runtime),
                 "-Wl,--end-group",
                 str(install / "usr/lib" / "crtn.o"),
             ],
@@ -471,11 +574,11 @@ def verify_elf(binary: Path, compiler: Path) -> None:
         candidate = shutil.which("llvm-readelf") or "/opt/homebrew/opt/llvm/bin/llvm-readelf"
         readelf = Path(candidate)
     if not readelf.is_file():
-        raise RuntimeError("RISC-V readelf or llvm-readelf is required")
+        raise RuntimeError(f"{TARGET.arch} readelf or llvm-readelf is required")
     output = run(
         [str(readelf), "--file-header", "--program-headers", "--wide", str(binary)], ROOT
     )
-    for marker in ("ELF64", "RISC-V", "EXEC"):
+    for marker in ("ELF64", ELF_MACHINE, "EXEC"):
         if marker not in output:
             raise RuntimeError(f"musl smoke ELF lacks {marker!r}")
     headers = [line.split() for line in output.splitlines()]
@@ -538,18 +641,24 @@ def main() -> int:
         if args.build_only:
             print(f"musl {MUSL_VERSION} runtime build passed")
             return 0
-        stamp = ROOT / "target/verify-gates/musl.json"
+        stamp = ROOT / f"target/verify-gates/musl-{TARGET.arch}.json"
+        runtime_inputs = [
+            ROOT / f"target/{TARGET.kernel_triple}/release/kernel",
+            binary,
+            ROOT / "create_fs.py",
+            Path(__file__).resolve(),
+            ROOT / "scripts/qemu_gate.py",
+        ]
+        if TARGET.requires_bootloader:
+            runtime_inputs.insert(
+                1,
+                ROOT
+                / f"bootloader/target/{TARGET.kernel_triple}/release/bootloader",
+            )
         payload = runtime_gate_payload(
             "musl-runtime",
             2,
-            (
-                ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
-                ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
-                binary,
-                ROOT / "create_fs.py",
-                Path(__file__).resolve(),
-                ROOT / "scripts/qemu_gate.py",
-            ),
+            tuple(runtime_inputs),
         )
         image = WORK / "fs.img"
         if runtime_gate_hit(stamp, payload, (image,)):

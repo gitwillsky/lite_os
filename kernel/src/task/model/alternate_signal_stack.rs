@@ -4,7 +4,6 @@ const SS_ONSTACK: u32 = 1;
 const SS_DISABLE: u32 = 2;
 const SS_AUTODISARM: u32 = 1 << 31;
 const SS_FLAG_BITS: u32 = SS_AUTODISARM;
-const MIN_SIGNAL_STACK_SIZE: usize = 2048;
 
 /// @description Linux `stack_t` 的领域表示；不包含 RV64 ABI padding。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +23,7 @@ pub(crate) enum SignalStackError {
     Active,
     /// flags 含 Linux 未定义的 mode 或 bit。
     InvalidFlags,
-    /// enabled stack 小于 RISC-V `MINSIGSTKSZ`。
+    /// enabled stack 小于编译期 architecture 的 Linux `MINSIGSTKSZ`。
     TooSmall,
 }
 
@@ -97,7 +96,7 @@ impl AlternateSignalStack {
             self.sp = 0;
             self.size = 0;
         } else {
-            if replacement.size < MIN_SIGNAL_STACK_SIZE {
+            if replacement.size < crate::arch::context::MIN_SIGNAL_STACK_SIZE {
                 return Err(SignalStackError::TooSmall);
             }
             self.sp = replacement.sp;
@@ -157,11 +156,11 @@ impl TaskControlBlock {
         Ok(old)
     }
 
-    /// @description 为一次 RV64 handler 构造选择栈并保存原 registration。
+    /// @description 为一次 architecture-owned signal frame 选择栈并保存原 registration。
     ///
     /// @param user_sp signal 前用户 SP。
     /// @param use_alternate disposition 是否含 `SA_ONSTACK`。
-    /// @param frame_size 固定 RV64 rt frame 字节数。
+    /// @param frame_size 编译期 architecture 的固定 rt frame 字节数。
     /// @return 16-byte 对齐的 frame 地址与 `ucontext.uc_stack` 快照。
     /// @errors 地址算术溢出或 nested frame 越过 altstack 底部时返回 Fault。
     pub(super) fn signal_frame_stack(

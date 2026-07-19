@@ -65,7 +65,7 @@ fn bootstrap_wfi_precedes_global_enable(sources: &[SourceFile]) -> bool {
     };
     let text = function.block.to_token_stream().to_string();
     text.find("disable_local")
-        .zip(text.find("__wait_for_external_interrupt"))
+        .zip(text.find("wait_once_with_local_irq_masked"))
         .zip(text.find("restore_local"))
         .is_some_and(|((disable, wait), restore)| disable < wait && wait < restore)
 }

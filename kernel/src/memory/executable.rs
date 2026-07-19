@@ -65,7 +65,7 @@ impl ExecutableImage {
 pub(crate) enum ExecutableParseError {
     /// metadata buffer 或 owned mapping plan 分配失败。
     OutOfMemory,
-    /// ELF header、program header 或 PT_INTERP 不满足 RV64 loader contract。
+    /// ELF header、program header 或 PT_INTERP 不满足当前 architecture loader contract。
     InvalidElf,
     /// executable source 发生 I/O error、越界或 short read。
     Io,
@@ -112,7 +112,7 @@ fn parse_elf(
         .read_exact_at(0, &mut header)
         .map_err(|_| ExecutableParseError::Io)?;
     if &header[..7] != b"\x7fELF\x02\x01\x01"
-        || read_u16(&header, 18)? != 243
+        || read_u16(&header, 18)? != crate::arch::user::ELF_MACHINE
         || read_u32(&header, 20)? != 1
         || read_u16(&header, 52)? as usize != HEADER_SIZE
     {
@@ -124,7 +124,7 @@ fn parse_elf(
         _ => return Err(ExecutableParseError::InvalidElf),
     };
     let flags = read_u32(&header, 48)?;
-    if flags & !0x7 != 0 || flags & 0x6 == 0x6 {
+    if !crate::arch::user::valid_elf_flags(flags) {
         return Err(ExecutableParseError::InvalidElf);
     }
     let entry = usize_u64(&header, 24)?;

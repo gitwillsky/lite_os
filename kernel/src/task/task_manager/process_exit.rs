@@ -468,8 +468,8 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
     }
     drop(removed);
     task.remove_thread_trap_context();
-    // vfork child exit 只有在临时 trap page 已从共享 AddressSpace 删除后才能恢复 parent；
-    // 否则 parent 可与仍持有 shared-mm supervisor mapping 的 child cleanup 并发。
+    // vfork child exit 只有在 RISC-V 临时 trap VMA 删除（AArch64 kernel-stack backing retire）
+    // 后才能恢复 parent；否则 parent 可与仍持有 shared-mm mapping 的 child cleanup 并发。
     complete_vfork(task.tgid());
     // 两个来源分别 staged，按 parent 后 init 的既有来源优先级各 drain 一次；waiter
     // identity 不依赖跨来源 TID 排序，合并反而会制造没有领域意义的 AVL interface。

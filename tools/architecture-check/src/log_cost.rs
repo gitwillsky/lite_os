@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
 const LOG_SOURCE: &str = "kernel/src/log.rs";
-const CONSOLE_SOURCE: &str = "kernel/src/platform/qemu_virt/console.rs";
-const FIRMWARE_SOURCE: &str = "kernel/src/platform/qemu_virt/firmware.rs";
+const CONSOLE_SOURCE: &str = "kernel/src/platform/qemu_virt/riscv64/console.rs";
+const FIRMWARE_SOURCE: &str = "kernel/src/platform/qemu_virt/riscv64/firmware.rs";
 const LINE_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

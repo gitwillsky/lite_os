@@ -21,11 +21,23 @@
 - `MemorySet::areas` 与 `VmaIndexState` 共同构成唯一 VMA index owner；后者只保存唯一 stack start key、RLIMIT_AS total 与 RLIMIT_DATA total。structural node publication/retire 必须在同一 `commit_area`/`take_area_entry` transaction 更新它，禁止旁路 cache 或事后全表重算。
 - `arch::mmu` 的 ASID bitmap 是 address-space identity 的唯一 lifecycle owner；ASID bit 从分配保持到完整 `MemorySet` owner 完成全 CPU retirement fence，其他 module 不得直接复用或释放。
 - architecture page table 的 active frame index 以 physical page 为唯一 key；leaf unmap 自底向上摘除空 L0/L1 table，`TranslationCommit` 保留这些 frame owners 到 local/remote revoke fence 全部完成。
+- AArch64 TTBR1 high-half root 是唯一 kernel mapping owner，TTBR0 root 是每个用户地址空间
+  owner；page-table descriptor 始终保存 physical address，Rust walker 只经 architecture
+  direct-map façade 解引用。把 direct-map VA 写入 descriptor 或让 MMIO 保持低物理
+  pointer 都会在启用 MMU 后访问错误地址。
+- task kernel stack 只从 architecture-owned virtual window 分配。AArch64 将 TTBR1 高半区
+  划分为低侧 120 GiB direct map 与高侧约 136 GiB stack window；即使 120 GiB 物理容量
+  全部用于 128 KiB stack，包含 guard 的虚拟跨度仍有余量。禁止非 canonical 地址或两个
+  owner 重叠。每个 AArch64 stack mapping 的最低页保持 guard，最高页只拥有对齐 padding
+  与 `UserContext`；effective stack top 必须下移一页，context 地址只能由该固定边界加
+  编译期 offset 推导，禁止冗余 pointer state。RISC-V 保留 trap-context 下方的既有 Sv39 stack 与 supervisor
+  trap-context VMA 布局。
 
 ## Interface
 
 - generic memory 只向 `arch::mmu` 提交语义权限和 frame-owner adapter；PTE bit、address token 与 fence instruction 不得泄漏。
 - kernel identity range 只向 architecture 提交精确 `[start,end)` 与统一 permissions；Sv39 walker 在不跨该边界的前提下选择最大对齐 1GiB/2MiB/4KiB leaf。generic translation 仍返回目标 4KiB physical page，不泄漏 leaf level。
+- AArch64 kernel direct-map 与 Sv39 identity map 使用同一 generic range transaction；所选 backend 可在不跨权限边界时使用 1GiB/2MiB/4KiB leaf，generic caller 不得假设 VA=PA。DEVICE permission 必须编码为 AArch64 Device-nGnRnE，不能与 normal cacheable DMA memory 合并。
 - user-copy 必须先完整证明 range membership、fault 与权限，再复制；不得返回指向 user memory 的 Rust reference。
 - `/dev/zero` 使用 `MemorySet::zero_user` 在一次 AddressSpace owner transaction 内 fault-in
   连续用户 range 并逐页清零；不得构造固定小 zero buffer 后重复进入 user-copy。COW 完整页替换
@@ -33,8 +45,10 @@
 - 所有 fallible owner storage 必须在 PTE、VMA、cache 或 global registry publication 前 reserve。
 - post-storage shared-file invalidation 必须在 truncate mutation 前准备一份可复用
   `TaskMutexWaitPreparation`，commit 后逐 AddressSpace 撤销 PTE 只允许阻塞、不得再分配或
-  返回 OOM。Thread 创建同样预留 temporary trap-mapping retirement waiter；退出必须在仍为
-  current/Running 时完成所有 address-space cleanup，之后才 detach scheduler owner。
+  返回 OOM。只有 RISC-V dynamic trap VMA Thread 创建预留 temporary trap-mapping retirement
+  waiter；AArch64 context 由 KernelStack 直接保活，不得分配永远不用的 waiter 或制造
+  AddressSpace cleanup 双轨。退出必须在仍为 current/Running 时完成 architecture 所需 cleanup，
+  之后才 detach scheduler owner。
 - VMA split 必须结构化 partition resident owner 节点；相邻 anonymous VMA merge 只允许使用已证明 `left.max < right.min` 的 ordered-disjoint join，不得逐 entry remove/reinsert 或覆盖重复 residency。
 - overlap 判定和 anonymous merge 必须使用 ordered VMA index 的 floor/ceiling/predecessor/successor；hinted mmap、stack fault 与单邻居 merge 不得创建全表 iterator。stack VMA 在一个 MemorySet 内必须唯一，grow 只 rekey 该 authoritative key。
 - futex key 只能由 AddressSpace identity 或 backing identity + offset 归一化；syscall/task 不得重建 mapping identity。
@@ -48,6 +62,11 @@
   lazy VMA 未写 leaf PTE，fence 数必须为零。
 - huge leaf revoke 必须记录完整 leaf span；只允许从 leaf-aligned virtual page 撤销，禁止把中间 4KiB unmap 静默扩大到整个 huge leaf。
 - fixed RISC-V Privileged 规范允许 publication/relax 暂时命中旧 invalid/restrictive translation；对应 page fault 必须先执行当前 CPU range fence 再重试。地址空间 activation 的 full local fence 不得作为 mutation 兼容路径。
+- AArch64 remote revoke 使用 inner-shareable TLBI 与 DSB/ISB completion；不得再发送 SGI
+  或等待 mailbox ack。精确 range 使用对齐的非零 `[start,size)`；generic sparse-span
+  归一化的 `size == usize::MAX` 与 address-space retirement 的 `(0,0)` 都必须在逐页校验前
+  解码为单次 `VMALLE1IS`。instruction publication 按 CTR_EL0 IDC/DIC 选择零维护快路径或
+  精确 DC/IC range，两条路径都必须在返回前完成 architecture ordering。
 - address-space retirement 是唯一 full remote fence 例外：完整 `MemorySet` owner 必须保活到全部 CPU fence 完成，随后才能归还 ASID 并释放 page-table/frame owner。
 - executable mapping publication 或权限首次增加 EXECUTE 必须由 `TranslationCommit` 在 instruction bytes 写完后提交本地 data/`fence.i` 与全部 online remote `FENCE.I`；trap return 不得作为 instruction-cache publication 兼容路径。
 

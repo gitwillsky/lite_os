@@ -5,9 +5,22 @@
 ## 环境
 
 - Rust 版本、组件和 target 由 `rust-toolchain.toml` 固定；精确 revision 见 [规范基线](../standards-baseline.md)。
-- 当前 target 是 `riscv64gc-unknown-none-elf`，运行环境需要 `qemu-system-riscv64`。
-- musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；不得静默消费系统副本或滚动 latest。
-- `target/rootfs.img` 是可重复基线；开发用 `fs.img` 只由显式 reset 初始化，不能反向污染基线。
+- `ARCH` 默认 `aarch64`，只接受 `aarch64` 与 `riscv64`；它统一选择 kernel target、Linux userspace target、QEMU、musl loader 与 Alpine repository architecture，未知值在 Make 解析期失败。
+- `ACCEL` 默认 `hvf`，只接受 `hvf` 与 `tcg`。`riscv64 + hvf` 在构建前硬失败；RISC-V 必须显式选择 `ACCEL=tcg`，AArch64 的 TCG 诊断路径也必须显式选择，不能从 HVF 静默回退。
+- `PROFILE` 默认 `release`，只接受 `release` 与 `debug`；提交门禁以 release 产物为准。
+- musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
+- kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture identity，不允许跨目标命中。
+- AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的
+  `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
+  `aarch64-unknown-none-softfloat`，两者不得混用。任一 runtime 缺失或歧义都必须在发布 sysroot
+  前失败，musl smoke 必须实际验证 `strtod` 返回与 FP arithmetic。RISC-V 保留 GCC 与其 `libgcc` runtime 路径。
+- `verify-runtime-gates` 在 target owner 内串行启动 boot、musl、BusyBox 与 APK QEMU。外层即使
+  使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
+  workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。静态编译、clippy、
+  unit 与 architecture gate 仍按 Make jobserver 并行；runtime marker 和 workload 不放宽。
+- BusyBox 主组合 gate 的 90 秒是 50+ 次 UART interaction、TLS、archive、editor、并发 VFS 与
+  job-control 共用的 host liveness bound，不作为 guest 性能阈值；全部 marker/workload 必须完成。
+  trap/context/MMU 等性能只由 release ELF 确定性指令/事件计数门禁裁决，禁止用 wall-clock 代替。
 
 ## 常用入口
 
@@ -46,7 +59,11 @@ make verify
 - 只设置宽但真实的绝对上限，用于阻止锁、分配、runtime dispatch 或复杂度退化；
 - 文档不记录本机测量值；阈值变化必须有实现和环境证据，不能为通过门禁直接放宽。
 
-当前 blocking benchmark 覆盖 timer deadline、Sv39 index projection 与 semantic PTE encode/decode。target-specific 零成本边界还必须通过 release target build、static architecture fence、symbol 与 disassembly 检查；host wall-clock 不能冒充 target instruction cost。
+当前 blocking benchmark 覆盖 timer deadline、AArch64 VA39 index/TLBI operand projection 与
+AArch64 semantic PTE encode/decode。target-specific 零成本边界还必须通过 release target
+build、static architecture fence、symbol 与 disassembly 检查；host wall-clock 不能冒充
+target instruction cost。RISC-V 保留 backend 的 PTE 与 trap 性能约束由其 unit、release
+static gate 与 disassembly gate 继续负责。
 
 新增 hot path、lock、allocation、codec 或 indirection 时必须明确：加入 blocking benchmark、加入 target static/disassembly gate，或说明为何只需要 diagnostic measurement。
 whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作诊断，不作窄阈值 blocking gate。
@@ -80,22 +97,30 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 
 - `architecture-check` 校验 dependency matrix、concrete backend containment、global owner、unsafe proof、fallible collection、source size、ABI dispatch、文档 fence 与 generated interface freshness。
 - generated interface 只能由 checker 的 `--write-interface` 更新；任何差异都视为 architecture interface change。
-- release kernel/bootloader 和 userspace ELF 必须通过 target、segment、W^X、stack、interpreter、dynamic/RELRO 及 target-specific static-call 检查。
+- release kernel、需要时的 bootloader 和原生 userspace ELF 必须通过 target、segment、W^X、stack、interpreter、dynamic/RELRO 及 target-specific static-call 检查；kernel、rootfs、APK image 与所有构建 cache 必须属于同一个 architecture identity。
 
 ## 运行时门禁
 
 完整验证从同一个只读 rootfs baseline 派生相互隔离的可写镜像，并覆盖：
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；
+- AArch64 `run-gui` 同构的 GPU、keyboard、tablet VirtIO 拓扑；gate 使用无 host 窗口的一 CPU
+  guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；
 - musl ELF/TLS/thread/signal/process consumer；
 - BusyBox init/ash、TTY、filesystem、IPC 与 network consumer；
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice。
 
-`make -j4 verify-runtime-gates` 是 QEMU 编排并发的唯一 owner，各顶层门禁使用独立镜像、
-success stamp 和 host port domain。APK 内部不再嵌套 QEMU 并发：curl/Git 的 TLS/HTTP 竖切
-共用一台 4-CPU guest，SQLite 独占持久化/断电恢复镜像；这避免把完整门禁从 4 台/16 guest
-vCPU 放大为 6 台/24 guest vCPU，并把网络应用冷启动从 2 次减为 1 次。guest 内被测的
-SQLite 双 writer 与 curl 四路传输仍保持并发，覆盖与 deadline 不变。
+`make -j4 verify-runtime-gates` 是 QEMU 编排的唯一 owner，并串行运行各顶层门禁；每项仍使用
+独立镜像、success stamp 和 host port domain。APK 内部同样保持单一 QEMU owner：curl/Git 的
+TLS/HTTP 竖切共用一台 4-CPU guest，SQLite 独占持久化/断电恢复镜像。guest 内被测的 SQLite
+双 writer 与 curl 四路传输仍保持并发；SQLite writer A 必须在持有 `BEGIN IMMEDIATE` 后发布
+guest 内握手，writer B 才能进入 blocking record-lock 路径。SQLite crash gate 保持一个
+已 INSERT、未 COMMIT 的 WAL transaction，再在 guest 内精确 `SIGKILL` sqlite process；
+重新打开后必须 `integrity=ok` 且未提交 row 不可见。它不把无 journal ext2 的物理掉电恢复
+伪装成 SQLite 能力；QEMU SIGKILL 掉电仍由 filesystem 专项 gate 独立裁决。
+SQLite 第一阶段 `sync` 后由 host 结束 VM，再冷启动同一持久化镜像执行恢复策略；禁止在 HVF
+进程内用 system reset 串联两阶段，因为 QEMU 的 HVF exception handler 会触发 host `isv`
+assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 SQLite process-crash 门禁。
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
 HTTPS origin 的 raw accept 与 TLS handshake 分属 server/connection worker owner；启动时持有
@@ -104,4 +129,8 @@ HTTPS origin 的 raw accept 与 TLS handshake 分属 server/connection worker ow
 
 ## 完整成功条件
 
-`make verify` 必须依次通过 format、clippy、全部单元测试、blocking benchmark、release build、architecture/documentation fence、artifact/static-call gate、全部 runtime gate 与 `git diff --check`。
+默认 `make verify` 以 AArch64/HVF 作为 first-class 提交门禁，必须依次通过 format、clippy、
+全部单元测试、blocking benchmark、release build、architecture/documentation fence、
+artifact/static-call gate、全部 runtime gate 与 `git diff --check`。最后还必须以
+`riscv64 + tcg + release` 执行 RISC-V secondary 的 compile、static/artifact 和 boot 门禁；
+该 secondary 保留 backend 可构建与可启动契约，不冒充 AArch64 完整 runtime consumer 覆盖。

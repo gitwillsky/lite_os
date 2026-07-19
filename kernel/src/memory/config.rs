@@ -2,7 +2,7 @@
 // CpuTopology 的一次性早期分配。缺失它会让 global allocator 与 frame allocator 循环依赖。
 pub(crate) const BOOTSTRAP_HEAP_SIZE: usize = 2 * 1024 * 1024;
 
-pub(crate) use crate::arch::mmu::{PAGE_SIZE, USER_ADDRESS_END};
+pub(crate) use crate::arch::mmu::{PAGE_SIZE, USER_ADDRESS_END, USER_STACK_TOP};
 
 pub(crate) const USER_STACK_SIZE: usize = 8 * 1024 * 1024;
 

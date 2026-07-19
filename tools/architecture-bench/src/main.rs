@@ -1,12 +1,12 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-#[path = "../../../kernel/src/arch/riscv64/pte.rs"]
-mod riscv_pte;
-#[path = "../../../kernel/src/arch/riscv64/sv39.rs"]
-mod sv39;
+#[path = "../../../kernel/src/arch/aarch64/pte.rs"]
+mod aarch64_pte;
 #[path = "../../../kernel/src/timer/deadline.rs"]
 mod timer_deadline;
+#[path = "../../../kernel/src/arch/aarch64/va39.rs"]
+mod va39;
 
 const ITERATIONS: u64 = 2_000_000;
 const SAMPLES: usize = 5;
@@ -47,16 +47,22 @@ fn main() {
         let now = previous + iteration % 31;
         timer_deadline::next(previous, now, 7).expect("benchmark input must be valid") as usize
     });
-    verify("Sv39 indexes", |iteration| {
-        let indexes = sv39::indexes((iteration as usize).wrapping_mul(0x9e37_79b9));
+    verify("AArch64 VA39 indexes", |iteration| {
+        let indexes = va39::indexes((iteration as usize).wrapping_mul(0x9e37_79b9));
         indexes[0] ^ indexes[1] ^ indexes[2]
     });
-    verify("semantic PTE encoding", |iteration| {
-        let mut permissions = riscv_pte::PagePermissions::READ;
+    verify("AArch64 TLBI operand", |iteration| {
+        va39::tlbi_all_asid_operand(
+            0xffff_ffc0_0000_0000usize | (iteration as usize).wrapping_mul(4096),
+        ) as usize
+    });
+    verify("AArch64 semantic PTE encoding", |iteration| {
+        let mut permissions = aarch64_pte::PagePermissions::READ;
         if iteration & 1 != 0 {
-            permissions |= riscv_pte::PagePermissions::WRITE;
+            permissions |= aarch64_pte::PagePermissions::WRITE;
         }
-        let encoded = riscv_pte::encode(permissions).expect("benchmark permissions must be valid");
-        riscv_pte::decode(encoded).bits() as usize
+        let encoded =
+            aarch64_pte::encode(permissions).expect("benchmark permissions must be valid");
+        aarch64_pte::decode(encoded | aarch64_pte::TABLE_OR_PAGE).bits() as usize
     });
 }

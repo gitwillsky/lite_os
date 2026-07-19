@@ -1,7 +1,7 @@
 //! Memory-owned frame adapter for the architecture-owned page-table mechanism.
 
 use crate::{
-    arch::mmu::{ArchitecturePageTable, ArchitecturePageTableEntry, TablePage},
+    arch::mmu::{AddressSpaceKind, ArchitecturePageTable, ArchitecturePageTableEntry, TablePage},
     memory::{
         address::{PhysicalPageNumber, VirtualPageNumber},
         frame_allocator::{self, FrameTracker},
@@ -43,16 +43,25 @@ impl core::fmt::Debug for PageTable {
 }
 
 impl PageTable {
-    pub(crate) fn new() -> Self {
-        Self::try_new().expect("cannot allocate root frame for page table")
+    pub(crate) fn new(kind: AddressSpaceKind) -> Self {
+        Self::try_new(kind).expect("cannot allocate root frame for page table")
     }
 
-    pub(crate) fn try_new() -> Result<Self, PageTableError> {
-        ArchitecturePageTable::try_new().map(Self)
+    pub(crate) fn try_new(kind: AddressSpaceKind) -> Result<Self, PageTableError> {
+        ArchitecturePageTable::try_new(kind).map(Self)
     }
 
     pub(crate) fn token(&self) -> crate::arch::mmu::AddressSpaceToken {
         self.0.token()
+    }
+
+    pub(crate) fn kernel_trap_token(&self) -> crate::arch::mmu::KernelTrapToken {
+        self.0.kernel_trap_token()
+    }
+
+    /// @description 激活显式声明为 kernel 的 architecture root。
+    pub(crate) fn activate_kernel(&self) {
+        self.0.activate_kernel();
     }
 
     /// @description 在全 CPU fence 完成后把 architecture ASID 交还唯一 allocator。
@@ -75,24 +84,29 @@ impl PageTable {
             .map(usize::from(vpn), usize::from(ppn), permissions)?;
         commit.record(vpn.as_usize(), TranslationTransition::Publish);
         if permissions.contains(PagePermissions::EXECUTE) {
-            commit.record_instruction_publication();
+            commit.record_instruction_publication(ppn.as_usize(), 1);
         }
         Ok(())
     }
 
-    pub(in crate::memory) fn map_identity_range(
+    pub(in crate::memory) fn map_contiguous_range(
         &mut self,
-        start: VirtualPageNumber,
-        end: VirtualPageNumber,
+        virtual_start: VirtualPageNumber,
+        physical_start: PhysicalPageNumber,
+        page_count: usize,
         permissions: PagePermissions,
         commit: &mut TranslationCommit,
     ) -> Result<(), PageTableError> {
-        let start = start.as_usize();
-        let end = end.as_usize();
-        self.0.map_identity_range(start, end, permissions)?;
-        commit.record_range(start, end - start, TranslationTransition::Publish);
+        let virtual_start = virtual_start.as_usize();
+        self.0.map_contiguous_range(
+            virtual_start,
+            physical_start.as_usize(),
+            page_count,
+            permissions,
+        )?;
+        commit.record_range(virtual_start, page_count, TranslationTransition::Publish);
         if permissions.contains(PagePermissions::EXECUTE) {
-            commit.record_instruction_publication();
+            commit.record_instruction_publication(physical_start.as_usize(), page_count);
         }
         Ok(())
     }
@@ -117,10 +131,8 @@ impl PageTable {
         permissions: PagePermissions,
         commit: &mut TranslationCommit,
     ) -> Result<(), PageTableError> {
-        let old = self
-            .translate(vpn)
-            .ok_or(PageTableError::NotMapped)?
-            .permissions();
+        let old_entry = self.translate(vpn).ok_or(PageTableError::NotMapped)?;
+        let old = old_entry.permissions();
         self.0.set_flags(usize::from(vpn), permissions)?;
         if permissions != old {
             commit.record(
@@ -134,7 +146,7 @@ impl PageTable {
             if permissions.contains(PagePermissions::EXECUTE)
                 && !old.contains(PagePermissions::EXECUTE)
             {
-                commit.record_instruction_publication();
+                commit.record_instruction_publication(old_entry.ppn().as_usize(), 1);
             }
         }
         Ok(())

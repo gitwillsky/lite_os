@@ -12,6 +12,9 @@
 - runqueue 为空但 outgoing 仍为可继续的 Preempting/WakePending 时，scheduler 原地恢复
   Running/current，context switch 数为零。生产成本门禁以 1024 次 runnable handoff 约束
   kernel context switch 从旧双跳的 2048 次降为 1024 次，idle entry 从 1024 降为 0。
+- scheduler idle 的 local IRQ guard 覆盖 deferred/mailbox/runqueue 复查与 guarded WFI；架构
+  assembly 只为 WFI 临时开中断并在返回前再次关闭，trap 用精确 WFI/resume PC 关闭一次性
+  wake edge 窗口，不依赖下一个周期 tick 兜底。
 - TaskManager process graph 拥有 PID/TID、parent/child、creator Thread、process group/session、
   wait event、timer index 与 process lifecycle transaction；内部维护 direct-child、global TID、
   creator-dependent 与 `(SID,PGID)` exact-membership indexes，使 exit/wait/signal lookup 只触达
@@ -20,7 +23,10 @@
   16 个 source shard 允许无共同 source 的 publication/wake 并行。multi-source wait 仍只有一个
   registration，`Arming/Notified/Armed/Claimed` 状态封闭锁外 readiness 复查与 exactly-once
   completion；发布 membership 前完成全部 fallible allocation。
-- signal generation、pending、delivery 与 syscall replay 分层但不复制状态；exit、exec、vfork、robust-list 和 group-exit 均有明确 point of no return 与清理顺序。
+- signal generation、pending、delivery 与 syscall replay 分层但不复制状态；AArch64 live
+  FP/NEON image 只在 task switch、signal capture/restore、clone inheritance 与 exec reset
+  的固定边界转移，普通 trap 不复制 q0-q31。exit、exec、vfork、robust-list 和 group-exit
+  均有明确 point of no return 与清理顺序。
 
 ## Known limits
 

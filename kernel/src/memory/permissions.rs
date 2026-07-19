@@ -10,6 +10,8 @@ bitflags! {
         const W = 1 << 1;
         const X = 1 << 2;
         const U = 1 << 3;
+        /// Platform MMIO：AArch64 编为 Device-nGnRnE；普通 RAM/DMA 不设置。
+        const DEVICE = 1 << 4;
     }
 }
 
@@ -27,6 +29,9 @@ impl From<MapPermission> for PagePermissions {
         }
         if permission.contains(MapPermission::U) {
             result |= Self::USER;
+        }
+        if permission.contains(MapPermission::DEVICE) {
+            result |= Self::DEVICE;
         }
         result
     }

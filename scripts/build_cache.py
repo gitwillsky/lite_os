@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from qemu_gate import qemu_runtime
+
 CACHE_MANIFEST = ".liteos-cache.json"
 
 
@@ -157,9 +159,10 @@ def runtime_gate_payload(
     inputs: tuple[Path, ...],
 ) -> dict[str, object]:
     """构造只由实际执行比特、gate recipe 与 QEMU identity 决定的成功缓存键。"""
-    qemu = shutil.which("qemu-system-riscv64")
+    runtime = qemu_runtime()
+    qemu = shutil.which(runtime.binary)
     if qemu is None:
-        raise RuntimeError("qemu-system-riscv64 is required")
+        raise RuntimeError(f"{runtime.binary} is required")
     version = subprocess.run(
         [qemu, "--version"],
         check=True,
@@ -171,7 +174,15 @@ def runtime_gate_payload(
         "kind": kind,
         "recipe_version": recipe_version,
         "inputs": {str(path): sha256(path) for path in inputs},
-        "qemu": {"path": str(Path(qemu).resolve()), "version": version},
+        "qemu": {
+            "path": str(Path(qemu).resolve()),
+            "version": version,
+            "arch": runtime.arch,
+            "accel": runtime.acceleration,
+            "cpu": runtime.cpu,
+            "machine": runtime.machine,
+            "kernel_boot_artifact": runtime.kernel_boot_artifact,
+        },
     }
 
 

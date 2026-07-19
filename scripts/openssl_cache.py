@@ -21,10 +21,18 @@ from build_cache import (
     temporary_directory,
     write_manifest,
 )
+from build_target import target_from_environment
 from verify_musl import MuslCachePaths, compiler_identity, run
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target/openssl-runtime"
+TARGET = target_from_environment()
+# OpenSSL 的 Configure target 是 build target 的 compile-time 映射。缺少该映射会让
+# AArch64 rootfs 静默复用 RISC-V 配方，直到 guest exec 才暴露错误架构 ELF。
+OPENSSL_CONFIGURE_TARGET = {
+    "aarch64": "linux-aarch64",
+    "riscv64": "linux64-riscv64",
+}[TARGET.arch]
 OPENSSL_VERSION = "3.5.7"
 OPENSSL_URL = (
     "https://github.com/openssl/openssl/releases/download/"
@@ -117,7 +125,7 @@ def build_openssl(
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "compiler": compiler_identity(musl.compiler),
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
-        "configure_target": "linux64-riscv64",
+        "configure_target": OPENSSL_CONFIGURE_TARGET,
         "configure_options": list(CONFIGURE_OPTIONS),
     }
     entry_fingerprint = fingerprint(payload)
@@ -133,7 +141,7 @@ def build_openssl(
         {
             "LITEOS_MUSL_CLANG": str(musl.compiler),
             "LITEOS_MUSL_LLD": str(musl.linker),
-            "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+            "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
             "LITEOS_MUSL_SYSROOT": str(musl.install),
             "CC": f"{sys.executable} {ROOT / 'scripts/musl_clang.py'}",
             "AR": str(musl.archiver),
@@ -145,7 +153,7 @@ def build_openssl(
         run(
             [
                 str(source / "Configure"),
-                "linux64-riscv64",
+                OPENSSL_CONFIGURE_TARGET,
                 "--prefix=/usr",
                 "--openssldir=/etc/ssl",
                 *CONFIGURE_OPTIONS,

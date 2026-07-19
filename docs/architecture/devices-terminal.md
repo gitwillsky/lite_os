@@ -16,6 +16,7 @@
 - net RX/TX、input、GPU control/damage、block request 与 RNG 固定 buffer 初始化时建立并持有
   `DmaBuffer` 物理 segment mapping；steady-state virtqueue submission 只投影 cached ranges，地址
   空间锁与 page walk 均为 0。adapter drop 写 reset 并等到 status 读回 0 后，再释放这些 mapping。
+- QEMU `virt` backend 把 DTB `dma-coherent` 作为必需 machine fact；VirtIO 不维护 non-coherent shadow buffer 或运行时 cache-maintenance fallback。
 - GPU runtime completion 由独立 sequence owner 验证 fence/response 与 stage 顺序，阶段分支只选择
   下一条 `GpuCommand`；统一 command seam 负责 wire encoding、长度与 queue publication。
   该层只增加 fixed enum dispatch，不增加 lock、allocation 或 descriptor 数；MMIO completion 主导实际
@@ -41,5 +42,5 @@
 
 ## Known limits
 
-- DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
+- GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush；VirGL、Vulkan、3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
 - 图形 terminal 是当前固定 userspace consumer，不代表通用 GUI stack。

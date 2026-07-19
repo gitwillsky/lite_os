@@ -500,12 +500,11 @@ pub(crate) fn run_tasks() -> ! {
             continue;
         }
 
-        // 2. 所有 scheduler guard 释放后恢复 local interrupt，再进入 architecture wait；
-        // 反序会让 platform interrupt 无法唤醒 idle CPU。
-        // 3. enable 与 wait 之间命中 IRQ 时，周期 scheduler timer 最迟在下一 tick 结束 wait；
-        // 下一轮仍先关闭 local interrupt 重查 deferred/mailbox/run queue，不丢 runnable state。
+        // 2. guard 保持 local IRQ 关闭直到 architecture seam 临时开中断并完成 WFI。固定的
+        // WFI/resume PC 使 trap entry 能跳过已消费 edge 对应的 WFI，关闭 enable-to-WFI 窗口。
+        // 3. seam 返回时 IRQ 仍关闭；guard 随后恢复原状态，下一轮再原子复查全部 scheduler state。
+        crate::arch::interrupt::wait_with_local_irq_masked();
         drop(idle_irq);
-        crate::arch::interrupt::wait();
     }
 }
 

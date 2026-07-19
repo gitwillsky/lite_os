@@ -30,6 +30,12 @@ pub(crate) fn riscv_hwprobe_value(key: i64) -> Option<u64> {
     crate::arch::user::hardware_probe_value(key, crate::platform::timebase_frequency())
 }
 
+/// @description 判断当前编译期 architecture 是否定义 Linux `riscv_hwprobe` syscall。
+/// @return RISC-V 后端为 true；其他架构为 false，dispatcher 必须返回 `ENOSYS`。
+pub(crate) const fn supports_riscv_hwprobe() -> bool {
+    crate::arch::user::SUPPORTS_RISCV_HWPROBE
+}
+
 /// @description 返回 calling CPU 对应的紧凑 Linux logical CPU index。
 ///
 /// @return 按 platform CPU ID 升序排列的零基 CPU index。

@@ -163,6 +163,13 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[2] as *const timer::TimeSpec,
             args[3] as u32,
         ),
+        SYSCALL_RENAMEAT => sys_renameat2(
+            args[0] as isize,
+            args[1] as *const u8,
+            args[2] as isize,
+            args[3] as *const u8,
+            0,
+        ),
         SYSCALL_RENAMEAT2 => sys_renameat2(
             args[0] as isize,
             args[1] as *const u8,
@@ -300,7 +307,9 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         ),
         SYSCALL_PRLIMIT64 => sys_prlimit64(args[0], args[1], args[2], args[3]),
         SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
-        SYSCALL_RISCV_HWPROBE => sys_riscv_hwprobe(args[0], args[1], args[2], args[3], args[4]),
+        SYSCALL_RISCV_HWPROBE if crate::system::supports_riscv_hwprobe() => {
+            sys_riscv_hwprobe(args[0], args[1], args[2], args[3], args[4])
+        }
         _ => -errno::ENOSYS,
     };
     if result == INTERNAL_RESTART_SYS {

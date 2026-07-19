@@ -16,14 +16,18 @@
 | 129 | `kill` | Partial | PID/group selectors、permission 与 signal zero |
 | 130 | `tkill` | Complete | Thread-directed generation |
 | 131 | `tgkill` | Complete | TGID/TID validation |
-| 132 | `sigaltstack` | Complete | registration、active projection、autodisarm |
+| 132 | `sigaltstack` | Complete | registration、active projection、autodisarm；AArch64/RV64 `MINSIGSTKSZ` 分别为 5120/2048 |
 | 133 | `rt_sigsuspend` | Complete | atomic mask/wait transaction |
 | 134 | `rt_sigaction` | Complete | disposition、mask 与 supported flags |
 | 135 | `rt_sigprocmask` | Complete | per-Thread mask |
 | 137 | `rt_sigtimedwait` | Partial | standard signal set；无 queued realtime payload |
-| 139 | `rt_sigreturn` | Complete | RV64 frame restore 与 syscall replay |
+| 139 | `rt_sigreturn` | Complete | AArch64/RV64 architecture-owned frame、寄存器恢复与 syscall replay |
 | 169 | `gettimeofday` | Complete | realtime snapshot |
 
 ## 已知缺口
 
-queued realtime signal、全部 restartable syscall、其他 POSIX clock/timer notification mode 与非 RV64 signal-frame backend 尚未开放。
+queued realtime signal、全部 restartable syscall 与其他 POSIX clock/timer notification mode
+尚未开放。AArch64 `rt_sigframe` 固定为 4688 bytes，只接受一个 528-byte `FPSIMD_MAGIC`
+record 和 null terminator；SVE/SME、ESR、extra context 及动态扩展 frame 尚未开放。
+`rt_sigreturn` 只允许恢复 NZCV，拒绝 DAIF、PAN 等未由用户 ABI owner 管理的 PSTATE 位，
+并要求 PC 位于用户地址空间且 4-byte 对齐。

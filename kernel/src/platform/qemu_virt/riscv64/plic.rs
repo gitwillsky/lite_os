@@ -5,7 +5,7 @@ use super::plic_policy::{
 };
 use crate::{
     cpu::{self, CpuSet},
-    drivers::{InterruptController, InterruptError, InterruptHandler, InterruptVector},
+    drivers::{InterruptError, InterruptHandler, InterruptVector},
     fallible_tree::FallibleMap,
 };
 
@@ -155,8 +155,8 @@ impl PlicInterruptController {
     }
 }
 
-impl InterruptController for PlicInterruptController {
-    fn register_handler(
+impl PlicInterruptController {
+    pub(super) fn register_handler(
         &mut self,
         vector: InterruptVector,
         handler: Arc<dyn InterruptHandler>,
@@ -170,7 +170,10 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn enable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
+    pub(super) fn enable_interrupt(
+        &mut self,
+        vector: InterruptVector,
+    ) -> Result<(), InterruptError> {
         if !valid_interrupt_vector(vector) {
             return Err(InterruptError::InvalidVector);
         }
@@ -188,7 +191,7 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn set_priority(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
+    pub(super) fn set_priority(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
         if !valid_interrupt_vector(vector) {
             return Err(InterruptError::InvalidVector);
         }
@@ -196,7 +199,7 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn set_affinity(
+    pub(super) fn set_affinity(
         &mut self,
         vector: InterruptVector,
         cpus: CpuSet,
@@ -216,7 +219,7 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn handle_pending_interrupts(&mut self) -> Result<(), InterruptError> {
+    pub(super) fn handle_pending_interrupts(&mut self) -> Result<(), InterruptError> {
         let current = cpu::current_id();
         if !self.possible_cpus.contains(current) {
             return Err(InterruptError::InvalidVector);
@@ -236,9 +239,5 @@ impl InterruptController for PlicInterruptController {
             },
             |vector| self.complete(context, vector),
         )
-    }
-
-    fn supports_cpu_affinity(&self) -> bool {
-        true
     }
 }

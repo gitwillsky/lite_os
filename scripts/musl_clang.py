@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""为固定 musl sysroot 提供 Linux/RISC-V Clang 编译与动态 PIE 链接入口。"""
+"""为固定 musl sysroot 提供目标相关 Clang 编译与动态 PIE 链接入口。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+from build_target import target_from_environment
 
 
 def required_path(name: str) -> Path:
@@ -20,19 +22,21 @@ def required_path(name: str) -> Path:
 
 
 def main() -> int:
+    target = target_from_environment()
+    target_argument = f"--target={target.linux_triple}"
     clang = required_path("LITEOS_MUSL_CLANG")
     linker = required_path("LITEOS_MUSL_LLD")
-    libgcc = required_path("LITEOS_MUSL_LIBGCC")
+    compiler_runtime = required_path("LITEOS_MUSL_COMPILER_RUNTIME")
     sysroot = Path(os.environ["LITEOS_MUSL_SYSROOT"])
     arguments = sys.argv[1:]
     query = {"--version", "-dumpmachine", "-dumpversion", "-print-search-dirs"}
     if arguments and all(argument in query for argument in arguments):
         return subprocess.run(
-            [str(clang), "--target=riscv64-linux-musl", *arguments]
+            [str(clang), target_argument, *arguments]
         ).returncode
     command = [
         str(clang),
-        "--target=riscv64-linux-musl",
+        target_argument,
         "-nostdlibinc",
         "-isystem",
         str(sysroot / "usr/include"),
@@ -52,7 +56,7 @@ def main() -> int:
         return subprocess.run(
             [
                 str(clang),
-                "--target=riscv64-linux-musl",
+                target_argument,
                 "-c",
                 "-x",
                 "c",
@@ -72,7 +76,15 @@ def main() -> int:
     else:
         library = sysroot / "usr/lib"
         if "-shared" in arguments:
-            command.extend(["-nostdlib", f"-L{library}", *arguments, "-lc", str(libgcc)])
+            command.extend(
+                [
+                    "-nostdlib",
+                    f"-L{library}",
+                    *arguments,
+                    "-lc",
+                    str(compiler_runtime),
+                ]
+            )
         else:
             command.extend(
                 [
@@ -82,9 +94,9 @@ def main() -> int:
                     f"-L{library}",
                     *arguments,
                     "-lc",
-                    str(libgcc),
+                    str(compiler_runtime),
                     str(library / "crtn.o"),
-                    "-Wl,-dynamic-linker,/lib/ld-musl-riscv64.so.1",
+                    f"-Wl,-dynamic-linker,{target.musl_loader}",
                 ]
             )
     return subprocess.run(command).returncode

@@ -92,7 +92,9 @@ impl TaskControlBlock {
         // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
         // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
         // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
-        let user_cx_va = if share_user_memory {
+        let user_cx_va = if let Some(address) = kernel_stack.user_context_address() {
+            address
+        } else if share_user_memory {
             address_space
                 .memory_set
                 .lock()
@@ -102,8 +104,13 @@ impl TaskControlBlock {
             TRAP_CONTEXT
         };
         let user_context = address_space.bind_user_context(user_cx_va)?;
-        let memory_retirement_wait =
-            TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?;
+        let memory_retirement_wait = if user_cx_va != TRAP_CONTEXT
+            && !crate::arch::context::is_kernel_stack_user_context(user_cx_va)
+        {
+            Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?)
+        } else {
+            None
+        };
 
         // 3. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
         let mut child_trap = self.snapshot_user_context_for_clone();
@@ -116,13 +123,13 @@ impl TaskControlBlock {
                 start_time_us,
                 kernel_stack,
                 user_context,
-                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
+                kernel_cx: Mutex::new(KernelContext::clone_for_trap_return(
                     kernel_stack_top,
                     crate::task::resume_new_task,
                 )),
                 kernel_trap_handler: self.thread.kernel_trap_handler,
                 kernel_trap_return: self.thread.kernel_trap_return,
-                memory_retirement_wait: Mutex::new(Some(memory_retirement_wait)),
+                memory_retirement_wait: Mutex::new(memory_retirement_wait),
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),

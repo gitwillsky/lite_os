@@ -21,6 +21,8 @@
 - directory iteration 由 inode adapter 从 opaque cursor 直接推进：ext2 的 cursor 是下一 record byte
   offset，内存型 adapter 使用 ordinal cookie；VFS 不物化完整目录，`getdents64` 只编码一个有界 batch。
 - close、dup replacement、CLOEXEC 与 SCM receive 遵守 reserve/detach/publish 顺序，可能析构或通知的 consequence 在 fd-table lock 外执行。
+- VFS `openat(O_CREAT)` 在 namespace mutation owner 内原子选择 existing winner 或 create commit；
+  无 `O_EXCL` 的并发 append 不会因另一个 creator 先提交而误报 `EEXIST`。
 
 ## Known limits
 

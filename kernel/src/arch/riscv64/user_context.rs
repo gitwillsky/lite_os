@@ -2,6 +2,23 @@ use super::mmu::AddressSpaceToken;
 use super::trap::UserTrapEntry;
 use riscv::register::sstatus::{self, SPP, Sstatus};
 
+/// RISC-V UserContext 必须保留在 trampoline 可访问的 TTBR0/Sv39 映射中。
+pub(crate) const KERNEL_STACK_CONTEXT_RESERVE: usize = 0;
+
+/// @description RISC-V kernel stack 不承载用户 trap context。
+/// @param _mapped_top kernel stack mapping top；RISC-V 不消费。
+/// @return 始终为 None，选择现有 Sv39 trap-context VMA。
+pub(crate) const fn kernel_stack_user_context(_mapped_top: usize) -> Option<usize> {
+    None
+}
+
+/// @description RISC-V 没有 kernel-stack-owned UserContext。
+/// @param _address 任意 context address。
+/// @return 始终为 false。
+pub(crate) const fn is_kernel_stack_user_context(_address: usize) -> bool {
+    false
+}
+
 /// @description U-mode 与 S-mode trap 路径之间共享的完整用户执行上下文。
 #[repr(C)]
 #[derive(Debug, Clone)]

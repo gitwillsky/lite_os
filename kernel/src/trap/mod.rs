@@ -13,12 +13,33 @@ use crate::{
 
 #[inline(always)]
 fn handle_supervisor_soft_interrupt() {
-    // 1. 先清除 calling CPU 的 SSIP，再读取 barrier request。若反序，远端在
-    // completion 与 clear 之间发布的新 request 会丢失唯一 IPI edge 并永久等待。
+    // RISC-V SSIP 必须先 clear 再完成同步 barrier；两步是唯一 trap-owned ack seam。
     arch::interrupt::clear_software();
-    // 2. kernel SSIP 可以打断持有普通 driver/KERNEL_SPACE lock 的任意 syscall；此处只
-    // 完成同步 trap-owned barrier，领域 deferred work 统一留给 user-return/idle safe point。
     crate::task::complete_pending_memory_barrier();
+}
+
+#[inline(always)]
+fn handle_claimed_interrupt() {
+    let claimed = crate::platform::claim_interrupt();
+    let software = matches!(&claimed, crate::platform::ClaimedInterrupt::Software(_));
+    match &claimed {
+        crate::platform::ClaimedInterrupt::Timer(_) => {
+            // 先重置 level timer source，再 EOI；反序会让 GIC 立即重投同一 PPI。
+            timer::set_next_timer_interrupt();
+            cpu::raise_deferred(DeferredWork::Timer);
+        }
+        crate::platform::ClaimedInterrupt::Device(_) => {}
+        crate::platform::ClaimedInterrupt::Software(_) => {}
+        crate::platform::ClaimedInterrupt::Spurious => return,
+    }
+    // Device handler 已由 controller owner 在 claim 内完成；opaque token 必须 exactly once
+    // 返回同一 controller。RISC-V PLIC batch 已完成，静态 façade 在此消费 no-op token。
+    crate::platform::complete_interrupt(claimed);
+    if software {
+        // 必须先 EOI/清除 local pending edge，再读取 barrier request；若反序，远端在
+        // completion 与 EOI 之间发布的新 request 可能合并到旧 edge 并永久等待。
+        crate::task::complete_pending_memory_barrier();
+    }
 }
 
 pub(crate) fn init() {
@@ -35,12 +56,13 @@ pub(crate) fn handle_user_trap() -> ! {
             cpu::raise_deferred(DeferredWork::Timer);
         }
         TrapEvent::ExternalInterrupt => {
-            crate::platform::handle_external_interrupt();
+            handle_claimed_interrupt();
             if drivers::console_input_ready() {
                 cpu::raise_deferred(DeferredWork::Console);
             }
         }
         TrapEvent::SoftwareInterrupt => {
+            // RISC-V local SSIP 不经过 PLIC claim，仍由唯一 clear-then-barrier seam 确认。
             handle_supervisor_soft_interrupt();
         }
         TrapEvent::UnsupportedInterrupt => panic!("unsupported user interrupt"),
@@ -60,11 +82,12 @@ pub(crate) fn handle_user_trap() -> ! {
                     // 保持 sepc 不变；return path 初始化 FP register file 后重试原指令。
                     drop(current);
                 } else {
-                    error!(
-                        "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
-                        program_counter
-                    );
-                    exit_current_group_by_signal(4);
+                    current
+                        .queue_synchronous_fault(
+                            4,
+                            task::PendingSignal::synchronous_fault(1, program_counter),
+                        )
+                        .expect("SIGILL synchronous delivery must accept a valid current task");
                 }
             } else {
                 error!("[kernel] IllegalInstruction with no current task");
@@ -213,7 +236,7 @@ pub(crate) fn handle_kernel_trap() {
         TrapEvent::ExternalInterrupt => {
             // 内核态同步 I/O 可以被 external IRQ 打断；此处只确认 platform
             // interrupt-controller 状态，不在 hardirq 中调度。
-            crate::platform::handle_external_interrupt();
+            handle_claimed_interrupt();
             if drivers::console_input_ready() {
                 cpu::raise_deferred(DeferredWork::Console);
             }

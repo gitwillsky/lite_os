@@ -9,12 +9,13 @@ bitflags! {
         const EXECUTE = 1 << 2;
         const USER = 1 << 3;
         const GLOBAL = 1 << 4;
+        const DEVICE = 1 << 5;
     }
 }
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(super) struct RiscvPteFlags: u8 {
+    pub(super) struct RiscvPteFlags: u16 {
         const V = 1 << 0;
         const R = 1 << 1;
         const W = 1 << 2;
@@ -23,6 +24,8 @@ bitflags! {
         const G = 1 << 5;
         const A = 1 << 6;
         const D = 1 << 7;
+        /// RSW[0] retains the generic DEVICE semantic; hardware ignores this software-owned bit.
+        const DEVICE = 1 << 8;
     }
 }
 
@@ -30,6 +33,11 @@ bitflags! {
 /// @param permissions generic memory domain 请求的权限。
 /// @return 合法编码；write-without-read 在 RISC-V 上不可表达时返回 `None`。
 pub(super) fn encode(permissions: PagePermissions) -> Option<RiscvPteFlags> {
+    if permissions.contains(PagePermissions::DEVICE)
+        && permissions.intersects(PagePermissions::EXECUTE | PagePermissions::USER)
+    {
+        return None;
+    }
     if permissions.contains(PagePermissions::WRITE) && !permissions.contains(PagePermissions::READ)
     {
         return None;
@@ -49,6 +57,9 @@ pub(super) fn encode(permissions: PagePermissions) -> Option<RiscvPteFlags> {
     }
     if permissions.contains(PagePermissions::GLOBAL) {
         flags |= RiscvPteFlags::G;
+    }
+    if permissions.contains(PagePermissions::DEVICE) {
+        flags |= RiscvPteFlags::DEVICE;
     }
     Some(flags)
 }
@@ -73,6 +84,9 @@ pub(super) fn decode(flags: RiscvPteFlags) -> PagePermissions {
     if flags.contains(RiscvPteFlags::G) {
         permissions |= PagePermissions::GLOBAL;
     }
+    if flags.contains(RiscvPteFlags::DEVICE) {
+        permissions |= PagePermissions::DEVICE;
+    }
     permissions
 }
 
@@ -94,5 +108,14 @@ mod tests {
     #[test]
     fn riscv_backend_rejects_write_without_read() {
         assert_eq!(encode(PagePermissions::WRITE), None);
+    }
+
+    #[test]
+    fn riscv_accepts_kernel_device_semantic_without_private_pte_bits() {
+        let permissions = PagePermissions::READ | PagePermissions::WRITE | PagePermissions::DEVICE;
+        let encoded = encode(permissions).unwrap();
+        assert_eq!(decode(encoded), permissions);
+        assert!(encode(permissions | PagePermissions::EXECUTE).is_none());
+        assert!(encode(permissions | PagePermissions::USER).is_none());
     }
 }

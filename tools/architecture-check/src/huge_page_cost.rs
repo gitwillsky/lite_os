@@ -15,7 +15,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     match measure(root) {
         Ok(PhysmapCost { leaf_entries: 64 }) => {}
         Ok(cost) => errors.push(format!(
-            "kernel identity mappings must use the largest aligned Sv39 leaf without crossing a VMA permission boundary; B={REGION_BYTES}, measured {cost:?}"
+            "kernel direct mappings must use the largest aligned Sv39 leaf without crossing a VMA permission boundary; B={REGION_BYTES}, measured {cost:?}"
         )),
         Err(error) => errors.push(error),
     }
@@ -24,9 +24,9 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
 fn measure(root: &Path) -> Result<PhysmapCost, String> {
     let arch = read(root, ARCH_TABLE)?;
     let area = read(root, AREA)?;
-    if arch.contains("pub(crate) fn map_identity_range")
-        && arch.contains("fn largest_identity_leaf")
-        && area.contains(".map_identity_range(")
+    if arch.contains("pub(crate) fn map_contiguous_range")
+        && arch.contains("fn largest_contiguous_leaf")
+        && area.contains(".map_contiguous_range(")
     {
         return Ok(PhysmapCost {
             leaf_entries: REGION_BYTES / MIDDLE_PAGE,
@@ -39,7 +39,7 @@ fn measure(root: &Path) -> Result<PhysmapCost, String> {
             leaf_entries: REGION_BYTES / BASE_PAGE,
         });
     }
-    Err("kernel identity-map leaf selection seam is not recognized".into())
+    Err("kernel direct-map leaf selection seam is not recognized".into())
 }
 
 fn read(root: &Path, relative: &str) -> Result<String, String> {

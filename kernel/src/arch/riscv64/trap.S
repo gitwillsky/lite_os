@@ -106,13 +106,13 @@ __kernel_trap:
     .endr
     frcsr t0
     sd t0, 64*8(sp)
-    # If an external IRQ arrived after bootstrap enabled SIE but before WFI executed, sepc points
+    # If an interrupt arrived after a guarded wait enabled SIE but before WFI executed, sepc points
     # at WFI. Resume after it so the already-acknowledged sole device edge cannot be followed by
     # an unbounded sleep. Exact PC identity avoids a flag or a second interrupt-delivery path.
     csrr t0, sepc
-    la t1, __bootstrap_external_wfi
+    la t1, __local_irq_wait_wfi
     bne t0, t1, 9f
-    la t0, __bootstrap_external_wfi_resume
+    la t0, __local_irq_wait_wfi_resume
     csrw sepc, t0
 9:
     call __liteos_kernel_trap
@@ -135,17 +135,15 @@ __kernel_trap:
 
     .section .text
     .align 2
-    .globl __wait_for_external_interrupt
-    .globl __bootstrap_external_wfi
-    .globl __bootstrap_external_wfi_resume
-__wait_for_external_interrupt:
-    csrsi sie, 2
+    .globl __wait_with_local_irq_masked
+    .globl __local_irq_wait_wfi
+    .globl __local_irq_wait_wfi_resume
+__wait_with_local_irq_masked:
     csrsi sstatus, 2
-__bootstrap_external_wfi:
+__local_irq_wait_wfi:
     wfi
-__bootstrap_external_wfi_resume:
+__local_irq_wait_wfi_resume:
     csrci sstatus, 2
-    csrci sie, 2
     ret
 
     .section .text.trampoline

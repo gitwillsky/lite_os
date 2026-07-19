@@ -44,6 +44,7 @@
   发布 transport-error latch，并无条件发布一次 `DriverIo` deferred work；safe point 消费 error 后
   reset/fail 全部 request。吞掉 MMIO error 会让已 claim 的唯一 IRQ edge 后 waiter 永久睡眠。
 - platform 是 concrete adapter 的唯一装配者；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
+- QEMU `virt` 必须在任何 VirtIO queue publication 前证明 root `dma-coherent`；缺失时 fail-stop，禁止增加 bounce buffer、每次提交 cache flush 或“先运行再探测”的兼容路径。
 - DRM/evdev syscall 只编码固定 Linux UAPI。devfs 只发布 object identity，不拥有 device state。
 - display completion、input packet 与 PTY byte readiness 统一投递 semantic event；hardirq 不执行 renderer、filesystem 或 task logic。
 - terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。
@@ -54,8 +55,8 @@
   echo 的完整 Console write，TCSETSW 取得该锁后才应用设置。TCSETSF 还必须在 Terminal→Console
   唯一 lock order 下同时丢弃 raw adapter input、cooked queue、partial line 与 EOF；未来 adapter 若在
   `Console::write` 内阻塞等待将破坏该临界区契约。
-- 普通 console formatting 在唯一 IRQ-safe owner 内使用 256-byte BSS batch，并通过 SBI DBCN bulk
-  write 同步 drain；panic 保留无锁单字节 fail-stop 通道。全局 severity 由 logging Atomic owner
+- 普通 console formatting 在唯一 IRQ-safe owner 内使用 256-byte BSS batch，并通过所选 platform
+  的同步 console seam drain（RISC-V SBI DBCN、AArch64 PL011）；panic 保留无锁单字节 fail-stop 通道。全局 severity 由 logging Atomic owner
   在 format arguments 构造前判断，被过滤日志不得取得 logger/console lock。
 
 ## Failure and cleanup

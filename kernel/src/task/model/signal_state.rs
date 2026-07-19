@@ -1,4 +1,4 @@
-/// @description Linux RV64 signal disposition 的 kernel 表示。
+/// @description Linux 64-bit signal disposition 的 kernel 表示。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SignalAction {
     pub(crate) handler: usize,
@@ -34,8 +34,12 @@ pub(crate) struct PendingSignal {
     code: i32,
     pid: i32,
     status: i32,
+    fault_layout: bool,
+    forced: bool,
     value: u64,
 }
+
+const _: () = assert!(core::mem::size_of::<PendingSignal>() == 24);
 
 impl PendingSignal {
     /// @description 构造 thread-directed signal 的 `SI_TKILL` 来源。
@@ -48,6 +52,7 @@ impl PendingSignal {
             pid: pid as i32,
             status: 0,
             value: 0,
+            ..Self::default()
         }
     }
 
@@ -61,6 +66,7 @@ impl PendingSignal {
             pid: pid as i32,
             status: 0,
             value: 0,
+            ..Self::default()
         }
     }
 
@@ -75,6 +81,7 @@ impl PendingSignal {
             pid: pid as i32,
             status,
             value: 0,
+            ..Self::default()
         }
     }
 
@@ -89,6 +96,7 @@ impl PendingSignal {
             pid: pid as i32,
             status: signal as i32,
             value: 0,
+            ..Self::default()
         }
     }
 
@@ -103,6 +111,7 @@ impl PendingSignal {
             pid: pid as i32,
             status: signal as i32,
             value: 0,
+            ..Self::default()
         }
     }
 
@@ -116,6 +125,7 @@ impl PendingSignal {
             pid: pid as i32,
             status: 18,
             value: 0,
+            ..Self::default()
         }
     }
 
@@ -128,6 +138,22 @@ impl PendingSignal {
             pid: 0,
             status: 0,
             value: 0,
+            ..Self::default()
+        }
+    }
+
+    /// @description 构造由当前 instruction/data fault 强制投递的同步 signal 来源。
+    /// @param code signal-specific positive `si_code`，例如 `ILL_ILLOPC`。
+    /// @param address 触发 fault 的用户虚拟地址。
+    /// @return fault union 在 offset 16 编码 `si_addr`，并标记为绕过 PID 1 默认豁免。
+    pub(crate) fn synchronous_fault(code: i32, address: usize) -> Self {
+        assert!(code > 0, "synchronous fault si_code must be positive");
+        Self {
+            code,
+            fault_layout: true,
+            forced: true,
+            value: address as u64,
+            ..Self::default()
         }
     }
 
@@ -143,10 +169,11 @@ impl PendingSignal {
             pid: id,
             status: overrun,
             value,
+            ..Self::default()
         }
     }
 
-    /// @description 编码 Linux RV64 128-byte `siginfo_t` 公共头与 kill/SIGCHLD union 字段。
+    /// @description 编码 Linux 64-bit 128-byte `siginfo_t` 公共头与 kill/SIGCHLD/fault union 字段。
     ///
     /// @param signal Linux signal number。
     /// @return 完整零初始化的 ABI 字节。
@@ -154,14 +181,22 @@ impl PendingSignal {
         let mut bytes = [0u8; 128];
         bytes[0..4].copy_from_slice(&(signal as i32).to_ne_bytes());
         bytes[8..12].copy_from_slice(&self.code.to_ne_bytes());
-        bytes[16..20].copy_from_slice(&self.pid.to_ne_bytes());
+        if self.fault_layout {
+            bytes[16..24].copy_from_slice(&self.value.to_ne_bytes());
+        } else {
+            bytes[16..20].copy_from_slice(&self.pid.to_ne_bytes());
+        }
         if self.code == -2 {
             bytes[20..24].copy_from_slice(&self.status.to_ne_bytes());
             bytes[24..32].copy_from_slice(&self.value.to_ne_bytes());
-        } else {
+        } else if !self.fault_layout {
             bytes[24..28].copy_from_slice(&self.status.to_ne_bytes());
         }
         bytes
+    }
+
+    fn is_forced_fault(self) -> bool {
+        self.fault_layout && self.forced
     }
 }
 
@@ -184,6 +219,8 @@ impl PendingSignals {
         if self.bits & bit == 0 {
             self.info[signal] = info;
             self.bits |= bit;
+        } else {
+            super::synchronous_fault::merge_forced(&mut self.info[signal].forced, info.forced);
         }
     }
 
@@ -234,6 +271,34 @@ impl ProcessSignalState {
 }
 
 impl TaskControlBlock {
+    /// @description 向当前 Thread 强制投递一个 synchronous fault signal。
+    /// @param signal `1..=64` 的 Linux signal number。
+    /// @param info 必须由 `PendingSignal::synchronous_fault` 构造。
+    /// @return disposition、mask 与 thread-pending 已在唯一锁事务中发布时成功。
+    /// @errors signal 非法或 info 不是同步 fault 来源时返回 `Err(())`。
+    pub(crate) fn queue_synchronous_fault(
+        &self,
+        signal: usize,
+        info: PendingSignal,
+    ) -> Result<(), ()> {
+        if signal == 0 || signal > 64 || !info.is_forced_fault() {
+            return Err(());
+        }
+        let mut signal_mask = self.thread.signal_mask.lock();
+        let mut state = self.process.signal_state.lock();
+        let policy = super::synchronous_fault::force_synchronous_fault(
+            signal,
+            state.actions[signal].handler,
+            *signal_mask,
+        );
+        if policy.reset_to_default {
+            state.actions[signal] = SignalAction::default();
+        }
+        *signal_mask = policy.signal_mask;
+        self.thread.pending_signals.lock().queue(signal, info);
+        Ok(())
+    }
+
     /// @description 将 standard signal 及首个来源合并进当前 Thread 的 pending state。
     ///
     /// @param threads 同一 Process 的完整 live Thread 集合，用于原子消除 stop/continue 冲突。
@@ -311,40 +376,7 @@ fn signal_conflicting_mask(signal: usize) -> u64 {
 use alloc::sync::Arc;
 
 use super::*;
-use crate::arch::context::SignalMachineContext;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct UserSignalStack {
-    sp: usize,
-    flags: i32,
-    padding: u32,
-    size: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SignalUserContext {
-    flags: usize,
-    link: usize,
-    stack: UserSignalStack,
-    signal_mask: u64,
-    unused: [u8; 120],
-    context: SignalMachineContext,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct RtSignalFrame {
-    info: [u8; 128],
-    context: SignalUserContext,
-}
-
-const _: () = {
-    assert!(core::mem::size_of::<SignalMachineContext>() == 784);
-    assert!(core::mem::size_of::<SignalUserContext>() == 952);
-    assert!(core::mem::size_of::<RtSignalFrame>() == 1080);
-};
+use crate::arch::context::{SIGNAL_FRAME_SIZE, SignalFrame, SignalStack as ArchSignalStack};
 
 impl TaskControlBlock {
     fn apply_syscall_restart(&self, context: &mut UserContext) {
@@ -354,7 +386,7 @@ impl TaskControlBlock {
         context.restart_syscall(restart.syscall_id, restart.args, restart.ecall_pc);
     }
 
-    /// @description 在 trap return 前选择 pending signal，并构造唯一 RV64 rt frame。
+    /// @description 在 trap return 前选择 pending signal，并委托编译期 arch codec 构造 frame。
     ///
     /// @return 无可交付 signal/handler frame 已就绪时返回 `None`；默认终止返回状态码。
     /// @errors 用户栈 frame 无法完整写入时返回 `UserAccessError`。
@@ -380,9 +412,12 @@ impl TaskControlBlock {
             if signal_is_ignored(signal, action) {
                 continue;
             }
-            // Linux 的 SIGNAL_UNKILLABLE 语义只压制 PID 1 的默认 disposition；显式
-            // handler 仍需执行，强制同步 fault 则不经过 pending delivery 入口。
-            if self.tgid() == crate::task::pid::INIT_PID && action.handler == 0 {
+            // Linux 的 SIGNAL_UNKILLABLE 语义只压制 PID 1 的异步默认 disposition；显式
+            // handler 仍需执行，force_sig_info 发布的同步 fault 必须绕过该豁免。
+            if self.tgid() == crate::task::pid::INIT_PID
+                && action.handler == 0
+                && !signal_info.forced
+            {
                 continue;
             }
             if signal_is_default_stop(signal, action) {
@@ -410,47 +445,27 @@ impl TaskControlBlock {
                 .take()
                 .unwrap_or(selection_mask);
 
-            let (user_stack_pointer, machine_context) = self.thread.user_context.with(|context| {
+            let user_stack_pointer = self.thread.user_context.with(|context| {
                 if action.flags & SA_RESTART != 0 {
                     self.apply_syscall_restart(context);
                 } else {
                     self.thread.syscall_restart.lock().take();
                 }
-                (
-                    context.stack_pointer(),
-                    context.capture_signal_machine_context(),
-                )
+                context.stack_pointer()
             });
-            let frame_size = core::mem::size_of::<RtSignalFrame>();
             let (frame_address, saved_stack) = self.signal_frame_stack(
                 user_stack_pointer,
                 action.flags & SA_ONSTACK != 0,
-                frame_size,
+                SIGNAL_FRAME_SIZE,
             )?;
-            let frame = RtSignalFrame {
-                info: signal_info.encode(signal),
-                context: SignalUserContext {
-                    flags: 0,
-                    link: 0,
-                    stack: UserSignalStack {
-                        sp: saved_stack.sp,
-                        flags: saved_stack.flags,
-                        padding: 0,
-                        size: saved_stack.size,
-                    },
-                    signal_mask: old_mask,
-                    unused: [0; 120],
-                    context: machine_context,
-                },
-            };
-            // SAFETY: repr(C) frame contains no references or padding with uninitialized data.
-            let bytes = unsafe {
-                core::slice::from_raw_parts(
-                    (&frame as *const RtSignalFrame).cast::<u8>(),
-                    frame_size,
+            let frame = self.thread.user_context.with(|context| {
+                context.capture_signal_frame(
+                    signal_info.encode(signal),
+                    ArchSignalStack::new(saved_stack.sp, saved_stack.flags, saved_stack.size),
+                    old_mask,
                 )
-            };
-            self.copy_to_user(frame_address, bytes)?;
+            });
+            self.copy_to_user(frame_address, frame.as_bytes())?;
             self.commit_signal_stack_delivery();
             let mut new_mask = old_mask | action.mask;
             if action.flags & SA_NODEFER == 0 {
@@ -472,30 +487,33 @@ impl TaskControlBlock {
         }
     }
 
-    /// @description 从当前用户 sp 读取并恢复唯一 RV64 rt signal frame。
+    /// @description 从当前用户 sp 读取并由编译期 arch codec 恢复 rt signal frame。
     ///
     /// @return 恢复后的用户 `a0`。
     /// @errors frame 不可读或包含未支持 extension 时返回 `UserAccessError`。
     pub(crate) fn restore_signal_frame(&self) -> Result<usize, UserAccessError> {
         let frame_address = self.user_stack_pointer();
-        let mut bytes = [0u8; core::mem::size_of::<RtSignalFrame>()];
-        self.copy_from_user(frame_address, &mut bytes)?;
-        // SAFETY: byte array has the exact size/alignment-independent representation; read_unaligned
-        // produces an owned frame before any field is inspected.
-        let frame = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<RtSignalFrame>()) };
-        let (result, restored_sp) = self.thread.user_context.with(|context| {
-            let result = context
-                .restore_signal_machine_context(&frame.context.context)
-                .map_err(|_| UserAccessError::Fault)?;
-            Ok::<_, UserAccessError>((result, context.stack_pointer()))
-        })?;
-        *self.thread.signal_mask.lock() = normalize_signal_mask(frame.context.signal_mask);
+        let mut frame = SignalFrame::zeroed();
+        self.copy_from_user(frame_address, frame.as_bytes_mut())?;
+        let (result, signal_mask, signal_stack, restored_sp) =
+            self.thread.user_context.with(|context| {
+                let (result, signal_mask, signal_stack) = context
+                    .restore_signal_frame(&frame)
+                    .map_err(|_| UserAccessError::Fault)?;
+                Ok::<_, UserAccessError>((
+                    result,
+                    signal_mask,
+                    signal_stack,
+                    context.stack_pointer(),
+                ))
+            })?;
+        *self.thread.signal_mask.lock() = normalize_signal_mask(signal_mask);
         self.restore_signal_stack(
             restored_sp,
             SignalStack {
-                sp: frame.context.stack.sp,
-                flags: frame.context.stack.flags,
-                size: frame.context.stack.size,
+                sp: signal_stack.sp(),
+                flags: signal_stack.flags(),
+                size: signal_stack.size(),
             },
         );
         Ok(result)

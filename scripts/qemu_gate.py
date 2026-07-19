@@ -11,15 +11,128 @@ import signal
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Mapping
+
+from build_target import (
+    Acceleration,
+    acceleration_from_environment,
+    target_from_environment,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-SERIAL_WRITE_CHUNK = 4
-SERIAL_WRITE_INTERVAL_SECONDS = 0.001
+SERIAL_WRITE_CHUNK = 1
+SERIAL_WRITE_INTERVAL_SECONDS = 0.0001
 SERIAL_TRIGGER_SETTLE_SECONDS = 0.02
 SERIAL_ESCAPE_SETTLE_SECONDS = 0.1
+FATAL_LINE_DRAIN_SECONDS = 0.25
+
+
+@dataclass(frozen=True)
+class QemuRuntime:
+    """一次 runtime gate 的目标相关 QEMU identity。"""
+
+    arch: str
+    acceleration: Acceleration
+    binary: str
+    cpu: str
+    machine: str
+    kernel_elf: str
+    kernel_boot_artifact: str
+    bootloader: str | None
+
+
+def qemu_runtime(
+    environment: Mapping[str, str] | None = None,
+) -> QemuRuntime:
+    """解析 runtime gate 的唯一目标、加速器和产物路由。
+
+    Raises:
+        ValueError: ARCH/ACCEL 未知，或选择了 RISC-V 不支持的 HVF。
+    """
+    target = target_from_environment(environment)
+    acceleration = acceleration_from_environment(environment)
+    cpu = target.qemu_cpu(acceleration)
+    bootloader = None
+    if target.requires_bootloader:
+        bootloader = (
+            f"bootloader/target/{target.kernel_triple}/release/bootloader"
+        )
+    return QemuRuntime(
+        arch=target.arch,
+        acceleration=acceleration,
+        binary=target.qemu_binary,
+        cpu=cpu,
+        machine=target.qemu_machine(acceleration),
+        kernel_elf=target.kernel_elf(),
+        kernel_boot_artifact=target.kernel_boot_artifact(),
+        bootloader=bootloader,
+    )
+
+
+def _qemu_command(
+    image: Path, smp: int, interactive_devices: bool = False
+) -> list[str]:
+    runtime = qemu_runtime()
+    qemu = shutil.which(runtime.binary)
+    if qemu is None:
+        raise RuntimeError(f"{runtime.binary} is required")
+    command = [
+        qemu,
+        "-machine",
+        runtime.machine,
+        "-cpu",
+        runtime.cpu,
+    ]
+    command.extend(
+        [
+            "-global",
+            "virtio-mmio.force-legacy=false",
+            "-nographic",
+            "-smp",
+            str(smp),
+            "-rtc",
+            "base=utc",
+        ]
+    )
+    if runtime.bootloader is not None:
+        command.extend(["-bios", runtime.bootloader])
+    command.extend(
+        [
+            "-kernel",
+            runtime.kernel_boot_artifact,
+            "-drive",
+            f"file={image},if=none,format=raw,id=x0",
+            "-device",
+            "virtio-blk-device,drive=x0",
+            "-object",
+            "rng-random,filename=/dev/urandom,id=rng0",
+            "-device",
+            "virtio-rng-device,rng=rng0",
+        ]
+    )
+    if interactive_devices:
+        command.extend(
+            [
+                "-device",
+                "virtio-gpu-device,xres=3008,yres=1692",
+                "-device",
+                "virtio-keyboard-device",
+                "-device",
+                "virtio-tablet-device",
+            ]
+        )
+    command.extend(
+        [
+            "-netdev",
+            "user,id=net0",
+            "-device",
+            "virtio-net-device,netdev=net0",
+        ]
+    )
+    return command
 
 
 def cpu_topology_markers(cpu_count: int) -> tuple[str, str]:
@@ -55,9 +168,10 @@ def send_interaction(stream: BinaryIO, data: bytes) -> None:
     """
     # QEMU stdio pipe 没有 guest UART 的硬件流控；一次写入长命令会让字符在 IRQ drain 前溢出，
     # ash 随后收到残缺引号并停在 continuation prompt，令 gate 误报 kernel 功能失败。
-    # raw-mode applet 的 ESC command sequence 不能依赖 canonical line buffering；逐字节注入可避免
-    # 16550 FIFO 在 editor 尚未完成 mode transition 时吞掉尾部控制字符。普通 shell 命令仍使用批次。
-    chunk_size = 1 if b"\x1b" in data else SERIAL_WRITE_CHUNK
+    # PL011/QEMU stdio 没有 hardware flow control，且 guest 会在 bounded deferred batch 中短暂
+    # 屏蔽 IRQ；逐字节平滑到 10 KB/s（低于 115200 baud 的有效 byte rate），既保持 gate
+    # 吞吐，也不会让 4-byte host burst 绕过 UART FIFO。raw-mode applet 的 ESC sequence 同样依赖这个顺序。
+    chunk_size = SERIAL_WRITE_CHUNK
     for offset in range(0, len(data), chunk_size):
         if offset != 0 and (data[offset] == 0x1B or data[offset - 1] == 0x1B):
             time.sleep(SERIAL_ESCAPE_SETTLE_SECONDS)
@@ -97,6 +211,33 @@ def terminate(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=3)
 
 
+def drain_fatal_line(stream: BinaryIO, output: bytearray) -> None:
+    """命中 fatal marker 后补齐当前串口日志行，保留可诊断的失败证据。
+
+    Args:
+        stream: QEMU stdout 的唯一 binary pipe。
+        output: 已收集且包含 fatal marker 的输出缓冲区。
+
+    Returns:
+        当前行结束、QEMU 关闭 pipe 或 250ms 上限到达时返回。
+    """
+    if output.endswith(b"\n"):
+        return
+    deadline = time.monotonic() + FATAL_LINE_DRAIN_SECONDS
+    remaining = 4096
+    while remaining != 0 and time.monotonic() < deadline:
+        ready, _, _ = select.select([stream], [], [], deadline - time.monotonic())
+        if not ready:
+            return
+        chunk = os.read(stream.fileno(), remaining)
+        if not chunk:
+            return
+        output.extend(chunk)
+        remaining -= len(chunk)
+        if b"\n" in chunk:
+            return
+
+
 def boot(
     image: Path,
     smp: int,
@@ -105,6 +246,7 @@ def boot(
     interactions: tuple[tuple[str, bytes], ...] = (),
     forbidden_markers: tuple[str, ...] = (),
     persistent_writes: bool = False,
+    interactive_devices: bool = False,
 ) -> None:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
@@ -116,6 +258,7 @@ def boot(
         interactions: 按输出 marker 排序触发的终端输入。
         forbidden_markers: 任一出现即立即失败的输出标记。
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
+        interactive_devices: 是否加入 run-gui 的 GPU、keyboard 与 tablet 设备拓扑。
 
     Returns:
         None；全部 marker 出现时返回。
@@ -123,9 +266,6 @@ def boot(
     Raises:
         RuntimeError: QEMU 缺失、异常退出、超时或命中禁止标记。
     """
-    qemu = shutil.which("qemu-system-riscv64")
-    if not qemu:
-        raise RuntimeError("qemu-system-riscv64 is required")
     private_directory: tempfile.TemporaryDirectory[str] | None = None
     if not persistent_writes:
         # QEMU snapshot 仍会申请 backing image 锁；私有副本才能与开发实例确定性隔离。
@@ -134,35 +274,7 @@ def boot(
         private_image = Path(private_directory.name) / image.name
         shutil.copyfile(image, private_image)
         image = private_image
-    drive = f"file={image},if=none,format=raw,id=x0"
-    command = [
-        qemu,
-        "-machine",
-        "virt",
-        "-global",
-        "virtio-mmio.force-legacy=false",
-        "-nographic",
-        "-smp",
-        str(smp),
-        "-rtc",
-        "base=utc",
-        "-bios",
-        "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
-        "-kernel",
-        "target/riscv64gc-unknown-none-elf/debug/kernel",
-        "-drive",
-        drive,
-        "-device",
-        "virtio-blk-device,drive=x0",
-        "-object",
-        "rng-random,filename=/dev/urandom,id=rng0",
-        "-device",
-        "virtio-rng-device,rng=rng0",
-        "-netdev",
-        "user,id=net0",
-        "-device",
-        "virtio-net-device,netdev=net0",
-    ]
+    command = _qemu_command(image, smp, interactive_devices)
     process = subprocess.Popen(
         command,
         cwd=ROOT,
@@ -187,6 +299,8 @@ def boot(
                 text = ANSI.sub("", output.decode(errors="replace"))
                 found = [marker for marker in forbidden_markers if marker in text]
                 if found:
+                    drain_fatal_line(process.stdout, output)
+                    text = ANSI.sub("", output.decode(errors="replace"))
                     tail = "\n".join(text.splitlines()[-40:])
                     raise RuntimeError(
                         f"QEMU -smp {smp} reached forbidden markers: {found!r}"
@@ -209,7 +323,11 @@ def boot(
                         send_interaction(process.stdin, data)
                 if all(marker in text for marker in markers):
                     if "panicked at" in text or "[ERROR]" in text:
-                        raise RuntimeError(f"QEMU -smp {smp} reached a fatal/error path")
+                        tail = "\n".join(text.splitlines()[-40:])
+                        raise RuntimeError(
+                            f"QEMU -smp {smp} reached a fatal/error path"
+                            f"\n--- output tail ---\n{tail}"
+                        )
                     return
             if process.poll() is not None:
                 break
@@ -239,7 +357,7 @@ def power_cut(
     Args:
         image: 直接承受 guest 写入的私有 root image。
         smp: QEMU 暴露的 hart 数。
-        command: shell 激活后执行且必须持续 mutation 的命令。
+        command: shell 激活后执行且必须持续 mutation 的命令；为空时 guest sysinit 自启动。
         active_marker: guest 确认 mutation loop 已开始的输出。
         delay_seconds: 观察到 active marker 后到 SIGKILL 的确定性延迟。
         timeout_seconds: 等待 console 与 active marker 的最大秒数。
@@ -250,38 +368,8 @@ def power_cut(
     Raises:
         RuntimeError: QEMU 不可用、提前退出、超时或命中 kernel fatal path。
     """
-    qemu = shutil.which("qemu-system-riscv64")
-    if not qemu:
-        raise RuntimeError("qemu-system-riscv64 is required")
     process = subprocess.Popen(
-        [
-            qemu,
-            "-machine",
-            "virt",
-            "-global",
-            "virtio-mmio.force-legacy=false",
-            "-nographic",
-            "-smp",
-            str(smp),
-            "-rtc",
-            "base=utc",
-            "-bios",
-            "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
-            "-kernel",
-            "target/riscv64gc-unknown-none-elf/debug/kernel",
-            "-drive",
-            f"file={image},if=none,format=raw,id=x0",
-            "-device",
-            "virtio-blk-device,drive=x0",
-            "-object",
-            "rng-random,filename=/dev/urandom,id=rng0",
-            "-device",
-            "virtio-rng-device,rng=rng0",
-            "-netdev",
-            "user,id=net0",
-            "-device",
-            "virtio-net-device,netdev=net0",
-        ],
+        _qemu_command(image, smp),
         cwd=ROOT,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -290,7 +378,7 @@ def power_cut(
     )
     assert process.stdin is not None and process.stdout is not None
     output = bytearray()
-    command_sent = False
+    command_sent = not command
     deadline = time.monotonic() + timeout_seconds
     try:
         while time.monotonic() < deadline:
@@ -305,7 +393,13 @@ def power_cut(
             output.extend(chunk)
             text = ANSI.sub("", output.decode(errors="replace"))
             if "panicked at" in text or "[ERROR]" in text:
-                raise RuntimeError("power-cut guest reached a kernel fatal path")
+                drain_fatal_line(process.stdout, output)
+                text = ANSI.sub("", output.decode(errors="replace"))
+                tail = "\n".join(text.splitlines()[-40:])
+                raise RuntimeError(
+                    "power-cut guest reached a kernel fatal path"
+                    f"\n--- output tail ---\n{tail}"
+                )
             if not command_sent and "Enter 'help' for a list of built-in commands." in text:
                 time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
                 send_interaction(process.stdin, command)

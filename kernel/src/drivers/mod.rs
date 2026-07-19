@@ -1,6 +1,5 @@
 pub(crate) mod block;
 mod display;
-mod goldfish_rtc;
 mod hal;
 mod input;
 pub(crate) mod io_completion;
@@ -17,10 +16,7 @@ mod virtio_rng;
 pub(crate) use display::{
     DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
 };
-pub(crate) use goldfish_rtc::GoldfishRTCDevice;
-pub(crate) use hal::{
-    InterruptController, InterruptError, InterruptHandler, InterruptVector, MmioBus,
-};
+pub(crate) use hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus};
 use hal::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
@@ -65,15 +61,13 @@ pub(crate) fn register_display_device(
     display::register(device)
 }
 
-pub(crate) fn initialize_console_uart(
-    base: usize,
-    size: usize,
-) -> Result<alloc::sync::Arc<dyn InterruptHandler>, InterruptError> {
-    uart::init(base, size)
+pub(crate) fn initialize_console_input() -> Result<(), InterruptError> {
+    uart::init()
 }
 
-pub(crate) fn enable_console_uart_receive() {
-    uart::enable_receive_interrupt();
+/// @description 由 platform UART hardirq 发布已 drain 的 bounded RX batch。
+pub(crate) fn publish_console_input(bytes: &[u8]) {
+    uart::publish_received(bytes);
 }
 
 /// @description 从唯一 UART RX ring 非阻塞读取 console bytes。

@@ -3,6 +3,7 @@
 mod mmu {
     #[derive(Clone, Copy)]
     pub(crate) struct AddressSpaceToken;
+    pub(crate) type KernelTrapToken = AddressSpaceToken;
 
     impl AddressSpaceToken {
         pub(crate) fn from_root_page(_root_page: usize, _address_space_id: usize) -> Self {
@@ -15,6 +16,7 @@ mod mmu {
     }
 
     pub(crate) fn release_address_space_id_after_global_fence(_address_space_id: usize) {}
+    pub(crate) fn activate_kernel(_token: AddressSpaceToken) {}
 }
 
 #[path = "../../../kernel/src/arch/riscv64/page_table.rs"]
@@ -33,7 +35,7 @@ mod tests {
     };
 
     use super::{
-        page_table::{PageTable, TablePage},
+        page_table::{AddressSpaceKind, PageTable, TablePage},
         pte::PagePermissions,
     };
 
@@ -72,7 +74,7 @@ mod tests {
     fn isolated_leaf_detaches_empty_tables_but_retains_frames_for_fence() {
         let _serial = PAGE_TABLE_TEST.lock().unwrap();
         assert_eq!(LIVE_TABLE_PAGES.load(Ordering::Relaxed), 0);
-        let mut table = PageTable::<HostTablePage>::try_new().unwrap();
+        let mut table = PageTable::<HostTablePage>::try_new(AddressSpaceKind::User).unwrap();
         table
             .map(
                 0x4_0201,
@@ -98,20 +100,22 @@ mod tests {
     #[test]
     fn aligned_identity_range_uses_middle_leaves_without_crossing_permissions() {
         let _serial = PAGE_TABLE_TEST.lock().unwrap();
-        let mut table = PageTable::<HostTablePage>::try_new().unwrap();
+        let mut table = PageTable::<HostTablePage>::try_new(AddressSpaceKind::User).unwrap();
         let start = 0x8_0000;
         let middle_pages = 512;
         table
-            .map_identity_range(
+            .map_contiguous_range(
                 start,
-                start + middle_pages,
+                start,
+                middle_pages,
                 PagePermissions::READ | PagePermissions::USER,
             )
             .unwrap();
         table
-            .map_identity_range(
+            .map_contiguous_range(
                 start + middle_pages,
-                start + 2 * middle_pages,
+                start + middle_pages,
+                middle_pages,
                 PagePermissions::READ | PagePermissions::WRITE,
             )
             .unwrap();
@@ -133,10 +137,10 @@ mod tests {
     #[test]
     fn middle_leaf_revoke_requires_base_and_reports_full_fence_span() {
         let _serial = PAGE_TABLE_TEST.lock().unwrap();
-        let mut table = PageTable::<HostTablePage>::try_new().unwrap();
+        let mut table = PageTable::<HostTablePage>::try_new(AddressSpaceKind::User).unwrap();
         let start = 0x10_0000;
         table
-            .map_identity_range(start, start + 512, PagePermissions::READ)
+            .map_contiguous_range(start, start, 512, PagePermissions::READ)
             .unwrap();
         assert!(matches!(
             table.unmap(start + 1),

@@ -12,24 +12,13 @@ impl PhysicalAddress {
     pub(crate) fn as_usize(self) -> usize {
         self.0
     }
+
+    pub(crate) fn as_mut_ptr<T>(self) -> *mut T {
+        self.0 as *mut T
+    }
 }
 
 impl From<usize> for PhysicalAddress {
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VirtualAddress(usize);
-
-impl VirtualAddress {
-    pub(crate) fn as_usize(self) -> usize {
-        self.0
-    }
-}
-
-impl From<usize> for VirtualAddress {
     fn from(value: usize) -> Self {
         Self(value)
     }

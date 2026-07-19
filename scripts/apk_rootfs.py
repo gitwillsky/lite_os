@@ -10,9 +10,11 @@ from pathlib import Path
 
 from apk_cache import ALPINE_BRANCH, ALPINE_MIRROR, ApkBootstrapPaths, cached_apk_bootstrap
 from apk_package import ApkPackageMetadata, build_signed_apk, tamper_signed_apk_control
+from build_target import target_from_environment
 from qemu_gate import boot
 
 ROOT = Path(__file__).resolve().parent.parent
+TARGET = target_from_environment()
 BASE_PACKAGE_NAME = "liteos-base"
 BASE_PACKAGE_VERSION = "0.1.0-r0"
 BASE_PACKAGE_FILENAME = f"{BASE_PACKAGE_NAME}-{BASE_PACKAGE_VERSION}.apk"
@@ -119,12 +121,12 @@ def _build_base_package(
             description="LiteOS fixed musl BusyBox userspace",
             url=PROJECT_URL,
             license="MIT AND GPL-2.0-only AND Apache-2.0",
-            arch="riscv64",
+            arch=TARGET.alpine_arch,
             provides=(
                 "/bin/sh",
                 "cmd:apk",
                 "cmd:busybox",
-                "so:libc.musl-riscv64.so.1=1.2.6",
+                f"so:libc.musl-{TARGET.alpine_arch}.so.1=1.2.6",
             ),
         ),
         private_key,
@@ -159,7 +161,7 @@ def _build_fixture_package(
             description=f"LiteOS APK gate fixture {name}",
             url=PROJECT_URL,
             license="MIT",
-            arch="riscv64",
+            arch=TARGET.alpine_arch,
             dependencies=dependencies,
         ),
         private_key,
@@ -347,6 +349,20 @@ def _verify_package_ownership(
 ) -> None:
     """拒绝 package database 缺失、bootstrap 残留或 base package 未登记的镜像。"""
     installed = run([str(debugfs), "-R", "cat /lib/apk/db/installed", str(image)])
+    installed_arches = {
+        line.removeprefix("A:")
+        for line in installed.splitlines()
+        if line.startswith("A:")
+    }
+    foreign_arches = installed_arches - {TARGET.alpine_arch, "noarch"}
+    if foreign_arches:
+        raise RuntimeError(
+            f"final rootfs contains foreign APK architectures: {sorted(foreign_arches)}"
+        )
+    if TARGET.alpine_arch not in installed_arches:
+        raise RuntimeError(
+            f"final rootfs lacks {TARGET.alpine_arch} package ownership"
+        )
     if f"P:{BASE_PACKAGE_NAME}" not in installed or f"V:{BASE_PACKAGE_VERSION}" not in installed:
         raise RuntimeError("final rootfs is not owned by the liteos-base APK database entry")
     if "P:ca-certificates-bundle" not in installed:

@@ -52,10 +52,15 @@ fn pending(cpu: CpuId) -> &'static AtomicU32 {
     &PENDING.wait()[cpu.index()]
 }
 
-/// @description 合并发布 calling CPU 的 deferred work 并触发 local software interrupt。
+/// @description 合并发布 calling CPU 的 deferred work 并经 platform 触发 local notification。
 pub(crate) fn raise(work: DeferredWork) {
-    pending(current_id()).fetch_or(work as u32, Ordering::Release);
-    crate::arch::interrupt::raise_software();
+    let previous = pending(current_id()).fetch_or(work as u32, Ordering::Release);
+    // 空→非空 transition 唯一签发 local edge；非空 bitmap 已拥有尚待 safe point 消费的
+    // durable edge/current hardirq continuation。若每次合并都重发，AArch64 SGI handler 在
+    // console raw ring 仍可读时会自触发 SGI storm，永远抢在 idle safe point 前运行。
+    if previous == 0 {
+        crate::platform::notify_self();
+    }
 }
 
 /// @description 原子取得 calling CPU 的全部 deferred work。

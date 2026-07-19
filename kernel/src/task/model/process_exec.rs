@@ -77,19 +77,24 @@ impl TaskControlBlock {
         self.replace_user_context(UserContext::app_init_context(
             entry_point,
             user_sp,
-            KERNEL_SPACE.wait().lock().token(),
+            KERNEL_SPACE.wait().lock().kernel_trap_token(),
             kernel_stack_top,
             self.thread.kernel_trap_handler,
         ));
-        if old_trap_context != TRAP_CONTEXT {
+        // exec 不继承旧 image 的 live FP/NEON state；AArch64 在显式 asm boundary 清零，
+        // RISC-V state 已由上面的新 UserContext image 覆盖。缺失该 hook 会跨 exec 泄漏寄存器。
+        crate::arch::context::reset_live_floating_point();
+        if old_trap_context != TRAP_CONTEXT
+            && !crate::arch::context::is_kernel_stack_user_context(old_trap_context)
+        {
             old_address_space
                 .memory_set
                 .try_lock()
                 .expect("single-thread exec old address space is contended")
                 .remove_thread_trap_context(old_trap_context);
         }
-        // vfork parent 只能在完整 exec commit 且 child 临时 trap page 已从共享 mm 删除后恢复；
-        // 提前唤醒会让 parent 与尚未 detach 的 child 并发修改同一 AddressSpace。
+        // vfork parent 只能在完整 exec commit 且 RISC-V child 临时 trap VMA 已删除后恢复；
+        // AArch64 context 随独立 KernelStack 保活。提前唤醒会让共享旧 mm 的 detach 顺序失效。
         super::super::task_manager::vfork::complete_vfork_exec(self.tgid());
         Ok(())
     }

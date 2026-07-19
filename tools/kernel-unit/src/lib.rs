@@ -180,7 +180,7 @@ mod virtio_gpu_sequence_policy;
 mod timer_deadline;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/platform/qemu_virt/plic_policy.rs"]
+#[path = "../../../kernel/src/platform/qemu_virt/riscv64/plic_policy.rs"]
 mod plic_policy;
 
 #[cfg(test)]
@@ -263,6 +263,37 @@ mod console_batch;
 #[cfg(test)]
 #[path = "../../../kernel/src/task/model/clone_tid_store.rs"]
 mod clone_tid_store;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/task/model/synchronous_fault.rs"]
+mod synchronous_fault;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/arch/aarch64/signal_frame.rs"]
+#[allow(dead_code)]
+mod aarch64_signal_frame;
+
+#[cfg(test)]
+mod fp_state {
+    use super::aarch64_kernel_context::KernelContext;
+
+    pub(super) unsafe fn capture_clone(_context: *mut KernelContext) {}
+}
+
+#[cfg(test)]
+#[path = "../../../kernel/src/arch/aarch64/kernel_context.rs"]
+#[allow(dead_code)]
+mod aarch64_kernel_context;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/arch/aarch64/va39.rs"]
+#[allow(dead_code)]
+mod aarch64_va39;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/arch/riscv64/signal_frame.rs"]
+#[allow(dead_code)]
+mod riscv64_signal_frame;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/task/task_manager/thread_activation.rs"]

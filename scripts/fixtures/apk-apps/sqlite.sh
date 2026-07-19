@@ -2,7 +2,16 @@
 set -eu
 
 database=/root/sqlite-gate.db
+lock_ready=/run/sqlite-writer-a-locked
+report_failure() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        echo "LITEOS_SQLITE_APPLICATION_FAILED status=$status"
+    fi
+}
+trap report_failure EXIT
 rm -f "$database" "$database-shm" "$database-wal" "$database-journal"
+rm -f "$lock_ready"
 
 # 1. rollback journal transaction 必须原子创建 schema 与首批 rows。
 sqlite3 "$database" <<'SQL'
@@ -17,12 +26,17 @@ SQL
 sqlite3 "$database" 'PRAGMA journal_mode=WAL; INSERT INTO records(value) VALUES("wal-a");'
 (
     printf '%s\n' 'PRAGMA busy_timeout=5000;' 'BEGIN IMMEDIATE;' \
-        'INSERT INTO records(value) VALUES("writer-a");'
+        'INSERT INTO records(value) VALUES("writer-a");' \
+        '.shell echo ready > /run/sqlite-writer-a-locked'
     sleep 2
     printf '%s\n' 'COMMIT;'
 ) | sqlite3 "$database" &
 first=$!
-sleep 1
+for _ in 1 2 3 4 5; do
+    [ -f "$lock_ready" ] && break
+    sleep 1
+done
+[ -f "$lock_ready" ]
 sqlite3 "$database" 'PRAGMA busy_timeout=5000; INSERT INTO records(value) VALUES("writer-b");'
 wait "$first"
 
@@ -32,4 +46,5 @@ wait "$first"
 cp /run/sqlite-recovery.inittab /etc/inittab
 sync
 echo LITEOS_SQLITE_APPLICATION_READY
-reboot -f
+trap - EXIT
+while :; do sleep 1; done

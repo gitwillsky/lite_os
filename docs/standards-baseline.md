@@ -4,11 +4,14 @@
 
 ## 核心规范
 
-### Linux/riscv64 ABI
+### Linux arm64 + riscv64 ABI
 
 - Linux `v7.1`；tag object `b3f94b2b3f3e51ab880a51fc6510e1dafba654ed`；peeled commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。
-- 来源：[Linux commit](https://github.com/torvalds/linux/commit/8cd9520d35a6c38db6567e97dd93b1f11f185dc6)、[RISC-V syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/include/uapi/asm/unistd.h)。
-- 它定义 syscall number、register convention、UAPI layout/flags、return 与 Linux errno。POSIX 和 libc wrapper 不能替代该层。
+- 来源：[Linux commit](https://github.com/torvalds/linux/commit/8cd9520d35a6c38db6567e97dd93b1f11f185dc6)、
+  [arm64 syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/arm64/include/uapi/asm/unistd.h)、
+  [RISC-V syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/arch/riscv/include/uapi/asm/unistd.h)、
+  [asm-generic syscall UAPI](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/asm-generic/unistd.h)。
+- 该固定源码树定义共享 syscall number、architecture UAPI layout/flags、return 与 Linux errno。POSIX 和 libc wrapper 不能替代该层；本基线不声明未经固定一手 revision 的 Arm ABI 或 architecture 版本号。
 
 ### RISC-V ELF psABI
 
@@ -39,6 +42,13 @@
 - Virtual I/O Device `1.4` Committee Specification 01；source commit `917e900e0246b7fe21cdde795b0e566dd4f57d8d`。
 - 来源：[CS01 HTML](https://docs.oasis-open.org/virtio/virtio/v1.4/cs01/virtio-v1.4-cs01.html)、[固定源码](https://github.com/oasis-tcs/virtio-spec/tree/917e900e0246b7fe21cdde795b0e566dd4f57d8d)。
 - 它定义 transport、feature negotiation、status、virtqueue ownership、notification、reset 与 device conformance。
+
+### Arm PrimeCell UART
+
+- PL011 Technical Reference Manual `DDI 0183G`，PrimeCell UART revision `r1p4`。
+- 来源：[Arm 固定手册](https://documentation-service.arm.com/static/5e8e3655fd977155116a9042)。
+- 它定义 UART register layout、reset state、FIFO 与 interrupt threshold；AArch64 QEMU `virt`
+  backend 不从 QEMU 行为反推这些 machine facts。
 
 ## 实现与 consumer 基线
 
@@ -75,17 +85,27 @@
 
 ### Alpine、APK 与 TLS
 
-- Alpine `v3.22/main/riscv64`；`apk-tools-static 2.14.10-r0` SHA-256 `85419c4d80eceb12af9cc3be178dce3599ef04679c46eee25175b6673c14cd43`。
-- `alpine-keys 2.5-r0` SHA-256 `ca4835c8907791ab172fc64e53a81ab4ed06ff21c493d2a7fe8f66a80e2ea200`。
+- Alpine `v3.22/main/{aarch64,riscv64}` 只使用官方 repository 固定文件。AArch64 的
+  `apk-tools-static 2.14.10-r0`、`alpine-keys 2.5-r0`、
+  `ca-certificates-bundle 20260611-r0` SHA-256 依次为
+  `3e22f80dd0272dc487e4ca84b2c6b660ca392cbad970764efe9ef9555b806ac8`、
+  `2e4c85ae16cabeb53b4145006f883bf8e57d454bd3faff14d35ec7d8a0d05b1a`、
+  `ae45c92eba28db3434058980c40930d3653663e5251cb04c9fd49a94ca00c93b`。
+- RISC-V 的同三包 SHA-256 依次为
+  `85419c4d80eceb12af9cc3be178dce3599ef04679c46eee25175b6673c14cd43`、
+  `ca4835c8907791ab172fc64e53a81ab4ed06ff21c493d2a7fe8f66a80e2ea200`、
+  `537dcb625ede1cb81e751dd92552b2715a35fdd72cdb43a965a055f14900d529`；curl/SQLite/Git
+  应用闭包也由各架构的固定摘要完整锁定，禁止 latest 或跨架构推导。
+- 本项目从官方 AArch64 repository 固定的闭包中，只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个数据包以 `.PKGINFO arch=noarch` 发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。
 - OpenSSL `3.5.7`；commit `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`；tarball SHA-256 `a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`。
-- 来源：[Alpine repository](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/)、[OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)。
+- 来源：[Alpine aarch64 repository](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/)、[OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)。
 
 ## 裁决顺序
 
 1. privilege、CSR、page table 与 memory ordering：固定 RISC-V ISA。
 2. S-mode 到 firmware：固定 SBI。
-3. U-mode 到 kernel：固定 Linux/riscv64 UAPI。
-4. ELF、procedure call、TLS 与 relocation：固定 psABI。
+3. U-mode 到 kernel：固定 Linux arm64/riscv64 UAPI。
+4. ELF、procedure call、TLS 与 relocation：RISC-V 使用固定 psABI；AArch64 只声明固定 Linux arm64 UAPI 与 artifact/runtime 门禁已验证的范围，不猜测未固定的 Arm 规范版本。
 5. 标准函数和 utility：POSIX；musl/BusyBox 只作为 consumer proof。
 6. 虚拟设备：固定 VirtIO normative requirements。
 

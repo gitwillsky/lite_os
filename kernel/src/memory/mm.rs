@@ -93,9 +93,9 @@ pub(crate) struct MemorySet {
 
 impl MemorySet {
     const MMAP_BASE: usize = 0x4000_0000;
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new_kernel() -> Self {
         Self {
-            page_table: PageTable::new(),
+            page_table: PageTable::new(crate::arch::mmu::AddressSpaceKind::Kernel),
             areas: FallibleMap::new(),
             vma_index_state: VmaIndexState::new(),
             private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
@@ -107,7 +107,7 @@ impl MemorySet {
 
     fn try_new() -> Result<Self, MemoryError> {
         Ok(Self {
-            page_table: PageTable::try_new()?,
+            page_table: PageTable::try_new(crate::arch::mmu::AddressSpaceKind::User)?,
             areas: FallibleMap::new(),
             vma_index_state: VmaIndexState::new(),
             private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
@@ -180,6 +180,10 @@ impl MemorySet {
         self.page_table.token()
     }
 
+    pub(crate) fn kernel_trap_token(&self) -> crate::arch::mmu::KernelTrapToken {
+        self.page_table.kernel_trap_token()
+    }
+
     fn virtual_bytes(&self) -> u64 {
         self.vma_index_state.virtual_bytes()
     }
@@ -230,7 +234,10 @@ impl MemorySet {
 
     pub(crate) fn map_trampoline(&mut self) -> Result<(), MemoryError> {
         let trampoline_va = VirtualAddress::from(config::TRAMPOLINE);
-        let strampoline_pa = PhysicalAddress::from(strampoline as *const () as usize);
+        let strampoline_pa = PhysicalAddress::from(
+            crate::arch::mmu::virtual_to_physical(strampoline as *const () as usize)
+                .expect("kernel trampoline is outside the architecture direct map"),
+        );
 
         let mut commit = TranslationCommit::new();
         self.page_table.map(
@@ -251,7 +258,7 @@ impl MemorySet {
     }
 
     pub(crate) fn active(&self) {
-        crate::arch::mmu::activate(self.page_table.token());
+        self.page_table.activate_kernel();
     }
 
     fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
@@ -330,9 +337,9 @@ impl MemorySet {
         Ok(new_break)
     }
 
-    /// @description 为共享地址空间中的新 Thread 分配独立 supervisor trap-context 页。
+    /// @description 为 RISC-V 共享地址空间中的新 Thread 分配独立 supervisor trap-context 页。
     ///
-    /// @param tid 全局唯一且大于 init TID 的线程标识。
+    /// @param tid 全局唯一且大于 init TID 的线程标识；只参与 RISC-V 临时 VA 投影。
     /// @return 成功返回该线程唯一 trap-context VA；冲突或溢出返回错误。
     pub(crate) fn allocate_thread_trap_context(
         &mut self,
@@ -352,7 +359,7 @@ impl MemorySet {
         Ok(address)
     }
 
-    /// @description 解除已退出 Thread 的唯一 supervisor trap-context 页。
+    /// @description 解除已退出 RISC-V Thread 的唯一 supervisor trap-context 页。
     ///
     /// @param address `allocate_thread_trap_context` 返回的页对齐地址。
     /// @return 无返回值；缺失映射表示退出清理重复并 fail-stop。

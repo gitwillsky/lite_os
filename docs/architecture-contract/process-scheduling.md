@@ -30,7 +30,12 @@
 - runnable successor 已存在时，scheduler 必须在一次 `task -> task` context switch 中转移
   `Processor.current`；只有没有 successor 且 outgoing 不能继续 Running 时才进入 idle。
   outgoing 是可继续的 Preempting/WakePending 且 runqueue 为空时直接恢复 current，不做自我切换。
+- idle decision 必须在 local IRQ guard 内依次完成 deferred safe point、mailbox drain 与 runnable
+  selection；无 successor 时 guard 继续覆盖 architecture guarded WFI。assembly 临时开中断，trap
+  通过精确 WFI/resume PC 修复 enable-to-WFI 窗口，返回前再次关中断，guard 随后恢复旧状态。
+  禁止先释放 guard 再执行裸 WFI，也禁止把周期 timer 当作一次性 IPI/deferred edge 的可靠兜底。
 - signal selection、permission、generation 与 job-control consequence 必须在 process-graph transaction 内线性化，锁外才执行 wake/notification。
+- clone/fork/vfork child 必须在发布前从 calling task 的 live architecture context 取得完整 machine snapshot；AArch64 包含 q0-q31、FPCR 与 FPSR。新 task 初始 vector image 和 exec commit 后的 live vector file 必须为零，禁止跨进程映像泄漏；普通 trap 不得承担该同步。
 - exit/reparent/wait/TID selection 只能遍历 direct children、creator dependents 或 exact group
   members；禁止退回全 ProcessGraph 扫描。waiter storage 在锁外准备，event claim、signal
   复查与 waiter publication 必须在一次 graph transaction 内完成。正 PID 的 `wait4`

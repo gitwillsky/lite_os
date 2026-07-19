@@ -3,4 +3,4 @@ profile = "minimal"
 # 固定当前最新 nightly 的发布日期，避免滚动 `nightly` 让同一提交产生不可复现的构建。
 channel = "nightly-2026-07-12"
 components = ["rust-src", "llvm-tools", "rustfmt", "clippy"]
-targets = ["riscv64gc-unknown-none-elf"]
+targets = ["aarch64-unknown-none-softfloat", "riscv64gc-unknown-none-elf"]

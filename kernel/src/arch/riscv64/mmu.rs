@@ -26,10 +26,16 @@ static ADDRESS_SPACE_ID_CPUS: [AtomicUsize; MAX_ADDRESS_SPACE_IDS] =
     [const { AtomicUsize::new(0) }; MAX_ADDRESS_SPACE_IDS];
 
 pub(crate) const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
+pub(crate) const DIRECT_MAP_BASE: usize = 0;
 pub(crate) const USER_ADDRESS_END: usize = 1 << (VIRTUAL_ADDRESS_WIDTH - 1);
 pub(crate) const TRAMPOLINE_ADDRESS: usize = usize::MAX - PAGE_SIZE + 1;
 pub(crate) const TRAP_CONTEXT_ADDRESS: usize = TRAMPOLINE_ADDRESS - PAGE_SIZE;
 pub(crate) const SIGNAL_TRAMPOLINE_ADDRESS: usize = TRAP_CONTEXT_ADDRESS - PAGE_SIZE;
+/// 保留既有 Sv39 kernel-stack virtual layout。
+pub(crate) const KERNEL_STACK_REGION_START: usize = 0;
+pub(crate) const KERNEL_STACK_REGION_TOP: usize = TRAP_CONTEXT_ADDRESS;
+/// 保持既有 Sv39 用户上界 guard 布局的初始用户栈 exclusive top。
+pub(crate) const USER_STACK_TOP: usize = USER_ADDRESS_END - PAGE_SIZE;
 
 /// @description 将 raw integer 限制到 RISC-V physical-address width。
 /// @param address generic memory 传入的地址值。
@@ -66,10 +72,29 @@ pub(crate) fn canonicalize_virtual_address(address: usize) -> usize {
     }
 }
 
+/// @description RISC-V 当前保持恒等 direct map，把 physical fact 转为 kernel address。
+pub(crate) fn physical_to_virtual(address: usize) -> usize {
+    assert_eq!(
+        address,
+        normalize_physical_address(address),
+        "RISC-V direct-map physical address exceeds supported width"
+    );
+    DIRECT_MAP_BASE + normalize_physical_address(address)
+}
+
+/// @description RISC-V 当前恒等 direct map 的逆变换。
+pub(crate) fn virtual_to_physical(address: usize) -> Option<usize> {
+    let normalized = normalize_physical_address(address);
+    (normalized == address).then_some(normalized)
+}
+
 /// @description RISC-V Sv39 address-space token；raw `satp` encoding 不跨越 arch seam。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AddressSpaceToken(usize);
+
+/// RISC-V user trap 仍需切换回包含 kernel mapping 的 Sv39 root。
+pub(crate) type KernelTrapToken = AddressSpaceToken;
 
 impl AddressSpaceToken {
     /// @description 从 Sv39 root physical page number 构造 address-space token。
@@ -195,6 +220,11 @@ pub(crate) fn activate(token: AddressSpaceToken) {
     unsafe {
         riscv::register::satp::write(riscv::register::satp::Satp::from_bits(token.encoded()));
     }
+}
+
+/// @description RISC-V kernel/user 共享同一 Sv39 root，激活 kernel root 等价于普通激活。
+pub(crate) fn activate_kernel(token: AddressSpaceToken) {
+    activate(token);
 }
 
 /// @description 失效当前 CPU 的全部 S-stage translations。

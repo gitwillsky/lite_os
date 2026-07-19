@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""将 BusyBox Kbuild 的可重定位链接请求规范化为 RISC-V LLD 参数。"""
+"""将 BusyBox Kbuild 的可重定位链接请求规范化为目标 LLD 参数。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from build_target import target_from_environment
+
 
 def main() -> int:
+    target = target_from_environment()
     linker = Path(os.environ["LITEOS_MUSL_LLD"])
     clang = Path(os.environ["LITEOS_MUSL_CLANG"])
     arguments = [
@@ -26,7 +29,16 @@ def main() -> int:
     if inputs:
         return subprocess.run(["ld.lld", *arguments], executable=str(linker)).returncode
     return subprocess.run(
-        [str(clang), "--target=riscv64-linux-musl", "-c", "-x", "c", "/dev/null", "-o", output]
+        [
+            str(clang),
+            f"--target={target.linux_triple}",
+            "-c",
+            "-x",
+            "c",
+            "/dev/null",
+            "-o",
+            output,
+        ]
     ).returncode
 
 

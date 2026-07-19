@@ -39,7 +39,12 @@ impl Debug for VirtualPageNumber {
 
 impl From<usize> for PhysicalAddress {
     fn from(addr: usize) -> Self {
-        PhysicalAddress(crate::arch::mmu::normalize_physical_address(addr))
+        let normalized = crate::arch::mmu::normalize_physical_address(addr);
+        assert_eq!(
+            addr, normalized,
+            "physical address exceeds architecture width"
+        );
+        PhysicalAddress(normalized)
     }
 }
 
@@ -76,7 +81,9 @@ impl From<VirtualPageNumber> for usize {
 
 impl From<usize> for PhysicalPageNumber {
     fn from(addr: usize) -> Self {
-        Self(crate::arch::mmu::normalize_physical_page(addr))
+        let normalized = crate::arch::mmu::normalize_physical_page(addr);
+        assert_eq!(addr, normalized, "physical page exceeds architecture width");
+        Self(normalized)
     }
 }
 
@@ -113,16 +120,16 @@ impl PhysicalAddress {
 
     /// @description 将物理地址表示为只读裸指针，不创建引用或声明别名关系。
     ///
-    /// @return 指向恒等映射物理地址的裸指针；调用方在解引用前必须证明映射、对齐和生命周期有效。
+    /// @return 指向 architecture direct map 的裸指针；调用方在解引用前必须证明映射、对齐和生命周期有效。
     pub(crate) fn as_ptr<T>(&self) -> *const T {
-        self.0 as *const T
+        crate::arch::mmu::physical_to_virtual(self.0) as *const T
     }
 
     /// @description 将物理地址表示为可写裸指针，不创建引用或声明独占访问。
     ///
-    /// @return 指向恒等映射物理地址的裸指针；调用方在解引用前必须证明映射、对齐、生命周期和独占访问有效。
+    /// @return 指向 architecture direct map 的裸指针；调用方在解引用前必须证明映射、对齐、生命周期和独占访问有效。
     pub(crate) fn as_mut_ptr<T>(&self) -> *mut T {
-        self.0 as *mut T
+        crate::arch::mmu::physical_to_virtual(self.0) as *mut T
     }
 }
 
@@ -133,10 +140,6 @@ impl VirtualAddress {
 
     pub(crate) fn is_aligned(&self) -> bool {
         self.page_offset() == 0
-    }
-
-    pub(crate) fn as_usize(&self) -> usize {
-        self.0
     }
 
     pub(crate) fn ceil(&self) -> VirtualPageNumber {

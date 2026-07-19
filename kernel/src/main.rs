@@ -55,7 +55,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     platform::verify_firmware();
     cpu::initialize(platform::hardware_cpu_ids(), context.hardware_cpu());
     task::initialize_interrupt_state();
-    debug!(
+    info!(
         "logical CPU topology initialized: count={}, boot={:?}",
         cpu::count(),
         cpu::boot_id()

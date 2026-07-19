@@ -38,6 +38,9 @@
 ## Interface
 
 - filesystem 只通过 block seam 使用 driver，通过 shared-page seam 使用 memory，通过 unified backend façade 接入 pipe/socket/device。
+- `openat(O_CREAT)` 的 final lookup 与 create 必须在同一个 VFS namespace mutation transaction
+  内完成：存在且无 `O_EXCL` 时打开 winner，存在且有 `O_EXCL` 时返回 `EEXIST`，不存在时创建。
+  禁止锁外先 lookup 再调用独立 create；该双阶段会让并发普通 append 错误收到 `EEXIST`。
 - fd reservation 在 lookup/procfs/fork/close 前不可见；`recvmsg` 的 fd number 与全部关联 metadata
   copyout 成功后才能整批 publish，任一失败必须在 fd-table lock 外完成全部 reservation cleanup。
 - OFD position 的推进只在对应 operation 已产生进度后发生；copyout 失败不得发布 `getdents64`
