@@ -945,6 +945,44 @@ def build_console_session(musl: MuslCachePaths) -> Path:
     )
 
 
+def display_proto_inputs() -> tuple[Path, ...]:
+    """desktop/terminal 的 path 依赖；其源码不在 crate 目录内，必须显式进入缓存身份。
+
+    缺失时 display-proto 协议改动不会触发 desktop/terminal 重建，rootfs 会静默混入
+    新旧两个协议版本的两端。
+    """
+    crate = ROOT / "user/display-proto"
+    return (
+        crate / "Cargo.toml",
+        crate / "Cargo.lock",
+        *sorted((crate / "src").rglob("*.rs")),
+    )
+
+
+def build_desktop(musl: MuslCachePaths) -> Path:
+    """构建桌面进程：合成器、窗口管理器与 shell 的唯一 owner。"""
+    return build_rust_user_program(
+        musl,
+        "desktop",
+        "desktop",
+        "desktop",
+        1,
+        (ROOT / "assets/fonts/liteos-terminal.a8", *display_proto_inputs()),
+    )
+
+
+def build_terminal(musl: MuslCachePaths) -> Path:
+    """构建终端模拟器：桌面客户端，ANSI parser/renderer 与 PTY 监督的 owner。"""
+    return build_rust_user_program(
+        musl,
+        "terminal",
+        "terminal",
+        "terminal",
+        1,
+        (ROOT / "assets/fonts/liteos-terminal.a8", *display_proto_inputs()),
+    )
+
+
 def build_stress_tools(musl: MuslCachePaths) -> Path:
     """构建 rootfs 单一 CPU/memory/page-cache 诊断程序。"""
     source = ROOT / "user/diagnostics/liteos-stress.c"
@@ -1016,6 +1054,8 @@ def create_image(
         ROOT,
     )
     console_session = build_console_session(musl)
+    desktop = build_desktop(musl)
+    terminal = build_terminal(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
@@ -1053,6 +1093,10 @@ def create_image(
         "set_inode_field /usr/lib/libc.so mode 0100755",
         f"write {console_session} /bin/console-session",
         "set_inode_field /bin/console-session mode 0100755",
+        f"write {desktop} /bin/desktop",
+        "set_inode_field /bin/desktop mode 0100755",
+        f"write {terminal} /bin/terminal",
+        "set_inode_field /bin/terminal mode 0100755",
         f"write {stress_tools} /bin/liteos-stress",
         "set_inode_field /bin/liteos-stress mode 0100755",
         "ln /bin/liteos-stress /bin/cputest",
@@ -1144,6 +1188,12 @@ def create_image(
     )
     if "Type: regular" not in console or "Mode:  0755" not in console:
         raise RuntimeError("BusyBox rootfs lacks the console session")
+    for session_binary in ("/bin/desktop", "/bin/terminal"):
+        metadata = run(
+            [str(find_debugfs()), "-R", f"stat {session_binary}", str(image)], ROOT
+        )
+        if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
+            raise RuntimeError(f"BusyBox rootfs lacks {session_binary}")
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
     ca_store = run(
         [str(find_debugfs()), "-R", "stat /etc/ssl/certs/ca-certificates.crt", str(image)],
@@ -1186,6 +1236,8 @@ def create_published_image(
         OSError: cache publication 或 output copy 失败。
     """
     console_session = build_console_session(musl)
+    desktop = build_desktop(musl)
+    terminal = build_terminal(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -1199,6 +1251,8 @@ def create_published_image(
         binary,
         musl.install / "usr/lib/libc.so",
         console_session,
+        desktop,
+        terminal,
         stress_tools,
         openssl.binary,
         bootstrap.apk_static,
@@ -1212,6 +1266,13 @@ def create_published_image(
         ROOT / "user/console-session/Cargo.toml",
         ROOT / "user/console-session/Cargo.lock",
         *sorted((ROOT / "user/console-session/src").rglob("*.rs")),
+        ROOT / "user/desktop/Cargo.toml",
+        ROOT / "user/desktop/Cargo.lock",
+        *sorted((ROOT / "user/desktop/src").rglob("*.rs")),
+        ROOT / "user/terminal/Cargo.toml",
+        ROOT / "user/terminal/Cargo.lock",
+        *sorted((ROOT / "user/terminal/src").rglob("*.rs")),
+        *display_proto_inputs(),
         ROOT / "user/diagnostics/liteos-stress.c",
         ROOT / "assets/terminfo/l/liteos",
         ROOT / "assets/fonts/liteos-terminal.a8",

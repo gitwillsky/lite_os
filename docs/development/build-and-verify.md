@@ -116,7 +116,9 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 完整验证从同一个只读 rootfs baseline 派生相互隔离的可写镜像，并覆盖：
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；
-- AArch64 `run-gui` 同构的 GPU、keyboard、tablet VirtIO 拓扑；gate 使用无 host 窗口的一 CPU
+- AArch64 `run-gui` 同构的 GPU、keyboard、tablet VirtIO 拓扑，以及桌面全链路：`desktop`
+  modeset、AF_UNIX + SCM_RIGHTS 握手、客户端 surface 映射与 `terminal` PTY 监督各自发布
+  启动 marker，gate 逐条裁决；gate 使用无 host 窗口的一 CPU
   guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；
 - musl ELF/TLS/thread/signal/process consumer；
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；

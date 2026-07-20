@@ -2,8 +2,75 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use super::rust_files;
 
+fn crate_sources(crate_dir: &Path, errors: &mut Vec<String>) -> BTreeSet<String> {
+    let mut source_paths = Vec::new();
+    if let Err(error) = rust_files(&crate_dir.join("src"), &mut source_paths) {
+        errors.push(error);
+    }
+    source_paths
+        .iter()
+        .filter_map(|path| path.strip_prefix(crate_dir.join("src")).ok())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .collect::<BTreeSet<_>>()
+}
+
+/// 校验单个用户态 crate 的目录形态、源文件清单与 manifest 必需项。
+fn check_crate(
+    root: &Path,
+    name: &str,
+    expected_sources: &[&str],
+    required_manifest: &[&str],
+    errors: &mut Vec<String>,
+) {
+    let crate_dir = root.join("user").join(name);
+    let expected_entries = BTreeSet::from([
+        "Cargo.lock".to_owned(),
+        "Cargo.toml".to_owned(),
+        "src".to_owned(),
+    ]);
+    let actual_entries = fs::read_dir(&crate_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    if actual_entries != expected_entries {
+        errors.push(format!(
+            "user/{name}: expected exactly {expected_entries:?}, found {actual_entries:?}"
+        ));
+    }
+
+    let expected = expected_sources
+        .iter()
+        .map(|source| (*source).to_owned())
+        .collect::<BTreeSet<_>>();
+    let actual = crate_sources(&crate_dir, errors);
+    if actual != expected {
+        errors.push(format!(
+            "user/{name}/src: expected exactly {expected:?}, found {actual:?}"
+        ));
+    }
+
+    let manifest = fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap_or_default();
+    for required in required_manifest {
+        if !manifest.contains(required) {
+            errors.push(format!("user/{name}/Cargo.toml: missing `{required}`"));
+        }
+    }
+}
+
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
-    let allowed = BTreeSet::from(["README.md", "base", "console-session", "diagnostics"]);
+    let allowed = BTreeSet::from([
+        "README.md",
+        "base",
+        "console-session",
+        "desktop",
+        "diagnostics",
+        "display-proto",
+        "terminal",
+    ]);
     let actual = match fs::read_dir(root.join("user")) {
         Ok(entries) => entries
             .flatten()
@@ -20,7 +87,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         .collect::<BTreeSet<_>>();
     if actual != expected {
         errors.push(format!(
-            "user/: expected the single TUI track {expected:?}, found {actual:?}"
+            "user/: expected the desktop product track {expected:?}, found {actual:?}"
         ));
     }
 
@@ -59,100 +126,135 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         }
     }
 
-    let console = root.join("user/console-session");
-    let expected_crate = BTreeSet::from([
-        "Cargo.lock".to_owned(),
-        "Cargo.toml".to_owned(),
-        "src".to_owned(),
-    ]);
-    let actual_crate = fs::read_dir(&console)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
-    if actual_crate != expected_crate {
-        errors.push(format!(
-            "user/console-session: expected exactly {expected_crate:?}, found {actual_crate:?}"
-        ));
-    }
-
-    let expected_sources = BTreeSet::from([
-        "atlas.rs",
-        "display.rs",
-        "ffi.rs",
-        "lib.rs",
-        "model.rs",
-        "model/parser.rs",
-        "model/reflow.rs",
-        "model/screen.rs",
-        "model/style.rs",
-        "reactor.rs",
-        "reactor/evdev.rs",
-        "reactor/input.rs",
-        "reactor/pointer.rs",
-        "reactor/session.rs",
-    ]);
-    let mut source_paths = Vec::new();
-    if let Err(error) = rust_files(&console.join("src"), &mut source_paths) {
-        errors.push(error);
-    }
-    let actual_sources = source_paths
-        .iter()
-        .filter_map(|path| path.strip_prefix(console.join("src")).ok())
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .collect::<BTreeSet<_>>();
-    let expected_sources = expected_sources
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    if actual_sources != expected_sources {
-        errors.push(format!(
-            "user/console-session/src: expected exactly {expected_sources:?}, found {actual_sources:?}"
-        ));
-    }
-
-    let manifest = fs::read_to_string(console.join("Cargo.toml")).unwrap_or_default();
-    for required in [
-        "name = \"console-session\"",
-        "crate-type = [\"staticlib\"]",
-        "panic = \"abort\"",
-    ] {
-        if !manifest.contains(required) {
-            errors.push(format!(
-                "user/console-session/Cargo.toml: missing `{required}`"
-            ));
-        }
-    }
-    if manifest.contains("[dependencies]") || manifest.contains(" path = ") {
+    // console-session 已从 inittab 退役，第四期移除；退役前结构与零依赖规则保持钉住。
+    check_crate(
+        root,
+        "console-session",
+        &[
+            "atlas.rs",
+            "display.rs",
+            "ffi.rs",
+            "lib.rs",
+            "model.rs",
+            "model/parser.rs",
+            "model/reflow.rs",
+            "model/screen.rs",
+            "model/style.rs",
+            "reactor.rs",
+            "reactor/evdev.rs",
+            "reactor/input.rs",
+            "reactor/pointer.rs",
+            "reactor/session.rs",
+        ],
+        &[
+            "name = \"console-session\"",
+            "crate-type = [\"staticlib\"]",
+            "panic = \"abort\"",
+        ],
+        errors,
+    );
+    let console_manifest =
+        fs::read_to_string(root.join("user/console-session/Cargo.toml")).unwrap_or_default();
+    if console_manifest.contains("[dependencies]") || console_manifest.contains(" path = ") {
         errors.push(
-            "user/console-session: the unique console Module must remain dependency-free"
+            "user/console-session: the retired console Module must remain dependency-free"
                 .to_owned(),
+        );
+    }
+
+    // 桌面轨道的三个 crate：desktop/terminal 只允许依赖 display-proto，display-proto 零依赖。
+    check_crate(
+        root,
+        "display-proto",
+        &["lib.rs", "message.rs", "transport.rs"],
+        &["name = \"display-proto\""],
+        errors,
+    );
+    let proto_manifest =
+        fs::read_to_string(root.join("user/display-proto/Cargo.toml")).unwrap_or_default();
+    if proto_manifest.contains("[dependencies]") || proto_manifest.contains(" path = ") {
+        errors
+            .push("user/display-proto: the protocol crate must remain dependency-free".to_owned());
+    }
+    for (name, sources) in [
+        (
+            "desktop",
+            &[
+                "atlas.rs",
+                "chrome.rs",
+                "compositor.rs",
+                "cursor.rs",
+                "ffi.rs",
+                "input.rs",
+                "lib.rs",
+                "scanout.rs",
+                "server.rs",
+                "supervisor.rs",
+                "window.rs",
+            ][..],
+        ),
+        (
+            "terminal",
+            &[
+                "atlas.rs",
+                "client.rs",
+                "ffi.rs",
+                "input.rs",
+                "lib.rs",
+                "model.rs",
+                "model/parser.rs",
+                "model/screen.rs",
+                "model/style.rs",
+                "pointer.rs",
+                "render.rs",
+                "session.rs",
+            ][..],
+        ),
+    ] {
+        check_crate(
+            root,
+            name,
+            sources,
+            &[
+                "crate-type = [\"staticlib\"]",
+                "panic = \"abort\"",
+                "[dependencies]\ndisplay-proto = { path = \"../display-proto\" }",
+            ],
+            errors,
         );
     }
 
     let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
-    if !workspace.contains("exclude = [\"bootloader\", \"user/console-session\"]") {
+    if !workspace.contains(
+        "exclude = [\"bootloader\", \"user/console-session\", \"user/desktop\", \"user/display-proto\", \"user/terminal\"]",
+    ) {
         errors.push(
-            "Cargo.toml: bootloader and console-session must be the only excluded Rust crates"
+            "Cargo.toml: bootloader and the four userspace crates must be the only excluded Rust crates"
                 .to_owned(),
         );
     }
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected_inittab = "::respawn:/bin/console-session\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    let expected_inittab =
+        "::respawn:/bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
     if inittab != expected_inittab {
         errors.push(
-            "user/base/inittab: must supervise console, network and UART recovery exactly once"
+            "user/base/inittab: must supervise desktop, network and UART recovery exactly once"
                 .to_owned(),
         );
     }
 
     let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
     if !builder.contains("def build_console_session(")
+        || !builder.contains("def build_desktop(")
+        || !builder.contains("def build_terminal(")
+        || !builder.contains("def display_proto_inputs(")
         || !builder.contains("/bin/console-session")
+        || !builder.contains("/bin/desktop")
+        || !builder.contains("/bin/terminal")
         || !builder.contains("user/console-session/src")
+        || !builder.contains("user/desktop/src")
+        || !builder.contains("user/terminal/src")
+        || !builder.contains("user/display-proto")
         || !builder.contains("/etc/terminfo/l/liteos")
         || [
             "liteui",
@@ -166,7 +268,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         .any(|marker| builder.contains(marker))
     {
         errors.push(
-            "scripts/verify_busybox.py: rootfs must contain only the registered console session track"
+            "scripts/verify_busybox.py: rootfs must contain only the registered desktop track"
                 .to_owned(),
         );
     }

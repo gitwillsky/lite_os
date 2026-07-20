@@ -1,0 +1,21 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+display-proto = { path = "../display-proto" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+
+# 非 --release 的 check/clippy 走 dev profile；no_std 下不允许 unwind。
+[profile.dev]
+panic = "abort"

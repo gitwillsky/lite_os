@@ -35,12 +35,15 @@
   spin 从 64/64 降为 0/0，output/DMA 覆盖前预零从 131072/4096 bytes 降为 0/0。
 - DRM owner 组合 display operation、GEM/framebuffer、KMS、damage fence、master 与 event；syscall 只编码 Linux DRM UAPI。
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke；VirtIO input adapter 只提供 raw event/config。
-- PTY registry、pair、Terminal session/foreground/winsize 与 Rust `console-session` 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
-- headless boot 缺少 DRM/input 时，`console-session` 在同一进程内以 5 秒 deadline 退避重试，
-  不触发 init respawn 风暴；设备可用时仍只创建唯一 reactor/session owner。
+- PTY registry、pair 与 Terminal session/foreground/winsize 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
+- 图形 userspace 拆为 `desktop` 与 `terminal` 两个进程：`desktop` 是 DRM master、evdev、合成与窗口管理的
+  唯一 owner；`terminal` 是 ANSI parser 与终端 renderer 的唯一 owner，作为桌面客户端运行。两端经
+  `display-proto` 协议通信，GEM handle 经 SCM_RIGHTS 共享的同一 OFD 传递，DESTROY 只归桌面。
+- headless boot 缺少 DRM/input 时，`desktop` 在同一进程内以 5 秒 deadline 退避重试，
+  不触发 init respawn 风暴；设备可用时仍只创建唯一 compositor owner。
 - terminal font 是 checked A8 atlas；普通构建只消费生成产物，升级由显式 generator 完成。
 
 ## Known limits
 
 - GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush；VirGL、Vulkan、3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
-- 图形 terminal 是当前固定 userspace consumer，不代表通用 GUI stack。
+- 桌面窗口语义当前只覆盖重叠窗口的移动/关闭/焦点；resize、任务栏与 shell UI 在后续分期落地。

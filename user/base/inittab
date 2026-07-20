@@ -1,3 +1,3 @@
-::respawn:/bin/console-session
+::respawn:/bin/desktop
 ::respawn:/etc/init.d/network-service
 ::respawn:-/bin/sh

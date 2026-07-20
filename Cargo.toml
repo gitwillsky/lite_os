@@ -7,7 +7,7 @@ members = [
     "tools/kernel-unit",
     "tools/scheduler-unit",
 ]
-exclude = ["bootloader", "user/console-session"]
+exclude = ["bootloader", "user/console-session", "user/desktop", "user/display-proto", "user/terminal"]
 default-members = ["kernel"]
 resolver = "3"
 

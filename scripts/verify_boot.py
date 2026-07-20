@@ -75,7 +75,13 @@ def boot(image: Path, smp: int) -> None:
 
 
 def boot_interactive_devices(image: Path) -> None:
-    """在无 host 窗口下验证 run-gui 的 GPU 与两个 VirtIO input 设备拓扑。"""
+    """在无 host 窗口下验证 run-gui 的 GPU、输入设备拓扑与桌面全链路。
+
+    `desktop: mode` 证明 modeset 完成；`desktop: client connected` 与
+    `terminal: connected` 证明 AF_UNIX + SCM_RIGHTS 握手成立；`desktop: surface`
+    证明客户端 dumb buffer 已映射进合成器；`terminal: shell spawned` 证明
+    终端 PTY 监督就绪。缺失任一 marker 表示桌面栈对应环节断裂。
+    """
     boot_image(
         image,
         1,
@@ -84,6 +90,11 @@ def boot_interactive_devices(image: Path) -> None:
             "VirtIO input event1",
             "VirtIO GPU",
             "init started: BusyBox v1.37.0",
+            "desktop: mode",
+            "desktop: client connected",
+            "terminal: connected",
+            "desktop: surface",
+            "terminal: shell spawned",
         ),
         interactive_devices=True,
     )

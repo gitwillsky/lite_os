@@ -18,7 +18,7 @@
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
-- `fs::pty` 独占 PTY registry/pair；Terminal 独占 session/foreground/termios/winsize；`console-session` 独占 ANSI parser 与 renderer state。
+- `fs::pty` 独占 PTY registry/pair；Terminal 独占 session/foreground/termios/winsize；`terminal`（桌面客户端）独占 ANSI parser 与 renderer state。
 
 ## Interface
 
@@ -47,10 +47,12 @@
 - QEMU `virt` 必须在任何 VirtIO queue publication 前证明 root `dma-coherent`；缺失时 fail-stop，禁止增加 bounce buffer、每次提交 cache flush 或“先运行再探测”的兼容路径。
 - DRM/evdev syscall 只编码固定 Linux UAPI。devfs 只发布 object identity，不拥有 device state。
 - display completion、input packet 与 PTY byte readiness 统一投递 semantic event；hardirq 不执行 renderer、filesystem 或 task logic。
-- terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。
-- `console-session` 是 graphical session 重建与缺设备退避的唯一 owner；headless boot 中
-  DRM/input 不可用时保持同一进程并以 5 秒 poll deadline 重试，只报告一次。禁止退出后依赖
-  init `respawn` 紧循环重复 exec，也禁止复制第二套 headless renderer/session state。
+- terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。桌面客户端协议（`display-proto`）是用户态进程间 seam，不进入内核 ABI。
+- `desktop` 是 graphical session 的唯一 owner：首个 open `/dev/dri/card0` 取得 DRM master，独占 evdev
+  输入与 scanout；客户端经 SCM_RIGHTS 共享同一 OFD，CREATE_DUMB handle 的 DESTROY 只归桌面。
+  headless boot 中 DRM/input 不可用时 `desktop` 保持同一进程并以 5 秒 poll deadline 重试，只报告一次。
+  禁止退出后依赖 init `respawn` 紧循环重复 exec，也禁止复制第二套 headless compositor state。
+- `terminal` 独占 ANSI parser 与 renderer state；它不再持有 DRM master 或 evdev，像素经 dumb buffer + damage 提交给 `desktop` 合成。
 - Console write 是同步且非阻塞的 output drain seam；Terminal state lock 必须覆盖普通 output 与 input
   echo 的完整 Console write，TCSETSW 取得该锁后才应用设置。TCSETSF 还必须在 Terminal→Console
   唯一 lock order 下同时丢弃 raw adapter input、cooked queue、partial line 与 EOF；未来 adapter 若在
