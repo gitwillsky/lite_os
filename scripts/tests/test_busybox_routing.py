@@ -78,9 +78,9 @@ class BusyBoxRoutingTests(unittest.TestCase):
             ):
                 module.build_rust_user_program(
                     musl,
-                    "console-session",
-                    "console-session",
-                    "console-session",
+                    "desktop",
+                    "desktop",
+                    "desktop",
                     1,
                 )
 

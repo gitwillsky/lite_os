@@ -190,6 +190,23 @@ impl Scanout {
         if connector.mode_count == 0 || mode.hdisplay == 0 || mode.vdisplay == 0 {
             return Err(());
         }
+        // sysinit 的 splash 是 card0 的首个 open 者，绘制启动画面后 DROP_MASTER；
+        // 桌面作为 root 经 SET_MASTER 取得 master（已是 master 时返回 0）。splash
+        // 尚未 DROP 的竞态窗口以 100ms × 50 次有界重试吸收，超出按启动失败处理。
+        let mut master_retries = 0;
+        loop {
+            // SAFETY: SET_MASTER 无参数，argument 传 0。
+            let result = unsafe { ffi::ioctl(fd, ffi::DRM_IOCTL_SET_MASTER, core::ptr::null_mut()) };
+            if result >= 0 {
+                break;
+            }
+            if ffi::errno() != ffi::EBUSY || master_retries >= 50 {
+                return Err(());
+            }
+            master_retries += 1;
+            // SAFETY: 空 poll 纯作定时器。
+            unsafe { ffi::poll(core::ptr::null_mut(), 0, 100) };
+        }
         let width = usize::from(mode.hdisplay);
         let height = usize::from(mode.vdisplay);
         let mut create = DrmDumbCreate {

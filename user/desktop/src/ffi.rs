@@ -12,6 +12,8 @@ pub const O_CLOEXEC: c_int = 0x80000;
 pub const PROT_READ: c_int = 1;
 pub const PROT_WRITE: c_int = 2;
 pub const MAP_SHARED: c_int = 1;
+pub const MAP_PRIVATE: c_int = 2;
+pub const MAP_ANONYMOUS: c_int = 0x20;
 pub const POLLIN: i16 = 1;
 pub const EINTR: c_int = 4;
 pub const EAGAIN: c_int = 11;
@@ -20,9 +22,12 @@ pub const SOCK_STREAM: c_int = 1;
 pub const SOCK_NONBLOCK: c_int = O_NONBLOCK;
 pub const SOCK_CLOEXEC: c_int = O_CLOEXEC;
 pub const WNOHANG: c_int = 1;
+pub const CLOCK_REALTIME: c_int = 0;
 pub const CLOCK_MONOTONIC: c_int = 1;
 pub const PR_SET_PDEATHSIG: c_int = 1;
 pub const SIGKILL: c_int = 9;
+pub const SIGTERM: c_int = 15;
+pub const EBUSY: c_int = 16;
 
 const IOC_WRITE: usize = 1;
 const IOC_READ: usize = 2;
@@ -32,6 +37,9 @@ const fn ioc(direction: usize, kind: usize, number: usize, size: usize) -> usize
 const fn drm_iowr(number: usize, size: usize) -> usize {
     ioc(IOC_READ | IOC_WRITE, b'd' as usize, number, size)
 }
+
+/// `DRM_IOCTL_SET_MASTER`：无参数（方向位为 0，编码 `0x0000641E`）。
+pub const DRM_IOCTL_SET_MASTER: usize = ioc(0, b'd' as usize, 0x1e, 0);
 
 pub const DRM_IOCTL_MODE_GETRESOURCES: usize = drm_iowr(0xa0, 64);
 pub const DRM_IOCTL_MODE_SETCRTC: usize = drm_iowr(0xa2, 104);
@@ -259,6 +267,7 @@ unsafe extern "C" {
         environment: *const *const c_char,
     ) -> c_int;
     pub fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
+    pub fn kill(pid: c_int, signal: c_int) -> c_int;
     pub fn _exit(status: c_int) -> !;
     pub fn __errno_location() -> *mut c_int;
 }

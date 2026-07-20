@@ -933,18 +933,6 @@ def build_rust_user_program(
     return entry / binary_name
 
 
-def build_console_session(musl: MuslCachePaths) -> Path:
-    """构建唯一 display/input/PTY/ANSI owner。"""
-    return build_rust_user_program(
-        musl,
-        "console-session",
-        "console-session",
-        "console-session",
-        1,
-        (ROOT / "assets/fonts/liteos-terminal.a8",),
-    )
-
-
 def display_proto_inputs() -> tuple[Path, ...]:
     """desktop/terminal 的 path 依赖；其源码不在 crate 目录内，必须显式进入缓存身份。
 
@@ -967,7 +955,7 @@ def build_desktop(musl: MuslCachePaths) -> Path:
         "desktop",
         "desktop",
         1,
-        (ROOT / "assets/fonts/liteos-terminal.a8", *display_proto_inputs()),
+        (ROOT / "assets/fonts/liteos-ui.a8p", ROOT / "assets/wallpaper.xrgb", *display_proto_inputs()),
     )
 
 
@@ -980,6 +968,18 @@ def build_terminal(musl: MuslCachePaths) -> Path:
         "terminal",
         1,
         (ROOT / "assets/fonts/liteos-terminal.a8", *display_proto_inputs()),
+    )
+
+
+def build_splash(musl: MuslCachePaths) -> Path:
+    """构建启动/关机画面程序：sysinit 阶段的临时屏幕 owner。"""
+    return build_rust_user_program(
+        musl,
+        "splash",
+        "splash",
+        "splash",
+        1,
+        (ROOT / "assets/bootlogo.xrgb",),
     )
 
 
@@ -1053,9 +1053,9 @@ def create_image(
         ],
         ROOT,
     )
-    console_session = build_console_session(musl)
     desktop = build_desktop(musl)
     terminal = build_terminal(musl)
+    splash = build_splash(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
@@ -1080,6 +1080,7 @@ def create_image(
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
         f"write {ROOT / 'user' / 'base' / 'inittab'} /etc/inittab",
+        f"write {ROOT / 'user' / 'base' / 'startmenu.conf'} /etc/startmenu.conf",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
@@ -1091,12 +1092,12 @@ def create_image(
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
         "set_inode_field /usr/lib/libc.so mode 0100755",
-        f"write {console_session} /bin/console-session",
-        "set_inode_field /bin/console-session mode 0100755",
         f"write {desktop} /bin/desktop",
         "set_inode_field /bin/desktop mode 0100755",
         f"write {terminal} /bin/terminal",
         "set_inode_field /bin/terminal mode 0100755",
+        f"write {splash} /bin/splash",
+        "set_inode_field /bin/splash mode 0100755",
         f"write {stress_tools} /bin/liteos-stress",
         "set_inode_field /bin/liteos-stress mode 0100755",
         "ln /bin/liteos-stress /bin/cputest",
@@ -1183,12 +1184,7 @@ def create_image(
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
-    console = run(
-        [str(find_debugfs()), "-R", "stat /bin/console-session", str(image)], ROOT
-    )
-    if "Type: regular" not in console or "Mode:  0755" not in console:
-        raise RuntimeError("BusyBox rootfs lacks the console session")
-    for session_binary in ("/bin/desktop", "/bin/terminal"):
+    for session_binary in ("/bin/desktop", "/bin/terminal", "/bin/splash"):
         metadata = run(
             [str(find_debugfs()), "-R", f"stat {session_binary}", str(image)], ROOT
         )
@@ -1235,9 +1231,9 @@ def create_published_image(
         RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
         OSError: cache publication 或 output copy 失败。
     """
-    console_session = build_console_session(musl)
     desktop = build_desktop(musl)
     terminal = build_terminal(musl)
+    splash = build_splash(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -1250,9 +1246,9 @@ def create_published_image(
         *target_runtime_artifacts(),
         binary,
         musl.install / "usr/lib/libc.so",
-        console_session,
         desktop,
         terminal,
+        splash,
         stress_tools,
         openssl.binary,
         bootstrap.apk_static,
@@ -1263,19 +1259,22 @@ def create_published_image(
         ROOT / "user/base/passwd",
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
-        ROOT / "user/console-session/Cargo.toml",
-        ROOT / "user/console-session/Cargo.lock",
-        *sorted((ROOT / "user/console-session/src").rglob("*.rs")),
+        ROOT / "user/base/startmenu.conf",
         ROOT / "user/desktop/Cargo.toml",
         ROOT / "user/desktop/Cargo.lock",
         *sorted((ROOT / "user/desktop/src").rglob("*.rs")),
         ROOT / "user/terminal/Cargo.toml",
         ROOT / "user/terminal/Cargo.lock",
         *sorted((ROOT / "user/terminal/src").rglob("*.rs")),
+        ROOT / "user/splash/Cargo.toml",
+        ROOT / "user/splash/Cargo.lock",
+        *sorted((ROOT / "user/splash/src").rglob("*.rs")),
         *display_proto_inputs(),
         ROOT / "user/diagnostics/liteos-stress.c",
         ROOT / "assets/terminfo/l/liteos",
         ROOT / "assets/fonts/liteos-terminal.a8",
+        ROOT / "assets/fonts/liteos-ui.a8p",
+        ROOT / "assets/wallpaper.xrgb",
         ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",
@@ -1358,7 +1357,6 @@ def main() -> int:
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
         dynamic_probe, dynamic_library = build_dynamic_probe(musl)
-        console_session = build_console_session(musl)
         stamp = ROOT / f"target/verify-gates/busybox-{TARGET.arch}.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
@@ -1369,14 +1367,11 @@ def main() -> int:
                 musl.install / "usr/lib/libc.so",
                 dynamic_probe,
                 dynamic_library,
-                console_session,
                 openssl.binary,
                 ROOT / "user/base/passwd",
                 ROOT / "user/base/group",
                 ROOT / "user/base/inittab",
-                ROOT / "user/console-session/Cargo.toml",
-                ROOT / "user/console-session/Cargo.lock",
-                *sorted((ROOT / "user/console-session/src").rglob("*.rs")),
+                ROOT / "user/base/startmenu.conf",
                 ROOT / "user/base/network-service",
                 ROOT / "user/base/shutdown",
                 ROOT / "user/base/udhcpc.script",

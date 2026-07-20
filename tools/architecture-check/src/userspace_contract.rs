@@ -65,10 +65,10 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     let allowed = BTreeSet::from([
         "README.md",
         "base",
-        "console-session",
         "desktop",
         "diagnostics",
         "display-proto",
+        "splash",
         "terminal",
     ]);
     let actual = match fs::read_dir(root.join("user")) {
@@ -102,6 +102,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
                 "network-service",
                 "passwd",
                 "shutdown",
+                "startmenu.conf",
                 "udhcpc.script",
             ][..],
         ),
@@ -126,40 +127,22 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         }
     }
 
-    // console-session 已从 inittab 退役，第四期移除；退役前结构与零依赖规则保持钉住。
+    // console-session 已随桌面轨道正式移除；splash 是零依赖的 sysinit 启动画面 crate。
     check_crate(
         root,
-        "console-session",
+        "splash",
+        &["ffi.rs", "lib.rs", "render.rs"],
         &[
-            "atlas.rs",
-            "display.rs",
-            "ffi.rs",
-            "lib.rs",
-            "model.rs",
-            "model/parser.rs",
-            "model/reflow.rs",
-            "model/screen.rs",
-            "model/style.rs",
-            "reactor.rs",
-            "reactor/evdev.rs",
-            "reactor/input.rs",
-            "reactor/pointer.rs",
-            "reactor/session.rs",
-        ],
-        &[
-            "name = \"console-session\"",
+            "name = \"splash\"",
             "crate-type = [\"staticlib\"]",
             "panic = \"abort\"",
         ],
         errors,
     );
-    let console_manifest =
-        fs::read_to_string(root.join("user/console-session/Cargo.toml")).unwrap_or_default();
-    if console_manifest.contains("[dependencies]") || console_manifest.contains(" path = ") {
-        errors.push(
-            "user/console-session: the retired console Module must remain dependency-free"
-                .to_owned(),
-        );
+    let splash_manifest =
+        fs::read_to_string(root.join("user/splash/Cargo.toml")).unwrap_or_default();
+    if splash_manifest.contains("[dependencies]") || splash_manifest.contains(" path = ") {
+        errors.push("user/splash: the splash Module must remain dependency-free".to_owned());
     }
 
     // 桌面轨道的三个 crate：desktop/terminal 只允许依赖 display-proto，display-proto 零依赖。
@@ -180,16 +163,22 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         (
             "desktop",
             &[
-                "atlas.rs",
                 "chrome.rs",
+                "clients.rs",
                 "compositor.rs",
                 "cursor.rs",
                 "ffi.rs",
                 "input.rs",
                 "lib.rs",
+                "pointer.rs",
                 "scanout.rs",
                 "server.rs",
+                "shutdown.rs",
+                "startmenu.rs",
                 "supervisor.rs",
+                "taskbar.rs",
+                "uifont.rs",
+                "wallpaper.rs",
                 "window.rs",
             ][..],
         ),
@@ -198,11 +187,13 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
             &[
                 "atlas.rs",
                 "client.rs",
+                "configure.rs",
                 "ffi.rs",
                 "input.rs",
                 "lib.rs",
                 "model.rs",
                 "model/parser.rs",
+                "model/reflow.rs",
                 "model/screen.rs",
                 "model/style.rs",
                 "pointer.rs",
@@ -226,7 +217,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
 
     let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
     if !workspace.contains(
-        "exclude = [\"bootloader\", \"user/console-session\", \"user/desktop\", \"user/display-proto\", \"user/terminal\"]",
+        "exclude = [\"bootloader\", \"user/desktop\", \"user/display-proto\", \"user/splash\", \"user/terminal\"]",
     ) {
         errors.push(
             "Cargo.toml: bootloader and the four userspace crates must be the only excluded Rust crates"
@@ -234,28 +225,28 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         );
     }
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected_inittab =
-        "::respawn:/bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    let expected_inittab = "::sysinit:/bin/splash\n::respawn:/bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
     if inittab != expected_inittab {
         errors.push(
-            "user/base/inittab: must supervise desktop, network and UART recovery exactly once"
+            "user/base/inittab: must run splash at sysinit and supervise desktop, network and UART recovery exactly once"
                 .to_owned(),
         );
     }
 
     let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
-    if !builder.contains("def build_console_session(")
-        || !builder.contains("def build_desktop(")
+    if !builder.contains("def build_desktop(")
         || !builder.contains("def build_terminal(")
+        || !builder.contains("def build_splash(")
         || !builder.contains("def display_proto_inputs(")
-        || !builder.contains("/bin/console-session")
         || !builder.contains("/bin/desktop")
         || !builder.contains("/bin/terminal")
-        || !builder.contains("user/console-session/src")
+        || !builder.contains("/bin/splash")
         || !builder.contains("user/desktop/src")
         || !builder.contains("user/terminal/src")
+        || !builder.contains("user/splash/src")
         || !builder.contains("user/display-proto")
         || !builder.contains("/etc/terminfo/l/liteos")
+        || builder.contains("console-session")
         || [
             "liteui",
             "quickjs",
@@ -277,5 +268,19 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         errors.push(
             "assets/fonts/liteos-terminal.a8: expected the checked v2 terminal atlas".to_owned(),
         );
+    }
+    let ui_atlas = fs::read(root.join("assets/fonts/liteos-ui.a8p")).unwrap_or_default();
+    if ui_atlas.get(..8) != Some(b"LUP8\0\0\0\x01") || ui_atlas.len() != 3_709_860 {
+        errors.push(
+            "assets/fonts/liteos-ui.a8p: expected the checked v1 UI proportional atlas".to_owned(),
+        );
+    }
+    let wallpaper = fs::read(root.join("assets/wallpaper.xrgb")).unwrap_or_default();
+    if wallpaper.get(..8) != Some(b"LWP8\0\0\0\x01") || wallpaper.len() != 6_293_424 {
+        errors.push("assets/wallpaper.xrgb: expected the checked v1 raw wallpaper".to_owned());
+    }
+    let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();
+    if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x01") || bootlogo.len() != 3_145_744 {
+        errors.push("assets/bootlogo.xrgb: expected the checked v1 raw boot logo".to_owned());
     }
 }

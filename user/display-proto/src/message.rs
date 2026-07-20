@@ -6,8 +6,8 @@
 
 use crate::{
     CLOSE_REQUEST, COMMIT, CONFIGURE, CREATE_SURFACE, DESTROY_SURFACE, FOCUS, HELLO, INPUT_KEY,
-    INPUT_POINTER, INPUT_SYNC_RESET, MAX_DAMAGE_RECTS, SET_TITLE, SURFACE_CREATED, WELCOME,
-    encode_frame, read_i32, read_u32, write_i32, write_u16, write_u32,
+    INPUT_POINTER, INPUT_SYNC_RESET, MAX_DAMAGE_RECTS, SET_BUFFER, SET_TITLE, SURFACE_CREATED,
+    WELCOME, encode_frame, read_i32, read_u32, write_i32, write_u16, write_u32,
 };
 
 /// `HELLO`（C→S）：客户端连接后发送的第一条消息。
@@ -455,7 +455,9 @@ impl DestroySurface {
     }
 }
 
-/// `CONFIGURE`（S→C）：桌面建议的 surface 尺寸。本期桌面不发送，仅预定义。
+/// `CONFIGURE`（S→C）：桌面建议的 surface 尺寸（如用户拖动边框缩放窗口）。
+///
+/// 客户端可按自身网格对齐后通过 [`SetBuffer`] 提交实际尺寸；尺寸不变时可忽略。
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Configure {
@@ -531,3 +533,43 @@ const _: () = assert!(size_of::<SetTitle>() == 8);
 const _: () = assert!(size_of::<DestroySurface>() == 4);
 const _: () = assert!(size_of::<Configure>() == 12);
 const _: () = assert!(size_of::<InputSyncReset>() == 4);
+const _: () = assert!(size_of::<SetBuffer>() == 16);
+
+/// `SET_BUFFER`（C→S）：替换 surface 的 backing buffer（语义见 [`crate::SET_BUFFER`]）。
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SetBuffer {
+    /// 目标 surface id。
+    pub surface_id: u32,
+    /// 新建 dumb buffer 的 GEM handle；提及时所有权转移给桌面。
+    pub gem_handle: u32,
+    /// 新内容宽度（像素）。
+    pub width: u32,
+    /// 新内容高度（像素）。
+    pub height: u32,
+}
+
+impl SetBuffer {
+    /// 编码为完整帧写入 `buf`，返回帧总长度；`buf` 不足或超 [`crate::MAX_MESSAGE`] 时返回 `None`。
+    pub fn encode(&self, buf: &mut [u8]) -> Option<usize> {
+        let total = encode_frame(buf, SET_BUFFER, 16)?;
+        write_u32(buf, 8, self.surface_id)?;
+        write_u32(buf, 12, self.gem_handle)?;
+        write_u32(buf, 16, self.width)?;
+        write_u32(buf, 20, self.height)?;
+        Some(total)
+    }
+
+    /// 从 payload 解析；不足 16 字节返回 `None`，多余尾部字节被忽略。
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        if payload.len() < 16 {
+            return None;
+        }
+        Some(Self {
+            surface_id: read_u32(payload, 0)?,
+            gem_handle: read_u32(payload, 4)?,
+            width: read_u32(payload, 8)?,
+            height: read_u32(payload, 12)?,
+        })
+    }
+}

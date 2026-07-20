@@ -3,14 +3,19 @@
 //! 连接序列：`socket` → `connect`（桌面未 listen 时每秒重试，上限 60 次）→
 //! `HELLO` → `WELCOME` + SCM_RIGHTS DRM fd → 在共享 fd 上建 dumb buffer →
 //! `CREATE_SURFACE` → `SURFACE_CREATED` → spawn shell + 首帧 `COMMIT`。
-//! 事件循环只 poll 两个 fd：PTY master 与桌面 socket。
+//! 事件循环只 poll 两个 fd：PTY master 与桌面 socket；桌面经 `CONFIGURE`
+//! 建议新尺寸时走 resize 事务换 backing buffer（见 [`crate::configure`]）。
+//! 带启动命令启动时（`run(command)` 非空），建 surface 后 `SET_TITLE` 换成命令
+//! 文本，首帧 `COMMIT` 后把命令当作键盘输入注入 PTY master 让 shell 执行。
 
 use core::ptr;
 
 use display_proto as proto;
 
 use crate::{
+    MAX_COMMAND_BYTES,
     atlas::{Atlas, FontMetrics},
+    configure::handle_configure,
     ffi::{self, PollFd, SockaddrUn},
     input::{
         self, InputQueue, KeyboardState, MAX_KEY_BYTES, PTY_REPLY_EXPANSION, flush_input,
@@ -21,7 +26,7 @@ use crate::{
     session::{read_pty, replay_boot_log, spawn_shell, terminate_child},
 };
 
-/// 窗口内容：固定 80×24 cell（cell 16×32）= 1280×768 像素。resize 本期不做。
+/// 窗口内容：初始 80×24 cell（16×32 像素）= 1280×768；之后随 `CONFIGURE` 调整。
 const COLUMNS: usize = 80;
 const ROWS: usize = 24;
 const WIDTH: u32 = 1280;
@@ -37,9 +42,12 @@ const TITLE: &[u8] = "终端".as_bytes();
 
 /// 进程入口：握手、建 surface、spawn shell，然后进入事件循环。
 ///
+/// `command` 为启动命令文本（argv[1..] join，见 `startup_command`），非空时建
+/// surface 后 `SET_TITLE` 换成命令文本，并在首帧 `COMMIT` 后注入 PTY。
+///
 /// 返回进程退出码：正常结束（shell 退出 / `CLOSE_REQUEST`）为 0；
 /// 握手失败、spawn 失败或桌面 socket EOF 为 1（桌面会 respawn）。
-pub fn run() -> i32 {
+pub fn run(command: &[u8]) -> i32 {
     let Some(atlas) = Atlas::checked() else {
         report(b"terminal: atlas failed\n");
         return 1;
@@ -62,6 +70,9 @@ pub fn run() -> i32 {
         report(b"terminal: create failed\n");
         return 1;
     };
+    if !command.is_empty() {
+        send_set_title(socket, surface_id, command);
+    }
     report(b"terminal: connected\n");
 
     let Some(mut model) = Model::new(COLUMNS, ROWS) else {
@@ -86,6 +97,7 @@ pub fn run() -> i32 {
         terminate_child(child);
         return 1;
     }
+    inject_command(master, command);
     report(b"terminal: shell spawned\n");
 
     // 握手期间 socket 保持阻塞以便顺序收发；进入事件循环前切非阻塞。
@@ -98,6 +110,7 @@ pub fn run() -> i32 {
             socket,
             master,
             child,
+            drm_fd,
             surface_id,
         },
         &mut surface,
@@ -195,12 +208,46 @@ fn create_surface(socket: i32, gem_handle: u32) -> Option<u32> {
     (created.error == 0).then_some(created.surface_id)
 }
 
+/// 有启动命令时把窗口标题换成命令文本；标题属装饰性消息，发送失败静默忽略。
+fn send_set_title(socket: i32, surface_id: u32, title: &[u8]) {
+    let mut buf = [0u8; 16 + MAX_COMMAND_BYTES];
+    if let Some(length) = proto::SetTitle::encode(&mut buf, surface_id, title) {
+        let _ = proto::send_message(socket, &buf[..length]);
+    }
+}
+
+/// 把启动命令当作键盘输入写进 PTY master：canonical 模式下 shell 收到末尾
+/// `\r` 才执行整行，命令结束后 shell 仍在，输出留在窗口里。master 是
+/// O_NONBLOCK，写不进或部分写都静默忽略（用户仍可手动输入）。
+fn inject_command(master: i32, command: &[u8]) {
+    if command.is_empty() {
+        return;
+    }
+    let mut line = [0u8; MAX_COMMAND_BYTES + 1];
+    line[..command.len()].copy_from_slice(command);
+    line[command.len()] = b'\r';
+    let line = &line[..command.len() + 1];
+    let mut written = 0;
+    while written < line.len() {
+        let count = unsafe { ffi::write(master, line[written..].as_ptr().cast(), line.len() - written) };
+        if count > 0 {
+            written += count as usize;
+        } else if count < 0 && ffi::errno() == ffi::EINTR {
+            continue;
+        } else {
+            return;
+        }
+    }
+}
+
 /// 事件循环期间持有的 fd 与 surface 标识；client 是它们的唯一 owner。
-struct Session {
-    socket: i32,
-    master: i32,
-    child: i32,
-    surface_id: u32,
+pub(crate) struct Session {
+    pub(crate) socket: i32,
+    pub(crate) master: i32,
+    pub(crate) child: i32,
+    /// 共享 DRM fd；初始建 surface 之外，resize 事务复用它创建新 dumb buffer。
+    pub(crate) drm_fd: i32,
+    pub(crate) surface_id: u32,
 }
 
 fn event_loop(
@@ -215,6 +262,7 @@ fn event_loop(
         master,
         child,
         surface_id,
+        ..
     } = *session;
     let mut keyboard = KeyboardState::default();
     let mut pointer = Pointer::new();
@@ -319,22 +367,26 @@ fn event_loop(
                     terminate_child(child);
                     return 1;
                 };
-                dispatch(
-                    header.kind,
-                    payload,
-                    &mut input,
-                    &mut keyboard,
-                    &mut pointer,
-                    model,
-                    metrics,
-                    master,
-                    &mut focused,
-                    &mut render_due,
-                    &mut blink_due,
-                    last_present,
-                    now,
-                    &mut close_requested,
-                );
+                if header.kind == proto::CONFIGURE {
+                    handle_configure(payload, session, surface, atlas, model, metrics, focused);
+                } else {
+                    dispatch(
+                        header.kind,
+                        payload,
+                        &mut input,
+                        &mut keyboard,
+                        &mut pointer,
+                        model,
+                        metrics,
+                        master,
+                        &mut focused,
+                        &mut render_due,
+                        &mut blink_due,
+                        last_present,
+                        now,
+                        &mut close_requested,
+                    );
+                }
                 offset += frame;
             }
             rx.copy_within(offset..rx_len, 0);
@@ -471,7 +523,7 @@ fn buffered_frame(buffered: &[u8]) -> Result<Option<usize>, ()> {
 }
 
 /// 发送一条 `COMMIT`；`rects` 为空表示整幅 damage。
-fn send_commit(socket: i32, surface_id: u32, rects: &[[u16; 4]]) -> Result<(), ()> {
+pub(crate) fn send_commit(socket: i32, surface_id: u32, rects: &[[u16; 4]]) -> Result<(), ()> {
     let mut buf = [0u8; 16 + 8 * proto::MAX_DAMAGE_RECTS];
     let length = proto::Commit::encode(&mut buf, surface_id, rects).ok_or(())?;
     proto::send_message(socket, &buf[..length]).map_err(|_| ())

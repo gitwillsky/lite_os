@@ -5,12 +5,21 @@
 //!
 //! # 结构
 //!
-//! - [`server`]：poll 事件循环与 display-proto 协议服务端（唯一编排者）。
+//! - [`server`]：poll 事件循环（唯一编排者）；[`clients`]：display-proto
+//!   协议服务端（握手、surface 生命周期、`SET_BUFFER` 换 backing buffer）。
 //! - [`scanout`]：DRM master / modeset / scanout fb / `DIRTYFB` 提交。
-//! - [`window`] / [`chrome`] / [`cursor`] / [`compositor`]：窗口对象、SSD 装饰、
-//!   指针光标与 damage 驱动的合成。
-//! - [`input`]：evdev 键盘 / tablet 的发现、grab 与语义派发。
-//! - [`supervisor`]：terminal 子进程的拉起 / 收割 / respawn。
+//! - [`window`] / [`chrome`] / [`cursor`] / [`compositor`]：窗口对象（含
+//!   Normal / Minimized / Maximized 状态机）、Luna SSD 装饰、指针光标与
+//!   damage 驱动的合成。
+//! - [`uifont`] / [`wallpaper`]：UI 比例字体 atlas（a8p）与壁纸（xrgb，
+//!   启动时一次性缩放到 mode 尺寸）；资产校验失败即启动失败。
+//! - [`input`]：evdev 键盘 / tablet 的发现、grab 与包边界消费；[`pointer`]：
+//!   指针语义层（raise / focus、移动与 resize 拖动、标题栏三按钮、开始菜单
+//!   交互）。
+//! - [`taskbar`]：底部任务栏（Start 按钮、窗口按钮、时钟），最顶层内部 UI；
+//!   [`startmenu`]：XP 双栏开始菜单（程序列表读 `/etc/startmenu.conf`）；
+//!   [`shutdown`]：关机画面与 `/bin/shutdown` 拉起。
+//! - [`supervisor`]：terminal 子进程数组的拉起 / 收割 / respawn。
 //!
 //! # Safety model
 //!
@@ -24,15 +33,21 @@
 //! 4. 启动失败（无 GPU 的 nographic 场景）由 `main` 退避重试，绝不读
 //!    stdin/stdout（UART shell 是 runtime gate 通道）。
 
-mod atlas;
 mod chrome;
+mod clients;
 mod compositor;
 mod cursor;
 mod ffi;
 mod input;
+mod pointer;
 mod scanout;
 mod server;
+mod shutdown;
+mod startmenu;
 mod supervisor;
+mod taskbar;
+mod uifont;
+mod wallpaper;
 mod window;
 
 use core::{ffi::c_int, panic::PanicInfo};

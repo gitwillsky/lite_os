@@ -45,7 +45,7 @@ mod transport;
 
 pub use message::{
     CloseRequest, Commit, CommitRects, Configure, CreateSurface, DestroySurface, Focus, Hello,
-    InputKey, InputPointer, InputSyncReset, SetTitle, SurfaceCreated, Welcome,
+    InputKey, InputPointer, InputSyncReset, SetBuffer, SetTitle, SurfaceCreated, Welcome,
 };
 pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
 
@@ -88,10 +88,17 @@ pub const CLOSE_REQUEST: u32 = 9;
 pub const SET_TITLE: u32 = 10;
 /// `DESTROY_SURFACE`（C→S）：销毁 surface，payload 为 [`DestroySurface`]。
 pub const DESTROY_SURFACE: u32 = 11;
-/// `CONFIGURE`（S→C）：建议尺寸，payload 为 [`Configure`]。本期桌面不发送，预定义。
+/// `CONFIGURE`（S→C）：建议尺寸，payload 为 [`Configure`]。
 pub const CONFIGURE: u32 = 12;
 /// `INPUT_SYNC_RESET`（S→C）：输入状态重置，payload 为 [`InputSyncReset`]。
 pub const INPUT_SYNC_RESET: u32 = 13;
+/// `SET_BUFFER`（C→S）：替换 surface 的 backing buffer，payload 为 [`SetBuffer`]。
+///
+/// 客户端响应 [`CONFIGURE`]（或自行改变内容尺寸）时创建新 dumb buffer 并经本消息
+/// 提交：新 handle 所有权随消息转移给桌面，桌面完成切换后 unmap 并 `DESTROY_DUMB`
+/// 旧 handle，窗口内容尺寸以本消息的 `width`/`height` 为准（客户端可按自身网格
+/// 对齐，不必等于 CONFIGURE 的请求值）。切换后的首个 [`COMMIT`] 针对新 buffer。
+pub const SET_BUFFER: u32 = 14;
 
 /// [`CreateSurface::flags`] 位：surface 不带装饰（无边框 / 标题栏）。
 pub const SURFACE_FLAG_UNDECORATED: u32 = 1;

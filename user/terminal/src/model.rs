@@ -1,10 +1,11 @@
-use core::ffi::c_void;
-
-use crate::ffi;
+use core::ptr;
 
 mod parser;
+mod reflow;
 mod screen;
 mod style;
+
+use reflow::{allocate_grid, free_grid, reflow_primary};
 
 pub const ATTR_BOLD: u16 = 1 << 0;
 pub const ATTR_DIM: u16 = 1 << 1;
@@ -168,6 +169,18 @@ pub struct Model {
     direct_graphics: bool,
 }
 
+pub struct ResizeCandidate {
+    columns: usize,
+    rows: usize,
+    primary: Screen,
+    alternate: Screen,
+    alternate_active: bool,
+    cursor_visible: bool,
+    reverse_screen: bool,
+    blink_visible: bool,
+    dirty: *mut DirtySpan,
+}
+
 impl Model {
     pub fn new(columns: usize, rows: usize) -> Option<Self> {
         let (primary, alternate, dirty) = allocate_grid(
@@ -294,6 +307,55 @@ impl Model {
         }
     }
 
+    pub fn prepare_resize(&self, columns: usize, rows: usize) -> Option<ResizeCandidate> {
+        let (mut primary, alternate, dirty) = allocate_grid(
+            columns,
+            rows,
+            self.foreground,
+            self.background,
+            style::style_indices(self.foreground_index, self.background_index),
+        )?;
+        reflow_primary(
+            self.primary,
+            self.columns,
+            self.rows,
+            &mut primary,
+            columns,
+            rows,
+        );
+        Some(ResizeCandidate {
+            columns,
+            rows,
+            primary,
+            alternate,
+            alternate_active: self.alternate_active,
+            cursor_visible: self.cursor_visible,
+            reverse_screen: self.reverse_screen,
+            blink_visible: self.blink_visible,
+            dirty,
+        })
+    }
+
+    pub fn commit_resize(&mut self, mut candidate: ResizeCandidate) {
+        free_grid(self.primary, self.alternate, self.dirty);
+        self.columns = candidate.columns;
+        self.rows = candidate.rows;
+        self.primary = candidate.primary;
+        self.alternate = candidate.alternate;
+        self.alternate_active = candidate.alternate_active;
+        self.cursor_visible = candidate.cursor_visible;
+        self.reverse_screen = candidate.reverse_screen;
+        self.blink_visible = candidate.blink_visible;
+        self.dirty = candidate.dirty;
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows;
+        self.reset_tab_stops();
+        candidate.primary.cells = ptr::null_mut();
+        candidate.alternate.cells = ptr::null_mut();
+        candidate.dirty = ptr::null_mut();
+        self.mark_all();
+    }
+
     pub fn has_blinking_cells(&self) -> bool {
         let screen = self.active();
         (0..self.columns * self.rows)
@@ -369,80 +431,53 @@ impl Grid for Model {
     }
 }
 
+impl Grid for ResizeCandidate {
+    fn columns(&self) -> usize {
+        self.columns
+    }
+
+    fn rows(&self) -> usize {
+        self.rows
+    }
+
+    fn cursor(&self) -> Option<(usize, usize)> {
+        if !self.cursor_visible {
+            return None;
+        }
+        let screen = if self.alternate_active {
+            self.alternate
+        } else {
+            self.primary
+        };
+        Some((screen.row, screen.column.min(self.columns - 1)))
+    }
+
+    fn cell(&self, row: usize, column: usize) -> Cell {
+        let screen = if self.alternate_active {
+            self.alternate
+        } else {
+            self.primary
+        };
+        unsafe { *screen.cells.add(row * self.columns + column) }
+    }
+
+    fn reverse_screen(&self) -> bool {
+        self.reverse_screen
+    }
+
+    fn blink_visible(&self) -> bool {
+        self.blink_visible
+    }
+}
+
 impl Drop for Model {
     fn drop(&mut self) {
         free_grid(self.primary, self.alternate, self.dirty);
     }
 }
 
-// 网格分配/释放搬自 console-session 的 `model/reflow.rs`；resize reflow 本期不做，未带入。
-
-fn allocate_grid(
-    columns: usize,
-    rows: usize,
-    foreground: u32,
-    background: u32,
-    reserved: u16,
-) -> Option<(Screen, Screen, *mut DirtySpan)> {
-    let count = columns.checked_mul(rows).filter(|count| *count != 0)?;
-    let primary = unsafe { ffi::calloc(count, core::mem::size_of::<Cell>()).cast::<Cell>() };
-    if primary.is_null() {
-        return None;
-    }
-    let alternate = unsafe { ffi::calloc(count, core::mem::size_of::<Cell>()).cast::<Cell>() };
-    if alternate.is_null() {
-        unsafe { ffi::free(primary.cast()) };
-        return None;
-    }
-    let dirty = unsafe { ffi::calloc(rows, core::mem::size_of::<DirtySpan>()).cast::<DirtySpan>() };
-    if dirty.is_null() {
-        unsafe {
-            ffi::free(primary.cast());
-            ffi::free(alternate.cast());
-        }
-        return None;
-    }
-    for index in 0..count {
-        unsafe {
-            *primary.add(index) = Cell::blank(foreground, background, reserved);
-            *alternate.add(index) = Cell::blank(foreground, background, reserved);
-        }
-    }
-    for row in 0..rows {
-        unsafe {
-            *dirty.add(row) = DirtySpan {
-                first: 0,
-                end: columns as u32,
-            };
-        }
-    }
-    Some((
-        Screen {
-            cells: primary,
-            column: 0,
-            row: 0,
-            saved: SavedState::initial(),
-        },
-        Screen {
-            cells: alternate,
-            column: 0,
-            row: 0,
-            saved: SavedState::initial(),
-        },
-        dirty,
-    ))
-}
-
-fn free_grid(primary: Screen, alternate: Screen, dirty: *mut DirtySpan) {
-    unsafe {
-        if !primary.cells.is_null() {
-            ffi::free(primary.cells.cast::<c_void>());
-        }
-        if !alternate.cells.is_null() {
-            ffi::free(alternate.cells.cast::<c_void>());
-        }
-        if !dirty.is_null() {
-            ffi::free(dirty.cast::<c_void>());
-        }
+impl Drop for ResizeCandidate {
+    fn drop(&mut self) {
+        free_grid(self.primary, self.alternate, self.dirty);
     }
 }

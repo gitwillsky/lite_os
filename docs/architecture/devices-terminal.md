@@ -46,4 +46,7 @@
 ## Known limits
 
 - GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush；VirGL、Vulkan、3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
-- 桌面窗口语义当前只覆盖重叠窗口的移动/关闭/焦点；resize、任务栏与 shell UI 在后续分期落地。
+- 桌面窗口语义当前覆盖重叠窗口的移动/缩放/最小化/最大化/关闭/置顶/焦点；shell 含任务栏
+  （Start/窗口按钮/时钟）、双栏开始菜单（`/etc/startmenu.conf`）、程序化壁纸与关机画面；
+  `splash` 在 sysinit 绘制启动画面，桌面首帧后接管。已知 cosmetic 问题：新窗口首帧
+  在窗口矩形外偶发残留像素（create/cascade 几何时序），随后续 damage 自愈。

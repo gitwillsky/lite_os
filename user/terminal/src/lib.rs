@@ -21,6 +21,7 @@
 
 mod atlas;
 mod client;
+mod configure;
 mod ffi;
 mod input;
 mod model;
@@ -30,9 +31,43 @@ mod session;
 
 use core::{ffi::c_int, panic::PanicInfo};
 
+/// 启动命令注入上限：argv[1..] join 后的命令文本总长截断到 256 字节。
+pub(crate) const MAX_COMMAND_BYTES: usize = 256;
+
 #[unsafe(no_mangle)]
-pub extern "C" fn main(_argument_count: c_int, _arguments: *const *const u8) -> c_int {
-    client::run()
+pub extern "C" fn main(argument_count: c_int, arguments: *const *const u8) -> c_int {
+    let (command, length) = startup_command(argument_count, arguments);
+    client::run(&command[..length])
+}
+
+/// 把 argv[1..] 按空格 join 成一行命令文本（如 `terminal /bin/cputest -n 4` →
+/// `/bin/cputest -n 4`），由 client 当作键盘输入注入 PTY；超过
+/// [`MAX_COMMAND_BYTES`] 截断，无参数时返回空切片（长度 0）。
+fn startup_command(argc: c_int, argv: *const *const u8) -> ([u8; MAX_COMMAND_BYTES], usize) {
+    let mut command = [0u8; MAX_COMMAND_BYTES];
+    let mut length = 0;
+    let mut index = 1;
+    while index < argc.max(0) as isize && length < MAX_COMMAND_BYTES {
+        // SAFETY: musl 按 C ABI 把 argv 作为 char* 数组传给 main，1..argc 内的指针
+        // 均非空且指向 NUL 结尾的参数字节串，其有效期覆盖 main 全程。
+        let mut byte = unsafe { *argv.offset(index) };
+        if byte.is_null() {
+            break;
+        }
+        if length > 0 {
+            command[length] = b' ';
+            length += 1;
+        }
+        // SAFETY: byte 指向上述参数字节串内的字节；逐字节推进，遇 NUL 或缓冲区满停止。
+        while length < MAX_COMMAND_BYTES && unsafe { *byte } != 0 {
+            command[length] = unsafe { *byte };
+            length += 1;
+            // SAFETY: 同上，仍在 NUL 之前的有效字节范围内推进。
+            byte = unsafe { byte.add(1) };
+        }
+        index += 1;
+    }
+    (command, length)
 }
 
 #[panic_handler]

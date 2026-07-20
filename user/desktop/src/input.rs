@@ -1,23 +1,21 @@
-//! evdev 输入：设备发现、包（SYN_REPORT）边界消费、指针 / 键盘语义派发。
+//! evdev 输入：设备发现、包（SYN_REPORT）边界消费、坐标 / 按钮转换累积。
 //!
 //! - keyboard：设备名含 "keyboard"，EV_KEY 原样转发给焦点窗口（无焦点则丢弃）。
-//! - tablet：设备名含 "tablet"，绝对坐标线性映射到屏幕；按钮维护 bitmask，
-//!   命中关闭按钮（按下 + 抬起均在按钮内）发 `CLOSE_REQUEST`，标题栏按下进入
-//!   拖动，内容区按下 raise + focus 并转发 `INPUT_POINTER`；无键悬停移动同样
-//!   转发。两个设备都 `EVIOCGRAB`。
+//! - tablet：设备名含 "tablet"，绝对坐标线性映射到屏幕；按钮转换累积到包边界
+//!   （`SYN_REPORT`）后统一交由 `pointer` 语义层派发（窗口管理动作、拖动 /
+//!   resize 与 `INPUT_POINTER` 转发见 `pointer.rs`）。两个设备都 `EVIOCGRAB`。
 //!
-//! 所有事件在包边界（`SYN_REPORT`）后统一派发，保证一个包内的坐标与按钮
-//! 转换按同一光标位置求值。
+//! 所有事件在包边界后统一派发，保证一个包内的坐标与按钮转换按同一光标位置
+//! 求值。
 
-use display_proto::{CloseRequest, Focus, InputKey, InputPointer};
+use display_proto::InputKey;
 
 use crate::{
-    compositor::Damage,
+    clients::Clients,
     cursor, ffi,
     ffi::{InputAbsInfo, InputEvent},
-    scanout::Rect,
-    server::Clients,
-    window::{Region, Window, Windows},
+    pointer::{Drag, PointerShell},
+    window::{Region, Windows},
 };
 
 const EV_SYN: u16 = 0;
@@ -30,8 +28,6 @@ const BTN_LEFT: u16 = 272;
 const BTN_RIGHT: u16 = 273;
 const BTN_MIDDLE: u16 = 274;
 
-const BUTTON_LEFT: u32 = 1;
-/// 拖动 / 关闭判定只对左键生效。
 const EVENT_CAPACITY: usize = 64;
 
 const EMPTY_EVENT: InputEvent = InputEvent {
@@ -41,15 +37,6 @@ const EMPTY_EVENT: InputEvent = InputEvent {
     code: 0,
     value: 0,
 };
-
-/// 左键按下标题栏后进入的拖动状态。
-#[derive(Clone, Copy)]
-struct Drag {
-    surface_id: u32,
-    /// 按下点相对窗口外框原点的偏移。
-    offset_x: i32,
-    offset_y: i32,
-}
 
 pub struct Input {
     /// keyboard evdev fd；未发现设备时为 -1（桌面仍可用指针工作）。
@@ -62,11 +49,13 @@ pub struct Input {
     pub cursor_x: i32,
     /// 光标屏幕坐标（热点）。
     pub cursor_y: i32,
-    buttons: u32,
-    drag: Option<Drag>,
-    /// 左键按下时命中的关闭按钮所属 surface；抬起时仍在同一按钮内才发
-    /// `CLOSE_REQUEST`。
-    close_armed: Option<u32>,
+    /// 指针按键位掩码（bit0 = left，bit1 = right，bit2 = middle）。
+    pub(crate) buttons: u32,
+    /// 左键拖动状态（移动 / resize），语义见 `pointer`。
+    pub(crate) drag: Option<Drag>,
+    /// 左键按下时命中的标题栏按钮（surface id + 区域）；抬起时仍在同一按钮
+    /// 内才生效。
+    pub(crate) armed: Option<(u32, Region)>,
     pending_x: Option<i32>,
     pending_y: Option<i32>,
     pending_buttons: [(u32, i32); 8],
@@ -88,7 +77,7 @@ impl Input {
             cursor_y: screen_height / 2,
             buttons: 0,
             drag: None,
-            close_armed: None,
+            armed: None,
             pending_x: None,
             pending_y: None,
             pending_buttons: [(0, 0); 8],
@@ -130,15 +119,8 @@ impl Input {
         }
     }
 
-    /// 消费 tablet 上所有待读事件，按包边界统一派发。
-    pub fn poll_tablet(
-        &mut self,
-        windows: &mut Windows,
-        clients: &Clients,
-        damage: &mut Damage,
-        screen_width: i32,
-        screen_height: i32,
-    ) {
+    /// 消费 tablet 上所有待读事件，按包边界统一交给 `pointer` 语义层派发。
+    pub fn poll_tablet(&mut self, shell: &mut PointerShell) {
         if self.tablet_fd < 0 {
             return;
         }
@@ -160,7 +142,7 @@ impl Input {
                     }
                 }
                 EV_SYN if event.code == SYN_REPORT => {
-                    self.dispatch(windows, clients, damage, screen_width, screen_height);
+                    self.dispatch(shell);
                 }
                 _ => {}
             }
@@ -170,234 +152,45 @@ impl Input {
             || self.pending_y.is_some()
             || self.pending_button_count != 0
         {
-            self.dispatch(windows, clients, damage, screen_width, screen_height);
+            self.dispatch(shell);
         }
     }
 
     /// 一个包内的坐标与按钮转换统一在此生效。
-    fn dispatch(
-        &mut self,
-        windows: &mut Windows,
-        clients: &Clients,
-        damage: &mut Damage,
-        screen_width: i32,
-        screen_height: i32,
-    ) {
+    fn dispatch(&mut self, shell: &mut PointerShell) {
         let previous = cursor::rect_at(self.cursor_x, self.cursor_y);
         let mut moved = false;
         if let Some(raw) = self.pending_x.take() {
-            let x = map_absolute(raw, self.abs_x_range, screen_width);
+            let x = map_absolute(raw, self.abs_x_range, shell.screen_width);
             if x != self.cursor_x {
                 self.cursor_x = x;
                 moved = true;
             }
         }
         if let Some(raw) = self.pending_y.take() {
-            let y = map_absolute(raw, self.abs_y_range, screen_height);
+            let y = map_absolute(raw, self.abs_y_range, shell.screen_height);
             if y != self.cursor_y {
                 self.cursor_y = y;
                 moved = true;
             }
         }
         if moved {
-            damage.add(previous);
-            damage.add(cursor::rect_at(self.cursor_x, self.cursor_y));
+            shell.damage.add(previous);
+            shell.damage.add(cursor::rect_at(self.cursor_x, self.cursor_y));
         }
         for index in 0..self.pending_button_count {
             let (bit, value) = self.pending_buttons[index];
             match value {
-                1 => self.press(bit, windows, clients, damage),
-                0 => self.release(bit, windows, clients),
+                1 => self.press(bit, shell),
+                0 => self.release(bit, shell),
                 _ => {}
             }
         }
         self.pending_button_count = 0;
         if moved {
-            self.motion(windows, clients, damage, screen_width, screen_height);
+            self.motion(shell);
         }
     }
-
-    fn press(
-        &mut self,
-        bit: u32,
-        windows: &mut Windows,
-        clients: &Clients,
-        damage: &mut Damage,
-    ) {
-        self.buttons |= bit;
-        match windows.hit_test(self.cursor_x, self.cursor_y) {
-            Some((slot, Region::CloseButton)) if bit == BUTTON_LEFT => {
-                if let Some(window) = windows.get(slot) {
-                    self.close_armed = Some(window.surface_id);
-                }
-            }
-            Some((slot, Region::TitleBar)) if bit == BUTTON_LEFT => {
-                focus_raise(windows, clients, damage, slot);
-                if let Some(window) = windows.get(slot) {
-                    self.drag = Some(Drag {
-                        surface_id: window.surface_id,
-                        offset_x: self.cursor_x - window.x,
-                        offset_y: self.cursor_y - window.y,
-                    });
-                }
-            }
-            Some((slot, Region::Content)) => {
-                focus_raise(windows, clients, damage, slot);
-                self.forward_pointer(windows, clients, slot);
-            }
-            _ => {}
-        }
-    }
-
-    fn release(&mut self, bit: u32, windows: &mut Windows, clients: &Clients) {
-        self.buttons &= !bit;
-        if bit == BUTTON_LEFT {
-            if let Some(armed) = self.close_armed.take() {
-                let confirmed = windows
-                    .by_surface(armed)
-                    .is_some_and(|slot| {
-                        matches!(
-                            windows.hit_test(self.cursor_x, self.cursor_y),
-                            Some((hit, Region::CloseButton)) if hit == slot
-                        )
-                    });
-                if confirmed
-                    && let Some(slot) = windows.by_surface(armed)
-                    && let Some(window) = windows.get(slot)
-                {
-                    let message = CloseRequest {
-                        surface_id: window.surface_id,
-                    };
-                    let mut buffer = [0u8; 16];
-                    if let Some(length) = message.encode(&mut buffer) {
-                        clients.send(window.client, &buffer[..length]);
-                    }
-                }
-            }
-            self.drag = None;
-        }
-        // 让焦点窗口看到按键释放（指针在其内容区内时）。
-        if let Some(focused) = windows.focused() {
-            self.forward_pointer(windows, clients, focused);
-        }
-    }
-
-    /// 无按钮转换的光标移动：拖动窗口、悬停转发或拖动中转发。
-    fn motion(
-        &mut self,
-        windows: &mut Windows,
-        clients: &Clients,
-        damage: &mut Damage,
-        screen_width: i32,
-        screen_height: i32,
-    ) {
-        if let Some(drag) = self.drag {
-            let Some(slot) = windows.by_surface(drag.surface_id) else {
-                self.drag = None;
-                return;
-            };
-            let Some(window) = windows.get_mut(slot) else {
-                self.drag = None;
-                return;
-            };
-            let old = window.outer_rect();
-            //  clamp：至少保留 32px 可点区域在屏内，标题栏不推出上沿。
-            let layout = window.layout();
-            let new_x = (self.cursor_x - drag.offset_x)
-                .clamp(32 - layout.outer_width, screen_width - 32);
-            let new_y = (self.cursor_y - drag.offset_y).clamp(0, screen_height - 32);
-            if new_x != window.x || new_y != window.y {
-                window.x = new_x;
-                window.y = new_y;
-                damage.add(old);
-                damage.add(window.outer_rect());
-            }
-        } else if self.buttons == 0 {
-            if let Some((slot, Region::Content)) = windows.hit_test(self.cursor_x, self.cursor_y)
-            {
-                self.forward_pointer(windows, clients, slot);
-            }
-        } else if let Some(focused) = windows.focused() {
-            self.forward_pointer(windows, clients, focused);
-        }
-    }
-
-    /// 指针在窗口内容区内时转发 `INPUT_POINTER`（内容相对坐标 + buttons）。
-    fn forward_pointer(&self, windows: &Windows, clients: &Clients, slot: usize) {
-        let Some(window) = windows.get(slot) else {
-            return;
-        };
-        let content = window.content_rect();
-        let x = self.cursor_x - content.x1;
-        let y = self.cursor_y - content.y1;
-        if !(0..content.width()).contains(&x) || !(0..content.height()).contains(&y) {
-            return;
-        }
-        let message = InputPointer {
-            surface_id: window.surface_id,
-            x: x as u32,
-            y: y as u32,
-            buttons: self.buttons,
-            wheel: 0,
-        };
-        let mut buffer = [0u8; 32];
-        if let Some(length) = message.encode(&mut buffer) {
-            clients.send(window.client, &buffer[..length]);
-        }
-    }
-}
-
-/// raise 窗口并把键盘焦点切过去（附带 `FOCUS` 消息与标题栏重画）。
-pub fn focus_raise(
-    windows: &mut Windows,
-    clients: &Clients,
-    damage: &mut Damage,
-    slot: usize,
-) {
-    windows.raise(slot);
-    set_focus(windows, clients, damage, Some(slot));
-}
-
-/// 切换键盘焦点：旧焦点发 `FOCUS{0}`、新焦点发 `FOCUS{1}`，两侧标题栏
-/// 记入 damage（焦点色变化）。
-pub fn set_focus(
-    windows: &mut Windows,
-    clients: &Clients,
-    damage: &mut Damage,
-    slot: Option<usize>,
-) {
-    if windows.focused() == slot {
-        return;
-    }
-    if let Some(old) = windows.focused()
-        && let Some(window) = windows.get(old)
-    {
-        send_focus(clients, window, 0);
-        damage.add(title_bar_strip(window));
-    }
-    windows.set_focus(slot);
-    if let Some(new) = slot
-        && let Some(window) = windows.get(new)
-    {
-        send_focus(clients, window, 1);
-        damage.add(title_bar_strip(window));
-    }
-}
-
-fn send_focus(clients: &Clients, window: &Window, focused: u32) {
-    let message = Focus {
-        surface_id: window.surface_id,
-        focused,
-    };
-    let mut buffer = [0u8; 16];
-    if let Some(length) = message.encode(&mut buffer) {
-        clients.send(window.client, &buffer[..length]);
-    }
-}
-
-fn title_bar_strip(window: &Window) -> Rect {
-    let outer = window.outer_rect();
-    Rect::new(outer.x1, outer.y1, outer.x2, outer.y1 + crate::chrome::TITLE_HEIGHT)
 }
 
 fn button_bit(code: u16) -> Option<u32> {

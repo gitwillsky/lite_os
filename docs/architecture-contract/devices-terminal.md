@@ -48,10 +48,14 @@
 - DRM/evdev syscall 只编码固定 Linux UAPI。devfs 只发布 object identity，不拥有 device state。
 - display completion、input packet 与 PTY byte readiness 统一投递 semantic event；hardirq 不执行 renderer、filesystem 或 task logic。
 - terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。桌面客户端协议（`display-proto`）是用户态进程间 seam，不进入内核 ABI。
-- `desktop` 是 graphical session 的唯一 owner：首个 open `/dev/dri/card0` 取得 DRM master，独占 evdev
+- `desktop` 是 graphical session 的唯一 owner：经 SET_MASTER 取得 DRM master，独占 evdev
   输入与 scanout；客户端经 SCM_RIGHTS 共享同一 OFD，CREATE_DUMB handle 的 DESTROY 只归桌面。
   headless boot 中 DRM/input 不可用时 `desktop` 保持同一进程并以 5 秒 poll deadline 重试，只报告一次。
   禁止退出后依赖 init `respawn` 紧循环重复 exec，也禁止复制第二套 headless compositor state。
+- `splash` 是 sysinit 的临时屏幕 owner：首个 open `/dev/dri/card0` 取得 master 完成启动画面
+  modeset 后立即 DROP_MASTER（DIRTYFB 不需要 master，进度条动画不受影响），fork 后父进程退出
+  使 sysinit 完成；子进程写 `/run/splash.pid`，`desktop` 首帧提交后经该 pid SIGTERM 接管并摘除
+  pid 文件。splash 失败必须静默退出（不打印、不读 console input），系统无 splash 必须能继续启动。
 - `terminal` 独占 ANSI parser 与 renderer state；它不再持有 DRM master 或 evdev，像素经 dumb buffer + damage 提交给 `desktop` 合成。
 - Console write 是同步且非阻塞的 output drain seam；Terminal state lock 必须覆盖普通 output 与 input
   echo 的完整 Console write，TCSETSW 取得该锁后才应用设置。TCSETSF 还必须在 Terminal→Console

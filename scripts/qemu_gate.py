@@ -400,7 +400,7 @@ def power_cut(
                     "power-cut guest reached a kernel fatal path"
                     f"\n--- output tail ---\n{tail}"
                 )
-            # BusyBox help banner 先于真正的 prompt；console-session 与 shell 在这段窗口内仍可能
+            # BusyBox help banner 先于真正的 prompt；desktop 与 shell 在这段窗口内仍可能
             # 竞争 console input。只有完整 prompt 出现后注入，缺失时 power-cut mutation 命令会
             # 被启动期 reader 吞掉，guest 随后永久停在空 shell。
             if not command_sent and "/ # " in text:
