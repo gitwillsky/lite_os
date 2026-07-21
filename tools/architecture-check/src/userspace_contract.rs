@@ -264,19 +264,19 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         );
     }
     let atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
-    if atlas.get(..8) != Some(b"LTA8\0\0\0\x02") || atlas.len() != 481_136 {
+    if atlas.get(..8) != Some(b"LTA8\0\0\0\x02") || atlas.len() != 1_918_832 {
         errors.push(
             "assets/fonts/liteos-terminal.a8: expected the checked v2 terminal atlas".to_owned(),
         );
     }
     let ui_atlas = fs::read(root.join("assets/fonts/liteos-ui.a8p")).unwrap_or_default();
-    if ui_atlas.get(..8) != Some(b"LUP8\0\0\0\x01") || ui_atlas.len() != 3_709_860 {
+    if ui_atlas.get(..8) != Some(b"LUP8\0\0\0\x01") || ui_atlas.len() != 10_854_033 {
         errors.push(
             "assets/fonts/liteos-ui.a8p: expected the checked v1 UI proportional atlas".to_owned(),
         );
     }
     let wallpaper = fs::read(root.join("assets/wallpaper.xrgb")).unwrap_or_default();
-    if wallpaper.get(..8) != Some(b"LWP8\0\0\0\x01") || wallpaper.len() != 6_293_424 {
+    if wallpaper.get(..8) != Some(b"LWP8\0\0\0\x01") || wallpaper.len() != 20_358_160 {
         errors.push("assets/wallpaper.xrgb: expected the checked v1 raw wallpaper".to_owned());
     }
     let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();

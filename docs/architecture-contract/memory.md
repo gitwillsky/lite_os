@@ -86,3 +86,7 @@
 - ASID retirement 必须严格按 `保活完整地址空间 -> local/remote full fence -> bitmap release -> frame/page-table Drop` 提交；每 CPU seen bit 只能在新分配后清零，首次 activation 必须先做 ASID-scoped fence 再发布 seen。缺失 release 只允许耗尽 ID，绝不能提前复用。
 - shared-file writer claim 必须覆盖远端 stale writable translation 的完整生命周期：增加写权限在 PTE publication 前 acquire，收紧写权限在 remote fence 完成后 release。
 - private reclaim 的 Arc owner count 只能在 fence 后 release replay 时决定实际回收数；revoke-time count 仅用于有界扫描节奏，不能跨 fence 断言稳定。达到 request target 后必须保留其余 resident owner，即使其 PTE 已撤销，后续 fault 仍可重建 translation。
+- private reclaim 的 round-robin cursor 由 `PrivateReclaimWalk` 唯一拥有，revoke 扫描与 release replay
+  共用同一状态机：committed cursor 只推进到最后一个实际扫描页的下一位置（未扫描任何页时保持
+  initial），wrap 只改变 probe 位置、不得提交 cursor。否则 replay 走完全部 scanned 页后停在
+  `after(last_scanned)`，与已被 wrap 清零的 final cursor 必然 diverge。

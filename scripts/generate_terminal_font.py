@@ -19,8 +19,8 @@ MEDIUM = ROOT / "assets/fonts/JetBrainsMonoNL-Medium.ttf"
 BOLD = ROOT / "assets/fonts/JetBrainsMonoNL-Bold.ttf"
 OUTPUT = ROOT / "assets/fonts/liteos-terminal.a8"
 MAGIC = b"LTA8\0\0\0\2"
-CELL_WIDTH = 16
-CELL_HEIGHT = 32
+CELL_WIDTH = 32
+CELL_HEIGHT = 64
 FACE_COUNT = 2
 MEDIUM_SHA256 = "44099e1efefba55637e0abbbf8dd3f526e59523345888a257bb01d39df4af74c"
 BOLD_SHA256 = "0198e841824025f8876e5c297f0b9b497ee8d6eb9969710a3328e1303f996ec3"
@@ -77,8 +77,8 @@ def generate(medium: Path, bold: Path, output: Path) -> None:
             raise RuntimeError(f"font identity mismatch: {path}: expected {expected}, got {actual}")
     glyphs = codepoints()
     faces = (
-        render_face(medium, CELL_WIDTH, CELL_HEIGHT, 24, glyphs),
-        render_face(bold, CELL_WIDTH, CELL_HEIGHT, 24, glyphs),
+        render_face(medium, CELL_WIDTH, CELL_HEIGHT, 48, glyphs),
+        render_face(bold, CELL_WIDTH, CELL_HEIGHT, 48, glyphs),
     )
     header = bytearray(32)
     header[:8] = MAGIC
@@ -87,8 +87,8 @@ def generate(medium: Path, bold: Path, output: Path) -> None:
     struct.pack_into("<I", header, 16, len(header) + len(glyphs) * 4)
     struct.pack_into("<HHI", header, 20, CELL_WIDTH, CELL_HEIGHT, FACE_COUNT)
     payload = bytes(header) + b"".join(struct.pack("<I", value) for value in glyphs) + b"".join(faces)
-    if len(payload) > 512 * 1024:
-        raise RuntimeError(f"terminal atlas exceeds 512 KiB contract: {len(payload)} bytes")
+    if len(payload) > 2 * 1024 * 1024:
+        raise RuntimeError(f"terminal atlas exceeds 2 MiB contract: {len(payload)} bytes")
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_bytes(payload)
     temporary.replace(output)

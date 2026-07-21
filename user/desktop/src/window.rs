@@ -22,8 +22,8 @@ use crate::{
 pub const MAX_WINDOWS: usize = 8;
 /// 标题字节上限（超出截断）。
 pub const MAX_TITLE: usize = 64;
-/// 缩放命中带宽度（px）：右 / 下边缘与右下角的触发区（不含标题栏）。
-pub const RESIZE_BAND: i32 = 4;
+/// 缩放命中带宽度（px，1× 基准 4）：右 / 下边缘与右下角的触发区（不含标题栏）。
+pub const RESIZE_BAND: i32 = 4 * chrome::SCALE;
 
 /// hit-test 结果：指针落在窗口的哪个区域。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -374,8 +374,8 @@ impl Windows {
         let slot = self.list.iter().position(|window| !window.alive)?;
         let surface_id = self.next_surface_id;
         self.next_surface_id = self.next_surface_id.wrapping_add(1).max(1);
-        // 级联初始位置，避免多窗完全重叠。
-        let cascade = 48 + 24 * (surface_id as i32 % 8);
+        // 级联初始位置（1× 基准 48 + 24 步进，按 SCALE 缩放），避免多窗完全重叠。
+        let cascade = (48 + 24 * (surface_id as i32 % 8)) * chrome::SCALE;
         let mut window = Window {
             surface_id,
             client: desc.client,

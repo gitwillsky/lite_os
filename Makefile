@@ -47,7 +47,7 @@ FS_IMAGE_SIZE_MIB ?= 8192
 .PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
 
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
-QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=1920,yres=1080
+QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
 QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
 QEMU_MEMORY ?= 512M
 QEMU_SMP ?= $(shell python3 scripts/host_topology.py)
@@ -103,7 +103,7 @@ build-apk-apps: build-kernel build-bootloader build-rootfs
 
 # 正常构建只消费 checked atlas；字体升级由显式目标完成，避免环境 FreeType 差异污染构建。
 regen-font:
-	python3 scripts/generate_terminal_font.py
+	target/fontenv/bin/python scripts/generate_terminal_font.py
 
 # UI 比例字体 atlas 由固定 venv 生成；正常构建只消费 checked 资产，不需要 Pillow。
 regen-ui-font:

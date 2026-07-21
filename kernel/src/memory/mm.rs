@@ -20,7 +20,7 @@ mod user_access;
 mod vma_index_state;
 use super::config;
 use super::permissions::MapPermission;
-use super::retire::{reclaim_release_decision, revoke_and_synchronize};
+use super::retire::{PrivateReclaimWalk, reclaim_release_decision, revoke_and_synchronize};
 use super::{address::VirtualPageNumber, page_table::PageTable};
 use crate::fallible_tree::{FallibleMap, VacantEntry};
 use crate::memory::{

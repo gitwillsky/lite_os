@@ -1,19 +1,20 @@
-//! 任务栏：屏幕底部 40px 的合成器内部 UI（合成最后绘制，覆盖窗口区域）。
+//! 任务栏：屏幕底部 80px（1× 基准 40px）的合成器内部 UI（合成最后绘制，覆盖窗口区域）。
 //!
-//! 布局（左→右）："开始" 按钮（100px，切换开始菜单）、窗口按钮区（每窗口
-//! 160px，显示标题，焦点窗口画按下态）、右侧时钟（HH:MM，`CLOCK_REALTIME`）。
+//! 布局（左→右）："开始" 按钮（200px，切换开始菜单）、窗口按钮区（每窗口
+//! 320px，显示标题，焦点窗口画按下态）、右侧时钟（HH:MM，`CLOCK_REALTIME`）。
 //! 事件循环按“到下一整分钟”的毫秒数约束 poll 超时，分钟翻转时
 //! [`Taskbar::tick`] 只 damage 时钟矩形。
 //!
 //! Luna 视觉：Start 按钮为绿渐变（#45A845→#2E7D2E）右侧圆角方块，左侧 2x2
-//! 四色小旗图标（红 / 绿 / 蓝 / 黄），右侧 uifont bold16 白字 "开始"，按下态
-//! 压暗。窗口按钮文字 uifont regular16，时钟 uifont regular13。
+//! 四色小旗图标（红 / 绿 / 蓝 / 黄），右侧 uifont bold32 白字 "开始"，按下态
+//! 压暗。窗口按钮文字 uifont regular32，时钟 uifont regular26。
 //!
 //! 窗口按钮点击行为对齐 XP：已最小化 → 还原并聚焦；已是焦点 → 最小化；
 //! 否则 → 置顶 + 聚焦（具体动作由 `pointer` 在 release 确认后执行，本模块只
 //! 负责命中、按下态与绘制）。
 
 use crate::{
+    chrome::SCALE,
     compositor::Damage,
     ffi,
     scanout::{Frame, Rect},
@@ -21,25 +22,25 @@ use crate::{
     window::{MAX_WINDOWS, State, Windows},
 };
 
-/// 任务栏高度（px）。
-pub const HEIGHT: i32 = 40;
-/// Start 按钮列宽（px）。
-pub const START_WIDTH: i32 = 100;
-/// 单个窗口按钮宽度（px）。
-pub const BUTTON_WIDTH: i32 = 160;
-/// 相邻窗口按钮间距（px）。
-const BUTTON_GAP: i32 = 4;
+/// 任务栏高度（px，1× 基准 40）。
+pub const HEIGHT: i32 = 40 * SCALE;
+/// Start 按钮列宽（px，1× 基准 100）。
+pub const START_WIDTH: i32 = 100 * SCALE;
+/// 单个窗口按钮宽度（px，1× 基准 160）。
+pub const BUTTON_WIDTH: i32 = 160 * SCALE;
+/// 相邻窗口按钮间距（px，1× 基准 4）。
+const BUTTON_GAP: i32 = 4 * SCALE;
 /// 窗口按钮区左缘 x 坐标。
 const BUTTONS_X: i32 = START_WIDTH + BUTTON_GAP;
-/// 时钟区宽度（px）。
-const CLOCK_WIDTH: i32 = 96;
-/// 按钮上下缩进（px）。
-const BUTTON_INSET_Y: i32 = 4;
-/// Start 按钮右侧圆角半径（px）。
-const START_RADIUS: i32 = 6;
-/// 小旗图标单格边长（px）与格间距。
-const FLAG_CELL: i32 = 7;
-const FLAG_GAP: i32 = 2;
+/// 时钟区宽度（px，1× 基准 96）。
+const CLOCK_WIDTH: i32 = 96 * SCALE;
+/// 按钮上下缩进（px，1× 基准 4）。
+const BUTTON_INSET_Y: i32 = 4 * SCALE;
+/// Start 按钮右侧圆角半径（px，1× 基准 6）。
+const START_RADIUS: i32 = 6 * SCALE;
+/// 小旗图标单格边长（px，1× 基准 7）与格间距（1× 基准 2）。
+const FLAG_CELL: i32 = 7 * SCALE;
+const FLAG_GAP: i32 = 2 * SCALE;
 
 const BAR: u32 = 0x0024_5edc;
 const BUTTON_UP: u32 = 0x003a_6ea5;
@@ -245,8 +246,8 @@ impl Taskbar {
         }
         let clock = self.clock_rect().intersect(clip);
         if !clock.is_empty() {
-            // regular13 在 40px 任务栏内垂直居中。
-            let face = Face::Regular13;
+            // regular26 在 80px 任务栏内垂直居中。
+            let face = Face::Regular26;
             let baseline = self.strip_rect().y1
                 + (HEIGHT - font.ascent(face) - font.descent(face)) / 2
                 + font.ascent(face);
@@ -258,7 +259,7 @@ impl Taskbar {
     }
 }
 
-/// Start 按钮：绿渐变右侧圆角方块（按下态压暗）+ 2x2 四色小旗 + bold16 "开始"。
+/// Start 按钮：绿渐变右侧圆角方块（按下态压暗）+ 2x2 四色小旗 + bold32 "开始"。
 fn paint_start(frame: &mut Frame, font: &UiFont, rect: Rect, pressed: bool, clip: Rect) {
     let area = rect.intersect(clip);
     if area.is_empty() {
@@ -277,7 +278,7 @@ fn paint_start(frame: &mut Frame, font: &UiFont, rect: Rect, pressed: bool, clip
         }
     }
     // 小旗图标：2x2 色块，垂直居中。
-    let flag_x = rect.x1 + 8;
+    let flag_x = rect.x1 + 8 * SCALE;
     let flag_y = rect.y1 + (rect.height() - 2 * FLAG_CELL - FLAG_GAP) / 2;
     for (index, color) in FLAG.into_iter().enumerate() {
         let cell = Rect::new(
@@ -288,15 +289,15 @@ fn paint_start(frame: &mut Frame, font: &UiFont, rect: Rect, pressed: bool, clip
         );
         fill(frame, cell.intersect(area), color);
     }
-    // bold16 在按钮内垂直居中。
-    let face = Face::Bold16;
+    // bold32 在按钮内垂直居中。
+    let face = Face::Bold32;
     let baseline =
         rect.y1 + (rect.height() - font.ascent(face) - font.descent(face)) / 2 + font.ascent(face);
     font.draw(
         frame,
         face,
         TEXT,
-        (flag_x + 2 * FLAG_CELL + FLAG_GAP + 6, baseline),
+        (flag_x + 2 * FLAG_CELL + FLAG_GAP + 6 * SCALE, baseline),
         "开始",
         area,
     );
@@ -320,7 +321,7 @@ fn in_start_shape(x: i32, y: i32, width: i32, height: i32) -> bool {
     true
 }
 
-/// 窗口按钮：底色（焦点 / 按下态压暗）+ regular16 截断文本。
+/// 窗口按钮：底色（焦点 / 按下态压暗）+ regular32 截断文本。
 fn paint_window_button(
     frame: &mut Frame,
     font: &UiFont,
@@ -338,8 +339,8 @@ fn paint_window_button(
     let Ok(text) = core::str::from_utf8(text) else {
         return;
     };
-    // regular16 在按钮内垂直居中。
-    let face = Face::Regular16;
+    // regular32 在按钮内垂直居中。
+    let face = Face::Regular32;
     let baseline =
         rect.y1 + (rect.height() - font.ascent(face) - font.descent(face)) / 2 + font.ascent(face);
     let area = area.intersect(Rect::new(

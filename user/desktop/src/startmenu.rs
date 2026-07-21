@@ -4,8 +4,8 @@
 //!   空行与 `#` 注释忽略；文件缺失 / 读取失败 / 无有效项时回退单项
 //!   `终端=`）。项数上限 16，名称 24B / 命令 96B（均按 UTF-8 字符边界截断）。
 //! - 右栏 `#D3E5FA`：固定项 `终端`（空命令，打开普通终端）与 `关机`。
-//! - 项高 36px，左侧 24x24 固定伪随机色方块图标，文字 uifont regular16 黑；
-//!   悬停 / 按下高亮 `#316AC5` 白字。
+//! - 项高 72px（1× 基准 36px），左侧 48x48（1× 基准 24x24）固定伪随机色方块
+//!   图标，文字 uifont regular32 黑；悬停 / 按下高亮 `#316AC5` 白字。
 //!
 //! 交互由 `pointer` 驱动：Start 按钮切换开关；按下菜单项记录按下态，release
 //! 仍在同项内才生效（程序项经 `supervisor.spawn_one` 把命令作为 terminal 的
@@ -13,21 +13,23 @@
 //! 变化只 damage 菜单矩形。
 
 use crate::{
+    chrome::SCALE,
     ffi,
     scanout::{Frame, Rect},
     taskbar,
     uifont::{Face, UiFont},
 };
 
-/// 菜单总宽（px）。
-const WIDTH: i32 = 380;
-/// 左栏（程序列表）宽度（px）。
-const LEFT_WIDTH: i32 = 232;
-/// 项高（px）。
-const ITEM_HEIGHT: i32 = 36;
-/// 图标边长（px）与相对项原点的缩进。
-const ICON_SIZE: i32 = 24;
-const ICON_INSET: i32 = 6;
+/// 菜单总宽（px，1× 基准 380）。
+const WIDTH: i32 = 380 * SCALE;
+/// 左栏（程序列表）宽度（px，1× 基准 232；右栏为 WIDTH - LEFT_WIDTH，
+/// 1× 基准 148）。
+const LEFT_WIDTH: i32 = 232 * SCALE;
+/// 项高（px，1× 基准 36）。
+const ITEM_HEIGHT: i32 = 36 * SCALE;
+/// 图标边长（px，1× 基准 24）与相对项原点的缩进（1× 基准 6）。
+const ICON_SIZE: i32 = 24 * SCALE;
+const ICON_INSET: i32 = 6 * SCALE;
 
 /// 程序项上限。
 const MAX_ITEMS: usize = 16;
@@ -236,7 +238,7 @@ impl StartMenu {
         }
     }
 
-    /// 单项：高亮底色（悬停 / 按下）+ 伪随机色图标 + regular16 文字。
+    /// 单项：高亮底色（悬停 / 按下）+ 伪随机色图标 + regular32 文字。
     fn paint_item(
         &self,
         frame: &mut Frame,
@@ -264,8 +266,8 @@ impl StartMenu {
         let Ok(text) = core::str::from_utf8(name) else {
             return;
         };
-        // regular16 在 36px 项高内垂直居中。
-        let face = Face::Regular16;
+        // regular32 在 72px 项高内垂直居中。
+        let face = Face::Regular32;
         let baseline = item_rect.y1 + (ITEM_HEIGHT - font.ascent(face) - font.descent(face)) / 2
             + font.ascent(face);
         let ink = if highlighted { TEXT_HIGHLIGHT } else { TEXT };

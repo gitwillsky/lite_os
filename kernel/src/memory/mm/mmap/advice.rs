@@ -215,27 +215,24 @@ impl<'memory> PrivateReclaimTransaction<'memory> {
     }
 
     fn revoke(&mut self) {
-        let mut wrapped = false;
+        let mut walk = PrivateReclaimWalk::new(self.memory.private_reclaim_cursor.as_usize());
         while self.revoke_unique_candidates < self.request.target_pages()
             && self.scanned < self.request.scan_pages()
         {
-            // cursor 到达末尾时只回绕一次；resident owner 此阶段保持原位，保证 fence
-            // 后可按同一 deterministic sequence 重放并释放。
+            // resident owner 此阶段保持原位，保证 fence 后可按同一 deterministic sequence
+            // 重放并释放；walk 只在实际扫描页后推进 cursor，wrap 不提交 cursor。
             let next = self
                 .memory
-                .next_private_resident_from(self.memory.private_reclaim_cursor);
+                .next_private_resident_from(VirtualPageNumber::from_vpn(walk.probe()));
             let Some((area_key, vpn)) = next else {
-                if wrapped {
+                if !walk.wrap_or_finish() {
                     break;
                 }
-                self.memory.private_reclaim_cursor = VirtualPageNumber::from_vpn(0);
-                wrapped = true;
                 continue;
             };
-            if wrapped && vpn >= self.initial_cursor {
+            if !walk.advance(vpn.as_usize()) {
                 break;
             }
-            self.memory.private_reclaim_cursor = Self::after(vpn);
             self.scanned += 1;
 
             let area = self
@@ -261,6 +258,7 @@ impl<'memory> PrivateReclaimTransaction<'memory> {
                 Err(error) => panic!("private reclaim failed to unmap {vpn:?}: {error:?}"),
             }
         }
+        self.memory.private_reclaim_cursor = VirtualPageNumber::from_vpn(walk.committed());
         self.final_cursor = self.memory.private_reclaim_cursor;
     }
 
@@ -269,23 +267,24 @@ impl<'memory> PrivateReclaimTransaction<'memory> {
     }
 
     fn release(self) -> ReclaimResult {
-        let mut cursor = self.initial_cursor;
-        let mut wrapped = false;
+        let mut walk = PrivateReclaimWalk::new(self.initial_cursor.as_usize());
         let mut replayed = 0;
         let mut reclaimed = 0;
         while replayed < self.scanned {
-            let next = self.memory.next_private_resident_from(cursor);
+            let next = self
+                .memory
+                .next_private_resident_from(VirtualPageNumber::from_vpn(walk.probe()));
             let Some((area_key, vpn)) = next else {
-                assert!(!wrapped, "private reclaim replay ended before scan budget");
-                cursor = VirtualPageNumber::from_vpn(0);
-                wrapped = true;
+                assert!(
+                    walk.wrap_or_finish(),
+                    "private reclaim replay ended before scan budget"
+                );
                 continue;
             };
             assert!(
-                !wrapped || vpn < self.initial_cursor,
+                walk.advance(vpn.as_usize()),
                 "private reclaim replay crossed its initial cursor"
             );
-            cursor = Self::after(vpn);
             replayed += 1;
 
             let area = self
@@ -320,15 +319,12 @@ impl<'memory> PrivateReclaimTransaction<'memory> {
             reclaimed += usize::from(decision.reclaimed);
         }
         if self.scanned != 0 {
-            assert_eq!(cursor, self.final_cursor, "private reclaim replay diverged");
+            assert_eq!(
+                walk.committed(),
+                self.final_cursor.as_usize(),
+                "private reclaim replay diverged"
+            );
         }
         ReclaimResult::new(reclaimed, replayed)
-    }
-
-    fn after(vpn: VirtualPageNumber) -> VirtualPageNumber {
-        vpn.as_usize()
-            .checked_add(1)
-            .map(VirtualPageNumber::from_vpn)
-            .unwrap_or_else(|| VirtualPageNumber::from_vpn(0))
     }
 }

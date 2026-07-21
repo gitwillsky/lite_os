@@ -36,14 +36,16 @@ BOLD_URL = (
     "https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
     "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf"
 )
-# face_kind 0 = regular, 1 = bold; both kinds are rendered at every pixel size.
+# face_kind 0 = regular, 1 = bold。每档 face 显式列出（kind, 字体文件, URL, sha256, pixel_size）：
+# regular 出 26/32 两档（菜单/任务栏/正文），bold 只出 32（标题栏/开始按钮），
+# bold26 没有消费方，留着只会让资产白白超出预算。
 FACES = (
-    (0, REGULAR, REGULAR_URL, REGULAR_SHA256),
-    (1, BOLD, BOLD_URL, BOLD_SHA256),
+    (0, REGULAR, REGULAR_URL, REGULAR_SHA256, 26),
+    (0, REGULAR, REGULAR_URL, REGULAR_SHA256, 32),
+    (1, BOLD, BOLD_URL, BOLD_SHA256, 32),
 )
-PIXEL_SIZES = (13, 16)
 # Desktop asset budget; exceeding it means the glyph set or sizes must shrink.
-MAX_BYTES = 6 * 1024 * 1024
+MAX_BYTES = 11 * 1024 * 1024
 
 
 def sha256(path: Path) -> str:
@@ -124,23 +126,22 @@ def render_face(path: Path, pixel_size: int, glyphs: list[int]) -> tuple[bytes, 
 
 def generate(output: Path) -> None:
     """Write one transactional atlas consumed directly by the no_std desktop."""
-    for _, path, url, expected in FACES:
+    for _, path, url, expected, _ in FACES:
         ensure_font(path, url, expected)
     glyphs = codepoints()
     payload = bytearray()
     payload.extend(MAGIC)
-    payload.extend(struct.pack("<I", len(FACES) * len(PIXEL_SIZES)))
+    payload.extend(struct.pack("<I", len(FACES)))
     payload.extend(struct.pack("<I", len(glyphs)))
     payload.extend(b"".join(struct.pack("<I", value) for value in glyphs))
-    for face_kind, path, _, _ in FACES:
-        for pixel_size in PIXEL_SIZES:
-            face, ascent, descent, empty, bitmap_bytes = render_face(path, pixel_size, glyphs)
-            payload.extend(struct.pack("<IIii", face_kind, pixel_size, ascent, descent))
-            payload.extend(face)
-            print(
-                f"face kind={face_kind} size={pixel_size}px: ascent={ascent} descent={descent}, "
-                f"{len(glyphs)} glyphs ({empty} empty bitmaps), {bitmap_bytes} bitmap bytes"
-            )
+    for face_kind, path, _, _, pixel_size in FACES:
+        face, ascent, descent, empty, bitmap_bytes = render_face(path, pixel_size, glyphs)
+        payload.extend(struct.pack("<IIii", face_kind, pixel_size, ascent, descent))
+        payload.extend(face)
+        print(
+            f"face kind={face_kind} size={pixel_size}px: ascent={ascent} descent={descent}, "
+            f"{len(glyphs)} glyphs ({empty} empty bitmaps), {bitmap_bytes} bitmap bytes"
+        )
     if len(payload) > MAX_BYTES:
         raise RuntimeError(f"UI atlas exceeds {MAX_BYTES} byte budget: {len(payload)} bytes")
     temporary = output.with_suffix(output.suffix + ".tmp")

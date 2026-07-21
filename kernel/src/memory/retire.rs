@@ -24,6 +24,72 @@ pub(super) fn revoke_and_synchronize<T, E>(
     }
 }
 
+/// @description private reclaim round-robin walk 的 probe 位置与已提交 cursor。
+///
+/// revoke 扫描与 release replay 共用同一状态机，保证对同一 resident 序列得到同一 final
+/// cursor。不变量：committed cursor 只推进到最后一个实际扫描页的下一位置（未扫描任何页时
+/// 等于 initial）；wrap 只是 probe 回看低地址的 walk 内部行为，不得把未扫描位置提交为
+/// cursor——否则 replay 走完全部 scanned 页后停在 `after(last_scanned)`，而 final 已被
+/// wrap 清零，两阶段必然 diverge。
+pub(super) struct PrivateReclaimWalk {
+    initial: usize,
+    probe: usize,
+    committed: usize,
+    wrapped: bool,
+}
+
+impl PrivateReclaimWalk {
+    /// @description 从 persistent reclaim cursor 建立一次 walk。
+    ///
+    /// @param initial 本轮扫描的起始 VPN，也是 wrap 后允许扫描的下界（不含）。
+    /// @return probe 与 committed 都从 initial 开始的 walk。
+    pub(super) const fn new(initial: usize) -> Self {
+        Self {
+            initial,
+            probe: initial,
+            committed: initial,
+            wrapped: false,
+        }
+    }
+
+    /// @description 返回下一次 resident 查询的起点 VPN。
+    pub(super) const fn probe(&self) -> usize {
+        self.probe
+    }
+
+    /// @description probe 之后已无 resident 时把 probe 回绕到 VPN 0；已回绕过则扫描结束。
+    ///
+    /// @return true 表示本次调用执行了回绕、walk 继续；false 表示 walk 已完整结束。
+    pub(super) fn wrap_or_finish(&mut self) -> bool {
+        if self.wrapped {
+            return false;
+        }
+        self.probe = 0;
+        self.wrapped = true;
+        true
+    }
+
+    /// @description 提交一个已扫描 resident 并把 probe 与 committed 推进到其下一位置。
+    ///
+    /// @param vpn 本次扫描的 resident VPN。
+    /// @return false 表示 walk 回绕后已回到 initial 之后，该页属于上一圈，不得重复扫描，
+    /// walk 结束且 cursor 不推进。
+    pub(super) fn advance(&mut self, vpn: usize) -> bool {
+        if self.wrapped && vpn >= self.initial {
+            return false;
+        }
+        let next = vpn.checked_add(1).unwrap_or(0);
+        self.probe = next;
+        self.committed = next;
+        true
+    }
+
+    /// @description 返回本 walk 提交的最终 cursor；恒等于最后一个扫描页的下一位置。
+    pub(super) const fn committed(&self) -> usize {
+        self.committed
+    }
+}
+
 /// release replay 对一个已撤销 private resident 的处置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ReclaimReleaseDecision {

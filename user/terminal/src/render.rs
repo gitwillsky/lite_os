@@ -272,9 +272,10 @@ fn render_cursor<G: Grid>(surface: &mut Surface, grid: &G, metrics: FontMetrics)
     let Some((row, column)) = grid.cursor() else {
         return;
     };
-    let y = (row + 1) * metrics.height() - 3;
+    let y = (row + 1) * metrics.height() - 6;
     let x = column * metrics.width();
-    for offset_y in 0..3 {
+    // 光标条厚度 6px（1× 基准 3px，随 cell 2× 缩放）。
+    for offset_y in 0..6 {
         if y + offset_y >= surface.height || x >= surface.width {
             continue;
         }
@@ -292,7 +293,7 @@ fn render_cursor<G: Grid>(surface: &mut Surface, grid: &G, metrics: FontMetrics)
 }
 
 fn clip(rectangle: (usize, usize, usize, usize)) -> [u16; 4] {
-    // 各分量已 clamp 到 surface 尺寸（1280×768，远小于 u16::MAX），转换不溢出。
+    // 各分量已 clamp 到 surface 尺寸（初始 2560×1536，远小于 u16::MAX），转换不溢出。
     [
         rectangle.0 as u16,
         rectangle.1 as u16,

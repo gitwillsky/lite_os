@@ -1,6 +1,6 @@
 //! UI 比例字体 atlas（`assets/fonts/liteos-ui.a8p`）的 checked 解析、测量与绘制。
 //!
-//! 文件布局（全部小端）：8B magic `LUP8\0\0\0\x01`、u32 face_count（=4）、
+//! 文件布局（全部小端）：8B magic `LUP8\0\0\0\x01`、u32 face_count（=3）、
 //! u32 glyph_count、glyph_count × u32 严格递增 codepoint 表，随后每 face 为
 //! `{u32 face_kind(0=regular,1=bold), u32 pixel_size, i32 ascent, i32 descent}`
 //! + glyph_count ×（10B metric `{i16 advance, i16 xoff, i16 yoff, u16 width,
@@ -16,8 +16,9 @@ use crate::scanout::{Frame, Rect};
 
 const BYTES: &[u8] = include_bytes!("../../../assets/fonts/liteos-ui.a8p");
 const MAGIC: &[u8; 8] = b"LUP8\0\0\0\x01";
-/// 生成脚本固定的 face 数与顺序（regular13 / regular16 / bold13 / bold16）。
-const FACE_COUNT: usize = 4;
+/// 生成脚本固定的 face 数与顺序（regular26 / regular32 / bold32，即 1× 四档
+/// 去掉无消费方的 bold13 后按 2× 重新生成）。
+const FACE_COUNT: usize = 3;
 /// 生成脚本固定的 glyph 数（ASCII + GB2312 一级汉字 + 符号 + U+FFFD）。
 const GLYPH_COUNT: usize = 4111;
 /// 单个 glyph metric 的字节数（advance/xoff/yoff/width/height）。
@@ -27,19 +28,15 @@ const FACE_HEADER: usize = 16;
 
 /// 字体档位（与文件内 face 顺序一一对应，`as usize` 即 face 下标）。
 ///
-/// 四档是资产查找 API 的完整集合；`Bold13` 当前没有 UI 消费方，保留以保证
-/// 与文件内 face 顺序的同构映射。
+/// 三档是资产查找 API 的完整集合（2× 桌面的全部消费档位）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Face {
-    /// regular 13px。
-    Regular13 = 0,
-    /// regular 16px。
-    Regular16 = 1,
-    /// bold 13px。
-    #[allow(dead_code)]
-    Bold13 = 2,
-    /// bold 16px。
-    Bold16 = 3,
+    /// regular 26px。
+    Regular26 = 0,
+    /// regular 32px。
+    Regular32 = 1,
+    /// bold 32px。
+    Bold32 = 2,
 }
 
 /// 单 face 的解析结果。
@@ -59,7 +56,7 @@ pub struct UiFont {
 
 impl UiFont {
     /// 全量校验并解析 atlas：magic、face/glyph 数、codepoint 严格递增、face
-    /// 顺序恰为 regular13/regular16/bold13/bold16、所有 metric / bitmap 偏移
+    /// 顺序恰为 regular26/regular32/bold32、所有 metric / bitmap 偏移
     /// 在文件内且末尾恰好对齐文件长度、含 U+FFFD。任一不满足返回 `None`。
     pub fn checked() -> Option<Self> {
         if BYTES.get(..8)? != MAGIC {
@@ -80,7 +77,7 @@ impl UiFont {
             previous = Some(codepoint);
         }
         // (face_kind, pixel_size) 必须与文件内 face 顺序一致。
-        const EXPECTED: [(u32, u32); FACE_COUNT] = [(0, 13), (0, 16), (1, 13), (1, 16)];
+        const EXPECTED: [(u32, u32); FACE_COUNT] = [(0, 26), (0, 32), (1, 32)];
         // 大数组置空样板：用 static 而非 const，避免每个使用点内联 32KB。
         static EMPTY: FaceData = FaceData {
             ascent: 0,

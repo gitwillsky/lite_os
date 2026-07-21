@@ -2721,6 +2721,12 @@ kernel/src/memory/retire.rs :: pub (super) ReclaimReleaseDecision :: reclaimed :
 kernel/src/memory/retire.rs :: pub (super) ReclaimReleaseDecision :: release : bool
 kernel/src/memory/retire.rs :: pub (super) const fn reclaim_release_decision (reclaimed : usize , target : usize , release_owner_count : usize ,) -> ReclaimReleaseDecision
 kernel/src/memory/retire.rs :: pub (super) fn revoke_and_synchronize < T , E > (mut retained : T , revoke : impl FnOnce (& mut T) , synchronize : impl FnOnce (& mut T) -> Result < () , E > ,) -> Result < T , E >
+kernel/src/memory/retire.rs :: pub (super) impl PrivateReclaimWalk :: const fn committed (& self) -> usize
+kernel/src/memory/retire.rs :: pub (super) impl PrivateReclaimWalk :: const fn new (initial : usize) -> Self
+kernel/src/memory/retire.rs :: pub (super) impl PrivateReclaimWalk :: const fn probe (& self) -> usize
+kernel/src/memory/retire.rs :: pub (super) impl PrivateReclaimWalk :: fn advance (& mut self , vpn : usize) -> bool
+kernel/src/memory/retire.rs :: pub (super) impl PrivateReclaimWalk :: fn wrap_or_finish (& mut self) -> bool
+kernel/src/memory/retire.rs :: pub (super) struct PrivateReclaimWalk
 kernel/src/memory/retire.rs :: pub (super) struct ReclaimReleaseDecision
 kernel/src/memory/shared_file.rs :: enum SharedFileError :: BeyondEof
 kernel/src/memory/shared_file.rs :: enum SharedFileError :: Io

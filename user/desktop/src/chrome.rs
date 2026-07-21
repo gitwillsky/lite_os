@@ -1,34 +1,39 @@
 //! SSD 窗口装饰：布局纯函数 + 裁剪绘制（第三期 Luna 视觉）。
 //!
-//! 布局：标题栏 32px（横跨整个外框顶部），左右下边框 2px；标题栏右侧从右到左
-//! 依次为关闭（X）、最大化 / 还原（□/❐）、最小化（—）三个 32x32 命中单元，
-//! 间距 2px（布局 / 命中与第二期一致，不变）。
+//! 布局：标题栏 64px（横跨整个外框顶部），左右下边框 4px；标题栏右侧从右到左
+//! 依次为关闭（X）、最大化 / 还原（□/❐）、最小化（—）三个 64x64 命中单元，
+//! 间距 4px。所有 UI 度量按 [`SCALE`] 统一 2× 缩放（常量注释标注 1× 基准值）。
 //!
 //! Luna 视觉：标题栏垂直渐变（焦点 #0058E6→#3D95FF，非焦点 #7697E7→#9DB9EB），
-//! 顶部两角圆角（半径 6px，圆角像素不画即露出下层）；边框取标题栏渐变底色；
-//! 按钮为命中单元内居中的 24x24 圆角方块（关闭=红渐变白 X，最大化 / 最小化=
-//! 蓝渐变白字形，按下态压暗）；标题文字 uifont bold16 白色。
+//! 顶部两角圆角（半径 12px，圆角像素不画即露出下层）；边框取标题栏渐变底色；
+//! 按钮为命中单元内居中的 48x48 圆角方块（关闭=红渐变白 X，最大化 / 最小化=
+//! 蓝渐变白字形，按下态压暗）；标题文字 uifont bold32 白色。
 
 use crate::{
     scanout::{Frame, Rect},
     uifont::{Face, UiFont},
 };
 
-/// 标题栏高度（px）。
-pub const TITLE_HEIGHT: i32 = 32;
-/// 左 / 右 / 下边框宽度（px）。
-pub const BORDER: i32 = 2;
-/// 标题栏按钮命中单元边长（px），位于标题栏右侧。
-pub const BUTTON_SIZE: i32 = 32;
-/// 相邻按钮间距（px）。
-pub const BUTTON_GAP: i32 = 2;
+/// 桌面统一 HiDPI 缩放因子：所有 UI 度量（chrome / taskbar / startmenu /
+/// cursor / pointer 命中带与尺寸下限等）以 1× 基准值乘 `SCALE` 得到，本常量
+/// 是缩放因子的唯一 owner。显示 mode 与指针坐标不缩放（屏幕绝对坐标）。
+pub const SCALE: i32 = 2;
 
-/// 按钮可视方块边长（px），在命中单元内居中。
-const BUTTON_VISUAL: i32 = 24;
-/// 标题栏顶部圆角半径（px）。
-const CORNER_RADIUS: i32 = 6;
-/// 按钮可视方块圆角半径（px）。
-const BUTTON_RADIUS: i32 = 4;
+/// 标题栏高度（px，1× 基准 32）。
+pub const TITLE_HEIGHT: i32 = 32 * SCALE;
+/// 左 / 右 / 下边框宽度（px，1× 基准 2）。
+pub const BORDER: i32 = 2 * SCALE;
+/// 标题栏按钮命中单元边长（px，1× 基准 32），位于标题栏右侧。
+pub const BUTTON_SIZE: i32 = 32 * SCALE;
+/// 相邻按钮间距（px，1× 基准 2）。
+pub const BUTTON_GAP: i32 = 2 * SCALE;
+
+/// 按钮可视方块边长（px，1× 基准 24），在命中单元内居中。
+const BUTTON_VISUAL: i32 = 24 * SCALE;
+/// 标题栏顶部圆角半径（px，1× 基准 6）。
+const CORNER_RADIUS: i32 = 6 * SCALE;
+/// 按钮可视方块圆角半径（px，1× 基准 4）。
+const BUTTON_RADIUS: i32 = 4 * SCALE;
 
 const TITLE_FOCUSED_TOP: u32 = 0x0000_58e6;
 const TITLE_FOCUSED_BOTTOM: u32 = 0x003d_95ff;
@@ -39,10 +44,10 @@ const CLOSE_BOTTOM: u32 = 0x00c0_5050;
 const BUTTON_TOP: u32 = 0x005a_9ae0;
 const BUTTON_BOTTOM: u32 = 0x002f_6ac0;
 const TEXT: u32 = 0x00ff_ffff;
-/// 标题文字左缘相对外框的缩进。
-const TEXT_INDENT: i32 = 8;
-/// 按钮白色图形相对可视方块边缘的缩进。
-const GLYPH_MARGIN: i32 = 7;
+/// 标题文字左缘相对外框的缩进（px，1× 基准 8）。
+const TEXT_INDENT: i32 = 8 * SCALE;
+/// 按钮白色图形相对可视方块边缘的缩进（px，1× 基准 7）。
+const GLYPH_MARGIN: i32 = 7 * SCALE;
 
 /// 标题栏按钮种类（布局与绘制共用；hit-test 的 `Region` 由其映射而来）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -220,8 +225,8 @@ fn in_rounded_top(x: i32, y: i32, width: i32) -> bool {
     true
 }
 
-/// 按钮：命中单元内居中画 24x24 圆角渐变方块（关闭红 / 其余蓝，按下态压暗
-/// 为 3/4 亮度），再画白色图形（X / □|❐ / —），只写 `clip` 内像素。
+/// 按钮：命中单元内居中画 48x48（1× 基准 24x24）圆角渐变方块（关闭红 / 其余蓝，
+/// 按下态压暗为 3/4 亮度），再画白色图形（X / □|❐ / —），只写 `clip` 内像素。
 fn paint_button(
     frame: &mut Frame,
     button: Button,
@@ -285,40 +290,58 @@ fn in_rounded_rect(x: i32, y: i32, width: i32, height: i32) -> bool {
     cx * cx + cy * cy <= radius_sq
 }
 
-/// 按钮白色图形命中：可视方块局部坐标（24x24）是否落在图形上。
+/// 按钮白色图形命中：可视方块局部坐标（48x48，1× 基准 24x24）是否落在图形上。
+/// 笔画几何常数均为 1× 基准值乘 [`SCALE`]，保证 2× 下形状不变。
 fn glyph_on(button: Button, maximized: bool, x: i32, y: i32) -> bool {
     let lo = GLYPH_MARGIN;
     let hi = BUTTON_VISUAL - GLYPH_MARGIN;
+    // 斜线半宽（1× 基准 1）。
+    let line = SCALE;
+    // 轮廓笔画宽度（1× 基准 2）。
+    let outline = 2 * SCALE;
+    // ❐ 前后框错位（1× 基准 3）。
+    let stack = 3 * SCALE;
     match button {
         Button::Close => {
             let span = hi - lo - 1;
             let on_span = (lo..hi).contains(&x) && (lo..hi).contains(&y);
-            on_span && ((x - y).abs() <= 1 || (x + y - 2 * lo - span).abs() <= 1)
+            on_span && ((x - y).abs() <= line || (x + y - 2 * lo - span).abs() <= line)
         }
         Button::Maximize if !maximized => {
-            // □：2px 轮廓方框。
+            // □：outline 宽度轮廓方框。
             (lo..hi).contains(&x)
                 && (lo..hi).contains(&y)
-                && (x < lo + 2 || x >= hi - 2 || y < lo + 2 || y >= hi - 2)
+                && (x < lo + outline
+                    || x >= hi - outline
+                    || y < lo + outline
+                    || y >= hi - outline)
         }
         Button::Maximize => {
-            // ❐：前框（右下）2px 轮廓压住后框（左上）2px 轮廓。
-            let front_lo = lo + 3;
+            // ❐：前框（右下）轮廓压住后框（左上）轮廓。
+            let front_lo = lo + stack;
             let in_front = (front_lo..hi).contains(&x) && (front_lo..hi).contains(&y);
-            let front =
-                in_front && (x < front_lo + 2 || x >= hi - 2 || y < front_lo + 2 || y >= hi - 2);
-            let back_hi = hi - 3;
+            let front = in_front
+                && (x < front_lo + outline
+                    || x >= hi - outline
+                    || y < front_lo + outline
+                    || y >= hi - outline);
+            let back_hi = hi - stack;
             let in_back = (lo..back_hi).contains(&x) && (lo..back_hi).contains(&y);
             let back = in_back
                 && !in_front
-                && (x < lo + 2 || x >= back_hi - 2 || y < lo + 2 || y >= back_hi - 2);
+                && (x < lo + outline
+                    || x >= back_hi - outline
+                    || y < lo + outline
+                    || y >= back_hi - outline);
             front || back
         }
-        Button::Minimize => (lo..hi).contains(&x) && (hi - 4..hi - 2).contains(&y),
+        Button::Minimize => {
+            (lo..hi).contains(&x) && (hi - 4 * SCALE..hi - 2 * SCALE).contains(&y)
+        }
     }
 }
 
-/// 标题文字：uifont bold16 白字 alpha blend，右缘不超过最小化按钮，裁到 `clip`。
+/// 标题文字：uifont bold32 白字 alpha blend，右缘不超过最小化按钮，裁到 `clip`。
 fn paint_title(
     frame: &mut Frame,
     font: &UiFont,
@@ -341,8 +364,8 @@ fn paint_title(
     if area.is_empty() {
         return;
     }
-    // bold16 在 32px 标题栏内垂直居中。
-    let face = Face::Bold16;
+    // bold32 在 64px 标题栏内垂直居中。
+    let face = Face::Bold32;
     let baseline = outer.1 + (TITLE_HEIGHT - font.ascent(face) - font.descent(face)) / 2
         + font.ascent(face);
     font.draw(

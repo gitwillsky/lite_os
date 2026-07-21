@@ -54,7 +54,7 @@ pub(crate) fn handle_configure(
     let Some((mut next, gem_handle)) = created else {
         return;
     };
-    // pixel 分量最大 200×16 / 100×32 = 3200，u16 不溢出。
+    // pixel 分量最大 200×32 / 100×64 = 6400，u16 不溢出。
     if set_window_size(session.master, columns, rows, pixel_width as u16, pixel_height as u16)
         .is_err()
     {

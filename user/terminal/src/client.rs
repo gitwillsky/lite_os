@@ -26,11 +26,11 @@ use crate::{
     session::{read_pty, replay_boot_log, spawn_shell, terminate_child},
 };
 
-/// 窗口内容：初始 80×24 cell（16×32 像素）= 1280×768；之后随 `CONFIGURE` 调整。
+/// 窗口内容：初始 80×24 cell（32×64 像素）= 2560×1536；之后随 `CONFIGURE` 调整。
 const COLUMNS: usize = 80;
 const ROWS: usize = 24;
-const WIDTH: u32 = 1280;
-const HEIGHT: u32 = 768;
+const WIDTH: u32 = 2560;
+const HEIGHT: u32 = 1536;
 
 const FRAME_INTERVAL_MS: u64 = 17;
 const BLINK_INTERVAL_MS: u64 = 500;

@@ -8,9 +8,10 @@
 //!   开始菜单；窗口按钮按 XP 行为：最小化 → 还原聚焦，焦点 → 最小化，否则
 //!   置顶聚焦）。
 //! - 命中窗口：任意位置（标题栏按钮除外）按下即 raise + focus；标题栏进入移动
-//!   拖动（最大化窗口禁止）；右 / 下边缘与右下角 4px 命中带进入 resize 拖动——
-//!   拖动中窗口不动、只画 2px 示意框，松开时按示意框减去 chrome 向客户端发
-//!   `CONFIGURE`（最小内容 160x96），客户端 `SET_BUFFER` 后窗口才采用新尺寸。
+//!   拖动（最大化窗口禁止）；右 / 下边缘与右下角 8px（1× 基准 4px）命中带进入
+//!   resize 拖动——拖动中窗口不动、只画 2px 示意框，松开时按示意框减去 chrome
+//!   向客户端发 `CONFIGURE`（最小内容 320x192，1× 基准 160x96），客户端
+//!   `SET_BUFFER` 后窗口才采用新尺寸。
 //! - 标题栏三按钮：press + release 都在同一按钮内才生效（关闭发
 //!   `CLOSE_REQUEST`，最大化 Normal ↔ Maximized 切换并向客户端发 `CONFIGURE`
 //!   建议新内容尺寸让其重排，最小化进入 Minimized）。
@@ -31,10 +32,12 @@ use crate::{
 
 /// 左键 bit（拖动 / 按钮判定只对左键生效）。
 const BUTTON_LEFT: u32 = 1;
-/// resize 建议内容尺寸下限（像素）。
-const MIN_CONTENT_WIDTH: i32 = 160;
-/// resize 建议内容尺寸下限（像素）。
-const MIN_CONTENT_HEIGHT: i32 = 96;
+/// resize 建议内容尺寸下限（px，1× 基准 160）。
+const MIN_CONTENT_WIDTH: i32 = 160 * chrome::SCALE;
+/// resize 建议内容尺寸下限（px，1× 基准 96）。
+const MIN_CONTENT_HEIGHT: i32 = 96 * chrome::SCALE;
+/// 移动拖动 clamp 留屏可点区域（px，1× 基准 32）。
+const KEEP_ON_SCREEN: i32 = 32 * chrome::SCALE;
 
 /// 左键拖动状态：移动窗口（本体跟手）或 resize（窗口不动，只更新示意框）。
 pub(crate) enum Drag {
@@ -217,12 +220,12 @@ impl Input {
                 };
                 if !window.geometry_locked() {
                     let old = window.outer_rect();
-                    // clamp：至少保留 32px 可点区域在屏内，标题栏不推出上沿。
+                    // clamp：至少保留 KEEP_ON_SCREEN 可点区域在屏内，标题栏不推出上沿。
                     let layout = window.layout();
                     let new_x = (self.cursor_x - offset_x)
-                        .clamp(32 - layout.outer_width, shell.screen_width - 32);
+                        .clamp(KEEP_ON_SCREEN - layout.outer_width, shell.screen_width - KEEP_ON_SCREEN);
                     let new_y =
-                        (self.cursor_y - offset_y).clamp(0, shell.screen_height - 32);
+                        (self.cursor_y - offset_y).clamp(0, shell.screen_height - KEEP_ON_SCREEN);
                     if new_x != window.x || new_y != window.y {
                         window.x = new_x;
                         window.y = new_y;
@@ -252,7 +255,7 @@ impl Input {
                     return;
                 };
                 // 窗口本体不动：示意框锚定外框左上角，仅按方向更新右 / 下缘，
-                // 下限保证减去 chrome 后内容不小于 160x96。
+                // 下限保证减去 chrome 后内容不小于 320x192（1× 基准 160x96）。
                 let anchor = window.outer_rect();
                 let mut next = Rect::new(anchor.x1, anchor.y1, outline.x2, outline.y2);
                 if east {
@@ -487,8 +490,8 @@ pub fn minimize_window(
     }
 }
 
-/// resize 松开：按示意框减去 chrome 计算建议内容尺寸（下限 160x96）并向该
-/// client 发 `CONFIGURE`；实际尺寸以客户端 `SET_BUFFER` 为准。
+/// resize 松开：按示意框减去 chrome 计算建议内容尺寸（下限 320x192，1× 基准
+/// 160x96）并向该 client 发 `CONFIGURE`；实际尺寸以客户端 `SET_BUFFER` 为准。
 fn send_configure(slot: usize, outline: Rect, shell: &PointerShell) {
     let Some(window) = shell.windows.get(slot) else {
         return;
