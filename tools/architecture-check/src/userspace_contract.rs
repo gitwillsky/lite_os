@@ -306,13 +306,13 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         );
     }
     let atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
-    if atlas.get(..8) != Some(b"LTA8\0\0\0\x02") || atlas.len() != 1_918_832 {
+    if atlas.get(..8) != Some(b"LTA8\0\0\0\x02") || atlas.len() != 481_136 {
         errors.push(
             "assets/fonts/liteos-terminal.a8: expected the checked v2 terminal atlas".to_owned(),
         );
     }
     let ui_atlas = fs::read(root.join("assets/fonts/liteos-ui.a8p")).unwrap_or_default();
-    if ui_atlas.get(..8) != Some(b"LUP8\0\0\0\x01") || ui_atlas.len() != 10_854_033 {
+    if ui_atlas.get(..8) != Some(b"LUP8\0\0\0\x01") || ui_atlas.len() != 7_458_232 {
         errors.push(
             "assets/fonts/liteos-ui.a8p: expected the checked v1 UI proportional atlas".to_owned(),
         );
@@ -328,5 +328,11 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     let cursor = fs::read(root.join("assets/cursor.lc1")).unwrap_or_default();
     if cursor.get(..8) != Some(b"LCR1\0\0\0\x01") || cursor.len() != 272 {
         errors.push("assets/cursor.lc1: expected the checked v1 32x32 arrow cursor".to_owned());
+    }
+    let sprites = fs::read(root.join("assets/desktop-sprites.argb")).unwrap_or_default();
+    if sprites.get(..8) != Some(b"LSP8\0\0\0\x01") || sprites.len() != 331_792 {
+        errors.push(
+            "assets/desktop-sprites.argb: expected the checked v1 576x144 sprite sheet".to_owned(),
+        );
     }
 }

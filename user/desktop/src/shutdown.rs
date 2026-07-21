@@ -1,6 +1,6 @@
 //! 关机画面与关机动作：开始菜单 `关机` 项确认后由事件循环调用一次。
 //!
-//! 先整屏画 Luna 蓝渐变（#00309C→#0058E6，顶→底）与中央 bold32 白字
+//! 先整屏画 Luna 蓝渐变（#00309C→#0058E6，顶→底）与中央 bold28 白字
 //! "Windows 正在关机..."，damage 全屏 `DIRTYFB` 提交一次；然后 fork 子进程
 //! `execve("/bin/shutdown", ["shutdown", "-h", "now"])`（init 收尸并关机）。
 //! 返回后事件循环停止响应输入，保持画面等 init 关机。
@@ -26,8 +26,8 @@ pub fn enter(scanout: &mut Scanout, font: &UiFont) {
         for y in 0..height {
             frame.row(y as usize).fill(gradient(y, height));
         }
-        // bold32 文字块垂直居中、水平居中。
-        let face = Face::Bold32;
+        // bold28 文字块垂直居中、水平居中。
+        let face = Face::Bold28;
         let text_width = font.measure(face, MESSAGE);
         let baseline = (height - font.ascent(face) - font.descent(face)) / 2 + font.ascent(face);
         font.draw(

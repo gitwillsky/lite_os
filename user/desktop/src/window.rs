@@ -21,7 +21,8 @@ use crate::{
 
 /// 标题字节上限（超出截断）。
 pub const MAX_TITLE: usize = 64;
-/// 缩放命中带宽度（px，1× 基准 4）：右 / 下边缘与右下角的触发区（不含标题栏）。
+/// 缩放命中带宽度（px，1× 基准 4）：四边边缘与四角的触发区（上边缘即标题栏，
+/// 不参与）。
 pub const RESIZE_BAND: i32 = 4 * chrome::SCALE;
 
 /// hit-test 结果：指针落在窗口的哪个区域。
@@ -37,12 +38,29 @@ pub enum Region {
     TitleBar,
     /// 内容区。
     Content,
+    /// 左边缘缩放命中带。
+    ResizeWest,
     /// 右边缘缩放命中带。
     ResizeEast,
     /// 下边缘缩放命中带。
     ResizeSouth,
+    /// 左上角缩放命中带。
+    ResizeNorthWest,
+    /// 右上角缩放命中带。
+    ResizeNorthEast,
+    /// 左下角缩放命中带。
+    ResizeSouthWest,
     /// 右下角缩放命中带。
     ResizeSouthEast,
+}
+
+/// 缩放命中带的方向标志（`west` / `north` 拖动时锚定对侧外框角）。
+#[derive(Clone, Copy)]
+pub struct ResizeEdges {
+    pub west: bool,
+    pub east: bool,
+    pub north: bool,
+    pub south: bool,
 }
 
 impl Region {
@@ -56,12 +74,22 @@ impl Region {
         }
     }
 
-    /// 是否为缩放命中带（及方向：东 / 南）。
-    pub fn resize_edges(self) -> Option<(bool, bool)> {
+    /// 是否为缩放命中带（及方向标志）。
+    pub fn resize_edges(self) -> Option<ResizeEdges> {
+        let edges = |west, east, north, south| ResizeEdges {
+            west,
+            east,
+            north,
+            south,
+        };
         match self {
-            Region::ResizeEast => Some((true, false)),
-            Region::ResizeSouth => Some((false, true)),
-            Region::ResizeSouthEast => Some((true, true)),
+            Region::ResizeWest => Some(edges(true, false, false, false)),
+            Region::ResizeEast => Some(edges(false, true, false, false)),
+            Region::ResizeSouth => Some(edges(false, false, false, true)),
+            Region::ResizeNorthWest => Some(edges(true, false, true, false)),
+            Region::ResizeNorthEast => Some(edges(false, true, true, false)),
+            Region::ResizeSouthWest => Some(edges(true, false, false, true)),
+            Region::ResizeSouthEast => Some(edges(false, true, false, true)),
             _ => None,
         }
     }
@@ -404,8 +432,9 @@ impl Windows {
     }
 
     /// 命中测试：返回最上层包含 `(x, y)` 的窗口及其区域；最小化窗口不参与，
-    /// 左 / 上边框归入 TitleBar，右 / 下边缘与右下角为缩放命中带（最大化窗口
-    /// 无缩放命中带），标题栏按钮优先于其他区域。
+    /// 左 / 上边框归入 TitleBar，四边边缘与四角为缩放命中带（最大化窗口无
+    /// 缩放命中带；上边缘即标题栏，只有两上角命中带），标题栏按钮优先于
+    /// 其他区域。
     pub fn hit_test(&self, x: i32, y: i32) -> Option<(usize, Region)> {
         for slot in self.bottom_to_top().iter().rev().copied() {
             let Some(window) = self.get(slot) else {
@@ -433,16 +462,22 @@ impl Windows {
                 }
             }
             if !window.geometry_locked() {
-                let band_x = outer.x2 - RESIZE_BAND;
-                let band_y = outer.y2 - RESIZE_BAND;
-                if x >= band_x && y >= band_y {
-                    return Some((slot, Region::ResizeSouthEast));
-                }
-                if x >= band_x && y >= outer.y1 + chrome::TITLE_HEIGHT {
-                    return Some((slot, Region::ResizeEast));
-                }
-                if y >= band_y {
-                    return Some((slot, Region::ResizeSouth));
+                let west = x < outer.x1 + RESIZE_BAND;
+                let east = x >= outer.x2 - RESIZE_BAND;
+                let north = y < outer.y1 + RESIZE_BAND;
+                let south = y >= outer.y2 - RESIZE_BAND;
+                let region = match (west, east, north, south) {
+                    (true, _, true, _) => Some(Region::ResizeNorthWest),
+                    (_, true, true, _) => Some(Region::ResizeNorthEast),
+                    (true, _, _, true) => Some(Region::ResizeSouthWest),
+                    (_, true, _, true) => Some(Region::ResizeSouthEast),
+                    (true, _, _, _) => Some(Region::ResizeWest),
+                    (_, true, _, _) => Some(Region::ResizeEast),
+                    (_, _, _, true) => Some(Region::ResizeSouth),
+                    _ => None,
+                };
+                if let Some(region) = region {
+                    return Some((slot, region));
                 }
             }
             let title_bar = shift(layout.title_bar, origin);

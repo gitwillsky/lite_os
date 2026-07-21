@@ -19,6 +19,7 @@ use crate::{
     pointer::PointerShell,
     scanout::{Rect, Scanout},
     shutdown,
+    sprites::Sprites,
     startmenu::StartMenu,
     supervisor::Supervisor,
     taskbar::Taskbar,
@@ -34,6 +35,7 @@ pub fn run() -> Result<(), ()> {
     clients::mark_mode(mode.width, mode.height);
     let font = UiFont::open().ok_or(())?;
     let wallpaper = Wallpaper::open(mode).ok_or(())?;
+    let sprites = Sprites::open().ok_or(())?;
     let cursor = Cursor::open().ok_or(())?;
     let listen = listen_socket()?;
     let mut clients = Clients::new();
@@ -168,6 +170,7 @@ pub fn run() -> Result<(), ()> {
                     windows: &windows,
                     font: &font,
                     wallpaper: &wallpaper,
+                    sprites: &sprites,
                     taskbar: &taskbar,
                     startmenu: &startmenu,
                     cursor: &cursor,
@@ -175,6 +178,7 @@ pub fn run() -> Result<(), ()> {
                 &compositor::Overlays {
                     outline: input.resize_outline(),
                     armed: input.armed_button(),
+                    hover: input.hovered_button(),
                     cursor: (input.cursor_x, input.cursor_y),
                 },
                 &damage,

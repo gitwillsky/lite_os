@@ -1080,6 +1080,7 @@ def create_image(
         f"write {ROOT / 'assets' / 'cursor.lc1'} /usr/share/liteos/cursor.lc1",
         f"write {ROOT / 'assets' / 'fonts' / 'liteos-ui.a8p'} /usr/share/liteos/liteos-ui.a8p",
         f"write {ROOT / 'assets' / 'fonts' / 'liteos-terminal.a8'} /usr/share/liteos/liteos-terminal.a8",
+        f"write {ROOT / 'assets' / 'desktop-sprites.argb'} /usr/share/liteos/desktop-sprites.argb",
         f"write {ROOT / 'user' / 'base' / 'shutdown'} /bin/shutdown",
         "set_inode_field /bin/shutdown mode 0100755",
         f"write {openssl.binary} /bin/openssl",
@@ -1190,6 +1191,7 @@ def create_image(
         "/usr/share/liteos/cursor.lc1",
         "/usr/share/liteos/liteos-ui.a8p",
         "/usr/share/liteos/liteos-terminal.a8",
+        "/usr/share/liteos/desktop-sprites.argb",
     ):
         metadata = run([str(find_debugfs()), "-R", f"stat {asset}", str(image)], ROOT)
         if "Type: regular" not in metadata:
@@ -1272,6 +1274,7 @@ def create_published_image(
         ROOT / "assets/terminfo/l/liteos",
         ROOT / "assets/fonts/liteos-terminal.a8",
         ROOT / "assets/fonts/liteos-ui.a8p",
+        ROOT / "assets/desktop-sprites.argb",
         ROOT / "assets/wallpaper.xrgb",
         ROOT / "assets/bootlogo.xrgb",
         ROOT / "assets/cursor.lc1",

@@ -209,10 +209,10 @@ fn render_cursor<G: Grid>(surface: &mut Surface, grid: &G, metrics: FontMetrics)
     let Some((row, column)) = grid.cursor() else {
         return;
     };
-    let y = (row + 1) * metrics.height() - 6;
+    let y = (row + 1) * metrics.height() - 4;
     let x = column * metrics.width();
-    // 光标条厚度 6px（1× 基准 3px，随 cell 2× 缩放）。
-    for offset_y in 0..6 {
+    // 光标条厚度 4px（32px 高 cell 的下划线式光标）。
+    for offset_y in 0..4 {
         if y + offset_y >= surface.height || x >= surface.width {
             continue;
         }

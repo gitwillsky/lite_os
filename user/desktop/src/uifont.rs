@@ -21,8 +21,8 @@ use crate::scanout::{Frame, Rect};
 /// rootfs 中的 atlas 路径（NUL 结尾）。
 const PATH: &str = "/usr/share/liteos/liteos-ui.a8p";
 const MAGIC: &[u8; 8] = b"LUP8\0\0\0\x01";
-/// 生成脚本固定的 face 数与顺序（regular26 / regular32 / bold32，即 1× 四档
-/// 去掉无消费方的 bold13 后按 2× 重新生成）。
+/// 生成脚本固定的 face 数与顺序（regular22 / bold24 / bold28，对齐 XP SP3 1×
+/// 字号 11/12/14px 的 2× 缩放）。
 const FACE_COUNT: usize = 3;
 /// 生成脚本固定的 glyph 数（ASCII + GB2312 一级汉字 + 符号 + U+FFFD）。
 const GLYPH_COUNT: usize = 4111;
@@ -36,12 +36,12 @@ const FACE_HEADER: usize = 16;
 /// 三档是资产查找 API 的完整集合（2× 桌面的全部消费档位）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Face {
-    /// regular 26px。
-    Regular26 = 0,
-    /// regular 32px。
-    Regular32 = 1,
-    /// bold 32px。
-    Bold32 = 2,
+    /// regular 22px（XP 11px：任务栏按钮 / 时钟 / 菜单项）。
+    Regular22 = 0,
+    /// bold 24px（XP 12px：窗口标题栏）。
+    Bold24 = 1,
+    /// bold 28px（XP 14px：开始按钮 / 菜单用户名 / 关机画面）。
+    Bold28 = 2,
 }
 
 /// 单 face 的解析结果。
@@ -89,7 +89,7 @@ impl UiFont {
             previous = Some(codepoint);
         }
         // (face_kind, pixel_size) 必须与文件内 face 顺序一致。
-        const EXPECTED: [(u32, u32); FACE_COUNT] = [(0, 26), (0, 32), (1, 32)];
+        const EXPECTED: [(u32, u32); FACE_COUNT] = [(0, 22), (1, 24), (1, 28)];
         // 大数组置空样板：用 static 而非 const，避免每个使用点内联 32KB。
         static EMPTY: FaceData = FaceData {
             ascent: 0,

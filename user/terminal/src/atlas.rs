@@ -66,8 +66,8 @@ impl Atlas {
         let layout_valid = glyph_count == GLYPH_COUNT
             && codepoints_offset == 32
             && bitmap_offset == codepoints_offset + glyph_count * 4
-            && metrics.width == 32
-            && metrics.height == 64
+            && metrics.width == 16
+            && metrics.height == 32
             && face_count == FACE_COUNT
             && expected == bytes.len()
             && bytes.get(28..32)?.iter().all(|byte| *byte == 0);

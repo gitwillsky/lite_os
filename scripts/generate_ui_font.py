@@ -37,12 +37,12 @@ BOLD_URL = (
     "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf"
 )
 # face_kind 0 = regular, 1 = bold。每档 face 显式列出（kind, 字体文件, URL, sha256, pixel_size）：
-# regular 出 26/32 两档（菜单/任务栏/正文），bold 只出 32（标题栏/开始按钮），
-# bold26 没有消费方，留着只会让资产白白超出预算。
+# 档位对齐 XP SP3 1× 字号（×2 缩放）：regular22 = 任务栏 / 菜单 11px，
+# bold24 = 标题栏 12px，bold28 = 开始按钮 / 菜单用户名 14px。
 FACES = (
-    (0, REGULAR, REGULAR_URL, REGULAR_SHA256, 26),
-    (0, REGULAR, REGULAR_URL, REGULAR_SHA256, 32),
-    (1, BOLD, BOLD_URL, BOLD_SHA256, 32),
+    (0, REGULAR, REGULAR_URL, REGULAR_SHA256, 22),
+    (1, BOLD, BOLD_URL, BOLD_SHA256, 24),
+    (1, BOLD, BOLD_URL, BOLD_SHA256, 28),
 )
 # Desktop asset budget; exceeding it means the glyph set or sizes must shrink.
 MAX_BYTES = 11 * 1024 * 1024

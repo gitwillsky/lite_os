@@ -153,6 +153,17 @@ pub fn service_client(index: usize, shell: &mut Shell) -> bool {
 }
 
 fn handle_message(index: usize, kind: u32, payload: &[u8], shell: &mut Shell) -> bool {
+    // 临时跟踪：消息种类（排查 SET_BUFFER 未应用后移除）。
+    if kind != display_proto::COMMIT {
+        let mut line = [0u8; 64];
+        let prefix = b"desktop: msg ";
+        line[..prefix.len()].copy_from_slice(prefix);
+        let mut length = prefix.len();
+        length += decimal(kind, &mut line[length..]);
+        line[length] = b'\n';
+        length += 1;
+        mark(&line[..length]);
+    }
     match kind {
         display_proto::HELLO => {
             let Some(hello) = Hello::parse(payload) else {
@@ -371,13 +382,25 @@ fn apply_set_buffer(index: usize, set_buffer: &SetBuffer, shell: &mut Shell) {
         reject();
         return;
     };
-    let Ok(buffer) = shell
+    let buffer = shell
         .scanout
         .drm_device()
-        .adopt_transferred(handle, width, height)
-    else {
-        return;
+        .adopt_transferred(handle, width, height);
+    let buffer = match buffer {
+        Ok(buffer) => buffer,
+        Err(error) => {
+            let mut line = [0u8; 80];
+            let prefix = b"desktop: set_buffer adopt failed errno=";
+            line[..prefix.len()].copy_from_slice(prefix);
+            let mut length = prefix.len();
+            length += decimal(error.raw_os_error().unwrap_or(0) as u32, &mut line[length..]);
+            line[length] = b'\n';
+            length += 1;
+            mark(&line[..length]);
+            return;
+        }
     };
+    mark(b"desktop: set_buffer applied\n");
     let old = window.outer_rect();
     let Some(window) = shell.windows.get_mut(slot) else {
         return;

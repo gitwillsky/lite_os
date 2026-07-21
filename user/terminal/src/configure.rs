@@ -47,14 +47,16 @@ pub(crate) fn handle_configure(
     }
     let pixel_width = columns * metrics.width();
     let pixel_height = rows * metrics.height();
+    crate::client::report_trace(b"configure: prepare\n");
     let Some(candidate) = model.prepare_resize(columns, rows) else {
         return;
     };
+    crate::client::report_trace(b"configure: create\n");
     let Some(mut next) = Surface::create(&session.drm, pixel_width as u32, pixel_height as u32)
     else {
         return;
     };
-    // pixel 分量最大 200×32 / 100×64 = 6400，u16 不溢出。
+    // pixel 分量最大 200×16 / 100×32 = 3200，u16 不溢出。
     if session
         .pty
         .resize(WindowSize {
@@ -67,13 +69,17 @@ pub(crate) fn handle_configure(
     {
         return;
     }
+    crate::client::report_trace(b"configure: winsz\n");
     render::render_full(&mut next, &candidate, atlas, metrics, focused);
+    crate::client::report_trace(b"configure: rendered\n");
     let set_buffer = proto::SetBuffer {
         surface_id: session.surface_id,
         gem_handle: next.handle().get(),
         width: pixel_width as u32,
         height: pixel_height as u32,
     };
+    crate::client::report_trace(b"configure: set_buffer\n");
+    crate::client::report_handle(set_buffer.gem_handle, pixel_width as u32, pixel_height as u32);
     if send_set_buffer(&session.socket, set_buffer).is_err() {
         return;
     }
@@ -81,6 +87,7 @@ pub(crate) fn handle_configure(
     if send_commit(&session.socket, session.surface_id, &[]).is_err() {
         return;
     }
+    crate::client::report_trace(b"configure: commit\n");
     model.commit_resize(candidate);
     // 新 buffer 已是整幅最新画面；清掉 commit_resize 标的全脏，避免重复 COMMIT。
     model.clear_all_dirty();

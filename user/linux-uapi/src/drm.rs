@@ -257,7 +257,15 @@ impl DrmDevice {
             handle: handle.get(),
             ..raw::DrmDumbMap::default()
         };
-        self.ioctl(raw::DRM_IOCTL_MODE_MAP_DUMB, (&raw mut map).cast())?;
+        // 临时跟踪：区分 MAP_DUMB 与 mmap 失败（排查后移除）。
+        if let Err(error) = self.ioctl(raw::DRM_IOCTL_MODE_MAP_DUMB, (&raw mut map).cast()) {
+            eprintln!(
+                "uapi: map_dumb handle={} failed errno={:?}",
+                handle.get(),
+                error.raw_os_error()
+            );
+            return Err(error);
+        }
         let pointer = unsafe {
             raw::mmap(
                 std::ptr::null_mut(),
@@ -269,7 +277,14 @@ impl DrmDevice {
             )
         };
         if pointer as usize == usize::MAX {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            eprintln!(
+                "uapi: mmap handle={} size={} failed errno={:?}",
+                handle.get(),
+                size,
+                error.raw_os_error()
+            );
+            return Err(error);
         }
         Ok(Mapping {
             pointer: NonNull::new(pointer.cast()).expect("mmap success is non-null"),
@@ -293,6 +308,13 @@ struct OwnedGem {
 
 impl Drop for OwnedGem {
     fn drop(&mut self) {
+        // 临时跟踪：记录 destroy 调用方进程（排查 SET_BUFFER adopt 后移除）。
+        eprintln!(
+            "uapi: destroy_dumb handle={} proc={:?} pid={}",
+            self.handle.get(),
+            std::env::args().next(),
+            std::process::id()
+        );
         let mut handle = self.handle.get();
         let _ = self
             .device

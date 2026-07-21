@@ -6,17 +6,19 @@
 //!   上的点击除外，由其 toggling 关闭）。
 //! - 命中任务栏：按下记录按下态，release 仍在同一目标内才生效（Start 切换
 //!   开始菜单；窗口按钮按 XP 行为：最小化 → 还原聚焦，焦点 → 最小化，否则
-//!   置顶聚焦）。
+//!   置顶聚焦）；无按键移动更新任务栏 / 标题栏按钮悬停态。
 //! - 命中窗口：任意位置（标题栏按钮除外）按下即 raise + focus；标题栏进入移动
-//!   拖动（最大化窗口禁止）；右 / 下边缘与右下角 8px（1× 基准 4px）命中带进入
-//!   resize 拖动——拖动中窗口不动、只画 2px 示意框，松开时按示意框减去 chrome
-//!   向客户端发 `CONFIGURE`（最小内容 320x192，1× 基准 160x96），客户端
-//!   `SET_BUFFER` 后窗口才采用新尺寸。
+//!   拖动（最大化窗口禁止），500ms 内标题栏双击切换 最大化 ↔ 还原（XP 行为）；
+//!   四边边缘与四角 8px（1× 基准 4px）命中带进入 resize 拖动——拖动中窗口
+//!   不动、只画 2px 示意框，松开时按示意框减去 chrome 向客户端发 `CONFIGURE`
+//!   （最小内容 320x192，1× 基准 160x96；西 / 北边拖动先把外框原点对齐示意框
+//!   原点，保持对侧缘锚定），客户端 `SET_BUFFER` 后窗口才采用新尺寸。
 //! - 标题栏三按钮：press + release 都在同一按钮内才生效（关闭发
 //!   `CLOSE_REQUEST`，最大化 Normal ↔ Maximized 切换并向客户端发 `CONFIGURE`
 //!   建议新内容尺寸让其重排，最小化进入 Minimized）。
 
 use display_proto::{CloseRequest, Configure, Focus, InputPointer};
+use std::time::Instant;
 
 use crate::{
     chrome,
@@ -27,7 +29,7 @@ use crate::{
     startmenu::{Item, StartMenu},
     supervisor::Supervisor,
     taskbar::{self, Target, Taskbar},
-    window::{Region, State, Window, Windows},
+    window::{Region, ResizeEdges, State, Window, Windows},
 };
 
 /// 左键 bit（拖动 / 按钮判定只对左键生效）。
@@ -36,8 +38,13 @@ const BUTTON_LEFT: u32 = 1;
 const MIN_CONTENT_WIDTH: i32 = 160 * chrome::SCALE;
 /// resize 建议内容尺寸下限（px，1× 基准 96）。
 const MIN_CONTENT_HEIGHT: i32 = 96 * chrome::SCALE;
+/// resize 示意框外框尺寸下限（内容下限 + chrome）。
+const MIN_OUTER_WIDTH: i32 = MIN_CONTENT_WIDTH + 2 * chrome::BORDER;
+const MIN_OUTER_HEIGHT: i32 = MIN_CONTENT_HEIGHT + chrome::TITLE_HEIGHT + chrome::BORDER;
 /// 移动拖动 clamp 留屏可点区域（px，1× 基准 32）。
 const KEEP_ON_SCREEN: i32 = 32 * chrome::SCALE;
+/// 标题栏双击判定窗口（XP 默认双击阈值 500ms）。
+const DOUBLE_CLICK_MS: u128 = 500;
 
 /// 左键拖动状态：移动窗口（本体跟手）或 resize（窗口不动，只更新示意框）。
 pub(crate) enum Drag {
@@ -48,11 +55,10 @@ pub(crate) enum Drag {
         offset_x: i32,
         offset_y: i32,
     },
-    /// resize 拖动：锚定外框左上角，`outline` 为当前示意框。
+    /// resize 拖动：锚定方向对侧的外框角，`outline` 为当前示意框。
     Resize {
         surface_id: u32,
-        east: bool,
-        south: bool,
+        edges: ResizeEdges,
         outline: Rect,
     },
 }
@@ -145,21 +151,39 @@ impl Input {
         let Some(window) = shell.windows.get(slot) else {
             return;
         };
-        if let Some((east, south)) = region.resize_edges() {
+        if let Some(edges) = region.resize_edges() {
             let outline = window.outer_rect();
             self.drag = Some(Drag::Resize {
                 surface_id: window.surface_id,
-                east,
-                south,
+                edges,
                 outline,
             });
             shell.damage.add(outline);
-        } else if region == Region::TitleBar && !window.geometry_locked() {
-            self.drag = Some(Drag::Move {
-                surface_id: window.surface_id,
-                offset_x: self.cursor_x - window.x,
-                offset_y: self.cursor_y - window.y,
-            });
+        } else if region == Region::TitleBar {
+            let surface_id = window.surface_id;
+            let locked = window.geometry_locked();
+            let (offset_x, offset_y) = (self.cursor_x - window.x, self.cursor_y - window.y);
+            let now = Instant::now();
+            let double = matches!(
+                self.last_title_click,
+                Some((id, at))
+                    if id == surface_id && now.duration_since(at).as_millis() <= DOUBLE_CLICK_MS
+            );
+            if double {
+                // 标题栏双击：Normal ↔ Maximized 切换（XP 行为；最大化窗口的
+                // 几何锁定不阻止双击还原）。
+                self.last_title_click = None;
+                maximize_toggle(slot, shell);
+            } else {
+                self.last_title_click = Some((surface_id, now));
+                if !locked {
+                    self.drag = Some(Drag::Move {
+                        surface_id,
+                        offset_x,
+                        offset_y,
+                    });
+                }
+            }
         } else if region == Region::Content {
             self.forward_pointer(shell.windows, shell.clients, slot);
         }
@@ -202,13 +226,31 @@ impl Input {
             }
             if let Some(Drag::Resize {
                 surface_id,
+                edges,
                 outline,
-                ..
             }) = self.drag.take()
             {
-                // 松开：擦除示意框并按最终尺寸向客户端建议新内容尺寸。
+                // 松开：擦除示意框并按最终尺寸向客户端建议新内容尺寸；西 / 北边
+                // 拖动会移动外框原点——先把窗口原点对齐示意框原点（东 / 南缘保持
+                // 锚定），客户端 `SET_BUFFER` 后外框即与示意框一致。
                 shell.damage.add(outline);
                 if let Some(slot) = shell.windows.by_surface(surface_id) {
+                    if edges.west || edges.north {
+                        if let Some(window) = shell.windows.get(slot) {
+                            shell.damage.add(window.outer_rect());
+                        }
+                        if let Some(window) = shell.windows.get_mut(slot) {
+                            if edges.west {
+                                window.x = outline.x1;
+                            }
+                            if edges.north {
+                                window.y = outline.y1;
+                            }
+                        }
+                        if let Some(window) = shell.windows.get(slot) {
+                            shell.damage.add(window.outer_rect());
+                        }
+                    }
                     send_configure(slot, outline, shell);
                 }
             }
@@ -259,8 +301,7 @@ impl Input {
             }
             Some(Drag::Resize {
                 surface_id,
-                east,
-                south,
+                edges,
                 outline,
             }) => {
                 let Some(slot) = shell.windows.by_surface(surface_id) else {
@@ -272,21 +313,25 @@ impl Input {
                     shell.damage.add(outline);
                     return;
                 };
-                // 窗口本体不动：示意框锚定外框左上角，仅按方向更新右 / 下缘，
-                // 下限保证减去 chrome 后内容不小于 320x192（1× 基准 160x96）。
+                // 窗口本体不动：示意框锚定方向对侧的外框角，仅按方向更新对应
+                // 边缘，下限保证减去 chrome 后内容不小于 320x192（1× 基准 160x96）。
                 let anchor = window.outer_rect();
-                let mut next = Rect::new(anchor.x1, anchor.y1, outline.x2, outline.y2);
-                if east {
-                    next.x2 = self.cursor_x.clamp(
-                        anchor.x1 + MIN_CONTENT_WIDTH + 2 * chrome::BORDER,
-                        shell.screen_width,
-                    );
+                let mut next = outline;
+                if edges.east {
+                    next.x2 = self
+                        .cursor_x
+                        .clamp(anchor.x1 + MIN_OUTER_WIDTH, shell.screen_width);
                 }
-                if south {
-                    next.y2 = self.cursor_y.clamp(
-                        anchor.y1 + MIN_CONTENT_HEIGHT + chrome::TITLE_HEIGHT + chrome::BORDER,
-                        shell.screen_height,
-                    );
+                if edges.west {
+                    next.x1 = self.cursor_x.clamp(0, anchor.x2 - MIN_OUTER_WIDTH);
+                }
+                if edges.south {
+                    next.y2 = self
+                        .cursor_y
+                        .clamp(anchor.y1 + MIN_OUTER_HEIGHT, shell.screen_height);
+                }
+                if edges.north {
+                    next.y1 = self.cursor_y.clamp(0, anchor.y2 - MIN_OUTER_HEIGHT);
                 }
                 if next != outline {
                     shell.damage.add(outline);
@@ -294,15 +339,22 @@ impl Input {
                 }
                 self.drag = Some(Drag::Resize {
                     surface_id,
-                    east,
-                    south,
+                    edges,
                     outline: next,
                 });
             }
             None => {
                 if self.buttons == 0 {
+                    // 任务栏是最顶层内部 UI：任何位置的无按键移动都先更新其
+                    // 悬停态（离开任务栏时 target 为 None，即清除悬停）。
+                    let target = shell
+                        .taskbar
+                        .hit_test(shell.windows, self.cursor_x, self.cursor_y);
+                    shell
+                        .damage
+                        .add(shell.taskbar.set_hover(shell.windows, target));
                     // 菜单打开时优先做菜单悬停；指针在菜单矩形内时不再向窗口
-                    // 内容区转发悬停。
+                    // 内容区转发悬停，也不更新标题栏按钮悬停。
                     if shell.startmenu.is_open() {
                         let hover = shell.startmenu.hit_test(self.cursor_x, self.cursor_y);
                         shell.damage.add(shell.startmenu.set_hover(hover));
@@ -311,12 +363,20 @@ impl Input {
                             .rect()
                             .contains(self.cursor_x, self.cursor_y)
                         {
+                            shell.damage.add(self.set_hovered_button(shell.windows, None));
                             return;
                         }
                     }
-                    if let Some((slot, Region::Content)) =
-                        shell.windows.hit_test(self.cursor_x, self.cursor_y)
-                    {
+                    let hit = shell.windows.hit_test(self.cursor_x, self.cursor_y);
+                    let hovered = match hit {
+                        Some((slot, region)) if region.button().is_some() => shell
+                            .windows
+                            .get(slot)
+                            .map(|window| (window.surface_id, region)),
+                        _ => None,
+                    };
+                    shell.damage.add(self.set_hovered_button(shell.windows, hovered));
+                    if let Some((slot, Region::Content)) = hit {
                         self.forward_pointer(shell.windows, shell.clients, slot);
                     }
                 } else if let Some(focused) = shell.windows.focused() {
@@ -324,6 +384,22 @@ impl Input {
                 }
             }
         }
+    }
+
+    /// 更新标题栏按钮悬停态；变化时返回需要 damage 的按钮矩形（新旧各一次）。
+    fn set_hovered_button(&mut self, windows: &Windows, target: Option<(u32, Region)>) -> Rect {
+        if self.hovered == target {
+            return Rect::new(0, 0, 0, 0);
+        }
+        let button_rect = |windows: &Windows, entry: Option<(u32, Region)>| {
+            entry
+                .and_then(|(surface_id, region)| windows.by_surface(surface_id).zip(Some(region)))
+                .and_then(|(slot, region)| windows.get(slot).map(|window| window.button_rect(region)))
+                .unwrap_or(Rect::new(0, 0, 0, 0))
+        };
+        let rect = button_rect(windows, self.hovered.take());
+        self.hovered = target;
+        rect.union(button_rect(windows, target))
     }
 
     /// 指针在窗口内容区内时转发 `INPUT_POINTER`（内容相对坐标 + buttons）。
@@ -363,7 +439,12 @@ impl Input {
         self.armed
     }
 
-    /// 拖动 / 按下态引用的窗口已销毁（client 断连）时取消对应状态；
+    /// 当前悬停的标题栏按钮（surface id + 区域），合成时画增亮态。
+    pub fn hovered_button(&self) -> Option<(u32, Region)> {
+        self.hovered
+    }
+
+    /// 拖动 / 按下 / 悬停态引用的窗口已销毁（client 断连）时取消对应状态；
     /// resize 取消时 damage 示意框区域以擦除。
     pub fn validate_drag(&mut self, windows: &Windows, damage: &mut Damage) {
         // 先取出判定结果再改状态，避免对 self.drag 的同时借用。
@@ -394,6 +475,16 @@ impl Input {
             && windows.by_surface(surface_id).is_none()
         {
             self.armed = None;
+        }
+        if let Some((surface_id, _)) = self.hovered
+            && windows.by_surface(surface_id).is_none()
+        {
+            self.hovered = None;
+        }
+        if let Some((surface_id, _)) = self.last_title_click
+            && windows.by_surface(surface_id).is_none()
+        {
+            self.last_title_click = None;
         }
     }
 }
@@ -459,29 +550,7 @@ fn button_action(slot: usize, region: Region, shell: &mut PointerShell) {
                 shell.clients.send(window.client, &buffer[..length]);
             }
         }
-        Region::MaximizeButton => {
-            let Some(window) = shell.windows.get(slot) else {
-                return;
-            };
-            if !window.decorated || window.state() == State::Minimized {
-                return;
-            }
-            let old = window.outer_rect();
-            let work_area = shell.work_area();
-            let mut configure = None;
-            if let Some(window) = shell.windows.get_mut(slot) {
-                configure = window.toggle_maximize(work_area);
-            }
-            if let Some(window) = shell.windows.get(slot) {
-                shell.damage.add(old);
-                shell.damage.add(window.outer_rect());
-                // 进入最大化建议 work area 内容尺寸，还原建议 saved geometry
-                // 内容尺寸；客户端 SET_BUFFER 后内容重排填满 / 外框自适应。
-                if let Some((width, height)) = configure {
-                    send_configure_size(window, width, height, shell.clients);
-                }
-            }
-        }
+        Region::MaximizeButton => maximize_toggle(slot, shell),
         Region::MinimizeButton => {
             let surface_id = shell.windows.get(slot).map(|window| window.surface_id);
             minimize_window(slot, shell.windows, shell.clients, shell.damage);
@@ -490,6 +559,31 @@ fn button_action(slot: usize, region: Region, shell: &mut PointerShell) {
             }
         }
         _ => {}
+    }
+}
+
+/// Normal ↔ Maximized 切换（标题栏按钮与标题栏双击共用）：进入最大化建议
+/// work area 内容尺寸，还原建议 saved geometry 内容尺寸；客户端 `SET_BUFFER`
+/// 后内容重排填满 / 外框自适应。
+fn maximize_toggle(slot: usize, shell: &mut PointerShell) {
+    let Some(window) = shell.windows.get(slot) else {
+        return;
+    };
+    if !window.decorated || window.state() == State::Minimized {
+        return;
+    }
+    let old = window.outer_rect();
+    let work_area = shell.work_area();
+    let mut configure = None;
+    if let Some(window) = shell.windows.get_mut(slot) {
+        configure = window.toggle_maximize(work_area);
+    }
+    if let Some(window) = shell.windows.get(slot) {
+        shell.damage.add(old);
+        shell.damage.add(window.outer_rect());
+        if let Some((width, height)) = configure {
+            send_configure_size(window, width, height, shell.clients);
+        }
     }
 }
 

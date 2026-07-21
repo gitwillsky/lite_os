@@ -19,8 +19,8 @@ MEDIUM = ROOT / "assets/fonts/JetBrainsMonoNL-Medium.ttf"
 BOLD = ROOT / "assets/fonts/JetBrainsMonoNL-Bold.ttf"
 OUTPUT = ROOT / "assets/fonts/liteos-terminal.a8"
 MAGIC = b"LTA8\0\0\0\2"
-CELL_WIDTH = 32
-CELL_HEIGHT = 64
+CELL_WIDTH = 16
+CELL_HEIGHT = 32
 FACE_COUNT = 2
 MEDIUM_SHA256 = "44099e1efefba55637e0abbbf8dd3f526e59523345888a257bb01d39df4af74c"
 BOLD_SHA256 = "0198e841824025f8876e5c297f0b9b497ee8d6eb9969710a3328e1303f996ec3"
@@ -77,8 +77,8 @@ def generate(medium: Path, bold: Path, output: Path) -> None:
             raise RuntimeError(f"font identity mismatch: {path}: expected {expected}, got {actual}")
     glyphs = codepoints()
     faces = (
-        render_face(medium, CELL_WIDTH, CELL_HEIGHT, 48, glyphs),
-        render_face(bold, CELL_WIDTH, CELL_HEIGHT, 48, glyphs),
+        render_face(medium, CELL_WIDTH, CELL_HEIGHT, 24, glyphs),
+        render_face(bold, CELL_WIDTH, CELL_HEIGHT, 24, glyphs),
     )
     header = bytearray(32)
     header[:8] = MAGIC

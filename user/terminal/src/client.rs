@@ -33,12 +33,12 @@ use crate::{
     session::{read_pty, replay_boot_log},
 };
 
-/// 窗口内容：初始 60×18 cell（32×64 像素）= 1920×1152（约占 3008×1692 屏幕
-/// 的一半，避免默认铺满）；之后随 `CONFIGURE` 调整。
-const COLUMNS: usize = 60;
-const ROWS: usize = 18;
-const WIDTH: u32 = 1920;
-const HEIGHT: u32 = 1152;
+/// 窗口内容：初始 80×24 cell（16×32 像素）= 1280×768（经典 80×24 终端尺寸，
+/// 约占 3008×1692 屏幕的五分之一）；之后随 `CONFIGURE` 调整。
+const COLUMNS: usize = 80;
+const ROWS: usize = 24;
+const WIDTH: u32 = 1280;
+const HEIGHT: u32 = 768;
 
 const FRAME_INTERVAL_MS: u64 = 17;
 const BLINK_INTERVAL_MS: u64 = 500;
@@ -522,6 +522,39 @@ fn timeout(render: Option<u64>, blink: Option<u64>, now: u64) -> Option<Duration
 /// 向 stderr 完整写入一行启动 marker / 错误（供 gate 匹配），`EINTR` 重试。
 fn report(message: &[u8]) {
     let _ = io::stderr().write_all(message);
+}
+
+/// 临时跟踪：resize 事务各阶段（排查 CONFIGURE 卡死后移除）。
+pub(crate) fn report_trace(message: &[u8]) {
+    report(message);
+}
+
+/// 临时跟踪：打印 SET_BUFFER 的 handle 与尺寸（十进制）。
+pub(crate) fn report_handle(handle: u32, width: u32, height: u32) {
+    let mut line = [0u8; 80];
+    let prefix = b"terminal: set_buffer handle=";
+    line[..prefix.len()].copy_from_slice(prefix);
+    let mut length = prefix.len();
+    for value in [handle, width, height] {
+        let mut digits = [0u8; 10];
+        let mut count = 0;
+        let mut v = value;
+        loop {
+            digits[count] = b'0' + (v % 10) as u8;
+            count += 1;
+            v /= 10;
+            if v == 0 { break; }
+        }
+        for index in 0..count {
+            line[length] = digits[count - 1 - index];
+            length += 1;
+        }
+        line[length] = b' ';
+        length += 1;
+    }
+    line[length] = b'\n';
+    length += 1;
+    report(&line[..length]);
 }
 
 fn monotonic_milliseconds() -> u64 {

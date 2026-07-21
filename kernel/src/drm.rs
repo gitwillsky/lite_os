@@ -298,7 +298,19 @@ impl DrmFile {
     /// @return handle 仍 live 时返回 page-aligned、非零且同 OFD 稳定的 offset。
     /// @errors handle 不存在返回 NotFound。
     pub(crate) fn map_dumb(&self, handle: u32) -> Result<u64, DrmError> {
-        if handle == 0 || !self.state.lock().buffers.contains_key(&handle) {
+        // 临时跟踪：lookup 失败时打印当前 namespace（排查 SET_BUFFER adopt 后移除）。
+        let state = self.state.lock();
+        if handle == 0 || !state.buffers.contains_key(&handle) {
+            let mut keys = alloc::vec::Vec::new();
+            for (key, _) in state.buffers.iter() {
+                keys.push(*key);
+            }
+            crate::warn!(
+                "[DRM] map_dumb miss: handle={} file_identity={} keys={:?}",
+                handle,
+                self.file_identity,
+                keys
+            );
             return Err(DrmError::NotFound);
         }
         Ok(u64::from(handle) << DUMB_OFFSET_SHIFT)
@@ -309,6 +321,12 @@ impl DrmFile {
     /// @return 删除成功返回 unit。
     /// @errors handle 不存在返回 NotFound。
     pub(crate) fn destroy_dumb(&self, handle: u32) -> Result<(), DrmError> {
+        // 临时跟踪：记录 handle 销毁（排查 SET_BUFFER adopt 后移除）。
+        crate::warn!(
+            "[DRM] destroy_dumb: handle={} file_identity={}",
+            handle,
+            self.file_identity
+        );
         let removed = self.state.lock().buffers.remove(&handle);
         let buffer = removed.ok_or(DrmError::NotFound)?;
         // DeviceBacking 的最后一个 Arc 会逐 extent 进入 buddy merge；必须在 GEM

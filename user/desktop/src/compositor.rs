@@ -10,6 +10,7 @@ use crate::{
     chrome, cursor,
     cursor::Cursor,
     scanout::{Frame, Rect, Scanout},
+    sprites::Sprites,
     startmenu::StartMenu,
     taskbar::Taskbar,
     uifont::UiFont,
@@ -77,6 +78,8 @@ pub struct Overlays {
     pub outline: Option<Rect>,
     /// 按住的标题栏按钮（surface id + 区域，画按下态）。
     pub armed: Option<(u32, Region)>,
+    /// 悬停的标题栏按钮（surface id + 区域，画增亮态）。
+    pub hover: Option<(u32, Region)>,
     /// 光标热点屏幕坐标。
     pub cursor: (i32, i32),
 }
@@ -86,6 +89,7 @@ pub struct Layers<'a> {
     pub windows: &'a Windows,
     pub font: &'a UiFont,
     pub wallpaper: &'a Wallpaper,
+    pub sprites: &'a Sprites,
     pub taskbar: &'a Taskbar,
     pub startmenu: &'a StartMenu,
     pub cursor: &'a Cursor,
@@ -97,6 +101,7 @@ pub fn composite(scanout: &mut Scanout, layers: &Layers<'_>, overlays: &Overlays
         windows,
         font,
         wallpaper,
+        sprites,
         taskbar,
         startmenu,
         cursor: cursor_asset,
@@ -133,6 +138,10 @@ pub fn composite(scanout: &mut Scanout, layers: &Layers<'_>, overlays: &Overlays
                         .armed
                         .filter(|(surface_id, _)| *surface_id == window.surface_id)
                         .and_then(|(_, region)| region.button());
+                    let hover = overlays
+                        .hover
+                        .filter(|(surface_id, _)| *surface_id == window.surface_id)
+                        .and_then(|(_, region)| region.button());
                     chrome::paint(
                         &mut frame,
                         font,
@@ -143,6 +152,7 @@ pub fn composite(scanout: &mut Scanout, layers: &Layers<'_>, overlays: &Overlays
                             focused: windows.focused() == Some(*slot),
                             maximized: window.state() == State::Maximized,
                             pressed,
+                            hover,
                         },
                         clip,
                     );
@@ -154,10 +164,10 @@ pub fn composite(scanout: &mut Scanout, layers: &Layers<'_>, overlays: &Overlays
             }
             // 开始菜单在窗口层之上、任务栏之下。
             if startmenu.is_open() {
-                startmenu.paint(&mut frame, font, clip);
+                startmenu.paint(&mut frame, font, sprites, clip);
             }
-            // 任务栏是最顶层内部 UI，覆盖窗口区域。
-            taskbar.paint(&mut frame, font, windows, clip);
+            // 任务栏是最顶层内部 UI，覆盖窗口区域；菜单打开时 Start 按钮保持按下态。
+            taskbar.paint(&mut frame, font, sprites, windows, startmenu.is_open(), clip);
             if !cursor_rect.intersect(clip).is_empty() {
                 cursor_asset.paint(&mut frame, overlays.cursor.0, overlays.cursor.1, clip);
             }

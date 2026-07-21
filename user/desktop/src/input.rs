@@ -52,6 +52,10 @@ pub struct Input {
     /// 左键按下时命中的标题栏按钮（surface id + 区域）；抬起时仍在同一按钮
     /// 内才生效。
     pub(crate) armed: Option<(u32, Region)>,
+    /// 无按键移动时悬停的标题栏按钮（surface id + 区域）；合成时画增亮态。
+    pub(crate) hovered: Option<(u32, Region)>,
+    /// 上一次标题栏按下的 surface id 与时刻；[`pointer`] 据此判定双击。
+    pub(crate) last_title_click: Option<(u32, std::time::Instant)>,
     pending_x: Option<i32>,
     pending_y: Option<i32>,
     pending_buttons: [(u32, i32); 8],
@@ -82,6 +86,8 @@ impl Input {
             buttons: 0,
             drag: None,
             armed: None,
+            hovered: None,
+            last_title_click: None,
             pending_x: None,
             pending_y: None,
             pending_buttons: [(0, 0); 8],

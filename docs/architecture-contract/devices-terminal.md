@@ -58,7 +58,7 @@
   输入与 scanout；客户端经 SCM_RIGHTS 共享同一 OFD，CREATE_DUMB handle 的 DESTROY 只归桌面。
   headless boot 中 DRM/input 不可用时 `desktop` 保持同一进程并以 5 秒 poll deadline 重试，只报告一次。
   禁止退出后依赖 init `respawn` 紧循环重复 exec，也禁止复制第二套 headless compositor state。
-  图形资产（壁纸 / 字体 atlas / 光标）只从 rootfs `/usr/share/liteos/` 单轨加载，禁止二进制
+  图形资产（壁纸 / 字体 atlas / 精灵表 / 光标）只从 rootfs `/usr/share/liteos/` 单轨加载，禁止二进制
   内嵌与 fs 之外的第二条资产路径；缺失或校验失败即启动失败，与无 GPU 同属启动失败路径。
 - `splash` 是 sysinit 的临时屏幕 owner：首个 open `/dev/dri/card0` 取得 master 完成启动画面
   modeset 后立即 DROP_MASTER（DIRTYFB 不需要 master，进度条动画不受影响），fork 后父进程退出

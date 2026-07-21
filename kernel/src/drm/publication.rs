@@ -143,6 +143,12 @@ impl<'file> PreparedDumbBuffer<'file> {
             entry,
             info: _,
         } = self;
+        // 临时跟踪：记录 handle 发布（排查 SET_BUFFER adopt 后移除）。
+        crate::warn!(
+            "[DRM] create_dumb publish: handle={} file_identity={}",
+            handle.handle,
+            handle.file.file_identity
+        );
         handle.file.state.lock().buffers.commit_vacant(entry);
         handle.commit();
         identity.commit();
