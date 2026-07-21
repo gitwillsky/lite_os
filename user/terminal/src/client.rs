@@ -26,11 +26,12 @@ use crate::{
     session::{read_pty, replay_boot_log, spawn_shell, terminate_child},
 };
 
-/// 窗口内容：初始 80×24 cell（32×64 像素）= 2560×1536；之后随 `CONFIGURE` 调整。
-const COLUMNS: usize = 80;
-const ROWS: usize = 24;
-const WIDTH: u32 = 2560;
-const HEIGHT: u32 = 1536;
+/// 窗口内容：初始 60×18 cell（32×64 像素）= 1920×1152（约占 3008×1692 屏幕
+/// 的一半，避免默认铺满）；之后随 `CONFIGURE` 调整。
+const COLUMNS: usize = 60;
+const ROWS: usize = 18;
+const WIDTH: u32 = 1920;
+const HEIGHT: u32 = 1152;
 
 const FRAME_INTERVAL_MS: u64 = 17;
 const BLINK_INTERVAL_MS: u64 = 500;
@@ -48,7 +49,7 @@ const TITLE: &[u8] = "终端".as_bytes();
 /// 返回进程退出码：正常结束（shell 退出 / `CLOSE_REQUEST`）为 0；
 /// 握手失败、spawn 失败或桌面 socket EOF 为 1（桌面会 respawn）。
 pub fn run(command: &[u8]) -> i32 {
-    let Some(atlas) = Atlas::checked() else {
+    let Some(atlas) = Atlas::open() else {
         report(b"terminal: atlas failed\n");
         return 1;
     };

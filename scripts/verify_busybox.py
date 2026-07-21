@@ -955,7 +955,7 @@ def build_desktop(musl: MuslCachePaths) -> Path:
         "desktop",
         "desktop",
         1,
-        (ROOT / "assets/fonts/liteos-ui.a8p", ROOT / "assets/wallpaper.xrgb", *display_proto_inputs()),
+        display_proto_inputs(),
     )
 
 
@@ -967,7 +967,7 @@ def build_terminal(musl: MuslCachePaths) -> Path:
         "terminal",
         "terminal",
         1,
-        (ROOT / "assets/fonts/liteos-terminal.a8", *display_proto_inputs()),
+        display_proto_inputs(),
     )
 
 
@@ -979,7 +979,6 @@ def build_splash(musl: MuslCachePaths) -> Path:
         "splash",
         "splash",
         1,
-        (ROOT / "assets/bootlogo.xrgb",),
     )
 
 
@@ -1086,6 +1085,14 @@ def create_image(
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
         f"write {ROOT / 'assets' / 'terminfo' / 'l' / 'liteos'} /etc/terminfo/l/liteos",
+        # 图形资产运行时由 desktop/terminal/splash 从 rootfs 读入（不内嵌二进制）；
+        # 缺失时 desktop/terminal 启动失败、splash 静默跳过 logo。
+        "mkdir /usr/share/liteos",
+        f"write {ROOT / 'assets' / 'wallpaper.xrgb'} /usr/share/liteos/wallpaper.xrgb",
+        f"write {ROOT / 'assets' / 'bootlogo.xrgb'} /usr/share/liteos/bootlogo.xrgb",
+        f"write {ROOT / 'assets' / 'cursor.lc1'} /usr/share/liteos/cursor.lc1",
+        f"write {ROOT / 'assets' / 'fonts' / 'liteos-ui.a8p'} /usr/share/liteos/liteos-ui.a8p",
+        f"write {ROOT / 'assets' / 'fonts' / 'liteos-terminal.a8'} /usr/share/liteos/liteos-terminal.a8",
         f"write {ROOT / 'user' / 'base' / 'shutdown'} /bin/shutdown",
         "set_inode_field /bin/shutdown mode 0100755",
         f"write {openssl.binary} /bin/openssl",
@@ -1190,6 +1197,16 @@ def create_image(
         )
         if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
             raise RuntimeError(f"BusyBox rootfs lacks {session_binary}")
+    for asset in (
+        "/usr/share/liteos/wallpaper.xrgb",
+        "/usr/share/liteos/bootlogo.xrgb",
+        "/usr/share/liteos/cursor.lc1",
+        "/usr/share/liteos/liteos-ui.a8p",
+        "/usr/share/liteos/liteos-terminal.a8",
+    ):
+        metadata = run([str(find_debugfs()), "-R", f"stat {asset}", str(image)], ROOT)
+        if "Type: regular" not in metadata:
+            raise RuntimeError(f"BusyBox rootfs lacks runtime asset {asset}")
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
     ca_store = run(
         [str(find_debugfs()), "-R", "stat /etc/ssl/certs/ca-certificates.crt", str(image)],
@@ -1275,6 +1292,8 @@ def create_published_image(
         ROOT / "assets/fonts/liteos-terminal.a8",
         ROOT / "assets/fonts/liteos-ui.a8p",
         ROOT / "assets/wallpaper.xrgb",
+        ROOT / "assets/bootlogo.xrgb",
+        ROOT / "assets/cursor.lc1",
         ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",

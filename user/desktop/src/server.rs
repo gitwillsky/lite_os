@@ -9,6 +9,7 @@
 use crate::{
     clients::{self, Clients, Markers, MAX_CLIENTS},
     compositor::{self, Damage},
+    cursor::Cursor,
     ffi,
     ffi::{PollFd, SockaddrUn},
     input::Input,
@@ -23,17 +24,18 @@ use crate::{
     window::Windows,
 };
 
-/// 桌面主循环的入口：modeset 成功 → 解析字体 / 壁纸资产 → 监听 socket →
-/// 拉起 terminal → 事件循环。
+/// 桌面主循环的入口：modeset 成功 → 从 `/usr/share/liteos/` 加载字体 / 壁纸 /
+/// 光标资产 → 监听 socket → 拉起 terminal → 事件循环。
 ///
-/// 只在启动阶段失败时返回 `Err(())`（无 GPU / socket 不可用 / 资产校验
+/// 只在启动阶段失败时返回 `Err(())`（无 GPU / socket 不可用 / 资产缺失或校验
 /// 失败），由 `main` 退避重试；进入事件循环后不返回。
 pub fn run() -> Result<(), ()> {
     let mut scanout = Scanout::open()?;
     let mode = scanout.mode();
     clients::mark_mode(mode.width, mode.height);
-    let font = UiFont::checked().ok_or(())?;
+    let font = UiFont::open().ok_or(())?;
     let wallpaper = Wallpaper::open(mode).ok_or(())?;
+    let cursor = Cursor::open().ok_or(())?;
     let listen = listen_socket()?;
     let mut clients = Clients::new();
     let mut windows = Windows::new();
@@ -151,6 +153,7 @@ pub fn run() -> Result<(), ()> {
                     wallpaper: &wallpaper,
                     taskbar: &taskbar,
                     startmenu: &startmenu,
+                    cursor: &cursor,
                 },
                 &compositor::Overlays {
                     outline: input.resize_outline(),

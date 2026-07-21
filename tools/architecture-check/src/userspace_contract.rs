@@ -283,4 +283,8 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x01") || bootlogo.len() != 3_145_744 {
         errors.push("assets/bootlogo.xrgb: expected the checked v1 raw boot logo".to_owned());
     }
+    let cursor = fs::read(root.join("assets/cursor.lc1")).unwrap_or_default();
+    if cursor.get(..8) != Some(b"LCR1\0\0\0\x01") || cursor.len() != 272 {
+        errors.push("assets/cursor.lc1: expected the checked v1 32x32 arrow cursor".to_owned());
+    }
 }

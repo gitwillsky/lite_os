@@ -1,18 +1,21 @@
-//! 桌面壁纸：`assets/wallpaper.xrgb` 的 checked 解析与一次性缩放到屏幕 mode。
+//! 桌面壁纸：运行时从 rootfs `/usr/share/liteos/wallpaper.xrgb` 读入、checked
+//! 解析并一次性缩放到屏幕 mode（资产随镜像分发，不内嵌进二进制）。
 //!
 //! 文件布局（小端）：8B magic `LWP8\0\0\0\x01`、u32 width、u32 height、
-//! width*height*4 字节 XRGB8888 行主序像素（源图 1672x941）。
+//! width*height*4 字节 XRGB8888 行主序像素。
 //!
 //! 启动时把源图按当前 mode 双线性缩放进一块匿名 mmap 的独立 buffer（一次性
-//! 成本，避免每次合成重复缩放）；之后合成背景按 damage 矩形从该 buffer 直拷。
-//! mmap 而不是固定数组：mode 尺寸运行期才知，全屏像素数组进栈会爆栈。
+//! 成本，避免每次合成重复缩放），源文件映射随后立即 `munmap`；之后合成背景
+//! 按 damage 矩形从该 buffer 直拷。mmap 而不是固定数组：mode 尺寸运行期才
+//! 知，全屏像素数组进栈会爆栈。文件缺失或校验失败返回 `None`（启动失败）。
 
 use crate::{
     ffi,
     scanout::{Frame, Mode, Rect},
 };
 
-const BYTES: &[u8] = include_bytes!("../../../assets/wallpaper.xrgb");
+/// rootfs 中的壁纸路径（NUL 结尾）。
+const PATH: &[u8] = b"/usr/share/liteos/wallpaper.xrgb\0";
 const MAGIC: &[u8; 8] = b"LWP8\0\0\0\x01";
 /// 资产头字节数（magic + width + height）。
 const HEADER: usize = 16;
@@ -25,11 +28,18 @@ pub struct Wallpaper {
 }
 
 impl Wallpaper {
-    /// 校验资产（magic、尺寸非零、长度恰好对齐），再把源图双线性缩放到
-    /// `mode` 尺寸的独立 buffer。任一失败返回 `None`（启动失败）。
+    /// 读入并校验资产（magic、尺寸非零、长度恰好对齐），再把源图双线性缩放到
+    /// `mode` 尺寸的独立 buffer，源映射随即释放。任一失败返回 `None`（启动失败）。
     pub fn open(mode: Mode) -> Option<Self> {
-        let (source, source_width, source_height) = checked_source()?;
         let map_size = mode.width.checked_mul(mode.height)?.checked_mul(4)?;
+        let (file_pointer, file_size) = ffi::read_file(PATH)?;
+        // SAFETY: file_pointer/file_size 来自 read_file 的匿名映射，munmap 前有效。
+        let file = unsafe { core::slice::from_raw_parts(file_pointer as *const u8, file_size) };
+        let Some((source, source_width, source_height)) = checked_source(file) else {
+            // SAFETY: 源映射由本函数持有，此后不再访问。
+            unsafe { ffi::munmap(file_pointer, file_size) };
+            return None;
+        };
         // SAFETY: 匿名映射不触碰 fd；失败返回 MAP_FAILED（usize::MAX）。
         let pixels = unsafe {
             ffi::mmap(
@@ -42,6 +52,8 @@ impl Wallpaper {
             )
         };
         if pixels as usize == usize::MAX {
+            // SAFETY: 源映射由本函数持有，此后不再访问。
+            unsafe { ffi::munmap(file_pointer, file_size) };
             return None;
         }
         let wallpaper = Self {
@@ -50,10 +62,19 @@ impl Wallpaper {
             width: mode.width,
         };
         // SAFETY: pixels 指向 map_size 字节的私有映射，行切片互不重叠。
-        let target = unsafe {
-            core::slice::from_raw_parts_mut(wallpaper.pixels, mode.width * mode.height)
-        };
-        scale(source, source_width, source_height, target, mode.width, mode.height);
+        let target =
+            unsafe { core::slice::from_raw_parts_mut(wallpaper.pixels, mode.width * mode.height) };
+        scale(
+            source,
+            source_width,
+            source_height,
+            target,
+            mode.width,
+            mode.height,
+        );
+        // 源图只用于这一次缩放，映射不再保留（20MB 级，常驻浪费）。
+        // SAFETY: 源映射由本函数持有，scale 返回后不再访问。
+        unsafe { ffi::munmap(file_pointer, file_size) };
         Some(wallpaper)
     }
 
@@ -67,9 +88,8 @@ impl Wallpaper {
             let y = y as usize;
             // SAFETY: pixels 指向 width*height 个 u32 的私有映射；合成单线程，
             // 读切片与 scanout 行切片不别名。
-            let source = unsafe {
-                core::slice::from_raw_parts(self.pixels.add(y * self.width), self.width)
-            };
+            let source =
+                unsafe { core::slice::from_raw_parts(self.pixels.add(y * self.width), self.width) };
             frame.row(y)[clip.x1 as usize..clip.x2 as usize]
                 .copy_from_slice(&source[clip.x1 as usize..clip.x2 as usize]);
         }
@@ -84,17 +104,19 @@ impl Drop for Wallpaper {
 }
 
 /// 校验资产头与总长度，返回像素区字节切片与源图尺寸。
-fn checked_source() -> Option<(&'static [u8], usize, usize)> {
-    if BYTES.get(..8)? != MAGIC {
+fn checked_source(bytes: &[u8]) -> Option<(&[u8], usize, usize)> {
+    if bytes.get(..8)? != MAGIC {
         return None;
     }
-    let width = read_u32(8)? as usize;
-    let height = read_u32(12)? as usize;
-    if width == 0 || height == 0 || HEADER + width.checked_mul(height)?.checked_mul(4)? != BYTES.len()
+    let width = read_u32(bytes, 8)? as usize;
+    let height = read_u32(bytes, 12)? as usize;
+    if width == 0
+        || height == 0
+        || HEADER + width.checked_mul(height)?.checked_mul(4)? != bytes.len()
     {
         return None;
     }
-    Some((BYTES.get(HEADER..)?, width, height))
+    Some((bytes.get(HEADER..)?, width, height))
 }
 
 /// 双线性缩放（16.16 定点）：目标像素中心映射回源图坐标，四角按分数混合。
@@ -144,14 +166,19 @@ fn bilinear(corners: (u32, u32, u32, u32), frac_x: u32, frac_y: u32) -> u32 {
         let bottom = pc * (65536 - fx) + pd * fx;
         ((top * (65536 - fy) + bottom * fy) >> 32) as u32
     };
-    let red = mix(a >> 16 & 0xff, b >> 16 & 0xff, c >> 16 & 0xff, d >> 16 & 0xff);
+    let red = mix(
+        a >> 16 & 0xff,
+        b >> 16 & 0xff,
+        c >> 16 & 0xff,
+        d >> 16 & 0xff,
+    );
     let green = mix(a >> 8 & 0xff, b >> 8 & 0xff, c >> 8 & 0xff, d >> 8 & 0xff);
     let blue = mix(a & 0xff, b & 0xff, c & 0xff, d & 0xff);
     red << 16 | green << 8 | blue
 }
 
-fn read_u32(offset: usize) -> Option<u32> {
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
-        BYTES.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
     ))
 }

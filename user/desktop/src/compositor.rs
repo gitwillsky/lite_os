@@ -8,6 +8,7 @@
 
 use crate::{
     chrome, cursor,
+    cursor::Cursor,
     scanout::{Frame, Rect, Scanout},
     startmenu::StartMenu,
     taskbar::Taskbar,
@@ -87,6 +88,7 @@ pub struct Layers<'a> {
     pub wallpaper: &'a Wallpaper,
     pub taskbar: &'a Taskbar,
     pub startmenu: &'a StartMenu,
+    pub cursor: &'a Cursor,
 }
 
 /// 重画 `damage` 覆盖的像素并 `DIRTYFB` 提交；返回后 damage 由调用方清空。
@@ -102,6 +104,7 @@ pub fn composite(
         wallpaper,
         taskbar,
         startmenu,
+        cursor: cursor_asset,
     } = *layers;
     let screen = Rect::new(0, 0, scanout.mode().width as i32, scanout.mode().height as i32);
     let cursor_rect = cursor::rect_at(overlays.cursor.0, overlays.cursor.1);
@@ -156,7 +159,7 @@ pub fn composite(
             // 任务栏是最顶层内部 UI，覆盖窗口区域。
             taskbar.paint(&mut frame, font, windows, clip);
             if !cursor_rect.intersect(clip).is_empty() {
-                cursor::paint(&mut frame, overlays.cursor.0, overlays.cursor.1, clip);
+                cursor_asset.paint(&mut frame, overlays.cursor.0, overlays.cursor.1, clip);
             }
         }
     }

@@ -9,6 +9,8 @@ pub const O_RDONLY: c_int = 0;
 pub const O_RDWR: c_int = 2;
 pub const O_NONBLOCK: c_int = 0x800;
 pub const O_CLOEXEC: c_int = 0x80000;
+pub const SEEK_SET: c_int = 0;
+pub const SEEK_END: c_int = 2;
 pub const PROT_READ: c_int = 1;
 pub const PROT_WRITE: c_int = 2;
 pub const MAP_SHARED: c_int = 1;
@@ -234,6 +236,7 @@ unsafe extern "C" {
     pub fn close(fd: c_int) -> c_int;
     pub fn read(fd: c_int, output: *mut c_void, length: usize) -> isize;
     pub fn write(fd: c_int, input: *const c_void, length: usize) -> isize;
+    pub fn lseek(fd: c_int, offset: i64, whence: c_int) -> i64;
     pub fn unlink(path: *const c_char) -> c_int;
     pub fn ioctl(fd: c_int, request: usize, argument: *mut c_void) -> c_int;
     pub fn mmap(
@@ -293,4 +296,60 @@ pub fn monotonic_milliseconds() -> u64 {
 
 pub const fn c_str(bytes: &'static [u8]) -> *const c_char {
     bytes.as_ptr().cast()
+}
+
+/// 把整个常规文件读进一块匿名 mmap，返回（映射指针，字节数）。
+///
+/// 所有权归调用方：随进程退出由内核回收，或用 `munmap` 提前释放。文件大小经
+/// `lseek(SEEK_END)` 探测（常规文件可定位，见 syscall 矩阵 62 号）；open /
+/// lseek / mmap / read 任一失败返回 `None`，调用方按启动失败处理。
+pub fn read_file(path: &'static [u8]) -> Option<(*mut c_void, usize)> {
+    // SAFETY: path 为 NUL 结尾静态字节串；只读打开。
+    let fd = unsafe { open(c_str(path), O_RDONLY | O_CLOEXEC) };
+    if fd < 0 {
+        return None;
+    }
+    let result = read_fd(fd);
+    // SAFETY: fd 为本函数打开的描述符。
+    unsafe { close(fd) };
+    result
+}
+
+/// `read_file` 的 fd 部分：量尺寸、建映射、循环读满。
+fn read_fd(fd: c_int) -> Option<(*mut c_void, usize)> {
+    // SAFETY: lseek 不触碰缓冲区。
+    let size = unsafe { lseek(fd, 0, SEEK_END) };
+    if size <= 0 || unsafe { lseek(fd, 0, SEEK_SET) } != 0 {
+        return None;
+    }
+    let size = usize::try_from(size).ok()?;
+    // SAFETY: 匿名映射不触碰 fd；失败返回 MAP_FAILED（usize::MAX）。
+    let pointer = unsafe {
+        mmap(
+            core::ptr::null_mut(),
+            size,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if pointer as usize == usize::MAX {
+        return None;
+    }
+    let mut total = 0usize;
+    while total < size {
+        // SAFETY: 映射 size 字节可写，[total, size) 区间在本次 read 期间有效。
+        let count = unsafe { read(fd, (pointer as *mut u8).add(total).cast(), size - total) };
+        if count > 0 {
+            total += count as usize;
+        } else if count < 0 && errno() == EINTR {
+            continue;
+        } else {
+            // SAFETY: 映射由本函数持有，此后不再访问。
+            unsafe { munmap(pointer, size) };
+            return None;
+        }
+    }
+    Some((pointer, size))
 }

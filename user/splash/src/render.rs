@@ -23,8 +23,6 @@ const TRACK_FILL: u32 = 0x001a_1a1a;
 const TRACK_BORDER: u32 = 0x005a_5a5a;
 const SLIDER_COLOR: u32 = 0x0024_5edc;
 
-static BOOTLOGO: &[u8] = include_bytes!("../../../assets/bootlogo.xrgb");
-
 /// 滑块组在轨道内容区内的最大起始偏移。
 pub const fn max_slider_offset() -> usize {
     CONTENT_WIDTH - SLIDER_GROUP
@@ -87,8 +85,8 @@ impl Canvas {
     }
 
     /// bootlogo 保持宽高比缩放并居中；资产损坏时静默跳过（保留黑屏）。
-    pub fn draw_bootlogo(&mut self) {
-        let Some((source, source_width, source_height)) = parse_bootlogo() else {
+    pub fn draw_bootlogo(&mut self, logo: &[u8]) {
+        let Some((source, source_width, source_height)) = parse_bootlogo(logo) else {
             return;
         };
         // 16.16 定点等比缩放，取宽/高两个方向中较小的倍率。
@@ -186,13 +184,13 @@ fn inside_rounded(column: usize, row: usize, width: usize, height: usize, radius
 }
 
 /// 校验 bootlogo 头部并返回（像素字节, 宽, 高）；头部格式见 `assets/bootlogo.xrgb`。
-fn parse_bootlogo() -> Option<(&'static [u8], usize, usize)> {
-    if BOOTLOGO.len() < 16 || &BOOTLOGO[..8] != b"LWP8\0\0\0\x01" {
+fn parse_bootlogo(logo: &[u8]) -> Option<(&[u8], usize, usize)> {
+    if logo.len() < 16 || &logo[..8] != b"LWP8\0\0\0\x01" {
         return None;
     }
-    let width = u32::from_le_bytes(BOOTLOGO[8..12].try_into().ok()?) as usize;
-    let height = u32::from_le_bytes(BOOTLOGO[12..16].try_into().ok()?) as usize;
+    let width = u32::from_le_bytes(logo[8..12].try_into().ok()?) as usize;
+    let height = u32::from_le_bytes(logo[12..16].try_into().ok()?) as usize;
     let length = width.checked_mul(height)?.checked_mul(4)?;
-    let pixels = BOOTLOGO.get(16..16 + length)?;
+    let pixels = logo.get(16..16 + length)?;
     Some((pixels, width, height))
 }

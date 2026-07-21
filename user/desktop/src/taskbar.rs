@@ -254,7 +254,10 @@ impl Taskbar {
             let Ok(text) = core::str::from_utf8(&self.clock_text) else {
                 return;
             };
-            font.draw(frame, face, TEXT, (clock.x1 + BUTTON_GAP * 2, baseline), text, clock);
+            // 文字原点必须取未裁剪的时钟区左缘（`clock` 只作写入裁剪）：damage
+            // 从左侧切入时钟区时按裁剪后的 x1 起笔会让文本随 clip 平移，画出残影。
+            let origin_x = self.clock_rect().x1 + BUTTON_GAP * 2;
+            font.draw(frame, face, TEXT, (origin_x, baseline), text, clock);
         }
     }
 }

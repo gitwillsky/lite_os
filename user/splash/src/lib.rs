@@ -67,7 +67,15 @@ fn run() -> Option<()> {
     let mode = query_mode(fd, connector_id)?;
     let (framebuffer_id, mut canvas) = create_buffer(fd, mode)?;
     canvas.fill(0);
-    canvas.draw_bootlogo();
+    // bootlogo 运行时从 rootfs 读入（资产随镜像分发，不内嵌进二进制）；
+    // 缺失或损坏时静默跳过（保留黑屏），与 splash 的装饰定位一致。
+    if let Some((logo_pointer, logo_size)) = ffi::read_file(b"/usr/share/liteos/bootlogo.xrgb\0") {
+        // SAFETY: logo_pointer/logo_size 来自 read_file 的匿名映射，munmap 前有效。
+        let logo = unsafe { core::slice::from_raw_parts(logo_pointer as *const u8, logo_size) };
+        canvas.draw_bootlogo(logo);
+        // SAFETY: 映射由本函数持有，draw_bootlogo 返回后不再访问。
+        unsafe { ffi::munmap(logo_pointer, logo_size) };
+    }
     let track = canvas.track_origin();
     canvas.draw_track(track.0, track.1);
     set_crtc(fd, crtc_id, connector_id, framebuffer_id, mode)?;

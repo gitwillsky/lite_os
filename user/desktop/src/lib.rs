@@ -11,8 +11,10 @@
 //! - [`window`] / [`chrome`] / [`cursor`] / [`compositor`]：窗口对象（含
 //!   Normal / Minimized / Maximized 状态机）、Luna SSD 装饰、指针光标与
 //!   damage 驱动的合成。
-//! - [`uifont`] / [`wallpaper`]：UI 比例字体 atlas（a8p）与壁纸（xrgb，
-//!   启动时一次性缩放到 mode 尺寸）；资产校验失败即启动失败。
+//! - [`uifont`] / [`wallpaper`] / [`cursor`]：UI 比例字体 atlas（a8p）、壁纸
+//!   （xrgb，启动时一次性缩放到 mode 尺寸）与 XP 箭头光标（lc1）；三者运行时
+//!   从 rootfs `/usr/share/liteos/` 加载（不内嵌二进制），缺失或校验失败即
+//!   启动失败。
 //! - [`input`]：evdev 键盘 / tablet 的发现、grab 与包边界消费；[`pointer`]：
 //!   指针语义层（raise / focus、移动与 resize 拖动、标题栏三按钮、开始菜单
 //!   交互）。

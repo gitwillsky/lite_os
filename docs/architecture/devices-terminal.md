@@ -42,11 +42,15 @@
 - headless boot 缺少 DRM/input 时，`desktop` 在同一进程内以 5 秒 deadline 退避重试，
   不触发 init respawn 风暴；设备可用时仍只创建唯一 compositor owner。
 - terminal font 是 checked A8 atlas；普通构建只消费生成产物，升级由显式 generator 完成。
+- 图形资产（壁纸 / bootlogo XRGB、UI 与终端字体 atlas、XP 箭头光标 lc1）不内嵌进
+  二进制，随 rootfs 分发到 `/usr/share/liteos/`，由 desktop / terminal / splash 启动时
+  读入并 checked 解析；缺失或损坏时 desktop / terminal 启动失败（退避重试），splash
+  静默跳过 logo。
 
 ## Known limits
 
 - GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush；VirGL、Vulkan、3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
 - 桌面窗口语义当前覆盖重叠窗口的移动/缩放/最小化/最大化/关闭/置顶/焦点；shell 含任务栏
-  （Start/窗口按钮/时钟）、双栏开始菜单（`/etc/startmenu.conf`）、程序化壁纸与关机画面；
+  （Start/窗口按钮/时钟）、双栏开始菜单（`/etc/startmenu.conf`）、壁纸与关机画面；
   `splash` 在 sysinit 绘制启动画面，桌面首帧后接管。已知 cosmetic 问题：新窗口首帧
   在窗口矩形外偶发残留像素（create/cascade 几何时序），随后续 damage 自愈。
