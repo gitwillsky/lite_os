@@ -1,6 +1,4 @@
-use core::{ffi::c_void, ptr};
-
-use crate::ffi;
+use core::ptr;
 
 use super::*;
 
@@ -156,37 +154,16 @@ pub(super) fn allocate_grid(
     reserved: u16,
 ) -> Option<(Screen, Screen, *mut DirtySpan)> {
     let count = columns.checked_mul(rows).filter(|count| *count != 0)?;
-    let primary = unsafe { ffi::calloc(count, core::mem::size_of::<Cell>()).cast::<Cell>() };
-    if primary.is_null() {
-        return None;
-    }
-    let alternate = unsafe { ffi::calloc(count, core::mem::size_of::<Cell>()).cast::<Cell>() };
-    if alternate.is_null() {
-        unsafe { ffi::free(primary.cast()) };
-        return None;
-    }
-    let dirty = unsafe { ffi::calloc(rows, core::mem::size_of::<DirtySpan>()).cast::<DirtySpan>() };
-    if dirty.is_null() {
-        unsafe {
-            ffi::free(primary.cast());
-            ffi::free(alternate.cast());
-        }
-        return None;
-    }
-    for index in 0..count {
-        unsafe {
-            *primary.add(index) = Cell::blank(foreground, background, reserved);
-            *alternate.add(index) = Cell::blank(foreground, background, reserved);
-        }
-    }
-    for row in 0..rows {
-        unsafe {
-            *dirty.add(row) = DirtySpan {
-                first: 0,
-                end: columns as u32,
-            };
-        }
-    }
+    let blank = Cell::blank(foreground, background, reserved);
+    let primary = allocate_boxed(count, blank)?;
+    let alternate = allocate_boxed(count, blank)?;
+    let dirty = allocate_boxed(
+        rows,
+        DirtySpan {
+            first: 0,
+            end: columns as u32,
+        },
+    )?;
     Some((
         Screen {
             cells: primary,
@@ -204,16 +181,38 @@ pub(super) fn allocate_grid(
     ))
 }
 
-pub(super) fn free_grid(primary: Screen, alternate: Screen, dirty: *mut DirtySpan) {
+fn allocate_boxed<T: Copy>(length: usize, value: T) -> Option<*mut T> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(length).ok()?;
+    values.resize(length, value);
+    Some(Box::into_raw(values.into_boxed_slice()).cast::<T>())
+}
+
+pub(super) fn free_grid(
+    primary: Screen,
+    alternate: Screen,
+    dirty: *mut DirtySpan,
+    columns: usize,
+    rows: usize,
+) {
+    let count = columns.saturating_mul(rows);
     unsafe {
         if !primary.cells.is_null() {
-            ffi::free(primary.cells.cast::<c_void>());
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                primary.cells,
+                count,
+            )));
         }
         if !alternate.cells.is_null() {
-            ffi::free(alternate.cells.cast::<c_void>());
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                alternate.cells,
+                count,
+            )));
         }
         if !dirty.is_null() {
-            ffi::free(dirty.cast::<c_void>());
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                dirty, rows,
+            )));
         }
     }
 }

@@ -166,9 +166,24 @@ pub fn paint(frame: &mut Frame, font: &UiFont, desc: &Paint<'_>, clip: Rect) {
     );
     paint_title_bar(frame, outer_rect, gradient_top, gradient_bottom, clip);
     // 左 / 右 / 下边框取标题栏渐变底色（跟随标题栏色系）。
-    let left = Rect::new(outer.0, outer.1 + TITLE_HEIGHT, outer.0 + BORDER, outer_rect.y2);
-    let right = Rect::new(outer_rect.x2 - BORDER, outer.1 + TITLE_HEIGHT, outer_rect.x2, outer_rect.y2);
-    let bottom = Rect::new(outer.0, outer_rect.y2 - BORDER, outer_rect.x2, outer_rect.y2);
+    let left = Rect::new(
+        outer.0,
+        outer.1 + TITLE_HEIGHT,
+        outer.0 + BORDER,
+        outer_rect.y2,
+    );
+    let right = Rect::new(
+        outer_rect.x2 - BORDER,
+        outer.1 + TITLE_HEIGHT,
+        outer_rect.x2,
+        outer_rect.y2,
+    );
+    let bottom = Rect::new(
+        outer.0,
+        outer_rect.y2 - BORDER,
+        outer_rect.x2,
+        outer_rect.y2,
+    );
     fill(frame, left.intersect(clip), gradient_bottom);
     fill(frame, right.intersect(clip), gradient_bottom);
     fill(frame, bottom.intersect(clip), gradient_bottom);
@@ -311,10 +326,7 @@ fn glyph_on(button: Button, maximized: bool, x: i32, y: i32) -> bool {
             // □：outline 宽度轮廓方框。
             (lo..hi).contains(&x)
                 && (lo..hi).contains(&y)
-                && (x < lo + outline
-                    || x >= hi - outline
-                    || y < lo + outline
-                    || y >= hi - outline)
+                && (x < lo + outline || x >= hi - outline || y < lo + outline || y >= hi - outline)
         }
         Button::Maximize => {
             // ❐：前框（右下）轮廓压住后框（左上）轮廓。
@@ -335,9 +347,7 @@ fn glyph_on(button: Button, maximized: bool, x: i32, y: i32) -> bool {
                     || y >= back_hi - outline);
             front || back
         }
-        Button::Minimize => {
-            (lo..hi).contains(&x) && (hi - 4 * SCALE..hi - 2 * SCALE).contains(&y)
-        }
+        Button::Minimize => (lo..hi).contains(&x) && (hi - 4 * SCALE..hi - 2 * SCALE).contains(&y),
     }
 }
 
@@ -366,8 +376,8 @@ fn paint_title(
     }
     // bold32 在 64px 标题栏内垂直居中。
     let face = Face::Bold32;
-    let baseline = outer.1 + (TITLE_HEIGHT - font.ascent(face) - font.descent(face)) / 2
-        + font.ascent(face);
+    let baseline =
+        outer.1 + (TITLE_HEIGHT - font.ascent(face) - font.descent(face)) / 2 + font.ascent(face);
     font.draw(
         frame,
         face,
@@ -380,8 +390,9 @@ fn paint_title(
 
 /// 垂直渐变：`y` ∈ [0, height) 在 top→bottom 间线性插值。
 fn gradient(top: u32, bottom: u32, y: i32, height: i32) -> u32 {
-    let mix = |top: u32, bottom: u32| (top * (height - 1 - y) as u32 + bottom * y as u32)
-        / (height.max(1) - 1).max(1) as u32;
+    let mix = |top: u32, bottom: u32| {
+        (top * (height - 1 - y) as u32 + bottom * y as u32) / (height.max(1) - 1).max(1) as u32
+    };
     let red = mix(top >> 16 & 0xff, bottom >> 16 & 0xff);
     let green = mix(top >> 8 & 0xff, bottom >> 8 & 0xff);
     let blue = mix(top & 0xff, bottom & 0xff);

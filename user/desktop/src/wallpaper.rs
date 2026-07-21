@@ -4,26 +4,22 @@
 //! 文件布局（小端）：8B magic `LWP8\0\0\0\x01`、u32 width、u32 height、
 //! width*height*4 字节 XRGB8888 行主序像素。
 //!
-//! 启动时把源图按当前 mode 双线性缩放进一块匿名 mmap 的独立 buffer（一次性
+//! 启动时把源图按当前 mode 双线性缩放进独立 `Vec` buffer（一次性
 //! 成本，避免每次合成重复缩放），源文件映射随后立即 `munmap`；之后合成背景
-//! 按 damage 矩形从该 buffer 直拷。mmap 而不是固定数组：mode 尺寸运行期才
-//! 知，全屏像素数组进栈会爆栈。文件缺失或校验失败返回 `None`（启动失败）。
+//! 按 damage 矩形从该 buffer 直拷。mode 尺寸运行期才知，不能使用固定数组。
+//! 文件缺失或校验失败返回 `None`（启动失败）。
 
-use crate::{
-    ffi,
-    scanout::{Frame, Mode, Rect},
-};
+use crate::scanout::{Frame, Mode, Rect};
 
 /// rootfs 中的壁纸路径（NUL 结尾）。
-const PATH: &[u8] = b"/usr/share/liteos/wallpaper.xrgb\0";
+const PATH: &str = "/usr/share/liteos/wallpaper.xrgb";
 const MAGIC: &[u8; 8] = b"LWP8\0\0\0\x01";
 /// 资产头字节数（magic + width + height）。
 const HEADER: usize = 16;
 
-/// 已缩放到屏幕 mode 的壁纸 buffer（匿名 mmap 持有，Drop 时 munmap）。
+/// 已缩放到屏幕 mode 的壁纸 buffer。
 pub struct Wallpaper {
-    pixels: *mut u32,
-    map_size: usize,
+    pixels: Vec<u32>,
     width: usize,
 }
 
@@ -31,51 +27,24 @@ impl Wallpaper {
     /// 读入并校验资产（magic、尺寸非零、长度恰好对齐），再把源图双线性缩放到
     /// `mode` 尺寸的独立 buffer，源映射随即释放。任一失败返回 `None`（启动失败）。
     pub fn open(mode: Mode) -> Option<Self> {
-        let map_size = mode.width.checked_mul(mode.height)?.checked_mul(4)?;
-        let (file_pointer, file_size) = ffi::read_file(PATH)?;
-        // SAFETY: file_pointer/file_size 来自 read_file 的匿名映射，munmap 前有效。
-        let file = unsafe { core::slice::from_raw_parts(file_pointer as *const u8, file_size) };
-        let Some((source, source_width, source_height)) = checked_source(file) else {
-            // SAFETY: 源映射由本函数持有，此后不再访问。
-            unsafe { ffi::munmap(file_pointer, file_size) };
-            return None;
-        };
-        // SAFETY: 匿名映射不触碰 fd；失败返回 MAP_FAILED（usize::MAX）。
-        let pixels = unsafe {
-            ffi::mmap(
-                core::ptr::null_mut(),
-                map_size,
-                ffi::PROT_READ | ffi::PROT_WRITE,
-                ffi::MAP_PRIVATE | ffi::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        };
-        if pixels as usize == usize::MAX {
-            // SAFETY: 源映射由本函数持有，此后不再访问。
-            unsafe { ffi::munmap(file_pointer, file_size) };
-            return None;
-        }
-        let wallpaper = Self {
-            pixels: pixels.cast(),
-            map_size,
-            width: mode.width,
-        };
-        // SAFETY: pixels 指向 map_size 字节的私有映射，行切片互不重叠。
-        let target =
-            unsafe { core::slice::from_raw_parts_mut(wallpaper.pixels, mode.width * mode.height) };
+        let file = std::fs::read(PATH).ok()?;
+        let (source, source_width, source_height) = checked_source(&file)?;
+        let pixel_count = mode.width.checked_mul(mode.height)?;
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(pixel_count).ok()?;
+        pixels.resize(pixel_count, 0);
         scale(
             source,
             source_width,
             source_height,
-            target,
+            &mut pixels,
             mode.width,
             mode.height,
         );
-        // 源图只用于这一次缩放，映射不再保留（20MB 级，常驻浪费）。
-        // SAFETY: 源映射由本函数持有，scale 返回后不再访问。
-        unsafe { ffi::munmap(file_pointer, file_size) };
-        Some(wallpaper)
+        Some(Self {
+            pixels,
+            width: mode.width,
+        })
     }
 
     /// 把 `clip`（屏幕坐标，调用方保证已裁到屏幕内）覆盖的像素从壁纸 buffer
@@ -86,20 +55,10 @@ impl Wallpaper {
         }
         for y in clip.y1..clip.y2 {
             let y = y as usize;
-            // SAFETY: pixels 指向 width*height 个 u32 的私有映射；合成单线程，
-            // 读切片与 scanout 行切片不别名。
-            let source =
-                unsafe { core::slice::from_raw_parts(self.pixels.add(y * self.width), self.width) };
+            let source = &self.pixels[y * self.width..(y + 1) * self.width];
             frame.row(y)[clip.x1 as usize..clip.x2 as usize]
                 .copy_from_slice(&source[clip.x1 as usize..clip.x2 as usize]);
         }
-    }
-}
-
-impl Drop for Wallpaper {
-    fn drop(&mut self) {
-        // SAFETY: pixels/map_size 为本对象持有的匿名映射，仅释放一次。
-        unsafe { ffi::munmap(self.pixels.cast(), self.map_size) };
     }
 }
 

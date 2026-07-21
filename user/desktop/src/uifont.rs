@@ -16,13 +16,10 @@
 //! 解析期把每个 glyph 的 bitmap 文件偏移预算成表（固定数组，无堆分配），
 //! 绘制时按 codepoint 二分查找后直接索引，不做线性扫描。
 
-use crate::{
-    ffi,
-    scanout::{Frame, Rect},
-};
+use crate::scanout::{Frame, Rect};
 
 /// rootfs 中的 atlas 路径（NUL 结尾）。
-const PATH: &[u8] = b"/usr/share/liteos/liteos-ui.a8p\0";
+const PATH: &str = "/usr/share/liteos/liteos-ui.a8p";
 const MAGIC: &[u8; 8] = b"LUP8\0\0\0\x01";
 /// 生成脚本固定的 face 数与顺序（regular26 / regular32 / bold32，即 1× 四档
 /// 去掉无消费方的 bold13 后按 2× 重新生成）。
@@ -60,7 +57,7 @@ struct FaceData {
 /// checked 解析后的 UI 字体；解析失败则启动失败（`server::run` 返回 `Err`）。
 pub struct UiFont {
     /// 完整 atlas 文件映射（进程生命周期持有，退出时由内核回收，故不释放）。
-    bytes: &'static [u8],
+    bytes: Vec<u8>,
     faces: [FaceData; FACE_COUNT],
 }
 
@@ -69,33 +66,23 @@ impl UiFont {
     /// 递增、face 顺序恰为 regular26/regular32/bold32、所有 metric / bitmap
     /// 偏移在文件内且末尾恰好对齐文件长度、含 U+FFFD。任一不满足返回 `None`。
     pub fn open() -> Option<Self> {
-        let (pointer, size) = ffi::read_file(PATH)?;
-        // SAFETY: pointer/size 来自 read_file 的匿名映射，进程生命周期内有效。
-        let bytes = unsafe { core::slice::from_raw_parts(pointer as *const u8, size) };
-        let parsed = Self::checked(bytes);
-        if parsed.is_none() {
-            // 校验失败不返回资产：释放映射（desktop 启动失败会退避重试，不能
-            // 每次重试泄漏一份映射）。
-            // SAFETY: 映射由本函数持有，此后不再访问。
-            unsafe { ffi::munmap(pointer, size) };
-        }
-        parsed
+        Self::checked(std::fs::read(PATH).ok()?)
     }
 
     /// `open` 的校验部分：只对 `bytes` 做只读检查，不触碰文件系统。
-    fn checked(bytes: &'static [u8]) -> Option<Self> {
+    fn checked(bytes: Vec<u8>) -> Option<Self> {
         if bytes.get(..8)? != MAGIC {
             return None;
         }
-        let face_count = read_u32(bytes, 8)? as usize;
-        let glyph_count = read_u32(bytes, 12)? as usize;
+        let face_count = read_u32(&bytes, 8)? as usize;
+        let glyph_count = read_u32(&bytes, 12)? as usize;
         if face_count != FACE_COUNT || glyph_count != GLYPH_COUNT {
             return None;
         }
         // codepoint 表：严格递增（二分查找的前提）。
         let mut previous = None;
         for index in 0..glyph_count {
-            let codepoint = read_u32(bytes, 16 + index * 4)?;
+            let codepoint = read_u32(&bytes, 16 + index * 4)?;
             if previous.is_some_and(|previous| previous >= codepoint) {
                 return None;
             }
@@ -112,19 +99,19 @@ impl UiFont {
         let mut faces = [EMPTY; FACE_COUNT];
         let mut offset = 16usize.checked_add(glyph_count.checked_mul(4)?)?;
         for (face, expected) in faces.iter_mut().zip(EXPECTED) {
-            let kind = read_u32(bytes, offset)?;
-            let pixel_size = read_u32(bytes, offset + 4)?;
+            let kind = read_u32(&bytes, offset)?;
+            let pixel_size = read_u32(&bytes, offset + 4)?;
             if (kind, pixel_size) != expected {
                 return None;
             }
-            let ascent = read_i32(bytes, offset + 8)?;
-            let descent = read_i32(bytes, offset + 12)?;
+            let ascent = read_i32(&bytes, offset + 8)?;
+            let descent = read_i32(&bytes, offset + 12)?;
             // 逐 glyph 交错布局：10B metric + width*height 字节 bitmap。
             let mut cursor = offset.checked_add(FACE_HEADER)?;
             let mut records = [0usize; GLYPH_COUNT];
             for slot in records.iter_mut() {
-                let size = usize::from(read_u16(bytes, cursor + 6)?)
-                    .checked_mul(usize::from(read_u16(bytes, cursor + 8)?))?;
+                let size = usize::from(read_u16(&bytes, cursor + 6)?)
+                    .checked_mul(usize::from(read_u16(&bytes, cursor + 8)?))?;
                 *slot = cursor;
                 cursor = cursor.checked_add(METRIC_SIZE)?.checked_add(size)?;
             }
@@ -138,10 +125,11 @@ impl UiFont {
             };
             offset = cursor;
         }
-        let font = Self { bytes, faces };
-        if offset != bytes.len() || font.find(0xfffd).is_none() {
+        if offset != bytes.len() {
             return None;
         }
+        let font = Self { bytes, faces };
+        font.find(0xfffd)?;
         Some(font)
     }
 
@@ -229,7 +217,7 @@ impl UiFont {
         let mut high = GLYPH_COUNT;
         while low < high {
             let middle = low + (high - low) / 2;
-            let value = read_u32(self.bytes, 16 + middle * 4)?;
+            let value = read_u32(&self.bytes, 16 + middle * 4)?;
             match value.cmp(&codepoint) {
                 core::cmp::Ordering::Less => low = middle + 1,
                 core::cmp::Ordering::Greater => high = middle,

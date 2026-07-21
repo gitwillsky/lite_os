@@ -1,21 +1,14 @@
 [package]
 name = "terminal"
 version = "0.1.0"
-edition = "2024"
-publish = false
+edition.workspace = true
+publish.workspace = true
+autolib = false
 
-[lib]
-crate-type = ["staticlib"]
+[[bin]]
+name = "terminal"
+path = "src/lib.rs"
 
 [dependencies]
-display-proto = { path = "../display-proto" }
-
-[profile.release]
-panic = "abort"
-opt-level = "s"
-lto = "fat"
-codegen-units = 1
-
-# 非 --release 的 check/clippy 走 dev profile；no_std 下不允许 unwind。
-[profile.dev]
-panic = "abort"
+display-proto.workspace = true
+linux-uapi.workspace = true

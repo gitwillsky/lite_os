@@ -21,7 +21,9 @@ pub(super) const MAX_IPV4_PACKET_BYTES: usize = 1_500;
 pub(super) fn protocol(domain: SocketDomain, socket_type: SocketType) -> MessageProtocol {
     match (domain, socket_type) {
         (_, SocketType::Stream) => MessageProtocol::Stream,
-        (SocketDomain::Unix, SocketType::Datagram) => MessageProtocol::UnixDatagram,
+        (SocketDomain::Unix, SocketType::Datagram | SocketType::SeqPacket) => {
+            MessageProtocol::UnixDatagram
+        }
         (SocketDomain::Inet, SocketType::Datagram) => MessageProtocol::Ipv4Udp,
         (SocketDomain::Inet, SocketType::Raw) => MessageProtocol::Ipv4Raw,
         (SocketDomain::Packet, SocketType::Datagram) => MessageProtocol::Ipv4Packet,

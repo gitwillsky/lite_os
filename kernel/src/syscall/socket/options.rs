@@ -129,6 +129,7 @@ pub(crate) fn sys_getsockopt(
                 SocketType::Stream => 1,
                 SocketType::Datagram => 2,
                 SocketType::Raw => 3,
+                SocketType::SeqPacket => 5,
             };
             result[..4].copy_from_slice(&value.to_ne_bytes());
             4

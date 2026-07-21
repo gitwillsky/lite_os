@@ -9,11 +9,15 @@
 //! 求值。
 
 use display_proto::InputKey;
+use linux_uapi::input::{AbsoluteAxis, InputDevice, InputEvent};
+use std::{
+    os::fd::{AsFd, BorrowedFd},
+    path::PathBuf,
+};
 
 use crate::{
     clients::Clients,
-    cursor, ffi,
-    ffi::{InputAbsInfo, InputEvent},
+    cursor,
     pointer::{Drag, PointerShell},
     window::{Region, Windows},
 };
@@ -30,19 +34,11 @@ const BTN_MIDDLE: u16 = 274;
 
 const EVENT_CAPACITY: usize = 64;
 
-const EMPTY_EVENT: InputEvent = InputEvent {
-    seconds: 0,
-    microseconds: 0,
-    kind: 0,
-    code: 0,
-    value: 0,
-};
-
 pub struct Input {
-    /// keyboard evdev fd；未发现设备时为 -1（桌面仍可用指针工作）。
-    pub keyboard_fd: i32,
-    /// tablet evdev fd；未发现时为 -1。
-    pub tablet_fd: i32,
+    /// keyboard evdev 设备；未发现时桌面仍可用指针工作。
+    keyboard: Option<InputDevice>,
+    /// tablet evdev 设备；未发现时桌面仍可用键盘工作。
+    tablet: Option<InputDevice>,
     abs_x_range: (i32, i32),
     abs_y_range: (i32, i32),
     /// 光标屏幕坐标（热点）。
@@ -66,13 +62,21 @@ impl Input {
     /// 扫描 `/dev/input/event0..15` 发现并 grab keyboard / tablet，查询 tablet
     /// 绝对轴范围；光标初始位于屏幕中心。
     pub fn open(screen_width: i32, screen_height: i32) -> Self {
-        let keyboard_fd = open_matching(b"keyboard");
-        let tablet_fd = open_matching(b"tablet");
-        let mut input = Self {
-            keyboard_fd,
-            tablet_fd,
-            abs_x_range: (0, 0),
-            abs_y_range: (0, 0),
+        let keyboard = open_matching("keyboard");
+        let tablet = open_matching("tablet");
+        let abs_x_range = tablet
+            .as_ref()
+            .and_then(|device| device.absolute_range(AbsoluteAxis::X).ok())
+            .map_or((0, 0), |range| (range.minimum, range.maximum));
+        let abs_y_range = tablet
+            .as_ref()
+            .and_then(|device| device.absolute_range(AbsoluteAxis::Y).ok())
+            .map_or((0, 0), |range| (range.minimum, range.maximum));
+        Self {
+            keyboard,
+            tablet,
+            abs_x_range,
+            abs_y_range,
             cursor_x: screen_width / 2,
             cursor_y: screen_height / 2,
             buttons: 0,
@@ -82,21 +86,24 @@ impl Input {
             pending_y: None,
             pending_buttons: [(0, 0); 8],
             pending_button_count: 0,
-        };
-        if tablet_fd >= 0 {
-            input.abs_x_range = abs_range(tablet_fd, ffi::EVIOCGABS_X);
-            input.abs_y_range = abs_range(tablet_fd, ffi::EVIOCGABS_Y);
         }
-        input
+    }
+
+    pub fn keyboard_fd(&self) -> Option<BorrowedFd<'_>> {
+        self.keyboard.as_ref().map(|device| device.file().as_fd())
+    }
+
+    pub fn tablet_fd(&self) -> Option<BorrowedFd<'_>> {
+        self.tablet.as_ref().map(|device| device.file().as_fd())
     }
 
     /// 消费 keyboard 上所有待读事件；EV_KEY 转发给焦点窗口。
     pub fn poll_keyboard(&mut self, windows: &Windows, clients: &Clients) {
-        if self.keyboard_fd < 0 {
+        let Some(keyboard) = self.keyboard.as_mut() else {
             return;
-        }
-        let mut events = [EMPTY_EVENT; EVENT_CAPACITY];
-        let count = read_events(self.keyboard_fd, &mut events);
+        };
+        let mut events = [InputEvent::EMPTY; EVENT_CAPACITY];
+        let count = read_events(keyboard, &mut events);
         let Some(focused) = windows.focused() else {
             return;
         };
@@ -104,13 +111,13 @@ impl Input {
             return;
         };
         for event in &events[..count] {
-            if event.kind != EV_KEY {
+            if event.kind() != EV_KEY {
                 continue;
             }
             let message = InputKey {
                 surface_id: window.surface_id,
-                code: u32::from(event.code),
-                value: event.value,
+                code: u32::from(event.code()),
+                value: event.value(),
             };
             let mut buffer = [0u8; 32];
             if let Some(length) = message.encode(&mut buffer) {
@@ -121,37 +128,34 @@ impl Input {
 
     /// 消费 tablet 上所有待读事件，按包边界统一交给 `pointer` 语义层派发。
     pub fn poll_tablet(&mut self, shell: &mut PointerShell) {
-        if self.tablet_fd < 0 {
+        let Some(tablet) = self.tablet.as_mut() else {
             return;
-        }
-        let mut events = [EMPTY_EVENT; EVENT_CAPACITY];
-        let count = read_events(self.tablet_fd, &mut events);
+        };
+        let mut events = [InputEvent::EMPTY; EVENT_CAPACITY];
+        let count = read_events(tablet, &mut events);
         for event in &events[..count] {
-            match event.kind {
-                EV_ABS => match event.code {
-                    ABS_X => self.pending_x = Some(event.value),
-                    ABS_Y => self.pending_y = Some(event.value),
+            match event.kind() {
+                EV_ABS => match event.code() {
+                    ABS_X => self.pending_x = Some(event.value()),
+                    ABS_Y => self.pending_y = Some(event.value()),
                     _ => {}
                 },
                 EV_KEY => {
-                    if let Some(bit) = button_bit(event.code)
+                    if let Some(bit) = button_bit(event.code())
                         && self.pending_button_count < self.pending_buttons.len()
                     {
-                        self.pending_buttons[self.pending_button_count] = (bit, event.value);
+                        self.pending_buttons[self.pending_button_count] = (bit, event.value());
                         self.pending_button_count += 1;
                     }
                 }
-                EV_SYN if event.code == SYN_REPORT => {
+                EV_SYN if event.code() == SYN_REPORT => {
                     self.dispatch(shell);
                 }
                 _ => {}
             }
         }
         // 设备异常（无 SYN 的包）时也把积压在包尾的输入落掉，避免永久卡位。
-        if self.pending_x.is_some()
-            || self.pending_y.is_some()
-            || self.pending_button_count != 0
-        {
+        if self.pending_x.is_some() || self.pending_y.is_some() || self.pending_button_count != 0 {
             self.dispatch(shell);
         }
     }
@@ -176,7 +180,9 @@ impl Input {
         }
         if moved {
             shell.damage.add(previous);
-            shell.damage.add(cursor::rect_at(self.cursor_x, self.cursor_y));
+            shell
+                .damage
+                .add(cursor::rect_at(self.cursor_x, self.cursor_y));
         }
         for index in 0..self.pending_button_count {
             let (bit, value) = self.pending_buttons[index];
@@ -212,94 +218,34 @@ fn map_absolute(raw: i32, range: (i32, i32), extent: i32) -> i32 {
     (scaled as i32).clamp(0, extent - 1)
 }
 
-fn abs_range(fd: i32, request: usize) -> (i32, i32) {
-    let mut info = InputAbsInfo::default();
-    // SAFETY: info 在 ioctl 期间有效，内核回写整个 input_absinfo。
-    if unsafe { ffi::ioctl(fd, request, (&mut info as *mut InputAbsInfo).cast()) } < 0 {
-        return (0, 0);
-    }
-    (info.minimum, info.maximum)
-}
-
 /// 读取所有待读事件到 `events`（不越过包边界语义，包边界由调用方识别）。
-fn read_events(fd: i32, events: &mut [InputEvent]) -> usize {
+fn read_events(device: &mut InputDevice, events: &mut [InputEvent]) -> usize {
     let mut total = 0;
     while total < events.len() {
-        let capacity = (events.len() - total) * size_of::<InputEvent>();
-        // SAFETY: events[total..] 在调用期间有效且可写，容量按整块事件对齐。
-        let count = unsafe { ffi::read(fd, events[total..].as_mut_ptr().cast(), capacity) };
-        if count > 0 {
-            total += count as usize / size_of::<InputEvent>();
-        } else if count < 0 && ffi::errno() == ffi::EINTR {
-            continue;
-        } else {
-            break;
+        match device.read_events(&mut events[total..]) {
+            Ok(0) => break,
+            Ok(count) => total += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
         }
     }
     total
 }
 
 /// 扫描 `/dev/input/event0..15`，返回首个名称含 `needle` 且已 grab 的 fd。
-fn open_matching(needle: &[u8]) -> i32 {
+fn open_matching(needle: &str) -> Option<InputDevice> {
     for index in 0..16u32 {
-        let mut path = [0u8; 32];
-        let prefix = b"/dev/input/event";
-        path[..prefix.len()].copy_from_slice(prefix);
-        let capacity = path.len() - 1;
-        let length = prefix.len() + decimal(index, &mut path[prefix.len()..capacity]);
-        path[length] = 0;
-        let fd = unsafe {
-            ffi::open(
-                path.as_ptr().cast(),
-                ffi::O_RDONLY | ffi::O_NONBLOCK | ffi::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
+        let path = PathBuf::from(format!("/dev/input/event{index}"));
+        let Ok(device) = InputDevice::open(&path) else {
             continue;
-        }
-        let mut name = [0u8; 128];
-        let named = unsafe { ffi::ioctl(fd, ffi::EVIOCGNAME_128, name.as_mut_ptr().cast()) } >= 0;
-        if named && contains(&name, needle) {
-            let mut grab = 1i32;
-            // SAFETY: grab 在 ioctl 期间有效。
-            unsafe { ffi::ioctl(fd, ffi::EVIOCGRAB, (&mut grab as *mut i32).cast()) };
-            return fd;
-        }
-        // SAFETY: fd 为本函数打开但未选中的描述符。
-        unsafe { ffi::close(fd) };
-    }
-    -1
-}
-
-fn contains(name: &[u8], needle: &[u8]) -> bool {
-    let mut matched = 0;
-    for byte in name.iter().copied().take_while(|byte| *byte != 0) {
-        let value = byte.to_ascii_lowercase();
-        matched = if value == needle[matched] {
-            matched + 1
-        } else {
-            usize::from(value == needle[0])
         };
-        if matched == needle.len() {
-            return true;
+        if device
+            .name()
+            .is_ok_and(|name| name.to_ascii_lowercase().contains(needle))
+            && device.grab().is_ok()
+        {
+            return Some(device);
         }
     }
-    false
-}
-
-fn decimal(mut value: u32, output: &mut [u8]) -> usize {
-    let mut digits = [0u8; 10];
-    let mut count = 0;
-    loop {
-        digits[count] = b'0' + (value % 10) as u8;
-        count += 1;
-        value /= 10;
-        if value == 0 {
-            break;
-        }
-    }
-    for (index, slot) in output.iter_mut().enumerate().take(count) {
-        *slot = digits[count - 1 - index];
-    }
-    count
+    None
 }

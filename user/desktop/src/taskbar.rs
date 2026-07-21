@@ -16,10 +16,9 @@
 use crate::{
     chrome::SCALE,
     compositor::Damage,
-    ffi,
     scanout::{Frame, Rect},
     uifont::{Face, UiFont},
-    window::{MAX_WINDOWS, State, Windows},
+    window::{State, Windows},
 };
 
 /// 任务栏高度（px，1× 基准 40）。
@@ -104,7 +103,12 @@ impl Taskbar {
     /// 时钟区的屏幕矩形。
     pub fn clock_rect(&self) -> Rect {
         let strip = self.strip_rect();
-        Rect::new(self.screen_width - CLOCK_WIDTH, strip.y1, self.screen_width, strip.y2)
+        Rect::new(
+            self.screen_width - CLOCK_WIDTH,
+            strip.y1,
+            self.screen_width,
+            strip.y2,
+        )
     }
 
     /// 第 `index` 个窗口按钮的屏幕矩形。
@@ -121,11 +125,11 @@ impl Taskbar {
 
     /// 指定窗口（surface id）的任务栏按钮矩形；窗口不存在时返回 `None`。
     pub fn window_button_rect(&self, windows: &Windows, surface_id: u32) -> Option<Rect> {
-        let mut slots = [0usize; MAX_WINDOWS];
-        let count = windows.ordered_slots(&mut slots);
-        let index = slots[..count]
-            .iter()
-            .position(|slot| windows.get(*slot).is_some_and(|w| w.surface_id == surface_id))?;
+        let index = windows.ordered_slots().position(|slot| {
+            windows
+                .get(slot)
+                .is_some_and(|w| w.surface_id == surface_id)
+        })?;
         Some(self.button_rect(index))
     }
 
@@ -148,9 +152,7 @@ impl Taskbar {
         if offset % (BUTTON_WIDTH + BUTTON_GAP) >= BUTTON_WIDTH {
             return None;
         }
-        let mut slots = [0usize; MAX_WINDOWS];
-        let count = windows.ordered_slots(&mut slots);
-        let slot = *slots[..count].get(index)?;
+        let slot = windows.ordered_slots().nth(index)?;
         let window = windows.get(slot)?;
         Some(Target::Window(window.surface_id))
     }
@@ -194,11 +196,12 @@ impl Taskbar {
     /// 到下一整分钟的毫秒数（1..=60_000），供事件循环约束 poll 超时；
     /// 时钟不可用时返回 60_000（每分钟兜底刷新一次）。
     pub fn ms_until_next_minute(&self) -> i32 {
-        let Some(realtime) = realtime() else {
+        let Ok(realtime) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        else {
             return 60_000;
         };
-        let seconds = realtime.seconds.rem_euclid(60);
-        let millis = seconds * 1_000 + realtime.nanoseconds / 1_000_000;
+        let seconds = realtime.as_secs() % 60;
+        let millis = seconds * 1_000 + u64::from(realtime.subsec_millis());
         (60_000 - millis as i32).clamp(1, 60_000)
     }
 
@@ -220,10 +223,14 @@ impl Taskbar {
             return;
         }
         fill(frame, clip, BAR);
-        paint_start(frame, font, self.start_rect(), self.pressed == Some(Target::Start), clip);
-        let mut slots = [0usize; MAX_WINDOWS];
-        let count = windows.ordered_slots(&mut slots);
-        for (index, slot) in slots[..count].iter().copied().enumerate() {
+        paint_start(
+            frame,
+            font,
+            self.start_rect(),
+            self.pressed == Some(Target::Start),
+            clip,
+        );
+        for (index, slot) in windows.ordered_slots().enumerate() {
             let Some(window) = windows.get(slot) else {
                 continue;
             };
@@ -352,13 +359,21 @@ fn paint_window_button(
         rect.x2 - BUTTON_GAP,
         rect.y2,
     ));
-    font.draw(frame, face, color, (rect.x1 + BUTTON_GAP * 2, baseline), text, area);
+    font.draw(
+        frame,
+        face,
+        color,
+        (rect.x1 + BUTTON_GAP * 2, baseline),
+        text,
+        area,
+    );
 }
 
 /// 垂直渐变：`y` ∈ [0, height) 在 top→bottom 间线性插值。
 fn gradient(top: u32, bottom: u32, y: i32, height: i32) -> u32 {
-    let mix = |top: u32, bottom: u32| (top * (height - 1 - y) as u32 + bottom * y as u32)
-        / (height.max(1) - 1).max(1) as u32;
+    let mix = |top: u32, bottom: u32| {
+        (top * (height - 1 - y) as u32 + bottom * y as u32) / (height.max(1) - 1).max(1) as u32
+    };
     let red = mix(top >> 16 & 0xff, bottom >> 16 & 0xff);
     let green = mix(top >> 8 & 0xff, bottom >> 8 & 0xff);
     let blue = mix(top & 0xff, bottom & 0xff);
@@ -375,10 +390,10 @@ fn darken(color: u32) -> u32 {
 
 /// 当前墙钟时间的 "HH:MM"（UTC；`CLOCK_REALTIME` 不可用时返回 "00:00"）。
 fn clock_text() -> [u8; 5] {
-    let Some(realtime) = realtime() else {
+    let Some(seconds) = realtime_seconds() else {
         return *b"00:00";
     };
-    let minutes = realtime.seconds.div_euclid(60);
+    let minutes = seconds.div_euclid(60);
     let hour = minutes.rem_euclid(1_440) / 60;
     let minute = minutes.rem_euclid(60);
     [
@@ -390,16 +405,11 @@ fn clock_text() -> [u8; 5] {
     ]
 }
 
-fn realtime() -> Option<ffi::Timespec> {
-    let mut value = ffi::Timespec {
-        seconds: 0,
-        nanoseconds: 0,
-    };
-    // SAFETY: value 在调用期间始终指向可写的 `timespec`。
-    if unsafe { ffi::clock_gettime(ffi::CLOCK_REALTIME, &mut value) } != 0 {
-        return None;
-    }
-    Some(value)
+fn realtime_seconds() -> Option<i64> {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(duration.as_secs()).ok()
 }
 
 /// 把 `area`（屏幕坐标，调用方保证已裁到屏幕内）填为 `color`。

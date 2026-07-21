@@ -18,8 +18,9 @@
   `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
   `aarch64-unknown-none-softfloat`，两者不得混用。任一 runtime 缺失或歧义都必须在发布 sysroot
   前失败，musl smoke 必须实际验证 `strtod` 返回与 FP arithmetic。RISC-V 保留 GCC 与其 `libgcc` runtime 路径。
-- 标准 Rust userspace 由 `scripts/verify_rust_std.py` 使用固定 rust-src 构建；Cargo 禁用 bundled
-  musl CRT，动态链接项目 musl，并静态链接同 revision LLVM libunwind。libunwind 是 panic/backtrace
+- 标准 Rust userspace 由单一 `user/` Cargo workspace/lockfile 构建；产品应用与
+  `scripts/verify_rust_std.py` fixture 都使用固定 rust-src。Cargo 直接生成最终 binary，禁用 bundled
+  musl CRT，动态链接项目 musl，并静态链接同 revision LLVM libunwind；禁止 staticlib 后手工二次链接。libunwind 是 panic/backtrace
   冷路径且固定 `-O2`；其正确性由双架构 target runtime gate 裁决，不增加失真的 host wall-clock benchmark。
 - `verify-runtime-gates` 在 target owner 内串行启动 boot、musl、BusyBox 与 APK QEMU。外层即使
   使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
@@ -107,7 +108,7 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 
 ## 架构与产物门禁
 
-- `architecture-check` 校验 dependency matrix、concrete backend containment、global owner、unsafe proof、fallible collection、source size、ABI dispatch、文档 fence 与 generated interface freshness。
+- `architecture-check` 校验 dependency matrix、concrete backend containment、global owner、unsafe proof、fallible collection、source size、ABI dispatch、userspace workspace 形态、`linux-uapi` 外 raw FFI 禁令、文档 fence 与 generated interface freshness。
 - generated interface 只能由 checker 的 `--write-interface` 更新；任何差异都视为 architecture interface change。
 - release kernel、需要时的 bootloader 和原生 userspace ELF 必须通过 target、segment、W^X、stack、interpreter、dynamic/RELRO 及 target-specific static-call 检查；kernel、rootfs、APK image 与所有构建 cache 必须属于同一个 architecture identity。
 

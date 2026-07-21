@@ -1,13 +1,13 @@
 //! `CONFIGURE`/resize 事务：按桌面建议尺寸替换 surface 的 backing buffer。
 
 use display_proto as proto;
+use linux_uapi::pty::WindowSize;
 
 use crate::{
     atlas::{Atlas, FontMetrics},
     client::{Session, send_commit},
     model::{Grid, Model},
     render::{self, Surface},
-    session::set_window_size,
 };
 
 const MIN_COLUMNS: usize = 8;
@@ -50,12 +50,19 @@ pub(crate) fn handle_configure(
     let Some(candidate) = model.prepare_resize(columns, rows) else {
         return;
     };
-    let created = Surface::create(session.drm_fd, pixel_width as u32, pixel_height as u32);
-    let Some((mut next, gem_handle)) = created else {
+    let Some(mut next) = Surface::create(&session.drm, pixel_width as u32, pixel_height as u32)
+    else {
         return;
     };
     // pixel 分量最大 200×32 / 100×64 = 6400，u16 不溢出。
-    if set_window_size(session.master, columns, rows, pixel_width as u16, pixel_height as u16)
+    if session
+        .pty
+        .resize(WindowSize {
+            columns: columns as u16,
+            rows: rows as u16,
+            pixel_width: pixel_width as u16,
+            pixel_height: pixel_height as u16,
+        })
         .is_err()
     {
         return;
@@ -63,13 +70,15 @@ pub(crate) fn handle_configure(
     render::render_full(&mut next, &candidate, atlas, metrics, focused);
     let set_buffer = proto::SetBuffer {
         surface_id: session.surface_id,
-        gem_handle,
+        gem_handle: next.handle().get(),
         width: pixel_width as u32,
         height: pixel_height as u32,
     };
-    if send_set_buffer(session.socket, set_buffer).is_err()
-        || send_commit(session.socket, session.surface_id, &[]).is_err()
-    {
+    if send_set_buffer(&session.socket, set_buffer).is_err() {
+        return;
+    }
+    next.transfer_handle();
+    if send_commit(&session.socket, session.surface_id, &[]).is_err() {
         return;
     }
     model.commit_resize(candidate);
@@ -79,7 +88,10 @@ pub(crate) fn handle_configure(
 }
 
 /// 发送一条 `SET_BUFFER`；成功时 `set_buffer.gem_handle` 所有权转移给桌面。
-fn send_set_buffer(socket: i32, set_buffer: proto::SetBuffer) -> Result<(), ()> {
+fn send_set_buffer(
+    socket: &std::os::unix::net::UnixStream,
+    set_buffer: proto::SetBuffer,
+) -> Result<(), ()> {
     let mut buf = [0u8; 24];
     let length = set_buffer.encode(&mut buf).ok_or(())?;
     proto::send_message(socket, &buf[..length]).map_err(|_| ())

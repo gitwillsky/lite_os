@@ -125,7 +125,7 @@ def render_face(path: Path, pixel_size: int, glyphs: list[int]) -> tuple[bytes, 
 
 
 def generate(output: Path) -> None:
-    """Write one transactional atlas consumed directly by the no_std desktop."""
+    """Write one transactional atlas consumed directly by the desktop."""
     for _, path, url, expected, _ in FACES:
         ensure_font(path, url, expected)
     glyphs = codepoints()

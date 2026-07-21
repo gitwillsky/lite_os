@@ -23,11 +23,7 @@ fn check_crate(
     errors: &mut Vec<String>,
 ) {
     let crate_dir = root.join("user").join(name);
-    let expected_entries = BTreeSet::from([
-        "Cargo.lock".to_owned(),
-        "Cargo.toml".to_owned(),
-        "src".to_owned(),
-    ]);
+    let expected_entries = BTreeSet::from(["Cargo.toml".to_owned(), "src".to_owned()]);
     let actual_entries = fs::read_dir(&crate_dir)
         .map(|entries| {
             entries
@@ -64,16 +60,20 @@ fn check_crate(
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     let allowed = BTreeSet::from([
         "README.md",
+        "Cargo.lock",
+        "Cargo.toml",
         "base",
         "desktop",
         "diagnostics",
         "display-proto",
+        "linux-uapi",
         "splash",
         "terminal",
     ]);
     let actual = match fs::read_dir(root.join("user")) {
         Ok(entries) => entries
             .flatten()
+            .filter(|entry| entry.file_name() != "target")
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect::<BTreeSet<_>>(),
         Err(error) => {
@@ -127,38 +127,53 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         }
     }
 
-    // console-session 已随桌面轨道正式移除；splash 是零依赖的 sysinit 启动画面 crate。
+    let user_workspace = fs::read_to_string(root.join("user/Cargo.toml")).unwrap_or_default();
+    for required in [
+        "members = [\"desktop\", \"display-proto\", \"linux-uapi\", \"splash\", \"terminal\"]",
+        "display-proto = { path = \"display-proto\" }",
+        "linux-uapi = { path = \"linux-uapi\" }",
+        "[profile.release]\npanic = \"abort\"",
+    ] {
+        if !user_workspace.contains(required) {
+            errors.push(format!("user/Cargo.toml: missing `{required}`"));
+        }
+    }
+
+    // 所有产品应用均为普通 std binary；Linux 缺失接口只允许由 linux-uapi 提供。
     check_crate(
         root,
         "splash",
-        &["ffi.rs", "lib.rs", "render.rs"],
+        &["lib.rs", "render.rs"],
         &[
             "name = \"splash\"",
-            "crate-type = [\"staticlib\"]",
-            "panic = \"abort\"",
+            "[[bin]]\nname = \"splash\"",
+            "linux-uapi.workspace = true",
         ],
         errors,
     );
-    let splash_manifest =
-        fs::read_to_string(root.join("user/splash/Cargo.toml")).unwrap_or_default();
-    if splash_manifest.contains("[dependencies]") || splash_manifest.contains(" path = ") {
-        errors.push("user/splash: the splash Module must remain dependency-free".to_owned());
-    }
 
-    // 桌面轨道的三个 crate：desktop/terminal 只允许依赖 display-proto，display-proto 零依赖。
     check_crate(
         root,
         "display-proto",
         &["lib.rs", "message.rs", "transport.rs"],
-        &["name = \"display-proto\""],
+        &["name = \"display-proto\"", "linux-uapi.workspace = true"],
         errors,
     );
-    let proto_manifest =
-        fs::read_to_string(root.join("user/display-proto/Cargo.toml")).unwrap_or_default();
-    if proto_manifest.contains("[dependencies]") || proto_manifest.contains(" path = ") {
-        errors
-            .push("user/display-proto: the protocol crate must remain dependency-free".to_owned());
-    }
+    check_crate(
+        root,
+        "linux-uapi",
+        &[
+            "drm.rs",
+            "input.rs",
+            "lib.rs",
+            "process.rs",
+            "pty.rs",
+            "raw.rs",
+            "unix.rs",
+        ],
+        &["name = \"linux-uapi\""],
+        errors,
+    );
     for (name, sources) in [
         (
             "desktop",
@@ -167,7 +182,6 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
                 "clients.rs",
                 "compositor.rs",
                 "cursor.rs",
-                "ffi.rs",
                 "input.rs",
                 "lib.rs",
                 "pointer.rs",
@@ -188,7 +202,6 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
                 "atlas.rs",
                 "client.rs",
                 "configure.rs",
-                "ffi.rs",
                 "input.rs",
                 "lib.rs",
                 "model.rs",
@@ -202,25 +215,55 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
             ][..],
         ),
     ] {
+        let binary_manifest = format!("[[bin]]\nname = \"{name}\"");
         check_crate(
             root,
             name,
             sources,
             &[
-                "crate-type = [\"staticlib\"]",
-                "panic = \"abort\"",
-                "[dependencies]\ndisplay-proto = { path = \"../display-proto\" }",
+                binary_manifest.as_str(),
+                "display-proto.workspace = true",
+                "linux-uapi.workspace = true",
             ],
             errors,
         );
     }
 
+    let mut product_sources = Vec::new();
+    if let Err(error) = rust_files(&root.join("user"), &mut product_sources) {
+        errors.push(error);
+    }
+    for source in product_sources {
+        if source.starts_with(root.join("user/linux-uapi")) {
+            continue;
+        }
+        let text = fs::read_to_string(&source).unwrap_or_default();
+        if text.contains("extern \"C\"") || text.contains("#[link(") {
+            errors.push(format!(
+                "{}: raw FFI is owned exclusively by user/linux-uapi",
+                source.display()
+            ));
+        }
+    }
+
     let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
-    if !workspace.contains(
-        "exclude = [\"bootloader\", \"user/desktop\", \"user/display-proto\", \"user/splash\", \"user/terminal\"]",
-    ) {
+    for excluded in [
+        "\"bootloader\"",
+        "\"user/desktop\"",
+        "\"user/display-proto\"",
+        "\"user/linux-uapi\"",
+        "\"user/splash\"",
+        "\"user/terminal\"",
+    ] {
+        if !workspace.contains(excluded) {
+            errors.push(format!(
+                "Cargo.toml: workspace exclude is missing {excluded}"
+            ));
+        }
+    }
+    if workspace.matches("\"user/").count() != 5 {
         errors.push(
-            "Cargo.toml: bootloader and the four userspace crates must be the only excluded Rust crates"
+            "Cargo.toml: bootloader and the five userspace crates must be the only excluded Rust crates"
                 .to_owned(),
         );
     }
@@ -237,14 +280,13 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     if !builder.contains("def build_desktop(")
         || !builder.contains("def build_terminal(")
         || !builder.contains("def build_splash(")
-        || !builder.contains("def display_proto_inputs(")
+        || !builder.contains("build-std=std,panic_abort")
+        || !builder.contains("--bin")
         || !builder.contains("/bin/desktop")
         || !builder.contains("/bin/terminal")
         || !builder.contains("/bin/splash")
-        || !builder.contains("user/desktop/src")
-        || !builder.contains("user/terminal/src")
-        || !builder.contains("user/splash/src")
-        || !builder.contains("user/display-proto")
+        || !builder.contains("ROOT / \"user/Cargo.toml\"")
+        || !builder.contains("ROOT / \"user/Cargo.lock\"")
         || !builder.contains("/etc/terminfo/l/liteos")
         || builder.contains("console-session")
         || [

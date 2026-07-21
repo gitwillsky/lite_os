@@ -218,7 +218,7 @@ impl UnixSocket {
                     peer_credentials: Some(first.credentials),
                 };
             }
-            SocketType::Datagram => {
+            SocketType::Datagram | SocketType::SeqPacket => {
                 if let SocketState::Datagram {
                     peer,
                     peer_credentials,

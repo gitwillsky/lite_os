@@ -1,7 +1,7 @@
 //! 窗口对象与 z-order 栈。
 //!
-//! 窗口上限 8，固定数组 + 空闲槽管理（无堆分配）。`order` 为 z-order 栈
-//! （底→顶，顶在尾），`focused` 记录键盘焦点窗口的槽位。
+//! 窗口使用可增长的稳定槽位表管理；`order` 为 z-order 栈（底→顶，顶在尾），
+//! `focused` 记录键盘焦点窗口的槽位。
 //!
 //! 窗口内容像素来自客户端的 dumb buffer：`CREATE_SURFACE` 提及时 handle
 //! 所有权转移给桌面，桌面 `MAP_DUMB` + `mmap` 后只读合成；窗口销毁时由桌面
@@ -12,14 +12,13 @@
 //! hit-test，还原时回到最小化前的状态；最大化时外框固定为 work area（内容尺寸
 //! 不变，仍锚定左上角），并记录还原所需的外框原点。
 
+use linux_uapi::drm::DumbBuffer;
+
 use crate::{
     chrome::{self, Button, Layout},
-    ffi,
-    scanout::{self, Rect},
+    scanout::Rect,
 };
 
-/// 同时存在的窗口上限。
-pub const MAX_WINDOWS: usize = 8;
 /// 标题字节上限（超出截断）。
 pub const MAX_TITLE: usize = 64;
 /// 缩放命中带宽度（px，1× 基准 4）：右 / 下边缘与右下角的触发区（不含标题栏）。
@@ -84,10 +83,7 @@ pub struct Window {
     pub surface_id: u32,
     /// 拥有者 client 在 `Clients` 中的索引。
     pub client: usize,
-    /// 客户端创建、所有权已转移给桌面的 GEM handle。
-    pub gem_handle: u32,
-    pixels: *mut u32,
-    map_size: usize,
+    buffer: DumbBuffer,
     content_width: usize,
     content_height: usize,
     /// 外框原点的屏幕 x 坐标。
@@ -96,8 +92,7 @@ pub struct Window {
     pub y: i32,
     /// 是否带 SSD 装饰。
     pub decorated: bool,
-    title: [u8; MAX_TITLE],
-    title_len: usize,
+    title: Vec<u8>,
     state: State,
     /// 最小化前的状态（`state == Minimized` 时有效）。
     restore_state: State,
@@ -110,32 +105,9 @@ pub struct Window {
     /// 还原后等待客户端 `SET_BUFFER` 期间保持的视觉外框（还原前的 work
     /// area 外框）；`SET_BUFFER` 到达即清除，外框按新内容尺寸自适应。
     pending_outer: Option<Rect>,
-    alive: bool,
 }
 
 impl Window {
-    const EMPTY: Self = Self {
-        surface_id: 0,
-        client: 0,
-        gem_handle: 0,
-        pixels: core::ptr::null_mut(),
-        map_size: 0,
-        content_width: 0,
-        content_height: 0,
-        x: 0,
-        y: 0,
-        decorated: false,
-        title: [0; MAX_TITLE],
-        title_len: 0,
-        state: State::Normal,
-        restore_state: State::Normal,
-        saved_origin: (0, 0),
-        saved_content: (0, 0),
-        max_rect: Rect::new(0, 0, 0, 0),
-        pending_outer: None,
-        alive: false,
-    };
-
     /// 外框尺寸（含装饰；最大化 / 还原过渡期为保持的视觉尺寸）。
     fn outer_size(&self) -> (i32, i32) {
         if let Some(rect) = self.pending_outer {
@@ -261,68 +233,35 @@ impl Window {
     }
 
     pub fn title(&self) -> &[u8] {
-        &self.title[..self.title_len]
+        &self.title
     }
 
     /// 更新标题（超过 [`MAX_TITLE`] 截断）。
     pub fn set_title(&mut self, title: &[u8]) {
         let keep = title.len().min(MAX_TITLE);
-        self.title[..keep].copy_from_slice(&title[..keep]);
-        self.title_len = keep;
+        self.title.clear();
+        if self.title.try_reserve(keep).is_ok() {
+            self.title.extend_from_slice(&title[..keep]);
+        }
     }
 
     /// 内容第 `y` 行像素（`y < content_height`，越界属编程错误）。
     pub fn content_row(&self, y: usize) -> &[u32] {
         assert!(y < self.content_height);
-        // SAFETY: pixels 指向 `content_width * 4 * content_height` 字节的
-        // 共享映射；窗口存活期间映射不释放（销毁先经 Windows::remove），
-        // 合成单线程进行，读切片不与任何写别名。
-        unsafe {
-            core::slice::from_raw_parts(
-                (self.pixels as *const u8)
-                    .add(y * self.content_width * 4)
-                    .cast::<u32>(),
-                self.content_width,
-            )
-        }
+        self.buffer.row(y)
     }
 
     /// 替换 backing buffer（`SET_BUFFER`）：采用新映射与新内容尺寸（锚定左上
     /// 角不变），并 unmap + `DESTROY_DUMB` 旧 handle（旧 handle 所有权在桌面）。
     ///
     /// `pixels` / `map_size` 为已完成的新 buffer 映射。
-    pub fn apply_buffer(
-        &mut self,
-        drm_fd: i32,
-        gem_handle: u32,
-        pixels: *mut u32,
-        map_size: usize,
-        width: usize,
-        height: usize,
-    ) {
-        // SAFETY: pixels/map_size 为本窗口持有的旧映射；旧 handle 所有权在桌面。
-        unsafe { ffi::munmap(self.pixels.cast(), self.map_size) };
-        scanout::destroy_dumb(drm_fd, self.gem_handle);
-        self.gem_handle = gem_handle;
-        self.pixels = pixels;
-        self.map_size = map_size;
-        self.content_width = width;
-        self.content_height = height;
+    pub fn apply_buffer(&mut self, buffer: DumbBuffer) {
+        self.content_width = buffer.width();
+        self.content_height = buffer.height();
+        self.buffer = buffer;
         // 还原过渡期的视觉外框到此为止：外框按新内容尺寸自适应（最大化状态
         // 下 pending_outer 恒为 None，外框仍保持 work area）。
         self.pending_outer = None;
-    }
-
-    /// 释放映射并销毁 GEM handle（handle 所有权归桌面）。
-    fn destroy(&mut self, drm_fd: i32) {
-        if !self.alive {
-            return;
-        }
-        // SAFETY: pixels/map_size 为本窗口持有的映射；handle 所有权在桌面。
-        unsafe { ffi::munmap(self.pixels.cast(), self.map_size) };
-        scanout::destroy_dumb(drm_fd, self.gem_handle);
-        self.alive = false;
-        self.pixels = core::ptr::null_mut();
     }
 }
 
@@ -330,16 +269,7 @@ impl Window {
 pub struct SurfaceDesc<'a> {
     /// 拥有者 client 在 `Clients` 中的索引。
     pub client: usize,
-    /// 客户端创建、所有权已转移给桌面的 GEM handle。
-    pub gem_handle: u32,
-    /// 客户端 buffer 的共享映射指针。
-    pub pixels: *mut u32,
-    /// 映射字节数（`width * 4 * height`）。
-    pub map_size: usize,
-    /// 内容宽度（像素）。
-    pub width: usize,
-    /// 内容高度（像素）。
-    pub height: usize,
+    pub buffer: DumbBuffer,
     /// 是否带 SSD 装饰。
     pub decorated: bool,
     /// 初始标题（超过 [`MAX_TITLE`] 截断）。
@@ -348,9 +278,8 @@ pub struct SurfaceDesc<'a> {
 
 /// 窗口集 + z-order 栈 + 焦点。
 pub struct Windows {
-    list: [Window; MAX_WINDOWS],
-    order: [usize; MAX_WINDOWS],
-    count: usize,
+    list: Vec<Option<Window>>,
+    order: Vec<usize>,
     focused: Option<usize>,
     next_surface_id: u32,
 }
@@ -358,9 +287,8 @@ pub struct Windows {
 impl Windows {
     pub fn new() -> Self {
         Self {
-            list: [Window::EMPTY; MAX_WINDOWS],
-            order: [0; MAX_WINDOWS],
-            count: 0,
+            list: Vec::new(),
+            order: Vec::new(),
             focused: None,
             next_surface_id: 1,
         }
@@ -371,7 +299,13 @@ impl Windows {
     /// `desc.pixels` / `desc.map_size` 为已完成的客户端 buffer 映射。返回槽位
     /// 与分配的 surface id；窗口满时返回 `None`（映射与 handle 仍归调用方清理）。
     pub fn add(&mut self, desc: SurfaceDesc<'_>) -> Option<(usize, u32)> {
-        let slot = self.list.iter().position(|window| !window.alive)?;
+        self.list.try_reserve(1).ok()?;
+        self.order.try_reserve(1).ok()?;
+        let slot = self
+            .list
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.list.len());
         let surface_id = self.next_surface_id;
         self.next_surface_id = self.next_surface_id.wrapping_add(1).max(1);
         // 级联初始位置（1× 基准 48 + 24 步进，按 SCALE 缩放），避免多窗完全重叠。
@@ -379,58 +313,61 @@ impl Windows {
         let mut window = Window {
             surface_id,
             client: desc.client,
-            gem_handle: desc.gem_handle,
-            pixels: desc.pixels,
-            map_size: desc.map_size,
-            content_width: desc.width,
-            content_height: desc.height,
+            content_width: desc.buffer.width(),
+            content_height: desc.buffer.height(),
+            buffer: desc.buffer,
             x: cascade,
             y: cascade,
             decorated: desc.decorated,
-            alive: true,
-            ..Window::EMPTY
+            title: Vec::new(),
+            state: State::Normal,
+            restore_state: State::Normal,
+            saved_origin: (0, 0),
+            saved_content: (0, 0),
+            max_rect: Rect::new(0, 0, 0, 0),
+            pending_outer: None,
         };
         window.set_title(desc.title);
-        self.list[slot] = window;
-        self.order[self.count] = slot;
-        self.count += 1;
+        if slot == self.list.len() {
+            self.list.push(Some(window));
+        } else {
+            self.list[slot] = Some(window);
+        }
+        self.order.push(slot);
         Some((slot, surface_id))
     }
 
     pub fn get(&self, slot: usize) -> Option<&Window> {
-        self.list.get(slot).filter(|window| window.alive)
+        self.list.get(slot)?.as_ref()
     }
 
     pub fn get_mut(&mut self, slot: usize) -> Option<&mut Window> {
-        self.list.get_mut(slot).filter(|window| window.alive)
+        self.list.get_mut(slot)?.as_mut()
     }
 
     pub fn by_surface(&self, surface_id: u32) -> Option<usize> {
-        self.list
-            .iter()
-            .position(|window| window.alive && window.surface_id == surface_id)
+        self.list.iter().position(|window| {
+            window
+                .as_ref()
+                .is_some_and(|window| window.surface_id == surface_id)
+        })
     }
 
     /// 栈顶可见（未最小化）窗口槽位；焦点回落时使用。
     pub fn top_visible(&self) -> Option<usize> {
-        self.order[..self.count]
-            .iter()
-            .rev()
-            .copied()
-            .find(|slot| self.list[*slot].state != State::Minimized)
+        self.order.iter().rev().copied().find(|slot| {
+            self.get(*slot)
+                .is_some_and(|window| window.state != State::Minimized)
+        })
     }
 
     /// 按槽位顺序（创建顺序，槽位复用除外）收集存活窗口槽位，供任务栏按钮
     /// 这类需要稳定顺序的 UI 使用；返回写入数量。
-    pub fn ordered_slots(&self, out: &mut [usize; MAX_WINDOWS]) -> usize {
-        let mut count = 0;
-        for (slot, window) in self.list.iter().enumerate() {
-            if window.alive {
-                out[count] = slot;
-                count += 1;
-            }
-        }
-        count
+    pub fn ordered_slots(&self) -> impl Iterator<Item = usize> + '_ {
+        self.list
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, window)| window.is_some().then_some(slot))
     }
 
     pub fn focused(&self) -> Option<usize> {
@@ -443,27 +380,23 @@ impl Windows {
 
     /// 把窗口提到栈顶。
     pub fn raise(&mut self, slot: usize) {
-        let Some(index) = self.order[..self.count].iter().position(|entry| *entry == slot)
-        else {
+        let Some(index) = self.order.iter().position(|entry| *entry == slot) else {
             return;
         };
         // 子切片左旋 1：槽位移到栈尾（栈顶），其余相对顺序不变。
-        self.order[index..self.count].rotate_left(1);
+        self.order[index..].rotate_left(1);
     }
 
     /// 底→顶遍历槽位。
     pub fn bottom_to_top(&self) -> &[usize] {
-        &self.order[..self.count]
+        &self.order
     }
 
     /// 销毁窗口并从栈中移除；焦点落在该窗口时清空（调用方另行聚焦栈顶）。
-    pub fn remove(&mut self, slot: usize, drm_fd: i32) {
-        if self.list[slot].alive {
-            self.list[slot].destroy(drm_fd);
-        }
-        if let Some(index) = self.order[..self.count].iter().position(|entry| *entry == slot) {
-            self.order[index..self.count].rotate_left(1);
-            self.count -= 1;
+    pub fn remove(&mut self, slot: usize) {
+        self.list[slot] = None;
+        if let Some(index) = self.order.iter().position(|entry| *entry == slot) {
+            self.order.remove(index);
         }
         if self.focused == Some(slot) {
             self.focused = None;

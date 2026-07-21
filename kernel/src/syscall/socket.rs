@@ -29,6 +29,7 @@ const AF_NETLINK: usize = 16;
 const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
 const SOCK_RAW: usize = 3;
+const SOCK_SEQPACKET: usize = 5;
 const SOCK_CLOEXEC: usize = O_CLOEXEC as usize;
 const SOCK_NONBLOCK: usize = O_NONBLOCK as usize;
 const MSG_PEEK: usize = 0x2;
@@ -96,6 +97,7 @@ fn decode_type(raw: usize) -> Result<(SocketType, u32, bool), isize> {
         SOCK_STREAM => SocketType::Stream,
         SOCK_DGRAM => SocketType::Datagram,
         SOCK_RAW => SocketType::Raw,
+        SOCK_SEQPACKET => SocketType::SeqPacket,
         _ => return Err(-errno::ESOCKTNOSUPPORT),
     };
     Ok((

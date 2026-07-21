@@ -1,19 +1,13 @@
 [package]
 name = "splash"
 version = "0.1.0"
-edition = "2024"
-publish = false
+edition.workspace = true
+publish.workspace = true
+autolib = false
 
-[lib]
-crate-type = ["staticlib"]
+[[bin]]
+name = "splash"
+path = "src/lib.rs"
 
-[profile.release]
-panic = "abort"
-opt-level = "s"
-lto = "fat"
-codegen-units = 1
-
-# dev 同样需要 abort：no_std 目标下 -Z build-std 重编的 core 不支持 unwind，
-# 缺少本段会使不带 --release 的 cargo clippy/check 直接失败。
-[profile.dev]
-panic = "abort"
+[dependencies]
+linux-uapi.workspace = true

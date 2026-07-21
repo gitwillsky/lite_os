@@ -80,7 +80,13 @@ impl Canvas {
         let slider_y = y + BORDER + (CONTENT_HEIGHT - SLIDER_HEIGHT) / 2;
         for index in 0..3 {
             let slider_x = content_x + offset + index * (SLIDER_WIDTH + SLIDER_GAP);
-            self.fill_rect(slider_x, slider_y, SLIDER_WIDTH, SLIDER_HEIGHT, SLIDER_COLOR);
+            self.fill_rect(
+                slider_x,
+                slider_y,
+                SLIDER_WIDTH,
+                SLIDER_HEIGHT,
+                SLIDER_COLOR,
+            );
         }
     }
 

@@ -26,7 +26,7 @@ use crate::{
     scanout::Rect,
     startmenu::{Item, StartMenu},
     supervisor::Supervisor,
-    taskbar::{self, Taskbar, Target},
+    taskbar::{self, Target, Taskbar},
     window::{Region, State, Window, Windows},
 };
 
@@ -74,7 +74,12 @@ pub struct PointerShell<'a> {
 impl PointerShell<'_> {
     /// work area：全屏减去任务栏高度（最大化窗口的外框）。
     fn work_area(&self) -> Rect {
-        Rect::new(0, 0, self.screen_width, self.screen_height - taskbar::HEIGHT)
+        Rect::new(
+            0,
+            0,
+            self.screen_width,
+            self.screen_height - taskbar::HEIGHT,
+        )
     }
 }
 
@@ -87,14 +92,22 @@ impl Input {
             // 菜单是最顶层弹出 UI：命中菜单项记录按下态；菜单矩形内的空白区
             // 点击不生效也不关菜单；点菜单外关闭（Start 按钮除外——它走任务
             // 栏按下态，release 时 toggle 关闭）。
-            if shell.startmenu.rect().contains(self.cursor_x, self.cursor_y) {
+            if shell
+                .startmenu
+                .rect()
+                .contains(self.cursor_x, self.cursor_y)
+            {
                 if let Some(item) = shell.startmenu.hit_test(self.cursor_x, self.cursor_y) {
                     shell.startmenu.press(item);
                     shell.damage.add(shell.startmenu.rect());
                 }
                 return;
             }
-            if !shell.taskbar.start_rect().contains(self.cursor_x, self.cursor_y) {
+            if !shell
+                .taskbar
+                .start_rect()
+                .contains(self.cursor_x, self.cursor_y)
+            {
                 let closed = shell.startmenu.close();
                 shell.damage.add(closed);
             }
@@ -166,7 +179,8 @@ impl Input {
                 }
             } else if shell.taskbar.is_pressed() {
                 let (confirmed, rect) =
-                    shell.taskbar
+                    shell
+                        .taskbar
                         .release(shell.windows, self.cursor_x, self.cursor_y);
                 shell.damage.add(rect);
                 if let Some(target) = confirmed {
@@ -187,7 +201,9 @@ impl Input {
                 }
             }
             if let Some(Drag::Resize {
-                surface_id, outline, ..
+                surface_id,
+                outline,
+                ..
             }) = self.drag.take()
             {
                 // 松开：擦除示意框并按最终尺寸向客户端建议新内容尺寸。
@@ -222,8 +238,10 @@ impl Input {
                     let old = window.outer_rect();
                     // clamp：至少保留 KEEP_ON_SCREEN 可点区域在屏内，标题栏不推出上沿。
                     let layout = window.layout();
-                    let new_x = (self.cursor_x - offset_x)
-                        .clamp(KEEP_ON_SCREEN - layout.outer_width, shell.screen_width - KEEP_ON_SCREEN);
+                    let new_x = (self.cursor_x - offset_x).clamp(
+                        KEEP_ON_SCREEN - layout.outer_width,
+                        shell.screen_width - KEEP_ON_SCREEN,
+                    );
                     let new_y =
                         (self.cursor_y - offset_y).clamp(0, shell.screen_height - KEEP_ON_SCREEN);
                     if new_x != window.x || new_y != window.y {
@@ -288,7 +306,11 @@ impl Input {
                     if shell.startmenu.is_open() {
                         let hover = shell.startmenu.hit_test(self.cursor_x, self.cursor_y);
                         shell.damage.add(shell.startmenu.set_hover(hover));
-                        if shell.startmenu.rect().contains(self.cursor_x, self.cursor_y) {
+                        if shell
+                            .startmenu
+                            .rect()
+                            .contains(self.cursor_x, self.cursor_y)
+                        {
                             return;
                         }
                     }
@@ -350,13 +372,13 @@ impl Input {
             Resize(Rect),
         }
         let stale = match &self.drag {
-            Some(Drag::Move { surface_id, .. })
-                if windows.by_surface(*surface_id).is_none() =>
-            {
+            Some(Drag::Move { surface_id, .. }) if windows.by_surface(*surface_id).is_none() => {
                 Some(Stale::Move)
             }
             Some(Drag::Resize {
-                surface_id, outline, ..
+                surface_id,
+                outline,
+                ..
             }) if windows.by_surface(*surface_id).is_none() => Some(Stale::Resize(*outline)),
             _ => None,
         };
@@ -472,12 +494,7 @@ fn button_action(slot: usize, region: Region, shell: &mut PointerShell) {
 }
 
 /// 最小化窗口：记 damage 旧外框；焦点窗口被最小化时焦点回落栈顶可见窗口。
-pub fn minimize_window(
-    slot: usize,
-    windows: &mut Windows,
-    clients: &Clients,
-    damage: &mut Damage,
-) {
+pub fn minimize_window(slot: usize, windows: &mut Windows, clients: &Clients, damage: &mut Damage) {
     if let Some(window) = windows.get(slot) {
         damage.add(window.outer_rect());
     }
@@ -500,8 +517,7 @@ fn send_configure(slot: usize, outline: Rect, shell: &PointerShell) {
         return;
     }
     let width = (outline.width() - 2 * chrome::BORDER).max(MIN_CONTENT_WIDTH);
-    let height =
-        (outline.height() - chrome::TITLE_HEIGHT - chrome::BORDER).max(MIN_CONTENT_HEIGHT);
+    let height = (outline.height() - chrome::TITLE_HEIGHT - chrome::BORDER).max(MIN_CONTENT_HEIGHT);
     send_configure_size(window, width as u32, height as u32, shell.clients);
 }
 
@@ -526,12 +542,7 @@ fn damage_window_button(shell: &mut PointerShell, surface_id: u32) {
 }
 
 /// raise 窗口并把键盘焦点切过去（附带 `FOCUS` 消息与标题栏重画）。
-pub fn focus_raise(
-    windows: &mut Windows,
-    clients: &Clients,
-    damage: &mut Damage,
-    slot: usize,
-) {
+pub fn focus_raise(windows: &mut Windows, clients: &Clients, damage: &mut Damage, slot: usize) {
     windows.raise(slot);
     set_focus(windows, clients, damage, Some(slot));
 }
@@ -575,5 +586,10 @@ fn send_focus(clients: &Clients, window: &Window, focused: u32) {
 
 fn title_bar_strip(window: &Window) -> Rect {
     let outer = window.outer_rect();
-    Rect::new(outer.x1, outer.y1, outer.x2, outer.y1 + crate::chrome::TITLE_HEIGHT)
+    Rect::new(
+        outer.x1,
+        outer.y1,
+        outer.x2,
+        outer.y1 + crate::chrome::TITLE_HEIGHT,
+    )
 }

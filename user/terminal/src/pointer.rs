@@ -66,7 +66,14 @@ impl Pointer {
     }
 }
 
-fn report(input: &mut InputQueue, model: &Model, button: u8, pressed: bool, column: usize, row: usize) {
+fn report(
+    input: &mut InputQueue,
+    model: &Model,
+    button: u8,
+    pressed: bool,
+    column: usize,
+    row: usize,
+) {
     let mode = model.mouse_mode();
     if mode == 0 || mode == 1 && !pressed {
         return;

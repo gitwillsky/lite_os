@@ -2,7 +2,7 @@
 //!
 //! - 左栏白底：程序列表读 `/etc/startmenu.conf`（每行 `名称=命令`，UTF-8；
 //!   空行与 `#` 注释忽略；文件缺失 / 读取失败 / 无有效项时回退单项
-//!   `终端=`）。项数上限 16，名称 24B / 命令 96B（均按 UTF-8 字符边界截断）。
+//!   `终端=`）。配置文件有 4 KiB 协议边界，项集合和字段使用动态字符串。
 //! - 右栏 `#D3E5FA`：固定项 `终端`（空命令，打开普通终端）与 `关机`。
 //! - 项高 72px（1× 基准 36px），左侧 48x48（1× 基准 24x24）固定伪随机色方块
 //!   图标，文字 uifont regular32 黑；悬停 / 按下高亮 `#316AC5` 白字。
@@ -14,7 +14,6 @@
 
 use crate::{
     chrome::SCALE,
-    ffi,
     scanout::{Frame, Rect},
     taskbar,
     uifont::{Face, UiFont},
@@ -31,13 +30,7 @@ const ITEM_HEIGHT: i32 = 36 * SCALE;
 const ICON_SIZE: i32 = 24 * SCALE;
 const ICON_INSET: i32 = 6 * SCALE;
 
-/// 程序项上限。
-const MAX_ITEMS: usize = 16;
-/// 名称字节上限（UTF-8 边界截断）。
-const MAX_NAME: usize = 24;
-/// 命令字节上限（UTF-8 边界截断）。
-const MAX_COMMAND: usize = 96;
-/// conf 文件读取缓冲（超出部分忽略）。
+/// conf 文件协议边界（超出即拒绝该配置）。
 const CONF_CAPACITY: usize = 4096;
 
 const LEFT_BACKGROUND: u32 = 0x00ff_ffff;
@@ -59,23 +52,13 @@ pub enum Item {
 
 /// 左栏程序项（名称 / 命令均为定长缓冲，长度字段记录有效字节数）。
 struct Entry {
-    name: [u8; MAX_NAME],
-    name_len: usize,
-    command: [u8; MAX_COMMAND],
-    command_len: usize,
+    name: String,
+    command: String,
 }
-
-const EMPTY_ENTRY: Entry = Entry {
-    name: [0; MAX_NAME],
-    name_len: 0,
-    command: [0; MAX_COMMAND],
-    command_len: 0,
-};
 
 pub struct StartMenu {
     open: bool,
-    entries: [Entry; MAX_ITEMS],
-    count: usize,
+    entries: Vec<Entry>,
     pressed: Option<Item>,
     hover: Option<Item>,
     screen_height: i32,
@@ -87,17 +70,16 @@ impl StartMenu {
     pub fn load(screen_height: i32) -> Self {
         let mut menu = Self {
             open: false,
-            entries: [EMPTY_ENTRY; MAX_ITEMS],
-            count: 0,
+            entries: Vec::new(),
             pressed: None,
             hover: None,
             screen_height,
         };
-        if let Some((text, length)) = read_conf() {
-            menu.parse(&text[..length]);
+        if let Some(text) = read_conf() {
+            menu.parse(&text);
         }
-        if menu.count == 0 {
-            menu.push("终端".as_bytes(), b"");
+        if menu.entries.is_empty() {
+            let _ = menu.push("终端", "");
         }
         menu
     }
@@ -152,7 +134,7 @@ impl StartMenu {
         }
         let index = ((y - rect.y1) / ITEM_HEIGHT) as usize;
         if x < LEFT_WIDTH {
-            return (index < self.count).then_some(Item::Program(index));
+            return (index < self.entries.len()).then_some(Item::Program(index));
         }
         match index {
             0 => Some(Item::Terminal),
@@ -184,8 +166,8 @@ impl StartMenu {
     /// 程序项的命令字节串（供 `supervisor.spawn_one` 作为 terminal argv[1]）。
     pub fn command(&self, item: Item) -> &[u8] {
         match item {
-            Item::Program(index) if index < self.count => {
-                &self.entries[index].command[..self.entries[index].command_len]
+            Item::Program(index) if index < self.entries.len() => {
+                self.entries[index].command.as_bytes()
             }
             _ => b"",
         }
@@ -202,7 +184,7 @@ impl StartMenu {
         fill(frame, left, LEFT_BACKGROUND);
         let right = Rect::new(rect.x1 + LEFT_WIDTH, rect.y1, rect.x2, rect.y2).intersect(clip);
         fill(frame, right, RIGHT_BACKGROUND);
-        for index in 0..self.count {
+        for index in 0..self.entries.len() {
             let entry = &self.entries[index];
             self.paint_item(
                 frame,
@@ -213,7 +195,7 @@ impl StartMenu {
                     rect.x1 + LEFT_WIDTH,
                     rect.y1 + (index as i32 + 1) * ITEM_HEIGHT,
                 ),
-                &entry.name[..entry.name_len],
+                &entry.name,
                 Item::Program(index),
                 clip,
             );
@@ -231,7 +213,7 @@ impl StartMenu {
                     rect.x2,
                     rect.y1 + (index as i32 + 1) * ITEM_HEIGHT,
                 ),
-                name.as_bytes(),
+                name,
                 item,
                 clip,
             );
@@ -244,7 +226,7 @@ impl StartMenu {
         frame: &mut Frame,
         font: &UiFont,
         item_rect: Rect,
-        name: &[u8],
+        name: &str,
         item: Item,
         clip: Rect,
     ) {
@@ -263,12 +245,10 @@ impl StartMenu {
             item_rect.y1 + (ITEM_HEIGHT - ICON_SIZE) / 2 + ICON_SIZE,
         );
         fill(frame, icon.intersect(area), icon_color(item));
-        let Ok(text) = core::str::from_utf8(name) else {
-            return;
-        };
         // regular32 在 72px 项高内垂直居中。
         let face = Face::Regular32;
-        let baseline = item_rect.y1 + (ITEM_HEIGHT - font.ascent(face) - font.descent(face)) / 2
+        let baseline = item_rect.y1
+            + (ITEM_HEIGHT - font.ascent(face) - font.descent(face)) / 2
             + font.ascent(face);
         let ink = if highlighted { TEXT_HIGHLIGHT } else { TEXT };
         font.draw(
@@ -276,90 +256,74 @@ impl StartMenu {
             face,
             ink,
             (icon.x2 + ICON_INSET, baseline),
-            text,
-            area.intersect(Rect::new(icon.x2 + ICON_INSET, item_rect.y1, item_rect.x2, item_rect.y2)),
+            name,
+            area.intersect(Rect::new(
+                icon.x2 + ICON_INSET,
+                item_rect.y1,
+                item_rect.x2,
+                item_rect.y2,
+            )),
         );
     }
 
     /// 菜单高度按左右栏较大行数取值（左栏程序数 vs 右栏固定 2 项）。
     fn rows(&self) -> i32 {
-        (self.count.max(2)) as i32
+        self.entries.len().max(2) as i32
     }
 
     /// 解析 conf 文本：每行 `名称=命令`，忽略空行与 `#` 注释。
-    fn parse(&mut self, text: &[u8]) {
-        for line in text.split(|byte| *byte == b'\n') {
-            if self.count == MAX_ITEMS {
+    fn parse(&mut self, text: &str) {
+        for line in text.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((name, command)) = line.split_once('=') else {
+                continue;
+            };
+            if !self.push(name, command) {
                 return;
             }
-            let line = match line {
-                [head @ .., b'\r'] => head,
-                _ => line,
-            };
-            if line.is_empty() || line[0] == b'#' {
-                continue;
-            }
-            let Some(separator) = line.iter().position(|byte| *byte == b'=') else {
-                continue;
-            };
-            self.push(&line[..separator], &line[separator + 1..]);
         }
     }
 
-    /// 追加一个程序项（名称 24B / 命令 96B，按 UTF-8 字符边界截断）。
-    fn push(&mut self, name: &[u8], command: &[u8]) {
-        if self.count == MAX_ITEMS {
-            return;
+    /// 追加一个程序项。外部配置增长在发布前完成全部 fallible reserve；OOM 时
+    /// 停止解析，已发布项继续可用。
+    fn push(&mut self, name: &str, command: &str) -> bool {
+        let Some(name) = try_string(name) else {
+            return false;
+        };
+        let Some(command) = try_string(command) else {
+            return false;
+        };
+        if self.entries.try_reserve(1).is_err() {
+            return false;
         }
-        let entry = &mut self.entries[self.count];
-        let name = &name[..utf8_floor(name, MAX_NAME)];
-        entry.name[..name.len()].copy_from_slice(name);
-        entry.name_len = name.len();
-        let command = &command[..utf8_floor(command, MAX_COMMAND)];
-        entry.command[..command.len()].copy_from_slice(command);
-        entry.command_len = command.len();
-        self.count += 1;
+        self.entries.push(Entry { name, command });
+        true
     }
 }
 
-/// 读取 `/etc/startmenu.conf` 全部内容（上限 [`CONF_CAPACITY`]），返回缓冲与
-/// 有效字节数；open / read 失败返回 `None`（调用方安静回退）。
-fn read_conf() -> Option<([u8; CONF_CAPACITY], usize)> {
-    // SAFETY: 静态 NUL 结尾路径，只读打开。
-    let fd = unsafe {
-        ffi::open(
-            ffi::c_str(b"/etc/startmenu.conf\0"),
-            ffi::O_RDONLY | ffi::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
+/// 读取 `/etc/startmenu.conf`；超过协议边界、非法 UTF-8 或 I/O/OOM 均回退。
+fn read_conf() -> Option<String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open("/etc/startmenu.conf").ok()?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(CONF_CAPACITY + 1).ok()?;
+    file.take((CONF_CAPACITY + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > CONF_CAPACITY {
         return None;
     }
-    let mut buffer = [0u8; CONF_CAPACITY];
-    let mut total = 0usize;
-    while total < buffer.len() {
-        // SAFETY: buffer[total..] 在 read 期间有效且可写。
-        let count = unsafe { ffi::read(fd, buffer[total..].as_mut_ptr().cast(), buffer.len() - total) };
-        if count > 0 {
-            total += count as usize;
-        } else if count < 0 && ffi::errno() == ffi::EINTR {
-            continue;
-        } else {
-            break;
-        }
-    }
-    // SAFETY: fd 为本函数打开的描述符。
-    unsafe { ffi::close(fd) };
-    Some((buffer, total))
+    String::from_utf8(bytes).ok()
 }
 
-/// 不超过 `limit` 的最大 UTF-8 字符边界字节数（截断不切开多字节字符）。
-fn utf8_floor(bytes: &[u8], limit: usize) -> usize {
-    let mut end = bytes.len().min(limit);
-    while end > 0 && end < bytes.len() && bytes[end] & 0xc0 == 0x80 {
-        end -= 1;
-    }
-    end
+fn try_string(value: &str) -> Option<String> {
+    let mut result = String::new();
+    result.try_reserve_exact(value.len()).ok()?;
+    result.push_str(value);
+    Some(result)
 }
 
 /// 项图标的固定伪随机色（同一项颜色稳定，纯函数无状态）。

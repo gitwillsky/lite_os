@@ -75,7 +75,7 @@ build-bootloader:
 build-musl:
 	python3 scripts/verify_musl.py --build-only
 
-build-rootfs: build-musl
+build-rootfs: build-kernel build-bootloader build-musl
 	python3 scripts/verify_busybox.py --build-only --image $(ROOTFS_IMAGE)
 
 build-rust-std: build-musl

@@ -70,7 +70,7 @@ def render_face(path: Path, width: int, height: int, pixel_size: int, glyphs: li
 
 
 def generate(medium: Path, bold: Path, output: Path) -> None:
-    """Write one transactional atlas consumed directly by the no_std terminal."""
+    """Write one transactional atlas consumed directly by the terminal."""
     for path, expected in ((medium, MEDIUM_SHA256), (bold, BOLD_SHA256)):
         actual = sha256(path)
         if actual != expected:

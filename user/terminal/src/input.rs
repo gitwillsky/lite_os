@@ -2,9 +2,9 @@
 //! keymap 译为 ANSI 转义序列写入 PTY。翻译逻辑搬自 console-session 的
 //! `reactor/input.rs`；evdev 设备发现与 `InputEvent` 读取已随桌面输入转发退役。
 
-use core::ffi::c_void;
+use linux_uapi::pty::PtySession;
 
-use crate::{ffi, model::Model};
+use crate::model::Model;
 
 const INPUT_CAPACITY: usize = 4 * 1024;
 pub const MAX_KEY_BYTES: usize = 8;
@@ -298,16 +298,14 @@ impl InputQueue {
     }
 }
 
-pub fn flush_input(master: i32, input: &mut InputQueue) {
+pub fn flush_input(session: &mut PtySession, input: &mut InputQueue) {
     while !input.is_empty() {
         let bytes = input.contiguous();
-        let count = unsafe { ffi::write(master, bytes.as_ptr().cast::<c_void>(), bytes.len()) };
-        if count > 0 {
-            input.consume(count as usize);
-        } else if count < 0 && ffi::errno() == ffi::EINTR {
-            continue;
-        } else {
-            return;
+        match session.write(bytes) {
+            Ok(0) => return,
+            Ok(count) => input.consume(count),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
         }
     }
 }

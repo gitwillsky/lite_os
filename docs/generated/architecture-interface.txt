@@ -2967,6 +2967,7 @@ kernel/src/socket.rs :: enum SocketError :: ProtocolNotSupported
 kernel/src/socket.rs :: enum SocketError :: WrongType
 kernel/src/socket.rs :: enum SocketType :: Datagram
 kernel/src/socket.rs :: enum SocketType :: Raw
+kernel/src/socket.rs :: enum SocketType :: SeqPacket
 kernel/src/socket.rs :: enum SocketType :: Stream
 kernel/src/socket.rs :: enum SocketWaitSource :: # [doc = " AF_UNIX stream 的真实 data Pipe，direction 与 poll event 一致。"] Data { pipe : Arc < Pipe > , direction : PipeDirection , }
 kernel/src/socket.rs :: enum SocketWaitSource :: # [doc = " 内部 notification Pipe 只表示“socket 状态发生变化”，不继承 userspace event mask。"] Notification (Arc < Pipe >)

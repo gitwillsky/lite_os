@@ -818,14 +818,11 @@ def build_rust_user_program(
     binary_name: str,
     kind: str,
     recipe_version: int,
-    extra_inputs: tuple[Path, ...] = (),
-    libraries: tuple[Path, ...] = (),
-    static_archives: tuple[Path, ...] = (),
-    system_libraries: tuple[str, ...] = (),
 ) -> Path:
     """经唯一 Cargo→musl PIE 路径构建 Rust userspace 程序。"""
-    crate = ROOT / "user" / crate_name
-    sources = tuple(sorted((crate / "src").rglob("*.rs")))
+    workspace = ROOT / "user"
+    crate = workspace / crate_name
+    sources = tuple(sorted(workspace.rglob("*.rs")))
     cargo = shutil.which("cargo")
     rustc = shutil.which("rustc")
     if cargo is None or rustc is None:
@@ -845,38 +842,50 @@ def build_rust_user_program(
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
         "cargo": run([cargo, "--version"], ROOT).strip(),
         "rustc": run([rustc, "--version"], ROOT).strip(),
-        "manifest_sha256": sha256(crate / "Cargo.toml"),
-        "lock_sha256": sha256(crate / "Cargo.lock"),
+        "build_std": "std,panic_abort;llvm-libunwind",
+        "manifest_sha256": {
+            str(path.relative_to(workspace)): sha256(path)
+            for path in sorted(workspace.glob("*/Cargo.toml"))
+        }
+        | {"Cargo.toml": sha256(workspace / "Cargo.toml")},
+        "lock_sha256": sha256(workspace / "Cargo.lock"),
         "source_sha256": {
-            str(source.relative_to(crate)): sha256(source)
+            str(source.relative_to(workspace)): sha256(source)
             for source in sources
         },
-        "extra_sha256": {
-            str(source.relative_to(ROOT)): sha256(source)
-            for source in extra_inputs
-        },
-        "library_sha256": {library.name: sha256(library) for library in libraries},
-        "static_archive_sha256": {
-            str(archive): sha256(archive) for archive in static_archives
-        },
-        "system_libraries": system_libraries,
     }
+    # 延迟导入打破 gate 编排模块间的初始化环；libunwind 构建本身由独立
+    # content-addressed cache 持有。
+    from verify_rust_std import build_libunwind
+
+    libunwind = build_libunwind(musl, rustc)
+    payload["libunwind_sha256"] = sha256(libunwind)
     entry = WORK / "rust-user-programs" / fingerprint(payload)
-    required_libraries = tuple(library.name for library in libraries) + ("libc.so",)
+    required_libraries = ("libc.so",)
     if manifest_matches(entry, payload, (binary_name,)):
         verify_elf(entry / binary_name, musl.compiler, required_libraries, binary_name)
         return entry / binary_name
     generation = generation_directory(WORK / "rust-user-program-generations", fingerprint(payload))
     env = build_environment()
-    env.update({
-        "LITEOS_MUSL_CLANG": str(musl.compiler),
-        "LITEOS_MUSL_LLD": str(musl.linker),
-        "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
-        "LITEOS_MUSL_SYSROOT": str(musl.install),
-        "CARGO_INCREMENTAL": "0",
-        "CARGO_TARGET_DIR": str(generation / "cargo-target"),
-        "RUSTFLAGS": "-C relocation-model=pic -D warnings",
-    })
+    linker_variable = f"CARGO_TARGET_{RUST_USER_TARGET.upper().replace('-', '_')}_LINKER"
+    env.update(
+        {
+            "LITEOS_MUSL_CLANG": str(musl.compiler),
+            "LITEOS_MUSL_LLD": str(musl.linker),
+            "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
+            "LITEOS_MUSL_SYSROOT": str(musl.install),
+            "LITEOS_RUST_PROVIDES_COMPILER_BUILTINS": "1",
+            "CARGO_INCREMENTAL": "0",
+            "CARGO_TARGET_DIR": str(generation / "cargo-target"),
+            linker_variable: str(ROOT / "scripts/musl_clang.py"),
+            "RUSTFLAGS": (
+                "-C link-self-contained=no -C target-feature=-crt-static "
+                "-C relocation-model=pic -C panic=abort "
+                "-C link-arg=-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack "
+                f"-L native={libunwind.parent} -D warnings"
+            ),
+        }
+    )
     published = False
     try:
         run(
@@ -884,9 +893,15 @@ def build_rust_user_program(
                 cargo,
                 "build",
                 "-Z",
-                "build-std=core,alloc,compiler_builtins",
+                "build-std=std,panic_abort",
+                "-Z",
+                "build-std-features=llvm-libunwind",
                 "--manifest-path",
-                str(crate / "Cargo.toml"),
+                str(workspace / "Cargo.toml"),
+                "-p",
+                crate_name,
+                "--bin",
+                binary_name,
                 "--target",
                 RUST_USER_TARGET,
                 "--release",
@@ -895,28 +910,16 @@ def build_rust_user_program(
             ROOT,
             env,
         )
-        archive = (
+        built = (
             generation
-            / f"cargo-target/{RUST_USER_TARGET}/release/lib{crate_name.replace('-', '_')}.a"
+            / "cargo-target"
+            / RUST_USER_TARGET
+            / "release"
+            / binary_name
         )
-        run(
-            [
-                sys.executable,
-                str(ROOT / "scripts/musl_clang.py"),
-                str(archive),
-                *(str(archive) for archive in static_archives),
-                *(f"-L{library.parent}" for library in libraries),
-                *(f"-l{library.name.removeprefix('lib').split('.so')[0]}" for library in libraries),
-                *(f"-l{library}" for library in system_libraries),
-                "-fPIE",
-                "-pie",
-                "-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack",
-                "-o",
-                str(generation / binary_name),
-            ],
-            ROOT,
-            env,
-        )
+        if not built.is_file():
+            raise RuntimeError(f"Cargo did not produce {binary_name}")
+        shutil.copy2(built, generation / binary_name)
         verify_elf(
             generation / binary_name,
             musl.compiler,
@@ -933,20 +936,6 @@ def build_rust_user_program(
     return entry / binary_name
 
 
-def display_proto_inputs() -> tuple[Path, ...]:
-    """desktop/terminal 的 path 依赖；其源码不在 crate 目录内，必须显式进入缓存身份。
-
-    缺失时 display-proto 协议改动不会触发 desktop/terminal 重建，rootfs 会静默混入
-    新旧两个协议版本的两端。
-    """
-    crate = ROOT / "user/display-proto"
-    return (
-        crate / "Cargo.toml",
-        crate / "Cargo.lock",
-        *sorted((crate / "src").rglob("*.rs")),
-    )
-
-
 def build_desktop(musl: MuslCachePaths) -> Path:
     """构建桌面进程：合成器、窗口管理器与 shell 的唯一 owner。"""
     return build_rust_user_program(
@@ -954,8 +943,7 @@ def build_desktop(musl: MuslCachePaths) -> Path:
         "desktop",
         "desktop",
         "desktop",
-        1,
-        display_proto_inputs(),
+        2,
     )
 
 
@@ -966,8 +954,7 @@ def build_terminal(musl: MuslCachePaths) -> Path:
         "terminal",
         "terminal",
         "terminal",
-        1,
-        display_proto_inputs(),
+        2,
     )
 
 
@@ -978,7 +965,7 @@ def build_splash(musl: MuslCachePaths) -> Path:
         "splash",
         "splash",
         "splash",
-        1,
+        2,
     )
 
 
@@ -1277,16 +1264,10 @@ def create_published_image(
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
         ROOT / "user/base/startmenu.conf",
-        ROOT / "user/desktop/Cargo.toml",
-        ROOT / "user/desktop/Cargo.lock",
-        *sorted((ROOT / "user/desktop/src").rglob("*.rs")),
-        ROOT / "user/terminal/Cargo.toml",
-        ROOT / "user/terminal/Cargo.lock",
-        *sorted((ROOT / "user/terminal/src").rglob("*.rs")),
-        ROOT / "user/splash/Cargo.toml",
-        ROOT / "user/splash/Cargo.lock",
-        *sorted((ROOT / "user/splash/src").rglob("*.rs")),
-        *display_proto_inputs(),
+        ROOT / "user/Cargo.toml",
+        ROOT / "user/Cargo.lock",
+        *sorted((ROOT / "user").glob("*/Cargo.toml")),
+        *sorted((ROOT / "user").glob("*/src/*.rs")),
         ROOT / "user/diagnostics/liteos-stress.c",
         ROOT / "assets/terminfo/l/liteos",
         ROOT / "assets/fonts/liteos-terminal.a8",

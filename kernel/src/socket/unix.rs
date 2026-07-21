@@ -106,7 +106,7 @@ impl UnixSocket {
             credentials,
             state: Mutex::new(match socket_type {
                 SocketType::Stream => SocketState::Initial,
-                SocketType::Datagram => SocketState::Datagram {
+                SocketType::Datagram | SocketType::SeqPacket => SocketState::Datagram {
                     messages: DatagramQueue::new(),
                     peer: None,
                     peer_credentials: None,
@@ -267,8 +267,15 @@ impl UnixSocket {
                     (PipeRead::Empty, _) => Err(SocketError::Again),
                 }
             }
-            SocketState::Datagram { messages, .. } => {
-                let (message, became_non_full) = messages.pop().ok_or(SocketError::Again)?;
+            SocketState::Datagram { messages, peer, .. } => {
+                let Some((message, became_non_full)) = messages.pop() else {
+                    if self.socket_type == SocketType::SeqPacket
+                        && peer.as_ref().is_some_and(|peer| peer.upgrade().is_none())
+                    {
+                        return Ok((0, 0, None, None));
+                    }
+                    return Err(SocketError::Again);
+                };
                 drop(state);
                 self.consume_notify();
                 if became_non_full {
@@ -308,7 +315,11 @@ impl UnixSocket {
                 let target = peer
                     .as_ref()
                     .and_then(Weak::upgrade)
-                    .ok_or(SocketError::NotConnected)
+                    .ok_or(if self.socket_type == SocketType::SeqPacket {
+                        SocketError::BrokenPipe
+                    } else {
+                        SocketError::NotConnected
+                    })
                     .map_err(SocketSendError::from)?;
                 drop(state);
                 target.enqueue_datagram(input, self.address(), rights)
@@ -383,12 +394,12 @@ impl UnixSocket {
                 let readable = !messages.is_empty();
                 let peer = peer.clone();
                 drop(state);
+                let peer = peer.and_then(|peer| peer.upgrade());
+                let closed = self.socket_type == SocketType::SeqPacket && peer.is_none();
                 SocketPollState {
-                    readable,
-                    writable: peer
-                        .and_then(|peer| peer.upgrade())
-                        .is_none_or(|peer| peer.datagram_capacity_available()),
-                    hangup: false,
+                    readable: readable || closed,
+                    writable: !closed && peer.is_none_or(|peer| peer.datagram_capacity_available()),
+                    hangup: closed,
                     error: false,
                 }
             }

@@ -10,10 +10,8 @@
 //! u32 face_count（=2，regular/bold 各一张 bitmap 区）、4B 保留（全零），
 //! 随后是 glyph_count × u32 严格递增 codepoint 表与逐 glyph 定长 A8 bitmap。
 
-use crate::ffi;
-
-/// rootfs 中的 atlas 路径（NUL 结尾）。
-const PATH: &[u8] = b"/usr/share/liteos/liteos-terminal.a8\0";
+/// rootfs 中的 atlas 路径。
+const PATH: &str = "/usr/share/liteos/liteos-terminal.a8";
 const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x02";
 const GLYPH_COUNT: usize = 468;
 const FACE_COUNT: usize = 2;
@@ -35,8 +33,7 @@ impl FontMetrics {
 }
 
 pub struct Atlas {
-    /// 完整 atlas 文件映射（进程生命周期持有，退出时由内核回收，故不释放）。
-    bytes: &'static [u8],
+    bytes: Vec<u8>,
     glyph_count: usize,
     codepoints_offset: usize,
     bitmap_offset: usize,
@@ -48,20 +45,18 @@ impl Atlas {
     /// 尺寸、文件长度恰好对齐、codepoint 严格递增、含 U+FFFD。任一失败返回
     /// `None`（文件缺失、截断或内容损坏）。
     pub fn open() -> Option<Self> {
-        let (pointer, size) = ffi::read_file(PATH)?;
-        // SAFETY: pointer/size 来自 read_file 的匿名映射，进程生命周期内有效。
-        let bytes = unsafe { core::slice::from_raw_parts(pointer as *const u8, size) };
+        let bytes = std::fs::read(PATH).ok()?;
         if bytes.get(..8)? != MAGIC {
             return None;
         }
-        let glyph_count = read_u32(bytes, 8)? as usize;
-        let codepoints_offset = read_u32(bytes, 12)? as usize;
-        let bitmap_offset = read_u32(bytes, 16)? as usize;
+        let glyph_count = read_u32(&bytes, 8)? as usize;
+        let codepoints_offset = read_u32(&bytes, 12)? as usize;
+        let bitmap_offset = read_u32(&bytes, 16)? as usize;
         let metrics = FontMetrics {
-            width: usize::from(read_u16(bytes, 20)?),
-            height: usize::from(read_u16(bytes, 22)?),
+            width: usize::from(read_u16(&bytes, 20)?),
+            height: usize::from(read_u16(&bytes, 22)?),
         };
-        let face_count = read_u32(bytes, 24)? as usize;
+        let face_count = read_u32(&bytes, 24)? as usize;
         let glyph_size = metrics.width.checked_mul(metrics.height)?;
         let expected = bitmap_offset.checked_add(
             glyph_count
@@ -88,7 +83,7 @@ impl Atlas {
         };
         let mut previous = None;
         for index in 0..glyph_count {
-            let codepoint = read_u32(bytes, codepoints_offset + index * 4)?;
+            let codepoint = read_u32(&atlas.bytes, codepoints_offset + index * 4)?;
             if previous.is_some_and(|previous| previous >= codepoint) {
                 return None;
             }
@@ -118,7 +113,7 @@ impl Atlas {
         let mut high = self.glyph_count;
         while low < high {
             let middle = low + (high - low) / 2;
-            let value = read_u32(self.bytes, self.codepoints_offset + middle * 4)?;
+            let value = read_u32(&self.bytes, self.codepoints_offset + middle * 4)?;
             match value.cmp(&codepoint) {
                 core::cmp::Ordering::Less => low = middle + 1,
                 core::cmp::Ordering::Greater => high = middle,

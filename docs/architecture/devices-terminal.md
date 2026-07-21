@@ -39,6 +39,10 @@
 - 图形 userspace 拆为 `desktop` 与 `terminal` 两个进程：`desktop` 是 DRM master、evdev、合成与窗口管理的
   唯一 owner；`terminal` 是 ANSI parser 与终端 renderer 的唯一 owner，作为桌面客户端运行。两端经
   `display-proto` 协议通信，GEM handle 经 SCM_RIGHTS 共享的同一 OFD 传递，DESTROY 只归桌面。
+- 三个应用是标准 Linux/musl `std` binary；文件、Unix socket、process、time 和动态集合直接使用
+  `std`。`linux-uapi` 只补足 DRM、evdev、PTY、poll/SCM_RIGHTS 等稳定 `std` 未提供的 Linux UAPI，
+  fd/GEM/mapping/child 都由 owned RAII 类型表达。窗口和客户端使用可增长稳定槽位；poll 向量跨事件
+  循环复用容量，damage/协议 frame/渲染行仍保持固定 buffer，不在热路径新增分配。
 - headless boot 缺少 DRM/input 时，`desktop` 在同一进程内以 5 秒 deadline 退避重试，
   不触发 init respawn 风暴；设备可用时仍只创建唯一 compositor owner。
 - terminal font 是 checked A8 atlas；普通构建只消费生成产物，升级由显式 generator 完成。

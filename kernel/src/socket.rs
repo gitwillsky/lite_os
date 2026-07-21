@@ -50,6 +50,7 @@ pub(crate) enum SocketDomain {
 pub(crate) enum SocketType {
     Stream,
     Datagram,
+    SeqPacket,
     Raw,
 }
 
@@ -208,14 +209,16 @@ impl Socket {
     ) -> Result<Arc<Self>, SocketError> {
         let object_id = crate::id::next_runtime_object_id();
         let backend = match (domain, socket_type, protocol) {
-            (SocketDomain::Unix, SocketType::Stream | SocketType::Datagram, 0) => {
-                SocketBackend::Unix(UnixSocket::new(
-                    socket_type,
-                    notify,
-                    unix_credentials.ok_or(SocketError::Invalid)?,
-                    object_id,
-                )?)
-            }
+            (
+                SocketDomain::Unix,
+                SocketType::Stream | SocketType::Datagram | SocketType::SeqPacket,
+                0,
+            ) => SocketBackend::Unix(UnixSocket::new(
+                socket_type,
+                notify,
+                unix_credentials.ok_or(SocketError::Invalid)?,
+                object_id,
+            )?),
             (SocketDomain::Inet, SocketType::Datagram, 0 | 17) => {
                 SocketBackend::Inet(InetSocket::new(SocketType::Datagram, notify)?)
             }
@@ -321,6 +324,9 @@ impl Socket {
                 };
                 if self.socket_type == SocketType::Datagram {
                     return client.connect_datagram(&listener);
+                }
+                if self.socket_type == SocketType::SeqPacket {
+                    return Err(SocketError::OperationNotSupported);
                 }
                 UnixSocket::connect_stream(
                     client,

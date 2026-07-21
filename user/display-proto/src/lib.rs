@@ -32,13 +32,8 @@
 //!
 //! socket 断开即视为客户端退出：桌面销毁该客户端的全部 surface 及其 GEM handle。
 //!
-//! # unsafe 边界
-//!
-//! 编解码全部逐字段进行（`to_le_bytes` / `from_le_bytes`），不依赖宿主结构体布局，
-//! 不含任何 unsafe。唯一的 unsafe / extern 集中在 [`transport`] 模块
-//! （[`send_message`] / [`send_message_with_fd`] / [`recv_message`]）。
-
-#![no_std]
+//! 编解码全部逐字段进行（`to_le_bytes` / `from_le_bytes`），不依赖宿主结构体布局。
+//! SCM_RIGHTS 的 raw UAPI 由 `linux-uapi` 封装，本 crate 只拥有协议传输语义。
 
 mod message;
 mod transport;

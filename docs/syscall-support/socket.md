@@ -3,7 +3,7 @@
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
 | 198 | `socket` | Partial | AF_UNIX、AF_INET、AF_PACKET、有限 AF_NETLINK |
-| 199 | `socketpair` | Complete | AF_UNIX stream/datagram |
+| 199 | `socketpair` | Complete | AF_UNIX stream/datagram/seqpacket |
 | 200 | `bind` | Partial | 支持 domain 的 address scope |
 | 201 | `listen` | Partial | AF_UNIX/IPv4 TCP backlog |
 | 202 | `accept` | Partial | AF_UNIX/IPv4 TCP |
@@ -21,7 +21,10 @@
 
 ## Domain scope
 
-- AF_UNIX 支持 abstract/pathname stream/datagram、peer credential、SCM_RIGHTS、pathname inode identity、固定 datagram queue 与 cycle-safe inflight collection。
+- AF_UNIX 支持 abstract/pathname stream/datagram、peer credential、SCM_RIGHTS、pathname inode
+  identity、固定 datagram queue 与 cycle-safe inflight collection。
+- `SOCK_SEQPACKET` 当前开放 socketpair 的可靠有序消息、peer-close EOF/hangup 与 `SO_TYPE`，
+  供标准 Rust process spawn 错误通道使用，尚不开放 bind/listen/connect。
 - AF_INET 支持单 interface IPv4 UDP/TCP 与 effective-root raw ICMP；AF_PACKET datagram 提供当前 DHCP 路径。
 - AF_NETLINK 只开放 `NETLINK_KOBJECT_UEVENT` group 1 的只读 DRM hotplug multicast。
 - blocking、nonblocking、pselect/ppoll/epoll 共用 backend level recheck；notification edge 不是第二份 readiness state。

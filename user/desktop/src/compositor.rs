@@ -92,12 +92,7 @@ pub struct Layers<'a> {
 }
 
 /// 重画 `damage` 覆盖的像素并 `DIRTYFB` 提交；返回后 damage 由调用方清空。
-pub fn composite(
-    scanout: &mut Scanout,
-    layers: &Layers<'_>,
-    overlays: &Overlays,
-    damage: &Damage,
-) {
+pub fn composite(scanout: &mut Scanout, layers: &Layers<'_>, overlays: &Overlays, damage: &Damage) {
     let Layers {
         windows,
         font,
@@ -106,7 +101,12 @@ pub fn composite(
         startmenu,
         cursor: cursor_asset,
     } = *layers;
-    let screen = Rect::new(0, 0, scanout.mode().width as i32, scanout.mode().height as i32);
+    let screen = Rect::new(
+        0,
+        0,
+        scanout.mode().width as i32,
+        scanout.mode().height as i32,
+    );
     let cursor_rect = cursor::rect_at(overlays.cursor.0, overlays.cursor.1);
     {
         let mut frame = scanout.frame();
@@ -168,10 +168,30 @@ pub fn composite(
 
 /// resize 示意框：沿 `outline` 四边画 2px 白线，只写 `clip` 内像素。
 fn paint_outline(frame: &mut Frame, outline: Rect, clip: Rect) {
-    let top = Rect::new(outline.x1, outline.y1, outline.x2, outline.y1 + OUTLINE_WIDTH);
-    let bottom = Rect::new(outline.x1, outline.y2 - OUTLINE_WIDTH, outline.x2, outline.y2);
-    let left = Rect::new(outline.x1, outline.y1, outline.x1 + OUTLINE_WIDTH, outline.y2);
-    let right = Rect::new(outline.x2 - OUTLINE_WIDTH, outline.y1, outline.x2, outline.y2);
+    let top = Rect::new(
+        outline.x1,
+        outline.y1,
+        outline.x2,
+        outline.y1 + OUTLINE_WIDTH,
+    );
+    let bottom = Rect::new(
+        outline.x1,
+        outline.y2 - OUTLINE_WIDTH,
+        outline.x2,
+        outline.y2,
+    );
+    let left = Rect::new(
+        outline.x1,
+        outline.y1,
+        outline.x1 + OUTLINE_WIDTH,
+        outline.y2,
+    );
+    let right = Rect::new(
+        outline.x2 - OUTLINE_WIDTH,
+        outline.y1,
+        outline.x2,
+        outline.y2,
+    );
     for edge in [top, bottom, left, right] {
         fill(frame, edge.intersect(clip), OUTLINE);
     }

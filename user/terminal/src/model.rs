@@ -337,7 +337,13 @@ impl Model {
     }
 
     pub fn commit_resize(&mut self, mut candidate: ResizeCandidate) {
-        free_grid(self.primary, self.alternate, self.dirty);
+        free_grid(
+            self.primary,
+            self.alternate,
+            self.dirty,
+            self.columns,
+            self.rows,
+        );
         self.columns = candidate.columns;
         self.rows = candidate.rows;
         self.primary = candidate.primary;
@@ -472,12 +478,24 @@ impl Grid for ResizeCandidate {
 
 impl Drop for Model {
     fn drop(&mut self) {
-        free_grid(self.primary, self.alternate, self.dirty);
+        free_grid(
+            self.primary,
+            self.alternate,
+            self.dirty,
+            self.columns,
+            self.rows,
+        );
     }
 }
 
 impl Drop for ResizeCandidate {
     fn drop(&mut self) {
-        free_grid(self.primary, self.alternate, self.dirty);
+        free_grid(
+            self.primary,
+            self.alternate,
+            self.dirty,
+            self.columns,
+            self.rows,
+        );
     }
 }

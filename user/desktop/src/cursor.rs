@@ -10,16 +10,13 @@
 //! 文件缺失或校验失败返回 `None`（启动失败）——光标是桌面唯一指针反馈，
 //! 没有可降级的替代路径。
 
-use crate::{
-    ffi,
-    scanout::{Frame, Rect},
-};
+use crate::scanout::{Frame, Rect};
 
 pub const WIDTH: i32 = 32;
 pub const HEIGHT: i32 = 32;
 
 /// rootfs 中的光标路径（NUL 结尾）。
-const PATH: &[u8] = b"/usr/share/liteos/cursor.lc1\0";
+const PATH: &str = "/usr/share/liteos/cursor.lc1";
 const MAGIC: &[u8; 8] = b"LCR1\0\0\0\x01";
 /// 资产头字节数（magic + width + height）。
 const HEADER: usize = 16;
@@ -31,25 +28,19 @@ const WHITE: u32 = 0x00ff_ffff;
 
 /// checked 解析后的光标资产（进程生命周期持有映射，退出时由内核回收）。
 pub struct Cursor {
-    bytes: &'static [u8],
+    bytes: Vec<u8>,
 }
 
 impl Cursor {
     /// 从 rootfs 读入光标并校验：magic、尺寸恰为 32x32、文件长度恰好对齐。
     /// 任一失败返回 `None`（文件缺失、截断或内容损坏）。
     pub fn open() -> Option<Self> {
-        let (pointer, size) = ffi::read_file(PATH)?;
-        // SAFETY: pointer/size 来自 read_file 的匿名映射，进程生命周期内有效。
-        let bytes = unsafe { core::slice::from_raw_parts(pointer as *const u8, size) };
+        let bytes = std::fs::read(PATH).ok()?;
         let valid = bytes.len() == HEADER + 2 * BITMAP_SIZE
             && bytes.get(..8) == Some(MAGIC.as_slice())
-            && read_u32(bytes, 8) == Some(WIDTH as u32)
-            && read_u32(bytes, 12) == Some(HEIGHT as u32);
+            && read_u32(&bytes, 8) == Some(WIDTH as u32)
+            && read_u32(&bytes, 12) == Some(HEIGHT as u32);
         if !valid {
-            // 校验失败不返回资产：释放映射（desktop 启动失败会退避重试，不能
-            // 每次重试泄漏一份映射）。
-            // SAFETY: 映射由本函数持有，此后不再访问。
-            unsafe { ffi::munmap(pointer, size) };
             return None;
         }
         Some(Self { bytes })

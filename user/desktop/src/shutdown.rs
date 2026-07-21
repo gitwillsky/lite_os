@@ -6,7 +6,6 @@
 //! 返回后事件循环停止响应输入，保持画面等 init 关机。
 
 use crate::{
-    ffi,
     scanout::{Rect, Scanout},
     uifont::{Face, UiFont},
 };
@@ -30,8 +29,7 @@ pub fn enter(scanout: &mut Scanout, font: &UiFont) {
         // bold32 文字块垂直居中、水平居中。
         let face = Face::Bold32;
         let text_width = font.measure(face, MESSAGE);
-        let baseline =
-            (height - font.ascent(face) - font.descent(face)) / 2 + font.ascent(face);
+        let baseline = (height - font.ascent(face) - font.descent(face)) / 2 + font.ascent(face);
         font.draw(
             &mut frame,
             face,
@@ -42,35 +40,16 @@ pub fn enter(scanout: &mut Scanout, font: &UiFont) {
         );
     }
     scanout.present(&[screen]);
-    // SAFETY: fork 无前置条件；子进程只 execve / _exit，不触碰父进程状态。
-    let pid = unsafe { ffi::fork() };
-    if pid == 0 {
-        // SAFETY: 静态 NUL 结尾参数；execve 成功不返回，失败 _exit。
-        unsafe {
-            let arguments = [
-                ffi::c_str(b"shutdown\0"),
-                ffi::c_str(b"-h\0"),
-                ffi::c_str(b"now\0"),
-                core::ptr::null(),
-            ];
-            let environment = [
-                ffi::c_str(b"PATH=/sbin:/usr/sbin:/bin:/usr/bin\0"),
-                core::ptr::null(),
-            ];
-            ffi::execve(
-                ffi::c_str(b"/bin/shutdown\0"),
-                arguments.as_ptr(),
-                environment.as_ptr(),
-            );
-            ffi::_exit(127);
-        }
-    }
+    let _ = std::process::Command::new("/bin/shutdown")
+        .args(["-h", "now"])
+        .spawn();
 }
 
 /// 垂直渐变：`y` ∈ [0, height) 在 top→bottom 间线性插值。
 fn gradient(y: i32, height: i32) -> u32 {
-    let mix = |top: u32, bottom: u32| (top * (height - 1 - y) as u32 + bottom * y as u32)
-        / (height.max(1) - 1).max(1) as u32;
+    let mix = |top: u32, bottom: u32| {
+        (top * (height - 1 - y) as u32 + bottom * y as u32) / (height.max(1) - 1).max(1) as u32
+    };
     let red = mix(GRADIENT_TOP >> 16 & 0xff, GRADIENT_BOTTOM >> 16 & 0xff);
     let green = mix(GRADIENT_TOP >> 8 & 0xff, GRADIENT_BOTTOM >> 8 & 0xff);
     let blue = mix(GRADIENT_TOP & 0xff, GRADIENT_BOTTOM & 0xff);

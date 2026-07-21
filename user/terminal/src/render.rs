@@ -4,13 +4,11 @@
 //! console-session 的 `display.rs`，只依赖 `{pixels, pitch, width, height}` 像素视图；
 //! modeset / ADDFB / SETCRTC / DIRTYFB 全部属于桌面，本模块不出现。
 
-use core::{ffi::c_void, ptr, slice};
-
 use display_proto::MAX_DAMAGE_RECTS;
+use linux_uapi::drm::{DrmDevice, DumbBuffer, GemHandle};
 
 use crate::{
     atlas::{self, Atlas, FontMetrics},
-    ffi::{self, DrmDumbCreate, DrmDumbMap},
     model::{
         ATTR_BLINK, ATTR_BOLD, ATTR_DIM, ATTR_HIDDEN, ATTR_INVERSE, ATTR_UNDERLINE, Cell, Grid,
         Model,
@@ -24,9 +22,7 @@ const BACKGROUND: u32 = 0x00101418;
 /// `handle` 的所有权随 `CREATE_SURFACE` 转移给桌面，由桌面最终 `DESTROY_DUMB`；
 /// 本进程只持有 mmap 视图，`Drop` 仅 `munmap`。
 pub struct Surface {
-    pixels: *mut u32,
-    size: usize,
-    pitch: usize,
+    buffer: DumbBuffer,
     width: usize,
     height: usize,
 }
@@ -44,89 +40,36 @@ impl Surface {
     /// 失败时返回 `None`（不销毁已建 handle：进程随即退出，handle 由桌面随连接
     /// 生命周期回收）。`pitch` 不足 `width * 4` 或 `size` 容纳不下整幅时视为驱动
     /// 契约违约，同样返回 `None`。
-    pub fn create(drm_fd: i32, width: u32, height: u32) -> Option<(Self, u32)> {
-        let mut create = DrmDumbCreate {
-            width,
-            height,
-            bpp: 32,
-            ..DrmDumbCreate::default()
-        };
-        if unsafe {
-            ffi::ioctl(
-                drm_fd,
-                ffi::DRM_IOCTL_MODE_CREATE_DUMB,
-                (&mut create as *mut DrmDumbCreate).cast(),
-            )
-        } < 0
-        {
-            return None;
-        }
-        let size = usize::try_from(create.size).ok()?;
-        let pitch = usize::try_from(create.pitch).ok()?;
-        let required = pitch.checked_mul(usize::try_from(height).ok()?)?;
-        if pitch < usize::try_from(width).ok()? * 4 || required > size {
-            return None;
-        }
-        let mut map = DrmDumbMap {
-            handle: create.handle,
-            ..DrmDumbMap::default()
-        };
-        if unsafe {
-            ffi::ioctl(
-                drm_fd,
-                ffi::DRM_IOCTL_MODE_MAP_DUMB,
-                (&mut map as *mut DrmDumbMap).cast(),
-            )
-        } < 0
-        {
-            return None;
-        }
-        let pixels = unsafe {
-            ffi::mmap(
-                ptr::null_mut(),
-                size,
-                ffi::PROT_READ | ffi::PROT_WRITE,
-                ffi::MAP_SHARED,
-                drm_fd,
-                map.offset as i64,
-            )
-        };
-        if pixels as usize == usize::MAX {
-            return None;
-        }
-        Some((
-            Self {
-                pixels: pixels.cast(),
-                size,
-                pitch,
-                width: usize::try_from(width).ok()?,
-                height: usize::try_from(height).ok()?,
-            },
-            create.handle,
-        ))
+    pub fn create(device: &DrmDevice, width: u32, height: u32) -> Option<Self> {
+        let buffer = device.create_dumb(width, height).ok()?;
+        Some(Self {
+            width: buffer.width(),
+            height: buffer.height(),
+            buffer,
+        })
     }
-}
 
-impl Drop for Surface {
-    fn drop(&mut self) {
-        // SAFETY: pixels 是 create() 中成功 mmap 的 size 字节映射，本结构是唯一 owner。
-        unsafe { ffi::munmap(self.pixels.cast::<c_void>(), self.size) };
+    pub fn handle(&self) -> GemHandle {
+        self.buffer.handle()
+    }
+
+    pub fn transfer_handle(&mut self) -> GemHandle {
+        self.buffer.transfer_handle()
     }
 }
 
 /// 整幅重绘：清背景后画出全部 cell 与光标，用于 surface 创建后的首帧。
 ///
 /// `focused` 为 false 时不画光标（桌面尚未聚焦本窗口）。
-pub fn render_full<G: Grid>(surface: &mut Surface, grid: &G, atlas: &Atlas, metrics: FontMetrics, focused: bool) {
+pub fn render_full<G: Grid>(
+    surface: &mut Surface,
+    grid: &G,
+    atlas: &Atlas,
+    metrics: FontMetrics,
+    focused: bool,
+) {
     for row in 0..surface.height {
-        let pixels = unsafe {
-            slice::from_raw_parts_mut(
-                (surface.pixels as *mut u8)
-                    .add(row * surface.pitch)
-                    .cast::<u32>(),
-                surface.width,
-            )
-        };
+        let pixels = surface.buffer.row_mut(row);
         pixels.fill(BACKGROUND);
     }
     for row in 0..grid.rows() {
@@ -247,15 +190,9 @@ impl CellRenderer<'_> {
             if pixel_y >= surface.height {
                 break;
             }
-            let pixels = unsafe {
-                slice::from_raw_parts_mut(
-                    (surface.pixels as *mut u8)
-                        .add(pixel_y * surface.pitch)
-                        .cast::<u32>()
-                        .add(column * cell_width),
-                    cell_width.min(surface.width.saturating_sub(column * cell_width)),
-                )
-            };
+            let start = column * cell_width;
+            let end = (start + cell_width).min(surface.width);
+            let pixels = &mut surface.buffer.row_mut(pixel_y)[start..end];
             for (x, pixel) in pixels.iter_mut().enumerate() {
                 let alpha = if cell.attributes & ATTR_UNDERLINE != 0 && y + 3 >= cell_height {
                     255
@@ -279,15 +216,8 @@ fn render_cursor<G: Grid>(surface: &mut Surface, grid: &G, metrics: FontMetrics)
         if y + offset_y >= surface.height || x >= surface.width {
             continue;
         }
-        let pixels = unsafe {
-            slice::from_raw_parts_mut(
-                (surface.pixels as *mut u8)
-                    .add((y + offset_y) * surface.pitch)
-                    .cast::<u32>()
-                    .add(x),
-                metrics.width().min(surface.width - x),
-            )
-        };
+        let end = (x + metrics.width()).min(surface.width);
+        let pixels = &mut surface.buffer.row_mut(y + offset_y)[x..end];
         pixels.fill(0x00f8fafc);
     }
 }

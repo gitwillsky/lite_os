@@ -17,6 +17,10 @@
 - Rust std builder 独占固定 rust-src `std/panic_abort` 与同 revision LLVM libunwind 的 source-list
   build；Cargo 最终链接由 build-std 的 `compiler_builtins` 独占，不能再追加 musl builder 的外部
   compiler runtime。最终 ELF 必须动态依赖唯一 musl `libc.so`，libunwind 只允许静态进入 consumer。
+- `user/Cargo.toml` 与 `user/Cargo.lock` 是产品 Rust userspace 的唯一 workspace/依赖解析 owner；Cargo
+  直接链接 `desktop`、`terminal`、`splash` 最终 PIE，禁止 staticlib 中间产物、手工二次链接或每应用
+  lockfile。`linux-uapi` 独占 raw musl FFI 与 Linux layout/constant；其外任何 `extern "C"`/`#[link]`
+  由 architecture-check 拒绝。
 
 ## Interface
 
@@ -49,6 +53,13 @@
 - userspace application 不得依赖 LiteOS 私有 runtime、init、device protocol 或第二条 rootfs path。
 - Rust application 必须使用标准 Linux/musl target；禁止 `os=none` custom target、预编译 bundled
   musl/CRT 或 LiteOS std fork。验证 fixture 只允许进入 disposable gate image，产品 rootfs 必须拒绝。
+- 应用优先使用 `std`；稳定 `std` 缺失的 Linux 专有机制只能通过
+  `linux-uapi::{drm,input,pty,process,unix}` 的安全 typed interface。`display-proto` 独占 wire 与
+  SCM_RIGHTS 帧语义，但 fd ancillary mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、
+  裸 fd/GEM owner 和并行兼容路径均禁止。
+- 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error
+  publication owner；kernel 必须保留消息边界、peer-close EOF/hangup 与 `SO_TYPE=5`。只开放
+  socketpair，seqpacket bind/listen/connect 仍明确返回不支持，不能在应用退回多线程不安全的 raw fork。
 - APK 只接受所选 architecture repository 的固定摘要与精确 `.PKGINFO`。只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个固定数据包预期 `noarch`；其余包必须精确匹配目标架构，禁止 blanket `noarch` 放宽。
 
 ## Failure and cleanup

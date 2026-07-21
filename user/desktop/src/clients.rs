@@ -9,78 +9,89 @@ use display_proto::{
     self, Commit, CreateSurface, DestroySurface, Hello, SetBuffer, SetTitle, SurfaceCreated,
     Welcome,
 };
+use linux_uapi::drm::GemHandle;
+use std::{io::Write, os::unix::net::UnixStream};
 
 use crate::{
     chrome,
     compositor::Damage,
-    ffi,
     pointer,
-    scanout::{self, Rect, Scanout},
+    scanout::{Rect, Scanout},
     taskbar::Taskbar,
     window::{SurfaceDesc, Windows},
 };
 
-/// 同时连接的客户端上限。
-pub const MAX_CLIENTS: usize = 8;
-
 /// client 在 `Clients` 中的条目。
 struct Client {
-    fd: i32,
+    stream: UnixStream,
     /// 是否已完成 HELLO → WELCOME 握手。
     greeted: bool,
-    alive: bool,
 }
 
-/// 客户端连接集（固定数组，fd 由本结构唯一持有）。
+/// 客户端连接集；每个 socket 由本结构唯一持有。
 pub struct Clients {
-    list: [Client; MAX_CLIENTS],
+    list: Vec<Option<Client>>,
 }
 
 impl Clients {
     pub fn new() -> Self {
-        const EMPTY: Client = Client {
-            fd: -1,
-            greeted: false,
-            alive: false,
-        };
-        Self {
-            list: [EMPTY; MAX_CLIENTS],
-        }
+        Self { list: Vec::new() }
     }
 
-    pub fn add(&mut self, fd: i32) -> Option<usize> {
-        let slot = self.list.iter().position(|client| !client.alive)?;
-        self.list[slot] = Client {
-            fd,
+    pub fn add(&mut self, stream: UnixStream) -> Option<usize> {
+        self.list.try_reserve(1).ok()?;
+        let slot = self
+            .list
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.list.len());
+        let client = Client {
+            stream,
             greeted: false,
-            alive: true,
         };
+        if slot == self.list.len() {
+            self.list.push(Some(client));
+        } else {
+            self.list[slot] = Some(client);
+        }
         Some(slot)
     }
 
     /// 遍历连接槽位（事件循环构造 poll 数组用）；返回 `(槽位, fd)`。
-    pub fn slots(&self) -> impl Iterator<Item = (usize, i32)> {
+    pub fn slots(&self) -> impl Iterator<Item = (usize, &UnixStream)> {
         self.list
             .iter()
             .enumerate()
-            .filter_map(|(index, client)| client.alive.then_some((index, client.fd)))
+            .filter_map(|(index, client)| client.as_ref().map(|client| (index, &client.stream)))
+    }
+
+    pub fn active_len(&self) -> usize {
+        self.list.iter().filter(|client| client.is_some()).count()
     }
 
     /// 发送一条已编码帧；失败（对端异常 / 缓冲满）静默忽略——对端死亡会
     /// 经 EOF / POLLERR 路径回收。
     pub fn send(&self, index: usize, buffer: &[u8]) {
-        let Some(client) = self.list.get(index).filter(|client| client.alive) else {
+        let Some(client) = self.list.get(index).and_then(Option::as_ref) else {
             return;
         };
-        let _ = display_proto::send_message(client.fd, buffer);
+        let _ = display_proto::send_message(&client.stream, buffer);
     }
 
     fn remove(&mut self, index: usize) {
-        if self.list[index].alive {
-            // SAFETY: fd 由本结构持有且仅关闭一次。
-            unsafe { ffi::close(self.list[index].fd) };
-            self.list[index].alive = false;
-        }
+        self.list[index] = None;
+    }
+
+    fn client(&self, index: usize) -> Option<&Client> {
+        self.list.get(index)?.as_ref()
+    }
+
+    fn client_mut(&mut self, index: usize) -> Option<&mut Client> {
+        self.list.get_mut(index)?.as_mut()
+    }
+
+    fn greeted(&self, index: usize) -> bool {
+        self.client(index).is_some_and(|client| client.greeted)
     }
 }
 
@@ -114,17 +125,14 @@ pub struct Shell<'a> {
 pub fn service_client(index: usize, shell: &mut Shell) -> bool {
     let mut buffer = [0u8; display_proto::MAX_MESSAGE];
     loop {
-        let fd = shell.clients.list[index].fd;
-        let mut passed = None;
-        let received = display_proto::recv_message(fd, &mut buffer, &mut passed);
-        if let Some(passed_fd) = passed {
-            // 客户端不应给桌面发 fd；立即关闭防泄漏。
-            // SAFETY: passed_fd 为内核刚安装的有效描述符。
-            unsafe { ffi::close(passed_fd) };
-        }
+        let Some(client) = shell.clients.client(index) else {
+            return false;
+        };
+        let received = display_proto::recv_message(&client.stream, &mut buffer);
         match received {
-            Ok(0) => return false,
-            Ok(length) => {
+            Ok((0, _)) => return false,
+            Ok((_, Some(_))) => return false,
+            Ok((length, None)) => {
                 let mut offset = 0;
                 while offset < length {
                     let Some((header, payload)) =
@@ -138,7 +146,7 @@ pub fn service_client(index: usize, shell: &mut Shell) -> bool {
                     }
                 }
             }
-            Err(error) if error == -ffi::EAGAIN => return true,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return true,
             Err(_) => return false,
         }
     }
@@ -150,8 +158,7 @@ fn handle_message(index: usize, kind: u32, payload: &[u8], shell: &mut Shell) ->
             let Some(hello) = Hello::parse(payload) else {
                 return false;
             };
-            if shell.clients.list[index].greeted || hello.version != display_proto::PROTOCOL_VERSION
-            {
+            if shell.clients.greeted(index) || hello.version != display_proto::PROTOCOL_VERSION {
                 return false;
             }
             let welcome = Welcome {
@@ -161,30 +168,36 @@ fn handle_message(index: usize, kind: u32, payload: &[u8], shell: &mut Shell) ->
             let Some(length) = welcome.encode(&mut frame) else {
                 return false;
             };
+            let Some(client) = shell.clients.client(index) else {
+                return false;
+            };
             if display_proto::send_message_with_fd(
-                shell.clients.list[index].fd,
+                &client.stream,
                 &frame[..length],
-                shell.scanout.drm_fd(),
+                shell.scanout.drm_device().as_fd(),
             )
             .is_err()
             {
                 return false;
             }
-            shell.clients.list[index].greeted = true;
+            let Some(client) = shell.clients.client_mut(index) else {
+                return false;
+            };
+            client.greeted = true;
             if !shell.markers.client {
                 mark(b"desktop: client connected\n");
                 shell.markers.client = true;
             }
             true
         }
-        display_proto::CREATE_SURFACE if shell.clients.list[index].greeted => {
+        display_proto::CREATE_SURFACE if shell.clients.greeted(index) => {
             let Some((create, title)) = CreateSurface::parse(payload) else {
                 return false;
             };
             create_surface(index, &create, title, shell);
             true
         }
-        display_proto::COMMIT if shell.clients.list[index].greeted => {
+        display_proto::COMMIT if shell.clients.greeted(index) => {
             let Some((commit, rects)) = Commit::parse(payload) else {
                 return false;
             };
@@ -215,7 +228,7 @@ fn handle_message(index: usize, kind: u32, payload: &[u8], shell: &mut Shell) ->
             }
             true
         }
-        display_proto::SET_TITLE if shell.clients.list[index].greeted => {
+        display_proto::SET_TITLE if shell.clients.greeted(index) => {
             let Some((set_title, title)) = SetTitle::parse(payload) else {
                 return false;
             };
@@ -245,14 +258,14 @@ fn handle_message(index: usize, kind: u32, payload: &[u8], shell: &mut Shell) ->
             }
             true
         }
-        display_proto::SET_BUFFER if shell.clients.list[index].greeted => {
+        display_proto::SET_BUFFER if shell.clients.greeted(index) => {
             let Some(set_buffer) = SetBuffer::parse(payload) else {
                 return false;
             };
             apply_set_buffer(index, &set_buffer, shell);
             true
         }
-        display_proto::DESTROY_SURFACE if shell.clients.list[index].greeted => {
+        display_proto::DESTROY_SURFACE if shell.clients.greeted(index) => {
             let Some(destroy) = DestroySurface::parse(payload) else {
                 return false;
             };
@@ -287,37 +300,30 @@ fn create_surface(index: usize, create: &CreateSurface, title: &[u8], shell: &mu
     const ENOMEM: u32 = 12;
     let width = create.width as usize;
     let height = create.height as usize;
-    let valid = create.gem_handle != 0
-        && (1..=4096).contains(&width)
-        && (1..=4096).contains(&height);
-    // 内核 dumb pitch 恒为 width * 4。
-    let size = width
-        .checked_mul(4)
-        .and_then(|pitch| pitch.checked_mul(height));
-    let (Some(size), true) = (size, valid) else {
+    let Some(handle) = GemHandle::new(create.gem_handle) else {
         reply(0, EINVAL);
         return;
     };
-    let mapped = scanout::map_dumb_buffer(shell.scanout.drm_fd(), create.gem_handle, size);
-    let Ok(pixels) = mapped else {
+    if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
+        shell.scanout.drm_device().destroy_transferred(handle);
         reply(0, EINVAL);
-        scanout::destroy_dumb(shell.scanout.drm_fd(), create.gem_handle);
+        return;
+    }
+    let Ok(buffer) = shell
+        .scanout
+        .drm_device()
+        .adopt_transferred(handle, width, height)
+    else {
+        reply(0, EINVAL);
         return;
     };
     let added = shell.windows.add(SurfaceDesc {
         client: index,
-        gem_handle: create.gem_handle,
-        pixels,
-        map_size: size,
-        width,
-        height,
+        buffer,
         decorated: create.flags & display_proto::SURFACE_FLAG_UNDECORATED == 0,
         title,
     });
     let Some((slot, surface_id)) = added else {
-        // SAFETY: pixels/size 为刚完成的映射，handle 所有权在桌面。
-        unsafe { ffi::munmap(pixels.cast(), size) };
-        scanout::destroy_dumb(shell.scanout.drm_fd(), create.gem_handle);
         reply(0, ENOMEM);
         return;
     };
@@ -341,47 +347,42 @@ fn create_surface(index: usize, create: &CreateSurface, title: &[u8], shell: &mu
 /// [`crate::window::Window::apply_buffer`] 内），失败时销毁新 handle 防泄漏。
 /// 窗口内容尺寸以消息的 width/height 为准（锚定左上角）。
 fn apply_set_buffer(index: usize, set_buffer: &SetBuffer, shell: &mut Shell) {
-    let drm_fd = shell.scanout.drm_fd();
-    // 新 handle 所有权随消息转移给桌面：拒绝路径必须销毁它防泄漏。
-    let reject = |handle: u32| {
-        if handle != 0 {
-            scanout::destroy_dumb(drm_fd, handle);
-        }
+    let Some(handle) = GemHandle::new(set_buffer.gem_handle) else {
+        return;
+    };
+    let reject = || {
+        shell.scanout.drm_device().destroy_transferred(handle);
     };
     let Some(slot) = shell.windows.by_surface(set_buffer.surface_id) else {
-        reject(set_buffer.gem_handle);
+        reject();
         return;
     };
     let Some(window) = shell.windows.get(slot) else {
-        reject(set_buffer.gem_handle);
+        reject();
         return;
     };
     if window.client != index {
-        reject(set_buffer.gem_handle);
+        reject();
         return;
     }
     let width = set_buffer.width as usize;
     let height = set_buffer.height as usize;
-    let valid = set_buffer.gem_handle != 0
-        && (1..=4096).contains(&width)
-        && (1..=4096).contains(&height);
-    // 内核 dumb pitch 恒为 width * 4。
-    let size = width
-        .checked_mul(4)
-        .and_then(|pitch| pitch.checked_mul(height));
-    let (Some(size), true) = (size, valid) else {
-        reject(set_buffer.gem_handle);
+    if !(1..=4096).contains(&width) || !(1..=4096).contains(&height) {
+        reject();
         return;
     };
-    let Ok(pixels) = scanout::map_dumb_buffer(drm_fd, set_buffer.gem_handle, size) else {
-        reject(set_buffer.gem_handle);
+    let Ok(buffer) = shell
+        .scanout
+        .drm_device()
+        .adopt_transferred(handle, width, height)
+    else {
         return;
     };
     let old = window.outer_rect();
     let Some(window) = shell.windows.get_mut(slot) else {
         return;
     };
-    window.apply_buffer(drm_fd, set_buffer.gem_handle, pixels, size, width, height);
+    window.apply_buffer(buffer);
     shell.damage.add(old);
     if let Some(window) = shell.windows.get(slot) {
         shell.damage.add(window.outer_rect());
@@ -393,7 +394,7 @@ fn destroy_window(slot: usize, shell: &mut Shell) {
     if let Some(window) = shell.windows.get(slot) {
         shell.damage.add(window.outer_rect());
     }
-    shell.windows.remove(slot, shell.scanout.drm_fd());
+    shell.windows.remove(slot);
     shell.damage.add(shell.taskbar.strip_rect());
     if shell.windows.focused().is_none() {
         let top = shell.windows.top_visible();
@@ -404,21 +405,16 @@ fn destroy_window(slot: usize, shell: &mut Shell) {
 /// 连接回收：关闭 fd、销毁该 client 的全部窗口（munmap + DESTROY_DUMB +
 /// damage 旧区域）、修补焦点。
 pub fn drop_client(index: usize, shell: &mut Shell) {
-    let mut owned = [None; crate::window::MAX_WINDOWS];
-    for (position, slot) in shell.windows.bottom_to_top().iter().enumerate() {
-        if shell
+    while let Some(slot) = shell.windows.bottom_to_top().iter().copied().find(|slot| {
+        shell
             .windows
             .get(*slot)
             .is_some_and(|window| window.client == index)
-        {
-            owned[position] = Some(*slot);
-        }
-    }
-    for slot in owned.into_iter().flatten() {
+    }) {
         if let Some(window) = shell.windows.get(slot) {
             shell.damage.add(window.outer_rect());
         }
-        shell.windows.remove(slot, shell.scanout.drm_fd());
+        shell.windows.remove(slot);
     }
     shell.damage.add(shell.taskbar.strip_rect());
     if shell.windows.focused().is_none() {
@@ -429,8 +425,7 @@ pub fn drop_client(index: usize, shell: &mut Shell) {
 }
 
 fn mark(text: &[u8]) {
-    // SAFETY: text 在 write 期间有效；fd 2 为 stderr（UART 日志）。
-    unsafe { ffi::write(2, text.as_ptr().cast(), text.len()) };
+    let _ = std::io::stderr().write_all(text);
 }
 
 pub fn mark_mode(width: usize, height: usize) {

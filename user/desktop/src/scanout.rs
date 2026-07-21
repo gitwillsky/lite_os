@@ -1,24 +1,11 @@
-//! DRM master、modeset 与 scanout framebuffer。
-//!
-//! 桌面是 `/dev/dri/card0` 的唯一 open 者（首个 open 自动成为 DRM master）；
-//! 客户端的 fd 是握手时经 `SCM_RIGHTS` 传出的 dup，共享同一 OFD / handle
-//! namespace，因此桌面可直接 `MAP_DUMB` 客户端的 handle 读取像素。
-//!
-//! 单缓冲模型：合成直接画进 scanout fb，每帧用 `DIRTYFB` 提交 damage clip
-//! （内核 clip 上限 32，超出时坍缩为单个 union clip）。mode 在会话内是常量，
-//! 不处理 resize / hotplug。
+//! DRM master, modesetting, scanout buffer, and damage submission.
 
-use core::ffi::c_void;
+use std::{io, thread, time::Duration};
 
-use crate::ffi::{
-    self, DrmClip, DrmConnector, DrmCrtc, DrmDirty, DrmDumbCreate, DrmDumbMap, DrmFramebuffer,
-    DrmMode, DrmResources,
-};
+use linux_uapi::drm::{Clip, DrmDevice, DumbBuffer};
 
-/// 内核 `DIRTYFB` 的 clip 上限。
 const MAX_CLIPS: usize = 32;
 
-/// 半开矩形 `{x1, y1, x2, y2}`，坐标为屏幕绝对坐标，允许负值（合成前裁剪）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub x1: i32,
@@ -73,8 +60,6 @@ impl Rect {
     }
 }
 
-/// scanout fb 的可变像素视图。单线程合成器内使用；`row` 返回整行切片，
-/// 调用方自行按 x 范围裁剪（范围越界会 panic，属编程错误）。
 pub struct Frame {
     pixels: *mut u32,
     pitch: usize,
@@ -93,11 +78,8 @@ impl Frame {
 
     pub fn row(&mut self, y: usize) -> &mut [u32] {
         assert!(y < self.height);
-        // SAFETY: pixels 指向 `pitch * height` 字节的 MAP_SHARED 映射，
-        // 第 y 行 [pitch*y, pitch*y + width*4) 必在映射内；桌面单线程，
-        // 同一时刻只有一个 Frame 存活，行切片互不重叠。
         unsafe {
-            core::slice::from_raw_parts_mut(
+            std::slice::from_raw_parts_mut(
                 (self.pixels as *mut u8).add(y * self.pitch).cast::<u32>(),
                 self.width,
             )
@@ -105,7 +87,6 @@ impl Frame {
     }
 }
 
-/// 屏幕 mode（会话内常量）。
 #[derive(Clone, Copy)]
 pub struct Mode {
     pub width: usize,
@@ -113,361 +94,97 @@ pub struct Mode {
 }
 
 pub struct Scanout {
-    fd: i32,
+    device: DrmDevice,
     framebuffer_id: u32,
-    handle: u32,
-    pixels: *mut u32,
-    size: usize,
-    pitch: usize,
+    buffer: DumbBuffer,
     mode: Mode,
 }
 
 impl Scanout {
-    /// 打开 card0（成为 DRM master），完成 modeset 并切到 scanout fb。
-    ///
-    /// 任一步骤失败即清理已申请的资源并返回 `Err(())`；`SETCRTC` 同步阻塞，
-    /// `EINTR` 时重试。
     pub fn open() -> Result<Self, ()> {
-        let fd = unsafe {
-            ffi::open(
-                ffi::c_str(b"/dev/dri/card0\0"),
-                ffi::O_RDWR | ffi::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(());
-        }
-        let result = Self::modeset(fd);
-        if result.is_err() {
-            // SAFETY: fd 为本函数打开的有效描述符。
-            unsafe { ffi::close(fd) };
-        }
-        result
+        Self::try_open().map_err(|_| ())
     }
 
-    fn modeset(fd: i32) -> Result<Self, ()> {
-        let mut crtc_id = 0u32;
-        let mut connector_id = 0u32;
-        let mut resources = DrmResources {
-            crtc_ids: (&mut crtc_id as *mut u32) as u64,
-            connector_ids: (&mut connector_id as *mut u32) as u64,
-            crtc_count: 1,
-            connector_count: 1,
-            ..DrmResources::default()
-        };
-        // SAFETY: resources 引用的 crtc_id / connector_id 在 ioctl 期间有效。
-        if unsafe {
-            ffi::ioctl(
-                fd,
-                ffi::DRM_IOCTL_MODE_GETRESOURCES,
-                (&mut resources as *mut DrmResources).cast(),
-            )
-        } < 0
-        {
-            return Err(());
-        }
-        if resources.crtc_count == 0 || resources.connector_count == 0 {
-            return Err(());
-        }
-        let mut mode = DrmMode::default();
-        let mut connector = DrmConnector {
-            modes: (&mut mode as *mut DrmMode) as u64,
-            mode_count: 1,
-            connector_id,
-            ..DrmConnector::default()
-        };
-        // SAFETY: connector.modes 指向有效的 DrmMode，容量为 1。
-        if unsafe {
-            ffi::ioctl(
-                fd,
-                ffi::DRM_IOCTL_MODE_GETCONNECTOR,
-                (&mut connector as *mut DrmConnector).cast(),
-            )
-        } < 0
-        {
-            return Err(());
-        }
-        if connector.mode_count == 0 || mode.hdisplay == 0 || mode.vdisplay == 0 {
-            return Err(());
-        }
-        // sysinit 的 splash 是 card0 的首个 open 者，绘制启动画面后 DROP_MASTER；
-        // 桌面作为 root 经 SET_MASTER 取得 master（已是 master 时返回 0）。splash
-        // 尚未 DROP 的竞态窗口以 100ms × 50 次有界重试吸收，超出按启动失败处理。
-        let mut master_retries = 0;
+    fn try_open() -> io::Result<Self> {
+        let device = DrmDevice::open("/dev/dri/card0")?;
+        let topology = device.query_topology()?;
+        let mut retries = 0;
         loop {
-            // SAFETY: SET_MASTER 无参数，argument 传 0。
-            let result = unsafe { ffi::ioctl(fd, ffi::DRM_IOCTL_SET_MASTER, core::ptr::null_mut()) };
-            if result >= 0 {
-                break;
-            }
-            if ffi::errno() != ffi::EBUSY || master_retries >= 50 {
-                return Err(());
-            }
-            master_retries += 1;
-            // SAFETY: 空 poll 纯作定时器。
-            unsafe { ffi::poll(core::ptr::null_mut(), 0, 100) };
-        }
-        let width = usize::from(mode.hdisplay);
-        let height = usize::from(mode.vdisplay);
-        let mut create = DrmDumbCreate {
-            width: u32::from(mode.hdisplay),
-            height: u32::from(mode.vdisplay),
-            bpp: 32,
-            ..DrmDumbCreate::default()
-        };
-        // SAFETY: create 在 ioctl 期间有效，内核回写 handle/pitch/size。
-        if unsafe {
-            ffi::ioctl(
-                fd,
-                ffi::DRM_IOCTL_MODE_CREATE_DUMB,
-                (&mut create as *mut DrmDumbCreate).cast(),
-            )
-        } < 0
-        {
-            return Err(());
-        }
-        let mut scanout = Self::map_and_bind(fd, &mode, create, width, height)?;
-        // SAFETY: crtc.connectors 指向有效 connector id，mode 来自 GETCONNECTOR。
-        let mut crtc = DrmCrtc {
-            connectors: (&connector_id as *const u32) as u64,
-            connector_count: 1,
-            crtc_id,
-            framebuffer_id: scanout.framebuffer_id,
-            mode_valid: 1,
-            mode,
-            ..DrmCrtc::default()
-        };
-        loop {
-            let result = unsafe {
-                ffi::ioctl(
-                    fd,
-                    ffi::DRM_IOCTL_MODE_SETCRTC,
-                    (&mut crtc as *mut DrmCrtc).cast(),
-                )
-            };
-            if result >= 0 {
-                break;
-            }
-            if ffi::errno() != ffi::EINTR {
-                scanout.release_fb();
-                return Err(());
+            match device.set_master() {
+                Ok(()) => break,
+                Err(error) if error.raw_os_error() == Some(16) && retries < 50 => {
+                    retries += 1;
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => return Err(error),
             }
         }
-        Ok(scanout)
-    }
-
-    fn map_and_bind(
-        fd: i32,
-        mode: &DrmMode,
-        create: DrmDumbCreate,
-        width: usize,
-        height: usize,
-    ) -> Result<Self, ()> {
-        let size = usize::try_from(create.size).map_err(|_| ())?;
-        let mut map = DrmDumbMap {
-            handle: create.handle,
-            ..DrmDumbMap::default()
-        };
-        // SAFETY: map 在 ioctl 期间有效。
-        if unsafe {
-            ffi::ioctl(
-                fd,
-                ffi::DRM_IOCTL_MODE_MAP_DUMB,
-                (&mut map as *mut DrmDumbMap).cast(),
-            )
-        } < 0
-        {
-            destroy_dumb(fd, create.handle);
-            return Err(());
-        }
-        // SAFETY: offset 来自 MAP_DUMB，length 为 CREATE_DUMB 报告的 size。
-        let pixels = unsafe {
-            ffi::mmap(
-                core::ptr::null_mut(),
-                size,
-                ffi::PROT_READ | ffi::PROT_WRITE,
-                ffi::MAP_SHARED,
-                fd,
-                map.offset as i64,
-            )
-        };
-        if pixels as usize == usize::MAX {
-            destroy_dumb(fd, create.handle);
-            return Err(());
-        }
-        let mut framebuffer = DrmFramebuffer {
-            width: u32::from(mode.hdisplay),
-            height: u32::from(mode.vdisplay),
-            pitch: create.pitch,
-            bpp: 32,
-            depth: 24,
-            handle: create.handle,
-            ..DrmFramebuffer::default()
-        };
-        // SAFETY: framebuffer 在 ioctl 期间有效。
-        if unsafe {
-            ffi::ioctl(
-                fd,
-                ffi::DRM_IOCTL_MODE_ADDFB,
-                (&mut framebuffer as *mut DrmFramebuffer).cast(),
-            )
-        } < 0
-        {
-            // SAFETY: pixels/size 是上面成功的映射。
-            unsafe { ffi::munmap(pixels, size) };
-            destroy_dumb(fd, create.handle);
-            return Err(());
-        }
+        let buffer =
+            device.create_dumb(topology.mode.width().into(), topology.mode.height().into())?;
+        let framebuffer_id = device.add_framebuffer(&buffer, 24)?;
+        device.set_crtc(&topology, framebuffer_id)?;
         Ok(Self {
-            fd,
-            framebuffer_id: framebuffer.framebuffer_id,
-            handle: create.handle,
-            pixels: pixels.cast(),
-            size,
-            pitch: create.pitch as usize,
-            mode: Mode { width, height },
+            device,
+            framebuffer_id,
+            mode: Mode {
+                width: buffer.width(),
+                height: buffer.height(),
+            },
+            buffer,
         })
     }
 
-    /// DRM fd：握手时经 `SCM_RIGHTS` dup 给客户端，也用于 `MAP_DUMB`
-    /// 客户端 handle（共享 OFD / handle namespace）。
-    pub fn drm_fd(&self) -> i32 {
-        self.fd
+    pub fn drm_device(&self) -> &DrmDevice {
+        &self.device
     }
 
     pub fn mode(&self) -> Mode {
         self.mode
     }
 
-    /// 当前 scanout fb 的可变像素视图；仅在事件循环的合成阶段使用。
     pub fn frame(&mut self) -> Frame {
         Frame {
-            pixels: self.pixels,
-            pitch: self.pitch,
+            pixels: self.buffer.as_mut_ptr(),
+            pitch: self.buffer.pitch(),
             width: self.mode.width,
             height: self.mode.height,
         }
     }
 
-    /// 把 damage clip 经 `DIRTYFB` 提交给内核；同步阻塞，`EINTR` 时重试。
-    ///
-    /// clip 先裁剪到屏幕内，超过 32 个时坍缩为单个 union clip。
     pub fn present(&self, damage: &[Rect]) {
         let screen = Rect::new(0, 0, self.mode.width as i32, self.mode.height as i32);
-        let mut clips = [DrmClip::default(); MAX_CLIPS];
-        let mut clip_count = 0usize;
-        let mut union = None::<Rect>;
+        let mut clips = [Clip {
+            x1: 0,
+            y1: 0,
+            x2: 0,
+            y2: 0,
+        }; MAX_CLIPS];
+        let mut count = 0;
+        let mut union = None;
         for rect in damage {
             let clipped = rect.intersect(screen);
             if clipped.is_empty() {
                 continue;
             }
-            union = Some(match union {
-                None => clipped,
-                Some(previous) => previous.union(clipped),
-            });
-            if clip_count < MAX_CLIPS {
-                clips[clip_count] = clip(clipped);
-                clip_count += 1;
+            union = Some(union.map_or(clipped, |previous: Rect| previous.union(clipped)));
+            if count < MAX_CLIPS {
+                clips[count] = to_clip(clipped);
+                count += 1;
             }
         }
         let Some(union) = union else {
             return;
         };
-        if clip_count == MAX_CLIPS && damage.len() > MAX_CLIPS {
-            clips[0] = clip(union);
-            clip_count = 1;
+        if count == MAX_CLIPS && damage.len() > MAX_CLIPS {
+            clips[0] = to_clip(union);
+            count = 1;
         }
-        let mut dirty = DrmDirty {
-            framebuffer_id: self.framebuffer_id,
-            flags: 0,
-            color: 0,
-            clip_count: clip_count as u32,
-            clips: clips.as_ptr() as u64,
-        };
-        loop {
-            // SAFETY: dirty.clips 指向本栈帧内有效的 clip 数组。
-            let result = unsafe {
-                ffi::ioctl(
-                    self.fd,
-                    ffi::DRM_IOCTL_MODE_DIRTYFB,
-                    (&mut dirty as *mut DrmDirty).cast(),
-                )
-            };
-            if result >= 0 || ffi::errno() != ffi::EINTR {
-                return;
-            }
-        }
-    }
-
-    /// 释放 fb 与 GEM handle（open 失败路径 / Drop 用）。
-    fn release_fb(&mut self) {
-        // SAFETY: pixels/size 为本对象持有的映射，handle 归本对象所有。
-        unsafe { ffi::munmap(self.pixels.cast::<c_void>(), self.size) };
-        destroy_dumb(self.fd, self.handle);
+        let _ = self.device.dirty(self.framebuffer_id, &clips[..count]);
     }
 }
 
-impl Drop for Scanout {
-    fn drop(&mut self) {
-        self.release_fb();
-        // SAFETY: fd 为本对象持有的有效描述符。
-        unsafe { ffi::close(self.fd) };
-    }
-}
-
-/// 销毁桌面持有的 GEM handle。客户端 surface 的 handle 所有权在
-/// `CREATE_SURFACE` 提及时已转移给桌面，客户端绝不调用 DESTROY_DUMB。
-pub fn destroy_dumb(fd: i32, handle: u32) {
-    let mut handle = handle;
-    // SAFETY: handle 是调用方持有的有效 dumb buffer handle。
-    unsafe {
-        ffi::ioctl(
-            fd,
-            ffi::DRM_IOCTL_MODE_DESTROY_DUMB,
-            (&mut handle as *mut u32).cast(),
-        )
-    };
-}
-
-/// `MAP_DUMB` + `mmap` 一个（客户端创建、所有权已转移给桌面的）GEM handle，
-/// 返回映射指针；`size` 由调用方按 `width * 4 * height` 计算（内核 dumb
-/// pitch 恒为 `width * 4`）。失败时 handle 仍归调用方负责销毁。
-pub fn map_dumb_buffer(fd: i32, handle: u32, size: usize) -> Result<*mut u32, ()> {
-    let mut map = DrmDumbMap {
-        handle,
-        ..DrmDumbMap::default()
-    };
-    // SAFETY: map 在 ioctl 期间有效。
-    if unsafe {
-        ffi::ioctl(
-            fd,
-            ffi::DRM_IOCTL_MODE_MAP_DUMB,
-            (&mut map as *mut DrmDumbMap).cast(),
-        )
-    } < 0
-    {
-        return Err(());
-    }
-    // SAFETY: offset 来自 MAP_DUMB，length 为该 dumb buffer 的实际大小。
-    let pixels = unsafe {
-        ffi::mmap(
-            core::ptr::null_mut(),
-            size,
-            ffi::PROT_READ | ffi::PROT_WRITE,
-            ffi::MAP_SHARED,
-            fd,
-            map.offset as i64,
-        )
-    };
-    if pixels as usize == usize::MAX {
-        return Err(());
-    }
-    Ok(pixels.cast())
-}
-
-fn clip(rect: Rect) -> DrmClip {
-    DrmClip {
+fn to_clip(rect: Rect) -> Clip {
+    Clip {
         x1: rect.x1 as u16,
         y1: rect.y1 as u16,
         x2: rect.x2 as u16,
