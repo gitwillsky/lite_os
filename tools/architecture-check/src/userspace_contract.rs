@@ -2,337 +2,223 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use super::rust_files;
 
-fn crate_sources(crate_dir: &Path, errors: &mut Vec<String>) -> BTreeSet<String> {
-    let mut source_paths = Vec::new();
-    if let Err(error) = rust_files(&crate_dir.join("src"), &mut source_paths) {
-        errors.push(error);
-    }
-    source_paths
-        .iter()
-        .filter_map(|path| path.strip_prefix(crate_dir.join("src")).ok())
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .collect::<BTreeSet<_>>()
+pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
+    check_user_tree(root, errors);
+    check_workspace(root, errors);
+    check_ffi_owners(root, errors);
+    check_boot_route(root, errors);
+    check_ui_product(root, errors);
+    check_assets(root, errors);
 }
 
-/// 校验单个用户态 crate 的目录形态、源文件清单与 manifest 必需项。
-fn check_crate(
-    root: &Path,
-    name: &str,
-    expected_sources: &[&str],
-    required_manifest: &[&str],
-    errors: &mut Vec<String>,
-) {
-    let crate_dir = root.join("user").join(name);
-    let expected_entries = BTreeSet::from(["Cargo.toml".to_owned(), "src".to_owned()]);
-    let actual_entries = fs::read_dir(&crate_dir)
+fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
+    let expected = BTreeSet::from([
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "base",
+        "compositor",
+        "diagnostics",
+        "display-proto",
+        "linux-uapi",
+        "lite-ui",
+        "quickjs-runtime",
+        "terminal-session",
+    ])
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let actual = fs::read_dir(root.join("user"))
         .map(|entries| {
             entries
                 .flatten()
+                .filter(|entry| entry.file_name() != "target")
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    if actual_entries != expected_entries {
-        errors.push(format!(
-            "user/{name}: expected exactly {expected_entries:?}, found {actual_entries:?}"
-        ));
-    }
-
-    let expected = expected_sources
-        .iter()
-        .map(|source| (*source).to_owned())
-        .collect::<BTreeSet<_>>();
-    let actual = crate_sources(&crate_dir, errors);
     if actual != expected {
         errors.push(format!(
-            "user/{name}/src: expected exactly {expected:?}, found {actual:?}"
+            "user/: expected the single LiteUI product track {expected:?}, found {actual:?}"
         ));
     }
-
-    let manifest = fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap_or_default();
-    for required in required_manifest {
-        if !manifest.contains(required) {
-            errors.push(format!("user/{name}/Cargo.toml: missing `{required}`"));
+    for forbidden in ["desktop", "splash", "terminal"] {
+        if root.join("user").join(forbidden).exists() {
+            errors.push(format!(
+                "user/{forbidden}: obsolete GUI track must be removed"
+            ));
+        }
+    }
+    for required in [
+        "compositor/src/lib.rs",
+        "compositor/src/boot.rs",
+        "compositor/src/scanout.rs",
+        "compositor/src/session.rs",
+        "display-proto/src/lib.rs",
+        "display-proto/src/scene.rs",
+        "lite-ui/src/main.rs",
+        "lite-ui/src/renderer.rs",
+        "quickjs-runtime/src/raw.rs",
+        "quickjs-runtime/vendor/quickjs/quickjs.c",
+        "terminal-session/src/lib.rs",
+        "terminal-session/src/model.rs",
+    ] {
+        if !root.join("user").join(required).is_file() {
+            errors.push(format!(
+                "user/{required}: required product owner is missing"
+            ));
         }
     }
 }
 
-pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
-    let allowed = BTreeSet::from([
-        "README.md",
-        "Cargo.lock",
-        "Cargo.toml",
-        "base",
-        "desktop",
-        "diagnostics",
-        "display-proto",
-        "linux-uapi",
-        "splash",
-        "terminal",
-    ]);
-    let actual = match fs::read_dir(root.join("user")) {
-        Ok(entries) => entries
-            .flatten()
-            .filter(|entry| entry.file_name() != "target")
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect::<BTreeSet<_>>(),
-        Err(error) => {
-            errors.push(format!("failed to inspect user/: {error}"));
-            return;
-        }
-    };
-    let expected = allowed
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    if actual != expected {
-        errors.push(format!(
-            "user/: expected the desktop product track {expected:?}, found {actual:?}"
-        ));
-    }
-
-    for (directory, names) in [
-        (
-            "base",
-            &[
-                "busybox.config",
-                "group",
-                "inittab",
-                "liteos.terminfo",
-                "network-service",
-                "passwd",
-                "shutdown",
-                "startmenu.conf",
-                "udhcpc.script",
-            ][..],
-        ),
-        ("diagnostics", &["liteos-stress.c"][..]),
-    ] {
-        let expected = names
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect::<BTreeSet<_>>();
-        let actual = fs::read_dir(root.join("user").join(directory))
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        if actual != expected {
-            errors.push(format!(
-                "user/{directory}: expected exactly {expected:?}, found {actual:?}"
-            ));
-        }
-    }
-
-    let user_workspace = fs::read_to_string(root.join("user/Cargo.toml")).unwrap_or_default();
+fn check_workspace(root: &Path, errors: &mut Vec<String>) {
+    let user = fs::read_to_string(root.join("user/Cargo.toml")).unwrap_or_default();
     for required in [
-        "members = [\"desktop\", \"display-proto\", \"linux-uapi\", \"splash\", \"terminal\"]",
-        "display-proto = { path = \"display-proto\" }",
-        "linux-uapi = { path = \"linux-uapi\" }",
-        "[profile.release]\npanic = \"abort\"",
+        "members = [\"compositor\", \"display-proto\", \"linux-uapi\", \"lite-ui\", \"quickjs-runtime\", \"terminal-session\"]",
+        "quickjs-runtime = { path = \"quickjs-runtime\" }",
+        "cssparser = \"=0.37.0\"",
+        "taffy = \"=0.12.2\"",
+        "tiny-skia = \"=0.12.0\"",
+        "version = \"=0.11.0\"",
     ] {
-        if !user_workspace.contains(required) {
+        if !user.contains(required) {
             errors.push(format!("user/Cargo.toml: missing `{required}`"));
         }
     }
-
-    // 所有产品应用均为普通 std binary；Linux 缺失接口只允许由 linux-uapi 提供。
-    check_crate(
-        root,
-        "splash",
-        &["lib.rs", "render.rs"],
-        &[
-            "name = \"splash\"",
-            "[[bin]]\nname = \"splash\"",
-            "linux-uapi.workspace = true",
-        ],
-        errors,
-    );
-
-    check_crate(
-        root,
-        "display-proto",
-        &["lib.rs", "message.rs", "transport.rs"],
-        &["name = \"display-proto\"", "linux-uapi.workspace = true"],
-        errors,
-    );
-    check_crate(
-        root,
-        "linux-uapi",
-        &[
-            "drm.rs",
-            "input.rs",
-            "lib.rs",
-            "process.rs",
-            "pty.rs",
-            "raw.rs",
-            "unix.rs",
-        ],
-        &["name = \"linux-uapi\""],
-        errors,
-    );
-    for (name, sources) in [
-        (
-            "desktop",
-            &[
-                "chrome.rs",
-                "clients.rs",
-                "compositor.rs",
-                "cursor.rs",
-                "input.rs",
-                "lib.rs",
-                "pointer.rs",
-                "scanout.rs",
-                "server.rs",
-                "shutdown.rs",
-                "startmenu.rs",
-                "supervisor.rs",
-                "taskbar.rs",
-                "uifont.rs",
-                "wallpaper.rs",
-                "window.rs",
-            ][..],
-        ),
-        (
-            "terminal",
-            &[
-                "atlas.rs",
-                "client.rs",
-                "configure.rs",
-                "input.rs",
-                "lib.rs",
-                "model.rs",
-                "model/parser.rs",
-                "model/reflow.rs",
-                "model/screen.rs",
-                "model/style.rs",
-                "pointer.rs",
-                "render.rs",
-                "session.rs",
-            ][..],
-        ),
-    ] {
-        let binary_manifest = format!("[[bin]]\nname = \"{name}\"");
-        check_crate(
-            root,
-            name,
-            sources,
-            &[
-                binary_manifest.as_str(),
-                "display-proto.workspace = true",
-                "linux-uapi.workspace = true",
-            ],
-            errors,
-        );
-    }
-
-    let mut product_sources = Vec::new();
-    if let Err(error) = rust_files(&root.join("user"), &mut product_sources) {
-        errors.push(error);
-    }
-    for source in product_sources {
-        if source.starts_with(root.join("user/linux-uapi")) {
-            continue;
-        }
-        let text = fs::read_to_string(&source).unwrap_or_default();
-        if text.contains("extern \"C\"") || text.contains("#[link(") {
-            errors.push(format!(
-                "{}: raw FFI is owned exclusively by user/linux-uapi",
-                source.display()
-            ));
-        }
-    }
-
-    let workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+    let root_workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
     for excluded in [
-        "\"bootloader\"",
-        "\"user/desktop\"",
+        "\"user/compositor\"",
         "\"user/display-proto\"",
         "\"user/linux-uapi\"",
-        "\"user/splash\"",
-        "\"user/terminal\"",
+        "\"user/lite-ui\"",
+        "\"user/quickjs-runtime\"",
+        "\"user/terminal-session\"",
     ] {
-        if !workspace.contains(excluded) {
+        if !root_workspace.contains(excluded) {
             errors.push(format!(
                 "Cargo.toml: workspace exclude is missing {excluded}"
             ));
         }
     }
-    if workspace.matches("\"user/").count() != 5 {
-        errors.push(
-            "Cargo.toml: bootloader and the five userspace crates must be the only excluded Rust crates"
-                .to_owned(),
-        );
-    }
-    let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected_inittab = "::sysinit:/bin/splash\n::respawn:/bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
-    if inittab != expected_inittab {
-        errors.push(
-            "user/base/inittab: must run splash at sysinit and supervise desktop, network and UART recovery exactly once"
-                .to_owned(),
-        );
-    }
+}
 
-    let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
-    if !builder.contains("def build_desktop(")
-        || !builder.contains("def build_terminal(")
-        || !builder.contains("def build_splash(")
-        || !builder.contains("build-std=std,panic_abort")
-        || !builder.contains("--bin")
-        || !builder.contains("/bin/desktop")
-        || !builder.contains("/bin/terminal")
-        || !builder.contains("/bin/splash")
-        || !builder.contains("ROOT / \"user/Cargo.toml\"")
-        || !builder.contains("ROOT / \"user/Cargo.lock\"")
-        || !builder.contains("/etc/terminfo/l/liteos")
-        || builder.contains("console-session")
-        || [
-            "liteui",
-            "quickjs",
-            "display-session",
-            "terminal-service",
-            "libseat",
-            "libdrm",
-        ]
-        .iter()
-        .any(|marker| builder.contains(marker))
-    {
+fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
+    let mut sources = Vec::new();
+    if let Err(error) = rust_files(&root.join("user"), &mut sources) {
+        errors.push(error);
+        return;
+    }
+    for source in sources {
+        let allowed = source.starts_with(root.join("user/linux-uapi"))
+            || source == root.join("user/quickjs-runtime/src/raw.rs");
+        if allowed {
+            continue;
+        }
+        let text = fs::read_to_string(&source).unwrap_or_default();
+        if text.contains("extern \"C\"") || text.contains("#[link(") {
+            errors.push(format!(
+                "{}: raw FFI belongs only to linux-uapi or quickjs-runtime/raw.rs",
+                source.display()
+            ));
+        }
+    }
+}
+
+fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
+    let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
+    let expected = "::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/lite-ui --desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    if inittab != expected {
         errors.push(
-            "scripts/verify_busybox.py: rootfs must contain only the registered desktop track"
+            "user/base/inittab: must supervise compositor, React desktop, network and UART recovery exactly once"
                 .to_owned(),
         );
     }
-    let atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
-    if atlas.get(..8) != Some(b"LTA8\0\0\0\x02") || atlas.len() != 481_136 {
-        errors.push(
-            "assets/fonts/liteos-terminal.a8: expected the checked v2 terminal atlas".to_owned(),
-        );
+    let graphical =
+        fs::read_to_string(root.join("user/base/graphical-session")).unwrap_or_default();
+    for required in ["/bin/compositor --probe", "while :", "\"$@\""] {
+        if !graphical.contains(required) {
+            errors.push(format!("user/base/graphical-session: missing `{required}`"));
+        }
     }
+    let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
+    for required in [
+        "def build_compositor(",
+        "def build_lite_ui(",
+        "def build_terminal_session(",
+        "def build_ui_assets(",
+        "/bin/compositor",
+        "/bin/lite-ui",
+        "/bin/terminal-session",
+        "/usr/lib/lite-ui/runtime.js",
+        "/usr/share/liteos/desktop/main.js",
+        "/usr/share/liteos/apps/terminal/app.json",
+    ] {
+        if !builder.contains(required) {
+            errors.push(format!("scripts/verify_busybox.py: missing `{required}`"));
+        }
+    }
+    for forbidden in [
+        "/bin/desktop",
+        "/bin/splash",
+        "startmenu.conf",
+        "wallpaper.xrgb",
+    ] {
+        if builder.contains(forbidden) {
+            errors.push(format!(
+                "scripts/verify_busybox.py: obsolete product `{forbidden}` remains"
+            ));
+        }
+    }
+}
+
+fn check_ui_product(root: &Path, errors: &mut Vec<String>) {
+    let package = fs::read_to_string(root.join("ui/package.json")).unwrap_or_default();
+    for required in [
+        "\"react\": \"19.2.7\"",
+        "\"react-reconciler\": \"0.33.0\"",
+        "\"esbuild\": \"0.28.1\"",
+    ] {
+        if !package.contains(required) {
+            errors.push(format!("ui/package.json: missing `{required}`"));
+        }
+    }
+    for required in [
+        "ui/build.mjs",
+        "ui/package-lock.json",
+        "ui/src/runtime/renderer.js",
+        "ui/src/design-system/window.jsx",
+        "ui/src/design-system/taskbar.jsx",
+        "ui/src/desktop/main.jsx",
+        "ui/src/desktop/style.css",
+        "ui/src/terminal/main.jsx",
+        "ui/src/terminal/app.json",
+    ] {
+        if !root.join(required).is_file() {
+            errors.push(format!(
+                "{required}: required React product source is missing"
+            ));
+        }
+    }
+}
+
+fn check_assets(root: &Path, errors: &mut Vec<String>) {
     let ui_atlas = fs::read(root.join("assets/fonts/liteos-ui.a8p")).unwrap_or_default();
     if ui_atlas.get(..8) != Some(b"LUP8\0\0\0\x01") || ui_atlas.len() != 7_458_232 {
-        errors.push(
-            "assets/fonts/liteos-ui.a8p: expected the checked v1 UI proportional atlas".to_owned(),
-        );
-    }
-    let wallpaper = fs::read(root.join("assets/wallpaper.xrgb")).unwrap_or_default();
-    if wallpaper.get(..8) != Some(b"LWP8\0\0\0\x01") || wallpaper.len() != 20_358_160 {
-        errors.push("assets/wallpaper.xrgb: expected the checked v1 raw wallpaper".to_owned());
+        errors.push("assets/fonts/liteos-ui.a8p: checked UI atlas identity changed".to_owned());
     }
     let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();
     if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x01") || bootlogo.len() != 3_145_744 {
-        errors.push("assets/bootlogo.xrgb: expected the checked v1 raw boot logo".to_owned());
+        errors.push("assets/bootlogo.xrgb: checked boot scene identity changed".to_owned());
     }
-    let cursor = fs::read(root.join("assets/cursor.lc1")).unwrap_or_default();
-    if cursor.get(..8) != Some(b"LCR1\0\0\0\x01") || cursor.len() != 272 {
-        errors.push("assets/cursor.lc1: expected the checked v1 32x32 arrow cursor".to_owned());
-    }
-    let sprites = fs::read(root.join("assets/desktop-sprites.argb")).unwrap_or_default();
-    if sprites.get(..8) != Some(b"LSP8\0\0\0\x01") || sprites.len() != 331_792 {
-        errors.push(
-            "assets/desktop-sprites.argb: expected the checked v1 576x144 sprite sheet".to_owned(),
-        );
+    for removed in [
+        "assets/wallpaper.xrgb",
+        "assets/desktop-sprites.argb",
+        "user/base/startmenu.conf",
+    ] {
+        if root.join(removed).exists() {
+            errors.push(format!(
+                "{removed}: obsolete native-shell asset must be removed"
+            ));
+        }
     }
 }

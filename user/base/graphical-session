@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# devfs 始终暴露标准节点；只有标准 DRM topology 查询成功才证明 platform 发布了显示设备。
+# 缺少该探测会让无 GPU 的恢复/自检启动反复拉起图形进程并占用 CPU 与进程资源。
+if ! /bin/compositor --probe 2>/dev/null; then
+    exit 0
+fi
+
+while :; do
+    "$@"
+    /bin/sleep 1
+done

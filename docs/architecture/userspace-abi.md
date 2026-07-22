@@ -15,9 +15,9 @@
   `SIG_IGN` 时恢复默认 disposition 并解除屏蔽，默认动作对 PID 1 也不豁免。RISC-V lazy FP
   指令必须先由 architecture backend 激活并原 PC 重试，只有未被该机制消费的指令生成 SIGILL。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、普通 Rust `std`
-  binary `desktop`/`terminal`/`splash`、`display-proto`/`linux-uapi` library 和单 ELF
-  `liteos-stress` diagnostics。`user/` 是单一 Cargo workspace 与 lockfile；kernel、rootfs、APK 与
-  cache 都携带同一个 architecture identity。
+  binary `compositor`/`lite-ui`/`terminal-session`、`quickjs-runtime`/`display-proto`/`linux-uapi`
+  library 和单 ELF `liteos-stress` diagnostics。`user/` 是单一 Cargo workspace 与 lockfile；
+  kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
 - 标准 Rust consumer 使用官方 `aarch64-unknown-linux-musl`/`riscv64gc-unknown-linux-musl`
   target 与普通 `fn main`；builder 从固定 rust-src 构建 `std + panic_abort`，从同一源码树构建并
   静态链接 LLVM libunwind，最终动态 runtime 仍只有固定 musl。`rust-std-smoke` 只注入 disposable

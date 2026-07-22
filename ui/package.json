@@ -1,0 +1,16 @@
+{
+  "name": "liteos-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "dependencies": {
+    "react": "19.2.7",
+    "react-reconciler": "0.33.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

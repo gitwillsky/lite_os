@@ -1,8 +1,12 @@
 //! Typed DRM dumb-buffer and modesetting resources.
 
+mod shared;
+
+pub use shared::SharedDumbBuffer;
+
 use std::{
     fs::{File, OpenOptions},
-    io,
+    io::{self, Read},
     os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
     os::unix::fs::OpenOptionsExt,
     ptr::NonNull,
@@ -28,6 +32,19 @@ pub struct Topology {
     pub crtc_id: u32,
     pub connector_id: u32,
     pub mode: Mode,
+}
+
+/// One completed DRM page flip.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlipEvent {
+    /// Opaque sequence supplied to [`DrmDevice::page_flip`].
+    pub user_data: u64,
+    /// Kernel monotonic seconds at completion.
+    pub seconds: u32,
+    /// Remaining monotonic microseconds at completion.
+    pub microseconds: u32,
+    /// Device presentation sequence.
+    pub sequence: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -194,6 +211,47 @@ impl DrmDevice {
         })
     }
 
+    /// Maps a compositor-owned dumb buffer through a shared DRM file description.
+    ///
+    /// # Parameters
+    ///
+    /// - `raw_handle`: GEM handle published by the compositor.
+    /// - `width`: Mapped pixel width.
+    /// - `height`: Mapped pixel height.
+    /// - `pitch`: Bytes between adjacent rows.
+    /// - `byte_len`: Exact mapping length published by the compositor.
+    ///
+    /// # Returns
+    ///
+    /// A mapping that never destroys the compositor-owned GEM handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for inconsistent geometry or the Linux mapping error.
+    pub fn map_shared_dumb(
+        &self,
+        raw_handle: u32,
+        width: usize,
+        height: usize,
+        pitch: usize,
+        byte_len: usize,
+    ) -> io::Result<SharedDumbBuffer> {
+        let handle = GemHandle::new(raw_handle)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GEM handle is zero"))?;
+        if pitch < width.saturating_mul(4) || pitch.saturating_mul(height) > byte_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "shared dumb-buffer geometry is inconsistent",
+            ));
+        }
+        Ok(SharedDumbBuffer::new(
+            self.map(handle, byte_len)?,
+            pitch,
+            width,
+            height,
+        ))
+    }
+
     pub fn destroy_transferred(&self, handle: GemHandle) {
         drop(OwnedGem {
             device: self.clone(),
@@ -234,6 +292,81 @@ impl DrmDevice {
         }
     }
 
+    /// Queues one event-producing page flip on the selected CRTC.
+    ///
+    /// # Parameters
+    ///
+    /// - `topology`: Topology whose CRTC receives the new framebuffer.
+    /// - `framebuffer_id`: Previously registered framebuffer.
+    /// - `user_data`: Opaque sequence returned in the completion event.
+    ///
+    /// # Returns
+    ///
+    /// `()` once the kernel accepted the asynchronous flip.
+    ///
+    /// # Errors
+    ///
+    /// Returns the Linux ioctl error for invalid ownership, framebuffer or in-flight state.
+    pub fn page_flip(
+        &self,
+        topology: &Topology,
+        framebuffer_id: u32,
+        user_data: u64,
+    ) -> io::Result<()> {
+        let mut flip = raw::DrmPageFlip {
+            crtc_id: topology.crtc_id,
+            framebuffer_id,
+            flags: 1,
+            user_data,
+            ..raw::DrmPageFlip::default()
+        };
+        self.ioctl(raw::DRM_IOCTL_MODE_PAGE_FLIP, (&raw mut flip).cast())
+    }
+
+    /// Reads exactly one page-flip completion event.
+    ///
+    /// # Returns
+    ///
+    /// The decoded event associated with this shared DRM file description.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error or `InvalidData` for a non-flip DRM event.
+    pub fn read_flip_event(&self) -> io::Result<FlipEvent> {
+        let mut bytes = [0u8; 32];
+        (&*self.file).read_exact(&mut bytes)?;
+        if read_u32(&bytes, 0) != 2 || read_u32(&bytes, 4) != bytes.len() as u32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "DRM returned a non-flip event",
+            ));
+        }
+        Ok(FlipEvent {
+            user_data: read_u64(&bytes, 8),
+            seconds: read_u32(&bytes, 16),
+            microseconds: read_u32(&bytes, 20),
+            sequence: read_u32(&bytes, 24),
+        })
+    }
+
+    /// Removes one registered framebuffer id.
+    ///
+    /// # Parameters
+    ///
+    /// - `framebuffer_id`: Framebuffer identity returned by [`DrmDevice::add_framebuffer`].
+    ///
+    /// # Returns
+    ///
+    /// `()` after the id is no longer published.
+    ///
+    /// # Errors
+    ///
+    /// Returns the Linux ioctl error when the id is invalid or still active.
+    pub fn remove_framebuffer(&self, framebuffer_id: u32) -> io::Result<()> {
+        let mut framebuffer_id = framebuffer_id;
+        self.ioctl(raw::DRM_IOCTL_MODE_RMFB, (&raw mut framebuffer_id).cast())
+    }
+
     pub fn dirty(&self, framebuffer_id: u32, clips: &[Clip]) -> io::Result<()> {
         const _: () = assert!(size_of::<Clip>() == size_of::<raw::DrmClip>());
         const _: () = assert!(align_of::<Clip>() == align_of::<raw::DrmClip>());
@@ -257,15 +390,7 @@ impl DrmDevice {
             handle: handle.get(),
             ..raw::DrmDumbMap::default()
         };
-        // 临时跟踪：区分 MAP_DUMB 与 mmap 失败（排查后移除）。
-        if let Err(error) = self.ioctl(raw::DRM_IOCTL_MODE_MAP_DUMB, (&raw mut map).cast()) {
-            eprintln!(
-                "uapi: map_dumb handle={} failed errno={:?}",
-                handle.get(),
-                error.raw_os_error()
-            );
-            return Err(error);
-        }
+        self.ioctl(raw::DRM_IOCTL_MODE_MAP_DUMB, (&raw mut map).cast())?;
         let pointer = unsafe {
             raw::mmap(
                 std::ptr::null_mut(),
@@ -277,14 +402,7 @@ impl DrmDevice {
             )
         };
         if pointer as usize == usize::MAX {
-            let error = io::Error::last_os_error();
-            eprintln!(
-                "uapi: mmap handle={} size={} failed errno={:?}",
-                handle.get(),
-                size,
-                error.raw_os_error()
-            );
-            return Err(error);
+            return Err(io::Error::last_os_error());
         }
         Ok(Mapping {
             pointer: NonNull::new(pointer.cast()).expect("mmap success is non-null"),
@@ -301,6 +419,22 @@ impl DrmDevice {
     }
 }
 
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_ne_bytes(
+        bytes[offset..offset + 4]
+            .try_into()
+            .expect("fixed DRM event"),
+    )
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_ne_bytes(
+        bytes[offset..offset + 8]
+            .try_into()
+            .expect("fixed DRM event"),
+    )
+}
+
 struct OwnedGem {
     device: DrmDevice,
     handle: GemHandle,
@@ -308,13 +442,6 @@ struct OwnedGem {
 
 impl Drop for OwnedGem {
     fn drop(&mut self) {
-        // 临时跟踪：记录 destroy 调用方进程（排查 SET_BUFFER adopt 后移除）。
-        eprintln!(
-            "uapi: destroy_dumb handle={} proc={:?} pid={}",
-            self.handle.get(),
-            std::env::args().next(),
-            std::process::id()
-        );
         let mut handle = self.handle.get();
         let _ = self
             .device
@@ -322,7 +449,7 @@ impl Drop for OwnedGem {
     }
 }
 
-struct Mapping {
+pub(super) struct Mapping {
     pointer: NonNull<u8>,
     size: usize,
 }

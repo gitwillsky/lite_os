@@ -9,11 +9,12 @@ members = [
 ]
 exclude = [
     "bootloader",
-    "user/desktop",
+    "user/compositor",
     "user/display-proto",
+    "user/lite-ui",
     "user/linux-uapi",
-    "user/splash",
-    "user/terminal",
+    "user/quickjs-runtime",
+    "user/terminal-session",
 ]
 default-members = ["kernel"]
 resolver = "3"

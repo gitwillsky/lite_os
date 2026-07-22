@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the XP-style arrow cursor asset consumed by user/desktop.
+"""Generate the XP-style arrow cursor asset consumed by the compositor.
 
 普通构建只消费 `assets/cursor.lc1`；本脚本只在调整光标形状时手动运行
 （需要 Pillow，使用 `target/fontenv` 虚拟环境）。
@@ -9,7 +9,7 @@
 轮廓由外形多边形均匀腐蚀得到填充区，再降采样阈值化，保证斜边落点平滑。
 另输出 `target/cursor-preview.png`（8× 放大 + 棋盘背景）供人工检查。
 
-文件布局（小端，与 user/desktop/src/cursor.rs 的解析契约一致）：
+文件布局（小端，与 compositor 的光标解析契约一致）：
 8B magic `LCR1\\0\\0\\0\\x01`、u32 width、u32 height，随后依次是轮廓与填充
 两张 1bpp 位图，各 height*ceil(width/8) 字节，每字节 MSB 对应行内最左像素。
 """

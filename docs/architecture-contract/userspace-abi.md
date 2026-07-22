@@ -18,9 +18,9 @@
   build；Cargo 最终链接由 build-std 的 `compiler_builtins` 独占，不能再追加 musl builder 的外部
   compiler runtime。最终 ELF 必须动态依赖唯一 musl `libc.so`，libunwind 只允许静态进入 consumer。
 - `user/Cargo.toml` 与 `user/Cargo.lock` 是产品 Rust userspace 的唯一 workspace/依赖解析 owner；Cargo
-  直接链接 `desktop`、`terminal`、`splash` 最终 PIE，禁止 staticlib 中间产物、手工二次链接或每应用
-  lockfile。`linux-uapi` 独占 raw musl FFI 与 Linux layout/constant；其外任何 `extern "C"`/`#[link]`
-  由 architecture-check 拒绝。
+  直接链接 `compositor`、`lite-ui`、`terminal-session` 最终 PIE，禁止 staticlib 中间产物、手工二次
+  链接或每应用 lockfile。`linux-uapi` 独占 raw musl FFI 与 Linux layout/constant；唯一例外是
+  `quickjs-runtime` 内固定 vendored QuickJS ABI，其他位置的 `extern "C"`/`#[link]` 由 architecture-check 拒绝。
 
 ## Interface
 

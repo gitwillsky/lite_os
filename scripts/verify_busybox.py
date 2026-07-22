@@ -61,7 +61,7 @@ BINARY_RECIPE_VERSION = 6
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 9
+ROOTFS_RECIPE_VERSION = 10
 if TARGET.arch == "aarch64":
     BUSYBOX_ARCH = "arm64"
     BUSYBOX_TARGET_CFLAGS = "-march=armv8-a"
@@ -936,37 +936,64 @@ def build_rust_user_program(
     return entry / binary_name
 
 
-def build_desktop(musl: MuslCachePaths) -> Path:
-    """构建桌面进程：合成器、窗口管理器与 shell 的唯一 owner。"""
+def build_compositor(musl: MuslCachePaths) -> Path:
+    """构建唯一 DRM/input/scanout owner。"""
     return build_rust_user_program(
         musl,
-        "desktop",
-        "desktop",
-        "desktop",
-        2,
+        "compositor",
+        "compositor",
+        "compositor",
+        1,
     )
 
 
-def build_terminal(musl: MuslCachePaths) -> Path:
-    """构建终端模拟器：桌面客户端，ANSI parser/renderer 与 PTY 监督的 owner。"""
+def build_lite_ui(musl: MuslCachePaths) -> Path:
+    """构建所有窗体应用共用的 QuickJS/React host。"""
     return build_rust_user_program(
         musl,
-        "terminal",
-        "terminal",
-        "terminal",
-        2,
+        "lite-ui",
+        "lite-ui",
+        "lite-ui",
+        1,
     )
 
 
-def build_splash(musl: MuslCachePaths) -> Path:
-    """构建启动/关机画面程序：sysinit 阶段的临时屏幕 owner。"""
+def build_terminal_session(musl: MuslCachePaths) -> Path:
+    """构建无窗体 PTY/VT helper。"""
     return build_rust_user_program(
         musl,
-        "splash",
-        "splash",
-        "splash",
-        2,
+        "terminal-session",
+        "terminal-session",
+        "terminal-session",
+        1,
     )
+
+
+def build_ui_assets() -> Path:
+    """以唯一 lockfile 构建共享 React runtime、desktop 与 app bundles。"""
+    npm = shutil.which("npm")
+    if npm is None:
+        raise RuntimeError("npm is required to build LiteUI bundles")
+    ui = ROOT / "ui"
+    run([npm, "ci", "--ignore-scripts"], ui)
+    run([npm, "run", "check"], ui)
+    run([npm, "run", "build"], ui)
+    output = ui / "dist"
+    required = (
+        "runtime.js",
+        "desktop/main.js",
+        "desktop/style.css",
+        "desktop/assets/bliss.png",
+        "desktop/assets/avatar.png",
+        "desktop/assets/terminal.png",
+        "terminal/app.json",
+        "terminal/main.js",
+        "terminal/style.css",
+        "terminal/assets/terminal.png",
+    )
+    if any(not (output / path).is_file() for path in required):
+        raise RuntimeError("LiteUI build omitted a required product artifact")
+    return output
 
 
 def build_stress_tools(musl: MuslCachePaths) -> Path:
@@ -1039,9 +1066,10 @@ def create_image(
         ],
         ROOT,
     )
-    desktop = build_desktop(musl)
-    terminal = build_terminal(musl)
-    splash = build_splash(musl)
+    compositor = build_compositor(musl)
+    lite_ui = build_lite_ui(musl)
+    terminal_session = build_terminal_session(musl)
+    ui = build_ui_assets()
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
@@ -1058,7 +1086,14 @@ def create_image(
         "set_inode_field /tmp mode 041777",
         "mkdir /usr",
         "mkdir /usr/lib",
+        "mkdir /usr/lib/lite-ui",
         "mkdir /usr/share",
+        "mkdir /usr/share/liteos",
+        "mkdir /usr/share/liteos/apps",
+        "mkdir /usr/share/liteos/apps/terminal",
+        "mkdir /usr/share/liteos/apps/terminal/assets",
+        "mkdir /usr/share/liteos/desktop",
+        "mkdir /usr/share/liteos/desktop/assets",
         "mkdir /usr/share/udhcpc",
         "mkdir /var",
         "mkdir /var/cache",
@@ -1066,33 +1101,40 @@ def create_image(
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
         f"write {ROOT / 'user' / 'base' / 'inittab'} /etc/inittab",
-        f"write {ROOT / 'user' / 'base' / 'startmenu.conf'} /etc/startmenu.conf",
+        f"write {ROOT / 'user' / 'base' / 'graphical-session'} /etc/init.d/graphical-session",
+        "set_inode_field /etc/init.d/graphical-session mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
         f"write {ROOT / 'assets' / 'terminfo' / 'l' / 'liteos'} /etc/terminfo/l/liteos",
-        # 图形资产运行时由 desktop/terminal/splash 从 rootfs 读入（不内嵌二进制）；
-        # 缺失时 desktop/terminal 启动失败、splash 静默跳过 logo。
-        "mkdir /usr/share/liteos",
-        f"write {ROOT / 'assets' / 'wallpaper.xrgb'} /usr/share/liteos/wallpaper.xrgb",
+        # compositor 只消费 boot/cursor；XP presentation 与 app 资产由 UI bundle 独占。
         f"write {ROOT / 'assets' / 'bootlogo.xrgb'} /usr/share/liteos/bootlogo.xrgb",
         f"write {ROOT / 'assets' / 'cursor.lc1'} /usr/share/liteos/cursor.lc1",
         f"write {ROOT / 'assets' / 'fonts' / 'liteos-ui.a8p'} /usr/share/liteos/liteos-ui.a8p",
         f"write {ROOT / 'assets' / 'fonts' / 'liteos-terminal.a8'} /usr/share/liteos/liteos-terminal.a8",
-        f"write {ROOT / 'assets' / 'desktop-sprites.argb'} /usr/share/liteos/desktop-sprites.argb",
+        f"write {ui / 'runtime.js'} /usr/lib/lite-ui/runtime.js",
+        f"write {ui / 'desktop' / 'main.js'} /usr/share/liteos/desktop/main.js",
+        f"write {ui / 'desktop' / 'style.css'} /usr/share/liteos/desktop/style.css",
+        f"write {ui / 'desktop' / 'assets' / 'bliss.png'} /usr/share/liteos/desktop/assets/bliss.png",
+        f"write {ui / 'desktop' / 'assets' / 'avatar.png'} /usr/share/liteos/desktop/assets/avatar.png",
+        f"write {ui / 'desktop' / 'assets' / 'terminal.png'} /usr/share/liteos/desktop/assets/terminal.png",
+        f"write {ui / 'terminal' / 'app.json'} /usr/share/liteos/apps/terminal/app.json",
+        f"write {ui / 'terminal' / 'main.js'} /usr/share/liteos/apps/terminal/main.js",
+        f"write {ui / 'terminal' / 'style.css'} /usr/share/liteos/apps/terminal/style.css",
+        f"write {ui / 'terminal' / 'assets' / 'terminal.png'} /usr/share/liteos/apps/terminal/assets/terminal.png",
         f"write {ROOT / 'user' / 'base' / 'shutdown'} /bin/shutdown",
         "set_inode_field /bin/shutdown mode 0100755",
         f"write {openssl.binary} /bin/openssl",
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
         "set_inode_field /usr/lib/libc.so mode 0100755",
-        f"write {desktop} /bin/desktop",
-        "set_inode_field /bin/desktop mode 0100755",
-        f"write {terminal} /bin/terminal",
-        "set_inode_field /bin/terminal mode 0100755",
-        f"write {splash} /bin/splash",
-        "set_inode_field /bin/splash mode 0100755",
+        f"write {compositor} /bin/compositor",
+        "set_inode_field /bin/compositor mode 0100755",
+        f"write {lite_ui} /bin/lite-ui",
+        "set_inode_field /bin/lite-ui mode 0100755",
+        f"write {terminal_session} /bin/terminal-session",
+        "set_inode_field /bin/terminal-session mode 0100755",
         f"write {stress_tools} /bin/liteos-stress",
         "set_inode_field /bin/liteos-stress mode 0100755",
         "ln /bin/liteos-stress /bin/cputest",
@@ -1179,19 +1221,24 @@ def create_image(
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
-    for session_binary in ("/bin/desktop", "/bin/terminal", "/bin/splash"):
+    for session_binary in ("/bin/compositor", "/bin/lite-ui", "/bin/terminal-session"):
         metadata = run(
             [str(find_debugfs()), "-R", f"stat {session_binary}", str(image)], ROOT
         )
         if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
             raise RuntimeError(f"BusyBox rootfs lacks {session_binary}")
     for asset in (
-        "/usr/share/liteos/wallpaper.xrgb",
         "/usr/share/liteos/bootlogo.xrgb",
         "/usr/share/liteos/cursor.lc1",
         "/usr/share/liteos/liteos-ui.a8p",
         "/usr/share/liteos/liteos-terminal.a8",
-        "/usr/share/liteos/desktop-sprites.argb",
+        "/usr/lib/lite-ui/runtime.js",
+        "/usr/share/liteos/desktop/main.js",
+        "/usr/share/liteos/desktop/style.css",
+        "/usr/share/liteos/desktop/assets/bliss.png",
+        "/usr/share/liteos/apps/terminal/app.json",
+        "/usr/share/liteos/apps/terminal/main.js",
+        "/usr/share/liteos/apps/terminal/style.css",
     ):
         metadata = run([str(find_debugfs()), "-R", f"stat {asset}", str(image)], ROOT)
         if "Type: regular" not in metadata:
@@ -1237,9 +1284,10 @@ def create_published_image(
         RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
         OSError: cache publication 或 output copy 失败。
     """
-    desktop = build_desktop(musl)
-    terminal = build_terminal(musl)
-    splash = build_splash(musl)
+    compositor = build_compositor(musl)
+    lite_ui = build_lite_ui(musl)
+    terminal_session = build_terminal_session(musl)
+    ui = build_ui_assets()
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -1252,9 +1300,10 @@ def create_published_image(
         *target_runtime_artifacts(),
         binary,
         musl.install / "usr/lib/libc.so",
-        desktop,
-        terminal,
-        splash,
+        compositor,
+        lite_ui,
+        terminal_session,
+        *sorted(path for path in ui.rglob("*") if path.is_file()),
         stress_tools,
         openssl.binary,
         bootstrap.apk_static,
@@ -1265,7 +1314,7 @@ def create_published_image(
         ROOT / "user/base/passwd",
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
-        ROOT / "user/base/startmenu.conf",
+        ROOT / "user/base/graphical-session",
         ROOT / "user/Cargo.toml",
         ROOT / "user/Cargo.lock",
         *sorted((ROOT / "user").glob("*/Cargo.toml")),
@@ -1274,14 +1323,16 @@ def create_published_image(
         ROOT / "assets/terminfo/l/liteos",
         ROOT / "assets/fonts/liteos-terminal.a8",
         ROOT / "assets/fonts/liteos-ui.a8p",
-        ROOT / "assets/desktop-sprites.argb",
-        ROOT / "assets/wallpaper.xrgb",
         ROOT / "assets/bootlogo.xrgb",
         ROOT / "assets/cursor.lc1",
         ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",
         ROOT / "user/base/udhcpc.script",
+        ROOT / "ui/package.json",
+        ROOT / "ui/package-lock.json",
+        ROOT / "ui/build.mjs",
+        *sorted(path for path in (ROOT / "ui/src").rglob("*") if path.is_file()),
         ROOT / "create_fs.py",
         Path(__file__).resolve(),
         ROOT / "scripts/apk_cache.py",
@@ -1374,7 +1425,12 @@ def main() -> int:
                 ROOT / "user/base/passwd",
                 ROOT / "user/base/group",
                 ROOT / "user/base/inittab",
-                ROOT / "user/base/startmenu.conf",
+                ROOT / "user/base/graphical-session",
+                ROOT / "user/Cargo.toml",
+                ROOT / "user/Cargo.lock",
+                ROOT / "ui/package.json",
+                ROOT / "ui/package-lock.json",
+                ROOT / "ui/build.mjs",
                 ROOT / "user/base/network-service",
                 ROOT / "user/base/shutdown",
                 ROOT / "user/base/udhcpc.script",

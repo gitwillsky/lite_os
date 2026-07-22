@@ -48,6 +48,7 @@ class QemuRoutingTests(unittest.TestCase):
         self.assertNotIn("-accel", command)
         self.assertNotIn("-acpi", command)
         self.assertEqual(argument_after(command, "-smp"), "7")
+        self.assertNotIn("-m", command)
         self.assertEqual(
             argument_after(command, "-kernel"),
             "target/aarch64-unknown-none-softfloat/release/Image",
@@ -74,6 +75,7 @@ class QemuRoutingTests(unittest.TestCase):
             for index, argument in enumerate(command)
             if argument == "-device"
         ]
+        self.assertEqual(argument_after(command, "-m"), "512M")
         self.assertEqual(
             devices,
             [

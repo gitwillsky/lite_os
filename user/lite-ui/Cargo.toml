@@ -1,0 +1,22 @@
+[package]
+name = "lite-ui"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+autolib = false
+
+[[bin]]
+name = "lite-ui"
+path = "src/main.rs"
+
+[dependencies]
+cssparser.workspace = true
+display-proto.workspace = true
+linux-uapi.workspace = true
+parley.workspace = true
+png = "=0.18.0"
+quickjs-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+taffy.workspace = true
+tiny-skia.workspace = true

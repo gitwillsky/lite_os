@@ -18,7 +18,8 @@
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
-- `fs::pty` 独占 PTY registry/pair；Terminal 独占 session/foreground/termios/winsize；`terminal`（桌面客户端）独占 ANSI parser 与 renderer state。
+- `fs::pty` 独占 PTY registry/pair；Terminal 独占 session/foreground/termios/winsize。userspace terminal
+  helper 与 graphical session owner 由 [LiteUI 契约](lite-ui.md) 维护。
 - userspace `linux-uapi` 独占 DRM/evdev/PTY/process/poll ancillary 的 raw musl FFI；`OwnedFd`、
   `DumbBuffer`、`InputDevice`、`PtySession` 与 `SessionChild` 独占对应资源 cleanup。应用不得复制
   layout、constant、extern block 或裸 owner。
@@ -54,19 +55,8 @@
 - 动态 client/window/child/config 集合必须使用 fallible `Vec`/`String` reserve 后发布，不得恢复任意
   8-slot 上限；damage、wire frame、input batch 与 renderer row 是协议或热路径 bounded buffer，继续
   使用固定数组。poll descriptor/mapping vector 必须跨轮次复用容量，事件稳态不得新增分配。
-- `desktop` 是 graphical session 的唯一 owner：经 SET_MASTER 取得 DRM master，独占 evdev
-  输入与 scanout；客户端经 SCM_RIGHTS 共享同一 OFD，CREATE_DUMB handle 的 DESTROY 只归桌面。
-  headless boot 中 DRM/input 不可用时 `desktop` 保持同一进程并以 5 秒 poll deadline 重试，只报告一次。
-  禁止退出后依赖 init `respawn` 紧循环重复 exec，也禁止复制第二套 headless compositor state。
-  图形资产（壁纸 / 字体 atlas / 精灵表 / 光标）只从 rootfs `/usr/share/liteos/` 单轨加载，禁止二进制
-  内嵌与 fs 之外的第二条资产路径；缺失或校验失败即启动失败，与无 GPU 同属启动失败路径。
-- `splash` 是 sysinit 的临时屏幕 owner：首个 open `/dev/dri/card0` 取得 master 完成启动画面
-  modeset 后立即 DROP_MASTER（DIRTYFB 不需要 master，进度条动画不受影响），fork 后父进程退出
-  使 sysinit 完成；子进程写 `/run/splash.pid`，`desktop` 首帧提交后经该 pid SIGTERM 接管并摘除
-  pid 文件。splash 失败必须静默退出（不打印、不读 console input），系统无 splash 必须能继续启动。
-- `terminal` 独占 ANSI parser 与 renderer state；它不再持有 DRM master 或 evdev，像素经 dumb buffer + damage 提交给 `desktop` 合成。
-- desktop `Supervisor.spawn_error_reported` 只抑制持久 spawn 故障的重复日志；首次错误仍可见，
-  任一次成功后清除。缺少该 flag 会让 1s respawn 节流退化为持续 UART 刷屏。
+- graphical userspace 的 DRM master、buffer、session epoch、boot scene、renderer 与 terminal helper
+  interface 由 [LiteUI 契约](lite-ui.md) 唯一维护；本契约不得复制其 state machine。
 - Console write 是同步且非阻塞的 output drain seam；Terminal state lock 必须覆盖普通 output 与 input
   echo 的完整 Console write，TCSETSW 取得该锁后才应用设置。TCSETSF 还必须在 Terminal→Console
   唯一 lock order 下同时丢弃 raw adapter input、cooked queue、partial line 与 EOF；未来 adapter 若在

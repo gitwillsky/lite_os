@@ -116,6 +116,8 @@ def _qemu_command(
     if interactive_devices:
         command.extend(
             [
+                "-m",
+                "512M",
                 "-device",
                 "virtio-gpu-device,xres=3008,yres=1692",
                 "-device",

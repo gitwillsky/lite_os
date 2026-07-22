@@ -12,6 +12,7 @@
 - [文件系统与存储](architecture/filesystem-storage.md)
 - [IPC 与网络](architecture/ipc-network.md)
 - [设备与终端](architecture/devices-terminal.md)
+- [图形会话与 LiteUI](architecture/lite-ui.md)
 - [用户态与 ABI](architecture/userspace-abi.md)
 
 ## 架构契约
@@ -24,6 +25,7 @@
 - [文件系统与存储契约](architecture-contract/filesystem-storage.md)
 - [IPC 与网络契约](architecture-contract/ipc-network.md)
 - [设备与终端契约](architecture-contract/devices-terminal.md)
+- [图形会话与 LiteUI 契约](architecture-contract/lite-ui.md)
 - [用户态与 ABI 契约](architecture-contract/userspace-abi.md)
 
 ## Linux 64-bit 用户态 ABI

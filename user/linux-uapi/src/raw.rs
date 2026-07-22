@@ -34,6 +34,8 @@ pub(crate) const DRM_IOCTL_MODE_GETRESOURCES: usize = drm_iowr(0xa0, 64);
 pub(crate) const DRM_IOCTL_MODE_SETCRTC: usize = drm_iowr(0xa2, 104);
 pub(crate) const DRM_IOCTL_MODE_GETCONNECTOR: usize = drm_iowr(0xa7, 80);
 pub(crate) const DRM_IOCTL_MODE_ADDFB: usize = drm_iowr(0xae, 28);
+pub(crate) const DRM_IOCTL_MODE_RMFB: usize = drm_iowr(0xaf, 4);
+pub(crate) const DRM_IOCTL_MODE_PAGE_FLIP: usize = drm_iowr(0xb0, 24);
 pub(crate) const DRM_IOCTL_MODE_DIRTYFB: usize = drm_iowr(0xb1, 24);
 pub(crate) const DRM_IOCTL_MODE_CREATE_DUMB: usize = drm_iowr(0xb2, 32);
 pub(crate) const DRM_IOCTL_MODE_MAP_DUMB: usize = drm_iowr(0xb3, 16);
@@ -117,6 +119,16 @@ pub(crate) struct DrmCrtc {
     pub gamma_size: u32,
     pub mode_valid: u32,
     pub mode: DrmMode,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmPageFlip {
+    pub crtc_id: u32,
+    pub framebuffer_id: u32,
+    pub flags: u32,
+    pub reserved: u32,
+    pub user_data: u64,
 }
 
 #[repr(C)]

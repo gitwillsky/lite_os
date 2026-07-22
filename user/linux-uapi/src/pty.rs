@@ -2,6 +2,7 @@
 
 use std::{
     ffi::CString,
+    ffi::OsString,
     fs::File,
     io::{self, Read, Write},
     os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
@@ -25,7 +26,22 @@ pub struct PtySession {
 }
 
 impl PtySession {
-    pub fn spawn_shell(size: WindowSize) -> io::Result<Self> {
+    /// Spawns one explicitly selected command as the PTY session leader.
+    ///
+    /// # Parameters
+    ///
+    /// - `size`: Initial terminal grid and pixel geometry.
+    /// - `program`: Exact executable path; no shell lookup or default is applied.
+    /// - `arguments`: Exact argv entries after argv[0].
+    ///
+    /// # Returns
+    ///
+    /// The unique PTY master and child-process owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first PTY, ioctl, fork or exec setup error.
+    pub fn spawn(size: WindowSize, program: &OsString, arguments: &[OsString]) -> io::Result<Self> {
         let path = CString::new("/dev/ptmx").expect("static PTY path");
         let master_raw = unsafe {
             raw::open(
@@ -59,9 +75,9 @@ impl PtySession {
         let stdin = File::from(slave.try_clone()?);
         let stdout = File::from(slave.try_clone()?);
         let stderr = File::from(slave);
-        let mut command = Command::new("/bin/sh");
+        let mut command = Command::new(program);
         command
-            .arg0("-sh")
+            .args(arguments)
             .env_clear()
             .env("TERM", "liteos")
             .env("HOME", "/root")

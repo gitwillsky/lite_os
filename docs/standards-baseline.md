@@ -85,6 +85,25 @@
 - 来源：[官方 release](https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304)、[ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/)。
 - checked atlas SHA-256 为 `bbc87d129cbb440dd76eceef02755cb36d66e9a37f00ba01b615a4d7cb87abdd`；terminfo 使用 ncurses `6.5` source format。
 
+### LiteUI
+
+- QuickJS `2026-06-04`；官方 tarball SHA-256
+  `b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a`。来源：
+  [官方 release](https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz)。只编译 vendored original C source，
+  不使用 fork、系统 library、JIT 或构建时下载。
+- React `19.2.7`、react-reconciler `0.33.0`、esbuild `0.28.1`；npm integrity 分别为
+  `sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==`、
+  `sha512-KetWRytFv1epdpJc3J4G75I4WrplZE5jOL7Yq0p34+OVOKF4Se7WrdIdVC45XsSSmUTlht2FM/fM1FZb1mfQeA==`、
+  `sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==`。
+  来源：[npm React](https://www.npmjs.com/package/react)、
+  [npm react-reconciler](https://www.npmjs.com/package/react-reconciler)、
+  [npm esbuild](https://www.npmjs.com/package/esbuild)。唯一解析 owner 是 `ui/package-lock.json`。
+- renderer 固定使用 cssparser `0.37.0`、Taffy `0.12.2`、Parley `0.11.0` 与 tiny-skia `0.12.0`；
+  来源分别为 [cssparser](https://crates.io/crates/cssparser/0.37.0)、
+  [Taffy](https://crates.io/crates/taffy/0.12.2)、[Parley](https://crates.io/crates/parley/0.11.0)、
+  [tiny-skia](https://crates.io/crates/tiny-skia/0.12.0)。Taffy 只启用 Flexbox/block，Parley 禁止 system
+  font discovery；精确 transitive source/checksum 由 `user/Cargo.lock` 唯一固定。
+
 ### Alpine、APK 与 TLS
 
 - Alpine `v3.22/main/{aarch64,riscv64}` 只使用官方 repository 固定文件。AArch64 的

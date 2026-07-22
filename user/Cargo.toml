@@ -1,5 +1,5 @@
 [workspace]
-members = ["desktop", "display-proto", "linux-uapi", "splash", "terminal"]
+members = ["compositor", "display-proto", "linux-uapi", "lite-ui", "quickjs-runtime", "terminal-session"]
 resolver = "3"
 
 [workspace.package]
@@ -9,6 +9,13 @@ publish = false
 [workspace.dependencies]
 display-proto = { path = "display-proto" }
 linux-uapi = { path = "linux-uapi" }
+quickjs-runtime = { path = "quickjs-runtime" }
+cssparser = "=0.37.0"
+parley = { version = "=0.11.0", default-features = false, features = ["std"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+taffy = "=0.12.2"
+tiny-skia = "=0.12.0"
 
 [profile.dev]
 panic = "abort"

@@ -1,4 +1,4 @@
-::sysinit:/bin/splash
-::respawn:/bin/desktop
+::once:/etc/init.d/graphical-session /bin/compositor
+::once:/etc/init.d/graphical-session /bin/lite-ui --desktop
 ::respawn:/etc/init.d/network-service
 ::respawn:-/bin/sh

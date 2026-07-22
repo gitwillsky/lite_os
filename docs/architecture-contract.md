@@ -13,6 +13,7 @@
 | 文件系统与存储 | [filesystem-storage](architecture-contract/filesystem-storage.md) |
 | IPC 与网络 | [ipc-network](architecture-contract/ipc-network.md) |
 | 设备与终端 | [devices-terminal](architecture-contract/devices-terminal.md) |
+| 图形会话与 LiteUI | [lite-ui](architecture-contract/lite-ui.md) |
 | 用户态与 ABI | [userspace-abi](architecture-contract/userspace-abi.md) |
 
 ## Crate contract
@@ -150,9 +151,12 @@ filesystem/storage、memory、platform/execution、socket/ABI 等真实 seam 放
 unit-test source 的 review notice 不允许把新测试继续堆进入口文件；必须先检查测试所属
 owner 并迁移到对应领域 module，或新增有领域含义的 module。
 
-`user/` 下全部 Rust/C/header/JS/TypeScript/CSS source 采用单文件 600 行硬上限，不提供 review
-例外。超过上限必须按状态 owner/interface 拆分；checker 递归扫描实际文件集，避免新 crate、
-应用或 native bridge 绕过围栏。
+`user/` 下项目自有 Rust/C/header/JS/TypeScript/CSS source 采用单文件 600 行硬上限，不提供 review
+例外。超过上限必须按状态 owner/interface 拆分；checker 递归扫描实际文件集，避免新 crate、应用或
+native bridge 绕过围栏。唯一排除目录是 `user/quickjs-runtime/vendor/quickjs/`：它必须保持
+standards baseline 固定官方 tarball 的原始文件，不能承载项目 patch；项目 C adapter 仍在 `src/`
+接受 600 行围栏。缺少该精确排除会把不可拆分的上游实现误判成项目 module，扩大到其他 vendor
+目录则会形成逃逸围栏。
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|

@@ -3,7 +3,7 @@
 use std::{
     io,
     os::unix::process::CommandExt,
-    process::{Child, Command, ExitStatus},
+    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus},
 };
 
 use crate::raw;
@@ -99,6 +99,24 @@ impl SessionChild {
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.child.try_wait()
+    }
+
+    /// Takes the child's piped standard input.
+    ///
+    /// # Returns
+    ///
+    /// The unique writer when the command requested `Stdio::piped`, otherwise `None`.
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.stdin.take()
+    }
+
+    /// Takes the child's piped standard output.
+    ///
+    /// # Returns
+    ///
+    /// The unique reader when the command requested `Stdio::piped`, otherwise `None`.
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.child.stdout.take()
     }
 
     pub fn terminate(&mut self) -> io::Result<()> {

@@ -45,10 +45,18 @@ pub fn recv_frame_blocking(
     stream: &UnixStream,
     bytes: &mut [u8],
 ) -> io::Result<(usize, Option<OwnedFd>)> {
+    if bytes.len() < crate::HEADER_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "display receive buffer is shorter than a frame header",
+        ));
+    }
     let mut received_fd = None;
     let mut filled = 0usize;
     loop {
-        if filled >= crate::HEADER_LEN {
+        let target = if filled < crate::HEADER_LEN {
+            crate::HEADER_LEN
+        } else {
             let declared = u32::from_le_bytes(
                 bytes[..4]
                     .try_into()
@@ -65,9 +73,10 @@ pub fn recv_frame_blocking(
             if filled >= declared {
                 return Ok((declared, received_fd));
             }
-        }
+            declared
+        };
         let (count, next_fd) = loop {
-            match recv_message(stream, &mut bytes[filled..]) {
+            match recv_message(stream, &mut bytes[filled..target]) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 result => break result?,
             }
@@ -91,11 +100,5 @@ pub fn recv_frame_blocking(
             };
         }
         filled += count;
-        if filled == bytes.len() && crate::parse_header(&bytes[..filled]).is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "display frame exceeds receive buffer",
-            ));
-        }
     }
 }

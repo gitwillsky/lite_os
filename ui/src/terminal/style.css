@@ -1,0 +1,24 @@
+.terminal {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  padding: 6px 8px;
+  overflow: hidden;
+  background: #000000;
+  color: #c0c0c0;
+  font-family: monospace;
+  font-size: 14px;
+  line-height: 16px;
+}
+.terminal__row {
+  height: 16px;
+  white-space: pre;
+}
+.terminal__cursor {
+  position: absolute;
+  width: 8px;
+  height: 16px;
+  background: #c0c0c0;
+}
