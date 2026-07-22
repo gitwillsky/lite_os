@@ -24,6 +24,7 @@ const liteModules = {
     export const move = (id, x, y) => globalThis.__liteNative("desktop.move", id + ":" + x + ":" + y);
     export const configure = (id, width, height) => Number(globalThis.__liteNative("desktop.configure", id + ":" + width + ":" + height));
     export const shutdown = () => globalThis.__liteNative("desktop.shutdown", "");
+    export const clock = () => Number(globalThis.__liteNative("time.clock", ""));
   `,
   "lite:terminal": `
     globalThis.liteTerminalSubscribe = (callback) => globalThis.__liteSubscribe("terminal", callback);
@@ -70,7 +71,7 @@ const reactSystemPlugin = {
 };
 
 const properties = new Set([
-  "align-items", "background", "border", "border-bottom", "border-color",
+  "align-items", "background", "background-image", "border", "border-bottom", "border-color",
   "border-left", "border-radius", "border-right", "border-top", "border-width",
   "bottom", "box-shadow", "color", "display", "flex", "flex-direction",
   "font-family", "font-size", "font-weight", "gap", "height", "justify-content",
@@ -144,6 +145,18 @@ for (const [id, entryName, styleName] of products) {
   if (id === "desktop") {
     await copyFile(join(root, "../assets/wallpaper-src.png"), join(assets, "bliss.png"));
     await copyFile(join(root, "../assets/sprites-src/avatar.png"), join(assets, "avatar.png"));
+    await copyFile(join(root, "../assets/sprites-src/start-normal.png"), join(assets, "start.png"));
+    await copyFile(join(root, "../assets/sprites-src/start-pressed.png"), join(assets, "start-pressed.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-power.png"), join(assets, "power.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-logoff.png"), join(assets, "logoff.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-documents.png"), join(assets, "documents.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-trash.png"), join(assets, "trash.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
+    await copyFile(join(root, "../assets/sprites-src/arrow-right.png"), join(assets, "arrow-right.png"));
+    await copyFile(join(root, "../assets/sprites-src/glyph-min.png"), join(assets, "glyph-min.png"));
+    await copyFile(join(root, "../assets/sprites-src/glyph-max.png"), join(assets, "glyph-max.png"));
+    await copyFile(join(root, "../assets/sprites-src/glyph-close.png"), join(assets, "glyph-close.png"));
   }
   await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));
   if (id !== "desktop") {

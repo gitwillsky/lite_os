@@ -375,7 +375,14 @@ impl DrmDevice {
             flags: 0,
             color: 0,
             clip_count: clips.len() as u32,
-            clips: clips.as_ptr() as u64,
+            // An empty clip list requests a full-framebuffer sync and must pair
+            // with a null pointer; a Rust empty slice yields a dangling
+            // non-null address the kernel validation rejects.
+            clips: if clips.is_empty() {
+                0
+            } else {
+                clips.as_ptr() as u64
+            },
         };
         loop {
             match self.ioctl(raw::DRM_IOCTL_MODE_DIRTYFB, (&raw mut dirty).cast()) {

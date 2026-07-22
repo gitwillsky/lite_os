@@ -3,7 +3,7 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Instant,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use quickjs_runtime::{EngineError, NativeHost, Role};
@@ -58,6 +58,7 @@ pub struct State {
     surfaces: RefCell<Vec<Surface>>,
     next_configure: Cell<u64>,
     focused_surface: Cell<u32>,
+    timers: RefCell<Vec<(u64, Instant)>>,
 }
 
 impl State {
@@ -69,6 +70,29 @@ impl State {
     /// Takes all native actions produced by the completed JavaScript turn.
     pub fn take_actions(&self) -> Vec<Action> {
         std::mem::take(&mut *self.actions.borrow_mut())
+    }
+
+    /// Takes every JavaScript timer whose deadline has passed.
+    pub fn take_expired_timers(&self) -> Vec<u64> {
+        let now = Instant::now();
+        let mut timers = self.timers.borrow_mut();
+        let expired = timers
+            .iter()
+            .filter(|(_, deadline)| *deadline <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        timers.retain(|(_, deadline)| *deadline > now);
+        expired
+    }
+
+    /// Returns how long the event loop may park until the next timer fires.
+    pub fn next_timer_delay(&self) -> Option<Duration> {
+        let now = Instant::now();
+        self.timers
+            .borrow()
+            .iter()
+            .map(|(_, deadline)| deadline.saturating_duration_since(now))
+            .min()
     }
 
     /// Returns the desktop-selected focused app surface.
@@ -139,6 +163,7 @@ impl Host {
             surfaces: RefCell::new(Vec::new()),
             next_configure: Cell::new(1),
             focused_surface: Cell::new(0),
+            timers: RefCell::new(Vec::new()),
         });
         (
             Self {
@@ -200,7 +225,34 @@ impl NativeHost for Host {
                 .as_secs_f64()
                 .mul_add(1000.0, 0.0)
                 .to_string()),
-            "timer.set" | "timer.clear" => Ok(String::new()),
+            // 1. Wall-clock seconds for desktop chrome (the tray clock); the
+            //    monotonic `time.now` above stays for animation timing.
+            "time.clock" => Ok(SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| EngineError::from_host(error.to_string()))?
+                .as_secs()
+                .to_string()),
+            "timer.set" => {
+                let mut fields = payload.split(':');
+                let id = parse_u64(fields.next(), "timer id")?;
+                let delay = parse_u64(fields.next(), "timer delay")?;
+                if fields.next().is_some() {
+                    return Err(EngineError::from_host("invalid timer set"));
+                }
+                self.state
+                    .timers
+                    .borrow_mut()
+                    .push((id, Instant::now() + Duration::from_millis(delay)));
+                Ok(String::new())
+            }
+            "timer.clear" => {
+                let id = parse_u64(Some(payload), "timer id")?;
+                self.state
+                    .timers
+                    .borrow_mut()
+                    .retain(|(timer, _)| *timer != id);
+                Ok(String::new())
+            }
             "apps.list" if self.role == Role::Desktop => Ok(
                 r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"}]"#.to_owned(),
             ),
@@ -264,6 +316,12 @@ fn app_metadata(id: &str) -> (&'static str, &'static str) {
 }
 
 fn parse_u32(value: Option<&str>, name: &str) -> Result<u32, EngineError> {
+    value
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
+}
+
+fn parse_u64(value: Option<&str>, name: &str) -> Result<u64, EngineError> {
     value
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))

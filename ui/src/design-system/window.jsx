@@ -23,9 +23,9 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
         <image className="window__icon" src={icon} />
         <text className="window__title">{title}</text>
         <view className="window__controls">
-          <view className="caption-button caption-button--min"><text>_</text></view>
-          <view className="caption-button caption-button--max"><text>□</text></view>
-          <view className="caption-button caption-button--close" onClick={() => onClose(id)}><text>×</text></view>
+          <view className="caption-button"><image className="caption-button__glyph" src="assets/glyph-min.png"/></view>
+          <view className="caption-button"><image className="caption-button__glyph" src="assets/glyph-max.png"/></view>
+          <view className="caption-button caption-button--close" onClick={() => onClose(id)}><image className="caption-button__glyph" src="assets/glyph-close.png"/></view>
         </view>
       </view>
       <view className="window__body">{children}</view>

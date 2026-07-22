@@ -23,7 +23,7 @@ use crate::{
 use box_paint::{paint_background, paint_border, paint_shadow};
 use image::{Image, decode_png, paint_image};
 
-const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
+pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
 
 struct RenderNode {
     source: Node,
@@ -233,13 +233,20 @@ impl Renderer {
             output.key_listener = Some(key_listener);
         }
         paint_shadow(pixels, bounds, &node.computed);
+        let radii = corner_radii(&node.computed);
         if let Some(background) = node.computed.get("background") {
-            paint_background(
-                pixels,
-                bounds,
-                background,
-                node.computed.px("border-radius", 0.0),
-            );
+            paint_background(pixels, bounds, background, radii);
+        }
+        // 1. `background-image: url(...)` paints a scaled bitmap over the box; any other
+        //    value (gradient or color) reuses the background raster so gradients work in
+        //    either property. This mirrors CSS, where both forms are legal here.
+        if let Some(image) = node.computed.get("background-image") {
+            if let Some(source) = background_url(image) {
+                let image = self.image(source)?;
+                paint_image(pixels, bounds, image);
+            } else {
+                paint_background(pixels, bounds, image, radii);
+            }
         }
         paint_border(pixels, bounds, &node.computed);
         if node.source.kind == "image"
@@ -302,8 +309,39 @@ fn listener(node: &Node, name: &str) -> Option<u64> {
     node.props.get(name).and_then(Value::as_u64)
 }
 
+/// Extracts the asset path from a CSS `url(...)` background image.
+///
+/// Returns `None` for gradient or color backgrounds so the caller falls back
+/// to the gradient/solid raster. Surrounding single or double quotes are
+/// stripped so `url("assets/x.png")` and `url(assets/x.png)` both resolve.
+fn background_url(value: &str) -> Option<&str> {
+    let inner = value
+        .trim()
+        .strip_prefix("url(")?
+        .strip_suffix(')')?
+        .trim();
+    Some(
+        inner
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .or_else(|| {
+                inner
+                    .strip_prefix('\'')
+                    .and_then(|rest| rest.strip_suffix('\''))
+            })
+            .unwrap_or(inner),
+    )
+}
+
 fn to_taffy(node: &Node, computed: &Computed) -> Style {
-    let text = text_content(node);
+    // Only text leaves size from their glyphs. Containers must stay auto-sized:
+    // a descendant-text width here would override block stretch, flex grow/shrink
+    // and absolute inset resolution with a bogus definite size.
+    let text = if matches!(node.kind.as_str(), "text" | "#text") {
+        text_content(node)
+    } else {
+        String::new()
+    };
     let font_size = computed.px("font-size", 11.0);
     let line_height = computed.px("line-height", font_size * 1.25);
     let intrinsic_width = text.chars().count() as f32 * font_size * 0.58;
@@ -367,16 +405,28 @@ fn to_taffy(node: &Node, computed: &Computed) -> Style {
     if let Some(value) = computed.get("padding") {
         style.padding = edges(value);
     }
-    let border = computed
+    // Per-side border widths: a `border-<side>` shorthand overrides the uniform
+    // `border`/`border-width` for layout so single-sided borders reserve space
+    // only on the edge they paint.
+    let uniform_border = computed
         .get("border-width")
         .and_then(number)
         .or_else(|| computed.get("border").and_then(first_number))
         .unwrap_or(0.0);
+    let mut border_widths = [uniform_border; 4]; // [top, right, bottom, left]
+    for (index, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+        if let Some(width) = computed
+            .get(&format!("border-{side}"))
+            .and_then(first_number)
+        {
+            border_widths[index] = width;
+        }
+    }
     style.border = TaffyRect {
-        top: LengthPercentage::length(border),
-        right: LengthPercentage::length(border),
-        bottom: LengthPercentage::length(border),
-        left: LengthPercentage::length(border),
+        top: LengthPercentage::length(border_widths[0]),
+        right: LengthPercentage::length(border_widths[1]),
+        bottom: LengthPercentage::length(border_widths[2]),
+        left: LengthPercentage::length(border_widths[3]),
     };
     if let Some(value) = computed.get("margin") {
         let edges = edge_values(value);
@@ -423,6 +473,17 @@ fn intrinsic(empty: bool, value: f32) -> Dimension {
     } else {
         Dimension::length(value)
     }
+}
+
+/// Resolves `border-radius` into per-corner logical radii `[tl, tr, br, bl]`.
+///
+/// The CSS multi-value forms map onto the same expansion rules as margins
+/// (`edge_values`), so `8px 8px 0 0` rounds only the top two corners.
+fn corner_radii(computed: &Computed) -> [f32; 4] {
+    computed
+        .get("border-radius")
+        .map(edge_values)
+        .unwrap_or([0.0; 4])
 }
 
 fn text_content(node: &Node) -> String {

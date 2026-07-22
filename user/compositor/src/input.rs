@@ -1,16 +1,18 @@
 //! evdev discovery and routing against compositor-presented scene state.
 
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    os::fd::{AsFd, BorrowedFd},
+    path::PathBuf,
+};
 
 use display_proto::PointerPhase;
 use linux_uapi::input::{AbsoluteAxis, InputDevice, InputEvent};
 
 use crate::session::Session;
 
-const EV_SYN: u16 = 0;
 const EV_KEY: u16 = 1;
 const EV_ABS: u16 = 3;
-const SYN_REPORT: u16 = 0;
 const ABS_X: u16 = 0;
 const ABS_Y: u16 = 1;
 const BTN_LEFT: u16 = 272;
@@ -29,8 +31,6 @@ pub struct Input {
     y: i32,
     pending_x: Option<i32>,
     pending_y: Option<i32>,
-    pending_buttons: [(u32, u32, i32); 8],
-    pending_button_count: usize,
     buttons: u32,
     modifiers: u32,
     serial: u64,
@@ -59,8 +59,6 @@ impl Input {
             y: height / 2,
             pending_x: None,
             pending_y: None,
-            pending_buttons: [(0, 0, 0); 8],
-            pending_button_count: 0,
             buttons: 0,
             modifiers: 0,
             serial: 1,
@@ -78,8 +76,20 @@ impl Input {
         (self.x, self.y)
     }
 
-    pub fn cursor_revision(&self) -> u64 {
-        1 << 63 | self.serial
+    /// Borrows the evdev descriptors so the main loop can wait on input readiness
+    /// inside the same `poll` as the display sockets.
+    ///
+    /// Returning borrows (rather than raw fds) ties their lifetime to `&self`,
+    /// guaranteeing the devices outlive the enclosing poll call.
+    pub fn wake_fds(&self) -> Vec<BorrowedFd<'_>> {
+        let mut fds = Vec::with_capacity(2);
+        if let Some(device) = &self.keyboard {
+            fds.push(device.file().as_fd());
+        }
+        if let Some(device) = &self.pointer {
+            fds.push(device.file().as_fd());
+        }
+        fds
     }
 
     fn poll_keyboard(&mut self, session: &Session) -> io::Result<()> {
@@ -109,25 +119,24 @@ impl Input {
                 EV_ABS if event.code() == ABS_X => self.pending_x = Some(event.value()),
                 EV_ABS if event.code() == ABS_Y => self.pending_y = Some(event.value()),
                 EV_KEY => {
-                    if let Some((button, bit)) = button(event.code())
-                        && self.pending_button_count < self.pending_buttons.len()
-                    {
-                        self.pending_buttons[self.pending_button_count] =
-                            (button, bit, event.value());
-                        self.pending_button_count += 1;
+                    if let Some((button, bit)) = button(event.code()) {
+                        // Flush the accumulated position first so the button
+                        // transition reports the coordinates where it happened.
+                        self.flush_motion(session)?;
+                        self.flush_button(session, button, bit, event.value())?;
                     }
                 }
-                EV_SYN if event.code() == SYN_REPORT => self.flush_pointer(session)?,
                 _ => {}
             }
         }
-        if self.pending_x.is_some() || self.pending_y.is_some() || self.pending_button_count != 0 {
-            self.flush_pointer(session)?;
-        }
+        // Motion is absolute, so a whole drain of samples collapses into one
+        // route per main-loop iteration; intermediate positions are invisible
+        // to clients that render one frame per event.
+        self.flush_motion(session)?;
         Ok(())
     }
 
-    fn flush_pointer(&mut self, session: &mut Session) -> io::Result<()> {
+    fn flush_motion(&mut self, session: &mut Session) -> io::Result<()> {
         let old = (self.x, self.y);
         if let Some(raw) = self.pending_x.take() {
             self.x = map_absolute(raw, self.x_range, self.width);
@@ -145,30 +154,35 @@ impl Input {
                 self.take_serial(),
             )?;
         }
-        for index in 0..self.pending_button_count {
-            let (button, bit, value) = self.pending_buttons[index];
-            let phase = match value {
-                1 => {
-                    self.buttons |= bit;
-                    PointerPhase::Down
-                }
-                0 => {
-                    self.buttons &= !bit;
-                    PointerPhase::Up
-                }
-                _ => continue,
-            };
-            session.route_pointer(
-                self.x,
-                self.y,
-                phase,
-                button,
-                self.buttons,
-                self.take_serial(),
-            )?;
-        }
-        self.pending_button_count = 0;
         Ok(())
+    }
+
+    fn flush_button(
+        &mut self,
+        session: &mut Session,
+        button: u32,
+        bit: u32,
+        value: i32,
+    ) -> io::Result<()> {
+        let phase = match value {
+            1 => {
+                self.buttons |= bit;
+                PointerPhase::Down
+            }
+            0 => {
+                self.buttons &= !bit;
+                PointerPhase::Up
+            }
+            _ => return Ok(()),
+        };
+        session.route_pointer(
+            self.x,
+            self.y,
+            phase,
+            button,
+            self.buttons,
+            self.take_serial(),
+        )
     }
 
     fn take_serial(&mut self) -> u64 {

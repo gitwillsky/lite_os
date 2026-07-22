@@ -116,13 +116,11 @@ impl Scanout {
         canvas.draw_sliders(origin.0, origin.1, offset);
     }
 
-    /// Composes the accepted flat scene into the back scanout.
-    pub fn compose(
-        &mut self,
-        scene: &Scene,
-        buffers: &Buffers,
-        cursor: (i32, i32),
-    ) -> io::Result<()> {
+    /// Composes the accepted flat scene into the back scanout, without the cursor.
+    ///
+    /// The cursor is applied separately by [`Self::present`] so that pointer motion
+    /// can be served by [`Self::move_cursor`] without recompositing the scene.
+    pub fn compose(&mut self, scene: &Scene, buffers: &Buffers) -> io::Result<()> {
         let target = &mut self.targets[1 - self.front].buffer;
         for row in 0..target.height() {
             target.row_mut(row).fill(0);
@@ -142,8 +140,52 @@ impl Scanout {
             };
             composite_node(target, source, node.bounds, node.clip, screen);
         }
-        self.cursor.paint(target, cursor.0, cursor.1);
         Ok(())
+    }
+
+    /// Overlays the cursor into the freshly composed back buffer and flips.
+    ///
+    /// 1. Rasterizes the cursor into the back buffer, saving the clean scene pixels
+    ///    beneath it so a later [`Self::move_cursor`] can erase it in place.
+    /// 2. Queues and waits for one exact page-flip completion.
+    ///
+    /// After the flip the back buffer becomes the front, so the cursor backing store
+    /// consistently describes the scanned-out buffer for subsequent motion damage.
+    pub fn present_scene(&mut self, revision: u64, cursor: (i32, i32)) -> io::Result<FlipEvent> {
+        let back = 1 - self.front;
+        self.cursor
+            .overlay(&mut self.targets[back].buffer, cursor.0, cursor.1);
+        // The kernel cannot observe CPU writes to dumb buffers: a framebuffer's
+        // host resource is only refreshed by `DRM_IOCTL_MODE_DIRTYFB`, and the
+        // flip skips the transfer entirely once any earlier dirty marked it
+        // synchronized. Sync the freshly composed back buffer first — empty
+        // clips mean the full framebuffer — or the flip presents stale pixels
+        // (frozen scenes and cursor remnants baked into old frames).
+        self.device.dirty(self.targets[back].framebuffer_id, &[])?;
+        self.present(revision)
+    }
+
+    /// Serves pointer motion by relocating the cursor on the scanned-out buffer and
+    /// flushing only the damaged rectangles, avoiding a recompose and page flip.
+    ///
+    /// 1. Restores the clean pixels under the old cursor and paints the new one on
+    ///    the current front buffer.
+    /// 2. Reports the union of old and new cursor boxes through `DRM_IOCTL_MODE_DIRTYFB`.
+    ///
+    /// Empty clips (cursor fully off-screen) are dropped; an all-empty update is a no-op.
+    pub fn move_cursor(&mut self, cursor: (i32, i32)) -> io::Result<()> {
+        let front = self.front;
+        let damage = self
+            .cursor
+            .relocate(&mut self.targets[front].buffer, cursor.0, cursor.1);
+        let clips: Vec<_> = damage
+            .into_iter()
+            .filter(|clip| clip.x2 > clip.x1 && clip.y2 > clip.y1)
+            .collect();
+        if clips.is_empty() {
+            return Ok(());
+        }
+        self.device.dirty(self.targets[front].framebuffer_id, &clips)
     }
 
     /// Queues and waits for one exact page-flip completion.

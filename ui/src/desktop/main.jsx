@@ -6,16 +6,17 @@ import { Taskbar } from "../design-system/taskbar.jsx";
 import { StartMenu } from "../design-system/start-menu.jsx";
 
 const desktopIcons = [
-  { id: "computer", label: "My Computer" },
-  { id: "terminal", label: "Terminal", app: "terminal" },
-  { id: "documents", label: "My Documents" },
-  { id: "trash", label: "Recycle Bin" },
+  { id: "computer", label: "My Computer", icon: "assets/computer.png" },
+  { id: "terminal", label: "Terminal", icon: "assets/terminal.png", app: "terminal" },
+  { id: "documents", label: "My Documents", icon: "assets/documents.png" },
+  { id: "trash", label: "Recycle Bin", icon: "assets/trash.png" },
 ];
 
 export default function Desktop() {
   const [open, setOpen] = useState(() => surfaces());
   const [activeId, setActiveId] = useState(() => open.at(-1)?.id ?? 0);
   const [startOpen, setStartOpen] = useState(false);
+  const [selectedIcon, setSelectedIcon] = useState(null);
   const listedApps = useMemo(() => apps(), []);
 
   useEffect(() => {
@@ -43,10 +44,15 @@ export default function Desktop() {
   }, []);
 
   return (
-    <view id="desktop">
+    <view id="desktop" onClick={() => setSelectedIcon(null)}>
       <image className="wallpaper" src="assets/bliss.png" />
       <view className="desktop-icons">
-        {desktopIcons.map((item) => <view key={item.id} className="desktop-icon" onDoubleClick={() => item.app && launchApp(item.app)}><view className={`system-icon system-icon--${item.id}`}/><text>{item.label}</text></view>)}
+        {desktopIcons.map((item) => (
+          <view key={item.id} className="desktop-icon" onClick={() => setSelectedIcon(item.id)} onDoubleClick={() => item.app && launchApp(item.app)}>
+            <image className="desktop-icon__image" src={item.icon}/>
+            <text className={selectedIcon === item.id ? "desktop-icon__label desktop-icon__label--selected" : "desktop-icon__label"}>{item.label}</text>
+          </view>
+        ))}
       </view>
       {open.map((surface, index) => (
         <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={surface.bounds} onActivate={activate} onClose={closeWindow} onMove={moveWindow}>

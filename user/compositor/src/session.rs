@@ -2,60 +2,38 @@
 
 mod buffers;
 mod routing;
+mod scene;
 mod wire;
 
 pub use buffers::Buffers;
+pub use scene::Scene;
 use buffers::Owner;
-use wire::{new_epoch, receive, send_accepted, send_presented, valid_app_id};
+use wire::{new_epoch, receive, send_accepted, valid_app_id};
 
 use std::{
     collections::HashMap,
     fs, io,
-    os::fd::AsFd,
+    os::fd::{AsFd, BorrowedFd},
     os::unix::net::{UnixListener, UnixStream},
     time::Duration,
 };
 
 use display_proto::{
-    AppClosed, AppOpened, BufferAlloc, BufferRelease, CloseRequest, Configure, ConfigureReady,
-    HelloApp, HelloDesktop, MAX_APP_SURFACES, MAX_MESSAGE, MessageKind, PROTOCOL_VERSION, Rect,
-    SceneCommit, SceneNodeKind, Size, SurfaceCommit, Welcome, parse_frame, recv_frame_blocking,
-    send_message, send_message_with_fd,
+    AppClosed, AppOpened, BufferAlloc, CloseRequest, Configure, ConfigureReady, HelloApp,
+    HelloDesktop, MAX_APP_SURFACES, MAX_MESSAGE, MessageKind, PROTOCOL_VERSION, Rect, Size,
+    SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message, send_message_with_fd,
 };
 use linux_uapi::{
-    drm::{DrmDevice, FlipEvent},
+    drm::DrmDevice,
     unix::{self, PollEvents, PollFd},
 };
 
-/// One accepted flat-scene pixel layer.
-pub struct Node {
-    pub buffer_id: u32,
-    pub bounds: Rect,
-    pub clip: Rect,
-}
-
-#[derive(Clone, Copy)]
-struct AppPresentation {
-    surface_id: u32,
-    revision: u64,
-    previous_buffer: Option<u32>,
-}
-
+/// One presented surface's hit-test region, retained for input routing.
 #[derive(Clone)]
 struct RoutingNode {
     surface_id: u32,
     bounds: Rect,
     input: Vec<Rect>,
-}
-
-/// Complete accepted desktop scene awaiting page-flip completion.
-pub struct Scene {
-    pub revision: u64,
-    pub nodes: Vec<Node>,
-    desktop_buffers: Vec<u32>,
-    app_presentations: Vec<AppPresentation>,
-    routing: Vec<RoutingNode>,
-    focused_surface: u32,
 }
 
 struct Desktop {
@@ -96,6 +74,14 @@ pub struct Session {
     pointer_capture: Option<(u32, Rect)>,
 }
 
+/// Outcome of one [`Session::poll`] wait.
+pub struct Activity {
+    /// A newly accepted desktop scene ready to compose, if any.
+    pub scene: Option<Scene>,
+    /// Whether a caller-supplied wake descriptor (evdev) became readable.
+    pub input: bool,
+}
+
 impl Session {
     /// Creates the only display socket and starts an empty epoch.
     pub fn open(device: &DrmDevice, display: Size) -> io::Result<Self> {
@@ -131,11 +117,22 @@ impl Session {
         self.first_scene_presented
     }
 
-    /// Polls all display connections once and returns at most one accepted scene.
-    pub fn poll(&mut self, timeout: Duration) -> io::Result<Option<Scene>> {
+    /// Polls all display connections plus caller-supplied wake descriptors once.
+    ///
+    /// The `wake` descriptors (evdev fds) join the same wait so pointer and key
+    /// events interrupt the timeout immediately instead of waiting for it to
+    /// elapse. Without them the loop would only drain input once per timeout,
+    /// capping cursor updates at roughly `1 / timeout` Hz and adding up to one
+    /// timeout of latency per move. Their readiness is returned in [`Activity`]
+    /// so the caller can pump input, while at most one accepted scene is returned.
+    pub fn poll(
+        &mut self,
+        wake: &[BorrowedFd<'_>],
+        timeout: Duration,
+    ) -> io::Result<Activity> {
         let app_ids: Vec<u32> = self.apps.keys().copied().collect();
-        let (listener_ready, desktop_ready, app_ready) = {
-            let mut descriptors = Vec::with_capacity(2 + app_ids.len());
+        let (listener_ready, desktop_ready, app_ready, input_ready) = {
+            let mut descriptors = Vec::with_capacity(2 + app_ids.len() + wake.len());
             descriptors.push(PollFd::new(self.listener.as_fd(), PollEvents::READ));
             if let Some(desktop) = &self.desktop {
                 descriptors.push(PollFd::new(desktop.stream.as_fd(), PollEvents::READ));
@@ -143,28 +140,39 @@ impl Session {
             for id in &app_ids {
                 descriptors.push(PollFd::new(self.apps[id].stream.as_fd(), PollEvents::READ));
             }
+            let wake_offset = descriptors.len();
+            for fd in wake {
+                descriptors.push(PollFd::new(*fd, PollEvents::READ));
+            }
             unix::poll(&mut descriptors, Some(timeout))?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(self.desktop.is_some());
             let desktop_ready =
                 self.desktop.is_some() && descriptors[1].returned() != PollEvents::EMPTY;
-            let app_ready = descriptors[1 + desktop_offset..]
+            let app_ready = descriptors[1 + desktop_offset..wake_offset]
                 .iter()
                 .map(|descriptor| descriptor.returned() != PollEvents::EMPTY)
                 .collect::<Vec<_>>();
-            (listener_ready, desktop_ready, app_ready)
+            let input_ready = descriptors[wake_offset..]
+                .iter()
+                .any(|descriptor| descriptor.returned() != PollEvents::EMPTY);
+            (listener_ready, desktop_ready, app_ready, input_ready)
         };
         if listener_ready && let Err(error) = self.accept() {
             eprintln!("compositor: rejected connection: {error}");
         }
+        let mut scene = None;
         if desktop_ready {
             match self.receive_desktop() {
-                Ok(scene) if scene.is_some() => return Ok(scene),
+                Ok(accepted) if accepted.is_some() => scene = accepted,
                 Ok(_) => {}
                 Err(error) => {
                     eprintln!("compositor: desktop disconnected: {error}");
                     self.reset_epoch();
-                    return Ok(None);
+                    return Ok(Activity {
+                        scene: None,
+                        input: input_ready,
+                    });
                 }
             }
         }
@@ -174,7 +182,10 @@ impl Session {
                 self.remove_app(surface_id);
             }
         }
-        Ok(None)
+        Ok(Activity {
+            scene,
+            input: input_ready,
+        })
     }
 
     fn accept(&mut self) -> io::Result<()> {
@@ -375,149 +386,6 @@ impl Session {
         send_message(desktop, message)
     }
 
-    fn accept_scene(&mut self, payload: &[u8]) -> io::Result<Scene> {
-        let commit = SceneCommit::parse(payload).ok_or_else(|| invalid("invalid scene"))?;
-        let last_revision = self
-            .desktop
-            .as_ref()
-            .ok_or_else(|| invalid("desktop disappeared"))?
-            .last_revision;
-        if commit.revision <= last_revision
-            || (commit.focused_surface != 0 && !self.apps.contains_key(&commit.focused_surface))
-        {
-            return Err(invalid("scene revision or focus invalid"));
-        }
-        let mut nodes = Vec::with_capacity(commit.nodes().len());
-        let mut desktop_buffers = Vec::new();
-        let mut adoptions = Vec::new();
-        let mut routing = Vec::new();
-        for node in commit.nodes() {
-            let buffer_id = match node.kind {
-                SceneNodeKind::Pixels => {
-                    let buffer = self
-                        .buffers
-                        .values
-                        .get(&node.source_id)
-                        .ok_or_else(|| invalid("unknown desktop buffer"))?;
-                    if buffer.owner != Owner::Desktop
-                        || buffer.busy
-                        || buffer.size.width != node.bounds.width
-                        || buffer.size.height != node.bounds.height
-                    {
-                        return Err(invalid("desktop buffer state invalid"));
-                    }
-                    if !desktop_buffers.contains(&node.source_id) {
-                        desktop_buffers.push(node.source_id);
-                    }
-                    node.source_id
-                }
-                SceneNodeKind::ForeignSurface => {
-                    let app = self
-                        .apps
-                        .get(&node.source_id)
-                        .ok_or_else(|| invalid("unknown foreign surface"))?;
-                    let content = app
-                        .pending
-                        .filter(|content| content.configure_serial == node.configure_serial)
-                        .or_else(|| {
-                            app.current
-                                .filter(|content| content.configure_serial == node.configure_serial)
-                        })
-                        .ok_or_else(|| invalid("foreign surface is not ready"))?;
-                    let buffer = &self.buffers.values[&content.buffer_id];
-                    if buffer.size.width != node.bounds.width
-                        || buffer.size.height != node.bounds.height
-                    {
-                        return Err(invalid("foreign surface geometry mismatch"));
-                    }
-                    if app
-                        .pending
-                        .is_some_and(|pending| pending.buffer_id == content.buffer_id)
-                        && !adoptions.contains(&node.source_id)
-                    {
-                        adoptions.push(node.source_id);
-                    }
-                    content.buffer_id
-                }
-            };
-            routing.push(RoutingNode {
-                surface_id: match node.kind {
-                    SceneNodeKind::Pixels => 0,
-                    SceneNodeKind::ForeignSurface => node.source_id,
-                },
-                bounds: node.bounds,
-                input: node.input.iter().collect(),
-            });
-            nodes.push(Node {
-                buffer_id,
-                bounds: node.bounds,
-                clip: node.clip,
-            });
-        }
-        if nodes.is_empty() {
-            return Err(invalid("desktop scene is empty"));
-        }
-        for id in &desktop_buffers {
-            self.buffers
-                .values
-                .get_mut(id)
-                .expect("validated desktop buffer")
-                .busy = true;
-        }
-        let mut app_presentations = Vec::new();
-        for surface_id in adoptions {
-            let app = self
-                .apps
-                .get_mut(&surface_id)
-                .expect("validated app adoption");
-            let next = app.pending.take().expect("adopted pending content");
-            let previous_buffer = app.current.replace(next).map(|content| content.buffer_id);
-            app_presentations.push(AppPresentation {
-                surface_id,
-                revision: next.revision,
-                previous_buffer,
-            });
-        }
-        let desktop = self.desktop.as_mut().expect("validated desktop");
-        desktop.last_revision = commit.revision;
-        send_accepted(&desktop.stream, commit.revision)?;
-        Ok(Scene {
-            revision: commit.revision,
-            nodes,
-            desktop_buffers,
-            app_presentations,
-            routing,
-            focused_surface: commit.focused_surface,
-        })
-    }
-
-    /// Releases presentation-retired buffers and publishes exact flip completion.
-    pub fn presented(&mut self, scene: &Scene, event: FlipEvent) -> io::Result<()> {
-        let desktop = self
-            .desktop
-            .as_ref()
-            .ok_or_else(|| io::Error::other("desktop disappeared"))?;
-        for id in &scene.desktop_buffers {
-            release_buffer(&mut self.buffers, &desktop.stream, *id)?;
-        }
-        send_presented(&desktop.stream, scene.revision, event)?;
-        for app_use in &scene.app_presentations {
-            if let Some(app) = self.apps.get(&app_use.surface_id) {
-                if let Some(previous) = app_use.previous_buffer {
-                    release_buffer(&mut self.buffers, &app.stream, previous)?;
-                }
-                send_presented(&app.stream, app_use.revision, event)?;
-            }
-        }
-        self.routing.clone_from(&scene.routing);
-        self.focused_surface = scene.focused_surface;
-        if !self.first_scene_presented {
-            self.first_scene_presented = true;
-            eprintln!("compositor: desktop first scene presented");
-        }
-        Ok(())
-    }
-
     fn notify_opened(&self, surface_id: u32) -> io::Result<()> {
         let app = &self.apps[&surface_id];
         let mut bytes = [0u8; 128];
@@ -577,19 +445,6 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = fs::remove_file(display_proto::SOCKET_PATH);
     }
-}
-
-fn release_buffer(buffers: &mut Buffers, stream: &UnixStream, id: u32) -> io::Result<()> {
-    buffers
-        .values
-        .get_mut(&id)
-        .ok_or_else(|| invalid("released buffer disappeared"))?
-        .busy = false;
-    let mut bytes = [0u8; 24];
-    let message = BufferRelease { buffer_id: id }
-        .encode(&mut bytes)
-        .ok_or_else(|| io::Error::other("release encoding failed"))?;
-    send_message(stream, message)
 }
 
 fn invalid(message: &'static str) -> io::Error {

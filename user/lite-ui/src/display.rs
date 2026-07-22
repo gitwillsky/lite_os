@@ -5,15 +5,18 @@ use std::{
     io,
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::UnixStream,
+    time::Duration,
 };
 
 use display_proto::{
     Accepted, AppClosed, AppOpened, BufferAlloc, BufferAllocated, BufferRelease, CloseRequest,
     Configure, ConfigureReady, HelloApp, HelloDesktop, InputKey, InputPointer, MAX_MESSAGE,
-    MessageKind, PROTOCOL_VERSION, Presented, Rect, Rectangles, SceneCommit, SceneNode,
-    SceneNodeKind, Size, SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
+    MessageKind, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit,
+    SceneNode, SceneNodeKind, Size, SurfaceCommit, Welcome, parse_frame, recv_frame_blocking,
+    send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
+use linux_uapi::unix::{self, PollEvents, PollFd};
 
 use crate::Mode;
 
@@ -248,7 +251,73 @@ impl Display {
     }
 
     /// Blocks until the next validated asynchronous event.
+    ///
+    /// Successive pointer motions coalesce into the newest one: a drag
+    /// generates motion far faster than one React render plus presented wait
+    /// per event can drain, and dispatching every stale position would lag
+    /// the window behind the cursor. Collapsing stops at the first non-motion
+    /// event so button transitions and lifecycle events keep exact ordering.
     pub fn next_event(&mut self) -> io::Result<Event> {
+        let mut event = self.next_wire_event()?;
+        while matches!(event, Event::Pointer(pointer) if pointer.phase == PointerPhase::Motion) {
+            let Some(newer) = self.take_queued_motion()? else {
+                break;
+            };
+            event = newer;
+        }
+        Ok(event)
+    }
+
+    /// Returns the next motion only when one is already buffered or
+    /// immediately readable, never blocking and never consuming a non-motion
+    /// event ahead of it.
+    fn take_queued_motion(&mut self) -> io::Result<Option<Event>> {
+        if let Some(event) = self.pending.front() {
+            let motion =
+                matches!(event, Event::Pointer(pointer) if pointer.phase == PointerPhase::Motion);
+            return if motion {
+                Ok(self.pending.pop_front())
+            } else {
+                Ok(None)
+            };
+        }
+        if !self.socket_readable()? {
+            return Ok(None);
+        }
+        match self.receive()? {
+            WireEvent::Public(event @ Event::Pointer(pointer))
+                if pointer.phase == PointerPhase::Motion =>
+            {
+                Ok(Some(event))
+            }
+            WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
+                self.ready.insert((surface_id, serial));
+                self.pending
+                    .push_back(Event::ConfigureReady { surface_id, serial });
+                Ok(None)
+            }
+            WireEvent::Public(event) => {
+                self.pending.push_back(event);
+                Ok(None)
+            }
+            WireEvent::Released(id) => {
+                self.release(id)?;
+                Ok(None)
+            }
+            WireEvent::Accepted(_) | WireEvent::Presented(_) => {
+                Err(invalid("unsolicited display acknowledgement"))
+            }
+        }
+    }
+
+    /// Reports whether at least one wire frame is readable without blocking.
+    fn socket_readable(&self) -> io::Result<bool> {
+        let mut descriptors = [PollFd::new(self.as_fd(), PollEvents::READ)];
+        unix::poll(&mut descriptors, Some(Duration::ZERO))?;
+        Ok(descriptors[0].returned() != PollEvents::EMPTY)
+    }
+
+    fn next_wire_event(&mut self) -> io::Result<Event> {
         if let Some(event) = self.pending.pop_front() {
             return Ok(event);
         }

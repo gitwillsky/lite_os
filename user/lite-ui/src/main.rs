@@ -102,7 +102,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     loop {
-        let (display_ready, terminal_ready) = wait(&display, terminal.as_ref())?;
+        let (display_ready, terminal_ready) = wait(&display, terminal.as_ref(), &state)?;
         if display_ready {
             let event = display.next_event()?;
             if matches!(event, Event::Close) {
@@ -118,6 +118,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             dispatch(&mut engine, "terminal", screen)?;
             engine.run_jobs()?;
         }
+        // 1. `setTimeout` callbacks fire after the poll wakes on their deadline;
+        //    an empty expiry means the wait ended on a display/terminal event.
+        for id in state.take_expired_timers() {
+            let script = format!("globalThis.__liteTimer({id});");
+            engine.evaluate("lite-ui-timer.js", script.as_bytes())?;
+        }
+        engine.run_jobs()?;
         process_actions(&state, &display, &mut children, terminal.as_mut())?;
         render_latest(
             &mode,
@@ -364,7 +371,11 @@ fn process_actions(
     Ok(())
 }
 
-fn wait(display: &Display, terminal: Option<&Terminal>) -> Result<(bool, bool), Box<dyn Error>> {
+fn wait(
+    display: &Display,
+    terminal: Option<&Terminal>,
+    state: &State,
+) -> Result<(bool, bool), Box<dyn Error>> {
     if display.has_pending_event() {
         return Ok((true, false));
     }
@@ -373,7 +384,9 @@ fn wait(display: &Display, terminal: Option<&Terminal>) -> Result<(bool, bool), 
     if let Some(terminal) = terminal {
         descriptors.push(PollFd::new(terminal.as_fd(), PollEvents::READ));
     }
-    unix::poll(&mut descriptors, None)?;
+    // Park at most until the nearest JavaScript timer deadline so `setTimeout`
+    // callbacks fire on time even when no display or terminal event arrives.
+    unix::poll(&mut descriptors, state.next_timer_delay())?;
     Ok((
         descriptors[0].returned() != PollEvents::EMPTY,
         descriptors
