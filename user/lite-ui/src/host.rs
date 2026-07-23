@@ -287,7 +287,7 @@ impl NativeHost for Host {
                 Ok(String::new())
             }
             "terminal.connect" if self.role == Role::App => Ok(
-                r#"{"rows":["Connecting to LiteOS terminal…"],"cursor":{"column":0,"row":0}}"#.to_owned(),
+                r#"{"rows":["Connecting to LiteOS terminal..."],"cursor":{"column":0,"row":0}}"#.to_owned(),
             ),
             "terminal.input" if self.role == Role::App => {
                 self.state.actions.borrow_mut().push(Action::TerminalInput(payload.as_bytes().to_vec()));

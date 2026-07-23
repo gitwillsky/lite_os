@@ -6,6 +6,7 @@ mod host;
 mod renderer;
 mod style;
 mod terminal;
+mod terminal_font;
 mod tree;
 
 use std::{

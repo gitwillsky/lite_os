@@ -135,6 +135,7 @@ impl DirtySpan {
 pub trait Grid {
     fn columns(&self) -> usize;
     fn rows(&self) -> usize;
+    /// Returns the visible cursor as `(column, row)`, matching the `columns`/`rows` order.
     fn cursor(&self) -> Option<(usize, usize)>;
     fn cell(&self, row: usize, column: usize) -> Cell;
 }
@@ -383,7 +384,7 @@ impl Grid for Model {
             return None;
         }
         let screen = self.active();
-        Some((screen.row, screen.column.min(self.columns - 1)))
+        Some((screen.column.min(self.columns - 1), screen.row))
     }
 
     fn cell(&self, row: usize, column: usize) -> Cell {

@@ -74,7 +74,7 @@ const properties = new Set([
   "align-items", "background", "background-image", "border", "border-bottom", "border-color",
   "border-left", "border-radius", "border-right", "border-top", "border-width",
   "bottom", "box-shadow", "color", "display", "flex", "flex-direction",
-  "font-family", "font-size", "font-weight", "gap", "height", "justify-content",
+  "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
   "left", "line-height", "margin", "margin-left", "margin-right", "max-height", "max-width", "min-height",
   "min-width", "opacity", "overflow", "padding", "pointer-events", "position",
   "padding-left", "padding-right", "right", "text-align", "text-shadow", "top", "white-space", "width", "z-index",

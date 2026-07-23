@@ -130,6 +130,7 @@ impl Font {
     ) {
         let face = self.face(style);
         let color = style.get("color").and_then(color).unwrap_or(0xff00_0000);
+        let italic = style.get("font-style") == Some("italic");
         let pen = bounds.x1 as i32;
         let baseline = bounds.y1 as i32 + face.ascent;
         let clip = PhysicalRect {
@@ -147,12 +148,22 @@ impl Font {
                 x2: (clip.x2 as i32 + dx.max(0)).min(target.width() as i32) as usize,
                 y2: (clip.y2 as i32 + dy.max(0)).min(target.height() as i32) as usize,
             };
-            self.pass(target, shadow_clip, face, text, pen + dx, baseline + dy, shadow_color);
+            self.pass(
+                target,
+                shadow_clip,
+                face,
+                text,
+                pen + dx,
+                baseline + dy,
+                shadow_color,
+                italic,
+            );
         }
-        self.pass(target, clip, face, text, pen, baseline, color);
+        self.pass(target, clip, face, text, pen, baseline, color, italic);
     }
 
     /// Draws one text run in a single color at the given pen origin.
+    #[allow(clippy::too_many_arguments)]
     fn pass(
         &self,
         target: &mut SharedDumbBuffer,
@@ -162,6 +173,7 @@ impl Font {
         pen: i32,
         baseline: i32,
         color: u32,
+        italic: bool,
     ) {
         let mut pen = pen;
         for character in text.chars() {
@@ -170,7 +182,7 @@ impl Font {
                 .binary_search(&(character as u32))
                 .unwrap_or(self.fallback);
             let glyph = face.glyphs[index];
-            self.glyph(target, clip, glyph, pen, baseline, color);
+            self.glyph(target, clip, glyph, pen, baseline, color, italic);
             pen += i32::from(glyph.advance);
             if pen >= clip.x2 as i32 {
                 break;
@@ -194,6 +206,7 @@ impl Font {
         }]
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn glyph(
         &self,
         target: &mut SharedDumbBuffer,
@@ -202,6 +215,7 @@ impl Font {
         pen: i32,
         baseline: i32,
         color: u32,
+        italic: bool,
     ) {
         let x = pen + i32::from(glyph.x);
         let y = baseline + i32::from(glyph.y);
@@ -210,9 +224,13 @@ impl Font {
             if target_y < clip.y1 as i32 || target_y >= clip.y2 as i32 {
                 continue;
             }
+            // Synthetic oblique for `font-style: italic`: rows lean right in
+            // proportion to their height above the baseline (~11°) while the
+            // upright face's advances and metrics stay unchanged.
+            let lean = if italic { (baseline - target_y) / 5 } else { 0 };
             let target_row = target.row_mut(target_y as usize);
             for column in 0..i32::from(glyph.width) {
-                let target_x = x + column;
+                let target_x = x + lean + column;
                 if target_x < clip.x1 as i32 || target_x >= clip.x2 as i32 {
                     continue;
                 }

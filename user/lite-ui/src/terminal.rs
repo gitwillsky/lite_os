@@ -40,14 +40,67 @@ struct KeyEvent {
     value: i32,
 }
 
+/// Latest decoded helper screen: full-width rows plus the `(column, row)` cursor.
+#[derive(Default)]
+struct ScreenState {
+    rows: Vec<String>,
+    cursor: (u16, u16),
+}
+
+impl ScreenState {
+    fn apply_update(&mut self, payload: &[u8]) -> io::Result<()> {
+        if payload.len() < 12 {
+            return Err(invalid("terminal update header truncated"));
+        }
+        let columns = read_u16(payload, 0)? as usize;
+        let rows = read_u16(payload, 2)? as usize;
+        // Header order pins `columns, rows, cursor_column, cursor_row`; the
+        // helper writer in terminal-session emits the same sequence.
+        self.cursor = (read_u16(payload, 4)?, read_u16(payload, 6)?);
+        let dirty = read_u16(payload, 8)? as usize;
+        if columns == 0 || rows == 0 || read_u16(payload, 10)? != 0 {
+            return Err(invalid("terminal update geometry invalid"));
+        }
+        if self.rows.len() != rows {
+            self.rows = vec![" ".repeat(columns); rows];
+        }
+        let mut offset = 12usize;
+        for _ in 0..dirty {
+            let row = read_u16(payload, offset)? as usize;
+            if row >= rows || read_u16(payload, offset + 2)? != 0 {
+                return Err(invalid("terminal dirty row invalid"));
+            }
+            offset += 4;
+            let bytes = payload
+                .get(
+                    offset
+                        ..offset
+                            .checked_add(columns * 16)
+                            .ok_or_else(|| invalid("terminal row overflow"))?,
+                )
+                .ok_or_else(|| invalid("terminal row truncated"))?;
+            let mut text = String::with_capacity(columns);
+            for cell in bytes.as_chunks::<16>().0 {
+                let codepoint = u32::from_le_bytes(cell[0..4].try_into().expect("cell codepoint"));
+                text.push(char::from_u32(codepoint).unwrap_or('\u{fffd}'));
+            }
+            self.rows[row] = text;
+            offset += columns * 16;
+        }
+        if offset != payload.len() {
+            return Err(invalid("terminal update has trailing bytes"));
+        }
+        Ok(())
+    }
+}
+
 /// One terminal helper process, control stream and readiness wakeup.
 pub struct Terminal {
     _child: SessionChild,
     input: ChildStdin,
     messages: Receiver<Message>,
     wake: UnixStream,
-    rows: Vec<String>,
-    cursor: (u16, u16),
+    screen: ScreenState,
     modifiers: Modifiers,
 }
 
@@ -91,8 +144,7 @@ impl Terminal {
             input,
             messages,
             wake,
-            rows: Vec::new(),
-            cursor: (0, 0),
+            screen: ScreenState::default(),
             modifiers: Modifiers::default(),
         })
     }
@@ -109,7 +161,7 @@ impl Terminal {
         while let Ok(message) = self.messages.try_recv() {
             match message {
                 Message::Update(payload) => {
-                    self.apply_update(&payload)?;
+                    self.screen.apply_update(&payload)?;
                     write_frame(&mut self.input, ACK, &[])?;
                 }
                 Message::Exit => return Ok(None),
@@ -117,8 +169,8 @@ impl Terminal {
             }
         }
         Ok(Some(json!({
-            "rows": self.rows,
-            "cursor": {"column": self.cursor.0, "row": self.cursor.1}
+            "rows": self.screen.rows,
+            "cursor": {"column": self.screen.cursor.0, "row": self.screen.cursor.1}
         })))
     }
 
@@ -142,49 +194,6 @@ impl Terminal {
         payload[4..6].copy_from_slice(&(width.min(u32::from(u16::MAX)) as u16).to_le_bytes());
         payload[6..8].copy_from_slice(&(height.min(u32::from(u16::MAX)) as u16).to_le_bytes());
         write_frame(&mut self.input, RESIZE, &payload)
-    }
-
-    fn apply_update(&mut self, payload: &[u8]) -> io::Result<()> {
-        if payload.len() < 12 {
-            return Err(invalid("terminal update header truncated"));
-        }
-        let columns = read_u16(payload, 0)? as usize;
-        let rows = read_u16(payload, 2)? as usize;
-        self.cursor = (read_u16(payload, 4)?, read_u16(payload, 6)?);
-        let dirty = read_u16(payload, 8)? as usize;
-        if columns == 0 || rows == 0 || read_u16(payload, 10)? != 0 {
-            return Err(invalid("terminal update geometry invalid"));
-        }
-        if self.rows.len() != rows {
-            self.rows = vec![" ".repeat(columns); rows];
-        }
-        let mut offset = 12usize;
-        for _ in 0..dirty {
-            let row = read_u16(payload, offset)? as usize;
-            if row >= rows || read_u16(payload, offset + 2)? != 0 {
-                return Err(invalid("terminal dirty row invalid"));
-            }
-            offset += 4;
-            let bytes = payload
-                .get(
-                    offset
-                        ..offset
-                            .checked_add(columns * 16)
-                            .ok_or_else(|| invalid("terminal row overflow"))?,
-                )
-                .ok_or_else(|| invalid("terminal row truncated"))?;
-            let mut text = String::with_capacity(columns);
-            for cell in bytes.as_chunks::<16>().0 {
-                let codepoint = u32::from_le_bytes(cell[0..4].try_into().expect("cell codepoint"));
-                text.push(char::from_u32(codepoint).unwrap_or('\u{fffd}'));
-            }
-            self.rows[row] = text;
-            offset += columns * 16;
-        }
-        if offset != payload.len() {
-            return Err(invalid("terminal update has trailing bytes"));
-        }
-        Ok(())
     }
 }
 
@@ -309,4 +318,51 @@ fn read_u16(bytes: &[u8], offset: usize) -> io::Result<u16> {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blank_cell(codepoint: char) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&(codepoint as u32).to_le_bytes());
+        bytes
+    }
+
+    /// Builds one minimal UPDATE payload: 3x2 grid, cursor at column 2 row 1,
+    /// and one dirty row carrying `abc`.
+    fn update_payload() -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&3u16.to_le_bytes()); // columns
+        payload.extend_from_slice(&2u16.to_le_bytes()); // rows
+        payload.extend_from_slice(&2u16.to_le_bytes()); // cursor column
+        payload.extend_from_slice(&1u16.to_le_bytes()); // cursor row
+        payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row count
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row index
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        for character in ['a', 'b', 'c'] {
+            payload.extend_from_slice(&blank_cell(character));
+        }
+        payload
+    }
+
+    #[test]
+    fn update_decodes_cursor_as_column_then_row() {
+        let mut state = ScreenState::default();
+        state.apply_update(&update_payload()).expect("valid update");
+        // Distinct column/row values catch a swapped decode: (1, 2) would pass
+        // a shape check but mirror the cursor across the grid diagonal.
+        assert_eq!(state.cursor, (2, 1));
+        assert_eq!(state.rows, vec!["   ".to_owned(), "abc".to_owned()]);
+    }
+
+    #[test]
+    fn update_rejects_truncated_row() {
+        let mut payload = update_payload();
+        payload.truncate(payload.len() - 8);
+        let mut state = ScreenState::default();
+        assert!(state.apply_update(&payload).is_err());
+    }
 }

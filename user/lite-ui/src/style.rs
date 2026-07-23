@@ -49,6 +49,7 @@ impl Computed {
             "color",
             "font-family",
             "font-size",
+            "font-style",
             "font-weight",
             "line-height",
             "text-align",

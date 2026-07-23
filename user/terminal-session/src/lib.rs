@@ -213,6 +213,8 @@ fn send_update(output: &mut impl Write, bytes: &mut Vec<u8>, model: &mut Model) 
     bytes.extend_from_slice(&UPDATE.to_le_bytes());
     bytes.extend_from_slice(&(model.columns() as u16).to_le_bytes());
     bytes.extend_from_slice(&(model.rows() as u16).to_le_bytes());
+    // Wire layout pins `columns, rows, cursor_column, cursor_row` in one order;
+    // the lite-ui reader decodes the same sequence.
     let cursor = model
         .cursor()
         .unwrap_or((u16::MAX as usize, u16::MAX as usize));

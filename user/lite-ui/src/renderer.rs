@@ -18,6 +18,7 @@ use crate::{
     display::ForeignLayer,
     font::Font,
     style::{Computed, Sheet},
+    terminal_font::{CELL_WIDTH, TerminalFont},
     tree::Node,
 };
 use box_paint::{paint_background, paint_border, paint_shadow};
@@ -72,6 +73,7 @@ pub struct Renderer {
     viewport: DisplaySize,
     images: HashMap<String, Image>,
     font: Font,
+    terminal_font: TerminalFont,
 }
 
 impl Renderer {
@@ -84,6 +86,7 @@ impl Renderer {
             viewport,
             images: HashMap::new(),
             font: Font::open()?,
+            terminal_font: TerminalFont::open()?,
         })
     }
 
@@ -256,8 +259,15 @@ impl Renderer {
             paint_image(pixels, bounds, image);
         }
         if node.source.kind == "text" {
-            self.font
-                .draw(pixels, bounds, &node.computed, &text_content(&node.source));
+            let text = text_content(&node.source);
+            // `font-family: monospace` selects the fixed-cell terminal atlas so
+            // VT grid cells, cursor math and resize divisors share one geometry.
+            if node.computed.get("font-family") == Some("monospace") {
+                self.terminal_font
+                    .draw(pixels, bounds, &node.computed, &text);
+            } else {
+                self.font.draw(pixels, bounds, &node.computed, &text);
+            }
         }
         if node.source.kind == "surface" {
             let surface_id = node
@@ -344,7 +354,14 @@ fn to_taffy(node: &Node, computed: &Computed) -> Style {
     };
     let font_size = computed.px("font-size", 11.0);
     let line_height = computed.px("line-height", font_size * 1.25);
-    let intrinsic_width = text.chars().count() as f32 * font_size * 0.58;
+    let columns = text.chars().count() as f32;
+    // Monospace rows measure exactly one terminal cell per character; the
+    // proportional UI face keeps its average-glyph estimate.
+    let intrinsic_width = if computed.get("font-family") == Some("monospace") {
+        columns * (CELL_WIDTH as f32 / SCALE)
+    } else {
+        columns * font_size * 0.58
+    };
     let intrinsic_height = line_height;
     let mut style = Style {
         display: match computed.get("display") {
