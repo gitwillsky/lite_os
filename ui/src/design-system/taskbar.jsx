@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { clock } from "lite:desktop";
 
-/** Formats epoch seconds as the XP tray clock (`h:mm AM/PM`, UTC). */
+/** Formats epoch seconds as the XP tray clock (`h:mm AM/PM`, UTC+8). */
 function formatClock(epochSeconds) {
-  const minutes = Math.floor(epochSeconds / 60) % 60;
-  const hours = Math.floor(epochSeconds / 3600) % 24;
+  const local = epochSeconds + 8 * 3600;
+  const minutes = Math.floor(local / 60) % 60;
+  const hours = Math.floor(local / 3600) % 24;
   const suffix = hours >= 12 ? "PM" : "AM";
   return `${hours % 12 || 12}:${String(minutes).padStart(2, "0")} ${suffix}`;
 }
@@ -24,10 +25,8 @@ export function Taskbar({ windows, activeId, startOpen, onStart, onActivate }) {
   }, []);
 
   return (
-    <view className="taskbar">
-      <view className={`start ${startOpen ? "start--pressed" : ""}`} onClick={onStart}>
-        <text className="start__label">start</text>
-      </view>
+    <view className="taskbar" overlay={true}>
+      <view className={`start ${startOpen ? "start--pressed" : ""}`} onClick={onStart}/>
       <view className="taskbar__tasks">
         {windows.map((window) => (
           <view key={window.id} className={`task ${window.id === activeId ? "task--active" : ""}`} onClick={() => onActivate(window.id)}>

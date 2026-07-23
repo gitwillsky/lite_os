@@ -138,7 +138,7 @@ impl Scanout {
                     "scene buffer disappeared",
                 ));
             };
-            composite_node(target, source, node.bounds, node.clip, screen);
+            composite_node(target, source, node.bounds, node.clip, screen, node.corner_radius);
         }
         Ok(())
     }
@@ -219,6 +219,7 @@ fn composite_node(
     bounds: Rect,
     clip: Rect,
     screen: Rect,
+    corner_radius: u32,
 ) {
     let x1 = bounds.x.max(clip.x).max(screen.x).max(0);
     let y1 = bounds.y.max(clip.y).max(screen.y).max(0);
@@ -231,11 +232,38 @@ fn composite_node(
     if x2 <= x1 || y2 <= y1 {
         return;
     }
+    // Rounded top corners: rows within `corner_radius` of the clip top inset
+    // horizontally so the frame clip skips the corner cutout, letting lower
+    // content show through instead of being covered by stale chrome pixels.
+    // The inset math mirrors the renderer's `corner_inset` so the clip edge
+    // aligns with the painted chrome arc.
+    let r = corner_radius as f32;
+    let r_sq = r * r;
     for y in y1..y2 {
         let source_y = (y - bounds.y) as usize;
         let source_row = source.row(source_y);
         let target_row = target.row_mut(y as usize);
-        for x in x1..x2 {
+        let (mut px1, mut px2) = (x1, x2);
+        if corner_radius > 0 {
+            let rel_y = y - clip.y;
+            if rel_y >= 0 && (rel_y as f32) < r {
+                let mid = rel_y as f32 + 0.5;
+                let dist = r - mid;
+                let inset = r - (r_sq - dist * dist).max(0.0).sqrt();
+                let left_px = (clip.x as f32 + inset).ceil() as i32;
+                if px1 < left_px {
+                    px1 = left_px;
+                }
+                let right_px = (clip.x as f32 + clip.width as f32 - inset).floor() as i32;
+                if px2 > right_px {
+                    px2 = right_px;
+                }
+            }
+        }
+        if px2 <= px1 {
+            continue;
+        }
+        for x in px1..px2 {
             let source_pixel = source_row[(x - bounds.x) as usize];
             target_row[x as usize] = over(source_pixel, target_row[x as usize]);
         }

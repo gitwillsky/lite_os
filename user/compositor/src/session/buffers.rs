@@ -3,8 +3,8 @@
 use std::io;
 
 use display_proto::{
-    BufferAlloc, BufferAllocated, BufferDescriptor, MAX_CONNECTION_FRAME_EQUIVALENTS,
-    MAX_SESSION_FRAME_EQUIVALENTS, Size, send_message,
+    BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease,
+    MAX_CONNECTION_FRAME_EQUIVALENTS, MAX_SESSION_FRAME_EQUIVALENTS, Size, send_message,
 };
 use linux_uapi::drm::DumbBuffer;
 
@@ -36,6 +36,12 @@ impl Buffers {
 
 impl Session {
     pub(super) fn allocate(&mut self, owner: Owner, request: BufferAlloc) -> io::Result<()> {
+        // Buffers sized for a superseded configure can never be presented
+        // again (accept_surface checks exact geometry), so retire the idle
+        // ones before accounting quota; busy ones retire on flip completion.
+        if let Owner::App(surface_id) = owner {
+            self.retire_stale_app_buffers(surface_id)?;
+        }
         let owner_count = self
             .buffers
             .values
@@ -134,6 +140,45 @@ impl Session {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("buffer identity exhausted"))?;
         Ok(id)
+    }
+
+    /// Removes every idle app buffer sized for a superseded configure and
+    /// tells the client to drop its mapping; busy ones retire when the
+    /// compositor finishes presenting them (see `presented`).
+    fn retire_stale_app_buffers(&mut self, surface_id: u32) -> io::Result<()> {
+        let Some(configure) = self.apps.get(&surface_id).and_then(|app| app.configure) else {
+            return Ok(());
+        };
+        let width = configure.width * display_proto::DEVICE_SCALE_FACTOR;
+        let height = configure.height * display_proto::DEVICE_SCALE_FACTOR;
+        let stale: Vec<u32> = self
+            .buffers
+            .values
+            .iter()
+            .filter(|(_, buffer)| {
+                buffer.owner == Owner::App(surface_id)
+                    && !buffer.busy
+                    && (buffer.size.width != width || buffer.size.height != height)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
+        let stream = &self
+            .apps
+            .get(&surface_id)
+            .ok_or_else(|| invalid("app disappeared"))?
+            .stream;
+        for id in stale {
+            self.buffers.values.remove(&id);
+            let mut bytes = [0u8; 24];
+            let message = BufferRelease { buffer_id: id }
+                .encode(&mut bytes)
+                .ok_or_else(|| io::Error::other("release encoding failed"))?;
+            send_message(stream, message)?;
+        }
+        Ok(())
     }
 }
 

@@ -12,9 +12,17 @@ const desktopIcons = [
   { id: "trash", label: "Recycle Bin", icon: "assets/trash.png" },
 ];
 
+// The taskbar-free area every maximized window covers; move clamps agree.
+const WORK_AREA = { x: 0, y: 0, width: 1504, height: 816 };
+const clampX = (x, width) => Math.max(0, Math.min(WORK_AREA.width - width, x));
+const clampY = (y) => Math.max(0, Math.min(WORK_AREA.height - 25, y));
+
 export default function Desktop() {
   const [open, setOpen] = useState(() => surfaces());
   const [activeId, setActiveId] = useState(() => open.at(-1)?.id ?? 0);
+  const [minimized, setMinimized] = useState(() => new Set());
+  // id -> bounds saved when the window was maximized; restore reads them back.
+  const [maximized, setMaximized] = useState(() => new Map());
   const [startOpen, setStartOpen] = useState(false);
   const [selectedIcon, setSelectedIcon] = useState(null);
   const listedApps = useMemo(() => apps(), []);
@@ -23,25 +31,81 @@ export default function Desktop() {
     const unsubscribe = globalThis.liteDesktopSubscribe((event) => {
       setOpen(surfaces());
       if (event.type === "opened") setActiveId(event.surface.id);
+      if (event.type === "closed") {
+        setMinimized((set) => {
+          const next = new Set(set);
+          next.delete(event.surfaceId);
+          return next;
+        });
+        setMaximized((map) => {
+          const next = new Map(map);
+          next.delete(event.surfaceId);
+          return next;
+        });
+        setActiveId((current) => (current === event.surfaceId ? 0 : current));
+      }
     });
     if (surfaces().length === 0) launch("terminal");
     return unsubscribe;
   }, []);
 
-  const activate = useCallback((id) => { focus(id); setActiveId(id); setStartOpen(false); }, []);
+  const activate = useCallback((id) => {
+    focus(id);
+    setActiveId(id);
+    setStartOpen(false);
+    // Activating from the taskbar is also the restore path for minimized windows.
+    setMinimized((set) => {
+      if (!set.has(id)) return set;
+      const next = new Set(set);
+      next.delete(id);
+      return next;
+    });
+  }, []);
   const launchApp = useCallback((id) => { launch(id); setStartOpen(false); }, []);
   const closeWindow = useCallback((id) => { close(id); setOpen((items) => items.filter((item) => item.id !== id)); }, []);
+  const minimizeWindow = useCallback((id) => {
+    const next = new Set(minimized);
+    next.add(id);
+    setMinimized(next);
+    if (activeId === id) {
+      const fallback = open.filter((item) => item.id !== id && !next.has(item.id)).at(-1);
+      focus(fallback ? fallback.id : 0);
+      setActiveId(fallback ? fallback.id : 0);
+    }
+  }, [open, minimized, activeId]);
+  const toggleMaximize = useCallback((id) => {
+    setMaximized((map) => {
+      const next = new Map(map);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        const surface = open.find((item) => item.id === id);
+        if (surface) next.set(id, surface.bounds);
+      }
+      return next;
+    });
+  }, [open]);
   const moveWindow = useCallback((id, x, y) => {
+    // Dragging a maximized titlebar restores the window centered on the cursor.
+    const restored = maximized.get(id);
+    if (restored) {
+      setMaximized((map) => {
+        const next = new Map(map);
+        next.delete(id);
+        return next;
+      });
+      const position = { x: clampX(x - Math.floor(restored.width / 2), restored.width), y: clampY(y - 12) };
+      move(id, position.x, position.y);
+      setOpen((items) => items.map((item) => (item.id === id ? { ...item, bounds: { ...restored, ...position } } : item)));
+      return;
+    }
     setOpen((items) => items.map((item) => {
       if (item.id !== id) return item;
-      const next = {
-        x: Math.max(0, Math.min(1504 - item.bounds.width, x)),
-        y: Math.max(0, Math.min(816 - 25, y)),
-      };
+      const next = { x: clampX(x, item.bounds.width), y: clampY(y) };
       move(id, next.x, next.y);
       return { ...item, bounds: { ...item.bounds, ...next } };
     }));
-  }, []);
+  }, [maximized]);
 
   return (
     <view id="desktop" onClick={() => setSelectedIcon(null)}>
@@ -54,11 +118,14 @@ export default function Desktop() {
           </view>
         ))}
       </view>
-      {open.map((surface, index) => (
-        <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={surface.bounds} onActivate={activate} onClose={closeWindow} onMove={moveWindow}>
-          <surface className="client-surface" id={surface.id} configureSerial={configure(surface.id, surface.bounds.width - 6, surface.bounds.height - 31)} />
-        </Window>
-      ))}
+      {open.filter((surface) => !minimized.has(surface.id)).map((surface) => {
+        const bounds = maximized.has(surface.id) ? WORK_AREA : surface.bounds;
+        return (
+          <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMove={moveWindow} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
+            <surface className="client-surface" id={surface.id} configureSerial={configure(surface.id, bounds.width - 8, bounds.height - 33)} frame={bounds} cornerRadius={8} />
+          </Window>
+        );
+      })}
       {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>} 
       <Taskbar windows={open} activeId={activeId} startOpen={startOpen} onStart={() => setStartOpen((value) => !value)} onActivate={activate}/>
     </view>

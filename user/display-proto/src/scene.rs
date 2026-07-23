@@ -34,6 +34,10 @@ pub struct SceneNode<'a> {
     pub window_group: u32,
     /// Buffer id for pixels or app surface id for a foreign surface.
     pub source_id: u32,
+    /// Rounded-corner radius in physical pixels for the frame clip; zero means
+    /// the full clip rect is painted. Only the top corners are cut, matching
+    /// the Luna window shape (`8px 8px 0 0`).
+    pub corner_radius: u32,
     /// Adopted configure serial for a foreign surface; zero for pixels.
     pub configure_serial: u64,
     /// Destination bounds in physical screen pixels.
@@ -61,7 +65,7 @@ impl<'a> SceneNode<'a> {
         writer.u32(self.kind as u32)?;
         writer.u32(self.window_group)?;
         writer.u32(self.source_id)?;
-        writer.u32(0)?;
+        writer.u32(self.corner_radius)?;
         writer.u64(self.configure_serial)?;
         self.bounds.encode(writer)?;
         self.clip.encode(writer)?;
@@ -83,7 +87,7 @@ impl<'a> SceneNode<'a> {
         let kind = SceneNodeKind::parse(reader.u32()?)?;
         let window_group = reader.u32()?;
         let source_id = reader.u32()?;
-        (reader.u32()? == 0).then_some(())?;
+        let corner_radius = reader.u32()?;
         let configure_serial = reader.u64()?;
         match kind {
             SceneNodeKind::Pixels if configure_serial != 0 => return None,
@@ -109,6 +113,7 @@ impl<'a> SceneNode<'a> {
             kind,
             window_group,
             source_id,
+            corner_radius,
             configure_serial,
             bounds,
             clip,

@@ -30,7 +30,6 @@ const liteModules = {
     globalThis.liteTerminalSubscribe = (callback) => globalThis.__liteSubscribe("terminal", callback);
     export const connect = (argv) => JSON.parse(globalThis.__liteNative("terminal.connect", JSON.stringify(argv)));
     export const input = (event) => globalThis.__liteNative("terminal.input", JSON.stringify(event));
-    export const resize = (width, height) => globalThis.__liteNative("terminal.resize", width + ":" + height);
   `,
 };
 
@@ -156,6 +155,7 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/arrow-right.png"), join(assets, "arrow-right.png"));
     await copyFile(join(root, "../assets/sprites-src/glyph-min.png"), join(assets, "glyph-min.png"));
     await copyFile(join(root, "../assets/sprites-src/glyph-max.png"), join(assets, "glyph-max.png"));
+    await copyFile(join(root, "../assets/sprites-src/glyph-restore.png"), join(assets, "glyph-restore.png"));
     await copyFile(join(root, "../assets/sprites-src/glyph-close.png"), join(assets, "glyph-close.png"));
   }
   await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));

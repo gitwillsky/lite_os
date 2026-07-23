@@ -2,7 +2,7 @@ import React from "react";
 
 export function StartMenu({ apps, onLaunch, onShutdown }) {
   return (
-    <view className="start-menu">
+    <view className="start-menu" overlay={true}>
       <view className="start-menu__user"><image src="assets/avatar.png"/><text>LiteOS</text></view>
       <view className="start-menu__columns">
         <view className="start-menu__primary">

@@ -51,6 +51,7 @@
 .window {
   position: absolute;
   padding: 3px;
+  border: 1px solid #00138c;
   border-radius: 8px 8px 0 0;
   box-shadow: 2px 3px 8px #15375a;
   overflow: hidden;
@@ -59,6 +60,7 @@
   background: linear-gradient(#0058ee 0%, #3593ff 4%, #288eff 6%, #127dff 8%, #036ffc 10%, #0262ee 14%, #0057e5 20%, #0054e3 24%, #0055eb 56%, #005bf5 66%, #026afe 76%, #0062ef 86%, #0052d6 92%, #0040ab 94%, #003092 100%);
 }
 .window--inactive {
+  border-color: #6f7d9c;
   background: linear-gradient(#7697e7 0%, #7e9ee3 3%, #94afe8 6%, #97b4e9 8%, #82a5e4 14%, #7c9fe2 17%, #7996de 25%, #7b99e1 56%, #82a9e9 81%, #80a5e7 89%, #7b96e1 94%, #7a93df 97%, #abbae3 100%);
 }
 .window__titlebar {
@@ -94,14 +96,15 @@
   justify-content: center;
   border: 1px solid #ffffff;
   border-radius: 3px;
-  background: linear-gradient(#7ba4f8 0%, #5583f2 12%, #2f62e6 50%, #2450d2 90%, #2c5ce0 100%);
+  background: linear-gradient(#c9dafe 0%, #7ba4f8 22%, #5583f2 42%, #2f62e6 68%, #2450d2 92%, #2c5ce0 100%);
 }
 .caption-button__glyph {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 .caption-button--close {
-  background: linear-gradient(#f5b09e 0%, #ee8266 12%, #d94e2e 50%, #c6260a 90%, #d94e2e 100%);
+  width: 23px;
+  background: linear-gradient(#f9d9cc 0%, #f5b09e 20%, #ee8266 42%, #d94e2e 70%, #c6260a 92%, #d94e2e 100%);
 }
 .window__body {
   position: absolute;
@@ -110,7 +113,7 @@
   top: 28px;
   bottom: 3px;
   overflow: hidden;
-  background: #ffffff;
+  background: #ece9d8;
 }
 .client-surface {
   width: 100%;
@@ -131,22 +134,10 @@
 .start {
   width: 96px;
   height: 30px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-left: 32px;
   background-image: url(assets/start.png);
 }
 .start--pressed {
   background-image: url(assets/start-pressed.png);
-}
-.start__label {
-  font-family: Tahoma;
-  font-style: italic;
-  font-size: 14px;
-  font-weight: bold;
-  color: #ffffff;
-  text-shadow: 1px 1px #225520;
 }
 .taskbar__tasks {
   flex: 1;
@@ -213,6 +204,7 @@
   align-items: center;
   gap: 10px;
   padding: 7px;
+  border-radius: 6px 6px 0 0;
   background: linear-gradient(#1868ce 0%, #0e60cb 12%, #0e60cb 20%, #1164cf 32%, #1667cf 33%, #1b6cd3 47%, #1e70d9 54%, #2476dc 60%, #297ae0 65%, #3482e3 77%, #3786e5 79%, #428ee9 90%, #4791eb 100%);
   color: #ffffff;
   font-size: 17px;

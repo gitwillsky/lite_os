@@ -24,6 +24,9 @@
   ownership 与 quota，再原子替换 accepted scene；失败保留旧 scene。
 - focused surface 在 scene 中声明，允许零个或一个；键盘 routing 只随 presentation 切换。不得增加
   imperative focus state seam。`<surface>` bounds 必须等于 adopted configure logical client size，禁止缩放。
+- desktop scene 的 node 顺序即 z 栈：全屏 Pixels 底图先行，随后每个窗口先按其 frame clip 重绘桌面像素、
+  再叠加其 foreign surface，overlay clip（taskbar/菜单）居末。同一桌面 buffer 可在多个 Pixels node 按
+  clip 复用；每个窗口的 chrome 与 content 必须原子叠放，任何窗口内容不得覆盖其他窗口的 chrome。
 - app `SURFACE_COMMIT` 与 desktop `SCENE_COMMIT` 分别有 monotonic revision。frame latch 后到达的提交进入
   下一帧；每连接最多 64 KiB nonblocking outbound queue。可合并 event 覆盖旧值，不可丢事件无法入队
   时断开连接；禁止 compositor writer thread。

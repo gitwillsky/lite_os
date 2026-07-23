@@ -195,7 +195,7 @@ fn send_update(output: &mut impl Write, bytes: &mut Vec<u8>, model: &mut Model) 
     let dirty_rows = (0..model.rows())
         .filter(|row| model.dirty_span(*row).is_some())
         .count();
-    let payload = 12usize
+    let payload = 20usize
         .checked_add(
             dirty_rows
                 .checked_mul(4 + model.columns() * 16)
@@ -222,6 +222,11 @@ fn send_update(output: &mut impl Write, bytes: &mut Vec<u8>, model: &mut Model) 
     bytes.extend_from_slice(&(cursor.1 as u16).to_le_bytes());
     bytes.extend_from_slice(&(dirty_rows as u16).to_le_bytes());
     bytes.extend_from_slice(&0u16.to_le_bytes());
+    // The header ends with the current default colors so the reader can fill
+    // the container background and cursor without a per-cell trip.
+    let (foreground, background) = model.default_colors();
+    bytes.extend_from_slice(&foreground.to_le_bytes());
+    bytes.extend_from_slice(&background.to_le_bytes());
     for row in 0..model.rows() {
         if model.dirty_span(row).is_none() {
             continue;

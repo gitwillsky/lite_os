@@ -28,8 +28,6 @@ pub enum Action {
     Shutdown,
     /// Send bytes to the terminal helper.
     TerminalInput(Vec<u8>),
-    /// Resize the terminal helper viewport.
-    TerminalResize { width: u32, height: u32 },
 }
 
 #[derive(Clone, Serialize)]
@@ -54,6 +52,7 @@ struct Surface {
 /// Latest-only UI state and deferred native actions shared with the event loop.
 pub struct State {
     scene: RefCell<Option<Vec<Node>>>,
+    scene_dirty: Cell<bool>,
     actions: RefCell<Vec<Action>>,
     surfaces: RefCell<Vec<Surface>>,
     next_configure: Cell<u64>,
@@ -62,9 +61,21 @@ pub struct State {
 }
 
 impl State {
-    /// Takes the most recent complete React host snapshot.
-    pub fn take_scene(&self) -> Option<Vec<Node>> {
-        self.scene.borrow_mut().take()
+    /// Borrows the latest React host snapshot when it still needs rendering.
+    ///
+    /// The scene stays owned so a reconfigure can re-render it at the new
+    /// viewport without a per-frame clone: [`State::invalidate_scene`] simply
+    /// marks the retained snapshot dirty again.
+    pub fn scene_if_dirty(&self) -> Option<std::cell::Ref<'_, Vec<Node>>> {
+        if !self.scene_dirty.replace(false) {
+            return None;
+        }
+        std::cell::Ref::filter_map(self.scene.borrow(), Option::as_ref).ok()
+    }
+
+    /// Forces the retained snapshot to render once more (viewport change).
+    pub fn invalidate_scene(&self) {
+        self.scene_dirty.set(true);
     }
 
     /// Takes all native actions produced by the completed JavaScript turn.
@@ -159,6 +170,7 @@ impl Host {
     pub fn new(role: Role) -> (Self, Rc<State>) {
         let state = Rc::new(State {
             scene: RefCell::new(None),
+            scene_dirty: Cell::new(false),
             actions: RefCell::new(Vec::new()),
             surfaces: RefCell::new(Vec::new()),
             next_configure: Cell::new(1),
@@ -217,6 +229,7 @@ impl NativeHost for Host {
             "scene.commit" => {
                 let scene = tree::parse(payload).map_err(EngineError::from_host)?;
                 self.state.scene.replace(Some(scene));
+                self.state.scene_dirty.set(true);
                 Ok(String::new())
             }
             "time.now" => Ok(self
@@ -286,19 +299,14 @@ impl NativeHost for Host {
                 self.state.actions.borrow_mut().push(Action::Shutdown);
                 Ok(String::new())
             }
+            // The pre-first-update frame mirrors the helper's initial palette
+            // (terminal-session DEFAULT_COLORS indices 7 and 0); the first real
+            // screen update replaces both colors and rows.
             "terminal.connect" if self.role == Role::App => Ok(
-                r#"{"rows":["Connecting to LiteOS terminal..."],"cursor":{"column":0,"row":0}}"#.to_owned(),
+                r#"{"rows":[[{"text":"Connecting to LiteOS terminal...","fg":13358561,"bg":1053720,"bold":false}]],"cursor":{"column":0,"row":0},"foreground":13358561,"background":1053720}"#.to_owned(),
             ),
             "terminal.input" if self.role == Role::App => {
                 self.state.actions.borrow_mut().push(Action::TerminalInput(payload.as_bytes().to_vec()));
-                Ok(String::new())
-            }
-            "terminal.resize" if self.role == Role::App => {
-                let mut fields = payload.split(':');
-                let width = parse_u32(fields.next(), "terminal width")?;
-                let height = parse_u32(fields.next(), "terminal height")?;
-                if fields.next().is_some() { return Err(EngineError::from_host("invalid terminal resize")); }
-                self.state.actions.borrow_mut().push(Action::TerminalResize { width, height });
                 Ok(String::new())
             }
             _ => Err(EngineError::from_host(format!(
@@ -357,7 +365,15 @@ mod tests {
                 "##,
             )
             .expect("valid host commits must evaluate");
-        assert_eq!(state.take_scene().expect("latest scene")[0].kind, "text");
+        assert_eq!(
+            state.scene_if_dirty().expect("latest scene")[0].kind,
+            "text"
+        );
+        // The dirty flag is consumed by the read: a second poll sees no work,
+        // and an explicit invalidation offers the same retained scene again.
+        assert!(state.scene_if_dirty().is_none());
+        state.invalidate_scene();
+        assert!(state.scene_if_dirty().is_some());
     }
 
     #[test]
@@ -377,7 +393,7 @@ mod tests {
             .expect("mount desktop");
         engine.run_jobs().expect("desktop jobs");
         assert!(
-            state.take_scene().is_some(),
+            state.scene_if_dirty().is_some(),
             "desktop must publish its root"
         );
     }

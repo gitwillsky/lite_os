@@ -20,6 +20,9 @@ pub struct Node {
     pub buffer_id: u32,
     pub bounds: Rect,
     pub clip: Rect,
+    /// Rounded-corner radius in physical pixels; the compositor skips corner
+    /// pixels outside the arc so lower content shows through the frame clip.
+    pub corner_radius: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -47,16 +50,38 @@ impl Session {
             .as_ref()
             .ok_or_else(|| invalid("desktop disappeared"))?
             .last_revision;
-        if commit.revision <= last_revision
-            || (commit.focused_surface != 0 && !self.apps.contains_key(&commit.focused_surface))
-        {
-            return Err(invalid("scene revision or focus invalid"));
+        if commit.revision <= last_revision {
+            return Err(invalid("scene revision invalid"));
         }
+        // App disconnect always races the desktop's next commit: the compositor
+        // removes a dead app before AppClosed reaches the desktop, so focus or
+        // a foreign node may still reference it. That reference can only be
+        // explained by the race, so clamp/skip it; every later violation
+        // (unknown buffer, bad geometry, stale serial) stays epoch-fatal.
+        let focused_surface =
+            if commit.focused_surface != 0 && !self.apps.contains_key(&commit.focused_surface) {
+                eprintln!(
+                    "compositor: focus {} clamped to desktop after app disconnect",
+                    commit.focused_surface
+                );
+                0
+            } else {
+                commit.focused_surface
+            };
         let mut nodes = Vec::with_capacity(commit.nodes().len());
         let mut desktop_buffers = Vec::new();
         let mut adoptions = Vec::new();
         let mut routing = Vec::new();
         for node in commit.nodes() {
+            if node.kind == SceneNodeKind::ForeignSurface
+                && !self.apps.contains_key(&node.source_id)
+            {
+                eprintln!(
+                    "compositor: foreign surface {} skipped after app disconnect",
+                    node.source_id
+                );
+                continue;
+            }
             let buffer_id = match node.kind {
                 SceneNodeKind::Pixels => {
                     let buffer = self
@@ -80,7 +105,7 @@ impl Session {
                     let app = self
                         .apps
                         .get(&node.source_id)
-                        .ok_or_else(|| invalid("unknown foreign surface"))?;
+                        .expect("validated foreign surface");
                     let content = app
                         .pending
                         .filter(|content| content.configure_serial == node.configure_serial)
@@ -117,6 +142,7 @@ impl Session {
                 buffer_id,
                 bounds: node.bounds,
                 clip: node.clip,
+                corner_radius: node.corner_radius,
             });
         }
         if nodes.is_empty() {
@@ -152,12 +178,13 @@ impl Session {
             desktop_buffers,
             app_presentations,
             routing,
-            focused_surface: commit.focused_surface,
+            focused_surface,
         })
     }
 
     /// Releases presentation-retired buffers and publishes exact flip completion.
     pub fn presented(&mut self, scene: &Scene, event: FlipEvent) -> io::Result<()> {
+        self.last_flip = event;
         let desktop = self
             .desktop
             .as_ref()
@@ -169,7 +196,31 @@ impl Session {
         for app_use in &scene.app_presentations {
             if let Some(app) = self.apps.get(&app_use.surface_id) {
                 if let Some(previous) = app_use.previous_buffer {
-                    release_buffer(&mut self.buffers, &app.stream, previous)?;
+                    // A previous buffer sized for a superseded configure can
+                    // never be presented again: retire it instead of recycling.
+                    // The matching release path keeps double buffering intact.
+                    let stale = app.configure.is_some_and(|configure| {
+                        let buffer = self
+                            .buffers
+                            .values
+                            .get(&previous)
+                            .expect("presented app buffer");
+                        buffer.size.width != configure.width * display_proto::DEVICE_SCALE_FACTOR
+                            || buffer.size.height
+                                != configure.height * display_proto::DEVICE_SCALE_FACTOR
+                    });
+                    if stale {
+                        self.buffers.values.remove(&previous);
+                        let mut bytes = [0u8; 24];
+                        let message = BufferRelease {
+                            buffer_id: previous,
+                        }
+                        .encode(&mut bytes)
+                        .ok_or_else(|| io::Error::other("release encoding failed"))?;
+                        send_message(&app.stream, message)?;
+                    } else {
+                        release_buffer(&mut self.buffers, &app.stream, previous)?;
+                    }
                 }
                 send_presented(&app.stream, app_use.revision, event)?;
             }

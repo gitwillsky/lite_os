@@ -1,7 +1,7 @@
 import React, { useCallback, useRef } from "react";
 
 /** Renders one Luna window frame while leaving client pixels owned by compositor. */
-export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMove }) {
+export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMove, onMinimize, onToggleMaximize, maximized }) {
   const drag = useRef(null);
   const beginDrag = useCallback((event) => {
     onActivate(id);
@@ -22,9 +22,9 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
       <view className="window__titlebar" onPointerDown={beginDrag} onPointerMove={continueDrag} onPointerUp={endDrag}>
         <image className="window__icon" src={icon} />
         <text className="window__title">{title}</text>
-        <view className="window__controls">
-          <view className="caption-button"><image className="caption-button__glyph" src="assets/glyph-min.png"/></view>
-          <view className="caption-button"><image className="caption-button__glyph" src="assets/glyph-max.png"/></view>
+        <view className="window__controls" onPointerDown={() => {}}>
+          <view className="caption-button" onClick={() => onMinimize(id)}><image className="caption-button__glyph" src="assets/glyph-min.png"/></view>
+          <view className="caption-button" onClick={() => onToggleMaximize(id)}><image className="caption-button__glyph" src={maximized ? "assets/glyph-restore.png" : "assets/glyph-max.png"}/></view>
           <view className="caption-button caption-button--close" onClick={() => onClose(id)}><image className="caption-button__glyph" src="assets/glyph-close.png"/></view>
         </view>
       </view>

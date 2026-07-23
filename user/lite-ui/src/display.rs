@@ -26,6 +26,15 @@ struct Buffer {
     free: bool,
 }
 
+impl Buffer {
+    /// Buffers sized for a superseded configure can never be presented again:
+    /// they retire instead of recycling back into the free pool.
+    fn matches(&self, physical: Size) -> bool {
+        self.pixels.width() == physical.width as usize
+            && self.pixels.height() == physical.height as usize
+    }
+}
+
 /// Writable compositor-issued frame.
 pub struct Frame<'a> {
     /// Protocol buffer identity used by the next commit.
@@ -43,6 +52,12 @@ pub struct ForeignLayer {
     pub configure_serial: u64,
     /// Physical client-area bounds.
     pub bounds: Rect,
+    /// Physical window frame clip re-painted above lower foreign content, so
+    /// each window's chrome and content stack as one atomic layer.
+    pub frame: Rect,
+    /// Rounded-corner radius in physical pixels for the frame clip; the compositor
+    /// skips corner pixels so lower content shows through the Luna-style rounded top corners instead of stale chrome pixels.
+    pub corner_radius: u32,
 }
 
 /// One validated asynchronous display event.
@@ -74,6 +89,7 @@ enum WireEvent {
 /// One exact-version display connection and its compositor-owned buffer pair.
 pub struct Display {
     stream: UnixStream,
+    device: DrmDevice,
     physical: Size,
     surface_id: u32,
     configure_serial: u64,
@@ -121,17 +137,45 @@ impl Display {
                 )
             }
         };
-        let buffers = allocate_pair(&stream, &device, physical)?;
-        Ok(Self {
+        let mut display = Self {
             stream,
+            device,
             physical,
             surface_id: welcome.surface_id,
             configure_serial,
-            buffers,
+            buffers: Vec::new(),
             revision: 0,
             ready: HashSet::new(),
             pending: VecDeque::new(),
-        })
+        };
+        display.allocate(2, physical)?;
+        Ok(display)
+    }
+
+    /// Adopts one desktop-issued configure and tops the buffer pair back up.
+    ///
+    /// Buffers already matching the new size survive (repeated toggles reuse
+    /// them); mismatched ones retire as their compositor releases arrive.
+    pub fn reconfigure(&mut self, configure: Configure) -> io::Result<()> {
+        let physical = Size {
+            width: configure.width * display_proto::DEVICE_SCALE_FACTOR,
+            height: configure.height * display_proto::DEVICE_SCALE_FACTOR,
+        };
+        self.configure_serial = configure.serial;
+        if physical == self.physical {
+            return Ok(());
+        }
+        self.physical = physical;
+        let matching = self
+            .buffers
+            .iter()
+            .filter(|buffer| buffer.matches(physical))
+            .count();
+        let missing = 2usize.saturating_sub(matching);
+        if missing > 0 {
+            self.allocate(missing as u32, physical)?;
+        }
+        Ok(())
     }
 
     /// Returns the fixed logical CSS viewport.
@@ -152,12 +196,13 @@ impl Display {
         !self.pending.is_empty()
     }
 
-    /// Acquires one released writable buffer.
+    /// Acquires one released writable buffer for the active configure size.
     pub fn acquire(&mut self) -> io::Result<Frame<'_>> {
+        let physical = self.physical;
         let buffer = self
             .buffers
             .iter_mut()
-            .find(|buffer| buffer.free)
+            .find(|buffer| buffer.free && buffer.matches(physical))
             .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "no released UI buffer"))?;
         buffer.free = false;
         Ok(Frame {
@@ -166,12 +211,18 @@ impl Display {
         })
     }
 
-    /// Commits desktop pixels and all currently ready app surface layers.
+    /// Commits desktop pixels interleaved with ready app surface layers.
+    ///
+    /// Node order is the z-stack: the full desktop buffer, then per window its
+    /// frame clip re-painted above lower foreign content followed by its own
+    /// surface, and finally overlay chrome clips (taskbar/menus) above all
+    /// content. One window's content can never cover another window's chrome.
     pub fn commit_desktop(
         &mut self,
         buffer_id: u32,
         focused_surface: u32,
         foreign: &[ForeignLayer],
+        overlays: &[Rect],
     ) -> io::Result<()> {
         let revision = self.next_revision()?;
         let full = Rect {
@@ -182,11 +233,12 @@ impl Display {
         };
         let full_input = [full];
         let no_damage = [];
-        let mut nodes = Vec::with_capacity(1 + foreign.len());
+        let mut nodes = Vec::with_capacity(1 + foreign.len() * 2 + overlays.len());
         nodes.push(SceneNode {
             kind: SceneNodeKind::Pixels,
             window_group: 0,
             source_id: buffer_id,
+            corner_radius: 0,
             configure_serial: 0,
             bounds: full,
             clip: full,
@@ -194,8 +246,11 @@ impl Display {
             input: Rectangles::from_slice(&full_input),
             damage: Rectangles::from_slice(&no_damage),
         });
-        let foreign_input: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();
-        for (layer, input) in foreign.iter().zip(&foreign_input) {
+        let foreign_bounds: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();
+        let foreign_frames: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.frame]).collect();
+        for (layer, (bounds_input, frame_input)) in
+            foreign.iter().zip(foreign_bounds.iter().zip(&foreign_frames))
+        {
             if !self
                 .ready
                 .contains(&(layer.surface_id, layer.configure_serial))
@@ -203,13 +258,41 @@ impl Display {
                 continue;
             }
             nodes.push(SceneNode {
+                kind: SceneNodeKind::Pixels,
+                window_group: 0,
+                source_id: buffer_id,
+                corner_radius: layer.corner_radius,
+                configure_serial: 0,
+                bounds: full,
+                clip: layer.frame,
+                opaque: None,
+                input: Rectangles::from_slice(frame_input),
+                damage: Rectangles::from_slice(&no_damage),
+            });
+            nodes.push(SceneNode {
                 kind: SceneNodeKind::ForeignSurface,
                 window_group: layer.surface_id,
                 source_id: layer.surface_id,
+                corner_radius: 0,
                 configure_serial: layer.configure_serial,
                 bounds: layer.bounds,
                 clip: full,
                 opaque: Some(layer.bounds),
+                input: Rectangles::from_slice(bounds_input),
+                damage: Rectangles::from_slice(&no_damage),
+            });
+        }
+        let overlay_inputs: Vec<[Rect; 1]> = overlays.iter().map(|clip| [*clip]).collect();
+        for (clip, input) in overlays.iter().zip(&overlay_inputs) {
+            nodes.push(SceneNode {
+                kind: SceneNodeKind::Pixels,
+                window_group: 0,
+                source_id: buffer_id,
+                corner_radius: 0,
+                configure_serial: 0,
+                bounds: full,
+                clip: *clip,
+                opaque: None,
                 input: Rectangles::from_slice(input),
                 damage: Rectangles::from_slice(&no_damage),
             });
@@ -370,11 +453,18 @@ impl Display {
     }
 
     fn release(&mut self, id: u32) -> io::Result<()> {
-        let buffer = self
+        let index = self
             .buffers
-            .iter_mut()
-            .find(|buffer| buffer.id == id)
+            .iter()
+            .position(|buffer| buffer.id == id)
             .ok_or_else(|| invalid("unknown buffer release"))?;
+        if !self.buffers[index].matches(self.physical) {
+            // Retired buffer: the compositor destroyed its twin, so the
+            // release carries "drop the mapping", not "back to the pool".
+            self.buffers.remove(index);
+            return Ok(());
+        }
+        let buffer = &mut self.buffers[index];
         if buffer.free {
             return Err(invalid("buffer released twice"));
         }
@@ -391,39 +481,56 @@ impl Display {
     }
 }
 
-fn allocate_pair(
-    stream: &UnixStream,
-    device: &DrmDevice,
-    physical: Size,
-) -> io::Result<Vec<Buffer>> {
-    let mut bytes = [0u8; 128];
-    let request = BufferAlloc {
-        request_id: 1,
-        size: physical,
-        count: 2,
-    }
-    .encode(&mut bytes)
-    .ok_or_else(|| io::Error::other("buffer request encoding failed"))?;
-    send_message(stream, request)?;
-    let mut input = [0u8; MAX_MESSAGE];
-    let (length, fd) = recv_frame_blocking(stream, &mut input)?;
-    if fd.is_some() {
-        return Err(invalid("buffer response carried a descriptor"));
-    }
-    let frame = parse_frame(&input[..length])
-        .filter(|frame| frame.kind() == MessageKind::BufferAllocated)
-        .ok_or_else(|| invalid("buffer response missing"))?;
-    let allocated = BufferAllocated::parse(frame.payload())
-        .filter(|response| response.request_id == 1 && response.error == 0 && response.count == 2)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::OutOfMemory, "buffer pair rejected"))?;
-    allocated
-        .buffers
-        .iter()
-        .take(2)
-        .map(|descriptor| {
-            Ok(Buffer {
+impl Display {
+    /// Allocates `count` fresh compositor buffers for one configure size.
+    ///
+    /// The wait loop keeps applying retirement releases that overtake the
+    /// allocation response: reconfigure-time cleanup on the compositor sends
+    /// exactly those before answering, and flip-driven releases may land here
+    /// on any later top-up.
+    fn allocate(&mut self, count: u32, physical: Size) -> io::Result<()> {
+        let mut bytes = [0u8; 128];
+        let request = BufferAlloc {
+            request_id: 1,
+            size: physical,
+            count,
+        }
+        .encode(&mut bytes)
+        .ok_or_else(|| io::Error::other("buffer request encoding failed"))?;
+        send_message(&self.stream, request)?;
+        let mut input = [0u8; MAX_MESSAGE];
+        let allocated = loop {
+            let (length, fd) = recv_frame_blocking(&self.stream, &mut input)?;
+            if fd.is_some() {
+                return Err(invalid("buffer response carried a descriptor"));
+            }
+            let frame =
+                parse_frame(&input[..length]).ok_or_else(|| invalid("invalid display event"))?;
+            match frame.kind() {
+                MessageKind::BufferAllocated => {
+                    break BufferAllocated::parse(frame.payload())
+                        .filter(|response| {
+                            response.request_id == 1
+                                && response.error == 0
+                                && response.count == count
+                        })
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::OutOfMemory, "buffer request rejected")
+                        })?;
+                }
+                MessageKind::BufferRelease => {
+                    let id = BufferRelease::parse(frame.payload())
+                        .ok_or_else(|| invalid("invalid buffer release"))?
+                        .buffer_id;
+                    self.release(id)?;
+                }
+                _ => return Err(invalid("buffer response missing")),
+            }
+        };
+        for descriptor in allocated.buffers.iter().take(count as usize) {
+            self.buffers.push(Buffer {
                 id: descriptor.buffer_id,
-                pixels: device.map_shared_dumb(
+                pixels: self.device.map_shared_dumb(
                     descriptor.gem_handle,
                     physical.width as usize,
                     physical.height as usize,
@@ -431,9 +538,10 @@ fn allocate_pair(
                     descriptor.byte_len as usize,
                 )?,
                 free: true,
-            })
-        })
-        .collect()
+            });
+        }
+        Ok(())
+    }
 }
 
 fn receive_configure(stream: &UnixStream, surface_id: u32) -> io::Result<Configure> {

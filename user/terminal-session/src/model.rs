@@ -137,6 +137,8 @@ pub trait Grid {
     fn rows(&self) -> usize;
     /// Returns the visible cursor as `(column, row)`, matching the `columns`/`rows` order.
     fn cursor(&self) -> Option<(usize, usize)>;
+    /// Returns the current default `(foreground, background)` SGR colors.
+    fn default_colors(&self) -> (u32, u32);
     fn cell(&self, row: usize, column: usize) -> Cell;
 }
 
@@ -385,6 +387,10 @@ impl Grid for Model {
         }
         let screen = self.active();
         Some((screen.column.min(self.columns - 1), screen.row))
+    }
+
+    fn default_colors(&self) -> (u32, u32) {
+        (self.foreground, self.background)
     }
 
     fn cell(&self, row: usize, column: usize) -> Cell {

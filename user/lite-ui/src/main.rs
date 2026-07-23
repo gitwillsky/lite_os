@@ -109,6 +109,18 @@ fn run() -> Result<(), Box<dyn Error>> {
             if matches!(event, Event::Close) {
                 return Ok(());
             }
+            // A desktop-issued reconfigure swaps the surface geometry: adopt it
+            // natively first so the same iteration still renders the retained
+            // scene into a correctly sized fresh buffer.
+            if let Event::Configure(configure) = &event {
+                let configure = *configure;
+                display.reconfigure(configure)?;
+                renderer.set_viewport(display.logical_size());
+                if let Some(terminal) = terminal.as_mut() {
+                    terminal.resize(configure.width, configure.height)?;
+                }
+                state.invalidate_scene();
+            }
             apply_event(&state, &mut engine, &mut interactions, event)?;
             engine.run_jobs()?;
         }
@@ -145,18 +157,21 @@ fn render_latest(
     renderer: &mut Renderer,
     interactions: &mut Interactions,
 ) -> Result<(), Box<dyn Error>> {
-    let Some(scene) = state.take_scene() else {
+    let Some(scene) = state.scene_if_dirty() else {
         return Ok(());
     };
     let (buffer_id, output) = {
         let frame = display.acquire()?;
-        let output = renderer.render(&scene, frame.pixels)?;
+        let output = renderer.render(scene.as_slice(), frame.pixels)?;
         (frame.id, output)
     };
     match mode {
-        Mode::Desktop => {
-            display.commit_desktop(buffer_id, state.focused_surface(), &output.foreign)?
-        }
+        Mode::Desktop => display.commit_desktop(
+            buffer_id,
+            state.focused_surface(),
+            &output.foreign,
+            &output.overlays,
+        )?,
         Mode::App(_) => display.commit_app(buffer_id)?,
     }
     interactions.hits = output.hits;
@@ -363,10 +378,6 @@ fn process_actions(
                 .as_deref_mut()
                 .ok_or("terminal action outside terminal app")?
                 .input(&payload)?,
-            Action::TerminalResize { width, height } => terminal
-                .as_deref_mut()
-                .ok_or("terminal resize outside terminal app")?
-                .resize(width, height)?,
         }
     }
     Ok(())

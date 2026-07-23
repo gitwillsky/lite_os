@@ -10,7 +10,7 @@ use std::{
 };
 
 use linux_uapi::process::SessionChild;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const INPUT: u32 = 1;
@@ -40,16 +40,35 @@ struct KeyEvent {
     value: i32,
 }
 
-/// Latest decoded helper screen: full-width rows plus the `(column, row)` cursor.
+// Cell attribute bits mirror `terminal-session/src/model.rs`; underline, dim
+// and blink have no raster in the fixed-cell atlas and are rendered as normal
+// text.
+const ATTR_BOLD: u16 = 1 << 0;
+const ATTR_INVERSE: u16 = 1 << 3;
+const ATTR_HIDDEN: u16 = 1 << 4;
+
+/// One maximal same-style cell run inside one screen row.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct Run {
+    text: String,
+    fg: u32,
+    bg: u32,
+    bold: bool,
+}
+
+/// Latest decoded helper screen: per-row style runs, the `(column, row)`
+/// cursor and the current default colors.
 #[derive(Default)]
 struct ScreenState {
-    rows: Vec<String>,
+    rows: Vec<Vec<Run>>,
     cursor: (u16, u16),
+    foreground: u32,
+    background: u32,
 }
 
 impl ScreenState {
     fn apply_update(&mut self, payload: &[u8]) -> io::Result<()> {
-        if payload.len() < 12 {
+        if payload.len() < 20 {
             return Err(invalid("terminal update header truncated"));
         }
         let columns = read_u16(payload, 0)? as usize;
@@ -61,10 +80,12 @@ impl ScreenState {
         if columns == 0 || rows == 0 || read_u16(payload, 10)? != 0 {
             return Err(invalid("terminal update geometry invalid"));
         }
+        self.foreground = read_u32(payload, 12)?;
+        self.background = read_u32(payload, 16)?;
         if self.rows.len() != rows {
-            self.rows = vec![" ".repeat(columns); rows];
+            self.rows = vec![Vec::new(); rows];
         }
-        let mut offset = 12usize;
+        let mut offset = 20usize;
         for _ in 0..dirty {
             let row = read_u16(payload, offset)? as usize;
             if row >= rows || read_u16(payload, offset + 2)? != 0 {
@@ -79,12 +100,7 @@ impl ScreenState {
                             .ok_or_else(|| invalid("terminal row overflow"))?,
                 )
                 .ok_or_else(|| invalid("terminal row truncated"))?;
-            let mut text = String::with_capacity(columns);
-            for cell in bytes.as_chunks::<16>().0 {
-                let codepoint = u32::from_le_bytes(cell[0..4].try_into().expect("cell codepoint"));
-                text.push(char::from_u32(codepoint).unwrap_or('\u{fffd}'));
-            }
-            self.rows[row] = text;
+            self.rows[row] = runs(bytes, self.background);
             offset += columns * 16;
         }
         if offset != payload.len() {
@@ -92,6 +108,46 @@ impl ScreenState {
         }
         Ok(())
     }
+}
+
+/// Collapses one full-width cell row into same-style runs and drops the
+/// trailing invisible tail: whole runs of spaces on the default background
+/// paint exactly the container color, so sending them would only grow the
+/// bridge payload.
+fn runs(bytes: &[u8], default_background: u32) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for cell in bytes.as_chunks::<16>().0 {
+        let mut codepoint = u32::from_le_bytes(cell[0..4].try_into().expect("cell codepoint"));
+        let mut fg = u32::from_le_bytes(cell[4..8].try_into().expect("cell foreground"));
+        let mut bg = u32::from_le_bytes(cell[8..12].try_into().expect("cell background"));
+        let attributes = u16::from_le_bytes(cell[12..14].try_into().expect("cell attributes"));
+        if attributes & ATTR_HIDDEN != 0 {
+            codepoint = b' ' as u32;
+        }
+        if attributes & ATTR_INVERSE != 0 {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        let bold = attributes & ATTR_BOLD != 0;
+        let character = char::from_u32(codepoint).unwrap_or('\u{fffd}');
+        match runs.last_mut() {
+            Some(run) if run.fg == fg && run.bg == bg && run.bold == bold => {
+                run.text.push(character)
+            }
+            _ => runs.push(Run {
+                text: character.into(),
+                fg,
+                bg,
+                bold,
+            }),
+        }
+    }
+    while runs
+        .last()
+        .is_some_and(|run| run.bg == default_background && run.text.chars().all(|c| c == ' '))
+    {
+        runs.pop();
+    }
+    runs
 }
 
 /// One terminal helper process, control stream and readiness wakeup.
@@ -170,7 +226,9 @@ impl Terminal {
         }
         Ok(Some(json!({
             "rows": self.screen.rows,
-            "cursor": {"column": self.screen.cursor.0, "row": self.screen.cursor.1}
+            "cursor": {"column": self.screen.cursor.0, "row": self.screen.cursor.1},
+            "foreground": self.screen.foreground,
+            "background": self.screen.background,
         })))
     }
 
@@ -316,6 +374,14 @@ fn read_u16(bytes: &[u8], offset: usize) -> io::Result<u16> {
         .ok_or_else(|| invalid("terminal update truncated"))
 }
 
+fn read_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
+    bytes
+        .get(offset..offset + 4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| invalid("terminal update truncated"))
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -324,14 +390,29 @@ fn invalid(message: &'static str) -> io::Error {
 mod tests {
     use super::*;
 
-    fn blank_cell(codepoint: char) -> [u8; 16] {
+    const FG: u32 = 0x00cb_d5e1;
+    const BG: u32 = 0x0010_1418;
+
+    fn cell(codepoint: char, fg: u32, bg: u32, attributes: u16) -> [u8; 16] {
         let mut bytes = [0u8; 16];
         bytes[0..4].copy_from_slice(&(codepoint as u32).to_le_bytes());
+        bytes[4..8].copy_from_slice(&fg.to_le_bytes());
+        bytes[8..12].copy_from_slice(&bg.to_le_bytes());
+        bytes[12..14].copy_from_slice(&attributes.to_le_bytes());
         bytes
     }
 
+    fn run(text: &str, fg: u32, bg: u32, bold: bool) -> Run {
+        Run {
+            text: text.to_owned(),
+            fg,
+            bg,
+            bold,
+        }
+    }
+
     /// Builds one minimal UPDATE payload: 3x2 grid, cursor at column 2 row 1,
-    /// and one dirty row carrying `abc`.
+    /// default colors, and one dirty row carrying `abc`.
     fn update_payload() -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&3u16.to_le_bytes()); // columns
@@ -340,10 +421,12 @@ mod tests {
         payload.extend_from_slice(&1u16.to_le_bytes()); // cursor row
         payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row count
         payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&FG.to_le_bytes()); // default foreground
+        payload.extend_from_slice(&BG.to_le_bytes()); // default background
         payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row index
         payload.extend_from_slice(&0u16.to_le_bytes());
         for character in ['a', 'b', 'c'] {
-            payload.extend_from_slice(&blank_cell(character));
+            payload.extend_from_slice(&cell(character, FG, BG, 0));
         }
         payload
     }
@@ -355,7 +438,12 @@ mod tests {
         // Distinct column/row values catch a swapped decode: (1, 2) would pass
         // a shape check but mirror the cursor across the grid diagonal.
         assert_eq!(state.cursor, (2, 1));
-        assert_eq!(state.rows, vec!["   ".to_owned(), "abc".to_owned()]);
+        assert_eq!(state.foreground, FG);
+        assert_eq!(state.background, BG);
+        assert_eq!(
+            state.rows,
+            vec![Vec::new(), vec![run("abc", FG, BG, false)]]
+        );
     }
 
     #[test]
@@ -364,5 +452,62 @@ mod tests {
         payload.truncate(payload.len() - 8);
         let mut state = ScreenState::default();
         assert!(state.apply_update(&payload).is_err());
+    }
+
+    #[test]
+    fn runs_split_on_style_change_and_merge_equal_neighbors() {
+        let bytes = [
+            cell('a', FG, BG, 0),
+            cell('b', 0x00ff_0000, BG, 0),
+            cell('c', 0x00ff_0000, BG, 0),
+        ]
+        .concat();
+        assert_eq!(
+            runs(&bytes, BG),
+            vec![run("a", FG, BG, false), run("bc", 0x00ff_0000, BG, false)]
+        );
+    }
+
+    #[test]
+    fn runs_resolve_bold_inverse_and_hidden_attributes() {
+        // The hidden cell sits mid-row: as a trailing default-background space
+        // it would be trimmed instead of asserting the space substitution.
+        let bytes = [
+            cell('a', FG, BG, ATTR_BOLD),
+            cell('c', FG, BG, ATTR_HIDDEN),
+            cell('b', FG, BG, ATTR_INVERSE),
+        ]
+        .concat();
+        assert_eq!(
+            runs(&bytes, BG),
+            vec![
+                run("a", FG, BG, true),
+                run(" ", FG, BG, false),
+                run("b", BG, FG, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn runs_trim_only_whole_trailing_default_background_space_runs() {
+        // One merged run keeps its tail: `ab  ` on the default background still
+        // paints the container color, so dropping spaces inside a run is never
+        // required for correctness.
+        let merged = [
+            cell('a', FG, BG, 0),
+            cell('b', FG, BG, 0),
+            cell(' ', FG, BG, 0),
+        ]
+        .concat();
+        assert_eq!(runs(&merged, BG), vec![run("ab ", FG, BG, false)]);
+        // A style boundary before the tail makes the tail its own run, which
+        // trims away; a non-default background tail always stays visible.
+        let split = [cell('a', FG, 0x0000_00ff, 0), cell(' ', FG, BG, 0)].concat();
+        assert_eq!(runs(&split, BG), vec![run("a", FG, 0x0000_00ff, false)]);
+        let visible = [cell('a', FG, BG, 0), cell(' ', FG, 0x0000_00ff, 0)].concat();
+        assert_eq!(
+            runs(&visible, BG),
+            vec![run("a", FG, BG, false), run(" ", FG, 0x0000_00ff, false)]
+        );
     }
 }

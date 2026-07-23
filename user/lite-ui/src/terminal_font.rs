@@ -77,7 +77,8 @@ impl TerminalFont {
     ///
     /// Cell `i` always lands at `bounds.x1 + i * CELL_WIDTH` regardless of the
     /// glyph's ink width: the terminal grid is the layout contract, unlike the
-    /// proportional UI atlas whose pen advances per glyph.
+    /// proportional UI atlas whose pen advances per glyph. `font-weight: bold`
+    /// selects the atlas's second face, mirroring the UI atlas bold routing.
     pub fn draw(
         &self,
         target: &mut SharedDumbBuffer,
@@ -86,6 +87,12 @@ impl TerminalFont {
         text: &str,
     ) {
         let color = style.get("color").and_then(color).unwrap_or(0xff00_0000);
+        let bold = style.get("font-weight") == Some("bold")
+            || style
+                .get("font-weight")
+                .and_then(|value| value.parse::<u32>().ok())
+                .is_some_and(|weight| weight >= 600);
+        let face = self.faces + usize::from(bold) * GLYPH_COUNT * GLYPH_BYTES;
         for (index, character) in text.chars().enumerate() {
             let cell_x = bounds.x1 + index * CELL_WIDTH;
             if cell_x >= bounds.x2 {
@@ -95,7 +102,7 @@ impl TerminalFont {
                 .codepoints
                 .binary_search(&(character as u32))
                 .unwrap_or(self.fallback);
-            let bitmap = self.faces + glyph * GLYPH_BYTES;
+            let bitmap = face + glyph * GLYPH_BYTES;
             for row in 0..CELL_HEIGHT {
                 let target_y = bounds.y1 + row;
                 if target_y >= bounds.y2 {

@@ -8,7 +8,7 @@ mod wire;
 pub use buffers::Buffers;
 pub use scene::Scene;
 use buffers::Owner;
-use wire::{new_epoch, receive, send_accepted, valid_app_id};
+use wire::{new_epoch, receive, send_accepted, send_presented, valid_app_id};
 
 use std::{
     collections::HashMap,
@@ -72,6 +72,7 @@ pub struct Session {
     routing: Vec<RoutingNode>,
     focused_surface: u32,
     pointer_capture: Option<(u32, Rect)>,
+    last_flip: linux_uapi::drm::FlipEvent,
 }
 
 /// Outcome of one [`Session::poll`] wait.
@@ -104,6 +105,12 @@ impl Session {
             routing: Vec::new(),
             focused_surface: 0,
             pointer_capture: None,
+            last_flip: linux_uapi::drm::FlipEvent {
+                user_data: 0,
+                seconds: 0,
+                microseconds: 0,
+                sequence: 0,
+            },
         })
     }
 
@@ -343,19 +350,31 @@ impl Session {
             .apps
             .get(&surface_id)
             .ok_or_else(|| invalid("unknown app"))?;
-        let configure = app
-            .configure
-            .filter(|configure| configure.serial == commit.configure_serial)
-            .ok_or_else(|| invalid("surface commit configure mismatch"))?;
+        let Some(configure) = app.configure else {
+            return Err(invalid("surface commit configure missing"));
+        };
         let buffer = self
             .buffers
             .values
             .get(&commit.buffer_id)
             .ok_or_else(|| invalid("unknown app buffer"))?;
         if commit.revision <= app.last_revision
-            || app.pending.is_some()
             || buffer.owner != Owner::App(surface_id)
             || buffer.busy
+        {
+            return Err(invalid("surface commit state invalid"));
+        }
+        if configure.serial != commit.configure_serial {
+            // Resize race: a newer configure superseded this frame before it
+            // arrived. ACK and present it immediately so the app's frame
+            // pacing unblocks, and recycle the never-adopted buffer; the next
+            // commit carries the current configure's geometry.
+            let app = self.apps.get_mut(&surface_id).expect("validated app");
+            app.last_revision = commit.revision;
+            send_accepted(&app.stream, commit.revision)?;
+            return send_presented(&app.stream, commit.revision, self.last_flip);
+        }
+        if app.pending.is_some()
             || buffer.size.width != configure.width * display_proto::DEVICE_SCALE_FACTOR
             || buffer.size.height != configure.height * display_proto::DEVICE_SCALE_FACTOR
         {

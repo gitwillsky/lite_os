@@ -200,6 +200,7 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
         kind: SceneNodeKind::Pixels,
         window_group: 8,
         source_id: 14,
+        corner_radius: 0,
         configure_serial: 0,
         bounds: damage[0],
         clip: damage[0],
