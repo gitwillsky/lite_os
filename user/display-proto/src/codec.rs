@@ -40,6 +40,8 @@ pub enum MessageKind {
     InputPointer = 16,
     /// Routed keyboard input.
     InputKey = 17,
+    /// A pointer-down landed on a foreign surface; the desktop should raise it.
+    SurfaceActivated = 18,
 }
 
 impl MessageKind {
@@ -71,6 +73,7 @@ impl MessageKind {
             15 => Self::CloseRequest,
             16 => Self::InputPointer,
             17 => Self::InputKey,
+            18 => Self::SurfaceActivated,
             _ => return None,
         })
     }

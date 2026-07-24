@@ -13,7 +13,7 @@ use serde_json::Value;
 use taffy::prelude::{AvailableSpace, Dimension, Display, NodeId, Size, Style, TaffyTree};
 
 use crate::{
-    display::ForeignLayer,
+    display::{ForeignLayer, Overlay},
     font::Font,
     style::{Computed, Sheet},
     terminal_font::TerminalFont,
@@ -39,7 +39,7 @@ pub struct RenderOutput {
     /// Overlay chrome clips (`overlay` elements) in React paint order: the
     /// compositor re-paints the desktop buffer at these rects above every
     /// foreign surface so taskbar/menus stay on top of window content.
-    pub overlays: Vec<display_proto::Rect>,
+    pub overlays: Vec<Overlay>,
     /// Pointer listeners in React paint order.
     pub hits: Vec<HitRegion>,
     /// Deepest keyboard listener in the current tree.
@@ -255,7 +255,7 @@ impl Renderer {
         if let Some(image) = node.computed.get("background-image") {
             if let Some(source) = background_url(image) {
                 let image = self.image(source)?;
-                paint_image(pixels, bounds, image);
+                paint_image(pixels, bounds, image, radii);
             } else {
                 paint_background(pixels, bounds, image, radii);
             }
@@ -265,7 +265,7 @@ impl Renderer {
             && let Some(source) = node.source.props.get("src").and_then(Value::as_str)
         {
             let image = self.image(source)?;
-            paint_image(pixels, bounds, image);
+            paint_image(pixels, bounds, image, radii);
         }
         if node.source.kind == "text" {
             let text = text_content(&node.source);
@@ -298,15 +298,27 @@ impl Renderer {
                     .and_then(Value::as_f64)
                     .map(|value| (value * f64::from(SCALE)).round() as u32)
                     .unwrap_or(0);
+                // The foreign surface's `bounds` is the SOURCE geometry the
+                // compositor uses to place and size app content, so it must
+                // equal the app's committed buffer size exactly (which is
+                // `configure(w,h) * DEVICE_SCALE_FACTOR`). `bounds` above is the
+                // screen-clamped `PhysicalRect` used for painting chrome into
+                // this framebuffer; using it here collapses the reported size
+                // whenever a window edge crosses the screen (dragged to the
+                // bottom/left, resized), which fails the compositor's exact
+                // size check and blanks the whole surface. Emit the TRUE,
+                // unclamped layout rect instead — the compositor clips it to the
+                // screen at composite time, so only the off-screen part is lost.
+                let surface_bounds = display_proto::Rect {
+                    x: (origin.0 * SCALE).round() as i32,
+                    y: (origin.1 * SCALE).round() as i32,
+                    width: (layout.size.width * SCALE).round() as u32,
+                    height: (layout.size.height * SCALE).round() as u32,
+                };
                 output.foreign.push(ForeignLayer {
                     surface_id,
                     configure_serial,
-                    bounds: display_proto::Rect {
-                        x: bounds.x1 as i32,
-                        y: bounds.y1 as i32,
-                        width: (bounds.x2 - bounds.x1) as u32,
-                        height: (bounds.y2 - bounds.y1) as u32,
-                    },
+                    bounds: surface_bounds,
                     frame: frame_rect(&node.source).unwrap_or(display_proto::Rect {
                         x: bounds.x1 as i32,
                         y: bounds.y1 as i32,
@@ -318,11 +330,17 @@ impl Renderer {
             }
         }
         if node.source.props.get("overlay") == Some(&Value::Bool(true)) {
-            output.overlays.push(display_proto::Rect {
-                x: bounds.x1 as i32,
-                y: bounds.y1 as i32,
-                width: (bounds.x2 - bounds.x1) as u32,
-                height: (bounds.y2 - bounds.y1) as u32,
+            // Chrome is rounded top-only (`8px 8px 0 0`); both top corners share
+            // one radius, so the compositor's single corner_radius takes the max.
+            let corner_radius = (f64::from(radii[0].max(radii[1])) * f64::from(SCALE)).round() as u32;
+            output.overlays.push(Overlay {
+                rect: display_proto::Rect {
+                    x: bounds.x1 as i32,
+                    y: bounds.y1 as i32,
+                    width: (bounds.x2 - bounds.x1) as u32,
+                    height: (bounds.y2 - bounds.y1) as u32,
+                },
+                corner_radius,
             });
         }
         for child in &node.children {

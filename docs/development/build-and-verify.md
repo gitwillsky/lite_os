@@ -14,6 +14,11 @@
   `run-gdb` 在 QEMU 启动前离线扩容已有实例并保留内容，较大的实例不会被缩容。缺少该扩容会让
   基线派生的 128 MiB 实例在安装 Node.js 等应用时以 `ENOSPC` 失败；runtime gate 仍消费紧凑、
   可复现的只读基线，不继承开发容量。
+- `sync-userland` 直接构建并离线替换图形会话拥有的 binary、React bundle、app manifest、字体和
+  presentation assets；镜像内指纹命中时 no-op。`run` 与 `run-gui` 自动执行它，保留 APK、项目和
+  用户数据。`reset-rootfs` 只用于首次初始化、系统级 rootfs 变化或显式恢复干净环境。
+- macOS 的 `run-gui` 在 `exec` QEMU 前按同一 PID 启动一次 Cocoa application 激活；QEMU 仍是
+  Make 的前台进程，退出码与 Ctrl-C 语义不经过额外 supervisor。
 - AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的
   `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
   `aarch64-unknown-none-softfloat`，两者不得混用。任一 runtime 缺失或歧义都必须在发布 sysroot
@@ -39,6 +44,7 @@
 make build
 make build-rust-std
 make build-ui
+make sync-userland
 make run
 make run-gui
 make verify-unit

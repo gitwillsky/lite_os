@@ -70,7 +70,7 @@
 - musl `v1.2.6`；commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`；tarball SHA-256 `d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a`。
 - 来源：[musl releases](https://musl.libc.org/releases.html)、[固定源码](https://git.musl-libc.org/cgit/musl/tree/?id=9fa28ece75d8a2191de7c5bb53bed224c5947417)。
 - BusyBox `1.37.0`；tarball SHA-256 `3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4`。
-- 来源：[BusyBox release](https://busybox.net/downloads/busybox-1.37.0.tar.bz2)。
+- 来源：[BusyBox release](https://busybox.net/downloads/busybox-1.37.0.tar.bz2)；下载优先使用内容相同的[阿里云镜像](https://mirrors.aliyun.com/slackware/slackware64-current/source/installer/sources/busybox/busybox-1.37.0.tar.bz2)，失败时回退官方源。
 - 两者是固定 consumer，不制定 kernel ABI，也不能把固定 smoke 外推为通用兼容性。
 
 ### ext2/JBD2

@@ -72,15 +72,17 @@ const reconciler = Reconciler({
   noTimeout: -1,
   supportsMicrotasks: true,
   scheduleMicrotask: queueMicrotask,
-  appendChild: (parent, child) => parent.children.push(child),
-  appendChildToContainer: (parent, child) => parent.children.push(child),
+  appendChild: (parent, child) => { remove(parent, child); parent.children.push(child); },
+  appendChildToContainer: (parent, child) => { remove(parent, child); parent.children.push(child); },
   insertBefore(parent, child, before) {
     remove(parent, child);
-    parent.children.splice(parent.children.indexOf(before), 0, child);
+    const index = parent.children.indexOf(before);
+    parent.children.splice(index < 0 ? parent.children.length : index, 0, child);
   },
   insertInContainerBefore(parent, child, before) {
     remove(parent, child);
-    parent.children.splice(parent.children.indexOf(before), 0, child);
+    const index = parent.children.indexOf(before);
+    parent.children.splice(index < 0 ? parent.children.length : index, 0, child);
   },
   removeChild: remove,
   removeChildFromContainer: remove,

@@ -270,7 +270,7 @@ fn blend_span(row: &mut [u32], x1: f32, x2: f32, color: u32) {
 /// bottom corner arc by the `bottom` radius, and straight rows not at all, so
 /// a box can round only its top corners (`8px 8px 0 0`). The circle is sampled
 /// at the scanline midpoint so [`blend_span`] gets a smooth coverage edge.
-fn corner_inset(top: usize, bottom: usize, y: usize, height: usize) -> f32 {
+pub(super) fn corner_inset(top: usize, bottom: usize, y: usize, height: usize) -> f32 {
     let arc = |radius: usize, distance: f32| {
         radius as f32
             - ((radius * radius) as f32 - (distance * distance)).max(0.0).sqrt()

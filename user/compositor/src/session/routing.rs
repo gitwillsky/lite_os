@@ -2,7 +2,7 @@
 
 use std::{io, os::unix::net::UnixStream};
 
-use display_proto::{InputKey, InputPointer, PointerPhase, Rect, send_message};
+use display_proto::{InputKey, InputPointer, PointerPhase, Rect, SurfaceActivated, send_message};
 
 use super::{Session, invalid};
 
@@ -14,6 +14,15 @@ impl Session {
         {
             self.pointer_capture = None;
         }
+    }
+
+    /// Tells the desktop that a foreign surface was pressed so it can restack.
+    fn notify_surface_activated(&self, surface_id: u32) -> io::Result<()> {
+        let mut bytes = [0u8; 24];
+        let message = SurfaceActivated { surface_id }
+            .encode(&mut bytes)
+            .ok_or_else(|| io::Error::other("surface-activated encoding failed"))?;
+        send_message(self.desktop_stream()?, message)
     }
 
     /// Routes one pointer transition against the last presented scene.
@@ -39,6 +48,25 @@ impl Session {
         };
         if phase == PointerPhase::Down {
             self.pointer_capture = Some((surface_id, bounds));
+            // A press on a foreign app surface routes only to that app, so the
+            // desktop never sees it and cannot restack. Tell the desktop which
+            // surface was pressed so it can raise and focus that window; the
+            // desktop owns z-order (surface_id 0 is the desktop itself).
+            //
+            // Skip the notify when this surface already holds focus: repeated
+            // presses (double-clicks, drag-select) on the active window would
+            // otherwise flood the desktop with restack messages it must ignore.
+            //
+            // A failed notify must NOT abort pointer routing. This message goes
+            // to the desktop stream, but the pointer event itself goes to the
+            // app; if the desktop socket is momentarily blocked, dropping one
+            // restack hint is recoverable, whereas propagating the error tears
+            // down the whole compositor (route_pointer is `?`-chained to run()).
+            if surface_id != 0 && surface_id != self.focused_surface {
+                if let Err(error) = self.notify_surface_activated(surface_id) {
+                    eprintln!("compositor: surface-activated notify dropped: {error}");
+                }
+            }
         }
         let scale = display_proto::DEVICE_SCALE_FACTOR as i32;
         let event = InputPointer {

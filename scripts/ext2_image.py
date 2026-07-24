@@ -96,17 +96,7 @@ def ensure_ext2_capacity(image: Path, size_mib: int) -> None:
     with image.open("r+b") as stream:
         stream.truncate(requested_bytes)
 
-    # guest 被窗口关闭时 journal 可能仍需 replay；只恢复 journal，避免 host fsck 对
-    # LiteOS 已接受的目录项或 symlink 施加额外修复策略。
-    check = subprocess.run(
-        [str(find_e2fsck()), "-E", "journal_only", "-p", str(image)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    if check.returncode not in (0, 1):
-        tail = "\n".join(check.stdout.splitlines()[-40:])
-        raise RuntimeError(f"journal recovery failed for {image}\n{tail}")
+    recover_ext2_journal(image)
 
     resize = subprocess.run(
         [str(find_resize2fs()), str(image)],
@@ -122,6 +112,31 @@ def ensure_ext2_capacity(image: Path, size_mib: int) -> None:
         raise RuntimeError(
             f"ext filesystem resize was incomplete: {actual_bytes} < {requested_bytes}"
         )
+
+
+def recover_ext2_journal(image: Path) -> None:
+    """只重放离线开发镜像 journal，不对 LiteOS 已接受的目录项执行额外修复。
+
+    Args:
+        image: 当前没有 guest 使用的 ext2/3/4 镜像。
+
+    Returns:
+        journal 已干净或成功恢复时返回。
+
+    Raises:
+        RuntimeError: e2fsck 缺失、镜像仍在使用或 journal 无法恢复。
+    """
+    # guest 被窗口关闭时 journal 可能仍需 replay；只恢复 journal，避免 host fsck 对
+    # LiteOS 已接受的目录项或 symlink 施加额外修复策略。
+    check = subprocess.run(
+        [str(find_e2fsck()), "-E", "journal_only", "-p", str(image)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if check.returncode not in (0, 1):
+        tail = "\n".join(check.stdout.splitlines()[-40:])
+        raise RuntimeError(f"journal recovery failed for {image}\n{tail}")
 
 
 def run_debugfs(image: Path, request: str, *, writable: bool = False) -> str:

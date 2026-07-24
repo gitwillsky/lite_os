@@ -106,19 +106,44 @@ impl Session {
                         .apps
                         .get(&node.source_id)
                         .expect("validated foreign surface");
+                    // The desktop bakes a node's `configure_serial` and `bounds`
+                    // from independent React state at render time, and its
+                    // `ready` set is never pruned, so a scene can legitimately
+                    // reference a serial the app has already superseded (its
+                    // buffer recycled) or one whose buffer no longer matches the
+                    // freshly-laid-out bounds. That is a normal configure
+                    // handshake in flight — mid maximize/restore/resize — not a
+                    // protocol violation. Skip the node this frame (like the
+                    // app-disconnect races above) and let the desktop re-emit it
+                    // once app and layout agree; killing the epoch here is what
+                    // dropped the whole desktop to the splash on maximize.
                     let content = app
                         .pending
                         .filter(|content| content.configure_serial == node.configure_serial)
                         .or_else(|| {
                             app.current
                                 .filter(|content| content.configure_serial == node.configure_serial)
-                        })
-                        .ok_or_else(|| invalid("foreign surface is not ready"))?;
+                        });
+                    let Some(content) = content else {
+                        eprintln!(
+                            "compositor: foreign surface {} serial {} not ready, skipped",
+                            node.source_id, node.configure_serial
+                        );
+                        continue;
+                    };
                     let buffer = &self.buffers.values[&content.buffer_id];
                     if buffer.size.width != node.bounds.width
                         || buffer.size.height != node.bounds.height
                     {
-                        return Err(invalid("foreign surface geometry mismatch"));
+                        eprintln!(
+                            "compositor: foreign surface {} geometry {}x{} != node {}x{}, skipped",
+                            node.source_id,
+                            buffer.size.width,
+                            buffer.size.height,
+                            node.bounds.width,
+                            node.bounds.height
+                        );
+                        continue;
                     }
                     if app
                         .pending
@@ -235,7 +260,7 @@ impl Session {
     }
 }
 
-fn release_buffer(buffers: &mut Buffers, stream: &UnixStream, id: u32) -> io::Result<()> {
+pub(super) fn release_buffer(buffers: &mut Buffers, stream: &UnixStream, id: u32) -> io::Result<()> {
     buffers
         .values
         .get_mut(&id)

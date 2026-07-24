@@ -197,6 +197,9 @@ fn apply_event(
             state.close_surface(surface_id);
             ("desktop", json!({"type":"closed","surfaceId":surface_id}))
         }
+        Event::SurfaceActivated { surface_id } => {
+            ("desktop", json!({"type":"activated","surfaceId":surface_id}))
+        }
         Event::ConfigureReady { surface_id, serial } => (
             "desktop",
             json!({"type":"ready","surfaceId":surface_id,"serial":serial}),

@@ -232,11 +232,12 @@ fn composite_node(
     if x2 <= x1 || y2 <= y1 {
         return;
     }
-    // Rounded top corners: rows within `corner_radius` of the clip top inset
-    // horizontally so the frame clip skips the corner cutout, letting lower
-    // content show through instead of being covered by stale chrome pixels.
-    // The inset math mirrors the renderer's `corner_inset` so the clip edge
-    // aligns with the painted chrome arc.
+    // Rounded corners: rows within `corner_radius` of the clip top inset
+    // horizontally so the frame clip skips the top corner cutout, letting
+    // lower content show through instead of being covered by stale chrome
+    // pixels. Chrome and windows are both `8px 8px 0 0` (top-only), so only
+    // the top edge rounds; the bottom stays square. The inset math mirrors the
+    // renderer's `corner_inset` so the clip edge aligns with the painted arc.
     let r = corner_radius as f32;
     let r_sq = r * r;
     for y in y1..y2 {
@@ -245,9 +246,11 @@ fn composite_node(
         let target_row = target.row_mut(y as usize);
         let (mut px1, mut px2) = (x1, x2);
         if corner_radius > 0 {
-            let rel_y = y - clip.y;
-            if rel_y >= 0 && (rel_y as f32) < r {
-                let mid = rel_y as f32 + 0.5;
+            // Distance in rows from the top clip edge; only rows inside the top
+            // corner region get inset.
+            let edge_dist = y - clip.y;
+            if edge_dist >= 0 && (edge_dist as f32) < r {
+                let mid = edge_dist as f32 + 0.5;
                 let dist = r - mid;
                 let inset = r - (r_sq - dist * dist).max(0.0).sqrt();
                 let left_px = (clip.x as f32 + inset).ceil() as i32;

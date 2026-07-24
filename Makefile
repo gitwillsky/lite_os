@@ -44,7 +44,7 @@ APK_APPS_IMAGE := target/apk-apps/$(ARCH).img
 # FS_IMAGE_SIZE_MIB 只控制可持续修改的开发实例；缺少扩容会让 GUI 内安装 Node.js 等应用时 ENOSPC。
 FS_IMAGE_SIZE_MIB ?= 8192
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs sync-userland build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
 
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
@@ -98,6 +98,10 @@ $(FS_IMAGE):
 prepare-rootfs: $(FS_IMAGE)
 	python3 scripts/resize_ext2_image.py --image "$(FS_IMAGE)" --size-mib "$(FS_IMAGE_SIZE_MIB)"
 
+# 图形用户态按内容增量替换；镜像内软件、项目和用户数据不属于该清单。
+sync-userland: build-musl prepare-rootfs
+	python3 scripts/sync_userland.py --image "$(FS_IMAGE)"
+
 build-apk-apps: build-kernel build-bootloader build-rootfs
 	python3 scripts/verify_apk_apps.py --build-only --image $(ROOTFS_IMAGE) --output $(APK_APPS_IMAGE)
 
@@ -109,7 +113,7 @@ regen-font:
 regen-ui-font:
 	target/fontenv/bin/python scripts/generate_ui_font.py
 
-run: build-kernel build-bootloader prepare-rootfs
+run: build-kernel build-bootloader sync-userland
 	$(QEMU) \
 	-machine $(QEMU_MACHINE) \
 	-cpu $(QEMU_CPU) \
@@ -127,8 +131,11 @@ run: build-kernel build-bootloader prepare-rootfs
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 
-run-gui: build-kernel build-bootloader prepare-rootfs
-	$(QEMU) \
+run-gui: build-kernel build-bootloader sync-userland
+	@if [ "$$(uname -s)" = Darwin ]; then \
+		/usr/bin/osascript scripts/activate_macos_process.applescript "$$$$" >/dev/null & \
+	fi; \
+	exec $(QEMU) \
 	-machine $(QEMU_MACHINE) \
 	-cpu $(QEMU_CPU) \
 	-global virtio-mmio.force-legacy=false \

@@ -74,3 +74,8 @@ surface_message!(
     CloseRequest,
     "Unconditional close request routed to one app."
 );
+surface_message!(
+    SurfaceActivated,
+    SurfaceActivated,
+    "Compositor notice that a pointer-down hit a foreign surface; raise it."
+);

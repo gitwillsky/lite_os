@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from apk_cache import cached_apk_bootstrap
@@ -52,7 +53,11 @@ TARGET = target_from_environment()
 WORK = ROOT / "target" / "busybox-runtime" / TARGET.arch
 CONFIG_FRAGMENT = ROOT / "user" / "base" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
-BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
+BUSYBOX_URLS = (
+    "https://mirrors.aliyun.com/slackware/slackware64-current/source/"
+    f"installer/sources/busybox/busybox-{BUSYBOX_VERSION}.tar.bz2",
+    f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2",
+)
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 SOURCE_RECIPE_VERSION = 1
 BINARY_RECIPE_VERSION = 6
@@ -61,7 +66,7 @@ BINARY_RECIPE_VERSION = 6
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 10
+ROOTFS_RECIPE_VERSION = 11
 if TARGET.arch == "aarch64":
     BUSYBOX_ARCH = "arm64"
     BUSYBOX_TARGET_CFLAGS = "-march=armv8-a"
@@ -444,21 +449,31 @@ def source_cache_path() -> Path:
 
 
 def obtain_source() -> Path:
-    """获取并缓存固定官方源码；完整目录只在校验和解压成功后发布。"""
+    """获取并缓存固定源码；完整目录只在校验和解压成功后发布。"""
     archive = WORK / f"busybox-{BUSYBOX_VERSION}.tar.bz2"
     if not archive.is_file() or sha256(archive) != BUSYBOX_SHA256:
         archive.unlink(missing_ok=True)
         temporary = archive.with_suffix(".download")
         temporary.unlink(missing_ok=True)
-        print(f"downloading BusyBox {BUSYBOX_VERSION}")
-        try:
-            urllib.request.urlretrieve(BUSYBOX_URL, temporary)
-        except Exception as error:
+        errors = []
+        for url in BUSYBOX_URLS:
+            print(f"downloading BusyBox {BUSYBOX_VERSION} from {url}")
+            try:
+                urllib.request.urlretrieve(url, temporary)
+            except Exception as error:
+                errors.append(f"{url}: {error}")
+                temporary.unlink(missing_ok=True)
+                continue
+            if sha256(temporary) != BUSYBOX_SHA256:
+                errors.append(f"{url}: SHA-256 mismatch")
+                temporary.unlink(missing_ok=True)
+                continue
+            break
+        else:
             temporary.unlink(missing_ok=True)
-            raise RuntimeError(f"failed to download {BUSYBOX_URL}: {error}") from error
-        if sha256(temporary) != BUSYBOX_SHA256:
-            temporary.unlink(missing_ok=True)
-            raise RuntimeError("BusyBox release tarball SHA-256 mismatch")
+            raise RuntimeError(
+                "failed to download BusyBox release tarball:\n" + "\n".join(errors)
+            )
         temporary.replace(archive)
 
     payload = source_payload()
@@ -985,6 +1000,9 @@ def build_ui_assets() -> Path:
         "desktop/style.css",
         "desktop/assets/bliss.png",
         "desktop/assets/avatar.png",
+        "desktop/assets/start.png",
+        "desktop/assets/start-pressed.png",
+        "desktop/assets/power.png",
         "desktop/assets/terminal.png",
         "desktop/assets/logoff.png",
         "desktop/assets/computer.png",
@@ -994,6 +1012,7 @@ def build_ui_assets() -> Path:
         "desktop/assets/arrow-right.png",
         "desktop/assets/glyph-min.png",
         "desktop/assets/glyph-max.png",
+        "desktop/assets/glyph-restore.png",
         "desktop/assets/glyph-close.png",
         "terminal/app.json",
         "terminal/main.js",
@@ -1003,6 +1022,82 @@ def build_ui_assets() -> Path:
     if any(not (output / path).is_file() for path in required):
         raise RuntimeError("LiteUI build omitted a required product artifact")
     return output
+
+
+@dataclass(frozen=True)
+class UserlandArtifact:
+    """一个由 host 构建并安装到开发/rootfs 镜像的图形用户态文件。
+
+    Attributes:
+        source: 已构建并校验的 host 文件。
+        destination: 文件在 guest 中的绝对路径。
+        mode: regular file 的 Unix permission bits。
+    """
+
+    source: Path
+    destination: str
+    mode: int = 0o644
+
+
+def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
+    """构建图形会话的唯一可热同步文件集合。
+
+    Args:
+        musl: 与目标架构绑定的已校验 musl 工具链和 sysroot。
+
+    Returns:
+        按 guest 绝对路径排序、无重复 destination 的完整文件集合。
+
+    Raises:
+        RuntimeError: Rust、frontend 构建或产物完整性检查失败。
+    """
+    ui = build_ui_assets()
+    artifacts = [
+        UserlandArtifact(build_compositor(musl), "/bin/compositor", 0o755),
+        UserlandArtifact(build_lite_ui(musl), "/bin/lite-ui", 0o755),
+        UserlandArtifact(build_terminal_session(musl), "/bin/terminal-session", 0o755),
+        UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
+        UserlandArtifact(
+            ROOT / "user/base/graphical-session",
+            "/etc/init.d/graphical-session",
+            0o755,
+        ),
+        UserlandArtifact(ROOT / "user/base/shutdown", "/bin/shutdown", 0o755),
+        UserlandArtifact(
+            ROOT / "assets/terminfo/l/liteos",
+            "/etc/terminfo/l/liteos",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/bootlogo.xrgb",
+            "/usr/share/liteos/bootlogo.xrgb",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/cursor.lc1",
+            "/usr/share/liteos/cursor.lc1",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/fonts/liteos-ui.a8p",
+            "/usr/share/liteos/liteos-ui.a8p",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/fonts/liteos-terminal.a8",
+            "/usr/share/liteos/liteos-terminal.a8",
+        ),
+    ]
+    for source in sorted(path for path in ui.rglob("*") if path.is_file()):
+        relative = source.relative_to(ui)
+        if relative == Path("runtime.js"):
+            destination = "/usr/lib/lite-ui/runtime.js"
+        elif relative.parts[0] == "desktop":
+            destination = f"/usr/share/liteos/{relative.as_posix()}"
+        else:
+            destination = f"/usr/share/liteos/apps/{relative.as_posix()}"
+        artifacts.append(UserlandArtifact(source, destination))
+    artifacts.sort(key=lambda artifact: artifact.destination)
+    destinations = [artifact.destination for artifact in artifacts]
+    if len(destinations) != len(set(destinations)):
+        raise RuntimeError("graphical userland contains duplicate guest paths")
+    return tuple(artifacts)
 
 
 def build_stress_tools(musl: MuslCachePaths) -> Path:
@@ -1075,10 +1170,7 @@ def create_image(
         ],
         ROOT,
     )
-    compositor = build_compositor(musl)
-    lite_ui = build_lite_ui(musl)
-    terminal_session = build_terminal_session(musl)
-    ui = build_ui_assets()
+    graphical_userland = build_graphical_userland(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
@@ -1109,53 +1201,14 @@ def create_image(
         "mkdir /var/empty",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
-        f"write {ROOT / 'user' / 'base' / 'inittab'} /etc/inittab",
-        f"write {ROOT / 'user' / 'base' / 'graphical-session'} /etc/init.d/graphical-session",
-        "set_inode_field /etc/init.d/graphical-session mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
-        f"write {ROOT / 'assets' / 'terminfo' / 'l' / 'liteos'} /etc/terminfo/l/liteos",
-        # compositor 只消费 boot/cursor；XP presentation 与 app 资产由 UI bundle 独占。
-        f"write {ROOT / 'assets' / 'bootlogo.xrgb'} /usr/share/liteos/bootlogo.xrgb",
-        f"write {ROOT / 'assets' / 'cursor.lc1'} /usr/share/liteos/cursor.lc1",
-        f"write {ROOT / 'assets' / 'fonts' / 'liteos-ui.a8p'} /usr/share/liteos/liteos-ui.a8p",
-        f"write {ROOT / 'assets' / 'fonts' / 'liteos-terminal.a8'} /usr/share/liteos/liteos-terminal.a8",
-        f"write {ui / 'runtime.js'} /usr/lib/lite-ui/runtime.js",
-        f"write {ui / 'desktop' / 'main.js'} /usr/share/liteos/desktop/main.js",
-        f"write {ui / 'desktop' / 'style.css'} /usr/share/liteos/desktop/style.css",
-        f"write {ui / 'desktop' / 'assets' / 'bliss.png'} /usr/share/liteos/desktop/assets/bliss.png",
-        f"write {ui / 'desktop' / 'assets' / 'avatar.png'} /usr/share/liteos/desktop/assets/avatar.png",
-        f"write {ui / 'desktop' / 'assets' / 'start.png'} /usr/share/liteos/desktop/assets/start.png",
-        f"write {ui / 'desktop' / 'assets' / 'start-pressed.png'} /usr/share/liteos/desktop/assets/start-pressed.png",
-        f"write {ui / 'desktop' / 'assets' / 'power.png'} /usr/share/liteos/desktop/assets/power.png",
-        f"write {ui / 'desktop' / 'assets' / 'logoff.png'} /usr/share/liteos/desktop/assets/logoff.png",
-        f"write {ui / 'desktop' / 'assets' / 'computer.png'} /usr/share/liteos/desktop/assets/computer.png",
-        f"write {ui / 'desktop' / 'assets' / 'documents.png'} /usr/share/liteos/desktop/assets/documents.png",
-        f"write {ui / 'desktop' / 'assets' / 'trash.png'} /usr/share/liteos/desktop/assets/trash.png",
-        f"write {ui / 'desktop' / 'assets' / 'speaker.png'} /usr/share/liteos/desktop/assets/speaker.png",
-        f"write {ui / 'desktop' / 'assets' / 'arrow-right.png'} /usr/share/liteos/desktop/assets/arrow-right.png",
-        f"write {ui / 'desktop' / 'assets' / 'glyph-min.png'} /usr/share/liteos/desktop/assets/glyph-min.png",
-        f"write {ui / 'desktop' / 'assets' / 'glyph-max.png'} /usr/share/liteos/desktop/assets/glyph-max.png",
-        f"write {ui / 'desktop' / 'assets' / 'glyph-close.png'} /usr/share/liteos/desktop/assets/glyph-close.png",
-        f"write {ui / 'desktop' / 'assets' / 'terminal.png'} /usr/share/liteos/desktop/assets/terminal.png",
-        f"write {ui / 'terminal' / 'app.json'} /usr/share/liteos/apps/terminal/app.json",
-        f"write {ui / 'terminal' / 'main.js'} /usr/share/liteos/apps/terminal/main.js",
-        f"write {ui / 'terminal' / 'style.css'} /usr/share/liteos/apps/terminal/style.css",
-        f"write {ui / 'terminal' / 'assets' / 'terminal.png'} /usr/share/liteos/apps/terminal/assets/terminal.png",
-        f"write {ROOT / 'user' / 'base' / 'shutdown'} /bin/shutdown",
-        "set_inode_field /bin/shutdown mode 0100755",
         f"write {openssl.binary} /bin/openssl",
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
         "set_inode_field /usr/lib/libc.so mode 0100755",
-        f"write {compositor} /bin/compositor",
-        "set_inode_field /bin/compositor mode 0100755",
-        f"write {lite_ui} /bin/lite-ui",
-        "set_inode_field /bin/lite-ui mode 0100755",
-        f"write {terminal_session} /bin/terminal-session",
-        "set_inode_field /bin/terminal-session mode 0100755",
         f"write {stress_tools} /bin/liteos-stress",
         "set_inode_field /bin/liteos-stress mode 0100755",
         "ln /bin/liteos-stress /bin/cputest",
@@ -1164,6 +1217,12 @@ def create_image(
         f"set_inode_field /bin/liteos-stress links_count {len(STRESS_LINKS) + 1}",
         f"symlink {TARGET.musl_loader} /usr/lib/libc.so",
     ]
+    # compositor 只消费 boot/cursor；XP presentation 与 app 资产由同一清单独占。
+    for artifact in graphical_userland:
+        commands.append(f"write {artifact.source} {artifact.destination}")
+        commands.append(
+            f"set_inode_field {artifact.destination} mode 0100{artifact.mode:o}"
+        )
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
     script_path: Path | None = None
@@ -1305,10 +1364,7 @@ def create_published_image(
         RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
         OSError: cache publication 或 output copy 失败。
     """
-    compositor = build_compositor(musl)
-    lite_ui = build_lite_ui(musl)
-    terminal_session = build_terminal_session(musl)
-    ui = build_ui_assets()
+    graphical_userland = build_graphical_userland(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -1321,10 +1377,7 @@ def create_published_image(
         *target_runtime_artifacts(),
         binary,
         musl.install / "usr/lib/libc.so",
-        compositor,
-        lite_ui,
-        terminal_session,
-        *sorted(path for path in ui.rglob("*") if path.is_file()),
+        *(artifact.source for artifact in graphical_userland),
         stress_tools,
         openssl.binary,
         bootstrap.apk_static,

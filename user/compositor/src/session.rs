@@ -374,11 +374,28 @@ impl Session {
             send_accepted(&app.stream, commit.revision)?;
             return send_presented(&app.stream, commit.revision, self.last_flip);
         }
-        if app.pending.is_some()
-            || buffer.size.width != configure.width * display_proto::DEVICE_SCALE_FACTOR
+        if buffer.size.width != configure.width * display_proto::DEVICE_SCALE_FACTOR
             || buffer.size.height != configure.height * display_proto::DEVICE_SCALE_FACTOR
         {
             return Err(invalid("surface commit state invalid"));
+        }
+        // A pending frame that the desktop has not yet adopted into a scene is
+        // superseded by this newer commit at the same serial. Maximize/restore
+        // makes an app reconfigure and repaint faster than the desktop adopts
+        // its frames, so back-to-back app commits are normal, not a violation:
+        // recycle the never-presented pending buffer and let the new frame take
+        // its slot. (`pending` is cleared only by desktop adoption, so a present
+        // `pending` provably never reached the screen and is safe to release.)
+        if let Some(superseded) = app.pending {
+            scene::release_buffer(
+                &mut self.buffers,
+                &self.apps[&surface_id].stream,
+                superseded.buffer_id,
+            )?;
+            self.apps
+                .get_mut(&surface_id)
+                .expect("validated app")
+                .pending = None;
         }
         let content = Content {
             revision: commit.revision,

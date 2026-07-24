@@ -18,7 +18,7 @@ pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
 pub use geometry::{Rect, Size};
 pub use handshake::{HelloApp, HelloDesktop, Welcome};
 pub use input::{InputKey, InputPointer, PointerPhase};
-pub use lifecycle::{AppClosed, AppOpened, CloseRequest};
+pub use lifecycle::{AppClosed, AppOpened, CloseRequest, SurfaceActivated};
 pub use scene::{Rectangles, SceneCommit, SceneNode, SceneNodeKind, SceneNodes};
 pub use surface::{
     Accepted, Configure, ConfigureReady, DamageRectangles, Presented, SurfaceCommit,

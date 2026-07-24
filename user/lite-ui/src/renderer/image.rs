@@ -8,7 +8,7 @@ use std::{
 
 use linux_uapi::drm::SharedDumbBuffer;
 
-use super::PhysicalRect;
+use super::{PhysicalRect, SCALE, box_paint::corner_inset};
 
 pub(super) struct Image {
     width: usize,
@@ -77,16 +77,38 @@ pub(super) fn decode_png(path: &Path) -> io::Result<Image> {
     })
 }
 
-pub(super) fn paint_image(target: &mut SharedDumbBuffer, bounds: PhysicalRect, image: &Image) {
+/// Scales `image` into `bounds`, skipping the pixels outside the rounded-corner
+/// arcs so images honor `border-radius` like [`super::box_paint::paint_background`].
+///
+/// `logical_radii` are per-corner `border-radius` values in logical CSS pixels,
+/// ordered `[top-left, top-right, bottom-right, bottom-left]`. Corner pixels are
+/// hard-skipped (not coverage-blended): the image sits over its box's own
+/// already-rounded background, so the skip reveals that rounded fill underneath.
+pub(super) fn paint_image(
+    target: &mut SharedDumbBuffer,
+    bounds: PhysicalRect,
+    image: &Image,
+    logical_radii: [f32; 4],
+) {
     let width = bounds.x2.saturating_sub(bounds.x1);
     let height = bounds.y2.saturating_sub(bounds.y1);
     if width == 0 || height == 0 {
         return;
     }
+    let radii = logical_radii.map(|radius| (radius * SCALE).round() as usize);
     for y in 0..height {
         let source_y = y * image.height / height;
         let row = target.row_mut(bounds.y1 + y);
-        for x in 0..width {
+        // Rows inside a corner arc inset each side, so the rounded background
+        // (and any rounded border ring) painted beneath the image shows through
+        // the cutout. Round the inset *up*: the image is fully opaque, so any
+        // under-skip leaves a square nub of bitmap overpainting the rounded
+        // corner. Ceiling guarantees the opaque fill never spills past the arc.
+        let left = corner_inset(radii[0], radii[3], y, height).ceil() as usize;
+        let right = corner_inset(radii[1], radii[2], y, height).ceil() as usize;
+        let start = left.min(width);
+        let end = width.saturating_sub(right);
+        for x in start..end {
             let source_x = x * image.width / width;
             let foreground = image.pixels[source_y * image.width + source_x];
             row[bounds.x1 + x] = alpha_over(foreground, row[bounds.x1 + x]);

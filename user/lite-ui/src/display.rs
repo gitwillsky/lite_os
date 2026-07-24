@@ -12,7 +12,8 @@ use display_proto::{
     Accepted, AppClosed, AppOpened, BufferAlloc, BufferAllocated, BufferRelease, CloseRequest,
     Configure, ConfigureReady, HelloApp, HelloDesktop, InputKey, InputPointer, MAX_MESSAGE,
     MessageKind, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit,
-    SceneNode, SceneNodeKind, Size, SurfaceCommit, Welcome, parse_frame, recv_frame_blocking,
+    SceneNode, SceneNodeKind, Size, SurfaceActivated, SurfaceCommit, Welcome, parse_frame,
+    recv_frame_blocking,
     send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
@@ -60,6 +61,18 @@ pub struct ForeignLayer {
     pub corner_radius: u32,
 }
 
+/// One desktop-local chrome clip (taskbar, Start menu) re-painted above every
+/// foreign surface so it stays on top of window content.
+#[derive(Clone, Copy, Debug)]
+pub struct Overlay {
+    /// Physical clip rectangle re-copied from the desktop buffer.
+    pub rect: Rect,
+    /// Rounded top-corner radius in physical pixels; the compositor skips the
+    /// corner cutout so lower window content shows through instead of a square
+    /// wallpaper corner.
+    pub corner_radius: u32,
+}
+
 /// One validated asynchronous display event.
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -67,6 +80,8 @@ pub enum Event {
     AppOpened { surface_id: u32, app_id: String },
     /// Ordinary app removed its top-level surface.
     AppClosed { surface_id: u32 },
+    /// A pointer-down hit a foreign surface; the desktop should raise it.
+    SurfaceActivated { surface_id: u32 },
     /// App pixels for one desktop configure are ready.
     ConfigureReady { surface_id: u32, serial: u64 },
     /// Desktop selected a new app client size.
@@ -222,7 +237,7 @@ impl Display {
         buffer_id: u32,
         focused_surface: u32,
         foreign: &[ForeignLayer],
-        overlays: &[Rect],
+        overlays: &[Overlay],
     ) -> io::Result<()> {
         let revision = self.next_revision()?;
         let full = Rect {
@@ -282,16 +297,16 @@ impl Display {
                 damage: Rectangles::from_slice(&no_damage),
             });
         }
-        let overlay_inputs: Vec<[Rect; 1]> = overlays.iter().map(|clip| [*clip]).collect();
-        for (clip, input) in overlays.iter().zip(&overlay_inputs) {
+        let overlay_inputs: Vec<[Rect; 1]> = overlays.iter().map(|overlay| [overlay.rect]).collect();
+        for (overlay, input) in overlays.iter().zip(&overlay_inputs) {
             nodes.push(SceneNode {
                 kind: SceneNodeKind::Pixels,
                 window_group: 0,
                 source_id: buffer_id,
-                corner_radius: 0,
+                corner_radius: overlay.corner_radius,
                 configure_serial: 0,
                 bounds: full,
-                clip: *clip,
+                clip: overlay.rect,
                 opaque: None,
                 input: Rectangles::from_slice(input),
                 damage: Rectangles::from_slice(&no_damage),
@@ -573,6 +588,11 @@ fn parse_event(kind: MessageKind, payload: &[u8], own_surface: u32) -> Option<Wi
         MessageKind::AppClosed if own_surface == 0 => WireEvent::Public(Event::AppClosed {
             surface_id: AppClosed::parse(payload)?.surface_id,
         }),
+        MessageKind::SurfaceActivated if own_surface == 0 => {
+            WireEvent::Public(Event::SurfaceActivated {
+                surface_id: SurfaceActivated::parse(payload)?.surface_id,
+            })
+        }
         MessageKind::ConfigureReady if own_surface == 0 => {
             let event = ConfigureReady::parse(payload)?;
             WireEvent::Public(Event::ConfigureReady {
