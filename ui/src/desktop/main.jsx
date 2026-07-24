@@ -41,6 +41,18 @@ export default function Desktop() {
   const [selectedIcon, setSelectedIcon] = useState(null);
   const listedApps = useMemo(() => apps(), []);
 
+  // Taskbar buttons keep a STABLE order (surface insertion order), unlike
+  // `open` which is z-ordered — `activate` splices the focused window to the
+  // end of `open` to paint it on top. Feeding that z-order to the taskbar makes
+  // every focus change reshuffle the buttons, so the active button jumps
+  // position and reads as "focus not tracking the window". Sorting by each
+  // surface's original id (assigned in open order) pins the buttons; only the
+  // `activeId` highlight moves, matching the Luna taskbar.
+  const taskbarWindows = useMemo(
+    () => open.slice().sort((a, b) => a.id - b.id),
+    [open],
+  );
+
   // Native `surfaces()` is authoritative for which surfaces EXIST (insertion
   // order), but z-order lives here in `open`: `activate` raises a surface by
   // moving it to the end of this array. Merging native truth into the current
@@ -209,7 +221,7 @@ export default function Desktop() {
         );
       })}
       {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>} 
-      <Taskbar windows={open} activeId={activeId} startOpen={startOpen} onStart={() => setStartOpen((value) => !value)} onActivate={activate}/>
+      <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => setStartOpen((value) => !value)} onActivate={activate}/>
     </view>
   );
 }

@@ -222,7 +222,7 @@
   gap: 10px;
   padding: 7px;
   border-radius: 6px 6px 0 0;
-  background: linear-gradient(#f0a94e 0%, #e88a3a 2%, #1868ce 6%, #0e60cb 14%, #0e60cb 22%, #1164cf 34%, #1667cf 35%, #1b6cd3 48%, #1e70d9 55%, #2476dc 61%, #297ae0 66%, #3482e3 78%, #3786e5 80%, #428ee9 91%, #6ba7f0 98%, #a8cdf7 100%);
+  background: linear-gradient(#1868ce 0%, #0e60cb 14%, #0e60cb 22%, #1164cf 34%, #1667cf 35%, #1b6cd3 48%, #1e70d9 55%, #2476dc 61%, #297ae0 66%, #3482e3 78%, #3786e5 80%, #428ee9 91%, #6ba7f0 98%, #a8cdf7 100%);
   color: #ffffff;
   font-size: 17px;
   font-weight: bold;
