@@ -192,7 +192,20 @@ export default function Desktop() {
     );
     return true;
   }, [maximized]);
-  const resizeWindow = useCallback((id, rect) => {
+  // Resize commit throttle. Every pointer motion on an edge fires `onResize`,
+  // and each commit does a full `move()` + `setOpen()` (one scene commit) plus
+  // a `configure()` at render (one new configure serial per distinct size). At
+  // pointer rate that floods the compositor with per-motion re-renders. The
+  // runtime exposes no requestAnimationFrame and no present signal to pace on —
+  // only `setTimeout` — so coalesce here: commit the leading motion at once for
+  // responsiveness, collapse interior motions to the newest rect, and flush the
+  // trailing rect one frame later. `flushResize` (called on pointer-up) commits
+  // whatever the last interval deferred so the final size is never dropped.
+  const resizeThrottle = useRef({ timer: null, pending: null });
+  // ~60 Hz. Long enough to collapse a burst of motions into one commit, short
+  // enough that the resize still tracks the cursor smoothly.
+  const RESIZE_FRAME_MS = 16;
+  const commitResize = useCallback((id, rect) => {
     // Dragging any edge of a maximized window first restores it, then resizes.
     if (maximized.has(id)) {
       setMaximized((map) => {
@@ -217,6 +230,43 @@ export default function Desktop() {
     move(id, x, y);
     setOpen((items) => items.map((item) => (item.id === id ? { ...item, bounds: { x, y, width, height } } : item)));
   }, [maximized]);
+  const resizeWindow = useCallback((id, rect) => {
+    const throttle = resizeThrottle.current;
+    if (throttle.timer === null) {
+      // Leading edge: commit immediately, then open a frame window that
+      // collapses any motions arriving inside it into a single trailing commit.
+      commitResize(id, rect);
+      throttle.timer = setTimeout(function tick() {
+        const next = resizeThrottle.current.pending;
+        if (next) {
+          resizeThrottle.current.pending = null;
+          commitResize(next.id, next.rect);
+          // A commit landed this frame; keep the window open one more frame in
+          // case more motions coalesced meanwhile, so the drag stays smooth.
+          resizeThrottle.current.timer = setTimeout(tick, RESIZE_FRAME_MS);
+        } else {
+          resizeThrottle.current.timer = null;
+        }
+      }, RESIZE_FRAME_MS);
+    } else {
+      // Inside the frame window: stash only the newest rect.
+      throttle.pending = { id, rect };
+    }
+  }, [commitResize]);
+  const flushResize = useCallback((id) => {
+    const throttle = resizeThrottle.current;
+    if (throttle.timer !== null) {
+      clearTimeout(throttle.timer);
+      throttle.timer = null;
+    }
+    // Commit the final deferred rect so the window ends exactly where the
+    // pointer released, not at the last frame boundary.
+    if (throttle.pending && throttle.pending.id === id) {
+      const { rect } = throttle.pending;
+      throttle.pending = null;
+      commitResize(id, rect);
+    }
+  }, [commitResize]);
 
   return (
     <view id="desktop" onClick={() => setSelectedIcon(null)}>
@@ -232,7 +282,7 @@ export default function Desktop() {
       {open.filter((surface) => !minimized.has(surface.id)).map((surface) => {
         const bounds = maximized.has(surface.id) ? WORK_AREA : surface.bounds;
         return (
-          <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMoveStart={beginWindowMove} onMove={moveWindow} onResize={resizeWindow} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
+          <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMoveStart={beginWindowMove} onMove={moveWindow} onResize={resizeWindow} onResizeEnd={flushResize} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
             <surface className="client-surface" id={surface.id} configureSerial={configure(surface.id, bounds.width - 10, bounds.height - 39)} frame={bounds} cornerRadius={8} />
           </Window>
         );

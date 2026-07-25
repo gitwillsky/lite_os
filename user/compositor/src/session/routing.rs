@@ -98,6 +98,25 @@ impl Session {
                 eprintln!("compositor: surface-activated notify dropped: {error}");
             }
         }
+        // Reconcile against the physical button state before touching the
+        // grab. A pointer-Up can be lost — released off every hit region, or
+        // dropped when the evdev queue coalesces — leaving a move grab that
+        // tracks the pointer forever with no release in sight. Any Motion whose
+        // button mask shows all buttons already up is proof the press ended
+        // without an Up we routed, so retire the grab exactly as a real Up
+        // would: send MoveComplete (idempotent once `ending`) and drop capture.
+        // Done before `update_move` so the freeze that `ending` imposes on the
+        // offset (see `next_move_offset`) takes effect on this same event.
+        if phase == PointerPhase::Motion
+            && buttons == 0
+            && self
+                .move_grab
+                .is_some_and(|grab| !grab.ending)
+        {
+            self.finish_move()?;
+            self.pointer_capture = None;
+            return Ok(());
+        }
         if matches!(phase, PointerPhase::Motion | PointerPhase::Up) {
             self.update_move(x, y);
         }

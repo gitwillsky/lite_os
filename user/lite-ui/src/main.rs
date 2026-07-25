@@ -247,11 +247,16 @@ fn apply_event(
             json!({"type":"activated","surfaceId":surface_id}),
         ),
         Event::MoveComplete { surface_id, x, y } => {
-            state.move_surface(
-                surface_id,
-                u32::try_from(x).map_err(|_| "move completed outside desktop")?,
-                u32::try_from(y).map_err(|_| "move completed outside desktop")?,
-            )?;
+            // The compositor clamps the move destination to the authorized
+            // limits, so a well-behaved MoveComplete is already in bounds. A
+            // stray negative would only arise from a race or a limit
+            // miscalculation; clamp it to the origin instead of tearing down
+            // the whole UI process (`try_from` on a negative is a hard `?`
+            // failure under `panic = "abort"`). React receives the same clamped
+            // value so its canonical bounds stay in sync with native.
+            let x = x.max(0);
+            let y = y.max(0);
+            state.move_surface(surface_id, x as u32, y as u32)?;
             (
                 "desktop",
                 json!({"type":"moved","surfaceId":surface_id,"x":x,"y":y}),

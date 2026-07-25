@@ -1,7 +1,7 @@
 import React, { useCallback, useRef } from "react";
 
 /** Renders one Luna window frame while leaving client pixels owned by compositor. */
-export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onMinimize, onToggleMaximize, maximized }) {
+export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onResizeEnd, onMinimize, onToggleMaximize, maximized }) {
   const drag = useRef(null);
   const beginDrag = useCallback((event) => {
     onActivate(id);
@@ -48,7 +48,9 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
     if (origin.edge.includes("n")) { y = origin.y + dy; height = origin.height - dy; }
     onResize(id, { x, y, width, height, anchorRight: origin.edge.includes("w"), anchorBottom: origin.edge.includes("n"), right: origin.x + origin.width, bottom: origin.y + origin.height });
   }, [id, onResize]);
-  const endResize = useCallback(() => { resize.current = null; }, []);
+  // On release, flush any resize commit the throttle deferred so the final
+  // rect always lands at the true end position, then drop the grab.
+  const endResize = useCallback(() => { resize.current = null; onResizeEnd(id); }, [id, onResizeEnd]);
 
   return (
     <view

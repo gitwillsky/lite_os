@@ -60,6 +60,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         // 2. A newly accepted scene is composed without the cursor, then the cursor
         //    is overlaid and the whole frame flipped.
+        if activity.epoch_reset {
+            // The desktop disconnected: the session dropped every client buffer
+            // and the presented scene, but scanout still holds the last scene's
+            // revisions, damage history and prepared damage. Return scanout to
+            // boot so the next desktop's first compose is a full-screen paint,
+            // not a stale diff over the previous session's pixels.
+            scanout.reset_to_boot()?;
+            boot_offset = 0;
+            last_boot = Instant::now() - FRAME;
+        }
         if let Some(scene) = activity.scene {
             scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
             let event = scanout.present_scene(scene.revision, input.position())?;

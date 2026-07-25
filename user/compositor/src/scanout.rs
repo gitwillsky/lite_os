@@ -113,6 +113,33 @@ impl Scanout {
         Ok(())
     }
 
+    /// Returns scanout to the same clean state [`Self::open`] leaves behind.
+    ///
+    /// A desktop disconnect resets the session epoch (dropping every client
+    /// buffer and the presented scene), but scanout state is separate and would
+    /// otherwise persist across the boundary: both targets keep their last scene
+    /// `revision`, the damage `history` still references retired revisions, and
+    /// `prepared_damage` describes the old scene. On the next boot the
+    /// revision-based damage diff in [`Self::compose`] (`revision == 0` means
+    /// full-screen) would then paint only a stale sub-rectangle over the last
+    /// desktop pixels — the cold-start ghosting. Repainting boot into both
+    /// buffers and forcing both revisions to 0 restores the guarantee that the
+    /// first post-reset compose is a full-screen paint, exactly as after
+    /// `open()`. `front` is left untouched and its framebuffer re-scanned so the
+    /// display never shows a torn intermediate frame.
+    pub fn reset_to_boot(&mut self) -> io::Result<()> {
+        self.draw_boot(0, 0);
+        self.draw_boot(1, 0);
+        for target in &mut self.targets {
+            target.revision = 0;
+            target.cursor = None;
+        }
+        self.history.clear();
+        self.prepared_damage = Rect::default();
+        self.device
+            .set_crtc(&self.topology, self.targets[self.front].framebuffer_id)
+    }
+
     fn draw_boot(&mut self, target: usize, offset: usize) {
         let buffer = &mut self.targets[target].buffer;
         // SAFETY: DumbBuffer owns a writable pitch*height mapping for the Canvas lifetime.

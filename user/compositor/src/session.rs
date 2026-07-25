@@ -108,6 +108,10 @@ pub struct Activity {
     pub scene: Option<Scene>,
     /// Whether a caller-supplied wake descriptor (evdev) became readable.
     pub input: bool,
+    /// Whether this poll reset the session epoch (desktop disconnect). The
+    /// caller owns scanout state, which `reset_epoch` cannot reach, so it must
+    /// return scanout to boot to avoid painting a stale scene diff on restart.
+    pub epoch_reset: bool,
 }
 
 impl Session {
@@ -227,6 +231,7 @@ impl Session {
                     return Ok(Activity {
                         scene: None,
                         input: input_ready,
+                        epoch_reset: true,
                     });
                 }
             }
@@ -244,6 +249,7 @@ impl Session {
         Ok(Activity {
             scene,
             input: input_ready,
+            epoch_reset: false,
         })
     }
 
@@ -341,9 +347,18 @@ impl Session {
                 Ok(None)
             }
             MessageKind::MoveBegin => {
-                self.begin_move(
-                    MoveBegin::parse(&payload).ok_or_else(|| invalid("invalid move begin"))?,
-                )?;
+                let request =
+                    MoveBegin::parse(&payload).ok_or_else(|| invalid("invalid move begin"))?;
+                // A MoveBegin races the pointer stream: by the time it arrives
+                // the authorizing pointer-down may have been superseded, the
+                // window may no longer be presented, or the underlay buffer may
+                // have been recycled. `begin_move` reports all of these as
+                // validation errors and performs no I/O, so a rejected grab must
+                // log and no-op — the desktop simply falls back to the React
+                // move path — never tear down the whole compositor.
+                if let Err(error) = self.begin_move(request) {
+                    eprintln!("compositor: move grab rejected: {error}");
+                }
                 Ok(None)
             }
             MessageKind::SceneCommit => self.accept_scene(&payload).map(Some),
