@@ -12,6 +12,9 @@
   独占 CSS/layout/text/raster cache。SPSC slot 与 snapshot arena ownership 必须线性转移，禁止共享 mutable tree。
 - `lite-ui` renderer 独占 CSS scroll offset、最新 scroll-port/scrollbar geometry 与 scrollbar drag；
   offset 只以 React host instance 的稳定 node id 寻址，节点消失时必须同步回收，应用不得复制该状态。
+- `lite-ui` input dispatcher 独占文档内 hover 与 pointer-capture target；target 只保存稳定 node id，
+  每次事件必须从最新 hit snapshot 解析当前 listener。禁止 capture listener id，否则 React commit
+  替换 inline handler 后会把后续 motion/up 投递给已删除的回调。
 - `quickjs-runtime` 是 QuickJS raw C ABI、unsafe、runtime/context、module loader、job queue 与 interrupt
   callback 的唯一 owner；其他 crate 不得声明 QuickJS extern、raw pointer 或复制 exception cleanup。
 - `terminal-session` 独占 PTY child、VT state、scrollback、selection 与 dirty rows；React terminal 不得

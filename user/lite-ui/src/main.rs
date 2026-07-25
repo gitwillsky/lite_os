@@ -3,6 +3,8 @@
 mod display;
 mod font;
 mod host;
+#[cfg(test)]
+mod pointer_capture_tests;
 mod renderer;
 mod style;
 mod terminal;
@@ -46,8 +48,8 @@ struct Interactions {
     pointer_capture: Option<PointerCapture>,
     last_click: Option<(Instant, i32, i32)>,
     desktop: Option<DesktopPresentation>,
-    /// `key` of the hit region the pointer currently hovers, so hover-in/out
-    /// can be diffed across the per-frame rebuild of `hits`.
+    /// Stable React host node currently under the pointer, so hover-in/out can
+    /// be diffed across complete per-frame rebuilds of `hits`.
     hovered: Option<u64>,
     /// Cursor shape most recently requested from the compositor, so shape
     /// changes are sent only on transition rather than on every motion.
@@ -67,8 +69,25 @@ struct DesktopPresentation {
 
 #[derive(Clone, Copy)]
 struct PointerCapture {
-    move_listener: Option<u64>,
-    up_listener: Option<u64>,
+    /// Stable React host node that received pointer-down.
+    ///
+    /// Capturing callback ids instead would break after any React commit that
+    /// replaces an inline handler: later motion would target a deleted id.
+    node_id: u64,
+}
+
+impl PointerCapture {
+    fn hit(self, hits: &[renderer::HitRegion]) -> Option<&renderer::HitRegion> {
+        hits.iter().find(|hit| hit.node_id == self.node_id)
+    }
+
+    fn move_listener(self, hits: &[renderer::HitRegion]) -> Option<u64> {
+        self.hit(hits).and_then(|hit| hit.pointer_move)
+    }
+
+    fn up_listener(self, hits: &[renderer::HitRegion]) -> Option<u64> {
+        self.hit(hits).and_then(|hit| hit.pointer_up)
+    }
 }
 
 fn main() {
@@ -241,7 +260,7 @@ fn render_latest(
     // state, so no synthetic leave is needed; just keep the tracker consistent
     // so a later re-hover of a fresh region fires enter.
     if let Some(hovered) = interactions.hovered
-        && !interactions.hits.iter().any(|hit| hit.key == hovered)
+        && !interactions.hits.iter().any(|hit| hit.node_id == hovered)
     {
         interactions.hovered = None;
     }
@@ -386,7 +405,7 @@ fn dispatch_pointer(
                 && let Some(leave) = interactions
                     .hits
                     .iter()
-                    .find(|hit| hit.key == old)
+                    .find(|hit| hit.node_id == old)
                     .and_then(|hit| hit.pointer_leave)
             {
                 dispatch_listener(engine, leave, payload)?;
@@ -427,14 +446,13 @@ fn dispatch_pointer(
                     payload.clone(),
                 )?;
                 interactions.pointer_capture = Some(PointerCapture {
-                    move_listener: hit.pointer_move,
-                    up_listener: hit.pointer_up,
+                    node_id: hit.node_id,
                 });
             }
         }
         display_proto::PointerPhase::Up => {
             if let Some(capture) = interactions.pointer_capture.take()
-                && let Some(listener) = capture.up_listener
+                && let Some(listener) = capture.up_listener(&interactions.hits)
             {
                 dispatch_listener(engine, listener, payload.clone())?;
             }
@@ -478,7 +496,7 @@ fn dispatch_pointer(
         display_proto::PointerPhase::Motion => {
             if let Some(listener) = interactions
                 .pointer_capture
-                .and_then(|capture| capture.move_listener)
+                .and_then(|capture| capture.move_listener(&interactions.hits))
             {
                 // A held-button drag routes motion to the captured target only.
                 dispatch_listener(engine, listener, payload)?;
@@ -496,13 +514,13 @@ fn dispatch_pointer(
                                 || hit.pointer_leave.is_some()
                                 || hit.pointer_move.is_some())
                     })
-                    .map(|hit| hit.key);
+                    .map(|hit| hit.node_id);
                 if next != interactions.hovered {
                     if let Some(old) = interactions.hovered
                         && let Some(leave) = interactions
                             .hits
                             .iter()
-                            .find(|hit| hit.key == old)
+                            .find(|hit| hit.node_id == old)
                             .and_then(|hit| hit.pointer_leave)
                     {
                         dispatch_listener(engine, leave, payload.clone())?;
@@ -511,7 +529,7 @@ fn dispatch_pointer(
                         && let Some(enter) = interactions
                             .hits
                             .iter()
-                            .find(|hit| hit.key == new)
+                            .find(|hit| hit.node_id == new)
                             .and_then(|hit| hit.pointer_enter)
                     {
                         dispatch_listener(engine, enter, payload.clone())?;
@@ -523,7 +541,7 @@ fn dispatch_pointer(
                     interactions
                         .hits
                         .iter()
-                        .find(|hit| hit.key == key)
+                        .find(|hit| hit.node_id == key)
                         .and_then(|hit| hit.pointer_move)
                 }) {
                     dispatch_listener(engine, mv, payload)?;

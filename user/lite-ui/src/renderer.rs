@@ -72,6 +72,9 @@ pub struct RenderOutput {
 /// Logical listener bounds produced by the same layout as raster pixels.
 #[derive(Clone)]
 pub struct HitRegion {
+    /// Stable React host-instance identity used for DOM-style target tracking
+    /// across complete scene rebuilds.
+    pub node_id: u64,
     /// Left edge in logical CSS pixels.
     pub x: f32,
     /// Top edge in logical CSS pixels.
@@ -100,10 +103,6 @@ pub struct HitRegion {
     pub wheel: Option<u64>,
     /// Requested pointer cursor shape: zero arrow (default), one pointer/hand.
     pub cursor: u32,
-    /// Stable identity for hover tracking across per-frame hit rebuilds. Derived
-    /// from a listener id, which the host runtime keeps stable while the JS
-    /// handler reference is stable (handlers are memoized with `useCallback`).
-    pub key: u64,
 }
 
 /// Theme-free renderer consuming only CSS and the fixed host primitives.
@@ -416,6 +415,7 @@ impl Renderer {
         {
             let hit = logical_from_physical(raster);
             output.hits.push(HitRegion {
+                node_id: node.source.id,
                 x: hit.x,
                 y: hit.y,
                 width: hit.width,
@@ -430,13 +430,6 @@ impl Renderer {
                 context_menu,
                 wheel,
                 cursor,
-                key: pointer_enter
-                    .or(pointer_leave)
-                    .or(pointer_down)
-                    .or(click)
-                    .or(context_menu)
-                    .or(wheel)
-                    .unwrap_or(0),
             });
         }
         if let Some(key_listener) = listener(&node.source, "onKeyDown") {
