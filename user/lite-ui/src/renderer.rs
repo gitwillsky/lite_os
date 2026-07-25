@@ -71,6 +71,8 @@ pub struct HitRegion {
     pub pointer_enter: Option<u64>,
     /// `onPointerLeave` listener identity (fires on hover-out).
     pub pointer_leave: Option<u64>,
+    /// `onContextMenu` listener identity (fires on right button-down).
+    pub context_menu: Option<u64>,
     /// Stable identity for hover tracking across per-frame hit rebuilds. Derived
     /// from a listener id, which the host runtime keeps stable while the JS
     /// handler reference is stable (handlers are memoized with `useCallback`).
@@ -292,6 +294,7 @@ impl Renderer {
         let double_click = listener(&node.source, "onDoubleClick");
         let pointer_enter = listener(&node.source, "onPointerEnter");
         let pointer_leave = listener(&node.source, "onPointerLeave");
+        let context_menu = listener(&node.source, "onContextMenu");
         if pointer_down.is_some()
             || pointer_move.is_some()
             || pointer_up.is_some()
@@ -299,6 +302,7 @@ impl Renderer {
             || double_click.is_some()
             || pointer_enter.is_some()
             || pointer_leave.is_some()
+            || context_menu.is_some()
         {
             output.hits.push(HitRegion {
                 x: origin.0,
@@ -312,10 +316,12 @@ impl Renderer {
                 double_click,
                 pointer_enter,
                 pointer_leave,
+                context_menu,
                 key: pointer_enter
                     .or(pointer_leave)
                     .or(pointer_down)
                     .or(click)
+                    .or(context_menu)
                     .unwrap_or(0),
             });
         }

@@ -84,7 +84,7 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
       windowGroup={id}
       onPointerDown={() => onActivate(id)}
     >
-      <view className="window__titlebar" onPointerDown={beginDrag} onPointerMove={continueDrag} onPointerUp={endDrag}>
+      <view className="window__titlebar" onPointerDown={beginDrag} onPointerMove={continueDrag} onPointerUp={endDrag} onDoubleClick={() => onToggleMaximize(id)}>
         <image className="window__icon" src={icon} />
         <text className="window__title">{title}</text>
         <view className="window__controls" onPointerDown={() => {}}>

@@ -4,6 +4,7 @@ import { beginMove, close, configure, focus, move, surfaces, shutdown } from "li
 import { Window } from "../design-system/window.jsx";
 import { Taskbar } from "../design-system/taskbar.jsx";
 import { StartMenu } from "../design-system/start-menu.jsx";
+import { ContextMenu } from "../design-system/context-menu.jsx";
 import { constrainResize } from "../design-system/window-geometry.js";
 import { applySurfaceMove, reconcileSurfaces } from "./surface-state.js";
 
@@ -13,6 +14,17 @@ const desktopIcons = [
   { id: "documents", label: "My Documents", icon: "assets/documents.png" },
   { id: "trash", label: "Recycle Bin", icon: "assets/trash.png" },
 ];
+
+// Right-click menu on the desktop background. Items are placeholders for now
+// (no backing actions yet); every click dismisses the menu.
+const DESKTOP_MENU_ITEMS = [
+  { id: "arrange", label: "Arrange Icons" },
+  { id: "refresh", label: "Refresh" },
+  { id: "properties", label: "Properties" },
+];
+
+// Linux evdev KEY_ESC. Escape dismisses open popups when the desktop is focused.
+const KEY_ESC = 1;
 
 // The taskbar-free area every maximized window covers; move clamps agree.
 const WORK_AREA = { x: 0, y: 0, width: 1504, height: 816 };
@@ -47,7 +59,12 @@ export default function Desktop() {
   resizePreviewRef.current = resizePreview;
   const [startOpen, setStartOpen] = useState(false);
   const [selectedIcon, setSelectedIcon] = useState(null);
+  // Open context menu: { x, y, items } in desktop-local logical pixels, or null.
+  const [menu, setMenu] = useState(null);
   const listedApps = useMemo(() => apps(), []);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  // Opening a context menu also dismisses the Start menu (only one popup at a time).
+  const openMenu = useCallback((x, y, items) => { setStartOpen(false); setMenu({ x, y, items }); }, []);
   const clearResizePreview = useCallback((id) => {
     setResizePreview((map) => {
       if (!map.has(id)) return map;
@@ -81,6 +98,7 @@ export default function Desktop() {
     focus(id);
     setActiveId(id);
     setStartOpen(false);
+    setMenu(null);
     // Raise to front: windows paint in `open` order, so moving the activated
     // surface to the end of the array draws it on top of the others.
     setOpen((items) => {
@@ -261,10 +279,28 @@ export default function Desktop() {
   }, [commitResize]);
 
   return (
-    <view id="desktop" onClick={() => setSelectedIcon(null)}>
+    <view
+      id="desktop"
+      onClick={() => { setSelectedIcon(null); setMenu(null); setStartOpen(false); }}
+      onContextMenu={(event) => openMenu(event.x, event.y, DESKTOP_MENU_ITEMS)}
+      onKeyDown={(event) => { if (event.code === KEY_ESC && event.value !== 0) { setMenu(null); setStartOpen(false); } }}
+    >
       <view className="desktop-icons">
         {desktopIcons.map((item) => (
-          <view key={item.id} className="desktop-icon" onClick={() => setSelectedIcon(item.id)} onDoubleClick={() => item.app && launchApp(item.app)}>
+          <view
+            key={item.id}
+            className="desktop-icon"
+            onClick={() => setSelectedIcon(item.id)}
+            onDoubleClick={() => item.app && launchApp(item.app)}
+            onContextMenu={(event) => {
+              setSelectedIcon(item.id);
+              openMenu(event.x, event.y, [
+                { id: "open", label: "Open", onSelect: () => item.app && launchApp(item.app) },
+                { id: "delete", label: "Delete" },
+                { id: "properties", label: "Properties" },
+              ]);
+            }}
+          >
             <image className="desktop-icon__image" src={item.icon}/>
             <text className={selectedIcon === item.id ? "desktop-icon__label desktop-icon__label--selected" : "desktop-icon__label"}>{item.label}</text>
           </view>
@@ -286,8 +322,9 @@ export default function Desktop() {
           <view className="window__resize-preview window__resize-preview--vertical" style={{ left: bounds.x + bounds.width - 1, top: bounds.y, height: bounds.height }} overlay={true}/>
         </React.Fragment>
       ))}
-      {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>} 
-      <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => setStartOpen((value) => !value)} onActivate={activate}/>
+      {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>}
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu}/>}
+      <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => { setMenu(null); setStartOpen((value) => !value); }} onActivate={activate}/>
     </view>
   );
 }

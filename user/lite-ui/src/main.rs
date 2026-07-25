@@ -35,6 +35,10 @@ enum Mode {
     App(String),
 }
 
+/// Linux evdev `BTN_RIGHT`; the compositor forwards raw button codes and the
+/// right button opens context menus rather than starting a drag or click.
+const BTN_RIGHT: u32 = 273;
+
 #[derive(Default)]
 struct Interactions {
     hits: Vec<renderer::HitRegion>,
@@ -328,7 +332,20 @@ fn dispatch_pointer(
     });
     match pointer.phase {
         display_proto::PointerPhase::Down => {
-            if let Some(hit) = interactions
+            if pointer.button == BTN_RIGHT {
+                // Right button opens a context menu on the topmost region that
+                // asked for one. It never starts a drag, so no pointer_capture.
+                if let Some(listener) = interactions
+                    .hits
+                    .iter()
+                    .rev()
+                    .filter(|hit| inside(hit))
+                    .filter_map(|hit| hit.context_menu)
+                    .next()
+                {
+                    dispatch_listener(engine, listener, payload.clone())?;
+                }
+            } else if let Some(hit) = interactions
                 .hits
                 .iter()
                 .rev()
@@ -352,36 +369,41 @@ fn dispatch_pointer(
             {
                 dispatch_listener(engine, listener, payload.clone())?;
             }
-            if let Some(listener) = interactions
-                .hits
-                .iter()
-                .rev()
-                .filter(|hit| inside(hit))
-                .filter_map(|hit| hit.click)
-                .next()
-            {
-                dispatch_listener(engine, listener, payload.clone())?;
-            }
-            let now = Instant::now();
-            let double = interactions.last_click.is_some_and(|(at, x, y)| {
-                now.duration_since(at) <= Duration::from_millis(500)
-                    && (x - pointer.x).abs() <= 4
-                    && (y - pointer.y).abs() <= 4
-            });
-            if double {
+            // Click and double-click are left-button semantics only; a right-up
+            // must not fire onClick/onDoubleClick (the menu already opened on
+            // right-down) nor disturb the double-click timer.
+            if pointer.button != BTN_RIGHT {
                 if let Some(listener) = interactions
                     .hits
                     .iter()
                     .rev()
                     .filter(|hit| inside(hit))
-                    .filter_map(|hit| hit.double_click)
+                    .filter_map(|hit| hit.click)
                     .next()
                 {
                     dispatch_listener(engine, listener, payload.clone())?;
                 }
-                interactions.last_click = None;
-            } else {
-                interactions.last_click = Some((now, pointer.x, pointer.y));
+                let now = Instant::now();
+                let double = interactions.last_click.is_some_and(|(at, x, y)| {
+                    now.duration_since(at) <= Duration::from_millis(500)
+                        && (x - pointer.x).abs() <= 4
+                        && (y - pointer.y).abs() <= 4
+                });
+                if double {
+                    if let Some(listener) = interactions
+                        .hits
+                        .iter()
+                        .rev()
+                        .filter(|hit| inside(hit))
+                        .filter_map(|hit| hit.double_click)
+                        .next()
+                    {
+                        dispatch_listener(engine, listener, payload.clone())?;
+                    }
+                    interactions.last_click = None;
+                } else {
+                    interactions.last_click = Some((now, pointer.x, pointer.y));
+                }
             }
         }
         display_proto::PointerPhase::Motion => {
