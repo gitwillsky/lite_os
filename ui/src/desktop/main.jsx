@@ -20,7 +20,7 @@ const WORK_AREA = { x: 0, y: 0, width: 1504, height: 816 };
 const MIN_W = 160;
 const MIN_H = 120;
 const clampX = (x, width) => Math.max(0, Math.min(WORK_AREA.width - width, x));
-const clampY = (y) => Math.max(0, Math.min(WORK_AREA.height - 25, y));
+const clampY = (y, height) => Math.max(0, Math.min(WORK_AREA.height - height, y));
 
 export default function Desktop() {
   const [open, setOpen] = useState(() => surfaces());
@@ -163,14 +163,14 @@ export default function Desktop() {
         next.delete(id);
         return next;
       });
-      const position = { x: clampX(x - Math.floor(restored.width / 2), restored.width), y: clampY(y - 12) };
+      const position = { x: clampX(x - Math.floor(restored.width / 2), restored.width), y: clampY(y - 12, restored.height) };
       move(id, position.x, position.y);
       setOpen((items) => items.map((item) => (item.id === id ? { ...item, bounds: { ...restored, ...position } } : item)));
       return;
     }
     setOpen((items) => items.map((item) => {
       if (item.id !== id) return item;
-      const next = { x: clampX(x, item.bounds.width), y: clampY(y) };
+      const next = { x: clampX(x, item.bounds.width), y: clampY(y, item.bounds.height) };
       move(id, next.x, next.y);
       return { ...item, bounds: { ...item.bounds, ...next } };
     }));
@@ -188,7 +188,7 @@ export default function Desktop() {
       0,
       0,
       Math.max(0, WORK_AREA.width - surface.bounds.width),
-      WORK_AREA.height - 25,
+      Math.max(0, WORK_AREA.height - surface.bounds.height),
     );
     return true;
   }, [maximized]);
