@@ -108,7 +108,14 @@ pub(super) fn paint_shadow(
         let inner = offset(shell as f32 - 1.0);
         let outer_radii = radii.map(|radius| radius + shell);
         let inner_radii = radii.map(|radius| radius + shell - 1);
-        fill_ring(pixels, outer, inner, outer_radii, inner_radii, scale_pm(color, factor));
+        fill_ring(
+            pixels,
+            outer,
+            inner,
+            outer_radii,
+            inner_radii,
+            scale_pm(color, factor),
+        );
     }
     fill_rounded(pixels, offset(0.0), radii, color);
 }
@@ -341,7 +348,9 @@ fn blend_span(row: &mut [u32], x1: f32, x2: f32, color: u32) {
 pub(super) fn corner_inset(top: usize, bottom: usize, y: usize, height: usize) -> f32 {
     let arc = |radius: usize, distance: f32| {
         radius as f32
-            - ((radius * radius) as f32 - (distance * distance)).max(0.0).sqrt()
+            - ((radius * radius) as f32 - (distance * distance))
+                .max(0.0)
+                .sqrt()
     };
     let top = top.min(height / 2);
     let bottom = bottom.min(height / 2);
@@ -357,12 +366,7 @@ pub(super) fn corner_inset(top: usize, bottom: usize, y: usize, height: usize) -
 
 /// Composites one rounded rect over the destination, honoring per-corner radii
 /// ordered `[tl, tr, br, bl]` in physical pixels.
-fn fill_rounded(
-    pixels: &mut SharedDumbBuffer,
-    rect: PhysicalRect,
-    radii: [usize; 4],
-    color: u32,
-) {
+fn fill_rounded(pixels: &mut SharedDumbBuffer, rect: PhysicalRect, radii: [usize; 4], color: u32) {
     if rect.x2 <= rect.x1 || rect.y2 <= rect.y1 {
         return;
     }

@@ -42,6 +42,9 @@ struct Interactions {
     pointer_capture: Option<PointerCapture>,
     last_click: Option<(Instant, i32, i32)>,
     desktop: Option<DesktopPresentation>,
+    /// `key` of the hit region the pointer currently hovers, so hover-in/out
+    /// can be diffed across the per-frame rebuild of `hits`.
+    hovered: Option<u64>,
 }
 
 struct DesktopPresentation {
@@ -214,6 +217,15 @@ fn render_latest(
     }
     interactions.hits = output.hits;
     interactions.key_listener = output.key_listener;
+    // Drop a hovered key whose region vanished from the rebuilt hit list (e.g.
+    // the menu closed). The JS component unmounts and resets its own hover
+    // state, so no synthetic leave is needed; just keep the tracker consistent
+    // so a later re-hover of a fresh region fires enter.
+    if let Some(hovered) = interactions.hovered
+        && !interactions.hits.iter().any(|hit| hit.key == hovered)
+    {
+        interactions.hovered = None;
+    }
     if matches!(mode, Mode::Desktop) {
         interactions.desktop = Some(DesktopPresentation {
             buffer_id,
@@ -377,7 +389,54 @@ fn dispatch_pointer(
                 .pointer_capture
                 .and_then(|capture| capture.move_listener)
             {
+                // A held-button drag routes motion to the captured target only.
                 dispatch_listener(engine, listener, payload)?;
+            } else {
+                // Free hover (no button held): find the topmost region under the
+                // pointer that participates in hover, and diff it against the
+                // last hovered region to emit leave(old) then enter(new).
+                let next = interactions
+                    .hits
+                    .iter()
+                    .rev()
+                    .find(|hit| {
+                        inside(hit)
+                            && (hit.pointer_enter.is_some()
+                                || hit.pointer_leave.is_some()
+                                || hit.pointer_move.is_some())
+                    })
+                    .map(|hit| hit.key);
+                if next != interactions.hovered {
+                    if let Some(old) = interactions.hovered
+                        && let Some(leave) = interactions
+                            .hits
+                            .iter()
+                            .find(|hit| hit.key == old)
+                            .and_then(|hit| hit.pointer_leave)
+                    {
+                        dispatch_listener(engine, leave, payload.clone())?;
+                    }
+                    if let Some(new) = next
+                        && let Some(enter) = interactions
+                            .hits
+                            .iter()
+                            .find(|hit| hit.key == new)
+                            .and_then(|hit| hit.pointer_enter)
+                    {
+                        dispatch_listener(engine, enter, payload.clone())?;
+                    }
+                    interactions.hovered = next;
+                }
+                // Deliver an ongoing move to the hovered region if it asked for one.
+                if let Some(mv) = next.and_then(|key| {
+                    interactions
+                        .hits
+                        .iter()
+                        .find(|hit| hit.key == key)
+                        .and_then(|hit| hit.pointer_move)
+                }) {
+                    dispatch_listener(engine, mv, payload)?;
+                }
             }
         }
     }

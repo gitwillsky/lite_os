@@ -5,15 +5,11 @@ use taffy::prelude::{
     LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
 };
 
-use crate::{
-    style::Computed,
-    terminal_font::CELL_WIDTH,
-    tree::Node,
-};
+use crate::{style::Computed, terminal_font::CELL_WIDTH, tree::Node};
 
 use super::SCALE;
 
-pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
+pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<f32>) -> Style {
     // Only text leaves size from their glyphs. Containers must stay auto-sized:
     // a descendant-text width here would override block stretch, flex grow/shrink
     // and absolute inset resolution with a bogus definite size.
@@ -25,12 +21,14 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
     let font_size = computed.px("font-size", 11.0);
     let line_height = computed.px("line-height", font_size * 1.25);
     let columns = text.chars().count() as f32;
-    // Monospace rows measure exactly one terminal cell per character; the
-    // proportional UI face keeps its average-glyph estimate.
+    // Monospace rows measure exactly one terminal cell per character. The
+    // proportional UI face uses the real summed glyph advances the rasterizer
+    // will use (`measured_width`), falling back to an average-glyph estimate
+    // only when no measurer is supplied (e.g. unit tests).
     let intrinsic_width = if computed.get("font-family") == Some("monospace") {
         columns * (CELL_WIDTH as f32 / SCALE)
     } else {
-        columns * font_size * 0.58
+        measured_width.unwrap_or(columns * font_size * 0.58)
     };
     let intrinsic_height = line_height;
     let mut style = Style {
@@ -301,7 +299,7 @@ mod tests {
         };
         let computed = sheet.compute(&node, &[]);
 
-        let style = to_taffy(&node, &computed);
+        let style = to_taffy(&node, &computed, None);
 
         assert_eq!(style.padding.top, LengthPercentage::length(1.0));
         assert_eq!(style.padding.bottom, LengthPercentage::length(4.0));

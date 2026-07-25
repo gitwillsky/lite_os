@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { projectResize } from "./window-geometry.js";
 
 const CLOSE_GLYPH_PIXELS = [
@@ -57,6 +57,26 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
   // lands at the true end position, then drop the grab.
   const endResize = useCallback(() => { resize.current = null; onResizeEnd(id); }, [id, onResizeEnd]);
 
+  // Caption-button feedback. The renderer has no CSS pseudo-classes, so hover
+  // and press are driven by state toggled from real pointer events: hover-in/out
+  // (onPointerEnter/Leave) lightens the button, and press (onPointerDown/Up)
+  // inverts the bevel to sunken. Handlers are memoized so the host keeps their
+  // listener ids stable across renders (the compositor tracks hover by that id).
+  const [hovered, setHovered] = useState(null);
+  const [pressed, setPressed] = useState(null);
+  const enter = useCallback((which) => () => setHovered(which), []);
+  const leave = useCallback((which) => () => setHovered((current) => (current === which ? null : current)), []);
+  const press = useCallback((which) => () => setPressed(which), []);
+  const release = useCallback(() => setPressed(null), []);
+  // Memoize per-button handler bundles once so their identities are stable.
+  const buttons = useRef({
+    min: { enter: enter("min"), leave: leave("min"), press: press("min") },
+    max: { enter: enter("max"), leave: leave("max"), press: press("max") },
+    close: { enter: enter("close"), leave: leave("close"), press: press("close") },
+  }).current;
+  const captionClass = (which) =>
+    `caption-button${hovered === which ? " caption-button--hover" : ""}${pressed === which ? " caption-button--pressed" : ""}`;
+
   return (
     <view
       className={`window ${active ? "window--active" : "window--inactive"}`}
@@ -68,13 +88,36 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
         <image className="window__icon" src={icon} />
         <text className="window__title">{title}</text>
         <view className="window__controls" onPointerDown={() => {}}>
-          <view className="caption-button" onClick={() => onMinimize(id)}><view className="caption-glyph caption-glyph--minimize"/></view>
-          <view className="caption-button" onClick={() => onToggleMaximize(id)}>
+          <view
+            className={captionClass("min")}
+            onPointerEnter={buttons.min.enter}
+            onPointerLeave={buttons.min.leave}
+            onPointerDown={buttons.min.press}
+            onPointerUp={release}
+            onClick={() => { release(); onMinimize(id); }}
+          >
+            <view className="caption-glyph caption-glyph--minimize"/>
+          </view>
+          <view
+            className={captionClass("max")}
+            onPointerEnter={buttons.max.enter}
+            onPointerLeave={buttons.max.leave}
+            onPointerDown={buttons.max.press}
+            onPointerUp={release}
+            onClick={() => { release(); onToggleMaximize(id); }}
+          >
             {maximized
               ? <view className="caption-glyph caption-glyph--restore"><view className="caption-glyph__back"/><view className="caption-glyph__front"/></view>
               : <view className="caption-glyph caption-glyph--maximize"/>}
           </view>
-          <view className="caption-button" onClick={() => onClose(id)}>
+          <view
+            className={captionClass("close")}
+            onPointerEnter={buttons.close.enter}
+            onPointerLeave={buttons.close.leave}
+            onPointerDown={buttons.close.press}
+            onPointerUp={release}
+            onClick={() => { release(); onClose(id); }}
+          >
             <view className="caption-glyph--close">
               {CLOSE_GLYPH_PIXELS.map(([left, top]) => <view key={`${left}:${top}`} style={{ left, top }}/>)}
             </view>

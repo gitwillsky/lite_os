@@ -115,6 +115,28 @@ impl Font {
         })
     }
 
+    /// Logical-pixel width of `text` in the face selected by `style`.
+    ///
+    /// Sums the real per-glyph advances of the exact face `draw`/`pass` would
+    /// use (weight- and size-aware), so layout sizes a text box to the width it
+    /// actually rasterizes to instead of a flat per-character estimate that
+    /// clips long or bold runs. Advances are in physical pixels; divide by
+    /// `SCALE` to match the logical CSS units taffy lays out in.
+    pub fn measure(&self, style: &Computed, text: &str) -> f32 {
+        let face = self.face(style);
+        let advances: i32 = text
+            .chars()
+            .map(|character| {
+                let index = self
+                    .codepoints
+                    .binary_search(&(character as u32))
+                    .unwrap_or(self.fallback);
+                i32::from(face.glyphs[index].advance)
+            })
+            .sum();
+        advances as f32 / SCALE
+    }
+
     /// Draws one CSS text node clipped to its physical layout box.
     ///
     /// The vertical clip extends to the font descent below the baseline: a line

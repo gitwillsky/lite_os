@@ -67,6 +67,14 @@ pub struct HitRegion {
     pub click: Option<u64>,
     /// `onDoubleClick` listener identity.
     pub double_click: Option<u64>,
+    /// `onPointerEnter` listener identity (fires on hover-in without a held button).
+    pub pointer_enter: Option<u64>,
+    /// `onPointerLeave` listener identity (fires on hover-out).
+    pub pointer_leave: Option<u64>,
+    /// Stable identity for hover tracking across per-frame hit rebuilds. Derived
+    /// from a listener id, which the host runtime keeps stable while the JS
+    /// handler reference is stable (handlers are memoized with `useCallback`).
+    pub key: u64,
 }
 
 /// Theme-free renderer consuming only CSS and the fixed host primitives.
@@ -229,7 +237,17 @@ impl Renderer {
                 .map(|child| self.build(tree, child, &next_ancestors, Some(&computed)))
                 .collect::<io::Result<Vec<_>>>()?
         };
-        let style = to_taffy(&source, &computed);
+        // Measure proportional text leaves with real glyph advances so the box
+        // matches what the rasterizer draws; monospace text is sized by cell
+        // count in `to_taffy`, and non-text nodes need no measurement.
+        let measured_width = if matches!(source.kind.as_str(), "text" | "#text")
+            && computed.get("font-family") != Some("monospace")
+        {
+            Some(self.font.measure(&computed, &text_content(&source)))
+        } else {
+            None
+        };
+        let style = to_taffy(&source, &computed, measured_width);
         let id = if children.is_empty() {
             tree.new_leaf(style)
         } else {
@@ -272,11 +290,15 @@ impl Renderer {
         let pointer_up = listener(&node.source, "onPointerUp");
         let click = listener(&node.source, "onClick");
         let double_click = listener(&node.source, "onDoubleClick");
+        let pointer_enter = listener(&node.source, "onPointerEnter");
+        let pointer_leave = listener(&node.source, "onPointerLeave");
         if pointer_down.is_some()
             || pointer_move.is_some()
             || pointer_up.is_some()
             || click.is_some()
             || double_click.is_some()
+            || pointer_enter.is_some()
+            || pointer_leave.is_some()
         {
             output.hits.push(HitRegion {
                 x: origin.0,
@@ -288,6 +310,13 @@ impl Renderer {
                 pointer_up,
                 click,
                 double_click,
+                pointer_enter,
+                pointer_leave,
+                key: pointer_enter
+                    .or(pointer_leave)
+                    .or(pointer_down)
+                    .or(click)
+                    .unwrap_or(0),
             });
         }
         if let Some(key_listener) = listener(&node.source, "onKeyDown") {

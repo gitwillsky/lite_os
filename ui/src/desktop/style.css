@@ -99,6 +99,16 @@
   border-radius: 0;
   background: #d4d0c8;
 }
+.caption-button--hover {
+  background: #e4e2dc;
+}
+.caption-button--pressed {
+  border-top-color: #404040;
+  border-left-color: #404040;
+  border-right-color: #ffffff;
+  border-bottom-color: #ffffff;
+  background: #d4d0c8;
+}
 .caption-glyph {
   position: relative;
   width: 9px;
@@ -352,6 +362,16 @@
 }
 .classic-menu-item__arrow {
   font-size: 9px;
+}
+.classic-menu-item--hover {
+  background: #0a246a;
+  color: #ffffff;
+}
+.classic-menu-item--hover text {
+  color: #ffffff;
+}
+.classic-menu-item--hover .classic-menu-item__arrow {
+  color: #ffffff;
 }
 .menu-separator {
   height: 2px;

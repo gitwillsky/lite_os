@@ -93,8 +93,8 @@ impl Gradient {
                 if second_position <= first_position {
                     return second_color;
                 }
-                let local = ((t - first_position) / (second_position - first_position))
-                    .clamp(0.0, 1.0);
+                let local =
+                    ((t - first_position) / (second_position - first_position)).clamp(0.0, 1.0);
                 return mix(first_color, second_color, local);
             }
         }
@@ -386,12 +386,7 @@ mod tests {
 
     #[test]
     fn interior_stops_distribute_evenly() {
-        let mut stops = vec![
-            (0u32, Some(0.0)),
-            (1, None),
-            (2, None),
-            (3, Some(1.0)),
-        ];
+        let mut stops = vec![(0u32, Some(0.0)), (1, None), (2, None), (3, Some(1.0))];
         resolve_positions(&mut stops);
         let positions: Vec<f32> = stops.iter().map(|stop| stop.1.unwrap()).collect();
         assert_eq!(positions, vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]);
