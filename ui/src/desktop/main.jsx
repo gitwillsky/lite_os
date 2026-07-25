@@ -4,6 +4,8 @@ import { beginMove, close, configure, focus, move, surfaces, shutdown } from "li
 import { Window } from "../design-system/window.jsx";
 import { Taskbar } from "../design-system/taskbar.jsx";
 import { StartMenu } from "../design-system/start-menu.jsx";
+import { constrainResize } from "../design-system/window-geometry.js";
+import { applySurfaceMove, reconcileSurfaces } from "./surface-state.js";
 
 const desktopIcons = [
   { id: "computer", label: "My Computer", icon: "assets/computer.png" },
@@ -14,9 +16,9 @@ const desktopIcons = [
 
 // The taskbar-free area every maximized window covers; move clamps agree.
 const WORK_AREA = { x: 0, y: 0, width: 1504, height: 816 };
-// Minimum window frame size. Comfortably above the chrome insets (10 wide, 39
-// tall) so the client area stays usable and `configure(w - 10, h - 39)` never
-// underflows the u32 the host parses.
+// Minimum window frame size. Comfortably above the classic chrome insets (10
+// wide, 32 tall) so the client area stays usable and
+// `configure(w - 10, h - 32)` never underflows the u32 the host parses.
 const MIN_W = 160;
 const MIN_H = 120;
 const clampX = (x, width) => Math.max(0, Math.min(WORK_AREA.width - width, x));
@@ -37,9 +39,24 @@ export default function Desktop() {
   minimizedRef.current = minimized;
   // id -> bounds saved when the window was maximized; restore reads them back.
   const [maximized, setMaximized] = useState(() => new Map());
+  // id -> outline bounds shown during classic resize. Keeping this separate
+  // from `open` prevents every pointer motion from configuring a new app
+  // buffer; without it the gray window body and app pixels alternate onscreen.
+  const [resizePreview, setResizePreview] = useState(() => new Map());
+  const resizePreviewRef = useRef(resizePreview);
+  resizePreviewRef.current = resizePreview;
   const [startOpen, setStartOpen] = useState(false);
   const [selectedIcon, setSelectedIcon] = useState(null);
   const listedApps = useMemo(() => apps(), []);
+  const clearResizePreview = useCallback((id) => {
+    setResizePreview((map) => {
+      if (!map.has(id)) return map;
+      const next = new Map(map);
+      next.delete(id);
+      resizePreviewRef.current = next;
+      return next;
+    });
+  }, []);
 
   // Taskbar buttons keep a STABLE order (surface insertion order), unlike
   // `open` which is z-ordered — `activate` splices the focused window to the
@@ -47,27 +64,17 @@ export default function Desktop() {
   // every focus change reshuffle the buttons, so the active button jumps
   // position and reads as "focus not tracking the window". Sorting by each
   // surface's original id (assigned in open order) pins the buttons; only the
-  // `activeId` highlight moves, matching the Luna taskbar.
+  // `activeId` highlight moves, matching the Windows Classic taskbar.
   const taskbarWindows = useMemo(
     () => open.slice().sort((a, b) => a.id - b.id),
     [open],
   );
 
-  // Native `surfaces()` is authoritative for which surfaces EXIST (insertion
-  // order), but z-order lives here in `open`: `activate` raises a surface by
-  // moving it to the end of this array. Merging native truth into the current
-  // order — instead of replacing it — preserves that raise-to-front. New
-  // surfaces append (top), closed ones drop, and mutable fields (title/bounds)
-  // refresh from native without disturbing z-order.
+  // Native `surfaces()` is authoritative for existence and metadata. React
+  // owns persistent frame geometry and z-order, so reconciliation must not
+  // restore the native registry's launch-time bounds after a resize.
   const reconcile = useCallback((items) => {
-    const native = surfaces();
-    const byId = new Map(native.map((surface) => [surface.id, surface]));
-    const kept = items
-      .filter((item) => byId.has(item.id))
-      .map((item) => byId.get(item.id));
-    const keptIds = new Set(kept.map((item) => item.id));
-    const added = native.filter((surface) => !keptIds.has(surface.id));
-    return [...kept, ...added];
+    return reconcileSurfaces(items, surfaces());
   }, []);
 
   const activate = useCallback((id) => {
@@ -105,6 +112,9 @@ export default function Desktop() {
         // back — restoring is an explicit taskbar action via `activate`.
         if (!minimizedRef.current.has(event.surfaceId)) activate(event.surfaceId);
       }
+      if (event.type === "moved") {
+        setOpen((items) => applySurfaceMove(items, event.surfaceId, event.x, event.y));
+      }
       if (event.type === "closed") {
         setMinimized((set) => {
           const next = new Set(set);
@@ -116,6 +126,7 @@ export default function Desktop() {
           next.delete(event.surfaceId);
           return next;
         });
+        clearResizePreview(event.surfaceId);
         setActiveId((current) => (current === event.surfaceId ? 0 : current));
       }
     });
@@ -124,7 +135,11 @@ export default function Desktop() {
   }, []);
 
   const launchApp = useCallback((id) => { launch(id); setStartOpen(false); }, []);
-  const closeWindow = useCallback((id) => { close(id); setOpen((items) => items.filter((item) => item.id !== id)); }, []);
+  const closeWindow = useCallback((id) => {
+    close(id);
+    clearResizePreview(id);
+    setOpen((items) => items.filter((item) => item.id !== id));
+  }, [clearResizePreview]);
   const minimizeWindow = useCallback((id) => {
     const next = new Set(minimizedRef.current);
     next.add(id);
@@ -192,57 +207,35 @@ export default function Desktop() {
     );
     return true;
   }, [maximized]);
-  // Resize commit throttle. Every pointer motion on an edge fires `onResize`,
-  // and each commit does a full `move()` + `setOpen()` (one scene commit) plus
-  // a `configure()` at render (one new configure serial per distinct size). At
-  // pointer rate that floods the compositor with per-motion re-renders. The
-  // runtime exposes no requestAnimationFrame and no present signal to pace on —
-  // only `setTimeout` — so coalesce here: commit the leading motion at once for
-  // responsiveness, collapse interior motions to the newest rect, and flush the
-  // trailing rect one frame later. `flushResize` (called on pointer-up) commits
-  // whatever the last interval deferred so the final size is never dropped.
+  // Resize preview throttle. Pointer motion only updates an outline; the
+  // canonical window geometry and app configure commit once on release.
   const resizeThrottle = useRef({ timer: null, pending: null });
-  // ~60 Hz. Long enough to collapse a burst of motions into one commit, short
+  // ~60 Hz. Long enough to collapse a burst of motions into one preview, short
   // enough that the resize still tracks the cursor smoothly.
   const RESIZE_FRAME_MS = 16;
-  const commitResize = useCallback((id, rect) => {
-    // Dragging any edge of a maximized window first restores it, then resizes.
-    if (maximized.has(id)) {
-      setMaximized((map) => {
-        const next = new Map(map);
-        next.delete(id);
-        return next;
-      });
-    }
-    let { x, y, width, height, anchorRight, anchorBottom, right, bottom } = rect;
-    // Clamp to the min size. When a left/top edge drives the drag it also moved
-    // the origin, so pin the far edge (right/bottom) rather than let the origin
-    // keep sliding once the min size is hit.
-    if (width < MIN_W) { width = MIN_W; if (anchorRight) x = right - MIN_W; }
-    if (height < MIN_H) { height = MIN_H; if (anchorBottom) y = bottom - MIN_H; }
-    // Keep the window inside the taskbar-free work area.
-    x = Math.max(0, x);
-    y = Math.max(0, y);
-    width = Math.min(width, WORK_AREA.width - x);
-    height = Math.min(height, WORK_AREA.height - y);
-    width = Math.max(MIN_W, width);
-    height = Math.max(MIN_H, height);
+  const publishResizePreview = useCallback((id, rect) => {
+    const bounds = constrainResize(rect, WORK_AREA, MIN_W, MIN_H);
+    setResizePreview((map) => {
+      const next = new Map(map);
+      next.set(id, bounds);
+      resizePreviewRef.current = next;
+      return next;
+    });
+  }, []);
+  const commitResize = useCallback((id, { x, y, width, height }) => {
     move(id, x, y);
     setOpen((items) => items.map((item) => (item.id === id ? { ...item, bounds: { x, y, width, height } } : item)));
-  }, [maximized]);
+    clearResizePreview(id);
+  }, [clearResizePreview]);
   const resizeWindow = useCallback((id, rect) => {
     const throttle = resizeThrottle.current;
     if (throttle.timer === null) {
-      // Leading edge: commit immediately, then open a frame window that
-      // collapses any motions arriving inside it into a single trailing commit.
-      commitResize(id, rect);
+      publishResizePreview(id, rect);
       throttle.timer = setTimeout(function tick() {
         const next = resizeThrottle.current.pending;
         if (next) {
           resizeThrottle.current.pending = null;
-          commitResize(next.id, next.rect);
-          // A commit landed this frame; keep the window open one more frame in
-          // case more motions coalesced meanwhile, so the drag stays smooth.
+          publishResizePreview(next.id, next.rect);
           resizeThrottle.current.timer = setTimeout(tick, RESIZE_FRAME_MS);
         } else {
           resizeThrottle.current.timer = null;
@@ -252,25 +245,23 @@ export default function Desktop() {
       // Inside the frame window: stash only the newest rect.
       throttle.pending = { id, rect };
     }
-  }, [commitResize]);
+  }, [publishResizePreview]);
   const flushResize = useCallback((id) => {
     const throttle = resizeThrottle.current;
     if (throttle.timer !== null) {
       clearTimeout(throttle.timer);
       throttle.timer = null;
     }
-    // Commit the final deferred rect so the window ends exactly where the
-    // pointer released, not at the last frame boundary.
+    let finalBounds = resizePreviewRef.current.get(id);
     if (throttle.pending && throttle.pending.id === id) {
-      const { rect } = throttle.pending;
+      finalBounds = constrainResize(throttle.pending.rect, WORK_AREA, MIN_W, MIN_H);
       throttle.pending = null;
-      commitResize(id, rect);
     }
+    if (finalBounds) commitResize(id, finalBounds);
   }, [commitResize]);
 
   return (
     <view id="desktop" onClick={() => setSelectedIcon(null)}>
-      <image className="wallpaper" src="assets/bliss.png" />
       <view className="desktop-icons">
         {desktopIcons.map((item) => (
           <view key={item.id} className="desktop-icon" onClick={() => setSelectedIcon(item.id)} onDoubleClick={() => item.app && launchApp(item.app)}>
@@ -283,10 +274,18 @@ export default function Desktop() {
         const bounds = maximized.has(surface.id) ? WORK_AREA : surface.bounds;
         return (
           <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMoveStart={beginWindowMove} onMove={moveWindow} onResize={resizeWindow} onResizeEnd={flushResize} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
-            <surface className="client-surface" id={surface.id} configureSerial={configure(surface.id, bounds.width - 10, bounds.height - 39)} frame={bounds} cornerRadius={8} />
+            <surface className="client-surface" id={surface.id} configureSerial={configure(surface.id, bounds.width - 10, bounds.height - 32)} frame={bounds} cornerRadius={0} />
           </Window>
         );
       })}
+      {Array.from(resizePreview, ([id, bounds]) => (
+        <React.Fragment key={id}>
+          <view className="window__resize-preview window__resize-preview--horizontal" style={{ left: bounds.x, top: bounds.y, width: bounds.width }} overlay={true}/>
+          <view className="window__resize-preview window__resize-preview--horizontal" style={{ left: bounds.x, top: bounds.y + bounds.height - 1, width: bounds.width }} overlay={true}/>
+          <view className="window__resize-preview window__resize-preview--vertical" style={{ left: bounds.x, top: bounds.y, height: bounds.height }} overlay={true}/>
+          <view className="window__resize-preview window__resize-preview--vertical" style={{ left: bounds.x + bounds.width - 1, top: bounds.y, height: bounds.height }} overlay={true}/>
+        </React.Fragment>
+      ))}
       {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>} 
       <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => setStartOpen((value) => !value)} onActivate={activate}/>
     </view>

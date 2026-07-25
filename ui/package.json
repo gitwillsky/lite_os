@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "check": "node build.mjs --check"
+    "check": "node build.mjs --check && node --test src/design-system/window-geometry.test.mjs src/desktop/surface-state.test.mjs"
   },
   "dependencies": {
     "react": "19.2.7",

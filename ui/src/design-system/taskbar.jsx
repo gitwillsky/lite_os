@@ -26,7 +26,13 @@ export function Taskbar({ windows, activeId, startOpen, onStart, onActivate }) {
 
   return (
     <view className="taskbar" overlay={true}>
-      <view className={`start ${startOpen ? "start--pressed" : ""}`} onClick={onStart}/>
+      <view className={`start ${startOpen ? "start--pressed" : ""}`} onClick={onStart}>
+        <view className="start__mark">
+          <view className="start__mark-row"><view className="start__pane start__pane--red"/><view className="start__pane start__pane--green"/></view>
+          <view className="start__mark-row"><view className="start__pane start__pane--blue"/><view className="start__pane start__pane--yellow"/></view>
+        </view>
+        <text className="start__label">Start</text>
+      </view>
       <view className="taskbar__tasks">
         {windows.map((window) => (
           <view key={window.id} className={`task ${window.id === activeId ? "task--active" : ""}`} onClick={() => onActivate(window.id)}>

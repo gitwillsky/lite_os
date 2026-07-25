@@ -92,9 +92,9 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
     if let Some(value) = computed.get("padding") {
         style.padding = edges(value);
     }
-    // Per-side border widths: a `border-<side>` shorthand overrides the uniform
-    // `border`/`border-width` for layout so single-sided borders reserve space
-    // only on the edge they paint.
+    // Per-side border widths are already cascade-expanded by the style owner.
+    // The fallbacks keep runtime compatibility with a pre-expanded Computed
+    // value constructed by native callers.
     let uniform_border = computed
         .get("border-width")
         .and_then(number)
@@ -102,9 +102,21 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
         .unwrap_or(0.0);
     let mut border_widths = [uniform_border; 4]; // [top, right, bottom, left]
     for (index, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+        let border_style = computed
+            .get(&format!("border-{side}-style"))
+            .or_else(|| computed.get("border-style"));
+        if matches!(border_style, Some("none" | "hidden")) {
+            border_widths[index] = 0.0;
+            continue;
+        }
         if let Some(width) = computed
-            .get(&format!("border-{side}"))
-            .and_then(first_number)
+            .get(&format!("border-{side}-width"))
+            .and_then(number)
+            .or_else(|| {
+                computed
+                    .get(&format!("border-{side}"))
+                    .and_then(first_number)
+            })
         {
             border_widths[index] = width;
         }
@@ -125,16 +137,20 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
         };
     }
     for (name, target) in [
-        ("padding-left", &mut style.padding.left),
+        ("padding-top", &mut style.padding.top),
         ("padding-right", &mut style.padding.right),
+        ("padding-bottom", &mut style.padding.bottom),
+        ("padding-left", &mut style.padding.left),
     ] {
         if let Some(value) = computed.get(name).and_then(number) {
             *target = LengthPercentage::length(value);
         }
     }
     for (name, target) in [
-        ("margin-left", &mut style.margin.left),
+        ("margin-top", &mut style.margin.top),
         ("margin-right", &mut style.margin.right),
+        ("margin-bottom", &mut style.margin.bottom),
+        ("margin-left", &mut style.margin.left),
     ] {
         if let Some(value) = computed.get(name).and_then(number) {
             *target = LengthPercentageAuto::length(value);
@@ -250,5 +266,48 @@ fn justify_content(value: &str) -> Option<JustifyContent> {
         "flex-end" => Some(JustifyContent::FLEX_END),
         "space-between" => Some(JustifyContent::SPACE_BETWEEN),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::Value;
+    use taffy::prelude::{LengthPercentage, LengthPercentageAuto};
+
+    use super::to_taffy;
+    use crate::{style::Sheet, tree::Node};
+
+    #[test]
+    fn side_longhands_reach_taffy_layout_edges() {
+        let sheet = Sheet::parse(
+            ".box {
+                padding: 1px;
+                padding-bottom: 4px;
+                margin: 2px;
+                margin-top: 5px;
+                border: 1px solid #000000;
+                border-right-width: 3px;
+                border-left-style: none;
+            }",
+        )
+        .expect("box stylesheet parses");
+        let node = Node {
+            kind: "view".to_owned(),
+            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+            text: String::new(),
+            children: Vec::new(),
+        };
+        let computed = sheet.compute(&node, &[]);
+
+        let style = to_taffy(&node, &computed);
+
+        assert_eq!(style.padding.top, LengthPercentage::length(1.0));
+        assert_eq!(style.padding.bottom, LengthPercentage::length(4.0));
+        assert_eq!(style.margin.top, LengthPercentageAuto::length(5.0));
+        assert_eq!(style.margin.right, LengthPercentageAuto::length(2.0));
+        assert_eq!(style.border.left, LengthPercentage::length(0.0));
+        assert_eq!(style.border.right, LengthPercentage::length(3.0));
     }
 }

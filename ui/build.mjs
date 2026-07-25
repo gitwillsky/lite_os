@@ -73,12 +73,17 @@ const reactSystemPlugin = {
 
 const properties = new Set([
   "align-items", "background", "background-image", "border", "border-bottom", "border-color",
-  "border-left", "border-radius", "border-right", "border-top", "border-width",
+  "border-bottom-color", "border-bottom-style", "border-bottom-width", "border-left",
+  "border-left-color", "border-left-style", "border-left-width", "border-radius", "border-right",
+  "border-right-color", "border-right-style", "border-right-width", "border-style", "border-top",
+  "border-top-color", "border-top-style", "border-top-width", "border-width",
   "bottom", "box-shadow", "color", "display", "flex", "flex-direction",
   "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
-  "left", "line-height", "margin", "margin-left", "margin-right", "max-height", "max-width", "min-height",
+  "left", "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top",
+  "max-height", "max-width", "min-height",
   "min-width", "opacity", "overflow", "padding", "pointer-events", "position",
-  "padding-left", "padding-right", "right", "text-align", "text-shadow", "top", "white-space", "width", "z-index",
+  "padding-bottom", "padding-left", "padding-right", "padding-top", "right", "text-align",
+  "text-shadow", "top", "white-space", "width", "z-index",
 ]);
 
 function validateCss(path, source) {
@@ -144,21 +149,10 @@ for (const [id, entryName, styleName] of products) {
   const assets = join(directory, "assets");
   await mkdir(assets, { recursive: true });
   if (id === "desktop") {
-    await copyFile(join(root, "../assets/wallpaper-src.png"), join(assets, "bliss.png"));
-    await copyFile(join(root, "../assets/sprites-src/avatar.png"), join(assets, "avatar.png"));
-    await copyFile(join(root, "../assets/sprites-src/start-normal.png"), join(assets, "start.png"));
-    await copyFile(join(root, "../assets/sprites-src/start-pressed.png"), join(assets, "start-pressed.png"));
-    await copyFile(join(root, "../assets/sprites-src/icon-power.png"), join(assets, "power.png"));
-    await copyFile(join(root, "../assets/sprites-src/icon-logoff.png"), join(assets, "logoff.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-documents.png"), join(assets, "documents.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-trash.png"), join(assets, "trash.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
-    await copyFile(join(root, "../assets/sprites-src/arrow-right.png"), join(assets, "arrow-right.png"));
-    await copyFile(join(root, "../assets/sprites-src/glyph-min.png"), join(assets, "glyph-min.png"));
-    await copyFile(join(root, "../assets/sprites-src/glyph-max.png"), join(assets, "glyph-max.png"));
-    await copyFile(join(root, "../assets/sprites-src/glyph-restore.png"), join(assets, "glyph-restore.png"));
-    await copyFile(join(root, "../assets/sprites-src/glyph-close.png"), join(assets, "glyph-close.png"));
   }
   await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));
   if (id !== "desktop") {

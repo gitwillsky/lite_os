@@ -135,14 +135,42 @@ fn scale_pm(color: u32, factor: f32) -> u32 {
     channel(24) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BorderStyle {
+    None,
+    Solid,
+    Dotted,
+    Dashed,
+}
+
+impl BorderStyle {
+    fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("none" | "hidden") => Self::None,
+            Some("dotted") => Self::Dotted,
+            Some("dashed") => Self::Dashed,
+            _ => Self::Solid,
+        }
+    }
+
+    fn paints(self, width: usize, offset: usize) -> bool {
+        match self {
+            Self::None => false,
+            Self::Solid => true,
+            Self::Dotted => offset % (width * 2) < width,
+            Self::Dashed => offset % (width * 6) < width * 3,
+        }
+    }
+}
+
 pub(super) fn paint_border(
     pixels: &mut SharedDumbBuffer,
     bounds: PhysicalRect,
     computed: &Computed,
 ) {
-    // 1. Resolve each side independently: a `border-<side>` shorthand wins over
-    //    the uniform `border`/`border-width` + `border-color` pair, matching the
-    //    CSS cascade so `border-left: 1px solid #1042af` paints only that edge.
+    // 1. Resolve each side independently. The style owner expands shorthands in
+    //    cascade order, so side longhands hold the standard winning width and
+    //    color. Shorthand fallbacks keep native pre-expanded values valid.
     let uniform_width = computed
         .get("border-width")
         .and_then(number)
@@ -152,18 +180,35 @@ pub(super) fn paint_border(
         .get("border-color")
         .and_then(parse_color)
         .or_else(|| computed.get("border").and_then(last_color));
-    let mut sides = [(0usize, 0u32); 4]; // [top, right, bottom, left]
+    let uniform_style = computed
+        .get("border-style")
+        .map(|value| BorderStyle::parse(Some(value)))
+        .or_else(|| computed.get("border").and_then(border_style))
+        .unwrap_or(BorderStyle::Solid);
+    let mut sides = [(0usize, 0u32, BorderStyle::None); 4]; // [top, right, bottom, left]
     for (index, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
         let shorthand = computed.get(&format!("border-{side}"));
-        let width = shorthand
-            .and_then(first_number)
+        let width = computed
+            .get(&format!("border-{side}-width"))
+            .and_then(number)
+            .or_else(|| shorthand.and_then(first_number))
             .unwrap_or(uniform_width);
-        let Some(color) = shorthand.and_then(last_color).or(uniform_color) else {
+        let Some(color) = computed
+            .get(&format!("border-{side}-color"))
+            .and_then(parse_color)
+            .or_else(|| shorthand.and_then(last_color))
+            .or(uniform_color)
+        else {
             continue;
         };
+        let style = computed
+            .get(&format!("border-{side}-style"))
+            .map(|value| BorderStyle::parse(Some(value)))
+            .or_else(|| shorthand.and_then(border_style))
+            .unwrap_or(uniform_style);
         let width = (width * SCALE).round() as usize;
-        if width > 0 {
-            sides[index] = (width, color);
+        if width > 0 && style != BorderStyle::None {
+            sides[index] = (width, color, style);
         }
     }
     if bounds.x2 <= bounds.x1 || bounds.y2 <= bounds.y1 {
@@ -173,8 +218,12 @@ pub(super) fn paint_border(
     // stroke follows the corner arcs; mixed side widths or colors keep the
     // square-edge path below (per-side colors have no corner semantics here).
     let radii = corner_radii(computed);
-    if radii != [0; 4] && sides[0].0 > 0 && sides.iter().all(|side| *side == sides[0]) {
-        let (width, color) = sides[0];
+    if radii != [0; 4]
+        && sides[0].0 > 0
+        && sides[0].2 == BorderStyle::Solid
+        && sides.iter().all(|side| *side == sides[0])
+    {
+        let (width, color, _) = sides[0];
         let inner = PhysicalRect {
             x1: bounds.x1 + width,
             y1: bounds.y1 + width,
@@ -191,23 +240,42 @@ pub(super) fn paint_border(
         // 2. Horizontal strips span the full width; vertical strips sit between
         //    them so corners belong to the top/bottom edges, as in CSS.
         if top.0 > 0 && y < bounds.y1 + top.0 {
-            blend_row(row, bounds.x1, bounds.x2, top.1);
+            blend_pattern_row(row, bounds.x1, bounds.x2, top.1, top.2, top.0);
             continue;
         }
         if bottom.0 > 0 && y + bottom.0 >= bounds.y2 {
-            blend_row(row, bounds.x1, bounds.x2, bottom.1);
+            blend_pattern_row(row, bounds.x1, bounds.x2, bottom.1, bottom.2, bottom.0);
             continue;
         }
-        if left.0 > 0 {
+        if left.0 > 0 && left.2.paints(left.0, y - bounds.y1) {
             blend_row(row, bounds.x1, (bounds.x1 + left.0).min(bounds.x2), left.1);
         }
-        if right.0 > 0 {
+        if right.0 > 0 && right.2.paints(right.0, y - bounds.y1) {
             blend_row(
                 row,
                 bounds.x2.saturating_sub(right.0).max(bounds.x1),
                 bounds.x2,
                 right.1,
             );
+        }
+    }
+}
+
+fn blend_pattern_row(
+    row: &mut [u32],
+    x1: usize,
+    x2: usize,
+    color: u32,
+    style: BorderStyle,
+    width: usize,
+) {
+    if style == BorderStyle::Solid {
+        blend_row(row, x1, x2, color);
+        return;
+    }
+    for (offset, pixel) in row[x1..x2].iter_mut().enumerate() {
+        if style.paints(width, offset) {
+            *pixel = alpha_over(color, *pixel);
         }
     }
 }
@@ -353,3 +421,43 @@ fn last_color(value: &str) -> Option<u32> {
     value.split_whitespace().rev().find_map(parse_color)
 }
 
+fn border_style(value: &str) -> Option<BorderStyle> {
+    value.split_whitespace().find_map(|token| match token {
+        "none" | "hidden" => Some(BorderStyle::None),
+        "dotted" => Some(BorderStyle::Dotted),
+        "dashed" => Some(BorderStyle::Dashed),
+        "solid" => Some(BorderStyle::Solid),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BorderStyle;
+
+    #[test]
+    fn dashed_border_uses_three_width_on_off_segments() {
+        let pattern: Vec<bool> = (0..12)
+            .map(|offset| BorderStyle::Dashed.paints(2, offset))
+            .collect();
+
+        assert_eq!(
+            pattern,
+            [
+                true, true, true, true, true, true, false, false, false, false, false, false,
+            ]
+        );
+    }
+
+    #[test]
+    fn dotted_border_alternates_one_width_squares() {
+        let pattern: Vec<bool> = (0..8)
+            .map(|offset| BorderStyle::Dotted.paints(2, offset))
+            .collect();
+
+        assert_eq!(
+            pattern,
+            [true, true, false, false, true, true, false, false]
+        );
+    }
+}

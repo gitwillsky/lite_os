@@ -9,11 +9,11 @@
   `--app <id>`。无窗体程序和 3D 游戏不经过 LiteUI。
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
   Promise job drain、值转换、exception、heap/stack 与 interrupt budget。`lite-ui` 只消费其安全窄接口。
-- React desktop 是 graphical session 的唯一窗口 policy owner：保存窗口位置、层级、active state、
+- React desktop 是 graphical session 的唯一窗口 policy owner：保存窗口位置与尺寸、层级、active state、
   最小化/最大化、decorations、任务栏、开始菜单、壁纸、应用启动与 XP 产品呈现。
 - `terminal-session` 是无窗体 helper，独占 PTY、VT parser、screen、cursor、scrollback 与 selection；
   React terminal 只绘制网格并转发输入、尺寸与 clipboard 操作。
-- `ui/design-system` 是唯一 XP/Luna presentation owner。LiteUI theme-free，compositor 不包含窗口主题。
+- `ui/design-system` 是唯一 XP Classic presentation owner。LiteUI theme-free，compositor 不包含窗口主题。
 
 ## 显示与调度
 

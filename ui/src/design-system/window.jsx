@@ -1,6 +1,17 @@
 import React, { useCallback, useRef } from "react";
+import { projectResize } from "./window-geometry.js";
 
-/** Renders one Luna window frame while leaving client pixels owned by compositor. */
+const CLOSE_GLYPH_PIXELS = [
+  [0, 0], [6, 0],
+  [1, 1], [5, 1],
+  [2, 2], [4, 2],
+  [3, 3],
+  [2, 4], [4, 4],
+  [1, 5], [5, 5],
+  [0, 6], [6, 6],
+];
+
+/** Renders one classic window frame while leaving client pixels owned by compositor. */
 export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onResizeEnd, onMinimize, onToggleMaximize, maximized }) {
   const drag = useRef(null);
   const beginDrag = useCallback((event) => {
@@ -39,17 +50,10 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
   const continueResize = useCallback((event) => {
     const origin = resize.current;
     if (!origin) return;
-    const dx = event.x - origin.startX;
-    const dy = event.y - origin.startY;
-    let { x, y, width, height } = origin;
-    if (origin.edge.includes("e")) width = origin.width + dx;
-    if (origin.edge.includes("s")) height = origin.height + dy;
-    if (origin.edge.includes("w")) { x = origin.x + dx; width = origin.width - dx; }
-    if (origin.edge.includes("n")) { y = origin.y + dy; height = origin.height - dy; }
-    onResize(id, { x, y, width, height, anchorRight: origin.edge.includes("w"), anchorBottom: origin.edge.includes("n"), right: origin.x + origin.width, bottom: origin.y + origin.height });
+    onResize(id, projectResize(origin.edge, origin, { x: event.x, y: event.y }));
   }, [id, onResize]);
-  // On release, flush any resize commit the throttle deferred so the final
-  // rect always lands at the true end position, then drop the grab.
+  // On release, flush the newest preview and commit it once so the final rect
+  // lands at the true end position, then drop the grab.
   const endResize = useCallback(() => { resize.current = null; onResizeEnd(id); }, [id, onResizeEnd]);
 
   return (
@@ -63,14 +67,21 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
         <image className="window__icon" src={icon} />
         <text className="window__title">{title}</text>
         <view className="window__controls" onPointerDown={() => {}}>
-          <view className="caption-button" onClick={() => onMinimize(id)}><image className="caption-button__glyph" src="assets/glyph-min.png"/></view>
-          <view className="caption-button" onClick={() => onToggleMaximize(id)}><image className="caption-button__glyph" src={maximized ? "assets/glyph-restore.png" : "assets/glyph-max.png"}/></view>
-          <view className="caption-button caption-button--close" onClick={() => onClose(id)}><image className="caption-button__glyph" src="assets/glyph-close.png"/></view>
+          <view className="caption-button" onClick={() => onMinimize(id)}><view className="caption-glyph caption-glyph--minimize"/></view>
+          <view className="caption-button" onClick={() => onToggleMaximize(id)}>
+            {maximized
+              ? <view className="caption-glyph caption-glyph--restore"><view className="caption-glyph__back"/><view className="caption-glyph__front"/></view>
+              : <view className="caption-glyph caption-glyph--maximize"/>}
+          </view>
+          <view className="caption-button" onClick={() => onClose(id)}>
+            <view className="caption-glyph--close">
+              {CLOSE_GLYPH_PIXELS.map(([left, top]) => <view key={`${left}:${top}`} style={{ left, top }}/>)}
+            </view>
+          </view>
         </view>
-        <view className="window__titlebar-glow" />
       </view>
       <view className="window__body">{children}</view>
-      {!maximized && ["s", "e", "w", "se", "sw"].map((edge) => (
+      {!maximized && ["n", "s", "e", "w", "ne", "nw", "se", "sw"].map((edge) => (
         <view
           key={edge}
           className={`window__resize window__resize--${edge}`}
