@@ -548,4 +548,15 @@ mod tests {
                 .any(|row| row.contains("primary"))
         );
     }
+
+    #[test]
+    fn decscusr_selects_every_cursor_shape_and_ignores_invalid_values() {
+        let mut model = Model::new(20, 5).expect("model");
+        for (parameter, style) in [(0, 1), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)] {
+            feed(&mut model, format!("\x1b[{parameter} q"));
+            assert_eq!(model.cursor_style(), style);
+        }
+        feed(&mut model, b"\x1b[2 q\x1b[99 q");
+        assert_eq!(model.cursor_style(), 2);
+    }
 }

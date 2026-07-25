@@ -5,7 +5,19 @@ const hex = (value) => "#" + value.toString(16).padStart(6, "0");
 
 export default function Terminal() {
   const [screen, setScreen] = useState(() => connect(["/bin/sh"]));
+  const [cursorPhase, setCursorPhase] = useState(true);
   useEffect(() => globalThis.liteTerminalSubscribe(setScreen), []);
+  useEffect(() => {
+    setCursorPhase(true);
+    if (!screen.cursor.blinking) return undefined;
+    let timer;
+    const tick = () => {
+      setCursorPhase((visible) => !visible);
+      timer = setTimeout(tick, 530);
+    };
+    timer = setTimeout(tick, 530);
+    return () => clearTimeout(timer);
+  }, [screen.cursor.blinking]);
   // Runs carry only their own text; the start column is implicit in the
   // concatenation order, and every cell is exactly 8x16 CSS px.
   const runs = [];
@@ -29,12 +41,23 @@ export default function Terminal() {
       );
     }
   });
+  const cursor = screen.cursor;
+  const cursorWidth = cursor.shape === "bar" ? 2 : 8;
+  const cursorHeight = cursor.shape === "underline" ? 2 : 16;
+  const cursorTop = cursor.row * 16 + (cursor.shape === "underline" ? 14 : 0);
   return (
     <view className="terminal" tabIndex={0} style={{ background: hex(screen.background) }} onKeyDown={(event) => input(event)}>
       {runs}
       <view
         className="terminal__cursor"
-        style={{ left: screen.cursor.column * 8, top: screen.cursor.row * 16, background: hex(screen.foreground) }}
+        style={{
+          left: cursor.column * 8,
+          top: cursorTop,
+          width: cursorWidth,
+          height: cursorHeight,
+          opacity: cursor.visible && cursorPhase ? 1 : 0,
+          background: hex(screen.foreground),
+        }}
       />
     </view>
   );

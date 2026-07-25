@@ -148,6 +148,9 @@ impl Model {
                 b'=' | b'<' if self.parameter_count == 1 && self.parameters[0] == 0 => {
                     self.ignored_csi = true
                 }
+                b' ' if !self.private_csi && !self.secondary_csi && !self.ignored_csi => {
+                    self.parser = ParserState::CsiSpace
+                }
                 0x20..=0x2f => self.ignored_csi = true,
                 _ => {
                     if !self.ignored_csi {
@@ -156,6 +159,7 @@ impl Model {
                     self.parser = ParserState::Ground;
                 }
             },
+            ParserState::CsiSpace => self.finish_cursor_style(byte),
             ParserState::SetG0 => {
                 self.g0_charset = byte;
                 self.parser = ParserState::Ground;

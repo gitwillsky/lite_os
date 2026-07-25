@@ -1,4 +1,8 @@
 liteos|LiteOS display terminal,
 	smcup=\E[?1049h,
 	rmcup=\E[?1049l,
+	Ss=\E[%p1%d q,
+	Se=\E[2 q,
+	SI=\E[5 q,
+	EI=\E[1 q,
 	use=linux,

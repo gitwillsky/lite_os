@@ -62,6 +62,7 @@ struct Run {
 struct ScreenState {
     rows: Vec<Vec<Run>>,
     cursor: (u16, u16),
+    cursor_style: u16,
     foreground: u32,
     background: u32,
 }
@@ -77,9 +78,11 @@ impl ScreenState {
         // helper writer in terminal-session emits the same sequence.
         self.cursor = (read_u16(payload, 4)?, read_u16(payload, 6)?);
         let dirty = read_u16(payload, 8)? as usize;
-        if columns == 0 || rows == 0 || read_u16(payload, 10)? != 0 {
+        let cursor_style = read_u16(payload, 10)?;
+        if columns == 0 || rows == 0 || cursor_appearance(cursor_style).is_none() {
             return Err(invalid("terminal update geometry invalid"));
         }
+        self.cursor_style = cursor_style;
         self.foreground = read_u32(payload, 12)?;
         self.background = read_u32(payload, 16)?;
         if self.rows.len() != rows {
@@ -224,9 +227,17 @@ impl Terminal {
                 Message::Error(error) => return Err(error),
             }
         }
+        let (cursor_shape, cursor_blinking) =
+            cursor_appearance(self.screen.cursor_style).expect("validated cursor style");
         Ok(Some(json!({
             "rows": self.screen.rows,
-            "cursor": {"column": self.screen.cursor.0, "row": self.screen.cursor.1},
+            "cursor": {
+                "column": self.screen.cursor.0,
+                "row": self.screen.cursor.1,
+                "visible": self.screen.cursor.0 != u16::MAX && self.screen.cursor.1 != u16::MAX,
+                "shape": cursor_shape,
+                "blinking": cursor_blinking,
+            },
             "foreground": self.screen.foreground,
             "background": self.screen.background,
         })))
@@ -252,6 +263,18 @@ impl Terminal {
         payload[4..6].copy_from_slice(&(width.min(u32::from(u16::MAX)) as u16).to_le_bytes());
         payload[6..8].copy_from_slice(&(height.min(u32::from(u16::MAX)) as u16).to_le_bytes());
         write_frame(&mut self.input, RESIZE, &payload)
+    }
+}
+
+fn cursor_appearance(style: u16) -> Option<(&'static str, bool)> {
+    match style {
+        1 => Some(("block", true)),
+        2 => Some(("block", false)),
+        3 => Some(("underline", true)),
+        4 => Some(("underline", false)),
+        5 => Some(("bar", true)),
+        6 => Some(("bar", false)),
+        _ => None,
     }
 }
 
@@ -420,7 +443,7 @@ mod tests {
         payload.extend_from_slice(&2u16.to_le_bytes()); // cursor column
         payload.extend_from_slice(&1u16.to_le_bytes()); // cursor row
         payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row count
-        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.extend_from_slice(&2u16.to_le_bytes()); // steady block cursor
         payload.extend_from_slice(&FG.to_le_bytes()); // default foreground
         payload.extend_from_slice(&BG.to_le_bytes()); // default background
         payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row index
@@ -438,12 +461,38 @@ mod tests {
         // Distinct column/row values catch a swapped decode: (1, 2) would pass
         // a shape check but mirror the cursor across the grid diagonal.
         assert_eq!(state.cursor, (2, 1));
+        assert_eq!(state.cursor_style, 2);
         assert_eq!(state.foreground, FG);
         assert_eq!(state.background, BG);
         assert_eq!(
             state.rows,
             vec![Vec::new(), vec![run("abc", FG, BG, false)]]
         );
+    }
+
+    #[test]
+    fn update_decodes_all_decscusr_cursor_styles() {
+        for (style, expected) in [
+            (1u16, ("block", true)),
+            (2, ("block", false)),
+            (3, ("underline", true)),
+            (4, ("underline", false)),
+            (5, ("bar", true)),
+            (6, ("bar", false)),
+        ] {
+            let mut payload = update_payload();
+            payload[10..12].copy_from_slice(&style.to_le_bytes());
+            let mut state = ScreenState::default();
+            state.apply_update(&payload).expect("valid cursor style");
+            assert_eq!(cursor_appearance(state.cursor_style), Some(expected));
+        }
+    }
+
+    #[test]
+    fn update_rejects_unknown_cursor_style() {
+        let mut payload = update_payload();
+        payload[10..12].copy_from_slice(&7u16.to_le_bytes());
+        assert!(ScreenState::default().apply_update(&payload).is_err());
     }
 
     #[test]

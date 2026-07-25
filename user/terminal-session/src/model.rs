@@ -1,10 +1,12 @@
 use core::ptr;
 
+mod cursor;
 mod parser;
 mod reflow;
 mod screen;
 mod style;
 
+use cursor::CursorStyle;
 use reflow::{History, allocate_grid, free_grid, resize_screen};
 
 pub const ATTR_BOLD: u16 = 1 << 0;
@@ -29,6 +31,7 @@ enum ParserState {
     Ground,
     Escape,
     Csi,
+    CsiSpace,
     SetG0,
     SetG1,
     EscapeHash,
@@ -139,6 +142,7 @@ pub trait Grid {
     fn cursor(&self) -> Option<(usize, usize)>;
     /// Returns the current default `(foreground, background)` SGR colors.
     fn default_colors(&self) -> (u32, u32);
+    fn cursor_style(&self) -> u16;
     fn cell(&self, row: usize, column: usize) -> Cell;
 }
 
@@ -179,6 +183,7 @@ pub struct Model {
     mouse_mode: u8,
     origin_mode: bool,
     cursor_visible: bool,
+    cursor_style: CursorStyle,
     reverse_screen: bool,
     blink_visible: bool,
     tab_stops: [u64; TAB_WORDS],
@@ -196,6 +201,7 @@ pub struct ResizeCandidate {
     alternate: Screen,
     alternate_active: bool,
     cursor_visible: bool,
+    cursor_style: CursorStyle,
     reverse_screen: bool,
     blink_visible: bool,
     dirty: *mut DirtySpan,
@@ -241,6 +247,7 @@ impl Model {
             mouse_mode: 0,
             origin_mode: false,
             cursor_visible: true,
+            cursor_style: CursorStyle::SteadyBlock,
             reverse_screen: false,
             blink_visible: true,
             tab_stops: [0; TAB_WORDS],
@@ -289,6 +296,7 @@ impl Model {
         self.mouse_mode = 0;
         self.origin_mode = false;
         self.cursor_visible = true;
+        self.cursor_style = CursorStyle::SteadyBlock;
         self.reverse_screen = false;
         self.blink_visible = true;
         self.g0_charset = b'B';
@@ -336,6 +344,7 @@ impl Model {
             history,
             alternate_active: self.alternate_active,
             cursor_visible: self.cursor_visible,
+            cursor_style: self.cursor_style,
             reverse_screen: self.reverse_screen,
             blink_visible: self.blink_visible,
             dirty,
@@ -378,6 +387,7 @@ impl Model {
         self.alternate = candidate.alternate;
         self.alternate_active = candidate.alternate_active;
         self.cursor_visible = candidate.cursor_visible;
+        self.cursor_style = candidate.cursor_style;
         self.reverse_screen = candidate.reverse_screen;
         self.blink_visible = candidate.blink_visible;
         self.dirty = candidate.dirty;
@@ -410,6 +420,10 @@ impl Grid for Model {
 
     fn default_colors(&self) -> (u32, u32) {
         (self.foreground, self.background)
+    }
+
+    fn cursor_style(&self) -> u16 {
+        self.cursor_style as u16
     }
 
     fn cell(&self, row: usize, column: usize) -> Cell {

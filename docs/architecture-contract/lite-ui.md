@@ -60,8 +60,9 @@
 - app entry 必须 default export 一个 component。target loader 仅接受固定 React/LiteUI system module；
   `lite:apps` 与 `lite:desktop` 必须拒绝普通 app session。native plugin、dlopen、worker 与 Node API 不存在。
 - terminal helper stdin/stdout 使用长度前缀 binary protocol，stderr 只诊断。screen update 按完整脏行，
-  最多一个 update 在途，ACK 前变更合并；resize 发送完整 grid。helper argv 必须在 `--` 后显式给出，
-  不提供默认 shell或 command-string parser。
+  并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；最多一个 update 在途，ACK 前变更合并；
+  terminfo 同时发布通用 `Ss`/`Se` 和 Vim 外部 terminfo loader 使用的 `SI`/`EI`；resize 发送完整
+  grid。helper argv 必须在 `--` 后显式给出，不提供默认 shell或 command-string parser。
 
 ## Failure and cleanup
 

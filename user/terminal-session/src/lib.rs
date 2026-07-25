@@ -221,7 +221,7 @@ fn send_update(output: &mut impl Write, bytes: &mut Vec<u8>, model: &mut Model) 
     bytes.extend_from_slice(&(cursor.0 as u16).to_le_bytes());
     bytes.extend_from_slice(&(cursor.1 as u16).to_le_bytes());
     bytes.extend_from_slice(&(dirty_rows as u16).to_le_bytes());
-    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&model.cursor_style().to_le_bytes());
     // The header ends with the current default colors so the reader can fill
     // the container background and cursor without a per-cell trip.
     let (foreground, background) = model.default_colors();

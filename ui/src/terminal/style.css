@@ -18,7 +18,5 @@
 }
 .terminal__cursor {
   position: absolute;
-  width: 8px;
-  height: 16px;
   background: #c0c0c0;
 }
