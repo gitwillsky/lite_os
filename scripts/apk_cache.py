@@ -26,7 +26,7 @@ TARGET = target_from_environment()
 WORK = ROOT / "target" / "apk-runtime" / TARGET.arch
 ALPINE_BRANCH = "v3.22"
 ALPINE_ARCH = TARGET.alpine_arch
-ALPINE_MIRROR = "https://dl-cdn.alpinelinux.org/alpine"
+ALPINE_MIRROR = "https://mirrors.ustc.edu.cn/alpine"
 ALPINE_REPOSITORY = (
     f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main/{ALPINE_ARCH}"
 )

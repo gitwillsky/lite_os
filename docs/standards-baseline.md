@@ -106,7 +106,8 @@
 
 ### Alpine、APK 与 TLS
 
-- Alpine `v3.22/main/{aarch64,riscv64}` 只使用官方 repository 固定文件。AArch64 的
+- Alpine `v3.22/main/{aarch64,riscv64}` 通过中科大镜像获取官方 repository
+  固定文件，下载后必须通过固定 SHA-256 校验。AArch64 的
   `apk-tools-static 2.14.10-r0`、`alpine-keys 2.5-r0`、
   `ca-certificates-bundle 20260611-r0` SHA-256 依次为
   `3e22f80dd0272dc487e4ca84b2c6b660ca392cbad970764efe9ef9555b806ac8`、
@@ -119,7 +120,7 @@
   应用闭包也由各架构的固定摘要完整锁定，禁止 latest 或跨架构推导。
 - 本项目从官方 AArch64 repository 固定的闭包中，只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个数据包以 `.PKGINFO arch=noarch` 发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。
 - OpenSSL `3.5.7`；commit `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`；tarball SHA-256 `a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`。
-- 来源：[Alpine aarch64 repository](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/riscv64/)、[OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)。
+- 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、[OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)。
 
 ## 裁决顺序
 
