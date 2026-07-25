@@ -16,10 +16,15 @@ use super::wire::{send_accepted, send_presented};
 use super::{RoutingNode, Session, invalid};
 
 /// One accepted flat-scene pixel layer.
+#[derive(Clone)]
 pub struct Node {
+    pub kind: SceneNodeKind,
+    pub window_group: u32,
     pub buffer_id: u32,
     pub bounds: Rect,
     pub clip: Rect,
+    pub opaque: Option<Rect>,
+    pub damage: Vec<Rect>,
     /// Rounded-corner radius in physical pixels; the compositor skips corner
     /// pixels outside the arc so lower content shows through the frame clip.
     pub corner_radius: u32,
@@ -36,6 +41,8 @@ struct AppPresentation {
 pub struct Scene {
     pub revision: u64,
     pub nodes: Vec<Node>,
+    pub damage: Rect,
+    pub(super) finishes_move: bool,
     desktop_buffers: Vec<u32>,
     app_presentations: Vec<AppPresentation>,
     routing: Vec<RoutingNode>,
@@ -82,6 +89,7 @@ impl Session {
                 );
                 continue;
             }
+            let mut damage: Vec<Rect> = node.damage.iter().collect();
             let buffer_id = match node.kind {
                 SceneNodeKind::Pixels => {
                     let buffer = self
@@ -90,7 +98,7 @@ impl Session {
                         .get(&node.source_id)
                         .ok_or_else(|| invalid("unknown desktop buffer"))?;
                     if buffer.owner != Owner::Desktop
-                        || buffer.busy
+                        || buffer.busy && !self.desktop_current_buffers.contains(&node.source_id)
                         || buffer.size.width != node.bounds.width
                         || buffer.size.height != node.bounds.height
                     {
@@ -119,9 +127,11 @@ impl Session {
                     // dropped the whole desktop to the splash on maximize.
                     let content = app
                         .pending
+                        .as_ref()
                         .filter(|content| content.configure_serial == node.configure_serial)
                         .or_else(|| {
                             app.current
+                                .as_ref()
                                 .filter(|content| content.configure_serial == node.configure_serial)
                         });
                     let Some(content) = content else {
@@ -147,10 +157,17 @@ impl Session {
                     }
                     if app
                         .pending
+                        .as_ref()
                         .is_some_and(|pending| pending.buffer_id == content.buffer_id)
                         && !adoptions.contains(&node.source_id)
                     {
                         adoptions.push(node.source_id);
+                        damage.extend(content.damage.iter().map(|rectangle| Rect {
+                            x: node.bounds.x.saturating_add(rectangle.x),
+                            y: node.bounds.y.saturating_add(rectangle.y),
+                            width: rectangle.width,
+                            height: rectangle.height,
+                        }));
                     }
                     content.buffer_id
                 }
@@ -160,13 +177,18 @@ impl Session {
                     SceneNodeKind::Pixels => 0,
                     SceneNodeKind::ForeignSurface => node.source_id,
                 },
+                window_group: node.window_group,
                 bounds: node.bounds,
                 input: node.input.iter().collect(),
             });
             nodes.push(Node {
+                kind: node.kind,
+                window_group: node.window_group,
                 buffer_id,
                 bounds: node.bounds,
                 clip: node.clip,
+                opaque: node.opaque,
+                damage,
                 corner_radius: node.corner_radius,
             });
         }
@@ -174,11 +196,12 @@ impl Session {
             return Err(invalid("desktop scene is empty"));
         }
         for id in &desktop_buffers {
-            self.buffers
+            let buffer = self
+                .buffers
                 .values
                 .get_mut(id)
-                .expect("validated desktop buffer")
-                .busy = true;
+                .expect("validated desktop buffer");
+            buffer.busy = true;
         }
         let mut app_presentations = Vec::new();
         for surface_id in adoptions {
@@ -187,19 +210,52 @@ impl Session {
                 .get_mut(&surface_id)
                 .expect("validated app adoption");
             let next = app.pending.take().expect("adopted pending content");
+            let revision = next.revision;
             let previous_buffer = app.current.replace(next).map(|content| content.buffer_id);
             app_presentations.push(AppPresentation {
                 surface_id,
-                revision: next.revision,
+                revision,
                 previous_buffer,
             });
         }
         let desktop = self.desktop.as_mut().expect("validated desktop");
         desktop.last_revision = commit.revision;
         send_accepted(&desktop.stream, commit.revision)?;
+        let full = Rect {
+            x: 0,
+            y: 0,
+            width: self.display.width,
+            height: self.display.height,
+        };
+        let damage = if self.presented_nodes.is_empty() {
+            full
+        } else {
+            let pixels = nodes
+                .iter()
+                .flat_map(|node| node.damage.iter().copied())
+                .filter_map(|rectangle| intersect(rectangle, full))
+                .reduce(union);
+            geometry_damage(&self.presented_nodes, &nodes)
+                .filter_map(|rectangle| intersect(rectangle, full))
+                .fold(pixels, |total, rectangle| {
+                    Some(total.map_or(rectangle, |current| union(current, rectangle)))
+                })
+                .unwrap_or(full)
+        };
+        let finishes_move = self.move_grab.is_some_and(|grab| {
+            grab.ending
+                && nodes.iter().any(|node| {
+                    node.kind == SceneNodeKind::Pixels
+                        && node.window_group == grab.surface_id
+                        && node.clip.x == grab.origin.0 + grab.offset.0
+                        && node.clip.y == grab.origin.1 + grab.offset.1
+                })
+        });
         Ok(Scene {
             revision: commit.revision,
             nodes,
+            damage,
+            finishes_move,
             desktop_buffers,
             app_presentations,
             routing,
@@ -214,9 +270,17 @@ impl Session {
             .desktop
             .as_ref()
             .ok_or_else(|| io::Error::other("desktop disappeared"))?;
-        for id in &scene.desktop_buffers {
-            release_buffer(&mut self.buffers, &desktop.stream, *id)?;
+        let retired: Vec<_> = self
+            .desktop_current_buffers
+            .iter()
+            .copied()
+            .filter(|id| !scene.desktop_buffers.contains(id))
+            .collect();
+        for id in retired {
+            release_buffer(&mut self.buffers, &desktop.stream, id)?;
         }
+        self.desktop_current_buffers
+            .clone_from(&scene.desktop_buffers);
         send_presented(&desktop.stream, scene.revision, event)?;
         for app_use in &scene.app_presentations {
             if let Some(app) = self.apps.get(&app_use.surface_id) {
@@ -251,7 +315,16 @@ impl Session {
             }
         }
         self.routing.clone_from(&scene.routing);
+        self.presented_nodes.clone_from(&scene.nodes);
         self.focused_surface = scene.focused_surface;
+        if scene.finishes_move {
+            let grab = self
+                .move_grab
+                .take()
+                .expect("move-finishing scene requires an active grab");
+            release_buffer(&mut self.buffers, &desktop.stream, grab.underlay_buffer_id)?;
+            self.move_damage = None;
+        }
         if !self.first_scene_presented {
             self.first_scene_presented = true;
             eprintln!("compositor: desktop first scene presented");
@@ -260,7 +333,76 @@ impl Session {
     }
 }
 
-pub(super) fn release_buffer(buffers: &mut Buffers, stream: &UnixStream, id: u32) -> io::Result<()> {
+fn geometry_damage(previous: &[Node], current: &[Node]) -> impl Iterator<Item = Rect> {
+    let mut damage = [None; 2];
+    let count = previous.len().max(current.len());
+    (0..count).flat_map(move |index| {
+        damage.fill(None);
+        match (previous.get(index), current.get(index)) {
+            (Some(old), Some(new))
+                if old.kind == new.kind
+                    && old.window_group == new.window_group
+                    && old.bounds == new.bounds
+                    && old.clip == new.clip => {}
+            (Some(old), Some(new)) => {
+                damage[0] = intersect(old.bounds, old.clip);
+                damage[1] = intersect(new.bounds, new.clip);
+            }
+            (Some(old), None) => {
+                damage[0] = intersect(old.bounds, old.clip);
+            }
+            (None, Some(new)) => {
+                damage[0] = intersect(new.bounds, new.clip);
+            }
+            (None, None) => unreachable!(),
+        }
+        damage.into_iter().flatten()
+    })
+}
+
+fn intersect(left: Rect, right: Rect) -> Option<Rect> {
+    let x1 = left.x.max(right.x);
+    let y1 = left.y.max(right.y);
+    let x2 = left
+        .x
+        .saturating_add_unsigned(left.width)
+        .min(right.x.saturating_add_unsigned(right.width));
+    let y2 = left
+        .y
+        .saturating_add_unsigned(left.height)
+        .min(right.y.saturating_add_unsigned(right.height));
+    (x2 > x1 && y2 > y1).then_some(Rect {
+        x: x1,
+        y: y1,
+        width: (x2 - x1) as u32,
+        height: (y2 - y1) as u32,
+    })
+}
+
+fn union(left: Rect, right: Rect) -> Rect {
+    let x1 = left.x.min(right.x);
+    let y1 = left.y.min(right.y);
+    let x2 = left
+        .x
+        .saturating_add_unsigned(left.width)
+        .max(right.x.saturating_add_unsigned(right.width));
+    let y2 = left
+        .y
+        .saturating_add_unsigned(left.height)
+        .max(right.y.saturating_add_unsigned(right.height));
+    Rect {
+        x: x1,
+        y: y1,
+        width: x2.saturating_sub(x1) as u32,
+        height: y2.saturating_sub(y1) as u32,
+    }
+}
+
+pub(super) fn release_buffer(
+    buffers: &mut Buffers,
+    stream: &UnixStream,
+    id: u32,
+) -> io::Result<()> {
     buffers
         .values
         .get_mut(&id)

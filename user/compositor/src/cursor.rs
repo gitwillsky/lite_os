@@ -61,9 +61,22 @@ impl Cursor {
     /// just fully recomposed, so no stale cursor exists there. After the flip the
     /// saved box describes the new front buffer, keeping the [`Self::saved`]
     /// invariant for subsequent [`Self::relocate`] calls.
-    pub fn overlay(&mut self, target: &mut DumbBuffer, x: i32, y: i32) {
+    pub fn overlay(&mut self, target: &mut DumbBuffer, x: i32, y: i32) -> Clip {
         self.save(target, x, y);
         self.paint(target, x, y);
+        clip(self.saved)
+    }
+
+    /// Removes the cursor before an in-place scene damage repaint.
+    ///
+    /// The returned clip must join the final DIRTYFB update. Without it, moving
+    /// scene pixels beneath a stationary cursor can leave the old arrow cached
+    /// in the host resource.
+    pub fn remove(&mut self, target: &mut DumbBuffer) -> Clip {
+        let old = self.saved;
+        self.restore(target);
+        self.saved = (0, 0, 0, 0);
+        clip(old)
     }
 
     /// Moves the cursor on the scanned-out front buffer, returning the previous

@@ -42,6 +42,10 @@ pub enum MessageKind {
     InputKey = 17,
     /// A pointer-down landed on a foreign surface; the desktop should raise it.
     SurfaceActivated = 18,
+    /// Desktop authorizes one compositor-side temporary window move.
+    MoveBegin = 19,
+    /// Compositor returns the final logical position of an authorized move.
+    MoveComplete = 20,
 }
 
 impl MessageKind {
@@ -74,6 +78,8 @@ impl MessageKind {
             16 => Self::InputPointer,
             17 => Self::InputKey,
             18 => Self::SurfaceActivated,
+            19 => Self::MoveBegin,
+            20 => Self::MoveComplete,
             _ => return None,
         })
     }

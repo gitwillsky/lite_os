@@ -8,6 +8,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     check_ffi_owners(root, errors);
     check_boot_route(root, errors);
     check_ui_product(root, errors);
+    check_ui_performance_path(root, errors);
     check_assets(root, errors);
 }
 
@@ -198,6 +199,54 @@ fn check_ui_product(root: &Path, errors: &mut Vec<String>) {
                 "{required}: required React product source is missing"
             ));
         }
+    }
+}
+
+fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
+    let required = [
+        (
+            "user/compositor/src/lib.rs",
+            "scanout.compose_move(",
+            "window drag must use compositor-side damage composition",
+        ),
+        (
+            "user/compositor/src/session.rs",
+            "let mut app_ids = [0; MAX_APP_SURFACES];",
+            "compositor poll must use fixed-capacity app staging",
+        ),
+        (
+            "user/compositor/src/scanout.rs",
+            "let mut clips = [EMPTY_CLIP;",
+            "DIRTYFB clip staging must remain stack-bounded",
+        ),
+        (
+            "user/lite-ui/src/display.rs",
+            "submitted: VecDeque<u64>",
+            "LiteUI commits must retain asynchronous revision ordering",
+        ),
+        (
+            "user/lite-ui/src/main.rs",
+            "state.composition_is_dirty()",
+            "foreign-surface adoption must preserve desktop raster pixels",
+        ),
+        (
+            "user/lite-ui/src/renderer.rs",
+            "render_move_underlay",
+            "window drag must retain a clean raster beneath the moving group",
+        ),
+    ];
+    for (path, marker, failure) in required {
+        let source = fs::read_to_string(root.join(path)).unwrap_or_default();
+        if !source.contains(marker) {
+            errors.push(format!("{path}: {failure}"));
+        }
+    }
+    let display = fs::read_to_string(root.join("user/lite-ui/src/display.rs")).unwrap_or_default();
+    if display.contains("wait_presented") {
+        errors.push(
+            "user/lite-ui/src/display.rs: synchronous presentation wait blocks latest-only pacing"
+                .to_owned(),
+        );
     }
 }
 

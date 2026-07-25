@@ -23,6 +23,11 @@
 - desktop 提交完整 `SCENE_COMMIT`，拥有几何、层级、裁剪和 focused surface；app 独立提交
   `SURFACE_COMMIT`，拥有 surface 像素与 damage。page flip 前的单一 latch 点冻结两类最新 revision；
   输入始终命中最后一次已呈现状态。
+- 标题栏 pointer-down 仍由 React desktop 判定窗口策略；它用同一 input serial 授权 compositor move
+  grab，并一次性栅格化排除该 `windowGroup` 的 underlay scratch。后续 motion 只更新整个 group 的
+  临时物理 transform，并在 front scanout 上用 underlay 重画旧/新 bounds 并集；pointer-up 返回最终
+  逻辑坐标，下一份 canonical scene 一次性接管。motion 期间不运行 React、CSS layout、desktop raster
+  或 page flip。
 - desktop renderer 的 flat scene 可交错 `Pixels` 与 `ForeignSurface` node。普通 app 只产生一个像素
   surface；desktop 遇到 `<surface>` 时切分 paint sequence，使窗口内容能与 React decorations 正确交错。
 - LiteUI 像素使用预乘 `ARGB8888`，compositor 合成到双 `XRGB8888` scanout。每个 node 带保守的
@@ -31,9 +36,15 @@
   completion。LiteUI 使用 UI/render 双线程：UI thread 独占 QuickJS/React，native render thread 独占
   CSS、layout、text 与 raster。固定三个 snapshot arena 组成 latest-only seam，中间 revision 可丢弃。
 - 每个像素 layer 严格双 buffer；静态 layer 可先持有一个 immutable buffer，首次变化时才申请第二个。
-  compositor 接受 commit 后只读 front，旧 buffer 仅在 presentation 后 `BUFFER_RELEASE`。
+  compositor 接受 commit 后只读 front，已呈现 desktop buffer 保持 pinned；只改变 foreign adoption
+  或几何的 scene 可继续引用它而不重画像素。新像素 scene 呈现后才向 client `BUFFER_RELEASE` 旧 buffer。
+- desktop 额外持有一个 full-size move-underlay scratch；它不进入普通 scene，也不形成第三条 presentation
+  路径。grab 开始后 compositor 将其 pin 为只读，最终 canonical window scene 呈现后立即 release。
 - compositor 的双 scanout 分别记录最后 scene revision；复用 back scanout 时重画自该 revision 以来的
   damage 并集。damage 最多 64 个矩形，溢出合并为一个 bounding rectangle；epoch 或历史缺口才全屏重画。
+- LiteUI commit 只发送 revision 后立即返回，不同步等待 `PRESENTED`。两个 client buffer 都在途时保留
+  最新 dirty host tree，任一 release 到达后只渲染一次最新状态；`ACCEPTED`、`PRESENTED` 与
+  `BUFFER_RELEASE` 仍按 revision 校验，不能把异步节奏降级为无序提交。
 - rAF 是 on-demand：可见连接最多一个 request outstanding，上一 page flip 完成后收到下一次 frame。
   完全遮挡或最小化的 app 不接收 rAF；后台 timer 最小 1000 ms，可见 app 最小 4 ms。无 revision
   不产生 render/commit，idle 不周期唤醒。

@@ -81,15 +81,11 @@ impl Input {
     ///
     /// Returning borrows (rather than raw fds) ties their lifetime to `&self`,
     /// guaranteeing the devices outlive the enclosing poll call.
-    pub fn wake_fds(&self) -> Vec<BorrowedFd<'_>> {
-        let mut fds = Vec::with_capacity(2);
-        if let Some(device) = &self.keyboard {
-            fds.push(device.file().as_fd());
-        }
-        if let Some(device) = &self.pointer {
-            fds.push(device.file().as_fd());
-        }
-        fds
+    pub fn wake_fds(&self) -> [Option<BorrowedFd<'_>>; 2] {
+        [
+            self.keyboard.as_ref().map(|device| device.file().as_fd()),
+            self.pointer.as_ref().map(|device| device.file().as_fd()),
+        ]
     }
 
     fn poll_keyboard(&mut self, session: &Session) -> io::Result<()> {

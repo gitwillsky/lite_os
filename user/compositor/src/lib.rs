@@ -61,7 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // 2. A newly accepted scene is composed without the cursor, then the cursor
         //    is overlaid and the whole frame flipped.
         if let Some(scene) = activity.scene {
-            scanout.compose(&scene, session.buffers())?;
+            scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
             let event = scanout.present_scene(scene.revision, input.position())?;
             session.presented(&scene, event)?;
         } else if !session.desktop_ready() && last_boot.elapsed() >= FRAME {
@@ -76,7 +76,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if activity.input {
             let moved = input.poll(&mut session)?;
             if moved && session.desktop_ready() {
-                scanout.move_cursor(input.position())?;
+                let damage = session.take_move_damage();
+                if let Some(active_move) = session.active_move()
+                    && let Some(damage) = damage
+                {
+                    scanout.compose_move(
+                        session.presented_nodes(),
+                        session.buffers(),
+                        active_move,
+                        damage,
+                        input.position(),
+                    )?;
+                } else {
+                    scanout.move_cursor(input.position())?;
+                }
             }
         }
     }

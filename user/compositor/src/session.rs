@@ -6,8 +6,8 @@ mod scene;
 mod wire;
 
 pub use buffers::Buffers;
-pub use scene::Scene;
 use buffers::Owner;
+pub use scene::{Node, Scene};
 use wire::{new_epoch, receive, send_accepted, send_presented, valid_app_id};
 
 use std::{
@@ -20,8 +20,9 @@ use std::{
 
 use display_proto::{
     AppClosed, AppOpened, BufferAlloc, CloseRequest, Configure, ConfigureReady, HelloApp,
-    HelloDesktop, MAX_APP_SURFACES, MAX_MESSAGE, MessageKind, PROTOCOL_VERSION, Rect, Size,
-    SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message, send_message_with_fd,
+    HelloDesktop, MAX_APP_SURFACES, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, Rect,
+    Size, SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
+    send_message_with_fd,
 };
 use linux_uapi::{
     drm::DrmDevice,
@@ -32,8 +33,29 @@ use linux_uapi::{
 #[derive(Clone)]
 struct RoutingNode {
     surface_id: u32,
+    window_group: u32,
     bounds: Rect,
     input: Vec<Rect>,
+}
+
+#[derive(Clone, Copy)]
+struct PointerCapture {
+    surface_id: u32,
+    window_group: u32,
+    bounds: Rect,
+    serial: u64,
+    down: (i32, i32),
+}
+
+#[derive(Clone, Copy)]
+struct MoveGrab {
+    surface_id: u32,
+    underlay_buffer_id: u32,
+    down: (i32, i32),
+    origin: (i32, i32),
+    offset: (i32, i32),
+    limits: (i32, i32, i32, i32),
+    ending: bool,
 }
 
 struct Desktop {
@@ -41,11 +63,12 @@ struct Desktop {
     last_revision: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Content {
     revision: u64,
     configure_serial: u64,
     buffer_id: u32,
+    damage: Vec<Rect>,
 }
 
 struct App {
@@ -71,7 +94,11 @@ pub struct Session {
     first_scene_presented: bool,
     routing: Vec<RoutingNode>,
     focused_surface: u32,
-    pointer_capture: Option<(u32, Rect)>,
+    pointer_capture: Option<PointerCapture>,
+    move_grab: Option<MoveGrab>,
+    move_damage: Option<Rect>,
+    presented_nodes: Vec<scene::Node>,
+    desktop_current_buffers: Vec<u32>,
     last_flip: linux_uapi::drm::FlipEvent,
 }
 
@@ -105,6 +132,10 @@ impl Session {
             routing: Vec::new(),
             focused_surface: 0,
             pointer_capture: None,
+            move_grab: None,
+            move_damage: None,
+            presented_nodes: Vec::new(),
+            desktop_current_buffers: Vec::new(),
             last_flip: linux_uapi::drm::FlipEvent {
                 user_data: 0,
                 seconds: 0,
@@ -134,33 +165,50 @@ impl Session {
     /// so the caller can pump input, while at most one accepted scene is returned.
     pub fn poll(
         &mut self,
-        wake: &[BorrowedFd<'_>],
+        wake: &[Option<BorrowedFd<'_>>],
         timeout: Duration,
     ) -> io::Result<Activity> {
-        let app_ids: Vec<u32> = self.apps.keys().copied().collect();
+        let mut app_ids = [0; MAX_APP_SURFACES];
+        let mut app_count = 0;
+        for id in self.apps.keys().copied() {
+            app_ids[app_count] = id;
+            app_count += 1;
+        }
         let (listener_ready, desktop_ready, app_ready, input_ready) = {
-            let mut descriptors = Vec::with_capacity(2 + app_ids.len() + wake.len());
-            descriptors.push(PollFd::new(self.listener.as_fd(), PollEvents::READ));
+            const MAX_POLL_FDS: usize = 2 + MAX_APP_SURFACES + 2;
+            let mut descriptors: [PollFd; MAX_POLL_FDS] =
+                std::array::from_fn(|_| PollFd::new(self.listener.as_fd(), PollEvents::READ));
+            let mut descriptor_count = 0;
+            descriptors[descriptor_count] = PollFd::new(self.listener.as_fd(), PollEvents::READ);
+            descriptor_count += 1;
             if let Some(desktop) = &self.desktop {
-                descriptors.push(PollFd::new(desktop.stream.as_fd(), PollEvents::READ));
+                descriptors[descriptor_count] =
+                    PollFd::new(desktop.stream.as_fd(), PollEvents::READ);
+                descriptor_count += 1;
             }
-            for id in &app_ids {
-                descriptors.push(PollFd::new(self.apps[id].stream.as_fd(), PollEvents::READ));
+            for id in &app_ids[..app_count] {
+                descriptors[descriptor_count] =
+                    PollFd::new(self.apps[id].stream.as_fd(), PollEvents::READ);
+                descriptor_count += 1;
             }
-            let wake_offset = descriptors.len();
-            for fd in wake {
-                descriptors.push(PollFd::new(*fd, PollEvents::READ));
+            let wake_offset = descriptor_count;
+            for fd in wake.iter().flatten() {
+                descriptors[descriptor_count] = PollFd::new(*fd, PollEvents::READ);
+                descriptor_count += 1;
             }
-            unix::poll(&mut descriptors, Some(timeout))?;
+            unix::poll(&mut descriptors[..descriptor_count], Some(timeout))?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(self.desktop.is_some());
             let desktop_ready =
                 self.desktop.is_some() && descriptors[1].returned() != PollEvents::EMPTY;
-            let app_ready = descriptors[1 + desktop_offset..wake_offset]
-                .iter()
-                .map(|descriptor| descriptor.returned() != PollEvents::EMPTY)
-                .collect::<Vec<_>>();
-            let input_ready = descriptors[wake_offset..]
+            let mut app_ready = [false; MAX_APP_SURFACES];
+            for (ready, descriptor) in app_ready[..app_count]
+                .iter_mut()
+                .zip(&descriptors[1 + desktop_offset..wake_offset])
+            {
+                *ready = descriptor.returned() != PollEvents::EMPTY;
+            }
+            let input_ready = descriptors[wake_offset..descriptor_count]
                 .iter()
                 .any(|descriptor| descriptor.returned() != PollEvents::EMPTY);
             (listener_ready, desktop_ready, app_ready, input_ready)
@@ -183,7 +231,11 @@ impl Session {
                 }
             }
         }
-        for (surface_id, ready) in app_ids.into_iter().zip(app_ready) {
+        for (surface_id, ready) in app_ids[..app_count]
+            .iter()
+            .copied()
+            .zip(app_ready[..app_count].iter().copied())
+        {
             if ready && let Err(error) = self.receive_app(surface_id) {
                 eprintln!("compositor: app {surface_id} disconnected: {error}");
                 self.remove_app(surface_id);
@@ -288,6 +340,12 @@ impl Session {
                 self.route_close(request.surface_id)?;
                 Ok(None)
             }
+            MessageKind::MoveBegin => {
+                self.begin_move(
+                    MoveBegin::parse(&payload).ok_or_else(|| invalid("invalid move begin"))?,
+                )?;
+                Ok(None)
+            }
             MessageKind::SceneCommit => self.accept_scene(&payload).map(Some),
             _ => Err(invalid("message is invalid for desktop role")),
         }
@@ -379,6 +437,7 @@ impl Session {
         {
             return Err(invalid("surface commit state invalid"));
         }
+        let buffer_size = buffer.size;
         // A pending frame that the desktop has not yet adopted into a scene is
         // superseded by this newer commit at the same serial. Maximize/restore
         // makes an app reconfigure and repaint faster than the desktop adopts
@@ -386,7 +445,7 @@ impl Session {
         // recycle the never-presented pending buffer and let the new frame take
         // its slot. (`pending` is cleared only by desktop adoption, so a present
         // `pending` provably never reached the screen and is safe to release.)
-        if let Some(superseded) = app.pending {
+        if let Some(superseded) = app.pending.as_ref() {
             scene::release_buffer(
                 &mut self.buffers,
                 &self.apps[&surface_id].stream,
@@ -401,6 +460,29 @@ impl Session {
             revision: commit.revision,
             configure_serial: commit.configure_serial,
             buffer_id: commit.buffer_id,
+            damage: {
+                let damage: Vec<_> = commit.damage().collect();
+                if damage.is_empty() {
+                    vec![Rect {
+                        x: 0,
+                        y: 0,
+                        width: buffer_size.width,
+                        height: buffer_size.height,
+                    }]
+                } else {
+                    if damage.iter().any(|rectangle| {
+                        rectangle.x < 0
+                            || rectangle.y < 0
+                            || rectangle.x.saturating_add_unsigned(rectangle.width)
+                                > buffer_size.width as i32
+                            || rectangle.y.saturating_add_unsigned(rectangle.height)
+                                > buffer_size.height as i32
+                    }) {
+                        return Err(invalid("surface damage outside buffer"));
+                    }
+                    damage
+                }
+            },
         };
         self.buffers
             .values
@@ -473,6 +555,10 @@ impl Session {
         self.routing.clear();
         self.focused_surface = 0;
         self.clear_pointer_capture(None);
+        self.move_grab = None;
+        self.move_damage = None;
+        self.presented_nodes.clear();
+        self.desktop_current_buffers.clear();
         self.epoch = self.epoch.wrapping_add(1);
     }
 }

@@ -20,8 +20,8 @@ use crate::{
     tree::Node,
 };
 use box_paint::{paint_background, paint_border, paint_shadow};
-use layout::{corner_radii, text_content, to_taffy};
 use image::{Image, decode_png, paint_image};
+use layout::{corner_radii, text_content, to_taffy};
 
 pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
 
@@ -104,6 +104,44 @@ impl Renderer {
         scene: &[Node],
         pixels: &mut SharedDumbBuffer,
     ) -> io::Result<RenderOutput> {
+        self.render_filtered(scene, pixels, None)
+    }
+
+    /// Rasterizes the desktop with one complete window group omitted.
+    ///
+    /// The result is a compositor move underlay: it preserves wallpaper,
+    /// desktop chrome and lower windows while leaving the moving group's old
+    /// bounds clean. It is generated once per grab, never per pointer motion.
+    ///
+    /// # Parameters
+    ///
+    /// - `scene`: Retained complete React host snapshot.
+    /// - `pixels`: Writable full-display scratch mapping.
+    /// - `window_group`: Window subtree omitted from raster output.
+    ///
+    /// # Returns
+    ///
+    /// Returns after the complete underlay has been rasterized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid layout, assets, styles or buffer geometry.
+    pub fn render_move_underlay(
+        &mut self,
+        scene: &[Node],
+        pixels: &mut SharedDumbBuffer,
+        window_group: u32,
+    ) -> io::Result<()> {
+        self.render_filtered(scene, pixels, Some(window_group))
+            .map(drop)
+    }
+
+    fn render_filtered(
+        &mut self,
+        scene: &[Node],
+        pixels: &mut SharedDumbBuffer,
+        excluded_window_group: Option<u32>,
+    ) -> io::Result<RenderOutput> {
         if pixels.width()
             != self.viewport.width as usize * display_proto::DEVICE_SCALE_FACTOR as usize
             || pixels.height()
@@ -152,7 +190,14 @@ impl Renderer {
             key_listener: None,
         };
         for child in &mut root.children {
-            self.paint(&tree, child, (0.0, 0.0), pixels, &mut output)?;
+            self.paint(
+                &tree,
+                child,
+                (0.0, 0.0),
+                pixels,
+                &mut output,
+                excluded_window_group,
+            )?;
         }
         Ok(output)
     }
@@ -207,7 +252,11 @@ impl Renderer {
         parent: (f32, f32),
         pixels: &mut SharedDumbBuffer,
         output: &mut RenderOutput,
+        excluded_window_group: Option<u32>,
     ) -> io::Result<()> {
+        if excludes_window_group(&node.source, excluded_window_group) {
+            return Ok(());
+        }
         let layout = tree.layout(node.id).map_err(taffy_error)?;
         let origin = (parent.0 + layout.location.x, parent.1 + layout.location.y);
         let bounds = PhysicalRect::new(
@@ -332,7 +381,8 @@ impl Renderer {
         if node.source.props.get("overlay") == Some(&Value::Bool(true)) {
             // Chrome is rounded top-only (`8px 8px 0 0`); both top corners share
             // one radius, so the compositor's single corner_radius takes the max.
-            let corner_radius = (f64::from(radii[0].max(radii[1])) * f64::from(SCALE)).round() as u32;
+            let corner_radius =
+                (f64::from(radii[0].max(radii[1])) * f64::from(SCALE)).round() as u32;
             output.overlays.push(Overlay {
                 rect: display_proto::Rect {
                     x: bounds.x1 as i32,
@@ -344,7 +394,7 @@ impl Renderer {
             });
         }
         for child in &node.children {
-            self.paint(tree, child, origin, pixels, output)?;
+            self.paint(tree, child, origin, pixels, output, excluded_window_group)?;
         }
         Ok(())
     }
@@ -368,6 +418,12 @@ fn listener(node: &Node, name: &str) -> Option<u64> {
     node.props.get(name).and_then(Value::as_u64)
 }
 
+fn excludes_window_group(node: &Node, excluded: Option<u32>) -> bool {
+    excluded.is_some_and(|window_group| {
+        node.props.get("windowGroup").and_then(Value::as_u64) == Some(u64::from(window_group))
+    })
+}
+
 /// Reads the logical `frame={{x, y, width, height}}` window rect one surface
 /// carries so the compositor can re-paint its chrome above lower content.
 fn frame_rect(node: &Node) -> Option<display_proto::Rect> {
@@ -387,11 +443,7 @@ fn frame_rect(node: &Node) -> Option<display_proto::Rect> {
 /// to the gradient/solid raster. Surrounding single or double quotes are
 /// stripped so `url("assets/x.png")` and `url(assets/x.png)` both resolve.
 fn background_url(value: &str) -> Option<&str> {
-    let inner = value
-        .trim()
-        .strip_prefix("url(")?
-        .strip_suffix(')')?
-        .trim();
+    let inner = value.trim().strip_prefix("url(")?.strip_suffix(')')?.trim();
     Some(
         inner
             .strip_prefix('"')
@@ -426,4 +478,41 @@ impl PhysicalRect {
 
 fn taffy_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::Value;
+
+    use crate::tree::Node;
+
+    use super::excludes_window_group;
+
+    fn node(window_group: Option<u32>) -> Node {
+        let mut props = BTreeMap::new();
+        if let Some(window_group) = window_group {
+            props.insert("windowGroup".to_owned(), Value::from(window_group));
+        }
+        Node {
+            kind: "view".to_owned(),
+            props,
+            text: String::new(),
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn normal_render_never_excludes_nodes() {
+        assert!(!excludes_window_group(&node(None), None));
+        assert!(!excludes_window_group(&node(Some(7)), None));
+    }
+
+    #[test]
+    fn underlay_excludes_only_the_selected_window_group() {
+        assert!(!excludes_window_group(&node(None), Some(7)));
+        assert!(!excludes_window_group(&node(Some(6)), Some(7)));
+        assert!(excludes_window_group(&node(Some(7)), Some(7)));
+    }
 }

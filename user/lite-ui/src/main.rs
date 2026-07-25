@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use display_proto::Configure;
+use display_proto::{Configure, MoveBegin};
 use linux_uapi::process::SessionChild;
 use linux_uapi::unix::{self, PollEvents, PollFd};
 use quickjs_runtime::{Engine, Role};
@@ -41,6 +41,13 @@ struct Interactions {
     key_listener: Option<u64>,
     pointer_capture: Option<PointerCapture>,
     last_click: Option<(Instant, i32, i32)>,
+    desktop: Option<DesktopPresentation>,
+}
+
+struct DesktopPresentation {
+    buffer_id: u32,
+    foreign: Vec<display::ForeignLayer>,
+    overlays: Vec<display::Overlay>,
 }
 
 #[derive(Clone, Copy)]
@@ -89,7 +96,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         terminal.resize(size.width, size.height)?;
     }
     let mut interactions = Interactions::default();
-    process_actions(&state, &display, &mut children, terminal.as_mut())?;
+    process_actions(
+        &state,
+        &mut display,
+        &mut renderer,
+        &mut children,
+        terminal.as_mut(),
+    )?;
     render_latest(
         &mode,
         &state,
@@ -138,7 +151,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             engine.evaluate("lite-ui-timer.js", script.as_bytes())?;
         }
         engine.run_jobs()?;
-        process_actions(&state, &display, &mut children, terminal.as_mut())?;
+        process_actions(
+            &state,
+            &mut display,
+            &mut renderer,
+            &mut children,
+            terminal.as_mut(),
+        )?;
         render_latest(
             &mode,
             &state,
@@ -157,11 +176,29 @@ fn render_latest(
     renderer: &mut Renderer,
     interactions: &mut Interactions,
 ) -> Result<(), Box<dyn Error>> {
-    let Some(scene) = state.scene_if_dirty() else {
+    if !state.scene_is_dirty() {
+        if matches!(mode, Mode::Desktop) && state.composition_is_dirty() {
+            let Some(presentation) = interactions.desktop.as_ref() else {
+                return Ok(());
+            };
+            state.take_composition_dirty();
+            display.commit_desktop(
+                presentation.buffer_id,
+                state.focused_surface(),
+                &presentation.foreign,
+                &presentation.overlays,
+                false,
+            )?;
+        }
+        return Ok(());
+    }
+    let Some(frame) = display.acquire()? else {
         return Ok(());
     };
+    let Some(scene) = state.scene_if_dirty() else {
+        unreachable!("dirty state disappeared on the single UI owner thread");
+    };
     let (buffer_id, output) = {
-        let frame = display.acquire()?;
         let output = renderer.render(scene.as_slice(), frame.pixels)?;
         (frame.id, output)
     };
@@ -171,11 +208,19 @@ fn render_latest(
             state.focused_surface(),
             &output.foreign,
             &output.overlays,
+            true,
         )?,
         Mode::App(_) => display.commit_app(buffer_id)?,
     }
     interactions.hits = output.hits;
     interactions.key_listener = output.key_listener;
+    if matches!(mode, Mode::Desktop) {
+        interactions.desktop = Some(DesktopPresentation {
+            buffer_id,
+            foreign: output.foreign,
+            overlays: output.overlays,
+        });
+    }
     Ok(())
 }
 
@@ -197,13 +242,25 @@ fn apply_event(
             state.close_surface(surface_id);
             ("desktop", json!({"type":"closed","surfaceId":surface_id}))
         }
-        Event::SurfaceActivated { surface_id } => {
-            ("desktop", json!({"type":"activated","surfaceId":surface_id}))
-        }
-        Event::ConfigureReady { surface_id, serial } => (
+        Event::SurfaceActivated { surface_id } => (
             "desktop",
-            json!({"type":"ready","surfaceId":surface_id,"serial":serial}),
+            json!({"type":"activated","surfaceId":surface_id}),
         ),
+        Event::MoveComplete { surface_id, x, y } => {
+            state.move_surface(
+                surface_id,
+                u32::try_from(x).map_err(|_| "move completed outside desktop")?,
+                u32::try_from(y).map_err(|_| "move completed outside desktop")?,
+            )?;
+            (
+                "desktop",
+                json!({"type":"moved","surfaceId":surface_id,"x":x,"y":y}),
+            )
+        }
+        Event::ConfigureReady { .. } => {
+            state.invalidate_composition();
+            return Ok(());
+        }
         Event::Configure(configure) => (
             "display",
             json!({"type":"configure","width":configure.width,"height":configure.height,"serial":configure.serial}),
@@ -222,6 +279,7 @@ fn apply_event(
             }
             return Ok(());
         }
+        Event::FrameDone => return Ok(()),
         Event::Close => unreachable!("close exits before event dispatch"),
     };
     dispatch(engine, channel, payload)
@@ -346,7 +404,8 @@ fn dispatch(
 
 fn process_actions(
     state: &State,
-    display: &Display,
+    display: &mut Display,
+    renderer: &mut Renderer,
     children: &mut Vec<SessionChild>,
     terminal: Option<&mut Terminal>,
 ) -> Result<(), Box<dyn Error>> {
@@ -371,6 +430,34 @@ fn process_actions(
                 height,
             })?,
             Action::Close(surface_id) => display.close(surface_id)?,
+            Action::BeginMove {
+                surface_id,
+                serial,
+                min_x,
+                min_y,
+                max_x,
+                max_y,
+            } => {
+                let underlay_buffer_id = {
+                    let scene = state
+                        .scene()
+                        .ok_or("move requested before the desktop scene exists")?;
+                    let frame = display
+                        .acquire()?
+                        .ok_or("desktop move underlay buffer unavailable")?;
+                    renderer.render_move_underlay(scene.as_slice(), frame.pixels, surface_id)?;
+                    frame.id
+                };
+                display.begin_move(MoveBegin {
+                    surface_id,
+                    serial,
+                    underlay_buffer_id,
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                })?;
+            }
             Action::Shutdown => {
                 Command::new("/sbin/poweroff")
                     .stdin(Stdio::null())

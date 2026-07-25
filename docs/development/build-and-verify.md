@@ -86,6 +86,10 @@ static gate 与 disassembly gate 继续负责。
 
 新增 hot path、lock、allocation、codec 或 indirection 时必须明确：加入 blocking benchmark、加入 target static/disassembly gate，或说明为何只需要 diagnostic measurement。
 whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作诊断，不作窄阈值 blocking gate。
+LiteUI window move 的成本主体是 evdev→compositor、CPU scanout composition、DIRTYFB host upload 与
+真实 60 Hz 显示链路，host microbenchmark 无法代表它；因此不新增失真的 blocking benchmark。静态门禁
+固定 compositor-side grab、bounded damage、异步 latest-only submit 和 steady-drag 零临时 collection，
+最终延迟按 LiteUI 契约的 AArch64+HVF 真实多窗口场景诊断。
 
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP

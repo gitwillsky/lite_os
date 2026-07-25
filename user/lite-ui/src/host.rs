@@ -24,6 +24,15 @@ pub enum Action {
     },
     /// Route an unconditional app close.
     Close(u32),
+    /// Authorize one compositor-side move from an exact pointer-down serial.
+    BeginMove {
+        surface_id: u32,
+        serial: u64,
+        min_x: i32,
+        min_y: i32,
+        max_x: i32,
+        max_y: i32,
+    },
     /// Request system shutdown.
     Shutdown,
     /// Send bytes to the terminal helper.
@@ -53,6 +62,7 @@ struct Surface {
 pub struct State {
     scene: RefCell<Option<Vec<Node>>>,
     scene_dirty: Cell<bool>,
+    composition_dirty: Cell<bool>,
     actions: RefCell<Vec<Action>>,
     surfaces: RefCell<Vec<Surface>>,
     next_configure: Cell<u64>,
@@ -61,6 +71,26 @@ pub struct State {
 }
 
 impl State {
+    /// Reports whether the latest React snapshot still needs one raster pass.
+    pub fn scene_is_dirty(&self) -> bool {
+        self.scene_dirty.get()
+    }
+
+    /// Reports whether unchanged desktop pixels need a fresh foreign-surface latch.
+    pub fn composition_is_dirty(&self) -> bool {
+        self.composition_dirty.get()
+    }
+
+    /// Consumes one pending foreign-surface-only scene latch.
+    pub fn take_composition_dirty(&self) -> bool {
+        self.composition_dirty.replace(false)
+    }
+
+    /// Requests a new scene latch without invalidating desktop raster pixels.
+    pub fn invalidate_composition(&self) {
+        self.composition_dirty.set(true);
+    }
+
     /// Borrows the latest React host snapshot when it still needs rendering.
     ///
     /// The scene stays owned so a reconfigure can re-render it at the new
@@ -70,6 +100,11 @@ impl State {
         if !self.scene_dirty.replace(false) {
             return None;
         }
+        std::cell::Ref::filter_map(self.scene.borrow(), Option::as_ref).ok()
+    }
+
+    /// Borrows the retained React snapshot without consuming its dirty state.
+    pub fn scene(&self) -> Option<std::cell::Ref<'_, Vec<Node>>> {
         std::cell::Ref::filter_map(self.scene.borrow(), Option::as_ref).ok()
     }
 
@@ -146,7 +181,7 @@ impl State {
         }
     }
 
-    fn move_surface(&self, id: u32, x: u32, y: u32) -> Result<(), EngineError> {
+    pub(crate) fn move_surface(&self, id: u32, x: u32, y: u32) -> Result<(), EngineError> {
         let mut surfaces = self.surfaces.borrow_mut();
         let surface = surfaces
             .iter_mut()
@@ -171,6 +206,7 @@ impl Host {
         let state = Rc::new(State {
             scene: RefCell::new(None),
             scene_dirty: Cell::new(false),
+            composition_dirty: Cell::new(false),
             actions: RefCell::new(Vec::new()),
             surfaces: RefCell::new(Vec::new()),
             next_configure: Cell::new(1),
@@ -230,6 +266,7 @@ impl NativeHost for Host {
                 let scene = tree::parse(payload).map_err(EngineError::from_host)?;
                 self.state.scene.replace(Some(scene));
                 self.state.scene_dirty.set(true);
+                self.state.composition_dirty.set(false);
                 Ok(String::new())
             }
             "time.now" => Ok(self
@@ -291,6 +328,27 @@ impl NativeHost for Host {
                 self.state.move_surface(surface_id, x, y)?;
                 Ok(String::new())
             }
+            "desktop.move.begin" if self.role == Role::Desktop => {
+                let mut fields = payload.split(':');
+                let surface_id = parse_u32(fields.next(), "moved surface")?;
+                let serial = parse_u64(fields.next(), "pointer serial")?;
+                let min_x = parse_i32(fields.next(), "minimum x")?;
+                let min_y = parse_i32(fields.next(), "minimum y")?;
+                let max_x = parse_i32(fields.next(), "maximum x")?;
+                let max_y = parse_i32(fields.next(), "maximum y")?;
+                if fields.next().is_some() || max_x < min_x || max_y < min_y {
+                    return Err(EngineError::from_host("invalid desktop move bounds"));
+                }
+                self.state.actions.borrow_mut().push(Action::BeginMove {
+                    surface_id,
+                    serial,
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                });
+                Ok(String::new())
+            }
             "desktop.close" if self.role == Role::Desktop => {
                 self.state.actions.borrow_mut().push(Action::Close(parse_u32(Some(payload), "closed surface")?));
                 Ok(String::new())
@@ -330,6 +388,12 @@ fn parse_u32(value: Option<&str>, name: &str) -> Result<u32, EngineError> {
 }
 
 fn parse_u64(value: Option<&str>, name: &str) -> Result<u64, EngineError> {
+    value
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
+}
+
+fn parse_i32(value: Option<&str>, name: &str) -> Result<i32, EngineError> {
     value
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))

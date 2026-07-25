@@ -1,5 +1,7 @@
 //! Exact display-protocol client for desktop and ordinary app roles.
 
+mod wire;
+
 use std::{
     collections::{HashSet, VecDeque},
     io,
@@ -9,17 +11,16 @@ use std::{
 };
 
 use display_proto::{
-    Accepted, AppClosed, AppOpened, BufferAlloc, BufferAllocated, BufferRelease, CloseRequest,
-    Configure, ConfigureReady, HelloApp, HelloDesktop, InputKey, InputPointer, MAX_MESSAGE,
-    MessageKind, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit,
-    SceneNode, SceneNodeKind, Size, SurfaceActivated, SurfaceCommit, Welcome, parse_frame,
-    recv_frame_blocking,
-    send_message,
+    BufferAlloc, BufferAllocated, BufferRelease, CloseRequest, Configure, HelloApp, HelloDesktop,
+    InputKey, InputPointer, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase,
+    Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, Size, SurfaceCommit, Welcome,
+    parse_frame, recv_frame_blocking, send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
 
 use crate::Mode;
+use wire::{WireEvent, parse_event, receive_configure};
 
 struct Buffer {
     id: u32,
@@ -82,6 +83,8 @@ pub enum Event {
     AppClosed { surface_id: u32 },
     /// A pointer-down hit a foreign surface; the desktop should raise it.
     SurfaceActivated { surface_id: u32 },
+    /// A compositor-side move ended at one canonical logical position.
+    MoveComplete { surface_id: u32, x: i32, y: i32 },
     /// App pixels for one desktop configure are ready.
     ConfigureReady { surface_id: u32, serial: u64 },
     /// Desktop selected a new app client size.
@@ -92,16 +95,11 @@ pub enum Event {
     Pointer(InputPointer),
     /// Keyboard input routed to the presented focused surface.
     Key(InputKey),
+    /// An asynchronous submit/release/presentation transition freed pipeline progress.
+    FrameDone,
 }
 
-enum WireEvent {
-    Public(Event),
-    Accepted(u64),
-    Released(u32),
-    Presented(u64),
-}
-
-/// One exact-version display connection and its compositor-owned buffer pair.
+/// One exact-version display connection and its compositor-owned buffers.
 pub struct Display {
     stream: UnixStream,
     device: DrmDevice,
@@ -112,10 +110,13 @@ pub struct Display {
     revision: u64,
     ready: HashSet<(u32, u64)>,
     pending: VecDeque<Event>,
+    submitted: VecDeque<u64>,
+    accepted: HashSet<u64>,
 }
 
 impl Display {
-    /// Connects, fixes the role and acquires its initial strict buffer pair.
+    /// Connects, fixes the role and acquires the presentation pair plus the
+    /// desktop-only move-underlay scratch.
     pub fn open(mode: &Mode) -> io::Result<Self> {
         let stream = UnixStream::connect(display_proto::SOCKET_PATH)?;
         let mut bytes = [0u8; 128];
@@ -162,8 +163,16 @@ impl Display {
             revision: 0,
             ready: HashSet::new(),
             pending: VecDeque::new(),
+            submitted: VecDeque::new(),
+            accepted: HashSet::new(),
         };
         display.allocate(2, physical)?;
+        if matches!(mode, Mode::Desktop) {
+            // The third desktop buffer is a transient move underlay. Without
+            // it the full-screen desktop raster would repaint the moving
+            // window at its canonical origin on every damage restoration.
+            display.allocate(1, physical)?;
+        }
         Ok(display)
     }
 
@@ -212,18 +221,20 @@ impl Display {
     }
 
     /// Acquires one released writable buffer for the active configure size.
-    pub fn acquire(&mut self) -> io::Result<Frame<'_>> {
+    pub fn acquire(&mut self) -> io::Result<Option<Frame<'_>>> {
         let physical = self.physical;
-        let buffer = self
+        let Some(buffer) = self
             .buffers
             .iter_mut()
             .find(|buffer| buffer.free && buffer.matches(physical))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "no released UI buffer"))?;
+        else {
+            return Ok(None);
+        };
         buffer.free = false;
-        Ok(Frame {
+        Ok(Some(Frame {
             id: buffer.id,
             pixels: &mut buffer.pixels,
-        })
+        }))
     }
 
     /// Commits desktop pixels interleaved with ready app surface layers.
@@ -238,6 +249,7 @@ impl Display {
         focused_surface: u32,
         foreign: &[ForeignLayer],
         overlays: &[Overlay],
+        pixels_changed: bool,
     ) -> io::Result<()> {
         let revision = self.next_revision()?;
         let full = Rect {
@@ -247,7 +259,13 @@ impl Display {
             height: self.physical.height,
         };
         let full_input = [full];
+        let full_damage = [full];
         let no_damage = [];
+        let pixel_damage = if pixels_changed {
+            Rectangles::from_slice(&full_damage)
+        } else {
+            Rectangles::from_slice(&no_damage)
+        };
         let mut nodes = Vec::with_capacity(1 + foreign.len() * 2 + overlays.len());
         nodes.push(SceneNode {
             kind: SceneNodeKind::Pixels,
@@ -259,12 +277,13 @@ impl Display {
             clip: full,
             opaque: Some(full),
             input: Rectangles::from_slice(&full_input),
-            damage: Rectangles::from_slice(&no_damage),
+            damage: pixel_damage,
         });
         let foreign_bounds: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();
         let foreign_frames: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.frame]).collect();
-        for (layer, (bounds_input, frame_input)) in
-            foreign.iter().zip(foreign_bounds.iter().zip(&foreign_frames))
+        for (layer, (bounds_input, frame_input)) in foreign
+            .iter()
+            .zip(foreign_bounds.iter().zip(&foreign_frames))
         {
             if !self
                 .ready
@@ -274,7 +293,7 @@ impl Display {
             }
             nodes.push(SceneNode {
                 kind: SceneNodeKind::Pixels,
-                window_group: 0,
+                window_group: layer.surface_id,
                 source_id: buffer_id,
                 corner_radius: layer.corner_radius,
                 configure_serial: 0,
@@ -297,7 +316,8 @@ impl Display {
                 damage: Rectangles::from_slice(&no_damage),
             });
         }
-        let overlay_inputs: Vec<[Rect; 1]> = overlays.iter().map(|overlay| [overlay.rect]).collect();
+        let overlay_inputs: Vec<[Rect; 1]> =
+            overlays.iter().map(|overlay| [overlay.rect]).collect();
         for (overlay, input) in overlays.iter().zip(&overlay_inputs) {
             nodes.push(SceneNode {
                 kind: SceneNodeKind::Pixels,
@@ -316,7 +336,8 @@ impl Display {
         let message = SceneCommit::encode(&mut output, revision, focused_surface, &nodes)
             .ok_or_else(|| io::Error::other("scene encoding failed"))?;
         send_message(&self.stream, message)?;
-        self.wait_presented(revision)
+        self.submitted.push_back(revision);
+        Ok(())
     }
 
     /// Commits one app pixel revision for the active configure.
@@ -327,7 +348,8 @@ impl Display {
             SurfaceCommit::encode(&mut output, revision, self.configure_serial, buffer_id, &[])
                 .ok_or_else(|| io::Error::other("surface encoding failed"))?;
         send_message(&self.stream, message)?;
-        self.wait_presented(revision)
+        self.submitted.push_back(revision);
+        Ok(())
     }
 
     /// Sends one desktop-owned configure to its app surface.
@@ -345,6 +367,15 @@ impl Display {
         let message = CloseRequest { surface_id }
             .encode(&mut bytes)
             .ok_or_else(|| io::Error::other("close encoding failed"))?;
+        send_message(&self.stream, message)
+    }
+
+    /// Authorizes a compositor-side move using the exact pointer-down serial.
+    pub fn begin_move(&self, request: MoveBegin) -> io::Result<()> {
+        let mut bytes = [0u8; 48];
+        let message = request
+            .encode(&mut bytes)
+            .ok_or_else(|| io::Error::other("move-begin encoding failed"))?;
         send_message(&self.stream, message)
     }
 
@@ -400,10 +431,13 @@ impl Display {
             }
             WireEvent::Released(id) => {
                 self.release(id)?;
+                self.pending.push_back(Event::FrameDone);
                 Ok(None)
             }
-            WireEvent::Accepted(_) | WireEvent::Presented(_) => {
-                Err(invalid("unsolicited display acknowledgement"))
+            event @ (WireEvent::Accepted(_) | WireEvent::Presented(_)) => {
+                self.handle_progress(event)?;
+                self.pending.push_back(Event::FrameDone);
+                Ok(None)
             }
         }
     }
@@ -419,36 +453,32 @@ impl Display {
         if let Some(event) = self.pending.pop_front() {
             return Ok(event);
         }
-        loop {
-            match self.receive()? {
-                WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
-                    self.ready.insert((surface_id, serial));
-                    return Ok(Event::ConfigureReady { surface_id, serial });
-                }
-                WireEvent::Public(event) => return Ok(event),
-                WireEvent::Released(id) => self.release(id)?,
-                WireEvent::Accepted(_) | WireEvent::Presented(_) => {
-                    return Err(invalid("unsolicited display acknowledgement"));
-                }
+        match self.receive()? {
+            WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
+                self.ready.insert((surface_id, serial));
+                Ok(Event::ConfigureReady { surface_id, serial })
+            }
+            WireEvent::Public(event) => Ok(event),
+            WireEvent::Released(id) => {
+                self.release(id)?;
+                Ok(Event::FrameDone)
+            }
+            event @ (WireEvent::Accepted(_) | WireEvent::Presented(_)) => {
+                self.handle_progress(event)?;
+                Ok(Event::FrameDone)
             }
         }
     }
 
-    fn wait_presented(&mut self, revision: u64) -> io::Result<()> {
-        let mut accepted = false;
-        loop {
-            match self.receive()? {
-                WireEvent::Accepted(value) if value == revision => accepted = true,
-                WireEvent::Released(id) => self.release(id)?,
-                WireEvent::Presented(value) if accepted && value == revision => return Ok(()),
-                WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
-                    self.ready.insert((surface_id, serial));
-                    self.pending
-                        .push_back(Event::ConfigureReady { surface_id, serial });
-                }
-                WireEvent::Public(event) => self.pending.push_back(event),
-                _ => return Err(invalid("display acknowledgement ordering failed")),
+    fn handle_progress(&mut self, event: WireEvent) -> io::Result<()> {
+        match event {
+            WireEvent::Accepted(revision) if self.submitted.front().copied() == Some(revision) => {
+                self.submitted.pop_front();
+                self.accepted.insert(revision);
+                Ok(())
             }
+            WireEvent::Presented(revision) if self.accepted.remove(&revision) => Ok(()),
+            _ => Err(invalid("display acknowledgement ordering failed")),
         }
     }
 
@@ -557,62 +587,6 @@ impl Display {
         }
         Ok(())
     }
-}
-
-fn receive_configure(stream: &UnixStream, surface_id: u32) -> io::Result<Configure> {
-    let mut bytes = [0u8; MAX_MESSAGE];
-    let (length, fd) = recv_frame_blocking(stream, &mut bytes)?;
-    if fd.is_some() {
-        return Err(invalid("configure carried a descriptor"));
-    }
-    let frame = parse_frame(&bytes[..length])
-        .filter(|frame| frame.kind() == MessageKind::Configure)
-        .ok_or_else(|| invalid("initial configure missing"))?;
-    Configure::parse(frame.payload())
-        .filter(|configure| configure.surface_id == surface_id)
-        .ok_or_else(|| invalid("initial configure invalid"))
-}
-
-fn parse_event(kind: MessageKind, payload: &[u8], own_surface: u32) -> Option<WireEvent> {
-    Some(match kind {
-        MessageKind::Accepted => WireEvent::Accepted(Accepted::parse(payload)?.revision),
-        MessageKind::BufferRelease => WireEvent::Released(BufferRelease::parse(payload)?.buffer_id),
-        MessageKind::Presented => WireEvent::Presented(Presented::parse(payload)?.revision),
-        MessageKind::AppOpened if own_surface == 0 => {
-            let event = AppOpened::parse(payload)?;
-            WireEvent::Public(Event::AppOpened {
-                surface_id: event.surface_id,
-                app_id: std::str::from_utf8(event.app_id).ok()?.to_owned(),
-            })
-        }
-        MessageKind::AppClosed if own_surface == 0 => WireEvent::Public(Event::AppClosed {
-            surface_id: AppClosed::parse(payload)?.surface_id,
-        }),
-        MessageKind::SurfaceActivated if own_surface == 0 => {
-            WireEvent::Public(Event::SurfaceActivated {
-                surface_id: SurfaceActivated::parse(payload)?.surface_id,
-            })
-        }
-        MessageKind::ConfigureReady if own_surface == 0 => {
-            let event = ConfigureReady::parse(payload)?;
-            WireEvent::Public(Event::ConfigureReady {
-                surface_id: event.surface_id,
-                serial: event.serial,
-            })
-        }
-        MessageKind::Configure if own_surface != 0 => {
-            WireEvent::Public(Event::Configure(Configure::parse(payload)?))
-        }
-        MessageKind::CloseRequest if own_surface != 0 => {
-            CloseRequest::parse(payload)?;
-            WireEvent::Public(Event::Close)
-        }
-        MessageKind::InputPointer => {
-            WireEvent::Public(Event::Pointer(InputPointer::parse(payload)?))
-        }
-        MessageKind::InputKey => WireEvent::Public(Event::Key(InputKey::parse(payload)?)),
-        _ => return None,
-    })
 }
 
 fn invalid(message: &'static str) -> io::Error {

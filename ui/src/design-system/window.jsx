@@ -1,14 +1,20 @@
 import React, { useCallback, useRef } from "react";
 
 /** Renders one Luna window frame while leaving client pixels owned by compositor. */
-export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMove, onResize, onMinimize, onToggleMaximize, maximized }) {
+export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onMinimize, onToggleMaximize, maximized }) {
   const drag = useRef(null);
   const beginDrag = useCallback((event) => {
     onActivate(id);
-    drag.current = { x: event.x - bounds.x, y: event.y - bounds.y };
-  }, [bounds.x, bounds.y, id, onActivate]);
+    drag.current = {
+      x: event.x - bounds.x,
+      y: event.y - bounds.y,
+      native: onMoveStart(id, event.serial),
+    };
+  }, [bounds.x, bounds.y, id, onActivate, onMoveStart]);
   const continueDrag = useCallback((event) => {
-    if (drag.current) onMove(id, event.x - drag.current.x, event.y - drag.current.y);
+    if (drag.current && !drag.current.native) {
+      onMove(id, event.x - drag.current.x, event.y - drag.current.y);
+    }
   }, [id, onMove]);
   const endDrag = useCallback(() => { drag.current = null; }, []);
 

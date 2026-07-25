@@ -1,9 +1,9 @@
 use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
-    Accepted, AppOpened, BufferAlloc, HelloApp, InputKey, InputPointer, MessageKind,
-    PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode,
-    SceneNodeKind, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
+    Accepted, AppOpened, BufferAlloc, HelloApp, InputKey, InputPointer, MessageKind, MoveBegin,
+    MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit,
+    SceneNode, SceneNodeKind, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
 };
 
 #[test]
@@ -119,6 +119,61 @@ fn lifecycle_and_input_preserve_exact_surface_routing() {
     assert_eq!(
         InputKey::parse(frame.payload()).expect("key payload").code,
         30
+    );
+}
+
+#[test]
+fn move_grab_round_trips_authority_constraints_and_signed_result() {
+    let mut bytes = [0u8; 128];
+    let begin = MoveBegin {
+        surface_id: 9,
+        serial: 44,
+        underlay_buffer_id: 17,
+        min_x: -120,
+        min_y: 0,
+        max_x: 1504,
+        max_y: 846,
+    };
+    let encoded = begin
+        .encode(&mut bytes)
+        .expect("valid move authorization must encode");
+    let frame = parse_frame(encoded).expect("move-begin frame must parse");
+    assert_eq!(frame.kind(), MessageKind::MoveBegin);
+    assert_eq!(
+        MoveBegin::parse(frame.payload()).expect("move-begin payload"),
+        begin
+    );
+
+    let complete = MoveComplete {
+        surface_id: 9,
+        x: -48,
+        y: 27,
+    };
+    let encoded = complete
+        .encode(&mut bytes)
+        .expect("valid move result must encode");
+    let frame = parse_frame(encoded).expect("move-complete frame must parse");
+    assert_eq!(frame.kind(), MessageKind::MoveComplete);
+    assert_eq!(
+        MoveComplete::parse(frame.payload()).expect("move-complete payload"),
+        complete
+    );
+
+    assert!(
+        MoveBegin {
+            max_x: -121,
+            ..begin
+        }
+        .encode(&mut bytes)
+        .is_none()
+    );
+    assert!(
+        MoveBegin {
+            underlay_buffer_id: 0,
+            ..begin
+        }
+        .encode(&mut bytes)
+        .is_none()
     );
 }
 

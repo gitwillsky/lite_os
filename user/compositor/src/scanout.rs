@@ -1,9 +1,9 @@
 //! Double scanout and boot/scene composition.
 
-use std::{fs, io, thread, time::Duration};
+use std::{collections::VecDeque, fs, io, thread, time::Duration};
 
-use display_proto::{Rect, Size};
-use linux_uapi::drm::{DrmDevice, DumbBuffer, FlipEvent, Topology};
+use display_proto::{Rect, SceneNodeKind, Size};
+use linux_uapi::drm::{Clip, DrmDevice, DumbBuffer, FlipEvent, Topology};
 
 use crate::{
     boot::Canvas,
@@ -11,9 +11,18 @@ use crate::{
     session::{Buffers, Scene},
 };
 
+const EMPTY_CLIP: Clip = Clip {
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 0,
+};
+
 struct Target {
     framebuffer_id: u32,
     buffer: DumbBuffer,
+    revision: u64,
+    cursor: Option<Rect>,
 }
 
 /// Unique DRM owner with two scanout buffers.
@@ -24,6 +33,8 @@ pub struct Scanout {
     front: usize,
     logo: Vec<u8>,
     cursor: Cursor,
+    history: VecDeque<(u64, Rect)>,
+    prepared_damage: Rect,
 }
 
 impl Scanout {
@@ -60,6 +71,8 @@ impl Scanout {
             front: 0,
             logo: fs::read("/usr/share/liteos/bootlogo.xrgb").unwrap_or_default(),
             cursor: Cursor::open()?,
+            history: VecDeque::new(),
+            prepared_damage: Rect::default(),
         };
         scanout.draw_boot(0, 0);
         scanout.draw_boot(1, 0);
@@ -76,6 +89,8 @@ impl Scanout {
         Ok(Target {
             framebuffer_id,
             buffer,
+            revision: 0,
+            cursor: None,
         })
     }
 
@@ -120,27 +135,134 @@ impl Scanout {
     ///
     /// The cursor is applied separately by [`Self::present`] so that pointer motion
     /// can be served by [`Self::move_cursor`] without recompositing the scene.
-    pub fn compose(&mut self, scene: &Scene, buffers: &Buffers) -> io::Result<()> {
-        let target = &mut self.targets[1 - self.front].buffer;
-        for row in 0..target.height() {
-            target.row_mut(row).fill(0);
-        }
+    pub fn compose(
+        &mut self,
+        scene: &Scene,
+        buffers: &Buffers,
+        active_move: Option<(u32, (i32, i32), u32)>,
+    ) -> io::Result<()> {
+        let back = 1 - self.front;
         let screen = Rect {
             x: 0,
             y: 0,
-            width: target.width() as u32,
-            height: target.height() as u32,
+            width: self.targets[back].buffer.width() as u32,
+            height: self.targets[back].buffer.height() as u32,
         };
+        let mut damage = if self.targets[back].revision == 0 {
+            screen
+        } else {
+            self.history
+                .iter()
+                .filter(|(revision, _)| *revision > self.targets[back].revision)
+                .map(|(_, damage)| *damage)
+                .fold(scene.damage, union)
+        };
+        if let Some(cursor) = self.targets[back].cursor {
+            damage = union(damage, cursor);
+        }
+        if let Some((window_group, offset, _)) = active_move
+            && let Some(bounds) = group_bounds(&scene.nodes, window_group)
+        {
+            // A direct front-buffer move is not represented by scene revisions.
+            // Repainting both positions makes a concurrently submitted scene
+            // inherit the temporary transform instead of snapping back.
+            damage = union(damage, union(bounds, translated(bounds, offset)));
+        }
+        damage = intersect(damage, screen).unwrap_or(screen);
+        let target = &mut self.targets[back].buffer;
+        clear(target, damage);
         for node in &scene.nodes {
-            let Some(source) = buffers.get(node.buffer_id) else {
+            let source_id = source_buffer_id(node, active_move);
+            let Some(source) = buffers.get(source_id) else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "scene buffer disappeared",
                 ));
             };
-            composite_node(target, source, node.bounds, node.clip, screen, node.corner_radius);
+            let offset = active_move
+                .filter(|(window_group, _, _)| node.window_group == *window_group)
+                .map_or((0, 0), |(_, offset, _)| offset);
+            composite_node(target, source, node, screen, damage, offset);
+        }
+        self.targets[back].revision = scene.revision;
+        self.targets[back].cursor = None;
+        self.prepared_damage = damage;
+        self.history.push_back((scene.revision, scene.damage));
+        let oldest = self
+            .targets
+            .iter()
+            .filter(|target| target.revision != 0)
+            .map(|target| target.revision)
+            .min()
+            .unwrap_or(scene.revision);
+        while self
+            .history
+            .front()
+            .is_some_and(|(revision, _)| *revision <= oldest)
+        {
+            self.history.pop_front();
         }
         Ok(())
+    }
+
+    /// Repaints only the old/new window-group union on the current front buffer.
+    ///
+    /// The canonical scene remains unchanged; `offset` is a compositor-owned
+    /// temporary transform authorized by the desktop. Painting every scene node
+    /// inside the damage rectangle restores occlusion correctly without a
+    /// full-screen React render, scanout compose, or page flip.
+    pub fn compose_move(
+        &mut self,
+        nodes: &[crate::session::Node],
+        buffers: &Buffers,
+        active_move: (u32, (i32, i32), u32),
+        damage: Rect,
+        cursor: (i32, i32),
+    ) -> io::Result<()> {
+        let (window_group, offset, _) = active_move;
+        let front = self.front;
+        let screen = Rect {
+            x: 0,
+            y: 0,
+            width: self.targets[front].buffer.width() as u32,
+            height: self.targets[front].buffer.height() as u32,
+        };
+        let Some(damage) = intersect(damage, screen) else {
+            return Ok(());
+        };
+        let target = &mut self.targets[front].buffer;
+        let old_cursor = self.cursor.remove(target);
+        clear(target, damage);
+        for node in nodes {
+            let source_id = source_buffer_id(node, Some(active_move));
+            let source = buffers.get(source_id).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "scene buffer disappeared")
+            })?;
+            composite_node(
+                target,
+                source,
+                node,
+                screen,
+                damage,
+                if node.window_group == window_group {
+                    offset
+                } else {
+                    (0, 0)
+                },
+            );
+        }
+        let new_cursor = self.cursor.overlay(target, cursor.0, cursor.1);
+        self.targets[front].cursor = from_clip(new_cursor);
+        let mut clips = [to_clip(damage), EMPTY_CLIP, EMPTY_CLIP];
+        let mut clip_count = 1;
+        for cursor in [old_cursor, new_cursor] {
+            if valid_clip(&cursor) {
+                clips[clip_count] = cursor;
+                clip_count += 1;
+            }
+        }
+        self.device
+            .dirty(self.targets[front].framebuffer_id, &clips[..clip_count])
     }
 
     /// Overlays the cursor into the freshly composed back buffer and flips.
@@ -153,7 +275,8 @@ impl Scanout {
     /// consistently describes the scanned-out buffer for subsequent motion damage.
     pub fn present_scene(&mut self, revision: u64, cursor: (i32, i32)) -> io::Result<FlipEvent> {
         let back = 1 - self.front;
-        self.cursor
+        let cursor_clip = self
+            .cursor
             .overlay(&mut self.targets[back].buffer, cursor.0, cursor.1);
         // The kernel cannot observe CPU writes to dumb buffers: a framebuffer's
         // host resource is only refreshed by `DRM_IOCTL_MODE_DIRTYFB`, and the
@@ -161,7 +284,12 @@ impl Scanout {
         // synchronized. Sync the freshly composed back buffer first — empty
         // clips mean the full framebuffer — or the flip presents stale pixels
         // (frozen scenes and cursor remnants baked into old frames).
-        self.device.dirty(self.targets[back].framebuffer_id, &[])?;
+        let damage = from_clip(cursor_clip).map_or(self.prepared_damage, |cursor| {
+            union(self.prepared_damage, cursor)
+        });
+        self.targets[back].cursor = from_clip(cursor_clip);
+        self.device
+            .dirty(self.targets[back].framebuffer_id, &[to_clip(damage)])?;
         self.present(revision)
     }
 
@@ -178,14 +306,20 @@ impl Scanout {
         let damage = self
             .cursor
             .relocate(&mut self.targets[front].buffer, cursor.0, cursor.1);
-        let clips: Vec<_> = damage
-            .into_iter()
-            .filter(|clip| clip.x2 > clip.x1 && clip.y2 > clip.y1)
-            .collect();
-        if clips.is_empty() {
+        let mut clips = [EMPTY_CLIP; 2];
+        let mut clip_count = 0;
+        for clip in damage {
+            if valid_clip(&clip) {
+                clips[clip_count] = clip;
+                clip_count += 1;
+            }
+        }
+        if clip_count == 0 {
             return Ok(());
         }
-        self.device.dirty(self.targets[front].framebuffer_id, &clips)
+        self.targets[front].cursor = from_clip(clips[clip_count - 1]);
+        self.device
+            .dirty(self.targets[front].framebuffer_id, &clips[..clip_count])
     }
 
     /// Queues and waits for one exact page-flip completion.
@@ -216,19 +350,24 @@ impl Drop for Scanout {
 fn composite_node(
     target: &mut DumbBuffer,
     source: &DumbBuffer,
-    bounds: Rect,
-    clip: Rect,
+    node: &crate::session::Node,
     screen: Rect,
-    corner_radius: u32,
+    damage: Rect,
+    offset: (i32, i32),
 ) {
+    let bounds = translated(node.bounds, offset);
+    let clip = translated(node.clip, offset);
     let x1 = bounds.x.max(clip.x).max(screen.x).max(0);
-    let y1 = bounds.y.max(clip.y).max(screen.y).max(0);
+    let x1 = x1.max(damage.x);
+    let y1 = bounds.y.max(clip.y).max(screen.y).max(0).max(damage.y);
     let x2 = (bounds.x + bounds.width as i32)
         .min(clip.x + clip.width as i32)
-        .min(screen.width as i32);
+        .min(screen.width as i32)
+        .min(damage.x.saturating_add_unsigned(damage.width));
     let y2 = (bounds.y + bounds.height as i32)
         .min(clip.y + clip.height as i32)
-        .min(screen.height as i32);
+        .min(screen.height as i32)
+        .min(damage.y.saturating_add_unsigned(damage.height));
     if x2 <= x1 || y2 <= y1 {
         return;
     }
@@ -238,14 +377,14 @@ fn composite_node(
     // pixels. Chrome and windows are both `8px 8px 0 0` (top-only), so only
     // the top edge rounds; the bottom stays square. The inset math mirrors the
     // renderer's `corner_inset` so the clip edge aligns with the painted arc.
-    let r = corner_radius as f32;
+    let r = node.corner_radius as f32;
     let r_sq = r * r;
     for y in y1..y2 {
         let source_y = (y - bounds.y) as usize;
         let source_row = source.row(source_y);
         let target_row = target.row_mut(y as usize);
         let (mut px1, mut px2) = (x1, x2);
-        if corner_radius > 0 {
+        if node.corner_radius > 0 {
             // Distance in rows from the top clip edge; only rows inside the top
             // corner region get inset.
             let edge_dist = y - clip.y;
@@ -266,11 +405,121 @@ fn composite_node(
         if px2 <= px1 {
             continue;
         }
+        let opaque = node.opaque.map(|rectangle| translated(rectangle, offset));
+        if opaque.is_some_and(|opaque| {
+            y >= opaque.y
+                && y < opaque.y.saturating_add_unsigned(opaque.height)
+                && px1 >= opaque.x
+                && px2 <= opaque.x.saturating_add_unsigned(opaque.width)
+        }) {
+            let source_start = (px1 - bounds.x) as usize;
+            let source_end = (px2 - bounds.x) as usize;
+            target_row[px1 as usize..px2 as usize]
+                .copy_from_slice(&source_row[source_start..source_end]);
+            continue;
+        }
         for x in px1..px2 {
             let source_pixel = source_row[(x - bounds.x) as usize];
             target_row[x as usize] = over(source_pixel, target_row[x as usize]);
         }
     }
+}
+
+fn clear(target: &mut DumbBuffer, rectangle: Rect) {
+    let x1 = rectangle.x as usize;
+    let x2 = x1 + rectangle.width as usize;
+    for y in rectangle.y as usize..rectangle.y as usize + rectangle.height as usize {
+        target.row_mut(y)[x1..x2].fill(0);
+    }
+}
+
+fn translated(rectangle: Rect, offset: (i32, i32)) -> Rect {
+    Rect {
+        x: rectangle.x.saturating_add(offset.0),
+        y: rectangle.y.saturating_add(offset.1),
+        ..rectangle
+    }
+}
+
+fn group_bounds(nodes: &[crate::session::Node], window_group: u32) -> Option<Rect> {
+    nodes
+        .iter()
+        .filter(|node| node.window_group == window_group)
+        .filter_map(|node| intersect(node.bounds, node.clip))
+        .reduce(union)
+}
+
+fn source_buffer_id(
+    node: &crate::session::Node,
+    active_move: Option<(u32, (i32, i32), u32)>,
+) -> u32 {
+    active_move.map_or(node.buffer_id, |(window_group, _, underlay)| {
+        if node.kind == SceneNodeKind::Pixels && node.window_group != window_group {
+            underlay
+        } else {
+            node.buffer_id
+        }
+    })
+}
+
+fn intersect(left: Rect, right: Rect) -> Option<Rect> {
+    let x1 = left.x.max(right.x);
+    let y1 = left.y.max(right.y);
+    let x2 = left
+        .x
+        .saturating_add_unsigned(left.width)
+        .min(right.x.saturating_add_unsigned(right.width));
+    let y2 = left
+        .y
+        .saturating_add_unsigned(left.height)
+        .min(right.y.saturating_add_unsigned(right.height));
+    (x2 > x1 && y2 > y1).then_some(Rect {
+        x: x1,
+        y: y1,
+        width: (x2 - x1) as u32,
+        height: (y2 - y1) as u32,
+    })
+}
+
+fn union(left: Rect, right: Rect) -> Rect {
+    let x1 = left.x.min(right.x);
+    let y1 = left.y.min(right.y);
+    let x2 = left
+        .x
+        .saturating_add_unsigned(left.width)
+        .max(right.x.saturating_add_unsigned(right.width));
+    let y2 = left
+        .y
+        .saturating_add_unsigned(left.height)
+        .max(right.y.saturating_add_unsigned(right.height));
+    Rect {
+        x: x1,
+        y: y1,
+        width: x2.saturating_sub(x1) as u32,
+        height: y2.saturating_sub(y1) as u32,
+    }
+}
+
+fn to_clip(rectangle: Rect) -> Clip {
+    Clip {
+        x1: rectangle.x as u16,
+        y1: rectangle.y as u16,
+        x2: rectangle.x.saturating_add_unsigned(rectangle.width) as u16,
+        y2: rectangle.y.saturating_add_unsigned(rectangle.height) as u16,
+    }
+}
+
+fn valid_clip(clip: &Clip) -> bool {
+    clip.x2 > clip.x1 && clip.y2 > clip.y1
+}
+
+fn from_clip(clip: Clip) -> Option<Rect> {
+    valid_clip(&clip).then_some(Rect {
+        x: i32::from(clip.x1),
+        y: i32::from(clip.y1),
+        width: u32::from(clip.x2 - clip.x1),
+        height: u32::from(clip.y2 - clip.y1),
+    })
 }
 
 fn over(source: u32, destination: u32) -> u32 {
@@ -286,4 +535,47 @@ fn over(source: u32, destination: u32) -> u32 {
     let green = ((source >> 8) & 0xff) + (((destination >> 8) & 0xff) * inverse + 127) / 255;
     let blue = (source & 0xff) + ((destination & 0xff) * inverse + 127) / 255;
     (red.min(255) << 16) | (green.min(255) << 8) | blue.min(255)
+}
+
+#[cfg(test)]
+mod tests {
+    use display_proto::{Rect, SceneNodeKind};
+
+    use crate::session::Node;
+
+    use super::source_buffer_id;
+
+    fn node(kind: SceneNodeKind, window_group: u32, buffer_id: u32) -> Node {
+        Node {
+            kind,
+            window_group,
+            buffer_id,
+            bounds: Rect::default(),
+            clip: Rect::default(),
+            opaque: None,
+            damage: Vec::new(),
+            corner_radius: 0,
+        }
+    }
+
+    #[test]
+    fn move_uses_underlay_only_for_desktop_pixels_outside_the_moving_group() {
+        let active = Some((9, (40, 20), 77));
+        assert_eq!(
+            source_buffer_id(&node(SceneNodeKind::Pixels, 0, 11), active),
+            77
+        );
+        assert_eq!(
+            source_buffer_id(&node(SceneNodeKind::Pixels, 8, 11), active),
+            77
+        );
+        assert_eq!(
+            source_buffer_id(&node(SceneNodeKind::Pixels, 9, 11), active),
+            11
+        );
+        assert_eq!(
+            source_buffer_id(&node(SceneNodeKind::ForeignSurface, 9, 22), active),
+            22
+        );
+    }
 }

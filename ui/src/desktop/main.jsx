@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apps, launch } from "lite:apps";
-import { close, configure, focus, move, surfaces, shutdown } from "lite:desktop";
+import { beginMove, close, configure, focus, move, surfaces, shutdown } from "lite:desktop";
 import { Window } from "../design-system/window.jsx";
 import { Taskbar } from "../design-system/taskbar.jsx";
 import { StartMenu } from "../design-system/start-menu.jsx";
@@ -175,6 +175,23 @@ export default function Desktop() {
       return { ...item, bounds: { ...item.bounds, ...next } };
     }));
   }, [maximized]);
+  const beginWindowMove = useCallback((id, serial) => {
+    // Restoring a maximized window changes canonical geometry first, so that
+    // uncommon transition keeps the React path. Ordinary moves stay entirely
+    // in compositor until the final `moved` event.
+    if (maximized.has(id)) return false;
+    const surface = openRef.current.find((item) => item.id === id);
+    if (!surface) return false;
+    beginMove(
+      id,
+      serial,
+      0,
+      0,
+      Math.max(0, WORK_AREA.width - surface.bounds.width),
+      WORK_AREA.height - 25,
+    );
+    return true;
+  }, [maximized]);
   const resizeWindow = useCallback((id, rect) => {
     // Dragging any edge of a maximized window first restores it, then resizes.
     if (maximized.has(id)) {
@@ -215,7 +232,7 @@ export default function Desktop() {
       {open.filter((surface) => !minimized.has(surface.id)).map((surface) => {
         const bounds = maximized.has(surface.id) ? WORK_AREA : surface.bounds;
         return (
-          <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMove={moveWindow} onResize={resizeWindow} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
+          <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMoveStart={beginWindowMove} onMove={moveWindow} onResize={resizeWindow} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
             <surface className="client-surface" id={surface.id} configureSerial={configure(surface.id, bounds.width - 10, bounds.height - 39)} frame={bounds} cornerRadius={8} />
           </Window>
         );

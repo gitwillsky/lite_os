@@ -30,12 +30,20 @@
 - app `SURFACE_COMMIT` 与 desktop `SCENE_COMMIT` 分别有 monotonic revision。frame latch 后到达的提交进入
   下一帧；每连接最多 64 KiB nonblocking outbound queue。可合并 event 覆盖旧值，不可丢事件无法入队
   时断开连接；禁止 compositor writer thread。
+- client 提交后不得同步等待 `PRESENTED`；`ACCEPTED` 只确认 compositor 原子接纳 revision，
+  `PRESENTED` 只确认 page-flip completion，buffer 只能由 `BUFFER_RELEASE` 重新变为 writable。
+  双 buffer 都在途时 client 必须保留 latest-only dirty state，禁止排队栅格化旧 snapshot。
 - buffer allocation 只经 compositor：每连接最多四个、session 最多八个 full-frame equivalent，按
   `pitch * height` 计费，scanout 不计入。allocation failure 明确返回，不得抢占别的连接、降低尺寸或
   让 client 自行 CREATE_DUMB。DESTROY 只由 compositor 执行。
 - resize/maximize 使用 `CONFIGURE(serial)`；对应 app commit 进入 pending slot，直到 desktop scene 引用
   `CONFIGURE_READY(serial)` 才在同一 latch 切换 buffer 与 geometry。旧 pair 在 presentation 后释放。
-  move 只允许由已投递 pointer-down serial 发起，temporary group transform 在 canonical scene 呈现后清除。
+  仅 foreign adoption/geometry 改变时 desktop scene 必须复用当前 pinned、只读像素 buffer，不得因此
+  触发 React desktop 重栅格化。move 只允许由已投递 pointer-down serial 发起；compositor 对完整
+  `windowGroup` 应用 bounded temporary transform。desktop 必须随授权提供一个排除该 group 的只读
+  underlay buffer；compositor 用它恢复旧位置，只刷新旧/新 bounds damage，并在 pointer-up 返回最终
+  logical position。最终 canonical scene 呈现后清除 grab 并 release underlay；期间到达的新 scene
+  必须继承 transform，禁止跳回旧位置或保留 canonical 残影。
 - scene input region 是 compositor routing 的唯一依据，pixel alpha 不参与 hit-test。每 node 最多 64、
   整份 scene 最多 256 个 input rectangle；超限拒绝，不得扩大到 bounds。app surface 默认使用完整 client rect。
 - pointer motion 对同一 target latest-only，每帧最多一次；离散事件前必须先 flush preceding motion。
@@ -80,4 +88,6 @@
   16.67 ms、p99 不超过 33.3 ms，input-to-visible p95 不超过 33.3 ms。
 - idle 不允许 render/commit/periodic wake；steady renderer/compositor frame 不允许 allocation。
   compositor+desktop+两个 app 总 RSS 不超过 256 MiB。RISC-V TCG 只承担正确性，不承担 60 Hz gate。
+- pointer/cursor poll、move damage accumulation 与 DIRTYFB clip staging 使用固定容量栈状态；持续拖动
+  不得为 wake descriptor、damage 或 clip 创建临时 heap collection。
 - 视觉还原不属于自动 gate，不生成 preview screenshot 或 Golden；真实启动后的外观由人工裁决。

@@ -18,7 +18,9 @@ pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
 pub use geometry::{Rect, Size};
 pub use handshake::{HelloApp, HelloDesktop, Welcome};
 pub use input::{InputKey, InputPointer, PointerPhase};
-pub use lifecycle::{AppClosed, AppOpened, CloseRequest, SurfaceActivated};
+pub use lifecycle::{
+    AppClosed, AppOpened, CloseRequest, MoveBegin, MoveComplete, SurfaceActivated,
+};
 pub use scene::{Rectangles, SceneCommit, SceneNode, SceneNodeKind, SceneNodes};
 pub use surface::{
     Accepted, Configure, ConfigureReady, DamageRectangles, Presented, SurfaceCommit,
@@ -26,7 +28,7 @@ pub use surface::{
 pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
 
 /// 唯一受支持的协议版本；不提供版本协商或兼容 decoder。
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";
