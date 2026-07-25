@@ -90,6 +90,10 @@ impl Session {
                 continue;
             }
             let mut damage: Vec<Rect> = node.damage.iter().collect();
+            // The composited bounds default to the declared node size; the
+            // foreign-surface fallback may clamp them to a stale buffer's real
+            // size so composite_node never reads past the source.
+            let mut node_bounds = node.bounds;
             let buffer_id = match node.kind {
                 SceneNodeKind::Pixels => {
                     let buffer = self
@@ -114,51 +118,85 @@ impl Session {
                         .apps
                         .get(&node.source_id)
                         .expect("validated foreign surface");
-                    // The desktop bakes a node's `configure_serial` and `bounds`
-                    // from independent React state at render time, and its
-                    // `ready` set is never pruned, so a scene can legitimately
-                    // reference a serial the app has already superseded (its
-                    // buffer recycled) or one whose buffer no longer matches the
-                    // freshly-laid-out bounds. That is a normal configure
-                    // handshake in flight — mid maximize/restore/resize — not a
-                    // protocol violation. Skip the node this frame (like the
-                    // app-disconnect races above) and let the desktop re-emit it
-                    // once app and layout agree; killing the epoch here is what
-                    // dropped the whole desktop to the splash on maximize.
-                    let content = app
+                    // Prefer the exact-serial content (pending, else current),
+                    // which matches the node bounds and adopts cleanly. If
+                    // neither matches the node's serial — a normal in-flight
+                    // configure handshake mid resize/maximize — fall back to the
+                    // app's last-presented `current` content of ANY serial rather
+                    // than skipping the node. Skipping leaves the region cleared
+                    // to black for that frame; with the app committing a new
+                    // serial almost every frame during a rapid resize, that
+                    // produced a sustained black flicker. Showing slightly-stale
+                    // (older-serial/older-size) content for a frame is
+                    // imperceptible; a black flash is not.
+                    let exact = app
                         .pending
                         .as_ref()
                         .filter(|content| content.configure_serial == node.configure_serial)
                         .or_else(|| {
-                            app.current
-                                .as_ref()
-                                .filter(|content| content.configure_serial == node.configure_serial)
+                            app.current.as_ref().filter(|content| {
+                                content.configure_serial == node.configure_serial
+                            })
                         });
-                    let Some(content) = content else {
-                        eprintln!(
-                            "compositor: foreign surface {} serial {} not ready, skipped",
-                            node.source_id, node.configure_serial
-                        );
-                        continue;
+                    let (content, exact_match) = match exact {
+                        Some(content) => (content, true),
+                        // Fall back to ANY content the app holds, newest-first:
+                        // prefer `current` (already presented) but accept
+                        // `pending` (staged, its buffer is validated) when there
+                        // is no current yet — during a rapid resize the app's
+                        // only content is often a pending buffer at a serial the
+                        // node hasn't caught up to. Showing it a frame early/late
+                        // beats clearing to black.
+                        None => match app.current.as_ref().or(app.pending.as_ref()) {
+                            Some(content) => (content, false),
+                            None => {
+                                // The app has committed NO buffer at all yet
+                                // (first-frame handshake): nothing to show, and no
+                                // prior frame to flicker against, so skip.
+                                eprintln!(
+                                    "compositor: foreign surface {} serial {} not ready, skipped",
+                                    node.source_id, node.configure_serial
+                                );
+                                continue;
+                            }
+                        },
                     };
                     let buffer = &self.buffers.values[&content.buffer_id];
+                    // The node bounds drive composite_node's source indexing, so
+                    // they MUST equal the content buffer's real size or the copy
+                    // reads out of bounds. On the exact-serial path they already
+                    // agree (the desktop laid the node out for this size). On the
+                    // fallback path the stale buffer can differ, so clamp the
+                    // node's bounds to the buffer size (keeping the origin); the
+                    // uncovered edge shows the desktop-owned window body, never a
+                    // black clear.
+                    let mut effective_bounds = node.bounds;
                     if buffer.size.width != node.bounds.width
                         || buffer.size.height != node.bounds.height
                     {
-                        eprintln!(
-                            "compositor: foreign surface {} geometry {}x{} != node {}x{}, skipped",
-                            node.source_id,
-                            buffer.size.width,
-                            buffer.size.height,
-                            node.bounds.width,
-                            node.bounds.height
-                        );
-                        continue;
+                        if exact_match {
+                            // Exact serial but wrong geometry is a transient
+                            // layout/handshake disagreement; keep the previous
+                            // skip semantics (self-heals next commit).
+                            eprintln!(
+                                "compositor: foreign surface {} geometry {}x{} != node {}x{}, skipped",
+                                node.source_id,
+                                buffer.size.width,
+                                buffer.size.height,
+                                node.bounds.width,
+                                node.bounds.height
+                            );
+                            continue;
+                        }
+                        effective_bounds.width = buffer.size.width;
+                        effective_bounds.height = buffer.size.height;
                     }
-                    if app
-                        .pending
-                        .as_ref()
-                        .is_some_and(|pending| pending.buffer_id == content.buffer_id)
+                    node_bounds = effective_bounds;
+                    if exact_match
+                        && app
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| pending.buffer_id == content.buffer_id)
                         && !adoptions.contains(&node.source_id)
                     {
                         adoptions.push(node.source_id);
@@ -185,7 +223,7 @@ impl Session {
                 kind: node.kind,
                 window_group: node.window_group,
                 buffer_id,
-                bounds: node.bounds,
+                bounds: node_bounds,
                 clip: node.clip,
                 opaque: node.opaque,
                 damage,
