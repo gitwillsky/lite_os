@@ -1,4 +1,16 @@
 import React, { useCallback, useRef, useState } from "react";
+import type { AppMeta } from "lite:apps";
+
+interface HoverHandlers {
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
+}
+
+interface StartMenuProps {
+  apps: AppMeta[];
+  onLaunch: (id: string) => void;
+  onShutdown: () => void;
+}
 
 // Static (non-app) menu rows. Stable ids let the compositor track hover by a
 // stable listener identity across renders, matching the app rows keyed on app.id.
@@ -11,16 +23,16 @@ const STATIC_ITEMS = [
   { id: "run", label: "Run..." },
 ];
 
-export function StartMenu({ apps, onLaunch, onShutdown }) {
+export function StartMenu({ apps, onLaunch, onShutdown }: StartMenuProps) {
   // The renderer has no CSS :hover; the classic blue highlight bar follows the
   // pointer via the real onPointerEnter/onPointerLeave events. Handlers are
   // cached per item id so their identities — and thus the host listener ids the
   // compositor tracks hover by — stay stable across renders.
-  const [hovered, setHovered] = useState(null);
-  const enter = useCallback((id) => setHovered(id), []);
-  const leave = useCallback((id) => setHovered((current) => (current === id ? null : current)), []);
-  const cache = useRef(new Map()).current;
-  const handlers = useCallback((id) => {
+  const [hovered, setHovered] = useState<string | null>(null);
+  const enter = useCallback((id: string) => setHovered(id), []);
+  const leave = useCallback((id: string) => setHovered((current) => (current === id ? null : current)), []);
+  const cache = useRef(new Map<string, HoverHandlers>()).current;
+  const handlers = useCallback((id: string) => {
     let bundle = cache.get(id);
     if (!bundle) {
       bundle = { onPointerEnter: () => enter(id), onPointerLeave: () => leave(id) };
@@ -28,49 +40,49 @@ export function StartMenu({ apps, onLaunch, onShutdown }) {
     }
     return bundle;
   }, [cache, enter, leave]);
-  const itemClass = (id, extra = "") =>
+  const itemClass = (id: string, extra = "") =>
     `classic-menu-item${extra}${hovered === id ? " classic-menu-item--hover" : ""}`;
 
   return (
-    <view className="start-menu" overlay={true}>
-      <view className="start-menu__rail"><text>L</text><text>I</text><text>T</text><text>E</text><text>O</text><text>S</text></view>
-      <view className="start-menu__items">
+    <div className="start-menu">
+      <div className="start-menu__rail"><span>L</span><span>I</span><span>T</span><span>E</span><span>O</span><span>S</span></div>
+      <div className="start-menu__items">
         {apps.map((app) => (
-          <view
+          <div
             key={app.id}
             className={itemClass(app.id, " classic-menu-item--app")}
             {...handlers(app.id)}
             onClick={() => onLaunch(app.id)}
           >
-            <image src={app.icon}/><text>{app.name}</text>
-          </view>
+            <img src={app.icon}/><span>{app.name}</span>
+          </div>
         ))}
-        <view className="menu-separator"/>
+        <div className="menu-separator"/>
         {STATIC_ITEMS.map((item) => (
-          <view
+          <div
             key={item.id}
             className={itemClass(item.id)}
             {...handlers(item.id)}
           >
-            <text>{item.label}</text>
-            {item.arrow && <text className="classic-menu-item__arrow">&gt;</text>}
-          </view>
+            <span>{item.label}</span>
+            {item.arrow && <span className="classic-menu-item__arrow">&gt;</span>}
+          </div>
         ))}
-        <view className="menu-separator"/>
-        <view
+        <div className="menu-separator"/>
+        <div
           className={itemClass("logoff")}
           {...handlers("logoff")}
         >
-          <text>Log Off LiteOS...</text>
-        </view>
-        <view
+          <span>Log Off LiteOS...</span>
+        </div>
+        <div
           className={itemClass("shutdown")}
           {...handlers("shutdown")}
           onClick={onShutdown}
         >
-          <text>Shut Down...</text>
-        </view>
-      </view>
-    </view>
+          <span>Shut Down...</span>
+        </div>
+      </div>
+    </div>
   );
 }

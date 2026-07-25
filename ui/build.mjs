@@ -7,8 +7,8 @@ const root = dirname(fileURLToPath(import.meta.url));
 const output = join(root, "dist");
 const checkOnly = process.argv.includes("--check");
 const products = [
-  ["desktop", "src/desktop/entry.jsx", "src/desktop/style.css"],
-  ["terminal", "src/terminal/entry.jsx", "src/terminal/style.css"],
+  ["desktop", "src/desktop/entry.tsx", "src/desktop/style.css"],
+  ["terminal", "src/terminal/entry.tsx", "src/terminal/style.css"],
 ];
 
 const liteModules = {
@@ -111,7 +111,7 @@ if (!checkOnly) {
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   await build({
-    entryPoints: [join(root, "src/runtime/entry.js")],
+    entryPoints: [join(root, "src/runtime/entry.ts")],
     outfile: join(output, "runtime.js"),
     bundle: true,
     format: "esm",

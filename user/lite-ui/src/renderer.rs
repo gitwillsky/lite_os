@@ -32,13 +32,24 @@ struct RenderNode {
     children: Vec<RenderNode>,
 }
 
+/// Per-node context threaded down the paint walk.
+#[derive(Clone, Copy)]
+struct PaintWalk {
+    /// Window subtree pruned from a move underlay (matched on `data-lite-window`).
+    excluded_window_group: Option<u32>,
+    /// Whole-window outer rect from the enclosing `<div data-lite-window>`
+    /// container, reported as the foreign surface's chrome/input frame.
+    window_frame: Option<display_proto::Rect>,
+}
+
 /// Geometry emitted beside pixels for compositor-owned app surfaces.
 pub struct RenderOutput {
     /// Foreign surfaces in React paint order.
     pub foreign: Vec<ForeignLayer>,
-    /// Overlay chrome clips (`overlay` elements) in React paint order: the
-    /// compositor re-paints the desktop buffer at these rects above every
-    /// foreign surface so taskbar/menus stay on top of window content.
+    /// Overlay chrome clips (CSS `position:fixed` elements) sorted by `z-index`
+    /// ascending: the compositor re-paints the desktop buffer at these rects
+    /// above every foreign surface so taskbar/menus stay on top of window
+    /// content.
     pub overlays: Vec<Overlay>,
     /// Pointer listeners in React paint order.
     pub hits: Vec<HitRegion>,
@@ -127,7 +138,8 @@ impl Renderer {
     ///
     /// - `scene`: Retained complete React host snapshot.
     /// - `pixels`: Writable full-display scratch mapping.
-    /// - `window_group`: Window subtree omitted from raster output.
+    /// - `window_group`: Id of the window omitted from raster output; its
+    ///   `<div data-lite-window={id}>` container subtree is pruned.
     ///
     /// # Returns
     ///
@@ -167,7 +179,7 @@ impl Renderer {
         }
         let mut tree = TaffyTree::new();
         let synthetic = Node {
-            kind: "view".to_owned(),
+            kind: "div".to_owned(),
             props: Default::default(),
             text: String::new(),
             children: scene.to_vec(),
@@ -206,9 +218,15 @@ impl Renderer {
                 (0.0, 0.0),
                 pixels,
                 &mut output,
-                excluded_window_group,
+                PaintWalk {
+                    excluded_window_group,
+                    window_frame: None,
+                },
             )?;
         }
+        // Stable-sort overlays by `z-index` ascending so higher chrome re-blits
+        // last (on top); equal `z-index` keeps React paint order.
+        output.overlays.sort_by_key(|overlay| overlay.z_index);
         Ok(output)
     }
 
@@ -223,10 +241,9 @@ impl Renderer {
         if let Some(inherited) = inherited {
             computed.inherit(inherited);
         }
-        let leaf = matches!(
-            source.kind.as_str(),
-            "text" | "image" | "text-input" | "surface" | "#text"
-        );
+        // Leaves own no laid-out children: inline text, images, raw strings,
+        // and the app client-area surface (a `div` tagged `data-lite-surface`).
+        let leaf = matches!(source.kind.as_str(), "span" | "img" | "#text") || is_surface(&source);
         let mut next_ancestors = ancestors.to_vec();
         next_ancestors.push(&source);
         let children = if leaf {
@@ -242,7 +259,7 @@ impl Renderer {
         // Measure proportional text leaves with real glyph advances so the box
         // matches what the rasterizer draws; monospace text is sized by cell
         // count in `to_taffy`, and non-text nodes need no measurement.
-        let measured_width = if matches!(source.kind.as_str(), "text" | "#text")
+        let measured_width = if matches!(source.kind.as_str(), "span" | "#text")
             && computed.get("font-family") != Some("monospace")
         {
             Some(self.font.measure(&computed, &text_content(&source)))
@@ -272,9 +289,9 @@ impl Renderer {
         parent: (f32, f32),
         pixels: &mut SharedDumbBuffer,
         output: &mut RenderOutput,
-        excluded_window_group: Option<u32>,
+        walk: PaintWalk,
     ) -> io::Result<()> {
-        if excludes_window_group(&node.source, excluded_window_group) {
+        if excludes_window(&node.source, walk.excluded_window_group) {
             return Ok(());
         }
         let layout = tree.layout(node.id).map_err(taffy_error)?;
@@ -345,13 +362,13 @@ impl Renderer {
             }
         }
         paint_border(pixels, bounds, &node.computed);
-        if node.source.kind == "image"
+        if node.source.kind == "img"
             && let Some(source) = node.source.props.get("src").and_then(Value::as_str)
         {
             let image = self.image(source)?;
             paint_image(pixels, bounds, image, radii);
         }
-        if node.source.kind == "text" {
+        if node.source.kind == "span" {
             let text = text_content(&node.source);
             // `font-family: monospace` selects the fixed-cell terminal atlas so
             // VT grid cells, cursor math and resize divisors share one geometry.
@@ -362,26 +379,25 @@ impl Renderer {
                 self.font.draw(pixels, bounds, &node.computed, &text);
             }
         }
-        if node.source.kind == "surface" {
+        if is_surface(&node.source) {
             let surface_id = node
                 .source
                 .props
-                .get("id")
+                .get("data-surface-id")
                 .and_then(Value::as_u64)
                 .and_then(|value| u32::try_from(value).ok());
             let configure_serial = node
                 .source
                 .props
-                .get("configureSerial")
+                .get("data-configure-serial")
                 .and_then(Value::as_u64);
             if let (Some(surface_id), Some(configure_serial)) = (surface_id, configure_serial) {
-                let corner_radius = node
-                    .source
-                    .props
-                    .get("cornerRadius")
-                    .and_then(Value::as_f64)
-                    .map(|value| (value * f64::from(SCALE)).round() as u32)
-                    .unwrap_or(0);
+                // Corner rounding comes from the standard CSS `border-radius`
+                // (already computed into `radii` as [tl,tr,br,bl]); the surface
+                // uses a single uniform radius, so take the max corner.
+                let corner_radius = (f64::from(radii[0].max(radii[1]).max(radii[2]).max(radii[3]))
+                    * f64::from(SCALE))
+                .round() as u32;
                 // The foreign surface's `bounds` is the SOURCE geometry the
                 // compositor uses to place and size app content, so it must
                 // equal the app's committed buffer size exactly (which is
@@ -403,21 +419,26 @@ impl Renderer {
                     surface_id,
                     configure_serial,
                     bounds: surface_bounds,
-                    frame: frame_rect(&node.source).unwrap_or(display_proto::Rect {
-                        x: bounds.x1 as i32,
-                        y: bounds.y1 as i32,
-                        width: (bounds.x2 - bounds.x1) as u32,
-                        height: (bounds.y2 - bounds.y1) as u32,
-                    }),
+                    // `frame` is the WHOLE-WINDOW outer rect (titlebar + borders +
+                    // client), threaded from the ancestor `<div data-lite-window>`
+                    // container. The surface's own laid-out rect is only the inset
+                    // client area, so fall back to it only when no window container
+                    // was seen (a bare surface with no chrome).
+                    frame: walk.window_frame.unwrap_or(surface_bounds),
                     corner_radius,
                 });
             }
         }
-        if node.source.props.get("overlay") == Some(&Value::Bool(true)) {
+        if node.computed.get("position") == Some("fixed") {
             // Chrome is rounded top-only (`8px 8px 0 0`); both top corners share
             // one radius, so the compositor's single corner_radius takes the max.
             let corner_radius =
                 (f64::from(radii[0].max(radii[1])) * f64::from(SCALE)).round() as u32;
+            let z_index = node
+                .computed
+                .get("z-index")
+                .and_then(|value| value.trim().parse::<i32>().ok())
+                .unwrap_or(0);
             output.overlays.push(Overlay {
                 rect: display_proto::Rect {
                     x: bounds.x1 as i32,
@@ -426,10 +447,35 @@ impl Renderer {
                     height: (bounds.y2 - bounds.y1) as u32,
                 },
                 corner_radius,
+                z_index,
             });
         }
+        // A `<div data-lite-window={id}>` container's UNCLAMPED laid-out rect is
+        // the whole-window outer frame; thread it to descendants so the nested
+        // `data-lite-surface` reports it as the compositor chrome/input clip.
+        // Any ancestor frame stays in effect for non-container subtrees.
+        let child_frame = if node.source.props.contains_key("data-lite-window") {
+            Some(display_proto::Rect {
+                x: (origin.0 * SCALE).round() as i32,
+                y: (origin.1 * SCALE).round() as i32,
+                width: (layout.size.width * SCALE).round() as u32,
+                height: (layout.size.height * SCALE).round() as u32,
+            })
+        } else {
+            walk.window_frame
+        };
         for child in &node.children {
-            self.paint(tree, child, origin, pixels, output, excluded_window_group)?;
+            self.paint(
+                tree,
+                child,
+                origin,
+                pixels,
+                output,
+                PaintWalk {
+                    window_frame: child_frame,
+                    ..walk
+                },
+            )?;
         }
         Ok(())
     }
@@ -453,23 +499,20 @@ fn listener(node: &Node, name: &str) -> Option<u64> {
     node.props.get(name).and_then(Value::as_u64)
 }
 
-fn excludes_window_group(node: &Node, excluded: Option<u32>) -> bool {
-    excluded.is_some_and(|window_group| {
-        node.props.get("windowGroup").and_then(Value::as_u64) == Some(u64::from(window_group))
+/// A move underlay omits one window: its container `<div data-lite-window={id}>`
+/// carries that id directly, so pruning the container node prunes the whole
+/// window subtree (chrome + client surface) from the raster in one match.
+fn excludes_window(node: &Node, excluded: Option<u32>) -> bool {
+    excluded.is_some_and(|window_id| {
+        node.props.get("data-lite-window").and_then(Value::as_u64) == Some(u64::from(window_id))
     })
 }
 
-/// Reads the logical `frame={{x, y, width, height}}` window rect one surface
-/// carries so the compositor can re-paint its chrome above lower content.
-fn frame_rect(node: &Node) -> Option<display_proto::Rect> {
-    let frame = node.props.get("frame")?.as_object()?;
-    let number = |name: &str| frame.get(name)?.as_f64();
-    Some(display_proto::Rect {
-        x: (number("x")? * f64::from(SCALE)).round() as i32,
-        y: (number("y")? * f64::from(SCALE)).round() as i32,
-        width: (number("width")? * f64::from(SCALE)).round() as u32,
-        height: (number("height")? * f64::from(SCALE)).round() as u32,
-    })
+/// A `div` marked `data-lite-surface` is the app client area — a region whose
+/// pixels come from an external app process, composited as a foreign layer
+/// rather than rasterized here (the browser-standard "embedded content" role).
+fn is_surface(node: &Node) -> bool {
+    node.kind == "div" && node.props.contains_key("data-lite-surface")
 }
 
 /// Extracts the asset path from a CSS `url(...)` background image.
@@ -523,15 +566,15 @@ mod tests {
 
     use crate::tree::Node;
 
-    use super::excludes_window_group;
+    use super::excludes_window;
 
-    fn node(window_group: Option<u32>) -> Node {
+    fn node(window_id: Option<u32>) -> Node {
         let mut props = BTreeMap::new();
-        if let Some(window_group) = window_group {
-            props.insert("windowGroup".to_owned(), Value::from(window_group));
+        if let Some(window_id) = window_id {
+            props.insert("data-lite-window".to_owned(), Value::from(window_id));
         }
         Node {
-            kind: "view".to_owned(),
+            kind: "div".to_owned(),
             props,
             text: String::new(),
             children: Vec::new(),
@@ -540,14 +583,14 @@ mod tests {
 
     #[test]
     fn normal_render_never_excludes_nodes() {
-        assert!(!excludes_window_group(&node(None), None));
-        assert!(!excludes_window_group(&node(Some(7)), None));
+        assert!(!excludes_window(&node(None), None));
+        assert!(!excludes_window(&node(Some(7)), None));
     }
 
     #[test]
-    fn underlay_excludes_only_the_selected_window_group() {
-        assert!(!excludes_window_group(&node(None), Some(7)));
-        assert!(!excludes_window_group(&node(Some(6)), Some(7)));
-        assert!(excludes_window_group(&node(Some(7)), Some(7)));
+    fn underlay_excludes_only_the_selected_window() {
+        assert!(!excludes_window(&node(None), Some(7)));
+        assert!(!excludes_window(&node(Some(6)), Some(7)));
+        assert!(excludes_window(&node(Some(7)), Some(7)));
     }
 }

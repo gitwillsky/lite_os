@@ -4,13 +4,17 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "check": "node build.mjs --check && node --test src/design-system/window-geometry.test.mjs src/desktop/surface-state.test.mjs"
+    "typecheck": "tsc --noEmit",
+    "check": "node build.mjs --check && tsc --noEmit && node --test src/design-system/window-geometry.test.mjs src/desktop/surface-state.test.mjs"
   },
   "dependencies": {
     "react": "19.2.7",
     "react-reconciler": "0.33.0"
   },
   "devDependencies": {
-    "esbuild": "0.28.1"
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.17",
+    "esbuild": "0.28.1",
+    "typescript": "^5.9.3"
   }
 }

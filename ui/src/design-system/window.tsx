@@ -1,5 +1,6 @@
 import React, { useCallback, useRef, useState } from "react";
-import { projectResize } from "./window-geometry.js";
+import { projectResize } from "./window-geometry.ts";
+import type { ResizeCandidate, ResizeEdge, ResizeOrigin } from "./window-geometry.ts";
 
 const CLOSE_GLYPH_PIXELS = [
   [0, 0], [1, 0], [6, 0], [7, 0],
@@ -13,9 +14,29 @@ const CLOSE_GLYPH_PIXELS = [
 ];
 
 /** Renders one classic window frame while leaving client pixels owned by compositor. */
-export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onResizeEnd, onMinimize, onToggleMaximize, maximized }) {
-  const drag = useRef(null);
-  const beginDrag = useCallback((event) => {
+interface WindowProps {
+  id: number;
+  title: string;
+  icon: string;
+  active: boolean;
+  bounds: LiteFrame;
+  children?: React.ReactNode;
+  onActivate: (id: number) => void;
+  onClose: (id: number) => void;
+  onMoveStart: (id: number, serial: number) => boolean;
+  onMove: (id: number, x: number, y: number) => void;
+  onResize: (id: number, rect: ResizeCandidate) => void;
+  onResizeEnd: (id: number) => void;
+  onMinimize: (id: number) => void;
+  onToggleMaximize: (id: number) => void;
+  maximized: boolean;
+}
+
+type CaptionButton = "min" | "max" | "close";
+
+export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onResizeEnd, onMinimize, onToggleMaximize, maximized }: WindowProps) {
+  const drag = useRef<{ x: number; y: number; native: boolean } | null>(null);
+  const beginDrag = useCallback((event: LitePointerEvent) => {
     onActivate(id);
     drag.current = {
       x: event.x - bounds.x,
@@ -23,7 +44,7 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
       native: onMoveStart(id, event.serial),
     };
   }, [bounds.x, bounds.y, id, onActivate, onMoveStart]);
-  const continueDrag = useCallback((event) => {
+  const continueDrag = useCallback((event: LitePointerEvent) => {
     if (drag.current && !drag.current.native) {
       onMove(id, event.x - drag.current.x, event.y - drag.current.y);
     }
@@ -35,8 +56,8 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
   // size, dragging a left/top edge moves the origin AND shrinks the size so the
   // opposite edge stays put. `onResize` (the size-aware sibling of `onMove`)
   // clamps to the min size and work area.
-  const resize = useRef(null);
-  const beginResize = useCallback((edge) => (event) => {
+  const resize = useRef<ResizeOrigin & { edge: ResizeEdge } | null>(null);
+  const beginResize = useCallback((edge: ResizeEdge) => (event: LitePointerEvent) => {
     onActivate(id);
     resize.current = {
       edge,
@@ -48,7 +69,7 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
       height: bounds.height,
     };
   }, [bounds.x, bounds.y, bounds.width, bounds.height, id, onActivate]);
-  const continueResize = useCallback((event) => {
+  const continueResize = useCallback((event: LitePointerEvent) => {
     const origin = resize.current;
     if (!origin) return;
     onResize(id, projectResize(origin.edge, origin, { x: event.x, y: event.y }));
@@ -62,11 +83,11 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
   // (onPointerEnter/Leave) lightens the button, and press (onPointerDown/Up)
   // inverts the bevel to sunken. Handlers are memoized so the host keeps their
   // listener ids stable across renders (the compositor tracks hover by that id).
-  const [hovered, setHovered] = useState(null);
-  const [pressed, setPressed] = useState(null);
-  const enter = useCallback((which) => () => setHovered(which), []);
-  const leave = useCallback((which) => () => setHovered((current) => (current === which ? null : current)), []);
-  const press = useCallback((which) => () => setPressed(which), []);
+  const [hovered, setHovered] = useState<CaptionButton | null>(null);
+  const [pressed, setPressed] = useState<CaptionButton | null>(null);
+  const enter = useCallback((which: CaptionButton) => () => setHovered(which), []);
+  const leave = useCallback((which: CaptionButton) => () => setHovered((current) => (current === which ? null : current)), []);
+  const press = useCallback((which: CaptionButton) => () => setPressed(which), []);
   const release = useCallback(() => setPressed(null), []);
   // Memoize per-button handler bundles once so their identities are stable.
   const buttons = useRef({
@@ -74,21 +95,21 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
     max: { enter: enter("max"), leave: leave("max"), press: press("max") },
     close: { enter: enter("close"), leave: leave("close"), press: press("close") },
   }).current;
-  const captionClass = (which) =>
+  const captionClass = (which: CaptionButton) =>
     `caption-button${hovered === which ? " caption-button--hover" : ""}${pressed === which ? " caption-button--pressed" : ""}`;
 
   return (
-    <view
+    <div
       className={`window ${active ? "window--active" : "window--inactive"}`}
       style={{ left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height }}
-      windowGroup={id}
+      data-lite-window={id}
       onPointerDown={() => onActivate(id)}
     >
-      <view className="window__titlebar" onPointerDown={beginDrag} onPointerMove={continueDrag} onPointerUp={endDrag} onDoubleClick={() => onToggleMaximize(id)}>
-        <image className="window__icon" src={icon} />
-        <text className="window__title">{title}</text>
-        <view className="window__controls" onPointerDown={() => {}}>
-          <view
+      <div className="window__titlebar" onPointerDown={(e) => beginDrag(e as unknown as LitePointerEvent)} onPointerMove={(e) => continueDrag(e as unknown as LitePointerEvent)} onPointerUp={endDrag} onDoubleClick={() => onToggleMaximize(id)}>
+        <img className="window__icon" src={icon} />
+        <span className="window__title">{title}</span>
+        <div className="window__controls" onPointerDown={() => {}}>
+          <div
             className={captionClass("min")}
             onPointerEnter={buttons.min.enter}
             onPointerLeave={buttons.min.leave}
@@ -96,9 +117,9 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
             onPointerUp={release}
             onClick={() => { release(); onMinimize(id); }}
           >
-            <view className="caption-glyph caption-glyph--minimize"/>
-          </view>
-          <view
+            <div className="caption-glyph caption-glyph--minimize"/>
+          </div>
+          <div
             className={captionClass("max")}
             onPointerEnter={buttons.max.enter}
             onPointerLeave={buttons.max.leave}
@@ -107,10 +128,10 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
             onClick={() => { release(); onToggleMaximize(id); }}
           >
             {maximized
-              ? <view className="caption-glyph caption-glyph--restore"><view className="caption-glyph__back"/><view className="caption-glyph__front"/></view>
-              : <view className="caption-glyph caption-glyph--maximize"/>}
-          </view>
-          <view
+              ? <div className="caption-glyph caption-glyph--restore"><div className="caption-glyph__back"/><div className="caption-glyph__front"/></div>
+              : <div className="caption-glyph caption-glyph--maximize"/>}
+          </div>
+          <div
             className={captionClass("close")}
             onPointerEnter={buttons.close.enter}
             onPointerLeave={buttons.close.leave}
@@ -118,22 +139,22 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
             onPointerUp={release}
             onClick={() => { release(); onClose(id); }}
           >
-            <view className="caption-glyph--close">
-              {CLOSE_GLYPH_PIXELS.map(([left, top]) => <view key={`${left}:${top}`} style={{ left, top }}/>)}
-            </view>
-          </view>
-        </view>
-      </view>
-      <view className="window__body">{children}</view>
-      {!maximized && ["n", "s", "e", "w", "ne", "nw", "se", "sw"].map((edge) => (
-        <view
+            <div className="caption-glyph--close">
+              {CLOSE_GLYPH_PIXELS.map(([left, top]) => <div key={`${left}:${top}`} style={{ left, top }}/>)}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="window__body">{children}</div>
+      {!maximized && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as ResizeEdge[]).map((edge) => (
+        <div
           key={edge}
           className={`window__resize window__resize--${edge}`}
-          onPointerDown={beginResize(edge)}
-          onPointerMove={continueResize}
+          onPointerDown={(e) => beginResize(edge)(e as unknown as LitePointerEvent)}
+          onPointerMove={(e) => continueResize(e as unknown as LitePointerEvent)}
           onPointerUp={endResize}
         />
       ))}
-    </view>
+    </div>
   );
 }

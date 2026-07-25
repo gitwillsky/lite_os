@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { connect, input } from "lite:terminal";
 
-const hex = (value) => "#" + value.toString(16).padStart(6, "0");
+const hex = (value: number) => "#" + value.toString(16).padStart(6, "0");
 
 export default function Terminal() {
   const [screen, setScreen] = useState(() => connect(["/bin/sh"]));
@@ -10,7 +10,7 @@ export default function Terminal() {
   useEffect(() => {
     setCursorPhase(true);
     if (!screen.cursor.blinking) return undefined;
-    let timer;
+    let timer: ReturnType<typeof setTimeout>;
     const tick = () => {
       setCursorPhase((visible) => !visible);
       timer = setTimeout(tick, 530);
@@ -20,14 +20,14 @@ export default function Terminal() {
   }, [screen.cursor.blinking]);
   // Runs carry only their own text; the start column is implicit in the
   // concatenation order, and every cell is exactly 8x16 CSS px.
-  const runs = [];
+  const runs: React.ReactElement[] = [];
   screen.rows.forEach((row, index) => {
     let column = 0;
     for (const run of row) {
       const left = column * 8;
       column += run.text.length;
       runs.push(
-        <text
+        <span
           key={`${index}:${left}`}
           className="terminal__run"
           style={{
@@ -37,7 +37,7 @@ export default function Terminal() {
             background: hex(run.bg),
             fontWeight: run.bold ? "bold" : "normal",
           }}
-        >{run.text}</text>
+        >{run.text}</span>
       );
     }
   });
@@ -46,9 +46,9 @@ export default function Terminal() {
   const cursorHeight = cursor.shape === "underline" ? 2 : 16;
   const cursorTop = cursor.row * 16 + (cursor.shape === "underline" ? 14 : 0);
   return (
-    <view className="terminal" tabIndex={0} style={{ background: hex(screen.background) }} onKeyDown={(event) => input(event)}>
+    <div className="terminal" tabIndex={0} style={{ background: hex(screen.background) }} onKeyDown={(event) => input(event as unknown as LiteKeyEvent)}>
       {runs}
-      <view
+      <div
         className="terminal__cursor"
         style={{
           left: cursor.column * 8,
@@ -59,6 +59,6 @@ export default function Terminal() {
           background: hex(screen.foreground),
         }}
       />
-    </view>
+    </div>
   );
 }

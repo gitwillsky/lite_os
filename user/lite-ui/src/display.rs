@@ -72,6 +72,9 @@ pub struct Overlay {
     /// corner cutout so lower window content shows through instead of a square
     /// wallpaper corner.
     pub corner_radius: u32,
+    /// CSS `z-index` of the fixed element; overlays are stable-sorted ascending
+    /// so higher-`z-index` chrome re-blits last (on top).
+    pub z_index: i32,
 }
 
 /// One validated asynchronous display event.

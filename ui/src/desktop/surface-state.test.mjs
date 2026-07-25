@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applySurfaceMove, reconcileSurfaces } from "./surface-state.js";
+import { applySurfaceMove, reconcileSurfaces } from "./surface-state.ts";
 
 test("native reconciliation preserves the React-owned window frame", () => {
   const current = [

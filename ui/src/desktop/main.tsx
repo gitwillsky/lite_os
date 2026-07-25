@@ -1,12 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apps, launch } from "lite:apps";
 import { beginMove, close, configure, focus, move, surfaces, shutdown } from "lite:desktop";
-import { Window } from "../design-system/window.jsx";
-import { Taskbar } from "../design-system/taskbar.jsx";
-import { StartMenu } from "../design-system/start-menu.jsx";
-import { ContextMenu } from "../design-system/context-menu.jsx";
-import { constrainResize } from "../design-system/window-geometry.js";
-import { applySurfaceMove, reconcileSurfaces } from "./surface-state.js";
+import { Window } from "../design-system/window.tsx";
+import { Taskbar } from "../design-system/taskbar.tsx";
+import { StartMenu } from "../design-system/start-menu.tsx";
+import { ContextMenu } from "../design-system/context-menu.tsx";
+import { constrainResize } from "../design-system/window-geometry.ts";
+import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts";
+import { applySurfaceMove, reconcileSurfaces } from "./surface-state.ts";
+
+interface DesktopMenuItem {
+  id: string;
+  label: string;
+  onSelect?: () => void;
+}
+
+interface MenuState {
+  x: number;
+  y: number;
+  items: DesktopMenuItem[];
+}
 
 const desktopIcons = [
   { id: "computer", label: "My Computer", icon: "assets/computer.png" },
@@ -33,8 +46,8 @@ const WORK_AREA = { x: 0, y: 0, width: 1504, height: 816 };
 // `configure(w - 10, h - 32)` never underflows the u32 the host parses.
 const MIN_W = 160;
 const MIN_H = 120;
-const clampX = (x, width) => Math.max(0, Math.min(WORK_AREA.width - width, x));
-const clampY = (y, height) => Math.max(0, Math.min(WORK_AREA.height - height, y));
+const clampX = (x: number, width: number) => Math.max(0, Math.min(WORK_AREA.width - width, x));
+const clampY = (y: number, height: number) => Math.max(0, Math.min(WORK_AREA.height - height, y));
 
 export default function Desktop() {
   const [open, setOpen] = useState(() => surfaces());
@@ -42,30 +55,30 @@ export default function Desktop() {
   // stale closure (see `minimizedRef`).
   const openRef = useRef(open);
   openRef.current = open;
-  const [activeId, setActiveId] = useState(() => open.at(-1)?.id ?? 0);
-  const [minimized, setMinimized] = useState(() => new Set());
+  const [activeId, setActiveId] = useState<number>(() => open.at(-1)?.id ?? 0);
+  const [minimized, setMinimized] = useState<Set<number>>(() => new Set());
   // Live mirror of `minimized` so the stable `[]`-deps subscribe callback and
   // callbacks can read the current set without a stale closure or a state
   // setter's side effects.
   const minimizedRef = useRef(minimized);
   minimizedRef.current = minimized;
   // id -> bounds saved when the window was maximized; restore reads them back.
-  const [maximized, setMaximized] = useState(() => new Map());
+  const [maximized, setMaximized] = useState<Map<number, LiteFrame>>(() => new Map());
   // id -> outline bounds shown during classic resize. Keeping this separate
   // from `open` prevents every pointer motion from configuring a new app
   // buffer; without it the gray window body and app pixels alternate onscreen.
-  const [resizePreview, setResizePreview] = useState(() => new Map());
+  const [resizePreview, setResizePreview] = useState<Map<number, Rect>>(() => new Map());
   const resizePreviewRef = useRef(resizePreview);
   resizePreviewRef.current = resizePreview;
   const [startOpen, setStartOpen] = useState(false);
-  const [selectedIcon, setSelectedIcon] = useState(null);
+  const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   // Open context menu: { x, y, items } in desktop-local logical pixels, or null.
-  const [menu, setMenu] = useState(null);
+  const [menu, setMenu] = useState<MenuState | null>(null);
   const listedApps = useMemo(() => apps(), []);
   const closeMenu = useCallback(() => setMenu(null), []);
   // Opening a context menu also dismisses the Start menu (only one popup at a time).
-  const openMenu = useCallback((x, y, items) => { setStartOpen(false); setMenu({ x, y, items }); }, []);
-  const clearResizePreview = useCallback((id) => {
+  const openMenu = useCallback((x: number, y: number, items: DesktopMenuItem[]) => { setStartOpen(false); setMenu({ x, y, items }); }, []);
+  const clearResizePreview = useCallback((id: number) => {
     setResizePreview((map) => {
       if (!map.has(id)) return map;
       const next = new Map(map);
@@ -90,11 +103,11 @@ export default function Desktop() {
   // Native `surfaces()` is authoritative for existence and metadata. React
   // owns persistent frame geometry and z-order, so reconciliation must not
   // restore the native registry's launch-time bounds after a resize.
-  const reconcile = useCallback((items) => {
+  const reconcile = useCallback((items: LiteSurface[]) => {
     return reconcileSurfaces(items, surfaces());
   }, []);
 
-  const activate = useCallback((id) => {
+  const activate = useCallback((id: number) => {
     focus(id);
     setActiveId(id);
     setStartOpen(false);
@@ -152,13 +165,13 @@ export default function Desktop() {
     return unsubscribe;
   }, []);
 
-  const launchApp = useCallback((id) => { launch(id); setStartOpen(false); }, []);
-  const closeWindow = useCallback((id) => {
+  const launchApp = useCallback((id: string) => { launch(id); setStartOpen(false); }, []);
+  const closeWindow = useCallback((id: number) => {
     close(id);
     clearResizePreview(id);
     setOpen((items) => items.filter((item) => item.id !== id));
   }, [clearResizePreview]);
-  const minimizeWindow = useCallback((id) => {
+  const minimizeWindow = useCallback((id: number) => {
     const next = new Set(minimizedRef.current);
     next.add(id);
     setMinimized(next);
@@ -175,7 +188,7 @@ export default function Desktop() {
       return fallbackId;
     });
   }, []);
-  const toggleMaximize = useCallback((id) => {
+  const toggleMaximize = useCallback((id: number) => {
     setMaximized((map) => {
       const next = new Map(map);
       if (next.has(id)) {
@@ -187,7 +200,7 @@ export default function Desktop() {
       return next;
     });
   }, [open]);
-  const moveWindow = useCallback((id, x, y) => {
+  const moveWindow = useCallback((id: number, x: number, y: number) => {
     // Dragging a maximized titlebar restores the window centered on the cursor.
     const restored = maximized.get(id);
     if (restored) {
@@ -208,7 +221,7 @@ export default function Desktop() {
       return { ...item, bounds: { ...item.bounds, ...next } };
     }));
   }, [maximized]);
-  const beginWindowMove = useCallback((id, serial) => {
+  const beginWindowMove = useCallback((id: number, serial: number) => {
     // Restoring a maximized window changes canonical geometry first, so that
     // uncommon transition keeps the React path. Ordinary moves stay entirely
     // in compositor until the final `moved` event.
@@ -227,11 +240,11 @@ export default function Desktop() {
   }, [maximized]);
   // Resize preview throttle. Pointer motion only updates an outline; the
   // canonical window geometry and app configure commit once on release.
-  const resizeThrottle = useRef({ timer: null, pending: null });
+  const resizeThrottle = useRef<{ timer: ReturnType<typeof setTimeout> | null; pending: { id: number; rect: ResizeCandidate } | null }>({ timer: null, pending: null });
   // ~60 Hz. Long enough to collapse a burst of motions into one preview, short
   // enough that the resize still tracks the cursor smoothly.
   const RESIZE_FRAME_MS = 16;
-  const publishResizePreview = useCallback((id, rect) => {
+  const publishResizePreview = useCallback((id: number, rect: ResizeCandidate) => {
     const bounds = constrainResize(rect, WORK_AREA, MIN_W, MIN_H);
     setResizePreview((map) => {
       const next = new Map(map);
@@ -240,12 +253,12 @@ export default function Desktop() {
       return next;
     });
   }, []);
-  const commitResize = useCallback((id, { x, y, width, height }) => {
+  const commitResize = useCallback((id: number, { x, y, width, height }: Rect) => {
     move(id, x, y);
     setOpen((items) => items.map((item) => (item.id === id ? { ...item, bounds: { x, y, width, height } } : item)));
     clearResizePreview(id);
   }, [clearResizePreview]);
-  const resizeWindow = useCallback((id, rect) => {
+  const resizeWindow = useCallback((id: number, rect: ResizeCandidate) => {
     const throttle = resizeThrottle.current;
     if (throttle.timer === null) {
       publishResizePreview(id, rect);
@@ -264,7 +277,7 @@ export default function Desktop() {
       throttle.pending = { id, rect };
     }
   }, [publishResizePreview]);
-  const flushResize = useCallback((id) => {
+  const flushResize = useCallback((id: number) => {
     const throttle = resizeThrottle.current;
     if (throttle.timer !== null) {
       clearTimeout(throttle.timer);
@@ -279,20 +292,21 @@ export default function Desktop() {
   }, [commitResize]);
 
   return (
-    <view
+    <div
       id="desktop"
       onClick={() => { setSelectedIcon(null); setMenu(null); setStartOpen(false); }}
-      onContextMenu={(event) => openMenu(event.x, event.y, DESKTOP_MENU_ITEMS)}
-      onKeyDown={(event) => { if (event.code === KEY_ESC && event.value !== 0) { setMenu(null); setStartOpen(false); } }}
+      onContextMenu={(rawEvent) => { const event = rawEvent as unknown as LitePointerEvent; openMenu(event.x, event.y, DESKTOP_MENU_ITEMS); }}
+      onKeyDown={(rawEvent) => { const event = rawEvent as unknown as LiteKeyEvent; if (event.code === KEY_ESC && event.value !== 0) { setMenu(null); setStartOpen(false); } }}
     >
-      <view className="desktop-icons">
+      <div className="desktop-icons">
         {desktopIcons.map((item) => (
-          <view
+          <div
             key={item.id}
             className="desktop-icon"
             onClick={() => setSelectedIcon(item.id)}
             onDoubleClick={() => item.app && launchApp(item.app)}
-            onContextMenu={(event) => {
+            onContextMenu={(rawEvent) => {
+              const event = rawEvent as unknown as LitePointerEvent;
               setSelectedIcon(item.id);
               openMenu(event.x, event.y, [
                 { id: "open", label: "Open", onSelect: () => item.app && launchApp(item.app) },
@@ -301,30 +315,30 @@ export default function Desktop() {
               ]);
             }}
           >
-            <image className="desktop-icon__image" src={item.icon}/>
-            <text className={selectedIcon === item.id ? "desktop-icon__label desktop-icon__label--selected" : "desktop-icon__label"}>{item.label}</text>
-          </view>
+            <img className="desktop-icon__image" src={item.icon}/>
+            <span className={selectedIcon === item.id ? "desktop-icon__label desktop-icon__label--selected" : "desktop-icon__label"}>{item.label}</span>
+          </div>
         ))}
-      </view>
+      </div>
       {open.filter((surface) => !minimized.has(surface.id)).map((surface) => {
         const bounds = maximized.has(surface.id) ? WORK_AREA : surface.bounds;
         return (
           <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMoveStart={beginWindowMove} onMove={moveWindow} onResize={resizeWindow} onResizeEnd={flushResize} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
-            <surface className="client-surface" id={surface.id} configureSerial={configure(surface.id, bounds.width - 10, bounds.height - 32)} frame={bounds} cornerRadius={0} />
+            <div className="client-surface" data-lite-surface={true} data-surface-id={surface.id} data-configure-serial={configure(surface.id, bounds.width - 10, bounds.height - 32)} />
           </Window>
         );
       })}
       {Array.from(resizePreview, ([id, bounds]) => (
         <React.Fragment key={id}>
-          <view className="window__resize-preview window__resize-preview--horizontal" style={{ left: bounds.x, top: bounds.y, width: bounds.width }} overlay={true}/>
-          <view className="window__resize-preview window__resize-preview--horizontal" style={{ left: bounds.x, top: bounds.y + bounds.height - 1, width: bounds.width }} overlay={true}/>
-          <view className="window__resize-preview window__resize-preview--vertical" style={{ left: bounds.x, top: bounds.y, height: bounds.height }} overlay={true}/>
-          <view className="window__resize-preview window__resize-preview--vertical" style={{ left: bounds.x + bounds.width - 1, top: bounds.y, height: bounds.height }} overlay={true}/>
+          <div className="window__resize-preview window__resize-preview--horizontal" style={{ left: bounds.x, top: bounds.y, width: bounds.width }}/>
+          <div className="window__resize-preview window__resize-preview--horizontal" style={{ left: bounds.x, top: bounds.y + bounds.height - 1, width: bounds.width }}/>
+          <div className="window__resize-preview window__resize-preview--vertical" style={{ left: bounds.x, top: bounds.y, height: bounds.height }}/>
+          <div className="window__resize-preview window__resize-preview--vertical" style={{ left: bounds.x + bounds.width - 1, top: bounds.y, height: bounds.height }}/>
         </React.Fragment>
       ))}
       {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu}/>}
       <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => { setMenu(null); setStartOpen((value) => !value); }} onActivate={activate}/>
-    </view>
+    </div>
   );
 }

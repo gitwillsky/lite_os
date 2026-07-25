@@ -42,7 +42,7 @@ fn validate(node: &Node, depth: usize, count: &mut usize) -> Result<(), String> 
         return Err("React host tree exceeds 4096 nodes".to_owned());
     }
     match node.kind.as_str() {
-        "view" | "text" | "image" | "text-input" | "surface" => {
+        "div" | "span" | "img" => {
             if !node.text.is_empty() {
                 return Err("primitive carries an unexpected text field".to_owned());
             }

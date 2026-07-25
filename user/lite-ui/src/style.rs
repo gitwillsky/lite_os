@@ -368,7 +368,7 @@ mod tests {
         )
         .expect("standard box declarations parse");
         let node = Node {
-            kind: "view".to_owned(),
+            kind: "div".to_owned(),
             props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
             text: String::new(),
             children: Vec::new(),
@@ -397,7 +397,7 @@ mod tests {
         )
         .expect("standard border declarations parse");
         let node = Node {
-            kind: "view".to_owned(),
+            kind: "div".to_owned(),
             props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
             text: String::new(),
             children: Vec::new(),
@@ -424,7 +424,7 @@ mod tests {
         )
         .expect("border styles parse");
         let node = Node {
-            kind: "view".to_owned(),
+            kind: "div".to_owned(),
             props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
             text: String::new(),
             children: Vec::new(),
@@ -447,7 +447,7 @@ mod tests {
         )
         .expect("functional color parses");
         let node = Node {
-            kind: "view".to_owned(),
+            kind: "div".to_owned(),
             props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
             text: String::new(),
             children: Vec::new(),

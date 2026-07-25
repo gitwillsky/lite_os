@@ -124,7 +124,7 @@
   border: 1px solid #000000;
   border-top-width: 2px;
 }
-.caption-glyph--restore view {
+.caption-glyph--restore div {
   position: absolute;
   width: 6px;
   height: 6px;
@@ -145,7 +145,7 @@
   width: 8px;
   height: 8px;
 }
-.caption-glyph--close view {
+.caption-glyph--close div {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -176,7 +176,7 @@
 .window__resize--se { bottom: 0; right: 0; width: 10px; height: 10px; }
 .window__resize--sw { bottom: 0; left: 0; width: 10px; height: 10px; }
 .window__resize-preview {
-  position: absolute;
+  position: fixed;
   z-index: 998;
   pointer-events: none;
 }
@@ -189,7 +189,7 @@
   border-left: 1px dashed #d4d0c8;
 }
 .taskbar {
-  position: absolute;
+  position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
@@ -302,7 +302,7 @@
   color: #000000;
 }
 .start-menu {
-  position: absolute;
+  position: fixed;
   left: 2px;
   bottom: 30px;
   width: 250px;
@@ -319,7 +319,7 @@
   overflow: hidden;
 }
 .context-menu {
-  position: absolute;
+  position: fixed;
   width: 150px;
   z-index: 1001;
   display: flex;
@@ -344,7 +344,7 @@
   font-size: 12px;
   font-weight: bold;
 }
-.start-menu__rail text {
+.start-menu__rail span {
   color: #ffffff;
   font-size: 11px;
   font-weight: bold;
@@ -370,7 +370,7 @@
   gap: 8px;
   font-weight: bold;
 }
-.classic-menu-item--app image {
+.classic-menu-item--app img {
   width: 28px;
   height: 28px;
 }
@@ -381,7 +381,7 @@
   background: #0a246a;
   color: #ffffff;
 }
-.classic-menu-item--hover text {
+.classic-menu-item--hover span {
   color: #ffffff;
 }
 .classic-menu-item--hover .classic-menu-item__arrow {

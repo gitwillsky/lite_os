@@ -1,12 +1,36 @@
+/** Grip that owns a resize drag. */
+export type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+/** A window frame rect in logical desktop pixels. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Pointer and frame captured when a resize grip is pressed. */
+export interface ResizeOrigin extends Rect {
+  startX: number;
+  startY: number;
+}
+
+/** Candidate resize frame plus the metadata identifying its fixed far edge. */
+export interface ResizeCandidate extends Rect {
+  anchorRight: boolean;
+  anchorBottom: boolean;
+  right: number;
+  bottom: number;
+}
+
 /**
  * Projects a captured window frame through one XP-style resize grip.
- *
- * @param {"n"|"s"|"e"|"w"|"ne"|"nw"|"se"|"sw"} edge - Grip that owns the drag.
- * @param {{startX:number,startY:number,x:number,y:number,width:number,height:number}} origin - Pointer and frame captured on press.
- * @param {{x:number,y:number}} point - Current desktop pointer position.
- * @returns {{x:number,y:number,width:number,height:number,anchorRight:boolean,anchorBottom:boolean,right:number,bottom:number}} Candidate frame with its fixed far-edge metadata.
  */
-export function projectResize(edge, origin, point) {
+export function projectResize(
+  edge: ResizeEdge,
+  origin: ResizeOrigin,
+  point: { x: number; y: number },
+): ResizeCandidate {
   const dx = point.x - origin.startX;
   const dy = point.y - origin.startY;
   let { x, y, width, height } = origin;
@@ -29,15 +53,15 @@ export function projectResize(edge, origin, point) {
 /**
  * Constrains a resize candidate to the desktop work area while keeping the
  * opposite edge fixed for north/west drags, matching native XP resizing.
- *
- * @param {{x:number,y:number,width:number,height:number,anchorRight:boolean,anchorBottom:boolean,right:number,bottom:number}} rect - Candidate resize frame.
- * @param {{x:number,y:number,width:number,height:number}} workArea - Taskbar-free desktop bounds.
- * @param {number} minWidth - Smallest allowed frame width.
- * @param {number} minHeight - Smallest allowed frame height.
- * @returns {{x:number,y:number,width:number,height:number}} Constrained window frame.
  */
-export function constrainResize(rect, workArea, minWidth, minHeight) {
-  let { x, y, width, height, anchorRight, anchorBottom, right, bottom } = rect;
+export function constrainResize(
+  rect: ResizeCandidate,
+  workArea: Rect,
+  minWidth: number,
+  minHeight: number,
+): Rect {
+  let { x, y, width, height } = rect;
+  const { anchorRight, anchorBottom, right, bottom } = rect;
   if (width < minWidth) { width = minWidth; if (anchorRight) x = right - minWidth; }
   if (height < minHeight) { height = minHeight; if (anchorBottom) y = bottom - minHeight; }
 

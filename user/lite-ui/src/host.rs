@@ -439,14 +439,14 @@ mod tests {
             .evaluate(
                 "host.js",
                 br##"
-                __liteNative("scene.commit", '[{"type":"view","props":{},"children":[]}]');
-                __liteNative("scene.commit", '[{"type":"text","props":{},"children":[{"type":"#text","text":"ready"}]}]');
+                __liteNative("scene.commit", '[{"type":"div","props":{},"children":[]}]');
+                __liteNative("scene.commit", '[{"type":"span","props":{},"children":[{"type":"#text","text":"ready"}]}]');
                 "##,
             )
             .expect("valid host commits must evaluate");
         assert_eq!(
             state.scene_if_dirty().expect("latest scene")[0].kind,
-            "text"
+            "span"
         );
         // The dirty flag is consumed by the read: a second poll sees no work,
         // and an explicit invalidation offers the same retained scene again.

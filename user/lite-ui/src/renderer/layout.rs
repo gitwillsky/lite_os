@@ -13,7 +13,7 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
     // Only text leaves size from their glyphs. Containers must stay auto-sized:
     // a descendant-text width here would override block stretch, flex grow/shrink
     // and absolute inset resolution with a bogus definite size.
-    let text = if matches!(node.kind.as_str(), "text" | "#text") {
+    let text = if matches!(node.kind.as_str(), "span" | "#text") {
         text_content(node)
     } else {
         String::new()
@@ -38,7 +38,9 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
             _ => Display::Block,
         },
         position: match computed.get("position") {
-            Some("absolute") => Position::Absolute,
+            // taffy has no Fixed; fixed overlays are direct #desktop children, so
+            // Absolute against the root behaves as fixed against the viewport.
+            Some("absolute") | Some("fixed") => Position::Absolute,
             _ => Position::Relative,
         },
         flex_direction: match computed.get("flex-direction") {
@@ -292,7 +294,7 @@ mod tests {
         )
         .expect("box stylesheet parses");
         let node = Node {
-            kind: "view".to_owned(),
+            kind: "div".to_owned(),
             props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
             text: String::new(),
             children: Vec::new(),

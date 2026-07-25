@@ -9,14 +9,32 @@ import React, { useCallback, useRef, useState } from "react";
  *
  * @param {{x:number, y:number, items:Array<{id:string,label:string,onSelect?:Function}>, onClose:Function}} props
  */
-export function ContextMenu({ x, y, items, onClose }) {
-  const [hovered, setHovered] = useState(null);
-  const enter = useCallback((id) => setHovered(id), []);
-  const leave = useCallback((id) => setHovered((current) => (current === id ? null : current)), []);
+interface ContextMenuItem {
+  id: string;
+  label: string;
+  onSelect?: () => void;
+}
+
+interface ContextMenuProps {
+  x: number;
+  y: number;
+  items: ContextMenuItem[];
+  onClose: () => void;
+}
+
+interface HoverHandlers {
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
+}
+
+export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
+  const [hovered, setHovered] = useState<string | null>(null);
+  const enter = useCallback((id: string) => setHovered(id), []);
+  const leave = useCallback((id: string) => setHovered((current) => (current === id ? null : current)), []);
   // Cache hover handlers per id so their identities — and thus the host listener
   // ids the compositor tracks hover by — stay stable across renders.
-  const cache = useRef(new Map()).current;
-  const handlers = useCallback((id) => {
+  const cache = useRef(new Map<string, HoverHandlers>()).current;
+  const handlers = useCallback((id: string) => {
     let bundle = cache.get(id);
     if (!bundle) {
       bundle = { onPointerEnter: () => enter(id), onPointerLeave: () => leave(id) };
@@ -24,21 +42,21 @@ export function ContextMenu({ x, y, items, onClose }) {
     }
     return bundle;
   }, [cache, enter, leave]);
-  const itemClass = (id) =>
+  const itemClass = (id: string) =>
     `classic-menu-item${hovered === id ? " classic-menu-item--hover" : ""}`;
 
   return (
-    <view className="context-menu" overlay={true} style={{ left: x, top: y }}>
+    <div className="context-menu" style={{ left: x, top: y }}>
       {items.map((item) => (
-        <view
+        <div
           key={item.id}
           className={itemClass(item.id)}
           {...handlers(item.id)}
           onClick={() => { item.onSelect?.(); onClose(); }}
         >
-          <text>{item.label}</text>
-        </view>
+          <span>{item.label}</span>
+        </div>
       ))}
-    </view>
+    </div>
   );
 }

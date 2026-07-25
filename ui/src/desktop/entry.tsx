@@ -1,3 +1,3 @@
-import Desktop from "./main.jsx";
+import Desktop from "./main.tsx";
 
 globalThis.__liteMount(Desktop);

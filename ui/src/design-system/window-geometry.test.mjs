@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { constrainResize, projectResize } from "./window-geometry.js";
+import { constrainResize, projectResize } from "./window-geometry.ts";
 
 const origin = { startX: 200, startY: 200, x: 100, y: 80, width: 400, height: 300 };
 const point = { x: 230, y: 250 };
