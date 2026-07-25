@@ -4,8 +4,8 @@ use std::{io, os::unix::net::UnixStream};
 
 use display_proto::{
     Accepted, AppClosed, AppOpened, BufferRelease, CloseRequest, Configure, ConfigureReady,
-    InputKey, InputPointer, MAX_MESSAGE, MessageKind, MoveComplete, Presented, SurfaceActivated,
-    parse_frame, recv_frame_blocking,
+    InputKey, InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveComplete, Presented,
+    SurfaceActivated, parse_frame, recv_frame_blocking,
 };
 
 use super::{Event, invalid};
@@ -80,6 +80,7 @@ pub(super) fn parse_event(
         MessageKind::InputPointer => {
             WireEvent::Public(Event::Pointer(InputPointer::parse(payload)?))
         }
+        MessageKind::InputScroll => WireEvent::Public(Event::Scroll(InputScroll::parse(payload)?)),
         MessageKind::InputKey => WireEvent::Public(Event::Key(InputKey::parse(payload)?)),
         _ => return None,
     })

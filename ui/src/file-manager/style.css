@@ -1,0 +1,75 @@
+.fm {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  color: #000000;
+  font-family: Tahoma;
+  font-size: 11px;
+}
+.fm__pathbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 6px;
+  background: #d4d0c8;
+  border-bottom: 1px solid #808080;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fm__list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.fm__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 18px;
+  padding: 0 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.fm__row--hover {
+  background: #0a246a;
+  color: #ffffff;
+}
+.fm__glyph {
+  width: 18px;
+  text-align: center;
+}
+.fm__name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fm__size {
+  width: 72px;
+  text-align: right;
+  color: #606060;
+}
+.fm__row--hover .fm__size {
+  color: #c8d4f0;
+}
+.fm__fileview {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  white-space: pre;
+  font-family: monospace;
+  font-size: 12px;
+  background: #ffffff;
+}
+.fm__note {
+  padding: 6px;
+  color: #808080;
+}

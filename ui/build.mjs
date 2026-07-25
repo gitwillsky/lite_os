@@ -9,6 +9,7 @@ const checkOnly = process.argv.includes("--check");
 const products = [
   ["desktop", "src/desktop/entry.tsx", "src/desktop/style.css"],
   ["terminal", "src/terminal/entry.tsx", "src/terminal/style.css"],
+  ["file-manager", "src/file-manager/entry.tsx", "src/file-manager/style.css"],
 ];
 
 const liteModules = {
@@ -32,6 +33,10 @@ const liteModules = {
     globalThis.liteTerminalSubscribe = (callback) => globalThis.__liteSubscribe("terminal", callback);
     export const connect = (argv) => JSON.parse(globalThis.__liteNative("terminal.connect", JSON.stringify(argv)));
     export const input = (event) => globalThis.__liteNative("terminal.input", JSON.stringify(event));
+  `,
+  "lite:fs": `
+    export const list = (path) => JSON.parse(globalThis.__liteNative("fs.list", path));
+    export const read = (path) => JSON.parse(globalThis.__liteNative("fs.read", path));
   `,
 };
 
@@ -81,9 +86,9 @@ const properties = new Set([
   "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
   "left", "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top",
   "max-height", "max-width", "min-height",
-  "min-width", "opacity", "overflow", "padding", "pointer-events", "position",
-  "padding-bottom", "padding-left", "padding-right", "padding-top", "right", "text-align",
-  "text-shadow", "top", "white-space", "width", "z-index",
+  "min-width", "opacity", "overflow", "overflow-x", "overflow-y", "padding", "pointer-events", "position",
+  "padding-bottom", "padding-left", "padding-right", "padding-top", "right", "cursor", "text-align",
+  "text-overflow", "text-shadow", "top", "white-space", "width", "z-index",
 ]);
 
 function validateCss(path, source) {
@@ -155,6 +160,9 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
   }
   await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));
+  if (id === "file-manager") {
+    await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
+  }
   if (id !== "desktop") {
     await copyFile(join(root, `src/${id}/app.json`), join(directory, "app.json"));
   }

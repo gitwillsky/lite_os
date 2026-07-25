@@ -1,9 +1,10 @@
 use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
-    Accepted, AppOpened, BufferAlloc, HelloApp, InputKey, InputPointer, MessageKind, MoveBegin,
-    MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit,
-    SceneNode, SceneNodeKind, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
+    Accepted, AppOpened, BufferAlloc, HelloApp, InputKey, InputPointer, InputScroll, MessageKind,
+    MoveBegin, MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles,
+    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, parse_frame,
+    recv_frame_blocking,
 };
 
 #[test]
@@ -175,6 +176,64 @@ fn move_grab_round_trips_authority_constraints_and_signed_result() {
         .encode(&mut bytes)
         .is_none()
     );
+}
+
+#[test]
+fn scroll_round_trips_surface_local_coordinates_and_signed_deltas() {
+    let mut bytes = [0u8; 64];
+    for event in [
+        InputScroll {
+            surface_id: 0,
+            serial: 7,
+            x: 12,
+            y: 34,
+            delta_x: 0,
+            delta_y: -3,
+        },
+        InputScroll {
+            surface_id: 9,
+            serial: 88,
+            x: 5,
+            y: 6,
+            delta_x: -2,
+            delta_y: 4,
+        },
+    ] {
+        let encoded = event
+            .encode(&mut bytes)
+            .expect("scroll message must encode");
+        let frame = parse_frame(encoded).expect("scroll frame must parse");
+        assert_eq!(frame.kind(), MessageKind::InputScroll);
+        assert_eq!(
+            InputScroll::parse(frame.payload()).expect("scroll payload"),
+            event
+        );
+    }
+}
+
+#[test]
+fn set_cursor_shape_round_trips_surface_and_shape() {
+    let mut bytes = [0u8; 64];
+    for request in [
+        SetCursorShape {
+            surface_id: 0,
+            shape: 0,
+        },
+        SetCursorShape {
+            surface_id: 9,
+            shape: 1,
+        },
+    ] {
+        let encoded = request
+            .encode(&mut bytes)
+            .expect("cursor-shape request must encode");
+        let frame = parse_frame(encoded).expect("cursor-shape frame must parse");
+        assert_eq!(frame.kind(), MessageKind::SetCursorShape);
+        assert_eq!(
+            SetCursorShape::parse(frame.payload()).expect("cursor-shape payload"),
+            request
+        );
+    }
 }
 
 #[test]

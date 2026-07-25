@@ -1007,6 +1007,10 @@ def build_ui_assets() -> Path:
         "terminal/main.js",
         "terminal/style.css",
         "terminal/assets/terminal.png",
+        "file-manager/app.json",
+        "file-manager/main.js",
+        "file-manager/style.css",
+        "file-manager/assets/computer.png",
     )
     if any(not (output / path).is_file() for path in required):
         raise RuntimeError("LiteUI build omitted a required product artifact")
@@ -1063,6 +1067,10 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
         UserlandArtifact(
             ROOT / "assets/cursor.lc1",
             "/usr/share/liteos/cursor.lc1",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/cursor-pointer.lc1",
+            "/usr/share/liteos/cursor-pointer.lc1",
         ),
         UserlandArtifact(
             ROOT / "assets/fonts/liteos-ui.a8p",
@@ -1182,6 +1190,8 @@ def create_image(
         "mkdir /usr/share/liteos/apps",
         "mkdir /usr/share/liteos/apps/terminal",
         "mkdir /usr/share/liteos/apps/terminal/assets",
+        "mkdir /usr/share/liteos/apps/file-manager",
+        "mkdir /usr/share/liteos/apps/file-manager/assets",
         "mkdir /usr/share/liteos/desktop",
         "mkdir /usr/share/liteos/desktop/assets",
         "mkdir /usr/share/udhcpc",
@@ -1299,6 +1309,7 @@ def create_image(
     for asset in (
         "/usr/share/liteos/bootlogo.xrgb",
         "/usr/share/liteos/cursor.lc1",
+        "/usr/share/liteos/cursor-pointer.lc1",
         "/usr/share/liteos/liteos-ui.a8p",
         "/usr/share/liteos/liteos-terminal.a8",
         "/usr/lib/lite-ui/runtime.js",
@@ -1308,6 +1319,9 @@ def create_image(
         "/usr/share/liteos/apps/terminal/app.json",
         "/usr/share/liteos/apps/terminal/main.js",
         "/usr/share/liteos/apps/terminal/style.css",
+        "/usr/share/liteos/apps/file-manager/app.json",
+        "/usr/share/liteos/apps/file-manager/main.js",
+        "/usr/share/liteos/apps/file-manager/style.css",
     ):
         metadata = run([str(find_debugfs()), "-R", f"stat {asset}", str(image)], ROOT)
         if "Type: regular" not in metadata:
@@ -1388,6 +1402,7 @@ def create_published_image(
         ROOT / "assets/fonts/liteos-ui.a8p",
         ROOT / "assets/bootlogo.xrgb",
         ROOT / "assets/cursor.lc1",
+        ROOT / "assets/cursor-pointer.lc1",
         ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",

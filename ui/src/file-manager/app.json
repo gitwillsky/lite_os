@@ -1,0 +1,8 @@
+{
+  "id": "file-manager",
+  "name": "File Manager",
+  "description": "Browse files",
+  "icon": "assets/computer.png",
+  "entry": "main.js",
+  "style": "style.css"
+}

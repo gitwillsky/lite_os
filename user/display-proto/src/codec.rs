@@ -46,6 +46,10 @@ pub enum MessageKind {
     MoveBegin = 19,
     /// Compositor returns the final logical position of an authorized move.
     MoveComplete = 20,
+    /// App requests the compositor draw a specific pointer cursor shape.
+    SetCursorShape = 21,
+    /// Routed mouse-wheel scroll input.
+    InputScroll = 22,
 }
 
 impl MessageKind {
@@ -80,6 +84,8 @@ impl MessageKind {
             18 => Self::SurfaceActivated,
             19 => Self::MoveBegin,
             20 => Self::MoveComplete,
+            21 => Self::SetCursorShape,
+            22 => Self::InputScroll,
             _ => return None,
         })
     }

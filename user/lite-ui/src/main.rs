@@ -49,6 +49,9 @@ struct Interactions {
     /// `key` of the hit region the pointer currently hovers, so hover-in/out
     /// can be diffed across the per-frame rebuild of `hits`.
     hovered: Option<u64>,
+    /// Cursor shape most recently requested from the compositor, so shape
+    /// changes are sent only on transition rather than on every motion.
+    cursor_shape: u32,
 }
 
 struct DesktopPresentation {
@@ -141,7 +144,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 }
                 state.invalidate_scene();
             }
-            apply_event(&state, &mut engine, &mut interactions, event)?;
+            apply_event(&state, &mut engine, &mut interactions, &display, event)?;
             engine.run_jobs()?;
         }
         if terminal_ready && let Some(terminal) = terminal.as_mut() {
@@ -244,6 +247,7 @@ fn apply_event(
     state: &State,
     engine: &mut Engine,
     interactions: &mut Interactions,
+    display: &Display,
     event: Event,
 ) -> Result<(), Box<dyn Error>> {
     let (channel, payload) = match event {
@@ -287,7 +291,11 @@ fn apply_event(
             json!({"type":"configure","width":configure.width,"height":configure.height,"serial":configure.serial}),
         ),
         Event::Pointer(pointer) => {
-            dispatch_pointer(engine, interactions, pointer)?;
+            dispatch_pointer(engine, interactions, display, pointer)?;
+            return Ok(());
+        }
+        Event::Scroll(scroll) => {
+            dispatch_scroll(engine, interactions, scroll)?;
             return Ok(());
         }
         Event::Key(key) => {
@@ -309,6 +317,7 @@ fn apply_event(
 fn dispatch_pointer(
     engine: &mut Engine,
     interactions: &mut Interactions,
+    display: &Display,
     pointer: display_proto::InputPointer,
 ) -> Result<(), Box<dyn Error>> {
     let inside = |hit: &renderer::HitRegion| {
@@ -459,8 +468,58 @@ fn dispatch_pointer(
                 }) {
                     dispatch_listener(engine, mv, payload)?;
                 }
+                // Resolve the topmost region under the pointer for its cursor
+                // shape (independent of hover listeners) and ask the compositor
+                // to change shapes only on a transition, never per motion.
+                let shape = interactions
+                    .hits
+                    .iter()
+                    .rev()
+                    .find(|hit| inside(hit))
+                    .map(|hit| hit.cursor)
+                    .unwrap_or(0);
+                if shape != interactions.cursor_shape {
+                    display.set_cursor_shape(shape)?;
+                    interactions.cursor_shape = shape;
+                }
             }
         }
+    }
+    Ok(())
+}
+
+fn dispatch_scroll(
+    engine: &mut Engine,
+    interactions: &mut Interactions,
+    scroll: display_proto::InputScroll,
+) -> Result<(), Box<dyn Error>> {
+    let inside = |hit: &renderer::HitRegion| {
+        scroll.x as f32 >= hit.x
+            && scroll.y as f32 >= hit.y
+            && (scroll.x as f32) < hit.x + hit.width
+            && (scroll.y as f32) < hit.y + hit.height
+    };
+    // Deliver to the topmost region under the pointer that asked for wheel
+    // events, mirroring dispatch_pointer's `inside` + `.rev()` hit resolution.
+    if let Some(listener) = interactions
+        .hits
+        .iter()
+        .rev()
+        .filter(|hit| inside(hit))
+        .filter_map(|hit| hit.wheel)
+        .next()
+    {
+        dispatch_listener(
+            engine,
+            listener,
+            json!({
+                "type":"wheel",
+                "x":scroll.x,
+                "y":scroll.y,
+                "deltaX":scroll.delta_x,
+                "deltaY":scroll.delta_y
+            }),
+        )?;
     }
     Ok(())
 }

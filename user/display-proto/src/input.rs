@@ -75,6 +75,52 @@ impl InputPointer {
     }
 }
 
+/// Mouse-wheel scroll event in target-local logical CSS pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InputScroll {
+    /// Target app surface, or zero for desktop.
+    pub surface_id: u32,
+    /// Monotonic compositor input identity.
+    pub serial: u64,
+    /// Target-local logical x coordinate.
+    pub x: i32,
+    /// Target-local logical y coordinate.
+    pub y: i32,
+    /// Horizontal wheel delta; positive scrolls content right.
+    pub delta_x: i32,
+    /// Vertical wheel delta; positive scrolls content down.
+    pub delta_y: i32,
+}
+
+impl InputScroll {
+    /// Encodes one routed scroll event.
+    pub fn encode(self, bytes: &mut [u8]) -> Option<&[u8]> {
+        let mut writer = FrameWriter::new(bytes, MessageKind::InputScroll)?;
+        writer.u32(self.surface_id)?;
+        writer.u64(self.serial)?;
+        writer.u32(self.x as u32)?;
+        writer.u32(self.y as u32)?;
+        writer.u32(self.delta_x as u32)?;
+        writer.u32(self.delta_y as u32)?;
+        writer.finish()
+    }
+
+    /// Parses one exact scroll payload.
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let mut reader = PayloadReader::new(payload);
+        let message = Self {
+            surface_id: reader.u32()?,
+            serial: reader.u64()?,
+            x: reader.u32()? as i32,
+            y: reader.u32()? as i32,
+            delta_x: reader.u32()? as i32,
+            delta_y: reader.u32()? as i32,
+        };
+        reader.finish()?;
+        Some(message)
+    }
+}
+
 /// Keyboard transition routed to the presented focused surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputKey {
@@ -110,5 +156,37 @@ impl InputKey {
         };
         reader.finish()?;
         matches!(message.value, 0..=2).then_some(message)
+    }
+}
+
+/// App request for the compositor to draw one specific pointer cursor shape.
+///
+/// Shape values: zero draws the default arrow; one draws the pointer/hand.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetCursorShape {
+    /// Requesting surface, or zero for the desktop.
+    pub surface_id: u32,
+    /// Selected cursor shape: zero arrow, one pointer/hand.
+    pub shape: u32,
+}
+
+impl SetCursorShape {
+    /// Encodes one cursor-shape request.
+    pub fn encode(self, bytes: &mut [u8]) -> Option<&[u8]> {
+        let mut writer = FrameWriter::new(bytes, MessageKind::SetCursorShape)?;
+        writer.u32(self.surface_id)?;
+        writer.u32(self.shape)?;
+        writer.finish()
+    }
+
+    /// Parses one exact cursor-shape payload.
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let mut reader = PayloadReader::new(payload);
+        let message = Self {
+            surface_id: reader.u32()?,
+            shape: reader.u32()?,
+        };
+        reader.finish()?;
+        Some(message)
     }
 }

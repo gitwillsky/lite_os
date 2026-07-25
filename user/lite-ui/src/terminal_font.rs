@@ -83,6 +83,9 @@ impl TerminalFont {
         &self,
         target: &mut SharedDumbBuffer,
         bounds: PhysicalRect,
+        // Terminal content is the app root, never nested in an overflow
+        // container; the clip is accepted for call-site symmetry with `Font`.
+        _overflow_clip: Option<PhysicalRect>,
         style: &Computed,
         text: &str,
     ) {

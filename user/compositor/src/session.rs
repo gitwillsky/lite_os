@@ -21,7 +21,7 @@ use std::{
 use display_proto::{
     AppClosed, AppOpened, BufferAlloc, CloseRequest, Configure, ConfigureReady, HelloApp,
     HelloDesktop, MAX_APP_SURFACES, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, Rect,
-    Size, SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
+    SetCursorShape, Size, SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
     send_message_with_fd,
 };
 use linux_uapi::{
@@ -100,6 +100,9 @@ pub struct Session {
     presented_nodes: Vec<scene::Node>,
     desktop_current_buffers: Vec<u32>,
     last_flip: linux_uapi::drm::FlipEvent,
+    /// Cursor shape requested by a client since the last poll, drained into
+    /// [`Activity`] so the caller (which owns scanout and the cursor) applies it.
+    pending_cursor_shape: Option<u32>,
 }
 
 /// Outcome of one [`Session::poll`] wait.
@@ -112,6 +115,9 @@ pub struct Activity {
     /// caller owns scanout state, which `reset_epoch` cannot reach, so it must
     /// return scanout to boot to avoid painting a stale scene diff on restart.
     pub epoch_reset: bool,
+    /// Cursor shape a client requested this poll, if any; the caller applies it
+    /// to scanout so the cursor asset switches without a scene recompose.
+    pub cursor_shape: Option<u32>,
 }
 
 impl Session {
@@ -146,6 +152,7 @@ impl Session {
                 microseconds: 0,
                 sequence: 0,
             },
+            pending_cursor_shape: None,
         })
     }
 
@@ -228,10 +235,12 @@ impl Session {
                 Err(error) => {
                     eprintln!("compositor: desktop disconnected: {error}");
                     self.reset_epoch();
+                    self.pending_cursor_shape = None;
                     return Ok(Activity {
                         scene: None,
                         input: input_ready,
                         epoch_reset: true,
+                        cursor_shape: None,
                     });
                 }
             }
@@ -250,6 +259,7 @@ impl Session {
             scene,
             input: input_ready,
             epoch_reset: false,
+            cursor_shape: self.pending_cursor_shape.take(),
         })
     }
 
@@ -362,6 +372,12 @@ impl Session {
                 Ok(None)
             }
             MessageKind::SceneCommit => self.accept_scene(&payload).map(Some),
+            MessageKind::SetCursorShape => {
+                let request = SetCursorShape::parse(&payload)
+                    .ok_or_else(|| invalid("invalid set cursor shape"))?;
+                self.pending_cursor_shape = Some(request.shape);
+                Ok(None)
+            }
             _ => Err(invalid("message is invalid for desktop role")),
         }
     }
@@ -382,6 +398,12 @@ impl Session {
                 surface_id,
                 SurfaceCommit::parse(&payload).ok_or_else(|| invalid("invalid surface commit"))?,
             ),
+            MessageKind::SetCursorShape => {
+                let request = SetCursorShape::parse(&payload)
+                    .ok_or_else(|| invalid("invalid set cursor shape"))?;
+                self.pending_cursor_shape = Some(request.shape);
+                Ok(())
+            }
             _ => Err(invalid("message is invalid for app role")),
         }
     }

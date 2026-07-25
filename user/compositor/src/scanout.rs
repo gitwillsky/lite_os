@@ -349,6 +349,20 @@ impl Scanout {
             .dirty(self.targets[front].framebuffer_id, &clips[..clip_count])
     }
 
+    /// Selects the pointer cursor shape and, when it changes, repaints the
+    /// cursor in place on the scanned-out front buffer so the new shape appears
+    /// immediately without recomposing or page-flipping.
+    ///
+    /// A shape that is already active is a no-op. Reuses the same relocate +
+    /// `DIRTYFB` path as [`Self::move_cursor`], relocating to the current
+    /// position so the old shape is erased and the new one drawn.
+    pub fn set_cursor_shape(&mut self, shape: u32, cursor: (i32, i32)) -> io::Result<()> {
+        if !self.cursor.set_shape(shape) {
+            return Ok(());
+        }
+        self.move_cursor(cursor)
+    }
+
     /// Queues and waits for one exact page-flip completion.
     pub fn present(&mut self, revision: u64) -> io::Result<FlipEvent> {
         let back = 1 - self.front;

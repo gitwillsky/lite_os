@@ -47,12 +47,14 @@ impl Computed {
     pub fn inherit(&mut self, parent: &Self) {
         for name in [
             "color",
+            "cursor",
             "font-family",
             "font-size",
             "font-style",
             "font-weight",
             "line-height",
             "text-align",
+            "text-overflow",
             "text-shadow",
             "white-space",
         ] {

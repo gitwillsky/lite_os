@@ -40,6 +40,9 @@ struct PaintWalk {
     /// Whole-window outer rect from the enclosing `<div data-lite-window>`
     /// container, reported as the foreign surface's chrome/input frame.
     window_frame: Option<display_proto::Rect>,
+    /// Active clip from an ancestor `overflow: hidden/scroll/auto` container;
+    /// raster and hit regions are confined to it, fully-clipped subtrees skipped.
+    clip: Option<PhysicalRect>,
 }
 
 /// Geometry emitted beside pixels for compositor-owned app surfaces.
@@ -84,6 +87,10 @@ pub struct HitRegion {
     pub pointer_leave: Option<u64>,
     /// `onContextMenu` listener identity (fires on right button-down).
     pub context_menu: Option<u64>,
+    /// `onWheel` listener identity (fires on mouse-wheel scroll).
+    pub wheel: Option<u64>,
+    /// Requested pointer cursor shape: zero arrow (default), one pointer/hand.
+    pub cursor: u32,
     /// Stable identity for hover tracking across per-frame hit rebuilds. Derived
     /// from a listener id, which the host runtime keeps stable while the JS
     /// handler reference is stable (handlers are memoized with `useCallback`).
@@ -221,6 +228,7 @@ impl Renderer {
                 PaintWalk {
                     excluded_window_group,
                     window_frame: None,
+                    clip: None,
                 },
             )?;
         }
@@ -304,6 +312,20 @@ impl Renderer {
             pixels.width(),
             pixels.height(),
         );
+        // An ancestor `overflow` container confines this node. If it falls
+        // entirely outside that clip, skip the whole subtree — no raster, no
+        // hit region, no recursion (mirrors the window-exclusion early return).
+        if let Some(clip) = walk.clip
+            && bounds.intersect(clip).is_empty()
+        {
+            return Ok(());
+        }
+        // Raster is confined to the active clip; children still see the full
+        // node origin for layout, only pixels are clipped.
+        let raster = match walk.clip {
+            Some(clip) => bounds.intersect(clip),
+            None => bounds,
+        };
         let pointer_down = listener(&node.source, "onPointerDown");
         let pointer_move = listener(&node.source, "onPointerMove");
         let pointer_up = listener(&node.source, "onPointerUp");
@@ -312,6 +334,12 @@ impl Renderer {
         let pointer_enter = listener(&node.source, "onPointerEnter");
         let pointer_leave = listener(&node.source, "onPointerLeave");
         let context_menu = listener(&node.source, "onContextMenu");
+        let wheel = listener(&node.source, "onWheel");
+        let cursor = if node.computed.get("cursor") == Some("pointer") {
+            1
+        } else {
+            0
+        };
         if pointer_down.is_some()
             || pointer_move.is_some()
             || pointer_up.is_some()
@@ -320,6 +348,7 @@ impl Renderer {
             || pointer_enter.is_some()
             || pointer_leave.is_some()
             || context_menu.is_some()
+            || wheel.is_some()
         {
             output.hits.push(HitRegion {
                 x: origin.0,
@@ -334,21 +363,24 @@ impl Renderer {
                 pointer_enter,
                 pointer_leave,
                 context_menu,
+                wheel,
+                cursor,
                 key: pointer_enter
                     .or(pointer_leave)
                     .or(pointer_down)
                     .or(click)
                     .or(context_menu)
+                    .or(wheel)
                     .unwrap_or(0),
             });
         }
         if let Some(key_listener) = listener(&node.source, "onKeyDown") {
             output.key_listener = Some(key_listener);
         }
-        paint_shadow(pixels, bounds, &node.computed);
+        paint_shadow(pixels, raster, &node.computed);
         let radii = corner_radii(&node.computed);
         if let Some(background) = node.computed.get("background") {
-            paint_background(pixels, bounds, background, radii);
+            paint_background(pixels, raster, background, radii);
         }
         // 1. `background-image: url(...)` paints a scaled bitmap over the box; any other
         //    value (gradient or color) reuses the background raster so gradients work in
@@ -356,27 +388,31 @@ impl Renderer {
         if let Some(image) = node.computed.get("background-image") {
             if let Some(source) = background_url(image) {
                 let image = self.image(source)?;
-                paint_image(pixels, bounds, image, radii);
+                paint_image(pixels, raster, image, radii);
             } else {
-                paint_background(pixels, bounds, image, radii);
+                paint_background(pixels, raster, image, radii);
             }
         }
-        paint_border(pixels, bounds, &node.computed);
+        paint_border(pixels, raster, &node.computed);
         if node.source.kind == "img"
             && let Some(source) = node.source.props.get("src").and_then(Value::as_str)
         {
             let image = self.image(source)?;
-            paint_image(pixels, bounds, image, radii);
+            paint_image(pixels, raster, image, radii);
         }
         if node.source.kind == "span" {
             let text = text_content(&node.source);
             // `font-family: monospace` selects the fixed-cell terminal atlas so
             // VT grid cells, cursor math and resize divisors share one geometry.
+            // Text positions off the full `bounds` but pixels stay within the
+            // active overflow clip (`raster`), so a partially-clipped row keeps
+            // its glyph origin yet is confined to the container.
             if node.computed.get("font-family") == Some("monospace") {
                 self.terminal_font
-                    .draw(pixels, bounds, &node.computed, &text);
+                    .draw(pixels, bounds, walk.clip, &node.computed, &text);
             } else {
-                self.font.draw(pixels, bounds, &node.computed, &text);
+                self.font
+                    .draw(pixels, bounds, walk.clip, &node.computed, &text);
             }
         }
         if is_surface(&node.source) {
@@ -464,6 +500,23 @@ impl Renderer {
         } else {
             walk.window_frame
         };
+        // A node with `overflow: hidden/scroll/auto` clips its descendants to
+        // its own box; intersect with any ancestor clip so nested containers
+        // compose. `overflow-x`/`overflow-y` count too (a scroll list sets one).
+        let clips_children = ["overflow", "overflow-x", "overflow-y"].iter().any(|prop| {
+            matches!(
+                node.computed.get(prop),
+                Some("hidden") | Some("scroll") | Some("auto")
+            )
+        });
+        let child_clip = if clips_children {
+            Some(match walk.clip {
+                Some(clip) => bounds.intersect(clip),
+                None => bounds,
+            })
+        } else {
+            walk.clip
+        };
         for child in &node.children {
             self.paint(
                 tree,
@@ -473,6 +526,7 @@ impl Renderer {
                 output,
                 PaintWalk {
                     window_frame: child_frame,
+                    clip: child_clip,
                     ..walk
                 },
             )?;
@@ -552,6 +606,21 @@ impl PhysicalRect {
             y2: ((y + height) * SCALE).round().clamp(0.0, screen_h as f32) as usize,
         }
     }
+
+    /// Intersection with another rect (empty if they don't overlap).
+    fn intersect(self, other: PhysicalRect) -> PhysicalRect {
+        PhysicalRect {
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+            x2: self.x2.min(other.x2),
+            y2: self.y2.min(other.y2),
+        }
+    }
+
+    /// True when the rect has no area (nothing to paint / fully clipped away).
+    fn is_empty(self) -> bool {
+        self.x2 <= self.x1 || self.y2 <= self.y1
+    }
 }
 
 fn taffy_error(error: impl std::fmt::Display) -> io::Error {
@@ -592,5 +661,142 @@ mod tests {
         assert!(!excludes_window(&node(None), Some(7)));
         assert!(!excludes_window(&node(Some(6)), Some(7)));
         assert!(excludes_window(&node(Some(7)), Some(7)));
+    }
+
+    // Reproduces the exact `.window` box model in taffy (border 2px, padding
+    // 3px, overflow:hidden) with an in-flow titlebar and the absolute resize
+    // grips, then checks whether the paint-time overflow clip (window border
+    // box) would produce an EMPTY intersection for any of them — i.e. whether
+    // the drag/resize hit regions get suppressed by the early-return.
+    #[test]
+    fn window_overflow_clip_vs_titlebar_and_grips() {
+        use taffy::prelude::{
+            Dimension, Display, FlexDirection, LengthPercentage, LengthPercentageAuto,
+            Position, Rect as TaffyRect, Size, Style, TaffyTree,
+        };
+        use taffy::AvailableSpace;
+
+        const WIN_W: f32 = 400.0;
+        const WIN_H: f32 = 300.0;
+
+        let mut tree = TaffyTree::<()>::new();
+
+        // Titlebar: position:relative, in-flow, height 21.
+        let titlebar = tree
+            .new_leaf(Style {
+                position: Position::Relative,
+                size: Size {
+                    width: Dimension::auto(),
+                    height: Dimension::length(21.0),
+                },
+                ..Style::default()
+            })
+            .unwrap();
+
+        // Absolute resize grips.
+        let grip = |tree: &mut TaffyTree<()>, inset: TaffyRect<LengthPercentageAuto>, w: f32, h: f32| {
+            tree.new_leaf(Style {
+                position: Position::Absolute,
+                inset,
+                size: Size {
+                    width: Dimension::length(w),
+                    height: Dimension::length(h),
+                },
+                ..Style::default()
+            })
+            .unwrap()
+        };
+        let auto = LengthPercentageAuto::auto;
+        let len = LengthPercentageAuto::length;
+        // nw: top:0; left:0; 10x10
+        let nw = grip(&mut tree, TaffyRect { top: len(0.0), left: len(0.0), right: auto(), bottom: auto() }, 10.0, 10.0);
+        // se: bottom:0; right:0; 10x10
+        let se = grip(&mut tree, TaffyRect { top: auto(), left: auto(), right: len(0.0), bottom: len(0.0) }, 10.0, 10.0);
+        // n: top:0; left:8; right:8; height:5 (width resolved from insets)
+        let n = tree
+            .new_leaf(Style {
+                position: Position::Absolute,
+                inset: TaffyRect { top: len(0.0), left: len(8.0), right: len(8.0), bottom: auto() },
+                size: Size { width: Dimension::auto(), height: Dimension::length(5.0) },
+                ..Style::default()
+            })
+            .unwrap();
+        // e: top:8; bottom:8; right:0; width:5 (height resolved from insets)
+        let e = tree
+            .new_leaf(Style {
+                position: Position::Absolute,
+                inset: TaffyRect { top: len(8.0), left: auto(), right: len(0.0), bottom: len(8.0) },
+                size: Size { width: Dimension::length(5.0), height: Dimension::auto() },
+                ..Style::default()
+            })
+            .unwrap();
+
+        // .window: border 2px all sides, padding 3px, fixed 400x300, flex column.
+        let window = tree
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    position: Position::Absolute,
+                    size: Size {
+                        width: Dimension::length(WIN_W),
+                        height: Dimension::length(WIN_H),
+                    },
+                    padding: TaffyRect {
+                        top: LengthPercentage::length(3.0),
+                        right: LengthPercentage::length(3.0),
+                        bottom: LengthPercentage::length(3.0),
+                        left: LengthPercentage::length(3.0),
+                    },
+                    border: TaffyRect {
+                        top: LengthPercentage::length(2.0),
+                        right: LengthPercentage::length(2.0),
+                        bottom: LengthPercentage::length(2.0),
+                        left: LengthPercentage::length(2.0),
+                    },
+                    ..Style::default()
+                },
+                &[titlebar, n, e, nw, se],
+            )
+            .unwrap();
+
+        tree.compute_layout(
+            window,
+            Size {
+                width: AvailableSpace::Definite(WIN_W),
+                height: AvailableSpace::Definite(WIN_H),
+            },
+        )
+        .unwrap();
+
+        // Window clip = its full border box, at origin (0,0) in this test.
+        let win = tree.layout(window).unwrap();
+        let clip = super::PhysicalRect::new(0.0, 0.0, win.size.width, win.size.height, 4000, 4000);
+
+        for (name, id) in [("titlebar", titlebar), ("n", n), ("e", e), ("nw", nw), ("se", se)] {
+            let l = tree.layout(id).unwrap();
+            // Child origin relative to window border-box origin (parent at 0,0).
+            let bounds = super::PhysicalRect::new(
+                l.location.x,
+                l.location.y,
+                l.size.width,
+                l.size.height,
+                4000,
+                4000,
+            );
+            let intersection = bounds.intersect(clip);
+            eprintln!(
+                "{name}: loc=({:.1},{:.1}) size=({:.1}x{:.1}) intersect_empty={}",
+                l.location.x,
+                l.location.y,
+                l.size.width,
+                l.size.height,
+                intersection.is_empty()
+            );
+            assert!(
+                !intersection.is_empty(),
+                "{name} would be suppressed by the overflow clip (empty intersection)"
+            );
+        }
     }
 }

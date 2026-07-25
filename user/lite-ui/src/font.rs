@@ -137,6 +137,40 @@ impl Font {
         advances as f32 / SCALE
     }
 
+    /// Physical-pixel advance of one character in `face` (fallback glyph if the
+    /// atlas lacks the codepoint).
+    fn advance_of(&self, face: &Face, character: char) -> i32 {
+        let index = self
+            .codepoints
+            .binary_search(&(character as u32))
+            .unwrap_or(self.fallback);
+        i32::from(face.glyphs[index].advance)
+    }
+
+    /// Truncates `text` to fit `box_width` (physical px) with a trailing
+    /// ellipsis. Uses U+2026 when the atlas has it, else three ASCII dots.
+    fn ellipsize(&self, face: &Face, text: &str, box_width: i32) -> String {
+        let has_ellipsis = self.codepoints.binary_search(&0x2026).is_ok();
+        let ellipsis: &str = if has_ellipsis { "…" } else { "..." };
+        let ellipsis_width: i32 = ellipsis.chars().map(|c| self.advance_of(face, c)).sum();
+        let budget = box_width - ellipsis_width;
+        if budget <= 0 {
+            return ellipsis.to_owned();
+        }
+        let mut used = 0;
+        let mut kept = String::new();
+        for character in text.chars() {
+            let advance = self.advance_of(face, character);
+            if used + advance > budget {
+                break;
+            }
+            used += advance;
+            kept.push(character);
+        }
+        kept.push_str(ellipsis);
+        kept
+    }
+
     /// Draws one CSS text node clipped to its physical layout box.
     ///
     /// The vertical clip extends to the font descent below the baseline: a line
@@ -147,20 +181,54 @@ impl Font {
         &self,
         target: &mut SharedDumbBuffer,
         bounds: PhysicalRect,
+        overflow_clip: Option<PhysicalRect>,
         style: &Computed,
         text: &str,
     ) {
         let face = self.face(style);
         let color = style.get("color").and_then(color).unwrap_or(0xff00_0000);
         let italic = style.get("font-style") == Some("italic");
-        let pen = bounds.x1 as i32;
+        // Resolve the run to draw and its pen origin, honoring text-overflow
+        // (ellipsis) and text-align. The box width is the layout box; run width
+        // is the exact summed advances (physical px, as glyph advances are).
+        let box_width = bounds.x2.saturating_sub(bounds.x1) as i32;
+        let run_width = (self.measure(style, text) * SCALE).round() as i32;
+        let ellipsize = style.get("text-overflow") == Some("ellipsis")
+            && run_width > box_width
+            && box_width > 0;
+        let drawn: String = if ellipsize {
+            self.ellipsize(face, text, box_width)
+        } else {
+            text.to_owned()
+        };
+        // Alignment offset only when the (final) run fits; an ellipsized run is
+        // sized to the box, so it stays left-anchored.
+        let drawn_width = if ellipsize { box_width } else { run_width };
+        let slack = (box_width - drawn_width).max(0);
+        let pen = match style.get("text-align") {
+            Some("center") => bounds.x1 as i32 + slack / 2,
+            Some("right") => bounds.x1 as i32 + slack,
+            _ => bounds.x1 as i32,
+        };
+        let text = drawn.as_str();
         let baseline = bounds.y1 as i32 + face.ascent;
-        let clip = PhysicalRect {
+        let mut clip = PhysicalRect {
             y2: (baseline + face.descent)
                 .max(bounds.y2 as i32)
                 .min(target.height() as i32) as usize,
             ..bounds
         };
+        // Confine glyphs to an ancestor `overflow` clip when present, so text in
+        // a scroll container never paints past it (positioning still uses the
+        // full box, only pixels are clipped).
+        if let Some(limit) = overflow_clip {
+            clip = PhysicalRect {
+                x1: clip.x1.max(limit.x1),
+                y1: clip.y1.max(limit.y1),
+                x2: clip.x2.min(limit.x2),
+                y2: clip.y2.min(limit.y2),
+            };
+        }
         // 1. `text-shadow` paints a solid offset copy of the run first; the clip
         //    box grows in the offset direction so the shadow is not cut short.
         if let Some((dx, dy, shadow_color)) = style.get("text-shadow").and_then(text_shadow) {

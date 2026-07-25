@@ -12,9 +12,12 @@ use linux_uapi::input::{AbsoluteAxis, InputDevice, InputEvent};
 use crate::session::Session;
 
 const EV_KEY: u16 = 1;
+const EV_REL: u16 = 2;
 const EV_ABS: u16 = 3;
 const ABS_X: u16 = 0;
 const ABS_Y: u16 = 1;
+const REL_HWHEEL: u16 = 6;
+const REL_WHEEL: u16 = 8;
 const BTN_LEFT: u16 = 272;
 const BTN_RIGHT: u16 = 273;
 const BTN_MIDDLE: u16 = 274;
@@ -31,6 +34,8 @@ pub struct Input {
     y: i32,
     pending_x: Option<i32>,
     pending_y: Option<i32>,
+    wheel_x: i32,
+    wheel_y: i32,
     buttons: u32,
     modifiers: u32,
     serial: u64,
@@ -59,6 +64,8 @@ impl Input {
             y: height / 2,
             pending_x: None,
             pending_y: None,
+            wheel_x: 0,
+            wheel_y: 0,
             buttons: 0,
             modifiers: 0,
             serial: 1,
@@ -114,6 +121,16 @@ impl Input {
             match event.kind() {
                 EV_ABS if event.code() == ABS_X => self.pending_x = Some(event.value()),
                 EV_ABS if event.code() == ABS_Y => self.pending_y = Some(event.value()),
+                EV_REL if event.code() == REL_WHEEL => {
+                    // evdev REL_WHEEL is positive when the wheel rolls up
+                    // (content should move up). DOM `deltaY` is positive when
+                    // content moves down, so negate to match the pointer path's
+                    // browser-style coordinate conventions.
+                    self.wheel_y -= event.value();
+                }
+                EV_REL if event.code() == REL_HWHEEL => {
+                    self.wheel_x += event.value();
+                }
                 EV_KEY => {
                     if let Some((button, bit)) = button(event.code()) {
                         // Flush the accumulated position first so the button
@@ -129,6 +146,9 @@ impl Input {
         // route per main-loop iteration; intermediate positions are invisible
         // to clients that render one frame per event.
         self.flush_motion(session)?;
+        // Wheel deltas are relative and accumulate across the drain, so the
+        // whole batch routes as one scroll at the current pointer position.
+        self.flush_wheel(session)?;
         Ok(())
     }
 
@@ -179,6 +199,17 @@ impl Input {
             self.buttons,
             self.take_serial(),
         )
+    }
+
+    fn flush_wheel(&mut self, session: &mut Session) -> io::Result<()> {
+        let (delta_x, delta_y) = (self.wheel_x, self.wheel_y);
+        if delta_x == 0 && delta_y == 0 {
+            return Ok(());
+        }
+        self.wheel_x = 0;
+        self.wheel_y = 0;
+        let serial = self.take_serial();
+        session.route_scroll(self.x, self.y, delta_x, delta_y, serial)
     }
 
     fn take_serial(&mut self) -> u64 {

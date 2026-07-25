@@ -17,7 +17,7 @@ pub use buffer::{BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease};
 pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
 pub use geometry::{Rect, Size};
 pub use handshake::{HelloApp, HelloDesktop, Welcome};
-pub use input::{InputKey, InputPointer, PointerPhase};
+pub use input::{InputKey, InputPointer, InputScroll, PointerPhase, SetCursorShape};
 pub use lifecycle::{
     AppClosed, AppOpened, CloseRequest, MoveBegin, MoveComplete, SurfaceActivated,
 };

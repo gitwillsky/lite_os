@@ -95,6 +95,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             boot_offset = (boot_offset + boot::SLIDER_STEP) % (boot::max_slider_offset() + 1);
             last_boot = Instant::now();
         }
+        // A client requested a new pointer cursor shape: switch the asset and
+        // repaint the cursor in place. Only meaningful once the desktop is up
+        // and driving the front buffer; before that the boot scene owns scanout.
+        if let Some(shape) = activity.cursor_shape
+            && session.desktop_ready()
+        {
+            scanout.set_cursor_shape(shape, input.position())?;
+        }
         // 3. Drain evdev whenever it signalled (also clears its readability so the
         //    next poll can block). A pure pointer move updates only the cursor via
         //    DIRTYFB, avoiding a scene recompose and page flip.

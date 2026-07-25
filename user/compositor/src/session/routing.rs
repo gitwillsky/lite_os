@@ -3,8 +3,8 @@
 use std::{io, os::unix::net::UnixStream};
 
 use display_proto::{
-    InputKey, InputPointer, MoveBegin, MoveComplete, PointerPhase, Rect, SurfaceActivated,
-    send_message,
+    InputKey, InputPointer, InputScroll, MoveBegin, MoveComplete, PointerPhase, Rect,
+    SurfaceActivated, send_message,
 };
 
 use super::buffers::Owner;
@@ -141,6 +141,53 @@ impl Session {
             self.pointer_capture = None;
         }
         result
+    }
+
+    /// Routes one mouse-wheel scroll against the last presented scene.
+    ///
+    /// Mirrors `route_pointer`'s hit-test and surface-local translation, but a
+    /// scroll never captures, restacks, or drives a move grab: it is delivered
+    /// to the surface directly under the current pointer position, or to the
+    /// desktop (surface zero) when no app surface is hit.
+    pub fn route_scroll(
+        &mut self,
+        x: i32,
+        y: i32,
+        delta_x: i32,
+        delta_y: i32,
+        serial: u64,
+    ) -> io::Result<()> {
+        let hit = self.routing.iter().rev().find(|node| {
+            node.input
+                .iter()
+                .any(|rectangle| contains(*rectangle, x, y))
+        });
+        let (surface_id, bounds) = match hit {
+            Some(target) => (target.surface_id, target.bounds),
+            None => (
+                0,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
+            ),
+        };
+        let scale = display_proto::DEVICE_SCALE_FACTOR as i32;
+        let event = InputScroll {
+            surface_id,
+            serial,
+            x: (x - bounds.x) / scale,
+            y: (y - bounds.y) / scale,
+            delta_x,
+            delta_y,
+        };
+        let mut bytes = [0u8; 64];
+        let message = event
+            .encode(&mut bytes)
+            .ok_or_else(|| io::Error::other("scroll encoding failed"))?;
+        send_message(self.target_stream(surface_id)?, message)
     }
 
     /// Starts the one compositor-side move authorized by the matching pointer-down.

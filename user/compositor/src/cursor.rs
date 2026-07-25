@@ -10,6 +10,7 @@ use std::io;
 use linux_uapi::drm::{Clip, DumbBuffer};
 
 const PATH: &str = "/usr/share/liteos/cursor.lc1";
+const POINTER_PATH: &str = "/usr/share/liteos/cursor-pointer.lc1";
 const MAGIC: &[u8; 8] = b"LCR1\0\0\0\x01";
 const WIDTH: usize = 32;
 const HEIGHT: usize = 32;
@@ -17,7 +18,12 @@ const HEADER: usize = 16;
 const BITMAP_SIZE: usize = HEIGHT * (WIDTH / 8);
 
 pub struct Cursor {
-    bytes: Vec<u8>,
+    /// One validated bitmap per shape: slot zero the arrow, slot one the
+    /// pointer/hand. Until the pointer asset ships, slot one falls back to the
+    /// arrow bytes so shape selection never renders a missing cursor.
+    shapes: [Vec<u8>; 2],
+    /// Selected shape index into [`Self::shapes`]; zero (arrow) by default.
+    active_shape: usize,
     /// Clean pixels captured under the arrow before it was rasterized.
     ///
     /// A relocate restores these into the buffer to erase the previous cursor
@@ -34,22 +40,34 @@ pub struct Cursor {
 
 impl Cursor {
     pub fn open() -> io::Result<Self> {
-        let bytes = std::fs::read(PATH)?;
-        let valid = bytes.len() == HEADER + 2 * BITMAP_SIZE
-            && bytes.get(..8) == Some(MAGIC.as_slice())
-            && read_u32(&bytes, 8) == Some(WIDTH as u32)
-            && read_u32(&bytes, 12) == Some(HEIGHT as u32);
-        if !valid {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "cursor asset identity invalid",
-            ));
-        }
+        let arrow = load_shape(PATH)?;
+        // The pointer asset lands in a later batch; fall back to the arrow bytes
+        // so slot one is always a valid bitmap and shape 1 renders something.
+        let pointer = match load_shape(POINTER_PATH) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => arrow.clone(),
+            Err(error) => return Err(error),
+        };
         Ok(Self {
-            bytes,
+            shapes: [arrow, pointer],
+            active_shape: 0,
             backing: Vec::new(),
             saved: (0, 0, 0, 0),
         })
+    }
+
+    /// Selects the cursor shape to draw. Returns whether the shape changed, so
+    /// the caller can trigger a redraw only on a real transition. Out-of-range
+    /// shapes select the default arrow.
+    pub fn set_shape(&mut self, shape: u32) -> bool {
+        let next = if (shape as usize) < self.shapes.len() {
+            shape as usize
+        } else {
+            0
+        };
+        let changed = next != self.active_shape;
+        self.active_shape = next;
+        changed
     }
 
     /// Rasterizes the cursor into a freshly composed back buffer before a flip.
@@ -126,6 +144,7 @@ impl Cursor {
     }
 
     fn paint(&self, target: &mut DumbBuffer, x: i32, y: i32) {
+        let bytes = &self.shapes[self.active_shape];
         let x1 = x.max(0);
         let y1 = y.max(0);
         let x2 = (x + WIDTH as i32).min(target.width() as i32);
@@ -137,9 +156,9 @@ impl Cursor {
                 let local_x = (screen_x - x) as usize;
                 let index = local_y * (WIDTH / 8) + local_x / 8;
                 let bit = 0x80 >> (local_x & 7);
-                if self.bytes[HEADER + index] & bit != 0 {
+                if bytes[HEADER + index] & bit != 0 {
                     row[screen_x as usize] = 0xff00_0000;
-                } else if self.bytes[HEADER + BITMAP_SIZE + index] & bit != 0 {
+                } else if bytes[HEADER + BITMAP_SIZE + index] & bit != 0 {
                     row[screen_x as usize] = 0xffff_ffff;
                 }
             }
@@ -180,4 +199,20 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
         bytes.get(offset..offset + 4)?.try_into().ok()?,
     ))
+}
+
+/// Reads and validates one cursor asset's identity header and bitmap size.
+fn load_shape(path: &str) -> io::Result<Vec<u8>> {
+    let bytes = std::fs::read(path)?;
+    let valid = bytes.len() == HEADER + 2 * BITMAP_SIZE
+        && bytes.get(..8) == Some(MAGIC.as_slice())
+        && read_u32(&bytes, 8) == Some(WIDTH as u32)
+        && read_u32(&bytes, 12) == Some(HEIGHT as u32);
+    if !valid {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "cursor asset identity invalid",
+        ));
+    }
+    Ok(bytes)
 }

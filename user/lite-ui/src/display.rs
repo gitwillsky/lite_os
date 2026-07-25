@@ -12,9 +12,9 @@ use std::{
 
 use display_proto::{
     BufferAlloc, BufferAllocated, BufferRelease, CloseRequest, Configure, HelloApp, HelloDesktop,
-    InputKey, InputPointer, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase,
-    Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, Size, SurfaceCommit, Welcome,
-    parse_frame, recv_frame_blocking, send_message,
+    InputKey, InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION,
+    PointerPhase, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size,
+    SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
@@ -96,6 +96,8 @@ pub enum Event {
     Close,
     /// Pointer input routed against the presented scene.
     Pointer(InputPointer),
+    /// Mouse-wheel scroll routed against the presented scene.
+    Scroll(InputScroll),
     /// Keyboard input routed to the presented focused surface.
     Key(InputKey),
     /// An asynchronous submit/release/presentation transition freed pipeline progress.
@@ -393,6 +395,19 @@ impl Display {
         let message = request
             .encode(&mut bytes)
             .ok_or_else(|| io::Error::other("move-begin encoding failed"))?;
+        send_message(&self.stream, message)
+    }
+
+    /// Requests the compositor draw one specific pointer cursor shape for this
+    /// session's surface. Shape zero is the default arrow; one is the pointer.
+    pub fn set_cursor_shape(&self, shape: u32) -> io::Result<()> {
+        let mut bytes = [0u8; 24];
+        let message = SetCursorShape {
+            surface_id: self.surface_id,
+            shape,
+        }
+        .encode(&mut bytes)
+        .ok_or_else(|| io::Error::other("set-cursor-shape encoding failed"))?;
         send_message(&self.stream, message)
     }
 

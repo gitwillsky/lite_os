@@ -2,6 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    fs,
     rc::Rc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -319,7 +320,7 @@ impl NativeHost for Host {
                 Ok(String::new())
             }
             "apps.list" if self.role == Role::Desktop => Ok(
-                r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"}]"#.to_owned(),
+                r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"},{"id":"file-manager","name":"File Manager","description":"Browse files","icon":"assets/computer.png"}]"#.to_owned(),
             ),
             "apps.launch" if self.role == Role::Desktop && valid_app_id(payload) => {
                 self.state.actions.borrow_mut().push(Action::Launch(payload.to_owned()));
@@ -382,6 +383,8 @@ impl NativeHost for Host {
                 self.state.actions.borrow_mut().push(Action::TerminalInput(payload.as_bytes().to_vec()));
                 Ok(String::new())
             }
+            "fs.list" if self.role == Role::App => Ok(fs_list(payload)),
+            "fs.read" if self.role == Role::App => Ok(fs_read(payload)),
             _ => Err(EngineError::from_host(format!(
                 "operation '{operation}' is unavailable in this session"
             ))),
@@ -389,9 +392,159 @@ impl NativeHost for Host {
     }
 }
 
+/// Read-only directory listing for the file-manager app. Absolute paths only;
+/// symlinks are reported, not followed; entries are capped so a huge directory
+/// can't blow the QuickJS budget. Expected filesystem errors are returned as a
+/// JSON `error` field (a thrown host error would surface as a JS exception).
+fn fs_list(path: &str) -> String {
+    #[derive(Serialize)]
+    struct Entry {
+        name: String,
+        kind: &'static str,
+        size: u64,
+    }
+    #[derive(Serialize)]
+    struct Listing {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entries: Option<Vec<Entry>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        truncated: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<&'static str>,
+    }
+    const MAX_ENTRIES: usize = 1000;
+    let error = |code: &'static str| Listing {
+        path: path.to_owned(),
+        entries: None,
+        truncated: None,
+        error: Some(code),
+    };
+    if !path.starts_with('/') {
+        return serde_json::to_string(&error("EINVAL")).unwrap_or_default();
+    }
+    let iterator = match fs::read_dir(path) {
+        Ok(iterator) => iterator,
+        Err(io_error) => {
+            return serde_json::to_string(&error(io_error_code(&io_error))).unwrap_or_default();
+        }
+    };
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    for entry in iterator.flatten() {
+        if entries.len() >= MAX_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let file_type = metadata.file_type();
+        let kind = if file_type.is_symlink() {
+            "symlink"
+        } else if file_type.is_dir() {
+            "dir"
+        } else if file_type.is_file() {
+            "file"
+        } else {
+            "other"
+        };
+        entries.push(Entry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            kind,
+            size: if kind == "dir" { 0 } else { metadata.len() },
+        });
+    }
+    serde_json::to_string(&Listing {
+        path: path.to_owned(),
+        entries: Some(entries),
+        truncated: Some(truncated),
+        error: None,
+    })
+    .unwrap_or_default()
+}
+
+/// Read-only file read for the file-manager app. Absolute paths only; caps the
+/// read so a large file can't blow the QuickJS budget; non-UTF-8 content is
+/// reported as `not-text` rather than lossily decoded.
+fn fs_read(path: &str) -> String {
+    #[derive(Serialize)]
+    struct FileContent {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        truncated: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<&'static str>,
+    }
+    const MAX_BYTES: usize = 64 * 1024;
+    let error = |code: &'static str| FileContent {
+        path: path.to_owned(),
+        content: None,
+        truncated: None,
+        error: Some(code),
+    };
+    if !path.starts_with('/') {
+        return serde_json::to_string(&error("EINVAL")).unwrap_or_default();
+    }
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            return serde_json::to_string(&error("EISDIR")).unwrap_or_default();
+        }
+        Ok(_) => {}
+        Err(io_error) => {
+            return serde_json::to_string(&error(io_error_code(&io_error))).unwrap_or_default();
+        }
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(io_error) => {
+            return serde_json::to_string(&error(io_error_code(&io_error))).unwrap_or_default();
+        }
+    };
+    let truncated = bytes.len() > MAX_BYTES;
+    let slice = &bytes[..bytes.len().min(MAX_BYTES)];
+    match std::str::from_utf8(slice) {
+        Ok(text) => serde_json::to_string(&FileContent {
+            path: path.to_owned(),
+            content: Some(text.to_owned()),
+            truncated: Some(truncated),
+            error: None,
+        })
+        .unwrap_or_default(),
+        // A cap can split a multi-byte codepoint; only report not-text when the
+        // full (untruncated) file fails to decode.
+        Err(_) if !truncated => serde_json::to_string(&error("not-text")).unwrap_or_default(),
+        Err(_) => match std::str::from_utf8(&bytes) {
+            Ok(text) => serde_json::to_string(&FileContent {
+                path: path.to_owned(),
+                content: Some(text.chars().take(MAX_BYTES).collect()),
+                truncated: Some(true),
+                error: None,
+            })
+            .unwrap_or_default(),
+            Err(_) => serde_json::to_string(&error("not-text")).unwrap_or_default(),
+        },
+    }
+}
+
+/// Maps an `io::Error` to the short code the file-manager UI renders.
+fn io_error_code(error: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::NotFound => "ENOENT",
+        ErrorKind::PermissionDenied => "EACCES",
+        ErrorKind::NotADirectory => "ENOTDIR",
+        _ => "IO",
+    }
+}
+
 fn app_metadata(id: &str) -> (&'static str, &'static str) {
     match id {
         "terminal" => ("Terminal", "assets/terminal.png"),
+        "file-manager" => ("File Manager", "assets/computer.png"),
         _ => ("Application", "assets/terminal.png"),
     }
 }
