@@ -75,8 +75,9 @@
   references、clipboard request、accelerator sequence、pointer/key state 与所有 GEM mapping/handle。
   partial decode、allocation 或 SCM_RIGHTS failure 不得发布 resource identity。
 - boot scene 由 compositor 在取得 DRM 后立即显示并以 30 Hz 运行 indeterminate progress；没有固定
-  最短时长。仅 desktop 首个完整 scene 成功 latch 后切换并永久释放 boot timer/buffer。desktop 失败时
-  保持 boot scene并由 init 重启，不恢复独立 splash 进程。
+  最短时长。identity 资产只保存按最终物理像素生成的紧凑 logo/title XRGB 图层，compositor 不缩放，
+  两层与进度条共享屏幕水平中轴。仅 desktop 首个完整 scene 成功 latch 后切换并永久释放 boot
+  timer/buffer。desktop 失败时保持 boot scene并由 init 重启，不恢复独立 splash 进程。
 - build-time 可验证的 manifest/CSS/bundle/asset error 必须阻止 rootfs 发布。runtime 不得 silent ignore、
   placeholder、旧协议 fallback 或降级 renderer。最终产品树不得保留旧 Rust shell/terminal renderer、
   旧 display protocol、atlas、`startmenu.conf` 或 `/bin/splash`。

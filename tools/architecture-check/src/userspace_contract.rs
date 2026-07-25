@@ -256,7 +256,7 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
         errors.push("assets/fonts/liteos-ui.a8p: checked UI atlas identity changed".to_owned());
     }
     let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();
-    if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x01") || bootlogo.len() != 3_145_744 {
+    if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x02") || bootlogo.len() != 757_144 {
         errors.push("assets/bootlogo.xrgb: checked boot scene identity changed".to_owned());
     }
     for removed in [

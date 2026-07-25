@@ -1,4 +1,4 @@
-//! 启动画面绘制：bootlogo 等比缩放居中、进度条轨道与滑块。
+//! 启动画面绘制：清晰度无损的 identity 图层、进度条轨道与滑块。
 
 use core::slice;
 
@@ -22,6 +22,9 @@ const SLIDER_GROUP: usize = 3 * SLIDER_WIDTH + 2 * SLIDER_GAP;
 const TRACK_FILL: u32 = 0x001a_1a1a;
 const TRACK_BORDER: u32 = 0x005a_5a5a;
 const SLIDER_COLOR: u32 = 0x0024_5edc;
+const LOGO_CENTER_PERCENT: usize = 42;
+const TITLE_CENTER_PERCENT: usize = 64;
+const TRACK_CENTER_PERCENT: usize = 75;
 
 /// 滑块组在轨道内容区内的最大起始偏移。
 pub const fn max_slider_offset() -> usize {
@@ -59,11 +62,11 @@ impl Canvas {
         }
     }
 
-    /// 轨道左上角：水平居中，纵向位于屏幕约 75% 处。
+    /// 轨道左上角：水平中轴与 identity 图层一致，纵向中心位于屏幕 75% 处。
     pub fn track_origin(&self) -> (usize, usize) {
         (
-            self.width.saturating_sub(TRACK_WIDTH) / 2,
-            self.height.saturating_sub(TRACK_HEIGHT) * 3 / 4,
+            centered_origin(self.width, TRACK_WIDTH),
+            centered_at(self.height, TRACK_HEIGHT, TRACK_CENTER_PERCENT),
         )
     }
 
@@ -90,32 +93,42 @@ impl Canvas {
         }
     }
 
-    /// bootlogo 保持宽高比缩放并居中；资产损坏时静默跳过（保留黑屏）。
+    /// 按最终物理像素绘制 boot identity；资产损坏时静默跳过（保留黑屏）。
     pub fn draw_bootlogo(&mut self, logo: &[u8]) {
-        let Some((source, source_width, source_height)) = parse_bootlogo(logo) else {
+        let Some(scene) = parse_bootlogo(logo) else {
             return;
         };
-        // 16.16 定点等比缩放，取宽/高两个方向中较小的倍率。
-        let scale = ((self.width << 16) / source_width).min((self.height << 16) / source_height);
-        if scale == 0 {
-            return;
-        }
-        let target_width = (source_width * scale) >> 16;
-        let target_height = (source_height * scale) >> 16;
-        if target_width == 0 || target_height == 0 {
-            return;
-        }
-        let origin_x = (self.width - target_width) / 2;
-        let origin_y = (self.height - target_height) / 2;
+        self.draw_layer(
+            scene.logo,
+            scene.logo_width,
+            scene.logo_height,
+            LOGO_CENTER_PERCENT,
+        );
+        self.draw_layer(
+            scene.title,
+            scene.title_width,
+            scene.title_height,
+            TITLE_CENTER_PERCENT,
+        );
+    }
+
+    fn draw_layer(&mut self, source: &[u8], width: usize, height: usize, center: usize) {
+        let target_width = width.min(self.width);
+        let target_height = height.min(self.height);
+        let source_x = width.saturating_sub(target_width) / 2;
+        let source_y = height.saturating_sub(target_height) / 2;
+        let target_x = centered_origin(self.width, target_width);
+        let target_y = centered_at(self.height, target_height, center);
         for row in 0..target_height {
-            let source_y = (row << 16) / scale;
-            let line = self.row_mut(origin_y + row);
+            let source_start = ((source_y + row) * width + source_x) * 4;
+            let line = self.row_mut(target_y + row);
             for column in 0..target_width {
-                let source_x = (column << 16) / scale;
-                let index = (source_y * source_width + source_x) * 4;
-                let pixel = &source[index..index + 4];
-                line[origin_x + column] =
-                    u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
+                let index = source_start + column * 4;
+                line[target_x + column] = u32::from_le_bytes(
+                    source[index..index + 4]
+                        .try_into()
+                        .expect("validated boot layer pixel"),
+                );
             }
         }
     }
@@ -170,6 +183,16 @@ impl Canvas {
     }
 }
 
+fn centered_origin(available: usize, extent: usize) -> usize {
+    available.saturating_sub(extent) / 2
+}
+
+fn centered_at(available: usize, extent: usize, percent: usize) -> usize {
+    (available * percent / 100)
+        .saturating_sub(extent / 2)
+        .min(available.saturating_sub(extent))
+}
+
 /// 判断像素是否在圆角矩形内：仅四个角的 `radius` 正方形区域做圆弧判定。
 fn inside_rounded(column: usize, row: usize, width: usize, height: usize, radius: usize) -> bool {
     let horizontal = if column < radius {
@@ -189,14 +212,80 @@ fn inside_rounded(column: usize, row: usize, width: usize, height: usize, radius
     horizontal * horizontal + vertical * vertical <= radius * radius
 }
 
-/// 校验 bootlogo 头部并返回（像素字节, 宽, 高）；头部格式见 `assets/bootlogo.xrgb`。
-fn parse_bootlogo(logo: &[u8]) -> Option<(&[u8], usize, usize)> {
-    if logo.len() < 16 || &logo[..8] != b"LWP8\0\0\0\x01" {
+struct BootScene<'a> {
+    logo: &'a [u8],
+    logo_width: usize,
+    logo_height: usize,
+    title: &'a [u8],
+    title_width: usize,
+    title_height: usize,
+}
+
+/// 校验 bootlogo 两个紧凑 XRGB 图层；头部格式见 `assets/bootlogo.xrgb`。
+fn parse_bootlogo(bytes: &[u8]) -> Option<BootScene<'_>> {
+    if bytes.len() < 24 || &bytes[..8] != b"LWP8\0\0\0\x02" {
         return None;
     }
-    let width = u32::from_le_bytes(logo[8..12].try_into().ok()?) as usize;
-    let height = u32::from_le_bytes(logo[12..16].try_into().ok()?) as usize;
-    let length = width.checked_mul(height)?.checked_mul(4)?;
-    let pixels = logo.get(16..16 + length)?;
-    Some((pixels, width, height))
+    let logo_width = read_u32(bytes, 8)?;
+    let logo_height = read_u32(bytes, 12)?;
+    let title_width = read_u32(bytes, 16)?;
+    let title_height = read_u32(bytes, 20)?;
+    let logo_length = layer_length(logo_width, logo_height)?;
+    let title_length = layer_length(title_width, title_height)?;
+    let title_offset = 24usize.checked_add(logo_length)?;
+    let end = title_offset.checked_add(title_length)?;
+    Some(BootScene {
+        logo: bytes.get(24..title_offset)?,
+        logo_width,
+        logo_height,
+        title: bytes
+            .get(title_offset..end)
+            .filter(|_| end == bytes.len())?,
+        title_width,
+        title_height,
+    })
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Option<usize> {
+    Some(u32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?) as usize)
+}
+
+fn layer_length(width: usize, height: usize) -> Option<usize> {
+    width.checked_mul(height)?.checked_mul(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splash_layers_and_track_share_the_screen_center() {
+        let screen_width = 3008;
+        for width in [424, 668, TRACK_WIDTH] {
+            let origin = centered_origin(screen_width, width);
+            assert_eq!(origin + width / 2, screen_width / 2);
+        }
+    }
+
+    #[test]
+    fn track_center_is_exactly_three_quarters_down_the_screen() {
+        let screen_height = 1692;
+        let origin = centered_at(screen_height, TRACK_HEIGHT, TRACK_CENTER_PERCENT);
+        assert_eq!(origin + TRACK_HEIGHT / 2, screen_height * 3 / 4);
+    }
+
+    #[test]
+    fn boot_scene_rejects_trailing_or_truncated_layers() {
+        let mut bytes = b"LWP8\0\0\0\x02".to_vec();
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 8]);
+        assert!(parse_bootlogo(&bytes).is_some());
+        bytes.push(0);
+        assert!(parse_bootlogo(&bytes).is_none());
+        bytes.truncate(31);
+        assert!(parse_bootlogo(&bytes).is_none());
+    }
 }
