@@ -142,6 +142,11 @@ impl Model {
             return;
         }
         let columns = self.columns;
+        if !self.alternate_active && top == 0 && bottom == self.rows {
+            for row in 0..count {
+                self.history.push_screen_row(self.primary, row);
+            }
+        }
         let blank = self.blank_cell();
         let screen = self.active_mut();
         unsafe {

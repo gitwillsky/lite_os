@@ -5,7 +5,7 @@ mod reflow;
 mod screen;
 mod style;
 
-use reflow::{allocate_grid, free_grid, reflow_primary};
+use reflow::{History, allocate_grid, free_grid, resize_screen};
 
 pub const ATTR_BOLD: u16 = 1 << 0;
 pub const ATTR_DIM: u16 = 1 << 1;
@@ -145,6 +145,10 @@ pub trait Grid {
 pub struct Model {
     columns: usize,
     rows: usize,
+    // OWNER: primary-screen scrollback is a fixed, preallocated ring owned by the VT model.
+    // Without it resize can only replay the visible grid, which relocates the live cursor over
+    // stale rows and makes continuing command output appear to restart out of order.
+    history: History,
     primary: Screen,
     alternate: Screen,
     alternate_active: bool,
@@ -187,6 +191,7 @@ pub struct Model {
 pub struct ResizeCandidate {
     columns: usize,
     rows: usize,
+    history: History,
     primary: Screen,
     alternate: Screen,
     alternate_active: bool,
@@ -198,16 +203,14 @@ pub struct ResizeCandidate {
 
 impl Model {
     pub fn new(columns: usize, rows: usize) -> Option<Self> {
-        let (primary, alternate, dirty) = allocate_grid(
-            columns,
-            rows,
-            0x00cbd5e1,
-            0x00101418,
-            style::style_indices(Some(7), Some(0)),
-        )?;
+        let reserved = style::style_indices(Some(7), Some(0));
+        let history = History::new(columns, Cell::blank(0x00cbd5e1, 0x00101418, reserved))?;
+        let (primary, alternate, dirty) =
+            allocate_grid(columns, rows, 0x00cbd5e1, 0x00101418, reserved)?;
         let mut model = Self {
             columns,
             rows,
+            history,
             primary,
             alternate,
             alternate_active: false,
@@ -264,6 +267,7 @@ impl Model {
     /// grid and incremental parser state prevents boot text or a truncated boot-log sequence from
     /// becoming part of the shell's terminal state.
     pub fn begin_shell_session(&mut self) {
+        self.history.clear();
         self.alternate_active = false;
         self.parser = ParserState::Ground;
         self.private_csi = false;
@@ -317,32 +321,46 @@ impl Model {
     }
 
     pub fn prepare_resize(&self, columns: usize, rows: usize) -> Option<ResizeCandidate> {
-        let (mut primary, alternate, dirty) = allocate_grid(
+        let reserved = style::style_indices(self.foreground_index, self.background_index);
+        let history = History::new(
             columns,
-            rows,
-            self.foreground,
-            self.background,
-            style::style_indices(self.foreground_index, self.background_index),
+            Cell::blank(self.foreground, self.background, reserved),
         )?;
-        reflow_primary(
-            self.primary,
-            self.columns,
-            self.rows,
-            &mut primary,
-            columns,
-            rows,
-        );
-        Some(ResizeCandidate {
+        let (primary, alternate, dirty) =
+            allocate_grid(columns, rows, self.foreground, self.background, reserved)?;
+        let mut candidate = ResizeCandidate {
             columns,
             rows,
             primary,
             alternate,
+            history,
             alternate_active: self.alternate_active,
             cursor_visible: self.cursor_visible,
             reverse_screen: self.reverse_screen,
             blink_visible: self.blink_visible,
             dirty,
-        })
+        };
+        resize_screen(
+            Some(&self.history),
+            self.primary,
+            self.columns,
+            self.rows,
+            &mut candidate.primary,
+            columns,
+            rows,
+            Some(&mut candidate.history),
+        )?;
+        resize_screen(
+            None,
+            self.alternate,
+            self.columns,
+            self.rows,
+            &mut candidate.alternate,
+            columns,
+            rows,
+            None,
+        )?;
+        Some(candidate)
     }
 
     pub fn commit_resize(&mut self, mut candidate: ResizeCandidate) {
@@ -355,6 +373,7 @@ impl Model {
         );
         self.columns = candidate.columns;
         self.rows = candidate.rows;
+        core::mem::swap(&mut self.history, &mut candidate.history);
         self.primary = candidate.primary;
         self.alternate = candidate.alternate;
         self.alternate_active = candidate.alternate_active;

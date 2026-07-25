@@ -134,9 +134,9 @@ impl Session {
                         .as_ref()
                         .filter(|content| content.configure_serial == node.configure_serial)
                         .or_else(|| {
-                            app.current.as_ref().filter(|content| {
-                                content.configure_serial == node.configure_serial
-                            })
+                            app.current
+                                .as_ref()
+                                .filter(|content| content.configure_serial == node.configure_serial)
                         });
                     let (content, exact_match) = match exact {
                         Some(content) => (content, true),
