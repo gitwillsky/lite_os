@@ -52,6 +52,11 @@ struct Interactions {
     /// Cursor shape most recently requested from the compositor, so shape
     /// changes are sent only on transition rather than on every motion.
     cursor_shape: u32,
+    /// True while native scrollbar chrome owns the current pointer sequence.
+    ///
+    /// Without this flag a track click would page the scroll port on down and
+    /// then incorrectly deliver the matching up/click to app content below it.
+    native_scroll_pointer: bool,
 }
 
 struct DesktopPresentation {
@@ -144,7 +149,14 @@ fn run() -> Result<(), Box<dyn Error>> {
                 }
                 state.invalidate_scene();
             }
-            apply_event(&state, &mut engine, &mut interactions, &display, event)?;
+            apply_event(
+                &state,
+                &mut engine,
+                &mut renderer,
+                &mut interactions,
+                &display,
+                event,
+            )?;
             engine.run_jobs()?;
         }
         if terminal_ready && let Some(terminal) = terminal.as_mut() {
@@ -246,6 +258,7 @@ fn render_latest(
 fn apply_event(
     state: &State,
     engine: &mut Engine,
+    renderer: &mut Renderer,
     interactions: &mut Interactions,
     display: &Display,
     event: Event,
@@ -291,11 +304,11 @@ fn apply_event(
             json!({"type":"configure","width":configure.width,"height":configure.height,"serial":configure.serial}),
         ),
         Event::Pointer(pointer) => {
-            dispatch_pointer(engine, interactions, display, pointer)?;
+            dispatch_pointer(state, engine, renderer, interactions, display, pointer)?;
             return Ok(());
         }
         Event::Scroll(scroll) => {
-            dispatch_scroll(engine, interactions, scroll)?;
+            dispatch_scroll(state, engine, renderer, interactions, scroll)?;
             return Ok(());
         }
         Event::Key(key) => {
@@ -315,11 +328,39 @@ fn apply_event(
 }
 
 fn dispatch_pointer(
+    state: &State,
     engine: &mut Engine,
+    renderer: &mut Renderer,
     interactions: &mut Interactions,
     display: &Display,
     pointer: display_proto::InputPointer,
 ) -> Result<(), Box<dyn Error>> {
+    match pointer.phase {
+        display_proto::PointerPhase::Down if renderer.scrollbar_at(pointer.x, pointer.y) => {
+            let changed = if pointer.button == BTN_RIGHT {
+                false
+            } else {
+                renderer.scrollbar_pointer_down(pointer.x, pointer.y).1
+            };
+            interactions.native_scroll_pointer = true;
+            if changed {
+                state.invalidate_scene();
+            }
+            return Ok(());
+        }
+        display_proto::PointerPhase::Motion if interactions.native_scroll_pointer => {
+            if renderer.scrollbar_pointer_move(pointer.x, pointer.y) {
+                state.invalidate_scene();
+            }
+            return Ok(());
+        }
+        display_proto::PointerPhase::Up if interactions.native_scroll_pointer => {
+            interactions.native_scroll_pointer = false;
+            renderer.scrollbar_pointer_up();
+            return Ok(());
+        }
+        _ => {}
+    }
     let inside = |hit: &renderer::HitRegion| {
         pointer.x as f32 >= hit.x
             && pointer.y as f32 >= hit.y
@@ -339,6 +380,25 @@ fn dispatch_pointer(
         "buttons":pointer.buttons,
         "serial":pointer.serial
     });
+    if renderer.scrollbar_at(pointer.x, pointer.y) {
+        if pointer.phase == display_proto::PointerPhase::Motion {
+            if let Some(old) = interactions.hovered
+                && let Some(leave) = interactions
+                    .hits
+                    .iter()
+                    .find(|hit| hit.key == old)
+                    .and_then(|hit| hit.pointer_leave)
+            {
+                dispatch_listener(engine, leave, payload)?;
+            }
+            interactions.hovered = None;
+            if interactions.cursor_shape != 0 {
+                display.set_cursor_shape(0)?;
+                interactions.cursor_shape = 0;
+            }
+        }
+        return Ok(());
+    }
     match pointer.phase {
         display_proto::PointerPhase::Down => {
             if pointer.button == BTN_RIGHT {
@@ -489,7 +549,9 @@ fn dispatch_pointer(
 }
 
 fn dispatch_scroll(
+    state: &State,
     engine: &mut Engine,
+    renderer: &mut Renderer,
     interactions: &mut Interactions,
     scroll: display_proto::InputScroll,
 ) -> Result<(), Box<dyn Error>> {
@@ -517,9 +579,13 @@ fn dispatch_scroll(
                 "x":scroll.x,
                 "y":scroll.y,
                 "deltaX":scroll.delta_x,
-                "deltaY":scroll.delta_y
+                "deltaY":scroll.delta_y,
+                "deltaMode":0
             }),
         )?;
+    }
+    if renderer.scroll_wheel(scroll.x, scroll.y, scroll.delta_x, scroll.delta_y) {
+        state.invalidate_scene();
     }
     Ok(())
 }

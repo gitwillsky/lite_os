@@ -10,6 +10,8 @@
   root 只对应一个 surface。desktop scene 独占 foreign surface geometry，两类 revision 不互相代理。
 - `lite-ui` UI thread 独占 QuickJS 与 mutable React host tree；render thread 只消费 immutable snapshot，
   独占 CSS/layout/text/raster cache。SPSC slot 与 snapshot arena ownership 必须线性转移，禁止共享 mutable tree。
+- `lite-ui` renderer 独占 CSS scroll offset、最新 scroll-port/scrollbar geometry 与 scrollbar drag；
+  offset 只以 React host instance 的稳定 node id 寻址，节点消失时必须同步回收，应用不得复制该状态。
 - `quickjs-runtime` 是 QuickJS raw C ABI、unsafe、runtime/context、module loader、job queue 与 interrupt
   callback 的唯一 owner；其他 crate 不得声明 QuickJS extern、raw pointer 或复制 exception cleanup。
 - `terminal-session` 独占 PTY child、VT state、scrollback、selection 与 dirty rows；React terminal 不得
@@ -49,6 +51,10 @@
 - pointer motion 对同一 target latest-only，每帧最多一次；离散事件前必须先 flush preceding motion。
   button/key/wheel/focus 不可合并。capture 只能消费同一次 pointer-down 的 input serial，并在 up、unmount、
   focus loss 或 disconnect 时由 compositor exactly-once reset。
+- compositor 必须把 evdev wheel detent 转为有符号 logical CSS pixel delta。LiteUI 先投递同值 wheel
+  listener，再执行 scroll default action；`overflow: hidden/clip` 只裁剪且不响应 wheel，
+  `overflow: auto` 仅在实际 overflow 时显示 scrollbar，`overflow: scroll` 始终显示。短内容的 offset
+  必须为零；content/viewport 缩小时必须 clamp；嵌套容器只把本层未消费 delta 传播给 ancestor。
 - global accelerator table 由 desktop 原子提交，compositor 只匹配固定 physical chord 并把完整 down/up
   sequence 路由 desktop。窗口 policy 与 shortcut action 不得进入 compositor。
 - clipboard 只保存 session 内不超过 1 MiB 的 UTF-8 text，desktop 是内容 owner，compositor 只按
@@ -92,6 +98,9 @@
   marker 强制（见 build-and-verify 性能测试段），不再仅由契约文本维护。
 - idle 不允许 render/commit/periodic wake；steady renderer/compositor frame 不允许 allocation。
   compositor+desktop+两个 app 总 RSS 不超过 256 MiB。RISC-V TCG 只承担正确性，不承担 60 Hz gate。
+- scroll wheel hot path 只更新稳定 node id 对应的 offset；scroll region、scrollbar 与 active-id collection
+  必须跨 frame 复用 capacity，UA scrollbar paint 只覆盖固定宽度 track/thumb。无需新增孤立
+  microbenchmark，现有真实 scroll 场景的 frame/input-to-visible gate 是该路径的性能 owner。
 - pointer/cursor poll、move damage accumulation 与 DIRTYFB clip staging 使用固定容量栈状态；持续拖动
   不得为 wake descriptor、damage 或 clip 创建临时 heap collection。
 - 视觉还原不属于自动 gate，不生成 preview screenshot 或 Golden；真实启动后的外观由人工裁决。

@@ -16,7 +16,10 @@
   可复现的只读基线，不继承开发容量。
 - `sync-userland` 直接构建并离线替换图形会话拥有的 binary、React bundle、app manifest、字体和
   presentation assets；镜像内指纹命中时 no-op。`run` 与 `run-gui` 自动执行它，保留 APK、项目和
-  用户数据。`reset-rootfs` 只用于首次初始化、系统级 rootfs 变化或显式恢复干净环境。
+  用户数据。Rust 用户态以 target、工具链、sysroot、libunwind 与 link flags 隔离持久 Cargo
+  compilation cache，最终 ELF 仍按完整源码内容发布不可变 generation；源码变化只重编受影响的
+  crate，不重复构建 `std` 和未变化依赖。React bundle 按 Node/npm、`ui/` 输入与引用的 presentation
+  assets 指纹复用不可变产物。`reset-rootfs` 只用于首次初始化、系统级 rootfs 变化或显式恢复干净环境。
 - macOS 的 `run-gui` 在 `exec` QEMU 前按同一 PID 启动一次 Cocoa application 激活；QEMU 仍是
   Make 的前台进程，退出码与 Ctrl-C 语义不经过额外 supervisor。
 - AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的

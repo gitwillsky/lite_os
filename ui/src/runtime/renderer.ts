@@ -4,6 +4,7 @@ import "./platform.ts";
 
 /** A rasterizable scene node the host serializes to the compositor. */
 interface Instance {
+  id: number;
   type: string;
   props: Record<string, unknown>;
   text?: string;
@@ -15,6 +16,7 @@ type Props = Record<string, unknown>;
 const primitives = new Set(["div", "span", "img"]);
 const listeners = new Map<number, (payload: unknown) => void>();
 let nextListener = 1;
+let nextNode = 1;
 const container: { children: Instance[] } = { children: [] };
 const hostContext = {};
 // The un-encoded source props per instance (functions intact), needed on update
@@ -71,14 +73,14 @@ const reconciler = Reconciler({
   resetAfterCommit: publish,
   createInstance(type: string, props: Props) {
     if (!primitives.has(type)) throw new Error(`unsupported LiteUI primitive '${type}'`);
-    const instance: Instance = { type, props: encodeProps(props), children: [] };
+    const instance: Instance = { id: nextNode++, type, props: encodeProps(props), children: [] };
     sourceProps.set(instance, props);
     return instance;
   },
   appendInitialChild: (parent: Instance, child: Instance) => parent.children.push(child),
   finalizeInitialChildren: () => false,
   shouldSetTextContent: () => false,
-  createTextInstance: (text: string): Instance => ({ type: "#text", props: {}, text: String(text), children: [] }),
+  createTextInstance: (text: string): Instance => ({ id: nextNode++, type: "#text", props: {}, text: String(text), children: [] }),
   scheduleTimeout: setTimeout,
   cancelTimeout: clearTimeout,
   noTimeout: -1,

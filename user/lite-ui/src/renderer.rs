@@ -4,8 +4,13 @@ mod box_paint;
 mod gradient;
 mod image;
 mod layout;
+mod scroll;
 
-use std::{collections::HashMap, io, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    path::PathBuf,
+};
 
 use display_proto::Size as DisplaySize;
 use linux_uapi::drm::SharedDumbBuffer;
@@ -21,7 +26,11 @@ use crate::{
 };
 use box_paint::{paint_background, paint_border, paint_shadow};
 use image::{Image, decode_png, paint_image};
-use layout::{corner_radii, text_content, to_taffy};
+use layout::{OverflowMode, corner_radii, overflow_modes, text_content, to_taffy};
+use scroll::{
+    Axis, LogicalRect, ScrollDrag, ScrollOffset, ScrollRegion, Scrollbar, paint_scrollbar,
+    paint_scrollbar_corner, scrollbar,
+};
 
 pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
 
@@ -105,6 +114,18 @@ pub struct Renderer {
     images: HashMap<String, Image>,
     font: Font,
     terminal_font: TerminalFont,
+    /// Persistent CSS scroll offsets keyed by stable React host-instance id.
+    ///
+    /// Without the stable id a keyed list update would transfer the old offset
+    /// to an unrelated structural path, unlike a browser DOM element.
+    scroll_offsets: HashMap<u64, ScrollOffset>,
+    /// Scroll containers from the latest rendered scene, in paint order.
+    scroll_regions: Vec<ScrollRegion>,
+    /// Stable scroll-container ids reused across frames for orphan cleanup.
+    active_scroll_nodes: HashSet<u64>,
+    /// User-agent scrollbar hit geometry from the latest rendered scene.
+    scrollbars: Vec<Scrollbar>,
+    scroll_drag: Option<ScrollDrag>,
 }
 
 impl Renderer {
@@ -118,6 +139,11 @@ impl Renderer {
             images: HashMap::new(),
             font: Font::open()?,
             terminal_font: TerminalFont::open()?,
+            scroll_offsets: HashMap::new(),
+            scroll_regions: Vec::new(),
+            active_scroll_nodes: HashSet::new(),
+            scrollbars: Vec::new(),
+            scroll_drag: None,
         })
     }
 
@@ -161,8 +187,24 @@ impl Renderer {
         pixels: &mut SharedDumbBuffer,
         window_group: u32,
     ) -> io::Result<()> {
-        self.render_filtered(scene, pixels, Some(window_group))
-            .map(drop)
+        // Underlay raster is a one-off filtered view, not a presented document
+        // revision. Preserve the normal render's scroll hit geometry and every
+        // stable offset; otherwise excluding the moving window would delete its
+        // scroll state and replace input routing with underlay-only regions.
+        let saved_offsets = self.scroll_offsets.clone();
+        let saved_regions = self.scroll_regions.clone();
+        let saved_active = self.active_scroll_nodes.clone();
+        let saved_scrollbars = self.scrollbars.clone();
+        let saved_drag = self.scroll_drag;
+        let result = self
+            .render_filtered(scene, pixels, Some(window_group))
+            .map(drop);
+        self.scroll_offsets = saved_offsets;
+        self.scroll_regions = saved_regions;
+        self.active_scroll_nodes = saved_active;
+        self.scrollbars = saved_scrollbars;
+        self.scroll_drag = saved_drag;
+        result
     }
 
     fn render_filtered(
@@ -171,6 +213,9 @@ impl Renderer {
         pixels: &mut SharedDumbBuffer,
         excluded_window_group: Option<u32>,
     ) -> io::Result<RenderOutput> {
+        self.scroll_regions.clear();
+        self.active_scroll_nodes.clear();
+        self.scrollbars.clear();
         if pixels.width()
             != self.viewport.width as usize * display_proto::DEVICE_SCALE_FACTOR as usize
             || pixels.height()
@@ -186,6 +231,7 @@ impl Renderer {
         }
         let mut tree = TaffyTree::new();
         let synthetic = Node {
+            id: 0,
             kind: "div".to_owned(),
             props: Default::default(),
             text: String::new(),
@@ -218,6 +264,9 @@ impl Renderer {
             hits: Vec::new(),
             key_listener: None,
         };
+        for child in &root.children {
+            collect_scroll_nodes(child, &mut self.active_scroll_nodes);
+        }
         for child in &mut root.children {
             self.paint(
                 &tree,
@@ -231,6 +280,14 @@ impl Renderer {
                     clip: None,
                 },
             )?;
+        }
+        self.scroll_offsets
+            .retain(|node_id, _| self.active_scroll_nodes.contains(node_id));
+        if self
+            .scroll_drag
+            .is_some_and(|drag| !self.active_scroll_nodes.contains(&drag.node_id))
+        {
+            self.scroll_drag = None;
         }
         // Stable-sort overlays by `z-index` ascending so higher chrome re-blits
         // last (on top); equal `z-index` keeps React paint order.
@@ -270,7 +327,14 @@ impl Renderer {
         let measured_width = if matches!(source.kind.as_str(), "span" | "#text")
             && computed.get("font-family") != Some("monospace")
         {
-            Some(self.font.measure(&computed, &text_content(&source)))
+            let text = text_content(&source);
+            Some(if computed.get("white-space") == Some("pre") {
+                text.split('\n')
+                    .map(|line| self.font.measure(&computed, line))
+                    .fold(0.0, f32::max)
+            } else {
+                self.font.measure(&computed, &text)
+            })
         } else {
             None
         };
@@ -350,11 +414,12 @@ impl Renderer {
             || context_menu.is_some()
             || wheel.is_some()
         {
+            let hit = logical_from_physical(raster);
             output.hits.push(HitRegion {
-                x: origin.0,
-                y: origin.1,
-                width: layout.size.width,
-                height: layout.size.height,
+                x: hit.x,
+                y: hit.y,
+                width: hit.width,
+                height: hit.height,
                 pointer_down,
                 pointer_move,
                 pointer_up,
@@ -500,20 +565,69 @@ impl Renderer {
         } else {
             walk.window_frame
         };
-        // A node with `overflow: hidden/scroll/auto` clips its descendants to
-        // its own box; intersect with any ancestor clip so nested containers
-        // compose. `overflow-x`/`overflow-y` count too (a scroll list sets one).
-        let clips_children = ["overflow", "overflow-x", "overflow-y"].iter().any(|prop| {
-            matches!(
-                node.computed.get(prop),
-                Some("hidden") | Some("scroll") | Some("auto")
-            )
-        });
+        let (overflow_x, overflow_y) = overflow_modes(&node.computed);
+        let clips_children = overflow_x.clips() || overflow_y.clips();
+        let scrolls_x = overflow_x.scrolls();
+        let scrolls_y = overflow_y.scrolls();
+        let scroll_port = LogicalRect {
+            x: origin.0 + layout.border.left,
+            y: origin.1 + layout.border.top,
+            width: (layout.size.width - layout.border.left - layout.border.right).max(0.0),
+            height: (layout.size.height - layout.border.top - layout.border.bottom).max(0.0),
+        };
+        let maximum = ScrollOffset {
+            x: (layout.content_size.width - layout.content_box_width()).max(0.0),
+            y: (layout.content_size.height - layout.content_box_height()).max(0.0),
+        };
+        let mut scroll_offset = ScrollOffset::default();
+        if scrolls_x || scrolls_y {
+            let offset = self.scroll_offsets.entry(node.source.id).or_default();
+            offset.x = if scrolls_x {
+                offset.x.clamp(0.0, maximum.x)
+            } else {
+                0.0
+            };
+            offset.y = if scrolls_y {
+                offset.y.clamp(0.0, maximum.y)
+            } else {
+                0.0
+            };
+            scroll_offset = *offset;
+            let visible_port = logical_intersection(scroll_port, walk.clip);
+            if visible_port.width > 0.0 && visible_port.height > 0.0 {
+                self.scroll_regions.push(ScrollRegion {
+                    node_id: node.source.id,
+                    port: visible_port,
+                    maximum,
+                    scroll_x: scrolls_x,
+                    scroll_y: scrolls_y,
+                });
+            }
+        }
         let child_clip = if clips_children {
-            Some(match walk.clip {
-                Some(clip) => bounds.intersect(clip),
-                None => bounds,
-            })
+            let port = PhysicalRect::new(
+                scroll_port.x,
+                scroll_port.y,
+                scroll_port.width,
+                scroll_port.height,
+                pixels.width(),
+                pixels.height(),
+            );
+            let mut clip = walk.clip.unwrap_or(PhysicalRect {
+                x1: 0,
+                y1: 0,
+                x2: pixels.width(),
+                y2: pixels.height(),
+            });
+            if overflow_x.clips() {
+                clip.x1 = clip.x1.max(port.x1);
+                clip.x2 = clip.x2.min(port.x2);
+            }
+            if overflow_y.clips() {
+                clip.y1 = clip.y1.max(port.y1);
+                clip.y2 = clip.y2.min(port.y2);
+            }
+            Some(clip)
         } else {
             walk.clip
         };
@@ -521,7 +635,7 @@ impl Renderer {
             self.paint(
                 tree,
                 child,
-                origin,
+                (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
                 pixels,
                 output,
                 PaintWalk {
@@ -530,6 +644,37 @@ impl Renderer {
                     ..walk
                 },
             )?;
+        }
+        let show_x = overflow_x == OverflowMode::Scroll
+            || (overflow_x == OverflowMode::Auto && maximum.x > 0.0);
+        let show_y = overflow_y == OverflowMode::Scroll
+            || (overflow_y == OverflowMode::Auto && maximum.y > 0.0);
+        if show_x {
+            let bar = scrollbar(
+                node.source.id,
+                Axis::Horizontal,
+                scroll_port,
+                maximum.x,
+                scroll_offset.x,
+                show_y,
+            );
+            paint_scrollbar(pixels, bar, walk.clip);
+            self.scrollbars.push(bar);
+        }
+        if show_y {
+            let bar = scrollbar(
+                node.source.id,
+                Axis::Vertical,
+                scroll_port,
+                maximum.y,
+                scroll_offset.y,
+                show_x,
+            );
+            paint_scrollbar(pixels, bar, walk.clip);
+            self.scrollbars.push(bar);
+        }
+        if show_x && show_y {
+            paint_scrollbar_corner(pixels, scroll_port, walk.clip);
         }
         Ok(())
     }
@@ -546,6 +691,41 @@ impl Renderer {
             self.images.insert(source.to_owned(), image);
         }
         Ok(self.images.get(source).expect("image was inserted"))
+    }
+}
+
+fn logical_from_physical(rect: PhysicalRect) -> LogicalRect {
+    LogicalRect {
+        x: rect.x1 as f32 / SCALE,
+        y: rect.y1 as f32 / SCALE,
+        width: rect.x2.saturating_sub(rect.x1) as f32 / SCALE,
+        height: rect.y2.saturating_sub(rect.y1) as f32 / SCALE,
+    }
+}
+
+fn logical_intersection(rect: LogicalRect, clip: Option<PhysicalRect>) -> LogicalRect {
+    let Some(clip) = clip.map(logical_from_physical) else {
+        return rect;
+    };
+    let x1 = rect.x.max(clip.x);
+    let y1 = rect.y.max(clip.y);
+    let x2 = (rect.x + rect.width).min(clip.x + clip.width);
+    let y2 = (rect.y + rect.height).min(clip.y + clip.height);
+    LogicalRect {
+        x: x1,
+        y: y1,
+        width: (x2 - x1).max(0.0),
+        height: (y2 - y1).max(0.0),
+    }
+}
+
+fn collect_scroll_nodes(node: &RenderNode, identities: &mut HashSet<u64>) {
+    let (overflow_x, overflow_y) = overflow_modes(&node.computed);
+    if overflow_x.scrolls() || overflow_y.scrolls() {
+        identities.insert(node.source.id);
+    }
+    for child in &node.children {
+        collect_scroll_nodes(child, identities);
     }
 }
 
@@ -643,6 +823,7 @@ mod tests {
             props.insert("data-lite-window".to_owned(), Value::from(window_id));
         }
         Node {
+            id: window_id.map_or(1, u64::from),
             kind: "div".to_owned(),
             props,
             text: String::new(),

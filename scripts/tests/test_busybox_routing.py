@@ -84,6 +84,113 @@ class BusyBoxRoutingTests(unittest.TestCase):
                     1,
                 )
 
+    def test_rust_user_cargo_cache_identity_excludes_source_revision(self) -> None:
+        module = reload_busybox("aarch64", "hvf")
+        musl = Mock(sysroot_fingerprint="sysroot-a")
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            module, "WORK", Path(directory)
+        ):
+            first = module.rust_user_cargo_target(
+                musl,
+                "cargo 1",
+                "rustc 1",
+                "driver-a",
+                "unwind-a",
+            )
+            second = module.rust_user_cargo_target(
+                musl,
+                "cargo 1",
+                "rustc 1",
+                "driver-a",
+                "unwind-a",
+            )
+            changed_sysroot = module.rust_user_cargo_target(
+                Mock(sysroot_fingerprint="sysroot-b"),
+                "cargo 1",
+                "rustc 1",
+                "driver-a",
+                "unwind-a",
+            )
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, changed_sysroot)
+        self.assertEqual(first.parent.name, "rust-user-cargo-targets")
+
+    def test_ui_asset_payload_ignores_outputs_and_tracks_external_assets(self) -> None:
+        module = reload_busybox("aarch64", "hvf")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ui = root / "ui"
+            source = ui / "src/main.ts"
+            ignored_dependency = ui / "node_modules/package/index.js"
+            ignored_output = ui / "dist/main.js"
+            external = root / "assets/icon.png"
+            for path, content in (
+                (source, "source-a"),
+                (ignored_dependency, "dependency-a"),
+                (ignored_output, "output-a"),
+                (external, "asset-a"),
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+
+            with (
+                patch.object(module, "ROOT", root),
+                patch.object(module, "UI_EXTERNAL_INPUTS", (external,)),
+            ):
+                initial = module.ui_asset_payload(ui, "node 1", "npm 1")
+                ignored_dependency.write_text("dependency-b")
+                ignored_output.write_text("output-b")
+                ignored = module.ui_asset_payload(ui, "node 1", "npm 1")
+                external.write_text("asset-b")
+                changed = module.ui_asset_payload(ui, "node 1", "npm 1")
+
+        self.assertEqual(initial, ignored)
+        self.assertNotEqual(ignored, changed)
+
+    def test_ui_asset_cache_hit_skips_npm_build(self) -> None:
+        module = reload_busybox("aarch64", "hvf")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / "target"
+            ui = root / "ui"
+            source = ui / "src/main.ts"
+            external = root / "assets/icon.png"
+            for path in (source, external):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(path.name)
+
+            def version_output(command: list[str], _: Path) -> str:
+                if command == ["/tools/node", "--version"]:
+                    return "node 1"
+                if command == ["/tools/npm", "--version"]:
+                    return "npm 1"
+                raise AssertionError(f"unexpected build command: {command}")
+
+            with (
+                patch.object(module, "ROOT", root),
+                patch.object(module, "WORK", work),
+                patch.object(module, "UI_EXTERNAL_INPUTS", (external,)),
+                patch.object(
+                    module.shutil,
+                    "which",
+                    side_effect=lambda name: f"/tools/{name}",
+                ),
+                patch.object(module, "run", side_effect=version_output) as run_mock,
+            ):
+                payload = module.ui_asset_payload(ui, "node 1", "npm 1")
+                entry = work / "ui-assets" / module.fingerprint(payload)
+                for relative in module.UI_REQUIRED_OUTPUTS:
+                    output = entry / "output" / relative
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_text(relative)
+                module.write_manifest(entry, payload)
+
+                observed = module.build_ui_assets()
+
+        self.assertEqual(observed, entry / "output")
+        self.assertEqual(run_mock.call_count, 2)
+
     def test_verify_elf_accepts_aarch64_machine_and_loader(self) -> None:
         module = reload_busybox("aarch64", "hvf")
         output = "\n".join(

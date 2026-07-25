@@ -2,8 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { list, read } from "lite:fs";
 import type { FsEntry } from "lite:fs";
 
-const ROW_HEIGHT = 18;
-
 /** Joins a directory path with a child name, keeping a single leading slash. */
 function joinPath(dir: string, name: string): string {
   return dir === "/" ? `/${name}` : `${dir}/${name}`;
@@ -43,7 +41,6 @@ export default function FileManager() {
   const [error, setError] = useState<string | null>(null);
   const [fileView, setFileView] = useState<FileView | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
 
   // Re-list whenever the directory changes; a failed op returns a JSON error
   // object (never throws), but wrap defensively regardless.
@@ -66,7 +63,6 @@ export default function FileManager() {
       setEntries([]);
       setError("failed to read directory");
     }
-    setScrollTop(0);
   }, [path, fileView]);
 
   const goto = useCallback((next: string) => { setFileView(null); setPath(next); }, []);
@@ -104,17 +100,6 @@ export default function FileManager() {
     return bundle;
   }, [cache]);
 
-  const onWheel = useCallback((rawEvent: unknown) => {
-    const event = rawEvent as { deltaY: number };
-    setScrollTop((top) => {
-      const maxScroll = Math.max(0, (entries.length + 1) * ROW_HEIGHT - 1);
-      // Each wheel notch delivers deltaY ≈ ±1; scroll a few rows per notch so
-      // the list moves at a usable speed rather than one pixel at a time.
-      const step = event.deltaY * ROW_HEIGHT * 3;
-      return Math.min(maxScroll, Math.max(0, top + step));
-    });
-  }, [entries.length]);
-
   if (fileView) {
     return (
       <div className="fm">
@@ -137,8 +122,8 @@ export default function FileManager() {
         <span className="fm__glyph" onClick={() => path !== "/" && goto(parentPath(path))}>{".."}</span>
         <span className="fm__name">{path}</span>
       </div>
-      <div className="fm__list" onWheel={onWheel}>
-        <div style={{ position: "relative", top: -scrollTop }}>
+      <div className="fm__list">
+        <div>
           {error && <div className="fm__note">{error}</div>}
           {entries.map((entry) => (
             <div

@@ -60,6 +60,10 @@
   inheritance、variables、box、Flexbox、absolute、gap、min/max、background、border、radius、shadow、
   opacity、clip、z-index、text、`white-space`、overflow 与 `pointer-events`。不支持 Grid、float、table、
   pseudo-element、media query、filter、transition、CSS animation 或 vendor prefix；不支持项构建失败。
+- React host instance 在完整 snapshot 中携带稳定 node id；LiteUI renderer 以该 id 独占 CSS scroll
+  offset。`overflow: auto/scroll` 形成通用双轴 scroll container，renderer 根据 layout content extent
+  收敛 offset、移动并裁剪 descendant、绘制 overlay UA scrollbar；wheel delta 在嵌套 scroll port
+  到达边界后向 ancestor 链式传播，应用无需保存私有 `scrollTop`。
 - layout 使用逻辑 CSS px，固定 `deviceScaleFactor=2`；默认 3008x1692 mode 对应 1504x846 viewport。
   LiteUI 是 logical/physical conversion 的唯一 owner。最终 box edge 从绝对逻辑坐标独立 snap 到物理像素。
 - text 由 Parley shaping/layout，generic `monospace` 使用 JetBrains Mono 固定单格 advance；宽字符占两格，

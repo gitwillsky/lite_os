@@ -592,8 +592,8 @@ mod tests {
             .evaluate(
                 "host.js",
                 br##"
-                __liteNative("scene.commit", '[{"type":"div","props":{},"children":[]}]');
-                __liteNative("scene.commit", '[{"type":"span","props":{},"children":[{"type":"#text","text":"ready"}]}]');
+                __liteNative("scene.commit", '[{"id":1,"type":"div","props":{},"children":[]}]');
+                __liteNative("scene.commit", '[{"id":2,"type":"span","props":{},"children":[{"id":3,"type":"#text","text":"ready"}]}]');
                 "##,
             )
             .expect("valid host commits must evaluate");

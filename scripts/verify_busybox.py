@@ -67,6 +67,8 @@ BINARY_RECIPE_VERSION = 6
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
 ROOTFS_RECIPE_VERSION = 11
+RUST_USER_CARGO_CACHE_RECIPE_VERSION = 1
+UI_ASSET_RECIPE_VERSION = 1
 if TARGET.arch == "aarch64":
     BUSYBOX_ARCH = "arm64"
     BUSYBOX_TARGET_CFLAGS = "-march=armv8-a"
@@ -77,6 +79,37 @@ else:
     BUSYBOX_TARGET_CFLAGS = "-march=rv64gc -mabi=lp64d"
     ELF_MACHINE = "RISC-V"
     RUST_USER_TARGET = "riscv64gc-unknown-linux-musl"
+RUST_USER_BUILD_STD = "std,panic_abort;llvm-libunwind"
+RUST_USER_RUSTFLAGS = (
+    "-C link-self-contained=no -C target-feature=-crt-static "
+    "-C relocation-model=pic -C panic=abort "
+    "-C link-arg=-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack"
+)
+UI_REQUIRED_OUTPUTS = (
+    "runtime.js",
+    "desktop/main.js",
+    "desktop/style.css",
+    "desktop/assets/terminal.png",
+    "desktop/assets/computer.png",
+    "desktop/assets/documents.png",
+    "desktop/assets/trash.png",
+    "desktop/assets/speaker.png",
+    "terminal/app.json",
+    "terminal/main.js",
+    "terminal/style.css",
+    "terminal/assets/terminal.png",
+    "file-manager/app.json",
+    "file-manager/main.js",
+    "file-manager/style.css",
+    "file-manager/assets/computer.png",
+)
+UI_EXTERNAL_INPUTS = (
+    ROOT / "assets/sprites-src/icon-computer.png",
+    ROOT / "assets/sprites-src/icon-documents.png",
+    ROOT / "assets/sprites-src/icon-speaker.png",
+    ROOT / "assets/sprites-src/icon-terminal.png",
+    ROOT / "assets/sprites-src/icon-trash.png",
+)
 # BusyBox 的 make-time `ARCH=arm64|riscv` 会覆盖 recipe 环境。CC/LD 必须在执行
 # LiteOS wrapper 前恢复 canonical selector；缺少该边界时 wrapper 会把 BusyBox 的
 # architecture spelling 当成公共 `ARCH` 并在编译第一项 target object 时 fail-stop。
@@ -827,6 +860,75 @@ def install_runtime_execution_fixtures(
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
 
+def rust_user_cargo_target(
+    musl: MuslCachePaths,
+    cargo_version: str,
+    rustc_version: str,
+    driver_sha256: str,
+    libunwind_sha256: str,
+) -> Path:
+    """返回只绑定编译环境、不绑定源码 revision 的持久 Cargo cache。
+
+    Args:
+        musl: 当前目标架构的 musl sysroot 身份。
+        cargo_version: 实际执行的 Cargo 版本字符串。
+        rustc_version: 实际执行的 rustc 版本字符串。
+        driver_sha256: 唯一 musl linker driver 的内容摘要。
+        libunwind_sha256: 当前静态 libunwind 的内容摘要。
+
+    Returns:
+        由完整编译环境身份隔离的 mutable Cargo target 目录。
+    """
+    compilation_payload = {
+        "kind": "rust-user-cargo-target",
+        "recipe_version": RUST_USER_CARGO_CACHE_RECIPE_VERSION,
+        "arch": TARGET.arch,
+        "rust_target": RUST_USER_TARGET,
+        "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
+        "driver_sha256": driver_sha256,
+        "cargo": cargo_version,
+        "rustc": rustc_version,
+        "build_std": RUST_USER_BUILD_STD,
+        "libunwind_sha256": libunwind_sha256,
+        "rustflags": f"{RUST_USER_RUSTFLAGS} -L native=<libunwind> -D warnings",
+    }
+    return WORK / "rust-user-cargo-targets" / fingerprint(compilation_payload)
+
+
+def ui_asset_payload(ui: Path, node_version: str, npm_version: str) -> dict[str, object]:
+    """构造 LiteUI bundle 的完整 host 构建输入身份。
+
+    Args:
+        ui: 包含 lockfile、build recipe 与 TypeScript/CSS 输入的目录。
+        node_version: 实际执行的 Node.js 版本字符串。
+        npm_version: 实际执行的 npm 版本字符串。
+
+    Returns:
+        排除 mutable output/dependency directory、包含外部 presentation assets 的规范 payload。
+
+    Raises:
+        OSError: 任一声明输入缺失或不可读。
+    """
+    inputs = tuple(
+        sorted(
+            path
+            for path in ui.rglob("*")
+            if path.is_file()
+            and path.relative_to(ui).parts[0] not in {"dist", "node_modules"}
+        )
+    )
+    return {
+        "kind": "lite-ui-assets",
+        "recipe_version": UI_ASSET_RECIPE_VERSION,
+        "node": node_version,
+        "npm": npm_version,
+        "inputs": {
+            str(path.relative_to(ROOT)): sha256(path)
+            for path in (*inputs, *UI_EXTERNAL_INPUTS)
+        },
+    }
+
+
 def build_rust_user_program(
     musl: MuslCachePaths,
     crate_name: str,
@@ -836,7 +938,6 @@ def build_rust_user_program(
 ) -> Path:
     """经唯一 Cargo→musl PIE 路径构建 Rust userspace 程序。"""
     workspace = ROOT / "user"
-    crate = workspace / crate_name
     sources = tuple(sorted(workspace.rglob("*.rs")))
     cargo = shutil.which("cargo")
     rustc = shutil.which("rustc")
@@ -848,6 +949,8 @@ def build_rust_user_program(
             f"rustc does not provide required {TARGET.arch} userspace target "
             f"{RUST_USER_TARGET}; refusing to reuse another architecture"
         )
+    cargo_version = run([cargo, "--version"], ROOT).strip()
+    rustc_version = run([rustc, "--version"], ROOT).strip()
     payload = {
         "kind": kind,
         "recipe_version": recipe_version,
@@ -855,9 +958,9 @@ def build_rust_user_program(
         "rust_target": RUST_USER_TARGET,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
-        "cargo": run([cargo, "--version"], ROOT).strip(),
-        "rustc": run([rustc, "--version"], ROOT).strip(),
-        "build_std": "std,panic_abort;llvm-libunwind",
+        "cargo": cargo_version,
+        "rustc": rustc_version,
+        "build_std": RUST_USER_BUILD_STD,
         "manifest_sha256": {
             str(path.relative_to(workspace)): sha256(path)
             for path in sorted(workspace.glob("*/Cargo.toml"))
@@ -875,6 +978,17 @@ def build_rust_user_program(
 
     libunwind = build_libunwind(musl, rustc)
     payload["libunwind_sha256"] = sha256(libunwind)
+    # OWNER: verify_busybox 在 WORK/.build.lock 下独占此 mutable Cargo cache。
+    # PROOF: toolchain、target、sysroot、libunwind 与完整 flags 都进入目录身份；最终 ELF 仍复制到
+    # 独立的 content-addressed generation，校验并发布 manifest 后才可被 rootfs 消费。
+    # FAILURE: 缺少持久目录只会让每次源码变化重复构建 std/依赖，不会改变发布产物身份。
+    cargo_target = rust_user_cargo_target(
+        musl,
+        cargo_version,
+        rustc_version,
+        str(payload["driver_sha256"]),
+        str(payload["libunwind_sha256"]),
+    )
     entry = WORK / "rust-user-programs" / fingerprint(payload)
     required_libraries = ("libc.so",)
     if manifest_matches(entry, payload, (binary_name,)):
@@ -891,12 +1005,10 @@ def build_rust_user_program(
             "LITEOS_MUSL_SYSROOT": str(musl.install),
             "LITEOS_RUST_PROVIDES_COMPILER_BUILTINS": "1",
             "CARGO_INCREMENTAL": "0",
-            "CARGO_TARGET_DIR": str(generation / "cargo-target"),
+            "CARGO_TARGET_DIR": str(cargo_target),
             linker_variable: str(ROOT / "scripts/musl_clang.py"),
             "RUSTFLAGS": (
-                "-C link-self-contained=no -C target-feature=-crt-static "
-                "-C relocation-model=pic -C panic=abort "
-                "-C link-arg=-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack "
+                f"{RUST_USER_RUSTFLAGS} "
                 f"-L native={libunwind.parent} -D warnings"
             ),
         }
@@ -926,8 +1038,7 @@ def build_rust_user_program(
             env,
         )
         built = (
-            generation
-            / "cargo-target"
+            cargo_target
             / RUST_USER_TARGET
             / "release"
             / binary_name
@@ -941,7 +1052,6 @@ def build_rust_user_program(
             required_libraries,
             binary_name,
         )
-        shutil.rmtree(generation / "cargo-target")
         write_manifest(generation, payload)
         publish_generation(generation, entry)
         published = True
@@ -987,34 +1097,44 @@ def build_terminal_session(musl: MuslCachePaths) -> Path:
 def build_ui_assets() -> Path:
     """以唯一 lockfile 构建共享 React runtime、desktop 与 app bundles。"""
     npm = shutil.which("npm")
-    if npm is None:
-        raise RuntimeError("npm is required to build LiteUI bundles")
+    node = shutil.which("node")
+    if npm is None or node is None:
+        raise RuntimeError("Node.js and npm are required to build LiteUI bundles")
     ui = ROOT / "ui"
+    payload = ui_asset_payload(
+        ui,
+        run([node, "--version"], ui).strip(),
+        run([npm, "--version"], ui).strip(),
+    )
+    # OWNER: verify_busybox 在 WORK/.build.lock 下发布唯一 LiteUI bundle cache。
+    # PROOF: Node/npm、全部 ui 输入和 build.mjs 引用的外部图标进入身份，manifest 与必需产物完整后
+    # 才原子发布。
+    # FAILURE: 缺少此 cache 会让每次 run-gui 重复 npm ci/check/build。
+    identity = fingerprint(payload)
+    entry = WORK / "ui-assets" / identity
+    cached_outputs = tuple(f"output/{path}" for path in UI_REQUIRED_OUTPUTS)
+    if manifest_matches(entry, payload, cached_outputs):
+        print(f"LiteUI asset cache hit: {identity[:12]}")
+        return entry / "output"
+
     run([npm, "ci", "--ignore-scripts"], ui)
     run([npm, "run", "check"], ui)
     run([npm, "run", "build"], ui)
     output = ui / "dist"
-    required = (
-        "runtime.js",
-        "desktop/main.js",
-        "desktop/style.css",
-        "desktop/assets/terminal.png",
-        "desktop/assets/computer.png",
-        "desktop/assets/documents.png",
-        "desktop/assets/trash.png",
-        "desktop/assets/speaker.png",
-        "terminal/app.json",
-        "terminal/main.js",
-        "terminal/style.css",
-        "terminal/assets/terminal.png",
-        "file-manager/app.json",
-        "file-manager/main.js",
-        "file-manager/style.css",
-        "file-manager/assets/computer.png",
-    )
-    if any(not (output / path).is_file() for path in required):
+    if any(not (output / path).is_file() for path in UI_REQUIRED_OUTPUTS):
         raise RuntimeError("LiteUI build omitted a required product artifact")
-    return output
+    generation = generation_directory(WORK / "ui-asset-generations", identity)
+    published = False
+    try:
+        shutil.copytree(output, generation / "output")
+        write_manifest(generation, payload)
+        publish_generation(generation, entry)
+        published = True
+    finally:
+        if not published:
+            shutil.rmtree(generation, ignore_errors=True)
+    print(f"LiteUI asset cache populated: {identity[:12]}")
+    return entry / "output"
 
 
 @dataclass(frozen=True)

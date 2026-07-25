@@ -18,6 +18,11 @@ const ABS_X: u16 = 0;
 const ABS_Y: u16 = 1;
 const REL_HWHEEL: u16 = 6;
 const REL_WHEEL: u16 = 8;
+// evdev wheel values count detents, while the display protocol and DOM wheel
+// payload use logical CSS pixels. The fixed three-line step makes native CSS
+// scrolling usable; without this conversion one detent moves content by one
+// pixel and every application is forced to invent its own multiplier.
+const WHEEL_STEP_PX: i32 = 48;
 const BTN_LEFT: u16 = 272;
 const BTN_RIGHT: u16 = 273;
 const BTN_MIDDLE: u16 = 274;
@@ -126,10 +131,10 @@ impl Input {
                     // (content should move up). DOM `deltaY` is positive when
                     // content moves down, so negate to match the pointer path's
                     // browser-style coordinate conventions.
-                    self.wheel_y -= event.value();
+                    self.wheel_y = self.wheel_y.saturating_sub(wheel_pixels(event.value()));
                 }
                 EV_REL if event.code() == REL_HWHEEL => {
-                    self.wheel_x += event.value();
+                    self.wheel_x = self.wheel_x.saturating_add(wheel_pixels(event.value()));
                 }
                 EV_KEY => {
                     if let Some((button, bit)) = button(event.code()) {
@@ -281,4 +286,25 @@ fn map_absolute(raw: i32, range: (i32, i32), extent: i32) -> i32 {
     }
     let scaled = i64::from(raw - minimum) * i64::from(extent - 1) / i64::from(maximum - minimum);
     (scaled as i32).clamp(0, extent - 1)
+}
+
+fn wheel_pixels(detents: i32) -> i32 {
+    detents.saturating_mul(WHEEL_STEP_PX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wheel_pixels;
+
+    #[test]
+    fn wheel_detents_are_converted_to_css_pixels() {
+        assert_eq!(wheel_pixels(1), 48);
+        assert_eq!(wheel_pixels(-2), -96);
+    }
+
+    #[test]
+    fn malicious_wheel_accumulation_saturates() {
+        assert_eq!(wheel_pixels(i32::MAX), i32::MAX);
+        assert_eq!(wheel_pixels(i32::MIN), i32::MIN);
+    }
 }

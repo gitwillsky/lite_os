@@ -28,6 +28,22 @@ interface LiteKeyEvent {
   modifiers: number;
 }
 
+/** Pixel-mode wheel payload delivered to onWheel handlers. */
+interface LiteWheelEvent {
+  /** Event discriminator. */
+  type: "wheel";
+  /** Surface-local logical x coordinate. */
+  x: number;
+  /** Surface-local logical y coordinate. */
+  y: number;
+  /** Signed horizontal movement in CSS pixels. */
+  deltaX: number;
+  /** Signed vertical movement in CSS pixels. */
+  deltaY: number;
+  /** DOM_DELTA_PIXEL. */
+  deltaMode: 0;
+}
+
 /** Logical rect carried by a foreign app surface. */
 interface LiteFrame {
   x: number;
