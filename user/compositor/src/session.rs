@@ -387,10 +387,20 @@ impl Session {
     }
 
     fn route_configure(&mut self, configure: Configure) -> io::Result<()> {
-        let app = self
-            .apps
-            .get_mut(&configure.surface_id)
-            .ok_or_else(|| invalid("configure targets unknown app"))?;
+        // The desktop bakes a Configure from React state and can legitimately
+        // target an app the compositor already removed: an app disconnect races
+        // the desktop's next commit (the compositor drops the app before
+        // AppClosed reaches the desktop). That is the same recoverable race the
+        // scene path skips for foreign surfaces — swallow it here instead of
+        // tearing down the whole desktop epoch. Every other violation
+        // (non-monotonic serial, encoding failure, socket error) stays fatal.
+        let Some(app) = self.apps.get_mut(&configure.surface_id) else {
+            eprintln!(
+                "compositor: configure for unknown app {} dropped (disconnect race)",
+                configure.surface_id
+            );
+            return Ok(());
+        };
         if app
             .configure
             .is_some_and(|current| configure.serial <= current.serial)
@@ -407,10 +417,14 @@ impl Session {
     }
 
     fn route_close(&self, surface_id: u32) -> io::Result<()> {
-        let app = self
-            .apps
-            .get(&surface_id)
-            .ok_or_else(|| invalid("close targets unknown app"))?;
+        // Same disconnect race as `route_configure`: the desktop may close a
+        // window whose app already vanished. Nothing left to forward the request
+        // to, and the desktop will reconcile on the next AppClosed — a no-op, not
+        // a fatal protocol error.
+        let Some(app) = self.apps.get(&surface_id) else {
+            eprintln!("compositor: close for unknown app {surface_id} dropped (disconnect race)");
+            return Ok(());
+        };
         let mut bytes = [0u8; 24];
         let message = CloseRequest { surface_id }
             .encode(&mut bytes)

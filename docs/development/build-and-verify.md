@@ -91,6 +91,17 @@ LiteUI window move 的成本主体是 evdev→compositor、CPU scanout compositi
 固定 compositor-side grab、bounded damage、异步 latest-only submit 和 steady-drag 零临时 collection，
 最终延迟按 LiteUI 契约的 AArch64+HVF 真实多窗口场景诊断。
 
+LiteUI 60 Hz frame gate 是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量宿主墙钟：
+帧间隔取自 guest 内核单调 vblank 时钟。compositor 在唯一 present 收敛点（`user/compositor/src/lib.rs`
+的 `present_scene`/`presented`）读取 DRM page-flip 事件的 `seconds`/`microseconds` 与 `sequence`；
+该时间戳由内核在 deferred display 完成路径以 `get_time_ns()`（DTB timebase 单调计数）写入，与 Python
+宿主时钟、HVF/TCG 调度抖动完全无关。`user/compositor/src/frame_stats.rs` 在 steady 帧路径零分配地累积
+相邻 vblank 间隔，每 512 帧发一行 `compositor: frame-stats` marker（微秒整数 p50/p95/p99 与
+dropped=sequence 间隙）。`scripts/verify_frame_timing.py` 用 QMP `input-send-event` 合成 virtio 输入
+驱动真实 input→compositor→scanout 链路产生帧流，解析该 marker，并按“宽但真实的绝对上限”设阈值、不在文档
+记录本机测量值。dropped==0 基于设备 vblank sequence，与宿主计时无关，是最强的真实信号并严格 gate。此 gate
+只在 AArch64+HVF 承担；RISC-V TCG 依 LiteUI 契约不承担 60 Hz gate，脚本在该目标自跳过。
+
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP
 拓扑的多窗口 host CPU 采样作诊断；secondary idle→IPI→task 与 timeout runtime gate 负责活性语义。

@@ -183,10 +183,17 @@ impl State {
 
     pub(crate) fn move_surface(&self, id: u32, x: u32, y: u32) -> Result<(), EngineError> {
         let mut surfaces = self.surfaces.borrow_mut();
-        let surface = surfaces
-            .iter_mut()
-            .find(|surface| surface.id == id)
-            .ok_or_else(|| EngineError::from_host("move targets unknown surface"))?;
+        // A move can name a surface that just disconnected: the desktop's
+        // resize/move commit references a window whose app closed mid-drag, one
+        // React frame before the `closed` event prunes it (and native
+        // MoveComplete can race the same way). The desktop reconciles on the
+        // next AppClosed, so a missing surface here is a transient race, not
+        // corruption — no-op instead of throwing (which, uncaught in JS, would
+        // exit the whole desktop under panic=abort).
+        let Some(surface) = surfaces.iter_mut().find(|surface| surface.id == id) else {
+            eprintln!("lite-ui: move for unknown surface {id} dropped (disconnect race)");
+            return Ok(());
+        };
         surface.bounds.x = x;
         surface.bounds.y = y;
         Ok(())
@@ -232,10 +239,18 @@ impl Host {
             return Err(EngineError::from_host("invalid desktop configure"));
         }
         let mut surfaces = self.state.surfaces.borrow_mut();
-        let surface = surfaces
-            .iter_mut()
-            .find(|surface| surface.id == surface_id)
-            .ok_or_else(|| EngineError::from_host("configure targets unknown surface"))?;
+        // `configure` is called during JSX render for every surface node, so it
+        // can name a surface that disconnected one frame ago (before `reconcile`
+        // prunes it). Emitting no Configure action and returning a benign serial
+        // lets that final render complete; the surface vanishes next frame. A
+        // throw here is uncaught in JS and would exit the whole desktop under
+        // panic=abort — the very crash a rapid resize was triggering.
+        let Some(surface) = surfaces.iter_mut().find(|surface| surface.id == surface_id) else {
+            eprintln!(
+                "lite-ui: configure for unknown surface {surface_id} skipped (disconnect race)"
+            );
+            return Ok("0".to_string());
+        };
         if let Some((old_width, old_height, serial)) = surface.configure
             && old_width == width
             && old_height == height

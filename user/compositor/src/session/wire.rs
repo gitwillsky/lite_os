@@ -43,8 +43,7 @@ pub(super) fn send_presented(
     let message = Presented {
         revision,
         frame_sequence: u64::from(event.sequence),
-        monotonic_ns: u64::from(event.seconds) * 1_000_000_000
-            + u64::from(event.microseconds) * 1_000,
+        monotonic_ns: crate::frame_stats::flip_monotonic_ns(&event),
     }
     .encode(&mut bytes)
     .ok_or_else(|| io::Error::other("presented encoding failed"))?;

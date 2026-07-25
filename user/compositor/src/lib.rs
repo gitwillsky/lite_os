@@ -5,6 +5,7 @@
 
 mod boot;
 mod cursor;
+mod frame_stats;
 mod input;
 mod scanout;
 mod session;
@@ -45,6 +46,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let size = scanout.size();
     let mut input = input::Input::open(size.width as i32, size.height as i32);
     let mut boot_offset = 0usize;
+    // Accumulates guest-vblank present intervals once the desktop reaches steady
+    // state; owned here (not in Session) because the loop persists across epoch
+    // resets while Session is torn down and rebuilt on desktop reconnect.
+    let mut frame_stats = frame_stats::FrameStats::new();
     // Throttles the boot slider to FRAME regardless of what woke the loop.
     //
     // Input fds now share the poll wait, so pointer motion can return early and
@@ -69,11 +74,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             scanout.reset_to_boot()?;
             boot_offset = 0;
             last_boot = Instant::now() - FRAME;
+            // The next desktop restarts steady-state measurement from scratch;
+            // drop any half-filled window from the dead epoch.
+            frame_stats.reset();
         }
         if let Some(scene) = activity.scene {
             scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
             let event = scanout.present_scene(scene.revision, input.position())?;
             session.presented(&scene, event)?;
+            // Measure only real desktop presents; boot-animation frames precede
+            // `desktop_ready` and `arm` clears the baseline so the boot→desktop
+            // transition interval is excluded.
+            if session.desktop_ready() {
+                frame_stats.arm();
+                frame_stats.record(frame_stats::flip_monotonic_ns(&event), event.sequence);
+            }
         } else if !session.desktop_ready() && last_boot.elapsed() >= FRAME {
             scanout.render_boot(boot_offset)?;
             scanout.present(0)?;

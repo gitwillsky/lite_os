@@ -27,11 +27,8 @@ impl Session {
             self.move_damage = None;
             if surface_id.is_some()
                 && let Some(desktop) = &self.desktop
-                && let Err(error) = release_buffer(
-                    &mut self.buffers,
-                    &desktop.stream,
-                    grab.underlay_buffer_id,
-                )
+                && let Err(error) =
+                    release_buffer(&mut self.buffers, &desktop.stream, grab.underlay_buffer_id)
             {
                 eprintln!("compositor: move underlay cancellation failed: {error}");
             }
@@ -109,9 +106,7 @@ impl Session {
         // offset (see `next_move_offset`) takes effect on this same event.
         if phase == PointerPhase::Motion
             && buttons == 0
-            && self
-                .move_grab
-                .is_some_and(|grab| !grab.ending)
+            && self.move_grab.is_some_and(|grab| !grab.ending)
         {
             self.finish_move()?;
             self.pointer_capture = None;
@@ -296,8 +291,7 @@ fn next_move_offset(grab: MoveGrab, x: i32, y: i32) -> Option<(i32, i32)> {
         return None;
     }
     let scale = display_proto::DEVICE_SCALE_FACTOR as i32;
-    let x =
-        (grab.origin.0 / scale + (x - grab.down.0) / scale).clamp(grab.limits.0, grab.limits.2);
+    let x = (grab.origin.0 / scale + (x - grab.down.0) / scale).clamp(grab.limits.0, grab.limits.2);
     let y = (grab.origin.1 / scale + (y - grab.down.1) / scale).clamp(grab.limits.1, grab.limits.3);
     Some((x * scale - grab.origin.0, y * scale - grab.origin.1))
 }

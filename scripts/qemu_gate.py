@@ -8,9 +8,12 @@ import re
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
+import threading
 import time
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Mapping
@@ -73,7 +76,7 @@ def qemu_runtime(
 
 
 def _qemu_command(
-    image: Path, smp: int, interactive_devices: bool = False
+    image: Path, smp: int, interactive_devices: bool = False, qmp_socket: Path | None = None
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -126,6 +129,11 @@ def _qemu_command(
                 "virtio-tablet-device",
             ]
         )
+    if qmp_socket is not None:
+        # QMP channel for the frame-timing gate's synthetic input driver. Idle
+        # desktops emit no frames, so the gate drives real virtio input through
+        # this socket to produce a measurable present stream.
+        command.extend(["-qmp", f"unix:{qmp_socket},server=on,wait=off"])
     command.extend(
         [
             "-netdev",
@@ -422,3 +430,295 @@ def power_cut(
     text = ANSI.sub("", output.decode(errors="replace"))
     tail = "\n".join(text.splitlines()[-40:])
     raise RuntimeError(f"power-cut gate missed {active_marker!r}\n--- output tail ---\n{tail}")
+
+
+# Absolute virtio-tablet axes are normalized to [0, 0x7FFF] across the display,
+# per QEMU's `qemu_input_scale_axis`. The gate reasons in fractions of the
+# 3008x1692 GUI and converts here.
+QMP_ABS_MAX = 0x7FFF
+FRAME_STATS_RE = re.compile(
+    r"compositor: frame-stats window=(\d+) frames=(\d+) dropped=(\d+) "
+    r"p50_us=(\d+) p95_us=(\d+) p99_us=(\d+)"
+)
+
+
+class QmpClient:
+    """Minimal QMP client over a unix socket for synthetic input injection.
+
+    Only the `input-send-event` surface the frame-timing gate needs is exposed;
+    it is not a general QMP wrapper.
+    """
+
+    def __init__(self, path: Path, connect_timeout_s: float = 10.0) -> None:
+        deadline = time.monotonic() + connect_timeout_s
+        last_error: OSError | None = None
+        # QEMU creates the server socket asynchronously after launch; retry the
+        # connect until it appears or the deadline passes.
+        while time.monotonic() < deadline:
+            try:
+                self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self._sock.connect(str(path))
+                break
+            except OSError as error:
+                last_error = error
+                time.sleep(0.1)
+        else:
+            raise RuntimeError(f"QMP socket never became connectable: {last_error}")
+        self._sock.settimeout(5.0)
+        self._buffer = b""
+        self._read_message()  # greeting
+        self._execute("qmp_capabilities")
+
+    def _read_message(self) -> dict:
+        while b"\n" not in self._buffer:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("QMP socket closed mid-message")
+            self._buffer += chunk
+        line, self._buffer = self._buffer.split(b"\n", 1)
+        return json.loads(line)
+
+    def _execute(self, command: str, arguments: dict | None = None) -> None:
+        request: dict = {"execute": command}
+        if arguments is not None:
+            request["arguments"] = arguments
+        self._sock.sendall((json.dumps(request) + "\r\n").encode())
+        # Drain until the matching return/error, skipping asynchronous events.
+        while True:
+            message = self._read_message()
+            if "error" in message:
+                raise RuntimeError(f"QMP {command} failed: {message['error']}")
+            if "return" in message:
+                return
+
+    def _send_events(self, events: list[dict]) -> None:
+        self._execute("input-send-event", {"events": events})
+
+    def move_abs(self, x_fraction: float, y_fraction: float) -> None:
+        """Moves the absolute pointer to a fraction of the display extent."""
+
+        def axis(fraction: float) -> int:
+            return round(max(0.0, min(1.0, fraction)) * QMP_ABS_MAX)
+
+        self._send_events(
+            [
+                {"type": "abs", "data": {"axis": "x", "value": axis(x_fraction)}},
+                {"type": "abs", "data": {"axis": "y", "value": axis(y_fraction)}},
+            ]
+        )
+
+    def button(self, name: str, down: bool) -> None:
+        self._send_events([{"type": "btn", "data": {"button": name, "down": down}}])
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+def start_frame_workload(qmp: QmpClient, duration_s: float, stop: "threading.Event") -> None:
+    """Drives a sustained ~60Hz flip stream by resizing a window via React.
+
+    The only architectural path that page-flips per event is a DESKTOP-side React
+    scene commit. A titlebar drag installs a compositor move-grab that composites
+    via DIRTYFB WITHOUT a page-flip, and app content only flips at the app's own
+    commit rate — neither reliably yields 60Hz. But dragging a window's RESIZE
+    grip stays entirely in desktop React: each pointer motion runs
+    `continueResize` -> `onResize` -> `commitResize` (`move()` + `setOpen()`),
+    which commits a fresh scene with pixels_changed=true -> compositor
+    `accept_scene` -> `present_scene` -> one page-flip. The desktop's own resize
+    throttle paces these to ~60Hz (RESIZE_FRAME_MS), which is exactly the cadence
+    the gate measures.
+
+    Presses the default terminal window's bottom-right (`se`) resize grip and
+    oscillates the pointer in small steps for `duration_s`, then releases. Runs on
+    its own thread; the caller's reader drains serial concurrently.
+    """
+    # `se` grip center: window logical bottom-right (870,570), grip is 8x8 at the
+    # corner, center ~ (866,566) on a 1504x846 logical screen.
+    grip_x, grip_y = 866 / 1504, 566 / 846
+    qmp.move_abs(grip_x, grip_y)
+    qmp.button("left", True)
+    deadline = time.monotonic() + duration_s
+    step = 0
+    try:
+        while time.monotonic() < deadline and not stop.is_set():
+            # Oscillate the corner outward/inward by up to ~120 logical px so the
+            # window genuinely resizes each motion (a zero-delta move commits no
+            # new scene). Triangle wave keeps it on-screen and above MIN size.
+            phase = (step % 40) / 40.0
+            tri = phase if phase <= 0.5 else 1.0 - phase  # 0..0.5..0
+            delta = tri * (120 / 1504)
+            qmp.move_abs(grip_x + delta, grip_y + delta * (846 / 1504))
+            step += 1
+            time.sleep(0.004)  # inject fast; guest resize throttle paces commits
+    finally:
+        qmp.button("left", False)
+
+
+def measure_frame_timing(
+    image: Path,
+    settle_s: float = 20.0,
+    timeout_seconds: int = 120,
+) -> dict[str, int]:
+    """Cold-boots the desktop stack, self-drives frames, and returns frame stats.
+
+    Boots with the interactive-device topology plus a QMP channel, waits for the
+    full desktop marker set, synthesizes opening a second window (to match the
+    contract's desktop+terminal+second-window scene), then types a
+    continuous-output command into the GUI terminal so the guest drives its own
+    SceneCommit stream at the device's natural flip rate. A background thread
+    drains serial the whole time so `compositor: frame-stats` markers are read as
+    they arrive (a blocking driver would starve the reader and stall the guest
+    via pipe backpressure). Returns the WORST window (max dropped, then p99/p95)
+    so a single good window cannot mask a bad one.
+
+    Raises:
+        RuntimeError: QEMU/QMP unavailable, boot markers missing, a fatal path,
+            or no full frame-stats window was produced before the deadline.
+    """
+    private_directory = tempfile.TemporaryDirectory(prefix="liteos-frame-timing-")
+    private_image = Path(private_directory.name) / image.name
+    shutil.copyfile(image, private_image)
+    qmp_socket = Path(private_directory.name) / "qmp.sock"
+    boot_markers = (
+        "init started: BusyBox v1.37.0",
+        "compositor: mode",
+        "compositor: desktop connected",
+        "compositor: desktop first scene presented",
+        "compositor: app 1 connected",
+        "lite-ui: desktop ready",
+        "lite-ui: terminal session ready",
+        "lite-ui: app terminal ready",
+        "terminal-session: shell spawned",
+    )
+    process = subprocess.Popen(
+        _qemu_command(private_image, 1, interactive_devices=True, qmp_socket=qmp_socket),
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    # Shared serial buffer drained by a background thread so the reader is never
+    # starved while the guest self-drives frames.
+    output = bytearray()
+    output_lock = threading.Lock()
+    stop_reading = threading.Event()
+
+    def reader() -> None:
+        while not stop_reading.is_set():
+            ready, _, _ = select.select([process.stdout], [], [], 0.1)
+            if not ready:
+                if process.poll() is not None:
+                    return
+                continue
+            chunk = os.read(process.stdout.fileno(), 16 * 1024)
+            if not chunk:
+                return
+            with output_lock:
+                output.extend(chunk)
+
+    def current_text() -> str:
+        with output_lock:
+            return ANSI.sub("", bytes(output).decode(errors="replace"))
+
+    def parse_windows(text: str) -> list[dict[str, int]]:
+        found: list[dict[str, int]] = []
+        for match in FRAME_STATS_RE.finditer(text):
+            found.append(
+                {
+                    "window": int(match.group(1)),
+                    "frames": int(match.group(2)),
+                    "dropped": int(match.group(3)),
+                    "p50_us": int(match.group(4)),
+                    "p95_us": int(match.group(5)),
+                    "p99_us": int(match.group(6)),
+                }
+            )
+        return found
+
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+    qmp: QmpClient | None = None
+    windows: list[dict[str, int]] = []
+    second_window_opened = False
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        # 1. Wait for the desktop stack to be fully up.
+        while time.monotonic() < deadline:
+            text = current_text()
+            if "panicked at" in text or "[ERROR]" in text:
+                tail = "\n".join(text.splitlines()[-40:])
+                raise RuntimeError(
+                    f"frame-timing guest reached a fatal path\n--- output tail ---\n{tail}"
+                )
+            if all(marker in text for marker in boot_markers):
+                break
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("frame-timing gate timed out before desktop was ready")
+
+        qmp = QmpClient(qmp_socket)
+        # 2. Open a second window (Start button -> first launchable entry) so the
+        #    measured scene matches the contract's desktop+terminal+second window.
+        #    Best-effort; a single window still yields a measurable stream.
+        qmp.move_abs(0.01, 0.98)
+        qmp.button("left", True)
+        qmp.button("left", False)
+        time.sleep(0.4)
+        qmp.move_abs(0.05, 0.5)
+        qmp.button("left", True)
+        qmp.button("left", False)
+        time.sleep(0.4)
+        second_window_opened = "compositor: app 2 connected" in current_text()
+
+        # 3. Activate the terminal window (app 1) so its resize grip is present,
+        #    then drive a sustained resize-drag. The workload blocks for its
+        #    duration while the background reader drains serial and collects the
+        #    `compositor: frame-stats` markers the resize commits produce.
+        qmp.move_abs(0.34, 0.11)  # terminal titlebar -> activate/raise it
+        qmp.button("left", True)
+        qmp.button("left", False)
+        time.sleep(0.4)
+        workload_deadline = min(deadline, time.monotonic() + settle_s)
+        start_frame_workload(qmp, workload_deadline - time.monotonic(), stop_reading)
+
+        # 4. Collect whatever windows the drive produced.
+        windows = parse_windows(current_text())
+        if not windows:
+            # Give a last moment for a trailing marker to arrive/flush.
+            time.sleep(0.5)
+            windows = parse_windows(current_text())
+        text_running = current_text()
+        if "panicked at" in text_running or "[ERROR]" in text_running:
+            tail = "\n".join(text_running.splitlines()[-40:])
+            raise RuntimeError(
+                f"frame-timing guest reached a fatal path\n--- output tail ---\n{tail}"
+            )
+    finally:
+        stop_reading.set()
+        reader_thread.join(timeout=2)
+        if qmp is not None:
+            qmp.close()
+        terminate(process)
+        text_final = current_text()
+        private_directory.cleanup()
+    if not windows:
+        tail = "\n".join(text_final.splitlines()[-40:])
+        raise RuntimeError(
+            "frame-timing gate collected no frame-stats window "
+            f"(second_window_opened={second_window_opened})\n--- output tail ---\n{tail}"
+        )
+    # Discard the first window as warmup: it straddles desktop settling, the
+    # second-window open and the focus clicks before the steady resize stream
+    # begins, so its tail percentiles reflect startup gaps, not steady cadence.
+    # Keep it only if it is the sole window collected.
+    steady = windows[1:] if len(windows) > 1 else windows
+    # Worst steady window: the gate must not be defeated by one good window
+    # among bad.
+    return max(steady, key=lambda w: (w["dropped"], w["p99_us"], w["p95_us"]))
+

@@ -197,7 +197,21 @@ impl Display {
             .count();
         let missing = 2usize.saturating_sub(matching);
         if missing > 0 {
-            self.allocate(missing as u32, physical)?;
+            // A rapid resize emits Configure serials faster than a buffer alloc
+            // round-trips: by the time this request reaches the compositor, a
+            // newer Configure has already superseded the size, so the compositor
+            // rejects the allocation (geometry mismatch, error 22 -> OutOfMemory
+            // kind here). That is a transient race, not a fatal condition — drop
+            // this reconfigure's buffer top-up and keep the current buffers; the
+            // next Configure (already in flight) reconciles the size. Only the
+            // rejection is swallowed; framing/mapping errors stay fatal.
+            if let Err(error) = self.allocate(missing as u32, physical) {
+                if error.kind() == io::ErrorKind::OutOfMemory {
+                    eprintln!("lite-ui: buffer request rejected (resize race), dropping frame");
+                    return Ok(());
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -498,11 +512,14 @@ impl Display {
     }
 
     fn release(&mut self, id: u32) -> io::Result<()> {
-        let index = self
-            .buffers
-            .iter()
-            .position(|buffer| buffer.id == id)
-            .ok_or_else(|| invalid("unknown buffer release"))?;
+        // A release naming a buffer this surface no longer tracks is a
+        // disconnect/reconfigure race, not corruption: during a rapid resize the
+        // compositor can retire a buffer whose mapping the app already dropped
+        // (e.g. after a configure swapped the surface size). Nothing to free —
+        // drop the release rather than abort the whole app under panic=abort.
+        let Some(index) = self.buffers.iter().position(|buffer| buffer.id == id) else {
+            return Ok(());
+        };
         if !self.buffers[index].matches(self.physical) {
             // Retired buffer: the compositor destroyed its twin, so the
             // release carries "drop the mapping", not "back to the pool".
@@ -569,7 +586,25 @@ impl Display {
                         .buffer_id;
                     self.release(id)?;
                 }
-                _ => return Err(invalid("buffer response missing")),
+                kind => {
+                    // A synchronous alloc round-trip can be interleaved with any
+                    // legitimate async event during rapid resize/render churn —
+                    // a newer Configure, an Accepted/Presented progress ack, or
+                    // input. These are not "missing responses": route them the
+                    // same way the main loop would (queue public events, fold
+                    // progress acks) and keep waiting for BufferAllocated, rather
+                    // than aborting the app under panic=abort. Only a truly
+                    // unparseable frame stays fatal.
+                    match parse_event(kind, frame.payload(), self.surface_id)
+                        .ok_or_else(|| invalid("buffer response missing"))?
+                    {
+                        WireEvent::Public(event) => self.pending.push_back(event),
+                        WireEvent::Released(id) => self.release(id)?,
+                        progress @ (WireEvent::Accepted(_) | WireEvent::Presented(_)) => {
+                            self.handle_progress(progress)?;
+                        }
+                    }
+                }
             }
         };
         for descriptor in allocated.buffers.iter().take(count as usize) {
