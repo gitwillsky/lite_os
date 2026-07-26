@@ -48,5 +48,14 @@ pub const CHANNELS: usize = 2;
 /// Interleaved stereo frames in every stream ring.
 pub const RING_CAPACITY_FRAMES: usize = 8192;
 
+/// Low-watermark that arms a `RingAvailable` refill request. The mixer notifies
+/// the producer when a consume moves `available` down across this level (from
+/// above to at-or-below), not when the ring is observed exactly full: an
+/// exactly-full edge is unrecoverable once concurrent consumption lands the
+/// producer a single period late, whereas a level crossing re-arms on every
+/// drain to the watermark. Half capacity keeps ~85 ms of headroom at 48 kHz,
+/// far larger than one refill round-trip.
+pub const LOW_WATER_FRAMES: usize = RING_CAPACITY_FRAMES / 2;
+
 /// PCM bytes in every stream ring, excluding its fixed ownership header.
 pub const RING_PCM_BYTES: usize = RING_CAPACITY_FRAMES * CHANNELS * size_of::<f32>();

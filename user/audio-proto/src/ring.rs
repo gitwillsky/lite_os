@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::{CHANNELS, RING_CAPACITY_FRAMES, RING_PCM_BYTES};
+use crate::{CHANNELS, LOW_WATER_FRAMES, RING_CAPACITY_FRAMES, RING_PCM_BYTES};
 use linux_uapi::shared_memory::SharedMapping;
 
 const RING_MAGIC: u64 = u64::from_le_bytes(*b"LTAUD001");
@@ -336,8 +336,12 @@ impl ConsumerRing {
     ///
     /// # Returns
     ///
-    /// The number of consumed frames and whether this was a full-to-available
-    /// edge requiring [`crate::ServiceMessage::RingAvailable`].
+    /// The number of consumed frames and whether this consume crossed the ring
+    /// down through [`crate::LOW_WATER_FRAMES`], requiring a
+    /// [`crate::ServiceMessage::RingAvailable`] refill request. A level crossing
+    /// (not an exactly-full observation) keeps refill re-arming under concurrent
+    /// consumption, so a single late producer refill cannot permanently starve
+    /// the stream.
     pub fn mix_into(
         &mut self,
         generation: u64,
@@ -370,7 +374,11 @@ impl ConsumerRing {
             .header()
             .consumed_frames
             .store(snapshot.consumed_frames + count as u64, Ordering::Release);
-        Ok((count, available == RING_CAPACITY_FRAMES && count != 0))
+        // Downward crossing of the refill watermark: fires once as `available`
+        // moves from above the low-water line to at-or-below it. Edge, not level,
+        // so a steady drain emits exactly one request per refill cycle.
+        let crossed = count != 0 && available > LOW_WATER_FRAMES && available - count <= LOW_WATER_FRAMES;
+        Ok((count, crossed))
     }
 
     /// Discards all published PCM and installs one newer generation.

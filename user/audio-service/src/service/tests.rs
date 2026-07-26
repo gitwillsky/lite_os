@@ -106,8 +106,12 @@ fn active_service_socket_is_not_unlinked_by_second_instance() {
 }
 
 #[test]
-fn delayed_ring_available_edge_survives_mixer_queue_and_service_socket() {
-    const DELAYED_PERIODS: usize = 8;
+fn low_watermark_crossing_arms_and_rearms_ring_available() {
+    // Periods to drain a full ring down across LOW_WATER_FRAMES: consumption is
+    // PERIOD_FRAMES/period, and the crossing fires when `available` first moves
+    // to at-or-below the watermark. 8192 → 4096 is exactly 16 periods.
+    const CROSS_PERIODS: usize =
+        (RING_CAPACITY_FRAMES - audio_proto::LOW_WATER_FRAMES) / PERIOD_FRAMES;
     let commands = Arc::new(SpscQueue::new());
     let events = Arc::new(SpscQueue::new());
     let failed = Arc::new(AtomicBool::new(false));
@@ -157,8 +161,9 @@ fn delayed_ring_available_edge_survives_mixer_queue_and_service_socket() {
     );
     let mixer_thread = thread::spawn(move || mixer.run());
 
-    grant_periods(&device, DELAYED_PERIODS);
-    wait_for_writes(&device, DELAYED_PERIODS);
+    // Drain from full down to the watermark; the last period crosses it once.
+    grant_periods(&device, CROSS_PERIODS);
+    wait_for_writes(&device, CROSS_PERIODS);
     assert!(!failed.load(Ordering::Acquire));
 
     let unique = SystemTime::now()
@@ -208,31 +213,47 @@ fn delayed_ring_available_edge_survives_mixer_queue_and_service_socket() {
         _device: std::marker::PhantomData,
     };
 
+    // Exactly one RingAvailable reaches the client from the single crossing;
+    // Progress frames may accompany it, so drain everything and count edges.
     service.drain_event_wake().expect("drain mixer wake");
     assert!(!service.drain_mixer_events().expect("route mixer events"));
     let mut frame = [0; audio_proto::MAX_FRAME_LEN];
     let mut first_edge = 0;
-    for _ in 0..2 {
-        let (message, fd) = recv_service(&client_socket, &mut frame)
-            .expect("service frame")
-            .expect("open service socket");
-        assert!(fd.is_none());
-        first_edge += usize::from(matches!(
-            message,
-            ServiceMessage::RingAvailable {
-                stream_id: 1,
-                generation: 1
+    client_socket
+        .set_nonblocking(true)
+        .expect("nonblocking client");
+    loop {
+        match recv_service(&client_socket, &mut frame) {
+            Ok(Some((message, fd))) => {
+                assert!(fd.is_none());
+                first_edge += usize::from(matches!(
+                    message,
+                    ServiceMessage::RingAvailable {
+                        stream_id: 1,
+                        generation: 1
+                    }
+                ));
             }
-        ));
+            Ok(None) => break,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("service frame: {error}"),
+        }
     }
+    client_socket
+        .set_nonblocking(false)
+        .expect("blocking client");
     assert_eq!(first_edge, 1);
 
+    // A refill that keeps `available` strictly above the watermark does NOT
+    // re-arm — the edge fires only on a fresh downward crossing, so a steady
+    // drain emits exactly one request per refill cycle (no notification storm).
+    // Write two periods then consume one, so the level stays above the line.
     assert_eq!(
-        producer.write(1, &[[0.5, -0.5]; PERIOD_FRAMES]),
-        Ok((PERIOD_FRAMES, false))
+        producer.write(1, &[[0.5, -0.5]; 2 * PERIOD_FRAMES]),
+        Ok((2 * PERIOD_FRAMES, false))
     );
     grant_periods(&device, 1);
-    wait_for_writes(&device, DELAYED_PERIODS + 1);
+    wait_for_writes(&device, CROSS_PERIODS + 1);
     service
         .drain_event_wake()
         .expect("drain partial-refill wake");
@@ -244,33 +265,67 @@ fn delayed_ring_available_edge_survives_mixer_queue_and_service_socket() {
     client_socket
         .set_nonblocking(true)
         .expect("nonblocking client");
-    let error = recv_service(&client_socket, &mut frame)
-        .expect_err("partial refill must not rearm the full-to-available edge");
-    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    // Progress frames still flow (they track playback time); only assert that no
+    // RingAvailable re-fires while the level stays above the watermark.
+    loop {
+        match recv_service(&client_socket, &mut frame) {
+            Ok(Some((message, fd))) => {
+                assert!(fd.is_none());
+                assert!(
+                    !matches!(
+                        message,
+                        ServiceMessage::RingAvailable {
+                            stream_id: 1,
+                            generation: 1
+                        }
+                    ),
+                    "staying above the watermark must not re-fire the crossing",
+                );
+            }
+            Ok(None) => break,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("partial-refill service frame: {error}"),
+        }
+    }
     client_socket
         .set_nonblocking(false)
         .expect("blocking client");
 
-    let released = DELAYED_PERIODS * PERIOD_FRAMES;
+    // Refill a little above the watermark, then drain across it again: the
+    // crossing re-arms and RingAvailable fires once more — the recovery the
+    // exactly-full edge could never provide. Level here is 4352 (4608 written
+    // minus one consumed period); +256 → 4608, and two periods drain to 4096,
+    // re-crossing the watermark exactly once.
     assert_eq!(
-        producer.write(1, &vec![[0.5, -0.5]; released]),
-        Ok((released, false))
+        producer.write(1, &[[0.5, -0.5]; PERIOD_FRAMES]),
+        Ok((PERIOD_FRAMES, false))
     );
-    grant_periods(&device, 1);
-    wait_for_writes(&device, DELAYED_PERIODS + 2);
+    grant_periods(&device, 2);
+    wait_for_writes(&device, CROSS_PERIODS + 1 + 2);
     service.drain_event_wake().expect("drain rearmed wake");
     assert!(!service.drain_mixer_events().expect("route rearmed edge"));
-    let (message, fd) = recv_service(&client_socket, &mut frame)
-        .expect("rearmed service frame")
-        .expect("open service socket");
-    assert!(fd.is_none());
-    assert_eq!(
-        message,
-        ServiceMessage::RingAvailable {
-            stream_id: 1,
-            generation: 1
+    let mut rearmed_edge = 0;
+    client_socket
+        .set_nonblocking(true)
+        .expect("nonblocking drain");
+    loop {
+        match recv_service(&client_socket, &mut frame) {
+            Ok(Some((message, fd))) => {
+                assert!(fd.is_none());
+                rearmed_edge += usize::from(matches!(
+                    message,
+                    ServiceMessage::RingAvailable {
+                        stream_id: 1,
+                        generation: 1
+                    }
+                ));
+            }
+            Ok(None) => break,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("rearmed service frame: {error}"),
         }
-    );
+    }
+    assert_eq!(rearmed_edge, 1);
 
     assert!(commands.push(MixerCommand::Shutdown).is_ok());
     grant_periods(&device, 1);

@@ -99,9 +99,15 @@ fn one_delayed_ring_available_edge_refills_every_consumed_period() {
     );
 
     let mut output = [[0.0; CHANNELS]; 256];
-    for delayed_periods in 2..=5 {
+    // Periods to drain a full ring down across the refill watermark. Consumption
+    // is `output.len()` frames/period; the crossing fires once at the boundary.
+    let cross_periods =
+        (RING_CAPACITY_FRAMES - audio_proto::LOW_WATER_FRAMES).div_ceil(output.len());
+    // Repeat the drain→refill cycle: each cycle must produce exactly one edge and
+    // one edge must restore the ring to full, proving sustained playback re-arms.
+    for _ in 0..4 {
         let mut available_edges = 0;
-        for _ in 0..delayed_periods {
+        for _ in 0..cross_periods {
             let (consumed, became_available) =
                 consumer.mix_into(generation, 1.0, &mut output).unwrap();
             assert_eq!(consumed, output.len());
@@ -109,7 +115,7 @@ fn one_delayed_ring_available_edge_refills_every_consumed_period() {
         }
         assert_eq!(
             available_edges, 1,
-            "continuous consumption must coalesce to one full-to-available edge"
+            "draining across the low watermark must coalesce to one refill edge"
         );
         let before_refill = worker.media[&7].ring.as_ref().unwrap().snapshot().unwrap();
         send_service(
@@ -143,7 +149,7 @@ fn one_delayed_ring_available_edge_refills_every_consumed_period() {
         assert_eq!(
             refilled.produced_frames - refilled.consumed_frames,
             RING_CAPACITY_FRAMES as u64,
-            "one delayed edge must restore the shared ring to full"
+            "one refill edge must restore the shared ring to full"
         );
     }
 }

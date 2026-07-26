@@ -28,6 +28,10 @@ kernel ALSA owner 不得读取 VirtIO private queue state；VirtIO adapter 不�
   producer/consumer index 与 generation
   使用 acquire/release publication。任何越界 index、非法 generation 或 frame/fd 数量损坏都撤销
   当前 stream；协议身份损坏撤销整个连接。
+- consumer 在一次消费把 available 从**高于**低水位 `LOW_WATER_FRAMES`（capacity 的一半）下穿到
+  **至或低于**该水位时发一次 `RingAvailable` 请求 producer 补齐——是**电平下穿边沿**而非「恰好满」
+  观察。恰好满边沿在并发消费下 producer 一次补迟即永久失联导致 ring 耗尽静音；下穿边沿每次排空到
+  水位都 re-arm，单次调度延迟不致饥饿。producer 侧对称地在 ring 由空转非空时发 `RingNonempty`。
 - app quota 8、session quota 32 必须在 memfd publication 前原子预留；所有失败路径回滚两级 reservation。
 - master state 只由 service 修改。普通 app 只能修改 element-local `volume`/`muted`；desktop-only
   `lite:audio-system` 只能取得 snapshot 和请求更新，不能成为第二 owner。
