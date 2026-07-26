@@ -1,7 +1,7 @@
 //! CSS-to-taffy style lowering for the React host snapshot.
 
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, JustifyContent, LengthPercentage,
+    AlignItems, Dimension, Display, FlexDirection, FlexWrap, JustifyContent, LengthPercentage,
     LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
 };
 use taffy::{Overflow, Point};
@@ -62,6 +62,14 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
             Some("row-reverse") => FlexDirection::RowReverse,
             Some("column-reverse") => FlexDirection::ColumnReverse,
             _ => FlexDirection::Row,
+        },
+        // `nowrap` (the CSS initial value), an absent property and any
+        // unrecognized keyword all keep items on a single line; only `wrap`
+        // and `wrap-reverse` let a flex container break onto multiple lines.
+        flex_wrap: match computed.get("flex-wrap") {
+            Some("wrap") => FlexWrap::Wrap,
+            Some("wrap-reverse") => FlexWrap::WrapReverse,
+            _ => FlexWrap::NoWrap,
         },
         align_items: computed.get("align-items").and_then(align_items),
         justify_content: computed.get("justify-content").and_then(justify_content),
@@ -425,6 +433,39 @@ mod tests {
         assert_eq!(style.overflow.x, taffy::Overflow::Scroll);
         assert_eq!(style.overflow.y, taffy::Overflow::Scroll);
         assert_eq!(style.scrollbar_width, 0.0);
+    }
+
+    #[test]
+    fn flex_wrap_keyword_maps_to_taffy_and_defaults_to_nowrap() {
+        fn wrap_of(css: &str) -> taffy::style::FlexWrap {
+            let sheet = Sheet::parse(css).expect("flex-wrap style parses");
+            let node = Node {
+                id: 1,
+                kind: "div".to_owned(),
+                props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+                text: String::new(),
+                children: Vec::new(),
+            };
+            to_taffy(&node, &sheet.compute(&node, &[]), None).flex_wrap
+        }
+
+        assert_eq!(
+            wrap_of(".box { flex-wrap: wrap; }"),
+            taffy::style::FlexWrap::Wrap
+        );
+        assert_eq!(
+            wrap_of(".box { flex-wrap: wrap-reverse; }"),
+            taffy::style::FlexWrap::WrapReverse
+        );
+        // Explicit `nowrap` and an absent property both stay single-line.
+        assert_eq!(
+            wrap_of(".box { flex-wrap: nowrap; }"),
+            taffy::style::FlexWrap::NoWrap
+        );
+        assert_eq!(
+            wrap_of(".box { display: flex; }"),
+            taffy::style::FlexWrap::NoWrap
+        );
     }
 
     #[test]

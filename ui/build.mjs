@@ -82,7 +82,7 @@ const properties = new Set([
   "border-left-color", "border-left-style", "border-left-width", "border-radius", "border-right",
   "border-right-color", "border-right-style", "border-right-width", "border-style", "border-top",
   "border-top-color", "border-top-style", "border-top-width", "border-width",
-  "bottom", "box-shadow", "color", "display", "flex", "flex-direction",
+  "bottom", "box-shadow", "color", "display", "flex", "flex-direction", "flex-wrap",
   "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
   "left", "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top",
   "max-height", "max-width", "min-height",
@@ -162,6 +162,16 @@ for (const [id, entryName, styleName] of products) {
   await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));
   if (id === "file-manager") {
     await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
+    await copyFile(join(root, "../assets/sprites-src/xp-folder.png"), join(assets, "folder.png"));
+    await copyFile(join(root, "../assets/sprites-src/xp-file.png"), join(assets, "file.png"));
+    await copyFile(join(root, "../assets/sprites-src/xp-folder-16.png"), join(assets, "folder-16.png"));
+    await copyFile(join(root, "../assets/sprites-src/xp-file-16.png"), join(assets, "file-16.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-back.png"), join(assets, "tb-back.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-forward.png"), join(assets, "tb-forward.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-up.png"), join(assets, "tb-up.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-search.png"), join(assets, "tb-search.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-folders.png"), join(assets, "tb-folders.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-views.png"), join(assets, "tb-views.png"));
   }
   if (id !== "desktop") {
     await copyFile(join(root, `src/${id}/app.json`), join(directory, "app.json"));
