@@ -67,7 +67,7 @@ BINARY_RECIPE_VERSION = 6
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 13
+ROOTFS_RECIPE_VERSION = 14
 # APK assembly temporarily holds both the installed tree and its signed base
 # package. The bundled FLAC makes the old 128 MiB image fail with ENOSPC during
 # that transaction, so the product baseline reserves 512 MiB to keep package
@@ -114,6 +114,7 @@ UI_REQUIRED_OUTPUTS = (
     "my-computer/assets/computer.png",
     "my-computer/assets/drive.png",
     "my-computer/assets/drive-16.png",
+    "my-computer/assets/tb-folders.png",
     "music-player/app.json",
     "music-player/main.js",
     "music-player/style.css",
@@ -1373,6 +1374,7 @@ def create_image(
         "mkdir /tmp",
         "set_inode_field /tmp mode 041777",
         "mkdir /usr",
+        "mkdir /usr/bin",
         "mkdir /usr/lib",
         "mkdir /usr/lib/lite-ui",
         "mkdir /usr/share",
@@ -1422,7 +1424,10 @@ def create_image(
             f"set_inode_field {artifact.destination} mode 0100{artifact.mode:o}"
         )
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
-    commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
+    # npm/pnpm use `#!/usr/bin/env node`; without the standard env location apk installs succeed
+    # but every JavaScript package-manager entry fails exec with ENOENT.
+    commands.append("ln /bin/init /usr/bin/env")
+    commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 2}")
     script_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile("w", delete=False) as script:
@@ -1455,8 +1460,13 @@ def create_image(
     if len({entries[name] for name in expected}) != 1:
         raise RuntimeError("BusyBox applets must be hardlinks to one inode")
     metadata = run([str(find_debugfs()), "-R", "stat /bin/init", str(image)], ROOT)
-    if f"Links: {len(expected)}" not in metadata:
+    if f"Links: {len(expected) + 1}" not in metadata:
         raise RuntimeError("BusyBox inode link count does not match rootfs applets")
+    standard_env = run(
+        [str(find_debugfs()), "-R", "stat /usr/bin/env", str(image)], ROOT
+    )
+    if f"Inode: {entries['init']}" not in standard_env or "Mode:  0755" not in standard_env:
+        raise RuntimeError("BusyBox rootfs lacks the standard /usr/bin/env hardlink")
     stress_commands = {"liteos-stress", *STRESS_LINKS}
     missing_stress = sorted(stress_commands - entries.keys())
     if missing_stress:
@@ -1568,6 +1578,7 @@ def create_image(
         "/usr/share/liteos/apps/my-computer/assets/computer.png",
         "/usr/share/liteos/apps/my-computer/assets/drive.png",
         "/usr/share/liteos/apps/my-computer/assets/drive-16.png",
+        "/usr/share/liteos/apps/my-computer/assets/tb-folders.png",
         "/usr/share/liteos/apps/music-player/app.json",
         "/usr/share/liteos/apps/music-player/main.js",
         "/usr/share/liteos/apps/music-player/style.css",

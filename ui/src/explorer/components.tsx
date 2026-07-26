@@ -1,145 +1,39 @@
-import React from "react";
+import React, { useState } from "react";
 import type { FsEntry } from "lite:fs";
-import { formatSize as formatSizeFor } from "./model.ts";
-import type { Handlers, ViewMode } from "./use-browser.ts";
+import { TextInput, useHoverFlag } from "../design-system/controls.tsx";
+import type { MenuItem } from "../design-system/controls.tsx";
+import { formatSize as formatSizeFor, measureText11 } from "./model.ts";
+import { fsListing } from "./use-browser.ts";
+import type { SortColumn, SortState, ViewMode } from "./use-browser.ts";
 
-/** One dropdown/context-menu row (shape shared with ContextMenu). */
-export interface MenuItem {
-  id: string;
-  label: string;
-  onSelect?: () => void;
-}
+export type { MenuItem };
 
 // evdev keycodes delivered on a focused input's onKeyDown for commit/cancel.
 const KEY_ESC = 1;
 const KEY_ENTER = 28;
 
-interface Chrome {
-  prefix: string;
-  bundle: (key: string) => Handlers;
-  cls: (base: string, key: string, extra?: string) => string;
-}
-
-/** Fixed menubar row. Each label carries its dropdown rows (or null for
- * label-only chrome); the dropdown opens just under the clicked label at a
- * per-label x offset derived from the fixed stride. */
-export function MenuBar({ prefix, menus, labelX, stride, top, bundle, cls, openMenu }: Chrome & {
-  menus: { label: string; items: MenuItem[] | null }[];
-  labelX: number;
-  stride: number;
-  top: number;
-  openMenu: (x: number, y: number, items: MenuItem[]) => void;
-}) {
-  return (
-    <div className={`${prefix}__menubar`}>
-      {menus.map((menu, index) => (
-        <span
-          key={menu.label}
-          className={cls(`${prefix}__menu`, `menu:${menu.label}`)}
-          {...bundle(`menu:${menu.label}`)}
-          onClick={() => menu.items && openMenu(labelX + index * stride, top, menu.items)}
-        >
-          {menu.label}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-/** One standard-toolbar button; `disabled` grays the glyph and drops clicks. */
-export function TbButton({ prefix, id, icon, label, disabled, bundle, cls, onClick }: Chrome & {
-  id: string;
-  icon: string;
-  label?: string;
-  disabled?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <div
-      className={cls(`${prefix}__tb`, `tb:${id}`, disabled ? `${prefix}__tb--disabled` : undefined)}
-      {...bundle(`tb:${id}`)}
-      onClick={() => !disabled && onClick?.()}
-    >
-      <img className={`${prefix}__tb-icon`} src={icon}/>
-      {label && <span className={`${prefix}__tb-label`}>{label}</span>}
-    </div>
-  );
-}
-
-export function TbSeparator({ prefix }: { prefix: string }) {
-  return <div className={`${prefix}__tb-sep`}/>;
-}
-
-/** Address row: sunken combo (icon + text) with an editable draft on focus,
- * a chevron dropdown of quick targets, and an optional Go button. */
-export function AddressBar({ prefix, label, icon, text, draft, onBeginEdit, onDraftChange, onCommit, onCancel, dropItems, go, bundle, cls, openMenu }: Chrome & {
-  label: string;
-  icon: string;
-  text: string;
-  draft: string | null;
-  onBeginEdit: () => void;
-  onDraftChange: (value: string) => void;
-  onCommit: () => void;
-  onCancel: () => void;
-  dropItems?: MenuItem[];
-  go?: { label: string; icon: string; onClick: () => void };
-  openMenu: (x: number, y: number, items: MenuItem[]) => void;
-}) {
-  return (
-    <div className={`${prefix}__addressbar`}>
-      <span className={`${prefix}__addr-label`}>{label}</span>
-      <div className={`${prefix}__addr-field`} onClick={onBeginEdit}>
-        <img className={`${prefix}__addr-icon`} src={icon}/>
-        {draft === null ? (
-          <span className={`${prefix}__addr-path`}>{text}</span>
-        ) : (
-          <input
-            className={`${prefix}__addr-input`}
-            value={draft}
-            onInput={(event) => onDraftChange((event as unknown as { value: string }).value)}
-            onKeyDown={(event) => {
-              const key = event as unknown as { code: number; value: number };
-              if (key.value === 0) return;
-              if (key.code === KEY_ENTER) onCommit();
-              else if (key.code === KEY_ESC) onCancel();
-            }}
-          />
-        )}
-        {dropItems && (
-          <span
-            className={`${prefix}__addr-drop`}
-            {...bundle("addr:drop")}
-            onClick={() => openMenu(8, 64, dropItems)}
-          >
-            <img className={`${prefix}__caret`} src="assets/caret-down.png"/>
-          </span>
-        )}
-      </div>
-      {go && (
-        <div className={cls(`${prefix}__go`, "go")} {...bundle("go")} onClick={go.onClick}>
-          <img className={`${prefix}__go-icon`} src={go.icon}/>
-          <span>{go.label}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Inline rename field shared by the icon/list/details views. */
-export function RenameInput({ prefix, value, onChange, onCommit, onCancel }: {
-  prefix: string;
+/** Inline rename field shared by the icon/list/details views. XP behavior:
+ * the box hugs the current text (real atlas advances, recomputed on every
+ * keystroke, clamped to the cell/column) on the shared text-input chrome and
+ * auto-focuses on appearance so typing works without a click. */
+export function RenameInput({ value, maxWidth, onChange, onCommit, onCancel }: {
   value: string;
+  maxWidth: number;
   onChange: (value: string) => void;
   onCommit: () => void;
   onCancel: () => void;
 }) {
+  // 4px horizontal padding + 2px caret + 2px slack; never narrower than the
+  // caret alone, never wider than the label cell/column it replaces.
+  const width = Math.min(maxWidth, Math.max(16, Math.ceil(measureText11(value)) + 8));
   return (
-    <input
-      className={`${prefix}__rename`}
+    <TextInput
+      width={width}
+      autoFocus
       value={value}
-      onInput={(event) => onChange((event as unknown as { value: string }).value)}
-      onKeyDown={(event) => {
-        const key = event as unknown as { code: number; value: number };
+      onInput={onChange}
+      onKeyDown={(rawEvent) => {
+        const key = rawEvent as { code: number; value: number };
         if (key.value === 0) return;
         if (key.code === KEY_ENTER) onCommit();
         else if (key.code === KEY_ESC) onCancel();
@@ -148,18 +42,24 @@ export function RenameInput({ prefix, value, onChange, onCommit, onCancel }: {
   );
 }
 
-interface FolderViewChrome extends Chrome {
-  prefix: string;
+interface FolderViewChrome {
   viewMode: ViewMode;
   entries: FsEntry[];
   error: string | null;
   iconLarge: (entry: FsEntry) => string;
   iconSmall: (entry: FsEntry) => string;
   entryType: (entry: FsEntry) => string;
-  columns: { name: string; size: string; type: string };
-  selected: string | null;
+  columns: { name: string; size: string; type: string; mtime: string };
+  /** App-locale mtime cell formatter (zh-CN vs en-US XP date style). */
+  formatDate: (mtime: number) => string;
+  sort: SortState;
+  onSort: (column: SortColumn) => void;
+  selected: string[];
   renaming: string | null;
   renameDraft: string;
+  /** Icon-cell content width the rename box may not exceed (list/details use
+   * a wider fixed cap). */
+  renameMaxWidth: number;
   onSelect: (entry: FsEntry) => void;
   onOpen: (entry: FsEntry) => void;
   onEntryMenu: (entry: FsEntry, x: number, y: number) => void;
@@ -172,105 +72,163 @@ interface FolderViewChrome extends Chrome {
   onRenameCancel: () => void;
 }
 
+/** One details header cell: clickable, showing XP's ∧/∨ direction arrow on
+ * the active column (the font atlas lacks ▲▼, so ASCII strokes are used). */
+function HeaderCell({ className, column, label, sort, onSort }: {
+  className: string;
+  column: SortColumn;
+  label: string;
+  sort: SortState;
+  onSort: (column: SortColumn) => void;
+}) {
+  const arrow = sort.column === column ? (sort.ascending ? " ∧" : " ∨") : "";
+  return (
+    <span className={className} onClick={() => onSort(column)}>
+      {label}{arrow}
+    </span>
+  );
+}
+
+interface RowProps {
+  entry: FsEntry;
+  selected: boolean;
+  renaming: boolean;
+  renameDraft: string;
+  renameMaxWidth: number;
+  icon: string;
+  onSelect: (entry: FsEntry) => void;
+  onOpen: (entry: FsEntry) => void;
+  onEntryMenu: (entry: FsEntry, x: number, y: number) => void;
+  onRenameDraftChange: (value: string) => void;
+  onRenameCommit: () => void;
+  onRenameCancel: () => void;
+}
+
+function rowCallbacks(props: RowProps) {
+  return {
+    onClick: () => props.onSelect(props.entry),
+    onDoubleClick: () => props.onOpen(props.entry),
+    onContextMenu: (rawEvent: unknown) => {
+      const event = rawEvent as { x: number; y: number };
+      props.onEntryMenu(props.entry, event.x, event.y);
+    },
+  };
+}
+
+function RenameOrLabel({ className, name, props }: {
+  className: string;
+  name: string;
+  props: RowProps;
+}) {
+  return props.renaming ? (
+    <RenameInput
+      value={props.renameDraft}
+      maxWidth={props.renameMaxWidth}
+      onChange={props.onRenameDraftChange}
+      onCommit={props.onRenameCommit}
+      onCancel={props.onRenameCancel}
+    />
+  ) : (
+    <span className={className}>{name}</span>
+  );
+}
+
+function IconCell(props: RowProps) {
+  const [hovered, handlers] = useHoverFlag();
+  const className = `icon-cell${hovered ? " icon-cell--hover" : ""}${props.selected ? " icon-cell--sel" : ""}`;
+  return (
+    <div className={className} {...handlers} {...rowCallbacks(props)}>
+      <img className="icon-cell__img" src={props.icon}/>
+      <RenameOrLabel className="icon-cell__label" name={props.entry.name} props={props}/>
+    </div>
+  );
+}
+
+function ListRow(props: RowProps) {
+  const [hovered, handlers] = useHoverFlag();
+  const className = `list-row${hovered ? " list-row--hover" : ""}${props.selected ? " list-row--sel" : ""}`;
+  return (
+    <div className={className} {...handlers} {...rowCallbacks(props)}>
+      <img className="list-row__img" src={props.icon}/>
+      <RenameOrLabel className="list-row__name" name={props.entry.name} props={props}/>
+    </div>
+  );
+}
+
+function DetailsRow(props: RowProps & {
+  type: string;
+  size: string;
+  mtime: string;
+}) {
+  const [hovered, handlers] = useHoverFlag();
+  const className = `details-row${hovered ? " details-row--hover" : ""}${props.selected ? " details-row--sel" : ""}`;
+  return (
+    <div className={className} {...handlers} {...rowCallbacks(props)}>
+      <img className="details-row__img" src={props.icon}/>
+      <RenameOrLabel className="details-cell-name" name={props.entry.name} props={props}/>
+      <span className="details-cell-size">{props.size}</span>
+      <span className="details-cell-type">{props.type}</span>
+      <span className="details-cell-mtime">{props.mtime}</span>
+    </div>
+  );
+}
+
 /** The scrollable folder area: large icons, list, or details rows, with
  * selection, inline rename and context menus. All fs logic lives in the
  * `useBrowser` hook; this component is pure rendering. */
 export function FolderView(props: FolderViewChrome) {
-  const { prefix, viewMode, entries, error, selected, renaming, renameDraft } = props;
-  const renameProps = {
-    prefix,
-    value: renameDraft,
-    onChange: props.onRenameDraftChange,
-    onCommit: props.onRenameCommit,
-    onCancel: props.onRenameCancel,
-  };
+  const { viewMode, entries, error, selected, renaming, renameDraft } = props;
+  const rowProps = (entry: FsEntry): RowProps => ({
+    entry,
+    selected: selected.includes(entry.name),
+    renaming: renaming === entry.name,
+    renameDraft,
+    renameMaxWidth: viewMode === "icons" ? props.renameMaxWidth : 280,
+    icon: viewMode === "icons" ? props.iconLarge(entry) : props.iconSmall(entry),
+    onSelect: props.onSelect,
+    onOpen: props.onOpen,
+    onEntryMenu: props.onEntryMenu,
+    onRenameDraftChange: props.onRenameDraftChange,
+    onRenameCommit: props.onRenameCommit,
+    onRenameCancel: props.onRenameCancel,
+  });
   return (
     <div
-      className={`${prefix}__view`}
+      className="folder-view"
       onClick={props.onBlankClick}
       onContextMenu={props.onBlankMenu ? (rawEvent) => {
         const event = rawEvent as unknown as { x: number; y: number };
         props.onBlankMenu!(event.x, event.y);
       } : undefined}
     >
-      {error && <div className={`${prefix}__note`}>{error}</div>}
-      {props.heading && <div className={`${prefix}__cat`}>{props.heading}</div>}
+      {error && <div className="folder-view__note">{error}</div>}
+      {props.heading && <div className="cat-heading">{props.heading}</div>}
       {viewMode === "icons" && (
-        <div className={`${prefix}__icons`}>
-          {entries.map((entry) => (
-            <div
-              key={entry.name}
-              className={props.cls(`${prefix}__icon`, `row:${entry.name}`, selected === entry.name ? `${prefix}__icon--sel` : undefined)}
-              {...props.bundle(`row:${entry.name}`)}
-              onClick={() => props.onSelect(entry)}
-              onDoubleClick={() => props.onOpen(entry)}
-              onContextMenu={(rawEvent) => {
-                const event = rawEvent as unknown as { x: number; y: number };
-                props.onEntryMenu(entry, event.x, event.y);
-              }}
-            >
-              <img className={`${prefix}__icon-img`} src={props.iconLarge(entry)}/>
-              {renaming === entry.name ? (
-                <RenameInput {...renameProps}/>
-              ) : (
-                <span className={`${prefix}__icon-label`}>{entry.name}</span>
-              )}
-            </div>
-          ))}
+        <div className="icon-grid">
+          {entries.map((entry) => <IconCell key={entry.name} {...rowProps(entry)}/>)}
         </div>
       )}
       {viewMode === "list" && (
-        <div className={`${prefix}__list`}>
-          {entries.map((entry) => (
-            <div
-              key={entry.name}
-              className={props.cls(`${prefix}__lrow`, `row:${entry.name}`, selected === entry.name ? `${prefix}__lrow--sel` : undefined)}
-              {...props.bundle(`row:${entry.name}`)}
-              onClick={() => props.onSelect(entry)}
-              onDoubleClick={() => props.onOpen(entry)}
-              onContextMenu={(rawEvent) => {
-                const event = rawEvent as unknown as { x: number; y: number };
-                props.onEntryMenu(entry, event.x, event.y);
-              }}
-            >
-              <img className={`${prefix}__lrow-img`} src={props.iconSmall(entry)}/>
-              {renaming === entry.name ? (
-                <RenameInput {...renameProps}/>
-              ) : (
-                <span className={`${prefix}__lrow-name`}>{entry.name}</span>
-              )}
-            </div>
-          ))}
+        <div className="list-view">
+          {entries.map((entry) => <ListRow key={entry.name} {...rowProps(entry)}/>)}
         </div>
       )}
       {viewMode === "details" && (
-        <div className={`${prefix}__details`}>
-          <div className={`${prefix}__dh`}>
-            <span className={`${prefix}__dh-name`}>{props.columns.name}</span>
-            <span className={`${prefix}__dh-size`}>{props.columns.size}</span>
-            <span className={`${prefix}__dh-type`}>{props.columns.type}</span>
+        <div className="details-view">
+          <div className="details-header">
+            <HeaderCell className="details-col-name" column="name" label={props.columns.name} sort={props.sort} onSort={props.onSort}/>
+            <HeaderCell className="details-col-size" column="size" label={props.columns.size} sort={props.sort} onSort={props.onSort}/>
+            <HeaderCell className="details-col-type" column="type" label={props.columns.type} sort={props.sort} onSort={props.onSort}/>
+            <HeaderCell className="details-col-mtime" column="mtime" label={props.columns.mtime} sort={props.sort} onSort={props.onSort}/>
           </div>
           {entries.map((entry) => (
-            <div
+            <DetailsRow
               key={entry.name}
-              className={props.cls(`${prefix}__drow`, `row:${entry.name}`, selected === entry.name ? `${prefix}__drow--sel` : undefined)}
-              {...props.bundle(`row:${entry.name}`)}
-              onClick={() => props.onSelect(entry)}
-              onDoubleClick={() => props.onOpen(entry)}
-              onContextMenu={(rawEvent) => {
-                const event = rawEvent as unknown as { x: number; y: number };
-                props.onEntryMenu(entry, event.x, event.y);
-              }}
-            >
-              <img className={`${prefix}__drow-img`} src={props.iconSmall(entry)}/>
-              {renaming === entry.name ? (
-                <RenameInput {...renameProps}/>
-              ) : (
-                <span className={`${prefix}__dc-name`}>{entry.name}</span>
-              )}
-              <span className={`${prefix}__dc-size`}>{formatSizeFor(entry)}</span>
-              <span className={`${prefix}__dc-type`}>{props.entryType(entry)}</span>
-            </div>
+              {...rowProps(entry)}
+              type={props.entryType(entry)}
+              size={formatSizeFor(entry)}
+              mtime={props.formatDate(entry.mtime)}
+            />
           ))}
         </div>
       )}
@@ -278,49 +236,89 @@ export function FolderView(props: FolderViewChrome) {
   );
 }
 
-// Size column: directories and symlinks stay blank like Explorer; re-exported
-// here so FolderView callers do not need model.ts just for the column.
+/** Directories under one tree node (symlinks included, like Explorer). */
+export function subdirs(path: string): FsEntry[] {
+  return fsListing(path).entries.filter((entry) => entry.kind === "dir" || entry.kind === "symlink");
+}
 
-/** Collapsible task-pane group box (blue header + chevron). */
-export function GroupBox({ prefix, id, title, expanded, onToggle, bundle, children }: {
-  prefix: string;
-  id: string;
-  title: string;
+function TreeRow({ path, label, icon, depth, current, expanded, onToggle, onNavigate }: {
+  path: string;
+  label: string;
+  icon: string;
+  depth: number;
+  current: boolean;
   expanded: boolean;
   onToggle: () => void;
-  bundle: (key: string) => Handlers;
-  children: React.ReactNode;
+  onNavigate: (path: string) => void;
 }) {
+  const [hovered, handlers] = useHoverFlag();
+  const className = `tree__row${hovered ? " tree__row--hover" : ""}${current ? " tree__row--sel" : ""}`;
   return (
-    <div className={`${prefix}__group`}>
-      <div
-        className={`${prefix}__group-head`}
-        {...bundle(`grp:${id}`)}
-        onClick={onToggle}
-      >
-        <span>{title}</span>
-        <span className={`${prefix}__group-chev`}><img className={`${prefix}__chev`} src={expanded ? "assets/chev-up.png" : "assets/chev-down.png"}/></span>
-      </div>
-      {expanded && <div className={`${prefix}__group-body`}>{children}</div>}
+    <div
+      className={className}
+      {...handlers}
+      style={{ paddingLeft: 4 + depth * 14 }}
+      onClick={() => onNavigate(path)}
+    >
+      <span className="tree__toggle" onClick={onToggle}>
+        {expanded ? "-" : "+"}
+      </span>
+      <img className="tree__icon" src={icon}/>
+      <span className="tree__label">{label}</span>
     </div>
   );
 }
 
-/** One task-pane link; `disabled` grays it and drops clicks. */
-export function TaskLink({ prefix, id, label, disabled, bundle, cls, onClick }: Chrome & {
-  id: string;
-  label: string;
-  disabled?: boolean;
-  onClick: () => void;
+/** XP Folders bar: a lazy-loaded directory tree. Children are listed on first
+ * expand (lite:fs list is synchronous), +/- toggles expansion, clicking a row
+ * navigates. The current location's row stays highlighted. */
+export function FolderTree({ roots, currentPath, listDirs, onNavigate }: {
+  roots: { path: string; label: string; icon: string }[];
+  currentPath: string;
+  listDirs: (path: string) => FsEntry[];
+  onNavigate: (path: string) => void;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [children, setChildren] = useState<Map<string, FsEntry[]>>(() => new Map());
+  const toggle = (path: string) => {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    if (!children.has(path)) {
+      setChildren((current) => new Map(current).set(path, listDirs(path)));
+    }
+  };
+
+  const renderNode = (path: string, label: string, icon: string, depth: number): React.ReactNode[] => {
+    const open = expanded.has(path);
+    const rows: React.ReactNode[] = [
+      <TreeRow
+        key={path}
+        path={path}
+        label={label}
+        icon={icon}
+        depth={depth}
+        current={currentPath === path}
+        expanded={open}
+        onToggle={() => toggle(path)}
+        onNavigate={onNavigate}
+      />,
+    ];
+    if (open) {
+      for (const entry of children.get(path) ?? []) {
+        rows.push(...renderNode(`${path === "/" ? "" : path}/${entry.name}`, entry.name, "assets/folder-16.png", depth + 1));
+      }
+    }
+    return rows;
+  };
+
   return (
-    <span
-      className={cls(`${prefix}__task-link`, `task:${id}`, disabled ? `${prefix}__task-link--disabled` : undefined)}
-      {...bundle(`task:${id}`)}
-      onClick={() => { if (!disabled) onClick(); }}
-    >
-      {label}
-    </span>
+    <div className="tree">
+      {roots.map((root) => renderNode(root.path, root.label, root.icon, 0))}
+    </div>
   );
 }
 

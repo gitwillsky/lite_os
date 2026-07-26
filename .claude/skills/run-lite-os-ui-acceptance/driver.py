@@ -72,12 +72,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="LiteOS GUI screenshot/acceptance driver")
     parser.add_argument("--out", default="/tmp/liteos-ui", help="截图输出目录")
     parser.add_argument("--open", default="file-manager", choices=sorted(DESKTOP_ICONS))
+    parser.add_argument(
+        "--image",
+        default=str(IMAGE),
+        help="引导的 ext2 镜像；默认开发实例。开发镜像被 run-gui 占用时可先整拷到 /tmp 再同步。",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if not IMAGE.is_file():
-        print(f"missing {IMAGE}; run `make sync-userland ARCH=aarch64` first", file=sys.stderr)
+    image = Path(args.image)
+    if not image.is_file():
+        print(f"missing {image}; run `make sync-userland ARCH=aarch64` first", file=sys.stderr)
         return 2
 
     import tempfile
@@ -86,7 +92,7 @@ def main() -> int:
     qmp_socket = Path(tmp.name) / "qmp.sock"
     # 引导开发实例镜像。`-snapshot` 让所有写入落临时 overlay：原镜像以只读打开，
     # 既不申请写锁（与并行 `make run-gui` / 开发实例共存），也省去 8GB 整拷。
-    command = _qemu_command(IMAGE, 1, interactive_devices=True, qmp_socket=qmp_socket)
+    command = _qemu_command(image, 1, interactive_devices=True, qmp_socket=qmp_socket)
     command.append("-snapshot")
     process = subprocess.Popen(
         command,
@@ -175,6 +181,10 @@ def main() -> int:
 
         # 2. ——验收脚本——（下面是各应用的示例流；改这里即可验收别的界面）
         if args.open == "my-computer":
+            # 系统任务 → 查看系统信息（真实 /proc 数据），随后点弹窗任意处关闭。
+            click(205 / 1504, 246 / 846)
+            shot("sysinfo")
+            click(360 / 1504, 250 / 846)
             # 单击主区域的 本地磁盘 (C:) 图标：任务窗格右侧、硬盘分组标题下方。
             click(430 / 1504, 280 / 846)
             shot("selected")
@@ -182,9 +192,46 @@ def main() -> int:
             double_click(430 / 1504, 280 / 846)
             time.sleep(1.0)
             shot("entered")
-            # 进入文件夹后图标区无分组标题，首列图标上移：单击第一项选中。
-            click(403 / 1504, 251 / 846)
-            shot("folder-selected")
+            # 后退返回我的电脑、前进回到 /：验证真实历史栈。
+            click(200 / 1504, 155 / 846)
+            shot("back-root")
+            click(293 / 1504, 155 / 846)
+            time.sleep(0.5)
+            # 工具栏 查看 → 详细信息：出现 名称/大小/类型/修改日期 四列。
+            # （菜单项高 28px：大图标 ~190 / 列表 ~220 / 详细信息 ~251）
+            click(537 / 1504, 155 / 846)
+            click(500 / 1504, 251 / 846)
+            shot("details")
+            # 点 修改日期 列表头：按 mtime 升序排序（表头出现 ∧）。
+            click(800 / 1504, 205 / 846)
+            shot("sorted")
+            # 排序状态跨视图保持（XP 语义）：先点 名称 表头恢复名称升序，
+            # 否则后续按名称布局的图标坐标会落到 mtime 顺序的 sys 上。
+            click(450 / 1504, 205 / 846)
+            # 切回大图标，进入 /etc，双击 passwd 打开文本查看器。
+            click(537 / 1504, 155 / 846)
+            click(500 / 1504, 190 / 846)
+            time.sleep(0.5)
+            double_click(611 / 1504, 251 / 846)
+            time.sleep(1.0)
+            shot("etc")
+            double_click(507 / 1504, 431 / 846)
+            time.sleep(1.0)
+            shot("viewer")
+            # Esc 关闭查看器，回到 /etc 列表。
+            qmp.key("esc", True)
+            qmp.key("esc", False)
+            time.sleep(0.5)
+            shot("closed")
+            # F2 触发内联重命名：文本宽度的细边框输入框（autoFocus 直接可键入）。
+            qmp.key("f2", True)
+            qmp.key("f2", False)
+            time.sleep(0.8)
+            shot("rename")
+            # Esc 取消重命名，文件名保持不变。
+            qmp.key("esc", True)
+            qmp.key("esc", False)
+            time.sleep(0.5)
         if args.open == "file-manager":
             # 单击第一个图标 (bin)：图标区在 180px 任务面板右侧，首列约 x=405 y=224。
             click(405 / 1504, 224 / 846)

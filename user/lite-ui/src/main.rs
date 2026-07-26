@@ -87,24 +87,39 @@ fn run() -> Result<(), Box<dyn Error>> {
         Mode::Desktop => (Role::Desktop, PathBuf::from("/usr/share/liteos/desktop")),
         Mode::App(id) => (Role::App, PathBuf::from("/usr/share/liteos/apps").join(id)),
     };
-    let runtime = fs::read("/usr/lib/lite-ui/runtime.js")?;
-    let source = fs::read(root.join("main.js"))?;
-    let style = fs::read_to_string(root.join("style.css"))?;
-    let mut display = Display::open(&mode)?;
-    let mut renderer = Renderer::open(root.clone(), &style, display.logical_size())?;
+    let runtime = fs::read("/usr/lib/lite-ui/runtime.js")
+        .map_err(|error| owner_error("runtime bundle read", error))?;
+    let source = fs::read(root.join("main.js"))
+        .map_err(|error| owner_error("app bundle read", error))?;
+    let style = fs::read_to_string(root.join("style.css"))
+        .map_err(|error| owner_error("app style read", error))?;
+    let mut display = Display::open(&mode)
+        .map_err(|error| owner_error("display open", error))?;
+    let mut renderer = Renderer::open(root.clone(), &style, display.logical_size())
+        .map_err(|error| owner_error("renderer open", error))?;
     let audio_role = if matches!(mode, Mode::Desktop) {
         audio_proto::ClientRole::Desktop
     } else {
         audio_proto::ClientRole::Media
     };
-    let (audio_commands, mut audio_events) = audio::start(audio_role)?;
+    let (audio_commands, mut audio_events) = audio::start(audio_role)
+        .map_err(|error| owner_error("audio start", error))?;
     let (host, state) = Host::new(role, root.clone(), audio_commands);
-    let mut engine = Engine::open(role)?;
+    let mut engine = Engine::open(role)
+        .map_err(|error| owner_error("engine open", error))?;
     engine.install_host(host);
-    engine.evaluate("lite-ui-runtime.js", &runtime)?;
-    engine.run_jobs()?;
-    engine.evaluate("main.js", &source)?;
-    engine.run_jobs()?;
+    engine
+        .evaluate("lite-ui-runtime.js", &runtime)
+        .map_err(|error| owner_error("runtime evaluate", error))?;
+    engine
+        .run_jobs()
+        .map_err(|error| owner_error("runtime jobs", error))?;
+    engine
+        .evaluate("main.js", &source)
+        .map_err(|error| owner_error("app evaluate", error))?;
+    engine
+        .run_jobs()
+        .map_err(|error| owner_error("app jobs", error))?;
 
     let mut children = Vec::new();
     let mut terminal = match &mode {
@@ -123,14 +138,16 @@ fn run() -> Result<(), Box<dyn Error>> {
         &mut renderer,
         &mut children,
         terminal.as_mut(),
-    )?;
+    )
+    .map_err(|error| owner_error("startup host actions", error))?;
     render_latest(
         &mode,
         &state,
         &mut display,
         &mut renderer,
         &mut interactions,
-    )?;
+    )
+    .map_err(|error| owner_error("startup scene render", error))?;
     let ready_marker = match &mode {
         Mode::Desktop => "lite-ui: desktop ready\n".to_owned(),
         Mode::App(id) => format!("lite-ui: app {id} ready\n"),

@@ -75,6 +75,13 @@ impl Renderer {
         } else {
             None
         };
+        // DOM autofocus: an `<input autoFocus>` claims focus when it appears,
+        // but never steals it from an already-focused field. Setting `focused`
+        // here (before the input paints below) draws the caret in the same
+        // frame, so e.g. inline rename is ready to type without a click.
+        if editable.is_some() && takes_autofocus(&node.source.props, self.focused) {
+            self.focused = Some(node.source.id);
+        }
         if pointer_down.is_some()
             || pointer_move.is_some()
             || pointer_up.is_some()
@@ -403,9 +410,37 @@ impl Renderer {
             ));
         }
         if !self.images.contains_key(source) {
-            let image = decode_png(&self.root.join(source))?;
+            let image = decode_png(&self.root.join(source))
+                .map_err(|error| io::Error::new(error.kind(), format!("{source}: {error}")))?;
             self.images.insert(source.to_owned(), image);
         }
         Ok(self.images.get(source).expect("image was inserted"))
+    }
+}
+
+/// Whether one appearing `<input>` takes focus unprompted: only with an
+/// explicit `autoFocus` prop and only while no field currently owns focus
+/// (standard DOM autofocus semantics — appearing fields never steal it).
+fn takes_autofocus(props: &std::collections::BTreeMap<String, Value>, focused: Option<u64>) -> bool {
+    focused.is_none() && props.get("autoFocus").and_then(Value::as_bool) == Some(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// The autofocus decision is a pure function of props plus current focus:
+    /// present-and-idle takes it, present-but-busy never steals, absent never
+    /// claims.
+    #[test]
+    fn autofocus_claims_only_an_idle_focus() {
+        let with_flag: std::collections::BTreeMap<String, serde_json::Value> =
+            serde_json::from_value(json!({"autoFocus": true, "value": "draft"}))
+                .expect("props");
+        let without_flag: std::collections::BTreeMap<String, serde_json::Value> =
+            serde_json::from_value(json!({"value": "draft"})).expect("props");
+        assert!(super::takes_autofocus(&with_flag, None));
+        assert!(!super::takes_autofocus(&with_flag, Some(7)));
+        assert!(!super::takes_autofocus(&without_flag, None));
     }
 }

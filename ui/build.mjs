@@ -210,6 +210,7 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/tb-back.png"), join(assets, "tb-back.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-forward.png"), join(assets, "tb-forward.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-up.png"), join(assets, "tb-up.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-folders.png"), join(assets, "tb-folders.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-views.png"), join(assets, "tb-views.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));

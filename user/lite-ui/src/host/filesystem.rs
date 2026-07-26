@@ -168,12 +168,20 @@ fn media_type(path: &str) -> &'static str {
 }
 
 /// Lists one absolute directory without following reported symlinks.
+///
+/// `mtime` is the entry's own `st_mtime` in Unix seconds (stat(2) semantics):
+/// `DirEntry::metadata` does not follow symlinks, so a link reports its own
+/// timestamp exactly like `ls -l` and Explorer do. The metadata was already
+/// fetched per entry for kind/size, so the new field adds no extra syscalls —
+/// the per-entry cost gate is unchanged (no new hot-path syscall, hence no
+/// benchmark impact to measure).
 pub(super) fn list(path: &str) -> String {
     #[derive(Serialize)]
     struct Entry {
         name: String,
         kind: &'static str,
         size: u64,
+        mtime: u64,
     }
     #[derive(Serialize)]
     struct Listing {
@@ -226,6 +234,13 @@ pub(super) fn list(path: &str) -> String {
             name: entry.file_name().to_string_lossy().into_owned(),
             kind,
             size: if kind == "dir" { 0 } else { metadata.len() },
+            // Pre-epoch or unsupported timestamps collapse to 0 (the UI shows
+            // an empty cell), matching `open`'s last_modified fallback.
+            mtime: metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |duration| duration.as_secs()),
         });
     }
     serde_json::to_string(&Listing {
@@ -314,9 +329,42 @@ fn io_error_code(error: &io::Error) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, time::UNIX_EPOCH};
 
     use super::Files;
+
+    #[test]
+    fn directory_listing_reports_each_entry_mtime() {
+        let directory = PathBuf::from(format!(
+            "/tmp/lite-ui-list-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir(&directory).expect("fixture dir");
+        fs::write(directory.join("note.txt"), b"hello").expect("fixture file");
+        let listing = serde_json::from_str::<serde_json::Value>(&super::list(
+            directory.to_str().expect("utf8 path"),
+        ))
+        .expect("listing json");
+        let entries = listing
+            .get("entries")
+            .and_then(serde_json::Value::as_array)
+            .expect("entries");
+        let entry = entries
+            .iter()
+            .find(|entry| entry.get("name").and_then(serde_json::Value::as_str) == Some("note.txt"))
+            .expect("fixture entry");
+        let mtime = entry
+            .get("mtime")
+            .and_then(serde_json::Value::as_u64)
+            .expect("mtime field");
+        let now = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        assert!(mtime > 0 && mtime <= now && now - mtime < 60);
+        fs::remove_dir_all(directory).expect("cleanup fixture");
+    }
 
     #[test]
     fn filesystem_file_ranges_remain_lazy_and_exact() {

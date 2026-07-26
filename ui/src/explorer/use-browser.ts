@@ -1,53 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { list, mkdir, remove, rename, copy } from "lite:fs";
 import type { FsEntry } from "lite:fs";
-import { baseName, freshFolderName, joinPath, parentPath } from "./model.ts";
+import { baseName, freshFolderName, joinPath, parentPath, typeLabel } from "./model.ts";
+import type { TypeLabels } from "./model.ts";
 
 export type ViewMode = "icons" | "list" | "details";
 
-/** A cut/copied entry awaiting Paste; `mode` decides move vs copy. */
+/** Details-view sortable columns (all backed by real FsEntry fields). */
+export type SortColumn = "name" | "size" | "type" | "mtime";
+
+export interface SortState {
+  column: SortColumn;
+  ascending: boolean;
+}
+
+/** A cut/copied selection awaiting Paste; `mode` decides move vs copy. */
 export interface Clipboard {
   mode: "cut" | "copy";
-  path: string;
-}
-
-/** One element's cached pointer listeners. Their identities must stay stable
- * across renders because the compositor tracks hover by listener identity;
- * click handlers are passed inline at the call site since only hover depends
- * on a stable identity. */
-export interface Handlers {
-  onPointerEnter: () => void;
-  onPointerLeave: () => void;
-}
-
-/** Pointer handlers cached by a namespaced key ("row:name", "tb:up",
- * "grp:places", …) so their identities — and thus the host listener ids the
- * compositor tracks hover by — stay stable across renders. Entry keys must be
- * cleared on navigation since the previous directory's handlers are dead. */
-export function useHover() {
-  const [hovered, setHovered] = useState<string | null>(null);
-  const cache = useRef(new Map<string, Handlers>()).current;
-  const bundle = useCallback((key: string): Handlers => {
-    let handlers = cache.get(key);
-    if (!handlers) {
-      handlers = {
-        onPointerEnter: () => setHovered(key),
-        onPointerLeave: () => setHovered((current) => (current === key ? null : current)),
-      };
-      cache.set(key, handlers);
-    }
-    return handlers;
-  }, [cache]);
-  const cls = useCallback(
-    (base: string, key: string, extra?: string) =>
-      `${base}${hovered === key ? ` ${base}--hover` : ""}${extra ? ` ${extra}` : ""}`,
-    [hovered],
-  );
-  const clear = useCallback(() => {
-    cache.clear();
-    setHovered(null);
-  }, [cache]);
-  return { hovered, bundle, cls, clear };
+  paths: string[];
 }
 
 /** Result of listing one location: rows plus a note banner text (or null). */
@@ -60,15 +30,21 @@ export interface Listing {
  * real directory (file-manager); My Computer overrides them to graft a
  * virtual drive-list root onto the same navigation machinery. */
 export interface BrowserOptions {
+  /** Wording for the Type column and type sorting (English vs zh-CN). */
+  typeLabels: TypeLabels;
   /** Lists one location. Default: `lite:fs` directory listing, sorted
    * directories-first like Explorer. */
   listEntries?: (path: string) => Listing;
   /** Parent of a location. Default: filesystem parent (`/` is its own parent,
    * which disables Up at the root). */
   parentOf?: (path: string) => string;
-  /** Navigation target for double-clicking an entry, or null to keep it
-   * selected (files have no associated-program system here). */
+  /** Navigation target for double-clicking an entry, or null when the entry
+   * does not navigate. Default: folders navigate, files stay selected. */
   openTarget?: (path: string, entry: FsEntry) => string | null;
+  /** Double-click/Enter on a file: the app decides (text viewer, …). Without
+   * it a file only takes the selection, matching XP's delegate-to-handler
+   * model when no handler exists. */
+  onOpenFile?: (path: string, entry: FsEntry) => void;
 }
 
 /** Default {@link BrowserOptions.listEntries}: a real `lite:fs` listing. */
@@ -92,10 +68,31 @@ function defaultOpenTarget(path: string, entry: FsEntry): string | null {
   return entry.kind === "dir" || entry.kind === "symlink" ? joinPath(path, entry.name) : null;
 }
 
+function byName(a: FsEntry, b: FsEntry): number {
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+
+/** Explorer sort: folders always first (both directions), then the column;
+ * name breaks ties so every column gives a stable, total order. */
+function applySort(rows: FsEntry[], sort: SortState, labels: TypeLabels): FsEntry[] {
+  const direction = sort.ascending ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    if ((a.kind === "dir") !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
+    let result = 0;
+    if (sort.column === "name") result = byName(a, b);
+    else if (sort.column === "size") result = a.size - b.size || byName(a, b);
+    else if (sort.column === "mtime") result = a.mtime - b.mtime || byName(a, b);
+    else result = typeLabel(a, labels) < typeLabel(b, labels) ? -1 : typeLabel(a, labels) > typeLabel(b, labels) ? 1 : byName(a, b);
+    return result * direction;
+  });
+}
+
 /** Folder-browsing state shared by file-manager and my-computer: location
- * history (Back/Forward/Up), directory listing, selection, clipboard,
- * inline rename and the fs mutations behind the context/task-pane menus. */
-export function useBrowser(initialPath: string, options: BrowserOptions = {}) {
+ * history (Back/Forward/Up), directory listing, multi-selection, clipboard,
+ * inline rename, hidden-file filter, details sorting and the fs mutations
+ * behind the context/task-pane menus. */
+export function useBrowser(initialPath: string, options: BrowserOptions) {
+  const typeLabels = options.typeLabels;
   const listEntries = options.listEntries ?? fsListing;
   const parentOf = options.parentOf ?? parentPath;
   const openTarget = options.openTarget ?? defaultOpenTarget;
@@ -106,11 +103,15 @@ export function useBrowser(initialPath: string, options: BrowserOptions = {}) {
   // forward tail, matching a browser/Explorer history.
   const [history, setHistory] = useState<string[]>([initialPath]);
   const [historyIndex, setHistoryIndex] = useState(0);
-  const [entries, setEntries] = useState<FsEntry[]>([]);
+  const [rawEntries, setRawEntries] = useState<FsEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("icons");
-  const [selected, setSelected] = useState<string | null>(null);
-  const hover = useHover();
+  const [sort, setSort] = useState<SortState>({ column: "name", ascending: true });
+  // XP hides "hidden" entries (dotfiles) until Folder Options says otherwise.
+  const [showHidden, setShowHidden] = useState(false);
+  // Ordered multi-selection; the last name is the focused entry (rename,
+  // properties act on it; delete/cut/copy act on the whole selection).
+  const [selected, setSelected] = useState<string[]>([]);
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
   // The entry name being renamed and its editable draft, or null when idle.
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -122,19 +123,30 @@ export function useBrowser(initialPath: string, options: BrowserOptions = {}) {
   // write (New Folder / Delete / Paste / Rename) can refresh the view.
   const refresh = useCallback(() => {
     const result = listEntries(path);
-    setEntries(result.entries);
+    setRawEntries(showHidden ? result.entries : result.entries.filter((entry) => !entry.name.startsWith(".")));
     setError(result.error);
-  }, [path, listEntries]);
+  }, [path, listEntries, showHidden]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Clear the per-directory hover/selection state and dismiss transient popups.
+  const entries = useMemo(() => applySort(rawEntries, sort, typeLabels), [rawEntries, sort, typeLabels]);
+
+  const toggleSort = useCallback((column: SortColumn) => {
+    setSort((current) => current.column === column
+      ? { column, ascending: !current.ascending }
+      : { column, ascending: true });
+  }, []);
+
+  const selectOnly = useCallback((name: string) => setSelected([name]), []);
+  const selectAll = useCallback(() => setSelected(rawEntries.map((entry) => entry.name)), [rawEntries]);
+  const clearSelection = useCallback(() => setSelected([]), []);
+
+  // Clear the per-directory selection/transient state on navigation.
   const resetView = useCallback(() => {
-    hover.clear();
-    setSelected(null);
+    setSelected([]);
     setRenaming(null);
     setAddressDraft(null);
-  }, [hover]);
+  }, []);
 
   // Navigate to a new directory, pushing history (truncating the forward tail).
   const navigate = useCallback((next: string) => {
@@ -147,6 +159,15 @@ export function useBrowser(initialPath: string, options: BrowserOptions = {}) {
     });
     setPath(next);
   }, [historyIndex, resetView]);
+
+  // Jump straight to one history entry (Back/Forward dropdowns), without
+  // truncating the tail — same stack semantics as browser history menus.
+  const jumpTo = useCallback((index: number) => {
+    if (index < 0 || index >= history.length || index === historyIndex) return;
+    resetView();
+    setHistoryIndex(index);
+    setPath(history[index]);
+  }, [history, historyIndex, resetView]);
 
   const back = useCallback(() => {
     if (historyIndex <= 0) return;
@@ -166,17 +187,19 @@ export function useBrowser(initialPath: string, options: BrowserOptions = {}) {
 
   const up = useCallback(() => navigate(parentOf(path)), [navigate, path, parentOf]);
 
-  // Double-click opens a folder (navigate in). Files have no associated-program
-  // system here, so double-clicking a file only keeps it selected — matching XP,
-  // where opening a file is delegated to its handler rather than the shell.
+  // Double-click/Enter opens a folder (navigate in). Files go to the app's
+  // onOpenFile (text viewer); without one they only take the selection —
+  // matching XP, where opening a file is delegated to its handler.
   const openEntry = useCallback((entry: FsEntry) => {
     const target = openTarget(path, entry);
     if (target !== null) {
       navigate(target);
+    } else if (options.onOpenFile) {
+      options.onOpenFile(path, entry);
     } else {
-      setSelected(entry.name);
+      setSelected([entry.name]);
     }
-  }, [path, navigate, openTarget]);
+  }, [path, navigate, openTarget, options]);
 
   // Surface a native mutation's error code in the note banner, else refresh.
   const applyResult = useCallback((result: { error?: string }) => {
@@ -193,18 +216,33 @@ export function useBrowser(initialPath: string, options: BrowserOptions = {}) {
     // A folder is removed with its contents (Explorer sends the whole subtree);
     // files/symlinks are unlinked. The native side gates recursion explicitly.
     applyResult(remove(joinPath(path, entry.name), entry.kind === "dir"));
-    setSelected((current) => (current === entry.name ? null : current));
+    setSelected((current) => current.filter((name) => name !== entry.name));
   }, [path, applyResult]);
+
+  const deleteSelected = useCallback((victims: FsEntry[]) => {
+    for (const entry of victims) {
+      applyResult(remove(joinPath(path, entry.name), entry.kind === "dir"));
+    }
+    setSelected((current) => current.filter((name) => !victims.some((entry) => entry.name === name)));
+  }, [path, applyResult]);
+
+  const clipboardFromSelection = useCallback((mode: Clipboard["mode"], victims: FsEntry[]) => {
+    if (victims.length > 0) setClipboard({ mode, paths: victims.map((entry) => joinPath(path, entry.name)) });
+  }, [path]);
 
   const paste = useCallback(() => {
     if (!clipboard) return;
-    const target = joinPath(path, baseName(clipboard.path));
-    const result = clipboard.mode === "cut"
-      ? rename(clipboard.path, target)
-      : copy(clipboard.path, target);
-    if (clipboard.mode === "cut" && !result.error) setClipboard(null);
-    applyResult(result);
-  }, [clipboard, path, applyResult]);
+    for (const source of clipboard.paths) {
+      const target = joinPath(path, baseName(source));
+      const result = clipboard.mode === "cut" ? rename(source, target) : copy(source, target);
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+    }
+    if (clipboard.mode === "cut") setClipboard(null);
+    refresh();
+  }, [clipboard, path, refresh]);
 
   const beginRename = useCallback((name: string) => {
     setRenaming(name);
@@ -227,11 +265,15 @@ export function useBrowser(initialPath: string, options: BrowserOptions = {}) {
   const canUp = parentOf(path) !== path;
 
   return {
-    path, entries, error, viewMode, setViewMode, selected, setSelected,
+    path, entries, error, viewMode, setViewMode, sort, toggleSort,
+    showHidden, setShowHidden,
+    selected, selectOnly, selectAll, clearSelection,
     clipboard, setClipboard, renaming, renameDraft, setRenameDraft,
     addressDraft, setAddressDraft,
-    hover, refresh, navigate, back, forward, up, openEntry,
-    newFolder, deleteEntry, paste, beginRename, commitRename, cancelRename,
+    history, historyIndex, jumpTo,
+    refresh, navigate, back, forward, up, openEntry,
+    newFolder, deleteEntry, deleteSelected, clipboardFromSelection, paste,
+    beginRename, commitRename, cancelRename,
     canBack, canForward, canUp,
   };
 }

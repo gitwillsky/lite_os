@@ -556,14 +556,18 @@ mod tests {
         Host::new(role, root, commands)
     }
 
-    #[test]
-    fn scratch_my_computer_mounts() {
+    /// Mounts one app bundle like the production session and asserts every
+    /// `<img src>` in its first frame resolves to a real file under the app
+    /// root — the exact failure a missing build.mjs asset copy causes at
+    /// first paint in the guest.
+    fn assert_app_bundle_mounts_with_assets(app: &str) {
         let root = std::env::var_os("LITE_UI_TEST_ASSETS")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
         let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
-        let bundle = fs::read(root.join("my-computer/main.js")).expect("my-computer bundle");
-        let (host, state) = host(Role::App, root.join("my-computer"));
+        let bundle = fs::read(root.join(app).join("main.js")).expect("app bundle");
+        let app_root = root.join(app);
+        let (host, state) = host(Role::App, app_root.clone());
         let mut engine = Engine::open(Role::App).expect("app engine");
         engine.install_host(host);
         engine
@@ -571,13 +575,33 @@ mod tests {
             .expect("load runtime");
         engine.run_jobs().expect("runtime jobs");
         engine
-            .evaluate("mc.js", &bundle)
-            .expect("mount my-computer");
-        engine.run_jobs().expect("my-computer jobs");
-        assert!(
-            state.scene_if_dirty().is_some(),
-            "my-computer must publish its root"
-        );
+            .evaluate("app.js", &bundle)
+            .expect("mount app");
+        engine.run_jobs().expect("app jobs");
+        let scene = state.scene_if_dirty().expect("app must publish its root");
+        let mut stack: Vec<&crate::tree::Node> = scene.iter().collect();
+        let mut srcs = Vec::new();
+        while let Some(node) = stack.pop() {
+            if node.kind == "img"
+                && let Some(src) = node.props.get("src").and_then(serde_json::Value::as_str)
+            {
+                srcs.push(src.to_owned());
+            }
+            stack.extend(node.children.iter());
+        }
+        assert!(!srcs.is_empty(), "first frame should reference assets");
+        for src in srcs {
+            assert!(
+                app_root.join(&src).is_file(),
+                "first-frame asset missing from bundle: {app}/{src}"
+            );
+        }
+    }
+
+    #[test]
+    fn explorer_apps_mount_with_all_first_frame_assets() {
+        assert_app_bundle_mounts_with_assets("my-computer");
+        assert_app_bundle_mounts_with_assets("file-manager");
     }
 
     #[test]

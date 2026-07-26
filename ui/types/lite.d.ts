@@ -183,6 +183,9 @@ declare module "lite:fs" {
     name: string;
     kind: "dir" | "file" | "symlink" | "other";
     size: number;
+    /** Entry's own st_mtime in Unix seconds (symlinks report their own, like
+     * `ls -l`); 0 when the platform cannot provide one. */
+    mtime: number;
   }
   export interface FsListResult {
     path: string;
