@@ -179,6 +179,9 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/tb-search.png"), join(assets, "tb-search.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-folders.png"), join(assets, "tb-folders.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-views.png"), join(assets, "tb-views.png"));
+    await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
+    await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));
+    await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
   }
   if (id !== "desktop") {
     await copyFile(join(root, `src/${id}/app.json`), join(directory, "app.json"));

@@ -120,10 +120,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
-  color: #333333;
   background: #ece9d8;
   border-left: 1px solid #808080;
+}
+.fm__caret {
+  width: 10px;
+  height: 10px;
 }
 .fm__go {
   display: flex;
@@ -183,10 +185,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
-  color: #4a72c4;
   border-radius: 8px;
   background: linear-gradient(#ffffff 0%, #cfe0f5 100%);
+}
+.fm__chev {
+  width: 15px;
+  height: 15px;
 }
 .fm__group-body {
   display: flex;

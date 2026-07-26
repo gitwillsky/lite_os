@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { list, read } from "lite:fs";
+import { list } from "lite:fs";
 import type { FsEntry } from "lite:fs";
 
 /** Joins a directory path with a child name, keeping a single leading slash. */
@@ -52,13 +52,6 @@ function iconFor16(entry: FsEntry): string {
 
 type ViewMode = "icons" | "details";
 
-interface FileView {
-  name: string;
-  content: string;
-  truncated: boolean;
-  error?: string;
-}
-
 /** One interactive element's cached listeners; identities must stay stable
  * across renders because the compositor tracks hover by listener identity. */
 /** One element's cached pointer listeners. Their identities must stay stable
@@ -74,7 +67,6 @@ export default function FileManager() {
   const [path, setPath] = useState<string>("/");
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [fileView, setFileView] = useState<FileView | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("icons");
   const [selected, setSelected] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -86,7 +78,6 @@ export default function FileManager() {
   // Re-list whenever the directory changes; a failed op returns a JSON error
   // object (never throws), but wrap defensively regardless.
   useEffect(() => {
-    if (fileView) return;
     try {
       const result = list(path);
       if (result.error) {
@@ -104,7 +95,7 @@ export default function FileManager() {
       setEntries([]);
       setError("failed to read directory");
     }
-  }, [path, fileView]);
+  }, [path]);
 
   // Pointer handlers are cached by a namespaced key ("row:name", "tb:up",
   // "grp:places", …) so their identities — and thus the host listener ids the
@@ -127,57 +118,22 @@ export default function FileManager() {
     cache.clear();
     setHovered(null);
     setSelected(null);
-    setFileView(null);
     setPath(next);
   }, [cache]);
 
+  // Double-click opens a folder (navigate in). Files have no associated-program
+  // system here, so double-clicking a file only keeps it selected — matching XP,
+  // where opening a file is delegated to its handler rather than the shell.
   const openEntry = useCallback((entry: FsEntry) => {
-    const child = joinPath(path, entry.name);
     if (entry.kind === "dir" || entry.kind === "symlink") {
-      goto(child);
-      return;
-    }
-    try {
-      const result = read(child);
-      setFileView({
-        name: entry.name,
-        content: result.content ?? "",
-        truncated: Boolean(result.truncated),
-        error: result.error,
-      });
-    } catch {
-      setFileView({ name: entry.name, content: "", truncated: false, error: "IO" });
+      goto(joinPath(path, entry.name));
+    } else {
+      setSelected(entry.name);
     }
   }, [path, goto]);
 
   const cls = (base: string, key: string, extra?: string) =>
     `${base}${hovered === key ? ` ${base}--hover` : ""}${extra ? ` ${extra}` : ""}`;
-
-  if (fileView) {
-    return (
-      <div className="fm">
-        <div className="fm__addressbar">
-          <div
-            className={cls("fm__tb", "fv:back")}
-            {...bundle("fv:back")}
-            onClick={() => setFileView(null)}
-          >
-            <img className="fm__tb-icon" src="assets/tb-back.png"/>
-            <span className="fm__tb-label">Back</span>
-          </div>
-          <div className="fm__addr-field">
-            <img className="fm__addr-icon" src="assets/file-16.png"/>
-            <span className="fm__addr-path">{joinPath(path, fileView.name)}</span>
-          </div>
-        </div>
-        {fileView.error === "not-text"
-          ? <div className="fm__note">Binary file - cannot display.</div>
-          : fileView.error
-            ? <div className="fm__note">Error: {fileView.error}</div>
-            : <div className="fm__fileview"><span>{fileView.content}{fileView.truncated ? "\n… (truncated)" : ""}</span></div>}
-      </div>
-    );
-  }
 
   const atRoot = path === "/";
   const menus = ["File", "Edit", "View", "Favorites", "Tools", "Help"];
@@ -238,7 +194,7 @@ export default function FileManager() {
         <div className="fm__addr-field">
           <img className="fm__addr-icon" src="assets/folder-16.png"/>
           <span className="fm__addr-path">{path}</span>
-          <span className="fm__addr-drop">{"∨"}</span>
+          <span className="fm__addr-drop"><img className="fm__caret" src="assets/caret-down.png"/></span>
         </div>
         <div className={cls("fm__go", "go")} {...bundle("go")}>
           <img className="fm__go-icon" src="assets/tb-forward.png"/>
@@ -255,7 +211,7 @@ export default function FileManager() {
               onClick={() => toggleGroup("tasks")}
             >
               <span>File and Folder Tasks</span>
-              <span className="fm__group-chev">{expanded.tasks ? "∧" : "∨"}</span>
+              <span className="fm__group-chev"><img className="fm__chev" src={expanded.tasks ? "assets/chev-up.png" : "assets/chev-down.png"}/></span>
             </div>
             {expanded.tasks && (
               <div className="fm__group-body">
@@ -272,7 +228,7 @@ export default function FileManager() {
               onClick={() => toggleGroup("places")}
             >
               <span>Other Places</span>
-              <span className="fm__group-chev">{expanded.places ? "∧" : "∨"}</span>
+              <span className="fm__group-chev"><img className="fm__chev" src={expanded.places ? "assets/chev-up.png" : "assets/chev-down.png"}/></span>
             </div>
             {expanded.places && (
               <div className="fm__group-body">

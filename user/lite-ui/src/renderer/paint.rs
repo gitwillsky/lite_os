@@ -109,7 +109,10 @@ impl Renderer {
             let image = self.image(source)?;
             paint_image(pixels, raster, image, radii);
         }
-        if node.source.kind == "span" {
+        // 文本叶子 span 直接绘制其拼接文本；容器 span 不绘制文本，其 `#text` 子节点各自
+        // 作为文本run在下方递归绘制。因此这里对“文本叶子 span”和 `#text` 都出文本，符合
+        // Web inline 语义——`<span>` 内嵌 `<img>` 时，文本与图片各自成盒并列绘制。
+        if node.source.is_text_leaf() {
             let text = text_content(&node.source);
             if node.computed.get("font-family") == Some("monospace") {
                 self.terminal_font

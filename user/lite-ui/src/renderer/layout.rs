@@ -13,8 +13,9 @@ use super::SCALE;
 pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<f32>) -> Style {
     // Only text leaves size from their glyphs. Containers must stay auto-sized:
     // a descendant-text width here would override block stretch, flex grow/shrink
-    // and absolute inset resolution with a bogus definite size.
-    let text = if matches!(node.kind.as_str(), "span" | "#text") {
+    // and absolute inset resolution with a bogus definite size. 容器 span（含元素
+    // 子节点）同样按容器处理，不用拼接文本量固有尺寸。
+    let text = if node.is_text_leaf() {
         text_content(node)
     } else {
         String::new()

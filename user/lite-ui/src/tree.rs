@@ -25,6 +25,21 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+impl Node {
+    /// 是否为“文本叶子”：即节点本身产出一段可绘制文本、且不含需要单独布局的元素子节点。
+    /// `#text` 永远是文本叶子；`span` 仅当它没有子节点、或所有子节点都是 `#text` 时才算——
+    /// 这类 span 直接绘制其拼接文本，与浏览器把纯文本 inline 盒当作单个文本run一致。
+    /// 含 `img`/`div`/嵌套 `span` 等元素子节点的 span 不是文本叶子：它要像普通容器那样布局
+    /// 并绘制子树，其中的 `#text` 子节点各自作为文本run被绘制（符合 Web inline 语义）。
+    pub fn is_text_leaf(&self) -> bool {
+        match self.kind.as_str() {
+            "#text" => true,
+            "span" => self.children.iter().all(|child| child.kind == "#text"),
+            _ => false,
+        }
+    }
+}
+
 /// Decodes and structurally bounds one complete React mutation result.
 pub fn parse(source: &str) -> Result<Vec<Node>, String> {
     let nodes: Vec<Node> = serde_json::from_str(source).map_err(|error| error.to_string())?;
@@ -83,5 +98,25 @@ mod tests {
             parse(r#"[{"id":1,"type":"div","children":[{"id":1,"type":"span","children":[]}]}]"#)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn span_is_a_text_leaf_only_without_element_children() {
+        // 纯文本 span 与空 span 都是文本叶子，直接绘制文本。
+        let text_span =
+            parse(r##"[{"id":1,"type":"span","children":[{"id":2,"type":"#text","text":"hi"}]}]"##)
+                .expect("text span parses");
+        assert!(text_span[0].is_text_leaf());
+        let empty_span = parse(r#"[{"id":1,"type":"span","children":[]}]"#).expect("empty parses");
+        assert!(empty_span[0].is_text_leaf());
+        // 含 img 子节点的 span 不是文本叶子：需按容器布局并绘制子树（Web inline 语义）。
+        let mixed_span =
+            parse(r#"[{"id":1,"type":"span","children":[{"id":2,"type":"img"}]}]"#)
+                .expect("mixed span parses");
+        assert!(!mixed_span[0].is_text_leaf());
+        // `#text` 永远是文本叶子；img 子节点不是。
+        assert!(!mixed_span[0].children[0].is_text_leaf());
+        let text = parse(r##"[{"id":1,"type":"#text","text":"x"}]"##).expect("text parses");
+        assert!(text[0].is_text_leaf());
     }
 }
