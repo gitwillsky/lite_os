@@ -14,9 +14,10 @@ QEMU 命令行或协议。坐标以 1504x846 逻辑视口的比例表达（QMP a
 
     --out   截图输出目录（默认 /tmp/liteos-ui）。每一步产出 <name>.png。
     --open  桌面第一屏要双击打开的应用（默认 file-manager）。可选：
-            file-manager | terminal。
+            my-computer | file-manager | terminal。
 
-    默认脚本演示 File Manager 的验收流：Icons 视图 → 单击选中 → 切 Details 视图。
+    默认脚本演示 File Manager 的验收流：Icons 视图 → 单击选中 → 切 Details 视图；
+    my-computer 的验收流：打开我的电脑 → 单击 本地磁盘 (C:) 看选中态+详细信息联动。
     要验收别的界面，照抄 main() 里的 shot()/click()/double_click() 序列改坐标即可。
 
 前置：已 `make build`（内核+bootloader）并 `make sync-userland ARCH=aarch64`
@@ -51,14 +52,17 @@ BOOT_MARKERS = (
     "compositor: desktop first scene presented",
 )
 
-# 桌面第一屏图标为竖排：My Computer(file-manager) 在最上，Terminal 次之。
-# 坐标为 1504x846 逻辑视口比例；同 frame-timing gate 用的双击点。
+# 桌面第一屏图标为竖排：My Computer(my-computer) 在最上，Terminal 次之，
+# My Documents(file-manager) 第四。坐标为 1504x846 逻辑视口比例；
+# 同 frame-timing gate 用的双击点。
 DESKTOP_ICONS = {
-    "file-manager": (47 / 1504, 34 / 846),
+    "my-computer": (47 / 1504, 34 / 846),
     "terminal": (47 / 1504, 92 / 846),
+    "file-manager": (47 / 1504, 208 / 846),
 }
 # 应用窗口就绪 marker。
 APP_READY = {
+    "my-computer": "lite-ui: app my-computer ready",
     "file-manager": "lite-ui: app file-manager ready",
     "terminal": "lite-ui: app terminal ready",
 }
@@ -169,7 +173,18 @@ def main() -> int:
         time.sleep(2.0)
         shot("opened")
 
-        # 2. ——验收脚本——（下面是 File Manager 的示例流；改这里即可验收别的界面）
+        # 2. ——验收脚本——（下面是各应用的示例流；改这里即可验收别的界面）
+        if args.open == "my-computer":
+            # 单击主区域的 本地磁盘 (C:) 图标：任务窗格右侧、硬盘分组标题下方。
+            click(430 / 1504, 280 / 846)
+            shot("selected")
+            # 双击 C: 在同一窗口进入 "/"（XP 默认同窗口打开）；地址栏变为 /。
+            double_click(430 / 1504, 280 / 846)
+            time.sleep(1.0)
+            shot("entered")
+            # 进入文件夹后图标区无分组标题，首列图标上移：单击第一项选中。
+            click(403 / 1504, 251 / 846)
+            shot("folder-selected")
         if args.open == "file-manager":
             # 单击第一个图标 (bin)：图标区在 180px 任务面板右侧，首列约 x=405 y=224。
             click(405 / 1504, 224 / 846)

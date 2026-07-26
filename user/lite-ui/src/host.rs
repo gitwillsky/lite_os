@@ -351,7 +351,7 @@ impl NativeHost for Host {
                 Ok(String::new())
             }
             "apps.list" if self.role == Role::Desktop => Ok(
-                r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"},{"id":"file-manager","name":"File Manager","description":"Browse files","icon":"assets/computer.png"},{"id":"music-player","name":"Music Player","description":"Play local music","icon":"assets/speaker.png"}]"#.to_owned(),
+                r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"},{"id":"my-computer","name":"我的电脑","description":"查看本机磁盘与系统信息","icon":"assets/computer.png"},{"id":"file-manager","name":"File Manager","description":"Browse files","icon":"assets/computer.png"},{"id":"music-player","name":"Music Player","description":"Play local music","icon":"assets/speaker.png"}]"#.to_owned(),
             ),
             "apps.launch" if self.role == Role::Desktop && valid_app_id(payload) => {
                 self.state.actions.borrow_mut().push(Action::Launch(payload.to_owned()));
@@ -430,6 +430,7 @@ impl NativeHost for Host {
 fn app_metadata(id: &str) -> (&'static str, &'static str) {
     match id {
         "terminal" => ("Terminal", "assets/terminal.png"),
+        "my-computer" => ("我的电脑", "assets/computer.png"),
         "file-manager" => ("File Manager", "assets/computer.png"),
         "music-player" => ("Music Player", "assets/speaker.png"),
         _ => ("Application", "assets/terminal.png"),

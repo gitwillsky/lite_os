@@ -49,7 +49,7 @@ python3 .claude/skills/run-lite-os-ui-acceptance/driver.py --out /tmp/liteos-ui
 driver 会：
 1. 冷启动 QEMU（`-snapshot`：写入落临时 overlay，原镜像只读，不与并行 `make run-gui` 抢写锁）。
 2. 等桌面就绪 marker（`compositor: desktop first scene presented`）。
-3. 双击桌面图标打开应用（`--open file-manager|terminal`，默认 file-manager），等其 ready marker。
+3. 双击桌面图标打开应用（`--open my-computer|file-manager|terminal`，默认 file-manager），等其 ready marker。
 4. 用 QMP 注入点击并 `screendump`，产出 PNG：
    - `opened.png` — 应用刚打开
    - `selected.png` — 单击第一个图标后的选中态

@@ -23,7 +23,7 @@ interface MenuState {
 }
 
 const desktopIcons = [
-  { id: "computer", label: "My Computer", icon: "assets/computer.png", app: "file-manager" },
+  { id: "computer", label: "My Computer", icon: "assets/computer.png", app: "my-computer" },
   { id: "terminal", label: "Terminal", icon: "assets/terminal.png", app: "terminal" },
   { id: "music-player", label: "Music Player", icon: "assets/speaker.png", app: "music-player" },
   { id: "documents", label: "My Documents", icon: "assets/documents.png", app: "file-manager" },

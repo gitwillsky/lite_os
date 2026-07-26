@@ -10,6 +10,7 @@ const products = [
   ["desktop", "src/desktop/entry.tsx", "src/desktop/style.css"],
   ["terminal", "src/terminal/entry.tsx", "src/terminal/style.css"],
   ["file-manager", "src/file-manager/entry.tsx", "src/file-manager/style.css"],
+  ["my-computer", "src/my-computer/entry.tsx", "src/my-computer/style.css"],
   ["music-player", "src/music-player/entry.tsx", "src/music-player/style.css"],
 ];
 
@@ -193,6 +194,22 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/tb-up.png"), join(assets, "tb-up.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-search.png"), join(assets, "tb-search.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-folders.png"), join(assets, "tb-folders.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-views.png"), join(assets, "tb-views.png"));
+    await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
+    await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));
+    await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
+  }
+  if (id === "my-computer") {
+    await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-drive.png"), join(assets, "drive.png"));
+    await copyFile(join(root, "../assets/sprites-src/icon-drive-16.png"), join(assets, "drive-16.png"));
+    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
+    await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
+    await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
+    await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-back.png"), join(assets, "tb-back.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-forward.png"), join(assets, "tb-forward.png"));
+    await copyFile(join(root, "../assets/sprites-src/tb-up.png"), join(assets, "tb-up.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-views.png"), join(assets, "tb-views.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));
