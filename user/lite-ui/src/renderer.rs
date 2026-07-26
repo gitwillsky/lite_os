@@ -20,7 +20,7 @@ use serde_json::Value;
 use taffy::prelude::{AvailableSpace, Dimension, Display, NodeId, Size, Style, TaffyTree};
 
 use crate::{
-    display::{ForeignLayer, Overlay},
+    display::{ForeignLayer, Overlay, WindowFrame},
     font::Font,
     style::{Computed, Sheet},
     terminal_font::TerminalFont,
@@ -61,6 +61,11 @@ struct PaintWalk {
 pub struct RenderOutput {
     /// Foreign surfaces in React paint order.
     pub foreign: Vec<ForeignLayer>,
+    /// Window frames in React paint (z) order — one per `data-lite-window`,
+    /// including pure-DOM windows without a foreign surface. Each becomes a
+    /// per-window group `Pixels` node so the compositor can move/damage/finish
+    /// every window uniformly.
+    pub windows: Vec<WindowFrame>,
     /// Overlay chrome clips (CSS `position:fixed` elements) sorted by `z-index`
     /// ascending: the compositor re-paints the desktop buffer at these rects
     /// above every foreign surface so taskbar/menus stay on top of window
@@ -301,6 +306,7 @@ impl Renderer {
         .map_err(taffy_error)?;
         let mut output = RenderOutput {
             foreign: Vec::new(),
+            windows: Vec::new(),
             overlays: Vec::new(),
             hits: Vec::new(),
             key_listener: None,

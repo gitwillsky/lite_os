@@ -46,7 +46,9 @@ pub struct Frame<'a> {
     pub pixels: &'a mut SharedDumbBuffer,
 }
 
-/// One compositor-ready foreign surface emitted by desktop layout.
+/// One compositor-ready foreign surface emitted by desktop layout. The window
+/// frame clip and corner radius live on [`WindowFrame`] (emitted per window),
+/// so this carries only the client-area surface geometry.
 #[derive(Clone, Copy, Debug)]
 pub struct ForeignLayer {
     /// App surface identity.
@@ -55,11 +57,21 @@ pub struct ForeignLayer {
     pub configure_serial: u64,
     /// Physical client-area bounds.
     pub bounds: Rect,
-    /// Physical window frame clip re-painted above lower foreign content, so
-    /// each window's chrome and content stack as one atomic layer.
+}
+
+/// One window's frame region, emitted for EVERY `data-lite-window` — including
+/// pure-DOM windows (Music Player) with no foreign client surface. It becomes a
+/// per-window group `Pixels` scene node so the compositor's move/damage/finish
+/// paths, which key on `window_group`, treat every window uniformly. Without it
+/// a pure-DOM window has no group node and cannot be moved or erased, leaving a
+/// drag ghost.
+#[derive(Clone, Copy, Debug)]
+pub struct WindowFrame {
+    /// Window surface identity (`data-lite-window` value).
+    pub surface_id: u32,
+    /// Physical outer window rectangle used as the group node's clip.
     pub frame: Rect,
-    /// Rounded-corner radius in physical pixels for the frame clip; the compositor
-    /// skips corner pixels so lower content shows through the Luna-style rounded top corners instead of stale chrome pixels.
+    /// Rounded top-corner radius in physical pixels for the frame clip.
     pub corner_radius: u32,
 }
 
@@ -268,6 +280,7 @@ impl Display {
         buffer_id: u32,
         focused_surface: u32,
         foreign: &[ForeignLayer],
+        windows: &[WindowFrame],
         overlays: &[Overlay],
         pixels_changed: bool,
     ) -> io::Result<()> {
@@ -286,7 +299,7 @@ impl Display {
         } else {
             Rectangles::from_slice(&no_damage)
         };
-        let mut nodes = Vec::with_capacity(1 + foreign.len() * 2 + overlays.len());
+        let mut nodes = Vec::with_capacity(1 + windows.len() + foreign.len() + overlays.len());
         nodes.push(SceneNode {
             kind: SceneNodeKind::Pixels,
             window_group: 0,
@@ -299,42 +312,47 @@ impl Display {
             input: Rectangles::from_slice(&full_input),
             damage: pixel_damage,
         });
+        // One group `Pixels` frame node per window in z-order (pure-DOM included)
+        // so the compositor moves/damages every window uniformly by window_group.
+        // A window that also owns a foreign surface emits its `ForeignSurface`
+        // node right after its frame, keeping "window chrome then its content"
+        // atomic and preserving cross-window z-stacking.
+        let window_frames: Vec<[Rect; 1]> = windows.iter().map(|window| [window.frame]).collect();
         let foreign_bounds: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();
-        let foreign_frames: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.frame]).collect();
-        for (layer, (bounds_input, frame_input)) in foreign
-            .iter()
-            .zip(foreign_bounds.iter().zip(&foreign_frames))
-        {
-            if !self
-                .ready
-                .contains(&(layer.surface_id, layer.configure_serial))
-            {
-                continue;
-            }
+        for (window, frame_input) in windows.iter().zip(&window_frames) {
             nodes.push(SceneNode {
                 kind: SceneNodeKind::Pixels,
-                window_group: layer.surface_id,
+                window_group: window.surface_id,
                 source_id: buffer_id,
-                corner_radius: layer.corner_radius,
+                corner_radius: window.corner_radius,
                 configure_serial: 0,
                 bounds: full,
-                clip: layer.frame,
+                clip: window.frame,
                 opaque: None,
                 input: Rectangles::from_slice(frame_input),
                 damage: Rectangles::from_slice(&no_damage),
             });
-            nodes.push(SceneNode {
-                kind: SceneNodeKind::ForeignSurface,
-                window_group: layer.surface_id,
-                source_id: layer.surface_id,
-                corner_radius: 0,
-                configure_serial: layer.configure_serial,
-                bounds: layer.bounds,
-                clip: full,
-                opaque: Some(layer.bounds),
-                input: Rectangles::from_slice(bounds_input),
-                damage: Rectangles::from_slice(&no_damage),
-            });
+            if let Some((index, layer)) = foreign
+                .iter()
+                .enumerate()
+                .find(|(_, layer)| layer.surface_id == window.surface_id)
+                && self
+                    .ready
+                    .contains(&(layer.surface_id, layer.configure_serial))
+            {
+                nodes.push(SceneNode {
+                    kind: SceneNodeKind::ForeignSurface,
+                    window_group: layer.surface_id,
+                    source_id: layer.surface_id,
+                    corner_radius: 0,
+                    configure_serial: layer.configure_serial,
+                    bounds: layer.bounds,
+                    clip: full,
+                    opaque: Some(layer.bounds),
+                    input: Rectangles::from_slice(&foreign_bounds[index]),
+                    damage: Rectangles::from_slice(&no_damage),
+                });
+            }
         }
         let overlay_inputs: Vec<[Rect; 1]> =
             overlays.iter().map(|overlay| [overlay.rect]).collect();

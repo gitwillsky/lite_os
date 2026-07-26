@@ -8,8 +8,8 @@ use taffy::TaffyTree;
 
 use super::{
     Axis, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk, PhysicalRect,
-    RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion, background_url,
-    corner_radii, cursor_shape, decode_png, excludes_window, is_surface, listener,
+    RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion, WindowFrame,
+    background_url, corner_radii, cursor_shape, decode_png, excludes_window, is_surface, listener,
     logical_from_physical, logical_intersection, overflow_modes, paint_background, paint_border,
     paint_image, paint_scrollbar, paint_scrollbar_corner, paint_shadow, scrollbar, taffy_error,
     text_content,
@@ -213,9 +213,6 @@ impl Renderer {
                 .get("data-configure-serial")
                 .and_then(Value::as_u64);
             if let (Some(surface_id), Some(configure_serial)) = (surface_id, configure_serial) {
-                let corner_radius = (f64::from(radii[0].max(radii[1]).max(radii[2]).max(radii[3]))
-                    * f64::from(SCALE))
-                .round() as u32;
                 // Foreign bounds are the unclamped source geometry. The
                 // compositor performs screen clipping; clamping here would
                 // change the configured client size and blank edge windows.
@@ -229,8 +226,6 @@ impl Renderer {
                     surface_id,
                     configure_serial,
                     bounds: surface_bounds,
-                    frame: walk.window_frame.unwrap_or(surface_bounds),
-                    corner_radius,
                 });
             }
         }
@@ -263,6 +258,29 @@ impl Renderer {
         } else {
             walk.window_frame
         };
+        // Emit a per-window group frame for EVERY window (pure-DOM included), in
+        // React paint (z) order, so the compositor moves/damages every window
+        // uniformly by `window_group`. Skipped on the move underlay: that render
+        // is a "one window excluded" backdrop, not a presentable window list.
+        if walk.excluded_window_group.is_none()
+            && let Some(frame) = child_frame
+            && node.source.props.contains_key("data-lite-window")
+            && let Some(surface_id) = node
+                .source
+                .props
+                .get("data-lite-window")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+        {
+            let corner_radius = (f64::from(radii[0].max(radii[1]).max(radii[2]).max(radii[3]))
+                * f64::from(SCALE))
+            .round() as u32;
+            output.windows.push(WindowFrame {
+                surface_id,
+                frame,
+                corner_radius,
+            });
+        }
         let (overflow_x, overflow_y) = overflow_modes(&node.computed);
         let clips_children = overflow_x.clips() || overflow_y.clips();
         let scrolls_x = overflow_x.scrolls();

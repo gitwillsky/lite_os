@@ -67,6 +67,7 @@ struct Interactions {
 struct DesktopPresentation {
     buffer_id: u32,
     foreign: Vec<display::ForeignLayer>,
+    windows: Vec<display::WindowFrame>,
     overlays: Vec<display::Overlay>,
 }
 
@@ -258,6 +259,7 @@ fn render_latest(
                 presentation.buffer_id,
                 state.focused_surface(),
                 &presentation.foreign,
+                &presentation.windows,
                 &presentation.overlays,
                 false,
             )?;
@@ -279,6 +281,7 @@ fn render_latest(
             buffer_id,
             state.focused_surface(),
             &output.foreign,
+            &output.windows,
             &output.overlays,
             true,
         )?,
@@ -299,6 +302,7 @@ fn render_latest(
         interactions.desktop = Some(DesktopPresentation {
             buffer_id,
             foreign: output.foreign,
+            windows: output.windows,
             overlays: output.overlays,
         });
     }
