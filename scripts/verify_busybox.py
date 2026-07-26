@@ -67,7 +67,12 @@ BINARY_RECIPE_VERSION = 6
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 12
+ROOTFS_RECIPE_VERSION = 13
+# APK assembly temporarily holds both the installed tree and its signed base
+# package. The bundled FLAC makes the old 128 MiB image fail with ENOSPC during
+# that transaction, so the product baseline reserves 512 MiB to keep package
+# installation atomic.
+ROOTFS_SIZE_MIB = 512
 RUST_USER_CARGO_CACHE_RECIPE_VERSION = 1
 UI_ASSET_RECIPE_VERSION = 2
 if TARGET.arch == "aarch64":
@@ -117,6 +122,8 @@ UI_EXTERNAL_INPUTS = (
     ROOT / "assets/sprites-src/icon-terminal.png",
     ROOT / "assets/sprites-src/icon-trash.png",
 )
+BUNDLED_MUSIC_SOURCE = ROOT / "assets/music/跟太阳系说再见/二向箔降维打击.flac"
+BUNDLED_MUSIC_DESTINATION = "/root/Music/跟太阳系说再见-二向箔降维打击.flac"
 # BusyBox 的 make-time `ARCH=arm64|riscv` 会覆盖 recipe 环境。CC/LD 必须在执行
 # LiteOS wrapper 前恢复 canonical selector；缺少该边界时 wrapper 会把 BusyBox 的
 # architecture spelling 当成公共 `ARCH` 并在编译第一项 target object 时 fail-stop。
@@ -1322,6 +1329,11 @@ def create_image(
     image: Path,
 ) -> Path:
     """构造 BusyBox、唯一 musl runtime、标准 loader symlink 与固定 inittab。"""
+    with BUNDLED_MUSIC_SOURCE.open("rb") as music:
+        if music.read(4) != b"fLaC":
+            raise RuntimeError(
+                "bundled music is missing its Git LFS payload or is not FLAC"
+            )
     run(
         [
             sys.executable,
@@ -1329,6 +1341,8 @@ def create_image(
             "create",
             "--file",
             str(image),
+            "--size",
+            str(ROOTFS_SIZE_MIB),
             "--init",
             str(binary),
         ],
@@ -1373,6 +1387,8 @@ def create_image(
         "mkdir /var/lib/liteos/audio",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
+        f"write {BUNDLED_MUSIC_SOURCE} {BUNDLED_MUSIC_DESTINATION}",
+        f"set_inode_field {BUNDLED_MUSIC_DESTINATION} mode 0100644",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
@@ -1447,6 +1463,37 @@ def create_image(
     )
     if "Mode:  01777" not in temporary_directory_metadata:
         raise RuntimeError("BusyBox rootfs /tmp must have mode 01777")
+    bundled_music_metadata = run(
+        [
+            str(find_debugfs()),
+            "-R",
+            f"stat {BUNDLED_MUSIC_DESTINATION}",
+            str(image),
+        ],
+        ROOT,
+    )
+    if (
+        "Type: regular" not in bundled_music_metadata
+        or "Mode:  0644" not in bundled_music_metadata
+        or (
+            f"Size: {BUNDLED_MUSIC_SOURCE.stat().st_size}"
+            not in bundled_music_metadata
+        )
+    ):
+        raise RuntimeError("BusyBox rootfs lacks the bundled music file")
+    with tempfile.TemporaryDirectory(prefix="liteos-bundled-music-") as directory:
+        readback = Path(directory) / "readback.flac"
+        run(
+            [
+                str(find_debugfs()),
+                "-R",
+                f"dump {BUNDLED_MUSIC_DESTINATION} {readback}",
+                str(image),
+            ],
+            ROOT,
+        )
+        if sha256(readback) != sha256(BUNDLED_MUSIC_SOURCE):
+            raise RuntimeError("BusyBox rootfs bundled music bytes differ from source")
     passwd = run([str(find_debugfs()), "-R", "cat /etc/passwd", str(image)], ROOT)
     group = run([str(find_debugfs()), "-R", "cat /etc/group", str(image)], ROOT)
     if "root:x:0:0:root:/root:/bin/sh" not in passwd or "root:x:0:" not in group:
@@ -1600,6 +1647,7 @@ def create_published_image(
         ROOT / "assets/cursor-resize-ew.lc2",
         ROOT / "assets/cursor-resize-nesw.lc2",
         ROOT / "assets/cursor-resize-nwse.lc2",
+        BUNDLED_MUSIC_SOURCE,
         ROOT / "scripts/pack_cursor_assets.py",
         ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",

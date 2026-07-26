@@ -10,9 +10,11 @@
 - `PROFILE` 默认 `release`，只接受 `release` 与 `debug`；提交门禁以 release 产物为准。
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
 - kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture identity，不允许跨目标命中。
+- rootfs 基线从 `assets/music/` 安装预置音乐到 `/root/Music`；该资产进入 rootfs 内容指纹并在写入后
+  回读校验。`reset-rootfs` 恢复预置副本，`sync-userland` 不拥有该目录，也不会覆盖用户新增音乐。
 - `FS_IMAGE_SIZE_MIB` 只控制可写开发实例的最小容量，默认 8192 MiB；`run`、`run-gui` 与
   `run-gdb` 在 QEMU 启动前离线扩容已有实例并保留内容，较大的实例不会被缩容。缺少该扩容会让
-  基线派生的 128 MiB 实例在安装 Node.js 等应用时以 `ENOSPC` 失败；runtime gate 仍消费紧凑、
+  基线派生的 512 MiB 实例在安装 Node.js 等应用时以 `ENOSPC` 失败；runtime gate 仍消费固定、
   可复现的只读基线，不继承开发容量。
 - `sync-userland` 直接构建并离线替换图形会话拥有的 binary、React bundle、app manifest、字体和
   presentation assets；镜像内指纹命中时 no-op。`run` 与 `run-gui` 自动执行它，保留 APK、项目和
