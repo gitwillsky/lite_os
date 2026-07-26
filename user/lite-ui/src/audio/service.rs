@@ -395,7 +395,11 @@ impl Worker {
                         self.emit(Event::time(id, "timeupdate", time));
                         self.emit(Event::plain(id, "pause"));
                     }
-                    AckOperation::Gain | AckOperation::Close => {}
+                    AckOperation::Gain => {
+                        let gain = self.media.get(&id).expect("matched media").gain;
+                        eprintln!("LITE_AUDIO gain-installed id={id} gain={gain:.6}");
+                    }
+                    AckOperation::Close => {}
                 }
             }
             ServiceMessage::Progress {

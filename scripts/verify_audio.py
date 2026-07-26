@@ -579,12 +579,14 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         browser_x = app_x + FILE_ROW_POINT[0]
         first_row_y = app_y + FILE_ROW_POINT[1]
         for index, (_, guest_name) in enumerate(FIXTURES):
+            source_marker = f"LITE_AUDIO source-opened id=1 file={guest_name}"
+            source_before = capture.count(source_marker)
             loaded_before = capture.count("LITE_AUDIO event=loadedmetadata")
             playing_before = capture.count("LITE_AUDIO event=playing")
             double_click(qmp, browser_x, first_row_y + index * FILE_ROW_HEIGHT)
             capture.wait_new(
-                f"LITE_AUDIO source-opened id=1 file={guest_name}",
-                0,
+                source_marker,
+                source_before,
                 min(8.0, deadline - time.monotonic()),
             )
             capture.wait_new(
@@ -653,7 +655,18 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             audible_end = wait_for_wav_growth(audio_output, audible_start + 12_000)
             element_audible_window = (audible_start, audible_end)
 
+            muted_before = capture.count(
+                "LITE_AUDIO gain-installed id=1 gain=0.000000"
+            )
             click(qmp, ua_mute_x, ua_y)
+            capture.wait_new(
+                "LITE_AUDIO gain-installed id=1 gain=0.000000",
+                muted_before,
+                5.0,
+            )
+            # GainInstalled is the mixer-owner barrier. Drain the already queued
+            # device periods before measuring silence; otherwise QEMU backend
+            # buffering can attribute pre-mute samples to the quiet window.
             quiet_start = wait_for_wav_growth(
                 audio_output, wav_frame_count(audio_output) + 2_048
             )
@@ -675,6 +688,15 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             click(qmp, loop_x, loop_y)
             capture.wait_new(
                 "LITE_AUDIO loop id=1 enabled=false", loop_disabled_before, 5.0
+            )
+            # Keep every remaining codec on the explicitly clicked source.
+            # Without this loop, `onEnded` may advance the playlist while the
+            # host waits for QEMU's buffered WAV growth and falsely bypass the
+            # next physical row click.
+            loop_enabled_before = capture.count("LITE_AUDIO loop id=1 enabled=true")
+            click(qmp, loop_x, loop_y)
+            capture.wait_new(
+                "LITE_AUDIO loop id=1 enabled=true", loop_enabled_before, 5.0
             )
 
         # 6. Exercise the desktop-only system controller through the production
@@ -736,21 +758,16 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         )
 
         # Keep all eight stress sources looping, then launch seven more production
-        # Music Player processes through the same desktop icon. This creates
+        # Music Player processes through the same desktop icon. The first process
+        # remains looped from the deterministic codec matrix; each later process
+        # enables the same public control after opening its source. This creates
         # eight real service streams without adding a hidden multi-stream app.
-        #    The 100% master step deliberately crosses the limiter threshold;
-        #    the private image is restored to 70% after the metrics window.
+        # The 100% master step deliberately crosses the limiter threshold; the
+        # private image is restored to 70% after the metrics window.
         toggle_master_popup(qmp)
         click(qmp, MASTER_VOLUME_X[100], MASTER_SCALE_Y)
         capture.wait_new("audio-service: master percent=100 muted=false", 0, 5.0)
         toggle_master_popup(qmp)
-        current_loop_x = app_x + CUSTOM_LOOP_POINT[0]
-        current_loop_y = app_y + CUSTOM_LOOP_POINT[1]
-        loop_enabled_before = capture.count("LITE_AUDIO loop id=1 enabled=true")
-        click(qmp, current_loop_x, current_loop_y)
-        capture.wait_new(
-            "LITE_AUDIO loop id=1 enabled=true", loop_enabled_before, 5.0
-        )
         for app_index in range(1, 8):
             presented_marker = (
                 f"compositor: app {app_index + 1} first scene presented"
