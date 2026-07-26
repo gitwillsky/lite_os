@@ -4,6 +4,10 @@ pub(crate) mod block;
 #[path = "../../../kernel/src/drivers/io_completion.rs"]
 pub(crate) mod io_completion;
 
+#[path = "../../../kernel/src/drivers/audio_output.rs"]
+pub(crate) mod audio_output;
+pub(crate) use audio_output::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES};
+
 pub(crate) mod hal {
     #[derive(Clone, Copy)]
     pub(in crate::drivers) struct VirtQueueAddresses {

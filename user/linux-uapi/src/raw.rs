@@ -12,7 +12,9 @@ pub(crate) const POLLERR: i16 = 8;
 pub(crate) const POLLHUP: i16 = 16;
 pub(crate) const SOL_SOCKET: c_int = 1;
 pub(crate) const SCM_RIGHTS: c_int = 1;
+#[cfg(target_os = "linux")]
 pub(crate) const MSG_CMSG_CLOEXEC: c_int = 0x4000_0000;
+#[cfg(target_os = "linux")]
 pub(crate) const MSG_CTRUNC: c_int = 0x8;
 pub(crate) const PR_SET_PDEATHSIG: c_int = 1;
 pub(crate) const ECHILD: c_int = 10;
@@ -270,9 +272,23 @@ unsafe extern "C" {
         offset: i64,
     ) -> *mut c_void;
     pub(crate) fn munmap(address: *mut c_void, length: usize) -> c_int;
+    pub(crate) fn ftruncate(fd: c_int, length: i64) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fcntl(fd: c_int, command: c_int, argument: c_int) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn syscall(number: isize, ...) -> isize;
     pub(crate) fn poll(descriptors: *mut PollFd, count: usize, timeout: c_int) -> c_int;
     pub(crate) fn sendmsg(fd: c_int, message: *const MsgHdr, flags: c_int) -> isize;
     pub(crate) fn recvmsg(fd: c_int, message: *mut MsgHdr, flags: c_int) -> isize;
+    pub(crate) fn dup2(old_fd: c_int, new_fd: c_int) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn getsockopt(
+        fd: c_int,
+        level: c_int,
+        option: c_int,
+        value: *mut c_void,
+        length: *mut u32,
+    ) -> c_int;
     pub(crate) fn fork() -> c_int;
     pub(crate) fn getppid() -> c_int;
     pub(crate) fn prctl(option: c_int, argument: c_int) -> c_int;

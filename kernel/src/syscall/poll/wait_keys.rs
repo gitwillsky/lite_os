@@ -117,6 +117,15 @@ impl PollWaitKeys {
                     wake_group,
                 ))?;
             }
+            OpenFileKind::Character(CharacterDevice::Audio(file)) => {
+                self.push(PollWaitKey::pipe(
+                    &file.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                    super::audio_notification_wait_event(),
+                    exclusive,
+                    wake_group,
+                ))?;
+            }
             OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
                 self.push(PollWaitKey::pipe(
                     &master.notification_pipe(),

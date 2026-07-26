@@ -1,7 +1,7 @@
 # Linux 64-bit syscall 支持
 
 LiteOS 共享 ABI 表维护 Linux 64-bit asm-generic syscall 子集以及 RISC-V architecture
-extension；其中 RISC-V backend 的矩阵仍包含 147 个 Linux/riscv64 syscall。AArch64 backend
+extension；其中 RISC-V backend 的矩阵仍包含 148 个 Linux/riscv64 syscall。AArch64 backend
 复用 asm-generic 领域矩阵，但不接入 RISC-V 专用编号 258。该数量只由
 `syscall-abi/src/lib.rs` 和本页维护；每个入口的状态、对象范围与缺口只在一个领域矩阵中出现。
 

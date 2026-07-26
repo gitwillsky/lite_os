@@ -628,6 +628,71 @@ kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: sepc : usi
 kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: sstatus : Sstatus
 kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: trap_handler : usize
 kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: x : [usize ; 32]
+kernel/src/audio.rs :: pub (crate) HardwareParameters :: access : i32
+kernel/src/audio.rs :: pub (crate) HardwareParameters :: buffer_frames : u64
+kernel/src/audio.rs :: pub (crate) HardwareParameters :: channels : u32
+kernel/src/audio.rs :: pub (crate) HardwareParameters :: format : i32
+kernel/src/audio.rs :: pub (crate) HardwareParameters :: period_frames : u64
+kernel/src/audio.rs :: pub (crate) HardwareParameters :: periods : u32
+kernel/src/audio.rs :: pub (crate) HardwareParameters :: rate : u32
+kernel/src/audio.rs :: pub (crate) PcmStatus :: application_frames : u64
+kernel/src/audio.rs :: pub (crate) PcmStatus :: delay_frames : i64
+kernel/src/audio.rs :: pub (crate) PcmStatus :: hardware_frames : u64
+kernel/src/audio.rs :: pub (crate) PcmStatus :: state : PcmState
+kernel/src/audio.rs :: pub (crate) SoftwareParameters :: available_min : u64
+kernel/src/audio.rs :: pub (crate) SoftwareParameters :: boundary : u64
+kernel/src/audio.rs :: pub (crate) SoftwareParameters :: start_threshold : u64
+kernel/src/audio.rs :: pub (crate) SoftwareParameters :: stop_threshold : u64
+kernel/src/audio.rs :: pub (crate) fn available () -> bool
+kernel/src/audio.rs :: pub (crate) fn init (output : Arc < dyn PcmOutput > , notification : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < () , () >
+kernel/src/audio.rs :: pub (crate) fn open () -> Result < Arc < PcmFile > , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn commit_application_pointer (& self , new_application_pointer : u64 ,) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn drop_stream (& self) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn free_hardware (& self) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn hardware_parameters (& self , parameters : HardwareParameters ,) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn mapping (& self , offset : u64 , length : usize ,) -> Result < DeviceMappingSource , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn poll_events (& self , events : i16) -> i16
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn prepare (& self) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn readiness_generation (& self) -> u64
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn software_parameters (& self , parameters : SoftwareParameters ,) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn start (& self) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn status (& self) -> PcmStatus
+kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn write_period (& self , bytes : & [u8]) -> Result < () , AudioError >
+kernel/src/audio.rs :: pub (crate) struct HardwareParameters
+kernel/src/audio.rs :: pub (crate) struct PcmFile
+kernel/src/audio.rs :: pub (crate) struct PcmStatus
+kernel/src/audio.rs :: pub (crate) struct SoftwareParameters
+kernel/src/audio.rs :: pub (crate) use crate :: drivers :: { PCM_BUFFER_FRAMES , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmOutputError as AudioError , }
+kernel/src/audio.rs :: pub (crate) use state :: PcmState
+kernel/src/audio/state.rs :: enum PcmState :: Disconnected = 8
+kernel/src/audio/state.rs :: enum PcmState :: Open = 0
+kernel/src/audio/state.rs :: enum PcmState :: Prepared = 2
+kernel/src/audio/state.rs :: enum PcmState :: Running = 3
+kernel/src/audio/state.rs :: enum PcmState :: Setup = 1
+kernel/src/audio/state.rs :: enum PcmState :: Xrun = 4
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: application_frames : u64
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: available_min : u64
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: boundary : u64
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: hardware_frames : u64
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: start_threshold : u64
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: state : PcmState
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: stop_threshold : u64
+kernel/src/audio/state.rs :: pub (crate) enum PcmState
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: const fn new () -> Self
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn complete_period (& mut self)
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn configure (& mut self) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn delay (& self) -> u64
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn disconnect (& mut self)
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn drop_stream (& mut self) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn free_hardware (& mut self) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn prepare (& mut self) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn set_software (& mut self , available_min : u64 , start_threshold : u64 , stop_threshold : u64 , boundary : u64 ,) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn start (& mut self) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn submit_period (& mut self) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn writable (& self) -> bool
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn xrun (& mut self)
+kernel/src/audio/state.rs :: pub (crate) struct PcmStateOwner
 kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
 kernel/src/config.rs :: pub (crate) const TICKS_PER_SEC : usize = 100
 kernel/src/cpu/deferred.rs :: enum DeferredWork :: Console = 1 << 1
@@ -674,6 +739,31 @@ kernel/src/cpu/mod.rs :: pub (crate) struct CpuSet
 kernel/src/cpu/mod.rs :: pub (crate) struct CpuSetIter
 kernel/src/cpu/mod.rs :: pub (crate) struct HardwareCpuId
 kernel/src/cpu/mod.rs :: pub (crate) use deferred :: { DeferredWork , raise as raise_deferred , take as take_deferred }
+kernel/src/drivers/audio_output.rs :: enum PcmOutputError :: # [doc = " adapter 当前所有 period slot 均由 device 持有。"] WouldBlock
+kernel/src/drivers/audio_output.rs :: enum PcmOutputError :: # [doc = " command 与当前 device lifecycle 不匹配。"] InvalidState
+kernel/src/drivers/audio_output.rs :: enum PcmOutputError :: # [doc = " transport、completion 或 device status 已损坏。"] Device
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_BUFFER_BYTES : usize = PCM_PERIOD_BYTES * PCM_PERIODS
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_BUFFER_FRAMES : usize = PCM_PERIOD_FRAMES * PCM_PERIODS
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_CHANNELS : u8 = 2
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_FRAME_BYTES : usize = 8
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_PERIODS : usize = 4
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_PERIOD_BYTES : usize = PCM_PERIOD_FRAMES * PCM_FRAME_BYTES
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_PERIOD_FRAMES : usize = 256
+kernel/src/drivers/audio_output.rs :: pub (crate) const PCM_RATE : u32 = 48_000
+kernel/src/drivers/audio_output.rs :: pub (crate) enum PcmOutputError
+kernel/src/drivers/audio_output.rs :: pub (crate) trait PcmCompletionObserver
+kernel/src/drivers/audio_output.rs :: pub (crate) trait PcmOutput
+kernel/src/drivers/audio_output.rs :: trait PcmCompletionObserver :: fn disconnected (& self)
+kernel/src/drivers/audio_output.rs :: trait PcmCompletionObserver :: fn period_completed (& self , frames : usize)
+kernel/src/drivers/audio_output.rs :: trait PcmCompletionObserver :: fn xrun (& self)
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn configure (& self) -> Result < () , PcmOutputError >
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn prepare (& self) -> Result < () , PcmOutputError >
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn release (& self) -> Result < () , PcmOutputError >
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn set_observer (& self , observer : Arc < dyn PcmCompletionObserver >) -> Result < () , PcmOutputError >
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn start (& self) -> Result < () , PcmOutputError >
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn stop (& self) -> Result < () , PcmOutputError >
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn submit_period (& self , bytes : & [u8]) -> Result < () , PcmOutputError >
+kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn writable (& self) -> bool
 kernel/src/drivers/block.rs :: enum BlockError :: AlreadyRegistered
 kernel/src/drivers/block.rs :: enum BlockError :: DeviceError
 kernel/src/drivers/block.rs :: enum BlockError :: InvalidBlock
@@ -855,8 +945,10 @@ kernel/src/drivers/mod.rs :: pub (crate) fn console_input_ready () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn discard_console_input () -> usize
 kernel/src/drivers/mod.rs :: pub (crate) fn dispatch_io_completion_work () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn initialize_console_input () -> Result < () , InterruptError >
+kernel/src/drivers/mod.rs :: pub (crate) fn primary_audio_output () -> Option < alloc :: sync :: Arc < dyn PcmOutput > >
 kernel/src/drivers/mod.rs :: pub (crate) fn publish_console_input (bytes : & [u8])
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
+kernel/src/drivers/mod.rs :: pub (crate) fn register_audio_output (device : alloc :: sync :: Arc < VirtIOSoundDevice >) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_display_device (device : alloc :: sync :: Arc < dyn DisplayDevice > ,) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_entropy_device (device : alloc :: sync :: Arc < VirtIORngDevice >) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_input_device (device : alloc :: sync :: Arc < dyn InputDevice > ,) -> Result < usize , alloc :: sync :: Arc < dyn InputDevice > >
@@ -864,6 +956,7 @@ kernel/src/drivers/mod.rs :: pub (crate) fn register_network_device (device : al
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/drivers/mod.rs :: pub (crate) mod network
+kernel/src/drivers/mod.rs :: pub (crate) use audio_output :: { PCM_BUFFER_FRAMES , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmCompletionObserver , PcmOutput , PcmOutputError , }
 kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , primary_display , }
 kernel/src/drivers/mod.rs :: pub (crate) use hal :: { InterruptError , InterruptHandler , InterruptVector , MmioBus }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
@@ -874,6 +967,7 @@ kernel/src/drivers/mod.rs :: pub (crate) use virtio_input :: VirtIOInputDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_net :: VirtIONetworkDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: VirtIORngDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: fill_entropy
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_sound :: VirtIOSoundDevice
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " transport、queue 或设备返回了不可恢复错误。"] Device
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " 帧超过设备或调用方 buffer 能表达的 MTU。"] FrameTooLarge
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " 设备暂时没有已完成的接收帧。"] WouldBlock
@@ -1180,6 +1274,49 @@ kernel/src/drivers/virtio_rng/completion_policy.rs :: enum CompletionValidity ::
 kernel/src/drivers/virtio_rng/completion_policy.rs :: enum CompletionValidity :: Initialized (usize)
 kernel/src/drivers/virtio_rng/completion_policy.rs :: pub (super) enum CompletionValidity
 kernel/src/drivers/virtio_rng/completion_policy.rs :: pub (super) fn validate_completion (requested : usize , returned : usize) -> CompletionValidity
+kernel/src/drivers/virtio_sound.rs :: pub (crate) impl VirtIOSoundDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_sound.rs :: pub (crate) impl VirtIOSoundDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_sound.rs :: pub (crate) struct VirtIOSoundDevice
+kernel/src/drivers/virtio_sound.rs :: pub (super) fn dispatch_completion_work (device : & VirtIOSoundDevice) -> bool
+kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Configured
+kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Failed
+kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Prepared
+kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Running
+kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Setup
+kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Stopped
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) enum DeviceState
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) fn polled_control_ack_requires_deferred (interrupt_status : u32) -> bool
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) fn unique_slot_for (completion_head : u16 , slot_count : usize , mut head_at : impl FnMut (usize) -> Option < u16 > ,) -> Option < usize >
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_configure (self) -> Option < Self >
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_prepare (self) -> Option < Self >
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_release (self) -> Option < Self >
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_start (self) -> Option < Self >
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_stop (self) -> Option < Self >
+kernel/src/drivers/virtio_sound/lifecycle.rs :: pub (super) impl DeviceState :: fn fail (& mut self) -> bool
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const CONTROL_QUEUE : u32 = 0
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const CONTROL_REQUEST_BYTES : usize = 24
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const CONTROL_RESPONSE_BYTES : usize = 36
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const D_OUTPUT : u8 = 0
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const EVENT_BYTES : usize = 8
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const EVENT_QUEUE : u32 = 1
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const EVT_PCM_XRUN : u32 = 0x1101
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const PCM_FMT_FLOAT : u8 = 19
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const PCM_INFO_BYTES : usize = 32
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const PCM_RATE_48000 : u8 = 7
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const RX_QUEUE : u32 = 3
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const R_PCM_INFO : u32 = 0x0100
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const R_PCM_PREPARE : u32 = 0x0102
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const R_PCM_RELEASE : u32 = 0x0103
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const R_PCM_SET_PARAMS : u32 = 0x0101
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const R_PCM_START : u32 = 0x0104
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const R_PCM_STOP : u32 = 0x0105
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const STATUS_BYTES : usize = 8
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const S_OK : u32 = 0x8000
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const TX_QUEUE : u32 = 2
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const XFER_BYTES : usize = 4
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
+kernel/src/drivers/virtio_sound/wire.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
 kernel/src/drm.rs :: enum DrmError :: # [doc = " UAPI 参数、尺寸或 fake offset 非法。"] Invalid
 kernel/src/drm.rs :: enum DrmError :: # [doc = " display adapter 已有未完成 transaction。"] Busy
 kernel/src/drm.rs :: enum DrmError :: # [doc = " display transport 或 response 损坏。"] Device
@@ -1543,6 +1680,7 @@ kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < OpenedFile >)
+kernel/src/fs/file.rs :: enum OpenFileKind :: MemFile (Arc < crate :: fs :: MemFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Pipe (Arc < PipeEnd >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Socket (Arc < Socket >)
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: flags : Mutex < u32 >
@@ -1562,6 +1700,7 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn event_fd (ev
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn filesystem_statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (opened : Arc < OpenedFile > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Option < Arc < dyn Inode > >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn mem_file (file : Arc < crate :: fs :: MemFile > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn opened_ref (& self) -> Option < Arc < OpenedFile > >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn pipe (endpoint : Arc < PipeEnd > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn poll_events (& self , events : i16) -> i16
@@ -1584,6 +1723,7 @@ kernel/src/fs/file.rs :: trait Console :: fn discard_input (& self) -> usize
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: Audio (Arc < crate :: audio :: PcmFile >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Drm (Arc < DrmFile >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Entropy
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Input { file : Arc < InputFile > , }
@@ -1702,6 +1842,7 @@ kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) fn terminal_input_chun
 kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
 kernel/src/fs/file/terminal_flush.rs :: pub (crate) fn clear_raw (head : & mut usize , length : & mut usize) -> usize
 kernel/src/fs/file/terminal_flush.rs :: pub (super) fn clear_pending (input_head : & mut usize , input_len : & mut usize , line_len : & mut usize , eof_pending : & mut bool ,) -> bool
+kernel/src/fs/inode.rs :: enum DeviceKind :: AudioPcmPlayback
 kernel/src/fs/inode.rs :: enum DeviceKind :: Console
 kernel/src/fs/inode.rs :: enum DeviceKind :: DriCard0
 kernel/src/fs/inode.rs :: enum DeviceKind :: InputEvent (u16)
@@ -1769,6 +1910,28 @@ kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , rem
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn add_seals (& self , seals : u32) -> Result < u32 , FileSystemError >
+kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn name (& self) -> & [u8]
+kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn new (name : Vec < u8 > , allow_sealing : bool) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn seals (& self) -> u32
+kernel/src/fs/memfd.rs :: pub (crate) struct MemFile
+kernel/src/fs/memfd/state.rs :: enum MemFileStateError :: InvalidOperation
+kernel/src/fs/memfd/state.rs :: enum MemFileStateError :: OutOfMemory
+kernel/src/fs/memfd/state.rs :: enum MemFileStateError :: PermissionDenied
+kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_FUTURE_WRITE : u32 = 0x0010
+kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_GROW : u32 = 0x0004
+kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_SEAL : u32 = 0x0001
+kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_SHRINK : u32 = 0x0002
+kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_WRITE : u32 = 0x0008
+kernel/src/fs/memfd/state.rs :: pub (super) enum MemFileStateError
+kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn add_seals (& mut self , seals : u32) -> Result < u32 , MemFileStateError >
+kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn len (& self) -> usize
+kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn new (allow_sealing : bool) -> Self
+kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn read (& self , offset : usize , output : & mut [u8]) -> usize
+kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn seals (& self) -> u32
+kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn truncate (& mut self , size : usize) -> Result < () , MemFileStateError >
+kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn write (& mut self , offset : usize , input : & [u8] ,) -> Result < usize , MemFileStateError >
+kernel/src/fs/memfd/state.rs :: pub (super) struct MemFileState
 kernel/src/fs/mod.rs :: enum FileSystemError :: AccessDenied
 kernel/src/fs/mod.rs :: enum FileSystemError :: AlreadyExists
 kernel/src/fs/mod.rs :: enum FileSystemError :: Busy
@@ -1809,6 +1972,7 @@ kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollCh
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , CharacterDevice , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , KmsgDeviceRead , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , character_write_chunk , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , Inode , InodeMetadata , InodeType , StorageWriter }
+kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
@@ -2346,6 +2510,7 @@ kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn exte
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent_count (& self) -> usize
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn page (& self , index : usize) -> Option < PhysicalPageNumber >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn pages (& self) -> usize
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn read (& self , offset : usize , output : & mut [u8]) -> Result < () , () >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn try_allocate (pages : usize , class : FrameAllocationClass) -> Option < Self >
 kernel/src/memory/device_backing.rs :: pub (crate) struct DeviceBacking
 kernel/src/memory/executable.rs :: enum ElfKind :: Executable
@@ -3415,6 +3580,32 @@ kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn fini
 kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn is_complete (& self) -> bool
 kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn reset (& self)
 kernel/src/sync/wait_completion.rs :: pub (crate) struct WaitCompletion
+kernel/src/syscall/audio.rs :: pub (in crate :: syscall) fn audio_ioctl (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , file : & Arc < PcmFile > , request : usize , argument : usize ,) -> isize
+kernel/src/syscall/audio.rs :: pub (in crate :: syscall) use codec :: { SNDRV_PCM_IOCTL_DELAY , SNDRV_PCM_IOCTL_DROP , SNDRV_PCM_IOCTL_HW_FREE , SNDRV_PCM_IOCTL_HW_PARAMS , SNDRV_PCM_IOCTL_PREPARE , SNDRV_PCM_IOCTL_PVERSION , SNDRV_PCM_IOCTL_START , SNDRV_PCM_IOCTL_STATUS , SNDRV_PCM_IOCTL_SW_PARAMS , SNDRV_PCM_IOCTL_SYNC_PTR , SNDRV_PCM_IOCTL_WRITEI_FRAMES , }
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DELAY : usize = 0x8008_4121
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DROP : usize = 0x0000_4143
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_FREE : usize = 0x0000_4112
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_PARAMS : usize = 0xc260_4111
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PREPARE : usize = 0x0000_4140
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PVERSION : usize = 0x8004_4100
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_START : usize = 0x0000_4142
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_STATUS : usize = 0x8098_4120
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SW_PARAMS : usize = 0xc088_4113
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SYNC_PTR : usize = 0xc088_4123
+kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_WRITEI_FRAMES : usize = 0x4018_4150
+kernel/src/syscall/audio/codec.rs :: pub (super) const HW_PARAMS_BYTES : usize = 608
+kernel/src/syscall/audio/codec.rs :: pub (super) const PCM_PROTOCOL_VERSION : i32 = 0x0002_0012
+kernel/src/syscall/audio/codec.rs :: pub (super) const STATUS_BYTES : usize = 152
+kernel/src/syscall/audio/codec.rs :: pub (super) const SW_PARAMS_BYTES : usize = 136
+kernel/src/syscall/audio/codec.rs :: pub (super) const SYNC_PTR_BYTES : usize = 136
+kernel/src/syscall/audio/codec.rs :: pub (super) const XFER_BYTES : usize = 24
+kernel/src/syscall/audio/codec.rs :: pub (super) fn exact_interval (bytes : & [u8] , parameter : usize) -> Option < u32 >
+kernel/src/syscall/audio/codec.rs :: pub (super) fn exact_mask (bytes : & [u8] , offset : usize) -> Option < i32 >
+kernel/src/syscall/audio/codec.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
+kernel/src/syscall/audio/codec.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
+kernel/src/syscall/audio/codec.rs :: pub (super) fn stop_or_error (completed : usize , error : isize) -> Result < () , isize >
+kernel/src/syscall/audio/codec.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
+kernel/src/syscall/audio/codec.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
 kernel/src/syscall/clone_errno.rs :: pub (super) const fn clone_resource_errno () -> isize
 kernel/src/syscall/clone_errno.rs :: pub (super) const fn process_clone_memory_errno (out_of_memory : bool) -> isize
 kernel/src/syscall/clone_errno.rs :: pub (super) const fn thread_clone_memory_errno (out_of_memory : bool) -> isize
@@ -3441,6 +3632,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const EAFNOSUPPORT : isize = 97
 kernel/src/syscall/errno.rs :: pub (crate) const EAGAIN : isize = 11
 kernel/src/syscall/errno.rs :: pub (crate) const EALREADY : isize = 114
 kernel/src/syscall/errno.rs :: pub (crate) const EBADF : isize = 9
+kernel/src/syscall/errno.rs :: pub (crate) const EBADFD : isize = 77
 kernel/src/syscall/errno.rs :: pub (crate) const EBUSY : isize = 16
 kernel/src/syscall/errno.rs :: pub (crate) const ECHILD : isize = 10
 kernel/src/syscall/errno.rs :: pub (crate) const ECONNREFUSED : isize = 111
@@ -3572,6 +3764,7 @@ kernel/src/syscall/getrandom_flags.rs :: pub (super) const fn getrandom_flags_su
 kernel/src/syscall/input.rs :: pub (in crate :: syscall) fn input_ioctl (task : & TaskControlBlock , file : & Arc < InputFile > , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/membarrier.rs :: pub (super) fn sys_membarrier (command : usize , flags : usize , _cpu_id : usize) -> isize
+kernel/src/syscall/memfd.rs :: pub (crate) fn sys_memfd_create (name : usize , flags : u32) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_brk (new_brk : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_madvise (address : usize , length : usize , advice : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mmap (address : usize , length : usize , prot : usize , flags : usize , fd : isize , offset : usize ,) -> isize

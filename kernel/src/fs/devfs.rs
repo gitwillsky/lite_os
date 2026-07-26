@@ -16,6 +16,7 @@ enum DevNode {
     Root,
     Dri,
     Input,
+    Snd,
     Pts,
     Device(DeviceKind),
     Link(DevLink),
@@ -47,6 +48,7 @@ impl DevNode {
             Self::Dri => 12,
             Self::Input => 14,
             Self::Pts => 16,
+            Self::Snd => 19,
             Self::Device(device) => device.inode(),
             Self::Link(DevLink::Fd) => 6,
             Self::Link(DevLink::Stdin) => 7,
@@ -57,7 +59,7 @@ impl DevNode {
 
     fn mode(self) -> u32 {
         match self {
-            Self::Root | Self::Dri | Self::Input | Self::Pts => 0o040755,
+            Self::Root | Self::Dri | Self::Input | Self::Pts | Self::Snd => 0o040755,
             Self::Device(device) => device.mode(),
             Self::Link(_) => 0o120777,
         }
@@ -84,6 +86,7 @@ impl DevInode {
             (DevNode::Root, b"dri") => DevNode::Dri,
             (DevNode::Root, b"input") => DevNode::Input,
             (DevNode::Root, b"pts") => DevNode::Pts,
+            (DevNode::Root, b"snd") if crate::audio::available() => DevNode::Snd,
             (DevNode::Root, b"null") => DevNode::Device(DeviceKind::Null),
             (DevNode::Root, b"zero") => DevNode::Device(DeviceKind::Zero),
             (DevNode::Root, b"random") => DevNode::Device(DeviceKind::Random),
@@ -103,6 +106,9 @@ impl DevInode {
             (DevNode::Input, b"..") => DevNode::Root,
             (DevNode::Pts, b".") => DevNode::Pts,
             (DevNode::Pts, b"..") => DevNode::Root,
+            (DevNode::Snd, b".") => DevNode::Snd,
+            (DevNode::Snd, b"..") => DevNode::Root,
+            (DevNode::Snd, b"pcmC0D0p") => DevNode::Device(DeviceKind::AudioPcmPlayback),
             (DevNode::Input, name) => {
                 let index = parse_event_index(name).ok_or(FileSystemError::NotFound)?;
                 if usize::from(index) >= crate::input::device_count() {
@@ -110,7 +116,8 @@ impl DevInode {
                 }
                 DevNode::Device(DeviceKind::InputEvent(index))
             }
-            (DevNode::Device(_) | DevNode::Link(_), _) | (DevNode::Dri | DevNode::Pts, _) => {
+            (DevNode::Device(_) | DevNode::Link(_), _)
+            | (DevNode::Dri | DevNode::Pts | DevNode::Snd, _) => {
                 return Err(FileSystemError::NotFound);
             }
             (DevNode::Root, _) => return Err(FileSystemError::NotFound),
@@ -158,7 +165,7 @@ impl Inode for DevInode {
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let device = match self.node {
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts => None,
+            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Snd => None,
             DevNode::Device(device) => Some(device),
             DevNode::Link(_) => None,
         };
@@ -180,6 +187,7 @@ impl Inode for DevInode {
                 | DevNode::Dri
                 | DevNode::Input
                 | DevNode::Pts
+                | DevNode::Snd
                 | DevNode::Device(_) => 0,
             },
             blocks: 0,
@@ -193,7 +201,9 @@ impl Inode for DevInode {
 
     fn inode_type(&self) -> InodeType {
         match self.node {
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts => InodeType::Directory,
+            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Snd => {
+                InodeType::Directory
+            }
             DevNode::Device(_) => InodeType::CharacterDevice,
             DevNode::Link(_) => InodeType::SymLink,
         }
@@ -202,7 +212,12 @@ impl Inode for DevInode {
     fn size(&self) -> u64 {
         match self.node {
             DevNode::Link(link) => link.target().len() as u64,
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Device(_) => 0,
+            DevNode::Root
+            | DevNode::Dri
+            | DevNode::Input
+            | DevNode::Pts
+            | DevNode::Snd
+            | DevNode::Device(_) => 0,
         }
     }
 
@@ -216,7 +231,7 @@ impl Inode for DevInode {
 
     fn device_kind(&self) -> Option<DeviceKind> {
         match self.node {
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts => None,
+            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Snd => None,
             DevNode::Device(device) => Some(device),
             DevNode::Link(_) => None,
         }
@@ -232,9 +247,12 @@ impl Inode for DevInode {
                 target.extend_from_slice(link.target());
                 Ok(target)
             }
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Device(_) => {
-                Err(FileSystemError::InvalidOperation)
-            }
+            DevNode::Root
+            | DevNode::Dri
+            | DevNode::Input
+            | DevNode::Pts
+            | DevNode::Snd
+            | DevNode::Device(_) => Err(FileSystemError::InvalidOperation),
         }
     }
 
@@ -281,15 +299,24 @@ impl Inode for DevInode {
             (14, InodeType::Directory, &b"input"[..]),
             (15, InodeType::CharacterDevice, &b"ptmx"[..]),
             (16, InodeType::Directory, &b"pts"[..]),
+            (19, InodeType::Directory, &b"snd"[..]),
         ];
+        let root_without_sound = &root[..root.len() - 1];
         let dri = [
             (12, InodeType::Directory, &b"."[..]),
             (1, InodeType::Directory, &b".."[..]),
             (13, InodeType::CharacterDevice, &b"card0"[..]),
         ];
+        let snd = [
+            (19, InodeType::Directory, &b"."[..]),
+            (1, InodeType::Directory, &b".."[..]),
+            (18, InodeType::CharacterDevice, &b"pcmC0D0p"[..]),
+        ];
         let specifications: &[_] = match self.node {
-            DevNode::Root => &root,
+            DevNode::Root if crate::audio::available() => &root,
+            DevNode::Root => root_without_sound,
             DevNode::Dri => &dri,
+            DevNode::Snd => &snd,
             DevNode::Input => {
                 let count = crate::input::device_count();
                 let mut stream = IndexedDirectory::new(cursor, visitor);

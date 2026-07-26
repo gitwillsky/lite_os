@@ -1,6 +1,8 @@
 use super::*;
 use crate::{
-    fs::{AdvisoryLockAttempt, AdvisoryLockError, RecordLockMode, RecordLockRange},
+    fs::{
+        AdvisoryLockAttempt, AdvisoryLockError, FileSystemError, RecordLockMode, RecordLockRange,
+    },
     syscall::INTERNAL_RESTART_SYS,
     task::{AdvisoryLockWaitError, wait_for_record_lock},
 };
@@ -14,6 +16,8 @@ const F_GETLK: u32 = 5;
 const F_SETLK: u32 = 6;
 const F_SETLKW: u32 = 7;
 const F_DUPFD_CLOEXEC: u32 = 1030;
+const F_ADD_SEALS: u32 = 1033;
+const F_GET_SEALS: u32 = 1034;
 const F_RDLCK: i16 = 0;
 const F_WRLCK: i16 = 1;
 const F_UNLCK: i16 = 2;
@@ -262,6 +266,27 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
             } else {
                 task.fd_duplicate(fd, argument, true)
                     .map_or_else(super::super::file_descriptor_error, |value| value as isize)
+            }
+        }
+        F_ADD_SEALS | F_GET_SEALS => {
+            let Some(ofd) = task.fd_get(fd) else {
+                return -errno::EBADF;
+            };
+            let OpenFileKind::MemFile(file) = &ofd.kind else {
+                return -errno::EINVAL;
+            };
+            if command == F_GET_SEALS {
+                file.seals() as isize
+            } else {
+                let Ok(seals) = u32::try_from(argument) else {
+                    return -errno::EINVAL;
+                };
+                match file.add_seals(seals) {
+                    Ok(_) => 0,
+                    Err(FileSystemError::PermissionDenied) => -errno::EPERM,
+                    Err(FileSystemError::InvalidOperation) => -errno::EINVAL,
+                    Err(_) => -errno::EIO,
+                }
             }
         }
         _ => -errno::EINVAL,

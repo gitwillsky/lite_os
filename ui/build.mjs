@@ -10,6 +10,7 @@ const products = [
   ["desktop", "src/desktop/entry.tsx", "src/desktop/style.css"],
   ["terminal", "src/terminal/entry.tsx", "src/terminal/style.css"],
   ["file-manager", "src/file-manager/entry.tsx", "src/file-manager/style.css"],
+  ["music-player", "src/music-player/entry.tsx", "src/music-player/style.css"],
 ];
 
 const liteModules = {
@@ -34,22 +35,32 @@ const liteModules = {
     export const connect = (argv) => JSON.parse(globalThis.__liteNative("terminal.connect", JSON.stringify(argv)));
     export const input = (event) => globalThis.__liteNative("terminal.input", JSON.stringify(event));
   `,
+  "lite:audio-system": `
+    export const subscribe = (callback) => globalThis.__liteSubscribe("audio-system", callback);
+    export const getState = () => globalThis.__liteNative("audio-system.get", "");
+    export const setVolume = (percent) => globalThis.__liteNative("audio-system.volume", String(percent));
+    export const setMuted = (muted) => globalThis.__liteNative("audio-system.muted", String(muted));
+  `,
   "lite:fs": `
     export const list = (path) => JSON.parse(globalThis.__liteNative("fs.list", path));
     export const read = (path) => JSON.parse(globalThis.__liteNative("fs.read", path));
+    export const open = (path) => globalThis.__liteFile(JSON.parse(globalThis.__liteNative("fs.open", path)));
   `,
 };
 
-const liteModulePlugin = {
+const liteModulePlugin = (product) => ({
   name: "lite-system-modules",
   setup(buildContext) {
     buildContext.onResolve({ filter: /^lite:/ }, ({ path }) => ({ path, namespace: "lite" }));
     buildContext.onLoad({ filter: /.*/, namespace: "lite" }, ({ path }) => {
       if (!(path in liteModules)) throw new Error(`unknown LiteUI system module '${path}'`);
+      if (path === "lite:audio-system" && product !== "desktop") {
+        throw new Error("lite:audio-system is available only to the desktop bundle");
+      }
       return { contents: liteModules[path], loader: "js" };
     });
   },
-};
+});
 
 const reactSystemPlugin = {
   name: "react-system-modules",
@@ -154,7 +165,7 @@ for (const [id, entryName, styleName] of products) {
     minifySyntax: true,
     minifyWhitespace: true,
     define: { "process.env.NODE_ENV": '"production"' },
-    plugins: [liteModulePlugin, reactSystemPlugin],
+    plugins: [liteModulePlugin(id), reactSystemPlugin],
     logLevel: "warning",
   });
   await writeFile(join(directory, "style.css"), style);
@@ -182,6 +193,11 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));
     await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
+  }
+  if (id === "music-player") {
+    await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
+    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
+    await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
   }
   if (id !== "desktop") {
     await copyFile(join(root, `src/${id}/app.json`), join(directory, "app.json"));

@@ -17,6 +17,8 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "Cargo.lock",
         "Cargo.toml",
         "README.md",
+        "audio-proto",
+        "audio-service",
         "base",
         "compositor",
         "diagnostics",
@@ -55,9 +57,17 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "compositor/src/boot.rs",
         "compositor/src/scanout.rs",
         "compositor/src/session.rs",
+        "audio-proto/src/lib.rs",
+        "audio-proto/src/ring.rs",
+        "audio-proto/src/transport.rs",
+        "audio-service/src/main.rs",
+        "audio-service/src/mixer.rs",
+        "audio-service/src/service.rs",
         "display-proto/src/lib.rs",
         "display-proto/src/scene.rs",
         "lite-ui/src/main.rs",
+        "lite-ui/src/audio/mod.rs",
+        "lite-ui/src/audio/decode.rs",
         "lite-ui/src/renderer.rs",
         "quickjs-runtime/src/raw.rs",
         "quickjs-runtime/vendor/quickjs/quickjs.c",
@@ -75,8 +85,17 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
 fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     let user = fs::read_to_string(root.join("user/Cargo.toml")).unwrap_or_default();
     for required in [
-        "members = [\"compositor\", \"display-proto\", \"linux-uapi\", \"lite-ui\", \"quickjs-runtime\", \"terminal-session\"]",
+        "\"audio-proto\"",
+        "\"audio-service\"",
+        "\"compositor\"",
+        "\"display-proto\"",
+        "\"linux-uapi\"",
+        "\"lite-ui\"",
+        "\"quickjs-runtime\"",
+        "\"terminal-session\"",
+        "audio-proto = { path = \"audio-proto\" }",
         "quickjs-runtime = { path = \"quickjs-runtime\" }",
+        "symphonia = { version = \"=0.6.0\", default-features = false, features = [\"all\", \"opt-simd-neon\"] }",
         "cssparser = \"=0.37.0\"",
         "taffy = \"=0.12.2\"",
         "tiny-skia = \"=0.12.0\"",
@@ -88,6 +107,8 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     }
     let root_workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
     for excluded in [
+        "\"user/audio-proto\"",
+        "\"user/audio-service\"",
         "\"user/compositor\"",
         "\"user/display-proto\"",
         "\"user/linux-uapi\"",
@@ -127,10 +148,10 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected = "::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/lite-ui --desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    let expected = "::respawn:/bin/audio-service\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/lite-ui --desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
-            "user/base/inittab: must supervise compositor, React desktop, network and UART recovery exactly once"
+            "user/base/inittab: must supervise the audio service, compositor, React desktop, network and UART recovery exactly once"
                 .to_owned(),
         );
     }
@@ -144,15 +165,18 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
     for required in [
         "def build_compositor(",
+        "def build_audio_service(",
         "def build_lite_ui(",
         "def build_terminal_session(",
         "def build_ui_assets(",
+        "/bin/audio-service",
         "/bin/compositor",
         "/bin/lite-ui",
         "/bin/terminal-session",
         "/usr/lib/lite-ui/runtime.js",
         "/usr/share/liteos/desktop/main.js",
         "/usr/share/liteos/apps/terminal/app.json",
+        "/usr/share/liteos/apps/music-player/app.json",
     ] {
         if !builder.contains(required) {
             errors.push(format!("scripts/verify_busybox.py: missing `{required}`"));
@@ -193,6 +217,8 @@ fn check_ui_product(root: &Path, errors: &mut Vec<String>) {
         "ui/src/desktop/style.css",
         "ui/src/terminal/main.tsx",
         "ui/src/terminal/app.json",
+        "ui/src/music-player/main.tsx",
+        "ui/src/music-player/app.json",
     ] {
         if !root.join(required).is_file() {
             errors.push(format!(

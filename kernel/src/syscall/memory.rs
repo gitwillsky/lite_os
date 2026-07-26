@@ -138,6 +138,22 @@ pub(crate) fn sys_mmap(
                 Err(error) => return -super::drm::drm_errno(error),
             };
             PreparedMapping::Device(source)
+        } else if let OpenFileKind::Character(CharacterDevice::Audio(file)) = &ofd.kind {
+            if sharing != MAP_SHARED
+                || permission.contains(MapPermission::X)
+                || !permission.contains(MapPermission::W)
+            {
+                return -errno::EINVAL;
+            }
+            if access_mode == O_RDONLY {
+                return -errno::EACCES;
+            }
+            let source = match file.mapping(offset as u64, length) {
+                Ok(source) => source,
+                Err(crate::audio::AudioError::InvalidState) => return -errno::EINVAL,
+                Err(_) => return -errno::EIO,
+            };
+            PreparedMapping::Device(source)
         } else {
             let Some(inode) = ofd.inode_ref() else {
                 return -errno::ENODEV;

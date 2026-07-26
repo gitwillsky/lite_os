@@ -26,8 +26,10 @@ RECIPE_VERSION = 1
 def managed_path(path: str) -> bool:
     """返回 path 是否属于增量同步唯一拥有的 guest 文件集合。"""
     return path in {
+        "/bin/audio-service",
         "/bin/compositor",
         "/bin/lite-ui",
+        "/bin/session-launch",
         "/bin/shutdown",
         "/bin/terminal-session",
         "/etc/inittab",

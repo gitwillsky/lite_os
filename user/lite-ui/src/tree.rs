@@ -110,9 +110,8 @@ mod tests {
         let empty_span = parse(r#"[{"id":1,"type":"span","children":[]}]"#).expect("empty parses");
         assert!(empty_span[0].is_text_leaf());
         // 含 img 子节点的 span 不是文本叶子：需按容器布局并绘制子树（Web inline 语义）。
-        let mixed_span =
-            parse(r#"[{"id":1,"type":"span","children":[{"id":2,"type":"img"}]}]"#)
-                .expect("mixed span parses");
+        let mixed_span = parse(r#"[{"id":1,"type":"span","children":[{"id":2,"type":"img"}]}]"#)
+            .expect("mixed span parses");
         assert!(!mixed_span[0].is_text_leaf());
         // `#text` 永远是文本叶子；img 子节点不是。
         assert!(!mixed_span[0].children[0].is_text_leaf());

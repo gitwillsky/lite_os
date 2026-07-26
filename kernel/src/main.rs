@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 extern crate alloc;
 
 mod arch;
+mod audio;
 mod config;
 mod cpu;
 mod entry;
@@ -64,6 +65,11 @@ fn kernel_main(context: entry::BootContext) -> ! {
     timer::init_rtc();
     fs::init_vfs();
     platform::initialize_devices();
+    if let Some(output) = drivers::primary_audio_output() {
+        let notification = task::create_notification_endpoints()
+            .expect("ALSA PCM readiness notification allocation failed");
+        audio::init(output, notification).expect("ALSA PCM initialization failed");
+    }
     if let Some(display) = drivers::primary_display() {
         let (completion_read, completion_write) = task::create_notification_endpoints()
             .expect("DRM completion notification allocation failed");

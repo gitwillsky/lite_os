@@ -34,10 +34,16 @@
   unlock 在短锁内把 owner 直接交给最旧 ticket、锁外 exact wake；禁止恢复 spin/yield polling。
 - page-cache `operation`/`write_sequence` 同样是可跨 cache fill、writeback 与 storage mutation
   保活的 task-only blocking owner；只有 resident page map 与全局 registry 的短临界区使用 spin。
+- 每个 `MemFile` 的同一 mutex 同时拥有 anonymous bytes 与 seal mask；`ftruncate`/write 和
+  `F_ADD_SEALS` 必须在该 owner 内线性化，禁止用独立 atomic seal 留出 seal 与 resize 的竞态窗口。
 
 ## Interface
 
 - filesystem 只通过 block seam 使用 driver，通过 shared-page seam 使用 memory，通过 unified backend façade 接入 pipe/socket/device。
+- `memfd_create` 只发布 anonymous regular OFD；`MFD_ALLOW_SEALING`、`F_ADD_SEALS`、
+  `F_GET_SEALS`、`ftruncate` 与 `MAP_SHARED` 沿既有 fd/inode/page-cache seam 工作，不注册 pathname
+  或引入私有 shared-memory ABI。当前 seal 子集为 `SEAL|SHRINK|GROW`，未支持的 write/hugetlb
+  语义明确返回错误。
 - `openat(O_CREAT)` 的 final lookup 与 create 必须在同一个 VFS namespace mutation transaction
   内完成：存在且无 `O_EXCL` 时打开 winner，存在且有 `O_EXCL` 时返回 `EEXIST`，不存在时创建。
   禁止锁外先 lookup 再调用独立 create；该双阶段会让并发普通 append 错误收到 `EEXIST`。
@@ -102,6 +108,8 @@
   admission，但 predecessor/successor 必须在取得 filesystem mutation owner 后重新读取并 journal。
   禁止把锁前 successor 快照用于摘链，否则并发 reclaim 可把 head 指回已释放 inode。
 - close/dup/CLOEXEC 在 fd-table lock 内只 detach；OFD drop、epoll/flock/record-lock consequence 在锁外执行。
+- `SCM_RIGHTS` 传递 memfd 时只共享既有 OFD/inode identity；发送失败、接收 copyout 失败、
+  connection EOF 与最后 fd close 沿通用 descriptor cleanup 释放引用及 mapping，不建立音频专用 fd 表。
 - opened membership 的 register node 必须在 publication 前可失败预分配；OOM
   不得留下 raw pointer 或半发布 location key。rename 只回收并重用原节点，
   不在 inode mutation 提交后引入新的 allocation failure。

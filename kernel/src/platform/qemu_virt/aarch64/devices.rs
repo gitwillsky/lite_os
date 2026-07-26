@@ -3,7 +3,7 @@
 use super::{discovery, gicv3, pl011};
 use crate::drivers::{
     DisplayDevice, InputDevice, MmioBus, VirtIOBlockDevice, VirtIOGpuDevice, VirtIOInputDevice,
-    VirtIONetworkDevice, VirtIORngDevice,
+    VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice,
 };
 use crate::{error, info, warn};
 
@@ -54,12 +54,21 @@ fn initialize_virtio_devices() {
             4 => initialize_rng(device),
             16 => initialize_gpu(device),
             18 => initialize_input(device),
+            25 => initialize_sound(device),
             _ => info!(
                 "[Platform] Unrecognized VirtIO device ID {:#x} at {:#x}",
                 device_id, device.base_addr
             ),
         }
     }
+}
+
+fn initialize_sound(resource: &discovery::MmioDevice) {
+    let device =
+        VirtIOSoundDevice::new(mapped_base(resource.base_addr)).expect("virtio-sound init failed");
+    crate::drivers::register_audio_output(device.clone())
+        .unwrap_or_else(|_| panic!("only one virtio-sound device is supported"));
+    register_irq(resource.irq, device.irq_handler_for(), "virtio-sound");
 }
 
 fn initialize_input(resource: &discovery::MmioDevice) {

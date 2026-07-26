@@ -5,6 +5,7 @@ use crate::{
 
 const FIONBIO: usize = 0x5421;
 
+use super::audio::audio_ioctl;
 use super::drm::drm_ioctl;
 use super::input::input_ioctl;
 use super::{
@@ -56,6 +57,9 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
         }
         OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
             input_ioctl(&task, file, request, argument)
+        }
+        OpenFileKind::Character(CharacterDevice::Audio(file)) => {
+            audio_ioctl(&task, &ofd, file, request, argument)
         }
         OpenFileKind::Socket(socket) => socket_ioctl(&task, socket, request, argument),
         _ => -errno::ENOTTY,

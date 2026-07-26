@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::ptr;
 
 use super::{FrameAllocationClass, FrameTracker, address::PhysicalPageNumber, alloc_contiguous};
 
@@ -98,6 +99,38 @@ impl DeviceBacking {
         self.extents
             .get(index)
             .map(|extent| (extent.frames.ppn, extent.frames.pages))
+    }
+
+    /// @description 从逻辑 byte range 复制 device backing 内容到 kernel buffer。
+    /// @param offset backing 内 byte offset。
+    /// @param output kernel-owned initialized output。
+    /// @return range 完整有效时成功。
+    /// @errors range 越界或算术溢出返回 unit。
+    pub(crate) fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), ()> {
+        let capacity = self.pages.checked_mul(super::PAGE_SIZE).ok_or(())?;
+        let end = offset.checked_add(output.len()).ok_or(())?;
+        if end > capacity {
+            return Err(());
+        }
+        let mut copied = 0usize;
+        while copied < output.len() {
+            let logical = offset + copied;
+            let page_index = logical / super::PAGE_SIZE;
+            let page_offset = logical % super::PAGE_SIZE;
+            let count = (output.len() - copied).min(super::PAGE_SIZE - page_offset);
+            let page = self.page(page_index).ok_or(())?;
+            // SAFETY: page() 保证 backing 在 self 生命周期内拥有该 frame；范围限制在单页，
+            // user mapping 可并发写入，逐 byte 中间状态与 Linux shared-memory 语义一致。
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    page.as_page_ptr().add(page_offset),
+                    output.as_mut_ptr().add(copied),
+                    count,
+                )
+            };
+            copied += count;
+        }
+        Ok(())
     }
 }
 

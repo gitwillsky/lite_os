@@ -9,7 +9,8 @@
   `--app <id>`。无窗体程序和 3D 游戏不经过 LiteUI。
 - `lite-ui/main.rs` 只编排进程生命周期、渲染提交与 helper；`input.rs` 独占 DOM-style input dispatch，
   `renderer/paint.rs` 独占递归 paint walk，`display/allocation.rs` 独占 buffer allocation round-trip，
-  `host/filesystem.rs` 独占 file-manager 的只读文件系统 host bridge。
+  `host/filesystem.rs` 独占 filesystem-backed `File` 的只读文件系统 host bridge；`audio/` 独占每进程
+  media worker、decode/resample、seek generation 与 audio-service transport。
 - `compositor/session.rs` 保存 epoch 与 client registry；`session/client.rs` 只负责握手和连接角色固定。
   `scanout.rs` 只保留生产合成路径，其 white-box 测试位于 `scanout/tests.rs`。
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
@@ -58,9 +59,10 @@
 
 - bundle default export 是唯一 React component，host 创建同步 mutation root。支持 hooks、context、
   fragment 与 keyed list；不开放 createRoot、portal、hydration、Server Components 或 concurrent root。
-- host primitive 固定为 `<view>`、`<text>`、`<image>`、`<text-input>` 与 `<surface>`；controls 都是
-  React component。desktop 用 `<view windowGroup={surface}>` 把 decoration 与 foreign surface 标为
-  同一 compositor move group，不新增 `<window>` primitive。
+- host primitive 固定为 `<view>`、`<text>`、`<image>`、`<text-input>`、`<audio>` 与 `<surface>`；
+  `<audio>` 投影冻结的 HTMLMediaElement playback surface 与 UA controls，其他 controls 是 React
+  component。desktop 用 `<view windowGroup={surface}>` 把 decoration 与 foreign surface 标为同一
+  compositor move group，不新增 `<window>` primitive。
 - CSS 是严格标准子集：type/class/id/descendant/child selector，hover/active/focus/disabled，specificity、
   inheritance、variables、box、Flexbox、absolute、gap、min/max、background、border、radius、shadow、
   opacity、clip、z-index、text、`white-space`、overflow 与 `pointer-events`。不支持 Grid、float、table、
@@ -77,6 +79,9 @@
   normal/bold。字形 cache 有界并使用 grayscale antialiasing。
 - `<image>` 与 background 只接受 app-relative PNG 或 host 发出的 opaque `ImageSource`；路径必须在
   `assets/` 内且不能包含 `..`。SVG/JPEG/WebP 在 host build 转为 PNG；target 无网络、data URL 或动画图。
+- `lite:fs.open(path)` 返回 filesystem-backed 标准 `File`；`URL.createObjectURL(file)` 只发布当前
+  process 内 opaque `blob:` source。`<audio>` 只接受 app-relative resource 与该 `blob:` source，
+  不接受 ambient `file:` path、network/data URL 或私有 path-play API。
 - raster 唯一使用 CPU tiny-skia，不建立 GPU backend abstraction。3D app 绕过 LiteUI。
 
 ## 应用与构建
@@ -91,6 +96,8 @@
   不支持 runtime relative/dynamic import、CommonJS、remote import 或 version negotiation。
 - desktop-only `lite:apps` 扫描一层 registry，提供只读 metadata、opaque icon 与 `launch(id)`；
   desktop-only `lite:desktop` 提供 surface lifecycle/configure/close/move/accelerator mechanism。
+  desktop-only `lite:audio-system` 只投影 audio-service master snapshot 和更新请求；普通 app
+  无法加载该 module。
   desktop 首次呈现不隐式 launch app，应用只由用户操作显式启动。普通 helper 只通过
   `lite:process.spawn(argv, stdio)`，不解析 shell string。
 
@@ -102,4 +109,6 @@
 - input v1 只有 US keyboard、pointer、wheel、focus、repeat、text clipboard 与基础 keyboard
   accessibility；`cursor` 只支持固定 arrow、pointer 与四向 resize shape，不支持 URL/custom bitmap。
   无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop 或 touch。
+- Web media 当前只提供标准音频播放，不提供 capture、Web Audio、MSE、MediaStream、remote playback、
+  EME、track 或非 `1x` playbackRate；精确 codec 与状态边界见音频领域文档。
 - 视觉还原不生成 screenshot preview 或 Golden，不进入自动门禁；最终由真实启动人工验收。

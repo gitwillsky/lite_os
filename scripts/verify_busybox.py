@@ -67,9 +67,9 @@ BINARY_RECIPE_VERSION = 6
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 11
+ROOTFS_RECIPE_VERSION = 12
 RUST_USER_CARGO_CACHE_RECIPE_VERSION = 1
-UI_ASSET_RECIPE_VERSION = 1
+UI_ASSET_RECIPE_VERSION = 2
 if TARGET.arch == "aarch64":
     BUSYBOX_ARCH = "arm64"
     BUSYBOX_TARGET_CFLAGS = "-march=armv8-a"
@@ -103,6 +103,12 @@ UI_REQUIRED_OUTPUTS = (
     "file-manager/main.js",
     "file-manager/style.css",
     "file-manager/assets/computer.png",
+    "music-player/app.json",
+    "music-player/main.js",
+    "music-player/style.css",
+    "music-player/assets/speaker.png",
+    "music-player/assets/folder.png",
+    "music-player/assets/file-16.png",
 )
 UI_EXTERNAL_INPUTS = (
     ROOT / "assets/sprites-src/icon-computer.png",
@@ -1095,6 +1101,28 @@ def build_terminal_session(musl: MuslCachePaths) -> Path:
     )
 
 
+def build_session_launch(musl: MuslCachePaths) -> Path:
+    """构建唯一的单线程 session/exec trampoline。"""
+    return build_rust_user_program(
+        musl,
+        "linux-uapi",
+        "session-launch",
+        "session-launch",
+        1,
+    )
+
+
+def build_audio_service(musl: MuslCachePaths) -> Path:
+    """构建唯一 physical PCM 与 system mixer owner。"""
+    return build_rust_user_program(
+        musl,
+        "audio-service",
+        "audio-service",
+        "audio-service",
+        1,
+    )
+
+
 def build_ui_assets() -> Path:
     """以唯一 lockfile 构建共享 React runtime、desktop 与 app bundles。"""
     npm = shutil.which("npm")
@@ -1167,8 +1195,10 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
     """
     ui = build_ui_assets()
     artifacts = [
+        UserlandArtifact(build_audio_service(musl), "/bin/audio-service", 0o755),
         UserlandArtifact(build_compositor(musl), "/bin/compositor", 0o755),
         UserlandArtifact(build_lite_ui(musl), "/bin/lite-ui", 0o755),
+        UserlandArtifact(build_session_launch(musl), "/bin/session-launch", 0o755),
         UserlandArtifact(build_terminal_session(musl), "/bin/terminal-session", 0o755),
         UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
         UserlandArtifact(
@@ -1317,6 +1347,7 @@ def create_image(
         "mkdir /run",
         "mkdir /root",
         "set_inode_field /root mode 040700",
+        "mkdir /root/Music",
         "mkdir /tmp",
         "set_inode_field /tmp mode 041777",
         "mkdir /usr",
@@ -1329,12 +1360,17 @@ def create_image(
         "mkdir /usr/share/liteos/apps/terminal/assets",
         "mkdir /usr/share/liteos/apps/file-manager",
         "mkdir /usr/share/liteos/apps/file-manager/assets",
+        "mkdir /usr/share/liteos/apps/music-player",
+        "mkdir /usr/share/liteos/apps/music-player/assets",
         "mkdir /usr/share/liteos/desktop",
         "mkdir /usr/share/liteos/desktop/assets",
         "mkdir /usr/share/udhcpc",
         "mkdir /var",
         "mkdir /var/cache",
         "mkdir /var/empty",
+        "mkdir /var/lib",
+        "mkdir /var/lib/liteos",
+        "mkdir /var/lib/liteos/audio",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
@@ -1437,7 +1473,13 @@ def create_image(
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
-    for session_binary in ("/bin/compositor", "/bin/lite-ui", "/bin/terminal-session"):
+    for session_binary in (
+        "/bin/audio-service",
+        "/bin/compositor",
+        "/bin/lite-ui",
+        "/bin/session-launch",
+        "/bin/terminal-session",
+    ):
         metadata = run(
             [str(find_debugfs()), "-R", f"stat {session_binary}", str(image)], ROOT
         )
@@ -1463,6 +1505,12 @@ def create_image(
         "/usr/share/liteos/apps/file-manager/app.json",
         "/usr/share/liteos/apps/file-manager/main.js",
         "/usr/share/liteos/apps/file-manager/style.css",
+        "/usr/share/liteos/apps/music-player/app.json",
+        "/usr/share/liteos/apps/music-player/main.js",
+        "/usr/share/liteos/apps/music-player/style.css",
+        "/usr/share/liteos/apps/music-player/assets/speaker.png",
+        "/usr/share/liteos/apps/music-player/assets/folder.png",
+        "/usr/share/liteos/apps/music-player/assets/file-16.png",
     ):
         metadata = run([str(find_debugfs()), "-R", f"stat {asset}", str(image)], ROOT)
         if "Type: regular" not in metadata:

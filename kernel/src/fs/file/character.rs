@@ -29,6 +29,7 @@ pub(crate) enum CharacterDevice {
     Input {
         file: Arc<InputFile>,
     },
+    Audio(Arc<crate::audio::PcmFile>),
     Terminal {
         terminal: Arc<Terminal>,
         kind: DeviceKind,
@@ -95,6 +96,14 @@ impl CharacterDevice {
                 file: crate::input::open(usize::from(index))
                     .map_err(|_| FileSystemError::OutOfMemory)?,
             },
+            DeviceKind::AudioPcmPlayback => {
+                Self::Audio(crate::audio::open().map_err(|error| match error {
+                    crate::audio::AudioError::InvalidState => FileSystemError::Busy,
+                    crate::audio::AudioError::WouldBlock | crate::audio::AudioError::Device => {
+                        FileSystemError::IoError
+                    }
+                })?)
+            }
         })
     }
 
@@ -134,6 +143,7 @@ impl CharacterDevice {
                 }
             }
             Self::Input { file, .. } => file.poll_events(events),
+            Self::Audio(file) => file.poll_events(events),
             Self::Terminal { terminal, pty, .. } => {
                 let hung_up = pty.as_ref().is_some_and(|slave| slave.master_hung_up());
                 (if hung_up {
@@ -166,6 +176,7 @@ impl CharacterDevice {
                 .notification_pipe()
                 .readiness_generation(crate::ipc::PipeDirection::Read),
             Self::Null | Self::Zero | Self::Entropy => 0,
+            Self::Audio(file) => file.readiness_generation(),
         }
     }
 
@@ -173,7 +184,11 @@ impl CharacterDevice {
     pub(super) fn epoll_pollable(&self) -> bool {
         matches!(
             self,
-            Self::Drm(_) | Self::PtyMaster(_) | Self::Terminal { .. } | Self::Input { .. }
+            Self::Drm(_)
+                | Self::PtyMaster(_)
+                | Self::Terminal { .. }
+                | Self::Input { .. }
+                | Self::Audio(_)
         )
     }
 }

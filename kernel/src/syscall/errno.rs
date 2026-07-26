@@ -92,5 +92,7 @@ pub(crate) const ESOCKTNOSUPPORT: isize = 94;
 pub(crate) const ENOPROTOOPT: isize = 92;
 /// 结果无法由目标文件系统或 ABI 字段表示。
 pub(crate) const EOVERFLOW: isize = 75;
+/// ALSA command 与当前 PCM file state 不匹配。
+pub(crate) const EBADFD: isize = 77;
 /// 等待在 deadline 前未完成。
 pub(crate) const ETIMEDOUT: isize = 110;

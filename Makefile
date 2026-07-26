@@ -44,7 +44,7 @@ APK_APPS_IMAGE := target/apk-apps/$(ARCH).img
 # FS_IMAGE_SIZE_MIB 只控制可持续修改的开发实例；缺少扩容会让 GUI 内安装 Node.js 等应用时 ENOSPC。
 FS_IMAGE_SIZE_MIB ?= 8192
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs sync-userland build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-frame-timing verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs sync-userland build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-audio verify-runtime-frame-timing verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
 
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
@@ -54,11 +54,15 @@ QEMU_SMP ?= $(shell python3 scripts/host_topology.py)
 
 ifeq ($(ARCH),aarch64)
 QEMU_BOOT_ARGS :=
+QEMU_AUDIO_HEADLESS_ARGS := -audiodev none,id=audio0 -device virtio-sound-device,audiodev=audio0,streams=1
+QEMU_AUDIO_GUI_ARGS := -audiodev coreaudio,id=audio0,out.frequency=48000,out.channels=2 -device virtio-sound-device,audiodev=audio0,streams=1
 GDB ?= aarch64-none-elf-gdb
 GDB_ARCH := aarch64
 ADDR2LINE ?= aarch64-none-elf-addr2line
 else
 QEMU_BOOT_ARGS := -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader
+QEMU_AUDIO_HEADLESS_ARGS :=
+QEMU_AUDIO_GUI_ARGS :=
 GDB ?= riscv64-elf-gdb
 GDB_ARCH := riscv:rv64
 ADDR2LINE ?= riscv64-unknown-elf-addr2line
@@ -128,6 +132,7 @@ run: build-kernel build-bootloader sync-userland
 	-object rng-random,filename=/dev/urandom,id=rng0 \
 	-device virtio-rng-device,rng=rng0 \
 	-device $(QEMU_GPU_DEVICE) \
+	$(QEMU_AUDIO_HEADLESS_ARGS) \
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 
@@ -153,6 +158,7 @@ run-gui: build-kernel build-bootloader sync-userland
 	-device $(QEMU_GPU_DEVICE) \
 	-device virtio-keyboard-device \
 	-device virtio-tablet-device \
+	$(QEMU_AUDIO_GUI_ARGS) \
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 
@@ -220,10 +226,18 @@ verify-runtime-gates:
 	$(MAKE) verify-runtime-rust-std
 	$(MAKE) verify-runtime-busybox
 	$(MAKE) verify-runtime-apk-apps
+	$(MAKE) verify-runtime-audio
 	$(MAKE) verify-runtime-frame-timing
 
 verify-runtime-boot:
 	python3 scripts/verify_boot.py --image $(ROOTFS_IMAGE)
+
+verify-runtime-audio:
+	@if [ "$(ARCH)-$(ACCEL)" = "aarch64-hvf" ]; then \
+		python3 scripts/verify_audio.py --image $(ROOTFS_IMAGE); \
+	else \
+		echo "audio runtime gate skipped: $(ARCH)/$(ACCEL) retains compile/static/boot coverage only"; \
+	fi
 
 verify-runtime-frame-timing:
 	python3 scripts/verify_frame_timing.py --image $(ROOTFS_IMAGE)

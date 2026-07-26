@@ -14,7 +14,9 @@ LiteOS userspace 的交互产品轨道是 XP 风格图形桌面：`compositor` �
 | `quickjs-runtime/` | LiteUI 内部安全接口 | vendored QuickJS C ABI、VM lifetime 与执行边界 |
 | `lite-ui/` | `/bin/lite-ui` | QuickJS/React host、CSS/layout/text/raster 与 app lifecycle |
 | `terminal-session/` | `/bin/terminal-session -- <argv>` | PTY、VT screen、scrollback 与 selection |
-| `linux-uapi/` | safe typed Linux-specific interface | DRM/evdev/PTY/process/poll/SCM_RIGHTS raw ABI |
+| `audio-proto/` | AF_UNIX v1 与 memfd SPSC ring | stream identity、frame codec 与共享 PCM publication |
+| `audio-service/` | `/bin/audio-service` | ALSA device clock、stream quota、mixer、limiter 与 master state |
+| `linux-uapi/` | safe typed Linux-specific interface | DRM/evdev/ALSA/memfd/process/poll/SCM_RIGHTS raw ABI |
 | `diagnostics/` | `cputest`, `memtest`, `cachetest` multicall executable | bounded product diagnostics |
 
 `compositor` 启动后立即显示 native boot scene，直到 React desktop 首个完整 scene latch；不再存在

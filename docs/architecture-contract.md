@@ -13,6 +13,7 @@
 | 文件系统与存储 | [filesystem-storage](architecture-contract/filesystem-storage.md) |
 | IPC 与网络 | [ipc-network](architecture-contract/ipc-network.md) |
 | 设备与终端 | [devices-terminal](architecture-contract/devices-terminal.md) |
+| 音频 | [audio](architecture-contract/audio.md) |
 | 图形会话与 LiteUI | [lite-ui](architecture-contract/lite-ui.md) |
 | 用户态与 ABI | [userspace-abi](architecture-contract/userspace-abi.md) |
 
@@ -36,21 +37,22 @@
 | `sync` | `arch`, `cpu` | 锁与 IRQ transfer 只依赖本地中断 mechanism 和 logical `CpuId`；transfer token 在错误 CPU restore 时 fail-stop，禁止把 hardware identity 引入同步领域 |
 | `memory` | `arch`, `config`, `cpu`, `fallible_tree`, `id`, `platform`, `random`, `sync` | VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding |
 | `drivers` | `arch`, `cpu`, `fallible_tree`, `memory`, `sync` | 只保存设备模型与通用 interrupt interface；具体 PLIC/DTB 装配属于 platform |
+| `audio` | `drivers`, `id`, `ipc`, `memory` | 拥有 Linux ALSA PCM playback 领域状态、position、poll/xrun 与 OFD backend；只经通用 PCM output seam 使用 device adapter |
 | `drm` | `drivers`, `fallible_tree`, `ipc`, `memory`, `socket`, `sync` | 只消费通用 display seam；GEM handle 使用统一 fallible ordered publication；connector mode 变化只经 socket façade 发布标准 kobject uevent，不感知 VirtIO adapter、task、filesystem 或 syscall ABI |
 | `input` | `drivers`, `ipc`, `sync`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域；不感知 VirtIO adapter、task、filesystem 或 syscall ABI |
 | `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
 | `socket` | `drivers`, `fallible_tree`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
-| `fs` | `drivers`, `drm`, `fallible_tree`, `input`, `ipc`, `log`, `memory`, `socket`, `sync`, `timer` | `drivers` 仅允许 `block` seam；`drm`/`input`/`log` 仅允许 OFD backend；socket 仅允许统一 OFD backend facade；`memory` 仅允许 shared-page seam |
+| `fs` | `audio`, `drivers`, `drm`, `fallible_tree`, `id`, `input`, `ipc`, `log`, `memory`, `socket`, `sync`, `timer` | 只经 block、OFD、anonymous-id、socket-OFD 与 shared-page seam 使用对应领域 |
 | `task` | `arch`, `cpu`, `drivers`, `drm`, `fallible_tree`, `fs`, `input`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer` | 调度只使用 logical CPU identity；`drivers` 只安装 typed I/O wait target，并在 deferred safe point 投递 completion，不依赖 concrete adapter、ISA 或 entry |
 | `trap` | `arch`, `cpu`, `drivers`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
-| `syscall` | `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `system`, `task`, `timer` | DRM/evdev 只编解码标准 UAPI；不得绕过 facade 接触 adapter/scheduler/page table |
+| `syscall` | `audio`, `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `system`, `task`, `timer` | ALSA/DRM/evdev 只编解码标准 UAPI；不得绕过 facade 接触 adapter/scheduler/page table |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch`, `cpu`, `platform` | whole-system policy；ISA 用户事实只经 `arch::user`，CPU/firmware 只经各自 facade |
 | `timer` | `arch`, `config`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |
 | `log` | `cpu`, `platform`, `sync`, `timer` | 日志策略、有界 record owner 与输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `lang_item` | `arch`, `cpu`, `platform` | 只使用 typed diagnostic identity 与 architecture/platform fail-stop mechanism |
-| `main` | `arch`, `config`, `cpu`, `drivers`, `drm`, `entry`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root；不含 raw firmware/trap ABI |
+| `main` | `arch`, `audio`, `config`, `cpu`, `drivers`, `drm`, `entry`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root；不含 raw firmware/trap ABI |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 

@@ -9,6 +9,8 @@ members = [
 ]
 exclude = [
     "bootloader",
+    "user/audio-proto",
+    "user/audio-service",
     "user/compositor",
     "user/display-proto",
     "user/lite-ui",

@@ -104,6 +104,18 @@
   [tiny-skia](https://crates.io/crates/tiny-skia/0.12.0)。Taffy 只启用 Flexbox/block，Parley 禁止 system
   font discovery；精确 transitive source/checksum 由 `user/Cargo.lock` 唯一固定。
 
+### 媒体解码
+
+- Symphonia `0.6.0`；source commit `980bf5830a90e069fd64641d9c38f067ab772a24`；
+  顶层 crate SHA-256 `1758d6c853020a7244de03cc3e0185eaea3f58715122422dd3cc7452e6d4c16a`；
+  MPL-2.0。来源：[固定源码](https://github.com/pdeljanov/Symphonia/tree/980bf5830a90e069fd64641d9c38f067ab772a24)、
+  [crate release](https://crates.io/crates/symphonia/0.6.0)。
+- `user/Cargo.lock` 唯一固定全部拆分 codec/format/metadata crate 与 transitive checksum。LiteUI 禁用
+  default feature，只启用 `all` 与 AArch64 可用的 NEON optimization；不启用 experimental
+  subtitle/video feature，不加载 system codec、plugin、FFmpeg executable 或运行时下载内容。
+- Symphonia 只定义 container/codec/metadata 实现，不定义 HTMLMediaElement、autoplay、File/blob、
+  ALSA、mixer 或设备 ABI。
+
 ### Alpine、APK 与 TLS
 
 - Alpine `v3.22/main/{aarch64,riscv64}` 通过中科大镜像获取官方 repository

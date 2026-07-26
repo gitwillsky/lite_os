@@ -76,7 +76,11 @@ def qemu_runtime(
 
 
 def _qemu_command(
-    image: Path, smp: int, interactive_devices: bool = False, qmp_socket: Path | None = None
+    image: Path,
+    smp: int,
+    interactive_devices: bool = False,
+    qmp_socket: Path | None = None,
+    audio_output: Path | None = None,
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -117,16 +121,28 @@ def _qemu_command(
         ]
     )
     if interactive_devices:
+        audio_backend = (
+            "none,id=audio0"
+            if audio_output is None
+            else (
+                f"wav,id=audio0,path={audio_output},"
+                "out.frequency=48000,out.channels=2,out.format=s16"
+            )
+        )
         command.extend(
             [
                 "-m",
                 "512M",
+                "-audiodev",
+                audio_backend,
                 "-device",
                 "virtio-gpu-device,xres=3008,yres=1692",
                 "-device",
                 "virtio-keyboard-device",
                 "-device",
                 "virtio-tablet-device",
+                "-device",
+                "virtio-sound-device,id=audio-device,audiodev=audio0,streams=1",
             ]
         )
     if qmp_socket is not None:
@@ -258,6 +274,7 @@ def boot(
     success_settle_seconds: float = 0.0,
     persistent_writes: bool = False,
     interactive_devices: bool = False,
+    audio_output: Path | None = None,
 ) -> None:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
@@ -271,6 +288,7 @@ def boot(
         success_settle_seconds: 成功标记齐备后继续观察 forbidden marker 的时长。
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
         interactive_devices: 是否加入 run-gui 的 GPU、keyboard 与 tablet 设备拓扑。
+        audio_output: interactive topology 的 WAV 输出；None 使用不会访问 host 声卡的 none backend。
 
     Returns:
         None；全部 marker 出现时返回。
@@ -286,7 +304,12 @@ def boot(
         private_image = Path(private_directory.name) / image.name
         shutil.copyfile(image, private_image)
         image = private_image
-    command = _qemu_command(image, smp, interactive_devices)
+    command = _qemu_command(
+        image,
+        smp,
+        interactive_devices,
+        audio_output=audio_output,
+    )
     process = subprocess.Popen(
         command,
         cwd=ROOT,
@@ -453,8 +476,8 @@ FRAME_STATS_RE = re.compile(
 class QmpClient:
     """Minimal QMP client over a unix socket for synthetic input injection.
 
-    Only the `input-send-event` surface the frame-timing gate needs is exposed;
-    it is not a general QMP wrapper.
+    Only the input and graceful-shutdown surfaces used by runtime gates are
+    exposed; it is not a general QMP wrapper.
     """
 
     def __init__(self, path: Path, connect_timeout_s: float = 10.0) -> None:
@@ -517,6 +540,43 @@ class QmpClient:
 
     def button(self, name: str, down: bool) -> None:
         self._send_events([{"type": "btn", "data": {"button": name, "down": down}}])
+
+    def quit(self) -> None:
+        """Requests graceful QEMU shutdown.
+
+        Returns:
+            After QMP accepts the request. The caller still owns waiting for
+            the QEMU process to exit.
+
+        Raises:
+            RuntimeError: QMP rejects the request or closes before replying.
+        """
+        self._execute("quit")
+
+    def stop_and_unrealize(self, device_id: str) -> None:
+        """Stops the VM and completes one device's backend cleanup.
+
+        Args:
+            device_id: QOM identity assigned by the matching ``-device id=``.
+
+        Returns:
+            After QMP accepts ``stop`` and QOM finishes unrealizing the device.
+            Stopping first prevents the guest from racing device teardown; a
+            successful unrealize means the device backend cleanup has completed.
+
+        Raises:
+            RuntimeError: QMP rejects either lifecycle transition or closes
+            before replying.
+        """
+        self._execute("stop")
+        self._execute(
+            "qom-set",
+            {
+                "path": f"/machine/peripheral/{device_id}",
+                "property": "realized",
+                "value": False,
+            },
+        )
 
     def close(self) -> None:
         try:

@@ -35,7 +35,7 @@
   dev server 或 runtime package cache。唯一 frontend build owner 是
   `scripts/verify_busybox.py` 的 `build_ui_assets()`；`--build-ui-assets-only` 只暴露该 owner 的已校验输出，
   不建立第二条构建路径。
-- `verify-runtime-gates` 在 target owner 内串行启动 boot、musl、BusyBox 与 APK QEMU。外层即使
+- `verify-runtime-gates` 在 target owner 内串行启动 boot、musl、BusyBox、APK、audio 与 frame-timing QEMU。外层即使
   使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
   workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。静态编译、clippy、
   unit 与 architecture gate 仍按 Make jobserver 并行；runtime marker 和 workload 不放宽。
@@ -158,6 +158,26 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
 - BusyBox init/ash、TTY、filesystem、IPC 与 network consumer；
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice。
+- AArch64/HVF production Music Player 的 13 个固定 codec/container 文件：gate 用 `debugfs`
+  注入相互隔离的 rootfs 副本，真实双击桌面图标和文件行，只经 `lite:fs.open()` 返回的 `File`、
+  `URL.createObjectURL()` 与公开 `<audio>` 播放；串口逐文件要求 `source-opened`、
+  `loadedmetadata` 和 `playing`。同一 production element UA controls 覆盖 pause、seek、volume 与
+  mute，production custom control 覆盖 loop，并以 public `loop` property 的 production worker
+  marker 和真实 EOF `seeking`/`seeked`/`playing` generation 共同裁决；desktop taskbar speaker popup 另行覆盖 system master
+  mute/unmute 和 10% volume step，并要求 audio-service 权威状态 marker、静音 WAV 区间及符合 cubic
+  curve 的相对增益。私有镜像最终恢复为 70%/unmuted，不污染任何 baseline。QEMU WAV backend 必须
+  给出 48 kHz stereo S16、非静音、左右声道 identity 正确且含 440/660 Hz 的实际设备输出。开机至首次 play 禁止 device START 和 WAV
+  payload；最终每一组 service metrics 都要求 `xrun=0`、`steady_allocations=0`、
+  `idle_periodic_wakes=0`、`mix_p99_us<=2670`，每个 decoder prefill marker 也必须声明 steady
+  allocation 为零。同一 run 在逐格式矩阵结束后把首进程经真实文件行切到额外的 48 kHz stereo
+  高电平 PCM fixture，再经桌面公开启动 7 个 production Music Player 进程；该 fixture 不计入
+  13 格式矩阵，只以 phase-independent 正电平让 8 个进程确定越过 limiter threshold。要求 8 个
+  stream identity 在同一窗口都产生 progress 后再裁决 metrics，并要求 limiter 实际 activation
+  与非零 reduction；该窗口临时使用 100% master，裁决后仍经 desktop popup 恢复 70%/unmuted。
+  单进程 8-stream quota 由
+  audio-proto/audio-service host test 裁决，runtime 不冒充 production UI 没有的多元素页面。
+  此门禁没有隐藏测试 API、私有播放入口或模拟 device；RISC-V secondary 与
+  AArch64/TCG 诊断路径不运行、也不冒充这项真实 AArch64/HVF consumer 覆盖。
 
 `make -j4 verify-runtime-gates` 是 QEMU 编排的唯一 owner，并串行运行各顶层门禁；每项仍使用
 独立镜像、success stamp 和 host port domain。APK 内部同样保持单一 QEMU owner：curl/Git 的

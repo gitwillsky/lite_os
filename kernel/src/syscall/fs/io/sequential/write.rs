@@ -1,5 +1,34 @@
 use super::*;
+use crate::fs::Inode;
 use core::mem::MaybeUninit;
+
+fn write_regular_descriptor(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    inode: Arc<dyn Inode>,
+    vectors: &[UserIoVec],
+    total_length: usize,
+) -> isize {
+    if inode.inode_type() == InodeType::Directory {
+        return -errno::EISDIR;
+    }
+    let file = match RegularFile::from_inode(inode) {
+        Ok(file) => file,
+        Err(error) => return ferr(error),
+    };
+    let append = *ofd.flags.lock() & O_APPEND != 0;
+    let staging = PreparedRegularWriteStaging::prepare(total_length);
+    with_prepared_staging(staging, |staging| {
+        let mut staging = staging.as_input_staging();
+        ofd.with_position(|offset| {
+            let writer = match file.begin_write() {
+                Ok(writer) => writer,
+                Err(error) => return ferr(error),
+            };
+            write_regular_vectors(task, &writer, offset, vectors, append, &mut staging)
+        })
+    })
+}
 
 /// @description 执行 scalar/writev 共用的唯一 sequential write descriptor dispatch。
 /// @param task userspace address owner 与 SIGPIPE/RLIMIT source。
@@ -18,26 +47,10 @@ pub(super) fn write_descriptor(
     }
     match &ofd.kind {
         OpenFileKind::Inode(opened) => {
-            let inode = opened.inode();
-            if inode.inode_type() == InodeType::Directory {
-                return -errno::EISDIR;
-            }
-            let file = match RegularFile::from_inode(inode) {
-                Ok(file) => file,
-                Err(error) => return ferr(error),
-            };
-            let append = *ofd.flags.lock() & O_APPEND != 0;
-            let staging = PreparedRegularWriteStaging::prepare(total_length);
-            with_prepared_staging(staging, |staging| {
-                let mut staging = staging.as_input_staging();
-                ofd.with_position(|offset| {
-                    let writer = match file.begin_write() {
-                        Ok(writer) => writer,
-                        Err(error) => return ferr(error),
-                    };
-                    write_regular_vectors(task, &writer, offset, vectors, append, &mut staging)
-                })
-            })
+            write_regular_descriptor(task, ofd, opened.inode(), vectors, total_length)
+        }
+        OpenFileKind::MemFile(file) => {
+            write_regular_descriptor(task, ofd, file.clone(), vectors, total_length)
         }
         OpenFileKind::Pipe(endpoint) => {
             if endpoint.direction() != PipeDirection::Write {
@@ -272,6 +285,7 @@ pub(super) fn write_descriptor(
                     | CharacterDevice::Kmsg(_)
                     | CharacterDevice::Drm(_)
                     | CharacterDevice::Input { .. }
+                    | CharacterDevice::Audio(_)
             ) {
                 return -errno::EOPNOTSUPP;
             }
@@ -398,6 +412,7 @@ pub(super) fn write_descriptor(
                     CharacterDevice::Kmsg(_) => unreachable!("kmsg write rejected above"),
                     CharacterDevice::Drm(_) => unreachable!("DRM write rejected above"),
                     CharacterDevice::Input { .. } => unreachable!("input write rejected above"),
+                    CharacterDevice::Audio(_) => unreachable!("PCM write uses WRITEI ioctl"),
                 };
                 written += count;
                 if count < requested {

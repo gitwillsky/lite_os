@@ -15,8 +15,9 @@
   `SIG_IGN` 时恢复默认 disposition 并解除屏蔽，默认动作对 PID 1 也不豁免。RISC-V lazy FP
   指令必须先由 architecture backend 激活并原 PC 重试，只有未被该机制消费的指令生成 SIGILL。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、普通 Rust `std`
-  binary `compositor`/`lite-ui`/`terminal-session`、`quickjs-runtime`/`display-proto`/`linux-uapi`
-  library 和单 ELF `liteos-stress` diagnostics。`user/` 是单一 Cargo workspace 与 lockfile；
+  binary `audio-service`/`compositor`/`lite-ui`/`terminal-session`、
+  `audio-proto`/`quickjs-runtime`/`display-proto`/`linux-uapi` library 和单 ELF
+  `liteos-stress` diagnostics。`user/` 是单一 Cargo workspace 与 lockfile；
   kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
 - 标准 Rust consumer 使用官方 `aarch64-unknown-linux-musl`/`riscv64gc-unknown-linux-musl`
   target 与普通 `fn main`；builder 从固定 rust-src 构建 `std + panic_abort`，从同一源码树构建并
@@ -24,9 +25,10 @@
   gate image，覆盖 allocator/RandomState、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client，
   不进入产品 rootfs。
 - Rust `std` 已按 target 提供文件、socket、process、thread/TLS、时间与集合等稳定 OS façade，因此
-  应用不再重复声明这些 FFI。DRM/evdev/PTY ioctl、`poll` 与 SCM_RIGHTS 等 Linux 专有 UAPI 不属于
-  跨平台 `std` 稳定 surface，由内部 `linux-uapi::{drm,input,pty,process,unix}` 深模块独占 raw musl
-  FFI、layout/常量和 RAII；应用与 `display-proto` 只消费安全 typed interface。
+  应用不再重复声明这些 FFI。ALSA/DRM/evdev/PTY ioctl、memfd、`poll` 与 SCM_RIGHTS 等 Linux
+  专有 UAPI 不属于跨平台 `std` 稳定 surface，由内部
+  `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 深模块独占 raw musl
+  FFI、layout/常量和 RAII；应用、`audio-proto` 与 `display-proto` 只消费安全 typed interface。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
 - rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
 

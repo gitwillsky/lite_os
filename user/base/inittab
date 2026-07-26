@@ -1,3 +1,4 @@
+::respawn:/bin/audio-service
 ::once:/etc/init.d/graphical-session /bin/compositor
 ::once:/etc/init.d/graphical-session /bin/lite-ui --desktop
 ::respawn:/etc/init.d/network-service

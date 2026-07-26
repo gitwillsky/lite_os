@@ -138,6 +138,7 @@ pub const SYSCALL_CLONE: usize = 220;
 pub const SYSCALL_EXECVE: usize = 221;
 pub const SYSCALL_MMAP: usize = 222;
 pub const SYSCALL_GETRANDOM: usize = 278;
+pub const SYSCALL_MEMFD_CREATE: usize = 279;
 pub const SYSCALL_MEMBARRIER: usize = 283;
 pub const SYSCALL_PREADV2: usize = 286;
 pub const SYSCALL_PWRITEV2: usize = 287;
@@ -152,10 +153,15 @@ pub const SYSCALL_RENAMEAT2: usize = 276;
 
 #[cfg(test)]
 mod tests {
-    use super::SYSCALL_RENAMEAT;
+    use super::{SYSCALL_MEMFD_CREATE, SYSCALL_RENAMEAT};
 
     #[test]
     fn renameat_uses_linux_asm_generic_number() {
         assert_eq!(SYSCALL_RENAMEAT, 38);
+    }
+
+    #[test]
+    fn memfd_create_uses_linux_asm_generic_number() {
+        assert_eq!(SYSCALL_MEMFD_CREATE, 279);
     }
 }

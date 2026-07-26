@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { clock } from "lite:desktop";
+import { getState, setMuted, setVolume, subscribe } from "lite:audio-system";
 
 /** Formats epoch seconds as the XP tray clock (`h:mm AM/PM`, UTC+8). */
 function formatClock(epochSeconds: number) {
@@ -20,6 +21,8 @@ interface TaskbarProps {
 
 export function Taskbar({ windows, activeId, startOpen, onStart, onActivate }: TaskbarProps) {
   const [now, setNow] = useState(() => clock());
+  const [audioOpen, setAudioOpen] = useState(false);
+  const [master, setMaster] = useState({ percent: 75, muted: false });
   useEffect(() => {
     // The tray clock only shows minutes, so a 5s poll hugs the minute boundary
     // without needing a calendar dependency in the guest.
@@ -30,6 +33,13 @@ export function Taskbar({ windows, activeId, startOpen, onStart, onActivate }: T
     };
     timer = setTimeout(tick, 5000);
     return () => clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    const unsubscribe = subscribe((state) => {
+      setMaster({ percent: state.percent, muted: state.muted });
+    });
+    getState();
+    return unsubscribe;
   }, []);
 
   return (
@@ -48,7 +58,32 @@ export function Taskbar({ windows, activeId, startOpen, onStart, onActivate }: T
           </div>
         ))}
       </div>
-      <div className="tray"><img className="tray__icon" src="assets/speaker.png"/><span className="tray__clock">{formatClock(now)}</span></div>
+      <div className="tray">
+        {audioOpen && (
+          <div className="tray-volume">
+            <span className="tray-volume__title">Master volume</span>
+            <div className="tray-volume__scale">
+              {Array.from({ length: 11 }, (_, index) => index * 10).map((percent) => (
+                <div
+                  key={percent}
+                  className={`tray-volume__step${percent <= master.percent ? " tray-volume__step--on" : ""}`}
+                  onClick={() => setVolume(percent)}
+                />
+              ))}
+            </div>
+            <span className="tray-volume__value">{master.muted ? "Muted" : `${master.percent}%`}</span>
+            <div className="tray-volume__mute" onClick={() => setMuted(!master.muted)}>
+              {master.muted ? "Unmute" : "Mute"}
+            </div>
+          </div>
+        )}
+        <img
+          className="tray__icon"
+          src="assets/speaker.png"
+          onClick={() => setAudioOpen((open) => !open)}
+        />
+        <span className="tray__clock">{formatClock(now)}</span>
+      </div>
     </div>
   );
 }

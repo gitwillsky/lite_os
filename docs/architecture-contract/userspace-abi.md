@@ -18,7 +18,7 @@
   build；Cargo 最终链接由 build-std 的 `compiler_builtins` 独占，不能再追加 musl builder 的外部
   compiler runtime。最终 ELF 必须动态依赖唯一 musl `libc.so`，libunwind 只允许静态进入 consumer。
 - `user/Cargo.toml` 与 `user/Cargo.lock` 是产品 Rust userspace 的唯一 workspace/依赖解析 owner；Cargo
-  直接链接 `compositor`、`lite-ui`、`terminal-session` 最终 PIE，禁止 staticlib 中间产物、手工二次
+  直接链接 `audio-service`、`compositor`、`lite-ui`、`session-launch`、`terminal-session` 最终 PIE，禁止 staticlib 中间产物、手工二次
   链接或每应用 lockfile。`linux-uapi` 独占 raw musl FFI 与 Linux layout/constant；唯一例外是
   `quickjs-runtime` 内固定 vendored QuickJS ABI，其他位置的 `extern "C"`/`#[link]` 由 architecture-check 拒绝。
 
@@ -54,12 +54,18 @@
 - Rust application 必须使用标准 Linux/musl target；禁止 `os=none` custom target、预编译 bundled
   musl/CRT 或 LiteOS std fork。验证 fixture 只允许进入 disposable gate image，产品 rootfs 必须拒绝。
 - 应用优先使用 `std`；稳定 `std` 缺失的 Linux 专有机制只能通过
-  `linux-uapi::{drm,input,pty,process,unix}` 的安全 typed interface。`display-proto` 独占 wire 与
-  SCM_RIGHTS 帧语义，但 fd ancillary mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、
-  裸 fd/GEM owner 和并行兼容路径均禁止。
+  `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 的安全 typed interface。
+  `audio-proto`/`display-proto` 分别独占音频/显示 wire 与 SCM_RIGHTS 帧语义，但 fd ancillary
+  mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、裸 fd/device owner 和并行兼容路径均禁止。
 - 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error
   publication owner；kernel 必须保留消息边界、peer-close EOF/hangup 与 `SO_TYPE=5`。只开放
   socketpair，seqpacket bind/listen/connect 仍明确返回不支持，不能在应用退回多线程不安全的 raw fork。
+- 多线程图形进程只能通过 `SessionChild` 的固定 `/bin/session-launch` 单轨启动 session child。
+  parent 的标准 `Command` 不得安装 `pre_exec`；单线程 trampoline 依次设置 parent-death signal、
+  复检 parent identity、`setsid` 并同 PID `exec`。parent 独占 exec-status 读端，trampoline
+  独占 CLOEXEC 写端；固定 frame 发布所有确定性 setup/exec 错误，空 EOF 表示没有这类已发布错误，
+  不虚报异步致死与成功 exec 后立即退出可区分。错误、非空截断或非法 frame 必须 kill/wait 回收；
+  禁止普通 spawn、raw fork 或重试兼容路径。
 - APK 只接受所选 architecture repository 的固定摘要与精确 `.PKGINFO`。只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个固定数据包预期 `noarch`；其余包必须精确匹配目标架构，禁止 blanket `noarch` 放宽。
 
 ## Failure and cleanup

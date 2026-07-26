@@ -84,6 +84,7 @@ def boot_interactive_devices(image: Path) -> None:
         image,
         1,
         (
+        "[Audio] VirtIO Sound capability ready",
             "VirtIO input event0",
             "VirtIO input event1",
             "VirtIO GPU",

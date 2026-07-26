@@ -75,6 +75,44 @@ interface LiteScreen {
   background: number;
 }
 
+/** Frozen first-milestone HTMLMediaElement public instance returned by React refs. */
+interface LiteAudioElement {
+  src: string;
+  currentSrc: string;
+  currentTime: number;
+  duration: number;
+  volume: number;
+  muted: boolean;
+  loop: boolean;
+  preload: string;
+  autoplay: boolean;
+  controls: boolean;
+  playbackRate: 1;
+  readonly paused: boolean;
+  readonly ended: boolean;
+  readonly seeking: boolean;
+  readonly buffered: TimeRanges;
+  readonly seekable: TimeRanges;
+  readonly readyState: number;
+  readonly networkState: number;
+  readonly error: MediaError | null;
+  readonly NETWORK_EMPTY: 0;
+  readonly NETWORK_IDLE: 1;
+  readonly NETWORK_LOADING: 2;
+  readonly NETWORK_NO_SOURCE: 3;
+  readonly HAVE_NOTHING: 0;
+  readonly HAVE_METADATA: 1;
+  readonly HAVE_CURRENT_DATA: 2;
+  readonly HAVE_FUTURE_DATA: 3;
+  readonly HAVE_ENOUGH_DATA: 4;
+  load(): void;
+  play(): Promise<void>;
+  pause(): void;
+  canPlayType(type: string): "" | "maybe" | "probably";
+  addEventListener(type: string, listener: (event: Event) => void): void;
+  removeEventListener(type: string, listener: (event: Event) => void): void;
+}
+
 // The host installs these globals before the app module evaluates.
 declare var __liteReact: typeof import("react");
 declare var __liteJsxRuntime: typeof import("react/jsx-runtime");
@@ -84,6 +122,13 @@ declare function __liteDispatch(listener: number, payload: unknown): void;
 declare function __liteSubscribe(channel: string, callback: (event: unknown) => void): () => void;
 declare function __liteTimer(id: number): void;
 declare function __liteEvent(channel: string, payload: unknown): void;
+declare function __liteFile(descriptor: {
+  path: string;
+  name: string;
+  size: number;
+  type: string;
+  lastModified: number;
+}): File;
 declare function liteDesktopSubscribe(callback: (event: LiteDesktopEvent) => void): () => void;
 declare function liteTerminalSubscribe(callback: (screen: LiteScreen) => void): () => void;
 
@@ -121,6 +166,18 @@ declare module "lite:terminal" {
   export const input: (event: LiteKeyEvent) => string;
 }
 
+declare module "lite:audio-system" {
+  export interface MasterState {
+    type: "masterstate";
+    percent: number;
+    muted: boolean;
+  }
+  export const subscribe: (callback: (state: MasterState) => void) => () => void;
+  export const getState: () => string;
+  export const setVolume: (percent: number) => string;
+  export const setMuted: (muted: boolean) => string;
+}
+
 declare module "lite:fs" {
   export interface FsEntry {
     name: string;
@@ -141,6 +198,7 @@ declare module "lite:fs" {
   }
   export const list: (path: string) => FsListResult;
   export const read: (path: string) => FsReadResult;
+  export const open: (path: string) => File;
 }
 
 // react-reconciler ships no bundled types and @types/react-reconciler doesn't

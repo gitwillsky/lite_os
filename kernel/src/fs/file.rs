@@ -68,6 +68,7 @@ pub(crate) enum OpenFileKind {
     Epoll(Arc<Epoll>),
     EventFd(Arc<EventFd>),
     Inode(Arc<OpenedFile>),
+    MemFile(Arc<crate::fs::MemFile>),
 }
 
 /// @description console 文件后端 seam；具体 platform adapter 只在 composition root 装配。
@@ -155,7 +156,7 @@ impl OpenFileDescription {
         const READ_HANGUP: i16 = 0x2000;
         let mut result = 0;
         match &self.kind {
-            OpenFileKind::Inode(_) => result = events & (INPUT | OUTPUT),
+            OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => result = events & (INPUT | OUTPUT),
             OpenFileKind::Character(device) => result = device.poll_events(events),
             OpenFileKind::Pipe(endpoint) => {
                 let state = endpoint.pipe().poll_state(endpoint.direction());
@@ -220,7 +221,7 @@ impl OpenFileDescription {
             OpenFileKind::Socket(socket) => socket.readiness_generation(events),
             OpenFileKind::Epoll(epoll) => epoll.readiness_generation(),
             OpenFileKind::EventFd(event) => event.readiness_generation(events),
-            OpenFileKind::Inode(_) => 0,
+            OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => 0,
         }
     }
 
@@ -234,7 +235,7 @@ impl OpenFileDescription {
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
             | OpenFileKind::EventFd(_) => true,
-            OpenFileKind::Inode(_) => false,
+            OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => false,
         }
     }
 
@@ -269,6 +270,12 @@ impl OpenFileDescription {
                 ));
             }
             OpenFileKind::Character(CharacterDevice::Drm(file)) => {
+                sources.push(ReadinessSource::pipe(
+                    &file.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                ));
+            }
+            OpenFileKind::Character(CharacterDevice::Audio(file)) => {
                 sources.push(ReadinessSource::pipe(
                     &file.notification_pipe(),
                     crate::ipc::PipeDirection::Read,
@@ -384,6 +391,19 @@ impl OpenFileDescription {
         .map_err(|_| ())
     }
 
+    /// @description 构造 pathname-less memfd OFD。
+    pub(crate) fn mem_file(file: Arc<crate::fs::MemFile>, flags: u32) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
+            kind: OpenFileKind::MemFile(file),
+            position: FilePosition::new(),
+            flags: Mutex::new(flags),
+            character_opened: None,
+            epoll_memberships: EpollMemberships::new(),
+            descriptor_refs: AtomicUsize::new(0),
+        })
+        .map_err(|_| ())
+    }
+
     pub(crate) fn pipe(endpoint: Arc<PipeEnd>, flags: u32) -> Result<Arc<Self>, ()> {
         Arc::try_new(Self {
             kind: OpenFileKind::Pipe(endpoint),
@@ -438,6 +458,7 @@ impl OpenFileDescription {
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.inode()),
+            OpenFileKind::MemFile(file) => Some(file.clone()),
             OpenFileKind::Character(_) => None,
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
@@ -451,6 +472,7 @@ impl OpenFileDescription {
     pub(crate) fn opened_ref(&self) -> Option<Arc<OpenedFile>> {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.clone()),
+            OpenFileKind::MemFile(_) => None,
             OpenFileKind::Character(_) => self.character_opened.clone(),
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
@@ -466,6 +488,20 @@ impl OpenFileDescription {
     pub(crate) fn filesystem_statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         match &self.kind {
             OpenFileKind::Inode(opened) => vfs().statistics(opened.inode()),
+            OpenFileKind::MemFile(_) => Ok(FileSystemStatistics {
+                type_name: "tmpfs",
+                magic: 0x0102_1994,
+                block_size: 4096,
+                blocks: 0,
+                blocks_free: 0,
+                blocks_available: 0,
+                files: 1,
+                files_free: 0,
+                fsid: [0x4d45_4d46, 0],
+                name_length: 255,
+                fragment_size: 4096,
+                flags: 0x20,
+            }),
             OpenFileKind::Character(_) => vfs().statistics(
                 self.character_opened
                     .clone()

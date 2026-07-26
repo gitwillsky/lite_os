@@ -12,6 +12,7 @@ use crate::{
 
 use super::timer::{TimeSpec, decode_timespec};
 
+include!("poll/notification.rs");
 mod select;
 mod wait_keys;
 pub(super) use wait_keys::{PollWaitGuards, PollWaitKeys};

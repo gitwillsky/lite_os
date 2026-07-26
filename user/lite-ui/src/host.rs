@@ -1,9 +1,16 @@
 //! Fixed native operations exposed to the self-contained React bundle.
 
 mod filesystem;
+mod media;
+#[cfg(test)]
+mod media_constants_tests;
+#[cfg(test)]
+mod media_controls_tests;
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeSet,
+    path::PathBuf,
     rc::Rc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -11,7 +18,10 @@ use std::{
 use quickjs_runtime::{EngineError, NativeHost, Role};
 use serde::Serialize;
 
-use crate::tree::{self, Node};
+use crate::{
+    audio::Commands as AudioCommands,
+    tree::{self, Node},
+};
 
 /// One side effect requested synchronously by React and executed after its JS turn.
 pub enum Action {
@@ -70,6 +80,7 @@ pub struct State {
     next_configure: Cell<u64>,
     focused_surface: Cell<u32>,
     timers: RefCell<Vec<(u64, Instant)>>,
+    playback_granted: Cell<bool>,
 }
 
 impl State {
@@ -148,6 +159,11 @@ impl State {
         self.focused_surface.get()
     }
 
+    /// Records one compositor-authenticated physical input activation.
+    pub fn grant_media_playback(&self) {
+        self.playback_granted.set(true);
+    }
+
     /// Adds one compositor-published app surface to desktop policy state.
     pub fn open_surface(&self, id: u32, app_id: String) {
         let index = self.surfaces.borrow().len() as u32;
@@ -207,11 +223,16 @@ pub struct Host {
     role: Role,
     started: Instant,
     state: Rc<State>,
+    app_root: PathBuf,
+    files: RefCell<filesystem::Files>,
+    audio: RefCell<AudioCommands>,
+    next_media: Cell<u64>,
+    media: RefCell<BTreeSet<u64>>,
 }
 
 impl Host {
     /// Creates the unique host and its read-side state handle.
-    pub fn new(role: Role) -> (Self, Rc<State>) {
+    pub fn new(role: Role, app_root: PathBuf, audio: AudioCommands) -> (Self, Rc<State>) {
         let state = Rc::new(State {
             scene: RefCell::new(None),
             scene_dirty: Cell::new(false),
@@ -221,12 +242,18 @@ impl Host {
             next_configure: Cell::new(1),
             focused_surface: Cell::new(0),
             timers: RefCell::new(Vec::new()),
+            playback_granted: Cell::new(false),
         });
         (
             Self {
                 role,
                 started: Instant::now(),
                 state: state.clone(),
+                app_root,
+                files: RefCell::new(filesystem::Files::default()),
+                audio: RefCell::new(audio),
+                next_media: Cell::new(1),
+                media: RefCell::new(BTreeSet::new()),
             },
             state,
         )
@@ -278,6 +305,9 @@ impl Host {
 
 impl NativeHost for Host {
     fn invoke(&mut self, operation: &str, payload: &str) -> Result<String, EngineError> {
+        if let Some(result) = self.invoke_media(operation, payload) {
+            return result;
+        }
         match operation {
             "scene.commit" => {
                 let scene = tree::parse(payload).map_err(EngineError::from_host)?;
@@ -321,7 +351,7 @@ impl NativeHost for Host {
                 Ok(String::new())
             }
             "apps.list" if self.role == Role::Desktop => Ok(
-                r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"},{"id":"file-manager","name":"File Manager","description":"Browse files","icon":"assets/computer.png"}]"#.to_owned(),
+                r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"},{"id":"file-manager","name":"File Manager","description":"Browse files","icon":"assets/computer.png"},{"id":"music-player","name":"Music Player","description":"Play local music","icon":"assets/speaker.png"}]"#.to_owned(),
             ),
             "apps.launch" if self.role == Role::Desktop && valid_app_id(payload) => {
                 self.state.actions.borrow_mut().push(Action::Launch(payload.to_owned()));
@@ -397,6 +427,7 @@ fn app_metadata(id: &str) -> (&'static str, &'static str) {
     match id {
         "terminal" => ("Terminal", "assets/terminal.png"),
         "file-manager" => ("File Manager", "assets/computer.png"),
+        "music-player" => ("Music Player", "assets/speaker.png"),
         _ => ("Application", "assets/terminal.png"),
     }
 }
@@ -435,9 +466,19 @@ mod tests {
 
     use super::Host;
 
+    fn host(role: Role, root: PathBuf) -> (Host, std::rc::Rc<super::State>) {
+        let audio_role = if role == Role::Desktop {
+            audio_proto::ClientRole::Desktop
+        } else {
+            audio_proto::ClientRole::Media
+        };
+        let (commands, _events) = crate::audio::start(audio_role).expect("audio worker");
+        Host::new(role, root, commands)
+    }
+
     #[test]
     fn quickjs_bridge_publishes_only_the_latest_complete_scene() {
-        let (host, state) = Host::new(Role::Desktop);
+        let (host, state) = host(Role::Desktop, PathBuf::from("/"));
         let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
         engine.install_host(host);
         engine
@@ -467,7 +508,7 @@ mod tests {
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
         let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
         let desktop = fs::read(root.join("desktop/main.js")).expect("desktop bundle");
-        let (host, state) = Host::new(Role::Desktop);
+        let (host, state) = host(Role::Desktop, root.clone());
         let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
         engine.install_host(host);
         engine
@@ -481,6 +522,50 @@ mod tests {
         assert!(
             state.scene_if_dirty().is_some(),
             "desktop must publish its root"
+        );
+    }
+
+    #[test]
+    fn audible_media_requires_physical_activation_and_system_audio_is_desktop_only() {
+        let (host, state) = host(Role::App, PathBuf::from("/"));
+        let mut engine = Engine::open(Role::App).expect("app engine");
+        engine.install_host(host);
+        engine
+            .evaluate(
+                "create.js",
+                br#"globalThis.mediaId = Number(__liteNative("media.create", "{}"));"#,
+            )
+            .expect("create media");
+        assert!(
+            engine
+                .evaluate(
+                    "denied.js",
+                    br#"__liteNative("media.play", JSON.stringify({id:mediaId,muted:false}));"#,
+                )
+                .is_err(),
+            "script cannot synthesize an audible playback grant"
+        );
+        engine
+            .evaluate(
+                "muted.js",
+                br#"__liteNative("media.gain", JSON.stringify({id:mediaId,volume:1,muted:true}));"#,
+            )
+            .expect("muted playback state does not require activation");
+        assert!(
+            engine
+                .evaluate(
+                    "unmute.js",
+                    br#"__liteNative("media.gain", JSON.stringify({id:mediaId,volume:1,muted:false}));"#,
+                )
+                .is_err(),
+            "unmuting without activation must remain atomic at the host boundary"
+        );
+        state.grant_media_playback();
+        assert!(
+            engine
+                .evaluate("system.js", br#"__liteNative("audio-system.get", "");"#)
+                .is_err(),
+            "ordinary app cannot acquire desktop system-volume capability"
         );
     }
 }

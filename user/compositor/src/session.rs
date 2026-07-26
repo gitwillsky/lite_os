@@ -79,6 +79,8 @@ struct App {
     last_revision: u64,
     pending: Option<Content>,
     current: Option<Content>,
+    // Prevents automation from clicking before this window enters input routing.
+    first_scene_presented: bool,
 }
 
 /// One compositor epoch. Desktop disconnect clears every app and client buffer.
@@ -593,3 +595,6 @@ impl Drop for Session {
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
+#[cfg(test)]
+mod tests;

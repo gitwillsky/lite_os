@@ -1,3 +1,4 @@
+mod audio_output;
 pub(crate) mod block;
 mod display;
 mod hal;
@@ -12,7 +13,12 @@ mod virtio_input;
 mod virtio_net;
 mod virtio_queue;
 mod virtio_rng;
+mod virtio_sound;
 
+pub(crate) use audio_output::{
+    PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_RATE,
+    PcmCompletionObserver, PcmOutput, PcmOutputError,
+};
 pub(crate) use display::{
     DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
 };
@@ -28,6 +34,13 @@ pub(crate) use virtio_gpu::VirtIOGpuDevice;
 pub(crate) use virtio_input::VirtIOInputDevice;
 pub(crate) use virtio_net::VirtIONetworkDevice;
 pub(crate) use virtio_rng::VirtIORngDevice;
+pub(crate) use virtio_sound::VirtIOSoundDevice;
+
+use spin::Once;
+
+// OWNER: drivers registry retains the only physical PCM output adapter after platform discovery.
+// 缺少单一 publication 会让两个 ALSA owner 分别控制同一 VirtIO stream。
+static AUDIO_OUTPUT: Once<alloc::sync::Arc<VirtIOSoundDevice>> = Once::new();
 
 pub(crate) use virtio_rng::fill_entropy;
 
@@ -48,11 +61,34 @@ pub(crate) fn register_entropy_device(device: alloc::sync::Arc<VirtIORngDevice>)
     virtio_rng::register(device)
 }
 
+/// @description 注册唯一 physical PCM output adapter。
+/// @param device platform 已完成 DTB identity 与 IRQ 装配的 VirtIO Sound adapter。
+/// @return 首次发布成功；重复设备返回原子失败。
+pub(crate) fn register_audio_output(device: alloc::sync::Arc<VirtIOSoundDevice>) -> Result<(), ()> {
+    if AUDIO_OUTPUT.get().is_some() {
+        return Err(());
+    }
+    AUDIO_OUTPUT.call_once(|| device);
+    Ok(())
+}
+
+/// @description 取得 kernel audio owner 可消费的 transport-neutral PCM seam。
+/// @return platform 未发现 sound device 时为 `None`。
+pub(crate) fn primary_audio_output() -> Option<alloc::sync::Arc<dyn PcmOutput>> {
+    AUDIO_OUTPUT
+        .get()
+        .map(|device| device.clone() as alloc::sync::Arc<dyn PcmOutput>)
+}
+
 /// @description 在 task/idle safe point 各回收一批有界 driver I/O completion。
 ///
 /// @return 任一设备仍有 backlog 时返回 `true`，caller 必须重新发布 `DriverIo` work。
 pub(crate) fn dispatch_io_completion_work() -> bool {
-    block::dispatch_completion_work() | virtio_rng::dispatch_completion_work()
+    block::dispatch_completion_work()
+        | virtio_rng::dispatch_completion_work()
+        | AUDIO_OUTPUT
+            .get()
+            .is_some_and(|device| virtio_sound::dispatch_completion_work(device))
 }
 
 pub(crate) fn register_display_device(

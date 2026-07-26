@@ -9,6 +9,7 @@ mod epoll;
 mod ext2;
 mod file;
 mod inode;
+mod memfd;
 mod page_cache;
 mod permission;
 mod procfs;
@@ -32,6 +33,7 @@ pub(crate) use file::{
     Terminal, TerminalAccess, TerminalRead, TerminalReadMode, character_write_chunk,
 };
 pub(crate) use inode::{DeviceKind, Inode, InodeMetadata, InodeType, StorageWriter};
+pub(crate) use memfd::MemFile;
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
     sync_all, sync_inode, truncate,

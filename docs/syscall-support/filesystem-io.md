@@ -5,8 +5,8 @@
 | 17 | `getcwd` | Complete | VFS opened-directory identity |
 | 23 | `dup` | Complete | lowest-free fd publication |
 | 24 | `dup3` | Complete | replacement 与 CLOEXEC |
-| 25 | `fcntl` | Partial | fd/status flags、dup 与 record lock 子集 |
-| 29 | `ioctl` | Partial | TTY、socket、DRM 与 evdev 已声明 request |
+| 25 | `fcntl` | Partial | fd/status flags、dup、record lock 以及 memfd `F_ADD_SEALS`/`F_GET_SEALS` 子集 |
+| 29 | `ioctl` | Partial | TTY、socket、DRM、evdev 与 `/dev/snd/pcmC0D0p` ALSA playback 已声明 request |
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |
@@ -18,7 +18,7 @@
 | 38 | `renameat` | Complete | 普通原子移动与替换 |
 | 43 | `statfs` | Complete | 已挂载 filesystem projection |
 | 44 | `fstatfs` | Complete | OFD-backed filesystem projection |
-| 46 | `ftruncate` | Complete | regular file、page cache 与 mapping invalidation |
+| 46 | `ftruncate` | Complete | regular file/memfd、page cache 与 mapping invalidation；memfd seal 精确拒绝 grow/shrink |
 | 47 | `fallocate` | Partial | mode 0 space reservation |
 | 48 | `faccessat` | Partial | current credential 与已声明 flags |
 | 49 | `chdir` | Complete | opened directory publication |
@@ -49,6 +49,7 @@
 | 88 | `utimensat` | Partial | inode timestamps 与已声明 flags |
 | 166 | `umask` | Complete | Process-owned mask |
 | 276 | `renameat2` | Partial | rename、NOREPLACE、EXCHANGE；其余 flags 拒绝 |
+| 279 | `memfd_create` | Partial | anonymous shared file、`MFD_CLOEXEC`/`MFD_ALLOW_SEALING`、`ftruncate`、`MAP_SHARED` 与 grow/shrink/seal seals；hugetlb、write seals 未开放 |
 | 286 | `preadv2` | Partial | positioned vector I/O 与已声明 flags |
 | 287 | `pwritev2` | Partial | positioned vector I/O 与已声明 flags |
 

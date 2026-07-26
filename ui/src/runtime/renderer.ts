@@ -1,6 +1,7 @@
 import React from "react";
 import Reconciler from "react-reconciler";
 import "./platform.ts";
+import { LiteMediaElement } from "./media.ts";
 
 /** A rasterizable scene node the host serializes to the compositor. */
 interface Instance {
@@ -10,10 +11,11 @@ interface Instance {
   text?: string;
   hidden?: boolean;
   children: Instance[];
+  media?: LiteMediaElement;
 }
 type Props = Record<string, unknown>;
 
-const primitives = new Set(["div", "span", "img"]);
+const primitives = new Set(["div", "span", "img", "audio"]);
 const listeners = new Map<number, (payload: unknown) => void>();
 let nextListener = 1;
 let nextNode = 1;
@@ -41,7 +43,11 @@ function encodeProps(props: Props, previousProps: Props = {}, previousEncoded: P
 }
 
 function publish() {
-  globalThis.__liteNative("scene.commit", JSON.stringify(container.children));
+  const scene = JSON.stringify(container.children, (name, value) => {
+    if (name === "media") return undefined;
+    return value;
+  });
+  globalThis.__liteNative("scene.commit", scene);
 }
 
 function remove(parent: { children: Instance[] }, child: Instance) {
@@ -60,6 +66,12 @@ function dropListeners(instance: Instance) {
   for (const child of instance.children ?? []) dropListeners(child);
 }
 
+function addListener(callback: (payload: unknown) => void) {
+  const id = nextListener++;
+  listeners.set(id, callback);
+  return id;
+}
+
 const reconciler = Reconciler({
   supportsMutation: true,
   supportsPersistence: false,
@@ -68,12 +80,28 @@ const reconciler = Reconciler({
   warnsIfNotActing: false,
   getRootHostContext: () => hostContext,
   getChildHostContext: () => hostContext,
-  getPublicInstance: (instance: Instance) => instance,
+  getPublicInstance: (instance: Instance) => instance.media ?? instance,
   prepareForCommit: () => null,
   resetAfterCommit: publish,
   createInstance(type: string, props: Props) {
     if (!primitives.has(type)) throw new Error(`unsupported LiteUI primitive '${type}'`);
-    const instance: Instance = { id: nextNode++, type, props: encodeProps(props), children: [] };
+    const instance: Instance = { id: nextNode++, type: type === "audio" ? "div" : type, props: encodeProps(props), children: [] };
+    if (type === "audio") {
+      instance.media = new LiteMediaElement(() => {
+        instance.children = instance.media?.shadowChildren() as Instance[] ?? [];
+        publish();
+      }, addListener, () => nextNode++);
+      instance.media.updateProps(props);
+      instance.children = instance.media.shadowChildren() as Instance[];
+      instance.props = {
+        ...instance.props,
+        style: {
+          display: "flex", alignItems: "center", gap: 3, width: 420, height: 32,
+          padding: 3, border: "2px inset #ffffff", background: "#d4d0c8",
+          ...(props.style as Record<string, unknown> ?? {}),
+        },
+      };
+    }
     sourceProps.set(instance, props);
     return instance;
   },
@@ -109,6 +137,15 @@ const reconciler = Reconciler({
       }
     }
     instance.props = encodeProps(newProps, previous, instance.props);
+    if (instance.media) {
+      instance.media.updateProps(newProps);
+      instance.children = instance.media.shadowChildren() as Instance[];
+      instance.props.style = {
+        display: "flex", alignItems: "center", gap: 3, width: 420, height: 32,
+        padding: 3, border: "2px inset #ffffff", background: "#d4d0c8",
+        ...(newProps.style as Record<string, unknown> ?? {}),
+      };
+    }
     sourceProps.set(instance, newProps);
   },
   commitTextUpdate(instance: Instance, oldText: string, newText: string) { instance.text = String(newText); },
@@ -132,7 +169,10 @@ const reconciler = Reconciler({
   resolveEventTimeStamp: () => -1.1,
   resolveEventPriority: () => 2,
   shouldAttemptEagerTransition: () => false,
-  detachDeletedInstance: dropListeners,
+  detachDeletedInstance(instance: Instance) {
+    instance.media?.destroy();
+    dropListeners(instance);
+  },
   requestPostPaintCallback: (callback: (time: number) => void) => callback(performance.now()),
   resetFormInstance: () => {},
 });

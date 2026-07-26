@@ -20,6 +20,35 @@ def argument_after(command: list[str], option: str) -> str:
 
 
 class QemuRoutingTests(unittest.TestCase):
+    def test_qmp_quit_requests_graceful_shutdown(self) -> None:
+        client = object.__new__(qemu_gate.QmpClient)
+        client._execute = Mock()
+
+        client.quit()
+
+        client._execute.assert_called_once_with("quit")
+
+    def test_qmp_stop_and_unrealize_orders_backend_cleanup(self) -> None:
+        client = object.__new__(qemu_gate.QmpClient)
+        client._execute = Mock()
+
+        client.stop_and_unrealize("audio-device")
+
+        self.assertEqual(
+            client._execute.call_args_list,
+            [
+                unittest.mock.call("stop"),
+                unittest.mock.call(
+                    "qom-set",
+                    {
+                        "path": "/machine/peripheral/audio-device",
+                        "property": "realized",
+                        "value": False,
+                    },
+                ),
+            ],
+        )
+
     def test_fatal_line_drain_collects_the_rest_of_the_current_line(self) -> None:
         read_fd, write_fd = os.pipe()
         try:
@@ -84,8 +113,29 @@ class QemuRoutingTests(unittest.TestCase):
                 "virtio-gpu-device,xres=3008,yres=1692",
                 "virtio-keyboard-device",
                 "virtio-tablet-device",
+                "virtio-sound-device,id=audio-device,audiodev=audio0,streams=1",
                 "virtio-net-device,netdev=net0",
             ],
+        )
+        self.assertEqual(argument_after(command, "-audiodev"), "none,id=audio0")
+
+    @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-aarch64")
+    def test_audio_gate_records_fixed_stereo_wav(self, _: Mock) -> None:
+        output = Path("/tmp/liteos-audio.wav")
+        with patch.dict(os.environ, {}, clear=True):
+            command = qemu_gate._qemu_command(
+                Path("rootfs.img"),
+                1,
+                interactive_devices=True,
+                audio_output=output,
+            )
+
+        self.assertEqual(
+            argument_after(command, "-audiodev"),
+            (
+                "wav,id=audio0,path=/tmp/liteos-audio.wav,"
+                "out.frequency=48000,out.channels=2,out.format=s16"
+            ),
         )
 
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-riscv64")

@@ -312,9 +312,8 @@ impl Renderer {
         // （子节点全为 `#text`），以及 app client-area surface（带 `data-lite-surface`
         // 的 `div`）。含元素子节点的 span 不是叶子——它像普通容器一样布局并绘制子树，
         // 使 `<span>` 内嵌 `<img>` 等符合 Web inline 语义。
-        let leaf = matches!(source.kind.as_str(), "img")
-            || source.is_text_leaf()
-            || is_surface(&source);
+        let leaf =
+            matches!(source.kind.as_str(), "img") || source.is_text_leaf() || is_surface(&source);
         let mut next_ancestors = ancestors.to_vec();
         next_ancestors.push(&source);
         let children = if leaf {
@@ -331,20 +330,19 @@ impl Renderer {
         // matches what the rasterizer draws; monospace text is sized by cell
         // count in `to_taffy`, and non-text nodes need no measurement. 容器 span
         // 不是文本叶子，其固有宽度来自子节点布局而非拼接文本。
-        let measured_width = if source.is_text_leaf()
-            && computed.get("font-family") != Some("monospace")
-        {
-            let text = text_content(&source);
-            Some(if computed.get("white-space") == Some("pre") {
-                text.split('\n')
-                    .map(|line| self.font.measure(&computed, line))
-                    .fold(0.0, f32::max)
+        let measured_width =
+            if source.is_text_leaf() && computed.get("font-family") != Some("monospace") {
+                let text = text_content(&source);
+                Some(if computed.get("white-space") == Some("pre") {
+                    text.split('\n')
+                        .map(|line| self.font.measure(&computed, line))
+                        .fold(0.0, f32::max)
+                } else {
+                    self.font.measure(&computed, &text)
+                })
             } else {
-                self.font.measure(&computed, &text)
-            })
-        } else {
-            None
-        };
+                None
+            };
         let style = to_taffy(&source, &computed, measured_width);
         let id = if children.is_empty() {
             tree.new_leaf(style)

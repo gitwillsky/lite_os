@@ -4,12 +4,12 @@ use std::{
     io::{self, Read, Write},
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::UnixStream,
-    process::{ChildStdin, Command, Stdio},
+    process::ChildStdin,
     sync::mpsc::{self, Receiver},
     thread,
 };
 
-use linux_uapi::process::SessionChild;
+use linux_uapi::process::{SessionChild, SessionCommand, SessionIo};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -166,13 +166,11 @@ pub struct Terminal {
 impl Terminal {
     /// Spawns the checked helper with an explicit interactive shell argv.
     pub fn spawn() -> io::Result<Self> {
-        let mut command = Command::new("/bin/terminal-session");
-        command.args(["--", "/bin/sh"]);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        let mut child = SessionChild::spawn(&mut command)?;
+        let mut child = SessionChild::spawn(SessionCommand::new(
+            "/bin/terminal-session",
+            vec!["--".into(), "/bin/sh".into()],
+            SessionIo::Piped,
+        ))?;
         let input = child
             .take_stdin()
             .ok_or_else(|| io::Error::other("terminal helper stdin missing"))?;

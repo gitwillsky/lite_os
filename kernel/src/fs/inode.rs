@@ -29,6 +29,7 @@ pub(crate) enum DeviceKind {
     PtySlave(u32),
     DriCard0,
     InputEvent(u16),
+    AudioPcmPlayback,
 }
 
 impl DeviceKind {
@@ -46,6 +47,7 @@ impl DeviceKind {
             Self::PtySlave(index) => (136 + index / 256, index % 256),
             Self::DriCard0 => (226, 0),
             Self::InputEvent(index) => (13, 64 + u32::from(index)),
+            Self::AudioPcmPlayback => (116, 16),
         }
     }
 
@@ -62,12 +64,17 @@ impl DeviceKind {
             Self::PtySlave(index) => 0x1_0000 + u64::from(index),
             Self::DriCard0 => 13,
             Self::InputEvent(index) => 0x100 + u64::from(index),
+            Self::AudioPcmPlayback => 18,
         }
     }
 
     pub(crate) fn mode(self) -> u32 {
         match self {
-            Self::Kmsg | Self::Console | Self::PtySlave(_) | Self::InputEvent(_) => 0o020600,
+            Self::Kmsg
+            | Self::Console
+            | Self::PtySlave(_)
+            | Self::InputEvent(_)
+            | Self::AudioPcmPlayback => 0o020600,
             Self::Null
             | Self::Zero
             | Self::Random

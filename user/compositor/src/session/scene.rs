@@ -6,7 +6,10 @@
 //! completion. Connection, handshake and per-message routing stay in the
 //! parent module; this seam only knows how a frame becomes presentable.
 
-use std::{io, os::unix::net::UnixStream};
+use std::{
+    io::{self, Write as _},
+    os::unix::net::UnixStream,
+};
 
 use display_proto::{BufferRelease, Rect, SceneCommit, SceneNodeKind, send_message};
 use linux_uapi::drm::FlipEvent;
@@ -14,6 +17,10 @@ use linux_uapi::drm::FlipEvent;
 use super::buffers::{Buffers, Owner};
 use super::wire::{send_accepted, send_presented};
 use super::{RoutingNode, Session, invalid};
+
+pub(super) fn app_first_scene_presented_marker(surface_id: u32) -> String {
+    format!("compositor: app {surface_id} first scene presented\n")
+}
 
 /// One accepted flat-scene pixel layer.
 #[derive(Clone)]
@@ -321,7 +328,7 @@ impl Session {
             .clone_from(&scene.desktop_buffers);
         send_presented(&desktop.stream, scene.revision, event)?;
         for app_use in &scene.app_presentations {
-            if let Some(app) = self.apps.get(&app_use.surface_id) {
+            if let Some(app) = self.apps.get_mut(&app_use.surface_id) {
                 if let Some(previous) = app_use.previous_buffer {
                     // A previous buffer sized for a superseded configure can
                     // never be presented again: retire it instead of recycling.
@@ -350,6 +357,14 @@ impl Session {
                     }
                 }
                 send_presented(&app.stream, app_use.revision, event)?;
+                let first_scene_presented =
+                    !std::mem::replace(&mut app.first_scene_presented, true);
+                if first_scene_presented {
+                    let marker = app_first_scene_presented_marker(app_use.surface_id);
+                    // One preformatted write keeps concurrent app diagnostics
+                    // from splicing bytes into this runtime ordering barrier.
+                    let _ = io::stderr().write_all(marker.as_bytes());
+                }
             }
         }
         self.routing.clone_from(&scene.routing);

@@ -63,6 +63,49 @@ mod drivers;
 mod sync;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/audio/state.rs"]
+mod audio_state;
+
+#[cfg(test)]
+mod audio_readiness {
+    include!("../../../kernel/src/audio/readiness.rs");
+
+    pub(crate) const fn project(events: i16, writable: bool) -> i16 {
+        project_playback_events(events, writable)
+    }
+}
+
+#[cfg(test)]
+mod poll_notification {
+    const POLLIN: i16 = 0x001;
+    include!("../../../kernel/src/syscall/poll/notification.rs");
+
+    pub(crate) const fn wait_event() -> i16 {
+        audio_notification_wait_event()
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_sound/wire.rs"]
+mod virtio_sound_wire;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_sound/lifecycle.rs"]
+mod virtio_sound_lifecycle;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/memfd/state.rs"]
+mod memfd_state;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/syscall/audio/codec.rs"]
+mod alsa_codec;
+
+#[cfg(test)]
+#[path = "tests/audio.rs"]
+mod audio_tests;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/ipc/receive_buffer.rs"]
 #[allow(dead_code)]
 mod receive_buffer;

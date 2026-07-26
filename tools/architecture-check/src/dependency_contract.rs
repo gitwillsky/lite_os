@@ -10,6 +10,7 @@ use super::SourceFile;
 
 const KERNEL_MODULES: &[&str] = &[
     "arch",
+    "audio",
     "config",
     "cpu",
     "drivers",

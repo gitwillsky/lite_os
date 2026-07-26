@@ -16,7 +16,8 @@
   每次事件必须从最新 hit snapshot 解析当前 listener。禁止 capture listener id，否则 React commit
   替换 inline handler 后会把后续 motion/up 投递给已删除的回调。
 - `lite-ui` 内部 owner seam 固定为 `input`（事件目标与默认动作）、`renderer/paint`（递归绘制）、
-  `display/allocation`（同步分配期间的协议推进）和 `host/filesystem`（只读文件系统 host bridge）。
+  `display/allocation`（同步分配期间的协议推进）、`host/filesystem`（filesystem-backed `File` host
+  bridge）和 `audio`（worker/media state/decoder/service transport）。
   compositor 的 connection handshake/role assignment 只属于 `session/client`；这些子模块不得复制
   父模块持有的 session、renderer、display 或 host state。
 - `quickjs-runtime` 是 QuickJS raw C ABI、unsafe、runtime/context、module loader、job queue 与 interrupt
@@ -78,7 +79,9 @@
 - 同一 JS turn 内同步 React mutation、job drain 后最多产生一个 revision；rAF callbacks 共用一个 turn，
   不同离散 input 不跨 turn 合并。snapshot arena 不可用时只记录 dirty，归还后从最新 host tree 生成。
 - app entry 必须 default export 一个 component。target loader 仅接受固定 React/LiteUI system module；
-  `lite:apps` 与 `lite:desktop` 必须拒绝普通 app session。native plugin、dlopen、worker 与 Node API 不存在。
+  `lite:apps`、`lite:desktop` 与 `lite:audio-system` 必须拒绝普通 app session。应用可通过标准
+  `<audio>` 与 `lite:fs` 的 filesystem-backed `File` 播放；native plugin、dlopen、应用自建 worker
+  与 Node API 不存在。
 - terminal helper stdin/stdout 使用长度前缀 binary protocol，stderr 只诊断。screen update 按完整脏行，
   并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；最多一个 update 在途，ACK 前变更合并；
   terminfo 同时发布通用 `Ss`/`Se` 和 Vim 外部 terminfo loader 使用的 `SI`/`EI`；resize 发送完整

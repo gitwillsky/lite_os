@@ -31,6 +31,17 @@ impl OpenFileDescription {
                 bytes.extend_from_slice(label);
                 Ok(bytes)
             }
+            OpenFileKind::MemFile(file) => {
+                let name = file.name();
+                let mut target = Vec::new();
+                target
+                    .try_reserve_exact(7 + name.len() + 10)
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                target.extend_from_slice(b"/memfd:");
+                target.extend_from_slice(name);
+                target.extend_from_slice(b" (deleted)");
+                Ok(target)
+            }
             OpenFileKind::Character(_) | OpenFileKind::Inode(_) => {
                 unreachable!("pathname-backed OFD lost opened identity")
             }

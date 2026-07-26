@@ -1,3 +1,4 @@
+mod audio;
 mod clone_errno;
 mod credentials;
 mod drm;
@@ -10,6 +11,7 @@ mod getrandom_flags;
 mod input;
 mod ioctl;
 mod membarrier;
+mod memfd;
 mod memory;
 mod mmap_flags;
 mod poll;
@@ -34,6 +36,7 @@ use crate::syscall::{
 };
 use eventfd::sys_eventfd2;
 use membarrier::sys_membarrier;
+use memfd::sys_memfd_create;
 use process_control::sys_prctl;
 use resource_limit::sys_prlimit64;
 use riscv_hwprobe::sys_riscv_hwprobe;
@@ -315,6 +318,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             SYSCALL_MSYNC => sys_msync(args[0], args[1], args[2]),
             SYSCALL_MADVISE => sys_madvise(args[0], args[1], args[2]),
             SYSCALL_GETRANDOM => sys_getrandom(args[0], args[1], args[2]),
+            SYSCALL_MEMFD_CREATE => sys_memfd_create(args[0], args[1] as u32),
             SYSCALL_MEMBARRIER => sys_membarrier(args[0], args[1], args[2]),
             SYSCALL_WAIT4 => sys_wait4(
                 args[0] as isize,

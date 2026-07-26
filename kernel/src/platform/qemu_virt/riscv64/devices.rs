@@ -5,7 +5,7 @@ use super::uart;
 use crate::debug;
 use crate::drivers::{
     DisplayDevice, InputDevice, InterruptHandler, MmioBus, VirtIOBlockDevice, VirtIOGpuDevice,
-    VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice,
+    VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice,
 };
 use crate::sync::IrqMutex;
 use crate::{error, info, warn};
@@ -83,6 +83,7 @@ fn init_virtio_devices(board_info: &PlatformInfo) {
                 4 => init_virtio_rng_device(board_info, virtio_dev.irq, base_addr),
                 16 => init_virtio_gpu_device(board_info, virtio_dev.irq, base_addr),
                 18 => init_virtio_input_device(board_info, virtio_dev.irq, base_addr),
+                25 => init_virtio_sound_device(board_info, virtio_dev.irq, base_addr),
                 _ => info!(
                     "[Platform] Unrecognized VirtIO device ID {:#x} at {:#x}",
                     device_id, base_addr
@@ -90,6 +91,16 @@ fn init_virtio_devices(board_info: &PlatformInfo) {
             }
         }
     }
+}
+
+fn init_virtio_sound_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
+    let device = VirtIOSoundDevice::new(base_addr).expect("DTB virtio-sound must initialize");
+    crate::drivers::register_audio_output(device.clone())
+        .unwrap_or_else(|_| panic!("only one virtio-sound device is supported"));
+    assert!(
+        maybe_register_irq(board_info, irq, device.irq_handler_for(), "sound"),
+        "virtio-sound requires a registered IRQ"
+    );
 }
 
 fn init_virtio_input_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {

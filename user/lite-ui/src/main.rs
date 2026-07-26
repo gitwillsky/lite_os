@@ -1,5 +1,6 @@
 //! Generic LiteUI host: one process, one QuickJS VM, one React root and one top-level surface.
 
+mod audio;
 mod display;
 mod font;
 mod host;
@@ -21,7 +22,7 @@ use std::{
 };
 
 use display_proto::{Configure, MoveBegin};
-use linux_uapi::process::SessionChild;
+use linux_uapi::process::{SessionChild, SessionCommand, SessionIo};
 use linux_uapi::unix::{self, PollEvents, PollFd};
 use quickjs_runtime::{Engine, Role};
 
@@ -84,8 +85,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let source = fs::read(root.join("main.js"))?;
     let style = fs::read_to_string(root.join("style.css"))?;
     let mut display = Display::open(&mode)?;
-    let mut renderer = Renderer::open(root, &style, display.logical_size())?;
-    let (host, state) = Host::new(role);
+    let mut renderer = Renderer::open(root.clone(), &style, display.logical_size())?;
+    let audio_role = if matches!(mode, Mode::Desktop) {
+        audio_proto::ClientRole::Desktop
+    } else {
+        audio_proto::ClientRole::Media
+    };
+    let (audio_commands, mut audio_events) = audio::start(audio_role)?;
+    let (host, state) = Host::new(role, root.clone(), audio_commands);
     let mut engine = Engine::open(role)?;
     engine.install_host(host);
     engine.evaluate("lite-ui-runtime.js", &runtime)?;
@@ -124,9 +131,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     loop {
-        let (display_ready, terminal_ready) = wait(&display, terminal.as_ref(), &state)?;
+        let (display_ready, terminal_ready, audio_ready) =
+            wait(&display, terminal.as_ref(), &audio_events, &state)
+                .map_err(|error| owner_error("event wait", error))?;
         if display_ready {
-            let event = display.next_event()?;
+            let event = display
+                .next_event()
+                .map_err(|error| owner_error("display event", error))?;
             if matches!(event, Event::Close) {
                 return Ok(());
             }
@@ -135,10 +146,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             // scene into a correctly sized fresh buffer.
             if let Event::Configure(configure) = &event {
                 let configure = *configure;
-                display.reconfigure(configure)?;
+                display
+                    .reconfigure(configure)
+                    .map_err(|error| owner_error("display reconfigure", error))?;
                 renderer.set_viewport(display.logical_size());
                 if let Some(terminal) = terminal.as_mut() {
-                    terminal.resize(configure.width, configure.height)?;
+                    terminal
+                        .resize(configure.width, configure.height)
+                        .map_err(|error| owner_error("terminal resize", error))?;
                 }
                 state.invalidate_scene();
             }
@@ -149,39 +164,73 @@ fn run() -> Result<(), Box<dyn Error>> {
                 &mut interactions,
                 &display,
                 event,
-            )?;
-            engine.run_jobs()?;
+            )
+            .map_err(|error| owner_error("input dispatch", error))?;
+            engine
+                .run_jobs()
+                .map_err(|error| owner_error("input JavaScript jobs", error))?;
         }
         if terminal_ready && let Some(terminal) = terminal.as_mut() {
-            let Some(screen) = terminal.drain()? else {
+            let Some(screen) = terminal
+                .drain()
+                .map_err(|error| owner_error("terminal drain", error))?
+            else {
                 return Ok(());
             };
-            dispatch(&mut engine, "terminal", screen)?;
-            engine.run_jobs()?;
+            dispatch(&mut engine, "terminal", screen)
+                .map_err(|error| owner_error("terminal event dispatch", error))?;
+            engine
+                .run_jobs()
+                .map_err(|error| owner_error("terminal JavaScript jobs", error))?;
+        }
+        if audio_ready {
+            for event in audio_events
+                .drain()
+                .map_err(|error| owner_error("audio event drain", error))?
+            {
+                let channel = event.channel();
+                let value = serde_json::to_value(event)
+                    .map_err(|error| owner_error("audio event encode", error))?;
+                dispatch(&mut engine, channel, value)
+                    .map_err(|error| owner_error("audio event dispatch", error))?;
+            }
+            engine
+                .run_jobs()
+                .map_err(|error| owner_error("audio JavaScript jobs", error))?;
         }
         // 1. `setTimeout` callbacks fire after the poll wakes on their deadline;
         //    an empty expiry means the wait ended on a display/terminal event.
         for id in state.take_expired_timers() {
             let script = format!("globalThis.__liteTimer({id});");
-            engine.evaluate("lite-ui-timer.js", script.as_bytes())?;
+            engine
+                .evaluate("lite-ui-timer.js", script.as_bytes())
+                .map_err(|error| owner_error("timer callback", error))?;
         }
-        engine.run_jobs()?;
+        engine
+            .run_jobs()
+            .map_err(|error| owner_error("timer JavaScript jobs", error))?;
         process_actions(
             &state,
             &mut display,
             &mut renderer,
             &mut children,
             terminal.as_mut(),
-        )?;
+        )
+        .map_err(|error| owner_error("host actions", error))?;
         render_latest(
             &mode,
             &state,
             &mut display,
             &mut renderer,
             &mut interactions,
-        )?;
-        reap_children(&mut children)?;
+        )
+        .map_err(|error| owner_error("scene render", error))?;
+        reap_children(&mut children).map_err(|error| owner_error("child reap", error))?;
     }
+}
+
+fn owner_error(owner: &'static str, error: impl std::fmt::Display) -> std::io::Error {
+    std::io::Error::other(format!("{owner}: {error}"))
 }
 
 fn render_latest(
@@ -271,10 +320,11 @@ fn process_actions(
     for action in state.take_actions() {
         match action {
             Action::Launch(id) => {
-                let mut command = Command::new("/bin/lite-ui");
-                command.args(["--app", &id]);
-                command.stdin(Stdio::null()).stdout(Stdio::null());
-                children.push(SessionChild::spawn(&mut command)?);
+                children.push(SessionChild::spawn(SessionCommand::new(
+                    "/bin/lite-ui",
+                    vec!["--app".into(), id.into()],
+                    SessionIo::Background,
+                ))?);
             }
             Action::Configure {
                 surface_id,
@@ -334,24 +384,26 @@ fn process_actions(
 fn wait(
     display: &Display,
     terminal: Option<&Terminal>,
+    audio: &audio::Events,
     state: &State,
-) -> Result<(bool, bool), Box<dyn Error>> {
+) -> Result<(bool, bool, bool), Box<dyn Error>> {
     if display.has_pending_event() {
-        return Ok((true, false));
+        return Ok((true, false, false));
     }
-    let mut descriptors = Vec::with_capacity(2);
+    let mut descriptors = Vec::with_capacity(3);
     descriptors.push(PollFd::new(display.as_fd(), PollEvents::READ));
     if let Some(terminal) = terminal {
         descriptors.push(PollFd::new(terminal.as_fd(), PollEvents::READ));
     }
+    let audio_index = descriptors.len();
+    descriptors.push(PollFd::new(audio.as_fd(), PollEvents::READ));
     // Park at most until the nearest JavaScript timer deadline so `setTimeout`
     // callbacks fire on time even when no display or terminal event arrives.
     unix::poll(&mut descriptors, state.next_timer_delay())?;
     Ok((
         descriptors[0].returned() != PollEvents::EMPTY,
-        descriptors
-            .get(1)
-            .is_some_and(|descriptor| descriptor.returned() != PollEvents::EMPTY),
+        terminal.is_some() && descriptors[1].returned() != PollEvents::EMPTY,
+        descriptors[audio_index].returned() != PollEvents::EMPTY,
     ))
 }
 

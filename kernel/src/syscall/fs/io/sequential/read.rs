@@ -1,6 +1,25 @@
 use super::*;
+use crate::fs::Inode;
 use crate::fs::TerminalReadMode;
 use crate::ipc::ReceiveBuffer;
+
+fn read_regular_descriptor(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    inode: Arc<dyn Inode>,
+    vectors: &[UserIoVec],
+) -> isize {
+    if inode.inode_type() == InodeType::Directory {
+        return -errno::EISDIR;
+    }
+    let file = match RegularFile::from_inode(inode) {
+        Ok(file) => file,
+        Err(error) => return ferr(error),
+    };
+    // 单个 sequential read 唯一持有 OFD offset；缺失该 ownership 会让共享 OFD
+    // 的并发 reader 在 chunks 之间穿插，使一次 operation 返回不连续的文件区间。
+    ofd.with_position(|offset| read_regular_vectors(task, &file, offset, vectors))
+}
 
 /// @description 执行 scalar/readv 共用的唯一 sequential read descriptor dispatch。
 /// @param task userspace address owner。
@@ -18,19 +37,8 @@ pub(super) fn read_descriptor(
         return 0;
     }
     match &ofd.kind {
-        OpenFileKind::Inode(opened) => {
-            let inode = opened.inode();
-            if inode.inode_type() == InodeType::Directory {
-                return -errno::EISDIR;
-            }
-            let file = match RegularFile::from_inode(inode) {
-                Ok(file) => file,
-                Err(error) => return ferr(error),
-            };
-            // 单个 sequential read 唯一持有 OFD offset；缺失该 ownership 会让共享 OFD
-            // 的并发 reader 在 chunks 之间穿插，使一次 operation 返回不连续的文件区间。
-            ofd.with_position(|offset| read_regular_vectors(task, &file, offset, vectors))
-        }
+        OpenFileKind::Inode(opened) => read_regular_descriptor(task, ofd, opened.inode(), vectors),
+        OpenFileKind::MemFile(file) => read_regular_descriptor(task, ofd, file.clone(), vectors),
         OpenFileKind::Pipe(endpoint) => {
             if endpoint.direction() != PipeDirection::Read {
                 return -errno::EBADF;
@@ -394,6 +402,7 @@ pub(super) fn read_descriptor(
                 }
                 cursor.completed() as isize
             }
+            CharacterDevice::Audio(_) => -errno::EOPNOTSUPP,
             CharacterDevice::Terminal {
                 terminal: console,
                 kind,

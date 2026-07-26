@@ -95,6 +95,9 @@ pub(super) fn apply_event(
             return Ok(());
         }
         Event::Key(key) => {
+            if key.value != 0 {
+                state.grant_media_playback();
+            }
             if let Some(listener) = interactions.key_listener {
                 dispatch_listener(
                     engine,
@@ -118,6 +121,9 @@ fn dispatch_pointer(
     display: &Display,
     pointer: display_proto::InputPointer,
 ) -> Result<(), Box<dyn Error>> {
+    if pointer.phase == display_proto::PointerPhase::Down {
+        state.grant_media_playback();
+    }
     match pointer.phase {
         display_proto::PointerPhase::Down if renderer.scrollbar_at(pointer.x, pointer.y) => {
             let changed = if pointer.button == BTN_RIGHT {
