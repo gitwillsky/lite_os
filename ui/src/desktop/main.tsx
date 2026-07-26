@@ -5,6 +5,7 @@ import { Window } from "../design-system/window.tsx";
 import { Taskbar } from "../design-system/taskbar.tsx";
 import { StartMenu } from "../design-system/start-menu.tsx";
 import { ContextMenu } from "../design-system/context-menu.tsx";
+import { PropertiesPopup } from "../design-system/properties-popup.tsx";
 import { constrainResize } from "../design-system/window-geometry.ts";
 import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts";
 import { applySurfaceMove, reconcileSurfaces } from "./surface-state.ts";
@@ -28,13 +29,12 @@ const desktopIcons = [
   { id: "trash", label: "Recycle Bin", icon: "assets/trash.png" },
 ];
 
-// Right-click menu on the desktop background. Items are placeholders for now
-// (no backing actions yet); every click dismisses the menu.
-const DESKTOP_MENU_ITEMS = [
-  { id: "arrange", label: "Arrange Icons" },
-  { id: "refresh", label: "Refresh" },
-  { id: "properties", label: "Properties" },
-];
+interface PropertiesState {
+  x: number;
+  y: number;
+  title: string;
+  rows: [string, string][];
+}
 
 // Linux evdev KEY_ESC. Escape dismisses open popups when the desktop is focused.
 const KEY_ESC = 1;
@@ -74,10 +74,18 @@ export default function Desktop() {
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   // Open context menu: { x, y, items } in desktop-local logical pixels, or null.
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // Desktop icons are CSS-flowed (fixed grid), so "Arrange Icons" re-sorts their
+  // render order rather than moving free positions. `iconOrder` holds ids in
+  // display order; `null` means the source array order.
+  const [iconOrder, setIconOrder] = useState<string[] | null>(null);
+  // Ids hidden by a shell-icon "Delete". These are shortcuts, not filesystem
+  // entries, so removal is view-only and non-persistent (returns on relaunch).
+  const [hiddenIcons, setHiddenIcons] = useState<Set<string>>(() => new Set());
+  const [properties, setProperties] = useState<PropertiesState | null>(null);
   const listedApps = useMemo(() => apps(), []);
   const closeMenu = useCallback(() => setMenu(null), []);
   // Opening a context menu also dismisses the Start menu (only one popup at a time).
-  const openMenu = useCallback((x: number, y: number, items: DesktopMenuItem[]) => { setStartOpen(false); setMenu({ x, y, items }); }, []);
+  const openMenu = useCallback((x: number, y: number, items: DesktopMenuItem[]) => { setStartOpen(false); setProperties(null); setMenu({ x, y, items }); }, []);
   const clearResizePreview = useCallback((id: number) => {
     setResizePreview((map) => {
       if (!map.has(id)) return map;
@@ -290,15 +298,49 @@ export default function Desktop() {
     if (finalBounds) commitResize(id, finalBounds);
   }, [commitResize]);
 
+  // Visible desktop icons in display order: hidden shell icons removed, then
+  // ordered by `iconOrder` when "Arrange Icons" has sorted them.
+  const visibleIcons = useMemo(() => {
+    const shown = desktopIcons.filter((item) => !hiddenIcons.has(item.id));
+    if (!iconOrder) return shown;
+    const rank = new Map(iconOrder.map((id, index) => [id, index]));
+    return shown.slice().sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  }, [hiddenIcons, iconOrder]);
+
+  // Refresh re-runs the authoritative surface merge; Arrange re-sorts the fixed
+  // icon grid alphabetically (there are no free positions to reset).
+  const refreshDesktop = useCallback(() => setOpen(reconcile), [reconcile]);
+  const arrangeIcons = useCallback(() => {
+    setIconOrder(
+      desktopIcons.map((item) => item.id).sort((a, b) => {
+        const la = desktopIcons.find((i) => i.id === a)?.label ?? a;
+        const lb = desktopIcons.find((i) => i.id === b)?.label ?? b;
+        return la < lb ? -1 : 1;
+      }),
+    );
+  }, []);
+  const openProperties = useCallback((x: number, y: number, title: string, rows: [string, string][]) => {
+    setStartOpen(false);
+    setMenu(null);
+    setProperties({ x, y, title, rows });
+  }, []);
+
   return (
     <div
       id="desktop"
-      onClick={() => { setSelectedIcon(null); setMenu(null); setStartOpen(false); }}
-      onContextMenu={(rawEvent) => { const event = rawEvent as unknown as LitePointerEvent; openMenu(event.x, event.y, DESKTOP_MENU_ITEMS); }}
-      onKeyDown={(rawEvent) => { const event = rawEvent as unknown as LiteKeyEvent; if (event.code === KEY_ESC && event.value !== 0) { setMenu(null); setStartOpen(false); } }}
+      onClick={() => { setSelectedIcon(null); setMenu(null); setStartOpen(false); setProperties(null); }}
+      onContextMenu={(rawEvent) => {
+        const event = rawEvent as unknown as LitePointerEvent;
+        openMenu(event.x, event.y, [
+          { id: "arrange", label: "Arrange Icons", onSelect: arrangeIcons },
+          { id: "refresh", label: "Refresh", onSelect: refreshDesktop },
+          { id: "properties", label: "Properties", onSelect: () => openProperties(event.x, event.y, "Desktop", [["Type", "Desktop"], ["Icons", String(visibleIcons.length)]]) },
+        ]);
+      }}
+      onKeyDown={(rawEvent) => { const event = rawEvent as unknown as LiteKeyEvent; if (event.code === KEY_ESC && event.value !== 0) { setMenu(null); setStartOpen(false); setProperties(null); } }}
     >
       <div className="desktop-icons">
-        {desktopIcons.map((item) => (
+        {visibleIcons.map((item) => (
           <div
             key={item.id}
             className="desktop-icon"
@@ -309,8 +351,8 @@ export default function Desktop() {
               setSelectedIcon(item.id);
               openMenu(event.x, event.y, [
                 { id: "open", label: "Open", onSelect: () => item.app && launchApp(item.app) },
-                { id: "delete", label: "Delete" },
-                { id: "properties", label: "Properties" },
+                { id: "delete", label: "Delete", onSelect: () => setHiddenIcons((set) => new Set(set).add(item.id)) },
+                { id: "properties", label: "Properties", onSelect: () => openProperties(event.x, event.y, item.label, [["Type", item.app ? "Shortcut" : "System Folder"], ["Opens", item.app ?? "—"]]) },
               ]);
             }}
           >
@@ -337,6 +379,7 @@ export default function Desktop() {
       ))}
       {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu}/>}
+      {properties && <PropertiesPopup x={properties.x} y={properties.y} title={properties.title} rows={properties.rows} onClose={() => setProperties(null)}/>}
       <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => { setMenu(null); setStartOpen((value) => !value); }} onActivate={activate}/>
     </div>
   );

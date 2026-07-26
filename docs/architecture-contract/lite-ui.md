@@ -12,11 +12,15 @@
   独占 CSS/layout/text/raster cache。SPSC slot 与 snapshot arena ownership 必须线性转移，禁止共享 mutable tree。
 - `lite-ui` renderer 独占 CSS scroll offset、最新 scroll-port/scrollbar geometry 与 scrollbar drag；
   offset 只以 React host instance 的稳定 node id 寻址，节点消失时必须同步回收，应用不得复制该状态。
-- `lite-ui` input dispatcher 独占文档内 hover 与 pointer-capture target；target 只保存稳定 node id，
-  每次事件必须从最新 hit snapshot 解析当前 listener。禁止 capture listener id，否则 React commit
-  替换 inline handler 后会把后续 motion/up 投递给已删除的回调。
+- `lite-ui` input dispatcher 独占文档内 hover、pointer-capture target 与文本输入焦点；target/焦点
+  只保存稳定 node id，每次事件必须从最新 hit snapshot 解析当前 listener。禁止 capture listener id，
+  否则 React commit 替换 inline handler 后会把后续 motion/up 投递给已删除的回调。`<input>` 是唯一文本
+  输入原语：左键按下聚焦，键码经唯一 keymap（与终端共用键码表）转字符后以受控语义派发 `onInput`
+  新值，控制键（Enter/Esc/方向）投递焦点节点的 `onKeyDown`；无焦点时键盘退回全局 `onKeyDown`
+  （终端/桌面 Escape）。文本光标由 `renderer/paint` 按焦点绘制；不新增 imperative focus state seam。
 - `lite-ui` 内部 owner seam 固定为 `input`（事件目标与默认动作）、`renderer/paint`（递归绘制）、
-  `display/allocation`（同步分配期间的协议推进）和 `host/filesystem`（只读文件系统 host bridge）。
+  `display/allocation`（同步分配期间的协议推进）和 `host/filesystem`（有界读写文件系统 host bridge：
+  list/read 与 mkdir/remove/rename/copy，路径必须绝对、payload 有界，仅 app session）。
   compositor 的 connection handshake/role assignment 只属于 `session/client`；这些子模块不得复制
   父模块持有的 session、renderer、display 或 host state。
 - `quickjs-runtime` 是 QuickJS raw C ABI、unsafe、runtime/context、module loader、job queue 与 interrupt

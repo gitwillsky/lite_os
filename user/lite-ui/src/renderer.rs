@@ -104,8 +104,27 @@ pub struct HitRegion {
     pub context_menu: Option<u64>,
     /// `onWheel` listener identity (fires on mouse-wheel scroll).
     pub wheel: Option<u64>,
+    /// `onKeyDown` listener identity for this node, used to route control keys
+    /// (Enter/Esc/arrows) to a focused `<input>`. The global deepest listener in
+    /// `RenderOutput.key_listener` still serves the terminal / desktop Escape.
+    pub key_down: Option<u64>,
     /// Requested fixed standard cursor shape (`display_proto::CURSOR_*`).
     pub cursor: u32,
+    /// `<input>` text field: its `value` prop and the `onInput` listener the
+    /// renderer calls with the edited string. `None` for non-input nodes.
+    /// A hit region carrying this is focusable — pointer-down sets it focused.
+    pub editable: Option<Editable>,
+}
+
+/// The editable payload of an `<input>` hit region: the controlled `value` the
+/// renderer edits from and the `onInput` listener it dispatches the new value
+/// to (React holds the truth and re-renders — standard controlled-input).
+#[derive(Clone)]
+pub struct Editable {
+    /// Current controlled text (the `value` prop).
+    pub value: String,
+    /// `onInput` listener identity; the renderer calls it with `{value}`.
+    pub on_input: Option<u64>,
 }
 
 /// Theme-free renderer consuming only CSS and the fixed host primitives.
@@ -128,6 +147,10 @@ pub struct Renderer {
     /// User-agent scrollbar hit geometry from the latest rendered scene.
     scrollbars: Vec<Scrollbar>,
     scroll_drag: Option<ScrollDrag>,
+    /// Stable node id of the focused `<input>`, or `None`. The input dispatcher
+    /// owns focus and sets this before each render so paint draws the text
+    /// caret on exactly the focused field (the renderer has no CSS `:focus`).
+    focused: Option<u64>,
 }
 
 impl Renderer {
@@ -146,7 +169,23 @@ impl Renderer {
             active_scroll_nodes: HashSet::new(),
             scrollbars: Vec::new(),
             scroll_drag: None,
+            focused: None,
         })
+    }
+
+    /// Sets the focused `<input>` node id (or clears it). The input dispatcher
+    /// calls this on focus changes so the next render draws the caret on the
+    /// right field. Returns whether the focus changed (a caret move needs a
+    /// repaint).
+    pub fn set_focus(&mut self, node_id: Option<u64>) -> bool {
+        let changed = self.focused != node_id;
+        self.focused = node_id;
+        changed
+    }
+
+    /// The focused `<input>` node id, if any.
+    pub fn focused(&self) -> Option<u64> {
+        self.focused
     }
 
     /// Re-bases layout and raster geometry on a reconfigured logical viewport.
@@ -308,11 +347,11 @@ impl Renderer {
         if let Some(inherited) = inherited {
             computed.inherit(inherited);
         }
-        // Leaves own no laid-out children: images, raw strings, 文本叶子 span
-        // （子节点全为 `#text`），以及 app client-area surface（带 `data-lite-surface`
-        // 的 `div`）。含元素子节点的 span 不是叶子——它像普通容器一样布局并绘制子树，
-        // 使 `<span>` 内嵌 `<img>` 等符合 Web inline 语义。
-        let leaf = matches!(source.kind.as_str(), "img")
+        // Leaves own no laid-out children: images, `<input>` text fields, 文本叶子
+        // span（子节点全为 `#text`），以及 app client-area surface（带
+        // `data-lite-surface` 的 `div`）。含元素子节点的 span 不是叶子——它像普通容器
+        // 一样布局并绘制子树，使 `<span>` 内嵌 `<img>` 等符合 Web inline 语义。
+        let leaf = matches!(source.kind.as_str(), "img" | "input")
             || source.is_text_leaf()
             || is_surface(&source);
         let mut next_ancestors = ancestors.to_vec();

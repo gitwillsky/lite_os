@@ -114,6 +114,33 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.fm__addr-input {
+  flex: 1;
+  height: 17px;
+  padding: 0 2px;
+  background: #ffffff;
+  color: #000000;
+  font-family: Tahoma;
+  font-size: 11px;
+  border-top: 1px solid #808080;
+  border-left: 1px solid #808080;
+  border-right: 1px solid #d4d0c8;
+  border-bottom: 1px solid #d4d0c8;
+}
+.fm__rename {
+  width: 100%;
+  height: 15px;
+  padding: 0 2px;
+  background: #ffffff;
+  color: #000000;
+  font-family: Tahoma;
+  font-size: 11px;
+  text-align: center;
+  border-top: 1px solid #808080;
+  border-left: 1px solid #808080;
+  border-right: 1px solid #d4d0c8;
+  border-bottom: 1px solid #d4d0c8;
+}
 .fm__addr-drop {
   width: 16px;
   height: 17px;

@@ -37,6 +37,10 @@ const liteModules = {
   "lite:fs": `
     export const list = (path) => JSON.parse(globalThis.__liteNative("fs.list", path));
     export const read = (path) => JSON.parse(globalThis.__liteNative("fs.read", path));
+    export const mkdir = (path) => JSON.parse(globalThis.__liteNative("fs.mkdir", path));
+    export const remove = (path, recursive = false) => JSON.parse(globalThis.__liteNative("fs.remove", JSON.stringify({ path, recursive })));
+    export const rename = (from, to) => JSON.parse(globalThis.__liteNative("fs.rename", JSON.stringify({ from, to })));
+    export const copy = (from, to) => JSON.parse(globalThis.__liteNative("fs.copy", JSON.stringify({ from, to })));
   `,
 };
 

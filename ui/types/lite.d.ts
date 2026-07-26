@@ -139,8 +139,18 @@ declare module "lite:fs" {
     truncated?: boolean;
     error?: string;
   }
+  // Mutations return the affected path and an optional error code (absent on
+  // success); see the host/filesystem bounded read/write seam.
+  export interface FsWriteResult {
+    path: string;
+    error?: string;
+  }
   export const list: (path: string) => FsListResult;
   export const read: (path: string) => FsReadResult;
+  export const mkdir: (path: string) => FsWriteResult;
+  export const remove: (path: string, recursive?: boolean) => FsWriteResult;
+  export const rename: (from: string, to: string) => FsWriteResult;
+  export const copy: (from: string, to: string) => FsWriteResult;
 }
 
 // react-reconciler ships no bundled types and @types/react-reconciler doesn't

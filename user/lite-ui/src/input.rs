@@ -12,6 +12,7 @@ use crate::{
     Interactions, dispatch,
     display::{Display, Event},
     host::State,
+    keymap,
     renderer::{self, Renderer},
 };
 
@@ -95,19 +96,90 @@ pub(super) fn apply_event(
             return Ok(());
         }
         Event::Key(key) => {
-            if let Some(listener) = interactions.key_listener {
-                dispatch_listener(
-                    engine,
-                    listener,
-                    json!({"type":"key","code":key.code,"value":key.value,"modifiers":key.modifiers}),
-                )?;
-            }
+            dispatch_key(engine, renderer, interactions, key)?;
             return Ok(());
         }
         Event::FrameDone => return Ok(()),
         Event::Close => unreachable!("close exits before event dispatch"),
     };
     dispatch(engine, channel, payload)
+}
+
+/// Routes one key event. When an `<input>` is focused and still present in the
+/// latest hits, the renderer's keymap turns the key into a text edit (dispatched
+/// to `onInput` with the new controlled value) or an `onKeyDown` (Enter/Esc/
+/// arrows). Otherwise the deepest global `onKeyDown` receives it — preserving
+/// the terminal and desktop-Escape behavior when nothing is focused.
+fn dispatch_key(
+    engine: &mut Engine,
+    renderer: &mut Renderer,
+    interactions: &mut Interactions,
+    key: display_proto::InputKey,
+) -> Result<(), Box<dyn Error>> {
+    // The focused input must still exist in the current scene; a React commit
+    // may have removed it, in which case focus falls away and the key routes
+    // globally (never to a stale node).
+    let focused = renderer.focused().and_then(|node_id| {
+        interactions
+            .hits
+            .iter()
+            .find(|hit| hit.node_id == node_id)
+            .and_then(|hit| hit.editable.clone().map(|editable| (node_id, editable)))
+    });
+    if let Some((node_id, editable)) = focused {
+        // Fold modifiers first; a modifier key produces no text itself.
+        if interactions.modifiers.apply(key.code, key.value) {
+            return Ok(());
+        }
+        if let Some(edit) = keymap::text_edit(key.code, key.value, interactions.modifiers) {
+            if let Some(on_input) = editable.on_input {
+                let next = apply_text_edit(&editable.value, edit);
+                dispatch_listener(engine, on_input, json!({ "type": "input", "value": next }))?;
+            }
+            return Ok(());
+        }
+        // Non-text keys (Enter/Esc/Tab/arrows) go to the input's own onKeyDown
+        // so the field can commit or cancel; only on a press edge.
+        if key.value != 0
+            && let Some(on_key) = interactions
+                .hits
+                .iter()
+                .find(|hit| hit.node_id == node_id)
+                .and_then(|hit| hit.key_down)
+        {
+            dispatch_listener(
+                engine,
+                on_key,
+                json!({"type":"key","code":key.code,"value":key.value,"modifiers":key.modifiers}),
+            )?;
+        }
+        return Ok(());
+    }
+    if let Some(listener) = interactions.key_listener {
+        dispatch_listener(
+            engine,
+            listener,
+            json!({"type":"key","code":key.code,"value":key.value,"modifiers":key.modifiers}),
+        )?;
+    }
+    Ok(())
+}
+
+/// Applies one `TextEdit` to a controlled value, returning the new string that
+/// the input's `onInput` handler will store (append a char / delete the last).
+fn apply_text_edit(value: &str, edit: keymap::TextEdit) -> String {
+    match edit {
+        keymap::TextEdit::Insert(character) => {
+            let mut next = value.to_owned();
+            next.push(character);
+            next
+        }
+        keymap::TextEdit::Backspace => {
+            let mut next = value.to_owned();
+            next.pop();
+            next
+        }
+    }
 }
 
 fn dispatch_pointer(
@@ -195,21 +267,35 @@ fn dispatch_pointer(
                 {
                     dispatch_listener(engine, listener, payload.clone())?;
                 }
-            } else if let Some(hit) = interactions
-                .hits
-                .iter()
-                .rev()
-                .filter(|hit| inside(hit))
-                .find(|hit| hit.pointer_down.is_some())
-            {
-                dispatch_listener(
-                    engine,
-                    hit.pointer_down.expect("filtered pointer listener"),
-                    payload.clone(),
-                )?;
-                interactions.pointer_capture = Some(PointerCapture {
-                    node_id: hit.node_id,
-                });
+            } else {
+                // 焦点跟随左键按下（标准 DOM 语义）：命中最顶层可编辑 `<input>` 则聚焦它，
+                // 否则清焦点。焦点变化需重绘以移动/隐藏文本光标。渲染器是焦点单一 owner。
+                let focus_target = interactions
+                    .hits
+                    .iter()
+                    .rev()
+                    .filter(|hit| inside(hit))
+                    .find(|hit| hit.editable.is_some())
+                    .map(|hit| hit.node_id);
+                if renderer.set_focus(focus_target) {
+                    state.invalidate_scene();
+                }
+                if let Some(hit) = interactions
+                    .hits
+                    .iter()
+                    .rev()
+                    .filter(|hit| inside(hit))
+                    .find(|hit| hit.pointer_down.is_some())
+                {
+                    dispatch_listener(
+                        engine,
+                        hit.pointer_down.expect("filtered pointer listener"),
+                        payload.clone(),
+                    )?;
+                    interactions.pointer_capture = Some(PointerCapture {
+                        node_id: hit.node_id,
+                    });
+                }
             }
         }
         display_proto::PointerPhase::Up => {

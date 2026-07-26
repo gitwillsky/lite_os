@@ -56,7 +56,25 @@ impl Renderer {
         let pointer_leave = listener(&node.source, "onPointerLeave");
         let context_menu = listener(&node.source, "onContextMenu");
         let wheel = listener(&node.source, "onWheel");
+        let key_down = listener(&node.source, "onKeyDown");
         let cursor = cursor_shape(node.computed.get("cursor"));
+        // An `<input>` is focusable: emit an `Editable` carrying its controlled
+        // `value` and `onInput` listener so a pointer-down can focus it and the
+        // input dispatcher can push edits back. Non-inputs get `None`.
+        let editable = if node.source.kind == "input" {
+            Some(super::Editable {
+                value: node
+                    .source
+                    .props
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                on_input: listener(&node.source, "onInput"),
+            })
+        } else {
+            None
+        };
         if pointer_down.is_some()
             || pointer_move.is_some()
             || pointer_up.is_some()
@@ -66,6 +84,7 @@ impl Renderer {
             || pointer_leave.is_some()
             || context_menu.is_some()
             || wheel.is_some()
+            || editable.is_some()
         {
             let hit = logical_from_physical(raster);
             output.hits.push(HitRegion {
@@ -83,10 +102,12 @@ impl Renderer {
                 pointer_leave,
                 context_menu,
                 wheel,
+                key_down,
                 cursor,
+                editable,
             });
         }
-        if let Some(key_listener) = listener(&node.source, "onKeyDown") {
+        if let Some(key_listener) = key_down {
             output.key_listener = Some(key_listener);
         }
         paint_shadow(pixels, raster, &node.computed);
@@ -108,6 +129,58 @@ impl Renderer {
         {
             let image = self.image(source)?;
             paint_image(pixels, raster, image, radii);
+        }
+        // `<input>` 绘制其受控 `value`（空时用 placeholder 的灰字），并在获焦时于文本末尾
+        // 画一个 1px 文本光标。文本从内容盒（扣 padding）起笔，与浏览器一致；React 持有
+        // value 真值，此处只呈现。
+        if node.source.kind == "input" {
+            let value = node
+                .source
+                .props
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let placeholder = node
+                .source
+                .props
+                .get("placeholder")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let pad_left = (node.computed.px("padding-left", 0.0) * SCALE).round() as usize;
+            let pad_top = (node.computed.px("padding-top", 0.0) * SCALE).round() as usize;
+            let content = PhysicalRect {
+                x1: (bounds.x1 + pad_left).min(bounds.x2),
+                y1: (bounds.y1 + pad_top).min(bounds.y2),
+                ..bounds
+            };
+            let showing_placeholder = value.is_empty() && !placeholder.is_empty();
+            let text = if showing_placeholder { placeholder } else { value };
+            if !text.is_empty() {
+                // Placeholder is drawn dimmed by overriding the color; the input's
+                // own `color` drives real text. `font.draw` re-reads `color` from
+                // the style, so clone-and-override only for the placeholder case.
+                if showing_placeholder {
+                    let mut dimmed = node.computed.clone();
+                    dimmed.set("color", "#808080");
+                    self.font.draw(pixels, content, walk.clip, &dimmed, text);
+                } else {
+                    self.font.draw(pixels, content, walk.clip, &node.computed, text);
+                }
+            }
+            if self.focused == Some(node.source.id) {
+                // Caret sits just past the value's measured advance, clamped inside
+                // the content box; 1 logical px wide, one line-height tall.
+                let advance = (self.font.measure(&node.computed, value) * SCALE).round() as usize;
+                let caret_x = (content.x1 + advance).min(bounds.x2.saturating_sub(1));
+                let caret = PhysicalRect {
+                    x1: caret_x,
+                    y1: content.y1,
+                    x2: (caret_x + SCALE.round() as usize).min(bounds.x2),
+                    y2: bounds.y2.saturating_sub(pad_top).max(content.y1),
+                };
+                let color = node.computed.get("color").unwrap_or("#000000").to_owned();
+                paint_background(pixels, caret, &color, [0.0; 4]);
+            }
         }
         // 文本叶子 span 直接绘制其拼接文本；容器 span 不绘制文本，其 `#text` 子节点各自
         // 作为文本run在下方递归绘制。因此这里对“文本叶子 span”和 `#text` 都出文本，符合

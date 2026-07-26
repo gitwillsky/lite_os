@@ -13,7 +13,7 @@ interface Instance {
 }
 type Props = Record<string, unknown>;
 
-const primitives = new Set(["div", "span", "img"]);
+const primitives = new Set(["div", "span", "img", "input"]);
 const listeners = new Map<number, (payload: unknown) => void>();
 let nextListener = 1;
 let nextNode = 1;

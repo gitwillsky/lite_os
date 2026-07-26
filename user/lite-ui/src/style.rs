@@ -38,6 +38,12 @@ impl Computed {
         self.values.get(name).map(String::as_str)
     }
 
+    /// Overrides one property, e.g. dimming an `<input>` placeholder's `color`
+    /// on a cloned cascade without mutating the shared computed style.
+    pub fn set(&mut self, name: &str, value: &str) {
+        self.values.insert(name.to_owned(), value.to_owned());
+    }
+
     /// Returns one pixel-valued property or the supplied default.
     pub fn px(&self, name: &str, default: f32) -> f32 {
         self.get(name).and_then(parse_px).unwrap_or(default)

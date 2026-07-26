@@ -386,6 +386,10 @@ impl NativeHost for Host {
             }
             "fs.list" if self.role == Role::App => Ok(filesystem::list(payload)),
             "fs.read" if self.role == Role::App => Ok(filesystem::read(payload)),
+            "fs.mkdir" if self.role == Role::App => Ok(filesystem::mkdir(payload)),
+            "fs.remove" if self.role == Role::App => Ok(filesystem::remove(payload)),
+            "fs.rename" if self.role == Role::App => Ok(filesystem::rename(payload)),
+            "fs.copy" if self.role == Role::App => Ok(filesystem::copy(payload)),
             _ => Err(EngineError::from_host(format!(
                 "operation '{operation}' is unavailable in this session"
             ))),

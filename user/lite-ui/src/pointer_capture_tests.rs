@@ -16,7 +16,9 @@ fn hit(node_id: u64, pointer_move: u64, pointer_up: u64) -> HitRegion {
         pointer_leave: None,
         context_menu: None,
         wheel: None,
+        key_down: None,
         cursor: 0,
+        editable: None,
     }
 }
 

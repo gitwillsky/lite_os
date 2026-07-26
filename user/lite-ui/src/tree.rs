@@ -73,6 +73,9 @@ fn validate(
                 return Err("primitive carries an unexpected text field".to_owned());
             }
         }
+        // `<input>` 是文本输入叶子：无子节点，文本在 `value` prop 而非 `text` 字段
+        // （受控输入语义，React 持有真值），与 `#text` 一样不能有 children。
+        "input" if node.text.is_empty() && node.children.is_empty() => {}
         "#text" if node.props.is_empty() && node.children.is_empty() => {}
         _ => return Err(format!("unsupported React host node '{}'", node.kind)),
     }
@@ -118,5 +121,20 @@ mod tests {
         assert!(!mixed_span[0].children[0].is_text_leaf());
         let text = parse(r##"[{"id":1,"type":"#text","text":"x"}]"##).expect("text parses");
         assert!(text[0].is_text_leaf());
+    }
+
+    #[test]
+    fn input_is_a_childless_value_leaf() {
+        // 合法：无子节点、value 在 props、text 字段为空。
+        assert!(
+            parse(r#"[{"id":1,"type":"input","props":{"value":"hi"}}]"#).is_ok(),
+            "a childless input with a value prop is valid",
+        );
+        // 非法：input 带子节点。
+        assert!(
+            parse(r##"[{"id":1,"type":"input","children":[{"id":2,"type":"#text","text":"x"}]}]"##)
+                .is_err(),
+            "an input must not carry children",
+        );
     }
 }
