@@ -59,6 +59,10 @@ impl Session {
                 .iter()
                 .any(|rectangle| contains(*rectangle, x, y))
         });
+        // The surface actually under the pointer, regardless of any capture. It
+        // drives pointer-focus (and thus which surface owns the cursor shape),
+        // and is where focus returns once a capture releases.
+        let hover_surface = hit.map(|node| node.surface_id);
         let target = self
             .pointer_capture
             .map(|capture| (capture.surface_id, capture.window_group, capture.bounds))
@@ -110,6 +114,7 @@ impl Session {
         {
             self.finish_move()?;
             self.pointer_capture = None;
+            self.set_pointer_surface(hover_surface);
             return Ok(());
         }
         if matches!(phase, PointerPhase::Motion | PointerPhase::Up) {
@@ -120,6 +125,12 @@ impl Session {
             // redundant motion would wake QuickJS and run the titlebar listener
             // even though React intentionally performs no canonical update.
             return Ok(());
+        }
+        // A free (uncaptured) motion establishes pointer focus on the hovered
+        // surface, resetting the cursor to arrow on any surface change so a
+        // shape set over one surface never lingers on the next.
+        if phase == PointerPhase::Motion && self.pointer_capture.is_none() {
+            self.set_pointer_surface(hover_surface);
         }
         let scale = display_proto::DEVICE_SCALE_FACTOR as i32;
         let event = InputPointer {
@@ -139,6 +150,10 @@ impl Session {
         if phase == PointerPhase::Up {
             self.finish_move()?;
             self.pointer_capture = None;
+            // Capture ended: pointer focus (and cursor ownership) returns to the
+            // surface actually under the pointer, resetting the cursor if it
+            // differs from the captured surface.
+            self.set_pointer_surface(hover_surface);
         }
         result
     }

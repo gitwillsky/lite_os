@@ -134,6 +134,10 @@ impl Scanout {
             target.revision = 0;
             target.cursor = None;
         }
+        // A dead epoch may have left a non-arrow shape selected; the next
+        // desktop's first Motion re-establishes pointer focus, but the arrow is
+        // the correct default until then.
+        self.cursor.set_shape(display_proto::CURSOR_DEFAULT);
         self.history.clear();
         self.prepared_damage = Rect::default();
         self.device

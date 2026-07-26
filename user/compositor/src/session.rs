@@ -102,6 +102,11 @@ pub struct Session {
     /// Cursor shape requested by a client since the last poll, drained into
     /// [`Activity`] so the caller (which owns scanout and the cursor) applies it.
     pending_cursor_shape: Option<u32>,
+    /// Surface currently under the pointer (the pointer-focus target); `None`
+    /// when no surface is hit. Cursor requests are honored only from this
+    /// surface, and a focus change resets the cursor to the default arrow so a
+    /// prior surface's shape never leaks onto the next one.
+    pointer_surface: Option<u32>,
 }
 
 /// Outcome of one [`Session::poll`] wait.
@@ -114,9 +119,6 @@ pub struct Activity {
     /// caller owns scanout state, which `reset_epoch` cannot reach, so it must
     /// return scanout to boot to avoid painting a stale scene diff on restart.
     pub epoch_reset: bool,
-    /// Cursor shape a client requested this poll, if any; the caller applies it
-    /// to scanout so the cursor asset switches without a scene recompose.
-    pub cursor_shape: Option<u32>,
 }
 
 impl Session {
@@ -152,6 +154,7 @@ impl Session {
                 sequence: 0,
             },
             pending_cursor_shape: None,
+            pointer_surface: None,
         })
     }
 
@@ -235,11 +238,11 @@ impl Session {
                     eprintln!("compositor: desktop disconnected: {error}");
                     self.reset_epoch();
                     self.pending_cursor_shape = None;
+                    self.pointer_surface = None;
                     return Ok(Activity {
                         scene: None,
                         input: input_ready,
                         epoch_reset: true,
-                        cursor_shape: None,
                     });
                 }
             }
@@ -258,8 +261,46 @@ impl Session {
             scene,
             input: input_ready,
             epoch_reset: false,
-            cursor_shape: self.pending_cursor_shape.take(),
         })
+    }
+
+    /// Drains the pending cursor shape, if any. The caller (which owns scanout)
+    /// applies it after routing this iteration's pointer motion, so the shape
+    /// reflects the final pointer-focus surface rather than a stale mid-batch one.
+    pub fn take_cursor_shape(&mut self) -> Option<u32> {
+        self.pending_cursor_shape.take()
+    }
+
+    /// Updates the pointer-focus surface. On a real change it resets the cursor
+    /// to the default arrow: the surface being left cannot send a reset (input
+    /// no longer routes to it), and the surface being entered owns its cursor
+    /// only from its next Motion. Without this reset a resize shape set over a
+    /// window edge would persist after the pointer moved into the content
+    /// surface (or off it), since no party would ever request the arrow back.
+    fn set_pointer_surface(&mut self, next: Option<u32>) {
+        if let Some(shape) = cursor_on_focus_change(self.pointer_surface, next) {
+            self.pending_cursor_shape = Some(shape);
+        }
+        self.pointer_surface = next;
+    }
+
+    /// Accepts a `SetCursorShape` request from `source_surface` (the connection
+    /// it arrived on; zero for the desktop). Rejects a spoofed surface id, and
+    /// applies the shape only while `source_surface` still holds pointer focus
+    /// so an async request that arrives after focus moved away is ignored.
+    fn accept_cursor_shape(
+        &mut self,
+        source_surface: u32,
+        request: SetCursorShape,
+    ) -> io::Result<()> {
+        match cursor_request(self.pointer_surface, source_surface, &request) {
+            Err(()) => Err(invalid("cursor shape surface does not match connection")),
+            Ok(Some(shape)) => {
+                self.pending_cursor_shape = Some(shape);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+        }
     }
 
     fn receive_desktop(&mut self) -> io::Result<Option<Scene>> {
@@ -303,7 +344,7 @@ impl Session {
             MessageKind::SetCursorShape => {
                 let request = SetCursorShape::parse(&payload)
                     .ok_or_else(|| invalid("invalid set cursor shape"))?;
-                self.pending_cursor_shape = Some(request.shape);
+                self.accept_cursor_shape(0, request)?;
                 Ok(None)
             }
             _ => Err(invalid("message is invalid for desktop role")),
@@ -329,8 +370,7 @@ impl Session {
             MessageKind::SetCursorShape => {
                 let request = SetCursorShape::parse(&payload)
                     .ok_or_else(|| invalid("invalid set cursor shape"))?;
-                self.pending_cursor_shape = Some(request.shape);
-                Ok(())
+                self.accept_cursor_shape(surface_id, request)
             }
             _ => Err(invalid("message is invalid for app role")),
         }
@@ -550,4 +590,76 @@ impl Drop for Session {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// The cursor shape to apply when pointer focus moves from `prev` to `next`.
+///
+/// A real focus change returns the default arrow so a shape owned by the
+/// surface being left never lingers on the next; an unchanged focus returns
+/// `None` (leave the current shape alone).
+fn cursor_on_focus_change(prev: Option<u32>, next: Option<u32>) -> Option<u32> {
+    (prev != next).then_some(display_proto::CURSOR_DEFAULT)
+}
+
+/// Resolves a `SetCursorShape` request into the shape to apply, if any.
+///
+/// - `Err(())`: the request names a different surface than the connection it
+///   arrived on (a spoofed id) — the caller turns this into a protocol error.
+/// - `Ok(Some(shape))`: `source_surface` holds pointer focus; apply its shape.
+/// - `Ok(None)`: focus has since moved elsewhere; ignore the stale request.
+fn cursor_request(
+    pointer_surface: Option<u32>,
+    source_surface: u32,
+    request: &SetCursorShape,
+) -> Result<Option<u32>, ()> {
+    if request.surface_id != source_surface {
+        return Err(());
+    }
+    Ok((pointer_surface == Some(source_surface)).then_some(request.shape))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cursor_on_focus_change, cursor_request};
+    use display_proto::{CURSOR_DEFAULT, CURSOR_RESIZE_EW, SetCursorShape};
+
+    fn request(surface_id: u32, shape: u32) -> SetCursorShape {
+        SetCursorShape { surface_id, shape }
+    }
+
+    #[test]
+    fn focus_change_resets_to_arrow_and_unchanged_focus_keeps_shape() {
+        // Desktop resize edge (0) → app content (1): reset to arrow.
+        assert_eq!(
+            cursor_on_focus_change(Some(0), Some(1)),
+            Some(CURSOR_DEFAULT)
+        );
+        // Off every surface: still resets.
+        assert_eq!(cursor_on_focus_change(Some(0), None), Some(CURSOR_DEFAULT));
+        // Same surface: leave the current shape untouched.
+        assert_eq!(cursor_on_focus_change(Some(1), Some(1)), None);
+    }
+
+    #[test]
+    fn cursor_request_applies_only_from_the_focused_surface() {
+        // App 1 holds focus and requests EW resize for itself: applied.
+        assert_eq!(
+            cursor_request(Some(1), 1, &request(1, CURSOR_RESIZE_EW)),
+            Ok(Some(CURSOR_RESIZE_EW))
+        );
+        // Desktop (0) request after focus already moved to app 1: ignored.
+        assert_eq!(
+            cursor_request(Some(1), 0, &request(0, CURSOR_RESIZE_EW)),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn cursor_request_rejects_a_spoofed_surface_id() {
+        // App 1's connection claims to be surface 2: protocol error.
+        assert_eq!(
+            cursor_request(Some(1), 1, &request(2, CURSOR_DEFAULT)),
+            Err(())
+        );
+    }
 }

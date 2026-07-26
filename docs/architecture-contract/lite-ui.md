@@ -61,6 +61,10 @@
 - cursor shape wire value 固定为 arrow、pointer、NS、EW、NESW 与 NWSE 六种；LiteUI 从标准 CSS
   `cursor` 值归一化，compositor 独占 checked 预乘 RGBA cursor asset（48×48 物理像素，`.lc2`）与
   hotspot。未知值必须回落 arrow，不接受应用 URL、位图或 theme asset。
+- compositor 独占 pointer-focus surface 并据此仲裁 cursor 归属：`SetCursorShape` 仅在请求连接身份
+  与当前 pointer-focus surface 一致时生效（surface_id 与连接不符视为协议错误）。pointer focus 切换
+  或消失（含 capture 释放、app 断开、epoch reset）时先回落 arrow，新 target 在其首个 Motion 上报当前
+  CSS cursor。LiteUI 不缓存全局 cursor owner；scanout 是形状去重与实际绘制的唯一 owner。
 - compositor 必须把 evdev wheel detent 转为有符号 logical CSS pixel delta。LiteUI 先投递同值 wheel
   listener，再执行 scroll default action；`overflow: hidden/clip` 只裁剪且不响应 wheel，
   `overflow: auto` 仅在实际 overflow 时显示 scrollbar，`overflow: scroll` 始终显示。短内容的 offset
