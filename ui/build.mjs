@@ -129,9 +129,16 @@ if (!checkOnly) {
   });
 }
 
+// design-system 独占 XP 主题（契约 lite-ui.md）：所有 app 共享的窗口/组件/bevel
+// 样式集中于此，构建期 prepend 到每个 app 自有 CSS 之前。渲染器不解析 var()，故
+// 主题用字面色值而非 CSS 变量。
+const sharedTheme = await readFile(join(root, "src/design-system/theme.css"), "utf8");
+
 for (const [id, entryName, styleName] of products) {
   const stylePath = join(root, styleName);
-  const style = await readFile(stylePath, "utf8");
+  const appStyle = await readFile(stylePath, "utf8");
+  // 共享主题在前、app 自有样式在后，后者可覆盖同名类。整体过验证器。
+  const style = `${sharedTheme}\n${appStyle}`;
   validateCss(stylePath, style);
   if (checkOnly) continue;
   const directory = join(output, id);
@@ -162,10 +169,10 @@ for (const [id, entryName, styleName] of products) {
   await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));
   if (id === "file-manager") {
     await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
-    await copyFile(join(root, "../assets/sprites-src/xp-folder.png"), join(assets, "folder.png"));
-    await copyFile(join(root, "../assets/sprites-src/xp-file.png"), join(assets, "file.png"));
-    await copyFile(join(root, "../assets/sprites-src/xp-folder-16.png"), join(assets, "folder-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/xp-file-16.png"), join(assets, "file-16.png"));
+    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
+    await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
+    await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
+    await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-back.png"), join(assets, "tb-back.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-forward.png"), join(assets, "tb-forward.png"));
     await copyFile(join(root, "../assets/sprites-src/tb-up.png"), join(assets, "tb-up.png"));

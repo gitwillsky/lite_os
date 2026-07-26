@@ -238,8 +238,12 @@ export default function FileManager() {
         <div className="fm__addr-field">
           <img className="fm__addr-icon" src="assets/folder-16.png"/>
           <span className="fm__addr-path">{path}</span>
+          <span className="fm__addr-drop">{"∨"}</span>
         </div>
-        <div className={cls("fm__go", "go")} {...bundle("go")}>Go</div>
+        <div className={cls("fm__go", "go")} {...bundle("go")}>
+          <img className="fm__go-icon" src="assets/tb-forward.png"/>
+          <span>Go</span>
+        </div>
       </div>
 
       <div className="fm__body">

@@ -15,14 +15,16 @@
 .fm__menubar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
   height: 20px;
-  padding: 0 4px;
+  padding: 0 3px;
   background: #ece9d8;
   border-bottom: 1px solid #aca899;
 }
 .fm__menu {
-  padding: 2px 6px;
+  display: flex;
+  align-items: center;
+  padding: 3px 7px;
   cursor: pointer;
 }
 .fm__menu--hover {
@@ -34,43 +36,44 @@
   display: flex;
   align-items: center;
   gap: 1px;
-  height: 30px;
-  padding: 0 4px;
-  background: #ece9d8;
+  height: 42px;
+  padding: 0 5px;
+  background: linear-gradient(#faf9f4 0%, #ece7d5 100%);
   border-bottom: 1px solid #aca899;
 }
 .fm__tb {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 24px;
-  padding: 0 5px;
+  gap: 5px;
+  height: 36px;
+  padding: 0 6px;
   cursor: pointer;
-  border-top: 1px solid #ece9d8;
-  border-left: 1px solid #ece9d8;
-  border-right: 1px solid #ece9d8;
-  border-bottom: 1px solid #ece9d8;
+  border-top: 1px solid #faf9f4;
+  border-left: 1px solid #faf9f4;
+  border-right: 1px solid #faf9f4;
+  border-bottom: 1px solid #faf9f4;
+  border-radius: 3px;
 }
 .fm__tb--hover {
   border-top-color: #ffffff;
   border-left-color: #ffffff;
-  border-right-color: #808080;
-  border-bottom-color: #808080;
-  background: #f5f4ee;
+  border-right-color: #85a5d4;
+  border-bottom-color: #85a5d4;
+  background: linear-gradient(#f3f7fd 0%, #dbe7fa 100%);
 }
 .fm__tb--disabled {
   opacity: 0.4;
 }
 .fm__tb-icon {
-  width: 16px;
-  height: 16px;
+  width: 22px;
+  height: 22px;
 }
 .fm__tb-label {
   font-size: 11px;
 }
 .fm__tb-sep {
   width: 0;
-  height: 20px;
+  height: 26px;
   margin: 0 4px;
   border-left: 1px solid #aca899;
   border-right: 1px solid #ffffff;
@@ -93,13 +96,13 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 18px;
-  padding: 0 4px;
+  height: 19px;
+  padding: 0 2px 0 4px;
   background: #ffffff;
   border-top: 1px solid #808080;
   border-left: 1px solid #808080;
-  border-right: 1px solid #ffffff;
-  border-bottom: 1px solid #ffffff;
+  border-right: 1px solid #d4d0c8;
+  border-bottom: 1px solid #d4d0c8;
 }
 .fm__addr-icon {
   width: 16px;
@@ -111,20 +114,32 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.fm__addr-drop {
+  width: 16px;
+  height: 17px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: #333333;
+  background: #ece9d8;
+  border-left: 1px solid #808080;
+}
 .fm__go {
   display: flex;
   align-items: center;
-  height: 18px;
+  gap: 4px;
+  height: 19px;
   padding: 0 8px;
   cursor: pointer;
-  border-top: 1px solid #ffffff;
-  border-left: 1px solid #ffffff;
-  border-right: 1px solid #808080;
-  border-bottom: 1px solid #808080;
-  background: #ece9d8;
+  color: #0a3d0a;
+}
+.fm__go-icon {
+  width: 16px;
+  height: 16px;
 }
 .fm__go--hover {
-  background: #f5f4ee;
+  color: #1a6b1a;
 }
 
 .fm__body {
@@ -135,52 +150,60 @@
 }
 
 .fm__taskpane {
-  width: 180px;
+  width: 175px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 8px;
+  gap: 12px;
+  padding: 10px 8px;
   overflow-y: auto;
   overflow-x: hidden;
-  background: linear-gradient(#7ba2e0 0%, #4e77c8 100%);
+  background: linear-gradient(#6d95d6 0%, #4a72c4 60%, #3f68bd 100%);
 }
 .fm__group {
   display: flex;
   flex-direction: column;
-  border-radius: 4px;
+  border-radius: 5px;
   overflow: hidden;
+  background: #ffffff;
 }
 .fm__group-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 23px;
-  padding: 0 8px;
+  height: 24px;
+  padding: 0 6px 0 10px;
   cursor: pointer;
   color: #0c327d;
   font-weight: bold;
-  background: linear-gradient(90deg, #f0f4fd 0%, #c2d1f0 100%);
+  background: linear-gradient(#f0f4fd 0%, #d5e0f4 100%);
 }
 .fm__group-chev {
-  font-size: 8px;
-  color: #4e77c8;
+  width: 15px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: #4a72c4;
+  border-radius: 8px;
+  background: linear-gradient(#ffffff 0%, #cfe0f5 100%);
 }
 .fm__group-body {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 7px 10px;
-  background: linear-gradient(#f7f9fe 0%, #d6dff7 100%);
+  gap: 7px;
+  padding: 8px 10px 9px 12px;
+  background: #ffffff;
 }
 .fm__task-link {
-  color: #0c327d;
+  color: #1c3f95;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .fm__task-link--hover {
-  color: #1a4fc4;
+  color: #2b6fd6;
 }
 
 .fm__view {
@@ -194,25 +217,25 @@
   display: flex;
   flex-wrap: wrap;
   width: 100%;
-  gap: 6px;
-  padding: 8px;
+  gap: 8px;
+  padding: 10px;
 }
 .fm__icon {
-  width: 84px;
-  height: 62px;
+  width: 90px;
+  height: 66px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   padding: 4px 3px;
   cursor: pointer;
   border-radius: 2px;
 }
 .fm__icon--hover {
-  background: #d3e0f7;
+  background: #e3edfb;
 }
 .fm__icon--sel {
-  background: #316ac5;
+  background: #d6e4f8;
 }
 .fm__icon-img {
   width: 32px;
@@ -226,7 +249,7 @@
   text-overflow: ellipsis;
 }
 .fm__icon--sel .fm__icon-label {
-  color: #ffffff;
+  color: #000000;
 }
 
 .fm__details {
@@ -243,17 +266,26 @@
 }
 .fm__dh-name {
   flex: 1;
+  display: flex;
+  align-items: center;
+  height: 18px;
   padding: 0 6px;
   border-right: 1px solid #aca899;
 }
 .fm__dh-size {
   width: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 18px;
   padding: 0 6px;
-  text-align: right;
   border-right: 1px solid #aca899;
 }
 .fm__dh-type {
   width: 110px;
+  display: flex;
+  align-items: center;
+  height: 18px;
   padding: 0 6px;
 }
 .fm__drow {
@@ -267,7 +299,7 @@
   overflow: hidden;
 }
 .fm__drow--hover {
-  background: #d3e0f7;
+  background: #e3edfb;
 }
 .fm__drow--sel {
   background: #316ac5;
@@ -279,20 +311,28 @@
 }
 .fm__dc-name {
   flex: 1;
+  display: flex;
+  align-items: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .fm__dc-size {
-  width: 74px;
-  text-align: right;
+  width: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 6px;
   color: #606060;
 }
 .fm__drow--sel .fm__dc-size {
   color: #dbe6fb;
 }
 .fm__dc-type {
-  width: 104px;
+  width: 110px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

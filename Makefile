@@ -203,6 +203,8 @@ verify-riscv64-secondary:
 
 verify-unit:
 	cargo test -p architecture-check -p kernel-unit -p scheduler-unit -p syscall-abi
+	user_test_assets="$$(python3 scripts/verify_busybox.py --build-ui-assets-only)" && \
+		LITE_UI_TEST_ASSETS="$$user_test_assets" cargo test --manifest-path user/Cargo.toml --workspace
 
 verify-architecture-benchmark:
 	cargo run --quiet --release -p architecture-bench

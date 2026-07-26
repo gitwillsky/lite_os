@@ -462,7 +462,9 @@ mod tests {
 
     #[test]
     fn checked_desktop_bundle_mounts_in_the_bounded_engine() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist");
+        let root = std::env::var_os("LITE_UI_TEST_ASSETS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
         let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
         let desktop = fs::read(root.join("desktop/main.js")).expect("desktop bundle");
         let (host, state) = Host::new(Role::Desktop);

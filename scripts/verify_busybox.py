@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import io
 import lzma
 import shutil
@@ -1609,6 +1610,11 @@ def main() -> int:
         help="只构建 rootfs，不执行 runtime gates；cache miss 时仍启动 target guest 装配 APK 数据库",
     )
     parser.add_argument(
+        "--build-ui-assets-only",
+        action="store_true",
+        help="只调用 build_ui_assets 并向 stdout 返回已校验 bundle 目录",
+    )
+    parser.add_argument(
         "--image",
         type=Path,
         default=WORK / "fs.img",
@@ -1620,11 +1626,20 @@ def main() -> int:
         help="忽略当前 fingerprint 的 BusyBox ELF 命中并重新构建",
     )
     args = parser.parse_args()
+    if args.build_only and args.build_ui_assets_only:
+        parser.error("--build-only 与 --build-ui-assets-only 不能同时使用")
     runtime_directory: tempfile.TemporaryDirectory[str] | None = None
     http_server: subprocess.Popen[bytes] | None = None
     https_server: subprocess.Popen[bytes] | None = None
     try:
         WORK.mkdir(parents=True, exist_ok=True)
+        if args.build_ui_assets_only:
+            # 构建日志留在 stderr，stdout 只输出机器可消费的目录；否则 Make
+            # command substitution 会把 cache-hit 文本误当成测试资源路径。
+            with contextlib.redirect_stdout(sys.stderr):
+                assets = build_ui_assets()
+            print(assets)
+            return 0
         jobs_override = build_jobs_override()
         compiler = find_compiler()
         with cache_lock(WORK / ".build.lock"):

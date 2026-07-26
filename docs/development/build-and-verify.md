@@ -32,7 +32,9 @@
   冷路径且固定 `-O2`；其正确性由双架构 target runtime gate 裁决，不增加失真的 host wall-clock benchmark。
 - LiteUI frontend 由 host Node.js、单一 `ui/package-lock.json` 与 `ui/build.mjs` 构建；target rootfs
   只安装 production ESM bundle、CSS、PNG assets 与固定 system runtime，不安装 Node/npm、source map、
-  dev server 或 runtime package cache。`make build-ui` 是唯一 frontend build owner。
+  dev server 或 runtime package cache。唯一 frontend build owner 是
+  `scripts/verify_busybox.py` 的 `build_ui_assets()`；`--build-ui-assets-only` 只暴露该 owner 的已校验输出，
+  不建立第二条构建路径。
 - `verify-runtime-gates` 在 target owner 内串行启动 boot、musl、BusyBox 与 APK QEMU。外层即使
   使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
   workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。静态编译、clippy、
@@ -46,7 +48,7 @@
 ```bash
 make build
 make build-rust-std
-make build-ui
+python3 scripts/verify_busybox.py --build-ui-assets-only
 make sync-userland
 make run
 make run-gui
@@ -64,6 +66,9 @@ make verify
 - `architecture-check`：dependency、owner、interface、文档索引/链接/事实归属与退化模式的纯函数测试。
 - `kernel-unit`：复用 production path 的内存、文件、IPC、socket、codec、数据结构与错误边界测试。
 - `scheduler-unit`：preallocated ready heap 的 capacity/compaction/fail-stop 与 signal selection/generation 测试。
+- `user/` Cargo workspace：display protocol、compositor session/scanout、LiteUI host/render/input/scroll、
+  QuickJS runtime 与 terminal-session 的单元及 codec 测试；LiteUI bundle 用例消费
+  `build_ui_assets()` 的已校验输出，不依赖工作树残留的 `ui/dist`。
 - run membership/CPU projection 由 `architecture-check` 静态围栏，wait/deferred 边界由 `kernel-unit`，完整 lifecycle 由对应 runtime smoke 覆盖；不得把这些范围虚报为 `scheduler-unit` 用例。
 - filesystem 可睡眠 owner 由静态字段/adapter contract 与真实 `TaskMutex` FIFO handoff host
   test 共同约束：两个排队 waiter 必须按 ticket 获取，handoff 期间 `try_lock` 不得插队，
@@ -145,10 +150,10 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 完整验证从同一个只读 rootfs baseline 派生相互隔离的可写镜像，并覆盖：
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；
-- AArch64 `run-gui` 同构的 GPU、keyboard、tablet VirtIO 拓扑，以及桌面全链路：`compositor`
-  modeset/boot scene、AF_UNIX + SCM_RIGHTS 握手、React desktop 首帧、客户端 surface 映射与
-  `terminal-session` PTY 监督各自发布启动 marker，gate 逐条裁决；gate 使用无 host 窗口的一 CPU
-  guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；
+- AArch64 `run-gui` 同构的 GPU、keyboard、tablet VirtIO 拓扑，以及空桌面启动链路：
+  `compositor` modeset/boot scene、AF_UNIX + SCM_RIGHTS 握手与 React desktop 首帧逐条发布 marker；
+  首帧后继续观察并禁止 Terminal/PTTY marker，证明开机不会隐式启动应用。gate 使用无 host 窗口的
+  一 CPU guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；
 - musl ELF/TLS/thread/signal/process consumer；
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
 - BusyBox init/ash、TTY、filesystem、IPC 与 network consumer；
@@ -167,10 +172,12 @@ SQLite 第一阶段 `sync` 后由 host 结束 VM，再冷启动同一持久化�
 assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 SQLite process-crash 门禁。
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
-LiteUI 的 host gate 覆盖 manifest/CSS/bundle validation、display codec、layout snap、terminal grid 与
-session/buffer/input lifecycle。AArch64 runtime gate 必须启动到 `SESSION_READY`，启动 terminal、执行
-命令、关闭窗口并证明资源回收；60 Hz 性能场景与阈值由 LiteUI 契约维护。RISC-V 只执行同路径
-correctness smoke。自动门禁不生成 screenshot、preview 或视觉 Golden。
+LiteUI 的 host gate 覆盖 manifest/CSS/bundle validation、display codec、layout/paint/scroll、
+terminal model 与 session/buffer/input 状态转换。AArch64 boot gate 只证明空桌面首帧及“不自动启动
+Terminal”；60 Hz gate 通过真实桌面双击显式启动 Terminal 与 File Manager，再驱动 resize 输入并裁决
+guest vblank marker。当前没有“Terminal 执行命令、关闭窗口、资源回收”的 GUI runtime gate，不得把
+host 单元测试或 resize workload 虚报为该覆盖。RISC-V secondary 只承担 compile、static/artifact、
+CPU topology boot 与 Rust std smoke。自动门禁不生成 screenshot、preview 或视觉 Golden。
 
 HTTPS origin 的 raw accept 与 TLS handshake 分属 server/connection worker owner；启动时持有
 一个不发送 ClientHello 的连接，并要求 10 个合法握手在 2 秒总 deadline 内全部完成。该自检
