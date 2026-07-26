@@ -17,6 +17,7 @@ mod tree;
 use std::{
     error::Error,
     fs,
+    io::{self, Write},
     path::PathBuf,
     process::{Command, Stdio},
     time::Instant,
@@ -129,10 +130,13 @@ fn run() -> Result<(), Box<dyn Error>> {
         &mut renderer,
         &mut interactions,
     )?;
-    match &mode {
-        Mode::Desktop => eprintln!("lite-ui: desktop ready"),
-        Mode::App(id) => eprintln!("lite-ui: app {id} ready"),
-    }
+    let ready_marker = match &mode {
+        Mode::Desktop => "lite-ui: desktop ready\n".to_owned(),
+        Mode::App(id) => format!("lite-ui: app {id} ready\n"),
+    };
+    // One write keeps the cross-process runtime marker intact; formatted stderr
+    // fragments can interleave with compositor or sibling-app diagnostics.
+    io::stderr().write_all(ready_marker.as_bytes())?;
 
     loop {
         let (display_ready, terminal_ready, audio_ready) =
@@ -233,8 +237,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn owner_error(owner: &'static str, error: impl std::fmt::Display) -> std::io::Error {
-    std::io::Error::other(format!("{owner}: {error}"))
+fn owner_error(owner: &'static str, error: impl std::fmt::Display) -> io::Error {
+    io::Error::other(format!("{owner}: {error}"))
 }
 
 fn render_latest(
