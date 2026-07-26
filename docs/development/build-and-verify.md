@@ -115,11 +115,15 @@ host unit loop 无法代表它。改动必须通过双 architecture compile/stat
 拓扑的多窗口 host CPU 采样作诊断；secondary idle→IPI→task 与 timeout runtime gate 负责活性语义。
 
 TLB shootdown 不增加 host wall-clock benchmark：成本主要来自 target firmware/IPI，宿主计时不能稳定代表它。
-blocking gate 使用 production `TranslationCommit` 派生的确定性计数，并由 architecture fence 阻止 direct whole-machine flush：
+blocking gate 使用 production `TranslationCommit` 派生的确定性计数：
 lazy mmap 为 `0 local / 0 remote`；1 MiB、256 页 first-touch 为 `256 local / 0 remote target`；
 revoke/replace batch 为 `online_cpus - 1` 个 remote target；合并跨度不超过 64 页时执行精确逐页 fence，
 超过 64 页时规范化为 1 次 full fence，防止稀疏 VMA teardown 把跨度页数变成无界指令循环。
-release target build 继续验证 range `SFENCE.VMA` mechanism。
+RISC-V release target 继续验证 range `SFENCE.VMA` mechanism。AArch64/HVF 是明确的平台例外：
+任一 remote revoke 以一条 `VMALLE1IS` 升级 generic range/full request，规避 scoped TLBI
+未清除其他 vCPU stale translation；该路径不改变 publication/relax 的 local-only 热路径，
+成本由 architecture static gate、四 CPU COW migration runtime gate 裁决，不用失真的 host wall-clock
+阈值掩盖。
 
 VMA hot path 使用 deterministic structure gate，不增加受宿主调度影响的 wall-clock benchmark。
 production `VmaIndexState` transition tests 覆盖 stack grow、split/protect/merge、fork/exec 与
@@ -157,7 +161,9 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 - musl ELF/TLS/thread/signal/process consumer；
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
 - BusyBox init/ash、TTY、filesystem、IPC 与 network consumer；
-- APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice。
+- APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice；
+  curl timeout 后连续 64 次 fork 分别改写 parent/child shell state，再成功跨过下一次
+  fork/exec，专门约束四 CPU migration 下的 COW remote TLB completion。
 - AArch64/HVF production Music Player 的 13 个固定 codec/container 文件：gate 用 `debugfs`
   注入相互隔离的 rootfs 副本，真实双击桌面图标和文件行，只经 `lite:fs.open()` 返回的 `File`、
   `URL.createObjectURL()` 与公开 `<audio>` 播放；串口逐文件要求 `source-opened`、
@@ -182,7 +188,8 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 `make -j4 verify-runtime-gates` 是 QEMU 编排的唯一 owner，并串行运行各顶层门禁；每项仍使用
 独立镜像、success stamp 和 host port domain。APK 内部同样保持单一 QEMU owner：curl/Git 的
 TLS/HTTP 竖切共用一台 4-CPU guest，SQLite 独占持久化/断电恢复镜像。guest 内被测的 SQLite
-双 writer 与 curl 四路传输仍保持并发；SQLite writer A 必须在持有 `BEGIN IMMEDIATE` 后发布
+双 writer 与 curl 四路传输仍保持并发；`LITEOS_COW_MIGRATION_READY` 只有在 timeout 后
+64 轮 parent/child 私有状态校验及下一次外部进程启动都成功后发布。SQLite writer A 必须在持有 `BEGIN IMMEDIATE` 后发布
 guest 内握手，writer B 才能进入 blocking record-lock 路径。SQLite crash gate 保持一个
 已 INSERT、未 COMMIT 的 WAL transaction，再在 guest 内精确 `SIGKILL` sqlite process；
 重新打开后必须 `integrity=ok` 且未提交 row 不可见。它不把无 journal ext2 的物理掉电恢复

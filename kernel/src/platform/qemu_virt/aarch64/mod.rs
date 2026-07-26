@@ -103,6 +103,11 @@ pub(crate) fn arm_timer(deadline: u64) -> Result<(), TimerArmError> {
     Ok(())
 }
 
+/// @description 同步完成 AArch64 `virt` inner-shareable domain 的远端 translation fence。
+/// @param cpus 至少一个可能持有 stale translation 的 logical CPU；空集合无需硬件操作。
+/// @param start_address generic owner 归一化的起始地址；本 backend 为可靠性升级为 full fence。
+/// @param size generic owner 归一化的区间长度；本 backend 为可靠性升级为 full fence。
+/// @return `VMALLE1IS` completion 后返回成功；当前 backend 没有可恢复失败。
 pub(crate) fn synchronize_tlb(
     cpus: crate::cpu::CpuSet,
     start_address: usize,
@@ -111,7 +116,12 @@ pub(crate) fn synchronize_tlb(
     if cpus.is_empty() {
         return Ok(());
     }
-    crate::arch::mmu::broadcast_tlb(start_address, size);
+    // 1. Apple HVF 下 VA/ASID-scoped inner-shareable TLBI 不能可靠清除其他 vCPU 的 writable
+    // translation；保留 range 会让迁移后的 task 绕过 COW fault 并写坏共享用户页。
+    // 2. VMALLE1IS 是该 platform 实测可靠的唯一同步原语。它只用于 Revoke/retirement，
+    // Publish/Relax 热路径仍保持 local fence，因此不会把每次 page fault 扩成全局 shootdown。
+    let _ = (start_address, size);
+    crate::arch::mmu::broadcast_tlb(0, 0);
     Ok(())
 }
 

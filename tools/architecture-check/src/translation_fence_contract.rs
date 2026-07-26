@@ -6,6 +6,7 @@ const MEMORY_PREFIX: &str = "kernel/src/memory/";
 const MMAP_PATH: &str = "kernel/src/memory/mm/mmap.rs";
 const FAULT_PATH: &str = "kernel/src/memory/mm/mmap/fault.rs";
 const POLICY_PATH: &str = "kernel/src/memory/mm/shootdown.rs";
+const AARCH64_PLATFORM_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/mod.rs";
 const RFENCE_PATH: &str = "bootloader/src/rfence.rs";
 const TRAP_VECTOR_PATH: &str = "bootloader/src/trap_vec.rs";
 
@@ -82,6 +83,26 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             "only {POLICY_PATH} may select remote TLB targets/ranges; direct platform callers remain: {}",
             direct_remote_fences.join(", ")
         ));
+    }
+
+    let Some(aarch64_platform) = sources
+        .iter()
+        .find(|source| source.relative == AARCH64_PLATFORM_PATH)
+    else {
+        errors.push(format!(
+            "{AARCH64_PLATFORM_PATH}: missing AArch64 TLB synchronization owner"
+        ));
+        return;
+    };
+    for required in [
+        "if cpus.is_empty()",
+        "crate::arch::mmu::broadcast_tlb(0, 0);",
+    ] {
+        if !aarch64_platform.text.contains(required) {
+            errors.push(format!(
+                "{AARCH64_PLATFORM_PATH}: Apple HVF remote revoke must keep empty-target no-op and upgrade every nonempty request to VMALLE1IS; missing `{required}`"
+            ));
+        }
     }
 
     let Some(rfence) = sources.iter().find(|source| source.relative == RFENCE_PATH) else {

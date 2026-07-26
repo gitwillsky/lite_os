@@ -62,11 +62,13 @@
   lazy VMA 未写 leaf PTE，fence 数必须为零。
 - huge leaf revoke 必须记录完整 leaf span；只允许从 leaf-aligned virtual page 撤销，禁止把中间 4KiB unmap 静默扩大到整个 huge leaf。
 - fixed RISC-V Privileged 规范允许 publication/relax 暂时命中旧 invalid/restrictive translation；对应 page fault 必须先执行当前 CPU range fence 再重试。地址空间 activation 的 full local fence 不得作为 mutation 兼容路径。
-- AArch64 remote revoke 使用 inner-shareable TLBI 与 DSB/ISB completion；不得再发送 SGI
-  或等待 mailbox ack。精确 range 使用对齐的非零 `[start,size)`；generic sparse-span
-  归一化的 `size == usize::MAX` 与 address-space retirement 的 `(0,0)` 都必须在逐页校验前
-  解码为单次 `VMALLE1IS`。instruction publication 按 CTR_EL0 IDC/DIC 选择零维护快路径或
-  精确 DC/IC range，两条路径都必须在返回前完成 architecture ordering。
+- AArch64 remote revoke 使用 inner-shareable TLBI 与 DSB/ISB completion；不得发送 SGI
+  或等待 mailbox ack。Apple HVF 的 remote VA/ASID-scoped invalidation 不能作为 completion
+  原语：任一非空 remote target 都必须把 generic `[start,size)` request 升级为单次
+  `VMALLE1IS`。缺少该升级会让迁移后的 task 命中 fork/COW 前的 writable translation，
+  直接写坏另一进程用户页；空 target 才允许 no-op。instruction publication 按 CTR_EL0
+  IDC/DIC 选择零维护快路径或精确 DC/IC range，两条路径都必须在返回前完成 architecture
+  ordering。
 - address-space retirement 是唯一 full remote fence 例外：完整 `MemorySet` owner 必须保活到全部 CPU fence 完成，随后才能归还 ASID 并释放 page-table/frame owner。
 - executable mapping publication 或权限首次增加 EXECUTE 必须由 `TranslationCommit` 在 instruction bytes 写完后提交本地 data/`fence.i` 与全部 online remote `FENCE.I`；trap return 不得作为 instruction-cache publication 兼容路径。
 
