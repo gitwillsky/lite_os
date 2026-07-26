@@ -235,6 +235,7 @@ def verify_network_applications(
         (
             "LITEOS_APK_NETWORK_READY",
             "LITEOS_CURL_APPLICATION_READY",
+            "LITEOS_COW_MIGRATION_READY",
             "LITEOS_GIT_LOCAL_READY",
             "LITEOS_GIT_REMOTE_READY",
             "LITEOS_GIT_APPLICATION_READY",

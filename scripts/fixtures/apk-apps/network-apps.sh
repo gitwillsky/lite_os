@@ -41,10 +41,24 @@ curl --fail --silent --show-error --max-time 1 "$origin/slow" \
 [ "$status" -eq 28 ]
 echo LITEOS_CURL_APPLICATION_READY
 
+# 4. timeout child 退出后反复 fork 小进程并分别改写 parent/child shell state。缺少可靠的
+# remote revoke fence 时，迁移后的 stale translation 会绕过 COW 并破坏另一侧用户页。
+cow_iteration=0
+while [ "$cow_iteration" -lt 64 ]; do
+    cow_parent="parent-$cow_iteration"
+    (
+        cow_child="child-$cow_iteration"
+        [ "$cow_child" = "child-$cow_iteration" ]
+    )
+    [ "$cow_parent" = "parent-$cow_iteration" ]
+    cow_iteration=$((cow_iteration + 1))
+done
+
 rm -rf "$git_work"
 mkdir "$git_work"
+echo LITEOS_COW_MIGRATION_READY
 
-# 4. 本地 object/index/ref/worktree mutation 必须覆盖 commit、branch、merge 与 tag。
+# 5. 本地 object/index/ref/worktree mutation 必须覆盖 commit、branch、merge 与 tag。
 git -C "$git_work" init -q -b main local
 git -C "$git_work/local" config user.name 'LiteOS Gate'
 git -C "$git_work/local" config user.email 'gate@liteos.invalid'
@@ -61,7 +75,7 @@ git -C "$git_work/local" tag verified
 git -C "$git_work/local" show-ref --verify --quiet refs/tags/verified
 echo LITEOS_GIT_LOCAL_READY
 
-# 5. 默认 TLS verification 下完成 dumb-HTTP clone 与 fetch，禁止 http 降级。
+# 6. 默认 TLS verification 下完成 dumb-HTTP clone 与 fetch，禁止 http 降级。
 git clone -q "$origin/repo.git" "$git_work/clone"
 [ "$(git -C "$git_work/clone" rev-parse HEAD)" = "$expected_commit" ]
 [ "$(cat "$git_work/clone/fixture.txt")" = 'git-over-https' ]
@@ -69,7 +83,7 @@ git -C "$git_work/clone" fetch -q origin gate-extra:refs/remotes/origin/gate-ext
 git -C "$git_work/clone" show-ref --verify --quiet refs/remotes/origin/gate-extra
 echo LITEOS_GIT_REMOTE_READY
 
-# 6. clone 后的 index/worktree 必须保持 clean。
+# 7. clone 后的 index/worktree 必须保持 clean。
 [ -z "$(git -C "$git_work/clone" status --porcelain)" ]
 echo LITEOS_GIT_APPLICATION_READY
 while :; do sleep 1; done
