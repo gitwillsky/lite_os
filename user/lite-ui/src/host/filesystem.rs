@@ -1,4 +1,8 @@
-//! Read-only filesystem operations exposed to the file-manager application.
+//! Bounded filesystem capabilities exposed only to app sessions.
+
+mod mutations;
+
+pub(super) use mutations::{copy, mkdir, remove, rename};
 
 use std::{
     collections::BTreeMap,
@@ -302,6 +306,8 @@ fn io_error_code(error: &io::Error) -> &'static str {
         ErrorKind::NotFound => "ENOENT",
         ErrorKind::PermissionDenied => "EACCES",
         ErrorKind::NotADirectory => "ENOTDIR",
+        ErrorKind::AlreadyExists => "EEXIST",
+        ErrorKind::DirectoryNotEmpty => "ENOTEMPTY",
         _ => "IO",
     }
 }

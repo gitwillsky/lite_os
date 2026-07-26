@@ -61,8 +61,7 @@ export function StartMenu({ apps, onLaunch, onShutdown }: StartMenuProps) {
         {STATIC_ITEMS.map((item) => (
           <div
             key={item.id}
-            className={itemClass(item.id)}
-            {...handlers(item.id)}
+            className={`${itemClass(item.id)} classic-menu-item--disabled`}
           >
             <span>{item.label}</span>
             {item.arrow && <span className="classic-menu-item__arrow">&gt;</span>}
@@ -70,8 +69,7 @@ export function StartMenu({ apps, onLaunch, onShutdown }: StartMenuProps) {
         ))}
         <div className="menu-separator"/>
         <div
-          className={itemClass("logoff")}
-          {...handlers("logoff")}
+          className="classic-menu-item classic-menu-item--disabled"
         >
           <span>Log Off LiteOS...</span>
         </div>

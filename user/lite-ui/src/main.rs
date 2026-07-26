@@ -5,6 +5,7 @@ mod display;
 mod font;
 mod host;
 mod input;
+mod keymap;
 #[cfg(test)]
 mod pointer_capture_tests;
 mod renderer;
@@ -57,6 +58,9 @@ struct Interactions {
     /// Without this flag a track click would page the scroll port on down and
     /// then incorrectly deliver the matching up/click to app content below it.
     native_scroll_pointer: bool,
+    /// Latched keyboard modifiers for the focused text field's key→char mapping.
+    /// Terminal keeps its own modifiers; this only serves UI `<input>` focus.
+    modifiers: keymap::Modifiers,
 }
 
 struct DesktopPresentation {

@@ -31,6 +31,17 @@ SERIAL_WRITE_INTERVAL_SECONDS = 0.0001
 SERIAL_TRIGGER_SETTLE_SECONDS = 0.02
 SERIAL_ESCAPE_SETTLE_SECONDS = 0.1
 FATAL_LINE_DRAIN_SECONDS = 0.25
+# `boot` 用进度看门狗而非固定墙钟 deadline：只要 guest 还在稳定吐新 UART 输出就不判死，
+# 连续 STALL_SECONDS 无任何新字节才算 hang。这样宿主负载高（并发多个 QEMU、8-hart 冷启动）
+# 只会让 50+ 命令的串行往返整体变慢，不会把一个活着的 guest 误判为超时——消除 pexpect 时序
+# flake。STALL_SECONDS 需容纳最慢的合法静默窗口（如 `sleep 2` + 8 spinner 占满单 vCPU 采样、
+# 多 hart 冷启动首帧）。HARD_MULTIPLE 给宽松绝对上限做失控兜底（真死循环不会无限跑）。
+STALL_SECONDS = 60.0
+HARD_DEADLINE_MULTIPLE = 30
+# marker 出现后等 ash 下一条 prompt 再注入命令，替代盲 sleep：宿主慢时 prompt 迟到，盲 sleep
+# 会让命令前缀被切断，导致该命令的 marker 永不出现。等真实 prompt 是标准 pexpect 做法。
+SHELL_PROMPT = "/ # "
+PROMPT_WAIT_SECONDS = 20.0
 
 
 @dataclass(frozen=True)
@@ -264,6 +275,30 @@ def drain_fatal_line(stream: BinaryIO, output: bytearray) -> None:
             return
 
 
+def _wait_for_prompt(stream: BinaryIO, output: bytearray, cursor: int) -> None:
+    """Waits until the ash prompt appears at/after `cursor`, so a command is
+    injected only once the shell is ready to read it (not mid-boot-spew).
+
+    Appends any bytes it reads to `output` (the caller re-scans it) and does NOT
+    advance the interaction cursor: a following `/ # `-triggered interaction must
+    still be able to match this same prompt. Bounded by `PROMPT_WAIT_SECONDS`; on
+    timeout it returns anyway and the caller injects (degrading to the old blind
+    behavior rather than hanging).
+    """
+    deadline = time.monotonic() + PROMPT_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        text = ANSI.sub("", bytes(output).decode(errors="replace"))
+        if text.find(SHELL_PROMPT, cursor) >= 0:
+            return
+        ready, _, _ = select.select([stream], [], [], deadline - time.monotonic())
+        if not ready:
+            break
+        chunk = os.read(stream.fileno(), 16 * 1024)
+        if not chunk:
+            break
+        output.extend(chunk)
+
+
 def boot(
     image: Path,
     smp: int,
@@ -323,15 +358,23 @@ def boot(
     pending_interactions = list(interactions)
     interaction_cursor = 0
     success_seen_at: float | None = None
-    deadline = time.monotonic() + timeout_seconds
+    # 进度看门狗：last_progress 每次读到新字节就刷新；只有连续 STALL_SECONDS 无新输出才判死。
+    # hard_deadline 是失控兜底，正常路径永远够用。
+    now = time.monotonic()
+    last_progress = now
+    hard_deadline = now + timeout_seconds * HARD_DEADLINE_MULTIPLE
     try:
-        while time.monotonic() < deadline:
+        while True:
+            now = time.monotonic()
+            if now - last_progress >= STALL_SECONDS or now >= hard_deadline:
+                break
             ready, _, _ = select.select([process.stdout], [], [], 0.25)
             if ready:
                 chunk = os.read(process.stdout.fileno(), 16 * 1024)
                 if not chunk:
                     break
                 output.extend(chunk)
+                last_progress = time.monotonic()
                 text = ANSI.sub("", output.decode(errors="replace"))
                 found = [marker for marker in forbidden_markers if marker in text]
                 if found:
@@ -353,10 +396,15 @@ def boot(
                     interaction_cursor = marker_offset + len(marker)
                     assert process.stdin is not None
                     if data:
-                        # marker 通常先于 ash 的下一条 prompt；立即注入会让 prompt 切断命令前缀。
-                        # 空 data 只推进单调 cursor，是无需触碰 UART 的 ordering barrier。
-                        time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
+                        # marker 通常先于 ash 的下一条 prompt；等 prompt 出现再注入，避免宿主慢时
+                        # prompt 迟到导致命令前缀被切断（盲 sleep 会漏掉该命令的 marker）。
+                        # 若触发 marker 本身就是 prompt，说明 prompt 已到，直接注入不再等待。
+                        # 不推进 cursor：紧随其后的 `/ # ` 触发型交互仍需匹配同一个 prompt。
+                        if not marker.endswith(SHELL_PROMPT):
+                            _wait_for_prompt(process.stdout, output, interaction_cursor)
                         send_interaction(process.stdin, data)
+                        # 等 prompt/注入期间读到的字节也是进度，刷新看门狗防误判 stall。
+                        last_progress = time.monotonic()
                 if all(marker in text for marker in markers):
                     if "panicked at" in text or "[ERROR]" in text:
                         tail = "\n".join(text.splitlines()[-40:])

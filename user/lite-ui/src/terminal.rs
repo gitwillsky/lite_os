@@ -13,6 +13,8 @@ use linux_uapi::process::{SessionChild, SessionCommand, SessionIo};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::keymap::{Modifiers, character};
+
 const INPUT: u32 = 1;
 const RESIZE: u32 = 2;
 const ACK: u32 = 3;
@@ -24,14 +26,6 @@ enum Message {
     Update(Vec<u8>),
     Exit,
     Error(io::Error),
-}
-
-#[derive(Default)]
-struct Modifiers {
-    shift: bool,
-    control: bool,
-    alt: bool,
-    caps: bool,
 }
 
 #[derive(Deserialize)]
@@ -306,14 +300,8 @@ fn write_frame(output: &mut impl Write, kind: u32, payload: &[u8]) -> io::Result
 
 fn translate_key(state: &mut Modifiers, event: KeyEvent) -> Option<Vec<u8>> {
     let pressed = event.value != 0;
-    match event.code {
-        42 | 54 => state.shift = pressed,
-        29 | 97 => state.control = pressed,
-        56 | 100 => state.alt = pressed,
-        58 if event.value == 1 => state.caps = !state.caps,
-        _ => {}
-    }
-    if matches!(event.code, 29 | 42 | 54 | 56 | 58 | 97 | 100) || !pressed {
+    // 修饰键折叠交给共享 keymap，避免与 UI 文本输入各持一份键码表。
+    if state.apply(event.code, event.value) || !pressed {
         return None;
     }
     let special: Option<&[u8]> = match event.code {
@@ -335,14 +323,8 @@ fn translate_key(state: &mut Modifiers, event: KeyEvent) -> Option<Vec<u8>> {
     if let Some(bytes) = special {
         return Some(bytes.to_vec());
     }
-    let mut character = plain_key(event.code as u16)?;
-    if character.is_ascii_alphabetic() {
-        if state.shift != state.caps {
-            character.make_ascii_uppercase();
-        }
-    } else if state.shift {
-        character = shifted_key(event.code as u16).unwrap_or(character);
-    }
+    // 共享 keymap 出字符（含 shift/caps），终端再叠加 control/alt 的 PTY 转义。
+    let mut character = character(event.code as u16, *state)? as u8;
     if state.control {
         character = character
             .to_ascii_lowercase()
@@ -355,36 +337,6 @@ fn translate_key(state: &mut Modifiers, event: KeyEvent) -> Option<Vec<u8>> {
     }
     bytes.push(character);
     Some(bytes)
-}
-
-fn plain_key(code: u16) -> Option<u8> {
-    Some(match code {
-        2..=11 => *b"1234567890".get((code - 2) as usize)?,
-        12 => b'-',
-        13 => b'=',
-        16..=27 => *b"qwertyuiop[]".get((code - 16) as usize)?,
-        30..=41 => *b"asdfghjkl;'`".get((code - 30) as usize)?,
-        43 => b'\\',
-        44..=53 => *b"zxcvbnm,./".get((code - 44) as usize)?,
-        57 => b' ',
-        _ => return None,
-    })
-}
-
-fn shifted_key(code: u16) -> Option<u8> {
-    Some(match code {
-        2..=13 => *b"!@#$%^&*()_+".get((code - 2) as usize)?,
-        26 => b'{',
-        27 => b'}',
-        39 => b':',
-        40 => b'"',
-        41 => b'~',
-        43 => b'|',
-        51 => b'<',
-        52 => b'>',
-        53 => b'?',
-        _ => return None,
-    })
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> io::Result<u16> {

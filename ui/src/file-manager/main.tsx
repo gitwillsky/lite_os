@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { list } from "lite:fs";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { list, mkdir, remove, rename, copy } from "lite:fs";
 import type { FsEntry } from "lite:fs";
+import { ContextMenu } from "../design-system/context-menu.tsx";
 
 /** Joins a directory path with a child name, keeping a single leading slash. */
 function joinPath(dir: string, name: string): string {
@@ -12,6 +13,13 @@ function parentPath(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   const cut = trimmed.lastIndexOf("/");
   return cut <= 0 ? "/" : trimmed.slice(0, cut);
+}
+
+/** Trailing name component of an absolute path (used to rebuild move targets). */
+function baseName(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const cut = trimmed.lastIndexOf("/");
+  return cut < 0 ? trimmed : trimmed.slice(cut + 1);
 }
 
 function formatSize(entry: FsEntry): string {
@@ -50,10 +58,30 @@ function iconFor16(entry: FsEntry): string {
     : "assets/file-16.png";
 }
 
+/** A first free "New Folder" / "New Folder (2)" … name against existing entries. */
+function freshFolderName(taken: Set<string>): string {
+  if (!taken.has("New Folder")) return "New Folder";
+  for (let index = 2; ; index += 1) {
+    const candidate = `New Folder (${index})`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
 type ViewMode = "icons" | "details";
 
-/** One interactive element's cached listeners; identities must stay stable
- * across renders because the compositor tracks hover by listener identity. */
+/** A cut/copied entry awaiting Paste; `mode` decides move vs copy. */
+interface Clipboard {
+  mode: "cut" | "copy";
+  path: string;
+}
+
+/** An open context menu: viewport-local position and its rows. */
+interface MenuState {
+  x: number;
+  y: number;
+  items: { id: string; label: string; onSelect?: () => void }[];
+}
+
 /** One element's cached pointer listeners. Their identities must stay stable
  * across renders because the compositor tracks hover by listener identity;
  * click handlers are passed inline at the call site since only hover depends
@@ -63,8 +91,22 @@ interface Handlers {
   onPointerLeave: () => void;
 }
 
+// evdev keycodes delivered on the focused input's onKeyDown for commit/cancel.
+const KEY_ESC = 1;
+const KEY_ENTER = 28;
+// Fixed menubar geometry: dropdowns open just under the clicked label. The
+// menubar is a fixed row, so a per-label x offset and a constant y suffice.
+const MENUBAR_TOP = 40;
+const MENU_LABEL_X = 8;
+const MENU_LABEL_STRIDE = 42;
+
 export default function FileManager() {
   const [path, setPath] = useState<string>("/");
+  // Visited-path stack for real Back/Forward (Up stays "parent", distinct from
+  // Back). `historyIndex` points at the current entry; navigating truncates any
+  // forward tail, matching a browser/Explorer history.
+  const [history, setHistory] = useState<string[]>(["/"]);
+  const [historyIndex, setHistoryIndex] = useState(0);
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("icons");
@@ -74,10 +116,17 @@ export default function FileManager() {
     tasks: true,
     places: true,
   });
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [clipboard, setClipboard] = useState<Clipboard | null>(null);
+  // The entry name being renamed and its editable draft, or null when idle.
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  // The address bar's editable draft when the path field is focused, else null.
+  const [addressDraft, setAddressDraft] = useState<string | null>(null);
 
-  // Re-list whenever the directory changes; a failed op returns a JSON error
-  // object (never throws), but wrap defensively regardless.
-  useEffect(() => {
+  // Re-list the current directory. Extracted from the mount effect so every
+  // write (New Folder / Delete / Paste / Rename) can refresh the view.
+  const refresh = useCallback(() => {
     try {
       const result = list(path);
       if (result.error) {
@@ -97,6 +146,8 @@ export default function FileManager() {
     }
   }, [path]);
 
+  useEffect(() => { refresh(); }, [refresh]);
+
   // Pointer handlers are cached by a namespaced key ("row:name", "tb:up",
   // "grp:places", …) so their identities — and thus the host listener ids the
   // compositor tracks hover by — stay stable across renders. Entry keys are
@@ -114,37 +165,169 @@ export default function FileManager() {
     return handlers;
   }, [cache]);
 
-  const goto = useCallback((next: string) => {
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const openMenu = useCallback((x: number, y: number, items: MenuState["items"]) => {
+    setMenu({ x, y, items });
+  }, []);
+
+  // Clear the per-directory hover/selection state and dismiss transient popups.
+  const resetView = useCallback(() => {
     cache.clear();
     setHovered(null);
     setSelected(null);
-    setPath(next);
+    setMenu(null);
+    setRenaming(null);
+    setAddressDraft(null);
   }, [cache]);
+
+  // Navigate to a new directory, pushing history (truncating the forward tail).
+  const navigate = useCallback((next: string) => {
+    resetView();
+    setHistory((stack) => {
+      const kept = stack.slice(0, historyIndex + 1);
+      kept.push(next);
+      setHistoryIndex(kept.length - 1);
+      return kept;
+    });
+    setPath(next);
+  }, [historyIndex, resetView]);
+
+  const back = useCallback(() => {
+    if (historyIndex <= 0) return;
+    const index = historyIndex - 1;
+    resetView();
+    setHistoryIndex(index);
+    setPath(history[index]);
+  }, [history, historyIndex, resetView]);
+
+  const forward = useCallback(() => {
+    if (historyIndex >= history.length - 1) return;
+    const index = historyIndex + 1;
+    resetView();
+    setHistoryIndex(index);
+    setPath(history[index]);
+  }, [history, historyIndex, resetView]);
+
+  const up = useCallback(() => navigate(parentPath(path)), [navigate, path]);
 
   // Double-click opens a folder (navigate in). Files have no associated-program
   // system here, so double-clicking a file only keeps it selected — matching XP,
   // where opening a file is delegated to its handler rather than the shell.
   const openEntry = useCallback((entry: FsEntry) => {
     if (entry.kind === "dir" || entry.kind === "symlink") {
-      goto(joinPath(path, entry.name));
+      navigate(joinPath(path, entry.name));
     } else {
       setSelected(entry.name);
     }
-  }, [path, goto]);
+  }, [path, navigate]);
+
+  // Surface a native mutation's error code in the note banner, else refresh.
+  const applyResult = useCallback((result: { error?: string }) => {
+    if (result.error) setError(result.error);
+    else refresh();
+  }, [refresh]);
+
+  const newFolder = useCallback(() => {
+    const taken = new Set(entries.map((entry) => entry.name));
+    applyResult(mkdir(joinPath(path, freshFolderName(taken))));
+  }, [entries, path, applyResult]);
+
+  const deleteEntry = useCallback((entry: FsEntry) => {
+    // A folder is removed with its contents (Explorer sends the whole subtree);
+    // files/symlinks are unlinked. The native side gates recursion explicitly.
+    applyResult(remove(joinPath(path, entry.name), entry.kind === "dir"));
+    setSelected((current) => (current === entry.name ? null : current));
+  }, [path, applyResult]);
+
+  const paste = useCallback(() => {
+    if (!clipboard) return;
+    const target = joinPath(path, baseName(clipboard.path));
+    const result = clipboard.mode === "cut"
+      ? rename(clipboard.path, target)
+      : copy(clipboard.path, target);
+    if (clipboard.mode === "cut" && !result.error) setClipboard(null);
+    applyResult(result);
+  }, [clipboard, path, applyResult]);
+
+  const commitRename = useCallback(() => {
+    const original = renaming;
+    setRenaming(null);
+    if (!original || !renameDraft || renameDraft === original) return;
+    applyResult(rename(joinPath(path, original), joinPath(path, renameDraft)));
+  }, [renaming, renameDraft, path, applyResult]);
 
   const cls = (base: string, key: string, extra?: string) =>
     `${base}${hovered === key ? ` ${base}--hover` : ""}${extra ? ` ${extra}` : ""}`;
 
   const atRoot = path === "/";
+  const canBack = historyIndex > 0;
+  const canForward = historyIndex < history.length - 1;
   const menus = ["File", "Edit", "View", "Favorites", "Tools", "Help"];
   const toggleGroup = (id: string) =>
     setExpanded((current) => ({ ...current, [id]: !current[id] }));
 
+  // Row context menu: Open/Cut/Copy/Delete/Rename operate on one entry.
+  const rowMenu = useCallback((entry: FsEntry): MenuState["items"] => [
+    { id: "open", label: "Open", onSelect: () => openEntry(entry) },
+    { id: "cut", label: "Cut", onSelect: () => setClipboard({ mode: "cut", path: joinPath(path, entry.name) }) },
+    { id: "copy", label: "Copy", onSelect: () => setClipboard({ mode: "copy", path: joinPath(path, entry.name) }) },
+    { id: "delete", label: "Delete", onSelect: () => deleteEntry(entry) },
+    { id: "rename", label: "Rename", onSelect: () => { setRenaming(entry.name); setRenameDraft(entry.name); } },
+  ], [openEntry, path, deleteEntry]);
+
+  // Empty-area context menu: New Folder, Paste (only with a clipboard), Refresh.
+  const emptyMenu = useCallback((): MenuState["items"] => {
+    const items: MenuState["items"] = [{ id: "new", label: "New Folder", onSelect: newFolder }];
+    if (clipboard) items.push({ id: "paste", label: "Paste", onSelect: paste });
+    items.push({ id: "refresh", label: "Refresh", onSelect: refresh });
+    return items;
+  }, [newFolder, clipboard, paste, refresh]);
+
+  // Menubar dropdowns. Each label opens a ContextMenu just below it.
+  const openMenubar = useCallback((label: string, index: number) => {
+    const x = MENU_LABEL_X + index * MENU_LABEL_STRIDE;
+    const items: Record<string, MenuState["items"]> = {
+      File: [
+        { id: "new", label: "New Folder", onSelect: newFolder },
+        { id: "refresh", label: "Refresh", onSelect: refresh },
+      ],
+      Edit: [
+        { id: "cut", label: "Cut", onSelect: () => selected && setClipboard({ mode: "cut", path: joinPath(path, selected) }) },
+        { id: "copy", label: "Copy", onSelect: () => selected && setClipboard({ mode: "copy", path: joinPath(path, selected) }) },
+        { id: "paste", label: "Paste", onSelect: paste },
+      ],
+      View: [
+        { id: "icons", label: "Icons", onSelect: () => setViewMode("icons") },
+        { id: "details", label: "Details", onSelect: () => setViewMode("details") },
+        { id: "refresh", label: "Refresh", onSelect: refresh },
+      ],
+    };
+    if (items[label]) openMenu(x, MENUBAR_TOP, items[label]);
+  }, [newFolder, refresh, selected, path, paste, openMenu]);
+
+  // Address caret: a dropdown of ancestor directories, each navigable.
+  const ancestors = useMemo(() => {
+    const parts = path.split("/").filter(Boolean);
+    const list: MenuState["items"] = [{ id: "/", label: "My Computer", onSelect: () => navigate("/") }];
+    let acc = "";
+    for (const part of parts) {
+      acc = `${acc}/${part}`;
+      const full = acc;
+      list.push({ id: full, label: full, onSelect: () => navigate(full) });
+    }
+    return list;
+  }, [path, navigate]);
+
   return (
-    <div className="fm">
+    <div className="fm" onClick={() => { setMenu(null); }}>
       <div className="fm__menubar">
-        {menus.map((label) => (
-          <span key={label} className={cls("fm__menu", `menu:${label}`)} {...bundle(`menu:${label}`)}>
+        {menus.map((label, index) => (
+          <span
+            key={label}
+            className={cls("fm__menu", `menu:${label}`)}
+            {...bundle(`menu:${label}`)}
+            onClick={() => openMenubar(label, index)}
+          >
             {label}
           </span>
         ))}
@@ -152,32 +335,36 @@ export default function FileManager() {
 
       <div className="fm__toolbar">
         <div
-          className={cls("fm__tb", "tb:back", atRoot ? "fm__tb--disabled" : undefined)}
+          className={cls("fm__tb", "tb:back", canBack ? undefined : "fm__tb--disabled")}
           {...bundle("tb:back")}
-          onClick={() => !atRoot && goto(parentPath(path))}
+          onClick={() => canBack && back()}
         >
           <img className="fm__tb-icon" src="assets/tb-back.png"/>
           <span className="fm__tb-label">Back</span>
         </div>
-        <div className={cls("fm__tb", "tb:forward", "fm__tb--disabled")} {...bundle("tb:forward")}>
+        <div
+          className={cls("fm__tb", "tb:forward", canForward ? undefined : "fm__tb--disabled")}
+          {...bundle("tb:forward")}
+          onClick={() => canForward && forward()}
+        >
           <img className="fm__tb-icon" src="assets/tb-forward.png"/>
           <span className="fm__tb-label">Forward</span>
         </div>
         <div
           className={cls("fm__tb", "tb:up", atRoot ? "fm__tb--disabled" : undefined)}
           {...bundle("tb:up")}
-          onClick={() => !atRoot && goto(parentPath(path))}
+          onClick={() => !atRoot && up()}
         >
           <img className="fm__tb-icon" src="assets/tb-up.png"/>
         </div>
         <div className="fm__tb-sep"/>
-        <div className={cls("fm__tb", "tb:search")} {...bundle("tb:search")}>
-          <img className="fm__tb-icon" src="assets/tb-search.png"/>
-          <span className="fm__tb-label">Search</span>
-        </div>
-        <div className={cls("fm__tb", "tb:folders")} {...bundle("tb:folders")}>
+        <div
+          className={cls("fm__tb", "tb:folders")}
+          {...bundle("tb:folders")}
+          onClick={newFolder}
+        >
           <img className="fm__tb-icon" src="assets/tb-folders.png"/>
-          <span className="fm__tb-label">Folders</span>
+          <span className="fm__tb-label">New Folder</span>
         </div>
         <div
           className={cls("fm__tb", "tb:views")}
@@ -191,12 +378,32 @@ export default function FileManager() {
 
       <div className="fm__addressbar">
         <span className="fm__addr-label">Address</span>
-        <div className="fm__addr-field">
+        <div className="fm__addr-field" onClick={() => setAddressDraft(path)}>
           <img className="fm__addr-icon" src="assets/folder-16.png"/>
-          <span className="fm__addr-path">{path}</span>
-          <span className="fm__addr-drop"><img className="fm__caret" src="assets/caret-down.png"/></span>
+          {addressDraft === null ? (
+            <span className="fm__addr-path">{path}</span>
+          ) : (
+            <input
+              className="fm__addr-input"
+              value={addressDraft}
+              onInput={(event) => setAddressDraft((event as unknown as { value: string }).value)}
+              onKeyDown={(event) => {
+                const key = event as unknown as { code: number; value: number };
+                if (key.value === 0) return;
+                if (key.code === KEY_ENTER) navigate(addressDraft ?? path);
+                else if (key.code === KEY_ESC) setAddressDraft(null);
+              }}
+            />
+          )}
+          <span
+            className="fm__addr-drop"
+            {...bundle("addr:drop")}
+            onClick={() => openMenu(8, 64, ancestors)}
+          >
+            <img className="fm__caret" src="assets/caret-down.png"/>
+          </span>
         </div>
-        <div className={cls("fm__go", "go")} {...bundle("go")}>
+        <div className={cls("fm__go", "go")} {...bundle("go")} onClick={refresh}>
           <img className="fm__go-icon" src="assets/tb-forward.png"/>
           <span>Go</span>
         </div>
@@ -215,9 +422,9 @@ export default function FileManager() {
             </div>
             {expanded.tasks && (
               <div className="fm__group-body">
-                <span className={cls("fm__task-link", "task:newfolder")} {...bundle("task:newfolder")}>Make a new folder</span>
-                <span className={cls("fm__task-link", "task:publish")} {...bundle("task:publish")}>Publish this folder to the Web</span>
-                <span className={cls("fm__task-link", "task:share")} {...bundle("task:share")}>Share this folder</span>
+                <span className={cls("fm__task-link", "task:newfolder")} {...bundle("task:newfolder")} onClick={newFolder}>Make a new folder</span>
+                {selected && <span className={cls("fm__task-link", "task:rename")} {...bundle("task:rename")} onClick={() => { setRenaming(selected); setRenameDraft(selected); }}>Rename this item</span>}
+                {selected && <span className={cls("fm__task-link", "task:delete")} {...bundle("task:delete")} onClick={() => { const entry = entries.find((e) => e.name === selected); if (entry) deleteEntry(entry); }}>Delete this item</span>}
               </div>
             )}
           </div>
@@ -236,7 +443,7 @@ export default function FileManager() {
                   <span
                     className={cls("fm__task-link", "place:up")}
                     {...bundle("place:up")}
-                    onClick={() => goto(parentPath(path))}
+                    onClick={up}
                   >
                     {parentPath(path)}
                   </span>
@@ -244,7 +451,7 @@ export default function FileManager() {
                 <span
                   className={cls("fm__task-link", "place:root")}
                   {...bundle("place:root")}
-                  onClick={() => goto("/")}
+                  onClick={() => navigate("/")}
                 >
                   My Computer
                 </span>
@@ -253,7 +460,13 @@ export default function FileManager() {
           </div>
         </div>
 
-        <div className="fm__view">
+        <div
+          className="fm__view"
+          onContextMenu={(rawEvent) => {
+            const event = rawEvent as unknown as { x: number; y: number };
+            openMenu(event.x, event.y, emptyMenu());
+          }}
+        >
           {error && <div className="fm__note">{error}</div>}
           {viewMode === "icons" ? (
             <div className="fm__icons">
@@ -264,9 +477,28 @@ export default function FileManager() {
                   {...bundle(`row:${entry.name}`)}
                   onClick={() => setSelected(entry.name)}
                   onDoubleClick={() => openEntry(entry)}
+                  onContextMenu={(rawEvent) => {
+                    const event = rawEvent as unknown as { x: number; y: number };
+                    setSelected(entry.name);
+                    openMenu(event.x, event.y, rowMenu(entry));
+                  }}
                 >
                   <img className="fm__icon-img" src={iconFor(entry)}/>
-                  <span className="fm__icon-label">{entry.name}</span>
+                  {renaming === entry.name ? (
+                    <input
+                      className="fm__rename"
+                      value={renameDraft}
+                      onInput={(event) => setRenameDraft((event as unknown as { value: string }).value)}
+                      onKeyDown={(event) => {
+                        const key = event as unknown as { code: number; value: number };
+                        if (key.value === 0) return;
+                        if (key.code === KEY_ENTER) commitRename();
+                        else if (key.code === KEY_ESC) setRenaming(null);
+                      }}
+                    />
+                  ) : (
+                    <span className="fm__icon-label">{entry.name}</span>
+                  )}
                 </div>
               ))}
             </div>
@@ -284,9 +516,28 @@ export default function FileManager() {
                   {...bundle(`row:${entry.name}`)}
                   onClick={() => setSelected(entry.name)}
                   onDoubleClick={() => openEntry(entry)}
+                  onContextMenu={(rawEvent) => {
+                    const event = rawEvent as unknown as { x: number; y: number };
+                    setSelected(entry.name);
+                    openMenu(event.x, event.y, rowMenu(entry));
+                  }}
                 >
                   <img className="fm__drow-img" src={iconFor16(entry)}/>
-                  <span className="fm__dc-name">{entry.name}</span>
+                  {renaming === entry.name ? (
+                    <input
+                      className="fm__rename"
+                      value={renameDraft}
+                      onInput={(event) => setRenameDraft((event as unknown as { value: string }).value)}
+                      onKeyDown={(event) => {
+                        const key = event as unknown as { code: number; value: number };
+                        if (key.value === 0) return;
+                        if (key.code === KEY_ENTER) commitRename();
+                        else if (key.code === KEY_ESC) setRenaming(null);
+                      }}
+                    />
+                  ) : (
+                    <span className="fm__dc-name">{entry.name}</span>
+                  )}
                   <span className="fm__dc-size">{formatSize(entry)}</span>
                   <span className="fm__dc-type">{typeLabel(entry)}</span>
                 </div>
@@ -299,6 +550,8 @@ export default function FileManager() {
       <div className="fm__status">
         <span>{entries.length} objects</span>
       </div>
+
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu}/>}
     </div>
   );
 }
