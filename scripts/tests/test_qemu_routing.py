@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -20,6 +21,49 @@ def argument_after(command: list[str], option: str) -> str:
 
 
 class QemuRoutingTests(unittest.TestCase):
+    def test_shell_interaction_waits_for_each_guest_echo(self) -> None:
+        input_read, input_write = os.pipe()
+        output_read, output_write = os.pipe()
+        command = b"echo paced\n"
+        received = bytearray()
+
+        def echo_guest() -> None:
+            while len(received) < len(command):
+                byte = os.read(input_read, 1)
+                if not byte:
+                    return
+                received.extend(byte)
+                os.write(output_write, byte)
+
+        guest = threading.Thread(target=echo_guest)
+        guest.start()
+        try:
+            with (
+                os.fdopen(input_write, "wb", closefd=False) as input_stream,
+                os.fdopen(output_read, "rb", closefd=False) as output_stream,
+            ):
+                output = bytearray()
+                qemu_gate.send_shell_interaction(
+                    input_stream,
+                    output_stream,
+                    output,
+                    command,
+                )
+        finally:
+            os.close(input_write)
+            guest.join()
+            os.close(input_read)
+            os.close(output_read)
+            os.close(output_write)
+
+        self.assertEqual(received, command)
+        self.assertEqual(output, command)
+
+    def test_echo_pacing_rejects_raw_terminal_input(self) -> None:
+        self.assertTrue(qemu_gate._is_echo_paced_shell_command(b"echo ok\n"))
+        self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"GoOK\x1b:wq\n"))
+        self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"q"))
+
     def test_qmp_quit_requests_graceful_shutdown(self) -> None:
         client = object.__new__(qemu_gate.QmpClient)
         client._execute = Mock()

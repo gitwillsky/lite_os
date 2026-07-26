@@ -30,6 +30,7 @@ SERIAL_WRITE_CHUNK = 1
 SERIAL_WRITE_INTERVAL_SECONDS = 0.0001
 SERIAL_TRIGGER_SETTLE_SECONDS = 0.02
 SERIAL_ESCAPE_SETTLE_SECONDS = 0.1
+SERIAL_ECHO_TIMEOUT_SECONDS = 5.0
 FATAL_LINE_DRAIN_SECONDS = 0.25
 # `boot` 用进度看门狗而非固定墙钟 deadline：只要 guest 还在稳定吐新 UART 输出就不判死，
 # 连续 STALL_SECONDS 无任何新字节才算 hang。这样宿主负载高（并发多个 QEMU、8-hart 冷启动）
@@ -218,6 +219,58 @@ def send_interaction(stream: BinaryIO, data: bytes) -> None:
             time.sleep(SERIAL_WRITE_INTERVAL_SECONDS)
 
 
+def _is_echo_paced_shell_command(data: bytes) -> bool:
+    """Returns whether `data` is one complete printable shell command."""
+    return (
+        data.endswith(b"\n")
+        and bool(data)
+        and all(byte == 0x0A or 0x20 <= byte <= 0x7E for byte in data)
+    )
+
+
+def send_shell_interaction(
+    input_stream: BinaryIO,
+    output_stream: BinaryIO,
+    output: bytearray,
+    data: bytes,
+) -> None:
+    """Sends one shell command using terminal echo as UART flow control.
+
+    Args:
+        input_stream: QEMU stdin, which owns bytes sent to the guest UART.
+        output_stream: QEMU stdout, which carries the guest terminal echo.
+        output: The gate's complete output buffer; echoed bytes are appended here.
+        data: One printable newline-terminated shell command.
+
+    Returns:
+        None after every byte has been observed through the guest terminal.
+
+    Raises:
+        ValueError: `data` is not a complete printable shell command.
+        RuntimeError: The guest closes output or does not echo a byte in time.
+    """
+    if not _is_echo_paced_shell_command(data):
+        raise ValueError("echo pacing requires one printable shell command")
+    for offset, byte in enumerate(data):
+        echo_cursor = len(output)
+        input_stream.write(bytes((byte,)))
+        input_stream.flush()
+        deadline = time.monotonic() + SERIAL_ECHO_TIMEOUT_SECONDS
+        while byte not in output[echo_cursor:]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"guest stopped echoing UART input at shell byte {offset}"
+                )
+            ready, _, _ = select.select([output_stream], [], [], remaining)
+            if not ready:
+                continue
+            chunk = os.read(output_stream.fileno(), 16 * 1024)
+            if not chunk:
+                raise RuntimeError("guest UART output closed during shell input")
+            output.extend(chunk)
+
+
 def terminate(process: subprocess.Popen[bytes]) -> None:
     """终止围栏创建的整个 QEMU process group。"""
     if process.poll() is not None:
@@ -402,7 +455,15 @@ def boot(
                         # 不推进 cursor：紧随其后的 `/ # ` 触发型交互仍需匹配同一个 prompt。
                         if not marker.endswith(SHELL_PROMPT):
                             _wait_for_prompt(process.stdout, output, interaction_cursor)
-                        send_interaction(process.stdin, data)
+                        if _is_echo_paced_shell_command(data):
+                            send_shell_interaction(
+                                process.stdin,
+                                process.stdout,
+                                output,
+                                data,
+                            )
+                        else:
+                            send_interaction(process.stdin, data)
                         # 等 prompt/注入期间读到的字节也是进度，刷新看门狗防误判 stall。
                         last_progress = time.monotonic()
                 if all(marker in text for marker in markers):
