@@ -161,7 +161,6 @@ export default function Desktop() {
         setActiveId((current) => (current === event.surfaceId ? 0 : current));
       }
     });
-    if (surfaces().length === 0) launch("terminal");
     return unsubscribe;
   }, []);
 

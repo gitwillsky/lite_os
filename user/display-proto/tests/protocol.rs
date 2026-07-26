@@ -1,10 +1,10 @@
 use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
-    Accepted, AppOpened, BufferAlloc, HelloApp, InputKey, InputPointer, InputScroll, MessageKind,
-    MoveBegin, MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles,
-    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, parse_frame,
-    recv_frame_blocking,
+    Accepted, AppOpened, BufferAlloc, CURSOR_DEFAULT, CURSOR_RESIZE_NWSE, HelloApp, InputKey,
+    InputPointer, InputScroll, MessageKind, MoveBegin, MoveComplete, PROTOCOL_VERSION,
+    PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
+    SetCursorShape, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
 };
 
 #[test]
@@ -217,11 +217,11 @@ fn set_cursor_shape_round_trips_surface_and_shape() {
     for request in [
         SetCursorShape {
             surface_id: 0,
-            shape: 0,
+            shape: CURSOR_DEFAULT,
         },
         SetCursorShape {
             surface_id: 9,
-            shape: 1,
+            shape: CURSOR_RESIZE_NWSE,
         },
     ] {
         let encoded = request

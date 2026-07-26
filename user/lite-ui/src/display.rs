@@ -1,5 +1,6 @@
 //! Exact display-protocol client for desktop and ordinary app roles.
 
+mod allocation;
 mod wire;
 
 use std::{
@@ -11,10 +12,10 @@ use std::{
 };
 
 use display_proto::{
-    BufferAlloc, BufferAllocated, BufferRelease, CloseRequest, Configure, HelloApp, HelloDesktop,
-    InputKey, InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION,
-    PointerPhase, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size,
-    SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
+    CloseRequest, Configure, HelloApp, HelloDesktop, InputKey, InputPointer, InputScroll,
+    MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, Rectangles,
+    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, Welcome,
+    parse_frame, recv_frame_blocking, send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
@@ -398,8 +399,8 @@ impl Display {
         send_message(&self.stream, message)
     }
 
-    /// Requests the compositor draw one specific pointer cursor shape for this
-    /// session's surface. Shape zero is the default arrow; one is the pointer.
+    /// Requests the compositor draw one fixed standard cursor shape for this
+    /// session's surface.
     pub fn set_cursor_shape(&self, shape: u32) -> io::Result<()> {
         let mut bytes = [0u8; 24];
         let message = SetCursorShape {
@@ -558,87 +559,6 @@ impl Display {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("visual revision exhausted"))?;
         Ok(self.revision)
-    }
-}
-
-impl Display {
-    /// Allocates `count` fresh compositor buffers for one configure size.
-    ///
-    /// The wait loop keeps applying retirement releases that overtake the
-    /// allocation response: reconfigure-time cleanup on the compositor sends
-    /// exactly those before answering, and flip-driven releases may land here
-    /// on any later top-up.
-    fn allocate(&mut self, count: u32, physical: Size) -> io::Result<()> {
-        let mut bytes = [0u8; 128];
-        let request = BufferAlloc {
-            request_id: 1,
-            size: physical,
-            count,
-        }
-        .encode(&mut bytes)
-        .ok_or_else(|| io::Error::other("buffer request encoding failed"))?;
-        send_message(&self.stream, request)?;
-        let mut input = [0u8; MAX_MESSAGE];
-        let allocated = loop {
-            let (length, fd) = recv_frame_blocking(&self.stream, &mut input)?;
-            if fd.is_some() {
-                return Err(invalid("buffer response carried a descriptor"));
-            }
-            let frame =
-                parse_frame(&input[..length]).ok_or_else(|| invalid("invalid display event"))?;
-            match frame.kind() {
-                MessageKind::BufferAllocated => {
-                    break BufferAllocated::parse(frame.payload())
-                        .filter(|response| {
-                            response.request_id == 1
-                                && response.error == 0
-                                && response.count == count
-                        })
-                        .ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::OutOfMemory, "buffer request rejected")
-                        })?;
-                }
-                MessageKind::BufferRelease => {
-                    let id = BufferRelease::parse(frame.payload())
-                        .ok_or_else(|| invalid("invalid buffer release"))?
-                        .buffer_id;
-                    self.release(id)?;
-                }
-                kind => {
-                    // A synchronous alloc round-trip can be interleaved with any
-                    // legitimate async event during rapid resize/render churn —
-                    // a newer Configure, an Accepted/Presented progress ack, or
-                    // input. These are not "missing responses": route them the
-                    // same way the main loop would (queue public events, fold
-                    // progress acks) and keep waiting for BufferAllocated, rather
-                    // than aborting the app under panic=abort. Only a truly
-                    // unparseable frame stays fatal.
-                    match parse_event(kind, frame.payload(), self.surface_id)
-                        .ok_or_else(|| invalid("buffer response missing"))?
-                    {
-                        WireEvent::Public(event) => self.pending.push_back(event),
-                        WireEvent::Released(id) => self.release(id)?,
-                        progress @ (WireEvent::Accepted(_) | WireEvent::Presented(_)) => {
-                            self.handle_progress(progress)?;
-                        }
-                    }
-                }
-            }
-        };
-        for descriptor in allocated.buffers.iter().take(count as usize) {
-            self.buffers.push(Buffer {
-                id: descriptor.buffer_id,
-                pixels: self.device.map_shared_dumb(
-                    descriptor.gem_handle,
-                    physical.width as usize,
-                    physical.height as usize,
-                    descriptor.pitch as usize,
-                    descriptor.byte_len as usize,
-                )?,
-                free: true,
-            });
-        }
-        Ok(())
     }
 }
 

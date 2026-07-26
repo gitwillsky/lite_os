@@ -1,0 +1,312 @@
+//! Recursive CSS paint walk and foreign-surface geometry emission.
+
+use std::io;
+
+use linux_uapi::drm::SharedDumbBuffer;
+use serde_json::Value;
+use taffy::TaffyTree;
+
+use super::{
+    Axis, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk, PhysicalRect,
+    RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion, background_url,
+    corner_radii, cursor_shape, decode_png, excludes_window, is_surface, listener,
+    logical_from_physical, logical_intersection, overflow_modes, paint_background, paint_border,
+    paint_image, paint_scrollbar, paint_scrollbar_corner, paint_shadow, scrollbar, taffy_error,
+    text_content,
+};
+
+impl Renderer {
+    pub(super) fn paint(
+        &mut self,
+        tree: &TaffyTree,
+        node: &RenderNode,
+        parent: (f32, f32),
+        pixels: &mut SharedDumbBuffer,
+        output: &mut RenderOutput,
+        walk: PaintWalk,
+    ) -> io::Result<()> {
+        if excludes_window(&node.source, walk.excluded_window_group) {
+            return Ok(());
+        }
+        let layout = tree.layout(node.id).map_err(taffy_error)?;
+        let origin = (parent.0 + layout.location.x, parent.1 + layout.location.y);
+        let bounds = PhysicalRect::new(
+            origin.0,
+            origin.1,
+            layout.size.width,
+            layout.size.height,
+            pixels.width(),
+            pixels.height(),
+        );
+        if let Some(clip) = walk.clip
+            && bounds.intersect(clip).is_empty()
+        {
+            return Ok(());
+        }
+        let raster = match walk.clip {
+            Some(clip) => bounds.intersect(clip),
+            None => bounds,
+        };
+        let pointer_down = listener(&node.source, "onPointerDown");
+        let pointer_move = listener(&node.source, "onPointerMove");
+        let pointer_up = listener(&node.source, "onPointerUp");
+        let click = listener(&node.source, "onClick");
+        let double_click = listener(&node.source, "onDoubleClick");
+        let pointer_enter = listener(&node.source, "onPointerEnter");
+        let pointer_leave = listener(&node.source, "onPointerLeave");
+        let context_menu = listener(&node.source, "onContextMenu");
+        let wheel = listener(&node.source, "onWheel");
+        let cursor = cursor_shape(node.computed.get("cursor"));
+        if pointer_down.is_some()
+            || pointer_move.is_some()
+            || pointer_up.is_some()
+            || click.is_some()
+            || double_click.is_some()
+            || pointer_enter.is_some()
+            || pointer_leave.is_some()
+            || context_menu.is_some()
+            || wheel.is_some()
+        {
+            let hit = logical_from_physical(raster);
+            output.hits.push(HitRegion {
+                node_id: node.source.id,
+                x: hit.x,
+                y: hit.y,
+                width: hit.width,
+                height: hit.height,
+                pointer_down,
+                pointer_move,
+                pointer_up,
+                click,
+                double_click,
+                pointer_enter,
+                pointer_leave,
+                context_menu,
+                wheel,
+                cursor,
+            });
+        }
+        if let Some(key_listener) = listener(&node.source, "onKeyDown") {
+            output.key_listener = Some(key_listener);
+        }
+        paint_shadow(pixels, raster, &node.computed);
+        let radii = corner_radii(&node.computed);
+        if let Some(background) = node.computed.get("background") {
+            paint_background(pixels, raster, background, radii);
+        }
+        if let Some(image) = node.computed.get("background-image") {
+            if let Some(source) = background_url(image) {
+                let image = self.image(source)?;
+                paint_image(pixels, raster, image, radii);
+            } else {
+                paint_background(pixels, raster, image, radii);
+            }
+        }
+        paint_border(pixels, raster, &node.computed);
+        if node.source.kind == "img"
+            && let Some(source) = node.source.props.get("src").and_then(Value::as_str)
+        {
+            let image = self.image(source)?;
+            paint_image(pixels, raster, image, radii);
+        }
+        if node.source.kind == "span" {
+            let text = text_content(&node.source);
+            if node.computed.get("font-family") == Some("monospace") {
+                self.terminal_font
+                    .draw(pixels, bounds, walk.clip, &node.computed, &text);
+            } else {
+                self.font
+                    .draw(pixels, bounds, walk.clip, &node.computed, &text);
+            }
+        }
+        if is_surface(&node.source) {
+            let surface_id = node
+                .source
+                .props
+                .get("data-surface-id")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok());
+            let configure_serial = node
+                .source
+                .props
+                .get("data-configure-serial")
+                .and_then(Value::as_u64);
+            if let (Some(surface_id), Some(configure_serial)) = (surface_id, configure_serial) {
+                let corner_radius = (f64::from(radii[0].max(radii[1]).max(radii[2]).max(radii[3]))
+                    * f64::from(SCALE))
+                .round() as u32;
+                // Foreign bounds are the unclamped source geometry. The
+                // compositor performs screen clipping; clamping here would
+                // change the configured client size and blank edge windows.
+                let surface_bounds = display_proto::Rect {
+                    x: (origin.0 * SCALE).round() as i32,
+                    y: (origin.1 * SCALE).round() as i32,
+                    width: (layout.size.width * SCALE).round() as u32,
+                    height: (layout.size.height * SCALE).round() as u32,
+                };
+                output.foreign.push(ForeignLayer {
+                    surface_id,
+                    configure_serial,
+                    bounds: surface_bounds,
+                    frame: walk.window_frame.unwrap_or(surface_bounds),
+                    corner_radius,
+                });
+            }
+        }
+        if node.computed.get("position") == Some("fixed") {
+            let corner_radius =
+                (f64::from(radii[0].max(radii[1])) * f64::from(SCALE)).round() as u32;
+            let z_index = node
+                .computed
+                .get("z-index")
+                .and_then(|value| value.trim().parse::<i32>().ok())
+                .unwrap_or(0);
+            output.overlays.push(Overlay {
+                rect: display_proto::Rect {
+                    x: bounds.x1 as i32,
+                    y: bounds.y1 as i32,
+                    width: (bounds.x2 - bounds.x1) as u32,
+                    height: (bounds.y2 - bounds.y1) as u32,
+                },
+                corner_radius,
+                z_index,
+            });
+        }
+        let child_frame = if node.source.props.contains_key("data-lite-window") {
+            Some(display_proto::Rect {
+                x: (origin.0 * SCALE).round() as i32,
+                y: (origin.1 * SCALE).round() as i32,
+                width: (layout.size.width * SCALE).round() as u32,
+                height: (layout.size.height * SCALE).round() as u32,
+            })
+        } else {
+            walk.window_frame
+        };
+        let (overflow_x, overflow_y) = overflow_modes(&node.computed);
+        let clips_children = overflow_x.clips() || overflow_y.clips();
+        let scrolls_x = overflow_x.scrolls();
+        let scrolls_y = overflow_y.scrolls();
+        let scroll_port = LogicalRect {
+            x: origin.0 + layout.border.left,
+            y: origin.1 + layout.border.top,
+            width: (layout.size.width - layout.border.left - layout.border.right).max(0.0),
+            height: (layout.size.height - layout.border.top - layout.border.bottom).max(0.0),
+        };
+        let maximum = ScrollOffset {
+            x: (layout.content_size.width - layout.content_box_width()).max(0.0),
+            y: (layout.content_size.height - layout.content_box_height()).max(0.0),
+        };
+        let mut scroll_offset = ScrollOffset::default();
+        if scrolls_x || scrolls_y {
+            let offset = self.scroll_offsets.entry(node.source.id).or_default();
+            offset.x = if scrolls_x {
+                offset.x.clamp(0.0, maximum.x)
+            } else {
+                0.0
+            };
+            offset.y = if scrolls_y {
+                offset.y.clamp(0.0, maximum.y)
+            } else {
+                0.0
+            };
+            scroll_offset = *offset;
+            let visible_port = logical_intersection(scroll_port, walk.clip);
+            if visible_port.width > 0.0 && visible_port.height > 0.0 {
+                self.scroll_regions.push(ScrollRegion {
+                    node_id: node.source.id,
+                    port: visible_port,
+                    maximum,
+                    scroll_x: scrolls_x,
+                    scroll_y: scrolls_y,
+                });
+            }
+        }
+        let child_clip = if clips_children {
+            let port = PhysicalRect::new(
+                scroll_port.x,
+                scroll_port.y,
+                scroll_port.width,
+                scroll_port.height,
+                pixels.width(),
+                pixels.height(),
+            );
+            let mut clip = walk.clip.unwrap_or(PhysicalRect {
+                x1: 0,
+                y1: 0,
+                x2: pixels.width(),
+                y2: pixels.height(),
+            });
+            if overflow_x.clips() {
+                clip.x1 = clip.x1.max(port.x1);
+                clip.x2 = clip.x2.min(port.x2);
+            }
+            if overflow_y.clips() {
+                clip.y1 = clip.y1.max(port.y1);
+                clip.y2 = clip.y2.min(port.y2);
+            }
+            Some(clip)
+        } else {
+            walk.clip
+        };
+        for child in &node.children {
+            self.paint(
+                tree,
+                child,
+                (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
+                pixels,
+                output,
+                PaintWalk {
+                    window_frame: child_frame,
+                    clip: child_clip,
+                    ..walk
+                },
+            )?;
+        }
+        let show_x = overflow_x == OverflowMode::Scroll
+            || (overflow_x == OverflowMode::Auto && maximum.x > 0.0);
+        let show_y = overflow_y == OverflowMode::Scroll
+            || (overflow_y == OverflowMode::Auto && maximum.y > 0.0);
+        if show_x {
+            let bar = scrollbar(
+                node.source.id,
+                Axis::Horizontal,
+                scroll_port,
+                maximum.x,
+                scroll_offset.x,
+                show_y,
+            );
+            paint_scrollbar(pixels, bar, walk.clip);
+            self.scrollbars.push(bar);
+        }
+        if show_y {
+            let bar = scrollbar(
+                node.source.id,
+                Axis::Vertical,
+                scroll_port,
+                maximum.y,
+                scroll_offset.y,
+                show_x,
+            );
+            paint_scrollbar(pixels, bar, walk.clip);
+            self.scrollbars.push(bar);
+        }
+        if show_x && show_y {
+            paint_scrollbar_corner(pixels, scroll_port, walk.clip);
+        }
+        Ok(())
+    }
+
+    fn image(&mut self, source: &str) -> io::Result<&super::Image> {
+        if source.starts_with('/') || source.split('/').any(|part| part == "..") {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "asset escaped app root",
+            ));
+        }
+        if !self.images.contains_key(source) {
+            let image = decode_png(&self.root.join(source))?;
+            self.images.insert(source.to_owned(), image);
+        }
+        Ok(self.images.get(source).expect("image was inserted"))
+    }
+}

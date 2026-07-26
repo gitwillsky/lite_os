@@ -1193,6 +1193,22 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
             "/usr/share/liteos/cursor-pointer.lc1",
         ),
         UserlandArtifact(
+            ROOT / "assets/cursor-resize-ns.lc1",
+            "/usr/share/liteos/cursor-resize-ns.lc1",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/cursor-resize-ew.lc1",
+            "/usr/share/liteos/cursor-resize-ew.lc1",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/cursor-resize-nesw.lc1",
+            "/usr/share/liteos/cursor-resize-nesw.lc1",
+        ),
+        UserlandArtifact(
+            ROOT / "assets/cursor-resize-nwse.lc1",
+            "/usr/share/liteos/cursor-resize-nwse.lc1",
+        ),
+        UserlandArtifact(
             ROOT / "assets/fonts/liteos-ui.a8p",
             "/usr/share/liteos/liteos-ui.a8p",
         ),
@@ -1430,6 +1446,10 @@ def create_image(
         "/usr/share/liteos/bootlogo.xrgb",
         "/usr/share/liteos/cursor.lc1",
         "/usr/share/liteos/cursor-pointer.lc1",
+        "/usr/share/liteos/cursor-resize-ns.lc1",
+        "/usr/share/liteos/cursor-resize-ew.lc1",
+        "/usr/share/liteos/cursor-resize-nesw.lc1",
+        "/usr/share/liteos/cursor-resize-nwse.lc1",
         "/usr/share/liteos/liteos-ui.a8p",
         "/usr/share/liteos/liteos-terminal.a8",
         "/usr/lib/lite-ui/runtime.js",
@@ -1515,7 +1535,11 @@ def create_published_image(
         ROOT / "user/Cargo.toml",
         ROOT / "user/Cargo.lock",
         *sorted((ROOT / "user").glob("*/Cargo.toml")),
-        *sorted((ROOT / "user").glob("*/src/*.rs")),
+        *sorted(
+            source
+            for crate_src in (ROOT / "user").glob("*/src")
+            for source in crate_src.rglob("*.rs")
+        ),
         ROOT / "user/diagnostics/liteos-stress.c",
         ROOT / "assets/terminfo/l/liteos",
         ROOT / "assets/fonts/liteos-terminal.a8",
@@ -1523,6 +1547,11 @@ def create_published_image(
         ROOT / "assets/bootlogo.xrgb",
         ROOT / "assets/cursor.lc1",
         ROOT / "assets/cursor-pointer.lc1",
+        ROOT / "assets/cursor-resize-ns.lc1",
+        ROOT / "assets/cursor-resize-ew.lc1",
+        ROOT / "assets/cursor-resize-nesw.lc1",
+        ROOT / "assets/cursor-resize-nwse.lc1",
+        ROOT / "scripts/generate_cursor_resize.py",
         ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",

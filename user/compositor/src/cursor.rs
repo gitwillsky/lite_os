@@ -1,4 +1,4 @@
-//! Checked XP arrow cursor composited as a damage overlay on the scanned-out buffer.
+//! Checked XP cursor shapes composited as a damage overlay on the scanned-out buffer.
 //!
 //! The cursor is deliberately decoupled from scene composition. Painting it into
 //! the buffer directly and tracking a backing store lets pointer motion refresh
@@ -11,17 +11,29 @@ use linux_uapi::drm::{Clip, DumbBuffer};
 
 const PATH: &str = "/usr/share/liteos/cursor.lc1";
 const POINTER_PATH: &str = "/usr/share/liteos/cursor-pointer.lc1";
+const RESIZE_NS_PATH: &str = "/usr/share/liteos/cursor-resize-ns.lc1";
+const RESIZE_EW_PATH: &str = "/usr/share/liteos/cursor-resize-ew.lc1";
+const RESIZE_NESW_PATH: &str = "/usr/share/liteos/cursor-resize-nesw.lc1";
+const RESIZE_NWSE_PATH: &str = "/usr/share/liteos/cursor-resize-nwse.lc1";
 const MAGIC: &[u8; 8] = b"LCR1\0\0\0\x01";
 const WIDTH: usize = 32;
 const HEIGHT: usize = 32;
 const HEADER: usize = 16;
 const BITMAP_SIZE: usize = HEIGHT * (WIDTH / 8);
+const SHAPE_COUNT: usize = display_proto::CURSOR_RESIZE_NWSE as usize + 1;
+
+struct Shape {
+    bytes: Vec<u8>,
+    /// Physical bitmap pixel placed at the logical pointer position.
+    ///
+    /// Resize cursors require a centered hotspot; without it the visible
+    /// double arrow would sit entirely below/right of the resize boundary.
+    hotspot: (i32, i32),
+}
 
 pub struct Cursor {
-    /// One validated bitmap per shape: slot zero the arrow, slot one the
-    /// pointer/hand. Until the pointer asset ships, slot one falls back to the
-    /// arrow bytes so shape selection never renders a missing cursor.
-    shapes: [Vec<u8>; 2],
+    /// Validated bitmaps in the `display_proto::CURSOR_*` wire-value order.
+    shapes: [Shape; SHAPE_COUNT],
     /// Selected shape index into [`Self::shapes`]; zero (arrow) by default.
     active_shape: usize,
     /// Clean pixels captured under the arrow before it was rasterized.
@@ -40,16 +52,33 @@ pub struct Cursor {
 
 impl Cursor {
     pub fn open() -> io::Result<Self> {
-        let arrow = load_shape(PATH)?;
-        // The pointer asset lands in a later batch; fall back to the arrow bytes
-        // so slot one is always a valid bitmap and shape 1 renders something.
-        let pointer = match load_shape(POINTER_PATH) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => arrow.clone(),
-            Err(error) => return Err(error),
-        };
         Ok(Self {
-            shapes: [arrow, pointer],
+            shapes: [
+                Shape {
+                    bytes: load_shape(PATH)?,
+                    hotspot: (0, 0),
+                },
+                Shape {
+                    bytes: load_shape(POINTER_PATH)?,
+                    hotspot: (0, 0),
+                },
+                Shape {
+                    bytes: load_shape(RESIZE_NS_PATH)?,
+                    hotspot: (16, 16),
+                },
+                Shape {
+                    bytes: load_shape(RESIZE_EW_PATH)?,
+                    hotspot: (16, 16),
+                },
+                Shape {
+                    bytes: load_shape(RESIZE_NESW_PATH)?,
+                    hotspot: (16, 16),
+                },
+                Shape {
+                    bytes: load_shape(RESIZE_NWSE_PATH)?,
+                    hotspot: (16, 16),
+                },
+            ],
             active_shape: 0,
             backing: Vec::new(),
             saved: (0, 0, 0, 0),
@@ -115,6 +144,7 @@ impl Cursor {
     }
 
     fn save(&mut self, target: &DumbBuffer, x: i32, y: i32) {
+        let (x, y) = self.origin(x, y);
         let (x1, y1, x2, y2) = bounds(target, x, y);
         if x2 <= x1 || y2 <= y1 {
             self.saved = (0, 0, 0, 0);
@@ -144,7 +174,8 @@ impl Cursor {
     }
 
     fn paint(&self, target: &mut DumbBuffer, x: i32, y: i32) {
-        let bytes = &self.shapes[self.active_shape];
+        let (x, y) = self.origin(x, y);
+        let bytes = &self.shapes[self.active_shape].bytes;
         let x1 = x.max(0);
         let y1 = y.max(0);
         let x2 = (x + WIDTH as i32).min(target.width() as i32);
@@ -164,9 +195,14 @@ impl Cursor {
             }
         }
     }
+
+    fn origin(&self, x: i32, y: i32) -> (i32, i32) {
+        let hotspot = self.shapes[self.active_shape].hotspot;
+        (x - hotspot.0, y - hotspot.1)
+    }
 }
 
-/// Clamps the arrow rectangle to the buffer, returning `(x1, y1, x2, y2)`.
+/// Clamps one cursor rectangle to the buffer, returning `(x1, y1, x2, y2)`.
 fn bounds(target: &DumbBuffer, x: i32, y: i32) -> (i32, i32, i32, i32) {
     (
         x.max(0),
@@ -215,4 +251,43 @@ fn load_shape(path: &str) -> io::Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cursor, SHAPE_COUNT, Shape};
+
+    fn cursor() -> Cursor {
+        Cursor {
+            shapes: std::array::from_fn(|index| Shape {
+                bytes: Vec::new(),
+                hotspot: if index >= display_proto::CURSOR_RESIZE_NS as usize {
+                    (16, 16)
+                } else {
+                    (0, 0)
+                },
+            }),
+            active_shape: 0,
+            backing: Vec::new(),
+            saved: (0, 0, 0, 0),
+        }
+    }
+
+    #[test]
+    fn resize_shape_centers_its_hotspot_on_the_pointer() {
+        let mut cursor = cursor();
+
+        assert!(cursor.set_shape(display_proto::CURSOR_RESIZE_NS));
+        assert_eq!(cursor.origin(100, 80), (84, 64));
+    }
+
+    #[test]
+    fn unknown_shape_returns_to_the_default_arrow() {
+        let mut cursor = cursor();
+        assert_eq!(SHAPE_COUNT, 6);
+        assert!(cursor.set_shape(display_proto::CURSOR_RESIZE_NWSE));
+
+        assert!(cursor.set_shape(u32::MAX));
+        assert_eq!(cursor.origin(100, 80), (100, 80));
+    }
 }

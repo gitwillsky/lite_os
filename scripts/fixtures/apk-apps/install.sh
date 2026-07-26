@@ -6,7 +6,7 @@ APK='/sbin/apk.static --no-network --no-progress'
 $APK add /run/apk-apps/*.apk
 
 # 2. 版本与 package database 必须同时证明三个顶层应用安装完成。
-$APK info -e 'curl=8.14.1-r2'
+$APK info -e 'curl=8.14.1-r3'
 $APK info -e 'sqlite=3.49.2-r1'
 $APK info -e 'git=2.49.1-r0'
 

@@ -77,9 +77,8 @@ def boot(image: Path, smp: int) -> None:
 def boot_interactive_devices(image: Path) -> None:
     """在无 host 窗口下验证 run-gui 的 GPU、输入设备拓扑与桌面全链路。
 
-    compositor 首帧 marker 证明真实 splash 已由桌面原子替换；LiteUI desktop/app
-    marker 证明两个独立 React/QuickJS root 均完成呈现；terminal-session marker
-    证明 PTY shell 已启动。缺失任一 marker 表示桌面栈对应环节断裂。
+    compositor 首帧 marker 证明真实 splash 已由空桌面原子替换。成功后继续观察
+    Terminal 相关 marker，确保启动路径不会隐式创建应用进程。
     """
     boot_image(
         image,
@@ -92,12 +91,14 @@ def boot_interactive_devices(image: Path) -> None:
             "compositor: mode",
             "compositor: desktop connected",
             "compositor: desktop first scene presented",
-            "compositor: app 1 connected",
             "lite-ui: desktop ready",
+        ),
+        forbidden_markers=(
             "lite-ui: terminal session ready",
             "lite-ui: app terminal ready",
             "terminal-session: shell spawned",
         ),
+        success_settle_seconds=2.0,
         interactive_devices=True,
     )
 
@@ -122,7 +123,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / f"boot-{target.arch}.json"
         payload = runtime_gate_payload(
             "boot-topology",
-            4,
+            5,
             gate_inputs(target, image, busybox, musl.install),
         )
         if runtime_gate_hit(stamp, payload, (image,)):

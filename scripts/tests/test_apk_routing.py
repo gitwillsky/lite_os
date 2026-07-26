@@ -56,7 +56,7 @@ class ApkRoutingTests(unittest.TestCase):
             apps_cache.fingerprint(
                 {"packages": dict(apps_cache.fixed_application_packages())}
             ),
-            "8422e7365c4818ce7305a67623fee77ff44825567146d93b29fc669f0b7e4420",
+            "8ed75e4f2fbb6a9bd22bc0e880b9d3fa9faa489618fb72287239a6fdb1903c84",
         )
 
     def test_aarch64_application_digests_are_complete(self) -> None:
@@ -70,7 +70,7 @@ class ApkRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             apps_cache.fingerprint({"packages": dict(packages)}),
-            "42674189acfa673c9661c3529764a7978a3843542eb0d0c0b60682bdd5ee6af7",
+            "bdd5e76818d0fabc60467bf489483d030e53b81e240aa3235183ae0159d45a38",
         )
 
     def test_only_fixed_data_packages_accept_noarch_metadata(self) -> None:
@@ -112,11 +112,11 @@ class ApkRoutingTests(unittest.TestCase):
 
     def test_unlisted_noarch_package_is_rejected(self) -> None:
         cache, _, _, _ = reload_apk_modules("aarch64", "hvf")
-        filename = "curl-8.14.1-r2.apk"
+        filename = "curl-8.14.1-r3.apk"
         with patch.object(
             cache,
             "run",
-            return_value="pkgname = curl\npkgver = 8.14.1-r2\narch = noarch\n",
+            return_value="pkgname = curl\npkgver = 8.14.1-r3\narch = noarch\n",
         ):
             with self.assertRaisesRegex(RuntimeError, "arch=aarch64"):
                 cache.verify_package_metadata(Path(filename), filename)

@@ -159,14 +159,25 @@ impl InputKey {
     }
 }
 
-/// App request for the compositor to draw one specific pointer cursor shape.
-///
-/// Shape values: zero draws the default arrow; one draws the pointer/hand.
+/// Default arrow cursor.
+pub const CURSOR_DEFAULT: u32 = 0;
+/// Pointing-hand cursor used by clickable controls.
+pub const CURSOR_POINTER: u32 = 1;
+/// Vertical double-arrow used by north/south resize edges.
+pub const CURSOR_RESIZE_NS: u32 = 2;
+/// Horizontal double-arrow used by east/west resize edges.
+pub const CURSOR_RESIZE_EW: u32 = 3;
+/// `/` diagonal double-arrow used by north-east/south-west resize corners.
+pub const CURSOR_RESIZE_NESW: u32 = 4;
+/// `\` diagonal double-arrow used by north-west/south-east resize corners.
+pub const CURSOR_RESIZE_NWSE: u32 = 5;
+
+/// App request for the compositor to draw one fixed standard cursor shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SetCursorShape {
     /// Requesting surface, or zero for the desktop.
     pub surface_id: u32,
-    /// Selected cursor shape: zero arrow, one pointer/hand.
+    /// One of the fixed `CURSOR_*` shape values.
     pub shape: u32,
 }
 

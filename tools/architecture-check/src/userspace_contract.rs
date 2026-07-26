@@ -186,12 +186,12 @@ fn check_ui_product(root: &Path, errors: &mut Vec<String>) {
     for required in [
         "ui/build.mjs",
         "ui/package-lock.json",
-        "ui/src/runtime/renderer.js",
-        "ui/src/design-system/window.jsx",
-        "ui/src/design-system/taskbar.jsx",
-        "ui/src/desktop/main.jsx",
+        "ui/src/runtime/renderer.ts",
+        "ui/src/design-system/window.tsx",
+        "ui/src/design-system/taskbar.tsx",
+        "ui/src/desktop/main.tsx",
         "ui/src/desktop/style.css",
-        "ui/src/terminal/main.jsx",
+        "ui/src/terminal/main.tsx",
         "ui/src/terminal/app.json",
     ] {
         if !root.join(required).is_file() {

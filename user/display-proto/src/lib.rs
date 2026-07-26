@@ -17,7 +17,10 @@ pub use buffer::{BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease};
 pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
 pub use geometry::{Rect, Size};
 pub use handshake::{HelloApp, HelloDesktop, Welcome};
-pub use input::{InputKey, InputPointer, InputScroll, PointerPhase, SetCursorShape};
+pub use input::{
+    CURSOR_DEFAULT, CURSOR_POINTER, CURSOR_RESIZE_EW, CURSOR_RESIZE_NESW, CURSOR_RESIZE_NS,
+    CURSOR_RESIZE_NWSE, InputKey, InputPointer, InputScroll, PointerPhase, SetCursorShape,
+};
 pub use lifecycle::{
     AppClosed, AppOpened, CloseRequest, MoveBegin, MoveComplete, SurfaceActivated,
 };

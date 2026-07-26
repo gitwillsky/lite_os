@@ -15,6 +15,10 @@
 - `lite-ui` input dispatcher 独占文档内 hover 与 pointer-capture target；target 只保存稳定 node id，
   每次事件必须从最新 hit snapshot 解析当前 listener。禁止 capture listener id，否则 React commit
   替换 inline handler 后会把后续 motion/up 投递给已删除的回调。
+- `lite-ui` 内部 owner seam 固定为 `input`（事件目标与默认动作）、`renderer/paint`（递归绘制）、
+  `display/allocation`（同步分配期间的协议推进）和 `host/filesystem`（只读文件系统 host bridge）。
+  compositor 的 connection handshake/role assignment 只属于 `session/client`；这些子模块不得复制
+  父模块持有的 session、renderer、display 或 host state。
 - `quickjs-runtime` 是 QuickJS raw C ABI、unsafe、runtime/context、module loader、job queue 与 interrupt
   callback 的唯一 owner；其他 crate 不得声明 QuickJS extern、raw pointer 或复制 exception cleanup。
 - `terminal-session` 独占 PTY child、VT state、scrollback、selection 与 dirty rows；React terminal 不得
@@ -54,6 +58,9 @@
 - pointer motion 对同一 target latest-only，每帧最多一次；离散事件前必须先 flush preceding motion。
   button/key/wheel/focus 不可合并。capture 只能消费同一次 pointer-down 的 input serial，并在 up、unmount、
   focus loss 或 disconnect 时由 compositor exactly-once reset。
+- cursor shape wire value 固定为 arrow、pointer、NS、EW、NESW 与 NWSE 六种；LiteUI 从标准 CSS
+  `cursor` 值归一化，compositor 独占 checked bitmap 与 hotspot。未知值必须回落 arrow，不接受应用
+  URL、位图或 theme asset。
 - compositor 必须把 evdev wheel detent 转为有符号 logical CSS pixel delta。LiteUI 先投递同值 wheel
   listener，再执行 scroll default action；`overflow: hidden/clip` 只裁剪且不响应 wheel，
   `overflow: auto` 仅在实际 overflow 时显示 scrollbar，`overflow: scroll` 始终显示。短内容的 offset

@@ -46,7 +46,7 @@ pub enum MessageKind {
     MoveBegin = 19,
     /// Compositor returns the final logical position of an authorized move.
     MoveComplete = 20,
-    /// App requests the compositor draw a specific pointer cursor shape.
+    /// App requests the compositor draw a fixed standard cursor shape.
     SetCursorShape = 21,
     /// Routed mouse-wheel scroll input.
     InputScroll = 22,

@@ -1,4 +1,4 @@
-use super::{PointerCapture, renderer::HitRegion};
+use super::{input::PointerCapture, renderer::HitRegion};
 
 fn hit(node_id: u64, pointer_move: u64, pointer_up: u64) -> HitRegion {
     HitRegion {

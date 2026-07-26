@@ -167,14 +167,14 @@
 .window__resize {
   position: absolute;
 }
-.window__resize--n { top: 0; left: 8px; right: 8px; height: 5px; }
-.window__resize--s { bottom: 0; left: 8px; right: 8px; height: 5px; }
-.window__resize--e { top: 8px; bottom: 8px; right: 0; width: 5px; }
-.window__resize--w { top: 8px; bottom: 8px; left: 0; width: 5px; }
-.window__resize--ne { top: 0; right: 0; width: 10px; height: 10px; }
-.window__resize--nw { top: 0; left: 0; width: 10px; height: 10px; }
-.window__resize--se { bottom: 0; right: 0; width: 10px; height: 10px; }
-.window__resize--sw { bottom: 0; left: 0; width: 10px; height: 10px; }
+.window__resize--n { top: 0; left: 8px; right: 8px; height: 5px; cursor: n-resize; }
+.window__resize--s { bottom: 0; left: 8px; right: 8px; height: 5px; cursor: s-resize; }
+.window__resize--e { top: 8px; bottom: 8px; right: 0; width: 5px; cursor: e-resize; }
+.window__resize--w { top: 8px; bottom: 8px; left: 0; width: 5px; cursor: w-resize; }
+.window__resize--ne { top: 0; right: 0; width: 10px; height: 10px; cursor: ne-resize; }
+.window__resize--nw { top: 0; left: 0; width: 10px; height: 10px; cursor: nw-resize; }
+.window__resize--se { bottom: 0; right: 0; width: 10px; height: 10px; cursor: se-resize; }
+.window__resize--sw { bottom: 0; left: 0; width: 10px; height: 10px; cursor: sw-resize; }
 .window__resize-preview {
   position: fixed;
   z-index: 998;

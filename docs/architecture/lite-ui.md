@@ -7,6 +7,11 @@
 - `/bin/lite-ui` 是所有窗体程序共用的唯一 executable。每次启动建立一个进程、一个 QuickJS VM、
   一个 React root 和一个顶层窗口；desktop 使用唯一的 `--desktop` session，普通应用使用
   `--app <id>`。无窗体程序和 3D 游戏不经过 LiteUI。
+- `lite-ui/main.rs` 只编排进程生命周期、渲染提交与 helper；`input.rs` 独占 DOM-style input dispatch，
+  `renderer/paint.rs` 独占递归 paint walk，`display/allocation.rs` 独占 buffer allocation round-trip，
+  `host/filesystem.rs` 独占 file-manager 的只读文件系统 host bridge。
+- `compositor/session.rs` 保存 epoch 与 client registry；`session/client.rs` 只负责握手和连接角色固定。
+  `scanout.rs` 只保留生产合成路径，其 white-box 测试位于 `scanout/tests.rs`。
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
   Promise job drain、值转换、exception、heap/stack 与 interrupt budget。`lite-ui` 只消费其安全窄接口。
 - React desktop 是 graphical session 的唯一窗口 policy owner：保存窗口位置与尺寸、层级、active state、
@@ -86,7 +91,8 @@
   不支持 runtime relative/dynamic import、CommonJS、remote import 或 version negotiation。
 - desktop-only `lite:apps` 扫描一层 registry，提供只读 metadata、opaque icon 与 `launch(id)`；
   desktop-only `lite:desktop` 提供 surface lifecycle/configure/close/move/accelerator mechanism。
-  普通 helper 只通过 `lite:process.spawn(argv, stdio)`，不解析 shell string。
+  desktop 首次呈现不隐式 launch app，应用只由用户操作显式启动。普通 helper 只通过
+  `lite:process.spawn(argv, stdio)`，不解析 shell string。
 
 ## 当前边界
 
@@ -94,5 +100,6 @@
   请求；compositor 是 CREATE/DESTROY owner，LiteUI 只 MAP_DUMB+mmap。权限模型和隔离后的共享内存
   transport 属于后续破坏性协议升级。
 - input v1 只有 US keyboard、pointer、wheel、focus、repeat、text clipboard 与基础 keyboard
-  accessibility；无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop、touch 或 app 自定义 cursor。
+  accessibility；`cursor` 只支持固定 arrow、pointer 与四向 resize shape，不支持 URL/custom bitmap。
+  无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop 或 touch。
 - 视觉还原不生成 screenshot preview 或 Golden，不进入自动门禁；最终由真实启动人工验收。

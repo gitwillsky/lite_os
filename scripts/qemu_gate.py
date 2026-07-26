@@ -255,6 +255,7 @@ def boot(
     timeout_seconds: int = 30,
     interactions: tuple[tuple[str, bytes], ...] = (),
     forbidden_markers: tuple[str, ...] = (),
+    success_settle_seconds: float = 0.0,
     persistent_writes: bool = False,
     interactive_devices: bool = False,
 ) -> None:
@@ -267,6 +268,7 @@ def boot(
         timeout_seconds: 单次冷启动的 monotonic deadline 秒数。
         interactions: 按输出 marker 排序触发的终端输入。
         forbidden_markers: 任一出现即立即失败的输出标记。
+        success_settle_seconds: 成功标记齐备后继续观察 forbidden marker 的时长。
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
         interactive_devices: 是否加入 run-gui 的 GPU、keyboard 与 tablet 设备拓扑。
 
@@ -297,6 +299,7 @@ def boot(
     output = bytearray()
     pending_interactions = list(interactions)
     interaction_cursor = 0
+    success_seen_at: float | None = None
     deadline = time.monotonic() + timeout_seconds
     try:
         while time.monotonic() < deadline:
@@ -338,7 +341,12 @@ def boot(
                             f"QEMU -smp {smp} reached a fatal/error path"
                             f"\n--- output tail ---\n{tail}"
                         )
-                    return
+                    if success_seen_at is None:
+                        success_seen_at = time.monotonic()
+            if success_seen_at is not None and (
+                time.monotonic() - success_seen_at >= success_settle_seconds
+            ):
+                return
             if process.poll() is not None:
                 break
     finally:
@@ -531,9 +539,10 @@ def start_frame_workload(qmp: QmpClient, duration_s: float, stop: "threading.Eve
     throttle paces these to ~60Hz (RESIZE_FRAME_MS), which is exactly the cadence
     the gate measures.
 
-    Presses the default terminal window's bottom-right (`se`) resize grip and
-    oscillates the pointer in small steps for `duration_s`, then releases. Runs on
-    its own thread; the caller's reader drains serial concurrently.
+    Presses the explicitly launched Terminal window's bottom-right (`se`) resize
+    grip and oscillates the pointer in small steps for `duration_s`, then
+    releases. Runs on its own thread; the caller's reader drains serial
+    concurrently.
     """
     # `se` grip center: window logical bottom-right (870,570), grip is 8x8 at the
     # corner, center ~ (866,566) on a 1504x846 logical screen.
@@ -565,14 +574,11 @@ def measure_frame_timing(
     """Cold-boots the desktop stack, self-drives frames, and returns frame stats.
 
     Boots with the interactive-device topology plus a QMP channel, waits for the
-    full desktop marker set, synthesizes opening a second window (to match the
-    contract's desktop+terminal+second-window scene), then types a
-    continuous-output command into the GUI terminal so the guest drives its own
-    SceneCommit stream at the device's natural flip rate. A background thread
-    drains serial the whole time so `compositor: frame-stats` markers are read as
-    they arrive (a blocking driver would starve the reader and stall the guest
-    via pipe backpressure). Returns the WORST window (max dropped, then p99/p95)
-    so a single good window cannot mask a bad one.
+    empty desktop, explicitly opens Terminal and File Manager through desktop
+    input, then drives resize commits on Terminal. A background thread drains
+    serial the whole time so `compositor: frame-stats` markers are read as they
+    arrive. Returns the WORST window (max dropped, then p99/p95) so a single good
+    window cannot mask a bad one.
 
     Raises:
         RuntimeError: QEMU/QMP unavailable, boot markers missing, a fatal path,
@@ -587,11 +593,7 @@ def measure_frame_timing(
         "compositor: mode",
         "compositor: desktop connected",
         "compositor: desktop first scene presented",
-        "compositor: app 1 connected",
         "lite-ui: desktop ready",
-        "lite-ui: terminal session ready",
-        "lite-ui: app terminal ready",
-        "terminal-session: shell spawned",
     )
     process = subprocess.Popen(
         _qemu_command(private_image, 1, interactive_devices=True, qmp_socket=qmp_socket),
@@ -663,18 +665,45 @@ def measure_frame_timing(
             raise RuntimeError("frame-timing gate timed out before desktop was ready")
 
         qmp = QmpClient(qmp_socket)
-        # 2. Open a second window (Start button -> first launchable entry) so the
-        #    measured scene matches the contract's desktop+terminal+second window.
-        #    Best-effort; a single window still yields a measurable stream.
-        qmp.move_abs(0.01, 0.98)
-        qmp.button("left", True)
-        qmp.button("left", False)
-        time.sleep(0.4)
-        qmp.move_abs(0.05, 0.5)
-        qmp.button("left", True)
-        qmp.button("left", False)
-        time.sleep(0.4)
-        second_window_opened = "compositor: app 2 connected" in current_text()
+        # 2. The boot contract is an empty desktop. Launch both workload apps via
+        #    real double-click input: Terminal is the second desktop icon, My
+        #    Computer (File Manager) is the first.
+        def double_click(x_fraction: float, y_fraction: float) -> None:
+            qmp.move_abs(x_fraction, y_fraction)
+            for _ in range(2):
+                qmp.button("left", True)
+                qmp.button("left", False)
+                time.sleep(0.08)
+
+        def wait_for(markers: tuple[str, ...], phase: str) -> None:
+            phase_deadline = min(deadline, time.monotonic() + 15.0)
+            while time.monotonic() < phase_deadline:
+                text = current_text()
+                if "panicked at" in text or "[ERROR]" in text:
+                    tail = "\n".join(text.splitlines()[-40:])
+                    raise RuntimeError(
+                        f"frame-timing guest failed during {phase}"
+                        f"\n--- output tail ---\n{tail}"
+                    )
+                if all(marker in text for marker in markers):
+                    return
+                time.sleep(0.1)
+            missing = [marker for marker in markers if marker not in current_text()]
+            raise RuntimeError(f"frame-timing gate missed {phase} markers: {missing!r}")
+
+        double_click(47 / 1504, 92 / 846)
+        wait_for(
+            (
+                "compositor: app 1 connected",
+                "lite-ui: terminal session ready",
+                "lite-ui: app terminal ready",
+                "terminal-session: shell spawned",
+            ),
+            "Terminal launch",
+        )
+        double_click(47 / 1504, 34 / 846)
+        wait_for(("compositor: app 2 connected", "lite-ui: app file-manager ready"), "second app")
+        second_window_opened = True
 
         # 3. Activate the terminal window (app 1) so its resize grip is present,
         #    then drive a sustained resize-drag. The workload blocks for its
@@ -721,4 +750,3 @@ def measure_frame_timing(
     # Worst steady window: the gate must not be defeated by one good window
     # among bad.
     return max(steady, key=lambda w: (w["dropped"], w["p99_us"], w["p95_us"]))
-
