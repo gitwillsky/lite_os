@@ -9,6 +9,9 @@
   RISC-V 保留既有 ELF flags、HWCAP 与 hwprobe 投影。
 - Apple Silicon/HVF 可能让 EL0 probe 被 CPU decode 为 SVE/SME access trap，即使 auxv 未公布该能力；
   backend 把 Unknown/SVE/SME probe 统一投递为可捕获的 `SIGILL/ILL_ILLOPC`，不保存或启用扩展 state。
+- AArch64 每个 CPU 初始化时只通过 `CNTKCTL_EL1.EL0VCTEN` 向 EL0 开放只读虚拟计数器
+  `CNTVCT_EL0`，供 V8 等标准 runtime 取得单调时钟；物理计数器、event stream 与虚拟/物理 timer
+  control 仍保持 trap。
 - Linux `riscv_hwprobe` 编号 258 只由 RISC-V backend 开放；AArch64 没有该 key space，必须返回 `ENOSYS`，不能伪造空 capability success。
 - 用户态非法指令生成 thread-directed forced SIGILL；首个可见 standard siginfo 使用
   `ILL_ILLOPC` 与 fault PC (`si_addr`)。caught 且未屏蔽时进入已注册 handler；blocked 或

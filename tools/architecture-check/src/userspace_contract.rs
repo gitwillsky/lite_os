@@ -7,9 +7,29 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     check_workspace(root, errors);
     check_ffi_owners(root, errors);
     check_boot_route(root, errors);
+    check_aarch64_el0_execution_access(root, errors);
     check_ui_product(root, errors);
     check_ui_performance_path(root, errors);
     check_assets(root, errors);
+}
+
+fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
+    let source =
+        fs::read_to_string(root.join("kernel/src/arch/aarch64/startup.rs")).unwrap_or_default();
+    for required in [
+        "const EL0_VIRTUAL_COUNTER_ACCESS: u64 = 1 << 1;",
+        "const EL0_CACHE_ACCESS: u64 = (1 << 26) | (1 << 15) | (1 << 14);",
+        "\"msr cntkctl_el1, {counter_access}\"",
+        "counter_access = in(reg) EL0_VIRTUAL_COUNTER_ACCESS",
+        "\"msr sctlr_el1, x10\"",
+        "cache_access = in(reg) EL0_CACHE_ACCESS",
+    ] {
+        if !source.contains(required) {
+            errors.push(format!(
+                "kernel/src/arch/aarch64/startup.rs: EL0 must receive the standard virtual-counter and cache-execution controls via `{required}`"
+            ));
+        }
+    }
 }
 
 fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
@@ -295,5 +315,16 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
                 "{removed}: obsolete native-shell asset must be removed"
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn repository_exposes_standard_aarch64_execution_controls_to_el0() {
+        let root = super::super::repository_root();
+        let mut errors = Vec::new();
+        super::check_aarch64_el0_execution_access(&root, &mut errors);
+        assert!(errors.is_empty(), "{errors:#?}");
     }
 }

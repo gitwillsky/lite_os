@@ -16,7 +16,7 @@ use std::{
 };
 
 use quickjs_runtime::{EngineError, NativeHost, Role};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     audio::Commands as AudioCommands,
@@ -350,9 +350,7 @@ impl NativeHost for Host {
                     .retain(|(timer, _)| *timer != id);
                 Ok(String::new())
             }
-            "apps.list" if self.role == Role::Desktop => Ok(
-                r#"[{"id":"terminal","name":"Terminal","description":"Command line","icon":"assets/terminal.png"},{"id":"my-computer","name":"我的电脑","description":"查看本机磁盘与系统信息","icon":"assets/computer.png"},{"id":"file-manager","name":"File Manager","description":"Browse files","icon":"assets/computer.png"},{"id":"music-player","name":"Music Player","description":"Play local music","icon":"assets/speaker.png"}]"#.to_owned(),
-            ),
+            "apps.list" if self.role == Role::Desktop => Ok(scan_apps()),
             "apps.launch" if self.role == Role::Desktop && valid_app_id(payload) => {
                 self.state.actions.borrow_mut().push(Action::Launch(payload.to_owned()));
                 Ok(String::new())
@@ -437,6 +435,83 @@ fn app_metadata(id: &str) -> (&'static str, &'static str) {
     }
 }
 
+// Installed application bundles. Each `<id>/app.json` is one launchable app;
+// `apps.launch` spawns `/bin/lite-ui --app <id>` against `<APPS_ROOT>/<id>`.
+const APPS_ROOT: &str = "/usr/share/liteos/apps";
+// The desktop bundle ships exactly these icons (see ui/build.mjs). The start
+// menu renders under the desktop role, so `src="assets/<name>"` only resolves
+// against the desktop root — a manifest icon outside this set cannot load, so
+// it is normalized to a shipped name (or the fallback) rather than trusted.
+const DESKTOP_ICON_NAMES: [&str; 5] = [
+    "computer.png",
+    "terminal.png",
+    "documents.png",
+    "trash.png",
+    "speaker.png",
+];
+const FALLBACK_ICON: &str = "assets/terminal.png";
+
+/// On-disk per-app manifest (`<id>/app.json`). Extra fields (entry/style) are
+/// ignored here; only what the launcher chrome needs is deserialized.
+#[derive(Deserialize)]
+struct AppManifest {
+    id: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    icon: Option<String>,
+}
+
+/// The launcher registry entry the desktop React consumes (matches AppMeta in
+/// ui/types/lite.d.ts).
+#[derive(Serialize)]
+struct AppMeta {
+    id: String,
+    name: String,
+    description: String,
+    icon: String,
+}
+
+/// Constrains a manifest icon to an asset the desktop bundle actually ships,
+/// falling back to the terminal icon so the start menu never renders a missing
+/// image (mirrors `app_metadata`'s fallback).
+fn normalize_icon(icon: Option<&str>) -> String {
+    let name = icon
+        .and_then(|value| value.rsplit('/').next())
+        .filter(|name| DESKTOP_ICON_NAMES.contains(name));
+    match name {
+        Some(name) => format!("assets/{name}"),
+        None => FALLBACK_ICON.to_owned(),
+    }
+}
+
+/// Enumerates `<APPS_ROOT>/*/app.json` into the launcher registry. Unreadable
+/// directories, missing/malformed manifests, and ids that fail `valid_app_id`
+/// are skipped rather than fatal, so one bad bundle never blanks the menu.
+/// Results are sorted by id for a deterministic render order.
+fn scan_apps() -> String {
+    let mut apps: Vec<AppMeta> = match std::fs::read_dir(APPS_ROOT) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|entry| {
+                let manifest = std::fs::read_to_string(entry.path().join("app.json")).ok()?;
+                let manifest: AppManifest = serde_json::from_str(&manifest).ok()?;
+                valid_app_id(&manifest.id).then_some(())?;
+                Some(AppMeta {
+                    icon: normalize_icon(manifest.icon.as_deref()),
+                    id: manifest.id,
+                    name: manifest.name,
+                    description: manifest.description,
+                })
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    apps.sort_by(|a, b| a.id.cmp(&b.id));
+    serde_json::to_string(&apps).unwrap_or_else(|_| "[]".to_owned())
+}
+
 fn parse_u32(value: Option<&str>, name: &str) -> Result<u32, EngineError> {
     value
         .and_then(|value| value.parse().ok())
@@ -479,6 +554,30 @@ mod tests {
         };
         let (commands, _events) = crate::audio::start(audio_role).expect("audio worker");
         Host::new(role, root, commands)
+    }
+
+    #[test]
+    fn scratch_my_computer_mounts() {
+        let root = std::env::var_os("LITE_UI_TEST_ASSETS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+        let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
+        let bundle = fs::read(root.join("my-computer/main.js")).expect("my-computer bundle");
+        let (host, state) = host(Role::App, root.join("my-computer"));
+        let mut engine = Engine::open(Role::App).expect("app engine");
+        engine.install_host(host);
+        engine
+            .evaluate("runtime.js", &runtime)
+            .expect("load runtime");
+        engine.run_jobs().expect("runtime jobs");
+        engine
+            .evaluate("mc.js", &bundle)
+            .expect("mount my-computer");
+        engine.run_jobs().expect("my-computer jobs");
+        assert!(
+            state.scene_if_dirty().is_some(),
+            "my-computer must publish its root"
+        );
     }
 
     #[test]
@@ -572,5 +671,16 @@ mod tests {
                 .is_err(),
             "ordinary app cannot acquire desktop system-volume capability"
         );
+    }
+
+    #[test]
+    fn manifest_icon_is_constrained_to_shipped_desktop_assets() {
+        // A shipped name survives, path prefixes are stripped to the basename.
+        assert_eq!(super::normalize_icon(Some("assets/speaker.png")), "assets/speaker.png");
+        assert_eq!(super::normalize_icon(Some("speaker.png")), "assets/speaker.png");
+        // Anything the desktop bundle does not ship, or a missing icon, falls
+        // back so the start menu never references an unresolvable image.
+        assert_eq!(super::normalize_icon(Some("assets/custom.png")), super::FALLBACK_ICON);
+        assert_eq!(super::normalize_icon(None), super::FALLBACK_ICON);
     }
 }

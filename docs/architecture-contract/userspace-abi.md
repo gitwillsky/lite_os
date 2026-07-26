@@ -33,6 +33,10 @@
 - AArch64 CPU 即使能 decode 未公布的 SVE/SME probe，也不得为其建立第二套 context state；Unknown、
   SVE-access 与 SME-access exception 必须统一强制投递 `SIGILL/ILL_ILLOPC`，使标准用户 signal
   handler 能恢复 feature probe。blocked/ignored consequence 仍按同步 fault policy 收敛为 default。
+- AArch64 CPU-local initialization 必须把 `CNTKCTL_EL1` 精确设置为仅
+  `EL0VCTEN`，允许 EL0 读取 `CNTVCT_EL0`；不得同时开放物理计数器、event stream 或用户态
+  virtual/physical timer control。缺失该权限时，V8 等读取标准虚拟计数器的 runtime 会陷入
+  unsupported system-register exception。
 - signal frame capture、SA_RESTART 与 sigreturn register restore 都通过 Thread context owner；frame
   copyout 成功前不得发布 handler registers，clone child 可取得一次完整 machine snapshot。
 - `ContextOwner<UserContext>` 必须用两个短 transaction 调用静态 backend 的

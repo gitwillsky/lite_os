@@ -10,6 +10,12 @@ use spin::Once;
 use crate::config::KERNEL_STACK_SIZE;
 
 const UNPUBLISHED_TABLE: usize = usize::MAX;
+// EL0VCTEN lets standard runtimes read the virtual counter while keeping physical-counter and
+// timer controls trapped. Without it, V8's CNTVCT_EL0 read becomes an unsupported sysreg trap.
+const EL0_VIRTUAL_COUNTER_ACCESS: u64 = 1 << 1;
+// UCI/UCT let JIT runtimes inspect cache geometry and publish generated instructions; DZE exposes
+// the standard zero-by-cache-line primitive. Without these bits, V8 traps in FlushICache.
+const EL0_CACHE_ACCESS: u64 = (1 << 26) | (1 << 15) | (1 << 14);
 
 /// Static input binding an MPIDR hardware identity to a logical CPU index.
 #[derive(Debug, Clone, Copy)]
@@ -164,13 +170,19 @@ pub(crate) fn initialize_local_execution() {
         | (u64::from(uses_sixteen_bit_asids) << 36) // AS selects 16-bit TTBR ASIDs
         | ips;
     // SAFETY: CPU is not scheduler-visible. MAIR slot 0 and TCR exactly match the page-table
-    // codec. CPACR traps FP/ASIMD in ordinary kernel Rust; bounded assembly windows temporarily
-    // enable it only while moving the explicitly owned vector context.
+    // codec. CNTKCTL exposes only the read-only virtual counter required by standard runtimes;
+    // SCTLR UCI/UCT/DZE provide the Linux cache-maintenance execution contract. CPACR traps
+    // FP/ASIMD in ordinary kernel Rust; bounded assembly windows temporarily enable it only while
+    // moving the explicitly owned vector context.
     unsafe {
         core::arch::asm!(
             ".arch_extension pan",
             "msr mair_el1, {mair}",
             "msr tcr_el1, {tcr}",
+            "msr cntkctl_el1, {counter_access}",
+            "mrs x10, sctlr_el1",
+            "orr x10, x10, {cache_access}",
+            "msr sctlr_el1, x10",
             "mrs x9, cpacr_el1",
             "bic x9, x9, #(3 << 20)",
             "msr cpacr_el1, x9",
@@ -179,7 +191,10 @@ pub(crate) fn initialize_local_execution() {
             // AttrIdx0=Normal WBWA (0xff), AttrIdx1=Device-nGnRnE (0x00).
             mair = in(reg) 0x00ffu64,
             tcr = in(reg) tcr,
+            counter_access = in(reg) EL0_VIRTUAL_COUNTER_ACCESS,
+            cache_access = in(reg) EL0_CACHE_ACCESS,
             out("x9") _,
+            out("x10") _,
             options(nostack)
         )
     };
