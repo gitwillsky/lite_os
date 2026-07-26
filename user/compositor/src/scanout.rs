@@ -563,7 +563,16 @@ fn from_clip(clip: Clip) -> Option<Rect> {
     })
 }
 
-fn over(source: u32, destination: u32) -> u32 {
+/// Composites one premultiplied ARGB8888 `source` pixel over `destination`.
+///
+/// Porter-Duff OVER for premultiplied source: `out = source + dest * (1 - a)`.
+/// The `source` color channels must already be scaled by its alpha — straight
+/// alpha would double-count the coverage and render translucent edges too bright.
+/// The result carries no alpha (the scanout buffer is presented as XRGB8888).
+///
+/// Shared with the cursor overlay ([`crate::cursor`]), which alpha-blends its
+/// RGBA shape pixels through the same operator so rounding stays identical.
+pub(crate) fn over(source: u32, destination: u32) -> u32 {
     let alpha = source >> 24;
     if alpha == 255 {
         return source & 0x00ff_ffff;

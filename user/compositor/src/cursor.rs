@@ -1,25 +1,37 @@
-//! Checked XP cursor shapes composited as a damage overlay on the scanned-out buffer.
+//! High-resolution RGBA cursor shapes composited as a damage overlay on the
+//! scanned-out buffer.
 //!
 //! The cursor is deliberately decoupled from scene composition. Painting it into
 //! the buffer directly and tracking a backing store lets pointer motion refresh
-//! only a 32x32 region through `DRM_IOCTL_MODE_DIRTYFB` instead of recompositing
+//! only a 48x48 region through `DRM_IOCTL_MODE_DIRTYFB` instead of recompositing
 //! and page-flipping the whole screen on every move.
+//!
+//! Shapes load from `.lc2` assets: an 8-byte magic `LCR2\0\0\0\x01`, u32-LE
+//! width and height, then `width*height*4` bytes of **premultiplied** ARGB8888,
+//! row-major top-to-bottom. Each pixel is 4 little-endian bytes `[B, G, R, A]`,
+//! so `u32::from_le_bytes` yields `0xAARRGGBB` — exactly the premultiplied form
+//! [`crate::scanout::over`] expects. 48x48 physical pixels = 24x24 logical under
+//! the 2x device scale, sized between the classic XP 16px arrow and the desktop
+//! chrome so it reads crisp without dominating.
 
 use std::io;
 
 use linux_uapi::drm::{Clip, DumbBuffer};
 
-const PATH: &str = "/usr/share/liteos/cursor.lc1";
-const POINTER_PATH: &str = "/usr/share/liteos/cursor-pointer.lc1";
-const RESIZE_NS_PATH: &str = "/usr/share/liteos/cursor-resize-ns.lc1";
-const RESIZE_EW_PATH: &str = "/usr/share/liteos/cursor-resize-ew.lc1";
-const RESIZE_NESW_PATH: &str = "/usr/share/liteos/cursor-resize-nesw.lc1";
-const RESIZE_NWSE_PATH: &str = "/usr/share/liteos/cursor-resize-nwse.lc1";
-const MAGIC: &[u8; 8] = b"LCR1\0\0\0\x01";
-const WIDTH: usize = 32;
-const HEIGHT: usize = 32;
+use crate::scanout::over;
+
+const PATH: &str = "/usr/share/liteos/cursor.lc2";
+const POINTER_PATH: &str = "/usr/share/liteos/cursor-pointer.lc2";
+const RESIZE_NS_PATH: &str = "/usr/share/liteos/cursor-resize-ns.lc2";
+const RESIZE_EW_PATH: &str = "/usr/share/liteos/cursor-resize-ew.lc2";
+const RESIZE_NESW_PATH: &str = "/usr/share/liteos/cursor-resize-nesw.lc2";
+const RESIZE_NWSE_PATH: &str = "/usr/share/liteos/cursor-resize-nwse.lc2";
+const MAGIC: &[u8; 8] = b"LCR2\0\0\0\x01";
+const WIDTH: usize = 48;
+const HEIGHT: usize = 48;
 const HEADER: usize = 16;
-const BITMAP_SIZE: usize = HEIGHT * (WIDTH / 8);
+/// Premultiplied ARGB8888 payload size following the header.
+const PIXEL_BYTES: usize = WIDTH * HEIGHT * 4;
 const SHAPE_COUNT: usize = display_proto::CURSOR_RESIZE_NWSE as usize + 1;
 
 struct Shape {
@@ -64,19 +76,19 @@ impl Cursor {
                 },
                 Shape {
                     bytes: load_shape(RESIZE_NS_PATH)?,
-                    hotspot: (16, 16),
+                    hotspot: (24, 24),
                 },
                 Shape {
                     bytes: load_shape(RESIZE_EW_PATH)?,
-                    hotspot: (16, 16),
+                    hotspot: (24, 24),
                 },
                 Shape {
                     bytes: load_shape(RESIZE_NESW_PATH)?,
-                    hotspot: (16, 16),
+                    hotspot: (24, 24),
                 },
                 Shape {
                     bytes: load_shape(RESIZE_NWSE_PATH)?,
-                    hotspot: (16, 16),
+                    hotspot: (24, 24),
                 },
             ],
             active_shape: 0,
@@ -185,13 +197,15 @@ impl Cursor {
             let row = target.row_mut(screen_y as usize);
             for screen_x in x1..x2 {
                 let local_x = (screen_x - x) as usize;
-                let index = local_y * (WIDTH / 8) + local_x / 8;
-                let bit = 0x80 >> (local_x & 7);
-                if bytes[HEADER + index] & bit != 0 {
-                    row[screen_x as usize] = 0xff00_0000;
-                } else if bytes[HEADER + BITMAP_SIZE + index] & bit != 0 {
-                    row[screen_x as usize] = 0xffff_ffff;
-                }
+                // Each pixel is 4 LE bytes [B,G,R,A] → premultiplied 0xAARRGGBB.
+                let index = HEADER + (local_y * WIDTH + local_x) * 4;
+                let source = u32::from_le_bytes([
+                    bytes[index],
+                    bytes[index + 1],
+                    bytes[index + 2],
+                    bytes[index + 3],
+                ]);
+                row[screen_x as usize] = over(source, row[screen_x as usize]);
             }
         }
     }
@@ -237,10 +251,10 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
-/// Reads and validates one cursor asset's identity header and bitmap size.
+/// Reads and validates one cursor asset's identity header and RGBA payload size.
 fn load_shape(path: &str) -> io::Result<Vec<u8>> {
     let bytes = std::fs::read(path)?;
-    let valid = bytes.len() == HEADER + 2 * BITMAP_SIZE
+    let valid = bytes.len() == HEADER + PIXEL_BYTES
         && bytes.get(..8) == Some(MAGIC.as_slice())
         && read_u32(&bytes, 8) == Some(WIDTH as u32)
         && read_u32(&bytes, 12) == Some(HEIGHT as u32);
@@ -255,14 +269,15 @@ fn load_shape(path: &str) -> io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cursor, SHAPE_COUNT, Shape};
+    use super::{Cursor, HEADER, SHAPE_COUNT, Shape, WIDTH};
+    use crate::scanout::over;
 
     fn cursor() -> Cursor {
         Cursor {
             shapes: std::array::from_fn(|index| Shape {
                 bytes: Vec::new(),
                 hotspot: if index >= display_proto::CURSOR_RESIZE_NS as usize {
-                    (16, 16)
+                    (24, 24)
                 } else {
                     (0, 0)
                 },
@@ -278,7 +293,8 @@ mod tests {
         let mut cursor = cursor();
 
         assert!(cursor.set_shape(display_proto::CURSOR_RESIZE_NS));
-        assert_eq!(cursor.origin(100, 80), (84, 64));
+        // 48px shape centered on the pointer: origin = pointer - (24, 24).
+        assert_eq!(cursor.origin(100, 80), (76, 56));
     }
 
     #[test]
@@ -289,5 +305,35 @@ mod tests {
 
         assert!(cursor.set_shape(u32::MAX));
         assert_eq!(cursor.origin(100, 80), (100, 80));
+    }
+
+    /// Guards the two `.lc2` decode invariants `paint()` relies on: the 4 disk
+    /// bytes are little-endian `[B, G, R, A]` (so `from_le_bytes` yields
+    /// `0xAARRGGBB`), and pixels are premultiplied so they feed `over()` directly.
+    /// `DumbBuffer` wraps a real DRM mmap with no test constructor, so this
+    /// exercises the exact index/unpack/blend path over a raw asset byte slice.
+    #[test]
+    fn lc2_pixel_decode_matches_premultiplied_over() {
+        let index = |x: usize, y: usize| HEADER + (y * WIDTH + x) * 4;
+        // Row 0: opaque red, transparent, and a 50%-premultiplied red.
+        let mut bytes = vec![0u8; HEADER + WIDTH * super::HEIGHT * 4];
+        // opaque red (a=255, premultiplied r=255): [B,G,R,A] = [0,0,255,255]
+        bytes[index(0, 0)..index(0, 0) + 4].copy_from_slice(&[0, 0, 255, 255]);
+        // fully transparent: all zero (already)
+        // 50% red premultiplied: a=128, r=128 → [B,G,R,A] = [0,0,128,128]
+        bytes[index(2, 0)..index(2, 0) + 4].copy_from_slice(&[0, 0, 128, 128]);
+
+        let unpack = |x: usize| {
+            let i = index(x, 0);
+            u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]])
+        };
+        let backdrop = 0x0000_2040; // some scene blue
+
+        // Opaque source replaces the destination color (alpha 255 fast path).
+        assert_eq!(over(unpack(0), backdrop), 0x00ff_0000);
+        // Transparent source leaves the destination untouched.
+        assert_eq!(over(unpack(1), backdrop), backdrop);
+        // 50% premultiplied red over the backdrop blends both channels.
+        assert_eq!(over(unpack(2), backdrop), over(0x8080_0000, backdrop));
     }
 }

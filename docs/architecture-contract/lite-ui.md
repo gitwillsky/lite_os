@@ -59,8 +59,8 @@
   button/key/wheel/focus 不可合并。capture 只能消费同一次 pointer-down 的 input serial，并在 up、unmount、
   focus loss 或 disconnect 时由 compositor exactly-once reset。
 - cursor shape wire value 固定为 arrow、pointer、NS、EW、NESW 与 NWSE 六种；LiteUI 从标准 CSS
-  `cursor` 值归一化，compositor 独占 checked bitmap 与 hotspot。未知值必须回落 arrow，不接受应用
-  URL、位图或 theme asset。
+  `cursor` 值归一化，compositor 独占 checked 预乘 RGBA cursor asset（48×48 物理像素，`.lc2`）与
+  hotspot。未知值必须回落 arrow，不接受应用 URL、位图或 theme asset。
 - compositor 必须把 evdev wheel detent 转为有符号 logical CSS pixel delta。LiteUI 先投递同值 wheel
   listener，再执行 scroll default action；`overflow: hidden/clip` 只裁剪且不响应 wheel，
   `overflow: auto` 仅在实际 overflow 时显示 scrollbar，`overflow: scroll` 始终显示。短内容的 offset
