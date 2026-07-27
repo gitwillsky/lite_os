@@ -28,6 +28,8 @@
   registration，`Arming/Notified/Armed/Claimed` 状态封闭锁外 readiness 复查与 exactly-once
   completion；发布 membership 前完成全部 fallible allocation。所有 claimed completion（包括
   signal）携带原 registration ID 进入 SchedulingState，延迟的旧代 wake 只能返回 stale。
+  `sigsuspend` 同时接受匹配 signal 的 `Woken` 与通用可投递 signal cancellation 的
+  `Interrupted`，pending signal 仍由 trap-return 唯一消费。
 - process graph 与 wait batch 通过 `FallibleMap::take_entry/commit_vacant` 无分配迁移节点；
   取出的 token 会归一为无链接、叶高度节点，再由目标树重新计算 AVL 高度。
 - signal generation、pending、delivery 与 syscall replay 分层但不复制状态；AArch64 live

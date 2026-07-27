@@ -49,7 +49,7 @@ FS_IMAGE_SIZE_MIB ?= 8192
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
 QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
-QEMU_MEMORY ?= 512M
+QEMU_MEMORY ?= 2G
 QEMU_SMP ?= $(shell python3 scripts/host_topology.py)
 
 ifeq ($(ARCH),aarch64)

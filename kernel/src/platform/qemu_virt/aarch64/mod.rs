@@ -9,8 +9,8 @@ mod discovery;
 mod gicv3;
 mod pl011;
 mod psci;
+mod tlb_shootdown;
 
-pub(crate) use devices::initialize as initialize_devices;
 pub(crate) use discovery::{BootInfo, hardware_cpu_ids};
 pub(crate) use gicv3::{claim_interrupt, complete_interrupt, notify_self, send_ipi};
 pub(crate) use psci::{ResetError, reset_system, start_cpu};
@@ -26,7 +26,7 @@ pub(crate) struct InstructionFenceError;
 
 impl fmt::Display for TlbShootdownError {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
-        output.write_str("AArch64 TLB broadcast failed")
+        output.write_str("AArch64 TLB rendezvous failed")
     }
 }
 
@@ -39,6 +39,15 @@ impl fmt::Display for InstructionFenceError {
 pub(crate) fn initialize(boot: BootInfo) {
     discovery::initialize(boot);
     console::validate_discovered_base();
+}
+
+/// @description 初始化 AArch64 interrupt controller 与逐 CPU TLB rendezvous state。
+///
+/// @return 无返回值。
+/// @errors controller 或 rendezvous 初始化失败时 fail-stop。
+pub(crate) fn initialize_devices() {
+    devices::initialize();
+    tlb_shootdown::initialize();
 }
 
 pub(crate) fn validate_boot_info(boot: BootInfo) {
@@ -103,11 +112,12 @@ pub(crate) fn arm_timer(deadline: u64) -> Result<(), TimerArmError> {
     Ok(())
 }
 
-/// @description 同步完成 AArch64 `virt` inner-shareable domain 的远端 translation fence。
+/// @description 广播 full translation fence，并等待每颗 AArch64 `virt` 目标 vCPU 越过 flush point。
 /// @param cpus 至少一个可能持有 stale translation 的 logical CPU；空集合无需硬件操作。
-/// @param start_address generic owner 归一化的起始地址；本 backend 为可靠性升级为 full fence。
-/// @param size generic owner 归一化的区间长度；本 backend 为可靠性升级为 full fence。
-/// @return `VMALLE1IS` completion 后返回成功；当前 backend 没有可恢复失败。
+/// @param start_address generic owner 归一化的起始地址；本 backend 为可靠性升级为 full broadcast。
+/// @param size generic owner 归一化的区间长度；本 backend 为可靠性升级为 full broadcast。
+/// @return source `VMALLE1IS` 完成且每颗目标 vCPU 的 SGI handler 发布 ack 后成功。
+/// @errors SGI 投递失败时返回 `TlbShootdownError`。
 pub(crate) fn synchronize_tlb(
     cpus: crate::cpu::CpuSet,
     start_address: usize,
@@ -116,13 +126,18 @@ pub(crate) fn synchronize_tlb(
     if cpus.is_empty() {
         return Ok(());
     }
-    // 1. Apple HVF 下 VA/ASID-scoped inner-shareable TLBI 不能可靠清除其他 vCPU 的 writable
-    // translation；保留 range 会让迁移后的 task 绕过 COW fault 并写坏共享用户页。
-    // 2. VMALLE1IS 是该 platform 实测可靠的唯一同步原语。它只用于 Revoke/retirement，
-    // Publish/Relax 热路径仍保持 local fence，因此不会把每次 page fault 扩成全局 shootdown。
+    // Apple HVF 的 VMALLE1IS 返回不能证明每颗 vCPU 都已越过 hypervisor flush point；
+    // full broadcast 后必须逐目标取得 SGI ack，才能释放 COW frame 或 kernel stack。
     let _ = (start_address, size);
-    crate::arch::mmu::broadcast_tlb(0, 0);
-    Ok(())
+    crate::arch::mmu::broadcast_tlb();
+    tlb_shootdown::synchronize(cpus)
+}
+
+/// @description 在 AArch64 SGI completion seam 消费当前 vCPU 的 TLB request。
+///
+/// @return 没有新 request 时不执行操作。
+pub(crate) fn complete_pending_ipi() {
+    tlb_shootdown::complete_pending();
 }
 
 pub(crate) fn synchronize_instruction_cache(

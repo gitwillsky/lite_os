@@ -60,7 +60,9 @@
   锁定全部 exact nodes 后才发布 SchedulingState。winner 必须同步删除所有 source/deadline/
   task nodes，禁止 lazy stale membership 或恢复全局 queue。claimed wake 必须把自身 wait ID
   原样交给 SchedulingState 校验；signal wake 不得重读 task 的当前 membership，否则延迟完成
-  会消费下一代 signal wait。
+  会消费下一代 signal wait。`sigsuspend` 的匹配 signal 产生 `Woken`，另一可投递 signal 经
+  通用 cancellation 产生 `Interrupted`；两者都保留 pending bit 给 trap delivery 并返回 `EINTR`，
+  只有 timeout/OOM completion 属于不变量破坏。
 - clone/fork/vfork 的 TCB、graph node 与 RLIMIT snapshot storage 在 `process_creation` 外准备；
   最终 guard 内只捕获已预留 snapshot、复检 limit 并提交 graph。snapshot backing OOM
   属于 memory failure 并由 syscall 映射为 `ENOMEM`；只有 RLIMIT_NPROC/PID exhaustion

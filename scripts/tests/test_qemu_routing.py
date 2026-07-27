@@ -148,7 +148,7 @@ class QemuRoutingTests(unittest.TestCase):
             for index, argument in enumerate(command)
             if argument == "-device"
         ]
-        self.assertEqual(argument_after(command, "-m"), "512M")
+        self.assertEqual(argument_after(command, "-m"), "2G")
         self.assertEqual(
             devices,
             [

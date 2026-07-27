@@ -38,8 +38,8 @@ impl ClaimedInterrupt {
 
 pub(crate) use selected::{
     BootInfo, InstructionFenceError, ResetError, TlbShootdownError, arm_timer, claim_interrupt,
-    complete_interrupt, console, debug_console_write, hardware_cpu_ids, initialize,
-    initialize_devices, kernel_mmio_regions, notify_self, physical_memory_end, read_realtime_ns,
-    reset_system, send_ipi, start_cpu, synchronize_instruction_cache, synchronize_tlb,
-    timebase_frequency, validate_boot_info, verify_firmware,
+    complete_interrupt, complete_pending_ipi, console, debug_console_write, hardware_cpu_ids,
+    initialize, initialize_devices, kernel_mmio_regions, notify_self, physical_memory_end,
+    read_realtime_ns, reset_system, send_ipi, start_cpu, synchronize_instruction_cache,
+    synchronize_tlb, timebase_frequency, validate_boot_info, verify_firmware,
 };

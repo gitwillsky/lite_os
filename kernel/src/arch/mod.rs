@@ -126,8 +126,6 @@ pub(crate) mod time {
 
 /// MMU mechanism selected at compile time.
 pub(crate) mod mmu {
-    #[cfg(target_arch = "aarch64")]
-    pub(crate) use super::selected::broadcast_tlb;
     pub(crate) use super::selected::{
         AddressSpaceKind, AddressSpaceToken, ArchitecturePageTable, ArchitecturePageTableEntry,
         KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken, PAGE_SIZE,
@@ -137,6 +135,8 @@ pub(crate) mod mmu {
         flush_local_tlb_range as flush_local_range, normalize_physical_address,
         normalize_physical_page, normalize_virtual_page, physical_to_virtual, virtual_to_physical,
     };
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) use super::selected::{acknowledge_broadcast_tlb, broadcast_tlb};
 }
 
 /// Trap entry, decoding and return mechanism selected at compile time.

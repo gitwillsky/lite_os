@@ -31,11 +31,15 @@
   KernelStack 独占为对齐 padding 与 `UserContext`，实际 SP 从该页下边界开始向下增长，
   context 由该边界加固定 offset 直接推导而不保存冗余 pointer；RISC-V
   继续使用 trap-context 下方的既有 Sv39 stack 与 supervisor trap-context VMA layout。
-- AArch64 remote TLB retirement 使用 inner-shareable TLBI broadcast，不建立 SGI mailbox。
-  Apple HVF 不能可靠完成其他 vCPU 的 VA/ASID-scoped invalidation，因此只要存在 remote
-  target，platform 就把 generic range/full request 统一升级为单次 `VMALLE1IS`；空 target
-  仍为 no-op，publication/relax 仍只做 local fence。instruction publication 优先使用
-  CTR_EL0 的 IDC/DIC 能力，否则执行精确 DC clean/IC invalidate range。
+- AArch64 remote TLB retirement 使用 `VMALLE1IS` + 逐 vCPU SGI rendezvous：source 先
+  broadcast，每颗目标以 barrier 越过 HVF flush point 并回写 generation completion，
+  retirement owner 等待全部 ack 后才释放 frame/page table。Apple HVF 的 broadcast
+  指令返回本身不能证明其他 vCPU 已清除旧 TTBR0/TTBR1 translation，而 target-local TLBI
+  会卡死低地址异常向量；VBAR 因而永久使用 TTBR1 high vector，user return 不再切换到
+  TTBR0 alias。空 target 仍为 no-op，publication/relax 仍只做 local fence。
+  kernel-stack PTE 在 `KERNEL_SPACE` 锁内摘除并保活，锁释放后才等待 ack，避免
+  IRQ-masked target 等待同一锁。instruction publication 优先使用 CTR_EL0 的 IDC/DIC
+  能力，否则执行精确 DC clean/IC invalidate range。
 - leaf unmap 会自底向上摘除空 Sv39 L0/L1 table；单个孤立 mapping 的 active table pages 从 unmap 后 3 降为仅 root 1。摘除的最多两页由 `TranslationCommit` 保活，remote revoke fence 完成后才回到 frame allocator。
 - kernel identity mapping 按每个 VMA 的精确权限边界选择最大对齐 Sv39 leaf；128MiB 对齐 physmap 的 leaf PTE 数从 32,768 个 4KiB leaf 降为 64 个 2MiB leaf，translate façade 仍投影逐页 PPN。
 - executable leaf publication 与新增 EXECUTE 权限由同一 `TranslationCommit` 记录；instruction bytes 完成后执行本地 data fence/`fence.i` 并同步所有 online remote CPU。普通 trap return 不执行 `fence.i`，后上线 CPU 在 startup 做一次本地初始化 fence。

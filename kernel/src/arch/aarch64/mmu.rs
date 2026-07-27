@@ -216,40 +216,25 @@ pub(crate) fn flush_local_range(start: usize, size: usize) {
     unsafe { asm!("dsb ish", "isb", options(nostack)) };
 }
 
-/// Broadcast an all-ASID EL1 stage-1 invalidation to the inner-shareable domain.
-///
-/// `(0, 0)` or `size == usize::MAX` selects a full invalidation; otherwise the range must be
-/// nonempty and page aligned. `usize::MAX` is the generic sparse-span normalization sentinel.
-pub(crate) fn broadcast_tlb(start: usize, size: usize) {
-    if start == 0 && size == 0 || size == usize::MAX {
-        // SAFETY: VMALLE1IS affects the inner-shareable EL1 translation domain; barriers complete
-        // break-before-reuse before the generic owner reclaims retired frames.
-        unsafe {
-            asm!(
-                "dsb ishst",
-                "tlbi vmalle1is",
-                "dsb ish",
-                "isb",
-                options(nostack)
-            )
-        };
-        return;
-    }
-    assert!(
-        start.is_multiple_of(PAGE_SIZE) && size != 0 && size.is_multiple_of(PAGE_SIZE),
-        "invalid AArch64 broadcast TLB range"
-    );
-    let end = start
-        .checked_add(size)
-        .expect("broadcast TLB range overflow");
-    // SAFETY: operands are validated VA page numbers; VAAE1IS targets every ASID in the
-    // inner-shareable translation domain.
-    unsafe { asm!("dsb ishst", options(nostack)) };
-    for address in (start..end).step_by(PAGE_SIZE) {
-        let operand = super::va39::tlbi_all_asid_operand(address);
-        // SAFETY: this iteration's operand is a validated page number in the bounded range.
-        unsafe { asm!("tlbi vaae1is, {operand}", operand = in(reg) operand, options(nostack)) };
-    }
-    // SAFETY: the completion barriers close the preceding broadcast invalidation sequence.
+/// Broadcast a full EL1 stage-1 invalidation to the inner-shareable domain.
+pub(crate) fn broadcast_tlb() {
+    // SAFETY: VMALLE1IS affects the complete inner-shareable EL1 translation domain. Platform
+    // code adds a per-vCPU rendezvous before reclaiming retired owners because Apple HVF may
+    // otherwise return before every vCPU has crossed its flush point.
+    unsafe {
+        asm!(
+            "dsb ishst",
+            "tlbi vmalle1is",
+            "dsb ish",
+            "isb",
+            options(nostack)
+        )
+    };
+}
+
+/// Complete the target-vCPU side of an inner-shareable TLB broadcast rendezvous.
+pub(crate) fn acknowledge_broadcast_tlb() {
+    // SAFETY: the SGI exception has forced this vCPU through the hypervisor after the source
+    // VMALLE1IS. Barriers prevent publishing the software ack before that observation completes.
     unsafe { asm!("dsb ish", "isb", options(nostack)) };
 }

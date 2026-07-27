@@ -34,11 +34,14 @@
   `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 深模块独占 raw musl
   FFI、layout/常量和 RAII；应用、`audio-proto` 与 `display-proto` 只消费安全 typed interface。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
+- 普通 fork 从多线程 parent 只复制 calling Thread，child 取得独立 process owner 与 COW
+  AddressSpace；这使 Node/libuv 等标准 launcher 可在 sibling Thread 存活时 fork/exec，
+  而 parent 的其他 Thread 不进入 child graph。多线程 Process 原地 exec 仍未开放。
 - rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；运行时
   `/etc/apk/repositories` 只启用同一稳定分支的 `main` 与 `community`，不接入 edge/testing。
-  BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`，使 npm/pnpm 等
-  `#!/usr/bin/env node` 入口可直接执行。应用与 terminal 只通过标准 Linux process、fd、PTY、
-  termios、socket 和 ELF ABI 交互。
+  BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`，login profile 把
+  `/usr/local/bin` 纳入标准 PATH，使 npm/pnpm 等全局安装的 `#!/usr/bin/env node` 入口可直接执行。
+  应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
 
 ## Known limits
 

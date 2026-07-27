@@ -24,7 +24,9 @@ mod lifecycle;
 #[path = "tcp/storage.rs"]
 mod storage;
 pub(super) use accept::accept;
-pub(super) use io::{maintain, poll_state, reap_orphans, receive, send, shutdown, take_error};
+pub(super) use io::{
+    maintain, poll_state, reap_orphans, receive, send, shutdown, take_error, try_poll_state,
+};
 pub(super) use lifecycle::drop_endpoint;
 use storage::{add_socket, placeholder_socket};
 

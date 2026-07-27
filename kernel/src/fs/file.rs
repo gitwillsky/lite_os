@@ -106,6 +106,31 @@ pub(crate) struct OpenFileDescription {
 }
 
 impl OpenFileDescription {
+    fn socket_poll_events(events: i16, state: crate::socket::SocketPollState) -> i16 {
+        const INPUT: i16 = 0x001;
+        const OUTPUT: i16 = 0x004;
+        const ERROR: i16 = 0x008;
+        const HANGUP: i16 = 0x010;
+        const READ_HANGUP: i16 = 0x2000;
+        let mut result = 0;
+        if events & INPUT != 0 && state.readable {
+            result |= INPUT;
+        }
+        if events & OUTPUT != 0 && state.writable {
+            result |= OUTPUT;
+        }
+        if state.error {
+            result |= ERROR;
+        }
+        if state.hangup {
+            result |= HANGUP;
+            if events & READ_HANGUP != 0 {
+                result |= READ_HANGUP;
+            }
+        }
+        result
+    }
+
     /// @description 在该 OFD 共享 position 的唯一临界区内执行一次完整操作。
     /// @param operation 依赖并可推进当前 position 的完整 operation。
     /// @return operation 的原始返回值。
@@ -153,7 +178,6 @@ impl OpenFileDescription {
         const OUTPUT: i16 = 0x004;
         const ERROR: i16 = 0x008;
         const HANGUP: i16 = 0x010;
-        const READ_HANGUP: i16 = 0x2000;
         let mut result = 0;
         match &self.kind {
             OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => result = events & (INPUT | OUTPUT),
@@ -174,22 +198,7 @@ impl OpenFileDescription {
                 }
             }
             OpenFileKind::Socket(socket) => {
-                let state = socket.poll_state();
-                if events & INPUT != 0 && state.readable {
-                    result |= INPUT;
-                }
-                if events & OUTPUT != 0 && state.writable {
-                    result |= OUTPUT;
-                }
-                if state.error {
-                    result |= ERROR;
-                }
-                if state.hangup {
-                    result |= HANGUP;
-                    if events & READ_HANGUP != 0 {
-                        result |= READ_HANGUP;
-                    }
-                }
+                result = Self::socket_poll_events(events, socket.poll_state());
             }
             OpenFileKind::Epoll(epoll) => {
                 if events & INPUT != 0 && epoll.has_ready() {
@@ -206,6 +215,19 @@ impl OpenFileDescription {
             }
         }
         result
+    }
+
+    /// @description 在 deferred source 通知中无等待地投影 OFD readiness。
+    /// @param events caller 关注的 poll event mask。
+    /// @return backend 可立即观察时返回 event bits；owner 竞争时返回 `None`。
+    /// @errors 不分配、不睡眠，也不注册 task waiter。
+    pub(crate) fn try_poll_events(&self, events: i16) -> Option<i16> {
+        match &self.kind {
+            OpenFileKind::Socket(socket) => socket
+                .try_poll_state()
+                .map(|state| Self::socket_poll_events(events, state)),
+            _ => Some(self.poll_events(events)),
+        }
     }
 
     /// @description 返回当前 OFD 最近一次可观察 I/O 状态变化的全局 generation。

@@ -353,3 +353,45 @@ fn recycled_entries_preserve_avl_and_successor_invariants() {
         assert_model(&map, &model);
     }
 }
+
+#[test]
+fn extracted_entries_can_move_between_maps_or_drop_without_dangling_topology() {
+    const SHARDS: usize = 4;
+    let mut maps: [FallibleMap<i32, i64>; SHARDS] = core::array::from_fn(|_| FallibleMap::new());
+    let mut models: [BTreeMap<i32, i64>; SHARDS] = core::array::from_fn(|_| BTreeMap::new());
+    for key in 0..512 {
+        let shard = key as usize % SHARDS;
+        maps[shard].try_insert(key, i64::from(key)).unwrap();
+        models[shard].insert(key, i64::from(key));
+    }
+
+    let mut state = 0xd131_0ba6_98df_b5ac_u64;
+    for step in 0..20_000 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let source = (state as usize >> 8) % SHARDS;
+        let key = ((state >> 24) % 768) as i32;
+        if let Some(mut entry) = maps[source].take_entry(&key) {
+            let value = models[source].remove(&key).unwrap();
+            if state & 3 != 0 {
+                let target = (source + 1 + ((state >> 40) as usize % (SHARDS - 1))) % SHARDS;
+                let new_key = 1_000_000 + step;
+                entry.set_key(new_key);
+                if let Some(replaced) = models[target].insert(new_key, value) {
+                    assert_eq!(maps[target].remove(&new_key), Some(replaced));
+                }
+                maps[target].commit_vacant(entry);
+            }
+        } else {
+            let value = i64::from(key) ^ i64::from(step);
+            assert_eq!(
+                maps[source].try_insert(key, value).unwrap(),
+                models[source].insert(key, value)
+            );
+        }
+        for shard in 0..SHARDS {
+            assert_model(&maps[shard], &models[shard]);
+        }
+    }
+}

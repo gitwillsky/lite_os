@@ -1,6 +1,7 @@
 use std::{fs, path::Path};
 
 const EPOLL_OWNER_SOURCE: &str = "kernel/src/fs/epoll.rs";
+const EPOLL_READY_SOURCE: &str = "kernel/src/fs/epoll/ready.rs";
 const EPOLL_SYSCALL_SOURCE: &str = "kernel/src/syscall/epoll.rs";
 const WAIT_KEY_SOURCE: &str = "kernel/src/syscall/poll/wait_keys.rs";
 const PIPE_NOTIFY_SOURCE: &str = "kernel/src/task/task_manager/pipe_wait.rs";
@@ -36,6 +37,9 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     if let Err(error) = check_direct_pipe_wake_one(root) {
         errors.push(error);
     }
+    if let Err(error) = check_source_refresh_is_nonblocking(root) {
+        errors.push(error);
+    }
 }
 
 fn check_direct_pipe_wake_one(root: &Path) -> Result<(), String> {
@@ -46,6 +50,29 @@ fn check_direct_pipe_wake_one(root: &Path) -> Result<(), String> {
     } else {
         Err(format!(
             "{WAIT_PREPARATION_SOURCE}: direct pipe waits must be exclusive so one readiness transition wakes one waiter"
+        ))
+    }
+}
+
+fn check_source_refresh_is_nonblocking(root: &Path) -> Result<(), String> {
+    let owner = read(root, EPOLL_OWNER_SOURCE)?;
+    let ready = read(root, EPOLL_READY_SOURCE)?;
+    let source_changed = function_body(&owner, "fn source_changed(", EPOLL_OWNER_SOURCE)?;
+    let refresh = function_body(
+        &ready,
+        "pub(super) fn refresh_source_locked(",
+        EPOLL_READY_SOURCE,
+    )?;
+    if source_changed.contains("refresh_source_locked")
+        && !source_changed.contains("refresh_locked(&mut state, key)")
+        && refresh.contains(".try_poll_events(")
+        && !refresh.contains(".poll_events(")
+        && refresh.contains("refresh_with_events(state, key, current)")
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "{EPOLL_READY_SOURCE}: deferred source refresh must use nonblocking backend observation and conservatively retain an unobserved edge"
         ))
     }
 }
@@ -172,5 +199,12 @@ mod tests {
         let root = super::super::repository_root();
         check_direct_pipe_wake_one(&root)
             .expect("direct pipe wait must not cause a thundering herd");
+    }
+
+    #[test]
+    fn source_refresh_never_enters_a_blocking_backend_poll() {
+        let root = super::super::repository_root();
+        check_source_refresh_is_nonblocking(&root)
+            .expect("source notifier must not register a task waiter");
     }
 }

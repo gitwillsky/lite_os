@@ -27,10 +27,10 @@ pub(crate) use kernel_context::{KernelContext, KernelResume, switch_kernel_conte
 pub(crate) use mmu::{
     AddressSpaceToken, KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken,
     PAGE_SIZE, SIGNAL_TRAMPOLINE_ADDRESS, TRAMPOLINE_ADDRESS, TRAP_CONTEXT_ADDRESS,
-    USER_ADDRESS_END, USER_STACK_TOP, broadcast_tlb, canonicalize_virtual_address,
-    flush_local as flush_local_tlb, flush_local_range as flush_local_tlb_range,
-    normalize_physical_address, normalize_physical_page, normalize_virtual_page,
-    physical_to_virtual, virtual_to_physical,
+    USER_ADDRESS_END, USER_STACK_TOP, acknowledge_broadcast_tlb, broadcast_tlb,
+    canonicalize_virtual_address, flush_local as flush_local_tlb,
+    flush_local_range as flush_local_tlb_range, normalize_physical_address,
+    normalize_physical_page, normalize_virtual_page, physical_to_virtual, virtual_to_physical,
 };
 pub(crate) use page_table::{
     AddressSpaceKind, PageTable as ArchitecturePageTable,

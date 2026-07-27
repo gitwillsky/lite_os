@@ -182,10 +182,10 @@ impl SignalFrame {
                 get_u64(&self.bytes, STACK_OFFSET + 16) as usize,
             ),
         };
-        // This baseline publishes only NZCV across sigreturn. EL0 mode is therefore implicit zero;
-        // accepting DAIF/PAN/UAO/BTYPE/SSBS/TCO without owning their full lifecycle would let a
-        // user frame alter privileged or untracked execution controls at ERET.
-        const USER_PSTATE_MASK: usize = 0xf000_0000;
+        // BTYPE/SSBS are Linux arm64 user PSTATE and the trap context already saves/restores both.
+        // Rejecting them makes a frame captured from an indirect branch fail its own sigreturn;
+        // DAIF, mode, PAN, UAO and unsupported extension state remain outside this mask.
+        const USER_PSTATE_MASK: usize = 0xf000_1c00;
         if decoded.pstate & !USER_PSTATE_MASK != 0
             || decoded.program_counter >= user_address_end
             || decoded.program_counter & 3 != 0
@@ -350,6 +350,14 @@ mod tests {
         let mut nzcv = frame();
         put_u64(&mut nzcv.bytes, PSTATE_OFFSET, 0xa000_0000);
         assert!(nzcv.decode(1 << 38).is_ok());
+
+        let mut branch_and_speculation_state = frame();
+        put_u64(
+            &mut branch_and_speculation_state.bytes,
+            PSTATE_OFFSET,
+            0x2000_1c00,
+        );
+        assert!(branch_and_speculation_state.decode(1 << 38).is_ok());
 
         let mut unaligned = frame();
         put_u64(&mut unaligned.bytes, PC_OFFSET, 0x4002);

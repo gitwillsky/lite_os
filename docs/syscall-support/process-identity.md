@@ -25,11 +25,11 @@
 | 176 | `getgid` | Complete | real GID |
 | 177 | `getegid` | Complete | effective GID |
 | 178 | `gettid` | Complete | Thread ID |
-| 220 | `clone` | Partial | fork/thread/vfork 已声明 flags；SETTID 为 Linux best-effort store，fault 不回滚 child；其余返回标准错误 |
+| 220 | `clone` | Partial | fork（多线程 parent 只复制 caller）/thread/vfork 已声明 flags；SETTID 为 Linux best-effort store，fault 不回滚 child；其余返回标准错误 |
 | 221 | `execve` | Partial | ELF64/script、dynamic musl 与 single-thread commit |
 | 260 | `wait4` | Partial | exit/stop/continue event 与 rusage 子集 |
 | 261 | `prlimit64` | Partial | 已声明 resources、permission 与 copyout ordering |
 
 ## 已知缺口
 
-普通多线程 Process 的全部 fork/exec 组合、完整 clone namespace/ptrace flags 与任意 process capability model 尚未开放。
+多线程 Process 原地 exec、完整 clone namespace/ptrace flags 与任意 process capability model 尚未开放。

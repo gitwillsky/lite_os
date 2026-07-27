@@ -21,7 +21,7 @@ struct NetworkStackState {
     payload_loans: usize,
 }
 
-/// 唯一 NetworkStack 的可睡眠 task-context guard。
+/// 唯一 NetworkStack guard；task path 可睡眠取得，deferred observer 只能 `try_lock`。
 pub(super) struct NetworkStackGuard<'a> {
     state: TaskMutexGuard<'a, NetworkStackState>,
     // 本 guard 取得 owner 后固定的 bounded-drain 结果；不复制持久 cleanup state。
@@ -106,6 +106,20 @@ impl NetworkStackOwner {
         Some(NetworkStackGuard {
             state,
             cleanup_backlog,
+        })
+    }
+
+    /// @description readiness 通知路径无等待地观察完整协议状态。
+    /// @return owner 正忙或 payload loan 使 SocketSet 暂时不完整时返回 `None`。
+    /// @errors 无错误且不消费 device error 或 cleanup command。
+    pub(super) fn try_observe(&self) -> Option<NetworkStackGuard<'_>> {
+        let state = self.state.try_lock()?;
+        if state.payload_loans != 0 {
+            return None;
+        }
+        Some(NetworkStackGuard {
+            state,
+            cleanup_backlog: false,
         })
     }
 

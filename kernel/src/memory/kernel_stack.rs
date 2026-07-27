@@ -61,10 +61,16 @@ impl Drop for KernelStack {
     fn drop(&mut self) {
         let (bottom, _) = kernel_stack_position(self.handle.0);
         let mapped_bottom = bottom + PAGE_SIZE;
-        KERNEL_SPACE
+        // 1. 只在 KERNEL_SPACE lock 内摘除 VMA/PTE，并由 retirement token 保活全部 frame。
+        // 2. 先释放 lock 再等待 remote ack；目标 CPU 可能正以 IRQ masked 状态等待同一 lock，
+        //    若持锁 shootdown 会让双方永久互等。
+        // 3. 全部目标越过 broadcast flush point 并发布 ack 后才释放 backing，阻止 HVF
+        //    stale TTBR1 translation 写入已经复用的新 kernel stack。
+        let retirement = KERNEL_SPACE
             .wait()
             .lock()
-            .remove_area_with_start_vpn(VirtualAddress::from(mapped_bottom).into());
+            .prepare_area_retirement(VirtualAddress::from(mapped_bottom).into());
+        retirement.synchronize();
     }
 }
 

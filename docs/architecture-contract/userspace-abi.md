@@ -65,6 +65,9 @@
 - 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error
   publication owner；kernel 必须保留消息边界、peer-close EOF/hangup 与 `SO_TYPE=5`。只开放
   socketpair，seqpacket bind/listen/connect 仍明确返回不支持，不能在应用退回多线程不安全的 raw fork。
+- 普通 `fork` 从多线程 parent 只复制 calling Thread，child 以独立 process owner、COW AddressSpace
+  与调用时的 fd/credential/signal-action snapshot 发布；parent sibling 不进入 child graph。
+  child 在 exec 前只能依赖 POSIX async-signal-safe 路径，kernel 不复制用户态锁状态。
 - 多线程图形进程只能通过 `SessionChild` 的固定 `/bin/session-launch` 单轨启动 session child。
   parent 的标准 `Command` 不得安装 `pre_exec`；单线程 trampoline 依次设置 parent-death signal、
   复检 parent identity、`setsid` 并同 PID `exec`。parent 独占 exec-status 读端，trampoline
@@ -77,6 +80,8 @@
   edge/testing 或其他 branch 形成未固定 ABI 回退。
 - 产品 rootfs 必须把同一个 BusyBox `env` inode 发布到 `/bin/env` 与 `/usr/bin/env`；缺失后者会让
   npm/pnpm 等已成功安装的 `#!/usr/bin/env node` 入口在 exec 时错误返回 `ENOENT`。
+- 产品 login profile 必须把 `/usr/local/bin` 放入 PATH；npm global prefix 发布的 command
+  symlink 位于该目录，缺失时包已成功安装但交互 shell 仍会错误报告 command not found。
 
 ## Failure and cleanup
 

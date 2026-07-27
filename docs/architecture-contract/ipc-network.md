@@ -26,7 +26,10 @@
   ready/source/reverse 节点，wake 只回收并重用节点。epoll_wait 只消费
   ready index 并等待单个 epoll notification，禁止每次 wake clone/poll 全部 interests
   或重建 source keys；所有 poll/epoll/blocking caller 仍必须在 wake 后复查
-  backend level readiness。
+  backend level readiness。source notifier 持 epoll owner 时只能无等待地观察 backend；
+  IPv4 owner 竞争或 payload loan 使状态暂不完整时，先保守发布 ready membership，再由
+  task-context delivery 精确 level recheck，禁止在 deferred context 注册 `TaskMutex` waiter
+  或吞掉唯一 edge。
 - syscall socket 层只处理 sockaddr/iovec/msghdr/cmsg/option codec、user-copy 与 errno；不得匹配或泄漏 concrete protocol adapter。
 - protocol message limit 与 stream/atomic classification 由 `socket::message_limits` 唯一提供。
 - pipe 与所有 socket backend 只向 `ipc::ReceiveBuffer` 追加实际取得的 bytes；64KiB heap staging 只 reserve、不预清零，stream control barrier 通过 bounded append 保持，syscall 只 scatter initialized prefix。不得取得未初始化 capacity 的 Rust slice，也不保留 slice/zeroed 双轨。

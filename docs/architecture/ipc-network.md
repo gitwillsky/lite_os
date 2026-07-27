@@ -5,7 +5,9 @@
 - `ipc::Pipe` 唯一拥有 byte ring、endpoint、atomic write 与 readiness generation；notification pipe 只传递合并 edge，不复制 data readiness。
 - epoll 在 ctl 阶段以持久 source index 精确更新 ready membership，wait 只向
   sharded WaitRegistry 发布单个 epoll notification key；ppoll/pselect 与 blocking I/O
-  仍使用 transient source-key seam，两者在唤醒后都复查 backend level state。
+  仍使用 transient source-key seam，两者在唤醒后都复查 backend level state。source notifier
+  不等待 IPv4 `TaskMutex`；owner 竞争时先保守保留 ready membership，由 task-context delivery
+  做精确 level recheck，避免 deferred callback 睡眠或丢失 edge。
 - `socket` façade 拥有 domain dispatch；AF_UNIX namespace/queue/SCM graph、IPv4 stack、
   AF_PACKET registry 与 kobject listener 各自拥有复合状态。IPv4 `TaskMutex` protocol owner 保持
   唯一 `SocketSet`；endpoint data-plane 通过稳定 placeholder slot 临时借出真实 socket，在 owner 外

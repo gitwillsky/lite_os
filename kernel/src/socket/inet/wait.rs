@@ -20,6 +20,21 @@ impl InetSocket {
         udp_endpoint::poll_state(handle)
     }
 
+    /// @description 在 deferred epoll source 通知中无等待地投影 readiness。
+    /// @return endpoint 或协议 owner 正忙时返回 `None`，由 epoll 保守保留一次复查机会。
+    /// @errors 不分配、不睡眠，也不消费 adapter error。
+    pub(in crate::socket) fn try_poll_state(&self) -> Option<SocketPollState> {
+        let _operation = self.operation.try_lock()?;
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            return tcp::try_poll_state(self);
+        }
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            return raw_endpoint::try_poll_state(handle);
+        }
+        let handle = self.udp_handle().ok()?;
+        udp_endpoint::try_poll_state(handle)
+    }
+
     pub(in crate::socket) fn readiness_generation(&self) -> u64 {
         self.notify_read
             .pipe()

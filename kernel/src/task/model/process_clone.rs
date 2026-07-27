@@ -1,7 +1,7 @@
 use super::*;
 
 impl TaskControlBlock {
-    /// @description 以 COW 用户页构造 fork child，Process 级非内存资源仍独立复制。
+    /// @description 以 COW 用户页构造 fork child；多线程 parent 只复制 calling Thread。
     /// @param pid TaskManager 已唯一分配、尚未发布的 child TGID/TID。
     /// @return 成功返回尚处于 New 状态的 child；OOM 时 parent 完全不变。
     pub(in crate::task) fn fork_process(&self, pid: ProcessId) -> Result<Self, MemoryError> {

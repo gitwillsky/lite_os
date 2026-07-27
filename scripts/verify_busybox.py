@@ -490,6 +490,34 @@ def install_guest_gate_init(
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
 
+def install_kernel_stack_churn_gate(image: Path, directory: Path) -> None:
+    """向 disposable image 注入双 CPU kernel-stack retirement 回归入口。
+
+    Args:
+        image: 当前未被 QEMU 使用的 gate-private ext2 镜像。
+        directory: host 临时命令与 inittab fixture 的唯一目录。
+
+    Returns:
+        None；脚本与 sysinit 入口完整写入镜像后返回。
+
+    Raises:
+        subprocess.CalledProcessError: debugfs 无法更新 private image。
+    """
+    fixture = ROOT / "scripts/fixtures/kernel-stack-churn.sh"
+    commands = directory / "kernel-stack-churn.debugfs"
+    commands.write_text(
+        f"write {fixture} /run/kernel-stack-churn.sh\n"
+        "set_inode_field /run/kernel-stack-churn.sh mode 0100755\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+    install_guest_gate_init(
+        image,
+        directory,
+        "/run/kernel-stack-churn.sh",
+        "kernel-stack-churn",
+    )
+
+
 def source_payload() -> dict[str, object]:
     return {
         "kind": "busybox-source",
@@ -1399,6 +1427,8 @@ def create_image(
         "mkdir /var/lib/liteos/audio",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
+        f"write {ROOT / 'user' / 'base' / 'profile'} /etc/profile",
+        "set_inode_field /etc/profile mode 0100644",
         f"write {BUNDLED_MUSIC_SOURCE} {BUNDLED_MUSIC_DESTINATION}",
         f"set_inode_field {BUNDLED_MUSIC_DESTINATION} mode 0100644",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
@@ -1654,6 +1684,7 @@ def create_published_image(
         ROOT / "user/base/passwd",
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
+        ROOT / "user/base/profile",
         ROOT / "user/base/graphical-session",
         ROOT / "user/Cargo.toml",
         ROOT / "user/Cargo.lock",
@@ -1779,7 +1810,7 @@ def main() -> int:
         stamp = ROOT / f"target/verify-gates/busybox-{TARGET.arch}.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            12,
+            13,
             (
                 *target_runtime_artifacts(),
                 binary,
@@ -1790,6 +1821,7 @@ def main() -> int:
                 ROOT / "user/base/passwd",
                 ROOT / "user/base/group",
                 ROOT / "user/base/inittab",
+                ROOT / "user/base/profile",
                 ROOT / "user/base/graphical-session",
                 ROOT / "user/Cargo.toml",
                 ROOT / "user/Cargo.lock",
@@ -1809,6 +1841,7 @@ def main() -> int:
                 ROOT / "scripts/apk_rootfs.py",
                 ROOT / "scripts/openssl_cache.py",
                 ROOT / "scripts/qemu_gate.py",
+                ROOT / "scripts/fixtures/kernel-stack-churn.sh",
             ),
         )
         image = args.image.resolve()
@@ -1837,12 +1870,15 @@ def main() -> int:
         phase55_image = runtime_path / "phase55.img"
         phase56_image = runtime_path / "phase56.img"
         phase57_image = runtime_path / "phase57.img"
+        kernel_stack_churn_image = runtime_path / "kernel-stack-churn.img"
         shutil.copyfile(runtime_image, phase55_image)
         shutil.copyfile(runtime_image, phase56_image)
         shutil.copyfile(runtime_image, phase57_image)
+        shutil.copyfile(runtime_image, kernel_stack_churn_image)
         install_guest_gate_init(phase55_image, runtime_path, "/run/phase55.sh", "phase55")
         install_guest_gate_init(phase56_image, runtime_path, "/run/phase56.sh", "phase56")
         install_guest_gate_init(phase57_image, runtime_path, "/run/phase57.sh", "phase57")
+        install_kernel_stack_churn_gate(kernel_stack_churn_image, runtime_path)
         # 该组合 gate 串行覆盖 50+ 次 UART interaction、TLS、archive、editor、并发 VFS 与
         # job-control；90 秒只是不受 host 调度影响的 liveness bound，不是性能阈值。热路径
         # 性能由 release instruction/count gates 独立约束，不能从这里删 marker 或 workload。
@@ -2301,6 +2337,17 @@ def main() -> int:
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
             timeout_seconds=30,
+        )
+        boot(
+            kernel_stack_churn_image,
+            2,
+            (
+                *cpu_topology_markers(2),
+                "init started: BusyBox v1.37.0",
+                "LITEOS_KERNEL_STACK_CHURN_42",
+            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            timeout_seconds=90,
         )
         boot(
             runtime_image,

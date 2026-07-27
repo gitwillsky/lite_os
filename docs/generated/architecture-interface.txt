@@ -195,8 +195,9 @@ kernel/src/arch/aarch64/mmu.rs :: pub (crate) const TRAMPOLINE_ADDRESS : usize =
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const TRAP_CONTEXT_ADDRESS : usize = TRAMPOLINE_ADDRESS - PAGE_SIZE
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const USER_ADDRESS_END : usize = 1 << (VIRTUAL_ADDRESS_WIDTH - 1)
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const USER_STACK_TOP : usize = SIGNAL_TRAMPOLINE_ADDRESS - PAGE_SIZE
+kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn acknowledge_broadcast_tlb ()
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn activate_kernel (root_page : usize)
-kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn broadcast_tlb (start : usize , size : usize)
+kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn broadcast_tlb ()
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn canonicalize_virtual_address (address : usize) -> usize
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn flush_local ()
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn flush_local_range (start : usize , size : usize)
@@ -218,7 +219,7 @@ kernel/src/arch/aarch64/mod.rs :: pub (crate) use instruction_cache :: broadcast
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use instruction_cache :: publish_range as publish_instruction_range
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u32 , read_mmio_u64 , write_mmio_u8 , write_mmio_u32 , write_mmio_u64 , }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use kernel_context :: { KernelContext , KernelResume , switch_kernel_context }
-kernel/src/arch/aarch64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , USER_STACK_TOP , broadcast_tlb , canonicalize_virtual_address , flush_local as flush_local_tlb , flush_local_range as flush_local_tlb_range , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_to_virtual , virtual_to_physical , }
+kernel/src/arch/aarch64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , USER_STACK_TOP , acknowledge_broadcast_tlb , broadcast_tlb , canonicalize_virtual_address , flush_local as flush_local_tlb , flush_local_range as flush_local_tlb_range , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_to_virtual , virtual_to_physical , }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use page_table :: { AddressSpaceKind , PageTable as ArchitecturePageTable , PageTableEntry as ArchitecturePageTableEntry , PageTableError , TablePage , }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use pte :: PagePermissions
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use signal_frame :: { MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack }
@@ -335,7 +336,7 @@ kernel/src/arch/aarch64/trap.rs :: pub (crate) enum TrapEvent
 kernel/src/arch/aarch64/trap.rs :: pub (crate) fn event () -> TrapEvent
 kernel/src/arch/aarch64/trap.rs :: pub (crate) fn install_kernel_entry ()
 kernel/src/arch/aarch64/trap.rs :: pub (crate) fn kernel_exception (event : TrapEvent) -> KernelException
-kernel/src/arch/aarch64/trap.rs :: pub (crate) fn return_to_user (context_address : usize , address_space : AddressSpaceToken , trampoline_address : usize ,) -> !
+kernel/src/arch/aarch64/trap.rs :: pub (crate) fn return_to_user (context_address : usize , address_space : AddressSpaceToken , _trampoline_address : usize ,) -> !
 kernel/src/arch/aarch64/trap.rs :: pub (crate) fn user_entry () -> UserTrapEntry
 kernel/src/arch/aarch64/trap.rs :: pub (crate) struct KernelException
 kernel/src/arch/aarch64/trap.rs :: pub (crate) struct UserTrapEntry
@@ -409,7 +410,6 @@ kernel/src/arch/mod.rs :: pub (crate) struct IllegalInstructionRetry
 kernel/src/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , read_mmio_u8 , read_mmio_u32 , secondary_entry , write_mmio_u8 , write_mmio_u32 , }
 kernel/src/arch/mod.rs :: pub (crate) use selected :: { read_mmio_u64 , write_mmio_u64 }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_instruction_cache
-kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_tlb
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: raise_software
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , disable_timer_source , enable_scheduler_interrupts , enable_timer_source , restore_local , wait_for_external_interrupt , wait_for_interrupt as wait , wait_with_local_irq_masked , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: publish_instruction_range as publish_range
@@ -419,6 +419,7 @@ kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { ELF_HWCAP , ELF
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { KERNEL_STACK_CONTEXT_RESERVE , KernelContext , KernelResume , MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack , SyscallCompletion , USER_CONTEXT_PLACEMENT , UserContext , inspect_illegal_instruction , reset_live_floating_point , switch_kernel_context , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { StartupCpu , current_logical_id , entry_identity , initialize_local_execution , initialize_startup , install_boot_cpu , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { TrapEvent , UserTrapEntry , install_kernel_entry , kernel_exception , return_to_user , trap_event as event , user_entry , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { acknowledge_broadcast_tlb , broadcast_tlb }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { counter_frequency , program_virtual_timer }
 kernel/src/arch/riscv64/fp_instruction.rs :: pub (crate) fn is_floating_point_instruction_at (program_counter : usize , mut copy : impl FnMut (usize , & mut [u8]) -> bool ,) -> bool
 kernel/src/arch/riscv64/instruction_cache.rs :: pub (crate) fn initialize_local ()
@@ -1546,6 +1547,7 @@ kernel/src/fs/epoll/ready.rs :: pub (crate) impl Epoll :: fn has_ready (& self) 
 kernel/src/fs/epoll/ready.rs :: pub (crate) impl Epoll :: fn readiness_generation (& self) -> u64
 kernel/src/fs/epoll/ready.rs :: pub (crate) impl Epoll :: fn ready_snapshot (& self , maximum : usize) -> Result < Vec < EpollInterest > , () >
 kernel/src/fs/epoll/ready.rs :: pub (super) impl Epoll :: fn refresh_locked (state : & mut EpollState , key : InterestKey)
+kernel/src/fs/epoll/ready.rs :: pub (super) impl Epoll :: fn refresh_source_locked (state : & mut EpollState , key : InterestKey) -> bool
 kernel/src/fs/ext2.rs :: pub (crate) struct Ext2FileSystem
 kernel/src/fs/ext2/allocation_dirty.rs :: pub (super) impl AllocationDirty :: const fn empty () -> Self
 kernel/src/fs/ext2/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn groups (& self) -> impl Iterator < Item = usize > + '_
@@ -1712,6 +1714,7 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn readiness_so
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn seek_position (& self , offset : i64 , base : impl FnOnce (u64) -> u64 ,) -> Result < u64 , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn socket (socket : Arc < Socket > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_opened : Arc < OpenedFile > , flags : u32 ,) -> Result < Arc < Self > , () >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn try_poll_events (& self , events : i16) -> Option < i16 >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn with_position < R > (& self , operation : impl FnOnce (& mut u64) -> R) -> R
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn with_positions < R > (first : & Self , second : & Self , operation : impl FnOnce (& mut u64 , & mut u64) -> R ,) -> Option < R >
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
@@ -2766,7 +2769,10 @@ kernel/src/memory/mm/resident.rs :: pub (super) PrivateResident :: discardable :
 kernel/src/memory/mm/resident.rs :: pub (super) PrivateResident :: frame : Arc < FrameTracker >
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn new (frame : Arc < FrameTracker >) -> Self
 kernel/src/memory/mm/resident.rs :: pub (super) struct PrivateResident
+kernel/src/memory/mm/retire.rs :: pub (crate) impl MemorySet :: fn prepare_area_retirement (& mut self , start_vpn : VirtualPageNumber ,) -> PreparedAreaRetirement
 kernel/src/memory/mm/retire.rs :: pub (crate) impl MemorySet :: fn remove_area_with_start_vpn (& mut self , start_vpn : VirtualPageNumber)
+kernel/src/memory/mm/retire.rs :: pub (crate) impl PreparedAreaRetirement :: fn synchronize (mut self)
+kernel/src/memory/mm/retire.rs :: pub (crate) struct PreparedAreaRetirement
 kernel/src/memory/mm/retire.rs :: pub (in crate :: memory) impl MapArea :: fn unmap (& mut self , page_table : & mut PageTable , commit : & mut TranslationCommit ,)
 kernel/src/memory/mm/shared_area.rs :: pub (super) AnonymousSharedBacking :: id : u64
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedAnonymousArea :: backing : Arc < AnonymousSharedBacking >
@@ -2937,7 +2943,7 @@ kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn sync_range (& 
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn acquire_writer (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn frame (& self) -> & SharedFrame
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
-kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
@@ -2981,8 +2987,10 @@ kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn register_device
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn send_ipi (cpus : CpuSet) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct GicV3
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn arm_timer (deadline : u64) -> Result < () , TimerArmError >
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn complete_pending_ipi ()
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn debug_console_write (byte : u8) -> Result < () , console :: ConsoleError >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn initialize (boot : BootInfo)
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn initialize_devices ()
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn kernel_mmio_regions () -> impl Iterator < Item = core :: ops :: Range < usize > >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn physical_memory_end () -> usize
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
@@ -2995,7 +3003,6 @@ kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) mod console
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct InstructionFenceError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TimerArmError
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TlbShootdownError
-kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use devices :: initialize as initialize_devices
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { claim_interrupt , complete_interrupt , notify_self , send_ipi }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use psci :: { ResetError , reset_system , start_cpu }
@@ -3007,12 +3014,15 @@ kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) fn verify ()
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) struct CpuStartError
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) struct FirmwareError
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) struct ResetError
+kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs :: pub (super) fn complete_pending ()
+kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs :: pub (super) fn initialize ()
+kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs :: pub (super) fn synchronize (targets : CpuSet) -> Result < () , super :: TlbShootdownError >
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Device (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Software (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Spurious
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Timer (u32)
 kernel/src/platform/qemu_virt/mod.rs :: pub (crate) enum ClaimedInterrupt
-kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
@@ -3068,6 +3078,7 @@ kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct TimerArm
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct TlbShootdownError
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn claim_interrupt () -> super :: ClaimedInterrupt
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_interrupt (claim : super :: ClaimedInterrupt)
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_pending_ipi ()
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn kernel_mmio_regions () -> impl Iterator < Item = core :: ops :: Range < usize > >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn notify_self ()
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn physical_memory_end () -> usize
@@ -3294,6 +3305,7 @@ kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackGuard <
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn cleanup_or_defer (& self , endpoint : InetEndpoint)
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn lock (& self) -> Result < NetworkStackGuard < '_ > , SocketError >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn new (stack : NetworkStack) -> Self
+kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn try_observe (& self) -> Option < NetworkStackGuard < '_ > >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn try_poll (& self) -> Option < NetworkStackGuard < '_ > >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) impl NetworkStackOwner :: fn with_payload_loan < T , R > (& self , take : impl FnOnce (& mut NetworkStack) -> Result < T , SocketError > , operation : impl FnOnce (& mut T) -> Result < R , SocketError > , restore : impl FnOnce (& mut NetworkStack , T) ,) -> Result < R , SocketError >
 kernel/src/socket/inet/protocol_owner.rs :: pub (super) static NETWORK_STACK : Once < NetworkStackOwner >
@@ -3320,6 +3332,7 @@ kernel/src/socket/inet/raw.rs :: pub (super) fn receive (endpoint : & InetSocket
 kernel/src/socket/inet/raw.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn set_broadcast (handle : SocketHandle , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn set_hop_limit (handle : SocketHandle , value : u8) -> Result < () , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn try_poll_state (handle : SocketHandle) -> Option < SocketPollState >
 kernel/src/socket/inet/raw.rs :: pub (super) struct RawEndpointState
 kernel/src/socket/inet/readiness.rs :: pub (super) fn notify_pending (pending : PendingNotifications)
 kernel/src/socket/inet/readiness.rs :: pub (super) impl NetworkStack :: fn capture_readiness_transitions (& mut self)
@@ -3342,7 +3355,7 @@ kernel/src/socket/inet/tcp.rs :: pub (super) fn peer_address (socket : & InetSoc
 kernel/src/socket/inet/tcp.rs :: pub (super) fn set_no_delay (socket : & InetSocket , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) struct TcpEndpointState
 kernel/src/socket/inet/tcp.rs :: pub (super) use accept :: accept
-kernel/src/socket/inet/tcp.rs :: pub (super) use io :: { maintain , poll_state , reap_orphans , receive , send , shutdown , take_error }
+kernel/src/socket/inet/tcp.rs :: pub (super) use io :: { maintain , poll_state , reap_orphans , receive , send , shutdown , take_error , try_poll_state , }
 kernel/src/socket/inet/tcp.rs :: pub (super) use lifecycle :: drop_endpoint
 kernel/src/socket/inet/tcp/accept.rs :: pub (in crate :: socket :: inet) fn accept (socket : & InetSocket , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < InetSocket > , SocketError >
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn maintain (network : & mut NetworkStack)
@@ -3352,6 +3365,7 @@ kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn receive 
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn send (socket : & InetSocket , input : & [u8] ,) -> Result < usize , SocketError >
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn shutdown (socket : & InetSocket , how : usize ,) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn take_error (socket : & InetSocket) -> Option < SocketError >
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn try_poll_state (socket : & InetSocket) -> Option < SocketPollState >
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) impl TcpEndpointState :: fn poll_state (& self , network : & NetworkStack) -> SocketPollState
 kernel/src/socket/inet/tcp/lifecycle.rs :: pub (in crate :: socket :: inet) fn drop_endpoint (network : & mut NetworkStack , id : usize)
 kernel/src/socket/inet/tcp/storage.rs :: pub (super) fn add_socket (network : & mut NetworkStack) -> Result < SocketHandle , SocketError >
@@ -3368,9 +3382,11 @@ kernel/src/socket/inet/udp.rs :: pub (super) fn poll_state (handle : SocketHandl
 kernel/src/socket/inet/udp.rs :: pub (super) fn receive (endpoint : & InetSocket , handle : SocketHandle , output : & mut ReceiveBuffer < '_ > , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn set_packet_info (handle : SocketHandle , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn try_poll_state (handle : SocketHandle) -> Option < SocketPollState >
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn consume_wait_notifications (& self)
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn poll_state (& self) -> SocketPollState
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn readiness_generation (& self) -> u64
+kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn try_poll_state (& self) -> Option < SocketPollState >
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn wait_sources (& self) -> crate :: socket :: SocketWaitSources
 kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn consume_notify (& self)
 kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn notify (& self)
@@ -3405,6 +3421,7 @@ kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn peer_address (
 kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn poll_state (& self) -> SocketPollState
 kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn prepare_wait (& self)
 kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn readiness_generation (& self , events : i16) -> u64
+kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn try_poll_state (& self) -> Option < SocketPollState >
 kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn wait_sources (& self , events : i16) -> (SocketWaitSources , Option < SocketWaitGuard >)
 kernel/src/socket/options.rs :: pub (crate) impl Socket :: fn bind_to_device (& self , name : & [u8]) -> Result < () , SocketError >
 kernel/src/socket/options.rs :: pub (crate) impl Socket :: fn ipv4_packet_info (& self) -> bool

@@ -51,6 +51,24 @@ impl Socket {
         }
     }
 
+    /// @description 在 deferred source 通知中无等待地投影 socket readiness。
+    /// @return AF_INET owner 竞争时返回 `None`；其他 backend 立即返回状态。
+    /// @errors 不分配、不睡眠，也不消费 adapter error。
+    pub(crate) fn try_poll_state(&self) -> Option<SocketPollState> {
+        match &self.backend {
+            SocketBackend::Unix(socket) => Some(socket.poll_state()),
+            SocketBackend::Inet(socket) => socket.try_poll_state(),
+            SocketBackend::Packet(socket) => Some(socket.poll_state()),
+            SocketBackend::Kobject(socket) => Some(socket.poll_state()),
+            SocketBackend::InterfaceControl => Some(SocketPollState {
+                readable: false,
+                writable: true,
+                hangup: false,
+                error: false,
+            }),
+        }
+    }
+
     pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.readiness_generation(events),

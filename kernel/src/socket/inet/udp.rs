@@ -388,6 +388,21 @@ pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
     }
 }
 
+/// @description 在 deferred source 通知中无等待地投影 UDP readiness。
+/// @param handle UDP smoltcp handle。
+/// @return owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
+/// @errors 不消费 adapter error；pending device failure 投影为 error readiness。
+pub(super) fn try_poll_state(handle: SocketHandle) -> Option<SocketPollState> {
+    let network = super::try_observe_stack()?;
+    let socket = network.sockets.get::<udp::Socket<'static>>(handle);
+    Some(SocketPollState {
+        readable: socket.can_recv(),
+        writable: socket.can_send(),
+        hangup: false,
+        error: network.device.pending_error().is_some(),
+    })
+}
+
 /// @description 删除 UDP metadata 与同一个 smoltcp handle。
 /// @param network 已由 protocol owner 独占的完整 NetworkStack。
 /// @param handle UDP smoltcp handle。

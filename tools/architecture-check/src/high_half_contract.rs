@@ -132,14 +132,14 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         );
     }
     let restore_ttbr = trap.find("msr ttbr0_el1, x1");
-    let restore_vbar = trap.find("msr vbar_el1, x2");
-    if !matches!((restore_ttbr, restore_vbar), (Some(ttbr), Some(vbar)) if ttbr < vbar)
+    if restore_ttbr.is_none()
+        || trap.contains("msr vbar_el1")
         || trap_rs.contains("__aarch64_restore as *const () as usize -")
         || !trap_rs.contains("restore = in(reg) __aarch64_restore as *const () as usize")
-        || !trap_rs.contains("in(\"x2\") trampoline_address")
+        || trap_rs.contains("in(\"x2\") trampoline_address")
     {
         errors.push(
-            "AArch64 user return must execute the linked TTBR1 restore entry and install TTBR0 before low VBAR"
+            "AArch64 user return must execute the linked TTBR1 restore entry, install TTBR0, and keep VBAR on its permanent high mapping"
                 .into(),
         );
     }
@@ -163,15 +163,10 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     if !(va39.contains("const TLBI_VIRTUAL_PAGE_MASK: u64 = (1u64 << 44) - 1")
         && va39.contains("tlbi_all_asid_operand(virtual_address: usize)")
         && va39.contains("high_half_tlbi_operand_contains_only_va_55_through_12")
-        && mmu.matches("va39::tlbi_all_asid_operand(address)").count() == 2)
+        && mmu.matches("va39::tlbi_all_asid_operand(address)").count() == 1)
     {
         errors.push(
-            "AArch64 TLBI operands must mask canonical VA down to architected VA[55:12]".into(),
-        );
-    }
-    if !mmu.contains("start == 0 && size == 0 || size == usize::MAX") {
-        errors.push(
-            "AArch64 broadcast TLBI must consume the generic full-range sentinel before aligned range validation"
+            "AArch64 local range TLBI operands must mask canonical VA down to architected VA[55:12]"
                 .into(),
         );
     }

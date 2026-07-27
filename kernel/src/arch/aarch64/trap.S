@@ -156,12 +156,10 @@ __aarch64_unsupported:
 
     .global __aarch64_restore
 __aarch64_restore:
-    // x0=context VA, x1=tagged TTBR0, x2=destination low vector VA. This entry executes through
-    // permanent TTBR1 until the destination TTBR0 makes the low context/vector mappings valid.
+    // x0=context VA, x1=tagged TTBR0. VBAR remains on the permanent TTBR1 vector mapping so a
+    // remote full TLBI cannot strand this CPU at an invalidated low-vector alias.
     dsb ishst
     msr ttbr0_el1, x1
-    isb
-    msr vbar_el1, x2
     isb
     mov x16, x0
     ldr x9, [x16, #280]

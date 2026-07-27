@@ -36,8 +36,9 @@ fn handle_claimed_interrupt() {
     // 返回同一 controller。RISC-V PLIC batch 已完成，静态 façade 在此消费 no-op token。
     crate::platform::complete_interrupt(claimed);
     if software {
-        // 必须先 EOI/清除 local pending edge，再读取 barrier request；若反序，远端在
-        // completion 与 EOI 之间发布的新 request 可能合并到旧 edge 并永久等待。
+        // 必须先 EOI/清除 local pending edge，再读取所有 SGI request；若反序，远端在
+        // completion 与 EOI 之间发布的新 generation 可能合并到旧 edge 并永久等待。
+        crate::platform::complete_pending_ipi();
         crate::task::complete_pending_memory_barrier();
     }
 }

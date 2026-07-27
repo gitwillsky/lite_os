@@ -112,7 +112,7 @@
 
 ## 性能契约
 
-- first-class gate 是 AArch64+HVF、3008x1692、512 MiB、60 Hz，场景为 desktop、terminal 与第二窗口。
+- first-class gate 是 AArch64+HVF、3008x1692、2 GiB、60 Hz，场景为 desktop、terminal 与第二窗口。
   window drag、菜单、scroll、terminal output、text input 与 background timer 的 frame p95 不超过
   16.67 ms、p99 不超过 33.3 ms，input-to-visible p95 不超过 33.3 ms。
   该 frame 预算由 `scripts/verify_frame_timing.py` 经 compositor 的 guest-vblank `compositor: frame-stats`

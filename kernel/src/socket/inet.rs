@@ -20,7 +20,7 @@ use crate::{
 use self::device::EthernetDevice;
 use self::options::InetSocketOptions;
 use self::port_namespace::{PortError, PortLease, PortNamespace};
-use self::protocol_owner::{NETWORK_STACK, NetworkStackOwner};
+use self::protocol_owner::{NETWORK_STACK, NetworkStackGuard, NetworkStackOwner};
 use self::tcp::TcpEndpointState;
 use super::{InetAddress, SocketError, SocketPollState, packet};
 
@@ -129,6 +129,13 @@ fn stack() -> Result<&'static NetworkStackOwner, SocketError> {
         return Err(network_error(error));
     }
     Ok(stack)
+}
+
+/// @description epoll source 通知路径无等待地取得完整 IPv4 协议状态。
+/// @return stack 未初始化、owner 竞争或 payload loan 存在时返回 `None`。
+/// @errors 不消费 adapter error，也不分配或注册 task waiter。
+fn try_observe_stack() -> Option<NetworkStackGuard<'static>> {
+    NETWORK_STACK.get()?.try_observe()
 }
 
 fn network_error(error: crate::drivers::network::NetworkError) -> SocketError {

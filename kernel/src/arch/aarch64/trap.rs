@@ -121,17 +121,12 @@ pub(crate) fn install_kernel_entry() {
 pub(crate) fn return_to_user(
     context_address: usize,
     address_space: AddressSpaceToken,
-    trampoline_address: usize,
+    _trampoline_address: usize,
 ) -> ! {
     // SAFETY: TTBR1 keeps the linked restore entry executable while the boot TTBR0 is active.
     unsafe extern "C" {
         fn __aarch64_restore();
     }
-    assert_eq!(
-        trampoline_address & 0x7ff,
-        0,
-        "user VBAR mapping is not aligned"
-    );
     assert!(
         is_kernel_stack_user_context(context_address),
         "AArch64 user context is outside the kernel stack window"
@@ -151,15 +146,14 @@ pub(crate) fn return_to_user(
             .is_some_and(|end| end <= reserved_page + PAGE_SIZE),
         "AArch64 user context exceeds its reserved kernel-stack page"
     );
-    // SAFETY: x0/x1 own the live user context/token and x2 is its mapped vector-table VA. The
-    // high-half restore entry installs TTBR0 before publishing x2 to VBAR_EL1 and never returns.
+    // SAFETY: x0/x1 own the live user context/token. The high-half restore entry installs TTBR0
+    // while VBAR remains on the permanent TTBR1 vector mapping and never returns.
     unsafe {
         asm!(
             "br {restore}",
             restore = in(reg) __aarch64_restore as *const () as usize,
             in("x0") context_address,
             in("x1") address_space.encoded(),
-            in("x2") trampoline_address,
             options(noreturn)
         )
     }

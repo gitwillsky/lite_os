@@ -252,8 +252,8 @@ pub(crate) fn sys_rt_sigsuspend(mask: usize, signal_set_size: usize) -> isize {
                 .expect("sigsuspend temporary mask disappeared");
             -errno::ENOMEM
         }
-        WaitResult::Woken => -errno::EINTR,
-        _ => unreachable!("sigsuspend has no timeout/cancellation result"),
+        WaitResult::Woken | WaitResult::Interrupted => -errno::EINTR,
+        _ => unreachable!("sigsuspend has no timeout completion"),
     }
 }
 

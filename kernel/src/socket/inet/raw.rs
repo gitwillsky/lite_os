@@ -274,6 +274,17 @@ pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
     }
 }
 
+/// @description 在 deferred source 通知中无等待地投影 raw IPv4 readiness。
+/// @param handle raw smoltcp handle。
+/// @return owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
+/// @errors 不消费 adapter error；pending device failure 投影为 error readiness。
+pub(super) fn try_poll_state(handle: SocketHandle) -> Option<SocketPollState> {
+    let network = super::try_observe_stack()?;
+    let mut readiness = poll_state_locked(&network, handle);
+    readiness.error |= network.device.pending_error().is_some();
+    Some(readiness)
+}
+
 pub(super) fn set_broadcast(handle: SocketHandle, enabled: bool) -> Result<(), SocketError> {
     let mut network = stack()?.lock()?;
     network

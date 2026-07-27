@@ -41,6 +41,15 @@ class BusyBoxRoutingTests(unittest.TestCase):
             ),
         )
 
+    def test_login_path_exposes_npm_global_commands(self) -> None:
+        module = reload_busybox("aarch64", "hvf")
+        profile = (module.ROOT / "user/base/profile").read_text().strip()
+
+        self.assertEqual(
+            profile,
+            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
+
     def test_riscv64_route_preserves_bootloader_and_build_arch(self) -> None:
         module = reload_busybox("riscv64", "tcg")
 

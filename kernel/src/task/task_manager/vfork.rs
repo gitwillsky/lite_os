@@ -109,7 +109,7 @@ fn publish_child(
     graph.processes_created = graph.processes_created.saturating_add(1);
 }
 
-/// @description COW fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
+/// @description COW fork 当前 process 的 calling Thread 并发布单线程 child。
 /// @return parent 成功获得 child PID；COW/page-table 事务 OOM 时 graph 不发布 child。
 /// @errors 地址空间/Process 分配失败返回 Memory，RLIMIT_NPROC/PID namespace 耗尽返回 ResourceLimit。
 pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {

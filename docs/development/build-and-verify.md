@@ -8,6 +8,8 @@
 - `ARCH` 默认 `aarch64`，只接受 `aarch64` 与 `riscv64`；它统一选择 kernel target、Linux userspace target、QEMU、musl loader 与 Alpine repository architecture，未知值在 Make 解析期失败。
 - `ACCEL` 默认 `hvf`，只接受 `hvf` 与 `tcg`。`riscv64 + hvf` 在构建前硬失败；RISC-V 必须显式选择 `ACCEL=tcg`，AArch64 的 TCG 诊断路径也必须显式选择，不能从 HVF 静默回退。
 - `PROFILE` 默认 `release`，只接受 `release` 与 `debug`；提交门禁以 release 产物为准。
+- `QEMU_MEMORY` 默认 `2G`，统一控制 `run`、`run-gui` 与 `run-gdb` 的 guest RAM；交互式
+  AArch64 runtime gate 使用相同的 2 GiB 产品内存配置。
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
 - kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture identity，不允许跨目标命中。
 - rootfs 基线从 `assets/music/` 安装预置音乐到 `/root/Music`；该资产进入 rootfs 内容指纹并在写入后
@@ -124,10 +126,13 @@ lazy mmap 为 `0 local / 0 remote`；1 MiB、256 页 first-touch 为 `256 local 
 revoke/replace batch 为 `online_cpus - 1` 个 remote target；合并跨度不超过 64 页时执行精确逐页 fence，
 超过 64 页时规范化为 1 次 full fence，防止稀疏 VMA teardown 把跨度页数变成无界指令循环。
 RISC-V release target 继续验证 range `SFENCE.VMA` mechanism。AArch64/HVF 是明确的平台例外：
-任一 remote revoke 以一条 `VMALLE1IS` 升级 generic range/full request，规避 scoped TLBI
-未清除其他 vCPU stale translation；该路径不改变 publication/relax 的 local-only 热路径，
-成本由 architecture static gate、四 CPU COW migration runtime gate 裁决，不用失真的 host wall-clock
-阈值掩盖。
+任一 remote revoke 先执行 full `VMALLE1IS`，再向每颗目标 vCPU 发送 SGI；目标以 barrier
+越过 hypervisor flush point 并发布 generation ack，owner 在全部 ack 完成前不得释放
+frame/page table。kernel-stack retirement 还必须在释放 `KERNEL_SPACE` lock 后等待，
+避免 IRQ-masked target 等待同一锁形成环。该路径规避 broadcast 指令返回后其他 vCPU
+仍持有 stale TTBR0/TTBR1 translation，不改变 publication/relax 的 local-only 热路径。
+成本由 architecture static gate、四 CPU COW migration 与双 CPU kernel-stack churn
+runtime gate 裁决，不用失真的 host wall-clock 阈值掩盖。
 
 VMA hot path 使用 deterministic structure gate，不增加受宿主调度影响的 wall-clock benchmark。
 production `VmaIndexState` transition tests 覆盖 stack grow、split/protect/merge、fork/exec 与
@@ -162,7 +167,8 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
   `compositor` modeset/boot scene、AF_UNIX + SCM_RIGHTS 握手与 React desktop 首帧逐条发布 marker；
   首帧后继续观察并禁止 Terminal/PTTY marker，证明开机不会隐式启动应用。gate 使用无 host 窗口的
   一 CPU guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；
-- musl ELF/TLS/thread/signal/process consumer；
+- musl ELF/TLS/thread/signal/process consumer；process phase 在 sibling pthread 保持 runnable
+  时执行普通 fork，并继续覆盖 wait、posix_spawn file actions 与并发 child waiter；
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
 - BusyBox init/ash、TTY、filesystem、IPC 与 network consumer；
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice；

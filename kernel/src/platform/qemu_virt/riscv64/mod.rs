@@ -38,6 +38,11 @@ pub(crate) fn notify_self() {
     crate::arch::interrupt::raise_software();
 }
 
+/// @description RISC-V SBI RFENCE 由 firmware trap owner 完成，不使用 platform SGI mailbox。
+///
+/// @return 无返回值。
+pub(crate) fn complete_pending_ipi() {}
+
 /// @description 投影 platform 可分配 physical memory 的 exclusive end。
 /// @return 已验证 DTB memory range 的 end address。
 pub(crate) fn physical_memory_end() -> usize {

@@ -144,7 +144,7 @@ def _qemu_command(
         command.extend(
             [
                 "-m",
-                "512M",
+                "2G",
                 "-audiodev",
                 audio_backend,
                 "-device",

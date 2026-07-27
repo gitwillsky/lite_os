@@ -159,20 +159,26 @@ int verify_process_spawn(void)
 	while (atomic_load_explicit(&worker_running, memory_order_acquire) != 1) sched_yield();
 	if (syscall(SYS_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0) != 0) return 10;
 
-	/* 2. system and popen both traverse musl posix_spawn while a sibling Thread remains runnable. */
+	/* 2. Linux fork duplicates only the caller while a sibling Thread remains runnable. */
+	child = fork();
+	if (child == 0) _exit(59);
+	if (child <= 0 || waitpid(child, &status, 0) != child || !exited_with(status, 59)) return 11;
+
+	/* 3. system and popen both traverse musl posix_spawn while a sibling Thread remains runnable. */
 	status = system("test x$(printf phase59) = xphase59");
-	if (!exited_with(status, 0)) return 11;
+	if (!exited_with(status, 0)) return 12;
 	stream = popen("printf popen-59", "r");
 	if (stream == NULL || fread(output, 1, sizeof output, stream) != 8
-	    || memcmp(output, "popen-59", 8) != 0 || !exited_with(pclose(stream), 0)) return 12;
+	    || memcmp(output, "popen-59", 8) != 0 || !exited_with(pclose(stream), 0)) return 13;
 
-	/* 3. PATH search/file actions succeed; exec failure returns errno through musl's CLOEXEC pipe. */
+	/* 4. PATH search/file actions succeed; exec failure returns errno through musl's CLOEXEC pipe. */
 	result = verify_spawn_file_actions();
 	if (result != 0) return 20 + result;
+	child = -1;
 	result = posix_spawn(&child, "/missing/phase59", NULL, NULL, missing_arguments, environ);
 	if (result != ENOENT || child != -1) return 30;
 
-	/* 4. Concurrent parent Threads wait through the graph's unique child-event claim. */
+	/* 5. Concurrent parent Threads wait through the graph's unique child-event claim. */
 	result = verify_concurrent_waiters();
 	if (result != 0) return 40 + result;
 	atomic_store_explicit(&worker_running, 2, memory_order_release);

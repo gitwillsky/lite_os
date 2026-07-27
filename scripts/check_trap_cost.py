@@ -167,14 +167,6 @@ def aarch64_measurements(
         "clone_capture": q_registers(clone_capture, "st"),
         "exec_reset": q_registers(exec_reset, "ld"),
     }
-    ttbr0_write = next(
-        (index for index, line in enumerate(user_trap_assembly) if re.search(r"^msr\s+ttbr0_el1\b", line)),
-        None,
-    )
-    vbar_write = next(
-        (index for index, line in enumerate(user_trap_assembly) if re.search(r"^msr\s+vbar_el1\b", line)),
-        None,
-    )
     measured = {
         "ordinary_fp_load_store": ordinary_fp_load_store,
         "ordinary_q_instructions": count_matching(
@@ -219,11 +211,6 @@ def aarch64_measurements(
         "user_restore_vbar_writes": count_matching(
             user_trap_assembly, r"^msr\s+vbar_el1\b"
         ),
-        "user_restore_ttbr0_before_vbar": int(
-            ttbr0_write is not None
-            and vbar_write is not None
-            and ttbr0_write < vbar_write
-        ),
         "pre_restore_vbar_writes": count_matching(user_return, r"^msr\s+vbar_el1\b"),
         "kernel_irq_elr_system": count_matching(
             kernel_irq, r"^(?:mrs\s+\w+,\s*elr_el1|msr\s+elr_el1\b)"
@@ -264,8 +251,7 @@ def aarch64_measurements(
         "user_scratch_stack_reserves": 2,
         "user_scratch_stack_releases": 1,
         "user_restore_ttbr0_writes": 1,
-        "user_restore_vbar_writes": 1,
-        "user_restore_ttbr0_before_vbar": 1,
+        "user_restore_vbar_writes": 0,
         "pre_restore_vbar_writes": 0,
         "kernel_irq_elr_system": 2,
         "kernel_irq_wfi_label_addresses": 2,

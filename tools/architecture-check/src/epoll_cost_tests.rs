@@ -60,6 +60,26 @@ impl Model {
         }
     }
 
+    fn source_change_while_backend_is_contended(&mut self, ofd: u8) {
+        let keys = self.reverse.get(&ofd).cloned().unwrap_or_default();
+        for key in keys {
+            let interest = self.interests.get_mut(&key).unwrap();
+            interest.generation += 1;
+            if !interest.disabled
+                && (!interest.edge
+                    || interest
+                        .delivered_generation
+                        .is_none_or(|delivered| interest.generation != delivered))
+            {
+                self.ready.insert(key);
+            }
+        }
+    }
+
+    fn task_context_recheck(&mut self, key: u8) {
+        self.refresh(key);
+    }
+
     fn deliver(&mut self, key: u8, copyout_succeeds: bool) {
         if !copyout_succeeds || !self.ready.remove(&key) {
             return;
@@ -162,6 +182,23 @@ fn final_close_visits_only_exact_reverse_memberships() {
     assert_eq!(model.close_ofd(17), 2);
     assert_eq!(model.interests.len(), 62);
     assert!(model.interests.values().all(|interest| interest.ofd != 17));
+    model.assert_matches_full_scan();
+}
+
+#[test]
+fn contended_source_observation_keeps_edge_until_task_recheck() {
+    let mut model = Model::default();
+    model.add(9, 3, true, false, false);
+
+    model.source_change_while_backend_is_contended(3);
+    assert!(model.ready.contains(&9), "the only source edge was lost");
+
+    model.task_context_recheck(9);
+    assert!(!model.ready.contains(&9));
+    model.assert_matches_full_scan();
+
+    model.source_change(3, true);
+    assert!(model.ready.contains(&9));
     model.assert_matches_full_scan();
 }
 

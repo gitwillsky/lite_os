@@ -462,7 +462,7 @@ impl Epoll {
         Self::unpublish_sources(Self::identity(self), key, interest);
         interest.sources = interest.ofd.readiness_sources(interest.event.events as i16);
         Self::publish_sources(self, key, interest);
-        Self::refresh_locked(&mut state, key);
+        let definitely_ready = Self::refresh_source_locked(&mut state, key);
         let now_ready = state.ready.contains_key(&key);
         let changed_ready = was_ready || now_ready;
         if changed_ready {
@@ -470,7 +470,7 @@ impl Epoll {
             drop(_graph);
             self.notify_change();
         }
-        now_ready
+        definitely_ready
     }
 
     fn notify_change(&self) {

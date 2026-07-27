@@ -134,10 +134,6 @@ pub(crate) fn sys_clone(
         if stack != 0 {
             return -errno::EINVAL;
         }
-        let current = current_task().expect("clone requires current task");
-        if thread_count(current.tgid()) != 1 {
-            return -errno::EAGAIN;
-        }
         return match fork_current_process() {
             Ok(pid) => pid as isize,
             Err(ProcessCloneError::Memory(error)) => {

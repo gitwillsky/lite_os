@@ -3,16 +3,15 @@ use alloc::{sync::Arc, vec::Vec};
 use super::{EPOLL_EDGE, Epoll, EpollInterest, EpollState, InterestKey, OpenFileDescription};
 
 impl Epoll {
-    pub(super) fn refresh_locked(state: &mut EpollState, key: InterestKey) {
+    fn refresh_with_events(state: &mut EpollState, key: InterestKey, current: Option<u32>) -> bool {
         let Some(interest) = state.interests.get(&key) else {
-            return;
+            return false;
         };
-        let current = interest.ofd.poll_events(interest.event.events as i16) as u32;
         let generation = interest
             .ofd
             .readiness_generation(interest.event.events as i16);
         let should_be_ready = !interest.disabled
-            && current != 0
+            && current.is_none_or(|events| events != 0)
             && (interest.event.events & EPOLL_EDGE == 0
                 || interest
                     .last_generation
@@ -34,6 +33,31 @@ impl Epoll {
         if should_be_ready {
             state.ready_generation = generation;
         }
+        should_be_ready && current.is_some()
+    }
+
+    pub(super) fn refresh_locked(state: &mut EpollState, key: InterestKey) {
+        let Some(interest) = state.interests.get(&key) else {
+            return;
+        };
+        let current = interest.ofd.poll_events(interest.event.events as i16) as u32;
+        Self::refresh_with_events(state, key, Some(current));
+    }
+
+    /// @description source notifier 持 epoll owner 时无等待地刷新单个 ready membership。
+    /// @param state 当前 epoll 的唯一 state guard。
+    /// @param key 被 source index 精确路由的 interest。
+    /// @return 已取得精确 backend 快照且确认 ready 时为 true；竞争时保守入队但返回 false。
+    /// @errors 不分配、不睡眠；`None` 快照由 task-context delivery 精确复查。
+    pub(super) fn refresh_source_locked(state: &mut EpollState, key: InterestKey) -> bool {
+        let Some(interest) = state.interests.get(&key) else {
+            return false;
+        };
+        let current = interest
+            .ofd
+            .try_poll_events(interest.event.events as i16)
+            .map(|events| events as u32);
+        Self::refresh_with_events(state, key, current)
     }
 
     /// @description 只复制当前 ready memberships，不扫描全部 interests。

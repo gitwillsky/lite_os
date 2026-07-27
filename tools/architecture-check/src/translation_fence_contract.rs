@@ -6,7 +6,10 @@ const MEMORY_PREFIX: &str = "kernel/src/memory/";
 const MMAP_PATH: &str = "kernel/src/memory/mm/mmap.rs";
 const FAULT_PATH: &str = "kernel/src/memory/mm/mmap/fault.rs";
 const POLICY_PATH: &str = "kernel/src/memory/mm/shootdown.rs";
+const AARCH64_MMU_PATH: &str = "kernel/src/arch/aarch64/mmu.rs";
 const AARCH64_PLATFORM_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/mod.rs";
+const AARCH64_TLB_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs";
+const TRAP_PATH: &str = "kernel/src/trap/mod.rs";
 const RFENCE_PATH: &str = "bootloader/src/rfence.rs";
 const TRAP_VECTOR_PATH: &str = "bootloader/src/trap_vec.rs";
 
@@ -94,15 +97,79 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         ));
         return;
     };
-    for required in [
-        "if cpus.is_empty()",
-        "crate::arch::mmu::broadcast_tlb(0, 0);",
-    ] {
+    for required in ["if cpus.is_empty()"] {
         if !aarch64_platform.text.contains(required) {
             errors.push(format!(
-                "{AARCH64_PLATFORM_PATH}: Apple HVF remote revoke must keep empty-target no-op and upgrade every nonempty request to VMALLE1IS; missing `{required}`"
+                "{AARCH64_PLATFORM_PATH}: Apple HVF remote revoke must broadcast before delegating to the per-vCPU rendezvous owner; missing `{required}`"
             ));
         }
+    }
+    let broadcast = aarch64_platform
+        .text
+        .find("crate::arch::mmu::broadcast_tlb();");
+    let rendezvous = aarch64_platform
+        .text
+        .find("tlb_shootdown::synchronize(cpus)");
+    if !matches!((broadcast, rendezvous), (Some(broadcast), Some(rendezvous)) if broadcast < rendezvous)
+    {
+        errors.push(format!(
+            "{AARCH64_PLATFORM_PATH}: Apple HVF remote revoke must execute the architectural broadcast before waiting for per-vCPU rendezvous"
+        ));
+    }
+    let Some(aarch64_mmu) = sources
+        .iter()
+        .find(|source| source.relative == AARCH64_MMU_PATH)
+    else {
+        errors.push(format!(
+            "{AARCH64_MMU_PATH}: missing AArch64 architectural TLB broadcast owner"
+        ));
+        return;
+    };
+    for required in [
+        "tlbi vmalle1is",
+        "pub(crate) fn acknowledge_broadcast_tlb()",
+        "\"dsb ish\"",
+        "\"isb\"",
+    ] {
+        if !aarch64_mmu.text.contains(required) {
+            errors.push(format!(
+                "{AARCH64_MMU_PATH}: Apple HVF broadcast must invalidate the inner-shareable regime and expose a barrier-only target acknowledgement; missing `{required}`"
+            ));
+        }
+    }
+    let Some(aarch64_tlb) = sources
+        .iter()
+        .find(|source| source.relative == AARCH64_TLB_PATH)
+    else {
+        errors.push(format!(
+            "{AARCH64_TLB_PATH}: missing AArch64 per-vCPU TLB rendezvous owner"
+        ));
+        return;
+    };
+    for required in [
+        "if targets.is_empty()",
+        "super::gicv3::send_ipi(targets)",
+        "crate::arch::mmu::acknowledge_broadcast_tlb();",
+        "state.completion.fetch_max(requested, Ordering::Release);",
+        ".completion.load(Ordering::Acquire) >= generation",
+    ] {
+        if !aarch64_tlb.text.contains(required) {
+            errors.push(format!(
+                "{AARCH64_TLB_PATH}: Apple HVF retirement must publish a generation, force every target across the broadcast flush point, and await each release/acquire ack; missing `{required}`"
+            ));
+        }
+    }
+    let Some(trap) = sources.iter().find(|source| source.relative == TRAP_PATH) else {
+        errors.push(format!("{TRAP_PATH}: missing SGI completion owner"));
+        return;
+    };
+    if !trap
+        .text
+        .contains("crate::platform::complete_pending_ipi();")
+    {
+        errors.push(format!(
+            "{TRAP_PATH}: software interrupt completion must consume the AArch64 TLB rendezvous request after EOI"
+        ));
     }
 
     let Some(rfence) = sources.iter().find(|source| source.relative == RFENCE_PATH) else {

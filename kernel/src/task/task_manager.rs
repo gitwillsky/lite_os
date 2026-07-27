@@ -432,7 +432,8 @@ pub(crate) fn wait_for_signal(
 /// @description 用 Signal membership 等待 trap-return 可交付 signal，但不消费 pending bit。
 ///
 /// @param deliverable_set sigsuspend 临时 mask 的补集。
-/// @return signal 发布后返回；pending signal 留给唯一 trap delivery path。
+/// @return 匹配 signal 返回 Woken，另一可投递 signal 取消等待时返回 Interrupted；
+/// pending signal 都留给唯一 trap delivery path。
 pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) -> WaitResult {
     let task = current_task().expect("signal delivery wait requires current task");
     let ticket = WAIT_REGISTRY.allocate_ticket();
@@ -447,10 +448,9 @@ pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) -> WaitResult {
         WaitMembership::Signal,
     )
     .map_or_else(core::convert::identity, |prepared| prepared.suspend());
-    assert_eq!(
-        result,
-        WaitResult::Woken,
-        "sigsuspend has no timeout/cancellation path"
+    assert!(
+        matches!(result, WaitResult::Woken | WaitResult::Interrupted),
+        "sigsuspend has no timeout/OOM completion after publication"
     );
     result
 }

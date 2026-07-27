@@ -189,6 +189,20 @@ pub(in crate::socket::inet) fn poll_state(socket: &InetSocket) -> SocketPollStat
         .map_or(SocketPollState::error(), |state| state.poll_state(&network))
 }
 
+/// @description 在 deferred source 通知中无等待地投影 TCP readiness。
+/// @param socket TCP facade identity。
+/// @return owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
+/// @errors 不消费 adapter error；pending device failure 投影为 error readiness。
+pub(in crate::socket::inet) fn try_poll_state(socket: &InetSocket) -> Option<SocketPollState> {
+    let network = super::super::try_observe_stack()?;
+    let mut readiness = network
+        .tcp_endpoints
+        .get(&endpoint_id(socket))
+        .map_or(SocketPollState::error(), |state| state.poll_state(&network));
+    readiness.error |= network.device.pending_error().is_some();
+    Some(readiness)
+}
+
 impl TcpEndpointState {
     /// @description 在已持有 NetworkStack lock 时计算 endpoint readiness。
     /// @param network 唯一协议栈 owner。

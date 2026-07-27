@@ -62,11 +62,17 @@
   lazy VMA 未写 leaf PTE，fence 数必须为零。
 - huge leaf revoke 必须记录完整 leaf span；只允许从 leaf-aligned virtual page 撤销，禁止把中间 4KiB unmap 静默扩大到整个 huge leaf。
 - fixed RISC-V Privileged 规范允许 publication/relax 暂时命中旧 invalid/restrictive translation；对应 page fault 必须先执行当前 CPU range fence 再重试。地址空间 activation 的 full local fence 不得作为 mutation 兼容路径。
-- AArch64 remote revoke 使用 inner-shareable TLBI 与 DSB/ISB completion；不得发送 SGI
-  或等待 mailbox ack。Apple HVF 的 remote VA/ASID-scoped invalidation 不能作为 completion
-  原语：任一非空 remote target 都必须把 generic `[start,size)` request 升级为单次
-  `VMALLE1IS`。缺少该升级会让迁移后的 task 命中 fork/COW 前的 writable translation，
-  直接写坏另一进程用户页；空 target 才允许 no-op。instruction publication 按 CTR_EL0
+- AArch64 remote revoke 必须由 source 执行 full `VMALLE1IS`，随后向每颗目标 vCPU 发布
+  generation 并发送 SGI；handler 在 EOI 后以 barrier 越过 HVF flush point，再以 Release
+  发布 completion，retirement owner 取得所有 Acquire ack 后才能释放 frame/page table。
+  Apple HVF 的 broadcast 指令返回本身不能证明其他 vCPU 已丢弃旧 TTBR0/TTBR1
+  translation，而在目标 SGI handler 内执行 local TLBI 会卡死低地址异常向量。VBAR
+  必须永久指向 TTBR1 high vector，user return 只切换 TTBR0；缺少
+  broadcast+ack 会让复用后的 kernel-stack frame 仍被旧 translation 写入，或让迁移后的
+  task 命中 fork/COW 前的 writable translation。空 target 才允许 no-op；并发 caller 必须
+  主动消费自身 pending request，避免双方等待。持有 `KERNEL_SPACE` ordinary lock 时不得
+  等 remote ack：kernel-stack retirement 必须锁内摘除 PTE/保活 owner，解锁后再同步，
+  否则 IRQ-masked target 等待同一锁会形成死锁。instruction publication 按 CTR_EL0
   IDC/DIC 选择零维护快路径或精确 DC/IC range，两条路径都必须在返回前完成 architecture
   ordering。
 - address-space retirement 是唯一 full remote fence 例外：完整 `MemorySet` owner 必须保活到全部 CPU fence 完成，随后才能归还 ASID 并释放 page-table/frame owner。
