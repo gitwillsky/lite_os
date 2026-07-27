@@ -20,6 +20,10 @@ host/unit test 可以证明局部 API，却不能证明普通桌面应用能在�
 功能限定为目录/playlist、metadata、播放/暂停、上一首/下一首、seek、loop、element volume 与错误提示。
 不包含 network library、跨曲 sample-accurate gapless、equalizer、format conversion 或 recording。
 
+产品 UX 以 Now Playing 为主视图，library 只负责目录导航与建立当前队列；seek 与 element volume 必须
+使用标准受控 `<input type="range">`，不能以固定几何点击区复制第二套 slider 状态。未知曲目时长显示
+`--:--`，不得用演示数据伪造 metadata。
+
 ## 结果
 
 - Music Player 不依赖 `audio-proto`、ALSA、VirtIO 或 system mixer interface；出现该依赖即架构失败。

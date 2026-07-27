@@ -14,7 +14,7 @@ QEMU 命令行或协议。坐标以 1504x846 逻辑视口的比例表达（QMP a
 
     --out   截图输出目录（默认 /tmp/liteos-ui）。每一步产出 <name>.png。
     --open  桌面第一屏要双击打开的应用（默认 file-manager）。可选：
-            my-computer | file-manager | terminal。
+            my-computer | file-manager | music-player | terminal。
 
     默认脚本演示 File Manager 的验收流：Icons 视图 → 单击选中 → 切 Details 视图；
     my-computer 的验收流：打开我的电脑 → 单击 本地磁盘 (C:) 看选中态+详细信息联动。
@@ -58,12 +58,14 @@ BOOT_MARKERS = (
 DESKTOP_ICONS = {
     "my-computer": (47 / 1504, 34 / 846),
     "terminal": (47 / 1504, 92 / 846),
+    "music-player": (47 / 1504, 150 / 846),
     "file-manager": (47 / 1504, 208 / 846),
 }
 # 应用窗口就绪 marker。
 APP_READY = {
     "my-computer": "lite-ui: app my-computer ready",
     "file-manager": "lite-ui: app file-manager ready",
+    "music-player": "lite-ui: app music-player ready",
     "terminal": "lite-ui: app terminal ready",
 }
 
@@ -239,6 +241,24 @@ def main() -> int:
             # 点工具栏 Views 按钮 (约 x=495 y=152) 切换 Icons↔Details。
             click(495 / 1504, 152 / 846)
             shot("details")
+        if args.open == "music-player":
+            # 默认 720x480 窗口位于 (150, 90)。播放按钮使用 public
+            # HTMLMediaElement path；抓帧确认 playing state 与进度条更新。
+            click(380 / 1504, 452 / 846)
+            time.sleep(1.0)
+            shot("playing")
+            # 主视图左上返回 Library；验证真实目录行和返回入口。
+            click(213 / 1504, 143 / 846)
+            time.sleep(0.5)
+            shot("library")
+            click(206 / 1504, 143 / 846)
+            time.sleep(0.5)
+            # 点击底部 element-local volume range，验证 native range default action。
+            click(310 / 1504, 549 / 846)
+            shot("volume")
+            # 打开应用音频设置，确认浮层复用同一个标准 range 控件。
+            click(809 / 1504, 137 / 846)
+            shot("settings")
 
         return 0
     finally:

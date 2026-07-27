@@ -34,10 +34,12 @@ impl PointerCapture {
         hits.iter().find(|hit| hit.node_id == self.node_id)
     }
 
+    #[cfg(test)]
     pub(super) fn move_listener(self, hits: &[renderer::HitRegion]) -> Option<u64> {
         self.hit(hits).and_then(|hit| hit.pointer_move)
     }
 
+    #[cfg(test)]
     pub(super) fn up_listener(self, hits: &[renderer::HitRegion]) -> Option<u64> {
         self.hit(hits).and_then(|hit| hit.pointer_up)
     }
@@ -127,13 +129,39 @@ fn dispatch_key(
             .hits
             .iter()
             .find(|hit| hit.node_id == node_id)
-            .and_then(|hit| hit.editable.clone().map(|editable| (node_id, editable)))
+            .map(|hit| (node_id, hit.editable.clone(), hit.range))
     });
-    if let Some((node_id, editable)) = focused {
+    if let Some((node_id, editable, range)) = focused {
         // Fold modifiers first; a modifier key produces no text itself.
         if interactions.modifiers.apply(key.code, key.value) {
             return Ok(());
         }
+        if let Some(range) = range {
+            if key.value != 0 {
+                if let Some(on_key) = interactions
+                    .hits
+                    .iter()
+                    .find(|hit| hit.node_id == node_id)
+                    .and_then(|hit| hit.key_down)
+                {
+                    dispatch_listener(
+                        engine,
+                        on_key,
+                        json!({"type":"key","code":key.code,"value":key.value,"modifiers":key.modifiers}),
+                    )?;
+                }
+                let direction = match key.code {
+                    103 | 106 => Some(1),  // KEY_UP / KEY_RIGHT
+                    105 | 108 => Some(-1), // KEY_LEFT / KEY_DOWN
+                    _ => None,
+                };
+                if let Some(direction) = direction {
+                    dispatch_range_value(engine, range, range.stepped(direction))?;
+                }
+            }
+            return Ok(());
+        }
+        let editable = editable.expect("focused non-range input is editable");
         if let Some(edit) = keymap::text_edit(key.code, key.value, interactions.modifiers) {
             if let Some(on_input) = editable.on_input {
                 let next = apply_text_edit(&editable.value, edit);
@@ -274,17 +302,33 @@ fn dispatch_pointer(
                     dispatch_listener(engine, listener, payload.clone())?;
                 }
             } else {
-                // 焦点跟随左键按下（标准 DOM 语义）：命中最顶层可编辑 `<input>` 则聚焦它，
-                // 否则清焦点。焦点变化需重绘以移动/隐藏文本光标。渲染器是焦点单一 owner。
+                // 焦点跟随左键按下（标准 DOM 语义）：文本与 range `<input>` 都可聚焦；
+                // disabled range 不可聚焦。焦点变化需重绘光标/滑块焦点框。
                 let focus_target = interactions
                     .hits
                     .iter()
                     .rev()
                     .filter(|hit| inside(hit))
-                    .find(|hit| hit.editable.is_some())
+                    .find(|hit| {
+                        hit.editable.is_some() || hit.range.is_some_and(|range| !range.disabled())
+                    })
                     .map(|hit| hit.node_id);
                 if renderer.set_focus(focus_target) {
                     state.invalidate_scene();
+                }
+                let range_target = interactions
+                    .hits
+                    .iter()
+                    .rev()
+                    .filter(|hit| inside(hit))
+                    .find(|hit| hit.range.is_some_and(|range| !range.disabled()))
+                    .cloned();
+                let range_captured = range_target.is_some();
+                if let Some(hit) = range_target {
+                    dispatch_range_pointer(engine, &hit, pointer.x)?;
+                    interactions.pointer_capture = Some(PointerCapture {
+                        node_id: hit.node_id,
+                    });
                 }
                 if let Some(hit) = interactions
                     .hits
@@ -298,17 +342,24 @@ fn dispatch_pointer(
                         hit.pointer_down.expect("filtered pointer listener"),
                         payload.clone(),
                     )?;
-                    interactions.pointer_capture = Some(PointerCapture {
-                        node_id: hit.node_id,
-                    });
+                    if !range_captured {
+                        interactions.pointer_capture = Some(PointerCapture {
+                            node_id: hit.node_id,
+                        });
+                    }
                 }
             }
         }
         display_proto::PointerPhase::Up => {
-            if let Some(capture) = interactions.pointer_capture.take()
-                && let Some(listener) = capture.up_listener(&interactions.hits)
-            {
-                dispatch_listener(engine, listener, payload.clone())?;
+            if let Some(capture) = interactions.pointer_capture.take() {
+                if let Some(hit) = capture.hit(&interactions.hits) {
+                    if hit.range.is_some_and(|range| !range.disabled()) {
+                        dispatch_range_pointer(engine, hit, pointer.x)?;
+                    }
+                    if let Some(listener) = hit.pointer_up {
+                        dispatch_listener(engine, listener, payload.clone())?;
+                    }
+                }
             }
             if pointer.button != BTN_RIGHT {
                 if let Some(listener) = interactions
@@ -345,11 +396,15 @@ fn dispatch_pointer(
             }
         }
         display_proto::PointerPhase::Motion => {
-            if let Some(listener) = interactions
-                .pointer_capture
-                .and_then(|capture| capture.move_listener(&interactions.hits))
-            {
-                dispatch_listener(engine, listener, payload)?;
+            if let Some(capture) = interactions.pointer_capture {
+                if let Some(hit) = capture.hit(&interactions.hits) {
+                    if hit.range.is_some_and(|range| !range.disabled()) {
+                        dispatch_range_pointer(engine, hit, pointer.x)?;
+                    }
+                    if let Some(listener) = hit.pointer_move {
+                        dispatch_listener(engine, listener, payload)?;
+                    }
+                }
             } else {
                 let next = interactions
                     .hits
@@ -405,6 +460,37 @@ fn dispatch_pointer(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn dispatch_range_pointer(
+    engine: &mut Engine,
+    hit: &renderer::HitRegion,
+    pointer_x: i32,
+) -> Result<(), Box<dyn Error>> {
+    let range = hit.range.expect("range hit");
+    let value = range.value_at(pointer_x as f32, hit.x, hit.width);
+    dispatch_range_value(engine, range, value)
+}
+
+fn dispatch_range_value(
+    engine: &mut Engine,
+    range: renderer::RangeInput,
+    value: f64,
+) -> Result<(), Box<dyn Error>> {
+    if value == range.value() {
+        return Ok(());
+    }
+    if let Some(on_input) = range.on_input() {
+        dispatch_listener(
+            engine,
+            on_input,
+            json!({
+                "type": "input",
+                "value": renderer::RangeInput::string_value(value)
+            }),
+        )?;
     }
     Ok(())
 }

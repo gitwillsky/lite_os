@@ -59,13 +59,16 @@
 
 - bundle default export 是唯一 React component，host 创建同步 mutation root。支持 hooks、context、
   fragment 与 keyed list；不开放 createRoot、portal、hydration、Server Components 或 concurrent root。
-- host primitive 固定为 `<view>`、`<text>`、`<image>`、`<text-input>`、`<audio>` 与 `<surface>`；
+- host primitive 固定为 `<view>`、`<text>`、`<image>`、`<input>`、`<audio>` 与 `<surface>`；
+  `<input>` 支持受控文本框和标准水平 `type=range`：range 的 min/max/step/value 由 renderer
+  规范化，pointer drag 与方向键默认动作派发字符串 `onInput`，UA 轨道/滑块由 renderer 绘制。
   `<audio>` 投影冻结的 HTMLMediaElement playback surface 与 UA controls，其他 controls 是 React
   component。desktop 用 `<view windowGroup={surface}>` 把 decoration 与 foreign surface 标为同一
   compositor move group，不新增 `<window>` primitive。
 - CSS 是严格标准子集：type/class/id/descendant/child selector，hover/active/focus/disabled，specificity、
-  inheritance、variables、box、Flexbox、absolute、gap、min/max、background、border、radius、shadow、
-  opacity、clip、z-index、text、`white-space`、overflow 与 `pointer-events`。不支持 Grid、float、table、
+  inheritance、variables、box、Flexbox、标准 margin 长度/百分比/`auto`、absolute、gap、min/max、
+  background、border、radius、shadow、opacity、clip、z-index、text、`white-space`、overflow 与
+  `pointer-events`。不支持 Grid、float、table、
   pseudo-element、media query、filter、transition、CSS animation 或 vendor prefix；不支持项构建失败。
 - React host instance 在完整 snapshot 中携带稳定 node id；LiteUI renderer 以该 id 独占 CSS scroll
   offset，并让 hover/pointer capture 在 snapshot 重建后继续解析同一元素的最新 listener。

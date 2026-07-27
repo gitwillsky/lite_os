@@ -220,6 +220,7 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
     await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
     await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
+    await copyFile(join(root, "../assets/music/跟太阳系说再见/cover.png"), join(assets, "solar-system-cover.png"));
   }
   if (id !== "desktop") {
     await copyFile(join(root, `src/${id}/app.json`), join(directory, "app.json"));

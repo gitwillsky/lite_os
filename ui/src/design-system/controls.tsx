@@ -65,6 +65,34 @@ export function TextInput({ value, width, autoFocus, placeholder, onInput, onKey
   );
 }
 
+/** Standard controlled horizontal range using LiteUI's native range default
+ * actions: pointer drag and arrow keys both emit a string-valued `onInput`. */
+export function RangeInput({ value, min, max, step, disabled, className, onInput }: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled?: boolean;
+  className?: string;
+  onInput: (value: number) => void;
+}) {
+  return (
+    <input
+      className={`range-input${disabled ? " range-input--disabled" : ""}${className ? ` ${className}` : ""}`}
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      disabled={disabled}
+      onInput={(event) => {
+        const value = Number((event as unknown as { value: string }).value);
+        if (Number.isFinite(value)) onInput(value);
+      }}
+    />
+  );
+}
+
 /** XP checkbox row: 13px sunken box with a real √ glyph when checked. */
 export function CheckBox({ label, checked, disabled, onToggle }: {
   label: string;

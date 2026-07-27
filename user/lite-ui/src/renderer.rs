@@ -6,6 +6,7 @@ mod gradient;
 mod image;
 mod layout;
 mod paint;
+mod range;
 mod scroll;
 
 use std::{
@@ -30,6 +31,7 @@ use box_paint::{paint_background, paint_border, paint_shadow};
 use cursor::shape as cursor_shape;
 use image::{Image, decode_png, paint_image};
 use layout::{OverflowMode, corner_radii, overflow_modes, text_content, to_taffy};
+pub(crate) use range::RangeInput;
 use scroll::{
     Axis, LogicalRect, ScrollDrag, ScrollOffset, ScrollRegion, Scrollbar, paint_scrollbar,
     paint_scrollbar_corner, scrollbar,
@@ -119,6 +121,8 @@ pub struct HitRegion {
     /// renderer calls with the edited string. `None` for non-input nodes.
     /// A hit region carrying this is focusable — pointer-down sets it focused.
     pub editable: Option<Editable>,
+    /// Standard `<input type="range">` checked state and default-action listener.
+    pub range: Option<RangeInput>,
 }
 
 /// The editable payload of an `<input>` hit region: the controlled `value` the

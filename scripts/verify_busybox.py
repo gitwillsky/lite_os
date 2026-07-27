@@ -121,6 +121,7 @@ UI_REQUIRED_OUTPUTS = (
     "music-player/assets/speaker.png",
     "music-player/assets/folder.png",
     "music-player/assets/file-16.png",
+    "music-player/assets/solar-system-cover.png",
 )
 UI_EXTERNAL_INPUTS = (
     ROOT / "assets/sprites-src/icon-computer.png",
@@ -130,6 +131,7 @@ UI_EXTERNAL_INPUTS = (
     ROOT / "assets/sprites-src/icon-speaker.png",
     ROOT / "assets/sprites-src/icon-terminal.png",
     ROOT / "assets/sprites-src/icon-trash.png",
+    ROOT / "assets/music/跟太阳系说再见/cover.png",
 )
 BUNDLED_MUSIC_SOURCE = ROOT / "assets/music/跟太阳系说再见/二向箔降维打击.flac"
 BUNDLED_MUSIC_DESTINATION = "/root/Music/跟太阳系说再见-二向箔降维打击.flac"
@@ -1615,6 +1617,7 @@ def create_image(
         "/usr/share/liteos/apps/music-player/assets/speaker.png",
         "/usr/share/liteos/apps/music-player/assets/folder.png",
         "/usr/share/liteos/apps/music-player/assets/file-16.png",
+        "/usr/share/liteos/apps/music-player/assets/solar-system-cover.png",
     ):
         metadata = run([str(find_debugfs()), "-R", f"stat {asset}", str(image)], ROOT)
         if "Type: regular" not in metadata:

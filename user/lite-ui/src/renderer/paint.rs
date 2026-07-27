@@ -11,8 +11,8 @@ use super::{
     RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion, WindowFrame,
     background_url, corner_radii, cursor_shape, decode_png, excludes_window, is_surface, listener,
     logical_from_physical, logical_intersection, overflow_modes, paint_background, paint_border,
-    paint_image, paint_scrollbar, paint_scrollbar_corner, paint_shadow, scrollbar, taffy_error,
-    text_content,
+    paint_image, paint_scrollbar, paint_scrollbar_corner, paint_shadow, range::paint_range,
+    scrollbar, taffy_error, text_content,
 };
 
 impl Renderer {
@@ -58,10 +58,14 @@ impl Renderer {
         let wheel = listener(&node.source, "onWheel");
         let key_down = listener(&node.source, "onKeyDown");
         let cursor = cursor_shape(node.computed.get("cursor"));
-        // An `<input>` is focusable: emit an `Editable` carrying its controlled
-        // `value` and `onInput` listener so a pointer-down can focus it and the
-        // input dispatcher can push edits back. Non-inputs get `None`.
-        let editable = if node.source.kind == "input" {
+        let range = if node.source.kind == "input" {
+            super::RangeInput::from_props(&node.source.props, listener(&node.source, "onInput"))
+        } else {
+            None
+        };
+        // Text inputs carry an `Editable`; range inputs instead carry their
+        // numeric checked state so text editing can never corrupt a slider.
+        let editable = if node.source.kind == "input" && range.is_none() {
             Some(super::Editable {
                 value: node
                     .source
@@ -79,7 +83,8 @@ impl Renderer {
         // but never steals it from an already-focused field. Setting `focused`
         // here (before the input paints below) draws the caret in the same
         // frame, so e.g. inline rename is ready to type without a click.
-        if editable.is_some() && takes_autofocus(&node.source.props, self.focused) {
+        let focusable = editable.is_some() || range.is_some_and(|input| !input.disabled());
+        if focusable && takes_autofocus(&node.source.props, self.focused) {
             self.focused = Some(node.source.id);
         }
         if pointer_down.is_some()
@@ -91,7 +96,7 @@ impl Renderer {
             || pointer_leave.is_some()
             || context_menu.is_some()
             || wheel.is_some()
-            || editable.is_some()
+            || focusable
         {
             let hit = logical_from_physical(raster);
             output.hits.push(HitRegion {
@@ -112,6 +117,7 @@ impl Renderer {
                 key_down,
                 cursor,
                 editable,
+                range,
             });
         }
         if let Some(key_listener) = key_down {
@@ -137,10 +143,19 @@ impl Renderer {
             let image = self.image(source)?;
             paint_image(pixels, raster, image, radii);
         }
-        // `<input>` 绘制其受控 `value`（空时用 placeholder 的灰字），并在获焦时于文本末尾
+        if let Some(range) = range {
+            paint_range(
+                pixels,
+                bounds,
+                walk.clip,
+                range,
+                self.focused == Some(node.source.id),
+            );
+        }
+        // 文本 `<input>` 绘制其受控 `value`（空时用 placeholder 的灰字），并在获焦时于文本末尾
         // 画一个 1px 文本光标。文本从内容盒（扣 padding）起笔，与浏览器一致；React 持有
         // value 真值，此处只呈现。
-        if node.source.kind == "input" {
+        if node.source.kind == "input" && range.is_none() {
             let value = node
                 .source
                 .props
@@ -354,7 +369,13 @@ impl Renderer {
         } else {
             walk.clip
         };
-        for child in &node.children {
+        let parent_is_flex = node.computed.get("display") == Some("flex");
+        let mut children = node.children.iter().collect::<Vec<_>>();
+        // Numeric z-index changes sibling paint and hit-test order for positioned
+        // boxes and flex items. Without this stable sort, a later in-flow sibling
+        // paints over an earlier popup even when the popup owns a higher z-index.
+        children.sort_by_key(|child| stacking_level(&child.computed, parent_is_flex));
+        for child in children {
             self.paint(
                 tree,
                 child,
@@ -421,13 +442,32 @@ impl Renderer {
 /// Whether one appearing `<input>` takes focus unprompted: only with an
 /// explicit `autoFocus` prop and only while no field currently owns focus
 /// (standard DOM autofocus semantics — appearing fields never steal it).
-fn takes_autofocus(props: &std::collections::BTreeMap<String, Value>, focused: Option<u64>) -> bool {
+fn takes_autofocus(
+    props: &std::collections::BTreeMap<String, Value>,
+    focused: Option<u64>,
+) -> bool {
     focused.is_none() && props.get("autoFocus").and_then(Value::as_bool) == Some(true)
+}
+
+fn stacking_level(computed: &crate::style::Computed, flex_item: bool) -> i32 {
+    let positioned = matches!(
+        computed.get("position"),
+        Some("relative" | "absolute" | "fixed")
+    );
+    if !positioned && !flex_item {
+        return 0;
+    }
+    computed
+        .get("z-index")
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    use crate::style::Computed;
 
     /// The autofocus decision is a pure function of props plus current focus:
     /// present-and-idle takes it, present-but-busy never steals, absent never
@@ -435,12 +475,24 @@ mod tests {
     #[test]
     fn autofocus_claims_only_an_idle_focus() {
         let with_flag: std::collections::BTreeMap<String, serde_json::Value> =
-            serde_json::from_value(json!({"autoFocus": true, "value": "draft"}))
-                .expect("props");
+            serde_json::from_value(json!({"autoFocus": true, "value": "draft"})).expect("props");
         let without_flag: std::collections::BTreeMap<String, serde_json::Value> =
             serde_json::from_value(json!({"value": "draft"})).expect("props");
         assert!(super::takes_autofocus(&with_flag, None));
         assert!(!super::takes_autofocus(&with_flag, Some(7)));
         assert!(!super::takes_autofocus(&without_flag, None));
+    }
+
+    #[test]
+    fn z_index_applies_to_positioned_boxes_and_flex_items() {
+        let mut positioned = Computed::default();
+        positioned.set("position", "absolute");
+        positioned.set("z-index", "20");
+        assert_eq!(super::stacking_level(&positioned, false), 20);
+
+        let mut static_box = Computed::default();
+        static_box.set("z-index", "99");
+        assert_eq!(super::stacking_level(&static_box, false), 0);
+        assert_eq!(super::stacking_level(&static_box, true), 99);
     }
 }

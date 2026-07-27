@@ -15,8 +15,20 @@ fn collect_text(nodes: &[Node], output: &mut Vec<String>) {
     }
 }
 
+fn count_range_inputs(nodes: &[Node]) -> usize {
+    nodes
+        .iter()
+        .map(|node| {
+            usize::from(
+                node.kind == "input"
+                    && node.props.get("type").and_then(serde_json::Value::as_str) == Some("range"),
+            ) + count_range_inputs(&node.children)
+        })
+        .sum()
+}
+
 #[test]
-fn production_music_player_uses_readable_ascii_media_controls() {
+fn production_music_player_uses_standard_range_and_readable_media_controls() {
     let root = std::env::var_os("LITE_UI_TEST_ASSETS")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
@@ -32,7 +44,15 @@ fn production_music_player_uses_readable_ascii_media_controls() {
             "runtime bundle omitted ASCII media label {label:?}"
         );
     }
-    for label in ["Play / Pause", "-10 s", "Vol -", "Vol +"] {
+    for label in [
+        "Back to Library",
+        "Previous",
+        "Play",
+        "Pause",
+        "Next",
+        "Audio Settings",
+        "Open Folder",
+    ] {
         assert!(
             player_text.contains(label),
             "music bundle omitted ASCII control label {label:?}"
@@ -58,13 +78,12 @@ fn production_music_player_uses_readable_ascii_media_controls() {
     let mut text = Vec::new();
     collect_text(&scene, &mut text);
     for label in [
-        "Play / Pause",
-        "-10 s",
-        "Vol -",
-        "Vol +",
+        "Back to Library",
+        "Previous",
         "Play",
-        "-10",
-        "+10",
+        "Next",
+        "Audio Settings",
+        "Open Folder",
         "Mute",
     ] {
         assert!(
@@ -77,5 +96,10 @@ fn production_music_player_uses_readable_ascii_media_controls() {
             .chars()
             .any(|character| matches!(character, '▶' | 'Ⅱ' | '🔇' | '🔊' | '−'))),
         "production media controls retained a glyph outside the fixed UI font"
+    );
+    assert_eq!(
+        count_range_inputs(&scene),
+        2,
+        "now-playing surface must expose seek and volume as standard range inputs"
     );
 }

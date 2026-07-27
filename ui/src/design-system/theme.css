@@ -506,6 +506,16 @@
   border: 1px solid #7f9db9;
 }
 
+.range-input {
+  width: 160px;
+  height: 22px;
+  cursor: pointer;
+}
+.range-input--disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .checkbox {
   display: flex;
   align-items: center;

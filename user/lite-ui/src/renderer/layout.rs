@@ -1,5 +1,7 @@
 //! CSS-to-taffy style lowering for the React host snapshot.
 
+mod margin;
+
 use taffy::prelude::{
     AlignItems, Dimension, Display, FlexDirection, FlexWrap, JustifyContent, LengthPercentage,
     LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
@@ -9,6 +11,7 @@ use taffy::{Overflow, Point};
 use crate::{style::Computed, terminal_font::CELL_WIDTH, tree::Node};
 
 use super::SCALE;
+use margin::{edges as margin_edges, single as margin_value};
 
 pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<f32>) -> Style {
     // Only text leaves size from their glyphs. Containers must stay auto-sized:
@@ -160,13 +163,9 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
         left: LengthPercentage::length(border_widths[3]),
     };
     if let Some(value) = computed.get("margin") {
-        let edges = edge_values(value);
-        style.margin = TaffyRect {
-            top: LengthPercentageAuto::length(edges[0]),
-            right: LengthPercentageAuto::length(edges[1]),
-            bottom: LengthPercentageAuto::length(edges[2]),
-            left: LengthPercentageAuto::length(edges[3]),
-        };
+        if let Some(margin) = margin_edges(value) {
+            style.margin = margin;
+        }
     }
     for (name, target) in [
         ("padding-top", &mut style.padding.top),
@@ -184,8 +183,8 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
         ("margin-bottom", &mut style.margin.bottom),
         ("margin-left", &mut style.margin.left),
     ] {
-        if let Some(value) = computed.get(name).and_then(number) {
-            *target = LengthPercentageAuto::length(value);
+        if let Some(value) = computed.get(name).and_then(margin_value) {
+            *target = value;
         }
     }
     if let Some(value) = computed.get("gap").and_then(number) {

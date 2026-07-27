@@ -12,12 +12,14 @@
   独占 CSS/layout/text/raster cache。SPSC slot 与 snapshot arena ownership 必须线性转移，禁止共享 mutable tree。
 - `lite-ui` renderer 独占 CSS scroll offset、最新 scroll-port/scrollbar geometry 与 scrollbar drag；
   offset 只以 React host instance 的稳定 node id 寻址，节点消失时必须同步回收，应用不得复制该状态。
-- `lite-ui` input dispatcher 独占文档内 hover、pointer-capture target 与文本输入焦点；target/焦点
+- `lite-ui` input dispatcher 独占文档内 hover、pointer-capture target 与表单控件焦点；target/焦点
   只保存稳定 node id，每次事件必须从最新 hit snapshot 解析当前 listener。禁止 capture listener id，
-  否则 React commit 替换 inline handler 后会把后续 motion/up 投递给已删除的回调。`<input>` 是唯一文本
-  输入原语：左键按下聚焦，键码经唯一 keymap（与终端共用键码表）转字符后以受控语义派发 `onInput`
-  新值，控制键（Enter/Esc/方向）投递焦点节点的 `onKeyDown`；无焦点时键盘退回全局 `onKeyDown`
-  （终端/桌面 Escape）。文本光标由 `renderer/paint` 按焦点绘制；不新增 imperative focus state seam。
+  否则 React commit 替换 inline handler 后会把后续 motion/up 投递给已删除的回调。文本 `<input>`
+  左键按下聚焦，键码经唯一 keymap（与终端共用键码表）转字符后以受控语义派发 `onInput` 新值；
+  水平 `<input type=range>` 由同一焦点 owner 按 min/max/step 规范化 value，pointer down/drag 与方向键
+  default action 派发字符串 `onInput`，disabled 控件既不聚焦也不派发。控制键仍先投递焦点节点的
+  `onKeyDown`；无焦点时键盘退回全局 `onKeyDown`（终端/桌面 Escape）。文本光标与 range UA 外观都由
+  `renderer/paint` 按同一焦点绘制；不新增 imperative focus state seam。
 - `lite-ui` 内部 owner seam 固定为 `input`（事件目标与默认动作）、`renderer/paint`（递归绘制）、
   `display/allocation`（同步分配期间的协议推进）、`host/filesystem`（有界 list/read 与
   mkdir/remove/rename/copy，并提供 filesystem-backed `File` bridge，路径必须绝对、payload 有界，
