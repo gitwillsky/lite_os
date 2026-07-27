@@ -34,9 +34,10 @@
   SVE-access 与 SME-access exception 必须统一强制投递 `SIGILL/ILL_ILLOPC`，使标准用户 signal
   handler 能恢复 feature probe。blocked/ignored consequence 仍按同步 fault policy 收敛为 default。
 - AArch64 CPU-local initialization 必须把 `CNTKCTL_EL1` 精确设置为仅
-  `EL0VCTEN`，允许 EL0 读取 `CNTVCT_EL0`；不得同时开放物理计数器、event stream 或用户态
-  virtual/physical timer control。缺失该权限时，V8 等读取标准虚拟计数器的 runtime 会陷入
-  unsupported system-register exception。
+  `EL0VCTEN`，并在既有 `SCTLR_EL1` 上设置 `UCT/UCI/DZE`，允许 EL0 读取 `CNTVCT_EL0` 与 cache
+  geometry、执行当前地址空间指令发布和 cache-line zero；不得同时开放物理计数器、event stream
+  或用户态 virtual/physical timer control。缺失这些权限时，V8 等标准 runtime 会在计时或
+  `FlushICache` 陷入 unsupported system-register exception。
 - signal frame capture、SA_RESTART 与 sigreturn register restore 都通过 Thread context owner；frame
   copyout 成功前不得发布 handler registers，clone child 可取得一次完整 machine snapshot。
 - `ContextOwner<UserContext>` 必须用两个短 transaction 调用静态 backend 的
@@ -71,6 +72,11 @@
   不虚报异步致死与成功 exec 后立即退出可区分。错误、非空截断或非法 frame 必须 kill/wait 回收；
   禁止普通 spawn、raw fork 或重试兼容路径。
 - APK 只接受所选 architecture repository 的固定摘要与精确 `.PKGINFO`。只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个固定数据包预期 `noarch`；其余包必须精确匹配目标架构，禁止 blanket `noarch` 放宽。
+- `/etc/apk/repositories` 必须精确启用固定 Alpine stable branch 的 `main` 与 `community`；
+  `main` 缺失会破坏基础包解析，`community` 缺失会让 npm 等标准拆分包不可见，禁止加入
+  edge/testing 或其他 branch 形成未固定 ABI 回退。
+- 产品 rootfs 必须把同一个 BusyBox `env` inode 发布到 `/bin/env` 与 `/usr/bin/env`；缺失后者会让
+  npm/pnpm 等已成功安装的 `#!/usr/bin/env node` 入口在 exec 时错误返回 `ENOENT`。
 
 ## Failure and cleanup
 

@@ -19,6 +19,12 @@ BASE_PACKAGE_NAME = "liteos-base"
 BASE_PACKAGE_VERSION = "0.1.0-r0"
 BASE_PACKAGE_FILENAME = f"{BASE_PACKAGE_NAME}-{BASE_PACKAGE_VERSION}.apk"
 PROJECT_URL = "https://github.com/gitwillsky/lite_os"
+# Stable main/community are the complete runtime package-discovery policy. Omitting community makes
+# standard split packages such as npm invisible; adding edge/testing would permit unpinned ABI drift.
+ALPINE_RUNTIME_REPOSITORIES = (
+    f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main",
+    f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/community",
+)
 
 
 def run(command: list[str]) -> str:
@@ -42,7 +48,9 @@ def _inject_bootstrap_files(
     """把 apk.static、trust roots 和 repository policy 加入 package staging 前的镜像。"""
     bootstrap = cached_apk_bootstrap()
     repositories = workspace / "repositories"
-    repositories.write_text(f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main\n")
+    repositories.write_text(
+        "".join(f"{repository}\n" for repository in ALPINE_RUNTIME_REPOSITORIES)
+    )
     commands = [
         "mkdir /sbin",
         "mkdir /etc/apk",
@@ -90,6 +98,9 @@ def _stage_package_root(
         path = staging / "bin" / name
         path.unlink(missing_ok=True)
         os.link(init, path)
+    standard_env = staging / "usr/bin/env"
+    standard_env.unlink(missing_ok=True)
+    os.link(init, standard_env)
     stress = staging / "bin/liteos-stress"
     if not stress.is_file():
         raise RuntimeError("rootfs staging lacks /bin/liteos-stress")

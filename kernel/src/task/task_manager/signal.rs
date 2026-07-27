@@ -350,7 +350,7 @@ fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
     };
     wake.claimed.is_none_or(|claimed| {
         assert!(Arc::ptr_eq(&claimed.task, task));
-        crate::task::processor::wake_signal_task(claimed.task, WaitResult::Woken)
+        crate::task::processor::wake_signal_task(claimed.task, claimed.id, WaitResult::Woken)
     })
 }
 
@@ -379,9 +379,11 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
             IndexedWaitKind::Console => {
                 crate::task::processor::wake_console_task(entry.task, wait_id, interrupted)
             }
-            IndexedWaitKind::Signal { .. } => {
-                crate::task::processor::wake_signal_task(entry.task, WaitResult::Interrupted)
-            }
+            IndexedWaitKind::Signal { .. } => crate::task::processor::wake_signal_task(
+                entry.task,
+                wait_id,
+                WaitResult::Interrupted,
+            ),
             IndexedWaitKind::Pipe { .. } => {
                 crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Interrupted)
             }

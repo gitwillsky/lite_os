@@ -179,6 +179,15 @@ pub(crate) fn release_test_orphan_drop() {
 }
 
 #[cfg(test)]
+pub(crate) fn with_test_mutation_lock(fs: &Ext2FileSystem, callback: impl FnOnce()) {
+    let _guard = fs
+        .mutation
+        .try_lock()
+        .expect("test mutation owner must be initially available");
+    callback();
+}
+
+#[cfg(test)]
 pub(crate) struct TestMappedInode(Arc<Ext2Inode>);
 
 #[cfg(test)]

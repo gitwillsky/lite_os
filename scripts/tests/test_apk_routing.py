@@ -137,6 +137,17 @@ class ApkRoutingTests(unittest.TestCase):
         self.assertEqual(metadata.arch, "aarch64")
         self.assertIn("so:libc.musl-aarch64.so.1=1.2.6", metadata.provides)
 
+    def test_runtime_repositories_enable_only_stable_main_and_community(self) -> None:
+        _, _, rootfs, _ = reload_apk_modules("aarch64", "hvf")
+
+        self.assertEqual(
+            rootfs.ALPINE_RUNTIME_REPOSITORIES,
+            (
+                "https://mirrors.ustc.edu.cn/alpine/v3.22/main",
+                "https://mirrors.ustc.edu.cn/alpine/v3.22/community",
+            ),
+        )
+
     def test_riscv64_fixture_metadata_is_preserved(self) -> None:
         _, _, rootfs, _ = reload_apk_modules("riscv64", "tcg")
         with tempfile.TemporaryDirectory() as directory:

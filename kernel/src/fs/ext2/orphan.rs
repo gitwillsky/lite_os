@@ -3,6 +3,51 @@ use alloc::sync::Arc;
 use super::*;
 
 impl Ext2FileSystem {
+    /// @description 在普通 task mutation 前回收一个因 final Drop 无法等待而延迟的 orphan。
+    /// @return 没有待处理 inode，或一个 dead orphan 已独立提交时成功。
+    /// @errors orphan chain、inode、journal 或 block I/O 无效时返回对应错误并保留重试 bit。
+    pub(super) fn reclaim_pending_orphan(&self) -> Result<(), FileSystemError> {
+        // 普通 mutation 只做 shared load；每次 I/O 都写同一 cache line 会把无 pending 的
+        // 多核 ext2 transaction 人为串行化。
+        if !self.pending_orphan_reclaim.load(Ordering::Acquire)
+            || !self.pending_orphan_reclaim.swap(false, Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+        let result = self.reclaim_one_pending_orphan();
+        if result.is_err() {
+            self.pending_orphan_reclaim.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    fn reclaim_one_pending_orphan(&self) -> Result<(), FileSystemError> {
+        let mut mutation = MutationGuard::begin(self)?;
+        let limit = self.superblock.lock().s_inodes_count;
+        let mut current = self.superblock.lock().s_last_orphan;
+        for _ in 0..limit {
+            if current == 0 {
+                return Ok(());
+            }
+            let live = self
+                .inode_cache
+                .lock()
+                .get(&current)
+                .and_then(Weak::upgrade)
+                .is_some();
+            if !live {
+                let inode = self.load_inode(current)?;
+                inode.reclaim_dropped_orphan_locked(&mut mutation)?;
+                mutation.commit()?;
+                // 一次 transaction 只回收一个 inode，避免任意长 orphan chain 超过 journal 容量。
+                self.pending_orphan_reclaim.store(true, Ordering::Release);
+                return Ok(());
+            }
+            current = self.read_inode_disk(current)?.i_dtime;
+        }
+        Err(FileSystemError::InvalidFileSystem)
+    }
+
     /// @description 将无目录项但仍被 OFD 持有的 inode 原子加入 ext orphan chain。
     /// @param inode link count 仍为正且由 caller 保活的目标。
     /// @return inode 与 superblock head 已 staged 时成功。

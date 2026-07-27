@@ -650,6 +650,12 @@ class QmpClient:
     def button(self, name: str, down: bool) -> None:
         self._send_events([{"type": "btn", "data": {"button": name, "down": down}}])
 
+    def key(self, qcode: str, down: bool) -> None:
+        """Presses or releases one key by QMP qcode (e.g. "esc", "ret")."""
+        self._send_events(
+            [{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}]
+        )
+
     def quit(self) -> None:
         """Requests graceful QEMU shutdown.
 

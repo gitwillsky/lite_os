@@ -1600,6 +1600,7 @@ kernel/src/fs/ext2/inode/block_mapping.rs :: pub (in crate :: fs :: ext2) impl E
 kernel/src/fs/ext2/inode/block_mapping.rs :: pub (in crate :: fs :: ext2) impl Ext2Inode :: fn map_block (& self , file_block : u32) -> Result < u32 , FileSystemError >
 kernel/src/fs/ext2/inode/block_mapping.rs :: pub (in crate :: fs :: ext2) impl Ext2Inode :: fn map_block_sparse (& self , file_block : u32 ,) -> Result < u32 , FileSystemError >
 kernel/src/fs/ext2/inode/block_mapping.rs :: pub (in crate :: fs :: ext2) struct BlockPath
+kernel/src/fs/ext2/inode/vfs.rs :: pub (in crate :: fs :: ext2) impl Ext2Inode :: fn reclaim_dropped_orphan_locked (& self , mutation : & mut MutationGuard < '_ > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/inode_kind.rs :: pub (super) fn create_mode (kind : InodeType , permissions : u32) -> u16
 kernel/src/fs/ext2/inode_kind.rs :: pub (super) fn file_type (kind : InodeType) -> u8
 kernel/src/fs/ext2/inode_kind.rs :: pub (super) fn from_mode (mode : u16) -> InodeType
@@ -1667,6 +1668,7 @@ kernel/src/fs/ext2/metadata_cache.rs :: pub (super) struct MetadataBlockCache
 kernel/src/fs/ext2/mount.rs :: pub (crate) impl Ext2FileSystem :: fn new (device : Arc < dyn BlockDevice >) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/ext2/mount.rs :: pub (super) impl Ext2FileSystem :: fn validate_superblock (sb : & Ext2SuperBlock , block_size : usize ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn defer_reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , inode : & Arc < Ext2Inode > ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn reclaim_pending_orphan (& self) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn recover_orphans (& self) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn remove_orphan_locked (& self , mutation : & mut MutationGuard < '_ > , target : u32 , target_next : u32 ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn allocate_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
@@ -4406,7 +4408,7 @@ kernel/src/task/processor.rs :: pub (super) fn wake_flock_task (task : Arc < Tas
 kernel/src/task/processor.rs :: pub (super) fn wake_futex_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_pipe_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_poll_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
-kernel/src/task/processor.rs :: pub (super) fn wake_signal_task (task : Arc < TaskControlBlock > , result : WaitResult) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_signal_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) use job_control :: { begin_preempt_running_task , continue_stopped_task , request_task_reschedule , request_task_stop , }
 kernel/src/task/processor/handoff.rs :: pub (in crate :: task) fn publish_pending_handoff (task : Arc < TaskControlBlock > , irq : LocalIrqGuard)
 kernel/src/task/processor/handoff.rs :: pub (in crate :: task) fn resume_without_switch (task : & Arc < TaskControlBlock >) -> bool

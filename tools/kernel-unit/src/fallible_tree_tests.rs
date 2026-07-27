@@ -316,3 +316,40 @@ fn retain_calls_predicate_once_per_node_without_key_comparisons() {
     assert_eq!(node_addresses(&map), before);
     map.test_assert_invariants();
 }
+
+#[test]
+fn recycled_entries_preserve_avl_and_successor_invariants() {
+    let mut map = FallibleMap::new();
+    let mut model = BTreeMap::new();
+    for key in 0..257 {
+        map.try_insert(key, i64::from(key)).unwrap();
+        model.insert(key, i64::from(key));
+    }
+
+    let mut state = 0x517c_c1b7_2722_0a95_u64;
+    for _ in 0..4_000 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let old_key = ((state >> 24) % 257) as i32;
+        let new_key = 257 + ((state >> 40) % 257) as i32;
+        if let Some(mut entry) = map.take_entry(&old_key) {
+            let value = model.remove(&old_key).unwrap();
+            entry.set_key(new_key);
+            entry.value_mut().clone_from(&value);
+            if let Some(replaced) = model.insert(new_key, value) {
+                assert_eq!(map.remove(&new_key), Some(replaced));
+            }
+            map.commit_vacant(entry);
+        } else if let Some(mut entry) = map.take_entry(&new_key) {
+            let value = model.remove(&new_key).unwrap();
+            entry.set_key(old_key);
+            entry.value_mut().clone_from(&value);
+            if let Some(replaced) = model.insert(old_key, value) {
+                assert_eq!(map.remove(&old_key), Some(replaced));
+            }
+            map.commit_vacant(entry);
+        }
+        assert_model(&map, &model);
+    }
+}

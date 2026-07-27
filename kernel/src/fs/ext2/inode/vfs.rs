@@ -370,7 +370,29 @@ impl Drop for Ext2Inode {
 
 impl Ext2Inode {
     fn reclaim_dropped_orphan(&self) -> Result<(), FileSystemError> {
-        let mut mutation = self.fs.begin_mutation()?;
+        let mut mutation = match MutationGuard::try_begin(&self.fs) {
+            Ok(Some(mutation)) => mutation,
+            Ok(None) => {
+                self.fs
+                    .pending_orphan_reclaim
+                    .store(true, Ordering::Release);
+                return Ok(());
+            }
+            Err(error) => {
+                self.fs
+                    .pending_orphan_reclaim
+                    .store(true, Ordering::Release);
+                return Err(error);
+            }
+        };
+        self.reclaim_dropped_orphan_locked(&mut mutation)?;
+        mutation.commit()
+    }
+
+    pub(in crate::fs::ext2) fn reclaim_dropped_orphan_locked(
+        &self,
+        mutation: &mut MutationGuard<'_>,
+    ) -> Result<(), FileSystemError> {
         // The lock-free admission above avoids a filesystem transaction for ordinary inode drops.
         // `i_dtime` is chain topology and may be rewritten by an earlier orphan reclaim, so its
         // authoritative value must be read only after acquiring the unique mutation owner.
@@ -384,8 +406,7 @@ impl Ext2Inode {
         let orphan_next = disk.i_dtime;
         mutation.discard_inode_on_abort(self.inode_num)?;
         self.fs
-            .remove_orphan_locked(&mut mutation, self.inode_num, orphan_next)?;
-        self.reclaim_locked(&mut mutation, false)?;
-        mutation.commit()
+            .remove_orphan_locked(mutation, self.inode_num, orphan_next)?;
+        self.reclaim_locked(mutation, false)
     }
 }

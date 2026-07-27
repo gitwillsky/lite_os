@@ -2,7 +2,10 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{cmp, mem};
+use core::{
+    cmp, mem,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use spin::Mutex;
 
 use super::{
@@ -65,7 +68,7 @@ pub(crate) use cost_test_support::{
     fail_next_test_metadata_owner, release_test_orphan_drop, reset_test_allocation_attempts,
     reset_test_stage_capacity, reset_test_write_costs, set_test_stage_capacity,
     test_allocation_attempts, test_mount_allocation_state, test_write_costs,
-    wait_test_orphan_drop_admission,
+    wait_test_orphan_drop_admission, with_test_mutation_lock,
 };
 #[cfg(test)]
 use cost_test_support::{
@@ -325,6 +328,9 @@ pub(crate) struct Ext2FileSystem {
     // OWNER: transaction-wide mutation serialization may span block I/O and task handoff；普通
     // spin mutex 会在同 CPU owner 睡眠后让另一个 task 永久自旋，阻止 completion 被消费。
     mutation: TaskMutex<()>,
+    // OWNER: final inode Drop 无法等待 task-only mutation owner 时发布一次合并重试。
+    // 缺失它会在 scheduler/deferred context 发生竞争时 panic，或永久泄漏已持久化 orphan。
+    pending_orphan_reclaim: AtomicBool,
     // OWNER: ext2 journal 同时拥有唯一 active transaction write-set 与 recovery sequence；
     // 缺失该 owner 会让 home metadata 与 commit record 形成两套不可恢复的写入状态。
     journal: Mutex<JournalOwner>,
@@ -372,6 +378,7 @@ impl Ext2FileSystem {
     }
 
     fn begin_mutation(&self) -> Result<MutationGuard<'_>, FileSystemError> {
+        self.reclaim_pending_orphan()?;
         MutationGuard::begin(self)
     }
 

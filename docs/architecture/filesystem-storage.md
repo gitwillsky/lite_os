@@ -14,6 +14,9 @@
   第二身份。
 - ext2 inode block mapping 由固定三层 `BlockPath` 唯一分类 logical block；lookup、sparse read 与
   allocation 共用同一路径，`PointerBlock` 是 cache-owned block image 的唯一 pointer decode seam。
+- open-unlinked inode 的 final Drop 只尝试非阻塞取得 ext2 mutation owner；竞争时由 filesystem
+  合并 retry，并在下一次 task mutation 前从持久 orphan chain 回收一个已无 live Weak identity
+  的 inode。常态路径只有一次 atomic load，不为每次文件写入增加 journal transaction。
 - JBD2 active transaction 同时拥有 redo block set 与 allocation dirty-group bitset；block/inode alloc/free
   只标记 dirty group，commit 前一次性物化 primary superblock、受影响 GDT block 及其 sparse backups。
 - JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从

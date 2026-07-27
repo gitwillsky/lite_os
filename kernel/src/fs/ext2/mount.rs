@@ -522,6 +522,7 @@ impl Ext2FileSystem {
             first_data_block,
             groups: Mutex::new(groups),
             mutation: TaskMutex::new(()),
+            pending_orphan_reclaim: AtomicBool::new(false),
             journal: Mutex::new(JournalOwner::unavailable()),
             metadata_cache: Mutex::new(MetadataBlockCache::new()),
             inode_cache: Mutex::new(FallibleMap::new()),

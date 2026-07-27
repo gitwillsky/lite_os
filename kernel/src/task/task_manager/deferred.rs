@@ -98,7 +98,7 @@ fn wake_expired_tasks(now_ns: u64) {
                 crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
             }
             IndexedWaitKind::Signal { .. } => {
-                crate::task::processor::wake_signal_task(task, WaitResult::TimedOut)
+                crate::task::processor::wake_signal_task(task, wait_id, WaitResult::TimedOut)
             }
             IndexedWaitKind::Console => {
                 crate::task::processor::wake_console_task(task, wait_id, WaitResult::TimedOut)

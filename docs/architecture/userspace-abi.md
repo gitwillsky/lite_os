@@ -9,9 +9,10 @@
   RISC-V 保留既有 ELF flags、HWCAP 与 hwprobe 投影。
 - Apple Silicon/HVF 可能让 EL0 probe 被 CPU decode 为 SVE/SME access trap，即使 auxv 未公布该能力；
   backend 把 Unknown/SVE/SME probe 统一投递为可捕获的 `SIGILL/ILL_ILLOPC`，不保存或启用扩展 state。
-- AArch64 每个 CPU 初始化时只通过 `CNTKCTL_EL1.EL0VCTEN` 向 EL0 开放只读虚拟计数器
-  `CNTVCT_EL0`，供 V8 等标准 runtime 取得单调时钟；物理计数器、event stream 与虚拟/物理 timer
-  control 仍保持 trap。
+- AArch64 每个 CPU 初始化时通过 `CNTKCTL_EL1.EL0VCTEN` 开放只读虚拟计数器，并通过
+  `SCTLR_EL1.UCT/UCI/DZE` 开放 cache geometry 读取、当前地址空间指令发布与 cache-line zero，
+  供 V8 等标准 runtime 计时和发布 JIT code；物理计数器、event stream 与虚拟/物理 timer control
+  仍保持 trap。
 - Linux `riscv_hwprobe` 编号 258 只由 RISC-V backend 开放；AArch64 没有该 key space，必须返回 `ENOSYS`，不能伪造空 capability success。
 - 用户态非法指令生成 thread-directed forced SIGILL；首个可见 standard siginfo 使用
   `ILL_ILLOPC` 与 fault PC (`si_addr`)。caught 且未屏蔽时进入已注册 handler；blocked 或
@@ -33,7 +34,11 @@
   `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 深模块独占 raw musl
   FFI、layout/常量和 RAII；应用、`audio-proto` 与 `display-proto` 只消费安全 typed interface。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
-- rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
+- rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；运行时
+  `/etc/apk/repositories` 只启用同一稳定分支的 `main` 与 `community`，不接入 edge/testing。
+  BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`，使 npm/pnpm 等
+  `#!/usr/bin/env node` 入口可直接执行。应用与 terminal 只通过标准 Linux process、fd、PTY、
+  termios、socket 和 ELF ABI 交互。
 
 ## Known limits
 

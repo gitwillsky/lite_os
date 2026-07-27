@@ -58,7 +58,9 @@
   lock 外准备。publication 先进入 `Arming`，readiness/backend/signal 复查只在 shard lock
   外执行；并发 source notification 把它变为 `Notified`，arm transaction 按 shard 编号升序
   锁定全部 exact nodes 后才发布 SchedulingState。winner 必须同步删除所有 source/deadline/
-  task nodes，禁止 lazy stale membership 或恢复全局 queue。
+  task nodes，禁止 lazy stale membership 或恢复全局 queue。claimed wake 必须把自身 wait ID
+  原样交给 SchedulingState 校验；signal wake 不得重读 task 的当前 membership，否则延迟完成
+  会消费下一代 signal wait。
 - clone/fork/vfork 的 TCB、graph node 与 RLIMIT snapshot storage 在 `process_creation` 外准备；
   最终 guard 内只捕获已预留 snapshot、复检 limit 并提交 graph。snapshot backing OOM
   属于 memory failure 并由 syscall 映射为 `ENOMEM`；只有 RLIMIT_NPROC/PID exhaustion
@@ -80,3 +82,5 @@
   stack。context switch 前只发布 per-CPU pending token，restore 后才完成 wait/signal/stop 的
   exactly-once transition。IRQ restore token 若观察到不同 logical CPU 必须在恢复中断前 fail-stop。
 - exit staged 的 parent/init child waiter 必须按来源各自 exactly once drain；跨来源 TID 没有排序契约，不得为合并它们扩大通用 ordered-storage interface。
+- `FallibleMap::take_entry` 返回的未发布 token 必须是 `height = 1`、无 child/next 的规范叶节点；
+  任何 graph/wait batch 迁移重新提交该 token 前不得携带原树高度，否则 AVL 旋转会基于失真元数据。

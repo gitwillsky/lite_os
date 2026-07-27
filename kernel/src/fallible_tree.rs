@@ -468,6 +468,9 @@ impl<K: Ord, V> FallibleMap<K, V> {
         let (root, removed) = remove_node(self.root.take(), key);
         self.root = root;
         let mut removed = removed.expect("located AVL entry disappeared during removal");
+        // `remove_node` 已把左右子树都从返回节点摘除；高度必须同步归一为叶节点。
+        // 若保留原树高度，token 重新提交后会把伪高度传播给祖先并破坏后续旋转选择。
+        removed.height = 1;
         removed.next = None;
         self.len -= 1;
         Some(VacantEntry(removed))

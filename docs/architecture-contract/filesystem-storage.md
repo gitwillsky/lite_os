@@ -107,6 +107,10 @@
 - open-unlinked inode 的 `i_dtime` 是 orphan chain topology；final Drop 可在锁前只读 inode 状态作
   admission，但 predecessor/successor 必须在取得 filesystem mutation owner 后重新读取并 journal。
   禁止把锁前 successor 快照用于摘链，否则并发 reclaim 可把 head 指回已释放 inode。
+- final inode Drop 不得等待 task-only mutation owner；owner 忙时只发布 filesystem 级合并
+  retry bit，并由下一次 task-context mutation 在独立 transaction 中从 on-disk orphan chain
+  选择一个 Weak 已失效的 inode 回收。普通 mutation 只读该 bit；缺失延迟 owner 会令
+  scheduler/deferred context 在锁竞争时 panic，直接跳过则会把空间永久泄漏到下次挂载。
 - close/dup/CLOEXEC 在 fd-table lock 内只 detach；OFD drop、epoll/flock/record-lock consequence 在锁外执行。
 - `SCM_RIGHTS` 传递 memfd 时只共享既有 OFD/inode identity；发送失败、接收 copyout 失败、
   connection EOF 与最后 fd close 沿通用 descriptor cleanup 释放引用及 mapping，不建立音频专用 fd 表。

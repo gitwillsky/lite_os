@@ -118,7 +118,9 @@
 
 ### Alpine、APK 与 TLS
 
-- Alpine `v3.22/main/{aarch64,riscv64}` 通过中科大镜像获取官方 repository
+- Alpine `v3.22/main/{aarch64,riscv64}` 通过中科大镜像获取固定 bootstrap 输入；guest runtime
+  repository policy 精确启用同镜像的 `v3.22/main` 与 `v3.22/community`，不启用 edge/testing。
+  固定 bootstrap repository
   固定文件，下载后必须通过固定 SHA-256 校验。AArch64 的
   `apk-tools-static 2.14.10-r0`、`alpine-keys 2.5-r0`、
   `ca-certificates-bundle 20260611-r0` SHA-256 依次为

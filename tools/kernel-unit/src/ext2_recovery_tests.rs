@@ -19,7 +19,7 @@ use crate::{
         CreateMetadata, FileSystem, FileSystemError,
         ext2::{
             Ext2FileSystem, arm_test_orphan_drop, release_test_orphan_drop,
-            test_mount_allocation_state, wait_test_orphan_drop_admission,
+            test_mount_allocation_state, wait_test_orphan_drop_admission, with_test_mutation_lock,
         },
     },
 };
@@ -296,5 +296,43 @@ fn orphan_reclaim_rereads_successor_under_mutation_owner() {
         test_mount_allocation_state(&fs),
         before,
         "second reclaim must use the successor rewritten by the first reclaim"
+    );
+}
+
+#[test]
+fn orphan_drop_defers_while_mutation_owner_is_busy() {
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    let (_image, fs) = mounted();
+    let before = test_mount_allocation_state(&fs);
+    let root = fs.root_inode().unwrap();
+    let file = root
+        .create(
+            b"deferred-orphan",
+            InodeType::File,
+            CreateMetadata {
+                mode: 0o644,
+                uid: 0,
+                gid: 0,
+            },
+        )
+        .unwrap();
+    file.write_storage(0, &[0x5a]).unwrap();
+    let inode = file.metadata().unwrap().inode as u32;
+    root.unlink(b"deferred-orphan", false).unwrap();
+    arm_test_orphan_drop(inode);
+    std::thread::scope(|scope| {
+        let inode_drop = scope.spawn(move || drop(file));
+        wait_test_orphan_drop_admission();
+        with_test_mutation_lock(&fs, || {
+            release_test_orphan_drop();
+            inode_drop.join().unwrap();
+        });
+    });
+
+    root.set_times(Some(1), Some(1)).unwrap();
+    assert_eq!(
+        test_mount_allocation_state(&fs),
+        before,
+        "the next task mutation must reclaim an orphan whose Drop could not wait"
     );
 }
