@@ -73,20 +73,36 @@ impl Model {
     }
 
     pub(super) fn clear_cell(&mut self, index: usize) {
-        let mut blank = self.blank_cell();
         let columns = self.columns;
-        let screen = self.active_mut();
-        unsafe {
-            if index % columns + 1 == columns {
-                blank.reserved |= (*screen.cells.add(index)).reserved & SOFT_WRAPPED_ROW;
+        let row = index / columns;
+        let column = index % columns;
+        let screen = self.active();
+        let cell = unsafe { *screen.cells.add(index) };
+        let first = if cell.reserved & WIDE_CONTINUATION != 0 {
+            column.saturating_sub(1)
+        } else {
+            column
+        };
+        let mut end = first + 1;
+        if first + 1 < columns {
+            let next = unsafe { *screen.cells.add(row * columns + first + 1) };
+            if next.reserved & WIDE_CONTINUATION != 0 {
+                end += 1;
             }
-            *screen.cells.add(index) = blank;
         }
-        self.mark(
-            index / self.columns,
-            index % self.columns,
-            index % self.columns + 1,
-        );
+        let blank = self.blank_cell();
+        unsafe {
+            for target_column in first..end {
+                let target = row * columns + target_column;
+                let mut replacement = blank;
+                if target_column + 1 == columns {
+                    replacement.reserved |=
+                        (*self.active().cells.add(target)).reserved & SOFT_WRAPPED_ROW;
+                }
+                *self.active_mut().cells.add(target) = replacement;
+            }
+        }
+        self.mark(row, first, end);
     }
 
     pub(super) fn clear_screen(&mut self) {
@@ -102,6 +118,37 @@ impl Model {
         screen.column = 0;
         screen.row = 0;
         self.mark_all();
+    }
+
+    /// 恢复逐单元格插入或删除后同一行内宽字符的首尾配对关系。
+    pub(super) fn normalize_wide_row(&mut self, row: usize) {
+        let columns = self.columns;
+        let blank = self.blank_cell();
+        let screen = self.active_mut();
+        for column in 0..columns {
+            let index = row * columns + column;
+            let cell = unsafe { *screen.cells.add(index) };
+            let valid = if cell.reserved & WIDE_CONTINUATION != 0 {
+                column != 0
+                    && unsafe {
+                        let previous = *screen.cells.add(index - 1);
+                        previous.reserved & WIDE_CONTINUATION == 0
+                            && display_width(previous.codepoint) == 2
+                    }
+            } else if display_width(cell.codepoint) == 2 {
+                column + 1 < columns
+                    && unsafe { (*screen.cells.add(index + 1)).reserved & WIDE_CONTINUATION != 0 }
+            } else {
+                true
+            };
+            if !valid {
+                let mut replacement = blank;
+                if column + 1 == columns {
+                    replacement.reserved |= cell.reserved & SOFT_WRAPPED_ROW;
+                }
+                unsafe { *screen.cells.add(index) = replacement };
+            }
+        }
     }
 
     pub(super) fn line_feed(&mut self, soft_wrap: bool) {
@@ -187,6 +234,46 @@ impl Model {
         }
     }
 
+    pub(super) fn insert_characters(&mut self, count: usize) {
+        let screen = self.active();
+        let column = screen.column.min(self.columns - 1);
+        let count = count.min(self.columns - column);
+        let blank = self.blank_cell();
+        unsafe {
+            ptr::copy(
+                screen.cells.add(screen.row * self.columns + column),
+                screen.cells.add(screen.row * self.columns + column + count),
+                self.columns - column - count,
+            );
+            for offset in 0..count {
+                *screen
+                    .cells
+                    .add(screen.row * self.columns + column + offset) = blank;
+            }
+        }
+        self.normalize_wide_row(screen.row);
+        self.mark(screen.row, column, self.columns);
+    }
+
+    pub(super) fn delete_characters(&mut self, count: usize) {
+        let screen = self.active();
+        let column = screen.column.min(self.columns - 1);
+        let count = count.min(self.columns - column);
+        let blank = self.blank_cell();
+        unsafe {
+            ptr::copy(
+                screen.cells.add(screen.row * self.columns + column + count),
+                screen.cells.add(screen.row * self.columns + column),
+                self.columns - column - count,
+            );
+            for offset in self.columns - count..self.columns {
+                *screen.cells.add(screen.row * self.columns + offset) = blank;
+            }
+        }
+        self.normalize_wide_row(screen.row);
+        self.mark(screen.row, column, self.columns);
+    }
+
     pub(super) fn put(&mut self, codepoint: u32) {
         let columns = self.columns;
         let insert_mode = self.insert_mode;
@@ -200,34 +287,68 @@ impl Model {
                 self.active_mut().column = columns - 1;
             }
         }
-        let codepoint = self.translate_character(codepoint);
+        let mut codepoint = self.translate_character(codepoint);
+        let mut width = display_width(codepoint);
+        if width == 2 && columns < 2 {
+            codepoint = 0xfffd;
+            width = 1;
+        }
+        if width == 2 && self.active().column + width > columns {
+            if autowrap {
+                self.line_feed(true);
+            } else {
+                codepoint = 0xfffd;
+                width = 1;
+            }
+        }
         let cell = Cell {
             codepoint,
             foreground: self.foreground,
             background: self.background,
             attributes: self.attributes,
-            reserved: style_indices(self.foreground_index, self.background_index),
+            reserved: style_indices(self.foreground_index, self.background_index) | OCCUPIED,
         };
+        let row = self.active().row;
+        let column = self.active().column;
+        if !insert_mode {
+            for occupied in column..column + width {
+                self.clear_cell(row * columns + occupied);
+            }
+        }
         let screen = self.active_mut();
         let index = screen.row * columns + screen.column;
         unsafe {
-            if insert_mode && screen.column + 1 < columns {
+            if insert_mode && screen.column + width < columns {
                 ptr::copy(
                     screen.cells.add(index),
-                    screen.cells.add(index + 1),
-                    columns - screen.column - 1,
+                    screen.cells.add(index + width),
+                    columns - screen.column - width,
                 );
             }
             *screen.cells.add(index) = cell;
+            if width == 2 {
+                *screen.cells.add(index + 1) = Cell {
+                    codepoint: 0,
+                    reserved: cell.reserved | WIDE_CONTINUATION,
+                    ..cell
+                };
+            }
         }
         let row = screen.row;
         let column = screen.column;
-        screen.column = if column + 1 == columns && !autowrap {
+        screen.column = if column + width == columns && !autowrap {
             column
         } else {
-            column + 1
+            column + width
         };
-        self.mark(row, column, if insert_mode { columns } else { column + 1 });
+        if insert_mode {
+            self.normalize_wide_row(row);
+        }
+        self.mark(
+            row,
+            column,
+            if insert_mode { columns } else { column + width },
+        );
     }
 
     pub(super) fn translate_character(&self, codepoint: u32) -> u32 {

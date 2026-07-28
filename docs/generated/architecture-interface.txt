@@ -703,6 +703,7 @@ kernel/src/cpu/deferred.rs :: enum DeferredWork :: Input = 1 << 5
 kernel/src/cpu/deferred.rs :: enum DeferredWork :: Network = 1 << 2
 kernel/src/cpu/deferred.rs :: enum DeferredWork :: Timer = 1
 kernel/src/cpu/deferred.rs :: enum DeferredWork :: TimerBacklog = 1 << 3
+kernel/src/cpu/deferred.rs :: enum DeferredWork :: VirtioPort = 1 << 7
 kernel/src/cpu/deferred.rs :: pub (crate) enum DeferredWork
 kernel/src/cpu/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
 kernel/src/cpu/deferred.rs :: pub (crate) fn take () -> DeferredWorkSet
@@ -947,6 +948,7 @@ kernel/src/drivers/mod.rs :: pub (crate) fn discard_console_input () -> usize
 kernel/src/drivers/mod.rs :: pub (crate) fn dispatch_io_completion_work () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn initialize_console_input () -> Result < () , InterruptError >
 kernel/src/drivers/mod.rs :: pub (crate) fn primary_audio_output () -> Option < alloc :: sync :: Arc < dyn PcmOutput > >
+kernel/src/drivers/mod.rs :: pub (crate) fn primary_virtio_port () -> Option < alloc :: sync :: Arc < VirtIOConsoleDevice > >
 kernel/src/drivers/mod.rs :: pub (crate) fn publish_console_input (bytes : & [u8])
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) fn register_audio_output (device : alloc :: sync :: Arc < VirtIOSoundDevice >) -> Result < () , () >
@@ -954,6 +956,7 @@ kernel/src/drivers/mod.rs :: pub (crate) fn register_display_device (device : al
 kernel/src/drivers/mod.rs :: pub (crate) fn register_entropy_device (device : alloc :: sync :: Arc < VirtIORngDevice >) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_input_device (device : alloc :: sync :: Arc < dyn InputDevice > ,) -> Result < usize , alloc :: sync :: Arc < dyn InputDevice > >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_network_device (device : alloc :: sync :: Arc < dyn network :: NetworkDevice > ,) -> Result < () , () >
+kernel/src/drivers/mod.rs :: pub (crate) fn register_virtio_port (device : alloc :: sync :: Arc < VirtIOConsoleDevice > ,) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/drivers/mod.rs :: pub (crate) mod network
@@ -963,6 +966,7 @@ kernel/src/drivers/mod.rs :: pub (crate) use hal :: { InterruptError , Interrupt
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { device as input_device , device_count as input_device_count }
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_blk :: VirtIOBlockDevice
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_console :: { PortError , VirtIOConsoleDevice }
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_gpu :: VirtIOGpuDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_input :: VirtIOInputDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_net :: VirtIONetworkDevice
@@ -1020,6 +1024,28 @@ kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIoCompletion
 kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIoCompletionIrq :: fn acknowledge_and_defer (& self , device : & VirtIODevice)
 kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIoCompletionIrq :: fn take_transport_error (& self) -> bool
 kernel/src/drivers/virtio_completion_irq.rs :: pub (super) struct VirtIoCompletionIrq
+kernel/src/drivers/virtio_console.rs :: enum PortError :: # [doc = " No byte or transmit slot is currently available."] WouldBlock
+kernel/src/drivers/virtio_console.rs :: enum PortError :: # [doc = " The selected named port is closed or the transport failed."] Disconnected
+kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: backlog : bool
+kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: readable_changed : bool
+kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: writable_changed : bool
+kernel/src/drivers/virtio_console.rs :: pub (crate) enum PortError
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn connected (& self) -> bool
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn dispatch (& self) -> PortActivity
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn read (& self , output : & mut [u8]) -> Result < usize , PortError >
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn readable (& self) -> bool
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn writable (& self) -> bool
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn write (& self , input : & [u8]) -> Result < usize , PortError >
+kernel/src/drivers/virtio_console.rs :: pub (crate) struct PortActivity
+kernel/src/drivers/virtio_console.rs :: pub (crate) struct VirtIOConsoleDevice
+kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn is_empty (& self) -> bool
+kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn new () -> Option < Self >
+kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn pop (& mut self , output : & mut [u8]) -> usize
+kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn push (& mut self , input : & [u8]) -> bool
+kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) struct ByteRing
+kernel/src/drivers/virtio_console/wire.rs :: pub (super) fn is_spice_port_name (payload : & [u8]) -> bool
 kernel/src/drivers/virtio_gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_gpu.rs :: pub (crate) struct VirtIOGpuDevice
@@ -1739,6 +1765,7 @@ kernel/src/fs/file/character.rs :: enum CharacterDevice :: Kmsg (KmsgReader)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Null
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: PtyMaster (Arc < PtyMaster >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , pty : Option < Arc < PtySlave > > , }
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: VirtioPort (Arc < crate :: virtio_port :: Port >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Zero
 kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " caller buffer 过小。"] BufferTooSmall
 kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " producer 尚无新 record。"] Empty
@@ -1862,6 +1889,7 @@ kernel/src/fs/inode.rs :: enum DeviceKind :: PtySlave (u32)
 kernel/src/fs/inode.rs :: enum DeviceKind :: Random
 kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
 kernel/src/fs/inode.rs :: enum DeviceKind :: Urandom
+kernel/src/fs/inode.rs :: enum DeviceKind :: VirtioPort
 kernel/src/fs/inode.rs :: enum DeviceKind :: Zero
 kernel/src/fs/inode.rs :: enum InodeType :: CharacterDevice = 3
 kernel/src/fs/inode.rs :: enum InodeType :: Directory = 1
@@ -4986,3 +5014,16 @@ kernel/src/trap/mod.rs :: pub (crate) fn handle_kernel_trap ()
 kernel/src/trap/mod.rs :: pub (crate) fn handle_user_trap () -> !
 kernel/src/trap/mod.rs :: pub (crate) fn init ()
 kernel/src/trap/mod.rs :: pub (crate) fn trap_return () -> !
+kernel/src/virtio_port.rs :: enum Error :: # [doc = " The current operation would block."] WouldBlock
+kernel/src/virtio_port.rs :: enum Error :: # [doc = " The named port is closed or the device failed."] Disconnected
+kernel/src/virtio_port.rs :: pub (crate) enum Error
+kernel/src/virtio_port.rs :: pub (crate) fn dispatch_work () -> bool
+kernel/src/virtio_port.rs :: pub (crate) fn init (device : Arc < VirtIOConsoleDevice > , notification : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < () , () >
+kernel/src/virtio_port.rs :: pub (crate) fn open () -> Option < Arc < Port > >
+kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn poll_events (& self , events : i16) -> i16
+kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn prepare_to_block (& self , events : i16) -> Option < Arc < Pipe > >
+kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn read (& self , output : & mut [u8]) -> Result < usize , Error >
+kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn readiness_generation (& self) -> u64
+kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn write (& self , input : & [u8]) -> Result < usize , Error >
+kernel/src/virtio_port.rs :: pub (crate) struct Port

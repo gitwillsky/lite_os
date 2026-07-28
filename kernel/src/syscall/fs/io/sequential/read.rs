@@ -435,6 +435,61 @@ pub(super) fn read_descriptor(
                 }
                 cursor.completed() as isize
             }
+            CharacterDevice::VirtioPort(port) => {
+                let mut input = [0u8; 1024];
+                let mut cursor = UserIoCursor::new(vectors);
+                loop {
+                    if cursor.completed() == total_length {
+                        break;
+                    }
+                    let requested = (total_length - cursor.completed()).min(input.len());
+                    if cursor.validate_write_prefix(task, requested).is_err() {
+                        return if cursor.completed() == 0 {
+                            -errno::EFAULT
+                        } else {
+                            cursor.completed() as isize
+                        };
+                    }
+                    match port.read(&mut input[..requested]) {
+                        Ok(count) => {
+                            if cursor.copy_to_user(task, &input[..count]).is_err() {
+                                return if cursor.completed() == 0 {
+                                    -errno::EFAULT
+                                } else {
+                                    cursor.completed() as isize
+                                };
+                            }
+                            if count < requested {
+                                break;
+                            }
+                        }
+                        Err(crate::virtio_port::Error::WouldBlock) if cursor.completed() != 0 => {
+                            break;
+                        }
+                        Err(crate::virtio_port::Error::WouldBlock)
+                            if *ofd.flags.lock() & O_NONBLOCK != 0 =>
+                        {
+                            return -errno::EAGAIN;
+                        }
+                        Err(crate::virtio_port::Error::WouldBlock) => {
+                            match crate::syscall::poll::wait_for_ofd(ofd, 0x001) {
+                                WaitResult::Woken => {}
+                                WaitResult::Interrupted => return -errno::EINTR,
+                                WaitResult::TimedOut => unreachable!(),
+                                WaitResult::OutOfMemory => return -errno::ENOMEM,
+                            }
+                        }
+                        Err(crate::virtio_port::Error::Disconnected) => {
+                            return if cursor.completed() == 0 {
+                                -errno::EIO
+                            } else {
+                                cursor.completed() as isize
+                            };
+                        }
+                    }
+                }
+                cursor.completed() as isize
+            }
             CharacterDevice::Audio(_) => -errno::EOPNOTSUPP,
             CharacterDevice::Terminal {
                 terminal: console,

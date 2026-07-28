@@ -4,6 +4,7 @@
 //! 协议只描述 flat scene、surface、buffer 与输入 mechanism；窗口 policy、React、CSS 与主题不进入此 seam。
 
 mod buffer;
+mod clipboard;
 mod codec;
 mod geometry;
 mod handshake;
@@ -14,6 +15,7 @@ mod surface;
 mod transport;
 
 pub use buffer::{BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease};
+pub use clipboard::{ClipboardData, ClipboardRead, ClipboardWrite, MAX_CLIPBOARD_TEXT};
 pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
 pub use geometry::{Rect, Size};
 pub use handshake::{HelloApp, HelloDesktop, Welcome};
@@ -31,7 +33,7 @@ pub use surface::{
 pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
 
 /// 唯一受支持的协议版本；不提供版本协商或兼容 decoder。
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";

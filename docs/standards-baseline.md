@@ -82,8 +82,16 @@
 
 - JetBrains Mono `2.304`；source zip SHA-256 `6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf`；SIL OFL 1.1。
 - Medium/Bold TTF SHA-256：`44099e1efefba55637e0abbbf8dd3f526e59523345888a257bb01d39df4af74c`、`0198e841824025f8876e5c297f0b9b497ee8d6eb9969710a3328e1303f996ec3`。
-- 来源：[官方 release](https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304)、[ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/)。
-- checked atlas SHA-256 为 `bbc87d129cbb440dd76eceef02755cb36d66e9a37f00ba01b615a4d7cb87abdd`；terminfo 使用 ncurses `6.5` source format。
+- 中文 fallback 使用 Noto Sans CJK SC Regular/Bold，SHA-256 分别为
+  `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`、
+  `b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a`。
+- 来源：[JetBrains Mono 官方 release](https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304)、
+  [Noto CJK 官方仓库](https://github.com/notofonts/noto-cjk)、
+  [ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/)。
+- Unicode cell width 使用 unicode-width `0.2.2`，checksum
+  `b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254`。
+- checked atlas SHA-256 为 `dab03e4beb2ee1b5ac689bc3a608461530ce58774557d011881f782f8a892d61`；
+  terminfo 使用 ncurses `6.5` source format。
 
 ### LiteUI
 
@@ -98,11 +106,26 @@
   来源：[npm React](https://www.npmjs.com/package/react)、
   [npm react-reconciler](https://www.npmjs.com/package/react-reconciler)、
   [npm esbuild](https://www.npmjs.com/package/esbuild)。唯一解析 owner 是 `ui/package-lock.json`。
-- renderer 固定使用 cssparser `0.37.0`、Taffy `0.12.2`、Parley `0.11.0` 与 tiny-skia `0.12.0`；
+- renderer 固定使用 cssparser `0.37.0`、Taffy `0.12.2`、Parley `0.11.0`、tiny-skia `0.12.0`
+  与 unicode-width `0.2.2`；
   来源分别为 [cssparser](https://crates.io/crates/cssparser/0.37.0)、
   [Taffy](https://crates.io/crates/taffy/0.12.2)、[Parley](https://crates.io/crates/parley/0.11.0)、
-  [tiny-skia](https://crates.io/crates/tiny-skia/0.12.0)。Taffy 只启用 Flexbox/block，Parley 禁止 system
-  font discovery；精确 transitive source/checksum 由 `user/Cargo.lock` 唯一固定。
+  [tiny-skia](https://crates.io/crates/tiny-skia/0.12.0) 与
+  [unicode-width](https://crates.io/crates/unicode-width/0.2.2)。Taffy 只启用 Flexbox/block，Parley
+  禁止 system font discovery；精确 transitive source/checksum 由 `user/Cargo.lock` 唯一固定。
+
+### QEMU host clipboard 与 SPICE agent
+
+- QEMU `11.0.2`；tag commit `e545d8bb9d63e9dd61542b88463183314cff9482`；官方 tarball SHA-256
+  `3745f6ea88e2e87fe0dc838b2b1d4e0a770bf48e01a1d5a186842a1fff76ccf5`。来源：
+  [官方 tarball](https://download.qemu.org/qemu-11.0.2.tar.xz)、
+  [固定源码](https://gitlab.com/qemu-project/qemu/-/tree/e545d8bb9d63e9dd61542b88463183314cff9482)。
+- spice-protocol `0.14.5`；官方 tarball SHA-256
+  `baf58449f6e89d19f475899ad5fb9196fdc46c03cc53233f4e39cf2978f9cff7`。来源：
+  [官方 tarball](https://www.spice-space.org/download/releases/spice-protocol-0.14.5.tar.xz)。
+- QEMU 固定 `qemu-vdagent` chardev、Cocoa clipboard backend 与 `com.redhat.spice.0`
+  virtserialport；guest 只实现 spice-protocol 定义的 VDI chunk、capability 与 UTF-8 clipboard message。
+  QEMU/SPICE 不定义 LiteUI focus policy、display-protocol request identity 或 kernel devfs ABI。
 
 ### 媒体解码
 

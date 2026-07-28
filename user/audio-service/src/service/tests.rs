@@ -210,6 +210,7 @@ fn low_watermark_crossing_arms_and_rearms_ring_available() {
         events: events.clone(),
         mixer_failed: failed,
         mixer: None,
+        diagnostic_log: false,
         _device: std::marker::PhantomData,
     };
 

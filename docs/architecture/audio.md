@@ -23,6 +23,8 @@ VirtIO Sound device ID 25。
 - 每条 memfd 是 8192-frame SPSC ring。worker 单写，mixer 单读；PCM 不经过 socket。
 - service control thread 独占连接、配额、fd publication 和设置持久化；mixer thread 独占 ALSA、
   stream 消费、mix、limiter 与 progress。双向 control handoff 使用预分配有界 SPSC queue。
+- 默认 service console 只记录启动、stream/device lifecycle、master state 与错误；每秒 progress/
+  metrics 只由公开 `--diagnostic-log` 模式启用，音频 runtime gate 仅在隔离私有镜像中显式选择该模式。
 
 ## PCM、调度与质量
 

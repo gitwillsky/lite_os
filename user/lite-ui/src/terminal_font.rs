@@ -1,11 +1,14 @@
-//! Checked fixed-cell terminal A8 atlas (JetBrains Mono NL, 16x32 physical cells).
+//! Checked terminal A8 atlas (JetBrains Mono NL + Noto CJK, 16x32 physical cells).
 //!
 //! The atlas mirrors `scripts/generate_terminal_font.py`: a 32-byte header, a
-//! sorted u32 codepoint table, then two tightly packed 16x32 A8 faces. One cell
-//! is exactly one terminal grid unit (8x16 CSS px at the display scale), so the
-//! VT grid, the React cursor math and the resize divisor all share one geometry.
+//! sorted u32 codepoint table, then two tightly packed 32x32 A8 faces. A narrow
+//! glyph uses the first 16 physical pixels; a wide glyph spans both terminal
+//! cells, while the VT grid, React cursor math and resize divisor retain one
+//! 16x32 physical cell geometry.
 
 use std::{fs, io};
+
+use unicode_width::UnicodeWidthChar;
 
 use crate::{
     renderer::{PhysicalRect, Raster},
@@ -13,13 +16,14 @@ use crate::{
 };
 
 const PATH: &str = "/usr/share/liteos/liteos-terminal.a8";
-const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x02";
-const GLYPH_COUNT: usize = 468;
+const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x03";
+const GLYPH_COUNT: usize = 4470;
 const FACE_COUNT: usize = 2;
 /// Physical cell extent; one cell is one terminal grid column/row.
 pub(crate) const CELL_WIDTH: usize = 16;
 pub(crate) const CELL_HEIGHT: usize = 32;
-const GLYPH_BYTES: usize = CELL_WIDTH * CELL_HEIGHT;
+const BITMAP_WIDTH: usize = 32;
+const GLYPH_BYTES: usize = BITMAP_WIDTH * CELL_HEIGHT;
 
 /// Fully validated fixed-cell terminal atlas.
 pub struct TerminalFont {
@@ -48,6 +52,8 @@ impl TerminalFont {
             || read_u16(&bytes, 20) != Some(CELL_WIDTH as u16)
             || read_u16(&bytes, 22) != Some(CELL_HEIGHT as u16)
             || read_u32(&bytes, 24) != Some(FACE_COUNT as u32)
+            || read_u16(&bytes, 28) != Some(BITMAP_WIDTH as u16)
+            || read_u16(&bytes, 30) != Some(0)
             || faces != codepoints_offset + GLYPH_COUNT * 4
             || bytes.len() != faces + FACE_COUNT * GLYPH_COUNT * GLYPH_BYTES
         {
@@ -76,10 +82,9 @@ impl TerminalFont {
 
     /// Draws one monospace text row cell by cell, clipped to its layout box.
     ///
-    /// Cell `i` always lands at `bounds.x1 + i * CELL_WIDTH` regardless of the
-    /// glyph's ink width: the terminal grid is the layout contract, unlike the
-    /// proportional UI font whose pen advances per glyph. `font-weight: bold`
-    /// selects the atlas's second face, mirroring the UI font bold routing.
+    /// Narrow glyphs advance one cell and wide glyphs advance two. The latter
+    /// use a 32-pixel bitmap so CJK ink is not compressed into the first cell.
+    /// `font-weight: bold` selects the atlas's second face.
     pub fn draw<R: Raster>(
         &self,
         target: &mut R,
@@ -97,8 +102,9 @@ impl TerminalFont {
                 .and_then(|value| value.parse::<u32>().ok())
                 .is_some_and(|weight| weight >= 600);
         let face = self.faces + usize::from(bold) * GLYPH_COUNT * GLYPH_BYTES;
-        for (index, character) in text.chars().enumerate() {
-            let cell_x = bounds.x1 + index * CELL_WIDTH;
+        let mut column = 0usize;
+        for character in text.chars() {
+            let cell_x = bounds.x1 + column * CELL_WIDTH;
             if cell_x >= bounds.x2 {
                 break;
             }
@@ -113,20 +119,21 @@ impl TerminalFont {
                     break;
                 }
                 let target_row = target.row_mut(target_y);
-                for column in 0..CELL_WIDTH {
+                for bitmap_column in 0..BITMAP_WIDTH {
                     // The final cell can straddle the layout box edge: glyph
                     // cells blit whole, so clip per pixel instead of per cell.
-                    let target_x = cell_x + column;
+                    let target_x = cell_x + bitmap_column;
                     if target_x >= bounds.x2 {
                         break;
                     }
-                    let alpha = self.bytes[bitmap + row * CELL_WIDTH + column];
+                    let alpha = self.bytes[bitmap + row * BITMAP_WIDTH + bitmap_column];
                     if alpha != 0 {
                         let background = target_row[target_x];
                         target_row[target_x] = blend(background, color, alpha);
                     }
                 }
             }
+            column += UnicodeWidthChar::width(character).unwrap_or(1).clamp(1, 2);
         }
     }
 }
@@ -187,6 +194,7 @@ mod tests {
         bytes[20..22].copy_from_slice(&(CELL_WIDTH as u16).to_le_bytes());
         bytes[22..24].copy_from_slice(&(CELL_HEIGHT as u16).to_le_bytes());
         bytes[24..28].copy_from_slice(&(FACE_COUNT as u32).to_le_bytes());
+        bytes[28..30].copy_from_slice(&(BITMAP_WIDTH as u16).to_le_bytes());
         for (index, codepoint) in codepoints.iter().enumerate() {
             bytes[32 + index * 4..36 + index * 4].copy_from_slice(&codepoint.to_le_bytes());
         }
@@ -197,6 +205,36 @@ mod tests {
     fn valid_atlas_parses_with_fallback_lookup() {
         let font = TerminalFont::parse(synthetic_atlas()).expect("valid atlas");
         assert_eq!(font.codepoints[font.fallback], 0xfffd);
+    }
+
+    #[test]
+    fn checked_atlas_contains_real_chinese_glyphs_in_both_faces() {
+        let font = TerminalFont::parse(
+            include_bytes!("../../../assets/fonts/liteos-terminal.a8").to_vec(),
+        )
+        .expect("checked terminal atlas");
+        for character in "中文乱码".chars() {
+            let glyph = font
+                .codepoints
+                .binary_search(&(character as u32))
+                .expect("Chinese codepoint");
+            for face in 0..FACE_COUNT {
+                let bitmap = font.faces + (face * GLYPH_COUNT + glyph) * GLYPH_BYTES;
+                assert!(
+                    font.bytes[bitmap..bitmap + GLYPH_BYTES]
+                        .iter()
+                        .any(|alpha| *alpha != 0),
+                    "empty {character:?} glyph in face {face}"
+                );
+                assert!(
+                    (0..CELL_HEIGHT).any(|row| font.bytes[bitmap + row * BITMAP_WIDTH + CELL_WIDTH
+                        ..bitmap + (row + 1) * BITMAP_WIDTH]
+                        .iter()
+                        .any(|alpha| *alpha != 0)),
+                    "narrow {character:?} glyph in face {face}"
+                );
+            }
+        }
     }
 
     #[test]

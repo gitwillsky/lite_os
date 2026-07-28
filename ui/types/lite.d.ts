@@ -9,6 +9,16 @@
 // This is an ambient script (no top-level import/export), so every type below
 // is global.
 
+/** Frozen plain-text subset of the standard Async Clipboard API. */
+interface Clipboard {
+  readText(): Promise<string>;
+  writeText(text: string): Promise<void>;
+}
+
+interface Navigator {
+  readonly clipboard: Clipboard;
+}
+
 /** Pointer payload delivered to onClick / onPointer / onContextMenu handlers. */
 interface LitePointerEvent {
   type: "pointer";
@@ -69,7 +79,7 @@ type LiteDesktopEvent =
 
 /** Terminal screen snapshot (loosely typed; only the terminal app reads it). */
 interface LiteScreen {
-  rows: Array<Array<{ text: string; fg: number; bg: number; bold: boolean }>>;
+  rows: Array<Array<{ text: string; columns: number; fg: number; bg: number; bold: boolean }>>;
   cursor: { column: number; row: number; blinking?: boolean; shape?: string; visible?: boolean };
   foreground: number;
   background: number;
@@ -164,6 +174,7 @@ declare module "lite:desktop" {
 declare module "lite:terminal" {
   export const connect: (argv: string[]) => LiteScreen;
   export const input: (event: LiteKeyEvent) => string;
+  export const paste: (text: string) => string;
 }
 
 declare module "lite:audio-system" {

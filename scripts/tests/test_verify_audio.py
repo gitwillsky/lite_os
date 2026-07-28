@@ -27,6 +27,7 @@ from verify_audio import (  # noqa: E402
     S16_POSITIVE_MAX,
     assert_qemu_wav_finalized,
     channel_tone_amplitude,
+    diagnostic_inittab,
     live_stream_ids,
     parse_metrics,
     signal_rms,
@@ -36,6 +37,21 @@ from verify_audio import (  # noqa: E402
 
 
 class AudioRuntimeGateTests(unittest.TestCase):
+    def test_audio_diagnostics_are_private_gate_opt_in(self) -> None:
+        production = (
+            "::respawn:/bin/audio-service\n"
+            "::once:/bin/compositor\n"
+        )
+        self.assertEqual(
+            diagnostic_inittab(production),
+            "::respawn:/bin/audio-service --diagnostic-log\n"
+            "::once:/bin/compositor\n",
+        )
+        with self.assertRaisesRegex(RuntimeError, "no unique"):
+            diagnostic_inittab("::once:/bin/compositor\n")
+        with self.assertRaisesRegex(RuntimeError, "no unique"):
+            diagnostic_inittab(production + production)
+
     def test_fixture_guest_names_are_complete_and_sorted(self) -> None:
         self.assertEqual(len(FIXTURES), 13)
         guest_names = [guest for _, guest in FIXTURES]

@@ -166,6 +166,11 @@ class QemuRoutingTests(unittest.TestCase):
             [
                 "virtio-blk-device,drive=x0",
                 "virtio-rng-device,rng=rng0",
+                "virtio-serial-device,id=virtio-serial0",
+                (
+                    "virtserialport,bus=virtio-serial0.0,chardev=vdagent,"
+                    "name=com.redhat.spice.0"
+                ),
                 "virtio-gpu-device,xres=3008,yres=1692",
                 "virtio-keyboard-device",
                 "virtio-tablet-device",
@@ -174,6 +179,10 @@ class QemuRoutingTests(unittest.TestCase):
             ],
         )
         self.assertEqual(argument_after(command, "-audiodev"), "none,id=audio0")
+        self.assertEqual(
+            argument_after(command, "-chardev"),
+            "qemu-vdagent,id=vdagent,name=vdagent,clipboard=on,mouse=off",
+        )
 
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-aarch64")
     def test_audio_gate_records_fixed_stereo_wav(self, _: Mock) -> None:

@@ -1,8 +1,10 @@
 //! Strict multi-process display session and compositor-owned client buffers.
 
 mod buffers;
+mod clipboard_bridge;
 mod client;
 mod cursor;
+mod messages;
 mod routing;
 mod scene;
 mod wire;
@@ -11,7 +13,7 @@ pub use buffers::Buffers;
 use buffers::Owner;
 use cursor::{cursor_on_focus_change, cursor_request};
 pub use scene::{Node, Scene};
-use wire::{new_epoch, receive, send_accepted, send_presented};
+use wire::{new_epoch, send_accepted, send_presented};
 
 use std::{
     collections::HashMap,
@@ -22,8 +24,8 @@ use std::{
 };
 
 use display_proto::{
-    AppClosed, AppOpened, BufferAlloc, CloseRequest, Configure, ConfigureReady, MAX_APP_SURFACES,
-    MessageKind, MoveBegin, Rect, SetCursorShape, Size, SurfaceCommit, send_message,
+    AppClosed, AppOpened, CloseRequest, Configure, ConfigureReady, MAX_APP_SURFACES, Rect,
+    SetCursorShape, Size, SurfaceCommit, send_message,
 };
 use linux_uapi::{
     drm::DrmDevice,
@@ -111,6 +113,7 @@ pub struct Session {
     /// surface, and a focus change resets the cursor to the default arrow so a
     /// prior surface's shape never leaks onto the next one.
     pointer_surface: Option<u32>,
+    clipboard: crate::clipboard::Clipboard,
 }
 
 /// Outcome of one [`Session::poll`] wait.
@@ -131,6 +134,7 @@ impl Session {
         let _ = fs::remove_file(display_proto::SOCKET_PATH);
         let listener = UnixListener::bind(display_proto::SOCKET_PATH)?;
         listener.set_nonblocking(true)?;
+        let clipboard = crate::clipboard::Clipboard::open()?;
         Ok(Self {
             listener,
             device: device.clone(),
@@ -159,6 +163,7 @@ impl Session {
             },
             pending_cursor_shape: None,
             pointer_surface: None,
+            clipboard,
         })
     }
 
@@ -191,8 +196,8 @@ impl Session {
             app_ids[app_count] = id;
             app_count += 1;
         }
-        let (listener_ready, desktop_ready, app_ready, input_ready) = {
-            const MAX_POLL_FDS: usize = 2 + MAX_APP_SURFACES + 2;
+        let (listener_ready, desktop_ready, app_ready, input_ready, clipboard_ready) = {
+            const MAX_POLL_FDS: usize = 3 + MAX_APP_SURFACES + 2;
             let mut descriptors: [PollFd; MAX_POLL_FDS] =
                 std::array::from_fn(|_| PollFd::new(self.listener.as_fd(), PollEvents::READ));
             let mut descriptor_count = 0;
@@ -213,6 +218,8 @@ impl Session {
                 descriptors[descriptor_count] = PollFd::new(*fd, PollEvents::READ);
                 descriptor_count += 1;
             }
+            let clipboard_offset =
+                self.append_clipboard_poll(&mut descriptors, &mut descriptor_count);
             unix::poll(&mut descriptors[..descriptor_count], Some(timeout))?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(self.desktop.is_some());
@@ -225,10 +232,17 @@ impl Session {
             {
                 *ready = descriptor.returned() != PollEvents::EMPTY;
             }
-            let input_ready = descriptors[wake_offset..descriptor_count]
+            let input_ready = descriptors[wake_offset..clipboard_offset]
                 .iter()
                 .any(|descriptor| descriptor.returned() != PollEvents::EMPTY);
-            (listener_ready, desktop_ready, app_ready, input_ready)
+            let clipboard_ready = descriptors[clipboard_offset].returned() != PollEvents::EMPTY;
+            (
+                listener_ready,
+                desktop_ready,
+                app_ready,
+                input_ready,
+                clipboard_ready,
+            )
         };
         if listener_ready && let Err(error) = self.accept() {
             eprintln!("compositor: rejected connection: {error}");
@@ -260,6 +274,9 @@ impl Session {
                 eprintln!("compositor: app {surface_id} disconnected: {error}");
                 self.remove_app(surface_id);
             }
+        }
+        if clipboard_ready {
+            self.pump_clipboard()?;
         }
         Ok(Activity {
             scene,
@@ -304,79 +321,6 @@ impl Session {
                 Ok(())
             }
             Ok(None) => Ok(()),
-        }
-    }
-
-    fn receive_desktop(&mut self) -> io::Result<Option<Scene>> {
-        let (kind, payload) = receive(self.desktop_stream()?)?;
-        match kind {
-            MessageKind::BufferAlloc => {
-                self.allocate(
-                    Owner::Desktop,
-                    BufferAlloc::parse(&payload).ok_or_else(|| invalid("invalid allocation"))?,
-                )?;
-                Ok(None)
-            }
-            MessageKind::Configure => {
-                let configure =
-                    Configure::parse(&payload).ok_or_else(|| invalid("invalid configure"))?;
-                self.route_configure(configure)?;
-                Ok(None)
-            }
-            MessageKind::CloseRequest => {
-                let request = CloseRequest::parse(&payload)
-                    .ok_or_else(|| invalid("invalid close request"))?;
-                self.route_close(request.surface_id)?;
-                Ok(None)
-            }
-            MessageKind::MoveBegin => {
-                let request =
-                    MoveBegin::parse(&payload).ok_or_else(|| invalid("invalid move begin"))?;
-                // A MoveBegin races the pointer stream: by the time it arrives
-                // the authorizing pointer-down may have been superseded, the
-                // window may no longer be presented, or the underlay buffer may
-                // have been recycled. `begin_move` reports all of these as
-                // validation errors and performs no I/O, so a rejected grab must
-                // log and no-op — the desktop simply falls back to the React
-                // move path — never tear down the whole compositor.
-                if let Err(error) = self.begin_move(request) {
-                    eprintln!("compositor: move grab rejected: {error}");
-                }
-                Ok(None)
-            }
-            MessageKind::SceneCommit => self.accept_scene(&payload).map(Some),
-            MessageKind::SetCursorShape => {
-                let request = SetCursorShape::parse(&payload)
-                    .ok_or_else(|| invalid("invalid set cursor shape"))?;
-                self.accept_cursor_shape(0, request)?;
-                Ok(None)
-            }
-            _ => Err(invalid("message is invalid for desktop role")),
-        }
-    }
-
-    fn receive_app(&mut self, surface_id: u32) -> io::Result<()> {
-        let stream = &self
-            .apps
-            .get(&surface_id)
-            .ok_or_else(|| invalid("unknown app"))?
-            .stream;
-        let (kind, payload) = receive(stream)?;
-        match kind {
-            MessageKind::BufferAlloc => self.allocate(
-                Owner::App(surface_id),
-                BufferAlloc::parse(&payload).ok_or_else(|| invalid("invalid allocation"))?,
-            ),
-            MessageKind::SurfaceCommit => self.accept_surface(
-                surface_id,
-                SurfaceCommit::parse(&payload).ok_or_else(|| invalid("invalid surface commit"))?,
-            ),
-            MessageKind::SetCursorShape => {
-                let request = SetCursorShape::parse(&payload)
-                    .ok_or_else(|| invalid("invalid set cursor shape"))?;
-                self.accept_cursor_shape(surface_id, request)
-            }
-            _ => Err(invalid("message is invalid for app role")),
         }
     }
 
@@ -543,6 +487,7 @@ impl Session {
         if self.apps.remove(&surface_id).is_none() {
             return;
         }
+        self.clipboard.remove_surface(surface_id);
         self.buffers
             .values
             .retain(|_, buffer| buffer.owner != Owner::App(surface_id));
@@ -582,6 +527,7 @@ impl Session {
         self.move_damage = None;
         self.presented_nodes.clear();
         self.desktop_current_buffers.clear();
+        self.clipboard.reset_session();
         self.epoch = self.epoch.wrapping_add(1);
     }
 }

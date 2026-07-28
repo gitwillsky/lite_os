@@ -4,6 +4,9 @@
 
 - `compositor` 是唯一 DRM master、evdev、scanout、page-flip、合成、输入路由与共享像素 buffer owner。
   它只理解物理像素、flat scene 和 surface，不理解 React、CSS、窗口策略或 XP 主题。
+- `compositor/clipboard.rs` 是 session plain-text clipboard 与 SPICE vdagent framing 的唯一 owner；
+  它通过标准 VirtIO named port 与 QEMU host clipboard 懒交换数据，并只把结果路由到当前 focused
+  surface。desktop 和 app 不保存另一份 system clipboard。
 - `/bin/lite-ui` 是所有窗体程序共用的唯一 executable。每次启动建立一个进程、一个 QuickJS VM、
   一个 React root 和一个顶层窗口；desktop 使用唯一的 `--desktop` session，普通应用使用
   `--app <id>`。无窗体程序和 3D 游戏不经过 LiteUI。
@@ -19,6 +22,9 @@
   最小化/最大化、decorations、任务栏、开始菜单、壁纸、应用启动与 XP 产品呈现。
 - `terminal-session` 是无窗体 helper，独占 PTY、VT parser、screen、cursor、scrollback 与 selection；
   React terminal 只绘制网格并转发输入、尺寸与 clipboard 操作。
+- LiteUI runtime 提供标准异步 `navigator.clipboard.readText()`/`writeText()`。受控文本框使用
+  Ctrl/Cmd+C/X/V，当前 append-only caret 模型下 copy/cut 作用于完整 value、paste 追加到 value；
+  Terminal 使用 Ctrl+Shift+V 或 macOS Cmd+V，把 UTF-8 文本作为一帧 PTY input。
 - `ui/design-system` 是唯一 XP Classic presentation owner。LiteUI theme-free，compositor 不包含窗口主题。
 
 ## 显示与调度
@@ -122,9 +128,10 @@
 - GUI 进程当前与 desktop 同等可信。握手仍共享同一 DRM OFD，但 dumb buffer 只能按协议向 compositor
   请求；compositor 是 CREATE/DESTROY owner，LiteUI 只 MAP_DUMB+mmap。权限模型和隔离后的共享内存
   transport 属于后续破坏性协议升级。
-- input v1 只有 US keyboard、pointer、wheel、focus、repeat、text clipboard 与基础 keyboard
+- input v1 只有 US keyboard、pointer、wheel、focus、repeat、plain-text clipboard 与基础 keyboard
   accessibility；`cursor` 只支持固定 arrow、pointer 与四向 resize shape，不支持 URL/custom bitmap。
-  无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop 或 touch。
+  clipboard 单次最多 60 KiB UTF-8，不支持 image、file、HTML、primary selection 或 Finder
+  drag-and-drop。无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop 或 touch。
 - Web media 当前只提供标准音频播放，不提供 capture、Web Audio、MSE、MediaStream、remote playback、
   EME、track 或非 `1x` playbackRate；精确 codec 与状态边界见音频领域文档。
 - 视觉还原不生成 screenshot preview 或 Golden，不进入自动门禁；最终由真实启动人工验收。

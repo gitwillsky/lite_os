@@ -72,6 +72,10 @@ GDB_ARCH := riscv:rv64
 ADDR2LINE ?= riscv64-unknown-elf-addr2line
 endif
 
+# qemu-vdagent owns the host clipboard and exposes the standard SPICE agent port. Keeping the
+# same topology in GUI, headless, debugger, and runtime gates prevents device-order-only failures.
+QEMU_CLIPBOARD_ARGS := -chardev qemu-vdagent,id=vdagent,name=vdagent,clipboard=on,mouse=off -device virtio-serial-device,id=virtio-serial0 -device virtserialport,bus=virtio-serial0.0,chardev=vdagent,name=com.redhat.spice.0
+
 build-kernel:
 	cd kernel && cargo build --target $(KERNEL_TARGET) $(CARGO_PROFILE_ARG)
 	python3 scripts/verify_artifacts.py --build-boot-artifact --profile $(PROFILE)
@@ -128,6 +132,7 @@ build-apk-apps: build-kernel build-bootloader build-rootfs
 # 正常构建只消费 checked atlas；字体升级由显式目标完成，避免环境 FreeType 差异污染构建。
 regen-font:
 	target/fontenv/bin/python scripts/generate_terminal_font.py
+	target/fontenv/bin/python scripts/generate_terminal_font.py --verify
 
 # UI 比例字体 OpenType 子集由固定 venv 生成；正常构建只消费 checked 资产，不需要 fontTools。
 regen-ui-font:
@@ -147,6 +152,7 @@ run: build-kernel build-bootloader sync-userland
 	-device virtio-blk-device,drive=x0 \
 	-object rng-random,filename=/dev/urandom,id=rng0 \
 	-device virtio-rng-device,rng=rng0 \
+	$(QEMU_CLIPBOARD_ARGS) \
 	-device $(QEMU_GPU_DEVICE) \
 	$(QEMU_AUDIO_HEADLESS_ARGS) \
 	-netdev user,id=net0 \
@@ -171,6 +177,7 @@ run-gui: build-kernel build-bootloader sync-userland
 	-device virtio-blk-device,drive=x0 \
 	-object rng-random,filename=/dev/urandom,id=rng0 \
 	-device virtio-rng-device,rng=rng0 \
+	$(QEMU_CLIPBOARD_ARGS) \
 	-device $(QEMU_GPU_DEVICE) \
 	-device virtio-keyboard-device \
 	-device virtio-tablet-device \
@@ -179,7 +186,7 @@ run-gui: build-kernel build-bootloader sync-userland
 	-device virtio-net-device,netdev=net0
 
 run-gdb: build-kernel build-bootloader prepare-rootfs
-	$(QEMU) -machine $(QEMU_MACHINE) -cpu $(QEMU_CPU) -global virtio-mmio.force-legacy=false -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(QEMU_BOOT_ARGS) -nographic -kernel $(KERNEL_BOOT_ARTIFACT) -drive file=$(FS_IMAGE),if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -device $(QEMU_GPU_DEVICE) -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
+	$(QEMU) -machine $(QEMU_MACHINE) -cpu $(QEMU_CPU) -global virtio-mmio.force-legacy=false -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(QEMU_BOOT_ARGS) -nographic -kernel $(KERNEL_BOOT_ARTIFACT) -drive file=$(FS_IMAGE),if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 $(QEMU_CLIPBOARD_ARGS) -device $(QEMU_GPU_DEVICE) -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
 
 clean:
 	cargo clean

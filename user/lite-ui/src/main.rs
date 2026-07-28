@@ -63,6 +63,14 @@ struct Interactions {
     /// Latched keyboard modifiers for the focused text field's key→char mapping.
     /// Terminal keeps its own modifiers; this only serves UI `<input>` focus.
     modifiers: keymap::Modifiers,
+    /// One native text-field paste awaiting its exact compositor response.
+    ///
+    /// Without the node identity, an asynchronous reply could paste into a
+    /// different field after focus changed.
+    pending_clipboard_paste: Option<input::ClipboardPaste>,
+    /// Counts native paste requests from the top of the u64 namespace so they
+    /// cannot collide with JavaScript Clipboard API request identities.
+    native_clipboard_generation: u64,
 }
 
 struct DesktopPresentation {
@@ -90,12 +98,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
     let runtime = fs::read("/usr/lib/lite-ui/runtime.js")
         .map_err(|error| owner_error("runtime bundle read", error))?;
-    let source = fs::read(root.join("main.js"))
-        .map_err(|error| owner_error("app bundle read", error))?;
+    let source =
+        fs::read(root.join("main.js")).map_err(|error| owner_error("app bundle read", error))?;
     let style = fs::read_to_string(root.join("style.css"))
         .map_err(|error| owner_error("app style read", error))?;
-    let mut display = Display::open(&mode)
-        .map_err(|error| owner_error("display open", error))?;
+    let mut display = Display::open(&mode).map_err(|error| owner_error("display open", error))?;
     let mut renderer = Renderer::open(root.clone(), &style, display.logical_size())
         .map_err(|error| owner_error("renderer open", error))?;
     let audio_role = if matches!(mode, Mode::Desktop) {
@@ -103,11 +110,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     } else {
         audio_proto::ClientRole::Media
     };
-    let (audio_commands, mut audio_events) = audio::start(audio_role)
-        .map_err(|error| owner_error("audio start", error))?;
+    let (audio_commands, mut audio_events) =
+        audio::start(audio_role).map_err(|error| owner_error("audio start", error))?;
     let (host, state) = Host::new(role, root.clone(), audio_commands);
-    let mut engine = Engine::open(role)
-        .map_err(|error| owner_error("engine open", error))?;
+    let mut engine = Engine::open(role).map_err(|error| owner_error("engine open", error))?;
     engine.install_host(host);
     engine
         .evaluate("lite-ui-runtime.js", &runtime)
@@ -406,6 +412,12 @@ fn process_actions(
                 .as_deref_mut()
                 .ok_or("terminal action outside terminal app")?
                 .input(&payload)?,
+            Action::TerminalPaste(text) => terminal
+                .as_deref_mut()
+                .ok_or("terminal paste outside terminal app")?
+                .paste(&text)?,
+            Action::ClipboardRead(request_id) => display.clipboard_read(request_id)?,
+            Action::ClipboardWrite(text) => display.clipboard_write(text)?,
         }
     }
     Ok(())

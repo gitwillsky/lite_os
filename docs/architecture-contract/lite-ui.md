@@ -78,8 +78,11 @@
   必须为零；content/viewport 缩小时必须 clamp；嵌套容器只把本层未消费 delta 传播给 ancestor。
 - global accelerator table 由 desktop 原子提交，compositor 只匹配固定 physical chord 并把完整 down/up
   sequence 路由 desktop。窗口 policy 与 shortcut action 不得进入 compositor。
-- clipboard 只保存 session 内不超过 1 MiB 的 UTF-8 text，desktop 是内容 owner，compositor 只按
-  connection routing read/write。无 image/file/HTML/primary selection。
+- compositor 是 session clipboard、focused connection routing 与 SPICE vdagent transport 的唯一
+  owner。display protocol 的 read/write/data 必须携带 exact surface/request identity，单次只接受
+  不超过 60 KiB 的 UTF-8 text；host 数据按需请求，异步结果只能返回仍存活的原请求连接。
+  LiteUI 只投影标准 `navigator.clipboard.readText()`/`writeText()` 与文本输入/Terminal 快捷键，
+  不保存平行内容。无 image/file/HTML/primary selection、文件拖放或私有 path clipboard。
 - QuickJS 每个 host→JS turn 使用固定 interrupt-check budget；Promise jobs 与 microtask 共用该预算。
   desktop heap 32 MiB、app heap 16 MiB、VM stack 512 KiB。超限是 fatal；native host call 必须非阻塞。
 - 同一 JS turn 内同步 React mutation、job drain 后最多产生一个 revision；rAF callbacks 共用一个 turn，
@@ -89,9 +92,13 @@
   `<audio>` 与 `lite:fs` 的 filesystem-backed `File` 播放；native plugin、dlopen、应用自建 worker
   与 Node API 不存在。
 - terminal helper stdin/stdout 使用长度前缀 binary protocol，stderr 只诊断。screen update 按完整脏行，
-  并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；最多一个 update 在途，ACK 前变更合并；
+  cell metadata 标记“已写入”状态与宽字符 continuation，并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；已写入状态区分原文空格与未使用空白，避免软换行重排吞掉行尾内容；
+  最多一个 update 在途，ACK 前变更合并；
   terminfo 同时发布通用 `Ss`/`Se` 和 Vim 外部 terminfo loader 使用的 `SI`/`EI`；resize 发送完整
   grid。helper argv 必须在 `--` 后显式给出，不提供默认 shell或 command-string parser。
+- Clipboard API native host call 只能排队 nonblocking display request；compositor 的 focused-surface
+  check 是唯一授权点。文本框 native paste 必须保存 node/request identity，异步结果若焦点或 node
+  已变化就丢弃；Terminal paste 只写既有 PTY input protocol，不建立 clipboard-specific helper seam。
 
 ## Failure and cleanup
 

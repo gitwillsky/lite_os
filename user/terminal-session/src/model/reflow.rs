@@ -121,7 +121,12 @@ impl ReflowWriter {
     }
 
     fn put(&mut self, mut cell: Cell) -> Option<()> {
-        if self.column == self.columns {
+        let width = if cell.reserved & WIDE_CONTINUATION == 0 {
+            display_width(cell.codepoint)
+        } else {
+            1
+        };
+        if self.column == self.columns || (width == 2 && self.column + width > self.columns) {
             let marker = self.row * self.columns + self.columns - 1;
             self.cells[marker].reserved |= SOFT_WRAPPED_ROW;
             self.column = 0;
@@ -205,7 +210,11 @@ impl Source<'_> {
             let cell = self.cell(row, column);
             let default_background = cell.reserved & BACKGROUND_INDEXED != 0
                 && cell.reserved & BACKGROUND_INDEX_MASK == 0;
-            if cell.codepoint != b' ' as u32 || cell.attributes != 0 || !default_background {
+            if cell.reserved & OCCUPIED != 0
+                || cell.codepoint != b' ' as u32
+                || cell.attributes != 0
+                || !default_background
+            {
                 return column + 1;
             }
         }
@@ -241,11 +250,7 @@ pub(super) fn resize_screen(
     //    live and saved cursors while replacing old soft-wrap boundaries with the new width.
     for row in 0..input.total_rows() {
         let wrapped = input.wrapped(row);
-        let mut end = if wrapped {
-            source_columns
-        } else {
-            input.content_end(row)
-        };
+        let mut end = input.content_end(row);
         if row == cursor_row {
             end = end.max(source.column);
         }
@@ -407,10 +412,14 @@ mod tests {
     fn row_text(cells: &[Cell]) -> String {
         let end = cells
             .iter()
-            .rposition(|cell| cell.codepoint != b' ' as u32)
+            .rposition(|cell| {
+                cell.reserved & OCCUPIED != 0
+                    || cell.codepoint != b' ' as u32 && cell.reserved & WIDE_CONTINUATION == 0
+            })
             .map_or(0, |index| index + 1);
         cells[..end]
             .iter()
+            .filter(|cell| cell.reserved & WIDE_CONTINUATION == 0)
             .map(|cell| char::from_u32(cell.codepoint).expect("valid test cell"))
             .collect()
     }

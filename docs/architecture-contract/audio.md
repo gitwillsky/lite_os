@@ -51,6 +51,9 @@ kernel ALSA owner 不得读取 VirtIO private queue state；VirtIO adapter 不�
 ## 实时与性能
 
 - mixer steady period 不允许 lock、allocation、filesystem、socket framing 或等待 control thread。
+- kernel period completion 进度属于 debug severity；`audio-service` 的周期性 progress/metrics
+  只能在显式 `--diagnostic-log` 下写 console。默认运行仍必须保留 lifecycle、master state、xrun
+  与 failure，禁止用终端侧文本过滤代替 producer 侧级别控制。
 - worker block 128 frames，mixer period 256 frames，device buffer 1024 frames；steady device wake
   不超过每秒 188 次。
 - `play()` 到首次 device submission p95 不超过 50 ms，steady guest pipeline 不超过 25 ms，

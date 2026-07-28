@@ -90,6 +90,10 @@ mod poll_notification {
 mod virtio_sound_wire;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_console/wire.rs"]
+mod virtio_console_wire;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/drivers/virtio_sound/lifecycle.rs"]
 mod virtio_sound_lifecycle;
 

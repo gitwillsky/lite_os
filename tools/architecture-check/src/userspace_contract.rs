@@ -308,6 +308,12 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
             errors.push(format!("{path}: checked UI face identity changed"));
         }
     }
+    let terminal_atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
+    if terminal_atlas.get(..8) != Some(b"LTA8\0\0\0\x03") || terminal_atlas.len() != 9_172_472 {
+        errors.push(
+            "assets/fonts/liteos-terminal.a8: checked terminal atlas identity changed".to_owned(),
+        );
+    }
     let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();
     if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x02") || bootlogo.len() != 757_144 {
         errors.push("assets/bootlogo.xrgb: checked boot scene identity changed".to_owned());

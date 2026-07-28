@@ -117,6 +117,9 @@ pub(super) fn prepare_wait_sources(ofd: &Arc<OpenFileDescription>) {
         OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
             let _ = master.prepare_to_block();
         }
+        OpenFileKind::Character(CharacterDevice::VirtioPort(port)) => {
+            let _ = port.prepare_to_block(i16::MAX);
+        }
         // epoll 的持久 source index 已由 ctl 路径准备；poll 只等待
         // epoll 自身 notification，不重建嵌套 interest tree。
         OpenFileKind::Epoll(_) => {}

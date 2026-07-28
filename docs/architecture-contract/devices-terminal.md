@@ -3,6 +3,9 @@
 ## Owner
 
 - concrete VirtIO adapter 独占 queue、DMA、descriptor、completion 与 reset state；`drivers` 只发布通用 device seam。
+- VirtIO Console adapter 独占四条 multiport queue、fixed RX/TX slot、named-port control state、
+  byte ring 与 terminal reset；`virtio_port` domain 独占 task notification Pipe。`drivers` 只发布
+  唯一物理 byte-stream seam，devfs 不复制 connected/readable/writable state。
 - `VirtQueue` 独占 split-ring cursor、descriptor free list 与单一 pending-used latch；`used()` 只摘取
   ring entry 并返回不可复制的 `UsedDescriptor`，`recycle_used()` 只消费当前 queue 的唯一 token。
   adapter slot/generation/head、device length 与 response 尚未验证前，free list 不得改变。
@@ -30,6 +33,15 @@
   queue/control/event lock、遍历 `KERNEL_SPACE` 或回收 descriptor。net、GPU、input 的 ordinary
   adapter lock 只允许 task context 与统一 user-return/idle deferred safe point 进入；禁止为个别
   adapter 增设 IRQ-lock 兼容路径。
+- VirtIO Console hardirq 只发布 `VirtioPort`；deferred pass 必须先 claim/validate/recycle completion，
+  再 repost RX descriptor，并按每次 repost 通知对应 queue。用“used ring 仍有数据”代替 repost
+  notification 会在恰好 drain 完一批后永久停止 host→guest stream，禁止这种近似。
+- `PORT_OPEN` 与 `PORT_NAME` 顺序没有领域保证；adapter 必须分别保存 host-open 与 exact-name match，
+  `PORT_NAME` payload 必须先消费 QEMU 发布的单个尾随 NUL 再做 exact match；漏掉该 wire terminator
+  会使标准 `com.redhat.spice.0` 永远无法命中。
+  name match 后 exactly once 回复 guest `PORT_OPEN=1`，并只在 guest acknowledgement 已发布且
+  host-open 同时成立时发布 connected。缺少 guest open 会让 QEMU 保留 channel 却不投递 byte
+  stream；`PORT_REMOVE` 或 transport failure 必须使 read/write/poll 同时观察 terminal disconnect。
 - 同步 block 与 entropy request 在 task context 通过 `IoCompletion` handshake 发布
   `WaitMembership::DriverIo` 后睡眠；只有启动期 block I/O 与创建 init `AT_RANDOM` 尚无 current
   task，经 architecture assembly seam 临时补开 SEIE/SSIE/SIE 并执行带固定 resume
@@ -50,6 +62,9 @@
 - platform 是 concrete adapter 的唯一装配者；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
 - QEMU `virt` 必须在任何 VirtIO queue publication 前证明 root `dma-coherent`；缺失时 fail-stop，禁止增加 bounce buffer、每次提交 cache flush 或“先运行再探测”的兼容路径。
 - DRM/evdev syscall 只编码固定 Linux UAPI。devfs 只发布 object identity，不拥有 device state。
+- `/dev/virtio-ports/com.redhat.spice.0` 是 mode `0600` 的 character byte stream：read/write 支持
+  blocking 与 `O_NONBLOCK`，poll/epoll 只投影 adapter level readiness 与 disconnect。它不是私有
+  clipboard syscall；SPICE agent framing 完全属于 compositor userspace。
 - display completion、input packet 与 PTY byte readiness 统一投递 semantic event；hardirq 不执行 renderer、filesystem 或 task logic。
 - terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。桌面客户端协议（`display-proto`）是用户态进程间 seam，不进入内核 ABI。
 - 动态 client/window/child/config 集合必须使用 fallible `Vec`/`String` reserve 后发布，不得恢复任意
@@ -103,6 +118,10 @@
   terminal queue failure；concrete adapter 对 duplicate/unknown head、非法 returned length、GPU
   response/fence/sequence mismatch 也必须在不回收该 chain 的情况下关闭 adapter 并 reset device。
   禁止返回普通 `Device` error 后继续使用原 queue，也禁止 reset 前局部修补 free list。
+- VirtIO Console 的 duplicate/unknown head、非法 device-written length、RX ring overflow、repost/
+  notify failure 必须进入同一 terminal failure，exactly once reset device 并唤醒全部 port waiter；
+  reset 后不得继续使用原 queue。异步 clipboard reply 命中已断开的 app 时只丢弃该 reply，因为
+  session teardown 已撤销 request owner，不得把正常 disconnect race 升格为 compositor failure。
 - GPU successor order 必须在 request 编码和 descriptor 摘取前验证；scanout 的
   `UNREF→CREATE→ATTACH→TRANSFER→SET_SCANOUT→FLUSH` 与 disable 的递增 slot UNREF chain 不得
   跳步、倒序或跨 operation。失败保持当前 operation owner，publication 前由原 rollback seam 恢复。

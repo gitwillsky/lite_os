@@ -1,5 +1,9 @@
 //! DOM-style input targeting over the latest rendered hit regions.
 
+mod clipboard;
+
+pub(super) use clipboard::ClipboardPaste;
+
 use std::{
     error::Error,
     time::{Duration, Instant},
@@ -101,8 +105,17 @@ pub(super) fn apply_event(
             if key.value != 0 {
                 state.grant_media_playback();
             }
-            dispatch_key(engine, renderer, interactions, key)?;
+            dispatch_key(engine, renderer, interactions, display, key)?;
             return Ok(());
+        }
+        Event::ClipboardData(data) => {
+            if clipboard::apply_data(engine, renderer, interactions, &data)? {
+                return Ok(());
+            }
+            (
+                "clipboard",
+                json!({"requestId":data.request_id,"text":data.text}),
+            )
         }
         Event::FrameDone => return Ok(()),
         Event::Close => unreachable!("close exits before event dispatch"),
@@ -119,6 +132,7 @@ fn dispatch_key(
     engine: &mut Engine,
     renderer: &mut Renderer,
     interactions: &mut Interactions,
+    display: &Display,
     key: display_proto::InputKey,
 ) -> Result<(), Box<dyn Error>> {
     // The focused input must still exist in the current scene; a React commit
@@ -162,6 +176,18 @@ fn dispatch_key(
             return Ok(());
         }
         let editable = editable.expect("focused non-range input is editable");
+        if key.value != 0
+            && clipboard::apply_shortcut(
+                engine,
+                interactions,
+                display,
+                node_id,
+                &editable,
+                key.code,
+            )?
+        {
+            return Ok(());
+        }
         if let Some(edit) = keymap::text_edit(key.code, key.value, interactions.modifiers) {
             if let Some(on_input) = editable.on_input {
                 let next = apply_text_edit(&editable.value, edit);

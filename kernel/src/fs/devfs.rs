@@ -17,6 +17,7 @@ enum DevNode {
     Dri,
     Input,
     Snd,
+    VirtioPorts,
     Pts,
     Device(DeviceKind),
     Link(DevLink),
@@ -49,6 +50,7 @@ impl DevNode {
             Self::Input => 14,
             Self::Pts => 16,
             Self::Snd => 19,
+            Self::VirtioPorts => 20,
             Self::Device(device) => device.inode(),
             Self::Link(DevLink::Fd) => 6,
             Self::Link(DevLink::Stdin) => 7,
@@ -59,7 +61,9 @@ impl DevNode {
 
     fn mode(self) -> u32 {
         match self {
-            Self::Root | Self::Dri | Self::Input | Self::Pts | Self::Snd => 0o040755,
+            Self::Root | Self::Dri | Self::Input | Self::Pts | Self::Snd | Self::VirtioPorts => {
+                0o040755
+            }
             Self::Device(device) => device.mode(),
             Self::Link(_) => 0o120777,
         }
@@ -87,6 +91,7 @@ impl DevInode {
             (DevNode::Root, b"input") => DevNode::Input,
             (DevNode::Root, b"pts") => DevNode::Pts,
             (DevNode::Root, b"snd") if crate::audio::available() => DevNode::Snd,
+            (DevNode::Root, b"virtio-ports") => DevNode::VirtioPorts,
             (DevNode::Root, b"null") => DevNode::Device(DeviceKind::Null),
             (DevNode::Root, b"zero") => DevNode::Device(DeviceKind::Zero),
             (DevNode::Root, b"random") => DevNode::Device(DeviceKind::Random),
@@ -109,6 +114,13 @@ impl DevInode {
             (DevNode::Snd, b".") => DevNode::Snd,
             (DevNode::Snd, b"..") => DevNode::Root,
             (DevNode::Snd, b"pcmC0D0p") => DevNode::Device(DeviceKind::AudioPcmPlayback),
+            (DevNode::VirtioPorts, b".") => DevNode::VirtioPorts,
+            (DevNode::VirtioPorts, b"..") => DevNode::Root,
+            (DevNode::VirtioPorts, b"com.redhat.spice.0")
+                if crate::virtio_port::open().is_some() =>
+            {
+                DevNode::Device(DeviceKind::VirtioPort)
+            }
             (DevNode::Input, name) => {
                 let index = parse_event_index(name).ok_or(FileSystemError::NotFound)?;
                 if usize::from(index) >= crate::input::device_count() {
@@ -117,7 +129,7 @@ impl DevInode {
                 DevNode::Device(DeviceKind::InputEvent(index))
             }
             (DevNode::Device(_) | DevNode::Link(_), _)
-            | (DevNode::Dri | DevNode::Pts | DevNode::Snd, _) => {
+            | (DevNode::Dri | DevNode::Pts | DevNode::Snd | DevNode::VirtioPorts, _) => {
                 return Err(FileSystemError::NotFound);
             }
             (DevNode::Root, _) => return Err(FileSystemError::NotFound),
@@ -165,7 +177,12 @@ impl Inode for DevInode {
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let device = match self.node {
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Snd => None,
+            DevNode::Root
+            | DevNode::Dri
+            | DevNode::Input
+            | DevNode::Pts
+            | DevNode::Snd
+            | DevNode::VirtioPorts => None,
             DevNode::Device(device) => Some(device),
             DevNode::Link(_) => None,
         };
@@ -188,6 +205,7 @@ impl Inode for DevInode {
                 | DevNode::Input
                 | DevNode::Pts
                 | DevNode::Snd
+                | DevNode::VirtioPorts
                 | DevNode::Device(_) => 0,
             },
             blocks: 0,
@@ -201,9 +219,12 @@ impl Inode for DevInode {
 
     fn inode_type(&self) -> InodeType {
         match self.node {
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Snd => {
-                InodeType::Directory
-            }
+            DevNode::Root
+            | DevNode::Dri
+            | DevNode::Input
+            | DevNode::Pts
+            | DevNode::Snd
+            | DevNode::VirtioPorts => InodeType::Directory,
             DevNode::Device(_) => InodeType::CharacterDevice,
             DevNode::Link(_) => InodeType::SymLink,
         }
@@ -217,6 +238,7 @@ impl Inode for DevInode {
             | DevNode::Input
             | DevNode::Pts
             | DevNode::Snd
+            | DevNode::VirtioPorts
             | DevNode::Device(_) => 0,
         }
     }
@@ -231,7 +253,12 @@ impl Inode for DevInode {
 
     fn device_kind(&self) -> Option<DeviceKind> {
         match self.node {
-            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Pts | DevNode::Snd => None,
+            DevNode::Root
+            | DevNode::Dri
+            | DevNode::Input
+            | DevNode::Pts
+            | DevNode::Snd
+            | DevNode::VirtioPorts => None,
             DevNode::Device(device) => Some(device),
             DevNode::Link(_) => None,
         }
@@ -252,6 +279,7 @@ impl Inode for DevInode {
             | DevNode::Input
             | DevNode::Pts
             | DevNode::Snd
+            | DevNode::VirtioPorts
             | DevNode::Device(_) => Err(FileSystemError::InvalidOperation),
         }
     }
@@ -299,6 +327,7 @@ impl Inode for DevInode {
             (14, InodeType::Directory, &b"input"[..]),
             (15, InodeType::CharacterDevice, &b"ptmx"[..]),
             (16, InodeType::Directory, &b"pts"[..]),
+            (20, InodeType::Directory, &b"virtio-ports"[..]),
             (19, InodeType::Directory, &b"snd"[..]),
         ];
         let root_without_sound = &root[..root.len() - 1];
@@ -312,11 +341,18 @@ impl Inode for DevInode {
             (1, InodeType::Directory, &b".."[..]),
             (18, InodeType::CharacterDevice, &b"pcmC0D0p"[..]),
         ];
+        let virtio_ports = [
+            (20, InodeType::Directory, &b"."[..]),
+            (1, InodeType::Directory, &b".."[..]),
+            (21, InodeType::CharacterDevice, &b"com.redhat.spice.0"[..]),
+        ];
         let specifications: &[_] = match self.node {
             DevNode::Root if crate::audio::available() => &root,
             DevNode::Root => root_without_sound,
             DevNode::Dri => &dri,
             DevNode::Snd => &snd,
+            DevNode::VirtioPorts if crate::virtio_port::open().is_some() => &virtio_ports,
+            DevNode::VirtioPorts => &virtio_ports[..2],
             DevNode::Input => {
                 let count = crate::input::device_count();
                 let mut stream = IndexedDirectory::new(cursor, visitor);

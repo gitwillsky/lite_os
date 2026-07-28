@@ -84,7 +84,8 @@ def boot_interactive_devices(image: Path) -> None:
         image,
         1,
         (
-        "[Audio] VirtIO Sound capability ready",
+            "[Audio] VirtIO Sound capability ready",
+            "[Platform] VirtIO console clipboard port",
             "VirtIO input event0",
             "VirtIO input event1",
             "VirtIO GPU",
@@ -124,7 +125,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / f"boot-{target.arch}.json"
         payload = runtime_gate_payload(
             "boot-topology",
-            5,
+            6,
             gate_inputs(target, image, busybox, musl.install),
         )
         if runtime_gate_hit(stamp, payload, (image,)):

@@ -409,6 +409,46 @@ pub(super) fn write_descriptor(
                             }
                         }
                     },
+                    CharacterDevice::VirtioPort(port) => loop {
+                        match port.write(&input[..requested]) {
+                            Ok(count) => break count,
+                            Err(crate::virtio_port::Error::WouldBlock) if written != 0 => {
+                                return written as isize;
+                            }
+                            Err(crate::virtio_port::Error::WouldBlock)
+                                if *ofd.flags.lock() & O_NONBLOCK != 0 =>
+                            {
+                                return -errno::EAGAIN;
+                            }
+                            Err(crate::virtio_port::Error::WouldBlock) => {
+                                match crate::syscall::poll::wait_for_ofd(ofd, 0x004) {
+                                    WaitResult::Woken => {}
+                                    WaitResult::Interrupted => {
+                                        return if written == 0 {
+                                            -errno::EINTR
+                                        } else {
+                                            written as isize
+                                        };
+                                    }
+                                    WaitResult::TimedOut => unreachable!(),
+                                    WaitResult::OutOfMemory => {
+                                        return if written == 0 {
+                                            -errno::ENOMEM
+                                        } else {
+                                            written as isize
+                                        };
+                                    }
+                                }
+                            }
+                            Err(crate::virtio_port::Error::Disconnected) => {
+                                return if written == 0 {
+                                    -errno::EIO
+                                } else {
+                                    written as isize
+                                };
+                            }
+                        }
+                    },
                     CharacterDevice::Entropy => unreachable!("entropy write rejected above"),
                     CharacterDevice::Kmsg(_) => unreachable!("kmsg write rejected above"),
                     CharacterDevice::Drm(_) => unreachable!("DRM write rejected above"),

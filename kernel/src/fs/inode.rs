@@ -30,6 +30,7 @@ pub(crate) enum DeviceKind {
     DriCard0,
     InputEvent(u16),
     AudioPcmPlayback,
+    VirtioPort,
 }
 
 impl DeviceKind {
@@ -48,6 +49,9 @@ impl DeviceKind {
             Self::DriCard0 => (226, 0),
             Self::InputEvent(index) => (13, 64 + u32::from(index)),
             Self::AudioPcmPlayback => (116, 16),
+            // VirtIO ports use a dynamically allocated Linux character major; LiteOS reserves
+            // this local devfs identity because pathname/protocol, not the number, is the ABI.
+            Self::VirtioPort => (253, 1),
         }
     }
 
@@ -65,6 +69,7 @@ impl DeviceKind {
             Self::DriCard0 => 13,
             Self::InputEvent(index) => 0x100 + u64::from(index),
             Self::AudioPcmPlayback => 18,
+            Self::VirtioPort => 21,
         }
     }
 
@@ -74,7 +79,8 @@ impl DeviceKind {
             | Self::Console
             | Self::PtySlave(_)
             | Self::InputEvent(_)
-            | Self::AudioPcmPlayback => 0o020600,
+            | Self::AudioPcmPlayback
+            | Self::VirtioPort => 0o020600,
             Self::Null
             | Self::Zero
             | Self::Random
