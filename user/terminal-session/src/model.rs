@@ -1,10 +1,13 @@
 use core::ptr;
+use unicode_width::UnicodeWidthChar;
 
 mod cursor;
 mod parser;
 mod reflow;
 mod screen;
 mod style;
+#[cfg(test)]
+mod wide_tests;
 
 use cursor::CursorStyle;
 use reflow::{History, allocate_grid, free_grid, resize_screen};
@@ -18,6 +21,10 @@ pub const ATTR_BLINK: u16 = 1 << 5;
 const SOFT_WRAPPED_ROW: u16 = 1 << 15;
 const FOREGROUND_INDEXED: u16 = 1 << 14;
 const BACKGROUND_INDEXED: u16 = 1 << 13;
+// 标记双列字符的尾随单元格；缺失时删除、重排和前端投影会把半个宽字符当成可见文本。
+const WIDE_CONTINUATION: u16 = 1 << 12;
+// 区分“显式写入的空格”和未使用的空白；缺失时软换行重排会吞掉行尾原文空格。
+const OCCUPIED: u16 = 1 << 11;
 const FOREGROUND_INDEX_MASK: u16 = 0x000f;
 const BACKGROUND_INDEX_MASK: u16 = 0x00f0;
 const TAB_WORDS: usize = 64;
@@ -102,15 +109,23 @@ impl Cell {
     ///
     /// # Returns
     ///
-    /// `codepoint`, foreground, background and attributes in little-endian order.
+    /// `codepoint`, foreground, background, attributes and cell metadata in little-endian order.
     pub fn encode(self) -> [u8; 16] {
         let mut bytes = [0u8; 16];
         bytes[0..4].copy_from_slice(&self.codepoint.to_le_bytes());
         bytes[4..8].copy_from_slice(&self.foreground.to_le_bytes());
         bytes[8..12].copy_from_slice(&self.background.to_le_bytes());
         bytes[12..14].copy_from_slice(&self.attributes.to_le_bytes());
+        bytes[14..16].copy_from_slice(&self.reserved.to_le_bytes());
         bytes
     }
+}
+
+fn display_width(codepoint: u32) -> usize {
+    char::from_u32(codepoint)
+        .and_then(UnicodeWidthChar::width)
+        .unwrap_or(1)
+        .clamp(1, 2)
 }
 
 #[derive(Clone, Copy)]

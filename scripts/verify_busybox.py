@@ -147,6 +147,7 @@ FORBIDDEN_BOOT_MARKERS = (
     "Please press Enter to activate this console.",
     "udhcpc:",
     "LITEOS_DNS_FAILURE",
+    "\ufffd",
 )
 BUSYBOX_LINKS = (
     "[",
@@ -1891,6 +1892,7 @@ def main() -> int:
                 *cpu_topology_markers(1),
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
+                "LITEOS_BUSYBOX_UNICODE_42",
                 "LITEOS_DHCP_51",
                 "LITEOS_DHCP_SINGLE_51",
                 "LITEOS_DHCP_RESPAWN_51",
@@ -1958,6 +1960,16 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
+                    (
+                        "value='标准，循环直至达成。任务转译示例：加校验修 bug 重构 X "
+                        "多步任务必须先给计划强成功标准让你独立闭环弱标准会反复返工'; "
+                        "[ \"$value\" = '标准，循环直至达成。任务转译示例：加校验修 bug 重构 X "
+                        "多步任务必须先给计划强成功标准让你独立闭环弱标准会反复返工' ] && "
+                        "echo LITEOS_BUSYBOX_UNICODE_$((6*7))\n"
+                    ).encode(),
+                ),
+                (
+                    "LITEOS_BUSYBOX_UNICODE_42",
                     b"/bin/sh /run/dhcp-gate.sh\n",
                 ),
                 (

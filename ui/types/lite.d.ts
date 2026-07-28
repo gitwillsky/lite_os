@@ -79,7 +79,7 @@ type LiteDesktopEvent =
 
 /** Terminal screen snapshot (loosely typed; only the terminal app reads it). */
 interface LiteScreen {
-  rows: Array<Array<{ text: string; fg: number; bg: number; bold: boolean }>>;
+  rows: Array<Array<{ text: string; columns: number; fg: number; bg: number; bold: boolean }>>;
   cursor: { column: number; row: number; blinking?: boolean; shape?: string; visible?: boolean };
   foreground: number;
   background: number;

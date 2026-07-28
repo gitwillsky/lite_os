@@ -92,7 +92,8 @@
   `<audio>` 与 `lite:fs` 的 filesystem-backed `File` 播放；native plugin、dlopen、应用自建 worker
   与 Node API 不存在。
 - terminal helper stdin/stdout 使用长度前缀 binary protocol，stderr 只诊断。screen update 按完整脏行，
-  并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；最多一个 update 在途，ACK 前变更合并；
+  cell metadata 标记“已写入”状态与宽字符 continuation，并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；已写入状态区分原文空格与未使用空白，避免软换行重排吞掉行尾内容；
+  最多一个 update 在途，ACK 前变更合并；
   terminfo 同时发布通用 `Ss`/`Se` 和 Vim 外部 terminfo loader 使用的 `SI`/`EI`；resize 发送完整
   grid。helper argv 必须在 `--` 后显式给出，不提供默认 shell或 command-string parser。
 - Clipboard API native host call 只能排队 nonblocking display request；compositor 的 focused-surface

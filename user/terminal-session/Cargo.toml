@@ -11,3 +11,4 @@ path = "src/lib.rs"
 
 [dependencies]
 linux-uapi.workspace = true
+unicode-width.workspace = true

@@ -1,5 +1,3 @@
-use core::ptr;
-
 use super::{
     style::{decimal, hex_digit, rgb, style_indices},
     *,
@@ -294,7 +292,7 @@ impl Model {
             foreground: self.foreground,
             background: self.background,
             attributes: self.attributes,
-            reserved: style_indices(self.foreground_index, self.background_index),
+            reserved: style_indices(self.foreground_index, self.background_index) | OCCUPIED,
         };
         let count = self.columns * self.rows;
         let screen = self.active_mut();
@@ -494,44 +492,6 @@ impl Model {
         if (self.scroll_top..self.scroll_bottom).contains(&row) {
             self.scroll_up(row, self.scroll_bottom, count);
         }
-    }
-
-    pub(super) fn insert_characters(&mut self, count: usize) {
-        let screen = self.active();
-        let column = screen.column.min(self.columns - 1);
-        let count = count.min(self.columns - column);
-        let blank = self.blank_cell();
-        unsafe {
-            ptr::copy(
-                screen.cells.add(screen.row * self.columns + column),
-                screen.cells.add(screen.row * self.columns + column + count),
-                self.columns - column - count,
-            );
-            for offset in 0..count {
-                *screen
-                    .cells
-                    .add(screen.row * self.columns + column + offset) = blank;
-            }
-        }
-        self.mark(screen.row, column, self.columns);
-    }
-
-    pub(super) fn delete_characters(&mut self, count: usize) {
-        let screen = self.active();
-        let column = screen.column.min(self.columns - 1);
-        let count = count.min(self.columns - column);
-        let blank = self.blank_cell();
-        unsafe {
-            ptr::copy(
-                screen.cells.add(screen.row * self.columns + column + count),
-                screen.cells.add(screen.row * self.columns + column),
-                self.columns - column - count,
-            );
-            for offset in self.columns - count..self.columns {
-                *screen.cells.add(screen.row * self.columns + offset) = blank;
-            }
-        }
-        self.mark(screen.row, column, self.columns);
     }
 
     pub(super) fn erase_characters(&mut self, count: usize) {

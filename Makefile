@@ -132,6 +132,7 @@ build-apk-apps: build-kernel build-bootloader build-rootfs
 # 正常构建只消费 checked atlas；字体升级由显式目标完成，避免环境 FreeType 差异污染构建。
 regen-font:
 	target/fontenv/bin/python scripts/generate_terminal_font.py
+	target/fontenv/bin/python scripts/generate_terminal_font.py --verify
 
 # UI 比例字体 atlas 由固定 venv 生成；正常构建只消费 checked 资产，不需要 Pillow。
 regen-ui-font:

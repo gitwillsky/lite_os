@@ -18,14 +18,15 @@ export default function Terminal() {
     timer = setTimeout(tick, 530);
     return () => clearTimeout(timer);
   }, [screen.cursor.blinking]);
-  // Runs carry only their own text; the start column is implicit in the
-  // concatenation order, and every cell is exactly 8x16 CSS px.
+  // Runs carry their occupied VT columns separately from JavaScript string
+  // length; otherwise UTF-16 astral characters and two-column CJK both move
+  // following runs and backgrounds to the wrong grid position.
   const runs: React.ReactElement[] = [];
   screen.rows.forEach((row, index) => {
     let column = 0;
     for (const run of row) {
       const left = column * 8;
-      column += run.text.length;
+      column += run.columns;
       runs.push(
         <span
           key={`${index}:${left}`}
@@ -33,6 +34,7 @@ export default function Terminal() {
           style={{
             left,
             top: index * 16,
+            width: run.columns * 8,
             color: hex(run.fg),
             background: hex(run.bg),
             fontWeight: run.bold ? "bold" : "normal",
