@@ -30,14 +30,21 @@ DISPLAY_HEIGHT = 846
 RECIPE_VERSION = 5
 APP_ORIGIN = (155, 117)
 APP_CASCADE = (28, 24)
-FILE_ROW_POINT = (180, 54)
-FILE_ROW_HEIGHT = 25
-CUSTOM_LOOP_POINT = (559, 215)
+QUEUE_ROW_POINT = (580, 112)
+QUEUE_ROW_HEIGHT = 48
+QUEUE_FIRST_SCROLL_ROWS = 5
+QUEUE_BOTTOM_OFFSET = 402
+REPEAT_BUTTON_POINT = (543, 20)
+PLAY_BUTTON_POINT = (224, 330)
+SEEK_POINT = (156, 294)
+ELEMENT_MUTE_POINT = (35, 427)
+ELEMENT_VOLUME_X = {50: 143, 80: 188}
 MASTER_SPEAKER_POINT = (1429, 831)
 MASTER_MUTE_POINT = (1407, 795)
 MASTER_SCALE_Y = 749
 MASTER_VOLUME_X = {30: 1380, 70: 1436, 100: 1478}
 S16_POSITIVE_MAX = 32_767 / 32_768
+POINTER_HOVER_SETTLE_SECONDS = 0.1
 
 # Guest names make the production directory sort byte-for-byte deterministic.
 # Without the numeric prefix, locale-dependent `localeCompare` ordering could
@@ -227,6 +234,10 @@ def inject_fixtures(image: Path) -> None:
 def click(qmp: QmpClient, x: float, y: float) -> None:
     """通过 virtio-tablet 在一个 logical pixel 坐标执行真实左键点击。"""
     qmp.move_abs(x / DISPLAY_WIDTH, y / DISPLAY_HEIGHT)
+    # PointerEnter 会让 production React button 提交 hover scene。没有这个
+    # 间隔，紧随其后的 button-down 偶发仍路由到旧 hit tree，Mute/Repeat
+    # 点击便会在串口看似无故消失。
+    time.sleep(POINTER_HOVER_SETTLE_SECONDS)
     qmp.button("left", True)
     qmp.button("left", False)
 
@@ -236,6 +247,19 @@ def double_click(qmp: QmpClient, x: float, y: float) -> None:
     for _ in range(2):
         click(qmp, x, y)
         time.sleep(0.08)
+
+
+def scroll_queue(qmp: QmpClient, app_x: float, app_y: float, steps: int) -> None:
+    """滚动 production Up Next 容器，使后续曲目进入可点击 viewport。"""
+    qmp.move_abs(
+        (app_x + QUEUE_ROW_POINT[0]) / DISPLAY_WIDTH,
+        (app_y + 250) / DISPLAY_HEIGHT,
+    )
+    time.sleep(POINTER_HOVER_SETTLE_SECONDS)
+    for _ in range(steps):
+        qmp.button("wheel-down", True)
+        qmp.button("wheel-down", False)
+    time.sleep(0.1)
 
 
 def toggle_master_popup(qmp: QmpClient) -> None:
@@ -572,18 +596,31 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             min(15.0, deadline - time.monotonic()),
         )
 
-        # 3. Every sorted row is opened through production lite:fs -> File ->
-        #    blob: -> <audio>. Generic event counts are sampled before the click,
-        #    so an earlier successful codec cannot satisfy a later one.
+        # 3. Every sorted Up Next row is opened through production lite:fs ->
+        #    File -> blob: -> <audio>. Generic event counts are sampled before
+        #    the click, so an earlier successful codec cannot satisfy a later
+        #    one. The two scroll transitions keep the requested row visible.
         app_x, app_y = APP_ORIGIN
-        browser_x = app_x + FILE_ROW_POINT[0]
-        first_row_y = app_y + FILE_ROW_POINT[1]
         for index, (_, guest_name) in enumerate(FIXTURES):
+            if index == 6:
+                scroll_queue(qmp, app_x, app_y, QUEUE_FIRST_SCROLL_ROWS)
+            elif index == 11:
+                scroll_queue(qmp, app_x, app_y, 4)
             source_marker = f"LITE_AUDIO source-opened id=1 file={guest_name}"
             source_before = capture.count(source_marker)
             loaded_before = capture.count("LITE_AUDIO event=loadedmetadata")
             playing_before = capture.count("LITE_AUDIO event=playing")
-            double_click(qmp, browser_x, first_row_y + index * FILE_ROW_HEIGHT)
+            if index < 6:
+                queue_offset = 0
+            elif index < 11:
+                queue_offset = QUEUE_FIRST_SCROLL_ROWS * QUEUE_ROW_HEIGHT
+            else:
+                queue_offset = QUEUE_BOTTOM_OFFSET
+            click(
+                qmp,
+                app_x + QUEUE_ROW_POINT[0],
+                app_y + QUEUE_ROW_POINT[1] + index * QUEUE_ROW_HEIGHT - queue_offset,
+            )
             capture.wait_new(
                 source_marker,
                 source_before,
@@ -605,29 +642,32 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             if index != 0:
                 continue
 
-            # 4. Enable the production custom loop before the longer UA workload.
-            #    Without this public app state, a valid two-second track can
-            #    naturally advance while controls are still being exercised.
-            loop_x = app_x + CUSTOM_LOOP_POINT[0]
-            loop_y = app_y + CUSTOM_LOOP_POINT[1]
+            # 4. Cycle the production Repeat control from Off through All to One
+            #    before the longer UA workload. Only Repeat: One maps to the
+            #    standard media `loop` state used by the service barrier.
+            loop_x = app_x + REPEAT_BUTTON_POINT[0]
+            loop_y = app_y + REPEAT_BUTTON_POINT[1]
             loop_enabled_before = capture.count("LITE_AUDIO loop id=1 enabled=true")
+            click(qmp, loop_x, loop_y)
+            time.sleep(0.1)
             click(qmp, loop_x, loop_y)
             capture.wait_new(
                 "LITE_AUDIO loop id=1 enabled=true", loop_enabled_before, 5.0
             )
 
             # 5. Exercise the UA controls on the first track. These coordinates
-            #    are derived from the production 420x32 flex control at the
-            #    bottom of the canonical 710x448 client; no test-only node exists.
-            ua_y = app_y + 432
-            ua_play_x = app_x + 22
-            ua_back_x = app_x + 65
-            ua_mute_x = app_x + 270
-            ua_quieter_x = app_x + 313
-            ua_louder_x = app_x + 401
+            #    are derived from the production Now Playing transport, seek
+            #    range, and status-bar volume controls in the canonical 710x448
+            #    client; no test-only node exists.
+            ua_play_x = app_x + PLAY_BUTTON_POINT[0]
+            ua_play_y = app_y + PLAY_BUTTON_POINT[1]
+            ua_seek_x = app_x + SEEK_POINT[0]
+            ua_seek_y = app_y + SEEK_POINT[1]
+            ua_mute_x = app_x + ELEMENT_MUTE_POINT[0]
+            ua_volume_y = app_y + ELEMENT_MUTE_POINT[1]
 
             pause_before = capture.count("LITE_AUDIO event=pause")
-            click(qmp, ua_play_x, ua_y)
+            click(qmp, ua_play_x, ua_play_y)
             capture.wait_new("LITE_AUDIO event=pause", pause_before, 5.0)
             time.sleep(0.2)
             paused_frames = wav_frame_count(audio_output)
@@ -636,19 +676,22 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
                 raise RuntimeError("UA pause did not stop device output")
 
             playing_before = capture.count("LITE_AUDIO event=playing")
-            click(qmp, ua_play_x, ua_y)
+            click(qmp, ua_play_x, ua_play_y)
             capture.wait_new("LITE_AUDIO event=playing", playing_before, 5.0)
 
             seeking_before = capture.count("LITE_AUDIO event=seeking")
             seeked_before = capture.count("LITE_AUDIO event=seeked")
             playing_before = capture.count("LITE_AUDIO event=playing")
-            click(qmp, ua_back_x, ua_y)
+            click(qmp, ua_seek_x, ua_seek_y)
             capture.wait_new("LITE_AUDIO event=seeking", seeking_before, 5.0)
             capture.wait_new("LITE_AUDIO event=seeked", seeked_before, 5.0)
             capture.wait_new("LITE_AUDIO event=playing", playing_before, 5.0)
 
-            click(qmp, ua_quieter_x, ua_y)
-            click(qmp, ua_quieter_x, ua_y)
+            click(
+                qmp,
+                app_x + ELEMENT_VOLUME_X[50],
+                ua_volume_y,
+            )
             audible_start = wait_for_wav_growth(
                 audio_output, wav_frame_count(audio_output) + 2_048
             )
@@ -658,7 +701,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             muted_before = capture.count(
                 "LITE_AUDIO gain-installed id=1 gain=0.000000"
             )
-            click(qmp, ua_mute_x, ua_y)
+            click(qmp, ua_mute_x, ua_volume_y)
             capture.wait_new(
                 "LITE_AUDIO gain-installed id=1 gain=0.000000",
                 muted_before,
@@ -672,9 +715,12 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             )
             quiet_end = wait_for_wav_growth(audio_output, quiet_start + 12_000)
             element_quiet_window = (quiet_start, quiet_end)
-            click(qmp, ua_mute_x, ua_y)
-            click(qmp, ua_louder_x, ua_y)
-            click(qmp, ua_louder_x, ua_y)
+            click(qmp, ua_mute_x, ua_volume_y)
+            click(
+                qmp,
+                app_x + ELEMENT_VOLUME_X[80],
+                ua_volume_y,
+            )
 
             # Require a complete EOF loop after the other controls, so an
             # earlier explicit seek cannot satisfy this generation barrier.
@@ -694,6 +740,8 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             # host waits for QEMU's buffered WAV growth and falsely bypass the
             # next physical row click.
             loop_enabled_before = capture.count("LITE_AUDIO loop id=1 enabled=true")
+            click(qmp, loop_x, loop_y)
+            time.sleep(0.1)
             click(qmp, loop_x, loop_y)
             capture.wait_new(
                 "LITE_AUDIO loop id=1 enabled=true", loop_enabled_before, 5.0
@@ -744,8 +792,12 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}"
         )
         playing_before = capture.count("LITE_AUDIO event=playing")
-        limiter_row_y = first_row_y + len(FIXTURES) * FILE_ROW_HEIGHT
-        double_click(qmp, browser_x, limiter_row_y)
+        click(
+            qmp,
+            app_x + QUEUE_ROW_POINT[0],
+            app_y + QUEUE_ROW_POINT[1] + len(FIXTURES) * QUEUE_ROW_HEIGHT
+            - QUEUE_BOTTOM_OFFSET,
+        )
         capture.wait_new(
             f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}",
             source_before,
@@ -785,10 +837,12 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             )
             child_x = APP_ORIGIN[0] + APP_CASCADE[0] * app_index
             child_y = APP_ORIGIN[1] + APP_CASCADE[1] * app_index
-            double_click(
+            scroll_queue(qmp, child_x, child_y, 9)
+            click(
                 qmp,
-                child_x + FILE_ROW_POINT[0],
-                child_y + FILE_ROW_POINT[1] + len(FIXTURES) * FILE_ROW_HEIGHT,
+                child_x + QUEUE_ROW_POINT[0],
+                child_y + QUEUE_ROW_POINT[1] + len(FIXTURES) * QUEUE_ROW_HEIGHT
+                - QUEUE_BOTTOM_OFFSET,
             )
             capture.wait_new(
                 f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}",
@@ -803,8 +857,14 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             loop_enabled_before = capture.count("LITE_AUDIO loop id=1 enabled=true")
             click(
                 qmp,
-                child_x + CUSTOM_LOOP_POINT[0],
-                child_y + CUSTOM_LOOP_POINT[1],
+                child_x + REPEAT_BUTTON_POINT[0],
+                child_y + REPEAT_BUTTON_POINT[1],
+            )
+            time.sleep(0.1)
+            click(
+                qmp,
+                child_x + REPEAT_BUTTON_POINT[0],
+                child_y + REPEAT_BUTTON_POINT[1],
             )
             capture.wait_new(
                 "LITE_AUDIO loop id=1 enabled=true", loop_enabled_before, 5.0
@@ -893,7 +953,13 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             raise RuntimeError(
                 f"decoder steady-state allocations are non-zero: {worker_allocations!r}"
             )
-        expected_sources = [guest for _, guest in FIXTURES] + [LIMITER_FIXTURE[1]] * 8
+        first_fixture = FIXTURES[0][1]
+        expected_sources = (
+            [first_fixture]
+            + [guest for _, guest in FIXTURES]
+            + [LIMITER_FIXTURE[1]]
+            + [source for _ in range(7) for source in (first_fixture, LIMITER_FIXTURE[1])]
+        )
         actual_sources = SOURCE_OPENED_RE.findall(final_text)
         if actual_sources != expected_sources:
             raise RuntimeError(

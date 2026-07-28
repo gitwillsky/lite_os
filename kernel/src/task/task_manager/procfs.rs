@@ -181,6 +181,37 @@ impl ProcSource for KernelProcSource {
         }
         Ok(representative.process_file_descriptors())
     }
+
+    fn process_executable(
+        &self,
+        pid: usize,
+    ) -> Result<Option<alloc::sync::Arc<crate::fs::OpenedFile>>, crate::fs::FileSystemError> {
+        let representative = {
+            let graph = TASK_MANAGER.graph.lock();
+            let Some(node) = graph.nodes.get(&pid) else {
+                return Ok(None);
+            };
+            let ProcessState::Live(threads) = &node.state else {
+                return Ok(None);
+            };
+            let Some(representative) = threads.values().next() else {
+                return Ok(None);
+            };
+            representative.clone()
+        };
+        let Some(caller) = crate::task::current_task() else {
+            return Err(crate::fs::FileSystemError::AccessDenied);
+        };
+        let caller_euid = caller.credential_res_ids(true)[1];
+        let target_uids = representative.credential_res_ids(true);
+        if caller.tgid() != pid
+            && caller_euid != 0
+            && target_uids.iter().any(|uid| *uid != caller_euid)
+        {
+            return Err(crate::fs::FileSystemError::AccessDenied);
+        }
+        Ok(Some(representative.process_executable()))
+    }
 }
 
 fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {

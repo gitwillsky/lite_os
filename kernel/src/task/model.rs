@@ -23,7 +23,7 @@ use spin::Mutex;
 
 use crate::{
     arch::context::{KernelContext, UserContext},
-    fs::{Console, FileDescriptorTable, OpenedFile, Terminal, vfs},
+    fs::{Console, FileDescriptorTable, Terminal, vfs},
     memory::{
         DeviceMappingSource, ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack,
         MapPermission, MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer,
@@ -44,6 +44,7 @@ pub(crate) use file_descriptions::ReceivedFdTransaction;
 use io_accounting::IoAccounting;
 pub(crate) use io_accounting::IoStatistics;
 use process_exec::{process_name, try_elf_arc};
+use process_resources::ProcessPaths;
 pub(in crate::task) use resource_limits::RLIMIT_NICE;
 use resource_limits::ResourceLimits;
 pub(crate) use resource_limits::{
@@ -160,8 +161,9 @@ struct Process {
     // 初始共享 parent Arc，exec 只替换 child Process 的 handle。若直接缓存第二份 mm pointer，
     // exec detach 会让 syscall、trap 与 futex 在不同地址空间继续运行。
     address_space: Mutex<Arc<AddressSpace>>,
-    // OWNER: Process 独占 VFS opened cwd identity；只保存 inode 会使 rename 后的 getcwd 与相对 lookup 分裂。
-    cwd: Mutex<Arc<OpenedFile>>,
+    // OWNER: cwd/executable identity 由同一锁串行替换；缺失 executable 会让
+    // `/proc/<pid>/exe` 在 rename/unlink 后无法保持 opened-entry identity。
+    paths: Mutex<ProcessPaths>,
     files: Mutex<FileDescriptorTable>,
     // OWNER: Process 的单锁凭据集供 thread 共享；拆分字段会让 setres* 暴露中间身份。
     credentials: Mutex<Credentials>,
@@ -223,12 +225,16 @@ impl TaskControlBlock {
         let cpu_runtime_us = try_elf_arc(AtomicU64::new(0))?;
         let io_accounting = try_elf_arc(IoAccounting::default())?;
         let start_time_us = get_time_us();
+        let paths = ProcessPaths {
+            cwd: vfs().open_file(b"/").expect("mounted root must resolve"),
+            executable: loaded.executable(),
+        };
         let process = try_elf_arc(Process {
             tgid: pid,
             comm: Mutex::new(process_name(loaded.execfn())?),
             start_time_us,
             address_space: Mutex::new(address_space),
-            cwd: Mutex::new(vfs().open_file(b"/").expect("mounted root must resolve")),
+            paths: Mutex::new(paths),
             files: Mutex::new(
                 FileDescriptorTable::with_terminal(terminal.clone())
                     .map_err(|()| ElfLoadError::OutOfMemory)?,
@@ -582,17 +588,5 @@ impl TaskControlBlock {
 
     pub(super) fn take_clear_child_tid(&self) -> Option<usize> {
         self.thread.clear_child_tid.lock().take()
-    }
-
-    /// @description 取得当前 Thread 的 context-switch 保存区锁。
-    ///
-    /// @return KernelContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
-    pub(crate) fn kernel_context(&self) -> &Mutex<KernelContext> {
-        &self.thread.kernel_cx
-    }
-
-    /// @description 取得首次 scheduler continuation 完成后进入的 architecture trap-return。
-    pub(in crate::task) fn kernel_resume_target(&self) -> crate::arch::context::KernelResume {
-        self.thread.kernel_trap_return
     }
 }

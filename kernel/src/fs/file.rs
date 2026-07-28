@@ -25,7 +25,7 @@ use position::FilePosition;
 
 use super::{
     AccessIdentity, DeviceKind, Epoll, EpollMemberships, FileSystemError, FileSystemStatistics,
-    Inode, OpenedFile, ReadinessSource, ReadinessSources, vfs,
+    Inode, OpenedFile, ReadinessSource, ReadinessSources, TimerFd, vfs,
 };
 use crate::{
     ipc::{EventFd, PipeEnd},
@@ -67,6 +67,7 @@ pub(crate) enum OpenFileKind {
     Socket(Arc<Socket>),
     Epoll(Arc<Epoll>),
     EventFd(Arc<EventFd>),
+    TimerFd(Arc<TimerFd>),
     Inode(Arc<OpenedFile>),
     MemFile(Arc<crate::fs::MemFile>),
 }
@@ -213,6 +214,11 @@ impl OpenFileDescription {
                     result |= OUTPUT;
                 }
             }
+            OpenFileKind::TimerFd(timer) => {
+                if events & INPUT != 0 && timer.readable() {
+                    result |= INPUT;
+                }
+            }
         }
         result
     }
@@ -243,6 +249,7 @@ impl OpenFileDescription {
             OpenFileKind::Socket(socket) => socket.readiness_generation(events),
             OpenFileKind::Epoll(epoll) => epoll.readiness_generation(),
             OpenFileKind::EventFd(event) => event.readiness_generation(events),
+            OpenFileKind::TimerFd(timer) => timer.readiness_generation(),
             OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => 0,
         }
     }
@@ -256,7 +263,8 @@ impl OpenFileDescription {
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
-            | OpenFileKind::EventFd(_) => true,
+            | OpenFileKind::EventFd(_)
+            | OpenFileKind::TimerFd(_) => true,
             OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => false,
         }
     }
@@ -343,6 +351,12 @@ impl OpenFileDescription {
                         crate::ipc::PipeDirection::Read,
                     ));
                 }
+            }
+            OpenFileKind::TimerFd(timer) if events & INPUT != 0 => {
+                sources.push(ReadinessSource::pipe(
+                    &timer.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                ));
             }
             _ => {}
         }
@@ -477,6 +491,18 @@ impl OpenFileDescription {
         .map_err(|_| ())
     }
 
+    pub(crate) fn timer_fd(timer: Arc<TimerFd>, flags: u32) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
+            kind: OpenFileKind::TimerFd(timer),
+            position: FilePosition::new(),
+            flags: Mutex::new(O_RDWR | flags),
+            character_opened: None,
+            epoll_memberships: EpollMemberships::new(),
+            descriptor_refs: AtomicUsize::new(0),
+        })
+        .map_err(|_| ())
+    }
+
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.inode()),
@@ -485,7 +511,8 @@ impl OpenFileDescription {
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
-            | OpenFileKind::EventFd(_) => None,
+            | OpenFileKind::EventFd(_)
+            | OpenFileKind::TimerFd(_) => None,
         }
     }
 
@@ -499,7 +526,8 @@ impl OpenFileDescription {
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
-            | OpenFileKind::EventFd(_) => None,
+            | OpenFileKind::EventFd(_)
+            | OpenFileKind::TimerFd(_) => None,
         }
     }
 
@@ -544,7 +572,7 @@ impl OpenFileDescription {
                 fragment_size: 4096,
                 flags: 0x20,
             }),
-            OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) => {
+            OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) | OpenFileKind::TimerFd(_) => {
                 Err(FileSystemError::InvalidFileSystem)
             }
         }

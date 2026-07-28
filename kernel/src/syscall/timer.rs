@@ -18,6 +18,10 @@ const CLOCK_REALTIME: i32 = 0;
 const CLOCK_MONOTONIC: i32 = 1;
 const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
 const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
+const CLOCK_MONOTONIC_RAW: i32 = 4;
+const CLOCK_REALTIME_COARSE: i32 = 5;
+const CLOCK_MONOTONIC_COARSE: i32 = 6;
+const CLOCK_BOOTTIME: i32 = 7;
 const TIMER_ABSTIME: i32 = 1;
 const ITIMER_REAL: usize = 0;
 
@@ -128,10 +132,10 @@ pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -
         crate::timer::get_time_ns(),
     ) {
         Ok(value) => value,
-        Err(crate::task::TimerError::NotFound | crate::task::TimerError::Exhausted) => {
+        Err(crate::fs::TimerError::NotFound | crate::fs::TimerError::Exhausted) => {
             return -EINVAL;
         }
-        Err(crate::task::TimerError::OutOfMemory) => return -ENOMEM,
+        Err(crate::fs::TimerError::OutOfMemory) => return -ENOMEM,
     };
     if previous != 0
         && task
@@ -146,7 +150,7 @@ pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -
     0
 }
 
-fn timespec_ns(value: TimeSpec) -> Result<u64, isize> {
+pub(super) fn timespec_ns(value: TimeSpec) -> Result<u64, isize> {
     if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
         return Err(-EINVAL);
     }
@@ -265,15 +269,22 @@ pub(crate) fn sys_clock_nanosleep(
     )
 }
 
-/// @description 查询 Linux/riscv64 realtime、monotonic 或 calling task CPU clock。
+/// @description 查询 Linux 进程可观察的 wall、monotonic 或 calling task CPU clock。
 ///
-/// @param clock_id Linux `CLOCK_REALTIME/MONOTONIC/PROCESS_CPUTIME_ID/THREAD_CPUTIME_ID`。
+/// @param clock_id Linux realtime、monotonic、raw/coarse/boottime 或 process/thread CPU clock。
 /// @param result 用户态 timespec 输出地址。
 /// @return 成功返回 0，非法 clock ID 返回 -EINVAL，copyout fault 返回 -EFAULT。
 pub(crate) fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
     let value = match clock_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC => {
-            let nanoseconds = if clock_id == CLOCK_REALTIME {
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_REALTIME_COARSE
+        | CLOCK_MONOTONIC_COARSE
+        | CLOCK_BOOTTIME => {
+            // LiteOS 没有 NTP 调频或 suspend domain，因此 RAW/BOOTTIME 与 MONOTONIC 同源；
+            // COARSE 使用同一硬件 counter 的真实精度。若伪造独立 offset，跨 clock 比较会倒退。
+            let nanoseconds = if matches!(clock_id, CLOCK_REALTIME | CLOCK_REALTIME_COARSE) {
                 crate::timer::get_realtime_ns()
             } else {
                 crate::timer::get_time_ns()
@@ -319,12 +330,17 @@ pub(crate) fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
 
 /// @description 查询 LiteOS 已实现 Linux clocks 的实际可观察分辨率。
 ///
-/// @param clock_id Linux `CLOCK_REALTIME/MONOTONIC/PROCESS_CPUTIME_ID/THREAD_CPUTIME_ID`。
+/// @param clock_id Linux realtime、monotonic、raw/coarse/boottime 或 process/thread CPU clock。
 /// @param result 可为空的用户态 timespec 输出地址；为空时只校验 clock ID。
 /// @return 成功返回 0，非法 clock ID 返回 -EINVAL，copyout fault 返回 -EFAULT。
 pub(crate) fn sys_clock_getres(clock_id: i32, result: *mut TimeSpec) -> isize {
     let nanoseconds = match clock_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC => crate::timer::monotonic_resolution_ns(),
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_REALTIME_COARSE
+        | CLOCK_MONOTONIC_COARSE
+        | CLOCK_BOOTTIME => crate::timer::monotonic_resolution_ns(),
         CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => 1_000,
         _ => return -EINVAL,
     };

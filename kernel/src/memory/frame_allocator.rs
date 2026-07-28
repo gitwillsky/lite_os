@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use super::address::{PhysicalAddress, PhysicalPageNumber};
+use super::frame_metadata_layout::frame_metadata_layout;
 use spin::Once;
 
 use crate::sync::IrqMutex;
@@ -134,7 +134,7 @@ struct FrameAllocator {
     // index 都会把 allocation/free 退化为全表扫描；三者禁止越过本 lock 单独更新。
     order_heads: [Option<PhysicalPageNumber>; ORDER_COUNT],
     nonempty_orders: usize,
-    block_state: Vec<u8>,
+    block_state: &'static mut [u8],
     // free_blocks 是 order lists 的同锁计数 projection；缺失它时 procfs 为了
     // 观察碎片必须在 IRQ-off 内扫描所有 free block。
     free_blocks: [usize; ORDER_COUNT],
@@ -145,14 +145,32 @@ struct FrameAllocator {
 
 impl FrameAllocator {
     fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
-        let start = start_addr.ceil();
+        let metadata_start = start_addr.ceil();
         let end = end_addr.floor();
-        let capacity = end.as_usize() - start.as_usize();
-        let mut block_state = Vec::new();
-        block_state
-            .try_reserve_exact(capacity)
-            .expect("frame allocator metadata allocation failed");
-        block_state.resize(capacity, BLOCK_UNUSED);
+        let total_pages = end
+            .as_usize()
+            .checked_sub(metadata_start.as_usize())
+            .expect("frame allocator range is reversed");
+        let layout = frame_metadata_layout(total_pages, super::config::PAGE_SIZE)
+            .expect("physical memory cannot contain frame allocator metadata");
+        let start = PhysicalPageNumber::from(
+            metadata_start
+                .as_usize()
+                .checked_add(layout.metadata_pages)
+                .expect("frame allocator metadata range overflow"),
+        );
+        let metadata_physical = metadata_start
+            .as_usize()
+            .checked_mul(super::config::PAGE_SIZE)
+            .expect("frame allocator metadata address overflow");
+        let metadata_virtual = crate::arch::mmu::physical_to_virtual(metadata_physical);
+        // SAFETY: [metadata_start, start) 来自尚未发布的可用物理区间，按布局从 buddy
+        // capacity 中永久排除；FRAME_ALLOCATOR 是该 slice 的唯一 owner，内核生命周期内
+        // direct map 保持有效，且长度只覆盖已保留 metadata pages。
+        let block_state = unsafe {
+            core::slice::from_raw_parts_mut(metadata_virtual as *mut u8, layout.allocatable_pages)
+        };
+        block_state.fill(BLOCK_UNUSED);
         let mut allocator = Self {
             start_ppn: start,
             end_ppn: end,
@@ -160,7 +178,7 @@ impl FrameAllocator {
             nonempty_orders: 0,
             block_state,
             free_blocks: [0; ORDER_COUNT],
-            free_pages: capacity,
+            free_pages: layout.allocatable_pages,
         };
 
         // 将任意起点/长度区间分解为最大的 absolute-PPN-aligned buddy blocks。

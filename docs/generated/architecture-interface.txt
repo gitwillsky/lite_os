@@ -1687,6 +1687,7 @@ kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < OpenedFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: MemFile (Arc < crate :: fs :: MemFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Pipe (Arc < PipeEnd >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Socket (Arc < Socket >)
+kernel/src/fs/file.rs :: enum OpenFileKind :: TimerFd (Arc < TimerFd >)
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: flags : Mutex < u32 >
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: kind : OpenFileKind
 kernel/src/fs/file.rs :: pub (crate) const O_ACCMODE : u32 = 3
@@ -1714,6 +1715,7 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn readiness_so
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn seek_position (& self , offset : i64 , base : impl FnOnce (u64) -> u64 ,) -> Result < u64 , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn socket (socket : Arc < Socket > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_opened : Arc < OpenedFile > , flags : u32 ,) -> Result < Arc < Self > , () >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn timer_fd (timer : Arc < TimerFd > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn try_poll_events (& self , events : i16) -> Option < i16 >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn with_position < R > (& self , operation : impl FnOnce (& mut u64) -> R) -> R
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn with_positions < R > (first : & Self , second : & Self , operation : impl FnOnce (& mut u64 , & mut u64) -> R ,) -> Option < R >
@@ -1984,6 +1986,7 @@ kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDe
 kernel/src/fs/mod.rs :: pub (crate) use pty :: { PtyMaster , PtySlave , init as init_pty }
 kernel/src/fs/mod.rs :: pub (crate) use readiness :: { ReadinessSource , ReadinessSources }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs :: SysFileSystem
+kernel/src/fs/mod.rs :: pub (crate) use timerfd :: { TimerError , TimerFd , TimerFdBackend , TimerFdRead , TimerSetting }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , RecordLockMode , RecordLockRange , init as init_vfs , vfs , }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
@@ -2061,6 +2064,7 @@ kernel/src/fs/procfs.rs :: pub (super) impl ProcText :: fn finish (self) -> Vec 
 kernel/src/fs/procfs.rs :: pub (super) struct ProcText
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_pid (& self) -> Option < usize >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_arguments (& self , pid : usize) -> Result < Option < Vec < u8 > > , FileSystemError >
+kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_executable (& self , pid : usize) -> Result < Option < Arc < OpenedFile > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_file_descriptors (& self , pid : usize ,) -> Result < Option < Vec < ProcFileDescriptorSnapshot > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn snapshot (& self) -> Result < ProcSnapshot , FileSystemError >
 kernel/src/fs/procfs/lookup.rs :: pub (super) fn decimal_name (value : usize , output : & mut [u8 ; 20]) -> & [u8]
@@ -2077,6 +2081,7 @@ kernel/src/fs/procfs/node.rs :: enum ProcNode :: NetRoute
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessCmdline (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessComm (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessDir (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessExe (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessFd (usize , usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessFdDir (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessIo (usize)
@@ -2236,6 +2241,34 @@ kernel/src/fs/readiness.rs :: pub (crate) impl ReadinessSources :: fn push (& mu
 kernel/src/fs/readiness.rs :: pub (crate) struct ReadinessSources
 kernel/src/fs/sysfs.rs :: pub (crate) impl SysFileSystem :: fn new (cpu_count : usize) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/sysfs.rs :: pub (crate) struct SysFileSystem
+kernel/src/fs/timerfd.rs :: enum TimerError :: Exhausted
+kernel/src/fs/timerfd.rs :: enum TimerError :: NotFound
+kernel/src/fs/timerfd.rs :: enum TimerError :: OutOfMemory
+kernel/src/fs/timerfd.rs :: enum TimerFdRead :: Empty
+kernel/src/fs/timerfd.rs :: enum TimerFdRead :: Expirations (u64)
+kernel/src/fs/timerfd.rs :: pub (crate) TimerSetting :: interval_ns : u64
+kernel/src/fs/timerfd.rs :: pub (crate) TimerSetting :: remaining_ns : u64
+kernel/src/fs/timerfd.rs :: pub (crate) enum TimerError
+kernel/src/fs/timerfd.rs :: pub (crate) enum TimerFdRead
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn new (backend : Arc < dyn TimerFdBackend >) -> Result < Arc < Self > , () >
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn object_id (& self) -> u64
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn read (& self) -> TimerFdRead
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn readable (& self) -> bool
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn readiness_generation (& self) -> u64
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn replace (& self , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/fs/timerfd.rs :: pub (crate) impl TimerFd :: fn setting (& self , now_ns : u64) -> Result < TimerSetting , TimerError >
+kernel/src/fs/timerfd.rs :: pub (crate) struct TimerFd
+kernel/src/fs/timerfd.rs :: pub (crate) struct TimerSetting
+kernel/src/fs/timerfd.rs :: pub (crate) trait TimerFdBackend
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn expire (& self , elapsed : u64)
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn object_id (& self) -> u64
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn read (& self) -> TimerFdRead
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn readable (& self) -> bool
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn readiness_generation (& self) -> u64
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn replace (& self , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn setting (& self , now_ns : u64) -> Result < TimerSetting , TimerError >
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , opened : Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
@@ -2568,6 +2601,10 @@ kernel/src/memory/frame_allocator.rs :: pub (crate) struct FrameStatistics
 kernel/src/memory/frame_allocator.rs :: pub (crate) struct FrameTracker
 kernel/src/memory/frame_allocator.rs :: pub (in crate :: memory) fn alloc_heap_extent (pages : usize) -> Option < FrameTracker >
 kernel/src/memory/frame_allocator.rs :: pub (in crate :: memory) impl FrameTracker :: unsafe fn from_raw (ppn : PhysicalPageNumber , pages : usize) -> Self
+kernel/src/memory/frame_metadata_layout.rs :: pub (crate) FrameMetadataLayout :: allocatable_pages : usize
+kernel/src/memory/frame_metadata_layout.rs :: pub (crate) FrameMetadataLayout :: metadata_pages : usize
+kernel/src/memory/frame_metadata_layout.rs :: pub (crate) fn frame_metadata_layout (total_pages : usize , page_size : usize ,) -> Option < FrameMetadataLayout >
+kernel/src/memory/frame_metadata_layout.rs :: pub (crate) struct FrameMetadataLayout
 kernel/src/memory/heap_allocator.rs :: pub (crate) HeapStatistics :: resident_pages : usize
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn enable_frame_backed_growth ()
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn handle_heap_alloc_error (layout : alloc :: Layout) -> !
@@ -3921,11 +3958,15 @@ kernel/src/syscall/timer.rs :: pub (crate) struct TimeSpec
 kernel/src/syscall/timer.rs :: pub (crate) use posix :: *
 kernel/src/syscall/timer.rs :: pub (super) fn decode_timespec (bytes : & [u8 ; core :: mem :: size_of :: < TimeSpec > ()]) -> TimeSpec
 kernel/src/syscall/timer.rs :: pub (super) fn encode_timespec (value : TimeSpec) -> [u8 ; core :: mem :: size_of :: < TimeSpec > ()]
+kernel/src/syscall/timer.rs :: pub (super) fn timespec_ns (value : TimeSpec) -> Result < u64 , isize >
 kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_create (clock_id : i32 , event : usize , output : usize) -> isize
 kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_delete (id : i32) -> isize
 kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_getoverrun (id : i32) -> isize
 kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_gettime (id : i32 , output : usize) -> isize
 kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_settime (id : i32 , flags : i32 , replacement : usize , previous : usize) -> isize
+kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_create (clock_id : i32 , flags : u32) -> isize
+kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_gettime (fd : usize , output : usize) -> isize
+kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_settime (fd : usize , flags : u32 , replacement : usize , previous : usize ,) -> isize
 kernel/src/syscall/tty.rs :: pub (super) fn guard_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , isize >
 kernel/src/syscall/tty.rs :: pub (super) fn pty_master_ioctl (task : & TaskControlBlock , master : & PtyMaster , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/tty.rs :: pub (super) fn tty_ioctl (task : & TaskControlBlock , terminal : & alloc :: sync :: Arc < Terminal > , request : usize , argument : usize ,) -> isize
@@ -4003,6 +4044,7 @@ kernel/src/task/loader.rs :: pub (crate) struct LoadedExecutable
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn build_address_space (& self , environments : & [Vec < u8 >] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (MemorySet , usize , usize) , ElfLoadError >
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn credential_metadata (& self) -> InodeMetadata
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn execfn (& self) -> & [u8]
+kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn executable (& self) -> Arc < OpenedFile >
 kernel/src/task/memory_barrier.rs :: pub (crate) fn complete_pending ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn register_private_memory_barrier ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn synchronize_private_memory () -> bool
@@ -4015,7 +4057,7 @@ kernel/src/task/mod.rs :: pub (crate) use model :: { CredentialUpdateError , IoS
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
-kernel/src/task/mod.rs :: pub (crate) use task_manager :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerError , TimerSetting , create_posix_timer , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
+kernel/src/task/mod.rs :: pub (crate) use task_manager :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerFileClock , create_posix_timer , create_timer_fd , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
 kernel/src/task/mod.rs :: pub (in crate :: task) use model :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: enum RunState :: Blocked
 kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : crate :: cpu :: CpuId , }
@@ -4041,7 +4083,6 @@ kernel/src/task/model.rs :: pub (crate) enum StopTransition
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn arm_syscall_restart (& self , syscall_id : usize , args : [usize ; 6] , ecall_pc : usize)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn begin_signal_suspend (& self , temporary : u64) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signal_set (& self , candidates : u64) -> u64
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn kernel_context (& self) -> & Mutex < KernelContext >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < SignalAction > ,) -> Result < SignalAction , () >
@@ -4055,7 +4096,6 @@ kernel/src/task/model.rs :: pub (crate) use resource_limits :: { RLIM_INFINITY ,
 kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState , WaitMembership , WaitResult }
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn clear_parent_death_signal (& self)
-kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn kernel_resume_target (& self) -> crate :: arch :: context :: KernelResume
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn mark_parent_death (& self , parent_tgid : usize)
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn parent_death_signal (& self , replacement : Option < usize >) -> usize
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn take_parent_death (& self) -> Option < (usize , usize) >
@@ -4220,6 +4260,7 @@ kernel/src/task/model/io_accounting.rs :: pub (super) struct IoAccounting
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn vfork_process (& self , pid : ProcessId , child_stack : usize ,) -> Result < Self , MemoryError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
+kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn process_executable (& self) -> Arc < crate :: fs :: OpenedFile >
 kernel/src/task/model/process_exec.rs :: pub (super) fn process_name (path : & [u8]) -> Result < Vec < u8 > , ElfLoadError >
 kernel/src/task/model/process_exec.rs :: pub (super) fn try_elf_arc < T > (value : T) -> Result < Arc < T > , ElfLoadError >
 kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn set_working_directory (& self , opened : Arc < OpenedFile >)
@@ -4229,6 +4270,9 @@ kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock 
 kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self) -> usize
 kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < OpenedFile >
 kernel/src/task/model/process_resources.rs :: pub (in crate :: task) impl TaskControlBlock :: fn set_terminal (& self , terminal : Arc < Terminal >)
+kernel/src/task/model/process_resources.rs :: pub (super) ProcessPaths :: cwd : Arc < OpenedFile >
+kernel/src/task/model/process_resources.rs :: pub (super) ProcessPaths :: executable : Arc < OpenedFile >
+kernel/src/task/model/process_resources.rs :: pub (super) struct ProcessPaths
 kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: InvalidLimit
 kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: InvalidResource
 kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: NotFound
@@ -4362,10 +4406,12 @@ kernel/src/task/model/synchronous_fault.rs :: pub (super) fn merge_forced (exist
 kernel/src/task/model/synchronous_fault.rs :: pub (super) struct SynchronousFaultPolicy
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn complete_syscall (& self , completion : crate :: arch :: context :: SyscallCompletion)
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn handle_illegal_instruction (& self ,) -> Result < () , crate :: arch :: IllegalInstructionFault >
+kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn kernel_context (& self) -> & Mutex < KernelContext >
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn prepare_user_return (& self , logical_cpu : usize) -> usize
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn take_syscall_request (& self) -> (usize , [usize ; 6] , usize)
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn user_program_counter (& self) -> usize
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn user_stack_pointer (& self) -> usize
+kernel/src/task/model/trap_context.rs :: pub (in crate :: task) impl TaskControlBlock :: fn kernel_resume_target (& self) -> crate :: arch :: context :: KernelResume
 kernel/src/task/model/trap_context.rs :: pub (in crate :: task) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model/trap_context.rs :: pub (super) impl AddressSpace :: fn bind_user_context (& self , binding : ContextBinding ,) -> Result < ContextOwner < UserContext > , MemoryError >
 kernel/src/task/model/trap_context.rs :: pub (super) impl AddressSpace :: fn rebind_user_context (& self , owner : & ContextOwner < UserContext > , address : usize)
@@ -4694,6 +4740,7 @@ kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn parent_pid (pi
 kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
 kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn scheduler_thread (tid : usize , caller : & Arc < TaskControlBlock > ,) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn thread_by_tid (graph : & ProcessGraph , tid : usize ,) -> Option < (usize , Arc < TaskControlBlock >) >
+kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: File { target : Arc < dyn TimerFdBackend > , elapsed : u64 , }
 kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Posix (ExpiredPosixTimer)
 kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Real (usize)
 kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Silent
@@ -4703,14 +4750,8 @@ kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # 
 kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_SIGNAL`：向创建进程发布 signal。"] Process { signal : usize , value : u64 }
 kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_THREAD_ID`：向创建进程中的指定 Thread 发布 signal。"] Thread { tid : usize , signal : usize , value : u64 , }
 kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `timer_create(..., NULL, ...)`：SIGALRM，且 `sival_int` 为分配后的 timer ID。"] Default
-kernel/src/task/task_manager/timer_queue.rs :: enum TimerError :: Exhausted
-kernel/src/task/task_manager/timer_queue.rs :: enum TimerError :: NotFound
-kernel/src/task/task_manager/timer_queue.rs :: enum TimerError :: OutOfMemory
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) TimerSetting :: interval_ns : u64
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) TimerSetting :: remaining_ns : u64
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum PosixTimerClock
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum PosixTimerNotification
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum TimerError
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn create_posix_timer (tgid : usize , clock : PosixTimerClock , notification : PosixTimerNotification ,) -> Result < i32 , TimerError >
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn delete_posix_timer (tgid : usize , id : i32) -> Result < () , TimerError >
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn posix_timer (tgid : usize , id : i32 , now_ns : u64) -> Result < TimerSetting , TimerError >
@@ -4719,7 +4760,7 @@ kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn real_timer (tgid :
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn remove_posix_timers_for_exec (tgid : usize)
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn set_posix_timer (tgid : usize , id : i32 , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
 kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn set_real_timer (tgid : usize , value_ns : u64 , interval_ns : u64 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) struct TimerSetting
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) use timer_file :: { TimerFileClock , create_timer_fd }
 kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: id : i32
 kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: notification : PosixTimerNotification
 kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: overrun : i32
@@ -4766,6 +4807,13 @@ kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) co
 kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) const fn real_replacement_needs (record_exists : bool , deadline_exists : bool , replacement_record : bool , replacement_deadline : bool ,) -> TimerReplacementNeeds
 kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) enum PosixCreateAction
 kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) struct TimerReplacementNeeds
+kernel/src/task/task_manager/timer_queue/timer_file.rs :: enum TimerFileClock :: Boottime
+kernel/src/task/task_manager/timer_queue/timer_file.rs :: enum TimerFileClock :: Monotonic
+kernel/src/task/task_manager/timer_queue/timer_file.rs :: enum TimerFileClock :: Realtime
+kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (crate) enum TimerFileClock
+kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (crate) fn create_timer_fd (clock : TimerFileClock ,) -> Result < Arc < dyn TimerFdBackend > , TimerError >
+kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (super) impl TimerQueue :: fn pop_expired_timer_file (& mut self , id : u64 , expiration : u64 , mut deadline : crate :: fallible_tree :: VacantEntry < (u64 , TimerIdentity) , () > , now_ns : u64 ,) -> super :: ExpiredTimer
+kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (super) struct TimerFile
 kernel/src/task/task_manager/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Create a POSIX timer, optionally requiring a live target thread."] PosixCreate { tgid : usize , thread : Option < usize > }
 kernel/src/task/task_manager/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Replace or disarm an existing process-owned POSIX timer."] PosixReplace { tgid : usize }
 kernel/src/task/task_manager/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Replace or disarm the process-owned ITIMER_REAL record."] ItimerReal { tgid : usize }

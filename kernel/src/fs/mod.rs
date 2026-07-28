@@ -16,6 +16,7 @@ mod procfs;
 mod pty;
 mod readiness;
 mod sysfs;
+mod timerfd;
 mod vfs;
 
 pub(crate) use devfs::DevFileSystem;
@@ -46,6 +47,7 @@ pub(crate) use procfs::{
 pub(crate) use pty::{PtyMaster, PtySlave, init as init_pty};
 pub(crate) use readiness::{ReadinessSource, ReadinessSources};
 pub(crate) use sysfs::SysFileSystem;
+pub(crate) use timerfd::{TimerError, TimerFd, TimerFdBackend, TimerFdRead, TimerSetting};
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
     AdvisoryLockNotifier, OpenedFile, PreparedAdvisoryLock, PreparedLockAttempt,

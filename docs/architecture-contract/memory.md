@@ -6,6 +6,10 @@
   slab/direct metadata。普通 frame、用户 backing 与 DMA backing 保持分配时清零；只有
   global allocator 可通过 `alloc_heap_extent` 取得不可读的未初始化 extent，并按 Rust
   allocator 契约在 caller 初始化前禁止读取。
+- frame allocator 必须在 publication 前从自身物理输入区间前缀保留足量整页 metadata，
+  以一 byte/allocatable-frame 建立 buddy state；该前缀永久排除在 allocatable capacity 外。
+  metadata 不得从固定 bootstrap heap 分配，否则 Guest RAM 增大时会在 frame-backed heap
+  尚未发布前形成容量循环依赖。
 - `MemorySet` 独占 page table、有序 VMA 集合和 program break；`mm::area` 只封装单个 VMA
   的范围、backing、resident frame 与 map/partition/merge mechanism，不取得集合 owner。
   page cache 独占 shared file page、dirty/writeback 与 reclaim state。
@@ -59,7 +63,9 @@
   权限收紧与物理 frame replacement 必须提交 local fence，并同步所有其他 online/possible CPU。
   单个 commit 的合并跨度不超过 64 页时保留精确 range，超过 64 页时由同一
   `TranslationCommit` 规范化为一次 full local/remote fence；禁止把稀疏跨度逐页执行。
-  lazy VMA 未写 leaf PTE，fence 数必须为零。
+  lazy VMA 未写 leaf PTE，fence 数必须为零。AArch64 动态 TTBR1 kernel-stack range 是唯一
+  local-strengthening 例外：retirement 必须用一次 `VMALLE1` 越过 Apple HVF 的本 CPU flush
+  point，再释放 backing；仅逐页 `VAAE1` 会让复用的 stack VA 写入已归还并重新分配的旧物理页。
 - huge leaf revoke 必须记录完整 leaf span；只允许从 leaf-aligned virtual page 撤销，禁止把中间 4KiB unmap 静默扩大到整个 huge leaf。
 - fixed RISC-V Privileged 规范允许 publication/relax 暂时命中旧 invalid/restrictive translation；对应 page fault 必须先执行当前 CPU range fence 再重试。地址空间 activation 的 full local fence 不得作为 mutation 兼容路径。
 - AArch64 remote revoke 必须由 source 执行 full `VMALLE1IS`，随后向每颗目标 vCPU 发布

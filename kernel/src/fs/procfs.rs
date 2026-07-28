@@ -23,7 +23,7 @@ use system::{
 
 use super::{
     DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
-    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType, vfs,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType, OpenedFile, vfs,
 };
 
 const PROC_FILESYSTEM_ID: usize = 3;
@@ -78,6 +78,12 @@ pub(crate) trait ProcSource: Send + Sync {
         &self,
         pid: usize,
     ) -> Result<Option<Vec<ProcFileDescriptorSnapshot>>, FileSystemError>;
+
+    /// @description 按 TGID 投影 live process 的最终 main ELF opened-entry identity。
+    /// @param pid live process TGID。
+    /// @return process 存在且访问允许时返回 executable opened entry；否则返回 None。
+    /// @errors 权限或内存失败返回明确文件系统错误。
+    fn process_executable(&self, pid: usize) -> Result<Option<Arc<OpenedFile>>, FileSystemError>;
 }
 
 struct ProcInode {
@@ -154,6 +160,7 @@ impl ProcInode {
             | ProcNode::ProcessTaskDir(_)
             | ProcNode::ProcessFdDir(_)
             | ProcNode::ThreadDir(_, _)
+            | ProcNode::ProcessExe(_)
             | ProcNode::ProcessFd(_, _) => Err(FileSystemError::IsDirectory),
             ProcNode::ProcessCmdline(_) | ProcNode::ThreadCmdline(_, _) => {
                 unreachable!("cmdline handled as binary data")
@@ -245,20 +252,28 @@ impl Inode for ProcInode {
                 .and_then(|entries| entries.into_iter().find(|entry| entry.fd == fd))
                 .map(|entry| entry.target)
                 .ok_or(FileSystemError::NotFound),
+            ProcNode::ProcessExe(pid) => self
+                .source
+                .process_executable(pid)?
+                .ok_or(FileSystemError::NotFound)
+                .and_then(|opened| vfs().opened_path(&opened)),
             _ => Err(FileSystemError::InvalidOperation),
         }
     }
 
     fn follow_link(&self) -> Option<Arc<super::OpenedFile>> {
-        let ProcNode::ProcessFd(pid, fd) = self.node else {
-            return None;
-        };
-        self.source
-            .process_file_descriptors(pid)
-            .ok()??
-            .into_iter()
-            .find(|entry| entry.fd == fd)?
-            .opened
+        match self.node {
+            ProcNode::ProcessFd(pid, fd) => {
+                self.source
+                    .process_file_descriptors(pid)
+                    .ok()??
+                    .into_iter()
+                    .find(|entry| entry.fd == fd)?
+                    .opened
+            }
+            ProcNode::ProcessExe(pid) => self.source.process_executable(pid).ok()?,
+            _ => None,
+        }
     }
 
     fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
@@ -348,6 +363,7 @@ impl Inode for ProcInode {
                     (ProcNode::ProcessComm(pid), InodeType::File, &b"comm"[..]),
                     (ProcNode::ProcessStatm(pid), InodeType::File, &b"statm"[..]),
                     (ProcNode::ProcessIo(pid), InodeType::File, &b"io"[..]),
+                    (ProcNode::ProcessExe(pid), InodeType::SymLink, &b"exe"[..]),
                     (
                         ProcNode::ProcessTaskDir(pid),
                         InodeType::Directory,
@@ -453,6 +469,7 @@ impl Inode for ProcInode {
                 b"comm" => ProcNode::ProcessComm(pid),
                 b"statm" => ProcNode::ProcessStatm(pid),
                 b"io" => ProcNode::ProcessIo(pid),
+                b"exe" => ProcNode::ProcessExe(pid),
                 b"task" => ProcNode::ProcessTaskDir(pid),
                 b"fd" => ProcNode::ProcessFdDir(pid),
                 _ => return Err(FileSystemError::NotFound),

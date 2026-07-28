@@ -18,11 +18,12 @@ impl OpenFileDescription {
             OpenFileKind::Socket(socket) => {
                 try_format_bytes(format_args!("socket:[{}]", socket.object_id()))
             }
-            OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) => {
-                let label = if matches!(self.kind, OpenFileKind::Epoll(_)) {
-                    &b"anon_inode:[eventpoll]"[..]
-                } else {
-                    &b"anon_inode:[eventfd]"[..]
+            OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) | OpenFileKind::TimerFd(_) => {
+                let label = match &self.kind {
+                    OpenFileKind::Epoll(_) => &b"anon_inode:[eventpoll]"[..],
+                    OpenFileKind::EventFd(_) => &b"anon_inode:[eventfd]"[..],
+                    OpenFileKind::TimerFd(_) => &b"anon_inode:[timerfd]"[..],
+                    _ => unreachable!(),
                 };
                 let mut bytes = Vec::new();
                 bytes

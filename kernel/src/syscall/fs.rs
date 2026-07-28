@@ -340,6 +340,9 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
             }
             OpenFileKind::Epoll(_) => copy_stat(&task, pointer, None, 0o100600, 0),
             OpenFileKind::EventFd(_) => copy_stat(&task, pointer, None, 0o100600, 0),
+            OpenFileKind::TimerFd(timer) => {
+                copy_stat(&task, pointer, None, 0o100600, timer.object_id())
+            }
             OpenFileKind::Inode(_) => unreachable!("inode_ref lost inode OFD"),
             OpenFileKind::MemFile(_) => unreachable!("inode_ref lost memfd OFD"),
         },

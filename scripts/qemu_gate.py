@@ -93,6 +93,7 @@ def _qemu_command(
     interactive_devices: bool = False,
     qmp_socket: Path | None = None,
     audio_output: Path | None = None,
+    memory: str | None = None,
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -116,6 +117,8 @@ def _qemu_command(
             "base=utc",
         ]
     )
+    if memory is not None and not interactive_devices:
+        command.extend(("-m", memory))
     if runtime.bootloader is not None:
         command.extend(["-bios", runtime.bootloader])
     command.extend(
@@ -144,7 +147,7 @@ def _qemu_command(
         command.extend(
             [
                 "-m",
-                "2G",
+                memory or "2G",
                 "-audiodev",
                 audio_backend,
                 "-device",
@@ -363,6 +366,7 @@ def boot(
     persistent_writes: bool = False,
     interactive_devices: bool = False,
     audio_output: Path | None = None,
+    memory: str | None = None,
 ) -> None:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
@@ -377,6 +381,7 @@ def boot(
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
         interactive_devices: 是否加入 run-gui 的 GPU、keyboard 与 tablet 设备拓扑。
         audio_output: interactive topology 的 WAV 输出；None 使用不会访问 host 声卡的 none backend。
+        memory: 显式 Guest RAM；None 保留既有 runtime gate 的 QEMU 默认值。
 
     Returns:
         None；全部 marker 出现时返回。
@@ -397,6 +402,7 @@ def boot(
         smp,
         interactive_devices,
         audio_output=audio_output,
+        memory=memory,
     )
     process = subprocess.Popen(
         command,
@@ -490,7 +496,8 @@ def boot(
     missing = [marker for marker in markers if marker not in text]
     tail = "\n".join(text.splitlines()[-40:])
     raise RuntimeError(
-        f"QEMU -smp {smp} boot gate failed; missing={missing!r}\n--- output tail ---\n{tail}"
+        f"QEMU -smp {smp} boot gate failed; returncode={process.returncode!r};"
+        f" missing={missing!r}\n--- output tail ---\n{tail}"
     )
 
 
@@ -743,7 +750,7 @@ def start_frame_workload(qmp: QmpClient, duration_s: float, stop: "threading.Eve
 
 def measure_frame_timing(
     image: Path,
-    settle_s: float = 20.0,
+    settle_s: float = 30.0,
     timeout_seconds: int = 120,
 ) -> dict[str, int]:
     """Cold-boots the desktop stack, self-drives frames, and returns frame stats.
@@ -841,14 +848,20 @@ def measure_frame_timing(
 
         qmp = QmpClient(qmp_socket)
         # 2. The boot contract is an empty desktop. Launch both workload apps via
-        #    real double-click input: Terminal is the second desktop icon, My
-        #    Computer (File Manager) is the first.
+        #    real double-click input: Terminal is the second desktop icon and My
+        #    Documents (the File Manager bundle) is the fourth.
         def double_click(x_fraction: float, y_fraction: float) -> None:
             qmp.move_abs(x_fraction, y_fraction)
-            for _ in range(2):
+            # Desktop icon hover/selection each publishes a new React hit tree.
+            # Moving and pressing in the same host turn can route the first press
+            # to the previous scene; the second press must likewise wait for the
+            # selection scene or the double-click launch is intermittently lost.
+            time.sleep(0.1)
+            for click_index in range(2):
                 qmp.button("left", True)
                 qmp.button("left", False)
-                time.sleep(0.08)
+                if click_index == 0:
+                    time.sleep(0.15)
 
         def wait_for(markers: tuple[str, ...], phase: str) -> None:
             phase_deadline = min(deadline, time.monotonic() + 15.0)
@@ -876,8 +889,11 @@ def measure_frame_timing(
             ),
             "Terminal launch",
         )
-        double_click(47 / 1504, 34 / 846)
-        wait_for(("compositor: app 2 connected", "lite-ui: app file-manager ready"), "second app")
+        double_click(47 / 1504, 212 / 846)
+        wait_for(
+            ("compositor: app 2 connected", "lite-ui: app file-manager ready"),
+            "second app",
+        )
         second_window_opened = True
 
         # 3. Activate the terminal window (app 1) so its resize grip is present,
@@ -911,17 +927,18 @@ def measure_frame_timing(
         terminate(process)
         text_final = current_text()
         private_directory.cleanup()
-    if not windows:
+    if len(windows) < 2:
         tail = "\n".join(text_final.splitlines()[-40:])
         raise RuntimeError(
-            "frame-timing gate collected no frame-stats window "
-            f"(second_window_opened={second_window_opened})\n--- output tail ---\n{tail}"
+            "frame-timing gate needs one warmup and one steady frame-stats window "
+            f"(collected={len(windows)}, second_window_opened={second_window_opened})"
+            f"\n--- output tail ---\n{tail}"
         )
-    # Discard the first window as warmup: it straddles desktop settling, the
-    # second-window open and the focus clicks before the steady resize stream
-    # begins, so its tail percentiles reflect startup gaps, not steady cadence.
-    # Keep it only if it is the sole window collected.
-    steady = windows[1:] if len(windows) > 1 else windows
+    # Discard the mandatory first window as warmup: it straddles desktop
+    # settling, the second-window open and the focus clicks before the steady
+    # resize stream begins, so its tail percentiles reflect startup gaps, not
+    # steady cadence.
+    steady = windows[1:]
     # Worst steady window: the gate must not be defeated by one good window
     # among bad.
     return max(steady, key=lambda w: (w["dropped"], w["p99_us"], w["p95_us"]))

@@ -42,7 +42,13 @@ impl TaskControlBlock {
                 .try_clone_for_fork()?;
             AddressSpace::new(memory_set)?
         };
-        let cwd = self.process.cwd.lock().clone();
+        let paths = {
+            let parent_paths = self.process.paths.lock();
+            ProcessPaths {
+                cwd: parent_paths.cwd.clone(),
+                executable: parent_paths.executable.clone(),
+            }
+        };
         let files = self
             .process
             .files
@@ -78,7 +84,7 @@ impl TaskControlBlock {
             comm: Mutex::new(comm),
             start_time_us,
             address_space: Mutex::new(address_space.clone()),
-            cwd: Mutex::new(cwd),
+            paths: Mutex::new(paths),
             files: Mutex::new(files),
             credentials: Mutex::new(credentials),
             resource_limits: Mutex::new(resource_limits),

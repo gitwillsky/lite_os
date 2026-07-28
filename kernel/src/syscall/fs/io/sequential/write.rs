@@ -268,6 +268,7 @@ pub(super) fn write_descriptor(
             }
             written as isize
         }
+        OpenFileKind::TimerFd(_) => -errno::EINVAL,
         OpenFileKind::Epoll(_) => unreachable!("epoll write rejected before descriptor dispatch"),
         OpenFileKind::Character(device) => {
             if let CharacterDevice::Terminal {

@@ -38,6 +38,7 @@ impl TaskControlBlock {
         let (new_memory_set, user_sp, entry_point) =
             loaded.build_address_space(envs, stack_limit, address_space_limit, data_limit)?;
         let new_address_space = AddressSpace::new(new_memory_set)?;
+        let new_executable = loaded.executable();
         let new_comm = process_name(loaded.execfn())?;
         let credential_metadata = loaded.credential_metadata();
 
@@ -60,6 +61,7 @@ impl TaskControlBlock {
         self.process
             .address_space()
             .rebind_user_context(&self.thread.user_context, TRAP_CONTEXT);
+        self.process.paths.lock().executable = new_executable;
         *self.process.comm.lock() = new_comm;
         self.close_cloexec_files();
         self.process
@@ -95,5 +97,12 @@ impl TaskControlBlock {
         // AArch64 context 随独立 KernelStack 保活。提前唤醒会让共享旧 mm 的 detach 顺序失效。
         super::super::task_manager::vfork::complete_vfork_exec(self.tgid());
         Ok(())
+    }
+
+    /// @description 返回当前映像的稳定 VFS opened-entry identity。
+    ///
+    /// @return fork 继承且 exec 原子替换的 main ELF opened entry。
+    pub(crate) fn process_executable(&self) -> Arc<crate::fs::OpenedFile> {
+        self.process.paths.lock().executable.clone()
     }
 }

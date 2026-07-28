@@ -4,8 +4,9 @@ mod model;
 
 use std::{
     ffi::OsString,
+    fs::File,
     io::{self, Read, Write},
-    os::fd::AsFd,
+    os::fd::{AsFd, BorrowedFd},
     time::Duration,
 };
 
@@ -21,6 +22,10 @@ const ACK: u32 = 3;
 const UPDATE: u32 = 4;
 const EXIT: u32 = 5;
 const MAX_INPUT: usize = 64 * 1024;
+// 每轮最多消费 64 KiB PTY 输出，随后必须回到 control fd。缺少该预算时，Claude 等持续
+// 刷新的 TUI 会让 drain 永远等不到 EAGAIN，LiteUI 的 ACK 与键盘输入因此永久饥饿。
+const MAX_PTY_DRAIN_BYTES: usize = 64 * 1024;
+const LINUX_EIO: i32 = 5;
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -51,8 +56,7 @@ fn run() -> io::Result<()> {
         })?;
     model.begin_shell_session();
     model.mark_all();
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
+    let mut input = duplicate_control_input(io::stdin().as_fd())?;
     let mut output = io::stdout().lock();
     let mut update = Vec::new();
     send_update(&mut output, &mut update, &mut model)?;
@@ -61,7 +65,7 @@ fn run() -> io::Result<()> {
     loop {
         let (control_ready, pty_ready) = {
             let mut descriptors = [
-                PollFd::new(stdin.as_fd(), PollEvents::READ),
+                PollFd::new(input.as_fd(), PollEvents::READ),
                 PollFd::new(session.as_fd(), PollEvents::READ),
             ];
             unix::poll(&mut descriptors, Some(Duration::from_secs(1)))?;
@@ -99,6 +103,12 @@ fn run() -> io::Result<()> {
             in_flight = true;
         }
     }
+}
+
+fn duplicate_control_input(fd: BorrowedFd<'_>) -> io::Result<File> {
+    // `poll` 与 `read_control` 必须观察同一个 kernel queue。`StdinLock` 会预读后续 frame；
+    // fd 随即变成 not-ready，主循环会永久漏掉已经藏在 userspace buffer 里的键盘输入。
+    fd.try_clone_to_owned().map(File::from)
 }
 
 fn command() -> io::Result<(OsString, Vec<OsString>)> {
@@ -157,6 +167,7 @@ fn read_control(input: &mut impl Read) -> io::Result<Control> {
 
 fn read_pty(session: &mut PtySession, model: &mut Model) -> io::Result<bool> {
     let mut bytes = [0u8; 8192];
+    let mut drained = 0usize;
     loop {
         match session.read(&mut bytes) {
             Ok(0) => return Ok(true),
@@ -166,9 +177,16 @@ fn read_pty(session: &mut PtySession, model: &mut Model) -> io::Result<bool> {
                 if !replies.is_empty() {
                     write_pty(session, &replies)?;
                 }
+                drained += count;
+                if drained >= MAX_PTY_DRAIN_BYTES {
+                    return Ok(false);
+                }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            // Linux PTY master 在最后一个 slave 关闭且输出已排空后返回 EIO；这与 read(2)
+            // 返回 0 一样表示 session child 已退出，不是 helper failure。
+            Err(error) if error.raw_os_error() == Some(LINUX_EIO) => return Ok(true),
             Err(error) => return Err(error),
         }
     }
@@ -246,4 +264,43 @@ fn send_exit(output: &mut impl Write) -> io::Result<()> {
     output.write_all(&8u32.to_le_bytes())?;
     output.write_all(&EXIT.to_le_bytes())?;
     output.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::Write,
+        os::{fd::AsFd, unix::net::UnixStream},
+        time::Duration,
+    };
+
+    use linux_uapi::unix::{self, PollEvents, PollFd};
+
+    use super::{ACK, Control, INPUT, duplicate_control_input, read_control};
+
+    #[test]
+    fn adjacent_control_frames_remain_visible_to_poll() {
+        let (receiver, mut sender) = UnixStream::pair().unwrap();
+        let mut frames = Vec::new();
+        frames.extend_from_slice(&8u32.to_le_bytes());
+        frames.extend_from_slice(&ACK.to_le_bytes());
+        frames.extend_from_slice(&9u32.to_le_bytes());
+        frames.extend_from_slice(&INPUT.to_le_bytes());
+        frames.push(b'x');
+        sender.write_all(&frames).unwrap();
+
+        let mut input = duplicate_control_input(receiver.as_fd()).unwrap();
+        assert!(matches!(read_control(&mut input).unwrap(), Control::Ack));
+
+        let mut descriptors = [PollFd::new(input.as_fd(), PollEvents::READ)];
+        assert_eq!(
+            unix::poll(&mut descriptors, Some(Duration::ZERO)).unwrap(),
+            1
+        );
+        assert!(descriptors[0].returned().contains(PollEvents::READ));
+        assert!(matches!(
+            read_control(&mut input).unwrap(),
+            Control::Input(bytes) if bytes == b"x"
+        ));
+    }
 }

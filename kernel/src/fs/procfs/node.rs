@@ -21,6 +21,7 @@ pub(super) enum ProcNode {
     ProcessComm(usize),
     ProcessStatm(usize),
     ProcessIo(usize),
+    ProcessExe(usize),
     ProcessTaskDir(usize),
     ProcessFdDir(usize),
     ProcessFd(usize, usize),
@@ -57,6 +58,7 @@ impl ProcNode {
             Self::ProcessStatm(pid) => 0x1000_0000_0000_0006 | (pid as u64) << 4,
             Self::ProcessTaskDir(pid) => 0x1000_0000_0000_0007 | (pid as u64) << 4,
             Self::ProcessIo(pid) => 0x1000_0000_0000_0008 | (pid as u64) << 4,
+            Self::ProcessExe(pid) => 0x1000_0000_0000_0009 | (pid as u64) << 4,
             Self::ProcessFd(pid, fd) => 0x2000_0000_0000_0000 | (pid as u64) << 10 | fd as u64,
             Self::ThreadDir(_, tid) => 0x3000_0000_0000_0000 | (tid as u64) << 4,
             Self::ThreadStat(_, tid) => 0x3000_0000_0000_0001 | (tid as u64) << 4,
@@ -76,7 +78,7 @@ impl ProcNode {
             | Self::ProcessTaskDir(_)
             | Self::ProcessFdDir(_)
             | Self::ThreadDir(_, _) => InodeType::Directory,
-            Self::SelfLink | Self::ProcessFd(_, _) => InodeType::SymLink,
+            Self::SelfLink | Self::ProcessExe(_) | Self::ProcessFd(_, _) => InodeType::SymLink,
             _ => InodeType::File,
         }
     }

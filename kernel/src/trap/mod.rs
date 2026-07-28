@@ -88,10 +88,15 @@ pub(crate) fn handle_user_trap() -> ! {
             }
         }
         TrapEvent::Breakpoint => {
-            // 在尚未实现标准 SIGTRAP frame 前不能猜测 16/32-bit 指令长度并跳过断点。
-            // 该 trap 完全由用户输入产生，只终止当前任务，不得 panic kernel。
-            error!("[kernel] breakpoint in application, terminating current task");
-            exit_current_group_by_signal(5);
+            if let Some(current) = task::current_task() {
+                let address = current.user_program_counter();
+                current
+                    .queue_synchronous_fault(5, task::PendingSignal::synchronous_fault(1, address))
+                    .expect("SIGTRAP synchronous delivery must accept a valid current task");
+            } else {
+                error!("[kernel] breakpoint with no current task");
+                exit_current_group_by_signal(5);
+            }
         }
         TrapEvent::UserEnvironmentCall => {
             if let Some(current) = task::current_task() {

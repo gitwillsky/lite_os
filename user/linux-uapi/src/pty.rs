@@ -12,6 +12,11 @@ use std::{
 
 use crate::raw;
 
+const SESSION_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const SESSION_HOME: &str = "/root";
+const SESSION_SHELL: &str = "/bin/sh";
+const SESSION_USER: &str = "root";
+
 #[derive(Clone, Copy)]
 pub struct WindowSize {
     pub columns: u16,
@@ -80,8 +85,11 @@ impl PtySession {
             .args(arguments)
             .env_clear()
             .env("TERM", "liteos")
-            .env("HOME", "/root")
-            .env("PATH", "/sbin:/usr/sbin:/bin:/usr/bin")
+            .env("HOME", SESSION_HOME)
+            .env("SHELL", SESSION_SHELL)
+            .env("USER", SESSION_USER)
+            .env("PATH", SESSION_PATH)
+            .current_dir(SESSION_HOME)
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
@@ -158,5 +166,25 @@ fn ioctl(fd: i32, request: usize, argument: *mut std::ffi::c_void) -> io::Result
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SESSION_HOME, SESSION_PATH, SESSION_SHELL, SESSION_USER};
+
+    #[test]
+    fn pty_path_matches_login_profile() {
+        assert_eq!(
+            include_str!("../../base/profile").trim(),
+            format!("export PATH={SESSION_PATH}")
+        );
+    }
+
+    #[test]
+    fn pty_exposes_the_installed_posix_shell() {
+        assert_eq!(SESSION_HOME, "/root");
+        assert_eq!(SESSION_SHELL, "/bin/sh");
+        assert_eq!(SESSION_USER, "root");
     }
 }

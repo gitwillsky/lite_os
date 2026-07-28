@@ -2,7 +2,11 @@
 
 ## 当前设计
 
-- frame allocator 唯一拥有物理页容量与 buddy metadata；global allocator 从它临时取得未初始化 slab/direct extent，不复制容量 owner，也不为 Rust allocator 本就不可读的 payload 产生整段 dead zero-fill。用户页与 DMA backing 仍由普通清零 seam 分配。
+- frame allocator 唯一拥有物理页容量与 buddy metadata；初始化时从 kernel image 后的物理区间
+  前缀保留一 byte/frame 状态表，保留页不进入 buddy capacity，因此 metadata 不依赖固定
+  bootstrap heap 且可随 guest RAM 扩展。global allocator 从它临时取得未初始化 slab/direct
+  extent，不复制容量 owner，也不为 Rust allocator 本就不可读的 payload 产生整段 dead
+  zero-fill。用户页与 DMA backing 仍由普通清零 seam 分配。
 - `MemorySet` 唯一拥有 page table、program break 与有序 VMA。ELF、stack、anonymous、file、shared/private mapping 使用同一 VMA lifecycle。
 - `AddressSpace` 使用 task-context mutex 保护 `MemorySet`；page fault、user-copy 与 procfs
   统计发生竞争时进入 scheduler Blocked/FIFO handoff，不在同 CPU 自旋。每个 AddressSpace
@@ -40,6 +44,10 @@
   kernel-stack PTE 在 `KERNEL_SPACE` 锁内摘除并保活，锁释放后才等待 ack，避免
   IRQ-masked target 等待同一锁。instruction publication 优先使用 CTR_EL0 的 IDC/DIC
   能力，否则执行精确 DC clean/IC invalidate range。
+- AArch64 动态 TTBR1 kernel-stack retirement 在本 CPU 把 31 次 range `VAAE1` 强化为一次
+  `VMALLE1 + DSB + ISB`，再释放 stack backing。该路径不在 syscall/page-fault 热路径；
+  确定性 fence 指令数从 31 降为 1，因此无需另设 microbenchmark，runtime gate 以连续 fork/exit
+  后的 stack VA/物理页复用验证不会写坏新 owner。
 - leaf unmap 会自底向上摘除空 Sv39 L0/L1 table；单个孤立 mapping 的 active table pages 从 unmap 后 3 降为仅 root 1。摘除的最多两页由 `TranslationCommit` 保活，remote revoke fence 完成后才回到 frame allocator。
 - kernel identity mapping 按每个 VMA 的精确权限边界选择最大对齐 Sv39 leaf；128MiB 对齐 physmap 的 leaf PTE 数从 32,768 个 4KiB leaf 降为 64 个 2MiB leaf，translate façade 仍投影逐页 PPN。
 - executable leaf publication 与新增 EXECUTE 权限由同一 `TranslationCommit` 记录；instruction bytes 完成后执行本地 data fence/`fence.i` 并同步所有 online remote CPU。普通 trap return 不执行 `fence.i`，后上线 CPU 在 startup 做一次本地初始化 fence。

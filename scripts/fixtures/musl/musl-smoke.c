@@ -235,18 +235,21 @@ int main(int argc, char **argv, char **envp)
 		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
 		return 4;
 	}
-	if (pipe(poll_a) != 0 || pipe(poll_b) != 0) {
+	int poll_ack[2];
+	if (pipe(poll_a) != 0 || pipe(poll_b) != 0 || pipe(poll_ack) != 0) {
 		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
 		return 4;
 	}
 	child = fork();
 	if (child == 0) {
 		const struct timespec delay = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 };
-		close(poll_a[0]); close(poll_a[1]); close(poll_b[0]);
-		if (nanosleep(&delay, 0) != 0 || write(poll_b[1], "P", 1) != 1) _exit(43);
+		close(poll_a[0]); close(poll_a[1]); close(poll_b[0]); close(poll_ack[1]);
+		if (nanosleep(&delay, 0) != 0 || write(poll_b[1], "P", 1) != 1
+		    || read(poll_ack[0], pipe_first, 1) != 1 || pipe_first[0] != 'A'
+		    || write(poll_b[1], "Q", 1) != 1) _exit(43);
 		_exit(0);
 	}
-	close(poll_b[1]);
+	close(poll_b[1]); close(poll_ack[0]);
 	{
 		struct pollfd descriptors[2] = {
 			{ .fd = poll_a[0], .events = POLLIN },
@@ -254,12 +257,15 @@ int main(int argc, char **argv, char **envp)
 		};
 		if (child <= 0 || poll(descriptors, 2, 0) != 0
 		    || poll(descriptors, 2, -1) != 1 || !(descriptors[1].revents & POLLIN)
-		    || read(poll_b[0], pipe_first, 1) != 1 || pipe_first[0] != 'P') {
+		    || read(poll_b[0], pipe_first, 1) != 1 || pipe_first[0] != 'P'
+		    || write(poll_ack[1], "A", 1) != 1
+		    || poll(descriptors, 2, -1) != 1 || !(descriptors[1].revents & POLLIN)
+		    || read(poll_b[0], pipe_first, 1) != 1 || pipe_first[0] != 'Q') {
 			write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
 			return 4;
 		}
 	}
-	close(poll_a[0]); close(poll_a[1]); close(poll_b[0]);
+	close(poll_a[0]); close(poll_a[1]); close(poll_b[0]); close(poll_ack[1]);
 	if (waitpid(child, &child_status, 0) != child
 	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
 		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);

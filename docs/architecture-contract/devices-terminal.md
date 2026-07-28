@@ -60,10 +60,24 @@
 - `SessionChild` 只接受固定 I/O profile 的 `SessionCommand`，并强制通过单线程
   `/bin/session-launch` 建立 parent-death、session/process-group 与同步 exec-error 契约；
   多线程 LiteUI 不得运行 `pre_exec`，目标 stderr 统一进入标准 `/dev/console`。
-- Console write 是同步且非阻塞的 output drain seam；Terminal state lock 必须覆盖普通 output 与 input
-  echo 的完整 Console write，TCSETSW 取得该锁后才应用设置。TCSETSF 还必须在 Terminal→Console
-  唯一 lock order 下同时丢弃 raw adapter input、cooked queue、partial line 与 EOF；未来 adapter 若在
-  `Console::write` 内阻塞等待将破坏该临界区契约。
+- `terminal-session` 每轮 PTY drain 必须有界，并在预算耗尽后回到 control fd；持续刷新的
+  TUI 不能饿死 LiteUI 的 ACK、resize 或键盘输入。PTY slave 关闭后的 Linux `EIO` 与空读
+  都表示 session child 正常结束，helper 必须发布 EXIT 而不是错误退出。
+- `terminal-session` control protocol 的 poll 与 frame read 必须直接消费同一 unbuffered fd queue；
+  禁止用 `StdinLock` 等预读缓冲跨 frame 取走尚未被 dispatcher 处理的 INPUT/RESIZE。否则 fd
+  readiness 已清除而命令只留在 userspace buffer，helper 会永久睡眠。
+- PTY session 在清空继承环境后必须显式发布 `TERM=liteos`、`USER=root`、root HOME、标准
+  PATH 与 `SHELL=/bin/sh`，并从 `/root` 启动；缺少用户/shell identity 或从 `/` 进行 project
+  discovery 时，Claude 会停在交互初始化阶段或错误地把整个 rootfs 当作项目。
+- 新建 console/PTY 的 Linux sane termios 必须发布 `VSTART=^Q`、`VSTOP=^S` 与 `VSUSP=^Z`；
+  control chars 留为 NUL 会让进入 raw mode 的交互式 CLI 观察到非标准 TTY 初态。
+- Console write 是同步且非阻塞的 output drain seam；Terminal transaction 的唯一锁序是
+  `output→input→state`。普通 output 与 input echo 在 output transaction 内只用 state lock
+  快照 termios，调用 Console 时不得持有 state；Pipe/Console readiness publication 会同步重入
+  `input_ready`，持有 state 会形成 epoll 自锁。TCSETSW 取得 output transaction 后应用设置；
+  TCSETSF 再取得 input transaction，在不持 state 时丢弃 raw adapter input，随后清除 cooked
+  queue、partial line 与 EOF 并应用设置。未来 adapter 若在 `Console::write` 内阻塞等待将破坏
+  同步 drain 契约。
 - 普通 console formatting 在唯一 IRQ-safe owner 内使用 256-byte BSS batch，并通过所选 platform
   的同步 console seam drain（RISC-V SBI DBCN、AArch64 PL011）；panic 保留无锁单字节 fail-stop 通道。全局 severity 由 logging Atomic owner
   在 format arguments 构造前判断，被过滤日志不得取得 logger/console lock。

@@ -16,7 +16,6 @@ from audio_analysis import WavSignal, read_qemu_wav  # noqa: E402
 from verify_audio import (  # noqa: E402
     APP_CASCADE,
     APP_ORIGIN,
-    CUSTOM_LOOP_POINT,
     FIXTURES,
     LIMITER_FIXTURE,
     LOOP_STATE_RE,
@@ -24,6 +23,7 @@ from verify_audio import (  # noqa: E402
     MASTER_SCALE_Y,
     MASTER_SPEAKER_POINT,
     MASTER_VOLUME_X,
+    REPEAT_BUTTON_POINT,
     S16_POSITIVE_MAX,
     assert_qemu_wav_finalized,
     channel_tone_amplitude,
@@ -53,17 +53,17 @@ class AudioRuntimeGateTests(unittest.TestCase):
         self.assertEqual(signal.frames[0], (0.25, 0.25))
         self.assertEqual(signal.frames[-1], (0.25, 0.25))
 
-    def test_production_loop_hit_point_matches_vqa_and_all_cascades(self) -> None:
+    def test_production_repeat_hit_point_matches_vqa_and_all_cascades(self) -> None:
         self.assertEqual(
             (
-                APP_ORIGIN[0] + CUSTOM_LOOP_POINT[0],
-                APP_ORIGIN[1] + CUSTOM_LOOP_POINT[1],
+                APP_ORIGIN[0] + REPEAT_BUTTON_POINT[0],
+                APP_ORIGIN[1] + REPEAT_BUTTON_POINT[1],
             ),
-            (714, 332),
+            (698, 137),
         )
         for index in range(8):
-            x = APP_ORIGIN[0] + APP_CASCADE[0] * index + CUSTOM_LOOP_POINT[0]
-            y = APP_ORIGIN[1] + APP_CASCADE[1] * index + CUSTOM_LOOP_POINT[1]
+            x = APP_ORIGIN[0] + APP_CASCADE[0] * index + REPEAT_BUTTON_POINT[0]
+            y = APP_ORIGIN[1] + APP_CASCADE[1] * index + REPEAT_BUTTON_POINT[1]
             self.assertLess(x, 1504)
             self.assertLess(y, 816)
         self.assertEqual(

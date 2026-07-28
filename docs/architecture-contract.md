@@ -43,7 +43,7 @@
 | `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
 | `socket` | `drivers`, `fallible_tree`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
 | `fs` | `audio`, `drivers`, `drm`, `fallible_tree`, `id`, `input`, `ipc`, `log`, `memory`, `socket`, `sync`, `timer` | 只经 block、OFD、anonymous-id、socket-OFD 与 shared-page seam 使用对应领域 |
-| `task` | `arch`, `cpu`, `drivers`, `drm`, `fallible_tree`, `fs`, `input`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer` | 调度只使用 logical CPU identity；`drivers` 只安装 typed I/O wait target，并在 deferred safe point 投递 completion，不依赖 concrete adapter、ISA 或 entry |
+| `task` | `arch`, `cpu`, `drivers`, `drm`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer` | 调度只使用 logical CPU identity；`id` 只分配 task-owned anonymous timerfd identity；`drivers` 只安装 I/O wait target，并在 deferred safe point 投递 completion |
 | `trap` | `arch`, `cpu`, `drivers`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
 | `syscall` | `audio`, `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `system`, `task`, `timer` | ALSA/DRM/evdev 只编解码标准 UAPI；不得绕过 facade 接触 adapter/scheduler/page table |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
@@ -132,6 +132,7 @@
 | `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.deadline_index` | `FallibleMap < (u64 , TimerIdentity) , () >` |
 | `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.posix_timers` | `FallibleMap < (usize , i32) , PosixTimer >` |
 | `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.real_timers` | `FallibleMap < usize , RealTimer >` |
+| `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.timer_files` | `FallibleMap < u64 , TimerFile >` |
 | `kernel/src/task/task_manager/signal/job_control.rs :: JobNotification.waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
 | `kernel/src/task/task_manager/wait_registry/batch.rs :: ClaimedBatch.entries` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
 | `kernel/src/task/task_manager/wait_registry/shard.rs :: WaitShard.index` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |

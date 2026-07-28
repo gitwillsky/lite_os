@@ -3,8 +3,9 @@ use super::{
     TIMER_ABSTIME, TimeSpec, decode_timespec, encode_timespec,
 };
 use crate::{
+    fs::{TimerError, TimerSetting},
     syscall::errno::{EAGAIN, EFAULT, EINVAL, ENOMEM, EOPNOTSUPP},
-    task::{PosixTimerClock, PosixTimerNotification, TimerError, TimerSetting, current_task},
+    task::{PosixTimerClock, PosixTimerNotification, current_task},
 };
 
 const SIGEV_SIGNAL: i32 = 0;

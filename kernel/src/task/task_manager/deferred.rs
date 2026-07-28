@@ -6,7 +6,7 @@ use crate::{
         PendingSignal, TaskControlBlock, WaitResult, current_task,
         processor::request_tick_reschedule,
     },
-    timer::{get_time_ns, get_time_us},
+    timer::get_time_ns,
 };
 
 use super::{
@@ -22,7 +22,7 @@ const TIMER_WORK_BATCH: usize = 32;
 type ExpiredWait = (u64, Arc<TaskControlBlock>, IndexedWaitKind);
 
 fn expire_timers(now_ns: u64) {
-    let mut targets = [None; TIMER_WORK_BATCH];
+    let mut targets: [Option<ExpiredTimer>; TIMER_WORK_BATCH] = core::array::from_fn(|_| None);
     // 1. timer owner 锁内只摘取并重装固定 batch，不触碰 ProcessGraph 或分配 target Vec。
     let backlog = {
         let mut timers = TASK_MANAGER.timers.lock();
@@ -62,6 +62,7 @@ fn expire_timers(now_ns: u64) {
                     }
                 }
             }
+            ExpiredTimer::File { target, elapsed } => target.expire(elapsed),
             ExpiredTimer::Silent => {}
         }
     }
@@ -129,7 +130,7 @@ pub(crate) fn dispatch_pending_deferred_work() {
         return;
     }
     if work.contains(DeferredWork::Timer) {
-        let now_us = get_time_us();
+        let now_us = crate::timer::get_time_us();
         if let Some(task) = current_task() {
             task.scheduling.policy.lock().checkpoint_runtime(now_us);
         }

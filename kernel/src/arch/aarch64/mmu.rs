@@ -204,6 +204,14 @@ pub(crate) fn flush_local_range(start: usize, size: usize) {
     debug_assert_eq!(start % PAGE_SIZE, 0);
     debug_assert_ne!(size, 0);
     debug_assert_eq!(size % PAGE_SIZE, 0);
+    if requires_full_local_flush(start) {
+        // Apple HVF can retain a retired global TTBR1 translation after local VAAE1 even though
+        // the page-table owner has removed the leaf. Kernel-stack VA reuse would then write into
+        // the released physical frame. A full local VMALLE1 is one operation and establishes the
+        // required completion point before the stack backing returns to the frame allocator.
+        flush_local();
+        return;
+    }
     let end = start.checked_add(size).expect("local TLB range overflow");
     // SAFETY: caller supplies canonical page addresses; VAAE1 takes VA[55:12] and all ASIDs.
     unsafe { asm!("dsb ishst", options(nostack)) };
@@ -214,6 +222,10 @@ pub(crate) fn flush_local_range(start: usize, size: usize) {
     }
     // SAFETY: complete invalidation before later memory access or instruction fetch.
     unsafe { asm!("dsb ish", "isb", options(nostack)) };
+}
+
+const fn requires_full_local_flush(start: usize) -> bool {
+    start >= KERNEL_STACK_REGION_START
 }
 
 /// Broadcast a full EL1 stage-1 invalidation to the inner-shareable domain.
@@ -237,4 +249,15 @@ pub(crate) fn acknowledge_broadcast_tlb() {
     // SAFETY: the SGI exception has forced this vCPU through the hypervisor after the source
     // VMALLE1IS. Barriers prevent publishing the software ack before that observation completes.
     unsafe { asm!("dsb ish", "isb", options(nostack)) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DIRECT_MAP_BASE, KERNEL_STACK_REGION_START, requires_full_local_flush};
+
+    #[test]
+    fn dynamic_ttbr1_stack_range_uses_full_local_flush() {
+        assert!(!requires_full_local_flush(DIRECT_MAP_BASE));
+        assert!(requires_full_local_flush(KERNEL_STACK_REGION_START));
+    }
 }

@@ -1,7 +1,9 @@
 //! Fixed native operations exposed to the self-contained React bundle.
 
+mod app_registry;
 mod filesystem;
 mod media;
+mod scalar;
 #[cfg(test)]
 mod media_constants_tests;
 #[cfg(test)]
@@ -16,7 +18,9 @@ use std::{
 };
 
 use quickjs_runtime::{EngineError, NativeHost, Role};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+
+use scalar::{parse_i32, parse_u32, parse_u64};
 
 use crate::{
     audio::Commands as AudioCommands,
@@ -167,7 +171,7 @@ impl State {
     /// Adds one compositor-published app surface to desktop policy state.
     pub fn open_surface(&self, id: u32, app_id: String) {
         let index = self.surfaces.borrow().len() as u32;
-        let (title, icon) = app_metadata(&app_id);
+        let (title, icon) = app_registry::app_metadata(&app_id);
         self.surfaces.borrow_mut().push(Surface {
             id,
             app_id,
@@ -350,8 +354,8 @@ impl NativeHost for Host {
                     .retain(|(timer, _)| *timer != id);
                 Ok(String::new())
             }
-            "apps.list" if self.role == Role::Desktop => Ok(scan_apps()),
-            "apps.launch" if self.role == Role::Desktop && valid_app_id(payload) => {
+            "apps.list" if self.role == Role::Desktop => Ok(app_registry::scan_apps()),
+            "apps.launch" if self.role == Role::Desktop && app_registry::valid_app_id(payload) => {
                 self.state.actions.borrow_mut().push(Action::Launch(payload.to_owned()));
                 Ok(String::new())
             }
@@ -423,119 +427,6 @@ impl NativeHost for Host {
             ))),
         }
     }
-}
-
-fn app_metadata(id: &str) -> (&'static str, &'static str) {
-    match id {
-        "terminal" => ("Terminal", "assets/terminal.png"),
-        "my-computer" => ("我的电脑", "assets/computer.png"),
-        "file-manager" => ("File Manager", "assets/computer.png"),
-        "music-player" => ("Music Player", "assets/speaker.png"),
-        _ => ("Application", "assets/terminal.png"),
-    }
-}
-
-// Installed application bundles. Each `<id>/app.json` is one launchable app;
-// `apps.launch` spawns `/bin/lite-ui --app <id>` against `<APPS_ROOT>/<id>`.
-const APPS_ROOT: &str = "/usr/share/liteos/apps";
-// The desktop bundle ships exactly these icons (see ui/build.mjs). The start
-// menu renders under the desktop role, so `src="assets/<name>"` only resolves
-// against the desktop root — a manifest icon outside this set cannot load, so
-// it is normalized to a shipped name (or the fallback) rather than trusted.
-const DESKTOP_ICON_NAMES: [&str; 5] = [
-    "computer.png",
-    "terminal.png",
-    "documents.png",
-    "trash.png",
-    "speaker.png",
-];
-const FALLBACK_ICON: &str = "assets/terminal.png";
-
-/// On-disk per-app manifest (`<id>/app.json`). Extra fields (entry/style) are
-/// ignored here; only what the launcher chrome needs is deserialized.
-#[derive(Deserialize)]
-struct AppManifest {
-    id: String,
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    icon: Option<String>,
-}
-
-/// The launcher registry entry the desktop React consumes (matches AppMeta in
-/// ui/types/lite.d.ts).
-#[derive(Serialize)]
-struct AppMeta {
-    id: String,
-    name: String,
-    description: String,
-    icon: String,
-}
-
-/// Constrains a manifest icon to an asset the desktop bundle actually ships,
-/// falling back to the terminal icon so the start menu never renders a missing
-/// image (mirrors `app_metadata`'s fallback).
-fn normalize_icon(icon: Option<&str>) -> String {
-    let name = icon
-        .and_then(|value| value.rsplit('/').next())
-        .filter(|name| DESKTOP_ICON_NAMES.contains(name));
-    match name {
-        Some(name) => format!("assets/{name}"),
-        None => FALLBACK_ICON.to_owned(),
-    }
-}
-
-/// Enumerates `<APPS_ROOT>/*/app.json` into the launcher registry. Unreadable
-/// directories, missing/malformed manifests, and ids that fail `valid_app_id`
-/// are skipped rather than fatal, so one bad bundle never blanks the menu.
-/// Results are sorted by id for a deterministic render order.
-fn scan_apps() -> String {
-    let mut apps: Vec<AppMeta> = match std::fs::read_dir(APPS_ROOT) {
-        Ok(entries) => entries
-            .flatten()
-            .filter_map(|entry| {
-                let manifest = std::fs::read_to_string(entry.path().join("app.json")).ok()?;
-                let manifest: AppManifest = serde_json::from_str(&manifest).ok()?;
-                valid_app_id(&manifest.id).then_some(())?;
-                Some(AppMeta {
-                    icon: normalize_icon(manifest.icon.as_deref()),
-                    id: manifest.id,
-                    name: manifest.name,
-                    description: manifest.description,
-                })
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    apps.sort_by(|a, b| a.id.cmp(&b.id));
-    serde_json::to_string(&apps).unwrap_or_else(|_| "[]".to_owned())
-}
-
-fn parse_u32(value: Option<&str>, name: &str) -> Result<u32, EngineError> {
-    value
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
-}
-
-fn parse_u64(value: Option<&str>, name: &str) -> Result<u64, EngineError> {
-    value
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
-}
-
-fn parse_i32(value: Option<&str>, name: &str) -> Result<i32, EngineError> {
-    value
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
-}
-
-fn valid_app_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 63
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 #[cfg(test)]
@@ -697,14 +588,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn manifest_icon_is_constrained_to_shipped_desktop_assets() {
-        // A shipped name survives, path prefixes are stripped to the basename.
-        assert_eq!(super::normalize_icon(Some("assets/speaker.png")), "assets/speaker.png");
-        assert_eq!(super::normalize_icon(Some("speaker.png")), "assets/speaker.png");
-        // Anything the desktop bundle does not ship, or a missing icon, falls
-        // back so the start menu never references an unresolvable image.
-        assert_eq!(super::normalize_icon(Some("assets/custom.png")), super::FALLBACK_ICON);
-        assert_eq!(super::normalize_icon(None), super::FALLBACK_ICON);
-    }
 }

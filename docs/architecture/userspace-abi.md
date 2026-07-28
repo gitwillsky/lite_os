@@ -3,7 +3,7 @@
 ## 当前设计
 
 - kernel 暴露固定 Linux 64-bit asm-generic UAPI 子集。syscall dispatcher 使用共享编号 crate；寄存器调用约定、signal frame、ELF machine/flags/HWCAP 与 architecture-specific query 由编译期静态 userspace ABI backend 提供，未接入编号返回 `ENOSYS`。
-- ELF loader 支持当前声明的 AArch64 与 RV64 ET_EXEC、动态 PIE、PT_INTERP、TLS、RELRO、
+- ELF loader 支持当前声明的 AArch64 与 RV64 静态/动态 ET_EXEC、动态 PIE、PT_INTERP、TLS、RELRO、
   auxv 与 Linux script rewrite；filesystem 只提供 executable source seam，memory 拥有映射
   与 initial stack。AArch64 只接受 `EM_AARCH64`（183），向 auxv 公布 FP 与 ASIMD HWCAP；
   RISC-V 保留既有 ELF flags、HWCAP 与 hwprobe 投影。
@@ -18,6 +18,13 @@
   `ILL_ILLOPC` 与 fault PC (`si_addr`)。caught 且未屏蔽时进入已注册 handler；blocked 或
   `SIG_IGN` 时恢复默认 disposition 并解除屏蔽，默认动作对 PID 1 也不豁免。RISC-V lazy FP
   指令必须先由 architecture backend 激活并原 PC 重试，只有未被该机制消费的指令生成 SIGILL。
+- 用户态 breakpoint 生成可捕获的 forced `SIGTRAP/TRAP_BRKPT`，而不是由 trap layer 直接终止；
+  signal handler 可按标准 machine context 决定恢复位置。
+- Process 的 `ProcessPaths` 在同一锁下保存 cwd 与最终 main ELF 的 VFS opened-entry
+  identity；fork/vfork child 复制 path owner，exec 原子替换 executable。`/proc/<pid>/exe`
+  因此可跟随 rename/unlink 并作为标准 magic link 再打开当前 executable。
+- timerfd 是标准匿名 OFD：`TimerQueue` 独占 clock/setting/deadline index，`TimerFd` 独占未读
+  expiration counter 与 poll/epoll readiness；最后一个 fd/OFD 引用释放时同步撤销 timer record。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、普通 Rust `std`
   binary `audio-service`/`compositor`/`lite-ui`/`terminal-session`、
   `audio-proto`/`quickjs-runtime`/`display-proto`/`linux-uapi` library 和单 ELF
@@ -39,9 +46,18 @@
   而 parent 的其他 Thread 不进入 child graph。多线程 Process 原地 exec 仍未开放。
 - rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；运行时
   `/etc/apk/repositories` 只启用同一稳定分支的 `main` 与 `community`，不接入 edge/testing。
-  BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`，login profile 把
-  `/usr/local/bin` 纳入标准 PATH，使 npm/pnpm 等全局安装的 `#!/usr/bin/env node` 入口可直接执行。
+  BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`；login profile 与图形 Terminal 的
+  PTY 会话都把 `/usr/local/bin` 纳入同一标准 PATH，使 npm/pnpm 等全局安装的
+  `#!/usr/bin/env node` 入口和开发实例中的 Codex 可直接执行。增量用户态同步拥有
+  `/etc/profile`，已有持久镜像不会继续保留旧路径。
+  图形 Terminal 的确定性 PTY 环境还显式发布 `USER=root` 与 `SHELL=/bin/sh`；Claude 等需要
+  user/shell discovery 的原生 CLI 不得依赖被 `env_clear` 移除的宿主环境。
+  BusyBox 同时提供 `add-shell`/`remove-shell`，使 Bash 等 stable APK 的 maintainer script
+  通过标准 `/etc/shells` owner 完成安装。
   应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
+- 固定产品 rootfs 不安装 Codex/Claude。AArch64 持久开发实例通过显式
+  `prepare-agent-development` 消费固定摘要的 Codex musl executable 与 Claude 签名 APK；
+  direct APK transaction 不修改产品 `/etc/apk/repositories`，也不建立 npm/Node 第二路径。
 
 ## Known limits
 

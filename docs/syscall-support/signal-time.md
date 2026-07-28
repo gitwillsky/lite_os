@@ -10,8 +10,8 @@
 | 109 | `timer_getoverrun` | Complete | bounded overrun projection |
 | 110 | `timer_settime` | Complete | absolute/relative deadline |
 | 111 | `timer_delete` | Complete | owner index cleanup |
-| 113 | `clock_gettime` | Partial | realtime、monotonic 与 process/thread CPU clocks |
-| 114 | `clock_getres` | Partial | supported clocks |
+| 113 | `clock_gettime` | Partial | realtime、monotonic、monotonic raw、realtime/monotonic coarse、boottime 与 process/thread CPU clocks |
+| 114 | `clock_getres` | Partial | 上述 supported clocks 的实际 counter/runtime 分辨率 |
 | 115 | `clock_nanosleep` | Partial | supported clocks、absolute/relative wait |
 | 129 | `kill` | Partial | PID/group selectors、permission 与 signal zero |
 | 130 | `tkill` | Complete | Thread-directed generation |

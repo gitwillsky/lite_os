@@ -1,14 +1,22 @@
-use crate::fallible_tree::FallibleMap;
+use alloc::sync::Arc;
+
+use crate::{
+    fallible_tree::FallibleMap,
+    fs::{TimerError, TimerFdBackend, TimerSetting},
+};
 
 mod period;
 mod posix_creation;
 mod preparation;
 mod preparation_policy;
+mod timer_file;
 mod transaction;
 mod transaction_loop;
 use period::next_period;
 use preparation::{PreparedPosixCreate, PreparedPosixReplacement, PreparedRealReplacement};
 use preparation_policy::{TimerReplacementNeeds, posix_deadline_needed, real_replacement_needs};
+use timer_file::TimerFile;
+pub(crate) use timer_file::{TimerFileClock, create_timer_fd};
 use transaction::{TimerTransactionPolicy, execute_timer_transaction};
 use transaction_loop::TimerTransactionCommit;
 
@@ -76,13 +84,7 @@ impl PosixTimer {
 enum TimerIdentity {
     Real(usize),
     Posix(usize, i32),
-}
-
-/// 一个 timer 在 syscall 边界可观察的相对 setting。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TimerSetting {
-    pub(crate) remaining_ns: u64,
-    pub(crate) interval_ns: u64,
+    File(u64),
 }
 
 /// 锁外 signal delivery 所需的完整 POSIX timer 到期值。
@@ -94,24 +96,22 @@ pub(super) struct ExpiredPosixTimer {
     pub(super) overrun: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 pub(super) enum ExpiredTimer {
     Real(usize),
     Posix(ExpiredPosixTimer),
+    File {
+        target: Arc<dyn TimerFdBackend>,
+        elapsed: u64,
+    },
     Silent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TimerError {
-    NotFound,
-    OutOfMemory,
-    Exhausted,
 }
 
 /// ITIMER_REAL、POSIX timer record 与 active deadline index 的唯一复合状态 owner。
 pub(super) struct TimerQueue {
     real_timers: FallibleMap<usize, RealTimer>,
     posix_timers: FallibleMap<(usize, i32), PosixTimer>,
+    timer_files: FallibleMap<u64, TimerFile>,
     // OWNER: 仅本类型在同一 timer lock 下同步 record 与 active deadline membership。
     // 缺失统一 index 会恢复每 tick O(processes+timers) 扫描；分离写入口会漏发或重复 signal。
     deadline_index: FallibleMap<(u64, TimerIdentity), ()>,
@@ -122,6 +122,7 @@ impl TimerQueue {
         Self {
             real_timers: FallibleMap::new(),
             posix_timers: FallibleMap::new(),
+            timer_files: FallibleMap::new(),
             deadline_index: FallibleMap::new(),
         }
     }
@@ -415,6 +416,9 @@ impl TimerQueue {
                         overrun: timer.overrun,
                     }))
                 }
+            }
+            TimerIdentity::File(id) => {
+                Some(self.pop_expired_timer_file(id, expiration, deadline, now_ns))
             }
         }
     }

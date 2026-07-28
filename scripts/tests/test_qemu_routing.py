@@ -129,6 +129,18 @@ class QemuRoutingTests(unittest.TestCase):
         self.assertNotIn("-bios", command)
 
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-aarch64")
+    def test_explicit_noninteractive_memory_is_routed_once(self, _: Mock) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            command = qemu_gate._qemu_command(
+                Path("rootfs.img"),
+                4,
+                memory="6G",
+            )
+
+        self.assertEqual(command.count("-m"), 1)
+        self.assertEqual(argument_after(command, "-m"), "6G")
+
+    @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-aarch64")
     def test_aarch64_tcg_uses_max_cpu(self, _: Mock) -> None:
         with patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "tcg"}, clear=True):
             command = qemu_gate._qemu_command(Path("rootfs.img"), 1)

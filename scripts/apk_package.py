@@ -183,6 +183,68 @@ def _signature_member(control: bytes, private_key: Path, public_key: Path) -> by
     return _gzip(_cut_tar(output.getvalue()))
 
 
+def split_apk_gzip_members(payload: bytes) -> tuple[bytes, ...]:
+    """拆分 APK v2 的连续 gzip members。
+
+    Args:
+        payload: 完整 APK 或签名 APKINDEX bytes。
+
+    Returns:
+        保留原压缩 bytes 的有序 gzip member。
+
+    Raises:
+        RuntimeError: 任一 member 损坏或无法前进。
+    """
+    remaining = payload
+    members = []
+    while remaining:
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        decoder.decompress(remaining)
+        decoder.flush()
+        consumed = len(remaining) - len(decoder.unused_data)
+        if consumed == 0:
+            raise RuntimeError("failed to split APK gzip members")
+        members.append(remaining[:consumed])
+        remaining = decoder.unused_data
+    return tuple(members)
+
+
+def add_apk_signature(
+    source: Path,
+    output: Path,
+    private_key: Path,
+    public_key: Path,
+) -> Path:
+    """给经过外部信任链验证的 unsigned APK control/data 添加本地签名。
+
+    Args:
+        source: 只含 control/data 两个 gzip member 的固定 APK。
+        output: 原子发布的本地签名 APK 路径。
+        private_key: LiteOS repository RSA private key。
+        public_key: Guest trust store 已包含的匹配 public key。
+
+    Returns:
+        signature + 原始 control + 原始 data 组成的新 APK。
+
+    Raises:
+        RuntimeError: source 不是 unsigned APK v2 或签名失败。
+    """
+    payload = source.read_bytes()
+    members = split_apk_gzip_members(payload)
+    if len(members) != 2:
+        raise RuntimeError(f"expected unsigned APK control/data members: {source}")
+    with tarfile.open(fileobj=io.BytesIO(gzip.decompress(members[0])), mode="r:") as archive:
+        names = set(archive.getnames())
+    if ".PKGINFO" not in names or any(name.startswith(".SIGN.") for name in names):
+        raise RuntimeError(f"unsigned APK control member is invalid: {source}")
+    signature = _signature_member(members[0], private_key, public_key)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_suffix(".tmp")
+    temporary.write_bytes(signature + payload)
+    os.replace(temporary, output)
+    return output
+
+
 def build_signed_apk(
     root: Path,
     output: Path,
@@ -205,17 +267,7 @@ def build_signed_apk(
 
 def tamper_signed_apk_control(source: Path, output: Path) -> Path:
     """保持 gzip/tar 有效但修改已签名 control bytes，用于验证 RSA 拒绝路径。"""
-    remaining = source.read_bytes()
-    members: list[bytes] = []
-    while remaining:
-        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
-        decoder.decompress(remaining)
-        decoder.flush()
-        consumed = len(remaining) - len(decoder.unused_data)
-        if consumed == 0:
-            raise RuntimeError(f"failed to split APK gzip members: {source}")
-        members.append(remaining[:consumed])
-        remaining = decoder.unused_data
+    members = split_apk_gzip_members(source.read_bytes())
     if len(members) != 3:
         raise RuntimeError(f"expected three APK v2 members: {source}")
     control = bytearray(gzip.decompress(members[1]))

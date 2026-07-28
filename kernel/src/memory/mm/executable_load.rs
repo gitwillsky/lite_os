@@ -29,7 +29,7 @@ impl MemorySet {
         const INTERPRETER_BASE: usize = 0x2000_0000;
         let main_type = image.main.kind;
         let main_bias = match main_type {
-            ElfKind::Executable if image.interpreter.is_none() => 0,
+            ElfKind::Executable => 0,
             ElfKind::SharedObject if image.interpreter.is_some() => MAIN_PIE_BASE,
             _ => return Err(ElfLoadError::InvalidElf),
         };

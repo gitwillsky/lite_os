@@ -136,6 +136,39 @@ pub(super) fn read_descriptor(
             }
             size as isize
         }
+        OpenFileKind::TimerFd(timer) => {
+            let size = mem::size_of::<u64>();
+            if total_length < size {
+                return -errno::EINVAL;
+            }
+            let mut cursor = UserIoCursor::new(vectors);
+            if cursor.validate_write_prefix(task, size).is_err() {
+                return -errno::EFAULT;
+            }
+            let expirations = loop {
+                match timer.read() {
+                    crate::fs::TimerFdRead::Expirations(value) => break value,
+                    crate::fs::TimerFdRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                        return -errno::EAGAIN;
+                    }
+                    crate::fs::TimerFdRead::Empty => {
+                        match crate::syscall::poll::wait_for_ofd(ofd, 1) {
+                            WaitResult::Woken => {}
+                            WaitResult::Interrupted => return -errno::EINTR,
+                            WaitResult::TimedOut => unreachable!(),
+                            WaitResult::OutOfMemory => return -errno::ENOMEM,
+                        }
+                    }
+                }
+            };
+            if cursor
+                .copy_to_user(task, &expirations.to_ne_bytes())
+                .is_err()
+            {
+                return -errno::EFAULT;
+            }
+            size as isize
+        }
         OpenFileKind::Epoll(_) => unreachable!("epoll read rejected before descriptor dispatch"),
         OpenFileKind::Character(device) => match device {
             CharacterDevice::Null => 0,

@@ -9,7 +9,10 @@
 | 59 | `pipe2` | Complete | byte ring、PIPE_BUF、nonblock/CLOEXEC |
 | 72 | `pselect6` | Complete | fd readiness、deadline 与 signal mask |
 | 73 | `ppoll` | Complete | fd readiness、deadline 与 signal mask |
+| 85 | `timerfd_create` | Complete | realtime、monotonic、boottime 与 NONBLOCK/CLOEXEC |
+| 86 | `timerfd_settime` | Partial | relative/absolute、one-shot/periodic；无 CANCEL_ON_SET |
+| 87 | `timerfd_gettime` | Complete | relative setting snapshot |
 
 ## 已知缺口
 
-System V IPC、POSIX message queue、signalfd、timerfd、splice family 与 io_uring 尚未开放。
+System V IPC、POSIX message queue、signalfd、splice family 与 io_uring 尚未开放。

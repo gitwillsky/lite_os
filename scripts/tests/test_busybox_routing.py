@@ -44,11 +44,42 @@ class BusyBoxRoutingTests(unittest.TestCase):
     def test_login_path_exposes_npm_global_commands(self) -> None:
         module = reload_busybox("aarch64", "hvf")
         profile = (module.ROOT / "user/base/profile").read_text().strip()
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(
+                module, "build_ui_assets", return_value=Path(temporary)
+            ),
+            patch.object(
+                module, "build_audio_service", return_value=Path("audio-service")
+            ),
+            patch.object(module, "build_compositor", return_value=Path("compositor")),
+            patch.object(module, "build_lite_ui", return_value=Path("lite-ui")),
+            patch.object(
+                module, "build_session_launch", return_value=Path("session-launch")
+            ),
+            patch.object(
+                module,
+                "build_terminal_session",
+                return_value=Path("terminal-session"),
+            ),
+        ):
+            artifacts = module.build_graphical_userland(Mock())
 
         self.assertEqual(
             profile,
             "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
+        self.assertIn(
+            module.UserlandArtifact(module.ROOT / "user/base/profile", "/etc/profile"),
+            artifacts,
+        )
+
+    def test_package_script_shell_registry_applets_are_enabled(self) -> None:
+        module = reload_busybox("aarch64", "hvf")
+        config = module.CONFIG_FRAGMENT.read_text().splitlines()
+
+        self.assertIn("CONFIG_ADD_SHELL=y", config)
+        self.assertIn("CONFIG_REMOVE_SHELL=y", config)
 
     def test_riscv64_route_preserves_bootloader_and_build_arch(self) -> None:
         module = reload_busybox("riscv64", "tcg")

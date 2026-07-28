@@ -69,6 +69,18 @@ impl AddressSpace {
 }
 
 impl TaskControlBlock {
+    /// @description 取得当前 Thread 的 context-switch 保存区锁。
+    ///
+    /// @return KernelContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
+    pub(crate) fn kernel_context(&self) -> &Mutex<KernelContext> {
+        &self.thread.kernel_cx
+    }
+
+    /// @description 取得首次 scheduler continuation 完成后进入的 architecture trap-return。
+    pub(in crate::task) fn kernel_resume_target(&self) -> crate::arch::context::KernelResume {
+        self.thread.kernel_trap_return
+    }
+
     /// @description 退休 Thread trap context，并删除非 canonical temporary mapping。
     pub(in crate::task) fn remove_thread_trap_context(&self) {
         let binding = self.thread.user_context.retire();

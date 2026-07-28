@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
@@ -19,6 +20,7 @@
 #include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
+#include <sys/timerfd.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -448,13 +450,41 @@ int main(int argc, char **argv)
     }
     struct timeval direct_time;
     struct timespec realtime;
+    struct timespec monotonic_raw;
+    struct timespec realtime_coarse;
+    struct timespec monotonic_coarse;
+    struct timespec boottime;
     int timezone[2] = { -1, -1 };
     if (syscall(SYS_gettimeofday, &direct_time, timezone) != 0
         || clock_gettime(CLOCK_REALTIME, &realtime) != 0
+        || clock_gettime(CLOCK_MONOTONIC_RAW, &monotonic_raw) != 0
+        || clock_gettime(CLOCK_REALTIME_COARSE, &realtime_coarse) != 0
+        || clock_gettime(CLOCK_MONOTONIC_COARSE, &monotonic_coarse) != 0
+        || clock_gettime(CLOCK_BOOTTIME, &boottime) != 0
         || direct_time.tv_usec < 0 || direct_time.tv_usec >= 1000000
         || realtime.tv_sec < direct_time.tv_sec
         || realtime.tv_sec > direct_time.tv_sec + 1
+        || realtime_coarse.tv_sec == 0
         || timezone[0] != 0 || timezone[1] != 0) {
+        return 5;
+    }
+    int timer = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    struct itimerspec timer_setting = {
+        .it_value = { .tv_nsec = 1000000 },
+    };
+    struct itimerspec timer_snapshot;
+    struct pollfd timer_poll = { .fd = timer, .events = POLLIN };
+    uint64_t expirations = 0;
+    if (timer < 0
+        || timerfd_settime(timer, 0, &timer_setting, NULL) != 0
+        || timerfd_gettime(timer, &timer_snapshot) != 0
+        || timer_snapshot.it_value.tv_sec < 0
+        || timer_snapshot.it_value.tv_nsec < 0
+        || poll(&timer_poll, 1, 2000) != 1
+        || !(timer_poll.revents & POLLIN)
+        || read(timer, &expirations, sizeof(expirations)) != sizeof(expirations)
+        || expirations == 0
+        || close(timer) != 0) {
         return 5;
     }
     struct statfs by_path;

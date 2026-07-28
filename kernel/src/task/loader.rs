@@ -17,6 +17,7 @@ pub(crate) const EXEC_ARGUMENT_BYTES_LIMIT: usize = 128 * 1024;
 /// @description pathname、script rewrite、权限检查与 ELF mapping plan 的完整加载结果。
 pub(crate) struct LoadedExecutable {
     image: ExecutableImage,
+    executable: Arc<OpenedFile>,
     arguments: Vec<Vec<u8>>,
     execfn: Vec<u8>,
     credentials: InodeMetadata,
@@ -51,6 +52,13 @@ impl LoadedExecutable {
     /// @return 不含 NUL 的 immutable pathname bytes。
     pub(super) fn execfn(&self) -> &[u8] {
         &self.execfn
+    }
+
+    /// @description 返回最终 ELF 的稳定 opened-entry identity，供 `/proc/<pid>/exe` 投影。
+    ///
+    /// @return main ELF 对应的 VFS opened entry；script rewrite 已解析到实际 interpreter。
+    pub(super) fn executable(&self) -> Arc<OpenedFile> {
+        self.executable.clone()
     }
 
     pub(super) fn credential_metadata(&self) -> InodeMetadata {
@@ -129,9 +137,10 @@ pub(crate) fn load_executable(
     let execfn = copy_bytes(&path)?;
     let mut current_path = path;
     for rewrite_count in 0..=MAX_SCRIPT_REWRITES {
-        let inode = vfs()
-            .open_at(Some(working_directory.clone()), &current_path, identity)
+        let executable = vfs()
+            .open_file_at(Some(working_directory.clone()), &current_path, identity)
             .map_err(ProgramLoadError::FileSystem)?;
+        let inode = executable.inode();
         let metadata = inode.metadata().map_err(ProgramLoadError::FileSystem)?;
         identity
             .require(metadata, 1)
@@ -151,8 +160,9 @@ pub(crate) fn load_executable(
         let interpreter = interpreter_path
             .map(|path| {
                 let inode = vfs()
-                    .open_at(Some(working_directory.clone()), &path, identity)
-                    .map_err(ProgramLoadError::FileSystem)?;
+                    .open_file_at(Some(working_directory.clone()), &path, identity)
+                    .map_err(ProgramLoadError::FileSystem)?
+                    .inode();
                 identity
                     .require(inode.metadata().map_err(ProgramLoadError::FileSystem)?, 1)
                     .map_err(ProgramLoadError::FileSystem)?;
@@ -161,6 +171,7 @@ pub(crate) fn load_executable(
             .transpose()?;
         return Ok(LoadedExecutable {
             image: ExecutableImage::new(main, interpreter),
+            executable,
             arguments,
             execfn,
             credentials: metadata,

@@ -27,6 +27,7 @@ mod socket;
 mod system_identity;
 mod system_info;
 mod timer;
+mod timerfd;
 mod tty;
 mod user_iovec;
 
@@ -41,6 +42,7 @@ use process_control::sys_prctl;
 use resource_limit::sys_prlimit64;
 use riscv_hwprobe::sys_riscv_hwprobe;
 use syscall_abi::*;
+use timerfd::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
 
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
 pub(crate) const INTERRUPTED_RESULT: isize = -errno::EINTR;
@@ -82,6 +84,11 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             ),
             SYSCALL_GETCWD => sys_get_cwd(args[0] as *mut u8, args[1]),
             SYSCALL_EVENTFD2 => sys_eventfd2(args[0] as u32, args[1] as u32),
+            SYSCALL_TIMERFD_CREATE => sys_timerfd_create(args[0] as i32, args[1] as u32),
+            SYSCALL_TIMERFD_SETTIME => {
+                sys_timerfd_settime(args[0], args[1] as u32, args[2], args[3])
+            }
+            SYSCALL_TIMERFD_GETTIME => sys_timerfd_gettime(args[0], args[1]),
             SYSCALL_DUP => sys_dup(args[0]),
             SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as u32),
             SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as u32, args[2]),

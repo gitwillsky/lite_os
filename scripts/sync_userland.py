@@ -34,6 +34,7 @@ def managed_path(path: str) -> bool:
         "/bin/terminal-session",
         "/etc/inittab",
         "/etc/init.d/graphical-session",
+        "/etc/profile",
         "/etc/terminfo/l/liteos",
     } or path.startswith(("/usr/lib/lite-ui/", "/usr/share/liteos/"))
 

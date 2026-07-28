@@ -8,6 +8,7 @@ mod config;
 mod device_backing;
 mod executable;
 mod frame_allocator;
+mod frame_metadata_layout;
 mod heap_allocator;
 mod kernel_stack;
 mod mm;

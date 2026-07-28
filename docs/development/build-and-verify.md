@@ -10,6 +10,8 @@
 - `PROFILE` 默认 `release`，只接受 `release` 与 `debug`；提交门禁以 release 产物为准。
 - `QEMU_MEMORY` 默认 `2G`，统一控制 `run`、`run-gui` 与 `run-gdb` 的 guest RAM；交互式
   AArch64 runtime gate 使用相同的 2 GiB 产品内存配置。
+- `AGENT_QEMU_MEMORY` 默认 `6G`，只控制 `prepare-agent-development` 的原生 CLI smoke 与
+  `run-agent-development`；不能用 Agent 的重型内存需求放宽产品 2 GiB runtime contract。
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
 - kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture identity，不允许跨目标命中。
 - rootfs 基线从 `assets/music/` 安装预置音乐到 `/root/Music`；该资产进入 rootfs 内容指纹并在写入后
@@ -20,6 +22,10 @@
   `run-gdb` 在 QEMU 启动前离线扩容已有实例并保留内容，较大的实例不会被缩容。缺少该扩容会让
   基线派生的 512 MiB 实例在安装 Node.js 等应用时以 `ENOSPC` 失败；runtime gate 仍消费固定、
   可复现的只读基线，不继承开发容量。
+- `AGENT_FS_IMAGE_SIZE_MIB` 默认 32768 MiB，只由 Agent 开发入口消费。固定 Codex AArch64
+  musl archive、Claude 官方签名 APK、Bash/ripgrep/C++ runtime 与 Git/curl 离线闭包安装到
+  `fs-aarch64.img`；版本、URL、SHA-256、APK metadata、签名 key、package database 与真实
+  `--version` 执行共同决定成功。产品 rootfs 不包含 Agent、Node/npm 或滚动 repository。
 - `sync-userland` 直接构建并离线替换图形会话拥有的 binary、React bundle、app manifest、字体和
   presentation assets；镜像内指纹命中时 no-op。`run` 与 `run-gui` 自动执行它，保留 APK、项目和
   用户数据。Rust 用户态以 target、工具链、sysroot、libunwind 与 link flags 隔离持久 Cargo
@@ -58,12 +64,41 @@ python3 scripts/verify_busybox.py --build-ui-assets-only
 make sync-userland
 make run
 make run-gui
+make prepare-agent-development
+make run-agent-development
 make verify-unit
 make verify-architecture-benchmark
 make verify
 ```
 
 `make verify` 是提交前完整入口；局部门禁用于开发反馈，不能替代完整验证。
+
+## Agent 开发镜像
+
+`make prepare-agent-development` 只支持一等 AArch64 路径。它先把持久开发实例扩到 32 GiB，
+再用 6 GiB Guest RAM 执行离线 APK transaction，安装固定 Codex/Claude、Bash、ripgrep、
+Git 与 curl。已有音乐、项目、认证配置和其他用户数据不由该入口管理；内容身份命中时只回读
+Codex bytes 与 APK database，不重复安装。
+
+```bash
+make prepare-agent-development
+make run-agent-development
+```
+
+进入 Guest 后先注入密钥，不得把密钥写入仓库或 rootfs：
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
+codex login status
+codex exec --sandbox danger-full-access '读取当前仓库并运行最小检查'
+
+export ANTHROPIC_API_KEY='...'
+claude -p '读取当前仓库并运行最小检查'
+```
+
+LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整契约，因此 Agent
+开发镜像不宣称 sandbox 隔离。任何 CLI 首次出现的 `ENOSYS`、fatal trap 或 hang 都必须定位
+第一个 kernel/userspace 契约缺口并补正式 Linux 语义，禁止增加 CLI 专用假成功分支。
 
 ## 单元测试
 
@@ -113,8 +148,10 @@ LiteUI 60 Hz frame gate 是上述“宿主墙钟不作 blocking gate”原则的
 相邻 vblank 间隔，每 512 帧发一行 `compositor: frame-stats` marker（微秒整数 p50/p95/p99 与
 dropped=sequence 间隙）。`scripts/verify_frame_timing.py` 用 QMP `input-send-event` 合成 virtio 输入
 驱动真实 input→compositor→scanout 链路产生帧流，解析该 marker，并按“宽但真实的绝对上限”设阈值、不在文档
-记录本机测量值。dropped==0 基于设备 vblank sequence，与宿主计时无关，是最强的真实信号并严格 gate。此 gate
-只在 AArch64+HVF 承担；RISC-V TCG 依 LiteUI 契约不承担 60 Hz gate，脚本在该目标自跳过。
+记录本机测量值。驱动持续 30 秒且必须收集至少两个完整 512 帧窗口；第一个覆盖启动/聚焦尾部并固定丢弃，
+第二个起才进入稳态裁决，禁止把仅有的 warmup 窗口冒充稳态。dropped==0 基于设备 vblank sequence，
+与宿主计时无关，是最强的真实信号并严格 gate。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 依 LiteUI
+契约不承担 60 Hz gate，脚本在该目标自跳过。
 
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP
@@ -126,6 +163,8 @@ lazy mmap 为 `0 local / 0 remote`；1 MiB、256 页 first-touch 为 `256 local 
 revoke/replace batch 为 `online_cpus - 1` 个 remote target；合并跨度不超过 64 页时执行精确逐页 fence，
 超过 64 页时规范化为 1 次 full fence，防止稀疏 VMA teardown 把跨度页数变成无界指令循环。
 RISC-V release target 继续验证 range `SFENCE.VMA` mechanism。AArch64/HVF 是明确的平台例外：
+动态 TTBR1 kernel-stack retirement 的本地 31 页 range 固定强化为 1 次 `VMALLE1`，
+避免 HVF 保留已经撤销的 global stack translation；
 任一 remote revoke 先执行 full `VMALLE1IS`，再向每颗目标 vCPU 发送 SGI；目标以 barrier
 越过 hypervisor flush point 并发布 generation ack，owner 在全部 ack 完成前不得释放
 frame/page table。kernel-stack retirement 还必须在释放 `KERNEL_SPACE` lock 后等待，

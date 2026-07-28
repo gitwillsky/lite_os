@@ -198,6 +198,10 @@ mod regular_write_policy;
 mod memory;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/memory/frame_metadata_layout.rs"]
+mod frame_metadata_layout;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/memory/mm/file_page_range.rs"]
 mod file_page_range;
 

@@ -99,6 +99,12 @@ pub(crate) struct Terminal {
     // Process handle 的别名。缺失该 identity 会让关闭所有 tty fd 后的 `/proc/pid/stat`
     // 无法继续准确投影 controlling terminal。
     device: DeviceKind,
+    // OWNER: output transaction 串行化同步 write、echo 与 TCSETSW/F drain point。若继续借用
+    // state lock 覆盖 Console callback，PTY readiness 回调会重入 input_ready 并自锁。
+    output_transaction: Mutex<()>,
+    // OWNER: input transaction 串行化 raw→cooked 转换与 TCSETSF discard；缺失时 flush 可与
+    // deferred drain 交错，使调用前输入在新 termios 下重新出现。
+    input_transaction: Mutex<()>,
     state: Mutex<TerminalState>,
 }
 
@@ -120,12 +126,15 @@ impl Terminal {
         termios[8..12].copy_from_slice(&0xbdu32.to_ne_bytes());
         termios[12..16].copy_from_slice(&0x8a3bu32.to_ne_bytes());
         termios[17..24].copy_from_slice(&[3, 28, 127, 21, 4, 0, 1]);
+        termios[25..28].copy_from_slice(&[17, 19, 26]);
         let mut window_size = [0u8; 8];
         window_size[0..2].copy_from_slice(&24u16.to_ne_bytes());
         window_size[2..4].copy_from_slice(&80u16.to_ne_bytes());
         Arc::try_new(Self {
             console,
             device,
+            output_transaction: Mutex::new(()),
+            input_transaction: Mutex::new(()),
             state: Mutex::new(TerminalState {
                 termios,
                 window_size,
@@ -224,11 +233,9 @@ impl Terminal {
     /// @return Console 已同步接收的 input byte 数。
     /// @errors Console adapter 写失败时返回 `IoError`。
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError> {
-        let state = self.state.lock();
-        let result = self.write_synchronous(bytes, state.output_flags());
-        // TCSETSW/TCSETSF 取得同一 state lock 后，所有更早进入的同步 output 必已返回。
-        drop(state);
-        result
+        let _output = self.output_transaction.lock();
+        let output_flags = self.state.lock().output_flags();
+        self.write_synchronous(bytes, output_flags)
     }
 
     fn write_synchronous(&self, bytes: &[u8], output_flags: u32) -> Result<usize, FileSystemError> {
@@ -274,26 +281,30 @@ impl Terminal {
         const ECHOE: u32 = 0x10;
         const ECHONL: u32 = 0x40;
         const ECHOCTL: u32 = 0x200;
+        // 全部 terminal transactions 使用 output→input→state 顺序。Console callback 期间
+        // 不持 state，因此同步 epoll readiness 复查可以安全调用 input_ready。
+        let _output = self.output_transaction.lock();
+        let _input = self.input_transaction.lock();
         let mut signals = 0u64;
         let mut consumed = 0usize;
         let mut raw = [0u8; 128];
         while consumed < TERMINAL_INPUT_BATCH_BYTES {
             let mut echo = [0u8; 512];
-            {
+            let capacity = terminal_input_chunk(consumed, raw.len());
+            let count = self.console.read(&mut raw[..capacity])?;
+            if count == 0 {
+                return Ok(TerminalInputBatch {
+                    signals,
+                    backlog: false,
+                });
+            }
+            assert!(
+                count <= raw.len(),
+                "console returned more bytes than requested"
+            );
+            consumed += count;
+            let (echo_len, output_flags) = {
                 let mut state = self.state.lock();
-                let capacity = terminal_input_chunk(consumed, raw.len());
-                let count = self.console.read(&mut raw[..capacity])?;
-                if count == 0 {
-                    return Ok(TerminalInputBatch {
-                        signals,
-                        backlog: false,
-                    });
-                }
-                assert!(
-                    count <= raw.len(),
-                    "console returned more bytes than requested"
-                );
-                consumed += count;
                 let mut echo_len = 0;
                 for mut byte in raw[..count].iter().copied() {
                     let input_flags = state.input_flags();
@@ -379,11 +390,11 @@ impl Terminal {
                         echo_len += 1;
                     }
                 }
-                if echo_len != 0
-                    && self.write_synchronous(&echo[..echo_len], state.output_flags())? != echo_len
-                {
-                    return Err(FileSystemError::IoError);
-                }
+                (echo_len, state.output_flags())
+            };
+            if echo_len != 0 && self.write_synchronous(&echo[..echo_len], output_flags)? != echo_len
+            {
+                return Err(FileSystemError::IoError);
             }
         }
         Ok(TerminalInputBatch {
@@ -437,6 +448,7 @@ impl Terminal {
     /// @param termios 完整 Linux kernel termios layout。
     /// @return 无返回值；Console::write 返回后 Terminal 不保留待发送 output，因此无需等待队列。
     pub(crate) fn set_termios_after_output(&self, termios: [u8; KERNEL_TERMIOS_SIZE]) {
+        let _output = self.output_transaction.lock();
         self.state.lock().termios = termios;
     }
 
@@ -444,10 +456,12 @@ impl Terminal {
     /// @param termios 完整 Linux kernel termios layout。
     /// @return 无返回值；termios 已应用且所有调用前 pending input 已不可见。
     pub(crate) fn flush_input_and_set_termios(&self, termios: [u8; KERNEL_TERMIOS_SIZE]) {
-        // 与 drain_input 使用同一 Terminal→Console lock order，使 raw dequeue、cooked publication
-        // 与本次 flush 可以线性化；缺失该顺序会让已经从 raw ring 取出的旧字节越过 TCSETSF。
-        let mut state = self.state.lock();
+        let _output = self.output_transaction.lock();
+        let _input = self.input_transaction.lock();
+        // Console discard 可同步触发 readiness callback；此处不得持 state，否则 callback 中的
+        // input_ready 会重入同一锁。input transaction 仍保证 raw/cooked flush 单点线性化。
         let raw = self.console.discard_input();
+        let mut state = self.state.lock();
         let TerminalState {
             input_head,
             input_len,

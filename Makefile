@@ -43,13 +43,17 @@ FS_IMAGE := fs-$(ARCH).img
 APK_APPS_IMAGE := target/apk-apps/$(ARCH).img
 # FS_IMAGE_SIZE_MIB 只控制可持续修改的开发实例；缺少扩容会让 GUI 内安装 Node.js 等应用时 ENOSPC。
 FS_IMAGE_SIZE_MIB ?= 8192
+# Agent 开发实例独立扩到 32 GiB；产品 rootfs/runtime gates 不继承开发工具容量。
+AGENT_FS_IMAGE_SIZE_MIB ?= 32768
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs sync-userland build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-audio verify-runtime-frame-timing verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs sync-userland prepare-agent-development run-agent-development build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-audio verify-runtime-frame-timing verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
 
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
 QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
 QEMU_MEMORY ?= 2G
+# Codex/Claude 与 Guest 内编译共享该开发 RAM；缺少独立值会把产品 2 GiB 门禁误改为重型配置。
+AGENT_QEMU_MEMORY ?= 6G
 QEMU_SMP ?= $(shell python3 scripts/host_topology.py)
 
 ifeq ($(ARCH),aarch64)
@@ -105,6 +109,18 @@ prepare-rootfs: $(FS_IMAGE)
 # 图形用户态按内容增量替换；镜像内软件、项目和用户数据不属于该清单。
 sync-userland: build-musl prepare-rootfs
 	python3 scripts/sync_userland.py --image "$(FS_IMAGE)"
+
+# Agent CLI 只进入持久 AArch64 开发实例；固定产品 rootfs 与跨架构 runtime gates 不安装这些工具。
+prepare-agent-development:
+	@if [ "$(ARCH)" != "aarch64" ]; then \
+		echo "Agent development currently supports only ARCH=aarch64"; \
+		exit 1; \
+	fi
+	$(MAKE) FS_IMAGE_SIZE_MIB=$(AGENT_FS_IMAGE_SIZE_MIB) build-kernel build-bootloader sync-userland
+	python3 scripts/prepare_agent_development.py --image "$(FS_IMAGE)" --size-mib "$(AGENT_FS_IMAGE_SIZE_MIB)" --qemu-memory "$(AGENT_QEMU_MEMORY)"
+
+run-agent-development: prepare-agent-development
+	$(MAKE) FS_IMAGE_SIZE_MIB=$(AGENT_FS_IMAGE_SIZE_MIB) QEMU_MEMORY=$(AGENT_QEMU_MEMORY) run-gui
 
 build-apk-apps: build-kernel build-bootloader build-rootfs
 	python3 scripts/verify_apk_apps.py --build-only --image $(ROOTFS_IMAGE) --output $(APK_APPS_IMAGE)

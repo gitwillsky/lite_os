@@ -1247,6 +1247,7 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
         UserlandArtifact(build_session_launch(musl), "/bin/session-launch", 0o755),
         UserlandArtifact(build_terminal_session(musl), "/bin/terminal-session", 0o755),
         UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
+        UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
         UserlandArtifact(
             ROOT / "user/base/graphical-session",
             "/etc/init.d/graphical-session",
@@ -1429,8 +1430,6 @@ def create_image(
         "mkdir /var/lib/liteos/audio",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
-        f"write {ROOT / 'user' / 'base' / 'profile'} /etc/profile",
-        "set_inode_field /etc/profile mode 0100644",
         f"write {BUNDLED_MUSIC_SOURCE} {BUNDLED_MUSIC_DESTINATION}",
         f"set_inode_field {BUNDLED_MUSIC_DESTINATION} mode 0100644",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
