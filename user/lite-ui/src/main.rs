@@ -1,6 +1,7 @@
 //! Generic LiteUI host: one process, one QuickJS VM, one React root and one top-level surface.
 
 mod audio;
+mod color;
 mod display;
 mod font;
 mod host;

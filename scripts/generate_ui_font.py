@@ -1,30 +1,35 @@
 #!/usr/bin/env python3
-"""Generate the checked LiteOS UI proportional A8 atlas from pinned Noto Sans CJK SC faces.
+"""Generate the checked LiteOS UI proportional OpenType faces from pinned Noto Sans CJK SC sources.
 
 Run with the pinned host interpreter: target/fontenv/bin/python scripts/generate_ui_font.py
-Normal builds consume the checked atlas and need neither Pillow nor the OTF sources.
+Normal builds consume the checked faces and need neither fontTools nor the OTF sources.
+
+The desktop renderer rasterizes glyphs at runtime (parley shaping + swash), so
+the product asset is the subsetted font itself, not a pre-rendered atlas. Each
+face keeps its CFF outlines (`.otf` sfnt version) and is subset to the UI glyph
+contract so the CJK table set stays inside the desktop asset budget.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import struct
 import urllib.request
 from pathlib import Path
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from fontTools import subset
+    from fontTools.ttLib import TTFont
 except ModuleNotFoundError as error:
-    raise SystemExit("regen-ui-font requires Pillow; normal builds consume the checked atlas") from error
+    raise SystemExit("regen-ui-font requires fontTools; normal builds consume the checked faces") from error
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "target/font-cache"
 REGULAR = CACHE / "NotoSansCJKsc-Regular.otf"
 BOLD = CACHE / "NotoSansCJKsc-Bold.otf"
-OUTPUT = ROOT / "assets/fonts/liteos-ui.a8p"
-MAGIC = b"LUP8\0\0\0\x01"
+REGULAR_OUTPUT = ROOT / "assets/fonts/liteos-ui-regular.otf"
+BOLD_OUTPUT = ROOT / "assets/fonts/liteos-ui-bold.otf"
 # SHA-256 of the pinned notofonts/noto-cjk main OTF sources, measured at fetch time.
 REGULAR_SHA256 = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b"
 BOLD_SHA256 = "b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a"
@@ -36,16 +41,14 @@ BOLD_URL = (
     "https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
     "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf"
 )
-# face_kind 0 = regular, 1 = bold。每档 face 显式列出（kind, 字体文件, URL, sha256, pixel_size）：
-# 档位对齐 XP SP3 1× 字号（×2 缩放）：regular22 = 任务栏 / 菜单 11px，
-# bold24 = 标题栏 12px，bold28 = 开始按钮 / 菜单用户名 14px。
+# (字体文件, URL, sha256, 输出)。regular 承担正文/菜单，bold 承担标题栏/强调；
+# font-weight 中间档由 fontique 按 CSS Fonts 匹配规则回落到这两档之一。
 FACES = (
-    (0, REGULAR, REGULAR_URL, REGULAR_SHA256, 22),
-    (1, BOLD, BOLD_URL, BOLD_SHA256, 24),
-    (1, BOLD, BOLD_URL, BOLD_SHA256, 28),
+    (REGULAR, REGULAR_URL, REGULAR_SHA256, REGULAR_OUTPUT),
+    (BOLD, BOLD_URL, BOLD_SHA256, BOLD_OUTPUT),
 )
-# Desktop asset budget; exceeding it means the glyph set or sizes must shrink.
-MAX_BYTES = 11 * 1024 * 1024
+# Desktop asset budget per face; exceeding it means the glyph set must shrink.
+MAX_BYTES = 2 * 1024 * 1024
 
 
 def sha256(path: Path) -> str:
@@ -95,114 +98,72 @@ def codepoints() -> list[int]:
     return sorted(values)
 
 
-def render_face(path: Path, pixel_size: int, glyphs: list[int]) -> tuple[bytes, int, int, int, int]:
-    """Rasterize one proportional face as tightly packed row-major A8 glyphs.
+def subset_face(source: Path, output: Path, glyphs: list[int]) -> None:
+    """Subset one pinned OTF to the UI glyph contract, keeping CFF outlines.
 
-    Anchor "ls" places the origin at the left baseline, so a consumer blits the
-    bitmap at (pen_x + xoff, baseline_y + yoff) and advances by `advance`.
-    Returns (payload, ascent, descent, empty_bitmaps, bitmap_bytes).
+    Hinting is dropped: the renderer rasterizes at arbitrary sizes where CFF
+    stems at 11-14 logical px gain little, and the hint table is a large share
+    of the CJK charstrings. The name and OS/2 tables stay intact so fontique
+    reads the family name and weight class for CSS matching.
     """
-    font = ImageFont.truetype(path, pixel_size, layout_engine=ImageFont.Layout.BASIC)
-    ascent, descent = font.getmetrics()
-    payload = bytearray()
-    empty = 0
-    bitmap_bytes = 0
-    for codepoint in glyphs:
-        char = chr(codepoint)
-        advance = int(round(font.getlength(char)))
-        x0, y0, x1, y1 = font.getbbox(char, anchor="ls")
-        width = max(0, x1 - x0)
-        height = max(0, y1 - y0)
-        payload.extend(struct.pack("<hhhHH", advance, x0, y0, width, height))
-        if width == 0 or height == 0:
-            empty += 1
-            continue
-        image = Image.new("L", (width, height), 0)
-        ImageDraw.Draw(image).text((-x0, -y0), char, font=font, fill=255, anchor="ls")
-        payload.extend(image.tobytes())
-        bitmap_bytes += width * height
-    return bytes(payload), ascent, descent, empty, bitmap_bytes
-
-
-def generate(output: Path) -> None:
-    """Write one transactional atlas consumed directly by the desktop."""
-    for _, path, url, expected, _ in FACES:
-        ensure_font(path, url, expected)
-    glyphs = codepoints()
-    payload = bytearray()
-    payload.extend(MAGIC)
-    payload.extend(struct.pack("<I", len(FACES)))
-    payload.extend(struct.pack("<I", len(glyphs)))
-    payload.extend(b"".join(struct.pack("<I", value) for value in glyphs))
-    for face_kind, path, _, _, pixel_size in FACES:
-        face, ascent, descent, empty, bitmap_bytes = render_face(path, pixel_size, glyphs)
-        payload.extend(struct.pack("<IIii", face_kind, pixel_size, ascent, descent))
-        payload.extend(face)
-        print(
-            f"face kind={face_kind} size={pixel_size}px: ascent={ascent} descent={descent}, "
-            f"{len(glyphs)} glyphs ({empty} empty bitmaps), {bitmap_bytes} bitmap bytes"
-        )
-    if len(payload) > MAX_BYTES:
-        raise RuntimeError(f"UI atlas exceeds {MAX_BYTES} byte budget: {len(payload)} bytes")
+    options = subset.Options()
+    options.hinting = False
+    options.name_IDs = ["*"]
+    font = subset.load_font(str(source), options)
+    subsetter = subset.Subsetter(options)
+    subsetter.populate(unicodes=glyphs)
+    subsetter.subset(font)
     temporary = output.with_suffix(output.suffix + ".tmp")
-    temporary.write_bytes(bytes(payload))
+    font.save(temporary)
+    if temporary.stat().st_size > MAX_BYTES:
+        temporary.unlink()
+        raise RuntimeError(f"{output.name} exceeds {MAX_BYTES} byte budget: {temporary.stat().st_size} bytes")
     temporary.replace(output)
     print(
-        f"generated {output.relative_to(ROOT)}: {len(glyphs)} glyphs, "
-        f"{len(payload)} bytes, sha256={hashlib.sha256(bytes(payload)).hexdigest()}"
+        f"generated {output.relative_to(ROOT)}: {len(glyphs)} codepoints, "
+        f"{output.stat().st_size} bytes, sha256={sha256(output)}"
     )
 
 
+def generate() -> None:
+    """Write both transactional faces consumed directly by the desktop."""
+    for path, url, expected, output in FACES:
+        ensure_font(path, url, expected)
+        subset_face(path, output, codepoints())
+
+
 def verify(path: Path) -> None:
-    """Reparse a generated atlas and check its structural invariants."""
-    data = path.read_bytes()
-    if data[:8] != MAGIC:
-        raise RuntimeError(f"bad magic: {data[:8]!r}")
-    face_count, glyph_count = struct.unpack_from("<II", data, 8)
-    offset = 16
-    glyphs = [value[0] for value in struct.iter_unpack("<I", data[offset : offset + glyph_count * 4])]
-    if any(a >= b for a, b in zip(glyphs, glyphs[1:])):
-        raise RuntimeError("glyph table is not strictly increasing")
-    if 0xFFFD not in glyphs:
-        raise RuntimeError("U+FFFD fallback is missing from the glyph table")
-    offset += glyph_count * 4
-    index = {value: position for position, value in enumerate(glyphs)}
-    samples = [index[value] for value in (0x4E2D, 0x6587, 0x684C, 0x9762, 0xFFFD)]
-    nonempty = 0
-    for face in range(face_count):
-        face_kind, pixel_size, ascent, descent = struct.unpack_from("<IIii", data, offset)
-        offset += 16
-        if face_kind not in (0, 1):
-            raise RuntimeError(f"face {face}: bad kind {face_kind}")
-        if ascent <= 0 or descent < 0:
-            raise RuntimeError(f"face {face}: bad metrics ascent={ascent} descent={descent}")
-        for glyph in range(glyph_count):
-            advance, xoff, yoff, width, height = struct.unpack_from("<hhhHH", data, offset)
-            offset += 10 + width * height
-            if offset > len(data):
-                raise RuntimeError(f"face {face} glyph {glyph}: record runs past end of file")
-            if glyph in samples and width * height > 0:
-                nonempty += 1
-        print(f"verified face kind={face_kind} size={pixel_size}px: ascent={ascent} descent={descent}")
-    if offset != len(data):
-        raise RuntimeError(f"trailing bytes: parsed {offset}, file is {len(data)}")
-    if nonempty != len(samples) * face_count:
-        raise RuntimeError(f"sample bitmaps missing: {nonempty} of {len(samples) * face_count} nonempty")
+    """Reparse a generated face and check its structural invariants."""
+    font = TTFont(path, lazy=True)
+    if font.sfntVersion != "OTTO":
+        raise RuntimeError(f"expected CFF OpenType (OTTO), got {font.sfntVersion!r}")
+    cmap = font.getBestCmap()
+    # U+FFFD has no cmap entry in the Noto sources; the renderer shapes it to
+    # the font's .notdef box, which is the intended fallback glyph anyway.
+    for sample in (0x20, 0x4E2D, 0x6587, 0x684C, 0x9762, 0x2026):
+        if sample not in cmap:
+            raise RuntimeError(f"U+{sample:04X} is missing from the cmap")
+    weight = font["OS/2"].usWeightClass
+    family = font["name"].getDebugName(16) or font["name"].getDebugName(1)
+    if not family:
+        raise RuntimeError("family name is missing from the name table")
+    glyph_count = len(font.getGlyphOrder())
     print(
-        f"verified {path.relative_to(ROOT)}: {face_count} faces, {glyph_count} glyphs, "
-        f"{len(data)} bytes, sampled bitmaps nonempty"
+        f"verified {path.relative_to(ROOT)}: family={family!r} weight={weight}, "
+        f"{glyph_count} glyphs, {path.stat().st_size} bytes"
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=OUTPUT)
-    parser.add_argument("--verify", action="store_true", help="reparse and check the atlas instead of generating")
+    parser.add_argument("--output", type=Path, default=None, help="unused legacy argument")
+    parser.add_argument("--verify", action="store_true", help="reparse and check both faces instead of generating")
     arguments = parser.parse_args()
     if arguments.verify:
-        verify(arguments.output)
+        verify(REGULAR_OUTPUT)
+        verify(BOLD_OUTPUT)
     else:
-        generate(arguments.output)
+        generate()
 
 
 if __name__ == "__main__":

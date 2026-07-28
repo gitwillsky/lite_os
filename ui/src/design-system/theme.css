@@ -169,6 +169,7 @@
   gap: 7px;
   border: 2px outset #dfdfdf;
   background: #d4d0c8;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
   color: #000000;
 }
 .tray-volume__title {
@@ -315,6 +316,7 @@
   border-bottom: 2px solid #404040;
   border-radius: 0;
   background: #d4d0c8;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
   overflow: hidden;
 }
 .context-menu {
@@ -330,6 +332,7 @@
   border-bottom: 2px solid #404040;
   border-radius: 0;
   background: #d4d0c8;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
 }
 .start-menu__rail {
   width: 22px;

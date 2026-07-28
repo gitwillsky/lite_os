@@ -22,10 +22,12 @@ linux-uapi = { path = "linux-uapi" }
 quickjs-runtime = { path = "quickjs-runtime" }
 cssparser = "=0.37.0"
 parley = { version = "=0.11.0", default-features = false, features = ["std"] }
+# parley 0.11 dropped its swash raster feature (fontique/harfrust are built in);
+# swash 0.2 is a direct dependency for A8 glyph rasterization from raw TTF bytes.
+swash = { version = "=0.2.5", default-features = false, features = ["std", "scale", "render"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 taffy = "=0.12.2"
-tiny-skia = "=0.12.0"
 symphonia = { version = "=0.6.0", default-features = false, features = ["all", "opt-simd-neon"] }
 
 [profile.dev]

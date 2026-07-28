@@ -7,9 +7,10 @@
 
 use std::{fs, io};
 
-use linux_uapi::drm::SharedDumbBuffer;
-
-use crate::{renderer::PhysicalRect, style::Computed};
+use crate::{
+    renderer::{PhysicalRect, Raster},
+    style::Computed,
+};
 
 const PATH: &str = "/usr/share/liteos/liteos-terminal.a8";
 const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x02";
@@ -77,11 +78,11 @@ impl TerminalFont {
     ///
     /// Cell `i` always lands at `bounds.x1 + i * CELL_WIDTH` regardless of the
     /// glyph's ink width: the terminal grid is the layout contract, unlike the
-    /// proportional UI atlas whose pen advances per glyph. `font-weight: bold`
-    /// selects the atlas's second face, mirroring the UI atlas bold routing.
-    pub fn draw(
+    /// proportional UI font whose pen advances per glyph. `font-weight: bold`
+    /// selects the atlas's second face, mirroring the UI font bold routing.
+    pub fn draw<R: Raster>(
         &self,
-        target: &mut SharedDumbBuffer,
+        target: &mut R,
         bounds: PhysicalRect,
         // Terminal content is the app root, never nested in an overflow
         // container; the clip is accepted for call-site symmetry with `Font`.

@@ -68,8 +68,17 @@
 - CSS 是严格标准子集：type/class/id/descendant/child selector，hover/active/focus/disabled，specificity、
   inheritance、variables、box、Flexbox、标准 margin 长度/百分比/`auto`、absolute、gap、min/max、
   background、border、radius、shadow、opacity、clip、z-index、text、`white-space`、overflow 与
-  `pointer-events`。不支持 Grid、float、table、
-  pseudo-element、media query、filter、transition、CSS animation 或 vendor prefix；不支持项构建失败。
+  `pointer-events`。颜色经 cssparser 解析，支持 hex、`rgb()`/`hsl()`（legacy 与现代语法）、完整命名色与
+  `transparent`（`currentColor` 不支持）。`border-style` 支持 solid/dotted/dashed 与双色斜面
+  outset/inset/groove/ridge/double（亮/暗色由 border-color 按 UA 固定系数推导）。`box-shadow` 支持
+  多层、spread 与 inset。`background` 支持 color/image/repeat/position/size 及简写（不认识的
+  origin/clip/`fixed` token 忽略）；url 背景默认 intrinsic 尺寸 + repeat，`<img>` 仍拉伸填满。
+  `linear-gradient` 支持任意角度（对角 `to *` 关键字映射 45° 家族）。`opacity` 是 group 语义：
+  子树先离屏合成再整体按 alpha 混合。`pointer-events: none` 关闭整个子树的 hit/scroll 注册，
+  不支持后代用 `auto` 重新开启。`box-sizing` 支持 `content-box`/`border-box`，但 UA 默认是
+  `border-box`（偏离 Web 初始值 `content-box`），theme.css 全部按 border-box 编写。不支持 Grid、
+  float、table、pseudo-element、media query、filter、transition、CSS animation 或 vendor prefix；
+  不支持项构建失败。
 - React host instance 在完整 snapshot 中携带稳定 node id；LiteUI renderer 以该 id 独占 CSS scroll
   offset，并让 hover/pointer capture 在 snapshot 重建后继续解析同一元素的最新 listener。
   `overflow: auto/scroll` 形成通用双轴 scroll container，renderer 根据 layout content extent
@@ -77,15 +86,19 @@
   到达边界后向 ancestor 链式传播，应用无需保存私有 `scrollTop`。
 - layout 使用逻辑 CSS px，固定 `deviceScaleFactor=2`；默认 3008x1692 mode 对应 1504x846 viewport。
   LiteUI 是 logical/physical conversion 的唯一 owner。最终 box edge 从绝对逻辑坐标独立 snap 到物理像素。
-- text 由 Parley shaping/layout，generic `monospace` 使用 JetBrains Mono 固定单格 advance；宽字符占两格，
-  combining grapheme 附着前格，Noto CJK fallback 不改变 advance。字体只允许固定 sans-serif/monospace
-  normal/bold。字形 cache 有界并使用 grayscale antialiasing。
+- text 由 Parley shaping/layout、swash 运行时栅格化：任意 `font-size` px 生效，`font-weight` 数值按
+  CSS Fonts 匹配映射到 subsetted Noto Sans regular/bold（`assets/fonts/liteos-ui-{regular,bold}.otf`，
+  4111 codepoint，由 `scripts/generate_ui_font.py` 生成并发布到 `/usr/share/liteos/`）；
+  `line-height` 支持 px/倍数/百分比，`white-space: normal/pre-wrap` 经 Parley line breaking 真换行。
+  generic `monospace` 使用 JetBrains Mono 固定单格 advance；宽字符占两格，combining grapheme 附着前格。
+  字形 cache 有界（LRU）并使用 grayscale antialiasing。
 - `<image>` 与 background 只接受 app-relative PNG 或 host 发出的 opaque `ImageSource`；路径必须在
   `assets/` 内且不能包含 `..`。SVG/JPEG/WebP 在 host build 转为 PNG；target 无网络、data URL 或动画图。
 - `lite:fs.open(path)` 返回 filesystem-backed 标准 `File`；`URL.createObjectURL(file)` 只发布当前
   process 内 opaque `blob:` source。`<audio>` 只接受 app-relative resource 与该 `blob:` source，
   不接受 ambient `file:` path、network/data URL 或私有 path-play API。
-- raster 唯一使用 CPU tiny-skia，不建立 GPU backend abstraction。3D app 绕过 LiteUI。
+- raster 唯一使用 CPU（盒/边框为手绘 scanline，字形为 swash A8），不建立 GPU backend abstraction。
+  3D app 绕过 LiteUI。
 
 ## 应用与构建
 

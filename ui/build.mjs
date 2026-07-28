@@ -93,12 +93,13 @@ const reactSystemPlugin = {
 };
 
 const properties = new Set([
-  "align-items", "background", "background-image", "border", "border-bottom", "border-color",
+  "align-items", "background", "background-color", "background-image", "background-position",
+  "background-repeat", "background-size", "border", "border-bottom", "border-color",
   "border-bottom-color", "border-bottom-style", "border-bottom-width", "border-left",
   "border-left-color", "border-left-style", "border-left-width", "border-radius", "border-right",
   "border-right-color", "border-right-style", "border-right-width", "border-style", "border-top",
   "border-top-color", "border-top-style", "border-top-width", "border-width",
-  "bottom", "box-shadow", "color", "display", "flex", "flex-direction", "flex-wrap",
+  "bottom", "box-shadow", "box-sizing", "color", "display", "flex", "flex-direction", "flex-wrap",
   "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
   "left", "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top",
   "max-height", "max-width", "min-height",

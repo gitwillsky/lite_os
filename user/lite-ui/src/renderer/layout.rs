@@ -1,19 +1,33 @@
 //! CSS-to-taffy style lowering for the React host snapshot.
 
 mod margin;
+mod overflow;
 
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, FlexWrap, JustifyContent, LengthPercentage,
-    LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
+    AlignItems, BoxSizing, Dimension, Display, FlexDirection, FlexWrap, JustifyContent,
+    LengthPercentage, LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
 };
-use taffy::{Overflow, Point};
+use taffy::Point;
 
 use crate::{style::Computed, terminal_font::CELL_WIDTH, tree::Node};
 
 use super::SCALE;
 use margin::{edges as margin_edges, single as margin_value};
+pub(crate) use overflow::{OverflowMode, overflow_modes};
 
-pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<f32>) -> Style {
+/// Measure context attached to a proportional text leaf's taffy node.
+///
+/// taffy calls back with the inline constraint during layout; the callback in
+/// `Renderer::render_filtered` shapes the text with parley at that width and
+/// reports the wrapped intrinsic size (`Font::measure_text`). The computed
+/// style travels with the text because taffy's measure callback receives no
+/// node state beyond this context.
+pub(crate) struct TextMeasure {
+    pub(crate) text: String,
+    pub(crate) computed: Computed,
+}
+
+pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
     // Only text leaves size from their glyphs. Containers must stay auto-sized:
     // a descendant-text width here would override block stretch, flex grow/shrink
     // and absolute inset resolution with a bogus definite size. 容器 span（含元素
@@ -23,30 +37,32 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
     } else {
         String::new()
     };
-    let font_size = computed.px("font-size", 11.0);
-    let line_height = computed.px("line-height", font_size * 1.25);
-    let preserves_lines = computed.get("white-space") == Some("pre");
-    let columns = if preserves_lines {
-        text.split('\n')
-            .map(|line| line.chars().count())
-            .max()
-            .unwrap_or(0) as f32
+    // Monospace rows measure exactly one terminal cell per character and keep
+    // their fixed intrinsic size. Proportional text leaves carry no definite
+    // size here: the taffy measure callback sizes them from a parley layout
+    // under the real inline constraint, which is what makes line wrapping
+    // (`white-space: normal`/`pre-wrap`) size the box correctly.
+    let monospace_text = !text.is_empty() && computed.get("font-family") == Some("monospace");
+    let (intrinsic_width, intrinsic_height) = if monospace_text {
+        let font_size = computed.px("font-size", 11.0);
+        let line_height = computed.px("line-height", font_size * 1.25);
+        let preserves_lines = computed.get("white-space") == Some("pre");
+        let columns = if preserves_lines {
+            text.split('\n')
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0) as f32
+        } else {
+            text.chars().count() as f32
+        };
+        let height = if preserves_lines {
+            text.split('\n').count() as f32 * line_height
+        } else {
+            line_height
+        };
+        (columns * (CELL_WIDTH as f32 / SCALE), height)
     } else {
-        text.chars().count() as f32
-    };
-    // Monospace rows measure exactly one terminal cell per character. The
-    // proportional UI face uses the real summed glyph advances the rasterizer
-    // will use (`measured_width`), falling back to an average-glyph estimate
-    // only when no measurer is supplied (e.g. unit tests).
-    let intrinsic_width = if computed.get("font-family") == Some("monospace") {
-        columns * (CELL_WIDTH as f32 / SCALE)
-    } else {
-        measured_width.unwrap_or(columns * font_size * 0.58)
-    };
-    let intrinsic_height = if preserves_lines {
-        text.split('\n').count() as f32 * line_height
-    } else {
-        line_height
+        (0.0, 0.0)
     };
     let (overflow_x, overflow_y) = overflow_modes(computed);
     let mut style = Style {
@@ -81,11 +97,11 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
             width: computed
                 .get("width")
                 .and_then(dimension)
-                .unwrap_or_else(|| intrinsic(text.is_empty(), intrinsic_width)),
+                .unwrap_or_else(|| intrinsic(!monospace_text, intrinsic_width)),
             height: computed
                 .get("height")
                 .and_then(dimension)
-                .unwrap_or_else(|| intrinsic(text.is_empty(), intrinsic_height)),
+                .unwrap_or_else(|| intrinsic(!monospace_text, intrinsic_height)),
         },
         min_size: Size {
             width: computed
@@ -116,6 +132,14 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
         overflow: Point {
             x: overflow_x.taffy(),
             y: overflow_y.taffy(),
+        },
+        // LiteUI's UA default is `border-box` — a deliberate deviation from the
+        // Web initial `content-box`, because theme.css is written against
+        // border-box sizing (recorded in docs/architecture/lite-ui.md). An
+        // explicit `content-box` opts a node into Web sizing.
+        box_sizing: match computed.get("box-sizing") {
+            Some("content-box") => BoxSizing::ContentBox,
+            _ => BoxSizing::BorderBox,
         },
         // LiteUI paints overlay scrollbars after layout, so they do not consume
         // content-box space. Without the overflow modes above, however, Taffy
@@ -199,77 +223,6 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed, measured_width: Option<
         style.flex_basis = Dimension::length(0.0);
     }
     style
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum OverflowMode {
-    Visible,
-    Clip,
-    Hidden,
-    Auto,
-    Scroll,
-}
-
-impl OverflowMode {
-    pub(super) fn clips(self) -> bool {
-        self != Self::Visible
-    }
-
-    pub(super) fn scrolls(self) -> bool {
-        matches!(self, Self::Auto | Self::Scroll)
-    }
-
-    fn taffy(self) -> Overflow {
-        match self {
-            Self::Visible => Overflow::Visible,
-            Self::Clip => Overflow::Clip,
-            Self::Hidden => Overflow::Hidden,
-            Self::Auto | Self::Scroll => Overflow::Scroll,
-        }
-    }
-}
-
-pub(super) fn overflow_modes(computed: &Computed) -> (OverflowMode, OverflowMode) {
-    let mut shorthand = computed
-        .get("overflow")
-        .unwrap_or("visible")
-        .split_whitespace();
-    let first = shorthand.next().unwrap_or("visible");
-    let second = shorthand.next().unwrap_or(first);
-    let mut x = computed.get("overflow-x").unwrap_or(first);
-    let mut y = computed.get("overflow-y").unwrap_or(second);
-
-    // CSS Overflow 3 computes a visible axis to auto (and clip to hidden) when
-    // the other axis establishes a scroll container. Missing this coupling
-    // lets one axis leak out of a container that is scrollable on the other.
-    let x_contained = !matches!(x, "visible" | "clip");
-    let y_contained = !matches!(y, "visible" | "clip");
-    if y_contained {
-        x = match x {
-            "visible" => "auto",
-            "clip" => "hidden",
-            value => value,
-        };
-    }
-    if x_contained {
-        y = match y {
-            "visible" => "auto",
-            "clip" => "hidden",
-            value => value,
-        };
-    }
-
-    (overflow_mode(x), overflow_mode(y))
-}
-
-fn overflow_mode(value: &str) -> OverflowMode {
-    match value {
-        "clip" => OverflowMode::Clip,
-        "hidden" => OverflowMode::Hidden,
-        "auto" => OverflowMode::Auto,
-        "scroll" => OverflowMode::Scroll,
-        _ => OverflowMode::Visible,
-    }
 }
 
 fn intrinsic(empty: bool, value: f32) -> Dimension {
@@ -407,7 +360,7 @@ mod tests {
         };
         let computed = sheet.compute(&node, &[]);
 
-        let style = to_taffy(&node, &computed, None);
+        let style = to_taffy(&node, &computed);
 
         assert_eq!(style.padding.top, LengthPercentage::length(1.0));
         assert_eq!(style.padding.bottom, LengthPercentage::length(4.0));
@@ -428,7 +381,7 @@ mod tests {
             children: Vec::new(),
         };
         let computed = sheet.compute(&node, &[]);
-        let style = to_taffy(&node, &computed, None);
+        let style = to_taffy(&node, &computed);
 
         assert_eq!(style.overflow.x, taffy::Overflow::Scroll);
         assert_eq!(style.overflow.y, taffy::Overflow::Scroll);
@@ -446,7 +399,7 @@ mod tests {
                 text: String::new(),
                 children: Vec::new(),
             };
-            to_taffy(&node, &sheet.compute(&node, &[]), None).flex_wrap
+            to_taffy(&node, &sheet.compute(&node, &[])).flex_wrap
         }
 
         assert_eq!(
@@ -469,6 +422,44 @@ mod tests {
     }
 
     #[test]
+    fn box_sizing_lowers_to_taffy_and_sizes_the_border_box() {
+        fn laid_out_width(box_sizing: Option<&str>) -> f32 {
+            let css = match box_sizing {
+                Some(value) => format!(
+                    ".box {{ box-sizing: {value}; width: 100px; padding: 10px; border: 2px solid #000; }}"
+                ),
+                None => ".box { width: 100px; padding: 10px; border: 2px solid #000; }".to_owned(),
+            };
+            let sheet = Sheet::parse(&css).expect("box-sizing style parses");
+            let node = Node {
+                id: 1,
+                kind: "div".to_owned(),
+                props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+                text: String::new(),
+                children: Vec::new(),
+            };
+            let style = to_taffy(&node, &sheet.compute(&node, &[]));
+            let mut tree = TaffyTree::<()>::new();
+            let id = tree.new_leaf(style).expect("box node");
+            tree.compute_layout(
+                id,
+                Size {
+                    width: AvailableSpace::Definite(200.0),
+                    height: AvailableSpace::Definite(200.0),
+                },
+            )
+            .expect("box layout");
+            tree.layout(id).expect("box layout").size.width
+        }
+
+        // The UA default stays border-box (theme.css relies on it); an explicit
+        // content-box adds padding and border around the 100px content.
+        assert_eq!(laid_out_width(None), 100.0);
+        assert_eq!(laid_out_width(Some("border-box")), 100.0);
+        assert_eq!(laid_out_width(Some("content-box")), 124.0);
+    }
+
+    #[test]
     fn preformatted_text_height_includes_every_line() {
         let sheet = Sheet::parse(
             ".content { white-space: pre; font-family: monospace; line-height: 16px; }",
@@ -488,7 +479,7 @@ mod tests {
             }],
         };
         let computed = sheet.compute(&node, &[]);
-        let style = to_taffy(&node, &computed, None);
+        let style = to_taffy(&node, &computed);
 
         assert_eq!(style.size.height, taffy::Dimension::length(48.0));
     }

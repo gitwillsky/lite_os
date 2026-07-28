@@ -4,6 +4,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+mod expand;
+
+use expand::apply_declaration;
+pub(crate) use expand::split_css_tokens;
+
 use crate::tree::Node;
 
 #[derive(Clone)]
@@ -145,103 +150,6 @@ impl Sheet {
     }
 }
 
-/// Applies one declaration and expands the supported box shorthands in source
-/// order. Keeping the longhands in the computed map is required for standard
-/// cascade behavior: a later shorthand resets its four sides, while a later
-/// longhand overrides only its own side.
-fn apply_declaration(values: &mut BTreeMap<String, String>, name: &str, value: &str) {
-    values.insert(name.to_owned(), value.to_owned());
-    match name {
-        "margin" | "padding" | "border-width" | "border-color" | "border-style" => {
-            let Some(edges) = expand_edges(value) else {
-                return;
-            };
-            let suffix = name.strip_prefix("border-").unwrap_or_default();
-            for (side, edge) in ["top", "right", "bottom", "left"].into_iter().zip(edges) {
-                let longhand = if suffix.is_empty() {
-                    format!("{name}-{side}")
-                } else {
-                    format!("border-{side}-{suffix}")
-                };
-                values.insert(longhand, edge);
-            }
-        }
-        "border" => {
-            for side in ["top", "right", "bottom", "left"] {
-                expand_border(values, side, value);
-            }
-        }
-        _ => {
-            if let Some(side) = name
-                .strip_prefix("border-")
-                .filter(|side| matches!(*side, "top" | "right" | "bottom" | "left"))
-            {
-                expand_border(values, side, value);
-            }
-        }
-    }
-}
-
-fn expand_edges(value: &str) -> Option<[String; 4]> {
-    let tokens = split_css_tokens(value);
-    let expanded = match tokens.as_slice() {
-        [all] => [*all, *all, *all, *all],
-        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
-        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
-        [top, right, bottom, left] => [*top, *right, *bottom, *left],
-        _ => return None,
-    };
-    Some(expanded.map(str::to_owned))
-}
-
-fn expand_border(values: &mut BTreeMap<String, String>, side: &str, value: &str) {
-    let tokens = split_css_tokens(value);
-    if let Some(width) = tokens
-        .iter()
-        .find(|token| token.parse::<f32>().is_ok() || token.ends_with("px"))
-    {
-        values.insert(format!("border-{side}-width"), (*width).to_owned());
-    }
-    if let Some(color) = tokens
-        .iter()
-        .rev()
-        .find(|token| token.starts_with('#') || token.starts_with("rgb"))
-    {
-        values.insert(format!("border-{side}-color"), (*color).to_owned());
-    }
-    if let Some(style) = tokens
-        .iter()
-        .find(|token| matches!(**token, "none" | "hidden" | "dotted" | "dashed" | "solid"))
-    {
-        values.insert(format!("border-{side}-style"), (*style).to_owned());
-    }
-}
-
-fn split_css_tokens(value: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let mut depth = 0usize;
-    let mut start = None;
-    for (index, character) in value.char_indices() {
-        if character.is_ascii_whitespace() && depth == 0 {
-            if let Some(begin) = start.take() {
-                tokens.push(&value[begin..index]);
-            }
-            continue;
-        }
-        if start.is_none() {
-            start = Some(index);
-        }
-        match character {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    if let Some(begin) = start {
-        tokens.push(&value[begin..]);
-    }
-    tokens
-}
 
 impl Selector {
     fn parse(source: &str) -> Result<Self, String> {
@@ -450,6 +358,83 @@ mod tests {
     }
 
     #[test]
+    fn background_shorthand_expands_color_image_and_tiling_longhands() {
+        let sheet = Sheet::parse(
+            ".box {
+                background: url(\"assets/bg.png\") no-repeat center / cover;
+            }",
+        )
+        .expect("background shorthand parses");
+        let node = Node {
+            id: 1,
+            kind: "div".to_owned(),
+            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+            text: String::new(),
+            children: Vec::new(),
+        };
+
+        let computed = sheet.compute(&node, &[]);
+
+        assert_eq!(computed.get("background-image"), Some("url(\"assets/bg.png\")"));
+        assert_eq!(computed.get("background-color"), Some("transparent"));
+        assert_eq!(computed.get("background-repeat"), Some("no-repeat"));
+        assert_eq!(computed.get("background-position"), Some("center"));
+        assert_eq!(computed.get("background-size"), Some("cover"));
+    }
+
+    #[test]
+    fn background_shorthand_mixes_color_gradient_and_repeat() {
+        let sheet = Sheet::parse(
+            ".box {
+                background: repeat-x linear-gradient(90deg, #000000, #ffffff) #0a246a;
+            }",
+        )
+        .expect("mixed background shorthand parses");
+        let node = Node {
+            id: 1,
+            kind: "div".to_owned(),
+            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+            text: String::new(),
+            children: Vec::new(),
+        };
+
+        let computed = sheet.compute(&node, &[]);
+
+        assert_eq!(computed.get("background-color"), Some("#0a246a"));
+        assert_eq!(
+            computed.get("background-image"),
+            Some("linear-gradient(90deg, #000000, #ffffff)")
+        );
+        assert_eq!(computed.get("background-repeat"), Some("repeat-x"));
+        // Tiling longhands absent from the shorthand stay untouched.
+        assert_eq!(computed.get("background-position"), None);
+        assert_eq!(computed.get("background-size"), None);
+    }
+
+    #[test]
+    fn later_background_shorthand_resets_earlier_image_longhand() {
+        let sheet = Sheet::parse(
+            ".box {
+                background-image: url(assets/bg.png);
+                background: #d4d0c8;
+            }",
+        )
+        .expect("background reset parses");
+        let node = Node {
+            id: 1,
+            kind: "div".to_owned(),
+            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+            text: String::new(),
+            children: Vec::new(),
+        };
+
+        let computed = sheet.compute(&node, &[]);
+
+        assert_eq!(computed.get("background-color"), Some("#d4d0c8"));
+        assert_eq!(computed.get("background-image"), Some("none"));
+    }
+
+    #[test]
     fn color_function_stays_one_token_during_edge_expansion() {
         let sheet = Sheet::parse(
             ".box {
@@ -472,6 +457,29 @@ mod tests {
                 computed.get(&format!("border-{side}-color")),
                 Some("rgba(10, 20, 30, 0.5)")
             );
+        }
+    }
+
+    #[test]
+    fn named_color_is_extracted_from_border_shorthand() {
+        let sheet = Sheet::parse(
+            ".box {
+                border: 1px solid teal;
+            }",
+        )
+        .expect("named color border parses");
+        let node = Node {
+            id: 1,
+            kind: "div".to_owned(),
+            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+            text: String::new(),
+            children: Vec::new(),
+        };
+
+        let computed = sheet.compute(&node, &[]);
+
+        for side in ["top", "right", "bottom", "left"] {
+            assert_eq!(computed.get(&format!("border-{side}-color")), Some("teal"));
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Persistent CSS scroll offsets, scrollbar geometry and user-agent painting.
 
-use linux_uapi::drm::SharedDumbBuffer;
+use super::Raster;
 
 use super::{PhysicalRect, Renderer};
 
@@ -345,8 +345,8 @@ pub(super) fn scrollbar(
 }
 
 /// Paints one neutral user-agent scrollbar above the scrolled descendants.
-pub(super) fn paint_scrollbar(
-    pixels: &mut SharedDumbBuffer,
+pub(super) fn paint_scrollbar<R: Raster>(
+    pixels: &mut R,
     scrollbar: Scrollbar,
     clip: Option<PhysicalRect>,
 ) {
@@ -402,8 +402,8 @@ pub(super) fn paint_scrollbar(
 }
 
 /// Paints the square where simultaneous horizontal and vertical tracks meet.
-pub(super) fn paint_scrollbar_corner(
-    pixels: &mut SharedDumbBuffer,
+pub(super) fn paint_scrollbar_corner<R: Raster>(
+    pixels: &mut R,
     port: LogicalRect,
     clip: Option<PhysicalRect>,
 ) {
@@ -417,9 +417,9 @@ pub(super) fn paint_scrollbar_corner(
     fill(pixels, corner, 0xffd4_d0c8);
 }
 
-fn physical(
+fn physical<R: Raster>(
     rect: LogicalRect,
-    pixels: &SharedDumbBuffer,
+    pixels: &R,
     clip: Option<PhysicalRect>,
 ) -> PhysicalRect {
     let bounds = PhysicalRect::new(
@@ -433,7 +433,7 @@ fn physical(
     clip.map_or(bounds, |clip| bounds.intersect(clip))
 }
 
-fn fill(pixels: &mut SharedDumbBuffer, rect: PhysicalRect, color: u32) {
+fn fill<R: Raster>(pixels: &mut R, rect: PhysicalRect, color: u32) {
     if rect.x2 <= rect.x1 || rect.y2 <= rect.y1 {
         return;
     }

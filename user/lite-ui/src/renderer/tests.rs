@@ -11,7 +11,7 @@ use taffy::{
 
 use crate::tree::Node;
 
-use super::{PhysicalRect, excludes_window};
+use super::{PhysicalRect, Raster, excludes_window};
 
 fn node(window_id: Option<u32>) -> Node {
     let mut props = BTreeMap::new();
@@ -187,4 +187,153 @@ fn window_overflow_clip_vs_titlebar_and_grips() {
             "{name} would be suppressed by the overflow clip"
         );
     }
+}
+
+#[test]
+fn opacity_layer_zeroes_rows_lazily_within_the_dirty_span() {
+    let mut layer = super::OpacityLayer::new(2, 8);
+    // Pre-fill with stale pixels to prove first writes re-zero their rows.
+    layer.pixels.fill(0xdead_beef);
+
+    layer.row_mut(5)[0] = 0xffff_0000;
+    layer.row_mut(2)[1] = 0xff00_ff00;
+
+    assert_eq!(layer.dirty, Some((2, 5)));
+    // Written cells keep their value; untouched cells in the span are zero.
+    assert_eq!(layer.row(2), &[0, 0xff00_ff00]);
+    assert_eq!(layer.row(3), &[0, 0]);
+    assert_eq!(layer.row(4), &[0, 0]);
+    assert_eq!(layer.row(5), &[0xffff_0000, 0]);
+    // Rows outside the span are untouched (stale, never composited).
+    assert_eq!(layer.row(1), &[0xdead_beef, 0xdead_beef]);
+
+    layer.reset();
+    assert_eq!(layer.dirty, None);
+    // After reset the next write re-zeroes its row.
+    layer.row_mut(5)[0] = 1;
+    assert_eq!(layer.row(5), &[1, 0]);
+}
+
+/// Loads the checked UI faces from the repository assets, like the font unit
+/// tests do, so the taffy measure callback shapes real text.
+fn test_font() -> crate::font::Font {
+    let fonts = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts");
+    crate::font::Font::from_faces(
+        std::fs::read(fonts.join("liteos-ui-regular.otf")).expect("regular UI face"),
+        std::fs::read(fonts.join("liteos-ui-bold.otf")).expect("bold UI face"),
+    )
+    .expect("UI faces register")
+}
+
+fn text_node(class: &str, text: &str) -> Node {
+    Node {
+        id: 1,
+        kind: "span".to_owned(),
+        props: BTreeMap::from([("className".to_owned(), Value::String(class.to_owned()))]),
+        text: String::new(),
+        children: vec![Node {
+            id: 2,
+            kind: "#text".to_owned(),
+            props: BTreeMap::new(),
+            text: text.to_owned(),
+            children: Vec::new(),
+        }],
+    }
+}
+
+/// A proportional text leaf carries no definite size in its taffy style; the
+/// measure callback sizes it from a parley layout under the real inline
+/// constraint, so wrapping text grows its box in whole line-height steps.
+#[test]
+fn proportional_text_leaf_wraps_via_the_measure_callback() {
+    let font = test_font();
+    let sheet = crate::style::Sheet::parse(".t { font-size: 11px; line-height: 14px; }").unwrap();
+    let node = text_node("t", "alpha beta gamma delta epsilon zeta eta theta");
+    let computed = sheet.compute(&node, &[]);
+    let style = super::layout::to_taffy(&node, &computed);
+    assert_eq!(style.size.width, Dimension::auto());
+    assert_eq!(style.size.height, Dimension::auto());
+
+    let mut tree = TaffyTree::<super::layout::TextMeasure>::new();
+    let leaf = tree
+        .new_leaf_with_context(
+            style,
+            super::layout::TextMeasure {
+                text: super::layout::text_content(&node),
+                computed: computed.clone(),
+            },
+        )
+        .unwrap();
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Block,
+                size: Size {
+                    width: Dimension::length(100.0),
+                    height: Dimension::length(400.0),
+                },
+                ..Style::default()
+            },
+            &[leaf],
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(
+        root,
+        Size {
+            width: AvailableSpace::Definite(100.0),
+            height: AvailableSpace::Definite(400.0),
+        },
+        |known, available, _node, context, _style| match context {
+            Some(measure) => font.measure_text(&measure.computed, &measure.text, known, available),
+            None => Size::ZERO,
+        },
+    )
+    .unwrap();
+
+    let laid_out = tree.layout(leaf).unwrap();
+    // The block child stretches to the 100px container width and wraps to
+    // whole 14px lines well past one line.
+    assert_eq!(laid_out.size.width, 100.0);
+    assert!(laid_out.size.height >= 28.0);
+    assert_eq!(laid_out.size.height % 14.0, 0.0);
+}
+
+/// `white-space: nowrap` text keeps one line: the measure callback reports the
+/// overflowing advance and one line-height, exactly what `text-overflow:
+/// ellipsis` needs at paint time.
+#[test]
+fn nowrap_text_leaf_overflows_via_the_measure_callback() {
+    let font = test_font();
+    let sheet =
+        crate::style::Sheet::parse(".t { font-size: 11px; line-height: 14px; white-space: nowrap; }")
+            .unwrap();
+    let node = text_node("t", "alpha beta gamma delta epsilon zeta eta theta");
+    let computed = sheet.compute(&node, &[]);
+    let style = super::layout::to_taffy(&node, &computed);
+
+    let mut tree = TaffyTree::<super::layout::TextMeasure>::new();
+    let leaf = tree
+        .new_leaf_with_context(
+            style,
+            super::layout::TextMeasure {
+                text: super::layout::text_content(&node),
+                computed: computed.clone(),
+            },
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(
+        leaf,
+        Size {
+            width: AvailableSpace::Definite(60.0),
+            height: AvailableSpace::Definite(400.0),
+        },
+        |known, available, _node, context, _style| match context {
+            Some(measure) => font.measure_text(&measure.computed, &measure.text, known, available),
+            None => Size::ZERO,
+        },
+    )
+    .unwrap();
+
+    let laid_out = tree.layout(leaf).unwrap();
+    assert_eq!(laid_out.size.height, 14.0);
 }

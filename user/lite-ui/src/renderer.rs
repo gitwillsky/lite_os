@@ -1,12 +1,16 @@
 //! Taffy layout and CPU raster for the immutable React host snapshot.
 
+mod border;
 mod box_paint;
 mod cursor;
 mod gradient;
 mod image;
 mod layout;
+mod opacity;
 mod paint;
+mod raster;
 mod range;
+mod shadow;
 mod scroll;
 
 use std::{
@@ -27,17 +31,22 @@ use crate::{
     terminal_font::TerminalFont,
     tree::Node,
 };
-use box_paint::{paint_background, paint_border, paint_shadow};
+use border::paint_border;
+use box_paint::paint_background;
+use shadow::{paint_inset_shadow, paint_shadow};
 use cursor::shape as cursor_shape;
-use image::{Image, decode_png, paint_image};
-use layout::{OverflowMode, corner_radii, overflow_modes, text_content, to_taffy};
+use image::{Image, decode_png, paint_background_image, paint_image};
+use layout::{OverflowMode, TextMeasure, corner_radii, overflow_modes, text_content, to_taffy};
 pub(crate) use range::RangeInput;
 use scroll::{
     Axis, LogicalRect, ScrollDrag, ScrollOffset, ScrollRegion, Scrollbar, paint_scrollbar,
     paint_scrollbar_corner, scrollbar,
 };
 
+pub(crate) use raster::{OpacityLayer, Raster};
+
 pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
+
 
 struct RenderNode {
     source: Node,
@@ -57,6 +66,13 @@ struct PaintWalk {
     /// Active clip from an ancestor `overflow: hidden/scroll/auto` container;
     /// raster and hit regions are confined to it, fully-clipped subtrees skipped.
     clip: Option<PhysicalRect>,
+    /// `opacity` group nesting depth: selects the offscreen layer pool slot, so
+    /// a nested group never rasterizes into a layer its ancestor still owns.
+    opacity_depth: usize,
+    /// Whether this subtree emits hit and scroll regions: `pointer-events:
+    /// none` on the node or any ancestor disables the whole subtree (LiteUI
+    /// does not implement the CSS `auto` re-enable on descendants).
+    hits_enabled: bool,
 }
 
 /// Geometry emitted beside pixels for compositor-owned app surfaces.
@@ -156,6 +172,10 @@ pub struct Renderer {
     /// User-agent scrollbar hit geometry from the latest rendered scene.
     scrollbars: Vec<Scrollbar>,
     scroll_drag: Option<ScrollDrag>,
+    /// Depth-indexed pool of offscreen layers for `opacity` group raster. Slot
+    /// `d` serves nesting depth `d`; a layer is taken out for the duration of
+    /// its subtree paint so a nested group recurses into the next slot.
+    opacity_layers: Vec<Option<OpacityLayer>>,
     /// Stable node id of the focused `<input>`, or `None`. The input dispatcher
     /// owns focus and sets this before each render so paint draws the text
     /// caret on exactly the focused field (the renderer has no CSS `:focus`).
@@ -178,6 +198,7 @@ impl Renderer {
             active_scroll_nodes: HashSet::new(),
             scrollbars: Vec::new(),
             scroll_drag: None,
+            opacity_layers: Vec::new(),
             focused: None,
         })
     }
@@ -279,7 +300,7 @@ impl Renderer {
         for row in 0..pixels.height() {
             pixels.row_mut(row).fill(0xff00_0000);
         }
-        let mut tree = TaffyTree::new();
+        let mut tree = TaffyTree::<TextMeasure>::new();
         let synthetic = Node {
             id: 0,
             kind: "div".to_owned(),
@@ -300,11 +321,25 @@ impl Renderer {
             },
         )
         .map_err(taffy_error)?;
-        tree.compute_layout(
+        tree.compute_layout_with_measure(
             root.id,
             Size {
                 width: AvailableSpace::Definite(self.viewport.width as f32),
                 height: AvailableSpace::Definite(self.viewport.height as f32),
+            },
+            // Proportional text leaves carry a `TextMeasure` context and are
+            // sized from a parley layout under the real inline constraint —
+            // this is where `white-space: normal`/`pre-wrap` line breaking
+            // feeds back into box sizes. Every other leaf keeps its taffy
+            // style size (monospace cells, images, inputs).
+            |known, available, _node, context, _style| match context {
+                Some(measure) => self.font.measure_text(
+                    &measure.computed,
+                    &measure.text,
+                    known,
+                    available,
+                ),
+                None => Size::ZERO,
             },
         )
         .map_err(taffy_error)?;
@@ -329,6 +364,8 @@ impl Renderer {
                     excluded_window_group,
                     window_frame: None,
                     clip: None,
+                    opacity_depth: 0,
+                    hits_enabled: true,
                 },
             )?;
         }
@@ -348,7 +385,7 @@ impl Renderer {
 
     fn build(
         &self,
-        tree: &mut TaffyTree,
+        tree: &mut TaffyTree<TextMeasure>,
         source: Node,
         ancestors: &[&Node],
         inherited: Option<&Computed>,
@@ -376,26 +413,27 @@ impl Renderer {
                 .map(|child| self.build(tree, child, &next_ancestors, Some(&computed)))
                 .collect::<io::Result<Vec<_>>>()?
         };
-        // Measure proportional text leaves with real glyph advances so the box
-        // matches what the rasterizer draws; monospace text is sized by cell
-        // count in `to_taffy`, and non-text nodes need no measurement. 容器 span
-        // 不是文本叶子，其固有宽度来自子节点布局而非拼接文本。
-        let measured_width =
-            if source.is_text_leaf() && computed.get("font-family") != Some("monospace") {
-                let text = text_content(&source);
-                Some(if computed.get("white-space") == Some("pre") {
-                    text.split('\n')
-                        .map(|line| self.font.measure(&computed, line))
-                        .fold(0.0, f32::max)
-                } else {
-                    self.font.measure(&computed, &text)
-                })
-            } else {
-                None
-            };
-        let style = to_taffy(&source, &computed, measured_width);
+        // Proportional text leaves are measured by the taffy measure callback
+        // (parley layout under the real inline constraint), so the node carries
+        // its text and cascade as context instead of a fixed intrinsic width.
+        // Monospace text sizes by terminal cell count in `to_taffy`, and
+        // non-text nodes need no measurement. 容器 span 不是文本叶子，其固有宽度
+        // 来自子节点布局而非拼接文本。
+        let proportional_text =
+            source.is_text_leaf() && computed.get("font-family") != Some("monospace");
+        let style = to_taffy(&source, &computed);
         let id = if children.is_empty() {
-            tree.new_leaf(style)
+            if proportional_text {
+                tree.new_leaf_with_context(
+                    style,
+                    TextMeasure {
+                        text: text_content(&source),
+                        computed: computed.clone(),
+                    },
+                )
+            } else {
+                tree.new_leaf(style)
+            }
         } else {
             let ids: Vec<NodeId> = children.iter().map(|child| child.id).collect();
             tree.new_with_children(style, &ids)

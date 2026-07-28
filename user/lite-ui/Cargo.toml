@@ -14,11 +14,11 @@ cssparser.workspace = true
 display-proto.workspace = true
 linux-uapi.workspace = true
 parley.workspace = true
+swash.workspace = true
 png = "=0.18.0"
 quickjs-runtime.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 taffy.workspace = true
-tiny-skia.workspace = true
 symphonia.workspace = true
 audio-proto.workspace = true

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use linux_uapi::drm::SharedDumbBuffer;
+use super::Raster;
 use serde_json::Value;
 
 use super::{PhysicalRect, SCALE, box_paint::paint_background};
@@ -128,8 +128,8 @@ impl RangeInput {
 }
 
 /// Paints the fixed LiteOS horizontal range user-agent appearance.
-pub(super) fn paint_range(
-    pixels: &mut SharedDumbBuffer,
+pub(super) fn paint_range<R: Raster>(
+    pixels: &mut R,
     bounds: PhysicalRect,
     clip: Option<PhysicalRect>,
     range: RangeInput,
@@ -232,8 +232,8 @@ fn inset_rect(rect: PhysicalRect, amount: usize) -> PhysicalRect {
     }
 }
 
-fn fill(
-    pixels: &mut SharedDumbBuffer,
+fn fill<R: Raster>(
+    pixels: &mut R,
     rect: PhysicalRect,
     clip: Option<PhysicalRect>,
     color: &str,

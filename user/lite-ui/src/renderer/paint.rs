@@ -2,26 +2,28 @@
 
 use std::io;
 
-use linux_uapi::drm::SharedDumbBuffer;
 use serde_json::Value;
 use taffy::TaffyTree;
 
 use super::{
-    Axis, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk, PhysicalRect,
-    RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion, WindowFrame,
-    background_url, corner_radii, cursor_shape, decode_png, excludes_window, is_surface, listener,
-    logical_from_physical, logical_intersection, overflow_modes, paint_background, paint_border,
-    paint_image, paint_scrollbar, paint_scrollbar_corner, paint_shadow, range::paint_range,
-    scrollbar, taffy_error, text_content,
+    Axis, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk,
+    PhysicalRect, Raster, RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion,
+    WindowFrame, background_url, corner_radii, cursor_shape, decode_png, excludes_window,
+    is_surface, listener, logical_from_physical, logical_intersection, overflow_modes,
+    paint_background, paint_background_image, paint_border, paint_image, paint_inset_shadow,
+    paint_scrollbar, paint_scrollbar_corner, paint_shadow, range::paint_range, scrollbar,
+    taffy_error, text_content,
 };
+use super::opacity::opacity;
+use super::layout::TextMeasure;
 
 impl Renderer {
-    pub(super) fn paint(
+    pub(super) fn paint<R: Raster>(
         &mut self,
-        tree: &TaffyTree,
+        tree: &TaffyTree<TextMeasure>,
         node: &RenderNode,
         parent: (f32, f32),
-        pixels: &mut SharedDumbBuffer,
+        pixels: &mut R,
         output: &mut RenderOutput,
         walk: PaintWalk,
     ) -> io::Result<()> {
@@ -87,16 +89,21 @@ impl Renderer {
         if focusable && takes_autofocus(&node.source.props, self.focused) {
             self.focused = Some(node.source.id);
         }
-        if pointer_down.is_some()
-            || pointer_move.is_some()
-            || pointer_up.is_some()
-            || click.is_some()
-            || double_click.is_some()
-            || pointer_enter.is_some()
-            || pointer_leave.is_some()
-            || context_menu.is_some()
-            || wheel.is_some()
-            || focusable
+        // `pointer-events: none` here or on an ancestor skips hit, focus and
+        // scroll-region registration for the whole subtree; raster is
+        // unaffected (the property only gates input).
+        let hits_enabled = hits_enabled(walk.hits_enabled, &node.computed);
+        if hits_enabled
+            && (pointer_down.is_some()
+                || pointer_move.is_some()
+                || pointer_up.is_some()
+                || click.is_some()
+                || double_click.is_some()
+                || pointer_enter.is_some()
+                || pointer_leave.is_some()
+                || context_menu.is_some()
+                || wheel.is_some()
+                || focusable)
         {
             let hit = logical_from_physical(raster);
             output.hits.push(HitRegion {
@@ -125,17 +132,23 @@ impl Renderer {
         }
         paint_shadow(pixels, raster, &node.computed);
         let radii = corner_radii(&node.computed);
-        if let Some(background) = node.computed.get("background") {
-            paint_background(pixels, raster, background, radii);
+        // Standard background order: the color layer paints first, then the
+        // image layer (tiled bitmap or gradient) composites over it. The style
+        // owner already expands the `background` shorthand, so only longhands
+        // are read here. Inset shadows belong to the background layer: they
+        // composite over it but stay under the border and content.
+        if let Some(color) = node.computed.get("background-color") {
+            paint_background(pixels, raster, color, radii);
         }
         if let Some(image) = node.computed.get("background-image") {
             if let Some(source) = background_url(image) {
                 let image = self.image(source)?;
-                paint_image(pixels, raster, image, radii);
+                paint_background_image(pixels, raster, image, &node.computed, radii);
             } else {
                 paint_background(pixels, raster, image, radii);
             }
         }
+        paint_inset_shadow(pixels, raster, &node.computed);
         paint_border(pixels, raster, &node.computed);
         if node.source.kind == "img"
             && let Some(source) = node.source.props.get("src").and_then(Value::as_str)
@@ -332,7 +345,7 @@ impl Renderer {
             };
             scroll_offset = *offset;
             let visible_port = logical_intersection(scroll_port, walk.clip);
-            if visible_port.width > 0.0 && visible_port.height > 0.0 {
+            if hits_enabled && visible_port.width > 0.0 && visible_port.height > 0.0 {
                 self.scroll_regions.push(ScrollRegion {
                     node_id: node.source.id,
                     port: visible_port,
@@ -376,17 +389,35 @@ impl Renderer {
         // paints over an earlier popup even when the popup owns a higher z-index.
         children.sort_by_key(|child| stacking_level(&child.computed, parent_is_flex));
         for child in children {
+            let child_walk = PaintWalk {
+                window_frame: child_frame,
+                clip: child_clip,
+                hits_enabled,
+                ..walk
+            };
+            // CSS group opacity: an `opacity < 1` subtree rasterizes whole into
+            // an offscreen layer and composites once, so overlapping descendants
+            // blend against each other before the backdrop — not against it.
+            let opacity = opacity(&child.computed);
+            if opacity < 1.0 {
+                self.paint_opacity_group(
+                    tree,
+                    child,
+                    (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
+                    pixels,
+                    output,
+                    child_walk,
+                    opacity,
+                )?;
+                continue;
+            }
             self.paint(
                 tree,
                 child,
                 (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
                 pixels,
                 output,
-                PaintWalk {
-                    window_frame: child_frame,
-                    clip: child_clip,
-                    ..walk
-                },
+                child_walk,
             )?;
         }
         let show_x = overflow_x == OverflowMode::Scroll
@@ -403,7 +434,12 @@ impl Renderer {
                 show_y,
             );
             paint_scrollbar(pixels, bar, walk.clip);
-            self.scrollbars.push(bar);
+            // The bar paints regardless (pointer-events gates input, not
+            // raster) but only registers drag geometry when the subtree is
+            // hit-enabled.
+            if hits_enabled {
+                self.scrollbars.push(bar);
+            }
         }
         if show_y {
             let bar = scrollbar(
@@ -415,7 +451,9 @@ impl Renderer {
                 show_x,
             );
             paint_scrollbar(pixels, bar, walk.clip);
-            self.scrollbars.push(bar);
+            if hits_enabled {
+                self.scrollbars.push(bar);
+            }
         }
         if show_x && show_y {
             paint_scrollbar_corner(pixels, scroll_port, walk.clip);
@@ -447,6 +485,14 @@ fn takes_autofocus(
     focused: Option<u64>,
 ) -> bool {
     focused.is_none() && props.get("autoFocus").and_then(Value::as_bool) == Some(true)
+}
+
+/// Whether a node's subtree emits hit/scroll regions: `pointer-events: none`
+/// on the node or any ancestor disables the whole subtree. LiteUI does not
+/// implement the CSS `pointer-events: auto` re-enable on descendants
+/// (documented subset limit).
+fn hits_enabled(ancestor: bool, computed: &crate::style::Computed) -> bool {
+    ancestor && computed.get("pointer-events") != Some("none")
 }
 
 fn stacking_level(computed: &crate::style::Computed, flex_item: bool) -> i32 {
@@ -481,6 +527,20 @@ mod tests {
         assert!(super::takes_autofocus(&with_flag, None));
         assert!(!super::takes_autofocus(&with_flag, Some(7)));
         assert!(!super::takes_autofocus(&without_flag, None));
+    }
+
+    #[test]
+    fn pointer_events_none_disables_the_whole_subtree() {
+        let mut style = Computed::default();
+        assert!(super::hits_enabled(true, &style));
+        style.set("pointer-events", "none");
+        // The node itself opts out, and an already-disabled ancestor cannot be
+        // re-enabled from below.
+        assert!(!super::hits_enabled(true, &style));
+        assert!(!super::hits_enabled(false, &style));
+        style.set("pointer-events", "auto");
+        assert!(super::hits_enabled(true, &style));
+        assert!(!super::hits_enabled(false, &style));
     }
 
     #[test]

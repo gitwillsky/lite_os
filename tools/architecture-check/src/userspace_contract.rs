@@ -118,7 +118,7 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "symphonia = { version = \"=0.6.0\", default-features = false, features = [\"all\", \"opt-simd-neon\"] }",
         "cssparser = \"=0.37.0\"",
         "taffy = \"=0.12.2\"",
-        "tiny-skia = \"=0.12.0\"",
+        "swash = { version = \"=0.2.5\", default-features = false, features = [\"std\", \"scale\", \"render\"] }",
         "version = \"=0.11.0\"",
     ] {
         if !user.contains(required) {
@@ -297,9 +297,16 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
 }
 
 fn check_assets(root: &Path, errors: &mut Vec<String>) {
-    let ui_atlas = fs::read(root.join("assets/fonts/liteos-ui.a8p")).unwrap_or_default();
-    if ui_atlas.get(..8) != Some(b"LUP8\0\0\0\x01") || ui_atlas.len() != 7_458_232 {
-        errors.push("assets/fonts/liteos-ui.a8p: checked UI atlas identity changed".to_owned());
+    // Checked UI faces: subsetted Noto Sans CJK SC OpenType (CFF outlines,
+    // "OTTO" sfnt version) consumed by the runtime parley/swash text path.
+    for (path, size) in [
+        ("assets/fonts/liteos-ui-regular.otf", 1_528_936),
+        ("assets/fonts/liteos-ui-bold.otf", 1_532_156),
+    ] {
+        let face = fs::read(root.join(path)).unwrap_or_default();
+        if face.get(..4) != Some(b"OTTO") || face.len() != size {
+            errors.push(format!("{path}: checked UI face identity changed"));
+        }
     }
     let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();
     if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x02") || bootlogo.len() != 757_144 {

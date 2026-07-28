@@ -129,7 +129,7 @@ build-apk-apps: build-kernel build-bootloader build-rootfs
 regen-font:
 	target/fontenv/bin/python scripts/generate_terminal_font.py
 
-# UI 比例字体 atlas 由固定 venv 生成；正常构建只消费 checked 资产，不需要 Pillow。
+# UI 比例字体 OpenType 子集由固定 venv 生成；正常构建只消费 checked 资产，不需要 fontTools。
 regen-ui-font:
 	target/fontenv/bin/python scripts/generate_ui_font.py
 
