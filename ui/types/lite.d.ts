@@ -9,6 +9,16 @@
 // This is an ambient script (no top-level import/export), so every type below
 // is global.
 
+/** Frozen plain-text subset of the standard Async Clipboard API. */
+interface Clipboard {
+  readText(): Promise<string>;
+  writeText(text: string): Promise<void>;
+}
+
+interface Navigator {
+  readonly clipboard: Clipboard;
+}
+
 /** Pointer payload delivered to onClick / onPointer / onContextMenu handlers. */
 interface LitePointerEvent {
   type: "pointer";
@@ -164,6 +174,7 @@ declare module "lite:desktop" {
 declare module "lite:terminal" {
   export const connect: (argv: string[]) => LiteScreen;
   export const input: (event: LiteKeyEvent) => string;
+  export const paste: (text: string) => string;
 }
 
 declare module "lite:audio-system" {

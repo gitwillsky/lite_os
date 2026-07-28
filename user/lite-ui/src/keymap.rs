@@ -8,6 +8,7 @@ pub struct Modifiers {
     pub shift: bool,
     pub control: bool,
     pub alt: bool,
+    pub super_key: bool,
     pub caps: bool,
 }
 
@@ -21,6 +22,7 @@ impl Modifiers {
             42 | 54 => self.shift = pressed,
             29 | 97 => self.control = pressed,
             56 | 100 => self.alt = pressed,
+            125 | 126 => self.super_key = pressed,
             // Caps lock latches on the press edge; its release is still a
             // modifier key (produces no text), so it falls through to `true`.
             58 => {
@@ -156,5 +158,9 @@ mod tests {
         assert!(!modifiers.apply(30, 1)); // a letter is not a modifier
         assert!(modifiers.apply(42, 0)); // shift up
         assert!(!modifiers.shift);
+        assert!(modifiers.apply(125, 1)); // left super down
+        assert!(modifiers.super_key);
+        assert!(modifiers.apply(125, 0));
+        assert!(!modifiers.super_key);
     }
 }

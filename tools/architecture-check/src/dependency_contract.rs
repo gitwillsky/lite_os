@@ -34,6 +34,7 @@ const KERNEL_MODULES: &[&str] = &[
     "task",
     "timer",
     "trap",
+    "virtio_port",
 ];
 
 #[derive(Default)]

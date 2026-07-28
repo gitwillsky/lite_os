@@ -38,6 +38,7 @@ mod system;
 mod task;
 mod timer;
 mod trap;
+mod virtio_port;
 
 /// 标记全局内核设施已完成初始化。
 ///
@@ -77,6 +78,14 @@ fn kernel_main(context: entry::BootContext) -> ! {
             .expect("primary DRM initialization failed");
     }
     input::init(task::create_notification_endpoints).expect("evdev input initialization failed");
+    if let Some(port) = drivers::primary_virtio_port() {
+        virtio_port::init(
+            port,
+            task::create_notification_endpoints()
+                .expect("VirtIO port readiness notification allocation failed"),
+        )
+        .expect("VirtIO port initialization failed");
+    }
     fs::init_pty(
         task::create_pipe_endpoints,
         task::create_notification_endpoints,

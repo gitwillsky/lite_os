@@ -2,7 +2,8 @@
 
 ## 当前设计
 
-- `platform` 发现并装配具体 adapter；`drivers` 只公开 block、network、display、input、RTC、RNG 与 interrupt 等通用 seam。
+- `platform` 发现并装配具体 adapter；`drivers` 只公开 block、network、display、input、RTC、RNG、
+  named byte-stream port 与 interrupt 等通用 seam。
 - VirtIO queue 与 DMA payload 由各 adapter 拥有；block/RNG 的 request slot、descriptor identity、
   lost-wake handshake 与 capacity wait 由 `drivers::io_completion` 统一拥有。hardirq 共用
   transport-error latch，只确认 MMIO 并发布 `DriverIo` deferred bit，不进入 ordinary adapter lock，completion 在统一
@@ -17,6 +18,11 @@
   `DmaBuffer` 物理 segment mapping；steady-state virtqueue submission 只投影 cached ranges，地址
   空间锁与 page walk 均为 0。adapter drop 写 reset 并等到 status 读回 0 后，再释放这些 mapping。
 - QEMU `virt` backend 把 DTB `dma-coherent` 作为必需 machine fact；VirtIO 不维护 non-coherent shadow buffer 或运行时 cache-maintenance fallback。
+- VirtIO Console adapter 只协商 modern multiport，固定选择 `com.redhat.spice.0`，拥有 control
+  RX/TX、port 1 RX/TX、named-port open state 与 64 KiB byte ring。hardirq 只 ack 并发布
+  `VirtioPort` deferred work；safe point 验证 completion、repost RX、通知 queue 并经
+  `virtio_port` domain 唤醒 task。devfs 只把该 stream 发布为
+  `/dev/virtio-ports/com.redhat.spice.0`。
 - GPU runtime completion 由独立 sequence owner 验证 fence/response 与 stage 顺序，阶段分支只选择
   下一条 `GpuCommand`；统一 command seam 负责 wire encoding、长度与 queue publication。
   该层只增加 fixed enum dispatch，不增加 lock、allocation 或 descriptor 数；MMIO completion 主导实际
@@ -42,4 +48,6 @@
 ## Known limits
 
 - GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush；VirGL、Vulkan、3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
+- VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port 或
+  hotplug userspace 管理。
 - graphical session 的产品边界见[图形会话与 LiteUI](lite-ui.md)。

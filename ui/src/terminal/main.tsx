@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { connect, input } from "lite:terminal";
+import { connect, input, paste } from "lite:terminal";
 
 const hex = (value: number) => "#" + value.toString(16).padStart(6, "0");
 
@@ -45,8 +45,18 @@ export default function Terminal() {
   const cursorWidth = cursor.shape === "bar" ? 2 : 8;
   const cursorHeight = cursor.shape === "underline" ? 2 : 16;
   const cursorTop = cursor.row * 16 + (cursor.shape === "underline" ? 14 : 0);
+  const handleKey = (event: LiteKeyEvent) => {
+    const control = (event.modifiers & 2) !== 0;
+    const shift = (event.modifiers & 1) !== 0;
+    const superKey = (event.modifiers & 8) !== 0;
+    if (event.value !== 0 && ((control && shift) || superKey) && event.code === 47) {
+      void navigator.clipboard.readText().then(paste);
+      return;
+    }
+    input(event);
+  };
   return (
-    <div className="terminal" tabIndex={0} style={{ background: hex(screen.background) }} onKeyDown={(event) => input(event as unknown as LiteKeyEvent)}>
+    <div className="terminal" tabIndex={0} style={{ background: hex(screen.background) }} onKeyDown={(event) => handleKey(event as unknown as LiteKeyEvent)}>
       {runs}
       <div
         className="terminal__cursor"

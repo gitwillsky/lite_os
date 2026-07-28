@@ -1,8 +1,9 @@
 use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
-    Accepted, AppOpened, BufferAlloc, CURSOR_DEFAULT, CURSOR_RESIZE_NWSE, HelloApp, InputKey,
-    InputPointer, InputScroll, MessageKind, MoveBegin, MoveComplete, PROTOCOL_VERSION,
+    Accepted, AppOpened, BufferAlloc, CURSOR_DEFAULT, CURSOR_RESIZE_NWSE, ClipboardData,
+    ClipboardRead, ClipboardWrite, HelloApp, InputKey, InputPointer, InputScroll,
+    MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete, PROTOCOL_VERSION,
     PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
     SetCursorShape, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
 };
@@ -209,6 +210,55 @@ fn scroll_round_trips_surface_local_coordinates_and_signed_deltas() {
             event
         );
     }
+}
+
+#[test]
+fn clipboard_round_trips_utf8_identity_and_rejects_oversize() {
+    let mut bytes = vec![0u8; MAX_MESSAGE];
+    let read = ClipboardRead {
+        surface_id: 9,
+        request_id: 44,
+    };
+    let frame = parse_frame(read.encode(&mut bytes).expect("clipboard read must encode"))
+        .expect("clipboard read frame");
+    assert_eq!(frame.kind(), MessageKind::ClipboardRead);
+    assert_eq!(
+        ClipboardRead::parse(frame.payload()).expect("clipboard read payload"),
+        read
+    );
+
+    let write = ClipboardWrite {
+        surface_id: 9,
+        text: "来自 macOS 的文本".to_owned(),
+    };
+    let frame = parse_frame(
+        write
+            .encode(&mut bytes)
+            .expect("clipboard write must encode"),
+    )
+    .expect("clipboard write frame");
+    assert_eq!(
+        ClipboardWrite::parse(frame.payload()).expect("clipboard write payload"),
+        write
+    );
+
+    let data = ClipboardData {
+        surface_id: 9,
+        request_id: 44,
+        text: "LiteOS".to_owned(),
+    };
+    let frame = parse_frame(data.encode(&mut bytes).expect("clipboard data must encode"))
+        .expect("clipboard data frame");
+    assert_eq!(
+        ClipboardData::parse(frame.payload()).expect("clipboard data payload"),
+        data
+    );
+
+    let oversized = ClipboardWrite {
+        surface_id: 9,
+        text: "x".repeat(MAX_CLIPBOARD_TEXT + 1),
+    };
+    assert!(oversized.encode(&mut bytes).is_none());
 }
 
 #[test]

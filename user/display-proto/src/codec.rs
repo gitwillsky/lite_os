@@ -50,6 +50,12 @@ pub enum MessageKind {
     SetCursorShape = 21,
     /// Routed mouse-wheel scroll input.
     InputScroll = 22,
+    /// Focused client requests the current plain-text clipboard.
+    ClipboardRead = 23,
+    /// Focused client publishes a new plain-text clipboard.
+    ClipboardWrite = 24,
+    /// Compositor returns clipboard text for one exact request.
+    ClipboardData = 25,
 }
 
 impl MessageKind {
@@ -86,6 +92,9 @@ impl MessageKind {
             20 => Self::MoveComplete,
             21 => Self::SetCursorShape,
             22 => Self::InputScroll,
+            23 => Self::ClipboardRead,
+            24 => Self::ClipboardWrite,
+            25 => Self::ClipboardData,
             _ => return None,
         })
     }

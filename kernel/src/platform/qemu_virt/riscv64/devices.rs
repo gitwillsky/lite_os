@@ -4,8 +4,8 @@ use super::uart;
 #[cfg(debug_assertions)]
 use crate::debug;
 use crate::drivers::{
-    DisplayDevice, InputDevice, InterruptHandler, MmioBus, VirtIOBlockDevice, VirtIOGpuDevice,
-    VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice,
+    DisplayDevice, InputDevice, InterruptHandler, MmioBus, VirtIOBlockDevice, VirtIOConsoleDevice,
+    VirtIOGpuDevice, VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice,
 };
 use crate::sync::IrqMutex;
 use crate::{error, info, warn};
@@ -80,6 +80,7 @@ fn init_virtio_devices(board_info: &PlatformInfo) {
             match device_id {
                 1 => init_virtio_net_device(board_info, virtio_dev.irq, base_addr),
                 2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
+                3 => init_virtio_console_device(board_info, virtio_dev.irq, base_addr),
                 4 => init_virtio_rng_device(board_info, virtio_dev.irq, base_addr),
                 16 => init_virtio_gpu_device(board_info, virtio_dev.irq, base_addr),
                 18 => init_virtio_input_device(board_info, virtio_dev.irq, base_addr),
@@ -91,6 +92,20 @@ fn init_virtio_devices(board_info: &PlatformInfo) {
             }
         }
     }
+}
+
+fn init_virtio_console_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
+    let device = VirtIOConsoleDevice::new(base_addr).expect("virtio-console init failed");
+    crate::drivers::register_virtio_port(device.clone())
+        .unwrap_or_else(|_| panic!("only one virtio-console clipboard port is supported"));
+    assert!(
+        maybe_register_irq(board_info, irq, device.irq_handler_for(), "virtio-console"),
+        "virtio-console requires a registered IRQ"
+    );
+    info!(
+        "[Platform] VirtIO console clipboard port registered at {:#x}",
+        base_addr
+    );
 }
 
 fn init_virtio_sound_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {

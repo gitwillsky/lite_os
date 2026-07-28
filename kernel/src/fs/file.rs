@@ -315,6 +315,12 @@ impl OpenFileDescription {
                     crate::ipc::PipeDirection::Read,
                 ));
             }
+            OpenFileKind::Character(CharacterDevice::VirtioPort(port)) => {
+                sources.push(ReadinessSource::pipe(
+                    &port.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                ));
+            }
             OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
                 sources.push(ReadinessSource::pipe(
                     &master.notification_pipe(),

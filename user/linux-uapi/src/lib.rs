@@ -11,5 +11,6 @@ pub mod pty;
 mod raw;
 pub mod shared_memory;
 pub mod unix;
+pub mod virtio_port;
 
 pub use process::{Pid, Signal};

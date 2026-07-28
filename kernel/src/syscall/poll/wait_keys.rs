@@ -126,6 +126,15 @@ impl PollWaitKeys {
                     wake_group,
                 ))?;
             }
+            OpenFileKind::Character(CharacterDevice::VirtioPort(port)) => {
+                self.push(PollWaitKey::pipe(
+                    &port.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                    events,
+                    exclusive,
+                    wake_group,
+                ))?;
+            }
             OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
                 self.push(PollWaitKey::pipe(
                     &master.notification_pipe(),

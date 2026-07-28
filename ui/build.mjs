@@ -35,6 +35,7 @@ const liteModules = {
     globalThis.liteTerminalSubscribe = (callback) => globalThis.__liteSubscribe("terminal", callback);
     export const connect = (argv) => JSON.parse(globalThis.__liteNative("terminal.connect", JSON.stringify(argv)));
     export const input = (event) => globalThis.__liteNative("terminal.input", JSON.stringify(event));
+    export const paste = (text) => globalThis.__liteNative("terminal.paste", text);
   `,
   "lite:audio-system": `
     export const subscribe = (callback) => globalThis.__liteSubscribe("audio-system", callback);

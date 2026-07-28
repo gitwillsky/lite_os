@@ -2,8 +2,8 @@
 
 use super::{discovery, gicv3, pl011};
 use crate::drivers::{
-    DisplayDevice, InputDevice, MmioBus, VirtIOBlockDevice, VirtIOGpuDevice, VirtIOInputDevice,
-    VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice,
+    DisplayDevice, InputDevice, MmioBus, VirtIOBlockDevice, VirtIOConsoleDevice, VirtIOGpuDevice,
+    VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice,
 };
 use crate::{error, info, warn};
 
@@ -51,6 +51,7 @@ fn initialize_virtio_devices() {
         match device_id {
             1 => initialize_network(device),
             2 => initialize_block(device),
+            3 => initialize_console(device),
             4 => initialize_rng(device),
             16 => initialize_gpu(device),
             18 => initialize_input(device),
@@ -61,6 +62,18 @@ fn initialize_virtio_devices() {
             ),
         }
     }
+}
+
+fn initialize_console(resource: &discovery::MmioDevice) {
+    let device = VirtIOConsoleDevice::new(mapped_base(resource.base_addr))
+        .expect("virtio-console init failed");
+    crate::drivers::register_virtio_port(device.clone())
+        .unwrap_or_else(|_| panic!("only one virtio-console clipboard port is supported"));
+    register_irq(resource.irq, device.irq_handler_for(), "virtio-console");
+    info!(
+        "[Platform] VirtIO console clipboard port at {:#x}",
+        resource.base_addr
+    );
 }
 
 fn initialize_sound(resource: &discovery::MmioDevice) {

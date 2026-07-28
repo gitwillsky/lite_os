@@ -16,6 +16,7 @@ pub(crate) enum DeferredWork {
     Display = 1 << 4,
     Input = 1 << 5,
     DriverIo = 1 << 6,
+    VirtioPort = 1 << 7,
 }
 
 #[repr(transparent)]

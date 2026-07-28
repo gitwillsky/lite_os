@@ -133,6 +133,12 @@ def _qemu_command(
             "rng-random,filename=/dev/urandom,id=rng0",
             "-device",
             "virtio-rng-device,rng=rng0",
+            "-chardev",
+            "qemu-vdagent,id=vdagent,name=vdagent,clipboard=on,mouse=off",
+            "-device",
+            "virtio-serial-device,id=virtio-serial0",
+            "-device",
+            "virtserialport,bus=virtio-serial0.0,chardev=vdagent,name=com.redhat.spice.0",
         ]
     )
     if interactive_devices:

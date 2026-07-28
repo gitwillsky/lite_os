@@ -1,6 +1,7 @@
 //! Exact display-protocol client for desktop and ordinary app roles.
 
 mod allocation;
+mod clipboard;
 mod wire;
 
 use std::{
@@ -14,8 +15,8 @@ use std::{
 use display_proto::{
     CloseRequest, Configure, HelloApp, HelloDesktop, InputKey, InputPointer, InputScroll,
     MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, Rectangles,
-    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, Welcome,
-    parse_frame, recv_frame_blocking, send_message,
+    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, Welcome, parse_frame,
+    recv_frame_blocking, send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
@@ -113,6 +114,8 @@ pub enum Event {
     Scroll(InputScroll),
     /// Keyboard input routed to the presented focused surface.
     Key(InputKey),
+    /// Result of one exact plain-text clipboard request.
+    ClipboardData(display_proto::ClipboardData),
     /// An asynchronous submit/release/presentation transition freed pipeline progress.
     FrameDone,
 }

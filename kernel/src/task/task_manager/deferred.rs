@@ -155,6 +155,9 @@ pub(crate) fn dispatch_pending_deferred_work() {
     if work.contains(DeferredWork::Input) && crate::input::dispatch_input_work() {
         cpu::raise_deferred(DeferredWork::Input);
     }
+    if work.contains(DeferredWork::VirtioPort) && crate::virtio_port::dispatch_work() {
+        cpu::raise_deferred(DeferredWork::VirtioPort);
+    }
     if work.contains(DeferredWork::DriverIo) && crate::drivers::dispatch_io_completion_work() {
         cpu::raise_deferred(DeferredWork::DriverIo);
     }

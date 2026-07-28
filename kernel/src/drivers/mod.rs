@@ -8,6 +8,7 @@ pub(crate) mod network;
 mod uart;
 mod virtio_blk;
 mod virtio_completion_irq;
+mod virtio_console;
 mod virtio_gpu;
 mod virtio_input;
 mod virtio_net;
@@ -30,6 +31,7 @@ use hal::{
 pub(crate) use input::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
 pub(crate) use input::{device as input_device, device_count as input_device_count};
 pub(crate) use virtio_blk::VirtIOBlockDevice;
+pub(crate) use virtio_console::{PortError, VirtIOConsoleDevice};
 pub(crate) use virtio_gpu::VirtIOGpuDevice;
 pub(crate) use virtio_input::VirtIOInputDevice;
 pub(crate) use virtio_net::VirtIONetworkDevice;
@@ -41,6 +43,9 @@ use spin::Once;
 // OWNER: drivers registry retains the only physical PCM output adapter after platform discovery.
 // 缺少单一 publication 会让两个 ALSA owner 分别控制同一 VirtIO stream。
 static AUDIO_OUTPUT: Once<alloc::sync::Arc<VirtIOSoundDevice>> = Once::new();
+// OWNER: drivers registry retains the only physical named VirtIO port after platform discovery.
+// Missing single publication would let two byte-stream owners race one SPICE vdagent channel.
+static VIRTIO_PORT: Once<alloc::sync::Arc<VirtIOConsoleDevice>> = Once::new();
 
 pub(crate) use virtio_rng::fill_entropy;
 
@@ -70,6 +75,25 @@ pub(crate) fn register_audio_output(device: alloc::sync::Arc<VirtIOSoundDevice>)
     }
     AUDIO_OUTPUT.call_once(|| device);
     Ok(())
+}
+
+/// @description Register the unique physical VirtIO Console clipboard port.
+/// @param device Platform-proven modern VirtIO Console adapter.
+/// @return The first publication succeeds; a duplicate device fails atomically.
+pub(crate) fn register_virtio_port(
+    device: alloc::sync::Arc<VirtIOConsoleDevice>,
+) -> Result<(), ()> {
+    if VIRTIO_PORT.get().is_some() {
+        return Err(());
+    }
+    VIRTIO_PORT.call_once(|| device);
+    Ok(())
+}
+
+/// @description Return the transport-neutral byte stream used by the vdagent service.
+/// @return The selected port, or `None` when the platform did not publish one.
+pub(crate) fn primary_virtio_port() -> Option<alloc::sync::Arc<VirtIOConsoleDevice>> {
+    VIRTIO_PORT.get().cloned()
 }
 
 /// @description 取得 kernel audio owner 可消费的 transport-neutral PCM seam。

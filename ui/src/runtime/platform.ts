@@ -5,6 +5,7 @@
 // installed through an `any` view of globalThis by design.
 const timers = new Map<number, () => void>();
 const channels = new Map<string, Set<(payload: unknown) => void>>();
+const clipboardReads = new Map<number, (text: string) => void>();
 let nextTimer = 1;
 
 interface NativeFileDescriptor {
@@ -134,6 +135,7 @@ const host = globalThis as unknown as {
   __liteTimer: (id: number) => void;
   __liteEvent: (channel: string, payload: unknown) => void;
   __liteFile: (descriptor: NativeFileDescriptor) => File;
+  navigator: Navigator;
 };
 
 if (!("DOMException" in globalThis)) {
@@ -173,9 +175,36 @@ host.__liteTimer = (id) => {
   callback?.();
 };
 host.__liteEvent = (channel, payload) => {
+  if (channel === "clipboard") {
+    const result = payload as { requestId: number; text: string };
+    const resolve = clipboardReads.get(result.requestId);
+    if (resolve) {
+      clipboardReads.delete(result.requestId);
+      resolve(result.text);
+    }
+  }
   for (const callback of channels.get(channel) ?? []) callback(payload);
 };
 host.__liteFile = (descriptor) => new LiteFile(descriptor) as unknown as File;
+
+const clipboard: Clipboard = {
+  readText: () => Promise.resolve().then(() => new Promise<string>((resolve) => {
+    const requestId = Number(globalThis.__liteNative("clipboard.read", ""));
+    clipboardReads.set(requestId, resolve);
+  })),
+  writeText: (text: string) => Promise.resolve().then(() => {
+    if (typeof text !== "string") throw new TypeError("Clipboard text must be a string");
+    globalThis.__liteNative("clipboard.write", text);
+  }),
+};
+const navigatorValue = (globalThis as unknown as { navigator?: Navigator }).navigator
+  ?? {} as Navigator;
+Object.defineProperty(navigatorValue, "clipboard", {
+  configurable: false,
+  enumerable: true,
+  value: clipboard,
+});
+host.navigator = navigatorValue;
 
 // The native file remains lazy: createObjectURL retains only its descriptor and
 // the audio worker opens/reads it on demand. Without the matching revoke call a

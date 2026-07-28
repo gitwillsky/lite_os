@@ -1,5 +1,7 @@
 //! Event-driven client for the pure PTY/VT terminal helper.
 
+mod control;
+
 use std::{
     io::{self, Read, Write},
     os::fd::{AsFd, BorrowedFd},
@@ -256,17 +258,6 @@ impl Terminal {
         Ok(())
     }
 
-    /// Converts app pixels to a fixed terminal grid and sends a complete resize.
-    pub fn resize(&mut self, width: u32, height: u32) -> io::Result<()> {
-        let columns = (width / 8).max(1).min(u32::from(u16::MAX)) as u16;
-        let rows = (height / 16).max(1).min(u32::from(u16::MAX)) as u16;
-        let mut payload = [0u8; 8];
-        payload[0..2].copy_from_slice(&columns.to_le_bytes());
-        payload[2..4].copy_from_slice(&rows.to_le_bytes());
-        payload[4..6].copy_from_slice(&(width.min(u32::from(u16::MAX)) as u16).to_le_bytes());
-        payload[6..8].copy_from_slice(&(height.min(u32::from(u16::MAX)) as u16).to_le_bytes());
-        write_frame(&mut self.input, RESIZE, &payload)
-    }
 }
 
 fn cursor_appearance(style: u16) -> Option<(&'static str, bool)> {

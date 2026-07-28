@@ -30,6 +30,7 @@ pub(crate) enum CharacterDevice {
         file: Arc<InputFile>,
     },
     Audio(Arc<crate::audio::PcmFile>),
+    VirtioPort(Arc<crate::virtio_port::Port>),
     Terminal {
         terminal: Arc<Terminal>,
         kind: DeviceKind,
@@ -104,6 +105,9 @@ impl CharacterDevice {
                     }
                 })?)
             }
+            DeviceKind::VirtioPort => {
+                Self::VirtioPort(crate::virtio_port::open().ok_or(FileSystemError::NotFound)?)
+            }
         })
     }
 
@@ -144,6 +148,7 @@ impl CharacterDevice {
             }
             Self::Input { file, .. } => file.poll_events(events),
             Self::Audio(file) => file.poll_events(events),
+            Self::VirtioPort(port) => port.poll_events(events),
             Self::Terminal { terminal, pty, .. } => {
                 let hung_up = pty.as_ref().is_some_and(|slave| slave.master_hung_up());
                 (if hung_up {
@@ -177,6 +182,7 @@ impl CharacterDevice {
                 .readiness_generation(crate::ipc::PipeDirection::Read),
             Self::Null | Self::Zero | Self::Entropy => 0,
             Self::Audio(file) => file.readiness_generation(),
+            Self::VirtioPort(port) => port.readiness_generation(),
         }
     }
 
@@ -189,6 +195,7 @@ impl CharacterDevice {
                 | Self::Terminal { .. }
                 | Self::Input { .. }
                 | Self::Audio(_)
+                | Self::VirtioPort(_)
         )
     }
 }

@@ -1,6 +1,8 @@
 //! Fixed native operations exposed to the self-contained React bundle.
 
+mod actions;
 mod app_registry;
+mod clipboard;
 mod filesystem;
 mod media;
 mod scalar;
@@ -27,33 +29,7 @@ use crate::{
     tree::{self, Node},
 };
 
-/// One side effect requested synchronously by React and executed after its JS turn.
-pub enum Action {
-    /// Launch one checked application registry id.
-    Launch(String),
-    /// Route a desktop-owned app configure.
-    Configure {
-        surface_id: u32,
-        serial: u64,
-        width: u32,
-        height: u32,
-    },
-    /// Route an unconditional app close.
-    Close(u32),
-    /// Authorize one compositor-side move from an exact pointer-down serial.
-    BeginMove {
-        surface_id: u32,
-        serial: u64,
-        min_x: i32,
-        min_y: i32,
-        max_x: i32,
-        max_y: i32,
-    },
-    /// Request system shutdown.
-    Shutdown,
-    /// Send bytes to the terminal helper.
-    TerminalInput(Vec<u8>),
-}
+pub use actions::Action;
 
 #[derive(Clone, Serialize)]
 struct Bounds {
@@ -231,6 +207,7 @@ pub struct Host {
     files: RefCell<filesystem::Files>,
     audio: RefCell<AudioCommands>,
     next_media: Cell<u64>,
+    next_clipboard_request: Cell<u64>,
     media: RefCell<BTreeSet<u64>>,
 }
 
@@ -257,6 +234,7 @@ impl Host {
                 files: RefCell::new(filesystem::Files::default()),
                 audio: RefCell::new(audio),
                 next_media: Cell::new(1),
+                next_clipboard_request: Cell::new(1),
                 media: RefCell::new(BTreeSet::new()),
             },
             state,
@@ -416,6 +394,9 @@ impl NativeHost for Host {
                 self.state.actions.borrow_mut().push(Action::TerminalInput(payload.as_bytes().to_vec()));
                 Ok(String::new())
             }
+            "terminal.paste" if self.role == Role::App => self.terminal_paste(payload),
+            "clipboard.read" => self.clipboard_read(),
+            "clipboard.write" => self.clipboard_write(payload),
             "fs.list" if self.role == Role::App => Ok(filesystem::list(payload)),
             "fs.read" if self.role == Role::App => Ok(filesystem::read(payload)),
             "fs.mkdir" if self.role == Role::App => Ok(filesystem::mkdir(payload)),

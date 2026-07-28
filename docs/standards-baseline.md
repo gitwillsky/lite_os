@@ -104,6 +104,19 @@
   [tiny-skia](https://crates.io/crates/tiny-skia/0.12.0)。Taffy 只启用 Flexbox/block，Parley 禁止 system
   font discovery；精确 transitive source/checksum 由 `user/Cargo.lock` 唯一固定。
 
+### QEMU host clipboard 与 SPICE agent
+
+- QEMU `11.0.2`；tag commit `e545d8bb9d63e9dd61542b88463183314cff9482`；官方 tarball SHA-256
+  `3745f6ea88e2e87fe0dc838b2b1d4e0a770bf48e01a1d5a186842a1fff76ccf5`。来源：
+  [官方 tarball](https://download.qemu.org/qemu-11.0.2.tar.xz)、
+  [固定源码](https://gitlab.com/qemu-project/qemu/-/tree/e545d8bb9d63e9dd61542b88463183314cff9482)。
+- spice-protocol `0.14.5`；官方 tarball SHA-256
+  `baf58449f6e89d19f475899ad5fb9196fdc46c03cc53233f4e39cf2978f9cff7`。来源：
+  [官方 tarball](https://www.spice-space.org/download/releases/spice-protocol-0.14.5.tar.xz)。
+- QEMU 固定 `qemu-vdagent` chardev、Cocoa clipboard backend 与 `com.redhat.spice.0`
+  virtserialport；guest 只实现 spice-protocol 定义的 VDI chunk、capability 与 UTF-8 clipboard message。
+  QEMU/SPICE 不定义 LiteUI focus policy、display-protocol request identity 或 kernel devfs ABI。
+
 ### 媒体解码
 
 - Symphonia `0.6.0`；source commit `980bf5830a90e069fd64641d9c38f067ab772a24`；
