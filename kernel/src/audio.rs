@@ -355,7 +355,7 @@ impl PcmCompletionObserver for AudioDevice {
             if let Some(completed_periods) = completed_periods
                 && completed_periods.is_multiple_of(256)
             {
-                crate::info!(
+                crate::debug!(
                     "[Audio] ALSA playback periods completed: {}",
                     completed_periods
                 );

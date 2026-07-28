@@ -27,7 +27,9 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIRECTORY = ROOT / "scripts" / "fixtures" / "audio"
 DISPLAY_WIDTH = 1504
 DISPLAY_HEIGHT = 846
-RECIPE_VERSION = 5
+RECIPE_VERSION = 6
+NORMAL_AUDIO_INIT = "::respawn:/bin/audio-service"
+DIAGNOSTIC_AUDIO_INIT = "::respawn:/bin/audio-service --diagnostic-log"
 APP_ORIGIN = (155, 117)
 APP_CASCADE = (28, 24)
 QUEUE_ROW_POINT = (580, 112)
@@ -195,6 +197,26 @@ class SerialCapture:
 def serial_tail(text: str, lines: int = 50) -> str:
     """返回适合失败输出的串口尾部。"""
     return "\n".join(text.splitlines()[-lines:])
+
+
+def diagnostic_inittab(text: str) -> str:
+    """Enables the public audio diagnostic log mode in one private gate image."""
+    normal = f"{NORMAL_AUDIO_INIT}\n"
+    if text.count(normal) != 1 or DIAGNOSTIC_AUDIO_INIT in text:
+        raise RuntimeError("rootfs inittab has no unique production audio-service entry")
+    return text.replace(normal, f"{DIAGNOSTIC_AUDIO_INIT}\n", 1)
+
+
+def enable_audio_diagnostics(image: Path, directory: Path) -> None:
+    """Rewrites only the private gate image to request periodic audio records."""
+    host_inittab = directory / "inittab"
+    run_debugfs(image, f"dump /etc/inittab {host_inittab}")
+    host_inittab.write_text(diagnostic_inittab(host_inittab.read_text()))
+    run_debugfs(image, "rm /etc/inittab", writable=True)
+    run_debugfs(image, f"write {host_inittab} /etc/inittab", writable=True)
+    installed = run_debugfs(image, "cat /etc/inittab")
+    if DIAGNOSTIC_AUDIO_INIT not in installed:
+        raise RuntimeError("audio diagnostic inittab was not installed")
 
 
 def inject_fixtures(image: Path) -> None:
@@ -529,6 +551,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
     audio_output = private_root / "audio.wav"
     shutil.copyfile(image, private_image)
     inject_fixtures(private_image)
+    enable_audio_diagnostics(private_image, private_root)
     process = subprocess.Popen(
         _qemu_command(
             private_image,

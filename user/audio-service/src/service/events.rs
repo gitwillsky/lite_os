@@ -131,7 +131,9 @@ impl<D: PlaybackDevice> Service<D> {
                         .find(|record| record.id == stream_id && record.generation == generation)
                     {
                         record.confirmed_frames = consumed_frames;
-                        if consumed_frames >= record.next_progress_marker {
+                        if self.diagnostic_log
+                            && consumed_frames >= record.next_progress_marker
+                        {
                             eprintln!(
                                 "audio-service: stream progress id={stream_id} generation={generation} consumed_frames={consumed_frames}"
                             );
@@ -187,15 +189,19 @@ impl<D: PlaybackDevice> Service<D> {
                         generation,
                     })?;
                 }
-                MixerEvent::Metrics(metrics) => eprintln!(
-                    "audio-service: metrics periods={} xrun={} steady_allocations={} idle_periodic_wakes=0 mix_p99_us={} limiter_activations={} limiter_max_reduction={:.6}",
-                    metrics.period_count,
-                    metrics.xrun_count,
-                    metrics.steady_allocations,
-                    metrics.mix_p99_us,
-                    metrics.limiter_activations,
-                    metrics.limiter_max_reduction,
-                ),
+                MixerEvent::Metrics(metrics) => {
+                    if self.diagnostic_log {
+                        eprintln!(
+                            "audio-service: metrics periods={} xrun={} steady_allocations={} idle_periodic_wakes=0 mix_p99_us={} limiter_activations={} limiter_max_reduction={:.6}",
+                            metrics.period_count,
+                            metrics.xrun_count,
+                            metrics.steady_allocations,
+                            metrics.mix_p99_us,
+                            metrics.limiter_activations,
+                            metrics.limiter_max_reduction,
+                        );
+                    }
+                }
                 MixerEvent::DeviceStarted => eprintln!(
                     "audio-service: device start rate_hz={} channels={} period_frames={} buffer_frames={}",
                     audio_proto::SAMPLE_RATE,

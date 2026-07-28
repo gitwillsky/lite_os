@@ -36,7 +36,11 @@ const SETTINGS_PATH: &str = "/var/lib/liteos/audio/master";
 const PCM_PATH: &str = "/dev/snd/pcmC0D0p";
 const MAX_CONNECTIONS: usize = 64;
 
-pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// Runs the system audio service.
+///
+/// `diagnostic_log` enables periodic progress and mixer metric records. Errors,
+/// lifecycle changes and master-state changes remain visible in either mode.
+pub(crate) fn run(diagnostic_log: bool) -> Result<(), Box<dyn std::error::Error>> {
     if !Path::new(PCM_PATH).exists() {
         eprintln!("audio-service: unavailable pcm={PCM_PATH}");
         // Secondary platforms without a sound device keep the supervised
@@ -47,14 +51,15 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let device = crate::alsa::AlsaDevice::open()?;
-    run_with_device(device, PathBuf::from(SETTINGS_PATH))
+    run_with_device(device, PathBuf::from(SETTINGS_PATH), diagnostic_log)
 }
 
 pub(crate) fn run_with_device<D: PlaybackDevice>(
     device: D,
     settings_path: PathBuf,
+    diagnostic_log: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut service = Service::start(device, settings_path)?;
+    let mut service = Service::start(device, settings_path, diagnostic_log)?;
     eprintln!("audio-service: ready");
     service.run_loop()
 }
@@ -122,11 +127,12 @@ struct Service<D: PlaybackDevice> {
     events: Arc<SpscQueue<MixerEvent, EVENT_CAPACITY>>,
     mixer_failed: Arc<AtomicBool>,
     mixer: Option<JoinHandle<()>>,
+    diagnostic_log: bool,
     _device: std::marker::PhantomData<D>,
 }
 
 impl<D: PlaybackDevice> Service<D> {
-    fn start(device: D, settings_path: PathBuf) -> io::Result<Self> {
+    fn start(device: D, settings_path: PathBuf, diagnostic_log: bool) -> io::Result<Self> {
         let (listener, socket_guard) = bind_listener(Path::new(SOCKET_PATH))?;
         listener.set_nonblocking(true)?;
         let settings = Settings::load(settings_path)?;
@@ -160,6 +166,7 @@ impl<D: PlaybackDevice> Service<D> {
             events,
             mixer_failed,
             mixer: Some(handle),
+            diagnostic_log,
             _device: std::marker::PhantomData,
         })
     }
