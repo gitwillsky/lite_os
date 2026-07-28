@@ -56,8 +56,9 @@
   通过标准 `/etc/shells` owner 完成安装。
   应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
 - 固定产品 rootfs 不安装 Codex/Claude。AArch64 持久开发实例通过显式
-  `prepare-agent-development` 消费固定摘要的 Codex musl executable 与 Claude 签名 APK；
-  direct APK transaction 不修改产品 `/etc/apk/repositories`，也不建立 npm/Node 第二路径。
+  `prepare-agent-development` 离线安装固定 Node/npm APK closure，再由 Guest npm 从
+  registry SRI 固定的 cache 全局安装 Codex 与 Claude；安装只发布 `/usr/local` 的 npm owner，
+  不保留 raw binary 或 Claude APK 第二路径，也不修改产品 `/etc/apk/repositories`。
 
 ## Known limits
 

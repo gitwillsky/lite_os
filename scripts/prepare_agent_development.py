@@ -31,7 +31,7 @@ INSTALL_SCRIPT = ROOT / "scripts/fixtures/agent-development/install.sh"
 STAMP_PATH = "/usr/share/liteos/agent-development.json"
 DEFAULT_IMAGE_SIZE_MIB = 32768
 DEFAULT_QEMU_MEMORY = "6G"
-RECIPE_VERSION = 1
+RECIPE_VERSION = 2
 FORBIDDEN_MARKERS = (
     "unsupported syscall_id:",
     "panicked at",
@@ -61,13 +61,7 @@ def installation_payload(artifacts: AgentCliArtifacts) -> dict[str, object]:
     return {
         "kind": "agent-development-image",
         "recipe_version": RECIPE_VERSION,
-        "artifacts": artifact_payload(
-            artifacts.codex_binary,
-            artifacts.claude_key,
-            artifacts.claude_index,
-            artifacts.claude_apk,
-            artifacts.alpine_apks,
-        ),
+        "artifacts": artifact_payload(artifacts),
         "install_script_sha256": sha256(INSTALL_SCRIPT),
     }
 
@@ -104,7 +98,6 @@ def _dump(image: Path, guest_path: str, host_path: Path) -> None:
 
 def _verify_installed_image(
     image: Path,
-    artifacts: AgentCliArtifacts,
     expected_identity: str,
     directory: Path,
 ) -> None:
@@ -112,15 +105,29 @@ def _verify_installed_image(
     if stamp is None or stamp.get("identity") != expected_identity:
         raise RuntimeError("Agent development stamp was not published")
 
-    installed_codex = directory / "installed-codex"
-    _dump(image, "/usr/local/bin/codex", installed_codex)
-    if sha256(installed_codex) != sha256(artifacts.codex_binary):
-        raise RuntimeError("installed Codex binary does not match fixed artifact")
+    expected_npm_packages = {
+        "/usr/local/lib/node_modules/@openai/codex/package.json": (
+            "@openai/codex",
+            CODEX_VERSION,
+        ),
+        "/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json": (
+            "@anthropic-ai/claude-code",
+            CLAUDE_VERSION,
+        ),
+    }
+    for index, (guest_path, expected) in enumerate(expected_npm_packages.items()):
+        package_json = directory / f"npm-package-{index}.json"
+        _dump(image, guest_path, package_json)
+        metadata = json.loads(package_json.read_text())
+        if (metadata.get("name"), metadata.get("version")) != expected:
+            raise RuntimeError(f"unexpected npm package identity: {guest_path}")
 
     database = run_debugfs(image, "cat /lib/apk/db/installed")
-    for package in ("claude-code", "bash", "curl", "git", "ripgrep"):
+    for package in ("nodejs", "npm", "bash", "curl", "git", "ripgrep"):
         if f"P:{package}\n" not in database:
             raise RuntimeError(f"Agent development APK database lacks {package}")
+    if "P:claude-code\n" in database:
+        raise RuntimeError("legacy Claude APK remains installed beside npm")
 
 
 def _stage_installation(
@@ -165,10 +172,11 @@ def _stage_installation(
         "/run/liteos-agent/versions",
         "/run/liteos-agent/stamp.json",
         "/run/liteos-agent/normal.inittab",
+        "/run/liteos-agent/npm-cache.tar",
     ]
     stale_files.extend(
         f"/run/liteos-agent/apks/{archive.name}"
-        for archive in (*artifacts.alpine_apks, artifacts.claude_apk)
+        for archive in artifacts.alpine_apks
     )
     commands = [f"rm {path}" for path in stale_files]
     commands.extend(
@@ -186,15 +194,15 @@ def _stage_installation(
             f"write {versions} /run/liteos-agent/versions",
             f"write {stamp} /run/liteos-agent/stamp.json",
             f"write {normal_inittab} /run/liteos-agent/normal.inittab",
+            f"write {artifacts.npm_cache_archive} /run/liteos-agent/npm-cache.tar",
             "mkdir /usr/local/bin",
             "rm /usr/local/bin/codex",
-            f"write {artifacts.codex_binary} /usr/local/bin/codex",
-            "set_inode_field /usr/local/bin/codex mode 0100755",
+            "rm /usr/local/bin/claude",
         ]
     )
     commands.extend(
         f"write {archive} /run/liteos-agent/apks/{archive.name}"
-        for archive in (*artifacts.alpine_apks, artifacts.claude_apk)
+        for archive in artifacts.alpine_apks
     )
     commands.extend(("rm /etc/inittab", f"write {bootstrap_inittab} /etc/inittab"))
     _run_debugfs_batch(image, commands, directory)
@@ -238,7 +246,6 @@ def prepare(
             ) as temporary:
                 _verify_installed_image(
                     image,
-                    artifacts,
                     identity,
                     Path(temporary),
                 )
@@ -265,9 +272,9 @@ def prepare(
     with tempfile.TemporaryDirectory(
         prefix="liteos-agent-development-verify-"
     ) as temporary:
-        _verify_installed_image(image, artifacts, identity, Path(temporary))
+        _verify_installed_image(image, identity, Path(temporary))
     print(
-        f"Agent development image prepared: Codex {CODEX_VERSION}, "
+        f"Agent development image prepared by npm: Codex {CODEX_VERSION}, "
         f"Claude {CLAUDE_VERSION} ({identity[:12]})"
     )
     return True

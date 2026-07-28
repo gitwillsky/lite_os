@@ -14,6 +14,7 @@ const TCGETS: usize = 0x5401;
 const TCSETS: usize = 0x5402;
 const TCSETSW: usize = 0x5403;
 const TCSETSF: usize = 0x5404;
+const TCFLSH: usize = 0x540b;
 const TIOCSCTTY: usize = 0x540e;
 const TIOCGPGRP: usize = 0x540f;
 const TIOCSPGRP: usize = 0x5410;
@@ -104,6 +105,19 @@ pub(super) fn tty_ioctl(
                 TCSETSF => terminal.flush_input_and_set_termios(termios),
                 _ => unreachable!(),
             }
+            0
+        }
+        TCFLSH => {
+            if let Err(error) = guard_terminal_access(terminal, TerminalAccess::StateChange) {
+                return error;
+            }
+            let (input, output) = match argument {
+                0 => (true, false),
+                1 => (false, true),
+                2 => (true, true),
+                _ => return -errno::EINVAL,
+            };
+            terminal.flush(input, output);
             0
         }
         TIOCSCTTY => claim_controlling_terminal(terminal, argument).map_or_else(tty_error, |()| 0),

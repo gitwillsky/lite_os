@@ -476,6 +476,38 @@ impl Terminal {
         }
     }
 
+    /// @description 丢弃调用前尚未消费的 terminal input/output。
+    ///
+    /// @param input true 时清除 adapter raw input、cooked queue、partial canonical line 与 EOF。
+    /// @param output true 时清除 adapter 尚未由 terminal peer 消费的 output。
+    /// @return 无返回值；所选方向在同一 output→input transaction 顺序下完成。
+    pub(crate) fn flush(&self, input: bool, output: bool) {
+        assert!(input || output, "terminal flush requires a direction");
+        let _output = self.output_transaction.lock();
+        if output {
+            self.console.discard_output();
+        }
+        if !input {
+            return;
+        }
+        let _input = self.input_transaction.lock();
+        // Console discard 可同步触发 readiness callback；此处不得持 state，否则 callback 中的
+        // input_ready 会重入同一锁。input transaction 保证调用前 raw/cooked input 不会重现。
+        let raw = self.console.discard_input();
+        let mut state = self.state.lock();
+        let TerminalState {
+            input_head,
+            input_len,
+            line_len,
+            eof_pending,
+            ..
+        } = &mut *state;
+        let cooked = terminal_flush::clear_pending(input_head, input_len, line_len, eof_pending);
+        if raw != 0 || cooked {
+            state.input_generation = crate::sync::next_readiness_generation();
+        }
+    }
+
     pub(crate) fn window_size(&self) -> [u8; 8] {
         self.state.lock().window_size
     }

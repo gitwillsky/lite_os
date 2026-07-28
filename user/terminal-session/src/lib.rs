@@ -21,6 +21,7 @@ const RESIZE: u32 = 2;
 const ACK: u32 = 3;
 const UPDATE: u32 = 4;
 const EXIT: u32 = 5;
+const APPLICATION_CURSOR_KEYS: u32 = 1;
 const MAX_INPUT: usize = 64 * 1024;
 // 每轮最多消费 64 KiB PTY 输出，随后必须回到 control fd。缺少该预算时，Claude 等持续
 // 刷新的 TUI 会让 drain 永远等不到 EAGAIN，LiteUI 的 ACK 与键盘输入因此永久饥饿。
@@ -61,6 +62,10 @@ fn run() -> io::Result<()> {
     let mut update = Vec::new();
     send_update(&mut output, &mut update, &mut model)?;
     let mut in_flight = true;
+    // OWNER: published mode tracks the last UPDATE acknowledged by LiteUI. Without this
+    // projection, a mode-only DECSET transition leaves navigation keys encoded for the old
+    // mode even though the VT parser has already accepted the new mode.
+    let mut published_application_cursor_keys = model.application_cursor_keys();
 
     loop {
         let (control_ready, pty_ready) = {
@@ -98,8 +103,13 @@ fn run() -> io::Result<()> {
             send_exit(&mut output)?;
             return Ok(());
         }
-        if !in_flight && (0..model.rows()).any(|row| model.dirty_span(row).is_some()) {
+        let application_cursor_keys = model.application_cursor_keys();
+        if !in_flight
+            && ((0..model.rows()).any(|row| model.dirty_span(row).is_some())
+                || application_cursor_keys != published_application_cursor_keys)
+        {
             send_update(&mut output, &mut update, &mut model)?;
+            published_application_cursor_keys = application_cursor_keys;
             in_flight = true;
         }
     }
@@ -213,7 +223,7 @@ fn send_update(output: &mut impl Write, bytes: &mut Vec<u8>, model: &mut Model) 
     let dirty_rows = (0..model.rows())
         .filter(|row| model.dirty_span(*row).is_some())
         .count();
-    let payload = 20usize
+    let payload = 24usize
         .checked_add(
             dirty_rows
                 .checked_mul(4 + model.columns() * 16)
@@ -245,6 +255,12 @@ fn send_update(output: &mut impl Write, bytes: &mut Vec<u8>, model: &mut Model) 
     let (foreground, background) = model.default_colors();
     bytes.extend_from_slice(&foreground.to_le_bytes());
     bytes.extend_from_slice(&background.to_le_bytes());
+    let input_modes = if model.application_cursor_keys() {
+        APPLICATION_CURSOR_KEYS
+    } else {
+        0
+    };
+    bytes.extend_from_slice(&input_modes.to_le_bytes());
     for row in 0..model.rows() {
         if model.dirty_span(row).is_none() {
             continue;
@@ -276,7 +292,10 @@ mod tests {
 
     use linux_uapi::unix::{self, PollEvents, PollFd};
 
-    use super::{ACK, Control, INPUT, duplicate_control_input, read_control};
+    use super::{
+        ACK, APPLICATION_CURSOR_KEYS, Control, Grid, INPUT, Model, duplicate_control_input,
+        read_control,
+    };
 
     #[test]
     fn adjacent_control_frames_remain_visible_to_poll() {
@@ -302,5 +321,16 @@ mod tests {
             read_control(&mut input).unwrap(),
             Control::Input(bytes) if bytes == b"x"
         ));
+    }
+
+    #[test]
+    fn dec_application_cursor_mode_is_projected_by_the_vt_owner() {
+        let mut model = Model::new(80, 25).unwrap();
+        assert!(!model.application_cursor_keys());
+        model.feed(b"\x1b[?1h", |_| {});
+        assert!(model.application_cursor_keys());
+        assert_eq!(APPLICATION_CURSOR_KEYS, 1);
+        model.feed(b"\x1b[?1l", |_| {});
+        assert!(!model.application_cursor_keys());
     }
 }

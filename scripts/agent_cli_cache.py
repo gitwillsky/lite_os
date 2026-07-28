@@ -1,28 +1,20 @@
 #!/usr/bin/env python3
-"""获取 LiteOS AArch64 Agent 开发环境的固定 CLI 与 APK 输入。"""
+"""获取 LiteOS AArch64 Agent 开发环境的固定 npm cache 与 APK 输入。"""
 
 from __future__ import annotations
 
-import gzip
-import io
+import json
 import os
 import re
 import shutil
 import subprocess
 import tarfile
-import tempfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 from apk_apps_cache import cached_application_apks
-from apk_cache import (
-    ALPINE_ARCH,
-    ALPINE_BRANCH,
-    ALPINE_MIRROR,
-    cached_apk_bootstrap,
-)
-from apk_package import add_apk_signature, split_apk_gzip_members
+from apk_cache import ALPINE_ARCH, ALPINE_BRANCH, ALPINE_MIRROR
 from build_cache import (
     cache_lock,
     fingerprint,
@@ -38,82 +30,69 @@ ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
 WORK = ROOT / "target" / "agent-development" / TARGET.arch
 
+NPM_REGISTRY = "https://registry.npmjs.org"
+CODEX_PACKAGE = "@openai/codex"
 CODEX_VERSION = "0.145.0"
-CODEX_ARCHIVE_NAME = "codex-aarch64-unknown-linux-musl.tar.gz"
-CODEX_ARCHIVE_URL = (
-    "https://github.com/openai/codex/releases/download/"
-    f"rust-v{CODEX_VERSION}/{CODEX_ARCHIVE_NAME}"
-)
-CODEX_ARCHIVE_SHA256 = (
-    "d384f90bc842450b42bd675feef06a12a46a3b1ca97efcb22566b270e4a11227"
-)
-CODEX_BINARY_NAME = "codex-aarch64-unknown-linux-musl"
+CODEX_PLATFORM_VERSION = f"{CODEX_VERSION}-linux-arm64"
+CLAUDE_PACKAGE = "@anthropic-ai/claude-code"
+CLAUDE_VERSION = "2.1.212"
 
-CLAUDE_VERSION = "2.1.212-r1"
-CLAUDE_APK_NAME = f"claude-code-{CLAUDE_VERSION}.apk"
-CLAUDE_APK_URL = (
-    "https://downloads.claude.ai/claude-code/apk/stable/"
-    f"aarch64/{CLAUDE_APK_NAME}"
-)
-CLAUDE_APK_SHA256 = (
-    "a7b800b0a1e392c5facd7743425711d8f2da6278600f69c18299d8d90469244a"
-)
-CLAUDE_KEY_NAME = "claude-code.rsa.pub"
-CLAUDE_KEY_URL = f"https://downloads.claude.ai/keys/{CLAUDE_KEY_NAME}"
-CLAUDE_KEY_SHA256 = (
-    "395759c1f7449ef4cdef305a42e820f3c766d6090d142634ebdb049f113168b6"
-)
-CLAUDE_INDEX_NAME = "APKINDEX.tar.gz"
-CLAUDE_INDEX_GENERATION = "1784943401844049"
-CLAUDE_INDEX_URL = (
-    "https://downloads.claude.ai/claude-code/apk/stable/aarch64/"
-    f"{CLAUDE_INDEX_NAME}?generation={CLAUDE_INDEX_GENERATION}"
-)
-CLAUDE_INDEX_SHA256 = (
-    "131c9ed4cb32b8d0ebcfed34b75ece690d76d9b0f5814134361eccf85bfea80f"
+# npm registry 的 SRI 是 package version 的不可变内容身份。构建 cache 前逐项与官方 registry
+# metadata 核对；缺少该检查时，同名版本的错误 mirror 响应会进入持久开发镜像。
+NPM_PACKAGE_INTEGRITIES = (
+    (
+        CODEX_PACKAGE,
+        CODEX_VERSION,
+        "sha512-/PSPSFujjjmiyVFvG2yu/grOFhsWdokTH8t2KGWhXSo/M5n/dIDsnbsnO82/7bLtIoDuzQf7ATBUMWqPWQINlQ==",
+    ),
+    (
+        CODEX_PACKAGE,
+        CODEX_PLATFORM_VERSION,
+        "sha512-8OLcPXaAol/FOrRoDxWhIiHIFa73KRsM41EKocjRZOwiT4TcelzJWn3dHyiuSb7teWF25rrslvSPyvhULYRRCQ==",
+    ),
+    (
+        CLAUDE_PACKAGE,
+        CLAUDE_VERSION,
+        "sha512-MEasj1oaoARRKEWU7eHJ6DWC2TC8ogml9QUDihbmxYI2Ij5Ol1leW90DIj8/a0xX3lfHZOwT3gJr0JxVKa8Sxw==",
+    ),
+    (
+        f"{CLAUDE_PACKAGE}-linux-arm64-musl",
+        CLAUDE_VERSION,
+        "sha512-OmNXhGKaf1F3XrqYL5GnMIAFMv4Og3H4ehEREX6JLiZU2AC3ckyPawqvvhqyhoJx+a6KN59+6rEC97DyQMgo5Q==",
+    ),
 )
 
-# Agent 开发镜像需要 Bash、外部 ripgrep 与 Claude 的 C++ runtime。缺失这些固定包时，
-# Claude 在 Alpine 上会选择不受支持的 bundled rg 或在 loader 阶段直接缺少 shared object。
+# Node/npm 及其 ELF dependency closure 与 Agent 常用 shell/tooling。全部文件名和摘要固定，
+# Guest 只执行离线 apk transaction，产品 rootfs 不继承这些开发包。
 AGENT_ALPINE_PACKAGES = (
-    (
-        "main",
-        "bash-5.2.37-r0.apk",
-        "411e1fec2dccd603bc9f23586f7b8df2211613ece49b20c71c17412ab2667c44",
-    ),
-    (
-        "main",
-        "libgcc-14.2.0-r6.apk",
-        "ba1835eec3ad8a120efd3d5020e561d53553a0513763a08f509e3ce6d4baa9ca",
-    ),
-    (
-        "main",
-        "libstdc++-14.2.0-r6.apk",
-        "0d2f054057a4f932e985a129eccb79908b40964185139a0a609aed3032aba064",
-    ),
-    (
-        "community",
-        "ripgrep-14.1.1-r0.apk",
-        "f9c145aca9868a3a90d57d4eb89a4c1c92bc4f06870311d230856f68cf6e58bd",
-    ),
+    ("main", "ada-libs-2.9.2-r4.apk", "58147891c4ae32752fd81792dfec19c71b8d88661c4aa30db3f26600df33bb28"),
+    ("main", "bash-5.2.37-r0.apk", "411e1fec2dccd603bc9f23586f7b8df2211613ece49b20c71c17412ab2667c44"),
+    ("main", "ca-certificates-20260611-r0.apk", "6b491dcda951129c80e8d7b0f509253ab640b20653b208d3b0994d893189b3f5"),
+    ("main", "icu-data-en-76.1-r1.apk", "2c2d36d47c82d0f6cff1b549044fe3562f327f944971ef367b9c40eeb35aa6e8"),
+    ("main", "icu-libs-76.1-r1.apk", "6c9dd2e6b0ddc6e7d5fd2a21b427799d7ca4f7e8b5aad72d17e84520db3cd249"),
+    ("main", "libgcc-14.2.0-r6.apk", "ba1835eec3ad8a120efd3d5020e561d53553a0513763a08f509e3ce6d4baa9ca"),
+    ("main", "libstdc++-14.2.0-r6.apk", "0d2f054057a4f932e985a129eccb79908b40964185139a0a609aed3032aba064"),
+    ("main", "nodejs-22.23.0-r0.apk", "8320f5e9cd6d37225d19a8fa66e437589c14300bc0386841b7f88ec44b74da20"),
+    ("community", "npm-11.6.4-r0.apk", "0ec0386135848268c5d316b2f28f2cbac7084686df20919e727942914f74cbfe"),
+    ("community", "ripgrep-14.1.1-r0.apk", "f9c145aca9868a3a90d57d4eb89a4c1c92bc4f06870311d230856f68cf6e58bd"),
+    ("main", "simdjson-3.12.0-r0.apk", "5605c691ab62e5a0071d065b5afdd5c3740d763821d689a6bf54e46c95916974"),
+    ("main", "simdutf-7.2.1-r0.apk", "b20688ad72d096ba903bc77ea92165153427dcf5d25b5b9dcf27e7b4ca7046b9"),
+    ("main", "sqlite-libs-3.49.2-r1.apk", "204910bcbb13df4d517cb01acb178ebe14f12ff0e55a04b38d1565941780ee29"),
 )
-RECIPE_VERSION = 1
+RECIPE_VERSION = 2
 
 
 @dataclass(frozen=True)
 class AgentCliArtifacts:
-    """已校验并缓存的 Agent CLI、签名身份与离线 APK 闭包。"""
+    """已校验并缓存的 npm 离线输入与 Alpine dependency closure。"""
 
-    codex_binary: Path
-    claude_key: Path
-    claude_index: Path
-    claude_apk: Path
+    npm_cache_archive: Path
     alpine_apks: tuple[Path, ...]
     fingerprint: str
 
 
 def ensure_supported_target() -> None:
-    """确认当前 target 能消费固定的 AArch64 Agent 原生产物。
+    """确认当前 target 能消费固定的 AArch64 npm/Alpine 产物。
 
     Raises:
         RuntimeError: 当前架构不是一等 AArch64 开发路径。
@@ -139,7 +118,7 @@ def _run(command: list[str]) -> str:
 
 
 def _download(url: str, name: str, expected_sha256: str) -> Path:
-    """下载一个固定输入，并只在摘要匹配后发布到共享 cache。"""
+    """下载一个固定 APK，并只在摘要匹配后发布到共享 cache。"""
     archives = WORK / "archives"
     archives.mkdir(parents=True, exist_ok=True)
     destination = archives / name
@@ -164,109 +143,187 @@ def _download(url: str, name: str, expected_sha256: str) -> Path:
     return destination
 
 
+def _package_identity(name: str) -> tuple[str, str]:
+    stem = name.removesuffix(".apk")
+    match = re.fullmatch(r"(.+?)-(\d.+-r\d+)", stem)
+    if match is None:
+        raise RuntimeError(f"invalid fixed APK filename: {name}")
+    return match.group(1), match.group(2)
+
+
 def _verify_apk(archive: Path, package: str, version: str) -> None:
-    """验证固定 APK 的 package/version/architecture metadata。"""
+    """验证固定 APK 的 package/version 与 AArch64/noarch metadata。"""
     metadata: dict[str, str] = {}
     for line in _run(["tar", "-xOf", str(archive), ".PKGINFO"]).splitlines():
         key, separator, value = line.partition(" = ")
         if separator and key in {"pkgname", "pkgver", "arch"}:
             metadata[key] = value
-    expected = {"pkgname": package, "pkgver": version, "arch": "aarch64"}
-    if metadata != expected:
+    if (
+        metadata.get("pkgname") != package
+        or metadata.get("pkgver") != version
+        or metadata.get("arch") not in {"aarch64", "noarch"}
+    ):
         raise RuntimeError(
-            f"Agent APK metadata mismatch: {archive.name}; "
-            f"expected={expected}, actual={metadata}"
+            f"Agent APK metadata mismatch: {archive.name}; actual={metadata}"
         )
 
 
-def _verify_claude_index(index: Path, public_key: Path) -> None:
-    """验证固定官方 index 的签名成员与目标 Claude package metadata。"""
-    members = split_apk_gzip_members(index.read_bytes())
-    if len(members) != 2:
-        raise RuntimeError("Claude APK index must contain signature and index members")
-    with tarfile.open(
-        fileobj=io.BytesIO(gzip.decompress(members[0])),
-        mode="r:",
-    ) as archive:
-        names = set(archive.getnames())
-        expected_signature = f".SIGN.RSA512.{CLAUDE_KEY_NAME}"
-        if names != {expected_signature}:
-            raise RuntimeError(f"Claude APK index lacks {expected_signature}")
-        source = archive.extractfile(expected_signature)
-        if source is None:
-            raise RuntimeError("Claude APK index signature is unreadable")
-        signature = source.read()
-    with tempfile.TemporaryDirectory(prefix="liteos-claude-index-verify-") as temporary:
-        directory = Path(temporary)
-        signature_path = directory / "signature"
-        payload_path = directory / "APKINDEX.tar.gz"
-        signature_path.write_bytes(signature)
-        payload_path.write_bytes(members[1])
-        result = subprocess.run(
-            [
-                "openssl",
-                "dgst",
-                "-sha512",
-                "-verify",
-                str(public_key),
-                "-signature",
-                str(signature_path),
-                str(payload_path),
-            ],
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if result.returncode != 0 or "Verified OK" not in result.stdout:
-            raise RuntimeError(f"Claude APK index signature is invalid: {result.stdout}")
+def _registry_integrity(package: str, version: str, cache: Path) -> str:
+    command = [
+        "npm",
+        "view",
+        "--registry",
+        NPM_REGISTRY,
+        "--cache",
+        str(cache),
+        f"{package}@{version}",
+        "dist.integrity",
+        "--json",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        tail = "\n".join((result.stdout + result.stderr).splitlines()[-60:])
+        raise RuntimeError(f"command failed: {' '.join(command)}\n{tail}")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"npm returned invalid integrity metadata: {result.stdout}"
+        ) from error
+    if not isinstance(value, str):
+        raise RuntimeError(f"npm integrity metadata is not a string: {value!r}")
+    return value
 
-    with tarfile.open(
-        fileobj=io.BytesIO(gzip.decompress(members[1])),
-        mode="r:",
-    ) as archive:
-        source = archive.extractfile("APKINDEX")
-        if source is None:
-            raise RuntimeError("Claude APK index payload is unreadable")
-        entries = source.read().decode().strip().split("\n\n")
+
+def _verify_npm_prefix(prefix: Path) -> None:
     expected = {
-        "P": "claude-code",
-        "V": CLAUDE_VERSION,
-        "A": "aarch64",
+        prefix / "lib/node_modules/@openai/codex/package.json": (
+            CODEX_PACKAGE,
+            CODEX_VERSION,
+        ),
+        prefix
+        / "lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/package.json": (
+            CODEX_PACKAGE,
+            CODEX_PLATFORM_VERSION,
+        ),
+        prefix / "lib/node_modules/@anthropic-ai/claude-code/package.json": (
+            CLAUDE_PACKAGE,
+            CLAUDE_VERSION,
+        ),
+        prefix
+        / "lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-arm64-musl/package.json": (
+            f"{CLAUDE_PACKAGE}-linux-arm64-musl",
+            CLAUDE_VERSION,
+        ),
     }
-    for entry in entries:
-        metadata = {
-            key: value
-            for line in entry.splitlines()
-            for key, separator, value in (line.partition(":"),)
-            if separator and key in expected
-        }
-        if metadata == expected:
-            return
-    raise RuntimeError(f"Claude APK index lacks fixed package metadata: {expected}")
+    for path, identity in expected.items():
+        metadata = json.loads(path.read_text())
+        if (metadata.get("name"), metadata.get("version")) != identity:
+            raise RuntimeError(f"npm installed unexpected package metadata: {path}")
+    required = (
+        prefix
+        / "lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex",
+        prefix
+        / "lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-arm64-musl/claude",
+    )
+    if not all(path.is_file() and path.stat().st_mode & 0o111 for path in required):
+        raise RuntimeError("npm cache validation lacks an executable AArch64 musl CLI")
 
 
-def _cached_signed_claude_apk(source: Path, private_key: Path, public_key: Path) -> Path:
+def _archive_cache(cache: Path, output: Path) -> None:
+    """把 npm cacache 打包为 metadata 归一化、Guest 可离线展开的 tar。"""
+    with tarfile.open(output, "w") as archive:
+        for path in sorted(cache.rglob("*")):
+            relative = Path("npm-cache") / path.relative_to(cache)
+            info = archive.gettarinfo(str(path), str(relative))
+            info.uid = 0
+            info.gid = 0
+            info.uname = "root"
+            info.gname = "root"
+            info.mtime = 0
+            if path.is_file():
+                with path.open("rb") as stream:
+                    archive.addfile(info, stream)
+            else:
+                archive.addfile(info)
+
+
+def _cached_npm_cache_archive() -> Path:
     payload = {
-        "kind": "claude-local-signature",
+        "kind": "agent-npm-cache",
         "recipe_version": RECIPE_VERSION,
-        "source_sha256": sha256(source),
-        "local_public_key_sha256": sha256(public_key),
+        "registry": NPM_REGISTRY,
+        "packages": {
+            f"{package}@{version}": integrity
+            for package, version, integrity in NPM_PACKAGE_INTEGRITIES
+        },
     }
-    destination = WORK / "claude" / fingerprint(payload)
-    output = destination / CLAUDE_APK_NAME
-    if manifest_matches(destination, payload, (CLAUDE_APK_NAME,)):
+    destination = WORK / "npm-cache" / fingerprint(payload)
+    output = destination / "npm-cache.tar"
+    if manifest_matches(destination, payload, ("npm-cache.tar",)):
         return output
 
-    generation = temporary_directory(WORK / "claude", "claude")
+    generation = temporary_directory(WORK / "npm-cache", "npm-cache")
     published = False
     try:
-        add_apk_signature(
-            source,
-            generation / CLAUDE_APK_NAME,
-            private_key,
-            public_key,
+        cache = generation / "npm-cache"
+        prefix = generation / "prefix"
+        cache.mkdir()
+        prefix.mkdir()
+        for package, version, expected_integrity in NPM_PACKAGE_INTEGRITIES:
+            actual = _registry_integrity(package, version, cache)
+            if actual != expected_integrity:
+                raise RuntimeError(
+                    f"npm integrity mismatch for {package}@{version}: "
+                    f"expected={expected_integrity}, actual={actual}"
+                )
+            _run(
+                [
+                    "npm",
+                    "cache",
+                    "add",
+                    "--registry",
+                    NPM_REGISTRY,
+                    "--cache",
+                    str(cache),
+                    f"{package}@{version}",
+                ]
+            )
+        _run(
+            [
+                "npm",
+                "install",
+                "--global",
+                "--prefix",
+                str(prefix),
+                "--cache",
+                str(cache),
+                "--offline",
+                "--registry",
+                NPM_REGISTRY,
+                "--os=linux",
+                "--cpu=arm64",
+                "--libc=musl",
+                "--include=optional",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                f"{CODEX_PACKAGE}@{CODEX_VERSION}",
+                f"{CLAUDE_PACKAGE}@{CLAUDE_VERSION}",
+            ]
         )
+        _verify_npm_prefix(prefix)
+        shutil.rmtree(cache / "_logs", ignore_errors=True)
+        (cache / "_update-notifier-last-checked").unlink(missing_ok=True)
+        _archive_cache(cache, generation / "npm-cache.tar")
+        shutil.rmtree(cache)
+        shutil.rmtree(prefix)
         write_manifest(generation, payload)
         publish_directory(generation, destination)
         published = True
@@ -276,83 +333,19 @@ def _cached_signed_claude_apk(source: Path, private_key: Path, public_key: Path)
     return output
 
 
-def _package_identity(name: str) -> tuple[str, str]:
-    stem = name.removesuffix(".apk")
-    match = re.fullmatch(r"(.+?)-(\d.+-r\d+)", stem)
-    if match is None:
-        raise RuntimeError(f"invalid fixed APK filename: {name}")
-    return match.group(1), match.group(2)
-
-
-def _cached_codex_binary() -> Path:
-    archive = _download(CODEX_ARCHIVE_URL, CODEX_ARCHIVE_NAME, CODEX_ARCHIVE_SHA256)
-    payload = {
-        "kind": "codex-native-binary",
-        "recipe_version": RECIPE_VERSION,
-        "version": CODEX_VERSION,
-        "archive_sha256": CODEX_ARCHIVE_SHA256,
-    }
-    destination = WORK / "codex" / fingerprint(payload)
-    if manifest_matches(destination, payload, ("codex",)):
-        binary = destination / "codex"
-        if binary.stat().st_mode & 0o111:
-            return binary
-
-    generation = temporary_directory(WORK / "codex", "codex")
-    published = False
-    try:
-        with tarfile.open(archive, "r:gz") as bundle:
-            members = bundle.getmembers()
-            if (
-                len(members) != 1
-                or members[0].name != CODEX_BINARY_NAME
-                or not members[0].isfile()
-            ):
-                raise RuntimeError(
-                    f"unexpected Codex archive members: {[item.name for item in members]}"
-                )
-            source = bundle.extractfile(members[0])
-            if source is None:
-                raise RuntimeError("Codex archive lacks its native executable")
-            binary = generation / "codex"
-            with binary.open("wb") as stream:
-                shutil.copyfileobj(source, stream)
-            binary.chmod(0o755)
-        write_manifest(generation, payload)
-        publish_directory(generation, destination)
-        published = True
-    finally:
-        if not published:
-            shutil.rmtree(generation, ignore_errors=True)
-    return destination / "codex"
-
-
-def artifact_payload(
-    codex_binary: Path,
-    claude_key: Path,
-    claude_index: Path,
-    claude_apk: Path,
-    alpine_apks: tuple[Path, ...],
-) -> dict[str, object]:
-    """构造与全部 Guest 安装 bytes 绑定的 Agent 开发环境身份。"""
+def artifact_payload(artifacts: AgentCliArtifacts) -> dict[str, object]:
+    """构造与全部 Guest npm/APK 安装 bytes 绑定的开发环境身份。"""
     return {
         "kind": "agent-development-assets",
         "recipe_version": RECIPE_VERSION,
         "arch": TARGET.arch,
-        "codex": {
-            "version": CODEX_VERSION,
-            "sha256": sha256(codex_binary),
-        },
-        "claude": {
-            "version": CLAUDE_VERSION,
-            "key_sha256": sha256(claude_key),
-            "index_generation": CLAUDE_INDEX_GENERATION,
-            "index_sha256": sha256(claude_index),
-            "source_apk_sha256": CLAUDE_APK_SHA256,
-            "apk_sha256": sha256(claude_apk),
+        "npm_cache_sha256": sha256(artifacts.npm_cache_archive),
+        "npm_packages": {
+            f"{package}@{version}": integrity
+            for package, version, integrity in NPM_PACKAGE_INTEGRITIES
         },
         "alpine_apks": {
-            archive.name: sha256(archive) for archive in alpine_apks
+            archive.name: sha256(archive) for archive in artifacts.alpine_apks
         },
     }
 
@@ -361,40 +354,15 @@ def cached_agent_cli_artifacts() -> AgentCliArtifacts:
     """返回 Agent 开发镜像需要的完整固定输入。
 
     Returns:
-        原生 Codex、Claude repository key 与离线 APK dependency closure。
+        npm 离线 cache 与 Node、npm、Git、curl、shell 的 Alpine APK 闭包。
 
     Raises:
-        RuntimeError: target、摘要、APK metadata 或 Codex archive 不符合固定契约。
+        RuntimeError: target、npm SRI、APK 摘要或 package metadata 不符合固定契约。
         OSError: 网络、cache 或本地工具不可用。
     """
     ensure_supported_target()
     with cache_lock(WORK / ".agent-cli.lock"):
-        codex_binary = _cached_codex_binary()
-        claude_key = _download(
-            CLAUDE_KEY_URL,
-            CLAUDE_KEY_NAME,
-            CLAUDE_KEY_SHA256,
-        )
-        claude_source_apk = _download(
-            CLAUDE_APK_URL,
-            CLAUDE_APK_NAME,
-            CLAUDE_APK_SHA256,
-        )
-        _verify_apk(claude_source_apk, "claude-code", CLAUDE_VERSION)
-        claude_index = _download(
-            CLAUDE_INDEX_URL,
-            CLAUDE_INDEX_NAME,
-            CLAUDE_INDEX_SHA256,
-        )
-        _verify_claude_index(claude_index, claude_key)
-        bootstrap = cached_apk_bootstrap()
-        claude_apk = _cached_signed_claude_apk(
-            claude_source_apk,
-            bootstrap.private_key,
-            bootstrap.public_key,
-        )
-        _verify_apk(claude_apk, "claude-code", CLAUDE_VERSION)
-
+        npm_cache_archive = _cached_npm_cache_archive()
         development_apks = []
         for repository, name, digest in AGENT_ALPINE_PACKAGES:
             url = (
@@ -406,7 +374,7 @@ def cached_agent_cli_artifacts() -> AgentCliArtifacts:
             _verify_apk(archive, package, version)
             development_apks.append(archive)
 
-        # Git/curl 的固定闭包已经有独立 runtime gate；Agent 开发镜像复用相同 bytes，
+        # Git/curl 的固定闭包已有独立 runtime gate；Agent 开发镜像复用相同 bytes，
         # 但不安装与自举无关的 SQLite 顶层应用。
         application_apks = tuple(
             archive
@@ -414,18 +382,14 @@ def cached_agent_cli_artifacts() -> AgentCliArtifacts:
             if not archive.name.startswith("sqlite-")
         )
         alpine_apks = (*application_apks, *development_apks)
-        payload = artifact_payload(
-            codex_binary,
-            claude_key,
-            claude_index,
-            claude_apk,
-            alpine_apks,
+        provisional = AgentCliArtifacts(
+            npm_cache_archive=npm_cache_archive,
+            alpine_apks=alpine_apks,
+            fingerprint="",
         )
+        payload = artifact_payload(provisional)
         return AgentCliArtifacts(
-            codex_binary=codex_binary,
-            claude_key=claude_key,
-            claude_index=claude_index,
-            claude_apk=claude_apk,
+            npm_cache_archive=npm_cache_archive,
             alpine_apks=alpine_apks,
             fingerprint=fingerprint(payload),
         )

@@ -6,6 +6,7 @@ use spin::Mutex;
 mod receive_buffer;
 pub(crate) use receive_buffer::ReceiveBuffer;
 
+#[path = "ipc/eventfd.rs"]
 mod eventfd;
 pub(crate) use eventfd::{EventFd, EventFdRead, EventFdWrite};
 
@@ -349,6 +350,27 @@ impl Pipe {
         }
         generation
     }
+
+    /// @description 丢弃 byte ring 中尚未由 reader 消费的全部数据。
+    ///
+    /// @return 被丢弃的 byte 数；read/write readiness generation 均已推进。
+    fn discard_buffered(self: &Arc<Self>) -> usize {
+        let discarded = {
+            let mut state = self.state.lock();
+            let discarded = state.length;
+            if discarded != 0 {
+                state.head = 0;
+                state.length = 0;
+                state.read_generation = crate::sync::next_readiness_generation();
+                state.write_generation = crate::sync::next_readiness_generation();
+            }
+            discarded
+        };
+        if discarded != 0 {
+            self.notifier.notify(self);
+        }
+        discarded
+    }
 }
 
 /// @description 一个 OFD-owned anonymous pipe endpoint；dup/fork 共享同一 endpoint Arc。
@@ -408,10 +430,45 @@ impl PipeEnd {
         assert_eq!(self.direction, PipeDirection::Read);
         self.pipe.drain_readiness()
     }
+
+    /// @description 丢弃 write endpoint 已发布、read endpoint 尚未消费的全部 bytes。
+    /// @return 被丢弃的 byte 数。
+    pub(crate) fn discard_buffered(&self) -> usize {
+        assert_eq!(self.direction, PipeDirection::Write);
+        self.pipe.discard_buffered()
+    }
 }
 
 impl Drop for PipeEnd {
     fn drop(&mut self) {
         self.pipe.close(self.direction);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestNotifier;
+
+    impl PipeNotifier for TestNotifier {
+        fn notify(&self, _pipe: &Arc<Pipe>) {}
+    }
+
+    #[test]
+    fn output_flush_discards_unread_pipe_bytes() {
+        let (read, write) = Pipe::pair(Arc::new(TestNotifier)).expect("pipe");
+        assert_eq!(write.write(b"pending"), PipeWrite::Bytes(7));
+
+        assert_eq!(write.discard_buffered(), 7);
+        assert_eq!(write.discard_buffered(), 0);
+
+        let mut storage = [0u8; 8];
+        let mut output = ReceiveBuffer::from_slice(&mut storage);
+        assert_eq!(read.read(&mut output), PipeRead::Empty);
+        assert_eq!(
+            write.pipe.poll_state(PipeDirection::Write).write_capacity,
+            PIPE_CAPACITY.get()
+        );
     }
 }

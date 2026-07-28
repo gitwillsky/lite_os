@@ -30,6 +30,9 @@
   IPv4 owner 竞争或 payload loan 使状态暂不完整时，先保守发布 ready membership，再由
   task-context delivery 精确 level recheck，禁止在 deferred context 注册 `TaskMutex` waiter
   或吞掉唯一 edge。
+- eventfd 每次成功 write/read 都必须分别发布 `EPOLLIN`/`EPOLLOUT` edge，而不只在
+  counter 的 0/满边界通知。Mio 的 epoll waker 不读取 eventfd counter；若重复 write
+  不推进 readiness generation，Tokio task 可已入队但所有 worker 仍睡眠。
 - syscall socket 层只处理 sockaddr/iovec/msghdr/cmsg/option codec、user-copy 与 errno；不得匹配或泄漏 concrete protocol adapter。
 - protocol message limit 与 stream/atomic classification 由 `socket::message_limits` 唯一提供。
 - pipe 与所有 socket backend 只向 `ipc::ReceiveBuffer` 追加实际取得的 bytes；64KiB heap staging 只 reserve、不预清零，stream control barrier 通过 bounded append 保持，syscall 只 scatter initialized prefix。不得取得未初始化 capacity 的 Rust slice，也不保留 slice/zeroed 双轨。

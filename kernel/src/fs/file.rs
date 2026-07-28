@@ -87,6 +87,10 @@ pub(crate) trait Console: Send + Sync {
     /// @return 被丢弃的 byte 数。
     fn discard_input(&self) -> usize;
 
+    /// @description 原子丢弃 adapter 尚未被终端 peer 消费的全部 output。
+    /// @return 被丢弃的 byte 数；同步直写设备没有 pending output 时返回零。
+    fn discard_output(&self) -> usize;
+
     /// @description 同步且不睡眠等待地写出完整或部分 console 字节流。
     ///
     /// @param bytes kernel 已完成 user-copy 的连续字节。

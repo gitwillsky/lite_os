@@ -52,44 +52,39 @@ impl EventFd {
     }
 
     pub(crate) fn read(&self) -> EventFdRead {
-        let (result, became_writable) = {
+        let result = {
             let mut counter = self.counter.lock();
             if *counter == 0 {
                 return EventFdRead::Empty;
             }
-            let became_writable = *counter == MAX_COUNTER;
             let value = if self.semaphore { 1 } else { *counter };
             *counter -= value;
             if *counter == 0 {
                 self.read_notify.drain_readiness();
             }
-            (value, became_writable)
+            value
         };
-        if became_writable {
-            self.write_signal.signal_readiness();
-        }
+        // Linux eventfd 对每次成功 read 都发布 EPOLLOUT wake；只在 full→writable
+        // 边界通知会让 EPOLLET consumer 丢失后续 read 产生的独立 edge。
+        self.write_signal.signal_readiness();
         EventFdRead::Value(result)
     }
 
     pub(crate) fn write(&self, value: u64) -> EventFdWrite {
-        if value == 0 {
-            return EventFdWrite::Written;
-        }
-        let became_readable = {
+        {
             let mut counter = self.counter.lock();
             if value > MAX_COUNTER - *counter {
                 return EventFdWrite::Full;
             }
-            let became_readable = *counter == 0;
             *counter += value;
             if *counter == MAX_COUNTER {
                 self.write_notify.drain_readiness();
             }
-            became_readable
-        };
-        if became_readable {
-            self.read_signal.signal_readiness();
         }
+        // Linux eventfd 对每次成功 write 都发布 EPOLLIN wake。Mio 的 eventfd
+        // waker 在 epoll backend 下不读取 counter；缺少重复 edge 会让 Tokio task
+        // 已进入 inject queue，但所有 worker 仍永久停在 parker。
+        self.read_signal.signal_readiness();
         EventFdWrite::Written
     }
 
@@ -128,5 +123,54 @@ impl EventFd {
             );
         }
         generation
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::{Pipe, PipeNotifier};
+
+    struct TestNotifier;
+
+    impl PipeNotifier for TestNotifier {
+        fn notify(&self, _pipe: &Arc<Pipe>) {}
+    }
+
+    fn eventfd(initial: u64, semaphore: bool) -> Arc<EventFd> {
+        let notifier: Arc<dyn PipeNotifier> = Arc::new(TestNotifier);
+        let read_pair = Pipe::notification_pair(notifier.clone()).expect("read notification pair");
+        let write_pair = Pipe::notification_pair(notifier).expect("write notification pair");
+        EventFd::new(initial, semaphore, read_pair, write_pair).expect("eventfd")
+    }
+
+    #[test]
+    fn every_successful_write_publishes_a_read_edge() {
+        let event = eventfd(0, false);
+        let initial = event.readiness_generation(0x001);
+
+        assert_eq!(event.write(1), EventFdWrite::Written);
+        let first = event.readiness_generation(0x001);
+        assert_ne!(first, initial);
+
+        assert_eq!(event.write(1), EventFdWrite::Written);
+        let second = event.readiness_generation(0x001);
+        assert_ne!(second, first);
+
+        assert_eq!(event.write(0), EventFdWrite::Written);
+        assert_ne!(event.readiness_generation(0x001), second);
+    }
+
+    #[test]
+    fn every_successful_read_publishes_a_write_edge() {
+        let event = eventfd(2, true);
+        let initial = event.readiness_generation(0x004);
+
+        assert_eq!(event.read(), EventFdRead::Value(1));
+        let first = event.readiness_generation(0x004);
+        assert_ne!(first, initial);
+
+        assert_eq!(event.read(), EventFdRead::Value(1));
+        assert_ne!(event.readiness_generation(0x004), first);
     }
 }

@@ -2,7 +2,7 @@
 
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
-| 19 | `eventfd2` | Complete | counter/semaphore、blocking 与 poll |
+| 19 | `eventfd2` | Complete | counter/semaphore、blocking、每次成功读写的 poll edge |
 | 20 | `epoll_create1` | Complete | CLOEXEC |
 | 21 | `epoll_ctl` | Partial | ADD/MOD/DEL、ET/ONESHOT/EXCLUSIVE 与 bounded nesting |
 | 22 | `epoll_pwait` | Complete | signal-mask atomic wait |

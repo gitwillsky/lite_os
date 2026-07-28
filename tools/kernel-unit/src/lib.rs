@@ -111,6 +111,16 @@ mod audio_tests;
 mod receive_buffer;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/id.rs"]
+#[allow(dead_code)]
+mod id;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/ipc.rs"]
+#[allow(dead_code, unused_imports)]
+mod ipc;
+
+#[cfg(test)]
 mod timer {
     pub(crate) fn get_realtime_ns() -> u64 {
         1_800_000_000_000_000_000
@@ -171,11 +181,6 @@ mod virtio_rng_completion_policy;
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/file/indexed_slots.rs"]
 mod indexed_slots;
-
-#[cfg(test)]
-#[path = "../../../kernel/src/id.rs"]
-#[allow(dead_code)]
-mod kernel_id;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/file/position.rs"]

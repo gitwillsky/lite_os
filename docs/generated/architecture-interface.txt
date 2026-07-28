@@ -1727,6 +1727,7 @@ kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess
 kernel/src/fs/file.rs :: pub (in crate :: fs) use terminal :: clear_terminal_raw_input
 kernel/src/fs/file.rs :: pub (super) OpenFileDescription :: epoll_memberships : EpollMemberships
 kernel/src/fs/file.rs :: trait Console :: fn discard_input (& self) -> usize
+kernel/src/fs/file.rs :: trait Console :: fn discard_output (& self) -> usize
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
@@ -1818,6 +1819,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn background_sig
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn claim_session (& self , session : usize , foreground_pgid : usize) -> Result < () , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn controlling_session (& self) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn drain_input (& self) -> Result < TerminalInputBatch , FileSystemError >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn flush (& self , input : bool , output : bool)
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn flush_input_and_set_termios (& self , termios : [u8 ; KERNEL_TERMIOS_SIZE])
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn foreground_pgid (& self , session : usize) -> Result < usize , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn hangup (& self) -> Option < usize >
@@ -2456,6 +2458,7 @@ kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction 
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
+kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn discard_buffered (& self) -> usize
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn drain_readiness (& self) -> u64
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn pipe (& self) -> Arc < Pipe >
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn read (& self , output : & mut ReceiveBuffer < '_ >) -> PipeRead

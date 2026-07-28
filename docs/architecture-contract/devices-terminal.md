@@ -66,6 +66,10 @@
 - `terminal-session` control protocol 的 poll 与 frame read 必须直接消费同一 unbuffered fd queue；
   禁止用 `StdinLock` 等预读缓冲跨 frame 取走尚未被 dispatcher 处理的 INPUT/RESIZE。否则 fd
   readiness 已清除而命令只留在 userspace buffer，helper 会永久睡眠。
+- `terminal-session` 的 VT model 独占 DEC application-cursor mode，并把它随 UPDATE 投影给
+  LiteUI；即使没有 dirty row，模式变化也必须发布。LiteUI 在普通模式对方向键编码 CSI，在
+  application mode 编码 SS3。缺少该投影时 Codex 等 TUI 已切换输入模式，方向键仍会被解释为
+  无效序列。
 - PTY session 在清空继承环境后必须显式发布 `TERM=liteos`、`USER=root`、root HOME、标准
   PATH 与 `SHELL=/bin/sh`，并从 `/root` 启动；缺少用户/shell identity 或从 `/` 进行 project
   discovery 时，Claude 会停在交互初始化阶段或错误地把整个 rootfs 当作项目。

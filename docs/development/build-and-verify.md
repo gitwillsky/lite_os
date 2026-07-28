@@ -22,10 +22,11 @@
   `run-gdb` 在 QEMU 启动前离线扩容已有实例并保留内容，较大的实例不会被缩容。缺少该扩容会让
   基线派生的 512 MiB 实例在安装 Node.js 等应用时以 `ENOSPC` 失败；runtime gate 仍消费固定、
   可复现的只读基线，不继承开发容量。
-- `AGENT_FS_IMAGE_SIZE_MIB` 默认 32768 MiB，只由 Agent 开发入口消费。固定 Codex AArch64
-  musl archive、Claude 官方签名 APK、Bash/ripgrep/C++ runtime 与 Git/curl 离线闭包安装到
-  `fs-aarch64.img`；版本、URL、SHA-256、APK metadata、签名 key、package database 与真实
-  `--version` 执行共同决定成功。产品 rootfs 不包含 Agent、Node/npm 或滚动 repository。
+- `AGENT_FS_IMAGE_SIZE_MIB` 默认 32768 MiB，只由 Agent 开发入口消费。固定 Node/npm、
+  Bash/ripgrep 与 Git/curl APK closure 先离线安装到 `fs-aarch64.img`，Guest npm 再从 host
+  按 registry SRI 校验并固定的 cache 全局安装 Codex 与 Claude；npm package/platform
+  identity、APK metadata、package database、唯一 `/usr/local/bin` 入口与真实 `--version`
+  执行共同决定成功。产品 rootfs 不包含 Agent、Node/npm 或滚动 repository。
 - `sync-userland` 直接构建并离线替换图形会话拥有的 binary、React bundle、app manifest、字体和
   presentation assets；镜像内指纹命中时 no-op。`run` 与 `run-gui` 自动执行它，保留 APK、项目和
   用户数据。Rust 用户态以 target、工具链、sysroot、libunwind 与 link flags 隔离持久 Cargo
@@ -76,9 +77,9 @@ make verify
 ## Agent 开发镜像
 
 `make prepare-agent-development` 只支持一等 AArch64 路径。它先把持久开发实例扩到 32 GiB，
-再用 6 GiB Guest RAM 执行离线 APK transaction，安装固定 Codex/Claude、Bash、ripgrep、
-Git 与 curl。已有音乐、项目、认证配置和其他用户数据不由该入口管理；内容身份命中时只回读
-Codex bytes 与 APK database，不重复安装。
+再用 6 GiB Guest RAM 执行固定 APK transaction，并由 Guest npm 从已校验 cache 离线全局安装
+固定版本的 Codex/Claude。已有音乐、项目、认证配置和其他用户数据不由该入口管理；内容身份
+命中时只回读 npm package identity 与 APK database，不重复安装。
 
 ```bash
 make prepare-agent-development

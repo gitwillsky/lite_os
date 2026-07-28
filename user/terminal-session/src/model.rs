@@ -143,6 +143,8 @@ pub trait Grid {
     /// Returns the current default `(foreground, background)` SGR colors.
     fn default_colors(&self) -> (u32, u32);
     fn cursor_style(&self) -> u16;
+    /// Returns whether DEC application-cursor mode currently owns navigation-key encoding.
+    fn application_cursor_keys(&self) -> bool;
     fn cell(&self, row: usize, column: usize) -> Cell;
 }
 
@@ -424,6 +426,10 @@ impl Grid for Model {
 
     fn cursor_style(&self) -> u16 {
         self.cursor_style as u16
+    }
+
+    fn application_cursor_keys(&self) -> bool {
+        self.application_cursor_keys
     }
 
     fn cell(&self, row: usize, column: usize) -> Cell {

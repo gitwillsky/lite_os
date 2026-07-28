@@ -77,14 +77,17 @@ pub(crate) struct TaskMutexOutOfMemory;
 
 struct Waiter {
     key: TaskMutexWaitKey,
-    completion: WaitCompletion,
+    // OWNER: completion 独立保活，使 unlock 能先释放最后一个 queue/publisher waiter 引用，
+    // 再发布完成。若 token 内嵌于 waiter，arming task 可在 publisher Arc 释放前恢复，
+    // 导致 preparation 无法重新取得唯一 waiter ownership。
+    completion: Arc<WaitCompletion>,
     target: Option<Arc<dyn TaskMutexWaitTarget>>,
     next: spin::Mutex<Option<Arc<Waiter>>>,
 }
 
 impl Waiter {
     fn allocate() -> Result<Arc<Self>, TaskMutexOutOfMemory> {
-        let completion = WaitCompletion::new();
+        let completion = Arc::try_new(WaitCompletion::new()).map_err(|_| TaskMutexOutOfMemory)?;
         Arc::try_new(Self {
             key: TaskMutexWaitKey {
                 owner: 0,
@@ -102,18 +105,26 @@ impl Waiter {
             .as_ref()
             .cloned()
             .expect("task mutex waiter target disappeared before sleep")
-            .sleep(&self.completion, self.key);
+            .sleep(self.completion.as_ref(), self.key);
     }
 
-    fn publish(self: Arc<Self>) -> Option<Wake> {
-        self.completion.complete().then(|| Wake {
+    fn retire(self: Arc<Self>) -> (Arc<WaitCompletion>, Wake) {
+        let completion = self.completion.clone();
+        let wake = Wake {
             target: self
                 .target
                 .as_ref()
                 .cloned()
                 .expect("task mutex waiter target disappeared before wake"),
             key: self.key,
-        })
+        };
+        drop(self);
+        (completion, wake)
+    }
+
+    fn publish(self: Arc<Self>) -> Option<Wake> {
+        let (completion, wake) = self.retire();
+        completion.complete().then_some(wake)
     }
 }
 
@@ -466,5 +477,24 @@ mod tests {
         drop(second_owner);
         assert_eq!(acquired_rx.recv().expect("second result"), 2);
         waiter.join().expect("prepared waiter panicked");
+    }
+
+    #[test]
+    fn publication_window_retires_queue_owner_before_completion() {
+        let mutex = TaskMutex::new(());
+        let mut preparation = TaskMutexWaitPreparation::prepare().expect("wait preparation");
+        let waiter = preparation.arm(&mutex);
+        assert!(waiter.completion.begin_arming());
+
+        let (completion, wake) = waiter.clone().retire();
+        assert_eq!(
+            Arc::strong_count(&waiter),
+            2,
+            "publisher retained the waiter visible to the acquiring task"
+        );
+        assert!(!completion.complete());
+        assert!(waiter.completion.finish_arming());
+        drop(wake);
+        preparation.disarm(waiter);
     }
 }

@@ -162,6 +162,10 @@ impl fs::Console for PlatformConsole {
         drivers::discard_console_input()
     }
 
+    fn discard_output(&self) -> usize {
+        0
+    }
+
     fn write(&self, bytes: &[u8]) -> Result<usize, fs::FileSystemError> {
         for byte in bytes {
             platform::debug_console_write(*byte).map_err(|_| fs::FileSystemError::IoError)?;

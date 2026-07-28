@@ -100,10 +100,11 @@
   必须拥有 `/etc/profile`，否则旧持久镜像不会随产品契约修复。
 - 产品 BusyBox 必须发布 `add-shell` 与 `remove-shell` applet；缺失时 Bash 等 stable APK 的
   maintainer script 无法通过标准 owner 更新 `/etc/shells`，安装只能留下部分配置。
-- Codex/Claude 只属于 AArch64 持久开发实例 owner：Codex 固定 musl executable 发布到
-  `/usr/local/bin`，Claude 由官方 key 验签的固定 APK 与 Alpine stable 固定 dependency closure
-  发布。该 owner 必须验证摘要、APK metadata、package database 与真实 CLI 启动；不得污染产品
-  rootfs、加入滚动 repository、回退 npm/Node，或把 namespace sandbox 宣称为已支持。
+- Codex/Claude 只属于 AArch64 持久开发实例 owner：固定 Node/npm APK closure 先离线安装，
+  Guest npm 再从 host 按 registry SRI 校验并固定的 cache 把两个官方 package 全局安装到
+  `/usr/local`。该 owner 必须验证 npm package identity、平台 optional package、APK metadata、
+  package database、唯一 command 入口与真实 CLI 启动；不得污染产品 rootfs、加入滚动
+  repository、保留 raw binary/Claude APK 第二路径，或把 namespace sandbox 宣称为已支持。
 
 ## Failure and cleanup
 

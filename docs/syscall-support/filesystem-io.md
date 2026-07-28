@@ -6,7 +6,7 @@
 | 23 | `dup` | Complete | lowest-free fd publication |
 | 24 | `dup3` | Complete | replacement 与 CLOEXEC |
 | 25 | `fcntl` | Partial | fd/status flags、dup、record lock 以及 memfd `F_ADD_SEALS`/`F_GET_SEALS` 子集 |
-| 29 | `ioctl` | Partial | TTY、socket、DRM、evdev 与 `/dev/snd/pcmC0D0p` ALSA playback 已声明 request |
+| 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev 与 `/dev/snd/pcmC0D0p` ALSA playback 已声明 request |
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |

@@ -50,7 +50,9 @@
 - TaskMutex wait 不进入 signal-indexed registry，也不接受 signal cancel；owner unlock 或
   publication-window self-wake 是消费该 membership 的唯一路径。wait node/Arc 在 owner spin
   gate 外预分配，final enqueue 与 `Held -> Handoff(ticket)` 在短锁内线性化，wake consequence
-  必须在锁外执行。
+  必须在锁外执行。unlock 必须先退休 queue/publisher 持有的 wait-node owner，再发布独立
+  completion token；否则 arming task 可在旧 Arc 释放前恢复，取得 guard 后无法回收并复用其
+  预分配 waiter。
 
 ## Failure and cleanup
 

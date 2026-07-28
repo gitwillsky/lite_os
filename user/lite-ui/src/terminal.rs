@@ -20,6 +20,7 @@ const RESIZE: u32 = 2;
 const ACK: u32 = 3;
 const UPDATE: u32 = 4;
 const EXIT: u32 = 5;
+const APPLICATION_CURSOR_KEYS: u32 = 1;
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 
 enum Message {
@@ -59,11 +60,12 @@ struct ScreenState {
     cursor_style: u16,
     foreground: u32,
     background: u32,
+    application_cursor_keys: bool,
 }
 
 impl ScreenState {
     fn apply_update(&mut self, payload: &[u8]) -> io::Result<()> {
-        if payload.len() < 20 {
+        if payload.len() < 24 {
             return Err(invalid("terminal update header truncated"));
         }
         let columns = read_u16(payload, 0)? as usize;
@@ -79,10 +81,15 @@ impl ScreenState {
         self.cursor_style = cursor_style;
         self.foreground = read_u32(payload, 12)?;
         self.background = read_u32(payload, 16)?;
+        let input_modes = read_u32(payload, 20)?;
+        if input_modes & !APPLICATION_CURSOR_KEYS != 0 {
+            return Err(invalid("terminal input mode invalid"));
+        }
+        self.application_cursor_keys = input_modes & APPLICATION_CURSOR_KEYS != 0;
         if self.rows.len() != rows {
             self.rows = vec![Vec::new(); rows];
         }
-        let mut offset = 20usize;
+        let mut offset = 24usize;
         for _ in 0..dirty {
             let row = read_u16(payload, offset)? as usize;
             if row >= rows || read_u16(payload, offset + 2)? != 0 {
@@ -239,7 +246,11 @@ impl Terminal {
     pub fn input(&mut self, payload: &[u8]) -> io::Result<()> {
         let event: KeyEvent = serde_json::from_slice(payload)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if let Some(bytes) = translate_key(&mut self.modifiers, event) {
+        if let Some(bytes) = translate_key(
+            &mut self.modifiers,
+            event,
+            self.screen.application_cursor_keys,
+        ) {
             write_frame(&mut self.input, INPUT, &bytes)?;
         }
         Ok(())
@@ -298,7 +309,11 @@ fn write_frame(output: &mut impl Write, kind: u32, payload: &[u8]) -> io::Result
     output.flush()
 }
 
-fn translate_key(state: &mut Modifiers, event: KeyEvent) -> Option<Vec<u8>> {
+fn translate_key(
+    state: &mut Modifiers,
+    event: KeyEvent,
+    application_cursor_keys: bool,
+) -> Option<Vec<u8>> {
     let pressed = event.value != 0;
     // 修饰键折叠交给共享 keymap，避免与 UI 文本输入各持一份键码表。
     if state.apply(event.code, event.value) || !pressed {
@@ -309,12 +324,36 @@ fn translate_key(state: &mut Modifiers, event: KeyEvent) -> Option<Vec<u8>> {
         14 => Some(b"\x7f"),
         15 => Some(if state.shift { b"\x1b[Z" } else { b"\t" }),
         28 => Some(b"\r"),
-        102 => Some(b"\x1b[1~"),
-        103 => Some(b"\x1b[A"),
-        105 => Some(b"\x1b[D"),
-        106 => Some(b"\x1b[C"),
-        107 => Some(b"\x1b[4~"),
-        108 => Some(b"\x1b[B"),
+        102 => Some(if application_cursor_keys {
+            b"\x1bOH"
+        } else {
+            b"\x1b[1~"
+        }),
+        103 => Some(if application_cursor_keys {
+            b"\x1bOA"
+        } else {
+            b"\x1b[A"
+        }),
+        105 => Some(if application_cursor_keys {
+            b"\x1bOD"
+        } else {
+            b"\x1b[D"
+        }),
+        106 => Some(if application_cursor_keys {
+            b"\x1bOC"
+        } else {
+            b"\x1b[C"
+        }),
+        107 => Some(if application_cursor_keys {
+            b"\x1bOF"
+        } else {
+            b"\x1b[4~"
+        }),
+        108 => Some(if application_cursor_keys {
+            b"\x1bOB"
+        } else {
+            b"\x1b[B"
+        }),
         109 => Some(b"\x1b[6~"),
         110 => Some(b"\x1b[2~"),
         111 => Some(b"\x1b[3~"),
@@ -396,6 +435,7 @@ mod tests {
         payload.extend_from_slice(&2u16.to_le_bytes()); // steady block cursor
         payload.extend_from_slice(&FG.to_le_bytes()); // default foreground
         payload.extend_from_slice(&BG.to_le_bytes()); // default background
+        payload.extend_from_slice(&0u32.to_le_bytes()); // normal cursor-key mode
         payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row index
         payload.extend_from_slice(&0u16.to_le_bytes());
         for character in ['a', 'b', 'c'] {
@@ -414,10 +454,58 @@ mod tests {
         assert_eq!(state.cursor_style, 2);
         assert_eq!(state.foreground, FG);
         assert_eq!(state.background, BG);
+        assert!(!state.application_cursor_keys);
         assert_eq!(
             state.rows,
             vec![Vec::new(), vec![run("abc", FG, BG, false)]]
         );
+    }
+
+    #[test]
+    fn update_projects_application_cursor_mode_into_navigation_encoding() {
+        let mut payload = update_payload();
+        payload[20..24].copy_from_slice(&APPLICATION_CURSOR_KEYS.to_le_bytes());
+        let mut screen = ScreenState::default();
+        screen.apply_update(&payload).expect("valid input mode");
+        assert!(screen.application_cursor_keys);
+        for (code, expected) in [
+            (102, b"\x1bOH".as_slice()),
+            (103, b"\x1bOA".as_slice()),
+            (105, b"\x1bOD".as_slice()),
+            (106, b"\x1bOC".as_slice()),
+            (107, b"\x1bOF".as_slice()),
+            (108, b"\x1bOB".as_slice()),
+        ] {
+            assert_eq!(
+                translate_key(
+                    &mut Modifiers::default(),
+                    KeyEvent { code, value: 1 },
+                    screen.application_cursor_keys,
+                )
+                .as_deref(),
+                Some(expected),
+            );
+        }
+    }
+
+    #[test]
+    fn normal_cursor_mode_keeps_csi_navigation_encoding() {
+        for (code, expected) in [
+            (103, b"\x1b[A".as_slice()),
+            (105, b"\x1b[D".as_slice()),
+            (106, b"\x1b[C".as_slice()),
+            (108, b"\x1b[B".as_slice()),
+        ] {
+            assert_eq!(
+                translate_key(
+                    &mut Modifiers::default(),
+                    KeyEvent { code, value: 1 },
+                    false,
+                )
+                .as_deref(),
+                Some(expected),
+            );
+        }
     }
 
     #[test]

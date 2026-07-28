@@ -74,6 +74,10 @@ impl Console for PtyConsole {
         count
     }
 
+    fn discard_output(&self) -> usize {
+        self.output.discard_buffered()
+    }
+
     fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError> {
         match self.output.write(bytes) {
             PipeWrite::Bytes(count) => {
