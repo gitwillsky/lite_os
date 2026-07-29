@@ -86,16 +86,34 @@ fn bevel_segments(
     style: BorderStyle,
     top_left: bool,
 ) -> ([Segment; 3], usize) {
-    let solid = ([Segment { color: Some(color), thickness: width }; 3], 1);
+    let solid = (
+        [Segment {
+            color: Some(color),
+            thickness: width,
+        }; 3],
+        1,
+    );
     let (light, dark) = bevel_shades(color);
     match style {
         BorderStyle::Outset => {
             let edge = if top_left { light } else { dark };
-            ([Segment { color: Some(edge), thickness: width }; 3], 1)
+            (
+                [Segment {
+                    color: Some(edge),
+                    thickness: width,
+                }; 3],
+                1,
+            )
         }
         BorderStyle::Inset => {
             let edge = if top_left { dark } else { light };
-            ([Segment { color: Some(edge), thickness: width }; 3], 1)
+            (
+                [Segment {
+                    color: Some(edge),
+                    thickness: width,
+                }; 3],
+                1,
+            )
         }
         BorderStyle::Groove | BorderStyle::Ridge => {
             let outer_width = width - width / 2;
@@ -107,9 +125,18 @@ fn bevel_segments(
             };
             (
                 [
-                    Segment { color: Some(outer), thickness: outer_width },
-                    Segment { color: Some(inner), thickness: inner_width },
-                    Segment { color: None, thickness: 0 },
+                    Segment {
+                        color: Some(outer),
+                        thickness: outer_width,
+                    },
+                    Segment {
+                        color: Some(inner),
+                        thickness: inner_width,
+                    },
+                    Segment {
+                        color: None,
+                        thickness: 0,
+                    },
                 ],
                 2,
             )
@@ -119,9 +146,18 @@ fn bevel_segments(
             let gap = width.saturating_sub(line * 2);
             (
                 [
-                    Segment { color: Some(color), thickness: line },
-                    Segment { color: None, thickness: gap },
-                    Segment { color: Some(color), thickness: width - line - gap },
+                    Segment {
+                        color: Some(color),
+                        thickness: line,
+                    },
+                    Segment {
+                        color: None,
+                        thickness: gap,
+                    },
+                    Segment {
+                        color: Some(color),
+                        thickness: width - line - gap,
+                    },
                 ],
                 3,
             )
@@ -130,11 +166,7 @@ fn bevel_segments(
     }
 }
 
-pub(super) fn paint_border<R: Raster>(
-    pixels: &mut R,
-    bounds: PhysicalRect,
-    computed: &Computed,
-) {
+pub(super) fn paint_border<R: Raster>(pixels: &mut R, bounds: PhysicalRect, computed: &Computed) {
     // 1. Resolve each side independently. The style owner expands shorthands in
     //    cascade order, so side longhands hold the standard winning width and
     //    color. Shorthand fallbacks keep native pre-expanded values valid.
@@ -213,11 +245,7 @@ pub(super) fn paint_border<R: Raster>(
         bevel_segments(bottom.0, bottom.1, bottom.2, false),
         bevel_segments(left.0, left.1, left.2, true),
     ];
-    let levels = segments
-        .iter()
-        .map(|(_, count)| *count)
-        .max()
-        .unwrap_or(0);
+    let levels = segments.iter().map(|(_, count)| *count).max().unwrap_or(0);
     let mut inset = [0usize; 4]; // [top, right, bottom, left]
     for level in 0..levels {
         let rect = PhysicalRect {
@@ -323,7 +351,6 @@ fn border_style(value: &str) -> Option<BorderStyle> {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{BorderStyle, bevel_segments, bevel_shades};
@@ -403,15 +430,9 @@ mod tests {
         else {
             panic!("double has three segments");
         };
-        assert_eq!(
-            (first.thickness, first.color),
-            (2, Some(0xff00_0000))
-        );
+        assert_eq!((first.thickness, first.color), (2, Some(0xff00_0000)));
         assert_eq!((gap.thickness, gap.color), (3, None));
-        assert_eq!(
-            (second.thickness, second.color),
-            (2, Some(0xff00_0000))
-        );
+        assert_eq!((second.thickness, second.color), (2, Some(0xff00_0000)));
 
         // A 1px double degenerates to a single line without overlapping bands.
         let ([first, gap, second], 3) = bevel_segments(1, 0xff00_0000, BorderStyle::Double, true)

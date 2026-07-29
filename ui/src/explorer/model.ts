@@ -17,7 +17,7 @@ export const MOD_CONTROL = 2;
 // Logical-pixel advances of the checked liteos-ui.a8p regular face at 11px
 // (atlas pixel_size 22 ÷ deviceScaleFactor 2), extracted from the atlas itself
 // — the same per-glyph `advance` values `font.rs measure()` sums, so the
-// rename box hugs its text exactly like XP's inline rename instead of using a
+// Rename box hugs its text instead of using a
 // flat per-character guess. CJK and the U+FFFD fallback advance 11px.
 const GLYPH_ADVANCE_11: Record<string, number> = {
   " ": 2.5, "!": 3.5, "\"": 5, "#": 6, "$": 6, "%": 10, "&": 7.5, "'": 3,
@@ -68,7 +68,7 @@ export function formatSize(entry: FsEntry): string {
   return `${Math.round(entry.size / (1024 * 1024))} MB`;
 }
 
-/** zh-CN XP date column (`2026/7/26 20:03`) from Unix seconds; "" for 0
+/** zh-CN date column (`2026/7/26 20:03`) from Unix seconds; "" for 0
  * (platform gave no timestamp), so unsupported entries show an empty cell
  * instead of a fake epoch date. */
 export function formatDate(mtime: number): string {
@@ -78,7 +78,7 @@ export function formatDate(mtime: number): string {
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** en-US XP date column (`7/26/2026 8:03 PM`); "" for 0, same contract as
+/** en-US date column (`7/26/2026 8:03 PM`); "" for 0, same contract as
  * {@link formatDate}. */
 export function formatDateEn(mtime: number): string {
   if (mtime <= 0) return "";

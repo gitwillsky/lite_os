@@ -13,7 +13,7 @@ fn public_media_instance_exposes_standard_state_and_error_constants() {
     let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/audio");
     let (commands, _events) =
         crate::audio::start(audio_proto::ClientRole::Media).expect("audio worker");
-    let (host, _state) = Host::new(Role::App, app_root, commands);
+    let (host, _state) = Host::new(Role::App, app_root.clone(), app_root, commands);
     let mut engine = Engine::open(Role::App).expect("app engine");
     engine.install_host(host);
     engine.evaluate("runtime.js", &runtime).expect("runtime");

@@ -38,6 +38,8 @@ impl PtySession {
     /// - `size`: Initial terminal grid and pixel geometry.
     /// - `program`: Exact executable path; no shell lookup or default is applied.
     /// - `arguments`: Exact argv entries after argv[0].
+    /// - `environment`: Application-owned variables added after the fixed
+    ///   terminal-session environment.
     ///
     /// # Returns
     ///
@@ -46,7 +48,12 @@ impl PtySession {
     /// # Errors
     ///
     /// Returns the first PTY, ioctl, fork or exec setup error.
-    pub fn spawn(size: WindowSize, program: &OsString, arguments: &[OsString]) -> io::Result<Self> {
+    pub fn spawn(
+        size: WindowSize,
+        program: &OsString,
+        arguments: &[OsString],
+        environment: &[(OsString, OsString)],
+    ) -> io::Result<Self> {
         let path = CString::new("/dev/ptmx").expect("static PTY path");
         let master_raw = unsafe {
             raw::open(
@@ -89,6 +96,7 @@ impl PtySession {
             .env("SHELL", SESSION_SHELL)
             .env("USER", SESSION_USER)
             .env("PATH", SESSION_PATH)
+            .envs(environment.iter().map(|(key, value)| (key, value)))
             .current_dir(SESSION_HOME)
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))

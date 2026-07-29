@@ -200,6 +200,7 @@ fn low_watermark_crossing_arms_and_rearms_ring_available() {
             id: 1,
             generation: 1,
             phase: StreamPhase::Live,
+            playing: true,
             confirmed_frames: 0,
             next_progress_marker: 1,
         }],

@@ -1,6 +1,6 @@
 # LiteOS userspace
 
-LiteOS userspace 的交互产品轨道是 XP 风格图形桌面：`compositor` 独占 DRM/evdev、scanout、合成与
+LiteOS userspace 的交互产品轨道是 Aurora React 图形桌面：`compositor` 独占 DRM/evdev、scanout、合成与
 输入路由，React `desktop` 独占窗口 policy 与产品呈现。所有窗体应用共用 `/bin/lite-ui`；无窗体
 程序与 3D 游戏不经过 LiteUI。TUI 程序仍只看到标准 PTY/termios/ANSI。
 

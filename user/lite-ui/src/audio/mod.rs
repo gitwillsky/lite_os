@@ -8,7 +8,8 @@ mod tests;
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    io::Read,
+    fmt,
+    io::{Read, Write as _},
     os::{fd::AsFd, unix::net::UnixStream},
     sync::{Arc, Mutex},
     time::Instant,
@@ -25,6 +26,20 @@ pub(crate) use control::{Command, Commands, Event, Events, start};
 
 const RENDER_FRAMES: usize = 128;
 const PREFILL_BLOCKS: usize = RING_CAPACITY_FRAMES / RENDER_FRAMES;
+
+/// Emits one complete cross-process diagnostic record with a single write.
+///
+/// Formatting directly through `eprintln!` can split a record into several
+/// writes; concurrent Music workers then splice their bytes and destroy the
+/// event ordering barriers consumed by the runtime gate.
+fn diagnostic(arguments: fmt::Arguments<'_>) {
+    let mut record = String::new();
+    if fmt::write(&mut record, arguments).is_err() {
+        return;
+    }
+    record.push('\n');
+    let _ = std::io::stderr().write_all(record.as_bytes());
+}
 
 enum FillResult {
     Written,
@@ -64,6 +79,10 @@ struct Worker {
     service: Option<UnixStream>,
     service_bytes: [u8; MAX_FRAME_LEN],
     deferred_service: VecDeque<ServiceMessage>,
+    /// Logical CPUs available to this UA process. Combined with the service's
+    /// exact concurrent playback count, this keeps aggregate periodic media UI
+    /// work bounded while preserving 4 Hz for the ordinary one-stream case.
+    render_parallelism: u32,
 }
 
 impl Worker {
@@ -85,6 +104,9 @@ impl Worker {
             service: None,
             service_bytes: [0; MAX_FRAME_LEN],
             deferred_service: VecDeque::new(),
+            render_parallelism: std::thread::available_parallelism()
+                .map(|count| count.get().try_into().unwrap_or(u32::MAX))
+                .unwrap_or(1),
         }
     }
 
@@ -146,12 +168,12 @@ impl Worker {
                 let decoder = DecoderSession::open_range(&path, offset, length)
                     .map_err(|error| (id, error))?;
                 let duration = decoder.metadata().duration;
-                eprintln!(
+                diagnostic(format_args!(
                     "LITE_AUDIO source-opened id={id} file={}",
                     path.file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or("media")
-                );
+                ));
                 self.media.insert(
                     id,
                     Media {
@@ -254,7 +276,7 @@ impl Worker {
                     .get_mut(&id)
                     .ok_or((id, "media source is not loaded".to_owned()))?
                     .loop_enabled = enabled;
-                eprintln!("LITE_AUDIO loop id={id} enabled={enabled}");
+                diagnostic(format_args!("LITE_AUDIO loop id={id} enabled={enabled}"));
             }
             Command::Close { id } => {
                 self.close_stream(id);

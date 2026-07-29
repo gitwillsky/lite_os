@@ -231,8 +231,8 @@ fn check_ui_product(root: &Path, errors: &mut Vec<String>) {
         "ui/build.mjs",
         "ui/package-lock.json",
         "ui/src/runtime/renderer.ts",
+        "ui/src/design-system/shell.tsx",
         "ui/src/design-system/window.tsx",
-        "ui/src/design-system/taskbar.tsx",
         "ui/src/desktop/main.tsx",
         "ui/src/desktop/style.css",
         "ui/src/terminal/main.tsx",
@@ -276,7 +276,7 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             "foreign-surface adoption must preserve desktop raster pixels",
         ),
         (
-            "user/lite-ui/src/renderer.rs",
+            "user/lite-ui/src/renderer/render.rs",
             "render_move_underlay",
             "window drag must retain a clean raster beneath the moving group",
         ),

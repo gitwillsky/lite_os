@@ -3964,6 +3964,8 @@ kernel/src/syscall/socket/control.rs :: pub (super) fn write_receive (target : R
 kernel/src/syscall/socket/control.rs :: pub (super) struct ReceiveContent
 kernel/src/syscall/socket/control.rs :: pub (super) struct ReceiveTarget < 'a >
 kernel/src/syscall/socket/interface.rs :: pub (in crate :: syscall) fn socket_ioctl (task : & TaskControlBlock , socket : & Socket , request : usize , argument : usize ,) -> isize
+kernel/src/syscall/socket/listen.rs :: pub (crate) const BACKLOG_MAX : usize = 4096
+kernel/src/syscall/socket/listen.rs :: pub (crate) fn normalize_backlog (backlog : isize) -> usize
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_recvfrom (fd : usize , buffer : usize , length : usize , flags : usize , address : usize , address_length : usize ,) -> isize
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_recvmsg (fd : usize , message : usize , flags : usize) -> isize
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_sendmsg (fd : usize , message : usize , flags : usize) -> isize

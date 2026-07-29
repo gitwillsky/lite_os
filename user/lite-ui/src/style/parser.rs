@@ -67,13 +67,51 @@ fn parse_blocks(
         if header.starts_with('@') {
             return Err(format!("unsupported CSS at-rule '{header}'"));
         }
-        rules.push(Rule {
-            selector: Selector::parse(header)?,
-            declarations: parse_declarations(body)?,
-            order: rules.len(),
-        });
+        let declarations = parse_declarations(body)?;
+        let order = rules.len();
+        for selector in selector_list(header)? {
+            rules.push(Rule {
+                selector: Selector::parse(selector)?,
+                declarations: declarations.clone(),
+                order,
+            });
+        }
     }
     Ok(())
+}
+
+fn selector_list(source: &str) -> Result<Vec<&str>, String> {
+    let mut selectors = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    for (index, character) in source.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or_else(|| format!("invalid selector list '{source}'"))?;
+            }
+            ',' if depth == 0 => {
+                let selector = source[start..index].trim();
+                if selector.is_empty() {
+                    return Err(format!("invalid selector list '{source}'"));
+                }
+                selectors.push(selector);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(format!("invalid selector list '{source}'"));
+    }
+    let selector = source[start..].trim();
+    if selector.is_empty() {
+        return Err(format!("invalid selector list '{source}'"));
+    }
+    selectors.push(selector);
+    Ok(selectors)
 }
 
 fn top_level_blocks(source: &str) -> Result<Vec<(&str, &str)>, String> {

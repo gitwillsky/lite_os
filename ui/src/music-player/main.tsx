@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { list, open } from "lite:fs";
 import type { FsEntry } from "lite:fs";
-import { RangeInput, useHoverFlag } from "../design-system/controls";
+import { RangeInput } from "../design-system/controls";
 
 const MUSIC_ROOT = "/root/Music";
 const AUDIO_EXTENSIONS = new Set([
@@ -73,12 +73,11 @@ function PlayerButton({ label, active, primary, disabled, onClick }: {
   disabled?: boolean;
   onClick: () => void;
 }) {
-  const [hovered, hover] = useHoverFlag();
-  const className = `player-button${hovered && !disabled ? " player-button--hover" : ""}${active ? " player-button--active" : ""}${primary ? " player-button--primary" : ""}${disabled ? " player-button--disabled" : ""}`;
+  const className = `player-button${active ? " player-button--active" : ""}${primary ? " player-button--primary" : ""}`;
   return (
-    <div className={className} {...hover} onClick={() => !disabled && onClick()}>
+    <button className={className} disabled={disabled} onClick={onClick}>
       <span>{label}</span>
-    </div>
+    </button>
   );
 }
 
@@ -264,7 +263,7 @@ export default function MusicPlayer() {
     : "Repeat: One";
 
   return (
-    <div className="player" tabIndex={0} onKeyDown={handleKey}>
+    <div className="aurora-root player" tabIndex={0} onKeyDown={handleKey}>
       {view === "now-playing" ? (
         <>
           <div className="player__commandbar">

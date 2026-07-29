@@ -1,4 +1,22 @@
-use crate::{socket_message_limits, unix_datagram_queue, user_iovec};
+use crate::{listen_backlog, socket_message_limits, unix_datagram_queue, user_iovec};
+
+#[cfg(test)]
+mod listen_backlog_tests {
+    use super::listen_backlog::{BACKLOG_MAX, normalize_backlog};
+
+    #[test]
+    fn linux_negative_backlog_selects_kernel_limit() {
+        assert_eq!(normalize_backlog(-1), BACKLOG_MAX);
+        assert_eq!(normalize_backlog(i32::MIN as isize), BACKLOG_MAX);
+    }
+
+    #[test]
+    fn linux_nonnegative_backlog_is_preserved_then_capped() {
+        assert_eq!(normalize_backlog(0), 0);
+        assert_eq!(normalize_backlog(128), 128);
+        assert_eq!(normalize_backlog(BACKLOG_MAX as isize + 1), BACKLOG_MAX);
+    }
+}
 
 #[cfg(test)]
 mod socket_message_limit_tests {

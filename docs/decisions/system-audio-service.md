@@ -14,6 +14,12 @@
 `HTMLMediaElement` 拥有自己的媒体状态和一条逻辑 stream；系统服务拥有设备时钟、mix buffer、
 per-stream gain 应用、格式归一化、提交进度和 underrun 恢复。
 
+每个 `PROGRESS` 同时携带 control owner 已确认处于 Started 状态的 `concurrent_playbacks`。LiteUI 只用
+它调度 HTML `timeupdate`：steady interval 为
+`250 ms × ceil(concurrent_playbacks / available_parallelism)`，从而在单播放器或足够 CPU 时保持 4 Hz，
+在多流超订阅时按系统负载公平降低 UI 更新频率。该字段不改变 mixer progress、ring refill、EOF、seek、
+pause 或 ended barrier；这些正确性事件仍逐条精确处理。并发数不得由各应用猜测或用固定 stress 阈值代替。
+
 该服务由 init 在开机时启动并监督，不创建窗口，也不进入 desktop 应用 registry。空闲时必须阻塞在
 IPC/PCM readiness，不使用 timer 轮询或产生周期唤醒。LiteUI、compositor 和任一应用都不得承担
 daemon 拉起或重启 owner。

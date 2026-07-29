@@ -64,12 +64,27 @@ pub(super) fn decode_png(path: &Path) -> io::Result<Image> {
                 })
                 .collect()
         }
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "PNG must be RGB/RGBA",
-            ));
+        png::ColorType::GrayscaleAlpha => {
+            let (pixels, remainder) = bytes[..info.buffer_size()].as_chunks::<2>();
+            if !remainder.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "grayscale-alpha PNG row truncated",
+                ));
+            }
+            pixels
+                .iter()
+                .map(|pixel| premultiply(pixel[0], pixel[0], pixel[0], pixel[1]))
+                .collect()
         }
+        png::ColorType::Grayscale => bytes[..info.buffer_size()]
+            .iter()
+            .map(|value| {
+                0xff00_0000 | u32::from(*value) << 16 | u32::from(*value) << 8 | u32::from(*value)
+            })
+            .collect(),
+        // `normalize_to_color8` expands indexed PNGs before this match.
+        png::ColorType::Indexed => unreachable!("indexed PNG was not normalized"),
     };
     Ok(Image {
         width: info.width as usize,
@@ -88,6 +103,7 @@ pub(super) fn decode_png(path: &Path) -> io::Result<Image> {
 pub(super) fn paint_image<R: Raster>(
     target: &mut R,
     bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
     image: &Image,
     logical_radii: [f32; 4],
 ) {
@@ -97,9 +113,11 @@ pub(super) fn paint_image<R: Raster>(
         return;
     }
     let radii = logical_radii.map(|radius| (radius * SCALE).round() as usize);
-    for y in 0..height {
+    let visible = clip.map_or(bounds, |clip| bounds.intersect(clip));
+    for absolute_y in visible.y1..visible.y2 {
+        let y = absolute_y - bounds.y1;
         let source_y = y * image.height / height;
-        let row = target.row_mut(bounds.y1 + y);
+        let row = target.row_mut(absolute_y);
         // Rows inside a corner arc inset each side, so the rounded background
         // (and any rounded border ring) painted beneath the image shows through
         // the cutout. Round the inset *up*: the image is fully opaque, so any
@@ -107,8 +125,10 @@ pub(super) fn paint_image<R: Raster>(
         // corner. Ceiling guarantees the opaque fill never spills past the arc.
         let left = corner_inset(radii[0], radii[3], y, height).ceil() as usize;
         let right = corner_inset(radii[1], radii[2], y, height).ceil() as usize;
-        let start = left.min(width);
-        let end = width.saturating_sub(right);
+        let start = left.min(width).max(visible.x1.saturating_sub(bounds.x1));
+        let end = width
+            .saturating_sub(right)
+            .min(visible.x2.saturating_sub(bounds.x1));
         for x in start..end {
             let source_x = x * image.width / width;
             let foreground = image.pixels[source_y * image.width + source_x];
@@ -151,6 +171,7 @@ impl TileAxis {
 pub(super) fn paint_background_image<R: Raster>(
     target: &mut R,
     bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
     image: &Image,
     computed: &Computed,
     logical_radii: [f32; 4],
@@ -177,16 +198,20 @@ pub(super) fn paint_background_image<R: Raster>(
         repeat: repeat_y,
     };
     let radii = logical_radii.map(|radius| (radius * SCALE).round() as usize);
-    for y in 0..height {
+    let visible = clip.map_or(bounds, |clip| bounds.intersect(clip));
+    for absolute_y in visible.y1..visible.y2 {
+        let y = absolute_y - bounds.y1;
         let Some(tile_y) = y_axis.tile(y) else {
             continue;
         };
         let source_y = tile_y * image.height / tile_height;
-        let row = target.row_mut(bounds.y1 + y);
+        let row = target.row_mut(absolute_y);
         let left = corner_inset(radii[0], radii[3], y, height).ceil() as usize;
         let right = corner_inset(radii[1], radii[2], y, height).ceil() as usize;
-        let start = left.min(width);
-        let end = width.saturating_sub(right);
+        let start = left.min(width).max(visible.x1.saturating_sub(bounds.x1));
+        let end = width
+            .saturating_sub(right)
+            .min(visible.x2.saturating_sub(bounds.x1));
         // 1. Row-level repeat blit: walk tile-sized chunks and wrap at tile
         //    edges instead of paying a modulo per pixel.
         let mut x = start;
@@ -202,7 +227,10 @@ pub(super) fn paint_background_image<R: Raster>(
                 continue;
             };
             let chunk = (tile_width - tile_x).min(end - x);
-            for (step, pixel) in row[bounds.x1 + x..bounds.x1 + x + chunk].iter_mut().enumerate() {
+            for (step, pixel) in row[bounds.x1 + x..bounds.x1 + x + chunk]
+                .iter_mut()
+                .enumerate()
+            {
                 let source_x = (tile_x + step) * image.width / tile_width;
                 *pixel = alpha_over(image.pixels[source_y * image.width + source_x], *pixel);
             }
@@ -217,7 +245,12 @@ pub(super) fn paint_background_image<R: Raster>(
 /// single definite axis scales the other proportionally. `cover`/`contain`
 /// scale proportionally to fill/fit the box. Percentages resolve against the
 /// box, `px` against the logical-to-physical scale.
-fn background_size(computed: &Computed, width: usize, height: usize, image: &Image) -> (usize, usize) {
+fn background_size(
+    computed: &Computed,
+    width: usize,
+    height: usize,
+    image: &Image,
+) -> (usize, usize) {
     let value = computed.get("background-size").unwrap_or("auto");
     if matches!(value, "cover" | "contain") {
         let scale_w = width as f32 / image.width as f32;
@@ -250,7 +283,9 @@ fn size_axis(token: Option<&str>, extent: usize) -> Option<usize> {
         return None;
     }
     if let Some(percent) = token.strip_suffix('%') {
-        return Some((extent as f32 * percent.trim().parse::<f32>().ok()? / 100.0).round() as usize);
+        return Some(
+            (extent as f32 * percent.trim().parse::<f32>().ok()? / 100.0).round() as usize,
+        );
     }
     Some((super::layout::number(token)? * SCALE).round() as usize)
 }
@@ -287,9 +322,7 @@ fn background_position(computed: &Computed) -> (Option<&str>, Option<&str>) {
         [] => (None, None),
         [only @ ("top" | "bottom")] => (Some("center"), Some(only)),
         [only] => (Some(only), Some("center")),
-        [first, second, ..] if matches!(*first, "top" | "bottom") => {
-            (Some(second), Some(first))
-        }
+        [first, second, ..] if matches!(*first, "top" | "bottom") => (Some(second), Some(first)),
         [first, second, ..] => (Some(first), Some(second)),
     }
 }
@@ -383,6 +416,10 @@ mod tests {
             self.height
         }
 
+        fn row(&self, row: usize) -> &[u32] {
+            &self.pixels[row * self.width..(row + 1) * self.width]
+        }
+
         fn row_mut(&mut self, row: usize) -> &mut [u32] {
             &mut self.pixels[row * self.width..(row + 1) * self.width]
         }
@@ -403,7 +440,7 @@ mod tests {
             x2: width,
             y2: height,
         };
-        paint_background_image(target, bounds, &bitmap(), computed, [0.0; 4]);
+        paint_background_image(target, bounds, None, &bitmap(), computed, [0.0; 4]);
     }
 
     #[test]

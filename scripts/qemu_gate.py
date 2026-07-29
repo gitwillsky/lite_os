@@ -229,11 +229,16 @@ def send_interaction(stream: BinaryIO, data: bytes) -> None:
 
 
 def _is_echo_paced_shell_command(data: bytes) -> bool:
-    """Returns whether `data` is one complete printable shell command."""
-    return (
-        data.endswith(b"\n")
-        and bool(data)
-        and all(byte == 0x0A or 0x20 <= byte <= 0x7E for byte in data)
+    """Returns whether `data` is one complete printable UTF-8 shell command."""
+    if not data.endswith(b"\n") or not data:
+        return False
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return all(
+        character == "\n" or (ord(character) >= 0x20 and character != "\x7f")
+        for character in text
     )
 
 
@@ -260,16 +265,16 @@ def send_shell_interaction(
     """
     if not _is_echo_paced_shell_command(data):
         raise ValueError("echo pacing requires one printable shell command")
-    for offset, byte in enumerate(data):
+    for offset, character in enumerate(data.decode("utf-8")):
+        encoded = character.encode("utf-8")
         echo_cursor = len(output)
-        input_stream.write(bytes((byte,)))
-        input_stream.flush()
+        send_interaction(input_stream, encoded)
         deadline = time.monotonic() + SERIAL_ECHO_TIMEOUT_SECONDS
-        while byte not in output[echo_cursor:]:
+        while encoded not in output[echo_cursor:]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(
-                    f"guest stopped echoing UART input at shell byte {offset}"
+                    f"guest stopped echoing UART input at shell character {offset}"
                 )
             ready, _, _ = select.select([output_stream], [], [], remaining)
             if not ready:
@@ -596,10 +601,11 @@ FRAME_STATS_RE = re.compile(
 
 
 class QmpClient:
-    """Minimal QMP client over a unix socket for synthetic input injection.
+    """Minimal QMP client for synthetic input, visual barriers and shutdown.
 
-    Only the input and graceful-shutdown surfaces used by runtime gates are
-    exposed; it is not a general QMP wrapper.
+    The screendump surface lets UI gates wait for a compositor-presented scene
+    instead of sleeping for a host-speed-dependent raster duration. It remains
+    intentionally narrower than a general QMP wrapper.
     """
 
     def __init__(self, path: Path, connect_timeout_s: float = 10.0) -> None:
@@ -669,6 +675,23 @@ class QmpClient:
             [{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}]
         )
 
+    def screendump(self, path: Path) -> None:
+        """Writes the currently presented scanout as a binary PPM file.
+
+        Args:
+            path: Absolute host output path owned by the calling runtime gate.
+
+        Returns:
+            After QEMU has completed the screenshot command.
+
+        Raises:
+            ValueError: ``path`` is not absolute.
+            RuntimeError: QMP rejects the screendump.
+        """
+        if not path.is_absolute():
+            raise ValueError("QMP screendump path must be absolute")
+        self._execute("screendump", {"filename": str(path)})
+
     def quit(self) -> None:
         """Requests graceful QEMU shutdown.
 
@@ -732,9 +755,9 @@ def start_frame_workload(qmp: QmpClient, duration_s: float, stop: "threading.Eve
     releases. Runs on its own thread; the caller's reader drains serial
     concurrently.
     """
-    # `se` grip center: window logical bottom-right (870,570), grip is 8x8 at the
-    # corner, center ~ (866,566) on a 1504x846 logical screen.
-    grip_x, grip_y = 866 / 1504, 566 / 846
+    # Aurora's canonical Terminal frame is (958,414) 460x250. The `se` grip is
+    # 10x10 at the corner, so its logical center is approximately (1413,659).
+    grip_x, grip_y = 1413 / 1504, 659 / 846
     qmp.move_abs(grip_x, grip_y)
     qmp.button("left", True)
     deadline = time.monotonic() + duration_s
@@ -762,8 +785,8 @@ def measure_frame_timing(
     """Cold-boots the desktop stack, self-drives frames, and returns frame stats.
 
     Boots with the interactive-device topology plus a QMP channel, waits for the
-    empty desktop, explicitly opens Terminal and File Manager through desktop
-    input, then drives resize commits on Terminal. A background thread drains
+    Aurora session's pinned Files and Terminal surfaces, then drives resize
+    commits on Terminal. A background thread drains
     serial the whole time so `compositor: frame-stats` markers are read as they
     arrive. Returns the WORST window (max dropped, then p99/p95) so a single good
     window cannot mask a bad one.
@@ -853,22 +876,6 @@ def measure_frame_timing(
             raise RuntimeError("frame-timing gate timed out before desktop was ready")
 
         qmp = QmpClient(qmp_socket)
-        # 2. The boot contract is an empty desktop. Launch both workload apps via
-        #    real double-click input: Terminal is the second desktop icon and My
-        #    Documents (the File Manager bundle) is the fourth.
-        def double_click(x_fraction: float, y_fraction: float) -> None:
-            qmp.move_abs(x_fraction, y_fraction)
-            # Desktop icon hover/selection each publishes a new React hit tree.
-            # Moving and pressing in the same host turn can route the first press
-            # to the previous scene; the second press must likewise wait for the
-            # selection scene or the double-click launch is intermittently lost.
-            time.sleep(0.1)
-            for click_index in range(2):
-                qmp.button("left", True)
-                qmp.button("left", False)
-                if click_index == 0:
-                    time.sleep(0.15)
-
         def wait_for(markers: tuple[str, ...], phase: str) -> None:
             phase_deadline = min(deadline, time.monotonic() + 15.0)
             while time.monotonic() < phase_deadline:
@@ -885,31 +892,23 @@ def measure_frame_timing(
             missing = [marker for marker in markers if marker not in current_text()]
             raise RuntimeError(f"frame-timing gate missed {phase} markers: {missing!r}")
 
-        double_click(47 / 1504, 92 / 846)
         wait_for(
             (
+                "lite-ui: desktop startup motion settled",
                 "compositor: app 1 connected",
                 "lite-ui: terminal session ready",
                 "lite-ui: app terminal ready",
                 "terminal-session: shell spawned",
+                "compositor: app 2 connected",
+                "lite-ui: app file-manager ready",
             ),
-            "Terminal launch",
-        )
-        double_click(47 / 1504, 212 / 846)
-        wait_for(
-            ("compositor: app 2 connected", "lite-ui: app file-manager ready"),
-            "second app",
+            "Aurora pinned apps",
         )
         second_window_opened = True
 
-        # 3. Activate the terminal window (app 1) so its resize grip is present,
-        #    then drive a sustained resize-drag. The workload blocks for its
-        #    duration while the background reader drains serial and collects the
-        #    `compositor: frame-stats` markers the resize commits produce.
-        qmp.move_abs(0.34, 0.11)  # terminal titlebar -> activate/raise it
-        qmp.button("left", True)
-        qmp.button("left", False)
-        time.sleep(0.4)
+        # 3. Drive the Terminal resize grip directly. `beginResize` activates
+        #    the window itself; a separate titlebar click would authorize a
+        #    native move grab and contaminate this React-resize workload.
         workload_deadline = min(deadline, time.monotonic() + settle_s)
         start_frame_workload(qmp, workload_deadline - time.monotonic(), stop_reading)
 

@@ -197,7 +197,6 @@ fn text_shadow_rejects_missing_parts() {
     assert_eq!(text_shadow("1px 1px"), None);
 }
 
-
 /// In-memory physical-pixel target for exercising the full draw path
 /// (parley layout → glyph cache → A8 blit) on the host.
 struct Buffer {
@@ -227,6 +226,10 @@ impl Raster for Buffer {
 
     fn height(&self) -> usize {
         self.height
+    }
+
+    fn row(&self, row: usize) -> &[u32] {
+        &self.pixels[row * self.width..(row + 1) * self.width]
     }
 
     fn row_mut(&mut self, row: usize) -> &mut [u32] {
@@ -280,8 +283,7 @@ fn draw_wraps_long_text_onto_a_second_line() {
 #[test]
 fn draw_ellipsizes_a_nowrap_overflowing_line() {
     let font = test_font();
-    let style =
-        computed(".t { font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }");
+    let style = computed(".t { font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }");
     let text = "alpha beta gamma delta epsilon zeta eta theta iota";
     let full = (font.measure(&style, text) * SCALE).round() as usize;
     let width = full / 2;

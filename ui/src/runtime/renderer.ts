@@ -15,7 +15,7 @@ interface Instance {
 }
 type Props = Record<string, unknown>;
 
-const primitives = new Set(["div", "span", "img", "input", "audio"]);
+const primitives = new Set(["div", "span", "img", "input", "button", "audio"]);
 const listeners = new Map<number, (payload: unknown) => void>();
 let nextListener = 1;
 let nextNode = 1;
@@ -25,15 +25,19 @@ const hostContext = {};
 // to diff listener identities. Kept off the serialized instance in a side table.
 const sourceProps = new WeakMap<Instance, Props>();
 
-function encodeProps(props: Props, previousProps: Props = {}, previousEncoded: Props = {}): Props {
+function encodeProps(props: Props, previousEncoded: Props = {}): Props {
   const encoded: Props = {};
   for (const [name, value] of Object.entries(props)) {
     if (name === "children") continue;
     if (typeof value === "function") {
-      const listener = previousProps[name] === value
-        ? (previousEncoded[name] as number)
-        : nextListener++;
-      if (previousProps[name] !== value) listeners.set(listener, value as (payload: unknown) => void);
+      // Listener identity belongs to the stable host node + prop slot, not to
+      // the JavaScript function object created by a particular React render.
+      // Reusing the id keeps the latest native hit snapshot dispatchable while
+      // React replaces inline callbacks; allocating a new id here creates a
+      // window where native still holds the old id after it has been deleted.
+      const previousListener = previousEncoded[name];
+      const listener = typeof previousListener === "number" ? previousListener : nextListener++;
+      listeners.set(listener, value as (payload: unknown) => void);
       encoded[name] = listener;
     } else {
       encoded[name] = value;
@@ -132,11 +136,11 @@ const reconciler = Reconciler({
   commitUpdate(instance: Instance, type: string, oldProps: Props, newProps: Props) {
     const previous = sourceProps.get(instance) ?? {};
     for (const [name, value] of Object.entries(previous)) {
-      if (typeof value === "function" && newProps[name] !== value) {
+      if (typeof value === "function" && typeof newProps[name] !== "function") {
         listeners.delete(instance.props[name] as number);
       }
     }
-    instance.props = encodeProps(newProps, previous, instance.props);
+    instance.props = encodeProps(newProps, instance.props);
     if (instance.media) {
       instance.media.updateProps(newProps);
       instance.children = instance.media.shadowChildren() as Instance[];
@@ -177,7 +181,30 @@ const reconciler = Reconciler({
   resetFormInstance: () => {},
 });
 
-globalThis.__liteDispatch = (listener: number, payload: unknown) => listeners.get(listener)?.(payload);
+globalThis.__liteDispatch = (listener: number | readonly number[], payload: unknown) => {
+  const route = typeof listener === "number" ? [listener] : listener;
+  let propagationStopped = false;
+  const event = typeof payload === "object" && payload !== null
+    ? payload as Record<string, unknown>
+    : { value: payload };
+  Object.defineProperty(event, "stopPropagation", {
+    configurable: true,
+    value: () => { propagationStopped = true; },
+  });
+  Object.defineProperty(event, "stopImmediatePropagation", {
+    configurable: true,
+    value: () => { propagationStopped = true; },
+  });
+
+  reconciler.discreteUpdates(() => {
+    for (const id of route) {
+      listeners.get(id)?.(event);
+      if (propagationStopped) {
+        break;
+      }
+    }
+  });
+};
 
 /** Mounts the bundle's only React root into the native LiteUI scene seam. */
 export function mount(Component: React.ComponentType) {

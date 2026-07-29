@@ -11,7 +11,7 @@ use taffy::{
 
 use crate::tree::Node;
 
-use super::{PhysicalRect, Raster, excludes_window};
+use super::{DocumentNode, PhysicalRect, Raster, collect_local_paint_changes, excludes_window};
 
 fn node(window_id: Option<u32>) -> Node {
     let mut props = BTreeMap::new();
@@ -38,6 +38,46 @@ fn underlay_excludes_only_the_selected_window() {
     assert!(!excludes_window(&node(None), Some(7)));
     assert!(!excludes_window(&node(Some(6)), Some(7)));
     assert!(excludes_window(&node(Some(7)), Some(7)));
+}
+
+#[test]
+fn fixed_damage_covers_appearance_and_removal_without_full_document_damage() {
+    let full = display_proto::Rect {
+        x: 0,
+        y: 0,
+        width: 3008,
+        height: 1692,
+    };
+    let topbar = display_proto::Rect {
+        x: 20,
+        y: 18,
+        width: 2960,
+        height: 80,
+    };
+    let panel = display_proto::Rect {
+        x: 772,
+        y: 184,
+        width: 1464,
+        height: 1208,
+    };
+    let current = [crate::display::Overlay {
+        rect: panel,
+        corner_radius: 40,
+        z_index: 950,
+    }];
+
+    assert_eq!(
+        super::paint_damage(&super::DocumentPaint::Full, &[topbar], &current, full),
+        [full]
+    );
+    assert_eq!(
+        super::paint_damage(&super::DocumentPaint::Reuse, &[topbar], &current, full),
+        [topbar, panel]
+    );
+    assert_eq!(
+        super::paint_damage(&super::DocumentPaint::Reuse, &[panel], &[], full),
+        [panel]
+    );
 }
 
 /// Proves that the window border-box overflow clip retains the titlebar and
@@ -214,6 +254,109 @@ fn opacity_layer_zeroes_rows_lazily_within_the_dirty_span() {
     assert_eq!(layer.row(5), &[1, 0]);
 }
 
+#[test]
+fn retained_damage_admits_only_text_and_controlled_value_paint_changes() {
+    let document = |id: u64, kind: &str, text: &str, value: Option<&str>| {
+        let mut source = Node {
+            id,
+            kind: kind.to_owned(),
+            props: BTreeMap::new(),
+            text: String::new(),
+            children: Vec::new(),
+        };
+        if let Some(value) = value {
+            source.props.insert("value".to_owned(), Value::from(value));
+        }
+        DocumentNode {
+            source,
+            paint_text: text.to_owned(),
+            computed: crate::style::Computed::default(),
+            children: Vec::new(),
+        }
+    };
+
+    let previous = [document(7, "span", "0:01", None)];
+    let current = [document(7, "span", "0:02", None)];
+    let mut changed = Vec::new();
+    assert!(collect_local_paint_changes(
+        &previous,
+        &current,
+        &mut changed
+    ));
+    assert_eq!(changed, [7]);
+
+    let previous = [document(8, "input", "", Some("1.0"))];
+    let current = [document(8, "input", "", Some("1.1"))];
+    changed.clear();
+    assert!(collect_local_paint_changes(
+        &previous,
+        &current,
+        &mut changed
+    ));
+    assert_eq!(changed, [8]);
+
+    let previous = [document(9, "span", "same", None)];
+    let mut current = document(9, "span", "same", None);
+    current.computed.set("color", "#ffffff");
+    changed.clear();
+    assert!(!collect_local_paint_changes(
+        &previous,
+        &[current],
+        &mut changed
+    ));
+}
+
+#[test]
+fn damage_raster_persists_only_the_scissored_span() {
+    struct Target {
+        width: usize,
+        height: usize,
+        pixels: Vec<u32>,
+    }
+
+    impl Raster for Target {
+        fn width(&self) -> usize {
+            self.width
+        }
+
+        fn height(&self) -> usize {
+            self.height
+        }
+
+        fn row(&self, row: usize) -> &[u32] {
+            &self.pixels[row * self.width..(row + 1) * self.width]
+        }
+
+        fn row_mut(&mut self, row: usize) -> &mut [u32] {
+            &mut self.pixels[row * self.width..(row + 1) * self.width]
+        }
+    }
+
+    let mut target = Target {
+        width: 5,
+        height: 3,
+        pixels: vec![1; 15],
+    };
+    {
+        let mut damaged = super::DamageRaster::new(
+            &mut target,
+            PhysicalRect {
+                x1: 1,
+                y1: 1,
+                x2: 4,
+                y2: 3,
+            },
+        );
+        damaged.row_mut(0).fill(2);
+        damaged.row_mut(1).fill(3);
+        damaged.row_mut(2).fill(4);
+    }
+
+    assert_eq!(target.row(0), &[1, 1, 1, 1, 1]);
+    assert_eq!(target.row(1), &[1, 3, 3, 3, 1]);
+    assert_eq!(target.row(2), &[1, 4, 4, 4, 1]);
+}
+
 /// Loads the checked UI faces from the repository assets, like the font unit
 /// tests do, so the taffy measure callback shapes real text.
 fn test_font() -> crate::font::Font {
@@ -304,9 +447,10 @@ fn proportional_text_leaf_wraps_via_the_measure_callback() {
 #[test]
 fn nowrap_text_leaf_overflows_via_the_measure_callback() {
     let font = test_font();
-    let sheet =
-        crate::style::Sheet::parse(".t { font-size: 11px; line-height: 14px; white-space: nowrap; }")
-            .unwrap();
+    let sheet = crate::style::Sheet::parse(
+        ".t { font-size: 11px; line-height: 14px; white-space: nowrap; }",
+    )
+    .unwrap();
     let node = text_node("t", "alpha beta gamma delta epsilon zeta eta theta");
     let computed = sheet.compute(&node, &[]);
     let style = super::layout::to_taffy(&node, &computed);

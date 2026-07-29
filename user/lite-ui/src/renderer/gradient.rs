@@ -209,8 +209,7 @@ fn parse_direction(segment: &str) -> Option<f32> {
 /// an optional normalized position.
 ///
 /// A trailing position may be a percentage (`50%`) or a bare `0`, which CSS
-/// treats as `0%`; the XP reference gradients pin their first stop with the
-/// bare-zero form, so rejecting it would void the whole gradient.
+/// treats as `0%`.
 fn parse_stop(segment: &str) -> Option<(u32, Option<f32>)> {
     let segment = segment.trim();
     if let Some(split) = segment.rfind(char::is_whitespace) {
@@ -384,20 +383,19 @@ mod tests {
 
     #[test]
     fn bare_zero_stop_is_zero_percent() {
-        // The XP taskbar gradient pins its first stop as `#1f2f86 0` (no `%`).
         assert_eq!(parse_stop("#1f2f86 0"), Some((0xff1f_2f86, Some(0.0))));
     }
 
     #[test]
-    fn reference_taskbar_gradient_parses_all_stops() {
-        // Regression guard: the 16-stop XP taskbar gradient must parse fully and
-        // resolve its endpoints to the first and last stop colors.
+    fn long_gradient_parses_all_stops() {
+        // A long authored gradient must preserve every stop and resolve both
+        // endpoints to the first and last colors.
         let gradient = Gradient::parse(
             "to bottom, #1f2f86 0, #3165c4 3%, #3682e5 6%, #4490e6 10%, #3883e5 12%, \
              #2b71e0 15%, #2663da 18%, #235bd6 20%, #2258d5 23%, #2157d6 38%, #245ddb 54%, \
              #2562df 86%, #245fdc 89%, #2158d4 92%, #1d4ec0 95%, #1941a5 98%",
         )
-        .expect("taskbar gradient parses");
+        .expect("long gradient parses");
         assert_eq!(gradient.stops.len(), 16);
         assert_eq!(gradient.color(0.0), 0xff1f_2f86);
         assert_eq!(gradient.color(1.0), 0xff19_41a5);

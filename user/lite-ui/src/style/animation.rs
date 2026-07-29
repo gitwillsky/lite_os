@@ -415,10 +415,7 @@ fn apply_keyframes(
         let underlying = values.get(property).cloned().unwrap_or_default();
         let from = declaration(previous, property).unwrap_or(&underlying);
         let to = declaration(next, property).unwrap_or(&underlying);
-        values.insert(
-            property.to_owned(),
-            sample_value(property, from, to, local),
-        );
+        values.insert(property.to_owned(), sample_value(property, from, to, local));
     }
 }
 

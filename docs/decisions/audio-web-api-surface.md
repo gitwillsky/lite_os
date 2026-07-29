@@ -20,10 +20,13 @@ LiteUI 的目标是桌面环境实践 Web 标准。声音能力必须能够支�
 - 事件：`loadstart`、`emptied`、`durationchange`、`loadedmetadata`、`loadeddata`、`canplay`、`play`、
   `playing`、`pause`、`waiting`、`seeking`、`seeked`、`timeupdate`、`ended`、`volumechange`、`abort`、`error`；
 - React `ref` 返回可操作的 media element public instance。
-- 标准 `controls` attribute：LiteUI UA 绘制 XP 主题的播放/暂停、进度、时间、音量与静音控件；
+- 标准 `controls` attribute：LiteUI UA 绘制 Aurora 主题的播放/暂停、进度、时间、音量与静音控件；
   无 `controls` 时元素不绘制内建 UI。
 
-`timeupdate` steady cadence 最多每 250 ms 一次，并在 pause、seek 与 ended transition 补发精确状态。
+`timeupdate` 单流 steady cadence 最多每 250 ms 一次，并在 pause、seek 与 ended transition 补发精确
+状态。UA 按 HTML 的 system-load/event-cost 规则，以系统服务确认的并发播放数和可用 CPU 数公平分配
+steady update budget；事件导致的 React 文本/range 更新走通用 retained paint damage，不能让多个播放
+元素以 full-surface raster 或各进程固定 4 Hz 争抢 UI rendering opportunity。
 ready/network/MediaError 常量和值必须与事件状态同步，不能只提供字段壳。
 
 首期 `src` 只接受 app-relative build-time resource 与 `blob:` URL；blob backing 可以是 Native

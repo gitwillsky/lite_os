@@ -134,6 +134,7 @@ pub(super) fn paint_range<R: Raster>(
     clip: Option<PhysicalRect>,
     range: RangeInput,
     focused: bool,
+    accent_color: &str,
 ) {
     if bounds.x2 <= bounds.x1 || bounds.y2 <= bounds.y1 {
         return;
@@ -150,14 +151,14 @@ pub(super) fn paint_range<R: Raster>(
         x2: track_right,
         y2: (center_y + track_half).min(bounds.y2),
     };
-    fill(pixels, track, clip, "#7f9db9");
+    fill(pixels, track, clip, "#23324a");
     let inner = PhysicalRect {
         x1: (track.x1 + unit).min(track.x2),
         y1: (track.y1 + unit).min(track.y2),
         x2: track.x2.saturating_sub(unit).max(track.x1),
         y2: track.y2.saturating_sub(unit).max(track.y1),
     };
-    fill(pixels, inner, clip, "#ffffff");
+    fill(pixels, inner, clip, "#0c1728");
 
     let travel = track_right.saturating_sub(track_left);
     let thumb_center = track_left
@@ -174,7 +175,11 @@ pub(super) fn paint_range<R: Raster>(
         pixels,
         progress,
         clip,
-        if range.disabled { "#aca899" } else { "#6ba92f" },
+        if range.disabled {
+            "#657186"
+        } else {
+            accent_color
+        },
     );
 
     let thumb_half_width = (THUMB_WIDTH / 2.0 * SCALE).round() as usize;
@@ -189,10 +194,10 @@ pub(super) fn paint_range<R: Raster>(
         pixels,
         thumb,
         clip,
-        if focused { "#003c74" } else { "#7f9db9" },
+        if focused { accent_color } else { "#7f91ab" },
     );
     let highlight = inset_rect(thumb, unit);
-    fill(pixels, highlight, clip, "#ffffff");
+    fill(pixels, highlight, clip, "#dcecff");
     let face = PhysicalRect {
         x1: (highlight.x1 + unit).min(highlight.x2),
         y1: (highlight.y1 + unit).min(highlight.y2),
@@ -203,7 +208,7 @@ pub(super) fn paint_range<R: Raster>(
         pixels,
         face,
         clip,
-        if range.disabled { "#d4d0c8" } else { "#ece9d8" },
+        if range.disabled { "#8b96a8" } else { "#f4f8ff" },
     );
 }
 
@@ -232,15 +237,9 @@ fn inset_rect(rect: PhysicalRect, amount: usize) -> PhysicalRect {
     }
 }
 
-fn fill<R: Raster>(
-    pixels: &mut R,
-    rect: PhysicalRect,
-    clip: Option<PhysicalRect>,
-    color: &str,
-) {
-    let rect = clip.map_or(rect, |clip| rect.intersect(clip));
-    if !rect.is_empty() {
-        paint_background(pixels, rect, color, [0.0; 4]);
+fn fill<R: Raster>(pixels: &mut R, rect: PhysicalRect, clip: Option<PhysicalRect>, color: &str) {
+    if !clip.map_or(rect, |clip| rect.intersect(clip)).is_empty() {
+        paint_background(pixels, rect, clip, color, [0.0; 4]);
     }
 }
 

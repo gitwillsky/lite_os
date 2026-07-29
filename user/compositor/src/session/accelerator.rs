@@ -212,7 +212,10 @@ mod tests {
     fn grab_ends_when_the_modifier_releases_first() {
         let mut accelerators = with_table(&[alt_tab()]);
         assert_eq!(accelerators.route(TAB, 1, 4, &[ALT]), KeyRoute::Desktop);
-        assert_eq!(accelerators.route(u32::from(ALT), 0, 0, &[]), KeyRoute::Desktop);
+        assert_eq!(
+            accelerators.route(u32::from(ALT), 0, 0, &[]),
+            KeyRoute::Desktop
+        );
         // Alt is up but Tab is still held: the sequence is not complete.
         assert_eq!(accelerators.route(TAB, 2, 0, &[]), KeyRoute::Desktop);
         assert_eq!(accelerators.route(TAB, 0, 0, &[]), KeyRoute::Desktop);
@@ -226,7 +229,10 @@ mod tests {
         assert_eq!(accelerators.route(TAB, 0, 4, &[ALT]), KeyRoute::Desktop);
         // Alt held, Tab tapped again: no re-match, but Tab is held again.
         assert_eq!(accelerators.route(TAB, 1, 4, &[ALT]), KeyRoute::Desktop);
-        assert_eq!(accelerators.route(u32::from(ALT), 0, 0, &[]), KeyRoute::Desktop);
+        assert_eq!(
+            accelerators.route(u32::from(ALT), 0, 0, &[]),
+            KeyRoute::Desktop
+        );
         // Tab still held, so the grab survives Alt's release until Tab is up.
         assert_eq!(accelerators.route(TAB, 0, 0, &[]), KeyRoute::Desktop);
         assert_eq!(accelerators.route(30, 0, 0, &[]), KeyRoute::Focused);

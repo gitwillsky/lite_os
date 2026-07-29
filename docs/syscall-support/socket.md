@@ -5,7 +5,7 @@
 | 198 | `socket` | Partial | AF_UNIX、AF_INET、AF_PACKET、有限 AF_NETLINK |
 | 199 | `socketpair` | Complete | AF_UNIX stream/datagram/seqpacket |
 | 200 | `bind` | Partial | 支持 domain 的 address scope |
-| 201 | `listen` | Partial | AF_UNIX/IPv4 TCP backlog |
+| 201 | `listen` | Partial | AF_UNIX/IPv4 TCP backlog；Linux signed-32 ABI 与 4096 kernel cap |
 | 202 | `accept` | Partial | AF_UNIX/IPv4 TCP |
 | 203 | `connect` | Partial | AF_UNIX/IPv4 endpoint |
 | 204 | `getsockname` | Partial | 支持 domain |

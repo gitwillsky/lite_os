@@ -28,6 +28,8 @@ interface LitePointerEvent {
   button: number;
   buttons: number;
   serial: number;
+  stopPropagation(): void;
+  stopImmediatePropagation(): void;
 }
 
 /** Keyboard payload delivered to onKeyDown. */
@@ -65,6 +67,7 @@ interface LiteFrame {
 /** One live surface in the desktop registry. */
 interface LiteSurface {
   id: number;
+  appId: string;
   title: string;
   icon: string;
   bounds: LiteFrame;
@@ -72,7 +75,7 @@ interface LiteSurface {
 
 /** Desktop subscription events emitted by the compositor bridge. */
 type LiteDesktopEvent =
-  | { type: "opened"; surface: LiteSurface }
+  | { type: "opened"; surface: { id: number; appId: string } }
   | { type: "closed"; surfaceId: number }
   | { type: "activated"; surfaceId: number }
   | { type: "moved"; surfaceId: number; x: number; y: number };
@@ -128,7 +131,7 @@ declare var __liteReact: typeof import("react");
 declare var __liteJsxRuntime: typeof import("react/jsx-runtime");
 declare function __liteMount(component: (props: Record<string, never>) => import("react").ReactNode): void;
 declare function __liteNative(operation: string, payload: string): string;
-declare function __liteDispatch(listener: number, payload: unknown): void;
+declare function __liteDispatch(listener: number | readonly number[], payload: unknown): void;
 declare function __liteSubscribe(channel: string, callback: (event: unknown) => void): () => void;
 declare function __liteTimer(id: number): void;
 declare function __liteEvent(channel: string, payload: unknown): void;
@@ -245,6 +248,7 @@ declare module "react-reconciler" {
   const Reconciler: (hostConfig: unknown) => {
     createContainer: (...args: unknown[]) => unknown;
     updateContainer: (element: unknown, container: unknown, ...args: unknown[]) => unknown;
+    discreteUpdates<T>(callback: () => T): T;
   };
   export default Reconciler;
 }

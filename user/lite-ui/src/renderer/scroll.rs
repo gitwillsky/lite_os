@@ -417,11 +417,7 @@ pub(super) fn paint_scrollbar_corner<R: Raster>(
     fill(pixels, corner, 0xffd4_d0c8);
 }
 
-fn physical<R: Raster>(
-    rect: LogicalRect,
-    pixels: &R,
-    clip: Option<PhysicalRect>,
-) -> PhysicalRect {
+fn physical<R: Raster>(rect: LogicalRect, pixels: &R, clip: Option<PhysicalRect>) -> PhysicalRect {
     let bounds = PhysicalRect::new(
         rect.x,
         rect.y,

@@ -10,7 +10,16 @@ use audio_proto::{
     recv_service, send_client,
 };
 
-use super::{Event, FillResult, PREFILL_BLOCKS, Worker};
+use super::{Event, FillResult, PREFILL_BLOCKS, Worker, diagnostic};
+
+const BASE_TIMEUPDATE_INTERVAL: Duration = Duration::from_millis(250);
+
+fn timeupdate_interval(concurrent_playbacks: u32, render_parallelism: u32) -> Duration {
+    let shares = concurrent_playbacks
+        .max(1)
+        .div_ceil(render_parallelism.max(1));
+    BASE_TIMEUPDATE_INTERVAL.saturating_mul(shares)
+}
 
 impl Worker {
     pub(super) fn send(&self, message: ClientMessage) -> Result<(), String> {
@@ -48,9 +57,9 @@ impl Worker {
             .decoder
             .allocation_epoch();
         let steady_allocations = final_epoch.saturating_sub(settled_epoch);
-        eprintln!(
+        diagnostic(format_args!(
             "LITE_AUDIO worker-allocation id={id} warmup_epoch={final_epoch} steady_allocations={steady_allocations}"
-        );
+        ));
         Ok(())
     }
 
@@ -199,6 +208,7 @@ impl Worker {
                     stream_id: progress_stream,
                     generation,
                     consumed_frames,
+                    ..
                 } if progress_stream == stream_id && generation == old_generation => {
                     if let Some(media) = self
                         .media
@@ -310,23 +320,26 @@ impl Worker {
 
     pub(super) fn emit(&mut self, event: Event) {
         match event.kind {
-            "seeking" => eprintln!(
+            "seeking" => diagnostic(format_args!(
                 "LITE_AUDIO event=seeking id={} seconds={:.6}",
                 event.id,
                 event.current_time.unwrap_or_default()
-            ),
+            )),
             "error" => {
                 if let Some(error) = &event.error {
-                    eprintln!(
+                    diagnostic(format_args!(
                         "LITE_AUDIO event=error id={} code={} message={:?}",
                         event.id, error.code, error.message
-                    );
+                    ));
                 } else {
-                    eprintln!("LITE_AUDIO event=error id={}", event.id);
+                    diagnostic(format_args!("LITE_AUDIO event=error id={}", event.id));
                 }
             }
             "loadedmetadata" | "play" | "playing" | "pause" | "seeked" | "ended" | "abort" => {
-                eprintln!("LITE_AUDIO event={} id={}", event.kind, event.id);
+                diagnostic(format_args!(
+                    "LITE_AUDIO event={} id={}",
+                    event.kind, event.id
+                ));
             }
             _ => {}
         }
@@ -397,7 +410,9 @@ impl Worker {
                     }
                     AckOperation::Gain => {
                         let gain = self.media.get(&id).expect("matched media").gain;
-                        eprintln!("LITE_AUDIO gain-installed id={id} gain={gain:.6}");
+                        diagnostic(format_args!(
+                            "LITE_AUDIO gain-installed id={id} gain={gain:.6}"
+                        ));
                     }
                     AckOperation::Close => {}
                 }
@@ -406,6 +421,7 @@ impl Worker {
                 stream_id,
                 generation,
                 consumed_frames,
+                concurrent_playbacks,
             } => {
                 if self.closing_streams.get(&stream_id) == Some(&generation) {
                     return Ok(());
@@ -420,7 +436,7 @@ impl Worker {
                     media.consumed_frames = consumed_frames;
                     let now = Instant::now();
                     let timeupdate = if now.duration_since(media.last_timeupdate)
-                        >= Duration::from_millis(250)
+                        >= timeupdate_interval(concurrent_playbacks, self.render_parallelism)
                     {
                         media.last_timeupdate = now;
                         Some(media.base_seconds + consumed_frames as f64 / f64::from(SAMPLE_RATE))
@@ -507,5 +523,21 @@ impl Worker {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use std::time::Duration;
+
+    use super::timeupdate_interval;
+
+    #[test]
+    fn system_load_is_shared_across_available_render_parallelism() {
+        assert_eq!(timeupdate_interval(1, 1), Duration::from_millis(250));
+        assert_eq!(timeupdate_interval(8, 1), Duration::from_millis(2_000));
+        assert_eq!(timeupdate_interval(8, 4), Duration::from_millis(500));
+        assert_eq!(timeupdate_interval(8, 8), Duration::from_millis(250));
+        assert_eq!(timeupdate_interval(0, 0), Duration::from_millis(250));
     }
 }

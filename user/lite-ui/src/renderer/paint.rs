@@ -1,21 +1,25 @@
 //! Recursive CSS paint walk and foreign-surface geometry emission.
 
+mod fixed;
+mod semantics;
+
 use std::io;
 
 use serde_json::Value;
 use taffy::TaffyTree;
 
-use super::{
-    Axis, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk,
-    PhysicalRect, Raster, RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion,
-    WindowFrame, background_url, corner_radii, cursor_shape, decode_png, excludes_window,
-    is_surface, listener, logical_from_physical, logical_intersection, overflow_modes,
-    paint_background, paint_background_image, paint_border, paint_image, paint_inset_shadow,
-    paint_scrollbar, paint_scrollbar_corner, paint_shadow, range::paint_range, scrollbar,
-    taffy_error, text_content, transform_translation,
-};
-use super::opacity::opacity;
 use super::layout::TextMeasure;
+use super::opacity::opacity;
+use super::{
+    Axis, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk, PhysicalRect,
+    Raster, RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion, WindowFrame,
+    background_url, corner_radii, cursor_shape, decode_png, excludes_window, is_surface, listener,
+    logical_from_physical, logical_intersection, overflow_modes, paint_background,
+    paint_background_image, paint_border, paint_image, paint_inset_shadow, paint_scrollbar,
+    paint_scrollbar_corner, paint_shadow, range::paint_range, scrollbar, taffy_error, text_content,
+    transform_translation,
+};
+use semantics::{hits_enabled, stacking_level, takes_autofocus};
 
 impl Renderer {
     pub(super) fn paint<R: Raster>(
@@ -31,6 +35,13 @@ impl Renderer {
             || excludes_window(&node.source, walk.excluded_window_group)
         {
             return Ok(());
+        }
+        let fixed_context = walk.fixed_context || node.computed.get("position") == Some("fixed");
+        if walk.phase == super::PaintPhase::Document && fixed_context {
+            return Ok(());
+        }
+        if walk.phase == super::PaintPhase::Fixed && !fixed_context {
+            return self.paint_fixed_descendants(tree, node, parent, pixels, output, walk);
         }
         let layout = tree.layout(node.id).map_err(taffy_error)?;
         // CSS transforms are applied after layout, so the taffy geometry keeps
@@ -58,16 +69,32 @@ impl Renderer {
             Some(clip) => bounds.intersect(clip),
             None => bounds,
         };
-        let pointer_down = listener(&node.source, "onPointerDown");
+        let paint_clip = match (walk.clip, walk.damage) {
+            (Some(clip), Some(damage)) => Some(clip.intersect(damage)),
+            (Some(clip), None) => Some(clip),
+            (None, Some(damage)) => Some(damage),
+            (None, None) => None,
+        };
+        let paint_raster = paint_clip.map_or(bounds, |clip| bounds.intersect(clip));
+        let disabled_button = node.source.kind == "button"
+            && node.source.props.get("disabled").and_then(Value::as_bool) == Some(true);
+        let interactive_listener = |name| {
+            if disabled_button {
+                None
+            } else {
+                listener(&node.source, name)
+            }
+        };
+        let pointer_down = interactive_listener("onPointerDown");
         let pointer_move = listener(&node.source, "onPointerMove");
-        let pointer_up = listener(&node.source, "onPointerUp");
-        let click = listener(&node.source, "onClick");
-        let double_click = listener(&node.source, "onDoubleClick");
+        let pointer_up = interactive_listener("onPointerUp");
+        let click = interactive_listener("onClick");
+        let double_click = interactive_listener("onDoubleClick");
         let pointer_enter = listener(&node.source, "onPointerEnter");
         let pointer_leave = listener(&node.source, "onPointerLeave");
         let context_menu = listener(&node.source, "onContextMenu");
         let wheel = listener(&node.source, "onWheel");
-        let key_down = listener(&node.source, "onKeyDown");
+        let key_down = interactive_listener("onKeyDown");
         let cursor = cursor_shape(node.computed.get("cursor"));
         let range = if node.source.kind == "input" {
             super::RangeInput::from_props(&node.source.props, listener(&node.source, "onInput"))
@@ -94,7 +121,9 @@ impl Renderer {
         // but never steals it from an already-focused field. Setting `focused`
         // here (before the input paints below) draws the caret in the same
         // frame, so e.g. inline rename is ready to type without a click.
-        let focusable = editable.is_some() || range.is_some_and(|input| !input.disabled());
+        let button = node.source.kind == "button" && !disabled_button;
+        let focusable =
+            editable.is_some() || range.is_some_and(|input| !input.disabled()) || button;
         if focusable && takes_autofocus(&node.source.props, self.focused) {
             self.focused = Some(node.source.id);
         }
@@ -102,22 +131,12 @@ impl Renderer {
         // scroll-region registration for the whole subtree; raster is
         // unaffected (the property only gates input).
         let hits_enabled = hits_enabled(walk.hits_enabled, &node.computed);
-        if hits_enabled
-            && (pointer_down.is_some()
-                || pointer_move.is_some()
-                || pointer_up.is_some()
-                || click.is_some()
-                || double_click.is_some()
-                || pointer_enter.is_some()
-                || pointer_leave.is_some()
-                || context_menu.is_some()
-                || wheel.is_some()
-                || cursor != display_proto::CURSOR_DEFAULT
-                || focusable)
-        {
+        if hits_enabled && !raster.is_empty() {
             let hit = logical_from_physical(raster);
             output.hits.push(HitRegion {
                 node_id: node.source.id,
+                parent_node_id: walk.parent_node_id,
+                window_group: walk.window_group,
                 x: hit.x,
                 y: hit.y,
                 width: hit.width,
@@ -135,44 +154,65 @@ impl Renderer {
                 cursor,
                 editable,
                 range,
+                button,
             });
         }
         if let Some(key_listener) = key_down {
             output.key_listener = Some(key_listener);
         }
-        paint_shadow(pixels, raster, &node.computed);
+        if walk.opacity_depth > 0 && node.computed.get("backdrop-filter").is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "backdrop-filter inside an opacity group is unsupported",
+            ));
+        }
+        if !paint_raster.is_empty() {
+            self.backdrop_blur
+                .paint(pixels, node.source.id, bounds, paint_clip, &node.computed)?;
+            paint_shadow(pixels, bounds, &node.computed);
+        }
         let radii = corner_radii(&node.computed);
         // Standard background order: the color layer paints first, then the
         // image layer (tiled bitmap or gradient) composites over it. The style
         // owner already expands the `background` shorthand, so only longhands
         // are read here. Inset shadows belong to the background layer: they
         // composite over it but stay under the border and content.
-        if let Some(color) = node.computed.get("background-color") {
-            paint_background(pixels, raster, color, radii);
+        if !paint_raster.is_empty()
+            && let Some(color) = node.computed.get("background-color")
+        {
+            paint_background(pixels, bounds, paint_clip, color, radii);
         }
-        if let Some(image) = node.computed.get("background-image") {
+        if !paint_raster.is_empty()
+            && let Some(image) = node.computed.get("background-image")
+        {
             if let Some(source) = background_url(image) {
                 let image = self.image(source)?;
-                paint_background_image(pixels, raster, image, &node.computed, radii);
+                paint_background_image(pixels, bounds, paint_clip, image, &node.computed, radii);
             } else {
-                paint_background(pixels, raster, image, radii);
+                paint_background(pixels, bounds, paint_clip, image, radii);
             }
         }
-        paint_inset_shadow(pixels, raster, &node.computed);
-        paint_border(pixels, raster, &node.computed);
-        if node.source.kind == "img"
+        if !paint_raster.is_empty() {
+            paint_inset_shadow(pixels, bounds, &node.computed);
+            paint_border(pixels, bounds, &node.computed);
+        }
+        if !paint_raster.is_empty()
+            && node.source.kind == "img"
             && let Some(source) = node.source.props.get("src").and_then(Value::as_str)
         {
             let image = self.image(source)?;
-            paint_image(pixels, raster, image, radii);
+            paint_image(pixels, bounds, paint_clip, image, radii);
         }
-        if let Some(range) = range {
+        if !paint_raster.is_empty()
+            && let Some(range) = range
+        {
             paint_range(
                 pixels,
                 bounds,
-                walk.clip,
+                paint_clip,
                 range,
                 self.focused == Some(node.source.id),
+                node.computed.get("accent-color").unwrap_or("#35c8ff"),
             );
         }
         // 文本 `<input>` 绘制其受控 `value`（空时用 placeholder 的灰字），并在获焦时于文本末尾
@@ -204,20 +244,20 @@ impl Renderer {
             } else {
                 value
             };
-            if !text.is_empty() {
+            if !paint_raster.is_empty() && !text.is_empty() {
                 // Placeholder is drawn dimmed by overriding the color; the input's
                 // own `color` drives real text. `font.draw` re-reads `color` from
                 // the style, so clone-and-override only for the placeholder case.
                 if showing_placeholder {
                     let mut dimmed = node.computed.clone();
                     dimmed.set("color", "#808080");
-                    self.font.draw(pixels, content, walk.clip, &dimmed, text);
+                    self.font.draw(pixels, content, paint_clip, &dimmed, text);
                 } else {
                     self.font
-                        .draw(pixels, content, walk.clip, &node.computed, text);
+                        .draw(pixels, content, paint_clip, &node.computed, text);
                 }
             }
-            if self.focused == Some(node.source.id) {
+            if !paint_raster.is_empty() && self.focused == Some(node.source.id) {
                 // Caret sits just past the value's measured advance, clamped inside
                 // the content box; 1 logical px wide, one line-height tall.
                 let advance = (self.font.measure(&node.computed, value) * SCALE).round() as usize;
@@ -229,20 +269,20 @@ impl Renderer {
                     y2: bounds.y2.saturating_sub(pad_top).max(content.y1),
                 };
                 let color = node.computed.get("color").unwrap_or("#000000").to_owned();
-                paint_background(pixels, caret, &color, [0.0; 4]);
+                paint_background(pixels, caret, paint_clip, &color, [0.0; 4]);
             }
         }
         // 文本叶子 span 直接绘制其拼接文本；容器 span 不绘制文本，其 `#text` 子节点各自
         // 作为文本run在下方递归绘制。因此这里对“文本叶子 span”和 `#text` 都出文本，符合
         // Web inline 语义——`<span>` 内嵌 `<img>` 时，文本与图片各自成盒并列绘制。
-        if node.source.is_text_leaf() {
+        if !paint_raster.is_empty() && node.source.is_text_leaf() {
             let text = text_content(&node.source);
             if node.computed.get("font-family") == Some("monospace") {
                 self.terminal_font
-                    .draw(pixels, bounds, walk.clip, &node.computed, &text);
+                    .draw(pixels, bounds, paint_clip, &node.computed, &text);
             } else {
                 self.font
-                    .draw(pixels, bounds, walk.clip, &node.computed, &text);
+                    .draw(pixels, bounds, paint_clip, &node.computed, &text);
             }
         }
         if is_surface(&node.source) {
@@ -271,6 +311,8 @@ impl Renderer {
                     surface_id,
                     configure_serial,
                     bounds: surface_bounds,
+                    desktop_input: Vec::new(),
+                    desktop_hit_start: output.hits.len(),
                 });
             }
         }
@@ -302,6 +344,15 @@ impl Renderer {
             })
         } else {
             walk.window_frame
+        };
+        let child_window_group = if node.source.props.contains_key("data-lite-window") {
+            node.source
+                .props
+                .get("data-lite-window")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+        } else {
+            walk.window_group
         };
         // Emit a per-window group frame for EVERY window (pure-DOM included), in
         // React paint (z) order, so the compositor moves/damages every window
@@ -400,9 +451,12 @@ impl Renderer {
         children.sort_by_key(|child| stacking_level(&child.computed, parent_is_flex));
         for child in children {
             let child_walk = PaintWalk {
+                parent_node_id: Some(node.source.id),
                 window_frame: child_frame,
+                window_group: child_window_group,
                 clip: child_clip,
                 hits_enabled,
+                fixed_context,
                 ..walk
             };
             // CSS group opacity: an `opacity < 1` subtree rasterizes whole into
@@ -443,7 +497,7 @@ impl Renderer {
                 scroll_offset.x,
                 show_y,
             );
-            paint_scrollbar(pixels, bar, walk.clip);
+            paint_scrollbar(pixels, bar, paint_clip);
             // The bar paints regardless (pointer-events gates input, not
             // raster) but only registers drag geometry when the subtree is
             // hit-enabled.
@@ -460,13 +514,13 @@ impl Renderer {
                 scroll_offset.y,
                 show_x,
             );
-            paint_scrollbar(pixels, bar, walk.clip);
+            paint_scrollbar(pixels, bar, paint_clip);
             if hits_enabled {
                 self.scrollbars.push(bar);
             }
         }
         if show_x && show_y {
-            paint_scrollbar_corner(pixels, scroll_port, walk.clip);
+            paint_scrollbar_corner(pixels, scroll_port, paint_clip);
         }
         Ok(())
     }
@@ -485,38 +539,6 @@ impl Renderer {
         }
         Ok(self.images.get(source).expect("image was inserted"))
     }
-}
-
-/// Whether one appearing `<input>` takes focus unprompted: only with an
-/// explicit `autoFocus` prop and only while no field currently owns focus
-/// (standard DOM autofocus semantics — appearing fields never steal it).
-fn takes_autofocus(
-    props: &std::collections::BTreeMap<String, Value>,
-    focused: Option<u64>,
-) -> bool {
-    focused.is_none() && props.get("autoFocus").and_then(Value::as_bool) == Some(true)
-}
-
-/// Whether a node's subtree emits hit/scroll regions: `pointer-events: none`
-/// on the node or any ancestor disables the whole subtree. LiteUI does not
-/// implement the CSS `pointer-events: auto` re-enable on descendants
-/// (documented subset limit).
-fn hits_enabled(ancestor: bool, computed: &crate::style::Computed) -> bool {
-    ancestor && computed.get("pointer-events") != Some("none")
-}
-
-fn stacking_level(computed: &crate::style::Computed, flex_item: bool) -> i32 {
-    let positioned = matches!(
-        computed.get("position"),
-        Some("relative" | "absolute" | "fixed")
-    );
-    if !positioned && !flex_item {
-        return 0;
-    }
-    computed
-        .get("z-index")
-        .and_then(|value| value.trim().parse::<i32>().ok())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

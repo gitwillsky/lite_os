@@ -7,11 +7,16 @@ use serde_json::Value;
 mod animation;
 mod expand;
 mod parser;
+mod selector;
+#[cfg(test)]
+mod tests;
 
 use animation::Keyframes;
 pub(crate) use animation::Timeline;
-use expand::apply_declaration;
 pub(crate) use expand::split_css_tokens;
+use expand::{apply_declaration, invalidate_declaration};
+pub(crate) use selector::PseudoState;
+use selector::Selector;
 
 use crate::tree::Node;
 
@@ -22,23 +27,11 @@ struct Rule {
     order: usize,
 }
 
-#[derive(Clone)]
-struct Selector {
-    parts: Vec<Simple>,
-    specificity: u32,
-}
-
-#[derive(Clone, Default)]
-struct Simple {
-    kind: Option<String>,
-    id: Option<String>,
-    classes: Vec<String>,
-}
-
 /// Cascaded string properties for one host node.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Computed {
     values: BTreeMap<String, String>,
+    custom: BTreeMap<String, Option<String>>,
 }
 
 impl Computed {
@@ -98,7 +91,7 @@ impl Sheet {
     /// Computes cascade order, specificity and inline-style precedence.
     #[cfg(test)]
     pub fn compute(&self, node: &Node, ancestors: &[&Node]) -> Computed {
-        self.cascade(node, ancestors)
+        self.cascade(node, ancestors, None, &PseudoState::default())
     }
 
     /// Computes cascade plus time-dependent transitions and animations.
@@ -106,26 +99,32 @@ impl Sheet {
         &self,
         node: &Node,
         ancestors: &[&Node],
+        inherited: Option<&Computed>,
+        pseudo: &PseudoState,
         timeline: &mut Timeline,
     ) -> Computed {
-        let mut computed = self.cascade(node, ancestors);
+        let mut computed = self.cascade(node, ancestors, inherited, pseudo);
         timeline.apply_transitions(node.id, &mut computed.values);
         timeline.apply_animation(node.id, &mut computed.values, &self.keyframes);
         computed
     }
 
-    fn cascade(&self, node: &Node, ancestors: &[&Node]) -> Computed {
+    fn cascade(
+        &self,
+        node: &Node,
+        ancestors: &[&Node],
+        inherited: Option<&Computed>,
+        pseudo: &PseudoState,
+    ) -> Computed {
         let mut matches: Vec<&Rule> = self
             .rules
             .iter()
-            .filter(|rule| rule.selector.matches(node, ancestors))
+            .filter(|rule| rule.selector.matches(node, ancestors, pseudo))
             .collect();
         matches.sort_by_key(|rule| (rule.selector.specificity, rule.order));
-        let mut values = BTreeMap::new();
+        let mut declarations = Vec::new();
         for rule in matches {
-            for (name, value) in &rule.declarations {
-                apply_declaration(&mut values, name, value);
-            }
+            declarations.extend(rule.declarations.iter().cloned());
         }
         if let Some(Value::Object(inline)) = node.props.get("style") {
             for (name, value) in inline {
@@ -135,102 +134,151 @@ impl Sheet {
                     Value::String(text) => text.clone(),
                     _ => continue,
                 };
-                apply_declaration(&mut values, &name, &value);
+                declarations.push((name, value));
             }
         }
-        Computed { values }
-    }
-}
-
-impl Selector {
-    fn parse(source: &str) -> Result<Self, String> {
-        if source.is_empty() || source.contains('>') || source.contains(',') {
-            return Err(format!("unsupported runtime selector '{source}'"));
-        }
-        let parts: Vec<Simple> = source
-            .split_whitespace()
-            .map(Simple::parse)
-            .collect::<Result<_, _>>()?;
-        let specificity = parts.iter().fold(0, |value, part| {
-            value
-                + u32::from(part.kind.is_some())
-                + part.classes.len() as u32 * 100
-                + u32::from(part.id.is_some()) * 10_000
-        });
-        Ok(Self { parts, specificity })
-    }
-
-    fn matches(&self, node: &Node, ancestors: &[&Node]) -> bool {
-        let Some(last) = self.parts.last() else {
-            return false;
-        };
-        if !last.matches(node) {
-            return false;
-        }
-        let mut ancestor = ancestors.len();
-        for part in self.parts[..self.parts.len() - 1].iter().rev() {
-            let Some(index) = (0..ancestor)
-                .rev()
-                .find(|index| part.matches(ancestors[*index]))
-            else {
-                return false;
-            };
-            ancestor = index;
-        }
-        true
-    }
-}
-
-impl Simple {
-    fn parse(source: &str) -> Result<Self, String> {
-        let mut simple = Self::default();
-        let mut start = 0;
-        let bytes = source.as_bytes();
-        while start < bytes.len() && bytes[start] != b'.' && bytes[start] != b'#' {
-            start += 1;
-        }
-        if start != 0 {
-            simple.kind = Some(source[..start].to_owned());
-        }
-        while start < bytes.len() {
-            let marker = bytes[start];
-            let begin = start + 1;
-            start = begin;
-            while start < bytes.len() && bytes[start] != b'.' && bytes[start] != b'#' {
-                start += 1;
-            }
-            if begin == start {
-                return Err(format!("empty selector component in '{source}'"));
-            }
-            match marker {
-                b'.' => simple.classes.push(source[begin..start].to_owned()),
-                b'#' if simple.id.is_none() => simple.id = Some(source[begin..start].to_owned()),
-                _ => return Err(format!("invalid selector '{source}'")),
-            }
-        }
-        Ok(simple)
-    }
-
-    fn matches(&self, node: &Node) -> bool {
-        if self.kind.as_deref().is_some_and(|kind| kind != node.kind) {
-            return false;
-        }
-        if self
-            .id
-            .as_deref()
-            .is_some_and(|id| node.props.get("id").and_then(Value::as_str) != Some(id))
-        {
-            return false;
-        }
-        let class = node
-            .props
-            .get("className")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        self.classes
+        let local_custom: BTreeMap<String, String> = declarations
             .iter()
-            .all(|required| class.split_whitespace().any(|actual| actual == required))
+            .filter(|(name, _)| name.starts_with("--"))
+            .cloned()
+            .collect();
+        let inherited_custom = inherited.map(|style| &style.custom);
+        let mut custom = inherited_custom.cloned().unwrap_or_default();
+        for name in local_custom.keys() {
+            let mut stack = Vec::new();
+            let value = resolve_custom(name, &local_custom, inherited_custom, &mut stack);
+            custom.insert(name.clone(), value);
+        }
+
+        let mut values = BTreeMap::new();
+        for (name, value) in declarations {
+            if name.starts_with("--") {
+                continue;
+            }
+            match resolve_value(&value, &local_custom, inherited_custom, &mut Vec::new()) {
+                Some(value) if value.trim() == "inherit" => {
+                    if let Some(value) = inherited.and_then(|style| style.values.get(&name)) {
+                        apply_declaration(&mut values, &name, value);
+                    } else {
+                        invalidate_declaration(&mut values, &name);
+                    }
+                }
+                Some(value) if value.trim() == "initial" => {
+                    invalidate_declaration(&mut values, &name);
+                }
+                Some(value) if value.trim() == "unset" => {
+                    if is_inherited_property(&name)
+                        && let Some(value) = inherited.and_then(|style| style.values.get(&name))
+                    {
+                        apply_declaration(&mut values, &name, value);
+                    } else {
+                        invalidate_declaration(&mut values, &name);
+                    }
+                }
+                Some(value) => apply_declaration(&mut values, &name, &value),
+                None => invalidate_declaration(&mut values, &name),
+            }
+        }
+        let mut computed = Computed { values, custom };
+        if let Some(parent) = inherited {
+            computed.inherit(parent);
+        }
+        computed
     }
+}
+
+fn is_inherited_property(name: &str) -> bool {
+    matches!(
+        name,
+        "color"
+            | "cursor"
+            | "font-family"
+            | "font-size"
+            | "font-style"
+            | "font-weight"
+            | "line-height"
+            | "text-align"
+            | "text-overflow"
+            | "text-shadow"
+            | "white-space"
+    )
+}
+
+fn resolve_custom(
+    name: &str,
+    local: &BTreeMap<String, String>,
+    inherited: Option<&BTreeMap<String, Option<String>>>,
+    stack: &mut Vec<String>,
+) -> Option<String> {
+    if stack.iter().any(|resolving| resolving == name) {
+        return None;
+    }
+    let Some(value) = local.get(name) else {
+        return inherited?.get(name)?.clone();
+    };
+    stack.push(name.to_owned());
+    let resolved = resolve_value(value, local, inherited, stack);
+    stack.pop();
+    resolved
+}
+
+fn resolve_value(
+    value: &str,
+    local: &BTreeMap<String, String>,
+    inherited: Option<&BTreeMap<String, Option<String>>>,
+    stack: &mut Vec<String>,
+) -> Option<String> {
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while let Some(relative) = value[cursor..].find("var(") {
+        let start = cursor + relative;
+        output.push_str(&value[cursor..start]);
+        let open = start + 3;
+        let close = matching_parenthesis(value, open)?;
+        let body = &value[open + 1..close];
+        let (name, fallback) = split_var_arguments(body);
+        let name = name.trim();
+        if !name.starts_with("--") {
+            return None;
+        }
+        let replacement = resolve_custom(name, local, inherited, stack).or_else(|| {
+            fallback.and_then(|fallback| resolve_value(fallback.trim(), local, inherited, stack))
+        })?;
+        output.push_str(&replacement);
+        cursor = close + 1;
+    }
+    output.push_str(&value[cursor..]);
+    Some(output)
+}
+
+fn matching_parenthesis(value: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, character) in value[open..].char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_var_arguments(body: &str) -> (&str, Option<&str>) {
+    let mut depth = 0usize;
+    for (index, character) in body.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return (&body[..index], Some(&body[index + 1..])),
+            _ => {}
+        }
+    }
+    (body, None)
 }
 
 fn parse_px(value: &str) -> Option<f32> {
@@ -248,271 +296,4 @@ fn camel_to_kebab(source: &str) -> String {
         }
     }
     output
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use serde_json::Value;
-
-    use super::{Sheet, Timeline};
-    use crate::tree::Node;
-
-    #[test]
-    fn box_longhands_follow_source_order_and_four_side_expansion() {
-        let sheet = Sheet::parse(
-            ".box {
-                margin-top: 1px;
-                margin: 2px 3px;
-                margin-top: 4px;
-                padding: 5px;
-                padding-bottom: 6px;
-                border-top: 1px solid #111111;
-                border-top-width: 2px;
-                border-top-color: #222222;
-            }",
-        )
-        .expect("standard box declarations parse");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        assert_eq!(computed.get("margin-top"), Some("4px"));
-        assert_eq!(computed.get("margin-right"), Some("3px"));
-        assert_eq!(computed.get("margin-bottom"), Some("2px"));
-        assert_eq!(computed.get("margin-left"), Some("3px"));
-        assert_eq!(computed.get("padding-top"), Some("5px"));
-        assert_eq!(computed.get("padding-bottom"), Some("6px"));
-        assert_eq!(computed.get("border-top-width"), Some("2px"));
-        assert_eq!(computed.get("border-top-color"), Some("#222222"));
-    }
-
-    #[test]
-    fn later_border_shorthand_resets_earlier_side_longhands() {
-        let sheet = Sheet::parse(
-            ".box {
-                border-top-width: 7px;
-                border-top-color: #111111;
-                border: 2px solid #abcdef;
-            }",
-        )
-        .expect("standard border declarations parse");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        for side in ["top", "right", "bottom", "left"] {
-            assert_eq!(computed.get(&format!("border-{side}-width")), Some("2px"));
-            assert_eq!(
-                computed.get(&format!("border-{side}-color")),
-                Some("#abcdef")
-            );
-            assert_eq!(computed.get(&format!("border-{side}-style")), Some("solid"));
-        }
-    }
-
-    #[test]
-    fn border_style_expands_in_standard_edge_order() {
-        let sheet = Sheet::parse(
-            ".box {
-                border-style: dotted dashed solid none;
-            }",
-        )
-        .expect("border styles parse");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        assert_eq!(computed.get("border-top-style"), Some("dotted"));
-        assert_eq!(computed.get("border-right-style"), Some("dashed"));
-        assert_eq!(computed.get("border-bottom-style"), Some("solid"));
-        assert_eq!(computed.get("border-left-style"), Some("none"));
-    }
-
-    #[test]
-    fn background_shorthand_expands_color_image_and_tiling_longhands() {
-        let sheet = Sheet::parse(
-            ".box {
-                background: url(\"assets/bg.png\") no-repeat center / cover;
-            }",
-        )
-        .expect("background shorthand parses");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        assert_eq!(
-            computed.get("background-image"),
-            Some("url(\"assets/bg.png\")")
-        );
-        assert_eq!(computed.get("background-color"), Some("transparent"));
-        assert_eq!(computed.get("background-repeat"), Some("no-repeat"));
-        assert_eq!(computed.get("background-position"), Some("center"));
-        assert_eq!(computed.get("background-size"), Some("cover"));
-    }
-
-    #[test]
-    fn background_shorthand_mixes_color_gradient_and_repeat() {
-        let sheet = Sheet::parse(
-            ".box {
-                background: repeat-x linear-gradient(90deg, #000000, #ffffff) #0a246a;
-            }",
-        )
-        .expect("mixed background shorthand parses");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        assert_eq!(computed.get("background-color"), Some("#0a246a"));
-        assert_eq!(
-            computed.get("background-image"),
-            Some("linear-gradient(90deg, #000000, #ffffff)")
-        );
-        assert_eq!(computed.get("background-repeat"), Some("repeat-x"));
-        // Tiling longhands absent from the shorthand stay untouched.
-        assert_eq!(computed.get("background-position"), None);
-        assert_eq!(computed.get("background-size"), None);
-    }
-
-    #[test]
-    fn later_background_shorthand_resets_earlier_image_longhand() {
-        let sheet = Sheet::parse(
-            ".box {
-                background-image: url(assets/bg.png);
-                background: #d4d0c8;
-            }",
-        )
-        .expect("background reset parses");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        assert_eq!(computed.get("background-color"), Some("#d4d0c8"));
-        assert_eq!(computed.get("background-image"), Some("none"));
-    }
-
-    #[test]
-    fn color_function_stays_one_token_during_edge_expansion() {
-        let sheet = Sheet::parse(
-            ".box {
-                border-color: rgba(10, 20, 30, 0.5);
-            }",
-        )
-        .expect("functional color parses");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        for side in ["top", "right", "bottom", "left"] {
-            assert_eq!(
-                computed.get(&format!("border-{side}-color")),
-                Some("rgba(10, 20, 30, 0.5)")
-            );
-        }
-    }
-
-    #[test]
-    fn named_color_is_extracted_from_border_shorthand() {
-        let sheet = Sheet::parse(
-            ".box {
-                border: 1px solid teal;
-            }",
-        )
-        .expect("named color border parses");
-        let node = Node {
-            id: 1,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-
-        let computed = sheet.compute(&node, &[]);
-
-        for side in ["top", "right", "bottom", "left"] {
-            assert_eq!(computed.get(&format!("border-{side}-color")), Some("teal"));
-        }
-    }
-
-    #[test]
-    fn motion_media_and_keyframes_override_the_base_cascade() {
-        let sheet = Sheet::parse(
-            ".splash { opacity: 0; pointer-events: none; }
-            @keyframes reveal {
-                from { opacity: 1; pointer-events: auto; }
-                to { opacity: 0; pointer-events: none; }
-            }
-            @media (prefers-reduced-motion: no-preference) {
-                .splash { animation: reveal 1s linear 1 both; }
-            }",
-        )
-        .expect("standard motion stylesheet parses");
-        let node = Node {
-            id: 7,
-            kind: "div".to_owned(),
-            props: BTreeMap::from([("className".to_owned(), Value::String("splash".to_owned()))]),
-            text: String::new(),
-            children: Vec::new(),
-        };
-        let mut timeline = Timeline::new();
-        timeline.begin_frame();
-
-        let computed = sheet.compute_at(&node, &[], &mut timeline);
-
-        assert_eq!(computed.get("pointer-events"), Some("auto"));
-        assert!(
-            computed
-                .get("opacity")
-                .is_some_and(|value| { value.parse::<f32>().is_ok_and(|opacity| opacity > 0.99) })
-        );
-        assert!(timeline.active());
-    }
-
-    #[test]
-    fn unknown_media_query_is_rejected_instead_of_silently_matching() {
-        assert!(Sheet::parse("@media (width > 10px) { .box { opacity: 1; } }").is_err());
-    }
 }

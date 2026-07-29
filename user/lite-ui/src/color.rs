@@ -38,15 +38,17 @@ fn parse_color<'i>(parser: &mut Parser<'i, '_>) -> Result<u32, ParseError<'i, ()
             if ident.eq_ignore_ascii_case("transparent") {
                 return Ok(0);
             }
-            let (red, green, blue) = parse_named_color(ident)
-                .map_err(|()| location.new_custom_error::<(), ()>(()))?;
+            let (red, green, blue) =
+                parse_named_color(ident).map_err(|()| location.new_custom_error::<(), ()>(()))?;
             Ok(premultiply(red, green, blue, 1.0))
         }
         Token::Function(name) => {
             let name = name.clone();
             parser.parse_nested_block(|input| parse_color_function(&name, input))
         }
-        token => Err(location.new_basic_unexpected_token_error(token.clone()).into()),
+        token => Err(location
+            .new_basic_unexpected_token_error(token.clone())
+            .into()),
     }
 }
 
@@ -74,7 +76,9 @@ fn parse_rgb<'i>(input: &mut Parser<'i, '_>) -> Result<u32, ParseError<'i, ()>> 
     } else {
         let green = rgb_channel(input)?;
         let blue = rgb_channel(input)?;
-        let alpha = optional_alpha(input, |i| i.expect_delim('/').map(|_| ()).map_err(Into::into))?;
+        let alpha = optional_alpha(input, |i| {
+            i.expect_delim('/').map(|_| ()).map_err(Into::into)
+        })?;
         (green, blue, alpha)
     };
     input.expect_exhausted()?;
@@ -93,7 +97,9 @@ fn parse_hsl<'i>(input: &mut Parser<'i, '_>) -> Result<u32, ParseError<'i, ()>> 
     } else {
         let saturation = unit_percentage(input)?;
         let lightness = unit_percentage(input)?;
-        let alpha = optional_alpha(input, |i| i.expect_delim('/').map(|_| ()).map_err(Into::into))?;
+        let alpha = optional_alpha(input, |i| {
+            i.expect_delim('/').map(|_| ()).map_err(Into::into)
+        })?;
         (saturation, lightness, alpha)
     };
     input.expect_exhausted()?;
@@ -113,7 +119,9 @@ fn optional_alpha<'i>(
     match input.next()? {
         Token::Number { value, .. } => Ok(value.clamp(0.0, 1.0)),
         Token::Percentage { unit_value, .. } => Ok(unit_value.clamp(0.0, 1.0)),
-        token => Err(location.new_basic_unexpected_token_error(token.clone()).into()),
+        token => Err(location
+            .new_basic_unexpected_token_error(token.clone())
+            .into()),
     }
 }
 
@@ -123,7 +131,9 @@ fn rgb_channel<'i>(input: &mut Parser<'i, '_>) -> Result<u8, ParseError<'i, ()>>
     match input.next()? {
         Token::Number { value, .. } => Ok(clamp_floor_256_f32(*value)),
         Token::Percentage { unit_value, .. } => Ok(clamp_unit_f32(*unit_value)),
-        token => Err(location.new_basic_unexpected_token_error(token.clone()).into()),
+        token => Err(location
+            .new_basic_unexpected_token_error(token.clone())
+            .into()),
     }
 }
 
@@ -139,7 +149,9 @@ fn hue_angle<'i>(input: &mut Parser<'i, '_>) -> Result<f32, ParseError<'i, ()>> 
             "turn" => Ok(*value * 360.0),
             _ => Err(location.new_custom_error::<(), ()>(())),
         },
-        token => Err(location.new_basic_unexpected_token_error(token.clone()).into()),
+        token => Err(location
+            .new_basic_unexpected_token_error(token.clone())
+            .into()),
     }
 }
 
@@ -148,7 +160,9 @@ fn unit_percentage<'i>(input: &mut Parser<'i, '_>) -> Result<f32, ParseError<'i,
     let location = input.current_source_location();
     match input.next()? {
         Token::Percentage { unit_value, .. } => Ok(unit_value.clamp(0.0, 1.0)),
-        token => Err(location.new_basic_unexpected_token_error(token.clone()).into()),
+        token => Err(location
+            .new_basic_unexpected_token_error(token.clone())
+            .into()),
     }
 }
 

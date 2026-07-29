@@ -5,8 +5,8 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #000000;
-  color: #c0c0c0;
+  background: #050d1a;
+  color: #d7e2f2;
   font-family: monospace;
   font-size: 14px;
   line-height: 16px;
@@ -18,5 +18,27 @@
 }
 .terminal__cursor {
   position: absolute;
-  background: #c0c0c0;
+  background: #35c8ff;
+  box-shadow: 0 0 8px rgba(53, 200, 255, 0.7);
+}
+
+@keyframes terminal-cursor-blink {
+  from {
+    opacity: 1;
+  }
+  49% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .terminal__cursor--blinking {
+    animation: terminal-cursor-blink 1060ms linear infinite both;
+  }
 }

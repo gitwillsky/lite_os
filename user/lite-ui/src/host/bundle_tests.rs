@@ -14,14 +14,17 @@ fn host(role: Role, root: PathBuf) -> (Host, std::rc::Rc<super::State>) {
         audio_proto::ClientRole::Media
     };
     let (commands, _events) = crate::audio::start(audio_role).expect("audio worker");
-    Host::new(role, root, commands)
+    Host::new(role, root.clone(), root, commands)
 }
 
 /// Mounts one app bundle like the production session and asserts every
-/// `<img src>` in its first frame resolves to a real file under the app
-/// root — the exact failure a missing build.mjs asset copy causes at
-/// first paint in the guest.
-fn assert_app_bundle_mounts_with_assets(app: &str) {
+/// `<img src>` that exists in its first frame resolves under the app root.
+///
+/// Returns the resolved sources so callers whose initial state necessarily
+/// contains imagery can additionally require a non-empty set. Files may render
+/// its CSS-only empty-directory shell before filesystem entries introduce
+/// images, so an unconditional non-empty requirement would encode old chrome.
+fn assert_app_bundle_mounts_with_assets(app: &str) -> Vec<String> {
     let root = std::env::var_os("LITE_UI_TEST_ASSETS")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
@@ -35,9 +38,7 @@ fn assert_app_bundle_mounts_with_assets(app: &str) {
         .evaluate("runtime.js", &runtime)
         .expect("load runtime");
     engine.run_jobs().expect("runtime jobs");
-    engine
-        .evaluate("app.js", &bundle)
-        .expect("mount app");
+    engine.evaluate("app.js", &bundle).expect("mount app");
     engine.run_jobs().expect("app jobs");
     let scene = state.scene_if_dirty().expect("app must publish its root");
     let mut stack: Vec<&crate::tree::Node> = scene.iter().collect();
@@ -50,18 +51,21 @@ fn assert_app_bundle_mounts_with_assets(app: &str) {
         }
         stack.extend(node.children.iter());
     }
-    assert!(!srcs.is_empty(), "first frame should reference assets");
-    for src in srcs {
+    for src in &srcs {
         assert!(
-            app_root.join(&src).is_file(),
+            app_root.join(src).is_file(),
             "first-frame asset missing from bundle: {app}/{src}"
         );
     }
+    srcs
 }
 
 #[test]
 fn explorer_apps_mount_with_all_first_frame_assets() {
-    assert_app_bundle_mounts_with_assets("my-computer");
+    assert!(
+        !assert_app_bundle_mounts_with_assets("my-computer").is_empty(),
+        "Computer's first frame must exercise its packaged imagery"
+    );
     assert_app_bundle_mounts_with_assets("file-manager");
 }
 
@@ -136,6 +140,188 @@ fn checked_desktop_bundle_mounts_in_the_bounded_engine() {
     }
 }
 
+#[test]
+fn checked_desktop_listener_dispatch_commits_react_state() {
+    let root = std::env::var_os("LITE_UI_TEST_ASSETS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+    let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
+    let desktop = fs::read(root.join("desktop/main.js")).expect("desktop bundle");
+    let (host, state) = host(Role::Desktop, root);
+    let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
+    engine.install_host(host);
+    engine
+        .evaluate("runtime.js", &runtime)
+        .expect("load runtime");
+    engine.run_jobs().expect("runtime jobs");
+    engine
+        .evaluate("desktop.js", &desktop)
+        .expect("mount desktop");
+    engine.run_jobs().expect("desktop jobs");
+    let scene = state.scene_if_dirty().expect("desktop root");
+    let mut stack: Vec<&crate::tree::Node> = scene.iter().collect();
+    let mut listener = None;
+    while let Some(node) = stack.pop() {
+        if node
+            .props
+            .get("className")
+            .and_then(serde_json::Value::as_str)
+            == Some("workspace-switcher")
+        {
+            listener = node
+                .props
+                .get("onClick")
+                .and_then(serde_json::Value::as_u64);
+            break;
+        }
+        stack.extend(node.children.iter());
+    }
+    let listener = listener.expect("workspace switcher listener");
+    drop(scene);
+    for (surface_id, app_id) in [(1, "terminal"), (2, "file-manager")] {
+        state.open_surface(surface_id, app_id.to_owned());
+        engine
+            .evaluate(
+                "surface.js",
+                format!(
+                    "globalThis.__liteEvent(\"desktop\",{{\"type\":\"opened\",\"surface\":{{\"id\":{surface_id},\"appId\":\"{app_id}\"}}}});"
+                )
+                .as_bytes(),
+            )
+            .expect("dispatch production surface event");
+        engine.run_jobs().expect("surface jobs");
+    }
+    drop(
+        state
+            .scene_if_dirty()
+            .expect("surface events must publish windows"),
+    );
+    engine
+        .evaluate(
+            "listener.js",
+            format!("globalThis.__liteDispatch([{listener}],{{\"type\":\"click\"}});").as_bytes(),
+        )
+        .expect("dispatch workspace click");
+    engine.run_jobs().expect("listener jobs");
+    let scene = state
+        .scene_if_dirty()
+        .expect("listener must publish a React commit");
+    let mut stack: Vec<&crate::tree::Node> = scene.iter().collect();
+    while let Some(node) = stack.pop() {
+        if node
+            .props
+            .get("className")
+            .and_then(serde_json::Value::as_str)
+            == Some("overview")
+        {
+            return;
+        }
+        stack.extend(node.children.iter());
+    }
+    panic!("workspace listener did not render the overview");
+}
+
+#[test]
+fn command_launch_unmounts_the_panel_in_the_same_react_commit() {
+    let root = std::env::var_os("LITE_UI_TEST_ASSETS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+    let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
+    let desktop = fs::read(root.join("desktop/main.js")).expect("desktop bundle");
+    let (host, state) = host(Role::Desktop, root);
+    let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
+    engine.install_host(host);
+    engine
+        .evaluate("runtime.js", &runtime)
+        .expect("load runtime");
+    engine.run_jobs().expect("runtime jobs");
+    engine
+        .evaluate("desktop.js", &desktop)
+        .expect("mount desktop");
+    engine.run_jobs().expect("desktop jobs");
+
+    let scene = state.scene_if_dirty().expect("desktop root");
+    let brand_listener = scene
+        .iter()
+        .flat_map(|node| descendants(node).into_iter())
+        .find(|node| {
+            node.props
+                .get("className")
+                .and_then(serde_json::Value::as_str)
+                == Some("topbar__brand")
+        })
+        .and_then(|node| node.props.get("onClick"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("topbar brand listener");
+    drop(scene);
+    engine
+        .evaluate(
+            "open-command.js",
+            format!("globalThis.__liteDispatch([{brand_listener}],{{\"type\":\"click\"}});")
+                .as_bytes(),
+        )
+        .expect("open command center");
+    engine.run_jobs().expect("command center jobs");
+
+    let scene = state.scene_if_dirty().expect("command center scene");
+    let music_listener = scene
+        .iter()
+        .flat_map(|node| descendants(node).into_iter())
+        .find(|node| {
+            node.props
+                .get("className")
+                .and_then(serde_json::Value::as_str)
+                == Some("command-app")
+                && descendants(node).into_iter().any(|child| {
+                    child.props.get("src").and_then(serde_json::Value::as_str)
+                        == Some("assets/monitor.png")
+                })
+        })
+        .and_then(|node| node.props.get("onClick"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("Music command listener");
+    drop(scene);
+    engine
+        .evaluate(
+            "launch-music.js",
+            format!("globalThis.__liteDispatch([{music_listener}],{{\"type\":\"click\"}});")
+                .as_bytes(),
+        )
+        .expect("launch Music");
+    engine.run_jobs().expect("launch jobs");
+
+    assert!(
+        state
+            .take_actions()
+            .iter()
+            .any(|action| { matches!(action, super::Action::Launch(id) if id == "music-player") }),
+        "Music command must publish the production launch action"
+    );
+    let scene = state
+        .scene_if_dirty()
+        .expect("launch must publish the panel-close commit");
+    assert!(
+        !scene
+            .iter()
+            .flat_map(|node| descendants(node).into_iter())
+            .any(|node| {
+                node.props
+                    .get("className")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("command-center")
+            }),
+        "the command panel must unmount in the same discrete event"
+    );
+}
+
+fn descendants(node: &crate::tree::Node) -> Vec<&crate::tree::Node> {
+    let mut nodes = vec![node];
+    for child in &node.children {
+        nodes.extend(descendants(child));
+    }
+    nodes
+}
+
 /// Mounts the production desktop bundle and fires the passive-effect
 /// timers the runtime scheduled, so startup effects run exactly as the
 /// event loop drives them in the guest.
@@ -166,7 +352,9 @@ fn checked_desktop_bundle_registers_its_accelerator_chords() {
         }
         for id in expired {
             let script = format!("globalThis.__liteTimer({id});");
-            engine.evaluate("timer.js", script.as_bytes()).expect("timer tick");
+            engine
+                .evaluate("timer.js", script.as_bytes())
+                .expect("timer tick");
             engine.run_jobs().expect("timer jobs");
         }
     }
@@ -181,7 +369,11 @@ fn checked_desktop_bundle_registers_its_accelerator_chords() {
     assert_eq!(
         chords,
         [
-            // Alt+Tab, Alt+F4, Ctrl+Esc (mask bits Alt = 4, Ctrl = 2).
+            // Escape dismisses global panels; Alt uses modifier-mask bit 4.
+            display_proto::AcceleratorChord {
+                modifiers: 0,
+                code: 1
+            },
             display_proto::AcceleratorChord {
                 modifiers: 4,
                 code: 15
@@ -189,10 +381,6 @@ fn checked_desktop_bundle_registers_its_accelerator_chords() {
             display_proto::AcceleratorChord {
                 modifiers: 4,
                 code: 62
-            },
-            display_proto::AcceleratorChord {
-                modifiers: 2,
-                code: 1
             },
         ]
     );
@@ -204,11 +392,12 @@ fn accelerator_set_is_validated_at_the_host_boundary() {
 
     // Desktop session: a valid table queues one replacement action.
     let (mut desktop_host, state) = host(Role::Desktop, PathBuf::from("/"));
-    desktop_host.invoke(
-        "desktop.accelerators.set",
-        r#"[{"modifiers":4,"code":15},{"modifiers":2,"code":1}]"#,
-    )
-    .expect("valid accelerator table");
+    desktop_host
+        .invoke(
+            "desktop.accelerators.set",
+            r#"[{"modifiers":4,"code":15},{"modifiers":2,"code":1}]"#,
+        )
+        .expect("valid accelerator table");
     let actions = state.take_actions();
     let [super::Action::SetAccelerators(chords)] = actions.as_slice() else {
         panic!("one accelerator replacement expected");
@@ -235,8 +424,16 @@ fn accelerator_set_is_validated_at_the_host_boundary() {
             .collect::<Vec<_>>()
             .join(",")
     );
-    assert!(desktop_host.invoke("desktop.accelerators.set", &overlong).is_err());
-    assert!(desktop_host.invoke("desktop.accelerators.set", "not json").is_err());
+    assert!(
+        desktop_host
+            .invoke("desktop.accelerators.set", &overlong)
+            .is_err()
+    );
+    assert!(
+        desktop_host
+            .invoke("desktop.accelerators.set", "not json")
+            .is_err()
+    );
     assert!(state.take_actions().is_empty());
     // App sessions never reach the handler.
     let (mut app_host, _) = host(Role::App, PathBuf::from("/"));

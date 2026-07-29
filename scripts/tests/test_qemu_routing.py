@@ -24,7 +24,7 @@ class QemuRoutingTests(unittest.TestCase):
     def test_shell_interaction_waits_for_each_guest_echo(self) -> None:
         input_read, input_write = os.pipe()
         output_read, output_write = os.pipe()
-        command = b"echo paced\n"
+        command = "echo 标准回显\n".encode()
         received = bytearray()
 
         def echo_guest() -> None:
@@ -61,7 +61,11 @@ class QemuRoutingTests(unittest.TestCase):
 
     def test_echo_pacing_rejects_raw_terminal_input(self) -> None:
         self.assertTrue(qemu_gate._is_echo_paced_shell_command(b"echo ok\n"))
+        self.assertTrue(
+            qemu_gate._is_echo_paced_shell_command("echo 标准回显\n".encode())
+        )
         self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"GoOK\x1b:wq\n"))
+        self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"echo \xff\n"))
         self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"q"))
 
     def test_qmp_quit_requests_graceful_shutdown(self) -> None:

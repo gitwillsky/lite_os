@@ -62,7 +62,7 @@ type DialogState =
 // disk (the ext2 rootfs, volume label LITEOS) and no optical/floppy drive, so
 // 我的电脑 shows a single 本地磁盘 (C:) and no removable-devices group. The
 // virtual root is the empty path ""; double-clicking C: enters "/" in the SAME
-// window (XP's default "open each folder in the same window"), and from there
+// window, and from there
 // the shared explorer core provides full browsing.
 const VIRTUAL_ROOT = "";
 const DRIVE_ENTRIES: FsEntry[] = [{ name: "本地磁盘 (C:)", kind: "dir", size: 0, mtime: 0 }];
@@ -92,7 +92,7 @@ const TYPE_LABELS: TypeLabels = {
 
 function iconFor(entry: FsEntry): string {
   return entry.kind === "dir" || entry.kind === "symlink"
-    ? "assets/folder.png"
+    ? "assets/files.png"
     : "assets/file.png";
 }
 
@@ -102,7 +102,7 @@ function iconFor16(entry: FsEntry): string {
     : "assets/file-16.png";
 }
 
-/** Total of several files, formatted like XP's selection size in the status bar. */
+/** Total of several selected files formatted for the shared status bar. */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -221,7 +221,7 @@ export default function MyComputer() {
     { id: "details", label: "详细信息(D)", onSelect: () => setViewMode("details") },
   ], [setViewMode]);
 
-  // Back/Forward history dropdowns (XP's chevrons beside the buttons).
+  // Back/Forward history dropdowns live beside their navigation buttons.
   const historyMenu = useCallback((direction: "back" | "forward"): MenuItem[] => {
     const { history, historyIndex } = browser;
     const range = direction === "back"
@@ -343,7 +343,7 @@ export default function MyComputer() {
     return list;
   }, [path, browser]);
 
-  // XP keyboard map on the global onKeyDown path; a focused input (rename,
+  // Explorer keyboard map on the global onKeyDown path; a focused input (rename,
   // address) captures its own keys first. Fs verbs are guarded at the virtual
   // root, where there is nothing to mutate.
   const onKeyDown = useCallback((rawEvent: unknown) => {
@@ -364,7 +364,7 @@ export default function MyComputer() {
     else if (key.code === KEY_DELETE && selectedEntries.length > 0 && !atRoot) browser.deleteSelected(selectedEntries);
   }, [dialog, closeDialog, browser, selectedEntries, focusedEntry, atRoot]);
 
-  // Status bar: object count, or the selection and its total size like XP.
+  // Status bar: object count, or the selection and its total size.
   const selectedBytes = selectedEntries.reduce((sum, entry) => sum + (entry.kind === "file" ? entry.size : 0), 0);
   const statusText = selected.length > 0
     ? `选定了 ${selected.length} 个对象${selectedBytes > 0 ? `  ${formatBytes(selectedBytes)}` : ""}`
@@ -374,23 +374,23 @@ export default function MyComputer() {
 
   return (
     <div
-      className="explorer"
+      className="aurora-root explorer"
       onClick={() => { closeMenu(); browser.clearSelection(); }}
       onKeyDown={onKeyDown}
     >
       <MenuBar menus={menus} labelX={MENU_LABEL_X} stride={MENU_LABEL_STRIDE}/>
 
       <Toolbar>
-        <ToolbarButton icon="assets/tb-back.png" label="后退" disabled={!browser.canBack} dropdown={{ items: historyMenu("back"), at: { x: BACK_MENU_X, y: NAV_MENU_Y } }} onClick={browser.back}/>
-        <ToolbarButton icon="assets/tb-forward.png" label="前进" disabled={!browser.canForward} dropdown={{ items: historyMenu("forward"), at: { x: FORWARD_MENU_X, y: NAV_MENU_Y } }} onClick={browser.forward}/>
-        <ToolbarButton icon="assets/tb-up.png" label="向上" disabled={!browser.canUp} onClick={browser.up}/>
+        <ToolbarButton icon="assets/nav-back.png" label="后退" disabled={!browser.canBack} dropdown={{ items: historyMenu("back"), at: { x: BACK_MENU_X, y: NAV_MENU_Y } }} onClick={browser.back}/>
+        <ToolbarButton icon="assets/nav-forward.png" label="前进" disabled={!browser.canForward} dropdown={{ items: historyMenu("forward"), at: { x: FORWARD_MENU_X, y: NAV_MENU_Y } }} onClick={browser.forward}/>
+        <ToolbarButton icon="assets/nav-up.png" label="向上" disabled={!browser.canUp} onClick={browser.up}/>
         <ToolbarSeparator/>
-        <ToolbarButton icon="assets/tb-folders.png" label="文件夹" onClick={() => setFoldersPane((value) => !value)}/>
-        <ToolbarButton icon="assets/tb-views.png" label="查看" dropdown={{ items: viewItems(), at: { x: VIEWS_MENU_X, y: NAV_MENU_Y } }}/>
+        <ToolbarButton icon="assets/files.png" label="文件夹" onClick={() => setFoldersPane((value) => !value)}/>
+        <ToolbarButton icon="assets/view-grid.png" label="查看" dropdown={{ items: viewItems(), at: { x: VIEWS_MENU_X, y: NAV_MENU_Y } }}/>
       </Toolbar>
 
       <AddressBar
-        label="地址(D)" icon={atRoot ? "assets/computer.png" : "assets/folder-16.png"}
+        label="地址(D)" icon={atRoot ? "assets/package.png" : "assets/folder-16.png"}
         text={atRoot ? "我的电脑" : path}
         draft={browser.addressDraft}
         onBeginEdit={() => browser.setAddressDraft(path)}
@@ -404,7 +404,7 @@ export default function MyComputer() {
         {foldersPane ? (
           <FolderTree
             roots={[
-              { path: VIRTUAL_ROOT, label: "我的电脑", icon: "assets/computer.png" },
+              { path: VIRTUAL_ROOT, label: "我的电脑", icon: "assets/package.png" },
               { path: "/", label: "本地磁盘 (C:)", icon: "assets/drive-16.png" },
             ]}
             currentPath={path}
@@ -443,7 +443,7 @@ export default function MyComputer() {
                 </>
               ) : (
                 <>
-                  <img className="detail-icon" src={atRoot ? "assets/computer.png" : "assets/folder.png"}/>
+                  <img className="detail-icon" src={atRoot ? "assets/package.png" : "assets/files.png"}/>
                   <span className="detail-name">{detailName}</span>
                   <span className="detail-line">{atRoot ? "选择要查看的项目。" : `${entries.length} 个对象`}</span>
                 </>
@@ -476,7 +476,7 @@ export default function MyComputer() {
       {statusVisible && (
         <StatusBar>
           <StatusBarCell text={statusText}/>
-          <StatusBarCell icon={atRoot ? "assets/computer.png" : "assets/folder-16.png"} text={placeText}/>
+          <StatusBarCell icon={atRoot ? "assets/package.png" : "assets/folder-16.png"} text={placeText}/>
         </StatusBar>
       )}
 

@@ -223,6 +223,7 @@ impl<D: PlaybackDevice> Service<D> {
             id: stream_id,
             generation,
             phase: StreamPhase::Live,
+            playing: false,
             confirmed_frames: 0,
             next_progress_marker: 1,
         });
@@ -458,6 +459,7 @@ mod tests {
             id,
             generation: 1,
             phase: StreamPhase::Live,
+            playing: false,
             confirmed_frames: 0,
             next_progress_marker: 1,
         }

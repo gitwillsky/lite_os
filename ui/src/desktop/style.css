@@ -5,42 +5,8 @@
   width: 1504px;
   height: 846px;
   overflow: hidden;
-  font-family: Tahoma;
-  font-size: 11px;
-  color: #000000;
-  background: #3a6ea5;
-}
-.desktop-icons {
-  position: absolute;
-  left: 8px;
-  top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.desktop-icon {
-  width: 78px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 0;
-}
-.desktop-icon__image {
-  width: 32px;
-  height: 32px;
-}
-.desktop-icon__label {
-  color: #ffffff;
-  font-size: 11px;
-  line-height: 13px;
-  text-align: center;
-  text-shadow: 1px 1px #101010;
-  padding: 0 3px;
-}
-.desktop-icon__label--selected {
-  background: #0a246a;
-  text-shadow: none;
+  color: #f3f7ff;
+  background: url("assets/wallpaper.png") no-repeat center / cover;
 }
 
 .splash {

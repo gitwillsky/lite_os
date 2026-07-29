@@ -2,11 +2,11 @@ use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
     AcceleratorChord, AcceleratorSet, Accepted, AppOpened, BufferAlloc, CURSOR_DEFAULT,
-    CURSOR_NONE, CURSOR_RESIZE_NWSE, ClipboardData, ClipboardRead, ClipboardWrite, HelloApp, InputKey,
-    InputPointer, InputScroll, MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind,
-    MoveBegin, MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles,
-    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, parse_frame,
-    recv_frame_blocking,
+    CURSOR_NONE, CURSOR_RESIZE_NWSE, ClipboardData, ClipboardRead, ClipboardWrite, HelloApp,
+    InputKey, InputPointer, InputScroll, MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT, MAX_MESSAGE,
+    MessageKind, MoveBegin, MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect,
+    Rectangles, SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit,
+    parse_frame, recv_frame_blocking,
 };
 
 #[test]
@@ -430,7 +430,11 @@ fn accelerator_set_rejects_over_limit_tables() {
         code: 1,
     }; MAX_ACCELERATORS + 1];
     let mut bytes = [0u8; 256];
-    assert!(AcceleratorSet { chords: &chords }.encode(&mut bytes).is_none());
+    assert!(
+        AcceleratorSet { chords: &chords }
+            .encode(&mut bytes)
+            .is_none()
+    );
 
     // A peer could still place an oversized count on the wire; the decoder
     // must reject it even when the chord bytes themselves are present.

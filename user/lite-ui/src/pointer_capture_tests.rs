@@ -1,8 +1,13 @@
-use super::{input::PointerCapture, renderer::HitRegion};
+use super::{
+    input::{PointerCapture, bubbling_listener_ids},
+    renderer::HitRegion,
+};
 
 fn hit(node_id: u64, pointer_move: u64, pointer_up: u64) -> HitRegion {
     HitRegion {
         node_id,
+        parent_node_id: None,
+        window_group: None,
         x: 0.0,
         y: 0.0,
         width: 10.0,
@@ -20,6 +25,7 @@ fn hit(node_id: u64, pointer_move: u64, pointer_up: u64) -> HitRegion {
         cursor: 0,
         editable: None,
         range: None,
+        button: false,
     }
 }
 
@@ -41,4 +47,26 @@ fn pointer_capture_releases_when_the_node_unmounts() {
 
     assert_eq!(capture.move_listener(&rebuilt), None);
     assert_eq!(capture.up_listener(&rebuilt), None);
+}
+
+#[test]
+fn event_route_bubbles_only_through_dom_ancestors() {
+    let mut root = hit(1, 0, 0);
+    root.click = Some(10);
+    root.key_down = Some(11);
+    let mut child = hit(2, 0, 0);
+    child.parent_node_id = Some(1);
+    child.click = Some(20);
+    let mut overlapping_sibling = hit(3, 0, 0);
+    overlapping_sibling.click = Some(30);
+    let hits = [root, overlapping_sibling, child];
+
+    assert_eq!(
+        bubbling_listener_ids(&hits, Some(2), |hit| hit.click),
+        vec![20, 10]
+    );
+    assert_eq!(
+        bubbling_listener_ids(&hits, Some(2), |hit| hit.key_down),
+        vec![11]
+    );
 }

@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// One immutable React host node.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Node {
     /// Stable React host-instance identity, preserved across complete snapshots.
@@ -68,7 +68,7 @@ fn validate(
         return Err("React host tree carries an invalid node identity".to_owned());
     }
     match node.kind.as_str() {
-        "div" | "span" | "img" => {
+        "div" | "span" | "img" | "button" => {
             if !node.text.is_empty() {
                 return Err("primitive carries an unexpected text field".to_owned());
             }
@@ -134,6 +134,17 @@ mod tests {
             parse(r##"[{"id":1,"type":"input","children":[{"id":2,"type":"#text","text":"x"}]}]"##)
                 .is_err(),
             "an input must not carry children",
+        );
+    }
+
+    #[test]
+    fn button_is_a_semantic_container() {
+        assert!(
+            parse(
+                r##"[{"id":1,"type":"button","props":{"disabled":false},"children":[{"id":2,"type":"#text","text":"Open"}]}]"##
+            )
+            .is_ok(),
+            "a button may carry label content",
         );
     }
 }

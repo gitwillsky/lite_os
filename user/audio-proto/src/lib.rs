@@ -22,7 +22,7 @@ pub use transport::{
 };
 
 /// The only supported protocol version.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The system audio service socket.
 pub const SOCKET_PATH: &str = "/run/audio.sock";

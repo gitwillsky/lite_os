@@ -70,7 +70,7 @@ impl Session {
             && owner_count + request.count as usize <= 4
             && requested.is_some_and(|bytes| {
                 owner_bytes + bytes <= full_frame * MAX_CONNECTION_FRAME_EQUIVALENTS
-                    && session_bytes + bytes <= full_frame * MAX_SESSION_FRAME_EQUIVALENTS
+                    && within_session_quota(session_bytes, bytes, full_frame)
             });
         if !valid {
             return self.send_allocation(
@@ -189,4 +189,24 @@ fn buffer_bytes(buffers: &Buffers, owner: Option<Owner>) -> u64 {
         .filter(|buffer| owner.is_none_or(|owner| buffer.owner == owner))
         .map(|buffer| buffer.pixels.size() as u64)
         .sum()
+}
+
+fn within_session_quota(session_bytes: u64, requested: u64, full_frame: u64) -> bool {
+    session_bytes
+        .checked_add(requested)
+        .zip(full_frame.checked_mul(MAX_SESSION_FRAME_EQUIVALENTS))
+        .is_some_and(|(total, quota)| total <= quota)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::within_session_quota;
+
+    #[test]
+    fn session_quota_accepts_its_boundary_and_rejects_the_next_byte() {
+        let frame = 20_000_000;
+        assert!(within_session_quota(15 * frame, frame, frame));
+        assert!(!within_session_quota(16 * frame, 1, frame));
+        assert!(!within_session_quota(u64::MAX, 1, frame));
+    }
 }

@@ -11,8 +11,7 @@
 //! row-major top-to-bottom. Each pixel is 4 little-endian bytes `[B, G, R, A]`,
 //! so `u32::from_le_bytes` yields `0xAARRGGBB` — exactly the premultiplied form
 //! [`crate::scanout::over`] expects. 48x48 physical pixels = 24x24 logical under
-//! the 2x device scale, sized between the classic XP 16px arrow and the desktop
-//! chrome so it reads crisp without dominating.
+//! the 2x device scale, sized to read crisply without dominating desktop chrome.
 
 use std::io;
 

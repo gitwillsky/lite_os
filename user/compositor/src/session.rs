@@ -2,8 +2,8 @@
 
 mod accelerator;
 mod buffers;
-mod clipboard_bridge;
 mod client;
+mod clipboard_bridge;
 mod cursor;
 mod messages;
 mod routing;
@@ -441,29 +441,7 @@ impl Session {
             revision: commit.revision,
             configure_serial: commit.configure_serial,
             buffer_id: commit.buffer_id,
-            damage: {
-                let damage: Vec<_> = commit.damage().collect();
-                if damage.is_empty() {
-                    vec![Rect {
-                        x: 0,
-                        y: 0,
-                        width: buffer_size.width,
-                        height: buffer_size.height,
-                    }]
-                } else {
-                    if damage.iter().any(|rectangle| {
-                        rectangle.x < 0
-                            || rectangle.y < 0
-                            || rectangle.x.saturating_add_unsigned(rectangle.width)
-                                > buffer_size.width as i32
-                            || rectangle.y.saturating_add_unsigned(rectangle.height)
-                                > buffer_size.height as i32
-                    }) {
-                        return Err(invalid("surface damage outside buffer"));
-                    }
-                    damage
-                }
-            },
+            damage: validate_surface_damage(commit.damage().collect(), buffer_size)?,
         };
         self.buffers
             .values
@@ -555,6 +533,18 @@ impl Drop for Session {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn validate_surface_damage(damage: Vec<Rect>, size: Size) -> io::Result<Vec<Rect>> {
+    if damage.iter().any(|rectangle| {
+        rectangle.x < 0
+            || rectangle.y < 0
+            || rectangle.x.saturating_add_unsigned(rectangle.width) > size.width as i32
+            || rectangle.y.saturating_add_unsigned(rectangle.height) > size.height as i32
+    }) {
+        return Err(invalid("surface damage outside buffer"));
+    }
+    Ok(damage)
 }
 
 #[cfg(test)]

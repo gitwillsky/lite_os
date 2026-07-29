@@ -36,7 +36,7 @@ pub use surface::{
 pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
 
 /// The only supported protocol version; no negotiation or compat decoder.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";
@@ -66,7 +66,10 @@ pub const MAX_DAMAGE_RECTS: usize = 64;
 pub const MAX_CONNECTION_FRAME_EQUIVALENTS: u64 = 4;
 
 /// 整个 session 最多持有的 client full-frame equivalent 数量。
-pub const MAX_SESSION_FRAME_EQUIVALENTS: u64 = 8;
+///
+/// 16 容纳 desktop triple buffering、默认 Files/Terminal 与八个当前尺寸的
+/// 双缓冲 Aurora 窗口；每连接的独立上限仍阻止单个 client 吞掉 session 配额。
+pub const MAX_SESSION_FRAME_EQUIVALENTS: u64 = 16;
 
 /// Maximum chords in one desktop-submitted global accelerator table.
 pub const MAX_ACCELERATORS: usize = 16;

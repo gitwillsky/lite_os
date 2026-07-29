@@ -1,28 +1,27 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 pub(super) fn app_metadata(id: &str) -> (&'static str, &'static str) {
     match id {
         "terminal" => ("Terminal", "assets/terminal.png"),
-        "my-computer" => ("我的电脑", "assets/computer.png"),
-        "file-manager" => ("File Manager", "assets/computer.png"),
-        "music-player" => ("Music Player", "assets/speaker.png"),
+        "my-computer" => ("Computer", "assets/package.png"),
+        "file-manager" => ("Files", "assets/files.png"),
+        "music-player" => ("Music", "assets/monitor.png"),
         _ => ("Application", "assets/terminal.png"),
     }
 }
 
-// Installed application bundles. Each `<id>/app.json` is one launchable app;
-// `apps.launch` spawns `/bin/lite-ui --app <id>` against `<APPS_ROOT>/<id>`.
-const APPS_ROOT: &str = "/usr/share/liteos/apps";
-// The desktop bundle ships exactly these icons (see ui/build.mjs). The start
-// menu renders under the desktop role, so `src="assets/<name>"` only resolves
-// against the desktop root — a manifest icon outside this set cannot load, so
-// it is normalized to a shipped name (or the fallback) rather than trusted.
-const DESKTOP_ICON_NAMES: [&str; 5] = [
-    "computer.png",
+// The desktop bundle ships exactly these icons (see ui/build.mjs). Launcher
+// cards render under the desktop role, so `src="assets/<name>"` resolves only
+// against the desktop root; manifest icons are constrained to that set.
+const DESKTOP_ICON_NAMES: [&str; 6] = [
+    "files.png",
     "terminal.png",
-    "documents.png",
-    "trash.png",
-    "speaker.png",
+    "monitor.png",
+    "package.png",
+    "settings.png",
+    "liteos.png",
 ];
 pub(super) const FALLBACK_ICON: &str = "assets/terminal.png";
 
@@ -49,7 +48,7 @@ struct AppMeta {
 }
 
 /// Constrains a manifest icon to an asset the desktop bundle actually ships,
-/// falling back to the terminal icon so the start menu never renders a missing
+/// falling back to the terminal icon so the launcher never renders a missing
 /// image (mirrors `app_metadata`'s fallback).
 pub(super) fn normalize_icon(icon: Option<&str>) -> String {
     let name = icon
@@ -61,12 +60,12 @@ pub(super) fn normalize_icon(icon: Option<&str>) -> String {
     }
 }
 
-/// Enumerates `<APPS_ROOT>/*/app.json` into the launcher registry. Unreadable
+/// Enumerates `<apps_root>/*/app.json` into the launcher registry. Unreadable
 /// directories, missing/malformed manifests, and ids that fail `valid_app_id`
 /// are skipped rather than fatal, so one bad bundle never blanks the menu.
 /// Results are sorted by id for a deterministic render order.
-pub(super) fn scan_apps() -> String {
-    let mut apps: Vec<AppMeta> = match std::fs::read_dir(APPS_ROOT) {
+pub(super) fn scan_apps(apps_root: &Path) -> String {
+    let mut apps: Vec<AppMeta> = match std::fs::read_dir(apps_root) {
         Ok(entries) => entries
             .flatten()
             .filter_map(|entry| {
@@ -100,12 +99,12 @@ mod tests {
     #[test]
     fn manifest_icon_is_constrained_to_shipped_desktop_assets() {
         assert_eq!(
-            super::normalize_icon(Some("assets/speaker.png")),
-            "assets/speaker.png"
+            super::normalize_icon(Some("assets/monitor.png")),
+            "assets/monitor.png"
         );
         assert_eq!(
-            super::normalize_icon(Some("speaker.png")),
-            "assets/speaker.png"
+            super::normalize_icon(Some("monitor.png")),
+            "assets/monitor.png"
         );
         assert_eq!(
             super::normalize_icon(Some("assets/custom.png")),

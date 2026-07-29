@@ -22,11 +22,7 @@ struct Shadow {
 }
 
 /// Paints the outer (drop) shadow layers of `box-shadow`, under the box.
-pub(super) fn paint_shadow<R: Raster>(
-    pixels: &mut R,
-    bounds: PhysicalRect,
-    computed: &Computed,
-) {
+pub(super) fn paint_shadow<R: Raster>(pixels: &mut R, bounds: PhysicalRect, computed: &Computed) {
     let Some(value) = computed.get("box-shadow") else {
         return;
     };
@@ -224,6 +220,10 @@ mod tests {
             self.height
         }
 
+        fn row(&self, row: usize) -> &[u32] {
+            &self.pixels[row * self.width..(row + 1) * self.width]
+        }
+
         fn row_mut(&mut self, row: usize) -> &mut [u32] {
             &mut self.pixels[row * self.width..(row + 1) * self.width]
         }
@@ -238,9 +238,7 @@ mod tests {
 
     #[test]
     fn multi_layer_shadow_extracts_lengths_color_spread_and_inset() {
-        let shadows = parse_shadows(
-            "2px 3px 8px rgba(0, 0, 0, 0.5), inset 1px 1px 0 4px #ffffff",
-        );
+        let shadows = parse_shadows("2px 3px 8px rgba(0, 0, 0, 0.5), inset 1px 1px 0 4px #ffffff");
         assert_eq!(
             shadows,
             [

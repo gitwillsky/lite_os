@@ -3,6 +3,7 @@
 mod allocation;
 mod clipboard;
 mod event;
+mod scene;
 mod wire;
 
 use std::{
@@ -15,9 +16,8 @@ use std::{
 
 use display_proto::{
     AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, MAX_MESSAGE,
-    MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, Rectangles, SceneCommit,
-    SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, Welcome, parse_frame,
-    recv_frame_blocking, send_message,
+    MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, SetCursorShape, Size,
+    SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
@@ -52,7 +52,7 @@ pub struct Frame<'a> {
 /// One compositor-ready foreign surface emitted by desktop layout. The window
 /// frame clip and corner radius live on [`WindowFrame`] (emitted per window),
 /// so this carries only the client-area surface geometry.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ForeignLayer {
     /// App surface identity.
     pub surface_id: u32,
@@ -60,6 +60,14 @@ pub struct ForeignLayer {
     pub configure_serial: u64,
     /// Physical client-area bounds.
     pub bounds: Rect,
+    /// Desktop-owned interactive boxes painted after this embedded surface.
+    ///
+    /// Scene input is independent from pixels: these rectangles restore DOM
+    /// stacking for transparent chrome without covering client pixels.
+    pub desktop_input: Vec<Rect>,
+    /// First desktop hit emitted after the foreign element itself. The renderer
+    /// resolves this paint-order boundary before the scene is committed.
+    pub(crate) desktop_hit_start: usize,
 }
 
 /// One window's frame region, emitted for EVERY `data-lite-window` — including
@@ -78,8 +86,8 @@ pub struct WindowFrame {
     pub corner_radius: u32,
 }
 
-/// One desktop-local chrome clip (taskbar, Start menu) re-painted above every
-/// foreign surface so it stays on top of window content.
+/// One desktop-local global-chrome clip re-painted above every foreign surface
+/// so the top bar, dock and open panels stay above window content.
 #[derive(Clone, Copy, Debug)]
 pub struct Overlay {
     /// Physical clip rectangle re-copied from the desktop buffer.
@@ -245,122 +253,34 @@ impl Display {
         }))
     }
 
-    /// Commits desktop pixels interleaved with ready app surface layers.
-    ///
-    /// Node order is the z-stack: the full desktop buffer, then per window its
-    /// frame clip re-painted above lower foreign content followed by its own
-    /// surface, and finally overlay chrome clips (taskbar/menus) above all
-    /// content. One window's content can never cover another window's chrome.
-    pub fn commit_desktop(
-        &mut self,
-        buffer_id: u32,
-        focused_surface: u32,
-        foreign: &[ForeignLayer],
-        windows: &[WindowFrame],
-        overlays: &[Overlay],
-        pixels_changed: bool,
-    ) -> io::Result<()> {
-        let revision = self.next_revision()?;
-        let full = Rect {
-            x: 0,
-            y: 0,
-            width: self.physical.width,
-            height: self.physical.height,
-        };
-        let full_input = [full];
-        let full_damage = [full];
-        let no_damage = [];
-        let pixel_damage = if pixels_changed {
-            Rectangles::from_slice(&full_damage)
-        } else {
-            Rectangles::from_slice(&no_damage)
-        };
-        let mut nodes = Vec::with_capacity(1 + windows.len() + foreign.len() + overlays.len());
-        nodes.push(SceneNode {
-            kind: SceneNodeKind::Pixels,
-            window_group: 0,
-            source_id: buffer_id,
-            corner_radius: 0,
-            configure_serial: 0,
-            bounds: full,
-            clip: full,
-            opaque: Some(full),
-            input: Rectangles::from_slice(&full_input),
-            damage: pixel_damage,
-        });
-        // One group `Pixels` frame node per window in z-order (pure-DOM included)
-        // so the compositor moves/damages every window uniformly by window_group.
-        // A window that also owns a foreign surface emits its `ForeignSurface`
-        // node right after its frame, keeping "window chrome then its content"
-        // atomic and preserving cross-window z-stacking.
-        let window_frames: Vec<[Rect; 1]> = windows.iter().map(|window| [window.frame]).collect();
-        let foreign_bounds: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();
-        for (window, frame_input) in windows.iter().zip(&window_frames) {
-            nodes.push(SceneNode {
-                kind: SceneNodeKind::Pixels,
-                window_group: window.surface_id,
-                source_id: buffer_id,
-                corner_radius: window.corner_radius,
-                configure_serial: 0,
-                bounds: full,
-                clip: window.frame,
-                opaque: None,
-                input: Rectangles::from_slice(frame_input),
-                damage: Rectangles::from_slice(&no_damage),
-            });
-            if let Some((index, layer)) = foreign
-                .iter()
-                .enumerate()
-                .find(|(_, layer)| layer.surface_id == window.surface_id)
-                && self
-                    .ready
-                    .contains(&(layer.surface_id, layer.configure_serial))
-            {
-                nodes.push(SceneNode {
-                    kind: SceneNodeKind::ForeignSurface,
-                    window_group: layer.surface_id,
-                    source_id: layer.surface_id,
-                    corner_radius: 0,
-                    configure_serial: layer.configure_serial,
-                    bounds: layer.bounds,
-                    clip: full,
-                    opaque: Some(layer.bounds),
-                    input: Rectangles::from_slice(&foreign_bounds[index]),
-                    damage: Rectangles::from_slice(&no_damage),
-                });
-            }
-        }
-        let overlay_inputs: Vec<[Rect; 1]> =
-            overlays.iter().map(|overlay| [overlay.rect]).collect();
-        for (overlay, input) in overlays.iter().zip(&overlay_inputs) {
-            nodes.push(SceneNode {
-                kind: SceneNodeKind::Pixels,
-                window_group: 0,
-                source_id: buffer_id,
-                corner_radius: overlay.corner_radius,
-                configure_serial: 0,
-                bounds: full,
-                clip: overlay.rect,
-                opaque: None,
-                input: Rectangles::from_slice(input),
-                damage: Rectangles::from_slice(&no_damage),
-            });
-        }
-        let mut output = [0u8; MAX_MESSAGE];
-        let message = SceneCommit::encode(&mut output, revision, focused_surface, &nodes)
-            .ok_or_else(|| io::Error::other("scene encoding failed"))?;
-        send_message(&self.stream, message)?;
-        self.submitted.push_back(revision);
-        Ok(())
-    }
-
     /// Commits one app pixel revision for the active configure.
-    pub fn commit_app(&mut self, buffer_id: u32) -> io::Result<()> {
+    ///
+    /// # Parameters
+    ///
+    /// - `buffer_id`: Writable client buffer containing the complete retained
+    ///   surface after this revision's raster.
+    /// - `damage`: Exact physical surface rectangles changed from the preceding
+    ///   revision; an empty list means the pixels are unchanged.
+    ///
+    /// # Returns
+    ///
+    /// Returns after the revision has been sent asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when revision allocation, encoding or socket delivery
+    /// fails.
+    pub fn commit_app(&mut self, buffer_id: u32, damage: &[display_proto::Rect]) -> io::Result<()> {
         let revision = self.next_revision()?;
         let mut output = [0u8; MAX_MESSAGE];
-        let message =
-            SurfaceCommit::encode(&mut output, revision, self.configure_serial, buffer_id, &[])
-                .ok_or_else(|| io::Error::other("surface encoding failed"))?;
+        let message = SurfaceCommit::encode(
+            &mut output,
+            revision,
+            self.configure_serial,
+            buffer_id,
+            damage,
+        )
+        .ok_or_else(|| io::Error::other("surface encoding failed"))?;
         send_message(&self.stream, message)?;
         self.submitted.push_back(revision);
         Ok(())

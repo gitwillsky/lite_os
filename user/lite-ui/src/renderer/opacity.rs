@@ -53,11 +53,16 @@ impl Renderer {
         let layer = self.opacity_layers[depth]
             .as_ref()
             .expect("opacity layer restored");
-        composite_opacity(pixels, layer, opacity, walk.clip);
+        let clip = match (walk.clip, walk.damage) {
+            (Some(clip), Some(damage)) => Some(clip.intersect(damage)),
+            (Some(clip), None) => Some(clip),
+            (None, Some(damage)) => Some(damage),
+            (None, None) => None,
+        };
+        composite_opacity(pixels, layer, opacity, clip);
         Ok(())
     }
 }
-
 
 /// Parses CSS `opacity` clamped to `0.0..=1.0`; missing or invalid is opaque.
 pub(super) fn opacity(computed: &crate::style::Computed) -> f32 {
@@ -140,5 +145,4 @@ mod tests {
         assert_eq!(target.row(0), &[0xff00_0000, 0xff00_0000]);
         assert_eq!(target.row(3), &[0xff00_0000, 0xff00_0000]);
     }
-
 }

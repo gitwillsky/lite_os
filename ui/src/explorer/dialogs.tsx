@@ -28,7 +28,7 @@ export function readTextFile(path: string, entry: FsEntry): { view: FileView } |
   };
 }
 
-/** XP-notepad-style read-only viewer for text-readable files. */
+/** Shared read-only viewer for text-readable files. */
 export function TextViewer({ view, onClose, closeLabel, truncatedLabel }: {
   view: FileView;
   onClose: () => void;
@@ -50,7 +50,7 @@ export function TextViewer({ view, onClose, closeLabel, truncatedLabel }: {
   );
 }
 
-/** XP's honest unknown-type dialog ("Windows 无法打开此文件"): real shell
+/** Unknown-type dialog: real shell
  * behavior for files with no associated handler, not silence. */
 export function CannotOpenDialog({ name, message, onClose, closeLabel }: {
   name: string;

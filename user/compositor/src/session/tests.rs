@@ -25,3 +25,33 @@ fn app_first_presented_marker_is_one_complete_line() {
         "compositor: app 7 first scene presented\n"
     );
 }
+
+#[test]
+fn empty_surface_damage_means_retained_pixels_are_unchanged() {
+    assert_eq!(
+        validate_surface_damage(
+            Vec::new(),
+            Size {
+                width: 1792,
+                height: 1132,
+            },
+        )
+        .unwrap(),
+        []
+    );
+    assert!(
+        validate_surface_damage(
+            vec![Rect {
+                x: 1700,
+                y: 0,
+                width: 100,
+                height: 10,
+            }],
+            Size {
+                width: 1792,
+                height: 1132,
+            },
+        )
+        .is_err()
+    );
+}

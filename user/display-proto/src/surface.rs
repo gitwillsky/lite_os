@@ -59,7 +59,7 @@ pub struct SurfaceCommit<'a> {
 impl<'a> SurfaceCommit<'a> {
     /// Encodes one complete surface commit.
     ///
-    /// An empty `damage` slice means full-buffer damage.
+    /// An empty `damage` slice means the retained pixels are unchanged.
     pub fn encode<'b>(
         bytes: &'b mut [u8],
         revision: u64,

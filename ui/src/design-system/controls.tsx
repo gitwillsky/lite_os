@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useState } from "react";
 import { ContextMenu } from "./context-menu.tsx";
 
 /** One dropdown/context-menu row (shape shared with ContextMenu). */
@@ -8,40 +8,21 @@ export interface MenuItem {
   onSelect?: () => void;
 }
 
-/**
- * Per-instance hover state with STABLE handler identities: the compositor
- * tracks hover by listener identity, so the two listeners are created once
- * per component instance and never change across renders. Every interactive
- * base control owns one of these instead of CSS `:hover` (unsupported by the
- * renderer).
- */
-export function useHoverFlag(): [boolean, { onPointerEnter: () => void; onPointerLeave: () => void }] {
-  const [hovered, setHovered] = useState(false);
-  const handlers = useRef({
-    onPointerEnter: () => setHovered(true),
-    onPointerLeave: () => setHovered(false),
-  }).current;
-  return [hovered, handlers];
-}
-
-/** XP push button. `default` draws the blue default-action border; `disabled`
- * grays the label and drops clicks. */
+/** Shared semantic push button. Visual states are standard CSS pseudo-classes. */
 export function Button({ label, default: isDefault, disabled, onClick }: {
   label: string;
   default?: boolean;
   disabled?: boolean;
   onClick?: () => void;
 }) {
-  const [hovered, handlers] = useHoverFlag();
-  const className = `button${hovered && !disabled ? " button--hover" : ""}${isDefault ? " button--default" : ""}${disabled ? " button--disabled" : ""}`;
   return (
-    <div className={className} {...handlers} onClick={() => !disabled && onClick?.()}>
+    <button className={`button${isDefault ? " button--default" : ""}`} disabled={disabled} onClick={onClick}>
       <span>{label}</span>
-    </div>
+    </button>
   );
 }
 
-/** XP edit field chrome (thin themed border). Behavior props map straight
+/** Shared controlled text field. Behavior props map straight
  * onto the renderer's controlled-input primitive; `autoFocus` claims focus
  * on appearance when no field owns it. */
 export function TextInput({ value, width, autoFocus, placeholder, onInput, onKeyDown }: {
@@ -62,6 +43,75 @@ export function TextInput({ value, width, autoFocus, placeholder, onInput, onKey
       onInput={(event) => onInput?.((event as unknown as { value: string }).value)}
       onKeyDown={onKeyDown}
     />
+  );
+}
+
+/** Shared search field used by system and application toolbars. */
+export function SearchField({ value, placeholder, onInput }: {
+  value: string;
+  placeholder: string;
+  onInput: (value: string) => void;
+}) {
+  return (
+    <div className="search-field">
+      <span className="search-glyph"/>
+      <input
+        value={value}
+        placeholder={placeholder}
+        onInput={(event) => onInput((event as unknown as { value: string }).value)}
+      />
+    </div>
+  );
+}
+
+/** Shared vertical navigation surface. */
+export function Sidebar({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={`sidebar${className ? ` ${className}` : ""}`}>{children}</div>;
+}
+
+/** One semantic sidebar destination. */
+export function SidebarItem({ label, icon, glyph, active, onClick }: {
+  label: string;
+  icon?: string;
+  glyph?: "home" | "document" | "download" | "picture" | "music" | "video" | "storage";
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button className={`sidebar-item${active ? " sidebar-item--active" : ""}`} onClick={onClick}>
+      {icon && <img src={icon}/>}
+      {glyph && (
+        <span className={`sidebar-glyph sidebar-glyph--${glyph}`}>
+          <span/><span/><span/>
+        </span>
+      )}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+/** Shared grid/list selector used by explorer-style applications. */
+export function ViewSwitch({ mode, onChange }: {
+  mode: "icons" | "details";
+  onChange: (mode: "icons" | "details") => void;
+}) {
+  return (
+    <div className="view-switch">
+      <button
+        className={`view-switch__button${mode === "icons" ? " view-switch__button--active" : ""}`}
+        aria-label="Grid view"
+        onClick={() => onChange("icons")}
+      >
+        <span className="view-switch__grid"><span/><span/><span/><span/></span>
+      </button>
+      <button
+        className={`view-switch__button${mode === "details" ? " view-switch__button--active" : ""}`}
+        aria-label="List view"
+        onClick={() => onChange("details")}
+      >
+        <span className="view-switch__list"><span/><span/><span/></span>
+      </button>
+    </div>
   );
 }
 
@@ -93,7 +143,7 @@ export function RangeInput({ value, min, max, step, disabled, className, onInput
   );
 }
 
-/** XP checkbox row: 13px sunken box with a real √ glyph when checked. */
+/** Shared semantic checkbox row. */
 export function CheckBox({ label, checked, disabled, onToggle }: {
   label: string;
   checked: boolean;
@@ -101,14 +151,14 @@ export function CheckBox({ label, checked, disabled, onToggle }: {
   onToggle?: () => void;
 }) {
   return (
-    <div className={`checkbox${disabled ? " checkbox--disabled" : ""}`} onClick={() => !disabled && onToggle?.()}>
+    <button className="checkbox" disabled={disabled} onClick={onToggle}>
       <span className="checkbox__box">{checked ? "√" : ""}</span>
       <span>{label}</span>
-    </div>
+    </button>
   );
 }
 
-/** XP radio row: circle with a filled inner dot when selected. */
+/** Shared semantic radio row. */
 export function Radio({ label, checked, disabled, onSelect }: {
   label: string;
   checked: boolean;
@@ -116,10 +166,10 @@ export function Radio({ label, checked, disabled, onSelect }: {
   onSelect?: () => void;
 }) {
   return (
-    <div className={`radio${disabled ? " radio--disabled" : ""}`} onClick={() => !disabled && onSelect?.()}>
+    <button className="radio" disabled={disabled} onClick={onSelect}>
       <span className="radio__circle">{checked ? <span className="radio__dot"/> : null}</span>
       <span>{label}</span>
-    </div>
+    </button>
   );
 }
 
@@ -152,11 +202,10 @@ export function MenuBar({ menus, labelX, stride }: {
 }
 
 function MenuBarLabel({ label, onClick }: { label: string; onClick: () => void }) {
-  const [hovered, handlers] = useHoverFlag();
   return (
-    <span className={`menu-bar__item${hovered ? " menu-bar__item--hover" : ""}`} {...handlers} onClick={onClick}>
+    <button className="menu-bar__item" onClick={onClick}>
       {label}
-    </span>
+    </button>
   );
 }
 
@@ -166,7 +215,7 @@ export function Toolbar({ children }: { children: React.ReactNode }) {
 }
 
 /** One toolbar button (glyph + optional label). `disabled` grays the glyph
- * and drops clicks; `dropdown` adds XP's chevron which opens the given rows
+ * and drops clicks; `dropdown` adds a chevron which opens the given rows
  * at `at` (window-local, same fixed-geometry pattern as the menubar). */
 export function ToolbarButton({ icon, label, disabled, dropdown, onClick }: {
   icon: string;
@@ -175,24 +224,19 @@ export function ToolbarButton({ icon, label, disabled, dropdown, onClick }: {
   dropdown?: { items: MenuItem[]; at: { x: number; y: number } };
   onClick?: () => void;
 }) {
-  const [hovered, handlers] = useHoverFlag();
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
-  const className = `toolbar-button${hovered && !disabled ? " toolbar-button--hover" : ""}${disabled ? " toolbar-button--disabled" : ""}`;
-  // A button with a dropdown but no action of its own opens the dropdown from
-  // the body too (XP's 查看 button); the caret always opens it.
   const activate = () => {
-    if (disabled) return;
     if (onClick) onClick();
     else if (dropdown) setOpen(true);
   };
   return (
-    <div className={className} {...handlers} onClick={activate}>
-      <img className="toolbar-button__icon" src={icon}/>
-      {label && <span className="toolbar-button__label">{label}</span>}
-      {dropdown && (
-        <ToolbarCaret disabled={disabled} onOpen={() => setOpen(true)}/>
-      )}
+    <div className="toolbar-button-group">
+      <button className="toolbar-button" disabled={disabled} onClick={activate}>
+        <img className="toolbar-button__icon" src={icon}/>
+        {label && <span className="toolbar-button__label">{label}</span>}
+      </button>
+      {dropdown && <ToolbarCaret disabled={disabled} onOpen={() => setOpen(true)}/>}
       {dropdown && open && (
         <ContextMenu x={dropdown.at.x} y={dropdown.at.y} items={dropdown.items} onClose={close}/>
       )}
@@ -201,15 +245,10 @@ export function ToolbarButton({ icon, label, disabled, dropdown, onClick }: {
 }
 
 function ToolbarCaret({ disabled, onOpen }: { disabled?: boolean; onOpen: () => void }) {
-  const [hovered, handlers] = useHoverFlag();
   return (
-    <span
-      className={`toolbar-button__caret${hovered ? " toolbar-button__caret--hover" : ""}`}
-      {...handlers}
-      onClick={() => !disabled && onOpen()}
-    >
+    <button className="toolbar-button__caret" disabled={disabled} onClick={onOpen}>
       <img className="toolbar-button__caret-img" src="assets/caret-down.png"/>
-    </span>
+    </button>
   );
 }
 
@@ -218,7 +257,7 @@ export function ToolbarSeparator() {
   return <div className="toolbar-separator"/>;
 }
 
-/** Collapsible XP task-pane group box (blue header + chevron). */
+/** Shared collapsible information group. */
 export function GroupBox({ title, expanded, onToggle, children }: {
   title: string;
   expanded: boolean;
@@ -227,10 +266,10 @@ export function GroupBox({ title, expanded, onToggle, children }: {
 }) {
   return (
     <div className="group-box">
-      <div className="group-box__head" onClick={onToggle}>
+      <button className="group-box__head" onClick={onToggle}>
         <span>{title}</span>
         <span className="group-box__chev"><img className="group-box__chev-img" src={expanded ? "assets/chev-up.png" : "assets/chev-down.png"}/></span>
-      </div>
+      </button>
       {expanded && <div className="group-box__body">{children}</div>}
     </div>
   );
@@ -242,16 +281,14 @@ export function TaskLink({ label, disabled, onClick }: {
   disabled?: boolean;
   onClick: () => void;
 }) {
-  const [hovered, handlers] = useHoverFlag();
-  const className = `task-link${hovered && !disabled ? " task-link--hover" : ""}${disabled ? " task-link--disabled" : ""}`;
   return (
-    <span className={className} {...handlers} onClick={() => { if (!disabled) onClick(); }}>
+    <button className="task-link" disabled={disabled} onClick={onClick}>
       {label}
-    </span>
+    </button>
   );
 }
 
-/** Sectioned XP status bar. */
+/** Shared sectioned status bar. */
 export function StatusBar({ children }: { children: React.ReactNode }) {
   return <div className="status-bar">{children}</div>;
 }
@@ -283,7 +320,6 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
 }) {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
-  const [goHovered, goHandlers] = useHoverFlag();
   return (
     <div className="address-bar">
       <span className="address-bar__label">{label}</span>
@@ -312,10 +348,10 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
         )}
       </div>
       {go && (
-        <div className={`go-button${goHovered ? " go-button--hover" : ""}`} {...goHandlers} onClick={go.onClick}>
+        <button className="go-button" onClick={go.onClick}>
           <img className="go-button__icon" src={go.icon}/>
           <span>{go.label}</span>
-        </div>
+        </button>
       )}
       {dropItems && open && (
         <ContextMenu x={8} y={64} items={dropItems} onClose={close}/>
@@ -328,7 +364,7 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
 const KEY_ESC = 1;
 const KEY_ENTER = 28;
 
-/** Modal XP dialog base: overlay + titled frame + content + action row.
+/** Shared modal dialog base: overlay + titled frame + content + action row.
  * Every app modal (properties, options, viewer, cannot-open) builds on this;
  * `actions` defaults to a single default OK button closing the dialog. */
 export function Dialog({ title, wide, onClose, actions, children }: {

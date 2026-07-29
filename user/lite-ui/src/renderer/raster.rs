@@ -3,6 +3,8 @@
 
 use linux_uapi::drm::SharedDumbBuffer;
 
+use super::PhysicalRect;
+
 /// Pixel target shared by the scanout buffer and offscreen opacity layers.
 ///
 /// The paint walk is generic over this so an `opacity` subtree rasterizes into
@@ -13,6 +15,7 @@ use linux_uapi::drm::SharedDumbBuffer;
 pub(crate) trait Raster {
     fn width(&self) -> usize;
     fn height(&self) -> usize;
+    fn row(&self, row: usize) -> &[u32];
     fn row_mut(&mut self, row: usize) -> &mut [u32];
 }
 
@@ -25,8 +28,81 @@ impl Raster for SharedDumbBuffer {
         self.height()
     }
 
+    fn row(&self, row: usize) -> &[u32] {
+        self.row(row)
+    }
+
     fn row_mut(&mut self, row: usize) -> &mut [u32] {
         self.row_mut(row)
+    }
+}
+
+/// Masks every raster write to one physical damage rectangle.
+///
+/// Paint primitives still address rows in full-surface coordinates because
+/// gradients, rounded corners and shadows depend on the original box geometry.
+/// The scratch row preserves that coordinate system while copying only the
+/// damaged span back to the retained target. Without this mask, a primitive
+/// that does not expose a separate clip argument could overwrite unchanged
+/// retained pixels outside the compositor damage.
+pub(crate) struct DamageRaster<'a, R: Raster> {
+    target: &'a mut R,
+    damage: PhysicalRect,
+    active_row: Option<usize>,
+    scratch: Vec<u32>,
+}
+
+impl<'a, R: Raster> DamageRaster<'a, R> {
+    pub(super) fn new(target: &'a mut R, damage: PhysicalRect) -> Self {
+        Self {
+            scratch: vec![0; target.width()],
+            target,
+            damage,
+            active_row: None,
+        }
+    }
+
+    fn flush(&mut self) {
+        let Some(row) = self.active_row.take() else {
+            return;
+        };
+        if row >= self.damage.y1 && row < self.damage.y2 {
+            self.target.row_mut(row)[self.damage.x1..self.damage.x2]
+                .copy_from_slice(&self.scratch[self.damage.x1..self.damage.x2]);
+        }
+    }
+}
+
+impl<R: Raster> Raster for DamageRaster<'_, R> {
+    fn width(&self) -> usize {
+        self.target.width()
+    }
+
+    fn height(&self) -> usize {
+        self.target.height()
+    }
+
+    fn row(&self, row: usize) -> &[u32] {
+        if self.active_row == Some(row) {
+            &self.scratch
+        } else {
+            self.target.row(row)
+        }
+    }
+
+    fn row_mut(&mut self, row: usize) -> &mut [u32] {
+        if self.active_row != Some(row) {
+            self.flush();
+            self.scratch.copy_from_slice(self.target.row(row));
+            self.active_row = Some(row);
+        }
+        &mut self.scratch
+    }
+}
+
+impl<R: Raster> Drop for DamageRaster<'_, R> {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
@@ -77,6 +153,10 @@ impl Raster for OpacityLayer {
 
     fn height(&self) -> usize {
         self.height
+    }
+
+    fn row(&self, row: usize) -> &[u32] {
+        self.row(row)
     }
 
     fn row_mut(&mut self, row: usize) -> &mut [u32] {

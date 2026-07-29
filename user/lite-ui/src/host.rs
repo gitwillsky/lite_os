@@ -7,11 +7,11 @@ mod bundle_tests;
 mod clipboard;
 mod filesystem;
 mod media;
-mod scalar;
 #[cfg(test)]
 mod media_constants_tests;
 #[cfg(test)]
 mod media_controls_tests;
+mod scalar;
 
 use std::{
     cell::{Cell, RefCell},
@@ -44,6 +44,7 @@ struct Bounds {
 #[derive(Clone, Serialize)]
 struct Surface {
     id: u32,
+    #[serde(rename = "appId")]
     app_id: String,
     title: String,
     icon: String,
@@ -150,17 +151,41 @@ impl State {
     pub fn open_surface(&self, id: u32, app_id: String) {
         let index = self.surfaces.borrow().len() as u32;
         let (title, icon) = app_registry::app_metadata(&app_id);
+        let bounds = match app_id.as_str() {
+            "file-manager" => Bounds {
+                x: 76,
+                y: 124,
+                width: 834,
+                height: 540,
+            },
+            "terminal" => Bounds {
+                x: 958,
+                y: 414,
+                width: 460,
+                height: 250,
+            },
+            "music-player" | "my-computer" => {
+                let slot = index % 4;
+                Bounds {
+                    x: 180 + slot * 28,
+                    y: 58 + slot * 24,
+                    width: 900,
+                    height: 620,
+                }
+            }
+            _ => Bounds {
+                x: 260 + index * 28,
+                y: 150 + index * 24,
+                width: 720,
+                height: 480,
+            },
+        };
         self.surfaces.borrow_mut().push(Surface {
             id,
             app_id,
             title: title.to_owned(),
             icon: icon.to_owned(),
-            bounds: Bounds {
-                x: 150 + index * 28,
-                y: 90 + index * 24,
-                width: 720,
-                height: 480,
-            },
+            bounds,
             configure: None,
         });
         self.focused_surface.set(id);
@@ -214,6 +239,7 @@ pub struct Host {
     started: Instant,
     state: Rc<State>,
     app_root: PathBuf,
+    apps_root: PathBuf,
     files: RefCell<filesystem::Files>,
     audio: RefCell<AudioCommands>,
     next_media: Cell<u64>,
@@ -222,8 +248,28 @@ pub struct Host {
 }
 
 impl Host {
-    /// Creates the unique host and its read-side state handle.
-    pub fn new(role: Role, app_root: PathBuf, audio: AudioCommands) -> (Self, Rc<State>) {
+    /// Creates the unique native host and its read-side state handle.
+    ///
+    /// # Parameters
+    ///
+    /// - `role`: Determines which native operations the JavaScript bundle may
+    ///   invoke.
+    /// - `app_root`: Resolves assets for the currently running desktop or app
+    ///   bundle.
+    /// - `apps_root`: Owns the installed application registry scanned by the
+    ///   desktop launcher.
+    /// - `audio`: Sends media and system-volume commands to the audio service.
+    ///
+    /// # Returns
+    ///
+    /// The native host installed into QuickJS and the retained state consumed
+    /// by the display/event loop.
+    pub fn new(
+        role: Role,
+        app_root: PathBuf,
+        apps_root: PathBuf,
+        audio: AudioCommands,
+    ) -> (Self, Rc<State>) {
         let state = Rc::new(State {
             scene: RefCell::new(None),
             scene_dirty: Cell::new(false),
@@ -241,6 +287,7 @@ impl Host {
                 started: Instant::now(),
                 state: state.clone(),
                 app_root,
+                apps_root,
                 files: RefCell::new(filesystem::Files::default()),
                 audio: RefCell::new(audio),
                 next_media: Cell::new(1),
@@ -368,7 +415,9 @@ impl NativeHost for Host {
                     .retain(|(timer, _)| *timer != id);
                 Ok(String::new())
             }
-            "apps.list" if self.role == Role::Desktop => Ok(app_registry::scan_apps()),
+            "apps.list" if self.role == Role::Desktop => {
+                Ok(app_registry::scan_apps(&self.apps_root))
+            }
             "apps.launch" if self.role == Role::Desktop && app_registry::valid_app_id(payload) => {
                 self.state.actions.borrow_mut().push(Action::Launch(payload.to_owned()));
                 Ok(String::new())

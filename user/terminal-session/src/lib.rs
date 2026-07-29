@@ -27,6 +27,7 @@ const MAX_INPUT: usize = 64 * 1024;
 // 刷新的 TUI 会让 drain 永远等不到 EAGAIN，LiteUI 的 ACK 与键盘输入因此永久饥饿。
 const MAX_PTY_DRAIN_BYTES: usize = 64 * 1024;
 const LINUX_EIO: i32 = 5;
+const SHELL_PROMPT: &str = "\x1b[36m>\x1b[0m ";
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -46,7 +47,8 @@ fn run() -> io::Result<()> {
         pixel_width: 640,
         pixel_height: 400,
     };
-    let mut session = PtySession::spawn(size, &program, &arguments)?;
+    let environment = [(OsString::from("PS1"), OsString::from(SHELL_PROMPT))];
+    let mut session = PtySession::spawn(size, &program, &arguments, &environment)?;
     eprintln!("terminal-session: shell spawned");
     let mut model =
         Model::new(usize::from(size.columns), usize::from(size.rows)).ok_or_else(|| {

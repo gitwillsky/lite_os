@@ -35,8 +35,7 @@ pub struct SceneNode<'a> {
     /// Buffer id for pixels or app surface id for a foreign surface.
     pub source_id: u32,
     /// Rounded-corner radius in physical pixels for the frame clip; zero means
-    /// the full clip rect is painted. Only the top corners are cut, matching
-    /// the Luna window shape (`8px 8px 0 0`).
+    /// the full clip rect is painted. Only the system-owned top corners are cut.
     pub corner_radius: u32,
     /// Adopted configure serial for a foreign surface; zero for pixels.
     pub configure_serial: u64,

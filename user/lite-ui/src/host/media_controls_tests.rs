@@ -67,7 +67,8 @@ fn production_music_player_uses_standard_range_and_readable_media_controls() {
 
     let (commands, _events) =
         crate::audio::start(audio_proto::ClientRole::Media).expect("audio worker");
-    let (host, state) = Host::new(Role::App, root.join("music-player"), commands);
+    let app_root = root.join("music-player");
+    let (host, state) = Host::new(Role::App, app_root.clone(), root, commands);
     let mut engine = Engine::open(Role::App).expect("app engine");
     engine.install_host(host);
     engine.evaluate("runtime.js", &runtime).expect("runtime");

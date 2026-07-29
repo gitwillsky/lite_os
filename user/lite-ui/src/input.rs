@@ -1,8 +1,15 @@
 //! DOM-style input targeting over the latest rendered hit regions.
 
 mod clipboard;
+mod dispatch;
 
 pub(super) use clipboard::ClipboardPaste;
+#[cfg(test)]
+pub(super) use dispatch::bubbling_listener_ids;
+use dispatch::{
+    dispatch_bubbling, dispatch_listener, dispatch_range_pointer, dispatch_range_value,
+    dispatch_scroll,
+};
 
 use std::{
     error::Error,
@@ -105,7 +112,7 @@ pub(super) fn apply_event(
             if key.value != 0 {
                 state.grant_media_playback();
             }
-            dispatch_key(engine, renderer, interactions, display, key)?;
+            dispatch_key(state, engine, renderer, interactions, display, key)?;
             return Ok(());
         }
         Event::ClipboardData(data) => {
@@ -124,11 +131,11 @@ pub(super) fn apply_event(
 }
 
 /// Routes one key event. When an `<input>` is focused and still present in the
-/// latest hits, the renderer's keymap turns the key into a text edit (dispatched
-/// to `onInput` with the new controlled value) or an `onKeyDown` (Enter/Esc/
-/// arrows). Otherwise the deepest global `onKeyDown` receives it — preserving
-/// the terminal and desktop-Escape behavior when nothing is focused.
+/// latest hits, `keydown` first bubbles from that target through its actual DOM
+/// ancestors; the renderer then applies the button/range/text default action.
+/// Otherwise the deepest global `onKeyDown` receives the transition.
 fn dispatch_key(
+    state: &State,
     engine: &mut Engine,
     renderer: &mut Renderer,
     interactions: &mut Interactions,
@@ -143,27 +150,56 @@ fn dispatch_key(
             .hits
             .iter()
             .find(|hit| hit.node_id == node_id)
-            .map(|hit| (node_id, hit.editable.clone(), hit.range))
+            .map(|hit| {
+                (
+                    node_id,
+                    hit.editable.clone(),
+                    hit.range,
+                    hit.button,
+                    hit.click,
+                )
+            })
     });
-    if let Some((node_id, editable, range)) = focused {
+    if let Some((node_id, editable, range, button, click)) = focused {
         // Fold modifiers first; a modifier key produces no text itself.
         if interactions.modifiers.apply(key.code, key.value) {
             return Ok(());
         }
-        if let Some(range) = range {
-            if key.value != 0 {
-                if let Some(on_key) = interactions
-                    .hits
-                    .iter()
-                    .find(|hit| hit.node_id == node_id)
-                    .and_then(|hit| hit.key_down)
-                {
+        if key.value != 0 {
+            dispatch_bubbling(
+                engine,
+                &interactions.hits,
+                Some(node_id),
+                |hit| hit.key_down,
+                json!({
+                    "type":"key",
+                    "code":key.code,
+                    "value":key.value,
+                    "modifiers":key.modifiers
+                }),
+            )?;
+        }
+        if button {
+            let activation_key = matches!(key.code, 28 | 57); // KEY_ENTER / KEY_SPACE
+            if activation_key {
+                let pressed = key.value != 0;
+                if renderer.set_active_target(pressed.then_some(node_id)) {
+                    state.invalidate_scene();
+                }
+                let invokes =
+                    (key.code == 28 && key.value == 1) || (key.code == 57 && key.value == 0);
+                if invokes && let Some(click) = click {
                     dispatch_listener(
                         engine,
-                        on_key,
-                        json!({"type":"key","code":key.code,"value":key.value,"modifiers":key.modifiers}),
+                        click,
+                        json!({"type":"click","detail":0,"keyboard":true}),
                     )?;
                 }
+            }
+            return Ok(());
+        }
+        if let Some(range) = range {
+            if key.value != 0 {
                 let direction = match key.code {
                     103 | 106 => Some(1),  // KEY_UP / KEY_RIGHT
                     105 | 108 => Some(-1), // KEY_LEFT / KEY_DOWN
@@ -194,21 +230,6 @@ fn dispatch_key(
                 dispatch_listener(engine, on_input, json!({ "type": "input", "value": next }))?;
             }
             return Ok(());
-        }
-        // Non-text keys (Enter/Esc/Tab/arrows) go to the input's own onKeyDown
-        // so the field can commit or cancel; only on a press edge.
-        if key.value != 0
-            && let Some(on_key) = interactions
-                .hits
-                .iter()
-                .find(|hit| hit.node_id == node_id)
-                .and_then(|hit| hit.key_down)
-        {
-            dispatch_listener(
-                engine,
-                on_key,
-                json!({"type":"key","code":key.code,"value":key.value,"modifiers":key.modifiers}),
-            )?;
         }
         return Ok(());
     }
@@ -253,19 +274,22 @@ fn dispatch_pointer(
     }
     match pointer.phase {
         display_proto::PointerPhase::Down if renderer.scrollbar_at(pointer.x, pointer.y) => {
+            let pseudo_changed = renderer.set_hover_target(None) | renderer.set_active_target(None);
             let changed = if pointer.button == BTN_RIGHT {
                 false
             } else {
                 renderer.scrollbar_pointer_down(pointer.x, pointer.y).1
             };
             interactions.native_scroll_pointer = true;
-            if changed {
+            if changed || pseudo_changed {
                 state.invalidate_scene();
             }
             return Ok(());
         }
         display_proto::PointerPhase::Motion if interactions.native_scroll_pointer => {
-            if renderer.scrollbar_pointer_move(pointer.x, pointer.y) {
+            let scroll_changed = renderer.scrollbar_pointer_move(pointer.x, pointer.y);
+            let pseudo_changed = renderer.set_hover_target(None);
+            if scroll_changed || pseudo_changed {
                 state.invalidate_scene();
             }
             return Ok(());
@@ -273,6 +297,9 @@ fn dispatch_pointer(
         display_proto::PointerPhase::Up if interactions.native_scroll_pointer => {
             interactions.native_scroll_pointer = false;
             renderer.scrollbar_pointer_up();
+            if renderer.set_active_target(None) {
+                state.invalidate_scene();
+            }
             return Ok(());
         }
         _ => {}
@@ -296,6 +323,30 @@ fn dispatch_pointer(
         "buttons":pointer.buttons,
         "serial":pointer.serial
     });
+    let css_target = interactions
+        .hits
+        .iter()
+        .rev()
+        .find(|hit| inside(hit))
+        .map(|hit| hit.node_id);
+    match pointer.phase {
+        display_proto::PointerPhase::Motion => {
+            if renderer.set_hover_target(css_target) {
+                state.invalidate_scene();
+            }
+        }
+        display_proto::PointerPhase::Down if pointer.button != BTN_RIGHT => {
+            if renderer.set_active_target(css_target) {
+                state.invalidate_scene();
+            }
+        }
+        display_proto::PointerPhase::Up if pointer.button != BTN_RIGHT => {
+            if renderer.set_active_target(None) {
+                state.invalidate_scene();
+            }
+        }
+        _ => {}
+    }
     if renderer.scrollbar_at(pointer.x, pointer.y) {
         if pointer.phase == display_proto::PointerPhase::Motion {
             if let Some(old) = interactions.hovered
@@ -308,6 +359,9 @@ fn dispatch_pointer(
                 dispatch_listener(engine, leave, payload)?;
             }
             interactions.hovered = None;
+            if renderer.set_hover_target(None) {
+                state.invalidate_scene();
+            }
             if interactions.cursor_shape != 0 {
                 display.set_cursor_shape(0)?;
                 interactions.cursor_shape = 0;
@@ -318,16 +372,13 @@ fn dispatch_pointer(
     match pointer.phase {
         display_proto::PointerPhase::Down => {
             if pointer.button == BTN_RIGHT {
-                if let Some(listener) = interactions
-                    .hits
-                    .iter()
-                    .rev()
-                    .filter(|hit| inside(hit))
-                    .filter_map(|hit| hit.context_menu)
-                    .next()
-                {
-                    dispatch_listener(engine, listener, payload.clone())?;
-                }
+                dispatch_bubbling(
+                    engine,
+                    &interactions.hits,
+                    css_target,
+                    |hit| hit.context_menu,
+                    payload.clone(),
+                )?;
             } else {
                 // 焦点跟随左键按下（标准 DOM 语义）：文本与 range `<input>` 都可聚焦；
                 // disabled range 不可聚焦。焦点变化需重绘光标/滑块焦点框。
@@ -337,7 +388,9 @@ fn dispatch_pointer(
                     .rev()
                     .filter(|hit| inside(hit))
                     .find(|hit| {
-                        hit.editable.is_some() || hit.range.is_some_and(|range| !range.disabled())
+                        hit.editable.is_some()
+                            || hit.range.is_some_and(|range| !range.disabled())
+                            || hit.button
                     })
                     .map(|hit| hit.node_id);
                 if renderer.set_focus(focus_target) {
@@ -357,23 +410,17 @@ fn dispatch_pointer(
                         node_id: hit.node_id,
                     });
                 }
-                if let Some(hit) = interactions
-                    .hits
-                    .iter()
-                    .rev()
-                    .filter(|hit| inside(hit))
-                    .find(|hit| hit.pointer_down.is_some())
+                if dispatch_bubbling(
+                    engine,
+                    &interactions.hits,
+                    css_target,
+                    |hit| hit.pointer_down,
+                    payload.clone(),
+                )? && !range_captured
                 {
-                    dispatch_listener(
-                        engine,
-                        hit.pointer_down.expect("filtered pointer listener"),
-                        payload.clone(),
-                    )?;
-                    if !range_captured {
-                        interactions.pointer_capture = Some(PointerCapture {
-                            node_id: hit.node_id,
-                        });
-                    }
+                    interactions.pointer_capture = Some(PointerCapture {
+                        node_id: css_target.expect("bubbling route has a target"),
+                    });
                 }
             }
         }
@@ -383,22 +430,32 @@ fn dispatch_pointer(
                     if hit.range.is_some_and(|range| !range.disabled()) {
                         dispatch_range_pointer(engine, hit, pointer.x)?;
                     }
-                    if let Some(listener) = hit.pointer_up {
-                        dispatch_listener(engine, listener, payload.clone())?;
-                    }
+                    dispatch_bubbling(
+                        engine,
+                        &interactions.hits,
+                        Some(hit.node_id),
+                        |candidate| candidate.pointer_up,
+                        payload.clone(),
+                    )?;
                 }
             }
             if pointer.button != BTN_RIGHT {
-                if let Some(listener) = interactions
-                    .hits
-                    .iter()
-                    .rev()
-                    .filter(|hit| inside(hit))
-                    .filter_map(|hit| hit.click)
-                    .next()
-                {
-                    dispatch_listener(engine, listener, payload.clone())?;
-                }
+                let click_payload = json!({
+                    "type":"click",
+                    "detail":1,
+                    "x":pointer.x,
+                    "y":pointer.y,
+                    "button":pointer.button,
+                    "buttons":pointer.buttons,
+                    "serial":pointer.serial
+                });
+                dispatch_bubbling(
+                    engine,
+                    &interactions.hits,
+                    css_target,
+                    |hit| hit.click,
+                    click_payload.clone(),
+                )?;
                 let now = Instant::now();
                 let double = interactions.last_click.is_some_and(|(at, x, y)| {
                     now.duration_since(at) <= Duration::from_millis(500)
@@ -406,16 +463,21 @@ fn dispatch_pointer(
                         && (y - pointer.y).abs() <= 4
                 });
                 if double {
-                    if let Some(listener) = interactions
-                        .hits
-                        .iter()
-                        .rev()
-                        .filter(|hit| inside(hit))
-                        .filter_map(|hit| hit.double_click)
-                        .next()
-                    {
-                        dispatch_listener(engine, listener, payload.clone())?;
-                    }
+                    dispatch_bubbling(
+                        engine,
+                        &interactions.hits,
+                        css_target,
+                        |hit| hit.double_click,
+                        json!({
+                            "type":"dblclick",
+                            "detail":2,
+                            "x":pointer.x,
+                            "y":pointer.y,
+                            "button":pointer.button,
+                            "buttons":pointer.buttons,
+                            "serial":pointer.serial
+                        }),
+                    )?;
                     interactions.last_click = None;
                 } else {
                     interactions.last_click = Some((now, pointer.x, pointer.y));
@@ -428,9 +490,13 @@ fn dispatch_pointer(
                     if hit.range.is_some_and(|range| !range.disabled()) {
                         dispatch_range_pointer(engine, hit, pointer.x)?;
                     }
-                    if let Some(listener) = hit.pointer_move {
-                        dispatch_listener(engine, listener, payload)?;
-                    }
+                    dispatch_bubbling(
+                        engine,
+                        &interactions.hits,
+                        Some(hit.node_id),
+                        |candidate| candidate.pointer_move,
+                        payload,
+                    )?;
                 }
             } else {
                 let next = interactions
@@ -465,15 +531,13 @@ fn dispatch_pointer(
                     }
                     interactions.hovered = next;
                 }
-                if let Some(mv) = next.and_then(|node_id| {
-                    interactions
-                        .hits
-                        .iter()
-                        .find(|hit| hit.node_id == node_id)
-                        .and_then(|hit| hit.pointer_move)
-                }) {
-                    dispatch_listener(engine, mv, payload)?;
-                }
+                dispatch_bubbling(
+                    engine,
+                    &interactions.hits,
+                    css_target,
+                    |hit| hit.pointer_move,
+                    payload,
+                )?;
                 reconcile_cursor(interactions, display)?;
             }
         }
@@ -509,87 +573,5 @@ pub(crate) fn reconcile_cursor(
         display.set_cursor_shape(shape)?;
         interactions.cursor_shape = shape;
     }
-    Ok(())
-}
-
-fn dispatch_range_pointer(
-    engine: &mut Engine,
-    hit: &renderer::HitRegion,
-    pointer_x: i32,
-) -> Result<(), Box<dyn Error>> {
-    let range = hit.range.expect("range hit");
-    let value = range.value_at(pointer_x as f32, hit.x, hit.width);
-    dispatch_range_value(engine, range, value)
-}
-
-fn dispatch_range_value(
-    engine: &mut Engine,
-    range: renderer::RangeInput,
-    value: f64,
-) -> Result<(), Box<dyn Error>> {
-    if value == range.value() {
-        return Ok(());
-    }
-    if let Some(on_input) = range.on_input() {
-        dispatch_listener(
-            engine,
-            on_input,
-            json!({
-                "type": "input",
-                "value": renderer::RangeInput::string_value(value)
-            }),
-        )?;
-    }
-    Ok(())
-}
-
-fn dispatch_scroll(
-    state: &State,
-    engine: &mut Engine,
-    renderer: &mut Renderer,
-    interactions: &mut Interactions,
-    scroll: display_proto::InputScroll,
-) -> Result<(), Box<dyn Error>> {
-    let inside = |hit: &renderer::HitRegion| {
-        scroll.x as f32 >= hit.x
-            && scroll.y as f32 >= hit.y
-            && (scroll.x as f32) < hit.x + hit.width
-            && (scroll.y as f32) < hit.y + hit.height
-    };
-    if let Some(listener) = interactions
-        .hits
-        .iter()
-        .rev()
-        .filter(|hit| inside(hit))
-        .filter_map(|hit| hit.wheel)
-        .next()
-    {
-        dispatch_listener(
-            engine,
-            listener,
-            json!({
-                "type":"wheel",
-                "x":scroll.x,
-                "y":scroll.y,
-                "deltaX":scroll.delta_x,
-                "deltaY":scroll.delta_y,
-                "deltaMode":0
-            }),
-        )?;
-    }
-    if renderer.scroll_wheel(scroll.x, scroll.y, scroll.delta_x, scroll.delta_y) {
-        state.invalidate_scene();
-    }
-    Ok(())
-}
-
-fn dispatch_listener(
-    engine: &mut Engine,
-    listener: u64,
-    payload: serde_json::Value,
-) -> Result<(), Box<dyn Error>> {
-    let payload = serde_json::to_string(&payload)?;
-    let script = format!("globalThis.__liteDispatch({listener},{payload});");
-    engine.evaluate("lite-ui-listener.js", script.as_bytes())?;
     Ok(())
 }

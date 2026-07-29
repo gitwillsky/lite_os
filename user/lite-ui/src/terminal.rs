@@ -142,7 +142,6 @@ impl Terminal {
         }
         Ok(())
     }
-
 }
 
 fn cursor_appearance(style: u16) -> Option<(&'static str, bool)> {

@@ -5,7 +5,7 @@ import { constrainResize, projectResize } from "./window-geometry.ts";
 const origin = { startX: 200, startY: 200, x: 100, y: 80, width: 400, height: 300 };
 const point = { x: 230, y: 250 };
 
-test("all eight XP grips keep their opposite edges fixed", () => {
+test("all eight resize grips keep their opposite edges fixed", () => {
   const expected = {
     n: [100, 130, 400, 250],
     s: [100, 80, 400, 350],

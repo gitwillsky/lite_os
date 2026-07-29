@@ -42,7 +42,7 @@ export interface BrowserOptions {
    * does not navigate. Default: folders navigate, files stay selected. */
   openTarget?: (path: string, entry: FsEntry) => string | null;
   /** Double-click/Enter on a file: the app decides (text viewer, …). Without
-   * it a file only takes the selection, matching XP's delegate-to-handler
+   * it a file only takes the selection, matching delegate-to-handler
    * model when no handler exists. */
   onOpenFile?: (path: string, entry: FsEntry) => void;
 }
@@ -107,7 +107,7 @@ export function useBrowser(initialPath: string, options: BrowserOptions) {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("icons");
   const [sort, setSort] = useState<SortState>({ column: "name", ascending: true });
-  // XP hides "hidden" entries (dotfiles) until Folder Options says otherwise.
+  // Dotfiles stay hidden until Folder Options says otherwise.
   const [showHidden, setShowHidden] = useState(false);
   // Ordered multi-selection; the last name is the focused entry (rename,
   // properties act on it; delete/cut/copy act on the whole selection).
@@ -189,7 +189,7 @@ export function useBrowser(initialPath: string, options: BrowserOptions) {
 
   // Double-click/Enter opens a folder (navigate in). Files go to the app's
   // onOpenFile (text viewer); without one they only take the selection —
-  // matching XP, where opening a file is delegated to its handler.
+  // Opening a file is delegated to its handler.
   const openEntry = useCallback((entry: FsEntry) => {
     const target = openTarget(path, entry);
     if (target !== null) {

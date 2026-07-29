@@ -95,13 +95,14 @@ const reactSystemPlugin = {
 };
 
 const properties = new Set([
-  "align-items", "background", "background-color", "background-image", "background-position",
+  "accent-color", "align-items", "background", "background-color", "background-image", "background-position",
   "background-repeat", "background-size", "border", "border-bottom", "border-color",
   "border-bottom-color", "border-bottom-style", "border-bottom-width", "border-left",
   "border-left-color", "border-left-style", "border-left-width", "border-radius", "border-right",
   "border-right-color", "border-right-style", "border-right-width", "border-style", "border-top",
   "border-top-color", "border-top-style", "border-top-width", "border-width",
-  "animation", "bottom", "box-shadow", "box-sizing", "color", "display", "flex", "flex-direction", "flex-wrap",
+  "animation", "backdrop-filter", "bottom", "box-shadow", "box-sizing", "color", "display", "flex", "flex-basis",
+  "flex-direction", "flex-grow", "flex-shrink", "flex-wrap",
   "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
   "left", "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top",
   "max-height", "max-width", "min-height",
@@ -162,8 +163,9 @@ function validateCss(path, source) {
         }
         declarations(body);
       } else {
-        if (!header || header.includes(",") || /::|\[|\]|\*/.test(header)) {
-          throw new Error(`${location}: selectors must be explicit and singular`);
+        const selectors = header.split(",").map((selector) => selector.trim());
+        if (selectors.some((selector) => !selector || /::|\[|\]|\*/.test(selector))) {
+          throw new Error(`${location}: selector lists must contain explicit supported selectors`);
         }
         declarations(body);
       }
@@ -189,9 +191,9 @@ if (!checkOnly) {
   });
 }
 
-// design-system 独占 XP 主题（契约 lite-ui.md）：所有 app 共享的窗口/组件/bevel
-// 样式集中于此，构建期 prepend 到每个 app 自有 CSS 之前。渲染器不解析 var()，故
-// 主题用字面色值而非 CSS 变量。
+// design-system 独占 Aurora token 与系统组件样式。构建期 prepend 到每个 app
+// 的业务布局之前；CSS custom properties 在运行时级联，因此颜色、圆角、阴影与
+// 控件状态始终只有这一份 owner。
 const sharedTheme = await readFile(join(root, "src/design-system/theme.css"), "utf8");
 
 for (const [id, entryName, styleName] of products) {
@@ -221,49 +223,39 @@ for (const [id, entryName, styleName] of products) {
   const assets = join(directory, "assets");
   await mkdir(assets, { recursive: true });
   if (id === "desktop") {
-    await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
-    await copyFile(join(root, "../assets/sprites-src/icon-documents.png"), join(assets, "documents.png"));
-    await copyFile(join(root, "../assets/sprites-src/icon-trash.png"), join(assets, "trash.png"));
-    await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
+    for (const name of ["liteos.png", "files.png", "terminal.png", "monitor.png", "package.png", "settings.png", "wallpaper.png"]) {
+      await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
+    }
     await copyFile(join(root, "../assets/splash/aurora-background.png"), join(assets, "aurora-background.png"));
     await copyFile(join(root, "../assets/splash/aurora-logo.png"), join(assets, "aurora-logo.png"));
   }
-  await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));
   if (id === "file-manager") {
-    await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
-    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
+    await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
+    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "view-grid.png"]) {
+      await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
+    }
     await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
     await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
     await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-back.png"), join(assets, "tb-back.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-forward.png"), join(assets, "tb-forward.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-up.png"), join(assets, "tb-up.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-search.png"), join(assets, "tb-search.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-folders.png"), join(assets, "tb-folders.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-views.png"), join(assets, "tb-views.png"));
-    await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
-    await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));
     await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
   }
   if (id === "my-computer") {
-    await copyFile(join(root, "../assets/sprites-src/icon-computer.png"), join(assets, "computer.png"));
+    await copyFile(join(root, "../assets/aurora/package.png"), join(assets, "package.png"));
+    await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
+    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "view-grid.png"]) {
+      await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
+    }
     await copyFile(join(root, "../assets/sprites-src/icon-drive.png"), join(assets, "drive.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-drive-16.png"), join(assets, "drive-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
     await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
     await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
     await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-back.png"), join(assets, "tb-back.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-forward.png"), join(assets, "tb-forward.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-up.png"), join(assets, "tb-up.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-folders.png"), join(assets, "tb-folders.png"));
-    await copyFile(join(root, "../assets/sprites-src/tb-views.png"), join(assets, "tb-views.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));
     await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
   }
   if (id === "music-player") {
-    await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
+    await copyFile(join(root, "../assets/aurora/monitor.png"), join(assets, "monitor.png"));
     await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
     await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
     await copyFile(join(root, "../assets/music/跟太阳系说再见/cover.png"), join(assets, "solar-system-cover.png"));

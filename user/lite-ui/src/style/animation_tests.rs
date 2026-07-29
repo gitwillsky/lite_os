@@ -5,22 +5,14 @@ use super::{Keyframe, Keyframes, Timeline, Timing, sample_value};
 #[test]
 fn transform_translation_interpolates_in_css_pixels() {
     assert_eq!(
-        sample_value(
-            "transform",
-            "translateX(-132px)",
-            "translateX(476px)",
-            0.5
-        ),
+        sample_value("transform", "translateX(-132px)", "translateX(476px)", 0.5),
         "translate(172px, 0px)"
     );
 }
 
 #[test]
 fn display_none_switches_only_at_the_effect_boundary() {
-    assert_eq!(
-        sample_value("display", "block", "none", 0.999),
-        "block"
-    );
+    assert_eq!(sample_value("display", "block", "none", 0.999), "block");
     assert_eq!(sample_value("display", "block", "none", 1.0), "none");
     assert_eq!(sample_value("display", "none", "block", 0.0), "block");
 }

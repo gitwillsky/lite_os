@@ -30,6 +30,36 @@ impl SharedDumbBuffer {
         self.height
     }
 
+    /// Returns one immutable ARGB8888 row without exposing padding bytes.
+    ///
+    /// # Parameters
+    ///
+    /// - `row`: Zero-based row below [`SharedDumbBuffer::height`].
+    ///
+    /// # Returns
+    ///
+    /// The exact visible pixel row.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `row` is outside the published mapping geometry.
+    pub fn row(&self, row: usize) -> &[u32] {
+        assert!(row < self.height);
+        // SAFETY: map_shared_dumb validates pitch*height against mapping length and the returned
+        // slice stops at width*4, which is no larger than pitch. The immutable borrow prevents a
+        // simultaneous mutable row view through this owner.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.mapping
+                    .pointer
+                    .as_ptr()
+                    .add(row * self.pitch)
+                    .cast::<u32>(),
+                self.width,
+            )
+        }
+    }
+
     /// Returns one mutable ARGB8888 row without exposing padding bytes.
     ///
     /// # Parameters

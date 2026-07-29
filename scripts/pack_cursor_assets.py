@@ -33,8 +33,8 @@ except ModuleNotFoundError as error:
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "assets/cursors-src"
 MAGIC = b"LCR2\0\0\0\x01"
-# 光标物理边长。源图 64×64 高清绘制，按此尺寸抗锯齿降采样后打包，既保清晰
-# 又控制视觉大小（48 物理 = 24 逻辑，介于经典 XP 的 16 与等大 32 之间）。
+# 光标物理边长。源图 64×64 高清绘制，按此尺寸抗锯齿降采样后打包；
+# 48 物理像素对应 HiDPI 下的 24 逻辑像素。
 SIZE = 48
 
 # 源 PNG 文件名 → 输出 .lc2 文件名（与 cursor.rs 的 6 个 CURSOR_* 形状对应）。

@@ -377,7 +377,8 @@ impl ConsumerRing {
         // Downward crossing of the refill watermark: fires once as `available`
         // moves from above the low-water line to at-or-below it. Edge, not level,
         // so a steady drain emits exactly one request per refill cycle.
-        let crossed = count != 0 && available > LOW_WATER_FRAMES && available - count <= LOW_WATER_FRAMES;
+        let crossed =
+            count != 0 && available > LOW_WATER_FRAMES && available - count <= LOW_WATER_FRAMES;
         Ok((count, crossed))
     }
 

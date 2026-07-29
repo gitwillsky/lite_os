@@ -1,13 +1,14 @@
 //! CSS-to-taffy style lowering for the React host snapshot.
 
+mod flex;
 mod margin;
 mod overflow;
 
+use taffy::Point;
 use taffy::prelude::{
     AlignItems, BoxSizing, Dimension, Display, FlexDirection, FlexWrap, JustifyContent,
     LengthPercentage, LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
 };
-use taffy::Point;
 
 use crate::{style::Computed, terminal_font::CELL_WIDTH, tree::Node};
 
@@ -217,11 +218,7 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
             height: LengthPercentage::length(value),
         };
     }
-    if let Some(value) = computed.get("flex").and_then(number) {
-        style.flex_grow = value;
-        style.flex_shrink = 1.0;
-        style.flex_basis = Dimension::length(0.0);
-    }
+    flex::apply(computed, &mut style);
     style
 }
 
@@ -419,6 +416,36 @@ mod tests {
             wrap_of(".box { display: flex; }"),
             taffy::style::FlexWrap::NoWrap
         );
+    }
+
+    #[test]
+    fn flex_shorthand_and_longhands_map_to_standard_taffy_components() {
+        fn flex_of(css: &str) -> Style {
+            let sheet = Sheet::parse(css).expect("flex style parses");
+            let node = Node {
+                id: 1,
+                kind: "div".to_owned(),
+                props: BTreeMap::from([("className".to_owned(), Value::String("box".to_owned()))]),
+                text: String::new(),
+                children: Vec::new(),
+            };
+            to_taffy(&node, &sheet.compute(&node, &[]))
+        }
+
+        let none = flex_of(".box { flex: none; }");
+        assert_eq!(none.flex_grow, 0.0);
+        assert_eq!(none.flex_shrink, 0.0);
+        assert_eq!(none.flex_basis, Dimension::auto());
+
+        let one = flex_of(".box { flex: 2; }");
+        assert_eq!(one.flex_grow, 2.0);
+        assert_eq!(one.flex_shrink, 1.0);
+        assert_eq!(one.flex_basis, Dimension::percent(0.0));
+
+        let overridden = flex_of(".box { flex: 2 3 40%; flex-shrink: 0; flex-basis: 24px; }");
+        assert_eq!(overridden.flex_grow, 2.0);
+        assert_eq!(overridden.flex_shrink, 0.0);
+        assert_eq!(overridden.flex_basis, Dimension::length(24.0));
     }
 
     #[test]

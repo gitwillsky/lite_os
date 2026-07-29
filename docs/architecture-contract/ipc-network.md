@@ -62,6 +62,9 @@
 - AF_UNIX stream listener 以 pending queue 与 RAII connect reservation 共同计入唯一 backlog
   capacity；backlog-full 必须在 transport factory 前返回，queue node、双向 Pipe 与 accepted endpoint
   全部在 listener/client lock 外准备，OOM 或并发失败由 reservation capability 自动回滚。
+  `listen(2)` 的 signed 32-bit backlog 按 Linux unsigned comparison 截到 kernel-wide 4096 上限；
+  因而 Rust `UnixListener` 使用的 `-1` 表示该上限，不得先归零。各 protocol backend 可继续收紧
+  自身容量（当前 TCP 为 16），但不能改变 syscall 层的 ABI 归一化语义。
 - hardirq 不分配且只确认设备并发布 Network bit；deferred 网络处理有 batch 上限，并且只从
   user-return/idle safe point 调用 `try_poll`。owner 竞争或存在 payload loan 时不得等待/自旋，必须
   O(1) 回投 Network bit；SocketSet 完整时 poll 持唯一可睡眠 owner 进入 VirtIO ordinary lock，其他

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { FsEntry } from "lite:fs";
-import { TextInput, useHoverFlag } from "../design-system/controls.tsx";
+import { TextInput } from "../design-system/controls.tsx";
 import type { MenuItem } from "../design-system/controls.tsx";
 import { formatSize as formatSizeFor, measureText11 } from "./model.ts";
 import { fsListing } from "./use-browser.ts";
@@ -12,7 +12,7 @@ export type { MenuItem };
 const KEY_ESC = 1;
 const KEY_ENTER = 28;
 
-/** Inline rename field shared by the icon/list/details views. XP behavior:
+/** Inline rename field shared by the icon/list/details views. Explorer behavior:
  * the box hugs the current text (real atlas advances, recomputed on every
  * keystroke, clamped to the cell/column) on the shared text-input chrome and
  * auto-focuses on appearance so typing works without a click. */
@@ -50,7 +50,7 @@ interface FolderViewChrome {
   iconSmall: (entry: FsEntry) => string;
   entryType: (entry: FsEntry) => string;
   columns: { name: string; size: string; type: string; mtime: string };
-  /** App-locale mtime cell formatter (zh-CN vs en-US XP date style). */
+  /** App-locale mtime cell formatter. */
   formatDate: (mtime: number) => string;
   sort: SortState;
   onSort: (column: SortColumn) => void;
@@ -65,14 +65,14 @@ interface FolderViewChrome {
   onEntryMenu: (entry: FsEntry, x: number, y: number) => void;
   onBlankMenu?: (x: number, y: number) => void;
   onBlankClick?: () => void;
-  /** Optional group heading above the entries (XP's "硬盘" category header). */
+  /** Optional group heading above the entries. */
   heading?: string;
   onRenameDraftChange: (value: string) => void;
   onRenameCommit: () => void;
   onRenameCancel: () => void;
 }
 
-/** One details header cell: clickable, showing XP's ∧/∨ direction arrow on
+/** One details header cell: clickable, showing an ∧/∨ direction arrow on
  * the active column (the font atlas lacks ▲▼, so ASCII strokes are used). */
 function HeaderCell({ className, column, label, sort, onSort }: {
   className: string;
@@ -134,10 +134,9 @@ function RenameOrLabel({ className, name, props }: {
 }
 
 function IconCell(props: RowProps) {
-  const [hovered, handlers] = useHoverFlag();
-  const className = `icon-cell${hovered ? " icon-cell--hover" : ""}${props.selected ? " icon-cell--sel" : ""}`;
+  const className = `icon-cell${props.selected ? " icon-cell--sel" : ""}`;
   return (
-    <div className={className} {...handlers} {...rowCallbacks(props)}>
+    <div className={className} {...rowCallbacks(props)}>
       <img className="icon-cell__img" src={props.icon}/>
       <RenameOrLabel className="icon-cell__label" name={props.entry.name} props={props}/>
     </div>
@@ -145,10 +144,9 @@ function IconCell(props: RowProps) {
 }
 
 function ListRow(props: RowProps) {
-  const [hovered, handlers] = useHoverFlag();
-  const className = `list-row${hovered ? " list-row--hover" : ""}${props.selected ? " list-row--sel" : ""}`;
+  const className = `list-row${props.selected ? " list-row--sel" : ""}`;
   return (
-    <div className={className} {...handlers} {...rowCallbacks(props)}>
+    <div className={className} {...rowCallbacks(props)}>
       <img className="list-row__img" src={props.icon}/>
       <RenameOrLabel className="list-row__name" name={props.entry.name} props={props}/>
     </div>
@@ -160,10 +158,9 @@ function DetailsRow(props: RowProps & {
   size: string;
   mtime: string;
 }) {
-  const [hovered, handlers] = useHoverFlag();
-  const className = `details-row${hovered ? " details-row--hover" : ""}${props.selected ? " details-row--sel" : ""}`;
+  const className = `details-row${props.selected ? " details-row--sel" : ""}`;
   return (
-    <div className={className} {...handlers} {...rowCallbacks(props)}>
+    <div className={className} {...rowCallbacks(props)}>
       <img className="details-row__img" src={props.icon}/>
       <RenameOrLabel className="details-cell-name" name={props.entry.name} props={props}/>
       <span className="details-cell-size">{props.size}</span>
@@ -251,12 +248,10 @@ function TreeRow({ path, label, icon, depth, current, expanded, onToggle, onNavi
   onToggle: () => void;
   onNavigate: (path: string) => void;
 }) {
-  const [hovered, handlers] = useHoverFlag();
-  const className = `tree__row${hovered ? " tree__row--hover" : ""}${current ? " tree__row--sel" : ""}`;
+  const className = `tree__row${current ? " tree__row--sel" : ""}`;
   return (
     <div
       className={className}
-      {...handlers}
       style={{ paddingLeft: 4 + depth * 14 }}
       onClick={() => onNavigate(path)}
     >
@@ -269,7 +264,7 @@ function TreeRow({ path, label, icon, depth, current, expanded, onToggle, onNavi
   );
 }
 
-/** XP Folders bar: a lazy-loaded directory tree. Children are listed on first
+/** Lazy-loaded directory tree. Children are listed on first
  * expand (lite:fs list is synchronous), +/- toggles expansion, clicking a row
  * navigates. The current location's row stays highlighted. */
 export function FolderTree({ roots, currentPath, listDirs, onNavigate }: {

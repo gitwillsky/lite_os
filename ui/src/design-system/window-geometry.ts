@@ -24,7 +24,7 @@ export interface ResizeCandidate extends Rect {
 }
 
 /**
- * Projects a captured window frame through one XP-style resize grip.
+ * Projects a captured window frame through one standard resize grip.
  */
 export function projectResize(
   edge: ResizeEdge,
@@ -52,7 +52,7 @@ export function projectResize(
 
 /**
  * Constrains a resize candidate to the desktop work area while keeping the
- * opposite edge fixed for north/west drags, matching native XP resizing.
+ * opposite edge fixed for north/west drags, matching native desktop resizing.
  */
 export function constrainResize(
   rect: ResizeCandidate,
@@ -67,7 +67,7 @@ export function constrainResize(
 
   // A north/west drag that crosses the work-area origin must shorten the frame
   // back to its fixed opposite edge. Clamping only x/y would move that edge,
-  // making the window jump and grow unlike the native XP interaction.
+  // making the window jump and grow unlike the native desktop interaction.
   if (x < workArea.x) {
     if (anchorRight) width = right - workArea.x;
     x = workArea.x;

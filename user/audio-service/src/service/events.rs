@@ -23,6 +23,13 @@ impl<D: PlaybackDevice> Service<D> {
                     generation,
                 } => {
                     eprintln!("audio-service: stream start id={stream_id} generation={generation}");
+                    if let Some(record) = self
+                        .streams
+                        .iter_mut()
+                        .find(|record| record.id == stream_id && record.generation == generation)
+                    {
+                        record.playing = true;
+                    }
                     self.route(
                         stream_id,
                         generation,
@@ -38,6 +45,14 @@ impl<D: PlaybackDevice> Service<D> {
                     generation,
                     consumed_frames,
                 } => {
+                    if let Some(record) = self
+                        .streams
+                        .iter_mut()
+                        .find(|record| record.id == stream_id && record.generation == generation)
+                    {
+                        record.confirmed_frames = consumed_frames;
+                        record.playing = false;
+                    }
                     self.route(
                         stream_id,
                         generation,
@@ -45,6 +60,7 @@ impl<D: PlaybackDevice> Service<D> {
                             stream_id,
                             generation,
                             consumed_frames,
+                            concurrent_playbacks: self.concurrent_playbacks(),
                         },
                     )?;
                     self.route(
@@ -78,6 +94,7 @@ impl<D: PlaybackDevice> Service<D> {
                     }) {
                         record.generation = generation;
                         record.phase = StreamPhase::Live;
+                        record.playing = false;
                         record.confirmed_frames = 0;
                         record.next_progress_marker = 1;
                     }
@@ -131,9 +148,7 @@ impl<D: PlaybackDevice> Service<D> {
                         .find(|record| record.id == stream_id && record.generation == generation)
                     {
                         record.confirmed_frames = consumed_frames;
-                        if self.diagnostic_log
-                            && consumed_frames >= record.next_progress_marker
-                        {
+                        if self.diagnostic_log && consumed_frames >= record.next_progress_marker {
                             eprintln!(
                                 "audio-service: stream progress id={stream_id} generation={generation} consumed_frames={consumed_frames}"
                             );
@@ -148,6 +163,7 @@ impl<D: PlaybackDevice> Service<D> {
                             stream_id,
                             generation,
                             consumed_frames,
+                            concurrent_playbacks: self.concurrent_playbacks(),
                         },
                     )?;
                 }
@@ -183,6 +199,7 @@ impl<D: PlaybackDevice> Service<D> {
                         .find(|record| record.id == stream_id)
                     {
                         record.phase = StreamPhase::Closing;
+                        record.playing = false;
                     }
                     self.push_command(MixerCommand::Close {
                         stream_id,

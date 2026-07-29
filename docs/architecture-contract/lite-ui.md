@@ -12,6 +12,9 @@
   root 只对应一个 surface。desktop scene 独占 foreign surface geometry，两类 revision 不互相代理。
 - `lite-ui` UI thread 独占 QuickJS 与 mutable React host tree；render thread 只消费 immutable snapshot，
   独占 CSS/layout/text/raster cache。SPSC slot 与 snapshot arena ownership 必须线性转移，禁止共享 mutable tree。
+- LiteUI 只支持 React；`react-reconciler` 是唯一 framework adapter。不得新增 DOM/ReactDOM、Vue adapter、
+  framework-neutral virtual DOM 或第二套 scene builder。Web 标准要求只落在已声明的 CSS、事件、表单、
+  clipboard 与 media 契约上，不构成浏览器兼容承诺。
 - `lite-ui` renderer 独占 CSS scroll offset、最新 scroll-port/scrollbar geometry 与 scrollbar drag；
   offset 只以 React host instance 的稳定 node id 寻址，节点消失时必须同步回收，应用不得复制该状态。
 - `lite-ui` input dispatcher 独占文档内 hover、pointer-capture target 与表单控件焦点；target/焦点
@@ -22,8 +25,16 @@
   default action 派发字符串 `onInput`，disabled 控件既不聚焦也不派发。控制键仍先投递焦点节点的
   `onKeyDown`；无焦点时键盘退回全局 `onKeyDown`（终端/桌面 Escape）。文本光标与 range UA 外观都由
   `renderer/paint` 按同一焦点绘制；不新增 imperative focus state seam。
-- `lite-ui` 内部 owner seam 固定为 `input`（事件目标与默认动作）、`renderer/paint`（递归绘制）、
-  `display/allocation`（同步分配期间的协议推进）、`host/filesystem`（有界 list/read 与
+  pointer/click/wheel 必须从最深 hit target 沿稳定 host parent id 构造唯一冒泡路径，并在同一次
+  `__liteDispatch` 中按 target→root 投递；`stopPropagation()`/`stopImmediatePropagation()` 必须阻止
+  后续 ancestor。禁止用“所有包含该坐标的 listener”近似冒泡，否则重叠 sibling 会收到错误事件。
+- `lite-ui` 内部 owner seam 固定为 `input`（事件状态）、`input/dispatch`（DOM 冒泡与表单默认动作）、
+  `renderer/render`（帧布局与 retained 决策）、`renderer/retained`（文档 identity/damage/pixel reuse）、
+  `renderer/paint`（递归绘制）、`renderer/paint/fixed`（fixed layer 遍历）、
+  `renderer/layout/flex`（Flexbox longhand lowering）、`renderer/backdrop/kernel`（box blur kernel）、
+  `style/selector`（选择器解析、specificity 与动态伪类匹配）、`display/allocation`
+  （同步分配期间的协议推进）、`display/scene`（desktop flat-scene z-order/input 构造与原子提交）、
+  `host/filesystem`（有界 list/read 与
   mkdir/remove/rename/copy，并提供 filesystem-backed `File` bridge，路径必须绝对、payload 有界，
   仅 app session）和 `audio`（worker/media state/decoder/service transport）。
   compositor 的 connection handshake/role assignment 只属于 `session/client`；这些子模块不得复制
@@ -31,7 +42,8 @@
 - `quickjs-runtime` 是 QuickJS raw C ABI、unsafe、runtime/context、module loader、job queue 与 interrupt
   callback 的唯一 owner；其他 crate 不得声明 QuickJS extern、raw pointer 或复制 exception cleanup。
 - `terminal-session` 独占 PTY child、VT state、scrollback、selection 与 dirty rows；React terminal 不得
-  复制 parser/screen state。`ui/design-system` 独占 XP assets/theme；compositor 与 LiteUI 不读取主题。
+  复制 parser/screen state。`ui/design-system` 独占 Aurora token、assets 与系统组件；应用不得复制窗口
+  chrome、shell、菜单、表单、Sidebar、Toolbar 或 Dialog 样式；compositor 与 LiteUI 不读取主题。
 
 ## Interface
 
@@ -43,15 +55,24 @@
 - focused surface 在 scene 中声明，允许零个或一个；键盘 routing 只随 presentation 切换。不得增加
   imperative focus state seam。`<surface>` bounds 必须等于 adopted configure logical client size，禁止缩放。
 - desktop scene 的 node 顺序即 z 栈：全屏 Pixels 底图先行，随后每个窗口先按其 frame clip 重绘桌面像素、
-  再叠加其 foreign surface，overlay clip（taskbar/菜单）居末。同一桌面 buffer 可在多个 Pixels node 按
-  clip 复用；每个窗口的 chrome 与 content 必须原子叠放，任何窗口内容不得覆盖其他窗口的 chrome。
+  再叠加其 foreign surface，并在其后放置该窗口后绘制 React chrome 的 empty-clip input-only Pixels node；
+  overlay clip（Top Bar/Dock/系统面板）居末。同一桌面 buffer 可在多个 Pixels node 按 clip 复用；input-only
+  node 不得写像素。每个窗口的 chrome 与 content 必须原子叠放，任何窗口内容不得覆盖其他窗口的 chrome，
+  foreign surface 也不得截获 paint order 中位于它之后的透明 desktop hit target。
+- desktop 与 app 共用唯一 retained document raster。结构、computed style、layout geometry、scroll 或
+  backdrop dependency 变化声明完整 document damage；完整 geometry 不变且仅文本内容或受控
+  `<input value>` 变化时，damage 是变化节点 border box 的并集。document 精确复用时，desktop damage
+  只包含上一帧与当前帧的 `position: fixed` overlay clips（去重），从而同时覆盖出现、变化和移除。
+  禁止把固定层或局部媒体进度变化退化为全屏 damage，否则并发 app surface commit 会阻塞 shell buffer
+  release。
 - app `SURFACE_COMMIT` 与 desktop `SCENE_COMMIT` 分别有 monotonic revision。frame latch 后到达的提交进入
-  下一帧；每连接最多 64 KiB nonblocking outbound queue。可合并 event 覆盖旧值，不可丢事件无法入队
-  时断开连接；禁止 compositor writer thread。
+  下一帧；`SURFACE_COMMIT` 空 damage 精确表示 retained pixels 未变化，首帧与 full repaint 必须显式
+  携带全 surface rect。每连接最多 64 KiB nonblocking outbound queue。可合并 event 覆盖旧值，不可丢
+  事件无法入队时断开连接；禁止 compositor writer thread。
 - client 提交后不得同步等待 `PRESENTED`；`ACCEPTED` 只确认 compositor 原子接纳 revision，
   `PRESENTED` 只确认 page-flip completion，buffer 只能由 `BUFFER_RELEASE` 重新变为 writable。
   双 buffer 都在途时 client 必须保留 latest-only dirty state，禁止排队栅格化旧 snapshot。
-- buffer allocation 只经 compositor：每连接最多四个、session 最多八个 full-frame equivalent，按
+- buffer allocation 只经 compositor：每连接最多四个、session 最多十六个 full-frame equivalent，按
   `pitch * height` 计费，scanout 不计入。allocation failure 明确返回，不得抢占别的连接、降低尺寸或
   让 client 自行 CREATE_DUMB。DESTROY 只由 compositor 执行。
 - resize/maximize 使用 `CONFIGURE(serial)`；对应 app commit 进入 pending slot，直到 desktop scene 引用
@@ -63,7 +84,9 @@
   logical position。最终 canonical scene 呈现后清除 grab 并 release underlay；期间到达的新 scene
   必须继承 transform，禁止跳回旧位置或保留 canonical 残影。
 - scene input region 是 compositor routing 的唯一依据，pixel alpha 不参与 hit-test。每 node 最多 64、
-  整份 scene 最多 256 个 input rectangle；超限拒绝，不得扩大到 bounds。app surface 默认使用完整 client rect。
+  整份 scene 最多 256 个 input rectangle；超限拒绝，不得扩大到 bounds。app surface 默认使用完整 client rect；
+  desktop renderer 必须把同一窗口内位于 foreign surface 之后且可交互的 hit boxes 投影为后置 input-only
+  node，以保持 CSS/DOM paint-order hit testing，禁止用缩小 app input bounds 或硬编码 resize inset 近似。
 - pointer motion 对同一 target latest-only，每帧最多一次；离散事件前必须先 flush preceding motion。
   button/key/wheel/focus 不可合并。capture 只能消费同一次 pointer-down 的 input serial，并在 up、unmount、
   focus loss 或 disconnect 时由 compositor exactly-once reset。
@@ -95,7 +118,8 @@
   不保存平行内容。无 image/file/HTML/primary selection、文件拖放或私有 path clipboard。
 - QuickJS 每个 host→JS turn 使用固定 interrupt-check budget；Promise jobs 与 microtask 共用该预算。
   desktop heap 32 MiB、app heap 16 MiB、VM stack 512 KiB。超限是 fatal；native host call 必须非阻塞。
-- 同一 JS turn 内同步 React mutation、job drain 后最多产生一个 revision，不同离散 input 不跨 turn
+- 同一 JS turn 内同步 React mutation、job drain 后最多产生一个 revision；离散 host callback 必须进入
+  reconciler 的同步事件边界并在返回前 commit，不同离散 input 不跨 turn
   合并。CSS timeline 只在 `PRESENTED` 后把活动 document 标 dirty，`ACCEPTED`、release 与 JavaScript
   timer 不得代替 refresh driver；snapshot arena 不可用时只记录 dirty，归还后从最新 host tree 生成。
 - app entry 必须 default export 一个 component。target loader 仅接受固定 React/LiteUI system module；
@@ -125,7 +149,7 @@
 - boot fallback 由 compositor 在取得 DRM 后立即一次性绘制，之后不运行 timer 或 progress animation。
   checked identity 资产只保存按最终物理像素生成的紧凑 logo/title/status premultiplied ARGB 图层，
   compositor 不缩放；它只承担 LiteUI 尚未连接或 desktop 失败时的静态品牌画面。desktop 首个完整
-  scene latch 后由 DOM/CSS splash 原子接管；aurora、progress、hold 与 fade 只存在于 stylesheet，
+  scene latch 后由 React/CSS splash 原子接管；aurora、progress、hold 与 fade 只存在于 stylesheet，
   CSS timeline 的下一帧只由真实 page flip 驱动。不得恢复 compositor 动画、JavaScript timer/rAF
   动画或独立 splash 进程中的第二条实现。
 - Splash 的 fixed overlay 必须由 CSS animation 在淡出 terminal frame 把 `display` 离散切到 `none`；

@@ -14,29 +14,58 @@ sys.path.insert(0, str(SCRIPTS))
 
 from audio_analysis import WavSignal, read_qemu_wav  # noqa: E402
 from verify_audio import (  # noqa: E402
-    APP_CASCADE,
-    APP_ORIGIN,
+    COMMAND_CENTER_POINT,
+    COMMAND_CENTER_SIGNATURE_POINTS,
+    COMMAND_MUSIC_POINT,
     FIXTURES,
     LIMITER_FIXTURE,
     LOOP_STATE_RE,
     MASTER_MUTE_POINT,
     MASTER_SCALE_Y,
-    MASTER_SPEAKER_POINT,
     MASTER_VOLUME_X,
+    MUSIC_APP_ORIGINS,
     REPEAT_BUTTON_POINT,
     S16_POSITIVE_MAX,
+    SYSTEM_CENTER_POINT,
+    _debugfs_directory_entries,
+    _debugfs_quoted_path,
     assert_qemu_wav_finalized,
     channel_tone_amplitude,
+    command_center_visible,
     diagnostic_inittab,
     live_stream_ids,
     parse_metrics,
+    pixel_distance,
+    ppm_pixels,
     signal_rms,
+    system_center_visible,
     validate_peak_windows,
     wav_frame_count,
 )
 
 
 class AudioRuntimeGateTests(unittest.TestCase):
+    def test_private_music_directory_inventory_is_exact_and_shell_free(self) -> None:
+        listing = (
+            "/27/040755/0/0/.//\n"
+            "/24/040700/0/0/..//\n"
+            "/193/100644/0/0/track with a quote\".flac/34635303/\n"
+            "/194/040755/0/0/nested//\n"
+        )
+        self.assertEqual(
+            _debugfs_directory_entries(listing),
+            (
+                (0o100644, 'track with a quote".flac'),
+                (0o040755, "nested"),
+            ),
+        )
+        self.assertEqual(
+            _debugfs_quoted_path('/root/Music/track with a quote".flac'),
+            '"/root/Music/track with a quote\\".flac"',
+        )
+        with self.assertRaisesRegex(RuntimeError, "line break"):
+            _debugfs_quoted_path("/root/Music/bad\nname")
+
     def test_audio_diagnostics_are_private_gate_opt_in(self) -> None:
         production = (
             "::respawn:/bin/audio-service\n"
@@ -69,19 +98,19 @@ class AudioRuntimeGateTests(unittest.TestCase):
         self.assertEqual(signal.frames[0], (0.25, 0.25))
         self.assertEqual(signal.frames[-1], (0.25, 0.25))
 
-    def test_production_repeat_hit_point_matches_vqa_and_all_cascades(self) -> None:
+    def test_production_repeat_hit_point_matches_vqa_and_all_windows(self) -> None:
         self.assertEqual(
             (
-                APP_ORIGIN[0] + REPEAT_BUTTON_POINT[0],
-                APP_ORIGIN[1] + REPEAT_BUTTON_POINT[1],
+                MUSIC_APP_ORIGINS[0][0] + REPEAT_BUTTON_POINT[0],
+                MUSIC_APP_ORIGINS[0][1] + REPEAT_BUTTON_POINT[1],
             ),
-            (698, 137),
+            (945, 181),
         )
-        for index in range(8):
-            x = APP_ORIGIN[0] + APP_CASCADE[0] * index + REPEAT_BUTTON_POINT[0]
-            y = APP_ORIGIN[1] + APP_CASCADE[1] * index + REPEAT_BUTTON_POINT[1]
+        for app_x, app_y in MUSIC_APP_ORIGINS:
+            x = app_x + REPEAT_BUTTON_POINT[0]
+            y = app_y + REPEAT_BUTTON_POINT[1]
             self.assertLess(x, 1504)
-            self.assertLess(y, 816)
+            self.assertLess(y, 772)
         self.assertEqual(
             LOOP_STATE_RE.findall(
                 "LITE_AUDIO loop id=1 enabled=true\n"
@@ -90,14 +119,45 @@ class AudioRuntimeGateTests(unittest.TestCase):
             [("1", "true"), ("1", "false")],
         )
 
-    def test_desktop_master_hit_points_match_production_popup_vqa(self) -> None:
-        self.assertEqual(MASTER_SPEAKER_POINT, (1429, 831))
-        self.assertEqual(MASTER_MUTE_POINT, (1407, 795))
-        self.assertEqual(MASTER_SCALE_Y, 749)
-        self.assertEqual(MASTER_VOLUME_X, {30: 1380, 70: 1436, 100: 1478})
+    def test_command_and_system_center_hit_points_match_production_vqa(self) -> None:
+        self.assertEqual(COMMAND_CENTER_POINT, (80, 28))
+        self.assertEqual(COMMAND_MUSIC_POINT, (666, 273))
+        self.assertEqual(SYSTEM_CENTER_POINT, (1440, 28))
+        self.assertEqual(MASTER_MUTE_POINT, (1155, 212))
+        self.assertEqual(MASTER_SCALE_Y, 212)
+        self.assertEqual(MASTER_VOLUME_X, {30: 1262, 70: 1342, 100: 1402})
         self.assertEqual(
             MASTER_VOLUME_X[70] - MASTER_VOLUME_X[30],
-            4 * (MASTER_VOLUME_X[100] - MASTER_VOLUME_X[70]) // 3,
+            80,
+        )
+        self.assertEqual(
+            MASTER_VOLUME_X[100] - MASTER_VOLUME_X[70],
+            60,
+        )
+
+    def test_panel_signatures_are_read_from_physical_qemu_ppm(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "screen.ppm"
+            width, height = 3008, 1692
+            payload = bytearray(width * height * 3)
+            points = COMMAND_CENTER_SIGNATURE_POINTS
+            colors = ((44, 59, 80),) * len(points)
+            for (x, y), color in zip(points, colors, strict=True):
+                index = ((y * 2) * width + x * 2) * 3
+                payload[index:index + 3] = bytes(color)
+            path.write_bytes(f"P6\n{width} {height}\n255\n".encode() + payload)
+            pixels = ppm_pixels(path, points)
+
+        self.assertEqual(pixels, colors)
+        self.assertTrue(command_center_visible(pixels))
+        self.assertFalse(
+            command_center_visible(((8, 18, 34),) * len(COMMAND_CENTER_SIGNATURE_POINTS))
+        )
+        self.assertTrue(system_center_visible(((53, 200, 255),) * 3))
+        self.assertFalse(system_center_visible(((23, 36, 144),) * 3))
+        self.assertEqual(
+            pixel_distance(((10, 20, 30),), ((40, 50, 60),)),
+            90,
         )
 
     def test_metrics_rejects_any_historical_regression(self) -> None:

@@ -77,8 +77,8 @@ def boot(image: Path, smp: int) -> None:
 def boot_interactive_devices(image: Path) -> None:
     """在无 host 窗口下验证 run-gui 的 GPU、输入设备拓扑与桌面全链路。
 
-    compositor 首帧 marker 证明真实 splash 已由空桌面原子替换。成功后继续观察
-    Terminal 相关 marker，确保启动路径不会隐式创建应用进程。
+    compositor 首帧 marker 证明真实 splash 已由 Aurora 桌面原子替换；随后
+    Files 与 Terminal 的 marker 证明两个固定启动窗口完成首帧发布。
     """
     boot_image(
         image,
@@ -94,13 +94,12 @@ def boot_interactive_devices(image: Path) -> None:
             "compositor: desktop connected",
             "compositor: desktop first scene presented",
             "lite-ui: desktop ready",
-        ),
-        forbidden_markers=(
-            "lite-ui: terminal session ready",
+            "compositor: app 1 connected",
             "lite-ui: app terminal ready",
             "terminal-session: shell spawned",
+            "compositor: app 2 connected",
+            "lite-ui: app file-manager ready",
         ),
-        success_settle_seconds=2.0,
         interactive_devices=True,
     )
 

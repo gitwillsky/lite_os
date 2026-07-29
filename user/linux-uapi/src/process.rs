@@ -16,7 +16,6 @@ use crate::raw;
 const SESSION_LAUNCHER: &str = "/bin/session-launch";
 const EXEC_STATUS_HEADER: [u8; 5] = *b"LSEX\x01";
 const EXEC_STATUS_ERROR_LEN: usize = 10;
-
 /// Result of creating a background copy of a single-threaded process.
 pub enum Fork {
     Parent { child: Pid },

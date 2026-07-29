@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,26 +28,58 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIRECTORY = ROOT / "scripts" / "fixtures" / "audio"
 DISPLAY_WIDTH = 1504
 DISPLAY_HEIGHT = 846
-RECIPE_VERSION = 6
+RECIPE_VERSION = 7
 NORMAL_AUDIO_INIT = "::respawn:/bin/audio-service"
 DIAGNOSTIC_AUDIO_INIT = "::respawn:/bin/audio-service --diagnostic-log"
-APP_ORIGIN = (155, 117)
-APP_CASCADE = (28, 24)
-QUEUE_ROW_POINT = (580, 112)
-QUEUE_ROW_HEIGHT = 48
-QUEUE_FIRST_SCROLL_ROWS = 5
-QUEUE_BOTTOM_OFFSET = 402
-REPEAT_BUTTON_POINT = (543, 20)
-PLAY_BUTTON_POINT = (224, 330)
-SEEK_POINT = (156, 294)
-ELEMENT_MUTE_POINT = (35, 427)
-ELEMENT_VOLUME_X = {50: 143, 80: 188}
-MASTER_SPEAKER_POINT = (1429, 831)
-MASTER_MUTE_POINT = (1407, 795)
-MASTER_SCALE_Y = 749
-MASTER_VOLUME_X = {30: 1380, 70: 1436, 100: 1478}
+MUSIC_APP_ORIGINS = tuple(
+    (
+        182 + ((instance + 2) % 4) * 28,
+        110 + ((instance + 2) % 4) * 24,
+    )
+    for instance in range(8)
+)
+COMMAND_CENTER_POINT = (80, 28)
+COMMAND_MUSIC_POINT = (666, 273)
+QUEUE_ROW_POINT = (756, 124)
+QUEUE_ROW_HEIGHT = 53
+QUEUE_BOTTOM_OFFSET = 315
+QUEUE_SCROLLBAR_TRACK_POINT = (888, 480)
+REPEAT_BUTTON_POINT = (707, 23)
+PLAY_BUTTON_POINT = (314, 395)
+SEEK_POINT = (200, 357)
+ELEMENT_MUTE_POINT = (48, 546)
+ELEMENT_VOLUME_X = {50: 168, 80: 209}
+SYSTEM_CENTER_POINT = (1440, 28)
+MASTER_MUTE_POINT = (1155, 212)
+MASTER_SCALE_Y = 212
+# QMP absolute coordinates map through the 1503-pixel evdev extent, so each
+# requested desktop x lands one logical pixel to its left. These points target
+# the exact 30/70/100 steps on the presented 200px native range track.
+MASTER_VOLUME_X = {30: 1262, 70: 1342, 100: 1402}
 S16_POSITIVE_MAX = 32_767 / 32_768
 POINTER_HOVER_SETTLE_SECONDS = 0.1
+POINTER_CLICK_HOLD_SECONDS = 0.05
+PANEL_PRESENT_TIMEOUT_SECONDS = 6.0
+PANEL_PRESENT_POLL_SECONDS = 0.1
+# These eight points lie on the Command Center's straight outer border. The
+# border is painted over the panel's own opaque surface, so its color is stable
+# even after Music windows occupy the former app-icon sample points underneath.
+COMMAND_CENTER_SIGNATURE_POINTS = (
+    (386, 150),
+    (386, 300),
+    (386, 500),
+    (1117, 150),
+    (1117, 300),
+    (1117, 500),
+    (750, 92),
+    (750, 695),
+)
+SYSTEM_CENTER_SIGNATURE_POINTS = ((1220, 212), (1240, 212), (1260, 212))
+# The native vertical scrollbar spans the queue's rightmost 12 CSS pixels.
+# Sampling its center isolates thumb movement from the active row's changing
+# duration text; its antialiased left edge can still expose the content pixel
+# underneath and falsely satisfy the presentation barrier.
+QUEUE_SCROLL_SIGNATURE_OFFSETS = tuple((888, y) for y in range(100, 431, 2))
 
 # Guest names make the production directory sort byte-for-byte deterministic.
 # Without the numeric prefix, locale-dependent `localeCompare` ordering could
@@ -86,6 +119,9 @@ FATAL_MARKERS = (
     "[Audio] ALSA playback XRUN",
     "audio-service: unavailable",
     "LITE_AUDIO event=error",
+)
+_DEBUGFS_DIRECTORY_ENTRY_RE = re.compile(
+    r"^/\d+/([0-7]+)/\d+/\d+/(.*)/[^/]*/$"
 )
 
 
@@ -219,6 +255,26 @@ def enable_audio_diagnostics(image: Path, directory: Path) -> None:
         raise RuntimeError("audio diagnostic inittab was not installed")
 
 
+def _debugfs_directory_entries(listing: str) -> tuple[tuple[int, str], ...]:
+    """Parses debugfs `ls -p` output into mode/name pairs."""
+    entries = []
+    for line in listing.splitlines():
+        match = _DEBUGFS_DIRECTORY_ENTRY_RE.fullmatch(line)
+        if match is None:
+            continue
+        name = match.group(2)
+        if name not in (".", ".."):
+            entries.append((int(match.group(1), 8), name))
+    return tuple(entries)
+
+
+def _debugfs_quoted_path(path: str) -> str:
+    """Quotes one absolute debugfs path without invoking a host shell."""
+    if "\n" in path or "\r" in path:
+        raise RuntimeError("debugfs path contains a line break")
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def inject_fixtures(image: Path) -> None:
     """用 debugfs 把固定 codec 矩阵写入 disposable `/root/Music`。
 
@@ -241,16 +297,37 @@ def inject_fixtures(image: Path) -> None:
     listing = run_debugfs(image, "stat /root/Music")
     if "File not found" in listing:
         raise RuntimeError("rootfs does not contain /root/Music")
+    existing = _debugfs_directory_entries(run_debugfs(image, "ls -p /root/Music"))
+    directories = [name for mode, name in existing if mode & 0o170000 == 0o040000]
+    if directories:
+        raise RuntimeError(
+            f"audio gate cannot empty nested Music directories: {directories!r}"
+        )
+    for _, name in existing:
+        run_debugfs(
+            image,
+            f"rm {_debugfs_quoted_path(f'/root/Music/{name}')}",
+            writable=True,
+        )
     for source, guest_name in injected:
         run_debugfs(
             image,
-            f"write {FIXTURE_DIRECTORY / source} /root/Music/{guest_name}",
+            f"write {FIXTURE_DIRECTORY / source} "
+            f"{_debugfs_quoted_path(f'/root/Music/{guest_name}')}",
             writable=True,
         )
-    final_listing = run_debugfs(image, "ls -l /root/Music")
-    absent = [guest for _, guest in injected if guest not in final_listing]
-    if absent:
-        raise RuntimeError(f"debugfs did not publish audio fixtures: {absent!r}")
+    final_names = {
+        name
+        for _, name in _debugfs_directory_entries(
+            run_debugfs(image, "ls -p /root/Music")
+        )
+    }
+    expected_names = {guest for _, guest in injected}
+    if final_names != expected_names:
+        raise RuntimeError(
+            "debugfs did not publish the exact audio fixture set: "
+            f"expected={sorted(expected_names)!r} actual={sorted(final_names)!r}"
+        )
 
 
 def click(qmp: QmpClient, x: float, y: float) -> None:
@@ -261,33 +338,211 @@ def click(qmp: QmpClient, x: float, y: float) -> None:
     # 点击便会在串口看似无故消失。
     time.sleep(POINTER_HOVER_SETTLE_SECONDS)
     qmp.button("left", True)
+    # QMP accepts transitions faster than the guest input worker can publish
+    # the matching DOM scene. A non-zero physical hold models a real click and
+    # prevents a down/up pair from collapsing into focus without activation.
+    time.sleep(POINTER_CLICK_HOLD_SECONDS)
     qmp.button("left", False)
 
 
-def double_click(qmp: QmpClient, x: float, y: float) -> None:
-    """通过两个真实 click 触发 production React `onDoubleClick`。"""
-    for _ in range(2):
-        click(qmp, x, y)
-        time.sleep(0.08)
-
-
-def scroll_queue(qmp: QmpClient, app_x: float, app_y: float, steps: int) -> None:
-    """滚动 production Up Next 容器，使后续曲目进入可点击 viewport。"""
-    qmp.move_abs(
-        (app_x + QUEUE_ROW_POINT[0]) / DISPLAY_WIDTH,
-        (app_y + 250) / DISPLAY_HEIGHT,
+def scroll_queue_to_bottom(
+    qmp: QmpClient,
+    directory: Path,
+    app_x: int,
+    app_y: int,
+) -> None:
+    """通过原生 scrollbar page-scroll 到列表末尾并等待实际呈现。"""
+    points = tuple(
+        (app_x + offset_x, app_y + offset_y)
+        for offset_x, offset_y in QUEUE_SCROLL_SIGNATURE_OFFSETS
     )
-    time.sleep(POINTER_HOVER_SETTLE_SECONDS)
-    for _ in range(steps):
-        qmp.button("wheel-down", True)
-        qmp.button("wheel-down", False)
-    time.sleep(0.1)
+    before = screen_pixels(qmp, directory, "queue-before", points)
+    click(
+        qmp,
+        app_x + QUEUE_SCROLLBAR_TRACK_POINT[0],
+        app_y + QUEUE_SCROLLBAR_TRACK_POINT[1],
+    )
+    wait_pixels_changed(qmp, directory, "queue-after", points, before)
 
 
-def toggle_master_popup(qmp: QmpClient) -> None:
-    """切换 production taskbar speaker popup 并等待新 hit geometry 发布。"""
-    click(qmp, *MASTER_SPEAKER_POINT)
-    time.sleep(0.1)
+def ppm_pixels(path: Path, logical_points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int, int], ...]:
+    """Reads selected logical pixels from QEMU's physical binary PPM scanout."""
+    data = path.read_bytes()
+    offset = 0
+
+    def token() -> bytes:
+        nonlocal offset
+        while offset < len(data):
+            if data[offset] == ord("#"):
+                newline = data.find(b"\n", offset)
+                if newline < 0:
+                    raise RuntimeError("QEMU PPM comment has no terminator")
+                offset = newline + 1
+            elif data[offset] in b" \t\r\n":
+                offset += 1
+            else:
+                break
+        start = offset
+        while offset < len(data) and data[offset] not in b" \t\r\n":
+            offset += 1
+        if start == offset:
+            raise RuntimeError("QEMU PPM header is truncated")
+        return data[start:offset]
+
+    magic = token()
+    width = int(token())
+    height = int(token())
+    maximum = int(token())
+    if magic != b"P6" or maximum != 255:
+        raise RuntimeError("QEMU screendump is not an 8-bit binary PPM")
+    if offset >= len(data) or data[offset] not in b" \t\r\n":
+        raise RuntimeError("QEMU PPM has no payload separator")
+    if data[offset:offset + 2] == b"\r\n":
+        offset += 2
+    else:
+        offset += 1
+    if (width, height) != (DISPLAY_WIDTH * 2, DISPLAY_HEIGHT * 2):
+        raise RuntimeError(
+            f"QEMU screendump geometry changed: {(width, height)!r}"
+        )
+    if len(data) - offset != width * height * 3:
+        raise RuntimeError("QEMU PPM payload length is inconsistent")
+    result = []
+    for logical_x, logical_y in logical_points:
+        physical_x = logical_x * 2
+        physical_y = logical_y * 2
+        index = offset + (physical_y * width + physical_x) * 3
+        result.append(tuple(data[index:index + 3]))
+    return tuple(result)
+
+
+def command_center_visible(pixels: tuple[tuple[int, int, int], ...]) -> bool:
+    """Recognizes the complete blue-gray outer border of Command Center."""
+    return len(pixels) == len(COMMAND_CENTER_SIGNATURE_POINTS) and all(
+        38 <= red <= 50 and 52 <= green <= 66 and 72 <= blue <= 90
+        for red, green, blue in pixels
+    )
+
+
+def system_center_visible(pixels: tuple[tuple[int, int, int], ...]) -> bool:
+    """Recognizes the cyan master-volume track unique to System Center."""
+    return len(pixels) == 3 and all(
+        green >= 150 and blue >= 220
+        for _, green, blue in pixels
+    )
+
+
+def screen_pixels(
+    qmp: QmpClient,
+    directory: Path,
+    name: str,
+    points: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int, int], ...]:
+    """Captures one presented scanout and returns selected logical pixels."""
+    path = directory / f"{name}.ppm"
+    qmp.screendump(path)
+    return ppm_pixels(path, points)
+
+
+def pixel_distance(
+    first: tuple[tuple[int, int, int], ...],
+    second: tuple[tuple[int, int, int], ...],
+) -> int:
+    """Returns the summed RGB distance between equal-sized samples."""
+    if len(first) != len(second):
+        raise ValueError("pixel samples must have equal length")
+    return sum(
+        abs(left - right)
+        for first_pixel, second_pixel in zip(first, second, strict=True)
+        for left, right in zip(first_pixel, second_pixel, strict=True)
+    )
+
+
+def wait_pixels_changed(
+    qmp: QmpClient,
+    directory: Path,
+    name: str,
+    points: tuple[tuple[int, int], ...],
+    before: tuple[tuple[int, int, int], ...],
+) -> tuple[tuple[int, int, int], ...]:
+    """Waits for a sampled region to change and returns the presented pixels."""
+    deadline = time.monotonic() + PANEL_PRESENT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        current = screen_pixels(qmp, directory, name, points)
+        if pixel_distance(before, current) >= 100:
+            return current
+        time.sleep(PANEL_PRESENT_POLL_SECONDS)
+    raise RuntimeError(f"{name} did not reach a changed presented scene")
+
+
+def panel_visible(
+    qmp: QmpClient,
+    directory: Path,
+    name: str,
+    points: tuple[tuple[int, int], ...],
+    predicate: Callable[[tuple[tuple[int, int, int], ...]], bool],
+) -> bool:
+    """Samples one compositor-presented scanout and recognizes a shell panel."""
+    return predicate(screen_pixels(qmp, directory, name, points))
+
+
+def wait_panel(
+    qmp: QmpClient,
+    directory: Path,
+    name: str,
+    points: tuple[tuple[int, int], ...],
+    predicate: Callable[[tuple[tuple[int, int, int], ...]], bool],
+    expected: bool,
+) -> None:
+    """Waits until a panel's visual signature reaches the requested state."""
+    deadline = time.monotonic() + PANEL_PRESENT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if panel_visible(qmp, directory, name, points, predicate) is expected:
+            return
+        time.sleep(PANEL_PRESENT_POLL_SECONDS)
+    raise RuntimeError(f"{name} did not reach presented={expected}")
+
+
+def launch_music(qmp: QmpClient, directory: Path) -> None:
+    """经 production Command Center 启动一个新的 React Music 实例。"""
+    click(qmp, *COMMAND_CENTER_POINT)
+    wait_panel(
+        qmp,
+        directory,
+        "command-center",
+        COMMAND_CENTER_SIGNATURE_POINTS,
+        command_center_visible,
+        True,
+    )
+    click(qmp, *COMMAND_MUSIC_POINT)
+    wait_panel(
+        qmp,
+        directory,
+        "command-center-closed",
+        COMMAND_CENTER_SIGNATURE_POINTS,
+        command_center_visible,
+        False,
+    )
+
+
+def toggle_system_center(qmp: QmpClient, directory: Path) -> None:
+    """切换 production System Center，并等待 compositor 呈现目标状态。"""
+    before = panel_visible(
+        qmp,
+        directory,
+        "system-center-before",
+        SYSTEM_CENTER_SIGNATURE_POINTS,
+        system_center_visible,
+    )
+    click(qmp, *SYSTEM_CENTER_POINT)
+    wait_panel(
+        qmp,
+        directory,
+        "system-center",
+        SYSTEM_CENTER_SIGNATURE_POINTS,
+        system_center_visible,
+        not before,
+    )
 
 
 def wav_frame_count(path: Path) -> int:
@@ -588,6 +843,8 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         shutil.copyfile(private_image, failure / private_image.name)
         if audio_output.is_file():
             shutil.copyfile(audio_output, failure / audio_output.name)
+        for screenshot in private_root.glob("*.ppm"):
+            shutil.copyfile(screenshot, failure / screenshot.name)
         print(
             f"audio runtime failure artifacts retained in {failure}",
             file=sys.stderr,
@@ -602,19 +859,23 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
                 "audio-service: ready",
                 "compositor: desktop first scene presented",
                 "lite-ui: desktop ready",
+                "compositor: app 1 first scene presented",
+                "lite-ui: app terminal ready",
+                "compositor: app 2 first scene presented",
+                "lite-ui: app file-manager ready",
             ),
             min(45.0, timeout_seconds),
         )
         assert_idle_audio(audio_output, capture)
         qmp = QmpClient(qmp_socket)
 
-        # 2. Launch the third desktop icon with real input. Music Player is the
-        #    first app, so its canonical client origin is (155, 117), 710x448.
-        double_click(qmp, 47, 154)
+        # 2. Launch Music through the production Command Center. Files and
+        #    Terminal are the two pinned Aurora windows, so Music owns surface 3.
+        launch_music(qmp, private_root)
         capture.wait_all(
             (
-                "compositor: app 1 connected",
-                "compositor: app 1 first scene presented",
+                "compositor: app 3 connected",
+                "compositor: app 3 first scene presented",
             ),
             min(15.0, deadline - time.monotonic()),
         )
@@ -622,21 +883,17 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         # 3. Every sorted Up Next row is opened through production lite:fs ->
         #    File -> blob: -> <audio>. Generic event counts are sampled before
         #    the click, so an earlier successful codec cannot satisfy a later
-        #    one. The two scroll transitions keep the requested row visible.
-        app_x, app_y = APP_ORIGIN
+        #    one. The native scrollbar transition keeps every later row visible.
+        app_x, app_y = MUSIC_APP_ORIGINS[0]
         for index, (_, guest_name) in enumerate(FIXTURES):
             if index == 6:
-                scroll_queue(qmp, app_x, app_y, QUEUE_FIRST_SCROLL_ROWS)
-            elif index == 11:
-                scroll_queue(qmp, app_x, app_y, 4)
+                scroll_queue_to_bottom(qmp, private_root, app_x, app_y)
             source_marker = f"LITE_AUDIO source-opened id=1 file={guest_name}"
             source_before = capture.count(source_marker)
             loaded_before = capture.count("LITE_AUDIO event=loadedmetadata")
             playing_before = capture.count("LITE_AUDIO event=playing")
             if index < 6:
                 queue_offset = 0
-            elif index < 11:
-                queue_offset = QUEUE_FIRST_SCROLL_ROWS * QUEUE_ROW_HEIGHT
             else:
                 queue_offset = QUEUE_BOTTOM_OFFSET
             click(
@@ -680,7 +937,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
 
             # 5. Exercise the UA controls on the first track. These coordinates
             #    are derived from the production Now Playing transport, seek
-            #    range, and status-bar volume controls in the canonical 710x448
+            #    range, and status-bar volume controls in the canonical 896x566
             #    client; no test-only node exists.
             ua_play_x = app_x + PLAY_BUTTON_POINT[0]
             ua_play_y = app_y + PLAY_BUTTON_POINT[1]
@@ -771,9 +1028,9 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             )
 
         # 6. Exercise the desktop-only system controller through the production
-        #    taskbar popup. Exact service markers prove the click reached the
+        #    System Center. Exact service markers prove the click reached the
         #    authoritative owner; WAV windows prove the mixer applied it.
-        toggle_master_popup(qmp)
+        toggle_system_center(qmp, private_root)
 
         click(qmp, *MASTER_MUTE_POINT)
         capture.wait_new("audio-service: master percent=75 muted=true", 0, 5.0)
@@ -804,7 +1061,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             audio_output, master_reference_start + 12_000
         )
         master_reference_window = (master_reference_start, master_reference_end)
-        toggle_master_popup(qmp)
+        toggle_system_center(qmp, private_root)
 
         # 7. Put the first production process on the deterministic high-level
         #    PCM source used by the seven processes below. The 13-format matrix
@@ -833,34 +1090,34 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         )
 
         # Keep all eight stress sources looping, then launch seven more production
-        # Music Player processes through the same desktop icon. The first process
+        # Music Player processes through the same Command Center. The first process
         # remains looped from the deterministic codec matrix; each later process
         # enables the same public control after opening its source. This creates
         # eight real service streams without adding a hidden multi-stream app.
         # The 100% master step deliberately crosses the limiter threshold; the
         # private image is restored to 70% after the metrics window.
-        toggle_master_popup(qmp)
+        toggle_system_center(qmp, private_root)
         click(qmp, MASTER_VOLUME_X[100], MASTER_SCALE_Y)
         capture.wait_new("audio-service: master percent=100 muted=false", 0, 5.0)
-        toggle_master_popup(qmp)
+        toggle_system_center(qmp, private_root)
         for app_index in range(1, 8):
+            surface_id = app_index + 3
             presented_marker = (
-                f"compositor: app {app_index + 1} first scene presented"
+                f"compositor: app {surface_id} first scene presented"
             )
             presented_before = capture.count(presented_marker)
             source_before = capture.count(
                 f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}"
             )
             playing_before = capture.count("LITE_AUDIO event=playing")
-            double_click(qmp, 47, 154)
+            launch_music(qmp, private_root)
             capture.wait_new(
                 presented_marker,
                 presented_before,
                 min(10.0, deadline - time.monotonic()),
             )
-            child_x = APP_ORIGIN[0] + APP_CASCADE[0] * app_index
-            child_y = APP_ORIGIN[1] + APP_CASCADE[1] * app_index
-            scroll_queue(qmp, child_x, child_y, 9)
+            child_x, child_y = MUSIC_APP_ORIGINS[app_index]
+            scroll_queue_to_bottom(qmp, private_root, child_x, child_y)
             click(
                 qmp,
                 child_x + QUEUE_ROW_POINT[0],
@@ -930,13 +1187,13 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             time.sleep(0.05)
         if len(METRICS_RE.findall(capture.text())) <= metrics_before:
             raise RuntimeError("audio service emitted no eight-stream metrics window")
-        toggle_master_popup(qmp)
+        toggle_system_center(qmp, private_root)
         restored_before = capture.count("audio-service: master percent=70 muted=false")
         click(qmp, MASTER_VOLUME_X[70], MASTER_SCALE_Y)
         capture.wait_new(
             "audio-service: master percent=70 muted=false", restored_before, 5.0
         )
-        toggle_master_popup(qmp)
+        toggle_system_center(qmp, private_root)
         final_text = capture.text()
         qmp.stop_and_unrealize("audio-device")
         assert_qemu_wav_finalized(audio_output)

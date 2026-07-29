@@ -101,6 +101,10 @@ struct StreamRecord {
     id: u64,
     generation: u64,
     phase: StreamPhase,
+    /// Whether the mixer has acknowledged Start without a matching
+    /// Pause/Flush/Close. Without this owner the service cannot report the
+    /// exact concurrent playback load used by UA `timeupdate` scheduling.
+    playing: bool,
     confirmed_frames: u64,
     next_progress_marker: u64,
 }
@@ -132,6 +136,15 @@ struct Service<D: PlaybackDevice> {
 }
 
 impl<D: PlaybackDevice> Service<D> {
+    fn concurrent_playbacks(&self) -> u32 {
+        self.streams
+            .iter()
+            .filter(|stream| stream.playing)
+            .count()
+            .try_into()
+            .expect("session stream quota fits u32")
+    }
+
     fn start(device: D, settings_path: PathBuf, diagnostic_log: bool) -> io::Result<Self> {
         let (listener, socket_guard) = bind_listener(Path::new(SOCKET_PATH))?;
         listener.set_nonblocking(true)?;

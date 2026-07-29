@@ -279,12 +279,7 @@ fn button(code: u16) -> Option<(u32, u32)> {
     }
 }
 
-fn update_modifier(
-    modifiers: &mut u32,
-    modifier_keys: &mut Vec<u16>,
-    code: u16,
-    value: i32,
-) {
+fn update_modifier(modifiers: &mut u32, modifier_keys: &mut Vec<u16>, code: u16, value: i32) {
     let bit = match code {
         42 | 54 => 1,
         29 | 97 => 2,

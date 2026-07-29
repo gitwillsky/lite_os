@@ -14,6 +14,7 @@ use super::{errno, poll::wait_for_ofd};
 
 mod control;
 mod interface;
+mod listen;
 mod message;
 mod options;
 mod receive_publication;
@@ -356,7 +357,7 @@ pub(crate) fn sys_listen(fd: usize, backlog: isize) -> isize {
         Err(error) => return error,
     };
     socket
-        .listen(backlog.max(0) as usize)
+        .listen(listen::normalize_backlog(backlog))
         .map_or_else(socket_error, |()| 0)
 }
 

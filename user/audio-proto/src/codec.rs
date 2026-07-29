@@ -166,6 +166,10 @@ pub enum ServiceMessage {
         stream_id: u64,
         generation: u64,
         consumed_frames: u64,
+        /// Number of streams currently consuming device frames. The media UA
+        /// uses this exact system-load fact to budget periodic `timeupdate`
+        /// rendering without changing playback or transition events.
+        concurrent_playbacks: u32,
     },
     /// Edge notification for a full-to-available ring transition.
     RingAvailable { stream_id: u64, generation: u64 },
@@ -492,10 +496,12 @@ pub fn encode_service<'a>(
             stream_id,
             generation,
             consumed_frames,
+            concurrent_playbacks,
         } => {
             writer.u64(stream_id)?;
             writer.u64(generation)?;
             writer.u64(consumed_frames)?;
+            writer.u32(concurrent_playbacks)?;
         }
         ServiceMessage::Error {
             stream_id,
@@ -540,6 +546,7 @@ pub fn decode_service(bytes: &[u8]) -> Result<ServiceMessage, ProtocolError> {
             stream_id: reader.u64().ok_or(ProtocolError::InvalidPayload)?,
             generation: reader.u64().ok_or(ProtocolError::InvalidPayload)?,
             consumed_frames: reader.u64().ok_or(ProtocolError::InvalidPayload)?,
+            concurrent_playbacks: reader.u32().ok_or(ProtocolError::InvalidPayload)?,
         },
         RING_AVAILABLE => ServiceMessage::RingAvailable {
             stream_id: reader.u64().ok_or(ProtocolError::InvalidPayload)?,

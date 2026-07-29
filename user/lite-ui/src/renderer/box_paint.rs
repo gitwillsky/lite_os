@@ -26,6 +26,7 @@ use super::{
 pub(super) fn paint_background<R: Raster>(
     pixels: &mut R,
     bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
     background: &str,
     logical_radii: [f32; 4],
 ) {
@@ -43,12 +44,15 @@ pub(super) fn paint_background<R: Raster>(
         Fill::Solid(_) => None,
     };
     let target_width = pixels.width() as f32;
-    for y in bounds.y1..bounds.y2 {
+    let visible = clip.map_or(bounds, |clip| bounds.intersect(clip));
+    for y in visible.y1..visible.y2 {
         let row_y = y - bounds.y1;
         let left = corner_inset(radii[0], radii[3], row_y, height);
         let right = corner_inset(radii[1], radii[2], row_y, height);
-        let x1 = ((bounds.x1 as f32 + left).min(bounds.x2 as f32)).max(0.0);
-        let x2 = ((bounds.x2 as f32 - right).max(x1)).min(target_width);
+        let x1 = ((bounds.x1 as f32 + left).min(bounds.x2 as f32)).max(visible.x1 as f32);
+        let x2 = ((bounds.x2 as f32 - right).max(x1))
+            .min(target_width)
+            .min(visible.x2 as f32);
         match &fill {
             // 1. Solid and vertical gradients share one color per scanline, so the row is
             //    filled (opaque) or alpha-composited (translucent) in a single pass. A
@@ -197,7 +201,12 @@ pub(super) fn corner_inset(top: usize, bottom: usize, y: usize, height: usize) -
 
 /// Composites one rounded rect over the destination, honoring per-corner radii
 /// ordered `[tl, tr, br, bl]` in physical pixels.
-pub(super) fn fill_rounded<R: Raster>(pixels: &mut R, rect: PhysicalRect, radii: [usize; 4], color: u32) {
+pub(super) fn fill_rounded<R: Raster>(
+    pixels: &mut R,
+    rect: PhysicalRect,
+    radii: [usize; 4],
+    color: u32,
+) {
     if rect.x2 <= rect.x1 || rect.y2 <= rect.y1 {
         return;
     }

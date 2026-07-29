@@ -1,8 +1,8 @@
 {
   "id": "music-player",
-  "name": "Music Player",
+  "name": "Music",
   "description": "Browse and play local music",
-  "icon": "assets/speaker.png",
+  "icon": "assets/monitor.png",
   "entry": "main.js",
   "style": "style.css"
 }

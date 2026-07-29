@@ -167,6 +167,10 @@ mod inet_port_namespace;
 mod inet_pending_cleanup;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/syscall/socket/listen.rs"]
+mod listen_backlog;
+
+#[cfg(test)]
 mod inet_port_namespace_tests;
 
 #[cfg(test)]

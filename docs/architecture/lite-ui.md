@@ -3,15 +3,20 @@
 ## 进程与 module
 
 - `compositor` 是唯一 DRM master、evdev、scanout、page-flip、合成、输入路由与共享像素 buffer owner。
-  它只理解物理像素、flat scene 和 surface，不理解 React、CSS、窗口策略或 XP 主题。
+  它只理解物理像素、flat scene 和 surface，不理解 React、CSS、窗口策略或 Aurora 主题。
 - `compositor/clipboard.rs` 是 session plain-text clipboard 与 SPICE vdagent framing 的唯一 owner；
   它通过标准 VirtIO named port 与 QEMU host clipboard 懒交换数据，并只把结果路由到当前 focused
   surface。desktop 和 app 不保存另一份 system clipboard。
 - `/bin/lite-ui` 是所有窗体程序共用的唯一 executable。每次启动建立一个进程、一个 QuickJS VM、
   一个 React root 和一个顶层窗口；desktop 使用唯一的 `--desktop` session，普通应用使用
   `--app <id>`。无窗体程序和 3D 游戏不经过 LiteUI。
-- `lite-ui/main.rs` 只编排进程生命周期、渲染提交与 helper；`input.rs` 独占 DOM-style input dispatch，
-  `renderer/paint.rs` 独占递归 paint walk，`display/allocation.rs` 独占 buffer allocation round-trip，
+- `lite-ui/main.rs` 只编排进程生命周期、渲染提交与 helper；`input.rs` 独占 input state，
+  `input/dispatch.rs` 独占 Web-style DOM dispatch/default action，`renderer/render.rs` 独占帧布局与
+  retained 选择，`renderer/retained.rs` 独占 document identity/damage/pixel reuse，
+  `renderer/paint.rs` 独占递归 paint walk，`renderer/paint/fixed.rs` 独占 fixed layer traversal，
+  `renderer/layout/flex.rs` 独占 Flexbox longhand lowering，`renderer/backdrop/kernel.rs` 独占
+  allocation-free blur kernel，`style/selector.rs` 独占 selector/specificity/pseudo-class matching，
+  `display/allocation.rs` 独占 buffer allocation round-trip，
   `host/filesystem.rs` 独占 filesystem-backed `File` 的只读文件系统 host bridge；`audio/` 独占每进程
   media worker、decode/resample、seek generation 与 audio-service transport。
 - `compositor/session.rs` 保存 epoch 与 client registry；`session/client.rs` 只负责握手和连接角色固定；
@@ -20,13 +25,15 @@
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
   Promise job drain、值转换、exception、heap/stack 与 interrupt budget。`lite-ui` 只消费其安全窄接口。
 - React desktop 是 graphical session 的唯一窗口 policy owner：保存窗口位置与尺寸、层级、active state、
-  最小化/最大化、decorations、任务栏、开始菜单、壁纸、应用启动与 XP 产品呈现。
+  最小化/最大化、decorations、Top Bar、Dock、Workspace Overview、Command Center、System Center、
+  壁纸与应用启动。
 - `terminal-session` 是无窗体 helper，独占 PTY、VT parser、screen、cursor、scrollback 与 selection；
   React terminal 只绘制网格并转发输入、尺寸与 clipboard 操作。
 - LiteUI runtime 提供标准异步 `navigator.clipboard.readText()`/`writeText()`。受控文本框使用
   Ctrl/Cmd+C/X/V，当前 append-only caret 模型下 copy/cut 作用于完整 value、paste 追加到 value；
   Terminal 使用 Ctrl+Shift+V 或 macOS Cmd+V，把 UTF-8 文本作为一帧 PTY input。
-- `ui/design-system` 是唯一 XP Classic presentation owner。LiteUI theme-free，compositor 不包含窗口主题。
+- `ui/design-system` 是唯一 Aurora presentation owner：独占 token、窗口 chrome、系统 shell、菜单、表单、
+  Sidebar、Toolbar 与 Dialog。应用只组合这些语义组件与业务内容；LiteUI theme-free，compositor 不包含窗口主题。
 
 ## 显示与调度
 
@@ -44,10 +51,20 @@
 - desktop renderer 的 flat scene 可交错 `Pixels` 与 `ForeignSurface` node。普通 app 只产生一个像素
   surface；desktop 遇到 `<surface>` 时切分 paint sequence，使窗口内容能与 React decorations 正确交错。
 - LiteUI 像素使用预乘 `ARGB8888`，compositor 合成到双 `XRGB8888` scanout。每个 node 带保守的
-  opaque region、显式 input region 与 damage；透明阴影不参与 input region。
+  opaque region、显式 input region 与 damage；透明阴影不参与 input region。React paint order 中位于
+  foreign surface 之后的透明交互 chrome 生成 empty-clip `Pixels` input node，使 resize grip 等元素按
+  标准 DOM z-order 命中 desktop，同时不复制 desktop 像素覆盖 app content。
 - compositor 单线程 poll loop 独占 sockets、evdev、scene latch、damage composition、DRM page flip 与
   completion。LiteUI 使用 UI/render 双线程：UI thread 独占 QuickJS/React，native render thread 独占
   CSS、layout、text 与 raster。固定三个 snapshot arena 组成 latest-only seam，中间 revision 可丢弃。
+- desktop raster 把 document 与 `position: fixed` subtree 作为两个标准 paint phase。document layer
+  只有在非 fixed host props、computed style、scroll offset 或 viewport 任一精确变化时才失效；纯 shell
+  overlay commit 复用其完整像素、hit、window 与 scroll geometry，再按 CSS paint order 合成 fixed
+  subtree。move-underlay 仍过滤后完整生成，不复用 presentation cache。
+- app 与 desktop document 共用 retained raster/damage owner。布局与完整 computed style 不变时，仅
+  文本内容或受控 `<input value>` 的变化恢复上一 revision 像素并按原 CSS paint order scissor 重画受影响
+  border box；结构、布局、其他 prop/style、scroll 或 backdrop dependency 任一变化立即升级为完整
+  document repaint。`SURFACE_COMMIT` 的空 damage 表示像素未变，不再暗含 full-buffer damage。
 - 每个像素 layer 严格双 buffer；静态 layer 可先持有一个 immutable buffer，首次变化时才申请第二个。
   compositor 接受 commit 后只读 front，已呈现 desktop buffer 保持 pinned；只改变 foreign adoption
   或几何的 scene 可继续引用它而不重画像素。新像素 scene 呈现后才向 client `BUFFER_RELEASE` 旧 buffer。
@@ -67,23 +84,34 @@
 
 ## React、CSS 与资源
 
-- bundle default export 是唯一 React component，host 创建同步 mutation root。支持 hooks、context、
-  fragment 与 keyed list；不开放 createRoot、portal、hydration、Server Components 或 concurrent root。
-- host primitive 固定为 `<view>`、`<text>`、`<image>`、`<input>`、`<audio>` 与 `<surface>`；
+- LiteUI 只支持 React，不实现 DOM/ReactDOM，也不承诺 Vue 或原生网页兼容。`react-reconciler` 是
+  React 到 LiteUI host tree 的唯一 adapter；CSS、事件、表单与媒体在该 host tree 上遵循已声明的
+  Web 标准子集，应用不得绕过它建立第二套 UI runtime。
+- bundle default export 是唯一 React component，host 创建 mutation root。支持 hooks、context、
+  fragment 与 keyed list；离散宿主事件在同一个 QuickJS turn 内同步提交，不能拖到下一输入事件。
+  不开放 createRoot、portal、hydration 或 Server Components。
+- host primitive 固定为 `<div>`、`<span>`、`<img>`、`<input>`、`<button>` 与 `<audio>`；
   `<input>` 支持受控文本框和标准水平 `type=range`：range 的 min/max/step/value 由 renderer
-  规范化，pointer drag 与方向键默认动作派发字符串 `onInput`，UA 轨道/滑块由 renderer 绘制。
+  规范化，pointer drag 与方向键默认动作派发字符串 `onInput`，UA 轨道/滑块由 renderer 绘制并消费
+  标准 `accent-color` 计算值。
   `<audio>` 投影冻结的 HTMLMediaElement playback surface 与 UA controls，其他 controls 是 React
-  component。desktop 用 `<view windowGroup={surface}>` 把 decoration 与 foreign surface 标为同一
-  compositor move group，不新增 `<window>` primitive。
-- CSS 是严格标准子集：type/class/id/descendant/child selector，hover/active/focus/disabled，specificity、
-  inheritance、variables、box、Flexbox、标准 margin 长度/百分比/`auto`、absolute、gap、min/max、
+  component。desktop 用带 `data-lite-window`/`data-lite-surface` 的 `<div>` 把 decoration 与 foreign
+  surface 标为同一 compositor move group，不新增私有 `<window>`/`<surface>` primitive。
+- CSS 是严格标准子集：selector list、type/class/id/descendant selector、`:nth-child(An+B)`、
+  `:hover`/`:active`/`:focus`/`:disabled`、specificity、inheritance、custom properties 与嵌套
+  `var()` fallback、`inherit`/`initial`/`unset`、box、Flexbox、标准 margin 长度/百分比/`auto`、
+  absolute、gap、min/max、
   background、border、radius、shadow、opacity、clip、z-index、text、`white-space`、overflow 与
   `pointer-events`。颜色经 cssparser 解析，支持 hex、`rgb()`/`hsl()`（legacy 与现代语法）、完整命名色与
   `transparent`（`currentColor` 不支持）。`border-style` 支持 solid/dotted/dashed 与双色斜面
   outset/inset/groove/ridge/double（亮/暗色由 border-color 按 UA 固定系数推导）。`box-shadow` 支持
   多层、spread 与 inset。`background` 支持 color/image/repeat/position/size 及简写（不认识的
   origin/clip/`fixed` token 忽略）；url 背景默认 intrinsic 尺寸 + repeat，`<img>` 仍拉伸填满。
-  `linear-gradient` 支持任意角度（对角 `to *` 关键字映射 45° 家族）。`opacity` 是 group 语义：
+  `linear-gradient` 支持任意角度（对角 `to *` 关键字映射 45° 家族）。`backdrop-filter: blur()` 在
+  rounded border box 内对已绘制 backdrop 作三次可分离 box pass；物理半径达到 16px 时在四分之一
+  线性尺寸的抗混叠 backdrop 上执行同一 filter，再双线性恢复，避免 CPU raster 对大半径玻璃层作
+  无效的过采样。filter result 按稳定 host node id 与完整输入像素精确保留；opacity 离屏 group 内的
+  backdrop filter 明确拒绝，避免采样错误。`opacity` 是 group 语义：
   子树先离屏合成再整体按 alpha 混合。`pointer-events: none` 关闭整个子树的 hit/scroll 注册，
   不支持后代用 `auto` 重新开启。`box-sizing` 支持 `content-box`/`border-box`，但 UA 默认是
   `border-box`（偏离 Web 初始值 `content-box`），theme.css 全部按 border-box 编写。
@@ -98,6 +126,8 @@
   animation/transition、复合/scale/rotate transform 或 vendor prefix；不支持项构建失败。
 - React host instance 在完整 snapshot 中携带稳定 node id；LiteUI renderer 以该 id 独占 CSS scroll
   offset，并让 hover/pointer capture 在 snapshot 重建后继续解析同一元素的最新 listener。
+  事件从最深命中节点沿实际 host parent 链冒泡，`stopPropagation()`/`stopImmediatePropagation()`
+  在同一次 JavaScript dispatch 内截断后续 ancestor；不得按几何包含关系把重叠 sibling 当成 ancestor。
   `overflow: auto/scroll` 形成通用双轴 scroll container，renderer 根据 layout content extent
   收敛 offset、移动并裁剪 descendant、绘制 overlay UA scrollbar；wheel delta 在嵌套 scroll port
   到达边界后向 ancestor 链式传播，应用无需保存私有 `scrollTop`。
@@ -110,7 +140,8 @@
   generic `monospace` 使用 JetBrains Mono 固定单格 advance；宽字符占两格，combining grapheme 附着前格。
   字形 cache 有界（LRU）并使用 grayscale antialiasing。
 - `<image>` 与 background 只接受 app-relative PNG 或 host 发出的 opaque `ImageSource`；路径必须在
-  `assets/` 内且不能包含 `..`。SVG/JPEG/WebP 在 host build 转为 PNG；target 无网络、data URL 或动画图。
+  `assets/` 内且不能包含 `..`。PNG 的 indexed/grayscale/grayscale-alpha/RGB/RGBA 输入统一规范化为
+  8-bit 预乘 ARGB；SVG/JPEG/WebP 在 host build 转为 PNG；target 无网络、data URL 或动画图。
 - `lite:fs.open(path)` 返回 filesystem-backed 标准 `File`；`URL.createObjectURL(file)` 只发布当前
   process 内 opaque `blob:` source。`<audio>` 只接受 app-relative resource 与该 `blob:` source，
   不接受 ambient `file:` path、network/data URL 或私有 path-play API。
@@ -130,11 +161,10 @@
 - desktop-only `lite:apps` 扫描一层 registry，提供只读 metadata、opaque icon 与 `launch(id)`；
   desktop-only `lite:desktop` 提供 surface lifecycle/configure/close/move 与 `setAccelerators(chords)`
   （全量替换 global accelerator table，不超过 16 条，空表清空；chord 命中后的完整 down/up sequence
-  经全局 `onKeyDown` 到达 desktop）。desktop 注册固定三条 chord：Alt+Tab（MRU 切换器，含 minimized
-  窗口，Tab/repeat 循环、Shift 反向、Alt 松开提交）、Alt+F4（关闭 active 窗口）与 Ctrl+Esc（开关
-  开始菜单）。desktop-only `lite:audio-system` 只投影 audio-service master snapshot 和更新请求；普通 app
-  无法加载该 module。
-  desktop 首次呈现不隐式 launch app，应用只由用户操作显式启动。普通 helper 只通过
+  经全局 `onKeyDown` 到达 desktop）。desktop 注册 Alt+Tab（按当前 z-order 激活下一非最小化窗口）
+  与 Alt+F4（关闭 active 窗口）。desktop-only `lite:audio-system` 只投影 audio-service master snapshot
+  和更新请求，System Center 的音量与静音控件直接消费该唯一状态；普通 app 无法加载该 module。
+  desktop 首次呈现固定启动 Files 与 Terminal；后续应用由 Command Center 或 Dock 启动。普通 helper 只通过
   `lite:process.spawn(argv, stdio)`，不解析 shell string。
 
 ## 当前边界
@@ -144,7 +174,7 @@
   transport 属于后续破坏性协议升级。
 - input v1 只有 US keyboard、pointer、wheel、focus、repeat、plain-text clipboard 与基础 keyboard
   accessibility；`cursor` 只支持固定 arrow、hidden、pointer 与四向 resize shape，不支持 URL/custom bitmap。
-  非默认 CSS cursor 即使没有 DOM listener 也建立命中区域；DOM/style 重绘后会在最新 pointer position
+  非默认 CSS cursor 即使没有 React listener 也建立命中区域；host/style 重绘后会在最新 pointer position
   重新求值，因此元素消失或 `pointer-events` 改变不需要用户移动鼠标才能恢复正确 cursor。
   clipboard 单次最多 60 KiB UTF-8，不支持 image、file、HTML、primary selection 或 Finder
   drag-and-drop。无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop 或 touch。

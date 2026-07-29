@@ -116,7 +116,12 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
     let (audio_commands, mut audio_events) =
         audio::start(audio_role).map_err(|error| owner_error("audio start", error))?;
-    let (host, state) = Host::new(role, root.clone(), audio_commands);
+    let (host, state) = Host::new(
+        role,
+        root.clone(),
+        PathBuf::from("/usr/share/liteos/apps"),
+        audio_commands,
+    );
     let mut engine = Engine::open(role).map_err(|error| owner_error("engine open", error))?;
     engine.install_host(host);
     engine
@@ -166,6 +171,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     // One write keeps the cross-process runtime marker intact; formatted stderr
     // fragments can interleave with compositor or sibling-app diagnostics.
     io::stderr().write_all(ready_marker.as_bytes())?;
+    // Tracks the startup CSS motion until its terminal frame is physically
+    // presented. Without this distinction, synthetic input can arrive after
+    // React mounted the desktop but while the full-screen Splash still owns
+    // pointer targeting, so a resize gate presses the wrong element.
+    let mut startup_motion_pending = matches!(mode, Mode::Desktop) && renderer.animations_active();
+    if matches!(mode, Mode::Desktop) && !startup_motion_pending {
+        io::stderr().write_all(b"lite-ui: desktop startup motion settled\n")?;
+    }
 
     loop {
         let (display_ready, terminal_ready, audio_ready) =
@@ -186,6 +199,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                 renderer.presented(*monotonic_ns);
                 if renderer.animations_active() {
                     state.invalidate_scene();
+                } else if startup_motion_pending {
+                    io::stderr().write_all(b"lite-ui: desktop startup motion settled\n")?;
+                    startup_motion_pending = false;
                 }
             }
             // A desktop-issued reconfigure swaps the surface geometry: adopt it
@@ -299,7 +315,7 @@ fn render_latest(
                 &presentation.foreign,
                 &presentation.windows,
                 &presentation.overlays,
-                false,
+                &[],
             )?;
         }
         return Ok(());
@@ -321,9 +337,9 @@ fn render_latest(
             &output.foreign,
             &output.windows,
             &output.overlays,
-            true,
+            &output.damage,
         )?,
-        Mode::App(_) => display.commit_app(buffer_id)?,
+        Mode::App(_) => display.commit_app(buffer_id, &output.damage)?,
     }
     interactions.hits = output.hits;
     interactions.key_listener = output.key_listener;

@@ -12,11 +12,11 @@ use crate::{
     cursor::Cursor,
     session::{Buffers, Scene},
 };
+pub(crate) use composite::over;
 use composite::{
     clear, composite_node, from_clip, group_bounds, intersect, moving_group_damage,
     source_buffer_id, to_clip, translated, union, valid_clip,
 };
-pub(crate) use composite::over;
 
 const EMPTY_CLIP: Clip = Clip {
     x1: 0,
@@ -302,8 +302,8 @@ impl Scanout {
         // The moving group is now painted at `offset` on the front buffer; a
         // later flip turns this buffer into the back, whose next full compose
         // must still clean this exact position.
-        self.targets[front].move_paint = group_bounds(nodes, window_group)
-            .map(|bounds| translated(bounds, offset));
+        self.targets[front].move_paint =
+            group_bounds(nodes, window_group).map(|bounds| translated(bounds, offset));
         let mut clips = [to_clip(damage), EMPTY_CLIP, EMPTY_CLIP];
         let mut clip_count = 1;
         for cursor in [old_cursor, new_cursor] {

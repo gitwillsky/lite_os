@@ -4,7 +4,6 @@
 use display_proto::{Rect, SceneNodeKind};
 use linux_uapi::drm::{Clip, DumbBuffer};
 
-
 pub(super) fn composite_node(
     target: &mut DumbBuffer,
     source: &DumbBuffer,

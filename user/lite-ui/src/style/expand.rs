@@ -28,6 +28,7 @@ pub(super) fn apply_declaration(values: &mut BTreeMap<String, String>, name: &st
                 expand_border(values, side, value);
             }
         }
+        "flex" => expand_flex(values, value),
         "background" => expand_background(values, value),
         _ => {
             if let Some(side) = name
@@ -38,6 +39,119 @@ pub(super) fn apply_declaration(values: &mut BTreeMap<String, String>, name: &st
             }
         }
     }
+}
+
+/// Removes the computed longhands owned by a declaration whose `var()` value
+/// is invalid at computed-value time.
+///
+/// CSS does not fall back to an earlier cascaded declaration when the winning
+/// declaration contains an unresolved custom property. Removing every
+/// longhand touched by the invalid shorthand preserves that behavior.
+pub(super) fn invalidate_declaration(values: &mut BTreeMap<String, String>, name: &str) {
+    values.remove(name);
+    match name {
+        "margin" | "padding" => {
+            for side in ["top", "right", "bottom", "left"] {
+                values.remove(&format!("{name}-{side}"));
+            }
+        }
+        "border-width" | "border-color" | "border-style" => {
+            let suffix = name
+                .strip_prefix("border-")
+                .expect("matched border longhand");
+            for side in ["top", "right", "bottom", "left"] {
+                values.remove(&format!("border-{side}-{suffix}"));
+            }
+        }
+        "border" => {
+            for side in ["top", "right", "bottom", "left"] {
+                for suffix in ["width", "color", "style"] {
+                    values.remove(&format!("border-{side}-{suffix}"));
+                }
+            }
+        }
+        "background" => {
+            for suffix in ["color", "image", "repeat", "position", "size"] {
+                values.remove(&format!("background-{suffix}"));
+            }
+        }
+        "flex" => {
+            for suffix in ["grow", "shrink", "basis"] {
+                values.remove(&format!("flex-{suffix}"));
+            }
+        }
+        _ => {
+            if let Some(side) = name
+                .strip_prefix("border-")
+                .filter(|side| matches!(*side, "top" | "right" | "bottom" | "left"))
+            {
+                for suffix in ["width", "color", "style"] {
+                    values.remove(&format!("border-{side}-{suffix}"));
+                }
+            }
+        }
+    }
+}
+
+/// Expands the CSS Flexbox shorthand into its three computed longhands.
+///
+/// 1. Keywords use their standard triples (`none` = `0 0 auto`,
+///    `auto` = `1 1 auto`).
+/// 2. A single number means `<grow> 1 0%`; a single basis means
+///    `1 1 <basis>`.
+/// 3. Two and three component forms preserve explicit shrink and basis values,
+///    allowing later longhands to override one component through normal source
+///    order. Without expansion, `flex: none` silently retained Taffy's default
+///    shrink factor and fixed-width system controls contracted under load.
+fn expand_flex(values: &mut BTreeMap<String, String>, value: &str) {
+    let tokens = split_css_tokens(value);
+    let expanded = match tokens.as_slice() {
+        ["none"] => Some(("0", "0", "auto")),
+        ["auto"] => Some(("1", "1", "auto")),
+        [single] if flex_factor(single).is_some() => Some((*single, "1", "0%")),
+        [basis] if flex_basis(basis) => Some(("1", "1", *basis)),
+        [grow, shrink] if flex_factor(grow).is_some() && flex_factor(shrink).is_some() => {
+            Some((*grow, *shrink, "0%"))
+        }
+        [grow, basis] if flex_factor(grow).is_some() && flex_basis(basis) => {
+            Some((*grow, "1", *basis))
+        }
+        [grow, shrink, basis]
+            if flex_factor(grow).is_some()
+                && flex_factor(shrink).is_some()
+                && flex_basis(basis) =>
+        {
+            Some((*grow, *shrink, *basis))
+        }
+        _ => None,
+    };
+    let Some((grow, shrink, basis)) = expanded else {
+        return;
+    };
+    for (name, component) in [
+        ("flex-grow", grow),
+        ("flex-shrink", shrink),
+        ("flex-basis", basis),
+    ] {
+        values.insert(name.to_owned(), component.to_owned());
+    }
+}
+
+fn flex_factor(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|factor| factor.is_finite() && *factor >= 0.0)
+}
+
+fn flex_basis(value: &str) -> bool {
+    value == "auto"
+        || value == "content"
+        || value == "0"
+        || value
+            .strip_suffix("px")
+            .or_else(|| value.strip_suffix('%'))
+            .is_some_and(|number| number.parse::<f32>().is_ok())
 }
 
 fn expand_edges(value: &str) -> Option<[String; 4]> {

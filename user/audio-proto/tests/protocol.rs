@@ -72,6 +72,7 @@ fn every_service_message_round_trips() {
             stream_id: 1,
             generation: 3,
             consumed_frames: 4096,
+            concurrent_playbacks: 8,
         },
         ServiceMessage::RingAvailable {
             stream_id: 1,

@@ -330,7 +330,10 @@ impl Session {
         modifiers: u32,
         modifier_keys: &[u16],
     ) -> io::Result<()> {
-        let surface_id = match self.accelerators.route(code, value, modifiers, modifier_keys) {
+        let surface_id = match self
+            .accelerators
+            .route(code, value, modifiers, modifier_keys)
+        {
             accelerator::KeyRoute::Desktop => 0,
             accelerator::KeyRoute::Focused => self.focused_surface,
         };

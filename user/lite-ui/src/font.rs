@@ -9,8 +9,7 @@ use std::{cell::RefCell, fs, io, sync::Arc};
 
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontData, FontFamily, FontWeight, Layout,
-    LayoutContext, LineHeight, StyleProperty, TextWrapMode,
-    fontique::Blob,
+    LayoutContext, LineHeight, StyleProperty, TextWrapMode, fontique::Blob,
     layout::PositionedLayoutItem,
 };
 use swash::scale::ScaleContext;
@@ -535,12 +534,11 @@ fn line_height(style: &Computed, font_size: f32) -> f32 {
     value.parse::<f32>().unwrap_or(1.25) * font_size
 }
 
-
 /// Parses `text-shadow: <dx> <dy> [blur] <color>` into physical offsets and a
 /// solid shadow color.
 ///
-/// The raster path has no blur pass, so an optional blur radius is accepted
-/// and ignored; XP-style labels only use a hard 1px drop shadow.
+/// The raster path has no text-blur pass, so an optional blur radius is
+/// accepted and ignored while hard-offset shadows remain exact.
 fn text_shadow(value: &str) -> Option<(i32, i32, u32)> {
     let parts: Vec<&str> = value.split_whitespace().collect();
     let mut numbers = parts.iter().filter_map(|part| {
@@ -552,7 +550,10 @@ fn text_shadow(value: &str) -> Option<(i32, i32, u32)> {
     });
     let dx = numbers.next()?;
     let dy = numbers.next()?;
-    let color = parts.iter().rev().find_map(|part| crate::color::parse(part))?;
+    let color = parts
+        .iter()
+        .rev()
+        .find_map(|part| crate::color::parse(part))?;
     Some((
         (dx * SCALE).round() as i32,
         (dy * SCALE).round() as i32,
