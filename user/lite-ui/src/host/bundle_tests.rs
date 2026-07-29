@@ -108,10 +108,32 @@ fn checked_desktop_bundle_mounts_in_the_bounded_engine() {
         .evaluate("desktop.js", &desktop)
         .expect("mount desktop");
     engine.run_jobs().expect("desktop jobs");
-    assert!(
-        state.scene_if_dirty().is_some(),
-        "desktop must publish its root"
+    let scene = state
+        .scene_if_dirty()
+        .expect("desktop must publish its root");
+    let mut stack: Vec<&crate::tree::Node> = scene.iter().collect();
+    let mut splash_assets = Vec::new();
+    while let Some(node) = stack.pop() {
+        if node.kind == "img"
+            && let Some(src) = node.props.get("src").and_then(serde_json::Value::as_str)
+            && src.starts_with("assets/aurora-")
+        {
+            splash_assets.push(src.to_owned());
+        }
+        stack.extend(node.children.iter());
+    }
+    splash_assets.sort();
+    assert_eq!(
+        splash_assets,
+        ["assets/aurora-background.png", "assets/aurora-logo.png"],
+        "the first desktop scene must own both approved splash layers"
     );
+    for src in splash_assets {
+        assert!(
+            root.join("desktop").join(src).is_file(),
+            "desktop splash asset missing from production bundle"
+        );
+    }
 }
 
 /// Mounts the production desktop bundle and fires the passive-effect
@@ -264,4 +286,3 @@ fn audible_media_requires_physical_activation_and_system_audio_is_desktop_only()
         "ordinary app cannot acquire desktop system-volume capability"
     );
 }
-

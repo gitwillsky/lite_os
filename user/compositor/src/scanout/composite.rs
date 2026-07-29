@@ -228,4 +228,3 @@ pub(crate) fn over(source: u32, destination: u32) -> u32 {
     let blue = (source & 0xff) + ((destination & 0xff) * inverse + 127) / 255;
     (red.min(255) << 16) | (green.min(255) << 8) | blue.min(255)
 }
-

@@ -4,8 +4,12 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+mod animation;
 mod expand;
+mod parser;
 
+use animation::Keyframes;
+pub(crate) use animation::Timeline;
 use expand::apply_declaration;
 pub(crate) use expand::split_css_tokens;
 
@@ -81,48 +85,36 @@ impl Computed {
 /// Immutable stylesheet parsed before QuickJS starts.
 pub struct Sheet {
     rules: Vec<Rule>,
+    keyframes: BTreeMap<String, Keyframes>,
 }
 
 impl Sheet {
-    /// Parses exact single selectors and declarations.
+    /// Parses exact single selectors, motion media queries and keyframes.
     pub fn parse(source: &str) -> Result<Self, String> {
-        let mut rules = Vec::new();
-        let mut rest = source;
-        while let Some(open) = rest.find('{') {
-            let selector_text = rest[..open].trim();
-            let close = rest[open + 1..]
-                .find('}')
-                .ok_or_else(|| "CSS block is unterminated".to_owned())?
-                + open
-                + 1;
-            let body = &rest[open + 1..close];
-            let selector = Selector::parse(selector_text)?;
-            let mut declarations = Vec::new();
-            for declaration in body.split(';') {
-                let declaration = declaration.trim();
-                if declaration.is_empty() {
-                    continue;
-                }
-                let (name, value) = declaration
-                    .split_once(':')
-                    .ok_or_else(|| format!("invalid CSS declaration '{declaration}'"))?;
-                declarations.push((name.trim().to_owned(), value.trim().to_owned()));
-            }
-            rules.push(Rule {
-                selector,
-                declarations,
-                order: rules.len(),
-            });
-            rest = &rest[close + 1..];
-        }
-        if !rest.trim().is_empty() {
-            return Err("CSS contains trailing input".to_owned());
-        }
-        Ok(Self { rules })
+        let (rules, keyframes) = parser::parse(source)?;
+        Ok(Self { rules, keyframes })
     }
 
     /// Computes cascade order, specificity and inline-style precedence.
+    #[cfg(test)]
     pub fn compute(&self, node: &Node, ancestors: &[&Node]) -> Computed {
+        self.cascade(node, ancestors)
+    }
+
+    /// Computes cascade plus time-dependent transitions and animations.
+    pub(crate) fn compute_at(
+        &self,
+        node: &Node,
+        ancestors: &[&Node],
+        timeline: &mut Timeline,
+    ) -> Computed {
+        let mut computed = self.cascade(node, ancestors);
+        timeline.apply_transitions(node.id, &mut computed.values);
+        timeline.apply_animation(node.id, &mut computed.values, &self.keyframes);
+        computed
+    }
+
+    fn cascade(&self, node: &Node, ancestors: &[&Node]) -> Computed {
         let mut matches: Vec<&Rule> = self
             .rules
             .iter()
@@ -149,7 +141,6 @@ impl Sheet {
         Computed { values }
     }
 }
-
 
 impl Selector {
     fn parse(source: &str) -> Result<Self, String> {
@@ -265,7 +256,7 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::Sheet;
+    use super::{Sheet, Timeline};
     use crate::tree::Node;
 
     #[test]
@@ -375,7 +366,10 @@ mod tests {
 
         let computed = sheet.compute(&node, &[]);
 
-        assert_eq!(computed.get("background-image"), Some("url(\"assets/bg.png\")"));
+        assert_eq!(
+            computed.get("background-image"),
+            Some("url(\"assets/bg.png\")")
+        );
         assert_eq!(computed.get("background-color"), Some("transparent"));
         assert_eq!(computed.get("background-repeat"), Some("no-repeat"));
         assert_eq!(computed.get("background-position"), Some("center"));
@@ -481,5 +475,44 @@ mod tests {
         for side in ["top", "right", "bottom", "left"] {
             assert_eq!(computed.get(&format!("border-{side}-color")), Some("teal"));
         }
+    }
+
+    #[test]
+    fn motion_media_and_keyframes_override_the_base_cascade() {
+        let sheet = Sheet::parse(
+            ".splash { opacity: 0; pointer-events: none; }
+            @keyframes reveal {
+                from { opacity: 1; pointer-events: auto; }
+                to { opacity: 0; pointer-events: none; }
+            }
+            @media (prefers-reduced-motion: no-preference) {
+                .splash { animation: reveal 1s linear 1 both; }
+            }",
+        )
+        .expect("standard motion stylesheet parses");
+        let node = Node {
+            id: 7,
+            kind: "div".to_owned(),
+            props: BTreeMap::from([("className".to_owned(), Value::String("splash".to_owned()))]),
+            text: String::new(),
+            children: Vec::new(),
+        };
+        let mut timeline = Timeline::new();
+        timeline.begin_frame();
+
+        let computed = sheet.compute_at(&node, &[], &mut timeline);
+
+        assert_eq!(computed.get("pointer-events"), Some("auto"));
+        assert!(
+            computed
+                .get("opacity")
+                .is_some_and(|value| { value.parse::<f32>().is_ok_and(|opacity| opacity > 0.99) })
+        );
+        assert!(timeline.active());
+    }
+
+    #[test]
+    fn unknown_media_query_is_rejected_instead_of_silently_matching() {
+        assert!(Sheet::parse("@media (width > 10px) { .box { opacity: 1; } }").is_err());
     }
 }

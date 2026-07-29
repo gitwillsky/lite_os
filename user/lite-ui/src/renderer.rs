@@ -12,6 +12,7 @@ mod raster;
 mod range;
 mod shadow;
 mod scroll;
+mod transform;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -27,7 +28,7 @@ use taffy::prelude::{AvailableSpace, Dimension, Display, NodeId, Size, Style, Ta
 use crate::{
     display::{ForeignLayer, Overlay, WindowFrame},
     font::Font,
-    style::{Computed, Sheet},
+    style::{Computed, Sheet, Timeline},
     terminal_font::TerminalFont,
     tree::Node,
 };
@@ -42,11 +43,11 @@ use scroll::{
     Axis, LogicalRect, ScrollDrag, ScrollOffset, ScrollRegion, Scrollbar, paint_scrollbar,
     paint_scrollbar_corner, scrollbar,
 };
+use transform::translation as transform_translation;
 
 pub(crate) use raster::{OpacityLayer, Raster};
 
 pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
-
 
 struct RenderNode {
     source: Node,
@@ -180,6 +181,9 @@ pub struct Renderer {
     /// owns focus and sets this before each render so paint draws the text
     /// caret on exactly the focused field (the renderer has no CSS `:focus`).
     focused: Option<u64>,
+    /// CSS document timeline. It advances only when a render is requested;
+    /// page-flip completion owns scheduling of subsequent active samples.
+    timeline: Timeline,
 }
 
 impl Renderer {
@@ -200,7 +204,19 @@ impl Renderer {
             scroll_drag: None,
             opacity_layers: Vec::new(),
             focused: None,
+            timeline: Timeline::new(),
         })
+    }
+
+    /// Whether the last computed frame contains a running CSS animation or
+    /// transition and therefore needs one next presentation-driven sample.
+    pub fn animations_active(&self) -> bool {
+        self.timeline.active()
+    }
+
+    /// Advances the CSS document clock from a real compositor page flip.
+    pub fn presented(&mut self, monotonic_ns: u64) {
+        self.timeline.presented(monotonic_ns);
     }
 
     /// Sets the focused `<input>` node id (or clears it). The input dispatcher
@@ -267,6 +283,7 @@ impl Renderer {
         let saved_active = self.active_scroll_nodes.clone();
         let saved_scrollbars = self.scrollbars.clone();
         let saved_drag = self.scroll_drag;
+        let saved_timeline = self.timeline.clone();
         let result = self
             .render_filtered(scene, pixels, Some(window_group))
             .map(drop);
@@ -275,6 +292,7 @@ impl Renderer {
         self.active_scroll_nodes = saved_active;
         self.scrollbars = saved_scrollbars;
         self.scroll_drag = saved_drag;
+        self.timeline = saved_timeline;
         result
     }
 
@@ -284,6 +302,7 @@ impl Renderer {
         pixels: &mut SharedDumbBuffer,
         excluded_window_group: Option<u32>,
     ) -> io::Result<RenderOutput> {
+        self.timeline.begin_frame();
         self.scroll_regions.clear();
         self.active_scroll_nodes.clear();
         self.scrollbars.clear();
@@ -380,17 +399,20 @@ impl Renderer {
         // Stable-sort overlays by `z-index` ascending so higher chrome re-blits
         // last (on top); equal `z-index` keeps React paint order.
         output.overlays.sort_by_key(|overlay| overlay.z_index);
+        self.timeline.finish_frame();
         Ok(output)
     }
 
     fn build(
-        &self,
+        &mut self,
         tree: &mut TaffyTree<TextMeasure>,
         source: Node,
         ancestors: &[&Node],
         inherited: Option<&Computed>,
     ) -> io::Result<RenderNode> {
-        let mut computed = self.sheet.compute(&source, ancestors);
+        let mut computed = self
+            .sheet
+            .compute_at(&source, ancestors, &mut self.timeline);
         if let Some(inherited) = inherited {
             computed.inherit(inherited);
         }

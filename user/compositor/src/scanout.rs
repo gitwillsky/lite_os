@@ -84,8 +84,8 @@ impl Scanout {
             history: VecDeque::new(),
             prepared_damage: Rect::default(),
         };
-        scanout.draw_boot(0, 0);
-        scanout.draw_boot(1, 0);
+        scanout.draw_boot(0);
+        scanout.draw_boot(1);
         scanout
             .device
             .set_crtc(&scanout.topology, scanout.targets[0].framebuffer_id)?;
@@ -118,12 +118,6 @@ impl Scanout {
         }
     }
 
-    /// Draws one real 30 Hz boot animation frame into the back target.
-    pub fn render_boot(&mut self, offset: usize) -> io::Result<()> {
-        self.draw_boot(1 - self.front, offset);
-        Ok(())
-    }
-
     /// Returns scanout to the same clean state [`Self::open`] leaves behind.
     ///
     /// A desktop disconnect resets the session epoch (dropping every client
@@ -139,8 +133,8 @@ impl Scanout {
     /// `open()`. `front` is left untouched and its framebuffer re-scanned so the
     /// display never shows a torn intermediate frame.
     pub fn reset_to_boot(&mut self) -> io::Result<()> {
-        self.draw_boot(0, 0);
-        self.draw_boot(1, 0);
+        self.draw_boot(0);
+        self.draw_boot(1);
         for target in &mut self.targets {
             target.revision = 0;
             target.cursor = None;
@@ -156,7 +150,7 @@ impl Scanout {
             .set_crtc(&self.topology, self.targets[self.front].framebuffer_id)
     }
 
-    fn draw_boot(&mut self, target: usize, offset: usize) {
+    fn draw_boot(&mut self, target: usize) {
         let buffer = &mut self.targets[target].buffer;
         // SAFETY: DumbBuffer owns a writable pitch*height mapping for the Canvas lifetime.
         let mut canvas = unsafe {
@@ -167,11 +161,8 @@ impl Scanout {
                 buffer.height(),
             )
         };
-        canvas.fill(0);
+        canvas.draw_background();
         canvas.draw_bootlogo(&self.logo);
-        let origin = canvas.track_origin();
-        canvas.draw_track(origin.0, origin.1);
-        canvas.draw_sliders(origin.0, origin.1, offset);
     }
 
     /// Composes the accepted flat scene into the back scanout, without the cursor.

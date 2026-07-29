@@ -60,9 +60,10 @@
 - LiteUI commit 只发送 revision 后立即返回，不同步等待 `PRESENTED`。两个 client buffer 都在途时保留
   最新 dirty host tree，任一 release 到达后只渲染一次最新状态；`ACCEPTED`、`PRESENTED` 与
   `BUFFER_RELEASE` 仍按 revision 校验，不能把异步节奏降级为无序提交。
-- rAF 是 on-demand：可见连接最多一个 request outstanding，上一 page flip 完成后收到下一次 frame。
-  完全遮挡或最小化的 app 不接收 rAF；后台 timer 最小 1000 ms，可见 app 最小 4 ms。无 revision
-  不产生 render/commit，idle 不周期唤醒。
+- CSS refresh driver 是 on-demand：活动 animation/transition 的下一次采样只由上一 revision 的
+  `PRESENTED(monotonic_ns)` 触发，`ACCEPTED`/`BUFFER_RELEASE` 只推进 buffer pipeline，不能推进
+  document timeline。有限动画到达填充后的 terminal frame 即停止请求 render/commit，idle 不周期唤醒。
+  JavaScript `requestAnimationFrame` 当前不对 bundle 开放，避免建立 timer 与 page-flip 两套时钟。
 
 ## React、CSS 与资源
 
@@ -85,9 +86,16 @@
   `linear-gradient` 支持任意角度（对角 `to *` 关键字映射 45° 家族）。`opacity` 是 group 语义：
   子树先离屏合成再整体按 alpha 混合。`pointer-events: none` 关闭整个子树的 hit/scroll 注册，
   不支持后代用 `auto` 重新开启。`box-sizing` 支持 `content-box`/`border-box`，但 UA 默认是
-  `border-box`（偏离 Web 初始值 `content-box`），theme.css 全部按 border-box 编写。不支持 Grid、
-  float、table、pseudo-element、media query、filter、transition、CSS animation 或 vendor prefix；
-  不支持项构建失败。
+  `border-box`（偏离 Web 初始值 `content-box`），theme.css 全部按 border-box 编写。
+  CSS Transforms 支持不改变 layout 的 `translate()`/`translateX()`/`translateY()`，paint、descendant
+  coordinate 与 hit region 使用同一变换；CSS Animations 支持 `@keyframes` 的 `from`/`to`/百分比帧及
+  单项 `animation` shorthand，CSS Transitions 支持单 property `transition` shorthand。数值、px 长度
+  与 translate 在 presentation timeline 上插值，其他 property 按 discrete interpolation；`display`
+  与 `none` 之间按 Web 离散特例在进入时的 0%/退出时的 100% 切换；
+  timing function 支持 linear/ease/ease-in/ease-out/ease-in-out。media query 当前只接受
+  `prefers-reduced-motion: reduce|no-preference`，平台尚无 reduce 设置时匹配标准默认
+  `no-preference`。不支持 Grid、float、table、pseudo-element、其他 media query、filter、多项
+  animation/transition、复合/scale/rotate transform 或 vendor prefix；不支持项构建失败。
 - React host instance 在完整 snapshot 中携带稳定 node id；LiteUI renderer 以该 id 独占 CSS scroll
   offset，并让 hover/pointer capture 在 snapshot 重建后继续解析同一元素的最新 listener。
   `overflow: auto/scroll` 形成通用双轴 scroll container，renderer 根据 layout content extent
@@ -135,7 +143,9 @@
   请求；compositor 是 CREATE/DESTROY owner，LiteUI 只 MAP_DUMB+mmap。权限模型和隔离后的共享内存
   transport 属于后续破坏性协议升级。
 - input v1 只有 US keyboard、pointer、wheel、focus、repeat、plain-text clipboard 与基础 keyboard
-  accessibility；`cursor` 只支持固定 arrow、pointer 与四向 resize shape，不支持 URL/custom bitmap。
+  accessibility；`cursor` 只支持固定 arrow、hidden、pointer 与四向 resize shape，不支持 URL/custom bitmap。
+  非默认 CSS cursor 即使没有 DOM listener 也建立命中区域；DOM/style 重绘后会在最新 pointer position
+  重新求值，因此元素消失或 `pointer-events` 改变不需要用户移动鼠标才能恢复正确 cursor。
   clipboard 单次最多 60 KiB UTF-8，不支持 image、file、HTML、primary selection 或 Finder
   drag-and-drop。无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop 或 touch。
 - Web media 当前只提供标准音频播放，不提供 capture、Web Audio、MSE、MediaStream、remote playback、

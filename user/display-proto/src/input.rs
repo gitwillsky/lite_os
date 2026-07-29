@@ -171,6 +171,8 @@ pub const CURSOR_RESIZE_EW: u32 = 3;
 pub const CURSOR_RESIZE_NESW: u32 = 4;
 /// `\` diagonal double-arrow used by north-west/south-east resize corners.
 pub const CURSOR_RESIZE_NWSE: u32 = 5;
+/// Hidden cursor requested by CSS `cursor: none`.
+pub const CURSOR_NONE: u32 = 6;
 
 /// App request for the compositor to draw one fixed standard cursor shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -55,6 +55,10 @@ struct Interactions {
     /// Cursor shape most recently requested from the compositor, so shape
     /// changes are sent only on transition rather than on every motion.
     cursor_shape: u32,
+    /// Latest compositor-routed pointer position used to recompute CSS cursor
+    /// after a DOM/style-only frame. Without it, removing or covering the
+    /// hovered element would leave its old cursor visible until physical motion.
+    pointer_position: Option<(i32, i32)>,
     /// True while native scrollbar chrome owns the current pointer sequence.
     ///
     /// Without this flag a track click would page the scroll port on down and
@@ -173,6 +177,16 @@ fn run() -> Result<(), Box<dyn Error>> {
                 .map_err(|error| owner_error("display event", error))?;
             if matches!(event, Event::Close) {
                 return Ok(());
+            }
+            // A CSS document requests its next sample only after the previous
+            // buffer really reached scanout. Accepted/released acknowledgements
+            // never advance animation time, preventing timer-style overproduction
+            // and making back-pressure an intrinsic part of the refresh driver.
+            if let Event::Presented { monotonic_ns } = &event {
+                renderer.presented(*monotonic_ns);
+                if renderer.animations_active() {
+                    state.invalidate_scene();
+                }
             }
             // A desktop-issued reconfigure swaps the surface geometry: adopt it
             // natively first so the same iteration still renders the retained
@@ -313,6 +327,7 @@ fn render_latest(
     }
     interactions.hits = output.hits;
     interactions.key_listener = output.key_listener;
+    input::reconcile_cursor(interactions, display)?;
     // Drop a hovered key whose region vanished from the rebuilt hit list (e.g.
     // the menu closed). The JS component unmounts and resets its own hover
     // state, so no synthetic leave is needed; just keep the tracker consistent

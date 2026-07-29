@@ -2,6 +2,7 @@
 
 mod allocation;
 mod clipboard;
+mod event;
 mod wire;
 
 use std::{
@@ -13,15 +14,16 @@ use std::{
 };
 
 use display_proto::{
-    AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, InputKey,
-    InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase,
-    Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit,
-    Welcome, parse_frame, recv_frame_blocking, send_message,
+    AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, MAX_MESSAGE,
+    MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, Rectangles, SceneCommit,
+    SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, Welcome, parse_frame,
+    recv_frame_blocking, send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
 
 use crate::Mode;
+pub use event::Event;
 use wire::{WireEvent, parse_event, receive_configure};
 
 struct Buffer {
@@ -89,35 +91,6 @@ pub struct Overlay {
     /// CSS `z-index` of the fixed element; overlays are stable-sorted ascending
     /// so higher-`z-index` chrome re-blits last (on top).
     pub z_index: i32,
-}
-
-/// One validated asynchronous display event.
-#[derive(Clone, Debug)]
-pub enum Event {
-    /// Ordinary app published a top-level surface.
-    AppOpened { surface_id: u32, app_id: String },
-    /// Ordinary app removed its top-level surface.
-    AppClosed { surface_id: u32 },
-    /// A pointer-down hit a foreign surface; the desktop should raise it.
-    SurfaceActivated { surface_id: u32 },
-    /// A compositor-side move ended at one canonical logical position.
-    MoveComplete { surface_id: u32, x: i32, y: i32 },
-    /// App pixels for one desktop configure are ready.
-    ConfigureReady { surface_id: u32, serial: u64 },
-    /// Desktop selected a new app client size.
-    Configure(Configure),
-    /// Desktop requested app termination.
-    Close,
-    /// Pointer input routed against the presented scene.
-    Pointer(InputPointer),
-    /// Mouse-wheel scroll routed against the presented scene.
-    Scroll(InputScroll),
-    /// Keyboard input routed to the presented focused surface.
-    Key(InputKey),
-    /// Result of one exact plain-text clipboard request.
-    ClipboardData(display_proto::ClipboardData),
-    /// An asynchronous submit/release/presentation transition freed pipeline progress.
-    FrameDone,
 }
 
 /// One exact-version display connection and its compositor-owned buffers.
@@ -500,9 +473,9 @@ impl Display {
                 self.pending.push_back(Event::FrameDone);
                 Ok(None)
             }
-            event @ (WireEvent::Accepted(_) | WireEvent::Presented(_)) => {
-                self.handle_progress(event)?;
-                self.pending.push_back(Event::FrameDone);
+            event @ (WireEvent::Accepted(_) | WireEvent::Presented { .. }) => {
+                let event = self.handle_progress(event)?;
+                self.pending.push_back(event);
                 Ok(None)
             }
         }
@@ -529,21 +502,23 @@ impl Display {
                 self.release(id)?;
                 Ok(Event::FrameDone)
             }
-            event @ (WireEvent::Accepted(_) | WireEvent::Presented(_)) => {
-                self.handle_progress(event)?;
-                Ok(Event::FrameDone)
+            event @ (WireEvent::Accepted(_) | WireEvent::Presented { .. }) => {
+                self.handle_progress(event)
             }
         }
     }
 
-    fn handle_progress(&mut self, event: WireEvent) -> io::Result<()> {
+    fn handle_progress(&mut self, event: WireEvent) -> io::Result<Event> {
         match event {
             WireEvent::Accepted(revision) if self.submitted.front().copied() == Some(revision) => {
                 self.submitted.pop_front();
                 self.accepted.insert(revision);
-                Ok(())
+                Ok(Event::FrameDone)
             }
-            WireEvent::Presented(revision) if self.accepted.remove(&revision) => Ok(()),
+            WireEvent::Presented {
+                revision,
+                monotonic_ns,
+            } if self.accepted.remove(&revision) => Ok(Event::Presented { monotonic_ns }),
             _ => Err(invalid("display acknowledgement ordering failed")),
         }
     }

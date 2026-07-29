@@ -65,8 +65,9 @@ impl Display {
                     {
                         WireEvent::Public(event) => self.pending.push_back(event),
                         WireEvent::Released(id) => self.release(id)?,
-                        progress @ (WireEvent::Accepted(_) | WireEvent::Presented(_)) => {
-                            self.handle_progress(progress)?;
+                        progress @ (WireEvent::Accepted(_) | WireEvent::Presented { .. }) => {
+                            let event = self.handle_progress(progress)?;
+                            self.pending.push_back(event);
                         }
                     }
                 }

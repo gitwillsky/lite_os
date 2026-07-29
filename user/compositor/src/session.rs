@@ -23,7 +23,6 @@ use std::{
     fs, io,
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::{UnixListener, UnixStream},
-    time::Duration,
 };
 
 use display_proto::{
@@ -189,16 +188,22 @@ impl Session {
     /// Polls all display connections plus caller-supplied wake descriptors once.
     ///
     /// The `wake` descriptors (evdev fds) join the same wait so pointer and key
-    /// events interrupt the timeout immediately instead of waiting for it to
-    /// elapse. Without them the loop would only drain input once per timeout,
-    /// capping cursor updates at roughly `1 / timeout` Hz and adding up to one
-    /// timeout of latency per move. Their readiness is returned in [`Activity`]
-    /// so the caller can pump input, while at most one accepted scene is returned.
-    pub fn poll(
-        &mut self,
-        wake: &[Option<BorrowedFd<'_>>],
-        timeout: Duration,
-    ) -> io::Result<Activity> {
+    /// events wake the otherwise unbounded idle wait. Their readiness is
+    /// returned in [`Activity`] so the caller can pump input, while at most one
+    /// accepted scene is returned.
+    ///
+    /// # Parameters
+    ///
+    /// - `wake`: Optional evdev descriptors joined to the display/clipboard wait.
+    ///
+    /// # Returns
+    ///
+    /// Returns the accepted scene and readiness/reset flags for this wake.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when polling or a required session transition fails.
+    pub fn poll(&mut self, wake: &[Option<BorrowedFd<'_>>]) -> io::Result<Activity> {
         let mut app_ids = [0; MAX_APP_SURFACES];
         let mut app_count = 0;
         for id in self.apps.keys().copied() {
@@ -229,7 +234,7 @@ impl Session {
             }
             let clipboard_offset =
                 self.append_clipboard_poll(&mut descriptors, &mut descriptor_count);
-            unix::poll(&mut descriptors[..descriptor_count], Some(timeout))?;
+            unix::poll(&mut descriptors[..descriptor_count], None)?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(self.desktop.is_some());
             let desktop_ready =

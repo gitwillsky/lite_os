@@ -423,4 +423,3 @@ mod tests {
         assert_eq!(second.thickness, 0);
     }
 }
-

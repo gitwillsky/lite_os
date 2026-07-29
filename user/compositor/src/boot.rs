@@ -1,35 +1,10 @@
-//! 启动画面绘制：清晰度无损的 identity 图层、进度条轨道与滑块。
+//! 启动画面绘制：静态 aurora fallback 与 premultiplied identity 图层。
 
 use core::slice;
 
-/// 进度条轨道宽度（像素）。
-pub const TRACK_WIDTH: usize = 260;
-/// 进度条轨道高度（像素）。
-pub const TRACK_HEIGHT: usize = 16;
-/// 每个 30 Hz 帧滑块组移动的像素数。
-pub const SLIDER_STEP: usize = 2;
-
-const BORDER: usize = 2;
-const CORNER_RADIUS: usize = 4;
-const CONTENT_WIDTH: usize = TRACK_WIDTH - 2 * BORDER;
-const CONTENT_HEIGHT: usize = TRACK_HEIGHT - 2 * BORDER;
-const SLIDER_WIDTH: usize = 12;
-const SLIDER_HEIGHT: usize = 8;
-const SLIDER_GAP: usize = 4;
-/// 滑块组整体宽度：3 个滑块加 2 个间距。
-const SLIDER_GROUP: usize = 3 * SLIDER_WIDTH + 2 * SLIDER_GAP;
-
-const TRACK_FILL: u32 = 0x001a_1a1a;
-const TRACK_BORDER: u32 = 0x005a_5a5a;
-const SLIDER_COLOR: u32 = 0x0024_5edc;
-const LOGO_CENTER_PERCENT: usize = 42;
-const TITLE_CENTER_PERCENT: usize = 64;
-const TRACK_CENTER_PERCENT: usize = 75;
-
-/// 滑块组在轨道内容区内的最大起始偏移。
-pub const fn max_slider_offset() -> usize {
-    CONTENT_WIDTH - SLIDER_GROUP
-}
+const LOGO_CENTER_PER_MILLE: usize = 381;
+const TITLE_CENTER_PER_MILLE: usize = 605;
+const STATUS_CENTER_PER_MILLE: usize = 809;
 
 /// XRGB8888 帧缓冲视图，几何来自内核 `CREATE_DUMB` 返回值。
 pub struct Canvas {
@@ -55,45 +30,35 @@ impl Canvas {
         }
     }
 
-    /// 整屏填充单色。
-    pub fn fill(&mut self, color: u32) {
-        for row in 0..self.height {
-            self.row_mut(row).fill(color);
+    /// 绘制选定概念的深蓝底色与左右 cyan/violet 椭圆环境光。
+    pub fn draw_background(&mut self) {
+        let width = self.width as i64;
+        let height = self.height as i64;
+        for y in 0..self.height {
+            let row = self.row_mut(y);
+            for (x, pixel) in row.iter_mut().enumerate() {
+                let cyan = radial_falloff(
+                    x as i64,
+                    y as i64,
+                    width * 36 / 100,
+                    height * 44 / 100,
+                    width * 45 / 100,
+                    height * 58 / 100,
+                );
+                let violet = radial_falloff(
+                    x as i64,
+                    y as i64,
+                    width * 67 / 100,
+                    height * 48 / 100,
+                    width * 43 / 100,
+                    height * 58 / 100,
+                );
+                *pixel = aurora_color(cyan, violet);
+            }
         }
     }
 
-    /// 轨道左上角：水平中轴与 identity 图层一致，纵向中心位于屏幕 75% 处。
-    pub fn track_origin(&self) -> (usize, usize) {
-        (
-            centered_origin(self.width, TRACK_WIDTH),
-            centered_at(self.height, TRACK_HEIGHT, TRACK_CENTER_PERCENT),
-        )
-    }
-
-    /// 一次性绘制轨道：圆角矩形，深色底加 2px 灰边。
-    pub fn draw_track(&mut self, x: usize, y: usize) {
-        self.fill_rounded(x, y, TRACK_WIDTH, TRACK_HEIGHT, CORNER_RADIUS, TRACK_BORDER);
-        self.clear_content(x, y);
-    }
-
-    /// 重绘一帧动画：清轨道内容区后按 `offset` 画 3 个滑块。
-    pub fn draw_sliders(&mut self, x: usize, y: usize, offset: usize) {
-        self.clear_content(x, y);
-        let content_x = x + BORDER;
-        let slider_y = y + BORDER + (CONTENT_HEIGHT - SLIDER_HEIGHT) / 2;
-        for index in 0..3 {
-            let slider_x = content_x + offset + index * (SLIDER_WIDTH + SLIDER_GAP);
-            self.fill_rect(
-                slider_x,
-                slider_y,
-                SLIDER_WIDTH,
-                SLIDER_HEIGHT,
-                SLIDER_COLOR,
-            );
-        }
-    }
-
-    /// 按最终物理像素绘制 boot identity；资产损坏时静默跳过（保留黑屏）。
+    /// 混合最终物理像素的 logo、标题和启动状态；损坏资产保持纯背景。
     pub fn draw_bootlogo(&mut self, logo: &[u8]) {
         let Some(scene) = parse_bootlogo(logo) else {
             return;
@@ -102,13 +67,19 @@ impl Canvas {
             scene.logo,
             scene.logo_width,
             scene.logo_height,
-            LOGO_CENTER_PERCENT,
+            LOGO_CENTER_PER_MILLE,
         );
         self.draw_layer(
             scene.title,
             scene.title_width,
             scene.title_height,
-            TITLE_CENTER_PERCENT,
+            TITLE_CENTER_PER_MILLE,
+        );
+        self.draw_layer(
+            scene.status,
+            scene.status_width,
+            scene.status_height,
+            STATUS_CENTER_PER_MILLE,
         );
     }
 
@@ -124,48 +95,12 @@ impl Canvas {
             let line = self.row_mut(target_y + row);
             for column in 0..target_width {
                 let index = source_start + column * 4;
-                line[target_x + column] = u32::from_le_bytes(
+                let source = u32::from_le_bytes(
                     source[index..index + 4]
                         .try_into()
                         .expect("validated boot layer pixel"),
                 );
-            }
-        }
-    }
-
-    fn clear_content(&mut self, x: usize, y: usize) {
-        self.fill_rounded(
-            x + BORDER,
-            y + BORDER,
-            CONTENT_WIDTH,
-            CONTENT_HEIGHT,
-            CORNER_RADIUS - BORDER,
-            TRACK_FILL,
-        );
-    }
-
-    fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: u32) {
-        for row in 0..height {
-            self.row_mut(y + row)[x..x + width].fill(color);
-        }
-    }
-
-    /// 填充圆角矩形；角部以半径为 `radius` 的圆弧裁剪。
-    fn fill_rounded(
-        &mut self,
-        x: usize,
-        y: usize,
-        width: usize,
-        height: usize,
-        radius: usize,
-        color: u32,
-    ) {
-        for row in 0..height {
-            let line = self.row_mut(y + row);
-            for column in 0..width {
-                if inside_rounded(column, row, width, height, radius) {
-                    line[x + column] = color;
-                }
+                line[target_x + column] = alpha_over(source, line[target_x + column]);
             }
         }
     }
@@ -187,29 +122,54 @@ fn centered_origin(available: usize, extent: usize) -> usize {
     available.saturating_sub(extent) / 2
 }
 
-fn centered_at(available: usize, extent: usize, percent: usize) -> usize {
-    (available * percent / 100)
+fn centered_at(available: usize, extent: usize, per_mille: usize) -> usize {
+    (available * per_mille / 1000)
         .saturating_sub(extent / 2)
         .min(available.saturating_sub(extent))
 }
 
-/// 判断像素是否在圆角矩形内：仅四个角的 `radius` 正方形区域做圆弧判定。
-fn inside_rounded(column: usize, row: usize, width: usize, height: usize, radius: usize) -> bool {
-    let horizontal = if column < radius {
-        radius - column
-    } else if column >= width - radius {
-        column - (width - radius - 1)
-    } else {
-        return true;
+fn radial_falloff(
+    x: i64,
+    y: i64,
+    center_x: i64,
+    center_y: i64,
+    radius_x: i64,
+    radius_y: i64,
+) -> u32 {
+    let dx = (x - center_x) * 1024 / radius_x.max(1);
+    let dy = (y - center_y) * 1024 / radius_y.max(1);
+    let distance = dx * dx + dy * dy;
+    let limit = 1024i64 * 1024;
+    if distance >= limit {
+        return 0;
+    }
+    let linear = ((limit - distance) * 1024 / limit) as u32;
+    linear * linear / 1024
+}
+
+fn aurora_color(cyan: u32, violet: u32) -> u32 {
+    let red = 5 + 17 * violet / 1024;
+    let green = 8 + 43 * cyan / 1024 + 8 * violet / 1024;
+    let blue = 22 + 71 * cyan / 1024 + 56 * violet / 1024;
+    (red << 16) | (green << 8) | blue
+}
+
+/// Premultiplied ARGB source-over blend onto one opaque XRGB destination.
+fn alpha_over(source: u32, destination: u32) -> u32 {
+    let alpha = source >> 24;
+    if alpha == 0 {
+        return destination;
+    }
+    if alpha == 255 {
+        return source & 0x00ff_ffff;
+    }
+    let inverse = 255 - alpha;
+    let channel = |shift: u32| {
+        let source = (source >> shift) & 0xffu32;
+        let destination = (destination >> shift) & 0xffu32;
+        source + (destination * inverse + 127) / 255
     };
-    let vertical = if row < radius {
-        radius - row
-    } else if row >= height - radius {
-        row - (height - radius - 1)
-    } else {
-        return true;
-    };
-    horizontal * horizontal + vertical * vertical <= radius * radius
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
 }
 
 struct BootScene<'a> {
@@ -219,30 +179,40 @@ struct BootScene<'a> {
     title: &'a [u8],
     title_width: usize,
     title_height: usize,
+    status: &'a [u8],
+    status_width: usize,
+    status_height: usize,
 }
 
-/// 校验 bootlogo 两个紧凑 XRGB 图层；头部格式见 `assets/bootlogo.xrgb`。
+/// 校验 bootlogo 三个紧凑 premultiplied ARGB 图层。
 fn parse_bootlogo(bytes: &[u8]) -> Option<BootScene<'_>> {
-    if bytes.len() < 24 || &bytes[..8] != b"LWP8\0\0\0\x02" {
+    if bytes.len() < 32 || &bytes[..8] != b"LWP8\0\0\0\x03" {
         return None;
     }
     let logo_width = read_u32(bytes, 8)?;
     let logo_height = read_u32(bytes, 12)?;
     let title_width = read_u32(bytes, 16)?;
     let title_height = read_u32(bytes, 20)?;
+    let status_width = read_u32(bytes, 24)?;
+    let status_height = read_u32(bytes, 28)?;
     let logo_length = layer_length(logo_width, logo_height)?;
     let title_length = layer_length(title_width, title_height)?;
-    let title_offset = 24usize.checked_add(logo_length)?;
-    let end = title_offset.checked_add(title_length)?;
+    let status_length = layer_length(status_width, status_height)?;
+    let title_offset = 32usize.checked_add(logo_length)?;
+    let status_offset = title_offset.checked_add(title_length)?;
+    let end = status_offset.checked_add(status_length)?;
     Some(BootScene {
-        logo: bytes.get(24..title_offset)?,
+        logo: bytes.get(32..title_offset)?,
         logo_width,
         logo_height,
-        title: bytes
-            .get(title_offset..end)
-            .filter(|_| end == bytes.len())?,
+        title: bytes.get(title_offset..status_offset)?,
         title_width,
         title_height,
+        status: bytes
+            .get(status_offset..end)
+            .filter(|_| end == bytes.len())?,
+        status_width,
+        status_height,
     })
 }
 
@@ -259,33 +229,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn splash_layers_and_track_share_the_screen_center() {
+    fn splash_layers_share_the_screen_center() {
         let screen_width = 3008;
-        for width in [424, 668, TRACK_WIDTH] {
+        for width in [604, 614] {
             let origin = centered_origin(screen_width, width);
             assert_eq!(origin + width / 2, screen_width / 2);
         }
     }
 
     #[test]
-    fn track_center_is_exactly_three_quarters_down_the_screen() {
-        let screen_height = 1692;
-        let origin = centered_at(screen_height, TRACK_HEIGHT, TRACK_CENTER_PERCENT);
-        assert_eq!(origin + TRACK_HEIGHT / 2, screen_height * 3 / 4);
-    }
-
-    #[test]
     fn boot_scene_rejects_trailing_or_truncated_layers() {
-        let mut bytes = b"LWP8\0\0\0\x02".to_vec();
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&[0; 8]);
+        let mut bytes = b"LWP8\0\0\0\x03".to_vec();
+        for _ in 0..6 {
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0; 12]);
         assert!(parse_bootlogo(&bytes).is_some());
         bytes.push(0);
         assert!(parse_bootlogo(&bytes).is_none());
-        bytes.truncate(31);
+        bytes.truncate(43);
         assert!(parse_bootlogo(&bytes).is_none());
+    }
+
+    #[test]
+    fn premultiplied_alpha_blends_without_dark_edge_math() {
+        assert_eq!(alpha_over(0, 0x0012_3456), 0x0012_3456);
+        assert_eq!(alpha_over(0xffff_0000, 0x0012_3456), 0x00ff_0000);
+        assert_eq!(alpha_over(0x8080_0000, 0x0000_00ff), 0x0080_007f);
     }
 }

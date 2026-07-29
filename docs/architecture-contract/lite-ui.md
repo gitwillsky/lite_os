@@ -67,13 +67,17 @@
 - pointer motion 对同一 target latest-only，每帧最多一次；离散事件前必须先 flush preceding motion。
   button/key/wheel/focus 不可合并。capture 只能消费同一次 pointer-down 的 input serial，并在 up、unmount、
   focus loss 或 disconnect 时由 compositor exactly-once reset。
-- cursor shape wire value 固定为 arrow、pointer、NS、EW、NESW 与 NWSE 六种；LiteUI 从标准 CSS
+- cursor shape wire value 固定为 arrow、pointer、NS、EW、NESW、NWSE 与 hidden 七种；LiteUI 从标准 CSS
   `cursor` 值归一化，compositor 独占 checked 预乘 RGBA cursor asset（48×48 物理像素，`.lc2`）与
-  hotspot。未知值必须回落 arrow，不接受应用 URL、位图或 theme asset。
+  hotspot；hidden 不创建平行透明 asset，而是禁止 overlay 并恢复旧 backing。未知值必须回落 arrow，
+  不接受应用 URL、位图或 theme asset。
 - compositor 独占 pointer-focus surface 并据此仲裁 cursor 归属：`SetCursorShape` 仅在请求连接身份
   与当前 pointer-focus surface 一致时生效（surface_id 与连接不符视为协议错误）。pointer focus 切换
   或消失（含 capture 释放、app 断开、epoch reset）时先回落 arrow，新 target 在其首个 Motion 上报当前
   CSS cursor。LiteUI 不缓存全局 cursor owner；scanout 是形状去重与实际绘制的唯一 owner。
+- 非默认 CSS cursor 不依赖事件 listener 才进入 hit tree；LiteUI 保存最近一次 compositor-routed
+  pointer position，并在每次 DOM/style scene 重建后重新求值 cursor。缺少该重算会让已卸载或
+  `pointer-events: none` 的节点继续支配静止指针，直到下一次物理 motion。
 - compositor 必须把 evdev wheel detent 转为有符号 logical CSS pixel delta。LiteUI 先投递同值 wheel
   listener，再执行 scroll default action；`overflow: hidden/clip` 只裁剪且不响应 wheel，
   `overflow: auto` 仅在实际 overflow 时显示 scrollbar，`overflow: scroll` 始终显示。短内容的 offset
@@ -91,8 +95,9 @@
   不保存平行内容。无 image/file/HTML/primary selection、文件拖放或私有 path clipboard。
 - QuickJS 每个 host→JS turn 使用固定 interrupt-check budget；Promise jobs 与 microtask 共用该预算。
   desktop heap 32 MiB、app heap 16 MiB、VM stack 512 KiB。超限是 fatal；native host call 必须非阻塞。
-- 同一 JS turn 内同步 React mutation、job drain 后最多产生一个 revision；rAF callbacks 共用一个 turn，
-  不同离散 input 不跨 turn 合并。snapshot arena 不可用时只记录 dirty，归还后从最新 host tree 生成。
+- 同一 JS turn 内同步 React mutation、job drain 后最多产生一个 revision，不同离散 input 不跨 turn
+  合并。CSS timeline 只在 `PRESENTED` 后把活动 document 标 dirty，`ACCEPTED`、release 与 JavaScript
+  timer 不得代替 refresh driver；snapshot arena 不可用时只记录 dirty，归还后从最新 host tree 生成。
 - app entry 必须 default export 一个 component。target loader 仅接受固定 React/LiteUI system module；
   `lite:apps`、`lite:desktop` 与 `lite:audio-system` 必须拒绝普通 app session。应用可通过标准
   `<audio>` 与 `lite:fs` 的 filesystem-backed `File` 播放；native plugin、dlopen、应用自建 worker
@@ -117,10 +122,15 @@
 - compositor 必须在 connection teardown 沿唯一 owner path 撤销 pending configure/commit、scene
   references、clipboard request、accelerator sequence、pointer/key state 与所有 GEM mapping/handle。
   partial decode、allocation 或 SCM_RIGHTS failure 不得发布 resource identity。
-- boot scene 由 compositor 在取得 DRM 后立即显示并以 30 Hz 运行 indeterminate progress；没有固定
-  最短时长。identity 资产只保存按最终物理像素生成的紧凑 logo/title XRGB 图层，compositor 不缩放，
-  两层与进度条共享屏幕水平中轴。仅 desktop 首个完整 scene 成功 latch 后切换并永久释放 boot
-  timer/buffer。desktop 失败时保持 boot scene并由 init 重启，不恢复独立 splash 进程。
+- boot fallback 由 compositor 在取得 DRM 后立即一次性绘制，之后不运行 timer 或 progress animation。
+  checked identity 资产只保存按最终物理像素生成的紧凑 logo/title/status premultiplied ARGB 图层，
+  compositor 不缩放；它只承担 LiteUI 尚未连接或 desktop 失败时的静态品牌画面。desktop 首个完整
+  scene latch 后由 DOM/CSS splash 原子接管；aurora、progress、hold 与 fade 只存在于 stylesheet，
+  CSS timeline 的下一帧只由真实 page flip 驱动。不得恢复 compositor 动画、JavaScript timer/rAF
+  动画或独立 splash 进程中的第二条实现。
+- Splash 的 fixed overlay 必须由 CSS animation 在淡出 terminal frame 把 `display` 离散切到 `none`；
+  renderer 对 `display:none` 不得生成 paint、hit 或 compositor overlay。只把 opacity 设为零仍会让
+  全屏 desktop overlay 排在 foreign app 之后，导致应用 client surface 被永久覆盖。
 - build-time 可验证的 manifest/CSS/bundle/asset error 必须阻止 rootfs 发布。runtime 不得 silent ignore、
   placeholder、旧协议 fallback 或降级 renderer。最终产品树不得保留旧 Rust shell/terminal renderer、
   旧 display protocol、atlas、`startmenu.conf` 或 `/bin/splash`。

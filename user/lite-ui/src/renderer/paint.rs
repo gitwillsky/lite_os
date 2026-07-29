@@ -12,7 +12,7 @@ use super::{
     is_surface, listener, logical_from_physical, logical_intersection, overflow_modes,
     paint_background, paint_background_image, paint_border, paint_image, paint_inset_shadow,
     paint_scrollbar, paint_scrollbar_corner, paint_shadow, range::paint_range, scrollbar,
-    taffy_error, text_content,
+    taffy_error, text_content, transform_translation,
 };
 use super::opacity::opacity;
 use super::layout::TextMeasure;
@@ -27,11 +27,20 @@ impl Renderer {
         output: &mut RenderOutput,
         walk: PaintWalk,
     ) -> io::Result<()> {
-        if excludes_window(&node.source, walk.excluded_window_group) {
+        if node.computed.get("display") == Some("none")
+            || excludes_window(&node.source, walk.excluded_window_group)
+        {
             return Ok(());
         }
         let layout = tree.layout(node.id).map_err(taffy_error)?;
-        let origin = (parent.0 + layout.location.x, parent.1 + layout.location.y);
+        // CSS transforms are applied after layout, so the taffy geometry keeps
+        // its normal flow position while paint, descendants and hit testing
+        // share the translated coordinate space.
+        let translation = transform_translation(&node.computed);
+        let origin = (
+            parent.0 + layout.location.x + translation.0,
+            parent.1 + layout.location.y + translation.1,
+        );
         let bounds = PhysicalRect::new(
             origin.0,
             origin.1,
@@ -103,6 +112,7 @@ impl Renderer {
                 || pointer_leave.is_some()
                 || context_menu.is_some()
                 || wheel.is_some()
+                || cursor != display_proto::CURSOR_DEFAULT
                 || focusable)
         {
             let hit = logical_from_physical(raster);

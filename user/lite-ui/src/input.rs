@@ -117,7 +117,7 @@ pub(super) fn apply_event(
                 json!({"requestId":data.request_id,"text":data.text}),
             )
         }
-        Event::FrameDone => return Ok(()),
+        Event::FrameDone | Event::Presented { .. } => return Ok(()),
         Event::Close => unreachable!("close exits before event dispatch"),
     };
     dispatch(engine, channel, payload)
@@ -247,6 +247,7 @@ fn dispatch_pointer(
     display: &Display,
     pointer: display_proto::InputPointer,
 ) -> Result<(), Box<dyn Error>> {
+    interactions.pointer_position = Some((pointer.x, pointer.y));
     if pointer.phase == display_proto::PointerPhase::Down {
         state.grant_media_playback();
     }
@@ -473,19 +474,40 @@ fn dispatch_pointer(
                 }) {
                     dispatch_listener(engine, mv, payload)?;
                 }
-                let shape = interactions
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|hit| inside(hit))
-                    .map(|hit| hit.cursor)
-                    .unwrap_or(0);
-                if shape != interactions.cursor_shape {
-                    display.set_cursor_shape(shape)?;
-                    interactions.cursor_shape = shape;
-                }
+                reconcile_cursor(interactions, display)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Re-evaluates the standard CSS cursor at the latest routed pointer position.
+///
+/// This is called both after pointer motion and after a rendered DOM/style
+/// change, matching the Web behavior where cursor changes do not require the
+/// user to jiggle the pointing device.
+pub(crate) fn reconcile_cursor(
+    interactions: &mut Interactions,
+    display: &Display,
+) -> Result<(), Box<dyn Error>> {
+    let Some((x, y)) = interactions.pointer_position else {
+        return Ok(());
+    };
+    let shape = interactions
+        .hits
+        .iter()
+        .rev()
+        .find(|hit| {
+            x as f32 >= hit.x
+                && y as f32 >= hit.y
+                && (x as f32) < hit.x + hit.width
+                && (y as f32) < hit.y + hit.height
+        })
+        .map(|hit| hit.cursor)
+        .unwrap_or(display_proto::CURSOR_DEFAULT);
+    if shape != interactions.cursor_shape {
+        display.set_cursor_shape(shape)?;
+        interactions.cursor_shape = shape;
     }
     Ok(())
 }

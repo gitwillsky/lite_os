@@ -13,6 +13,7 @@ import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts"
 import { applySurfaceMove, reconcileSurfaces } from "./surface-state.ts";
 import { cycle, openSwitcher, reconcileSwitcher, selectedCandidate } from "./app-switcher.ts";
 import type { SwitcherState } from "./app-switcher.ts";
+import { Splash } from "./splash.tsx";
 
 interface DesktopMenuItem {
   id: string;
@@ -490,6 +491,7 @@ export default function Desktop() {
       {properties && <PropertiesPopup x={properties.x} y={properties.y} title={properties.title} rows={properties.rows} onClose={() => setProperties(null)}/>}
       {switcher && <AppSwitcher state={switcher}/>}
       <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => { setMenu(null); setStartOpen((value) => !value); }} onActivate={toggleTask} onTaskMenu={openSystemMenu}/>
+      <Splash/>
     </div>
   );
 }

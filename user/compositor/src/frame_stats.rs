@@ -67,8 +67,8 @@ impl FrameStats {
     ///
     /// Idempotent: only the first call after construction/reset matters. Clearing
     /// the baseline (`last_ns = 0`) means the first post-arm frame only seeds the
-    /// predecessor, so the one-off boot→desktop transition interval (a 30 Hz boot
-    /// frame followed by the first desktop present) is never recorded.
+    /// predecessor, so the one-off static-fallback→desktop transition interval
+    /// is never recorded.
     pub(crate) fn arm(&mut self) {
         if self.armed {
             return;

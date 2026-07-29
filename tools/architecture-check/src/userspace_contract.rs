@@ -315,7 +315,7 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
         );
     }
     let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();
-    if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x02") || bootlogo.len() != 757_144 {
+    if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x03") || bootlogo.len() != 1_699_424 {
         errors.push("assets/bootlogo.xrgb: checked boot scene identity changed".to_owned());
     }
     for removed in [

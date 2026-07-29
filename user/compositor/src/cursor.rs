@@ -44,9 +44,9 @@ struct Shape {
 }
 
 pub struct Cursor {
-    /// Validated bitmaps in the `display_proto::CURSOR_*` wire-value order.
+    /// Validated bitmaps in the visible `display_proto::CURSOR_*` wire-value order.
     shapes: [Shape; SHAPE_COUNT],
-    /// Selected shape index into [`Self::shapes`]; zero (arrow) by default.
+    /// Selected wire value; `CURSOR_NONE` is the only value without a bitmap.
     active_shape: usize,
     /// Clean pixels captured under the arrow before it was rasterized.
     ///
@@ -101,7 +101,7 @@ impl Cursor {
     /// the caller can trigger a redraw only on a real transition. Out-of-range
     /// shapes select the default arrow.
     pub fn set_shape(&mut self, shape: u32) -> bool {
-        let next = if (shape as usize) < self.shapes.len() {
+        let next = if shape <= display_proto::CURSOR_NONE {
             shape as usize
         } else {
             0
@@ -121,6 +121,10 @@ impl Cursor {
     /// saved box describes the new front buffer, keeping the [`Self::saved`]
     /// invariant for subsequent [`Self::relocate`] calls.
     pub fn overlay(&mut self, target: &mut DumbBuffer, x: i32, y: i32) -> Clip {
+        if self.hidden() {
+            self.saved = (0, 0, 0, 0);
+            return clip(self.saved);
+        }
         self.save(target, x, y);
         self.paint(target, x, y);
         clip(self.saved)
@@ -150,6 +154,10 @@ impl Cursor {
     pub fn relocate(&mut self, target: &mut DumbBuffer, x: i32, y: i32) -> [Clip; 2] {
         let old = self.saved;
         self.restore(target);
+        if self.hidden() {
+            self.saved = (0, 0, 0, 0);
+            return [clip(old), clip(self.saved)];
+        }
         self.save(target, x, y);
         self.paint(target, x, y);
         [clip(old), clip(self.saved)]
@@ -213,6 +221,10 @@ impl Cursor {
     fn origin(&self, x: i32, y: i32) -> (i32, i32) {
         let hotspot = self.shapes[self.active_shape].hotspot;
         (x - hotspot.0, y - hotspot.1)
+    }
+
+    fn hidden(&self) -> bool {
+        self.active_shape == display_proto::CURSOR_NONE as usize
     }
 }
 
@@ -305,6 +317,15 @@ mod tests {
 
         assert!(cursor.set_shape(u32::MAX));
         assert_eq!(cursor.origin(100, 80), (100, 80));
+    }
+
+    #[test]
+    fn hidden_shape_uses_no_bitmap_slot() {
+        let mut cursor = cursor();
+
+        assert!(cursor.set_shape(display_proto::CURSOR_NONE));
+        assert!(cursor.hidden());
+        assert_eq!(cursor.active_shape, SHAPE_COUNT);
     }
 
     /// Guards the two `.lc2` decode invariants `paint()` relies on: the 4 disk

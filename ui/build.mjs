@@ -101,34 +101,75 @@ const properties = new Set([
   "border-left-color", "border-left-style", "border-left-width", "border-radius", "border-right",
   "border-right-color", "border-right-style", "border-right-width", "border-style", "border-top",
   "border-top-color", "border-top-style", "border-top-width", "border-width",
-  "bottom", "box-shadow", "box-sizing", "color", "display", "flex", "flex-direction", "flex-wrap",
+  "animation", "bottom", "box-shadow", "box-sizing", "color", "display", "flex", "flex-direction", "flex-wrap",
   "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
   "left", "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top",
   "max-height", "max-width", "min-height",
   "min-width", "opacity", "overflow", "overflow-x", "overflow-y", "padding", "pointer-events", "position",
   "padding-bottom", "padding-left", "padding-right", "padding-top", "right", "cursor", "text-align",
-  "text-overflow", "text-shadow", "top", "white-space", "width", "z-index",
+  "text-overflow", "text-shadow", "top", "transform", "transition", "white-space", "width", "z-index",
 ]);
 
 function validateCss(path, source) {
-  if (/@|::|\[|\]|\*/.test(source)) {
-    throw new Error(`${relative(root, path)}: unsupported CSS selector or at-rule`);
-  }
-  for (const block of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const selector = block[1].trim();
-    if (!selector || selector.includes(",")) {
-      throw new Error(`${relative(root, path)}: selectors must be explicit and singular`);
-    }
-    for (const declaration of block[2].split(";")) {
+  const location = relative(root, path);
+  const declarations = (body) => {
+    for (const declaration of body.split(";")) {
       const text = declaration.trim();
       if (!text) continue;
       const separator = text.indexOf(":");
       const property = text.slice(0, separator).trim();
       if (separator < 1 || (!property.startsWith("--") && !properties.has(property))) {
-        throw new Error(`${relative(root, path)}: unsupported CSS property '${property}'`);
+        throw new Error(`${location}: unsupported CSS property '${property}'`);
       }
     }
-  }
+  };
+  const blocks = (text) => {
+    const output = [];
+    let cursor = 0;
+    while (cursor < text.length) {
+      while (cursor < text.length && /\s/.test(text[cursor])) cursor += 1;
+      if (cursor === text.length) break;
+      const open = text.indexOf("{", cursor);
+      if (open < 0) throw new Error(`${location}: CSS contains trailing input`);
+      const header = text.slice(cursor, open).trim();
+      let depth = 1;
+      let close = open + 1;
+      for (; close < text.length && depth > 0; close += 1) {
+        if (text[close] === "{") depth += 1;
+        if (text[close] === "}") depth -= 1;
+      }
+      if (depth !== 0) throw new Error(`${location}: CSS block is unterminated`);
+      output.push([header, text.slice(open + 1, close - 1)]);
+      cursor = close;
+    }
+    return output;
+  };
+  const validate = (text, context = "rules") => {
+    for (const [header, body] of blocks(text)) {
+      if (header.startsWith("@media ")) {
+        if (!["(prefers-reduced-motion: reduce)", "(prefers-reduced-motion: no-preference)"]
+          .includes(header.slice(7).trim())) {
+          throw new Error(`${location}: unsupported media query '${header.slice(7).trim()}'`);
+        }
+        validate(body);
+      } else if (header.startsWith("@keyframes ")) {
+        if (!header.slice(11).trim()) throw new Error(`${location}: @keyframes requires a name`);
+        validate(body, "keyframes");
+      } else if (context === "keyframes") {
+        if (!header.split(",").every((selector) =>
+          /^(from|to|\d+(\.\d+)?%)$/.test(selector.trim()))) {
+          throw new Error(`${location}: invalid keyframe selector '${header}'`);
+        }
+        declarations(body);
+      } else {
+        if (!header || header.includes(",") || /::|\[|\]|\*/.test(header)) {
+          throw new Error(`${location}: selectors must be explicit and singular`);
+        }
+        declarations(body);
+      }
+    }
+  };
+  validate(source);
 }
 
 if (!checkOnly) {
@@ -184,6 +225,8 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/icon-documents.png"), join(assets, "documents.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-trash.png"), join(assets, "trash.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-speaker.png"), join(assets, "speaker.png"));
+    await copyFile(join(root, "../assets/splash/aurora-background.png"), join(assets, "aurora-background.png"));
+    await copyFile(join(root, "../assets/splash/aurora-logo.png"), join(assets, "aurora-logo.png"));
   }
   await copyFile(join(root, "../assets/sprites-src/icon-terminal.png"), join(assets, "terminal.png"));
   if (id === "file-manager") {

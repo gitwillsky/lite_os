@@ -14,7 +14,7 @@ pub(super) enum WireEvent {
     Public(Event),
     Accepted(u64),
     Released(u32),
-    Presented(u64),
+    Presented { revision: u64, monotonic_ns: u64 },
 }
 
 pub(super) fn receive_configure(stream: &UnixStream, surface_id: u32) -> io::Result<Configure> {
@@ -39,7 +39,13 @@ pub(super) fn parse_event(
     Some(match kind {
         MessageKind::Accepted => WireEvent::Accepted(Accepted::parse(payload)?.revision),
         MessageKind::BufferRelease => WireEvent::Released(BufferRelease::parse(payload)?.buffer_id),
-        MessageKind::Presented => WireEvent::Presented(Presented::parse(payload)?.revision),
+        MessageKind::Presented => {
+            let presented = Presented::parse(payload)?;
+            WireEvent::Presented {
+                revision: presented.revision,
+                monotonic_ns: presented.monotonic_ns,
+            }
+        }
         MessageKind::AppOpened if own_surface == 0 => {
             let event = AppOpened::parse(payload)?;
             WireEvent::Public(Event::AppOpened {
@@ -89,4 +95,32 @@ pub(super) fn parse_event(
         }
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use display_proto::{MessageKind, Presented, parse_frame};
+
+    use super::{WireEvent, parse_event};
+
+    #[test]
+    fn presented_keeps_the_compositor_timeline_timestamp() {
+        let mut bytes = [0u8; 64];
+        let encoded = Presented {
+            revision: 7,
+            frame_sequence: 9,
+            monotonic_ns: 11_000_000,
+        }
+        .encode(&mut bytes)
+        .expect("presented encodes");
+        let frame = parse_frame(encoded).expect("presented frame parses");
+
+        assert!(matches!(
+            parse_event(MessageKind::Presented, frame.payload(), 0),
+            Some(WireEvent::Presented {
+                revision: 7,
+                monotonic_ns: 11_000_000
+            })
+        ));
+    }
 }
