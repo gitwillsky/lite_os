@@ -54,7 +54,9 @@
 - desktop 额外持有一个 full-size move-underlay scratch；它不进入普通 scene，也不形成第三条 presentation
   路径。grab 开始后 compositor 将其 pin 为只读，最终 canonical window scene 呈现后立即 release。
 - compositor 的双 scanout 分别记录最后 scene revision；复用 back scanout 时重画自该 revision 以来的
-  damage 并集。damage 最多 64 个矩形，溢出合并为一个 bounding rectangle；epoch 或历史缺口才全屏重画。
+  damage 并集。move grab 期间每个 scanout 额外记录移动窗口组最后绘制的 rect，下一次 full compose
+  必把该 stale rect 并入 damage，否则并发 surface 提交会在 flip 后留下旧临时位置的残影。
+  damage 最多 64 个矩形，溢出合并为一个 bounding rectangle；epoch 或历史缺口才全屏重画。
 - LiteUI commit 只发送 revision 后立即返回，不同步等待 `PRESENTED`。两个 client buffer 都在途时保留
   最新 dirty host tree，任一 release 到达后只渲染一次最新状态；`ACCEPTED`、`PRESENTED` 与
   `BUFFER_RELEASE` 仍按 revision 校验，不能把异步节奏降级为无序提交。
