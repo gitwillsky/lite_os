@@ -22,6 +22,8 @@ pub enum Action {
         max_x: i32,
         max_y: i32,
     },
+    /// Atomically replace the compositor's global accelerator table.
+    SetAccelerators(Vec<display_proto::AcceleratorChord>),
     /// Request system shutdown.
     Shutdown,
     /// Send bytes to the terminal helper.

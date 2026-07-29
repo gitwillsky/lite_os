@@ -2,6 +2,8 @@
 
 mod actions;
 mod app_registry;
+#[cfg(test)]
+mod bundle_tests;
 mod clipboard;
 mod filesystem;
 mod media;
@@ -20,7 +22,7 @@ use std::{
 };
 
 use quickjs_runtime::{EngineError, NativeHost, Role};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use scalar::{parse_i32, parse_u32, parse_u64};
 
@@ -198,6 +200,14 @@ impl State {
     }
 }
 
+/// One JSON chord accepted by `desktop.accelerators.set`; it mirrors
+/// [`display_proto::AcceleratorChord`] but is decodable from the JS payload.
+#[derive(Deserialize)]
+struct AcceleratorChordPayload {
+    modifiers: u32,
+    code: u32,
+}
+
 /// QuickJS native bridge implementation for one LiteUI process.
 pub struct Host {
     role: Role,
@@ -283,6 +293,32 @@ impl Host {
         });
         Ok(serial.to_string())
     }
+
+    /// Validates and queues one atomic accelerator-table replacement.
+    ///
+    /// The chord list is the desktop's complete shortcut set: overlong tables
+    /// are rejected here so the deferred wire encode in
+    /// [`display_proto::AcceleratorSet::encode`] can never fail on length.
+    fn desktop_accelerators(&self, payload: &str) -> Result<String, EngineError> {
+        let chords: Vec<AcceleratorChordPayload> = serde_json::from_str(payload)
+            .map_err(|error| EngineError::from_host(error.to_string()))?;
+        if chords.len() > display_proto::MAX_ACCELERATORS {
+            return Err(EngineError::from_host("accelerator table exceeds limit"));
+        }
+        self.state
+            .actions
+            .borrow_mut()
+            .push(Action::SetAccelerators(
+                chords
+                    .into_iter()
+                    .map(|chord| display_proto::AcceleratorChord {
+                        modifiers: chord.modifiers,
+                        code: chord.code,
+                    })
+                    .collect(),
+            ));
+        Ok(String::new())
+    }
 }
 
 impl NativeHost for Host {
@@ -339,6 +375,9 @@ impl NativeHost for Host {
             }
             "desktop.surfaces" if self.role == Role::Desktop => serde_json::to_string(&*self.state.surfaces.borrow()).map_err(|error| EngineError::from_host(error.to_string())),
             "desktop.configure" if self.role == Role::Desktop => self.desktop_configure(payload),
+            "desktop.accelerators.set" if self.role == Role::Desktop => {
+                self.desktop_accelerators(payload)
+            }
             "desktop.focus" if self.role == Role::Desktop => {
                 let surface_id = parse_u32(Some(payload), "focused surface")?;
                 self.state.focused_surface.set(surface_id);
@@ -408,165 +447,4 @@ impl NativeHost for Host {
             ))),
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{fs, path::PathBuf};
-
-    use quickjs_runtime::{Engine, Role};
-
-    use super::Host;
-
-    fn host(role: Role, root: PathBuf) -> (Host, std::rc::Rc<super::State>) {
-        let audio_role = if role == Role::Desktop {
-            audio_proto::ClientRole::Desktop
-        } else {
-            audio_proto::ClientRole::Media
-        };
-        let (commands, _events) = crate::audio::start(audio_role).expect("audio worker");
-        Host::new(role, root, commands)
-    }
-
-    /// Mounts one app bundle like the production session and asserts every
-    /// `<img src>` in its first frame resolves to a real file under the app
-    /// root — the exact failure a missing build.mjs asset copy causes at
-    /// first paint in the guest.
-    fn assert_app_bundle_mounts_with_assets(app: &str) {
-        let root = std::env::var_os("LITE_UI_TEST_ASSETS")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
-        let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
-        let bundle = fs::read(root.join(app).join("main.js")).expect("app bundle");
-        let app_root = root.join(app);
-        let (host, state) = host(Role::App, app_root.clone());
-        let mut engine = Engine::open(Role::App).expect("app engine");
-        engine.install_host(host);
-        engine
-            .evaluate("runtime.js", &runtime)
-            .expect("load runtime");
-        engine.run_jobs().expect("runtime jobs");
-        engine
-            .evaluate("app.js", &bundle)
-            .expect("mount app");
-        engine.run_jobs().expect("app jobs");
-        let scene = state.scene_if_dirty().expect("app must publish its root");
-        let mut stack: Vec<&crate::tree::Node> = scene.iter().collect();
-        let mut srcs = Vec::new();
-        while let Some(node) = stack.pop() {
-            if node.kind == "img"
-                && let Some(src) = node.props.get("src").and_then(serde_json::Value::as_str)
-            {
-                srcs.push(src.to_owned());
-            }
-            stack.extend(node.children.iter());
-        }
-        assert!(!srcs.is_empty(), "first frame should reference assets");
-        for src in srcs {
-            assert!(
-                app_root.join(&src).is_file(),
-                "first-frame asset missing from bundle: {app}/{src}"
-            );
-        }
-    }
-
-    #[test]
-    fn explorer_apps_mount_with_all_first_frame_assets() {
-        assert_app_bundle_mounts_with_assets("my-computer");
-        assert_app_bundle_mounts_with_assets("file-manager");
-    }
-
-    #[test]
-    fn quickjs_bridge_publishes_only_the_latest_complete_scene() {
-        let (host, state) = host(Role::Desktop, PathBuf::from("/"));
-        let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
-        engine.install_host(host);
-        engine
-            .evaluate(
-                "host.js",
-                br##"
-                __liteNative("scene.commit", '[{"id":1,"type":"div","props":{},"children":[]}]');
-                __liteNative("scene.commit", '[{"id":2,"type":"span","props":{},"children":[{"id":3,"type":"#text","text":"ready"}]}]');
-                "##,
-            )
-            .expect("valid host commits must evaluate");
-        assert_eq!(
-            state.scene_if_dirty().expect("latest scene")[0].kind,
-            "span"
-        );
-        // The dirty flag is consumed by the read: a second poll sees no work,
-        // and an explicit invalidation offers the same retained scene again.
-        assert!(state.scene_if_dirty().is_none());
-        state.invalidate_scene();
-        assert!(state.scene_if_dirty().is_some());
-    }
-
-    #[test]
-    fn checked_desktop_bundle_mounts_in_the_bounded_engine() {
-        let root = std::env::var_os("LITE_UI_TEST_ASSETS")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
-        let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
-        let desktop = fs::read(root.join("desktop/main.js")).expect("desktop bundle");
-        let (host, state) = host(Role::Desktop, root.clone());
-        let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
-        engine.install_host(host);
-        engine
-            .evaluate("runtime.js", &runtime)
-            .expect("load runtime");
-        engine.run_jobs().expect("runtime jobs");
-        engine
-            .evaluate("desktop.js", &desktop)
-            .expect("mount desktop");
-        engine.run_jobs().expect("desktop jobs");
-        assert!(
-            state.scene_if_dirty().is_some(),
-            "desktop must publish its root"
-        );
-    }
-
-    #[test]
-    fn audible_media_requires_physical_activation_and_system_audio_is_desktop_only() {
-        let (host, state) = host(Role::App, PathBuf::from("/"));
-        let mut engine = Engine::open(Role::App).expect("app engine");
-        engine.install_host(host);
-        engine
-            .evaluate(
-                "create.js",
-                br#"globalThis.mediaId = Number(__liteNative("media.create", "{}"));"#,
-            )
-            .expect("create media");
-        assert!(
-            engine
-                .evaluate(
-                    "denied.js",
-                    br#"__liteNative("media.play", JSON.stringify({id:mediaId,muted:false}));"#,
-                )
-                .is_err(),
-            "script cannot synthesize an audible playback grant"
-        );
-        engine
-            .evaluate(
-                "muted.js",
-                br#"__liteNative("media.gain", JSON.stringify({id:mediaId,volume:1,muted:true}));"#,
-            )
-            .expect("muted playback state does not require activation");
-        assert!(
-            engine
-                .evaluate(
-                    "unmute.js",
-                    br#"__liteNative("media.gain", JSON.stringify({id:mediaId,volume:1,muted:false}));"#,
-                )
-                .is_err(),
-            "unmuting without activation must remain atomic at the host boundary"
-        );
-        state.grant_media_playback();
-        assert!(
-            engine
-                .evaluate("system.js", br#"__liteNative("audio-system.get", "");"#)
-                .is_err(),
-            "ordinary app cannot acquire desktop system-volume capability"
-        );
-    }
-
 }

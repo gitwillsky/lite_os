@@ -17,9 +17,11 @@ interface TaskbarProps {
   startOpen: boolean;
   onStart: () => void;
   onActivate: (id: number) => void;
+  /** Right-click on a task button opens that window's system menu at (x, y). */
+  onTaskMenu: (id: number, x: number, y: number) => void;
 }
 
-export function Taskbar({ windows, activeId, startOpen, onStart, onActivate }: TaskbarProps) {
+export function Taskbar({ windows, activeId, startOpen, onStart, onActivate, onTaskMenu }: TaskbarProps) {
   const [now, setNow] = useState(() => clock());
   const [audioOpen, setAudioOpen] = useState(false);
   const [master, setMaster] = useState({ percent: 75, muted: false });
@@ -53,7 +55,15 @@ export function Taskbar({ windows, activeId, startOpen, onStart, onActivate }: T
       </div>
       <div className="taskbar__tasks">
         {windows.map((window) => (
-          <div key={window.id} className={`task ${window.id === activeId ? "task--active" : ""}`} onClick={() => onActivate(window.id)}>
+          <div
+            key={window.id}
+            className={`task ${window.id === activeId ? "task--active" : ""}`}
+            onClick={() => onActivate(window.id)}
+            onContextMenu={(rawEvent) => {
+              const event = rawEvent as unknown as LitePointerEvent;
+              onTaskMenu(window.id, event.x, event.y);
+            }}
+          >
             <img className="task__icon" src={window.icon}/><span>{window.title}</span>
           </div>
         ))}

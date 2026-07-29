@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "check": "node build.mjs --check && tsc --noEmit && node --test src/design-system/window-geometry.test.mjs src/desktop/surface-state.test.mjs"
+    "check": "node build.mjs --check && tsc --noEmit && node --test src/design-system/window-geometry.test.mjs src/design-system/system-menu.test.mjs src/desktop/surface-state.test.mjs src/desktop/app-switcher.test.mjs"
   },
   "dependencies": {
     "react": "19.2.7",

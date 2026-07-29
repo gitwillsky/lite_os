@@ -43,6 +43,16 @@ export function StartMenu({ apps, onLaunch, onShutdown }: StartMenuProps) {
   const itemClass = (id: string, extra = "") =>
     `classic-menu-item${extra}${hovered === id ? " classic-menu-item--hover" : ""}`;
 
+  // Programs flyout. The flyout sits at `left: 100%` of the Programs row — OUTSIDE
+  // the row's box — so crossing over fires the row's pointer-leave before the
+  // flyout's pointer-enter. Tracking the hover ZONE (which of the two siblings
+  // is hovered) instead of one boolean keeps the flyout open through that gap:
+  // leaving the row only closes the zone the pointer never re-entered.
+  const [flyoutZone, setFlyoutZone] = useState<"item" | "flyout" | null>(null);
+  const enterZone = useCallback((zone: "item" | "flyout") => setFlyoutZone(zone), []);
+  const leaveZone = useCallback((zone: "item" | "flyout") =>
+    setFlyoutZone((current) => (current === zone ? null : current)), []);
+
   return (
     <div className="start-menu">
       <div className="start-menu__rail"><span>L</span><span>I</span><span>T</span><span>E</span><span>O</span><span>S</span></div>
@@ -58,7 +68,34 @@ export function StartMenu({ apps, onLaunch, onShutdown }: StartMenuProps) {
           </div>
         ))}
         <div className="menu-separator"/>
-        {STATIC_ITEMS.map((item) => (
+        <div
+          className={`${itemClass("programs")} start-menu__programs`}
+          onPointerEnter={() => { enter("programs"); enterZone("item"); }}
+          onPointerLeave={() => { leave("programs"); leaveZone("item"); }}
+          onClick={() => setFlyoutZone((zone) => (zone === null ? "item" : null))}
+        >
+          <span>Programs</span>
+          <span className="classic-menu-item__arrow">&gt;</span>
+          {flyoutZone !== null && (
+            <div
+              className="start-menu__flyout"
+              onPointerEnter={() => enterZone("flyout")}
+              onPointerLeave={() => leaveZone("flyout")}
+            >
+              {apps.map((app) => (
+                <div
+                  key={app.id}
+                  className={itemClass(`flyout-${app.id}`, " classic-menu-item--app")}
+                  {...handlers(`flyout-${app.id}`)}
+                  onClick={() => onLaunch(app.id)}
+                >
+                  <img src={app.icon}/><span>{app.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {STATIC_ITEMS.filter((item) => item.id !== "programs").map((item) => (
           <div
             key={item.id}
             className={`${itemClass(item.id)} classic-menu-item--disabled`}

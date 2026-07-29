@@ -3,6 +3,7 @@
 //! `compositor`、desktop-mode LiteUI 与 app-mode LiteUI 通过同一 AF_UNIX stream 使用本协议。
 //! 协议只描述 flat scene、surface、buffer 与输入 mechanism；窗口 policy、React、CSS 与主题不进入此 seam。
 
+mod accelerator;
 mod buffer;
 mod clipboard;
 mod codec;
@@ -14,6 +15,7 @@ mod scene;
 mod surface;
 mod transport;
 
+pub use accelerator::{AcceleratorChord, AcceleratorChordIterator, AcceleratorSet};
 pub use buffer::{BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease};
 pub use clipboard::{ClipboardData, ClipboardRead, ClipboardWrite, MAX_CLIPBOARD_TEXT};
 pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
@@ -32,8 +34,8 @@ pub use surface::{
 };
 pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
 
-/// 唯一受支持的协议版本；不提供版本协商或兼容 decoder。
-pub const PROTOCOL_VERSION: u32 = 5;
+/// The only supported protocol version; no negotiation or compat decoder.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";
@@ -64,6 +66,9 @@ pub const MAX_CONNECTION_FRAME_EQUIVALENTS: u64 = 4;
 
 /// 整个 session 最多持有的 client full-frame equivalent 数量。
 pub const MAX_SESSION_FRAME_EQUIVALENTS: u64 = 8;
+
+/// Maximum chords in one desktop-submitted global accelerator table.
+pub const MAX_ACCELERATORS: usize = 16;
 
 /// 逻辑 CSS pixel 到物理 pixel 的固定比例。
 pub const DEVICE_SCALE_FACTOR: u32 = 2;

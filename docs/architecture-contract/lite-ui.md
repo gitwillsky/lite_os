@@ -4,6 +4,8 @@
 
 - `compositor` 独占 DRM master/OFD、evdev fd、scanout pair、page-flip state、client registry、buffer
   quota、last-presented scene、input routing、pointer capture、cursor position 与 session epoch。
+  `compositor/session/accelerator.rs` 独占 global accelerator chord 表与 key-grab 状态机；
+  `display-proto/accelerator.rs` 独占 `AcceleratorSet` wire codec。
 - React desktop 独占 persistent window policy state。compositor 只保存已接受/已呈现 scene snapshot 与
   move-grab temporary transform，不得复制窗口位置、z-order、active/minimized/maximized policy。
 - 每个 app connection 独占一个 top-level surface content revision；一个 OS process/QuickJS VM/React
@@ -76,8 +78,12 @@
   listener，再执行 scroll default action；`overflow: hidden/clip` 只裁剪且不响应 wheel，
   `overflow: auto` 仅在实际 overflow 时显示 scrollbar，`overflow: scroll` 始终显示。短内容的 offset
   必须为零；content/viewport 缩小时必须 clamp；嵌套容器只把本层未消费 delta 传播给 ancestor。
-- global accelerator table 由 desktop 原子提交，compositor 只匹配固定 physical chord 并把完整 down/up
-  sequence 路由 desktop。窗口 policy 与 shortcut action 不得进入 compositor。
+- global accelerator table 由 desktop 经 `AcceleratorSet`（kind=26，`count` + `count × {modifiers, code}`，
+  不超过 `MAX_ACCELERATORS=16` 条，空表清空）原子提交；app session 发送按协议错误处理。compositor
+  只做 fixed chord 精确匹配（modifier mask 精确相等，repeat 不触发）：命中后进入 key grab，grab 期间
+  全部 key 事件（含 modifier 自身变化与无关 key）路由 desktop（surface_id=0），chord 的全部 key 松开
+  （次序无关）才结束并恢复 focused surface 路由；desktop 断开或 epoch reset 强制结束。modifier mask
+  位定义固定为 Shift=1、Ctrl=2、Alt=4、Super=8。窗口 policy 与 shortcut action 不得进入 compositor。
 - compositor 是 session clipboard、focused connection routing 与 SPICE vdagent transport 的唯一
   owner。display protocol 的 read/write/data 必须携带 exact surface/request identity，单次只接受
   不超过 60 KiB 的 UTF-8 text；host 数据按需请求，异步结果只能返回仍存活的原请求连接。

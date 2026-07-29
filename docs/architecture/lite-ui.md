@@ -14,7 +14,8 @@
   `renderer/paint.rs` 独占递归 paint walk，`display/allocation.rs` 独占 buffer allocation round-trip，
   `host/filesystem.rs` 独占 filesystem-backed `File` 的只读文件系统 host bridge；`audio/` 独占每进程
   media worker、decode/resample、seek generation 与 audio-service transport。
-- `compositor/session.rs` 保存 epoch 与 client registry；`session/client.rs` 只负责握手和连接角色固定。
+- `compositor/session.rs` 保存 epoch 与 client registry；`session/client.rs` 只负责握手和连接角色固定；
+  `session/accelerator.rs` 独占 chord 匹配与 key grab（命中后完整 key sequence 只路由 desktop）。
   `scanout.rs` 只保留生产合成路径，其 white-box 测试位于 `scanout/tests.rs`。
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
   Promise job drain、值转换、exception、heap/stack 与 interrupt budget。`lite-ui` 只消费其安全窄接口。
@@ -117,8 +118,11 @@
 - target ESM loader 只接受固定 system bare specifier；项目相对 import 在 host 合并进 `main.js`。
   不支持 runtime relative/dynamic import、CommonJS、remote import 或 version negotiation。
 - desktop-only `lite:apps` 扫描一层 registry，提供只读 metadata、opaque icon 与 `launch(id)`；
-  desktop-only `lite:desktop` 提供 surface lifecycle/configure/close/move/accelerator mechanism。
-  desktop-only `lite:audio-system` 只投影 audio-service master snapshot 和更新请求；普通 app
+  desktop-only `lite:desktop` 提供 surface lifecycle/configure/close/move 与 `setAccelerators(chords)`
+  （全量替换 global accelerator table，不超过 16 条，空表清空；chord 命中后的完整 down/up sequence
+  经全局 `onKeyDown` 到达 desktop）。desktop 注册固定三条 chord：Alt+Tab（MRU 切换器，含 minimized
+  窗口，Tab/repeat 循环、Shift 反向、Alt 松开提交）、Alt+F4（关闭 active 窗口）与 Ctrl+Esc（开关
+  开始菜单）。desktop-only `lite:audio-system` 只投影 audio-service master snapshot 和更新请求；普通 app
   无法加载该 module。
   desktop 首次呈现不隐式 launch app，应用只由用户操作显式启动。普通 helper 只通过
   `lite:process.spawn(argv, stdio)`，不解析 shell string。

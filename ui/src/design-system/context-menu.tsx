@@ -13,6 +13,10 @@ interface ContextMenuItem {
   id: string;
   label: string;
   onSelect?: () => void;
+  /** Disabled rows render grayed and never dispatch `onSelect` (XP semantics). */
+  disabled?: boolean;
+  /** A separator renders the etched divider row; its label is ignored. */
+  separator?: boolean;
 }
 
 interface ContextMenuProps {
@@ -48,14 +52,18 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   return (
     <div className="context-menu" style={{ left: x, top: y }}>
       {items.map((item) => (
-        <div
-          key={item.id}
-          className={itemClass(item.id)}
-          {...handlers(item.id)}
-          onClick={() => { item.onSelect?.(); onClose(); }}
-        >
-          <span>{item.label}</span>
-        </div>
+        item.separator ? (
+          <div key={item.id} className="menu-separator"/>
+        ) : (
+          <div
+            key={item.id}
+            className={`${itemClass(item.id)}${item.disabled ? " classic-menu-item--disabled" : ""}`}
+            {...(item.disabled ? {} : handlers(item.id))}
+            onClick={() => { if (!item.disabled) { item.onSelect?.(); onClose(); } }}
+          >
+            <span>{item.label}</span>
+          </div>
+        )
       ))}
     </div>
   );

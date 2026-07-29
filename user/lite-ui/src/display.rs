@@ -13,10 +13,10 @@ use std::{
 };
 
 use display_proto::{
-    CloseRequest, Configure, HelloApp, HelloDesktop, InputKey, InputPointer, InputScroll,
-    MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, Rectangles,
-    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, Welcome, parse_frame,
-    recv_frame_blocking, send_message,
+    AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, InputKey,
+    InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase,
+    Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit,
+    Welcome, parse_frame, recv_frame_blocking, send_message,
 };
 use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
@@ -399,6 +399,18 @@ impl Display {
         let message = configure
             .encode(&mut bytes)
             .ok_or_else(|| io::Error::other("configure encoding failed"))?;
+        send_message(&self.stream, message)
+    }
+
+    /// Atomically replaces the compositor's global accelerator table.
+    ///
+    /// Desktop-only: the compositor rejects the message from an app session.
+    pub fn set_accelerators(&self, chords: &[AcceleratorChord]) -> io::Result<()> {
+        // Header (8) + count (4) + MAX_ACCELERATORS chords of 8 bytes.
+        let mut bytes = [0u8; 8 + 4 + 16 * 8];
+        let message = AcceleratorSet { chords }
+            .encode(&mut bytes)
+            .ok_or_else(|| io::Error::other("accelerator-set encoding failed"))?;
         send_message(&self.stream, message)
     }
 

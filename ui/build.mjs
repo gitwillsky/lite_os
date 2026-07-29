@@ -28,6 +28,7 @@ const liteModules = {
     export const beginMove = (id, serial, minX, minY, maxX, maxY) =>
       globalThis.__liteNative("desktop.move.begin", [id, serial, minX, minY, maxX, maxY].join(":"));
     export const configure = (id, width, height) => Number(globalThis.__liteNative("desktop.configure", id + ":" + width + ":" + height));
+    export const setAccelerators = (chords) => globalThis.__liteNative("desktop.accelerators.set", JSON.stringify(chords));
     export const shutdown = () => globalThis.__liteNative("desktop.shutdown", "");
     export const clock = () => Number(globalThis.__liteNative("time.clock", ""));
   `,

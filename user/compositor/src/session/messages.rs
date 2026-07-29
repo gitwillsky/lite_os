@@ -3,7 +3,8 @@
 use std::io;
 
 use display_proto::{
-    BufferAlloc, CloseRequest, Configure, MessageKind, MoveBegin, SetCursorShape, SurfaceCommit,
+    AcceleratorSet, BufferAlloc, CloseRequest, Configure, MessageKind, MoveBegin, SetCursorShape,
+    SurfaceCommit,
 };
 
 use super::{Owner, Scene, Session, invalid, wire::receive};
@@ -47,6 +48,12 @@ impl Session {
                 Ok(None)
             }
             MessageKind::SceneCommit => self.accept_scene(&payload).map(Some),
+            MessageKind::AcceleratorSet => {
+                let chords = AcceleratorSet::parse(&payload)
+                    .ok_or_else(|| invalid("invalid accelerator set"))?;
+                self.accelerators.replace(chords);
+                Ok(None)
+            }
             MessageKind::SetCursorShape => {
                 let request = SetCursorShape::parse(&payload)
                     .ok_or_else(|| invalid("invalid set cursor shape"))?;

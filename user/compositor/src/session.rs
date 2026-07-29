@@ -1,5 +1,6 @@
 //! Strict multi-process display session and compositor-owned client buffers.
 
+mod accelerator;
 mod buffers;
 mod clipboard_bridge;
 mod client;
@@ -14,6 +15,8 @@ use buffers::Owner;
 use cursor::{cursor_on_focus_change, cursor_request};
 pub use scene::{Node, Scene};
 use wire::{new_epoch, send_accepted, send_presented};
+
+use accelerator::Accelerators;
 
 use std::{
     collections::HashMap,
@@ -113,6 +116,11 @@ pub struct Session {
     /// surface, and a focus change resets the cursor to the default arrow so a
     /// prior surface's shape never leaks onto the next one.
     pointer_surface: Option<u32>,
+    /// Global accelerator chords owned by the desktop connection (atomic
+    /// `AcceleratorSet` replacement) plus the active key grab. Cleared on
+    /// epoch reset; without it every key routes only to the focused surface
+    /// and system shortcuts cannot work.
+    accelerators: Accelerators,
     clipboard: crate::clipboard::Clipboard,
 }
 
@@ -163,6 +171,7 @@ impl Session {
             },
             pending_cursor_shape: None,
             pointer_surface: None,
+            accelerators: Accelerators::new(),
             clipboard,
         })
     }
@@ -527,6 +536,7 @@ impl Session {
         self.move_damage = None;
         self.presented_nodes.clear();
         self.desktop_current_buffers.clear();
+        self.accelerators.clear();
         self.clipboard.reset_session();
         self.epoch = self.epoch.wrapping_add(1);
     }

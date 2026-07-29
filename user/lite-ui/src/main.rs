@@ -374,6 +374,7 @@ fn process_actions(
                 height,
             })?,
             Action::Close(surface_id) => display.close(surface_id)?,
+            Action::SetAccelerators(chords) => display.set_accelerators(&chords)?,
             Action::BeginMove {
                 surface_id,
                 serial,

@@ -56,6 +56,8 @@ pub enum MessageKind {
     ClipboardWrite = 24,
     /// Compositor returns clipboard text for one exact request.
     ClipboardData = 25,
+    /// Desktop atomically replaces the global accelerator chord table.
+    AcceleratorSet = 26,
 }
 
 impl MessageKind {
@@ -95,6 +97,7 @@ impl MessageKind {
             23 => Self::ClipboardRead,
             24 => Self::ClipboardWrite,
             25 => Self::ClipboardData,
+            26 => Self::AcceleratorSet,
             _ => return None,
         })
     }

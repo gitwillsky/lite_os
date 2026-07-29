@@ -1,19 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apps, launch } from "lite:apps";
-import { beginMove, close, configure, focus, move, surfaces, shutdown } from "lite:desktop";
+import { beginMove, close, configure, focus, move, surfaces, shutdown, setAccelerators } from "lite:desktop";
 import { Window } from "../design-system/window.tsx";
 import { Taskbar } from "../design-system/taskbar.tsx";
 import { StartMenu } from "../design-system/start-menu.tsx";
 import { ContextMenu } from "../design-system/context-menu.tsx";
+import { AppSwitcher } from "../design-system/app-switcher.tsx";
+import { systemMenuItems } from "../design-system/system-menu.ts";
 import { PropertiesPopup } from "../design-system/properties-popup.tsx";
 import { constrainResize } from "../design-system/window-geometry.ts";
 import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts";
 import { applySurfaceMove, reconcileSurfaces } from "./surface-state.ts";
+import { cycle, openSwitcher, reconcileSwitcher, selectedCandidate } from "./app-switcher.ts";
+import type { SwitcherState } from "./app-switcher.ts";
 
 interface DesktopMenuItem {
   id: string;
   label: string;
   onSelect?: () => void;
+  disabled?: boolean;
+  separator?: boolean;
 }
 
 interface MenuState {
@@ -39,6 +45,17 @@ interface PropertiesState {
 
 // Linux evdev KEY_ESC. Escape dismisses open popups when the desktop is focused.
 const KEY_ESC = 1;
+// evdev codes for the desktop accelerator chords and their grab sequences.
+const KEY_TAB = 15;
+const KEY_LEFTALT = 56;
+const KEY_F4 = 62;
+const KEY_RIGHTALT = 100;
+// display-proto modifier mask bits (compositor input.rs `update_modifier`):
+// Shift = 1, Ctrl = 2, Alt = 4, Super = 8. Chord matching is exact, so the
+// registered chords below list the full required mask.
+const MOD_SHIFT = 1;
+const MOD_CTRL = 2;
+const MOD_ALT = 4;
 
 // The taskbar-free area every maximized window covers; move clamps agree.
 const WORK_AREA = { x: 0, y: 0, width: 1504, height: 816 };
@@ -57,6 +74,15 @@ export default function Desktop() {
   const openRef = useRef(open);
   openRef.current = open;
   const [activeId, setActiveId] = useState<number>(() => open.at(-1)?.id ?? 0);
+  // Live mirror for the key handler (Alt+F4 closes the active window).
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  // Open Alt+Tab panel; null while no grab is in progress.
+  const [switcher, setSwitcher] = useState<SwitcherState | null>(null);
+  // Live mirror so the key handler commits the latest selection even when the
+  // Alt-up event lands before the render of the last Tab cycle.
+  const switcherRef = useRef(switcher);
+  switcherRef.current = switcher;
   const [minimized, setMinimized] = useState<Set<number>>(() => new Set());
   // Live mirror of `minimized` so the stable `[]`-deps subscribe callback and
   // callbacks can read the current set without a stale closure or a state
@@ -173,12 +199,73 @@ export default function Desktop() {
     return unsubscribe;
   }, []);
 
+  // Global chords. A match key-grabs the chord: the whole sequence (Tab
+  // downs/repeats, Shift transitions, the final Alt up) streams to this
+  // desktop's root onKeyDown until every chord key is released.
+  useEffect(() => {
+    setAccelerators([
+      { modifiers: MOD_ALT, code: KEY_TAB },
+      { modifiers: MOD_ALT, code: KEY_F4 },
+      { modifiers: MOD_CTRL, code: KEY_ESC },
+    ]);
+  }, []);
+
+  // A window opening or closing mid-grab changes the candidate list; clamp the
+  // selection (and drop the panel when nothing remains) before Alt is released.
+  useEffect(() => {
+    setSwitcher((state) => (state ? reconcileSwitcher(state, open) : state));
+  }, [open]);
+
   const launchApp = useCallback((id: string) => { launch(id); setStartOpen(false); }, []);
   const closeWindow = useCallback((id: number) => {
     close(id);
     clearResizePreview(id);
     setOpen((items) => items.filter((item) => item.id !== id));
   }, [clearResizePreview]);
+  // Root key handler: plain Escape dismissal plus the grabbed accelerator
+  // sequences (Alt+Tab switcher, Alt+F4, Ctrl+Esc). Refs keep the reads current
+  // when the final Alt-up lands before the last Tab cycle has rendered.
+  const onDesktopKey = (rawEvent: unknown) => {
+    const event = rawEvent as LiteKeyEvent;
+    // Ctrl+Esc toggles the Start menu like the Start button (press edge only;
+    // the chord grab also delivers the repeat and the key-ups).
+    if (event.code === KEY_ESC && event.modifiers === MOD_CTRL) {
+      if (event.value === 1) {
+        setMenu(null);
+        setStartOpen((value) => !value);
+      }
+      return;
+    }
+    if (event.code === KEY_ESC && event.value !== 0 && event.modifiers === 0) {
+      setMenu(null);
+      setStartOpen(false);
+      setProperties(null);
+      return;
+    }
+    // Grabbed Alt+Tab sequence: the first Tab down opens the panel, every
+    // further Tab down/repeat cycles (Shift walks backwards).
+    if (event.code === KEY_TAB && event.value !== 0 && (event.modifiers & MOD_ALT) !== 0) {
+      const backward = (event.modifiers & MOD_SHIFT) !== 0;
+      setSwitcher((state) => state ? cycle(state, backward) : openSwitcher(openRef.current));
+      return;
+    }
+    // Releasing either Alt key commits the selection and closes the panel.
+    if ((event.code === KEY_LEFTALT || event.code === KEY_RIGHTALT) && event.value === 0) {
+      const state = switcherRef.current;
+      if (state) {
+        setSwitcher(null);
+        const target = selectedCandidate(state);
+        if (openRef.current.some((surface) => surface.id === target.id)) activate(target.id);
+      }
+      return;
+    }
+    // Alt+F4 closes the active window on the press edge only: a repeat would
+    // re-close while the compositor's closed event is still in flight.
+    if (event.code === KEY_F4 && event.value === 1 && (event.modifiers & MOD_ALT) !== 0) {
+      const id = activeIdRef.current;
+      if (id !== 0 && openRef.current.some((surface) => surface.id === id)) closeWindow(id);
+    }
+  };
   const minimizeWindow = useCallback((id: number) => {
     const next = new Set(minimizedRef.current);
     next.add(id);
@@ -208,10 +295,30 @@ export default function Desktop() {
       return next;
     });
   }, [open]);
+  // XP taskbar toggle: clicking the already-active button minimizes its window;
+  // any other click activates (and restores) its window.
+  const toggleTask = useCallback((id: number) => {
+    if (id === activeId && !minimizedRef.current.has(id)) {
+      minimizeWindow(id);
+    } else {
+      activate(id);
+    }
+  }, [activeId, activate, minimizeWindow]);
+  // Shared window system menu (taskbar button and titlebar right-click); the
+  // enable/disable rules come from the pure `systemMenuItems` model.
+  const openSystemMenu = useCallback((id: number, x: number, y: number) => {
+    const state = { minimized: minimizedRef.current.has(id), maximized: maximized.has(id) };
+    const actions: Record<string, (() => void) | undefined> = {
+      restore: () => activate(id),
+      minimize: () => minimizeWindow(id),
+      maximize: () => toggleMaximize(id),
+      close: () => closeWindow(id),
+    };
+    openMenu(x, y, systemMenuItems(state).map((item) => ({ ...item, onSelect: actions[item.id] })));
+  }, [maximized, activate, minimizeWindow, toggleMaximize, closeWindow, openMenu]);
   const moveWindow = useCallback((id: number, x: number, y: number) => {
     // Dragging a maximized titlebar restores the window centered on the cursor.
-    const restored = maximized.get(id);
-    if (restored) {
+    const restored = maximized.get(id);    if (restored) {
       setMaximized((map) => {
         const next = new Map(map);
         next.delete(id);
@@ -338,7 +445,7 @@ export default function Desktop() {
           { id: "properties", label: "Properties", onSelect: () => openProperties(event.x, event.y, "Desktop", [["Type", "Desktop"], ["Icons", String(visibleIcons.length)]]) },
         ]);
       }}
-      onKeyDown={(rawEvent) => { const event = rawEvent as unknown as LiteKeyEvent; if (event.code === KEY_ESC && event.value !== 0) { setMenu(null); setStartOpen(false); setProperties(null); } }}
+      onKeyDown={onDesktopKey}
     >
       <div className="desktop-icons">
         {visibleIcons.map((item) => (
@@ -365,7 +472,7 @@ export default function Desktop() {
       {open.filter((surface) => !minimized.has(surface.id)).map((surface) => {
         const bounds = maximized.has(surface.id) ? WORK_AREA : surface.bounds;
         return (
-          <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMoveStart={beginWindowMove} onMove={moveWindow} onResize={resizeWindow} onResizeEnd={flushResize} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} maximized={maximized.has(surface.id)}>
+          <Window key={surface.id} id={surface.id} title={surface.title} icon={surface.icon} active={surface.id === activeId} bounds={bounds} onActivate={activate} onClose={closeWindow} onMoveStart={beginWindowMove} onMove={moveWindow} onResize={resizeWindow} onResizeEnd={flushResize} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximize} onSystemMenu={openSystemMenu} maximized={maximized.has(surface.id)}>
             <div className="client-surface" data-lite-surface={true} data-surface-id={surface.id} data-configure-serial={configure(surface.id, bounds.width - 10, bounds.height - 32)} />
           </Window>
         );
@@ -381,7 +488,8 @@ export default function Desktop() {
       {startOpen && <StartMenu apps={listedApps} onLaunch={launchApp} onShutdown={shutdown}/>}
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu}/>}
       {properties && <PropertiesPopup x={properties.x} y={properties.y} title={properties.title} rows={properties.rows} onClose={() => setProperties(null)}/>}
-      <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => { setMenu(null); setStartOpen((value) => !value); }} onActivate={activate}/>
+      {switcher && <AppSwitcher state={switcher}/>}
+      <Taskbar windows={taskbarWindows} activeId={activeId} startOpen={startOpen} onStart={() => { setMenu(null); setStartOpen((value) => !value); }} onActivate={toggleTask} onTaskMenu={openSystemMenu}/>
     </div>
   );
 }

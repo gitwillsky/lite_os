@@ -29,12 +29,14 @@ interface WindowProps {
   onResizeEnd: (id: number) => void;
   onMinimize: (id: number) => void;
   onToggleMaximize: (id: number) => void;
+  /** Titlebar right-click opens the window system menu at (x, y). */
+  onSystemMenu?: (id: number, x: number, y: number) => void;
   maximized: boolean;
 }
 
 type CaptionButton = "min" | "max" | "close";
 
-export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onResizeEnd, onMinimize, onToggleMaximize, maximized }: WindowProps) {
+export function Window({ id, title, icon, active, bounds, children, onActivate, onClose, onMoveStart, onMove, onResize, onResizeEnd, onMinimize, onToggleMaximize, onSystemMenu, maximized }: WindowProps) {
   const drag = useRef<{ x: number; y: number; native: boolean } | null>(null);
   const beginDrag = useCallback((event: LitePointerEvent) => {
     onActivate(id);
@@ -105,7 +107,7 @@ export function Window({ id, title, icon, active, bounds, children, onActivate, 
       data-lite-window={id}
       onPointerDown={() => onActivate(id)}
     >
-      <div className="window__titlebar" onPointerDown={(e) => beginDrag(e as unknown as LitePointerEvent)} onPointerMove={(e) => continueDrag(e as unknown as LitePointerEvent)} onPointerUp={endDrag} onDoubleClick={() => onToggleMaximize(id)}>
+      <div className="window__titlebar" onPointerDown={(e) => beginDrag(e as unknown as LitePointerEvent)} onPointerMove={(e) => continueDrag(e as unknown as LitePointerEvent)} onPointerUp={endDrag} onDoubleClick={() => onToggleMaximize(id)} onContextMenu={(e) => { const event = e as unknown as LitePointerEvent; onSystemMenu?.(id, event.x, event.y); }}>
         <img className="window__icon" src={icon} />
         <span className="window__title">{title}</span>
         <div className="window__controls" onPointerDown={() => {}}>

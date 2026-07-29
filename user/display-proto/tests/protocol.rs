@@ -1,11 +1,12 @@
 use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
-    Accepted, AppOpened, BufferAlloc, CURSOR_DEFAULT, CURSOR_RESIZE_NWSE, ClipboardData,
-    ClipboardRead, ClipboardWrite, HelloApp, InputKey, InputPointer, InputScroll,
-    MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete, PROTOCOL_VERSION,
-    PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
-    SetCursorShape, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
+    AcceleratorChord, AcceleratorSet, Accepted, AppOpened, BufferAlloc, CURSOR_DEFAULT,
+    CURSOR_RESIZE_NWSE, ClipboardData, ClipboardRead, ClipboardWrite, HelloApp, InputKey,
+    InputPointer, InputScroll, MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind,
+    MoveBegin, MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles,
+    SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, parse_frame,
+    recv_frame_blocking,
 };
 
 #[test]
@@ -381,4 +382,74 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
     assert_eq!(parsed.kind, SceneNodeKind::Pixels);
     assert_eq!(parsed.input.iter().collect::<Vec<_>>(), input);
     assert_eq!(parsed.damage.iter().collect::<Vec<_>>(), damage);
+}
+
+#[test]
+fn accelerator_set_round_trips_bounded_chords() {
+    let chords = [
+        AcceleratorChord {
+            modifiers: 4,
+            code: 15,
+        },
+        AcceleratorChord {
+            modifiers: 2,
+            code: 46,
+        },
+    ];
+    let mut bytes = [0u8; 64];
+    let encoded = AcceleratorSet { chords: &chords }
+        .encode(&mut bytes)
+        .expect("bounded table must encode");
+    let frame = parse_frame(encoded).expect("accelerator frame must parse");
+    assert_eq!(frame.kind(), MessageKind::AcceleratorSet);
+    let parsed = AcceleratorSet::parse(frame.payload()).expect("table payload must parse");
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed.collect::<Vec<_>>(), chords);
+}
+
+#[test]
+fn accelerator_set_empty_table_clears_chords() {
+    let mut bytes = [0u8; 16];
+    let encoded = AcceleratorSet { chords: &[] }
+        .encode(&mut bytes)
+        .expect("empty table must encode");
+    let frame = parse_frame(encoded).expect("accelerator frame must parse");
+    let parsed = AcceleratorSet::parse(frame.payload()).expect("empty payload must parse");
+    assert_eq!(parsed.len(), 0);
+    assert_eq!(parsed.count(), 0);
+}
+
+#[test]
+fn accelerator_set_rejects_over_limit_tables() {
+    let chords = [AcceleratorChord {
+        modifiers: 0,
+        code: 1,
+    }; MAX_ACCELERATORS + 1];
+    let mut bytes = [0u8; 256];
+    assert!(AcceleratorSet { chords: &chords }.encode(&mut bytes).is_none());
+
+    // A peer could still place an oversized count on the wire; the decoder
+    // must reject it even when the chord bytes themselves are present.
+    let mut payload = Vec::from((MAX_ACCELERATORS as u32 + 1).to_le_bytes());
+    payload.extend_from_slice(&[0u8; (MAX_ACCELERATORS + 1) * 8]);
+    assert!(AcceleratorSet::parse(&payload).is_none());
+}
+
+#[test]
+fn accelerator_set_rejects_truncated_and_overlong_payloads() {
+    let chords = [AcceleratorChord {
+        modifiers: 4,
+        code: 15,
+    }];
+    let mut bytes = [0u8; 32];
+    let encoded = AcceleratorSet { chords: &chords }
+        .encode(&mut bytes)
+        .expect("one chord must encode");
+    let frame = parse_frame(encoded).expect("frame must parse");
+    let payload = frame.payload();
+    assert!(AcceleratorSet::parse(&payload[..payload.len() - 1]).is_none());
+
+    let mut overlong = Vec::from(payload);
+    overlong.extend_from_slice(&[0u8; 8]);
+    assert!(AcceleratorSet::parse(&overlong).is_none());
 }

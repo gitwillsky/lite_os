@@ -43,6 +43,10 @@ pub struct Input {
     wheel_y: i32,
     buttons: u32,
     modifiers: u32,
+    /// Physical modifier key codes currently held behind `modifiers`; needed
+    /// so an accelerator grab covers exactly the keys the user pressed (both
+    /// Alt keys share one mask bit, and the grab must outlive either release).
+    modifier_keys: Vec<u16>,
     serial: u64,
 }
 
@@ -73,6 +77,7 @@ impl Input {
             wheel_y: 0,
             buttons: 0,
             modifiers: 0,
+            modifier_keys: Vec::new(),
             serial: 1,
         }
     }
@@ -100,7 +105,7 @@ impl Input {
         ]
     }
 
-    fn poll_keyboard(&mut self, session: &Session) -> io::Result<()> {
+    fn poll_keyboard(&mut self, session: &mut Session) -> io::Result<()> {
         let Some(device) = self.keyboard.as_mut() else {
             return Ok(());
         };
@@ -110,8 +115,18 @@ impl Input {
             if event.kind() != EV_KEY {
                 continue;
             }
-            update_modifier(&mut self.modifiers, event.code(), event.value());
-            session.route_key(u32::from(event.code()), event.value(), self.modifiers)?;
+            update_modifier(
+                &mut self.modifiers,
+                &mut self.modifier_keys,
+                event.code(),
+                event.value(),
+            );
+            session.route_key(
+                u32::from(event.code()),
+                event.value(),
+                self.modifiers,
+                &self.modifier_keys,
+            )?;
         }
         Ok(())
     }
@@ -264,7 +279,12 @@ fn button(code: u16) -> Option<(u32, u32)> {
     }
 }
 
-fn update_modifier(modifiers: &mut u32, code: u16, value: i32) {
+fn update_modifier(
+    modifiers: &mut u32,
+    modifier_keys: &mut Vec<u16>,
+    code: u16,
+    value: i32,
+) {
     let bit = match code {
         42 | 54 => 1,
         29 | 97 => 2,
@@ -274,8 +294,12 @@ fn update_modifier(modifiers: &mut u32, code: u16, value: i32) {
     };
     if value == 0 {
         *modifiers &= !bit;
+        modifier_keys.retain(|&key| key != code);
     } else {
         *modifiers |= bit;
+        if !modifier_keys.contains(&code) {
+            modifier_keys.push(code);
+        }
     }
 }
 

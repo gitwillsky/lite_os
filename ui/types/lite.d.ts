@@ -167,6 +167,19 @@ declare module "lite:desktop" {
     maxY: number,
   ) => string;
   export const configure: (id: number, width: number, height: number) => number;
+  /**
+   * One fixed physical chord: an exact Shift/Ctrl/Alt/Super mask (bits 1/2/4/8)
+   * plus one evdev key code, mirroring display-proto `AcceleratorChord`.
+   */
+  export interface AcceleratorChord {
+    modifiers: number;
+    code: number;
+  }
+  /**
+   * Atomically replaces the compositor's global accelerator table (at most 16
+   * chords; an empty list clears it). Desktop-only: an app session throws.
+   */
+  export const setAccelerators: (chords: AcceleratorChord[]) => string;
   export const shutdown: () => string;
   export const clock: () => number;
 }

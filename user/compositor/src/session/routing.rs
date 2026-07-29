@@ -7,6 +7,7 @@ use display_proto::{
     SurfaceActivated, send_message,
 };
 
+use super::accelerator;
 use super::buffers::Owner;
 use super::scene::release_buffer;
 use super::{MoveGrab, PointerCapture, Session, invalid};
@@ -317,10 +318,24 @@ impl Session {
         Ok(())
     }
 
-    /// Routes one keyboard transition to the presented focused surface.
-    pub fn route_key(&self, code: u32, value: i32, modifiers: u32) -> io::Result<()> {
+    /// Routes one keyboard transition: while an accelerator grab owns the key
+    /// stream every event (including the chord's own modifier transitions)
+    /// goes to the desktop, otherwise the event goes to the presented focused
+    /// surface. `modifier_keys` carries the physical modifier codes currently
+    /// held so a matched chord grabs exactly the keys the user pressed.
+    pub fn route_key(
+        &mut self,
+        code: u32,
+        value: i32,
+        modifiers: u32,
+        modifier_keys: &[u16],
+    ) -> io::Result<()> {
+        let surface_id = match self.accelerators.route(code, value, modifiers, modifier_keys) {
+            accelerator::KeyRoute::Desktop => 0,
+            accelerator::KeyRoute::Focused => self.focused_surface,
+        };
         let event = InputKey {
-            surface_id: self.focused_surface,
+            surface_id,
             code,
             value,
             modifiers,
@@ -329,7 +344,7 @@ impl Session {
         let message = event
             .encode(&mut bytes)
             .ok_or_else(|| io::Error::other("key encoding failed"))?;
-        send_message(self.target_stream(self.focused_surface)?, message)
+        send_message(self.target_stream(surface_id)?, message)
     }
 
     fn target_stream(&self, surface_id: u32) -> io::Result<&UnixStream> {
