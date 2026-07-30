@@ -1433,7 +1433,7 @@ button:disabled {
 .search-field .search-glyph {
   position: absolute;
   left: 12px;
-  top: 11px;
+  top: 10px;
   margin-left: 0;
   pointer-events: none;
   z-index: 1;
@@ -1441,11 +1441,17 @@ button:disabled {
 
 .search-field input {
   width: 100%;
-  height: 32px;
-  padding: 0 12px 0 40px;
-  border: 0 solid transparent;
+  height: 34px;
+  padding: 9px 12px 9px 40px;
+  border: 1px solid transparent;
+  border-radius: 9px;
   color: var(--aurora-text);
   background: transparent;
+}
+
+.search-field input:focus {
+  border-color: var(--aurora-cyan);
+  background: rgba(53, 200, 255, 0.08);
 }
 
 .menu-bar {
@@ -1674,7 +1680,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   padding: 21px 14px;
-  overflow: hidden;
+  overflow-y: hidden;
 }
 
 .files-sidebar .sidebar-item {

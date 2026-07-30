@@ -2,9 +2,9 @@
 
 use super::Raster;
 
-use super::{PhysicalRect, Renderer};
+use super::{PhysicalRect, Renderer, SCALE};
 
-pub(super) const SCROLLBAR_WIDTH: f32 = 14.0;
+pub(super) const SCROLLBAR_WIDTH: f32 = 10.0;
 const MINIMUM_THUMB_LENGTH: f32 = 18.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -351,57 +351,22 @@ pub(super) fn paint_scrollbar<R: Raster>(
     clip: Option<PhysicalRect>,
 ) {
     let track = physical(scrollbar.track, pixels, clip);
-    // Aurora dark scrollbar (was Win95 beige #d4d0c8): translucent navy track,
-    // a blue-grey thumb with a light top/left edge and darker bottom/right so it
-    // still reads as raised, tuned to the design-system glass palette.
-    fill(pixels, track, 0xff0d_1626);
+    // Aurora scrollbar: a nearly-invisible track and a slim, inset, flat thumb
+    // (was a chunky Win95 beige beveled bar). The thumb is inset 3px on its
+    // cross axis so it reads as a thin pill rather than a full-width slab.
+    fill(pixels, track, 0xff0b_1322);
     let thumb = physical(scrollbar.thumb, pixels, clip);
-    fill(pixels, thumb, 0xff2c_3e5a);
     if thumb.x2 <= thumb.x1 || thumb.y2 <= thumb.y1 {
         return;
     }
-    let light = 0xff4d_6488;
-    let dark = 0xff10_1a2c;
-    fill(
-        pixels,
-        PhysicalRect {
-            x1: thumb.x1,
-            y1: thumb.y1,
-            x2: thumb.x2,
-            y2: (thumb.y1 + 1).min(thumb.y2),
-        },
-        light,
-    );
-    fill(
-        pixels,
-        PhysicalRect {
-            x1: thumb.x1,
-            y1: thumb.y1,
-            x2: (thumb.x1 + 1).min(thumb.x2),
-            y2: thumb.y2,
-        },
-        light,
-    );
-    fill(
-        pixels,
-        PhysicalRect {
-            x1: thumb.x1,
-            y1: thumb.y2.saturating_sub(1),
-            x2: thumb.x2,
-            y2: thumb.y2,
-        },
-        dark,
-    );
-    fill(
-        pixels,
-        PhysicalRect {
-            x1: thumb.x2.saturating_sub(1),
-            y1: thumb.y1,
-            x2: thumb.x2,
-            y2: thumb.y2,
-        },
-        dark,
-    );
+    let inset = (3.0 * SCALE).round() as usize;
+    let pill = PhysicalRect {
+        x1: (thumb.x1 + inset).min(thumb.x2),
+        y1: (thumb.y1 + inset).min(thumb.y2),
+        x2: thumb.x2.saturating_sub(inset).max(thumb.x1),
+        y2: thumb.y2.saturating_sub(inset).max(thumb.y1),
+    };
+    fill(pixels, pill, 0xff37_4d70);
 }
 
 /// Paints the square where simultaneous horizontal and vertical tracks meet.
@@ -417,7 +382,7 @@ pub(super) fn paint_scrollbar_corner<R: Raster>(
         height: SCROLLBAR_WIDTH.min(port.height),
     };
     let corner = physical(corner, pixels, clip);
-    fill(pixels, corner, 0xff0d_1626);
+    fill(pixels, corner, 0xff0b_1322);
 }
 
 fn physical<R: Raster>(rect: LogicalRect, pixels: &R, clip: Option<PhysicalRect>) -> PhysicalRect {
