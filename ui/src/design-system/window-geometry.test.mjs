@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { constrainResize, projectResize } from "./window-geometry.ts";
+import { constrainResize, frameStyle, projectResize } from "./window-geometry.ts";
 
 const origin = { startX: 200, startY: 200, x: 100, y: 80, width: 400, height: 300 };
 const point = { x: 230, y: 250 };
+
+test("window frames map desktop x/y to standard CSS left/top", () => {
+  assert.deepEqual(
+    frameStyle({ x: 124, y: 352, width: 850, height: 550 }),
+    { left: 124, top: 352, width: 850, height: 550 },
+  );
+});
 
 test("all eight resize grips keep their opposite edges fixed", () => {
   const expected = {

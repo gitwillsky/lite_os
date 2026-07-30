@@ -1,5 +1,5 @@
 import React, { useCallback, useRef } from "react";
-import { projectResize } from "./window-geometry.ts";
+import { frameStyle, projectResize } from "./window-geometry.ts";
 import type { ResizeCandidate, ResizeEdge, ResizeOrigin } from "./window-geometry.ts";
 
 /** CSS-drawn close glyph shared by every system-owned dismiss control. */
@@ -86,7 +86,7 @@ export function Window({
   return (
     <div
       className={`window${active ? " window--active" : ""}`}
-      style={{ left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height }}
+      style={frameStyle(bounds)}
       data-lite-window={id}
       onPointerDown={() => onActivate(id)}
     >

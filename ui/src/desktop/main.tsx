@@ -14,7 +14,7 @@ import {
 import { Window } from "../design-system/window.tsx";
 import { Dock, CommandCenter, SystemCenter, TopBar, WorkspaceOverview } from "../design-system/shell.tsx";
 import type { ShellPanel } from "../design-system/shell.tsx";
-import { constrainResize } from "../design-system/window-geometry.ts";
+import { constrainResize, frameStyle } from "../design-system/window-geometry.ts";
 import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts";
 import { applySurfaceMove, fitSurfaceFrame, reconcileSurfaces } from "./surface-state.ts";
 import { Splash } from "./splash.tsx";
@@ -376,7 +376,7 @@ export default function Desktop() {
         );
       })}
       {Array.from(resizePreview, ([id, bounds]) => (
-        <div key={id} className="window-resize-preview" style={bounds}/>
+        <div key={id} className="window-resize-preview" style={frameStyle(bounds)}/>
       ))}
       <Dock items={[
         { id: "liteos", label: "LiteOS", icon: "assets/liteos.png", active: panel === "command", onClick: () => setPanel(panel === "command" ? null : "command") },

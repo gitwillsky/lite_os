@@ -9,6 +9,21 @@ export interface Rect {
   height: number;
 }
 
+/**
+ * Converts a logical desktop frame into standard CSS positioning properties.
+ *
+ * @param rect - Frame measured in logical desktop pixels.
+ * @returns Inline positioning properties accepted by a positioned HTML element.
+ */
+export function frameStyle(rect: Rect) {
+  return {
+    left: rect.x,
+    top: rect.y,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
 /** Pointer and frame captured when a resize grip is pressed. */
 export interface ResizeOrigin extends Rect {
   startX: number;
