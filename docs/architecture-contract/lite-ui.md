@@ -4,6 +4,7 @@
 
 - `compositor` 独占 DRM master/OFD、evdev fd、scanout pair、page-flip state、client registry、buffer
   quota、last-presented scene、input routing、pointer capture、cursor position 与 session epoch。
+  `session/output.rs` 独占 kobject subscription、output serial 与 connector-size publication；
   `compositor/session/accelerator.rs` 独占 global accelerator chord 表与 key-grab 状态机；
   `display-proto/accelerator.rs` 独占 `AcceleratorSet` wire codec。
 - React desktop 独占 persistent window policy state。compositor 只保存已接受/已呈现 scene snapshot 与
@@ -70,7 +71,11 @@
   携带全 surface rect。每连接最多 64 KiB nonblocking outbound queue。可合并 event 覆盖旧值，不可丢
   事件无法入队时断开连接；禁止 compositor writer thread。
 - client 提交后不得同步等待 `PRESENTED`；`ACCEPTED` 只确认 compositor 原子接纳 revision，
-  `PRESENTED` 只确认 page-flip completion，buffer 只能由 `BUFFER_RELEASE` 重新变为 writable。
+  `PRESENTED` 只确认 page-flip completion。当前几何 generation 的 buffer 只能由 `BUFFER_RELEASE`
+  重新变为 writable；output resize 后不再合法的 mapping 只能由 `BUFFER_RETIRED` 唯一、永久移除，
+  两种事件不得互换。
+  `DISCARDED` 是 output serial 被更新后该 revision 不会呈现的唯一 terminal acknowledgement；允许发生在
+  `ACCEPTED` 前或后，client 必须结束该 revision，并按独立的 buffer 生命周期事件处理 mapping。
   双 buffer 都在途时 client 必须保留 latest-only dirty state，禁止排队栅格化旧 snapshot。
 - buffer allocation 只经 compositor：每连接最多四个、session 最多十六个 full-frame equivalent，按
   `pitch * height` 计费，scanout 不计入。allocation failure 明确返回，不得抢占别的连接、降低尺寸或
@@ -83,6 +88,15 @@
   underlay buffer；compositor 用它恢复旧位置，只刷新旧/新 bounds damage，并在 pointer-up 返回最终
   logical position。最终 canonical scene 呈现后清除 grab 并 release underlay；期间到达的新 scene
   必须继承 transform，禁止跳回旧位置或保留 canonical 残影。
+- QEMU 窗口 resize 只走标准 DRM connector hotplug：compositor 订阅
+  `NETLINK_KOBJECT_UEVENT` group 1，drain burst 后发布最新
+  `OUTPUT_CONFIGURE(serial, physicalSize, deviceScaleFactor=2)`。`SCENE_COMMIT` 必须携带 exact output
+  serial；新 serial 的 desktop triple buffer、双 scanout 与 KMS mode 作为一个事务接管，旧 front 在
+  新 scene 完成 page flip 前保持 pinned。不得用宿主缩放、轮询 topology、断开 desktop epoch、固定
+  1504×846 viewport 或双 renderer 路径模拟 resize。
+- LiteUI document 的公开 viewport 只投影标准 `window.innerWidth`、`window.innerHeight`、
+  `window.devicePixelRatio` 与 `resize` event；native output message 只更新这一个 platform owner。
+  React desktop 与 app 必须消费该标准 viewport，禁止另设 Aurora/QEMU 私有 resize API。
 - scene input region 是 compositor routing 的唯一依据，pixel alpha 不参与 hit-test。每 node 最多 64、
   整份 scene 最多 256 个 input rectangle；超限拒绝，不得扩大到 bounds。app surface 默认使用完整 client rect；
   desktop renderer 必须把同一窗口内位于 foreign surface 之后且可交互的 hit boxes 投影为后置 input-only

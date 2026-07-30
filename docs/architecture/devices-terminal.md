@@ -40,6 +40,8 @@
   256 个 256-byte batch 降为 16 个 heap-backed 4 KiB batch；固定 64-poll 模型的 MMIO polling/
   spin 从 64/64 降为 0/0，output/DMA 覆盖前预零从 131072/4096 bytes 降为 0/0。
 - DRM owner 组合 display operation、GEM/framebuffer、KMS、damage fence、master 与 event；syscall 只编码 Linux DRM UAPI。
+  VirtIO-GPU config change 更新唯一 connector preferred mode，并只通过标准 DRM kobject hotplug
+  uevent 通知 userspace；动态 mode 的 userspace transaction 属于 LiteUI/compositor 领域。
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke；VirtIO input adapter 只提供 raw event/config。
 - PTY registry、pair 与 Terminal session/foreground/winsize 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
@@ -47,7 +49,8 @@
 
 ## Known limits
 
-- GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush；VirGL、Vulkan、3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
+- GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush 与单 connector mode change；VirGL、Vulkan、
+  3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
 - VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port 或
   hotplug userspace 管理。
 - graphical session 的产品边界见[图形会话与 LiteUI](lite-ui.md)。

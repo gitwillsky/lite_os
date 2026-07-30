@@ -1,12 +1,12 @@
 use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
-    AcceleratorChord, AcceleratorSet, Accepted, AppOpened, BufferAlloc, CURSOR_DEFAULT,
-    CURSOR_NONE, CURSOR_RESIZE_NWSE, ClipboardData, ClipboardRead, ClipboardWrite, HelloApp,
-    InputKey, InputPointer, InputScroll, MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT, MAX_MESSAGE,
-    MessageKind, MoveBegin, MoveComplete, PROTOCOL_VERSION, PointerPhase, Presented, Rect,
-    Rectangles, SceneCommit, SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit,
-    parse_frame, recv_frame_blocking,
+    AcceleratorChord, AcceleratorSet, Accepted, AppOpened, BufferAlloc, BufferRetired,
+    CURSOR_DEFAULT, CURSOR_NONE, CURSOR_RESIZE_NWSE, ClipboardData, ClipboardRead, ClipboardWrite,
+    Discarded, HelloApp, InputKey, InputPointer, InputScroll, MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT,
+    MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete, OutputConfigure, PROTOCOL_VERSION,
+    PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
+    SetCursorShape, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
 };
 
 #[test]
@@ -42,6 +42,52 @@ fn stream_receiver_preserves_back_to_back_frames() {
     assert_eq!(
         parse_frame(&bytes[..length]).expect("second parse").kind(),
         MessageKind::Presented
+    );
+}
+
+#[test]
+fn output_configure_and_discard_are_exact_terminal_messages() {
+    let mut bytes = [0u8; 64];
+    let encoded = OutputConfigure {
+        serial: 9,
+        size: Size {
+            width: 2560,
+            height: 1441,
+        },
+    }
+    .encode(&mut bytes)
+    .expect("output configure");
+    let frame = parse_frame(encoded).expect("output frame");
+    assert_eq!(frame.kind(), MessageKind::OutputConfigure);
+    assert_eq!(
+        OutputConfigure::parse(frame.payload()),
+        Some(OutputConfigure {
+            serial: 9,
+            size: Size {
+                width: 2560,
+                height: 1441,
+            },
+        })
+    );
+
+    let encoded = Discarded { revision: 17 }
+        .encode(&mut bytes)
+        .expect("discarded");
+    let frame = parse_frame(encoded).expect("discarded frame");
+    assert_eq!(frame.kind(), MessageKind::Discarded);
+    assert_eq!(
+        Discarded::parse(frame.payload()),
+        Some(Discarded { revision: 17 })
+    );
+
+    let encoded = BufferRetired { buffer_id: 23 }
+        .encode(&mut bytes)
+        .expect("buffer retired");
+    let frame = parse_frame(encoded).expect("buffer retired frame");
+    assert_eq!(frame.kind(), MessageKind::BufferRetired);
+    assert_eq!(
+        BufferRetired::parse(frame.payload()),
+        Some(BufferRetired { buffer_id: 23 })
     );
 }
 
@@ -379,9 +425,10 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
     }];
     let mut bytes = [0u8; 512];
     let encoded =
-        SceneCommit::encode(&mut bytes, 22, 8, &nodes).expect("bounded scene must encode");
+        SceneCommit::encode(&mut bytes, 22, 3, 8, &nodes).expect("bounded scene must encode");
     let frame = parse_frame(encoded).expect("scene frame must parse");
     let scene = SceneCommit::parse(frame.payload()).expect("scene payload must validate fully");
+    assert_eq!(scene.output_serial, 3);
     let parsed = scene.nodes().next().expect("one node must remain");
     assert_eq!(parsed.kind, SceneNodeKind::Pixels);
     assert_eq!(parsed.input.iter().collect::<Vec<_>>(), input);

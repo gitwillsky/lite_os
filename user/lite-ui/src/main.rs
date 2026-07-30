@@ -121,6 +121,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         root.clone(),
         PathBuf::from("/usr/share/liteos/apps"),
         audio_commands,
+        display.logical_size(),
     );
     let mut engine = Engine::open(role).map_err(|error| owner_error("engine open", error))?;
     engine.install_host(host);
@@ -213,11 +214,25 @@ fn run() -> Result<(), Box<dyn Error>> {
                     .reconfigure(configure)
                     .map_err(|error| owner_error("display reconfigure", error))?;
                 renderer.set_viewport(display.logical_size());
+                state.set_viewport(display.logical_size());
+                dispatch_viewport(&mut engine, display.logical_size())
+                    .map_err(|error| owner_error("viewport resize dispatch", error))?;
                 if let Some(terminal) = terminal.as_mut() {
                     terminal
                         .resize(configure.width, configure.height)
                         .map_err(|error| owner_error("terminal resize", error))?;
                 }
+                state.invalidate_scene();
+            }
+            if let Event::OutputConfigure(configure) = &event {
+                display
+                    .reconfigure_output(*configure)
+                    .map_err(|error| owner_error("output reconfigure", error))?;
+                let viewport = display.logical_size();
+                renderer.set_viewport(viewport);
+                state.set_viewport(viewport);
+                dispatch_viewport(&mut engine, viewport)
+                    .map_err(|error| owner_error("viewport resize dispatch", error))?;
                 state.invalidate_scene();
             }
             apply_event(
@@ -374,6 +389,21 @@ fn dispatch(
     let script = format!("globalThis.__liteEvent({channel},{payload});");
     engine.evaluate("lite-ui-event.js", script.as_bytes())?;
     Ok(())
+}
+
+fn dispatch_viewport(
+    engine: &mut Engine,
+    viewport: display_proto::Size,
+) -> Result<(), Box<dyn Error>> {
+    dispatch(
+        engine,
+        "viewport",
+        serde_json::json!({
+            "width": viewport.width,
+            "height": viewport.height,
+            "devicePixelRatio": display_proto::DEVICE_SCALE_FACTOR,
+        }),
+    )
 }
 
 fn process_actions(

@@ -128,6 +128,8 @@ impl<'a> SceneNode<'a> {
 pub struct SceneCommit<'a> {
     /// Monotonic desktop scene revision.
     pub revision: u64,
+    /// Output configuration whose exact physical viewport this scene implements.
+    pub output_serial: u64,
     /// Focused app surface, or zero when desktop itself receives keyboard input.
     pub focused_surface: u32,
     node_payload: &'a [u8],
@@ -141,6 +143,7 @@ impl<'a> SceneCommit<'a> {
     pub fn encode<'b>(
         bytes: &'b mut [u8],
         revision: u64,
+        output_serial: u64,
         focused_surface: u32,
         nodes: &[SceneNode<'_>],
     ) -> Option<&'b [u8]> {
@@ -151,6 +154,7 @@ impl<'a> SceneCommit<'a> {
         }
         let mut writer = FrameWriter::new(bytes, MessageKind::SceneCommit)?;
         writer.u64(revision)?;
+        writer.u64(output_serial)?;
         writer.u32(focused_surface)?;
         writer.u32(u32::try_from(nodes.len()).ok()?)?;
         for node in nodes {
@@ -163,12 +167,13 @@ impl<'a> SceneCommit<'a> {
     pub fn parse(payload: &[u8]) -> Option<SceneCommit<'_>> {
         let mut reader = PayloadReader::new(payload);
         let revision = reader.u64()?;
+        let output_serial = reader.u64()?;
         let focused_surface = reader.u32()?;
         let node_count = reader.u32()? as usize;
         if node_count > MAX_SCENE_NODES {
             return None;
         }
-        let node_payload = reader.bytes(payload.len().checked_sub(16)?)?;
+        let node_payload = reader.bytes(payload.len().checked_sub(24)?)?;
         reader.finish()?;
 
         // 1. Validate every variable-length node before exposing the scene.
@@ -186,6 +191,7 @@ impl<'a> SceneCommit<'a> {
         nodes.finish()?;
         Some(SceneCommit {
             revision,
+            output_serial,
             focused_surface,
             node_payload,
             node_count,

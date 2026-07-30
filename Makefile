@@ -48,8 +48,14 @@ AGENT_FS_IMAGE_SIZE_MIB ?= 32768
 
 .PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs sync-userland prepare-agent-development run-agent-development build-apk-apps regen-font regen-ui-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-audio verify-runtime-frame-timing verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
 
+# Cocoa must open at the guest-selected 3008x1692 mode first; the activation
+# helper enables Zoom To Fit only after fixing that initial window geometry.
+# Starting with it enabled makes Cocoa publish its temporary 640x360 bootstrap
+# window as a real guest mode before the requested initial mode exists.
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
+QEMU_GUI_WINDOW_WIDTH ?= 1504
+QEMU_GUI_WINDOW_HEIGHT ?= 874
 QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
 QEMU_MEMORY ?= 2G
 # Codex/Claude 与 Guest 内编译共享该开发 RAM；缺少独立值会把产品 2 GiB 门禁误改为重型配置。
@@ -160,7 +166,7 @@ run: build-kernel build-bootloader sync-userland
 
 run-gui: build-kernel build-bootloader sync-userland
 	@if [ "$$(uname -s)" = Darwin ]; then \
-		/usr/bin/osascript scripts/activate_macos_process.applescript "$$$$" >/dev/null & \
+		/usr/bin/osascript scripts/activate_macos_process.applescript "$$$$" "$(QEMU_GUI_WINDOW_WIDTH)" "$(QEMU_GUI_WINDOW_HEIGHT)" >/dev/null & \
 	fi; \
 	exec $(QEMU) \
 	-machine $(QEMU_MACHINE) \

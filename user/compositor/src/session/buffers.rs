@@ -3,7 +3,7 @@
 use std::io;
 
 use display_proto::{
-    BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease,
+    BufferAlloc, BufferAllocated, BufferDescriptor, BufferRetired,
     MAX_CONNECTION_FRAME_EQUIVALENTS, MAX_SESSION_FRAME_EQUIVALENTS, Size, send_message,
 };
 use linux_uapi::drm::DumbBuffer;
@@ -41,6 +41,8 @@ impl Session {
         // ones before accounting quota; busy ones retire on flip completion.
         if let Owner::App(surface_id) = owner {
             self.retire_stale_app_buffers(surface_id)?;
+        } else {
+            self.retire_stale_desktop_buffers()?;
         }
         let owner_count = self
             .buffers
@@ -48,7 +50,21 @@ impl Session {
             .values()
             .filter(|buffer| buffer.owner == owner)
             .count();
-        let full_frame = u64::from(self.display.width) * u64::from(self.display.height) * 4;
+        // During an output transaction the last presented desktop buffer can
+        // be larger than the new connector. Account in equivalents of the
+        // larger live generation; otherwise shrinking the QEMU window can make
+        // the old busy front alone exceed the new quota and deadlock the only
+        // allocation capable of replacing it.
+        let full_frame = self
+            .buffers
+            .values
+            .values()
+            .map(|buffer| u64::from(buffer.size.width) * u64::from(buffer.size.height) * 4)
+            .chain(std::iter::once(
+                u64::from(self.display.width) * u64::from(self.display.height) * 4,
+            ))
+            .max()
+            .expect("display frame exists");
         let owner_bytes = buffer_bytes(&self.buffers, Some(owner));
         let session_bytes = buffer_bytes(&self.buffers, None);
         let requested = u64::from(request.size.width)
@@ -173,10 +189,40 @@ impl Session {
         for id in stale {
             self.buffers.values.remove(&id);
             let mut bytes = [0u8; 24];
-            let message = BufferRelease { buffer_id: id }
+            let message = BufferRetired { buffer_id: id }
                 .encode(&mut bytes)
                 .ok_or_else(|| io::Error::other("release encoding failed"))?;
             send_message(stream, message)?;
+        }
+        Ok(())
+    }
+
+    /// Retires idle desktop buffers that cannot implement the current output
+    /// serial. Busy buffers remain until the accepted scene that owns them
+    /// reaches a terminal presented/discarded acknowledgement.
+    pub(super) fn retire_stale_desktop_buffers(&mut self) -> io::Result<()> {
+        let stale: Vec<u32> = self
+            .buffers
+            .values
+            .iter()
+            .filter(|(_, buffer)| {
+                buffer.owner == Owner::Desktop && !buffer.busy && buffer.size != self.display
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        let Some(desktop) = &self.desktop else {
+            for id in stale {
+                self.buffers.values.remove(&id);
+            }
+            return Ok(());
+        };
+        for id in stale {
+            self.buffers.values.remove(&id);
+            let mut bytes = [0u8; 24];
+            let message = BufferRetired { buffer_id: id }
+                .encode(&mut bytes)
+                .ok_or_else(|| io::Error::other("release encoding failed"))?;
+            send_message(&desktop.stream, message)?;
         }
         Ok(())
     }

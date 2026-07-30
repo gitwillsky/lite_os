@@ -19,6 +19,36 @@ interface Navigator {
   readonly clipboard: Clipboard;
 }
 
+interface EventListenerObject {
+  handleEvent(event: Event): void;
+}
+
+type EventListener = (event: Event) => void;
+type EventListenerOrEventListenerObject = EventListener | EventListenerObject;
+
+interface Window {
+  readonly innerWidth: number;
+  readonly innerHeight: number;
+  readonly devicePixelRatio: number;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null): void;
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null): void;
+  dispatchEvent(event: Event): boolean;
+}
+
+declare var window: Window & typeof globalThis;
+declare var innerWidth: number;
+declare var innerHeight: number;
+declare var devicePixelRatio: number;
+declare function addEventListener(
+  type: string,
+  listener: EventListenerOrEventListenerObject | null,
+): void;
+declare function removeEventListener(
+  type: string,
+  listener: EventListenerOrEventListenerObject | null,
+): void;
+declare function dispatchEvent(event: Event): boolean;
+
 /** Pointer payload delivered to onClick / onPointer / onContextMenu handlers. */
 interface LitePointerEvent {
   type: "pointer";

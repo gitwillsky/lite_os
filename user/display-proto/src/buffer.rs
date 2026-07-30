@@ -155,3 +155,29 @@ impl BufferRelease {
         Some(message)
     }
 }
+
+/// Permanent retirement of a buffer whose geometry generation is obsolete.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferRetired {
+    /// Retired protocol buffer identity.
+    pub buffer_id: u32,
+}
+
+impl BufferRetired {
+    /// Encodes one retirement.
+    pub fn encode(self, bytes: &mut [u8]) -> Option<&[u8]> {
+        let mut writer = FrameWriter::new(bytes, MessageKind::BufferRetired)?;
+        writer.u32(self.buffer_id)?;
+        writer.finish()
+    }
+
+    /// Parses one exact retirement payload.
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let mut reader = PayloadReader::new(payload);
+        let message = Self {
+            buffer_id: reader.u32()?,
+        };
+        reader.finish()?;
+        Some(message)
+    }
+}

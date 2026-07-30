@@ -47,6 +47,14 @@ pub struct Scanout {
     prepared_damage: Rect,
 }
 
+/// Result of preparing and presenting a scene for a changed connector mode.
+pub enum ModePresent {
+    /// The scene reached the new scanout through a real page-flip completion.
+    Presented(FlipEvent),
+    /// The connector changed again before the requested mode could be latched.
+    Superseded(Size),
+}
+
 impl Scanout {
     /// Reports whether the platform published a usable DRM display topology.
     pub fn available() -> bool {
@@ -118,6 +126,82 @@ impl Scanout {
         }
     }
 
+    /// Rebuilds both scanout targets and atomically presents a scene at the
+    /// exact connector generation it was rendered for.
+    pub fn present_mode(
+        &mut self,
+        scene: &Scene,
+        buffers: &Buffers,
+        cursor: (i32, i32),
+    ) -> io::Result<ModePresent> {
+        let topology = self.device.query_topology()?;
+        let actual = topology_size(&topology);
+        if actual != scene.output_size {
+            return Ok(ModePresent::Superseded(actual));
+        }
+        let mut next = [
+            Self::target(&self.device, actual.width, actual.height)?,
+            Self::target(&self.device, actual.width, actual.height)?,
+        ];
+        let screen = Rect {
+            x: 0,
+            y: 0,
+            width: actual.width,
+            height: actual.height,
+        };
+        for target in &mut next {
+            clear(&mut target.buffer, screen);
+            for node in &scene.nodes {
+                let source = buffers.get(node.buffer_id).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "scene buffer disappeared")
+                })?;
+                composite_node(&mut target.buffer, source, node, screen, screen, (0, 0));
+            }
+            target.revision = scene.revision;
+        }
+        let cursor_clip = self.cursor.overlay(&mut next[1].buffer, cursor.0, cursor.1);
+        next[1].cursor = from_clip(cursor_clip);
+        self.device.dirty(next[1].framebuffer_id, &[])?;
+        if let Err(error) = self.device.set_crtc(&topology, next[0].framebuffer_id) {
+            Self::remove_targets(&self.device, &next);
+            let latest = self.device.query_topology()?;
+            let latest_size = topology_size(&latest);
+            if latest_size != actual {
+                return Ok(ModePresent::Superseded(latest_size));
+            }
+            return Err(error);
+        }
+        if let Err(error) = self
+            .device
+            .page_flip(&topology, next[1].framebuffer_id, scene.revision)
+        {
+            Self::remove_targets(&self.device, &next);
+            return Err(error);
+        }
+        let event = self.device.read_flip_event()?;
+        if event.user_data != scene.revision {
+            Self::remove_targets(&self.device, &next);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "mode page-flip sequence mismatch",
+            ));
+        }
+        let old = std::mem::replace(&mut self.targets, next);
+        Self::remove_targets(&self.device, &old);
+        self.topology = topology;
+        self.front = 1;
+        self.history.clear();
+        self.prepared_damage = screen;
+        eprintln!("compositor: mode {}x{}", actual.width, actual.height);
+        Ok(ModePresent::Presented(event))
+    }
+
+    fn remove_targets(device: &DrmDevice, targets: &[Target; 2]) {
+        for target in targets {
+            let _ = device.remove_framebuffer(target.framebuffer_id);
+        }
+    }
+
     /// Returns scanout to the same clean state [`Self::open`] leaves behind.
     ///
     /// A desktop disconnect resets the session epoch (dropping every client
@@ -133,6 +217,18 @@ impl Scanout {
     /// `open()`. `front` is left untouched and its framebuffer re-scanned so the
     /// display never shows a torn intermediate frame.
     pub fn reset_to_boot(&mut self) -> io::Result<()> {
+        let topology = self.device.query_topology()?;
+        if topology_size(&topology) != self.size() {
+            let size = topology_size(&topology);
+            let next = [
+                Self::target(&self.device, size.width, size.height)?,
+                Self::target(&self.device, size.width, size.height)?,
+            ];
+            let old = std::mem::replace(&mut self.targets, next);
+            self.topology = topology;
+            self.front = 0;
+            Self::remove_targets(&self.device, &old);
+        }
         self.draw_boot(0);
         self.draw_boot(1);
         for target in &mut self.targets {
@@ -406,9 +502,14 @@ impl Scanout {
 
 impl Drop for Scanout {
     fn drop(&mut self) {
-        for target in &self.targets {
-            let _ = self.device.remove_framebuffer(target.framebuffer_id);
-        }
+        Self::remove_targets(&self.device, &self.targets);
+    }
+}
+
+fn topology_size(topology: &Topology) -> Size {
+    Size {
+        width: u32::from(topology.mode.width()),
+        height: u32::from(topology.mode.height()),
     }
 }
 #[cfg(test)]

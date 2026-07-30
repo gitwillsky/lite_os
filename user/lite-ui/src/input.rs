@@ -100,6 +100,7 @@ pub(super) fn apply_event(
             "display",
             json!({"type":"configure","width":configure.width,"height":configure.height,"serial":configure.serial}),
         ),
+        Event::OutputConfigure(_) => return Ok(()),
         Event::Pointer(pointer) => {
             dispatch_pointer(state, engine, renderer, interactions, display, pointer)?;
             return Ok(());

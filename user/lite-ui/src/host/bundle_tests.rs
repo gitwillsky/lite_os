@@ -14,7 +14,16 @@ fn host(role: Role, root: PathBuf) -> (Host, std::rc::Rc<super::State>) {
         audio_proto::ClientRole::Media
     };
     let (commands, _events) = crate::audio::start(audio_role).expect("audio worker");
-    Host::new(role, root.clone(), root, commands)
+    Host::new(
+        role,
+        root.clone(),
+        root,
+        commands,
+        display_proto::Size {
+            width: 1504,
+            height: 846,
+        },
+    )
 }
 
 /// Mounts one app bundle like the production session and asserts every
@@ -92,6 +101,38 @@ fn quickjs_bridge_publishes_only_the_latest_complete_scene() {
     assert!(state.scene_if_dirty().is_none());
     state.invalidate_scene();
     assert!(state.scene_if_dirty().is_some());
+}
+
+#[test]
+fn runtime_exposes_standard_retina_viewport_and_resize_event() {
+    let root = std::env::var_os("LITE_UI_TEST_ASSETS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+    let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
+    let (host, _state) = host(Role::Desktop, root);
+    let mut engine = Engine::open(Role::Desktop).expect("desktop engine");
+    engine.install_host(host);
+    engine
+        .evaluate("runtime.js", &runtime)
+        .expect("load runtime");
+    engine
+        .evaluate(
+            "viewport-test.js",
+            br#"
+            if (window !== globalThis || innerWidth !== 1504 || innerHeight !== 846 || devicePixelRatio !== 2) {
+              throw new Error("initial viewport contract failed");
+            }
+            let resizeCount = 0;
+            const onResize = () => { resizeCount += 1; };
+            window.addEventListener("resize", onResize);
+            __liteEvent("viewport", { width: 1280, height: 720, devicePixelRatio: 2 });
+            window.removeEventListener("resize", onResize);
+            if (innerWidth !== 1280 || innerHeight !== 720 || resizeCount !== 1) {
+              throw new Error("resize event contract failed");
+            }
+            "#,
+        )
+        .expect("standard viewport must update");
 }
 
 #[test]

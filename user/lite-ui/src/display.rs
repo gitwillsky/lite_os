@@ -1,6 +1,7 @@
 //! Exact display-protocol client for desktop and ordinary app roles.
 
 mod allocation;
+mod buffer;
 mod clipboard;
 mod event;
 mod scene;
@@ -23,23 +24,9 @@ use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
 
 use crate::Mode;
+use buffer::Buffer;
 pub use event::Event;
 use wire::{WireEvent, parse_event, receive_configure};
-
-struct Buffer {
-    id: u32,
-    pixels: SharedDumbBuffer,
-    free: bool,
-}
-
-impl Buffer {
-    /// Buffers sized for a superseded configure can never be presented again:
-    /// they retire instead of recycling back into the free pool.
-    fn matches(&self, physical: Size) -> bool {
-        self.pixels.width() == physical.width as usize
-            && self.pixels.height() == physical.height as usize
-    }
-}
 
 /// Writable compositor-issued frame.
 pub struct Frame<'a> {
@@ -108,6 +95,7 @@ pub struct Display {
     physical: Size,
     surface_id: u32,
     configure_serial: u64,
+    output_serial: u64,
     buffers: Vec<Buffer>,
     revision: u64,
     ready: HashSet<(u32, u64)>,
@@ -161,6 +149,7 @@ impl Display {
             physical,
             surface_id: welcome.surface_id,
             configure_serial,
+            output_serial: welcome.output_serial,
             buffers: Vec::new(),
             revision: 0,
             ready: HashSet::new(),
@@ -168,14 +157,64 @@ impl Display {
             submitted: VecDeque::new(),
             accepted: HashSet::new(),
         };
-        display.allocate(2, physical)?;
+        loop {
+            match display.allocate(2, display.physical) {
+                Ok(()) => break,
+                Err(error)
+                    if error.kind() == io::ErrorKind::OutOfMemory
+                        && display.adopt_initial_superseding_configure(mode)? => {}
+                Err(error) => return Err(error),
+            }
+        }
         if matches!(mode, Mode::Desktop) {
             // The third desktop buffer is a transient move underlay. Without
             // it the full-screen desktop raster would repaint the moving
             // window at its canonical origin on every damage restoration.
-            display.allocate(1, physical)?;
+            loop {
+                match display.allocate(1, display.physical) {
+                    Ok(()) => break,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::OutOfMemory
+                            && display.adopt_initial_superseding_configure(mode)? => {}
+                    Err(error) => return Err(error),
+                }
+            }
         }
         Ok(display)
+    }
+
+    fn adopt_initial_superseding_configure(&mut self, mode: &Mode) -> io::Result<bool> {
+        let index = match mode {
+            Mode::Desktop => self
+                .pending
+                .iter()
+                .rposition(|event| matches!(event, Event::OutputConfigure(_))),
+            Mode::App(_) => self
+                .pending
+                .iter()
+                .rposition(|event| matches!(event, Event::Configure(_))),
+        };
+        let Some(index) = index else {
+            return Ok(false);
+        };
+        let event = self.pending.remove(index).expect("validated pending event");
+        match event {
+            Event::OutputConfigure(configure) => {
+                self.output_serial = configure.serial;
+                self.physical = configure.size;
+            }
+            Event::Configure(configure) => {
+                self.configure_serial = configure.serial;
+                self.physical = Size {
+                    width: configure.width * display_proto::DEVICE_SCALE_FACTOR,
+                    height: configure.height * display_proto::DEVICE_SCALE_FACTOR,
+                };
+            }
+            _ => unreachable!("selected configure event"),
+        }
+        self.pending
+            .retain(|event| !matches!(event, Event::OutputConfigure(_) | Event::Configure(_)));
+        Ok(true)
     }
 
     /// Adopts one desktop-issued configure and tops the buffer pair back up.
@@ -218,11 +257,56 @@ impl Display {
         Ok(())
     }
 
+    /// Adopts one compositor-owned desktop output generation and acquires its
+    /// complete presentation triple.
+    pub fn reconfigure_output(
+        &mut self,
+        configure: display_proto::OutputConfigure,
+    ) -> io::Result<()> {
+        if self.surface_id != 0 || configure.serial <= self.output_serial {
+            return Err(invalid("invalid output configure serial"));
+        }
+        self.output_serial = configure.serial;
+        self.physical = configure.size;
+        let matching = self
+            .buffers
+            .iter()
+            .filter(|buffer| buffer.matches(configure.size))
+            .count();
+        let missing = 3usize.saturating_sub(matching);
+        if missing > 0 {
+            let pair = missing.min(2);
+            if let Err(error) = self.allocate(pair as u32, configure.size) {
+                if self.output_allocation_was_superseded(&error, configure.serial) {
+                    return Ok(());
+                }
+                return Err(error);
+            }
+            if missing > pair {
+                if let Err(error) = self.allocate((missing - pair) as u32, configure.size) {
+                    if self.output_allocation_was_superseded(&error, configure.serial) {
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn output_allocation_was_superseded(&self, error: &io::Error, serial: u64) -> bool {
+        error.kind() == io::ErrorKind::OutOfMemory
+            && self.pending.iter().any(|event| {
+                matches!(event, Event::OutputConfigure(configure) if configure.serial > serial)
+            })
+    }
+
     /// Returns the fixed logical CSS viewport.
     pub fn logical_size(&self) -> Size {
+        let scale = display_proto::DEVICE_SCALE_FACTOR;
         Size {
-            width: self.physical.width / display_proto::DEVICE_SCALE_FACTOR,
-            height: self.physical.height / display_proto::DEVICE_SCALE_FACTOR,
+            width: self.physical.width.div_ceil(scale),
+            height: self.physical.height.div_ceil(scale),
         }
     }
 
@@ -238,6 +322,14 @@ impl Display {
 
     /// Acquires one released writable buffer for the active configure size.
     pub fn acquire(&mut self) -> io::Result<Option<Frame<'_>>> {
+        if self.surface_id == 0
+            && self
+                .pending
+                .iter()
+                .any(|event| matches!(event, Event::OutputConfigure(_)))
+        {
+            return Ok(None);
+        }
         let physical = self.physical;
         let Some(buffer) = self
             .buffers
@@ -393,7 +485,14 @@ impl Display {
                 self.pending.push_back(Event::FrameDone);
                 Ok(None)
             }
-            event @ (WireEvent::Accepted(_) | WireEvent::Presented { .. }) => {
+            WireEvent::Retired(id) => {
+                self.retire(id)?;
+                self.pending.push_back(Event::FrameDone);
+                Ok(None)
+            }
+            event @ (WireEvent::Accepted(_)
+            | WireEvent::Discarded(_)
+            | WireEvent::Presented { .. }) => {
                 let event = self.handle_progress(event)?;
                 self.pending.push_back(event);
                 Ok(None)
@@ -422,9 +521,13 @@ impl Display {
                 self.release(id)?;
                 Ok(Event::FrameDone)
             }
-            event @ (WireEvent::Accepted(_) | WireEvent::Presented { .. }) => {
-                self.handle_progress(event)
+            WireEvent::Retired(id) => {
+                self.retire(id)?;
+                Ok(Event::FrameDone)
             }
+            event @ (WireEvent::Accepted(_)
+            | WireEvent::Discarded(_)
+            | WireEvent::Presented { .. }) => self.handle_progress(event),
         }
     }
 
@@ -433,6 +536,14 @@ impl Display {
             WireEvent::Accepted(revision) if self.submitted.front().copied() == Some(revision) => {
                 self.submitted.pop_front();
                 self.accepted.insert(revision);
+                Ok(Event::FrameDone)
+            }
+            WireEvent::Discarded(revision) if self.submitted.front().copied() == Some(revision) => {
+                self.submitted.pop_front();
+                self.accepted.remove(&revision);
+                Ok(Event::FrameDone)
+            }
+            WireEvent::Discarded(revision) if self.accepted.remove(&revision) => {
                 Ok(Event::FrameDone)
             }
             WireEvent::Presented {
@@ -456,29 +567,6 @@ impl Display {
             parse_frame(&bytes[..length]).ok_or_else(|| invalid("invalid display event"))?;
         parse_event(frame.kind(), frame.payload(), self.surface_id)
             .ok_or_else(|| invalid("invalid display event role"))
-    }
-
-    fn release(&mut self, id: u32) -> io::Result<()> {
-        // A release naming a buffer this surface no longer tracks is a
-        // disconnect/reconfigure race, not corruption: during a rapid resize the
-        // compositor can retire a buffer whose mapping the app already dropped
-        // (e.g. after a configure swapped the surface size). Nothing to free —
-        // drop the release rather than abort the whole app under panic=abort.
-        let Some(index) = self.buffers.iter().position(|buffer| buffer.id == id) else {
-            return Ok(());
-        };
-        if !self.buffers[index].matches(self.physical) {
-            // Retired buffer: the compositor destroyed its twin, so the
-            // release carries "drop the mapping", not "back to the pool".
-            self.buffers.remove(index);
-            return Ok(());
-        }
-        let buffer = &mut self.buffers[index];
-        if buffer.free {
-            return Err(invalid("buffer released twice"));
-        }
-        buffer.free = true;
-        Ok(())
     }
 
     fn next_revision(&mut self) -> io::Result<u64> {

@@ -243,6 +243,15 @@ pub(crate) struct CmsgHdr {
     pub kind: c_int,
 }
 
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub(crate) struct SockAddrNl {
+    pub family: u16,
+    pub padding: u16,
+    pub port_id: u32,
+    pub groups: u32,
+}
+
 const _: () = assert!(size_of::<DrmMode>() == 68);
 const _: () = assert!(align_of::<DrmMode>() == 4);
 const _: () = assert!(size_of::<DrmResources>() == 64);
@@ -258,6 +267,8 @@ const _: () = assert!(size_of::<PollFd>() == 8);
 const _: () = assert!(size_of::<WindowSize>() == 8);
 const _: () = assert!(size_of::<MsgHdr>() == 56);
 const _: () = assert!(size_of::<CmsgHdr>() == 16);
+#[cfg(target_os = "linux")]
+const _: () = assert!(size_of::<SockAddrNl>() == 12);
 const _: () = assert!(DRM_IOCTL_DROP_MASTER == 0x0000_641f);
 
 unsafe extern "C" {
@@ -280,6 +291,12 @@ unsafe extern "C" {
     pub(crate) fn poll(descriptors: *mut PollFd, count: usize, timeout: c_int) -> c_int;
     pub(crate) fn sendmsg(fd: c_int, message: *const MsgHdr, flags: c_int) -> isize;
     pub(crate) fn recvmsg(fd: c_int, message: *mut MsgHdr, flags: c_int) -> isize;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind(fd: c_int, address: *const c_void, length: u32) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn recv(fd: c_int, bytes: *mut c_void, length: usize, flags: c_int) -> isize;
     pub(crate) fn dup2(old_fd: c_int, new_fd: c_int) -> c_int;
     #[cfg(target_os = "linux")]
     pub(crate) fn getsockopt(

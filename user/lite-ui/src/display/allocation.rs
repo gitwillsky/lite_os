@@ -3,8 +3,8 @@
 use std::io;
 
 use display_proto::{
-    BufferAlloc, BufferAllocated, BufferRelease, MAX_MESSAGE, MessageKind, Size, parse_frame,
-    recv_frame_blocking, send_message,
+    BufferAlloc, BufferAllocated, BufferRelease, BufferRetired, MAX_MESSAGE, MessageKind, Size,
+    parse_frame, recv_frame_blocking, send_message,
 };
 
 use super::{
@@ -55,6 +55,12 @@ impl Display {
                         .buffer_id;
                     self.release(id)?;
                 }
+                MessageKind::BufferRetired => {
+                    let id = BufferRetired::parse(frame.payload())
+                        .ok_or_else(|| invalid("invalid buffer retirement"))?
+                        .buffer_id;
+                    self.retire(id)?;
+                }
                 kind => {
                     // A synchronous allocation response can be interleaved with
                     // any valid asynchronous event during rapid resize. Routing
@@ -65,7 +71,10 @@ impl Display {
                     {
                         WireEvent::Public(event) => self.pending.push_back(event),
                         WireEvent::Released(id) => self.release(id)?,
-                        progress @ (WireEvent::Accepted(_) | WireEvent::Presented { .. }) => {
+                        WireEvent::Retired(id) => self.retire(id)?,
+                        progress @ (WireEvent::Accepted(_)
+                        | WireEvent::Discarded(_)
+                        | WireEvent::Presented { .. }) => {
                             let event = self.handle_progress(progress)?;
                             self.pending.push_back(event);
                         }

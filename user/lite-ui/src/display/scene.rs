@@ -51,8 +51,7 @@ impl Display {
         };
         let full_input = [full];
         let no_damage = [];
-        let mut nodes =
-            Vec::with_capacity(1 + windows.len() * 3 + foreign.len() + overlays.len());
+        let mut nodes = Vec::with_capacity(1 + windows.len() * 3 + foreign.len() + overlays.len());
         nodes.push(SceneNode {
             kind: SceneNodeKind::Pixels,
             window_group: 0,
@@ -133,8 +132,14 @@ impl Display {
             });
         }
         let mut output = [0u8; MAX_MESSAGE];
-        let message = SceneCommit::encode(&mut output, revision, focused_surface, &nodes)
-            .ok_or_else(|| io::Error::other("scene encoding failed"))?;
+        let message = SceneCommit::encode(
+            &mut output,
+            revision,
+            self.output_serial,
+            focused_surface,
+            &nodes,
+        )
+        .ok_or_else(|| io::Error::other("scene encoding failed"))?;
         send_message(&self.stream, message)?;
         self.submitted.push_back(revision);
         Ok(())

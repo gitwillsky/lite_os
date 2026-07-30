@@ -58,6 +58,12 @@ pub enum MessageKind {
     ClipboardData = 25,
     /// Desktop atomically replaces the global accelerator chord table.
     AcceleratorSet = 26,
+    /// Compositor selects a new physical output mode for the desktop document.
+    OutputConfigure = 27,
+    /// A validated visual revision was superseded before presentation.
+    Discarded = 28,
+    /// A buffer generation is permanently destroyed instead of recycled.
+    BufferRetired = 29,
 }
 
 impl MessageKind {
@@ -98,6 +104,9 @@ impl MessageKind {
             24 => Self::ClipboardWrite,
             25 => Self::ClipboardData,
             26 => Self::AcceleratorSet,
+            27 => Self::OutputConfigure,
+            28 => Self::Discarded,
+            29 => Self::BufferRetired,
             _ => return None,
         })
     }

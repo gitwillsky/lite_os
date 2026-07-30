@@ -1,18 +1,20 @@
 //! CSS-to-taffy style lowering for the React host snapshot.
 
 mod flex;
+mod inset;
 mod margin;
 mod overflow;
 
 use taffy::Point;
 use taffy::prelude::{
     AlignItems, BoxSizing, Dimension, Display, FlexDirection, FlexWrap, JustifyContent,
-    LengthPercentage, LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
+    LengthPercentage, Position, Rect as TaffyRect, Size, Style,
 };
 
 use crate::{style::Computed, terminal_font::CELL_WIDTH, tree::Node};
 
 use super::SCALE;
+use inset::length_auto;
 use margin::{edges as margin_edges, single as margin_value};
 pub(crate) use overflow::{OverflowMode, overflow_modes};
 
@@ -258,13 +260,6 @@ fn dimension(value: &str) -> Option<Dimension> {
     } else {
         Some(Dimension::length(number(value)?))
     }
-}
-
-fn length_auto(value: Option<&str>) -> LengthPercentageAuto {
-    value
-        .and_then(number)
-        .map(LengthPercentageAuto::length)
-        .unwrap_or(LengthPercentageAuto::auto())
 }
 
 fn edges(value: &str) -> TaffyRect<LengthPercentage> {

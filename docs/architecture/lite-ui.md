@@ -20,6 +20,7 @@
   `host/filesystem.rs` 独占 filesystem-backed `File` 的只读文件系统 host bridge；`audio/` 独占每进程
   media worker、decode/resample、seek generation 与 audio-service transport。
 - `compositor/session.rs` 保存 epoch 与 client registry；`session/client.rs` 只负责握手和连接角色固定；
+  `session/output.rs` 独占 DRM hotplug 到 desktop output configure 的状态转换；
   `session/accelerator.rs` 独占 chord 匹配与 key grab（命中后完整 key sequence 只路由 desktop）。
   `scanout.rs` 只保留生产合成路径，其 white-box 测试位于 `scanout/tests.rs`。
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
@@ -57,6 +58,13 @@
 - compositor 单线程 poll loop 独占 sockets、evdev、scene latch、damage composition、DRM page flip 与
   completion。LiteUI 使用 UI/render 双线程：UI thread 独占 QuickJS/React，native render thread 独占
   CSS、layout、text 与 raster。固定三个 snapshot arena 组成 latest-only seam，中间 revision 可丢弃。
+- compositor 通过标准 `NETLINK_KOBJECT_UEVENT` group 1 与 display socket/evdev 同 poll；一次 resize
+  burst drain 到 `EAGAIN` 后只查询一次最新 DRM topology，并发布 monotonic
+  `OUTPUT_CONFIGURE(serial, physicalSize, scale=2)`。desktop 只有在新尺寸 triple buffer 与完整 scene
+  就绪后才重建双 scanout、modeset 并 page flip；旧 output serial 的 scene 以 `DISCARDED` 终止。
+  当前几何 generation 的 buffer 只通过 `BUFFER_RELEASE` 重新变为 writable，过期尺寸的 mapping
+  只通过 `BUFFER_RETIRED` 永久移除；不重启 epoch、不让 QEMU 做模糊 host scaling，也不保留固定尺寸
+  compositor 路径。
 - desktop raster 把 document 与 `position: fixed` subtree 作为两个标准 paint phase。document layer
   只有在非 fixed host props、computed style、scroll offset 或 viewport 任一精确变化时才失效；纯 shell
   overlay commit 复用其完整像素、hit、window 与 scroll geometry，再按 CSS paint order 合成 fixed
@@ -131,8 +139,11 @@
   `overflow: auto/scroll` 形成通用双轴 scroll container，renderer 根据 layout content extent
   收敛 offset、移动并裁剪 descendant、绘制 overlay UA scrollbar；wheel delta 在嵌套 scroll port
   到达边界后向 ancestor 链式传播，应用无需保存私有 `scrollTop`。
-- layout 使用逻辑 CSS px，固定 `deviceScaleFactor=2`；默认 3008x1692 mode 对应 1504x846 viewport。
-  LiteUI 是 logical/physical conversion 的唯一 owner。最终 box edge 从绝对逻辑坐标独立 snap 到物理像素。
+- layout 使用逻辑 CSS px，固定 `devicePixelRatio=2`；默认 3008x1692 mode 对应 1504x846 viewport，
+  QEMU Cocoa 把可调整窗口的 backing-pixel 尺寸作为动态物理 mode。LiteUI 是 logical/physical
+  conversion 的唯一 owner；奇数物理边长对应最后一个部分覆盖的 CSS pixel，不另建 scale path。
+  runtime 在应用模块求值前提供标准 `window === globalThis`、`innerWidth`、`innerHeight`、
+  `devicePixelRatio` 与 `addEventListener("resize", ...)`。最终 box edge 从绝对逻辑坐标独立 snap 到物理像素。
 - text 由 Parley shaping/layout、swash 运行时栅格化：任意 `font-size` px 生效，`font-weight` 数值按
   CSS Fonts 匹配映射到 subsetted Noto Sans regular/bold（`assets/fonts/liteos-ui-{regular,bold}.otf`，
   4111 codepoint，由 `scripts/generate_ui_font.py` 生成并发布到 `/usr/share/liteos/`）；

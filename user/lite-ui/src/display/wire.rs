@@ -3,9 +3,10 @@
 use std::{io, os::unix::net::UnixStream};
 
 use display_proto::{
-    Accepted, AppClosed, AppOpened, BufferRelease, ClipboardData, CloseRequest, Configure,
-    ConfigureReady, InputKey, InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveComplete,
-    Presented, SurfaceActivated, parse_frame, recv_frame_blocking,
+    Accepted, AppClosed, AppOpened, BufferRelease, BufferRetired, ClipboardData, CloseRequest,
+    Configure, ConfigureReady, Discarded, InputKey, InputPointer, InputScroll, MAX_MESSAGE,
+    MessageKind, MoveComplete, OutputConfigure, Presented, SurfaceActivated, parse_frame,
+    recv_frame_blocking,
 };
 
 use super::{Event, invalid};
@@ -13,7 +14,9 @@ use super::{Event, invalid};
 pub(super) enum WireEvent {
     Public(Event),
     Accepted(u64),
+    Discarded(u64),
     Released(u32),
+    Retired(u32),
     Presented { revision: u64, monotonic_ns: u64 },
 }
 
@@ -38,7 +41,9 @@ pub(super) fn parse_event(
 ) -> Option<WireEvent> {
     Some(match kind {
         MessageKind::Accepted => WireEvent::Accepted(Accepted::parse(payload)?.revision),
+        MessageKind::Discarded => WireEvent::Discarded(Discarded::parse(payload)?.revision),
         MessageKind::BufferRelease => WireEvent::Released(BufferRelease::parse(payload)?.buffer_id),
+        MessageKind::BufferRetired => WireEvent::Retired(BufferRetired::parse(payload)?.buffer_id),
         MessageKind::Presented => {
             let presented = Presented::parse(payload)?;
             WireEvent::Presented {
@@ -78,6 +83,9 @@ pub(super) fn parse_event(
         }
         MessageKind::Configure if own_surface != 0 => {
             WireEvent::Public(Event::Configure(Configure::parse(payload)?))
+        }
+        MessageKind::OutputConfigure if own_surface == 0 => {
+            WireEvent::Public(Event::OutputConfigure(OutputConfigure::parse(payload)?))
         }
         MessageKind::CloseRequest if own_surface != 0 => {
             CloseRequest::parse(payload)?;

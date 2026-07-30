@@ -7,7 +7,8 @@ use std::{
 };
 
 use display_proto::{
-    Accepted, MAX_MESSAGE, MessageKind, Presented, parse_frame, recv_frame_blocking, send_message,
+    Accepted, Discarded, MAX_MESSAGE, MessageKind, Presented, parse_frame, recv_frame_blocking,
+    send_message,
 };
 use linux_uapi::drm::FlipEvent;
 
@@ -31,6 +32,14 @@ pub(super) fn send_accepted(stream: &UnixStream, revision: u64) -> io::Result<()
     let message = Accepted { revision }
         .encode(&mut bytes)
         .ok_or_else(|| io::Error::other("accepted encoding failed"))?;
+    send_message(stream, message)
+}
+
+pub(super) fn send_discarded(stream: &UnixStream, revision: u64) -> io::Result<()> {
+    let mut bytes = [0u8; 24];
+    let message = Discarded { revision }
+        .encode(&mut bytes)
+        .ok_or_else(|| io::Error::other("discarded encoding failed"))?;
     send_message(stream, message)
 }
 

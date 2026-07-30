@@ -255,7 +255,7 @@ assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
 LiteUI 的 host gate 覆盖 manifest/CSS/bundle validation、display codec、layout/paint/scroll、
-terminal model 与 session/buffer/input 状态转换。AArch64 boot gate 只证明空桌面首帧及“不自动启动
+terminal model、标准 Retina viewport/resize event 与 session/buffer/input 状态转换。AArch64 boot gate 只证明空桌面首帧及“不自动启动
 Terminal”；60 Hz gate 通过真实桌面双击显式启动 Terminal 与 File Manager，再驱动 resize 输入并裁决
 guest vblank marker。当前没有“Terminal 执行命令、关闭窗口、资源回收”的 GUI runtime gate，不得把
 host 单元测试或 resize workload 虚报为该覆盖。RISC-V secondary 只承担 compile、static/artifact、

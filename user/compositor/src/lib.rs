@@ -62,15 +62,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             frame_stats.reset();
         }
         if let Some(scene) = activity.scene {
-            scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
-            let event = scanout.present_scene(scene.revision, input.position())?;
-            session.presented(&scene, event)?;
-            // Measure only real desktop presents; `arm` excludes the static
-            // fallback→desktop handoff interval from the baseline.
-            if session.desktop_ready() {
-                frame_stats.arm();
-                frame_stats.record(frame_stats::flip_monotonic_ns(&event), event.sequence);
+            if !scene.is_discarded() {
+                let event = if scene.output_size != scanout.size() {
+                    match scanout.present_mode(&scene, session.buffers(), input.position())? {
+                        scanout::ModePresent::Presented(event) => event,
+                        scanout::ModePresent::Superseded(size) => {
+                            session.discard_scene(&scene)?;
+                            session.configure_output(size)?;
+                            input.resize(size.width as i32, size.height as i32);
+                            continue;
+                        }
+                    }
+                } else {
+                    scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
+                    scanout.present_scene(scene.revision, input.position())?
+                };
+                session.presented(&scene, event)?;
+                // Measure only real desktop presents; `arm` excludes the static
+                // fallback→desktop handoff interval from the baseline.
+                if session.desktop_ready() {
+                    frame_stats.arm();
+                    frame_stats.record(frame_stats::flip_monotonic_ns(&event), event.sequence);
+                }
             }
+        }
+        if let Some(size) = activity.output {
+            input.resize(size.width as i32, size.height as i32);
         }
         // 3. Drain evdev whenever it signalled (also clears its readability so the
         //    next poll can block). A pure pointer move updates only the cursor via

@@ -6,6 +6,7 @@
 pub mod alsa;
 pub mod drm;
 pub mod input;
+pub mod kobject;
 pub mod process;
 pub mod pty;
 mod raw;

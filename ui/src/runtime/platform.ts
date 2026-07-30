@@ -8,6 +8,10 @@ const channels = new Map<string, Set<(payload: unknown) => void>>();
 const clipboardReads = new Map<number, (text: string) => void>();
 let nextTimer = 1;
 
+type Viewport = { width: number; height: number; devicePixelRatio: number };
+const viewport = JSON.parse(globalThis.__liteNative("viewport.get", "")) as Viewport;
+const eventListeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+
 interface NativeFileDescriptor {
   path: string;
   name: string;
@@ -136,7 +140,55 @@ const host = globalThis as unknown as {
   __liteEvent: (channel: string, payload: unknown) => void;
   __liteFile: (descriptor: NativeFileDescriptor) => File;
   navigator: Navigator;
+  window: Window & typeof globalThis;
+  addEventListener: typeof addEventListener;
+  removeEventListener: typeof removeEventListener;
+  dispatchEvent: typeof dispatchEvent;
 };
+
+if (!("Event" in globalThis)) {
+  class LiteEvent {
+    readonly type: string;
+    readonly bubbles = false;
+    readonly cancelable = false;
+    defaultPrevented = false;
+
+    constructor(type: string) {
+      this.type = String(type);
+    }
+
+    preventDefault() {
+      if (this.cancelable) this.defaultPrevented = true;
+    }
+  }
+  (globalThis as unknown as { Event: typeof Event }).Event =
+    LiteEvent as unknown as typeof Event;
+}
+
+host.window = globalThis as unknown as Window & typeof globalThis;
+host.addEventListener = (type, listener) => {
+  if (!listener) return;
+  let listeners = eventListeners.get(type);
+  if (!listeners) eventListeners.set(type, listeners = new Set());
+  listeners.add(listener);
+};
+host.removeEventListener = (type, listener) => {
+  if (listener) eventListeners.get(type)?.delete(listener);
+};
+host.dispatchEvent = (event) => {
+  for (const listener of eventListeners.get(event.type) ?? []) {
+    if (typeof listener === "function") listener.call(globalThis, event);
+    else listener.handleEvent(event);
+  }
+  return !event.defaultPrevented;
+};
+for (const key of ["innerWidth", "innerHeight", "devicePixelRatio"] as const) {
+  Object.defineProperty(globalThis, key, {
+    configurable: false,
+    enumerable: true,
+    get: () => viewport[key === "innerWidth" ? "width" : key === "innerHeight" ? "height" : key],
+  });
+}
 
 if (!("DOMException" in globalThis)) {
   class LiteDOMException extends Error {
@@ -175,6 +227,13 @@ host.__liteTimer = (id) => {
   callback?.();
 };
 host.__liteEvent = (channel, payload) => {
+  if (channel === "viewport") {
+    const next = payload as Viewport;
+    viewport.width = next.width;
+    viewport.height = next.height;
+    viewport.devicePixelRatio = next.devicePixelRatio;
+    host.dispatchEvent(new Event("resize"));
+  }
   if (channel === "clipboard") {
     const result = payload as { requestId: number; text: string };
     const resolve = clipboardReads.get(result.requestId);

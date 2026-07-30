@@ -1,6 +1,8 @@
 //! Validated asynchronous events exposed by the display protocol client.
 
-use display_proto::{ClipboardData, Configure, InputKey, InputPointer, InputScroll};
+use display_proto::{
+    ClipboardData, Configure, InputKey, InputPointer, InputScroll, OutputConfigure,
+};
 
 /// One exact role-checked event consumed by the LiteUI event loop.
 #[derive(Clone, Debug)]
@@ -17,6 +19,8 @@ pub enum Event {
     ConfigureReady { surface_id: u32, serial: u64 },
     /// Desktop selected a new app client size.
     Configure(Configure),
+    /// Compositor selected a new physical viewport for the desktop document.
+    OutputConfigure(OutputConfigure),
     /// Desktop requested app termination.
     Close,
     /// Pointer input routed against the presented scene.

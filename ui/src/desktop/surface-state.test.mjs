@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applySurfaceMove, reconcileSurfaces } from "./surface-state.ts";
+import { applySurfaceMove, fitSurfaceFrame, reconcileSurfaces } from "./surface-state.ts";
 
 test("native reconciliation preserves the React-owned window frame", () => {
   const current = [
@@ -25,4 +25,14 @@ test("completed native move changes position without restoring the old size", ()
   assert.deepEqual(applySurfaceMove(surfaces, 1, 80, 100), [
     { id: 1, bounds: { x: 80, y: 100, width: 500, height: 360 } },
   ]);
+});
+
+test("viewport shrink fits a window entirely inside the logical work area", () => {
+  assert.deepEqual(
+    fitSurfaceFrame(
+      { x: 500, y: 300, width: 800, height: 600 },
+      { x: 12, y: 56, width: 476, height: 270 },
+    ),
+    { x: 12, y: 56, width: 476, height: 270 },
+  );
 });

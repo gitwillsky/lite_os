@@ -6,6 +6,7 @@ mod client;
 mod clipboard_bridge;
 mod cursor;
 mod messages;
+mod output;
 mod routing;
 mod scene;
 mod wire;
@@ -31,6 +32,7 @@ use display_proto::{
 };
 use linux_uapi::{
     drm::DrmDevice,
+    kobject::KobjectUevent,
     unix::{self, PollEvents, PollFd},
 };
 
@@ -92,6 +94,8 @@ pub struct Session {
     listener: UnixListener,
     device: DrmDevice,
     display: Size,
+    output_serial: u64,
+    hotplug: KobjectUevent,
     epoch: u64,
     desktop: Option<Desktop>,
     apps: HashMap<u32, App>,
@@ -133,6 +137,8 @@ pub struct Activity {
     /// caller owns scanout state, which `reset_epoch` cannot reach, so it must
     /// return scanout to boot to avoid painting a stale scene diff on restart.
     pub epoch_reset: bool,
+    /// Latest physical connector size selected by a drained DRM hotplug burst.
+    pub output: Option<Size>,
 }
 
 impl Session {
@@ -142,10 +148,13 @@ impl Session {
         let listener = UnixListener::bind(display_proto::SOCKET_PATH)?;
         listener.set_nonblocking(true)?;
         let clipboard = crate::clipboard::Clipboard::open()?;
+        let hotplug = KobjectUevent::open()?;
         Ok(Self {
             listener,
             device: device.clone(),
             display,
+            output_serial: 1,
+            hotplug,
             epoch: new_epoch(),
             desktop: None,
             apps: HashMap::new(),
@@ -210,8 +219,8 @@ impl Session {
             app_ids[app_count] = id;
             app_count += 1;
         }
-        let (listener_ready, desktop_ready, app_ready, input_ready, clipboard_ready) = {
-            const MAX_POLL_FDS: usize = 3 + MAX_APP_SURFACES + 2;
+        let (listener_ready, desktop_ready, app_ready, input_ready, hotplug_ready, clipboard_ready) = {
+            const MAX_POLL_FDS: usize = 4 + MAX_APP_SURFACES + 2;
             let mut descriptors: [PollFd; MAX_POLL_FDS] =
                 std::array::from_fn(|_| PollFd::new(self.listener.as_fd(), PollEvents::READ));
             let mut descriptor_count = 0;
@@ -232,6 +241,9 @@ impl Session {
                 descriptors[descriptor_count] = PollFd::new(*fd, PollEvents::READ);
                 descriptor_count += 1;
             }
+            let hotplug_offset = descriptor_count;
+            descriptors[descriptor_count] = PollFd::new(self.hotplug.as_fd(), PollEvents::READ);
+            descriptor_count += 1;
             let clipboard_offset =
                 self.append_clipboard_poll(&mut descriptors, &mut descriptor_count);
             unix::poll(&mut descriptors[..descriptor_count], None)?;
@@ -246,17 +258,26 @@ impl Session {
             {
                 *ready = descriptor.returned() != PollEvents::EMPTY;
             }
-            let input_ready = descriptors[wake_offset..clipboard_offset]
+            let input_ready = descriptors[wake_offset..hotplug_offset]
                 .iter()
                 .any(|descriptor| descriptor.returned() != PollEvents::EMPTY);
+            let hotplug_ready = descriptors[hotplug_offset].returned() != PollEvents::EMPTY;
             let clipboard_ready = descriptors[clipboard_offset].returned() != PollEvents::EMPTY;
             (
                 listener_ready,
                 desktop_ready,
                 app_ready,
                 input_ready,
+                hotplug_ready,
                 clipboard_ready,
             )
+        };
+        let output = if hotplug_ready && self.hotplug.drain_drm_hotplug()? {
+            let size = topology_size(self.device.query_topology()?);
+            self.configure_output(size)?;
+            Some(size)
+        } else {
+            None
         };
         if listener_ready && let Err(error) = self.accept() {
             eprintln!("compositor: rejected connection: {error}");
@@ -275,6 +296,7 @@ impl Session {
                         scene: None,
                         input: input_ready,
                         epoch_reset: true,
+                        output,
                     });
                 }
             }
@@ -296,6 +318,7 @@ impl Session {
             scene,
             input: input_ready,
             epoch_reset: false,
+            output,
         })
     }
 
@@ -522,6 +545,13 @@ impl Session {
         self.accelerators.clear();
         self.clipboard.reset_session();
         self.epoch = self.epoch.wrapping_add(1);
+    }
+}
+
+fn topology_size(topology: linux_uapi::drm::Topology) -> Size {
+    Size {
+        width: u32::from(topology.mode.width()),
+        height: u32::from(topology.mode.height()),
     }
 }
 

@@ -107,10 +107,13 @@ impl Renderer {
         self.scroll_regions.clear();
         self.active_scroll_nodes.clear();
         self.scrollbars.clear();
-        if pixels.width()
-            != self.viewport.width as usize * display_proto::DEVICE_SCALE_FACTOR as usize
-            || pixels.height()
-                != self.viewport.height as usize * display_proto::DEVICE_SCALE_FACTOR as usize
+        let scale = display_proto::DEVICE_SCALE_FACTOR as usize;
+        let matches_axis = |physical: usize, logical: u32| {
+            let upper = logical as usize * scale;
+            physical <= upper && physical > upper.saturating_sub(scale)
+        };
+        if !matches_axis(pixels.width(), self.viewport.width)
+            || !matches_axis(pixels.height(), self.viewport.height)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

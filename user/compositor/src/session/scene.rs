@@ -11,11 +11,11 @@ use std::{
     os::unix::net::UnixStream,
 };
 
-use display_proto::{BufferRelease, Rect, SceneCommit, SceneNodeKind, send_message};
+use display_proto::{BufferRelease, BufferRetired, Rect, SceneCommit, SceneNodeKind, send_message};
 use linux_uapi::drm::FlipEvent;
 
 use super::buffers::{Buffers, Owner};
-use super::wire::{send_accepted, send_presented};
+use super::wire::{send_accepted, send_discarded, send_presented};
 use super::{RoutingNode, Session, invalid};
 
 pub(super) fn app_first_scene_presented_marker(surface_id: u32) -> String {
@@ -37,16 +37,17 @@ pub struct Node {
     pub corner_radius: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct AppPresentation {
     surface_id: u32,
     revision: u64,
-    previous_buffer: Option<u32>,
+    previous: Option<super::Content>,
 }
 
 /// Complete accepted desktop scene awaiting page-flip completion.
 pub struct Scene {
     pub revision: u64,
+    pub output_size: display_proto::Size,
     pub nodes: Vec<Node>,
     pub damage: Rect,
     pub(super) finishes_move: bool,
@@ -66,6 +67,9 @@ impl Session {
             .last_revision;
         if commit.revision <= last_revision {
             return Err(invalid("scene revision invalid"));
+        }
+        if commit.output_serial != self.output_serial {
+            return self.discard_commit(commit);
         }
         // App disconnect always races the desktop's next commit: the compositor
         // removes a dead app before AppClosed reaches the desktop, so focus or
@@ -256,11 +260,11 @@ impl Session {
                 .expect("validated app adoption");
             let next = app.pending.take().expect("adopted pending content");
             let revision = next.revision;
-            let previous_buffer = app.current.replace(next).map(|content| content.buffer_id);
+            let previous = app.current.replace(next);
             app_presentations.push(AppPresentation {
                 surface_id,
                 revision,
-                previous_buffer,
+                previous,
             });
         }
         let desktop = self.desktop.as_mut().expect("validated desktop");
@@ -298,6 +302,7 @@ impl Session {
         });
         Ok(Scene {
             revision: commit.revision,
+            output_size: self.display,
             nodes,
             damage,
             finishes_move,
@@ -322,14 +327,24 @@ impl Session {
             .filter(|id| !scene.desktop_buffers.contains(id))
             .collect();
         for id in retired {
-            release_buffer(&mut self.buffers, &desktop.stream, id)?;
+            let stale = self
+                .buffers
+                .values
+                .get(&id)
+                .is_some_and(|buffer| buffer.size != self.display);
+            if stale {
+                self.buffers.values.remove(&id);
+                send_buffer_retired(&desktop.stream, id)?;
+            } else {
+                release_buffer(&mut self.buffers, &desktop.stream, id)?;
+            }
         }
         self.desktop_current_buffers
             .clone_from(&scene.desktop_buffers);
         send_presented(&desktop.stream, scene.revision, event)?;
         for app_use in &scene.app_presentations {
             if let Some(app) = self.apps.get_mut(&app_use.surface_id) {
-                if let Some(previous) = app_use.previous_buffer {
+                if let Some(previous) = &app_use.previous {
                     // A previous buffer sized for a superseded configure can
                     // never be presented again: retire it instead of recycling.
                     // The matching release path keeps double buffering intact.
@@ -337,23 +352,23 @@ impl Session {
                         let buffer = self
                             .buffers
                             .values
-                            .get(&previous)
+                            .get(&previous.buffer_id)
                             .expect("presented app buffer");
                         buffer.size.width != configure.width * display_proto::DEVICE_SCALE_FACTOR
                             || buffer.size.height
                                 != configure.height * display_proto::DEVICE_SCALE_FACTOR
                     });
                     if stale {
-                        self.buffers.values.remove(&previous);
+                        self.buffers.values.remove(&previous.buffer_id);
                         let mut bytes = [0u8; 24];
-                        let message = BufferRelease {
-                            buffer_id: previous,
+                        let message = BufferRetired {
+                            buffer_id: previous.buffer_id,
                         }
                         .encode(&mut bytes)
                         .ok_or_else(|| io::Error::other("release encoding failed"))?;
                         send_message(&app.stream, message)?;
                     } else {
-                        release_buffer(&mut self.buffers, &app.stream, previous)?;
+                        release_buffer(&mut self.buffers, &app.stream, previous.buffer_id)?;
                     }
                 }
                 send_presented(&app.stream, app_use.revision, event)?;
@@ -383,6 +398,101 @@ impl Session {
             eprintln!("compositor: desktop first scene presented");
         }
         Ok(())
+    }
+
+    fn discard_commit(&mut self, commit: SceneCommit<'_>) -> io::Result<Scene> {
+        let mut buffers = Vec::new();
+        for node in commit.nodes() {
+            if node.kind != SceneNodeKind::Pixels || buffers.contains(&node.source_id) {
+                continue;
+            }
+            let buffer = self
+                .buffers
+                .values
+                .get(&node.source_id)
+                .ok_or_else(|| invalid("unknown discarded desktop buffer"))?;
+            if buffer.owner != Owner::Desktop || buffer.busy {
+                return Err(invalid("discarded desktop buffer state invalid"));
+            }
+            buffers.push(node.source_id);
+        }
+        if buffers.is_empty() {
+            return Err(invalid("discarded desktop scene has no pixels"));
+        }
+        let desktop = self.desktop.as_mut().expect("validated desktop");
+        desktop.last_revision = commit.revision;
+        send_discarded(&desktop.stream, commit.revision)?;
+        for id in buffers {
+            let stale = self
+                .buffers
+                .values
+                .get(&id)
+                .is_some_and(|buffer| buffer.size != self.display);
+            if stale {
+                self.buffers.values.remove(&id);
+                send_buffer_retired(&desktop.stream, id)?;
+            } else {
+                release_buffer(&mut self.buffers, &desktop.stream, id)?;
+            }
+        }
+        Ok(Scene::discarded(commit.revision))
+    }
+
+    /// Terminates an already validated scene when the connector changed again
+    /// between socket validation and the KMS modeset.
+    pub fn discard_scene(&mut self, scene: &Scene) -> io::Result<()> {
+        let desktop = self
+            .desktop
+            .as_ref()
+            .ok_or_else(|| invalid("desktop disappeared"))?;
+        send_discarded(&desktop.stream, scene.revision)?;
+        for id in &scene.desktop_buffers {
+            let stale = self
+                .buffers
+                .values
+                .get(id)
+                .is_some_and(|buffer| buffer.size != self.display);
+            if stale {
+                self.buffers.values.remove(id);
+                send_buffer_retired(&desktop.stream, *id)?;
+            } else {
+                release_buffer(&mut self.buffers, &desktop.stream, *id)?;
+            }
+        }
+        for presentation in &scene.app_presentations {
+            let app = self
+                .apps
+                .get_mut(&presentation.surface_id)
+                .ok_or_else(|| invalid("discarded app disappeared"))?;
+            let adopted = app
+                .current
+                .take()
+                .ok_or_else(|| invalid("discarded app adoption missing"))?;
+            app.current = presentation.previous.clone();
+            app.pending = Some(adopted);
+        }
+        Ok(())
+    }
+}
+
+impl Scene {
+    fn discarded(revision: u64) -> Self {
+        Self {
+            revision,
+            output_size: display_proto::Size::default(),
+            nodes: Vec::new(),
+            damage: Rect::default(),
+            finishes_move: false,
+            desktop_buffers: Vec::new(),
+            app_presentations: Vec::new(),
+            routing: Vec::new(),
+            focused_surface: 0,
+        }
+    }
+
+    /// Reports that this is a terminal protocol acknowledgement, not a scene.
+    pub fn is_discarded(&self) -> bool {
+        self.nodes.is_empty()
     }
 }
 
@@ -461,9 +571,21 @@ pub(super) fn release_buffer(
         .get_mut(&id)
         .ok_or_else(|| invalid("released buffer disappeared"))?
         .busy = false;
+    send_buffer_release(stream, id)
+}
+
+fn send_buffer_release(stream: &UnixStream, id: u32) -> io::Result<()> {
     let mut bytes = [0u8; 24];
     let message = BufferRelease { buffer_id: id }
         .encode(&mut bytes)
         .ok_or_else(|| io::Error::other("release encoding failed"))?;
+    send_message(stream, message)
+}
+
+fn send_buffer_retired(stream: &UnixStream, id: u32) -> io::Result<()> {
+    let mut bytes = [0u8; 24];
+    let message = BufferRetired { buffer_id: id }
+        .encode(&mut bytes)
+        .ok_or_else(|| io::Error::other("retirement encoding failed"))?;
     send_message(stream, message)
 }

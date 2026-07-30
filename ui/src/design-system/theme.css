@@ -49,8 +49,9 @@ button:disabled {
 .topbar {
   position: fixed;
   left: 13px;
+  right: 13px;
   top: 9px;
-  width: 1478px;
+  width: auto;
   height: 40px;
   display: flex;
   align-items: center;
@@ -97,7 +98,8 @@ button:disabled {
 
 .workspace-switcher {
   position: absolute;
-  left: 621px;
+  left: 50%;
+  margin-left: -125px;
   top: 3px;
   width: 250px;
   height: 34px;
@@ -174,8 +176,9 @@ button:disabled {
 
 .dock {
   position: fixed;
-  left: 431px;
-  top: 742px;
+  left: 50%;
+  bottom: 20px;
+  margin-left: -317px;
   width: 634px;
   height: 84px;
   display: flex;
@@ -447,8 +450,8 @@ button:disabled {
   position: fixed;
   left: 0;
   top: 0;
-  width: 1504px;
-  height: 846px;
+  width: 100%;
+  height: 100%;
   background: rgba(1, 6, 16, 0.46);
   backdrop-filter: blur(8px);
   z-index: 800;
@@ -456,7 +459,8 @@ button:disabled {
 
 .command-center {
   position: fixed;
-  left: 386px;
+  left: 50%;
+  margin-left: -366px;
   top: 92px;
   width: 732px;
   height: 604px;
@@ -583,8 +587,8 @@ button:disabled {
   position: fixed;
   left: 0;
   top: 0;
-  width: 1504px;
-  height: 846px;
+  width: 100%;
+  height: 100%;
   background: rgba(2, 7, 18, 0.82);
   backdrop-filter: blur(18px);
   z-index: 940;
@@ -593,8 +597,9 @@ button:disabled {
 .overview__header {
   position: absolute;
   left: 92px;
+  right: 92px;
   top: 82px;
-  width: 1320px;
+  width: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -632,14 +637,15 @@ button:disabled {
 .workspace-list {
   position: absolute;
   left: 92px;
+  right: 92px;
   top: 178px;
-  width: 1320px;
+  width: auto;
   display: flex;
   gap: 24px;
 }
 
 .workspace-card {
-  width: 410px;
+  width: 31%;
   height: 372px;
   flex-direction: column;
   border: 1px solid var(--aurora-border);
@@ -660,7 +666,7 @@ button:disabled {
 
 .workspace-card__preview {
   position: relative;
-  width: 376px;
+  width: 91.7%;
   height: 292px;
   margin: 16px;
   border-radius: 12px;
@@ -699,7 +705,7 @@ button:disabled {
 }
 
 .workspace-card__meta {
-  width: 376px;
+  width: 91.7%;
   height: 46px;
   display: flex;
   align-items: center;
@@ -722,7 +728,7 @@ button:disabled {
 }
 
 .workspace-card__empty {
-  width: 376px;
+  width: 91.7%;
   height: 292px;
   margin: 16px;
   display: flex;
@@ -737,8 +743,9 @@ button:disabled {
 .overview__footer {
   position: absolute;
   left: 92px;
+  right: 92px;
   bottom: 72px;
-  width: 1320px;
+  width: auto;
   display: flex;
   align-items: center;
   gap: 28px;

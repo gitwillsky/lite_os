@@ -73,6 +73,8 @@ pub struct Welcome {
     pub surface_id: u32,
     /// Session epoch chosen by compositor.
     pub session_epoch: u64,
+    /// Current compositor-owned output configuration identity.
+    pub output_serial: u64,
 }
 
 impl Welcome {
@@ -84,6 +86,7 @@ impl Welcome {
         writer.u32(DEVICE_SCALE_FACTOR)?;
         writer.u32(self.surface_id)?;
         writer.u64(self.session_epoch)?;
+        writer.u64(self.output_serial)?;
         writer.finish()
     }
 
@@ -98,8 +101,9 @@ impl Welcome {
                 reader.u32()?
             },
             session_epoch: reader.u64()?,
+            output_serial: reader.u64()?,
         };
         reader.finish()?;
-        (message.version == PROTOCOL_VERSION).then_some(message)
+        (message.version == PROTOCOL_VERSION && message.output_serial != 0).then_some(message)
     }
 }

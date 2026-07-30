@@ -16,11 +16,9 @@ import { Dock, CommandCenter, SystemCenter, TopBar, WorkspaceOverview } from "..
 import type { ShellPanel } from "../design-system/shell.tsx";
 import { constrainResize } from "../design-system/window-geometry.ts";
 import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts";
-import { applySurfaceMove, reconcileSurfaces } from "./surface-state.ts";
+import { applySurfaceMove, fitSurfaceFrame, reconcileSurfaces } from "./surface-state.ts";
 import { Splash } from "./splash.tsx";
 
-const SCREEN = { width: 1504, height: 846 };
-const WORK_AREA = { x: 12, y: 56, width: 1480, height: 716 };
 const MIN_WINDOW = { width: 260, height: 180 };
 const KEY_ESC = 1;
 const KEY_TAB = 15;
@@ -37,7 +35,22 @@ const dockApps = [
 
 const appIcon = (id: string) => dockApps.find((item) => item.id === id)?.icon ?? "assets/package.png";
 
+const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
+
+const workArea = (screen: { width: number; height: number }): Rect => {
+  const x = Math.min(12, Math.max(0, screen.width - 1));
+  const y = Math.min(56, Math.max(0, screen.height - 55));
+  return {
+    x,
+    y,
+    width: Math.max(1, screen.width - x - Math.min(12, screen.width - x - 1)),
+    height: Math.max(55, screen.height - y - Math.min(74, screen.height - y - 55)),
+  };
+};
+
 export default function Desktop() {
+  const [screen, setScreen] = useState(viewport);
+  const desktopArea = useMemo(() => workArea(screen), [screen]);
   const [open, setOpen] = useState(() => surfaces());
   const openRef = useRef(open);
   openRef.current = open;
@@ -81,6 +94,26 @@ export default function Desktop() {
       clearTimeout(timer);
     };
   }, []);
+
+  useEffect(() => {
+    const resize = () => setScreen(viewport());
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+
+  useEffect(() => {
+    setOpen((current) => current.map((surface) => {
+      const bounds = fitSurfaceFrame(surface.bounds, desktopArea);
+      if (
+        bounds.x === surface.bounds.x
+        && bounds.y === surface.bounds.y
+        && bounds.width === surface.bounds.width
+        && bounds.height === surface.bounds.height
+      ) return surface;
+      move(surface.id, bounds.x, bounds.y);
+      return { ...surface, bounds };
+    }));
+  }, [desktopArea]);
 
   useEffect(() => {
     const unsubscribe = subscribe((state) => {
@@ -137,7 +170,13 @@ export default function Desktop() {
 
   useEffect(() => globalThis.liteDesktopSubscribe((event) => {
     const snapshot = surfaces();
-    setOpen((current) => reconcileSurfaces(current, snapshot));
+    setOpen((current) => reconcileSurfaces(current, snapshot).map((surface) => {
+      const bounds = fitSurfaceFrame(surface.bounds, desktopArea);
+      if (bounds.x !== surface.bounds.x || bounds.y !== surface.bounds.y) {
+        move(surface.id, bounds.x, bounds.y);
+      }
+      return { ...surface, bounds };
+    }));
     setSurfaceWorkspace((current) => {
       const next = new Map(current);
       for (const surface of snapshot) {
@@ -167,7 +206,7 @@ export default function Desktop() {
         return next;
       });
     }
-  }), [synchronizeActivation]);
+  }), [desktopArea, synchronizeActivation]);
 
   useEffect(() => {
     setAccelerators([
@@ -234,12 +273,12 @@ export default function Desktop() {
   const moveWindow = useCallback((id: number, x: number, y: number) => {
     setOpen((current) => current.map((surface) => {
       if (surface.id !== id) return surface;
-      const nextX = Math.max(WORK_AREA.x, Math.min(WORK_AREA.x + WORK_AREA.width - surface.bounds.width, x));
-      const nextY = Math.max(WORK_AREA.y, Math.min(WORK_AREA.y + WORK_AREA.height - surface.bounds.height, y));
+      const nextX = Math.max(desktopArea.x, Math.min(desktopArea.x + desktopArea.width - surface.bounds.width, x));
+      const nextY = Math.max(desktopArea.y, Math.min(desktopArea.y + desktopArea.height - surface.bounds.height, y));
       move(id, nextX, nextY);
       return { ...surface, bounds: { ...surface.bounds, x: nextX, y: nextY } };
     }));
-  }, []);
+  }, [desktopArea]);
 
   const beginWindowMove = useCallback((id: number, serial: number) => {
     if (maximized.has(id)) return false;
@@ -248,18 +287,23 @@ export default function Desktop() {
     beginMove(
       id,
       serial,
-      WORK_AREA.x,
-      WORK_AREA.y,
-      WORK_AREA.x + WORK_AREA.width - surface.bounds.width,
-      WORK_AREA.y + WORK_AREA.height - surface.bounds.height,
+      desktopArea.x,
+      desktopArea.y,
+      desktopArea.x + desktopArea.width - surface.bounds.width,
+      desktopArea.y + desktopArea.height - surface.bounds.height,
     );
     return true;
-  }, [maximized]);
+  }, [desktopArea, maximized]);
 
   const resizeWindow = useCallback((id: number, candidate: ResizeCandidate) => {
-    const bounds = constrainResize(candidate, WORK_AREA, MIN_WINDOW.width, MIN_WINDOW.height);
+    const bounds = constrainResize(
+      candidate,
+      desktopArea,
+      Math.min(MIN_WINDOW.width, desktopArea.width),
+      Math.min(MIN_WINDOW.height, desktopArea.height),
+    );
     setResizePreview((current) => new Map(current).set(id, bounds));
-  }, []);
+  }, [desktopArea]);
   const finishResize = useCallback((id: number) => {
     const bounds = resizePreviewRef.current.get(id);
     if (!bounds) return;
@@ -314,7 +358,7 @@ export default function Desktop() {
         onPanel={setPanel}
       />
       {visible.map((surface) => {
-        const bounds = maximized.has(surface.id) ? WORK_AREA : surface.bounds;
+        const bounds = maximized.has(surface.id) ? desktopArea : surface.bounds;
         return (
           <Window
             key={surface.id}

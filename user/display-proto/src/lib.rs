@@ -16,7 +16,7 @@ mod surface;
 mod transport;
 
 pub use accelerator::{AcceleratorChord, AcceleratorChordIterator, AcceleratorSet};
-pub use buffer::{BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease};
+pub use buffer::{BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease, BufferRetired};
 pub use clipboard::{ClipboardData, ClipboardRead, ClipboardWrite, MAX_CLIPBOARD_TEXT};
 pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
 pub use geometry::{Rect, Size};
@@ -31,12 +31,13 @@ pub use lifecycle::{
 };
 pub use scene::{Rectangles, SceneCommit, SceneNode, SceneNodeKind, SceneNodes};
 pub use surface::{
-    Accepted, Configure, ConfigureReady, DamageRectangles, Presented, SurfaceCommit,
+    Accepted, Configure, ConfigureReady, DamageRectangles, Discarded, OutputConfigure, Presented,
+    SurfaceCommit,
 };
 pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
 
 /// The only supported protocol version; no negotiation or compat decoder.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";

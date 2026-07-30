@@ -93,6 +93,15 @@ impl Input {
         (self.x, self.y)
     }
 
+    /// Adopts a new physical output extent while preserving the pointer's
+    /// normalized location inside the absolute tablet range.
+    pub fn resize(&mut self, width: i32, height: i32) {
+        self.width = width.max(1);
+        self.height = height.max(1);
+        self.x = self.x.clamp(0, self.width - 1);
+        self.y = self.y.clamp(0, self.height - 1);
+    }
+
     /// Borrows the evdev descriptors so the main loop can wait on input readiness
     /// inside the same `poll` as the display sockets.
     ///

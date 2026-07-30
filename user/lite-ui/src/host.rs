@@ -30,6 +30,7 @@ use crate::{
     audio::Commands as AudioCommands,
     tree::{self, Node},
 };
+use display_proto::Size;
 
 pub use actions::Action;
 
@@ -64,6 +65,7 @@ pub struct State {
     focused_surface: Cell<u32>,
     timers: RefCell<Vec<(u64, Instant)>>,
     playback_granted: Cell<bool>,
+    viewport: Cell<Size>,
 }
 
 impl State {
@@ -145,6 +147,11 @@ impl State {
     /// Records one compositor-authenticated physical input activation.
     pub fn grant_media_playback(&self) {
         self.playback_granted.set(true);
+    }
+
+    /// Updates the browser-standard logical viewport exposed to JavaScript.
+    pub fn set_viewport(&self, viewport: Size) {
+        self.viewport.set(viewport);
     }
 
     /// Adds one compositor-published app surface to desktop policy state.
@@ -259,6 +266,7 @@ impl Host {
     /// - `apps_root`: Owns the installed application registry scanned by the
     ///   desktop launcher.
     /// - `audio`: Sends media and system-volume commands to the audio service.
+    /// - `viewport`: Initial logical CSS viewport selected by the display.
     ///
     /// # Returns
     ///
@@ -269,6 +277,7 @@ impl Host {
         app_root: PathBuf,
         apps_root: PathBuf,
         audio: AudioCommands,
+        viewport: Size,
     ) -> (Self, Rc<State>) {
         let state = Rc::new(State {
             scene: RefCell::new(None),
@@ -280,6 +289,7 @@ impl Host {
             focused_surface: Cell::new(0),
             timers: RefCell::new(Vec::new()),
             playback_granted: Cell::new(false),
+            viewport: Cell::new(viewport),
         });
         (
             Self {
@@ -387,6 +397,15 @@ impl NativeHost for Host {
                 .as_secs_f64()
                 .mul_add(1000.0, 0.0)
                 .to_string()),
+            "viewport.get" => {
+                let viewport = self.state.viewport.get();
+                Ok(format!(
+                    r#"{{"width":{},"height":{},"devicePixelRatio":{}}}"#,
+                    viewport.width,
+                    viewport.height,
+                    display_proto::DEVICE_SCALE_FACTOR
+                ))
+            }
             // 1. Wall-clock seconds for desktop chrome (the tray clock); the
             //    monotonic `time.now` above stays for animation timing.
             "time.clock" => Ok(SystemTime::now()

@@ -76,6 +76,7 @@ impl Session {
             display: self.display,
             surface_id,
             session_epoch: self.epoch,
+            output_serial: self.output_serial,
         }
         .encode(&mut bytes)
         .ok_or_else(|| io::Error::other("welcome encoding failed"))?;
