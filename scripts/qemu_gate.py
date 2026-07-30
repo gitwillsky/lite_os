@@ -777,6 +777,34 @@ def start_frame_workload(qmp: QmpClient, duration_s: float, stop: "threading.Eve
         qmp.button("left", False)
 
 
+def stress_window_move_lifecycle(qmp: QmpClient, iterations: int = 64) -> None:
+    """Drives rapid native titlebar grabs through accept/reject buffer lifecycles.
+
+    The Files titlebar starts at logical ``(76, 124)`` in the fixed
+    1504×846 viewport. Alternating complete drags creates both accepted grabs
+    and stale-serial rejections; every request must return its move underlay, or
+    a later gesture exhausts the desktop triple and resets the whole epoch.
+
+    Args:
+        qmp: Connected QMP input owner for the running interactive guest.
+        iterations: Number of complete press/move/release gestures.
+
+    Returns:
+        After all synthetic gestures have been accepted by QMP.
+    """
+    x = 220.0
+    y = 150 / 846
+    for _ in range(iterations):
+        qmp.move_abs(x / 1504, y)
+        qmp.button("left", True)
+        next_x = 520.0 if x < 300 else 150.0
+        for step in range(1, 7):
+            qmp.move_abs((x + (next_x - x) * step / 6) / 1504, y)
+        qmp.button("left", False)
+        x = next_x
+        time.sleep(0.01)
+
+
 def measure_frame_timing(
     image: Path,
     settle_s: float = 30.0,
@@ -906,13 +934,30 @@ def measure_frame_timing(
         )
         second_window_opened = True
 
-        # 3. Drive the Terminal resize grip directly. `beginResize` activates
+        # 3. Exercise the native move transaction before measuring steady resize
+        #    frames. A rejected stale serial is recoverable only if its underlay
+        #    is returned exactly once; the old failure restarted the desktop.
+        stress_window_move_lifecycle(qmp)
+        time.sleep(0.5)
+        move_text = current_text()
+        if (
+            move_text.count("lite-ui: desktop ready") != 1
+            or "desktop move underlay buffer unavailable" in move_text
+            or "compositor: desktop disconnected" in move_text
+        ):
+            tail = "\n".join(move_text.splitlines()[-40:])
+            raise RuntimeError(
+                "frame-timing guest reset during native window-move lifecycle"
+                f"\n--- output tail ---\n{tail}"
+            )
+
+        # 4. Drive the Terminal resize grip directly. `beginResize` activates
         #    the window itself; a separate titlebar click would authorize a
         #    native move grab and contaminate this React-resize workload.
         workload_deadline = min(deadline, time.monotonic() + settle_s)
         start_frame_workload(qmp, workload_deadline - time.monotonic(), stop_reading)
 
-        # 4. Collect whatever windows the drive produced.
+        # 5. Collect whatever windows the drive produced.
         windows = parse_windows(current_text())
         if not windows:
             # Give a last moment for a trailing marker to arrive/flush.

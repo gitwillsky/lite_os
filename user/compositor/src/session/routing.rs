@@ -207,27 +207,11 @@ impl Session {
     }
 
     /// Starts the one compositor-side move authorized by the matching pointer-down.
-    pub(super) fn begin_move(&mut self, request: MoveBegin) -> io::Result<()> {
-        if self.move_grab.is_some() {
-            return Err(invalid("move grab already active"));
-        }
-        let capture = self
-            .pointer_capture
-            .filter(|capture| {
-                capture.surface_id == 0
-                    && capture.window_group == request.surface_id
-                    && capture.serial == request.serial
-            })
-            .ok_or_else(|| invalid("move begin is not authorized by pointer-down"))?;
-        let frame = self
-            .presented_nodes
-            .iter()
-            .find(|node| {
-                node.window_group == request.surface_id
-                    && node.kind == display_proto::SceneNodeKind::Pixels
-            })
-            .map(|node| node.clip)
-            .ok_or_else(|| invalid("move group is not presented"))?;
+    ///
+    /// `Ok(Some(error))` is a recoverable authorization race. Receipt of a valid
+    /// request transfers the underlay to the compositor even when that race loses,
+    /// so the buffer is released exactly once before the rejection is returned.
+    pub(super) fn begin_move(&mut self, request: MoveBegin) -> io::Result<Option<io::Error>> {
         let underlay = self
             .buffers
             .values
@@ -243,6 +227,45 @@ impl Session {
             return Err(invalid("move underlay buffer state invalid"));
         }
         underlay.busy = true;
+        let rejection = if self.move_grab.is_some() {
+            Some(invalid("move grab already active"))
+        } else {
+            None
+        };
+        let capture = self.pointer_capture.filter(|capture| {
+            capture.surface_id == 0
+                && capture.window_group == request.surface_id
+                && capture.serial == request.serial
+        });
+        let rejection = rejection.or_else(|| {
+            capture
+                .is_none()
+                .then(|| invalid("move begin is not authorized by pointer-down"))
+        });
+        let frame = self.presented_nodes.iter().find_map(|node| {
+            (node.window_group == request.surface_id
+                && node.kind == display_proto::SceneNodeKind::Pixels)
+                .then_some(node.clip)
+        });
+        let rejection = rejection.or_else(|| {
+            frame
+                .is_none()
+                .then(|| invalid("move group is not presented"))
+        });
+        if let Some(error) = rejection {
+            let desktop = self
+                .desktop
+                .as_ref()
+                .ok_or_else(|| invalid("desktop disappeared during move begin"))?;
+            release_buffer(
+                &mut self.buffers,
+                &desktop.stream,
+                request.underlay_buffer_id,
+            )?;
+            return Ok(Some(error));
+        }
+        let capture = capture.expect("validated move capture");
+        let frame = frame.expect("validated move frame");
         self.move_grab = Some(MoveGrab {
             surface_id: request.surface_id,
             underlay_buffer_id: request.underlay_buffer_id,
@@ -252,7 +275,7 @@ impl Session {
             limits: (request.min_x, request.min_y, request.max_x, request.max_y),
             ending: false,
         });
-        Ok(())
+        Ok(None)
     }
 
     /// Returns and clears damage accumulated by compositor-side move updates.

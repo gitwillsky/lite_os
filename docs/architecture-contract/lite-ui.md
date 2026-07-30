@@ -87,7 +87,10 @@
   `windowGroup` 应用 bounded temporary transform。desktop 必须随授权提供一个排除该 group 的只读
   underlay buffer；compositor 用它恢复旧位置，只刷新旧/新 bounds damage，并在 pointer-up 返回最终
   logical position。最终 canonical scene 呈现后清除 grab 并 release underlay；期间到达的新 scene
-  必须继承 transform，禁止跳回旧位置或保留 canonical 残影。
+  必须继承 transform，禁止跳回旧位置或保留 canonical 残影。`MOVE_BEGIN` 一经接收即把有效 underlay
+  转交 compositor；授权 serial 过期、group 消失或已有 grab 时必须先 `BUFFER_RELEASE` 再拒绝，
+  exactly-once 结束该 buffer transaction。标题栏拖动只走 compositor grab，不得保留 React motion
+  fallback；瞬时无空闲 underlay 时丢弃当前 gesture，不得终止 desktop epoch。
 - QEMU 窗口 resize 只走标准 DRM connector hotplug：compositor 订阅
   `NETLINK_KOBJECT_UEVENT` group 1，drain burst 后发布最新
   `OUTPUT_CONFIGURE(serial, physicalSize, deviceScaleFactor=2)`。`SCENE_COMMIT` 必须携带 exact output

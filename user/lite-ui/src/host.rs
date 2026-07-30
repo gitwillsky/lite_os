@@ -11,7 +11,6 @@ mod media;
 mod media_constants_tests;
 #[cfg(test)]
 mod media_controls_tests;
-mod scalar;
 
 use std::{
     cell::{Cell, RefCell},
@@ -24,8 +23,6 @@ use std::{
 use quickjs_runtime::{EngineError, NativeHost, Role};
 use serde::{Deserialize, Serialize};
 
-use scalar::{parse_i32, parse_u32, parse_u64};
-
 use crate::{
     audio::Commands as AudioCommands,
     tree::{self, Node},
@@ -33,6 +30,24 @@ use crate::{
 use display_proto::Size;
 
 pub use actions::Action;
+
+fn parse_u32(value: Option<&str>, name: &str) -> Result<u32, EngineError> {
+    value
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
+}
+
+fn parse_u64(value: Option<&str>, name: &str) -> Result<u64, EngineError> {
+    value
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
+}
+
+fn parse_i32(value: Option<&str>, name: &str) -> Result<i32, EngineError> {
+    value
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
+}
 
 #[derive(Clone, Serialize)]
 struct Bounds {

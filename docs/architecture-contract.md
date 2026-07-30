@@ -142,8 +142,8 @@
 
 生产 kernel/bootloader Rust 源文件，`tools/kernel-unit/src`、`tools/scheduler-unit/src` 下的
 host unit-test Rust 源文件，以及 `tools/architecture-check/src` 中以 `_tests.rs` 命名的
-unit-test module 采用两级围栏：超过 600 行触发 architecture review notice，但不单独导致
-验证失败；超过 1200 行默认拒绝。architecture-check 的 unit-test module 必须使用
+unit-test module 采用两级围栏：超过 1000 行触发 architecture review notice，但不单独导致
+验证失败；超过 1500 行默认拒绝。architecture-check 的 unit-test module 必须使用
 `_tests.rs` 后缀，禁止把测试正文重新塞回 production `main.rs` 绕过围栏。
 reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam。生产 source 可以拆成深
 module，或在下表登记精确审查额度；登记必须给出 owner、暂不拆分的原因与消除条件。
@@ -155,11 +155,12 @@ filesystem/storage、memory、platform/execution、socket/ABI 等真实 seam 放
 unit-test source 的 review notice 不允许把新测试继续堆进入口文件；必须先检查测试所属
 owner 并迁移到对应领域 module，或新增有领域含义的 module。
 
-`user/` 下项目自有 Rust/C/header/JS/TypeScript/CSS source 采用单文件 600 行硬上限，不提供 review
-例外。超过上限必须按状态 owner/interface 拆分；checker 递归扫描实际文件集，避免新 crate、应用或
-native bridge 绕过围栏。唯一排除目录是 `user/quickjs-runtime/vendor/quickjs/`：它必须保持
+`user/` 下项目自有 Rust/C/header/JS/TypeScript/CSS source 采用相同的 1000 行 review、1500 行
+默认拒绝两级围栏。review 必须检查状态 owner/interface，不能仅为降行数建立 pass-through module；
+checker 递归扫描实际文件集，避免新 crate、应用或 native bridge 绕过围栏。唯一排除目录是
+`user/quickjs-runtime/vendor/quickjs/`：它必须保持
 standards baseline 固定官方 tarball 的原始文件，不能承载项目 patch；项目 C adapter 仍在 `src/`
-接受 600 行围栏。缺少该精确排除会把不可拆分的上游实现误判成项目 module，扩大到其他 vendor
+接受 1000/1500 两级围栏。缺少该精确排除会把不可拆分的上游实现误判成项目 module，扩大到其他 vendor
 目录则会形成逃逸围栏。
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |

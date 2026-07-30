@@ -448,9 +448,14 @@ fn process_actions(
                     let scene = state
                         .scene()
                         .ok_or("move requested before the desktop scene exists")?;
-                    let frame = display
-                        .acquire()?
-                        .ok_or("desktop move underlay buffer unavailable")?;
+                    let Some(frame) = display.acquire()? else {
+                        // A scene commit or output transaction can temporarily own
+                        // all three desktop buffers. This pointer gesture cannot be
+                        // deferred because its authorization serial expires when
+                        // the button sequence advances, so decline it without
+                        // terminating the desktop epoch.
+                        continue;
+                    };
                     renderer.render_move_underlay(scene.as_slice(), frame.pixels, surface_id)?;
                     frame.id
                 };

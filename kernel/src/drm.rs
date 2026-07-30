@@ -30,6 +30,10 @@ struct CompletionState {
     // completed 单调前进，waiter 以 `>= fence` 判断；若只保存一次 edge，旧 Pipe token
     // 被其他 waiter 排空后会永久丢失已完成事实。
     completed: u64,
+    // 每次 adapter transaction（含不改变 connector mode 的内部 display-info）
+    // 完成时前进。同步 ioctl 用它等待 controlq 可再次提交；只观察 userspace fence
+    // 会在 display-info 不产生 ModeChanged 时永久睡眠。
+    adapter_generation: u64,
     // OWNER: sequence 只在成功完成一次 userspace scanout transaction 时前进；若按
     // submission 计数，adapter failure 或尚未生效的 framebuffer 会获得伪完成序号。
     sequence: u32,
@@ -172,12 +176,28 @@ pub(crate) enum FramebufferRemoval {
     Removed,
     /// scanout disable 或 inactive RESOURCE_UNREF 尚未完成，caller 必须等待后重试删除。
     Wait(DrmWait),
+    /// 另一个 display transaction 暂时占用 adapter，caller 必须等待 readiness 后重试。
+    Retry(DrmRetry),
+}
+
+/// @description 一次 DRM operation 的同步提交结果。
+pub(crate) enum DrmSubmission {
+    /// operation 已发布；caller 必须等待其 exact fence。
+    Wait(DrmWait),
+    /// adapter 正由另一 transaction 占用；caller 必须等待 readiness 后重新提交。
+    Retry(DrmRetry),
 }
 
 /// @description 一个不泄漏 adapter fence 编码的 DRM completion wait token。
 pub(crate) struct DrmWait {
     device: Arc<DrmDevice>,
     fence: u64,
+}
+
+/// @description 一个不泄漏 adapter transaction 的 DRM retry wait token。
+pub(crate) struct DrmRetry {
+    device: Arc<DrmDevice>,
+    generation: u64,
 }
 
 impl DrmWait {
@@ -189,6 +209,19 @@ impl DrmWait {
         }
         self.device.completion_read.drain_readiness();
         (self.device.completion.lock().completed < self.fence)
+            .then(|| self.device.completion_read.pipe())
+    }
+}
+
+impl DrmRetry {
+    /// @description 排空旧 edge 并原子化地准备 adapter-readiness wait。
+    /// @return 取得 token 后已有 transaction 完成返回 None；否则返回统一 Pipe source。
+    pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
+        if self.device.completion.lock().adapter_generation != self.generation {
+            return None;
+        }
+        self.device.completion_read.drain_readiness();
+        (self.device.completion.lock().adapter_generation == self.generation)
             .then(|| self.device.completion_read.pipe())
     }
 }
@@ -474,13 +507,13 @@ impl DrmFile {
     /// @description 异步提交一个本 OFD framebuffer 为固定 single-scanout backing。
     ///
     /// @param id device-wide framebuffer object ID。
-    /// @return CREATE→ATTACH→TRANSFER→SET→FLUSH→UNREF transaction fence。
-    /// @errors object/尺寸非法、已有 transaction 或 adapter failure 返回稳定领域错误。
+    /// @return 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
+    /// @errors object/尺寸非法、event queue 满或 adapter failure 返回稳定领域错误。
     pub(crate) fn page_flip(
         self: &Arc<Self>,
         id: u32,
         user_data: Option<u64>,
-    ) -> Result<DrmWait, DrmError> {
+    ) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
         }
@@ -496,33 +529,45 @@ impl DrmFile {
             .active
             .map(|active| active.mode)
             .ok_or(DrmError::Invalid)?;
-        self.submit_scanout(&mut completion, mode, id, event)
+        let generation = completion.adapter_generation;
+        classify_submission(
+            self,
+            generation,
+            self.submit_scanout(&mut completion, mode, id, event),
+        )
     }
 
     /// @description 同步 modeset 到指定 framebuffer，不忙等 GPU completion。
     /// @param id device-wide framebuffer object ID。
-    /// @return hardware transaction 完成且 active state 发布后返回 unit。
-    /// @errors page-flip 提交错误、signal interruption 或 wait registration OOM。
-    pub(crate) fn set_crtc(&self, id: u32) -> Result<DrmWait, DrmError> {
+    /// @return 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
+    /// @errors object/尺寸/权限非法或 adapter failure 返回稳定领域错误。
+    pub(crate) fn set_crtc(&self, id: u32) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
         }
         let mut completion = self.device.completion.lock();
         let mode = self.device.state.lock().mode;
-        self.submit_scanout(&mut completion, mode, id, None)
+        let generation = completion.adapter_generation;
+        classify_submission(
+            self,
+            generation,
+            self.submit_scanout(&mut completion, mode, id, None),
+        )
     }
 
     /// @description 同步把任一本 OFD framebuffer 的 dirty rectangles 传输到 resident resource。
     /// @param id 属于本 OFD 的 framebuffer object ID；允许在 page flip 前同步 inactive buffer。
     /// @param rectangles 0..=32 个半开 scanout rectangle；零个表示 full framebuffer。
-    /// @return Linux 语义下零 clips 扩展为 full framebuffer；始终返回 TRANSFER+FLUSH wait token。
-    /// @errors framebuffer 非本 OFD、已有 operation 或 rectangle/device failure。
+    /// @return Linux 语义下零 clips 扩展为 full framebuffer；返回 exact-fence wait token，
+    /// 或 adapter readiness retry token。
+    /// @errors framebuffer 非本 OFD或 rectangle/device failure。
     pub(crate) fn dirty_framebuffer(
         &self,
         id: u32,
         rectangles: &[DisplayRect],
-    ) -> Result<DrmWait, DrmError> {
+    ) -> Result<DrmSubmission, DrmError> {
         let mut completion = self.device.completion.lock();
+        let generation = completion.adapter_generation;
         let mode = {
             let state = self.device.state.lock();
             let framebuffer = state.framebuffers.get(&id).ok_or(DrmError::NotFound)?;
@@ -541,25 +586,45 @@ impl DrmFile {
             width: mode.width,
             height: mode.height,
         }];
-        self.submit_damage(
-            &mut completion,
-            id,
-            if rectangles.is_empty() {
-                &full
-            } else {
-                rectangles
-            },
+        classify_submission(
+            self,
+            generation,
+            self.submit_damage(
+                &mut completion,
+                id,
+                if rectangles.is_empty() {
+                    &full
+                } else {
+                    rectangles
+                },
+            ),
         )
     }
 
     /// @description 同步以 resource_id=0 禁用 scanout，并清除 active framebuffer state。
-    /// @return hardware 解绑 backing 后返回 unit。
-    /// @errors 已有 transaction、signal interruption、OOM 或 adapter failure。
-    pub(crate) fn disable_crtc(&self) -> Result<DrmWait, DrmError> {
+    /// @return 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
+    /// @errors permission 或 adapter failure 返回稳定领域错误。
+    pub(crate) fn disable_crtc(&self) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
         }
         let mut completion = self.device.completion.lock();
-        self.submit_disable(&mut completion)
+        let generation = completion.adapter_generation;
+        classify_submission(self, generation, self.submit_disable(&mut completion))
+    }
+}
+
+fn classify_submission(
+    file: &DrmFile,
+    generation: u64,
+    result: Result<DrmWait, DrmError>,
+) -> Result<DrmSubmission, DrmError> {
+    match result {
+        Ok(wait) => Ok(DrmSubmission::Wait(wait)),
+        Err(DrmError::Busy) => Ok(DrmSubmission::Retry(DrmRetry {
+            device: file.device.clone(),
+            generation,
+        })),
+        Err(error) => Err(error),
     }
 }

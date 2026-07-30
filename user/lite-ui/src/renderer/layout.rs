@@ -1,21 +1,16 @@
 //! CSS-to-taffy style lowering for the React host snapshot.
 
-mod flex;
-mod inset;
-mod margin;
 mod overflow;
 
 use taffy::Point;
 use taffy::prelude::{
     AlignItems, BoxSizing, Dimension, Display, FlexDirection, FlexWrap, JustifyContent,
-    LengthPercentage, Position, Rect as TaffyRect, Size, Style,
+    LengthPercentage, LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
 };
 
 use crate::{style::Computed, terminal_font::CELL_WIDTH, tree::Node};
 
 use super::SCALE;
-use inset::length_auto;
-use margin::{edges as margin_edges, single as margin_value};
 pub(crate) use overflow::{OverflowMode, overflow_modes};
 
 /// Measure context attached to a proportional text leaf's taffy node.
@@ -220,7 +215,7 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
             height: LengthPercentage::length(value),
         };
     }
-    flex::apply(computed, &mut style);
+    apply_flex(computed, &mut style);
     style
 }
 
@@ -262,6 +257,20 @@ fn dimension(value: &str) -> Option<Dimension> {
     }
 }
 
+fn length_auto(value: Option<&str>) -> LengthPercentageAuto {
+    match value {
+        Some("auto") | None => LengthPercentageAuto::auto(),
+        Some(value) if value.ends_with('%') => value
+            .strip_suffix('%')
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .map(|value| LengthPercentageAuto::percent(value / 100.0))
+            .unwrap_or(LengthPercentageAuto::auto()),
+        Some(value) => number(value)
+            .map(LengthPercentageAuto::length)
+            .unwrap_or(LengthPercentageAuto::auto()),
+    }
+}
+
 fn edges(value: &str) -> TaffyRect<LengthPercentage> {
     let values = edge_values(value);
     TaffyRect {
@@ -269,6 +278,39 @@ fn edges(value: &str) -> TaffyRect<LengthPercentage> {
         right: LengthPercentage::length(values[1]),
         bottom: LengthPercentage::length(values[2]),
         left: LengthPercentage::length(values[3]),
+    }
+}
+
+fn margin_edges(value: &str) -> Option<TaffyRect<LengthPercentageAuto>> {
+    let values = value
+        .split_whitespace()
+        .map(margin_value)
+        .collect::<Option<Vec<_>>>()?;
+    let [top, right, bottom, left] = match values.as_slice() {
+        [all] => [*all; 4],
+        [vertical, horizontal] => [*vertical, *horizontal, *vertical, *horizontal],
+        [top, horizontal, bottom] => [*top, *horizontal, *bottom, *horizontal],
+        [top, right, bottom, left] => [*top, *right, *bottom, *left],
+        _ => return None,
+    };
+    Some(TaffyRect {
+        top,
+        right,
+        bottom,
+        left,
+    })
+}
+
+fn margin_value(value: &str) -> Option<LengthPercentageAuto> {
+    let value = value.trim();
+    if value == "auto" {
+        Some(LengthPercentageAuto::auto())
+    } else if let Some(percent) = value.strip_suffix('%') {
+        Some(LengthPercentageAuto::percent(
+            percent.trim().parse::<f32>().ok()? / 100.0,
+        ))
+    } else {
+        Some(LengthPercentageAuto::length(number(value)?))
     }
 }
 
@@ -294,6 +336,25 @@ pub(super) fn number(value: &str) -> Option<f32> {
 
 pub(super) fn first_number(value: &str) -> Option<f32> {
     value.split_whitespace().find_map(number)
+}
+
+fn apply_flex(computed: &Computed, style: &mut Style) {
+    style.flex_grow = computed
+        .get("flex-grow")
+        .and_then(non_negative_number)
+        .unwrap_or(style.flex_grow);
+    style.flex_shrink = computed
+        .get("flex-shrink")
+        .and_then(non_negative_number)
+        .unwrap_or(style.flex_shrink);
+    style.flex_basis = computed
+        .get("flex-basis")
+        .and_then(dimension)
+        .unwrap_or(style.flex_basis);
+}
+
+fn non_negative_number(value: &str) -> Option<f32> {
+    number(value).filter(|number| number.is_finite() && *number >= 0.0)
 }
 
 fn align_items(value: &str) -> Option<AlignItems> {
@@ -360,6 +421,27 @@ mod tests {
         assert_eq!(style.margin.right, LengthPercentageAuto::length(2.0));
         assert_eq!(style.border.left, LengthPercentage::length(0.0));
         assert_eq!(style.border.right, LengthPercentage::length(3.0));
+    }
+
+    #[test]
+    fn expands_auto_and_percentage_in_standard_edge_order() {
+        let edges = super::margin_edges("2px auto 4px 10%").expect("valid margin");
+        assert_eq!(edges.top, LengthPercentageAuto::length(2.0));
+        assert_eq!(edges.right, LengthPercentageAuto::auto());
+        assert_eq!(edges.bottom, LengthPercentageAuto::length(4.0));
+        assert_eq!(edges.left, LengthPercentageAuto::percent(0.1));
+    }
+
+    #[test]
+    fn positioned_insets_accept_standard_percentages() {
+        assert_eq!(
+            super::length_auto(Some("50%")),
+            LengthPercentageAuto::percent(0.5)
+        );
+        assert_eq!(
+            super::length_auto(Some("25%")),
+            LengthPercentageAuto::percent(0.25)
+        );
     }
 
     #[test]

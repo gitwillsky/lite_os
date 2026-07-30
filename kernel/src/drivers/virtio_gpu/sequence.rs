@@ -100,9 +100,13 @@ pub(super) fn complete(
         RuntimeStage::DisplayInfo => {
             let mode = VirtIOGpuDevice::parse_display_mode(control.response.as_slice())
                 .ok_or(DisplayError::Device)?;
-            let update = (mode != control.mode).then_some(DisplayUpdate::ModeChanged(mode));
+            let update = if mode != control.mode {
+                DisplayUpdate::ModeChanged(mode)
+            } else {
+                DisplayUpdate::AdapterReady
+            };
             control.mode = mode;
-            Ok(SequenceCompletion::update(update))
+            Ok(SequenceCompletion::update(Some(update)))
         }
         RuntimeStage::UnrefEvicted => {
             let (mode, resource_id) = operation_target(&control.operation, &control.resources)?;

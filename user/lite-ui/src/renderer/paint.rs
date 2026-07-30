@@ -1,9 +1,8 @@
 //! Recursive CSS paint walk and foreign-surface geometry emission.
 
 mod fixed;
-mod semantics;
 
-use std::io;
+use std::{collections::BTreeMap, io};
 
 use serde_json::Value;
 use taffy::TaffyTree;
@@ -19,7 +18,27 @@ use super::{
     paint_scrollbar_corner, paint_shadow, range::paint_range, scrollbar, taffy_error, text_content,
     transform_translation,
 };
-use semantics::{hits_enabled, stacking_level, takes_autofocus};
+fn takes_autofocus(props: &BTreeMap<String, Value>, focused: Option<u64>) -> bool {
+    focused.is_none() && props.get("autoFocus").and_then(Value::as_bool) == Some(true)
+}
+
+fn hits_enabled(ancestor: bool, computed: &crate::style::Computed) -> bool {
+    ancestor && computed.get("pointer-events") != Some("none")
+}
+
+fn stacking_level(computed: &crate::style::Computed, flex_item: bool) -> i32 {
+    let positioned = matches!(
+        computed.get("position"),
+        Some("relative" | "absolute" | "fixed")
+    );
+    if !positioned && !flex_item {
+        return 0;
+    }
+    computed
+        .get("z-index")
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .unwrap_or(0)
+}
 
 impl Renderer {
     pub(super) fn paint<R: Raster>(

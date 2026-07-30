@@ -45,6 +45,11 @@ pub(crate) enum DisplayUpdate {
     OperationCompleted(u64),
     /// adapter 重新查询 display-info 后观察到新的 scanout mode。
     ModeChanged(DisplayMode),
+    /// adapter 内部 display-info 查询完成且 preferred mode 未变化。
+    ///
+    /// DRM 同步 ioctl 可能正在等待 controlq 从该内部事务重新变为可提交；
+    /// 缺失这个 edge 会让一次无实际 mode 变化的 config interrupt 永久阻塞 waiter。
+    AdapterReady,
 }
 
 /// @description 不泄漏具体 adapter 的 single-scanout display seam。

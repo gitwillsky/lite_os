@@ -40,9 +40,10 @@ impl Session {
                     MoveBegin::parse(&payload).ok_or_else(|| invalid("invalid move begin"))?;
                 // A MoveBegin races the pointer stream: by the time it arrives
                 // the authorizing pointer-down may have been superseded, the
-                // window may no longer be presented, or the underlay buffer may
-                // have been recycled. A rejected grab falls back to React move.
-                if let Err(error) = self.begin_move(request) {
+                // window may no longer be presented, or another grab may already
+                // own the sequence. The request still transfers its underlay to
+                // the compositor, which returns it before reporting rejection.
+                if let Some(error) = self.begin_move(request)? {
                     eprintln!("compositor: move grab rejected: {error}");
                 }
                 Ok(None)

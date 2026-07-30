@@ -162,4 +162,9 @@
 - DRM CREATE_DUMB/ADDFB 必须先预留 backing、object node 与 identity；完整 ioctl copyout 成功后才
   无分配发布 handle/ID；identity reserve 同时预留 rollback node，copyout failure 必须按任意并发
   顺序无分配回收全部未发布 identity，已经 publication 的 identity 永不复用。
+- DRM connector preferred mode 与 completion-confirmed active CRTC mode 是两个 generation；
+  VirtIO-GPU display-info 更新不得使旧 active mode 的合法 PAGE_FLIP/DIRTYFB 失效。同步
+  SETCRTC/DIRTYFB/RMFB 遇到内部 display-info 或另一 display operation 时必须按 device readiness
+  generation 睡眠并重提；无 mode 变化的 display-info completion 也必须发布 readiness，禁止向
+  userspace 泄漏 adapter `WouldBlock` 或发生 lost wake。
 - DRM close/RMFB/disable、evdev revoke、PTY master close 与 session exit 必须沿唯一 owner seam 清理并在锁外发布 consequence。

@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::{
-    drm::{DisplayRect, DrmError, DrmFile, DrmWait, FramebufferRemoval},
+    drm::{DisplayRect, DrmError, DrmFile, DrmRetry, DrmSubmission, DrmWait, FramebufferRemoval},
     ipc::PipeWaitCondition,
     task::{TaskControlBlock, WaitResult, wait_for_pipe},
 };
@@ -173,6 +173,7 @@ fn remove_framebuffer(
         match file.remove_framebuffer(id).map_err(drm_errno)? {
             FramebufferRemoval::Removed => return Ok(()),
             FramebufferRemoval::Wait(wait) => wait_scanout(wait)?,
+            FramebufferRemoval::Retry(retry) => wait_retry(retry)?,
         }
     }
 }
@@ -264,25 +265,33 @@ fn set_crtc(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Re
         return Err(errno::EINVAL);
     }
     if read_u32(&bytes, 16)? == 0 && read_u32(&bytes, 8)? == 0 && read_u32(&bytes, 32)? == 0 {
-        let wait = file.disable_crtc().map_err(drm_errno)?;
-        return wait_scanout(wait);
-    }
-    let mode = file.mode();
-    if read_u32(&bytes, 8)? != 1
-        || read_u32(&bytes, 16)? == 0
-        || read_u32(&bytes, 32)? != 1
-        || read_u16(&bytes, 40)? != mode.hdisplay
-        || read_u16(&bytes, 50)? != mode.vdisplay
-    {
-        return Err(errno::EINVAL);
+        loop {
+            match file.disable_crtc().map_err(drm_errno)? {
+                DrmSubmission::Wait(wait) => return wait_scanout(wait),
+                DrmSubmission::Retry(retry) => wait_retry(retry)?,
+            }
+        }
     }
     let connector_pointer = read_u64(&bytes, 0)?;
     let connector_address = usize::try_from(connector_pointer).map_err(|_| errno::EFAULT)?;
     if read_u32(&copy_in::<4>(task, connector_address)?, 0)? != CONNECTOR_ID {
         return Err(errno::ENOENT);
     }
-    let wait = file.set_crtc(read_u32(&bytes, 16)?).map_err(drm_errno)?;
-    wait_scanout(wait)
+    loop {
+        let mode = file.mode();
+        if read_u32(&bytes, 8)? != 1
+            || read_u32(&bytes, 16)? == 0
+            || read_u32(&bytes, 32)? != 1
+            || read_u16(&bytes, 40)? != mode.hdisplay
+            || read_u16(&bytes, 50)? != mode.vdisplay
+        {
+            return Err(errno::EINVAL);
+        }
+        match file.set_crtc(read_u32(&bytes, 16)?).map_err(drm_errno)? {
+            DrmSubmission::Wait(wait) => return wait_scanout(wait),
+            DrmSubmission::Retry(retry) => wait_retry(retry)?,
+        }
+    }
 }
 
 fn page_flip(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Result<(), isize> {
@@ -296,9 +305,15 @@ fn page_flip(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> R
         return Err(errno::EINVAL);
     }
     let user_data = (flags & 1 != 0).then(|| read_u64(&bytes, 16)).transpose()?;
-    file.page_flip(read_u32(&bytes, 4)?, user_data)
-        .map(|_| ())
-        .map_err(drm_errno)
+    loop {
+        match file
+            .page_flip(read_u32(&bytes, 4)?, user_data)
+            .map_err(drm_errno)?
+        {
+            DrmSubmission::Wait(_) => return Ok(()),
+            DrmSubmission::Retry(retry) => wait_retry(retry)?,
+        }
+    }
 }
 
 fn dirty_framebuffer(
@@ -345,10 +360,15 @@ fn dirty_framebuffer(
                 .ok_or(errno::EINVAL)?,
         };
     }
-    let wait = file
-        .dirty_framebuffer(framebuffer, &rectangles[..count])
-        .map_err(drm_errno)?;
-    wait_scanout(wait)
+    loop {
+        match file
+            .dirty_framebuffer(framebuffer, &rectangles[..count])
+            .map_err(drm_errno)?
+        {
+            DrmSubmission::Wait(wait) => return wait_scanout(wait),
+            DrmSubmission::Retry(retry) => wait_retry(retry)?,
+        }
+    }
 }
 
 fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
@@ -361,6 +381,20 @@ fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),
             WaitResult::TimedOut => panic!("DRM completion wait has no timeout"),
+        }
+    }
+}
+
+fn wait_retry(retry: DrmRetry) -> Result<(), isize> {
+    loop {
+        let Some(pipe) = retry.prepare_to_block() else {
+            return Ok(());
+        };
+        match wait_for_pipe(&pipe, PipeWaitCondition::Readable) {
+            WaitResult::Woken => {}
+            WaitResult::Interrupted => return Err(errno::EINTR),
+            WaitResult::OutOfMemory => return Err(errno::ENOMEM),
+            WaitResult::TimedOut => panic!("DRM retry wait has no timeout"),
         }
     }
 }

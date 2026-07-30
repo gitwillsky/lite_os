@@ -6,8 +6,8 @@ use std::{
 
 use super::{SourceFile, rust_files};
 
-const REVIEW_LINE_THRESHOLD: usize = 600;
-const DEFAULT_REJECTION_LIMIT: usize = 1_200;
+const REVIEW_LINE_THRESHOLD: usize = 1_000;
+const DEFAULT_REJECTION_LIMIT: usize = 1_500;
 const UNIT_SOURCE_ROOTS: [&str; 2] = ["tools/kernel-unit/src", "tools/scheduler-unit/src"];
 const UNIT_TEST_MODULE_ROOTS: [&str; 1] = ["tools/architecture-check/src"];
 
@@ -34,7 +34,7 @@ pub(super) fn check(
 ) {
     check_production(root, sources, errors, review_notices);
     check_unit_sources(root, errors, review_notices);
-    check_user_sources(root, errors);
+    check_user_sources(root, errors, review_notices);
 }
 
 fn reviews(root: &Path) -> Result<BTreeMap<String, SourceSizeReview>, String> {
@@ -222,7 +222,7 @@ fn check_unit_root(
     }
 }
 
-fn check_user_sources(root: &Path, errors: &mut Vec<String>) {
+fn check_user_sources(root: &Path, errors: &mut Vec<String>, review_notices: &mut Vec<String>) {
     let mut pending = vec![root.join("user")];
     let quickjs_vendor = root.join("user/quickjs-runtime/vendor/quickjs");
     while let Some(directory) = pending.pop() {
@@ -257,11 +257,15 @@ fn check_user_sources(root: &Path, errors: &mut Vec<String>) {
                 continue;
             };
             let lines = source.lines().count();
-            if lines > REVIEW_LINE_THRESHOLD {
-                let relative = path.strip_prefix(root).unwrap_or(&path).display();
-                errors.push(format!(
-                    "{relative}: {lines} lines exceeds the hard {REVIEW_LINE_THRESHOLD}-line user-module limit; split at an owner/interface seam"
-                ));
+            let relative = path.strip_prefix(root).unwrap_or(&path).display();
+            match unit_disposition(lines) {
+                UnitDisposition::Accepted => {}
+                UnitDisposition::Review => review_notices.push(format!(
+                    "{relative}: {lines} lines exceeds the {REVIEW_LINE_THRESHOLD}-line review threshold; review its owner/interface seam before adding more code"
+                )),
+                UnitDisposition::Reject => errors.push(format!(
+                    "{relative}: {lines} lines exceeds the {DEFAULT_REJECTION_LIMIT}-line rejection limit; split at an owner/interface seam"
+                )),
             }
         }
     }

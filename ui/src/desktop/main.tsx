@@ -270,20 +270,10 @@ export default function Desktop() {
     });
   }, []);
 
-  const moveWindow = useCallback((id: number, x: number, y: number) => {
-    setOpen((current) => current.map((surface) => {
-      if (surface.id !== id) return surface;
-      const nextX = Math.max(desktopArea.x, Math.min(desktopArea.x + desktopArea.width - surface.bounds.width, x));
-      const nextY = Math.max(desktopArea.y, Math.min(desktopArea.y + desktopArea.height - surface.bounds.height, y));
-      move(id, nextX, nextY);
-      return { ...surface, bounds: { ...surface.bounds, x: nextX, y: nextY } };
-    }));
-  }, [desktopArea]);
-
   const beginWindowMove = useCallback((id: number, serial: number) => {
-    if (maximized.has(id)) return false;
+    if (maximized.has(id)) return;
     const surface = openRef.current.find((item) => item.id === id);
-    if (!surface) return false;
+    if (!surface) return;
     beginMove(
       id,
       serial,
@@ -292,7 +282,6 @@ export default function Desktop() {
       desktopArea.x + desktopArea.width - surface.bounds.width,
       desktopArea.y + desktopArea.height - surface.bounds.height,
     );
-    return true;
   }, [desktopArea, maximized]);
 
   const resizeWindow = useCallback((id: number, candidate: ResizeCandidate) => {
@@ -371,7 +360,6 @@ export default function Desktop() {
             onActivate={activate}
             onClose={closeWindow}
             onMoveStart={beginWindowMove}
-            onMove={moveWindow}
             onResize={resizeWindow}
             onResizeEnd={finishResize}
             onMinimize={minimizeWindow}

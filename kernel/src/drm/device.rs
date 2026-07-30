@@ -14,8 +14,9 @@ pub(super) fn display_error(error: DisplayError) -> DrmError {
 impl DrmFile {
     /// @description 删除本 OFD 创建的 framebuffer，并显式释放 adapter residency。
     /// @param id device-wide framebuffer ID。
-    /// @return object 已删除，或 disable/RESOURCE_UNREF transaction 的 wait token。
-    /// @errors object 不存在返回 NotFound；并发 operation 或 adapter failure 返回对应错误。
+    /// @return object 已删除、disable/RESOURCE_UNREF 的 exact-fence wait token，或 adapter
+    /// readiness retry token。
+    /// @errors object 不存在返回 NotFound；adapter failure 返回对应错误。
     pub(crate) fn remove_framebuffer(&self, id: u32) -> Result<FramebufferRemoval, DrmError> {
         let mut completion = self.device.completion.lock();
         {
@@ -29,22 +30,35 @@ impl DrmFile {
             }
         }
         if completion.pending.is_some() {
-            return Err(DrmError::Busy);
+            return Ok(FramebufferRemoval::Retry(DrmRetry {
+                device: self.device.clone(),
+                generation: completion.adapter_generation,
+            }));
         }
         if completion
             .active
             .is_some_and(|active| active.framebuffer == id)
         {
-            return self
-                .submit_disable(&mut completion)
-                .map(FramebufferRemoval::Wait);
+            return match self.submit_disable(&mut completion) {
+                Ok(wait) => Ok(FramebufferRemoval::Wait(wait)),
+                Err(DrmError::Busy) => Ok(FramebufferRemoval::Retry(DrmRetry {
+                    device: self.device.clone(),
+                    generation: completion.adapter_generation,
+                })),
+                Err(error) => Err(error),
+            };
         }
-        if let Some(fence) = self
-            .device
-            .display
-            .release_buffer(u64::from(id))
-            .map_err(display_error)?
-        {
+        let fence = match self.device.display.release_buffer(u64::from(id)) {
+            Ok(fence) => fence,
+            Err(DisplayError::WouldBlock) => {
+                return Ok(FramebufferRemoval::Retry(DrmRetry {
+                    device: self.device.clone(),
+                    generation: completion.adapter_generation,
+                }));
+            }
+            Err(error) => return Err(display_error(error)),
+        };
+        if let Some(fence) = fence {
             completion.pending = Some(PendingDisplay {
                 fence,
                 operation: PendingOperation::Release {
@@ -268,6 +282,7 @@ pub(crate) fn init(
             pending: None,
             active: None,
             completed: 0,
+            adapter_generation: 0,
             sequence: 0,
             reset_after_owner: None,
         }),
@@ -339,12 +354,14 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     let Some(update) = update else {
         return;
     };
+    state.adapter_generation = state.adapter_generation.wrapping_add(1);
     let DisplayUpdate::OperationCompleted(fence) = update else {
-        let DisplayUpdate::ModeChanged(mode) = update else {
-            unreachable!()
-        };
         drop(state);
-        publish_mode_change(drm, mode);
+        if let DisplayUpdate::ModeChanged(mode) = update {
+            publish_mode_change(drm, mode);
+        } else {
+            drm.completion_write.signal_readiness();
+        }
         return;
     };
     let pending = state
@@ -405,6 +422,8 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
 fn publish_mode_change(drm: &DrmDevice, mode: DisplayMode) {
     let mut state = drm.state.lock();
     if state.mode == mode {
+        drop(state);
+        drm.completion_write.signal_readiness();
         return;
     }
     state.mode = mode;

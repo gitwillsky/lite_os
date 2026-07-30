@@ -432,9 +432,6 @@ impl VirtIOGpuDevice {
         if control.pending.is_some() || control.operation.is_some() {
             return Err(DisplayError::WouldBlock);
         }
-        if control.mode != mode {
-            return Err(DisplayError::InvalidRectangle);
-        }
         let target = control.resources.prepare(identity, mode, backing)?;
         let resource_id = target.id(&control.resources);
         let command = if let Some(evicted) = target.evicted_id() {

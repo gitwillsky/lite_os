@@ -785,6 +785,7 @@ kernel/src/drivers/block.rs :: trait BlockDevice :: fn write_block (& self , blo
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " rectangle 越过当前 scanout。"] InvalidRectangle
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " transport、queue 或 response 损坏。"] Device
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
+kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " adapter 内部 display-info 查询完成且 preferred mode 未变化。"] # [doc = ""] # [doc = " DRM 同步 ioctl 可能正在等待 controlq 从该内部事务重新变为可提交；"] # [doc = " 缺失这个 edge 会让一次无实际 mode 变化的 config interrupt 永久阻塞 waiter。"] AdapterReady
 kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " adapter 重新查询 display-info 后观察到新的 scanout mode。"] ModeChanged (DisplayMode)
 kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " 一次 userspace scanout、damage 或 disable operation 已完整完成。"] OperationCompleted (u64)
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: height : u32
@@ -1351,8 +1352,11 @@ kernel/src/drm.rs :: enum DrmError :: # [doc = " monotonic identity 或 handle �
 kernel/src/drm.rs :: enum DrmError :: # [doc = " physical extent、Arc control block 或 map node 分配失败。"] OutOfMemory
 kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD namespace 中没有目标 handle。"] NotFound
 kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD 不是 KMS master，或无权重新取得 master。"] Permission
+kernel/src/drm.rs :: enum DrmSubmission :: # [doc = " adapter 正由另一 transaction 占用；caller 必须等待 readiness 后重新提交。"] Retry (DrmRetry)
+kernel/src/drm.rs :: enum DrmSubmission :: # [doc = " operation 已发布；caller 必须等待其 exact fence。"] Wait (DrmWait)
 kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " object 已从 device namespace 删除。"] Removed
 kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " scanout disable 或 inactive RESOURCE_UNREF 尚未完成，caller 必须等待后重试删除。"] Wait (DrmWait)
+kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " 另一个 display transaction 暂时占用 adapter，caller 必须等待 readiness 后重试。"] Retry (DrmRetry)
 kernel/src/drm.rs :: pub (crate) DrmMode :: clock : u32
 kernel/src/drm.rs :: pub (crate) DrmMode :: flags : u32
 kernel/src/drm.rs :: pub (crate) DrmMode :: hdisplay : u16
@@ -1373,24 +1377,27 @@ kernel/src/drm.rs :: pub (crate) FramebufferInfo :: height : u32
 kernel/src/drm.rs :: pub (crate) FramebufferInfo :: pitch : u32
 kernel/src/drm.rs :: pub (crate) FramebufferInfo :: width : u32
 kernel/src/drm.rs :: pub (crate) enum DrmError
+kernel/src/drm.rs :: pub (crate) enum DrmSubmission
 kernel/src/drm.rs :: pub (crate) enum FramebufferRemoval
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn active_framebuffer (& self) -> Option < u32 >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn destroy_dumb (& self , handle : u32) -> Result < () , DrmError >
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn dirty_framebuffer (& self , id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmWait , DrmError >
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn disable_crtc (& self) -> Result < DrmWait , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn dirty_framebuffer (& self , id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmSubmission , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn disable_crtc (& self) -> Result < DrmSubmission , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer (& self , id : u32) -> Result < FramebufferInfo , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_count (& self) -> usize
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_id (& self , index : usize) -> Option < u32 >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn map_dumb (& self , handle : u32) -> Result < u64 , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mapping (& self , offset : u64 , length : usize ,) -> Result < DeviceMappingSource , DrmError >
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (self : & Arc < Self > , id : u32 , user_data : Option < u64 > ,) -> Result < DrmWait , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (self : & Arc < Self > , id : u32 , user_data : Option < u64 > ,) -> Result < DrmSubmission , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn prepare_dumb (& self , width : u32 , height : u32 , bpp : u32 , flags : u32 ,) -> Result < PreparedDumbBuffer < '_ > , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn prepare_framebuffer (& self , handle : u32 , width : u32 , height : u32 , pitch : u32 ,) -> Result < PreparedFramebuffer < '_ > , DrmError >
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32) -> Result < DrmWait , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32) -> Result < DrmSubmission , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmRetry :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
 kernel/src/drm.rs :: pub (crate) impl DrmWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
 kernel/src/drm.rs :: pub (crate) mod device
 kernel/src/drm.rs :: pub (crate) struct DrmFile
 kernel/src/drm.rs :: pub (crate) struct DrmMode
+kernel/src/drm.rs :: pub (crate) struct DrmRetry
 kernel/src/drm.rs :: pub (crate) struct DrmWait
 kernel/src/drm.rs :: pub (crate) struct DumbBufferInfo
 kernel/src/drm.rs :: pub (crate) struct FramebufferInfo

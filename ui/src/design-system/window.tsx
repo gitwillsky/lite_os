@@ -23,8 +23,7 @@ interface WindowProps {
   children?: React.ReactNode;
   onActivate: (id: number) => void;
   onClose: (id: number) => void;
-  onMoveStart: (id: number, serial: number) => boolean;
-  onMove: (id: number, x: number, y: number) => void;
+  onMoveStart: (id: number, serial: number) => void;
   onResize: (id: number, rect: ResizeCandidate) => void;
   onResizeEnd: (id: number) => void;
   onMinimize: (id: number) => void;
@@ -48,32 +47,18 @@ export function Window({
   onActivate,
   onClose,
   onMoveStart,
-  onMove,
   onResize,
   onResizeEnd,
   onMinimize,
   onToggleMaximize,
   maximized,
 }: WindowProps) {
-  const drag = useRef<{ x: number; y: number; native: boolean } | null>(null);
   const resize = useRef<ResizeOrigin & { edge: ResizeEdge } | null>(null);
 
   const beginDrag = useCallback((event: LitePointerEvent) => {
     onActivate(id);
-    drag.current = {
-      x: event.x - bounds.x,
-      y: event.y - bounds.y,
-      native: onMoveStart(id, event.serial),
-    };
-  }, [bounds.x, bounds.y, id, onActivate, onMoveStart]);
-  const continueDrag = useCallback((event: LitePointerEvent) => {
-    if (drag.current && !drag.current.native) {
-      onMove(id, event.x - drag.current.x, event.y - drag.current.y);
-    }
-  }, [id, onMove]);
-  const endDrag = useCallback(() => {
-    drag.current = null;
-  }, []);
+    onMoveStart(id, event.serial);
+  }, [id, onActivate, onMoveStart]);
 
   const beginResize = useCallback((edge: ResizeEdge) => (event: LitePointerEvent) => {
     onActivate(id);
@@ -108,8 +93,6 @@ export function Window({
       <div
         className="window__titlebar"
         onPointerDown={(event) => beginDrag(event as unknown as LitePointerEvent)}
-        onPointerMove={(event) => continueDrag(event as unknown as LitePointerEvent)}
-        onPointerUp={endDrag}
         onDoubleClick={() => onToggleMaximize(id)}
       >
         <span className={`window__icon-frame window__icon-frame--${appId}`}>

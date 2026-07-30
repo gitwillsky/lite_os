@@ -25,9 +25,10 @@
   `/dev/virtio-ports/com.redhat.spice.0`。
 - GPU runtime completion 由独立 sequence owner 验证 fence/response 与 stage 顺序，阶段分支只选择
   下一条 `GpuCommand`；统一 command seam 负责 wire encoding、长度与 queue publication。
-  该层只增加 fixed enum dispatch，不增加 lock、allocation 或 descriptor 数；MMIO completion 主导实际
-  latency，因此不新增微基准，改由 architecture cost gate 固定 `poll_update` 的 direct assembly 与
-  direct publication 为 0、sequence submission 出口至多 1 个。
+  DRM readiness generation 在同一次 completion lock 内前进。该层只增加 fixed enum dispatch 与整数
+  increment，不增加 lock、allocation 或 descriptor 数；MMIO completion 主导实际 latency，因此不新增
+  微基准，改由 architecture cost gate 固定 `poll_update` 的 direct assembly 与 direct publication
+  为 0、sequence submission 出口至多 1 个。
 - VirtIO-block 使用 16 个固定 DMA request slots，允许乱序 multi-outstanding；同步 caller 在
   task context 睡眠，bootstrap caller 以 trap-PC-resumed external IRQ/WFI 原子等待同一
   completion owner；第 17 个
@@ -41,7 +42,10 @@
   spin 从 64/64 降为 0/0，output/DMA 覆盖前预零从 131072/4096 bytes 降为 0/0。
 - DRM owner 组合 display operation、GEM/framebuffer、KMS、damage fence、master 与 event；syscall 只编码 Linux DRM UAPI。
   VirtIO-GPU config change 更新唯一 connector preferred mode，并只通过标准 DRM kobject hotplug
-  uevent 通知 userspace；动态 mode 的 userspace transaction 属于 LiteUI/compositor 领域。
+  uevent 通知 userspace；preferred mode 与已完成的 active CRTC mode 独立，旧 CRTC 在 userspace
+  modeset 新 generation 前仍可 page-flip。同步 DRM ioctl 遇到 adapter 内部 display-info transaction
+  时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
+  userspace transaction 属于 LiteUI/compositor 领域。
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke；VirtIO input adapter 只提供 raw event/config。
 - PTY registry、pair 与 Terminal session/foreground/winsize 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
