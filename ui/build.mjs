@@ -226,13 +226,27 @@ for (const [id, entryName, styleName] of products) {
     for (const name of ["liteos.png", "files.png", "terminal.png", "monitor.png", "package.png", "settings.png", "wallpaper.png"]) {
       await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
     }
+    // Command Center recent list reuses the generic file sprite.
+    await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
+    // Aurora status / quick-settings glyphs (topbar, System Center, Command Center).
+    for (const name of [
+      "wifi.png", "network.png", "battery.png", "battery-lg.png",
+      "bluetooth.png", "night-light.png", "do-not-disturb.png", "airplane.png", "focus.png",
+      "brightness.png", "volume.png", "speakers.png",
+      "microphone.png", "all-apps.png", "lock.png", "sleep.png", "restart.png", "power.png",
+    ]) {
+      await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
+    }
     await copyFile(join(root, "../assets/splash/aurora-background.png"), join(assets, "aurora-background.png"));
     await copyFile(join(root, "../assets/splash/aurora-logo.png"), join(assets, "aurora-logo.png"));
   }
   if (id === "file-manager") {
     await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
-    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "view-grid.png"]) {
-      await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
+    await copyFile(join(root, "../assets/aurora/view-grid.png"), join(assets, "view-grid.png"));
+    // Nav glyphs come from the Codex-generated aurora-glyphs set (the old
+    // assets/aurora/nav-*.png were near-empty and invisible on the dark toolbar).
+    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "nav-home.png"]) {
+      await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
     }
     await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
     await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));

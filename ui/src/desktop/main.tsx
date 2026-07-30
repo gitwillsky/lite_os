@@ -395,9 +395,9 @@ export default function Desktop() {
       {panel === "command" && (
         <CommandCenter
           apps={commandApps}
+          activeWorkspace={activeWorkspace}
           onLaunch={(id) => { launch(id); setPanel(null); }}
           onClose={() => setPanel(null)}
-          onSystem={() => setPanel("system")}
           onShutdown={shutdown}
         />
       )}
@@ -407,6 +407,7 @@ export default function Desktop() {
           activeWorkspace={activeWorkspace}
           onActivate={activate}
           onSelect={selectWorkspace}
+          onCloseWindow={closeWindow}
           onClose={() => setPanel(null)}
         />
       )}

@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
+import { list } from "lite:fs";
 import type { FsEntry } from "lite:fs";
 import { ContextMenu } from "../design-system/context-menu.tsx";
 import {
@@ -12,6 +13,8 @@ import {
   KEY_A, KEY_BACKSPACE, KEY_C, KEY_DELETE, KEY_ESC, KEY_ENTER, KEY_F2, KEY_V, KEY_X,
   MOD_CONTROL,
   formatDateEn,
+  formatRecent,
+  joinPath,
   parentPath,
   typeLabel,
 } from "../explorer/model.ts";
@@ -64,6 +67,34 @@ function iconFor16(entry: FsEntry): string {
     : "assets/file-16.png";
 }
 
+/** One "Recent files" row: a real file plus the folder it lives in. */
+interface RecentFile {
+  name: string;
+  path: string;
+  mtime: number;
+}
+
+/** Collect real files one level under `root`'s folders (plus root's own
+ * files), newest first. Powers the Home "Recent files" list from actual fs
+ * data rather than a mock — synchronous lite:fs listing, capped at `limit`. */
+function collectRecentFiles(root: string, limit: number): RecentFile[] {
+  const files: RecentFile[] = [];
+  const scan = (dir: string) => {
+    const result = list(dir);
+    for (const entry of result.entries ?? []) {
+      if (entry.name.startsWith(".")) continue;
+      if (entry.kind === "file") {
+        files.push({ name: entry.name, path: joinPath(dir, entry.name), mtime: entry.mtime });
+      }
+    }
+  };
+  scan(root);
+  for (const entry of list(root).entries ?? []) {
+    if (entry.kind === "dir" && !entry.name.startsWith(".")) scan(joinPath(root, entry.name));
+  }
+  return files.sort((a, b) => b.mtime - a.mtime).slice(0, limit);
+}
+
 export default function FileManager() {
   const [dialog, setDialog] = useState<DialogState>(null);
   const closeDialog = useCallback(() => setDialog(null), []);
@@ -78,6 +109,10 @@ export default function FileManager() {
   const { path, entries, error, viewMode, setViewMode, selected } = browser;
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [query, setQuery] = useState("");
+  // One clock read for the Home "Recent files" relative stamps. Snapshotting
+  // once (not per render) keeps the list stable and avoids an argless
+  // new Date() during render; refreshing on navigation into Home is enough.
+  const [now] = useState(() => new Date());
 
   const closeMenu = useCallback(() => setMenu(null), []);
   const openMenu = useCallback((x: number, y: number, items: MenuItem[]) => {
@@ -149,6 +184,21 @@ export default function FileManager() {
     });
   }, [entries, query, atRoot]);
 
+  // Home splits its content into "Folders" (directory grid) and "Recent files"
+  // (real files under the home tree, newest first). Only computed at root, and
+  // filtered by the same search query as the grid.
+  const homeFolders = useMemo(
+    () => visibleEntries.filter((entry) => entry.kind === "dir" || entry.kind === "symlink"),
+    [visibleEntries],
+  );
+  const recentFiles = useMemo(() => {
+    if (!atRoot) return [];
+    const normalized = query.trim().toLowerCase();
+    return collectRecentFiles("/root", 6)
+      .filter((file) => file.name.toLowerCase().includes(normalized));
+    // Re-scan when the query changes or we (re)enter Home via a browser refresh.
+  }, [atRoot, query, browser.entries]);
+
   return (
     <div className="aurora-root explorer explorer--files" onClick={closeMenu} onKeyDown={onKeyDown}>
       <div className="explorer__body">
@@ -161,31 +211,99 @@ export default function FileManager() {
           <SidebarItem label="Videos" glyph="video" active={path === "/root/Videos"} onClick={() => browser.navigate("/root/Videos")}/>
           <div className="sidebar-separator"/>
           <SidebarItem label="Storage" glyph="storage" active={path === "/"} onClick={() => browser.navigate("/")}/>
+          {/* Presentational disk-usage bar: lite:fs has no statfs, so the fill
+              is a fixed visual matching the concept, not a live measurement. */}
+          <div className="files-storage">
+            <span className="sidebar-glyph sidebar-glyph--storage"><span/><span/><span/></span>
+            <div className="files-storage__track"><div className="files-storage__fill"/></div>
+          </div>
         </Sidebar>
         <div className="files-content">
           <div className="files-toolbar">
+            <div className="files-nav">
+              <button className="files-nav__btn" aria-label="Back" disabled={!browser.canBack} onClick={browser.back}>
+                <img src="assets/nav-back.png"/>
+              </button>
+              <button className="files-nav__btn" aria-label="Forward" disabled={!browser.canForward} onClick={browser.forward}>
+                <img src="assets/nav-forward.png"/>
+              </button>
+              <button className="files-nav__btn" aria-label="Up" disabled={!browser.canUp} onClick={browser.up}>
+                <img src="assets/nav-up.png"/>
+              </button>
+              <button className="files-nav__btn" aria-label="Home" disabled={atRoot} onClick={() => browser.navigate("/root")}>
+                <img src="assets/nav-home.png"/>
+              </button>
+            </div>
             <ViewSwitch
               mode={viewMode === "icons" ? "icons" : "details"}
               onChange={setViewMode}
             />
             <SearchField value={query} placeholder="Search files" onInput={setQuery}/>
           </div>
-          <FolderView
-            viewMode={viewMode} entries={visibleEntries} error={error}
-            iconLarge={iconFor} iconSmall={iconFor16}
-            entryType={(entry) => typeLabel(entry, TYPE_LABELS)}
-            columns={{ name: "Name", size: "Size", type: "Type", mtime: "Date Modified" }}
-            formatDate={formatDateEn}
-            sort={browser.sort} onSort={(column: SortColumn) => browser.toggleSort(column)}
-            selected={selected} renaming={browser.renaming} renameDraft={browser.renameDraft} renameMaxWidth={90}
-            onSelect={(entry) => browser.selectOnly(entry.name)}
-            onOpen={browser.openEntry}
-            onEntryMenu={(entry, x, y) => { browser.selectOnly(entry.name); openMenu(x, y, rowMenu(entry)); }}
-            onBlankMenu={(x, y) => openMenu(x, y, emptyMenu())}
-            onRenameDraftChange={browser.setRenameDraft}
-            onRenameCommit={browser.commitRename}
-            onRenameCancel={browser.cancelRename}
-          />
+          {atRoot && viewMode === "icons" ? (
+            <div className="files-home">
+              {error && <div className="folder-view__note">{error}</div>}
+              <div className="files-home__section">
+                <span className="cat-heading">Folders</span>
+                <div className="icon-grid">
+                  {homeFolders.map((entry) => (
+                    <button
+                      key={entry.name}
+                      className={`icon-cell${selected.includes(entry.name) ? " icon-cell--sel" : ""}`}
+                      onClick={() => browser.selectOnly(entry.name)}
+                      onDoubleClick={() => browser.openEntry(entry)}
+                      onContextMenu={(rawEvent) => {
+                        const event = rawEvent as unknown as { x: number; y: number };
+                        browser.selectOnly(entry.name);
+                        openMenu(event.x, event.y, rowMenu(entry));
+                      }}
+                    >
+                      <img className="icon-cell__img" src={iconFor(entry)}/>
+                      <span className="icon-cell__label">{entry.name}</span>
+                    </button>
+                  ))}
+                  {homeFolders.length === 0 && <span className="command-empty">No folders</span>}
+                </div>
+              </div>
+              <div className="files-home__section">
+                <span className="cat-heading">Recent files</span>
+                <div className="recent-list">
+                  {recentFiles.length === 0 ? (
+                    <span className="command-empty">No recent files</span>
+                  ) : (
+                    recentFiles.map((file) => (
+                      <button
+                        key={file.path}
+                        className="recent-row"
+                        onDoubleClick={() => browser.navigate(parentPath(file.path))}
+                      >
+                        <img className="recent-row__icon" src="assets/file-16.png"/>
+                        <span className="recent-row__name">{file.name}</span>
+                        <span className="recent-row__when">{formatRecent(file.mtime, now)}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <FolderView
+              viewMode={viewMode} entries={visibleEntries} error={error}
+              iconLarge={iconFor} iconSmall={iconFor16}
+              entryType={(entry) => typeLabel(entry, TYPE_LABELS)}
+              columns={{ name: "Name", size: "Size", type: "Type", mtime: "Date Modified" }}
+              formatDate={formatDateEn}
+              sort={browser.sort} onSort={(column: SortColumn) => browser.toggleSort(column)}
+              selected={selected} renaming={browser.renaming} renameDraft={browser.renameDraft} renameMaxWidth={90}
+              onSelect={(entry) => browser.selectOnly(entry.name)}
+              onOpen={browser.openEntry}
+              onEntryMenu={(entry, x, y) => { browser.selectOnly(entry.name); openMenu(x, y, rowMenu(entry)); }}
+              onBlankMenu={(x, y) => openMenu(x, y, emptyMenu())}
+              onRenameDraftChange={browser.setRenameDraft}
+              onRenameCommit={browser.commitRename}
+              onRenameCancel={browser.cancelRename}
+            />
+          )}
         </div>
       </div>
 
@@ -194,7 +312,7 @@ export default function FileManager() {
         <TextViewer view={dialog.view} onClose={closeDialog} closeLabel="Close" truncatedLabel="(content truncated at 64 KB)"/>
       )}
       {dialog?.kind === "cannot-open" && (
-        <CannotOpenDialog name={dialog.name} message={(name) => `Windows cannot open '${name}'. No program is associated with this file type.`} onClose={closeDialog} closeLabel="OK"/>
+        <CannotOpenDialog name={dialog.name} message={(name) => `LiteOS cannot open '${name}'. No program is associated with this file type.`} onClose={closeDialog} closeLabel="OK"/>
       )}
     </div>
   );

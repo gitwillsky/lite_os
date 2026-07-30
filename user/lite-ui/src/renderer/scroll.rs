@@ -351,14 +351,17 @@ pub(super) fn paint_scrollbar<R: Raster>(
     clip: Option<PhysicalRect>,
 ) {
     let track = physical(scrollbar.track, pixels, clip);
-    fill(pixels, track, 0xffd4_d0c8);
+    // Aurora dark scrollbar (was Win95 beige #d4d0c8): translucent navy track,
+    // a blue-grey thumb with a light top/left edge and darker bottom/right so it
+    // still reads as raised, tuned to the design-system glass palette.
+    fill(pixels, track, 0xff0d_1626);
     let thumb = physical(scrollbar.thumb, pixels, clip);
-    fill(pixels, thumb, 0xffd4_d0c8);
+    fill(pixels, thumb, 0xff2c_3e5a);
     if thumb.x2 <= thumb.x1 || thumb.y2 <= thumb.y1 {
         return;
     }
-    let light = 0xffff_ffff;
-    let dark = 0xff40_4040;
+    let light = 0xff4d_6488;
+    let dark = 0xff10_1a2c;
     fill(
         pixels,
         PhysicalRect {
@@ -414,7 +417,7 @@ pub(super) fn paint_scrollbar_corner<R: Raster>(
         height: SCROLLBAR_WIDTH.min(port.height),
     };
     let corner = physical(corner, pixels, clip);
-    fill(pixels, corner, 0xffd4_d0c8);
+    fill(pixels, corner, 0xff0d_1626);
 }
 
 fn physical<R: Raster>(rect: LogicalRect, pixels: &R, clip: Option<PhysicalRect>) -> PhysicalRect {

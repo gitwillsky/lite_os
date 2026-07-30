@@ -89,6 +89,22 @@ export function formatDateEn(mtime: number): string {
   return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()} ${hour12}:${pad(date.getMinutes())} ${hours < 12 ? "AM" : "PM"}`;
 }
 
+/** Relative "recent files" stamp (`Today, 10:15` / `Yesterday, 18:07` /
+ * `7/24, 09:12`) from Unix seconds; "" for 0. `now` is injected (a Date) so
+ * callers own the clock — the reconciler forbids argless `new Date()`. */
+export function formatRecent(mtime: number, now: Date): string {
+  if (mtime <= 0) return "";
+  const date = new Date(mtime * 1000);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const yesterday = new Date(now.getTime() - 86_400_000);
+  if (sameDay(date, now)) return `Today, ${clock}`;
+  if (sameDay(date, yesterday)) return `Yesterday, ${clock}`;
+  return `${date.getMonth() + 1}/${date.getDate()}, ${clock}`;
+}
+
 /** Uppercased trailing extension, or "" when the name has no dotted suffix. */
 export function extensionOf(name: string): string {
   const dot = name.lastIndexOf(".");
