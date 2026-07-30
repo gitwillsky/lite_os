@@ -256,8 +256,11 @@ for (const [id, entryName, styleName] of products) {
   if (id === "my-computer") {
     await copyFile(join(root, "../assets/aurora/package.png"), join(assets, "package.png"));
     await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
-    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "view-grid.png"]) {
-      await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
+    await copyFile(join(root, "../assets/aurora/view-grid.png"), join(assets, "view-grid.png"));
+    // Nav glyphs from the Codex-generated aurora-glyphs set (the old
+    // assets/aurora/nav-*.png were near-empty; see file-manager block).
+    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png"]) {
+      await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
     }
     await copyFile(join(root, "../assets/sprites-src/icon-drive.png"), join(assets, "drive.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-drive-16.png"), join(assets, "drive-16.png"));
