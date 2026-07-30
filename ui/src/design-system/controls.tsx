@@ -54,7 +54,7 @@ export function SearchField({ value, placeholder, onInput }: {
 }) {
   return (
     <div className="search-field">
-      <span className="search-glyph"/>
+      <span className="search-glyph"><span/></span>
       <input
         value={value}
         placeholder={placeholder}

@@ -524,11 +524,24 @@ button:disabled {
 }
 
 .search-glyph {
-  width: 15px;
-  height: 15px;
+  position: relative;
+  width: 12px;
+  height: 12px;
   margin-left: 18px;
+  flex: none;
   border: 2px solid var(--aurora-muted);
-  border-radius: 10px;
+  border-radius: 8px;
+}
+
+.search-glyph span {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  width: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--aurora-muted);
+  transform: translate(-1px, -1px);
 }
 
 .command-search input {
@@ -1418,7 +1431,8 @@ button:disabled {
 }
 
 .search-field input {
-  width: 185px;
+  flex: 1;
+  min-width: 0;
   height: 30px;
   border: 0 solid transparent;
   color: var(--aurora-text);

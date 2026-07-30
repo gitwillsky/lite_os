@@ -155,7 +155,7 @@ export function CommandCenter({
         </div>
         <div className="cc-main">
           <div className="command-search">
-            <span className="search-glyph"/>
+            <span className="search-glyph"><span/></span>
             <input
               autoFocus={true}
               value={query}
