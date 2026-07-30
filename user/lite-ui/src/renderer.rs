@@ -49,7 +49,7 @@ use scroll::{
 use shadow::{paint_inset_shadow, paint_shadow};
 use transform::translation as transform_translation;
 
-pub(crate) use raster::{DamageRaster, OpacityLayer, Raster};
+pub(crate) use raster::{ClipRaster, DamageRaster, OpacityLayer, Raster, RasterClip};
 
 pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
 
@@ -413,6 +413,45 @@ fn logical_intersection(rect: LogicalRect, clip: Option<PhysicalRect>) -> Logica
     }
 }
 
+/// Builds the physical padding-edge clip for one CSS overflow container.
+///
+/// `border-radius` describes the outer border edge. Descendants clip at the
+/// padding edge, so each corner's horizontal and vertical radii shrink by
+/// their corresponding side borders. Keeping the outer radius would erase
+/// valid inner-corner pixels, while a square clip lets descendants overwrite
+/// the rounded frame.
+fn overflow_raster_clip(
+    port: PhysicalRect,
+    computed: &Computed,
+    borders: [f32; 4],
+    clip_x: bool,
+    clip_y: bool,
+) -> RasterClip {
+    let [top, right, bottom, left] =
+        borders.map(|border| (border * SCALE).round().max(0.0) as usize);
+    let [top_left, top_right, bottom_right, bottom_left] = box_paint::corner_radii(computed);
+    RasterClip::new(
+        port,
+        [
+            (top_left.saturating_sub(left), top_left.saturating_sub(top)),
+            (
+                top_right.saturating_sub(right),
+                top_right.saturating_sub(top),
+            ),
+            (
+                bottom_right.saturating_sub(right),
+                bottom_right.saturating_sub(bottom),
+            ),
+            (
+                bottom_left.saturating_sub(left),
+                bottom_left.saturating_sub(bottom),
+            ),
+        ],
+        clip_x,
+        clip_y,
+    )
+}
+
 fn collect_scroll_nodes(node: &RenderNode, identities: &mut HashSet<u64>) {
     let (overflow_x, overflow_y) = overflow_modes(&node.computed);
     if overflow_x.scrolls() || overflow_y.scrolls() {
@@ -489,7 +528,7 @@ impl PhysicalRect {
     }
 
     /// Intersection with another rect (empty if they don't overlap).
-    fn intersect(self, other: PhysicalRect) -> PhysicalRect {
+    pub(crate) fn intersect(self, other: PhysicalRect) -> PhysicalRect {
         PhysicalRect {
             x1: self.x1.max(other.x1),
             y1: self.y1.max(other.y1),

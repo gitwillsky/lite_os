@@ -142,7 +142,7 @@ pub(super) fn blend_row(row: &mut [u32], x1: usize, x2: usize, color: u32) {
 /// Interior pixels take `color` verbatim; the two boundary pixels composite
 /// with their exact pixel coverage so rounded corners blend into the backdrop
 /// instead of stair-stepping. Endpoints are target-column coordinates.
-fn blend_span(row: &mut [u32], x1: f32, x2: f32, color: u32) {
+pub(super) fn blend_span(row: &mut [u32], x1: f32, x2: f32, color: u32) {
     if x2 <= x1 {
         return;
     }
@@ -199,28 +199,6 @@ pub(super) fn corner_inset(top: usize, bottom: usize, y: usize, height: usize) -
     }
 }
 
-/// Composites one rounded rect over the destination, honoring per-corner radii
-/// ordered `[tl, tr, br, bl]` in physical pixels.
-pub(super) fn fill_rounded<R: Raster>(
-    pixels: &mut R,
-    rect: PhysicalRect,
-    radii: [usize; 4],
-    color: u32,
-) {
-    if rect.x2 <= rect.x1 || rect.y2 <= rect.y1 {
-        return;
-    }
-    let height = rect.y2 - rect.y1;
-    for y in rect.y1..rect.y2 {
-        let row_y = y - rect.y1;
-        let left = corner_inset(radii[0], radii[3], row_y, height);
-        let right = corner_inset(radii[1], radii[2], row_y, height);
-        let x1 = ((rect.x1 as f32 + left).min(rect.x2 as f32)).max(0.0);
-        let x2 = ((rect.x2 as f32 - right).max(x1)).min(pixels.width() as f32);
-        blend_span(pixels.row_mut(y), x1, x2, color);
-    }
-}
-
 /// Composites the band between two concentric rounded rects.
 ///
 /// Shadow falloff shells nest by 1px; painting only the band each shell owns
@@ -230,6 +208,7 @@ pub(super) fn fill_ring<R: Raster>(
     pixels: &mut R,
     outer: PhysicalRect,
     inner: PhysicalRect,
+    clip: Option<PhysicalRect>,
     outer_radii: [usize; 4],
     inner_radii: [usize; 4],
     color: u32,
@@ -239,13 +218,13 @@ pub(super) fn fill_ring<R: Raster>(
     }
     let outer_height = outer.y2 - outer.y1;
     let inner_height = inner.y2.saturating_sub(inner.y1);
-    let width = pixels.width() as f32;
-    for y in outer.y1..outer.y2 {
+    let visible = clip.map_or(outer, |clip| outer.intersect(clip));
+    for y in visible.y1..visible.y2 {
         let outer_y = y - outer.y1;
         let left = corner_inset(outer_radii[0], outer_radii[3], outer_y, outer_height);
         let right = corner_inset(outer_radii[1], outer_radii[2], outer_y, outer_height);
-        let x1 = ((outer.x1 as f32 + left).min(outer.x2 as f32)).max(0.0);
-        let x2 = ((outer.x2 as f32 - right).max(x1)).min(width);
+        let x1 = ((outer.x1 as f32 + left).min(outer.x2 as f32)).max(visible.x1 as f32);
+        let x2 = ((outer.x2 as f32 - right).max(x1)).min(visible.x2 as f32);
         let row = pixels.row_mut(y);
         if y < inner.y1 || y >= inner.y2 || inner_height == 0 {
             blend_span(row, x1, x2, color);

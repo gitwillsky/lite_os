@@ -166,7 +166,12 @@ fn bevel_segments(
     }
 }
 
-pub(super) fn paint_border<R: Raster>(pixels: &mut R, bounds: PhysicalRect, computed: &Computed) {
+pub(super) fn paint_border<R: Raster>(
+    pixels: &mut R,
+    bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
+    computed: &Computed,
+) {
     // 1. Resolve each side independently. The style owner expands shorthands in
     //    cascade order, so side longhands hold the standard winning width and
     //    color. Shorthand fallbacks keep native pre-expanded values valid.
@@ -230,7 +235,7 @@ pub(super) fn paint_border<R: Raster>(pixels: &mut R, bounds: PhysicalRect, comp
             y2: bounds.y2.saturating_sub(width),
         };
         let inner_radii = radii.map(|radius| radius.saturating_sub(width));
-        fill_ring(pixels, bounds, inner, radii, inner_radii, color);
+        fill_ring(pixels, bounds, inner, clip, radii, inner_radii, color);
         return;
     }
     // 2. Split each side into concentric segments (solid/pattern styles have a
@@ -275,7 +280,7 @@ pub(super) fn paint_border<R: Raster>(pixels: &mut R, bounds: PhysicalRect, comp
                 ring[side] = (segment.thickness, color, style);
             }
         }
-        paint_edge_ring(pixels, rect, ring);
+        paint_edge_ring(pixels, rect, clip, ring);
     }
 }
 
@@ -286,29 +291,34 @@ pub(super) fn paint_border<R: Raster>(pixels: &mut R, bounds: PhysicalRect, comp
 fn paint_edge_ring<R: Raster>(
     pixels: &mut R,
     rect: PhysicalRect,
+    clip: Option<PhysicalRect>,
     sides: [(usize, u32, BorderStyle); 4],
 ) {
     let [top, right, bottom, left] = sides;
-    for y in rect.y1..rect.y2 {
+    let visible = clip.map_or(rect, |clip| rect.intersect(clip));
+    for y in visible.y1..visible.y2 {
         let row = pixels.row_mut(y);
         if top.0 > 0 && y < rect.y1 + top.0 {
-            blend_pattern_row(row, rect.x1, rect.x2, top.1, top.2, top.0);
+            blend_pattern_row(row, visible.x1, visible.x2, top.1, top.2, top.0);
             continue;
         }
         if bottom.0 > 0 && y + bottom.0 >= rect.y2 {
-            blend_pattern_row(row, rect.x1, rect.x2, bottom.1, bottom.2, bottom.0);
+            blend_pattern_row(row, visible.x1, visible.x2, bottom.1, bottom.2, bottom.0);
             continue;
         }
         if left.0 > 0 && left.2.paints(left.0, y - rect.y1) {
-            blend_row(row, rect.x1, (rect.x1 + left.0).min(rect.x2), left.1);
+            let x1 = rect.x1.max(visible.x1);
+            let x2 = (rect.x1 + left.0).min(visible.x2);
+            if x2 > x1 {
+                blend_row(row, x1, x2, left.1);
+            }
         }
         if right.0 > 0 && right.2.paints(right.0, y - rect.y1) {
-            blend_row(
-                row,
-                rect.x2.saturating_sub(right.0).max(rect.x1),
-                rect.x2,
-                right.1,
-            );
+            let x1 = rect.x2.saturating_sub(right.0).max(visible.x1);
+            let x2 = rect.x2.min(visible.x2);
+            if x2 > x1 {
+                blend_row(row, x1, x2, right.1);
+            }
         }
     }
 }

@@ -3,7 +3,8 @@
 use std::io;
 
 use display_proto::{
-    MAX_MESSAGE, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, send_message,
+    ClipMask, ClipMasks, MAX_MESSAGE, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
+    send_message,
 };
 
 use super::{Display, ForeignLayer, Overlay, WindowFrame};
@@ -51,15 +52,16 @@ impl Display {
         };
         let full_input = [full];
         let no_damage = [];
+        let no_clip_masks: [ClipMask; 0] = [];
         let mut nodes = Vec::with_capacity(1 + windows.len() * 3 + foreign.len() + overlays.len());
         nodes.push(SceneNode {
             kind: SceneNodeKind::Pixels,
             window_group: 0,
             source_id: buffer_id,
-            corner_radius: 0,
             configure_serial: 0,
             bounds: full,
             clip: full,
+            clip_masks: ClipMasks::from_slice(&no_clip_masks),
             opaque: Some(full),
             input: Rectangles::from_slice(&full_input),
             damage: Rectangles::from_slice(damage),
@@ -71,10 +73,10 @@ impl Display {
                 kind: SceneNodeKind::Pixels,
                 window_group: window.surface_id,
                 source_id: buffer_id,
-                corner_radius: window.corner_radius,
                 configure_serial: 0,
                 bounds: full,
                 clip: window.frame,
+                clip_masks: ClipMasks::from_slice(std::slice::from_ref(&window.clip_mask)),
                 opaque: None,
                 input: Rectangles::from_slice(frame_input),
                 damage: Rectangles::from_slice(&no_damage),
@@ -91,10 +93,10 @@ impl Display {
                     kind: SceneNodeKind::ForeignSurface,
                     window_group: layer.surface_id,
                     source_id: layer.surface_id,
-                    corner_radius: 0,
                     configure_serial: layer.configure_serial,
                     bounds: layer.bounds,
-                    clip: full,
+                    clip: layer.clip,
+                    clip_masks: ClipMasks::from_slice(&layer.clip_masks),
                     opaque: Some(layer.bounds),
                     input: Rectangles::from_slice(&foreign_bounds[index]),
                     damage: Rectangles::from_slice(&no_damage),
@@ -104,10 +106,10 @@ impl Display {
                         kind: SceneNodeKind::Pixels,
                         window_group: layer.surface_id,
                         source_id: buffer_id,
-                        corner_radius: 0,
                         configure_serial: 0,
                         bounds: full,
                         clip: Rect::default(),
+                        clip_masks: ClipMasks::from_slice(&no_clip_masks),
                         opaque: None,
                         input: Rectangles::from_slice(&layer.desktop_input),
                         damage: Rectangles::from_slice(&no_damage),
@@ -122,10 +124,10 @@ impl Display {
                 kind: SceneNodeKind::Pixels,
                 window_group: 0,
                 source_id: buffer_id,
-                corner_radius: overlay.corner_radius,
                 configure_serial: 0,
                 bounds: full,
                 clip: overlay.rect,
+                clip_masks: ClipMasks::from_slice(std::slice::from_ref(&overlay.clip_mask)),
                 opaque: None,
                 input: Rectangles::from_slice(input),
                 damage: Rectangles::from_slice(&no_damage),

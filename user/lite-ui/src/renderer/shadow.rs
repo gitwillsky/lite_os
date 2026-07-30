@@ -5,7 +5,7 @@ use crate::style::Computed;
 
 use super::{
     PhysicalRect, Raster, SCALE,
-    box_paint::{corner_radii, fill_ring, fill_rounded, scale_pm},
+    box_paint::{blend_span, corner_radii, fill_ring, scale_pm},
     gradient::split_top_level,
     layout::number,
 };
@@ -22,7 +22,12 @@ struct Shadow {
 }
 
 /// Paints the outer (drop) shadow layers of `box-shadow`, under the box.
-pub(super) fn paint_shadow<R: Raster>(pixels: &mut R, bounds: PhysicalRect, computed: &Computed) {
+pub(super) fn paint_shadow<R: Raster>(
+    pixels: &mut R,
+    bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
+    computed: &Computed,
+) {
     let Some(value) = computed.get("box-shadow") else {
         return;
     };
@@ -30,7 +35,7 @@ pub(super) fn paint_shadow<R: Raster>(pixels: &mut R, bounds: PhysicalRect, comp
     // CSS stacks the FIRST declared shadow on top, so layers composite in
     // reverse declaration order.
     for shadow in parse_shadows(value).iter().rev().filter(|s| !s.inset) {
-        paint_outer_shadow(pixels, bounds, &radii, shadow);
+        paint_outer_shadow(pixels, bounds, clip, &radii, shadow);
     }
 }
 
@@ -38,6 +43,7 @@ pub(super) fn paint_shadow<R: Raster>(pixels: &mut R, bounds: PhysicalRect, comp
 pub(super) fn paint_inset_shadow<R: Raster>(
     pixels: &mut R,
     bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
     computed: &Computed,
 ) {
     let Some(value) = computed.get("box-shadow") else {
@@ -45,7 +51,7 @@ pub(super) fn paint_inset_shadow<R: Raster>(
     };
     let radii = corner_radii(computed);
     for shadow in parse_shadows(value).iter().rev().filter(|s| s.inset) {
-        paint_inner_shadow(pixels, bounds, &radii, shadow);
+        paint_inner_shadow(pixels, bounds, clip, &radii, shadow);
     }
 }
 
@@ -87,47 +93,306 @@ fn parse_shadows(value: &str) -> Vec<Shadow> {
 fn paint_outer_shadow<R: Raster>(
     pixels: &mut R,
     bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
     radii: &[usize; 4],
     shadow: &Shadow,
 ) {
     let dx = shadow.dx * SCALE;
     let dy = shadow.dy * SCALE;
     let blur = shadow.blur * SCALE;
-    // Spread grows (or shrinks, when negative) the shadow shape on every side
-    // before the blur falloff; corner radii grow with it.
     let spread = shadow.spread * SCALE;
-    let target_width = pixels.width() as f32;
-    let target_height = pixels.height() as f32;
-    let offset = |expand: f32| PhysicalRect {
-        x1: (bounds.x1 as f32 + dx - spread - expand).max(0.0) as usize,
-        y1: (bounds.y1 as f32 + dy - spread - expand).max(0.0) as usize,
-        x2: (bounds.x2 as f32 + dx + spread + expand).min(target_width) as usize,
-        y2: (bounds.y2 as f32 + dy + spread + expand).min(target_height) as usize,
+    let original = ShadowShape::new(bounds, radii.map(|radius| radius as f32));
+    let shifted = ShadowShape {
+        x1: bounds.x1 as f32 + dx - spread,
+        y1: bounds.y1 as f32 + dy - spread,
+        x2: bounds.x2 as f32 + dx + spread,
+        y2: bounds.y2 as f32 + dy + spread,
+        radii: radii.map(|radius| (radius as f32 + spread).max(0.0)),
     };
-    // 1. A soft shadow falls off over `blur` pixels. Concentric shells keep the
-    //    cost proportional to the perimeter: each 1px band is composited once
-    //    with a quadratic alpha falloff instead of refilling the whole rect.
-    //    The shell count is therefore linear in the blur radius and capped at
-    //    64 physical px to bound worst-case frame cost.
-    let shells = (blur.round() as usize).clamp(1, 64);
-    for shell in (1..=shells).rev() {
-        let factor = ((shells + 1 - shell) as f32 / (shells + 1) as f32).powi(2);
-        let outer = offset(shell as f32);
-        let inner = offset(shell as f32 - 1.0);
-        let outer_radii = radii.map(|radius| (radius as f32 + spread).max(0.0) as usize + shell);
-        let inner_radii =
-            radii.map(|radius| (radius as f32 + spread).max(0.0) as usize + shell - 1);
-        fill_ring(
+    if shifted.is_empty() {
+        return;
+    }
+    if blur <= 0.0 {
+        paint_shadow_fill(pixels, shifted, original, clip, shadow.color);
+        return;
+    }
+
+    // CSS blurs the complete shifted mask across both sides of its boundary.
+    // Treating the shifted box as an opaque base and adding only outer shells
+    // leaves a solid `dy`-high slab below the element. Three-sigma signed
+    // distance bands approximate the Gaussian mask while keeping work
+    // proportional to the perimeter instead of the window area.
+    let sigma = blur * 0.5;
+    let support = (sigma * 3.0).ceil().max(1.0);
+    paint_outer_falloff(
+        pixels,
+        shifted,
+        original,
+        clip,
+        shadow.color,
+        sigma,
+        support,
+    );
+
+    // Only the shifted/spread part that protrudes beyond the original border
+    // box can remain visible on the inside half of the blurred boundary.
+    let protrusion = dx.abs().max(dy.abs()) + spread.max(0.0);
+    let inner_depth = support.min(protrusion.ceil() + 1.0);
+    paint_inner_falloff(
+        pixels,
+        shifted,
+        original,
+        clip,
+        shadow.color,
+        sigma,
+        inner_depth,
+    );
+    if protrusion > support {
+        paint_shadow_fill(
+            pixels,
+            shifted.contour(-support),
+            original,
+            clip,
+            scale_pm(shadow.color, gaussian_coverage(-support, sigma)),
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ShadowShape {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    radii: [f32; 4],
+}
+
+impl ShadowShape {
+    fn new(bounds: PhysicalRect, radii: [f32; 4]) -> Self {
+        Self {
+            x1: bounds.x1 as f32,
+            y1: bounds.y1 as f32,
+            x2: bounds.x2 as f32,
+            y2: bounds.y2 as f32,
+            radii,
+        }
+    }
+
+    fn contour(self, distance: f32) -> Self {
+        Self {
+            x1: self.x1 - distance,
+            y1: self.y1 - distance,
+            x2: self.x2 + distance,
+            y2: self.y2 + distance,
+            radii: self.radii.map(|radius| (radius + distance).max(0.0)),
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.x2 <= self.x1 || self.y2 <= self.y1
+    }
+
+    fn span(self, y: usize) -> Option<(f32, f32)> {
+        if self.is_empty() {
+            return None;
+        }
+        let mid = y as f32 + 0.5;
+        if mid < self.y1 || mid >= self.y2 {
+            return None;
+        }
+        let height = self.y2 - self.y1;
+        let width = self.x2 - self.x1;
+        let normalize = |radius: f32| radius.min(height * 0.5).min(width * 0.5);
+        let radii = self.radii.map(normalize);
+        let inset = |radius: f32, distance: f32| {
+            if radius <= 0.0 {
+                0.0
+            } else {
+                radius - (radius * radius - distance * distance).max(0.0).sqrt()
+            }
+        };
+        let top = mid - self.y1;
+        let bottom = self.y2 - mid;
+        let left = if top < radii[0] {
+            inset(radii[0], radii[0] - top)
+        } else if bottom < radii[3] {
+            inset(radii[3], radii[3] - bottom)
+        } else {
+            0.0
+        };
+        let right = if top < radii[1] {
+            inset(radii[1], radii[1] - top)
+        } else if bottom < radii[2] {
+            inset(radii[2], radii[2] - bottom)
+        } else {
+            0.0
+        };
+        let x1 = self.x1 + left;
+        let x2 = self.x2 - right;
+        (x2 > x1).then_some((x1, x2))
+    }
+}
+
+fn paint_outer_falloff<R: Raster>(
+    pixels: &mut R,
+    shape: ShadowShape,
+    exclusion: ShadowShape,
+    clip: Option<PhysicalRect>,
+    color: u32,
+    sigma: f32,
+    support: f32,
+) {
+    let steps = (support.ceil() as usize).clamp(1, 64);
+    for step in (0..steps).rev() {
+        let inner_distance = support * step as f32 / steps as f32;
+        let outer_distance = support * (step + 1) as f32 / steps as f32;
+        let factor = gaussian_coverage((inner_distance + outer_distance) * 0.5, sigma);
+        paint_shadow_ring(
+            pixels,
+            shape.contour(outer_distance),
+            shape.contour(inner_distance),
+            exclusion,
+            clip,
+            scale_pm(color, factor),
+        );
+    }
+}
+
+fn paint_inner_falloff<R: Raster>(
+    pixels: &mut R,
+    shape: ShadowShape,
+    exclusion: ShadowShape,
+    clip: Option<PhysicalRect>,
+    color: u32,
+    sigma: f32,
+    depth: f32,
+) {
+    if depth <= 0.0 {
+        return;
+    }
+    let steps = (depth.ceil() as usize).clamp(1, 64);
+    for step in 0..steps {
+        let outer_distance = depth * step as f32 / steps as f32;
+        let inner_distance = depth * (step + 1) as f32 / steps as f32;
+        let outer = shape.contour(-outer_distance);
+        if outer.is_empty() {
+            break;
+        }
+        let factor = gaussian_coverage(-(outer_distance + inner_distance) * 0.5, sigma);
+        let inner = shape.contour(-inner_distance);
+        if inner.is_empty() {
+            paint_shadow_fill(pixels, outer, exclusion, clip, scale_pm(color, factor));
+            break;
+        }
+        paint_shadow_ring(
             pixels,
             outer,
             inner,
-            outer_radii,
-            inner_radii,
-            scale_pm(shadow.color, factor),
+            exclusion,
+            clip,
+            scale_pm(color, factor),
         );
     }
-    let base_radii = radii.map(|radius| (radius as f32 + spread).max(0.0) as usize);
-    fill_rounded(pixels, offset(0.0), base_radii, shadow.color);
+}
+
+fn paint_shadow_ring<R: Raster>(
+    pixels: &mut R,
+    outer: ShadowShape,
+    inner: ShadowShape,
+    exclusion: ShadowShape,
+    clip: Option<PhysicalRect>,
+    color: u32,
+) {
+    paint_shadow_shape(pixels, outer, Some(inner), exclusion, clip, color);
+}
+
+fn paint_shadow_fill<R: Raster>(
+    pixels: &mut R,
+    shape: ShadowShape,
+    exclusion: ShadowShape,
+    clip: Option<PhysicalRect>,
+    color: u32,
+) {
+    paint_shadow_shape(pixels, shape, None, exclusion, clip, color);
+}
+
+fn paint_shadow_shape<R: Raster>(
+    pixels: &mut R,
+    outer: ShadowShape,
+    inner: Option<ShadowShape>,
+    exclusion: ShadowShape,
+    clip: Option<PhysicalRect>,
+    color: u32,
+) {
+    if color == 0 || outer.is_empty() {
+        return;
+    }
+    let y1 = outer
+        .y1
+        .floor()
+        .max(clip.map_or(0.0, |clip| clip.y1 as f32))
+        .max(0.0) as usize;
+    let y2 = outer
+        .y2
+        .ceil()
+        .min(clip.map_or(pixels.height() as f32, |clip| clip.y2 as f32))
+        .min(pixels.height() as f32) as usize;
+    let clip_x1 = clip.map_or(0.0, |clip| clip.x1 as f32);
+    let clip_x2 = clip.map_or(pixels.width() as f32, |clip| clip.x2 as f32);
+    for y in y1..y2 {
+        let Some((outer_x1, outer_x2)) = outer.span(y) else {
+            continue;
+        };
+        let outer_x1 = outer_x1.max(clip_x1).max(0.0);
+        let outer_x2 = outer_x2.min(clip_x2).min(pixels.width() as f32);
+        if outer_x2 <= outer_x1 {
+            continue;
+        }
+        let excluded = exclusion.span(y);
+        let row = pixels.row_mut(y);
+        if let Some((inner_x1, inner_x2)) = inner.and_then(|inner| inner.span(y)) {
+            paint_shadow_span(
+                row,
+                outer_x1,
+                inner_x1.clamp(outer_x1, outer_x2),
+                excluded,
+                color,
+            );
+            paint_shadow_span(
+                row,
+                inner_x2.clamp(outer_x1, outer_x2),
+                outer_x2,
+                excluded,
+                color,
+            );
+        } else {
+            paint_shadow_span(row, outer_x1, outer_x2, excluded, color);
+        }
+    }
+}
+
+fn paint_shadow_span(row: &mut [u32], x1: f32, x2: f32, excluded: Option<(f32, f32)>, color: u32) {
+    if x2 <= x1 {
+        return;
+    }
+    if let Some((excluded_x1, excluded_x2)) = excluded {
+        blend_span(row, x1, x2.min(excluded_x1), color);
+        blend_span(row, x1.max(excluded_x2), x2, color);
+    } else {
+        blend_span(row, x1, x2, color);
+    }
+}
+
+/// Normal CDF of the blurred mask at signed distance `distance`.
+fn gaussian_coverage(distance: f32, sigma: f32) -> f32 {
+    let z = -distance / sigma.max(f32::EPSILON);
+    let magnitude = z.abs();
+    let t = 1.0 / (1.0 + 0.231_641_9 * magnitude);
+    let polynomial = t
+        * (0.319_381_54
+            + t * (-0.356_563_78 + t * (1.781_477_9 + t * (-1.821_256 + t * 1.330_274_5))));
+    let tail = 0.398_942_3 * (-0.5 * magnitude * magnitude).exp() * polynomial;
+    if z >= 0.0 { 1.0 - tail } else { tail }
 }
 
 /// Inset shadows shade the padding box from its edges inward: the offset
@@ -137,6 +402,7 @@ fn paint_outer_shadow<R: Raster>(
 fn paint_inner_shadow<R: Raster>(
     pixels: &mut R,
     bounds: PhysicalRect,
+    clip: Option<PhysicalRect>,
     radii: &[usize; 4],
     shadow: &Shadow,
 ) {
@@ -159,6 +425,7 @@ fn paint_inner_shadow<R: Raster>(
         pixels,
         bounds,
         hole(spread),
+        clip,
         *radii,
         radii.map(|radius| radius.saturating_sub(spread as usize)),
         shadow.color,
@@ -174,6 +441,7 @@ fn paint_inner_shadow<R: Raster>(
             pixels,
             hole(spread + (shell - 1) as f32),
             hole(spread + shell as f32),
+            clip,
             radii.map(|radius| radius.saturating_sub(spread as usize + shell - 1)),
             radii.map(|radius| radius.saturating_sub(spread as usize + shell)),
             scale_pm(shadow.color, factor),
@@ -232,8 +500,8 @@ mod tests {
     fn shadowed(style: &str, bounds: PhysicalRect, target: &mut TestTarget) {
         let mut computed = Computed::default();
         computed.set("box-shadow", style);
-        super::paint_shadow(target, bounds, &computed);
-        super::paint_inset_shadow(target, bounds, &computed);
+        super::paint_shadow(target, bounds, None, &computed);
+        super::paint_inset_shadow(target, bounds, None, &computed);
     }
 
     #[test]
@@ -282,8 +550,9 @@ mod tests {
         assert_eq!(target.at(10, 6), 0xff00_0000);
         assert_eq!(target.at(6, 10), 0xff00_0000);
         assert_eq!(target.at(19, 23), 0xff00_0000);
-        // blur=0 still emits one quadratic shell at 25% alpha over white.
-        assert_eq!(target.at(10, 5), 0xffbf_bfbf);
+        // A zero blur has a hard standard edge; it must not invent a fallback
+        // shell outside the spread shape.
+        assert_eq!(target.at(10, 5), 0xffff_ffff);
         assert_eq!(target.at(10, 4), 0xffff_ffff);
         // The spread-grown corner radius cuts the corner pixels out.
         assert_eq!(target.at(5, 5), 0xffff_ffff);
@@ -345,5 +614,56 @@ mod tests {
         // Sampled at an edge midpoint: corner pixels sit inside the
         // spread-grown radius arc.
         assert_eq!(target.at(10, 6), 0xff00_0000);
+    }
+
+    #[test]
+    fn outer_blur_has_no_solid_offset_slab_and_excludes_the_source_box() {
+        let mut target = TestTarget::white(120, 120);
+        let bounds = PhysicalRect {
+            x1: 40,
+            y1: 20,
+            x2: 80,
+            y2: 60,
+        };
+        shadowed("0 10px 20px #000000", bounds, &mut target);
+
+        assert_eq!(
+            target.at(60, 59),
+            0xffff_ffff,
+            "outer shadow is clipped out of the original border box"
+        );
+        let below = [60, 70, 80, 90].map(|y| target.at(60, y) & 0xff);
+        assert!(
+            below.windows(2).all(|pair| pair[0] < pair[1]),
+            "blur must continuously fade below the box, got {below:?}"
+        );
+    }
+
+    #[test]
+    fn shifted_rounded_shadow_fades_symmetrically_around_bottom_corners() {
+        let mut target = TestTarget::white(140, 120);
+        let bounds = PhysicalRect {
+            x1: 40,
+            y1: 20,
+            x2: 100,
+            y2: 60,
+        };
+        let mut computed = Computed::default();
+        computed.set("border-radius", "10px");
+        computed.set("box-shadow", "0 10px 20px #000000");
+        super::paint_shadow(&mut target, bounds, None, &computed);
+
+        for distance in [1, 5, 10, 15] {
+            assert_eq!(
+                target.at(40usize.saturating_sub(distance), 60),
+                target.at(99 + distance, 60),
+                "left and right bottom-corner falloff must be symmetric"
+            );
+        }
+        let left = [25, 30, 35, 39].map(|x| target.at(x, 60) & 0xff);
+        assert!(
+            left.windows(2).all(|pair| pair[0] > pair[1]),
+            "corner shadow must fade gradually toward the window, got {left:?}"
+        );
     }
 }

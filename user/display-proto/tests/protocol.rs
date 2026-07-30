@@ -2,11 +2,12 @@ use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
     AcceleratorChord, AcceleratorSet, Accepted, AppOpened, BufferAlloc, BufferRetired,
-    CURSOR_DEFAULT, CURSOR_NONE, CURSOR_RESIZE_NWSE, ClipboardData, ClipboardRead, ClipboardWrite,
-    Discarded, HelloApp, InputKey, InputPointer, InputScroll, MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT,
-    MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete, OutputConfigure, PROTOCOL_VERSION,
-    PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
-    SetCursorShape, Size, SurfaceCommit, parse_frame, recv_frame_blocking,
+    ClipMask, ClipMasks, ClipboardData, ClipboardRead, ClipboardWrite, CornerRadius, CURSOR_DEFAULT,
+    CURSOR_NONE, CURSOR_RESIZE_NWSE, Discarded, HelloApp, InputKey, InputPointer, InputScroll,
+    MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete,
+    OutputConfigure, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit,
+    SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, parse_frame,
+    recv_frame_blocking,
 };
 
 #[test]
@@ -411,14 +412,18 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
         width: 300,
         height: 200,
     }];
+    let clip_masks = [ClipMask {
+        rect: damage[0],
+        radii: [CornerRadius { x: 18, y: 14 }; 4],
+    }];
     let nodes = [SceneNode {
         kind: SceneNodeKind::Pixels,
         window_group: 8,
         source_id: 14,
-        corner_radius: 0,
         configure_serial: 0,
         bounds: damage[0],
         clip: damage[0],
+        clip_masks: ClipMasks::from_slice(&clip_masks),
         opaque: None,
         input: Rectangles::from_slice(&input),
         damage: Rectangles::from_slice(&damage),
@@ -431,6 +436,7 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
     assert_eq!(scene.output_serial, 3);
     let parsed = scene.nodes().next().expect("one node must remain");
     assert_eq!(parsed.kind, SceneNodeKind::Pixels);
+    assert_eq!(parsed.clip_masks.iter().collect::<Vec<_>>(), clip_masks);
     assert_eq!(parsed.input.iter().collect::<Vec<_>>(), input);
     assert_eq!(parsed.damage.iter().collect::<Vec<_>>(), damage);
 }

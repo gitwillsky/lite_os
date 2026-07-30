@@ -29,7 +29,10 @@ pub use input::{
 pub use lifecycle::{
     AppClosed, AppOpened, CloseRequest, MoveBegin, MoveComplete, SurfaceActivated,
 };
-pub use scene::{Rectangles, SceneCommit, SceneNode, SceneNodeKind, SceneNodes};
+pub use scene::{
+    ClipMask, ClipMasks, CornerRadius, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
+    SceneNodes,
+};
 pub use surface::{
     Accepted, Configure, ConfigureReady, DamageRectangles, Discarded, OutputConfigure, Presented,
     SurfaceCommit,
@@ -37,7 +40,7 @@ pub use surface::{
 pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
 
 /// The only supported protocol version; no negotiation or compat decoder.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";
@@ -59,6 +62,9 @@ pub const MAX_INPUT_RECTS: usize = 256;
 
 /// 单个 scene node 的 input rectangle 上限。
 pub const MAX_NODE_INPUT_RECTS: usize = 64;
+
+/// 单个 scene node 的 CSS rounded clip mask 上限。
+pub const MAX_NODE_CLIP_MASKS: usize = 16;
 
 /// 单次像素提交允许的 damage rectangle 上限。
 pub const MAX_DAMAGE_RECTS: usize = 64;

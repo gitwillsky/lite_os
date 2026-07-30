@@ -6,8 +6,9 @@ use taffy::TaffyTree;
 
 use super::stacking_level;
 use crate::renderer::{
-    LogicalRect, PaintWalk, PhysicalRect, Raster, RenderNode, RenderOutput, Renderer, SCALE,
-    layout::TextMeasure, opacity::opacity, overflow_modes, taffy_error, transform_translation,
+    ClipRaster, LogicalRect, PaintWalk, PhysicalRect, Raster, RenderNode, RenderOutput, Renderer,
+    SCALE, layout::TextMeasure, opacity::opacity, overflow_modes, overflow_raster_clip,
+    taffy_error, transform_translation,
 };
 
 impl Renderer {
@@ -18,7 +19,7 @@ impl Renderer {
         tree: &TaffyTree<TextMeasure>,
         node: &RenderNode,
         parent: (f32, f32),
-        pixels: &mut R,
+        pixels: &mut ClipRaster<R>,
         output: &mut RenderOutput,
         walk: PaintWalk,
     ) -> io::Result<()> {
@@ -85,6 +86,27 @@ impl Renderer {
         } else {
             walk.clip
         };
+        if overflow_x.clips() || overflow_y.clips() {
+            pixels.push_clip(overflow_raster_clip(
+                PhysicalRect::new(
+                    scroll_port.x,
+                    scroll_port.y,
+                    scroll_port.width,
+                    scroll_port.height,
+                    pixels.width(),
+                    pixels.height(),
+                ),
+                &node.computed,
+                [
+                    layout.border.top,
+                    layout.border.right,
+                    layout.border.bottom,
+                    layout.border.left,
+                ],
+                overflow_x.clips(),
+                overflow_y.clips(),
+            ));
+        }
         let scroll_offset = self
             .scroll_offsets
             .get(&node.source.id)
@@ -93,37 +115,43 @@ impl Renderer {
         let parent_is_flex = node.computed.get("display") == Some("flex");
         let mut children = node.children.iter().collect::<Vec<_>>();
         children.sort_by_key(|child| stacking_level(&child.computed, parent_is_flex));
-        for child in children {
-            let child_walk = PaintWalk {
-                parent_node_id: Some(node.source.id),
-                window_frame: child_frame,
-                window_group: walk.window_group,
-                clip: child_clip,
-                fixed_context: false,
-                ..walk
-            };
-            let opacity = opacity(&child.computed);
-            if opacity < 1.0 {
-                self.paint_opacity_group(
-                    tree,
-                    child,
-                    (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
-                    pixels,
-                    output,
-                    child_walk,
-                    opacity,
-                )?;
-            } else {
-                self.paint(
-                    tree,
-                    child,
-                    (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
-                    pixels,
-                    output,
-                    child_walk,
-                )?;
+        let children_result: io::Result<()> = (|| {
+            for child in children {
+                let child_walk = PaintWalk {
+                    parent_node_id: Some(node.source.id),
+                    window_frame: child_frame,
+                    window_group: walk.window_group,
+                    clip: child_clip,
+                    fixed_context: false,
+                    ..walk
+                };
+                let opacity = opacity(&child.computed);
+                if opacity < 1.0 {
+                    self.paint_opacity_group(
+                        tree,
+                        child,
+                        (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
+                        pixels,
+                        output,
+                        child_walk,
+                        opacity,
+                    )?;
+                } else {
+                    self.paint(
+                        tree,
+                        child,
+                        (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
+                        pixels,
+                        output,
+                        child_walk,
+                    )?;
+                }
             }
+            Ok(())
+        })();
+        if overflow_x.clips() || overflow_y.clips() {
+            pixels.pop_clip();
         }
-        Ok(())
+        children_result
     }
 }

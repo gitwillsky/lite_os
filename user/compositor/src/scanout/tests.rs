@@ -11,9 +11,9 @@ fn node(kind: SceneNodeKind, window_group: u32, buffer_id: u32) -> Node {
         buffer_id,
         bounds: Rect::default(),
         clip: Rect::default(),
+        clip_masks: Vec::new(),
         opaque: None,
         damage: Vec::new(),
-        corner_radius: 0,
     }
 }
 

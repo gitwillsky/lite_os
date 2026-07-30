@@ -36,9 +36,7 @@ pub struct Frame<'a> {
     pub pixels: &'a mut SharedDumbBuffer,
 }
 
-/// One compositor-ready foreign surface emitted by desktop layout. The window
-/// frame clip and corner radius live on [`WindowFrame`] (emitted per window),
-/// so this carries only the client-area surface geometry.
+/// One compositor-ready foreign surface emitted by desktop layout.
 #[derive(Clone, Debug)]
 pub struct ForeignLayer {
     /// App surface identity.
@@ -47,6 +45,10 @@ pub struct ForeignLayer {
     pub configure_serial: u64,
     /// Physical client-area bounds.
     pub bounds: Rect,
+    /// Rectangular intersection of every active CSS overflow clip.
+    pub clip: Rect,
+    /// Exact rounded CSS overflow clip chain inherited by the replaced surface.
+    pub clip_masks: Vec<display_proto::ClipMask>,
     /// Desktop-owned interactive boxes painted after this embedded surface.
     ///
     /// Scene input is independent from pixels: these rectangles restore DOM
@@ -69,8 +71,8 @@ pub struct WindowFrame {
     pub surface_id: u32,
     /// Physical outer window rectangle used as the group node's clip.
     pub frame: Rect,
-    /// Rounded top-corner radius in physical pixels for the frame clip.
-    pub corner_radius: u32,
+    /// Exact rounded outer-frame clip.
+    pub clip_mask: display_proto::ClipMask,
 }
 
 /// One desktop-local global-chrome clip re-painted above every foreign surface
@@ -79,10 +81,8 @@ pub struct WindowFrame {
 pub struct Overlay {
     /// Physical clip rectangle re-copied from the desktop buffer.
     pub rect: Rect,
-    /// Rounded top-corner radius in physical pixels; the compositor skips the
-    /// corner cutout so lower window content shows through instead of a square
-    /// wallpaper corner.
-    pub corner_radius: u32,
+    /// Exact rounded overlay clip.
+    pub clip_mask: display_proto::ClipMask,
     /// CSS `z-index` of the fixed element; overlays are stable-sorted ascending
     /// so higher-`z-index` chrome re-blits last (on top).
     pub z_index: i32,

@@ -1,7 +1,7 @@
 //! Pure scene-composition geometry: node clipping, damage unions and the
 //! premultiplied OVER operator shared by scanout composition and the cursor.
 
-use display_proto::{Rect, SceneNodeKind};
+use display_proto::{ClipMask, CornerRadius, Rect, SceneNodeKind};
 use linux_uapi::drm::{Clip, DumbBuffer};
 
 pub(super) fn composite_node(
@@ -28,47 +28,39 @@ pub(super) fn composite_node(
     if x2 <= x1 || y2 <= y1 {
         return;
     }
-    // Rounded corners: rows within `corner_radius` of the clip top inset
-    // horizontally so the frame clip skips the top corner cutout, letting
-    // lower content show through instead of being covered by stale chrome
-    // pixels. Chrome and windows are both `8px 8px 0 0` (top-only), so only
-    // the top edge rounds; the bottom stays square. The inset math mirrors the
-    // renderer's `corner_inset` so the clip edge aligns with the painted arc.
-    let r = node.corner_radius as f32;
-    let r_sq = r * r;
     for y in y1..y2 {
         let source_y = (y - bounds.y) as usize;
         let source_row = source.row(source_y);
         let target_row = target.row_mut(y as usize);
         let (mut px1, mut px2) = (x1, x2);
-        if node.corner_radius > 0 {
-            // Distance in rows from the top clip edge; only rows inside the top
-            // corner region get inset.
-            let edge_dist = y - clip.y;
-            if edge_dist >= 0 && (edge_dist as f32) < r {
-                let mid = edge_dist as f32 + 0.5;
-                let dist = r - mid;
-                let inset = r - (r_sq - dist * dist).max(0.0).sqrt();
-                let left_px = (clip.x as f32 + inset).ceil() as i32;
-                if px1 < left_px {
-                    px1 = left_px;
-                }
-                let right_px = (clip.x as f32 + clip.width as f32 - inset).floor() as i32;
-                if px2 > right_px {
-                    px2 = right_px;
-                }
-            }
+        let mut rounded = (clip.x as f32, (clip.x + clip.width as i32) as f32);
+        for mask in &node.clip_masks {
+            let mask = ClipMask {
+                rect: translated(mask.rect, offset),
+                ..*mask
+            };
+            let Some(span) = rounded_span(mask, y) else {
+                px2 = px1;
+                break;
+            };
+            rounded.0 = rounded.0.max(span.0);
+            rounded.1 = rounded.1.min(span.1);
         }
+        px1 = px1.max(rounded.0.floor() as i32);
+        px2 = px2.min(rounded.1.ceil() as i32);
         if px2 <= px1 {
             continue;
         }
         let opaque = node.opaque.map(|rectangle| translated(rectangle, offset));
-        if opaque.is_some_and(|opaque| {
-            y >= opaque.y
-                && y < opaque.y.saturating_add_unsigned(opaque.height)
-                && px1 >= opaque.x
-                && px2 <= opaque.x.saturating_add_unsigned(opaque.width)
-        }) {
+        let fully_covered = rounded.0.fract() == 0.0 && rounded.1.fract() == 0.0;
+        if fully_covered
+            && opaque.is_some_and(|opaque| {
+                y >= opaque.y
+                    && y < opaque.y.saturating_add_unsigned(opaque.height)
+                    && px1 >= opaque.x
+                    && px2 <= opaque.x.saturating_add_unsigned(opaque.width)
+            })
+        {
             let source_start = (px1 - bounds.x) as usize;
             let source_end = (px2 - bounds.x) as usize;
             target_row[px1 as usize..px2 as usize]
@@ -76,10 +68,59 @@ pub(super) fn composite_node(
             continue;
         }
         for x in px1..px2 {
-            let source_pixel = source_row[(x - bounds.x) as usize];
+            let coverage =
+                (rounded.1.min(x as f32 + 1.0) - rounded.0.max(x as f32)).clamp(0.0, 1.0);
+            let source_pixel = scale_pm(source_row[(x - bounds.x) as usize], coverage);
             target_row[x as usize] = over(source_pixel, target_row[x as usize]);
         }
     }
+}
+
+fn rounded_span(mask: ClipMask, y: i32) -> Option<(f32, f32)> {
+    let row = y - mask.rect.y;
+    let height = mask.rect.height as i32;
+    if row < 0 || row >= height {
+        return None;
+    }
+    let width = mask.rect.width;
+    let inset = |top: CornerRadius, bottom: CornerRadius| {
+        let normalize = |radius: CornerRadius| CornerRadius {
+            x: radius.x.min(width / 2),
+            y: radius.y.min(mask.rect.height / 2),
+        };
+        let top = normalize(top);
+        let bottom = normalize(bottom);
+        let mid = row as f32 + 0.5;
+        let ellipse = |radius: CornerRadius, distance: f32| {
+            if radius.x == 0 || radius.y == 0 {
+                return 0.0;
+            }
+            let normalized = distance / radius.y as f32;
+            radius.x as f32
+                * (1.0 - (1.0 - normalized * normalized).max(0.0).sqrt())
+        };
+        if row < top.y as i32 {
+            ellipse(top, top.y as f32 - mid)
+        } else if row >= height - bottom.y as i32 {
+            ellipse(bottom, mid - (height as f32 - bottom.y as f32))
+        } else {
+            0.0
+        }
+    };
+    let left = inset(mask.radii[0], mask.radii[3]);
+    let right = inset(mask.radii[1], mask.radii[2]);
+    let x1 = mask.rect.x as f32 + left;
+    let x2 = mask.rect.x as f32 + mask.rect.width as f32 - right;
+    if x2 > x1 {
+        Some((x1, x2))
+    } else {
+        None
+    }
+}
+
+fn scale_pm(color: u32, coverage: f32) -> u32 {
+    let channel = |shift: u32| (((color >> shift) & 0xff) as f32 * coverage).round() as u32;
+    channel(24) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0)
 }
 
 pub(super) fn clear(target: &mut DumbBuffer, rectangle: Rect) {
@@ -226,4 +267,68 @@ pub(crate) fn over(source: u32, destination: u32) -> u32 {
     let green = ((source >> 8) & 0xff) + (((destination >> 8) & 0xff) * inverse + 127) / 255;
     let blue = (source & 0xff) + ((destination & 0xff) * inverse + 127) / 255;
     (red.min(255) << 16) | (green.min(255) << 8) | blue.min(255)
+}
+
+#[cfg(test)]
+mod tests {
+    use display_proto::{ClipMask, CornerRadius, Rect};
+
+    #[test]
+    fn rounded_scene_clip_is_symmetric_across_all_four_corners() {
+        let mask = ClipMask {
+            rect: Rect {
+                x: 10,
+                y: 20,
+                width: 20,
+                height: 12,
+            },
+            radii: [CornerRadius { x: 4, y: 4 }; 4],
+        };
+        let top = super::rounded_span(mask, 20).expect("top row");
+        let bottom = super::rounded_span(mask, 31).expect("bottom row");
+        let upper_inner = super::rounded_span(mask, 21).expect("upper row");
+        let lower_inner = super::rounded_span(mask, 30).expect("lower row");
+
+        assert_eq!(top, bottom, "top and bottom outer arcs must match");
+        assert_eq!(
+            upper_inner, lower_inner,
+            "top and bottom inner arcs must match"
+        );
+        assert!(
+            top.0 > mask.rect.x as f32
+                && top.1 < (mask.rect.x + mask.rect.width as i32) as f32
+        );
+        assert_eq!(
+            super::rounded_span(mask, 26),
+            Some((
+                mask.rect.x as f32,
+                (mask.rect.x + mask.rect.width as i32) as f32
+            )),
+            "straight rows retain the complete clip width"
+        );
+    }
+
+    #[test]
+    fn rounded_scene_clip_preserves_elliptical_per_corner_geometry() {
+        let mask = ClipMask {
+            rect: Rect {
+                x: 10,
+                y: 20,
+                width: 40,
+                height: 30,
+            },
+            radii: [
+                CornerRadius { x: 12, y: 6 },
+                CornerRadius { x: 4, y: 10 },
+                CornerRadius { x: 8, y: 4 },
+                CornerRadius { x: 2, y: 2 },
+            ],
+        };
+        let top = super::rounded_span(mask, 20).expect("top row");
+        let bottom = super::rounded_span(mask, 49).expect("bottom row");
+        assert!(top.0 - mask.rect.x as f32 > 6.0);
+        assert!((mask.rect.x + mask.rect.width as i32) as f32 - top.1 < 4.0);
+        assert!(bottom.0 - (mask.rect.x as f32) < 2.0);
+        assert!((mask.rect.x + mask.rect.width as i32) as f32 - bottom.1 > 4.0);
+    }
 }

@@ -11,7 +11,9 @@ use std::{
     os::unix::net::UnixStream,
 };
 
-use display_proto::{BufferRelease, BufferRetired, Rect, SceneCommit, SceneNodeKind, send_message};
+use display_proto::{
+    BufferRelease, BufferRetired, ClipMask, Rect, SceneCommit, SceneNodeKind, send_message,
+};
 use linux_uapi::drm::FlipEvent;
 
 use super::buffers::{Buffers, Owner};
@@ -30,11 +32,10 @@ pub struct Node {
     pub buffer_id: u32,
     pub bounds: Rect,
     pub clip: Rect,
+    /// Rounded CSS masks applied inside the coarse rectangular clip.
+    pub clip_masks: Vec<ClipMask>,
     pub opaque: Option<Rect>,
     pub damage: Vec<Rect>,
-    /// Rounded-corner radius in physical pixels; the compositor skips corner
-    /// pixels outside the arc so lower content shows through the frame clip.
-    pub corner_radius: u32,
 }
 
 #[derive(Clone)]
@@ -236,9 +237,9 @@ impl Session {
                 buffer_id,
                 bounds: node_bounds,
                 clip: node.clip,
+                clip_masks: node.clip_masks.iter().collect(),
                 opaque: node.opaque,
                 damage,
-                corner_radius: node.corner_radius,
             });
         }
         if nodes.is_empty() {
@@ -506,7 +507,8 @@ fn geometry_damage(previous: &[Node], current: &[Node]) -> impl Iterator<Item = 
                 if old.kind == new.kind
                     && old.window_group == new.window_group
                     && old.bounds == new.bounds
-                    && old.clip == new.clip => {}
+                    && old.clip == new.clip
+                    && old.clip_masks == new.clip_masks => {}
             (Some(old), Some(new)) => {
                 damage[0] = intersect(old.bounds, old.clip);
                 damage[1] = intersect(new.bounds, new.clip);

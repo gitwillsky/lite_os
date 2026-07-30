@@ -1,7 +1,8 @@
 //! Atomic desktop flat-scene snapshot.
 
 use crate::{
-    MAX_DAMAGE_RECTS, MAX_INPUT_RECTS, MAX_NODE_INPUT_RECTS, MAX_SCENE_NODES, Rect,
+    MAX_DAMAGE_RECTS, MAX_INPUT_RECTS, MAX_NODE_CLIP_MASKS, MAX_NODE_INPUT_RECTS, MAX_SCENE_NODES,
+    Rect,
     codec::{FrameWriter, MessageKind, PayloadReader},
 };
 
@@ -25,6 +26,47 @@ impl SceneNodeKind {
     }
 }
 
+/// One elliptical CSS corner radius in physical pixels.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CornerRadius {
+    /// Horizontal radius.
+    pub x: u32,
+    /// Vertical radius.
+    pub y: u32,
+}
+
+/// One rounded ancestor clip mask applied to a scene node.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClipMask {
+    /// Padding-edge rectangle in physical screen pixels.
+    pub rect: Rect,
+    /// Per-corner radii ordered top-left, top-right, bottom-right, bottom-left.
+    pub radii: [CornerRadius; 4],
+}
+
+impl ClipMask {
+    const WIRE_SIZE: usize = 48;
+
+    fn encode(self, writer: &mut FrameWriter<'_>) -> Option<()> {
+        self.rect.encode(writer)?;
+        for radius in self.radii {
+            writer.u32(radius.x)?;
+            writer.u32(radius.y)?;
+        }
+        Some(())
+    }
+
+    fn parse(reader: &mut PayloadReader<'_>) -> Option<Self> {
+        let rect = Rect::parse(reader)?;
+        let mut radii = [CornerRadius::default(); 4];
+        for radius in &mut radii {
+            radius.x = reader.u32()?;
+            radius.y = reader.u32()?;
+        }
+        Some(Self { rect, radii })
+    }
+}
+
 /// One borrowed node in back-to-front paint order.
 #[derive(Clone, Copy, Debug)]
 pub struct SceneNode<'a> {
@@ -34,15 +76,14 @@ pub struct SceneNode<'a> {
     pub window_group: u32,
     /// Buffer id for pixels or app surface id for a foreign surface.
     pub source_id: u32,
-    /// Rounded-corner radius in physical pixels for the frame clip; zero means
-    /// the full clip rect is painted. Only the system-owned top corners are cut.
-    pub corner_radius: u32,
     /// Adopted configure serial for a foreign surface; zero for pixels.
     pub configure_serial: u64,
     /// Destination bounds in physical screen pixels.
     pub bounds: Rect,
     /// Physical screen clip.
     pub clip: Rect,
+    /// Rounded CSS ancestor masks applied in addition to the rectangular clip.
+    pub clip_masks: ClipMasks<'a>,
     /// Conservative physical opaque rectangle.
     pub opaque: Option<Rect>,
     /// Physical input rectangles; alpha never participates in hit testing.
@@ -53,7 +94,10 @@ pub struct SceneNode<'a> {
 
 impl<'a> SceneNode<'a> {
     fn encode(self, writer: &mut FrameWriter<'_>) -> Option<()> {
-        if self.input.len() > MAX_NODE_INPUT_RECTS || self.damage.len() > MAX_DAMAGE_RECTS {
+        if self.input.len() > MAX_NODE_INPUT_RECTS
+            || self.damage.len() > MAX_DAMAGE_RECTS
+            || self.clip_masks.len() > MAX_NODE_CLIP_MASKS
+        {
             return None;
         }
         match self.kind {
@@ -64,15 +108,17 @@ impl<'a> SceneNode<'a> {
         writer.u32(self.kind as u32)?;
         writer.u32(self.window_group)?;
         writer.u32(self.source_id)?;
-        writer.u32(self.corner_radius)?;
         writer.u64(self.configure_serial)?;
         self.bounds.encode(writer)?;
         self.clip.encode(writer)?;
         writer.u32(u32::from(self.opaque.is_some()))?;
         writer.u32(u32::try_from(self.input.len()).ok()?)?;
         writer.u32(u32::try_from(self.damage.len()).ok()?)?;
-        writer.u32(0)?;
+        writer.u32(u32::try_from(self.clip_masks.len()).ok()?)?;
         self.opaque.unwrap_or_default().encode(writer)?;
+        for mask in self.clip_masks.iter() {
+            mask.encode(writer)?;
+        }
         for rectangle in self.input.iter() {
             rectangle.encode(writer)?;
         }
@@ -86,7 +132,6 @@ impl<'a> SceneNode<'a> {
         let kind = SceneNodeKind::parse(reader.u32()?)?;
         let window_group = reader.u32()?;
         let source_id = reader.u32()?;
-        let corner_radius = reader.u32()?;
         let configure_serial = reader.u64()?;
         match kind {
             SceneNodeKind::Pixels if configure_serial != 0 => return None,
@@ -101,21 +146,26 @@ impl<'a> SceneNode<'a> {
         }
         let input_count = reader.u32()? as usize;
         let damage_count = reader.u32()? as usize;
-        if input_count > MAX_NODE_INPUT_RECTS || damage_count > MAX_DAMAGE_RECTS {
+        let clip_mask_count = reader.u32()? as usize;
+        if input_count > MAX_NODE_INPUT_RECTS
+            || damage_count > MAX_DAMAGE_RECTS
+            || clip_mask_count > MAX_NODE_CLIP_MASKS
+        {
             return None;
         }
-        (reader.u32()? == 0).then_some(())?;
         let opaque_rectangle = Rect::parse(reader)?;
+        let clip_mask_bytes =
+            reader.bytes(clip_mask_count.checked_mul(ClipMask::WIRE_SIZE)?)?;
         let input_bytes = reader.bytes(input_count.checked_mul(16)?)?;
         let damage_bytes = reader.bytes(damage_count.checked_mul(16)?)?;
         Some(SceneNode {
             kind,
             window_group,
             source_id,
-            corner_radius,
             configure_serial,
             bounds,
             clip,
+            clip_masks: ClipMasks::from_wire(clip_mask_bytes, clip_mask_count)?,
             opaque: (has_opaque == 1).then_some(opaque_rectangle),
             input: Rectangles::from_wire(input_bytes, input_count)?,
             damage: Rectangles::from_wire(damage_bytes, damage_count)?,
@@ -230,6 +280,95 @@ impl<'a> Iterator for SceneNodes<'a> {
 }
 
 impl ExactSizeIterator for SceneNodes<'_> {}
+
+/// Zero-allocation rounded-clip view used by native encoders and wire decoders.
+#[derive(Clone, Copy, Debug)]
+pub enum ClipMasks<'a> {
+    /// Caller-owned native masks used while encoding.
+    Native(&'a [ClipMask]),
+    /// Strictly validated little-endian wire bytes used while decoding.
+    Wire { bytes: &'a [u8], count: usize },
+}
+
+impl<'a> ClipMasks<'a> {
+    /// Creates an encoding view over native clip masks.
+    pub fn from_slice(masks: &'a [ClipMask]) -> Self {
+        Self::Native(masks)
+    }
+
+    fn from_wire(bytes: &'a [u8], count: usize) -> Option<Self> {
+        (bytes.len() == count.checked_mul(ClipMask::WIRE_SIZE)?)
+            .then_some(Self::Wire { bytes, count })
+    }
+
+    /// Returns the mask count.
+    pub fn len(self) -> usize {
+        match self {
+            Self::Native(masks) => masks.len(),
+            Self::Wire { count, .. } => count,
+        }
+    }
+
+    /// Returns whether this view has no masks.
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    /// Iterates decoded mask values.
+    pub fn iter(self) -> ClipMaskIterator<'a> {
+        match self {
+            Self::Native(masks) => ClipMaskIterator {
+                inner: ClipMaskIteratorInner::Native(masks.iter()),
+            },
+            Self::Wire { bytes, count } => ClipMaskIterator {
+                inner: ClipMaskIteratorInner::Wire {
+                    reader: PayloadReader::new(bytes),
+                    remaining: count,
+                },
+            },
+        }
+    }
+}
+
+/// Exact-size clip-mask iterator independent of native structure layout.
+pub struct ClipMaskIterator<'a> {
+    inner: ClipMaskIteratorInner<'a>,
+}
+
+enum ClipMaskIteratorInner<'a> {
+    Native(std::slice::Iter<'a, ClipMask>),
+    Wire {
+        reader: PayloadReader<'a>,
+        remaining: usize,
+    },
+}
+
+impl Iterator for ClipMaskIterator<'_> {
+    type Item = ClipMask;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            ClipMaskIteratorInner::Native(masks) => masks.next().copied(),
+            ClipMaskIteratorInner::Wire { reader, remaining } => {
+                if *remaining == 0 {
+                    return None;
+                }
+                *remaining -= 1;
+                ClipMask::parse(reader)
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = match &self.inner {
+            ClipMaskIteratorInner::Native(masks) => masks.len(),
+            ClipMaskIteratorInner::Wire { remaining, .. } => *remaining,
+        };
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for ClipMaskIterator<'_> {}
 
 /// Zero-allocation rectangle view used by both native encoders and wire decoders.
 #[derive(Clone, Copy, Debug)]

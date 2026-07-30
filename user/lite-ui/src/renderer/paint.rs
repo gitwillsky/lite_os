@@ -10,13 +10,13 @@ use taffy::TaffyTree;
 use super::layout::TextMeasure;
 use super::opacity::opacity;
 use super::{
-    Axis, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk, PhysicalRect,
-    Raster, RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion, WindowFrame,
-    background_url, corner_radii, cursor_shape, decode_png, excludes_window, is_surface, listener,
-    logical_from_physical, logical_intersection, overflow_modes, paint_background,
-    paint_background_image, paint_border, paint_image, paint_inset_shadow, paint_scrollbar,
-    paint_scrollbar_corner, paint_shadow, range::paint_range, scrollbar, taffy_error, text_content,
-    transform_translation,
+    Axis, ClipRaster, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk,
+    PhysicalRect, Raster, RenderNode, RenderOutput, Renderer, SCALE, ScrollOffset, ScrollRegion,
+    WindowFrame, background_url, corner_radii, cursor_shape, decode_png, excludes_window,
+    is_surface, listener, logical_from_physical, logical_intersection, overflow_modes,
+    overflow_raster_clip, paint_background, paint_background_image, paint_border, paint_image,
+    paint_inset_shadow, paint_scrollbar, paint_scrollbar_corner, paint_shadow, range::paint_range,
+    scrollbar, taffy_error, text_content, transform_translation,
 };
 fn takes_autofocus(props: &BTreeMap<String, Value>, focused: Option<u64>) -> bool {
     focused.is_none() && props.get("autoFocus").and_then(Value::as_bool) == Some(true)
@@ -24,6 +24,22 @@ fn takes_autofocus(props: &BTreeMap<String, Value>, focused: Option<u64>) -> boo
 
 fn hits_enabled(ancestor: bool, computed: &crate::style::Computed) -> bool {
     ancestor && computed.get("pointer-events") != Some("none")
+}
+
+fn circular_clip_mask(
+    rect: display_proto::Rect,
+    radii: [f32; 4],
+) -> display_proto::ClipMask {
+    display_proto::ClipMask {
+        rect,
+        radii: radii.map(|radius| {
+            let radius = (radius * SCALE).round().max(0.0) as u32;
+            display_proto::CornerRadius {
+                x: radius,
+                y: radius,
+            }
+        }),
+    }
 }
 
 fn stacking_level(computed: &crate::style::Computed, flex_item: bool) -> i32 {
@@ -46,10 +62,14 @@ impl Renderer {
         tree: &TaffyTree<TextMeasure>,
         node: &RenderNode,
         parent: (f32, f32),
-        pixels: &mut R,
+        pixels: &mut ClipRaster<R>,
         output: &mut RenderOutput,
         walk: PaintWalk,
     ) -> io::Result<()> {
+        // A backdrop read must observe every write from the preceding node.
+        // Rounded rows are deferred in ClipRaster until their scanline mask is
+        // known; synchronizing at the node boundary preserves paint order.
+        pixels.sync();
         if node.computed.get("display") == Some("none")
             || excludes_window(&node.source, walk.excluded_window_group)
         {
@@ -188,7 +208,7 @@ impl Renderer {
         if !paint_raster.is_empty() {
             self.backdrop_blur
                 .paint(pixels, node.source.id, bounds, paint_clip, &node.computed)?;
-            paint_shadow(pixels, bounds, &node.computed);
+            paint_shadow(pixels, bounds, paint_clip, &node.computed);
         }
         let radii = corner_radii(&node.computed);
         // Standard background order: the color layer paints first, then the
@@ -212,8 +232,8 @@ impl Renderer {
             }
         }
         if !paint_raster.is_empty() {
-            paint_inset_shadow(pixels, bounds, &node.computed);
-            paint_border(pixels, bounds, &node.computed);
+            paint_inset_shadow(pixels, bounds, paint_clip, &node.computed);
+            paint_border(pixels, bounds, paint_clip, &node.computed);
         }
         if !paint_raster.is_empty()
             && node.source.kind == "img"
@@ -330,27 +350,33 @@ impl Renderer {
                     surface_id,
                     configure_serial,
                     bounds: surface_bounds,
+                    clip: walk.clip.map_or(surface_bounds, |clip| display_proto::Rect {
+                        x: clip.x1 as i32,
+                        y: clip.y1 as i32,
+                        width: clip.x2.saturating_sub(clip.x1) as u32,
+                        height: clip.y2.saturating_sub(clip.y1) as u32,
+                    }),
+                    clip_masks: pixels.scene_clip_masks().collect(),
                     desktop_input: Vec::new(),
                     desktop_hit_start: output.hits.len(),
                 });
             }
         }
         if node.computed.get("position") == Some("fixed") {
-            let corner_radius =
-                (f64::from(radii[0].max(radii[1])) * f64::from(SCALE)).round() as u32;
             let z_index = node
                 .computed
                 .get("z-index")
                 .and_then(|value| value.trim().parse::<i32>().ok())
                 .unwrap_or(0);
+            let rect = display_proto::Rect {
+                x: bounds.x1 as i32,
+                y: bounds.y1 as i32,
+                width: (bounds.x2 - bounds.x1) as u32,
+                height: (bounds.y2 - bounds.y1) as u32,
+            };
             output.overlays.push(Overlay {
-                rect: display_proto::Rect {
-                    x: bounds.x1 as i32,
-                    y: bounds.y1 as i32,
-                    width: (bounds.x2 - bounds.x1) as u32,
-                    height: (bounds.y2 - bounds.y1) as u32,
-                },
-                corner_radius,
+                rect,
+                clip_mask: circular_clip_mask(rect, radii),
                 z_index,
             });
         }
@@ -387,13 +413,10 @@ impl Renderer {
                 .and_then(Value::as_u64)
                 .and_then(|value| u32::try_from(value).ok())
         {
-            let corner_radius = (f64::from(radii[0].max(radii[1]).max(radii[2]).max(radii[3]))
-                * f64::from(SCALE))
-            .round() as u32;
             output.windows.push(WindowFrame {
                 surface_id,
                 frame,
-                corner_radius,
+                clip_mask: circular_clip_mask(frame, radii),
             });
         }
         let (overflow_x, overflow_y) = overflow_modes(&node.computed);
@@ -462,47 +485,75 @@ impl Renderer {
         } else {
             walk.clip
         };
+        if clips_children {
+            pixels.push_clip(overflow_raster_clip(
+                PhysicalRect::new(
+                    scroll_port.x,
+                    scroll_port.y,
+                    scroll_port.width,
+                    scroll_port.height,
+                    pixels.width(),
+                    pixels.height(),
+                ),
+                &node.computed,
+                [
+                    layout.border.top,
+                    layout.border.right,
+                    layout.border.bottom,
+                    layout.border.left,
+                ],
+                overflow_x.clips(),
+                overflow_y.clips(),
+            ));
+        }
         let parent_is_flex = node.computed.get("display") == Some("flex");
         let mut children = node.children.iter().collect::<Vec<_>>();
         // Numeric z-index changes sibling paint and hit-test order for positioned
         // boxes and flex items. Without this stable sort, a later in-flow sibling
         // paints over an earlier popup even when the popup owns a higher z-index.
         children.sort_by_key(|child| stacking_level(&child.computed, parent_is_flex));
-        for child in children {
-            let child_walk = PaintWalk {
-                parent_node_id: Some(node.source.id),
-                window_frame: child_frame,
-                window_group: child_window_group,
-                clip: child_clip,
-                hits_enabled,
-                fixed_context,
-                ..walk
-            };
-            // CSS group opacity: an `opacity < 1` subtree rasterizes whole into
-            // an offscreen layer and composites once, so overlapping descendants
-            // blend against each other before the backdrop — not against it.
-            let opacity = opacity(&child.computed);
-            if opacity < 1.0 {
-                self.paint_opacity_group(
+        let children_result: io::Result<()> = (|| {
+            for child in children {
+                let child_walk = PaintWalk {
+                    parent_node_id: Some(node.source.id),
+                    window_frame: child_frame,
+                    window_group: child_window_group,
+                    clip: child_clip,
+                    hits_enabled,
+                    fixed_context,
+                    ..walk
+                };
+                // CSS group opacity: an `opacity < 1` subtree rasterizes whole into
+                // an offscreen layer and composites once, so overlapping descendants
+                // blend against each other before the backdrop — not against it.
+                let opacity = opacity(&child.computed);
+                if opacity < 1.0 {
+                    self.paint_opacity_group(
+                        tree,
+                        child,
+                        (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
+                        pixels,
+                        output,
+                        child_walk,
+                        opacity,
+                    )?;
+                    continue;
+                }
+                self.paint(
                     tree,
                     child,
                     (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
                     pixels,
                     output,
                     child_walk,
-                    opacity,
                 )?;
-                continue;
             }
-            self.paint(
-                tree,
-                child,
-                (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
-                pixels,
-                output,
-                child_walk,
-            )?;
+            Ok(())
+        })();
+        if clips_children {
+            pixels.pop_clip();
         }
+        children_result?;
         let show_x = overflow_x == OverflowMode::Scroll
             || (overflow_x == OverflowMode::Auto && maximum.x > 0.0);
         let show_y = overflow_y == OverflowMode::Scroll

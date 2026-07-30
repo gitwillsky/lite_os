@@ -89,12 +89,11 @@ impl TerminalFont {
         &self,
         target: &mut R,
         bounds: PhysicalRect,
-        // Terminal content is the app root, never nested in an overflow
-        // container; the clip is accepted for call-site symmetry with `Font`.
-        _overflow_clip: Option<PhysicalRect>,
+        overflow_clip: Option<PhysicalRect>,
         style: &Computed,
         text: &str,
     ) {
+        let bounds = overflow_clip.map_or(bounds, |clip| bounds.intersect(clip));
         let color = style.get("color").and_then(color).unwrap_or(0xff00_0000);
         let bold = style.get("font-weight") == Some("bold")
             || style

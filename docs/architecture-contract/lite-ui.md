@@ -58,14 +58,24 @@
 - desktop scene 的 node 顺序即 z 栈：全屏 Pixels 底图先行，随后每个窗口先按其 frame clip 重绘桌面像素、
   再叠加其 foreign surface，并在其后放置该窗口后绘制 React chrome 的 empty-clip input-only Pixels node；
   overlay clip（Top Bar/Dock/系统面板）居末。同一桌面 buffer 可在多个 Pixels node 按 clip 复用；input-only
-  node 不得写像素。每个窗口的 chrome 与 content 必须原子叠放，任何窗口内容不得覆盖其他窗口的 chrome，
-  foreign surface 也不得截获 paint order 中位于它之后的透明 desktop hit target。
+  node 不得写像素。窗口 Pixels 使用 outer border-edge mask；foreign surface 必须携带其 DOM 位置实际
+  生效的完整祖先 CSS overflow clip chain，不得复用窗口外圆角或全屏方形 clip。每个 mask 保留
+  padding-edge rect 与四角独立横纵半径，compositor 对所有 mask 的 scanline 交集施加亚像素 coverage。
+  每个窗口的 chrome 与 content 必须原子叠放，任何窗口内容不得覆盖自身 border ring、窗口圆角或其他
+  窗口的 chrome，foreign surface 也不得截获 paint order 中位于它之后的透明 desktop hit target。
 - desktop 与 app 共用唯一 retained document raster。结构、computed style、layout geometry、scroll 或
   backdrop dependency 变化声明完整 document damage；完整 geometry 不变且仅文本内容或受控
   `<input value>` 变化时，damage 是变化节点 border box 的并集。document 精确复用时，desktop damage
   只包含上一帧与当前帧的 `position: fixed` overlay clips（去重），从而同时覆盖出现、变化和移除。
   禁止把固定层或局部媒体进度变化退化为全屏 damage，否则并发 app surface commit 会阻塞 shell buffer
   release。
+- CSS `overflow: hidden/clip/auto/scroll` 的后代 raster 必须经过同一个祖先 clip stack；矩形 bounds 仅用于
+  early reject 与 hit geometry，不能代替像素裁剪。`border-radius` 的 overflow clip 位于 padding edge，
+  四角横纵半径分别扣除相邻 border，并以亚像素 coverage 同时约束背景、边框、阴影、文本、图片与 opacity
+  group；opacity offscreen 与最终 composite 之间只能应用一次祖先 coverage。
+- outer `box-shadow` 必须从偏移、spread 后的圆角 mask 计算边界内外连续 blur coverage，并排除原始
+  border box；offset 只移动 mask，不能生成实心矩形阴影底板。blur 的有限采样范围与分带数必须受限，
+  使 raster 成本随轮廓与 blur 半径增长，而不是随窗口面积重复填充。
 - app `SURFACE_COMMIT` 与 desktop `SCENE_COMMIT` 分别有 monotonic revision。frame latch 后到达的提交进入
   下一帧；`SURFACE_COMMIT` 空 damage 精确表示 retained pixels 未变化，首帧与 full repaint 必须显式
   携带全 surface rect。每连接最多 64 KiB nonblocking outbound queue。可合并 event 覆盖旧值，不可丢

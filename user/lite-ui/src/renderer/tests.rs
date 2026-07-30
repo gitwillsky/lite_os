@@ -62,7 +62,10 @@ fn fixed_damage_covers_appearance_and_removal_without_full_document_damage() {
     };
     let current = [crate::display::Overlay {
         rect: panel,
-        corner_radius: 40,
+        clip_mask: display_proto::ClipMask {
+            rect: panel,
+            radii: [display_proto::CornerRadius { x: 40, y: 40 }; 4],
+        },
         z_index: 950,
     }];
 

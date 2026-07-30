@@ -54,7 +54,11 @@
 - LiteUI 像素使用预乘 `ARGB8888`，compositor 合成到双 `XRGB8888` scanout。每个 node 带保守的
   opaque region、显式 input region 与 damage；透明阴影不参与 input region。React paint order 中位于
   foreign surface 之后的透明交互 chrome 生成 empty-clip `Pixels` input node，使 resize grip 等元素按
-  标准 DOM z-order 命中 desktop，同时不复制 desktop 像素覆盖 app content。
+  标准 DOM z-order 命中 desktop，同时不复制 desktop 像素覆盖 app content。窗口 frame Pixels 使用
+  outer border-edge mask；foreign surface 携带 renderer 当时完整的 CSS overflow clip chain，每层保留
+  padding-edge rect 与四角横纵半径。compositor 逐 scanline 求所有 mask 的交集并合成一次亚像素
+  coverage，因此 client content 不能用外圆角越过 inner border arc 覆盖边框。renderer 的同一 clip stack
+  在 raster seam 约束其他 primitive。
 - compositor 单线程 poll loop 独占 sockets、evdev、scene latch、damage composition、DRM page flip 与
   completion。LiteUI 使用 UI/render 双线程：UI thread 独占 QuickJS/React，native render thread 独占
   CSS、layout、text 与 raster。固定三个 snapshot arena 组成 latest-only seam，中间 revision 可丢弃。
@@ -113,7 +117,9 @@
   `pointer-events`。颜色经 cssparser 解析，支持 hex、`rgb()`/`hsl()`（legacy 与现代语法）、完整命名色与
   `transparent`（`currentColor` 不支持）。`border-style` 支持 solid/dotted/dashed 与双色斜面
   outset/inset/groove/ridge/double（亮/暗色由 border-color 按 UA 固定系数推导）。`box-shadow` 支持
-  多层、spread 与 inset。`background` 支持 color/image/repeat/position/size 及简写（不认识的
+  多层、spread 与 inset；outer shadow 对偏移后的圆角 mask 作双侧 Gaussian falloff，并从原始
+  border box 扣除，禁止把 offset 区域作为实心底板。`background` 支持
+  color/image/repeat/position/size 及简写（不认识的
   origin/clip/`fixed` token 忽略）；url 背景默认 intrinsic 尺寸 + repeat，`<img>` 仍拉伸填满。
   `linear-gradient` 支持任意角度（对角 `to *` 关键字映射 45° 家族）。`backdrop-filter: blur()` 在
   rounded border box 内对已绘制 backdrop 作三次可分离 box pass；物理半径达到 16px 时在四分之一

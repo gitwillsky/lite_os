@@ -7,7 +7,7 @@ use taffy::TaffyTree;
 use super::box_paint::scale_pm;
 use super::image::alpha_over;
 use super::{
-    OpacityLayer, PaintWalk, PhysicalRect, Raster, RenderNode, RenderOutput, Renderer,
+    ClipRaster, OpacityLayer, PaintWalk, PhysicalRect, Raster, RenderNode, RenderOutput, Renderer,
     layout::TextMeasure,
 };
 
@@ -24,7 +24,7 @@ impl Renderer {
         tree: &TaffyTree<TextMeasure>,
         node: &RenderNode,
         parent: (f32, f32),
-        pixels: &mut R,
+        pixels: &mut ClipRaster<R>,
         output: &mut RenderOutput,
         walk: PaintWalk,
         opacity: f32,
@@ -37,17 +37,23 @@ impl Renderer {
             .take()
             .unwrap_or_else(|| OpacityLayer::new(pixels.width(), pixels.height()));
         layer.reset();
-        let result = self.paint(
-            tree,
-            node,
-            parent,
-            &mut layer,
-            output,
-            PaintWalk {
-                opacity_depth: depth + 1,
-                ..walk
-            },
-        );
+        let result = {
+            // The parent ClipRaster applies ancestor overflow once when this
+            // layer composites. Copying that stack into the offscreen pass
+            // would multiply fractional corner coverage and erode the arc.
+            let mut clipped_layer = ClipRaster::new(&mut layer);
+            self.paint(
+                tree,
+                node,
+                parent,
+                &mut clipped_layer,
+                output,
+                PaintWalk {
+                    opacity_depth: depth + 1,
+                    ..walk
+                },
+            )
+        };
         self.opacity_layers[depth] = Some(layer);
         result?;
         let layer = self.opacity_layers[depth]

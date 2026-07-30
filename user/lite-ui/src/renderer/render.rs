@@ -230,12 +230,13 @@ impl Renderer {
                 output = empty_output();
                 {
                     let mut damaged = DamageRaster::new(pixels, damage);
+                    let mut clipped = ClipRaster::new(&mut damaged);
                     for child in &root.children {
                         self.paint(
                             &tree,
                             child,
                             (0.0, 0.0),
-                            &mut damaged,
+                            &mut clipped,
                             &mut output,
                             document_walk(excluded_window_group, Some(damage)),
                         )?;
@@ -257,15 +258,18 @@ impl Renderer {
                     pixels.row_mut(row).fill(0xff00_0000);
                 }
                 output = empty_output();
-                for child in &root.children {
-                    self.paint(
-                        &tree,
-                        child,
-                        (0.0, 0.0),
-                        pixels,
-                        &mut output,
-                        document_walk(excluded_window_group, None),
-                    )?;
+                {
+                    let mut clipped = ClipRaster::new(pixels);
+                    for child in &root.children {
+                        self.paint(
+                            &tree,
+                            child,
+                            (0.0, 0.0),
+                            &mut clipped,
+                            &mut output,
+                            document_walk(excluded_window_group, None),
+                        )?;
+                    }
                 }
                 if excluded_window_group.is_none() {
                     document_bounds.clear();
@@ -293,26 +297,29 @@ impl Renderer {
                 }
             }
         }
-        for child in &root.children {
-            self.paint(
-                &tree,
-                child,
-                (0.0, 0.0),
-                pixels,
-                &mut output,
-                PaintWalk {
-                    parent_node_id: None,
-                    excluded_window_group,
-                    window_frame: None,
-                    window_group: None,
-                    clip: None,
-                    damage: None,
-                    opacity_depth: 0,
-                    hits_enabled: true,
-                    phase: PaintPhase::Fixed,
-                    fixed_context: false,
-                },
-            )?;
+        {
+            let mut clipped = ClipRaster::new(pixels);
+            for child in &root.children {
+                self.paint(
+                    &tree,
+                    child,
+                    (0.0, 0.0),
+                    &mut clipped,
+                    &mut output,
+                    PaintWalk {
+                        parent_node_id: None,
+                        excluded_window_group,
+                        window_frame: None,
+                        window_group: None,
+                        clip: None,
+                        damage: None,
+                        opacity_depth: 0,
+                        hits_enabled: true,
+                        phase: PaintPhase::Fixed,
+                        fixed_context: false,
+                    },
+                )?;
+            }
         }
         self.scroll_offsets
             .retain(|node_id, _| self.active_scroll_nodes.contains(node_id));
