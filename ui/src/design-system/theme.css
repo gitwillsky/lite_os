@@ -1680,6 +1680,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   padding: 21px 14px;
+  overflow-x: hidden;
   overflow-y: hidden;
 }
 
