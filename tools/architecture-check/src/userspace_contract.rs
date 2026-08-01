@@ -307,7 +307,8 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             errors.push(format!("{path}: {failure}"));
         }
     }
-    let display = fs::read_to_string(root.join("user/lite-runtime/src/display.rs")).unwrap_or_default();
+    let display =
+        fs::read_to_string(root.join("user/lite-runtime/src/display.rs")).unwrap_or_default();
     if display.contains("wait_presented") {
         errors.push(
             "user/lite-ui/src/display.rs: synchronous presentation wait blocks latest-only pacing"

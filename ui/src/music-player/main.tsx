@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { list, open } from "lite:fs";
 import type { FsEntry } from "lite:fs";
 import * as net from "lite:net";
-import { RangeInput } from "../design-system/controls";
+import { RangeInput, TextInput } from "../design-system/controls";
 
 const MUSIC_ROOT = "/root/Music";
 const AUDIO_EXTENSIONS = new Set([
@@ -424,11 +424,11 @@ export default function MusicPlayer() {
               <PlayerButton label="NetEase" active={source === "netease"} onClick={() => setSource("netease")}/>
               <PlayerButton label="QQ Music" active={source === "qq"} onClick={() => setSource("qq")}/>
             </div>
-            <input
+            <TextInput
               className="player__search-input"
               value={query}
               placeholder="Search songs or artists..."
-              onInput={(event) => setQuery((event as unknown as { value: string }).value)}
+              onInput={setQuery}
               onKeyDown={(event) => {
                 const key = event as unknown as LiteKeyEvent;
                 if (key.code === KEY_ENTER && key.value !== 0) runSearch();

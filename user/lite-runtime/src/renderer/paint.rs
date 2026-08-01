@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, io};
 use serde_json::Value;
 use taffy::TaffyTree;
 
-use super::layout::TextMeasure;
+use super::layout::{TextMeasure, border_widths};
 use super::opacity::opacity;
 use super::{
     Axis, ClipRaster, ForeignLayer, HitRegion, LogicalRect, OverflowMode, Overlay, PaintWalk,
@@ -54,6 +54,58 @@ fn stacking_level(computed: &crate::style::Computed, flex_item: bool) -> i32 {
         .get("z-index")
         .and_then(|value| value.trim().parse::<i32>().ok())
         .unwrap_or(0)
+}
+
+fn input_line_boxes(
+    bounds: PhysicalRect,
+    borders: [f32; 4],
+    padding: [f32; 4],
+    line_height: f32,
+) -> (PhysicalRect, PhysicalRect) {
+    let inset = |value: f32| (value.max(0.0) * SCALE).round() as usize;
+    let [border_top, border_right, border_bottom, border_left] = borders.map(inset);
+    let [padding_top, padding_right, padding_bottom, padding_left] = padding.map(inset);
+
+    // 1. The editable content box excludes both border and padding on every
+    //    edge. Omitting the bottom/right edges lets text and the caret paint
+    //    over the control chrome when the value grows.
+    let content = PhysicalRect {
+        x1: bounds
+            .x1
+            .saturating_add(border_left)
+            .saturating_add(padding_left)
+            .min(bounds.x2),
+        y1: bounds
+            .y1
+            .saturating_add(border_top)
+            .saturating_add(padding_top)
+            .min(bounds.y2),
+        x2: bounds
+            .x2
+            .saturating_sub(border_right.saturating_add(padding_right)),
+        y2: bounds
+            .y2
+            .saturating_sub(border_bottom.saturating_add(padding_bottom)),
+    };
+    let content = PhysicalRect {
+        x2: content.x2.max(content.x1),
+        y2: content.y2.max(content.y1),
+        ..content
+    };
+
+    // 2. A text input is a single-line replaced control. Center its CSS line
+    //    box inside the content box; using the whole control height produces
+    //    the full-height caret and top-aligned text visible in the bug report.
+    let available_height = content.y2.saturating_sub(content.y1);
+    let line_height = (line_height.round().max(1.0) as usize).min(available_height);
+    let line_top = content.y1 + available_height.saturating_sub(line_height) / 2;
+    let line = PhysicalRect {
+        x1: content.x1,
+        y1: line_top,
+        x2: content.x2,
+        y2: line_top.saturating_add(line_height),
+    };
+    (content, line)
 }
 
 impl Renderer {
@@ -258,9 +310,8 @@ impl Renderer {
                 node.computed.get("accent-color").unwrap_or("#35c8ff"),
             );
         }
-        // 文本 `<input>` 绘制其受控 `value`（空时用 placeholder 的灰字），并在获焦时于文本末尾
-        // 画一个 1px 文本光标。文本从内容盒（扣 padding）起笔，与浏览器一致；React 持有
-        // value 真值，此处只呈现。
+        // 文本 `<input>` 绘制受控 `value`（空时显示 placeholder），React 持有 value 真值。
+        // 单行内容盒同时约束文本与光标，避免两条绘制路径产生不同的控件几何。
         if node.source.kind == "input" && range.is_none() {
             let value = node
                 .source
@@ -274,45 +325,70 @@ impl Renderer {
                 .get("placeholder")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let pad_left = (node.computed.px("padding-left", 0.0) * SCALE).round() as usize;
-            let pad_top = (node.computed.px("padding-top", 0.0) * SCALE).round() as usize;
-            let content = PhysicalRect {
-                x1: (bounds.x1 + pad_left).min(bounds.x2),
-                y1: (bounds.y1 + pad_top).min(bounds.y2),
-                ..bounds
-            };
+            let padding = [
+                node.computed.px("padding-top", 0.0),
+                node.computed.px("padding-right", 0.0),
+                node.computed.px("padding-bottom", 0.0),
+                node.computed.px("padding-left", 0.0),
+            ];
+            let (content, line) = input_line_boxes(
+                bounds,
+                border_widths(&node.computed),
+                padding,
+                self.font.single_line_height(&node.computed),
+            );
+            let content_clip = paint_clip.map_or(content, |clip| content.intersect(clip));
             let showing_placeholder = value.is_empty() && !placeholder.is_empty();
             let text = if showing_placeholder {
                 placeholder
             } else {
                 value
             };
-            if !paint_raster.is_empty() && !text.is_empty() {
+            if !paint_raster.is_empty() && !content_clip.is_empty() && !text.is_empty() {
                 // Placeholder is drawn dimmed by overriding the color; the input's
                 // own `color` drives real text. `font.draw` re-reads `color` from
                 // the style, so clone-and-override only for the placeholder case.
                 if showing_placeholder {
                     let mut dimmed = node.computed.clone();
                     dimmed.set("color", "#808080");
-                    self.font.draw(pixels, content, paint_clip, &dimmed, text);
+                    self.font.draw_single_line(
+                        pixels,
+                        line,
+                        Some(content_clip),
+                        &dimmed,
+                        text,
+                    );
                 } else {
-                    self.font
-                        .draw(pixels, content, paint_clip, &node.computed, text);
+                    self.font.draw_single_line(
+                        pixels,
+                        line,
+                        Some(content_clip),
+                        &node.computed,
+                        text,
+                    );
                 }
             }
-            if !paint_raster.is_empty() && self.focused == Some(node.source.id) {
+            if !paint_raster.is_empty()
+                && !content_clip.is_empty()
+                && self.focused == Some(node.source.id)
+            {
                 // Caret sits just past the value's measured advance, clamped inside
                 // the content box; 1 logical px wide, one line-height tall.
                 let advance = (self.font.measure(&node.computed, value) * SCALE).round() as usize;
-                let caret_x = (content.x1 + advance).min(bounds.x2.saturating_sub(1));
+                let caret_x = content
+                    .x1
+                    .saturating_add(advance)
+                    .min(content.x2.saturating_sub(1));
                 let caret = PhysicalRect {
                     x1: caret_x,
-                    y1: content.y1,
-                    x2: (caret_x + SCALE.round() as usize).min(bounds.x2),
-                    y2: bounds.y2.saturating_sub(pad_top).max(content.y1),
+                    y1: line.y1,
+                    x2: caret_x
+                        .saturating_add(SCALE.round() as usize)
+                        .min(content.x2),
+                    y2: line.y2,
                 };
                 let color = node.computed.get("color").unwrap_or("#000000").to_owned();
-                paint_background(pixels, caret, paint_clip, &color, [0.0; 4]);
+                paint_background(pixels, caret, Some(content_clip), &color, [0.0; 4]);
             }
         }
         // 文本叶子 span 直接绘制其拼接文本；容器 span 不绘制文本，其 `#text` 子节点各自
@@ -629,6 +705,37 @@ mod tests {
     use serde_json::json;
 
     use crate::style::Computed;
+
+    #[test]
+    fn input_line_box_excludes_chrome_and_centers_one_line() {
+        let bounds = super::PhysicalRect {
+            x1: 0,
+            y1: 0,
+            x2: 200,
+            y2: 68,
+        };
+        let (content, line) =
+            super::input_line_boxes(bounds, [1.0; 4], [0.0, 12.0, 0.0, 12.0], 36.0);
+
+        assert_eq!(
+            content,
+            super::PhysicalRect {
+                x1: 26,
+                y1: 2,
+                x2: 174,
+                y2: 66,
+            }
+        );
+        assert_eq!(
+            line,
+            super::PhysicalRect {
+                x1: 26,
+                y1: 16,
+                x2: 174,
+                y2: 52,
+            }
+        );
+    }
 
     /// The autofocus decision is a pure function of props plus current focus:
     /// present-and-idle takes it, present-but-busy never steals, absent never

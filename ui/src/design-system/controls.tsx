@@ -38,9 +38,11 @@ export function Button({ label, default: isDefault, disabled, onClick }: {
 /** Shared controlled text field. Behavior props map straight
  * onto the renderer's controlled-input primitive; `autoFocus` claims focus
  * on appearance when no field owns it. */
-export function TextInput({ value, width, autoFocus, placeholder, onInput, onKeyDown }: {
+export function TextInput({ value, width, className, autoFocus, placeholder, onInput, onKeyDown }: {
   value: string;
   width?: number;
+  /** App-specific layout hook; control visuals remain owned by `.text-input`. */
+  className?: string;
   autoFocus?: boolean;
   placeholder?: string;
   onInput?: (value: string) => void;
@@ -48,7 +50,7 @@ export function TextInput({ value, width, autoFocus, placeholder, onInput, onKey
 }) {
   return (
     <input
-      className="text-input"
+      className={`text-input${className ? ` ${className}` : ""}`}
       style={width === undefined ? undefined : { width }}
       autoFocus={autoFocus}
       placeholder={placeholder}

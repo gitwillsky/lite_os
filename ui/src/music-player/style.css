@@ -83,17 +83,6 @@
 .player__search-input {
   flex: 1;
   min-width: 120px;
-  height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--aurora-border);
-  border-radius: 9px;
-  color: var(--aurora-text);
-  background: rgba(25, 38, 59, 0.56);
-}
-
-.player__search-input:focus {
-  border-color: rgba(53, 200, 255, 0.64);
-  background: rgba(25, 38, 59, 0.82);
 }
 
 .player__results {

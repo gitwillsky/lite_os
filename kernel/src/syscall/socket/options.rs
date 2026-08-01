@@ -89,7 +89,9 @@ fn read_timeval(value: usize, length: usize) -> Result<u64, isize> {
     if seconds < 0 || micros < 0 {
         return Err(-errno::EINVAL);
     }
-    Ok((seconds as u64).saturating_mul(1_000_000).saturating_add(micros as u64))
+    Ok((seconds as u64)
+        .saturating_mul(1_000_000)
+        .saturating_add(micros as u64))
 }
 
 fn read_i32(value: usize, length: usize) -> Result<i32, isize> {

@@ -281,6 +281,29 @@ fn draw_wraps_long_text_onto_a_second_line() {
 }
 
 #[test]
+fn single_line_control_never_wraps_inherited_normal_text() {
+    let font = test_font();
+    let style = computed(".t { font-size: 11px; line-height: 14px; }");
+    let text = "alpha beta gamma delta epsilon zeta eta theta iota";
+    let width = (font.measure(&style, text) * 0.4 * SCALE).round() as usize;
+    let mut target = Buffer::new(width, 120);
+    let bounds = PhysicalRect {
+        x1: 0,
+        y1: 0,
+        x2: width,
+        y2: 120,
+    };
+    font.draw_single_line(&mut target, bounds, None, &style, text);
+
+    let beyond_first_line = (14.0 * 1.5 * SCALE) as usize;
+    let lower_ink = target.pixels[beyond_first_line * width..]
+        .iter()
+        .filter(|&&p| p != 0xffff_ffff)
+        .count();
+    assert_eq!(lower_ink, 0, "an HTML text input remains one line");
+}
+
+#[test]
 fn draw_ellipsizes_a_nowrap_overflowing_line() {
     let font = test_font();
     let style = computed(".t { font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }");

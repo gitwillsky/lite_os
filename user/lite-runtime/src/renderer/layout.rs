@@ -149,35 +149,7 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
     if let Some(value) = computed.get("padding") {
         style.padding = edges(value);
     }
-    // Per-side border widths are already cascade-expanded by the style owner.
-    // The fallbacks keep runtime compatibility with a pre-expanded Computed
-    // value constructed by native callers.
-    let uniform_border = computed
-        .get("border-width")
-        .and_then(number)
-        .or_else(|| computed.get("border").and_then(first_number))
-        .unwrap_or(0.0);
-    let mut border_widths = [uniform_border; 4]; // [top, right, bottom, left]
-    for (index, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
-        let border_style = computed
-            .get(&format!("border-{side}-style"))
-            .or_else(|| computed.get("border-style"));
-        if matches!(border_style, Some("none" | "hidden")) {
-            border_widths[index] = 0.0;
-            continue;
-        }
-        if let Some(width) = computed
-            .get(&format!("border-{side}-width"))
-            .and_then(number)
-            .or_else(|| {
-                computed
-                    .get(&format!("border-{side}"))
-                    .and_then(first_number)
-            })
-        {
-            border_widths[index] = width;
-        }
-    }
+    let border_widths = border_widths(computed);
     style.border = TaffyRect {
         top: LengthPercentage::length(border_widths[0]),
         right: LengthPercentage::length(border_widths[1]),
@@ -217,6 +189,43 @@ pub(super) fn to_taffy(node: &Node, computed: &Computed) -> Style {
     }
     apply_flex(computed, &mut style);
     style
+}
+
+/// Resolves logical border widths in CSS clockwise order: top, right, bottom, left.
+///
+/// Layout and replaced-control painting must consume the same resolved edges;
+/// resolving them independently makes an input's content box disagree with
+/// the border box that Taffy laid out.
+pub(super) fn border_widths(computed: &Computed) -> [f32; 4] {
+    // Per-side border widths are already cascade-expanded by the style owner.
+    // The fallbacks also support a directly constructed Computed value.
+    let uniform_border = computed
+        .get("border-width")
+        .and_then(number)
+        .or_else(|| computed.get("border").and_then(first_number))
+        .unwrap_or(0.0);
+    let mut widths = [uniform_border; 4];
+    for (index, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+        let border_style = computed
+            .get(&format!("border-{side}-style"))
+            .or_else(|| computed.get("border-style"));
+        if matches!(border_style, Some("none" | "hidden")) {
+            widths[index] = 0.0;
+            continue;
+        }
+        if let Some(width) = computed
+            .get(&format!("border-{side}-width"))
+            .and_then(number)
+            .or_else(|| {
+                computed
+                    .get(&format!("border-{side}"))
+                    .and_then(first_number)
+            })
+        {
+            widths[index] = width;
+        }
+    }
+    widths
 }
 
 fn intrinsic(empty: bool, value: f32) -> Dimension {

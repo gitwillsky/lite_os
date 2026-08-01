@@ -186,6 +186,14 @@ impl Font {
         self.single_line_width(style, text) / SCALE
     }
 
+    /// Physical height of one CSS line for the supplied computed text style.
+    ///
+    /// Replaced single-line controls use this metric to position their line
+    /// box without duplicating CSS `line-height` parsing outside the font owner.
+    pub(crate) fn single_line_height(&self, style: &Computed) -> f32 {
+        line_height(style, style.px("font-size", 11.0) * SCALE)
+    }
+
     /// Intrinsic logical size of a text leaf under taffy's constraints.
     ///
     /// `white-space: normal`/`pre-wrap` text wraps at a definite inline
@@ -249,6 +257,35 @@ impl Font {
         style: &Computed,
         text: &str,
     ) {
+        self.draw_with_wrap(target, bounds, overflow_clip, style, text, wraps(style));
+    }
+
+    /// Draws the value of a single-line replaced control.
+    ///
+    /// HTML text inputs never become multiline controls, regardless of the
+    /// inherited `white-space` value. Keeping that rule in the font owner also
+    /// makes caret measurement and painted shaping use the same no-wrap mode.
+    pub(crate) fn draw_single_line<R: Raster>(
+        &self,
+        target: &mut R,
+        bounds: PhysicalRect,
+        overflow_clip: Option<PhysicalRect>,
+        style: &Computed,
+        text: &str,
+    ) {
+        self.draw_with_wrap(target, bounds, overflow_clip, style, text, false);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_with_wrap<R: Raster>(
+        &self,
+        target: &mut R,
+        bounds: PhysicalRect,
+        overflow_clip: Option<PhysicalRect>,
+        style: &Computed,
+        text: &str,
+        wrap: bool,
+    ) {
         // Text colors are usually opaque; for translucent values the
         // premultiplied channels darken the glyph coverage blend slightly,
         // which is visually indistinguishable at UI text sizes.
@@ -258,7 +295,6 @@ impl Font {
             .unwrap_or(0xff00_0000);
         let italic = style.get("font-style") == Some("italic");
         let box_width = bounds.x2.saturating_sub(bounds.x1) as i32;
-        let wrap = wraps(style);
         // 1. Lay out at the box width: wrapping text breaks there, nowrap
         //    text keeps one line and overflows, and the box width doubles as
         //    the alignment container below.
