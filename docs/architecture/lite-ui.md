@@ -35,6 +35,8 @@
   Terminal 使用 Ctrl+Shift+V 或 macOS Cmd+V，把 UTF-8 文本作为一帧 PTY input。
 - `ui/design-system` 是唯一 Aurora presentation owner：独占 token、窗口 chrome、系统 shell、菜单、表单、
   Sidebar、Toolbar 与 Dialog。应用只组合这些语义组件与业务内容；LiteUI theme-free，compositor 不包含窗口主题。
+  `SystemIcon` 提供不依赖字体字形的排序、树形展开与状态图标；应用图标和文件系统内容图标是不同语义资产，
+  前者使用 256px Aurora master，后者使用透明 256px 大图与 32px Retina 小图。
 
 ## 显示与调度
 
@@ -109,7 +111,7 @@
   `<audio>` 投影冻结的 HTMLMediaElement playback surface 与 UA controls，其他 controls 是 React
   component。desktop 用带 `data-lite-window`/`data-lite-surface` 的 `<div>` 把 decoration 与 foreign
   surface 标为同一 compositor move group，不新增私有 `<window>`/`<surface>` primitive。
-- CSS 是严格标准子集：selector list、type/class/id/descendant selector、`:nth-child(An+B)`、
+- CSS 是严格标准子集：selector list、type/class/id/descendant selector、`:first-child`、`:last-child`、`:nth-child(An+B)`、
   `:hover`/`:active`/`:focus`/`:disabled`、specificity、inheritance、custom properties 与嵌套
   `var()` fallback、`inherit`/`initial`/`unset`、box、Flexbox、标准 margin 长度/百分比/`auto`、
   absolute、gap、min/max、
@@ -121,6 +123,9 @@
   border box 扣除，禁止把 offset 区域作为实心底板。`background` 支持
   color/image/repeat/position/size 及简写（不认识的
   origin/clip/`fixed` token 忽略）；url 背景默认 intrinsic 尺寸 + repeat，`<img>` 仍拉伸填满。
+  `<img>` 与 url 背景共享像素中心采样器；`image-rendering` 按继承属性支持
+  `auto`/`smooth`/`high-quality` 的预乘双线性过滤，以及 `crisp-edges`/`pixelated` 的最近邻过滤。
+  图片自身 `border-radius` 与 ancestor overflow clip 均以亚像素 coverage 合成，不允许整数裁边重新引入毛刺。
   `linear-gradient` 支持任意角度（对角 `to *` 关键字映射 45° 家族）。`backdrop-filter: blur()` 在
   rounded border box 内对已绘制 backdrop 作三次可分离 box pass；物理半径达到 16px 时在四分之一
   线性尺寸的抗混叠 backdrop 上执行同一 filter，再双线性恢复，避免 CPU raster 对大半径玻璃层作

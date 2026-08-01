@@ -91,12 +91,16 @@ enum PaintPhase {
     Fixed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum DocumentPaint {
     Reuse,
-    Partial(PhysicalRect),
+    Partial(Vec<PhysicalRect>),
     Full,
 }
+
+/// 单帧 damage rect 集合上限;超出合并为 bounding box(与 compositor scanout
+/// 的累积规则一致)。cap 保证 scissor/写掩码循环有界,协议消息也不超 MAX_MESSAGE。
+pub(crate) const MAX_DAMAGE_RECTS: usize = 64;
 
 /// Per-node context threaded down the paint walk.
 #[derive(Clone, Copy)]
@@ -117,7 +121,9 @@ struct PaintWalk {
     /// raster and hit regions are confined to it, fully-clipped subtrees skipped.
     clip: Option<PhysicalRect>,
     /// Optional retained-raster damage scissor. Unlike `clip`, this never
-    /// changes hit testing or descendant CSS overflow geometry.
+    /// changes hit testing or descendant CSS overflow geometry. It is the
+    /// bounding box of the frame's exact damage set and only prunes paint
+    /// work; the exact write mask lives in `DamageRaster`.
     damage: Option<PhysicalRect>,
     /// `opacity` group nesting depth: selects the offscreen layer pool slot, so
     /// a nested group never rasterizes into a layer its ancestor still owns.

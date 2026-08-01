@@ -39,7 +39,7 @@ MUSIC_APP_ORIGINS = tuple(
     for instance in range(8)
 )
 COMMAND_CENTER_POINT = (80, 28)
-COMMAND_MUSIC_POINT = (666, 273)
+COMMAND_MUSIC_POINT = (436, 220)
 QUEUE_ROW_POINT = (756, 124)
 QUEUE_ROW_HEIGHT = 53
 QUEUE_BOTTOM_OFFSET = 315
@@ -50,12 +50,13 @@ SEEK_POINT = (200, 357)
 ELEMENT_MUTE_POINT = (48, 546)
 ELEMENT_VOLUME_X = {50: 168, 80: 209}
 SYSTEM_CENTER_POINT = (1440, 28)
-MASTER_MUTE_POINT = (1155, 212)
-MASTER_SCALE_Y = 212
-# QMP absolute coordinates map through the 1503-pixel evdev extent, so each
-# requested desktop x lands one logical pixel to its left. These points target
-# the exact 30/70/100 steps on the presented 200px native range track.
-MASTER_VOLUME_X = {30: 1262, 70: 1342, 100: 1402}
+MASTER_MUTE_POINT = (1382, 564)
+MASTER_SCALE_Y = 596
+# The current System Center presents the native range track from x=1127 through
+# x=1441. These points target its exact 30/70/100 steps; keeping them tied to
+# the painted control prevents a layout change from silently clicking another
+# quick-setting tile while the audio assertion waits for an unrelated marker.
+MASTER_VOLUME_X = {30: 1221, 70: 1347, 100: 1441}
 S16_POSITIVE_MAX = 32_767 / 32_768
 POINTER_HOVER_SETTLE_SECONDS = 0.1
 POINTER_CLICK_HOLD_SECONDS = 0.05
@@ -65,21 +66,21 @@ PANEL_PRESENT_POLL_SECONDS = 0.1
 # border is painted over the panel's own opaque surface, so its color is stable
 # even after Music windows occupy the former app-icon sample points underneath.
 COMMAND_CENTER_SIGNATURE_POINTS = (
-    (386, 150),
-    (386, 300),
-    (386, 500),
-    (1117, 150),
-    (1117, 300),
-    (1117, 500),
-    (750, 92),
-    (750, 695),
+    (20, 150),
+    (20, 300),
+    (20, 500),
+    (831, 150),
+    (831, 300),
+    (831, 500),
+    (400, 58),
+    (400, 660),
 )
 SYSTEM_CENTER_SIGNATURE_POINTS = ((1220, 212), (1240, 212), (1260, 212))
 # The native vertical scrollbar spans the queue's rightmost 12 CSS pixels.
 # Sampling its center isolates thumb movement from the active row's changing
 # duration text; its antialiased left edge can still expose the content pixel
 # underneath and falsely satisfy the presentation barrier.
-QUEUE_SCROLL_SIGNATURE_OFFSETS = tuple((888, y) for y in range(100, 431, 2))
+QUEUE_SCROLL_SIGNATURE_OFFSETS = tuple((890, y) for y in range(100, 431, 2))
 
 # Guest names make the production directory sort byte-for-byte deterministic.
 # Without the numeric prefix, locale-dependent `localeCompare` ordering could

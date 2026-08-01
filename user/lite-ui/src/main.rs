@@ -342,7 +342,7 @@ fn render_latest(
         unreachable!("dirty state disappeared on the single UI owner thread");
     };
     let (buffer_id, output) = {
-        let output = renderer.render(scene.as_slice(), frame.pixels)?;
+        let output = renderer.render(scene.as_slice(), frame.pixels, &frame.damage)?;
         (frame.id, output)
     };
     match mode {

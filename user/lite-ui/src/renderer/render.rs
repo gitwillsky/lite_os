@@ -28,12 +28,18 @@ impl Renderer {
     }
 
     /// Lays out and rasterizes the latest complete host snapshot.
+    ///
+    /// `buffer_damage` is the buffer-age debt reported by `Display::acquire`:
+    /// the back buffer is only restored inside debt ∪ this frame's damage, so
+    /// the caller MUST pass exactly the debt of the acquired buffer (an empty
+    /// slice claims the buffer is already fully current).
     pub fn render(
         &mut self,
         scene: &[Node],
         pixels: &mut SharedDumbBuffer,
+        buffer_damage: &[display_proto::Rect],
     ) -> io::Result<RenderOutput> {
-        self.render_filtered(scene, pixels, None)
+        self.render_filtered(scene, pixels, None, buffer_damage)
     }
 
     /// Rasterizes the desktop with one complete window group omitted.
@@ -73,7 +79,7 @@ impl Renderer {
         let saved_drag = self.scroll_drag;
         let saved_timeline = self.timeline.clone();
         let result = self
-            .render_filtered(scene, pixels, Some(window_group))
+            .render_filtered(scene, pixels, Some(window_group), &[])
             .map(drop);
         self.scroll_offsets = saved_offsets;
         self.scroll_regions = saved_regions;
@@ -89,6 +95,7 @@ impl Renderer {
         scene: &[Node],
         pixels: &mut SharedDumbBuffer,
         excluded_window_group: Option<u32>,
+        buffer_damage: &[display_proto::Rect],
     ) -> io::Result<RenderOutput> {
         if excluded_window_group.is_none() {
             self.backdrop_blur.begin_frame();
@@ -192,14 +199,16 @@ impl Renderer {
                 DocumentPaint::Reuse
             } else {
                 let mut changed = Vec::new();
+                let mut moved = HashSet::new();
                 if !document_has_backdrop(&document_nodes)
-                    && collect_local_paint_changes(&layer.nodes, &document_nodes, &mut changed)
-                    && layer.bounds == document_bounds
+                    && collect_local_paint_changes(
+                        &layer.nodes,
+                        &document_nodes,
+                        &mut changed,
+                        &mut moved,
+                    )
                 {
-                    changed
-                        .into_iter()
-                        .filter_map(|node_id| document_bounds.get(&node_id).copied())
-                        .reduce(PhysicalRect::union)
+                    partial_damage(&layer.bounds, &document_bounds, &changed, &moved)
                         .map_or(DocumentPaint::Full, DocumentPaint::Partial)
                 } else {
                     DocumentPaint::Full
@@ -208,14 +217,50 @@ impl Renderer {
         } else {
             DocumentPaint::Full
         };
+        // Blit scissor 模型:back buffer 只需在 scissor 集合内恢复正确性。
+        // scissor = buffer-age 欠账 ∪ 当前帧 damage(文档变化 ∪ fixed 层新旧
+        // overlay rect);集合之外的像素自该 buffer 上次 commit 以来从未变化,
+        // 保持有效。fixed 当前 rect 必须在 document blit 之前采集:新出现的
+        // overlay 位置在 back buffer 里还是旧内容,blit 要先恢复其 document
+        // 基底,fixed phase 才能在同一 scissor 内正确重画。
+        let mut scissor: Vec<PhysicalRect> = Vec::new();
+        if excluded_window_group.is_none() && !matches!(document_paint, DocumentPaint::Full) {
+            let (width, height) = (pixels.width(), pixels.height());
+            scissor.extend(
+                buffer_damage
+                    .iter()
+                    .map(|rect| physical_from_display(*rect, width, height)),
+            );
+            scissor.extend(
+                self.previous_fixed_clips
+                    .iter()
+                    .map(|rect| physical_from_display(*rect, width, height)),
+            );
+            for child in &root.children {
+                collect_fixed_bounds(
+                    &tree,
+                    child,
+                    (0.0, 0.0),
+                    width,
+                    height,
+                    &self.scroll_offsets,
+                    &mut scissor,
+                )?;
+            }
+            if let DocumentPaint::Partial(damage) = &document_paint {
+                scissor.extend_from_slice(damage);
+            }
+            scissor.retain(|rect| !rect.is_empty());
+            cap_damage(&mut scissor);
+        }
         let mut output;
-        match document_paint {
+        match &document_paint {
             DocumentPaint::Reuse => {
                 let layer = self
                     .document_layer
                     .as_ref()
                     .expect("document layer checked above");
-                copy_retained(pixels, layer);
+                copy_retained(pixels, layer, &scissor);
                 output = layer.output.clone();
                 self.scroll_regions.clone_from(&layer.scroll_regions);
                 self.scrollbars.clone_from(&layer.scrollbars);
@@ -225,8 +270,10 @@ impl Renderer {
                     .document_layer
                     .as_ref()
                     .expect("partial document layer checked above");
-                copy_retained(pixels, layer);
-                clear_rect(pixels, damage);
+                copy_retained(pixels, layer, &scissor);
+                for rect in damage {
+                    clear_rect(pixels, *rect);
+                }
                 output = empty_output();
                 {
                     let mut damaged = DamageRaster::new(pixels, damage);
@@ -238,7 +285,7 @@ impl Renderer {
                             (0.0, 0.0),
                             &mut clipped,
                             &mut output,
-                            document_walk(excluded_window_group, Some(damage)),
+                            document_walk(excluded_window_group, bounding(damage)),
                         )?;
                     }
                 }
@@ -251,6 +298,7 @@ impl Renderer {
                     &self.scroll_regions,
                     &self.scrollbars,
                     &output,
+                    damage,
                 );
             }
             DocumentPaint::Full => {
@@ -293,33 +341,40 @@ impl Renderer {
                         &self.scroll_regions,
                         &self.scrollbars,
                         &output,
+                        &[PhysicalRect {
+                            x1: 0,
+                            y1: 0,
+                            x2: pixels.width(),
+                            y2: pixels.height(),
+                        }],
                     );
                 }
             }
         }
-        {
+        // Fixed phase:全量路径直接画;Reuse/Partial 戴上 scissor 写掩码,
+        // 未变的 fixed 区域不重画(backdrop blit、阴影、fill 全省)。fixed 层
+        // 仍全程 walk 一遍以发射当前 overlay rect 与 hit 区域。
+        if excluded_window_group.is_some() || matches!(document_paint, DocumentPaint::Full) {
             let mut clipped = ClipRaster::new(pixels);
-            for child in &root.children {
-                self.paint(
-                    &tree,
-                    child,
-                    (0.0, 0.0),
-                    &mut clipped,
-                    &mut output,
-                    PaintWalk {
-                        parent_node_id: None,
-                        excluded_window_group,
-                        window_frame: None,
-                        window_group: None,
-                        clip: None,
-                        damage: None,
-                        opacity_depth: 0,
-                        hits_enabled: true,
-                        phase: PaintPhase::Fixed,
-                        fixed_context: false,
-                    },
-                )?;
-            }
+            self.paint_fixed(
+                &tree,
+                &root,
+                &mut clipped,
+                &mut output,
+                excluded_window_group,
+                None,
+            )?;
+        } else {
+            let mut damaged = DamageRaster::new(pixels, &scissor);
+            let mut clipped = ClipRaster::new(&mut damaged);
+            self.paint_fixed(
+                &tree,
+                &root,
+                &mut clipped,
+                &mut output,
+                excluded_window_group,
+                bounding(&scissor),
+            )?;
         }
         self.scroll_offsets
             .retain(|node_id, _| self.active_scroll_nodes.contains(node_id));
@@ -375,5 +430,43 @@ impl Renderer {
         }
         self.timeline.finish_frame();
         Ok(output)
+    }
+
+    /// Runs the fixed-position paint pass over the whole tree.
+    ///
+    /// `damage` is the scissor bounding box used for paint pruning; the exact
+    /// write mask lives in the `DamageRaster` wrapping `pixels`. `None` paints
+    /// every fixed layer in full (Full frames and the move underlay).
+    fn paint_fixed<R: Raster>(
+        &mut self,
+        tree: &TaffyTree<TextMeasure>,
+        root: &RenderNode,
+        pixels: &mut ClipRaster<R>,
+        output: &mut RenderOutput,
+        excluded_window_group: Option<u32>,
+        damage: Option<PhysicalRect>,
+    ) -> io::Result<()> {
+        for child in &root.children {
+            self.paint(
+                tree,
+                child,
+                (0.0, 0.0),
+                pixels,
+                output,
+                PaintWalk {
+                    parent_node_id: None,
+                    excluded_window_group,
+                    window_frame: None,
+                    window_group: None,
+                    clip: None,
+                    damage,
+                    opacity_depth: 0,
+                    hits_enabled: true,
+                    phase: PaintPhase::Fixed,
+                    fixed_context: false,
+                },
+            )?;
+        }
+        Ok(())
     }
 }

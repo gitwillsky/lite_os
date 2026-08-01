@@ -33,6 +33,8 @@ enum PseudoClass {
     Active,
     Focus,
     Disabled,
+    FirstChild,
+    LastChild,
     NthChild(NthExpression),
 }
 
@@ -130,17 +132,32 @@ impl PseudoState {
             PseudoClass::Disabled => {
                 node.props.get("disabled").and_then(Value::as_bool) == Some(true)
             }
-            PseudoClass::NthChild(expression) => parent
-                .and_then(|parent| {
-                    parent
-                        .children
-                        .iter()
-                        .filter(|sibling| sibling.kind != "#text")
-                        .position(|sibling| sibling.id == node.id)
-                })
-                .is_some_and(|index| expression.matches(index as i32 + 1)),
+            PseudoClass::FirstChild => {
+                element_sibling_position(node, parent).is_some_and(|(index, _)| index == 1)
+            }
+            PseudoClass::LastChild => element_sibling_position(node, parent)
+                .is_some_and(|(index, count)| index == count),
+            PseudoClass::NthChild(expression) => element_sibling_position(node, parent)
+                .is_some_and(|(index, _)| expression.matches(index)),
         }
     }
+}
+
+/// Returns the one-based element index and element count within `parent`.
+/// Text nodes do not participate in CSS structural pseudo-classes.
+fn element_sibling_position(node: &Node, parent: Option<&Node>) -> Option<(i32, i32)> {
+    let mut index = None;
+    let mut count = 0;
+    for sibling in &parent?.children {
+        if sibling.kind == "#text" {
+            continue;
+        }
+        count += 1;
+        if sibling.id == node.id {
+            index = Some(count);
+        }
+    }
+    Some((index?, count))
 }
 impl Selector {
     pub(super) fn parse(source: &str) -> Result<Self, String> {
@@ -313,6 +330,8 @@ impl Simple {
                         "active" => PseudoClass::Active,
                         "focus" => PseudoClass::Focus,
                         "disabled" => PseudoClass::Disabled,
+                        "first-child" => PseudoClass::FirstChild,
+                        "last-child" => PseudoClass::LastChild,
                         _ if pseudo.starts_with("nth-child(") && pseudo.ends_with(')') => {
                             let expression = &pseudo["nth-child(".len()..pseudo.len() - 1];
                             PseudoClass::NthChild(NthExpression::parse(expression)?)

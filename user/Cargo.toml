@@ -39,3 +39,9 @@ panic = "abort"
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
+
+# 光栅/合成热路径 crate：opt-level "s" 会限制内联与向量化，对每帧预算不利。
+# lite-ui 在 opt3 + fat LTO 下会误编译（desktop 静默停止 commit，疑似既有 UB
+# 被激进优化触发），保持 "s"；compositor 实测安全且 p50 收益 ~5-8%。
+[profile.release.package.compositor]
+opt-level = 3

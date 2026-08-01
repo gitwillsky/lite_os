@@ -92,7 +92,7 @@ const TYPE_LABELS: TypeLabels = {
 
 function iconFor(entry: FsEntry): string {
   return entry.kind === "dir" || entry.kind === "symlink"
-    ? "assets/files.png"
+    ? "assets/folder.png"
     : "assets/file.png";
 }
 

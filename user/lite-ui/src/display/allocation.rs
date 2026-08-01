@@ -93,6 +93,8 @@ impl Display {
                     descriptor.byte_len as usize,
                 )?,
                 free: true,
+                // 全新映射内容不可信:0 让 acquire 回退全屏欠账。
+                last_revision: 0,
             });
         }
         Ok(())

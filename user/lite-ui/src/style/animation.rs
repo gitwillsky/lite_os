@@ -108,18 +108,46 @@ impl Timeline {
         self.active
     }
 
+    /// Triggers and samples the transition of one node's computed values.
+    ///
+    /// Node state persists across frames where the `transition` declaration is
+    /// absent (e.g. declared only under `:hover`): the running transition is
+    /// cancelled per CSS semantics, but tracked targets are refreshed to the
+    /// current computed value so the declaration's next appearance finds a real
+    /// before-change value. Without this, a transition scoped to a state rule
+    /// can never start.
     pub(super) fn apply_transitions(&mut self, node: u64, values: &mut BTreeMap<String, String>) {
         let Some(spec) = Transition::parse(values) else {
-            self.transitions.remove(&node);
+            if let Some(state) = self.transitions.get_mut(&node) {
+                self.visited_transitions.insert(node);
+                for (property, previous) in state.targets.iter_mut() {
+                    if let Some(current) = values.get(property) {
+                        *previous = current.clone();
+                    } else if let Some(initial) = initial_value(property) {
+                        *previous = initial.to_owned();
+                    }
+                }
+                state.running.clear();
+            }
             return;
         };
         self.visited_transitions.insert(node);
         let state = self.transitions.entry(node).or_default();
-        let target = values.get(&spec.property).cloned();
-        let previous_target = state.targets.get(&spec.property).cloned();
+        // An undeclared property participates as its initial value; otherwise an
+        // element whose transition first appears on a state rule never has a
+        // recorded before-change value and the transition never starts.
+        let target = values
+            .get(&spec.property)
+            .cloned()
+            .or_else(|| initial_value(&spec.property).map(str::to_owned));
+        let previous_target = state
+            .targets
+            .get(&spec.property)
+            .cloned()
+            .or_else(|| initial_value(&spec.property).map(str::to_owned));
         if let Some(target) = target {
             if let Some(previous) = previous_target
-                && previous != target
+                && !values_equal(&spec.property, &previous, &target)
             {
                 let from = state
                     .running
@@ -465,6 +493,29 @@ fn sample_value(property: &str, from: &str, to: &str, progress: f32) -> String {
     }
 }
 
+/// CSS initial values usable as a transition baseline when the property was
+/// never declared. Only `transform` is known; other properties without a
+/// recorded baseline keep the no-start behavior.
+fn initial_value(property: &str) -> Option<&'static str> {
+    match property {
+        "transform" => Some("none"),
+        _ => None,
+    }
+}
+
+/// Compares two computed values for transition triggering. `transform`
+/// compares parsed translations so textual variants of the identity (`none`,
+/// `translate(0px, 0px)`, `translateY(0)`) do not start a no-op transition;
+/// everything else compares the serialized value.
+fn values_equal(property: &str, a: &str, b: &str) -> bool {
+    if property == "transform"
+        && let (Some(a), Some(b)) = (parse_translate(a), parse_translate(b))
+    {
+        return a == b;
+    }
+    a == b
+}
+
 fn parse_translate(value: &str) -> Option<(f32, f32)> {
     let value = value.trim();
     if value == "none" {
@@ -499,7 +550,12 @@ fn parse_translate(value: &str) -> Option<(f32, f32)> {
 }
 
 fn parse_px(value: &str) -> Option<f32> {
-    value.trim().strip_suffix("px")?.trim().parse().ok()
+    let value = value.trim();
+    // CSS allows a unitless zero length.
+    if value == "0" {
+        return Some(0.0);
+    }
+    value.strip_suffix("px")?.trim().parse().ok()
 }
 
 fn parse_time(value: &str) -> Option<f64> {

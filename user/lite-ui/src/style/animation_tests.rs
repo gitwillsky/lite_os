@@ -63,6 +63,93 @@ fn finite_animation_holds_its_terminal_frame_and_goes_idle() {
 }
 
 #[test]
+fn transition_scoped_to_a_state_rule_starts_from_the_initial_value() {
+    let mut timeline = Timeline::new();
+    // Not hovered: neither a `transition` declaration nor a transform value.
+    timeline.now_ms = 0.0;
+    let mut idle = BTreeMap::new();
+    timeline.apply_transitions(7, &mut idle);
+
+    // Hover enters: the transition is declared only by the state rule and must
+    // start from the initial value (`none`).
+    timeline.now_ms = 20.0;
+    let mut hovered = BTreeMap::from([
+        ("transition".to_owned(), "transform 180ms linear".to_owned()),
+        ("transform".to_owned(), "translateY(-4px)".to_owned()),
+    ]);
+    timeline.apply_transitions(7, &mut hovered);
+    assert!(timeline.active);
+    assert_eq!(
+        hovered.get("transform").map(String::as_str),
+        Some("translate(0px, 0px)")
+    );
+
+    // The effect completes at the target and goes idle.
+    timeline.active = false;
+    timeline.now_ms = 300.0;
+    let mut settled = BTreeMap::from([
+        ("transition".to_owned(), "transform 180ms linear".to_owned()),
+        ("transform".to_owned(), "translateY(-4px)".to_owned()),
+    ]);
+    timeline.apply_transitions(7, &mut settled);
+    assert_eq!(
+        settled.get("transform").map(String::as_str),
+        Some("translateY(-4px)")
+    );
+    assert!(!timeline.active);
+}
+
+#[test]
+fn transition_restarts_after_the_declaration_disappears_and_returns() {
+    let mut timeline = Timeline::new();
+    timeline.now_ms = 0.0;
+    let mut hovered = BTreeMap::from([
+        ("transition".to_owned(), "transform 180ms linear".to_owned()),
+        ("transform".to_owned(), "translateY(-4px)".to_owned()),
+    ]);
+    timeline.apply_transitions(9, &mut hovered);
+    assert!(timeline.active);
+
+    // Hover leaves: the declaration disappears, the running transition is
+    // cancelled (snap back), but the node state survives with its baseline
+    // refreshed to the current value.
+    timeline.active = false;
+    timeline.now_ms = 50.0;
+    let mut idle = BTreeMap::new();
+    timeline.apply_transitions(9, &mut idle);
+    assert!(!timeline.active);
+
+    // Hovering again must start the transition from the initial value again.
+    timeline.now_ms = 100.0;
+    let mut rehovered = BTreeMap::from([
+        ("transition".to_owned(), "transform 180ms linear".to_owned()),
+        ("transform".to_owned(), "translateY(-4px)".to_owned()),
+    ]);
+    timeline.apply_transitions(9, &mut rehovered);
+    assert!(timeline.active);
+    assert_eq!(
+        rehovered.get("transform").map(String::as_str),
+        Some("translate(0px, 0px)")
+    );
+}
+
+#[test]
+fn identity_transform_does_not_start_a_noop_transition() {
+    let mut timeline = Timeline::new();
+    timeline.now_ms = 0.0;
+    let mut values = BTreeMap::from([
+        ("transition".to_owned(), "transform 180ms linear".to_owned()),
+        ("transform".to_owned(), "translateY(0)".to_owned()),
+    ]);
+    timeline.apply_transitions(11, &mut values);
+    assert!(!timeline.active);
+    assert_eq!(
+        values.get("transform").map(String::as_str),
+        Some("translateY(0)")
+    );
+}
+
+#[test]
 fn transition_starts_from_the_presented_value_and_stops_at_the_target() {
     let mut timeline = Timeline::new();
     timeline.now_ms = 0.0;

@@ -8,13 +8,206 @@ use std::{
 
 use super::Raster;
 
-use super::{PhysicalRect, SCALE, box_paint::corner_inset};
+use super::{
+    PhysicalRect, SCALE,
+    box_paint::{corner_inset, scale_pm},
+};
 use crate::style::Computed;
 
 pub(super) struct Image {
     width: usize,
     height: usize,
     pixels: Vec<u32>,
+}
+
+const FILTER_BITS: u32 = 20;
+const FILTER_ONE: u32 = 1 << FILTER_BITS;
+
+#[derive(Clone, Copy)]
+struct AxisSample {
+    lower: usize,
+    upper: usize,
+    weight: u32,
+}
+
+/// Pixel-center projection for one scaled image axis.
+///
+/// The fixed-point step avoids a division for every destination pixel. Without
+/// the half-pixel origin, scaling shifts the bitmap toward its top-left edge
+/// and makes symmetric icons visibly asymmetric.
+#[derive(Clone, Copy)]
+struct ScaleAxis {
+    first: i64,
+    step: i64,
+    last: usize,
+}
+
+impl ScaleAxis {
+    fn new(source: usize, target: usize) -> Self {
+        let step = (((source as i64) << FILTER_BITS) + target as i64 / 2) / target as i64;
+        Self {
+            first: (step - i64::from(FILTER_ONE)) / 2,
+            step,
+            last: source - 1,
+        }
+    }
+
+    fn sample(self, coordinate: usize) -> AxisSample {
+        let position = self.first + coordinate as i64 * self.step;
+        if position <= 0 {
+            return AxisSample {
+                lower: 0,
+                upper: 0,
+                weight: 0,
+            };
+        }
+        let last = (self.last as i64) << FILTER_BITS;
+        if position >= last {
+            return AxisSample {
+                lower: self.last,
+                upper: self.last,
+                weight: 0,
+            };
+        }
+        let lower = (position >> FILTER_BITS) as usize;
+        AxisSample {
+            lower,
+            upper: lower + 1,
+            weight: (position & i64::from(FILTER_ONE - 1)) as u32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ImageRendering {
+    Smooth,
+    Pixelated,
+}
+
+impl ImageRendering {
+    fn from_computed(computed: &Computed) -> Self {
+        match computed.get("image-rendering") {
+            Some("crisp-edges" | "pixelated") => Self::Pixelated,
+            // `auto`, `smooth` and `high-quality` all select the UA's smooth
+            // resampler. Unknown values are invalid at computed-value time and
+            // therefore fall back to the same initial `auto` behavior.
+            _ => Self::Smooth,
+        }
+    }
+}
+
+/// One bitmap scaled to a concrete CSS image or background tile size.
+struct ImageSampler<'a> {
+    image: &'a Image,
+    x: ScaleAxis,
+    y: ScaleAxis,
+    rendering: ImageRendering,
+    exact: bool,
+}
+
+impl<'a> ImageSampler<'a> {
+    fn new(image: &'a Image, width: usize, height: usize, computed: &Computed) -> Self {
+        Self {
+            image,
+            x: ScaleAxis::new(image.width, width),
+            y: ScaleAxis::new(image.height, height),
+            rendering: ImageRendering::from_computed(computed),
+            // Exact-size wallpapers and sprites remain a one-read fast path.
+            // Sending them through four-tap interpolation would consume the
+            // frame budget without changing a single output pixel.
+            exact: image.width == width && image.height == height,
+        }
+    }
+
+    fn sample(&self, x: usize, y: usize) -> u32 {
+        if self.exact {
+            return self.image.pixels[y * self.image.width + x];
+        }
+        let x = self.x.sample(x);
+        let y = self.y.sample(y);
+        if self.rendering == ImageRendering::Pixelated {
+            let x = if x.weight < FILTER_ONE / 2 {
+                x.lower
+            } else {
+                x.upper
+            };
+            let y = if y.weight < FILTER_ONE / 2 {
+                y.lower
+            } else {
+                y.upper
+            };
+            return self.image.pixels[y * self.image.width + x];
+        }
+        let top = interpolate_pm(
+            self.image.pixels[y.lower * self.image.width + x.lower],
+            self.image.pixels[y.lower * self.image.width + x.upper],
+            x.weight,
+        );
+        let bottom = interpolate_pm(
+            self.image.pixels[y.upper * self.image.width + x.lower],
+            self.image.pixels[y.upper * self.image.width + x.upper],
+            x.weight,
+        );
+        interpolate_pm(top, bottom, y.weight)
+    }
+}
+
+fn interpolate_pm(first: u32, second: u32, weight: u32) -> u32 {
+    let inverse = FILTER_ONE - weight;
+    let channel = |shift: u32| {
+        let first = u64::from((first >> shift) & 0xff);
+        let second = u64::from((second >> shift) & 0xff);
+        ((first * u64::from(inverse)
+            + second * u64::from(weight)
+            + u64::from(FILTER_ONE / 2))
+            / u64::from(FILTER_ONE)) as u32
+    };
+    channel(24) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0)
+}
+
+struct RowSpan {
+    first: usize,
+    last: usize,
+    x1: f32,
+    x2: f32,
+}
+
+/// Resolves the element's rounded edge and rectangular scissor into one
+/// fractional scanline. Keeping this shared prevents `<img>` and url
+/// backgrounds from acquiring different corner antialiasing.
+fn rounded_row(
+    bounds: PhysicalRect,
+    visible: PhysicalRect,
+    y: usize,
+    radii: [usize; 4],
+) -> Option<RowSpan> {
+    let width = bounds.x2.saturating_sub(bounds.x1);
+    let height = bounds.y2.saturating_sub(bounds.y1);
+    let left = corner_inset(radii[0], radii[3], y, height);
+    let right = corner_inset(radii[1], radii[2], y, height);
+    let x1 = left.max(visible.x1.saturating_sub(bounds.x1) as f32);
+    let x2 = (width as f32 - right).min(visible.x2.saturating_sub(bounds.x1) as f32);
+    if x2 <= x1 {
+        return None;
+    }
+    Some(RowSpan {
+        first: x1.floor().max(0.0) as usize,
+        last: (x2.ceil() as usize).min(width),
+        x1,
+        x2,
+    })
+}
+
+fn composite_sample(pixel: &mut u32, source: u32, coverage: f32) {
+    if coverage <= 0.0 {
+        return;
+    }
+    let source = if coverage < 1.0 {
+        scale_pm(source, coverage)
+    } else {
+        source
+    };
+    *pixel = alpha_over(source, *pixel);
 }
 
 pub(super) fn decode_png(path: &Path) -> io::Result<Image> {
@@ -93,18 +286,17 @@ pub(super) fn decode_png(path: &Path) -> io::Result<Image> {
     })
 }
 
-/// Scales `image` into `bounds`, skipping the pixels outside the rounded-corner
-/// arcs so images honor `border-radius` like [`super::box_paint::paint_background`].
+/// Scales `image` into `bounds` using the standard smooth image-rendering
+/// default and fractional rounded-corner coverage.
 ///
 /// `logical_radii` are per-corner `border-radius` values in logical CSS pixels,
 /// ordered `[top-left, top-right, bottom-right, bottom-left]`. Corner pixels are
-/// hard-skipped (not coverage-blended): the image sits over its box's own
-/// already-rounded background, so the skip reveals that rounded fill underneath.
 pub(super) fn paint_image<R: Raster>(
     target: &mut R,
     bounds: PhysicalRect,
     clip: Option<PhysicalRect>,
     image: &Image,
+    computed: &Computed,
     logical_radii: [f32; 4],
 ) {
     let width = bounds.x2.saturating_sub(bounds.x1);
@@ -114,25 +306,17 @@ pub(super) fn paint_image<R: Raster>(
     }
     let radii = logical_radii.map(|radius| (radius * SCALE).round() as usize);
     let visible = clip.map_or(bounds, |clip| bounds.intersect(clip));
+    let sampler = ImageSampler::new(image, width, height, computed);
     for absolute_y in visible.y1..visible.y2 {
         let y = absolute_y - bounds.y1;
-        let source_y = y * image.height / height;
+        let Some(span) = rounded_row(bounds, visible, y, radii) else {
+            continue;
+        };
         let row = target.row_mut(absolute_y);
-        // Rows inside a corner arc inset each side, so the rounded background
-        // (and any rounded border ring) painted beneath the image shows through
-        // the cutout. Round the inset *up*: the image is fully opaque, so any
-        // under-skip leaves a square nub of bitmap overpainting the rounded
-        // corner. Ceiling guarantees the opaque fill never spills past the arc.
-        let left = corner_inset(radii[0], radii[3], y, height).ceil() as usize;
-        let right = corner_inset(radii[1], radii[2], y, height).ceil() as usize;
-        let start = left.min(width).max(visible.x1.saturating_sub(bounds.x1));
-        let end = width
-            .saturating_sub(right)
-            .min(visible.x2.saturating_sub(bounds.x1));
-        for x in start..end {
-            let source_x = x * image.width / width;
-            let foreground = image.pixels[source_y * image.width + source_x];
-            row[bounds.x1 + x] = alpha_over(foreground, row[bounds.x1 + x]);
+        for x in span.first..span.last {
+            let coverage = (span.x2.min(x as f32 + 1.0) - span.x1.max(x as f32)).min(1.0);
+            let foreground = sampler.sample(x, y);
+            composite_sample(&mut row[bounds.x1 + x], foreground, coverage);
         }
     }
 }
@@ -166,8 +350,8 @@ impl TileAxis {
 ///
 /// Unlike [`paint_image`] (the `<img>` path, which stretches to fill), the
 /// default here is Web-initial: intrinsic bitmap size, anchored at the top
-/// left, tiled on both axes. Corner pixels are hard-skipped for
-/// `border-radius` exactly as in [`paint_image`].
+/// left, tiled on both axes. Sampling and rounded coverage are exactly the same
+/// as [`paint_image`].
 pub(super) fn paint_background_image<R: Raster>(
     target: &mut R,
     bounds: PhysicalRect,
@@ -197,6 +381,7 @@ pub(super) fn paint_background_image<R: Raster>(
         size: tile_height,
         repeat: repeat_y,
     };
+    let sampler = ImageSampler::new(image, tile_width, tile_height, computed);
     let radii = logical_radii.map(|radius| (radius * SCALE).round() as usize);
     let visible = clip.map_or(bounds, |clip| bounds.intersect(clip));
     for absolute_y in visible.y1..visible.y2 {
@@ -204,35 +389,36 @@ pub(super) fn paint_background_image<R: Raster>(
         let Some(tile_y) = y_axis.tile(y) else {
             continue;
         };
-        let source_y = tile_y * image.height / tile_height;
+        let Some(span) = rounded_row(bounds, visible, y, radii) else {
+            continue;
+        };
         let row = target.row_mut(absolute_y);
-        let left = corner_inset(radii[0], radii[3], y, height).ceil() as usize;
-        let right = corner_inset(radii[1], radii[2], y, height).ceil() as usize;
-        let start = left.min(width).max(visible.x1.saturating_sub(bounds.x1));
-        let end = width
-            .saturating_sub(right)
-            .min(visible.x2.saturating_sub(bounds.x1));
         // 1. Row-level repeat blit: walk tile-sized chunks and wrap at tile
         //    edges instead of paying a modulo per pixel.
-        let mut x = start;
-        while x < end {
+        let mut x = span.first;
+        while x < span.last {
             // 2. A non-repeating row can start before or end inside the single
             //    tile; skip the uncovered spans instead of sampling them.
             let Some(tile_x) = x_axis.tile(x) else {
                 x = if x as isize <= x_axis.offset {
-                    (x_axis.offset.max(0) as usize).min(end)
+                    (x_axis.offset.max(0) as usize).min(span.last)
                 } else {
                     break;
                 };
                 continue;
             };
-            let chunk = (tile_width - tile_x).min(end - x);
-            for (step, pixel) in row[bounds.x1 + x..bounds.x1 + x + chunk]
-                .iter_mut()
-                .enumerate()
-            {
-                let source_x = (tile_x + step) * image.width / tile_width;
-                *pixel = alpha_over(image.pixels[source_y * image.width + source_x], *pixel);
+            let chunk = (tile_width - tile_x).min(span.last - x);
+            for step in 0..chunk {
+                let local_x = x + step;
+                let coverage = (span.x2.min(local_x as f32 + 1.0)
+                    - span.x1.max(local_x as f32))
+                .min(1.0);
+                let foreground = sampler.sample(tile_x + step, tile_y);
+                composite_sample(
+                    &mut row[bounds.x1 + local_x],
+                    foreground,
+                    coverage,
+                );
             }
             x += chunk;
         }
@@ -376,7 +562,7 @@ pub(super) fn alpha_over(source: u32, destination: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Image, paint_background_image};
+    use super::{Image, paint_background_image, paint_image};
     use crate::renderer::{PhysicalRect, Raster};
     use crate::style::Computed;
 
@@ -441,6 +627,48 @@ mod tests {
             y2: height,
         };
         paint_background_image(target, bounds, None, &bitmap(), computed, [0.0; 4]);
+    }
+
+    fn paint_img(target: &mut TestTarget, computed: &Computed, radii: [f32; 4]) {
+        let bounds = PhysicalRect {
+            x1: 0,
+            y1: 0,
+            x2: target.width,
+            y2: target.height,
+        };
+        paint_image(target, bounds, None, &bitmap(), computed, radii);
+    }
+
+    #[test]
+    fn smooth_image_rendering_interpolates_premultiplied_pixel_centers() {
+        let mut target = TestTarget::new(3, 3);
+        paint_img(&mut target, &Computed::default(), [0.0; 4]);
+
+        // The central destination pixel is centered among all four source
+        // pixels, so its red channel is their premultiplied average.
+        assert_eq!(target.at(1, 1), 0xff28_0000);
+    }
+
+    #[test]
+    fn pixelated_image_rendering_selects_one_nearest_source_pixel() {
+        let mut computed = Computed::default();
+        computed.set("image-rendering", "pixelated");
+        let mut target = TestTarget::new(3, 3);
+        paint_img(&mut target, &computed, [0.0; 4]);
+
+        assert_eq!(target.at(1, 1), D);
+    }
+
+    #[test]
+    fn image_border_radius_blends_fractional_edge_coverage() {
+        let mut target = TestTarget::new(4, 4);
+        target.pixels.fill(0xff00_0000);
+        paint_img(&mut target, &Computed::default(), [1.0; 4]);
+
+        let edge_red = (target.at(0, 0) >> 16) & 0xff;
+        let interior_red = (target.at(1, 1) >> 16) & 0xff;
+        assert!(edge_red > 0 && edge_red < ((A >> 16) & 0xff));
+        assert!(interior_red > edge_red);
     }
 
     #[test]
@@ -511,14 +739,14 @@ mod tests {
         let mut target = TestTarget::new(6, 4);
         paint(&mut target, 6, 4, &computed);
 
-        // scale = max(6/2, 4/2) = 3 → 6x6 tile; the visible 4 rows sample
-        // source row `y * 2 / 6` and column `x * 2 / 6`.
+        // scale = max(6/2, 4/2) = 3 → 6x6 tile. Edge pixels clamp to
+        // source centers while interior pixels interpolate their neighbors.
         assert_eq!(target.at(0, 0), A);
-        assert_eq!(target.at(2, 0), A);
-        assert_eq!(target.at(3, 0), B);
-        assert_eq!(target.at(0, 2), A);
-        assert_eq!(target.at(0, 3), C);
-        assert_eq!(target.at(5, 3), D);
+        assert!(target.at(2, 0) > A && target.at(2, 0) < B);
+        assert!(target.at(3, 0) > A && target.at(3, 0) < B);
+        assert!(target.at(0, 2) > A && target.at(0, 2) < C);
+        assert!(target.at(0, 3) > A && target.at(0, 3) < C);
+        assert!(target.at(5, 3) > B && target.at(5, 3) < D);
     }
 
     #[test]
@@ -529,10 +757,12 @@ mod tests {
         let mut target = TestTarget::new(8, 4);
         paint(&mut target, 8, 4, &computed);
 
-        // 4x2 tile: source column `x * 2 / 4`, row `y * 2 / 2`.
+        // 4x2 tile: vertical pixels remain exact while the scaled horizontal
+        // axis interpolates between its two source columns.
         assert_eq!(target.at(0, 0), A);
-        assert_eq!(target.at(1, 0), A);
-        assert_eq!(target.at(2, 0), B);
+        assert!(target.at(1, 0) > A && target.at(1, 0) < B);
+        assert!(target.at(2, 0) > A && target.at(2, 0) < B);
+        assert_eq!(target.at(3, 0), B);
         assert_eq!(target.at(0, 1), C);
         assert_eq!(target.at(3, 1), D);
         assert_eq!(target.at(4, 0), 0); // no-repeat leaves the rest bare

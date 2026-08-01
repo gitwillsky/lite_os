@@ -90,9 +90,10 @@ impl RasterClip {
                 width: self.rect.x2.saturating_sub(self.rect.x1) as u32,
                 height: self.rect.y2.saturating_sub(self.rect.y1) as u32,
             },
-            radii: self
-                .radii
-                .map(|(x, y)| CornerRadius { x: x as u32, y: y as u32 }),
+            radii: self.radii.map(|(x, y)| CornerRadius {
+                x: x as u32,
+                y: y as u32,
+            }),
         })
     }
 }
@@ -301,23 +302,25 @@ impl Raster for SharedDumbBuffer {
     }
 }
 
-/// Masks every raster write to one physical damage rectangle.
+/// Masks every raster write to a set of physical damage rectangles.
 ///
 /// Paint primitives still address rows in full-surface coordinates because
 /// gradients, rounded corners and shadows depend on the original box geometry.
 /// The scratch row preserves that coordinate system while copying only the
-/// damaged span back to the retained target. Without this mask, a primitive
+/// damaged spans back to the retained target. Without this mask, a primitive
 /// that does not expose a separate clip argument could overwrite unchanged
-/// retained pixels outside the compositor damage.
+/// retained pixels outside the compositor damage. The rect set is exact
+/// (buffer-age 欠账 ∪ 当前帧 damage,cap 后由调用方合并);walk 级 paint 剪枝
+/// 只用其 bounding box,写掩码仍按此精确集合生效。
 pub(crate) struct DamageRaster<'a, R: Raster> {
     target: &'a mut R,
-    damage: PhysicalRect,
+    damage: &'a [PhysicalRect],
     active_row: Option<usize>,
     scratch: Vec<u32>,
 }
 
 impl<'a, R: Raster> DamageRaster<'a, R> {
-    pub(super) fn new(target: &'a mut R, damage: PhysicalRect) -> Self {
+    pub(super) fn new(target: &'a mut R, damage: &'a [PhysicalRect]) -> Self {
         Self {
             scratch: vec![0; target.width()],
             target,
@@ -330,9 +333,11 @@ impl<'a, R: Raster> DamageRaster<'a, R> {
         let Some(row) = self.active_row.take() else {
             return;
         };
-        if row >= self.damage.y1 && row < self.damage.y2 {
-            self.target.row_mut(row)[self.damage.x1..self.damage.x2]
-                .copy_from_slice(&self.scratch[self.damage.x1..self.damage.x2]);
+        for rect in self.damage {
+            if row >= rect.y1 && row < rect.y2 {
+                self.target.row_mut(row)[rect.x1..rect.x2]
+                    .copy_from_slice(&self.scratch[rect.x1..rect.x2]);
+            }
         }
     }
 }
@@ -588,8 +593,14 @@ mod tests {
         let masks = clipped.scene_clip_masks().collect::<Vec<_>>();
         assert_eq!(masks.len(), 2);
         assert_eq!(masks[0].rect.x, 2);
-        assert_eq!(masks[0].radii[0], display_proto::CornerRadius { x: 8, y: 8 });
+        assert_eq!(
+            masks[0].radii[0],
+            display_proto::CornerRadius { x: 8, y: 8 }
+        );
         assert_eq!(masks[1].rect.y, 10);
-        assert_eq!(masks[1].radii[2], display_proto::CornerRadius { x: 6, y: 5 });
+        assert_eq!(
+            masks[1].radii[2],
+            display_proto::CornerRadius { x: 6, y: 5 }
+        );
     }
 }

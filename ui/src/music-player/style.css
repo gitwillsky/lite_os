@@ -242,6 +242,9 @@
 
 .player__queue-index {
   width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--aurora-cyan);
   text-align: center;
 }

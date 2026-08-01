@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { SystemIcon } from "./controls.tsx";
 import { CloseGlyph } from "./window.tsx";
 
 export type ShellPanel = "command" | "overview" | "system" | null;
@@ -438,7 +439,7 @@ export function SystemCenter({
       <div className="sc-row">
         <img className="sc-row__icon" src="assets/speakers.png"/>
         <span className="sc-row__label">Speakers</span>
-        <span className="sc-row__chev">›</span>
+        <SystemIcon name="chevron-right" className="sc-row__chev"/>
       </div>
       <div className="sc-row">
         <img className="sc-row__icon" src="assets/battery-lg.png"/>

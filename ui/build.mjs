@@ -103,7 +103,7 @@ const properties = new Set([
   "border-top-color", "border-top-style", "border-top-width", "border-width",
   "animation", "backdrop-filter", "bottom", "box-shadow", "box-sizing", "color", "display", "flex", "flex-basis",
   "flex-direction", "flex-grow", "flex-shrink", "flex-wrap",
-  "font-family", "font-size", "font-style", "font-weight", "gap", "height", "justify-content",
+  "font-family", "font-size", "font-style", "font-weight", "gap", "height", "image-rendering", "justify-content",
   "left", "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top",
   "max-height", "max-width", "min-height",
   "min-width", "opacity", "overflow", "overflow-x", "overflow-y", "padding", "pointer-events", "position",
@@ -243,12 +243,12 @@ for (const [id, entryName, styleName] of products) {
   if (id === "file-manager") {
     await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
     await copyFile(join(root, "../assets/aurora/view-grid.png"), join(assets, "view-grid.png"));
-    // Nav glyphs come from the Codex-generated aurora-glyphs set (the old
-    // assets/aurora/nav-*.png were near-empty and invisible on the dark toolbar).
+    // Toolbar navigation uses the shared 48px Aurora glyph masters.
     for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "nav-home.png"]) {
       await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
     }
     await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
+    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
     await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
     await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
     await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
@@ -257,14 +257,14 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/aurora/package.png"), join(assets, "package.png"));
     await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
     await copyFile(join(root, "../assets/aurora/view-grid.png"), join(assets, "view-grid.png"));
-    // Nav glyphs from the Codex-generated aurora-glyphs set (the old
-    // assets/aurora/nav-*.png were near-empty; see file-manager block).
+    // Toolbar navigation uses the shared 48px Aurora glyph masters.
     for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png"]) {
       await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
     }
     await copyFile(join(root, "../assets/sprites-src/icon-drive.png"), join(assets, "drive.png"));
     await copyFile(join(root, "../assets/sprites-src/icon-drive-16.png"), join(assets, "drive-16.png"));
     await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
+    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
     await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
     await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
     await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));

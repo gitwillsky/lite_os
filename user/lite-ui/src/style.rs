@@ -51,6 +51,21 @@ impl Computed {
         self.get(name).and_then(parse_px).unwrap_or(default)
     }
 
+    /// Returns whether the two cascades are identical once `name` is ignored.
+    ///
+    /// Retained damage uses this to recognize a "transform-only" node change;
+    /// any other differing property must still promote the frame to a full
+    /// repaint.
+    pub fn equals_except(&self, other: &Self, name: &str) -> bool {
+        self.custom == other.custom
+            && self.values.len() - usize::from(self.values.contains_key(name))
+                == other.values.len() - usize::from(other.values.contains_key(name))
+            && self
+                .values
+                .iter()
+                .all(|(key, value)| key == name || other.values.get(key) == Some(value))
+    }
+
     /// Applies the fixed inheritable text properties absent from this node's cascade.
     pub fn inherit(&mut self, parent: &Self) {
         for name in [
@@ -60,6 +75,7 @@ impl Computed {
             "font-size",
             "font-style",
             "font-weight",
+            "image-rendering",
             "line-height",
             "text-align",
             "text-overflow",
@@ -196,6 +212,7 @@ fn is_inherited_property(name: &str) -> bool {
             | "font-size"
             | "font-style"
             | "font-weight"
+            | "image-rendering"
             | "line-height"
             | "text-align"
             | "text-overflow"

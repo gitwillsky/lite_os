@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import type { FsEntry } from "lite:fs";
-import { TextInput } from "../design-system/controls.tsx";
+import { SystemIcon, TextInput } from "../design-system/controls.tsx";
 import type { MenuItem } from "../design-system/controls.tsx";
 import { formatSize as formatSizeFor, measureText11 } from "./model.ts";
 import { fsListing } from "./use-browser.ts";
@@ -72,8 +72,7 @@ interface FolderViewChrome {
   onRenameCancel: () => void;
 }
 
-/** One details header cell: clickable, showing an ∧/∨ direction arrow on
- * the active column (the font atlas lacks ▲▼, so ASCII strokes are used). */
+/** One details header cell with a font-independent sort-direction icon. */
 function HeaderCell({ className, column, label, sort, onSort }: {
   className: string;
   column: SortColumn;
@@ -81,10 +80,11 @@ function HeaderCell({ className, column, label, sort, onSort }: {
   sort: SortState;
   onSort: (column: SortColumn) => void;
 }) {
-  const arrow = sort.column === column ? (sort.ascending ? " ∧" : " ∨") : "";
+  const direction = sort.column === column ? (sort.ascending ? "sort-up" : "sort-down") : null;
   return (
     <span className={className} onClick={() => onSort(column)}>
-      {label}{arrow}
+      <span>{label}</span>
+      {direction && <SystemIcon name={direction}/>}
     </span>
   );
 }
@@ -256,7 +256,7 @@ function TreeRow({ path, label, icon, depth, current, expanded, onToggle, onNavi
       onClick={() => onNavigate(path)}
     >
       <span className="tree__toggle" onClick={onToggle}>
-        {expanded ? "-" : "+"}
+        <SystemIcon name={expanded ? "chevron-down" : "chevron-right"}/>
       </span>
       <img className="tree__icon" src={icon}/>
       <span className="tree__label">{label}</span>
@@ -265,7 +265,7 @@ function TreeRow({ path, label, icon, depth, current, expanded, onToggle, onNavi
 }
 
 /** Lazy-loaded directory tree. Children are listed on first
- * expand (lite:fs list is synchronous), +/- toggles expansion, clicking a row
+ * expand (lite:fs list is synchronous), the chevron toggles expansion, clicking a row
  * navigates. The current location's row stays highlighted. */
 export function FolderTree({ roots, currentPath, listDirs, onNavigate }: {
   roots: { path: string; label: string; icon: string }[];

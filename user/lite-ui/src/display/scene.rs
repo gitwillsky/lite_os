@@ -3,8 +3,7 @@
 use std::io;
 
 use display_proto::{
-    ClipMask, ClipMasks, MAX_MESSAGE, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
-    send_message,
+    ClipMask, ClipMasks, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, send_message,
 };
 
 use super::{Display, ForeignLayer, Overlay, WindowFrame};
@@ -133,9 +132,8 @@ impl Display {
                 damage: Rectangles::from_slice(&no_damage),
             });
         }
-        let mut output = [0u8; MAX_MESSAGE];
         let message = SceneCommit::encode(
-            &mut output,
+            &mut self.staging,
             revision,
             self.output_serial,
             focused_surface,
@@ -144,6 +142,7 @@ impl Display {
         .ok_or_else(|| io::Error::other("scene encoding failed"))?;
         send_message(&self.stream, message)?;
         self.submitted.push_back(revision);
+        self.record_damage(buffer_id, revision, damage);
         Ok(())
     }
 }

@@ -1,6 +1,19 @@
 import React, { useCallback, useState } from "react";
 import { ContextMenu } from "./context-menu.tsx";
 
+export type SystemIconName = "chevron-right" | "chevron-down" | "sort-up" | "sort-down" | "playing" | "check";
+
+/** Shared geometry-backed system icon. These marks must not depend on font
+ * coverage: using text glyphs makes their shape vary with the UI font atlas. */
+export function SystemIcon({ name, className = "" }: { name: SystemIconName; className?: string }) {
+  const marks = name === "playing" ? 3 : 2;
+  return (
+    <span className={`system-icon system-icon--${name}${className ? ` ${className}` : ""}`} aria-hidden="true">
+      {Array.from({ length: marks }, (_, index) => <span key={index} className="system-icon__mark"/>)}
+    </span>
+  );
+}
+
 /** One dropdown/context-menu row (shape shared with ContextMenu). */
 export interface MenuItem {
   id: string;
@@ -152,7 +165,7 @@ export function CheckBox({ label, checked, disabled, onToggle }: {
 }) {
   return (
     <button className="checkbox" disabled={disabled} onClick={onToggle}>
-      <span className="checkbox__box">{checked ? "√" : ""}</span>
+      <span className="checkbox__box">{checked ? <SystemIcon name="check"/> : null}</span>
       <span>{label}</span>
     </button>
   );

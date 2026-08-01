@@ -56,7 +56,7 @@ const TYPE_LABELS: TypeLabels = {
 /** 48px icon for the large-icon view (folders share one cached bitmap). */
 function iconFor(entry: FsEntry): string {
   return entry.kind === "dir" || entry.kind === "symlink"
-    ? "assets/files.png"
+    ? "assets/folder.png"
     : "assets/file.png";
 }
 

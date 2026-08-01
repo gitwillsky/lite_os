@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { list, open } from "lite:fs";
 import type { FsEntry } from "lite:fs";
-import { RangeInput } from "../design-system/controls";
+import { RangeInput, SystemIcon } from "../design-system/controls";
 
 const MUSIC_ROOT = "/root/Music";
 const AUDIO_EXTENSIONS = new Set([
@@ -363,7 +363,9 @@ export default function MusicPlayer() {
                       className={`player__queue-row${active ? " player__queue-row--active" : ""}`}
                       onClick={() => activateTrack(queue, index, true)}
                     >
-                      <span className="player__queue-index">{active && playing ? ">" : String(index + 1)}</span>
+                      <span className="player__queue-index">
+                        {active && playing ? <SystemIcon name="playing"/> : String(index + 1)}
+                      </span>
                       <div className="player__queue-copy">
                         <span className="player__queue-title">{labels.title}</span>
                         <span className="player__queue-artist">{labels.artist}</span>

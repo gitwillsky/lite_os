@@ -121,18 +121,18 @@ class AudioRuntimeGateTests(unittest.TestCase):
 
     def test_command_and_system_center_hit_points_match_production_vqa(self) -> None:
         self.assertEqual(COMMAND_CENTER_POINT, (80, 28))
-        self.assertEqual(COMMAND_MUSIC_POINT, (666, 273))
+        self.assertEqual(COMMAND_MUSIC_POINT, (436, 220))
         self.assertEqual(SYSTEM_CENTER_POINT, (1440, 28))
-        self.assertEqual(MASTER_MUTE_POINT, (1155, 212))
-        self.assertEqual(MASTER_SCALE_Y, 212)
-        self.assertEqual(MASTER_VOLUME_X, {30: 1262, 70: 1342, 100: 1402})
+        self.assertEqual(MASTER_MUTE_POINT, (1382, 564))
+        self.assertEqual(MASTER_SCALE_Y, 596)
+        self.assertEqual(MASTER_VOLUME_X, {30: 1221, 70: 1347, 100: 1441})
         self.assertEqual(
             MASTER_VOLUME_X[70] - MASTER_VOLUME_X[30],
-            80,
+            126,
         )
         self.assertEqual(
             MASTER_VOLUME_X[100] - MASTER_VOLUME_X[70],
-            60,
+            94,
         )
 
     def test_panel_signatures_are_read_from_physical_qemu_ppm(self) -> None:

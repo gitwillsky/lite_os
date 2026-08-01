@@ -44,7 +44,9 @@
   callback 的唯一 owner；其他 crate 不得声明 QuickJS extern、raw pointer 或复制 exception cleanup。
 - `terminal-session` 独占 PTY child、VT state、scrollback、selection 与 dirty rows；React terminal 不得
   复制 parser/screen state。`ui/design-system` 独占 Aurora token、assets 与系统组件；应用不得复制窗口
-  chrome、shell、菜单、表单、Sidebar、Toolbar 或 Dialog 样式；compositor 与 LiteUI 不读取主题。
+  chrome、shell、菜单、表单、Sidebar、Toolbar、Dialog 或结构/状态图标样式；字符不得代替系统图标。
+  app identity icon 与 filesystem content icon 必须使用不同资产，禁止把带 tile 的应用图标复用于文件对象；
+  compositor 与 LiteUI 不读取主题。
 
 ## Interface
 
@@ -73,6 +75,10 @@
   early reject 与 hit geometry，不能代替像素裁剪。`border-radius` 的 overflow clip 位于 padding edge，
   四角横纵半径分别扣除相邻 border，并以亚像素 coverage 同时约束背景、边框、阴影、文本、图片与 opacity
   group；opacity offscreen 与最终 composite 之间只能应用一次祖先 coverage。
+- `<img>` 与 url `background-image` 必须由 `renderer/image` 的同一像素中心采样 owner 绘制；默认
+  `image-rendering: auto` 使用预乘双线性过滤，显式 `crisp-edges`/`pixelated` 才使用最近邻。精确 1:1
+  尺寸必须走单采样 fast path；图片自身圆角必须与其他 box primitive 一样使用 fractional coverage，禁止
+  hard-skip 整数裁边或为 Dock、壁纸建立私有缩放路径。
 - outer `box-shadow` 必须从偏移、spread 后的圆角 mask 计算边界内外连续 blur coverage，并排除原始
   border box；offset 只移动 mask，不能生成实心矩形阴影底板。blur 的有限采样范围与分带数必须受限，
   使 raster 成本随轮廓与 blur 半径增长，而不是随窗口面积重复填充。

@@ -240,7 +240,7 @@ impl Renderer {
             && let Some(source) = node.source.props.get("src").and_then(Value::as_str)
         {
             let image = self.image(source)?;
-            paint_image(pixels, bounds, paint_clip, image, radii);
+            paint_image(pixels, bounds, paint_clip, image, &node.computed, radii);
         }
         if !paint_raster.is_empty()
             && let Some(range) = range

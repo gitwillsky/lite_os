@@ -379,8 +379,8 @@ fn standard_pseudo_classes_match_dynamic_state_and_hovered_ancestors() {
 #[test]
 fn css_wide_keywords_resolve_against_parent_computed_values() {
     let sheet = Sheet::parse(
-        ".parent { color: #f3f7ff; font-size: 16px; padding: 9px; }
-            .child { color: inherit; font-size: unset; padding: initial; }",
+        ".parent { color: #f3f7ff; font-size: 16px; padding: 9px; image-rendering: pixelated; }
+            .child { color: inherit; font-size: unset; padding: initial; image-rendering: unset; }",
     )
     .expect("CSS-wide keywords parse");
     let parent = Node {
@@ -403,6 +403,7 @@ fn css_wide_keywords_resolve_against_parent_computed_values() {
 
     assert_eq!(child_style.get("color"), Some("#f3f7ff"));
     assert_eq!(child_style.get("font-size"), Some("16px"));
+    assert_eq!(child_style.get("image-rendering"), Some("pixelated"));
     assert_eq!(child_style.get("padding"), None);
     assert_eq!(child_style.get("padding-left"), None);
 }
@@ -454,6 +455,55 @@ fn nth_child_matches_standard_an_plus_b_and_ignores_text_nodes() {
     assert_eq!(first_style.get("opacity"), Some("0.5"));
     assert_eq!(second_style.get("color"), Some("#ffffff"));
     assert_eq!(second_style.get("opacity"), Some("0.5"));
+}
+
+#[test]
+fn first_and_last_child_match_element_siblings_and_ignore_text_nodes() {
+    let sheet = Sheet::parse(
+        ".item:first-child { color: #35c8ff; }
+            .item:last-child { opacity: 0.5; }",
+    )
+    .expect("standard structural pseudo-classes parse");
+    let first = Node {
+        id: 2,
+        kind: "span".to_owned(),
+        props: BTreeMap::from([("className".to_owned(), Value::String("item".to_owned()))]),
+        text: String::new(),
+        children: Vec::new(),
+    };
+    let last = Node { id: 4, ..first.clone() };
+    let parent = Node {
+        id: 1,
+        kind: "div".to_owned(),
+        props: BTreeMap::new(),
+        text: String::new(),
+        children: vec![
+            Node {
+                id: 3,
+                kind: "#text".to_owned(),
+                props: BTreeMap::new(),
+                text: "separator".to_owned(),
+                children: Vec::new(),
+            },
+            first.clone(),
+            last.clone(),
+            Node {
+                id: 5,
+                kind: "#text".to_owned(),
+                props: BTreeMap::new(),
+                text: "separator".to_owned(),
+                children: Vec::new(),
+            },
+        ],
+    };
+
+    let first_style = sheet.compute(&first, &[&parent]);
+    let last_style = sheet.compute(&last, &[&parent]);
+
+    assert_eq!(first_style.get("color"), Some("#35c8ff"));
+    assert_eq!(first_style.get("opacity"), None);
+    assert_eq!(last_style.get("color"), None);
+    assert_eq!(last_style.get("opacity"), Some("0.5"));
 }
 
 #[test]

@@ -34,6 +34,11 @@ pub struct Frame<'a> {
     pub id: u32,
     /// Mutable premultiplied ARGB8888 mapping.
     pub pixels: &'a mut SharedDumbBuffer,
+    /// Buffer-age 欠账:该 back buffer 自上次 commit 以来缺失的各 revision
+    /// damage 并集(物理像素)。渲染只需在这些 rect 与当前帧 damage 的并集内
+    /// 重建像素;集合之外的像素自该 buffer 上次 commit 起从未变化,保持有效。
+    /// 历史断档或全新映射时退化为全屏 rect。
+    pub damage: Vec<Rect>,
 }
 
 /// One compositor-ready foreign surface emitted by desktop layout.
@@ -98,6 +103,13 @@ pub struct Display {
     output_serial: u64,
     buffers: Vec<Buffer>,
     revision: u64,
+    /// 每次 scene/surface commit 的 (revision, damage) 历史,cap 见
+    /// `buffer::DAMAGE_HISTORY_CAP`。acquire 用它计算 back buffer 的
+    /// buffer-age 欠账;缺了它渲染只能整帧重建(每帧 20MB memcpy)。
+    history: VecDeque<(u64, Vec<Rect>)>,
+    /// 持久 commit 编码缓冲,替代每帧 64KiB 栈数组(MAX_MESSAGE 一次性驻留,
+    /// 不再反复清零栈页)。只被 commit 路径独占使用,无重入。
+    staging: Vec<u8>,
     ready: HashSet<(u32, u64)>,
     pending: VecDeque<Event>,
     submitted: VecDeque<u64>,
@@ -152,6 +164,8 @@ impl Display {
             output_serial: welcome.output_serial,
             buffers: Vec::new(),
             revision: 0,
+            history: VecDeque::new(),
+            staging: vec![0; MAX_MESSAGE],
             ready: HashSet::new(),
             pending: VecDeque::new(),
             submitted: VecDeque::new(),
@@ -231,6 +245,9 @@ impl Display {
             return Ok(());
         }
         self.physical = physical;
+        // 几何代际切换后,旧坐标系的 damage 历史对幸存 buffer 不再有意义;
+        // 清空强制下一次 acquire 回退全屏欠账。
+        self.history.clear();
         let matching = self
             .buffers
             .iter()
@@ -268,6 +285,8 @@ impl Display {
         }
         self.output_serial = configure.serial;
         self.physical = configure.size;
+        // 同 reconfigure:输出几何代际切换后清空旧坐标系 damage 历史。
+        self.history.clear();
         let matching = self
             .buffers
             .iter()
@@ -331,17 +350,26 @@ impl Display {
             return Ok(None);
         }
         let physical = self.physical;
-        let Some(buffer) = self
+        let Some(index) = self
             .buffers
-            .iter_mut()
-            .find(|buffer| buffer.free && buffer.matches(physical))
+            .iter()
+            .position(|buffer| buffer.free && buffer.matches(physical))
         else {
             return Ok(None);
         };
+        let full = Rect {
+            x: 0,
+            y: 0,
+            width: physical.width,
+            height: physical.height,
+        };
+        let damage = buffer::owed_damage(&self.history, self.buffers[index].last_revision, full);
+        let buffer = &mut self.buffers[index];
         buffer.free = false;
         Ok(Some(Frame {
             id: buffer.id,
             pixels: &mut buffer.pixels,
+            damage,
         }))
     }
 
@@ -364,9 +392,8 @@ impl Display {
     /// fails.
     pub fn commit_app(&mut self, buffer_id: u32, damage: &[display_proto::Rect]) -> io::Result<()> {
         let revision = self.next_revision()?;
-        let mut output = [0u8; MAX_MESSAGE];
         let message = SurfaceCommit::encode(
-            &mut output,
+            &mut self.staging,
             revision,
             self.configure_serial,
             buffer_id,
@@ -375,6 +402,7 @@ impl Display {
         .ok_or_else(|| io::Error::other("surface encoding failed"))?;
         send_message(&self.stream, message)?;
         self.submitted.push_back(revision);
+        self.record_damage(buffer_id, revision, damage);
         Ok(())
     }
 
