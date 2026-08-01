@@ -5,7 +5,12 @@ members = [
     "compositor",
     "display-proto",
     "linux-uapi",
-    "lite-ui",
+    "lite-runtime",
+    "apps/desktop",
+    "apps/music-player",
+    "apps/file-manager",
+    "apps/my-computer",
+    "apps/terminal",
     "quickjs-runtime",
     "terminal-session",
 ]
@@ -30,6 +35,23 @@ serde_json = "=1.0.149"
 taffy = "=0.12.2"
 symphonia = { version = "=0.6.0", default-features = false, features = ["all", "opt-simd-neon"] }
 unicode-width = "=0.2.2"
+# Online music: signing/crypto for QQ (musicu.fcg sign) and NetEase (eapi
+# AES-128-ECB + MD5). Pure-Rust RustCrypto stack — no C/asm, builds anywhere.
+aes = "=0.8.4"
+ecb = { version = "=0.1.2", features = ["std"] }
+md-5 = "=0.10.6"
+sha1 = "=0.10.6"
+sha2 = "=0.10.9"
+hmac = "=0.12.1"
+hex = "=0.4.3"
+base64 = "=0.22.1"
+# Blocking HTTP + pure-Rust TLS (rustls/ring). ring builds on aarch64-linux-musl
+# (tested asm) and riscv64 (portable C path); certs bundled via webpki-roots
+# because the guest ships no CA bundle.
+ureq = { version = "=2.12.1", default-features = false, features = ["tls"] }
+rustls = { version = "=0.23.20", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "=0.26.7"
+rustls-pki-types = "=1.10.1"
 
 [profile.dev]
 panic = "abort"

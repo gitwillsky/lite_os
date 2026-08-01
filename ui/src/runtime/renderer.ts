@@ -214,7 +214,7 @@ export function mount(Component: React.ComponentType) {
     null,
     false,
     null,
-    "lite-ui",
+    "lite-runtime",
     (error: unknown) => { throw error; },
     (error: unknown) => { throw error; },
     (error: unknown) => { throw error; },

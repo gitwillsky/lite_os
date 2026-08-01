@@ -55,11 +55,14 @@ BOOT_MARKERS = (
 # 桌面第一屏图标为竖排：My Computer(my-computer) 在最上，Terminal 次之，
 # My Documents(file-manager) 第四。坐标为 1504x846 逻辑视口比例；
 # 同 frame-timing gate 用的双击点。
+# Aurora 桌面把应用放在底部 Dock（非早期 XP 竖排左上角）。坐标为 1504x846 逻辑
+# 视口比例；Dock 居中于底部。图标顺序：LiteOS(Command Center，非应用) / Files /
+# Terminal / Music / Workspace / 设置。单击 Dock 图标即启动或激活（非双击）。
 DESKTOP_ICONS = {
-    "my-computer": (47 / 1504, 34 / 846),
-    "terminal": (47 / 1504, 92 / 846),
-    "music-player": (47 / 1504, 150 / 846),
-    "file-manager": (47 / 1504, 208 / 846),
+    "file-manager": (627 / 1504, 783 / 846),
+    "terminal": (711 / 1504, 783 / 846),
+    "music-player": (793 / 1504, 783 / 846),
+    "my-computer": (875 / 1504, 783 / 846),
 }
 # 应用窗口就绪 marker。
 APP_READY = {
@@ -175,8 +178,10 @@ def main() -> int:
                 qmp.button("left", False)
                 time.sleep(0.08)
 
-        # 1. 双击桌面图标打开目标应用，等其窗口就绪并稳定几帧。
-        double_click(*DESKTOP_ICONS[args.open])
+        # 1. 单击底部 Dock 图标打开目标应用，等其窗口就绪并稳定几帧。
+        shot("00-desktop")
+        click(*DESKTOP_ICONS[args.open])
+        shot("00-after-click")
         wait((APP_READY[args.open],), f"{args.open} launch", 20.0)
         time.sleep(2.0)
         shot("opened")

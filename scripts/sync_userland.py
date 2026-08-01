@@ -28,7 +28,11 @@ def managed_path(path: str) -> bool:
     return path in {
         "/bin/audio-service",
         "/bin/compositor",
-        "/bin/lite-ui",
+        "/bin/desktop",
+        "/bin/file-manager",
+        "/bin/my-computer",
+        "/bin/music-player",
+        "/bin/terminal",
         "/bin/session-launch",
         "/bin/shutdown",
         "/bin/terminal-session",
@@ -36,7 +40,7 @@ def managed_path(path: str) -> bool:
         "/etc/init.d/graphical-session",
         "/etc/profile",
         "/etc/terminfo/l/liteos",
-    } or path.startswith(("/usr/lib/lite-ui/", "/usr/share/liteos/"))
+    } or path.startswith(("/usr/lib/lite-runtime/", "/usr/share/liteos/"))
 
 
 def read_stamp(image: Path) -> dict[str, object] | None:

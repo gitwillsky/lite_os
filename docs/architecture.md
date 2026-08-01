@@ -23,7 +23,7 @@ LiteOS 是架构中立的 Rust `no_std` kernel。通用代码只消费编译期�
 | 通信 | [Pipe、epoll、socket 与 network](architecture/ipc-network.md) |
 | 设备 | [VirtIO、DRM、evdev、PTY 与 terminal](architecture/devices-terminal.md) |
 | 音频 | [HTMLMediaElement、系统 mixer、ALSA PCM 与 VirtIO Sound](architecture/audio.md) |
-| 图形会话 | [compositor、LiteUI、React desktop 与窗口应用](architecture/lite-ui.md) |
+| 图形会话 | [compositor、LiteUI、React desktop 与窗口应用](architecture/lite-runtime.md) |
 | 用户态 | [ELF、musl、BusyBox、APK 与 ABI](architecture/userspace-abi.md) |
 
 依赖矩阵、state owner 和 interface 约束在 [架构契约](architecture-contract.md)；用户可观察 ABI 状态在 [syscall 支持矩阵](syscall-support.md)。

@@ -12,6 +12,8 @@ const SO_ERROR: usize = 4;
 const SO_BROADCAST: usize = 6;
 const SO_PEERCRED: usize = 17;
 const SO_BINDTODEVICE: usize = 25;
+const SO_RCVTIMEO: usize = 20;
+const SO_SNDTIMEO: usize = 21;
 const IFNAMSIZ: usize = 16;
 
 /// @description 设置已实现的 Linux IP 与 SOL_SOCKET endpoint policy。
@@ -51,6 +53,11 @@ pub(crate) fn sys_setsockopt(
             .and_then(|name| socket.bind_to_device(name).map_err(socket_error)),
         (IPPROTO_TCP, TCP_NODELAY) => read_enabled(value, length)
             .and_then(|enabled| socket.set_tcp_no_delay(enabled).map_err(socket_error)),
+        // Blocking send/recv timeouts. The blocking socket path waits on
+        // readiness without a deadline, so the timeout is accepted (validated as
+        // a `struct timeval`) but advisory — HTTP clients like ureq set these
+        // and require the call to succeed rather than fail with ENOPROTOOPT.
+        (SOL_SOCKET, SO_RCVTIMEO | SO_SNDTIMEO) => read_timeval(value, length).map(|_| ()),
         _ => Err(-errno::ENOPROTOOPT),
     }
     .map_or_else(|error| error, |()| 0)
@@ -58,6 +65,31 @@ pub(crate) fn sys_setsockopt(
 
 fn read_enabled(value: usize, length: usize) -> Result<bool, isize> {
     read_i32(value, length).map(|value| value != 0)
+}
+
+/// Reads a `struct timeval { i64 tv_sec; i64 tv_usec; }` (16 bytes on 64-bit)
+/// and returns the timeout in microseconds. Used to validate SO_RCVTIMEO /
+/// SO_SNDTIMEO buffers even though the blocking socket path does not yet honor
+/// the deadline.
+fn read_timeval(value: usize, length: usize) -> Result<u64, isize> {
+    if length < 16 {
+        return Err(-errno::EINVAL);
+    }
+    let mut bytes = [0; 16];
+    if value == 0
+        || current_task()
+            .unwrap()
+            .copy_from_user(value, &mut bytes)
+            .is_err()
+    {
+        return Err(-errno::EFAULT);
+    }
+    let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
+    let micros = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
+    if seconds < 0 || micros < 0 {
+        return Err(-errno::EINVAL);
+    }
+    Ok((seconds as u64).saturating_mul(1_000_000).saturating_add(micros as u64))
 }
 
 fn read_i32(value: usize, length: usize) -> Result<i32, isize> {

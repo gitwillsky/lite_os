@@ -20,7 +20,7 @@
 | `user/audio-service` | mixer、ALSA OFD、master volume 与 stream registry |
 | `user/audio-proto` | AF_UNIX control wire 与 memfd ring layout |
 | `user/linux-uapi` | ALSA、memfd、mmap、SCM_RIGHTS typed wrapper |
-| `user/lite-ui/audio` | 每进程 audio worker、media state、decoder/resampler 与 Web event projection |
+| `user/lite-runtime/audio` | 每进程 audio worker、media state、decoder/resampler 与 Web event projection |
 | `ui/runtime` | `HTMLMediaElement` public instance 与 UA controls |
 
 compositor 不依赖任何 audio module，也不启动、监督或恢复 audio service。
@@ -28,6 +28,6 @@ compositor 不依赖任何 audio module，也不启动、监督或恢复 audio s
 ## 结果
 
 - 新增独立 audio architecture/contract 文档，并在全局 dependency matrix 登记 `audio`，不能把事实复制到
-  `devices-terminal` 或 `lite-ui`。
+  `devices-terminal` 或 `lite-runtime`。
 - kernel concrete adapter 只实现通用 PCM device seam；ALSA UAPI 不读取 VirtIO private state。
 - system service protocol 是 userspace seam，不进入 kernel ABI；Web app 不直接消费该协议。

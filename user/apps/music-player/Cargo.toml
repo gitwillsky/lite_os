@@ -1,0 +1,32 @@
+[package]
+name = "music-player"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+autolib = false
+
+# The online music player: the generic LiteOS runtime plus a `MusicExt`
+# HostExtension that owns QQ/NetEase signing, the HTTPS+TLS stack, and the
+# play-while-downloading stream worker. Only this binary links ureq/rustls/ring
+# and the crypto crates — the runtime library and other apps carry none of it.
+[[bin]]
+name = "music-player"
+path = "src/main.rs"
+
+[dependencies]
+lite-runtime = { path = "../../lite-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+# HTTP + TLS + provider signing (owned by this app, not the runtime library).
+ureq.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+rustls-pki-types.workspace = true
+aes.workspace = true
+ecb.workspace = true
+md-5.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+hex.workspace = true
+base64.workspace = true

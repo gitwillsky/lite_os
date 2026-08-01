@@ -49,7 +49,7 @@
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke；VirtIO input adapter 只提供 raw event/config。
 - PTY registry、pair 与 Terminal session/foreground/winsize 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
-  [图形会话与 LiteUI](lite-ui.md) 唯一维护；本文件只拥有 kernel device 与 PTY 事实。
+  [图形会话与 LiteUI](lite-runtime.md) 唯一维护；本文件只拥有 kernel device 与 PTY 事实。
 
 ## Known limits
 
@@ -57,4 +57,4 @@
   3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
 - VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port 或
   hotplug userspace 管理。
-- graphical session 的产品边界见[图形会话与 LiteUI](lite-ui.md)。
+- graphical session 的产品边界见[图形会话与 LiteUI](lite-runtime.md)。

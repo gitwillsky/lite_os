@@ -39,12 +39,13 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "README.md",
         "audio-proto",
         "audio-service",
+        "apps",
         "base",
         "compositor",
         "diagnostics",
         "display-proto",
         "linux-uapi",
-        "lite-ui",
+        "lite-runtime",
         "quickjs-runtime",
         "terminal-session",
     ])
@@ -62,10 +63,12 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         .unwrap_or_default();
     if actual != expected {
         errors.push(format!(
-            "user/: expected the single LiteUI product track {expected:?}, found {actual:?}"
+            "user/: expected the LiteUI runtime library + app-binary track {expected:?}, found {actual:?}"
         ));
     }
-    for forbidden in ["desktop", "splash", "terminal"] {
+    // Obsolete GUI tracks must not reappear at the top level; each app now lives
+    // under `user/apps/<id>` as its own binary linking the `lite-runtime` lib.
+    for forbidden in ["desktop", "splash", "terminal", "lite-ui"] {
         if root.join("user").join(forbidden).exists() {
             errors.push(format!(
                 "user/{forbidden}: obsolete GUI track must be removed"
@@ -85,10 +88,16 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "audio-service/src/service.rs",
         "display-proto/src/lib.rs",
         "display-proto/src/scene.rs",
-        "lite-ui/src/main.rs",
-        "lite-ui/src/audio/mod.rs",
-        "lite-ui/src/audio/decode.rs",
-        "lite-ui/src/renderer.rs",
+        "lite-runtime/src/lib.rs",
+        "lite-runtime/src/host/extension.rs",
+        "lite-runtime/src/audio/mod.rs",
+        "lite-runtime/src/audio/decode.rs",
+        "lite-runtime/src/renderer.rs",
+        "apps/desktop/src/main.rs",
+        "apps/file-manager/src/main.rs",
+        "apps/my-computer/src/main.rs",
+        "apps/terminal/src/main.rs",
+        "apps/music-player/src/main.rs",
         "quickjs-runtime/src/raw.rs",
         "quickjs-runtime/vendor/quickjs/quickjs.c",
         "terminal-session/src/lib.rs",
@@ -110,7 +119,12 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "\"compositor\"",
         "\"display-proto\"",
         "\"linux-uapi\"",
-        "\"lite-ui\"",
+        "\"lite-runtime\"",
+        "\"apps/desktop\"",
+        "\"apps/file-manager\"",
+        "\"apps/my-computer\"",
+        "\"apps/terminal\"",
+        "\"apps/music-player\"",
         "\"quickjs-runtime\"",
         "\"terminal-session\"",
         "audio-proto = { path = \"audio-proto\" }",
@@ -132,7 +146,9 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "\"user/compositor\"",
         "\"user/display-proto\"",
         "\"user/linux-uapi\"",
-        "\"user/lite-ui\"",
+        "\"user/lite-runtime\"",
+        "\"user/apps/desktop\"",
+        "\"user/apps/music-player\"",
         "\"user/quickjs-runtime\"",
         "\"user/terminal-session\"",
     ] {
@@ -168,7 +184,7 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected = "::respawn:/bin/audio-service\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/lite-ui --desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    let expected = "::respawn:/bin/audio-service\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
             "user/base/inittab: must supervise the audio service, compositor, React desktop, network and UART recovery exactly once"
@@ -186,14 +202,18 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     for required in [
         "def build_compositor(",
         "def build_audio_service(",
-        "def build_lite_ui(",
+        "def build_app_binary(",
         "def build_terminal_session(",
         "def build_ui_assets(",
         "/bin/audio-service",
         "/bin/compositor",
-        "/bin/lite-ui",
+        "/bin/desktop",
+        "/bin/file-manager",
+        "/bin/my-computer",
+        "/bin/music-player",
+        "/bin/terminal",
         "/bin/terminal-session",
-        "/usr/lib/lite-ui/runtime.js",
+        "/usr/lib/lite-runtime/runtime.js",
         "/usr/share/liteos/desktop/main.js",
         "/usr/share/liteos/apps/terminal/app.json",
         "/usr/share/liteos/apps/music-player/app.json",
@@ -203,7 +223,7 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
         }
     }
     for forbidden in [
-        "/bin/desktop",
+        "/bin/lite-ui",
         "/bin/splash",
         "startmenu.conf",
         "wallpaper.xrgb",
@@ -266,17 +286,17 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             "DIRTYFB clip staging must remain stack-bounded",
         ),
         (
-            "user/lite-ui/src/display.rs",
+            "user/lite-runtime/src/display.rs",
             "submitted: VecDeque<u64>",
             "LiteUI commits must retain asynchronous revision ordering",
         ),
         (
-            "user/lite-ui/src/main.rs",
+            "user/lite-runtime/src/lib.rs",
             "state.composition_is_dirty()",
             "foreign-surface adoption must preserve desktop raster pixels",
         ),
         (
-            "user/lite-ui/src/renderer/render.rs",
+            "user/lite-runtime/src/renderer/render.rs",
             "render_move_underlay",
             "window drag must retain a clean raster beneath the moving group",
         ),
@@ -287,7 +307,7 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             errors.push(format!("{path}: {failure}"));
         }
     }
-    let display = fs::read_to_string(root.join("user/lite-ui/src/display.rs")).unwrap_or_default();
+    let display = fs::read_to_string(root.join("user/lite-runtime/src/display.rs")).unwrap_or_default();
     if display.contains("wait_presented") {
         errors.push(
             "user/lite-ui/src/display.rs: synchronous presentation wait blocks latest-only pacing"

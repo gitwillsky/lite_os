@@ -1074,6 +1074,13 @@ def build_rust_user_program(
     generation = generation_directory(WORK / "rust-user-program-generations", fingerprint(payload))
     env = build_environment()
     linker_variable = f"CARGO_TARGET_{RUST_USER_TARGET.upper().replace('-', '_')}_LINKER"
+    # `ring` (rustls TLS backend, pulled in by the online music player) compiles
+    # C sources via the `cc` crate, which by default probes for a
+    # `<triple>-gcc`. Point it at the pinned musl clang + sysroot for this
+    # target so the cross build finds a working C toolchain.
+    target_key = RUST_USER_TARGET.replace("-", "_")
+    cc_invocation = f"{musl.compiler} --target={TARGET.linux_triple}"
+    cflags = f"-nostdlibinc -isystem {musl.install}/usr/include"
     env.update(
         {
             "LITEOS_MUSL_CLANG": str(musl.compiler),
@@ -1084,6 +1091,9 @@ def build_rust_user_program(
             "CARGO_INCREMENTAL": "0",
             "CARGO_TARGET_DIR": str(cargo_target),
             linker_variable: str(ROOT / "scripts/musl_clang.py"),
+            f"CC_{target_key}": cc_invocation,
+            f"AR_{target_key}": str(musl.archiver),
+            f"CFLAGS_{target_key}": cflags,
             "RUSTFLAGS": (
                 f"{RUST_USER_RUSTFLAGS} "
                 f"-L native={libunwind.parent} -D warnings"
@@ -1149,13 +1159,17 @@ def build_compositor(musl: MuslCachePaths) -> Path:
     )
 
 
-def build_lite_ui(musl: MuslCachePaths) -> Path:
-    """构建所有窗体应用共用的 QuickJS/React host。"""
+def build_app_binary(musl: MuslCachePaths, app_id: str) -> Path:
+    """构建一个链接 lite-runtime 库的应用二进制(desktop / 各 app)。
+
+    每个 app 是独立 crate(`user/apps/<id>`),crate 名与 bin 名均为 `<id>`,
+    链接通用运行时库 `lite-runtime`(QuickJS/React host、渲染器、事件循环)。
+    """
     return build_rust_user_program(
         musl,
-        "lite-ui",
-        "lite-ui",
-        "lite-ui",
+        app_id,
+        app_id,
+        f"app-{app_id}",
         1,
     )
 
@@ -1267,7 +1281,17 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
     artifacts = [
         UserlandArtifact(build_audio_service(musl), "/bin/audio-service", 0o755),
         UserlandArtifact(build_compositor(musl), "/bin/compositor", 0o755),
-        UserlandArtifact(build_lite_ui(musl), "/bin/lite-ui", 0o755),
+        # Each GUI app is its own binary (`/bin/<id>`) linking the lite-runtime
+        # library; the desktop shell spawns them by that path.
+        UserlandArtifact(build_app_binary(musl, "desktop"), "/bin/desktop", 0o755),
+        UserlandArtifact(
+            build_app_binary(musl, "file-manager"), "/bin/file-manager", 0o755
+        ),
+        UserlandArtifact(build_app_binary(musl, "my-computer"), "/bin/my-computer", 0o755),
+        UserlandArtifact(
+            build_app_binary(musl, "music-player"), "/bin/music-player", 0o755
+        ),
+        UserlandArtifact(build_app_binary(musl, "terminal"), "/bin/terminal", 0o755),
         UserlandArtifact(build_session_launch(musl), "/bin/session-launch", 0o755),
         UserlandArtifact(build_terminal_session(musl), "/bin/terminal-session", 0o755),
         UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
@@ -1326,7 +1350,7 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
     for source in sorted(path for path in ui.rglob("*") if path.is_file()):
         relative = source.relative_to(ui)
         if relative == Path("runtime.js"):
-            destination = "/usr/lib/lite-ui/runtime.js"
+            destination = "/usr/lib/lite-runtime/runtime.js"
         elif relative.parts[0] == "desktop":
             destination = f"/usr/share/liteos/{relative.as_posix()}"
         else:
@@ -1439,7 +1463,7 @@ def create_image(
         "mkdir /usr",
         "mkdir /usr/bin",
         "mkdir /usr/lib",
-        "mkdir /usr/lib/lite-ui",
+        "mkdir /usr/lib/lite-runtime",
         "mkdir /usr/share",
         "mkdir /usr/share/liteos",
         "mkdir /usr/share/liteos/apps",
@@ -1606,7 +1630,11 @@ def create_image(
     for session_binary in (
         "/bin/audio-service",
         "/bin/compositor",
-        "/bin/lite-ui",
+        "/bin/desktop",
+        "/bin/file-manager",
+        "/bin/my-computer",
+        "/bin/music-player",
+        "/bin/terminal",
         "/bin/session-launch",
         "/bin/terminal-session",
     ):
@@ -1626,7 +1654,7 @@ def create_image(
         "/usr/share/liteos/liteos-ui-regular.otf",
         "/usr/share/liteos/liteos-ui-bold.otf",
         "/usr/share/liteos/liteos-terminal.a8",
-        "/usr/lib/lite-ui/runtime.js",
+        "/usr/lib/lite-runtime/runtime.js",
         "/usr/share/liteos/desktop/main.js",
         "/usr/share/liteos/desktop/style.css",
         "/usr/share/liteos/desktop/assets/liteos.png",

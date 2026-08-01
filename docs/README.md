@@ -13,7 +13,7 @@
 - [IPC 与网络](architecture/ipc-network.md)
 - [设备与终端](architecture/devices-terminal.md)
 - [音频](architecture/audio.md)
-- [图形会话与 LiteUI](architecture/lite-ui.md)
+- [图形会话与 LiteUI](architecture/lite-runtime.md)
 - [用户态与 ABI](architecture/userspace-abi.md)
 
 ## 架构契约
@@ -27,7 +27,7 @@
 - [IPC 与网络契约](architecture-contract/ipc-network.md)
 - [设备与终端契约](architecture-contract/devices-terminal.md)
 - [音频契约](architecture-contract/audio.md)
-- [图形会话与 LiteUI 契约](architecture-contract/lite-ui.md)
+- [图形会话与 LiteUI 契约](architecture-contract/lite-runtime.md)
 - [用户态与 ABI 契约](architecture-contract/userspace-abi.md)
 
 ## Linux 64-bit 用户态 ABI

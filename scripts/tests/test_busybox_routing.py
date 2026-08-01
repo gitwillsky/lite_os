@@ -53,7 +53,9 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 module, "build_audio_service", return_value=Path("audio-service")
             ),
             patch.object(module, "build_compositor", return_value=Path("compositor")),
-            patch.object(module, "build_lite_ui", return_value=Path("lite-ui")),
+            patch.object(
+                module, "build_app_binary", side_effect=lambda _musl, app_id: Path(app_id)
+            ),
             patch.object(
                 module, "build_session_launch", return_value=Path("session-launch")
             ),

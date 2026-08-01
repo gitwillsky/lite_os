@@ -1,0 +1,30 @@
+[package]
+name = "lite-runtime"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+autolib = false
+
+# The generic LiteOS GUI/JS runtime, linked as a library by each app binary
+# (like GTK/GStreamer). It owns QuickJS+React, the CSS renderer, input, timers,
+# clipboard, the generic filesystem bridge, and the audio playback pipeline.
+# App-specific native ops (desktop shell, terminal PTY, music provider/network)
+# live in each app binary as a `HostExtension`, not here.
+[lib]
+name = "lite_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+cssparser.workspace = true
+display-proto.workspace = true
+linux-uapi.workspace = true
+parley.workspace = true
+swash.workspace = true
+png = "=0.18.0"
+quickjs-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+taffy.workspace = true
+symphonia.workspace = true
+audio-proto.workspace = true
+unicode-width.workspace = true

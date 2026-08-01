@@ -10,12 +10,12 @@ frame-stats` marker per window. This gate parses that marker, driving a syntheti
 virtio-input workload so an otherwise-idle desktop produces a measurable stream.
 
 Gate policy (microseconds), per build-and-verify.md's "wide-but-real absolute
-ceilings" rule: the contract numbers (lite-ui.md:87-89, p95 16.67ms / p99 33.3ms)
+ceilings" rule: the contract numbers (lite-runtime.md:87-89, p95 16.67ms / p99 33.3ms)
 are printed as context, but the RED thresholds are widened so host scheduling
 jitter under QEMU+HVF does not flap the gate. `dropped` counts device vblank
 SEQUENCE gaps — independent of any host clock — so it is gated strictly at 0 as
 the sharpest real signal. AArch64+HVF only; RISC-V TCG does not carry the 60Hz
-gate (lite-ui.md:91).
+gate (lite-runtime.md:91).
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def default_image(target: BuildTarget) -> Path:
 def gate_inputs(image: Path, target: BuildTarget) -> tuple[Path, ...]:
     """Cache inputs = only artifacts that can change measured frame timing.
 
-    The rootfs image is the ground truth of what boots (the compositor, lite-ui
+    The rootfs image is the ground truth of what boots (the compositor, the app binaries linking lite-runtime
     and terminal-session binaries are baked into it by build-rootfs), so hashing
     it captures any userland change. The kernel boot artifact and the two gate
     scripts complete the key.

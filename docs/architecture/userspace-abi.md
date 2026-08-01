@@ -26,7 +26,7 @@
 - timerfd 是标准匿名 OFD：`TimerQueue` 独占 clock/setting/deadline index，`TimerFd` 独占未读
   expiration counter 与 poll/epoll readiness；最后一个 fd/OFD 引用释放时同步撤销 timer record。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、普通 Rust `std`
-  binary `audio-service`/`compositor`/`lite-ui`/`terminal-session`、
+  binary `audio-service`/`compositor`/`desktop` 等 app bin/`terminal-session`、
   `audio-proto`/`quickjs-runtime`/`display-proto`/`linux-uapi` library 和单 ELF
   `liteos-stress` diagnostics。`user/` 是单一 Cargo workspace 与 lockfile；
   kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。

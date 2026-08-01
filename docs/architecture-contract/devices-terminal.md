@@ -22,7 +22,7 @@
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
 - `fs::pty` 独占 PTY registry/pair；Terminal 独占 session/foreground/termios/winsize。userspace terminal
-  helper 与 graphical session owner 由 [LiteUI 契约](lite-ui.md) 维护。
+  helper 与 graphical session owner 由 [LiteUI 契约](lite-runtime.md) 维护。
 - userspace `linux-uapi` 独占 DRM/evdev/PTY/process/poll ancillary 的 raw musl FFI；`OwnedFd`、
   `DumbBuffer`、`InputDevice`、`PtySession` 与 `SessionChild` 独占对应资源 cleanup。应用不得复制
   layout、constant、extern block 或裸 owner。
@@ -71,7 +71,7 @@
   8-slot 上限；damage、wire frame、input batch 与 renderer row 是协议或热路径 bounded buffer，继续
   使用固定数组。poll descriptor/mapping vector 必须跨轮次复用容量，事件稳态不得新增分配。
 - graphical userspace 的 DRM master、buffer、session epoch、boot scene、renderer 与 terminal helper
-  interface 由 [LiteUI 契约](lite-ui.md) 唯一维护；本契约不得复制其 state machine。
+  interface 由 [LiteUI 契约](lite-runtime.md) 唯一维护；本契约不得复制其 state machine。
 - `SessionChild` 只接受固定 I/O profile 的 `SessionCommand`，并强制通过单线程
   `/bin/session-launch` 建立 parent-death、session/process-group 与同步 exec-error 契约；
   多线程 LiteUI 不得运行 `pre_exec`，目标 stderr 统一进入标准 `/dev/console`。

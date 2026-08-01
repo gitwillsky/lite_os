@@ -53,6 +53,49 @@ const liteModules = {
     export const rename = (from, to) => JSON.parse(globalThis.__liteNative("fs.rename", JSON.stringify({ from, to })));
     export const copy = (from, to) => JSON.parse(globalThis.__liteNative("fs.copy", JSON.stringify({ from, to })));
   `,
+  "lite:net": `
+    // Async request replies and stream progress arrive on the "net" channel,
+    // keyed by the id the sync op returned. Resolvers live in one map.
+    const pending = new Map();
+    const streamWatchers = new Map();
+    let subscribed = false;
+    const ensureSubscribed = () => {
+      if (subscribed) return;
+      subscribed = true;
+      globalThis.__liteSubscribe("net", (event) => {
+        if (event.requestId != null) {
+          const resolve = pending.get(event.requestId);
+          if (resolve) { pending.delete(event.requestId); resolve(event); }
+        }
+        if (event.streamId != null) {
+          const watcher = streamWatchers.get(event.streamId);
+          if (watcher) watcher(event);
+        }
+      });
+    };
+    const call = (op, payload) => {
+      ensureSubscribed();
+      return new Promise((resolve) => {
+        const id = Number(globalThis.__liteNative(op, payload));
+        pending.set(id, resolve);
+      });
+    };
+    // Buffered HTTP: resolves to { status, body, error }.
+    export const request = (req) => call("net.request", JSON.stringify(req));
+    // Signed provider search: resolves to { status, body, error } (raw source JSON).
+    export const search = (source, query, limit) => call("music.search", JSON.stringify({ source, query, limit }));
+    // Resolve a playable URL for a track: resolves to { status, body, error }.
+    export const songUrl = (opts) => call("music.songUrl", JSON.stringify(opts));
+    // Begin a streaming download; resolves to the numeric stream id synchronously.
+    export const streamOpen = (url, ext) => {
+      ensureSubscribed();
+      return Number(globalThis.__liteNative("net.stream.open", JSON.stringify({ url, ext })));
+    };
+    export const watchStream = (id, callback) => { streamWatchers.set(id, callback); };
+    export const unwatchStream = (id) => { streamWatchers.delete(id); };
+    export const streamStat = (id) => JSON.parse(globalThis.__liteNative("net.stream.stat", String(id)));
+    export const streamClose = (id) => { streamWatchers.delete(id); globalThis.__liteNative("net.stream.close", String(id)); };
+  `,
 };
 
 const liteModulePlugin = (product) => ({
@@ -63,6 +106,9 @@ const liteModulePlugin = (product) => ({
       if (!(path in liteModules)) throw new Error(`unknown LiteUI system module '${path}'`);
       if (path === "lite:audio-system" && product !== "desktop") {
         throw new Error("lite:audio-system is available only to the desktop bundle");
+      }
+      if (path === "lite:net" && product !== "music-player") {
+        throw new Error("lite:net is available only to the music-player bundle");
       }
       return { contents: liteModules[path], loader: "js" };
     });
@@ -276,6 +322,14 @@ for (const [id, entryName, styleName] of products) {
     await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
     await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
     await copyFile(join(root, "../assets/music/跟太阳系说再见/cover.png"), join(assets, "solar-system-cover.png"));
+    // Codex-generated online-music UI glyphs (Aurora cyan/purple theme).
+    for (const name of [
+      "badge-netease.png", "badge-qq.png", "play.png", "pause.png",
+      "prev.png", "next.png", "search.png", "buffering.png",
+      "cover-placeholder.png",
+    ]) {
+      await copyFile(join(root, `../assets/music-online-src/${name}`), join(assets, name));
+    }
   }
   if (id !== "desktop") {
     await copyFile(join(root, `src/${id}/app.json`), join(directory, "app.json"));

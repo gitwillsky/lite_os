@@ -14,7 +14,7 @@
 | IPC 与网络 | [ipc-network](architecture-contract/ipc-network.md) |
 | 设备与终端 | [devices-terminal](architecture-contract/devices-terminal.md) |
 | 音频 | [audio](architecture-contract/audio.md) |
-| 图形会话与 LiteUI | [lite-ui](architecture-contract/lite-ui.md) |
+| 图形会话与 LiteUI | [lite-runtime](architecture-contract/lite-runtime.md) |
 | 用户态与 ABI | [userspace-abi](architecture-contract/userspace-abi.md) |
 
 ## Crate contract

@@ -271,6 +271,57 @@ declare module "lite:fs" {
   export const copy: (from: string, to: string) => FsWriteResult;
 }
 
+declare module "lite:net" {
+  /** Reply to a buffered HTTP request / signed provider call. */
+  export interface NetReply {
+    requestId: number;
+    status?: number;
+    body?: string;
+    error?: string;
+  }
+  /** Streaming download progress / completion event. */
+  export interface StreamEvent {
+    streamId: number;
+    received?: number;
+    total?: number;
+    done?: boolean;
+    error?: string;
+  }
+  export interface StreamStat {
+    received: number;
+    total?: number;
+    done: boolean;
+    error?: string;
+  }
+  export interface HttpRequest {
+    method?: "GET" | "POST";
+    url: string;
+    headers?: [string, string][];
+    body?: string;
+  }
+  export interface SongUrlRequest {
+    source: "qq" | "netease";
+    id: string;
+    /** NetEase quality tier (jymaster/hires/lossless/exhigh/standard). */
+    level?: string;
+    /** QQ quality index into the filename table (0 = highest). */
+    qualityIndex?: number;
+  }
+  export const request: (req: HttpRequest) => Promise<NetReply>;
+  export const search: (
+    source: "qq" | "netease",
+    query: string,
+    limit?: number,
+  ) => Promise<NetReply>;
+  export const songUrl: (opts: SongUrlRequest) => Promise<NetReply>;
+  /** Begins a streaming download; returns the numeric stream id. */
+  export const streamOpen: (url: string, ext?: string) => number;
+  export const watchStream: (id: number, callback: (event: StreamEvent) => void) => void;
+  export const unwatchStream: (id: number) => void;
+  export const streamStat: (id: number) => StreamStat;
+  export const streamClose: (id: number) => void;
+}
+
 // react-reconciler ships no bundled types and @types/react-reconciler doesn't
 // match 0.33.0's HostConfig; the host-config is validated by the running
 // renderer + Rust tests, so expose the factory loosely here.

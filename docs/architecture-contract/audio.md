@@ -12,7 +12,7 @@
 | `user/linux-uapi` | ALSA、memfd、mmap 与 SCM_RIGHTS 的 typed wrapper |
 | `user/audio-proto` | AF_UNIX v1 wire、stream identity 与 memfd SPSC ring layout |
 | `user/audio-service` | device clock、stream registry、quota、mixer、limiter 与 master state |
-| `user/lite-ui/audio` | 每进程 worker、File/media source、decoder/resampler、seek 与 Web state projection |
+| `user/lite-runtime/audio` | 每进程 worker、File/media source、decoder/resampler、seek 与 Web state projection |
 | `ui/runtime` | `HTMLMediaElement` public instance、Promise/event projection 与 UA controls |
 
 `compositor` 不得依赖 audio crate、protocol 或 service。Web app 不得直接消费 `audio-proto`；
