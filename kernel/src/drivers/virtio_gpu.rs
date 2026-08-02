@@ -4,9 +4,10 @@ use spin::Mutex;
 use crate::memory::{DeviceBacking, FrameAllocationClass, PAGE_SIZE};
 
 use super::{
-    DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, InterruptError,
-    InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK,
-    VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
+    DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, GraphicsDevice,
+    InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
+    VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
+    VirglCapsetInfo, VirglCommand, VirtIODevice,
     virtio_queue::{DmaBuffer, VirtQueue},
 };
 
@@ -16,6 +17,7 @@ mod boot;
 mod command;
 use command::{GpuCommand, PendingCommand, PreparedCommand};
 mod damage;
+mod graphics_command;
 use damage::DamageTransition;
 mod resource;
 use resource::{ResourceSet, RuntimeOperation};
@@ -30,8 +32,11 @@ struct ControlQueue {
     next_fence: u64,
     // 最大 attach request 固定容纳 DeviceBacking 的完整 extent contract；运行期所有
     // command 复用这块 DMA-stable storage，不按 damage/resize 分配临时 request。
-    request: DmaBuffer<ATTACH_REQUEST_SIZE>,
-    response: DmaBuffer<DISPLAY_INFO_SIZE>,
+    request: DmaBuffer<CONTROL_REQUEST_SIZE>,
+    response: DmaBuffer<CAPSET_RESPONSE_SIZE>,
+    // OWNER: capset 是 FEATURES_OK 后从 host 固定取得的 immutable VirGL ABI；若每个 DRM
+    // OFD 重查，context 可能在 resize/config interrupt 间观察不同 capability generation。
+    capset: Option<VirglCapset>,
     // OWNER: pending 是 descriptor head、command fence 与 stage 的唯一对应关系；若按
     // command type 分散记录，乱序或 stale completion 会推进错误 transaction。
     pending: Option<PendingCommand>,
@@ -53,9 +58,15 @@ struct ControlQueue {
     mode: DisplayMode,
 }
 
+struct VirglCapset {
+    info: VirglCapsetInfo,
+    bytes: [u8; MAX_CAPSET_SIZE],
+}
+
 /// @description VirtIO-GPU 2D single-scanout adapter。
 pub(crate) struct VirtIOGpuDevice {
     device: VirtIODevice,
+    context_init: bool,
     // OWNER: adapter 在 device ready 后永久持有 controlq DMA backing；hardirq 只确认
     // MMIO 并发布 deferred bit，controlq completion 只在 user-return/idle safe point 获取
     // 此 ordinary lock。若初始化后释放，device 仍可访问已经归还 allocator 的 pages。
@@ -74,10 +85,13 @@ impl VirtIOGpuDevice {
             return None;
         }
         device.initialize().ok()?;
-        if device.device_features().ok()? & VIRTIO_F_VERSION_1 == 0 {
+        let offered = device.device_features().ok()?;
+        if offered & VIRTIO_F_VERSION_1 == 0 {
             return None;
         }
-        device.set_driver_features(VIRTIO_F_VERSION_1).ok()?;
+        let graphics_features = VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_CONTEXT_INIT;
+        let features = VIRTIO_F_VERSION_1 | offered & graphics_features;
+        device.set_driver_features(features).ok()?;
         let status = device.get_status().ok()?;
         device
             .set_status(status | VIRTIO_CONFIG_S_FEATURES_OK)
@@ -98,6 +112,7 @@ impl VirtIOGpuDevice {
             next_fence: 1,
             request: DmaBuffer::try_zeroed().ok()?,
             response: DmaBuffer::try_zeroed().ok()?,
+            capset: None,
             pending: None,
             resources: ResourceSet::empty(),
             operation: None,
@@ -111,7 +126,15 @@ impl VirtIOGpuDevice {
         });
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
-        let adapter = Self { device, control };
+        let adapter = Self {
+            device,
+            context_init: features & VIRTIO_GPU_F_CONTEXT_INIT != 0,
+            control,
+        };
+        if features & VIRTIO_GPU_F_VIRGL != 0 {
+            let capset = Self::load_virgl_capset(&adapter.device, &adapter.control)?;
+            adapter.control.lock().capset = Some(capset);
+        }
         let mode = Self::display_mode(&adapter.device, &adapter.control)?;
         adapter.control.lock().mode = mode;
         let framebuffer_bytes = usize::try_from(mode.pitch)
@@ -442,6 +465,67 @@ impl DisplayDevice for VirtIOGpuDevice {
             return Ok(completion.update);
         }
         Ok(None)
+    }
+}
+
+impl GraphicsDevice for VirtIOGpuDevice {
+    fn virgl_capset_info(&self) -> Option<VirglCapsetInfo> {
+        self.control
+            .lock()
+            .capset
+            .as_ref()
+            .map(|capset| capset.info)
+    }
+
+    fn supports_virgl_context_init(&self) -> bool {
+        self.context_init
+    }
+
+    fn copy_virgl_capset(&self, output: &mut [u8]) -> Result<usize, DisplayError> {
+        let control = self.control.lock();
+        let capset = control.capset.as_ref().ok_or(DisplayError::Device)?;
+        let destination = output
+            .get_mut(..capset.info.size)
+            .ok_or(DisplayError::Device)?;
+        destination.copy_from_slice(&capset.bytes[..capset.info.size]);
+        Ok(capset.info.size)
+    }
+
+    fn submit_virgl(&self, command: VirglCommand<'_>) -> Result<u64, DisplayError> {
+        let mut control = self.control.lock();
+        if control.capset.is_none() || control.pending.is_some() || control.damage.batch_active() {
+            return Err(if control.capset.is_none() {
+                DisplayError::Device
+            } else {
+                DisplayError::WouldBlock
+            });
+        }
+        let prepared = graphics_command::prepare(command, control.request.as_mut_slice())?;
+        self.publish_prepared(&mut control, prepared, None)
+    }
+
+    fn submit_virgl_scanout(
+        &self,
+        mode: DisplayMode,
+        resource_id: u32,
+    ) -> Result<u64, DisplayError> {
+        let mut control = self.control.lock();
+        if control.capset.is_none() || control.pending.is_some() || control.damage.batch_active() {
+            return Err(if control.capset.is_none() {
+                DisplayError::Device
+            } else {
+                DisplayError::WouldBlock
+            });
+        }
+        if mode != control.mode || resource_id == 0 {
+            return Err(DisplayError::InvalidRectangle);
+        }
+        let mut prepared = graphics_command::prepare(
+            VirglCommand::SetScanout { mode, resource_id },
+            control.request.as_mut_slice(),
+        )?;
+        prepared.stage = sequence_policy::RuntimeStage::VirglSetScanout;
+        self.publish_prepared(&mut control, prepared, None)
     }
 }
 

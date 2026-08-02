@@ -9,6 +9,7 @@ use crate::{
 use super::errno;
 
 mod publication;
+mod virtgpu;
 
 const IOC_WRITE: usize = 1;
 const IOC_READ: usize = 2;
@@ -26,6 +27,7 @@ const DRM_IOCTL_VERSION: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x00, 64);
 const DRM_IOCTL_GET_CAP: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x0c, 16);
 const DRM_IOCTL_SET_MASTER: usize = drm_ioc(0, 0x1e, 0);
 const DRM_IOCTL_DROP_MASTER: usize = drm_ioc(0, 0x1f, 0);
+const DRM_IOCTL_GEM_CLOSE: usize = drm_ioc(IOC_WRITE, 0x09, 8);
 const DRM_IOCTL_MODE_GETRESOURCES: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa0, 64);
 const DRM_IOCTL_MODE_GETCRTC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa1, 104);
 const DRM_IOCTL_MODE_SETCRTC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa2, 104);
@@ -40,6 +42,16 @@ const DRM_IOCTL_MODE_CREATE_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb2, 32
 const DRM_IOCTL_MODE_MAP_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb3, 16);
 const DRM_IOCTL_MODE_DESTROY_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb4, 4);
 const DRM_IOCTL_MODE_ADDFB2: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb8, 104);
+const DRM_IOCTL_VIRTGPU_MAP: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x41, 16);
+const DRM_IOCTL_VIRTGPU_EXECBUFFER: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x42, 64);
+const DRM_IOCTL_VIRTGPU_GETPARAM: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x43, 16);
+const DRM_IOCTL_VIRTGPU_RESOURCE_CREATE: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x44, 56);
+const DRM_IOCTL_VIRTGPU_RESOURCE_INFO: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x45, 16);
+const DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x46, 44);
+const DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x47, 44);
+const DRM_IOCTL_VIRTGPU_WAIT: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x48, 8);
+const DRM_IOCTL_VIRTGPU_GET_CAPS: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x49, 24);
+const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x4b, 16);
 
 /// @description 分发 Linux DRM/KMS topology query 与 dumb-buffer ioctl 子集。
 ///
@@ -59,6 +71,7 @@ pub(in crate::syscall) fn drm_ioctl(
         DRM_IOCTL_GET_CAP => get_cap(task, argument),
         DRM_IOCTL_SET_MASTER => set_master(task, file),
         DRM_IOCTL_DROP_MASTER => drop_master(task, file),
+        DRM_IOCTL_GEM_CLOSE => virtgpu::gem_close(task, file, argument),
         DRM_IOCTL_MODE_GETRESOURCES => resources(task, file, argument),
         DRM_IOCTL_MODE_GETCRTC => crtc(task, file, argument),
         DRM_IOCTL_MODE_SETCRTC => set_crtc(task, file, argument),
@@ -73,6 +86,26 @@ pub(in crate::syscall) fn drm_ioctl(
         DRM_IOCTL_MODE_MAP_DUMB => map_dumb(task, file, argument),
         DRM_IOCTL_MODE_DESTROY_DUMB => destroy_dumb(task, file, argument),
         DRM_IOCTL_MODE_ADDFB2 => publication::add_framebuffer2(task, file, argument),
+        DRM_IOCTL_VIRTGPU_MAP => virtgpu::map(task, file, argument),
+        DRM_IOCTL_VIRTGPU_EXECBUFFER => virtgpu::execbuffer(task, file, argument),
+        DRM_IOCTL_VIRTGPU_GETPARAM => virtgpu::get_param(task, file, argument),
+        DRM_IOCTL_VIRTGPU_RESOURCE_CREATE => virtgpu::resource_create(task, file, argument),
+        DRM_IOCTL_VIRTGPU_RESOURCE_INFO => virtgpu::resource_info(task, file, argument),
+        DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST => virtgpu::transfer(
+            task,
+            file,
+            argument,
+            crate::drivers::VirglTransferDirection::FromHost,
+        ),
+        DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST => virtgpu::transfer(
+            task,
+            file,
+            argument,
+            crate::drivers::VirglTransferDirection::ToHost,
+        ),
+        DRM_IOCTL_VIRTGPU_WAIT => virtgpu::wait(task, file, argument),
+        DRM_IOCTL_VIRTGPU_GET_CAPS => virtgpu::get_caps(task, file, argument),
+        DRM_IOCTL_VIRTGPU_CONTEXT_INIT => virtgpu::context_init(task, file, argument),
         _ => return -errno::ENOTTY,
     };
     result.map_or_else(|error| -error, |()| 0)

@@ -12,7 +12,9 @@ use display_proto::{
 use linux_uapi::virtio_port::SpicePort;
 
 const VDP_CLIENT_PORT: u32 = 1;
+const VDP_SERVER_PORT: u32 = 2;
 const VD_AGENT_PROTOCOL: u32 = 1;
+const VD_AGENT_MOUSE_STATE: u32 = 1;
 const VD_AGENT_MONITORS_CONFIG: u32 = 2;
 const VD_AGENT_CLIPBOARD: u32 = 4;
 const VD_AGENT_ANNOUNCE_CAPABILITIES: u32 = 6;
@@ -62,6 +64,9 @@ pub(super) struct SpiceAgent {
     wire: Vec<u8>,
     message: Vec<u8>,
     expected_message: Option<usize>,
+    /// Port of the fragmented message in `message`. Without this ownership,
+    /// chunks from both VDI directions could be assembled into one payload.
+    message_port: Option<u32>,
     output: VecDeque<u8>,
     owner: Owner,
     pending: Vec<ClipboardRead>,
@@ -76,6 +81,7 @@ impl SpiceAgent {
             wire: Vec::new(),
             message: Vec::new(),
             expected_message: None,
+            message_port: None,
             output: VecDeque::new(),
             owner: Owner::Empty,
             pending: Vec::new(),
@@ -266,53 +272,76 @@ impl SpiceAgent {
     }
 
     fn parse_wire(&mut self) -> io::Result<Vec<AgentEvent>> {
-        let mut events = Vec::new();
-        let mut consumed = 0usize;
-        while self.wire.len() - consumed >= 8 {
-            let port = read_u32(&self.wire, consumed)?;
-            let size = read_u32(&self.wire, consumed + 4)? as usize;
-            if port != VDP_CLIENT_PORT || size == 0 || size > CHUNK_PAYLOAD {
-                return Err(invalid("invalid vdagent chunk"));
-            }
-            if self.wire.len() - consumed < 8 + size {
-                break;
-            }
-            self.message
-                .extend_from_slice(&self.wire[consumed + 8..consumed + 8 + size]);
-            consumed += 8 + size;
-            if self.expected_message.is_none() && self.message.len() >= AGENT_HEADER {
-                if read_u32(&self.message, 0)? != VD_AGENT_PROTOCOL {
-                    return Err(invalid("invalid vdagent protocol"));
-                }
-                let payload = read_u32(&self.message, 16)? as usize;
-                self.expected_message = Some(
-                    AGENT_HEADER
-                        .checked_add(payload)
-                        .filter(|length| *length <= MAX_AGENT_MESSAGE)
-                        .ok_or_else(|| invalid("vdagent payload too large"))?,
-                );
-            }
-            if let Some(expected) = self.expected_message {
-                if self.message.len() > expected {
-                    return Err(invalid("vdagent chunk crossed message boundary"));
-                }
-                if self.message.len() == expected {
-                    if let Some(event) = parse_agent(&self.message)? {
-                        events.push(event);
-                    }
-                    self.message.clear();
-                    self.expected_message = None;
-                }
-            }
-        }
-        if consumed != 0 {
-            self.wire.drain(..consumed);
-        }
-        Ok(events)
+        parse_wire(
+            &mut self.wire,
+            &mut self.message,
+            &mut self.expected_message,
+            &mut self.message_port,
+        )
     }
 }
 
-fn parse_agent(message: &[u8]) -> io::Result<Option<AgentEvent>> {
+fn parse_wire(
+    wire: &mut Vec<u8>,
+    message: &mut Vec<u8>,
+    expected_message: &mut Option<usize>,
+    message_port: &mut Option<u32>,
+) -> io::Result<Vec<AgentEvent>> {
+    let mut events = Vec::new();
+    let mut consumed = 0usize;
+    while wire.len() - consumed >= 8 {
+        let port = read_u32(wire, consumed)?;
+        let size = read_u32(wire, consumed + 4)? as usize;
+        if !matches!(port, VDP_CLIENT_PORT | VDP_SERVER_PORT) || size == 0 || size > CHUNK_PAYLOAD {
+            return Err(invalid("invalid vdagent chunk"));
+        }
+        if wire.len() - consumed < 8 + size {
+            break;
+        }
+        match *message_port {
+            None => *message_port = Some(port),
+            Some(current) if current != port => {
+                return Err(invalid("vdagent message crossed port boundary"));
+            }
+            Some(_) => {}
+        }
+        message.extend_from_slice(&wire[consumed + 8..consumed + 8 + size]);
+        consumed += 8 + size;
+        if expected_message.is_none() && message.len() >= AGENT_HEADER {
+            if read_u32(message, 0)? != VD_AGENT_PROTOCOL {
+                return Err(invalid("invalid vdagent protocol"));
+            }
+            let payload = read_u32(message, 16)? as usize;
+            *expected_message = Some(
+                AGENT_HEADER
+                    .checked_add(payload)
+                    .filter(|length| *length <= MAX_AGENT_MESSAGE)
+                    .ok_or_else(|| invalid("vdagent payload too large"))?,
+            );
+        }
+        if let Some(expected) = *expected_message {
+            if message.len() > expected {
+                return Err(invalid("vdagent chunk crossed message boundary"));
+            }
+            if message.len() == expected {
+                let port = message_port
+                    .take()
+                    .ok_or_else(|| invalid("vdagent message has no port"))?;
+                if let Some(event) = parse_agent(port, message)? {
+                    events.push(event);
+                }
+                message.clear();
+                *expected_message = None;
+            }
+        }
+    }
+    if consumed != 0 {
+        wire.drain(..consumed);
+    }
+    Ok(events)
+}
+
+fn parse_agent(port: u32, message: &[u8]) -> io::Result<Option<AgentEvent>> {
     if message.len() < AGENT_HEADER || read_u32(message, 0)? != VD_AGENT_PROTOCOL {
         return Err(invalid("invalid vdagent message"));
     }
@@ -322,6 +351,13 @@ fn parse_agent(message: &[u8]) -> io::Result<Option<AgentEvent>> {
         return Err(invalid("invalid vdagent message length"));
     }
     let data = &message[AGENT_HEADER..];
+    if port == VDP_SERVER_PORT {
+        return match kind {
+            VD_AGENT_MOUSE_STATE if data.len() == 13 => Ok(None),
+            VD_AGENT_MOUSE_STATE => Err(invalid("invalid vdagent mouse state")),
+            _ => Err(invalid("unexpected vdagent server message")),
+        };
+    }
     Ok(match kind {
         VD_AGENT_ANNOUNCE_CAPABILITIES if data.len() >= 8 => Some(AgentEvent::Capabilities {
             request: read_u32(data, 0)? != 0,
@@ -428,21 +464,63 @@ mod tests {
         bytes
     }
 
+    fn chunk(port: u32, message: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(8 + message.len());
+        bytes.extend_from_slice(&port.to_le_bytes());
+        bytes.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(message);
+        bytes
+    }
+
+    fn parse_test_wire(mut wire: Vec<u8>) -> io::Result<Vec<AgentEvent>> {
+        parse_wire(&mut wire, &mut Vec::new(), &mut None, &mut None)
+    }
+
+    #[test]
+    fn accepts_server_port_mouse_state_without_creating_a_second_input_path() {
+        let mouse = [0u8; 13];
+        let events = parse_test_wire(chunk(
+            VDP_SERVER_PORT,
+            &message(VD_AGENT_MOUSE_STATE, &mouse),
+        ))
+        .expect("server-originated mouse state is valid vdagent traffic");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn rejects_one_message_split_across_vdi_ports() {
+        let message = message(VD_AGENT_MOUSE_STATE, &[0u8; 13]);
+        let mut wire = chunk(VDP_SERVER_PORT, &message[..10]);
+        wire.extend(chunk(VDP_CLIENT_PORT, &message[10..]));
+        assert_eq!(
+            parse_test_wire(wire)
+                .expect_err("one message cannot change VDI port")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
     #[test]
     fn parses_demand_capability_and_text_grab() {
         let mut capabilities = Vec::new();
         capabilities.extend_from_slice(&1u32.to_le_bytes());
         capabilities.extend_from_slice(&(1u32 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND).to_le_bytes());
         assert!(matches!(
-            parse_agent(&message(VD_AGENT_ANNOUNCE_CAPABILITIES, &capabilities))
-                .expect("capability message"),
+            parse_agent(
+                VDP_CLIENT_PORT,
+                &message(VD_AGENT_ANNOUNCE_CAPABILITIES, &capabilities),
+            )
+            .expect("capability message"),
             Some(AgentEvent::Capabilities { request: true })
         ));
         assert!(matches!(
-            parse_agent(&message(
-                VD_AGENT_CLIPBOARD_GRAB,
-                &VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes()
-            ))
+            parse_agent(
+                VDP_CLIENT_PORT,
+                &message(
+                    VD_AGENT_CLIPBOARD_GRAB,
+                    &VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes()
+                ),
+            )
             .expect("grab message"),
             Some(AgentEvent::Grab { text: true })
         ));
@@ -459,7 +537,8 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes());
         assert!(matches!(
-            parse_agent(&message(VD_AGENT_MONITORS_CONFIG, &data)).expect("monitor message"),
+            parse_agent(VDP_CLIENT_PORT, &message(VD_AGENT_MONITORS_CONFIG, &data),)
+                .expect("monitor message"),
             Some(AgentEvent::Monitor(Size {
                 width: 2040,
                 height: 1179
@@ -474,7 +553,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes());
         data.resize(MONITOR_CONFIG_HEADER + 2 * MONITOR_CONFIG_SIZE, 0);
         assert_eq!(
-            parse_agent(&message(VD_AGENT_MONITORS_CONFIG, &data))
+            parse_agent(VDP_CLIENT_PORT, &message(VD_AGENT_MONITORS_CONFIG, &data),)
                 .expect_err("multiple monitors must fail")
                 .kind(),
             io::ErrorKind::InvalidData
@@ -486,7 +565,7 @@ mod tests {
         let mut invalid_text = Vec::from(VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
         invalid_text.push(0xff);
         assert!(
-            parse_agent(&message(VD_AGENT_CLIPBOARD, &invalid_text))
+            parse_agent(VDP_CLIENT_PORT, &message(VD_AGENT_CLIPBOARD, &invalid_text))
                 .expect_err("invalid UTF-8 must fail")
                 .kind()
                 == io::ErrorKind::InvalidData
@@ -495,7 +574,7 @@ mod tests {
         let mut oversized = Vec::from(VD_AGENT_CLIPBOARD_UTF8_TEXT.to_le_bytes());
         oversized.resize(4 + MAX_CLIPBOARD_TEXT + 1, b'x');
         assert!(matches!(
-            parse_agent(&message(VD_AGENT_CLIPBOARD, &oversized))
+            parse_agent(VDP_CLIENT_PORT, &message(VD_AGENT_CLIPBOARD, &oversized))
                 .expect("oversized host data is a valid agent message"),
             Some(AgentEvent::Data(value)) if value.is_empty()
         ));
@@ -506,7 +585,7 @@ mod tests {
         let mut bytes = message(VD_AGENT_CLIPBOARD_RELEASE, &[]);
         bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(
-            parse_agent(&bytes)
+            parse_agent(VDP_CLIENT_PORT, &bytes)
                 .expect_err("mismatched payload length must fail")
                 .kind(),
             io::ErrorKind::InvalidData

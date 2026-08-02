@@ -35,12 +35,10 @@ impl Display {
     /// delivery fails.
     pub fn commit_desktop(
         &mut self,
-        buffer_id: u32,
         focused_surface: u32,
         foreign: &[ForeignLayer],
         windows: &[WindowFrame],
         overlays: &[Overlay],
-        damage: &[Rect],
     ) -> io::Result<()> {
         let revision = self.next_revision()?;
         let full = Rect {
@@ -54,24 +52,24 @@ impl Display {
         let no_clip_masks: [ClipMask; 0] = [];
         let mut nodes = Vec::with_capacity(1 + windows.len() * 3 + foreign.len() + overlays.len());
         nodes.push(SceneNode {
-            kind: SceneNodeKind::Pixels,
+            kind: SceneNodeKind::DisplayList,
             window_group: 0,
-            source_id: buffer_id,
+            source_id: 0,
             configure_serial: 0,
             bounds: full,
             clip: full,
             clip_masks: ClipMasks::from_slice(&no_clip_masks),
             opaque: Some(full),
             input: Rectangles::from_slice(&full_input),
-            damage: Rectangles::from_slice(damage),
+            damage: Rectangles::from_slice(std::slice::from_ref(&full)),
         });
         let window_frames: Vec<[Rect; 1]> = windows.iter().map(|window| [window.frame]).collect();
         let foreign_bounds: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();
         for (window, frame_input) in windows.iter().zip(&window_frames) {
             nodes.push(SceneNode {
-                kind: SceneNodeKind::Pixels,
+                kind: SceneNodeKind::DisplayList,
                 window_group: window.surface_id,
-                source_id: buffer_id,
+                source_id: 0,
                 configure_serial: 0,
                 bounds: full,
                 clip: window.frame,
@@ -84,9 +82,6 @@ impl Display {
                 .iter()
                 .enumerate()
                 .find(|(_, layer)| layer.surface_id == window.surface_id)
-                && self
-                    .ready
-                    .contains(&(layer.surface_id, layer.configure_serial))
             {
                 nodes.push(SceneNode {
                     kind: SceneNodeKind::ForeignSurface,
@@ -102,9 +97,9 @@ impl Display {
                 });
                 if !layer.desktop_input.is_empty() {
                     nodes.push(SceneNode {
-                        kind: SceneNodeKind::Pixels,
+                        kind: SceneNodeKind::DisplayList,
                         window_group: layer.surface_id,
-                        source_id: buffer_id,
+                        source_id: 0,
                         configure_serial: 0,
                         bounds: full,
                         clip: Rect::default(),
@@ -120,9 +115,9 @@ impl Display {
             overlays.iter().map(|overlay| [overlay.rect]).collect();
         for (overlay, input) in overlays.iter().zip(&overlay_inputs) {
             nodes.push(SceneNode {
-                kind: SceneNodeKind::Pixels,
+                kind: SceneNodeKind::DisplayList,
                 window_group: 0,
-                source_id: buffer_id,
+                source_id: 0,
                 configure_serial: 0,
                 bounds: full,
                 clip: overlay.rect,
@@ -142,7 +137,6 @@ impl Display {
         .ok_or_else(|| io::Error::other("scene encoding failed"))?;
         send_message(&self.stream, message)?;
         self.submitted.push_back(revision);
-        self.record_damage(buffer_id, revision, damage);
         Ok(())
     }
 }

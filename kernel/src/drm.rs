@@ -3,18 +3,22 @@ use spin::Mutex;
 
 pub(crate) use crate::drivers::DisplayRect;
 use crate::{
-    drivers::{DisplayDevice, DisplayMode},
+    drivers::{DisplayMode, GraphicsDevice},
     fallible_tree::FallibleMap,
     ipc::{Pipe, PipeEnd},
     memory::{DeviceBacking, DeviceMappingSource, FrameAllocationClass, PAGE_SIZE},
 };
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
+pub(crate) const VIRGL_COMMAND_MAX: usize = 64 * 1024;
 
 mod event;
 pub(crate) use event::DrmEvent;
 use event::{EVENT_QUEUE_CAPACITY, EventQueue};
 pub(crate) mod device;
+mod graphics;
+pub(crate) use graphics::VirglResourceCreate;
+pub(crate) use graphics::VirglTransfer;
 mod master;
 mod mode;
 mod publication;
@@ -85,6 +89,11 @@ struct DrmDeviceState {
     // OWNER: framebuffer allocator 与 device-wide object map 同锁；rollback storage 在 reserve
     // 时预留，copyout failure 可按任意并发顺序无分配回收未发布 ID。
     framebuffer_ids: IdAllocator<u32>,
+    context_ids: IdAllocator<u32>,
+    graphics_resource_ids: IdAllocator<u32>,
+    // OWNER: 每个 context 创建时预分配 cleanup node；OFD Drop 只移动现有 AVL nodes，
+    // 因而即使进程在 OOM/abort 路径退出也不会遗留 host VirGL resource/context。
+    graphics_cleanups: FallibleMap<u32, graphics::VirglCleanup>,
     // OWNER: primary-node master identity 与 KMS object namespace 同属 device state；若放在
     // syscall 或 OFD flag，多个 open 会同时通过 modeset permission check。
     master: Option<u64>,
@@ -111,7 +120,12 @@ struct Framebuffer {
     pitch: u32,
     // OWNER: framebuffer object 独立保活 GEM backing；缺失该引用时 DESTROY_DUMB 会让
     // 已注册但尚未移除的 framebuffer 指向已回收 extent。
-    buffer: Arc<DumbBuffer>,
+    backing: FramebufferBacking,
+}
+
+enum FramebufferBacking {
+    Dumb(Arc<DumbBuffer>),
+    Virgl(Arc<graphics::VirglBuffer>),
 }
 
 struct DrmFileState {
@@ -121,6 +135,10 @@ struct DrmFileState {
     // OWNER: buffers 是当前 OFD 唯一 GEM handle namespace；缺失 file-private collection
     // 会让不同 open 通过猜测 handle/offset 访问彼此 backing。
     buffers: FallibleMap<u32, Arc<DumbBuffer>>,
+    // OWNER: context 与 graphics_buffers 属于同一 OFD；缺失同锁 ownership 会让 EXECBUFFER
+    // 在 close/context teardown 间向已销毁的 host context 提交。
+    context: Option<graphics::VirglContext>,
+    graphics_buffers: FallibleMap<u32, Arc<graphics::VirglBuffer>>,
     // Linux 允许曾经的 master 在无当前 master 时重新取得 ownership；缺失该历史位会让
     // root-less display server 在 DROP_MASTER 后永久无法恢复。
     was_master: bool,
@@ -128,7 +146,7 @@ struct DrmFileState {
 
 /// @description Linux DRM/KMS domain 的 primary display owner。
 struct DrmDevice {
-    display: Arc<dyn DisplayDevice>,
+    display: Arc<dyn GraphicsDevice>,
     completion_read: Arc<PipeEnd>,
     completion_write: Arc<PipeEnd>,
     // OWNER: pending/completed fence 在同一锁下完成唯一状态迁移；若拆开，IRQ completion
@@ -201,6 +219,11 @@ pub(crate) struct DrmRetry {
 }
 
 impl DrmWait {
+    /// @description 返回与该 wait token 绑定的 exact adapter fence。
+    pub(crate) const fn fence(&self) -> u64 {
+        self.fence
+    }
+
     /// @description 排空旧 edge 并原子化地准备 scheduler wait。
     /// @return fence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
@@ -387,10 +410,20 @@ impl DrmFile {
             .ok()
             .filter(|handle| *handle != 0)
             .ok_or(DrmError::Invalid)?;
+        let buffer = self.state.lock().buffers.get(&handle).cloned();
+        if let Some(buffer) = buffer {
+            if length > buffer.size {
+                return Err(DrmError::Invalid);
+            }
+            return Ok(DeviceMappingSource::new(
+                buffer.identity,
+                buffer.backing.clone(),
+            ));
+        }
         let buffer = self
             .state
             .lock()
-            .buffers
+            .graphics_buffers
             .get(&handle)
             .cloned()
             .ok_or(DrmError::NotFound)?;
@@ -398,7 +431,7 @@ impl DrmFile {
             return Err(DrmError::Invalid);
         }
         Ok(DeviceMappingSource::new(
-            buffer.identity,
+            (1u64 << 63) | u64::from(buffer.resource_id),
             buffer.backing.clone(),
         ))
     }
@@ -418,21 +451,35 @@ impl DrmFile {
         height: u32,
         pitch: u32,
     ) -> Result<PreparedFramebuffer<'_>, DrmError> {
-        let buffer = self
-            .state
-            .lock()
-            .buffers
-            .get(&handle)
-            .cloned()
-            .ok_or(DrmError::NotFound)?;
+        let backing = {
+            let state = self.state.lock();
+            if let Some(buffer) = state.buffers.get(&handle).cloned() {
+                FramebufferBacking::Dumb(buffer)
+            } else if let Some(buffer) = state.graphics_buffers.get(&handle).cloned() {
+                FramebufferBacking::Virgl(buffer)
+            } else {
+                return Err(DrmError::NotFound);
+            }
+        };
+        let (buffer_pitch, buffer_size, buffer_width, buffer_height) = match &backing {
+            FramebufferBacking::Dumb(buffer) => (buffer.pitch, buffer.size, None, None),
+            FramebufferBacking::Virgl(buffer) => (
+                buffer.stride,
+                buffer.size,
+                Some(buffer.width),
+                Some(buffer.height),
+            ),
+        };
         let required = usize::try_from(pitch)
             .ok()
             .and_then(|pitch| pitch.checked_mul(height as usize))
-            .filter(|required| *required <= buffer.size)
+            .filter(|required| *required <= buffer_size)
             .ok_or(DrmError::Invalid)?;
         if width == 0
             || height == 0
-            || pitch != buffer.pitch
+            || pitch != buffer_pitch
+            || buffer_width.is_some_and(|buffer_width| buffer_width != width)
+            || buffer_height.is_some_and(|buffer_height| buffer_height != height)
             || width.checked_mul(4).is_none_or(|minimum| pitch < minimum)
             || required == 0
         {
@@ -446,7 +493,7 @@ impl DrmFile {
                 width,
                 height,
                 pitch,
-                buffer,
+                backing,
             },
         )
         .map_err(|_| DrmError::OutOfMemory)?;

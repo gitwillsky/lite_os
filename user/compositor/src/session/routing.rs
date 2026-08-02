@@ -9,7 +9,6 @@ use display_proto::{
 
 use super::accelerator;
 use super::buffers::Owner;
-use super::scene::release_buffer;
 use super::{MoveGrab, PointerCapture, Session, invalid};
 
 impl Session {
@@ -26,12 +25,9 @@ impl Session {
         {
             let grab = self.move_grab.take().expect("matching move grab");
             self.move_damage = None;
-            if surface_id.is_some()
-                && let Some(desktop) = &self.desktop
-                && let Err(error) =
-                    release_buffer(&mut self.buffers, &desktop.stream, grab.underlay_buffer_id)
-            {
-                eprintln!("compositor: move underlay cancellation failed: {error}");
+            if surface_id.is_some() {
+                self.move_underlays.remove(&grab.surface_id);
+                self.buffers.values.remove(&grab.underlay_buffer_id);
             }
         }
     }
@@ -212,17 +208,19 @@ impl Session {
     /// request transfers the underlay to the compositor even when that race loses,
     /// so the buffer is released exactly once before the rejection is returned.
     pub(super) fn begin_move(&mut self, request: MoveBegin) -> io::Result<Option<io::Error>> {
+        let underlay_buffer_id = *self
+            .move_underlays
+            .get(&request.surface_id)
+            .ok_or_else(|| invalid("move underlay is not prepared"))?;
         let underlay = self
             .buffers
             .values
-            .get_mut(&request.underlay_buffer_id)
-            .ok_or_else(|| invalid("move underlay buffer is unknown"))?;
+            .get_mut(&underlay_buffer_id)
+            .ok_or_else(|| invalid("move underlay disappeared"))?;
         if underlay.owner != Owner::Desktop
             || underlay.busy
             || underlay.size != self.display
-            || self
-                .desktop_current_buffers
-                .contains(&request.underlay_buffer_id)
+            || self.desktop_current_buffers.contains(&underlay_buffer_id)
         {
             return Err(invalid("move underlay buffer state invalid"));
         }
@@ -244,7 +242,7 @@ impl Session {
         });
         let frame = self.presented_nodes.iter().find_map(|node| {
             (node.window_group == request.surface_id
-                && node.kind == display_proto::SceneNodeKind::Pixels)
+                && node.kind == display_proto::SceneNodeKind::DisplayList)
                 .then_some(node.clip)
         });
         let rejection = rejection.or_else(|| {
@@ -253,22 +251,14 @@ impl Session {
                 .then(|| invalid("move group is not presented"))
         });
         if let Some(error) = rejection {
-            let desktop = self
-                .desktop
-                .as_ref()
-                .ok_or_else(|| invalid("desktop disappeared during move begin"))?;
-            release_buffer(
-                &mut self.buffers,
-                &desktop.stream,
-                request.underlay_buffer_id,
-            )?;
+            underlay.busy = false;
             return Ok(Some(error));
         }
         let capture = capture.expect("validated move capture");
         let frame = frame.expect("validated move frame");
         self.move_grab = Some(MoveGrab {
             surface_id: request.surface_id,
-            underlay_buffer_id: request.underlay_buffer_id,
+            underlay_buffer_id,
             down: capture.down,
             origin: (frame.x, frame.y),
             offset: (0, 0),

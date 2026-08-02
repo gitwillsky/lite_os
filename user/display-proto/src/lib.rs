@@ -1,22 +1,21 @@
 //! LiteOS graphical-session wire protocol.
 //!
 //! `compositor`、desktop-mode LiteUI 与 app-mode LiteUI 通过同一 AF_UNIX stream 使用本协议。
-//! 协议只描述 flat scene、surface、buffer 与输入 mechanism；窗口 policy、React、CSS 与主题不进入此 seam。
+//! 协议只描述 flat scene、GPU display list、surface 与输入 mechanism；窗口 policy、React、CSS 与主题不进入此 seam。
 
 mod accelerator;
-mod buffer;
 mod clipboard;
 mod codec;
 mod geometry;
 mod handshake;
 mod input;
 mod lifecycle;
+mod paint;
 mod scene;
 mod surface;
 mod transport;
 
 pub use accelerator::{AcceleratorChord, AcceleratorChordIterator, AcceleratorSet};
-pub use buffer::{BufferAlloc, BufferAllocated, BufferDescriptor, BufferRelease, BufferRetired};
 pub use clipboard::{ClipboardData, ClipboardRead, ClipboardWrite, MAX_CLIPBOARD_TEXT};
 pub use codec::{Frame, FrameWriter, MessageKind, parse_frame};
 pub use geometry::{Rect, Size};
@@ -29,18 +28,20 @@ pub use input::{
 pub use lifecycle::{
     AppClosed, AppOpened, CloseRequest, MoveBegin, MoveComplete, SurfaceActivated,
 };
+pub use paint::{
+    BorderStyle, DisplayCommand, DisplayCommands, DisplayListCommit, DisplayListWriter, Glyph,
+    Glyphs, GradientStop, GradientStops, ImageRepeat, ImageSampling, TextureCreate, TextureDestroy,
+    TextureFormat, TexturePublish, TextureRect, TextureWrite,
+};
 pub use scene::{
     ClipMask, ClipMasks, CornerRadius, Rectangles, SceneCommit, SceneNode, SceneNodeKind,
     SceneNodes,
 };
-pub use surface::{
-    Accepted, Configure, ConfigureReady, DamageRectangles, Discarded, OutputConfigure, Presented,
-    SurfaceCommit,
-};
-pub use transport::{recv_frame_blocking, recv_message, send_message, send_message_with_fd};
+pub use surface::{Accepted, Configure, ConfigureReady, Discarded, OutputConfigure, Presented};
+pub use transport::{recv_frame_blocking, send_message};
 
 /// The only supported protocol version; no negotiation or compat decoder.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";
@@ -66,17 +67,23 @@ pub const MAX_NODE_INPUT_RECTS: usize = 64;
 /// 单个 scene node 的 CSS rounded clip mask 上限。
 pub const MAX_NODE_CLIP_MASKS: usize = 16;
 
-/// 单次像素提交允许的 damage rectangle 上限。
-pub const MAX_DAMAGE_RECTS: usize = 64;
+/// 单个 scene node 允许的 damage rectangle 上限。
+pub const MAX_NODE_DAMAGE_RECTS: usize = 64;
 
-/// 每个 connection 最多持有的 full-frame equivalent 数量。
-pub const MAX_CONNECTION_FRAME_EQUIVALENTS: u64 = 4;
+/// Maximum GPU paint operations in one immutable display list.
+pub const MAX_DISPLAY_COMMANDS: usize = 2048;
 
-/// 整个 session 最多持有的 client full-frame equivalent 数量。
-///
-/// 16 容纳 desktop triple buffering、默认 Files/Terminal 与八个当前尺寸的
-/// 双缓冲 Aurora 窗口；每连接的独立上限仍阻止单个 client 吞掉 session 配额。
-pub const MAX_SESSION_FRAME_EQUIVALENTS: u64 = 16;
+/// Maximum nested CSS clip or opacity groups in one display list.
+pub const MAX_DISPLAY_STACK_DEPTH: usize = 16;
+
+/// Maximum color stops in one CSS linear gradient primitive.
+pub const MAX_GRADIENT_STOPS: usize = 16;
+
+/// Maximum glyph quads carried by one display-list command.
+pub const MAX_GLYPHS_PER_RUN: usize = 256;
+
+/// Maximum immutable textures owned by one display connection.
+pub const MAX_CLIENT_TEXTURES: usize = 256;
 
 /// Maximum chords in one desktop-submitted global accelerator table.
 pub const MAX_ACCELERATORS: usize = 16;

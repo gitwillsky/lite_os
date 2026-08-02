@@ -6,17 +6,12 @@
 //! completion. Connection, handshake and per-message routing stay in the
 //! parent module; this seam only knows how a frame becomes presentable.
 
-use std::{
-    io::{self, Write as _},
-    os::unix::net::UnixStream,
-};
+use std::io::{self, Write as _};
 
-use display_proto::{
-    BufferRelease, BufferRetired, ClipMask, Rect, SceneCommit, SceneNodeKind, send_message,
-};
+use display_proto::{ClipMask, Rect, SceneCommit, SceneNodeKind};
 use linux_uapi::drm::FlipEvent;
 
-use super::buffers::{Buffers, Owner};
+use super::buffers::Owner;
 use super::wire::{send_accepted, send_discarded, send_presented};
 use super::{RoutingNode, Session, invalid};
 
@@ -34,8 +29,6 @@ pub struct Node {
     pub clip: Rect,
     /// Rounded CSS masks applied inside the coarse rectangular clip.
     pub clip_masks: Vec<ClipMask>,
-    pub opaque: Option<Rect>,
-    pub damage: Vec<Rect>,
 }
 
 #[derive(Clone)]
@@ -50,7 +43,6 @@ pub struct Scene {
     pub revision: u64,
     pub output_size: display_proto::Size,
     pub nodes: Vec<Node>,
-    pub damage: Rect,
     pub(super) finishes_move: bool,
     desktop_buffers: Vec<u32>,
     app_presentations: Vec<AppPresentation>,
@@ -101,29 +93,34 @@ impl Session {
                 );
                 continue;
             }
-            let mut damage: Vec<Rect> = node.damage.iter().collect();
             // The composited bounds default to the declared node size; the
             // foreign-surface fallback may clamp them to a stale buffer's real
             // size so composite_node never reads past the source.
             let mut node_bounds = node.bounds;
             let buffer_id = match node.kind {
-                SceneNodeKind::Pixels => {
+                SceneNodeKind::DisplayList => {
+                    if node.source_id != 0 {
+                        return Err(invalid("desktop display-list source identity invalid"));
+                    }
+                    let render_id = self
+                        .desktop_render_id
+                        .ok_or_else(|| invalid("desktop display list is not rendered"))?;
                     let buffer = self
                         .buffers
                         .values
-                        .get(&node.source_id)
-                        .ok_or_else(|| invalid("unknown desktop buffer"))?;
+                        .get(&render_id)
+                        .ok_or_else(|| invalid("desktop render target disappeared"))?;
                     if buffer.owner != Owner::Desktop
-                        || buffer.busy && !self.desktop_current_buffers.contains(&node.source_id)
+                        || buffer.busy && !self.desktop_current_buffers.contains(&render_id)
                         || buffer.size.width != node.bounds.width
                         || buffer.size.height != node.bounds.height
                     {
                         return Err(invalid("desktop buffer state invalid"));
                     }
-                    if !desktop_buffers.contains(&node.source_id) {
-                        desktop_buffers.push(node.source_id);
+                    if !desktop_buffers.contains(&render_id) {
+                        desktop_buffers.push(render_id);
                     }
-                    node.source_id
+                    render_id
                 }
                 SceneNodeKind::ForeignSurface => {
                     let app = self
@@ -212,19 +209,13 @@ impl Session {
                         && !adoptions.contains(&node.source_id)
                     {
                         adoptions.push(node.source_id);
-                        damage.extend(content.damage.iter().map(|rectangle| Rect {
-                            x: node.bounds.x.saturating_add(rectangle.x),
-                            y: node.bounds.y.saturating_add(rectangle.y),
-                            width: rectangle.width,
-                            height: rectangle.height,
-                        }));
                     }
                     content.buffer_id
                 }
             };
             routing.push(RoutingNode {
                 surface_id: match node.kind {
-                    SceneNodeKind::Pixels => 0,
+                    SceneNodeKind::DisplayList => 0,
                     SceneNodeKind::ForeignSurface => node.source_id,
                 },
                 window_group: node.window_group,
@@ -238,8 +229,6 @@ impl Session {
                 bounds: node_bounds,
                 clip: node.clip,
                 clip_masks: node.clip_masks.iter().collect(),
-                opaque: node.opaque,
-                damage,
             });
         }
         if nodes.is_empty() {
@@ -271,31 +260,10 @@ impl Session {
         let desktop = self.desktop.as_mut().expect("validated desktop");
         desktop.last_revision = commit.revision;
         send_accepted(&desktop.stream, commit.revision)?;
-        let full = Rect {
-            x: 0,
-            y: 0,
-            width: self.display.width,
-            height: self.display.height,
-        };
-        let damage = if self.presented_nodes.is_empty() {
-            full
-        } else {
-            let pixels = nodes
-                .iter()
-                .flat_map(|node| node.damage.iter().copied())
-                .filter_map(|rectangle| intersect(rectangle, full))
-                .reduce(union);
-            geometry_damage(&self.presented_nodes, &nodes)
-                .filter_map(|rectangle| intersect(rectangle, full))
-                .fold(pixels, |total, rectangle| {
-                    Some(total.map_or(rectangle, |current| union(current, rectangle)))
-                })
-                .unwrap_or(full)
-        };
         let finishes_move = self.move_grab.is_some_and(|grab| {
             grab.ending
                 && nodes.iter().any(|node| {
-                    node.kind == SceneNodeKind::Pixels
+                    node.kind == SceneNodeKind::DisplayList
                         && node.window_group == grab.surface_id
                         && node.clip.x == grab.origin.0 + grab.offset.0
                         && node.clip.y == grab.origin.1 + grab.offset.1
@@ -305,7 +273,6 @@ impl Session {
             revision: commit.revision,
             output_size: self.display,
             nodes,
-            damage,
             finishes_move,
             desktop_buffers,
             app_presentations,
@@ -328,17 +295,7 @@ impl Session {
             .filter(|id| !scene.desktop_buffers.contains(id))
             .collect();
         for id in retired {
-            let stale = self
-                .buffers
-                .values
-                .get(&id)
-                .is_some_and(|buffer| buffer.size != self.display);
-            if stale {
-                self.buffers.values.remove(&id);
-                send_buffer_retired(&desktop.stream, id)?;
-            } else {
-                release_buffer(&mut self.buffers, &desktop.stream, id)?;
-            }
+            self.buffers.values.remove(&id);
         }
         self.desktop_current_buffers
             .clone_from(&scene.desktop_buffers);
@@ -346,31 +303,7 @@ impl Session {
         for app_use in &scene.app_presentations {
             if let Some(app) = self.apps.get_mut(&app_use.surface_id) {
                 if let Some(previous) = &app_use.previous {
-                    // A previous buffer sized for a superseded configure can
-                    // never be presented again: retire it instead of recycling.
-                    // The matching release path keeps double buffering intact.
-                    let stale = app.configure.is_some_and(|configure| {
-                        let buffer = self
-                            .buffers
-                            .values
-                            .get(&previous.buffer_id)
-                            .expect("presented app buffer");
-                        buffer.size.width != configure.width * display_proto::DEVICE_SCALE_FACTOR
-                            || buffer.size.height
-                                != configure.height * display_proto::DEVICE_SCALE_FACTOR
-                    });
-                    if stale {
-                        self.buffers.values.remove(&previous.buffer_id);
-                        let mut bytes = [0u8; 24];
-                        let message = BufferRetired {
-                            buffer_id: previous.buffer_id,
-                        }
-                        .encode(&mut bytes)
-                        .ok_or_else(|| io::Error::other("release encoding failed"))?;
-                        send_message(&app.stream, message)?;
-                    } else {
-                        release_buffer(&mut self.buffers, &app.stream, previous.buffer_id)?;
-                    }
+                    self.buffers.values.remove(&previous.buffer_id);
                 }
                 send_presented(&app.stream, app_use.revision, event)?;
                 let first_scene_presented =
@@ -391,7 +324,8 @@ impl Session {
                 .move_grab
                 .take()
                 .expect("move-finishing scene requires an active grab");
-            release_buffer(&mut self.buffers, &desktop.stream, grab.underlay_buffer_id)?;
+            self.move_underlays.remove(&grab.surface_id);
+            self.buffers.values.remove(&grab.underlay_buffer_id);
             self.move_damage = None;
         }
         if !self.first_scene_presented {
@@ -402,40 +336,15 @@ impl Session {
     }
 
     fn discard_commit(&mut self, commit: SceneCommit<'_>) -> io::Result<Scene> {
-        let mut buffers = Vec::new();
-        for node in commit.nodes() {
-            if node.kind != SceneNodeKind::Pixels || buffers.contains(&node.source_id) {
-                continue;
-            }
-            let buffer = self
-                .buffers
-                .values
-                .get(&node.source_id)
-                .ok_or_else(|| invalid("unknown discarded desktop buffer"))?;
-            if buffer.owner != Owner::Desktop || buffer.busy {
-                return Err(invalid("discarded desktop buffer state invalid"));
-            }
-            buffers.push(node.source_id);
-        }
-        if buffers.is_empty() {
+        if !commit
+            .nodes()
+            .any(|node| node.kind == SceneNodeKind::DisplayList && node.source_id == 0)
+        {
             return Err(invalid("discarded desktop scene has no pixels"));
         }
         let desktop = self.desktop.as_mut().expect("validated desktop");
         desktop.last_revision = commit.revision;
         send_discarded(&desktop.stream, commit.revision)?;
-        for id in buffers {
-            let stale = self
-                .buffers
-                .values
-                .get(&id)
-                .is_some_and(|buffer| buffer.size != self.display);
-            if stale {
-                self.buffers.values.remove(&id);
-                send_buffer_retired(&desktop.stream, id)?;
-            } else {
-                release_buffer(&mut self.buffers, &desktop.stream, id)?;
-            }
-        }
         Ok(Scene::discarded(commit.revision))
     }
 
@@ -455,9 +364,12 @@ impl Session {
                 .is_some_and(|buffer| buffer.size != self.display);
             if stale {
                 self.buffers.values.remove(id);
-                send_buffer_retired(&desktop.stream, *id)?;
             } else {
-                release_buffer(&mut self.buffers, &desktop.stream, *id)?;
+                self.buffers
+                    .values
+                    .get_mut(id)
+                    .ok_or_else(|| invalid("discarded GPU target disappeared"))?
+                    .busy = false;
             }
         }
         for presentation in &scene.app_presentations {
@@ -477,12 +389,18 @@ impl Session {
 }
 
 impl Scene {
+    pub(crate) fn window_groups(&self) -> impl Iterator<Item = u32> + '_ {
+        self.nodes
+            .iter()
+            .map(|node| node.window_group)
+            .filter(|group| *group != 0)
+    }
+
     fn discarded(revision: u64) -> Self {
         Self {
             revision,
             output_size: display_proto::Size::default(),
             nodes: Vec::new(),
-            damage: Rect::default(),
             finishes_move: false,
             desktop_buffers: Vec::new(),
             app_presentations: Vec::new(),
@@ -495,99 +413,4 @@ impl Scene {
     pub fn is_discarded(&self) -> bool {
         self.nodes.is_empty()
     }
-}
-
-fn geometry_damage(previous: &[Node], current: &[Node]) -> impl Iterator<Item = Rect> {
-    let mut damage = [None; 2];
-    let count = previous.len().max(current.len());
-    (0..count).flat_map(move |index| {
-        damage.fill(None);
-        match (previous.get(index), current.get(index)) {
-            (Some(old), Some(new))
-                if old.kind == new.kind
-                    && old.window_group == new.window_group
-                    && old.bounds == new.bounds
-                    && old.clip == new.clip
-                    && old.clip_masks == new.clip_masks => {}
-            (Some(old), Some(new)) => {
-                damage[0] = intersect(old.bounds, old.clip);
-                damage[1] = intersect(new.bounds, new.clip);
-            }
-            (Some(old), None) => {
-                damage[0] = intersect(old.bounds, old.clip);
-            }
-            (None, Some(new)) => {
-                damage[0] = intersect(new.bounds, new.clip);
-            }
-            (None, None) => unreachable!(),
-        }
-        damage.into_iter().flatten()
-    })
-}
-
-fn intersect(left: Rect, right: Rect) -> Option<Rect> {
-    let x1 = left.x.max(right.x);
-    let y1 = left.y.max(right.y);
-    let x2 = left
-        .x
-        .saturating_add_unsigned(left.width)
-        .min(right.x.saturating_add_unsigned(right.width));
-    let y2 = left
-        .y
-        .saturating_add_unsigned(left.height)
-        .min(right.y.saturating_add_unsigned(right.height));
-    (x2 > x1 && y2 > y1).then_some(Rect {
-        x: x1,
-        y: y1,
-        width: (x2 - x1) as u32,
-        height: (y2 - y1) as u32,
-    })
-}
-
-fn union(left: Rect, right: Rect) -> Rect {
-    let x1 = left.x.min(right.x);
-    let y1 = left.y.min(right.y);
-    let x2 = left
-        .x
-        .saturating_add_unsigned(left.width)
-        .max(right.x.saturating_add_unsigned(right.width));
-    let y2 = left
-        .y
-        .saturating_add_unsigned(left.height)
-        .max(right.y.saturating_add_unsigned(right.height));
-    Rect {
-        x: x1,
-        y: y1,
-        width: x2.saturating_sub(x1) as u32,
-        height: y2.saturating_sub(y1) as u32,
-    }
-}
-
-pub(super) fn release_buffer(
-    buffers: &mut Buffers,
-    stream: &UnixStream,
-    id: u32,
-) -> io::Result<()> {
-    buffers
-        .values
-        .get_mut(&id)
-        .ok_or_else(|| invalid("released buffer disappeared"))?
-        .busy = false;
-    send_buffer_release(stream, id)
-}
-
-fn send_buffer_release(stream: &UnixStream, id: u32) -> io::Result<()> {
-    let mut bytes = [0u8; 24];
-    let message = BufferRelease { buffer_id: id }
-        .encode(&mut bytes)
-        .ok_or_else(|| io::Error::other("release encoding failed"))?;
-    send_message(stream, message)
-}
-
-fn send_buffer_retired(stream: &UnixStream, id: u32) -> io::Result<()> {
-    let mut bytes = [0u8; 24];
-    let message = BufferRetired { buffer_id: id }
-        .encode(&mut bytes)
-        .ok_or_else(|| io::Error::other("retirement encoding failed"))?;
-    send_message(stream, message)
 }

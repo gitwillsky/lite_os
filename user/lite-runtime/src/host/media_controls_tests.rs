@@ -92,13 +92,7 @@ fn production_music_player_uses_standard_range_and_readable_media_controls() {
     collect_text(&scene, &mut text);
     // The player opens on the Search view; assert its tab + source controls
     // render with plain ASCII labels the fixed UI font can draw.
-    for label in [
-        "Search",
-        "Now Playing",
-        "Library",
-        "NetEase",
-        "QQ Music",
-    ] {
+    for label in ["Search", "Now Playing", "Library", "NetEase", "QQ Music"] {
         assert!(
             text.iter().any(|value| value == label),
             "production media surface omitted ASCII control label {label:?}"

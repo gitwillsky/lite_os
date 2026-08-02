@@ -1,33 +1,27 @@
 //! Taffy layout and CPU raster for the immutable React host snapshot.
 
-mod backdrop;
 mod border;
-mod box_paint;
 mod cursor;
+mod gpu_list;
+mod gpu_paint;
 mod gradient;
 mod image;
 mod layout;
-mod opacity;
-mod paint;
 mod range;
-mod raster;
-mod render;
-mod retained;
 mod scroll;
 mod shadow;
 mod text_control;
 mod transform;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     io,
     path::PathBuf,
 };
 
 use display_proto::Size as DisplaySize;
-use linux_uapi::drm::SharedDumbBuffer;
 use serde_json::Value;
-use taffy::prelude::{AvailableSpace, Dimension, Display, NodeId, Size, Style, TaffyTree};
+use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::{
     display::{ForeignLayer, Overlay, WindowFrame},
@@ -36,21 +30,13 @@ use crate::{
     terminal_font::TerminalFont,
     tree::Node,
 };
-use border::paint_border;
-use box_paint::paint_background;
 use cursor::shape as cursor_shape;
-use image::{Image, decode_png, paint_background_image, paint_image};
-use layout::{OverflowMode, TextMeasure, corner_radii, overflow_modes, text_content, to_taffy};
+pub(crate) use gpu_list::{GpuCommand, GpuFrame, TextureUpload};
+use image::{Image, decode_png};
+use layout::{TextMeasure, text_content, to_taffy};
 pub(crate) use range::RangeInput;
-use retained::*;
-use scroll::{
-    Axis, LogicalRect, ScrollDrag, ScrollOffset, ScrollRegion, Scrollbar, paint_scrollbar,
-    paint_scrollbar_corner, scrollbar,
-};
-use shadow::{paint_inset_shadow, paint_shadow};
+use scroll::{LogicalRect, ScrollDrag, ScrollOffset, ScrollRegion, Scrollbar};
 use transform::translation as transform_translation;
-
-pub(crate) use raster::{ClipRaster, DamageRaster, OpacityLayer, Raster, RasterClip};
 
 pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
 
@@ -61,109 +47,12 @@ struct RenderNode {
     selection: Option<Computed>,
     id: NodeId,
     children: Vec<RenderNode>,
-    /// Whether this subtree contains a CSS `position: fixed` node.
-    ///
-    /// Fixed-layer paint must walk through document ancestors to reach those
-    /// nodes, but an entire window subtree without one cannot contribute any
-    /// fixed pixels or hit regions. Publishing the fact during tree creation
-    /// prevents the steady frame path from recursively scanning every app
-    /// control just to discover that it is not fixed.
-    has_fixed_descendant: bool,
-}
-
-/// Stable identity of the fixed-position paint tree.
-///
-/// The document layer is retained independently, but fixed chrome also needs
-/// a retained identity: repainting its text, images and shadows on every
-/// unrelated window resize was the dominant 30 FPS regression. Only fixed
-/// ancestors and the complete descendants of a fixed root are copied, so an
-/// application window update does not invalidate the shell cache.
-#[derive(Clone, PartialEq)]
-struct FixedSignatureNode {
-    id: u64,
-    kind: String,
-    props: BTreeMap<String, Value>,
-    text: String,
-    computed: Computed,
-    children: Vec<FixedSignatureNode>,
-}
-
-/// Exact retained identity of the document layer. Fixed-position subtrees are
-/// separate compositor layers and therefore do not invalidate this snapshot.
-#[derive(Clone, PartialEq)]
-struct DocumentNode {
-    source: Node,
-    /// Flattened text actually painted by a text leaf. The render tree omits
-    /// its raw `#text` children after shaping, so retaining only `source`
-    /// would miss a text-only React update and incorrectly reuse old pixels.
-    paint_text: String,
-    computed: Computed,
-    children: Vec<DocumentNode>,
-}
-
-struct DocumentLayer {
-    nodes: Vec<DocumentNode>,
-    bounds: HashMap<u64, PhysicalRect>,
-    scroll_offsets: HashMap<u64, ScrollOffset>,
-    width: usize,
-    height: usize,
-    pixels: Vec<u32>,
-    output: RenderOutput,
-    scroll_regions: Vec<ScrollRegion>,
-    scrollbars: Vec<Scrollbar>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PaintPhase {
     Document,
     Fixed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum DocumentPaint {
-    Reuse,
-    Partial(Vec<PhysicalRect>),
-    Full,
-}
-
-/// 单帧 damage rect 集合上限;超出合并为 bounding box(与 compositor scanout
-/// 的累积规则一致)。cap 保证 scissor/写掩码循环有界,协议消息也不超 MAX_MESSAGE。
-pub(crate) const MAX_DAMAGE_RECTS: usize = 64;
-
-/// Per-node context threaded down the paint walk.
-#[derive(Clone, Copy)]
-struct PaintWalk {
-    /// DOM parent of the node being painted. Hit testing uses this stable host
-    /// identity to build the actual target-to-root event path; geometry-only
-    /// listener lookup would incorrectly "bubble" through overlapping siblings.
-    parent_node_id: Option<u64>,
-    /// Window subtree pruned from a move underlay (matched on `data-lite-window`).
-    excluded_window_group: Option<u32>,
-    /// Whole-window outer rect from the enclosing `<div data-lite-window>`
-    /// container, reported as the foreign surface's chrome/input frame.
-    window_frame: Option<display_proto::Rect>,
-    /// Surface identity of the enclosing system window. This preserves DOM
-    /// hit-test order when desktop chrome paints after an embedded surface.
-    window_group: Option<u32>,
-    /// Active clip from an ancestor `overflow: hidden/scroll/auto` container;
-    /// raster and hit regions are confined to it, fully-clipped subtrees skipped.
-    clip: Option<PhysicalRect>,
-    /// Optional retained-raster damage scissor. Unlike `clip`, this never
-    /// changes hit testing or descendant CSS overflow geometry. It is the
-    /// bounding box of the frame's exact damage set and only prunes paint
-    /// work; the exact write mask lives in `DamageRaster`.
-    damage: Option<PhysicalRect>,
-    /// `opacity` group nesting depth: selects the offscreen layer pool slot, so
-    /// a nested group never rasterizes into a layer its ancestor still owns.
-    opacity_depth: usize,
-    /// Whether this subtree emits hit and scroll regions: `pointer-events:
-    /// none` on the node or any ancestor disables the whole subtree (LiteUI
-    /// does not implement the CSS `auto` re-enable on descendants).
-    hits_enabled: bool,
-    /// Retained paint layer selected for this walk.
-    phase: PaintPhase,
-    /// Whether an ancestor established a fixed-position subtree.
-    fixed_context: bool,
 }
 
 /// Geometry emitted beside pixels for compositor-owned app surfaces.
@@ -173,7 +62,7 @@ pub struct RenderOutput {
     pub foreign: Vec<ForeignLayer>,
     /// Window frames in React paint (z) order — one per `data-lite-window`,
     /// including pure-DOM windows without a foreign surface. Each becomes a
-    /// per-window group `Pixels` node so the compositor can move/damage/finish
+    /// per-window display-list group so the compositor can move/damage/finish
     /// every window uniformly.
     pub windows: Vec<WindowFrame>,
     /// Overlay chrome clips (CSS `position:fixed` elements) sorted by `z-index`
@@ -262,6 +151,9 @@ pub struct Renderer {
     sheet: Sheet,
     viewport: DisplaySize,
     images: HashMap<String, Image>,
+    gpu_images: HashMap<String, u32>,
+    gpu_text_texture: Option<u32>,
+    next_gpu_texture: u32,
     font: Font,
     terminal_font: TerminalFont,
     /// Persistent CSS scroll offsets keyed by stable React host-instance id.
@@ -276,28 +168,6 @@ pub struct Renderer {
     /// User-agent scrollbar hit geometry from the latest rendered scene.
     scrollbars: Vec<Scrollbar>,
     scroll_drag: Option<ScrollDrag>,
-    /// Depth-indexed pool of offscreen layers for `opacity` group raster. Slot
-    /// `d` serves nesting depth `d`; a layer is taken out for the duration of
-    /// its subtree paint so a nested group recurses into the next slot.
-    opacity_layers: Vec<Option<OpacityLayer>>,
-    /// Reused standard backdrop-filter working set. Without renderer ownership,
-    /// every glass surface would allocate two large pixel planes per frame.
-    backdrop_blur: backdrop::BackdropBlur,
-    /// Exact retained document raster below every `position: fixed` layer.
-    ///
-    /// Without this layer, opening global chrome re-rasterizes wallpaper and
-    /// every application window even though only the fixed overlay changed.
-    document_layer: Option<DocumentLayer>,
-    /// Fixed-layer clips from the preceding desktop render. Removed overlays
-    /// must damage their old pixels as well as current overlays their new ones.
-    previous_fixed_clips: Vec<display_proto::Rect>,
-    /// Cached fixed output metadata reused while its pixels remain valid.
-    fixed_output: Option<RenderOutput>,
-    /// Source/style identity of the fixed tree represented by `fixed_output`.
-    fixed_signature: Option<Vec<FixedSignatureNode>>,
-    /// Number of following commits that must refresh a newly changed fixed
-    /// layer into every presentation buffer before steady-state reuse.
-    fixed_refresh_remaining: usize,
     /// Stable node id of the focused form control, or `None`.
     focused: Option<u64>,
     /// Native caret, selection and horizontal scroll keyed by stable host id.
@@ -329,6 +199,9 @@ impl Renderer {
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
             viewport,
             images: HashMap::new(),
+            gpu_images: HashMap::new(),
+            gpu_text_texture: None,
+            next_gpu_texture: 1,
             font: Font::open()?,
             terminal_font: TerminalFont::open()?,
             scroll_offsets: HashMap::new(),
@@ -336,13 +209,6 @@ impl Renderer {
             active_scroll_nodes: HashSet::new(),
             scrollbars: Vec::new(),
             scroll_drag: None,
-            opacity_layers: Vec::new(),
-            backdrop_blur: backdrop::BackdropBlur::new(),
-            document_layer: None,
-            previous_fixed_clips: Vec::new(),
-            fixed_output: None,
-            fixed_signature: None,
-            fixed_refresh_remaining: 0,
             focused: None,
             text_controls: HashMap::new(),
             hover_target: None,
@@ -372,6 +238,26 @@ impl Renderer {
         let changed = self.focused != node_id;
         self.focused = node_id;
         changed
+    }
+
+    pub fn focused(&self) -> Option<u64> {
+        self.focused
+    }
+
+    pub fn set_hover_target(&mut self, node_id: Option<u64>) -> bool {
+        let changed = self.hover_target != node_id;
+        self.hover_target = node_id;
+        changed
+    }
+
+    pub fn set_active_target(&mut self, node_id: Option<u64>) -> bool {
+        let changed = self.active_target != node_id;
+        self.active_target = node_id;
+        changed
+    }
+
+    pub fn set_viewport(&mut self, viewport: DisplaySize) {
+        self.viewport = viewport;
     }
 
     /// Builds one cascade-resolved render subtree and its Taffy nodes.
@@ -452,8 +338,6 @@ impl Renderer {
             tree.new_with_children(style, &ids)
         }
         .map_err(taffy_error)?;
-        let has_fixed_descendant = computed.get("position") == Some("fixed")
-            || children.iter().any(|child| child.has_fixed_descendant);
         Ok(RenderNode {
             source,
             computed,
@@ -461,8 +345,18 @@ impl Renderer {
             selection,
             id,
             children,
-            has_fixed_descendant,
         })
+    }
+}
+
+fn empty_output() -> RenderOutput {
+    RenderOutput {
+        foreign: Vec::new(),
+        windows: Vec::new(),
+        overlays: Vec::new(),
+        hits: Vec::new(),
+        key_listener: None,
+        damage: Vec::new(),
     }
 }
 
@@ -491,85 +385,6 @@ fn logical_intersection(rect: LogicalRect, clip: Option<PhysicalRect>) -> Logica
     }
 }
 
-/// Builds the physical padding-edge clip for one CSS overflow container.
-///
-/// `border-radius` describes the outer border edge. Descendants clip at the
-/// padding edge, so each corner's horizontal and vertical radii shrink by
-/// their corresponding side borders. Keeping the outer radius would erase
-/// valid inner-corner pixels, while a square clip lets descendants overwrite
-/// the rounded frame.
-fn overflow_raster_clip(
-    port: PhysicalRect,
-    computed: &Computed,
-    borders: [f32; 4],
-    clip_x: bool,
-    clip_y: bool,
-) -> RasterClip {
-    let [top, right, bottom, left] =
-        borders.map(|border| (border * SCALE).round().max(0.0) as usize);
-    let [top_left, top_right, bottom_right, bottom_left] = box_paint::corner_radii(computed);
-    RasterClip::new(
-        port,
-        [
-            (top_left.saturating_sub(left), top_left.saturating_sub(top)),
-            (
-                top_right.saturating_sub(right),
-                top_right.saturating_sub(top),
-            ),
-            (
-                bottom_right.saturating_sub(right),
-                bottom_right.saturating_sub(bottom),
-            ),
-            (
-                bottom_left.saturating_sub(left),
-                bottom_left.saturating_sub(bottom),
-            ),
-        ],
-        clip_x,
-        clip_y,
-    )
-}
-
-fn collect_scroll_nodes(node: &RenderNode, identities: &mut HashSet<u64>) {
-    let (overflow_x, overflow_y) = overflow_modes(&node.computed);
-    if overflow_x.scrolls() || overflow_y.scrolls() {
-        identities.insert(node.source.id);
-    }
-    for child in &node.children {
-        collect_scroll_nodes(child, identities);
-    }
-}
-
-fn fixed_signature(node: &RenderNode) -> Option<FixedSignatureNode> {
-    if !node.has_fixed_descendant {
-        return None;
-    }
-    let children = if node.computed.get("position") == Some("fixed") {
-        node.children.iter().map(full_signature).collect()
-    } else {
-        node.children.iter().filter_map(fixed_signature).collect()
-    };
-    Some(FixedSignatureNode {
-        id: node.source.id,
-        kind: node.source.kind.clone(),
-        props: node.source.props.clone(),
-        text: node.source.text.clone(),
-        computed: node.computed.clone(),
-        children,
-    })
-}
-
-fn full_signature(node: &RenderNode) -> FixedSignatureNode {
-    FixedSignatureNode {
-        id: node.source.id,
-        kind: node.source.kind.clone(),
-        props: node.source.props.clone(),
-        text: node.source.text.clone(),
-        computed: node.computed.clone(),
-        children: node.children.iter().map(full_signature).collect(),
-    }
-}
-
 fn collect_parents(node: &Node, parent: Option<u64>, parents: &mut HashMap<u64, Option<u64>>) {
     parents.insert(node.id, parent);
     for child in &node.children {
@@ -579,15 +394,6 @@ fn collect_parents(node: &Node, parent: Option<u64>, parents: &mut HashMap<u64, 
 
 fn listener(node: &Node, name: &str) -> Option<u64> {
     node.props.get(name).and_then(Value::as_u64)
-}
-
-/// A move underlay omits one window: its container `<div data-lite-window={id}>`
-/// carries that id directly, so pruning the container node prunes the whole
-/// window subtree (chrome + client surface) from the raster in one match.
-fn excludes_window(node: &Node, excluded: Option<u32>) -> bool {
-    excluded.is_some_and(|window_id| {
-        node.props.get("data-lite-window").and_then(Value::as_u64) == Some(u64::from(window_id))
-    })
 }
 
 /// A `div` marked `data-lite-surface` is the app client area — a region whose
@@ -645,24 +451,6 @@ impl PhysicalRect {
         }
     }
 
-    fn union(self, other: PhysicalRect) -> PhysicalRect {
-        PhysicalRect {
-            x1: self.x1.min(other.x1),
-            y1: self.y1.min(other.y1),
-            x2: self.x2.max(other.x2),
-            y2: self.y2.max(other.y2),
-        }
-    }
-
-    fn display_rect(self) -> display_proto::Rect {
-        display_proto::Rect {
-            x: self.x1 as i32,
-            y: self.y1 as i32,
-            width: self.x2.saturating_sub(self.x1) as u32,
-            height: self.y2.saturating_sub(self.y1) as u32,
-        }
-    }
-
     /// True when the rect has no area (nothing to paint / fully clipped away).
     pub(crate) fn is_empty(self) -> bool {
         self.x2 <= self.x1 || self.y2 <= self.y1
@@ -672,6 +460,3 @@ impl PhysicalRect {
 fn taffy_error(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
-
-#[cfg(test)]
-mod tests;

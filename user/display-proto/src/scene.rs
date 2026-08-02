@@ -1,8 +1,8 @@
 //! Atomic desktop flat-scene snapshot.
 
 use crate::{
-    MAX_DAMAGE_RECTS, MAX_INPUT_RECTS, MAX_NODE_CLIP_MASKS, MAX_NODE_INPUT_RECTS, MAX_SCENE_NODES,
-    Rect,
+    MAX_INPUT_RECTS, MAX_NODE_CLIP_MASKS, MAX_NODE_DAMAGE_RECTS, MAX_NODE_INPUT_RECTS,
+    MAX_SCENE_NODES, Rect,
     codec::{FrameWriter, MessageKind, PayloadReader},
 };
 
@@ -10,8 +10,8 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum SceneNodeKind {
-    /// Premultiplied ARGB pixels from a desktop-owned buffer.
-    Pixels = 1,
+    /// Compositor-rendered output of the connection's immutable display list.
+    DisplayList = 1,
     /// Latest adopted content of one app surface.
     ForeignSurface = 2,
 }
@@ -19,7 +19,7 @@ pub enum SceneNodeKind {
 impl SceneNodeKind {
     fn parse(raw: u32) -> Option<Self> {
         match raw {
-            1 => Some(Self::Pixels),
+            1 => Some(Self::DisplayList),
             2 => Some(Self::ForeignSurface),
             _ => None,
         }
@@ -74,9 +74,9 @@ pub struct SceneNode<'a> {
     pub kind: SceneNodeKind,
     /// App surface whose compositor-side temporary move transform applies, or zero.
     pub window_group: u32,
-    /// Buffer id for pixels or app surface id for a foreign surface.
+    /// Display-list target id or app surface id for a foreign surface.
     pub source_id: u32,
-    /// Adopted configure serial for a foreign surface; zero for pixels.
+    /// Adopted configure serial for a foreign surface; zero for a display list.
     pub configure_serial: u64,
     /// Destination bounds in physical screen pixels.
     pub bounds: Rect,
@@ -95,13 +95,13 @@ pub struct SceneNode<'a> {
 impl<'a> SceneNode<'a> {
     fn encode(self, writer: &mut FrameWriter<'_>) -> Option<()> {
         if self.input.len() > MAX_NODE_INPUT_RECTS
-            || self.damage.len() > MAX_DAMAGE_RECTS
+            || self.damage.len() > MAX_NODE_DAMAGE_RECTS
             || self.clip_masks.len() > MAX_NODE_CLIP_MASKS
         {
             return None;
         }
         match self.kind {
-            SceneNodeKind::Pixels if self.configure_serial != 0 => return None,
+            SceneNodeKind::DisplayList if self.configure_serial != 0 => return None,
             SceneNodeKind::ForeignSurface if self.configure_serial == 0 => return None,
             _ => {}
         }
@@ -134,7 +134,7 @@ impl<'a> SceneNode<'a> {
         let source_id = reader.u32()?;
         let configure_serial = reader.u64()?;
         match kind {
-            SceneNodeKind::Pixels if configure_serial != 0 => return None,
+            SceneNodeKind::DisplayList if configure_serial != 0 => return None,
             SceneNodeKind::ForeignSurface if configure_serial == 0 => return None,
             _ => {}
         }
@@ -148,14 +148,13 @@ impl<'a> SceneNode<'a> {
         let damage_count = reader.u32()? as usize;
         let clip_mask_count = reader.u32()? as usize;
         if input_count > MAX_NODE_INPUT_RECTS
-            || damage_count > MAX_DAMAGE_RECTS
+            || damage_count > MAX_NODE_DAMAGE_RECTS
             || clip_mask_count > MAX_NODE_CLIP_MASKS
         {
             return None;
         }
         let opaque_rectangle = Rect::parse(reader)?;
-        let clip_mask_bytes =
-            reader.bytes(clip_mask_count.checked_mul(ClipMask::WIRE_SIZE)?)?;
+        let clip_mask_bytes = reader.bytes(clip_mask_count.checked_mul(ClipMask::WIRE_SIZE)?)?;
         let input_bytes = reader.bytes(input_count.checked_mul(16)?)?;
         let damage_bytes = reader.bytes(damage_count.checked_mul(16)?)?;
         Some(SceneNode {

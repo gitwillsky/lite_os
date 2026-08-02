@@ -57,8 +57,9 @@
 
 ## Known limits
 
-- GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush 与单 connector mode change；VirGL、Vulkan、
-  3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
+- GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush 与
+  单 connector mode change；Vulkan、多 client 3D context、DRM atomic/auth/lease、完整 evdev
+  output/multitouch 和设备热拔插尚未开放。
 - VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port、PCI
   bridge/hotplug 或多显示器管理。
 - graphical session 的产品边界见[图形会话与 LiteUI](lite-runtime.md)。

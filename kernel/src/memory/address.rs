@@ -120,14 +120,14 @@ impl PhysicalAddress {
 
     /// @description 将物理地址表示为只读裸指针，不创建引用或声明别名关系。
     ///
-    /// @return 指向 architecture direct map 的裸指针；调用方在解引用前必须证明映射、对齐和生命周期有效。
+    /// @return 指向 architecture kernel mapping 的裸指针；调用方在解引用前必须证明映射、对齐和生命周期有效。
     pub(crate) fn as_ptr<T>(&self) -> *const T {
         crate::arch::mmu::physical_to_virtual(self.0) as *const T
     }
 
     /// @description 将物理地址表示为可写裸指针，不创建引用或声明独占访问。
     ///
-    /// @return 指向 architecture direct map 的裸指针；调用方在解引用前必须证明映射、对齐、生命周期和独占访问有效。
+    /// @return 指向 architecture kernel mapping 的裸指针；调用方在解引用前必须证明映射、对齐、生命周期和独占访问有效。
     pub(crate) fn as_mut_ptr<T>(&self) -> *mut T {
         crate::arch::mmu::physical_to_virtual(self.0) as *mut T
     }

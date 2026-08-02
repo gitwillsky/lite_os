@@ -87,8 +87,6 @@ pub struct MoveBegin {
     pub surface_id: u32,
     /// Exact desktop pointer-down serial authorizing the grab.
     pub serial: u64,
-    /// Desktop scratch buffer rasterized without the moving window group.
-    pub underlay_buffer_id: u32,
     /// Minimum canonical logical x position.
     pub min_x: i32,
     /// Minimum canonical logical y position.
@@ -102,17 +100,12 @@ pub struct MoveBegin {
 impl MoveBegin {
     /// Encodes one move authorization and its desktop-owned constraints.
     pub fn encode(self, bytes: &mut [u8]) -> Option<&[u8]> {
-        if self.surface_id == 0
-            || self.underlay_buffer_id == 0
-            || self.max_x < self.min_x
-            || self.max_y < self.min_y
-        {
+        if self.surface_id == 0 || self.max_x < self.min_x || self.max_y < self.min_y {
             return None;
         }
         let mut writer = FrameWriter::new(bytes, MessageKind::MoveBegin)?;
         writer.u32(self.surface_id)?;
         writer.u64(self.serial)?;
-        writer.u32(self.underlay_buffer_id)?;
         writer.u32(self.min_x as u32)?;
         writer.u32(self.min_y as u32)?;
         writer.u32(self.max_x as u32)?;
@@ -126,7 +119,6 @@ impl MoveBegin {
         let message = Self {
             surface_id: reader.u32()?,
             serial: reader.u64()?,
-            underlay_buffer_id: reader.u32()?,
             min_x: reader.u32()? as i32,
             min_y: reader.u32()? as i32,
             max_x: reader.u32()? as i32,
@@ -134,7 +126,6 @@ impl MoveBegin {
         };
         reader.finish()?;
         (message.surface_id != 0
-            && message.underlay_buffer_id != 0
             && message.max_x >= message.min_x
             && message.max_y >= message.min_y)
             .then_some(message)

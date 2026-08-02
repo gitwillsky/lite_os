@@ -3,10 +3,9 @@
 use std::{io, os::unix::net::UnixStream};
 
 use display_proto::{
-    Accepted, AppClosed, AppOpened, BufferRelease, BufferRetired, ClipboardData, CloseRequest,
-    Configure, ConfigureReady, Discarded, InputKey, InputPointer, InputScroll, MAX_MESSAGE,
-    MessageKind, MoveComplete, OutputConfigure, Presented, SurfaceActivated, parse_frame,
-    recv_frame_blocking,
+    Accepted, AppClosed, AppOpened, ClipboardData, CloseRequest, Configure, ConfigureReady,
+    Discarded, InputKey, InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveComplete,
+    OutputConfigure, Presented, SurfaceActivated, parse_frame, recv_frame_blocking,
 };
 
 use super::{Event, invalid};
@@ -15,17 +14,12 @@ pub(super) enum WireEvent {
     Public(Event),
     Accepted(u64),
     Discarded(u64),
-    Released(u32),
-    Retired(u32),
     Presented { revision: u64, monotonic_ns: u64 },
 }
 
 pub(super) fn receive_configure(stream: &UnixStream, surface_id: u32) -> io::Result<Configure> {
     let mut bytes = [0u8; MAX_MESSAGE];
-    let (length, fd) = recv_frame_blocking(stream, &mut bytes)?;
-    if fd.is_some() {
-        return Err(invalid("configure carried a descriptor"));
-    }
+    let length = recv_frame_blocking(stream, &mut bytes)?;
     let frame = parse_frame(&bytes[..length])
         .filter(|frame| frame.kind() == MessageKind::Configure)
         .ok_or_else(|| invalid("initial configure missing"))?;
@@ -42,8 +36,6 @@ pub(super) fn parse_event(
     Some(match kind {
         MessageKind::Accepted => WireEvent::Accepted(Accepted::parse(payload)?.revision),
         MessageKind::Discarded => WireEvent::Discarded(Discarded::parse(payload)?.revision),
-        MessageKind::BufferRelease => WireEvent::Released(BufferRelease::parse(payload)?.buffer_id),
-        MessageKind::BufferRetired => WireEvent::Retired(BufferRetired::parse(payload)?.buffer_id),
         MessageKind::Presented => {
             let presented = Presented::parse(payload)?;
             WireEvent::Presented {

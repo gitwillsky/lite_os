@@ -21,8 +21,7 @@ type Aes128EcbEnc = ecb::Encryptor<aes::Aes128>;
 const EAPI_KEY: &[u8; 16] = b"e82ckenh8dichen8";
 const SEP: &str = "-36cd479b6b5-";
 const HOST: &str = "https://interface3.music.163.com";
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
      Chrome/134.0.0.0 Safari/537.36";
 
 fn md5_hex(input: &str) -> String {
@@ -36,12 +35,10 @@ fn md5_hex(input: &str) -> String {
 pub(crate) fn eapi_encrypt(request_path: &str, params_json: &str) -> String {
     // The digest is computed over the /api/ variant of the path.
     let api_path = request_path.replacen("/eapi/", "/api/", 1);
-    let digest = md5_hex(&format!(
-        "nobody{api_path}use{params_json}md5forencrypt"
-    ));
+    let digest = md5_hex(&format!("nobody{api_path}use{params_json}md5forencrypt"));
     let plain = format!("{api_path}{SEP}{params_json}{SEP}{digest}");
-    let cipher = Aes128EcbEnc::new(EAPI_KEY.into())
-        .encrypt_padded_vec_mut::<Pkcs7>(plain.as_bytes());
+    let cipher =
+        Aes128EcbEnc::new(EAPI_KEY.into()).encrypt_padded_vec_mut::<Pkcs7>(plain.as_bytes());
     format!("params={}", hex::encode_upper(cipher))
 }
 
@@ -148,10 +145,7 @@ fn parse_song(song: &serde_json::Value) -> RemoteTrack {
         .unwrap_or_default();
     RemoteTrack {
         source: "netease",
-        id: song
-            .get("id")
-            .map(json_id)
-            .unwrap_or_default(),
+        id: song.get("id").map(json_id).unwrap_or_default(),
         title: str_field(song, "name"),
         artist,
         album: song
@@ -179,7 +173,9 @@ pub(crate) fn parse_song_url(body: &str) -> Result<SongUrl, String> {
         serde_json::from_str(body).map_err(|error| format!("netease url json: {error}"))?;
     if let Some(code) = value.get("code").and_then(|c| c.as_i64()) {
         if code != 200 {
-            return Ok(SongUrl::rejected(format!("netease player url: code {code}")));
+            return Ok(SongUrl::rejected(format!(
+                "netease player url: code {code}"
+            )));
         }
     }
     let first = value.get("data").and_then(|data| data.get(0));
@@ -250,8 +246,8 @@ mod tests {
         // digest = md5("nobody/api/xuse{}md5forencrypt")
         let digest = md5_hex("nobody/api/xuse{}md5forencrypt");
         let plain = format!("/api/x{SEP}{{}}{SEP}{digest}");
-        let expected = Aes128EcbEnc::new(EAPI_KEY.into())
-            .encrypt_padded_vec_mut::<Pkcs7>(plain.as_bytes());
+        let expected =
+            Aes128EcbEnc::new(EAPI_KEY.into()).encrypt_padded_vec_mut::<Pkcs7>(plain.as_bytes());
         assert_eq!(
             eapi_encrypt("/eapi/x", "{}"),
             format!("params={}", hex::encode_upper(expected))
@@ -327,11 +323,15 @@ mod tests {
         assert!(!full.trial);
         assert_eq!(full.reason, None);
         assert_eq!(
-            parse_song_url(r#"{"code":200,"data":[{"url":""}]}"#).unwrap().url,
+            parse_song_url(r#"{"code":200,"data":[{"url":""}]}"#)
+                .unwrap()
+                .url,
             None
         );
         assert_eq!(
-            parse_song_url(r#"{"code":200,"data":[{"url":null}]}"#).unwrap().url,
+            parse_song_url(r#"{"code":200,"data":[{"url":null}]}"#)
+                .unwrap()
+                .url,
             None
         );
     }

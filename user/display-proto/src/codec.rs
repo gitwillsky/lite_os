@@ -12,58 +12,58 @@ pub enum MessageKind {
     HelloApp = 2,
     /// Successful exact-version handshake.
     Welcome = 3,
-    /// Request a compositor-owned dumb-buffer pair.
-    BufferAlloc = 4,
-    /// Buffer allocation result.
-    BufferAllocated = 5,
-    /// A buffer is writable by its producer again.
-    BufferRelease = 6,
     /// Configure an app client area.
-    Configure = 7,
-    /// App pixels for one configure serial are ready.
-    SurfaceCommit = 8,
+    Configure = 4,
     /// Pending configure has a complete surface commit.
-    ConfigureReady = 9,
+    ConfigureReady = 5,
     /// Full desktop flat-scene snapshot.
-    SceneCommit = 10,
+    SceneCommit = 6,
     /// A visual revision passed validation and released the protocol permit.
-    Accepted = 11,
+    Accepted = 7,
     /// A visual revision reached page-flip completion.
-    Presented = 12,
+    Presented = 8,
     /// An app connection published one top-level surface.
-    AppOpened = 13,
+    AppOpened = 9,
     /// An app connection removed its top-level surface.
-    AppClosed = 14,
+    AppClosed = 10,
     /// Desktop requests unconditional app termination.
-    CloseRequest = 15,
+    CloseRequest = 11,
     /// Routed pointer input.
-    InputPointer = 16,
+    InputPointer = 12,
     /// Routed keyboard input.
-    InputKey = 17,
+    InputKey = 13,
     /// A pointer-down landed on a foreign surface; the desktop should raise it.
-    SurfaceActivated = 18,
+    SurfaceActivated = 14,
     /// Desktop authorizes one compositor-side temporary window move.
-    MoveBegin = 19,
+    MoveBegin = 15,
     /// Compositor returns the final logical position of an authorized move.
-    MoveComplete = 20,
+    MoveComplete = 16,
     /// App requests the compositor draw a fixed standard cursor shape.
-    SetCursorShape = 21,
+    SetCursorShape = 17,
     /// Routed mouse-wheel scroll input.
-    InputScroll = 22,
+    InputScroll = 18,
     /// Focused client requests the current plain-text clipboard.
-    ClipboardRead = 23,
+    ClipboardRead = 19,
     /// Focused client publishes a new plain-text clipboard.
-    ClipboardWrite = 24,
+    ClipboardWrite = 20,
     /// Compositor returns clipboard text for one exact request.
-    ClipboardData = 25,
+    ClipboardData = 21,
     /// Desktop atomically replaces the global accelerator chord table.
-    AcceleratorSet = 26,
+    AcceleratorSet = 22,
     /// Compositor selects a new physical output mode for the desktop document.
-    OutputConfigure = 27,
+    OutputConfigure = 23,
     /// A validated visual revision was superseded before presentation.
-    Discarded = 28,
-    /// A buffer generation is permanently destroyed instead of recycled.
-    BufferRetired = 29,
+    Discarded = 24,
+    /// Immutable GPU display-list snapshot for one client revision.
+    DisplayListCommit = 25,
+    /// Declares one client-owned immutable texture upload.
+    TextureCreate = 26,
+    /// Supplies one exact byte range of a declared texture.
+    TextureWrite = 27,
+    /// Atomically publishes a completely uploaded texture.
+    TexturePublish = 28,
+    /// Permanently removes one client texture identity.
+    TextureDestroy = 29,
 }
 
 impl MessageKind {
@@ -81,32 +81,32 @@ impl MessageKind {
             1 => Self::HelloDesktop,
             2 => Self::HelloApp,
             3 => Self::Welcome,
-            4 => Self::BufferAlloc,
-            5 => Self::BufferAllocated,
-            6 => Self::BufferRelease,
-            7 => Self::Configure,
-            8 => Self::SurfaceCommit,
-            9 => Self::ConfigureReady,
-            10 => Self::SceneCommit,
-            11 => Self::Accepted,
-            12 => Self::Presented,
-            13 => Self::AppOpened,
-            14 => Self::AppClosed,
-            15 => Self::CloseRequest,
-            16 => Self::InputPointer,
-            17 => Self::InputKey,
-            18 => Self::SurfaceActivated,
-            19 => Self::MoveBegin,
-            20 => Self::MoveComplete,
-            21 => Self::SetCursorShape,
-            22 => Self::InputScroll,
-            23 => Self::ClipboardRead,
-            24 => Self::ClipboardWrite,
-            25 => Self::ClipboardData,
-            26 => Self::AcceleratorSet,
-            27 => Self::OutputConfigure,
-            28 => Self::Discarded,
-            29 => Self::BufferRetired,
+            4 => Self::Configure,
+            5 => Self::ConfigureReady,
+            6 => Self::SceneCommit,
+            7 => Self::Accepted,
+            8 => Self::Presented,
+            9 => Self::AppOpened,
+            10 => Self::AppClosed,
+            11 => Self::CloseRequest,
+            12 => Self::InputPointer,
+            13 => Self::InputKey,
+            14 => Self::SurfaceActivated,
+            15 => Self::MoveBegin,
+            16 => Self::MoveComplete,
+            17 => Self::SetCursorShape,
+            18 => Self::InputScroll,
+            19 => Self::ClipboardRead,
+            20 => Self::ClipboardWrite,
+            21 => Self::ClipboardData,
+            22 => Self::AcceleratorSet,
+            23 => Self::OutputConfigure,
+            24 => Self::Discarded,
+            25 => Self::DisplayListCommit,
+            26 => Self::TextureCreate,
+            27 => Self::TextureWrite,
+            28 => Self::TexturePublish,
+            29 => Self::TextureDestroy,
             _ => return None,
         })
     }

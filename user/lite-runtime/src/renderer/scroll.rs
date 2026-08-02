@@ -1,8 +1,6 @@
-//! Persistent CSS scroll offsets, scrollbar geometry and user-agent painting.
+//! Persistent CSS scroll offsets, scrollbar geometry and input behavior.
 
-use super::Raster;
-
-use super::{PhysicalRect, Renderer, SCALE};
+use super::Renderer;
 
 pub(super) const SCROLLBAR_WIDTH: f32 = 10.0;
 const MINIMUM_THUMB_LENGTH: f32 = 18.0;
@@ -341,68 +339,6 @@ pub(super) fn scrollbar(
         thumb,
         maximum,
         viewport,
-    }
-}
-
-/// Paints one neutral user-agent scrollbar above the scrolled descendants.
-pub(super) fn paint_scrollbar<R: Raster>(
-    pixels: &mut R,
-    scrollbar: Scrollbar,
-    clip: Option<PhysicalRect>,
-) {
-    let track = physical(scrollbar.track, pixels, clip);
-    // Aurora scrollbar: a nearly-invisible track and a slim, inset, flat thumb
-    // (was a chunky Win95 beige beveled bar). The thumb is inset 3px on its
-    // cross axis so it reads as a thin pill rather than a full-width slab.
-    fill(pixels, track, 0xff0b_1322);
-    let thumb = physical(scrollbar.thumb, pixels, clip);
-    if thumb.x2 <= thumb.x1 || thumb.y2 <= thumb.y1 {
-        return;
-    }
-    let inset = (3.0 * SCALE).round() as usize;
-    let pill = PhysicalRect {
-        x1: (thumb.x1 + inset).min(thumb.x2),
-        y1: (thumb.y1 + inset).min(thumb.y2),
-        x2: thumb.x2.saturating_sub(inset).max(thumb.x1),
-        y2: thumb.y2.saturating_sub(inset).max(thumb.y1),
-    };
-    fill(pixels, pill, 0xff37_4d70);
-}
-
-/// Paints the square where simultaneous horizontal and vertical tracks meet.
-pub(super) fn paint_scrollbar_corner<R: Raster>(
-    pixels: &mut R,
-    port: LogicalRect,
-    clip: Option<PhysicalRect>,
-) {
-    let corner = LogicalRect {
-        x: port.x + (port.width - SCROLLBAR_WIDTH).max(0.0),
-        y: port.y + (port.height - SCROLLBAR_WIDTH).max(0.0),
-        width: SCROLLBAR_WIDTH.min(port.width),
-        height: SCROLLBAR_WIDTH.min(port.height),
-    };
-    let corner = physical(corner, pixels, clip);
-    fill(pixels, corner, 0xff0b_1322);
-}
-
-fn physical<R: Raster>(rect: LogicalRect, pixels: &R, clip: Option<PhysicalRect>) -> PhysicalRect {
-    let bounds = PhysicalRect::new(
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        pixels.width(),
-        pixels.height(),
-    );
-    clip.map_or(bounds, |clip| bounds.intersect(clip))
-}
-
-fn fill<R: Raster>(pixels: &mut R, rect: PhysicalRect, color: u32) {
-    if rect.x2 <= rect.x1 || rect.y2 <= rect.y1 {
-        return;
-    }
-    for y in rect.y1..rect.y2 {
-        pixels.row_mut(y)[rect.x1..rect.x2].fill(color);
     }
 }
 

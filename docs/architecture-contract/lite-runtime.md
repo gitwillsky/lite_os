@@ -15,8 +15,9 @@
   worker→run-loop 事件、`register_stream`/`remove_stream` 流注册、`push_action`、`apps_root`），
   不得把应用语义漏进库。窗口**机制**（`desktop.surfaces/configure/move/focus/close`、accelerators、
   `audio-system.*` 音量）是 compositor 客户端基础设施，作为 `Role::Desktop` 能力留在库内，非应用策略。
-- `compositor` 独占 DRM master/OFD、evdev fd、scanout pair、page-flip state、client registry、buffer
-  quota、last-presented scene、input routing、pointer capture、cursor position 与 session epoch。
+- `compositor` 独占 DRM master/OFD、VirGL context/pipeline、evdev fd、scanout pair、page-flip state、
+  client registry、GPU texture quota、last-presented scene、input routing、pointer capture、cursor
+  position 与 session epoch。
   `compositor/spice_agent.rs` 独占 VDI/SPICE message assembly、monitor request 与 host clipboard state；
   `session/output.rs` 独占 output serial 与 connector-size publication；
   `compositor/session/accelerator.rs` 独占 global accelerator chord 表与 key-grab 状态机；
@@ -76,7 +77,10 @@
   overlay clip（Top Bar/Dock/系统面板）居末。同一桌面 buffer 可在多个 Pixels node 按 clip 复用；input-only
   node 不得写像素。窗口 Pixels 使用 outer border-edge mask；foreign surface 必须携带其 DOM 位置实际
   生效的完整祖先 CSS overflow clip chain，不得复用窗口外圆角或全屏方形 clip。每个 mask 保留
-  padding-edge rect 与四角独立横纵半径，compositor 对所有 mask 的 scanline 交集施加亚像素 coverage。
+  padding-edge rect 与四角独立横纵半径，compositor 在唯一 VirGL fragment pipeline 中对所有 mask
+  的交集施加亚像素 coverage。Y0-top texture sampling、VirGL 归一化 viewport 的 destination
+  transform、layer rect 与全部 clip mask 必须共同投影到同一左上原点 window coordinate；禁止另用
+  host rasterizer scissor 形成第二套坐标契约。
   每个窗口的 chrome 与 content 必须原子叠放，任何窗口内容不得覆盖自身 border ring、窗口圆角或其他
   窗口的 chrome，foreign surface 也不得截获 paint order 中位于它之后的透明 desktop hit target。
 - desktop 与 app 共用唯一 retained document raster。结构、computed style、layout geometry、scroll 或
@@ -160,8 +164,10 @@
   （次序无关）才结束并恢复 focused surface 路由；desktop 断开或 epoch reset 强制结束。modifier mask
   位定义固定为 Shift=1、Ctrl=2、Alt=4、Super=8。窗口 policy 与 shortcut action 不得进入 compositor。
 - compositor 的 `spice_agent` 是 monitor/clipboard capability、session clipboard 与 SPICE vdagent
-  transport 的唯一 owner。只接受单 monitor、原点为零、32-bit/unspecified depth 与不超过 8192 的
-  geometry；水平尺寸按 Linux CVT 8-pixel cell 归一化，多显示器或 malformed payload 直接拒绝。
+  transport 的唯一 owner。VDI client port 承载 monitor/clipboard，VDI server port 的标准 13-byte
+  mouse-state 只做 framing 校验后丢弃；真实 pointer input 只来自 compositor 独占的 evdev/tablet，
+  不建立 SPICE input 第二路径。只接受单 monitor、原点为零、32-bit/unspecified depth 与不超过 8192
+  的 geometry；水平尺寸按 Linux CVT 8-pixel cell 归一化，多显示器或 malformed payload 直接拒绝。
   display protocol 的 read/write/data 必须携带 exact surface/request identity，单次只接受
   不超过 60 KiB 的 UTF-8 text；host 数据按需请求，异步结果只能返回仍存活的原请求连接。
   LiteUI 只投影标准 `navigator.clipboard.readText()`/`writeText()` 与文本输入/Terminal 快捷键，

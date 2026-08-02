@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use spin::Once;
 
-use crate::memory::DeviceBacking;
+use crate::{drivers::GraphicsDevice, memory::DeviceBacking};
 
 /// @description single-scanout adapter 的 canonical CVT/scanout 显示模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +50,8 @@ pub(crate) enum DisplayUpdate {
     /// DRM 同步 ioctl 可能正在等待 controlq 从该内部事务重新变为可提交；
     /// 缺失这个 edge 会让一次无实际 mode 变化的 config interrupt 永久阻塞 waiter。
     AdapterReady,
+    /// 一条 VirGL controlq operation 已完成，fence 可由 DRM waiter 观察。
+    RenderCompleted(u64),
 }
 
 /// @description 不泄漏具体 adapter 的 single-scanout display seam。
@@ -107,14 +109,14 @@ pub(crate) trait DisplayDevice: Send + Sync {
 
 // OWNER: display facade 唯一持有 DTB 选中的 primary adapter；缺失该 publication 时
 // IRQ handler 与后续 DRM fd 会各自决定设备生命周期，scanout backing 可能提前释放。
-static PRIMARY_DISPLAY: Once<Arc<dyn DisplayDevice>> = Once::new();
+static PRIMARY_DISPLAY: Once<Arc<dyn GraphicsDevice>> = Once::new();
 
 /// @description 发布唯一 primary display adapter。
 ///
 /// @param device 已完成 mode-set 且拥有 scanout backing 的 display adapter。
 /// @return 首次发布成功返回 unit。
 /// @errors primary display 已存在时返回 unit error。
-pub(super) fn register(device: Arc<dyn DisplayDevice>) -> Result<(), ()> {
+pub(super) fn register(device: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     if PRIMARY_DISPLAY.get().is_some() {
         return Err(());
     }
@@ -124,6 +126,6 @@ pub(super) fn register(device: Arc<dyn DisplayDevice>) -> Result<(), ()> {
 
 /// @description 取得 DTB 选中的唯一 primary display。
 /// @return adapter 已发布时返回共享 seam；无 GPU 时返回 `None`。
-pub(crate) fn primary_display() -> Option<Arc<dyn DisplayDevice>> {
+pub(crate) fn primary_display() -> Option<Arc<dyn GraphicsDevice>> {
     PRIMARY_DISPLAY.get().cloned()
 }

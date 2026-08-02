@@ -6,6 +6,7 @@
 mod boot;
 mod cursor;
 mod frame_stats;
+mod gpu;
 mod input;
 mod scanout;
 mod session;
@@ -34,7 +35,7 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scanout = scanout::Scanout::open()?;
-    let mut session = session::Session::open(scanout.device(), scanout.size())?;
+    let mut session = session::Session::open(scanout.device(), scanout.graphics(), scanout.size())?;
     let size = scanout.size();
     let mut input = input::Input::open(size.width as i32, size.height as i32);
     // Accumulates guest-vblank present intervals once the desktop reaches steady
@@ -48,6 +49,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let wake = input.wake_fds();
             session.poll(&wake)?
         };
+        // Client React/CSS produces only immutable paint commands. The
+        // compositor resolves its private textures and performs the complete
+        // raster in the sole VirGL context before any scene can adopt it.
+        for owner in activity.paint.iter().copied() {
+            let size = session.paint_size(owner)?;
+            let target =
+                scanout.render_display_list(size, session.paint_list(owner)?, |texture_id| {
+                    session.paint_texture(owner, texture_id)
+                })?;
+            session.complete_paint(owner, target)?;
+        }
         // 2. A newly accepted scene is composed without the cursor, then the cursor
         //    is overlaid and the whole frame flipped.
         if activity.epoch_reset {
@@ -61,8 +73,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // drop any half-filled window from the dead epoch.
             frame_stats.reset();
         }
-        if let Some(scene) = activity.scene {
-            if !scene.is_discarded() {
+        if let Some(scene) = activity.scene
+            && !scene.is_discarded()
+        {
+                let groups = scene
+                    .window_groups()
+                    .collect::<std::collections::HashSet<_>>();
+                for group in groups {
+                    if session.has_move_underlay(group) {
+                        continue;
+                    }
+                    let target = scanout.render_display_list_excluding(
+                        session.paint_size(session::Owner::Desktop)?,
+                        session.paint_list(session::Owner::Desktop)?,
+                        |texture_id| session.paint_texture(session::Owner::Desktop, texture_id),
+                        group,
+                    )?;
+                    session.install_move_underlay(group, target)?;
+                }
                 let event = if scene.output_size != scanout.size() {
                     match scanout.present_mode(&scene, session.buffers(), input.position())? {
                         scanout::ModePresent::Presented(event) => event,
@@ -74,7 +102,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 } else {
-                    scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
+                    scanout.compose(
+                        &scene,
+                        session.buffers(),
+                        session.scene_move(&scene),
+                        input.position(),
+                    )?;
                     scanout.present_scene(scene.revision, input.position())?
                 };
                 session.presented(&scene, event)?;
@@ -84,7 +117,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     frame_stats.arm();
                     frame_stats.record(frame_stats::flip_monotonic_ns(&event), event.sequence);
                 }
-            }
         }
         if let Some(size) = activity.output {
             input.resize(size.width as i32, size.height as i32);
@@ -107,7 +139,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         input.position(),
                     )?;
                 } else {
-                    scanout.move_cursor(input.position())?;
+                    scanout.move_cursor(
+                        session.presented_nodes(),
+                        session.buffers(),
+                        session.active_move(),
+                        input.position(),
+                    )?;
                 }
             }
         }
@@ -119,7 +156,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(shape) = session.take_cursor_shape()
             && session.desktop_ready()
         {
-            scanout.set_cursor_shape(shape, input.position())?;
+            scanout.set_cursor_shape(
+                shape,
+                session.presented_nodes(),
+                session.buffers(),
+                session.active_move(),
+                input.position(),
+            )?;
         }
     }
 }

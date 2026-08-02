@@ -50,20 +50,11 @@ impl Session {
             return Ok(());
         };
         self.move_damage = None;
-        let desktop = self
-            .desktop
-            .as_ref()
-            .ok_or_else(|| invalid("desktop disappeared during output change"))?;
+        self.move_underlays.remove(&grab.surface_id);
         self.buffers
             .values
             .remove(&grab.underlay_buffer_id)
             .ok_or_else(|| invalid("move underlay disappeared"))?;
-        let mut bytes = [0u8; 24];
-        let message = display_proto::BufferRetired {
-            buffer_id: grab.underlay_buffer_id,
-        }
-        .encode(&mut bytes)
-        .ok_or_else(|| io::Error::other("move underlay release encoding failed"))?;
-        send_message(&desktop.stream, message)
+        Ok(())
     }
 }

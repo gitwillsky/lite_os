@@ -33,7 +33,11 @@ fn main() {
     std::panic::set_hook(Box::new(|info| {
         eprintln!("music-player: invariant failure: {info}");
     }));
-    if let Err(error) = lite_runtime::run(Role::App, "music-player", vec![Box::new(MusicExt::default())]) {
+    if let Err(error) = lite_runtime::run(
+        Role::App,
+        "music-player",
+        vec![Box::new(MusicExt::default())],
+    ) {
         eprintln!("music-player: {error}");
         exit(1);
     }

@@ -37,7 +37,7 @@ pub use extension::{ExtensionCx, HostExtension};
 // spawn workers); it is public API consumed by app-binary extensions (Step 2+).
 #[allow(unused_imports)]
 pub use extension::ExtensionEvents;
-pub(crate) use extension::{extension_channel, ExtensionEventLoop};
+pub(crate) use extension::{ExtensionEventLoop, extension_channel};
 
 fn parse_u32(value: Option<&str>, name: &str) -> Result<u32, EngineError> {
     value
@@ -137,11 +137,6 @@ impl State {
         std::cell::Ref::filter_map(self.scene.borrow(), Option::as_ref).ok()
     }
 
-    /// Borrows the retained React snapshot without consuming its dirty state.
-    pub fn scene(&self) -> Option<std::cell::Ref<'_, Vec<Node>>> {
-        std::cell::Ref::filter_map(self.scene.borrow(), Option::as_ref).ok()
-    }
-
     /// Forces the retained snapshot to render once more (viewport change).
     pub fn invalidate_scene(&self) {
         self.scene_dirty.set(true);
@@ -203,10 +198,7 @@ impl State {
     }
 
     /// Resolves a registered stream handle to its temp path and shared state.
-    pub(crate) fn resolve_stream(
-        &self,
-        id: u64,
-    ) -> Option<(PathBuf, crate::audio::SharedStream)> {
+    pub(crate) fn resolve_stream(&self, id: u64) -> Option<(PathBuf, crate::audio::SharedStream)> {
         self.streams
             .borrow()
             .get(&id)

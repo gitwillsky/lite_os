@@ -3,7 +3,7 @@ use spin::Mutex;
 use crate::memory::{DeviceBacking, PAGE_SIZE};
 
 use super::{
-    ATTACH_REQUEST_SIZE, CONTROL_QUEUE, ControlQueue, DisplayMode, VirtIODevice, VirtIOGpuDevice,
+    CONTROL_QUEUE, CONTROL_REQUEST_SIZE, ControlQueue, DisplayMode, VirtIODevice, VirtIOGpuDevice,
     wire::*,
 };
 
@@ -19,8 +19,72 @@ impl VirtIOGpuDevice {
             VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
             CONTROL_HEADER_SIZE,
             VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+            DISPLAY_INFO_SIZE,
         )?;
         Self::parse_display_mode(&control.lock().response[..])
+    }
+
+    pub(super) fn load_virgl_capset(
+        device: &VirtIODevice,
+        control: &Mutex<ControlQueue>,
+    ) -> Option<super::VirglCapset> {
+        let count = usize::try_from(device.read_config_u32(VIRTIO_GPU_NUM_CAPSETS).ok()?).ok()?;
+        let mut selected = None;
+        for index in 0..count {
+            {
+                let mut control = control.lock();
+                control.request[..32].fill(0);
+                write_u32(
+                    control.request.as_mut_slice(),
+                    24,
+                    u32::try_from(index).ok()?,
+                )?;
+            }
+            Self::execute_boot(
+                device,
+                control,
+                VIRTIO_GPU_CMD_GET_CAPSET_INFO,
+                32,
+                VIRTIO_GPU_RESP_OK_CAPSET_INFO,
+                CAPSET_INFO_SIZE,
+            )?;
+            let control_guard = control.lock();
+            let id = read_u32(control_guard.response.as_slice(), 24)?;
+            let version = read_u32(control_guard.response.as_slice(), 28)?;
+            let size = usize::try_from(read_u32(control_guard.response.as_slice(), 32)?).ok()?;
+            drop(control_guard);
+            if size > MAX_CAPSET_SIZE
+                || !matches!(id, VIRTIO_GPU_CAPSET_VIRGL | VIRTIO_GPU_CAPSET_VIRGL2)
+            {
+                continue;
+            }
+            let candidate = (id, version, size);
+            if selected.is_none() || id == VIRTIO_GPU_CAPSET_VIRGL2 {
+                selected = Some(candidate);
+            }
+        }
+        let (id, version, size) = selected?;
+        {
+            let mut control = control.lock();
+            control.request[..32].fill(0);
+            write_u32(control.request.as_mut_slice(), 24, id)?;
+            write_u32(control.request.as_mut_slice(), 28, version)?;
+        }
+        Self::execute_boot(
+            device,
+            control,
+            VIRTIO_GPU_CMD_GET_CAPSET,
+            32,
+            VIRTIO_GPU_RESP_OK_CAPSET,
+            CONTROL_HEADER_SIZE.checked_add(size)?,
+        )?;
+        let control = control.lock();
+        let mut bytes = [0; MAX_CAPSET_SIZE];
+        bytes[..size].copy_from_slice(&control.response[CONTROL_HEADER_SIZE..][..size]);
+        Some(super::VirglCapset {
+            info: crate::drivers::VirglCapsetInfo { id, version, size },
+            bytes,
+        })
     }
 
     pub(super) fn parse_display_mode(response: &[u8]) -> Option<DisplayMode> {
@@ -135,6 +199,7 @@ impl VirtIOGpuDevice {
             command,
             request_length,
             VIRTIO_GPU_RESP_OK_NODATA,
+            CONTROL_HEADER_SIZE,
         )
     }
 
@@ -144,8 +209,9 @@ impl VirtIOGpuDevice {
         command: u32,
         request_length: usize,
         expected_response: u32,
+        response_length: usize,
     ) -> Option<()> {
-        if !(CONTROL_HEADER_SIZE..=ATTACH_REQUEST_SIZE).contains(&request_length) {
+        if !(CONTROL_HEADER_SIZE..=CONTROL_REQUEST_SIZE).contains(&request_length) {
             return None;
         }
         let mut control = control.lock();
@@ -176,12 +242,7 @@ impl VirtIOGpuDevice {
             match control.queue.used() {
                 Ok(Some(completion))
                     if completion.head() == head
-                        && completion.length() as usize
-                            == if expected_response == VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
-                                DISPLAY_INFO_SIZE
-                            } else {
-                                CONTROL_HEADER_SIZE
-                            }
+                        && completion.length() as usize == response_length
                         && read_u32(control.response.as_slice(), 0)? == expected_response
                         && read_u32(control.response.as_slice(), 4)? & VIRTIO_GPU_FLAG_FENCE
                             != 0

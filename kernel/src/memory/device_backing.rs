@@ -18,9 +18,6 @@ struct DeviceExtent {
 }
 
 impl DeviceBacking {
-    /// VirtIO scatter/gather attach 与 allocator transaction 共用的固定 extent 上限。
-    pub(crate) const MAX_EXTENTS: usize = MAX_EXTENTS;
-
     /// @description 以不超过 256 KiB 的 buddy extent 事务化分配指定页数。
     ///
     /// @param pages 非零逻辑页数；成功 backing 的物理页数与其精确相等。

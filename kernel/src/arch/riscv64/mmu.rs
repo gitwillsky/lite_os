@@ -1,5 +1,6 @@
 use core::{
     arch::asm,
+    ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -72,6 +73,16 @@ pub(crate) fn canonicalize_virtual_address(address: usize) -> usize {
     }
 }
 
+/// @description 发布平台 MMIO 映射；Sv39 当前使用物理地址恒等映射，因此无需额外窗口。
+/// @param regions platform 已验证的 MMIO physical ranges。
+/// @return 无返回值。
+/// @errors 当前 backend 不产生额外映射失败；超出 physical width 仍由地址 façade fail-stop。
+pub(crate) fn initialize_kernel_mmio<I>(_regions: I)
+where
+    I: IntoIterator<Item = Range<usize>>,
+{
+}
+
 /// @description RISC-V 当前保持恒等 direct map，把 physical fact 转为 kernel address。
 pub(crate) fn physical_to_virtual(address: usize) -> usize {
     assert_eq!(
@@ -80,6 +91,20 @@ pub(crate) fn physical_to_virtual(address: usize) -> usize {
         "RISC-V direct-map physical address exceeds supported width"
     );
     DIRECT_MAP_BASE + normalize_physical_address(address)
+}
+
+/// @description 将 Sv39 恒等映射中的半开物理区间转换为 kernel virtual range。
+/// @param range 已经按 platform fact 验证且不为空的 physical range。
+/// @return 与输入相同的 virtual range。
+/// @errors physical range 反向或超出 backend physical width 时 fail-stop。
+pub(crate) fn physical_range_to_virtual(range: Range<usize>) -> Range<usize> {
+    assert!(
+        range.start < range.end,
+        "RISC-V physical range is empty or reversed"
+    );
+    let start = physical_to_virtual(range.start);
+    let end = physical_to_virtual(range.end);
+    start..end
 }
 
 /// @description RISC-V 当前恒等 direct map 的逆变换。

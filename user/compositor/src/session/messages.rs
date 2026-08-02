@@ -3,8 +3,8 @@
 use std::io;
 
 use display_proto::{
-    AcceleratorSet, BufferAlloc, CloseRequest, Configure, MessageKind, MoveBegin, SetCursorShape,
-    SurfaceCommit,
+    AcceleratorSet, CloseRequest, Configure, DisplayListCommit, MessageKind, MoveBegin,
+    SetCursorShape, TextureCreate, TextureDestroy, TexturePublish, TextureWrite,
 };
 
 use super::{Owner, Scene, Session, invalid, wire::receive};
@@ -16,11 +16,36 @@ impl Session {
             return Ok(None);
         }
         match kind {
-            MessageKind::BufferAlloc => {
-                self.allocate(
-                    Owner::Desktop,
-                    BufferAlloc::parse(&payload).ok_or_else(|| invalid("invalid allocation"))?,
-                )?;
+            MessageKind::TextureCreate => {
+                let create = TextureCreate::parse(&payload)
+                    .ok_or_else(|| invalid("invalid texture create"))?;
+                self.paint
+                    .create_texture(&self.graphics, Owner::Desktop, create)?;
+                Ok(None)
+            }
+            MessageKind::TextureWrite => {
+                let write = TextureWrite::parse(&payload)
+                    .ok_or_else(|| invalid("invalid texture write"))?;
+                self.paint.write_texture(Owner::Desktop, write)?;
+                Ok(None)
+            }
+            MessageKind::TexturePublish => {
+                let publish = TexturePublish::parse(&payload)
+                    .ok_or_else(|| invalid("invalid texture publish"))?;
+                self.paint.publish_texture(Owner::Desktop, publish)?;
+                Ok(None)
+            }
+            MessageKind::TextureDestroy => {
+                let destroy = TextureDestroy::parse(&payload)
+                    .ok_or_else(|| invalid("invalid texture destroy"))?;
+                self.paint.destroy_texture(Owner::Desktop, destroy)?;
+                Ok(None)
+            }
+            MessageKind::DisplayListCommit => {
+                DisplayListCommit::parse(&payload)
+                    .ok_or_else(|| invalid("invalid display list"))?;
+                self.paint.commit_list(Owner::Desktop, &payload)?;
+                self.queue_paint(Owner::Desktop);
                 Ok(None)
             }
             MessageKind::Configure => {
@@ -76,14 +101,32 @@ impl Session {
             return Ok(());
         }
         match kind {
-            MessageKind::BufferAlloc => self.allocate(
+            MessageKind::TextureCreate => self.paint.create_texture(
+                &self.graphics,
                 Owner::App(surface_id),
-                BufferAlloc::parse(&payload).ok_or_else(|| invalid("invalid allocation"))?,
+                TextureCreate::parse(&payload).ok_or_else(|| invalid("invalid texture create"))?,
             ),
-            MessageKind::SurfaceCommit => self.accept_surface(
-                surface_id,
-                SurfaceCommit::parse(&payload).ok_or_else(|| invalid("invalid surface commit"))?,
+            MessageKind::TextureWrite => self.paint.write_texture(
+                Owner::App(surface_id),
+                TextureWrite::parse(&payload).ok_or_else(|| invalid("invalid texture write"))?,
             ),
+            MessageKind::TexturePublish => self.paint.publish_texture(
+                Owner::App(surface_id),
+                TexturePublish::parse(&payload)
+                    .ok_or_else(|| invalid("invalid texture publish"))?,
+            ),
+            MessageKind::TextureDestroy => self.paint.destroy_texture(
+                Owner::App(surface_id),
+                TextureDestroy::parse(&payload)
+                    .ok_or_else(|| invalid("invalid texture destroy"))?,
+            ),
+            MessageKind::DisplayListCommit => {
+                DisplayListCommit::parse(&payload)
+                    .ok_or_else(|| invalid("invalid display list"))?;
+                self.paint.commit_list(Owner::App(surface_id), &payload)?;
+                self.queue_paint(Owner::App(surface_id));
+                Ok(())
+            }
             MessageKind::SetCursorShape => {
                 let request = SetCursorShape::parse(&payload)
                     .ok_or_else(|| invalid("invalid set cursor shape"))?;

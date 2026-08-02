@@ -104,23 +104,14 @@ fn temp_path(id: u64, ext: &str) -> PathBuf {
 
 /// Downloads `url` into `path`, advancing `state.received` and emitting
 /// progress events. On any failure it records `state.error` and emits it.
-fn download(
-    id: u64,
-    url: &str,
-    path: &PathBuf,
-    state: SharedStream,
-    events: ExtensionEvents,
-) {
+fn download(id: u64, url: &str, path: &PathBuf, state: SharedStream, events: ExtensionEvents) {
     if let Err(error) = download_inner(id, url, path, &state, &events) {
         if let Ok(mut guard) = state.lock() {
             if guard.error.is_none() && !guard.cancelled {
                 guard.error = Some(error.clone());
             }
         }
-        events.emit(
-            "net",
-            serde_json::json!({ "streamId": id, "error": error }),
-        );
+        events.emit("net", serde_json::json!({ "streamId": id, "error": error }));
     }
 }
 
@@ -163,7 +154,8 @@ fn download_inner(
         }
         file.write_all(&buffer[..read])
             .map_err(|error| format!("stream write: {error}"))?;
-        file.flush().map_err(|error| format!("stream flush: {error}"))?;
+        file.flush()
+            .map_err(|error| format!("stream flush: {error}"))?;
         received += read as u64;
         if let Ok(mut guard) = state.lock() {
             guard.received = received;

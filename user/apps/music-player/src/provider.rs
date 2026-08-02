@@ -9,8 +9,8 @@
 //! only; VIP content requires the user's own account (see `credentials.rs`).
 
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::credentials::Credentials;
@@ -203,8 +203,7 @@ pub(crate) fn song_url(
             let index = qq_quality_index.min(qq::QUALITY_FILENAMES.len() - 1);
             let (prefix, ext) = qq::QUALITY_FILENAMES[index];
             let filename = qq::build_filename(prefix, id, ext);
-            let (status, body) =
-                execute(&qq::song_url_request(id, &filename, Some(credentials)))?;
+            let (status, body) = execute(&qq::song_url_request(id, &filename, Some(credentials)))?;
             (status, qq::parse_song_url(&body)?)
         }
         other => return Err(format!("unknown source '{other}'")),

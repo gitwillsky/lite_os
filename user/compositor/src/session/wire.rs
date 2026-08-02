@@ -16,12 +16,9 @@ use super::invalid;
 
 pub(super) fn receive(stream: &UnixStream) -> io::Result<(MessageKind, Vec<u8>)> {
     let mut bytes = vec![0u8; MAX_MESSAGE];
-    let (length, fd) = recv_frame_blocking(stream, &mut bytes)?;
+    let length = recv_frame_blocking(stream, &mut bytes)?;
     if length == 0 {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "display EOF"));
-    }
-    if fd.is_some() {
-        return Err(invalid("unexpected descriptor"));
     }
     let frame = parse_frame(&bytes[..length]).ok_or_else(|| invalid("invalid display frame"))?;
     Ok((frame.kind(), frame.payload().to_vec()))

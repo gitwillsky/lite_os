@@ -1,6 +1,7 @@
 //! Runtime proportional text: parley shaping and line breaking over the two
 //! checked Noto Sans CJK SC subsets; glyph bitmap raster lives in `raster`.
 
+mod gpu;
 mod raster;
 #[cfg(test)]
 mod tests;
@@ -8,19 +9,17 @@ mod tests;
 use std::{cell::RefCell, fs, io, sync::Arc};
 
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontData, FontFamily, FontWeight, Layout,
-    LayoutContext, LineHeight, StyleProperty, TextWrapMode,
+    FontContext, FontData, FontFamily, FontWeight, Layout, LayoutContext, LineHeight,
+    StyleProperty, TextWrapMode,
     editing::{Cursor, Selection},
     fontique::Blob,
-    layout::{Affinity, PositionedLayoutItem},
+    layout::Affinity,
 };
 use swash::scale::ScaleContext;
 use taffy::prelude::{AvailableSpace, Size};
 
-use crate::{
-    renderer::{PhysicalRect, Raster, SCALE},
-    style::Computed,
-};
+use crate::{renderer::SCALE, style::Computed};
+pub(crate) use gpu::{GlyphAtlas, GpuTextRun};
 use raster::{GlyphCache, GlyphKey};
 
 const REGULAR_PATH: &str = "/usr/share/liteos/liteos-ui-regular.otf";
@@ -318,162 +317,6 @@ impl Font {
         }
     }
 
-    /// Draws a CSS text node clipped to its physical layout box.
-    ///
-    /// Wrapping text (`white-space: normal`/`pre-wrap`) breaks at the box
-    /// width and paints every line top-down; `pre`/`nowrap` text paints its
-    /// unbroken lines and overflows horizontally, with `text-overflow:
-    /// ellipsis` truncating a single overflowing line. The vertical clip
-    /// extends to the deepest line's descent so descenders (y/g/j/p/q) are
-    /// not cut off when `line-height` is smaller than the font metrics.
-    pub fn draw<R: Raster>(
-        &self,
-        target: &mut R,
-        bounds: PhysicalRect,
-        overflow_clip: Option<PhysicalRect>,
-        style: &Computed,
-        text: &str,
-    ) {
-        self.draw_with_wrap(target, bounds, overflow_clip, style, text, wraps(style));
-    }
-
-    /// Draws the value of a single-line replaced control.
-    ///
-    /// HTML text inputs never become multiline controls, regardless of the
-    /// inherited `white-space` value. Keeping that rule in the font owner also
-    /// makes caret measurement and painted shaping use the same no-wrap mode.
-    #[cfg(test)]
-    pub(crate) fn draw_single_line<R: Raster>(
-        &self,
-        target: &mut R,
-        bounds: PhysicalRect,
-        overflow_clip: Option<PhysicalRect>,
-        style: &Computed,
-        text: &str,
-    ) {
-        self.draw_with_wrap(target, bounds, overflow_clip, style, text, false);
-    }
-
-    /// Draws one already-positioned control line at a signed physical origin.
-    ///
-    /// The signed x coordinate is required for native horizontal scrolling:
-    /// a long value may start left of the screen while the content-box clip
-    /// remains on screen. This is the sole text paint path for form controls.
-    pub(crate) fn draw_control_line<R: Raster>(
-        &self,
-        target: &mut R,
-        origin: (i32, i32),
-        clip: PhysicalRect,
-        style: &Computed,
-        text: &str,
-    ) {
-        if clip.is_empty() || text.is_empty() {
-            return;
-        }
-        let layout = self.build_layout(style, text, false, None);
-        let color = style
-            .get("color")
-            .and_then(crate::color::parse)
-            .unwrap_or(0xff00_0000);
-        let italic = style.get("font-style") == Some("italic");
-        self.pass(target, clip, &layout, origin.0, origin.1, color, italic);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_with_wrap<R: Raster>(
-        &self,
-        target: &mut R,
-        bounds: PhysicalRect,
-        overflow_clip: Option<PhysicalRect>,
-        style: &Computed,
-        text: &str,
-        wrap: bool,
-    ) {
-        // Text colors are usually opaque; for translucent values the
-        // premultiplied channels darken the glyph coverage blend slightly,
-        // which is visually indistinguishable at UI text sizes.
-        let color = style
-            .get("color")
-            .and_then(crate::color::parse)
-            .unwrap_or(0xff00_0000);
-        let italic = style.get("font-style") == Some("italic");
-        let box_width = bounds.x2.saturating_sub(bounds.x1) as i32;
-        // 1. Lay out at the box width: wrapping text breaks there, nowrap
-        //    text keeps one line and overflows, and the box width doubles as
-        //    the alignment container below.
-        let mut layout = self.build_layout(style, text, wrap, Some(box_width as f32));
-        // 2. `text-overflow: ellipsis` only applies to a nowrap line that
-        //    overflows its box; wrapped text overflows vertically instead.
-        if !wrap
-            && style.get("text-overflow") == Some("ellipsis")
-            && layout.width() > box_width as f32
-            && box_width > 0
-        {
-            let truncated = self.ellipsize(style, text, box_width);
-            layout = self.build_layout(style, &truncated, false, Some(box_width as f32));
-        }
-        // 3. Align every line inside the box per `text-align`; parley keeps
-        //    overflowing lines start-aligned.
-        layout.align(
-            match style.get("text-align") {
-                Some("center") => Alignment::Center,
-                Some("right") => Alignment::Right,
-                _ => Alignment::Left,
-            },
-            AlignmentOptions::default(),
-        );
-        let mut descent_bottom = 0.0f32;
-        for line in layout.lines() {
-            descent_bottom = descent_bottom.max(line.metrics().block_max_coord);
-        }
-        let mut clip = PhysicalRect {
-            y2: (bounds.y1 as i32 + descent_bottom.ceil() as i32)
-                .max(bounds.y2 as i32)
-                .min(target.height() as i32) as usize,
-            ..bounds
-        };
-        // Confine glyphs to an ancestor `overflow` clip when present, so text in
-        // a scroll container never paints past it (positioning still uses the
-        // full box, only pixels are clipped).
-        if let Some(limit) = overflow_clip {
-            clip = PhysicalRect {
-                x1: clip.x1.max(limit.x1),
-                y1: clip.y1.max(limit.y1),
-                x2: clip.x2.min(limit.x2),
-                y2: clip.y2.min(limit.y2),
-            };
-        }
-        // 4. `text-shadow` paints a solid offset copy of every line first; the
-        //    clip box grows in the offset direction so the shadow is not cut
-        //    short.
-        if let Some((dx, dy, shadow_color)) = style.get("text-shadow").and_then(text_shadow) {
-            let shadow_clip = PhysicalRect {
-                x1: (clip.x1 as i32 + dx.min(0)).max(0) as usize,
-                y1: (clip.y1 as i32 + dy.min(0)).max(0) as usize,
-                x2: (clip.x2 as i32 + dx.max(0)).min(target.width() as i32) as usize,
-                y2: (clip.y2 as i32 + dy.max(0)).min(target.height() as i32) as usize,
-            };
-            self.pass(
-                target,
-                shadow_clip,
-                &layout,
-                bounds.x1 as i32 + dx,
-                bounds.y1 as i32 + dy,
-                shadow_color,
-                italic,
-            );
-        }
-        self.pass(
-            target,
-            clip,
-            &layout,
-            bounds.x1 as i32,
-            bounds.y1 as i32,
-            color,
-            italic,
-        );
-    }
-
     /// Builds a parley layout of `text` at the style's size/weight/leading.
     ///
     /// `max_advance` is the physical wrap/alignment width; `None` leaves
@@ -556,46 +399,6 @@ impl Font {
         kept
     }
 
-    /// Draws every glyph of the laid-out text in one color at the origin.
-    #[allow(clippy::too_many_arguments)]
-    fn pass<R: Raster>(
-        &self,
-        target: &mut R,
-        clip: PhysicalRect,
-        layout: &Layout<()>,
-        x0: i32,
-        y0: i32,
-        color: u32,
-        italic: bool,
-    ) {
-        for line in layout.lines() {
-            for item in line.items() {
-                let PositionedLayoutItem::GlyphRun(run) = item else {
-                    continue;
-                };
-                let bold = self.is_bold(run.run().font());
-                let size = run.run().font_size();
-                for glyph in run.positioned_glyphs() {
-                    let pen = (x0 as f32 + glyph.x).round() as i32;
-                    let baseline = (y0 as f32 + glyph.y).round() as i32;
-                    self.glyph(
-                        target,
-                        clip,
-                        GlyphKey {
-                            bold,
-                            glyph: glyph.id,
-                            size_bits: size.to_bits(),
-                        },
-                        pen,
-                        baseline,
-                        color,
-                        italic,
-                    );
-                }
-            }
-        }
-    }
-
     /// Maps a shaped run's font back to the bold face by blob identity.
     /// fontique only ever returns the two blobs registered in `from_faces`,
     /// so a mismatch is impossible; it still falls back to regular rather
@@ -604,32 +407,6 @@ impl Font {
     fn is_bold(&self, font: &FontData) -> bool {
         let data: &[u8] = font.data.as_ref();
         data.as_ptr() == self.bold.bytes.0.as_ptr() && data.len() == self.bold.bytes.0.len()
-    }
-
-    /// Draws one glyph, rasterizing and caching it on first use.
-    #[allow(clippy::too_many_arguments)]
-    fn glyph<R: Raster>(
-        &self,
-        target: &mut R,
-        clip: PhysicalRect,
-        key: GlyphKey,
-        pen: i32,
-        baseline: i32,
-        color: u32,
-        italic: bool,
-    ) {
-        if let Some(cached) = self.cache.borrow_mut().get(key) {
-            raster::blit(target, clip, cached, pen, baseline, color, italic);
-            return;
-        }
-        let face = if key.bold { &self.bold } else { &self.regular };
-        let Some(rasterized) = raster::rasterize(&mut self.scx.borrow_mut(), &face.bytes.0, key)
-        else {
-            return;
-        };
-        let mut cache = self.cache.borrow_mut();
-        let cached = cache.insert(key, rasterized);
-        raster::blit(target, clip, cached, pen, baseline, color, italic);
     }
 }
 
@@ -671,33 +448,6 @@ fn line_height(style: &Computed, font_size: f32) -> f32 {
         return font_size * 1.25;
     }
     value.parse::<f32>().unwrap_or(1.25) * font_size
-}
-
-/// Parses `text-shadow: <dx> <dy> [blur] <color>` into physical offsets and a
-/// solid shadow color.
-///
-/// The raster path has no text-blur pass, so an optional blur radius is
-/// accepted and ignored while hard-offset shadows remain exact.
-fn text_shadow(value: &str) -> Option<(i32, i32, u32)> {
-    let parts: Vec<&str> = value.split_whitespace().collect();
-    let mut numbers = parts.iter().filter_map(|part| {
-        part.strip_suffix("px")
-            .unwrap_or(part)
-            .trim()
-            .parse::<f32>()
-            .ok()
-    });
-    let dx = numbers.next()?;
-    let dy = numbers.next()?;
-    let color = parts
-        .iter()
-        .rev()
-        .find_map(|part| crate::color::parse(part))?;
-    Some((
-        (dx * SCALE).round() as i32,
-        (dy * SCALE).round() as i32,
-        color,
-    ))
 }
 
 fn invalid(message: &str) -> io::Error {

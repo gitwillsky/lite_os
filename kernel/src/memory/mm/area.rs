@@ -3,7 +3,7 @@ use super::*;
 /// page table leaf 的物理页来源。
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum MapType {
-    DirectMapped, // VA 经 architecture direct-map façade 唯一还原为 PA
+    KernelMapped, // VA 经 architecture kernel-mapping façade 唯一还原为 PA
     Framed,       // 映射到分配的物理页帧
 }
 
@@ -256,7 +256,7 @@ impl MapArea {
         if self.lazy_private {
             return Ok(());
         }
-        if self.map_type == MapType::DirectMapped {
+        if self.map_type == MapType::KernelMapped {
             if !Self::has_leaf_permission(self.map_permission) {
                 return Err(MemoryError::InvalidRange);
             }
@@ -295,7 +295,7 @@ impl MapArea {
                 let frame = try_memory_arc(alloc().ok_or(MemoryError::OutOfMemory)?)?;
                 (frame.ppn, Some(frame))
             }
-            MapType::DirectMapped => unreachable!("direct-map areas use range leaf selection"),
+            MapType::KernelMapped => unreachable!("kernel-mapped areas use range leaf selection"),
         };
 
         let resident = frame

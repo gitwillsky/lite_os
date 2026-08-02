@@ -32,6 +32,7 @@ const fn drm_iowr(number: usize, size: usize) -> usize {
 
 pub(crate) const DRM_IOCTL_SET_MASTER: usize = ioc(0, b'd' as usize, 0x1e, 0);
 pub(crate) const DRM_IOCTL_DROP_MASTER: usize = ioc(0, b'd' as usize, 0x1f, 0);
+pub(crate) const DRM_IOCTL_GEM_CLOSE: usize = ioc(IOC_WRITE, b'd' as usize, 0x09, 8);
 pub(crate) const DRM_IOCTL_MODE_GETRESOURCES: usize = drm_iowr(0xa0, 64);
 pub(crate) const DRM_IOCTL_MODE_SETCRTC: usize = drm_iowr(0xa2, 104);
 pub(crate) const DRM_IOCTL_MODE_GETCONNECTOR: usize = drm_iowr(0xa7, 80);
@@ -42,6 +43,16 @@ pub(crate) const DRM_IOCTL_MODE_DIRTYFB: usize = drm_iowr(0xb1, 24);
 pub(crate) const DRM_IOCTL_MODE_CREATE_DUMB: usize = drm_iowr(0xb2, 32);
 pub(crate) const DRM_IOCTL_MODE_MAP_DUMB: usize = drm_iowr(0xb3, 16);
 pub(crate) const DRM_IOCTL_MODE_DESTROY_DUMB: usize = drm_iowr(0xb4, 4);
+pub(crate) const DRM_IOCTL_VIRTGPU_MAP: usize = drm_iowr(0x41, 16);
+pub(crate) const DRM_IOCTL_VIRTGPU_EXECBUFFER: usize = drm_iowr(0x42, 64);
+pub(crate) const DRM_IOCTL_VIRTGPU_GETPARAM: usize = drm_iowr(0x43, 16);
+pub(crate) const DRM_IOCTL_VIRTGPU_RESOURCE_CREATE: usize = drm_iowr(0x44, 56);
+pub(crate) const DRM_IOCTL_VIRTGPU_RESOURCE_INFO: usize = drm_iowr(0x45, 16);
+pub(crate) const DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST: usize = drm_iowr(0x46, 44);
+pub(crate) const DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST: usize = drm_iowr(0x47, 44);
+pub(crate) const DRM_IOCTL_VIRTGPU_WAIT: usize = drm_iowr(0x48, 8);
+pub(crate) const DRM_IOCTL_VIRTGPU_GET_CAPS: usize = drm_iowr(0x49, 24);
+pub(crate) const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: usize = drm_iowr(0x4b, 16);
 pub(crate) const EVIOCGNAME_128: usize = ioc(IOC_READ, b'E' as usize, 0x06, 128);
 pub(crate) const EVIOCGABS_X: usize = ioc(IOC_READ, b'E' as usize, 0x40, 24);
 pub(crate) const EVIOCGABS_Y: usize = ioc(IOC_READ, b'E' as usize, 0x41, 24);
@@ -155,6 +166,126 @@ pub(crate) struct DrmDumbMap {
 
 #[repr(C)]
 #[derive(Default)]
+pub(crate) struct VirtGpuMap {
+    pub offset: u64,
+    pub handle: u32,
+    pub padding: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuExecBuffer {
+    pub flags: u32,
+    pub size: u32,
+    pub command: u64,
+    pub bo_handles: u64,
+    pub num_bo_handles: u32,
+    pub fence_fd: i32,
+    pub ring_index: u32,
+    pub syncobj_stride: u32,
+    pub input_syncobj_count: u32,
+    pub output_syncobj_count: u32,
+    pub input_syncobjs: u64,
+    pub output_syncobjs: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuGetParam {
+    pub param: u64,
+    pub value: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuResourceCreate {
+    pub target: u32,
+    pub format: u32,
+    pub bind: u32,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub array_size: u32,
+    pub last_level: u32,
+    pub samples: u32,
+    pub flags: u32,
+    pub bo_handle: u32,
+    pub resource_handle: u32,
+    pub size: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuResourceInfo {
+    pub bo_handle: u32,
+    pub resource_handle: u32,
+    pub size: u32,
+    pub blob_memory: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct VirtGpuBox {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuTransfer3d {
+    pub bo_handle: u32,
+    pub region: VirtGpuBox,
+    pub level: u32,
+    pub offset: u32,
+    pub stride: u32,
+    pub layer_stride: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuWait {
+    pub handle: u32,
+    pub flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DrmGemClose {
+    pub handle: u32,
+    pub pad: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuGetCaps {
+    pub capset_id: u32,
+    pub capset_version: u32,
+    pub address: u64,
+    pub size: u32,
+    pub padding: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct VirtGpuContextParameter {
+    pub parameter: u64,
+    pub value: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct VirtGpuContextInit {
+    pub parameter_count: u32,
+    pub padding: u32,
+    pub parameters: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
 pub(crate) struct DrmFramebuffer {
     pub framebuffer_id: u32,
     pub width: u32,
@@ -259,6 +390,18 @@ const _: () = assert!(size_of::<DrmConnector>() == 80);
 const _: () = assert!(size_of::<DrmCrtc>() == 104);
 const _: () = assert!(size_of::<DrmDumbCreate>() == 32);
 const _: () = assert!(size_of::<DrmDumbMap>() == 16);
+const _: () = assert!(size_of::<VirtGpuMap>() == 16);
+const _: () = assert!(size_of::<VirtGpuExecBuffer>() == 64);
+const _: () = assert!(size_of::<VirtGpuGetParam>() == 16);
+const _: () = assert!(size_of::<VirtGpuResourceCreate>() == 56);
+const _: () = assert!(std::mem::offset_of!(VirtGpuResourceCreate, size) == 48);
+const _: () = assert!(size_of::<VirtGpuResourceInfo>() == 16);
+const _: () = assert!(size_of::<VirtGpuTransfer3d>() == 44);
+const _: () = assert!(size_of::<VirtGpuWait>() == 8);
+const _: () = assert!(size_of::<DrmGemClose>() == 8);
+const _: () = assert!(size_of::<VirtGpuGetCaps>() == 24);
+const _: () = assert!(size_of::<VirtGpuContextParameter>() == 16);
+const _: () = assert!(size_of::<VirtGpuContextInit>() == 16);
 const _: () = assert!(size_of::<DrmFramebuffer>() == 28);
 const _: () = assert!(size_of::<DrmDirty>() == 24);
 const _: () = assert!(size_of::<InputEvent>() == 24);

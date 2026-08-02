@@ -90,7 +90,6 @@ struct Interactions {
 }
 
 struct DesktopPresentation {
-    buffer_id: u32,
     foreign: Vec<display::ForeignLayer>,
     windows: Vec<display::WindowFrame>,
     overlays: Vec<display::Overlay>,
@@ -352,36 +351,28 @@ fn render_latest(
             };
             state.take_composition_dirty();
             display.commit_desktop(
-                presentation.buffer_id,
                 state.focused_surface(),
                 &presentation.foreign,
                 &presentation.windows,
                 &presentation.overlays,
-                &[],
             )?;
         }
         return Ok(());
     }
-    let Some(frame) = display.acquire()? else {
-        return Ok(());
-    };
     let Some(scene) = state.scene_if_dirty() else {
         unreachable!("dirty state disappeared on the single UI owner thread");
     };
-    let (buffer_id, output) = {
-        let output = renderer.render(scene.as_slice(), frame.pixels, &frame.damage)?;
-        (frame.id, output)
-    };
+    let frame = renderer.render_gpu(scene.as_slice())?;
+    display.commit_gpu_frame(&frame)?;
+    let output = frame.output;
     match mode {
         Mode::Desktop => display.commit_desktop(
-            buffer_id,
             state.focused_surface(),
             &output.foreign,
             &output.windows,
             &output.overlays,
-            &output.damage,
         )?,
-        Mode::App(_) => display.commit_app(buffer_id, &output.damage)?,
+        Mode::App(_) => {}
     }
     interactions.hits = output.hits;
     interactions.key_listener = output.key_listener;
@@ -397,7 +388,6 @@ fn render_latest(
     }
     if matches!(mode, Mode::Desktop) {
         interactions.desktop = Some(DesktopPresentation {
-            buffer_id,
             foreign: output.foreign,
             windows: output.windows,
             overlays: output.overlays,
@@ -436,7 +426,7 @@ fn dispatch_viewport(
 fn process_actions(
     state: &State,
     display: &mut Display,
-    renderer: &mut Renderer,
+    _renderer: &mut Renderer,
     children: &mut Vec<SessionChild>,
     terminal: Option<&mut Terminal>,
 ) -> Result<(), Box<dyn Error>> {
@@ -473,25 +463,9 @@ fn process_actions(
                 max_x,
                 max_y,
             } => {
-                let underlay_buffer_id = {
-                    let scene = state
-                        .scene()
-                        .ok_or("move requested before the desktop scene exists")?;
-                    let Some(frame) = display.acquire()? else {
-                        // A scene commit or output transaction can temporarily own
-                        // all three desktop buffers. This pointer gesture cannot be
-                        // deferred because its authorization serial expires when
-                        // the button sequence advances, so decline it without
-                        // terminating the desktop epoch.
-                        continue;
-                    };
-                    renderer.render_move_underlay(scene.as_slice(), frame.pixels, surface_id)?;
-                    frame.id
-                };
                 display.begin_move(MoveBegin {
                     surface_id,
                     serial,
-                    underlay_buffer_id,
                     min_x,
                     min_y,
                     max_x,

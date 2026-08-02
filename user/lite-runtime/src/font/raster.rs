@@ -7,8 +7,6 @@ use swash::{
     scale::{Render, ScaleContext, Source},
 };
 
-use crate::renderer::{PhysicalRect, Raster};
-
 /// Glyph bitmap cache capacity in entries.
 ///
 /// One desktop frame draws well under 1000 distinct (face, glyph, size)
@@ -35,11 +33,11 @@ pub(super) struct GlyphKey {
 /// origin: the bitmap's top-left pixel lands at `(pen.x + left, baseline -
 /// top)`.
 pub(super) struct CachedGlyph {
-    left: i32,
-    top: i32,
-    width: u32,
-    height: u32,
-    data: Vec<u8>,
+    pub(super) left: i32,
+    pub(super) top: i32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) data: Vec<u8>,
     /// Last use tick; the oldest entry is evicted when the cache is full.
     used: u64,
 }
@@ -106,50 +104,4 @@ pub(super) fn rasterize(
         data: image.data,
         used: 0,
     })
-}
-
-/// Paints one cached A8 glyph into the target, clipped to `clip`.
-pub(super) fn blit<R: Raster>(
-    target: &mut R,
-    clip: PhysicalRect,
-    glyph: &CachedGlyph,
-    pen: i32,
-    baseline: i32,
-    color: u32,
-    italic: bool,
-) {
-    let x = pen + glyph.left;
-    let y = baseline - glyph.top;
-    for row in 0..glyph.height as i32 {
-        let target_y = y + row;
-        if target_y < clip.y1 as i32 || target_y >= clip.y2 as i32 {
-            continue;
-        }
-        // Synthetic oblique for `font-style: italic`: rows lean right in
-        // proportion to their height above the baseline (~11°) while the
-        // upright face's advances and metrics stay unchanged.
-        let lean = if italic { (baseline - target_y) / 5 } else { 0 };
-        let target_row = target.row_mut(target_y as usize);
-        for column in 0..glyph.width as i32 {
-            let target_x = x + lean + column;
-            if target_x < clip.x1 as i32 || target_x >= clip.x2 as i32 {
-                continue;
-            }
-            let alpha = glyph.data[row as usize * glyph.width as usize + column as usize];
-            if alpha != 0 {
-                let background = target_row[target_x as usize];
-                target_row[target_x as usize] = blend(background, color, alpha);
-            }
-        }
-    }
-}
-
-fn blend(background: u32, foreground: u32, alpha: u8) -> u32 {
-    let alpha = u32::from(alpha);
-    let inverse = 255 - alpha;
-    let channel = |shift: u32| {
-        (((foreground >> shift) & 0xffu32) * alpha + ((background >> shift) & 0xffu32) * inverse)
-            / 255
-    };
-    0xff00_0000 | channel(16) << 16 | channel(8) << 8 | channel(0)
 }

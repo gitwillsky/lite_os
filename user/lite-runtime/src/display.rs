@@ -1,9 +1,8 @@
 //! Exact display-protocol client for desktop and ordinary app roles.
 
-mod allocation;
-mod buffer;
 mod clipboard;
 mod event;
+mod paint;
 mod scene;
 mod wire;
 
@@ -17,29 +16,14 @@ use std::{
 
 use display_proto::{
     AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, MAX_MESSAGE,
-    MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, SetCursorShape, Size,
-    SurfaceCommit, Welcome, parse_frame, recv_frame_blocking, send_message,
+    MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, SetCursorShape, Size, Welcome,
+    parse_frame, recv_frame_blocking, send_message,
 };
-use linux_uapi::drm::{DrmDevice, SharedDumbBuffer};
 use linux_uapi::unix::{self, PollEvents, PollFd};
 
 use crate::Mode;
-use buffer::Buffer;
 pub use event::Event;
 use wire::{WireEvent, parse_event, receive_configure};
-
-/// Writable compositor-issued frame.
-pub struct Frame<'a> {
-    /// Protocol buffer identity used by the next commit.
-    pub id: u32,
-    /// Mutable premultiplied ARGB8888 mapping.
-    pub pixels: &'a mut SharedDumbBuffer,
-    /// Buffer-age 欠账:该 back buffer 自上次 commit 以来缺失的各 revision
-    /// damage 并集(物理像素)。渲染只需在这些 rect 与当前帧 damage 的并集内
-    /// 重建像素;集合之外的像素自该 buffer 上次 commit 起从未变化,保持有效。
-    /// 历史断档或全新映射时退化为全屏 rect。
-    pub damage: Vec<Rect>,
-}
 
 /// One compositor-ready foreign surface emitted by desktop layout.
 #[derive(Clone, Debug)]
@@ -66,7 +50,7 @@ pub struct ForeignLayer {
 
 /// One window's frame region, emitted for EVERY `data-lite-window` — including
 /// pure-DOM windows (Music Player) with no foreign client surface. It becomes a
-/// per-window group `Pixels` scene node so the compositor's move/damage/finish
+/// per-window group display-list scene node so the compositor's move/damage/finish
 /// paths, which key on `window_group`, treat every window uniformly. Without it
 /// a pure-DOM window has no group node and cannot be moved or erased, leaving a
 /// drag ghost.
@@ -96,29 +80,21 @@ pub struct Overlay {
 /// One exact-version display connection and its compositor-owned buffers.
 pub struct Display {
     stream: UnixStream,
-    device: DrmDevice,
     physical: Size,
     surface_id: u32,
     configure_serial: u64,
     output_serial: u64,
-    buffers: Vec<Buffer>,
     revision: u64,
-    /// 每次 scene/surface commit 的 (revision, damage) 历史,cap 见
-    /// `buffer::DAMAGE_HISTORY_CAP`。acquire 用它计算 back buffer 的
-    /// buffer-age 欠账;缺了它渲染只能整帧重建(每帧 20MB memcpy)。
-    history: VecDeque<(u64, Vec<Rect>)>,
     /// 持久 commit 编码缓冲,替代每帧 64KiB 栈数组(MAX_MESSAGE 一次性驻留,
     /// 不再反复清零栈页)。只被 commit 路径独占使用,无重入。
     staging: Vec<u8>,
-    ready: HashSet<(u32, u64)>,
     pending: VecDeque<Event>,
     submitted: VecDeque<u64>,
     accepted: HashSet<u64>,
 }
 
 impl Display {
-    /// Connects, fixes the role and acquires the presentation pair plus the
-    /// desktop-only move-underlay scratch.
+    /// Connects and fixes the role. GPU storage remains compositor-private.
     pub fn open(mode: &Mode) -> io::Result<Self> {
         let stream = UnixStream::connect(display_proto::SOCKET_PATH)?;
         let mut bytes = [0u8; 128];
@@ -136,12 +112,11 @@ impl Display {
         .ok_or_else(|| io::Error::other("display handshake encoding failed"))?;
         send_message(&stream, hello)?;
         let mut input = [0u8; MAX_MESSAGE];
-        let (length, fd) = recv_frame_blocking(&stream, &mut input)?;
+        let length = recv_frame_blocking(&stream, &mut input)?;
         let frame = parse_frame(&input[..length])
             .filter(|frame| frame.kind() == MessageKind::Welcome)
             .ok_or_else(|| invalid("display welcome missing"))?;
         let welcome = Welcome::parse(frame.payload()).ok_or_else(|| invalid("invalid welcome"))?;
-        let device = DrmDevice::from_owned_fd(fd.ok_or_else(|| invalid("DRM descriptor missing"))?);
         let (physical, configure_serial) = match mode {
             Mode::Desktop => (welcome.display, 0),
             Mode::App(_) => {
@@ -155,86 +130,22 @@ impl Display {
                 )
             }
         };
-        let mut display = Self {
+        let display = Self {
             stream,
-            device,
             physical,
             surface_id: welcome.surface_id,
             configure_serial,
             output_serial: welcome.output_serial,
-            buffers: Vec::new(),
             revision: 0,
-            history: VecDeque::new(),
             staging: vec![0; MAX_MESSAGE],
-            ready: HashSet::new(),
             pending: VecDeque::new(),
             submitted: VecDeque::new(),
             accepted: HashSet::new(),
         };
-        loop {
-            match display.allocate(2, display.physical) {
-                Ok(()) => break,
-                Err(error)
-                    if error.kind() == io::ErrorKind::OutOfMemory
-                        && display.adopt_initial_superseding_configure(mode)? => {}
-                Err(error) => return Err(error),
-            }
-        }
-        if matches!(mode, Mode::Desktop) {
-            // The third desktop buffer is a transient move underlay. Without
-            // it the full-screen desktop raster would repaint the moving
-            // window at its canonical origin on every damage restoration.
-            loop {
-                match display.allocate(1, display.physical) {
-                    Ok(()) => break,
-                    Err(error)
-                        if error.kind() == io::ErrorKind::OutOfMemory
-                            && display.adopt_initial_superseding_configure(mode)? => {}
-                    Err(error) => return Err(error),
-                }
-            }
-        }
         Ok(display)
     }
 
-    fn adopt_initial_superseding_configure(&mut self, mode: &Mode) -> io::Result<bool> {
-        let index = match mode {
-            Mode::Desktop => self
-                .pending
-                .iter()
-                .rposition(|event| matches!(event, Event::OutputConfigure(_))),
-            Mode::App(_) => self
-                .pending
-                .iter()
-                .rposition(|event| matches!(event, Event::Configure(_))),
-        };
-        let Some(index) = index else {
-            return Ok(false);
-        };
-        let event = self.pending.remove(index).expect("validated pending event");
-        match event {
-            Event::OutputConfigure(configure) => {
-                self.output_serial = configure.serial;
-                self.physical = configure.size;
-            }
-            Event::Configure(configure) => {
-                self.configure_serial = configure.serial;
-                self.physical = Size {
-                    width: configure.width * display_proto::DEVICE_SCALE_FACTOR,
-                    height: configure.height * display_proto::DEVICE_SCALE_FACTOR,
-                };
-            }
-            _ => unreachable!("selected configure event"),
-        }
-        self.pending
-            .retain(|event| !matches!(event, Event::OutputConfigure(_) | Event::Configure(_)));
-        Ok(true)
-    }
-
-    /// Adopts one desktop-issued configure and tops the buffer pair back up.
-    ///
-    /// Buffers already matching the new size survive (repeated toggles reuse
-    /// them); mismatched ones retire as their compositor releases arrive.
+    /// Adopts one desktop-issued app-surface configure.
     pub fn reconfigure(&mut self, configure: Configure) -> io::Result<()> {
         let physical = Size {
             width: configure.width * display_proto::DEVICE_SCALE_FACTOR,
@@ -245,37 +156,10 @@ impl Display {
             return Ok(());
         }
         self.physical = physical;
-        // 几何代际切换后,旧坐标系的 damage 历史对幸存 buffer 不再有意义;
-        // 清空强制下一次 acquire 回退全屏欠账。
-        self.history.clear();
-        let matching = self
-            .buffers
-            .iter()
-            .filter(|buffer| buffer.matches(physical))
-            .count();
-        let missing = 2usize.saturating_sub(matching);
-        if missing > 0 {
-            // A rapid resize emits Configure serials faster than a buffer alloc
-            // round-trips: by the time this request reaches the compositor, a
-            // newer Configure has already superseded the size, so the compositor
-            // rejects the allocation (geometry mismatch, error 22 -> OutOfMemory
-            // kind here). That is a transient race, not a fatal condition — drop
-            // this reconfigure's buffer top-up and keep the current buffers; the
-            // next Configure (already in flight) reconciles the size. Only the
-            // rejection is swallowed; framing/mapping errors stay fatal.
-            if let Err(error) = self.allocate(missing as u32, physical) {
-                if error.kind() == io::ErrorKind::OutOfMemory {
-                    eprintln!("lite-ui: buffer request rejected (resize race), dropping frame");
-                    return Ok(());
-                }
-                return Err(error);
-            }
-        }
         Ok(())
     }
 
-    /// Adopts one compositor-owned desktop output generation and acquires its
-    /// complete presentation triple.
+    /// Adopts one compositor-owned desktop output generation.
     pub fn reconfigure_output(
         &mut self,
         configure: display_proto::OutputConfigure,
@@ -285,39 +169,7 @@ impl Display {
         }
         self.output_serial = configure.serial;
         self.physical = configure.size;
-        // 同 reconfigure:输出几何代际切换后清空旧坐标系 damage 历史。
-        self.history.clear();
-        let matching = self
-            .buffers
-            .iter()
-            .filter(|buffer| buffer.matches(configure.size))
-            .count();
-        let missing = 3usize.saturating_sub(matching);
-        if missing > 0 {
-            let pair = missing.min(2);
-            if let Err(error) = self.allocate(pair as u32, configure.size) {
-                if self.output_allocation_was_superseded(&error, configure.serial) {
-                    return Ok(());
-                }
-                return Err(error);
-            }
-            if missing > pair {
-                if let Err(error) = self.allocate((missing - pair) as u32, configure.size) {
-                    if self.output_allocation_was_superseded(&error, configure.serial) {
-                        return Ok(());
-                    }
-                    return Err(error);
-                }
-            }
-        }
         Ok(())
-    }
-
-    fn output_allocation_was_superseded(&self, error: &io::Error, serial: u64) -> bool {
-        error.kind() == io::ErrorKind::OutOfMemory
-            && self.pending.iter().any(|event| {
-                matches!(event, Event::OutputConfigure(configure) if configure.serial > serial)
-            })
     }
 
     /// Returns the fixed logical CSS viewport.
@@ -337,73 +189,6 @@ impl Display {
     /// Returns whether commit acknowledgement handling already queued an event.
     pub fn has_pending_event(&self) -> bool {
         !self.pending.is_empty()
-    }
-
-    /// Acquires one released writable buffer for the active configure size.
-    pub fn acquire(&mut self) -> io::Result<Option<Frame<'_>>> {
-        if self.surface_id == 0
-            && self
-                .pending
-                .iter()
-                .any(|event| matches!(event, Event::OutputConfigure(_)))
-        {
-            return Ok(None);
-        }
-        let physical = self.physical;
-        let Some(index) = self
-            .buffers
-            .iter()
-            .position(|buffer| buffer.free && buffer.matches(physical))
-        else {
-            return Ok(None);
-        };
-        let full = Rect {
-            x: 0,
-            y: 0,
-            width: physical.width,
-            height: physical.height,
-        };
-        let damage = buffer::owed_damage(&self.history, self.buffers[index].last_revision, full);
-        let buffer = &mut self.buffers[index];
-        buffer.free = false;
-        Ok(Some(Frame {
-            id: buffer.id,
-            pixels: &mut buffer.pixels,
-            damage,
-        }))
-    }
-
-    /// Commits one app pixel revision for the active configure.
-    ///
-    /// # Parameters
-    ///
-    /// - `buffer_id`: Writable client buffer containing the complete retained
-    ///   surface after this revision's raster.
-    /// - `damage`: Exact physical surface rectangles changed from the preceding
-    ///   revision; an empty list means the pixels are unchanged.
-    ///
-    /// # Returns
-    ///
-    /// Returns after the revision has been sent asynchronously.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when revision allocation, encoding or socket delivery
-    /// fails.
-    pub fn commit_app(&mut self, buffer_id: u32, damage: &[display_proto::Rect]) -> io::Result<()> {
-        let revision = self.next_revision()?;
-        let message = SurfaceCommit::encode(
-            &mut self.staging,
-            revision,
-            self.configure_serial,
-            buffer_id,
-            damage,
-        )
-        .ok_or_else(|| io::Error::other("surface encoding failed"))?;
-        send_message(&self.stream, message)?;
-        self.submitted.push_back(revision);
-        self.record_damage(buffer_id, revision, damage);
-        Ok(())
     }
 
     /// Sends one desktop-owned configure to its app surface.
@@ -499,23 +284,12 @@ impl Display {
                 Ok(Some(event))
             }
             WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
-                self.ready.insert((surface_id, serial));
                 self.pending
                     .push_back(Event::ConfigureReady { surface_id, serial });
                 Ok(None)
             }
             WireEvent::Public(event) => {
                 self.pending.push_back(event);
-                Ok(None)
-            }
-            WireEvent::Released(id) => {
-                self.release(id)?;
-                self.pending.push_back(Event::FrameDone);
-                Ok(None)
-            }
-            WireEvent::Retired(id) => {
-                self.retire(id)?;
-                self.pending.push_back(Event::FrameDone);
                 Ok(None)
             }
             event @ (WireEvent::Accepted(_)
@@ -541,18 +315,9 @@ impl Display {
         }
         match self.receive()? {
             WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
-                self.ready.insert((surface_id, serial));
                 Ok(Event::ConfigureReady { surface_id, serial })
             }
             WireEvent::Public(event) => Ok(event),
-            WireEvent::Released(id) => {
-                self.release(id)?;
-                Ok(Event::FrameDone)
-            }
-            WireEvent::Retired(id) => {
-                self.retire(id)?;
-                Ok(Event::FrameDone)
-            }
             event @ (WireEvent::Accepted(_)
             | WireEvent::Discarded(_)
             | WireEvent::Presented { .. }) => self.handle_progress(event),
@@ -584,12 +349,9 @@ impl Display {
 
     fn receive(&self) -> io::Result<WireEvent> {
         let mut bytes = [0u8; MAX_MESSAGE];
-        let (length, fd) = recv_frame_blocking(&self.stream, &mut bytes)?;
+        let length = recv_frame_blocking(&self.stream, &mut bytes)?;
         if length == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "display EOF"));
-        }
-        if fd.is_some() {
-            return Err(invalid("unexpected descriptor"));
         }
         let frame =
             parse_frame(&bytes[..length]).ok_or_else(|| invalid("invalid display event"))?;

@@ -132,8 +132,9 @@ pub(crate) mod mmu {
         PagePermissions, PageTableError, SIGNAL_TRAMPOLINE_ADDRESS, TRAMPOLINE_ADDRESS,
         TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END, USER_STACK_TOP,
         canonicalize_virtual_address, flush_local_tlb as flush_local,
-        flush_local_tlb_range as flush_local_range, normalize_physical_address,
-        normalize_physical_page, normalize_virtual_page, physical_to_virtual, virtual_to_physical,
+        flush_local_tlb_range as flush_local_range, initialize_kernel_mmio,
+        normalize_physical_address, normalize_physical_page, normalize_virtual_page,
+        physical_range_to_virtual, physical_to_virtual, virtual_to_physical,
     };
     #[cfg(target_arch = "aarch64")]
     pub(crate) use super::selected::{acknowledge_broadcast_tlb, broadcast_tlb};

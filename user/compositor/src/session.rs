@@ -7,31 +7,33 @@ mod clipboard_bridge;
 mod cursor;
 mod messages;
 mod output;
+mod paint_store;
 mod routing;
 mod scene;
 mod wire;
 
 pub use buffers::Buffers;
-use buffers::Owner;
+pub(crate) use buffers::Owner;
 use cursor::{cursor_on_focus_change, cursor_request};
+use paint_store::PaintStore;
 pub use scene::{Node, Scene};
-use wire::{new_epoch, send_accepted, send_presented};
+use wire::{new_epoch, send_accepted};
 
 use accelerator::Accelerators;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs, io,
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::{UnixListener, UnixStream},
 };
 
 use display_proto::{
-    AppClosed, AppOpened, CloseRequest, Configure, ConfigureReady, MAX_APP_SURFACES, Rect,
-    SetCursorShape, Size, SurfaceCommit, send_message,
+    AppClosed, AppOpened, CloseRequest, Configure, ConfigureReady, DisplayListCommit,
+    MAX_APP_SURFACES, Rect, SetCursorShape, Size, TextureFormat, send_message,
 };
 use linux_uapi::{
-    drm::DrmDevice,
+    drm::{DrmDevice, VirglContext, VirglResource},
     kobject::KobjectUevent,
     unix::{self, PollEvents, PollFd},
 };
@@ -75,7 +77,6 @@ struct Content {
     revision: u64,
     configure_serial: u64,
     buffer_id: u32,
-    damage: Vec<Rect>,
 }
 
 struct App {
@@ -93,6 +94,7 @@ struct App {
 pub struct Session {
     listener: UnixListener,
     device: DrmDevice,
+    graphics: VirglContext,
     display: Size,
     output_serial: u64,
     hotplug: KobjectUevent,
@@ -100,6 +102,11 @@ pub struct Session {
     desktop: Option<Desktop>,
     apps: HashMap<u32, App>,
     buffers: Buffers,
+    paint: PaintStore,
+    pending_paint: VecDeque<Owner>,
+    desktop_render_id: Option<u32>,
+    /// GPU-rendered desktop snapshots with one window group omitted.
+    move_underlays: HashMap<u32, u32>,
     next_buffer_id: u32,
     next_surface_id: u32,
     first_scene_presented: bool,
@@ -131,6 +138,8 @@ pub struct Session {
 pub struct Activity {
     /// A newly accepted desktop scene ready to compose, if any.
     pub scene: Option<Scene>,
+    /// Client display lists waiting for compositor-owned GPU rasterization.
+    pub(crate) paint: Vec<Owner>,
     /// Whether a caller-supplied wake descriptor (evdev) became readable.
     pub input: bool,
     /// Whether this poll reset the session epoch (desktop disconnect). The
@@ -143,7 +152,7 @@ pub struct Activity {
 
 impl Session {
     /// Creates the only display socket and starts an empty epoch.
-    pub fn open(device: &DrmDevice, display: Size) -> io::Result<Self> {
+    pub fn open(device: &DrmDevice, graphics: &VirglContext, display: Size) -> io::Result<Self> {
         let _ = fs::remove_file(display_proto::SOCKET_PATH);
         let listener = UnixListener::bind(display_proto::SOCKET_PATH)?;
         listener.set_nonblocking(true)?;
@@ -152,6 +161,7 @@ impl Session {
         Ok(Self {
             listener,
             device: device.clone(),
+            graphics: graphics.clone(),
             display,
             output_serial: 1,
             hotplug,
@@ -161,6 +171,10 @@ impl Session {
             buffers: Buffers {
                 values: HashMap::new(),
             },
+            paint: PaintStore::new(),
+            pending_paint: VecDeque::new(),
+            desktop_render_id: None,
+            move_underlays: HashMap::new(),
             next_buffer_id: 1,
             next_surface_id: 1,
             first_scene_presented: false,
@@ -187,6 +201,147 @@ impl Session {
     /// Returns immutable compositor-owned client buffers used for composition.
     pub fn buffers(&self) -> &Buffers {
         &self.buffers
+    }
+
+    pub(crate) fn queue_paint(&mut self, owner: Owner) {
+        if !self.pending_paint.contains(&owner) {
+            self.pending_paint.push_back(owner);
+        }
+    }
+
+    pub(crate) fn paint_size(&self, owner: Owner) -> io::Result<Size> {
+        let list = self
+            .paint
+            .list(owner)
+            .ok_or_else(|| invalid("display list disappeared"))?;
+        match owner {
+            Owner::Desktop if list.configuration_serial == self.output_serial => Ok(self.display),
+            Owner::App(surface_id) => {
+                let configure = self
+                    .apps
+                    .get(&surface_id)
+                    .and_then(|app| app.configure)
+                    .ok_or_else(|| invalid("app display list has no configure"))?;
+                if list.configuration_serial != configure.serial {
+                    return Err(invalid("app display list configure is stale"));
+                }
+                Ok(Size {
+                    width: configure.width * display_proto::DEVICE_SCALE_FACTOR,
+                    height: configure.height * display_proto::DEVICE_SCALE_FACTOR,
+                })
+            }
+            Owner::Desktop => Err(invalid("desktop display list output is stale")),
+        }
+    }
+
+    pub(crate) fn paint_list(&self, owner: Owner) -> io::Result<DisplayListCommit<'_>> {
+        self.paint
+            .list(owner)
+            .ok_or_else(|| invalid("display list disappeared"))
+    }
+
+    pub(crate) fn paint_texture(
+        &self,
+        owner: Owner,
+        texture_id: u32,
+    ) -> Option<(&VirglResource, TextureFormat)> {
+        self.paint.texture(owner, texture_id)
+    }
+
+    pub(crate) fn complete_paint(&mut self, owner: Owner, target: VirglResource) -> io::Result<()> {
+        let list = self
+            .paint
+            .list(owner)
+            .ok_or_else(|| invalid("display list disappeared"))?;
+        let revision = list.revision;
+        let configuration_serial = list.configuration_serial;
+        let size = Size {
+            width: target.width(),
+            height: target.height(),
+        };
+        let id = self.take_buffer_id()?;
+        self.buffers.values.insert(
+            id,
+            buffers::Buffer {
+                pixels: target,
+                size,
+                owner,
+                busy: false,
+            },
+        );
+        match owner {
+            Owner::Desktop => {
+                if self.move_grab.is_none() {
+                    for (_, id) in self.move_underlays.drain() {
+                        self.buffers.values.remove(&id);
+                    }
+                }
+                if let Some(previous) = self.desktop_render_id.replace(id)
+                    && !self.desktop_current_buffers.contains(&previous)
+                {
+                    self.buffers.values.remove(&previous);
+                }
+                send_accepted(self.desktop_stream()?, revision)
+            }
+            Owner::App(surface_id) => {
+                if let Some(previous) = self
+                    .apps
+                    .get(&surface_id)
+                    .and_then(|app| app.pending.as_ref())
+                    .map(|content| content.buffer_id)
+                {
+                    self.buffers.values.remove(&previous);
+                }
+                let app = self
+                    .apps
+                    .get_mut(&surface_id)
+                    .ok_or_else(|| invalid("app disappeared during GPU paint"))?;
+                app.last_revision = revision;
+                app.pending = Some(Content {
+                    revision,
+                    configure_serial: configuration_serial,
+                    buffer_id: id,
+                });
+                send_accepted(&app.stream, revision)?;
+                let mut bytes = [0u8; 32];
+                let ready = ConfigureReady {
+                    surface_id,
+                    serial: configuration_serial,
+                }
+                .encode(&mut bytes)
+                .ok_or_else(|| io::Error::other("ready encoding failed"))?;
+                send_message(self.desktop_stream()?, ready)
+            }
+        }
+    }
+
+    pub(crate) fn has_move_underlay(&self, group: u32) -> bool {
+        self.move_underlays.contains_key(&group)
+    }
+
+    pub(crate) fn install_move_underlay(
+        &mut self,
+        group: u32,
+        target: VirglResource,
+    ) -> io::Result<()> {
+        let id = self.take_buffer_id()?;
+        let size = Size {
+            width: target.width(),
+            height: target.height(),
+        };
+        self.buffers.values.insert(
+            id,
+            buffers::Buffer {
+                pixels: target,
+                size,
+                owner: Owner::Desktop,
+                busy: false,
+            },
+        );
+        if let Some(previous) = self.move_underlays.insert(group, id) {
+            self.buffers.values.remove(&previous);
+        }
+        Ok(())
     }
 
     /// Reports whether a desktop scene has reached flip completion.
@@ -301,6 +456,7 @@ impl Session {
                     self.pointer_surface = None;
                     return Ok(Activity {
                         scene: None,
+                        paint: self.pending_paint.drain(..).collect(),
                         input: input_ready,
                         epoch_reset: true,
                         output,
@@ -320,6 +476,7 @@ impl Session {
         }
         Ok(Activity {
             scene,
+            paint: self.pending_paint.drain(..).collect(),
             input: input_ready,
             epoch_reset: false,
             output,
@@ -411,85 +568,6 @@ impl Session {
         send_message(&app.stream, message)
     }
 
-    fn accept_surface(&mut self, surface_id: u32, commit: SurfaceCommit<'_>) -> io::Result<()> {
-        let app = self
-            .apps
-            .get(&surface_id)
-            .ok_or_else(|| invalid("unknown app"))?;
-        let Some(configure) = app.configure else {
-            return Err(invalid("surface commit configure missing"));
-        };
-        let buffer = self
-            .buffers
-            .values
-            .get(&commit.buffer_id)
-            .ok_or_else(|| invalid("unknown app buffer"))?;
-        if commit.revision <= app.last_revision
-            || buffer.owner != Owner::App(surface_id)
-            || buffer.busy
-        {
-            return Err(invalid("surface commit state invalid"));
-        }
-        if configure.serial != commit.configure_serial {
-            // Resize race: a newer configure superseded this frame before it
-            // arrived. ACK and present it immediately so the app's frame
-            // pacing unblocks, and recycle the never-adopted buffer; the next
-            // commit carries the current configure's geometry.
-            let app = self.apps.get_mut(&surface_id).expect("validated app");
-            app.last_revision = commit.revision;
-            send_accepted(&app.stream, commit.revision)?;
-            return send_presented(&app.stream, commit.revision, self.last_flip);
-        }
-        if buffer.size.width != configure.width * display_proto::DEVICE_SCALE_FACTOR
-            || buffer.size.height != configure.height * display_proto::DEVICE_SCALE_FACTOR
-        {
-            return Err(invalid("surface commit state invalid"));
-        }
-        let buffer_size = buffer.size;
-        // A pending frame that the desktop has not yet adopted into a scene is
-        // superseded by this newer commit at the same serial. Maximize/restore
-        // makes an app reconfigure and repaint faster than the desktop adopts
-        // its frames, so back-to-back app commits are normal, not a violation:
-        // recycle the never-presented pending buffer and let the new frame take
-        // its slot. (`pending` is cleared only by desktop adoption, so a present
-        // `pending` provably never reached the screen and is safe to release.)
-        if let Some(superseded) = app.pending.as_ref() {
-            scene::release_buffer(
-                &mut self.buffers,
-                &self.apps[&surface_id].stream,
-                superseded.buffer_id,
-            )?;
-            self.apps
-                .get_mut(&surface_id)
-                .expect("validated app")
-                .pending = None;
-        }
-        let content = Content {
-            revision: commit.revision,
-            configure_serial: commit.configure_serial,
-            buffer_id: commit.buffer_id,
-            damage: validate_surface_damage(commit.damage().collect(), buffer_size)?,
-        };
-        self.buffers
-            .values
-            .get_mut(&commit.buffer_id)
-            .expect("validated app buffer")
-            .busy = true;
-        let app = self.apps.get_mut(&surface_id).expect("validated app");
-        app.last_revision = commit.revision;
-        app.pending = Some(content);
-        send_accepted(&app.stream, commit.revision)?;
-        let desktop = self.desktop_stream()?;
-        let mut bytes = [0u8; 32];
-        let message = ConfigureReady {
-            surface_id,
-            serial: commit.configure_serial,
-        }
-        .encode(&mut bytes)
-        .ok_or_else(|| io::Error::other("ready encoding failed"))?;
-        send_message(desktop, message)
-    }
-
     fn notify_opened(&self, surface_id: u32) -> io::Result<()> {
         let app = &self.apps[&surface_id];
         let mut bytes = [0u8; 128];
@@ -510,6 +588,7 @@ impl Session {
         self.buffers
             .values
             .retain(|_, buffer| buffer.owner != Owner::App(surface_id));
+        self.paint.remove_owner(Owner::App(surface_id));
         self.clear_pointer_capture(Some(surface_id));
         if let Ok(stream) = self.desktop_stream() {
             let mut bytes = [0u8; 24];
@@ -538,6 +617,9 @@ impl Session {
         self.desktop = None;
         self.apps.clear();
         self.buffers.values.clear();
+        self.paint = PaintStore::new();
+        self.pending_paint.clear();
+        self.desktop_render_id = None;
         self.first_scene_presented = false;
         self.routing.clear();
         self.focused_surface = 0;
@@ -567,18 +649,6 @@ impl Drop for Session {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
-fn validate_surface_damage(damage: Vec<Rect>, size: Size) -> io::Result<Vec<Rect>> {
-    if damage.iter().any(|rectangle| {
-        rectangle.x < 0
-            || rectangle.y < 0
-            || rectangle.x.saturating_add_unsigned(rectangle.width) > size.width as i32
-            || rectangle.y.saturating_add_unsigned(rectangle.height) > size.height as i32
-    }) {
-        return Err(invalid("surface damage outside buffer"));
-    }
-    Ok(damage)
 }
 
 #[cfg(test)]

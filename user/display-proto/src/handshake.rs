@@ -62,7 +62,7 @@ impl HelloApp<'_> {
     }
 }
 
-/// Successful handshake response, sent with the shared DRM OFD.
+/// Successful handshake response. GPU and DRM ownership never leave compositor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Welcome {
     /// Exact protocol version.

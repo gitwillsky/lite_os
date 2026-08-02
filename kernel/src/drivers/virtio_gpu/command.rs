@@ -66,6 +66,10 @@ pub(super) enum GpuCommand {
         resource_id: u32,
         purpose: UnrefPurpose,
     },
+    GraphicsFlush {
+        rectangle: DisplayRect,
+        resource_id: u32,
+    },
 }
 
 /// 编码完成、可由唯一 queue publication seam 提交的 command proof。
@@ -116,6 +120,7 @@ impl GpuCommand {
                 UnrefPurpose::Released => RuntimeStage::UnrefReleased,
                 UnrefPurpose::Disabled(slot) => RuntimeStage::UnrefDisabled(*slot),
             },
+            Self::GraphicsFlush { .. } => RuntimeStage::VirglFlush,
         }
     }
 
@@ -169,6 +174,13 @@ impl GpuCommand {
             Self::Unref { resource_id, .. } => {
                 prepare_unref(request, resource_id)?;
                 (VIRTIO_GPU_CMD_RESOURCE_UNREF, 32)
+            }
+            Self::GraphicsFlush {
+                rectangle,
+                resource_id,
+            } => {
+                prepare_flush(request, rectangle, resource_id)?;
+                (VIRTIO_GPU_CMD_RESOURCE_FLUSH, 48)
             }
         };
         Ok(PreparedCommand {

@@ -1,4 +1,4 @@
-//! `linear-gradient(...)` parsing and premultiplied stop interpolation.
+//! `linear-gradient(...)` parsing and GPU projection geometry.
 
 use crate::color;
 
@@ -65,25 +65,8 @@ impl Gradient {
         Some(Self { stops, angle })
     }
 
-    /// Returns the premultiplied color at axis fraction `t` (`0.0..=1.0`).
-    pub(super) fn color(&self, t: f32) -> u32 {
-        let t = t.clamp(0.0, 1.0);
-        if self.stops.len() == 1 {
-            return self.stops[0].0;
-        }
-        for pair in self.stops.windows(2) {
-            let (first_color, first_position) = pair[0];
-            let (second_color, second_position) = pair[1];
-            if t <= second_position {
-                if second_position <= first_position {
-                    return second_color;
-                }
-                let local =
-                    ((t - first_position) / (second_position - first_position)).clamp(0.0, 1.0);
-                return mix(first_color, second_color, local);
-            }
-        }
-        self.stops.last().expect("gradient has stops").0
+    pub(super) fn stops(&self) -> impl ExactSizeIterator<Item = (u32, f32)> + '_ {
+        self.stops.iter().copied()
     }
 }
 
@@ -101,9 +84,6 @@ pub(super) struct Projection {
     dy: f32,
     /// Projected line length in pixel-index space; `0` for a degenerate box.
     span: f32,
-    /// Box center in pixel-index space.
-    cx: f32,
-    cy: f32,
 }
 
 impl Projection {
@@ -126,31 +106,19 @@ impl Projection {
             dy,
             span: width.saturating_sub(1) as f32 * dx.abs()
                 + height.saturating_sub(1) as f32 * dy.abs(),
-            cx: width.saturating_sub(1) as f32 / 2.0,
-            cy: height.saturating_sub(1) as f32 / 2.0,
         }
     }
 
-    /// Whether the axis runs purely vertically (uniform color per scanline).
-    pub(super) fn vertical(&self) -> bool {
-        self.dx == 0.0
-    }
-
-    /// Normalized gradient position at box-relative pixel index `(x, y)`.
-    pub(super) fn at(&self, x: f32, y: f32) -> f32 {
-        if self.span == 0.0 {
-            return 0.0;
-        }
-        0.5 + ((x - self.cx) * self.dx + (y - self.cy) * self.dy) / self.span
-    }
-
-    /// Position step per `+1` in x, for incremental scanline accumulation
-    /// (one multiply per pixel instead of a full projection).
-    pub(super) fn step_x(&self) -> f32 {
-        if self.span == 0.0 {
-            return 0.0;
-        }
-        self.dx / self.span
+    pub(super) fn endpoints(&self, bounds: super::PhysicalRect) -> ([f32; 2], [f32; 2]) {
+        let center = [
+            (bounds.x1 + bounds.x2) as f32 / 2.0,
+            (bounds.y1 + bounds.y2) as f32 / 2.0,
+        ];
+        let half = self.span / 2.0;
+        (
+            [center[0] - self.dx * half, center[1] - self.dy * half],
+            [center[0] + self.dx * half, center[1] + self.dy * half],
+        )
     }
 }
 
@@ -262,15 +230,12 @@ fn resolve_positions(stops: &mut [(u32, Option<f32>)]) {
         }
         index = next;
     }
-}
-
-fn mix(first: u32, second: u32, amount: f32) -> u32 {
-    let channel = |shift: u32| {
-        let a = ((first >> shift) & 0xffu32) as f32;
-        let b = ((second >> shift) & 0xffu32) as f32;
-        (a + (b - a) * amount).round() as u32
-    };
-    channel(24) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0)
+    let mut previous = 0.0;
+    for (_, position) in stops {
+        let resolved = position.unwrap_or(previous).max(previous);
+        *position = Some(resolved);
+        previous = resolved;
+    }
 }
 
 #[cfg(test)]
@@ -287,9 +252,7 @@ mod tests {
     fn vertical_gradient_defaults_to_bottom() {
         let gradient = Gradient::parse("#000000, #ffffff").expect("gradient parses");
         assert_eq!(gradient.angle, 180.0);
-        assert_eq!(gradient.color(0.0), 0xff00_0000);
-        assert_eq!(gradient.color(1.0), 0xffff_ffff);
-        assert_eq!(gradient.color(0.5), 0xff80_8080);
+        assert_eq!(gradient.stops, vec![(0xff00_0000, 0.0), (0xffff_ffff, 1.0)]);
     }
 
     #[test]
@@ -310,57 +273,26 @@ mod tests {
         );
     }
 
-    /// Cardinal angles must reproduce the former axis-only raster exactly:
-    /// the first pixel samples t=0 and the last t=1 on the sweep axis.
+    /// Cardinal axes reach the corresponding physical box edges.
     #[test]
     fn cardinal_projections_pin_endpoints_to_edge_pixels() {
         let vertical = Projection::new(180.0, 20, 11);
-        assert!(vertical.vertical());
-        assert_eq!(vertical.at(7.0, 0.0), 0.0);
-        assert_eq!(vertical.at(3.0, 10.0), 1.0);
-        assert_eq!(vertical.at(0.0, 5.0), 0.5);
+        let bounds = super::super::PhysicalRect {
+            x1: 0,
+            y1: 0,
+            x2: 20,
+            y2: 11,
+        };
+        assert_eq!(vertical.endpoints(bounds), ([10.0, 0.5], [10.0, 10.5]));
 
         let horizontal = Projection::new(90.0, 21, 8);
-        assert!(!horizontal.vertical());
-        assert_eq!(horizontal.at(0.0, 5.0), 0.0);
-        assert_eq!(horizontal.at(20.0, 0.0), 1.0);
-
-        // Reversed axes sweep in the opposite direction.
-        let up = Projection::new(0.0, 20, 11);
-        assert_eq!(up.at(0.0, 10.0), 0.0);
-        assert_eq!(up.at(0.0, 0.0), 1.0);
-        let left = Projection::new(270.0, 21, 8);
-        assert_eq!(left.at(20.0, 0.0), 0.0);
-        assert_eq!(left.at(0.0, 0.0), 1.0);
-    }
-
-    /// A 45° gradient on a square runs corner to corner: per CSS Images 4 the
-    /// gradient line endpoints project onto the bottom-left and top-right
-    /// corners, while the other two corners sit exactly mid-gradient.
-    #[test]
-    fn diagonal_projection_matches_the_spec_corner_formula() {
-        let projection = Projection::new(45.0, 101, 101);
-        assert_eq!(projection.at(0.0, 100.0), 0.0); // bottom-left corner
-        assert_eq!(projection.at(100.0, 0.0), 1.0); // top-right corner
-        assert_eq!(projection.at(0.0, 0.0), 0.5); // perpendicular corners
-        assert_eq!(projection.at(100.0, 100.0), 0.5);
-        assert_eq!(projection.at(50.0, 50.0), 0.5); // box center
-
-        // Non-square box: compare against |W·sinθ| + |H·cosθ| in pixel-index
-        // space, projecting from the box center.
-        let wide = Projection::new(45.0, 41, 21);
-        let sin = (45.0_f32).to_radians().sin();
-        let span = 40.0 * sin + 20.0 * sin;
-        let expect = |x: f32, y: f32| 0.5 + ((x - 20.0) * sin + (y - 10.0) * (-sin)) / span;
-        for (x, y) in [(0.0, 0.0), (40.0, 20.0), (40.0, 0.0), (10.0, 15.0)] {
-            assert!((wide.at(x, y) - expect(x, y)).abs() < 1e-6, "at ({x}, {y})");
-        }
-        // Incremental scanline stepping matches direct projection.
-        let mut t = wide.at(0.0, 15.0);
-        for x in 1..=40 {
-            t += wide.step_x();
-            assert!((t - wide.at(x as f32, 15.0)).abs() < 1e-5, "step at x={x}");
-        }
+        let bounds = super::super::PhysicalRect {
+            x1: 0,
+            y1: 0,
+            x2: 21,
+            y2: 8,
+        };
+        assert_eq!(horizontal.endpoints(bounds), ([0.5, 4.0], [20.5, 4.0]));
     }
 
     #[test]
@@ -368,9 +300,8 @@ mod tests {
         // Black holds until 25%, so the 0..0.25 span is a solid ramp to white.
         let gradient =
             Gradient::parse("#000000 0%, #000000 25%, #ffffff 100%").expect("gradient parses");
-        assert_eq!(gradient.color(0.25), 0xff00_0000);
-        // Halfway between 25% and 100% is 0.5 of that span.
-        assert_eq!(gradient.color(0.625), 0xff80_8080);
+        assert_eq!(gradient.stops[1], (0xff00_0000, 0.25));
+        assert_eq!(gradient.stops[2], (0xffff_ffff, 1.0));
     }
 
     #[test]
@@ -379,6 +310,14 @@ mod tests {
         resolve_positions(&mut stops);
         let positions: Vec<f32> = stops.iter().map(|stop| stop.1.unwrap()).collect();
         assert_eq!(positions, vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]);
+    }
+
+    #[test]
+    fn decreasing_explicit_stops_clamp_to_the_previous_position() {
+        let gradient = Gradient::parse("#000000 70%, #ffffff 30%, #ff0000").expect("gradient");
+        assert_eq!(gradient.stops[0].1, 0.7);
+        assert_eq!(gradient.stops[1].1, 0.7);
+        assert_eq!(gradient.stops[2].1, 1.0);
     }
 
     #[test]
@@ -397,7 +336,7 @@ mod tests {
         )
         .expect("long gradient parses");
         assert_eq!(gradient.stops.len(), 16);
-        assert_eq!(gradient.color(0.0), 0xff1f_2f86);
-        assert_eq!(gradient.color(1.0), 0xff19_41a5);
+        assert_eq!(gradient.stops.first(), Some(&(0xff1f_2f86, 0.0)));
+        assert_eq!(gradient.stops.last(), Some(&(0xff19_41a5, 0.98)));
     }
 }

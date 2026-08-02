@@ -176,156 +176,41 @@ fn preformatted_text_keeps_hard_breaks() {
 }
 
 #[test]
-fn text_shadow_parses_offsets_and_color() {
-    assert_eq!(
-        text_shadow("1px 1px #123b66"),
-        Some((SCALE as i32, SCALE as i32, 0xff12_3b66))
-    );
-}
-
-#[test]
-fn text_shadow_accepts_and_ignores_blur() {
-    assert_eq!(
-        text_shadow("0px 1px 2px #000000"),
-        Some((0, SCALE as i32, 0xff00_0000))
-    );
-}
-
-#[test]
-fn text_shadow_rejects_missing_parts() {
-    assert_eq!(text_shadow("1px #123b66"), None);
-    assert_eq!(text_shadow("1px 1px"), None);
-}
-
-/// In-memory physical-pixel target for exercising the full draw path
-/// (parley layout → glyph cache → A8 blit) on the host.
-struct Buffer {
-    width: usize,
-    height: usize,
-    pixels: Vec<u32>,
-}
-
-impl Buffer {
-    fn new(width: usize, height: usize) -> Self {
-        Self {
-            width,
-            height,
-            pixels: vec![0xffff_ffff; width * height],
-        }
-    }
-
-    fn count_ink(&self) -> usize {
-        self.pixels.iter().filter(|&&p| p != 0xffff_ffff).count()
-    }
-}
-
-impl Raster for Buffer {
-    fn width(&self) -> usize {
-        self.width
-    }
-
-    fn height(&self) -> usize {
-        self.height
-    }
-
-    fn row(&self, row: usize) -> &[u32] {
-        &self.pixels[row * self.width..(row + 1) * self.width]
-    }
-
-    fn row_mut(&mut self, row: usize) -> &mut [u32] {
-        &mut self.pixels[row * self.width..(row + 1) * self.width]
-    }
-}
-
-#[test]
-fn draw_paints_glyph_ink_for_latin_and_cjk() {
+fn gpu_text_emits_a8_glyph_geometry_for_latin_and_cjk() {
     let font = test_font();
-    let style = computed(".t { font-size: 11px; }");
-    let mut target = Buffer::new(300, 60);
-    let bounds = PhysicalRect {
+    let style = computed(".t { color: #123b66; font-size: 11px; }");
+    let bounds = crate::renderer::PhysicalRect {
         x1: 0,
         y1: 0,
         x2: 300,
-        y2: 28,
-    };
-    font.draw(&mut target, bounds, None, &style, "Lite 中");
-    assert!(target.count_ink() > 0, "glyphs paint ink");
-    // A second identical draw hits the glyph cache and paints the same ink.
-    let mut again = Buffer::new(300, 60);
-    font.draw(&mut again, bounds, None, &style, "Lite 中");
-    assert_eq!(target.pixels, again.pixels);
-}
-
-#[test]
-fn draw_wraps_long_text_onto_a_second_line() {
-    let font = test_font();
-    let style = computed(".t { font-size: 11px; line-height: 14px; }");
-    let text = "alpha beta gamma delta epsilon zeta eta theta iota";
-    let width = (font.measure(&style, text) * 0.4 * SCALE).round() as usize;
-    let mut target = Buffer::new(width, 120);
-    let bounds = PhysicalRect {
-        x1: 0,
-        y1: 0,
-        x2: width,
-        y2: 120,
-    };
-    font.draw(&mut target, bounds, None, &style, text);
-    // Ink past 1.5 physical line-heights can only come from a wrapped line:
-    // first-line descenders end around baseline + descent, well above it.
-    let beyond_first_line = (14.0 * 1.5 * SCALE) as usize;
-    let lower_ink = target.pixels[beyond_first_line * width..]
-        .iter()
-        .filter(|&&p| p != 0xffff_ffff)
-        .count();
-    assert!(lower_ink > 0, "wrapped line paints below the first line");
-}
-
-#[test]
-fn single_line_control_never_wraps_inherited_normal_text() {
-    let font = test_font();
-    let style = computed(".t { font-size: 11px; line-height: 14px; }");
-    let text = "alpha beta gamma delta epsilon zeta eta theta iota";
-    let width = (font.measure(&style, text) * 0.4 * SCALE).round() as usize;
-    let mut target = Buffer::new(width, 120);
-    let bounds = PhysicalRect {
-        x1: 0,
-        y1: 0,
-        x2: width,
-        y2: 120,
-    };
-    font.draw_single_line(&mut target, bounds, None, &style, text);
-
-    let beyond_first_line = (14.0 * 1.5 * SCALE) as usize;
-    let lower_ink = target.pixels[beyond_first_line * width..]
-        .iter()
-        .filter(|&&p| p != 0xffff_ffff)
-        .count();
-    assert_eq!(lower_ink, 0, "an HTML text input remains one line");
-}
-
-#[test]
-fn draw_ellipsizes_a_nowrap_overflowing_line() {
-    let font = test_font();
-    let style = computed(".t { font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }");
-    let text = "alpha beta gamma delta epsilon zeta eta theta iota";
-    let full = (font.measure(&style, text) * SCALE).round() as usize;
-    let width = full / 2;
-    let mut target = Buffer::new(width, 60);
-    let bounds = PhysicalRect {
-        x1: 0,
-        y1: 0,
-        x2: width,
         y2: 60,
     };
-    font.draw(&mut target, bounds, None, &style, text);
-    // Default line-height is 1.25×11px; ink past 1.5 physical line-heights
-    // would mean a wrapped second line (first-line descenders end higher).
-    let beyond_first_line = (11.0 * 1.25 * 1.5 * SCALE) as usize;
-    let lower_ink = target.pixels[beyond_first_line * width..]
-        .iter()
-        .filter(|&&p| p != 0xffff_ffff)
-        .count();
-    assert_eq!(lower_ink, 0, "nowrap text never wraps onto a second line");
+    let mut atlas = GlyphAtlas::new();
+    let runs = font.gpu_text(&mut atlas, bounds, None, &style, "Lite 中");
+    assert!(!runs.is_empty());
+    assert!(runs.iter().all(|run| run.color == 0xff12_3b66));
+    // Four Latin letters plus one CJK ideograph have visible masks; the CSS
+    // space advances layout but intentionally contributes no atlas bitmap.
+    assert_eq!(runs.iter().flat_map(|run| &run.glyphs).count(), 5);
+    let (size, bytes) = atlas.finish().expect("glyph coverage atlas");
+    assert_eq!(size.width, 2048);
+    assert_eq!(bytes.len(), (size.width * size.height) as usize);
+    assert!(bytes.iter().any(|coverage| *coverage != 0));
+}
+
+#[test]
+fn glyph_atlas_keeps_the_tallest_row_when_a_shorter_glyph_follows() {
+    let mut atlas = GlyphAtlas::new();
+    atlas.insert(2, 4, &[1; 8]).expect("tall glyph");
+    atlas.insert(2, 1, &[2; 2]).expect("short glyph");
+
+    let (size, bytes) = atlas.finish().expect("atlas");
+    assert_eq!(size.height, 4);
+    assert_eq!(bytes.len(), (size.width * size.height) as usize);
+    assert_eq!(
+        &bytes[3 * size.width as usize..3 * size.width as usize + 2],
+        &[1; 2]
+    );
 }
 
 #[test]

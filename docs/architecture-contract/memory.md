@@ -27,21 +27,25 @@
 - architecture page table 的 active frame index 以 physical page 为唯一 key；leaf unmap 自底向上摘除空 L0/L1 table，`TranslationCommit` 保留这些 frame owners 到 local/remote revoke fence 全部完成。
 - AArch64 TTBR1 high-half root 是唯一 kernel mapping owner，TTBR0 root 是每个用户地址空间
   owner；page-table descriptor 始终保存 physical address，Rust walker 只经 architecture
-  direct-map façade 解引用。把 direct-map VA 写入 descriptor 或让 MMIO 保持低物理
-  pointer 都会在启用 MMU 后访问错误地址。
+  kernel-mapping façade 解引用。低侧 120 GiB 使用连续 RAM direct map；顶部固定 1 GiB
+  high-MMIO window 由同一 façade 的 immutable physical-range projection 管理。把 kernel
+  mapping VA 写入 descriptor 或让 MMIO 保持低物理 pointer 都会在启用 MMU 后访问错误地址。
 - task kernel stack 只从 architecture-owned virtual window 分配。AArch64 将 TTBR1 高半区
-  划分为低侧 120 GiB direct map 与高侧约 136 GiB stack window；即使 120 GiB 物理容量
-  全部用于 128 KiB stack，包含 guard 的虚拟跨度仍有余量。禁止非 canonical 地址或两个
-  owner 重叠。每个 AArch64 stack mapping 的最低页保持 guard，最高页只拥有对齐 padding
-  与 `UserContext`；effective stack top 必须下移一页，context 地址只能由该固定边界加
-  编译期 offset 推导，禁止冗余 pointer state。RISC-V 保留 trap-context 下方的既有 Sv39 stack 与 supervisor
-  trap-context VMA 布局。
+  划分为低侧 120 GiB direct map、中间约 135 GiB stack window 与顶部 1 GiB high-MMIO
+  window；即使 120 GiB 物理容量全部用于 128 KiB stack，包含 guard 的虚拟跨度仍有余量。
+  platform MMIO ranges 必须在 kernel page-table publication 前一次性提交给该 projection
+  owner，重复提交、跨 direct-map 边界或超出窗口都必须 fail-stop。禁止非 canonical 地址
+  或两个 owner 重叠。每个 AArch64 stack mapping 的最低页保持 guard，最高页只拥有对齐
+  padding 与 `UserContext`；effective stack top 必须下移一页，context 地址只能由该固定
+  边界加编译期 offset 推导，禁止冗余 pointer state。RISC-V 保留 trap-context 下方的既有
+  Sv39 stack 与 supervisor trap-context VMA 布局。
 
 ## Interface
 
-- generic memory 只向 `arch::mmu` 提交语义权限和 frame-owner adapter；PTE bit、address token 与 fence instruction 不得泄漏。
+- generic memory 只向 `arch::mmu` 提交语义权限、frame-owner adapter 与一次性 platform MMIO
+  range publication；PTE bit、address token、mapping projection 与 fence instruction 不得泄漏。
 - kernel identity range 只向 architecture 提交精确 `[start,end)` 与统一 permissions；Sv39 walker 在不跨该边界的前提下选择最大对齐 1GiB/2MiB/4KiB leaf。generic translation 仍返回目标 4KiB physical page，不泄漏 leaf level。
-- AArch64 kernel direct-map 与 Sv39 identity map 使用同一 generic range transaction；所选 backend 可在不跨权限边界时使用 1GiB/2MiB/4KiB leaf，generic caller 不得假设 VA=PA。DEVICE permission 必须编码为 AArch64 Device-nGnRnE，不能与 normal cacheable DMA memory 合并。
+- AArch64 kernel RAM direct-map 与 Sv39 identity map 使用同一 generic range transaction；high-MMIO 通过 architecture projection 后仍使用同一 kernel-mapped range transaction。所选 backend 可在不跨权限边界时使用 1GiB/2MiB/4KiB leaf，generic caller 不得假设 VA=PA。DEVICE permission 必须编码为 AArch64 Device-nGnRnE，不能与 normal cacheable DMA memory 合并。
 - user-copy 必须先完整证明 range membership、fault 与权限，再复制；不得返回指向 user memory 的 Rust reference。
 - `/dev/zero` 使用 `MemorySet::zero_user` 在一次 AddressSpace owner transaction 内 fault-in
   连续用户 range 并逐页清零；不得构造固定小 zero buffer 后重复进入 user-copy。COW 完整页替换

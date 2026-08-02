@@ -4,7 +4,7 @@ use std::{io, os::unix::net::UnixStream};
 
 use display_proto::{
     HelloApp, HelloDesktop, MAX_APP_SURFACES, MAX_MESSAGE, MessageKind, PROTOCOL_VERSION, Welcome,
-    parse_frame, recv_frame_blocking, send_message_with_fd,
+    parse_frame, recv_frame_blocking, send_message,
 };
 
 use super::{App, Desktop, Session, invalid, wire::valid_app_id};
@@ -17,8 +17,8 @@ impl Session {
             Err(error) => return Err(error),
         };
         let mut bytes = [0u8; MAX_MESSAGE];
-        let (length, fd) = recv_frame_blocking(&stream, &mut bytes)?;
-        if fd.is_some() || length == 0 {
+        let length = recv_frame_blocking(&stream, &mut bytes)?;
+        if length == 0 {
             return Err(invalid("invalid display handshake"));
         }
         let frame = parse_frame(&bytes[..length]).ok_or_else(|| invalid("invalid handshake"))?;
@@ -80,6 +80,6 @@ impl Session {
         }
         .encode(&mut bytes)
         .ok_or_else(|| io::Error::other("welcome encoding failed"))?;
-        send_message_with_fd(stream, message, self.device.as_fd())
+        send_message(stream, message)
     }
 }

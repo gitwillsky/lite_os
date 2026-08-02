@@ -461,7 +461,12 @@ impl GrowingFile {
         self.stream
             .lock()
             .map(|state| (state.received, state.total, state.done, state.error.clone()))
-            .unwrap_or((self.position, None, true, Some("stream state poisoned".into())))
+            .unwrap_or((
+                self.position,
+                None,
+                true,
+                Some("stream state poisoned".into()),
+            ))
     }
 }
 
@@ -504,8 +509,11 @@ impl Seek for GrowingFile {
                     io::Error::new(io::ErrorKind::InvalidInput, "stream seek before start")
                 })?
             }
-            SeekFrom::End(offset) => u64::try_from(i128::from(end) + i128::from(offset))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "stream seek before start"))?,
+            SeekFrom::End(offset) => {
+                u64::try_from(i128::from(end) + i128::from(offset)).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "stream seek before start")
+                })?
+            }
         };
         // Only seek within the already-downloaded prefix; Symphonia probes
         // early bytes and progressive formats never need to seek ahead.

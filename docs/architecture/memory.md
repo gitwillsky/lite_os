@@ -29,12 +29,14 @@
 - RISC-V startup 按固定 Privileged ISA 方法探测 `satp.ASID` 宽度；每个 live page table 持有唯一非零 ASID。每个 CPU 首次观察该 ASID 时做一次 ASID-scoped ordering fence，此后普通 kernel/user switch 只写两次 `satp`，不做 full fence。
   地址空间析构保活完整 mapping/frame owner，完成所有 online CPU 的全量失效后才归还 ASID。
 - AArch64 使用 4KiB granule、39-bit/3-level translation：TTBR1_EL1 唯一承载高半 kernel/direct map，TTBR0_EL1 承载当前用户地址空间与非零 ASID；PAN 保持开启且不建立 KPTI 双轨。页表按对齐和权限边界选择 1GiB/2MiB block 或 4KiB page，MMIO 使用 MAIR Device-nGnRnE。
-- AArch64 将 TTBR1 高半区静态划为低侧 120 GiB direct map 与高侧约 136 GiB task
-  kernel-stack window；当前 QEMU virt guest RAM 上限约 119 GiB，超出时在 direct-map
-  publication 前明确失败。每个 AArch64 mapping 仍保留最低 guard page，最高页由
-  KernelStack 独占为对齐 padding 与 `UserContext`，实际 SP 从该页下边界开始向下增长，
-  context 由该边界加固定 offset 直接推导而不保存冗余 pointer；RISC-V
-  继续使用 trap-context 下方的既有 Sv39 stack 与 supervisor trap-context VMA layout。
+- AArch64 将 TTBR1 高半区静态划为低侧 120 GiB RAM direct map、中间约 135 GiB task
+  kernel-stack window 与顶部 1 GiB high-MMIO window；当前 QEMU virt guest RAM 上限约
+  119 GiB，超出时在 direct-map publication 前明确失败。平台发布的每个高地址 MMIO
+  range 只经 architecture-owned mapping projection 映射一次，不能退回 guessed physical
+  pointer 或改变 QEMU high-memory 拓扑。每个 AArch64 mapping 仍保留最低 guard page，
+  最高页由 KernelStack 独占为对齐 padding 与 `UserContext`，实际 SP 从该页下边界开始向下
+  增长，context 由该边界加固定 offset 直接推导而不保存冗余 pointer；RISC-V 继续使用
+  trap-context 下方的既有 Sv39 stack 与 supervisor trap-context VMA layout。
 - AArch64 remote TLB retirement 使用 `VMALLE1IS` + 逐 vCPU SGI rendezvous：source 先
   broadcast，每颗目标以 barrier 越过 HVF flush point 并回写 generation completion，
   retirement owner 等待全部 ack 后才释放 frame/page table。Apple HVF 的 broadcast

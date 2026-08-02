@@ -6,8 +6,9 @@
   它只理解物理像素、flat scene 和 surface，不理解 React、CSS、窗口策略或 Aurora 主题。
 - `compositor/spice_agent.rs` 是 SPICE vdagent framing、UTM monitor request 与 session plain-text
   clipboard 的唯一 owner；它通过标准 VirtIO named port 接收 `VD_AGENT_MONITORS_CONFIG`，并与 host
-  clipboard 懒交换数据。monitor request 只进入 compositor/DRM output transaction，clipboard 结果只
-  路由到当前 focused surface；desktop 和 app 不保存另一份 system state。
+  clipboard 懒交换数据。server-port mouse-state 只校验并丢弃，pointer 仍唯一走 evdev/tablet。
+  monitor request 只进入 compositor/DRM output transaction，clipboard 结果只路由到当前 focused
+  surface；desktop 和 app 不保存另一份 system state。
 - `lite-runtime`（crate `lite-runtime`，lib 名 `lite_runtime`）是通用 GUI/JS 运行时**库**——像
   GTK/浏览器引擎——被每个应用二进制链接。它导出 `run(role, app_id, extensions)`，独占 QuickJS+React、
   CSS 渲染器、输入/定时器/剪贴板、事件循环、通用文件桥 `fs.*` 与音频播放管线（含边下边播的
@@ -71,7 +72,10 @@
   或 page flip。
 - desktop renderer 的 flat scene 可交错 `Pixels` 与 `ForeignSurface` node。普通 app 只产生一个像素
   surface；desktop 遇到 `<surface>` 时切分 paint sequence，使窗口内容能与 React decorations 正确交错。
-- LiteUI 像素使用预乘 `ARGB8888`，compositor 合成到双 `XRGB8888` scanout。每个 node 带保守的
+- LiteUI 把预乘 `ARGB8888` paint 降为 immutable GPU display list，compositor 在唯一 VirGL context
+  中栅格化 texture 并合成到双 `XRGB8888` scanout。Y0-top texture sampling 与 VirGL 归一化
+  viewport 的 destination transform 共同把 window coordinate 固定为左上原点；layer rect、圆角与
+  祖先 clip 全部在同一 fragment shader 坐标域求交，不依赖 host rasterizer 的 scissor 原点。每个 node 带保守的
   opaque region、显式 input region 与 damage；透明阴影不参与 input region。React paint order 中位于
   foreign surface 之后的透明交互 chrome 生成 empty-clip `Pixels` input node，使 resize grip 等元素按
   标准 DOM z-order 命中 desktop，同时不复制 desktop 像素覆盖 app content。窗口 frame Pixels 使用
@@ -186,8 +190,8 @@
 - `lite:fs.open(path)` 返回 filesystem-backed 标准 `File`；`URL.createObjectURL(file)` 只发布当前
   process 内 opaque `blob:` source。`<audio>` 只接受 app-relative resource 与该 `blob:` source，
   不接受 ambient `file:` path、network/data URL 或私有 path-play API。
-- raster 唯一使用 CPU（盒/边框为手绘 scanline，字形为 swash A8），不建立 GPU backend abstraction。
-  3D app 绕过 LiteUI。
+- raster 唯一使用 GPU display-list/VirGL 路径；盒、边框、图片、渐变、阴影与 swash A8 glyph mask
+  都由 compositor 的固定 pipeline 执行，不保留 CPU raster fallback 或第二 renderer backend。
 
 ## 应用与构建
 
@@ -210,9 +214,9 @@
 
 ## 当前边界
 
-- GUI 进程当前与 desktop 同等可信。握手仍共享同一 DRM OFD，但 dumb buffer 只能按协议向 compositor
-  请求；compositor 是 CREATE/DESTROY owner，LiteUI 只 MAP_DUMB+mmap。权限模型和隔离后的共享内存
-  transport 属于后续破坏性协议升级。
+- GUI 进程当前与 desktop 同等可信，但不共享 DRM OFD。应用只提交有界 GPU display list 与 immutable
+  texture payload；compositor 是 VirGL context、resource、render target 与 scanout 的唯一 owner。
+  权限模型和进一步隔离 transport 属于后续破坏性协议升级。
 - input v1 只有 US keyboard、pointer、wheel、focus、repeat、plain-text clipboard 与基础 keyboard
   accessibility；`cursor` 只支持固定 arrow、hidden、pointer 与四向 resize shape，不支持 URL/custom bitmap。
   非默认 CSS cursor 即使没有 React listener 也建立命中区域；host/style 重绘后会在最新 pointer position

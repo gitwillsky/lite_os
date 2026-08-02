@@ -109,6 +109,7 @@ pub(crate) fn init() {
 }
 
 fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
+    crate::arch::mmu::initialize_kernel_mmio(platform::kernel_mmio_regions());
     let mut memory_set = MemorySet::new_kernel();
 
     memory_set
@@ -117,14 +118,13 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
 
     for region in platform::kernel_mmio_regions() {
         debug!("[init_kernel_space] platform MMIO: {region:#x?}");
-        let virtual_start = crate::arch::mmu::physical_to_virtual(region.start);
-        let virtual_end = crate::arch::mmu::physical_to_virtual(region.end);
+        let virtual_range = crate::arch::mmu::physical_range_to_virtual(region);
         memory_set
             .push(
                 MapArea::new(
-                    virtual_start.into(),
-                    virtual_end.into(),
-                    mm::MapType::DirectMapped,
+                    virtual_range.start.into(),
+                    virtual_range.end.into(),
+                    mm::MapType::KernelMapped,
                     MapPermission::R | MapPermission::W | MapPermission::DEVICE,
                 )
                 .set_global(true),
@@ -145,7 +145,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (stext as *const () as usize).into(),
                 (etext as *const () as usize).into(),
-                mm::MapType::DirectMapped,
+                mm::MapType::KernelMapped,
                 MapPermission::R | MapPermission::X,
             )
             .set_global(true),
@@ -165,7 +165,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (srodata as *const () as usize).into(),
                 (erodata as *const () as usize).into(),
-                mm::MapType::DirectMapped,
+                mm::MapType::KernelMapped,
                 MapPermission::R,
             )
             .set_global(true),
@@ -185,7 +185,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (sdata as *const () as usize).into(),
                 (edata as *const () as usize).into(),
-                mm::MapType::DirectMapped,
+                mm::MapType::KernelMapped,
                 MapPermission::R | MapPermission::W,
             )
             .set_global(true),
@@ -205,7 +205,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 (sbss as *const () as usize).into(),
                 (ebss as *const () as usize).into(),
-                mm::MapType::DirectMapped,
+                mm::MapType::KernelMapped,
                 MapPermission::R | MapPermission::W,
             )
             .set_global(true),
@@ -227,7 +227,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapArea::new(
                 mapped_bottom.into(),
                 boot_stack_top_addr.into(),
-                mm::MapType::DirectMapped,
+                mm::MapType::KernelMapped,
                 MapPermission::R | MapPermission::W,
             )
             .set_global(true),
@@ -250,7 +250,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
                 MapArea::new(
                     direct_map_start.into(),
                     direct_map_end.into(),
-                    mm::MapType::DirectMapped,
+                    mm::MapType::KernelMapped,
                     MapPermission::R | MapPermission::W,
                 )
                 .set_global(true),

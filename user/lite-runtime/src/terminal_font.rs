@@ -10,10 +10,7 @@ use std::{fs, io};
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::{
-    renderer::{PhysicalRect, Raster},
-    style::Computed,
-};
+use crate::{font::GlyphAtlas, renderer::PhysicalRect, style::Computed};
 
 const PATH: &str = "/usr/share/liteos/liteos-terminal.a8";
 const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x03";
@@ -80,21 +77,16 @@ impl TerminalFont {
         })
     }
 
-    /// Draws one monospace text row cell by cell, clipped to its layout box.
-    ///
-    /// Narrow glyphs advance one cell and wide glyphs advance two. The latter
-    /// use a 32-pixel bitmap so CJK ink is not compressed into the first cell.
-    /// `font-weight: bold` selects the atlas's second face.
-    pub fn draw<R: Raster>(
+    /// Appends fixed-cell glyph coverage to the frame-local GPU atlas.
+    pub(crate) fn gpu_text(
         &self,
-        target: &mut R,
+        atlas: &mut GlyphAtlas,
         bounds: PhysicalRect,
         overflow_clip: Option<PhysicalRect>,
         style: &Computed,
         text: &str,
-    ) {
-        let bounds = overflow_clip.map_or(bounds, |clip| bounds.intersect(clip));
-        let color = style.get("color").and_then(color).unwrap_or(0xff00_0000);
+    ) -> Vec<display_proto::Glyph> {
+        let clip = overflow_clip.map_or(bounds, |clip| bounds.intersect(clip));
         let bold = style.get("font-weight") == Some("bold")
             || style
                 .get("font-weight")
@@ -102,9 +94,10 @@ impl TerminalFont {
                 .is_some_and(|weight| weight >= 600);
         let face = self.faces + usize::from(bold) * GLYPH_COUNT * GLYPH_BYTES;
         let mut column = 0usize;
+        let mut output = Vec::new();
         for character in text.chars() {
-            let cell_x = bounds.x1 + column * CELL_WIDTH;
-            if cell_x >= bounds.x2 {
+            let destination_x = bounds.x1 + column * CELL_WIDTH;
+            if destination_x >= bounds.x2 {
                 break;
             }
             let glyph = self
@@ -112,50 +105,64 @@ impl TerminalFont {
                 .binary_search(&(character as u32))
                 .unwrap_or(self.fallback);
             let bitmap = face + glyph * GLYPH_BYTES;
-            for row in 0..CELL_HEIGHT {
-                let target_y = bounds.y1 + row;
-                if target_y >= bounds.y2 {
-                    break;
-                }
-                let target_row = target.row_mut(target_y);
-                for bitmap_column in 0..BITMAP_WIDTH {
-                    // The final cell can straddle the layout box edge: glyph
-                    // cells blit whole, so clip per pixel instead of per cell.
-                    let target_x = cell_x + bitmap_column;
-                    if target_x >= bounds.x2 {
-                        break;
-                    }
-                    let alpha = self.bytes[bitmap + row * BITMAP_WIDTH + bitmap_column];
-                    if alpha != 0 {
-                        let background = target_row[target_x];
-                        target_row[target_x] = blend(background, color, alpha);
-                    }
-                }
+            let Some(source) = atlas.insert(
+                BITMAP_WIDTH,
+                CELL_HEIGHT,
+                &self.bytes[bitmap..bitmap + GLYPH_BYTES],
+            ) else {
+                break;
+            };
+            let destination = display_proto::Rect {
+                x: destination_x as i32,
+                y: bounds.y1 as i32,
+                width: BITMAP_WIDTH as u32,
+                height: CELL_HEIGHT as u32,
+            };
+            if let Some((source, destination)) = crop_glyph(source, destination, clip) {
+                output.push(display_proto::Glyph {
+                    source,
+                    destination,
+                });
             }
             column += UnicodeWidthChar::width(character).unwrap_or(1).clamp(1, 2);
         }
+        output
     }
 }
 
-fn blend(background: u32, foreground: u32, alpha: u8) -> u32 {
-    let alpha = u32::from(alpha);
-    let inverse = 255 - alpha;
-    let channel = |shift: u32| {
-        (((foreground >> shift) & 0xffu32) * alpha + ((background >> shift) & 0xffu32) * inverse)
-            / 255
-    };
-    0xff00_0000 | channel(16) << 16 | channel(8) << 8 | channel(0)
-}
-
-fn color(value: &str) -> Option<u32> {
-    let hex = value.trim().strip_prefix('#')?;
-    (hex.len() == 6)
-        .then(|| {
-            u32::from_str_radix(hex, 16)
-                .ok()
-                .map(|value| 0xff00_0000 | value)
-        })
-        .flatten()
+fn crop_glyph(
+    source: display_proto::Rect,
+    destination: display_proto::Rect,
+    clip: PhysicalRect,
+) -> Option<(display_proto::Rect, display_proto::Rect)> {
+    let x1 = destination.x.max(clip.x1 as i32);
+    let y1 = destination.y.max(clip.y1 as i32);
+    let x2 = destination
+        .x
+        .saturating_add_unsigned(destination.width)
+        .min(clip.x2 as i32);
+    let y2 = destination
+        .y
+        .saturating_add_unsigned(destination.height)
+        .min(clip.y2 as i32);
+    (x2 > x1 && y2 > y1).then(|| {
+        let width = (x2 - x1) as u32;
+        let height = (y2 - y1) as u32;
+        (
+            display_proto::Rect {
+                x: source.x + x1 - destination.x,
+                y: source.y + y1 - destination.y,
+                width,
+                height,
+            },
+            display_proto::Rect {
+                x: x1,
+                y: y1,
+                width,
+                height,
+            },
+        )
+    })
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {

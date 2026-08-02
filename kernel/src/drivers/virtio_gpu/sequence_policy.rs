@@ -13,6 +13,9 @@ pub(super) enum RuntimeStage {
     UnrefReleased,
     DisableScanout,
     UnrefDisabled(u8),
+    Virgl,
+    VirglSetScanout,
+    VirglFlush,
 }
 
 /// completion 与 next command 不属于同一合法 GPU protocol chain。
@@ -30,6 +33,7 @@ impl RuntimeStage {
             | (Self::SetScanout, Self::FlushScanout)
             | (Self::FlushScanout, Self::UnrefBoot)
             | (Self::DisableScanout, Self::UnrefDisabled(_)) => true,
+            (Self::VirglSetScanout, Self::VirglFlush) => true,
             (Self::UnrefDisabled(previous), Self::UnrefDisabled(next)) => next > previous,
             _ => false,
         }

@@ -1,8 +1,15 @@
 //! Typed DRM dumb-buffer and modesetting resources.
 
 mod shared;
+mod virgl;
 
 pub use shared::SharedDumbBuffer;
+pub use virgl::{
+    BIND_DISPLAY_TARGET, BIND_RENDER_TARGET, BIND_SAMPLER_VIEW, BIND_SCANOUT, BIND_VERTEX_BUFFER,
+    CommandEncoder, FORMAT_B8G8R8A8_UNORM, FORMAT_B8G8R8X8_UNORM, FORMAT_R8_UNORM, ObjectKind,
+    PIPE_BUFFER, PIPE_TEXTURE_2D, RESOURCE_Y_0_TOP, SamplerFilter, SamplerWrap, ShaderStage,
+    VirglCapabilities, VirglContext, VirglResource,
+};
 
 use std::{
     fs::{File, OpenOptions},
@@ -485,6 +492,10 @@ impl DrmDevice {
             ..raw::DrmDumbMap::default()
         };
         self.ioctl(raw::DRM_IOCTL_MODE_MAP_DUMB, (&raw mut map).cast())?;
+        self.map_at_offset(map.offset, size)
+    }
+
+    fn map_at_offset(&self, offset: u64, size: usize) -> io::Result<Mapping> {
         let pointer = unsafe {
             raw::mmap(
                 std::ptr::null_mut(),
@@ -492,7 +503,7 @@ impl DrmDevice {
                 raw::PROT_READ | raw::PROT_WRITE,
                 raw::MAP_SHARED,
                 self.file.as_raw_fd(),
-                map.offset as i64,
+                i64::try_from(offset).map_err(|_| invalid_mode())?,
             )
         };
         if pointer as usize == usize::MAX {

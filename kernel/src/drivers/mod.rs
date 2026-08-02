@@ -1,6 +1,7 @@
 mod audio_output;
 pub(crate) mod block;
 mod display;
+mod graphics;
 mod hal;
 mod input;
 pub(crate) mod io_completion;
@@ -22,6 +23,9 @@ pub(crate) use audio_output::{
 };
 pub(crate) use display::{
     DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
+};
+pub(crate) use graphics::{
+    GraphicsDevice, VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection,
 };
 #[cfg(target_arch = "aarch64")]
 pub(crate) use hal::PciTransport;
@@ -118,7 +122,7 @@ pub(crate) fn dispatch_io_completion_work() -> bool {
 }
 
 pub(crate) fn register_display_device(
-    device: alloc::sync::Arc<dyn DisplayDevice>,
+    device: alloc::sync::Arc<dyn GraphicsDevice>,
 ) -> Result<(), ()> {
     display::register(device)
 }

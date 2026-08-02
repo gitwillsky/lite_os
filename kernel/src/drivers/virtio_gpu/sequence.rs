@@ -8,7 +8,7 @@ use super::{
     sequence_policy::RuntimeStage,
     wire::{VIRTIO_GPU_FLAG_FENCE, read_u32, read_u64},
 };
-use crate::drivers::{DisplayError, DisplayMode, DisplayUpdate};
+use crate::drivers::{DisplayError, DisplayMode, DisplayRect, DisplayUpdate};
 
 /// completion 状态机选出的唯一后继动作；wire encoding 与 queue publication 不在分支内发生。
 pub(super) enum SequenceAction {
@@ -220,6 +220,26 @@ pub(super) fn complete(
         RuntimeStage::UnrefDisabled(slot) => {
             unref_disabled(control, pending, usize::from(slot) + 1)
         }
+        RuntimeStage::Virgl => Ok(SequenceCompletion::update(Some(
+            DisplayUpdate::RenderCompleted(fence),
+        ))),
+        RuntimeStage::VirglSetScanout => command_after(
+            pending.stage,
+            fence,
+            GpuCommand::GraphicsFlush {
+                rectangle: DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width: control.mode.width,
+                    height: control.mode.height,
+                },
+                resource_id: read_u32(control.request.as_slice(), 44)
+                    .ok_or(DisplayError::Device)?,
+            },
+        ),
+        RuntimeStage::VirglFlush => Ok(SequenceCompletion::update(Some(
+            DisplayUpdate::RenderCompleted(fence),
+        ))),
     }
 }
 

@@ -1,7 +1,12 @@
 use spin::Once;
 
 use super::*;
-use crate::drivers::{DisplayError, DisplayUpdate};
+use crate::drivers::{DisplayError, DisplayUpdate, VirglCommand};
+
+enum ScanoutBacking {
+    Dumb(Arc<DeviceBacking>),
+    Virgl(u32),
+}
 
 pub(super) fn display_error(error: DisplayError) -> DrmError {
     match error {
@@ -48,15 +53,30 @@ impl DrmFile {
                 Err(error) => Err(error),
             };
         }
-        let fence = match self.device.display.release_buffer(u64::from(id)) {
-            Ok(fence) => fence,
-            Err(DisplayError::WouldBlock) => {
-                return Ok(FramebufferRemoval::Retry(DrmRetry {
-                    device: self.device.clone(),
-                    generation: completion.adapter_generation,
-                }));
+        let is_virgl = {
+            let state = self.device.state.lock();
+            matches!(
+                &state
+                    .framebuffers
+                    .get(&id)
+                    .expect("validated framebuffer disappeared under owner lock")
+                    .backing,
+                FramebufferBacking::Virgl(_)
+            )
+        };
+        let fence = if is_virgl {
+            None
+        } else {
+            match self.device.display.release_buffer(u64::from(id)) {
+                Ok(fence) => fence,
+                Err(DisplayError::WouldBlock) => {
+                    return Ok(FramebufferRemoval::Retry(DrmRetry {
+                        device: self.device.clone(),
+                        generation: completion.adapter_generation,
+                    }));
+                }
+                Err(error) => return Err(display_error(error)),
             }
-            Err(error) => return Err(display_error(error)),
         };
         if let Some(fence) = fence {
             completion.pending = Some(PendingDisplay {
@@ -109,13 +129,23 @@ impl DrmFile {
             {
                 return Err(DrmError::Invalid);
             }
-            (framebuffer.buffer.backing.clone(), self.file_identity)
+            let backing = match &framebuffer.backing {
+                FramebufferBacking::Dumb(buffer) => ScanoutBacking::Dumb(buffer.backing.clone()),
+                FramebufferBacking::Virgl(buffer) => ScanoutBacking::Virgl(buffer.resource_id),
+            };
+            (backing, self.file_identity)
         };
-        let fence = self
-            .device
-            .display
-            .submit_scanout(u64::from(framebuffer_id), mode, backing)
-            .map_err(display_error)?;
+        let fence = match backing {
+            ScanoutBacking::Dumb(backing) => {
+                self.device
+                    .display
+                    .submit_scanout(u64::from(framebuffer_id), mode, backing)
+            }
+            ScanoutBacking::Virgl(resource_id) => {
+                self.device.display.submit_virgl_scanout(mode, resource_id)
+            }
+        }
+        .map_err(display_error)?;
         completion.pending = Some(PendingDisplay {
             fence,
             operation: PendingOperation::Scanout {
@@ -155,15 +185,33 @@ impl DrmFile {
                     height: framebuffer.height,
                     pitch: framebuffer.pitch,
                 },
-                framebuffer.buffer.backing.clone(),
+                match &framebuffer.backing {
+                    FramebufferBacking::Dumb(buffer) => {
+                        ScanoutBacking::Dumb(buffer.backing.clone())
+                    }
+                    FramebufferBacking::Virgl(buffer) => ScanoutBacking::Virgl(buffer.resource_id),
+                },
                 framebuffer.owner,
             )
         };
-        let fence = self
-            .device
-            .display
-            .submit_damage(u64::from(framebuffer_id), mode, backing, rectangles)
-            .map_err(display_error)?;
+        let fence = match backing {
+            ScanoutBacking::Dumb(backing) => self.device.display.submit_damage(
+                u64::from(framebuffer_id),
+                mode,
+                backing,
+                rectangles,
+            ),
+            ScanoutBacking::Virgl(resource_id) => {
+                if rectangles.len() != 1 {
+                    return Err(DrmError::Invalid);
+                }
+                self.device.display.submit_virgl(VirglCommand::Flush {
+                    resource_id,
+                    rectangle: rectangles[0],
+                })
+            }
+        }
+        .map_err(display_error)?;
         completion.pending = Some(PendingDisplay {
             fence,
             operation: PendingOperation::Damage { owner },
@@ -251,6 +299,73 @@ impl Drop for DrmFile {
             // 保证 close 在 OOM 路径仍不分配，也不把 allocator lock 嵌套进 DRM lock。
             drop(framebuffer);
         }
+        let cleanup = {
+            let mut state = self.state.lock();
+            let Some(context) = state.context.take() else {
+                assert!(state.graphics_buffers.is_empty());
+                return;
+            };
+            let buffers = core::mem::take(&mut state.graphics_buffers);
+            context.into_cleanup(buffers)
+        };
+        self.device
+            .state
+            .lock()
+            .graphics_cleanups
+            .commit_vacant(cleanup);
+        let mut completion = self.device.completion.lock();
+        advance_graphics_cleanup(&self.device, &mut completion);
+    }
+}
+
+fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState) {
+    let selected = {
+        let state = device.state.lock();
+        state
+            .graphics_cleanups
+            .iter()
+            .find_map(|(&context, cleanup)| {
+                cleanup
+                    .next_action(completion.completed)
+                    .map(|action| (context, action))
+            })
+    };
+    let Some((context, action)) = selected else {
+        return;
+    };
+    let fence = match device.display.submit_virgl(action.command()) {
+        Ok(fence) => fence,
+        Err(DisplayError::WouldBlock) => return,
+        Err(error) => panic!("VirGL OFD cleanup submission failed: {error:?}"),
+    };
+    device
+        .state
+        .lock()
+        .graphics_cleanups
+        .get_mut(&context)
+        .expect("selected VirGL cleanup disappeared")
+        .record_submission(action, fence);
+}
+
+fn complete_graphics_cleanup(device: &DrmDevice, fence: u64) {
+    let mut state = device.state.lock();
+    let context = state
+        .graphics_cleanups
+        .iter()
+        .find_map(|(&context, cleanup)| cleanup.owns_fence(fence).then_some(context));
+    let Some(context) = context else {
+        return;
+    };
+    let finished = state
+        .graphics_cleanups
+        .get_mut(&context)
+        .expect("matched VirGL cleanup disappeared")
+        .complete(fence);
+    if finished {
+        state
+            .graphics_cleanups
+            .remove(&context)
+            .expect("completed VirGL cleanup disappeared");
     }
 }
 
@@ -266,7 +381,7 @@ static PRIMARY_DRM: Once<Arc<DrmDevice>> = Once::new();
 /// @return owner 成功发布时返回 unit。
 /// @errors 重复初始化或内存不足返回 unit error。
 pub(crate) fn init(
-    display: Arc<dyn DisplayDevice>,
+    display: Arc<dyn GraphicsDevice>,
     completion_read: Arc<PipeEnd>,
     completion_write: Arc<PipeEnd>,
 ) -> Result<(), ()> {
@@ -290,6 +405,9 @@ pub(crate) fn init(
             buffer_identities: IdAllocator::new(1),
             next_file_identity: 1,
             framebuffer_ids: IdAllocator::new(4),
+            context_ids: IdAllocator::new(1),
+            graphics_resource_ids: IdAllocator::new(3),
+            graphics_cleanups: FallibleMap::new(),
             master: None,
             mode,
             framebuffers: FallibleMap::new(),
@@ -317,6 +435,8 @@ pub(crate) fn open() -> Result<Arc<DrmFile>, ()> {
         state: Mutex::new(DrmFileState {
             handle_ids: IdAllocator::new(1),
             buffers: FallibleMap::new(),
+            context: None,
+            graphics_buffers: FallibleMap::new(),
             was_master: false,
         }),
         events: Mutex::new(EventQueue::new()),
@@ -355,14 +475,35 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
         return;
     };
     state.adapter_generation = state.adapter_generation.wrapping_add(1);
-    let DisplayUpdate::OperationCompleted(fence) = update else {
-        drop(state);
-        if let DisplayUpdate::ModeChanged(mode) = update {
-            publish_mode_change(drm, mode);
-        } else {
-            drm.completion_write.signal_readiness();
+    let fence = match update {
+        DisplayUpdate::OperationCompleted(fence) => fence,
+        DisplayUpdate::RenderCompleted(fence)
+            if state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.fence == fence) =>
+        {
+            fence
         }
-        return;
+        DisplayUpdate::RenderCompleted(fence) => {
+            state.completed = state.completed.max(fence);
+            complete_graphics_cleanup(drm, fence);
+            advance_graphics_cleanup(drm, &mut state);
+            drop(state);
+            drm.completion_write.signal_readiness();
+            return;
+        }
+        DisplayUpdate::ModeChanged(mode) => {
+            drop(state);
+            publish_mode_change(drm, mode);
+            return;
+        }
+        DisplayUpdate::AdapterReady => {
+            advance_graphics_cleanup(drm, &mut state);
+            drop(state);
+            drm.completion_write.signal_readiness();
+            return;
+        }
     };
     let pending = state
         .pending
@@ -415,6 +556,7 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
             operation: PendingOperation::Disable,
         });
     }
+    advance_graphics_cleanup(drm, &mut state);
     drop(state);
     drm.completion_write.signal_readiness();
 }

@@ -1,13 +1,12 @@
 use std::{io::Write, os::unix::net::UnixStream};
 
 use display_proto::{
-    AcceleratorChord, AcceleratorSet, Accepted, AppOpened, BufferAlloc, BufferRetired,
-    ClipMask, ClipMasks, ClipboardData, ClipboardRead, ClipboardWrite, CornerRadius, CURSOR_DEFAULT,
-    CURSOR_NONE, CURSOR_RESIZE_NWSE, Discarded, HelloApp, InputKey, InputPointer, InputScroll,
-    MAX_ACCELERATORS, MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete,
-    OutputConfigure, PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit,
-    SceneNode, SceneNodeKind, SetCursorShape, Size, SurfaceCommit, parse_frame,
-    recv_frame_blocking,
+    AcceleratorChord, AcceleratorSet, Accepted, AppOpened, CURSOR_DEFAULT, CURSOR_NONE,
+    CURSOR_RESIZE_NWSE, ClipMask, ClipMasks, ClipboardData, ClipboardRead, ClipboardWrite,
+    CornerRadius, Discarded, HelloApp, InputKey, InputPointer, InputScroll, MAX_ACCELERATORS,
+    MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete, OutputConfigure,
+    PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode,
+    SceneNodeKind, SetCursorShape, Size, parse_frame, recv_frame_blocking,
 };
 
 #[test]
@@ -32,14 +31,12 @@ fn stream_receiver_preserves_back_to_back_frames() {
         .expect("both frames must enter one stream write");
 
     let mut bytes = [0u8; 64];
-    let (length, fd) = recv_frame_blocking(&reader, &mut bytes).expect("first frame");
-    assert!(fd.is_none());
+    let length = recv_frame_blocking(&reader, &mut bytes).expect("first frame");
     assert_eq!(
         parse_frame(&bytes[..length]).expect("first parse").kind(),
         MessageKind::Accepted
     );
-    let (length, fd) = recv_frame_blocking(&reader, &mut bytes).expect("second frame");
-    assert!(fd.is_none());
+    let length = recv_frame_blocking(&reader, &mut bytes).expect("second frame");
     assert_eq!(
         parse_frame(&bytes[..length]).expect("second parse").kind(),
         MessageKind::Presented
@@ -79,16 +76,6 @@ fn output_configure_and_discard_are_exact_terminal_messages() {
     assert_eq!(
         Discarded::parse(frame.payload()),
         Some(Discarded { revision: 17 })
-    );
-
-    let encoded = BufferRetired { buffer_id: 23 }
-        .encode(&mut bytes)
-        .expect("buffer retired");
-    let frame = parse_frame(encoded).expect("buffer retired frame");
-    assert_eq!(frame.kind(), MessageKind::BufferRetired);
-    assert_eq!(
-        BufferRetired::parse(frame.payload()),
-        Some(BufferRetired { buffer_id: 23 })
     );
 }
 
@@ -178,7 +165,6 @@ fn move_grab_round_trips_authority_constraints_and_signed_result() {
     let begin = MoveBegin {
         surface_id: 9,
         serial: 44,
-        underlay_buffer_id: 17,
         min_x: -120,
         min_y: 0,
         max_x: 1504,
@@ -219,7 +205,7 @@ fn move_grab_round_trips_authority_constraints_and_signed_result() {
     );
     assert!(
         MoveBegin {
-            underlay_buffer_id: 0,
+            surface_id: 0,
             ..begin
         }
         .encode(&mut bytes)
@@ -339,66 +325,6 @@ fn set_cursor_shape_round_trips_surface_and_shape() {
 }
 
 #[test]
-fn allocation_accepts_only_single_or_double_buffer() {
-    let mut bytes = [0u8; 128];
-    for count in [1, 2] {
-        let encoded = BufferAlloc {
-            request_id: 7,
-            size: Size {
-                width: 640,
-                height: 480,
-            },
-            count,
-        }
-        .encode(&mut bytes)
-        .expect("supported count must encode");
-        let frame = parse_frame(encoded).expect("allocation frame must parse");
-        assert_eq!(
-            BufferAlloc::parse(frame.payload())
-                .expect("allocation payload must parse")
-                .count,
-            count
-        );
-    }
-    assert!(
-        BufferAlloc {
-            request_id: 7,
-            size: Size {
-                width: 640,
-                height: 480,
-            },
-            count: 3,
-        }
-        .encode(&mut bytes)
-        .is_none()
-    );
-}
-
-#[test]
-fn surface_damage_round_trips_without_native_layout_casts() {
-    let damage = [
-        Rect {
-            x: 3,
-            y: 4,
-            width: 10,
-            height: 12,
-        },
-        Rect {
-            x: 20,
-            y: 30,
-            width: 2,
-            height: 5,
-        },
-    ];
-    let mut bytes = [0u8; 256];
-    let encoded = SurfaceCommit::encode(&mut bytes, 11, 9, 4, &damage)
-        .expect("bounded surface commit must encode");
-    let frame = parse_frame(encoded).expect("surface frame must parse");
-    let commit = SurfaceCommit::parse(frame.payload()).expect("surface payload must parse");
-    assert_eq!(commit.damage().collect::<Vec<_>>(), damage);
-}
-
-#[test]
 fn scene_round_trips_variable_regions_and_node_kinds() {
     let input = [Rect {
         x: 4,
@@ -417,7 +343,7 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
         radii: [CornerRadius { x: 18, y: 14 }; 4],
     }];
     let nodes = [SceneNode {
-        kind: SceneNodeKind::Pixels,
+        kind: SceneNodeKind::DisplayList,
         window_group: 8,
         source_id: 14,
         configure_serial: 0,
@@ -435,7 +361,7 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
     let scene = SceneCommit::parse(frame.payload()).expect("scene payload must validate fully");
     assert_eq!(scene.output_serial, 3);
     let parsed = scene.nodes().next().expect("one node must remain");
-    assert_eq!(parsed.kind, SceneNodeKind::Pixels);
+    assert_eq!(parsed.kind, SceneNodeKind::DisplayList);
     assert_eq!(parsed.clip_masks.iter().collect::<Vec<_>>(), clip_masks);
     assert_eq!(parsed.input.iter().collect::<Vec<_>>(), input);
     assert_eq!(parsed.damage.iter().collect::<Vec<_>>(), damage);

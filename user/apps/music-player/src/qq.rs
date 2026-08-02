@@ -12,8 +12,7 @@ use crate::provider::{HttpRequest, Method, RemoteTrack, SongUrl, random_hex};
 
 const ENDPOINT: &str = "https://u.y.qq.com/cgi-bin/musicu.fcg";
 const MUSIC_DOMAIN: &str = "https://isure.stream.qqmusic.qq.com/";
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
      Chrome/134.0.0.0 Safari/537.36";
 const URL_VKEY_KEY: &str = "music.vkey.GetVkey.UrlGetVkey";
 
@@ -223,7 +222,9 @@ pub(crate) fn parse_song_url(body: &str) -> Result<SongUrl, String> {
             .and_then(|p| p.as_str())
             .filter(|p| !p.is_empty())
     });
-    Ok(SongUrl::resolved(purl.map(|p| format!("{MUSIC_DOMAIN}{p}"))))
+    Ok(SongUrl::resolved(
+        purl.map(|p| format!("{MUSIC_DOMAIN}{p}")),
+    ))
 }
 
 /// Non-zero `code` at the envelope or service level, rendered with the
@@ -286,7 +287,11 @@ mod tests {
     fn search_request_targets_plain_musicu_endpoint() {
         let request = search_request("周杰伦", 20);
         assert_eq!(request.method, Method::Post);
-        assert!(request.url.starts_with("https://u.y.qq.com/cgi-bin/musicu.fcg"));
+        assert!(
+            request
+                .url
+                .starts_with("https://u.y.qq.com/cgi-bin/musicu.fcg")
+        );
         assert!(!request.url.contains("sign="));
         assert!(request.body.contains("DoSearchForQQMusicMobile"));
     }
@@ -294,7 +299,11 @@ mod tests {
     #[test]
     fn song_url_request_is_unsigned_with_vkey_contract() {
         let request = song_url_request("abc", "F000abcabc.flac", None);
-        assert!(request.url.starts_with("https://u.y.qq.com/cgi-bin/musicu.fcg"));
+        assert!(
+            request
+                .url
+                .starts_with("https://u.y.qq.com/cgi-bin/musicu.fcg")
+        );
         assert!(!request.url.contains("sign="));
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["comm"]["ct"], "19");
