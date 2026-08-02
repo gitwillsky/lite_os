@@ -81,11 +81,9 @@ class RustStdRoutingTests(unittest.TestCase):
     def test_make_routes_both_architectures_through_std_runtime_gate(self) -> None:
         makefile = (ROOT / "Makefile").read_text()
 
-        self.assertIn("$(MAKE) verify-runtime-rust-std", makefile)
-        self.assertIn(
-            "ARCH=riscv64 ACCEL=tcg python3 scripts/verify_rust_std.py",
-            makefile,
-        )
+        self.assertIn("verify-runtime-rust-std", makefile)
+        self.assertIn("WORKFLOW := $(PYTHON) scripts/workflow.py", makefile)
+        self.assertIn("verify-riscv64-secondary", makefile)
 
 
 if __name__ == "__main__":

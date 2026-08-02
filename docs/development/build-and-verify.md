@@ -51,33 +51,43 @@
   dev server 或 runtime package cache。唯一 frontend build owner 是
   `scripts/verify_busybox.py` 的 `build_ui_assets()`；`--build-ui-assets-only` 只暴露该 owner 的已校验输出，
   不建立第二条构建路径。
-- `verify-runtime-gates` 在 target owner 内串行启动 boot、musl、BusyBox、APK、audio 与 frame-timing QEMU。外层即使
-  使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
-  workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。静态编译、clippy、
-  unit 与 architecture gate 仍按 Make jobserver 并行；runtime marker 和 workload 不放宽。frame-timing
-  只在 `desktop startup motion settled`（Splash 的 `display:none` terminal frame 已被 PRESENTED）
-  后注入 resize，不能用 React mount/首 scene marker 或 host sleep 近似该视觉状态。
+- Make 只负责参数校验和稳定入口；`scripts/workflow.py` 是 build、run、verify 的唯一编排 owner。
+  推荐入口只有 `build`、`run`、`run-gui`、`verify-fast`、`verify-runtime` 和 `verify`；其余目标仅用于
+  局部诊断或资源准备，均不得再实现独立的依赖链。workflow 按一次 DAG 顺序准备共享产物，禁止递归
+  `make` 重复声明 kernel、bootloader、musl 或 rootfs 前置条件。
+- `verify-fast` 覆盖 host/static/unit；`verify-runtime` 只构建一次后串行运行完整 runtime gates；`verify`
+  组合两者并追加 release、artifact、架构与 RISC-V secondary 门禁。runtime QEMU 必须保持串行，即使
+  外层使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
+  workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。
+- frame-timing 只在 `desktop startup motion settled`（Splash 的 `display:none` terminal frame 已被 PRESENTED）
+  后注入 resize，不能用 React mount、首 scene marker 或 host sleep 近似该视觉状态。
 - BusyBox 主组合 gate 的 90 秒是 50+ 次 UART interaction、TLS、archive、editor、并发 VFS 与
   job-control 共用的 host liveness bound，不作为 guest 性能阈值；全部 marker/workload 必须完成。
   trap/context/MMU 等性能只由 release ELF 确定性指令/事件计数门禁裁决，禁止用 wall-clock 代替。
 
-## 常用入口
+## 推荐入口
 
 ```bash
 make build
-make build-rust-std
-python3 scripts/verify_busybox.py --build-ui-assets-only
-make sync-userland
 make run
 make run-gui
-make prepare-agent-development
-make run-agent-development
-make verify-unit
-make verify-architecture-benchmark
+make verify-fast
+make verify-runtime
 make verify
 ```
 
-`make verify` 是提交前完整入口；局部门禁用于开发反馈，不能替代完整验证。
+`make verify` 是提交前完整入口；`verify-fast` 用于日常反馈，`verify-runtime` 用于单独复现 guest
+门禁。所有入口都接受 `ARCH`、`ACCEL`、`PROFILE` 及 QEMU 相关环境变量。
+
+局部 scope 仍可直接调用，但它们不是独立编排入口：
+
+| scope | 用途 |
+| --- | --- |
+| `build-kernel`、`build-rootfs`、`build-rust-std` | 定位单项构建问题 |
+| `sync-userland`、`reset-rootfs` | 准备或恢复开发镜像 |
+| `verify-unit`、`verify-architecture-benchmark` | 定位 host/static/unit 问题 |
+| `verify-runtime-*`、`verify-runtime-gates` | 定位单个 guest 门禁；由 `verify-runtime` 统一串行调用 |
+| `regen-font`、`regen-ui-font`、`clean*`、`gdb`、`addr2line` | 维护和调试工具 |
 
 ## Agent 开发镜像
 
@@ -108,7 +118,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 
 ## 单元测试
 
-`make verify-unit` 必须执行：
+`verify-fast` 的 unit scope（也可直接执行 `make verify-unit`）必须包含：
 
 - `architecture-check`：dependency、owner、interface、文档索引/链接/事实归属与退化模式的纯函数测试。
 - `kernel-unit`：复用 production path 的内存、文件、IPC、socket、codec、数据结构与错误边界测试。
@@ -240,8 +250,8 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
   此门禁没有隐藏测试 API、私有播放入口或模拟 device；RISC-V secondary 与
   AArch64/TCG 诊断路径不运行、也不冒充这项真实 AArch64/HVF consumer 覆盖。
 
-`make -j4 verify-runtime-gates` 是 QEMU 编排的唯一 owner，并串行运行各顶层门禁；每项仍使用
-独立镜像、success stamp 和 host port domain。APK 内部同样保持单一 QEMU owner：curl/Git 的
+`verify-runtime` 与 `verify` 共用 `verify-runtime-gates`；它是 QEMU 编排的唯一 owner，并串行运行各顶层门禁。
+每项仍使用独立镜像、success stamp 和 host port domain。APK 内部同样保持单一 QEMU owner：curl/Git 的
 TLS/HTTP 竖切共用一台 4-CPU guest，SQLite 独占持久化/断电恢复镜像。guest 内被测的 SQLite
 双 writer 与 curl 四路传输仍保持并发；`LITEOS_COW_MIGRATION_READY` 只有在 timeout 后
 64 轮 parent/child 私有状态校验及下一次外部进程启动都成功后发布。SQLite writer A 必须在持有 `BEGIN IMMEDIATE` 后发布
