@@ -26,12 +26,99 @@ impl Mode {
     pub fn height(self) -> u16 {
         self.0.vdisplay
     }
+
+    /// Builds the same canonical non-reduced CVT 60 Hz mode Linux uses for a
+    /// VirtIO-GPU display size.
+    pub fn cvt(width: u32, height: u32) -> io::Result<Self> {
+        const HV_FACTOR: u64 = 1000;
+        const MIN_VSYNC_BACK_PORCH_US: u64 = 550;
+        const MIN_V_PORCH: u64 = 3;
+        const H_GRANULARITY: u64 = 8;
+        const HSYNC_PERCENTAGE: u64 = 8;
+        const M_PRIME: u64 = 300;
+        const C_PRIME: u64 = 30;
+        const CLOCK_STEP_KHZ: u64 = 250;
+        const REFRESH: u64 = 60;
+
+        let width = u64::from(width);
+        let height = u64::from(height);
+        if width == 0 || !width.is_multiple_of(H_GRANULARITY) || height == 0 {
+            return Err(invalid_mode());
+        }
+        let vsync = if height.is_multiple_of(3) && height * 4 / 3 == width {
+            4
+        } else if height.is_multiple_of(9) && height * 16 / 9 == width {
+            5
+        } else if height.is_multiple_of(10) && height * 16 / 10 == width {
+            6
+        } else if height.is_multiple_of(4) && height * 5 / 4 == width
+            || height.is_multiple_of(9) && height * 15 / 9 == width
+        {
+            7
+        } else {
+            10
+        };
+        let horizontal_period =
+            (HV_FACTOR * 1_000_000 - MIN_VSYNC_BACK_PORCH_US * HV_FACTOR * REFRESH) * 2
+                / ((height + MIN_V_PORCH) * 2 * REFRESH);
+        if horizontal_period == 0 {
+            return Err(invalid_mode());
+        }
+        let sync_and_back_porch =
+            (MIN_VSYNC_BACK_PORCH_US * HV_FACTOR / horizontal_period + 1).max(vsync + MIN_V_PORCH);
+        let vtotal = height + sync_and_back_porch + MIN_V_PORCH;
+        let blank_percentage =
+            (C_PRIME * HV_FACTOR - M_PRIME * horizontal_period / 1000).max(20 * HV_FACTOR);
+        let mut hblank = width * blank_percentage / (100 * HV_FACTOR - blank_percentage);
+        hblank -= hblank % (2 * H_GRANULARITY);
+        let htotal = width + hblank;
+        let hsync_end = width + hblank / 2;
+        let mut hsync_start = hsync_end - htotal * HSYNC_PERCENTAGE / 100;
+        hsync_start += H_GRANULARITY - hsync_start % H_GRANULARITY;
+        let vsync_start = height + MIN_V_PORCH;
+        let vsync_end = vsync_start + vsync;
+        let mut clock = htotal * HV_FACTOR * 1000 / horizontal_period;
+        clock -= clock % CLOCK_STEP_KHZ;
+        let mut raw = raw::DrmMode {
+            clock: u32::try_from(clock).map_err(|_| invalid_mode())?,
+            hdisplay: u16::try_from(width).map_err(|_| invalid_mode())?,
+            hsync_start: u16::try_from(hsync_start).map_err(|_| invalid_mode())?,
+            hsync_end: u16::try_from(hsync_end).map_err(|_| invalid_mode())?,
+            htotal: u16::try_from(htotal).map_err(|_| invalid_mode())?,
+            vdisplay: u16::try_from(height).map_err(|_| invalid_mode())?,
+            vsync_start: u16::try_from(vsync_start).map_err(|_| invalid_mode())?,
+            vsync_end: u16::try_from(vsync_end).map_err(|_| invalid_mode())?,
+            vtotal: u16::try_from(vtotal).map_err(|_| invalid_mode())?,
+            vrefresh: REFRESH as u32,
+            flags: (1 << 2) | (1 << 1),
+            mode_type: (1 << 3) | (1 << 6),
+            ..raw::DrmMode::default()
+        };
+        let name = format!("{width}x{height}");
+        raw.name[..name.len()].copy_from_slice(name.as_bytes());
+        Ok(Self(raw))
+    }
 }
 
 pub struct Topology {
     pub crtc_id: u32,
     pub connector_id: u32,
     pub mode: Mode,
+}
+
+impl Topology {
+    /// Returns this fixed connector/CRTC pair with a caller-selected CVT mode.
+    pub fn with_size(&self, width: u32, height: u32) -> io::Result<Self> {
+        Ok(Self {
+            crtc_id: self.crtc_id,
+            connector_id: self.connector_id,
+            mode: Mode::cvt(width, height)?,
+        })
+    }
+}
+
+fn invalid_mode() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "invalid DRM CVT mode")
 }
 
 /// One completed DRM page flip.
@@ -545,5 +632,19 @@ impl DumbBuffer {
 
     pub fn device(&self) -> &DrmDevice {
         &self.device
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mode;
+
+    #[test]
+    fn cvt_mode_is_deterministic_and_rejects_noncanonical_width() {
+        let mode = Mode::cvt(2040, 1179).expect("canonical CVT mode");
+        assert_eq!(mode.width(), 2040);
+        assert_eq!(mode.height(), 1179);
+        assert!(Mode::cvt(2047, 1179).is_err());
+        assert!(Mode::cvt(0, 1179).is_err());
     }
 }

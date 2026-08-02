@@ -4,12 +4,12 @@
 //! React, CSS, window policy and product presentation remain outside this crate.
 
 mod boot;
-mod clipboard;
 mod cursor;
 mod frame_stats;
 mod input;
 mod scanout;
 mod session;
+mod spice_agent;
 
 use std::{thread, time::Duration};
 

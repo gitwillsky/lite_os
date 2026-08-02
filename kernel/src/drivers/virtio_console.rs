@@ -6,6 +6,8 @@ mod wire;
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
+#[cfg(target_arch = "aarch64")]
+use super::PciTransport;
 use super::{
     InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
     VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
@@ -13,13 +15,11 @@ use super::{
     virtio_queue::{DmaBuffer, UsedDescriptor, VirtQueue},
 };
 use byte_ring::ByteRing;
-use wire::is_spice_port_name;
+use wire::{data_queue_indices, is_spice_port_name};
 
 const VIRTIO_CONSOLE_F_MULTIPORT: u64 = 1 << 1;
 const CONTROL_RX_QUEUE: u32 = 2;
 const CONTROL_TX_QUEUE: u32 = 3;
-const DATA_RX_QUEUE: u32 = 4;
-const DATA_TX_QUEUE: u32 = 5;
 const QUEUE_LIMIT: u16 = 32;
 const RX_SLOTS: usize = 8;
 const TX_SLOTS: usize = 8;
@@ -65,12 +65,14 @@ struct TransmitSlot<const SIZE: usize> {
 }
 
 struct ReceiveQueue<const SIZE: usize> {
+    index: u32,
     queue: VirtQueue,
     slots: Vec<ReceiveSlot<SIZE>>,
     by_head: Vec<Option<u16>>,
 }
 
 struct TransmitQueue<const SIZE: usize> {
+    index: u32,
     queue: VirtQueue,
     slots: Vec<TransmitSlot<SIZE>>,
     by_head: Vec<Option<u16>>,
@@ -79,8 +81,8 @@ struct TransmitQueue<const SIZE: usize> {
 struct State {
     control_rx: ReceiveQueue<CONTROL_BYTES>,
     control_tx: TransmitQueue<8>,
-    data_rx: ReceiveQueue<RX_BYTES>,
-    data_tx: TransmitQueue<TX_BYTES>,
+    data_rx: Option<ReceiveQueue<RX_BYTES>>,
+    data_tx: Option<TransmitQueue<TX_BYTES>>,
     stream: ByteRing,
     port_id: Option<u32>,
     name_matches: bool,
@@ -108,7 +110,18 @@ impl VirtIOConsoleDevice {
     /// @param base_addr DTB VirtIO MMIO base.
     /// @return A complete adapter, or `None` when required features/queues are absent.
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
-        let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
+        Self::from_device(VirtIODevice::new(base_addr, 0x1000).ok()?)
+    }
+
+    /// @description Initialize the UTM-provided modern VirtIO PCI console function.
+    /// @param transport Capability-validated PCI common/notify/ISR windows.
+    /// @return The same named-port adapter used by VirtIO MMIO, or `None` on negotiation failure.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn from_pci(transport: PciTransport) -> Option<Arc<Self>> {
+        Self::from_device(VirtIODevice::from_pci(3, transport))
+    }
+
+    fn from_device(mut device: VirtIODevice) -> Option<Arc<Self>> {
         if device.device_id() != 3 {
             return None;
         }
@@ -129,23 +142,19 @@ impl VirtIOConsoleDevice {
 
         let mut control_rx = Self::receive_queue(&device, CONTROL_RX_QUEUE, CONTROL_SLOTS)?;
         let control_tx = Self::transmit_queue(&device, CONTROL_TX_QUEUE, CONTROL_SLOTS)?;
-        let mut data_rx = Self::receive_queue(&device, DATA_RX_QUEUE, RX_SLOTS)?;
-        let data_tx = Self::transmit_queue(&device, DATA_TX_QUEUE, TX_SLOTS)?;
         Self::post_receive_slots(&mut control_rx)?;
-        Self::post_receive_slots(&mut data_rx)?;
 
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
         device.notify_queue(CONTROL_RX_QUEUE).ok()?;
-        device.notify_queue(DATA_RX_QUEUE).ok()?;
 
         let adapter = Arc::try_new(Self {
             device,
             state: Mutex::new(State {
                 control_rx,
                 control_tx,
-                data_rx,
-                data_tx,
+                data_rx: None,
+                data_tx: None,
                 stream: ByteRing::new()?,
                 port_id: None,
                 name_matches: false,
@@ -190,6 +199,7 @@ impl VirtIOConsoleDevice {
         by_head.try_reserve_exact(size as usize).ok()?;
         by_head.resize(size as usize, None);
         Some(ReceiveQueue {
+            index,
             queue,
             slots: values,
             by_head,
@@ -222,6 +232,7 @@ impl VirtIOConsoleDevice {
         by_head.try_reserve_exact(size as usize).ok()?;
         by_head.resize(size as usize, None);
         Some(TransmitQueue {
+            index,
             queue,
             slots: values,
             by_head,
@@ -235,6 +246,25 @@ impl VirtIOConsoleDevice {
             receive.by_head[head as usize] = Some(slot_index as u16);
             receive.queue.add_to_avail(head);
         }
+        Some(())
+    }
+
+    /// @description Configure the queue pair belonging to the named port ID.
+    /// @param state Adapter state that will own the selected pair.
+    /// @param port_id VirtIO Console port identity from `PORT_NAME`.
+    /// @return `Some` after the exact pair is live and RX descriptors are posted.
+    fn select_data_queues(&self, state: &mut State, port_id: u32) -> Option<()> {
+        let (receive_index, transmit_index) = data_queue_indices(port_id)?;
+        if let (Some(receive), Some(transmit)) = (&state.data_rx, &state.data_tx) {
+            return (receive.index == receive_index && transmit.index == transmit_index)
+                .then_some(());
+        }
+        let mut receive = Self::receive_queue(&self.device, receive_index, RX_SLOTS)?;
+        let transmit = Self::transmit_queue(&self.device, transmit_index, TX_SLOTS)?;
+        Self::post_receive_slots(&mut receive)?;
+        self.device.notify_queue(receive_index).ok()?;
+        state.data_rx = Some(receive);
+        state.data_tx = Some(transmit);
         Some(())
     }
 
@@ -285,17 +315,19 @@ impl VirtIOConsoleDevice {
         if state.failed || !state.open {
             return Err(PortError::Disconnected);
         }
-        let slot_index = state
-            .data_tx
+        let data_tx = state.data_tx.as_mut().ok_or(PortError::Disconnected)?;
+        let slot_index = data_tx
             .slots
             .iter()
             .position(|slot| !slot.busy)
             .ok_or(PortError::WouldBlock)?;
+        let queue_index = data_tx.index;
         let TransmitQueue {
             queue,
             slots,
             by_head,
-        } = &mut state.data_tx;
+            ..
+        } = data_tx;
         let slot = &mut slots[slot_index];
         slot.bytes[..count].copy_from_slice(&input[..count]);
         let payload = slot
@@ -313,9 +345,9 @@ impl VirtIOConsoleDevice {
             return Err(PortError::Disconnected);
         }
         slot.busy = true;
-        state.data_tx.queue.add_to_avail(head);
+        queue.add_to_avail(head);
         drop(state);
-        if self.device.notify_queue(DATA_TX_QUEUE).is_err() {
+        if self.device.notify_queue(queue_index).is_err() {
             let mut state = self.state.lock();
             state.failed = true;
             if !state.reset_issued {
@@ -335,7 +367,12 @@ impl VirtIOConsoleDevice {
 
     pub(crate) fn writable(&self) -> bool {
         let state = self.state.lock();
-        !state.failed && state.open && state.data_tx.slots.iter().any(|slot| !slot.busy)
+        !state.failed
+            && state.open
+            && state
+                .data_tx
+                .as_ref()
+                .is_some_and(|queue| queue.slots.iter().any(|slot| !slot.busy))
     }
 
     pub(crate) fn connected(&self) -> bool {
@@ -375,21 +412,32 @@ impl VirtIOConsoleDevice {
         }
         let backlog = state.control_rx.queue.has_used()
             || state.control_tx.queue.has_used()
-            || state.data_rx.queue.has_used()
-            || state.data_tx.queue.has_used();
+            || state
+                .data_rx
+                .as_ref()
+                .is_some_and(|queue| queue.queue.has_used())
+            || state
+                .data_tx
+                .as_ref()
+                .is_some_and(|queue| queue.queue.has_used());
         let after_readable = state.failed || !state.open || !state.stream.is_empty();
-        let after_writable =
-            !state.failed && state.open && state.data_tx.slots.iter().any(|slot| !slot.busy);
+        let after_writable = !state.failed
+            && state.open
+            && state
+                .data_tx
+                .as_ref()
+                .is_some_and(|queue| queue.slots.iter().any(|slot| !slot.busy));
         let reset = state.failed && !state.reset_issued;
         if reset {
             state.reset_issued = true;
         }
+        let data_rx_index = state.data_rx.as_ref().map(|queue| queue.index);
         drop(state);
         if notify_control_rx {
             let _ = self.device.notify_queue(CONTROL_RX_QUEUE);
         }
-        if notify_data_rx {
-            let _ = self.device.notify_queue(DATA_RX_QUEUE);
+        if notify_data_rx && let Some(index) = data_rx_index {
+            let _ = self.device.notify_queue(index);
         }
         if reset {
             let _ = self.device.reset();
@@ -412,7 +460,10 @@ impl VirtIOConsoleDevice {
     }
 
     fn reclaim_data_tx(&self, state: &mut State) -> bool {
-        match Self::reclaim_transmit(&mut state.data_tx) {
+        let Some(queue) = state.data_tx.as_mut() else {
+            return false;
+        };
+        match Self::reclaim_transmit(queue) {
             Ok(progressed) => progressed,
             Err(()) => {
                 state.failed = true;
@@ -484,13 +535,18 @@ impl VirtIOConsoleDevice {
             }
             PORT_NAME if state.port_id == Some(id) => {
                 state.name_matches = name_matches;
-                if state.name_matches
-                    && !state.guest_open_announced
-                    && self.submit_control(state, id, PORT_OPEN, 1).is_some()
-                {
-                    state.guest_open_announced = true;
-                } else if state.name_matches && !state.guest_open_announced {
-                    state.failed = true;
+                if state.name_matches && !state.guest_open_announced {
+                    // Queue 4/5 belongs specifically to port 1. UTM also creates
+                    // `org.qemu.guest_agent.0`, so the SPICE port is commonly id 2
+                    // and must use queue 6/7. Selecting by the advertised id keeps
+                    // control-plane naming and data-plane ownership identical.
+                    if self.select_data_queues(state, id).is_some()
+                        && self.submit_control(state, id, PORT_OPEN, 1).is_some()
+                    {
+                        state.guest_open_announced = true;
+                    } else {
+                        state.failed = true;
+                    }
                 }
                 state.open = state.name_matches && state.host_open;
             }
@@ -505,7 +561,10 @@ impl VirtIOConsoleDevice {
     }
 
     fn reclaim_data_rx(&self, state: &mut State, reposted: &mut bool) -> bool {
-        let (slot, completion) = match Self::claim_receive(&mut state.data_rx) {
+        let Some(queue) = state.data_rx.as_mut() else {
+            return false;
+        };
+        let (slot, completion) = match Self::claim_receive(queue) {
             Ok(Some(value)) => value,
             Ok(None) => return false,
             Err(()) => {
@@ -518,13 +577,13 @@ impl VirtIOConsoleDevice {
             state.failed = true;
             return false;
         }
-        let bytes = &state.data_rx.slots[slot].bytes[..length];
+        let bytes = &queue.slots[slot].bytes[..length];
         if !state.stream.push(bytes) {
             state.failed = true;
             return false;
         }
-        if state.data_rx.queue.recycle_used(completion).is_err()
-            || Self::repost_receive(&mut state.data_rx, slot).is_none()
+        if queue.queue.recycle_used(completion).is_err()
+            || Self::repost_receive(queue, slot).is_none()
         {
             state.failed = true;
         } else {

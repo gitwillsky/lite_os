@@ -28,17 +28,11 @@ FS_IMAGE_SIZE_MIB ?= 8192
 AGENT_FS_IMAGE_SIZE_MIB ?= 32768
 QEMU_MEMORY ?= 2G
 AGENT_QEMU_MEMORY ?= 6G
-QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
-QEMU_GUI_WINDOW_WIDTH ?= 1504
-QEMU_GUI_WINDOW_HEIGHT ?= 874
-QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
-QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
 GDB ?= $(if $(filter aarch64,$(ARCH)),aarch64-none-elf-gdb,riscv64-elf-gdb)
 ADDR2LINE ?= $(if $(filter aarch64,$(ARCH)),aarch64-none-elf-addr2line,riscv64-unknown-elf-addr2line)
 
 export ARCH ACCEL PROFILE FS_IMAGE_SIZE_MIB AGENT_FS_IMAGE_SIZE_MIB
-export QEMU_MEMORY AGENT_QEMU_MEMORY QEMU_GUI_DISPLAY QEMU_GUI_WINDOW_WIDTH
-export QEMU_GUI_WINDOW_HEIGHT QEMU_GUI_SERIAL_LOG QEMU_GPU_DEVICE QEMU_SMP
+export QEMU_MEMORY AGENT_QEMU_MEMORY QEMU_SMP
 export GDB ADDR2LINE
 
 WORKFLOW := $(PYTHON) scripts/workflow.py

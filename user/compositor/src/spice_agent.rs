@@ -1,4 +1,4 @@
-//! SPICE vdagent bridge and single-owner text clipboard state.
+//! SPICE guest-agent transport for dynamic display configuration and clipboard state.
 
 use std::{
     collections::VecDeque,
@@ -7,19 +7,27 @@ use std::{
 };
 
 use display_proto::{
-    ClipboardData, ClipboardRead, ClipboardWrite, MAX_APP_SURFACES, MAX_CLIPBOARD_TEXT,
+    ClipboardData, ClipboardRead, ClipboardWrite, MAX_APP_SURFACES, MAX_CLIPBOARD_TEXT, Size,
 };
 use linux_uapi::virtio_port::SpicePort;
 
 const VDP_CLIENT_PORT: u32 = 1;
 const VD_AGENT_PROTOCOL: u32 = 1;
+const VD_AGENT_MONITORS_CONFIG: u32 = 2;
 const VD_AGENT_CLIPBOARD: u32 = 4;
 const VD_AGENT_ANNOUNCE_CAPABILITIES: u32 = 6;
 const VD_AGENT_CLIPBOARD_GRAB: u32 = 7;
 const VD_AGENT_CLIPBOARD_REQUEST: u32 = 8;
 const VD_AGENT_CLIPBOARD_RELEASE: u32 = 9;
 const VD_AGENT_CLIPBOARD_UTF8_TEXT: u32 = 1;
+const VD_AGENT_CAP_MONITORS_CONFIG: u32 = 1;
 const VD_AGENT_CAP_CLIPBOARD_BY_DEMAND: u32 = 5;
+const VD_AGENT_CONFIG_MONITORS_FLAG_USE_POS: u32 = 1;
+const VD_AGENT_CONFIG_MONITORS_FLAG_PHYSICAL_SIZE: u32 = 2;
+const MONITOR_CONFIG_HEADER: usize = 8;
+const MONITOR_CONFIG_SIZE: usize = 20;
+const MONITOR_PHYSICAL_SIZE: usize = 4;
+const MAX_OUTPUT_DIMENSION: u32 = 8192;
 const CHUNK_PAYLOAD: usize = 1024;
 const AGENT_HEADER: usize = 20;
 const MAX_AGENT_MESSAGE: usize = 1024 * 1024 + AGENT_HEADER;
@@ -33,14 +41,23 @@ enum Owner {
 #[derive(Debug)]
 enum AgentEvent {
     Capabilities { request: bool },
+    Monitor(Size),
     Grab { text: bool },
     RequestText,
     Data(String),
     Release,
 }
 
-/// The compositor-owned clipboard routing state and standard host transport.
-pub(super) struct Clipboard {
+/// Results produced by one nonblocking SPICE agent drain.
+pub(super) struct AgentPump {
+    /// Clipboard replies whose pending guest reads can now complete.
+    pub(super) clipboard: Vec<ClipboardData>,
+    /// Latest single-monitor pixel size requested by the UTM display client.
+    pub(super) monitor: Option<Size>,
+}
+
+/// The compositor-owned SPICE transport, display request stream and clipboard state.
+pub(super) struct SpiceAgent {
     port: SpicePort,
     wire: Vec<u8>,
     message: Vec<u8>,
@@ -51,7 +68,7 @@ pub(super) struct Clipboard {
     remote_request_outstanding: bool,
 }
 
-impl Clipboard {
+impl SpiceAgent {
     /// Opens the standard SPICE port and starts capability negotiation.
     pub(super) fn open() -> io::Result<Self> {
         let mut value = Self {
@@ -120,8 +137,8 @@ impl Clipboard {
         self.pending.clear();
     }
 
-    /// Drains nonblocking port I/O and returns replies unblocked by host data.
-    pub(super) fn pump(&mut self) -> io::Result<Vec<ClipboardData>> {
+    /// Drains nonblocking port I/O and coalesces standard agent events.
+    pub(super) fn pump(&mut self) -> io::Result<AgentPump> {
         self.flush()?;
         let mut bytes = [0u8; 4096];
         loop {
@@ -134,6 +151,7 @@ impl Clipboard {
         }
         let events = self.parse_wire()?;
         let mut replies = Vec::new();
+        let mut monitor = None;
         for event in events {
             match event {
                 AgentEvent::Capabilities { request } => {
@@ -141,6 +159,7 @@ impl Clipboard {
                         self.send_capabilities(false)?;
                     }
                 }
+                AgentEvent::Monitor(size) => monitor = Some(size),
                 AgentEvent::Grab { text } => {
                     self.pending.clear();
                     self.remote_request_outstanding = false;
@@ -182,7 +201,10 @@ impl Clipboard {
             }
         }
         self.flush()?;
-        Ok(replies)
+        Ok(AgentPump {
+            clipboard: replies,
+            monitor,
+        })
     }
 
     fn data(request: ClipboardRead, text: String) -> ClipboardData {
@@ -196,7 +218,9 @@ impl Clipboard {
     fn send_capabilities(&mut self, request: bool) -> io::Result<()> {
         let mut data = [0u8; 8];
         data[..4].copy_from_slice(&u32::from(request).to_le_bytes());
-        data[4..].copy_from_slice(&(1u32 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND).to_le_bytes());
+        let capabilities =
+            1u32 << VD_AGENT_CAP_MONITORS_CONFIG | 1u32 << VD_AGENT_CAP_CLIPBOARD_BY_DEMAND;
+        data[4..].copy_from_slice(&capabilities.to_le_bytes());
         self.send_agent(VD_AGENT_ANNOUNCE_CAPABILITIES, &data)
     }
 
@@ -302,6 +326,7 @@ fn parse_agent(message: &[u8]) -> io::Result<Option<AgentEvent>> {
         VD_AGENT_ANNOUNCE_CAPABILITIES if data.len() >= 8 => Some(AgentEvent::Capabilities {
             request: read_u32(data, 0)? != 0,
         }),
+        VD_AGENT_MONITORS_CONFIG => parse_monitor_config(data)?.map(AgentEvent::Monitor),
         VD_AGENT_CLIPBOARD_GRAB if data.len().is_multiple_of(4) => {
             let text = data
                 .as_chunks::<4>()
@@ -332,6 +357,47 @@ fn parse_agent(message: &[u8]) -> io::Result<Option<AgentEvent>> {
         VD_AGENT_CLIPBOARD_RELEASE if data.is_empty() => Some(AgentEvent::Release),
         _ => None,
     })
+}
+
+fn parse_monitor_config(data: &[u8]) -> io::Result<Option<Size>> {
+    if data.len() < MONITOR_CONFIG_HEADER {
+        return Err(invalid("truncated vdagent monitor configuration"));
+    }
+    let count = usize::try_from(read_u32(data, 0)?)
+        .map_err(|_| invalid("invalid vdagent monitor count"))?;
+    if count != 1 {
+        return Err(invalid("LiteOS requires exactly one SPICE monitor"));
+    }
+    let flags = read_u32(data, 4)?;
+    if flags
+        & !(VD_AGENT_CONFIG_MONITORS_FLAG_USE_POS | VD_AGENT_CONFIG_MONITORS_FLAG_PHYSICAL_SIZE)
+        != 0
+    {
+        return Err(invalid("unsupported vdagent monitor flags"));
+    }
+    let expected = MONITOR_CONFIG_HEADER
+        + MONITOR_CONFIG_SIZE
+        + usize::from(flags & VD_AGENT_CONFIG_MONITORS_FLAG_PHYSICAL_SIZE != 0)
+            * MONITOR_PHYSICAL_SIZE;
+    if data.len() != expected {
+        return Err(invalid("invalid vdagent monitor configuration length"));
+    }
+    let height = read_u32(data, 8)?;
+    let requested_width = read_u32(data, 12)?;
+    let depth = read_u32(data, 16)?;
+    let x = read_u32(data, 20)? as i32;
+    let y = read_u32(data, 24)? as i32;
+    if x != 0 || y != 0 || !matches!(depth, 0 | 32) {
+        return Err(invalid("unsupported vdagent monitor geometry"));
+    }
+    // Linux's non-reduced CVT helper canonicalizes horizontal pixels to 8-pixel
+    // character cells. Applying that standard normalization here prevents a
+    // one-to-seven-pixel UTM window increment from producing a non-modeable KMS size.
+    let width = requested_width / 8 * 8;
+    if width == 0 || height == 0 || width > MAX_OUTPUT_DIMENSION || height > MAX_OUTPUT_DIMENSION {
+        return Err(invalid("vdagent monitor dimensions are out of range"));
+    }
+    Ok(Some(Size { width, height }))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> io::Result<u32> {
@@ -380,6 +446,39 @@ mod tests {
             .expect("grab message"),
             Some(AgentEvent::Grab { text: true })
         ));
+    }
+
+    #[test]
+    fn parses_single_monitor_and_applies_cvt_granularity() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&VD_AGENT_CONFIG_MONITORS_FLAG_USE_POS.to_le_bytes());
+        data.extend_from_slice(&1179u32.to_le_bytes());
+        data.extend_from_slice(&2047u32.to_le_bytes());
+        data.extend_from_slice(&32u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(
+            parse_agent(&message(VD_AGENT_MONITORS_CONFIG, &data)).expect("monitor message"),
+            Some(AgentEvent::Monitor(Size {
+                width: 2040,
+                height: 1179
+            }))
+        ));
+    }
+
+    #[test]
+    fn monitor_config_rejects_topologies_the_drm_owner_cannot_represent() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&2u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.resize(MONITOR_CONFIG_HEADER + 2 * MONITOR_CONFIG_SIZE, 0);
+        assert_eq!(
+            parse_agent(&message(VD_AGENT_MONITORS_CONFIG, &data))
+                .expect_err("multiple monitors must fail")
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]

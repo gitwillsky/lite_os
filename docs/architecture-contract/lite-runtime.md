@@ -17,7 +17,8 @@
   `audio-system.*` 音量）是 compositor 客户端基础设施，作为 `Role::Desktop` 能力留在库内，非应用策略。
 - `compositor` 独占 DRM master/OFD、evdev fd、scanout pair、page-flip state、client registry、buffer
   quota、last-presented scene、input routing、pointer capture、cursor position 与 session epoch。
-  `session/output.rs` 独占 kobject subscription、output serial 与 connector-size publication；
+  `compositor/spice_agent.rs` 独占 VDI/SPICE message assembly、monitor request 与 host clipboard state；
+  `session/output.rs` 独占 output serial 与 connector-size publication；
   `compositor/session/accelerator.rs` 独占 global accelerator chord 表与 key-grab 状态机；
   `display-proto/accelerator.rs` 独占 `AcceleratorSet` wire codec。
 - React desktop 独占 persistent window policy state。compositor 只保存已接受/已呈现 scene snapshot 与
@@ -120,8 +121,9 @@
   转交 compositor；授权 serial 过期、group 消失或已有 grab 时必须先 `BUFFER_RELEASE` 再拒绝，
   exactly-once 结束该 buffer transaction。标题栏拖动只走 compositor grab，不得保留 React motion
   fallback；瞬时无空闲 underlay 时丢弃当前 gesture，不得终止 desktop epoch。
-- QEMU 窗口 resize 只走标准 DRM connector hotplug：compositor 订阅
-  `NETLINK_KOBJECT_UEVENT` group 1，drain burst 后发布最新
+- UTM 窗口 resize 只走 spice-protocol `VD_AGENT_MONITORS_CONFIG` → canonical CVT → 标准 DRM/KMS
+  transaction；设备自身 config change 仍只走 `NETLINK_KOBJECT_UEVENT` group 1。compositor 对同一
+  poll turn coalesce 后发布最新
   `OUTPUT_CONFIGURE(serial, physicalSize, deviceScaleFactor=2)`。`SCENE_COMMIT` 必须携带 exact output
   serial；新 serial 的 desktop triple buffer、双 scanout 与 KMS mode 作为一个事务接管，旧 front 在
   新 scene 完成 page flip 前保持 pinned。不得用宿主缩放、轮询 topology、断开 desktop epoch、固定
@@ -157,8 +159,10 @@
   全部 key 事件（含 modifier 自身变化与无关 key）路由 desktop（surface_id=0），chord 的全部 key 松开
   （次序无关）才结束并恢复 focused surface 路由；desktop 断开或 epoch reset 强制结束。modifier mask
   位定义固定为 Shift=1、Ctrl=2、Alt=4、Super=8。窗口 policy 与 shortcut action 不得进入 compositor。
-- compositor 是 session clipboard、focused connection routing 与 SPICE vdagent transport 的唯一
-  owner。display protocol 的 read/write/data 必须携带 exact surface/request identity，单次只接受
+- compositor 的 `spice_agent` 是 monitor/clipboard capability、session clipboard 与 SPICE vdagent
+  transport 的唯一 owner。只接受单 monitor、原点为零、32-bit/unspecified depth 与不超过 8192 的
+  geometry；水平尺寸按 Linux CVT 8-pixel cell 归一化，多显示器或 malformed payload 直接拒绝。
+  display protocol 的 read/write/data 必须携带 exact surface/request identity，单次只接受
   不超过 60 KiB 的 UTF-8 text；host 数据按需请求，异步结果只能返回仍存活的原请求连接。
   LiteUI 只投影标准 `navigator.clipboard.readText()`/`writeText()` 与文本输入/Terminal 快捷键，
   不保存平行内容。无 image/file/HTML/primary selection、文件拖放或私有 path clipboard。

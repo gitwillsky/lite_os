@@ -10,7 +10,18 @@ use crate::tree::Node;
 pub(super) struct Selector {
     parts: Vec<Simple>,
     combinators: Vec<Combinator>,
+    pseudo_element: Option<PseudoElement>,
     pub(super) specificity: u32,
+}
+
+/// Pseudo-elements whose generated content is painted by a native form control.
+///
+/// They remain part of the author cascade: the renderer asks for their computed
+/// style and never hard-codes application theme colors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PseudoElement {
+    Placeholder,
+    Selection,
 }
 
 #[derive(Clone, Copy)]
@@ -135,8 +146,9 @@ impl PseudoState {
             PseudoClass::FirstChild => {
                 element_sibling_position(node, parent).is_some_and(|(index, _)| index == 1)
             }
-            PseudoClass::LastChild => element_sibling_position(node, parent)
-                .is_some_and(|(index, count)| index == count),
+            PseudoClass::LastChild => {
+                element_sibling_position(node, parent).is_some_and(|(index, count)| index == count)
+            }
             PseudoClass::NthChild(expression) => element_sibling_position(node, parent)
                 .is_some_and(|(index, _)| expression.matches(index)),
         }
@@ -164,6 +176,18 @@ impl Selector {
         if source.is_empty() || source.contains(',') {
             return Err(format!("unsupported runtime selector '{source}'"));
         }
+        let (source, pseudo_element) = if let Some(element) = source.strip_suffix("::placeholder") {
+            (element, Some(PseudoElement::Placeholder))
+        } else if let Some(element) = source.strip_suffix("::selection") {
+            (element, Some(PseudoElement::Selection))
+        } else if source.contains("::") {
+            return Err(format!("unsupported pseudo-element in selector '{source}'"));
+        } else {
+            (source, None)
+        };
+        if source.trim().is_empty() {
+            return Err("a form-control pseudo-element requires an originating element".to_owned());
+        }
         let (parts, combinators) = split_selector_parts(source)?;
         let parts: Vec<Simple> = parts
             .into_iter()
@@ -174,15 +198,25 @@ impl Selector {
                 + u32::from(part.kind.is_some())
                 + (part.classes.len() + part.pseudos.len()) as u32 * 100
                 + u32::from(part.id.is_some()) * 10_000
-        });
+        }) + u32::from(pseudo_element.is_some());
         Ok(Self {
             parts,
             combinators,
+            pseudo_element,
             specificity,
         })
     }
 
-    pub(super) fn matches(&self, node: &Node, ancestors: &[&Node], pseudo: &PseudoState) -> bool {
+    pub(super) fn matches(
+        &self,
+        node: &Node,
+        ancestors: &[&Node],
+        pseudo: &PseudoState,
+        pseudo_element: Option<PseudoElement>,
+    ) -> bool {
+        if self.pseudo_element != pseudo_element {
+            return false;
+        }
         let Some(last) = self.parts.last() else {
             return false;
         };

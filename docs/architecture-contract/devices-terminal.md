@@ -3,9 +3,10 @@
 ## Owner
 
 - concrete VirtIO adapter 独占 queue、DMA、descriptor、completion 与 reset state；`drivers` 只发布通用 device seam。
-- VirtIO Console adapter 独占四条 multiport queue、fixed RX/TX slot、named-port control state、
+- VirtIO Console adapter 独占 control RX/TX 与 exact-name 命中的唯一 data RX/TX pair、fixed RX/TX slot、named-port control state、
   byte ring 与 terminal reset；`virtio_port` domain 独占 task notification Pipe。`drivers` 只发布
-  唯一物理 byte-stream seam，devfs 不复制 connected/readable/writable state。
+  唯一物理 byte-stream seam，devfs 不复制 connected/readable/writable state。`VirtIODevice` 的
+  transport enum 是 MMIO 与 PCI 的唯一分派点；两种 transport 不得各自实现 console adapter。
 - `VirtQueue` 独占 split-ring cursor、descriptor free list 与单一 pending-used latch；`used()` 只摘取
   ring entry 并返回不可复制的 `UsedDescriptor`，`recycle_used()` 只消费当前 queue 的唯一 token。
   adapter slot/generation/head、device length 与 response 尚未验证前，free list 不得改变。
@@ -39,6 +40,10 @@
 - `PORT_OPEN` 与 `PORT_NAME` 顺序没有领域保证；adapter 必须分别保存 host-open 与 exact-name match，
   `PORT_NAME` payload 必须先消费 QEMU 发布的单个尾随 NUL 再做 exact match；漏掉该 wire terminator
   会使标准 `com.redhat.spice.0` 永远无法命中。
+  exact-name match 后，adapter 必须以标准 multiport queue mapping 选择 data pair：port 0 为 0/1，
+  port N 为 `2N+2`/`2N+3`，并只配置一次该 pair。UTM 可以在 SPICE port 前枚举
+  `org.qemu.guest_agent.0`；固定使用 4/5 会把 SPICE payload 投递到 QEMU Guest Agent，表现为
+  channel connected 但 capabilities 与 monitor config 永远缺失。
   name match 后 exactly once 回复 guest `PORT_OPEN=1`，并只在 guest acknowledgement 已发布且
   host-open 同时成立时发布 connected。缺少 guest open 会让 QEMU 保留 channel 却不投递 byte
   stream；`PORT_REMOVE` 或 transport failure 必须使 read/write/poll 同时观察 terminal disconnect。
@@ -60,11 +65,16 @@
   发布 transport-error latch，并无条件发布一次 `DriverIo` deferred work；safe point 消费 error 后
   reset/fail 全部 request。吞掉 MMIO error 会让已 claim 的唯一 IRQ edge 后 waiter 永久睡眠。
 - platform 是 concrete adapter 的唯一装配者；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
+- AArch64 PCI owner 必须从 vendor capabilities 得到 modern common/notify/ISR/device windows，按
+  `cap.offset + queue_notify_off * notify_off_multiplier` 计算 doorbell，禁用 MSI-X 并只消费 DTB
+  `interrupt-map` 给出的 INTx。BAR、capability chain、queue size 或 route 非法时不得发布半初始化 adapter。
 - QEMU `virt` 必须在任何 VirtIO queue publication 前证明 root `dma-coherent`；缺失时 fail-stop，禁止增加 bounce buffer、每次提交 cache flush 或“先运行再探测”的兼容路径。
 - DRM/evdev syscall 只编码固定 Linux UAPI。devfs 只发布 object identity，不拥有 device state。
 - `/dev/virtio-ports/com.redhat.spice.0` 是 mode `0600` 的 character byte stream：read/write 支持
   blocking 与 `O_NONBLOCK`，poll/epoll 只投影 adapter level readiness 与 disconnect。它不是私有
-  clipboard syscall；SPICE agent framing 完全属于 compositor userspace。
+  clipboard syscall；SPICE agent framing 完全属于 compositor userspace。compositor 必须在同一个
+  agent owner 中声明 `MONITORS_CONFIG` 与 clipboard-by-demand capability，严格解析单显示器
+  `VDAgentMonitorsConfig`，并把最终 resize 只提交到标准 DRM/KMS seam。
 - display completion、input packet 与 PTY byte readiness 统一投递 semantic event；hardirq 不执行 renderer、filesystem 或 task logic。
 - terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。桌面客户端协议（`display-proto`）是用户态进程间 seam，不进入内核 ABI。
 - 动态 client/window/child/config 集合必须使用 fallible `Vec`/`String` reserve 后发布，不得恢复任意

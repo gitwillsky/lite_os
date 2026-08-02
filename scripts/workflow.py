@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import platform
 import shutil
 import signal
 import subprocess
@@ -19,6 +18,7 @@ from typing import Mapping, Sequence
 
 from build_target import acceleration_from_environment, target_from_environment
 from host_topology import default_guest_cpu_count
+from utm_runtime import run_gui as run_utm_gui
 
 ROOT = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
@@ -217,7 +217,7 @@ def _qemu_command(
     memory: str,
     environment: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """构造 run/run-gui/run-gdb 共用的单一 QEMU 命令。"""
+    """构造无窗口 run 与 run-gdb 共用的单一 QEMU 命令。"""
     source = os.environ if environment is None else environment
     target = target_from_environment(source)
     acceleration = acceleration_from_environment(source)
@@ -226,12 +226,9 @@ def _qemu_command(
         raise RuntimeError(f"{target.qemu_binary} is required")
     command = [qemu, "-machine", target.qemu_machine(acceleration), "-cpu", target.qemu_cpu(acceleration)]
     command.extend(("-global", "virtio-mmio.force-legacy=false"))
-    if mode == "gui":
-        command.extend(("-display", source.get("QEMU_GUI_DISPLAY", "cocoa,zoom-to-fit=off")))
-        command.extend(("-serial", f"file:{source.get('QEMU_GUI_SERIAL_LOG', 'target/run-gui-serial.log')}"))
-        command.extend(("-monitor", "none"))
-    else:
-        command.append("-nographic")
+    if mode not in {"run", "gdb"}:
+        raise ValueError(f"headless QEMU mode must be run or gdb; got {mode!r}")
+    command.append("-nographic")
     command.extend(("-m", memory, "-smp", _qemu_smp(source)))
     if mode != "gdb":
         command.extend(("-rtc", "base=utc"))
@@ -257,13 +254,8 @@ def _qemu_command(
             "virtserialport,bus=virtio-serial0.0,chardev=vdagent,name=com.redhat.spice.0",
         )
     )
-    command.extend(("-device", source.get("QEMU_GPU_DEVICE", "virtio-gpu-device,xres=3008,yres=1692")))
-    if mode == "gui":
-        command.extend(("-device", "virtio-keyboard-device", "-device", "virtio-tablet-device"))
-        if target.arch == "aarch64":
-            command.extend(("-audiodev", "coreaudio,id=audio0,out.frequency=48000,out.channels=2"))
-            command.extend(("-device", "virtio-sound-device,audiodev=audio0,streams=1"))
-    elif mode == "run":
+    command.extend(("-device", "virtio-gpu-device,xres=3008,yres=1692"))
+    if mode == "run":
         if target.arch == "aarch64":
             command.extend(("-audiodev", "none,id=audio0", "-device", "virtio-sound-device,audiodev=audio0,streams=1"))
     command.extend(("-netdev", "user,id=net0", "-device", "virtio-net-device,netdev=net0"))
@@ -273,7 +265,7 @@ def _qemu_command(
 
 
 def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory: str | None = None) -> None:
-    """启动开发 QEMU；GUI 激活与 QEMU 生命周期由同一 workflow 拥有。"""
+    """启动无窗口开发或 GDB QEMU。"""
     source = os.environ if environment is None else environment
     if mode == "gdb":
         build_kernel(environment)
@@ -286,31 +278,12 @@ def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory:
     paths = target_paths(environment)
     selected_memory = memory or source.get("QEMU_MEMORY", "2G")
     command = _qemu_command(paths["fs"], mode=mode, memory=selected_memory, environment=environment)
-    if mode == "gui":
-        serial_log = ROOT / source.get("QEMU_GUI_SERIAL_LOG", "target/run-gui-serial.log")
-        serial_log.parent.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(command, cwd=ROOT)
-    activator: subprocess.Popen[bytes] | None = None
-    if mode == "gui" and platform.system() == "Darwin":
-        activator = subprocess.Popen(
-            [
-                "/usr/bin/osascript",
-                str(ROOT / "scripts/activate_macos_process.applescript"),
-                str(process.pid),
-                source.get("QEMU_GUI_WINDOW_WIDTH", "1504"),
-                source.get("QEMU_GUI_WINDOW_HEIGHT", "874"),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
     try:
         process.wait()
     except KeyboardInterrupt:
         process.send_signal(signal.SIGINT)
         process.wait()
-    finally:
-        if activator is not None and activator.poll() is None:
-            activator.terminate()
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, command)
 
@@ -625,7 +598,21 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         run_qemu("run", environment)
         return
     if scope == "run-gui":
-        run_qemu("gui", environment)
+        source = os.environ if environment is None else environment
+        target = target_from_environment(source)
+        acceleration = acceleration_from_environment(source)
+        if target.arch != "aarch64" or acceleration != "hvf":
+            raise RuntimeError("run-gui is the macOS UTM AArch64/HVF product path")
+        build_kernel(environment)
+        build_bootloader(environment)
+        sync_userland(environment)
+        paths = target_paths(environment)
+        run_utm_gui(
+            kernel=paths["boot"],
+            rootfs=paths["fs"],
+            memory=source.get("QEMU_MEMORY", "2G"),
+            cpu_count=int(_qemu_smp(source)),
+        )
         return
     if scope == "run-gdb":
         run_qemu("gdb", environment)
@@ -633,7 +620,13 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
     if scope == "run-agent-development":
         prepare_agent_development(environment)
         source = os.environ if environment is None else environment
-        run_qemu("gui", environment, memory=source.get("AGENT_QEMU_MEMORY", "6G"))
+        paths = target_paths(environment)
+        run_utm_gui(
+            kernel=paths["boot"],
+            rootfs=paths["fs"],
+            memory=source.get("AGENT_QEMU_MEMORY", "6G"),
+            cpu_count=int(_qemu_smp(source)),
+        )
         return
     if scope == "gdb":
         target = target_from_environment(environment)

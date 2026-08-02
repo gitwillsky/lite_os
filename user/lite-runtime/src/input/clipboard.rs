@@ -21,7 +21,7 @@ pub(crate) struct ClipboardPaste {
 /// Resolves a native paste only when its original field still owns focus.
 pub(super) fn apply_data(
     engine: &mut Engine,
-    renderer: &Renderer,
+    renderer: &mut Renderer,
     interactions: &mut Interactions,
     data: &display_proto::ClipboardData,
 ) -> Result<bool, Box<dyn Error>> {
@@ -43,8 +43,7 @@ pub(super) fn apply_data(
             .and_then(|hit| hit.editable.as_ref())
         && let Some(on_input) = editable.on_input
     {
-        let mut next = editable.value.clone();
-        next.push_str(&data.text);
+        let next = renderer.paste_control(pending.node_id, &editable.value, &data.text);
         dispatch_listener(engine, on_input, json!({ "type": "input", "value": next }))?;
     }
     Ok(true)
@@ -53,6 +52,7 @@ pub(super) fn apply_data(
 /// Applies Ctrl/Cmd+C/X/V for the complete append-only controlled value.
 pub(super) fn apply_shortcut(
     engine: &mut Engine,
+    renderer: &mut Renderer,
     interactions: &mut Interactions,
     display: &Display,
     node_id: u64,
@@ -63,11 +63,18 @@ pub(super) fn apply_shortcut(
         return Ok(false);
     }
     match code {
-        46 => display.clipboard_write(editable.value.clone())?,
+        30 => {
+            renderer.select_all_control(node_id, &editable.value);
+        }
+        46 => display.clipboard_write(renderer.selected_control_text(node_id, &editable.value))?,
         45 => {
-            display.clipboard_write(editable.value.clone())?;
-            if let Some(on_input) = editable.on_input {
-                dispatch_listener(engine, on_input, json!({ "type": "input", "value": "" }))?;
+            let selected = renderer.selected_control_text(node_id, &editable.value);
+            if !selected.is_empty() {
+                display.clipboard_write(selected)?;
+                if let Some(on_input) = editable.on_input {
+                    let next = renderer.delete_control_selection(node_id, &editable.value);
+                    dispatch_listener(engine, on_input, json!({ "type": "input", "value": next }))?;
+                }
             }
         }
         47 => {

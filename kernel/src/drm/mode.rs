@@ -78,6 +78,33 @@ impl DrmFile {
         cvt_mode(self.device.state.lock().mode)
     }
 
+    /// @description Validate and canonicalize a userspace-selected single-output CVT mode.
+    /// @param width Requested horizontal pixels, aligned to the CVT 8-pixel cell.
+    /// @param height Requested vertical pixels.
+    /// @return Adapter mode and its exact Linux UAPI encoding.
+    /// @errors Zero, unaligned or out-of-product-range geometry returns `Invalid`.
+    pub(crate) fn requested_mode(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<(DisplayMode, DrmMode), super::DrmError> {
+        const MAX_OUTPUT_DIMENSION: u32 = 8192;
+        if width == 0
+            || !width.is_multiple_of(8)
+            || height == 0
+            || width > MAX_OUTPUT_DIMENSION
+            || height > MAX_OUTPUT_DIMENSION
+        {
+            return Err(super::DrmError::Invalid);
+        }
+        let mode = DisplayMode {
+            width,
+            height,
+            pitch: width.checked_mul(4).ok_or(super::DrmError::Invalid)?,
+        };
+        Ok((mode, cvt_mode(mode)))
+    }
+
     /// @description 原子读取 completion 已确认的 active CRTC framebuffer 与 mode。
     /// @return 尚未由 userspace modeset 时返回 `None`。
     pub(crate) fn active_crtc(&self) -> Option<(u32, DrmMode)> {

@@ -4,9 +4,10 @@
 
 - `compositor` 是唯一 DRM master、evdev、scanout、page-flip、合成、输入路由与共享像素 buffer owner。
   它只理解物理像素、flat scene 和 surface，不理解 React、CSS、窗口策略或 Aurora 主题。
-- `compositor/clipboard.rs` 是 session plain-text clipboard 与 SPICE vdagent framing 的唯一 owner；
-  它通过标准 VirtIO named port 与 QEMU host clipboard 懒交换数据，并只把结果路由到当前 focused
-  surface。desktop 和 app 不保存另一份 system clipboard。
+- `compositor/spice_agent.rs` 是 SPICE vdagent framing、UTM monitor request 与 session plain-text
+  clipboard 的唯一 owner；它通过标准 VirtIO named port 接收 `VD_AGENT_MONITORS_CONFIG`，并与 host
+  clipboard 懒交换数据。monitor request 只进入 compositor/DRM output transaction，clipboard 结果只
+  路由到当前 focused surface；desktop 和 app 不保存另一份 system state。
 - `lite-runtime`（crate `lite-runtime`，lib 名 `lite_runtime`）是通用 GUI/JS 运行时**库**——像
   GTK/浏览器引擎——被每个应用二进制链接。它导出 `run(role, app_id, extensions)`，独占 QuickJS+React、
   CSS 渲染器、输入/定时器/剪贴板、事件循环、通用文件桥 `fs.*` 与音频播放管线（含边下边播的
@@ -81,12 +82,12 @@
 - compositor 单线程 poll loop 独占 sockets、evdev、scene latch、damage composition、DRM page flip 与
   completion。LiteUI 使用 UI/render 双线程：UI thread 独占 QuickJS/React，native render thread 独占
   CSS、layout、text 与 raster。固定三个 snapshot arena 组成 latest-only seam，中间 revision 可丢弃。
-- compositor 通过标准 `NETLINK_KOBJECT_UEVENT` group 1 与 display socket/evdev 同 poll；一次 resize
-  burst drain 到 `EAGAIN` 后只查询一次最新 DRM topology，并发布 monotonic
+- compositor 把标准 SPICE agent monitor request 与 `NETLINK_KOBJECT_UEVENT` group 1 同 display
+  socket/evdev poll；一次 burst 只保留最新物理尺寸并发布 monotonic
   `OUTPUT_CONFIGURE(serial, physicalSize, scale=2)`。desktop 只有在新尺寸 triple buffer 与完整 scene
   就绪后才重建双 scanout、modeset 并 page flip；旧 output serial 的 scene 以 `DISCARDED` 终止。
   当前几何 generation 的 buffer 只通过 `BUFFER_RELEASE` 重新变为 writable，过期尺寸的 mapping
-  只通过 `BUFFER_RETIRED` 永久移除；不重启 epoch、不让 QEMU 做模糊 host scaling，也不保留固定尺寸
+  只通过 `BUFFER_RETIRED` 永久移除；不重启 epoch、不让 UTM 做模糊 host scaling，也不保留固定尺寸
   compositor 路径。
 - desktop raster 把 document 与 `position: fixed` subtree 作为两个标准 paint phase。document layer
   只有在非 fixed host props、computed style、scroll offset 或 viewport 任一精确变化时才失效；纯 shell
@@ -158,7 +159,8 @@
   与 `none` 之间按 Web 离散特例在进入时的 0%/退出时的 100% 切换；
   timing function 支持 linear/ease/ease-in/ease-out/ease-in-out。media query 当前只接受
   `prefers-reduced-motion: reduce|no-preference`，平台尚无 reduce 设置时匹配标准默认
-  `no-preference`。不支持 Grid、float、table、pseudo-element、其他 media query、filter、多项
+  `no-preference`。form control 支持 browser-owned `::placeholder` 与 `::selection`；不支持 Grid、
+  float、table、其他 pseudo-element、其他 media query、filter、多项
   animation/transition、复合/scale/rotate transform 或 vendor prefix；不支持项构建失败。
 - React host instance 在完整 snapshot 中携带稳定 node id；LiteUI renderer 以该 id 独占 CSS scroll
   offset，并让 hover/pointer capture 在 snapshot 重建后继续解析同一元素的最新 listener。
@@ -168,7 +170,7 @@
   收敛 offset、移动并裁剪 descendant、绘制 overlay UA scrollbar；wheel delta 在嵌套 scroll port
   到达边界后向 ancestor 链式传播，应用无需保存私有 `scrollTop`。
 - layout 使用逻辑 CSS px，固定 `devicePixelRatio=2`；默认 3008x1692 mode 对应 1504x846 viewport，
-  QEMU Cocoa 把可调整窗口的 backing-pixel 尺寸作为动态物理 mode。LiteUI 是 logical/physical
+  UTM Metal/SPICE 把可调整窗口的 backing-pixel 尺寸作为动态物理 mode。LiteUI 是 logical/physical
   conversion 的唯一 owner；奇数物理边长对应最后一个部分覆盖的 CSS pixel，不另建 scale path。
   runtime 在应用模块求值前提供标准 `window === globalThis`、`innerWidth`、`innerHeight`、
   `devicePixelRatio` 与 `addEventListener("resize", ...)`。最终 box edge 从绝对逻辑坐标独立 snap 到物理像素。

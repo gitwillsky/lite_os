@@ -5,8 +5,9 @@
 
 ## 背景
 
-LiteOS 的 QEMU `virt` platform 已使用 modern VirtIO-MMIO，当前没有 PCI bus、HDA controller 或
-AC97 adapter。本机 QEMU 提供 `virtio-sound-device` 和 CoreAudio/WAV/none host backend。
+LiteOS 的 QEMU `virt` platform 已使用 modern VirtIO-MMIO；AArch64 UTM 路径的 PCI 范围只承载
+原生 VirtIO Console/SPICE agent，没有 PCI sound、HDA controller 或 AC97 adapter。本机 QEMU 提供
+`virtio-sound-device` 和 CoreAudio/WAV/none host backend。
 
 ## 决策
 
@@ -19,7 +20,7 @@ AC97 adapter。本机 QEMU 提供 `virtio-sound-device` 和 CoreAudio/WAV/none h
 - kernel adapter 独占 controlq、eventq、txq、DMA、PCM command lifecycle、completion、xrun 与 reset；
 - `drivers` 只发布通用 PCM output seam，platform 独占 DTB discovery 与 adapter 装配。
 
-不增加 PCI、HDA、AC97、USB Audio 或第二种音频 adapter。
+不增加 PCI sound、HDA、AC97、USB Audio 或第二种音频 adapter。
 
 ## 结果
 

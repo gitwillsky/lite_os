@@ -18,8 +18,10 @@
   `DmaBuffer` 物理 segment mapping；steady-state virtqueue submission 只投影 cached ranges，地址
   空间锁与 page walk 均为 0。adapter drop 写 reset 并等到 status 读回 0 后，再释放这些 mapping。
 - QEMU `virt` backend 把 DTB `dma-coherent` 作为必需 machine fact；VirtIO 不维护 non-coherent shadow buffer 或运行时 cache-maintenance fallback。
-- VirtIO Console adapter 只协商 modern multiport，固定选择 `com.redhat.spice.0`，拥有 control
-  RX/TX、port 1 RX/TX、named-port open state 与 64 KiB byte ring。hardirq 只 ack 并发布
+- VirtIO Console adapter 只协商 modern multiport，固定选择 `com.redhat.spice.0`；同一个 transport-neutral adapter 在 UTM 产品路径消费 modern VirtIO PCI common/notify/ISR capabilities，在 headless gate 消费 modern MMIO，绝不复制 queue 或 port state。它拥有 control
+  RX/TX、exact-name 命中后按 port id 选择的唯一 data RX/TX pair、named-port open state 与 64 KiB
+  byte ring。UTM 可以先枚举 `org.qemu.guest_agent.0`，因此 data queue 不得固定为 port 1 的 4/5；
+  port 0 使用 0/1，port N 使用 `2N+2`/`2N+3`。hardirq 只 ack 并发布
   `VirtioPort` deferred work；safe point 验证 completion、repost RX、通知 queue 并经
   `virtio_port` domain 唤醒 task。devfs 只把该 stream 发布为
   `/dev/virtio-ports/com.redhat.spice.0`。
@@ -45,7 +47,9 @@
   uevent 通知 userspace；preferred mode 与已完成的 active CRTC mode 独立，旧 CRTC 在 userspace
   modeset 新 generation 前仍可 page-flip。同步 DRM ioctl 遇到 adapter 内部 display-info transaction
   时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
-  userspace transaction 属于 LiteUI/compositor 领域。
+  userspace transaction 属于 LiteUI/compositor 领域。UTM 窗口 resize 由 compositor 的唯一 SPICE
+  agent owner 接收标准 `VD_AGENT_MONITORS_CONFIG`，再通过 legacy DRM `SETCRTC` 提交 canonical CVT
+  mode；内核验证完整 mode encoding 与 framebuffer geometry 后把同一 transaction 交给 VirtIO-GPU。
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke；VirtIO input adapter 只提供 raw event/config。
 - PTY registry、pair 与 Terminal session/foreground/winsize 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
@@ -55,6 +59,6 @@
 
 - GPU 只开放 VirtIO-GPU 2D resource/scanout/transfer/flush 与单 connector mode change；VirGL、Vulkan、
   3D context、DRM atomic/auth/lease、完整 evdev output/multitouch 和设备热拔插尚未开放。
-- VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port 或
-  hotplug userspace 管理。
+- VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port、PCI
+  bridge/hotplug 或多显示器管理。
 - graphical session 的产品边界见[图形会话与 LiteUI](lite-runtime.md)。

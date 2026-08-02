@@ -26,10 +26,7 @@ fn hits_enabled(ancestor: bool, computed: &crate::style::Computed) -> bool {
     ancestor && computed.get("pointer-events") != Some("none")
 }
 
-fn circular_clip_mask(
-    rect: display_proto::Rect,
-    radii: [f32; 4],
-) -> display_proto::ClipMask {
+fn circular_clip_mask(rect: display_proto::Rect, radii: [f32; 4]) -> display_proto::ClipMask {
     display_proto::ClipMask {
         rect,
         radii: radii.map(|radius| {
@@ -192,22 +189,47 @@ impl Renderer {
         } else {
             None
         };
+        let text_value = node
+            .source
+            .props
+            .get("value")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let input_boxes = (node.source.kind == "input" && range.is_none()).then(|| {
+            let padding = [
+                node.computed.px("padding-top", 0.0),
+                node.computed.px("padding-right", 0.0),
+                node.computed.px("padding-bottom", 0.0),
+                node.computed.px("padding-left", 0.0),
+            ];
+            input_line_boxes(
+                bounds,
+                border_widths(&node.computed),
+                padding,
+                self.font.single_line_height(&node.computed),
+            )
+        });
+        let control_geometry = input_boxes.map(|(content, _)| {
+            self.control_geometry(
+                node.source.id,
+                text_value,
+                &node.computed,
+                content.x2.saturating_sub(content.x1),
+            )
+        });
         // Text inputs carry an `Editable`; range inputs instead carry their
         // numeric checked state so text editing can never corrupt a slider.
-        let editable = if node.source.kind == "input" && range.is_none() {
-            Some(super::Editable {
-                value: node
-                    .source
-                    .props
-                    .get("value")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                on_input: listener(&node.source, "onInput"),
-            })
-        } else {
-            None
-        };
+        let editable =
+            if let (Some((content, _)), Some((_, _, scroll_x))) = (input_boxes, control_geometry) {
+                Some(super::Editable {
+                    value: text_value.to_owned(),
+                    on_input: listener(&node.source, "onInput"),
+                    style: node.computed.clone(),
+                    text_origin_x: content.x1 as i32 - scroll_x.round() as i32,
+                })
+            } else {
+                None
+            };
         // DOM autofocus: an `<input autoFocus>` claims focus when it appears,
         // but never steals it from an already-focused field. Setting `focused`
         // here (before the input paints below) draws the caret in the same
@@ -313,30 +335,14 @@ impl Renderer {
         // 文本 `<input>` 绘制受控 `value`（空时显示 placeholder），React 持有 value 真值。
         // 单行内容盒同时约束文本与光标，避免两条绘制路径产生不同的控件几何。
         if node.source.kind == "input" && range.is_none() {
-            let value = node
-                .source
-                .props
-                .get("value")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let value = text_value;
             let placeholder = node
                 .source
                 .props
                 .get("placeholder")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let padding = [
-                node.computed.px("padding-top", 0.0),
-                node.computed.px("padding-right", 0.0),
-                node.computed.px("padding-bottom", 0.0),
-                node.computed.px("padding-left", 0.0),
-            ];
-            let (content, line) = input_line_boxes(
-                bounds,
-                border_widths(&node.computed),
-                padding,
-                self.font.single_line_height(&node.computed),
-            );
+            let (content, line) = input_boxes.expect("text input boxes");
             let content_clip = paint_clip.map_or(content, |clip| content.intersect(clip));
             let showing_placeholder = value.is_empty() && !placeholder.is_empty();
             let text = if showing_placeholder {
@@ -345,40 +351,65 @@ impl Renderer {
                 value
             };
             if !paint_raster.is_empty() && !content_clip.is_empty() && !text.is_empty() {
-                // Placeholder is drawn dimmed by overriding the color; the input's
-                // own `color` drives real text. `font.draw` re-reads `color` from
-                // the style, so clone-and-override only for the placeholder case.
-                if showing_placeholder {
-                    let mut dimmed = node.computed.clone();
-                    dimmed.set("color", "#808080");
-                    self.font.draw_single_line(
-                        pixels,
-                        line,
-                        Some(content_clip),
-                        &dimmed,
-                        text,
-                    );
+                let style = if showing_placeholder {
+                    node.placeholder.as_ref().expect("input placeholder style")
                 } else {
-                    self.font.draw_single_line(
-                        pixels,
-                        line,
-                        Some(content_clip),
-                        &node.computed,
-                        text,
-                    );
+                    &node.computed
+                };
+                let scroll_x = control_geometry.expect("text input geometry").2;
+                let origin = (content.x1 as i32 - scroll_x.round() as i32, line.y1 as i32);
+                let selection = self.font.control_selection_geometry(
+                    &node.computed,
+                    value,
+                    control_geometry.expect("text input geometry").0,
+                    control_geometry.expect("text input geometry").1,
+                );
+                if !showing_placeholder {
+                    let selected = node.selection.as_ref().expect("input selection style");
+                    for &(start, end) in &selection.ranges {
+                        let range = PhysicalRect {
+                            x1: (origin.0 + start.floor() as i32).max(content.x1 as i32) as usize,
+                            y1: line.y1,
+                            x2: (origin.0 + end.ceil() as i32)
+                                .min(content.x2 as i32)
+                                .max(content.x1 as i32) as usize,
+                            y2: line.y2,
+                        };
+                        if let Some(color) = selected.get("background-color") {
+                            paint_background(pixels, range, Some(content_clip), color, [0.0; 4]);
+                        }
+                    }
+                }
+                self.font
+                    .draw_control_line(pixels, origin, content_clip, style, text);
+                if !showing_placeholder {
+                    let selected = node.selection.as_ref().expect("input selection style");
+                    for &(start, end) in &selection.ranges {
+                        let range = PhysicalRect {
+                            x1: (origin.0 + start.floor() as i32).max(content.x1 as i32) as usize,
+                            y1: line.y1,
+                            x2: (origin.0 + end.ceil() as i32)
+                                .min(content.x2 as i32)
+                                .max(content.x1 as i32) as usize,
+                            y2: line.y2,
+                        };
+                        self.font
+                            .draw_control_line(pixels, origin, range, selected, text);
+                    }
                 }
             }
             if !paint_raster.is_empty()
                 && !content_clip.is_empty()
                 && self.focused == Some(node.source.id)
             {
-                // Caret sits just past the value's measured advance, clamped inside
-                // the content box; 1 logical px wide, one line-height tall.
-                let advance = (self.font.measure(&node.computed, value) * SCALE).round() as usize;
-                let caret_x = content
-                    .x1
-                    .saturating_add(advance)
-                    .min(content.x2.saturating_sub(1));
+                let (anchor, focus, scroll_x) = control_geometry.expect("text input geometry");
+                let caret_local = self
+                    .font
+                    .control_selection_geometry(&node.computed, value, anchor, focus)
+                    .caret_x;
+                let caret_x = (content.x1 as i32 + (caret_local - scroll_x).round() as i32)
+                    .clamp(content.x1 as i32, content.x2.saturating_sub(1) as i32)
+                    as usize;
                 let caret = PhysicalRect {
                     x1: caret_x,
                     y1: line.y1,
@@ -430,12 +461,14 @@ impl Renderer {
                     surface_id,
                     configure_serial,
                     bounds: surface_bounds,
-                    clip: walk.clip.map_or(surface_bounds, |clip| display_proto::Rect {
-                        x: clip.x1 as i32,
-                        y: clip.y1 as i32,
-                        width: clip.x2.saturating_sub(clip.x1) as u32,
-                        height: clip.y2.saturating_sub(clip.y1) as u32,
-                    }),
+                    clip: walk
+                        .clip
+                        .map_or(surface_bounds, |clip| display_proto::Rect {
+                            x: clip.x1 as i32,
+                            y: clip.y1 as i32,
+                            width: clip.x2.saturating_sub(clip.x1) as u32,
+                            height: clip.y2.saturating_sub(clip.y1) as u32,
+                        }),
                     clip_masks: pixels.scene_clip_masks().collect(),
                     desktop_input: Vec::new(),
                     desktop_hit_start: output.hits.len(),

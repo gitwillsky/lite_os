@@ -278,16 +278,25 @@ fn set_crtc(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Re
         return Err(errno::ENOENT);
     }
     loop {
-        let mode = file.mode();
+        let (display_mode, mode) = file
+            .requested_mode(
+                u32::from(read_u16(&bytes, 40)?),
+                u32::from(read_u16(&bytes, 50)?),
+            )
+            .map_err(drm_errno)?;
+        let mut expected_mode = [0u8; 68];
+        encode_mode(&mut expected_mode, mode)?;
         if read_u32(&bytes, 8)? != 1
             || read_u32(&bytes, 16)? == 0
             || read_u32(&bytes, 32)? != 1
-            || read_u16(&bytes, 40)? != mode.hdisplay
-            || read_u16(&bytes, 50)? != mode.vdisplay
+            || bytes[36..104] != expected_mode
         {
             return Err(errno::EINVAL);
         }
-        match file.set_crtc(read_u32(&bytes, 16)?).map_err(drm_errno)? {
+        match file
+            .set_crtc(read_u32(&bytes, 16)?, display_mode)
+            .map_err(drm_errno)?
+        {
             DrmSubmission::Wait(wait) => return wait_scanout(wait),
             DrmSubmission::Retry(retry) => wait_retry(retry)?,
         }

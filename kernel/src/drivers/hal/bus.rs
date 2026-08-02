@@ -35,7 +35,7 @@ impl MmioBus {
     /// @param offset 相对 window base 的 byte offset。
     /// @return volatile 读取值。
     /// @errors offset 越界返回 `InvalidAddress`。
-    pub(in crate::drivers) fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
+    pub(crate) fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
         let address = self.address(offset, core::mem::size_of::<u8>())?;
         // SAFETY: `address` 已由本 window 完成范围检查；arch owner 保证单次 device access。
         Ok(unsafe { crate::arch::read_mmio_u8(address) })
@@ -46,10 +46,25 @@ impl MmioBus {
     /// @param value 要发布的 byte。
     /// @return 写入成功返回 unit。
     /// @errors offset 越界返回 `InvalidAddress`。
-    pub(in crate::drivers) fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
+    pub(crate) fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
         let address = self.address(offset, core::mem::size_of::<u8>())?;
         // SAFETY: `address` 已由本 window 完成范围检查；arch owner 保证单次 device access。
         unsafe { crate::arch::write_mmio_u8(address, value) };
+        Ok(())
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn read_u16(&self, offset: usize) -> Result<u16, BusError> {
+        let address = self.address(offset, core::mem::size_of::<u16>())?;
+        // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。
+        Ok(unsafe { crate::arch::read_mmio_u16(address) })
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError> {
+        let address = self.address(offset, core::mem::size_of::<u16>())?;
+        // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。
+        unsafe { crate::arch::write_mmio_u16(address, value) };
         Ok(())
     }
 
@@ -59,7 +74,7 @@ impl MmioBus {
         Ok(unsafe { crate::arch::read_mmio_u32(address) })
     }
 
-    pub(in crate::drivers) fn write_u32(&self, offset: usize, value: u32) -> Result<(), BusError> {
+    pub(crate) fn write_u32(&self, offset: usize, value: u32) -> Result<(), BusError> {
         let address = self.address(offset, core::mem::size_of::<u32>())?;
         // SAFETY: `address` 已完成边界、溢出与 32 位对齐检查。
         unsafe { crate::arch::write_mmio_u32(address, value) };

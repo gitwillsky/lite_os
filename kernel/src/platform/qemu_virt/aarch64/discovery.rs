@@ -43,6 +43,20 @@ pub(crate) struct GicV3Info {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct PciHostInfo {
+    pub(crate) ecam: RangeValue,
+    pub(crate) mmio32: RangeValue,
+    intx: [[u32; 4]; 4],
+}
+
+impl PciHostInfo {
+    pub(crate) fn interrupt(self, slot: usize, pin: usize) -> Option<u32> {
+        let vector = *self.intx.get(slot)?.get(pin.checked_sub(1)?)?;
+        (vector != 0).then_some(vector)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct RangeValue {
     pub(crate) start: usize,
     pub(crate) size: usize,
@@ -61,6 +75,7 @@ pub(crate) struct PlatformInfo {
     pub(crate) uart: MmioDevice,
     pub(crate) rtc: RangeValue,
     pub(crate) gic: GicV3Info,
+    pub(crate) pci: PciHostInfo,
     pub(crate) virtio_devices: [Option<MmioDevice>; MAX_VIRTIO_DEVICES],
     pub(crate) virtio_count: usize,
 }
@@ -138,6 +153,10 @@ impl PlatformInfo {
         let mut uart_irq = None;
         let mut rtc = None;
         let mut gic = None;
+        let mut pci_ecam = None;
+        let mut pci_mmio32 = None;
+        let mut pci_intx = [[0u32; 4]; 4];
+        let mut pci_compatible = false;
         let mut virtio_devices = [None; MAX_VIRTIO_DEVICES];
         let mut virtio_count = 0usize;
         let mut current_virtio_reg = None;
@@ -216,6 +235,8 @@ impl PlatformInfo {
                             redistributor,
                         });
                     }
+                } else if is_pci_node(node) {
+                    pci_ecam = registers.next().map(range_value);
                 } else if node.starts_with("virtio_mmio") {
                     current_virtio_reg = registers.next();
                     publish_virtio(
@@ -241,6 +262,10 @@ impl PlatformInfo {
                     && compatible
                         .clone()
                         .any(|value| value == Str::from("arm,gic-v3"));
+                pci_compatible |= is_pci_node(node)
+                    && compatible
+                        .clone()
+                        .any(|value| value == Str::from("pci-host-ecam-generic"));
                 timer_compatible |= is_timer_node(node)
                     && compatible
                         .clone()
@@ -273,6 +298,10 @@ impl PlatformInfo {
                     } else if is_timer_node(node) {
                         virtual_timer_ppi = contains_gic_interrupt(value, 1, 11);
                     }
+                } else if is_pci_node(node) && name == Str::from("ranges") {
+                    pci_mmio32 = decode_pci_mmio32(value);
+                } else if is_pci_node(node) && name == Str::from("interrupt-map") {
+                    decode_pci_interrupt_map(value, &mut pci_intx);
                 }
                 WalkOperation::StepOver
             }
@@ -287,6 +316,7 @@ impl PlatformInfo {
             "virtual timer PPI 27 missing"
         );
         assert!(psci_compatible && psci_hvc, "PSCI HVC 0.2+ is required");
+        assert!(pci_compatible, "QEMU virt requires pci-host-ecam-generic");
         assert!(coherent_dma, "AArch64 QEMU virt requires coherent DMA");
         assert!(!hardware_cpu_ids.is_empty(), "DTB contains no enabled CPUs");
 
@@ -307,6 +337,19 @@ impl PlatformInfo {
             valid_range_value(gic.distributor) && valid_range_value(gic.redistributor),
             "invalid GICv3 MMIO ranges"
         );
+        let pci = PciHostInfo {
+            ecam: pci_ecam
+                .filter(|range| valid_range_value(*range))
+                .expect("PCI ECAM range missing"),
+            mmio32: pci_mmio32
+                .filter(|range| valid_range_value(*range))
+                .expect("PCI 32-bit MMIO range missing"),
+            intx: pci_intx,
+        };
+        assert!(
+            pci.interrupt(1, 1).is_some(),
+            "PCI slot 1 INTx route missing"
+        );
 
         Self {
             dtb: dtb_range,
@@ -315,6 +358,7 @@ impl PlatformInfo {
             uart,
             rtc,
             gic,
+            pci,
             virtio_devices,
             virtio_count,
         }
@@ -331,7 +375,15 @@ fn interesting_root_node(name: Str<'_>) -> bool {
 }
 
 fn interesting_device_node(name: Str<'_>) -> bool {
-    is_uart_node(name) || is_rtc_node(name) || is_gic_node(name) || name.starts_with("virtio_mmio")
+    is_uart_node(name)
+        || is_rtc_node(name)
+        || is_gic_node(name)
+        || is_pci_node(name)
+        || name.starts_with("virtio_mmio")
+}
+
+fn is_pci_node(name: Str<'_>) -> bool {
+    name.starts_with("pcie@") || name.starts_with("pci@")
 }
 
 fn is_uart_node(name: Str<'_>) -> bool {
@@ -415,4 +467,48 @@ fn contains_gic_interrupt(bytes: &[u8], expected_type: u32, expected_number: u32
 
 fn be_u32(bytes: &[u8]) -> u32 {
     u32::from_be_bytes(bytes.try_into().expect("DTB cell must contain four bytes"))
+}
+
+fn decode_pci_mmio32(bytes: &[u8]) -> Option<RangeValue> {
+    for cells in bytes.as_chunks::<28>().0 {
+        let kind = be_u32(&cells[0..4]) & 0x0300_0000;
+        if kind != 0x0200_0000 {
+            continue;
+        }
+        let child = be_u64(&cells[4..12]);
+        let parent = be_u64(&cells[12..20]);
+        let size = be_u64(&cells[20..28]);
+        if child != parent {
+            continue;
+        }
+        return Some(RangeValue {
+            start: usize::try_from(parent).ok()?,
+            size: usize::try_from(size).ok()?,
+        });
+    }
+    None
+}
+
+fn decode_pci_interrupt_map(bytes: &[u8], routes: &mut [[u32; 4]; 4]) {
+    for cells in bytes.as_chunks::<40>().0 {
+        let slot = ((be_u32(&cells[0..4]) >> 11) & 0x1f) as usize;
+        let pin = be_u32(&cells[12..16]) as usize;
+        let Some(vector) = decode_first_gic_interrupt(&cells[28..40]) else {
+            continue;
+        };
+        if let Some(entry) = routes
+            .get_mut(slot)
+            .and_then(|values| values.get_mut(pin.saturating_sub(1)))
+        {
+            *entry = vector;
+        }
+    }
+}
+
+fn be_u64(bytes: &[u8]) -> u64 {
+    u64::from_be_bytes(
+        bytes
+            .try_into()
+            .expect("DTB value must contain eight bytes"),
+    )
 }

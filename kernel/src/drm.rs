@@ -541,12 +541,11 @@ impl DrmFile {
     /// @param id device-wide framebuffer object ID。
     /// @return 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
     /// @errors object/尺寸/权限非法或 adapter failure 返回稳定领域错误。
-    pub(crate) fn set_crtc(&self, id: u32) -> Result<DrmSubmission, DrmError> {
+    pub(crate) fn set_crtc(&self, id: u32, mode: DisplayMode) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
         }
         let mut completion = self.device.completion.lock();
-        let mode = self.device.state.lock().mode;
         let generation = completion.adapter_generation;
         classify_submission(
             self,

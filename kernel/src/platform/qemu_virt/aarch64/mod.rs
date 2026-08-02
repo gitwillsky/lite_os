@@ -7,6 +7,7 @@ pub(crate) mod console;
 mod devices;
 mod discovery;
 mod gicv3;
+mod pci;
 mod pl011;
 mod psci;
 mod tlb_shootdown;
@@ -91,6 +92,8 @@ pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usi
         Some(info.gic.distributor.range()),
         Some(info.gic.redistributor.range()),
         (virtio_start < virtio_end).then_some(virtio_start..virtio_end),
+        Some(info.pci.ecam.range()),
+        Some(info.pci.mmio32.range()),
     ]
     .into_iter()
     .flatten()

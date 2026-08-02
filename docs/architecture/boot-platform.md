@@ -9,13 +9,13 @@
 ## AArch64 / QEMU virt backend
 
 - QEMU 直接按 Linux arm64 Image protocol 加载 release kernel；x0 是唯一 DTB handoff，低物理 boot stub 从 EL2 收敛到 EL1 后建立高半内核映射，不存在 ARM bootloader 或兼容启动入口。
-- platform 严格要求 DTB 中的 enabled CPU、`dma-coherent`、PL011、PL031、GICv3、PSCI HVC 与 modern VirtIO MMIO；缺失必需事实时 fail-stop，不猜测 QEMU 默认地址。
+- platform 严格要求 DTB 中的 enabled CPU、`dma-coherent`、PL011、PL031、GICv3、PSCI HVC 与 modern VirtIO MMIO；UTM 产品拓扑还要求 `pci-host-ecam-generic` 的 ECAM、32-bit MMIO window 与 INTx route。缺失必需事实时 fail-stop，不猜测 QEMU 默认地址。
 - PL011 RX 在 unmask 前启用 16-byte FIFO 与最低接收阈值；hardirq 每次有界 drain 全部当前可读
   bytes。这样 host stdio 无硬件流控时的批量输入不会退化到 reset 后的 1-byte holding register。
 - `arch::io` 用内联静态 façade 固定 AArch64 MMIO 为 base-only `LDRB/STRB/LDR/STR`，通用
   `MmioBus` 保留边界/对齐 owner。该形态既阻止 VirtIO input config loop 被优化成 HVF 无法
   解码的 post-index access，也不增加调用、锁、分配或运行时架构分派。
-- GICv3 只启用 Group-1 GICD/GICR/ICC、timer PPI 27 与单一 software SGI；PSCI `CPU_ON` 启动 secondary。ITS/MSI/PCI、secure world、EL2 guest、ACPI 均不在当前产品范围。
+- GICv3 只启用 Group-1 GICD/GICR/ICC、timer PPI 27 与单一 software SGI；PSCI `CPU_ON` 启动 secondary。PCI 只实现 ECAM enumeration、memory BAR assignment 与 legacy INTx，供 UTM 原生 VirtIO Console/SPICE agent 使用；ITS/MSI、PCI hotplug/bridge、secure world、EL2 guest、ACPI 均不在当前产品范围。
 
 ## RISC-V64 / QEMU virt backend
 

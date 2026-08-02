@@ -55,10 +55,10 @@ class WorkflowTests(unittest.TestCase):
         process.wait.assert_called_once()
 
     @patch("workflow.shutil.which", return_value="/opt/qemu-system-aarch64")
-    def test_gui_qemu_command_uses_single_shared_topology(self, _: object) -> None:
+    def test_headless_qemu_has_no_gui_backend_override(self, _: object) -> None:
         command = workflow._qemu_command(
             Path("fs-aarch64.img"),
-            mode="gui",
+            mode="run",
             memory="2G",
             environment={
                 "ARCH": "aarch64",
@@ -70,9 +70,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(command[0], "/opt/qemu-system-aarch64")
         self.assertEqual(command[command.index("-m") + 1], "2G")
         self.assertEqual(command[command.index("-smp") + 1], "4")
-        self.assertIn("-display", command)
-        self.assertIn("virtio-keyboard-device", command)
-        self.assertIn("virtio-tablet-device", command)
+        self.assertIn("-nographic", command)
+        self.assertNotIn("-display", command)
+        self.assertNotIn("cocoa", " ".join(command))
         self.assertIn("com.redhat.spice.0", " ".join(command))
 
     def test_make_is_a_thin_dispatcher_without_recursive_make(self) -> None:

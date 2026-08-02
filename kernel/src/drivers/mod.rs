@@ -23,6 +23,8 @@ pub(crate) use audio_output::{
 pub(crate) use display::{
     DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
 };
+#[cfg(target_arch = "aarch64")]
+pub(crate) use hal::PciTransport;
 pub(crate) use hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus};
 use hal::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,

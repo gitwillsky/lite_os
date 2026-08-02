@@ -34,28 +34,29 @@ impl Session {
     }
 
     /// Appends the single vdagent descriptor and returns its array offset.
-    pub(super) fn append_clipboard_poll(
+    pub(super) fn append_spice_agent_poll(
         &self,
         descriptors: &mut [PollFd],
         descriptor_count: &mut usize,
     ) -> usize {
         let offset = *descriptor_count;
-        let events = if self.clipboard.wants_write() {
+        let events = if self.spice_agent.wants_write() {
             PollEvents::READ | PollEvents::WRITE
         } else {
             PollEvents::READ
         };
-        descriptors[offset] = PollFd::new(self.clipboard.as_fd(), events);
+        descriptors[offset] = PollFd::new(self.spice_agent.as_fd(), events);
         *descriptor_count += 1;
         offset
     }
 
     /// Drains ready vdagent I/O and routes every newly resolved read.
-    pub(super) fn pump_clipboard(&mut self) -> io::Result<()> {
-        for data in self.clipboard.pump()? {
+    pub(super) fn pump_spice_agent(&mut self) -> io::Result<Option<display_proto::Size>> {
+        let activity = self.spice_agent.pump()?;
+        for data in activity.clipboard {
             self.send_clipboard_data(data)?;
         }
-        Ok(())
+        Ok(activity.monitor)
     }
 
     fn accept_clipboard_read(
@@ -66,7 +67,7 @@ impl Session {
         if request.surface_id != source_surface || self.focused_surface != source_surface {
             return Err(invalid("clipboard read is not from the focused connection"));
         }
-        if let Some(data) = self.clipboard.read(request)? {
+        if let Some(data) = self.spice_agent.read(request)? {
             self.send_clipboard_data(data)?;
         }
         Ok(())
@@ -82,7 +83,7 @@ impl Session {
                 "clipboard write is not from the focused connection",
             ));
         }
-        self.clipboard.write(value)
+        self.spice_agent.write(value)
     }
 
     fn send_clipboard_data(&self, data: ClipboardData) -> io::Result<()> {

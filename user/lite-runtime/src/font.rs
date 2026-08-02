@@ -9,8 +9,10 @@ use std::{cell::RefCell, fs, io, sync::Arc};
 
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontData, FontFamily, FontWeight, Layout,
-    LayoutContext, LineHeight, StyleProperty, TextWrapMode, fontique::Blob,
-    layout::PositionedLayoutItem,
+    LayoutContext, LineHeight, StyleProperty, TextWrapMode,
+    editing::{Cursor, Selection},
+    fontique::Blob,
+    layout::{Affinity, PositionedLayoutItem},
 };
 use swash::scale::ScaleContext;
 use taffy::prelude::{AvailableSpace, Size};
@@ -23,6 +25,21 @@ use raster::{GlyphCache, GlyphKey};
 
 const REGULAR_PATH: &str = "/usr/share/liteos/liteos-ui-regular.otf";
 const BOLD_PATH: &str = "/usr/share/liteos/liteos-ui-bold.otf";
+
+/// Visual movement over shaped cluster boundaries in a single-line control.
+#[derive(Clone, Copy)]
+pub(crate) enum CursorMove {
+    Previous,
+    Next,
+    PreviousWord,
+    NextWord,
+}
+
+/// Shaped geometry needed to paint one text-control selection.
+pub(crate) struct ControlSelectionGeometry {
+    pub(crate) caret_x: f32,
+    pub(crate) ranges: Vec<(f32, f32)>,
+}
 
 /// One registered face: the owned font bytes handed to fontique and reused by
 /// swash. The `Arc` shares one allocation between the fontique collection
@@ -182,8 +199,68 @@ impl Font {
     /// Used for the `<input>` caret and any single-line intrinsic width.
     /// Shaping is real (kerning included), so the caret lands on the same
     /// advance the rasterizer draws.
+    #[cfg(test)]
     pub fn measure(&self, style: &Computed, text: &str) -> f32 {
         self.single_line_width(style, text) / SCALE
+    }
+
+    /// Returns the nearest shaped cluster boundary for a physical x coordinate.
+    pub(crate) fn control_cursor_from_point(&self, style: &Computed, text: &str, x: f32) -> usize {
+        let layout = self.build_layout(style, text, false, None);
+        Cursor::from_point(&layout, x, 0.0).index()
+    }
+
+    /// Moves a byte-index cursor through the same shaped clusters used to draw.
+    pub(crate) fn move_control_cursor(
+        &self,
+        style: &Computed,
+        text: &str,
+        index: usize,
+        movement: CursorMove,
+    ) -> usize {
+        let layout = self.build_layout(style, text, false, None);
+        let cursor = Cursor::from_byte_index(&layout, index, Affinity::Downstream);
+        match movement {
+            CursorMove::Previous => cursor.previous_visual(&layout),
+            CursorMove::Next => cursor.next_visual(&layout),
+            CursorMove::PreviousWord => cursor.previous_visual_word(&layout),
+            CursorMove::NextWord => cursor.next_visual_word(&layout),
+        }
+        .index()
+    }
+
+    /// Shapes caret and selection geometry in the control's local coordinates.
+    pub(crate) fn control_selection_geometry(
+        &self,
+        style: &Computed,
+        text: &str,
+        anchor: usize,
+        focus: usize,
+    ) -> ControlSelectionGeometry {
+        let layout = self.build_layout(style, text, false, None);
+        let anchor = Cursor::from_byte_index(&layout, anchor, Affinity::Downstream);
+        let focus = Cursor::from_byte_index(&layout, focus, Affinity::Downstream);
+        let ranges = if anchor == focus {
+            Vec::new()
+        } else {
+            Selection::new(anchor, focus)
+                .geometry(&layout)
+                .into_iter()
+                .map(|(rect, _)| (rect.x0 as f32, rect.x1 as f32))
+                .collect()
+        };
+        Self::cursor_x(&layout, focus, ranges)
+    }
+
+    fn cursor_x(
+        layout: &Layout<()>,
+        focus: Cursor,
+        ranges: Vec<(f32, f32)>,
+    ) -> ControlSelectionGeometry {
+        ControlSelectionGeometry {
+            caret_x: focus.geometry(layout, 0.0).x0 as f32,
+            ranges,
+        }
     }
 
     /// Physical height of one CSS line for the supplied computed text style.
@@ -265,6 +342,7 @@ impl Font {
     /// HTML text inputs never become multiline controls, regardless of the
     /// inherited `white-space` value. Keeping that rule in the font owner also
     /// makes caret measurement and painted shaping use the same no-wrap mode.
+    #[cfg(test)]
     pub(crate) fn draw_single_line<R: Raster>(
         &self,
         target: &mut R,
@@ -274,6 +352,31 @@ impl Font {
         text: &str,
     ) {
         self.draw_with_wrap(target, bounds, overflow_clip, style, text, false);
+    }
+
+    /// Draws one already-positioned control line at a signed physical origin.
+    ///
+    /// The signed x coordinate is required for native horizontal scrolling:
+    /// a long value may start left of the screen while the content-box clip
+    /// remains on screen. This is the sole text paint path for form controls.
+    pub(crate) fn draw_control_line<R: Raster>(
+        &self,
+        target: &mut R,
+        origin: (i32, i32),
+        clip: PhysicalRect,
+        style: &Computed,
+        text: &str,
+    ) {
+        if clip.is_empty() || text.is_empty() {
+            return;
+        }
+        let layout = self.build_layout(style, text, false, None);
+        let color = style
+            .get("color")
+            .and_then(crate::color::parse)
+            .unwrap_or(0xff00_0000);
+        let italic = style.get("font-style") == Some("italic");
+        self.pass(target, clip, &layout, origin.0, origin.1, color, italic);
     }
 
     #[allow(clippy::too_many_arguments)]

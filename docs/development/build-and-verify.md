@@ -33,11 +33,16 @@
   compilation cache，最终 ELF 仍按完整源码内容发布不可变 generation；源码变化只重编受影响的
   crate，不重复构建 `std` 和未变化依赖。React bundle 按 Node/npm、`ui/` 输入与引用的 presentation
   assets 指纹复用不可变产物。`reset-rootfs` 只用于首次初始化、系统级 rootfs 变化或显式恢复干净环境。
-- macOS 的 `run-gui` 在 `exec` QEMU 前按同一 PID 启动一次 Cocoa application 激活；QEMU 仍是
-  Make 的前台进程，退出码与 Ctrl-C 语义不经过额外 supervisor。
-- `run`、`run-gui`、`run-gdb` 与 runtime gate 使用同一 `qemu-vdagent` +
-  `virtio-serial-device` + `com.redhat.spice.0` 拓扑；GUI 时 Cocoa backend 连接 macOS system
-  clipboard，headless/debug 路径仍保留同一 device order 与 guest contract。
+- macOS 的 `run-gui` 是唯一交互图形产品入口：要求固定 `/Applications/UTM.app` v4.7.5，生成确定
+  UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
+  display window。
+  Make/Python 前台进程持有生命周期；Ctrl-C 只停止该 managed VM。旧 Cocoa QEMU window、激活脚本
+  与 GUI 参数入口均不存在。
+- UTM 产品路径固定 AArch64 `host` CPU、HVF、SPICE `gl=on`、`virtio-gpu-gl-device`、native Retina
+  dynamic resolution，以及 UTM 自带的唯一 PCI `com.redhat.spice.0` port。kernel/rootfs 以同卷
+  hard link 发布到 UTM app group，QEMU drive 显式 `format=raw`。`run`/`run-gdb` 与 runtime gate
+  保留无窗口 QEMU/MMIO 拓扑作为验证与调试入口，不是第二个 GUI 产品实现；两条拓扑在同一个
+  transport-neutral VirtIO Console adapter 汇合。
 - AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的
   `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
   `aarch64-unknown-none-softfloat`，两者不得混用。任一 runtime 缺失或歧义都必须在发布 sysroot
@@ -218,7 +223,7 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 完整验证从同一个只读 rootfs baseline 派生相互隔离的可写镜像，并覆盖：
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；
-- AArch64 `run-gui` 同构的 GPU、keyboard、tablet、SPICE VirtIO Console 拓扑，以及空桌面启动链路：
+- AArch64 headless GPU、keyboard、tablet、SPICE VirtIO Console 拓扑，以及空桌面启动链路：
   `compositor` modeset/boot scene、AF_UNIX + SCM_RIGHTS 握手与 React desktop 首帧逐条发布 marker；
   首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用无 host 窗口的
   一 CPU guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；

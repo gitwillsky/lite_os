@@ -134,11 +134,8 @@ impl Scanout {
         buffers: &Buffers,
         cursor: (i32, i32),
     ) -> io::Result<ModePresent> {
-        let topology = self.device.query_topology()?;
-        let actual = topology_size(&topology);
-        if actual != scene.output_size {
-            return Ok(ModePresent::Superseded(actual));
-        }
+        let actual = scene.output_size;
+        let topology = self.topology.with_size(actual.width, actual.height)?;
         let mut next = [
             Self::target(&self.device, actual.width, actual.height)?,
             Self::target(&self.device, actual.width, actual.height)?,
@@ -166,7 +163,7 @@ impl Scanout {
             Self::remove_targets(&self.device, &next);
             let latest = self.device.query_topology()?;
             let latest_size = topology_size(&latest);
-            if latest_size != actual {
+            if latest_size != self.size() && latest_size != actual {
                 return Ok(ModePresent::Superseded(latest_size));
             }
             return Err(error);
@@ -217,18 +214,6 @@ impl Scanout {
     /// `open()`. `front` is left untouched and its framebuffer re-scanned so the
     /// display never shows a torn intermediate frame.
     pub fn reset_to_boot(&mut self) -> io::Result<()> {
-        let topology = self.device.query_topology()?;
-        if topology_size(&topology) != self.size() {
-            let size = topology_size(&topology);
-            let next = [
-                Self::target(&self.device, size.width, size.height)?,
-                Self::target(&self.device, size.width, size.height)?,
-            ];
-            let old = std::mem::replace(&mut self.targets, next);
-            self.topology = topology;
-            self.front = 0;
-            Self::remove_targets(&self.device, &old);
-        }
         self.draw_boot(0);
         self.draw_boot(1);
         for target in &mut self.targets {

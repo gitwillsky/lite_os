@@ -242,6 +242,44 @@ fn accent_color_reaches_standard_form_controls() {
 }
 
 #[test]
+fn form_control_pseudo_elements_use_author_cascade_over_ua_defaults() {
+    let sheet = Sheet::parse(
+        ".field { color: #ffffff; }
+         .field::placeholder { color: #778899; }
+         .field::selection { background-color: #224466; color: #eeeeee; }",
+    )
+    .expect("form-control pseudo-elements parse");
+    let node = Node {
+        id: 1,
+        kind: "input".to_owned(),
+        props: BTreeMap::from([("className".to_owned(), Value::String("field".to_owned()))]),
+        text: String::new(),
+        children: Vec::new(),
+    };
+    let inherited = sheet.compute(&node, &[]);
+    let pseudo = super::PseudoState::default();
+
+    let placeholder = sheet.compute_pseudo(
+        &node,
+        &[],
+        &inherited,
+        &pseudo,
+        super::PseudoElement::Placeholder,
+    );
+    let selection = sheet.compute_pseudo(
+        &node,
+        &[],
+        &inherited,
+        &pseudo,
+        super::PseudoElement::Selection,
+    );
+
+    assert_eq!(placeholder.get("color"), Some("#778899"));
+    assert_eq!(selection.get("background-color"), Some("#224466"));
+    assert_eq!(selection.get("color"), Some("#eeeeee"));
+}
+
+#[test]
 fn motion_media_and_keyframes_override_the_base_cascade() {
     let sheet = Sheet::parse(
         ".splash { opacity: 0; pointer-events: none; }
@@ -305,8 +343,8 @@ fn custom_properties_cascade_inherit_and_resolve_nested_fallbacks() {
     };
 
     let pseudo = PseudoState::default();
-    let parent_style = sheet.cascade(&parent, &[], None, &pseudo);
-    let child_style = sheet.cascade(&child, &[&parent], Some(&parent_style), &pseudo);
+    let parent_style = sheet.cascade(&parent, &[], None, &pseudo, None);
+    let child_style = sheet.cascade(&child, &[&parent], Some(&parent_style), &pseudo, None);
 
     assert_eq!(child_style.get("color"), Some("#35c8ff"));
     assert_eq!(
@@ -368,7 +406,7 @@ fn standard_pseudo_classes_match_dynamic_state_and_hovered_ancestors() {
     let parents = HashMap::from([(10, None), (11, Some(10))]);
     let pseudo = PseudoState::from_targets(&parents, Some(11), Some(11), Some(10));
 
-    let computed = sheet.cascade(&button, &[], None, &pseudo);
+    let computed = sheet.cascade(&button, &[], None, &pseudo, None);
 
     assert_eq!(computed.get("color"), Some("#35c8ff"));
     assert_eq!(computed.get("transform"), Some("scale(0.96)"));
@@ -398,8 +436,8 @@ fn css_wide_keywords_resolve_against_parent_computed_values() {
         children: Vec::new(),
     };
     let pseudo = PseudoState::default();
-    let parent_style = sheet.cascade(&parent, &[], None, &pseudo);
-    let child_style = sheet.cascade(&child, &[&parent], Some(&parent_style), &pseudo);
+    let parent_style = sheet.cascade(&parent, &[], None, &pseudo, None);
+    let child_style = sheet.cascade(&child, &[&parent], Some(&parent_style), &pseudo, None);
 
     assert_eq!(child_style.get("color"), Some("#f3f7ff"));
     assert_eq!(child_style.get("font-size"), Some("16px"));
@@ -471,7 +509,10 @@ fn first_and_last_child_match_element_siblings_and_ignore_text_nodes() {
         text: String::new(),
         children: Vec::new(),
     };
-    let last = Node { id: 4, ..first.clone() };
+    let last = Node {
+        id: 4,
+        ..first.clone()
+    };
     let parent = Node {
         id: 1,
         kind: "div".to_owned(),

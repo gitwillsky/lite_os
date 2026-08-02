@@ -15,6 +15,7 @@ use animation::Keyframes;
 pub(crate) use animation::Timeline;
 pub(crate) use expand::split_css_tokens;
 use expand::{apply_declaration, invalidate_declaration};
+pub(crate) use selector::PseudoElement;
 pub(crate) use selector::PseudoState;
 use selector::Selector;
 
@@ -107,7 +108,7 @@ impl Sheet {
     /// Computes cascade order, specificity and inline-style precedence.
     #[cfg(test)]
     pub fn compute(&self, node: &Node, ancestors: &[&Node]) -> Computed {
-        self.cascade(node, ancestors, None, &PseudoState::default())
+        self.cascade(node, ancestors, None, &PseudoState::default(), None)
     }
 
     /// Computes cascade plus time-dependent transitions and animations.
@@ -119,9 +120,41 @@ impl Sheet {
         pseudo: &PseudoState,
         timeline: &mut Timeline,
     ) -> Computed {
-        let mut computed = self.cascade(node, ancestors, inherited, pseudo);
+        let mut computed = self.cascade(node, ancestors, inherited, pseudo, None);
         timeline.apply_transitions(node.id, &mut computed.values);
         timeline.apply_animation(node.id, &mut computed.values, &self.keyframes);
+        computed
+    }
+
+    /// Computes author style for native generated content such as an input's
+    /// placeholder or selection. Inline declarations belong to the originating
+    /// element and are inherited normally; only matching pseudo-element rules
+    /// participate at the pseudo-element level.
+    pub(crate) fn compute_pseudo(
+        &self,
+        node: &Node,
+        ancestors: &[&Node],
+        inherited: &Computed,
+        pseudo: &PseudoState,
+        element: PseudoElement,
+    ) -> Computed {
+        let declares = |property: &str| {
+            self.rules.iter().any(|rule| {
+                rule.selector
+                    .matches(node, ancestors, pseudo, Some(element))
+                    && rule.declarations.iter().any(|(name, _)| name == property)
+            })
+        };
+        let mut computed = self.cascade(node, ancestors, Some(inherited), pseudo, Some(element));
+        match element {
+            PseudoElement::Placeholder if !declares("color") => {
+                computed.set("color", "#808080");
+            }
+            PseudoElement::Selection if !declares("background-color") => {
+                computed.set("background-color", "#3390ff");
+            }
+            _ => {}
+        }
         computed
     }
 
@@ -131,18 +164,24 @@ impl Sheet {
         ancestors: &[&Node],
         inherited: Option<&Computed>,
         pseudo: &PseudoState,
+        pseudo_element: Option<PseudoElement>,
     ) -> Computed {
         let mut matches: Vec<&Rule> = self
             .rules
             .iter()
-            .filter(|rule| rule.selector.matches(node, ancestors, pseudo))
+            .filter(|rule| {
+                rule.selector
+                    .matches(node, ancestors, pseudo, pseudo_element)
+            })
             .collect();
         matches.sort_by_key(|rule| (rule.selector.specificity, rule.order));
         let mut declarations = Vec::new();
         for rule in matches {
             declarations.extend(rule.declarations.iter().cloned());
         }
-        if let Some(Value::Object(inline)) = node.props.get("style") {
+        if pseudo_element.is_none()
+            && let Some(Value::Object(inline)) = node.props.get("style")
+        {
             for (name, value) in inline {
                 let name = camel_to_kebab(name);
                 let value = match value {

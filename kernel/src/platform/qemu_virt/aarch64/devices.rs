@@ -30,6 +30,7 @@ fn initialize_pl011() {
 
 fn initialize_virtio_devices() {
     let platform = discovery::info();
+    initialize_pci_console();
     info!(
         "[Platform] Scanning {} AArch64 VirtIO devices",
         platform.virtio_count
@@ -62,6 +63,29 @@ fn initialize_virtio_devices() {
             ),
         }
     }
+}
+
+fn initialize_pci_console() {
+    let Some(function) = super::pci::find_console(discovery::info().pci) else {
+        return;
+    };
+    assert_eq!(
+        function.device_id, 3,
+        "PCI transport returned a non-console device"
+    );
+    let device =
+        VirtIOConsoleDevice::from_pci(function.transport).expect("virtio-console PCI init failed");
+    crate::drivers::register_virtio_port(device.clone())
+        .unwrap_or_else(|_| panic!("only one virtio-console clipboard port is supported"));
+    register_irq(
+        function.interrupt,
+        device.irq_handler_for(),
+        "virtio-console-pci",
+    );
+    info!(
+        "[Platform] VirtIO console PCI transport on IRQ {}",
+        function.interrupt
+    );
 }
 
 fn initialize_console(resource: &discovery::MmioDevice) {

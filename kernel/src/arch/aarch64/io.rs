@@ -41,6 +41,44 @@ pub(crate) unsafe fn write_mmio_u8(address: usize, value: u8) {
     };
 }
 
+/// Read one 16-bit halfword from a caller-validated, aligned MMIO address.
+///
+/// # Safety
+///
+/// `address` must name a readable, 16-bit-aligned device register.
+#[inline(always)]
+pub(crate) unsafe fn read_mmio_u16(address: usize) -> u16 {
+    let value: u32;
+    // SAFETY: the caller owns range/alignment validity; the template fixes one exact LDRH.
+    unsafe {
+        asm!(
+            "ldrh {value:w}, [{address}]",
+            value = out(reg) value,
+            address = in(reg) address,
+            options(nostack, preserves_flags)
+        )
+    };
+    value as u16
+}
+
+/// Write one 16-bit halfword to a caller-validated, aligned MMIO address.
+///
+/// # Safety
+///
+/// `address` must name a writable, 16-bit-aligned device register.
+#[inline(always)]
+pub(crate) unsafe fn write_mmio_u16(address: usize, value: u16) {
+    // SAFETY: the caller owns range/alignment validity; the template fixes one exact STRH.
+    unsafe {
+        asm!(
+            "strh {value:w}, [{address}]",
+            value = in(reg) u32::from(value),
+            address = in(reg) address,
+            options(nostack, preserves_flags)
+        )
+    };
+}
+
 /// Read one 32-bit word from a caller-validated, aligned MMIO address.
 ///
 /// # Safety

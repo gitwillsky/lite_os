@@ -124,7 +124,7 @@ pub struct Session {
     /// epoch reset; without it every key routes only to the focused surface
     /// and system shortcuts cannot work.
     accelerators: Accelerators,
-    clipboard: crate::clipboard::Clipboard,
+    spice_agent: crate::spice_agent::SpiceAgent,
 }
 
 /// Outcome of one [`Session::poll`] wait.
@@ -147,7 +147,7 @@ impl Session {
         let _ = fs::remove_file(display_proto::SOCKET_PATH);
         let listener = UnixListener::bind(display_proto::SOCKET_PATH)?;
         listener.set_nonblocking(true)?;
-        let clipboard = crate::clipboard::Clipboard::open()?;
+        let spice_agent = crate::spice_agent::SpiceAgent::open()?;
         let hotplug = KobjectUevent::open()?;
         Ok(Self {
             listener,
@@ -180,7 +180,7 @@ impl Session {
             pending_cursor_shape: None,
             pointer_surface: None,
             accelerators: Accelerators::new(),
-            clipboard,
+            spice_agent,
         })
     }
 
@@ -203,7 +203,7 @@ impl Session {
     ///
     /// # Parameters
     ///
-    /// - `wake`: Optional evdev descriptors joined to the display/clipboard wait.
+    /// - `wake`: Optional evdev descriptors joined to the display/SPICE-agent wait.
     ///
     /// # Returns
     ///
@@ -219,7 +219,7 @@ impl Session {
             app_ids[app_count] = id;
             app_count += 1;
         }
-        let (listener_ready, desktop_ready, app_ready, input_ready, hotplug_ready, clipboard_ready) = {
+        let (listener_ready, desktop_ready, app_ready, input_ready, hotplug_ready, agent_ready) = {
             const MAX_POLL_FDS: usize = 4 + MAX_APP_SURFACES + 2;
             let mut descriptors: [PollFd; MAX_POLL_FDS] =
                 std::array::from_fn(|_| PollFd::new(self.listener.as_fd(), PollEvents::READ));
@@ -244,8 +244,8 @@ impl Session {
             let hotplug_offset = descriptor_count;
             descriptors[descriptor_count] = PollFd::new(self.hotplug.as_fd(), PollEvents::READ);
             descriptor_count += 1;
-            let clipboard_offset =
-                self.append_clipboard_poll(&mut descriptors, &mut descriptor_count);
+            let agent_offset =
+                self.append_spice_agent_poll(&mut descriptors, &mut descriptor_count);
             unix::poll(&mut descriptors[..descriptor_count], None)?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(self.desktop.is_some());
@@ -262,23 +262,30 @@ impl Session {
                 .iter()
                 .any(|descriptor| descriptor.returned() != PollEvents::EMPTY);
             let hotplug_ready = descriptors[hotplug_offset].returned() != PollEvents::EMPTY;
-            let clipboard_ready = descriptors[clipboard_offset].returned() != PollEvents::EMPTY;
+            let agent_ready = descriptors[agent_offset].returned() != PollEvents::EMPTY;
             (
                 listener_ready,
                 desktop_ready,
                 app_ready,
                 input_ready,
                 hotplug_ready,
-                clipboard_ready,
+                agent_ready,
             )
         };
-        let output = if hotplug_ready && self.hotplug.drain_drm_hotplug()? {
-            let size = topology_size(self.device.query_topology()?);
-            self.configure_output(size)?;
-            Some(size)
+        let agent_output = if agent_ready {
+            self.pump_spice_agent()?
         } else {
             None
         };
+        let hotplug_output = if hotplug_ready && self.hotplug.drain_drm_hotplug()? {
+            Some(topology_size(self.device.query_topology()?))
+        } else {
+            None
+        };
+        let output = agent_output.or(hotplug_output);
+        if let Some(size) = output {
+            self.configure_output(size)?;
+        }
         if listener_ready && let Err(error) = self.accept() {
             eprintln!("compositor: rejected connection: {error}");
         }
@@ -310,9 +317,6 @@ impl Session {
                 eprintln!("compositor: app {surface_id} disconnected: {error}");
                 self.remove_app(surface_id);
             }
-        }
-        if clipboard_ready {
-            self.pump_clipboard()?;
         }
         Ok(Activity {
             scene,
@@ -502,7 +506,7 @@ impl Session {
         if self.apps.remove(&surface_id).is_none() {
             return;
         }
-        self.clipboard.remove_surface(surface_id);
+        self.spice_agent.remove_surface(surface_id);
         self.buffers
             .values
             .retain(|_, buffer| buffer.owner != Owner::App(surface_id));
@@ -543,7 +547,7 @@ impl Session {
         self.presented_nodes.clear();
         self.desktop_current_buffers.clear();
         self.accelerators.clear();
-        self.clipboard.reset_session();
+        self.spice_agent.reset_session();
         self.epoch = self.epoch.wrapping_add(1);
     }
 }

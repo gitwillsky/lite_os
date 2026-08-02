@@ -22,6 +22,7 @@ use serde_json::json;
 use crate::{
     Interactions, dispatch,
     display::{Display, Event},
+    font::CursorMove,
     host::State,
     keymap,
     renderer::{self, Renderer},
@@ -216,6 +217,7 @@ fn dispatch_key(
         if key.value != 0
             && clipboard::apply_shortcut(
                 engine,
+                renderer,
                 interactions,
                 display,
                 node_id,
@@ -223,11 +225,48 @@ fn dispatch_key(
                 key.code,
             )?
         {
+            state.invalidate_scene();
             return Ok(());
+        }
+        if key.value != 0 {
+            let movement = match key.code {
+                105 if interactions.modifiers.control => Some(CursorMove::PreviousWord),
+                106 if interactions.modifiers.control => Some(CursorMove::NextWord),
+                105 => Some(CursorMove::Previous),
+                106 => Some(CursorMove::Next),
+                _ => None,
+            };
+            if let Some(movement) = movement {
+                if renderer.move_control_cursor(
+                    node_id,
+                    &editable,
+                    movement,
+                    interactions.modifiers.shift,
+                ) {
+                    state.invalidate_scene();
+                }
+                return Ok(());
+            }
+            let edge = match key.code {
+                102 => Some(0),                    // KEY_HOME
+                107 => Some(editable.value.len()), // KEY_END
+                _ => None,
+            };
+            if let Some(edge) = edge {
+                if renderer.set_control_focus(
+                    node_id,
+                    &editable.value,
+                    edge,
+                    interactions.modifiers.shift,
+                ) {
+                    state.invalidate_scene();
+                }
+                return Ok(());
+            }
         }
         if let Some(edit) = keymap::text_edit(key.code, key.value, interactions.modifiers) {
             if let Some(on_input) = editable.on_input {
-                let next = apply_text_edit(&editable.value, edit);
+                let next = renderer.edit_control(node_id, &editable, edit);
                 dispatch_listener(engine, on_input, json!({ "type": "input", "value": next }))?;
             }
             return Ok(());
@@ -242,23 +281,6 @@ fn dispatch_key(
         )?;
     }
     Ok(())
-}
-
-/// Applies one `TextEdit` to a controlled value, returning the new string that
-/// the input's `onInput` handler will store (append a char / delete the last).
-fn apply_text_edit(value: &str, edit: keymap::TextEdit) -> String {
-    match edit {
-        keymap::TextEdit::Insert(character) => {
-            let mut next = value.to_owned();
-            next.push(character);
-            next
-        }
-        keymap::TextEdit::Backspace => {
-            let mut next = value.to_owned();
-            next.pop();
-            next
-        }
-    }
 }
 
 fn dispatch_pointer(
@@ -397,6 +419,26 @@ fn dispatch_pointer(
                 if renderer.set_focus(focus_target) {
                     state.invalidate_scene();
                 }
+                let text_target = interactions
+                    .hits
+                    .iter()
+                    .rev()
+                    .filter(|hit| inside(hit))
+                    .find(|hit| hit.editable.is_some())
+                    .cloned();
+                if let Some(hit) = text_target {
+                    if renderer.place_control_cursor(
+                        hit.node_id,
+                        hit.editable.as_ref().expect("text input hit"),
+                        pointer.x,
+                        interactions.modifiers.shift,
+                    ) {
+                        state.invalidate_scene();
+                    }
+                    interactions.pointer_capture = Some(PointerCapture {
+                        node_id: hit.node_id,
+                    });
+                }
                 let range_target = interactions
                     .hits
                     .iter()
@@ -428,6 +470,11 @@ fn dispatch_pointer(
         display_proto::PointerPhase::Up => {
             if let Some(capture) = interactions.pointer_capture.take() {
                 if let Some(hit) = capture.hit(&interactions.hits) {
+                    if let Some(editable) = &hit.editable
+                        && renderer.place_control_cursor(hit.node_id, editable, pointer.x, true)
+                    {
+                        state.invalidate_scene();
+                    }
                     if hit.range.is_some_and(|range| !range.disabled()) {
                         dispatch_range_pointer(engine, hit, pointer.x)?;
                     }
@@ -488,6 +535,11 @@ fn dispatch_pointer(
         display_proto::PointerPhase::Motion => {
             if let Some(capture) = interactions.pointer_capture {
                 if let Some(hit) = capture.hit(&interactions.hits) {
+                    if let Some(editable) = &hit.editable
+                        && renderer.place_control_cursor(hit.node_id, editable, pointer.x, true)
+                    {
+                        state.invalidate_scene();
+                    }
                     if hit.range.is_some_and(|range| !range.disabled()) {
                         dispatch_range_pointer(engine, hit, pointer.x)?;
                     }

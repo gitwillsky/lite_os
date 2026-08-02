@@ -15,6 +15,7 @@ mod render;
 mod retained;
 mod scroll;
 mod shadow;
+mod text_control;
 mod transform;
 
 use std::{
@@ -56,6 +57,8 @@ pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;
 struct RenderNode {
     source: Node,
     computed: Computed,
+    placeholder: Option<Computed>,
+    selection: Option<Computed>,
     id: NodeId,
     children: Vec<RenderNode>,
     /// Whether this subtree contains a CSS `position: fixed` node.
@@ -247,6 +250,10 @@ pub struct Editable {
     pub value: String,
     /// `onInput` listener identity; the renderer calls it with `{value}`.
     pub on_input: Option<u64>,
+    /// Cascaded text style used by shaped cursor navigation and hit testing.
+    pub(crate) style: Computed,
+    /// Physical x origin of the unscrolled shaped line.
+    pub(crate) text_origin_x: i32,
 }
 
 /// Theme-free renderer consuming only CSS and the fixed host primitives.
@@ -293,6 +300,12 @@ pub struct Renderer {
     fixed_refresh_remaining: usize,
     /// Stable node id of the focused form control, or `None`.
     focused: Option<u64>,
+    /// Native caret, selection and horizontal scroll keyed by stable host id.
+    ///
+    /// React owns the controlled value, while this renderer-owned state mirrors
+    /// browser selection state. Without it every edit appends at the end and a
+    /// long value paints outside the content box.
+    text_controls: HashMap<u64, text_control::State>,
     /// Current DOM pointer target used to derive `:hover` for the target and
     /// every ancestor before the next cascade.
     hover_target: Option<u64>,
@@ -331,6 +344,7 @@ impl Renderer {
             fixed_signature: None,
             fixed_refresh_remaining: 0,
             focused: None,
+            text_controls: HashMap::new(),
             hover_target: None,
             active_target: None,
             parents: HashMap::new(),
@@ -375,6 +389,24 @@ impl Renderer {
             &self.pseudo,
             &mut self.timeline,
         );
+        let placeholder = (source.kind == "input").then(|| {
+            self.sheet.compute_pseudo(
+                &source,
+                ancestors,
+                &computed,
+                &self.pseudo,
+                crate::style::PseudoElement::Placeholder,
+            )
+        });
+        let selection = (source.kind == "input").then(|| {
+            self.sheet.compute_pseudo(
+                &source,
+                ancestors,
+                &computed,
+                &self.pseudo,
+                crate::style::PseudoElement::Selection,
+            )
+        });
         // Leaves own no laid-out children: images, `<input>` text fields, 文本叶子
         // span（子节点全为 `#text`），以及 app client-area surface（带
         // `data-lite-surface` 的 `div`）。含元素子节点的 span 不是叶子——它像普通容器
@@ -421,12 +453,12 @@ impl Renderer {
         }
         .map_err(taffy_error)?;
         let has_fixed_descendant = computed.get("position") == Some("fixed")
-            || children
-                .iter()
-                .any(|child| child.has_fixed_descendant);
+            || children.iter().any(|child| child.has_fixed_descendant);
         Ok(RenderNode {
             source,
             computed,
+            placeholder,
+            selection,
             id,
             children,
             has_fixed_descendant,
@@ -632,7 +664,7 @@ impl PhysicalRect {
     }
 
     /// True when the rect has no area (nothing to paint / fully clipped away).
-    fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         self.x2 <= self.x1 || self.y2 <= self.y1
     }
 }
