@@ -444,16 +444,20 @@ impl Renderer {
                 key_listener: fixed_key_listener,
                 damage: Vec::new(),
             });
-            output.key_listener = fixed_key_listener.or(document_key_listener);
-        } else if let Some(cached) = self.fixed_output.as_ref() {
-            output.foreign.extend(cached.foreign.iter().cloned());
-            output.windows.extend(cached.windows.iter().cloned());
-            output.overlays.extend(cached.overlays.iter().cloned());
-            output.hits.extend(cached.hits.iter().cloned());
-            output.key_listener = cached.key_listener.or(document_key_listener);
-        } else {
-            return Err(io::Error::other("fixed output cache missing"));
         }
+        // `split_off` above transfers fixed metadata into the retained cache.
+        // Publish that same cache on both refresh and reuse frames; otherwise a
+        // freshly painted top bar or dock is visible but absent from hit testing
+        // until a later steady frame happens to reuse the cache.
+        let cached = self
+            .fixed_output
+            .as_ref()
+            .ok_or_else(|| io::Error::other("fixed output cache missing"))?;
+        output.foreign.extend(cached.foreign.iter().cloned());
+        output.windows.extend(cached.windows.iter().cloned());
+        output.overlays.extend(cached.overlays.iter().cloned());
+        output.hits.extend(cached.hits.iter().cloned());
+        output.key_listener = cached.key_listener.or(document_key_listener);
         if excluded_window_group.is_none() {
             if fixed_repaint_reason {
                 // Desktop owns two presentation buffers plus a transient
