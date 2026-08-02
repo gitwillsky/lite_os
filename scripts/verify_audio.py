@@ -40,15 +40,15 @@ MUSIC_APP_ORIGINS = tuple(
 )
 COMMAND_CENTER_POINT = (80, 28)
 COMMAND_MUSIC_POINT = (436, 220)
-QUEUE_ROW_POINT = (756, 124)
-QUEUE_ROW_HEIGHT = 53
-QUEUE_BOTTOM_OFFSET = 315
-QUEUE_SCROLLBAR_TRACK_POINT = (888, 480)
-REPEAT_BUTTON_POINT = (707, 23)
-PLAY_BUTTON_POINT = (314, 395)
-SEEK_POINT = (200, 357)
-ELEMENT_MUTE_POINT = (48, 546)
-ELEMENT_VOLUME_X = {50: 168, 80: 209}
+LIBRARY_TAB_POINT = (234, 23)
+LIBRARY_FIRST_ROW_POINT = (420, 111)
+LIBRARY_LAST_ROW_POINT = (420, 554)
+REPEAT_BUTTON_POINT = (610, 392)
+PLAY_BUTTON_POINT = (342, 392)
+NEXT_BUTTON_POINT = (415, 392)
+SEEK_POINT = (350, 354)
+ELEMENT_MUTE_POINT = (345, 426)
+ELEMENT_VOLUME_X = {50: 467, 80: 512}
 SYSTEM_CENTER_POINT = (1440, 28)
 MASTER_MUTE_POINT = (1382, 564)
 MASTER_SCALE_Y = 596
@@ -76,12 +76,6 @@ COMMAND_CENTER_SIGNATURE_POINTS = (
     (400, 660),
 )
 SYSTEM_CENTER_SIGNATURE_POINTS = ((1220, 212), (1240, 212), (1260, 212))
-# The native vertical scrollbar spans the queue's rightmost 12 CSS pixels.
-# Sampling its center isolates thumb movement from the active row's changing
-# duration text; its antialiased left edge can still expose the content pixel
-# underneath and falsely satisfy the presentation barrier.
-QUEUE_SCROLL_SIGNATURE_OFFSETS = tuple((890, y) for y in range(100, 431, 2))
-
 # Guest names make the production directory sort byte-for-byte deterministic.
 # Without the numeric prefix, locale-dependent `localeCompare` ordering could
 # make the gate click a different codec while still observing a valid marker.
@@ -346,24 +340,11 @@ def click(qmp: QmpClient, x: float, y: float) -> None:
     qmp.button("left", False)
 
 
-def scroll_queue_to_bottom(
-    qmp: QmpClient,
-    directory: Path,
-    app_x: int,
-    app_y: int,
-) -> None:
-    """通过原生 scrollbar page-scroll 到列表末尾并等待实际呈现。"""
-    points = tuple(
-        (app_x + offset_x, app_y + offset_y)
-        for offset_x, offset_y in QUEUE_SCROLL_SIGNATURE_OFFSETS
-    )
-    before = screen_pixels(qmp, directory, "queue-before", points)
-    click(
-        qmp,
-        app_x + QUEUE_SCROLLBAR_TRACK_POINT[0],
-        app_y + QUEUE_SCROLLBAR_TRACK_POINT[1],
-    )
-    wait_pixels_changed(qmp, directory, "queue-after", points, before)
+def double_click(qmp: QmpClient, x: float, y: float) -> None:
+    """通过两次完整 production click 触发 React `onDoubleClick`。"""
+    click(qmp, x, y)
+    time.sleep(0.1)
+    click(qmp, x, y)
 
 
 def ppm_pixels(path: Path, logical_points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int, int], ...]:
@@ -881,27 +862,31 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             min(15.0, deadline - time.monotonic()),
         )
 
-        # 3. Every sorted Up Next row is opened through production lite:fs ->
-        #    File -> blob: -> <audio>. Generic event counts are sampled before
-        #    the click, so an earlier successful codec cannot satisfy a later
-        #    one. The native scrollbar transition keeps every later row visible.
+        # 3. The first sorted Library row is opened through production lite:fs
+        #    -> File -> blob: -> <audio>; Music builds the complete sorted local
+        #    queue from that directory. Every later codec is selected through
+        #    the visible Now Playing `Next` control. Generic event counts are
+        #    sampled before each click, so an earlier codec cannot satisfy a
+        #    later one.
         app_x, app_y = MUSIC_APP_ORIGINS[0]
         for index, (_, guest_name) in enumerate(FIXTURES):
-            if index == 6:
-                scroll_queue_to_bottom(qmp, private_root, app_x, app_y)
             source_marker = f"LITE_AUDIO source-opened id=1 file={guest_name}"
             source_before = capture.count(source_marker)
             loaded_before = capture.count("LITE_AUDIO event=loadedmetadata")
             playing_before = capture.count("LITE_AUDIO event=playing")
-            if index < 6:
-                queue_offset = 0
+            if index == 0:
+                click(qmp, app_x + LIBRARY_TAB_POINT[0], app_y + LIBRARY_TAB_POINT[1])
+                double_click(
+                    qmp,
+                    app_x + LIBRARY_FIRST_ROW_POINT[0],
+                    app_y + LIBRARY_FIRST_ROW_POINT[1],
+                )
             else:
-                queue_offset = QUEUE_BOTTOM_OFFSET
-            click(
-                qmp,
-                app_x + QUEUE_ROW_POINT[0],
-                app_y + QUEUE_ROW_POINT[1] + index * QUEUE_ROW_HEIGHT - queue_offset,
-            )
+                click(
+                    qmp,
+                    app_x + NEXT_BUTTON_POINT[0],
+                    app_y + NEXT_BUTTON_POINT[1],
+                )
             capture.wait_new(
                 source_marker,
                 source_before,
@@ -1064,10 +1049,9 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         master_reference_window = (master_reference_start, master_reference_end)
         toggle_system_center(qmp, private_root)
 
-        # 7. Put the first production process on the deterministic high-level
-        #    PCM source used by the seven processes below. The 13-format matrix
-        #    has already been proven in order; this extra public file is only the
-        #    limiter workload and its positive DC level is phase-independent.
+        # 7. `Next` selects the deterministic high-level PCM source after the
+        #    13-format matrix. This extra public file is only the limiter
+        #    workload and its positive DC level is phase-independent.
         limiter_workload_start = wav_frame_count(audio_output)
         source_before = capture.count(
             f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}"
@@ -1075,9 +1059,8 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         playing_before = capture.count("LITE_AUDIO event=playing")
         click(
             qmp,
-            app_x + QUEUE_ROW_POINT[0],
-            app_y + QUEUE_ROW_POINT[1] + len(FIXTURES) * QUEUE_ROW_HEIGHT
-            - QUEUE_BOTTOM_OFFSET,
+            app_x + NEXT_BUTTON_POINT[0],
+            app_y + NEXT_BUTTON_POINT[1],
         )
         capture.wait_new(
             f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}",
@@ -1118,12 +1101,15 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
                 min(10.0, deadline - time.monotonic()),
             )
             child_x, child_y = MUSIC_APP_ORIGINS[app_index]
-            scroll_queue_to_bottom(qmp, private_root, child_x, child_y)
             click(
                 qmp,
-                child_x + QUEUE_ROW_POINT[0],
-                child_y + QUEUE_ROW_POINT[1] + len(FIXTURES) * QUEUE_ROW_HEIGHT
-                - QUEUE_BOTTOM_OFFSET,
+                child_x + LIBRARY_TAB_POINT[0],
+                child_y + LIBRARY_TAB_POINT[1],
+            )
+            double_click(
+                qmp,
+                child_x + LIBRARY_LAST_ROW_POINT[0],
+                child_y + LIBRARY_LAST_ROW_POINT[1],
             )
             capture.wait_new(
                 f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}",
@@ -1234,12 +1220,10 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             raise RuntimeError(
                 f"decoder steady-state allocations are non-zero: {worker_allocations!r}"
             )
-        first_fixture = FIXTURES[0][1]
         expected_sources = (
-            [first_fixture]
-            + [guest for _, guest in FIXTURES]
+            [guest for _, guest in FIXTURES]
             + [LIMITER_FIXTURE[1]]
-            + [source for _ in range(7) for source in (first_fixture, LIMITER_FIXTURE[1])]
+            + [LIMITER_FIXTURE[1]] * 7
         )
         actual_sources = SOURCE_OPENED_RE.findall(final_text)
         if actual_sources != expected_sources:

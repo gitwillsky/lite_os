@@ -188,6 +188,26 @@ impl Renderer {
                 &mut document_bounds,
             )?;
         }
+        let current_fixed_signature = (excluded_window_group.is_none()).then(|| {
+            root.children
+                .iter()
+                .filter_map(super::fixed_signature)
+                .collect::<Vec<_>>()
+        });
+        let mut current_fixed_bounds = Vec::new();
+        if excluded_window_group.is_none() {
+            for child in &root.children {
+                collect_fixed_bounds(
+                    &tree,
+                    child,
+                    (0.0, 0.0),
+                    pixels.width(),
+                    pixels.height(),
+                    &self.scroll_offsets,
+                    &mut current_fixed_bounds,
+                )?;
+            }
+        }
         let document_paint = if excluded_window_group.is_some() {
             DocumentPaint::Full
         } else if let Some(layer) = self.document_layer.as_ref().filter(|layer| {
@@ -217,6 +237,45 @@ impl Renderer {
         } else {
             DocumentPaint::Full
         };
+        let mut current_fixed_clips = current_fixed_bounds
+            .iter()
+            .map(|rect| rect.display_rect())
+            .collect::<Vec<_>>();
+        // Overlay output is later ordered by z-index, while the bounds walk
+        // follows DOM order. Compare geometry as a set so a z-index-only
+        // reorder does not invalidate the retained fixed raster.
+        current_fixed_clips.sort_by_key(|rect| (rect.x, rect.y, rect.width, rect.height));
+        let fixed_signature_changed = excluded_window_group.is_none()
+            && self.fixed_signature.as_ref() != current_fixed_signature.as_ref();
+        let fixed_geometry_changed = excluded_window_group.is_none()
+            && self.previous_fixed_clips != current_fixed_clips;
+        let fixed_underlay_damaged = if excluded_window_group.is_none() {
+            let intersects = |rect: PhysicalRect| {
+                current_fixed_bounds
+                    .iter()
+                    .any(|fixed| !fixed.intersect(rect).is_empty())
+            };
+            let full = PhysicalRect {
+                x1: 0,
+                y1: 0,
+                x2: pixels.width(),
+                y2: pixels.height(),
+            };
+            buffer_damage.iter().any(|rect| {
+                physical_from_display(*rect, pixels.width(), pixels.height()) == full
+            })
+                || matches!(&document_paint, DocumentPaint::Partial(damage) if damage.iter().copied().any(intersects))
+        } else {
+            false
+        };
+        let fixed_repaint_reason = self.fixed_output.is_none()
+            || fixed_signature_changed
+            || fixed_geometry_changed
+            || matches!(&document_paint, DocumentPaint::Full)
+            || fixed_underlay_damaged;
+        let fixed_dirty = excluded_window_group.is_some()
+            || fixed_repaint_reason
+            || self.fixed_refresh_remaining > 0;
         // Blit scissor 模型:back buffer 只需在 scissor 集合内恢复正确性。
         // scissor = buffer-age 欠账 ∪ 当前帧 damage(文档变化 ∪ fixed 层新旧
         // overlay rect);集合之外的像素自该 buffer 上次 commit 以来从未变化,
@@ -231,21 +290,13 @@ impl Renderer {
                     .iter()
                     .map(|rect| physical_from_display(*rect, width, height)),
             );
-            scissor.extend(
-                self.previous_fixed_clips
-                    .iter()
-                    .map(|rect| physical_from_display(*rect, width, height)),
-            );
-            for child in &root.children {
-                collect_fixed_bounds(
-                    &tree,
-                    child,
-                    (0.0, 0.0),
-                    width,
-                    height,
-                    &self.scroll_offsets,
-                    &mut scissor,
-                )?;
+            if fixed_dirty {
+                scissor.extend(
+                    self.previous_fixed_clips
+                        .iter()
+                        .map(|rect| physical_from_display(*rect, width, height)),
+                );
+                scissor.extend(current_fixed_bounds.iter().copied());
             }
             if let DocumentPaint::Partial(damage) = &document_paint {
                 scissor.extend_from_slice(damage);
@@ -351,30 +402,67 @@ impl Renderer {
                 }
             }
         }
-        // Fixed phase:全量路径直接画;Reuse/Partial 戴上 scissor 写掩码,
-        // 未变的 fixed 区域不重画(backdrop blit、阴影、fill 全省)。fixed 层
-        // 仍全程 walk 一遍以发射当前 overlay rect 与 hit 区域。
-        if excluded_window_group.is_some() || matches!(document_paint, DocumentPaint::Full) {
-            let mut clipped = ClipRaster::new(pixels);
-            self.paint_fixed(
-                &tree,
-                &root,
-                &mut clipped,
-                &mut output,
-                excluded_window_group,
-                None,
-            )?;
+        // Fixed phase: repaint only when its source/style, geometry, or
+        // underlying document pixels changed. Unrelated window resize/move
+        // commits reuse the fixed raster metadata and leave the shell pixels
+        // untouched in every buffer that already contains the same revision.
+        let document_key_listener = output.key_listener;
+        if fixed_dirty {
+            let document_foreign_len = output.foreign.len();
+            let document_windows_len = output.windows.len();
+            let document_overlays_len = output.overlays.len();
+            let document_hits_len = output.hits.len();
+            output.key_listener = None;
+            if excluded_window_group.is_some() || matches!(&document_paint, DocumentPaint::Full) {
+                let mut clipped = ClipRaster::new(pixels);
+                self.paint_fixed(
+                    &tree,
+                    &root,
+                    &mut clipped,
+                    &mut output,
+                    excluded_window_group,
+                    None,
+                )?;
+            } else {
+                let mut damaged = DamageRaster::new(pixels, &scissor);
+                let mut clipped = ClipRaster::new(&mut damaged);
+                self.paint_fixed(
+                    &tree,
+                    &root,
+                    &mut clipped,
+                    &mut output,
+                    excluded_window_group,
+                    bounding(&scissor),
+                )?;
+            }
+            let fixed_key_listener = output.key_listener;
+            self.fixed_output = Some(RenderOutput {
+                foreign: output.foreign.split_off(document_foreign_len),
+                windows: output.windows.split_off(document_windows_len),
+                overlays: output.overlays.split_off(document_overlays_len),
+                hits: output.hits.split_off(document_hits_len),
+                key_listener: fixed_key_listener,
+                damage: Vec::new(),
+            });
+            output.key_listener = fixed_key_listener.or(document_key_listener);
+        } else if let Some(cached) = self.fixed_output.as_ref() {
+            output.foreign.extend(cached.foreign.iter().cloned());
+            output.windows.extend(cached.windows.iter().cloned());
+            output.overlays.extend(cached.overlays.iter().cloned());
+            output.hits.extend(cached.hits.iter().cloned());
+            output.key_listener = cached.key_listener.or(document_key_listener);
         } else {
-            let mut damaged = DamageRaster::new(pixels, &scissor);
-            let mut clipped = ClipRaster::new(&mut damaged);
-            self.paint_fixed(
-                &tree,
-                &root,
-                &mut clipped,
-                &mut output,
-                excluded_window_group,
-                bounding(&scissor),
-            )?;
+            return Err(io::Error::other("fixed output cache missing"));
+        }
+        if excluded_window_group.is_none() {
+            if fixed_repaint_reason {
+                // Desktop owns two presentation buffers plus a transient
+                // underlay; three refreshes cover every buffer that can be
+                // acquired after a fixed-layer change.
+                self.fixed_refresh_remaining = 3;
+            } else {
+                self.fixed_refresh_remaining = self.fixed_refresh_remaining.saturating_sub(1);
+            }
         }
         self.scroll_offsets
             .retain(|node_id, _| self.active_scroll_nodes.contains(node_id));
@@ -411,10 +499,16 @@ impl Renderer {
                 .collect();
         }
         if excluded_window_group.is_none() {
+            let previous_fixed = fixed_dirty
+                .then_some(self.previous_fixed_clips.as_slice())
+                .unwrap_or(&[]);
+            let current_fixed = fixed_dirty
+                .then_some(output.overlays.as_slice())
+                .unwrap_or(&[]);
             output.damage = paint_damage(
                 &document_paint,
-                &self.previous_fixed_clips,
-                &output.overlays,
+                previous_fixed,
+                current_fixed,
                 display_proto::Rect {
                     x: 0,
                     y: 0,
@@ -422,8 +516,8 @@ impl Renderer {
                     height: pixels.height() as u32,
                 },
             );
-            self.previous_fixed_clips =
-                output.overlays.iter().map(|overlay| overlay.rect).collect();
+            self.previous_fixed_clips = current_fixed_clips;
+            self.fixed_signature = current_fixed_signature;
         }
         if excluded_window_group.is_none() {
             self.backdrop_blur.finish_frame();

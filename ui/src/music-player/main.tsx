@@ -47,7 +47,33 @@ interface RemoteResult {
 }
 
 // NetEase quality tiers to try, highest first (mp3 fallback always resolves).
-const NETEASE_LEVELS = ["hires", "lossless", "exhigh", "standard"];
+// Mirrors NETEASE_LEVELS in user/apps/music-player/src/provider.rs.
+const NETEASE_LEVELS = ["jymaster", "hires", "lossless", "exhigh", "standard"];
+// QQ tier count; mirrors QUALITY_FILENAMES in user/apps/music-player/src/qq.rs.
+const QQ_QUALITY_TIERS = 10;
+
+interface SongUrlResolution {
+  url: string;
+  trial: boolean;
+  // Platform/network rejection (stop trying lower tiers); null means this
+  // quality tier is simply unavailable (try the next one).
+  reason: string | null;
+}
+
+// Interprets one songUrl reply: transport error, HTTP status, and the
+// provider's structured {url, kind, reason} body.
+function parseSongUrlReply(reply: net.NetReply): SongUrlResolution {
+  if (reply.error) return { url: "", trial: false, reason: reply.error };
+  if (reply.status && reply.status >= 400) {
+    return { url: "", trial: false, reason: `HTTP ${reply.status}` };
+  }
+  const body = reply.body ? JSON.parse(reply.body) : {};
+  return {
+    url: body.url ?? "",
+    trial: body.kind === "trial",
+    reason: body.reason ?? null,
+  };
+}
 
 function joinPath(directory: string, name: string) {
   return directory === "/" ? `/${name}` : `${directory}/${name}`;
@@ -132,6 +158,8 @@ export default function MusicPlayer() {
   // Streaming / resolution state.
   const [buffering, setBuffering] = useState<{ received: number; total: number } | null>(null);
   const [resolving, setResolving] = useState(false);
+  // True while the current stream is a short trial clip, not the full track.
+  const [trialClip, setTrialClip] = useState(false);
 
   // Local library browser state.
   const [browserPath, setBrowserPath] = useState(MUSIC_ROOT);
@@ -181,26 +209,32 @@ export default function MusicPlayer() {
     setPlaybackError(null);
     try {
       let url = "";
-      if (track.source === "netease") {
-        for (const level of NETEASE_LEVELS) {
-          const reply = await net.songUrl({ source: "netease", id: track.id, level });
-          url = reply.body ? (JSON.parse(reply.body).url ?? "") : "";
-          if (url) break;
+      let trial = false;
+      let reason: string | null = null;
+      const tiers = track.source === "netease" ? NETEASE_LEVELS.length : QQ_QUALITY_TIERS;
+      for (let tier = 0; tier < tiers; tier += 1) {
+        const reply = await net.songUrl(track.source === "netease"
+          ? { source: "netease", id: track.id, level: NETEASE_LEVELS[tier] }
+          : { source: "qq", id: track.id, qualityIndex: tier });
+        const resolution = parseSongUrlReply(reply);
+        if (resolution.reason) {
+          reason = resolution.reason;
+          break;
         }
-      } else {
-        for (let qualityIndex = 0; qualityIndex < 3; qualityIndex += 1) {
-          const reply = await net.songUrl({ source: "qq", id: track.id, qualityIndex });
-          url = reply.body ? (JSON.parse(reply.body).url ?? "") : "";
-          if (url) break;
+        if (resolution.url) {
+          url = resolution.url;
+          trial = resolution.trial;
+          break;
         }
       }
       if (!url) {
         setResolving(false);
-        setPlaybackError(track.vip
+        setPlaybackError(reason ?? (track.vip
           ? "This track is VIP-only and could not be resolved. Try the other source."
-          : "No playable URL was returned for this track.");
+          : "No playable URL was returned for this track."));
         return;
       }
+      setTrialClip(trial);
       const ext = extFromUrl(url);
       const streamId = net.streamOpen(url, ext);
       activeStream.current = streamId;
@@ -241,6 +275,7 @@ export default function MusicPlayer() {
     setQueue(tracks);
     setCurrentIndex(index);
     setView("now-playing");
+    setTrialClip(false);
     if (track.kind === "local") {
       try {
         closeStream();
@@ -471,6 +506,7 @@ export default function MusicPlayer() {
           <span className="player__title">{currentTrack?.title ?? "Choose a track"}</span>
           <span className="player__artist">{currentTrack?.artist ?? "Search online or open your library"}</span>
           {resolving && <span className="player__status">Resolving...</span>}
+          {trialClip && <span className="player__status">Trial clip</span>}
           {bufferPercent !== null && <span className="player__status">Buffering {bufferPercent}%</span>}
           <div className="player__seek-row">
             <span className="player__time">{formatTime(position)}</span>

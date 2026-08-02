@@ -14,7 +14,7 @@
 use aes::cipher::{BlockEncryptMut, KeyInit, block_padding::Pkcs7};
 use md5::{Digest, Md5};
 
-use crate::provider::{HttpRequest, Method, RemoteTrack};
+use crate::provider::{HttpRequest, Method, RemoteTrack, SongUrl, random_u64};
 
 type Aes128EcbEnc = ecb::Encryptor<aes::Aes128>;
 
@@ -45,8 +45,15 @@ pub(crate) fn eapi_encrypt(request_path: &str, params_json: &str) -> String {
     format!("params={}", hex::encode_upper(cipher))
 }
 
-/// Builds a POST request to an eapi endpoint with encrypted params.
-fn eapi_request(request_path: &str, params_json: &str) -> HttpRequest {
+/// Builds a POST request to an eapi endpoint with encrypted params. `music_u`
+/// is the account token from the credentials file; without it VIP tracks
+/// resolve to trial clips or nothing at all.
+fn eapi_request(request_path: &str, params_json: &str, music_u: Option<&str>) -> HttpRequest {
+    let mut cookie = "os=pc; appver=8.9.70; osver=; deviceId=liteos".to_owned();
+    if let Some(music_u) = music_u {
+        cookie.push_str("; MUSIC_U=");
+        cookie.push_str(music_u);
+    }
     HttpRequest {
         method: Method::Post,
         url: format!("{HOST}/eapi{}", request_path.trim_start_matches("/eapi")),
@@ -57,16 +64,14 @@ fn eapi_request(request_path: &str, params_json: &str) -> HttpRequest {
                 "application/x-www-form-urlencoded".into(),
             ),
             ("Referer".into(), "https://music.163.com".into()),
-            (
-                "Cookie".into(),
-                "os=pc; appver=8.9.70; osver=; deviceId=liteos".into(),
-            ),
+            ("Cookie".into(), cookie),
         ],
         body: eapi_encrypt(request_path, params_json),
     }
 }
 
 /// Search request. `keyword` is the free-text query; `limit` caps results.
+/// Anonymous on purpose: login only matters for playable-URL resolution.
 pub(crate) fn search_request(keyword: &str, limit: u32) -> HttpRequest {
     let params = serde_json::json!({
         "s": keyword,
@@ -74,24 +79,47 @@ pub(crate) fn search_request(keyword: &str, limit: u32) -> HttpRequest {
         "limit": limit.to_string(),
         "offset": "0",
     });
-    eapi_request("/eapi/cloudsearch/pc", &params.to_string())
+    eapi_request("/eapi/cloudsearch/pc", &params.to_string(), None)
 }
 
-/// Playable-URL request for a song id, requesting the highest quality first.
-/// `level` is one of jymaster/hires/lossless/exhigh/standard.
-pub(crate) fn song_url_request(song_id: &str, level: &str) -> HttpRequest {
+/// Builds the (unencrypted) player-url params, split out so tests can assert
+/// the contract without decrypting an eapi body. Matches the reference
+/// official path: `ids` is a JSON array (not the string `"[id]"`) and
+/// `header` carries device info plus a per-request id.
+fn song_url_params(song_id: &str, level: &str) -> serde_json::Value {
     // encodeType flac for lossless tiers, aac otherwise — never opus (the
     // LiteOS decoder has no Opus support).
     let encode_type = match level {
         "jymaster" | "hires" | "lossless" => "flac",
         _ => "aac",
     };
-    let params = serde_json::json!({
-        "ids": format!("[{song_id}]"),
+    let id = song_id
+        .parse::<u64>()
+        .map(serde_json::Value::from)
+        .unwrap_or_else(|_| serde_json::Value::from(song_id));
+    let header = serde_json::json!({
+        "os": "pc",
+        "appver": "",
+        "osver": "",
+        "deviceId": "liteos",
+        "requestId": (20_000_000 + random_u64() % 10_000_000).to_string(),
+    });
+    serde_json::json!({
+        "ids": [id],
         "level": level,
         "encodeType": encode_type,
-    });
-    eapi_request("/eapi/song/enhance/player/url/v1", &params.to_string())
+        "header": header.to_string(),
+    })
+}
+
+/// Playable-URL request for a song id, requesting the highest quality first.
+/// `level` is one of jymaster/hires/lossless/exhigh/standard.
+pub(crate) fn song_url_request(song_id: &str, level: &str, music_u: Option<&str>) -> HttpRequest {
+    eapi_request(
+        "/eapi/song/enhance/player/url/v1",
+        &song_url_params(song_id, level).to_string(),
+        music_u,
+    )
 }
 
 /// Parses a cloudsearch response body into normalized tracks.
@@ -140,17 +168,34 @@ fn parse_song(song: &serde_json::Value) -> RemoteTrack {
     }
 }
 
-/// Extracts `data[0].url` from a player-url response.
-pub(crate) fn parse_song_url(body: &str) -> Result<Option<String>, String> {
+/// Extracts the playable URL from a player-url response. A non-200 top-level
+/// `code` is a request-level rejection (surfaces as `reason`); an empty
+/// `data[0].url` with code 200 means this quality tier is unavailable and the
+/// caller should try the next one. VIP tracks without entitlement resolve to
+/// a short trial fragment, which the platform marks in `freeTrialPrivilege` —
+/// surfaced so the UI labels the clip instead of presenting it as full audio.
+pub(crate) fn parse_song_url(body: &str) -> Result<SongUrl, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|error| format!("netease url json: {error}"))?;
-    Ok(value
-        .get("data")
-        .and_then(|data| data.get(0))
+    if let Some(code) = value.get("code").and_then(|c| c.as_i64()) {
+        if code != 200 {
+            return Ok(SongUrl::rejected(format!("netease player url: code {code}")));
+        }
+    }
+    let first = value.get("data").and_then(|data| data.get(0));
+    let url = first
         .and_then(|first| first.get("url"))
         .and_then(|url| url.as_str())
-        .filter(|url| !url.is_empty())
-        .map(str::to_owned))
+        .filter(|url| !url.is_empty());
+    let trial = url.is_some()
+        && first
+            .and_then(|first| first.get("freeTrialPrivilege"))
+            .and_then(|privilege| privilege.get("resCanListen"))
+            .and_then(|can_listen| can_listen.as_bool())
+            .unwrap_or(false);
+    let mut result = SongUrl::resolved(url.map(str::to_owned));
+    result.trial = trial;
+    Ok(result)
 }
 
 fn str_field(value: &serde_json::Value, key: &str) -> String {
@@ -245,12 +290,65 @@ mod tests {
     }
 
     #[test]
+    fn song_url_params_match_official_contract() {
+        let params = song_url_params("347230", "jymaster");
+        // `ids` is a JSON array of the numeric id, not the string "[id]".
+        assert_eq!(params["ids"], serde_json::json!([347230]));
+        assert_eq!(params["encodeType"], "flac");
+        assert_eq!(song_url_params("347230", "exhigh")["encodeType"], "aac");
+        let header: serde_json::Value =
+            serde_json::from_str(params["header"].as_str().unwrap()).unwrap();
+        assert_eq!(header["os"], "pc");
+        assert_eq!(header["deviceId"], "liteos");
+        let request_id = header["requestId"].as_str().unwrap();
+        assert!(request_id.len() == 8 && request_id.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn song_url_request_appends_music_u_cookie() {
+        let anonymous = song_url_request("1", "standard", None);
+        let cookie = |request: &HttpRequest| {
+            request
+                .headers
+                .iter()
+                .find(|(name, _)| name == "Cookie")
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        assert!(!cookie(&anonymous).contains("MUSIC_U"));
+        let logged_in = song_url_request("1", "standard", Some("deadbeef"));
+        assert!(cookie(&logged_in).contains("MUSIC_U=deadbeef"));
+    }
+
+    #[test]
     fn parse_song_url_extracts_first() {
+        let full = parse_song_url(r#"{"code":200,"data":[{"url":"http://cdn/a.mp3"}]}"#).unwrap();
+        assert_eq!(full.url.as_deref(), Some("http://cdn/a.mp3"));
+        assert!(!full.trial);
+        assert_eq!(full.reason, None);
         assert_eq!(
-            parse_song_url(r#"{"data":[{"url":"http://cdn/a.mp3"}]}"#).unwrap(),
-            Some("http://cdn/a.mp3".to_owned())
+            parse_song_url(r#"{"code":200,"data":[{"url":""}]}"#).unwrap().url,
+            None
         );
-        assert_eq!(parse_song_url(r#"{"data":[{"url":""}]}"#).unwrap(), None);
-        assert_eq!(parse_song_url(r#"{"data":[{"url":null}]}"#).unwrap(), None);
+        assert_eq!(
+            parse_song_url(r#"{"code":200,"data":[{"url":null}]}"#).unwrap().url,
+            None
+        );
+    }
+
+    #[test]
+    fn parse_song_url_marks_trial_clips() {
+        let body = r#"{"code":200,"data":[{"url":"http://cdn/trial.mp3",
+            "freeTrialPrivilege":{"resCanListen":true,"resFrag":30}}]}"#;
+        let result = parse_song_url(body).unwrap();
+        assert_eq!(result.url.as_deref(), Some("http://cdn/trial.mp3"));
+        assert!(result.trial);
+    }
+
+    #[test]
+    fn parse_song_url_surfaces_request_level_rejection() {
+        let result = parse_song_url(r#"{"code":401,"message":"need login"}"#).unwrap();
+        assert_eq!(result.url, None);
+        assert!(result.reason.unwrap().contains("401"));
     }
 }

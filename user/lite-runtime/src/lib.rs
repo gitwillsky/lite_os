@@ -383,7 +383,8 @@ fn render_latest(
         )?,
         Mode::App(_) => display.commit_app(buffer_id, &output.damage)?,
     }
-    interactions.hits = output.hits;    interactions.key_listener = output.key_listener;
+    interactions.hits = output.hits;
+    interactions.key_listener = output.key_listener;
     input::reconcile_cursor(interactions, display)?;
     // Drop a hovered key whose region vanished from the rebuilt hit list (e.g.
     // the menu closed). The JS component unmounts and resets its own hover
@@ -563,5 +564,3 @@ fn reap_children(children: &mut Vec<SessionChild>) -> Result<(), Box<dyn Error>>
     }
     Ok(())
 }
-
-

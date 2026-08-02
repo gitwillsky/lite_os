@@ -17,15 +17,23 @@ from verify_audio import (  # noqa: E402
     COMMAND_CENTER_POINT,
     COMMAND_CENTER_SIGNATURE_POINTS,
     COMMAND_MUSIC_POINT,
+    ELEMENT_MUTE_POINT,
+    ELEMENT_VOLUME_X,
     FIXTURES,
+    LIBRARY_FIRST_ROW_POINT,
+    LIBRARY_LAST_ROW_POINT,
+    LIBRARY_TAB_POINT,
     LIMITER_FIXTURE,
     LOOP_STATE_RE,
     MASTER_MUTE_POINT,
     MASTER_SCALE_Y,
     MASTER_VOLUME_X,
     MUSIC_APP_ORIGINS,
+    NEXT_BUTTON_POINT,
+    PLAY_BUTTON_POINT,
     REPEAT_BUTTON_POINT,
     S16_POSITIVE_MAX,
+    SEEK_POINT,
     SYSTEM_CENTER_POINT,
     _debugfs_directory_entries,
     _debugfs_quoted_path,
@@ -98,19 +106,37 @@ class AudioRuntimeGateTests(unittest.TestCase):
         self.assertEqual(signal.frames[0], (0.25, 0.25))
         self.assertEqual(signal.frames[-1], (0.25, 0.25))
 
-    def test_production_repeat_hit_point_matches_vqa_and_all_windows(self) -> None:
+    def test_production_music_hit_points_match_vqa_and_all_windows(self) -> None:
+        first_x, first_y = MUSIC_APP_ORIGINS[0]
+        expected = (
+            (LIBRARY_TAB_POINT, (472, 181)),
+            (LIBRARY_FIRST_ROW_POINT, (658, 269)),
+            (LIBRARY_LAST_ROW_POINT, (658, 712)),
+            (REPEAT_BUTTON_POINT, (848, 550)),
+            (PLAY_BUTTON_POINT, (580, 550)),
+            (NEXT_BUTTON_POINT, (653, 550)),
+            (SEEK_POINT, (588, 512)),
+            (ELEMENT_MUTE_POINT, (583, 584)),
+        )
+        for (x, y), global_point in expected:
+            self.assertEqual((first_x + x, first_y + y), global_point)
         self.assertEqual(
-            (
-                MUSIC_APP_ORIGINS[0][0] + REPEAT_BUTTON_POINT[0],
-                MUSIC_APP_ORIGINS[0][1] + REPEAT_BUTTON_POINT[1],
-            ),
-            (945, 181),
+            {percent: first_x + x for percent, x in ELEMENT_VOLUME_X.items()},
+            {50: 705, 80: 750},
         )
         for app_x, app_y in MUSIC_APP_ORIGINS:
-            x = app_x + REPEAT_BUTTON_POINT[0]
-            y = app_y + REPEAT_BUTTON_POINT[1]
-            self.assertLess(x, 1504)
-            self.assertLess(y, 772)
+            for x, y in (
+                LIBRARY_TAB_POINT,
+                LIBRARY_FIRST_ROW_POINT,
+                LIBRARY_LAST_ROW_POINT,
+                REPEAT_BUTTON_POINT,
+                PLAY_BUTTON_POINT,
+                NEXT_BUTTON_POINT,
+                SEEK_POINT,
+                ELEMENT_MUTE_POINT,
+            ):
+                self.assertLess(app_x + x, 1504)
+                self.assertLess(app_y + y, 772)
         self.assertEqual(
             LOOP_STATE_RE.findall(
                 "LITE_AUDIO loop id=1 enabled=true\n"

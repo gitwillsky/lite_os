@@ -16,9 +16,13 @@
   一个 React root 和一个顶层窗口。桌面 `apps.launch` 以 `/bin/<id>` spawn（不再是共享
   `/bin/lite-ui --app <id>`）。无窗体程序和 3D 游戏不经过 LiteUI。
 - 应用专属 native 能力经 `HostExtension` 注入运行时 dispatch 级联（`invoke_media` 之后），不写进库：
-  `music-player/src`（`MusicExt`）独占 QQ/网易云签名、TLS/HTTP（ureq/rustls/ring，仅此二进制链接）
-  与流式下载 worker；`desktop/src`（`DesktopExt` + `registry.rs`）独占启动器策略（`apps.list` 扫描
-  `app.json`、`apps.launch`、`desktop.shutdown`）。`file-manager`/`my-computer` 无扩展，只用库内
+  `music-player/src`（`MusicExt`）独占 QQ/网易云请求构造与 eapi 加密、可选登录态
+  （`/root/music-credentials.json` 中用户自粘贴的 cookie，缺失/损坏时匿名降级）、TLS/HTTP
+  （ureq/rustls/ring，仅此二进制链接）与流式下载 worker。在线解析只走官方端点：QQ 用无签名
+  `musicu.fcg` + `UrlGetVkey`（加密 `mflac/mgg` 与母带/全景声档位不支持——无法解密或超出解码器
+  能力），网易云 level 只取 `jymaster/hires/lossless/exhigh/standard`；平台只给试听片段时按
+  `freeTrialPrivilege` 如实标注。`desktop/src`（`DesktopExt` + `registry.rs`）独占启动器策略
+  （`apps.list` 扫描 `app.json`、`apps.launch`、`desktop.shutdown`）。`file-manager`/`my-computer` 无扩展，只用库内
   `fs.*`。窗口机制（surfaces/configure/move/focus/close、accelerators、`audio-system.*` 音量）与终端
   PTY 是运行时集成的 compositor 客户端/IO 基础设施，留在库内（terminal 由 `terminal` 二进制以库内
   `id=="terminal"` 路径激活），不属于应用策略。扩展只经 `ExtensionCx` 用通用原语（requestId、

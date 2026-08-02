@@ -7,7 +7,8 @@
   `fs.*` 与音频播放管线（`media.*` + 边下边播 `GrowingFile` 流式解码）。每个 GUI 应用是链接该库的
   独立二进制 `/bin/<id>`（`desktop` / `file-manager` / `my-computer` / `terminal` / `music-player`），
   桌面 `apps.launch` 以该路径 spawn。应用专属 native 能力经 `HostExtension` 注入 `Host` dispatch
-  级联（`invoke_media` 之后），不写进库：`music-player` 的 `MusicExt` 独占 QQ/网易云签名、TLS/HTTP
+  级联（`invoke_media` 之后），不写进库：`music-player` 的 `MusicExt` 独占 QQ/网易云请求构造与
+  eapi 加密、可选登录态文件（`/root/music-credentials.json`）、TLS/HTTP
   栈与流式下载 worker（唯一链接 ureq/rustls/ring 的二进制）；`desktop` 的 `DesktopExt` 独占启动器
   策略（`apps.list` 扫描 `app.json`、`apps.launch` 校验后 spawn `/bin/<id>`、`desktop.shutdown`）。
   `HostExtension` 只经 `ExtensionCx` 使用**通用**原语（`next_request_id`、`events().emit(channel,…)`

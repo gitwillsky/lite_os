@@ -18,7 +18,7 @@ mod shadow;
 mod transform;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     path::PathBuf,
 };
@@ -58,6 +58,31 @@ struct RenderNode {
     computed: Computed,
     id: NodeId,
     children: Vec<RenderNode>,
+    /// Whether this subtree contains a CSS `position: fixed` node.
+    ///
+    /// Fixed-layer paint must walk through document ancestors to reach those
+    /// nodes, but an entire window subtree without one cannot contribute any
+    /// fixed pixels or hit regions. Publishing the fact during tree creation
+    /// prevents the steady frame path from recursively scanning every app
+    /// control just to discover that it is not fixed.
+    has_fixed_descendant: bool,
+}
+
+/// Stable identity of the fixed-position paint tree.
+///
+/// The document layer is retained independently, but fixed chrome also needs
+/// a retained identity: repainting its text, images and shadows on every
+/// unrelated window resize was the dominant 30 FPS regression. Only fixed
+/// ancestors and the complete descendants of a fixed root are copied, so an
+/// application window update does not invalidate the shell cache.
+#[derive(Clone, PartialEq)]
+struct FixedSignatureNode {
+    id: u64,
+    kind: String,
+    props: BTreeMap<String, Value>,
+    text: String,
+    computed: Computed,
+    children: Vec<FixedSignatureNode>,
 }
 
 /// Exact retained identity of the document layer. Fixed-position subtrees are
@@ -259,6 +284,13 @@ pub struct Renderer {
     /// Fixed-layer clips from the preceding desktop render. Removed overlays
     /// must damage their old pixels as well as current overlays their new ones.
     previous_fixed_clips: Vec<display_proto::Rect>,
+    /// Cached fixed output metadata reused while its pixels remain valid.
+    fixed_output: Option<RenderOutput>,
+    /// Source/style identity of the fixed tree represented by `fixed_output`.
+    fixed_signature: Option<Vec<FixedSignatureNode>>,
+    /// Number of following commits that must refresh a newly changed fixed
+    /// layer into every presentation buffer before steady-state reuse.
+    fixed_refresh_remaining: usize,
     /// Stable node id of the focused form control, or `None`.
     focused: Option<u64>,
     /// Current DOM pointer target used to derive `:hover` for the target and
@@ -295,6 +327,9 @@ impl Renderer {
             backdrop_blur: backdrop::BackdropBlur::new(),
             document_layer: None,
             previous_fixed_clips: Vec::new(),
+            fixed_output: None,
+            fixed_signature: None,
+            fixed_refresh_remaining: 0,
             focused: None,
             hover_target: None,
             active_target: None,
@@ -385,11 +420,16 @@ impl Renderer {
             tree.new_with_children(style, &ids)
         }
         .map_err(taffy_error)?;
+        let has_fixed_descendant = computed.get("position") == Some("fixed")
+            || children
+                .iter()
+                .any(|child| child.has_fixed_descendant);
         Ok(RenderNode {
             source,
             computed,
             id,
             children,
+            has_fixed_descendant,
         })
     }
 }
@@ -465,6 +505,36 @@ fn collect_scroll_nodes(node: &RenderNode, identities: &mut HashSet<u64>) {
     }
     for child in &node.children {
         collect_scroll_nodes(child, identities);
+    }
+}
+
+fn fixed_signature(node: &RenderNode) -> Option<FixedSignatureNode> {
+    if !node.has_fixed_descendant {
+        return None;
+    }
+    let children = if node.computed.get("position") == Some("fixed") {
+        node.children.iter().map(full_signature).collect()
+    } else {
+        node.children.iter().filter_map(fixed_signature).collect()
+    };
+    Some(FixedSignatureNode {
+        id: node.source.id,
+        kind: node.source.kind.clone(),
+        props: node.source.props.clone(),
+        text: node.source.text.clone(),
+        computed: node.computed.clone(),
+        children,
+    })
+}
+
+fn full_signature(node: &RenderNode) -> FixedSignatureNode {
+    FixedSignatureNode {
+        id: node.source.id,
+        kind: node.source.kind.clone(),
+        props: node.source.props.clone(),
+        text: node.source.text.clone(),
+        computed: node.computed.clone(),
+        children: node.children.iter().map(full_signature).collect(),
     }
 }
 

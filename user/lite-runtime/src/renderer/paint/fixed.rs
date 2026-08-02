@@ -23,6 +23,9 @@ impl Renderer {
         output: &mut RenderOutput,
         walk: PaintWalk,
     ) -> io::Result<()> {
+        if !node.has_fixed_descendant {
+            return Ok(());
+        }
         let layout = tree.layout(node.id).map_err(taffy_error)?;
         let translation = transform_translation(&node.computed);
         let origin = (

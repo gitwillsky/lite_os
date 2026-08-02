@@ -2,9 +2,9 @@
 //!
 //! A thin binary that runs the generic `lite-runtime` GUI/JS runtime with one
 //! [`MusicExt`] extension. The extension owns everything provider-specific —
-//! QQ/NetEase request signing, the HTTPS+TLS stack, and the
-//! play-while-downloading stream worker — so the runtime library and the other
-//! app binaries carry none of it. The React UI (bundled to
+//! QQ/NetEase request construction and eapi encryption, the HTTPS+TLS stack,
+//! and the play-while-downloading stream worker — so the runtime library and
+//! the other app binaries carry none of it. The React UI (bundled to
 //! `/usr/share/liteos/apps/music-player`) reaches these ops through the
 //! `lite:net` module.
 //!
@@ -14,6 +14,7 @@
 //! JS resolves a per-id promise. Streaming ops manage a growing temp file the
 //! runtime's decoder plays as it fills (see [`stream`]).
 
+mod credentials;
 mod netease;
 mod provider;
 mod qq;
@@ -153,7 +154,9 @@ impl MusicExt {
     }
 
     /// Resolve a playable URL for one track at one quality tier; body is
-    /// `{"url": "..."|null}`.
+    /// `{"url": string|null, "kind": "full"|"trial", "reason": string|null}`.
+    /// The optional credentials file is re-read here (cheap, and edits must
+    /// not require an app restart).
     fn music_song_url(&self, cx: &ExtensionCx, payload: &str) -> Result<String, EngineError> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -167,7 +170,14 @@ impl MusicExt {
         }
         let request: Request = json(payload)?;
         self.spawn_request(cx, move || {
-            provider::song_url(&request.source, &request.id, &request.level, request.quality_index)
+            let credentials = credentials::load();
+            provider::song_url(
+                &request.source,
+                &request.id,
+                &request.level,
+                request.quality_index,
+                &credentials,
+            )
         })
     }
 
