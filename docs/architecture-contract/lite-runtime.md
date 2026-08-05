@@ -162,7 +162,8 @@
   button/key/wheel/focus 不可合并。capture 只能消费同一次 pointer-down 的 input serial，并在 up、unmount、
   focus loss 或 disconnect 时由 compositor exactly-once reset。
 - cursor shape wire value 固定为 arrow、pointer、NS、EW、NESW、NWSE 与 hidden 七种；LiteUI 从标准 CSS
-  `cursor` 值归一化，compositor 独占 checked 预乘 RGBA cursor asset（48×48 物理像素，`.lc2`），切换时
+  `cursor` 值归一化，compositor 独占 checked 预乘 RGBA cursor asset（48×48 物理像素，`.lc2`）；每个
+  asset 必须携带并校验自己的物理 `hot_x/hot_y`，禁止 compositor 按 shape index 猜测热点。切换时
   透明补齐到唯一 64×64 dumb BO，并由 DRM 以标准 B8G8R8A8 2D resource upload 后保留 hotspot；hidden 不创建平行透明 asset，而以
   `UPDATE_CURSOR(resource_id=0)` 禁用硬件光标。未知值必须回落 arrow，
   不接受应用 URL、位图或 theme asset。
