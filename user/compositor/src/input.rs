@@ -14,6 +14,8 @@ use crate::session::Session;
 const EV_KEY: u16 = 1;
 const EV_REL: u16 = 2;
 const EV_ABS: u16 = 3;
+const EV_SYN: u16 = 0;
+const SYN_REPORT: u16 = 0;
 const ABS_X: u16 = 0;
 const ABS_Y: u16 = 1;
 const REL_HWHEEL: u16 = 6;
@@ -82,10 +84,14 @@ impl Input {
         }
     }
 
-    pub fn poll(&mut self, session: &mut Session) -> io::Result<bool> {
+    pub fn poll(
+        &mut self,
+        session: &mut Session,
+        mut move_cursor: impl FnMut((i32, i32)) -> io::Result<()>,
+    ) -> io::Result<bool> {
         let before = (self.x, self.y);
         self.poll_keyboard(session)?;
-        self.poll_pointer(session)?;
+        self.poll_pointer(session, &mut move_cursor)?;
         Ok(before != (self.x, self.y))
     }
 
@@ -140,16 +146,27 @@ impl Input {
         Ok(())
     }
 
-    fn poll_pointer(&mut self, session: &mut Session) -> io::Result<()> {
+    fn poll_pointer(
+        &mut self,
+        session: &mut Session,
+        move_cursor: &mut impl FnMut((i32, i32)) -> io::Result<()>,
+    ) -> io::Result<()> {
         let Some(device) = self.pointer.as_mut() else {
             return Ok(());
         };
         let mut events = [InputEvent::EMPTY; EVENT_CAPACITY];
         let count = read_events(device, &mut events)?;
+        let mut route_motion = false;
         for event in &events[..count] {
             match event.kind() {
                 EV_ABS if event.code() == ABS_X => self.pending_x = Some(event.value()),
                 EV_ABS if event.code() == ABS_Y => self.pending_y = Some(event.value()),
+                EV_SYN if event.code() == SYN_REPORT => {
+                    if self.apply_motion() {
+                        move_cursor((self.x, self.y))?;
+                        route_motion = true;
+                    }
+                }
                 EV_REL if event.code() == REL_WHEEL => {
                     // evdev REL_WHEEL is positive when the wheel rolls up
                     // (content should move up). DOM `deltaY` is positive when
@@ -162,26 +179,35 @@ impl Input {
                 }
                 EV_KEY => {
                     if let Some((button, bit)) = button(event.code()) {
-                        // Flush the accumulated position first so the button
-                        // transition reports the coordinates where it happened.
-                        self.flush_motion(session)?;
+                        // A button may precede SYN_REPORT inside the same evdev packet. Apply
+                        // its accumulated axes first so both hardware cursor and button routing
+                        // use the physical click coordinate.
+                        if self.apply_motion() {
+                            move_cursor((self.x, self.y))?;
+                            route_motion = true;
+                        }
+                        if route_motion {
+                            self.route_motion(session)?;
+                            route_motion = false;
+                        }
                         self.flush_button(session, button, bit, event.value())?;
                     }
                 }
                 _ => {}
             }
         }
-        // Motion is absolute, so a whole drain of samples collapses into one
-        // route per main-loop iteration; intermediate positions are invisible
-        // to clients that render one frame per event.
-        self.flush_motion(session)?;
+        // Hardware cursor motion follows every complete evdev report above. Client routing stays
+        // latest-only per drain, preventing hover/React work from re-entering the cursor fast path.
+        if route_motion {
+            self.route_motion(session)?;
+        }
         // Wheel deltas are relative and accumulate across the drain, so the
         // whole batch routes as one scroll at the current pointer position.
         self.flush_wheel(session)?;
         Ok(())
     }
 
-    fn flush_motion(&mut self, session: &mut Session) -> io::Result<()> {
+    fn apply_motion(&mut self) -> bool {
         let old = (self.x, self.y);
         if let Some(raw) = self.pending_x.take() {
             self.x = map_absolute(raw, self.x_range, self.width);
@@ -189,17 +215,18 @@ impl Input {
         if let Some(raw) = self.pending_y.take() {
             self.y = map_absolute(raw, self.y_range, self.height);
         }
-        if old != (self.x, self.y) {
-            session.route_pointer(
-                self.x,
-                self.y,
-                PointerPhase::Motion,
-                0,
-                self.buttons,
-                self.take_serial(),
-            )?;
-        }
-        Ok(())
+        old != (self.x, self.y)
+    }
+
+    fn route_motion(&mut self, session: &mut Session) -> io::Result<()> {
+        session.route_pointer(
+            self.x,
+            self.y,
+            PointerPhase::Motion,
+            0,
+            self.buttons,
+            self.take_serial(),
+        )
     }
 
     fn flush_button(

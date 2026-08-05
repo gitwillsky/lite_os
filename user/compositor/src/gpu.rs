@@ -2,7 +2,7 @@
 
 mod paint;
 
-use std::io;
+use std::{cell::RefCell, io};
 
 use display_proto::{ClipMask, ImageRepeat, MAX_NODE_CLIP_MASKS, Rect, TextureRect};
 use linux_uapi::drm::{
@@ -14,6 +14,7 @@ const VERTEX_ELEMENTS: u32 = 1;
 const VERTEX_SHADER: u32 = 2;
 const FRAGMENT_SHADER: u32 = 3;
 const BLEND: u32 = 4;
+const REPLACE_BLEND: u32 = 19;
 const DEPTH_STENCIL_ALPHA: u32 = 5;
 const RASTERIZER: u32 = 6;
 const SAMPLER_NEAREST_EDGE: u32 = 7;
@@ -31,6 +32,10 @@ const COLOR_CONSTANT: usize = MAX_GPU_CLIP_MASKS * CONSTANTS_PER_CLIP_MASK;
 const MODE_CONSTANT: usize = COLOR_CONSTANT + 1;
 const PARAMETER_CONSTANT: usize = MODE_CONSTANT + 1;
 const LAST_FRAGMENT_CONSTANT: usize = PARAMETER_CONSTANT + 3;
+// Each nested opacity group retains one backdrop and one isolated target while rendering its
+// child slice; the deepest effect may need one additional target. The display protocol caps
+// opacity nesting at 16, so this capacity covers every valid simultaneous effect lifetime.
+const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 1;
 
 const VERTEX_SHADER_SOURCE: &str = "VERT\n\
 DCL IN[0]\n\
@@ -114,8 +119,13 @@ pub enum TextureMode {
     MaskBlur {
         radius: f32,
     },
-    InvertedMaskBlur {
-        radius: f32,
+    Shadow {
+        mask: Rect,
+        radii: [display_proto::CornerRadius; 4],
+        support: f32,
+        spread: f32,
+        offset: [f32; 2],
+        inset: bool,
     },
 }
 
@@ -131,11 +141,47 @@ pub enum TextureWrap {
     Background(ImageRepeat),
 }
 
+struct EffectScratch<'a> {
+    pool: &'a RefCell<Vec<VirglResource>>,
+    resource: Option<VirglResource>,
+}
+
+impl std::ops::Deref for EffectScratch<'_> {
+    type Target = VirglResource;
+
+    fn deref(&self) -> &Self::Target {
+        self.resource
+            .as_ref()
+            .expect("live effect scratch lost its resource")
+    }
+}
+
+impl Drop for EffectScratch<'_> {
+    fn drop(&mut self) {
+        let resource = self
+            .resource
+            .take()
+            .expect("effect scratch resource recycled twice");
+        let mut pool = self.pool.borrow_mut();
+        if pool.len() == EFFECT_TARGET_CAPACITY {
+            // A mode/geometry change can fill the pool with obsolete extents. Retire exactly one
+            // old target so the current geometry becomes reusable; steady-state paint never
+            // reaches this branch and therefore never GEM_CLOSEs an effect target.
+            pool.swap_remove(0);
+        }
+        pool.push(resource);
+    }
+}
+
 /// Persistent VirGL pipeline shared by every desktop and application surface.
 pub struct GpuRenderer {
     context: VirglContext,
     vertices: VirglResource,
     white: VirglResource,
+    /// Single-thread-owned fixed-capacity effect targets shared by opacity and texture blur.
+    /// Without this sole pool, every repaint synchronously creates/attaches/unrefs several host
+    /// resources and blocks evdev routing for hundreds of milliseconds.
+    effect_scratch: RefCell<Vec<VirglResource>>,
 }
 
 impl GpuRenderer {
@@ -157,6 +203,7 @@ impl GpuRenderer {
         let fragment_shader = fragment_shader();
         command.create_shader(FRAGMENT_SHADER, ShaderStage::Fragment, &fragment_shader);
         command.create_premultiplied_blend(BLEND);
+        command.create_replace_blend(REPLACE_BLEND);
         command.create_depth_stencil_alpha(DEPTH_STENCIL_ALPHA);
         command.create_rasterizer(RASTERIZER);
         command.create_sampler_state(
@@ -202,10 +249,31 @@ impl GpuRenderer {
         context.exec(command.words(), &[&vertices])?;
         vertices.wait()?;
         white.wait()?;
+        let mut effect_scratch = Vec::new();
+        effect_scratch
+            .try_reserve_exact(EFFECT_TARGET_CAPACITY)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         Ok(Self {
             context: context.clone(),
             vertices,
             white,
+            effect_scratch: RefCell::new(effect_scratch),
+        })
+    }
+
+    fn take_effect_scratch(&self, width: u32, height: u32) -> io::Result<EffectScratch<'_>> {
+        let resource = {
+            let mut pool = self.effect_scratch.borrow_mut();
+            pool.iter()
+                .position(|target| target.width() == width && target.height() == height)
+                .map(|index| pool.swap_remove(index))
+        };
+        Ok(EffectScratch {
+            pool: &self.effect_scratch,
+            resource: Some(match resource {
+                Some(resource) => resource,
+                None => self.context.create_texture(width, height)?,
+            }),
         })
     }
 
@@ -221,6 +289,16 @@ impl GpuRenderer {
         layers: &[TextureLayer<'_>],
         clear: bool,
     ) -> io::Result<()> {
+        self.render_layers_with_blend(target, layers, clear, None)
+    }
+
+    fn render_layers_with_blend(
+        &self,
+        target: &VirglResource,
+        layers: &[TextureLayer<'_>],
+        clear: bool,
+        blend: Option<u32>,
+    ) -> io::Result<()> {
         let screen = Rect {
             x: 0,
             y: 0,
@@ -228,16 +306,15 @@ impl GpuRenderer {
             height: target.height(),
         };
         let mut commands = CommandEncoder::new();
+        if let Some(blend) = blend {
+            commands.bind_object(ObjectKind::Blend, blend);
+        }
         commands.create_surface(TARGET_SURFACE, target.resource_id(), target.format());
         commands.set_framebuffer(TARGET_SURFACE);
         commands.set_viewport(target.width(), target.height());
         if clear {
             commands.clear([0.0, 0.0, 0.0, 0.0]);
         }
-        self.context
-            .exec(commands.words(), &[target, &self.vertices])?;
-
-        let mut commands = CommandEncoder::new();
         let mut resources = vec![target, &self.vertices];
         for layer in layers {
             let clip = layer.clip_masks.iter().fold(layer.clip, |clip, mask| {
@@ -283,13 +360,93 @@ impl GpuRenderer {
                 resources.extend([target, &self.vertices]);
             }
         }
-        if !commands.is_empty() {
-            self.context.exec(commands.words(), &resources)?;
-        }
-        let mut commands = CommandEncoder::new();
         commands.destroy_object(ObjectKind::Surface, TARGET_SURFACE);
-        self.context.exec(commands.words(), &[target])?;
-        target.wait()
+        if blend.is_some() {
+            commands.bind_object(ObjectKind::Blend, BLEND);
+        }
+        self.context.exec(commands.words(), &resources)
+    }
+
+    /// Seeds a retained target from the exact previous revision and clears the
+    /// rectangle that the new display list will replace.
+    pub(super) fn prepare_retained_target(
+        &self,
+        target: &VirglResource,
+        base: &VirglResource,
+        damage: Rect,
+    ) -> io::Result<()> {
+        if target.width() != base.width()
+            || target.height() != base.height()
+            || target.format() != base.format()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retained base texture geometry or format mismatch",
+            ));
+        }
+        let screen = Rect {
+            x: 0,
+            y: 0,
+            width: target.width(),
+            height: target.height(),
+        };
+        self.render(
+            target,
+            &[TextureLayer {
+                texture: base,
+                source: TextureRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: base.width() as f32,
+                    height: base.height() as f32,
+                },
+                bounds: screen,
+                clip: screen,
+                clip_masks: &[],
+                clip_offset: (0, 0),
+                color: [1.0; 4],
+                mode: TextureMode::Color,
+                sampling: TextureSampling::Nearest,
+                wrap: TextureWrap::Edge,
+            }],
+        )?;
+        self.clear_retained_damage(target, damage)
+    }
+
+    fn clear_retained_damage(&self, target: &VirglResource, damage: Rect) -> io::Result<()> {
+        let Some(damage) = intersect(
+            damage,
+            Rect {
+                x: 0,
+                y: 0,
+                width: target.width(),
+                height: target.height(),
+            },
+        ) else {
+            return Ok(());
+        };
+        self.render_layers_with_blend(
+            target,
+            &[TextureLayer {
+                texture: &self.white,
+                source: TextureRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
+                bounds: damage,
+                clip: damage,
+                clip_masks: &[],
+                clip_offset: (0, 0),
+                color: [0.0; 4],
+                mode: TextureMode::Color,
+                sampling: TextureSampling::Nearest,
+                wrap: TextureWrap::Edge,
+            }],
+            false,
+            Some(REPLACE_BLEND),
+        )
     }
 }
 
@@ -436,12 +593,142 @@ fn fragment_parameters(mode: TextureMode, texture: &VirglResource) -> (f32, [u32
             words[1] = (radius / texture.height() as f32).to_bits();
             (4.0, words)
         }
-        TextureMode::InvertedMaskBlur { radius } => {
-            words[0] = (radius / texture.width() as f32).to_bits();
-            words[1] = (radius / texture.height() as f32).to_bits();
+        TextureMode::Shadow {
+            mask,
+            radii,
+            support,
+            spread,
+            offset,
+            inset,
+        } => {
+            let edges = |rect: Rect| {
+                [
+                    (rect.x as f32).to_bits(),
+                    (rect.y as f32).to_bits(),
+                    (rect.x.saturating_add_unsigned(rect.width) as f32).to_bits(),
+                    (rect.y.saturating_add_unsigned(rect.height) as f32).to_bits(),
+                ]
+            };
+            words[..4].copy_from_slice(&edges(mask));
+            words[4..8].copy_from_slice(&radii.map(|radius| radius.x as f32).map(f32::to_bits));
+            words[8..12].copy_from_slice(&radii.map(|radius| radius.y as f32).map(f32::to_bits));
+            let reciprocal = if support > 0.0 { 0.5 / support } else { 1024.0 };
+            words[12..16].copy_from_slice(&[
+                if inset { -reciprocal } else { reciprocal }.to_bits(),
+                spread.to_bits(),
+                offset[0].to_bits(),
+                offset[1].to_bits(),
+            ]);
             (5.0, words)
         }
     }
+}
+
+fn append_rounded_rect_sdf(shader: &mut String, instruction: &mut usize, original: bool) {
+    use std::fmt::Write as _;
+
+    let mut emit = |line: &str| {
+        writeln!(shader, "{}: {line}", *instruction).unwrap();
+        *instruction += 1;
+    };
+    if original {
+        emit(&format!(
+            "ADD TEMP[2].xy, CONST[0][{PARAMETER_CONSTANT}].xyxy, -CONST[0][{}].zwzw",
+            PARAMETER_CONSTANT + 3
+        ));
+        emit(&format!(
+            "ADD TEMP[2].xy, TEMP[2].xyxy, CONST[0][{}].yyyy",
+            PARAMETER_CONSTANT + 3
+        ));
+        emit(&format!(
+            "ADD TEMP[2].zw, CONST[0][{PARAMETER_CONSTANT}].zwzw, -CONST[0][{}].zwzw",
+            PARAMETER_CONSTANT + 3
+        ));
+        emit(&format!(
+            "ADD TEMP[2].zw, TEMP[2].zwzw, -CONST[0][{}].yyyy",
+            PARAMETER_CONSTANT + 3
+        ));
+        emit("ADD TEMP[4].xy, TEMP[2].xyxy, TEMP[2].zwzw");
+    } else {
+        emit(&format!(
+            "ADD TEMP[4].xy, CONST[0][{PARAMETER_CONSTANT}].xyxy, CONST[0][{PARAMETER_CONSTANT}].zwzw"
+        ));
+    }
+    emit("MUL TEMP[4].xy, TEMP[4].xyxy, IMM[0].xxxx");
+    if original {
+        emit("ADD TEMP[4].zw, TEMP[2].zwzw, -TEMP[2].xyxy");
+    } else {
+        emit(&format!(
+            "ADD TEMP[4].zw, CONST[0][{PARAMETER_CONSTANT}].zwzw, -CONST[0][{PARAMETER_CONSTANT}].xyxy"
+        ));
+    }
+    emit("MUL TEMP[4].zw, TEMP[4].zwzw, IMM[0].xxxx");
+    emit("SGE TEMP[7].y, IN[1].xxxx, TEMP[4].xxxx");
+    emit("SGE TEMP[7].z, IN[1].yyyy, TEMP[4].yyyy");
+    emit("IF TEMP[7].zzzz");
+    emit("IF TEMP[7].yyyy");
+    emit(&format!(
+        "MOV TEMP[5].z, CONST[0][{}].zzzz",
+        PARAMETER_CONSTANT + 1
+    ));
+    emit(&format!(
+        "MOV TEMP[5].w, CONST[0][{}].zzzz",
+        PARAMETER_CONSTANT + 2
+    ));
+    emit("ELSE");
+    emit(&format!(
+        "MOV TEMP[5].z, CONST[0][{}].wwww",
+        PARAMETER_CONSTANT + 1
+    ));
+    emit(&format!(
+        "MOV TEMP[5].w, CONST[0][{}].wwww",
+        PARAMETER_CONSTANT + 2
+    ));
+    emit("ENDIF");
+    emit("ELSE");
+    emit("IF TEMP[7].yyyy");
+    emit(&format!(
+        "MOV TEMP[5].z, CONST[0][{}].yyyy",
+        PARAMETER_CONSTANT + 1
+    ));
+    emit(&format!(
+        "MOV TEMP[5].w, CONST[0][{}].yyyy",
+        PARAMETER_CONSTANT + 2
+    ));
+    emit("ELSE");
+    emit(&format!(
+        "MOV TEMP[5].z, CONST[0][{}].xxxx",
+        PARAMETER_CONSTANT + 1
+    ));
+    emit(&format!(
+        "MOV TEMP[5].w, CONST[0][{}].xxxx",
+        PARAMETER_CONSTANT + 2
+    ));
+    emit("ENDIF");
+    emit("ENDIF");
+    if original {
+        emit(&format!(
+            "ADD TEMP[5].zw, TEMP[5].zwzw, -CONST[0][{}].yyyy",
+            PARAMETER_CONSTANT + 3
+        ));
+        emit("MAX TEMP[5].zw, TEMP[5].zwzw, IMM[0].zzzz");
+    }
+    emit("MAX TEMP[5].zw, TEMP[5].zwzw, IMM[0].yyyy");
+    emit("ADD TEMP[5].xy, IN[1].xyxy, -TEMP[4].xyxy");
+    emit("ABS TEMP[5].xy, TEMP[5].xyxy");
+    emit("ADD TEMP[5].xy, TEMP[5].xyxy, -TEMP[4].zwzw");
+    emit("ADD TEMP[5].xy, TEMP[5].xyxy, TEMP[5].zwzw");
+    emit("MAX TEMP[4].xy, TEMP[5].xyxy, IMM[0].zzzz");
+    emit("RCP TEMP[4].zw, TEMP[5].zwzw");
+    emit("MUL TEMP[4].xy, TEMP[4].xyxy, TEMP[4].zwzw");
+    emit("DP2 TEMP[6].x, TEMP[4], TEMP[4]");
+    emit("SQRT TEMP[6].x, TEMP[6].xxxx");
+    emit("MIN TEMP[4].y, TEMP[5].zzzz, TEMP[5].wwww");
+    emit("MUL TEMP[6].x, TEMP[6].xxxx, TEMP[4].yyyy");
+    emit("MAX TEMP[4].x, TEMP[5].xxxx, TEMP[5].yyyy");
+    emit("MIN TEMP[4].x, TEMP[4].xxxx, IMM[0].zzzz");
+    emit("ADD TEMP[6].x, TEMP[6].xxxx, TEMP[4].xxxx");
+    emit("ADD TEMP[6].x, TEMP[6].xxxx, -TEMP[4].yyyy");
 }
 
 fn fragment_shader() -> String {
@@ -607,6 +894,112 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
+        "{instruction}: SEQ TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[11].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(shader, "{instruction}: IF TEMP[7].xxxx").unwrap();
+    instruction += 1;
+    append_rounded_rect_sdf(&mut shader, &mut instruction, false);
+    writeln!(
+        shader,
+        "{instruction}: ABS TEMP[4].x, CONST[0][{}].xxxx",
+        PARAMETER_CONSTANT + 3
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MAD TEMP[6].x, -TEMP[6].xxxx, TEMP[4].xxxx, IMM[0].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MAX TEMP[6].x, TEMP[6].xxxx, IMM[0].zzzz"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MIN TEMP[6].x, TEMP[6].xxxx, IMM[0].yyyy"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MUL TEMP[6].y, TEMP[6].xxxx, TEMP[6].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MAD TEMP[4].x, -TEMP[6].xxxx, IMM[1].yyyy, IMM[1].zzzz"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MUL TEMP[6].x, TEMP[6].yyyy, TEMP[4].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: SLT TEMP[7].x, CONST[0][{}].xxxx, IMM[0].zzzz",
+        PARAMETER_CONSTANT + 3
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(shader, "{instruction}: IF TEMP[7].xxxx").unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: ADD TEMP[6].x, IMM[0].yyyy, -TEMP[6].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(shader, "{instruction}: ELSE").unwrap();
+    instruction += 1;
+    writeln!(shader, "{instruction}: MOV TEMP[1].w, TEMP[6].xxxx").unwrap();
+    instruction += 1;
+    append_rounded_rect_sdf(&mut shader, &mut instruction, true);
+    writeln!(
+        shader,
+        "{instruction}: ADD TEMP[6].x, TEMP[6].xxxx, IMM[0].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MAX TEMP[6].x, TEMP[6].xxxx, IMM[0].zzzz"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MIN TEMP[6].x, TEMP[6].xxxx, IMM[0].yyyy"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MUL TEMP[6].x, TEMP[1].wwww, TEMP[6].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(shader, "{instruction}: ENDIF").unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
+        "{instruction}: MUL TEMP[0], CONST[0][{COLOR_CONSTANT}], TEMP[6].xxxx"
+    )
+    .unwrap();
+    instruction += 1;
+    writeln!(shader, "{instruction}: ELSE").unwrap();
+    instruction += 1;
+    writeln!(
+        shader,
         "{instruction}: SEQ TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[1].yyyy"
     )
     .unwrap();
@@ -732,22 +1125,6 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     }
     writeln!(
         shader,
-        "{instruction}: SEQ TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[11].xxxx"
-    )
-    .unwrap();
-    instruction += 1;
-    writeln!(shader, "{instruction}: IF TEMP[7].xxxx").unwrap();
-    instruction += 1;
-    writeln!(
-        shader,
-        "{instruction}: ADD TEMP[0].w, IMM[0].yyyy, -TEMP[0].wwww"
-    )
-    .unwrap();
-    instruction += 1;
-    writeln!(shader, "{instruction}: ENDIF").unwrap();
-    instruction += 1;
-    writeln!(
-        shader,
         "{instruction}: SGE TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[1].wwww"
     )
     .unwrap();
@@ -802,6 +1179,8 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(shader, "{instruction}: ENDIF").unwrap();
     instruction += 1;
+    writeln!(shader, "{instruction}: ENDIF").unwrap();
+    instruction += 1;
     writeln!(shader, "{instruction}: MUL OUT[0], TEMP[0], TEMP[3].xxxx").unwrap();
     instruction += 1;
     writeln!(shader, "{instruction}: END").unwrap();
@@ -816,7 +1195,7 @@ fn translated(rectangle: Rect, offset: (i32, i32)) -> Rect {
     }
 }
 
-fn intersect(left: Rect, right: Rect) -> Option<Rect> {
+pub(crate) fn intersect(left: Rect, right: Rect) -> Option<Rect> {
     let x1 = left.x.max(right.x);
     let y1 = left.y.max(right.y);
     let x2 = left
@@ -838,6 +1217,45 @@ fn intersect(left: Rect, right: Rect) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn live_context_object_handles_are_globally_unique() {
+        // VirGL stores every object kind in one handle table. Reusing a blend
+        // handle for a sampler silently replaces the blend; the next retained
+        // clear then binds the wrong kind and drops that partial paint.
+        let fixed = [
+            VERTEX_ELEMENTS,
+            VERTEX_SHADER,
+            FRAGMENT_SHADER,
+            BLEND,
+            REPLACE_BLEND,
+            DEPTH_STENCIL_ALPHA,
+            RASTERIZER,
+            SAMPLER_NEAREST_EDGE,
+            SAMPLER_LINEAR_EDGE,
+            TARGET_SURFACE,
+            SOURCE_VIEW,
+        ];
+        let mut handles = HashSet::new();
+        for handle in fixed {
+            assert!(
+                handles.insert(handle),
+                "duplicate VirGL object handle {handle}"
+            );
+        }
+        for repeat in 0..4 {
+            for handle in [
+                SAMPLER_NEAREST_BACKGROUND + repeat,
+                SAMPLER_LINEAR_BACKGROUND + repeat,
+            ] {
+                assert!(
+                    handles.insert(handle),
+                    "duplicate VirGL object handle {handle}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn top_left_bounds_and_y0_top_texture_lower_together() {

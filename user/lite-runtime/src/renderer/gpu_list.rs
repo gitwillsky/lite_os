@@ -178,15 +178,28 @@ pub(crate) struct GpuFrame {
     pub(crate) uploads: Vec<TextureUpload>,
     pub(crate) output: RenderOutput,
     pub(crate) retired_textures: Vec<u32>,
+    pub(crate) reuses_previous: bool,
+    pub(crate) paint_changed: bool,
 }
 
 impl GpuFrame {
-    pub(crate) fn encode(&self, revision: u64, configuration_serial: u64) -> Option<Vec<u8>> {
+    pub(crate) fn encode(
+        &self,
+        revision: u64,
+        configuration_serial: u64,
+        previous_paint_revision: u64,
+    ) -> Option<Vec<u8>> {
         let mut bytes = vec![0; MAX_MESSAGE];
         let mut writer = DisplayListWriter::new(
             &mut bytes,
             revision,
             configuration_serial,
+            if self.reuses_previous {
+                (previous_paint_revision != 0).then_some(previous_paint_revision)?
+            } else {
+                0
+            },
+            self.output.damage.first().copied().unwrap_or_default(),
             self.commands.len(),
         )?;
         for command in &self.commands {

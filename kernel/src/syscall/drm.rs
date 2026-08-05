@@ -1,7 +1,10 @@
 use alloc::sync::Arc;
 
 use crate::{
-    drm::{DisplayRect, DrmError, DrmFile, DrmRetry, DrmSubmission, DrmWait, FramebufferRemoval},
+    drm::{
+        DisplayRect, DrmCursorSubmission, DrmCursorWait, DrmError, DrmFile, DrmRetry,
+        DrmSubmission, DrmWait, FramebufferRemoval, VirglTransferDirection,
+    },
     ipc::PipeWaitCondition,
     task::{TaskControlBlock, WaitResult, wait_for_pipe},
 };
@@ -41,6 +44,7 @@ const DRM_IOCTL_MODE_DIRTYFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb1, 24);
 const DRM_IOCTL_MODE_CREATE_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb2, 32);
 const DRM_IOCTL_MODE_MAP_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb3, 16);
 const DRM_IOCTL_MODE_DESTROY_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb4, 4);
+const DRM_IOCTL_MODE_CURSOR2: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xbb, 36);
 const DRM_IOCTL_MODE_ADDFB2: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb8, 104);
 const DRM_IOCTL_VIRTGPU_MAP: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x41, 16);
 const DRM_IOCTL_VIRTGPU_EXECBUFFER: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x42, 64);
@@ -85,24 +89,19 @@ pub(in crate::syscall) fn drm_ioctl(
         DRM_IOCTL_MODE_CREATE_DUMB => publication::create_dumb(task, file, argument),
         DRM_IOCTL_MODE_MAP_DUMB => map_dumb(task, file, argument),
         DRM_IOCTL_MODE_DESTROY_DUMB => destroy_dumb(task, file, argument),
+        DRM_IOCTL_MODE_CURSOR2 => cursor2(task, file, argument),
         DRM_IOCTL_MODE_ADDFB2 => publication::add_framebuffer2(task, file, argument),
         DRM_IOCTL_VIRTGPU_MAP => virtgpu::map(task, file, argument),
         DRM_IOCTL_VIRTGPU_EXECBUFFER => virtgpu::execbuffer(task, file, argument),
         DRM_IOCTL_VIRTGPU_GETPARAM => virtgpu::get_param(task, file, argument),
         DRM_IOCTL_VIRTGPU_RESOURCE_CREATE => virtgpu::resource_create(task, file, argument),
         DRM_IOCTL_VIRTGPU_RESOURCE_INFO => virtgpu::resource_info(task, file, argument),
-        DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST => virtgpu::transfer(
-            task,
-            file,
-            argument,
-            crate::drivers::VirglTransferDirection::FromHost,
-        ),
-        DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST => virtgpu::transfer(
-            task,
-            file,
-            argument,
-            crate::drivers::VirglTransferDirection::ToHost,
-        ),
+        DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST => {
+            virtgpu::transfer(task, file, argument, VirglTransferDirection::FromHost)
+        }
+        DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST => {
+            virtgpu::transfer(task, file, argument, VirglTransferDirection::ToHost)
+        }
         DRM_IOCTL_VIRTGPU_WAIT => virtgpu::wait(task, file, argument),
         DRM_IOCTL_VIRTGPU_GET_CAPS => virtgpu::get_caps(task, file, argument),
         DRM_IOCTL_VIRTGPU_CONTEXT_INIT => virtgpu::context_init(task, file, argument),
@@ -358,6 +357,66 @@ fn page_flip(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> R
     }
 }
 
+fn cursor2(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    const CURSOR_BO: u32 = 1;
+    const CURSOR_MOVE: u32 = 2;
+
+    let bytes = copy_in::<36>(task, argument)?;
+    let flags = read_u32(&bytes, 0)?;
+    if flags == 0 || flags & !(CURSOR_BO | CURSOR_MOVE) != 0 || read_u32(&bytes, 4)? != CRTC_ID {
+        return Err(errno::EINVAL);
+    }
+    let x = read_u32(&bytes, 8)?;
+    let y = read_u32(&bytes, 12)?;
+    let width = read_u32(&bytes, 16)?;
+    let height = read_u32(&bytes, 20)?;
+    let handle = read_u32(&bytes, 24)?;
+    let hot_x = read_u32(&bytes, 28)?;
+    let hot_y = read_u32(&bytes, 32)?;
+
+    if flags & CURSOR_BO == 0 {
+        if handle != 0 || width != 0 || height != 0 || hot_x != 0 || hot_y != 0 {
+            return Err(errno::EINVAL);
+        }
+        return file.move_cursor(x, y).map_err(drm_errno);
+    }
+
+    let resource = if handle == 0 {
+        if width != 0 || height != 0 || hot_x != 0 || hot_y != 0 {
+            return Err(errno::EINVAL);
+        }
+        None
+    } else {
+        if width != 64 || height != 64 || hot_x >= width || hot_y >= height {
+            return Err(errno::EINVAL);
+        }
+        // VirtIO requires CREATE_2D/ATTACH/TRANSFER_TO_HOST_2D to complete before UPDATE_CURSOR
+        // reaches cursorq. The adapter keeps this upload separate from scene VirGL resources.
+        loop {
+            match file.upload_cursor(handle).map_err(drm_errno)? {
+                DrmSubmission::Wait(wait) => {
+                    wait_scanout(wait)?;
+                    break;
+                }
+                DrmSubmission::Retry(retry) => wait_retry(retry)?,
+            }
+        }
+        Some(handle)
+    };
+    submit_cursor(|| file.update_cursor(resource, x, y, hot_x, hot_y))
+}
+
+fn submit_cursor(
+    mut submit: impl FnMut() -> Result<DrmCursorSubmission, DrmError>,
+) -> Result<(), isize> {
+    loop {
+        match submit().map_err(drm_errno)? {
+            DrmCursorSubmission::Wait(wait) => return wait_cursor(wait),
+            DrmCursorSubmission::Retry(retry) => wait_retry(retry)?,
+        }
+    }
+}
+
 fn dirty_framebuffer(
     task: &TaskControlBlock,
     file: &DrmFile,
@@ -423,6 +482,20 @@ fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),
             WaitResult::TimedOut => panic!("DRM completion wait has no timeout"),
+        }
+    }
+}
+
+fn wait_cursor(wait: DrmCursorWait) -> Result<(), isize> {
+    loop {
+        let Some(pipe) = wait.prepare_to_block() else {
+            return Ok(());
+        };
+        match wait_for_pipe(&pipe, PipeWaitCondition::Readable) {
+            WaitResult::Woken => {}
+            WaitResult::Interrupted => return Err(errno::EINTR),
+            WaitResult::OutOfMemory => return Err(errno::ENOMEM),
+            WaitResult::TimedOut => panic!("DRM cursor completion wait has no timeout"),
         }
     }
 }

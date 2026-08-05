@@ -5,6 +5,10 @@ pub(super) enum RuntimeStage {
     UnrefEvicted,
     Create,
     Attach,
+    UnrefCursor,
+    CreateCursor,
+    AttachCursor,
+    TransferCursor,
     TransferScanout,
     SetScanout,
     FlushScanout,
@@ -29,11 +33,14 @@ impl RuntimeStage {
             (Self::UnrefEvicted, Self::Create)
             | (Self::Create, Self::Attach)
             | (Self::Attach, Self::TransferScanout)
+            | (Self::UnrefCursor, Self::CreateCursor)
+            | (Self::CreateCursor, Self::AttachCursor)
+            | (Self::AttachCursor, Self::TransferCursor)
             | (Self::TransferScanout, Self::SetScanout)
             | (Self::SetScanout, Self::FlushScanout)
             | (Self::FlushScanout, Self::UnrefBoot)
+            | (Self::VirglSetScanout, Self::VirglFlush)
             | (Self::DisableScanout, Self::UnrefDisabled(_)) => true,
-            (Self::VirglSetScanout, Self::VirglFlush) => true,
             (Self::UnrefDisabled(previous), Self::UnrefDisabled(next)) => next > previous,
             _ => false,
         }
@@ -94,6 +101,44 @@ mod tests {
         assert!(
             RuntimeStage::FlushDamage
                 .validate_successor(RuntimeStage::UnrefReleased)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cursor_upload_accepts_only_the_standard_2d_chain() {
+        let fresh = [
+            RuntimeStage::CreateCursor,
+            RuntimeStage::AttachCursor,
+            RuntimeStage::TransferCursor,
+        ];
+        for pair in fresh.windows(2) {
+            assert!(pair[0].allows(pair[1]), "rejected {pair:?}");
+        }
+        assert!(RuntimeStage::UnrefCursor.allows(RuntimeStage::CreateCursor));
+        assert!(
+            RuntimeStage::CreateCursor
+                .validate_successor(RuntimeStage::TransferCursor)
+                .is_err()
+        );
+        assert!(
+            RuntimeStage::AttachCursor
+                .validate_successor(RuntimeStage::SetScanout)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn virgl_scanout_requires_flush_as_the_visibility_edge() {
+        assert!(RuntimeStage::VirglSetScanout.allows(RuntimeStage::VirglFlush));
+        assert!(
+            RuntimeStage::VirglSetScanout
+                .validate_successor(RuntimeStage::Virgl)
+                .is_err()
+        );
+        assert!(
+            RuntimeStage::VirglFlush
+                .validate_successor(RuntimeStage::VirglSetScanout)
                 .is_err()
         );
     }

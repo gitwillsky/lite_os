@@ -173,9 +173,11 @@ kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn enable_scheduler_i
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn enable_timer_source ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) unsafe fn restore_local (state : LocalInterruptState)
 kernel/src/arch/aarch64/io.rs :: pub (crate) fn before_mmio_write ()
+kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn read_mmio_u16 (address : usize) -> u16
 kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn read_mmio_u32 (address : usize) -> u32
 kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn read_mmio_u64 (address : usize) -> u64
 kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn read_mmio_u8 (address : usize) -> u8
+kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn write_mmio_u16 (address : usize , value : u16)
 kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn write_mmio_u32 (address : usize , value : u32)
 kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn write_mmio_u64 (address : usize , value : u64)
 kernel/src/arch/aarch64/io.rs :: pub (crate) unsafe fn write_mmio_u8 (address : usize , value : u8)
@@ -187,8 +189,10 @@ kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) struct KernelContext
 kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) type KernelResume  = fn () -> !
 kernel/src/arch/aarch64/kernel_context.rs :: pub (crate) unsafe fn switch_kernel_context (current : * mut KernelContext , next : * const KernelContext ,)
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const DIRECT_MAP_BASE : usize = 0xffff_ffc0_0000_0000
+kernel/src/arch/aarch64/mmu.rs :: pub (crate) const KERNEL_MMIO_REGION_START : usize = TTBR1_ADDRESS_TOP - KERNEL_MMIO_WINDOW_SIZE
+kernel/src/arch/aarch64/mmu.rs :: pub (crate) const KERNEL_MMIO_REGION_TOP : usize = TTBR1_ADDRESS_TOP
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const KERNEL_STACK_REGION_START : usize = DIRECT_MAP_BASE + DIRECT_MAP_SIZE
-kernel/src/arch/aarch64/mmu.rs :: pub (crate) const KERNEL_STACK_REGION_TOP : usize = usize :: MAX & ! (PAGE_SIZE - 1)
+kernel/src/arch/aarch64/mmu.rs :: pub (crate) const KERNEL_STACK_REGION_TOP : usize = KERNEL_MMIO_REGION_START
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const PAGE_SIZE : usize = 1 << PAGE_SHIFT
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const SIGNAL_TRAMPOLINE_ADDRESS : usize = TRAP_CONTEXT_ADDRESS - PAGE_SIZE
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) const TRAMPOLINE_ADDRESS : usize = USER_ADDRESS_END - PAGE_SIZE
@@ -202,9 +206,11 @@ kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn canonicalize_virtual_address (a
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn flush_local ()
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn flush_local_range (start : usize , size : usize)
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn initialize_address_space_identifiers () -> bool
+kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn initialize_kernel_mmio < I > (regions : I) where I : IntoIterator < Item = Range < usize > > ,
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn normalize_physical_address (address : usize) -> usize
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn normalize_physical_page (page : usize) -> usize
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn normalize_virtual_page (page : usize) -> usize
+kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn physical_range_to_virtual (range : Range < usize >) -> Range < usize >
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn physical_to_virtual (address : usize) -> usize
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) fn virtual_to_physical (address : usize) -> Option < usize >
 kernel/src/arch/aarch64/mmu.rs :: pub (crate) impl AddressSpaceToken :: fn from_root_page (root_page : usize , address_space_id : usize) -> Self
@@ -217,9 +223,9 @@ kernel/src/arch/aarch64/mod.rs :: pub (crate) mod interrupt
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use fp_state :: reset_live as reset_live_floating_point
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use instruction_cache :: broadcast_instruction_cache
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use instruction_cache :: publish_range as publish_instruction_range
-kernel/src/arch/aarch64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u32 , read_mmio_u64 , write_mmio_u8 , write_mmio_u32 , write_mmio_u64 , }
+kernel/src/arch/aarch64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , read_mmio_u64 , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , write_mmio_u64 , }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use kernel_context :: { KernelContext , KernelResume , switch_kernel_context }
-kernel/src/arch/aarch64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , USER_STACK_TOP , acknowledge_broadcast_tlb , broadcast_tlb , canonicalize_virtual_address , flush_local as flush_local_tlb , flush_local_range as flush_local_tlb_range , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_to_virtual , virtual_to_physical , }
+kernel/src/arch/aarch64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , USER_STACK_TOP , acknowledge_broadcast_tlb , broadcast_tlb , canonicalize_virtual_address , flush_local as flush_local_tlb , flush_local_range as flush_local_tlb_range , initialize_kernel_mmio , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_range_to_virtual , physical_to_virtual , virtual_to_physical , }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use page_table :: { AddressSpaceKind , PageTable as ArchitecturePageTable , PageTableEntry as ArchitecturePageTableEntry , PageTableError , TablePage , }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use pte :: PagePermissions
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use signal_frame :: { MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack }
@@ -407,14 +413,14 @@ kernel/src/arch/mod.rs :: pub (crate) mod trap
 kernel/src/arch/mod.rs :: pub (crate) mod user
 kernel/src/arch/mod.rs :: pub (crate) struct IllegalInstructionFault
 kernel/src/arch/mod.rs :: pub (crate) struct IllegalInstructionRetry
-kernel/src/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , read_mmio_u8 , read_mmio_u32 , secondary_entry , write_mmio_u8 , write_mmio_u32 , }
+kernel/src/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , secondary_entry , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , }
 kernel/src/arch/mod.rs :: pub (crate) use selected :: { read_mmio_u64 , write_mmio_u64 }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_instruction_cache
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: raise_software
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , disable_timer_source , enable_scheduler_interrupts , enable_timer_source , restore_local , wait_for_external_interrupt , wait_for_interrupt as wait , wait_with_local_irq_masked , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: publish_instruction_range as publish_range
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: time_counter as counter
-kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { AddressSpaceKind , AddressSpaceToken , ArchitecturePageTable , ArchitecturePageTableEntry , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , PagePermissions , PageTableError , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , TablePage , USER_ADDRESS_END , USER_STACK_TOP , canonicalize_virtual_address , flush_local_tlb as flush_local , flush_local_tlb_range as flush_local_range , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_to_virtual , virtual_to_physical , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { AddressSpaceKind , AddressSpaceToken , ArchitecturePageTable , ArchitecturePageTableEntry , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , PagePermissions , PageTableError , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , TablePage , USER_ADDRESS_END , USER_STACK_TOP , canonicalize_virtual_address , flush_local_tlb as flush_local , flush_local_tlb_range as flush_local_range , initialize_kernel_mmio , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_range_to_virtual , physical_to_virtual , virtual_to_physical , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , decode_private_syscall , valid_elf_flags , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { KERNEL_STACK_CONTEXT_RESERVE , KernelContext , KernelResume , MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack , SyscallCompletion , USER_CONTEXT_PLACEMENT , UserContext , inspect_illegal_instruction , reset_live_floating_point , switch_kernel_context , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { StartupCpu , current_logical_id , entry_identity , initialize_local_execution , initialize_startup , install_boot_cpu , }
@@ -439,8 +445,10 @@ kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn enable_scheduler_i
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn enable_timer_source ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn restore_local (state : LocalInterruptState)
 kernel/src/arch/riscv64/io.rs :: pub (crate) fn before_mmio_write ()
+kernel/src/arch/riscv64/io.rs :: pub (crate) unsafe fn read_mmio_u16 (address : usize) -> u16
 kernel/src/arch/riscv64/io.rs :: pub (crate) unsafe fn read_mmio_u32 (address : usize) -> u32
 kernel/src/arch/riscv64/io.rs :: pub (crate) unsafe fn read_mmio_u8 (address : usize) -> u8
+kernel/src/arch/riscv64/io.rs :: pub (crate) unsafe fn write_mmio_u16 (address : usize , value : u16)
 kernel/src/arch/riscv64/io.rs :: pub (crate) unsafe fn write_mmio_u32 (address : usize , value : u32)
 kernel/src/arch/riscv64/io.rs :: pub (crate) unsafe fn write_mmio_u8 (address : usize , value : u8)
 kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn clone_for_trap_return (kernel_sp : usize , trap_return : KernelResume) -> Self
@@ -465,9 +473,11 @@ kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn canonicalize_virtual_address (a
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn flush_local ()
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn flush_local_range (start : usize , size : usize)
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn initialize_address_space_identifiers ()
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn initialize_kernel_mmio < I > (_regions : I) where I : IntoIterator < Item = Range < usize > > ,
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn normalize_physical_address (address : usize) -> usize
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn normalize_physical_page (page : usize) -> usize
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn normalize_virtual_page (page : usize) -> usize
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn physical_range_to_virtual (range : Range < usize >) -> Range < usize >
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn physical_to_virtual (address : usize) -> usize
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn prepare_user_activation (token : AddressSpaceToken , logical_cpu : usize)
 kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn virtual_to_physical (address : usize) -> Option < usize >
@@ -480,9 +490,9 @@ kernel/src/arch/riscv64/mmu.rs :: pub (super) impl AddressSpaceToken :: fn encod
 kernel/src/arch/riscv64/mod.rs :: pub (crate) fn reset_live_floating_point ()
 kernel/src/arch/riscv64/mod.rs :: pub (crate) mod interrupt
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use instruction_cache :: publish_range as publish_instruction_range
-kernel/src/arch/riscv64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u32 , write_mmio_u8 , write_mmio_u32 , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , }
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use kernel_context :: { KernelContext , KernelResume , switch_kernel_context }
-kernel/src/arch/riscv64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , USER_STACK_TOP , canonicalize_virtual_address , flush_local as flush_local_tlb , flush_local_range as flush_local_tlb_range , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_to_virtual , virtual_to_physical , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , USER_STACK_TOP , canonicalize_virtual_address , flush_local as flush_local_tlb , flush_local_range as flush_local_tlb_range , initialize_kernel_mmio , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_range_to_virtual , physical_to_virtual , virtual_to_physical , }
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use page_table :: { AddressSpaceKind , PageTable as ArchitecturePageTable , PageTableEntry as ArchitecturePageTableEntry , PageTableError , TablePage , }
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use pte :: PagePermissions
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use signal_frame :: { MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack }
@@ -787,6 +797,8 @@ kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " transport、que
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
 kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " adapter 内部 display-info 查询完成且 preferred mode 未变化。"] # [doc = ""] # [doc = " DRM 同步 ioctl 可能正在等待 controlq 从该内部事务重新变为可提交；"] # [doc = " 缺失这个 edge 会让一次无实际 mode 变化的 config interrupt 永久阻塞 waiter。"] AdapterReady
 kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " adapter 重新查询 display-info 后观察到新的 scanout mode。"] ModeChanged (DisplayMode)
+kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " 一条 VirGL controlq operation 已完成，fence 可由 DRM waiter 观察。"] RenderCompleted (u64)
+kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " 一条独立 cursorq operation 已完成，不与 controlq fence 共用命名空间。"] CursorCompleted (u64)
 kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " 一次 userspace scanout、damage 或 disable operation 已完整完成。"] OperationCompleted (u64)
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: height : u32
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: pitch : u32
@@ -797,25 +809,66 @@ kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: x : u32
 kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: y : u32
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayError
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayUpdate
-kernel/src/drivers/display.rs :: pub (crate) fn primary_display () -> Option < Arc < dyn DisplayDevice > >
+kernel/src/drivers/display.rs :: pub (crate) fn primary_display () -> Option < Arc < dyn GraphicsDevice > >
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayRect
 kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
-kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn DisplayDevice >) -> Result < () , () >
+kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn GraphicsDevice >) -> Result < () , () >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn disable_scanout (& self) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_update (& self) -> Result < Option < DisplayUpdate > , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn release_buffer (& self , identity : u64) -> Result < Option < u64 > , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_damage (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > , rectangles : & [DisplayRect] ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/graphics.rs :: enum CursorCommand :: # [doc = " 切换光标资源并同时设置位置与热点；resource 0 表示隐藏。"] Update { # [doc = " Scanout 0 中的水平位置。"] x : u32 , # [doc = " Scanout 0 中的垂直位置。"] y : u32 , # [doc = " true 使用 adapter-owned 2D cursor resource；false 表示隐藏。"] visible : bool , # [doc = " Resource 内的水平热点。"] hot_x : u32 , # [doc = " Resource 内的垂直热点。"] hot_y : u32 , }
+kernel/src/drivers/graphics.rs :: enum CursorCommand :: # [doc = " 只移动当前光标，不重新读取像素。"] Move { # [doc = " Scanout 0 中的水平位置。"] x : u32 , # [doc = " Scanout 0 中的垂直位置。"] y : u32 , # [doc = " 当前 cursor resource 是否可见。QEMU 10 的 MOVE 路径仍以 resource_id"] # [doc = " 控制 host pointer 可见性；缺失该状态会让每次移动都隐藏刚更新的光标。"] visible : bool , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 从 context 可见对象集合删除 resource。"] ContextDetachResource { # [doc = " 已创建的 context identity。"] context_id : u32 , # [doc = " 已 attach 的 resource identity。"] resource_id : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 从 resource 解绑 guest backing。"] ResourceDetachBacking { # [doc = " 已创建且已绑定 backing 的 resource identity。"] resource_id : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 创建一个 VirGL context。"] ContextCreate { # [doc = " 非零、device-wide unique context identity。"] context_id : u32 , # [doc = " `VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK` 编码后的 capset 初始化值。"] context_init : u32 , # [doc = " 最多 64 bytes 的诊断名称。"] name : & 'a [u8] , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 创建一个 VirGL pipe resource。"] ResourceCreate3d { # [doc = " 非零、device-wide unique resource identity。"] resource_id : u32 , # [doc = " Gallium pipe texture target。"] target : u32 , # [doc = " VirGL format identity。"] format : u32 , # [doc = " Gallium/VirGL bind flags。"] bind : u32 , # [doc = " Base-level pixel width。"] width : u32 , # [doc = " Base-level pixel height。"] height : u32 , # [doc = " Base-level pixel depth。"] depth : u32 , # [doc = " Array layer count。"] array_size : u32 , # [doc = " Highest mip level。"] last_level : u32 , # [doc = " Sample count。"] samples : u32 , # [doc = " Protocol resource flags。"] flags : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 发布 resource 已完成渲染的矩形。"] Flush { # [doc = " 已创建的 GPU resource identity。"] resource_id : u32 , # [doc = " scanout 坐标系中的非空矩形。"] rectangle : DisplayRect , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 在 guest backing 与 host resource 之间传输一个三维区域。"] Transfer3d { # [doc = " 传输方向。"] direction : VirglTransferDirection , # [doc = " 接收 transfer 的 context identity。"] context_id : u32 , # [doc = " guest backing 起始 byte offset。"] offset : u64 , # [doc = " 目标 resource identity。"] resource_id : u32 , # [doc = " 目标 mip level。"] level : u32 , # [doc = " transfer 三维区域。"] region : VirglBox , # [doc = " 相邻 image row 的 byte 距离。"] stride : u32 , # [doc = " 相邻 array layer 的 byte 距离。"] layer_stride : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 把 guest pages 绑定为 resource backing。"] ResourceAttachBacking { # [doc = " 已创建的 resource identity。"] resource_id : u32 , # [doc = " 覆盖 resource storage 的 DMA-stable scatter/gather owner。"] backing : Arc < DeviceBacking > , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 把 resource 加入 context 可见对象集合。"] ContextAttachResource { # [doc = " 已创建的 context identity。"] context_id : u32 , # [doc = " 已创建的 resource identity。"] resource_id : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 提交一段 exact VirGL command stream。"] Submit3d { # [doc = " 接收 command stream 的 context identity。"] context_id : u32 , # [doc = " 4-byte aligned VirGL dword stream。"] commands : & 'a [u8] , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 让 scanout 直接引用一个 GPU resource。"] SetScanout { # [doc = " 当前 connector mode。"] mode : DisplayMode , # [doc = " 已创建的 GPU resource identity；零表示禁用。"] resource_id : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 释放一个 host resource。"] ResourceUnref { # [doc = " 已创建的 resource identity。"] resource_id : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 销毁一个 context 及其 host-side state。"] ContextDestroy { # [doc = " 已存在的 context identity。"] context_id : u32 , }
+kernel/src/drivers/graphics.rs :: enum VirglTransferDirection :: # [doc = " 从 guest backing 上传到 host resource。"] ToHost
+kernel/src/drivers/graphics.rs :: enum VirglTransferDirection :: # [doc = " 从 host resource 回读到 guest backing。"] FromHost
+kernel/src/drivers/graphics.rs :: pub (crate) VirglBox :: depth : u32
+kernel/src/drivers/graphics.rs :: pub (crate) VirglBox :: height : u32
+kernel/src/drivers/graphics.rs :: pub (crate) VirglBox :: width : u32
+kernel/src/drivers/graphics.rs :: pub (crate) VirglBox :: x : u32
+kernel/src/drivers/graphics.rs :: pub (crate) VirglBox :: y : u32
+kernel/src/drivers/graphics.rs :: pub (crate) VirglBox :: z : u32
+kernel/src/drivers/graphics.rs :: pub (crate) VirglCapsetInfo :: id : u32
+kernel/src/drivers/graphics.rs :: pub (crate) VirglCapsetInfo :: size : usize
+kernel/src/drivers/graphics.rs :: pub (crate) VirglCapsetInfo :: version : u32
+kernel/src/drivers/graphics.rs :: pub (crate) enum CursorCommand
+kernel/src/drivers/graphics.rs :: pub (crate) enum VirglCommand < 'a >
+kernel/src/drivers/graphics.rs :: pub (crate) enum VirglTransferDirection
+kernel/src/drivers/graphics.rs :: pub (crate) struct VirglBox
+kernel/src/drivers/graphics.rs :: pub (crate) struct VirglCapsetInfo
+kernel/src/drivers/graphics.rs :: pub (crate) trait GraphicsDevice
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn copy_virgl_capset (& self , output : & mut [u8]) -> Result < usize , DisplayError >
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn move_cursor (& self , x : u32 , y : u32) -> Result < () , DisplayError >
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_cursor (& self , command : CursorCommand) -> Result < u64 , DisplayError >
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_cursor_upload (& self , identity : u64 , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_virgl (& self , command : VirglCommand < '_ >) -> Result < u64 , DisplayError >
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_virgl_scanout (& self , mode : DisplayMode , resource_id : u32 ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn supports_virgl_context_init (& self) -> bool
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn virgl_capset_info (& self) -> Option < VirglCapsetInfo >
 kernel/src/drivers/hal/bus.rs :: enum BusError :: InvalidAddress
 kernel/src/drivers/hal/bus.rs :: pub (crate) enum BusError
 kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u16 (& self , offset : usize) -> Result < u16 , BusError >
 kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u32 (& self , offset : usize) -> Result < u32 , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u8 (& self , offset : usize) -> Result < u8 , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u16 (& self , offset : usize , value : u16) -> Result < () , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
 kernel/src/drivers/hal/bus.rs :: pub (crate) struct MmioBus
-kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn read_u8 (& self , offset : usize) -> Result < u8 , BusError >
-kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn write_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn write_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: DeviceFailure
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: HandlerNotSet
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: InvalidVector
@@ -826,7 +879,9 @@ kernel/src/drivers/hal/interrupt.rs :: pub (crate) type InterruptVector  = u32
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptHandler :: fn handle_interrupt (& self , vector : InterruptVector) -> Result < () , InterruptError >
 kernel/src/drivers/hal/mod.rs :: pub (crate) use bus :: MmioBus
 kernel/src/drivers/hal/mod.rs :: pub (crate) use interrupt :: { InterruptError , InterruptHandler , InterruptVector }
+kernel/src/drivers/hal/mod.rs :: pub (crate) use virtio_pci :: PciTransport
 kernel/src/drivers/hal/mod.rs :: pub (super) use virtio :: { VIRTIO_CONFIG_S_DRIVER_OK , VIRTIO_CONFIG_S_FEATURES_OK , VIRTIO_F_VERSION_1 , VIRTIO_MMIO_INT_CONFIG , VIRTIO_MMIO_INT_VRING , VirtIODevice , VirtQueueAddresses , }
+kernel/src/drivers/hal/virtio.rs :: pub (crate) impl VirtIODevice :: fn from_pci (device_id : u32 , transport : PciTransport) -> Self
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: descriptor : u64
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: device : u64
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: driver : u64
@@ -858,6 +913,22 @@ kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice 
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn write_config_u8 (& self , offset : usize , value : u8 ,) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtIODevice
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtQueueAddresses
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn config_generation (& self) -> Result < u32 , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn device_features (& self) -> Result < u64 , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn get_status (& self) -> Result < u32 , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn initialize (& self) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn interrupt_status (& self) -> Result < u32 , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn new (common : MmioBus , notify : MmioBus , isr : MmioBus , device : Option < MmioBus > , notify_multiplier : u32 ,) -> Self
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn notify_queue (& self , index : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn queue_max_size (& self , index : u32) -> Result < u16 , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn read_config_u32 (& self , offset : usize) -> Result < u32 , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn read_config_u8 (& self , offset : usize) -> Result < u8 , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn set_driver_features (& self , features : u64) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn set_status (& self , status : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn write_config_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) impl PciTransport :: fn write_config_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio_pci.rs :: pub (crate) struct PciTransport
+kernel/src/drivers/hal/virtio_pci.rs :: pub (in crate :: drivers) impl PciTransport :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses ,) -> Result < () , BusError >
 kernel/src/drivers/input.rs :: enum InputDeviceError :: Device
 kernel/src/drivers/input.rs :: pub (crate) InputAbsInfo :: flat : i32
 kernel/src/drivers/input.rs :: pub (crate) InputAbsInfo :: fuzz : i32
@@ -953,7 +1024,7 @@ kernel/src/drivers/mod.rs :: pub (crate) fn primary_virtio_port () -> Option < a
 kernel/src/drivers/mod.rs :: pub (crate) fn publish_console_input (bytes : & [u8])
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) fn register_audio_output (device : alloc :: sync :: Arc < VirtIOSoundDevice >) -> Result < () , () >
-kernel/src/drivers/mod.rs :: pub (crate) fn register_display_device (device : alloc :: sync :: Arc < dyn DisplayDevice > ,) -> Result < () , () >
+kernel/src/drivers/mod.rs :: pub (crate) fn register_display_device (device : alloc :: sync :: Arc < dyn GraphicsDevice > ,) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_entropy_device (device : alloc :: sync :: Arc < VirtIORngDevice >) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_input_device (device : alloc :: sync :: Arc < dyn InputDevice > ,) -> Result < usize , alloc :: sync :: Arc < dyn InputDevice > >
 kernel/src/drivers/mod.rs :: pub (crate) fn register_network_device (device : alloc :: sync :: Arc < dyn network :: NetworkDevice > ,) -> Result < () , () >
@@ -963,6 +1034,8 @@ kernel/src/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/drivers/mod.rs :: pub (crate) mod network
 kernel/src/drivers/mod.rs :: pub (crate) use audio_output :: { PCM_BUFFER_FRAMES , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmCompletionObserver , PcmOutput , PcmOutputError , }
 kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , primary_display , }
+kernel/src/drivers/mod.rs :: pub (crate) use graphics :: { CursorCommand , GraphicsDevice , VirglBox , VirglCapsetInfo , VirglCommand , VirglTransferDirection , }
+kernel/src/drivers/mod.rs :: pub (crate) use hal :: PciTransport
 kernel/src/drivers/mod.rs :: pub (crate) use hal :: { InterruptError , InterruptHandler , InterruptVector , MmioBus }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { device as input_device , device_count as input_device_count }
@@ -1033,6 +1106,7 @@ kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: writable_cha
 kernel/src/drivers/virtio_console.rs :: pub (crate) enum PortError
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn connected (& self) -> bool
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn dispatch (& self) -> PortActivity
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn from_pci (transport : PciTransport) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn read (& self , output : & mut [u8]) -> Result < usize , PortError >
@@ -1046,25 +1120,31 @@ kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: f
 kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn pop (& mut self , output : & mut [u8]) -> usize
 kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn push (& mut self , input : & [u8]) -> bool
 kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) struct ByteRing
+kernel/src/drivers/virtio_console/wire.rs :: pub (super) fn data_queue_indices (port_id : u32) -> Option < (u32 , u32) >
 kernel/src/drivers/virtio_console/wire.rs :: pub (super) fn is_spice_port_name (payload : & [u8]) -> bool
 kernel/src/drivers/virtio_gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_gpu.rs :: pub (crate) struct VirtIOGpuDevice
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn display_mode (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < DisplayMode >
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn initialize_scanout (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , framebuffer : & DeviceBacking ,) -> Option < () >
+kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn load_virgl_capset (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < super :: VirglCapset >
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn parse_display_mode (response : & [u8]) -> Option < DisplayMode >
 kernel/src/drivers/virtio_gpu/command.rs :: enum FlushPurpose :: Damage
 kernel/src/drivers/virtio_gpu/command.rs :: enum FlushPurpose :: Scanout
 kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: Attach { resource_id : u32 , backing : Arc < DeviceBacking > , }
+kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: AttachCursor { resource_id : u32 , backing : Arc < DeviceBacking > , }
 kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: Create { mode : DisplayMode , resource_id : u32 , }
+kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: CreateCursor { resource_id : u32 , }
 kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: DisplayInfo
 kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: Flush { rectangle : DisplayRect , resource_id : u32 , purpose : FlushPurpose , }
 kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: SetScanout { mode : DisplayMode , resource_id : u32 , purpose : ScanoutPurpose , }
+kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: TransferCursor { resource_id : u32 , }
 kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: TransferScanout { mode : DisplayMode , resource_id : u32 , }
 kernel/src/drivers/virtio_gpu/command.rs :: enum GpuCommand :: Unref { resource_id : u32 , purpose : UnrefPurpose , }
 kernel/src/drivers/virtio_gpu/command.rs :: enum ScanoutPurpose :: Activate
 kernel/src/drivers/virtio_gpu/command.rs :: enum ScanoutPurpose :: Disable
 kernel/src/drivers/virtio_gpu/command.rs :: enum UnrefPurpose :: Boot
+kernel/src/drivers/virtio_gpu/command.rs :: enum UnrefPurpose :: Cursor
 kernel/src/drivers/virtio_gpu/command.rs :: enum UnrefPurpose :: Disabled (u8)
 kernel/src/drivers/virtio_gpu/command.rs :: enum UnrefPurpose :: Evicted
 kernel/src/drivers/virtio_gpu/command.rs :: enum UnrefPurpose :: Released
@@ -1098,13 +1178,18 @@ kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: 
 kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn try_new () -> Option < Self >
 kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl VirtIOGpuDevice :: fn submit_resident_damage (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > , rectangles : & [DisplayRect] ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) struct DamageTransition
+kernel/src/drivers/virtio_gpu/graphics_command.rs :: pub (super) fn prepare (command : VirglCommand < '_ > , request : & mut [u8] ,) -> Result < PreparedCommand , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: enum CursorTarget :: New { next : CursorResource , evicted : Option < CursorResource > , }
+kernel/src/drivers/virtio_gpu/resource.rs :: enum CursorTarget :: Resident
 kernel/src/drivers/virtio_gpu/resource.rs :: enum ResourceTarget :: New { slot : usize , next : ResidentResource , evicted : Option < ResidentResource > , }
 kernel/src/drivers/virtio_gpu/resource.rs :: enum ResourceTarget :: Resident (usize)
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: CursorUpload (CursorTarget)
 kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Damage (ResourceTarget)
 kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Disable (ResourceSnapshot)
 kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Release (ResourceRelease)
 kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: RetireBoot { boot : ResourceRelease , evicted : Option < ResidentResource > , }
 kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Scanout (ResourceTarget)
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) enum CursorTarget
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) enum ResourceTarget
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) enum RuntimeOperation
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn disabled_resource (operation : & Option < RuntimeOperation > , start : usize ,) -> Result < Option < (usize , u32) > , DisplayError >
@@ -1112,6 +1197,14 @@ kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn full_rectangle (mode
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn operation_target (operation : & Option < RuntimeOperation > , resources : & ResourceSet ,) -> Result < (DisplayMode , u32) , DisplayError >
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn operation_target_ref (operation : & Option < RuntimeOperation > ,) -> Result < & ResourceTarget , DisplayError >
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn validate_backing (mode : DisplayMode , backing : & DeviceBacking ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorResourceSet :: const fn empty () -> Self
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorResourceSet :: fn cancel (& mut self , target : CursorTarget) -> Option < CursorResource >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorResourceSet :: fn complete (& mut self , target : CursorTarget) -> Option < CursorResource >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorResourceSet :: fn prepare (& mut self , identity : u64 , backing : Arc < DeviceBacking > ,) -> Result < CursorTarget , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorTarget :: const fn id (& self) -> u32
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorTarget :: fn backing_owner (& self , resources : & CursorResourceSet) -> Arc < DeviceBacking >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorTarget :: fn evicts (& self) -> bool
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl CursorTarget :: fn is_new (& self) -> bool
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResidentResource :: fn id (& self) -> u32
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceRelease :: fn id (& self) -> u32
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: const fn empty () -> Self
@@ -1132,7 +1225,10 @@ kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: 
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: fn synchronized (& self , resources : & ResourceSet) -> bool
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn disable_resident (& self) -> Result < u64 , DisplayError >
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn release_resident (& self , identity : u64) -> Result < Option < u64 > , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn submit_cursor_resource_upload (& self , identity : u64 , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn submit_resident_scanout (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct CursorResource
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct CursorResourceSet
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct ResidentResource
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct ResourceRelease
 kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct ResourceSet
@@ -1141,6 +1237,7 @@ kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceAction :: Command { co
 kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceAction :: DamageBatch { operation_fence : u64 , mode : DisplayMode , resource_id : u32 , }
 kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceAction :: Finished (SequenceCompletion)
 kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceRetirement :: Boot { boot : ResourceRelease , evicted : Option < ResidentResource > , }
+kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceRetirement :: Cursor (Option < CursorResource >)
 kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceRetirement :: Disabled (ResourceSnapshot)
 kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceRetirement :: None
 kernel/src/drivers/virtio_gpu/sequence.rs :: enum SequenceRetirement :: Released (ResourceRelease)
@@ -1149,49 +1246,85 @@ kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) SequenceCompletion :: r
 kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) SequenceCompletion :: update : Option < DisplayUpdate >
 kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) enum SequenceAction
 kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) enum SequenceRetirement
-kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) fn complete (control : & mut ControlQueue , head : u16 ,) -> Result < SequenceAction , DisplayError >
+kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) fn complete (control : & mut ControlQueue , completed : CompletedCommand ,) -> Result < SequenceAction , DisplayError >
 kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) fn finish_damage_batch (control : & mut ControlQueue ,) -> Result < SequenceAction , DisplayError >
 kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) impl SequenceRetirement :: fn release_after_unlock (self)
 kernel/src/drivers/virtio_gpu/sequence.rs :: pub (super) struct SequenceCompletion
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: Attach
+kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: AttachCursor
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: Create
+kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: CreateCursor
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: DisableScanout
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: DisplayInfo
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: FlushDamage
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: FlushScanout
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: SetScanout
+kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: TransferCursor
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: TransferScanout
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: UnrefBoot
+kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: UnrefCursor
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: UnrefDisabled (u8)
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: UnrefEvicted
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: UnrefReleased
+kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: Virgl
+kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: VirglFlush
+kernel/src/drivers/virtio_gpu/sequence_policy.rs :: enum RuntimeStage :: VirglSetScanout
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: pub (super) enum RuntimeStage
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: pub (super) impl RuntimeStage :: const fn allows (self , next : Self) -> bool
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: pub (super) impl RuntimeStage :: const fn validate_successor (self , next : Self) -> Result < () , SequenceOrderError >
 kernel/src/drivers/virtio_gpu/sequence_policy.rs :: pub (super) struct SequenceOrderError
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const ALTERNATE_RESOURCE_ID : u32 = 2
-kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const ATTACH_REQUEST_SIZE : usize = 32 + DeviceBacking :: MAX_EXTENTS * 16
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const BOOT_RESOURCE_ID : u32 = 1
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CAPSET_INFO_SIZE : usize = CONTROL_HEADER_SIZE + 16
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CAPSET_RESPONSE_SIZE : usize = CONTROL_HEADER_SIZE + MAX_CAPSET_SIZE
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CONTROL_HEADER_SIZE : usize = 24
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CONTROL_QUEUE : u32 = 0
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CONTROL_REQUEST_SIZE : usize = 32 + 64 * 1024
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CURSOR_QUEUE : u32 = 1
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CURSOR_REQUEST_SIZE : usize = 56
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CURSOR_RESOURCE_ID : u32 = 3
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const DISPLAY_INFO_SIZE : usize = CONTROL_HEADER_SIZE + 16 * 24
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const MAX_CAPSET_SIZE : usize = 4096
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const QUEUE_SIZE : u16 = 64
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CAPSET_VIRGL : u32 = 1
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CAPSET_VIRGL2 : u32 = 2
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE : u32 = 0x0202
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_CREATE : u32 = 0x0200
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_DESTROY : u32 = 0x0201
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE : u32 = 0x0203
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_CAPSET : u32 = 0x0109
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_CAPSET_INFO : u32 = 0x0108
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_DISPLAY_INFO : u32 = 0x0100
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_MOVE_CURSOR : u32 = 0x0301
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING : u32 = 0x0106
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D : u32 = 0x0101
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D : u32 = 0x0204
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING : u32 = 0x0107
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_FLUSH : u32 = 0x0104
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_UNREF : u32 = 0x0102
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_SET_SCANOUT : u32 = 0x0103
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_SUBMIT_3D : u32 = 0x0207
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D : u32 = 0x0206
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D : u32 = 0x0105
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D : u32 = 0x0205
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_UPDATE_CURSOR : u32 = 0x0300
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_EVENTS_CLEAR : usize = 4
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_EVENTS_READ : usize = 0
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_EVENT_DISPLAY : u32 = 1
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FLAG_FENCE : u32 = 1
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM : u32 = 1
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM : u32 = 2
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_F_CONTEXT_INIT : u64 = 1 << 4
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_F_VIRGL : u64 = 1
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_NUM_CAPSETS : usize = 12
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_CAPSET : u32 = 0x1103
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_CAPSET_INFO : u32 = 0x1102
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_DISPLAY_INFO : u32 = 0x1101
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_NODATA : u32 = 0x1100
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_attach (request : & mut [u8] , resource_id : u32 , backing : & DeviceBacking ,) -> Result < usize , DisplayError >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_create (request : & mut [u8] , mode : DisplayMode , resource_id : u32 ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_create_cursor (request : & mut [u8] , resource_id : u32 ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_cursor (request : & mut [u8] , command : super :: CursorCommand ,) -> Result < () , DisplayError >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_flush (request : & mut [u8] , rectangle : DisplayRect , resource_id : u32 ,) -> Result < () , DisplayError >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_set_scanout (request : & mut [u8] , mode : DisplayMode , resource_id : u32 ,) -> Result < () , DisplayError >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_transfer (request : & mut [u8] , mode : DisplayMode , rectangle : DisplayRect , resource_id : u32 ,) -> Result < () , DisplayError >
@@ -1253,6 +1386,7 @@ kernel/src/drivers/virtio_queue.rs :: pub (super) const VIRTQ_DESC_F_WRITE : u16
 kernel/src/drivers/virtio_queue.rs :: pub (super) enum VirtQueueError
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl UsedDescriptor :: fn head (& self) -> u16
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl UsedDescriptor :: fn length (& self) -> u32
+kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn add_batch_to_avail (& mut self , heads : & [u16])
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn add_dma (& mut self , buffers : & [DmaSlice < '_ >]) -> Result < u16 , VirtQueueError >
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn add_to_avail (& mut self , desc_idx : u16)
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn addresses (& self) -> VirtQueueAddresses
@@ -1345,6 +1479,8 @@ kernel/src/drivers/virtio_sound/wire.rs :: pub (super) const XFER_BYTES : usize 
 kernel/src/drivers/virtio_sound/wire.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
 kernel/src/drivers/virtio_sound/wire.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
 kernel/src/drivers/virtio_sound/wire.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
+kernel/src/drm.rs :: enum DrmCursorSubmission :: # [doc = " command 已发布；caller 必须等待 cursorq exact sequence。"] Wait (DrmCursorWait)
+kernel/src/drm.rs :: enum DrmCursorSubmission :: # [doc = " cursorq 单 slot 正在使用；caller 等待 adapter generation 后重试。"] Retry (DrmRetry)
 kernel/src/drm.rs :: enum DrmError :: # [doc = " UAPI 参数、尺寸或 fake offset 非法。"] Invalid
 kernel/src/drm.rs :: enum DrmError :: # [doc = " display adapter 已有未完成 transaction。"] Busy
 kernel/src/drm.rs :: enum DrmError :: # [doc = " display transport 或 response 损坏。"] Device
@@ -1376,9 +1512,12 @@ kernel/src/drm.rs :: pub (crate) FramebufferInfo :: handle : u32
 kernel/src/drm.rs :: pub (crate) FramebufferInfo :: height : u32
 kernel/src/drm.rs :: pub (crate) FramebufferInfo :: pitch : u32
 kernel/src/drm.rs :: pub (crate) FramebufferInfo :: width : u32
+kernel/src/drm.rs :: pub (crate) const VIRGL_COMMAND_MAX : usize = 64 * 1024
+kernel/src/drm.rs :: pub (crate) enum DrmCursorSubmission
 kernel/src/drm.rs :: pub (crate) enum DrmError
 kernel/src/drm.rs :: pub (crate) enum DrmSubmission
 kernel/src/drm.rs :: pub (crate) enum FramebufferRemoval
+kernel/src/drm.rs :: pub (crate) impl DrmCursorWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn active_framebuffer (& self) -> Option < u32 >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn destroy_dumb (& self , handle : u32) -> Result < () , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn dirty_framebuffer (& self , id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmSubmission , DrmError >
@@ -1388,24 +1527,30 @@ kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_count (& self) -
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_id (& self , index : usize) -> Option < u32 >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn map_dumb (& self , handle : u32) -> Result < u64 , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mapping (& self , offset : u64 , length : usize ,) -> Result < DeviceMappingSource , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn move_cursor (& self , x : u32 , y : u32) -> Result < () , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (self : & Arc < Self > , id : u32 , user_data : Option < u64 > ,) -> Result < DrmSubmission , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn prepare_dumb (& self , width : u32 , height : u32 , bpp : u32 , flags : u32 ,) -> Result < PreparedDumbBuffer < '_ > , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn prepare_framebuffer (& self , handle : u32 , width : u32 , height : u32 , pitch : u32 ,) -> Result < PreparedFramebuffer < '_ > , DrmError >
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32) -> Result < DrmSubmission , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32 , mode : DisplayMode) -> Result < DrmSubmission , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn update_cursor (& self , handle : Option < u32 > , x : u32 , y : u32 , hot_x : u32 , hot_y : u32 ,) -> Result < DrmCursorSubmission , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmRetry :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+kernel/src/drm.rs :: pub (crate) impl DrmWait :: const fn fence (& self) -> u64
 kernel/src/drm.rs :: pub (crate) impl DrmWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
 kernel/src/drm.rs :: pub (crate) mod device
+kernel/src/drm.rs :: pub (crate) struct DrmCursorWait
 kernel/src/drm.rs :: pub (crate) struct DrmFile
 kernel/src/drm.rs :: pub (crate) struct DrmMode
 kernel/src/drm.rs :: pub (crate) struct DrmRetry
 kernel/src/drm.rs :: pub (crate) struct DrmWait
 kernel/src/drm.rs :: pub (crate) struct DumbBufferInfo
 kernel/src/drm.rs :: pub (crate) struct FramebufferInfo
-kernel/src/drm.rs :: pub (crate) use crate :: drivers :: DisplayRect
+kernel/src/drm.rs :: pub (crate) use crate :: drivers :: { DisplayRect , VirglBox , VirglCommand , VirglTransferDirection }
 kernel/src/drm.rs :: pub (crate) use event :: DrmEvent
+kernel/src/drm.rs :: pub (crate) use graphics :: VirglResourceCreate
+kernel/src/drm.rs :: pub (crate) use graphics :: VirglTransfer
 kernel/src/drm.rs :: pub (crate) use publication :: { PreparedDumbBuffer , PreparedFramebuffer }
 kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work (timestamp_ns : u64)
-kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn DisplayDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
+kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn GraphicsDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
 kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
 kernel/src/drm/device.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
 kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
@@ -1428,11 +1573,87 @@ kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn len (& self) -> usi
 kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn new () -> Self
 kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn push (& mut self , event : DrmEvent)
 kernel/src/drm/event.rs :: pub (super) struct EventQueue
+kernel/src/drm/graphics.rs :: enum VirglCleanupAction :: Context { context_id : u32 }
+kernel/src/drm/graphics.rs :: enum VirglCleanupAction :: Resource { handle : u32 , resource_id : u32 }
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: array_size : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: bind : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: depth : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: flags : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: format : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: height : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: last_level : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: samples : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: size : u64
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: target : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: width : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceInfo :: handle : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceInfo :: resource_id : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglResourceInfo :: size : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglTransfer :: direction : VirglTransferDirection
+kernel/src/drm/graphics.rs :: pub (crate) VirglTransfer :: handle : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglTransfer :: layer_stride : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglTransfer :: level : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglTransfer :: offset : u32
+kernel/src/drm/graphics.rs :: pub (crate) VirglTransfer :: region : VirglBox
+kernel/src/drm/graphics.rs :: pub (crate) VirglTransfer :: stride : u32
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn copy_virgl_capset (& self , output : & mut [u8]) -> Result < usize , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn map_virgl (& self , handle : u32) -> Result < u64 , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_legacy_virgl_context (& self ,) -> Result < Option < PreparedVirglContext < '_ > > , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_virgl_close (& self , handle : u32 ,) -> Result < PreparedVirglClose < '_ > , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_virgl_context (& self , capset_id : u32 , name : & [u8] ,) -> Result < PreparedVirglContext < '_ > , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_virgl_resource (& self , create : VirglResourceCreate ,) -> Result < PreparedVirglResource < '_ > , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn record_virgl_fence (& self , handles : & [u32] , fence : u64) -> Result < () , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn submit_virgl (& self , command : VirglCommand < '_ > ,) -> Result < DrmSubmission , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn supports_virgl_context_init (& self) -> bool
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn transfer_command (& self , transfer : VirglTransfer ,) -> Result < VirglCommand < 'static > , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn upload_cursor (& self , handle : u32) -> Result < DrmSubmission , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn validate_exec_resources (& self , handles : & [u32]) -> Result < u32 , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn virgl_capset_info (& self) -> Result < VirglCapsetInfo , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn virgl_resource_info (& self , handle : u32) -> Result < VirglResourceInfo , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn virgl_wait (& self , handle : u32) -> Result < Option < DrmWait > , DrmError >
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglClose < '_ > :: fn publish (mut self)
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglClose < '_ > :: fn unref_command (& self) -> VirglCommand < 'static >
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglClose < '_ > :: fn wait (& self) -> Option < DrmWait >
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglContext < '_ > :: fn command (& self) -> VirglCommand < '_ >
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglContext < '_ > :: fn publish (mut self)
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: const fn identities (& self) -> (u32 , u32)
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn attach_command (& self) -> VirglCommand < 'static >
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn context_attach_command (& self) -> VirglCommand < 'static >
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn create_command (& self) -> VirglCommand < 'static >
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn info (& self) -> VirglResourceInfo
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn publish (mut self)
+kernel/src/drm/graphics.rs :: pub (crate) struct PreparedVirglClose < 'file >
+kernel/src/drm/graphics.rs :: pub (crate) struct PreparedVirglContext < 'file >
+kernel/src/drm/graphics.rs :: pub (crate) struct PreparedVirglResource < 'file >
+kernel/src/drm/graphics.rs :: pub (crate) struct VirglResourceCreate
+kernel/src/drm/graphics.rs :: pub (crate) struct VirglResourceInfo
+kernel/src/drm/graphics.rs :: pub (crate) struct VirglTransfer
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: backing : Arc < DeviceBacking >
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: height : u32
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: last_fence : Mutex < u64 >
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: resource_id : u32
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: size : usize
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: stride : u32
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: target : u32
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: width : u32
+kernel/src/drm/graphics.rs :: pub (super) VirglContext :: id : u32
+kernel/src/drm/graphics.rs :: pub (super) enum VirglCleanupAction
+kernel/src/drm/graphics.rs :: pub (super) impl DrmFile :: fn cursor_resource (& self , handle : u32) -> Result < Arc < DumbBuffer > , DrmError >
+kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn complete (& mut self , fence : u64) -> bool
+kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn next_action (& self , completed : u64) -> Option < VirglCleanupAction >
+kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn owns_fence (& self , fence : u64) -> bool
+kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn record_submission (& mut self , action : VirglCleanupAction , fence : u64)
+kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanupAction :: const fn command (self) -> VirglCommand < 'static >
+kernel/src/drm/graphics.rs :: pub (super) impl VirglContext :: fn into_cleanup (mut self , buffers : FallibleMap < u32 , Arc < VirglBuffer > > ,) -> VacantEntry < u32 , VirglCleanup >
+kernel/src/drm/graphics.rs :: pub (super) struct VirglBuffer
+kernel/src/drm/graphics.rs :: pub (super) struct VirglCleanup
+kernel/src/drm/graphics.rs :: pub (super) struct VirglContext
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn drop_master (& self , privileged : bool) -> Result < () , DrmError >
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn is_master (& self) -> bool
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn set_master (& self , privileged : bool) -> Result < () , DrmError >
 kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn active_crtc (& self) -> Option < (u32 , DrmMode) >
 kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn mode (& self) -> DrmMode
+kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn requested_mode (& self , width : u32 , height : u32 ,) -> Result < (DisplayMode , DrmMode) , super :: DrmError >
 kernel/src/drm/mode.rs :: pub (super) fn cvt_mode (mode : DisplayMode) -> DrmMode
 kernel/src/drm/publication.rs :: pub (crate) impl PreparedDumbBuffer < 'file > :: fn complete < E > (self , copyout : impl FnOnce (DumbBufferInfo) -> Result < () , E > ,) -> Result < () , E >
 kernel/src/drm/publication.rs :: pub (crate) impl PreparedFramebuffer < 'file > :: fn complete < E > (self , copyout : impl FnOnce (u32) -> Result < () , E >) -> Result < () , E >
@@ -2671,8 +2892,8 @@ kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mm.rs :: pub (crate) use area :: { MapArea , MapType }
 kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: FaultAccess as PageFaultAccess , futex_key :: FutexKey , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingResourceLimits , MemoryAdvice , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
 kernel/src/memory/mm.rs :: pub (super) mod shootdown
-kernel/src/memory/mm/area.rs :: enum MapType :: DirectMapped
 kernel/src/memory/mm/area.rs :: enum MapType :: Framed
+kernel/src/memory/mm/area.rs :: enum MapType :: KernelMapped
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Anonymous
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Device
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Elf
@@ -3031,9 +3252,12 @@ kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) GicV3Info :: r
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) MmioDevice :: base_addr : usize
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) MmioDevice :: irq : u32
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) MmioDevice :: size : usize
+kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PciHostInfo :: ecam : RangeValue
+kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PciHostInfo :: mmio32 : RangeValue
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: gic : GicV3Info
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
+kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: pci : PciHostInfo
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: rtc : RangeValue
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: uart : MmioDevice
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: virtio_count : usize
@@ -3046,10 +3270,12 @@ kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn info_if_ini
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) impl BootInfo :: fn from_firmware_opaque (value : usize) -> Self
+kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) impl PciHostInfo :: fn interrupt (self , slot : usize , pin : usize) -> Option < u32 >
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) impl RangeValue :: fn range (self) -> Range < usize >
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct BootInfo
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct GicV3Info
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct MmioDevice
+kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct PciHostInfo
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct PlatformInfo
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct RangeValue
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (super) impl BootInfo :: fn address (self) -> usize
@@ -3081,6 +3307,11 @@ kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TlbShootdownE
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { claim_interrupt , complete_interrupt , notify_self , send_ipi }
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use psci :: { ResetError , reset_system , start_cpu }
+kernel/src/platform/qemu_virt/aarch64/pci.rs :: pub (crate) VirtioPciFunction :: device_id : u32
+kernel/src/platform/qemu_virt/aarch64/pci.rs :: pub (crate) VirtioPciFunction :: interrupt : u32
+kernel/src/platform/qemu_virt/aarch64/pci.rs :: pub (crate) VirtioPciFunction :: transport : PciTransport
+kernel/src/platform/qemu_virt/aarch64/pci.rs :: pub (crate) fn find_console (host : PciHostInfo) -> Option < VirtioPciFunction >
+kernel/src/platform/qemu_virt/aarch64/pci.rs :: pub (crate) struct VirtioPciFunction
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn enable_receive ()
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn initialize (base : usize , size : usize ,) -> Result < Arc < dyn InterruptHandler > , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) fn reset_system (reset_type : usize , _reset_reason : usize) -> Result < () , ResetError >
@@ -3715,6 +3946,16 @@ kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_ioctl (task : & Ta
 kernel/src/syscall/drm/publication.rs :: pub (super) fn add_framebuffer (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
 kernel/src/syscall/drm/publication.rs :: pub (super) fn add_framebuffer2 (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
 kernel/src/syscall/drm/publication.rs :: pub (super) fn create_dumb (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn context_init (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn execbuffer (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn gem_close (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn get_caps (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn get_param (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn map (task : & TaskControlBlock , file : & DrmFile , argument : usize) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn resource_create (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn resource_info (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn transfer (task : & TaskControlBlock , file : & DrmFile , argument : usize , direction : VirglTransferDirection ,) -> Result < () , isize >
+kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn wait (task : & TaskControlBlock , file : & DrmFile , argument : usize) -> Result < () , isize >
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_pwait (epoll_fd_number : usize , events : usize , maximum : usize , timeout_ms : isize , signal_mask : usize , signal_set_size : usize ,) -> isize

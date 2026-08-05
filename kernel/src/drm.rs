@@ -1,9 +1,9 @@
 use alloc::sync::{Arc, Weak};
 use spin::Mutex;
 
-pub(crate) use crate::drivers::DisplayRect;
+pub(crate) use crate::drivers::{DisplayRect, VirglBox, VirglCommand, VirglTransferDirection};
 use crate::{
-    drivers::{DisplayMode, GraphicsDevice},
+    drivers::{CursorCommand, DisplayMode, GraphicsDevice},
     fallible_tree::FallibleMap,
     ipc::{Pipe, PipeEnd},
     memory::{DeviceBacking, DeviceMappingSource, FrameAllocationClass, PAGE_SIZE},
@@ -15,6 +15,7 @@ pub(crate) const VIRGL_COMMAND_MAX: usize = 64 * 1024;
 mod event;
 pub(crate) use event::DrmEvent;
 use event::{EVENT_QUEUE_CAPACITY, EventQueue};
+include!("drm/fence_timeline.rs");
 pub(crate) mod device;
 mod graphics;
 pub(crate) use graphics::VirglResourceCreate;
@@ -31,9 +32,12 @@ struct CompletionState {
     // completion 与并发 RMFB/close 会把 active state 发布到错误 object。
     pending: Option<PendingDisplay>,
     active: Option<ActiveScanout>,
-    // completed 单调前进，waiter 以 `>= fence` 判断；若只保存一次 edge，旧 Pipe token
-    // 被其他 waiter 排空后会永久丢失已完成事实。
-    completed: u64,
+    // OWNER: timeline 按公开 submission 顺序登记 exact fence，并暂存乱序 completion；若直接
+    // 取最大 fence，后完成的 command 会让尚未完成的旧 waiter 提前越过同步点。
+    timeline: FenceTimeline,
+    // OWNER: cursorq sequence 与 controlq fence 是独立命名空间；单独水位保证 cursor ioctl
+    // 只等待 fast path completion，不会被耗时 scene render fence 阻塞或提前越过。
+    cursor_completed: u64,
     // 每次 adapter transaction（含不改变 connector mode 的内部 display-info）
     // 完成时前进。同步 ioctl 用它等待 controlq 可再次提交；只观察 userspace fence
     // 会在 display-info 不产生 ModeChanged 时永久睡眠。
@@ -206,10 +210,27 @@ pub(crate) enum DrmSubmission {
     Retry(DrmRetry),
 }
 
+/// @description 一次硬件光标命令的同步提交结果。
+pub(crate) enum DrmCursorSubmission {
+    /// command 已发布；caller 必须等待 cursorq exact sequence。
+    Wait(DrmCursorWait),
+    /// cursorq 单 slot 正在使用；caller 等待 adapter generation 后重试。
+    Retry(DrmRetry),
+}
+
 /// @description 一个不泄漏 adapter fence 编码的 DRM completion wait token。
 pub(crate) struct DrmWait {
     device: Arc<DrmDevice>,
     fence: u64,
+}
+
+/// @description 一个保活光标 resource 直到 cursorq 已复制像素的 wait token。
+pub(crate) struct DrmCursorWait {
+    device: Arc<DrmDevice>,
+    sequence: u64,
+    // OWNER: UPDATE_CURSOR completion 前 QEMU 仍可能读取 2D resource backing；保活 dumb
+    // buffer 使并发 DESTROY_DUMB 不会先回收 cursor pixels。
+    _resource: Option<Arc<DumbBuffer>>,
 }
 
 /// @description 一个不泄漏 adapter transaction 的 DRM retry wait token。
@@ -227,11 +248,24 @@ impl DrmWait {
     /// @description 排空旧 edge 并原子化地准备 scheduler wait。
     /// @return fence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
-        if self.device.completion.lock().completed >= self.fence {
+        if self.device.completion.lock().timeline.completed() >= self.fence {
             return None;
         }
         self.device.completion_read.drain_readiness();
-        (self.device.completion.lock().completed < self.fence)
+        (self.device.completion.lock().timeline.completed() < self.fence)
+            .then(|| self.device.completion_read.pipe())
+    }
+}
+
+impl DrmCursorWait {
+    /// @description 排空旧 edge 并原子化地准备 cursorq completion wait。
+    /// @return sequence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
+    pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
+        if self.device.completion.lock().cursor_completed >= self.sequence {
+            return None;
+        }
+        self.device.completion_read.drain_readiness();
+        (self.device.completion.lock().cursor_completed < self.sequence)
             .then(|| self.device.completion_read.pipe())
     }
 }
@@ -291,6 +325,68 @@ pub(crate) struct DrmMode {
 }
 
 impl DrmFile {
+    /// @description 通过独立 cursorq 切换 64x64 ARGB 光标；handle=None 表示隐藏。
+    /// @param handle 当前 OFD 中已经完成标准 2D host transfer 的 dumb handle。
+    /// @param x scanout 0 水平位置。
+    /// @param y scanout 0 垂直位置。
+    /// @param hot_x resource 内水平热点。
+    /// @param hot_y resource 内垂直热点。
+    /// @return exact cursor completion wait 或 adapter readiness retry token。
+    /// @errors 非 master、CRTC inactive、resource/geometry 非法或 device failure。
+    pub(crate) fn update_cursor(
+        &self,
+        handle: Option<u32>,
+        x: u32,
+        y: u32,
+        hot_x: u32,
+        hot_y: u32,
+    ) -> Result<DrmCursorSubmission, DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
+        let completion = self.device.completion.lock();
+        if completion.active.is_none() {
+            return Err(DrmError::Invalid);
+        }
+        let resource = handle
+            .map(|handle| self.cursor_resource(handle))
+            .transpose()?;
+        if resource.is_some() && (hot_x >= 64 || hot_y >= 64)
+            || resource.is_none() && (hot_x != 0 || hot_y != 0)
+        {
+            return Err(DrmError::Invalid);
+        }
+        let command = CursorCommand::Update {
+            x,
+            y,
+            visible: resource.is_some(),
+            hot_x,
+            hot_y,
+        };
+        let generation = completion.adapter_generation;
+        let result = self.device.display.submit_cursor(command);
+        drop(completion);
+        classify_cursor_submission(self, generation, resource, result)
+    }
+
+    /// @description 通过独立 cursorq 移动当前硬件光标，不读取或重绘 scene resource。
+    /// @param x scanout 0 水平位置。
+    /// @param y scanout 0 垂直位置。
+    /// @return adapter 接受最新位置后返回 unit，不等待 cursorq completion。
+    /// @errors 非 master、CRTC inactive 或 device failure。
+    pub(crate) fn move_cursor(&self, x: u32, y: u32) -> Result<(), DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
+        let completion = self.device.completion.lock();
+        if completion.active.is_none() {
+            return Err(DrmError::Invalid);
+        }
+        let result = self.device.display.move_cursor(x, y);
+        drop(completion);
+        result.map_err(device::display_error)
+    }
+
     /// @description 准备 file-private XRGB8888 linear dumb buffer，不提前发布 handle。
     ///
     /// @param width 非零 pixel width。
@@ -377,12 +473,6 @@ impl DrmFile {
     /// @return 删除成功返回 unit。
     /// @errors handle 不存在返回 NotFound。
     pub(crate) fn destroy_dumb(&self, handle: u32) -> Result<(), DrmError> {
-        // 临时跟踪：记录 handle 销毁（排查 SET_BUFFER adopt 后移除）。
-        crate::warn!(
-            "[DRM] destroy_dumb: handle={} file_identity={}",
-            handle,
-            self.file_identity
-        );
         let removed = self.state.lock().buffers.remove(&handle);
         let buffer = removed.ok_or(DrmError::NotFound)?;
         // DeviceBacking 的最后一个 Arc 会逐 extent 进入 buddy merge；必须在 GEM
@@ -672,5 +762,25 @@ fn classify_submission(
             generation,
         })),
         Err(error) => Err(error),
+    }
+}
+
+fn classify_cursor_submission(
+    file: &DrmFile,
+    generation: u64,
+    resource: Option<Arc<DumbBuffer>>,
+    result: Result<u64, crate::drivers::DisplayError>,
+) -> Result<DrmCursorSubmission, DrmError> {
+    match result {
+        Ok(sequence) => Ok(DrmCursorSubmission::Wait(DrmCursorWait {
+            device: file.device.clone(),
+            sequence,
+            _resource: resource,
+        })),
+        Err(crate::drivers::DisplayError::WouldBlock) => Ok(DrmCursorSubmission::Retry(DrmRetry {
+            device: file.device.clone(),
+            generation,
+        })),
+        Err(error) => Err(device::display_error(error)),
     }
 }

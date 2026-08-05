@@ -85,6 +85,10 @@ pub struct Display {
     configure_serial: u64,
     output_serial: u64,
     revision: u64,
+    /// Last GPU paint revision, distinct from scene revisions allocated from
+    /// the same public monotonic sequence. Without this owner, retained paint
+    /// can name an intervening scene revision that has no pixel target.
+    paint_revision: u64,
     /// 持久 commit 编码缓冲,替代每帧 64KiB 栈数组(MAX_MESSAGE 一次性驻留,
     /// 不再反复清零栈页)。只被 commit 路径独占使用,无重入。
     staging: Vec<u8>,
@@ -137,6 +141,7 @@ impl Display {
             configure_serial,
             output_serial: welcome.output_serial,
             revision: 0,
+            paint_revision: 0,
             staging: vec![0; MAX_MESSAGE],
             pending: VecDeque::new(),
             submitted: VecDeque::new(),

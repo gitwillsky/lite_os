@@ -170,10 +170,9 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
                 .into(),
         );
     }
-    if !(mmu.contains("address < DIRECT_MAP_SIZE")
-        && mmu.contains(
-            "AArch64 direct-map physical address exceeds the current 120 GiB TTBR1 window",
-        )
+    if !(mmu.contains("if address < DIRECT_MAP_SIZE")
+        && mmu.contains("KERNEL_MMIO_MAPPINGS.get().and_then")
+        && mmu.contains("AArch64 physical address has no kernel mapping")
         && mmu.contains("checked_add(address)"))
     {
         errors.push(
@@ -186,8 +185,16 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         );
     }
     if !(mmu.contains("const DIRECT_MAP_SIZE: usize = 120usize << 30")
+        && mmu.contains("const KERNEL_MMIO_WINDOW_SIZE: usize = 1usize << 30")
+        && mmu.contains(
+            "KERNEL_MMIO_REGION_START: usize = TTBR1_ADDRESS_TOP - KERNEL_MMIO_WINDOW_SIZE",
+        )
+        && mmu.contains("KERNEL_MMIO_REGION_TOP: usize = TTBR1_ADDRESS_TOP")
         && mmu.contains("KERNEL_STACK_REGION_START: usize = DIRECT_MAP_BASE + DIRECT_MAP_SIZE")
-        && mmu.contains("KERNEL_STACK_REGION_TOP: usize = usize::MAX & !(PAGE_SIZE - 1)")
+        && mmu.contains("KERNEL_STACK_REGION_TOP: usize = KERNEL_MMIO_REGION_START")
+        && mmu.contains(
+            "assert!(KERNEL_STACK_REGION_TOP - KERNEL_STACK_REGION_START >= (135usize << 30) - PAGE_SIZE)",
+        )
         && riscv_mmu.contains("KERNEL_STACK_REGION_START: usize = 0")
         && riscv_mmu.contains("KERNEL_STACK_REGION_TOP: usize = TRAP_CONTEXT_ADDRESS")
         && kernel_stack.contains("crate::arch::mmu::KERNEL_STACK_REGION_START")

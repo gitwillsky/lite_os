@@ -9,12 +9,10 @@ import os
 import re
 import select
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,13 +20,14 @@ from audio_analysis import WavSignal, read_qemu_wav
 from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_payload
 from build_target import acceleration_from_environment, target_from_environment
 from ext2_image import recover_ext2_journal, run_debugfs
-from qemu_gate import ANSI, QmpClient, _qemu_command, terminate
+from qemu_gate import ANSI, QmpClient
+from utm_runtime import GateRuntime, start_gate
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIRECTORY = ROOT / "scripts" / "fixtures" / "audio"
 DISPLAY_WIDTH = 1504
 DISPLAY_HEIGHT = 846
-RECIPE_VERSION = 7
+RECIPE_VERSION = 8
 NORMAL_AUDIO_INIT = "::respawn:/bin/audio-service"
 DIAGNOSTIC_AUDIO_INIT = "::respawn:/bin/audio-service --diagnostic-log"
 MUSIC_APP_ORIGINS = tuple(
@@ -60,22 +59,10 @@ MASTER_VOLUME_X = {30: 1221, 70: 1347, 100: 1441}
 S16_POSITIVE_MAX = 32_767 / 32_768
 POINTER_HOVER_SETTLE_SECONDS = 0.1
 POINTER_CLICK_HOLD_SECONDS = 0.05
-PANEL_PRESENT_TIMEOUT_SECONDS = 6.0
-PANEL_PRESENT_POLL_SECONDS = 0.1
-# These eight points lie on the Command Center's straight outer border. The
-# border is painted over the panel's own opaque surface, so its color is stable
-# even after Music windows occupy the former app-icon sample points underneath.
-COMMAND_CENTER_SIGNATURE_POINTS = (
-    (20, 150),
-    (20, 300),
-    (20, 500),
-    (831, 150),
-    (831, 300),
-    (831, 500),
-    (400, 58),
-    (400, 660),
-)
-SYSTEM_CENTER_SIGNATURE_POINTS = ((1220, 212), (1240, 212), (1260, 212))
+# Opening either shell panel commits a backdrop-filtered full-desktop scene.
+# The next click must wait for that hit tree, otherwise it can still target the
+# pre-panel desktop and silently miss Music or a System Center control.
+PANEL_INTERACTION_SETTLE_SECONDS = 1.5
 # Guest names make the production directory sort byte-for-byte deterministic.
 # Without the numeric prefix, locale-dependent `localeCompare` ordering could
 # make the gate click a different codec while still observing a valid marker.
@@ -142,7 +129,7 @@ class AudioGateResult:
 class SerialCapture:
     """持续 drain QEMU 串口并提供单调 marker 等待。"""
 
-    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+    def __init__(self, process: GateRuntime) -> None:
         if process.stdout is None:
             raise RuntimeError("QEMU stdout pipe is unavailable")
         self._process = process
@@ -347,184 +334,21 @@ def double_click(qmp: QmpClient, x: float, y: float) -> None:
     click(qmp, x, y)
 
 
-def ppm_pixels(path: Path, logical_points: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int, int], ...]:
-    """Reads selected logical pixels from QEMU's physical binary PPM scanout."""
-    data = path.read_bytes()
-    offset = 0
-
-    def token() -> bytes:
-        nonlocal offset
-        while offset < len(data):
-            if data[offset] == ord("#"):
-                newline = data.find(b"\n", offset)
-                if newline < 0:
-                    raise RuntimeError("QEMU PPM comment has no terminator")
-                offset = newline + 1
-            elif data[offset] in b" \t\r\n":
-                offset += 1
-            else:
-                break
-        start = offset
-        while offset < len(data) and data[offset] not in b" \t\r\n":
-            offset += 1
-        if start == offset:
-            raise RuntimeError("QEMU PPM header is truncated")
-        return data[start:offset]
-
-    magic = token()
-    width = int(token())
-    height = int(token())
-    maximum = int(token())
-    if magic != b"P6" or maximum != 255:
-        raise RuntimeError("QEMU screendump is not an 8-bit binary PPM")
-    if offset >= len(data) or data[offset] not in b" \t\r\n":
-        raise RuntimeError("QEMU PPM has no payload separator")
-    if data[offset:offset + 2] == b"\r\n":
-        offset += 2
-    else:
-        offset += 1
-    if (width, height) != (DISPLAY_WIDTH * 2, DISPLAY_HEIGHT * 2):
-        raise RuntimeError(
-            f"QEMU screendump geometry changed: {(width, height)!r}"
-        )
-    if len(data) - offset != width * height * 3:
-        raise RuntimeError("QEMU PPM payload length is inconsistent")
-    result = []
-    for logical_x, logical_y in logical_points:
-        physical_x = logical_x * 2
-        physical_y = logical_y * 2
-        index = offset + (physical_y * width + physical_x) * 3
-        result.append(tuple(data[index:index + 3]))
-    return tuple(result)
-
-
-def command_center_visible(pixels: tuple[tuple[int, int, int], ...]) -> bool:
-    """Recognizes the complete blue-gray outer border of Command Center."""
-    return len(pixels) == len(COMMAND_CENTER_SIGNATURE_POINTS) and all(
-        38 <= red <= 50 and 52 <= green <= 66 and 72 <= blue <= 90
-        for red, green, blue in pixels
-    )
-
-
-def system_center_visible(pixels: tuple[tuple[int, int, int], ...]) -> bool:
-    """Recognizes the cyan master-volume track unique to System Center."""
-    return len(pixels) == 3 and all(
-        green >= 150 and blue >= 220
-        for _, green, blue in pixels
-    )
-
-
-def screen_pixels(
-    qmp: QmpClient,
-    directory: Path,
-    name: str,
-    points: tuple[tuple[int, int], ...],
-) -> tuple[tuple[int, int, int], ...]:
-    """Captures one presented scanout and returns selected logical pixels."""
-    path = directory / f"{name}.ppm"
-    qmp.screendump(path)
-    return ppm_pixels(path, points)
-
-
-def pixel_distance(
-    first: tuple[tuple[int, int, int], ...],
-    second: tuple[tuple[int, int, int], ...],
-) -> int:
-    """Returns the summed RGB distance between equal-sized samples."""
-    if len(first) != len(second):
-        raise ValueError("pixel samples must have equal length")
-    return sum(
-        abs(left - right)
-        for first_pixel, second_pixel in zip(first, second, strict=True)
-        for left, right in zip(first_pixel, second_pixel, strict=True)
-    )
-
-
-def wait_pixels_changed(
-    qmp: QmpClient,
-    directory: Path,
-    name: str,
-    points: tuple[tuple[int, int], ...],
-    before: tuple[tuple[int, int, int], ...],
-) -> tuple[tuple[int, int, int], ...]:
-    """Waits for a sampled region to change and returns the presented pixels."""
-    deadline = time.monotonic() + PANEL_PRESENT_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        current = screen_pixels(qmp, directory, name, points)
-        if pixel_distance(before, current) >= 100:
-            return current
-        time.sleep(PANEL_PRESENT_POLL_SECONDS)
-    raise RuntimeError(f"{name} did not reach a changed presented scene")
-
-
-def panel_visible(
-    qmp: QmpClient,
-    directory: Path,
-    name: str,
-    points: tuple[tuple[int, int], ...],
-    predicate: Callable[[tuple[tuple[int, int, int], ...]], bool],
-) -> bool:
-    """Samples one compositor-presented scanout and recognizes a shell panel."""
-    return predicate(screen_pixels(qmp, directory, name, points))
-
-
-def wait_panel(
-    qmp: QmpClient,
-    directory: Path,
-    name: str,
-    points: tuple[tuple[int, int], ...],
-    predicate: Callable[[tuple[tuple[int, int, int], ...]], bool],
-    expected: bool,
-) -> None:
-    """Waits until a panel's visual signature reaches the requested state."""
-    deadline = time.monotonic() + PANEL_PRESENT_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        if panel_visible(qmp, directory, name, points, predicate) is expected:
-            return
-        time.sleep(PANEL_PRESENT_POLL_SECONDS)
-    raise RuntimeError(f"{name} did not reach presented={expected}")
-
-
-def launch_music(qmp: QmpClient, directory: Path) -> None:
+def launch_music(qmp: QmpClient) -> None:
     """经 production Command Center 启动一个新的 React Music 实例。"""
     click(qmp, *COMMAND_CENTER_POINT)
-    wait_panel(
-        qmp,
-        directory,
-        "command-center",
-        COMMAND_CENTER_SIGNATURE_POINTS,
-        command_center_visible,
-        True,
-    )
+    # VirGL scanouts have no valid QMP CPU screendump. This delay is only an
+    # input-ordering interval; the subsequent app-connected marker remains the
+    # authoritative pass condition and rejects a click that missed the panel.
+    time.sleep(PANEL_INTERACTION_SETTLE_SECONDS)
     click(qmp, *COMMAND_MUSIC_POINT)
-    wait_panel(
-        qmp,
-        directory,
-        "command-center-closed",
-        COMMAND_CENTER_SIGNATURE_POINTS,
-        command_center_visible,
-        False,
-    )
+    time.sleep(PANEL_INTERACTION_SETTLE_SECONDS)
 
 
-def toggle_system_center(qmp: QmpClient, directory: Path) -> None:
-    """切换 production System Center，并等待 compositor 呈现目标状态。"""
-    before = panel_visible(
-        qmp,
-        directory,
-        "system-center-before",
-        SYSTEM_CENTER_SIGNATURE_POINTS,
-        system_center_visible,
-    )
+def toggle_system_center(qmp: QmpClient) -> None:
+    """切换 production System Center，并稳定后续物理控件输入顺序。"""
     click(qmp, *SYSTEM_CENTER_POINT)
-    wait_panel(
-        qmp,
-        directory,
-        "system-center",
-        SYSTEM_CENTER_SIGNATURE_POINTS,
-        system_center_visible,
-        not before,
-    )
+    time.sleep(PANEL_INTERACTION_SETTLE_SECONDS)
 
 
 def wav_frame_count(path: Path) -> int:
@@ -768,11 +592,16 @@ def validate_signal(
     return signal, tone_440, tone_660
 
 
-def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
+def run_audio_gate(
+    image: Path,
+    kernel: Path,
+    timeout_seconds: int = 120,
+) -> AudioGateResult:
     """执行 production Music Player 的完整 AArch64 audio runtime gate。
 
     Args:
         image: 不可原地修改的 rootfs baseline。
+        kernel: 与该 rootfs 配套的 AArch64 boot artifact。
         timeout_seconds: boot、交互和输出的总 host liveness 上限。
 
     Returns:
@@ -784,25 +613,26 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
     private = tempfile.TemporaryDirectory(prefix="liteos-audio-gate-")
     private_root = Path(private.name)
     private_image = private_root / image.name
-    qmp_socket = private_root / "qmp.sock"
-    audio_output = private_root / "audio.wav"
     shutil.copyfile(image, private_image)
     inject_fixtures(private_image)
     enable_audio_diagnostics(private_image, private_root)
-    process = subprocess.Popen(
-        _qemu_command(
-            private_image,
-            1,
-            interactive_devices=True,
-            qmp_socket=qmp_socket,
-            audio_output=audio_output,
-        ),
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    capture = SerialCapture(process)
+    try:
+        runtime = start_gate(
+            kernel=kernel,
+            rootfs=private_image,
+            qmp=True,
+            capture_audio=True,
+        )
+    except BaseException:
+        private.cleanup()
+        raise
+    if runtime.qmp_socket is None or runtime.audio_output is None:
+        runtime.close()
+        private.cleanup()
+        raise RuntimeError("UTM audio gate did not publish QMP and WAV endpoints")
+    qmp_socket = runtime.qmp_socket
+    audio_output = runtime.audio_output
+    capture = SerialCapture(runtime)
     qmp: QmpClient | None = None
     element_quiet_window = (0, 0)
     element_audible_window = (0, 0)
@@ -825,8 +655,6 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         shutil.copyfile(private_image, failure / private_image.name)
         if audio_output.is_file():
             shutil.copyfile(audio_output, failure / audio_output.name)
-        for screenshot in private_root.glob("*.ppm"):
-            shutil.copyfile(screenshot, failure / screenshot.name)
         print(
             f"audio runtime failure artifacts retained in {failure}",
             file=sys.stderr,
@@ -853,7 +681,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
 
         # 2. Launch Music through the production Command Center. Files and
         #    Terminal are the two pinned Aurora windows, so Music owns surface 3.
-        launch_music(qmp, private_root)
+        launch_music(qmp)
         capture.wait_all(
             (
                 "compositor: app 3 connected",
@@ -1016,7 +844,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         # 6. Exercise the desktop-only system controller through the production
         #    System Center. Exact service markers prove the click reached the
         #    authoritative owner; WAV windows prove the mixer applied it.
-        toggle_system_center(qmp, private_root)
+        toggle_system_center(qmp)
 
         click(qmp, *MASTER_MUTE_POINT)
         capture.wait_new("audio-service: master percent=75 muted=true", 0, 5.0)
@@ -1047,7 +875,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             audio_output, master_reference_start + 12_000
         )
         master_reference_window = (master_reference_start, master_reference_end)
-        toggle_system_center(qmp, private_root)
+        toggle_system_center(qmp)
 
         # 7. `Next` selects the deterministic high-level PCM source after the
         #    13-format matrix. This extra public file is only the limiter
@@ -1080,10 +908,10 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         # eight real service streams without adding a hidden multi-stream app.
         # The 100% master step deliberately crosses the limiter threshold; the
         # private image is restored to 70% after the metrics window.
-        toggle_system_center(qmp, private_root)
+        toggle_system_center(qmp)
         click(qmp, MASTER_VOLUME_X[100], MASTER_SCALE_Y)
         capture.wait_new("audio-service: master percent=100 muted=false", 0, 5.0)
-        toggle_system_center(qmp, private_root)
+        toggle_system_center(qmp)
         for app_index in range(1, 8):
             surface_id = app_index + 3
             presented_marker = (
@@ -1094,7 +922,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
                 f"LITE_AUDIO source-opened id=1 file={LIMITER_FIXTURE[1]}"
             )
             playing_before = capture.count("LITE_AUDIO event=playing")
-            launch_music(qmp, private_root)
+            launch_music(qmp)
             capture.wait_new(
                 presented_marker,
                 presented_before,
@@ -1174,21 +1002,18 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
             time.sleep(0.05)
         if len(METRICS_RE.findall(capture.text())) <= metrics_before:
             raise RuntimeError("audio service emitted no eight-stream metrics window")
-        toggle_system_center(qmp, private_root)
+        toggle_system_center(qmp)
         restored_before = capture.count("audio-service: master percent=70 muted=false")
         click(qmp, MASTER_VOLUME_X[70], MASTER_SCALE_Y)
         capture.wait_new(
             "audio-service: master percent=70 muted=false", restored_before, 5.0
         )
-        toggle_system_center(qmp, private_root)
+        toggle_system_center(qmp)
         final_text = capture.text()
         qmp.stop_and_unrealize("audio-device")
         assert_qemu_wav_finalized(audio_output)
         qmp.quit()
-        try:
-            returncode = process.wait(timeout=3)
-        except subprocess.TimeoutExpired as error:
-            raise RuntimeError("QEMU did not exit after graceful QMP quit") from error
+        returncode = runtime.wait(timeout=5)
         if returncode != 0:
             raise RuntimeError(
                 f"QEMU exited with status {returncode} after graceful QMP quit"
@@ -1198,10 +1023,11 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         if qmp is not None:
             qmp.close()
         capture.close()
-        terminate(process)
+        runtime.close()
         final_text = capture.text()
         if failed:
             retain_failure_artifacts()
+            audio_output.unlink(missing_ok=True)
             private.cleanup()
 
     try:
@@ -1266,6 +1092,7 @@ def run_audio_gate(image: Path, timeout_seconds: int = 120) -> AudioGateResult:
         retain_failure_artifacts()
         raise
     finally:
+        audio_output.unlink(missing_ok=True)
         private.cleanup()
 
 
@@ -1279,6 +1106,7 @@ def gate_inputs(image: Path) -> tuple[Path, ...]:
         image,
         ROOT / target.kernel_boot_artifact(),
         ROOT / "scripts" / "qemu_gate.py",
+        ROOT / "scripts" / "utm_runtime.py",
         ROOT / "scripts" / "audio_analysis.py",
         ROOT / "scripts" / "ext2_image.py",
         Path(__file__).resolve(),
@@ -1337,7 +1165,7 @@ def main() -> int:
         if runtime_gate_hit(stamp, payload, (image,)):
             print("audio runtime verification cache hit")
             return 0
-        result = run_audio_gate(image)
+        result = run_audio_gate(image, ROOT / target.kernel_boot_artifact())
         report(result)
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:

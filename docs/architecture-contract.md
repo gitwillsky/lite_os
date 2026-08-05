@@ -89,8 +89,11 @@
 | `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
 | `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
 | `kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
+| `kernel/src/drm.rs :: DrmDeviceState.graphics_cleanups` | `FallibleMap < u32 , graphics :: VirglCleanup >` |
 | `kernel/src/drm.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
 | `kernel/src/drm.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
+| `kernel/src/drm.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
+| `kernel/src/drm/graphics.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
 | `kernel/src/drm/publication_order.rs :: IdAllocator.reusable` | `FallibleMap < T , () >` |
 | `kernel/src/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
 | `kernel/src/fs/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |

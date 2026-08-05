@@ -152,61 +152,6 @@ class QemuRoutingTests(unittest.TestCase):
         self.assertIn("accel=tcg", argument_after(command, "-machine"))
         self.assertEqual(argument_after(command, "-cpu"), "max")
 
-    @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-aarch64")
-    def test_aarch64_interactive_devices_match_run_gui_topology(self, _: Mock) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            command = qemu_gate._qemu_command(
-                Path("rootfs.img"), 11, interactive_devices=True
-            )
-
-        devices = [
-            command[index + 1]
-            for index, argument in enumerate(command)
-            if argument == "-device"
-        ]
-        self.assertEqual(argument_after(command, "-m"), "2G")
-        self.assertEqual(
-            devices,
-            [
-                "virtio-blk-device,drive=x0",
-                "virtio-rng-device,rng=rng0",
-                "virtio-serial-device,id=virtio-serial0",
-                (
-                    "virtserialport,bus=virtio-serial0.0,chardev=vdagent,"
-                    "name=com.redhat.spice.0"
-                ),
-                "virtio-gpu-device,xres=3008,yres=1692",
-                "virtio-keyboard-device",
-                "virtio-tablet-device",
-                "virtio-sound-device,id=audio-device,audiodev=audio0,streams=1",
-                "virtio-net-device,netdev=net0",
-            ],
-        )
-        self.assertEqual(argument_after(command, "-audiodev"), "none,id=audio0")
-        self.assertEqual(
-            argument_after(command, "-chardev"),
-            "qemu-vdagent,id=vdagent,name=vdagent,clipboard=on,mouse=off",
-        )
-
-    @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-aarch64")
-    def test_audio_gate_records_fixed_stereo_wav(self, _: Mock) -> None:
-        output = Path("/tmp/liteos-audio.wav")
-        with patch.dict(os.environ, {}, clear=True):
-            command = qemu_gate._qemu_command(
-                Path("rootfs.img"),
-                1,
-                interactive_devices=True,
-                audio_output=output,
-            )
-
-        self.assertEqual(
-            argument_after(command, "-audiodev"),
-            (
-                "wav,id=audio0,path=/tmp/liteos-audio.wav,"
-                "out.frequency=48000,out.channels=2,out.format=s16"
-            ),
-        )
-
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu-system-riscv64")
     def test_riscv64_tcg_keeps_rustsbi_and_release_kernel(self, _: Mock) -> None:
         environment = {"ARCH": "riscv64", "ACCEL": "tcg"}

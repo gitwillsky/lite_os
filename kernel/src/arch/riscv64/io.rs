@@ -24,6 +24,30 @@ pub(crate) unsafe fn write_mmio_u8(address: usize, value: u8) {
     unsafe { core::ptr::write_volatile(address as *mut u8, value) };
 }
 
+/// Read one 16-bit halfword from a caller-validated, aligned MMIO address.
+///
+/// # Safety
+///
+/// `address` must name a readable, 16-bit-aligned device register.
+// SAFETY: callers must prove the address is a readable aligned 16-bit device register.
+#[inline(always)]
+pub(crate) unsafe fn read_mmio_u16(address: usize) -> u16 {
+    // SAFETY: the caller owns range and alignment validity.
+    unsafe { core::ptr::read_volatile(address as *const u16) }
+}
+
+/// Write one 16-bit halfword to a caller-validated, aligned MMIO address.
+///
+/// # Safety
+///
+/// `address` must name a writable, 16-bit-aligned device register.
+// SAFETY: callers must prove the address is a writable aligned 16-bit device register.
+#[inline(always)]
+pub(crate) unsafe fn write_mmio_u16(address: usize, value: u16) {
+    // SAFETY: the caller owns range and alignment validity.
+    unsafe { core::ptr::write_volatile(address as *mut u16, value) };
+}
+
 /// Read one 32-bit word from a caller-validated, aligned MMIO address.
 ///
 /// # Safety

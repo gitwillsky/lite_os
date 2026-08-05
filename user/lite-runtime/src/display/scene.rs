@@ -3,7 +3,8 @@
 use std::io;
 
 use display_proto::{
-    ClipMask, ClipMasks, Rect, Rectangles, SceneCommit, SceneNode, SceneNodeKind, send_message,
+    ClipMask, ClipMasks, MAX_NODE_CLIP_MASKS, Rect, Rectangles, SceneCommit, SceneNode,
+    SceneNodeKind, send_message,
 };
 
 use super::{Display, ForeignLayer, Overlay, WindowFrame};
@@ -65,6 +66,15 @@ impl Display {
         });
         let window_frames: Vec<[Rect; 1]> = windows.iter().map(|window| [window.frame]).collect();
         let foreign_bounds: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();
+        let foreign_clip_masks = foreign
+            .iter()
+            .map(|layer| {
+                let window = windows
+                    .iter()
+                    .find(|window| window.surface_id == layer.surface_id);
+                scene_clip_masks(layer, window)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         for (window, frame_input) in windows.iter().zip(&window_frames) {
             nodes.push(SceneNode {
                 kind: SceneNodeKind::DisplayList,
@@ -90,7 +100,7 @@ impl Display {
                     configure_serial: layer.configure_serial,
                     bounds: layer.bounds,
                     clip: layer.clip,
-                    clip_masks: ClipMasks::from_slice(&layer.clip_masks),
+                    clip_masks: ClipMasks::from_slice(&foreign_clip_masks[index]),
                     opaque: Some(layer.bounds),
                     input: Rectangles::from_slice(&foreign_bounds[index]),
                     damage: Rectangles::from_slice(&no_damage),
@@ -138,5 +148,75 @@ impl Display {
         send_message(&self.stream, message)?;
         self.submitted.push_back(revision);
         Ok(())
+    }
+}
+
+/// Adds the owning window's outer shape to an embedded surface's inherited CSS clips.
+///
+/// The desktop display list already uses `WindowFrame::clip_mask`, but foreign pixels are a
+/// separate scene node and therefore do not inherit that node's clip. Omitting this mask lets an
+/// opaque client texture overwrite the frame's rounded bottom corners.
+fn scene_clip_masks(
+    layer: &ForeignLayer,
+    window: Option<&WindowFrame>,
+) -> io::Result<Vec<ClipMask>> {
+    let mut masks = layer.clip_masks.clone();
+    let Some(mask) = window.map(|window| window.clip_mask) else {
+        return Ok(masks);
+    };
+    if masks.contains(&mask) {
+        return Ok(masks);
+    }
+    if masks.len() == MAX_NODE_CLIP_MASKS {
+        return Err(io::Error::other(
+            "foreign surface clip chain leaves no room for its window shape",
+        ));
+    }
+    masks.push(mask);
+    Ok(masks)
+}
+
+#[cfg(test)]
+mod tests {
+    use display_proto::{CornerRadius, Rect};
+
+    use super::{ForeignLayer, WindowFrame, scene_clip_masks};
+
+    #[test]
+    fn foreign_surface_includes_owning_window_shape() {
+        let bounds = Rect {
+            x: 10,
+            y: 60,
+            width: 400,
+            height: 300,
+        };
+        let window_mask = display_proto::ClipMask {
+            rect: Rect {
+                x: 8,
+                y: 8,
+                width: 404,
+                height: 352,
+            },
+            radii: [CornerRadius { x: 14, y: 14 }; 4],
+        };
+        let layer = ForeignLayer {
+            surface_id: 7,
+            configure_serial: 1,
+            bounds,
+            clip: bounds,
+            clip_masks: Vec::new(),
+            desktop_input: Vec::new(),
+            desktop_hit_start: 0,
+        };
+        let window = WindowFrame {
+            surface_id: 7,
+            frame: window_mask.rect,
+            clip_mask: window_mask,
+        };
+
+        assert_eq!(
+            scene_clip_masks(&layer, Some(&window)).unwrap(),
+            [window_mask]
+        );
     }
 }

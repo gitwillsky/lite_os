@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 
 from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_payload
-from build_target import BuildTarget, target_from_environment
+from build_target import BuildTarget, acceleration_from_environment, target_from_environment
 from qemu_gate import boot as boot_image, cpu_topology_markers
+from utm_gate import boot_graphics
 from verify_busybox import cached_busybox_binary
 from verify_musl import cached_musl_paths, find_compiler
 
@@ -42,6 +43,8 @@ def gate_inputs(
         ROOT / "scripts/verify_busybox.py",
         Path(__file__).resolve(),
         ROOT / "scripts/qemu_gate.py",
+        ROOT / "scripts/utm_gate.py",
+        ROOT / "scripts/utm_runtime.py",
     ]
     if kernel_boot_artifact != kernel_elf:
         artifacts.append(kernel_boot_artifact)
@@ -74,23 +77,23 @@ def boot(image: Path, smp: int) -> None:
     boot_image(image, smp, markers)
 
 
-def boot_interactive_devices(image: Path) -> None:
-    """在无 host 窗口下验证 run-gui 的 GPU、输入设备拓扑与桌面全链路。
+def boot_product_graphics(image: Path, kernel: Path) -> None:
+    """通过隐藏 UTM VirGL 产品路径验证 GPU、输入设备拓扑与桌面全链路。
 
     compositor 首帧 marker 证明真实 splash 已由 Aurora 桌面原子替换；随后
     Files 与 Terminal 的 marker 证明两个固定启动窗口完成首帧发布。
     """
-    boot_image(
+    boot_graphics(
         image,
-        1,
+        kernel,
         (
             "[Audio] VirtIO Sound capability ready",
-            "[Platform] VirtIO console clipboard port",
+            "[Platform] VirtIO console PCI transport on IRQ",
             "VirtIO input event0",
             "VirtIO input event1",
             "VirtIO GPU",
             "init started: BusyBox v1.37.0",
-            "compositor: mode",
+            "compositor: GPU mode",
             "compositor: desktop connected",
             "compositor: desktop first scene presented",
             "lite-ui: desktop ready",
@@ -100,7 +103,6 @@ def boot_interactive_devices(image: Path) -> None:
             "compositor: app 2 connected",
             "lite-ui: app file-manager ready",
         ),
-        interactive_devices=True,
     )
 
 
@@ -124,7 +126,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / f"boot-{target.arch}.json"
         payload = runtime_gate_payload(
             "boot-topology",
-            6,
+            7,
             gate_inputs(target, image, busybox, musl.install),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
@@ -133,9 +135,14 @@ def main() -> int:
         for smp in SMP_CONFIGURATIONS:
             boot(image, smp)
             print(f"QEMU -smp {smp} boot verification passed")
-        if target.arch == "aarch64":
-            boot_interactive_devices(image)
-            print("QEMU AArch64 interactive-device boot verification passed")
+        if (
+            target.arch == "aarch64"
+            and acceleration_from_environment() == "hvf"
+        ):
+            boot_product_graphics(image, ROOT / target.kernel_boot_artifact())
+            print("UTM AArch64 VirGL product graphics boot verification passed")
+        elif target.arch == "aarch64":
+            print("UTM VirGL boot gate skipped outside the AArch64/HVF product runtime")
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:
         print(f"boot verification failed: {error}", file=sys.stderr)

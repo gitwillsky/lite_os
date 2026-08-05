@@ -49,8 +49,7 @@ impl Session {
         let Some(grab) = self.move_grab.take() else {
             return Ok(());
         };
-        self.move_damage = None;
-        self.move_underlays.remove(&grab.surface_id);
+        self.move_changed = false;
         self.buffers
             .values
             .remove(&grab.underlay_buffer_id)

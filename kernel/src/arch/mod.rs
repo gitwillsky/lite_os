@@ -83,10 +83,11 @@ pub(crate) enum UserContextPlacement {
 }
 
 pub(crate) use selected::{
-    before_mmio_write, read_mmio_u8, read_mmio_u32, secondary_entry, write_mmio_u8, write_mmio_u32,
+    before_mmio_write, read_mmio_u8, read_mmio_u16, read_mmio_u32, secondary_entry, write_mmio_u8,
+    write_mmio_u16, write_mmio_u32,
 };
 #[cfg(target_arch = "aarch64")]
-pub(crate) use selected::{read_mmio_u16, read_mmio_u64, write_mmio_u16, write_mmio_u64};
+pub(crate) use selected::{read_mmio_u64, write_mmio_u64};
 
 /// Local interrupt mechanism selected at compile time.
 pub(crate) mod interrupt {

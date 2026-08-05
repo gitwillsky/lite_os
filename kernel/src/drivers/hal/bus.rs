@@ -53,14 +53,21 @@ impl MmioBus {
         Ok(())
     }
 
-    #[cfg(target_arch = "aarch64")]
+    /// @description 从 MMIO window 读取一个 little-endian 16-bit halfword。
+    /// @param offset 相对 window base 的 byte offset。
+    /// @return volatile 读取值。
+    /// @errors offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
     pub(crate) fn read_u16(&self, offset: usize) -> Result<u16, BusError> {
         let address = self.address(offset, core::mem::size_of::<u16>())?;
         // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。
         Ok(unsafe { crate::arch::read_mmio_u16(address) })
     }
 
-    #[cfg(target_arch = "aarch64")]
+    /// @description 向 MMIO window 写入一个 little-endian 16-bit halfword。
+    /// @param offset 相对 window base 的 byte offset。
+    /// @param value 要发布的 halfword。
+    /// @return 写入成功返回 unit。
+    /// @errors offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
     pub(crate) fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError> {
         let address = self.address(offset, core::mem::size_of::<u16>())?;
         // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。

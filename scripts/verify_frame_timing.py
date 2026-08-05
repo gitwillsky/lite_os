@@ -26,7 +26,7 @@ from pathlib import Path
 
 from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_payload
 from build_target import BuildTarget, target_from_environment
-from qemu_gate import measure_frame_timing
+from utm_gate import measure_frame_timing
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -45,7 +45,7 @@ LIMIT_P95_US = 33_300
 LIMIT_P99_US = 50_000
 MAX_DROPPED = 0  # any vblank sequence gap is a real dropped frame.
 # Bump to force a re-run after tightening thresholds or the marker format.
-RECIPE_VERSION = 3
+RECIPE_VERSION = 4
 
 
 def default_image(target: BuildTarget) -> Path:
@@ -65,6 +65,8 @@ def gate_inputs(image: Path, target: BuildTarget) -> tuple[Path, ...]:
         image,
         ROOT / target.kernel_boot_artifact(),
         ROOT / "scripts" / "qemu_gate.py",
+        ROOT / "scripts" / "utm_gate.py",
+        ROOT / "scripts" / "utm_runtime.py",
         Path(__file__).resolve(),
     )
 
@@ -122,7 +124,10 @@ def main() -> int:
         if runtime_gate_hit(stamp, payload, (image,)):
             print("frame-timing verification cache hit")
             return 0
-        measured = measure_frame_timing(image)
+        measured = measure_frame_timing(
+            image,
+            ROOT / target.kernel_boot_artifact(),
+        )
         code = report(measured)
         if code != 0:
             return code

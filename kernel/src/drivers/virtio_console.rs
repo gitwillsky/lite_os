@@ -6,7 +6,6 @@ mod wire;
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-#[cfg(target_arch = "aarch64")]
 use super::PciTransport;
 use super::{
     InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
@@ -116,7 +115,10 @@ impl VirtIOConsoleDevice {
     /// @description Initialize the UTM-provided modern VirtIO PCI console function.
     /// @param transport Capability-validated PCI common/notify/ISR windows.
     /// @return The same named-port adapter used by VirtIO MMIO, or `None` on negotiation failure.
-    #[cfg(target_arch = "aarch64")]
+    #[allow(
+        dead_code,
+        reason = "PCI console assembly is owned by platform backends that discover PCI"
+    )]
     pub(crate) fn from_pci(transport: PciTransport) -> Option<Arc<Self>> {
         Self::from_device(VirtIODevice::from_pci(3, transport))
     }

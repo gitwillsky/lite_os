@@ -269,21 +269,38 @@ impl VirtQueue {
     }
 
     pub(super) fn add_to_avail(&mut self, desc_idx: u16) {
-        // Update available ring following virtio-drivers pattern
-        let avail_slot = self.avail_idx & (self.size - 1);
+        self.add_batch_to_avail(core::slice::from_ref(&desc_idx));
+    }
 
-        // SAFETY: size 在创建时已验证为 2 的幂，因此 slot < size；
-        // avail ring 指向已分配共享页，外层 Mutex 串行化 producer 写入。
-        unsafe {
-            let ring_ptr = (self.avail as *mut u16).add(2 + avail_slot as usize);
-            *ring_ptr = desc_idx;
+    /// @description 把一组已完整构造的 descriptor chain 作为一次 available publication 提交。
+    /// @param heads 按 device 必须执行的顺序排列、且尚未发布的 descriptor head。
+    /// @return 无返回值；空 batch 不改变 available ring。
+    pub(super) fn add_batch_to_avail(&mut self, heads: &[u16]) {
+        if heads.is_empty() {
+            return;
+        }
+        assert!(
+            heads.len() <= usize::from(self.size),
+            "VirtIO available batch exceeds queue capacity"
+        );
+
+        // 1. 先填完 batch 的所有 ring slot。逐项提升 idx 会让 polling device 在
+        // SET_SCANOUT 后、RESOURCE_FLUSH 前观察到半个 presentation transaction。
+        for (offset, head) in heads.iter().copied().enumerate() {
+            let index = self.avail_idx.wrapping_add(offset as u16);
+            let avail_slot = index & (self.size - 1);
+            // SAFETY: size 在创建时已验证为 2 的幂，因此 slot < size；avail ring 指向
+            // 已分配共享页，外层 Mutex 串行化 producer 写入。
+            unsafe {
+                let ring_ptr = (self.avail as *mut u16).add(2 + avail_slot as usize);
+                *ring_ptr = head;
+            }
         }
 
-        // Increment avail index - this makes the descriptor available to device
-        self.avail_idx = self.avail_idx.wrapping_add(1);
-        // SAFETY: `avail` points into the queue pages retained by `_frame_tracker`; producer
-        // access is serialized by `&mut self`.  The Release store is the VirtIO-required barrier:
-        // it publishes the descriptor table and ring slot before exposing the new index.
+        // 2. 只提升一次 shared idx，使 device 首次观察该 transaction 时两条 command 已同时可见。
+        self.avail_idx = self.avail_idx.wrapping_add(heads.len() as u16);
+        // SAFETY: `avail` 指向 `_frame_tracker` 保活的 queue pages；producer 由 `&mut self`
+        // 串行化。Release store 在暴露新 idx 前发布 descriptor table 与整个 ring batch。
         unsafe {
             (*self.avail).idx.store(self.avail_idx, Ordering::Release);
         }

@@ -6,9 +6,11 @@ from __future__ import annotations
 import os
 import plistlib
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 UTM_APP = Path("/Applications/UTM.app")
 UTM_VERSION = "4.7.5"
@@ -83,9 +85,17 @@ def _configuration(
     cpu_count: int,
     kernel: Path | None = None,
     rootfs: Path | None = None,
+    serial_tcp_port: int | None = None,
+    qmp_socket: Path | None = None,
+    audio_output: Path | None = None,
 ) -> dict[str, object]:
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
+    # UTM's generated SPICE server enables vdagent mouse delivery by default.
+    # Disable it explicitly so the attached virtio-tablet remains the sole
+    # pointer source; otherwise SPICE diverts host motion into mouse-state
+    # messages while the guest's canonical evdev tablet stays permanently idle.
+    audio_id = "audio0"
     additional = [
         "-global",
         "virtio-mmio.force-legacy=false",
@@ -93,6 +103,8 @@ def _configuration(
         "virtio-gpu-device.xres=3008",
         "-global",
         "virtio-gpu-device.yres=1692",
+        "-spice",
+        "agent-mouse=off",
         "-rtc",
         "base=utc",
         "-drive",
@@ -114,9 +126,44 @@ def _configuration(
         "virtio-keyboard-device",
         "-device",
         "virtio-tablet-device",
-        "-device",
-        "virtio-sound-device,audiodev=audio0,streams=1",
     ]
+    if qmp_socket is not None:
+        additional.extend(
+            (
+                "-qmp",
+                f'"unix:{_qemu_path(qmp_socket)},server=on,wait=off"',
+            )
+        )
+    if audio_output is not None:
+        audio_id = "gate-audio"
+        additional.extend(
+            (
+                "-audiodev",
+                f'"wav,id={audio_id},path={_qemu_path(audio_output)},'
+                'out.frequency=48000,out.channels=2,out.format=s16"',
+            )
+        )
+    additional.extend(
+        (
+            "-device",
+            f"virtio-sound-device,id=audio-device,audiodev={audio_id},streams=1",
+        )
+    )
+    serial = (
+        [{"Mode": "Ptty", "Target": "Auto"}]
+        if serial_tcp_port is None
+        else [
+            {
+                # OWNER: the gate listens before UTM starts, so QEMU connects without
+                # losing early boot markers. TcpServer+WaitForConnection blocks UTM's
+                # own QMP startup and leaves an otherwise-running VM stuck at `starting`.
+                "Mode": "TcpClient",
+                "Target": "Auto",
+                "TcpHostAddress": "127.0.0.1",
+                "TcpPort": serial_tcp_port,
+            }
+        ]
+    )
     return {
         "Backend": "QEMU",
         "ConfigurationVersion": 4,
@@ -183,12 +230,7 @@ def _configuration(
                 "PortForward": [],
             }
         ],
-        "Serial": [
-            {
-                "Mode": "Ptty",
-                "Target": "Auto",
-            }
-        ],
+        "Serial": serial,
         "Sound": [],
     }
 
@@ -199,6 +241,9 @@ def prepare(
     rootfs: Path,
     memory: str,
     cpu_count: int,
+    serial_tcp_port: int | None = None,
+    qmp_socket: Path | None = None,
+    audio_output: Path | None = None,
 ) -> Path:
     """Publish current artifacts and an exact UTM v4 configuration."""
     _installed_version()
@@ -215,6 +260,9 @@ def prepare(
         cpu_count=cpu_count,
         kernel=published_kernel,
         rootfs=published_rootfs,
+        serial_tcp_port=serial_tcp_port,
+        qmp_socket=qmp_socket,
+        audio_output=audio_output,
     )
     with (VM_PACKAGE / "config.plist").open("wb") as stream:
         plistlib.dump(config, stream, fmt=plistlib.FMT_XML, sort_keys=False)
@@ -329,6 +377,215 @@ def _remove_registered() -> None:
         except subprocess.CalledProcessError:
             time.sleep(0.25)
     raise RuntimeError("UTM did not become available for managed VM regeneration")
+
+
+def _stop_managed() -> None:
+    """Stop only the generated LiteOS VM and wait for QEMU ownership to end."""
+    current = _status()
+    if current in (None, "stopped"):
+        return
+    _ctl("stop", "--hide", VM_UUID)
+    for _ in range(40):
+        if _status() in (None, "stopped"):
+            return
+        time.sleep(0.25)
+    # UTM documents a second stop as the force-stop edge for an unresponsive VM.
+    _ctl("stop", "--hide", VM_UUID)
+    for _ in range(40):
+        if _status() in (None, "stopped"):
+            return
+        time.sleep(0.25)
+    raise RuntimeError("UTM did not stop the managed LiteOS gate VM")
+
+
+class GateRuntime:
+    """One disposable UTM VirGL runtime with observable serial and optional QMP."""
+
+    def __init__(
+        self,
+        serial_socket: socket.socket,
+        *,
+        kernel: Path,
+        rootfs: Path,
+        memory: str,
+        cpu_count: int,
+        qmp_socket: Path | None,
+        audio_output: Path | None,
+        restore: tuple[bytes | None, Path | None, Path | None],
+    ) -> None:
+        self._serial_socket = serial_socket
+        self.stdout: BinaryIO = serial_socket.makefile("rb", buffering=0)
+        self.kernel = kernel
+        self.rootfs = rootfs
+        self.memory = memory
+        self.cpu_count = cpu_count
+        self.qmp_socket = qmp_socket
+        self.audio_output = audio_output
+        self._restore = restore
+        self._closed = False
+
+    def poll(self) -> int | None:
+        """Return `None` while UTM owns a running QEMU process, otherwise zero."""
+        return None if _status() in ("starting", "started") else 0
+
+    def wait(self, timeout: float) -> int:
+        """Wait for the disposable QEMU process to stop within `timeout` seconds."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self.poll()
+            if result is not None:
+                return result
+            time.sleep(0.1)
+        raise subprocess.TimeoutExpired("UTM LiteOS gate", timeout)
+
+    def close(self) -> None:
+        """Stop the gate and restore the generated development VM configuration."""
+        if self._closed:
+            return
+        self._closed = True
+        _stop_managed()
+        self.stdout.close()
+        self._serial_socket.close()
+        _remove_registered()
+        _restore_after_gate(
+            self._restore,
+            kernel=self.kernel,
+            rootfs=self.rootfs,
+            memory=self.memory,
+            cpu_count=self.cpu_count,
+        )
+        _ensure_registered()
+        if self.qmp_socket is not None:
+            self.qmp_socket.unlink(missing_ok=True)
+
+
+def _backup_for_gate() -> tuple[bytes | None, Path | None, Path | None]:
+    """Preserve the exact generated development VM while a gate is disposable."""
+    config_path = VM_PACKAGE / "config.plist"
+    config = config_path.read_bytes() if config_path.is_file() else None
+    backups: list[Path | None] = []
+    for name in ("kernel", "rootfs.img"):
+        source = UTM_ARTIFACTS / name
+        backup = UTM_ARTIFACTS / f".gate-backup-{name}-{os.getpid()}"
+        backup.unlink(missing_ok=True)
+        if source.is_file():
+            os.link(source, backup)
+            backups.append(backup)
+        else:
+            backups.append(None)
+    return config, backups[0], backups[1]
+
+
+def _restore_after_gate(
+    restore: tuple[bytes | None, Path | None, Path | None],
+    *,
+    kernel: Path,
+    rootfs: Path,
+    memory: str,
+    cpu_count: int,
+) -> None:
+    """Restore the pre-gate VM config and published artifact inodes exactly."""
+    config, kernel_backup, rootfs_backup = restore
+    if config is None or kernel_backup is None or rootfs_backup is None:
+        prepare(
+            kernel=kernel,
+            rootfs=rootfs,
+            memory=memory,
+            cpu_count=cpu_count,
+        )
+        for backup in (kernel_backup, rootfs_backup):
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+        return
+    _publish_file(kernel_backup, UTM_ARTIFACTS / "kernel")
+    _publish_file(rootfs_backup, UTM_ARTIFACTS / "rootfs.img")
+    config_path = VM_PACKAGE / "config.plist"
+    with config_path.open("wb") as stream:
+        stream.write(config)
+        stream.flush()
+        os.fsync(stream.fileno())
+    kernel_backup.unlink()
+    rootfs_backup.unlink()
+
+
+def start_gate(
+    *,
+    kernel: Path,
+    rootfs: Path,
+    memory: str = "2G",
+    cpu_count: int = 1,
+    qmp: bool = False,
+    capture_audio: bool = False,
+) -> GateRuntime:
+    """Start the sole product VirGL path as a hidden disposable UTM runtime."""
+    _installed_version()
+    kernel = kernel.resolve(strict=True)
+    rootfs = rootfs.resolve(strict=True)
+    serial_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    serial_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    serial_listener.bind(("127.0.0.1", 0))
+    serial_listener.listen(1)
+    serial_port = int(serial_listener.getsockname()[1])
+    qmp_socket = (
+        UTM_ARTIFACTS / f"gate-qmp-{os.getpid()}.sock" if qmp else None
+    )
+    audio_output = UTM_ARTIFACTS / "gate-audio.wav" if capture_audio else None
+    for path in (qmp_socket, audio_output):
+        if path is not None:
+            path.unlink(missing_ok=True)
+    restore = _backup_for_gate()
+    _remove_registered()
+    try:
+        prepare(
+            kernel=kernel,
+            rootfs=rootfs,
+            memory=memory,
+            cpu_count=cpu_count,
+            serial_tcp_port=serial_port,
+            # QEMUHelper is sandboxed to UTM's app group and starts with that
+            # directory as cwd. A short relative path satisfies both the sandbox
+            # and macOS's 104-byte AF_UNIX limit; an absolute app-group path does not.
+            qmp_socket=(
+                qmp_socket.relative_to(UTM_ARTIFACTS.parent)
+                if qmp_socket
+                else None
+            ),
+            audio_output=audio_output,
+        )
+        _ensure_registered()
+        if _status() != "stopped":
+            raise RuntimeError("UTM gate VM must be stopped before launch")
+        _ctl("start", "--hide", VM_UUID, "--disposable")
+        serial_listener.settimeout(15.0)
+        try:
+            serial_socket, _ = serial_listener.accept()
+        except TimeoutError as error:
+            raise RuntimeError("UTM gate serial endpoint did not become ready") from error
+        serial_socket.setblocking(False)
+        return GateRuntime(
+            serial_socket,
+            kernel=kernel,
+            rootfs=rootfs,
+            memory=memory,
+            cpu_count=cpu_count,
+            qmp_socket=qmp_socket,
+            audio_output=audio_output,
+            restore=restore,
+        )
+    except BaseException:
+        _stop_managed()
+        _remove_registered()
+        _restore_after_gate(
+            restore,
+            kernel=kernel,
+            rootfs=rootfs,
+            memory=memory,
+            cpu_count=cpu_count,
+        )
+        _ensure_registered()
+        raise
+    finally:
+        serial_listener.close()
 
 
 def run_gui(

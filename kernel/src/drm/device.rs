@@ -79,6 +79,10 @@ impl DrmFile {
             }
         };
         if let Some(fence) = fence {
+            completion
+                .timeline
+                .submit(fence)
+                .expect("published DRM release fence exceeded completion timeline");
             completion.pending = Some(PendingDisplay {
                 fence,
                 operation: PendingOperation::Release {
@@ -146,6 +150,10 @@ impl DrmFile {
             }
         }
         .map_err(display_error)?;
+        completion
+            .timeline
+            .submit(fence)
+            .expect("published DRM scanout fence exceeded completion timeline");
         completion.pending = Some(PendingDisplay {
             fence,
             operation: PendingOperation::Scanout {
@@ -212,6 +220,10 @@ impl DrmFile {
             }
         }
         .map_err(display_error)?;
+        completion
+            .timeline
+            .submit(fence)
+            .expect("published DRM damage fence exceeded completion timeline");
         completion.pending = Some(PendingDisplay {
             fence,
             operation: PendingOperation::Damage { owner },
@@ -234,6 +246,10 @@ impl DrmFile {
             .display
             .disable_scanout()
             .map_err(display_error)?;
+        completion
+            .timeline
+            .submit(fence)
+            .expect("published DRM disable fence exceeded completion timeline");
         completion.pending = Some(PendingDisplay {
             fence,
             operation: PendingOperation::Disable,
@@ -326,7 +342,7 @@ fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState
             .iter()
             .find_map(|(&context, cleanup)| {
                 cleanup
-                    .next_action(completion.completed)
+                    .next_action(completion.timeline.completed())
                     .map(|action| (context, action))
             })
     };
@@ -338,6 +354,10 @@ fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState
         Err(DisplayError::WouldBlock) => return,
         Err(error) => panic!("VirGL OFD cleanup submission failed: {error:?}"),
     };
+    completion
+        .timeline
+        .submit(fence)
+        .expect("published VirGL cleanup fence exceeded completion timeline");
     device
         .state
         .lock()
@@ -396,7 +416,8 @@ pub(crate) fn init(
         completion: Mutex::new(CompletionState {
             pending: None,
             active: None,
-            completed: 0,
+            timeline: FenceTimeline::new(),
+            cursor_completed: 0,
             adapter_generation: 0,
             sequence: 0,
             reset_after_owner: None,
@@ -406,7 +427,9 @@ pub(crate) fn init(
             next_file_identity: 1,
             framebuffer_ids: IdAllocator::new(4),
             context_ids: IdAllocator::new(1),
-            graphics_resource_ids: IdAllocator::new(3),
+            // VirtIO resource IDs 1/2 belong to scanout residency and 3 to the standard 2D
+            // hardware cursor; VirGL allocations start after those adapter-owned identities.
+            graphics_resource_ids: IdAllocator::new(4),
             graphics_cleanups: FallibleMap::new(),
             master: None,
             mode,
@@ -476,6 +499,16 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     };
     state.adapter_generation = state.adapter_generation.wrapping_add(1);
     let fence = match update {
+        DisplayUpdate::CursorCompleted(sequence) => {
+            assert!(
+                sequence > state.cursor_completed,
+                "duplicate or non-monotonic cursor completion"
+            );
+            state.cursor_completed = sequence;
+            drop(state);
+            drm.completion_write.signal_readiness();
+            return;
+        }
         DisplayUpdate::OperationCompleted(fence) => fence,
         DisplayUpdate::RenderCompleted(fence)
             if state
@@ -486,7 +519,10 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
             fence
         }
         DisplayUpdate::RenderCompleted(fence) => {
-            state.completed = state.completed.max(fence);
+            state
+                .timeline
+                .complete(fence)
+                .expect("unknown or duplicate VirGL completion fence");
             complete_graphics_cleanup(drm, fence);
             advance_graphics_cleanup(drm, &mut state);
             drop(state);
@@ -510,7 +546,10 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
         .take()
         .expect("display completion without pending DRM transaction");
     assert_eq!(pending.fence, fence);
-    state.completed = state.completed.max(fence);
+    state
+        .timeline
+        .complete(fence)
+        .expect("unknown or duplicate DRM completion fence");
     let reset_after_close = match &pending.operation {
         PendingOperation::Scanout { owner, .. } => state.reset_after_owner == Some(*owner),
         PendingOperation::Damage { owner } => state.reset_after_owner == Some(*owner),
@@ -551,6 +590,10 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
             .display
             .disable_scanout()
             .expect("closed DRM OFD failed to queue scanout disable");
+        state
+            .timeline
+            .submit(reset_fence)
+            .expect("published close reset fence exceeded completion timeline");
         state.pending = Some(PendingDisplay {
             fence: reset_fence,
             operation: PendingOperation::Disable,

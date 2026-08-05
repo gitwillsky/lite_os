@@ -41,6 +41,15 @@ impl Computed {
         self.values.get(name).map(String::as_str)
     }
 
+    /// Returns whether every changed declaration is one of `names` and no
+    /// custom property changed.
+    pub(crate) fn differs_only_in(&self, other: &Self, names: &[&str]) -> bool {
+        self.custom == other.custom
+            && self.values.keys().chain(other.values.keys()).all(|name| {
+                self.values.get(name) == other.values.get(name) || names.contains(&name.as_str())
+            })
+    }
+
     /// Overrides one property, e.g. dimming an `<input>` placeholder's `color`
     /// on a cloned cascade without mutating the shared computed style.
     pub fn set(&mut self, name: &str, value: &str) {

@@ -52,6 +52,8 @@ pub(crate) enum DisplayUpdate {
     AdapterReady,
     /// 一条 VirGL controlq operation 已完成，fence 可由 DRM waiter 观察。
     RenderCompleted(u64),
+    /// 一条独立 cursorq operation 已完成，不与 controlq fence 共用命名空间。
+    CursorCompleted(u64),
 }
 
 /// @description 不泄漏具体 adapter 的 single-scanout display seam。

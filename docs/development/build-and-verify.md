@@ -40,8 +40,11 @@
   与 GUI 参数入口均不存在。
 - UTM 产品路径固定 AArch64 `host` CPU、HVF、SPICE `gl=on`、`virtio-gpu-gl-device`、native Retina
   dynamic resolution，以及 UTM 自带的唯一 PCI `com.redhat.spice.0` port。kernel/rootfs 以同卷
-  hard link 发布到 UTM app group，QEMU drive 显式 `format=raw`。`run`/`run-gdb` 与 runtime gate
-  保留无窗口 QEMU/MMIO 拓扑作为验证与调试入口，不是第二个 GUI 产品实现；两条拓扑在同一个
+  hard link 发布到 UTM app group，QEMU drive 显式 `format=raw`。产品 graphics boot、frame timing 与
+  audio gate 都创建同一 UTM/VirGL 配置的 disposable 实例：gate 先备份开发 VM 的 plist 与已发布 artifact
+  inode，使用预监听 TCP client serial 捕获最早 boot marker，按需在 app group 建立 QMP/WAV endpoint，
+  结束后精确恢复原配置与 inode。`run`/`run-gdb` 只保留无窗口 QEMU/MMIO 拓扑作为非图形验证与调试
+  入口，不是第二个 GUI 产品实现；两条设备 transport 在同一个
   transport-neutral VirtIO Console adapter 汇合。
 - AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的
   `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
@@ -158,8 +161,10 @@ static gate 与 disassembly gate 继续负责。
 whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作诊断，不作窄阈值 blocking gate。
 LiteUI window move 的成本主体是 evdev→compositor、VirGL scanout composition/flush 与
 真实 60 Hz 显示链路，host microbenchmark 无法代表它；因此不新增失真的 blocking benchmark。静态门禁
-固定 compositor-side grab、bounded damage、异步 latest-only submit 和 steady-drag 零临时 collection，
-最终延迟按 LiteUI 契约的 AArch64+HVF 真实多窗口场景诊断。
+固定 compositor-side grab；production 状态测试固定 window-move page flip 至多一个在途、burst 只保留一个
+latest transform，并固定每个 evdev `SYN_REPORT` 的纯 cursor motion 只异步提交 VirtIO-GPU
+`MOVE_CURSOR`、slot 忙时覆盖 latest position、不触发 VirGL draw/page flip；最终延迟按 LiteUI 契约的
+AArch64+HVF 真实多窗口场景诊断。
 
 LiteUI 60 Hz frame gate 是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量宿主墙钟：
 帧间隔取自 guest 内核单调 vblank 时钟。compositor 在唯一 present 收敛点（`user/compositor/src/lib.rs`
@@ -167,8 +172,8 @@ LiteUI 60 Hz frame gate 是上述“宿主墙钟不作 blocking gate”原则的
 该时间戳由内核在 deferred display 完成路径以 `get_time_ns()`（DTB timebase 单调计数）写入，与 Python
 宿主时钟、HVF/TCG 调度抖动完全无关。`user/compositor/src/frame_stats.rs` 在 steady 帧路径零分配地累积
 相邻 vblank 间隔，每 512 帧发一行 `compositor: frame-stats` marker（微秒整数 p50/p95/p99 与
-dropped=sequence 间隙）。`scripts/verify_frame_timing.py` 用 QMP `input-send-event` 合成 virtio 输入
-驱动真实 input→compositor→scanout 链路产生帧流，解析该 marker，并按“宽但真实的绝对上限”设阈值、不在文档
+dropped=sequence 间隙）。`scripts/verify_frame_timing.py` 在固定 UTM VirGL 产品实例中用 QMP
+`input-send-event` 合成 virtio 输入，驱动真实 input→compositor→scanout 链路产生帧流，解析该 marker，并按“宽但真实的绝对上限”设阈值、不在文档
 记录本机测量值。驱动持续 30 秒且必须收集至少两个完整 512 帧窗口；第一个覆盖启动/聚焦尾部并固定丢弃，
 第二个起才进入稳态裁决，禁止把仅有的 warmup 窗口冒充稳态。dropped==0 基于设备 vblank sequence，
 与宿主计时无关，是最强的真实信号并严格 gate。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 依 LiteUI
@@ -223,10 +228,11 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 完整验证从同一个只读 rootfs baseline 派生相互隔离的可写镜像，并覆盖：
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；
-- AArch64 headless GPU、keyboard、tablet、SPICE VirtIO Console 拓扑，以及空桌面启动链路：
+- AArch64/HVF UTM VirGL 产品 GPU、keyboard、tablet、SPICE VirtIO Console 拓扑，以及空桌面启动链路：
   `compositor` modeset/boot scene、AF_UNIX + SCM_RIGHTS 握手与 React desktop 首帧逐条发布 marker；
-  首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用无 host 窗口的
-  一 CPU guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；
+  首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用隐藏的
+  disposable 一 CPU UTM 产品实例；无窗口 plain QEMU 不再承担图形通过判定，真实 11-CPU 全拓扑由
+  headless SMP gate 与同一静态路径覆盖；
 - musl ELF/TLS/thread/signal/process consumer；process phase 在 sibling pthread 保持 runnable
   时执行普通 fork，并继续覆盖 wait、posix_spawn file actions 与并发 child waiter；
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
@@ -241,7 +247,7 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
   mute，production custom control 覆盖 loop，并以 public `loop` property 的 production worker
   marker 和真实 EOF `seeking`/`seeked`/`playing` generation 共同裁决；desktop System Center 另行覆盖 system master
   mute/unmute 和 10% volume step，并要求 audio-service 权威状态 marker、静音 WAV 区间及符合 cubic
-  curve 的相对增益。私有镜像最终恢复为 70%/unmuted，不污染任何 baseline。QEMU WAV backend 必须
+  curve 的相对增益。私有镜像最终恢复为 70%/unmuted，不污染任何 baseline。UTM 管理的 QEMU WAV backend 必须
   给出 48 kHz stereo S16、非静音、左右声道 identity 正确且含 440/660 Hz 的实际设备输出。开机至首次 play 禁止 device START 和 WAV
   payload；最终每一组 service metrics 都要求 `xrun=0`、`steady_allocations=0`、
   `idle_periodic_wakes=0`、`mix_p99_us<=2670`，每个 decoder prefill marker 也必须声明 steady
@@ -255,7 +261,9 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
   此门禁没有隐藏测试 API、私有播放入口或模拟 device；RISC-V secondary 与
   AArch64/TCG 诊断路径不运行、也不冒充这项真实 AArch64/HVF consumer 覆盖。
 
-`verify-runtime` 与 `verify` 共用 `verify-runtime-gates`；它是 QEMU 编排的唯一 owner，并串行运行各顶层门禁。
+`verify-runtime` 与 `verify` 共用 `verify-runtime-gates`；它是 runtime 编排的唯一 owner，并串行运行各顶层门禁。
+非图形门禁只走 headless QEMU；graphics boot、frame 与 audio 只走 disposable UTM VirGL，禁止同一能力
+再由 plain QEMU 复制一套设备拓扑或通过判定。
 每项仍使用独立镜像、success stamp 和 host port domain。APK 内部同样保持单一 QEMU owner：curl/Git 的
 TLS/HTTP 竖切共用一台 4-CPU guest，SQLite 独占持久化/断电恢复镜像。guest 内被测的 SQLite
 双 writer 与 curl 四路传输仍保持并发；`LITEOS_COW_MIGRATION_READY` 只有在 timeout 后

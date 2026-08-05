@@ -43,6 +43,7 @@ pub(crate) const DRM_IOCTL_MODE_DIRTYFB: usize = drm_iowr(0xb1, 24);
 pub(crate) const DRM_IOCTL_MODE_CREATE_DUMB: usize = drm_iowr(0xb2, 32);
 pub(crate) const DRM_IOCTL_MODE_MAP_DUMB: usize = drm_iowr(0xb3, 16);
 pub(crate) const DRM_IOCTL_MODE_DESTROY_DUMB: usize = drm_iowr(0xb4, 4);
+pub(crate) const DRM_IOCTL_MODE_CURSOR2: usize = drm_iowr(0xbb, 36);
 pub(crate) const DRM_IOCTL_VIRTGPU_MAP: usize = drm_iowr(0x41, 16);
 pub(crate) const DRM_IOCTL_VIRTGPU_EXECBUFFER: usize = drm_iowr(0x42, 64);
 pub(crate) const DRM_IOCTL_VIRTGPU_GETPARAM: usize = drm_iowr(0x43, 16);
@@ -142,6 +143,20 @@ pub(crate) struct DrmPageFlip {
     pub flags: u32,
     pub reserved: u32,
     pub user_data: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct DrmCursor2 {
+    pub flags: u32,
+    pub crtc_id: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub handle: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
 }
 
 #[repr(C)]
@@ -388,6 +403,7 @@ const _: () = assert!(align_of::<DrmMode>() == 4);
 const _: () = assert!(size_of::<DrmResources>() == 64);
 const _: () = assert!(size_of::<DrmConnector>() == 80);
 const _: () = assert!(size_of::<DrmCrtc>() == 104);
+const _: () = assert!(size_of::<DrmCursor2>() == 36);
 const _: () = assert!(size_of::<DrmDumbCreate>() == 32);
 const _: () = assert!(size_of::<DrmDumbMap>() == 16);
 const _: () = assert!(size_of::<VirtGpuMap>() == 16);

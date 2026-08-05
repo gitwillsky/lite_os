@@ -239,6 +239,10 @@ mod virtio_net_rx_slots;
 mod virtio_gpu_sequence_policy;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/drm/fence_timeline.rs"]
+mod drm_fence_timeline;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/timer/deadline.rs"]
 mod timer_deadline;
 

@@ -26,11 +26,12 @@ use std::{
     fs, io,
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::{UnixListener, UnixStream},
+    time::Duration,
 };
 
 use display_proto::{
     AppClosed, AppOpened, CloseRequest, Configure, ConfigureReady, DisplayListCommit,
-    MAX_APP_SURFACES, Rect, SetCursorShape, Size, TextureFormat, send_message,
+    MAX_APP_SURFACES, MoveBegin, Rect, SetCursorShape, Size, TextureFormat, send_message,
 };
 use linux_uapi::{
     drm::{DrmDevice, VirglContext, VirglResource},
@@ -90,6 +91,14 @@ struct App {
     first_scene_presented: bool,
 }
 
+/// One submitted GPU paint whose completion fence has not signalled yet.
+struct PendingPaint {
+    owner: Owner,
+    target: VirglResource,
+    revision: u64,
+    configuration_serial: u64,
+}
+
 /// One compositor epoch. Desktop disconnect clears every app and client buffer.
 pub struct Session {
     listener: UnixListener,
@@ -104,9 +113,16 @@ pub struct Session {
     buffers: Buffers,
     paint: PaintStore,
     pending_paint: VecDeque<Owner>,
+    /// Submitted targets remain private until their GPU fence completes.
+    /// Publishing them earlier lets a scene sample unfinished pixels; waiting
+    /// synchronously here instead would stall pointer and keyboard routing.
+    pending_targets: VecDeque<PendingPaint>,
     desktop_render_id: Option<u32>,
-    /// GPU-rendered desktop snapshots with one window group omitted.
-    move_underlays: HashMap<u32, u32>,
+    /// One retired GPU paint target per client owner. Reusing this second
+    /// buffer avoids three synchronous VirtIO resource-creation round trips on
+    /// every repaint; without the exact owner key a client could overwrite a
+    /// target still referenced by another surface's scene.
+    idle_targets: HashMap<Owner, VirglResource>,
     next_buffer_id: u32,
     next_surface_id: u32,
     first_scene_presented: bool,
@@ -114,7 +130,9 @@ pub struct Session {
     focused_surface: u32,
     pointer_capture: Option<PointerCapture>,
     move_grab: Option<MoveGrab>,
-    move_damage: Option<Rect>,
+    // Records that the canonical move offset changed since input last asked
+    // scanout to draw. Without it, clamped pointer motion submits duplicate flips.
+    move_changed: bool,
     presented_nodes: Vec<scene::Node>,
     desktop_current_buffers: Vec<u32>,
     last_flip: linux_uapi::drm::FlipEvent,
@@ -140,8 +158,12 @@ pub struct Activity {
     pub scene: Option<Scene>,
     /// Client display lists waiting for compositor-owned GPU rasterization.
     pub(crate) paint: Vec<Owner>,
+    /// One desktop-authorized move whose target underlay must be rendered now.
+    pub(crate) move_begin: Option<MoveBegin>,
     /// Whether a caller-supplied wake descriptor (evdev) became readable.
     pub input: bool,
+    /// Whether the compositor's asynchronous window-move page flip completed.
+    pub flip: bool,
     /// Whether this poll reset the session epoch (desktop disconnect). The
     /// caller owns scanout state, which `reset_epoch` cannot reach, so it must
     /// return scanout to boot to avoid painting a stale scene diff on restart.
@@ -173,8 +195,9 @@ impl Session {
             },
             paint: PaintStore::new(),
             pending_paint: VecDeque::new(),
+            pending_targets: VecDeque::new(),
             desktop_render_id: None,
-            move_underlays: HashMap::new(),
+            idle_targets: HashMap::new(),
             next_buffer_id: 1,
             next_surface_id: 1,
             first_scene_presented: false,
@@ -182,7 +205,7 @@ impl Session {
             focused_surface: 0,
             pointer_capture: None,
             move_grab: None,
-            move_damage: None,
+            move_changed: false,
             presented_nodes: Vec::new(),
             desktop_current_buffers: Vec::new(),
             last_flip: linux_uapi::drm::FlipEvent {
@@ -248,13 +271,95 @@ impl Session {
         self.paint.texture(owner, texture_id)
     }
 
-    pub(crate) fn complete_paint(&mut self, owner: Owner, target: VirglResource) -> io::Result<()> {
-        let list = self
-            .paint
-            .list(owner)
-            .ok_or_else(|| invalid("display list disappeared"))?;
-        let revision = list.revision;
-        let configuration_serial = list.configuration_serial;
+    /// Takes the owner's retired half of its GPU paint double buffer.
+    pub(crate) fn take_paint_target(&mut self, owner: Owner, size: Size) -> Option<VirglResource> {
+        let target = self.idle_targets.remove(&owner)?;
+        (target.width() == size.width && target.height() == size.height).then_some(target)
+    }
+
+    /// Resolves the exact pixel owner named by a retained display-list commit.
+    pub(crate) fn paint_base(&self, owner: Owner, revision: u64) -> Option<&VirglResource> {
+        if revision == 0 {
+            return None;
+        }
+        let id = match owner {
+            Owner::Desktop => self.desktop_render_id,
+            Owner::App(surface_id) => self.apps.get(&surface_id).and_then(|app| {
+                app.pending
+                    .as_ref()
+                    .filter(|content| content.revision == revision)
+                    .or_else(|| {
+                        app.current
+                            .as_ref()
+                            .filter(|content| content.revision == revision)
+                    })
+                    .map(|content| content.buffer_id)
+            }),
+        }?;
+        self.buffers
+            .values
+            .get(&id)
+            .filter(|buffer| buffer.revision == revision)
+            .map(|buffer| &buffer.pixels)
+    }
+
+    pub(super) fn recycle_buffer(&mut self, id: u32) {
+        let Some(buffer) = self.buffers.values.remove(&id) else {
+            return;
+        };
+        self.idle_targets.insert(buffer.owner, buffer.pixels);
+    }
+
+    /// Retains one submitted target until its GPU fence signals.
+    pub(crate) fn defer_paint(
+        &mut self,
+        owner: Owner,
+        target: VirglResource,
+        revision: u64,
+        configuration_serial: u64,
+    ) -> io::Result<()> {
+        if self
+            .pending_targets
+            .iter()
+            .any(|pending| pending.owner == owner)
+        {
+            return Err(invalid("owner already has a GPU paint in flight"));
+        }
+        if self.pending_targets.len() >= MAX_APP_SURFACES + 1 {
+            return Err(invalid("GPU paint queue exceeded client capacity"));
+        }
+        self.pending_targets.push_back(PendingPaint {
+            owner,
+            target,
+            revision,
+            configuration_serial,
+        });
+        Ok(())
+    }
+
+    fn complete_ready_paints(&mut self) -> io::Result<()> {
+        loop {
+            let Some(pending) = self.pending_targets.front() else {
+                return Ok(());
+            };
+            if !pending.target.is_ready()? {
+                return Ok(());
+            }
+            let pending = self
+                .pending_targets
+                .pop_front()
+                .expect("ready GPU paint disappeared");
+            self.publish_paint(pending)?;
+        }
+    }
+
+    fn publish_paint(&mut self, pending: PendingPaint) -> io::Result<()> {
+        let PendingPaint {
+            owner,
+            target,
+            revision,
+            configuration_serial,
+        } = pending;
         let size = Size {
             width: target.width(),
             height: target.height(),
@@ -267,19 +372,15 @@ impl Session {
                 size,
                 owner,
                 busy: false,
+                revision,
             },
         );
         match owner {
             Owner::Desktop => {
-                if self.move_grab.is_none() {
-                    for (_, id) in self.move_underlays.drain() {
-                        self.buffers.values.remove(&id);
-                    }
-                }
                 if let Some(previous) = self.desktop_render_id.replace(id)
                     && !self.desktop_current_buffers.contains(&previous)
                 {
-                    self.buffers.values.remove(&previous);
+                    self.recycle_buffer(previous);
                 }
                 send_accepted(self.desktop_stream()?, revision)
             }
@@ -290,7 +391,7 @@ impl Session {
                     .and_then(|app| app.pending.as_ref())
                     .map(|content| content.buffer_id)
                 {
-                    self.buffers.values.remove(&previous);
+                    self.recycle_buffer(previous);
                 }
                 let app = self
                     .apps
@@ -313,35 +414,6 @@ impl Session {
                 send_message(self.desktop_stream()?, ready)
             }
         }
-    }
-
-    pub(crate) fn has_move_underlay(&self, group: u32) -> bool {
-        self.move_underlays.contains_key(&group)
-    }
-
-    pub(crate) fn install_move_underlay(
-        &mut self,
-        group: u32,
-        target: VirglResource,
-    ) -> io::Result<()> {
-        let id = self.take_buffer_id()?;
-        let size = Size {
-            width: target.width(),
-            height: target.height(),
-        };
-        self.buffers.values.insert(
-            id,
-            buffers::Buffer {
-                pixels: target,
-                size,
-                owner: Owner::Desktop,
-                busy: false,
-            },
-        );
-        if let Some(previous) = self.move_underlays.insert(group, id) {
-            self.buffers.values.remove(&previous);
-        }
-        Ok(())
     }
 
     /// Reports whether a desktop scene has reached flip completion.
@@ -368,20 +440,38 @@ impl Session {
     ///
     /// Returns an error when polling or a required session transition fails.
     pub fn poll(&mut self, wake: &[Option<BorrowedFd<'_>>]) -> io::Result<Activity> {
+        self.complete_ready_paints()?;
+        // Display messages are globally ordered around paint publication. While
+        // a target is in flight, continuing to read commits could overwrite the
+        // retained base revision before its predecessor is acknowledged. Input,
+        // flips and hotplug remain live while the fence is polled non-blockingly.
+        let poll_clients = self.pending_targets.is_empty();
         let mut app_ids = [0; MAX_APP_SURFACES];
         let mut app_count = 0;
-        for id in self.apps.keys().copied() {
-            app_ids[app_count] = id;
-            app_count += 1;
+        if poll_clients {
+            for id in self.apps.keys().copied() {
+                app_ids[app_count] = id;
+                app_count += 1;
+            }
         }
-        let (listener_ready, desktop_ready, app_ready, input_ready, hotplug_ready, agent_ready) = {
-            const MAX_POLL_FDS: usize = 4 + MAX_APP_SURFACES + 2;
+        let (
+            listener_ready,
+            desktop_ready,
+            app_ready,
+            input_ready,
+            flip_ready,
+            hotplug_ready,
+            agent_ready,
+        ) = {
+            const MAX_POLL_FDS: usize = 5 + MAX_APP_SURFACES + 2;
             let mut descriptors: [PollFd; MAX_POLL_FDS] =
                 std::array::from_fn(|_| PollFd::new(self.listener.as_fd(), PollEvents::READ));
             let mut descriptor_count = 0;
             descriptors[descriptor_count] = PollFd::new(self.listener.as_fd(), PollEvents::READ);
             descriptor_count += 1;
-            if let Some(desktop) = &self.desktop {
+            let desktop_polled = poll_clients && self.desktop.is_some();
+            if desktop_polled {
+                let desktop = self.desktop.as_ref().expect("desktop disappeared");
                 descriptors[descriptor_count] =
                     PollFd::new(desktop.stream.as_fd(), PollEvents::READ);
                 descriptor_count += 1;
@@ -396,16 +486,19 @@ impl Session {
                 descriptors[descriptor_count] = PollFd::new(*fd, PollEvents::READ);
                 descriptor_count += 1;
             }
+            let flip_offset = descriptor_count;
+            descriptors[descriptor_count] = PollFd::new(self.device.as_fd(), PollEvents::READ);
+            descriptor_count += 1;
             let hotplug_offset = descriptor_count;
             descriptors[descriptor_count] = PollFd::new(self.hotplug.as_fd(), PollEvents::READ);
             descriptor_count += 1;
             let agent_offset =
                 self.append_spice_agent_poll(&mut descriptors, &mut descriptor_count);
-            unix::poll(&mut descriptors[..descriptor_count], None)?;
+            let timeout = (!self.pending_targets.is_empty()).then_some(Duration::from_millis(1));
+            unix::poll(&mut descriptors[..descriptor_count], timeout)?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
-            let desktop_offset = usize::from(self.desktop.is_some());
-            let desktop_ready =
-                self.desktop.is_some() && descriptors[1].returned() != PollEvents::EMPTY;
+            let desktop_offset = usize::from(desktop_polled);
+            let desktop_ready = desktop_polled && descriptors[1].returned() != PollEvents::EMPTY;
             let mut app_ready = [false; MAX_APP_SURFACES];
             for (ready, descriptor) in app_ready[..app_count]
                 .iter_mut()
@@ -413,9 +506,10 @@ impl Session {
             {
                 *ready = descriptor.returned() != PollEvents::EMPTY;
             }
-            let input_ready = descriptors[wake_offset..hotplug_offset]
+            let input_ready = descriptors[wake_offset..flip_offset]
                 .iter()
                 .any(|descriptor| descriptor.returned() != PollEvents::EMPTY);
+            let flip_ready = descriptors[flip_offset].returned() != PollEvents::EMPTY;
             let hotplug_ready = descriptors[hotplug_offset].returned() != PollEvents::EMPTY;
             let agent_ready = descriptors[agent_offset].returned() != PollEvents::EMPTY;
             (
@@ -423,10 +517,12 @@ impl Session {
                 desktop_ready,
                 app_ready,
                 input_ready,
+                flip_ready,
                 hotplug_ready,
                 agent_ready,
             )
         };
+        self.complete_ready_paints()?;
         let agent_output = if agent_ready {
             self.pump_spice_agent()?
         } else {
@@ -445,10 +541,12 @@ impl Session {
             eprintln!("compositor: rejected connection: {error}");
         }
         let mut scene = None;
+        let mut move_begin = None;
         if desktop_ready {
             match self.receive_desktop() {
-                Ok(accepted) if accepted.is_some() => scene = accepted,
-                Ok(_) => {}
+                Ok(messages::DesktopMessage::Scene(accepted)) => scene = Some(accepted),
+                Ok(messages::DesktopMessage::Move(request)) => move_begin = Some(request),
+                Ok(messages::DesktopMessage::Idle) => {}
                 Err(error) => {
                     eprintln!("compositor: desktop disconnected: {error}");
                     self.reset_epoch();
@@ -457,7 +555,9 @@ impl Session {
                     return Ok(Activity {
                         scene: None,
                         paint: self.pending_paint.drain(..).collect(),
+                        move_begin: None,
                         input: input_ready,
+                        flip: flip_ready,
                         epoch_reset: true,
                         output,
                     });
@@ -477,7 +577,9 @@ impl Session {
         Ok(Activity {
             scene,
             paint: self.pending_paint.drain(..).collect(),
+            move_begin,
             input: input_ready,
+            flip: flip_ready,
             epoch_reset: false,
             output,
         })
@@ -589,6 +691,9 @@ impl Session {
             .values
             .retain(|_, buffer| buffer.owner != Owner::App(surface_id));
         self.paint.remove_owner(Owner::App(surface_id));
+        self.pending_targets
+            .retain(|pending| pending.owner != Owner::App(surface_id));
+        self.idle_targets.remove(&Owner::App(surface_id));
         self.clear_pointer_capture(Some(surface_id));
         if let Ok(stream) = self.desktop_stream() {
             let mut bytes = [0u8; 24];
@@ -619,13 +724,15 @@ impl Session {
         self.buffers.values.clear();
         self.paint = PaintStore::new();
         self.pending_paint.clear();
+        self.pending_targets.clear();
         self.desktop_render_id = None;
+        self.idle_targets.clear();
         self.first_scene_presented = false;
         self.routing.clear();
         self.focused_surface = 0;
         self.clear_pointer_capture(None);
         self.move_grab = None;
-        self.move_damage = None;
+        self.move_changed = false;
         self.presented_nodes.clear();
         self.desktop_current_buffers.clear();
         self.accelerators.clear();

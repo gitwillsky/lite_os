@@ -12,8 +12,8 @@ use super::{
         VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
         VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
         VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
-        VIRTIO_GPU_RESP_OK_NODATA, prepare_attach, prepare_create, prepare_flush,
-        prepare_set_scanout, prepare_transfer, prepare_unref,
+        VIRTIO_GPU_RESP_OK_NODATA, prepare_attach, prepare_create, prepare_create_cursor,
+        prepare_flush, prepare_set_scanout, prepare_transfer, prepare_unref,
     },
 };
 
@@ -21,6 +21,7 @@ use super::{
 pub(super) enum UnrefPurpose {
     Evicted,
     Boot,
+    Cursor,
     Released,
     Disabled(u8),
 }
@@ -48,6 +49,16 @@ pub(super) enum GpuCommand {
         resource_id: u32,
         backing: Arc<DeviceBacking>,
     },
+    CreateCursor {
+        resource_id: u32,
+    },
+    AttachCursor {
+        resource_id: u32,
+        backing: Arc<DeviceBacking>,
+    },
+    TransferCursor {
+        resource_id: u32,
+    },
     TransferScanout {
         mode: DisplayMode,
         resource_id: u32,
@@ -66,10 +77,6 @@ pub(super) enum GpuCommand {
         resource_id: u32,
         purpose: UnrefPurpose,
     },
-    GraphicsFlush {
-        rectangle: DisplayRect,
-        resource_id: u32,
-    },
 }
 
 /// 编码完成、可由唯一 queue publication seam 提交的 command proof。
@@ -79,7 +86,7 @@ pub(super) struct PreparedCommand {
     pub(super) stage: RuntimeStage,
 }
 
-/// controlq 中唯一在途 command 的 descriptor 与 fence 凭据。
+/// controlq 一个有界 slot 中的 descriptor 与 fence 凭据。
 pub(super) struct PendingCommand {
     pub(super) head: u16,
     pub(super) operation_fence: u64,
@@ -105,6 +112,9 @@ impl GpuCommand {
             Self::DisplayInfo => RuntimeStage::DisplayInfo,
             Self::Create { .. } => RuntimeStage::Create,
             Self::Attach { .. } => RuntimeStage::Attach,
+            Self::CreateCursor { .. } => RuntimeStage::CreateCursor,
+            Self::AttachCursor { .. } => RuntimeStage::AttachCursor,
+            Self::TransferCursor { .. } => RuntimeStage::TransferCursor,
             Self::TransferScanout { .. } => RuntimeStage::TransferScanout,
             Self::SetScanout { purpose, .. } => match purpose {
                 ScanoutPurpose::Activate => RuntimeStage::SetScanout,
@@ -117,10 +127,10 @@ impl GpuCommand {
             Self::Unref { purpose, .. } => match purpose {
                 UnrefPurpose::Evicted => RuntimeStage::UnrefEvicted,
                 UnrefPurpose::Boot => RuntimeStage::UnrefBoot,
+                UnrefPurpose::Cursor => RuntimeStage::UnrefCursor,
                 UnrefPurpose::Released => RuntimeStage::UnrefReleased,
                 UnrefPurpose::Disabled(slot) => RuntimeStage::UnrefDisabled(*slot),
             },
-            Self::GraphicsFlush { .. } => RuntimeStage::VirglFlush,
         }
     }
 
@@ -143,6 +153,36 @@ impl GpuCommand {
                 VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
                 prepare_attach(request, resource_id, &backing)?,
             ),
+            Self::CreateCursor { resource_id } => {
+                prepare_create_cursor(request, resource_id)?;
+                (VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 40)
+            }
+            Self::AttachCursor {
+                resource_id,
+                backing,
+            } => (
+                VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+                prepare_attach(request, resource_id, &backing)?,
+            ),
+            Self::TransferCursor { resource_id } => {
+                let mode = DisplayMode {
+                    width: 64,
+                    height: 64,
+                    pitch: 64 * 4,
+                };
+                prepare_transfer(
+                    request,
+                    mode,
+                    DisplayRect {
+                        x: 0,
+                        y: 0,
+                        width: 64,
+                        height: 64,
+                    },
+                    resource_id,
+                )?;
+                (VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, 56)
+            }
             Self::TransferScanout { mode, resource_id } => {
                 prepare_transfer(
                     request,
@@ -174,13 +214,6 @@ impl GpuCommand {
             Self::Unref { resource_id, .. } => {
                 prepare_unref(request, resource_id)?;
                 (VIRTIO_GPU_CMD_RESOURCE_UNREF, 32)
-            }
-            Self::GraphicsFlush {
-                rectangle,
-                resource_id,
-            } => {
-                prepare_flush(request, rectangle, resource_id)?;
-                (VIRTIO_GPU_CMD_RESOURCE_FLUSH, 48)
             }
         };
         Ok(PreparedCommand {

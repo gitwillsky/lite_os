@@ -46,6 +46,7 @@ pub(crate) unsafe fn write_mmio_u8(address: usize, value: u8) {
 /// # Safety
 ///
 /// `address` must name a readable, 16-bit-aligned device register.
+// SAFETY: callers must prove the address is a readable aligned 16-bit device register.
 #[inline(always)]
 pub(crate) unsafe fn read_mmio_u16(address: usize) -> u16 {
     let value: u32;
@@ -66,6 +67,7 @@ pub(crate) unsafe fn read_mmio_u16(address: usize) -> u16 {
 /// # Safety
 ///
 /// `address` must name a writable, 16-bit-aligned device register.
+// SAFETY: callers must prove the address is a writable aligned 16-bit device register.
 #[inline(always)]
 pub(crate) unsafe fn write_mmio_u16(address: usize, value: u16) {
     // SAFETY: the caller owns range/alignment validity; the template fixes one exact STRH.

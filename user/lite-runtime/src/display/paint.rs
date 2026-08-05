@@ -24,9 +24,10 @@ impl Display {
             self.configure_serial
         };
         let encoded = frame
-            .encode(revision, configuration_serial)
+            .encode(revision, configuration_serial, self.paint_revision)
             .ok_or_else(|| io::Error::other("GPU frame encoding failed"))?;
         send_message(&self.stream, &encoded)?;
+        self.paint_revision = revision;
         for texture_id in &frame.retired_textures {
             let mut bytes = [0u8; 24];
             let destroy = TextureDestroy {

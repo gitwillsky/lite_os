@@ -9,11 +9,17 @@ use display_proto::{
 
 use super::{Owner, Scene, Session, invalid, wire::receive};
 
+pub(super) enum DesktopMessage {
+    Idle,
+    Scene(Scene),
+    Move(MoveBegin),
+}
+
 impl Session {
-    pub(super) fn receive_desktop(&mut self) -> io::Result<Option<Scene>> {
+    pub(super) fn receive_desktop(&mut self) -> io::Result<DesktopMessage> {
         let (kind, payload) = receive(self.desktop_stream()?)?;
         if self.receive_clipboard(0, kind, &payload)? {
-            return Ok(None);
+            return Ok(DesktopMessage::Idle);
         }
         match kind {
             MessageKind::TextureCreate => {
@@ -21,70 +27,62 @@ impl Session {
                     .ok_or_else(|| invalid("invalid texture create"))?;
                 self.paint
                     .create_texture(&self.graphics, Owner::Desktop, create)?;
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::TextureWrite => {
                 let write = TextureWrite::parse(&payload)
                     .ok_or_else(|| invalid("invalid texture write"))?;
                 self.paint.write_texture(Owner::Desktop, write)?;
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::TexturePublish => {
                 let publish = TexturePublish::parse(&payload)
                     .ok_or_else(|| invalid("invalid texture publish"))?;
                 self.paint.publish_texture(Owner::Desktop, publish)?;
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::TextureDestroy => {
                 let destroy = TextureDestroy::parse(&payload)
                     .ok_or_else(|| invalid("invalid texture destroy"))?;
                 self.paint.destroy_texture(Owner::Desktop, destroy)?;
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::DisplayListCommit => {
                 DisplayListCommit::parse(&payload)
                     .ok_or_else(|| invalid("invalid display list"))?;
                 self.paint.commit_list(Owner::Desktop, &payload)?;
                 self.queue_paint(Owner::Desktop);
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::Configure => {
                 let configure =
                     Configure::parse(&payload).ok_or_else(|| invalid("invalid configure"))?;
                 self.route_configure(configure)?;
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::CloseRequest => {
                 let request = CloseRequest::parse(&payload)
                     .ok_or_else(|| invalid("invalid close request"))?;
                 self.route_close(request.surface_id)?;
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::MoveBegin => {
                 let request =
                     MoveBegin::parse(&payload).ok_or_else(|| invalid("invalid move begin"))?;
-                // A MoveBegin races the pointer stream: by the time it arrives
-                // the authorizing pointer-down may have been superseded, the
-                // window may no longer be presented, or another grab may already
-                // own the sequence. The request still transfers its underlay to
-                // the compositor, which returns it before reporting rejection.
-                if let Some(error) = self.begin_move(request)? {
-                    eprintln!("compositor: move grab rejected: {error}");
-                }
-                Ok(None)
+                Ok(DesktopMessage::Move(request))
             }
-            MessageKind::SceneCommit => self.accept_scene(&payload).map(Some),
+            MessageKind::SceneCommit => self.accept_scene(&payload).map(DesktopMessage::Scene),
             MessageKind::AcceleratorSet => {
                 let chords = AcceleratorSet::parse(&payload)
                     .ok_or_else(|| invalid("invalid accelerator set"))?;
                 self.accelerators.replace(chords);
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             MessageKind::SetCursorShape => {
                 let request = SetCursorShape::parse(&payload)
                     .ok_or_else(|| invalid("invalid set cursor shape"))?;
                 self.accept_cursor_shape(0, request)?;
-                Ok(None)
+                Ok(DesktopMessage::Idle)
             }
             _ => Err(invalid("message is invalid for desktop role")),
         }

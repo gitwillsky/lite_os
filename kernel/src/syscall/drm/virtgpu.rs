@@ -1,8 +1,10 @@
 use alloc::vec::Vec;
 
 use crate::{
-    drivers::{VirglBox, VirglCommand},
-    drm::{DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglResourceCreate},
+    drm::{
+        DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand, VirglResourceCreate,
+        VirglTransferDirection,
+    },
     task::TaskControlBlock,
 };
 
@@ -206,7 +208,7 @@ pub(super) fn transfer(
     task: &TaskControlBlock,
     file: &DrmFile,
     argument: usize,
-    direction: crate::drivers::VirglTransferDirection,
+    direction: VirglTransferDirection,
 ) -> Result<(), isize> {
     let bytes = copy_in::<44>(task, argument)?;
     let handle = read_u32(&bytes, 0)?;

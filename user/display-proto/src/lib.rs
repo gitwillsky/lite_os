@@ -90,3 +90,27 @@ pub const MAX_ACCELERATORS: usize = 16;
 
 /// 逻辑 CSS pixel 到物理 pixel 的固定比例。
 pub const DEVICE_SCALE_FACTOR: u32 = 2;
+
+/// Returns the finite pixel support used by the compositor's CSS blur kernel.
+///
+/// # Parameters
+///
+/// - `radius`: Non-negative physical-pixel CSS blur radius.
+///
+/// # Returns
+///
+/// Three standard deviations for the shared `sigma = radius / 2` kernel. Paint
+/// damage and GPU sampling must use this same extent; a shorter damage bound
+/// clips the visible falloff, while a longer one repaints unrelated content.
+pub fn blur_support(radius: f32) -> f32 {
+    radius.max(0.0) * 1.5
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn blur_support_covers_three_sigma() {
+        assert_eq!(super::blur_support(24.0), 36.0);
+        assert_eq!(super::blur_support(-1.0), 0.0);
+    }
+}

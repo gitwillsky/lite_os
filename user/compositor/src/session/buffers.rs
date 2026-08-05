@@ -18,6 +18,7 @@ pub(super) struct Buffer {
     pub(super) size: Size,
     pub(super) owner: Owner,
     pub(super) busy: bool,
+    pub(super) revision: u64,
 }
 
 /// GPU targets referenced by the current and pending flat scenes.
@@ -45,14 +46,13 @@ impl Session {
         self.buffers.values.retain(|_, buffer| {
             buffer.owner != Owner::Desktop || buffer.busy || buffer.size == self.display
         });
-        self.move_underlays
-            .retain(|_, id| self.buffers.values.contains_key(id));
         if self
             .desktop_render_id
             .is_some_and(|id| !self.buffers.values.contains_key(&id))
         {
             self.desktop_render_id = None;
         }
+        self.idle_targets.remove(&Owner::Desktop);
         Ok(())
     }
 }

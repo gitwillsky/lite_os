@@ -15,6 +15,24 @@ fn publish_single(queue: &mut VirtQueue) -> u16 {
     head
 }
 
+#[test]
+fn available_batch_preserves_order_and_publishes_one_final_index() {
+    let mut queue = VirtQueue::new(4).expect("host queue allocation must succeed");
+    let first = queue.free_head;
+    let second = queue.desc_shadow[first as usize].next;
+
+    queue.add_batch_to_avail(&[first, second]);
+
+    assert_eq!(queue.avail_idx, 2);
+    // SAFETY: the test queue owns a four-entry available ring and reads the two slots just
+    // initialized by add_batch_to_avail.
+    unsafe {
+        let ring = (queue.avail as *const u16).add(2);
+        assert_eq!((*ring, *ring.add(1)), (first, second));
+        assert_eq!((*queue.avail).idx.load(Ordering::Acquire), 2);
+    }
+}
+
 fn inject_used(queue: &mut VirtQueue, head: u16, length: u32) {
     inject_used_id(queue, u32::from(head), length);
 }

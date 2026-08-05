@@ -39,6 +39,7 @@ class UtmRuntimeTests(unittest.TestCase):
         self.assertNotIn("-display", arguments)
         self.assertIn("format=raw", " ".join(arguments))
         self.assertNotIn("qemu-vdagent", " ".join(arguments))
+        self.assertIn("agent-mouse=off", arguments)
         self.assertIn("virtio-keyboard-device", arguments)
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(config["Drive"], [])
@@ -76,6 +77,79 @@ class UtmRuntimeTests(unittest.TestCase):
             arguments = " ".join(config["QEMU"]["AdditionalArguments"])
             self.assertIn(str(artifacts / "rootfs.img"), arguments)
             self.assertIn(str(artifacts / "kernel"), arguments)
+
+    def test_gate_configuration_uses_tcp_serial_qmp_and_wav_capture(self) -> None:
+        config = utm_runtime._configuration(
+            memory_mib=2048,
+            cpu_count=1,
+            serial_tcp_port=4567,
+            qmp_socket=Path("/tmp/liteos-qmp.sock"),
+            audio_output=Path("/tmp/liteos-audio.wav"),
+        )
+
+        self.assertEqual(
+            config["Serial"],
+            [
+                {
+                    "Mode": "TcpClient",
+                    "Target": "Auto",
+                    "TcpHostAddress": "127.0.0.1",
+                    "TcpPort": 4567,
+                }
+            ],
+        )
+        arguments = config["QEMU"]["AdditionalArguments"]
+        self.assertIn('"unix:/tmp/liteos-qmp.sock,server=on,wait=off"', arguments)
+        self.assertIn(
+            '"wav,id=gate-audio,path=/tmp/liteos-audio.wav,'
+            'out.frequency=48000,out.channels=2,out.format=s16"',
+            arguments,
+        )
+        self.assertIn(
+            "virtio-sound-device,id=audio-device,audiodev=gate-audio,streams=1",
+            arguments,
+        )
+
+    def test_gate_restore_recovers_exact_config_and_published_inodes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "LiteOS.utm"
+            package.mkdir()
+            artifacts = root / "group" / "LiteOS"
+            artifacts.mkdir(parents=True)
+            config_path = package / "config.plist"
+            config_path.write_bytes(b"development config")
+            published_kernel = artifacts / "kernel"
+            published_rootfs = artifacts / "rootfs.img"
+            published_kernel.write_bytes(b"development kernel")
+            published_rootfs.write_bytes(b"development rootfs")
+            kernel_inode = published_kernel.stat().st_ino
+            rootfs_inode = published_rootfs.stat().st_ino
+
+            with (
+                patch.object(utm_runtime, "VM_PACKAGE", package),
+                patch.object(utm_runtime, "UTM_ARTIFACTS", artifacts),
+            ):
+                restore = utm_runtime._backup_for_gate()
+                published_kernel.unlink()
+                published_kernel.write_bytes(b"gate kernel")
+                published_rootfs.unlink()
+                published_rootfs.write_bytes(b"gate rootfs")
+                config_path.write_bytes(b"gate config")
+                utm_runtime._restore_after_gate(
+                    restore,
+                    kernel=root / "unused-kernel",
+                    rootfs=root / "unused-rootfs",
+                    memory="2G",
+                    cpu_count=1,
+                )
+
+            self.assertEqual(config_path.read_bytes(), b"development config")
+            self.assertEqual(published_kernel.read_bytes(), b"development kernel")
+            self.assertEqual(published_rootfs.read_bytes(), b"development rootfs")
+            self.assertEqual(published_kernel.stat().st_ino, kernel_inode)
+            self.assertEqual(published_rootfs.stat().st_ino, rootfs_inode)
+            self.assertFalse(any(artifacts.glob(".gate-backup-*")))
 
     def test_memory_requires_an_explicit_binary_unit(self) -> None:
         self.assertEqual(utm_runtime._memory_mib("6G"), 6144)

@@ -15,7 +15,6 @@ sys.path.insert(0, str(SCRIPTS))
 from audio_analysis import WavSignal, read_qemu_wav  # noqa: E402
 from verify_audio import (  # noqa: E402
     COMMAND_CENTER_POINT,
-    COMMAND_CENTER_SIGNATURE_POINTS,
     COMMAND_MUSIC_POINT,
     ELEMENT_MUTE_POINT,
     ELEMENT_VOLUME_X,
@@ -39,14 +38,10 @@ from verify_audio import (  # noqa: E402
     _debugfs_quoted_path,
     assert_qemu_wav_finalized,
     channel_tone_amplitude,
-    command_center_visible,
     diagnostic_inittab,
     live_stream_ids,
     parse_metrics,
-    pixel_distance,
-    ppm_pixels,
     signal_rms,
-    system_center_visible,
     validate_peak_windows,
     wav_frame_count,
 )
@@ -159,31 +154,6 @@ class AudioRuntimeGateTests(unittest.TestCase):
         self.assertEqual(
             MASTER_VOLUME_X[100] - MASTER_VOLUME_X[70],
             94,
-        )
-
-    def test_panel_signatures_are_read_from_physical_qemu_ppm(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "screen.ppm"
-            width, height = 3008, 1692
-            payload = bytearray(width * height * 3)
-            points = COMMAND_CENTER_SIGNATURE_POINTS
-            colors = ((44, 59, 80),) * len(points)
-            for (x, y), color in zip(points, colors, strict=True):
-                index = ((y * 2) * width + x * 2) * 3
-                payload[index:index + 3] = bytes(color)
-            path.write_bytes(f"P6\n{width} {height}\n255\n".encode() + payload)
-            pixels = ppm_pixels(path, points)
-
-        self.assertEqual(pixels, colors)
-        self.assertTrue(command_center_visible(pixels))
-        self.assertFalse(
-            command_center_visible(((8, 18, 34),) * len(COMMAND_CENTER_SIGNATURE_POINTS))
-        )
-        self.assertTrue(system_center_visible(((53, 200, 255),) * 3))
-        self.assertFalse(system_center_visible(((23, 36, 144),) * 3))
-        self.assertEqual(
-            pixel_distance(((10, 20, 30),), ((40, 50, 60),)),
-            90,
         )
 
     def test_metrics_rejects_any_historical_regression(self) -> None:

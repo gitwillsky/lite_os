@@ -37,6 +37,10 @@ impl PciTransport {
     /// @param device Optional device-specific configuration window.
     /// @param notify_multiplier Capability-defined notification stride.
     /// @return A transport whose accesses stay inside capability windows.
+    #[allow(
+        dead_code,
+        reason = "PCI capability assembly is owned by platform backends that discover PCI"
+    )]
     pub(crate) fn new(
         common: MmioBus,
         notify: MmioBus,

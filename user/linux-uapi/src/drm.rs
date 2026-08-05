@@ -417,6 +417,77 @@ impl DrmDevice {
         self.ioctl(raw::DRM_IOCTL_MODE_PAGE_FLIP, (&raw mut flip).cast())
     }
 
+    /// Updates the hardware cursor image, hotspot, and position through DRM cursor2.
+    ///
+    /// # Parameters
+    ///
+    /// - `topology`: Active single-scanout KMS topology.
+    /// - `resource`: A 64x64 guest-backed dumb buffer, or `None` to hide the cursor.
+    /// - `position`: Cursor position in scanout coordinates.
+    /// - `hotspot`: Pixel within the resource that tracks `position`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when geometry is invalid or the cursor queue fails.
+    pub fn update_cursor(
+        &self,
+        topology: &Topology,
+        resource: Option<&DumbBuffer>,
+        position: (i32, i32),
+        hotspot: (u32, u32),
+    ) -> io::Result<()> {
+        const CURSOR_BO: u32 = 1;
+        const CURSOR_MOVE: u32 = 2;
+        let (width, height, handle, hot_x, hot_y) = match resource {
+            Some(resource)
+                if resource.width() == 64
+                    && resource.height() == 64
+                    && resource.pitch() == 64 * 4
+                    && hotspot.0 < 64
+                    && hotspot.1 < 64 =>
+            {
+                (64, 64, resource.handle().get(), hotspot.0, hotspot.1)
+            }
+            Some(_) => return Err(invalid_mode()),
+            None if hotspot == (0, 0) => (0, 0, 0, 0, 0),
+            None => return Err(invalid_mode()),
+        };
+        let mut cursor = raw::DrmCursor2 {
+            flags: CURSOR_BO | CURSOR_MOVE,
+            crtc_id: topology.crtc_id,
+            x: position.0,
+            y: position.1,
+            width,
+            height,
+            handle,
+            hot_x,
+            hot_y,
+        };
+        self.ioctl(raw::DRM_IOCTL_MODE_CURSOR2, (&raw mut cursor).cast())
+    }
+
+    /// Moves the current hardware cursor without touching scene or cursor pixels.
+    ///
+    /// # Parameters
+    ///
+    /// - `topology`: Active single-scanout KMS topology.
+    /// - `position`: Cursor position in scanout coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the cursor queue fails.
+    pub fn move_cursor(&self, topology: &Topology, position: (i32, i32)) -> io::Result<()> {
+        const CURSOR_MOVE: u32 = 2;
+        let mut cursor = raw::DrmCursor2 {
+            flags: CURSOR_MOVE,
+            crtc_id: topology.crtc_id,
+            x: position.0,
+            y: position.1,
+            ..raw::DrmCursor2::default()
+        };
+        self.ioctl(raw::DRM_IOCTL_MODE_CURSOR2, (&raw mut cursor).cast())
+    }
+
     /// Reads exactly one page-flip completion event.
     ///
     /// # Returns
@@ -643,6 +714,11 @@ impl DumbBuffer {
 
     pub fn device(&self) -> &DrmDevice {
         &self.device
+    }
+
+    /// Returns the complete mutable guest backing used for a 2D device upload.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.mapping.pointer.as_ptr(), self.mapping.size) }
     }
 }
 

@@ -277,7 +277,7 @@ impl VirtIOGpuDevice {
         }
         validate_backing(mode, &backing)?;
         let mut control = self.control.lock();
-        if control.pending.is_some() || control.operation.is_some() {
+        if control.commands.has_pending() || control.operation.is_some() {
             return Err(DisplayError::WouldBlock);
         }
         let mut copied = [DisplayRect::default(); MAX_DAMAGE_RECTS];

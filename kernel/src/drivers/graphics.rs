@@ -4,6 +4,34 @@ use crate::memory::DeviceBacking;
 
 use super::{DisplayDevice, DisplayError, DisplayMode, DisplayRect};
 
+/// @description 由 VirtIO-GPU 独立 cursorq 消费的硬件光标命令。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CursorCommand {
+    /// 只移动当前光标，不重新读取像素。
+    Move {
+        /// Scanout 0 中的水平位置。
+        x: u32,
+        /// Scanout 0 中的垂直位置。
+        y: u32,
+        /// 当前 cursor resource 是否可见。QEMU 10 的 MOVE 路径仍以 resource_id
+        /// 控制 host pointer 可见性；缺失该状态会让每次移动都隐藏刚更新的光标。
+        visible: bool,
+    },
+    /// 切换光标资源并同时设置位置与热点；resource 0 表示隐藏。
+    Update {
+        /// Scanout 0 中的水平位置。
+        x: u32,
+        /// Scanout 0 中的垂直位置。
+        y: u32,
+        /// true 使用 adapter-owned 2D cursor resource；false 表示隐藏。
+        visible: bool,
+        /// Resource 内的水平热点。
+        hot_x: u32,
+        /// Resource 内的垂直热点。
+        hot_y: u32,
+    },
+}
+
 /// @description VirGL capset 的 stable identity 与 exact byte contract。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VirglCapsetInfo {
@@ -158,6 +186,32 @@ pub(crate) enum VirglCommand<'a> {
 
 /// @description 同时拥有 scanout 与 VirGL controlq 的唯一 graphics adapter seam。
 pub(crate) trait GraphicsDevice: DisplayDevice {
+    /// @description 把一个 64x64 ARGB dumb buffer 上传到规范要求的 2D cursor resource。
+    /// @param identity DRM dumb buffer 的全局单调 identity。
+    /// @param backing cursor pixels 的 SG lifetime owner。
+    /// @return CREATE/ATTACH/TRANSFER 完整完成后发布的 adapter fence。
+    /// @errors 已有非 render control transaction 时返回 `WouldBlock`；几何或 device failure
+    /// 返回稳定 display error。
+    fn submit_cursor_upload(
+        &self,
+        identity: u64,
+        backing: Arc<DeviceBacking>,
+    ) -> Result<u64, DisplayError>;
+
+    /// @description 向独立 cursorq 提交一条需要 exact completion 的光标图像更新。
+    /// @param command 已由 DRM 验证 resource、geometry 与 master ownership 的命令。
+    /// @return cursorq 单调 completion sequence。
+    /// @errors 前一条 cursor command 尚未完成时返回 `WouldBlock`；queue 或 device failure
+    /// 返回 `Device`。
+    fn submit_cursor(&self, command: CursorCommand) -> Result<u64, DisplayError>;
+
+    /// @description 异步移动硬件光标；cursorq 忙时由 adapter 覆盖尚未发布的旧坐标。
+    /// @param x scanout 0 中的水平位置。
+    /// @param y scanout 0 中的垂直位置。
+    /// @return adapter 接受当前最新位置后返回 unit，不等待 device completion。
+    /// @errors queue 或 device failure 返回 `Device`。
+    fn move_cursor(&self, x: u32, y: u32) -> Result<(), DisplayError>;
+
     /// @description 返回 adapter 初始化时固定选中的 VirGL capset。
     /// @return host 未提供 VirGL 时为 `None`；有能力时返回 exact identity/version/size。
     fn virgl_capset_info(&self) -> Option<VirglCapsetInfo>;

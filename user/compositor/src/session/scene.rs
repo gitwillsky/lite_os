@@ -284,10 +284,9 @@ impl Session {
     /// Releases presentation-retired buffers and publishes exact flip completion.
     pub fn presented(&mut self, scene: &Scene, event: FlipEvent) -> io::Result<()> {
         self.last_flip = event;
-        let desktop = self
-            .desktop
-            .as_ref()
-            .ok_or_else(|| io::Error::other("desktop disappeared"))?;
+        if self.desktop.is_none() {
+            return Err(io::Error::other("desktop disappeared"));
+        }
         let retired: Vec<_> = self
             .desktop_current_buffers
             .iter()
@@ -295,16 +294,18 @@ impl Session {
             .filter(|id| !scene.desktop_buffers.contains(id))
             .collect();
         for id in retired {
-            self.buffers.values.remove(&id);
+            self.recycle_buffer(id);
         }
         self.desktop_current_buffers
             .clone_from(&scene.desktop_buffers);
-        send_presented(&desktop.stream, scene.revision, event)?;
+        send_presented(
+            &self.desktop.as_ref().expect("checked desktop").stream,
+            scene.revision,
+            event,
+        )?;
         for app_use in &scene.app_presentations {
             if let Some(app) = self.apps.get_mut(&app_use.surface_id) {
-                if let Some(previous) = &app_use.previous {
-                    self.buffers.values.remove(&previous.buffer_id);
-                }
+                let retired = app_use.previous.as_ref().map(|content| content.buffer_id);
                 send_presented(&app.stream, app_use.revision, event)?;
                 let first_scene_presented =
                     !std::mem::replace(&mut app.first_scene_presented, true);
@@ -313,6 +314,9 @@ impl Session {
                     // One preformatted write keeps concurrent app diagnostics
                     // from splicing bytes into this runtime ordering barrier.
                     let _ = io::stderr().write_all(marker.as_bytes());
+                }
+                if let Some(id) = retired {
+                    self.recycle_buffer(id);
                 }
             }
         }
@@ -324,9 +328,8 @@ impl Session {
                 .move_grab
                 .take()
                 .expect("move-finishing scene requires an active grab");
-            self.move_underlays.remove(&grab.surface_id);
             self.buffers.values.remove(&grab.underlay_buffer_id);
-            self.move_damage = None;
+            self.move_changed = false;
         }
         if !self.first_scene_presented {
             self.first_scene_presented = true;
@@ -389,13 +392,6 @@ impl Session {
 }
 
 impl Scene {
-    pub(crate) fn window_groups(&self) -> impl Iterator<Item = u32> + '_ {
-        self.nodes
-            .iter()
-            .map(|node| node.window_group)
-            .filter(|group| *group != 0)
-    }
-
     fn discarded(revision: u64) -> Self {
         Self {
             revision,

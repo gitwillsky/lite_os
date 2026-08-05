@@ -25,9 +25,8 @@ pub(crate) use display::{
     DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
 };
 pub(crate) use graphics::{
-    GraphicsDevice, VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection,
+    CursorCommand, GraphicsDevice, VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection,
 };
-#[cfg(target_arch = "aarch64")]
 pub(crate) use hal::PciTransport;
 pub(crate) use hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus};
 use hal::{

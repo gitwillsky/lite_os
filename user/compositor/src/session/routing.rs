@@ -6,6 +6,7 @@ use display_proto::{
     InputKey, InputPointer, InputScroll, MoveBegin, MoveComplete, PointerPhase, Rect,
     SurfaceActivated, send_message,
 };
+use linux_uapi::drm::VirglResource;
 
 use super::accelerator;
 use super::buffers::Owner;
@@ -24,9 +25,8 @@ impl Session {
             .is_some_and(|grab| surface_id.is_none_or(|id| grab.surface_id == id))
         {
             let grab = self.move_grab.take().expect("matching move grab");
-            self.move_damage = None;
+            self.move_changed = false;
             if surface_id.is_some() {
-                self.move_underlays.remove(&grab.surface_id);
                 self.buffers.values.remove(&grab.underlay_buffer_id);
             }
         }
@@ -204,27 +204,16 @@ impl Session {
 
     /// Starts the one compositor-side move authorized by the matching pointer-down.
     ///
-    /// `Ok(Some(error))` is a recoverable authorization race. Receipt of a valid
-    /// request transfers the underlay to the compositor even when that race loses,
-    /// so the buffer is released exactly once before the rejection is returned.
-    pub(super) fn begin_move(&mut self, request: MoveBegin) -> io::Result<Option<io::Error>> {
-        let underlay_buffer_id = *self
-            .move_underlays
-            .get(&request.surface_id)
-            .ok_or_else(|| invalid("move underlay is not prepared"))?;
-        let underlay = self
-            .buffers
-            .values
-            .get_mut(&underlay_buffer_id)
-            .ok_or_else(|| invalid("move underlay disappeared"))?;
-        if underlay.owner != Owner::Desktop
-            || underlay.busy
-            || underlay.size != self.display
-            || self.desktop_current_buffers.contains(&underlay_buffer_id)
-        {
-            return Err(invalid("move underlay buffer state invalid"));
+    /// `Ok(Some(error))` is a recoverable authorization race. The caller renders
+    /// exactly one underlay for this request; a losing race drops it immediately.
+    pub(crate) fn begin_move(
+        &mut self,
+        request: MoveBegin,
+        underlay: VirglResource,
+    ) -> io::Result<Option<io::Error>> {
+        if underlay.width() != self.display.width || underlay.height() != self.display.height {
+            return Err(invalid("move underlay geometry invalid"));
         }
-        underlay.busy = true;
         let rejection = if self.move_grab.is_some() {
             Some(invalid("move grab already active"))
         } else {
@@ -251,11 +240,21 @@ impl Session {
                 .then(|| invalid("move group is not presented"))
         });
         if let Some(error) = rejection {
-            underlay.busy = false;
             return Ok(Some(error));
         }
         let capture = capture.expect("validated move capture");
         let frame = frame.expect("validated move frame");
+        let underlay_buffer_id = self.take_buffer_id()?;
+        self.buffers.values.insert(
+            underlay_buffer_id,
+            super::buffers::Buffer {
+                pixels: underlay,
+                size: self.display,
+                owner: Owner::Desktop,
+                busy: true,
+                revision: 0,
+            },
+        );
         self.move_grab = Some(MoveGrab {
             surface_id: request.surface_id,
             underlay_buffer_id,
@@ -268,9 +267,9 @@ impl Session {
         Ok(None)
     }
 
-    /// Returns and clears damage accumulated by compositor-side move updates.
-    pub fn take_move_damage(&mut self) -> Option<Rect> {
-        self.move_damage.take()
+    /// Returns whether the canonical move offset changed since the last draw.
+    pub fn take_move_changed(&mut self) -> bool {
+        std::mem::take(&mut self.move_changed)
     }
 
     /// Returns the active move group and its current physical translation.
@@ -300,13 +299,7 @@ impl Session {
         let old = grab.offset;
         grab.offset = next;
         if grab.offset != old {
-            if let Some(damage) = group_damage(&self.presented_nodes, grab.surface_id, old) {
-                accumulate(&mut self.move_damage, damage);
-            }
-            if let Some(damage) = group_damage(&self.presented_nodes, grab.surface_id, grab.offset)
-            {
-                accumulate(&mut self.move_damage, damage);
-            }
+            self.move_changed = true;
         }
         self.move_grab = Some(grab);
     }
@@ -387,69 +380,6 @@ fn next_move_offset(grab: MoveGrab, x: i32, y: i32) -> Option<(i32, i32)> {
     let x = (grab.origin.0 / scale + (x - grab.down.0) / scale).clamp(grab.limits.0, grab.limits.2);
     let y = (grab.origin.1 / scale + (y - grab.down.1) / scale).clamp(grab.limits.1, grab.limits.3);
     Some((x * scale - grab.origin.0, y * scale - grab.origin.1))
-}
-
-fn group_damage(
-    nodes: &[super::scene::Node],
-    window_group: u32,
-    offset: (i32, i32),
-) -> Option<Rect> {
-    nodes
-        .iter()
-        .filter(|node| node.window_group == window_group)
-        .filter_map(|node| intersect(node.bounds, node.clip))
-        .map(|rectangle| translated(rectangle, offset))
-        .reduce(union)
-}
-
-fn accumulate(total: &mut Option<Rect>, damage: Rect) {
-    *total = Some(total.map_or(damage, |current| union(current, damage)));
-}
-
-fn intersect(left: Rect, right: Rect) -> Option<Rect> {
-    let x1 = left.x.max(right.x);
-    let y1 = left.y.max(right.y);
-    let x2 = left
-        .x
-        .saturating_add_unsigned(left.width)
-        .min(right.x.saturating_add_unsigned(right.width));
-    let y2 = left
-        .y
-        .saturating_add_unsigned(left.height)
-        .min(right.y.saturating_add_unsigned(right.height));
-    (x2 > x1 && y2 > y1).then_some(Rect {
-        x: x1,
-        y: y1,
-        width: (x2 - x1) as u32,
-        height: (y2 - y1) as u32,
-    })
-}
-
-fn translated(rectangle: Rect, offset: (i32, i32)) -> Rect {
-    Rect {
-        x: rectangle.x.saturating_add(offset.0),
-        y: rectangle.y.saturating_add(offset.1),
-        ..rectangle
-    }
-}
-
-fn union(left: Rect, right: Rect) -> Rect {
-    let x1 = left.x.min(right.x);
-    let y1 = left.y.min(right.y);
-    let x2 = left
-        .x
-        .saturating_add_unsigned(left.width)
-        .max(right.x.saturating_add_unsigned(right.width));
-    let y2 = left
-        .y
-        .saturating_add_unsigned(left.height)
-        .max(right.y.saturating_add_unsigned(right.height));
-    Rect {
-        x: x1,
-        y: y1,
-        width: x2.saturating_sub(x1) as u32,
-        height: y2.saturating_sub(y1) as u32,
-    }
 }
 
 fn contains(rectangle: Rect, x: i32, y: i32) -> bool {

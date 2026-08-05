@@ -1,14 +1,13 @@
 use super::{
-    ControlQueue, VirtIOGpuDevice,
+    CommandPayload, CompletedCommand, ControlQueue,
     command::{FlushPurpose, GpuCommand, PendingCommand, ScanoutPurpose, UnrefPurpose},
     resource::{
-        ResidentResource, ResourceRelease, ResourceSnapshot, RuntimeOperation, disabled_resource,
-        full_rectangle, operation_target, operation_target_ref,
+        CursorResource, ResidentResource, ResourceRelease, ResourceSnapshot, RuntimeOperation,
+        disabled_resource, full_rectangle, operation_target, operation_target_ref,
     },
     sequence_policy::RuntimeStage,
-    wire::{VIRTIO_GPU_FLAG_FENCE, read_u32, read_u64},
 };
-use crate::drivers::{DisplayError, DisplayMode, DisplayRect, DisplayUpdate};
+use crate::drivers::{DisplayError, DisplayMode, DisplayUpdate};
 
 /// completion 状态机选出的唯一后继动作；wire encoding 与 queue publication 不在分支内发生。
 pub(super) enum SequenceAction {
@@ -34,6 +33,7 @@ pub(super) enum SequenceRetirement {
     },
     Released(ResourceRelease),
     Disabled(ResourceSnapshot),
+    Cursor(Option<CursorResource>),
 }
 
 impl SequenceRetirement {
@@ -48,6 +48,7 @@ impl SequenceRetirement {
             }
             Self::Released(resource) => drop(resource),
             Self::Disabled(resources) => drop(resources),
+            Self::Cursor(resource) => drop(resource),
         }
     }
 }
@@ -91,15 +92,15 @@ fn command_after(
 /// 验证一个 used completion，并只选择下一条领域 command 或 terminal result。
 pub(super) fn complete(
     control: &mut ControlQueue,
-    head: u16,
+    completed: CompletedCommand,
 ) -> Result<SequenceAction, DisplayError> {
-    let pending = control.pending.take().ok_or(DisplayError::Device)?;
-    validate_response(control, head, &pending)?;
+    let (pending, payload) = completed.into_parts();
     let fence = pending.operation_fence;
     match pending.stage {
         RuntimeStage::DisplayInfo => {
-            let mode = VirtIOGpuDevice::parse_display_mode(control.response.as_slice())
-                .ok_or(DisplayError::Device)?;
+            let CommandPayload::DisplayInfo(mode) = payload else {
+                return Err(DisplayError::Device);
+            };
             let update = if mode != control.mode {
                 DisplayUpdate::ModeChanged(mode)
             } else {
@@ -147,6 +148,57 @@ pub(super) fn complete(
                     GpuCommand::TransferScanout { mode, resource_id },
                 )
             }
+        }
+        RuntimeStage::UnrefCursor => {
+            let target = match control.operation.as_ref() {
+                Some(RuntimeOperation::CursorUpload(target)) => target,
+                _ => return Err(DisplayError::Device),
+            };
+            command_after(
+                pending.stage,
+                fence,
+                GpuCommand::CreateCursor {
+                    resource_id: target.id(),
+                },
+            )
+        }
+        RuntimeStage::CreateCursor => {
+            let target = match control.operation.as_ref() {
+                Some(RuntimeOperation::CursorUpload(target)) => target,
+                _ => return Err(DisplayError::Device),
+            };
+            command_after(
+                pending.stage,
+                fence,
+                GpuCommand::AttachCursor {
+                    resource_id: target.id(),
+                    backing: target.backing_owner(&control.cursor_resource),
+                },
+            )
+        }
+        RuntimeStage::AttachCursor => {
+            let target = match control.operation.as_ref() {
+                Some(RuntimeOperation::CursorUpload(target)) => target,
+                _ => return Err(DisplayError::Device),
+            };
+            command_after(
+                pending.stage,
+                fence,
+                GpuCommand::TransferCursor {
+                    resource_id: target.id(),
+                },
+            )
+        }
+        RuntimeStage::TransferCursor => {
+            let target = match control.operation.take() {
+                Some(RuntimeOperation::CursorUpload(target)) => target,
+                _ => return Err(DisplayError::Device),
+            };
+            let evicted = control.cursor_resource.complete(target);
+            Ok(SequenceAction::Finished(SequenceCompletion {
+                update: Some(DisplayUpdate::RenderCompleted(fence)),
+                retirement: SequenceRetirement::Cursor(evicted),
+            }))
         }
         RuntimeStage::TransferScanout => {
             let (mode, resource_id) = operation_target(&control.operation, &control.resources)?;
@@ -220,43 +272,25 @@ pub(super) fn complete(
         RuntimeStage::UnrefDisabled(slot) => {
             unref_disabled(control, pending, usize::from(slot) + 1)
         }
-        RuntimeStage::Virgl => Ok(SequenceCompletion::update(Some(
-            DisplayUpdate::RenderCompleted(fence),
-        ))),
-        RuntimeStage::VirglSetScanout => command_after(
-            pending.stage,
-            fence,
-            GpuCommand::GraphicsFlush {
-                rectangle: DisplayRect {
-                    x: 0,
-                    y: 0,
-                    width: control.mode.width,
-                    height: control.mode.height,
-                },
-                resource_id: read_u32(control.request.as_slice(), 44)
-                    .ok_or(DisplayError::Device)?,
-            },
-        ),
-        RuntimeStage::VirglFlush => Ok(SequenceCompletion::update(Some(
-            DisplayUpdate::RenderCompleted(fence),
-        ))),
+        RuntimeStage::Virgl => match payload {
+            CommandPayload::None => Ok(SequenceCompletion::update(Some(
+                DisplayUpdate::RenderCompleted(fence),
+            ))),
+            _ => Err(DisplayError::Device),
+        },
+        // SET_SCANOUT 只改变 host scanout 绑定；同一批次中后继的 RESOURCE_FLUSH 才触发
+        // dpy_gl_update。若在这里发布 fence，客体会把尚未可见的黑帧误报为已呈现。
+        RuntimeStage::VirglSetScanout => match payload {
+            CommandPayload::None => Ok(SequenceCompletion::update(None)),
+            _ => Err(DisplayError::Device),
+        },
+        RuntimeStage::VirglFlush => match payload {
+            CommandPayload::None => Ok(SequenceCompletion::update(Some(
+                DisplayUpdate::RenderCompleted(fence),
+            ))),
+            _ => Err(DisplayError::Device),
+        },
     }
-}
-
-fn validate_response(
-    control: &ControlQueue,
-    head: u16,
-    pending: &PendingCommand,
-) -> Result<(), DisplayError> {
-    if head != pending.head
-        || read_u32(control.response.as_slice(), 0) != Some(pending.stage.expected_response())
-        || read_u32(control.response.as_slice(), 4)
-            .is_none_or(|flags| flags & VIRTIO_GPU_FLAG_FENCE == 0)
-        || read_u64(control.response.as_slice(), 8) != Some(pending.command_fence)
-    {
-        return Err(DisplayError::Device);
-    }
-    Ok(())
 }
 
 fn finish_scanout(

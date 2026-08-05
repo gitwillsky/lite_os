@@ -363,15 +363,20 @@ fn render_latest(
         unreachable!("dirty state disappeared on the single UI owner thread");
     };
     let frame = renderer.render_gpu(scene.as_slice())?;
-    display.commit_gpu_frame(&frame)?;
+    if frame.paint_changed {
+        display.commit_gpu_frame(&frame)?;
+    }
     let output = frame.output;
     match mode {
-        Mode::Desktop => display.commit_desktop(
-            state.focused_surface(),
-            &output.foreign,
-            &output.windows,
-            &output.overlays,
-        )?,
+        Mode::Desktop if frame.paint_changed => {
+            display.commit_desktop(
+                state.focused_surface(),
+                &output.foreign,
+                &output.windows,
+                &output.overlays,
+            )?;
+        }
+        Mode::Desktop => {}
         Mode::App(_) => {}
     }
     interactions.hits = output.hits;

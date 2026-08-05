@@ -90,9 +90,7 @@ def qemu_runtime(
 def _qemu_command(
     image: Path,
     smp: int,
-    interactive_devices: bool = False,
     qmp_socket: Path | None = None,
-    audio_output: Path | None = None,
     memory: str | None = None,
 ) -> list[str]:
     runtime = qemu_runtime()
@@ -117,7 +115,7 @@ def _qemu_command(
             "base=utc",
         ]
     )
-    if memory is not None and not interactive_devices:
+    if memory is not None:
         command.extend(("-m", memory))
     if runtime.bootloader is not None:
         command.extend(["-bios", runtime.bootloader])
@@ -141,31 +139,6 @@ def _qemu_command(
             "virtserialport,bus=virtio-serial0.0,chardev=vdagent,name=com.redhat.spice.0",
         ]
     )
-    if interactive_devices:
-        audio_backend = (
-            "none,id=audio0"
-            if audio_output is None
-            else (
-                f"wav,id=audio0,path={audio_output},"
-                "out.frequency=48000,out.channels=2,out.format=s16"
-            )
-        )
-        command.extend(
-            [
-                "-m",
-                memory or "2G",
-                "-audiodev",
-                audio_backend,
-                "-device",
-                "virtio-gpu-device,xres=3008,yres=1692",
-                "-device",
-                "virtio-keyboard-device",
-                "-device",
-                "virtio-tablet-device",
-                "-device",
-                "virtio-sound-device,id=audio-device,audiodev=audio0,streams=1",
-            ]
-        )
     if qmp_socket is not None:
         # QMP channel for the frame-timing gate's synthetic input driver. Idle
         # desktops emit no frames, so the gate drives real virtio input through
@@ -375,8 +348,6 @@ def boot(
     forbidden_markers: tuple[str, ...] = (),
     success_settle_seconds: float = 0.0,
     persistent_writes: bool = False,
-    interactive_devices: bool = False,
-    audio_output: Path | None = None,
     memory: str | None = None,
 ) -> None:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
@@ -390,8 +361,6 @@ def boot(
         forbidden_markers: 任一出现即立即失败的输出标记。
         success_settle_seconds: 成功标记齐备后继续观察 forbidden marker 的时长。
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
-        interactive_devices: 是否加入 run-gui 的 GPU、keyboard 与 tablet 设备拓扑。
-        audio_output: interactive topology 的 WAV 输出；None 使用不会访问 host 声卡的 none backend。
         memory: 显式 Guest RAM；None 保留既有 runtime gate 的 QEMU 默认值。
 
     Returns:
@@ -411,8 +380,6 @@ def boot(
     command = _qemu_command(
         image,
         smp,
-        interactive_devices,
-        audio_output=audio_output,
         memory=memory,
     )
     process = subprocess.Popen(
@@ -601,12 +568,7 @@ FRAME_STATS_RE = re.compile(
 
 
 class QmpClient:
-    """Minimal QMP client for synthetic input, visual barriers and shutdown.
-
-    The screendump surface lets UI gates wait for a compositor-presented scene
-    instead of sleeping for a host-speed-dependent raster duration. It remains
-    intentionally narrower than a general QMP wrapper.
-    """
+    """Minimal QMP client for synthetic input and deterministic shutdown."""
 
     def __init__(self, path: Path, connect_timeout_s: float = 10.0) -> None:
         deadline = time.monotonic() + connect_timeout_s
@@ -675,23 +637,6 @@ class QmpClient:
             [{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}]
         )
 
-    def screendump(self, path: Path) -> None:
-        """Writes the currently presented scanout as a binary PPM file.
-
-        Args:
-            path: Absolute host output path owned by the calling runtime gate.
-
-        Returns:
-            After QEMU has completed the screenshot command.
-
-        Raises:
-            ValueError: ``path`` is not absolute.
-            RuntimeError: QMP rejects the screendump.
-        """
-        if not path.is_absolute():
-            raise ValueError("QMP screendump path must be absolute")
-        self._execute("screendump", {"filename": str(path)})
-
     def quit(self) -> None:
         """Requests graceful QEMU shutdown.
 
@@ -737,258 +682,33 @@ class QmpClient:
 
 
 def start_frame_workload(qmp: QmpClient, duration_s: float, stop: "threading.Event") -> None:
-    """Drives a sustained ~60Hz flip stream by resizing a window via React.
+    """Drives sustained compositor-owned move flips through a legal titlebar grab.
 
-    The only architectural path that page-flips per event is a DESKTOP-side React
-    scene commit. A titlebar drag installs a compositor move-grab that composites
-    via DIRTYFB WITHOUT a page-flip, and app content only flips at the app's own
-    commit rate — neither reliably yields 60Hz. But dragging a window's RESIZE
-    grip stays entirely in desktop React: each pointer motion runs
-    `continueResize` -> `onResize` -> `commitResize` (`move()` + `setOpen()`),
-    which commits a fresh scene with pixels_changed=true -> compositor
-    `accept_scene` -> `present_scene` -> one page-flip. The desktop's own resize
-    throttle paces these to ~60Hz (RESIZE_FRAME_MS), which is exactly the cadence
-    the gate measures.
-
-    Presses the explicitly launched Terminal window's bottom-right (`se`) resize
-    grip and oscillates the pointer in small steps for `duration_s`, then
-    releases. Runs on its own thread; the caller's reader drains serial
-    concurrently.
+    Aurora's Terminal titlebar begins at logical ``(958, 414)`` in the canonical
+    1504×846 viewport. The down event first grants the desktop an exact input
+    serial; only after the desktop has sent ``MOVE_BEGIN`` does motion enter the
+    compositor's bounded temporary transform path. That path is the sole steady
+    presentation source after static scene retention and hardware-cursor motion
+    removed unrelated redraws.
     """
-    # Aurora's canonical Terminal frame is (958,414) 460x250. The `se` grip is
-    # 10x10 at the corner, so its logical center is approximately (1413,659).
-    grip_x, grip_y = 1413 / 1504, 659 / 846
-    qmp.move_abs(grip_x, grip_y)
+    start_x, start_y = 1100.0, 435.0
+    qmp.move_abs(start_x / 1504, start_y / 846)
     qmp.button("left", True)
+    # MOVE_BEGIN crosses compositor -> desktop -> compositor and renders one
+    # full-output underlay. Moving before that transaction owns the capture can
+    # race the button-up and turn the workload into rejected, unmeasured input.
+    time.sleep(0.75)
     deadline = time.monotonic() + duration_s
     step = 0
     try:
         while time.monotonic() < deadline and not stop.is_set():
-            # Oscillate the corner outward/inward by up to ~120 logical px so the
-            # window genuinely resizes each motion (a zero-delta move commits no
-            # new scene). Triangle wave keeps it on-screen and above MIN size.
-            phase = (step % 40) / 40.0
-            tri = phase if phase <= 0.5 else 1.0 - phase  # 0..0.5..0
-            delta = tri * (120 / 1504)
-            qmp.move_abs(grip_x + delta, grip_y + delta * (846 / 1504))
+            phase = (step % 120) / 120.0
+            triangle = phase if phase <= 0.5 else 1.0 - phase
+            x = start_x - triangle * 600.0
+            qmp.move_abs(x / 1504, start_y / 846)
             step += 1
-            time.sleep(0.004)  # inject fast; guest resize throttle paces commits
+            # Input may run ahead of the one-flip-in-flight owner; compositor
+            # coalescing retains the newest transform and vblank paces presents.
+            time.sleep(0.004)
     finally:
         qmp.button("left", False)
-
-
-def stress_window_move_lifecycle(qmp: QmpClient, iterations: int = 64) -> None:
-    """Drives rapid native titlebar grabs through accept/reject buffer lifecycles.
-
-    The Files titlebar starts at logical ``(76, 124)`` in the fixed
-    1504×846 viewport. Alternating complete drags creates both accepted grabs
-    and stale-serial rejections; every request must return its move underlay, or
-    a later gesture exhausts the desktop triple and resets the whole epoch.
-
-    Args:
-        qmp: Connected QMP input owner for the running interactive guest.
-        iterations: Number of complete press/move/release gestures.
-
-    Returns:
-        After all synthetic gestures have been accepted by QMP.
-    """
-    x = 220.0
-    y = 150 / 846
-    for _ in range(iterations):
-        qmp.move_abs(x / 1504, y)
-        qmp.button("left", True)
-        next_x = 520.0 if x < 300 else 150.0
-        for step in range(1, 7):
-            qmp.move_abs((x + (next_x - x) * step / 6) / 1504, y)
-        qmp.button("left", False)
-        x = next_x
-        time.sleep(0.01)
-
-
-def measure_frame_timing(
-    image: Path,
-    settle_s: float = 30.0,
-    timeout_seconds: int = 120,
-) -> dict[str, int]:
-    """Cold-boots the desktop stack, self-drives frames, and returns frame stats.
-
-    Boots with the interactive-device topology plus a QMP channel, waits for the
-    Aurora session's pinned Files and Terminal surfaces, then drives resize
-    commits on Terminal. A background thread drains
-    serial the whole time so `compositor: frame-stats` markers are read as they
-    arrive. Returns the WORST window (max dropped, then p99/p95) so a single good
-    window cannot mask a bad one.
-
-    Raises:
-        RuntimeError: QEMU/QMP unavailable, boot markers missing, a fatal path,
-            or no full frame-stats window was produced before the deadline.
-    """
-    private_directory = tempfile.TemporaryDirectory(prefix="liteos-frame-timing-")
-    private_image = Path(private_directory.name) / image.name
-    shutil.copyfile(image, private_image)
-    qmp_socket = Path(private_directory.name) / "qmp.sock"
-    boot_markers = (
-        "init started: BusyBox v1.37.0",
-        "compositor: mode",
-        "compositor: desktop connected",
-        "compositor: desktop first scene presented",
-        "lite-ui: desktop ready",
-    )
-    process = subprocess.Popen(
-        _qemu_command(private_image, 1, interactive_devices=True, qmp_socket=qmp_socket),
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    assert process.stdout is not None
-    # Shared serial buffer drained by a background thread so the reader is never
-    # starved while the guest self-drives frames.
-    output = bytearray()
-    output_lock = threading.Lock()
-    stop_reading = threading.Event()
-
-    def reader() -> None:
-        while not stop_reading.is_set():
-            ready, _, _ = select.select([process.stdout], [], [], 0.1)
-            if not ready:
-                if process.poll() is not None:
-                    return
-                continue
-            chunk = os.read(process.stdout.fileno(), 16 * 1024)
-            if not chunk:
-                return
-            with output_lock:
-                output.extend(chunk)
-
-    def current_text() -> str:
-        with output_lock:
-            return ANSI.sub("", bytes(output).decode(errors="replace"))
-
-    def parse_windows(text: str) -> list[dict[str, int]]:
-        found: list[dict[str, int]] = []
-        for match in FRAME_STATS_RE.finditer(text):
-            found.append(
-                {
-                    "window": int(match.group(1)),
-                    "frames": int(match.group(2)),
-                    "dropped": int(match.group(3)),
-                    "p50_us": int(match.group(4)),
-                    "p95_us": int(match.group(5)),
-                    "p99_us": int(match.group(6)),
-                }
-            )
-        return found
-
-    reader_thread = threading.Thread(target=reader, daemon=True)
-    reader_thread.start()
-    qmp: QmpClient | None = None
-    windows: list[dict[str, int]] = []
-    second_window_opened = False
-    deadline = time.monotonic() + timeout_seconds
-    try:
-        # 1. Wait for the desktop stack to be fully up.
-        while time.monotonic() < deadline:
-            text = current_text()
-            if "panicked at" in text or "[ERROR]" in text:
-                tail = "\n".join(text.splitlines()[-40:])
-                raise RuntimeError(
-                    f"frame-timing guest reached a fatal path\n--- output tail ---\n{tail}"
-                )
-            if all(marker in text for marker in boot_markers):
-                break
-            if process.poll() is not None:
-                break
-            time.sleep(0.1)
-        else:
-            raise RuntimeError("frame-timing gate timed out before desktop was ready")
-
-        qmp = QmpClient(qmp_socket)
-        def wait_for(markers: tuple[str, ...], phase: str) -> None:
-            phase_deadline = min(deadline, time.monotonic() + 15.0)
-            while time.monotonic() < phase_deadline:
-                text = current_text()
-                if "panicked at" in text or "[ERROR]" in text:
-                    tail = "\n".join(text.splitlines()[-40:])
-                    raise RuntimeError(
-                        f"frame-timing guest failed during {phase}"
-                        f"\n--- output tail ---\n{tail}"
-                    )
-                if all(marker in text for marker in markers):
-                    return
-                time.sleep(0.1)
-            missing = [marker for marker in markers if marker not in current_text()]
-            raise RuntimeError(f"frame-timing gate missed {phase} markers: {missing!r}")
-
-        wait_for(
-            (
-                "lite-ui: desktop startup motion settled",
-                "compositor: app 1 connected",
-                "lite-ui: terminal session ready",
-                "lite-ui: app terminal ready",
-                "terminal-session: shell spawned",
-                "compositor: app 2 connected",
-                "lite-ui: app file-manager ready",
-            ),
-            "Aurora pinned apps",
-        )
-        second_window_opened = True
-
-        # 3. Exercise the native move transaction before measuring steady resize
-        #    frames. A rejected stale serial is recoverable only if its underlay
-        #    is returned exactly once; the old failure restarted the desktop.
-        stress_window_move_lifecycle(qmp)
-        time.sleep(0.5)
-        move_text = current_text()
-        if (
-            move_text.count("lite-ui: desktop ready") != 1
-            or "desktop move underlay buffer unavailable" in move_text
-            or "compositor: desktop disconnected" in move_text
-        ):
-            tail = "\n".join(move_text.splitlines()[-40:])
-            raise RuntimeError(
-                "frame-timing guest reset during native window-move lifecycle"
-                f"\n--- output tail ---\n{tail}"
-            )
-
-        # 4. Drive the Terminal resize grip directly. `beginResize` activates
-        #    the window itself; a separate titlebar click would authorize a
-        #    native move grab and contaminate this React-resize workload.
-        workload_deadline = min(deadline, time.monotonic() + settle_s)
-        start_frame_workload(qmp, workload_deadline - time.monotonic(), stop_reading)
-
-        # 5. Collect whatever windows the drive produced.
-        windows = parse_windows(current_text())
-        if not windows:
-            # Give a last moment for a trailing marker to arrive/flush.
-            time.sleep(0.5)
-            windows = parse_windows(current_text())
-        text_running = current_text()
-        if "panicked at" in text_running or "[ERROR]" in text_running:
-            tail = "\n".join(text_running.splitlines()[-40:])
-            raise RuntimeError(
-                f"frame-timing guest reached a fatal path\n--- output tail ---\n{tail}"
-            )
-    finally:
-        stop_reading.set()
-        reader_thread.join(timeout=2)
-        if qmp is not None:
-            qmp.close()
-        terminate(process)
-        text_final = current_text()
-        private_directory.cleanup()
-    if len(windows) < 2:
-        tail = "\n".join(text_final.splitlines()[-40:])
-        raise RuntimeError(
-            "frame-timing gate needs one warmup and one steady frame-stats window "
-            f"(collected={len(windows)}, second_window_opened={second_window_opened})"
-            f"\n--- output tail ---\n{tail}"
-        )
-    # Discard the mandatory first window as warmup: it straddles desktop
-    # settling, the second-window open and the focus clicks before the steady
-    # resize stream begins, so its tail percentiles reflect startup gaps, not
-    # steady cadence.
-    steady = windows[1:]
-    # Worst steady window: the gate must not be defeated by one good window
-    # among bad.
-    return max(steady, key=lambda w: (w["dropped"], w["p99_us"], w["p95_us"]))

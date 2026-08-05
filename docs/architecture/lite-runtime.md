@@ -6,7 +6,8 @@
   它只理解物理像素、flat scene 和 surface，不理解 React、CSS、窗口策略或 Aurora 主题。
 - `compositor/spice_agent.rs` 是 SPICE vdagent framing、UTM monitor request 与 session plain-text
   clipboard 的唯一 owner；它通过标准 VirtIO named port 接收 `VD_AGENT_MONITORS_CONFIG`，并与 host
-  clipboard 懒交换数据。server-port mouse-state 只校验并丢弃，pointer 仍唯一走 evdev/tablet。
+  clipboard 懒交换数据。UTM/QEMU 启动契约必须设置 `agent-mouse=off`，使 pointer 唯一走
+  virtio-tablet/evdev；server-port mouse-state 只作为非输入 framing 校验后丢弃。
   monitor request 只进入 compositor/DRM output transaction，clipboard 结果只路由到当前 focused
   surface；desktop 和 app 不保存另一份 system state。
 - `lite-runtime`（crate `lite-runtime`，lib 名 `lite_runtime`）是通用 GUI/JS 运行时**库**——像
@@ -30,9 +31,8 @@
   `id=="terminal"` 路径激活），不属于应用策略。扩展只经 `ExtensionCx` 用通用原语（requestId、
   worker 事件 emit、流注册、push_action、apps_root）。
 - `lite-runtime/lib.rs` 只编排进程生命周期、渲染提交与 helper；`input.rs` 独占 input state，
-  `input/dispatch.rs` 独占 Web-style DOM dispatch/default action，`renderer/render.rs` 独占帧布局与
-  retained 选择，`renderer/retained.rs` 独占 document identity/damage/pixel reuse，
-  `renderer/paint.rs` 独占递归 paint walk，`renderer/paint/fixed.rs` 独占 fixed layer traversal，
+  `input/dispatch.rs` 独占 Web-style DOM dispatch/default action，`renderer/gpu_paint.rs` 独占帧布局与
+  完整 immutable display list，`renderer/retained.rs` 独占 document/fixed identity、geometry 与 damage，
   `renderer/layout/flex.rs` 独占 Flexbox longhand lowering，`renderer/backdrop/kernel.rs` 独占
   allocation-free blur kernel，`style/selector.rs` 独占 selector/specificity/pseudo-class matching，
   `display/allocation.rs` 独占 buffer allocation round-trip，
@@ -66,10 +66,12 @@
   `SURFACE_COMMIT`，拥有 surface 像素与 damage。page flip 前的单一 latch 点冻结两类最新 revision；
   输入始终命中最后一次已呈现状态。
 - 标题栏 pointer-down 仍由 React desktop 判定窗口策略；它用同一 input serial 授权 compositor move
-  grab，并一次性栅格化排除该 `windowGroup` 的 underlay scratch。后续 motion 只更新整个 group 的
-  临时物理 transform，并在 front scanout 上用 underlay 重画旧/新 bounds 并集；pointer-up 返回最终
-  逻辑坐标，下一份 canonical scene 一次性接管。motion 期间不运行 React、CSS layout、desktop raster
-  或 page flip。
+  grab。compositor 只在收到该授权后栅格化一次排除 `windowGroup` 的 underlay；普通 scene 不预生成
+  每窗口 scratch。后续 motion 只更新整个 group 的
+  临时物理 transform，underlay 作为未移动节点的既有 GPU texture 参与同一 VirGL 合成；pointer-up 返回
+  最终逻辑坐标，下一份 canonical scene 一次性接管。motion 期间不运行 React、CSS layout 或 desktop
+  raster；scanout 同时最多提交一个 window-move page flip，期间的 transform 只保留最新状态。硬件光标
+  motion 独立走 VirtIO-GPU cursorq，不参与该 scene flip。
 - desktop renderer 的 flat scene 可交错 `Pixels` 与 `ForeignSurface` node。普通 app 只产生一个像素
   surface；desktop 遇到 `<surface>` 时切分 paint sequence，使窗口内容能与 React decorations 正确交错。
 - LiteUI 把预乘 `ARGB8888` paint 降为 immutable GPU display list，compositor 在唯一 VirGL context
@@ -79,13 +81,22 @@
   opaque region、显式 input region 与 damage；透明阴影不参与 input region。React paint order 中位于
   foreign surface 之后的透明交互 chrome 生成 empty-clip `Pixels` input node，使 resize grip 等元素按
   标准 DOM z-order 命中 desktop，同时不复制 desktop 像素覆盖 app content。窗口 frame Pixels 使用
-  outer border-edge mask；foreign surface 携带 renderer 当时完整的 CSS overflow clip chain，每层保留
-  padding-edge rect 与四角横纵半径。compositor 逐 scanline 求所有 mask 的交集并合成一次亚像素
+  outer border-edge mask；foreign surface 携带 renderer 当时完整的 CSS overflow clip chain，并由 scene
+  encoder 追加所属 `WindowFrame` 的 canonical outer mask；每层保留 padding-edge rect 与四角横纵半径。compositor 逐 scanline 求所有 mask 的交集并合成一次亚像素
   coverage，因此 client content 不能用外圆角越过 inner border arc 覆盖边框。renderer 的同一 clip stack
   在 raster seam 约束其他 primitive。
-- compositor 单线程 poll loop 独占 sockets、evdev、scene latch、damage composition、DRM page flip 与
-  completion。LiteUI 使用 UI/render 双线程：UI thread 独占 QuickJS/React，native render thread 独占
-  CSS、layout、text 与 raster。固定三个 snapshot arena 组成 latest-only seam，中间 revision 可丢弃。
+- 一个 VirGL render pass 的 surface setup、draw 与 teardown 必须在 command 大小上限内合并为一次
+  execbuffer；超限才按有界 command batch 切分。资源最近 fence 统一托管异步生命周期，不得为每个阶段或
+  layer 插入同步 wait。kernel controlq 按 queue descriptor capacity 的一半固定持有 DMA-stable command
+  slot（每条 command 消费两个 descriptor），有界接纳完整 effect paint burst；completion 以 descriptor
+  head 映射回 exact slot，公开 fence 即使乱序到达，也只能按提交顺序推进 waiter。
+- compositor 单线程 poll loop 独占 sockets、evdev、scene latch、GPU composition、DRM page flip 与
+  completion；DRM event fd 与输入、socket 进入同一次 poll。window-move flip 提交后不在 input 调用栈等待，
+  一个在途帧期间的 transform 变化合并为一个 latest frame；每个 evdev `SYN_REPORT` 的 position 异步
+  进入 cursorq，queue 忙时覆盖 latest position，shape 才等待 exact completion。两者都不排在 scene
+  VirGL work 或 vblank 后面。LiteUI 使用 UI/render
+  双线程：UI thread 独占 QuickJS/React，native render thread 独占 CSS、layout、text 与 raster。固定三个
+  snapshot arena 组成 latest-only seam，中间 revision 可丢弃。
 - compositor 把标准 SPICE agent monitor request 与 `NETLINK_KOBJECT_UEVENT` group 1 同 display
   socket/evdev poll；一次 burst 只保留最新物理尺寸并发布 monotonic
   `OUTPUT_CONFIGURE(serial, physicalSize, scale=2)`。desktop 只有在新尺寸 triple buffer 与完整 scene
@@ -96,20 +107,31 @@
 - desktop raster 把 document 与 `position: fixed` subtree 作为两个标准 paint phase。document layer
   只有在非 fixed host props、computed style、scroll offset 或 viewport 任一精确变化时才失效；纯 shell
   overlay commit 复用其完整像素、hit、window 与 scroll geometry，再按 CSS paint order 合成 fixed
-  subtree。move-underlay 仍过滤后完整生成，不复用 presentation cache。
+  subtree。move-underlay 仅在有效 `MOVE_BEGIN` 后过滤生成，不复用 presentation cache。
 - app 与 desktop document 共用 retained raster/damage owner。布局与完整 computed style 不变时，仅
   文本内容或受控 `<input value>` 的变化恢复上一 revision 像素并按原 CSS paint order scissor 重画受影响
   border box；结构、布局、其他 prop/style、scroll 或 backdrop dependency 任一变化立即升级为完整
   document repaint。`SURFACE_COMMIT` 的空 damage 表示像素未变，不再暗含 full-buffer damage。
+- GPU display-list revision 用 client 独占的 last paint revision 生成显式 `base_revision`，不能从夹杂 scene
+  revision 的公共序列做减一推导。compositor 只从精确 base target
+  复制像素，以 replacement blend 清除 damage，再在 damage clip 下重放同一份完整 display list；完整列表
+  同时是授权 move-underlay 的来源，不保存局部命令副本或 CPU fallback。
 - 每个像素 layer 严格双 buffer；静态 layer 可先持有一个 immutable buffer，首次变化时才申请第二个。
   compositor 接受 commit 后只读 front，已呈现 desktop buffer 保持 pinned；只改变 foreign adoption
   或几何的 scene 可继续引用它而不重画像素。新像素 scene 呈现后才向 client `BUFFER_RELEASE` 旧 buffer。
-- desktop 额外持有一个 full-size move-underlay scratch；它不进入普通 scene，也不形成第三条 presentation
-  路径。grab 开始后 compositor 将其 pin 为只读，最终 canonical window scene 呈现后立即 release。
-- compositor 的双 scanout 分别记录最后 scene revision；复用 back scanout 时重画自该 revision 以来的
-  damage 并集。move grab 期间每个 scanout 额外记录移动窗口组最后绘制的 rect，下一次 full compose
-  必把该 stale rect 并入 damage，否则并发 surface 提交会在 flip 后留下旧临时位置的残影。
-  damage 最多 64 个矩形，溢出合并为一个 bounding rectangle；epoch 或历史缺口才全屏重画。
+  compositor 的 GPU paint target 随 retired buffer 回到同 owner、同尺寸的唯一 idle slot，后续 paint 直接
+  复用；尺寸变化或 owner 退出时销毁，不在每次按键重绘重复 create/attach/unref host resource。
+- opacity、backdrop blur 与 glyph blur 的离屏 target 统一借用 renderer-owned 定容 effect pool；box-shadow
+  由同一 fragment pipeline 直接计算圆角 signed-distance 与有限 Gaussian falloff，不创建离屏 target。
+  pool 容量由协议最大 opacity 嵌套深度推导，稳态重绘不创建或销毁 VirGL resource。
+- compositor 在有效 move grab 期间额外持有一个 full-size underlay target；它不进入普通 scene，也不形成
+  第三条 presentation 路径。最终 canonical window scene 呈现后立即回收。
+- compositor 的双 GPU scanout 分别记录最后 scene revision；scene 与 window-move frame 只经唯一 VirGL
+  合成管线写入 back target。硬件光标是同一 VirtIO-GPU device 的 cursor plane：shape pixels 保存在
+  唯一 64×64 ARGB dumb BO，并先经标准 2D controlq upload；其 `UPDATE_CURSOR` 与 position move 只经
+  queue 1，不修改双 scanout、调用 DIRTYFB 或建立 CPU renderer。
+  window-move frame 最多一个 page flip 在途，后续 transform 只置位一次 latest redraw；scene latch 若与它
+  相遇，先收割该唯一 completion，再由 canonical scene 接管 back target。
 - LiteUI commit 只发送 revision 后立即返回，不同步等待 `PRESENTED`。两个 client buffer 都在途时保留
   最新 dirty host tree，任一 release 到达后只渲染一次最新状态；`ACCEPTED`、`PRESENTED` 与
   `BUFFER_RELEASE` 仍按 revision 校验，不能把异步节奏降级为无序提交。

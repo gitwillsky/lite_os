@@ -29,9 +29,37 @@ impl GpuRenderer {
         &'a self,
         target: &VirglResource,
         list: DisplayListCommit<'_>,
+        base: Option<&VirglResource>,
         mut texture: impl FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
     ) -> io::Result<()> {
-        self.render_display_list_filtered(target, list, &mut texture, None)
+        let full_damage = list.damage.x == 0
+            && list.damage.y == 0
+            && list.damage.width == target.width()
+            && list.damage.height == target.height();
+        let retained = base.is_some() && !full_damage;
+        if retained {
+            let base = base.expect("retained target has an exact base");
+            self.prepare_retained_target(target, base, list.damage)?;
+        } else if list.base_revision != 0 {
+            if base.is_none() {
+                return Err(invalid("retained display list has no exact base revision"));
+            }
+        }
+        if list.base_revision != 0 && list.damage.width == 0 {
+            return Ok(());
+        }
+        let damage_clip = retained.then(|| ClipMask {
+            rect: list.damage,
+            radii: [display_proto::CornerRadius::default(); 4],
+        });
+        self.render_display_list_filtered(
+            target,
+            list,
+            &mut texture,
+            None,
+            damage_clip.into_iter().collect(),
+            retained,
+        )
     }
 
     /// Renders the desktop snapshot without one movable window group.
@@ -42,7 +70,14 @@ impl GpuRenderer {
         mut texture: impl FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
         excluded_group: u32,
     ) -> io::Result<()> {
-        self.render_display_list_filtered(target, list, &mut texture, Some(excluded_group))
+        self.render_display_list_filtered(
+            target,
+            list,
+            &mut texture,
+            Some(excluded_group),
+            Vec::new(),
+            false,
+        )
     }
 
     fn render_display_list_filtered<'a>(
@@ -51,6 +86,8 @@ impl GpuRenderer {
         list: DisplayListCommit<'_>,
         texture: &mut dyn FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
         excluded_group: Option<u32>,
+        clip_stack: Vec<ClipMask>,
+        target_initialized: bool,
     ) -> io::Result<()> {
         let commands = list.commands().collect::<Vec<_>>();
         self.render_commands(
@@ -58,9 +95,10 @@ impl GpuRenderer {
             &commands,
             texture,
             excluded_group,
-            Vec::new(),
+            clip_stack,
             None,
             None,
+            target_initialized,
         )
     }
 
@@ -77,9 +115,10 @@ impl GpuRenderer {
         mut clip_stack: Vec<ClipMask>,
         mut group: Option<u32>,
         backdrop: Option<&VirglResource>,
+        initialized: bool,
     ) -> io::Result<()> {
         let mut layers = Vec::new();
-        let mut target_initialized = false;
+        let mut target_initialized = initialized;
         let mut index = 0usize;
         while index < commands.len() {
             let command = commands[index];
@@ -110,15 +149,22 @@ impl GpuRenderer {
                         .ok_or_else(|| invalid("display-list clip stack underflow"))?;
                 }
                 DisplayCommand::PushOpacity(opacity) => {
+                    let pop = matching_opacity_pop(commands, index)?;
+                    if !commands_may_touch(
+                        &commands[index..pop],
+                        &clip_stack,
+                        target.width(),
+                        target.height(),
+                    ) {
+                        index = pop + 1;
+                        continue;
+                    }
                     self.flush(target, &mut layers, &mut target_initialized)?;
                     if !target_initialized {
                         self.render(target, &[])?;
                     }
-                    let pop = matching_opacity_pop(commands, index)?;
                     let isolated_backdrop = self.snapshot_backdrop(target, backdrop)?;
-                    let scratch = self
-                        .context
-                        .create_texture(target.width(), target.height())?;
+                    let scratch = self.take_effect_scratch(target.width(), target.height())?;
                     self.render_commands(
                         &scratch,
                         &commands[index..pop],
@@ -127,6 +173,7 @@ impl GpuRenderer {
                         clip_stack.clone(),
                         group,
                         Some(&isolated_backdrop),
+                        false,
                     )?;
                     let screen = Rect {
                         x: 0,
@@ -302,10 +349,18 @@ impl GpuRenderer {
                     }
                     let glyphs = glyphs.iter().collect::<Vec<_>>();
                     if blur > 0.0 {
+                        if !glyphs.iter().any(|glyph| {
+                            clip_intersects(
+                                &clip_stack,
+                                expand_rect(offset_rect(glyph.destination, offset), blur, [0.0; 2]),
+                                target.width(),
+                                target.height(),
+                            )
+                        }) {
+                            continue;
+                        }
                         self.flush(target, &mut layers, &mut target_initialized)?;
-                        let scratch = self
-                            .context
-                            .create_texture(target.width(), target.height())?;
+                        let scratch = self.take_effect_scratch(target.width(), target.height())?;
                         let screen = Rect {
                             x: 0,
                             y: 0,
@@ -366,6 +421,14 @@ impl GpuRenderer {
                     radii,
                     radius,
                 } => {
+                    if !clip_intersects(
+                        &clip_stack,
+                        expand_rect(rect, radius, [0.0; 2]),
+                        target.width(),
+                        target.height(),
+                    ) {
+                        continue;
+                    }
                     self.flush(target, &mut layers, &mut target_initialized)?;
                     if !target_initialized {
                         self.render(target, &[])?;
@@ -429,16 +492,14 @@ impl GpuRenderer {
         &self,
         target: &VirglResource,
         inherited: Option<&VirglResource>,
-    ) -> io::Result<VirglResource> {
+    ) -> io::Result<super::EffectScratch<'_>> {
         let screen = Rect {
             x: 0,
             y: 0,
             width: target.width(),
             height: target.height(),
         };
-        let snapshot = self
-            .context
-            .create_texture(target.width(), target.height())?;
+        let snapshot = self.take_effect_scratch(target.width(), target.height())?;
         if let Some(inherited) = inherited {
             self.render(
                 &snapshot,
@@ -542,35 +603,25 @@ impl GpuRenderer {
         if mask_rect.width == 0 || mask_rect.height == 0 {
             return Ok(());
         }
+        let support = display_proto::blur_support(blur);
+        let effect_bounds = if inset {
+            rect
+        } else {
+            expand_rect(mask_rect, support, [0.0; 2])
+        };
+        if !clip_intersects(clips, effect_bounds, target.width(), target.height()) {
+            return Ok(());
+        }
         let mask_radii = radii.map(|radius| display_proto::CornerRadius {
             x: (radius.x as f32 + distance).max(0.0).round() as u32,
             y: (radius.y as f32 + distance).max(0.0).round() as u32,
         });
-        let scratch = self
-            .context
-            .create_texture(target.width(), target.height())?;
         let screen = Rect {
             x: 0,
             y: 0,
             width: target.width(),
             height: target.height(),
         };
-        let mask = shape_masks(&[], mask_rect, mask_radii)?;
-        self.render(
-            &scratch,
-            &[TextureLayer {
-                texture: &self.white,
-                source: unit_source(),
-                bounds: mask_rect,
-                clip: screen,
-                clip_masks: &mask,
-                clip_offset: (0, 0),
-                color: [1.0; 4],
-                mode: TextureMode::Color,
-                sampling: TextureSampling::Nearest,
-                wrap: TextureWrap::Edge,
-            }],
-        )?;
         let final_masks = if inset {
             shape_masks(clips, rect, radii)?
         } else {
@@ -579,19 +630,22 @@ impl GpuRenderer {
         self.render_layers(
             target,
             &[TextureLayer {
-                texture: &scratch,
-                source: texture_rect(screen),
-                bounds: screen,
+                texture: &self.white,
+                source: unit_source(),
+                bounds: effect_bounds,
                 clip: screen,
                 clip_masks: &final_masks,
                 clip_offset: (0, 0),
                 color: color_rgba(color, opacity),
-                mode: if inset {
-                    TextureMode::InvertedMaskBlur { radius: blur }
-                } else {
-                    TextureMode::MaskBlur { radius: blur }
+                mode: TextureMode::Shadow {
+                    mask: mask_rect,
+                    radii: mask_radii,
+                    support,
+                    spread: distance,
+                    offset,
+                    inset,
                 },
-                sampling: TextureSampling::Linear,
+                sampling: TextureSampling::Nearest,
                 wrap: TextureWrap::Edge,
             }],
             clear_target,
@@ -632,6 +686,98 @@ impl GpuRenderer {
         *initialized = true;
         layers.clear();
         Ok(())
+    }
+}
+
+fn commands_may_touch(
+    commands: &[DisplayCommand<'_>],
+    inherited: &[ClipMask],
+    width: u32,
+    height: u32,
+) -> bool {
+    let mut clips = inherited.to_vec();
+    for command in commands {
+        let bounds = match *command {
+            DisplayCommand::PushClip(mask) => {
+                clips.push(mask);
+                continue;
+            }
+            DisplayCommand::PopClip => {
+                clips.pop();
+                continue;
+            }
+            DisplayCommand::SolidRect { rect, .. }
+            | DisplayCommand::LinearGradient { rect, .. }
+            | DisplayCommand::Border { rect, .. }
+            | DisplayCommand::Image {
+                destination: rect, ..
+            }
+            | DisplayCommand::BackdropBlur { rect, .. } => Some(rect),
+            DisplayCommand::BoxShadow {
+                rect,
+                offset,
+                blur,
+                spread,
+                inset,
+                ..
+            } => Some(if inset {
+                rect
+            } else {
+                expand_rect(
+                    expand_rect(rect, spread, offset),
+                    display_proto::blur_support(blur),
+                    [0.0; 2],
+                )
+            }),
+            DisplayCommand::GlyphRun {
+                offset,
+                blur,
+                glyphs,
+                ..
+            } => glyphs
+                .iter()
+                .map(|glyph| expand_rect(offset_rect(glyph.destination, offset), blur, [0.0; 2]))
+                .reduce(union_rect),
+            DisplayCommand::PushGroup(_)
+            | DisplayCommand::PopGroup
+            | DisplayCommand::PushOpacity(_)
+            | DisplayCommand::PopOpacity => continue,
+        };
+        if bounds.is_some_and(|bounds| clip_intersects(&clips, bounds, width, height)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn clip_intersects(clips: &[ClipMask], bounds: Rect, width: u32, height: u32) -> bool {
+    let screen = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    clips
+        .iter()
+        .fold(Some(screen), |visible, mask| {
+            visible.and_then(|visible| super::intersect(visible, mask.rect))
+        })
+        .and_then(|visible| super::intersect(visible, bounds))
+        .is_some()
+}
+
+fn union_rect(left: Rect, right: Rect) -> Rect {
+    let x1 = i64::from(left.x).min(i64::from(right.x));
+    let y1 = i64::from(left.y).min(i64::from(right.y));
+    let x2 = (i64::from(left.x) + i64::from(left.width))
+        .max(i64::from(right.x) + i64::from(right.width));
+    let y2 = (i64::from(left.y) + i64::from(left.height))
+        .max(i64::from(right.y) + i64::from(right.height));
+    Rect {
+        x: x1.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y: y1.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        width: x2.saturating_sub(x1).min(i64::from(u32::MAX)) as u32,
+        height: y2.saturating_sub(y1).min(i64::from(u32::MAX)) as u32,
     }
 }
 
@@ -833,7 +979,8 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::color_rgba;
+    use super::{color_rgba, commands_may_touch};
+    use display_proto::{ClipMask, CornerRadius, DisplayCommand, Rect};
 
     #[test]
     fn premultiplied_argb_lowers_to_rgba_constants() {
@@ -841,5 +988,39 @@ mod tests {
             color_rgba(0x8040_2010, 0.5),
             [64.0 / 510.0, 32.0 / 510.0, 16.0 / 510.0, 128.0 / 510.0,]
         );
+    }
+
+    #[test]
+    fn retained_clip_rejects_unrelated_effect_subtrees() {
+        let damage = ClipMask {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 3008,
+                height: 64,
+            },
+            radii: [CornerRadius::default(); 4],
+        };
+        let window_shadow = DisplayCommand::BoxShadow {
+            rect: Rect {
+                x: 300,
+                y: 300,
+                width: 900,
+                height: 700,
+            },
+            radii: [CornerRadius::default(); 4],
+            offset: [0.0, 24.0],
+            blur: 32.0,
+            spread: 0.0,
+            color: 0x8000_0000,
+            inset: false,
+        };
+        assert!(!commands_may_touch(&[window_shadow], &[damage], 3008, 1692));
+        let topbar = DisplayCommand::SolidRect {
+            rect: damage.rect,
+            radii: [CornerRadius::default(); 4],
+            color: 0xff00_0000,
+        };
+        assert!(commands_may_touch(&[topbar], &[damage], 3008, 1692));
     }
 }

@@ -45,7 +45,11 @@
 - generic memory 只向 `arch::mmu` 提交语义权限、frame-owner adapter 与一次性 platform MMIO
   range publication；PTE bit、address token、mapping projection 与 fence instruction 不得泄漏。
 - kernel identity range 只向 architecture 提交精确 `[start,end)` 与统一 permissions；Sv39 walker 在不跨该边界的前提下选择最大对齐 1GiB/2MiB/4KiB leaf。generic translation 仍返回目标 4KiB physical page，不泄漏 leaf level。
-- AArch64 kernel RAM direct-map 与 Sv39 identity map 使用同一 generic range transaction；high-MMIO 通过 architecture projection 后仍使用同一 kernel-mapped range transaction。所选 backend 可在不跨权限边界时使用 1GiB/2MiB/4KiB leaf，generic caller 不得假设 VA=PA。DEVICE permission 必须编码为 AArch64 Device-nGnRnE，不能与 normal cacheable DMA memory 合并。
+- AArch64 kernel RAM direct-map 与 Sv39 identity map 使用同一 generic range transaction；
+  high-MMIO 通过 architecture projection 后仍使用同一 kernel-mapped range transaction。
+  所选 backend 可在不跨权限边界时使用 1GiB/2MiB/4KiB leaf，generic caller 不得假设
+  VA=PA。DEVICE permission 必须编码为 AArch64 Device-nGnRnE，不能与 normal cacheable
+  DMA memory 合并。
 - user-copy 必须先完整证明 range membership、fault 与权限，再复制；不得返回指向 user memory 的 Rust reference。
 - `/dev/zero` 使用 `MemorySet::zero_user` 在一次 AddressSpace owner transaction 内 fault-in
   连续用户 range 并逐页清零；不得构造固定小 zero buffer 后重复进入 user-copy。COW 完整页替换

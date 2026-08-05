@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    DrmError, DrmFile, DrmRetry, DrmSubmission, DrmWait,
+    DrmError, DrmFile, DrmRetry, DrmSubmission, DrmWait, DumbBuffer,
     publication_order::{ReservationError, UnpublishedId},
 };
 
@@ -433,6 +433,58 @@ fn virgl_resource_stride(create: VirglResourceCreate) -> Result<u32, DrmError> {
 }
 
 impl DrmFile {
+    /// @description 取得并保活一个满足 VirtIO-GPU cursorq 固定 geometry 的 dumb buffer。
+    /// @param handle 当前 OFD 的标准 DRM dumb GEM handle。
+    /// @return 64x64x4 guest-backed pixel owner。
+    /// @errors handle 不存在或 resource contract 不匹配。
+    pub(super) fn cursor_resource(&self, handle: u32) -> Result<Arc<DumbBuffer>, DrmError> {
+        let state = self.state.lock();
+        let buffer = state.buffers.get(&handle).ok_or(DrmError::NotFound)?;
+        if buffer.pitch != 64 * 4 || buffer.size != 64 * 64 * 4 {
+            return Err(DrmError::Invalid);
+        }
+        Ok(buffer.clone())
+    }
+
+    /// @description 把标准 dumb cursor pixels 上传到 adapter-owned 2D resource。
+    /// @param handle 当前 OFD 的 64x64x4 dumb GEM handle。
+    /// @return 完整 2D CREATE/ATTACH/TRANSFER fence，或 adapter readiness retry。
+    /// @errors 非 master、CRTC inactive、handle/geometry 非法或 device failure。
+    pub(crate) fn upload_cursor(&self, handle: u32) -> Result<DrmSubmission, DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
+        let resource = self.cursor_resource(handle)?;
+        let mut completion = self.device.completion.lock();
+        if completion.active.is_none() {
+            return Err(DrmError::Invalid);
+        }
+        let generation = completion.adapter_generation;
+        let fence = match self
+            .device
+            .display
+            .submit_cursor_upload(resource.identity, resource.backing.clone())
+        {
+            Ok(fence) => fence,
+            Err(crate::drivers::DisplayError::WouldBlock) => {
+                return Ok(DrmSubmission::Retry(DrmRetry {
+                    device: self.device.clone(),
+                    generation,
+                }));
+            }
+            Err(error) => return Err(super::device::display_error(error)),
+        };
+        completion
+            .timeline
+            .submit(fence)
+            .expect("published cursor upload fence exceeded completion timeline");
+        drop(completion);
+        Ok(DrmSubmission::Wait(DrmWait {
+            device: self.device.clone(),
+            fence,
+        }))
+    }
+
     /// @description 返回 host 固定的 VirGL capset ABI。
     pub(crate) fn virgl_capset_info(&self) -> Result<VirglCapsetInfo, DrmError> {
         self.device
@@ -603,7 +655,7 @@ impl DrmFile {
         &self,
         command: VirglCommand<'_>,
     ) -> Result<DrmSubmission, DrmError> {
-        let completion = self.device.completion.lock();
+        let mut completion = self.device.completion.lock();
         let generation = completion.adapter_generation;
         let fence = match self.device.display.submit_virgl(command) {
             Ok(fence) => fence,
@@ -615,6 +667,10 @@ impl DrmFile {
             }
             Err(error) => return Err(super::device::display_error(error)),
         };
+        completion
+            .timeline
+            .submit(fence)
+            .expect("published VirGL fence exceeded completion timeline");
         drop(completion);
         Ok(DrmSubmission::Wait(DrmWait {
             device: self.device.clone(),

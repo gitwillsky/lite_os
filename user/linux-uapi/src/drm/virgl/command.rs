@@ -126,6 +126,13 @@ impl CommandEncoder {
         self.words.extend([0xf << 27; 7]);
     }
 
+    /// Creates color replacement with no source/destination blending.
+    pub fn create_replace_blend(&mut self, handle: u32) {
+        self.header(CREATE_OBJECT, ObjectKind::Blend, 11);
+        self.words.extend([handle, 0, 0]);
+        self.words.extend([0xf << 27; 8]);
+    }
+
     /// Creates disabled depth/stencil/alpha testing.
     pub fn create_depth_stencil_alpha(&mut self, handle: u32) {
         self.header(CREATE_OBJECT, ObjectKind::DepthStencilAlpha, 5);
@@ -320,6 +327,15 @@ mod tests {
         assert_eq!(encoder.words()[1..6], [4, 1, 5, 4, 0]);
         assert_eq!(encoder.words()[6].to_ne_bytes(), *b"END\n");
         assert_eq!(encoder.words()[7].to_ne_bytes(), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn replace_blend_disables_blending_and_writes_every_channel() {
+        let mut encoder = CommandEncoder::new();
+        encoder.create_replace_blend(19);
+        assert_eq!(encoder.words()[0], 1 | (1 << 8) | (11 << 16));
+        assert_eq!(encoder.words()[1..4], [19, 0, 0]);
+        assert_eq!(encoder.words()[4..], [0xf << 27; 8]);
     }
 
     #[test]

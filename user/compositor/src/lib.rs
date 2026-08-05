@@ -12,7 +12,7 @@ mod scanout;
 mod session;
 mod spice_agent;
 
-use std::{thread, time::Duration};
+use std::{io, thread, time::Duration};
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -49,101 +49,135 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let wake = input.wake_fds();
             session.poll(&wake)?
         };
+        // Only compositor-owned window dragging uses asynchronous page flips now;
+        // ordinary pointer motion runs on the independent hardware cursor queue.
+        let mut redraw_move = if activity.flip {
+            finish_move_frame(&mut scanout, &session, &mut frame_stats)?
+        } else {
+            false
+        };
         // Client React/CSS produces only immutable paint commands. The
         // compositor resolves its private textures and performs the complete
         // raster in the sole VirGL context before any scene can adopt it.
         for owner in activity.paint.iter().copied() {
             let size = session.paint_size(owner)?;
-            let target =
-                scanout.render_display_list(size, session.paint_list(owner)?, |texture_id| {
-                    session.paint_texture(owner, texture_id)
-                })?;
-            session.complete_paint(owner, target)?;
+            let target = match session.take_paint_target(owner, size) {
+                Some(target) => target,
+                None => scanout.create_paint_target(size)?,
+            };
+            let list = session.paint_list(owner)?;
+            let revision = list.revision;
+            let configuration_serial = list.configuration_serial;
+            let base = if list.base_revision == 0 {
+                None
+            } else {
+                Some(
+                    session
+                        .paint_base(owner, list.base_revision)
+                        .ok_or_else(|| {
+                            io::Error::other("retained paint base revision disappeared")
+                        })?,
+                )
+            };
+            let target = scanout.render_display_list(target, list, base, |texture_id| {
+                session.paint_texture(owner, texture_id)
+            })?;
+            session.defer_paint(owner, target, revision, configuration_serial)?;
         }
-        // 2. A newly accepted scene is composed without the cursor, then the cursor
-        //    is overlaid and the whole frame flipped.
+        // A move underlay is needed only after the desktop authorizes an exact
+        // pointer-down. Eagerly rendering one full-output texture per window on
+        // every scene made ordinary hover and typing pay seconds of unrelated
+        // GPU work.
+        if let Some(request) = activity.move_begin {
+            let target = scanout.render_display_list_excluding(
+                session.paint_size(session::Owner::Desktop)?,
+                session.paint_list(session::Owner::Desktop)?,
+                |texture_id| session.paint_texture(session::Owner::Desktop, texture_id),
+                request.surface_id,
+            )?;
+            if let Some(error) = session.begin_move(request, target)? {
+                eprintln!("compositor: move grab rejected: {error}");
+            }
+        }
+        // 2. A newly accepted scene is composed and flipped independently from the
+        //    hardware cursor plane.
         if activity.epoch_reset {
+            if scanout.move_frame_in_flight() {
+                let _ = finish_move_frame(&mut scanout, &session, &mut frame_stats)?;
+            }
             // The desktop disconnected: the session dropped every client buffer
-            // and the presented scene, but scanout still holds the last scene's
-            // revisions, damage history and prepared damage. Return scanout to
-            // boot so the next desktop's first compose is a full-screen paint,
-            // not a stale diff over the previous session's pixels.
+            // and the presented scene, but both GPU scanout targets still hold
+            // the last epoch's pixels and revisions. Return scanout to boot so
+            // the next desktop cannot inherit stale content.
             scanout.reset_to_boot()?;
             // The next desktop restarts steady-state measurement from scratch;
             // drop any half-filled window from the dead epoch.
             frame_stats.reset();
+            redraw_move = false;
         }
         if let Some(scene) = activity.scene
             && !scene.is_discarded()
         {
-                let groups = scene
-                    .window_groups()
-                    .collect::<std::collections::HashSet<_>>();
-                for group in groups {
-                    if session.has_move_underlay(group) {
+            if scanout.move_frame_in_flight() {
+                let _ = finish_move_frame(&mut scanout, &session, &mut frame_stats)?;
+            }
+            let event = if scene.output_size != scanout.size() {
+                match scanout.present_mode(&scene, session.buffers(), input.position())? {
+                    scanout::ModePresent::Presented(event) => event,
+                    scanout::ModePresent::Superseded(size) => {
+                        session.discard_scene(&scene)?;
+                        session.configure_output(size)?;
+                        input.resize(size.width as i32, size.height as i32);
                         continue;
                     }
-                    let target = scanout.render_display_list_excluding(
-                        session.paint_size(session::Owner::Desktop)?,
-                        session.paint_list(session::Owner::Desktop)?,
-                        |texture_id| session.paint_texture(session::Owner::Desktop, texture_id),
-                        group,
-                    )?;
-                    session.install_move_underlay(group, target)?;
                 }
-                let event = if scene.output_size != scanout.size() {
-                    match scanout.present_mode(&scene, session.buffers(), input.position())? {
-                        scanout::ModePresent::Presented(event) => event,
-                        scanout::ModePresent::Superseded(size) => {
-                            session.discard_scene(&scene)?;
-                            session.configure_output(size)?;
-                            input.resize(size.width as i32, size.height as i32);
-                            continue;
-                        }
-                    }
-                } else {
-                    scanout.compose(
-                        &scene,
-                        session.buffers(),
-                        session.scene_move(&scene),
-                        input.position(),
-                    )?;
-                    scanout.present_scene(scene.revision, input.position())?
-                };
-                session.presented(&scene, event)?;
-                // Measure only real desktop presents; `arm` excludes the static
-                // fallback→desktop handoff interval from the baseline.
-                if session.desktop_ready() {
-                    frame_stats.arm();
-                    frame_stats.record(frame_stats::flip_monotonic_ns(&event), event.sequence);
-                }
+            } else {
+                scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
+                scanout.present_scene(scene.revision, input.position())?
+            };
+            session.presented(&scene, event)?;
+            // The scene frame already sampled the move transform, so an older
+            // coalesced drag redraw is obsolete. Cursor state is independent.
+            redraw_move = false;
+            // Measure only real desktop presents; `arm` excludes the static
+            // fallback→desktop handoff interval from the baseline.
+            if session.desktop_ready() {
+                frame_stats.arm();
+                frame_stats.record(frame_stats::flip_monotonic_ns(&event), event.sequence);
+            }
         }
         if let Some(size) = activity.output {
             input.resize(size.width as i32, size.height as i32);
         }
-        // 3. Drain evdev whenever it signalled (also clears its readability so the
-        //    next poll can block). A pure pointer move updates only the cursor via
-        //    DIRTYFB, avoiding a scene recompose and page flip.
+        if redraw_move
+            && session.desktop_ready()
+            && let Some(active_move) = session.active_move()
+        {
+            scanout.compose_latest_move(
+                session.presented_nodes(),
+                session.buffers(),
+                active_move,
+            )?;
+        }
+        // 3. Drain evdev whenever it signalled. Every accepted motion updates the
+        //    cursor fast path directly; only an active window drag also redraws scene pixels.
         if activity.input {
-            let moved = input.poll(&mut session)?;
+            let cursor_ready = session.desktop_ready();
+            let moved = input.poll(&mut session, |position| {
+                if cursor_ready {
+                    scanout.move_cursor(position)
+                } else {
+                    Ok(())
+                }
+            })?;
             if moved && session.desktop_ready() {
-                let damage = session.take_move_damage();
-                if let Some(active_move) = session.active_move()
-                    && let Some(damage) = damage
+                if session.take_move_changed()
+                    && let Some(active_move) = session.active_move()
                 {
                     scanout.compose_move(
                         session.presented_nodes(),
                         session.buffers(),
                         active_move,
-                        damage,
-                        input.position(),
-                    )?;
-                } else {
-                    scanout.move_cursor(
-                        session.presented_nodes(),
-                        session.buffers(),
-                        session.active_move(),
-                        input.position(),
                     )?;
                 }
             }
@@ -156,13 +190,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(shape) = session.take_cursor_shape()
             && session.desktop_ready()
         {
-            scanout.set_cursor_shape(
-                shape,
-                session.presented_nodes(),
-                session.buffers(),
-                session.active_move(),
-                input.position(),
-            )?;
+            scanout.set_cursor_shape(shape, input.position())?;
         }
     }
+}
+
+/// Retires one compositor-owned move flip through the same timing owner as a scene flip.
+fn finish_move_frame(
+    scanout: &mut scanout::Scanout,
+    session: &session::Session,
+    frame_stats: &mut frame_stats::FrameStats,
+) -> io::Result<bool> {
+    let (redraw, event) = scanout.finish_move_frame()?;
+    if session.desktop_ready() {
+        frame_stats.arm();
+        frame_stats.record(frame_stats::flip_monotonic_ns(&event), event.sequence);
+    }
+    Ok(redraw)
 }

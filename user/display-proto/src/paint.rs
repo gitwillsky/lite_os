@@ -508,6 +508,12 @@ pub enum DisplayCommand<'a> {
 pub struct DisplayListCommit<'a> {
     pub revision: u64,
     pub configuration_serial: u64,
+    /// Exact preceding revision whose pixels seed a retained update. Zero
+    /// declares a complete repaint independent of prior target contents.
+    pub base_revision: u64,
+    /// Physical rectangle replaced by this revision; zero-sized means pixels
+    /// are unchanged and only scene/input metadata advanced.
+    pub damage: Rect,
     payload: &'a [u8],
     count: usize,
 }
@@ -531,14 +537,24 @@ impl<'a> DisplayListWriter<'a> {
         output: &'a mut [u8],
         revision: u64,
         configuration_serial: u64,
+        base_revision: u64,
+        damage: Rect,
         command_count: usize,
     ) -> Option<Self> {
-        if revision == 0 || configuration_serial == 0 || command_count > MAX_DISPLAY_COMMANDS {
+        if revision == 0
+            || configuration_serial == 0
+            || base_revision >= revision
+            || (base_revision == 0 && (damage.width == 0 || damage.height == 0))
+            || (base_revision != 0 && (damage.width == 0) != (damage.height == 0))
+            || command_count > MAX_DISPLAY_COMMANDS
+        {
             return None;
         }
         let mut writer = FrameWriter::new(output, MessageKind::DisplayListCommit)?;
         writer.u64(revision)?;
         writer.u64(configuration_serial)?;
+        writer.u64(base_revision)?;
+        damage.encode(&mut writer)?;
         writer.u32(u32::try_from(command_count).ok()?)?;
         Some(Self {
             writer,
@@ -596,10 +612,18 @@ impl<'a> DisplayListCommit<'a> {
         output: &'output mut [u8],
         revision: u64,
         configuration_serial: u64,
+        base_revision: u64,
+        damage: Rect,
         commands: &[DisplayCommand<'_>],
     ) -> Option<&'output [u8]> {
-        let mut writer =
-            DisplayListWriter::new(output, revision, configuration_serial, commands.len())?;
+        let mut writer = DisplayListWriter::new(
+            output,
+            revision,
+            configuration_serial,
+            base_revision,
+            damage,
+            commands.len(),
+        )?;
         for command in commands {
             writer.push(*command)?;
         }
@@ -611,11 +635,19 @@ impl<'a> DisplayListCommit<'a> {
         let mut reader = PayloadReader::new(payload);
         let revision = reader.u64()?;
         let configuration_serial = reader.u64()?;
+        let base_revision = reader.u64()?;
+        let damage = Rect::parse(&mut reader)?;
         let count = reader.u32()? as usize;
-        if revision == 0 || configuration_serial == 0 || count > MAX_DISPLAY_COMMANDS {
+        if revision == 0
+            || configuration_serial == 0
+            || base_revision >= revision
+            || (base_revision == 0 && (damage.width == 0 || damage.height == 0))
+            || (base_revision != 0 && (damage.width == 0) != (damage.height == 0))
+            || count > MAX_DISPLAY_COMMANDS
+        {
             return None;
         }
-        let commands = reader.bytes(payload.len().checked_sub(20)?)?;
+        let commands = reader.bytes(payload.len().checked_sub(44)?)?;
         reader.finish()?;
         let mut parsed = DisplayCommands {
             reader: PayloadReader::new(commands),
@@ -627,6 +659,8 @@ impl<'a> DisplayListCommit<'a> {
         Some(Self {
             revision,
             configuration_serial,
+            base_revision,
+            damage,
             payload: commands,
             count,
         })

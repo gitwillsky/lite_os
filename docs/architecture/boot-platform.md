@@ -15,7 +15,10 @@
 - `arch::io` 用内联静态 façade 固定 AArch64 MMIO 为 base-only `LDRB/STRB/LDR/STR`，通用
   `MmioBus` 保留边界/对齐 owner。该形态既阻止 VirtIO input config loop 被优化成 HVF 无法
   解码的 post-index access，也不增加调用、锁、分配或运行时架构分派。
-- GICv3 只启用 Group-1 GICD/GICR/ICC、timer PPI 27 与单一 software SGI；PSCI `CPU_ON` 启动 secondary。PCI 只实现 ECAM enumeration、memory BAR assignment 与 legacy INTx，供 UTM 原生 VirtIO Console/SPICE agent 使用；ITS/MSI、PCI hotplug/bridge、secure world、EL2 guest、ACPI 均不在当前产品范围。
+- GICv3 只启用 Group-1 GICD/GICR/ICC、timer PPI 27 与单一 software SGI；PSCI
+  `CPU_ON` 启动 secondary。PCI 只实现 ECAM enumeration、memory BAR assignment 与
+  legacy INTx，供 UTM 原生 VirtIO Console/SPICE agent 使用；ITS/MSI、PCI
+  hotplug/bridge、secure world、EL2 guest、ACPI 均不在当前产品范围。
 
 ## RISC-V64 / QEMU virt backend
 

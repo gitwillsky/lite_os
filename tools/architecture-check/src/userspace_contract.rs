@@ -282,8 +282,48 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
         ),
         (
             "user/compositor/src/scanout.rs",
-            "let mut clips = [EMPTY_CLIP;",
-            "DIRTYFB clip staging must remain stack-bounded",
+            "move_frames: MoveFrames",
+            "window-move presentation must have one fixed-capacity pacing owner",
+        ),
+        (
+            "user/compositor/src/scanout.rs",
+            "self.device.move_cursor(&self.topology, position)",
+            "pointer motion must use the hardware cursor queue without scene composition",
+        ),
+        (
+            "kernel/src/drivers/virtio_gpu.rs",
+            "notify_queue(CURSOR_QUEUE)",
+            "hardware cursor commands must use the dedicated VirtIO-GPU cursor queue",
+        ),
+        (
+            "kernel/src/drivers/virtio_gpu.rs",
+            "cursor.latest_move = Some((x, y));",
+            "cursor motion must coalesce in the adapter instead of blocking userspace",
+        ),
+        (
+            "user/compositor/src/input.rs",
+            "EV_SYN if event.code() == SYN_REPORT",
+            "hardware cursor motion must preserve complete evdev report cadence",
+        ),
+        (
+            "user/compositor/src/gpu.rs",
+            "const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 1;",
+            "GPU effects must reuse one protocol-bounded target pool",
+        ),
+        (
+            "user/compositor/src/gpu.rs",
+            "self.context.exec(commands.words(), &resources)",
+            "one render pass must retain a single bounded execbuffer seam",
+        ),
+        (
+            "scripts/utm_runtime.py",
+            "agent-mouse=off",
+            "UTM pointer input must stay on the sole virtio-tablet path",
+        ),
+        (
+            "user/compositor/src/session.rs",
+            "PollFd::new(self.device.as_fd(), PollEvents::READ)",
+            "window-move page-flip completion must join the compositor poll owner",
         ),
         (
             "user/lite-runtime/src/display.rs",
@@ -296,9 +336,34 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             "foreign-surface adoption must preserve desktop raster pixels",
         ),
         (
-            "user/lite-runtime/src/renderer/render.rs",
-            "render_move_underlay",
-            "window drag must retain a clean raster beneath the moving group",
+            "user/compositor/src/lib.rs",
+            "render_display_list_excluding(",
+            "window drag must rasterize exactly one underlay after authorization",
+        ),
+        (
+            "user/compositor/src/session.rs",
+            "self.idle_targets.insert(buffer.owner, buffer.pixels)",
+            "retired GPU paint targets must return to the per-owner reuse path",
+        ),
+        (
+            "user/display-proto/src/paint.rs",
+            "pub base_revision: u64",
+            "retained display lists must name their exact pixel base revision",
+        ),
+        (
+            "user/compositor/src/gpu.rs",
+            "prepare_retained_target",
+            "retained GPU paint must copy and replace only declared damage",
+        ),
+        (
+            "user/lite-runtime/src/renderer/retained.rs",
+            "classify_gpu_paint",
+            "LiteUI must derive local damage from retained host identity",
+        ),
+        (
+            "user/lite-runtime/src/display.rs",
+            "paint_revision: u64",
+            "retained paint bases must not be inferred from interleaved scene revisions",
         ),
     ];
     for (path, marker, failure) in required {
@@ -306,6 +371,21 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
         if !source.contains(marker) {
             errors.push(format!("{path}: {failure}"));
         }
+    }
+    let scanout =
+        fs::read_to_string(root.join("user/compositor/src/scanout.rs")).unwrap_or_default();
+    if scanout.contains("dirty_framebuffer(") || scanout.contains("DRM_IOCTL_MODE_DIRTYFB") {
+        errors.push(
+            "user/compositor/src/scanout.rs: hardware cursor presentation must not create a DIRTYFB path"
+                .to_owned(),
+        );
+    }
+    let gpu = fs::read_to_string(root.join("user/compositor/src/gpu.rs")).unwrap_or_default();
+    if gpu.contains("target.wait()") {
+        errors.push(
+            "user/compositor/src/gpu.rs: render pass must not synchronously wait on its target"
+                .to_owned(),
+        );
     }
     let display =
         fs::read_to_string(root.join("user/lite-runtime/src/display.rs")).unwrap_or_default();

@@ -16,6 +16,11 @@
 - VirtIO-GPU `GpuCommand` 是 runtime opcode、wire length 与 completion stage 的唯一共同 owner；
   `sequence` 只从已验证 completion 选择一个后继领域 command 或 terminal retirement，随后由
   `submit_command` 单一出口编码并发布。`poll_update` 不得自行组合 prepare/opcode/length/stage。
+- VirtIO-GPU cursorq 独占一个 DMA-stable 56-byte request slot、descriptor head 与单调 completion
+  sequence；`MOVE_CURSOR`/`UPDATE_CURSOR` 不得进入 controlq 或复用 render fence。纯 move 在 slot
+  占用时只覆盖尚未发布的 latest position，并携带 cursorq 当前 resource 可见性，ioctl 不等待 used
+  completion；shape update 必须等待 slot readiness，且 DRM cursor2 wait token 在 exact used completion
+  前保活 64×64 B8G8R8A8 dumb backing。
 - `drivers::io_completion` 是 block/RNG 共用的唯一 request slot、descriptor identity、completion
   handshake 与 capacity membership owner；typed `IoWaitKey { device, kind }` 保留完整 slot、
   generation 与 ticket，不位打包或复制 adapter 私有 wait ABI。block 的 16 个 fixed slots 独占
@@ -132,9 +137,13 @@
   notify failure 必须进入同一 terminal failure，exactly once reset device 并唤醒全部 port waiter；
   reset 后不得继续使用原 queue。异步 clipboard reply 命中已断开的 app 时只丢弃该 reply，因为
   session teardown 已撤销 request owner，不得把正常 disconnect race 升格为 compositor failure。
-- GPU successor order 必须在 request 编码和 descriptor 摘取前验证；scanout 的
-  `UNREF→CREATE→ATTACH→TRANSFER→SET_SCANOUT→FLUSH` 与 disable 的递增 slot UNREF chain 不得
-  跳步、倒序或跨 operation。失败保持当前 operation owner，publication 前由原 rollback seam 恢复。
+- GPU successor order 必须在 request 编码和 descriptor 摘取前验证；2D scanout 的
+  `UNREF→CREATE→ATTACH→TRANSFER→SET_SCANOUT→FLUSH`、2D damage 的 transfer/flush 与 disable 的
+  递增 slot UNREF chain 不得跳步、倒序或跨 operation。已完成 VirGL render 的 alternate target 必须把
+  `SET_SCANOUT→RESOURCE_FLUSH` 作为一个 ordered batch 发布：前者只绑定 host scanout texture，后者才触发
+  display update；operation fence 只能在 flush completion 发布。两条 command 不得经 completion round-trip
+  串行提交，否则一次 page flip 会多付一次 host event-loop/display-sync 延迟。失败保持当前 operation owner，
+  publication 前由原 rollback seam 恢复。
 - concrete VirtIO adapter 的 `Drop` 必须先写 device status 0，并等待读回 0 证明 reset 完成、同步
   撤销设备对所有 descriptor 的 ownership，再释放 queue、fixed slot 与 cached mapping；初始化进入
   `DRIVER_OK` 后的任意失败也必须由同一 owner drop 路径 reset。缺少读回或该顺序会把仍可 DMA 的页
@@ -177,4 +186,9 @@
   SETCRTC/DIRTYFB/RMFB 遇到内部 display-info 或另一 display operation 时必须按 device readiness
   generation 睡眠并重提；无 mode 变化的 display-info completion 也必须发布 readiness，禁止向
   userspace 泄漏 adapter `WouldBlock` 或发生 lost wake。
+- `DRM_IOCTL_MODE_CURSOR2` 是硬件光标的唯一 UAPI：shape update 必须先完成标准
+  `RESOURCE_CREATE_2D`/`RESOURCE_ATTACH_BACKING`/`TRANSFER_TO_HOST_2D` transaction，再提交
+  cursorq 并等待 exact completion；不得把 VirGL 3D texture 直接交给 cursorq。纯 move 只向 queue 1 发布或覆盖 latest
+  position，立即返回。两者都不得修改 active framebuffer、生成 page-flip event 或排到 VirGL controlq
+  后面。
 - DRM close/RMFB/disable、evdev revoke、PTY master close 与 session exit 必须沿唯一 owner seam 清理并在锁外发布 consequence。

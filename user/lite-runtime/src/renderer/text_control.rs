@@ -4,7 +4,7 @@ use super::{Editable, Renderer};
 use crate::{font::CursorMove, keymap::TextEdit, style::Computed};
 
 /// One controlled input's browser-owned editing state.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct State {
     anchor: usize,
     focus: usize,

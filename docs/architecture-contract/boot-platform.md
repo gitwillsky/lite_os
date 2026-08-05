@@ -18,7 +18,10 @@
 - hardware address、hart ID、SBI status、PLIC context 和 concrete VirtIO adapter 不得进入 generic domain。
 - `platform::qemu_virt` 的 PLIC register codec 只编码 source ID `1..=1023`；`0` 是 claim 哨兵，越过单个 context `0x80` enable bitmap 的 ID 必须在 MMIO 前拒绝。
 - 新 machine 必须作为独立 compile-time platform backend 接入；禁止在 generic code 追加 target 分支。
-- AArch64 backend 必须验证 GICv3、PSCI HVC、PL011、PL031 与 `dma-coherent`。PCI host 存在时还必须从 DTB 验证 ECAM、32-bit MMIO range 与 `interrupt-map`，只允许 platform 扫描 bus 0、分配 memory BAR 并把 INTx 投影为 GIC vector；不支持的 GICv2/ITS/MSI、PCI bridge/hotplug、SMC、ACPI 或 guessed address 必须拒绝。
+- AArch64 backend 必须验证 GICv3、PSCI HVC、PL011、PL031 与 `dma-coherent`。PCI host
+  存在时还必须从 DTB 验证 ECAM、32-bit MMIO range 与 `interrupt-map`，只允许 platform
+  扫描 bus 0、分配 memory BAR 并把 INTx 投影为 GIC vector；不支持的 GICv2/ITS/MSI、
+  PCI bridge/hotplug、SMC、ACPI 或 guessed address 必须拒绝。
 - AArch64 byte/word/doubleword MMIO 必须分别固定为 exact base-register
   `LDRB/STRB/LDR/STR`；禁止 LLVM 生成 post-index、unscaled、pair 或 SIMD device access。
   缺失此 seam 时 VirtIO input 的连续 config byte 读取会合并成 writeback `LDRB`，QEMU HVF

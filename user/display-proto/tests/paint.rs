@@ -86,11 +86,14 @@ fn display_list_round_trips_gpu_primitives_and_balanced_stacks() {
         DisplayCommand::PopClip,
     ];
     let mut bytes = [0; 4096];
-    let encoded = DisplayListCommit::encode(&mut bytes, 11, 13, &commands).expect("display list");
+    let damage = rect(0, 0, 800, 600);
+    let encoded =
+        DisplayListCommit::encode(&mut bytes, 11, 13, 0, damage, &commands).expect("display list");
     let frame = parse_frame(encoded).expect("frame");
     assert_eq!(frame.kind(), MessageKind::DisplayListCommit);
     let commit = DisplayListCommit::parse(frame.payload()).expect("validated list");
     assert_eq!((commit.revision, commit.configuration_serial), (11, 13));
+    assert_eq!((commit.base_revision, commit.damage), (0, damage));
     assert_eq!(commit.commands().len(), commands.len());
 }
 
@@ -98,13 +101,23 @@ fn display_list_round_trips_gpu_primitives_and_balanced_stacks() {
 fn display_list_rejects_unbalanced_groups_and_non_finite_values() {
     let mut bytes = [0; 256];
     assert!(
-        DisplayListCommit::encode(&mut bytes, 1, 1, &[DisplayCommand::PushOpacity(0.5)]).is_none()
+        DisplayListCommit::encode(
+            &mut bytes,
+            1,
+            1,
+            0,
+            rect(0, 0, 8, 8),
+            &[DisplayCommand::PushOpacity(0.5)]
+        )
+        .is_none()
     );
     assert!(
         DisplayListCommit::encode(
             &mut bytes,
             1,
             1,
+            0,
+            rect(0, 0, 8, 8),
             &[
                 DisplayCommand::PushOpacity(f32::NAN),
                 DisplayCommand::PopOpacity,

@@ -23,12 +23,37 @@ impl GpuSequenceCost {
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     match measure(sources) {
-        Ok(cost) if cost.uses_single_sequence_seam() && runtime_fallback_removed(sources) => {}
+        Ok(cost)
+            if cost.uses_single_sequence_seam()
+                && runtime_fallback_removed(sources)
+                && bounded_multi_command_owner(sources) => {}
         Ok(cost) => errors.push(format!(
-            "VirtIO GPU completion must select one domain command and submit it through one sequence seam; measured {cost:?}"
+            "VirtIO GPU completion must use one sequence seam plus bounded head-mapped command slots; measured {cost:?}"
         )),
         Err(error) => errors.push(error),
     }
+}
+
+fn bounded_multi_command_owner(sources: &[SourceFile]) -> bool {
+    let adapter = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    let timeline = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drm/fence_timeline.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    adapter.contains("const CONTROL_COMMAND_CAPACITY: usize = QUEUE_SIZE as usize / 2;")
+        && adapter.contains("struct CommandSlot")
+        && adapter.contains("commands: CommandSlots")
+        && adapter.contains("pending: Option<PendingCommand>")
+        && adapter.contains("pending.head == head")
+        && adapter.contains("fn has_non_render_pending")
+        && !adapter.contains("control.pending")
+        && timeline.contains("struct FenceTimeline")
+        && timeline.contains("while self.count != 0 && self.entries[self.head].complete")
 }
 
 fn measure(sources: &[SourceFile]) -> Result<GpuSequenceCost, String> {
@@ -61,14 +86,21 @@ fn measure(sources: &[SourceFile]) -> Result<GpuSequenceCost, String> {
 }
 
 fn runtime_fallback_removed(sources: &[SourceFile]) -> bool {
-    let runtime = sources
+    let runtime_sources = sources
         .iter()
         .filter(|source| {
             source.relative == "kernel/src/drivers/virtio_gpu.rs"
                 || source.relative == "kernel/src/drivers/virtio_gpu/resource.rs"
         })
+        .collect::<Vec<_>>();
+    let runtime = runtime_sources
+        .iter()
         .map(|source| source.text.as_str())
         .collect::<String>();
+    let mut visitor = RuntimeAssemblyVisitor::default();
+    for source in runtime_sources {
+        visitor.visit_file(&source.syntax);
+    }
     let command_owner = sources
         .iter()
         .find(|source| source.relative == "kernel/src/drivers/virtio_gpu/command.rs")
@@ -79,9 +111,36 @@ fn runtime_fallback_removed(sources: &[SourceFile]) -> bool {
         });
     runtime.contains("GpuCommand")
         && runtime.contains("submit_command")
-        && !runtime.contains("prepare_")
         && !runtime.contains("publish_runtime")
+        && visitor.cursor_assemblies == 1
+        && visitor.forbidden_direct_assemblies == 0
         && command_owner
+}
+
+#[derive(Default)]
+struct RuntimeAssemblyVisitor {
+    cursor_assemblies: usize,
+    forbidden_direct_assemblies: usize,
+}
+
+impl<'ast> Visit<'ast> for RuntimeAssemblyVisitor {
+    fn visit_expr_call(&mut self, expression: &'ast syn::ExprCall) {
+        if let Expr::Path(path) = expression.func.as_ref()
+            && let Some(name) = path
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+            && name.starts_with("prepare_")
+        {
+            if name == "prepare_cursor" {
+                self.cursor_assemblies += 1;
+            } else {
+                self.forbidden_direct_assemblies += 1;
+            }
+        }
+        syn::visit::visit_expr_call(self, expression);
+    }
 }
 
 #[derive(Default)]
@@ -120,7 +179,7 @@ impl<'ast> Visit<'ast> for SequenceVisitor {
 
 #[cfg(test)]
 mod tests {
-    use super::measure;
+    use super::{bounded_multi_command_owner, measure, runtime_fallback_removed};
 
     #[test]
     fn poll_update_selects_one_command_and_uses_one_submission_seam() {
@@ -128,5 +187,19 @@ mod tests {
         let sources = super::super::load_sources(&root).expect("repository sources");
         let cost = measure(&sources).expect("GPU sequence cost");
         assert!(cost.uses_single_sequence_seam(), "measured {cost:?}");
+    }
+
+    #[test]
+    fn runtime_owns_bounded_head_mapped_commands_and_ordered_public_fences() {
+        let root = super::super::repository_root();
+        let sources = super::super::load_sources(&root).expect("repository sources");
+        assert!(bounded_multi_command_owner(&sources));
+    }
+
+    #[test]
+    fn runtime_uses_command_owner_except_for_the_independent_cursor_queue() {
+        let root = super::super::repository_root();
+        let sources = super::super::load_sources(&root).expect("repository sources");
+        assert!(runtime_fallback_removed(&sources));
     }
 }

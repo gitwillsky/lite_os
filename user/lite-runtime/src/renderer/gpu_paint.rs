@@ -56,10 +56,6 @@ impl Renderer {
             self.active_target,
             self.focused,
         );
-        self.scroll_regions.clear();
-        self.active_scroll_nodes.clear();
-        self.scrollbars.clear();
-
         let mut tree = TaffyTree::<TextMeasure>::new();
         let synthetic = Node {
             id: 0,
@@ -107,6 +103,37 @@ impl Renderer {
             x2: physical.width as usize,
             y2: physical.height as usize,
         };
+        let mut retained = super::retained::snapshot_gpu_frame(
+            &tree,
+            &root,
+            &self.scroll_offsets,
+            self.focused,
+            &self.text_controls,
+            screen.x2,
+            screen.y2,
+        )?;
+        let paint = super::retained::classify_gpu_paint(self.retained_gpu.as_ref(), &retained);
+        if matches!(paint, super::retained::GpuPaint::Reuse) {
+            let output = self
+                .retained_gpu
+                .as_ref()
+                .and_then(|frame| frame.output.clone())
+                .ok_or_else(|| io::Error::other("retained GPU output disappeared"))?;
+            retained.output = Some(output.clone());
+            self.retained_gpu = Some(retained);
+            self.timeline.finish_frame();
+            return Ok(GpuFrame {
+                commands: Vec::new(),
+                uploads: Vec::new(),
+                output,
+                retired_textures: Vec::new(),
+                reuses_previous: true,
+                paint_changed: false,
+            });
+        }
+        self.scroll_regions.clear();
+        self.active_scroll_nodes.clear();
+        self.scrollbars.clear();
         let mut commands = Vec::new();
         let mut uploads = Vec::new();
         let mut output = empty_output();
@@ -174,12 +201,23 @@ impl Renderer {
             self.scroll_drag = None;
         }
         self.timeline.finish_frame();
-        output.damage = vec![Rect {
-            x: 0,
-            y: 0,
-            width: physical.width,
-            height: physical.height,
-        }];
+        output.damage = match paint {
+            super::retained::GpuPaint::Reuse => Vec::new(),
+            super::retained::GpuPaint::Partial(rect) | super::retained::GpuPaint::Full(rect) => {
+                vec![rect.display_rect()]
+            }
+        };
+        let mut retained = super::retained::snapshot_gpu_frame(
+            &tree,
+            &root,
+            &self.scroll_offsets,
+            self.focused,
+            &self.text_controls,
+            screen.x2,
+            screen.y2,
+        )?;
+        retained.output = Some(output.clone());
+        self.retained_gpu = Some(retained);
         let retired_textures = self.gpu_text_texture.take().into_iter().collect();
         if let Some((size, bytes)) = glyph_atlas.finish() {
             uploads.push(TextureUpload {
@@ -195,6 +233,8 @@ impl Renderer {
             uploads,
             output,
             retired_textures,
+            reuses_previous: !matches!(paint, super::retained::GpuPaint::Full(_)),
+            paint_changed: true,
         })
     }
 
@@ -495,22 +535,25 @@ impl Renderer {
         children.sort_by_key(|child| stacking_level(&child.computed, parent_is_flex));
         for child in children {
             let opacity = css_opacity(&child.computed);
-            if opacity < 1.0 {
-                commands.push(GpuCommand::PushOpacity(opacity));
-            }
+            let mut child_commands = Vec::new();
             self.paint_gpu_node(
                 tree,
                 child,
                 (origin.0 - scroll_offset.x, origin.1 - scroll_offset.y),
                 screen,
-                commands,
+                &mut child_commands,
                 uploads,
                 output,
                 glyph_atlas,
                 text_texture_id,
                 child_walk.clone(),
             )?;
-            if opacity < 1.0 {
+            let child_painted = !child_commands.is_empty();
+            if child_painted && opacity < 1.0 {
+                commands.push(GpuCommand::PushOpacity(opacity));
+            }
+            commands.append(&mut child_commands);
+            if child_painted && opacity < 1.0 {
                 commands.push(GpuCommand::PopOpacity);
             }
         }

@@ -50,6 +50,11 @@
   userspace transaction 属于 LiteUI/compositor 领域。UTM 窗口 resize 由 compositor 的唯一 SPICE
   agent owner 接收标准 `VD_AGENT_MONITORS_CONFIG`，再通过 legacy DRM `SETCRTC` 提交 canonical CVT
   mode；内核验证完整 mode encoding 与 framebuffer geometry 后把同一 transaction 交给 VirtIO-GPU。
+  Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
+  `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的
+  completion 水位与 controlq fence 分离。纯 position update 异步发布，slot 忙时只保留尚未发布的最新
+  坐标，并继承 cursorq 当前 resource 可见性；shape update 才等待 exact completion，因此 pointer motion
+  不受 scene render、vblank 或旧坐标 completion 排队影响。
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke；VirtIO input adapter 只提供 raw event/config。
 - PTY registry、pair 与 Terminal session/foreground/winsize 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
@@ -57,7 +62,8 @@
 
 ## Known limits
 
-- GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush 与
+- GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
+  64×64 hardware cursor 与
   单 connector mode change；Vulkan、多 client 3D context、DRM atomic/auth/lease、完整 evdev
   output/multitouch 和设备热拔插尚未开放。
 - VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port、PCI

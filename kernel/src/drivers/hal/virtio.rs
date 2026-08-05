@@ -1,5 +1,4 @@
 use super::bus::{BusError, MmioBus};
-#[cfg(target_arch = "aarch64")]
 use super::virtio_pci::PciTransport;
 
 const MAGIC: usize = 0x000;
@@ -49,7 +48,10 @@ pub(in crate::drivers) struct VirtIODevice {
 
 enum Transport {
     Mmio(MmioBus),
-    #[cfg(target_arch = "aarch64")]
+    #[allow(
+        dead_code,
+        reason = "PCI transport is constructed only by platform backends that discover PCI"
+    )]
     Pci(PciTransport),
 }
 
@@ -81,7 +83,10 @@ impl VirtIODevice {
     /// @param device_id VirtIO device type derived from the PCI identity.
     /// @param transport Common/notify/ISR capability owner.
     /// @return A transport-neutral device consumed by the existing adapter.
-    #[cfg(target_arch = "aarch64")]
+    #[allow(
+        dead_code,
+        reason = "PCI transport is constructed only by platform backends that discover PCI"
+    )]
     pub(crate) fn from_pci(device_id: u32, transport: PciTransport) -> Self {
         Self {
             transport: Transport::Pci(transport),
@@ -102,7 +107,6 @@ impl VirtIODevice {
                     return Err(BusError::InvalidAddress);
                 }
             }
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.initialize()?,
         }
         self.reset()?;
@@ -137,7 +141,6 @@ impl VirtIODevice {
                 bus.write_u32(DRIVER_FEATURES_SEL, 1)?;
                 bus.write_u32(DRIVER_FEATURES, (features >> 32) as u32)
             }
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.set_driver_features(features),
         }
     }
@@ -155,7 +158,6 @@ impl VirtIODevice {
                 let high = bus.read_u32(DEVICE_FEATURES)?;
                 Ok(u64::from(low) | u64::from(high) << 32)
             }
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.device_features(),
         }
     }
@@ -163,7 +165,6 @@ impl VirtIODevice {
     pub(in crate::drivers) fn set_status(&self, status: u32) -> Result<(), BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.write_u32(STATUS, status),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.set_status(status),
         }
     }
@@ -171,7 +172,6 @@ impl VirtIODevice {
     pub(in crate::drivers) fn get_status(&self) -> Result<u32, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u32(STATUS),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.get_status(),
         }
     }
@@ -183,7 +183,6 @@ impl VirtIODevice {
     /// @errors queue 不存在、已 ready 或 MMIO 失败返回 `InvalidAddress`。
     pub(in crate::drivers) fn queue_max_size(&self, index: u32) -> Result<u16, BusError> {
         match &self.transport {
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.queue_max_size(index),
             Transport::Mmio(bus) => {
                 bus.write_u32(QUEUE_SEL, index)?;
@@ -209,13 +208,11 @@ impl VirtIODevice {
         requested: u16,
         addresses: VirtQueueAddresses,
     ) -> Result<(), BusError> {
-        #[cfg(target_arch = "aarch64")]
         if let Transport::Pci(pci) = &self.transport {
             return pci.configure_queue(index, requested, addresses);
         }
         let bus = match &self.transport {
             Transport::Mmio(bus) => bus,
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(_) => unreachable!(),
         };
         bus.write_u32(QUEUE_SEL, index)?;
@@ -243,7 +240,6 @@ impl VirtIODevice {
                 crate::arch::before_mmio_write();
                 bus.write_u32(QUEUE_NOTIFY, queue)
             }
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.notify_queue(queue),
         }
     }
@@ -251,7 +247,6 @@ impl VirtIODevice {
     pub(in crate::drivers) fn interrupt_status(&self) -> Result<u32, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u32(INTERRUPT_STATUS),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.interrupt_status(),
         }
     }
@@ -260,7 +255,6 @@ impl VirtIODevice {
         match &self.transport {
             Transport::Mmio(bus) => bus.write_u32(INTERRUPT_ACK, interrupt),
             // Reading the PCI ISR capability atomically consumes the INTx reason.
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(_) => Ok(()),
         }
     }
@@ -285,7 +279,6 @@ impl VirtIODevice {
     pub(in crate::drivers) fn read_config_u32(&self, offset: usize) -> Result<u32, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u32(CONFIG + offset),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.read_config_u32(offset),
         }
     }
@@ -302,7 +295,6 @@ impl VirtIODevice {
     ) -> Result<(), BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.write_u32(CONFIG + offset, value),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.write_config_u32(offset, value),
         }
     }
@@ -314,7 +306,6 @@ impl VirtIODevice {
     pub(in crate::drivers) fn read_config_u8(&self, offset: usize) -> Result<u8, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u8(CONFIG + offset),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.read_config_u8(offset),
         }
     }
@@ -331,7 +322,6 @@ impl VirtIODevice {
     ) -> Result<(), BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.write_u8(CONFIG + offset, value),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.write_config_u8(offset, value),
         }
     }
@@ -342,7 +332,6 @@ impl VirtIODevice {
     pub(in crate::drivers) fn config_generation(&self) -> Result<u32, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u32(CONFIG_GENERATION),
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(pci) => pci.config_generation(),
         }
     }
@@ -350,7 +339,6 @@ impl VirtIODevice {
     fn write_address(&self, low_register: usize, address: u64) -> Result<(), BusError> {
         let bus = match &self.transport {
             Transport::Mmio(bus) => bus,
-            #[cfg(target_arch = "aarch64")]
             Transport::Pci(_) => return Err(BusError::InvalidAddress),
         };
         bus.write_u32(low_register, address as u32)?;

@@ -20,6 +20,8 @@ pub(super) const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D: u32 = 0x0204;
 pub(super) const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32 = 0x0205;
 pub(super) const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D: u32 = 0x0206;
 pub(super) const VIRTIO_GPU_CMD_SUBMIT_3D: u32 = 0x0207;
+pub(super) const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
+pub(super) const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 pub(super) const VIRTIO_GPU_RESP_OK_NODATA: u32 = 0x1100;
 pub(super) const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32 = 0x1101;
 pub(super) const VIRTIO_GPU_RESP_OK_CAPSET_INFO: u32 = 0x1102;
@@ -30,20 +32,62 @@ pub(super) const VIRTIO_GPU_F_CONTEXT_INIT: u64 = 1 << 4;
 pub(super) const VIRTIO_GPU_CAPSET_VIRGL: u32 = 1;
 pub(super) const VIRTIO_GPU_CAPSET_VIRGL2: u32 = 2;
 pub(super) const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM: u32 = 2;
+pub(super) const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM: u32 = 1;
 pub(super) const VIRTIO_GPU_EVENT_DISPLAY: u32 = 1;
 pub(super) const VIRTIO_GPU_EVENTS_READ: usize = 0;
 pub(super) const VIRTIO_GPU_EVENTS_CLEAR: usize = 4;
 pub(super) const VIRTIO_GPU_NUM_CAPSETS: usize = 12;
 pub(super) const CONTROL_QUEUE: u32 = 0;
+pub(super) const CURSOR_QUEUE: u32 = 1;
 pub(super) const QUEUE_SIZE: u16 = 64;
 pub(super) const CONTROL_REQUEST_SIZE: usize = 32 + 64 * 1024;
 pub(super) const CONTROL_HEADER_SIZE: usize = 24;
+pub(super) const CURSOR_REQUEST_SIZE: usize = 56;
 pub(super) const DISPLAY_INFO_SIZE: usize = CONTROL_HEADER_SIZE + 16 * 24;
 pub(super) const CAPSET_INFO_SIZE: usize = CONTROL_HEADER_SIZE + 16;
 pub(super) const MAX_CAPSET_SIZE: usize = 4096;
 pub(super) const CAPSET_RESPONSE_SIZE: usize = CONTROL_HEADER_SIZE + MAX_CAPSET_SIZE;
 pub(super) const BOOT_RESOURCE_ID: u32 = 1;
 pub(super) const ALTERNATE_RESOURCE_ID: u32 = 2;
+pub(super) const CURSOR_RESOURCE_ID: u32 = 3;
+
+pub(super) fn prepare_cursor(
+    request: &mut [u8],
+    command: super::CursorCommand,
+) -> Result<(), DisplayError> {
+    request.fill(0);
+    let (opcode, x, y, resource_id, hot_x, hot_y) = match command {
+        super::CursorCommand::Move { x, y, visible } => (
+            VIRTIO_GPU_CMD_MOVE_CURSOR,
+            x,
+            y,
+            if visible { CURSOR_RESOURCE_ID } else { 0 },
+            0,
+            0,
+        ),
+        super::CursorCommand::Update {
+            x,
+            y,
+            visible,
+            hot_x,
+            hot_y,
+        } => (
+            VIRTIO_GPU_CMD_UPDATE_CURSOR,
+            x,
+            y,
+            if visible { CURSOR_RESOURCE_ID } else { 0 },
+            hot_x,
+            hot_y,
+        ),
+    };
+    write_u32(request, 0, opcode).ok_or(DisplayError::Device)?;
+    // scanout_id=0 与 padding 已由 fill(0) 固定；cursorq 不设置 controlq fence。
+    write_u32(request, 28, x).ok_or(DisplayError::Device)?;
+    write_u32(request, 32, y).ok_or(DisplayError::Device)?;
+    write_u32(request, 40, resource_id).ok_or(DisplayError::Device)?;
+    write_u32(request, 44, hot_x).ok_or(DisplayError::Device)?;
+    write_u32(request, 48, hot_y).ok_or(DisplayError::Device)
+}
 
 pub(super) fn prepare_create(
     request: &mut [u8],
@@ -55,6 +99,17 @@ pub(super) fn prepare_create(
     write_u32(request, 28, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM).ok_or(DisplayError::Device)?;
     write_u32(request, 32, mode.width).ok_or(DisplayError::Device)?;
     write_u32(request, 36, mode.height).ok_or(DisplayError::Device)
+}
+
+pub(super) fn prepare_create_cursor(
+    request: &mut [u8],
+    resource_id: u32,
+) -> Result<(), DisplayError> {
+    request.fill(0);
+    write_u32(request, 24, resource_id).ok_or(DisplayError::Device)?;
+    write_u32(request, 28, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM).ok_or(DisplayError::Device)?;
+    write_u32(request, 32, 64).ok_or(DisplayError::Device)?;
+    write_u32(request, 36, 64).ok_or(DisplayError::Device)
 }
 
 pub(super) fn prepare_attach(

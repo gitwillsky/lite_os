@@ -8,13 +8,14 @@ mod gradient;
 mod image;
 mod layout;
 mod range;
+mod retained;
 mod scroll;
 mod shadow;
 mod text_control;
 mod transform;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     path::PathBuf,
 };
@@ -47,6 +48,37 @@ struct RenderNode {
     selection: Option<Computed>,
     id: NodeId,
     children: Vec<RenderNode>,
+}
+
+#[derive(Clone, PartialEq)]
+struct RetainedNode {
+    source: Node,
+    paint_text: String,
+    computed: Computed,
+    children: Vec<RetainedNode>,
+}
+
+#[derive(Clone, PartialEq)]
+struct FixedSignatureNode {
+    id: u64,
+    kind: String,
+    props: BTreeMap<String, Value>,
+    text: String,
+    computed: Computed,
+    children: Vec<FixedSignatureNode>,
+}
+
+struct RetainedGpuFrame {
+    document: Vec<RetainedNode>,
+    bounds: HashMap<u64, PhysicalRect>,
+    scroll_offsets: HashMap<u64, ScrollOffset>,
+    fixed: HashMap<u64, FixedSignatureNode>,
+    fixed_bounds: HashMap<u64, PhysicalRect>,
+    focused: Option<u64>,
+    text_controls: HashMap<u64, text_control::State>,
+    output: Option<RenderOutput>,
+    width: usize,
+    height: usize,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -154,6 +186,10 @@ pub struct Renderer {
     gpu_images: HashMap<String, u32>,
     gpu_text_texture: Option<u32>,
     next_gpu_texture: u32,
+    /// Exact source, geometry and scroll identity represented by the preceding
+    /// GPU revision. Without this owner the renderer can only declare every
+    /// small text/caret update as full-screen damage.
+    retained_gpu: Option<RetainedGpuFrame>,
     font: Font,
     terminal_font: TerminalFont,
     /// Persistent CSS scroll offsets keyed by stable React host-instance id.
@@ -202,6 +238,7 @@ impl Renderer {
             gpu_images: HashMap::new(),
             gpu_text_texture: None,
             next_gpu_texture: 1,
+            retained_gpu: None,
             font: Font::open()?,
             terminal_font: TerminalFont::open()?,
             scroll_offsets: HashMap::new(),
@@ -258,6 +295,7 @@ impl Renderer {
 
     pub fn set_viewport(&mut self, viewport: DisplaySize) {
         self.viewport = viewport;
+        self.retained_gpu = None;
     }
 
     /// Builds one cascade-resolved render subtree and its Taffy nodes.
@@ -448,6 +486,24 @@ impl PhysicalRect {
             y1: self.y1.max(other.y1),
             x2: self.x2.min(other.x2),
             y2: self.y2.min(other.y2),
+        }
+    }
+
+    pub(crate) fn union(self, other: PhysicalRect) -> PhysicalRect {
+        PhysicalRect {
+            x1: self.x1.min(other.x1),
+            y1: self.y1.min(other.y1),
+            x2: self.x2.max(other.x2),
+            y2: self.y2.max(other.y2),
+        }
+    }
+
+    pub(crate) fn display_rect(self) -> display_proto::Rect {
+        display_proto::Rect {
+            x: self.x1 as i32,
+            y: self.y1 as i32,
+            width: self.x2.saturating_sub(self.x1) as u32,
+            height: self.y2.saturating_sub(self.y1) as u32,
         }
     }
 

@@ -8,7 +8,7 @@ use crate::{
 use super::{
     VirtIOGpuDevice,
     command::{GpuCommand, ScanoutPurpose, UnrefPurpose},
-    wire::{ALTERNATE_RESOURCE_ID, BOOT_RESOURCE_ID},
+    wire::{ALTERNATE_RESOURCE_ID, BOOT_RESOURCE_ID, CURSOR_RESOURCE_ID},
 };
 
 const RESOURCE_IDS: [u32; 2] = [BOOT_RESOURCE_ID, ALTERNATE_RESOURCE_ID];
@@ -41,12 +41,129 @@ pub(super) fn validate_backing(
 pub(super) enum RuntimeOperation {
     Scanout(ResourceTarget),
     Damage(ResourceTarget),
+    CursorUpload(CursorTarget),
     Release(ResourceRelease),
     RetireBoot {
         boot: ResourceRelease,
         evicted: Option<ResidentResource>,
     },
     Disable(ResourceSnapshot),
+}
+
+/// @description 已 CREATE+ATTACH、由 cursorq 唯一读取的标准 2D cursor resource。
+pub(super) struct CursorResource {
+    identity: u64,
+    backing: Arc<DeviceBacking>,
+}
+
+/// @description 一次 cursor upload 对固定 resource ID 的独占替换计划。
+pub(super) enum CursorTarget {
+    Resident,
+    New {
+        next: CursorResource,
+        evicted: Option<CursorResource>,
+    },
+}
+
+/// @description VirtIO-GPU 唯一 64x64 ARGB 2D cursor resource owner。
+pub(super) struct CursorResourceSet {
+    resident: Option<CursorResource>,
+}
+
+impl CursorResourceSet {
+    /// @description 构造尚未发布 cursor resource 的初始状态。
+    pub(super) const fn empty() -> Self {
+        Self { resident: None }
+    }
+
+    /// @description 为一个 stable dumb buffer 准备复用或替换固定 cursor resource。
+    /// @param identity DRM dumb buffer 的全局单调 identity。
+    /// @param backing 64x64 ARGB pixels 的 SG lifetime owner。
+    /// @return 当前 resource target；不同 identity 会先独占摘下旧 owner。
+    /// @errors identity 被复用于不同 backing 时返回 Device。
+    pub(super) fn prepare(
+        &mut self,
+        identity: u64,
+        backing: Arc<DeviceBacking>,
+    ) -> Result<CursorTarget, DisplayError> {
+        if let Some(resident) = self.resident.as_ref()
+            && resident.identity == identity
+        {
+            if !Arc::ptr_eq(&resident.backing, &backing) {
+                return Err(DisplayError::Device);
+            }
+            return Ok(CursorTarget::Resident);
+        }
+        Ok(CursorTarget::New {
+            next: CursorResource { identity, backing },
+            evicted: self.resident.take(),
+        })
+    }
+
+    /// @description 发布已完成 CREATE+ATTACH+TRANSFER 的 cursor target。
+    /// @return 被替换且已完成 RESOURCE_UNREF 的旧 backing owner。
+    pub(super) fn complete(&mut self, target: CursorTarget) -> Option<CursorResource> {
+        match target {
+            CursorTarget::Resident => None,
+            CursorTarget::New { next, evicted } => {
+                assert!(self.resident.is_none(), "cursor resource was republished");
+                self.resident = Some(next);
+                evicted
+            }
+        }
+    }
+
+    /// @description 回滚尚未进入 avail ring 的 cursor replacement。
+    /// @return 未发布的新 backing owner。
+    pub(super) fn cancel(&mut self, target: CursorTarget) -> Option<CursorResource> {
+        match target {
+            CursorTarget::Resident => None,
+            CursorTarget::New { next, evicted } => {
+                assert!(
+                    self.resident.is_none(),
+                    "cancelled cursor resource is occupied"
+                );
+                self.resident = evicted;
+                Some(next)
+            }
+        }
+    }
+}
+
+impl CursorTarget {
+    /// @description 返回 target 使用的固定 VirtIO cursor resource ID。
+    pub(super) const fn id(&self) -> u32 {
+        CURSOR_RESOURCE_ID
+    }
+
+    /// @description 返回替换前是否必须先完成 RESOURCE_UNREF。
+    pub(super) fn evicts(&self) -> bool {
+        matches!(
+            self,
+            Self::New {
+                evicted: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// @description 返回是否必须执行 CREATE+ATTACH，而非仅上传已有 resource。
+    pub(super) fn is_new(&self) -> bool {
+        matches!(self, Self::New { .. })
+    }
+
+    /// @description 克隆本次 upload 必须保活的 SG backing owner。
+    pub(super) fn backing_owner(&self, resources: &CursorResourceSet) -> Arc<DeviceBacking> {
+        match self {
+            Self::Resident => resources
+                .resident
+                .as_ref()
+                .expect("resident cursor target disappeared")
+                .backing
+                .clone(),
+            Self::New { next, .. } => next.backing.clone(),
+        }
+    }
 }
 
 /// @description 一个已 CREATE+ATTACH、可在后续 flip/damage 中复用的 host resource。
@@ -415,6 +532,56 @@ pub(super) fn disabled_resource(
 }
 
 impl VirtIOGpuDevice {
+    /// @description 上传一个标准 DRM dumb buffer 到唯一 VirtIO 2D cursor resource。
+    /// @param identity dumb buffer 的 stable device identity。
+    /// @param backing 64x64x4 cursor backing；operation completion 前保持存活。
+    /// @return 替换旧 resource 时完成 UNREF→CREATE→ATTACH→TRANSFER，否则完成 TRANSFER
+    /// 的单一 fence。
+    /// @errors backing geometry、control transaction 或 queue publication failure。
+    pub(super) fn submit_cursor_resource_upload(
+        &self,
+        identity: u64,
+        backing: Arc<DeviceBacking>,
+    ) -> Result<u64, DisplayError> {
+        let mode = DisplayMode {
+            width: 64,
+            height: 64,
+            pitch: 64 * 4,
+        };
+        validate_backing(mode, &backing)?;
+        let mut control = self.control.lock();
+        if control.operation.is_some()
+            || control.commands.has_non_render_pending()
+            || control.damage.batch_active()
+        {
+            return Err(DisplayError::WouldBlock);
+        }
+        let target = control.cursor_resource.prepare(identity, backing)?;
+        let resource_id = target.id();
+        let command = if target.evicts() {
+            GpuCommand::Unref {
+                resource_id,
+                purpose: UnrefPurpose::Cursor,
+            }
+        } else if target.is_new() {
+            GpuCommand::CreateCursor { resource_id }
+        } else {
+            GpuCommand::TransferCursor { resource_id }
+        };
+        control.operation = Some(RuntimeOperation::CursorUpload(target));
+        let result = self.submit_command(&mut control, command, None);
+        if result.is_err() {
+            let target = match control.operation.take() {
+                Some(RuntimeOperation::CursorUpload(target)) => target,
+                _ => unreachable!(),
+            };
+            let unpublished = control.cursor_resource.cancel(target);
+            drop(control);
+            drop(unpublished);
+        }
+        result
+    }
+
     /// @description 以两槽 residency protocol 提交 scanout switch。
     /// @param identity DRM framebuffer 的全局单调 identity。
     /// @param mode target framebuffer 的 canonical mode。
@@ -429,7 +596,7 @@ impl VirtIOGpuDevice {
     ) -> Result<u64, DisplayError> {
         validate_backing(mode, &backing)?;
         let mut control = self.control.lock();
-        if control.pending.is_some() || control.operation.is_some() {
+        if control.commands.has_pending() || control.operation.is_some() {
             return Err(DisplayError::WouldBlock);
         }
         let target = control.resources.prepare(identity, mode, backing)?;
@@ -470,7 +637,7 @@ impl VirtIOGpuDevice {
     /// @errors active identity、已有 operation 或 controlq publication failure。
     pub(super) fn release_resident(&self, identity: u64) -> Result<Option<u64>, DisplayError> {
         let mut control = self.control.lock();
-        if control.pending.is_some() || control.operation.is_some() {
+        if control.commands.has_pending() || control.operation.is_some() {
             return Err(DisplayError::WouldBlock);
         }
         let Some(release) = control.resources.release(identity)? else {
@@ -497,7 +664,7 @@ impl VirtIOGpuDevice {
     /// @errors 无 active resource、已有 operation 或 controlq publication failure。
     pub(super) fn disable_resident(&self) -> Result<u64, DisplayError> {
         let mut control = self.control.lock();
-        if control.pending.is_some() || control.operation.is_some() {
+        if control.commands.has_pending() || control.operation.is_some() {
             return Err(DisplayError::WouldBlock);
         }
         let mode = control
