@@ -133,6 +133,9 @@
   合成管线写入 back target。硬件光标是同一 VirtIO-GPU device 的 cursor plane：shape pixels 保存在
   唯一 64×64 ARGB dumb BO，并先经标准 2D controlq upload；其 `UPDATE_CURSOR` 与 position move 只经
   queue 1，不修改双 scanout、调用 DIRTYFB 或建立 CPU renderer。
+  canonical target 的无 move state 不等同于零偏移 move frame：前者可能含有 window clip 外的 shadow/blur
+  支持像素，因此每个 scanout 从 canonical 首次进入 move 时完整重建一次；只有同一 group 的连续 move
+  state 才用 target-local old/new transform 计算局部 damage。
   window-move frame 最多一个 page flip 在途，后续 transform 只置位一次 latest redraw；scene latch 若与它
   相遇，先收割该唯一 completion，再由 canonical scene 接管 back target。
 - LiteUI commit 只发送 revision 后立即返回，不同步等待 `PRESENTED`。两个 client buffer 都在途时保留

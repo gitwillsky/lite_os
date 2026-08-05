@@ -391,19 +391,14 @@ impl Scanout {
         let back = 1 - self.front;
         let revision = self.targets[self.front].revision;
         let (group, offset, _) = active_move;
-        let previous = self.targets[back].move_state;
-        let damage = if self.targets[back].revision == revision
-            && previous.is_none_or(|(previous_group, _)| previous_group == group)
-        {
-            move_damage(
-                nodes,
-                group,
-                previous.map_or((0, 0), |(_, offset)| offset),
-                offset,
-            )
-        } else {
-            None
-        };
+        let damage = move_frame_damage(
+            nodes,
+            self.targets[back].revision,
+            revision,
+            self.targets[back].move_state,
+            group,
+            offset,
+        );
         self.render_target(
             &self.targets[back].buffer,
             nodes,
@@ -705,6 +700,24 @@ fn move_damage(
     ))
 }
 
+fn move_frame_damage(
+    nodes: &[Node],
+    target_revision: u64,
+    scene_revision: u64,
+    previous: Option<(u32, (i32, i32))>,
+    window_group: u32,
+    new_offset: (i32, i32),
+) -> Option<Rect> {
+    // A canonical target is not the zero-offset form of a move target: its
+    // flattened desktop layer can contain this window's shadow/blur support
+    // outside the scene-node clip. Treating `None` as `(0, 0)` leaves those
+    // pixels outside partial damage and produces a permanent drag ghost.
+    let (previous_group, old_offset) = previous?;
+    (target_revision == scene_revision && previous_group == window_group)
+        .then(|| move_damage(nodes, window_group, old_offset, new_offset))
+        .flatten()
+}
+
 fn union(left: Rect, right: Rect) -> Rect {
     let x1 = left.x.min(right.x);
     let y1 = left.y.min(right.y);
@@ -795,6 +808,43 @@ mod tests {
                 y: 40,
                 width: 80,
                 height: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn canonical_target_is_fully_rebuilt_before_its_first_move_frame() {
+        let nodes = [Node {
+            kind: display_proto::SceneNodeKind::DisplayList,
+            window_group: 7,
+            buffer_id: 1,
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                width: 300,
+                height: 200,
+            },
+            clip: Rect {
+                x: 40,
+                y: 30,
+                width: 120,
+                height: 80,
+            },
+            clip_masks: Vec::new(),
+        }];
+
+        assert_eq!(
+            move_frame_damage(&nodes, 11, 11, None, 7, (20, 10)),
+            None,
+            "canonical pixels outside the window clip require one full rebuild"
+        );
+        assert_eq!(
+            move_frame_damage(&nodes, 11, 11, Some((7, (20, 10))), 7, (30, 25)),
+            Some(Rect {
+                x: 60,
+                y: 40,
+                width: 130,
+                height: 95,
             })
         );
     }

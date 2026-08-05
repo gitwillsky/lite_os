@@ -138,7 +138,9 @@
   scanout pipeline 合成临时 transform；普通 scene/hover/key 不得预生成每窗口 underlay。授权 serial
   过期、group 消失或已有 grab 时立即回收该临时 target。pointer-up 返回最终 logical position，最终
   canonical scene 呈现后清除 grab；期间到达的新 scene 必须继承 transform，禁止跳回旧位置或保留
-  canonical 残影。标题栏拖动只走 compositor grab，不得保留 React motion fallback。
+  canonical 残影。双 scanout 的 canonical state 禁止当作零偏移 move state 做局部重绘：每个 target
+  首次进入 move 必须完整重建，只有相同 scene revision、相同 group 的连续 move state 才能按其
+  target-local old/new transform 局部重绘。标题栏拖动只走 compositor grab，不得保留 React motion fallback。
 - UTM 窗口 resize 只走 spice-protocol `VD_AGENT_MONITORS_CONFIG` → canonical CVT → 标准 DRM/KMS
   transaction；设备自身 config change 仍只走 `NETLINK_KOBJECT_UEVENT` group 1。compositor 对同一
   poll turn coalesce 后发布最新
