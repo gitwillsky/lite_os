@@ -33,10 +33,13 @@ const SAMPLER_LINEAR_BACKGROUND: u32 = 15;
 const MAX_GPU_CLIP_MASKS: usize = MAX_NODE_CLIP_MASKS + 1;
 const CONSTANTS_PER_CLIP_MASK: usize = 6;
 // Each nested opacity group retains one backdrop and one isolated target while rendering its
-// child slice; the deepest effect may need one additional target. The display protocol caps
-// opacity nesting at 16, so this capacity covers every valid simultaneous effect lifetime.
-const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 1;
+// child slice. The deepest blur additionally owns its clean source plus the reduced and horizontal
+// Gaussian passes. The display protocol caps opacity nesting at 16, so this capacity covers every
+// valid simultaneous effect lifetime without resource churn in steady-state paint.
+const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 3;
 const BACKDROP_CACHE_CAPACITY: usize = MAX_DISPLAY_STACK_DEPTH * 2 + 1;
+const GAUSSIAN_PAIR_OFFSETS: [f32; 3] = [1.407_333_4, 3.294_215, 5.201_813];
+const GAUSSIAN_WEIGHTS: [f32; 4] = [0.297_322_5, 0.091_848_34, 0.010_991_33, 0.199_675_63];
 
 const VERTEX_SHADER_SOURCE: &str = "VERT\n\
 DCL IN[0]\n\
@@ -114,11 +117,11 @@ pub enum TextureMode {
         start_color: [f32; 4],
         end_color: [f32; 4],
     },
-    Blur {
-        radius: f32,
+    Gaussian {
+        texel_step: [f32; 2],
     },
-    MaskBlur {
-        radius: f32,
+    MaskGaussian {
+        texel_step: [f32; 2],
     },
     Shadow {
         mask: Rect,
@@ -726,14 +729,14 @@ fn fragment_parameters(mode: TextureMode, texture: &VirglResource) -> (f32, [u32
             words[12..16].copy_from_slice(&end_color.map(f32::to_bits));
             (2.0, words)
         }
-        TextureMode::Blur { radius } => {
-            words[0] = (radius / texture.width() as f32).to_bits();
-            words[1] = (radius / texture.height() as f32).to_bits();
+        TextureMode::Gaussian { texel_step } => {
+            words[0] = (texel_step[0] / texture.width() as f32).to_bits();
+            words[1] = (texel_step[1] / texture.height() as f32).to_bits();
             (3.0, words)
         }
-        TextureMode::MaskBlur { radius } => {
-            words[0] = (radius / texture.width() as f32).to_bits();
-            words[1] = (radius / texture.height() as f32).to_bits();
+        TextureMode::MaskGaussian { texel_step } => {
+            words[0] = (texel_step[0] / texture.width() as f32).to_bits();
+            words[1] = (texel_step[1] / texture.height() as f32).to_bits();
             (4.0, words)
         }
         TextureMode::Shadow {
@@ -882,6 +885,8 @@ fn append_rounded_rect_sdf(
 fn fragment_shader(clip_masks: usize) -> String {
     use std::fmt::Write as _;
 
+    let [near_offset, middle_offset, far_offset] = GAUSSIAN_PAIR_OFFSETS;
+    let [near_weight, middle_weight, far_weight, center_weight] = GAUSSIAN_WEIGHTS;
     let color_constant = clip_masks * CONSTANTS_PER_CLIP_MASK;
     let mode_constant = color_constant + 1;
     let parameter_constant = mode_constant + 1;
@@ -911,7 +916,10 @@ IMM[12] FLT32 {{0.0, 1.0, 2.0, 3.0}}\n\
 IMM[13] FLT32 {{4.0, 5.0, 6.0, 7.0}}\n\
 IMM[14] FLT32 {{8.0, 9.0, 10.0, 11.0}}\n\
 IMM[15] FLT32 {{12.0, 13.0, 14.0, 15.0}}\n\
-IMM[16] FLT32 {{16.0, 17.0, 18.0, 19.0}}\n"
+IMM[16] FLT32 {{16.0, 17.0, 18.0, 19.0}}\n\
+IMM[17] FLT32 {{-{far_offset}, -{middle_offset}, -{near_offset}, 0.0}}\n\
+IMM[18] FLT32 {{{near_offset}, {middle_offset}, {far_offset}, 0.0}}\n\
+IMM[19] FLT32 {{{far_weight}, {middle_weight}, {near_weight}, {center_weight}}}\n"
     ));
     let mut instruction = 0;
     writeln!(shader, "{instruction}: MOV TEMP[3], IMM[0].yyyy").unwrap();
@@ -1278,16 +1286,27 @@ IMM[16] FLT32 {{16.0, 17.0, 18.0, 19.0}}\n"
     instruction += 1;
     writeln!(shader, "{instruction}: IF TEMP[7].xxxx").unwrap();
     instruction += 1;
-    writeln!(shader, "{instruction}: MOV TEMP[0], IMM[0].zzzz").unwrap();
-    instruction += 1;
-    for offset in 2..=10 {
-        writeln!(shader, "{instruction}: MAD TEMP[6].xy, CONST[0][{parameter_constant}].xyxy, IMM[{offset}].xyxy, IN[0].xyxy").unwrap();
+    for (sample, (offset, weight)) in [
+        ("IMM[17].xxxx", "IMM[19].xxxx"),
+        ("IMM[17].yyyy", "IMM[19].yyyy"),
+        ("IMM[17].zzzz", "IMM[19].zzzz"),
+        ("IMM[0].zzzz", "IMM[19].wwww"),
+        ("IMM[18].xxxx", "IMM[19].zzzz"),
+        ("IMM[18].yyyy", "IMM[19].yyyy"),
+        ("IMM[18].zzzz", "IMM[19].xxxx"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        writeln!(shader, "{instruction}: MAD TEMP[6].xy, CONST[0][{parameter_constant}].xyxy, {offset}, IN[0].xyxy").unwrap();
         instruction += 1;
         writeln!(shader, "{instruction}: TEX TEMP[4], TEMP[6], SAMP[0], 2D").unwrap();
         instruction += 1;
+        let operation = if sample == 0 { "MUL" } else { "MAD" };
+        let tail = if sample == 0 { "" } else { ", TEMP[0]" };
         writeln!(
             shader,
-            "{instruction}: MAD TEMP[0], TEMP[4], IMM[0].wwww, TEMP[0]"
+            "{instruction}: {operation} TEMP[0], TEMP[4], {weight}{tail}"
         )
         .unwrap();
         instruction += 1;
@@ -1632,5 +1651,14 @@ mod tests {
         let flat = fragment_shader(0);
         assert!(flat.contains("DCL CONST[0][0..5]"));
         assert!(!flat.contains(&format!("CONST[0][{rounded_mode_constant}]")));
+    }
+
+    #[test]
+    fn gaussian_shader_uses_normalized_separable_kernel() {
+        let [near, middle, far, center] = GAUSSIAN_WEIGHTS;
+        assert!((center + 2.0 * (near + middle + far) - 1.0).abs() < 1.0e-6);
+        let shader = fragment_shader(0);
+        assert_eq!(shader.matches("TEMP[4], IMM[19]").count(), 7);
+        assert!(!shader.contains("TEMP[4], IMM[0].wwww, TEMP[0]"));
     }
 }

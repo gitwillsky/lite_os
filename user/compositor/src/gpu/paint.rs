@@ -35,6 +35,24 @@ impl PaintTexture<'_> {
     }
 }
 
+struct PreparedBlur<'a> {
+    texture: super::EffectScratch<'a>,
+    source_region: Rect,
+    scale: [f32; 2],
+    vertical_texel_step: f32,
+}
+
+impl PreparedBlur<'_> {
+    fn source_rect(&self, region: Rect) -> TextureRect {
+        TextureRect {
+            x: (region.x as f64 - self.source_region.x as f64) as f32 / self.scale[0],
+            y: (region.y as f64 - self.source_region.y as f64) as f32 / self.scale[1],
+            width: region.width as f32 / self.scale[0],
+            height: region.height as f32 / self.scale[1],
+        }
+    }
+}
+
 impl GpuRenderer {
     /// Executes a complete immutable CSS display list in the compositor's sole
     /// VirGL context. Geometry assembly remains on the CPU; coverage, filtering,
@@ -148,6 +166,8 @@ impl GpuRenderer {
         backdrop: Option<&VirglResource>,
         initialized: bool,
     ) -> io::Result<()> {
+        let prefix_clip_stack = clip_stack.clone();
+        let prefix_group = group;
         let mut layers = Vec::new();
         let mut target_initialized = initialized;
         let mut index = 0usize;
@@ -195,7 +215,36 @@ impl GpuRenderer {
                     if !target_initialized {
                         self.render(target, &[])?;
                     }
-                    let isolated_backdrop = self.snapshot_backdrop(target, backdrop)?;
+                    let backdrop_region = backdrop_read_rect(
+                        &commands[index..pop],
+                        &clip_stack,
+                        target.width(),
+                        target.height(),
+                    )?;
+                    let isolated_backdrop = match backdrop_region {
+                        Some(region) if retained_clip_depth == 0 => {
+                            Some(self.snapshot_backdrop_region(target, backdrop, region)?)
+                        }
+                        Some(region) => {
+                            let owner = cache_owner.ok_or_else(|| {
+                                invalid("retained opacity backdrop has no cache owner")
+                            })?;
+                            Some(self.rebuild_clean_prefix(
+                                target,
+                                &commands[..index - 1],
+                                &prefixes[..index - 1],
+                                texture,
+                                excluded_group,
+                                owner,
+                                prefix_clip_stack.clone(),
+                                retained_clip_depth,
+                                prefix_group,
+                                backdrop,
+                                region,
+                            )?)
+                        }
+                        None => None,
+                    };
                     let scratch = self.take_effect_scratch(target.width(), target.height())?;
                     self.render_commands(
                         &scratch,
@@ -207,7 +256,7 @@ impl GpuRenderer {
                         clip_stack.clone(),
                         retained_clip_depth,
                         group,
-                        Some(&isolated_backdrop),
+                        isolated_backdrop.as_deref(),
                         false,
                     )?;
                     let screen = Rect {
@@ -408,24 +457,35 @@ impl GpuRenderer {
                     }
                     let glyphs = glyphs.iter().collect::<Vec<_>>();
                     if blur > 0.0 {
-                        if !glyphs.iter().any(|glyph| {
-                            clip_intersects(
-                                &clip_stack,
-                                expand_rect(offset_rect(glyph.destination, offset), blur, [0.0; 2]),
-                                target.width(),
-                                target.height(),
-                            )
-                        }) {
-                            continue;
-                        }
-                        self.flush(target, &mut layers, &mut target_initialized)?;
-                        let scratch = self.take_effect_scratch(target.width(), target.height())?;
                         let screen = Rect {
                             x: 0,
                             y: 0,
                             width: target.width(),
                             height: target.height(),
                         };
+                        let blur_bounds = glyphs
+                            .iter()
+                            .filter_map(|glyph| {
+                                let bounds = expand_rect(
+                                    offset_rect(glyph.destination, offset),
+                                    display_proto::blur_support(blur),
+                                    [0.0; 2],
+                                );
+                                clip_intersects(
+                                    &clip_stack,
+                                    bounds,
+                                    target.width(),
+                                    target.height(),
+                                )
+                                .then(|| super::intersect(bounds, screen))
+                                .flatten()
+                            })
+                            .reduce(union_rect);
+                        let Some(blur_bounds) = blur_bounds else {
+                            continue;
+                        };
+                        self.flush(target, &mut layers, &mut target_initialized)?;
+                        let scratch = self.take_effect_scratch(target.width(), target.height())?;
                         let masks = clip_stack.clone();
                         let glyph_layers = glyphs
                             .iter()
@@ -443,17 +503,21 @@ impl GpuRenderer {
                             })
                             .collect::<Vec<_>>();
                         self.render(&scratch, &glyph_layers)?;
+                        let gaussian =
+                            self.prepare_gaussian_blur(&scratch, blur_bounds, blur)?;
                         self.render_layers(
                             target,
                             &[TextureLayer {
-                                texture: &scratch,
-                                source: texture_rect(screen),
-                                bounds: screen,
+                                texture: &gaussian.texture,
+                                source: gaussian.source_rect(blur_bounds),
+                                bounds: blur_bounds,
                                 clip: screen,
                                 clip_masks: &[],
                                 clip_offset: (0, 0),
                                 color: color_rgba(color, 1.0),
-                                mode: TextureMode::MaskBlur { radius: blur },
+                                mode: TextureMode::MaskGaussian {
+                                    texel_step: [0.0, gaussian.vertical_texel_step],
+                                },
                                 sampling: TextureSampling::Linear,
                                 wrap: TextureWrap::Edge,
                             }],
@@ -511,9 +575,25 @@ impl GpuRenderer {
                         self.render(target, &[])?;
                     }
                     if let Some(owner) = cache_owner {
+                        let source = if retained_clip_depth == 0 {
+                            self.snapshot_backdrop_region(target, backdrop, snapshot_rect)?
+                        } else {
+                            self.rebuild_clean_prefix(
+                                target,
+                                &commands[..index - 1],
+                                &prefixes[..index - 1],
+                                texture,
+                                excluded_group,
+                                owner,
+                                prefix_clip_stack.clone(),
+                                retained_clip_depth,
+                                prefix_group,
+                                backdrop,
+                                snapshot_rect,
+                            )?
+                        };
                         let texture = self.populate_backdrop_cache(
-                            target,
-                            backdrop,
+                            &source,
                             &clip_stack,
                             retained_clip_depth,
                             rect,
@@ -571,23 +651,6 @@ impl GpuRenderer {
         })
     }
 
-    fn snapshot_backdrop(
-        &self,
-        target: &VirglResource,
-        inherited: Option<&VirglResource>,
-    ) -> io::Result<super::EffectScratch<'_>> {
-        self.snapshot_backdrop_region(
-            target,
-            inherited,
-            Rect {
-                x: 0,
-                y: 0,
-                width: target.width(),
-                height: target.height(),
-            },
-        )
-    }
-
     fn snapshot_backdrop_region(
         &self,
         target: &VirglResource,
@@ -607,22 +670,138 @@ impl GpuRenderer {
             sampling: TextureSampling::Nearest,
             wrap: TextureWrap::Edge,
         };
-        // 1. Only the blur's visible output plus sampling support can be read.
-        // 2. REPLACE is required because pooled scratch pixels may be translucent;
-        //    source-over would accumulate an older backdrop and create ghost blocks.
+        // 1. Clear pooled pixels outside the bounded read region so the linear
+        //    downsample pass cannot pick up an older effect at its edge.
+        // 2. Copy only the blur's visible output plus sampling support with
+        //    REPLACE; source-over would accumulate an older translucent backdrop.
         // 3. Nested opacity then composites its local target over the inherited
         //    backdrop in the same bounded region.
         let source = inherited.unwrap_or(target);
         self.render_layers_with_blend(
             &snapshot,
             &[copy(source)],
-            false,
+            true,
             Some(super::REPLACE_BLEND),
         )?;
         if inherited.is_some() {
             self.render_layers(&snapshot, &[copy(target)], false)?;
         }
         Ok(snapshot)
+    }
+
+    fn prepare_gaussian_blur<'a>(
+        &'a self,
+        source: &VirglResource,
+        source_region: Rect,
+        radius: f32,
+    ) -> io::Result<PreparedBlur<'a>> {
+        let reduction = (radius.max(0.0) / 4.0).max(1.0);
+        let width = ((source_region.width as f32 / reduction).ceil() as u32).max(1);
+        let height = ((source_region.height as f32 / reduction).ceil() as u32).max(1);
+        let scale = [
+            source_region.width as f32 / width as f32,
+            source_region.height as f32 / height as f32,
+        ];
+        let reduced = self.take_effect_scratch(width, height)?;
+        let local = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        // 1. Reduce large-radius input until sigma=radius/2 is at most two
+        // texture pixels; sparse full-resolution taps otherwise become visible
+        // copies of text and icons instead of a continuous blur.
+        // 2. Apply the normalized 13-coefficient Gaussian horizontally using
+        // seven bilinear fetches.
+        // 3. Keep the horizontal result reduced; the vertical pass is applied
+        // by the caller while mapping its exact output rectangle back to screen.
+        self.render(
+            &reduced,
+            &[TextureLayer {
+                texture: source,
+                source: texture_rect(source_region),
+                bounds: local,
+                clip: local,
+                clip_masks: &[],
+                clip_offset: (0, 0),
+                color: [1.0; 4],
+                mode: TextureMode::Color,
+                sampling: TextureSampling::Linear,
+                wrap: TextureWrap::Edge,
+            }],
+        )?;
+        let horizontal = self.take_effect_scratch(width, height)?;
+        let horizontal_texel_step = radius.max(0.0) / (4.0 * scale[0]);
+        self.render(
+            &horizontal,
+            &[TextureLayer {
+                texture: &reduced,
+                source: texture_rect(local),
+                bounds: local,
+                clip: local,
+                clip_masks: &[],
+                clip_offset: (0, 0),
+                color: [1.0; 4],
+                mode: TextureMode::Gaussian {
+                    texel_step: [horizontal_texel_step, 0.0],
+                },
+                sampling: TextureSampling::Linear,
+                wrap: TextureWrap::Edge,
+            }],
+        )?;
+        Ok(PreparedBlur {
+            texture: horizontal,
+            source_region,
+            scale,
+            vertical_texel_step: radius.max(0.0) / (4.0 * scale[1]),
+        })
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "prefix reconstruction preserves the exact recursive display-list context"
+    )]
+    fn rebuild_clean_prefix<'a>(
+        &'a self,
+        target: &VirglResource,
+        commands: &[DisplayCommand<'_>],
+        prefixes: &[(usize, &[u8])],
+        texture: &mut dyn FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
+        excluded_group: Option<u32>,
+        cache_owner: (u64, u32),
+        mut clip_stack: Vec<ClipMask>,
+        retained_clip_depth: usize,
+        group: Option<u32>,
+        backdrop: Option<&VirglResource>,
+        snapshot_rect: Rect,
+    ) -> io::Result<super::EffectScratch<'a>> {
+        // 1. A retained target contains the previous frame's final effects, so
+        // neither a blur nor an opacity group's inherited backdrop may sample it.
+        // 2. Rebuild only the command prefix preceding the effect into transparent
+        // scratch, replacing the retained damage clip with the exact read region.
+        // 3. Composite the already-clean inherited backdrop once, yielding the
+        // same prefix pixels a complete repaint would expose to backdrop-filter.
+        clip_stack = backdrop_prefix_clips(clip_stack, retained_clip_depth, snapshot_rect)?;
+        let local = self.take_effect_scratch(target.width(), target.height())?;
+        // Prefix clips bound every draw, but a nested linear filter may read a
+        // half texel beyond that bound. Clear the whole pooled target once so
+        // such reads resolve to transparent pixels, never an older final frame.
+        self.render(&local, &[])?;
+        self.render_commands(
+            &local,
+            commands,
+            prefixes,
+            texture,
+            excluded_group,
+            Some(cache_owner),
+            clip_stack,
+            0,
+            group,
+            backdrop,
+            true,
+        )?;
+        self.snapshot_backdrop_region(&local, backdrop, snapshot_rect)
     }
 
     fn cached_backdrop(
@@ -648,8 +827,7 @@ impl GpuRenderer {
     #[allow(clippy::too_many_arguments)]
     fn populate_backdrop_cache(
         &self,
-        target: &VirglResource,
-        inherited: Option<&VirglResource>,
+        source: &VirglResource,
         clips: &[ClipMask],
         retained_clip_depth: usize,
         rect: Rect,
@@ -661,12 +839,17 @@ impl GpuRenderer {
         let stable_clips = clips
             .get(retained_clip_depth..)
             .ok_or_else(|| invalid("retained backdrop clip depth invalid"))?;
-        let visible = clipped_rect(stable_clips, rect, target.width(), target.height())
+        let visible = clipped_rect(stable_clips, rect, source.width(), source.height())
             .ok_or_else(|| invalid("visible backdrop cache unexpectedly empty"))?;
-        let snapshot_rect =
-            backdrop_snapshot_rect(stable_clips, rect, radius, target.width(), target.height())
-                .ok_or_else(|| invalid("backdrop cache source unexpectedly empty"))?;
-        let scratch = self.snapshot_backdrop_region(target, inherited, snapshot_rect)?;
+        let source_region = backdrop_snapshot_rect(
+            stable_clips,
+            rect,
+            radius,
+            source.width(),
+            source.height(),
+        )
+        .ok_or_else(|| invalid("backdrop cache source unexpectedly empty"))?;
+        let blur = self.prepare_gaussian_blur(source, source_region, radius)?;
         let local = Rect {
             x: visible.x - rect.x,
             y: visible.y - rect.y,
@@ -703,14 +886,16 @@ impl GpuRenderer {
         self.render(
             &entry.texture,
             &[TextureLayer {
-                texture: &scratch,
-                source: texture_rect(visible),
+                texture: &blur.texture,
+                source: blur.source_rect(visible),
                 bounds: local,
                 clip: local,
                 clip_masks: &[],
                 clip_offset: (0, 0),
                 color: [1.0; 4],
-                mode: TextureMode::Blur { radius },
+                mode: TextureMode::Gaussian {
+                    texel_step: [0.0, blur.vertical_texel_step],
+                },
                 sampling: TextureSampling::Linear,
                 wrap: TextureWrap::Edge,
             }],
@@ -740,17 +925,28 @@ impl GpuRenderer {
             height: target.height(),
         };
         let masks = shape_masks(clips, rect, radii)?;
+        let source_region = backdrop_snapshot_rect(
+            clips,
+            rect,
+            radius,
+            texture.width(),
+            texture.height(),
+        )
+        .ok_or_else(|| invalid("visible backdrop source unexpectedly empty"))?;
+        let blur = self.prepare_gaussian_blur(texture, source_region, radius)?;
         self.render_layers(
             target,
             &[TextureLayer {
-                texture,
-                source: texture_rect(rect),
+                texture: &blur.texture,
+                source: blur.source_rect(rect),
                 bounds: rect,
                 clip: screen,
                 clip_masks: &masks,
                 clip_offset: (0, 0),
                 color: [1.0; 4],
-                mode: TextureMode::Blur { radius },
+                mode: TextureMode::Gaussian {
+                    texel_step: [0.0, blur.vertical_texel_step],
+                },
                 sampling: TextureSampling::Linear,
                 wrap: TextureWrap::Edge,
             }],
@@ -977,6 +1173,49 @@ fn backdrop_snapshot_rect(
         expand_rect(visible, display_proto::blur_support(radius), [0.0; 2]),
         screen,
     )
+}
+
+fn backdrop_read_rect(
+    commands: &[DisplayCommand<'_>],
+    inherited: &[ClipMask],
+    width: u32,
+    height: u32,
+) -> io::Result<Option<Rect>> {
+    let mut clips = inherited.to_vec();
+    let mut read = None;
+    for command in commands {
+        match *command {
+            DisplayCommand::PushClip(mask) => clips.push(mask),
+            DisplayCommand::PopClip => {
+                clips
+                    .pop()
+                    .ok_or_else(|| invalid("display-list clip stack underflow"))?;
+            }
+            DisplayCommand::BackdropBlur { rect, radius, .. } => {
+                if let Some(region) = backdrop_snapshot_rect(&clips, rect, radius, width, height) {
+                    read = Some(read.map_or(region, |read| union_rect(read, region)));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(read)
+}
+
+fn backdrop_prefix_clips(
+    mut clips: Vec<ClipMask>,
+    retained_clip_depth: usize,
+    snapshot_rect: Rect,
+) -> io::Result<Vec<ClipMask>> {
+    if retained_clip_depth > clips.len() {
+        return Err(invalid("retained backdrop prefix clip depth invalid"));
+    }
+    clips.drain(..retained_clip_depth);
+    clips.push(ClipMask {
+        rect: snapshot_rect,
+        radii: [display_proto::CornerRadius::default(); 4],
+    });
+    Ok(clips)
 }
 
 fn clipped_rect(clips: &[ClipMask], bounds: Rect, width: u32, height: u32) -> Option<Rect> {
@@ -1244,7 +1483,10 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{backdrop_snapshot_rect, color_rgba, commands_may_touch, rounded_solid_border};
+    use super::{
+        backdrop_prefix_clips, backdrop_read_rect, backdrop_snapshot_rect, color_rgba,
+        commands_may_touch, rounded_solid_border,
+    };
     use display_proto::{BorderStyle, ClipMask, CornerRadius, DisplayCommand, Rect};
 
     #[test]
@@ -1319,6 +1561,88 @@ mod tests {
                 width: 92,
                 height: 102,
             })
+        );
+    }
+
+    #[test]
+    fn retained_backdrop_rebuild_replaces_damage_with_sampling_support() {
+        let damage = ClipMask {
+            rect: Rect {
+                x: 100,
+                y: 120,
+                width: 20,
+                height: 30,
+            },
+            radii: [CornerRadius::default(); 4],
+        };
+        let window = ClipMask {
+            rect: Rect {
+                x: 40,
+                y: 50,
+                width: 300,
+                height: 300,
+            },
+            radii: [CornerRadius { x: 18, y: 18 }; 4],
+        };
+        let support = Rect {
+            x: 64,
+            y: 84,
+            width: 92,
+            height: 102,
+        };
+        let clips = backdrop_prefix_clips(vec![damage, window], 1, support).unwrap();
+        assert_eq!(clips[0], window);
+        assert_eq!(clips[1].rect, support);
+        assert_eq!(clips[1].radii, [CornerRadius::default(); 4]);
+    }
+
+    #[test]
+    fn opacity_backdrop_read_is_bounded_to_descendant_blur_support() {
+        let damage = ClipMask {
+            rect: Rect {
+                x: 100,
+                y: 120,
+                width: 20,
+                height: 30,
+            },
+            radii: [CornerRadius::default(); 4],
+        };
+        let commands = [
+            DisplayCommand::PushOpacity(0.5),
+            DisplayCommand::BackdropBlur {
+                rect: Rect {
+                    x: 40,
+                    y: 50,
+                    width: 300,
+                    height: 300,
+                },
+                radii: [CornerRadius::default(); 4],
+                radius: 24.0,
+            },
+            DisplayCommand::PopOpacity,
+        ];
+        assert_eq!(
+            backdrop_read_rect(&commands, &[damage], 3008, 1692).unwrap(),
+            Some(Rect {
+                x: 64,
+                y: 84,
+                width: 92,
+                height: 102,
+            })
+        );
+        assert_eq!(
+            backdrop_read_rect(
+                &[DisplayCommand::SolidRect {
+                    rect: damage.rect,
+                    radii: [CornerRadius::default(); 4],
+                    color: 0xff00_0000,
+                }],
+                &[damage],
+                3008,
+                1692,
+            )
+            .unwrap(),
+            None
         );
     }
 

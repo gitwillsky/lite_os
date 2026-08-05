@@ -123,10 +123,12 @@
   让 client 自行 CREATE_DUMB。DESTROY 只由 compositor 执行。retired GPU paint target 必须回到同
   owner、同尺寸的唯一 idle slot，后续 paint 复用该 resource；owner/尺寸改变时销毁，禁止每帧维护
   create/unref 兼容路径。
-- compositor GPU effect target 由唯一 renderer pool 持有；capacity 固定为 opacity 最大嵌套所需的
-  `2 * MAX_DISPLAY_STACK_DEPTH + 1`。opacity backdrop/isolated target、backdrop blur 与 glyph blur
-  必须统一借还该 pool；box-shadow 只能走同一 fragment pipeline 的 analytic coverage，不得另建 target。
-  稳态 paint 不得同步 CREATE/ATTACH/GEM_CLOSE host resource。
+- compositor GPU effect target 由唯一 renderer pool 持有；capacity 固定为 opacity 最大嵌套及最深
+  Gaussian clean-source/reduction/horizontal pass 所需的 `2 * MAX_DISPLAY_STACK_DEPTH + 3`。opacity
+  backdrop/isolated target、backdrop blur 与 glyph blur 必须统一借还该 pool；任何 backdrop source 必须
+  由当前 immutable display-list 的效果前缀重建，禁止读取 retained final target。blur 只走按半径降采样后
+  的水平/垂直归一化 Gaussian pipeline；box-shadow 只能走同一 fragment pipeline 的 analytic coverage，
+  不得另建 target。稳态 paint 不得同步 CREATE/ATTACH/GEM_CLOSE host resource。
 - resize/maximize 使用 `CONFIGURE(serial)`；对应 app commit 进入 pending slot，直到 desktop scene 引用
   `CONFIGURE_READY(serial)` 才在同一 latch 切换 buffer 与 geometry。旧 pair 在 presentation 后释放。
   仅 foreign adoption/geometry 改变时 desktop scene 必须复用当前 pinned、只读像素 buffer，不得因此

@@ -121,9 +121,12 @@
   或几何的 scene 可继续引用它而不重画像素。新像素 scene 呈现后才向 client `BUFFER_RELEASE` 旧 buffer。
   compositor 的 GPU paint target 随 retired buffer 回到同 owner、同尺寸的唯一 idle slot，后续 paint 直接
   复用；尺寸变化或 owner 退出时销毁，不在每次按键重绘重复 create/attach/unref host resource。
-- opacity、backdrop blur 与 glyph blur 的离屏 target 统一借用 renderer-owned 定容 effect pool；box-shadow
-  由同一 fragment pipeline 直接计算圆角 signed-distance 与有限 Gaussian falloff，不创建离屏 target。
-  pool 容量由协议最大 opacity 嵌套深度推导，稳态重绘不创建或销毁 VirGL resource。
+- opacity、backdrop blur 与 glyph blur 的离屏 target 统一借用 renderer-owned 定容 effect pool；backdrop
+  只能读取当前 immutable display list 在该效果之前重建的干净前缀，禁止从包含上一帧最终效果的 retained
+  target 反向采样。大半径 blur 先降采样，再执行水平/垂直两遍归一化 Gaussian kernel 并双线性恢复；
+  box-shadow 由同一 fragment pipeline 直接计算圆角 signed-distance 与有限 Gaussian falloff，不创建离屏
+  target。pool 容量由协议最大 opacity 嵌套深度和最深 Gaussian 三个临时 target 推导，稳态重绘不创建或
+  销毁 VirGL resource。
 - compositor 在有效 move grab 期间额外持有一个 full-size underlay target；它不进入普通 scene，也不形成
   第三条 presentation 路径。最终 canonical window scene 呈现后立即回收。
 - compositor 的双 GPU scanout 分别记录最后 scene revision；scene 与 window-move frame 只经唯一 VirGL
@@ -171,10 +174,10 @@
   `auto`/`smooth`/`high-quality` 的预乘双线性过滤，以及 `crisp-edges`/`pixelated` 的最近邻过滤。
   图片自身 `border-radius` 与 ancestor overflow clip 均以亚像素 coverage 合成，不允许整数裁边重新引入毛刺。
   `linear-gradient` 支持任意角度（对角 `to *` 关键字映射 45° 家族）。`backdrop-filter: blur()` 在
-  rounded border box 内对已绘制 backdrop 作三次可分离 box pass；物理半径达到 16px 时在四分之一
-  线性尺寸的抗混叠 backdrop 上执行同一 filter，再双线性恢复，避免 CPU raster 对大半径玻璃层作
-  无效的过采样。filter result 按稳定 host node id 与完整输入像素精确保留；opacity 离屏 group 内的
-  backdrop filter 明确拒绝，避免采样错误。`opacity` 是 group 语义：
+  rounded border box 内读取当前效果之前的干净 display-list 前缀；大半径输入按 sigma 降采样后执行
+  水平/垂直两遍归一化 Gaussian kernel，再双线性恢复，禁止用相隔 radius 的稀疏 tap 复制高对比内容。
+  filter result 按稳定 host node id 与完整输入像素精确保留；opacity 离屏 group 继承的 backdrop 同样从
+  外层干净前缀重建，不能采样 retained final target。`opacity` 是 group 语义：
   子树先离屏合成再整体按 alpha 混合。`pointer-events: none` 关闭整个子树的 hit/scroll 注册，
   不支持后代用 `auto` 重新开启。`box-sizing` 支持 `content-box`/`border-box`，但 UA 默认是
   `border-box`（偏离 Web 初始值 `content-box`），theme.css 全部按 border-box 编写。
