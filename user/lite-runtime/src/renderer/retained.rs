@@ -57,12 +57,15 @@ pub(super) fn classify_gpu_paint(
         x2: current.width,
         y2: current.height,
     };
-    let Some(previous) = previous.filter(|previous| {
-        previous.width == current.width
-            && previous.height == current.height
-            && previous.scroll_offsets == current.scroll_offsets
-    }) else {
+    let Some(previous) = previous
+        .filter(|previous| previous.width == current.width && previous.height == current.height)
+    else {
         return GpuPaint::Full(full);
+    };
+
+    let scroll_damage = match changed_scroll_damage(previous, current) {
+        Ok(damage) => damage,
+        Err(()) => return GpuPaint::Full(full),
     };
 
     let document_damage = if previous.document == current.document {
@@ -128,7 +131,7 @@ pub(super) fn classify_gpu_paint(
         })
         .filter(|bounds| !bounds.is_empty())
         .reduce(PhysicalRect::union);
-    let damage = [document_damage, fixed_damage, control_damage]
+    let damage = [document_damage, fixed_damage, control_damage, scroll_damage]
         .into_iter()
         .flatten()
         .reduce(PhysicalRect::union);
@@ -136,6 +139,32 @@ pub(super) fn classify_gpu_paint(
         None => GpuPaint::Reuse,
         Some(damage) => GpuPaint::Partial(damage),
     }
+}
+
+fn changed_scroll_damage(
+    previous: &RetainedGpuFrame,
+    current: &RetainedGpuFrame,
+) -> Result<Option<PhysicalRect>, ()> {
+    previous
+        .scroll_offsets
+        .keys()
+        .chain(current.scroll_offsets.keys())
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter(|id| previous.scroll_offsets.get(id) != current.scroll_offsets.get(id))
+        .try_fold(None, |damage, id| {
+            // A scroll changes every descendant's painted position but cannot
+            // escape its scrollport clip. Owning that clip explicitly keeps the
+            // hot path local; falling back to a guessed ancestor would leave
+            // stale content when a fixed or nested scroller changes.
+            let old = previous.scroll_bounds.get(&id).copied().ok_or(())?;
+            let new = current.scroll_bounds.get(&id).copied().ok_or(())?;
+            let changed = old.union(new);
+            Ok(Some(damage.map_or(changed, |damage: PhysicalRect| {
+                damage.union(changed)
+            })))
+        })
 }
 
 fn retained_bounds(frame: &RetainedGpuFrame, id: u64) -> Option<PhysicalRect> {
@@ -157,6 +186,7 @@ pub(super) fn snapshot_gpu_frame(
 ) -> io::Result<RetainedGpuFrame> {
     let document = root.children.iter().filter_map(document_node).collect();
     let mut bounds = HashMap::new();
+    let mut scroll_bounds = HashMap::new();
     let mut fixed_bounds = HashMap::new();
     let mut fixed = HashMap::new();
     for child in &root.children {
@@ -170,12 +200,14 @@ pub(super) fn snapshot_gpu_frame(
             height,
             false,
             &mut bounds,
+            &mut scroll_bounds,
             &mut fixed_bounds,
         )?;
     }
     Ok(RetainedGpuFrame {
         document,
         bounds,
+        scroll_bounds,
         scroll_offsets: scroll_offsets.clone(),
         fixed,
         fixed_bounds,
@@ -336,6 +368,7 @@ fn collect_bounds(
     height: usize,
     fixed_context: bool,
     document: &mut HashMap<u64, PhysicalRect>,
+    scroll_bounds: &mut HashMap<u64, PhysicalRect>,
     fixed: &mut HashMap<u64, PhysicalRect>,
 ) -> io::Result<()> {
     if node.computed.get("display") == Some("none") {
@@ -363,6 +396,19 @@ fn collect_bounds(
         document.insert(node.source.id, paint_bounds);
     }
     let (overflow_x, overflow_y) = overflow_modes(&node.computed);
+    if overflow_x.scrolls() || overflow_y.scrolls() {
+        scroll_bounds.insert(
+            node.source.id,
+            PhysicalRect::new(
+                origin.0 + layout.border.left,
+                origin.1 + layout.border.top,
+                (layout.size.width - layout.border.left - layout.border.right).max(0.0),
+                (layout.size.height - layout.border.top - layout.border.bottom).max(0.0),
+                width,
+                height,
+            ),
+        );
+    }
     let mut offset = scroll_offsets
         .get(&node.source.id)
         .copied()
@@ -383,6 +429,7 @@ fn collect_bounds(
             height,
             fixed_context,
             document,
+            scroll_bounds,
             fixed,
         )?;
     }
@@ -648,5 +695,37 @@ mod tests {
                 y2: 144,
             }
         );
+    }
+
+    #[test]
+    fn scrolling_damages_only_the_scrollport() {
+        let port = PhysicalRect {
+            x1: 100,
+            y1: 120,
+            x2: 900,
+            y2: 700,
+        };
+        let frame = |offset| RetainedGpuFrame {
+            document: Vec::new(),
+            bounds: HashMap::new(),
+            scroll_bounds: HashMap::from([(7, port)]),
+            scroll_offsets: HashMap::from([(7, ScrollOffset { x: 0.0, y: offset })]),
+            fixed: HashMap::new(),
+            fixed_bounds: HashMap::new(),
+            focused: None,
+            text_controls: HashMap::new(),
+            output: None,
+            width: 3008,
+            height: 1692,
+        };
+
+        assert_eq!(
+            changed_scroll_damage(&frame(0.0), &frame(32.0)),
+            Ok(Some(port))
+        );
+        assert!(matches!(
+            classify_gpu_paint(Some(&frame(0.0)), &frame(32.0)),
+            GpuPaint::Partial(damage) if damage == port
+        ));
     }
 }

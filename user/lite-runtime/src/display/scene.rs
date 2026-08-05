@@ -40,6 +40,7 @@ impl Display {
         foreign: &[ForeignLayer],
         windows: &[WindowFrame],
         overlays: &[Overlay],
+        damage: &[Rect],
     ) -> io::Result<()> {
         let revision = self.next_revision()?;
         let full = Rect {
@@ -62,7 +63,7 @@ impl Display {
             clip_masks: ClipMasks::from_slice(&no_clip_masks),
             opaque: Some(full),
             input: Rectangles::from_slice(&full_input),
-            damage: Rectangles::from_slice(std::slice::from_ref(&full)),
+            damage: Rectangles::from_slice(damage),
         });
         let window_frames: Vec<[Rect; 1]> = windows.iter().map(|window| [window.frame]).collect();
         let foreign_bounds: Vec<[Rect; 1]> = foreign.iter().map(|layer| [layer.bounds]).collect();

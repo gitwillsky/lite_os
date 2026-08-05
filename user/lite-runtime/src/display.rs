@@ -15,9 +15,9 @@ use std::{
 };
 
 use display_proto::{
-    AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, MAX_MESSAGE,
-    MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, SetCursorShape, Size, Welcome,
-    parse_frame, recv_frame_blocking, send_message,
+    AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, InputScroll,
+    MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, SetCursorShape, Size,
+    Welcome, parse_frame, recv_frame_blocking, send_message,
 };
 use linux_uapi::unix::{self, PollEvents, PollFd};
 
@@ -186,6 +186,16 @@ impl Display {
         }
     }
 
+    /// Returns the exact physical output rectangle owned by this connection.
+    pub(crate) fn physical_rect(&self) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            width: self.physical.width,
+            height: self.physical.height,
+        }
+    }
+
     /// Returns the display socket for the owning event loop's readiness poll.
     pub fn as_fd(&self) -> BorrowedFd<'_> {
         self.stream.as_fd()
@@ -250,11 +260,12 @@ impl Display {
 
     /// Blocks until the next validated asynchronous event.
     ///
-    /// Successive pointer motions coalesce into the newest one: a drag
-    /// generates motion far faster than one React render plus presented wait
-    /// per event can drain, and dispatching every stale position would lag
-    /// the window behind the cursor. Collapsing stops at the first non-motion
-    /// event so button transitions and lifecycle events keep exact ordering.
+    /// Successive high-rate relative or absolute inputs coalesce before one
+    /// React render. Pointer motion keeps only the newest position; wheel input
+    /// accumulates every delta so its final scroll offset remains exact. Without
+    /// this boundary, an input burst queues one GPU paint per obsolete detent and
+    /// delays later key/button lifecycle events by seconds. Coalescing stops at
+    /// the first different event so input ordering remains exact.
     pub fn next_event(&mut self) -> io::Result<Event> {
         let mut event = self.next_wire_event()?;
         while matches!(event, Event::Pointer(pointer) if pointer.phase == PointerPhase::Motion) {
@@ -262,6 +273,15 @@ impl Display {
                 break;
             };
             event = newer;
+        }
+        if let Event::Scroll(mut scroll) = event {
+            while let Some(newer) = self.take_queued_scroll()? {
+                let Event::Scroll(newer) = newer else {
+                    unreachable!("scroll queue returned a different event");
+                };
+                scroll = accumulate_scroll(scroll, newer);
+            }
+            event = Event::Scroll(scroll);
         }
         Ok(event)
     }
@@ -288,6 +308,40 @@ impl Display {
             {
                 Ok(Some(event))
             }
+            WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
+                self.pending
+                    .push_back(Event::ConfigureReady { surface_id, serial });
+                Ok(None)
+            }
+            WireEvent::Public(event) => {
+                self.pending.push_back(event);
+                Ok(None)
+            }
+            event @ (WireEvent::Accepted(_)
+            | WireEvent::Discarded(_)
+            | WireEvent::Presented { .. }) => {
+                let event = self.handle_progress(event)?;
+                self.pending.push_back(event);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Returns the next wheel batch only when it is already buffered or
+    /// immediately readable, preserving the first non-wheel event in order.
+    fn take_queued_scroll(&mut self) -> io::Result<Option<Event>> {
+        if let Some(event) = self.pending.front() {
+            return if matches!(event, Event::Scroll(_)) {
+                Ok(self.pending.pop_front())
+            } else {
+                Ok(None)
+            };
+        }
+        if !self.socket_readable()? {
+            return Ok(None);
+        }
+        match self.receive()? {
+            WireEvent::Public(event @ Event::Scroll(_)) => Ok(Some(event)),
             WireEvent::Public(Event::ConfigureReady { surface_id, serial }) => {
                 self.pending
                     .push_back(Event::ConfigureReady { surface_id, serial });
@@ -373,6 +427,53 @@ impl Display {
     }
 }
 
+fn accumulate_scroll(current: InputScroll, newer: InputScroll) -> InputScroll {
+    debug_assert_eq!(current.surface_id, newer.surface_id);
+    InputScroll {
+        surface_id: newer.surface_id,
+        serial: newer.serial,
+        x: newer.x,
+        y: newer.y,
+        delta_x: current.delta_x.saturating_add(newer.delta_x),
+        delta_y: current.delta_y.saturating_add(newer.delta_y),
+    }
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use display_proto::InputScroll;
+
+    use super::accumulate_scroll;
+
+    #[test]
+    fn queued_wheel_batches_preserve_total_delta_and_newest_target() {
+        let combined = accumulate_scroll(
+            InputScroll {
+                surface_id: 7,
+                serial: 10,
+                x: 20,
+                y: 30,
+                delta_x: i32::MAX,
+                delta_y: 96,
+            },
+            InputScroll {
+                surface_id: 7,
+                serial: 11,
+                x: 24,
+                y: 34,
+                delta_x: 1,
+                delta_y: -48,
+            },
+        );
+
+        assert_eq!(combined.surface_id, 7);
+        assert_eq!(combined.serial, 11);
+        assert_eq!((combined.x, combined.y), (24, 34));
+        assert_eq!(combined.delta_x, i32::MAX);
+        assert_eq!(combined.delta_y, 48);
+    }
 }

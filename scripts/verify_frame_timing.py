@@ -45,7 +45,7 @@ LIMIT_P95_US = 33_300
 LIMIT_P99_US = 50_000
 MAX_DROPPED = 0  # any vblank sequence gap is a real dropped frame.
 # Bump to force a re-run after tightening thresholds or the marker format.
-RECIPE_VERSION = 4
+RECIPE_VERSION = 6
 
 
 def default_image(target: BuildTarget) -> Path:

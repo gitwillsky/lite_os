@@ -192,7 +192,7 @@ fn gpu_text_emits_a8_glyph_geometry_for_latin_and_cjk() {
     // Four Latin letters plus one CJK ideograph have visible masks; the CSS
     // space advances layout but intentionally contributes no atlas bitmap.
     assert_eq!(runs.iter().flat_map(|run| &run.glyphs).count(), 5);
-    let (size, bytes) = atlas.finish().expect("glyph coverage atlas");
+    let (size, bytes) = atlas.upload().expect("glyph coverage atlas");
     assert_eq!(size.width, 2048);
     assert_eq!(bytes.len(), (size.width * size.height) as usize);
     assert!(bytes.iter().any(|coverage| *coverage != 0));
@@ -201,14 +201,56 @@ fn gpu_text_emits_a8_glyph_geometry_for_latin_and_cjk() {
 #[test]
 fn glyph_atlas_keeps_the_tallest_row_when_a_shorter_glyph_follows() {
     let mut atlas = GlyphAtlas::new();
-    atlas.insert(2, 4, &[1; 8]).expect("tall glyph");
-    atlas.insert(2, 1, &[2; 2]).expect("short glyph");
+    atlas
+        .insert(
+            super::AtlasKey::Terminal {
+                bold: false,
+                glyph: 1,
+            },
+            2,
+            4,
+            &[1; 8],
+        )
+        .expect("tall glyph");
+    atlas
+        .insert(
+            super::AtlasKey::Terminal {
+                bold: false,
+                glyph: 2,
+            },
+            2,
+            1,
+            &[2; 2],
+        )
+        .expect("short glyph");
 
-    let (size, bytes) = atlas.finish().expect("atlas");
+    let (size, bytes) = atlas.upload().expect("atlas");
     assert_eq!(size.height, 4);
     assert_eq!(bytes.len(), (size.width * size.height) as usize);
     assert_eq!(
         &bytes[3 * size.width as usize..3 * size.width as usize + 2],
+        &[1; 2]
+    );
+}
+
+#[test]
+fn glyph_atlas_reuses_stable_rasters_without_another_upload() {
+    let mut atlas = GlyphAtlas::new();
+    let key = super::AtlasKey::Terminal {
+        bold: false,
+        glyph: 7,
+    };
+    let first = atlas.insert(key, 2, 2, &[1; 4]).expect("first glyph");
+    assert!(atlas.dirty());
+    atlas.mark_clean();
+
+    let reused = atlas.insert(key, 2, 2, &[9; 4]).expect("reused glyph");
+    assert_eq!(reused, first);
+    assert!(!atlas.dirty());
+    let (size, bytes) = atlas.upload().expect("atlas");
+    assert_eq!(&bytes[..2], &[1; 2]);
+    assert_eq!(
+        &bytes[size.width as usize..size.width as usize + 2],
         &[1; 2]
     );
 }

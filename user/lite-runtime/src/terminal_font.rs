@@ -10,7 +10,11 @@ use std::{fs, io};
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::{font::GlyphAtlas, renderer::PhysicalRect, style::Computed};
+use crate::{
+    font::{AtlasKey, GlyphAtlas},
+    renderer::PhysicalRect,
+    style::Computed,
+};
 
 const PATH: &str = "/usr/share/liteos/liteos-terminal.a8";
 const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x03";
@@ -106,6 +110,10 @@ impl TerminalFont {
                 .unwrap_or(self.fallback);
             let bitmap = face + glyph * GLYPH_BYTES;
             let Some(source) = atlas.insert(
+                AtlasKey::Terminal {
+                    bold,
+                    glyph: glyph as u32,
+                },
                 BITMAP_WIDTH,
                 CELL_HEIGHT,
                 &self.bytes[bitmap..bitmap + GLYPH_BYTES],

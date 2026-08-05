@@ -1,6 +1,6 @@
 //! Lowering from validated display-list primitives to GPU draws.
 
-use std::io;
+use std::{io, rc::Rc};
 
 use display_proto::{
     BorderStyle, ClipMask, DisplayCommand, DisplayListCommit, ImageSampling, Rect, TextureFormat,
@@ -11,7 +11,7 @@ use linux_uapi::drm::VirglResource;
 use super::{GpuRenderer, TextureLayer, TextureMode, TextureSampling, TextureWrap};
 
 struct PaintLayer<'a> {
-    texture: &'a VirglResource,
+    texture: PaintTexture<'a>,
     source: TextureRect,
     bounds: Rect,
     masks: Vec<ClipMask>,
@@ -19,6 +19,20 @@ struct PaintLayer<'a> {
     mode: TextureMode,
     sampling: TextureSampling,
     wrap: TextureWrap,
+}
+
+enum PaintTexture<'a> {
+    Borrowed(&'a VirglResource),
+    Cached(Rc<VirglResource>),
+}
+
+impl PaintTexture<'_> {
+    fn resource(&self) -> &VirglResource {
+        match self {
+            Self::Borrowed(resource) => resource,
+            Self::Cached(resource) => resource,
+        }
+    }
 }
 
 impl GpuRenderer {
@@ -30,6 +44,8 @@ impl GpuRenderer {
         target: &VirglResource,
         list: DisplayListCommit<'_>,
         base: Option<&VirglResource>,
+        repair: Option<Rect>,
+        cache_owner: (u64, u32),
         mut texture: impl FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
     ) -> io::Result<()> {
         let full_damage = list.damage.x == 0
@@ -39,7 +55,7 @@ impl GpuRenderer {
         let retained = base.is_some() && !full_damage;
         if retained {
             let base = base.expect("retained target has an exact base");
-            self.prepare_retained_target(target, base, list.damage)?;
+            self.prepare_retained_target(target, base, repair, list.damage)?;
         } else if list.base_revision != 0 {
             if base.is_none() {
                 return Err(invalid("retained display list has no exact base revision"));
@@ -57,6 +73,7 @@ impl GpuRenderer {
             list,
             &mut texture,
             None,
+            Some(cache_owner),
             damage_clip.into_iter().collect(),
             retained,
         )
@@ -75,6 +92,7 @@ impl GpuRenderer {
             list,
             &mut texture,
             Some(excluded_group),
+            None,
             Vec::new(),
             false,
         )
@@ -86,16 +104,26 @@ impl GpuRenderer {
         list: DisplayListCommit<'_>,
         texture: &mut dyn FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
         excluded_group: Option<u32>,
+        cache_owner: Option<(u64, u32)>,
         clip_stack: Vec<ClipMask>,
         target_initialized: bool,
     ) -> io::Result<()> {
-        let commands = list.commands().collect::<Vec<_>>();
+        let mut decoded = list.commands();
+        let mut commands = Vec::with_capacity(decoded.len());
+        let mut prefixes = Vec::with_capacity(decoded.len());
+        while let Some(command) = decoded.next() {
+            commands.push(command);
+            prefixes.push((commands.len() - 1, decoded.consumed_bytes()));
+        }
         self.render_commands(
             target,
             &commands,
+            &prefixes,
             texture,
             excluded_group,
+            cache_owner,
             clip_stack,
+            usize::from(target_initialized),
             None,
             None,
             target_initialized,
@@ -110,9 +138,12 @@ impl GpuRenderer {
         &'a self,
         target: &VirglResource,
         commands: &[DisplayCommand<'_>],
+        prefixes: &[(usize, &[u8])],
         texture: &mut dyn FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
         excluded_group: Option<u32>,
+        cache_owner: Option<(u64, u32)>,
         mut clip_stack: Vec<ClipMask>,
+        retained_clip_depth: usize,
         mut group: Option<u32>,
         backdrop: Option<&VirglResource>,
         initialized: bool,
@@ -122,6 +153,7 @@ impl GpuRenderer {
         let mut index = 0usize;
         while index < commands.len() {
             let command = commands[index];
+            let (command_slot, command_prefix) = prefixes[index];
             index += 1;
             match command {
                 DisplayCommand::PushGroup(id) => {
@@ -168,9 +200,12 @@ impl GpuRenderer {
                     self.render_commands(
                         &scratch,
                         &commands[index..pop],
+                        &prefixes[index..pop],
                         texture,
                         excluded_group,
+                        cache_owner,
                         clip_stack.clone(),
+                        retained_clip_depth,
                         group,
                         Some(&isolated_backdrop),
                         false,
@@ -241,7 +276,7 @@ impl GpuRenderer {
                     }
                     for (index, pair) in intervals.iter().enumerate() {
                         layers.push(PaintLayer {
-                            texture: &self.white,
+                            texture: PaintTexture::Borrowed(&self.white),
                             source: unit_source(),
                             bounds: rect,
                             masks: masks.clone(),
@@ -272,16 +307,41 @@ impl GpuRenderer {
                     widths,
                     colors,
                     styles,
-                } => self.border_layers(
-                    &mut layers,
-                    &clip_stack,
-                    rect,
-                    radii,
-                    widths,
-                    colors,
-                    styles,
-                    1.0,
-                )?,
+                } => {
+                    if let Some((width, color)) =
+                        rounded_solid_border(radii, widths, colors, styles)
+                    {
+                        // Four thin edge rectangles cannot contain the arc
+                        // pixels between them. The existing analytic inset
+                        // shadow is the exact rounded-ring primitive and keeps
+                        // focus chrome in the same GPU pipeline.
+                        if let Some(layer) = self.shadow_layer(
+                            target,
+                            &clip_stack,
+                            rect,
+                            radii,
+                            [0.0; 2],
+                            0.0,
+                            width,
+                            color,
+                            true,
+                            1.0,
+                        )? {
+                            layers.push(layer);
+                        }
+                    } else {
+                        self.border_layers(
+                            &mut layers,
+                            &clip_stack,
+                            rect,
+                            radii,
+                            widths,
+                            colors,
+                            styles,
+                            1.0,
+                        )?;
+                    }
+                }
                 DisplayCommand::BoxShadow {
                     rect,
                     radii,
@@ -291,8 +351,7 @@ impl GpuRenderer {
                     color,
                     inset,
                 } => {
-                    self.flush(target, &mut layers, &mut target_initialized)?;
-                    self.render_shadow(
+                    if let Some(layer) = self.shadow_layer(
                         target,
                         &clip_stack,
                         rect,
@@ -303,9 +362,9 @@ impl GpuRenderer {
                         color,
                         inset,
                         1.0,
-                        !target_initialized,
-                    )?;
-                    target_initialized = true;
+                    )? {
+                        layers.push(layer);
+                    }
                 }
                 DisplayCommand::Image {
                     texture_id,
@@ -322,7 +381,7 @@ impl GpuRenderer {
                         return Err(invalid("display-list image texture format"));
                     }
                     layers.push(PaintLayer {
-                        texture: resource,
+                        texture: PaintTexture::Borrowed(resource),
                         source,
                         bounds: destination,
                         masks: shape_masks(&clip_stack, destination, radii)?,
@@ -405,7 +464,7 @@ impl GpuRenderer {
                     }
                     for glyph in glyphs {
                         layers.push(PaintLayer {
-                            texture: resource,
+                            texture: PaintTexture::Borrowed(resource),
                             source: texture_rect(glyph.source),
                             bounds: offset_rect(glyph.destination, offset),
                             masks: clip_stack.clone(),
@@ -421,43 +480,67 @@ impl GpuRenderer {
                     radii,
                     radius,
                 } => {
-                    if !clip_intersects(
+                    let Some(snapshot_rect) = backdrop_snapshot_rect(
                         &clip_stack,
-                        expand_rect(rect, radius, [0.0; 2]),
+                        rect,
+                        radius,
                         target.width(),
                         target.height(),
-                    ) {
+                    ) else {
                         continue;
+                    };
+                    if let Some(owner) = cache_owner {
+                        if let Some(texture) = self.cached_backdrop(
+                            owner,
+                            command_slot,
+                            command_prefix,
+                            rect,
+                        ) {
+                            layers.push(cached_backdrop_layer(
+                                texture,
+                                &clip_stack,
+                                rect,
+                                radii,
+                            )?);
+                            continue;
+                        }
                     }
+
                     self.flush(target, &mut layers, &mut target_initialized)?;
                     if !target_initialized {
                         self.render(target, &[])?;
                     }
-                    let scratch = self.snapshot_backdrop(target, backdrop)?;
-                    let screen = Rect {
-                        x: 0,
-                        y: 0,
-                        width: target.width(),
-                        height: target.height(),
-                    };
-                    let masks = shape_masks(&clip_stack, rect, radii)?;
-                    self.render_layers(
-                        target,
-                        &[TextureLayer {
-                            texture: &scratch,
-                            source: texture_rect(rect),
-                            bounds: rect,
-                            clip: screen,
-                            clip_masks: &masks,
-                            clip_offset: (0, 0),
-                            color: [1.0; 4],
-                            mode: TextureMode::Blur { radius },
-                            sampling: TextureSampling::Linear,
-                            wrap: TextureWrap::Edge,
-                        }],
-                        false,
-                    )?;
-                    target_initialized = true;
+                    if let Some(owner) = cache_owner {
+                        let texture = self.populate_backdrop_cache(
+                            target,
+                            backdrop,
+                            &clip_stack,
+                            retained_clip_depth,
+                            rect,
+                            radius,
+                            owner,
+                            command_slot,
+                            command_prefix,
+                        )?;
+                        layers.push(cached_backdrop_layer(
+                            texture,
+                            &clip_stack,
+                            rect,
+                            radii,
+                        )?);
+                    } else {
+                        let scratch =
+                            self.snapshot_backdrop_region(target, backdrop, snapshot_rect)?;
+                        self.draw_backdrop(
+                            target,
+                            &scratch,
+                            &clip_stack,
+                            rect,
+                            radii,
+                            radius,
+                        )?;
+                        target_initialized = true;
+                    }
                 }
             }
         }
@@ -477,7 +560,7 @@ impl GpuRenderer {
         opacity: f32,
     ) -> io::Result<PaintLayer<'a>> {
         Ok(PaintLayer {
-            texture: &self.white,
+            texture: PaintTexture::Borrowed(&self.white),
             source: unit_source(),
             bounds: rect,
             masks: shape_masks(clips, rect, radii)?,
@@ -493,63 +576,186 @@ impl GpuRenderer {
         target: &VirglResource,
         inherited: Option<&VirglResource>,
     ) -> io::Result<super::EffectScratch<'_>> {
+        self.snapshot_backdrop_region(
+            target,
+            inherited,
+            Rect {
+                x: 0,
+                y: 0,
+                width: target.width(),
+                height: target.height(),
+            },
+        )
+    }
+
+    fn snapshot_backdrop_region(
+        &self,
+        target: &VirglResource,
+        inherited: Option<&VirglResource>,
+        region: Rect,
+    ) -> io::Result<super::EffectScratch<'_>> {
+        let snapshot = self.take_effect_scratch(target.width(), target.height())?;
+        let copy = |texture| TextureLayer {
+            texture,
+            source: texture_rect(region),
+            bounds: region,
+            clip: region,
+            clip_masks: &[],
+            clip_offset: (0, 0),
+            color: [1.0; 4],
+            mode: TextureMode::Color,
+            sampling: TextureSampling::Nearest,
+            wrap: TextureWrap::Edge,
+        };
+        // 1. Only the blur's visible output plus sampling support can be read.
+        // 2. REPLACE is required because pooled scratch pixels may be translucent;
+        //    source-over would accumulate an older backdrop and create ghost blocks.
+        // 3. Nested opacity then composites its local target over the inherited
+        //    backdrop in the same bounded region.
+        let source = inherited.unwrap_or(target);
+        self.render_layers_with_blend(
+            &snapshot,
+            &[copy(source)],
+            false,
+            Some(super::REPLACE_BLEND),
+        )?;
+        if inherited.is_some() {
+            self.render_layers(&snapshot, &[copy(target)], false)?;
+        }
+        Ok(snapshot)
+    }
+
+    fn cached_backdrop(
+        &self,
+        owner: (u64, u32),
+        command_slot: usize,
+        prefix: &[u8],
+        rect: Rect,
+    ) -> Option<Rc<VirglResource>> {
+        self.backdrop_cache
+            .borrow()
+            .iter()
+            .find(|entry| {
+                entry.owner == owner
+                    && entry.command_slot == command_slot
+                    && entry.prefix == prefix
+                    && entry.texture.width() == rect.width
+                    && entry.texture.height() == rect.height
+            })
+            .map(|entry| Rc::clone(&entry.texture))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn populate_backdrop_cache(
+        &self,
+        target: &VirglResource,
+        inherited: Option<&VirglResource>,
+        clips: &[ClipMask],
+        retained_clip_depth: usize,
+        rect: Rect,
+        radius: f32,
+        owner: (u64, u32),
+        command_slot: usize,
+        prefix: &[u8],
+    ) -> io::Result<Rc<VirglResource>> {
+        let stable_clips = clips
+            .get(retained_clip_depth..)
+            .ok_or_else(|| invalid("retained backdrop clip depth invalid"))?;
+        let visible = clipped_rect(stable_clips, rect, target.width(), target.height())
+            .ok_or_else(|| invalid("visible backdrop cache unexpectedly empty"))?;
+        let snapshot_rect =
+            backdrop_snapshot_rect(stable_clips, rect, radius, target.width(), target.height())
+                .ok_or_else(|| invalid("backdrop cache source unexpectedly empty"))?;
+        let scratch = self.snapshot_backdrop_region(target, inherited, snapshot_rect)?;
+        let local = Rect {
+            x: visible.x - rect.x,
+            y: visible.y - rect.y,
+            width: visible.width,
+            height: visible.height,
+        };
+        let mut cache = self.backdrop_cache.borrow_mut();
+        let index = match cache
+            .iter()
+            .position(|entry| entry.owner == owner && entry.command_slot == command_slot)
+        {
+            Some(index) => index,
+            None => {
+                if cache.len() == super::BACKDROP_CACHE_CAPACITY {
+                    cache.remove(0);
+                }
+                let mut stored_prefix = Vec::new();
+                stored_prefix
+                    .try_reserve_exact(prefix.len())
+                    .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+                cache.push(super::BackdropCacheEntry {
+                    owner,
+                    command_slot,
+                    prefix: stored_prefix,
+                    texture: Rc::new(self.context.create_texture(rect.width, rect.height)?),
+                });
+                cache.len() - 1
+            }
+        };
+        let entry = &mut cache[index];
+        if entry.texture.width() != rect.width || entry.texture.height() != rect.height {
+            entry.texture = Rc::new(self.context.create_texture(rect.width, rect.height)?);
+        }
+        self.render(
+            &entry.texture,
+            &[TextureLayer {
+                texture: &scratch,
+                source: texture_rect(visible),
+                bounds: local,
+                clip: local,
+                clip_masks: &[],
+                clip_offset: (0, 0),
+                color: [1.0; 4],
+                mode: TextureMode::Blur { radius },
+                sampling: TextureSampling::Linear,
+                wrap: TextureWrap::Edge,
+            }],
+        )?;
+        entry.prefix.clear();
+        entry
+            .prefix
+            .try_reserve(prefix.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        entry.prefix.extend_from_slice(prefix);
+        Ok(Rc::clone(&entry.texture))
+    }
+
+    fn draw_backdrop(
+        &self,
+        target: &VirglResource,
+        texture: &VirglResource,
+        clips: &[ClipMask],
+        rect: Rect,
+        radii: [display_proto::CornerRadius; 4],
+        radius: f32,
+    ) -> io::Result<()> {
         let screen = Rect {
             x: 0,
             y: 0,
             width: target.width(),
             height: target.height(),
         };
-        let snapshot = self.take_effect_scratch(target.width(), target.height())?;
-        if let Some(inherited) = inherited {
-            self.render(
-                &snapshot,
-                &[TextureLayer {
-                    texture: inherited,
-                    source: texture_rect(screen),
-                    bounds: screen,
-                    clip: screen,
-                    clip_masks: &[],
-                    clip_offset: (0, 0),
-                    color: [1.0; 4],
-                    mode: TextureMode::Color,
-                    sampling: TextureSampling::Linear,
-                    wrap: TextureWrap::Edge,
-                }],
-            )?;
-            self.render_layers(
-                &snapshot,
-                &[TextureLayer {
-                    texture: target,
-                    source: texture_rect(screen),
-                    bounds: screen,
-                    clip: screen,
-                    clip_masks: &[],
-                    clip_offset: (0, 0),
-                    color: [1.0; 4],
-                    mode: TextureMode::Color,
-                    sampling: TextureSampling::Linear,
-                    wrap: TextureWrap::Edge,
-                }],
-                false,
-            )?;
-        } else {
-            self.render(
-                &snapshot,
-                &[TextureLayer {
-                    texture: target,
-                    source: texture_rect(screen),
-                    bounds: screen,
-                    clip: screen,
-                    clip_masks: &[],
-                    clip_offset: (0, 0),
-                    color: [1.0; 4],
-                    mode: TextureMode::Color,
-                    sampling: TextureSampling::Linear,
-                    wrap: TextureWrap::Edge,
-                }],
-            )?;
-        }
-        Ok(snapshot)
+        let masks = shape_masks(clips, rect, radii)?;
+        self.render_layers(
+            target,
+            &[TextureLayer {
+                texture,
+                source: texture_rect(rect),
+                bounds: rect,
+                clip: screen,
+                clip_masks: &masks,
+                clip_offset: (0, 0),
+                color: [1.0; 4],
+                mode: TextureMode::Blur { radius },
+                sampling: TextureSampling::Linear,
+                wrap: TextureWrap::Edge,
+            }],
+            false,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -584,8 +790,8 @@ impl GpuRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_shadow(
-        &self,
+    fn shadow_layer<'a>(
+        &'a self,
         target: &VirglResource,
         clips: &[ClipMask],
         rect: Rect,
@@ -596,12 +802,11 @@ impl GpuRenderer {
         color: u32,
         inset: bool,
         opacity: f32,
-        clear_target: bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<PaintLayer<'a>>> {
         let distance = if inset { -spread } else { spread };
         let mask_rect = expand_rect(rect, distance, offset);
         if mask_rect.width == 0 || mask_rect.height == 0 {
-            return Ok(());
+            return Ok(None);
         }
         let support = display_proto::blur_support(blur);
         let effect_bounds = if inset {
@@ -610,46 +815,34 @@ impl GpuRenderer {
             expand_rect(mask_rect, support, [0.0; 2])
         };
         if !clip_intersects(clips, effect_bounds, target.width(), target.height()) {
-            return Ok(());
+            return Ok(None);
         }
         let mask_radii = radii.map(|radius| display_proto::CornerRadius {
             x: (radius.x as f32 + distance).max(0.0).round() as u32,
             y: (radius.y as f32 + distance).max(0.0).round() as u32,
         });
-        let screen = Rect {
-            x: 0,
-            y: 0,
-            width: target.width(),
-            height: target.height(),
-        };
         let final_masks = if inset {
             shape_masks(clips, rect, radii)?
         } else {
             clips.to_vec()
         };
-        self.render_layers(
-            target,
-            &[TextureLayer {
-                texture: &self.white,
-                source: unit_source(),
-                bounds: effect_bounds,
-                clip: screen,
-                clip_masks: &final_masks,
-                clip_offset: (0, 0),
-                color: color_rgba(color, opacity),
-                mode: TextureMode::Shadow {
-                    mask: mask_rect,
-                    radii: mask_radii,
-                    support,
-                    spread: distance,
-                    offset,
-                    inset,
-                },
-                sampling: TextureSampling::Nearest,
-                wrap: TextureWrap::Edge,
-            }],
-            clear_target,
-        )
+        Ok(Some(PaintLayer {
+            texture: PaintTexture::Borrowed(&self.white),
+            source: unit_source(),
+            bounds: effect_bounds,
+            masks: final_masks,
+            color: color_rgba(color, opacity),
+            mode: TextureMode::Shadow {
+                mask: mask_rect,
+                radii: mask_radii,
+                support,
+                spread: distance,
+                offset,
+                inset,
+            },
+            sampling: TextureSampling::Nearest,
+            wrap: TextureWrap::Edge,
+        }))
     }
 
     fn flush<'a>(
@@ -670,7 +863,7 @@ impl GpuRenderer {
         let draws = layers
             .iter()
             .map(|layer| TextureLayer {
-                texture: layer.texture,
+                texture: layer.texture.resource(),
                 source: layer.source,
                 bounds: layer.bounds,
                 clip: screen,
@@ -766,6 +959,40 @@ fn clip_intersects(clips: &[ClipMask], bounds: Rect, width: u32, height: u32) ->
         .is_some()
 }
 
+fn backdrop_snapshot_rect(
+    clips: &[ClipMask],
+    rect: Rect,
+    radius: f32,
+    width: u32,
+    height: u32,
+) -> Option<Rect> {
+    let visible = clipped_rect(clips, rect, width, height)?;
+    let screen = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    super::intersect(
+        expand_rect(visible, display_proto::blur_support(radius), [0.0; 2]),
+        screen,
+    )
+}
+
+fn clipped_rect(clips: &[ClipMask], bounds: Rect, width: u32, height: u32) -> Option<Rect> {
+    let screen = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    clips
+        .iter()
+        .fold(super::intersect(screen, bounds), |visible, mask| {
+            visible.and_then(|visible| super::intersect(visible, mask.rect))
+        })
+}
+
 fn union_rect(left: Rect, right: Rect) -> Rect {
     let x1 = i64::from(left.x).min(i64::from(right.x));
     let y1 = i64::from(left.y).min(i64::from(right.y));
@@ -820,6 +1047,21 @@ fn border_segments(rect: Rect, side: usize, width: u32, style: BorderStyle) -> V
             }
         })
         .collect()
+}
+
+fn rounded_solid_border(
+    radii: [display_proto::CornerRadius; 4],
+    widths: [f32; 4],
+    colors: [u32; 4],
+    styles: [BorderStyle; 4],
+) -> Option<(f32, u32)> {
+    let width = widths[0];
+    (radii.iter().any(|radius| radius.x != 0 && radius.y != 0)
+        && width > 0.0
+        && widths.iter().all(|candidate| *candidate == width)
+        && colors.iter().all(|candidate| *candidate == colors[0])
+        && styles.iter().all(|style| *style == BorderStyle::Solid))
+    .then_some((width, colors[0]))
 }
 
 fn matching_opacity_pop(commands: &[DisplayCommand<'_>], start: usize) -> io::Result<usize> {
@@ -941,7 +1183,7 @@ fn gradient_layer<'a>(
     end_color: [f32; 4],
 ) -> PaintLayer<'a> {
     PaintLayer {
-        texture,
+        texture: PaintTexture::Borrowed(texture),
         source: unit_source(),
         bounds: rect,
         masks: masks.to_vec(),
@@ -957,6 +1199,29 @@ fn gradient_layer<'a>(
         sampling: TextureSampling::Nearest,
         wrap: TextureWrap::Edge,
     }
+}
+
+fn cached_backdrop_layer<'a>(
+    texture: Rc<VirglResource>,
+    clips: &[ClipMask],
+    rect: Rect,
+    radii: [display_proto::CornerRadius; 4],
+) -> io::Result<PaintLayer<'a>> {
+    Ok(PaintLayer {
+        texture: PaintTexture::Cached(texture),
+        source: TextureRect {
+            x: 0.0,
+            y: 0.0,
+            width: rect.width as f32,
+            height: rect.height as f32,
+        },
+        bounds: rect,
+        masks: shape_masks(clips, rect, radii)?,
+        color: [1.0; 4],
+        mode: TextureMode::Color,
+        sampling: TextureSampling::Linear,
+        wrap: TextureWrap::Edge,
+    })
 }
 
 fn unit_source() -> TextureRect {
@@ -979,8 +1244,8 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{color_rgba, commands_may_touch};
-    use display_proto::{ClipMask, CornerRadius, DisplayCommand, Rect};
+    use super::{backdrop_snapshot_rect, color_rgba, commands_may_touch, rounded_solid_border};
+    use display_proto::{BorderStyle, ClipMask, CornerRadius, DisplayCommand, Rect};
 
     #[test]
     fn premultiplied_argb_lowers_to_rgba_constants() {
@@ -1022,5 +1287,56 @@ mod tests {
             color: 0xff00_0000,
         };
         assert!(commands_may_touch(&[topbar], &[damage], 3008, 1692));
+    }
+
+    #[test]
+    fn backdrop_snapshot_is_bounded_by_damage_plus_blur_support() {
+        let damage = ClipMask {
+            rect: Rect {
+                x: 100,
+                y: 120,
+                width: 20,
+                height: 30,
+            },
+            radii: [CornerRadius::default(); 4],
+        };
+        assert_eq!(
+            backdrop_snapshot_rect(
+                &[damage],
+                Rect {
+                    x: 40,
+                    y: 50,
+                    width: 300,
+                    height: 300,
+                },
+                24.0,
+                3008,
+                1692,
+            ),
+            Some(Rect {
+                x: 64,
+                y: 84,
+                width: 92,
+                height: 102,
+            })
+        );
+    }
+
+    #[test]
+    fn uniform_rounded_solid_border_uses_one_analytic_ring() {
+        let radii = [CornerRadius { x: 18, y: 18 }; 4];
+        assert_eq!(
+            rounded_solid_border(radii, [2.0; 4], [0xff35_c8ff; 4], [BorderStyle::Solid; 4],),
+            Some((2.0, 0xff35_c8ff))
+        );
+        assert_eq!(
+            rounded_solid_border(
+                radii,
+                [2.0, 1.0, 2.0, 1.0],
+                [0xff35_c8ff; 4],
+                [BorderStyle::Solid; 4],
+            ),
+            None
+        );
     }
 }

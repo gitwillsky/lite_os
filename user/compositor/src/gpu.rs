@@ -2,9 +2,11 @@
 
 mod paint;
 
-use std::{cell::RefCell, io};
+use std::{cell::RefCell, io, rc::Rc};
 
-use display_proto::{ClipMask, ImageRepeat, MAX_NODE_CLIP_MASKS, Rect, TextureRect};
+use display_proto::{
+    ClipMask, ImageRepeat, MAX_DISPLAY_STACK_DEPTH, MAX_NODE_CLIP_MASKS, Rect, TextureRect,
+};
 use linux_uapi::drm::{
     CommandEncoder, ObjectKind, SamplerFilter, SamplerWrap, ShaderStage, VirglContext,
     VirglResource,
@@ -12,9 +14,10 @@ use linux_uapi::drm::{
 
 const VERTEX_ELEMENTS: u32 = 1;
 const VERTEX_SHADER: u32 = 2;
-const FRAGMENT_SHADER: u32 = 3;
+const ROUNDED_FRAGMENT_SHADER: u32 = 3;
 const BLEND: u32 = 4;
 const REPLACE_BLEND: u32 = 19;
+const FLAT_FRAGMENT_SHADER: u32 = 20;
 const DEPTH_STENCIL_ALPHA: u32 = 5;
 const RASTERIZER: u32 = 6;
 const SAMPLER_NEAREST_EDGE: u32 = 7;
@@ -23,19 +26,17 @@ const SOURCE_VIEW: u32 = 9;
 const SAMPLER_LINEAR_EDGE: u32 = 10;
 const SAMPLER_NEAREST_BACKGROUND: u32 = 11;
 const SAMPLER_LINEAR_BACKGROUND: u32 = 15;
-/// A primitive shape and its layer clip each contribute one mask in addition
-/// to all protocol-level ancestor masks. Keeping clipping in this single
-/// top-left logical space avoids host-rasterizer origin differences.
-const MAX_GPU_CLIP_MASKS: usize = MAX_NODE_CLIP_MASKS + 2;
+/// A rounded primitive can contribute one mask in addition to all
+/// protocol-level rounded ancestor masks. Rectangular masks are enforced by
+/// cropping the submitted quad, so sending them through this per-fragment path
+/// would make every damaged pixel repeat work already completed on the CPU.
+const MAX_GPU_CLIP_MASKS: usize = MAX_NODE_CLIP_MASKS + 1;
 const CONSTANTS_PER_CLIP_MASK: usize = 6;
-const COLOR_CONSTANT: usize = MAX_GPU_CLIP_MASKS * CONSTANTS_PER_CLIP_MASK;
-const MODE_CONSTANT: usize = COLOR_CONSTANT + 1;
-const PARAMETER_CONSTANT: usize = MODE_CONSTANT + 1;
-const LAST_FRAGMENT_CONSTANT: usize = PARAMETER_CONSTANT + 3;
 // Each nested opacity group retains one backdrop and one isolated target while rendering its
 // child slice; the deepest effect may need one additional target. The display protocol caps
 // opacity nesting at 16, so this capacity covers every valid simultaneous effect lifetime.
 const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 1;
+const BACKDROP_CACHE_CAPACITY: usize = MAX_DISPLAY_STACK_DEPTH * 2 + 1;
 
 const VERTEX_SHADER_SOURCE: &str = "VERT\n\
 DCL IN[0]\n\
@@ -146,6 +147,13 @@ struct EffectScratch<'a> {
     resource: Option<VirglResource>,
 }
 
+struct BackdropCacheEntry {
+    owner: (u64, u32),
+    command_slot: usize,
+    prefix: Vec<u8>,
+    texture: Rc<VirglResource>,
+}
+
 impl std::ops::Deref for EffectScratch<'_> {
     type Target = VirglResource;
 
@@ -182,6 +190,10 @@ pub struct GpuRenderer {
     /// Without this sole pool, every repaint synchronously creates/attaches/unrefs several host
     /// resources and blocks evdev routing for hundreds of milliseconds.
     effect_scratch: RefCell<Vec<VirglResource>>,
+    /// Exact-prefix cache for stable CSS backdrops, bounded independently from
+    /// client command count. Without it, scrolling a child reruns every static
+    /// ancestor blur even though no command before that blur changed.
+    backdrop_cache: RefCell<Vec<BackdropCacheEntry>>,
 }
 
 impl GpuRenderer {
@@ -200,8 +212,18 @@ impl GpuRenderer {
         let mut command = CommandEncoder::new();
         command.create_textured_vertex_elements(VERTEX_ELEMENTS);
         command.create_shader(VERTEX_SHADER, ShaderStage::Vertex, VERTEX_SHADER_SOURCE);
-        let fragment_shader = fragment_shader();
-        command.create_shader(FRAGMENT_SHADER, ShaderStage::Fragment, &fragment_shader);
+        let rounded_fragment_shader = fragment_shader(MAX_GPU_CLIP_MASKS);
+        command.create_shader(
+            ROUNDED_FRAGMENT_SHADER,
+            ShaderStage::Fragment,
+            &rounded_fragment_shader,
+        );
+        let flat_fragment_shader = fragment_shader(0);
+        command.create_shader(
+            FLAT_FRAGMENT_SHADER,
+            ShaderStage::Fragment,
+            &flat_fragment_shader,
+        );
         command.create_premultiplied_blend(BLEND);
         command.create_replace_blend(REPLACE_BLEND);
         command.create_depth_stencil_alpha(DEPTH_STENCIL_ALPHA);
@@ -243,8 +265,9 @@ impl GpuRenderer {
         command.bind_object(ObjectKind::DepthStencilAlpha, DEPTH_STENCIL_ALPHA);
         command.bind_object(ObjectKind::Rasterizer, RASTERIZER);
         command.bind_shader(ShaderStage::Vertex, VERTEX_SHADER);
-        command.bind_shader(ShaderStage::Fragment, FRAGMENT_SHADER);
-        command.link_shaders(VERTEX_SHADER, FRAGMENT_SHADER);
+        command.bind_shader(ShaderStage::Fragment, ROUNDED_FRAGMENT_SHADER);
+        command.link_shaders(VERTEX_SHADER, ROUNDED_FRAGMENT_SHADER);
+        command.link_shaders(VERTEX_SHADER, FLAT_FRAGMENT_SHADER);
         command.set_vertex_buffer(vertices.resource_id());
         context.exec(command.words(), &[&vertices])?;
         vertices.wait()?;
@@ -253,11 +276,16 @@ impl GpuRenderer {
         effect_scratch
             .try_reserve_exact(EFFECT_TARGET_CAPACITY)
             .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        let mut backdrop_cache = Vec::new();
+        backdrop_cache
+            .try_reserve_exact(BACKDROP_CACHE_CAPACITY)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         Ok(Self {
             context: context.clone(),
             vertices,
             white,
             effect_scratch: RefCell::new(effect_scratch),
+            backdrop_cache: RefCell::new(backdrop_cache),
         })
     }
 
@@ -316,6 +344,7 @@ impl GpuRenderer {
             commands.clear([0.0, 0.0, 0.0, 0.0]);
         }
         let mut resources = vec![target, &self.vertices];
+        let mut bound_fragment_shader = None;
         for layer in layers {
             let clip = layer.clip_masks.iter().fold(layer.clip, |clip, mask| {
                 intersect(clip, translated(mask.rect, layer.clip_offset)).unwrap_or_default()
@@ -323,9 +352,15 @@ impl GpuRenderer {
             let Some(clip) = intersect(clip, screen) else {
                 continue;
             };
-            if layer.bounds.width == 0 || layer.bounds.height == 0 {
+            // 1. Every mask's rectangular extent is enforced by this crop.
+            // 2. Only curved corner coverage remains for the fragment shader;
+            // submitting rectangular masks there would repeat their edge tests
+            // for every pixel and made scroll/resize slower than CPU rendering.
+            // 3. Crop the affine texture source with the raster bounds so the
+            // optimization cannot change sampling inside the visible region.
+            let Some((bounds, source)) = clipped_layer(layer.bounds, layer.source, clip) else {
                 continue;
-            }
+            };
             commands.create_sampler_view(
                 SOURCE_VIEW,
                 layer.texture.resource_id(),
@@ -336,18 +371,41 @@ impl GpuRenderer {
             commands.set_constants(
                 ShaderStage::Vertex,
                 &transform(
-                    layer.bounds,
-                    layer.source,
+                    bounds,
+                    source,
                     layer.texture.width(),
                     layer.texture.height(),
                     target.width(),
                     target.height(),
                 ),
             );
-            let mut fragment = clip_constants(layer.clip_masks, layer.clip_offset, clip, screen);
+            let active_clip_count = rounded_clip_count(
+                layer.clip_masks,
+                layer.clip_offset,
+                bounds,
+            );
+            let fragment_shader = if active_clip_count == 0 {
+                FLAT_FRAGMENT_SHADER
+            } else {
+                ROUNDED_FRAGMENT_SHADER
+            };
+            if bound_fragment_shader != Some(fragment_shader) {
+                commands.bind_shader(ShaderStage::Fragment, fragment_shader);
+                bound_fragment_shader = Some(fragment_shader);
+            }
+            let mut fragment = if active_clip_count == 0 {
+                Vec::with_capacity(24)
+            } else {
+                clip_constants(
+                    layer.clip_masks,
+                    layer.clip_offset,
+                    bounds,
+                    screen,
+                )
+            };
             fragment.extend(layer.color.map(f32::to_bits));
             let (mode, parameters) = fragment_parameters(layer.mode, layer.texture);
-            fragment.extend([mode.to_bits(), 0, 0, 0]);
+            fragment.extend([mode.to_bits(), (active_clip_count as f32).to_bits(), 0, 0]);
             fragment.extend(parameters);
             commands.set_constants(ShaderStage::Fragment, &fragment);
             commands.draw_triangles(0, 6);
@@ -373,6 +431,7 @@ impl GpuRenderer {
         &self,
         target: &VirglResource,
         base: &VirglResource,
+        repair: Option<Rect>,
         damage: Rect,
     ) -> io::Result<()> {
         if target.width() != base.width()
@@ -390,30 +449,63 @@ impl GpuRenderer {
             width: target.width(),
             height: target.height(),
         };
-        self.render(
-            target,
-            &[TextureLayer {
-                texture: base,
+        let mut replacements = Vec::with_capacity(2);
+        if let Some(repair) = repair {
+            replacements.push(TextureLayer {
+                    texture: base,
+                    source: TextureRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: base.width() as f32,
+                        height: base.height() as f32,
+                    },
+                    bounds: screen,
+                    clip: repair,
+                    clip_masks: &[],
+                    clip_offset: (0, 0),
+                    color: [1.0; 4],
+                    mode: TextureMode::Color,
+                    sampling: TextureSampling::Nearest,
+                    wrap: TextureWrap::Edge,
+                });
+        }
+        if damage.width != 0 && damage.height != 0 {
+            replacements.push(TextureLayer {
+                texture: &self.white,
                 source: TextureRect {
                     x: 0.0,
                     y: 0.0,
-                    width: base.width() as f32,
-                    height: base.height() as f32,
+                    width: 1.0,
+                    height: 1.0,
                 },
-                bounds: screen,
-                clip: screen,
+                bounds: damage,
+                clip: damage,
                 clip_masks: &[],
                 clip_offset: (0, 0),
-                color: [1.0; 4],
+                color: [0.0; 4],
                 mode: TextureMode::Color,
                 sampling: TextureSampling::Nearest,
                 wrap: TextureWrap::Edge,
-            }],
-        )?;
-        self.clear_retained_damage(target, damage)
+            });
+        }
+        if replacements.is_empty() {
+            return Ok(());
+        }
+        // Repair must precede the transparent replacement when the rectangles
+        // overlap. One REPLACE batch preserves that order while avoiding a
+        // second VirtIO control-queue submission on every retained frame.
+        self.render_layers_with_blend(
+            target,
+            &replacements,
+            false,
+            Some(REPLACE_BLEND),
+        )
     }
 
-    fn clear_retained_damage(&self, target: &VirglResource, damage: Rect) -> io::Result<()> {
+    /// Replaces one target rectangle with transparent pixels before a clipped
+    /// scene replay. Without replacement, source-over would accumulate the old
+    /// translucent window, text, and backdrop pixels on every partial frame.
+    pub(super) fn clear_damage(&self, target: &VirglResource, damage: Rect) -> io::Result<()> {
         let Some(damage) = intersect(
             damage,
             Rect {
@@ -511,15 +603,17 @@ fn background_wrap(repeat: ImageRepeat) -> (SamplerWrap, SamplerWrap) {
 fn clip_constants(
     masks: &[ClipMask],
     offset: (i32, i32),
-    layer_clip: Rect,
+    bounds: Rect,
     screen: Rect,
 ) -> Vec<u32> {
     let mut constants = Vec::with_capacity(MAX_GPU_CLIP_MASKS * 24);
-    for index in 0..MAX_GPU_CLIP_MASKS {
-        let mask = masks.get(index).copied();
-        let (rect, radii) = match mask {
+    let mut rounded = masks
+        .iter()
+        .copied()
+        .filter(|mask| rounded_mask_affects(*mask, offset, bounds));
+    for _ in 0..MAX_GPU_CLIP_MASKS {
+        let (rect, radii) = match rounded.next() {
             Some(mask) => (translated(mask.rect, offset), mask.radii),
-            None if index == masks.len() => (layer_clip, Default::default()),
             None => (screen, Default::default()),
         };
         let x1 = rect.x as f32;
@@ -552,6 +646,55 @@ fn clip_constants(
         constants.extend([x1.to_bits(), y1.to_bits(), x2.to_bits(), y2.to_bits()]);
     }
     constants
+}
+
+fn rounded_clip_count(masks: &[ClipMask], offset: (i32, i32), bounds: Rect) -> usize {
+    masks
+        .iter()
+        .copied()
+        .filter(|mask| rounded_mask_affects(*mask, offset, bounds))
+        .count()
+}
+
+fn rounded_mask_affects(mask: ClipMask, offset: (i32, i32), bounds: Rect) -> bool {
+    let rect = translated(mask.rect, offset);
+    let x2 = rect.x.saturating_add_unsigned(rect.width);
+    let y2 = rect.y.saturating_add_unsigned(rect.height);
+    let origins = [
+        (rect.x, rect.y),
+        (x2, rect.y),
+        (x2, y2),
+        (rect.x, y2),
+    ];
+    mask.radii
+        .into_iter()
+        .zip(origins)
+        .enumerate()
+        .any(|(corner, (radius, (anchor_x, anchor_y)))| {
+            if radius.x == 0 || radius.y == 0 {
+                return false;
+            }
+            let x = if corner == 0 || corner == 3 {
+                anchor_x
+            } else {
+                anchor_x.saturating_sub_unsigned(radius.x)
+            };
+            let y = if corner <= 1 {
+                anchor_y
+            } else {
+                anchor_y.saturating_sub_unsigned(radius.y)
+            };
+            intersect(
+                bounds,
+                Rect {
+                    x,
+                    y,
+                    width: radius.x,
+                    height: radius.y,
+                },
+            )
+            .is_some()
+        })
 }
 
 fn fragment_parameters(mode: TextureMode, texture: &VirglResource) -> (f32, [u32; 16]) {
@@ -624,7 +767,12 @@ fn fragment_parameters(mode: TextureMode, texture: &VirglResource) -> (f32, [u32
     }
 }
 
-fn append_rounded_rect_sdf(shader: &mut String, instruction: &mut usize, original: bool) {
+fn append_rounded_rect_sdf(
+    shader: &mut String,
+    instruction: &mut usize,
+    parameter_constant: usize,
+    original: bool,
+) {
     use std::fmt::Write as _;
 
     let mut emit = |line: &str| {
@@ -633,25 +781,25 @@ fn append_rounded_rect_sdf(shader: &mut String, instruction: &mut usize, origina
     };
     if original {
         emit(&format!(
-            "ADD TEMP[2].xy, CONST[0][{PARAMETER_CONSTANT}].xyxy, -CONST[0][{}].zwzw",
-            PARAMETER_CONSTANT + 3
+            "ADD TEMP[2].xy, CONST[0][{parameter_constant}].xyxy, -CONST[0][{}].zwzw",
+            parameter_constant + 3
         ));
         emit(&format!(
             "ADD TEMP[2].xy, TEMP[2].xyxy, CONST[0][{}].yyyy",
-            PARAMETER_CONSTANT + 3
+            parameter_constant + 3
         ));
         emit(&format!(
-            "ADD TEMP[2].zw, CONST[0][{PARAMETER_CONSTANT}].zwzw, -CONST[0][{}].zwzw",
-            PARAMETER_CONSTANT + 3
+            "ADD TEMP[2].zw, CONST[0][{parameter_constant}].zwzw, -CONST[0][{}].zwzw",
+            parameter_constant + 3
         ));
         emit(&format!(
             "ADD TEMP[2].zw, TEMP[2].zwzw, -CONST[0][{}].yyyy",
-            PARAMETER_CONSTANT + 3
+            parameter_constant + 3
         ));
         emit("ADD TEMP[4].xy, TEMP[2].xyxy, TEMP[2].zwzw");
     } else {
         emit(&format!(
-            "ADD TEMP[4].xy, CONST[0][{PARAMETER_CONSTANT}].xyxy, CONST[0][{PARAMETER_CONSTANT}].zwzw"
+            "ADD TEMP[4].xy, CONST[0][{parameter_constant}].xyxy, CONST[0][{parameter_constant}].zwzw"
         ));
     }
     emit("MUL TEMP[4].xy, TEMP[4].xyxy, IMM[0].xxxx");
@@ -659,7 +807,7 @@ fn append_rounded_rect_sdf(shader: &mut String, instruction: &mut usize, origina
         emit("ADD TEMP[4].zw, TEMP[2].zwzw, -TEMP[2].xyxy");
     } else {
         emit(&format!(
-            "ADD TEMP[4].zw, CONST[0][{PARAMETER_CONSTANT}].zwzw, -CONST[0][{PARAMETER_CONSTANT}].xyxy"
+            "ADD TEMP[4].zw, CONST[0][{parameter_constant}].zwzw, -CONST[0][{parameter_constant}].xyxy"
         ));
     }
     emit("MUL TEMP[4].zw, TEMP[4].zwzw, IMM[0].xxxx");
@@ -669,47 +817,47 @@ fn append_rounded_rect_sdf(shader: &mut String, instruction: &mut usize, origina
     emit("IF TEMP[7].yyyy");
     emit(&format!(
         "MOV TEMP[5].z, CONST[0][{}].zzzz",
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1
     ));
     emit(&format!(
         "MOV TEMP[5].w, CONST[0][{}].zzzz",
-        PARAMETER_CONSTANT + 2
+        parameter_constant + 2
     ));
     emit("ELSE");
     emit(&format!(
         "MOV TEMP[5].z, CONST[0][{}].wwww",
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1
     ));
     emit(&format!(
         "MOV TEMP[5].w, CONST[0][{}].wwww",
-        PARAMETER_CONSTANT + 2
+        parameter_constant + 2
     ));
     emit("ENDIF");
     emit("ELSE");
     emit("IF TEMP[7].yyyy");
     emit(&format!(
         "MOV TEMP[5].z, CONST[0][{}].yyyy",
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1
     ));
     emit(&format!(
         "MOV TEMP[5].w, CONST[0][{}].yyyy",
-        PARAMETER_CONSTANT + 2
+        parameter_constant + 2
     ));
     emit("ELSE");
     emit(&format!(
         "MOV TEMP[5].z, CONST[0][{}].xxxx",
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1
     ));
     emit(&format!(
         "MOV TEMP[5].w, CONST[0][{}].xxxx",
-        PARAMETER_CONSTANT + 2
+        parameter_constant + 2
     ));
     emit("ENDIF");
     emit("ENDIF");
     if original {
         emit(&format!(
             "ADD TEMP[5].zw, TEMP[5].zwzw, -CONST[0][{}].yyyy",
-            PARAMETER_CONSTANT + 3
+            parameter_constant + 3
         ));
         emit("MAX TEMP[5].zw, TEMP[5].zwzw, IMM[0].zzzz");
     }
@@ -731,9 +879,13 @@ fn append_rounded_rect_sdf(shader: &mut String, instruction: &mut usize, origina
     emit("ADD TEMP[6].x, TEMP[6].xxxx, -TEMP[4].yyyy");
 }
 
-fn fragment_shader() -> String {
+fn fragment_shader(clip_masks: usize) -> String {
     use std::fmt::Write as _;
 
+    let color_constant = clip_masks * CONSTANTS_PER_CLIP_MASK;
+    let mode_constant = color_constant + 1;
+    let parameter_constant = mode_constant + 1;
+    let last_fragment_constant = parameter_constant + 3;
     let mut shader = String::from(&format!(
         "FRAG\n\
 DCL IN[0], GENERIC[0], LINEAR\n\
@@ -742,7 +894,7 @@ DCL OUT[0], COLOR\n\
 DCL SAMP[0]\n\
 DCL SVIEW[0], 2D, FLOAT\n\
 DCL TEMP[0..7]\n\
-DCL CONST[0][0..{LAST_FRAGMENT_CONSTANT}]\n\
+DCL CONST[0][0..{last_fragment_constant}]\n\
 IMM[0] FLT32 {{0.5, 1.0, 0.0, 0.11111111}}\n\
 IMM[1] FLT32 {{1.0, 2.0, 3.0, 4.0}}\n\
 IMM[2] FLT32 {{-1.0, -1.0, 0.0, 0.0}}\n\
@@ -754,14 +906,29 @@ IMM[7] FLT32 {{1.0, 0.0, 0.0, 0.0}}\n\
 IMM[8] FLT32 {{-1.0, 1.0, 0.0, 0.0}}\n\
 IMM[9] FLT32 {{0.0, 1.0, 0.0, 0.0}}\n\
 IMM[10] FLT32 {{1.0, 1.0, 0.0, 0.0}}\n\
-IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
+IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n\
+IMM[12] FLT32 {{0.0, 1.0, 2.0, 3.0}}\n\
+IMM[13] FLT32 {{4.0, 5.0, 6.0, 7.0}}\n\
+IMM[14] FLT32 {{8.0, 9.0, 10.0, 11.0}}\n\
+IMM[15] FLT32 {{12.0, 13.0, 14.0, 15.0}}\n\
+IMM[16] FLT32 {{16.0, 17.0, 18.0, 19.0}}\n"
     ));
     let mut instruction = 0;
     writeln!(shader, "{instruction}: MOV TEMP[3], IMM[0].yyyy").unwrap();
     instruction += 1;
-    for mask in 0..MAX_GPU_CLIP_MASKS {
+    for mask in 0..clip_masks {
         let base = mask * CONSTANTS_PER_CLIP_MASK;
         let edges = base + 5;
+        let immediate = 12 + mask / 4;
+        let component = ["xxxx", "yyyy", "zzzz", "wwww"][mask % 4];
+        writeln!(
+            shader,
+            "{instruction}: SLT TEMP[7].w, IMM[{immediate}].{component}, CONST[0][{mode_constant}].yyyy"
+        )
+        .unwrap();
+        instruction += 1;
+        writeln!(shader, "{instruction}: IF TEMP[7].wwww").unwrap();
+        instruction += 1;
         writeln!(
             shader,
             "{instruction}: SGE TEMP[1].x, IN[1].xxxx, CONST[0][{edges}].xxxx"
@@ -885,6 +1052,8 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
             writeln!(shader, "{instruction}: ENDIF").unwrap();
             instruction += 1;
         }
+        writeln!(shader, "{instruction}: ENDIF").unwrap();
+        instruction += 1;
     }
     writeln!(
         shader,
@@ -894,17 +1063,17 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: SEQ TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[11].xxxx"
+        "{instruction}: SEQ TEMP[7].x, CONST[0][{mode_constant}].xxxx, IMM[11].xxxx"
     )
     .unwrap();
     instruction += 1;
     writeln!(shader, "{instruction}: IF TEMP[7].xxxx").unwrap();
     instruction += 1;
-    append_rounded_rect_sdf(&mut shader, &mut instruction, false);
+    append_rounded_rect_sdf(&mut shader, &mut instruction, parameter_constant, false);
     writeln!(
         shader,
         "{instruction}: ABS TEMP[4].x, CONST[0][{}].xxxx",
-        PARAMETER_CONSTANT + 3
+        parameter_constant + 3
     )
     .unwrap();
     instruction += 1;
@@ -947,7 +1116,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     writeln!(
         shader,
         "{instruction}: SLT TEMP[7].x, CONST[0][{}].xxxx, IMM[0].zzzz",
-        PARAMETER_CONSTANT + 3
+        parameter_constant + 3
     )
     .unwrap();
     instruction += 1;
@@ -963,7 +1132,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(shader, "{instruction}: MOV TEMP[1].w, TEMP[6].xxxx").unwrap();
     instruction += 1;
-    append_rounded_rect_sdf(&mut shader, &mut instruction, true);
+    append_rounded_rect_sdf(&mut shader, &mut instruction, parameter_constant, true);
     writeln!(
         shader,
         "{instruction}: ADD TEMP[6].x, TEMP[6].xxxx, IMM[0].xxxx"
@@ -992,7 +1161,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: MUL TEMP[0], CONST[0][{COLOR_CONSTANT}], TEMP[6].xxxx"
+        "{instruction}: MUL TEMP[0], CONST[0][{color_constant}], TEMP[6].xxxx"
     )
     .unwrap();
     instruction += 1;
@@ -1000,17 +1169,17 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: SEQ TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[1].yyyy"
+        "{instruction}: SEQ TEMP[7].x, CONST[0][{mode_constant}].xxxx, IMM[1].yyyy"
     )
     .unwrap();
     instruction += 1;
     writeln!(shader, "{instruction}: IF TEMP[7].xxxx").unwrap();
     instruction += 1;
-    writeln!(shader, "{instruction}: ADD TEMP[4].xy, CONST[0][{PARAMETER_CONSTANT}].zwzw, -CONST[0][{PARAMETER_CONSTANT}].xyxy").unwrap();
+    writeln!(shader, "{instruction}: ADD TEMP[4].xy, CONST[0][{parameter_constant}].zwzw, -CONST[0][{parameter_constant}].xyxy").unwrap();
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: ADD TEMP[5].xy, IN[1].xyxy, -CONST[0][{PARAMETER_CONSTANT}].xyxy"
+        "{instruction}: ADD TEMP[5].xy, IN[1].xyxy, -CONST[0][{parameter_constant}].xyxy"
     )
     .unwrap();
     instruction += 1;
@@ -1031,14 +1200,14 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     writeln!(
         shader,
         "{instruction}: SGE TEMP[7].y, CONST[0][{}].zzzz, TEMP[5].zzzz",
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1
     )
     .unwrap();
     instruction += 1;
     writeln!(
         shader,
         "{instruction}: SLT TEMP[7].z, CONST[0][{}].wwww, TEMP[5].zzzz",
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1
     )
     .unwrap();
     instruction += 1;
@@ -1057,15 +1226,15 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     writeln!(
         shader,
         "{instruction}: ADD TEMP[5].x, TEMP[5].xxxx, -CONST[0][{}].xxxx",
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1
     )
     .unwrap();
     instruction += 1;
     writeln!(
         shader,
         "{instruction}: ADD TEMP[5].y, CONST[0][{}].yyyy, -CONST[0][{}].xxxx",
-        PARAMETER_CONSTANT + 1,
-        PARAMETER_CONSTANT + 1
+        parameter_constant + 1,
+        parameter_constant + 1
     )
     .unwrap();
     instruction += 1;
@@ -1092,8 +1261,8 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     writeln!(
         shader,
         "{instruction}: LRP TEMP[0], TEMP[5].xxxx, CONST[0][{}], CONST[0][{}]",
-        PARAMETER_CONSTANT + 3,
-        PARAMETER_CONSTANT + 2
+        parameter_constant + 3,
+        parameter_constant + 2
     )
     .unwrap();
     instruction += 1;
@@ -1103,7 +1272,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: SGE TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[1].zzzz"
+        "{instruction}: SGE TEMP[7].x, CONST[0][{mode_constant}].xxxx, IMM[1].zzzz"
     )
     .unwrap();
     instruction += 1;
@@ -1112,7 +1281,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     writeln!(shader, "{instruction}: MOV TEMP[0], IMM[0].zzzz").unwrap();
     instruction += 1;
     for offset in 2..=10 {
-        writeln!(shader, "{instruction}: MAD TEMP[6].xy, CONST[0][{PARAMETER_CONSTANT}].xyxy, IMM[{offset}].xyxy, IN[0].xyxy").unwrap();
+        writeln!(shader, "{instruction}: MAD TEMP[6].xy, CONST[0][{parameter_constant}].xyxy, IMM[{offset}].xyxy, IN[0].xyxy").unwrap();
         instruction += 1;
         writeln!(shader, "{instruction}: TEX TEMP[4], TEMP[6], SAMP[0], 2D").unwrap();
         instruction += 1;
@@ -1125,7 +1294,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     }
     writeln!(
         shader,
-        "{instruction}: SGE TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[1].wwww"
+        "{instruction}: SGE TEMP[7].x, CONST[0][{mode_constant}].xxxx, IMM[1].wwww"
     )
     .unwrap();
     instruction += 1;
@@ -1133,7 +1302,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: MUL TEMP[0], CONST[0][{COLOR_CONSTANT}], TEMP[0].wwww"
+        "{instruction}: MUL TEMP[0], CONST[0][{color_constant}], TEMP[0].wwww"
     )
     .unwrap();
     instruction += 1;
@@ -1141,7 +1310,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: MUL TEMP[0], TEMP[0], CONST[0][{COLOR_CONSTANT}]"
+        "{instruction}: MUL TEMP[0], TEMP[0], CONST[0][{color_constant}]"
     )
     .unwrap();
     instruction += 1;
@@ -1153,7 +1322,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: SEQ TEMP[7].x, CONST[0][{MODE_CONSTANT}].xxxx, IMM[1].xxxx"
+        "{instruction}: SEQ TEMP[7].x, CONST[0][{mode_constant}].xxxx, IMM[1].xxxx"
     )
     .unwrap();
     instruction += 1;
@@ -1161,7 +1330,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: MUL TEMP[0], CONST[0][{COLOR_CONSTANT}], TEMP[0].xxxx"
+        "{instruction}: MUL TEMP[0], CONST[0][{color_constant}], TEMP[0].xxxx"
     )
     .unwrap();
     instruction += 1;
@@ -1169,7 +1338,7 @@ IMM[11] FLT32 {{5.0, 0.0, 0.0, 0.0}}\n"
     instruction += 1;
     writeln!(
         shader,
-        "{instruction}: MUL TEMP[0], TEMP[0], CONST[0][{COLOR_CONSTANT}]"
+        "{instruction}: MUL TEMP[0], TEMP[0], CONST[0][{color_constant}]"
     )
     .unwrap();
     instruction += 1;
@@ -1195,6 +1364,30 @@ fn translated(rectangle: Rect, offset: (i32, i32)) -> Rect {
     }
 }
 
+fn clipped_layer(
+    bounds: Rect,
+    source: TextureRect,
+    clip: Rect,
+) -> Option<(Rect, TextureRect)> {
+    let clipped = intersect(bounds, clip)?;
+    if bounds.width == 0 || bounds.height == 0 {
+        return None;
+    }
+    let scale_x = source.width / bounds.width as f32;
+    let scale_y = source.height / bounds.height as f32;
+    let offset_x = (clipped.x as f64 - bounds.x as f64) as f32;
+    let offset_y = (clipped.y as f64 - bounds.y as f64) as f32;
+    Some((
+        clipped,
+        TextureRect {
+            x: source.x + offset_x * scale_x,
+            y: source.y + offset_y * scale_y,
+            width: clipped.width as f32 * scale_x,
+            height: clipped.height as f32 * scale_y,
+        },
+    ))
+}
+
 pub(crate) fn intersect(left: Rect, right: Rect) -> Option<Rect> {
     let x1 = left.x.max(right.x);
     let y1 = left.y.max(right.y);
@@ -1217,6 +1410,7 @@ pub(crate) fn intersect(left: Rect, right: Rect) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use display_proto::CornerRadius;
     use std::collections::HashSet;
 
     #[test]
@@ -1227,7 +1421,8 @@ mod tests {
         let fixed = [
             VERTEX_ELEMENTS,
             VERTEX_SHADER,
-            FRAGMENT_SHADER,
+            ROUNDED_FRAGMENT_SHADER,
+            FLAT_FRAGMENT_SHADER,
             BLEND,
             REPLACE_BLEND,
             DEPTH_STENCIL_ALPHA,
@@ -1316,28 +1511,110 @@ mod tests {
     }
 
     #[test]
-    fn layer_clip_is_encoded_after_ancestor_masks() {
-        let clip = Rect {
-            x: 50,
-            y: 10,
-            width: 100,
-            height: 20,
+    fn coarse_clip_crops_the_quad_and_preserves_texture_mapping() {
+        let (bounds, source) = clipped_layer(
+            Rect {
+                x: 100,
+                y: 200,
+                width: 400,
+                height: 200,
+            },
+            TextureRect {
+                x: 10.0,
+                y: 20.0,
+                width: 200.0,
+                height: 100.0,
+            },
+            Rect {
+                x: 300,
+                y: 250,
+                width: 100,
+                height: 50,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            bounds,
+            Rect {
+                x: 300,
+                y: 250,
+                width: 100,
+                height: 50,
+            }
+        );
+        assert_eq!(
+            source,
+            TextureRect {
+                x: 110.0,
+                y: 45.0,
+                width: 50.0,
+                height: 25.0,
+            }
+        );
+    }
+
+    #[test]
+    fn rectangular_masks_stay_in_coarse_clip_and_only_rounded_masks_reach_the_shader() {
+        let square = ClipMask {
+            rect: Rect {
+                x: 5,
+                y: 6,
+                width: 7,
+                height: 8,
+            },
+            radii: [CornerRadius::default(); 4],
         };
-        let constants = clip_constants(&[], (0, 0), clip, Rect::default());
-        assert_eq!(f32::from_bits(constants[0]), 50.0);
-        assert_eq!(f32::from_bits(constants[1]), 10.0);
-        assert_eq!(f32::from_bits(constants[4]), 150.0);
-        assert_eq!(f32::from_bits(constants[9]), 30.0);
+        let rounded = ClipMask {
+            rect: Rect {
+                x: 50,
+                y: 10,
+                width: 100,
+                height: 20,
+            },
+            radii: [CornerRadius { x: 10, y: 5 }; 4],
+        };
+        let corner = Rect {
+            x: 53,
+            y: 8,
+            width: 10,
+            height: 5,
+        };
+        let constants = clip_constants(
+            &[square, rounded],
+            (3, -2),
+            corner,
+            Rect::default(),
+        );
+        assert_eq!(rounded_clip_count(&[square, rounded], (3, -2), corner), 1);
+        assert_eq!(
+            rounded_clip_count(
+                &[rounded],
+                (3, -2),
+                Rect {
+                    x: 70,
+                    y: 13,
+                    width: 60,
+                    height: 10,
+                },
+            ),
+            0
+        );
+        assert_eq!(f32::from_bits(constants[0]), 63.0);
+        assert_eq!(f32::from_bits(constants[1]), 13.0);
+        assert_eq!(f32::from_bits(constants[4]), 143.0);
+        assert_eq!(f32::from_bits(constants[9]), 23.0);
         assert_eq!(
             [constants[20], constants[21], constants[22], constants[23],].map(f32::from_bits),
-            [50.0, 10.0, 150.0, 30.0]
+            [53.0, 8.0, 153.0, 28.0]
         );
     }
 
     #[test]
     fn fragment_shader_contains_every_protocol_clip_mask() {
-        let shader = fragment_shader();
-        assert!(shader.contains(&format!("CONST[0][0..{LAST_FRAGMENT_CONSTANT}]")));
+        let shader = fragment_shader(MAX_GPU_CLIP_MASKS);
+        let rounded_mode_constant = MAX_GPU_CLIP_MASKS * CONSTANTS_PER_CLIP_MASK + 1;
+        let rounded_last_constant = rounded_mode_constant + 4;
+        assert!(shader.contains(&format!("CONST[0][0..{rounded_last_constant}]")));
         assert_eq!(
             shader.matches(": IF TEMP[1].xxxx").count(),
             MAX_GPU_CLIP_MASKS * 4
@@ -1346,5 +1623,14 @@ mod tests {
             shader.matches("SLT TEMP[1].y, IN[1].xxxx").count(),
             MAX_GPU_CLIP_MASKS
         );
+        assert_eq!(
+            shader
+                .matches(&format!("CONST[0][{rounded_mode_constant}].yyyy"))
+                .count(),
+            MAX_GPU_CLIP_MASKS
+        );
+        let flat = fragment_shader(0);
+        assert!(flat.contains("DCL CONST[0][0..5]"));
+        assert!(!flat.contains(&format!("CONST[0][{rounded_mode_constant}]")));
     }
 }

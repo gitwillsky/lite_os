@@ -253,6 +253,7 @@ impl Session {
                 owner: Owner::Desktop,
                 busy: true,
                 revision: 0,
+                repair: None,
             },
         );
         self.move_grab = Some(MoveGrab {

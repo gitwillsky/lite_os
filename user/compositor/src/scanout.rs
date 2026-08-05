@@ -20,6 +20,11 @@ struct Target {
     // Without target-local ownership, alternating scanouts cannot derive the
     // old damage region and must repaint the full 3008×1692 output every move.
     move_state: Option<(u32, (i32, i32))>,
+    // Region where this target differs from the latest canonical scene. The
+    // alternating scanout target carries it until reuse; without this owner a
+    // partial scene would either inherit pixels two revisions old or repaint
+    // the complete output every frame.
+    repair: Option<Rect>,
 }
 
 #[derive(Default)]
@@ -150,6 +155,7 @@ impl Scanout {
             buffer,
             revision: 0,
             move_state: None,
+            repair: None,
         })
     }
 
@@ -179,10 +185,12 @@ impl Scanout {
         target: VirglResource,
         list: DisplayListCommit<'_>,
         base: Option<&VirglResource>,
+        repair: Option<Rect>,
+        cache_owner: (u64, u32),
         texture: impl FnMut(u32) -> Option<(&'a VirglResource, TextureFormat)>,
     ) -> io::Result<VirglResource> {
         self.renderer
-            .render_display_list(&target, list, base, texture)?;
+            .render_display_list(&target, list, base, repair, cache_owner, texture)?;
         // Paint and scene composition share one VirGL context, so a later
         // sampling submit observes every earlier target write in context order.
         // Blocking this publication on the CPU would stall evdev/socket polling
@@ -201,6 +209,36 @@ impl Scanout {
         let target = self.graphics.create_texture(size.width, size.height)?;
         self.renderer
             .render_display_list_excluding(&target, list, texture, group)?;
+        Ok(target)
+    }
+
+    /// Flattens every non-moving scene node over the desktop raster captured at
+    /// move authorization time.
+    pub fn compose_move_underlay(
+        &self,
+        desktop: VirglResource,
+        nodes: &[Node],
+        buffers: &Buffers,
+        moving_group: u32,
+    ) -> io::Result<VirglResource> {
+        let target = self
+            .graphics
+            .create_texture(desktop.width(), desktop.height())?;
+        let mut layers = Vec::with_capacity(nodes.len());
+        for node in nodes
+            .iter()
+            .filter(|node| node.window_group != moving_group)
+        {
+            let texture = if node.kind == display_proto::SceneNodeKind::DisplayList {
+                &desktop
+            } else {
+                buffers
+                    .get(node.buffer_id)
+                    .ok_or_else(scene_buffer_disappeared)?
+            };
+            layers.push(scene_layer(texture, node, (0, 0), None));
+        }
+        self.renderer.render(&target, &layers)?;
         Ok(target)
     }
 
@@ -223,6 +261,8 @@ impl Scanout {
         next[1].revision = scene.revision;
         next[0].move_state = None;
         next[1].move_state = None;
+        next[0].repair = None;
+        next[1].repair = None;
         if let Err(error) = self.device.set_crtc(&topology, next[0].framebuffer_id) {
             Self::remove_targets(&self.device, &next);
             let latest_size = topology_size(&self.device.query_topology()?);
@@ -261,6 +301,7 @@ impl Scanout {
         for target in &mut self.targets {
             target.revision = 0;
             target.move_state = None;
+            target.repair = None;
         }
         self.cursor.set_shape(display_proto::CURSOR_DEFAULT);
         self.device
@@ -278,15 +319,20 @@ impl Scanout {
         active_move: Option<(u32, (i32, i32), u32)>,
     ) -> io::Result<()> {
         let back = 1 - self.front;
+        let retained = active_move.is_none()
+            && self.targets[self.front].move_state.is_none()
+            && self.targets[back].move_state.is_none();
+        let damage = retained.then(|| merge_damage(self.targets[back].repair, scene.damage));
         self.render_target(
             &self.targets[back].buffer,
             &scene.nodes,
             buffers,
             active_move,
-            None,
+            damage,
         )?;
         self.targets[back].revision = scene.revision;
         self.targets[back].move_state = active_move.map(|(group, offset, _)| (group, offset));
+        self.targets[back].repair = None;
         Ok(())
     }
 
@@ -367,6 +413,7 @@ impl Scanout {
         )?;
         self.targets[back].revision = revision;
         self.targets[back].move_state = Some((group, offset));
+        self.targets[back].repair = None;
         self.device
             .page_flip(&self.topology, self.targets[back].framebuffer_id, revision)?;
         self.move_frames.submitted(revision);
@@ -408,8 +455,27 @@ impl Scanout {
     }
 
     /// Flips the GPU-rendered back target for one accepted scene revision.
-    pub fn present_scene(&mut self, revision: u64, cursor: (i32, i32)) -> io::Result<FlipEvent> {
+    pub fn present_scene(
+        &mut self,
+        revision: u64,
+        damage: Rect,
+        cursor: (i32, i32),
+    ) -> io::Result<FlipEvent> {
+        let old_front = self.front;
+        let old_was_moving = self.targets[old_front].move_state.is_some();
         let event = self.present(revision)?;
+        self.targets[old_front].repair = if old_was_moving {
+            Some(Rect {
+                x: 0,
+                y: 0,
+                width: self.targets[old_front].buffer.width(),
+                height: self.targets[old_front].buffer.height(),
+            })
+        } else if damage.width != 0 && damage.height != 0 {
+            Some(damage)
+        } else {
+            None
+        };
         if !self.cursor_published {
             self.cursor.present(&self.device, &self.topology, cursor)?;
             self.cursor_published = true;
@@ -446,38 +512,50 @@ impl Scanout {
         active_move: Option<(u32, (i32, i32), u32)>,
         damage: Option<Rect>,
     ) -> io::Result<()> {
-        let mut layers = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            let id = source_buffer_id(node, active_move);
-            let texture = buffers.get(id).ok_or_else(scene_buffer_disappeared)?;
-            let offset = active_move
-                .filter(|(group, _, _)| *group == node.window_group)
-                .map_or((0, 0), |(_, offset, _)| offset);
-            layers.push(TextureLayer {
-                texture,
-                source: TextureRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: texture.width() as f32,
-                    height: texture.height() as f32,
-                },
-                bounds: translated(node.bounds, offset),
-                clip: damage
-                    .and_then(|damage| intersect(translated(node.clip, offset), damage))
-                    .unwrap_or_else(|| {
-                        if damage.is_some() {
-                            Rect::default()
-                        } else {
-                            translated(node.clip, offset)
-                        }
-                    }),
-                clip_masks: &node.clip_masks,
-                clip_offset: offset,
-                color: [1.0; 4],
-                mode: crate::gpu::TextureMode::Color,
-                sampling: crate::gpu::TextureSampling::Linear,
-                wrap: crate::gpu::TextureWrap::Edge,
-            });
+        let mut layers = Vec::with_capacity(nodes.len() + usize::from(active_move.is_some()));
+        if let Some((moving_group, offset, underlay_id)) = active_move {
+            let underlay = buffers
+                .get(underlay_id)
+                .ok_or_else(scene_buffer_disappeared)?;
+            let screen = Rect {
+                x: 0,
+                y: 0,
+                width: underlay.width(),
+                height: underlay.height(),
+            };
+            layers.push(texture_layer(underlay, screen, damage.unwrap_or(screen), &[], (0, 0)));
+            let last_moving = nodes
+                .iter()
+                .rposition(|node| node.window_group == moving_group)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "move group disappeared"))?;
+            for (index, node) in nodes.iter().enumerate() {
+                let source = move_node_source(index, last_moving, node, moving_group);
+                let Some(source) = source else {
+                    continue;
+                };
+                let texture = match source {
+                    MoveNodeSource::Original => buffers
+                        .get(node.buffer_id)
+                        .ok_or_else(scene_buffer_disappeared)?,
+                    MoveNodeSource::Underlay => underlay,
+                };
+                let node_offset = if node.window_group == moving_group {
+                    offset
+                } else {
+                    (0, 0)
+                };
+                layers.push(scene_layer(texture, node, node_offset, damage));
+            }
+        } else {
+            for node in nodes {
+                let texture = buffers
+                    .get(node.buffer_id)
+                    .ok_or_else(scene_buffer_disappeared)?;
+                layers.push(scene_layer(texture, node, (0, 0), damage));
+            }
+        }
+        if let Some(damage) = damage {
+            self.renderer.clear_damage(target, damage)?;
         }
         self.renderer
             .render_layers(target, &layers, damage.is_none())
@@ -529,16 +607,77 @@ fn take_master(device: &DrmDevice) -> io::Result<()> {
     }
 }
 
-fn source_buffer_id(node: &Node, active_move: Option<(u32, (i32, i32), u32)>) -> u32 {
-    active_move.map_or(node.buffer_id, |(window_group, _, underlay)| {
-        if node.kind == display_proto::SceneNodeKind::DisplayList
-            && node.window_group != window_group
-        {
-            underlay
-        } else {
-            node.buffer_id
-        }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MoveNodeSource {
+    Original,
+    Underlay,
+}
+
+fn move_node_source(
+    index: usize,
+    last_moving: usize,
+    node: &Node,
+    moving_group: u32,
+) -> Option<MoveNodeSource> {
+    if node.window_group == moving_group {
+        return Some(MoveNodeSource::Original);
+    }
+    if index <= last_moving {
+        return None;
+    }
+    Some(if node.kind == display_proto::SceneNodeKind::DisplayList {
+        MoveNodeSource::Underlay
+    } else {
+        MoveNodeSource::Original
     })
+}
+
+fn scene_layer<'a>(
+    texture: &'a VirglResource,
+    node: &'a Node,
+    offset: (i32, i32),
+    damage: Option<Rect>,
+) -> TextureLayer<'a> {
+    let clip = translated(node.clip, offset);
+    texture_layer(
+        texture,
+        translated(node.bounds, offset),
+        damage.and_then(|damage| intersect(clip, damage)).unwrap_or_else(|| {
+            if damage.is_some() {
+                Rect::default()
+            } else {
+                clip
+            }
+        }),
+        &node.clip_masks,
+        offset,
+    )
+}
+
+fn texture_layer<'a>(
+    texture: &'a VirglResource,
+    bounds: Rect,
+    clip: Rect,
+    clip_masks: &'a [display_proto::ClipMask],
+    clip_offset: (i32, i32),
+) -> TextureLayer<'a> {
+    TextureLayer {
+        texture,
+        source: TextureRect {
+            x: 0.0,
+            y: 0.0,
+            width: texture.width() as f32,
+            height: texture.height() as f32,
+        },
+        bounds,
+        clip,
+        clip_masks,
+        clip_offset,
+        color: [1.0; 4],
+        mode: crate::gpu::TextureMode::Color,
+        sampling: crate::gpu::TextureSampling::Linear,
+        wrap: crate::gpu::TextureWrap::Edge,
+    }
 }
 
 fn translated(rectangle: Rect, offset: (i32, i32)) -> Rect {
@@ -582,6 +721,22 @@ fn union(left: Rect, right: Rect) -> Rect {
         y: y1,
         width: x2.saturating_sub(x1) as u32,
         height: y2.saturating_sub(y1) as u32,
+    }
+}
+
+fn merge_damage(repair: Option<Rect>, changed: Rect) -> Rect {
+    match repair {
+        Some(repair) if repair.width == 0 || repair.height == 0 => changed,
+        Some(repair)
+            if repair.width != 0
+                && repair.height != 0
+                && changed.width != 0
+                && changed.height != 0 =>
+        {
+            union(repair, changed)
+        }
+        Some(repair) => repair,
+        None => changed,
     }
 }
 
@@ -641,6 +796,70 @@ mod tests {
                 width: 80,
                 height: 50,
             })
+        );
+    }
+
+    #[test]
+    fn alternating_scanout_repairs_old_and_current_scene_damage() {
+        let old = Rect {
+            x: 100,
+            y: 200,
+            width: 80,
+            height: 60,
+        };
+        let current = Rect {
+            x: 160,
+            y: 180,
+            width: 100,
+            height: 50,
+        };
+        assert_eq!(
+            merge_damage(Some(old), current),
+            Rect {
+                x: 100,
+                y: 180,
+                width: 160,
+                height: 80,
+            }
+        );
+        assert_eq!(merge_damage(None, current), current);
+        assert_eq!(merge_damage(Some(old), Rect::default()), old);
+    }
+
+    #[test]
+    fn move_replays_only_the_moving_group_and_nodes_above_it() {
+        let node = |kind, window_group| Node {
+            kind,
+            window_group,
+            buffer_id: window_group + 1,
+            bounds: Rect::default(),
+            clip: Rect::default(),
+            clip_masks: Vec::new(),
+        };
+        let nodes = [
+            node(display_proto::SceneNodeKind::DisplayList, 0),
+            node(display_proto::SceneNodeKind::DisplayList, 7),
+            node(display_proto::SceneNodeKind::ForeignSurface, 7),
+            node(display_proto::SceneNodeKind::DisplayList, 9),
+            node(display_proto::SceneNodeKind::ForeignSurface, 9),
+        ];
+        let last_moving = 2;
+        assert_eq!(move_node_source(0, last_moving, &nodes[0], 7), None);
+        assert_eq!(
+            move_node_source(1, last_moving, &nodes[1], 7),
+            Some(MoveNodeSource::Original)
+        );
+        assert_eq!(
+            move_node_source(2, last_moving, &nodes[2], 7),
+            Some(MoveNodeSource::Original)
+        );
+        assert_eq!(
+            move_node_source(3, last_moving, &nodes[3], 7),
+            Some(MoveNodeSource::Underlay)
+        );
+        assert_eq!(
+            move_node_source(4, last_moving, &nodes[4], 7),
+            Some(MoveNodeSource::Original)
         );
     }
 

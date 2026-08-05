@@ -42,6 +42,8 @@ struct AppPresentation {
 pub struct Scene {
     pub revision: u64,
     pub output_size: display_proto::Size,
+    /// Conservative physical region changed from the preceding accepted scene.
+    pub damage: Rect,
     pub nodes: Vec<Node>,
     pub(super) finishes_move: bool,
     desktop_buffers: Vec<u32>,
@@ -83,6 +85,13 @@ impl Session {
         let mut desktop_buffers = Vec::new();
         let mut adoptions = Vec::new();
         let mut routing = Vec::new();
+        let output = Rect {
+            x: 0,
+            y: 0,
+            width: self.display.width,
+            height: self.display.height,
+        };
+        let mut damage = Rect::default();
         for node in commit.nodes() {
             if node.kind == SceneNodeKind::ForeignSurface
                 && !self.apps.contains_key(&node.source_id)
@@ -92,6 +101,11 @@ impl Session {
                     node.source_id
                 );
                 continue;
+            }
+            for changed in node.damage.iter() {
+                if let Some(changed) = intersect_rect(changed, output) {
+                    damage = union_rect(damage, changed);
+                }
             }
             // The composited bounds default to the declared node size; the
             // foreign-surface fallback may clamp them to a stale buffer's real
@@ -272,6 +286,7 @@ impl Session {
         Ok(Scene {
             revision: commit.revision,
             output_size: self.display,
+            damage,
             nodes,
             finishes_move,
             desktop_buffers,
@@ -396,6 +411,7 @@ impl Scene {
         Self {
             revision,
             output_size: display_proto::Size::default(),
+            damage: Rect::default(),
             nodes: Vec::new(),
             finishes_move: false,
             desktop_buffers: Vec::new(),
@@ -408,5 +424,94 @@ impl Scene {
     /// Reports that this is a terminal protocol acknowledgement, not a scene.
     pub fn is_discarded(&self) -> bool {
         self.nodes.is_empty()
+    }
+}
+
+fn intersect_rect(left: Rect, right: Rect) -> Option<Rect> {
+    let x1 = left.x.max(right.x);
+    let y1 = left.y.max(right.y);
+    let x2 = left
+        .x
+        .saturating_add_unsigned(left.width)
+        .min(right.x.saturating_add_unsigned(right.width));
+    let y2 = left
+        .y
+        .saturating_add_unsigned(left.height)
+        .min(right.y.saturating_add_unsigned(right.height));
+    (x2 > x1 && y2 > y1).then_some(Rect {
+        x: x1,
+        y: y1,
+        width: x2.saturating_sub(x1) as u32,
+        height: y2.saturating_sub(y1) as u32,
+    })
+}
+
+fn union_rect(left: Rect, right: Rect) -> Rect {
+    if left.width == 0 || left.height == 0 {
+        return right;
+    }
+    if right.width == 0 || right.height == 0 {
+        return left;
+    }
+    let x1 = left.x.min(right.x);
+    let y1 = left.y.min(right.y);
+    let x2 = left
+        .x
+        .saturating_add_unsigned(left.width)
+        .max(right.x.saturating_add_unsigned(right.width));
+    let y2 = left
+        .y
+        .saturating_add_unsigned(left.height)
+        .max(right.y.saturating_add_unsigned(right.height));
+    Rect {
+        x: x1,
+        y: y1,
+        width: x2.saturating_sub(x1) as u32,
+        height: y2.saturating_sub(y1) as u32,
+    }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::{intersect_rect, union_rect};
+    use display_proto::Rect;
+
+    #[test]
+    fn scene_damage_is_clipped_to_output_then_conservatively_unioned() {
+        let output = Rect {
+            x: 0,
+            y: 0,
+            width: 300,
+            height: 200,
+        };
+        let left = intersect_rect(
+            Rect {
+                x: -20,
+                y: 30,
+                width: 80,
+                height: 50,
+            },
+            output,
+        )
+        .unwrap();
+        let right = intersect_rect(
+            Rect {
+                x: 250,
+                y: 10,
+                width: 100,
+                height: 30,
+            },
+            output,
+        )
+        .unwrap();
+        assert_eq!(
+            union_rect(left, right),
+            Rect {
+                x: 0,
+                y: 10,
+                width: 300,
+                height: 70,
+            }
+        );
     }
 }

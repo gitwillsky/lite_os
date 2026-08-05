@@ -1,4 +1,6 @@
-//! Frame-local A8 glyph atlas and GPU text command geometry.
+//! Persistent A8 glyph atlas and GPU text command geometry.
+
+use std::collections::HashMap;
 
 use display_proto::{Glyph, Rect, Size};
 use parley::{Alignment, AlignmentOptions, layout::PositionedLayoutItem};
@@ -7,6 +9,22 @@ use super::{Font, GlyphKey, wraps};
 use crate::{renderer::PhysicalRect, style::Computed};
 
 const ATLAS_WIDTH: usize = 2048;
+const MAX_ATLAS_GLYPHS: usize = 4096;
+
+/// Stable raster identity inside one renderer-owned atlas.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) enum AtlasKey {
+    Ui {
+        bold: bool,
+        glyph: u32,
+        size_bits: u32,
+        italic: bool,
+    },
+    Terminal {
+        bold: bool,
+        glyph: u32,
+    },
+}
 
 /// One colored glyph run ready for the display-list protocol.
 pub(crate) struct GpuTextRun {
@@ -14,26 +32,49 @@ pub(crate) struct GpuTextRun {
     pub(crate) glyphs: Vec<Glyph>,
 }
 
-/// One frame's tightly packed A8 glyph coverage texture.
+/// One renderer's tightly packed A8 glyph coverage texture.
+#[derive(Default)]
 pub(crate) struct GlyphAtlas {
     bytes: Vec<u8>,
     x: usize,
     y: usize,
     row_height: usize,
+    placements: HashMap<AtlasKey, Rect>,
+    dirty: bool,
 }
 
 impl GlyphAtlas {
     pub(crate) fn new() -> Self {
-        Self {
-            bytes: Vec::new(),
-            x: 0,
-            y: 0,
-            row_height: 0,
-        }
+        Self::default()
     }
 
-    /// Packs one bitmap and returns its source rectangle.
-    pub(crate) fn insert(&mut self, width: usize, height: usize, data: &[u8]) -> Option<Rect> {
+    /// Starts one paint pass and bounds glyph storage across an unbounded app lifetime.
+    pub(crate) fn begin_frame(&mut self) {
+        if self.placements.len() < MAX_ATLAS_GLYPHS {
+            return;
+        }
+        // The current document is repacked immediately after this reset. Without
+        // the bound, visiting new CJK content forever would make both guest RAM
+        // and the next immutable texture upload grow without limit.
+        self.bytes.clear();
+        self.x = 0;
+        self.y = 0;
+        self.row_height = 0;
+        self.placements.clear();
+        self.dirty = true;
+    }
+
+    /// Reuses or packs one stable bitmap and returns its source rectangle.
+    pub(crate) fn insert(
+        &mut self,
+        key: AtlasKey,
+        width: usize,
+        height: usize,
+        data: &[u8],
+    ) -> Option<Rect> {
+        if let Some(source) = self.placements.get(&key) {
+            return Some(*source);
+        }
         if width == 0 || height == 0 || width > ATLAS_WIDTH || data.len() != width * height {
             return None;
         }
@@ -60,17 +101,27 @@ impl GlyphAtlas {
         };
         self.x += width;
         self.row_height = self.row_height.max(height);
+        self.placements.insert(key, source);
+        self.dirty = true;
         Some(source)
     }
 
-    pub(crate) fn finish(self) -> Option<(Size, Vec<u8>)> {
+    pub(crate) fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub(crate) fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+
+    pub(crate) fn upload(&self) -> Option<(Size, Vec<u8>)> {
         let height = self.y.checked_add(self.row_height)?;
         (height != 0).then_some((
             Size {
                 width: ATLAS_WIDTH as u32,
                 height: height as u32,
             },
-            self.bytes,
+            self.bytes.clone(),
         ))
     }
 }
@@ -230,8 +281,16 @@ impl Font {
             cache.insert(key, rasterized);
         }
         let glyph = cache.get(key).expect("glyph inserted");
-        let (bitmap, width, x_offset) = oblique_bitmap(glyph, italic);
-        let Some(source) = atlas.insert(width, glyph.height as usize, &bitmap) else {
+        let (width, x_offset) = oblique_geometry(glyph, italic);
+        let atlas_key = AtlasKey::Ui {
+            bold: key.bold,
+            glyph: key.glyph,
+            size_bits: key.size_bits,
+            italic,
+        };
+        let bitmap = italic.then(|| oblique_bitmap(glyph));
+        let data = bitmap.as_deref().unwrap_or(&glyph.data);
+        let Some(source) = atlas.insert(atlas_key, width, glyph.height as usize, data) else {
             return;
         };
         let destination = Rect {
@@ -249,10 +308,19 @@ impl Font {
     }
 }
 
-fn oblique_bitmap(glyph: &super::raster::CachedGlyph, italic: bool) -> (Vec<u8>, usize, i32) {
+fn oblique_geometry(glyph: &super::raster::CachedGlyph, italic: bool) -> (usize, i32) {
     if !italic {
-        return (glyph.data.clone(), glyph.width as usize, 0);
+        return (glyph.width as usize, 0);
     }
+    let offsets = (0..glyph.height as i32)
+        .map(|row| (glyph.top - row) / 5)
+        .collect::<Vec<_>>();
+    let minimum = offsets.iter().copied().min().unwrap_or(0);
+    let maximum = offsets.iter().copied().max().unwrap_or(0);
+    (glyph.width as usize + (maximum - minimum) as usize, minimum)
+}
+
+fn oblique_bitmap(glyph: &super::raster::CachedGlyph) -> Vec<u8> {
     let offsets = (0..glyph.height as i32)
         .map(|row| (glyph.top - row) / 5)
         .collect::<Vec<_>>();
@@ -266,7 +334,7 @@ fn oblique_bitmap(glyph: &super::raster::CachedGlyph, italic: bool) -> (Vec<u8>,
             &glyph.data[row * glyph.width as usize..(row + 1) * glyph.width as usize],
         );
     }
-    (output, width, minimum)
+    output
 }
 
 fn crop(source: Rect, destination: Rect, clip: PhysicalRect) -> Option<(Rect, Rect)> {

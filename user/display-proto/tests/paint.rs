@@ -128,6 +128,43 @@ fn display_list_rejects_unbalanced_groups_and_non_finite_values() {
 }
 
 #[test]
+fn backdrop_prefix_tracks_only_commands_that_can_feed_the_effect() {
+    fn prefix(before: u32, after: u32) -> Vec<u8> {
+        let commands = [
+            DisplayCommand::SolidRect {
+                rect: rect(0, 0, 800, 600),
+                radii: [CornerRadius::default(); 4],
+                color: before,
+            },
+            DisplayCommand::BackdropBlur {
+                rect: rect(100, 100, 300, 300),
+                radii: RADII,
+                radius: 24.0,
+            },
+            DisplayCommand::SolidRect {
+                rect: rect(120, 120, 40, 40),
+                radii: [CornerRadius::default(); 4],
+                color: after,
+            },
+        ];
+        let mut bytes = [0; 512];
+        let encoded =
+            DisplayListCommit::encode(&mut bytes, 1, 1, 0, rect(0, 0, 800, 600), &commands)
+                .expect("display list");
+        let frame = parse_frame(encoded).expect("frame");
+        let commit = DisplayListCommit::parse(frame.payload()).expect("validated list");
+        let mut decoded = commit.commands();
+        decoded.next().expect("backdrop input");
+        decoded.next().expect("backdrop");
+        decoded.consumed_bytes().to_vec()
+    }
+
+    let stable = prefix(0xff10_2030, 0xff40_5060);
+    assert_eq!(stable, prefix(0xff10_2030, 0xff70_8090));
+    assert_ne!(stable, prefix(0xff11_2233, 0xff40_5060));
+}
+
+#[test]
 fn texture_upload_contract_is_tightly_packed_and_chunked() {
     let create = TextureCreate {
         texture_id: 4,

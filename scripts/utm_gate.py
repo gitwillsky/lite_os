@@ -62,7 +62,7 @@ def boot_graphics(
 def measure_frame_timing(
     image: Path,
     kernel: Path,
-    settle_s: float = 30.0,
+    settle_s: float = 90.0,
     timeout_seconds: int = 180,
 ) -> dict[str, int]:
     """Drive and measure the sole UTM VirGL compositor path through QMP."""
@@ -105,6 +105,7 @@ def measure_frame_timing(
     reader_thread.start()
     qmp: QmpClient | None = None
     windows: list[dict[str, int]] = []
+    phase_windows: dict[str, int] = {}
     second_window_opened = False
     deadline = time.monotonic() + timeout_seconds
     try:
@@ -161,7 +162,17 @@ def measure_frame_timing(
         )
         second_window_opened = True
         workload_deadline = min(deadline, time.monotonic() + settle_s)
-        start_frame_workload(qmp, workload_deadline - time.monotonic(), stop_reading)
+
+        def phase_finished(phase: str) -> None:
+            text = current_text()
+            phase_windows[phase] = len(parse_windows(text))
+
+        start_frame_workload(
+            qmp,
+            workload_deadline - time.monotonic(),
+            stop_reading,
+            phase_finished,
+        )
         windows = parse_windows(current_text())
         if not windows:
             time.sleep(0.5)
@@ -179,9 +190,20 @@ def measure_frame_timing(
             or text_running.count("lite-ui: desktop ready") != 1
         ):
             raise RuntimeError(
-                "frame-timing workload did not remain on one authorized move lifecycle"
+                "frame-timing workload left the authorized interaction lifecycle"
                 f"\n--- output tail ---\n{_tail(text_running)}"
             )
+        previous = 0
+        for phase in ("resize", "scroll", "move"):
+            current = phase_windows.get(phase, 0)
+            print(f"frame-timing phase={phase} windows={windows[previous:current]!r}")
+            if current <= previous:
+                raise RuntimeError(
+                    f"frame-timing {phase} phase did not complete a frame-stats window; "
+                    f"phase_windows={phase_windows!r}"
+                    f"\n--- output tail ---\n{_tail(text_running)}"
+                )
+            previous = current
     finally:
         stop_reading.set()
         reader_thread.join(timeout=2)

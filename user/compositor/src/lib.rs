@@ -63,11 +63,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let size = session.paint_size(owner)?;
             let target = match session.take_paint_target(owner, size) {
                 Some(target) => target,
-                None => scanout.create_paint_target(size)?,
+                None => session::PaintTarget {
+                    pixels: scanout.create_paint_target(size)?,
+                    repair: Some(display_proto::Rect {
+                        x: 0,
+                        y: 0,
+                        width: size.width,
+                        height: size.height,
+                    }),
+                },
             };
             let list = session.paint_list(owner)?;
             let revision = list.revision;
             let configuration_serial = list.configuration_serial;
+            let damage = list.damage;
+            let cache_owner = session.paint_cache_owner(owner);
             let base = if list.base_revision == 0 {
                 None
             } else {
@@ -79,20 +89,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         })?,
                 )
             };
-            let target = scanout.render_display_list(target, list, base, |texture_id| {
-                session.paint_texture(owner, texture_id)
-            })?;
-            session.defer_paint(owner, target, revision, configuration_serial)?;
+            let repair = target.repair;
+            let target = scanout.render_display_list(
+                target.pixels,
+                list,
+                base,
+                repair,
+                cache_owner,
+                |texture_id| session.paint_texture(owner, texture_id),
+            )?;
+            session.publish_paint(
+                owner,
+                target,
+                revision,
+                configuration_serial,
+                damage,
+            )?;
         }
         // A move underlay is needed only after the desktop authorizes an exact
         // pointer-down. Eagerly rendering one full-output texture per window on
         // every scene made ordinary hover and typing pay seconds of unrelated
         // GPU work.
         if let Some(request) = activity.move_begin {
-            let target = scanout.render_display_list_excluding(
+            let desktop = scanout.render_display_list_excluding(
                 session.paint_size(session::Owner::Desktop)?,
                 session.paint_list(session::Owner::Desktop)?,
                 |texture_id| session.paint_texture(session::Owner::Desktop, texture_id),
+                request.surface_id,
+            )?;
+            let target = scanout.compose_move_underlay(
+                desktop,
+                session.presented_nodes(),
+                session.buffers(),
                 request.surface_id,
             )?;
             if let Some(error) = session.begin_move(request, target)? {
@@ -133,7 +161,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
-                scanout.present_scene(scene.revision, input.position())?
+                scanout.present_scene(scene.revision, scene.damage, input.position())?
             };
             session.presented(&scene, event)?;
             // The scene frame already sampled the move transform, so an older

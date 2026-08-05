@@ -679,6 +679,17 @@ pub struct DisplayCommands<'a> {
     remaining: usize,
 }
 
+impl<'a> DisplayCommands<'a> {
+    /// Returns the exact validated wire prefix consumed by preceding iterations.
+    ///
+    /// The compositor uses this prefix as the complete pixel-dependency key for
+    /// an effect command. Any changed command or immutable texture identity
+    /// before that effect therefore invalidates its cached output.
+    pub fn consumed_bytes(&self) -> &'a [u8] {
+        self.reader.consumed()
+    }
+}
+
 impl<'a> Iterator for DisplayCommands<'a> {
     type Item = DisplayCommand<'a>;
 

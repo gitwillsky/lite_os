@@ -13,7 +13,7 @@ mod scene;
 mod wire;
 
 pub use buffers::Buffers;
-pub(crate) use buffers::Owner;
+pub(crate) use buffers::{Owner, PaintTarget};
 use cursor::{cursor_on_focus_change, cursor_request};
 use paint_store::PaintStore;
 pub use scene::{Node, Scene};
@@ -26,7 +26,6 @@ use std::{
     fs, io,
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::{UnixListener, UnixStream},
-    time::Duration,
 };
 
 use display_proto::{
@@ -91,14 +90,6 @@ struct App {
     first_scene_presented: bool,
 }
 
-/// One submitted GPU paint whose completion fence has not signalled yet.
-struct PendingPaint {
-    owner: Owner,
-    target: VirglResource,
-    revision: u64,
-    configuration_serial: u64,
-}
-
 /// One compositor epoch. Desktop disconnect clears every app and client buffer.
 pub struct Session {
     listener: UnixListener,
@@ -113,16 +104,12 @@ pub struct Session {
     buffers: Buffers,
     paint: PaintStore,
     pending_paint: VecDeque<Owner>,
-    /// Submitted targets remain private until their GPU fence completes.
-    /// Publishing them earlier lets a scene sample unfinished pixels; waiting
-    /// synchronously here instead would stall pointer and keyboard routing.
-    pending_targets: VecDeque<PendingPaint>,
     desktop_render_id: Option<u32>,
-    /// One retired GPU paint target per client owner. Reusing this second
-    /// buffer avoids three synchronous VirtIO resource-creation round trips on
-    /// every repaint; without the exact owner key a client could overwrite a
-    /// target still referenced by another surface's scene.
-    idle_targets: HashMap<Owner, VirglResource>,
+    /// One retired GPU paint target and its accumulated stale region per client
+    /// owner. The exact owner key prevents cross-surface overwrite; retaining
+    /// the repair region prevents retained scroll/resize from copying the full
+    /// output merely because double buffering alternates target storage.
+    idle_targets: HashMap<Owner, buffers::PaintTarget>,
     next_buffer_id: u32,
     next_surface_id: u32,
     first_scene_presented: bool,
@@ -195,7 +182,6 @@ impl Session {
             },
             paint: PaintStore::new(),
             pending_paint: VecDeque::new(),
-            pending_targets: VecDeque::new(),
             desktop_render_id: None,
             idle_targets: HashMap::new(),
             next_buffer_id: 1,
@@ -263,6 +249,17 @@ impl Session {
             .ok_or_else(|| invalid("display list disappeared"))
     }
 
+    /// Returns the epoch-qualified identity for one client's GPU effect cache.
+    pub(crate) fn paint_cache_owner(&self, owner: Owner) -> (u64, u32) {
+        (
+            self.epoch,
+            match owner {
+                Owner::Desktop => 0,
+                Owner::App(surface_id) => surface_id,
+            },
+        )
+    }
+
     pub(crate) fn paint_texture(
         &self,
         owner: Owner,
@@ -272,9 +269,14 @@ impl Session {
     }
 
     /// Takes the owner's retired half of its GPU paint double buffer.
-    pub(crate) fn take_paint_target(&mut self, owner: Owner, size: Size) -> Option<VirglResource> {
+    pub(crate) fn take_paint_target(
+        &mut self,
+        owner: Owner,
+        size: Size,
+    ) -> Option<buffers::PaintTarget> {
         let target = self.idle_targets.remove(&owner)?;
-        (target.width() == size.width && target.height() == size.height).then_some(target)
+        (target.pixels.width() == size.width && target.pixels.height() == size.height)
+            .then_some(target)
     }
 
     /// Resolves the exact pixel owner named by a retained display-list commit.
@@ -307,63 +309,46 @@ impl Session {
         let Some(buffer) = self.buffers.values.remove(&id) else {
             return;
         };
-        self.idle_targets.insert(buffer.owner, buffer.pixels);
+        self.idle_targets.insert(
+            buffer.owner,
+            buffers::PaintTarget {
+                pixels: buffer.pixels,
+                repair: buffer.repair,
+            },
+        );
     }
 
-    /// Retains one submitted target until its GPU fence signals.
-    pub(crate) fn defer_paint(
+    /// Publishes one submitted paint into the ordered display protocol.
+    ///
+    /// Paint and later scene composition use the compositor's sole VirGL
+    /// context, so submission order is the synchronization contract. Waiting
+    /// for the paint fence here would serialize those two GPU stages and add a
+    /// complete fence latency to every scroll or keypress.
+    pub(crate) fn publish_paint(
         &mut self,
         owner: Owner,
         target: VirglResource,
         revision: u64,
         configuration_serial: u64,
+        damage: Rect,
     ) -> io::Result<()> {
-        if self
-            .pending_targets
-            .iter()
-            .any(|pending| pending.owner == owner)
-        {
-            return Err(invalid("owner already has a GPU paint in flight"));
-        }
-        if self.pending_targets.len() >= MAX_APP_SURFACES + 1 {
-            return Err(invalid("GPU paint queue exceeded client capacity"));
-        }
-        self.pending_targets.push_back(PendingPaint {
-            owner,
-            target,
-            revision,
-            configuration_serial,
-        });
-        Ok(())
-    }
-
-    fn complete_ready_paints(&mut self) -> io::Result<()> {
-        loop {
-            let Some(pending) = self.pending_targets.front() else {
-                return Ok(());
-            };
-            if !pending.target.is_ready()? {
-                return Ok(());
-            }
-            let pending = self
-                .pending_targets
-                .pop_front()
-                .expect("ready GPU paint disappeared");
-            self.publish_paint(pending)?;
-        }
-    }
-
-    fn publish_paint(&mut self, pending: PendingPaint) -> io::Result<()> {
-        let PendingPaint {
-            owner,
-            target,
-            revision,
-            configuration_serial,
-        } = pending;
         let size = Size {
             width: target.width(),
             height: target.height(),
         };
+        // Every older paint target for this owner now differs from the new
+        // canonical pixels exactly where this commit changed them. Accumulating
+        // that region at publication keeps target/base ownership atomic; trying
+        // to infer it later from revision numbers would lose non-consecutive or
+        // empty-damage commits.
+        for buffer in self
+            .buffers
+            .values
+            .values_mut()
+            .filter(|buffer| buffer.owner == owner && buffer.revision != 0)
+        {
+            buffer.repair = buffers::extend_repair(buffer.repair, damage);
+        }
         let id = self.take_buffer_id()?;
         self.buffers.values.insert(
             id,
@@ -373,6 +358,7 @@ impl Session {
                 owner,
                 busy: false,
                 revision,
+                repair: None,
             },
         );
         match owner {
@@ -440,19 +426,11 @@ impl Session {
     ///
     /// Returns an error when polling or a required session transition fails.
     pub fn poll(&mut self, wake: &[Option<BorrowedFd<'_>>]) -> io::Result<Activity> {
-        self.complete_ready_paints()?;
-        // Display messages are globally ordered around paint publication. While
-        // a target is in flight, continuing to read commits could overwrite the
-        // retained base revision before its predecessor is acknowledged. Input,
-        // flips and hotplug remain live while the fence is polled non-blockingly.
-        let poll_clients = self.pending_targets.is_empty();
         let mut app_ids = [0; MAX_APP_SURFACES];
         let mut app_count = 0;
-        if poll_clients {
-            for id in self.apps.keys().copied() {
-                app_ids[app_count] = id;
-                app_count += 1;
-            }
+        for id in self.apps.keys().copied() {
+            app_ids[app_count] = id;
+            app_count += 1;
         }
         let (
             listener_ready,
@@ -469,7 +447,7 @@ impl Session {
             let mut descriptor_count = 0;
             descriptors[descriptor_count] = PollFd::new(self.listener.as_fd(), PollEvents::READ);
             descriptor_count += 1;
-            let desktop_polled = poll_clients && self.desktop.is_some();
+            let desktop_polled = self.desktop.is_some();
             if desktop_polled {
                 let desktop = self.desktop.as_ref().expect("desktop disappeared");
                 descriptors[descriptor_count] =
@@ -494,8 +472,7 @@ impl Session {
             descriptor_count += 1;
             let agent_offset =
                 self.append_spice_agent_poll(&mut descriptors, &mut descriptor_count);
-            let timeout = (!self.pending_targets.is_empty()).then_some(Duration::from_millis(1));
-            unix::poll(&mut descriptors[..descriptor_count], timeout)?;
+            unix::poll(&mut descriptors[..descriptor_count], None)?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(desktop_polled);
             let desktop_ready = desktop_polled && descriptors[1].returned() != PollEvents::EMPTY;
@@ -522,7 +499,6 @@ impl Session {
                 agent_ready,
             )
         };
-        self.complete_ready_paints()?;
         let agent_output = if agent_ready {
             self.pump_spice_agent()?
         } else {
@@ -691,8 +667,6 @@ impl Session {
             .values
             .retain(|_, buffer| buffer.owner != Owner::App(surface_id));
         self.paint.remove_owner(Owner::App(surface_id));
-        self.pending_targets
-            .retain(|pending| pending.owner != Owner::App(surface_id));
         self.idle_targets.remove(&Owner::App(surface_id));
         self.clear_pointer_capture(Some(surface_id));
         if let Ok(stream) = self.desktop_stream() {
@@ -724,7 +698,6 @@ impl Session {
         self.buffers.values.clear();
         self.paint = PaintStore::new();
         self.pending_paint.clear();
-        self.pending_targets.clear();
         self.desktop_render_id = None;
         self.idle_targets.clear();
         self.first_scene_presented = false;

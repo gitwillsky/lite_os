@@ -19,7 +19,7 @@ use swash::scale::ScaleContext;
 use taffy::prelude::{AvailableSpace, Size};
 
 use crate::{renderer::SCALE, style::Computed};
-pub(crate) use gpu::{GlyphAtlas, GpuTextRun};
+pub(crate) use gpu::{AtlasKey, GlyphAtlas, GpuTextRun};
 use raster::{GlyphCache, GlyphKey};
 
 const REGULAR_PATH: &str = "/usr/share/liteos/liteos-ui-regular.otf";

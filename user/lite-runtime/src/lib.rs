@@ -350,11 +350,13 @@ fn render_latest(
                 return Ok(());
             };
             state.take_composition_dirty();
+            let damage = [display.physical_rect()];
             display.commit_desktop(
                 state.focused_surface(),
                 &presentation.foreign,
                 &presentation.windows,
                 &presentation.overlays,
+                &damage,
             )?;
         }
         return Ok(());
@@ -374,6 +376,7 @@ fn render_latest(
                 &output.foreign,
                 &output.windows,
                 &output.overlays,
+                &output.damage,
             )?;
         }
         Mode::Desktop => {}

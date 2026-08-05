@@ -253,6 +253,10 @@ impl<'a> PayloadReader<'a> {
         Some(value)
     }
 
+    pub(crate) fn consumed(&self) -> &'a [u8] {
+        &self.bytes[..self.cursor]
+    }
+
     pub(crate) fn finish(self) -> Option<()> {
         (self.cursor == self.bytes.len()).then_some(())
     }

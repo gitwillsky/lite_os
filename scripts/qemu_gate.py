@@ -16,7 +16,7 @@ import time
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Mapping
+from typing import BinaryIO, Callable, Mapping
 
 from build_target import (
     Acceleration,
@@ -631,6 +631,13 @@ class QmpClient:
     def button(self, name: str, down: bool) -> None:
         self._send_events([{"type": "btn", "data": {"button": name, "down": down}}])
 
+    def wheel(self, name: str) -> None:
+        """Sends one complete QEMU wheel-button detent."""
+        if name not in ("wheel-up", "wheel-down"):
+            raise ValueError(f"unsupported vertical wheel button: {name}")
+        self.button(name, True)
+        self.button(name, False)
+
     def key(self, qcode: str, down: bool) -> None:
         """Presses or releases one key by QMP qcode (e.g. "esc", "ret")."""
         self._send_events(
@@ -681,34 +688,98 @@ class QmpClient:
             pass
 
 
-def start_frame_workload(qmp: QmpClient, duration_s: float, stop: "threading.Event") -> None:
-    """Drives sustained compositor-owned move flips through a legal titlebar grab.
+def start_frame_workload(
+    qmp: QmpClient,
+    duration_s: float,
+    stop: "threading.Event",
+    phase_finished: Callable[[str], None] | None = None,
+) -> None:
+    """Drives resize, scroll, and move through their production input paths.
 
-    Aurora's Terminal titlebar begins at logical ``(958, 414)`` in the canonical
-    1504×846 viewport. The down event first grants the desktop an exact input
-    serial; only after the desktop has sent ``MOVE_BEGIN`` does motion enter the
-    compositor's bounded temporary transform path. That path is the sole steady
-    presentation source after static scene retention and hardware-cursor motion
-    removed unrelated redraws.
+    Resize exercises the React-owned fixed preview, wheel detents exercise a
+    known-overflowing System Center scrollport, and move exercises the
+    compositor's temporary-transform path. Move runs last because its
+    completion is a desktop/compositor transaction; later pointer phases must
+    not depend on that asynchronous lifecycle having retired already.
     """
-    start_x, start_y = 1100.0, 435.0
+    phase_s = max(0.0, duration_s / 3.0)
+
+    # 1. React-owned bottom-right resize preview. The southeast grip is only
+    # 10x10 logical pixels; stay two pixels inside both edges so absolute-tablet
+    # rounding cannot land on the half-open outer boundary.
+    # `.window` uses the CSS content-box default, so its 1px borders extend the
+    # declared 460x250 frame to the outer edge at (1420, 666).
+    start_x, start_y = 1417.0, 663.0
+    qmp.move_abs(start_x / 1504, start_y / 846)
+    qmp.button("left", True)
+    deadline = time.monotonic() + phase_s
+    step = 0
+    try:
+        while time.monotonic() < deadline and not stop.is_set():
+            phase = (step % 120) / 120.0
+            triangle = phase if phase <= 0.5 else 1.0 - phase
+            qmp.move_abs(
+                (start_x + triangle * 120.0) / 1504,
+                (start_y + triangle * 160.0) / 846,
+            )
+            step += 1
+            time.sleep(0.016)
+    finally:
+        qmp.move_abs(start_x / 1504, start_y / 846)
+        time.sleep(0.1)
+        qmp.button("left", False)
+    if phase_finished is not None:
+        phase_finished("resize")
+
+    time.sleep(0.75)
+
+    # 2. Open System Center, whose 748px viewport deterministically overflows,
+    # then drive its native CSS scroll path. Files depends on rootfs contents
+    # and can legitimately have no scroll range in a freshly built image.
+    qmp.move_abs(1430.0 / 1504, 30.0 / 846)
+    qmp.button("left", True)
+    qmp.button("left", False)
+    time.sleep(0.75)
+    qmp.move_abs(1300.0 / 1504, 400.0 / 846)
+    deadline = time.monotonic() + phase_s
+    step = 0
+    while time.monotonic() < deadline and not stop.is_set():
+        qmp.wheel("wheel-down" if step % 4 < 2 else "wheel-up")
+        step += 1
+        time.sleep(0.016)
+    # Close through the same button that opened the panel. Mixing Escape and a
+    # later scrim click made the final state depend on asynchronous desktop
+    # commits; a late scrim could still own the following titlebar press and
+    # invalidate the compositor's exact pointer-down authorization.
+    qmp.move_abs(1430.0 / 1504, 30.0 / 846)
+    qmp.button("left", True)
+    qmp.button("left", False)
+    time.sleep(1.5)
+    if phase_finished is not None:
+        phase_finished("scroll")
+
+    # 3. Compositor-owned temporary window transform. Files has a fixed frame
+    # at (76, 124, 834, 540), untouched by the preceding Terminal resize.
+    start_x, start_y = 500.0, 145.0
     qmp.move_abs(start_x / 1504, start_y / 846)
     qmp.button("left", True)
     # MOVE_BEGIN crosses compositor -> desktop -> compositor and renders one
     # full-output underlay. Moving before that transaction owns the capture can
     # race the button-up and turn the workload into rejected, unmeasured input.
     time.sleep(0.75)
-    deadline = time.monotonic() + duration_s
+    deadline = time.monotonic() + phase_s
     step = 0
     try:
         while time.monotonic() < deadline and not stop.is_set():
             phase = (step % 120) / 120.0
             triangle = phase if phase <= 0.5 else 1.0 - phase
-            x = start_x - triangle * 600.0
+            x = start_x + triangle * 500.0
             qmp.move_abs(x / 1504, start_y / 846)
             step += 1
             # Input may run ahead of the one-flip-in-flight owner; compositor
             # coalescing retains the newest transform and vblank paces presents.
-            time.sleep(0.004)
+            time.sleep(0.016)
     finally:
         qmp.button("left", False)
+    if phase_finished is not None:
+        phase_finished("move")

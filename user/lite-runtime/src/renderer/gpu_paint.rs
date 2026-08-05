@@ -137,12 +137,12 @@ impl Renderer {
         let mut commands = Vec::new();
         let mut uploads = Vec::new();
         let mut output = empty_output();
-        let text_texture_id = self.next_gpu_texture;
-        self.next_gpu_texture = self
-            .next_gpu_texture
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("GPU texture identity exhausted"))?;
-        let mut glyph_atlas = GlyphAtlas::new();
+        // Glyph commands use a placeholder until this pass knows whether the
+        // persistent atlas changed. A stable atlas keeps its published texture;
+        // a newly packed glyph atomically replaces it for every command.
+        let text_texture_id = 0;
+        let mut glyph_atlas = std::mem::take(&mut self.gpu_glyph_atlas);
+        glyph_atlas.begin_frame();
         for phase in [PaintPhase::Document, PaintPhase::Fixed] {
             for child in &root.children {
                 self.paint_gpu_node(
@@ -218,15 +218,38 @@ impl Renderer {
         )?;
         retained.output = Some(output.clone());
         self.retained_gpu = Some(retained);
-        let retired_textures = self.gpu_text_texture.take().into_iter().collect();
-        if let Some((size, bytes)) = glyph_atlas.finish() {
+        let mut retired_textures = Vec::new();
+        if glyph_atlas.dirty()
+            && let Some((size, bytes)) = glyph_atlas.upload()
+        {
+            let next = self.next_gpu_texture;
+            self.next_gpu_texture = self
+                .next_gpu_texture
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("GPU texture identity exhausted"))?;
             uploads.push(TextureUpload {
-                id: text_texture_id,
+                id: next,
                 size,
                 format: TextureFormat::R8,
                 bytes,
             });
-            self.gpu_text_texture = Some(text_texture_id);
+            retired_textures.extend(self.gpu_text_texture.replace(next));
+        }
+        glyph_atlas.mark_clean();
+        self.gpu_glyph_atlas = glyph_atlas;
+        let has_text = commands
+            .iter()
+            .any(|command| matches!(command, GpuCommand::GlyphRun { .. }));
+        let published_text = self.gpu_text_texture;
+        if has_text && published_text.is_none() {
+            return Err(io::Error::other(
+                "GPU text commands have no published atlas",
+            ));
+        }
+        for command in &mut commands {
+            if let GpuCommand::GlyphRun { texture_id, .. } = command {
+                *texture_id = published_text.expect("text atlas checked above");
+            }
         }
         Ok(GpuFrame {
             commands,

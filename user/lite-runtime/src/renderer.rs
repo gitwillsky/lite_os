@@ -26,7 +26,7 @@ use taffy::prelude::{NodeId, TaffyTree};
 
 use crate::{
     display::{ForeignLayer, Overlay, WindowFrame},
-    font::Font,
+    font::{Font, GlyphAtlas},
     style::{Computed, PseudoState, Sheet, Timeline},
     terminal_font::TerminalFont,
     tree::Node,
@@ -71,6 +71,7 @@ struct FixedSignatureNode {
 struct RetainedGpuFrame {
     document: Vec<RetainedNode>,
     bounds: HashMap<u64, PhysicalRect>,
+    scroll_bounds: HashMap<u64, PhysicalRect>,
     scroll_offsets: HashMap<u64, ScrollOffset>,
     fixed: HashMap<u64, FixedSignatureNode>,
     fixed_bounds: HashMap<u64, PhysicalRect>,
@@ -184,6 +185,10 @@ pub struct Renderer {
     viewport: DisplaySize,
     images: HashMap<String, Image>,
     gpu_images: HashMap<String, u32>,
+    /// Persistent stable glyph packing for the one immutable UI text texture.
+    /// Without this owner, every local hover/scroll/resize repaint repacks and
+    /// uploads all unchanged text before the compositor can draw its damage.
+    gpu_glyph_atlas: GlyphAtlas,
     gpu_text_texture: Option<u32>,
     next_gpu_texture: u32,
     /// Exact source, geometry and scroll identity represented by the preceding
@@ -236,6 +241,7 @@ impl Renderer {
             viewport,
             images: HashMap::new(),
             gpu_images: HashMap::new(),
+            gpu_glyph_atlas: GlyphAtlas::new(),
             gpu_text_texture: None,
             next_gpu_texture: 1,
             retained_gpu: None,
