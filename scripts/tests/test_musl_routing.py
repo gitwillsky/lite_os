@@ -23,9 +23,45 @@ def reload_verify_musl(arch: str, accel: str) -> object:
 
 
 class MuslRoutingTests(unittest.TestCase):
+    def test_musl_download_falls_back_to_verified_release_source(self) -> None:
+        module = reload_verify_musl("aarch64", "hvf")
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+
+            def download(url: str, destination: Path) -> None:
+                if url == module.MUSL_URLS[0]:
+                    raise OSError("primary source unavailable")
+                destination.write_bytes(b"verified musl archive")
+
+            def digest(path: Path) -> str:
+                self.assertEqual(path.read_bytes(), b"verified musl archive")
+                return module.MUSL_SHA256
+
+            with (
+                patch.object(module, "WORK", work),
+                patch.object(module.urllib.request, "urlretrieve", side_effect=download) as retrieve,
+                patch.object(module, "sha256", side_effect=digest),
+                patch.object(module, "manifest_matches", return_value=True),
+            ):
+                source = module.obtain_source()
+                expected_source = module.source_cache_path()
+
+        self.assertEqual(
+            [call.args[0] for call in retrieve.call_args_list],
+            list(module.MUSL_URLS),
+        )
+        self.assertEqual(source, expected_source)
+
     def test_verify_musl_aarch64_recipe_and_cache_scope(self) -> None:
         module = reload_verify_musl("aarch64", "hvf")
 
+        self.assertEqual(
+            module.MUSL_URLS,
+            (
+                "https://mirrors.aliyun.com/gentoo/distfiles/9d/musl-1.2.6.tar.gz",
+                "https://mirrors.tuna.tsinghua.edu.cn/gentoo/distfiles/9d/musl-1.2.6.tar.gz",
+            ),
+        )
         self.assertEqual(module.CONFIGURE_ARGUMENTS[0], "--target=aarch64")
         self.assertEqual(module.LINUX_HEADER_ARCH, "arm64")
         self.assertEqual(module.ELF_MACHINE, "AArch64")

@@ -39,7 +39,10 @@ TARGET = target_from_environment()
 WORK = ROOT / "target" / "musl-runtime" / TARGET.arch
 MUSL_VERSION = "1.2.6"
 MUSL_REVISION = "9fa28ece75d8a2191de7c5bb53bed224c5947417"
-MUSL_URL = f"https://download.nus.edu.sg/mirror/gentoo/distfiles/9d/musl-{MUSL_VERSION}.tar.gz"
+MUSL_URLS = (
+    f"https://mirrors.aliyun.com/gentoo/distfiles/9d/musl-{MUSL_VERSION}.tar.gz",
+    f"https://mirrors.tuna.tsinghua.edu.cn/gentoo/distfiles/9d/musl-{MUSL_VERSION}.tar.gz",
+)
 MUSL_SHA256 = "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
 LINUX_VERSION = "7.1"
 LINUX_URL = f"https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-{LINUX_VERSION}.tar.xz"
@@ -129,15 +132,25 @@ def obtain_source() -> Path:
         archive.unlink(missing_ok=True)
         temporary = archive.with_suffix(".download")
         temporary.unlink(missing_ok=True)
-        print(f"downloading musl {MUSL_VERSION} ({MUSL_REVISION[:12]})")
-        try:
-            urllib.request.urlretrieve(MUSL_URL, temporary)
-        except Exception as error:
+        errors = []
+        for url in MUSL_URLS:
+            print(f"downloading musl {MUSL_VERSION} ({MUSL_REVISION[:12]}) from {url}")
+            try:
+                urllib.request.urlretrieve(url, temporary)
+            except Exception as error:
+                errors.append(f"{url}: {error}")
+                temporary.unlink(missing_ok=True)
+                continue
+            if sha256(temporary) != MUSL_SHA256:
+                errors.append(f"{url}: SHA-256 mismatch")
+                temporary.unlink(missing_ok=True)
+                continue
+            break
+        else:
             temporary.unlink(missing_ok=True)
-            raise RuntimeError(f"failed to download {MUSL_URL}: {error}") from error
-        if sha256(temporary) != MUSL_SHA256:
-            temporary.unlink(missing_ok=True)
-            raise RuntimeError("musl release tarball SHA-256 mismatch")
+            raise RuntimeError(
+                "failed to download musl release tarball:\n" + "\n".join(errors)
+            )
         temporary.replace(archive)
 
     payload = source_payload()
