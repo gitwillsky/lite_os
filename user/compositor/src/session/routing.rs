@@ -10,6 +10,7 @@ use linux_uapi::drm::VirglResource;
 
 use super::accelerator;
 use super::buffers::Owner;
+use super::scene::SceneMove;
 use super::{MoveGrab, PointerCapture, Session, invalid};
 
 impl Session {
@@ -278,10 +279,29 @@ impl Session {
             .map(|grab| (grab.surface_id, grab.offset, grab.underlay_buffer_id))
     }
 
-    /// Returns the transform a newly accepted scene still needs.
-    pub fn scene_move(&self, scene: &super::Scene) -> Option<(u32, (i32, i32), u32)> {
+    /// Reconciles the active move against a newly accepted scene.
+    ///
+    /// # Parameters
+    ///
+    /// - `scene`: The complete canonical scene about to enter scanout.
+    ///
+    /// # Returns
+    ///
+    /// Returns the temporary group transform while the scene still contains
+    /// that group. If the group disappeared, this method atomically retires the
+    /// pointer capture, grab and underlay before returning no transform; without
+    /// that retirement scanout would receive an impossible group/resource pair
+    /// and restart the complete display session.
+    pub fn scene_move(&mut self, scene: &super::Scene) -> Option<(u32, (i32, i32), u32)> {
         let grab = self.move_grab?;
-        (!scene.finishes_move).then_some((grab.surface_id, grab.offset, grab.underlay_buffer_id))
+        match scene.project_move(grab) {
+            SceneMove::Finished => None,
+            SceneMove::Active(transform) => Some(transform),
+            SceneMove::MissingGroup(surface_id) => {
+                self.clear_pointer_capture(Some(surface_id));
+                None
+            }
+        }
     }
 
     /// Returns the last page-flip-complete flat scene used by move damage composition.

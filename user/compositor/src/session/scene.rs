@@ -13,7 +13,7 @@ use linux_uapi::drm::FlipEvent;
 
 use super::buffers::Owner;
 use super::wire::{send_accepted, send_discarded, send_presented};
-use super::{RoutingNode, Session, invalid};
+use super::{MoveGrab, RoutingNode, Session, invalid};
 
 pub(super) fn app_first_scene_presented_marker(surface_id: u32) -> String {
     format!("compositor: app {surface_id} first scene presented\n")
@@ -50,6 +50,40 @@ pub struct Scene {
     app_presentations: Vec<AppPresentation>,
     routing: Vec<RoutingNode>,
     focused_surface: u32,
+}
+
+/// How an accepted scene relates to the compositor-owned move transaction.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum SceneMove {
+    Finished,
+    Active((u32, (i32, i32), u32)),
+    MissingGroup(u32),
+}
+
+impl Scene {
+    /// Projects one active grab onto this accepted scene.
+    ///
+    /// # Parameters
+    ///
+    /// - `grab`: The compositor-owned move transaction awaiting presentation.
+    ///
+    /// # Returns
+    ///
+    /// Returns whether the canonical scene finishes the move, still needs its
+    /// temporary transform, or no longer contains the transaction's window.
+    pub(super) fn project_move(&self, grab: MoveGrab) -> SceneMove {
+        if self.finishes_move {
+            SceneMove::Finished
+        } else if self
+            .nodes
+            .iter()
+            .all(|node| node.window_group != grab.surface_id)
+        {
+            SceneMove::MissingGroup(grab.surface_id)
+        } else {
+            SceneMove::Active((grab.surface_id, grab.offset, grab.underlay_buffer_id))
+        }
+    }
 }
 
 impl Session {
@@ -505,8 +539,8 @@ fn union_rect(left: Rect, right: Rect) -> Rect {
 
 #[cfg(test)]
 mod damage_tests {
-    use super::{AppPresentation, Node, Scene, intersect_rect, union_rect};
-    use crate::session::RoutingNode;
+    use super::{AppPresentation, Node, Scene, SceneMove, intersect_rect, union_rect};
+    use crate::session::{MoveGrab, RoutingNode};
     use display_proto::{Rect, SceneNodeKind, Size};
 
     #[test]
@@ -549,7 +583,7 @@ mod damage_tests {
     }
 
     #[test]
-    fn disconnected_surface_is_removed_from_unpresented_scene() {
+    fn removed_surface_cancels_move_projection_in_unpresented_scene() {
         let mut scene = Scene {
             revision: 9,
             output_size: Size {
@@ -600,9 +634,24 @@ mod damage_tests {
             }],
             focused_surface: 7,
         };
+        let grab = MoveGrab {
+            surface_id: 7,
+            underlay_buffer_id: 2,
+            down: (20, 20),
+            origin: (40, 30),
+            offset: (10, 10),
+            limits: (0, 0, 200, 100),
+            ending: false,
+        };
+
+        assert_eq!(
+            scene.project_move(grab),
+            SceneMove::Active((7, (10, 10), 2))
+        );
 
         scene.revoke_surface(7);
 
+        assert_eq!(scene.project_move(grab), SceneMove::MissingGroup(7));
         assert_eq!(scene.nodes.len(), 1);
         assert!(scene.routing.is_empty());
         assert!(scene.app_presentations.is_empty());

@@ -160,7 +160,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else {
-                scanout.compose(&scene, session.buffers(), session.scene_move(&scene))?;
+                let scene_move = session.scene_move(&scene);
+                scanout.compose(&scene, session.buffers(), scene_move)?;
                 scanout.present_scene(scene.revision, scene.damage, input.position())?
             };
             session.presented(&scene, event)?;
