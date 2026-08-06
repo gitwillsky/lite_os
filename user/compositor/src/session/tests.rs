@@ -35,6 +35,22 @@ fn buffered_hangup_is_a_terminal_connection_event() {
 }
 
 #[test]
+fn older_paint_configuration_is_a_terminal_discard_not_a_session_error() {
+    assert_eq!(
+        classify_paint_configuration(4, 5).expect("old configure is a normal race"),
+        PaintConfiguration::Superseded
+    );
+    assert_eq!(
+        classify_paint_configuration(5, 5).expect("current configure is paintable"),
+        PaintConfiguration::Current
+    );
+    assert!(
+        classify_paint_configuration(6, 5).is_err(),
+        "a client may not invent a future configure generation"
+    );
+}
+
+#[test]
 fn close_deadline_arms_once_and_never_pushes_out() {
     // A repeated CloseRequest (desktop re-committing a close-in-progress) must
     // not keep extending the deadline, or a wedged app could defeat the timeout

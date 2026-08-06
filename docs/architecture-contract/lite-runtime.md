@@ -118,8 +118,10 @@
   `PRESENTED` 只确认 page-flip completion。当前几何 generation 的 buffer 只能由 `BUFFER_RELEASE`
   重新变为 writable；output resize 后不再合法的 mapping 只能由 `BUFFER_RETIRED` 唯一、永久移除，
   两种事件不得互换。
-  `DISCARDED` 是 output serial 被更新后该 revision 不会呈现的唯一 terminal acknowledgement；允许发生在
-  `ACCEPTED` 前或后，client 必须结束该 revision，并按独立的 buffer 生命周期事件处理 mapping。
+  `DISCARDED` 是 output/configure serial 被更新后该 revision 不会呈现的唯一 terminal acknowledgement；
+  desktop output 与 app surface 的旧 generation 都必须在进入 GPU paint 前终止为 `DISCARDED`，不得把正常的
+  跨连接 configure/commit 竞态升级为 compositor/session failure。该事件允许发生在 `ACCEPTED` 前或后，
+  client 必须结束该 revision，并按独立的 buffer 生命周期事件处理 mapping。
   双 buffer 都在途时 client 必须保留 latest-only dirty state，禁止排队栅格化旧 snapshot。
 - buffer allocation 只经 compositor：每连接最多四个、session 最多十六个 full-frame equivalent，按
   `pitch * height` 计费，scanout 不计入。allocation failure 明确返回，不得抢占别的连接、降低尺寸或

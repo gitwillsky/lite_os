@@ -17,7 +17,7 @@ pub(crate) use buffers::{Owner, PaintTarget};
 use cursor::{cursor_on_focus_change, cursor_request};
 use paint_store::PaintStore;
 pub use scene::{Node, Scene};
-use wire::{new_epoch, send_accepted};
+use wire::{new_epoch, send_accepted, send_discarded};
 
 use accelerator::Accelerators;
 
@@ -75,6 +75,12 @@ struct MoveGrab {
     offset: (i32, i32),
     limits: (i32, i32, i32, i32),
     ending: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum PaintConfiguration {
+    Current,
+    Superseded,
 }
 
 struct Desktop {
@@ -241,6 +247,53 @@ impl Session {
         if !self.pending_paint.contains(&owner) {
             self.pending_paint.push_back(owner);
         }
+    }
+
+    /// Publishes one validated display list into the GPU queue only when its
+    /// configuration generation is still current.
+    ///
+    /// A desktop configure and an app's preceding paint arrive on independent
+    /// sockets. The configure is intentionally handled first in one poll wake,
+    /// so an older app frame can legitimately arrive after the new generation
+    /// became current. That frame receives the protocol's terminal
+    /// `DISCARDED` acknowledgement; treating it as an invariant failure would
+    /// unwind the compositor's unique DRM/session owner and restart the whole
+    /// desktop.
+    pub(super) fn commit_paint_list(&mut self, owner: Owner, payload: Vec<u8>) -> io::Result<()> {
+        let (revision, configuration_serial) = self.paint.commit_list(owner, payload)?;
+        let current_serial = match owner {
+            Owner::Desktop => self.output_serial,
+            Owner::App(surface_id) => self
+                .apps
+                .get(&surface_id)
+                .and_then(|app| app.configure)
+                .ok_or_else(|| invalid("app display list has no configure"))?
+                .serial,
+        };
+        match classify_paint_configuration(configuration_serial, current_serial)? {
+            PaintConfiguration::Current => self.queue_paint(owner),
+            PaintConfiguration::Superseded => {
+                let stream = match owner {
+                    Owner::Desktop => self.desktop_stream()?,
+                    Owner::App(surface_id) => &self
+                        .apps
+                        .get(&surface_id)
+                        .ok_or_else(|| invalid("app disappeared before paint discard"))?
+                        .stream,
+                };
+                send_discarded(stream, revision)?;
+                self.paint.discard_list(owner, revision)?;
+                match owner {
+                    Owner::Desktop => eprintln!(
+                        "compositor: desktop paint revision {revision} discarded: output serial {configuration_serial} superseded by {current_serial}"
+                    ),
+                    Owner::App(surface_id) => eprintln!(
+                        "compositor: app {surface_id} paint revision {revision} discarded: configure {configuration_serial} superseded by {current_serial}"
+                    ),
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn paint_size(&self, owner: Owner) -> io::Result<Size> {
@@ -887,6 +940,19 @@ fn invalid(message: &'static str) -> io::Error {
 
 fn connection_closed(events: PollEvents) -> bool {
     events.contains(PollEvents::HANGUP) || events.contains(PollEvents::ERROR)
+}
+
+fn classify_paint_configuration(
+    submitted: u64,
+    current: u64,
+) -> io::Result<PaintConfiguration> {
+    match submitted.cmp(&current) {
+        std::cmp::Ordering::Equal => Ok(PaintConfiguration::Current),
+        std::cmp::Ordering::Less => Ok(PaintConfiguration::Superseded),
+        std::cmp::Ordering::Greater => {
+            Err(invalid("display list names an unissued configuration"))
+        }
+    }
 }
 
 fn revoke_surface_paint(pending: &mut VecDeque<Owner>, surface_id: u32) {

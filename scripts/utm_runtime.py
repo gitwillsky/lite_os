@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import select
 import shutil
 import socket
 import subprocess
@@ -398,6 +399,15 @@ def _stop_managed() -> None:
     raise RuntimeError("UTM did not stop the managed LiteOS gate VM")
 
 
+def _open_serial_listener() -> tuple[socket.socket, int]:
+    """Listen before QEMU starts so the complete guest serial stream is observable."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    return listener, int(listener.getsockname()[1])
+
+
 class GateRuntime:
     """One disposable UTM VirGL runtime with observable serial and optional QMP."""
 
@@ -521,11 +531,7 @@ def start_gate(
     _installed_version()
     kernel = kernel.resolve(strict=True)
     rootfs = rootfs.resolve(strict=True)
-    serial_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    serial_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    serial_listener.bind(("127.0.0.1", 0))
-    serial_listener.listen(1)
-    serial_port = int(serial_listener.getsockname()[1])
+    serial_listener, serial_port = _open_serial_listener()
     qmp_socket = (
         UTM_ARTIFACTS / f"gate-qmp-{os.getpid()}.sock" if qmp else None
     )
@@ -594,34 +600,65 @@ def run_gui(
     rootfs: Path,
     memory: str,
     cpu_count: int,
+    serial_log: Path,
 ) -> None:
-    """Start the generated VM and keep the invoking terminal as lifecycle owner."""
+    """Start the generated VM while persistently capturing its complete serial stream."""
     _installed_version()
-    _remove_registered()
-    prepare(kernel=kernel, rootfs=rootfs, memory=memory, cpu_count=cpu_count)
-    _ensure_registered()
-    status = _status()
-    if status != "stopped":
-        raise RuntimeError(f"UTM VM {VM_NAME!r} must be stopped before launch; status={status}")
-    _start_visible()
-    for _ in range(40):
-        status = _status()
-        if status is None:
-            raise RuntimeError("UTM removed the managed LiteOS registration during launch")
-        if status == "started":
-            break
-        time.sleep(0.25)
-    else:
-        raise RuntimeError(f"UTM failed to start {VM_NAME}")
+    serial_listener, serial_port = _open_serial_listener()
+    serial_socket: socket.socket | None = None
+    serial_log = serial_log.resolve()
+    serial_log.parent.mkdir(parents=True, exist_ok=True)
+    print(f"LiteOS serial log: {serial_log}")
     try:
-        while True:
+        _remove_registered()
+        prepare(
+            kernel=kernel,
+            rootfs=rootfs,
+            memory=memory,
+            cpu_count=cpu_count,
+            serial_tcp_port=serial_port,
+        )
+        _ensure_registered()
+        status = _status()
+        if status != "stopped":
+            raise RuntimeError(f"UTM VM {VM_NAME!r} must be stopped before launch; status={status}")
+        _start_visible()
+        for _ in range(40):
             status = _status()
-            if status == "stopped":
-                return
             if status is None:
-                raise RuntimeError("UTM removed the managed LiteOS registration while running")
-            time.sleep(0.5)
+                raise RuntimeError("UTM removed the managed LiteOS registration during launch")
+            if status == "started":
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError(f"UTM failed to start {VM_NAME}")
+        serial_listener.settimeout(15.0)
+        try:
+            serial_socket, _ = serial_listener.accept()
+        except TimeoutError as error:
+            _stop_managed()
+            raise RuntimeError("UTM serial endpoint did not become ready") from error
+        serial_socket.setblocking(False)
+        with serial_log.open("wb", buffering=0) as output:
+            # The capture file is the sole durable serial owner. Reading only
+            # UTM's PTY UI loses the first failure as soon as the window closes.
+            while True:
+                status = _status()
+                if status == "stopped":
+                    return
+                if status is None:
+                    raise RuntimeError("UTM removed the managed LiteOS registration while running")
+                ready, _, _ = select.select([serial_socket], [], [], 0.5)
+                if ready:
+                    chunk = serial_socket.recv(16 * 1024)
+                    if not chunk:
+                        raise RuntimeError("UTM serial stream closed while the VM was running")
+                    output.write(chunk)
     except KeyboardInterrupt:
         if _registered():
             _ctl("stop", VM_UUID)
         return
+    finally:
+        if serial_socket is not None:
+            serial_socket.close()
+        serial_listener.close()

@@ -36,6 +36,11 @@ struct PublishedList {
 pub(super) struct PaintStore {
     textures: HashMap<(Owner, u32), TextureState>,
     lists: HashMap<Owner, PublishedList>,
+    /// Highest display-list revision decoded for each live connection owner.
+    /// This watermark outlives a discarded list; without it, removing a
+    /// superseded configure frame would let a later lower revision pass the
+    /// monotonicity check.
+    last_revisions: HashMap<Owner, u64>,
 }
 
 impl PaintStore {
@@ -43,6 +48,7 @@ impl PaintStore {
         Self {
             textures: HashMap::new(),
             lists: HashMap::new(),
+            last_revisions: HashMap::new(),
         }
     }
 
@@ -151,13 +157,17 @@ impl PaintStore {
 
     /// Publishes one fully validated display list only after all texture
     /// references resolve to immutable resources of the required format.
-    pub(super) fn commit_list(&mut self, owner: Owner, payload: Vec<u8>) -> io::Result<()> {
+    pub(super) fn commit_list(
+        &mut self,
+        owner: Owner,
+        payload: Vec<u8>,
+    ) -> io::Result<(u64, u64)> {
         let commit = DisplayListCommit::parse(&payload)
             .ok_or_else(|| invalid("invalid GPU display list"))?;
         if self
-            .lists
+            .last_revisions
             .get(&owner)
-            .is_some_and(|current| commit.revision <= current.revision)
+            .is_some_and(|current| commit.revision <= *current)
         {
             return Err(invalid("display-list revision is not monotonic"));
         }
@@ -184,6 +194,7 @@ impl PaintStore {
         }
         let revision = commit.revision;
         let configuration_serial = commit.configuration_serial;
+        self.last_revisions.insert(owner, revision);
         self.lists.insert(
             owner,
             PublishedList {
@@ -192,6 +203,20 @@ impl PaintStore {
                 payload,
             },
         );
+        Ok((revision, configuration_serial))
+    }
+
+    /// Removes one terminally discarded display list while preserving its
+    /// monotonic revision watermark.
+    pub(super) fn discard_list(&mut self, owner: Owner, revision: u64) -> io::Result<()> {
+        let current = self
+            .lists
+            .get(&owner)
+            .ok_or_else(|| invalid("discarded display list disappeared"))?;
+        if current.revision != revision {
+            return Err(invalid("discarded display list revision changed"));
+        }
+        self.lists.remove(&owner);
         Ok(())
     }
 
@@ -211,6 +236,7 @@ impl PaintStore {
 
     pub(super) fn remove_owner(&mut self, owner: Owner) {
         self.lists.remove(&owner);
+        self.last_revisions.remove(&owner);
         self.textures
             .retain(|(candidate, _), _| *candidate != owner);
     }
@@ -245,5 +271,55 @@ impl PaintStore {
         let commit = DisplayListCommit::parse(&list.payload)?;
         debug_assert_eq!(commit.configuration_serial, list.configuration_serial);
         Some(commit)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use display_proto::{DisplayListCommit, Rect, parse_frame};
+
+    use super::{Owner, PaintStore};
+
+    fn display_list(revision: u64) -> Vec<u8> {
+        let mut bytes = [0; 128];
+        let encoded = DisplayListCommit::encode(
+            &mut bytes,
+            revision,
+            3,
+            0,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 16,
+            },
+            &[],
+        )
+        .expect("display list encodes");
+        parse_frame(encoded)
+            .expect("display-list frame parses")
+            .payload()
+            .to_vec()
+    }
+
+    #[test]
+    fn discarded_list_keeps_its_revision_watermark() {
+        let mut store = PaintStore::new();
+        assert_eq!(
+            store
+                .commit_list(Owner::App(7), display_list(9))
+                .expect("first list accepted"),
+            (9, 3)
+        );
+        store
+            .discard_list(Owner::App(7), 9)
+            .expect("current list discarded");
+        assert!(store.list(Owner::App(7)).is_none());
+        assert!(
+            store
+                .commit_list(Owner::App(7), display_list(8))
+                .is_err(),
+            "discard must not reopen lower revisions"
+        );
     }
 }

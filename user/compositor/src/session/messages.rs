@@ -48,8 +48,7 @@ impl Session {
                 Ok(DesktopMessage::Idle)
             }
             MessageKind::DisplayListCommit => {
-                self.paint.commit_list(Owner::Desktop, payload)?;
-                self.queue_paint(Owner::Desktop);
+                self.commit_paint_list(Owner::Desktop, payload)?;
                 Ok(DesktopMessage::Idle)
             }
             MessageKind::Configure => {
@@ -117,9 +116,7 @@ impl Session {
                     .ok_or_else(|| invalid("invalid texture destroy"))?,
             ),
             MessageKind::DisplayListCommit => {
-                self.paint.commit_list(Owner::App(surface_id), payload)?;
-                self.queue_paint(Owner::App(surface_id));
-                Ok(())
+                self.commit_paint_list(Owner::App(surface_id), payload)
             }
             MessageKind::SetCursorShape => {
                 let request = SetCursorShape::parse(&payload)

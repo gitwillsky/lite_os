@@ -612,6 +612,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             rootfs=paths["fs"],
             memory=source.get("QEMU_MEMORY", "2G"),
             cpu_count=int(_qemu_smp(source)),
+            serial_log=ROOT / "target" / "logs" / "run-gui-serial.log",
         )
         return
     if scope == "run-gdb":
@@ -626,6 +627,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             rootfs=paths["fs"],
             memory=source.get("AGENT_QEMU_MEMORY", "6G"),
             cpu_count=int(_qemu_smp(source)),
+            serial_log=ROOT / "target" / "logs" / "run-agent-development-serial.log",
         )
         return
     if scope == "gdb":

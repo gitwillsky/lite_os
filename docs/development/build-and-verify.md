@@ -35,7 +35,8 @@
   assets 指纹复用不可变产物。`reset-rootfs` 只用于首次初始化、系统级 rootfs 变化或显式恢复干净环境。
 - macOS 的 `run-gui` 是唯一交互图形产品入口：要求固定 `/Applications/UTM.app` v4.7.5，生成确定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
-  display window。
+  display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入
+  `target/logs/run-gui-serial.log`；该文件是桌面退出、hang 或窗口关闭后的持久取证 owner。
   Make/Python 前台进程持有生命周期；Ctrl-C 只停止该 managed VM。旧 Cocoa QEMU window、激活脚本
   与 GUI 参数入口均不存在。
 - UTM 产品路径固定 AArch64 `host` CPU、HVF、SPICE `gl=on`、`virtio-gpu-gl-device`、native Retina

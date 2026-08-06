@@ -184,6 +184,7 @@ fn move_grab_round_trips_authority_constraints_and_signed_result() {
         surface_id: 9,
         x: -48,
         y: 27,
+        move_token: 45,
     };
     let encoded = complete
         .encode(&mut bytes)
@@ -355,8 +356,8 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
         damage: Rectangles::from_slice(&damage),
     }];
     let mut bytes = [0u8; 512];
-    let encoded =
-        SceneCommit::encode(&mut bytes, 22, 3, 8, &nodes).expect("bounded scene must encode");
+    let encoded = SceneCommit::encode(&mut bytes, 22, 3, 8, 0, &nodes)
+        .expect("bounded scene must encode");
     let frame = parse_frame(encoded).expect("scene frame must parse");
     let scene = SceneCommit::parse(frame.payload()).expect("scene payload must validate fully");
     assert_eq!(scene.output_serial, 3);

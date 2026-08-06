@@ -135,7 +135,7 @@ impl Accepted {
 /// Notification that one submitted revision will never reach scanout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Discarded {
-    /// Connection-local visual revision superseded by a newer output mode.
+    /// Connection-local visual revision superseded by a newer configuration.
     pub revision: u64,
 }
 

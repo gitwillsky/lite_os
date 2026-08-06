@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
@@ -192,28 +192,38 @@ class UtmRuntimeTests(unittest.TestCase):
         ctl.assert_called_once_with("list")
 
     def test_interrupt_stops_only_the_managed_vm_and_exits_cleanly(self) -> None:
-        with (
-            patch.object(utm_runtime, "_installed_version"),
-            patch.object(utm_runtime, "_remove_registered"),
-            patch.object(utm_runtime, "prepare"),
-            patch.object(utm_runtime, "_ensure_registered"),
-            patch.object(utm_runtime, "_start_visible"),
-            patch.object(
-                utm_runtime,
-                "_status",
-                side_effect=["stopped", "started", KeyboardInterrupt],
-            ),
-            patch.object(utm_runtime, "_registered", return_value=True),
-            patch.object(utm_runtime, "_ctl", return_value="") as ctl,
-        ):
-            utm_runtime.run_gui(
-                kernel=Path("kernel"),
-                rootfs=Path("rootfs"),
-                memory="2G",
-                cpu_count=6,
-            )
+        listener = MagicMock()
+        serial = MagicMock()
+        listener.accept.return_value = (serial, ("127.0.0.1", 1234))
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(utm_runtime, "_installed_version"),
+                patch.object(utm_runtime, "_open_serial_listener", return_value=(listener, 4567)),
+                patch.object(utm_runtime, "_remove_registered"),
+                patch.object(utm_runtime, "prepare") as prepare,
+                patch.object(utm_runtime, "_ensure_registered"),
+                patch.object(utm_runtime, "_start_visible"),
+                patch.object(
+                    utm_runtime,
+                    "_status",
+                    side_effect=["stopped", "started", KeyboardInterrupt],
+                ),
+                patch.object(utm_runtime, "_registered", return_value=True),
+                patch.object(utm_runtime, "_ctl", return_value="") as ctl,
+            ):
+                utm_runtime.run_gui(
+                    kernel=Path("kernel"),
+                    rootfs=Path("rootfs"),
+                    memory="2G",
+                    cpu_count=6,
+                    serial_log=Path(directory) / "serial.log",
+                )
 
         ctl.assert_called_once_with("stop", utm_runtime.VM_UUID)
+        self.assertEqual(prepare.call_args.kwargs["serial_tcp_port"], 4567)
+        serial.setblocking.assert_called_once_with(False)
+        serial.close.assert_called_once_with()
+        listener.close.assert_called_once_with()
 
 
 if __name__ == "__main__":
