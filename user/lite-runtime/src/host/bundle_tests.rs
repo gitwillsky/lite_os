@@ -301,6 +301,169 @@ fn checked_desktop_listener_dispatch_commits_react_state() {
 }
 
 #[test]
+fn close_control_waits_for_app_closed_without_starting_a_move() {
+    let root = std::env::var_os("LITE_UI_TEST_ASSETS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+    let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
+    let desktop = fs::read(root.join("desktop/main.js")).expect("desktop bundle");
+    let (host, state) = host(Role::Desktop, root);
+    let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
+    engine.install_host(host);
+    engine
+        .evaluate("runtime.js", &runtime)
+        .expect("load runtime");
+    engine.run_jobs().expect("runtime jobs");
+    engine
+        .evaluate("desktop.js", &desktop)
+        .expect("mount desktop");
+    engine.run_jobs().expect("desktop jobs");
+    drop(state.scene_if_dirty().expect("desktop root"));
+
+    state.open_surface(7, "terminal".to_owned());
+    engine
+        .evaluate(
+            "open-terminal.js",
+            br#"globalThis.__liteEvent("desktop",{"type":"opened","surface":{"id":7,"appId":"terminal"}});"#,
+        )
+        .expect("dispatch opened event");
+    engine.run_jobs().expect("opened jobs");
+    let scene = state
+        .scene_if_dirty()
+        .expect("opened surface must publish one window");
+    let nodes: Vec<_> = scene
+        .iter()
+        .flat_map(|node| descendants(node).into_iter())
+        .collect();
+    let controls_down = nodes
+        .iter()
+        .find(|node| {
+            node.props
+                .get("className")
+                .and_then(serde_json::Value::as_str)
+                == Some("window__controls")
+        })
+        .and_then(|node| node.props.get("onPointerDown"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("window controls must isolate pointer-down from the titlebar");
+    let titlebar_down = nodes
+        .iter()
+        .find(|node| {
+            node.props
+                .get("className")
+                .and_then(serde_json::Value::as_str)
+                == Some("window__titlebar")
+        })
+        .and_then(|node| node.props.get("onPointerDown"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("titlebar pointer-down listener");
+    let window_down = nodes
+        .iter()
+        .find(|node| {
+            node.props
+                .get("data-lite-window")
+                .and_then(serde_json::Value::as_u64)
+                == Some(7)
+        })
+        .and_then(|node| node.props.get("onPointerDown"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("window activation listener");
+    let close_click = nodes
+        .iter()
+        .find(|node| {
+            node.props
+                .get("aria-label")
+                .and_then(serde_json::Value::as_str)
+                == Some("Close")
+        })
+        .and_then(|node| node.props.get("onClick"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("close click listener");
+    drop(nodes);
+    drop(scene);
+    state.take_actions();
+
+    engine
+        .evaluate(
+            "close-pointer-down.js",
+            format!(
+                "globalThis.__liteDispatch([{controls_down},{titlebar_down},{window_down}],{{\"type\":\"pointer\",\"phase\":\"down\",\"serial\":41}});"
+            )
+            .as_bytes(),
+        )
+        .expect("dispatch close pointer-down route");
+    engine.run_jobs().expect("pointer-down jobs");
+    assert!(
+        !state
+            .take_actions()
+            .iter()
+            .any(|action| matches!(action, Action::BeginMove { surface_id: 7, .. })),
+        "window controls must not enter the titlebar move owner"
+    );
+
+    engine
+        .evaluate(
+            "close-click.js",
+            format!("globalThis.__liteDispatch({close_click},{{\"type\":\"click\"}});").as_bytes(),
+        )
+        .expect("dispatch close click");
+    engine.run_jobs().expect("close click jobs");
+    let actions = state.take_actions();
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| matches!(action, Action::Close(7)))
+            .count(),
+        1,
+        "close control must publish exactly one close request"
+    );
+    state.invalidate_scene();
+    let scene = state
+        .scene_if_dirty()
+        .expect("close request retains the native-owned surface");
+    assert!(
+        has_window(&scene, 7),
+        "close request must wait for AppClosed instead of hiding optimistically"
+    );
+    drop(scene);
+
+    state
+        .move_surface(7, 320, 180)
+        .expect("delayed native move remains valid before AppClosed");
+    engine
+        .evaluate(
+            "delayed-move.js",
+            br#"globalThis.__liteEvent("desktop",{"type":"moved","surfaceId":7,"x":320,"y":180});"#,
+        )
+        .expect("dispatch delayed move completion");
+    engine.run_jobs().expect("delayed move jobs");
+    let scene = state
+        .scene_if_dirty()
+        .expect("delayed move publishes retained window");
+    assert!(
+        has_window(&scene, 7),
+        "an event before AppClosed must not toggle surface existence"
+    );
+    drop(scene);
+
+    state.close_surface(7);
+    engine
+        .evaluate(
+            "app-closed.js",
+            br#"globalThis.__liteEvent("desktop",{"type":"closed","surfaceId":7});"#,
+        )
+        .expect("dispatch AppClosed");
+    engine.run_jobs().expect("AppClosed jobs");
+    let scene = state
+        .scene_if_dirty()
+        .expect("AppClosed must publish the removal");
+    assert!(
+        !has_window(&scene, 7),
+        "AppClosed is the sole transition that removes the window"
+    );
+}
+
+#[test]
 fn command_launch_unmounts_the_panel_in_the_same_react_commit() {
     let root = std::env::var_os("LITE_UI_TEST_ASSETS")
         .map(PathBuf::from)
@@ -399,6 +562,17 @@ fn descendants(node: &crate::tree::Node) -> Vec<&crate::tree::Node> {
         nodes.extend(descendants(child));
     }
     nodes
+}
+
+fn has_window(scene: &[crate::tree::Node], surface_id: u64) -> bool {
+    scene.iter().any(|node| {
+        descendants(node).into_iter().any(|node| {
+            node.props
+                .get("data-lite-window")
+                .and_then(serde_json::Value::as_u64)
+                == Some(surface_id)
+        })
+    })
 }
 
 /// Mounts the production desktop bundle and fires the passive-effect

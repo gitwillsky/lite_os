@@ -150,22 +150,6 @@ export default function Desktop() {
 
   const closeWindow = useCallback((id: number) => {
     close(id);
-    setOpen((current) => current.filter((surface) => surface.id !== id));
-    setMinimized((current) => {
-      const next = new Set(current);
-      next.delete(id);
-      return next;
-    });
-    setMaximized((current) => {
-      const next = new Map(current);
-      next.delete(id);
-      return next;
-    });
-    setSurfaceWorkspace((current) => {
-      const next = new Map(current);
-      next.delete(id);
-      return next;
-    });
   }, []);
 
   useEffect(() => globalThis.liteDesktopSubscribe((event) => {
@@ -200,6 +184,21 @@ export default function Desktop() {
     }
     if (event.type === "closed") {
       setActiveId((current) => current === event.surfaceId ? 0 : current);
+      setMinimized((current) => {
+        const next = new Set(current);
+        next.delete(event.surfaceId);
+        return next;
+      });
+      setMaximized((current) => {
+        const next = new Map(current);
+        next.delete(event.surfaceId);
+        return next;
+      });
+      setResizePreview((current) => {
+        const next = new Map(current);
+        next.delete(event.surfaceId);
+        return next;
+      });
       setSurfaceWorkspace((current) => {
         const next = new Map(current);
         next.delete(event.surfaceId);

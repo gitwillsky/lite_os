@@ -12,6 +12,11 @@ export function CloseGlyph() {
   );
 }
 
+// Window controls share the titlebar's layout, but not its drag gesture. Without
+// this boundary, pressing a control bubbles into beginDrag and publishes a
+// MoveComplete after the control action has already changed window policy.
+const stopControlPropagation = (event: { stopPropagation(): void }) => event.stopPropagation();
+
 /** Props for the single system-owned Aurora window frame. */
 interface WindowProps {
   id: number;
@@ -99,7 +104,11 @@ export function Window({
           <img className="window__icon" src={icon}/>
         </span>
         <span className="window__title">{title}</span>
-        <div className="window__controls">
+        <div
+          className="window__controls"
+          onPointerDown={stopControlPropagation}
+          onDoubleClick={stopControlPropagation}
+        >
           <button className="window-control" aria-label="Minimize" onClick={() => onMinimize(id)}>
             <span className="window-control__minimize"/>
           </button>

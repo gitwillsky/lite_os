@@ -228,7 +228,10 @@
 - ordinary app uncaught exception、OOM、budget exhaustion、invalid dynamic style/asset 或 display protocol
   error 只终止该 app。desktop 的同类错误终止 epoch。LiteUI 只写 stderr，不显示 error page 或恢复 UI。
 - close request 同步 unmount 唯一 React root、关闭 helper/fd、断开 display 并退出；应用不可 veto，也没有
-  before-unload hook。PTY child exit 使 terminal-session 同码退出，React terminal 随后退出。
+  before-unload hook。窗口 control 的 pointer-down/double-click 必须在 titlebar drag owner 前终止传播；
+  desktop close request 不得提前删除 React surface，只有 compositor 发布的 `AppClosed` 可以同时撤销
+  native surface identity 与 minimized/maximized/resize/workspace policy。PTY child exit 使
+  terminal-session 同码退出，React terminal 随后退出。
 - compositor 必须在 connection teardown 沿唯一 owner path 撤销 pending configure/commit、scene
   references、clipboard request、accelerator sequence、pointer/key state 与所有 GEM mapping/handle。
   `POLLHUP/POLLERR` 是高于残留可读 frame 的 terminal transition；app teardown 必须先撤销其 pending
