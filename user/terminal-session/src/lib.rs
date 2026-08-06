@@ -252,8 +252,9 @@ fn send_update(output: &mut impl Write, bytes: &mut Vec<u8>, model: &mut Model) 
     bytes.extend_from_slice(&(cursor.1 as u16).to_le_bytes());
     bytes.extend_from_slice(&(dirty_rows as u16).to_le_bytes());
     bytes.extend_from_slice(&model.cursor_style().to_le_bytes());
-    // The header ends with the current default colors so the reader can fill
-    // the container background and cursor without a per-cell trip.
+    // The header ends with terminal default palette colors so the reader can
+    // fill the unoccupied viewport and cursor without leaking the parser's
+    // transient SGR rendition across an arbitrary UPDATE boundary.
     let (foreground, background) = model.default_colors();
     bytes.extend_from_slice(&foreground.to_le_bytes());
     bytes.extend_from_slice(&background.to_le_bytes());
@@ -296,7 +297,7 @@ mod tests {
 
     use super::{
         ACK, APPLICATION_CURSOR_KEYS, Control, Grid, INPUT, Model, duplicate_control_input,
-        read_control,
+        read_control, send_update,
     };
 
     #[test]
@@ -334,5 +335,23 @@ mod tests {
         assert_eq!(APPLICATION_CURSOR_KEYS, 1);
         model.feed(b"\x1b[?1l", |_| {});
         assert!(!model.application_cursor_keys());
+    }
+
+    #[test]
+    fn transient_sgr_colors_do_not_recolor_the_unoccupied_viewport() {
+        let mut model = Model::new(4, 2).unwrap();
+        let default_colors = model.default_colors();
+        model.feed(b"\x1b[31;46mX", |_| {});
+        assert_ne!(model.cell(0, 0).foreground, default_colors.0);
+        assert_ne!(model.cell(0, 0).background, default_colors.1);
+
+        let mut output = Vec::new();
+        let mut frame = Vec::new();
+        send_update(&mut output, &mut frame, &mut model).unwrap();
+        let published_foreground =
+            u32::from_le_bytes(output[20..24].try_into().expect("foreground"));
+        let published_background =
+            u32::from_le_bytes(output[24..28].try_into().expect("background"));
+        assert_eq!((published_foreground, published_background), default_colors);
     }
 }

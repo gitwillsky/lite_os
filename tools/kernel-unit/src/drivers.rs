@@ -8,6 +8,13 @@ pub(crate) mod io_completion;
 pub(crate) mod audio_output;
 pub(crate) use audio_output::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DisplayMode {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pitch: u32,
+}
+
 pub(crate) mod hal {
     #[derive(Clone, Copy)]
     pub(in crate::drivers) struct VirtQueueAddresses {

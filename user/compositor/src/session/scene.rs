@@ -407,6 +407,38 @@ impl Session {
 }
 
 impl Scene {
+    /// Revokes one disconnected app from an accepted but not yet presented scene.
+    ///
+    /// # Parameters
+    ///
+    /// - `surface_id`: The compositor-assigned app surface to remove.
+    ///
+    /// The scene remains presentable and expands damage over every removed node.
+    pub(super) fn revoke_surface(&mut self, surface_id: u32) {
+        let output = Rect {
+            x: 0,
+            y: 0,
+            width: self.output_size.width,
+            height: self.output_size.height,
+        };
+        for node in self
+            .nodes
+            .iter()
+            .filter(|node| node.window_group == surface_id)
+        {
+            if let Some(removed) = intersect_rect(node.clip, output) {
+                self.damage = union_rect(self.damage, removed);
+            }
+        }
+        self.nodes.retain(|node| node.window_group != surface_id);
+        super::revoke_surface_routing(&mut self.routing, surface_id);
+        self.app_presentations
+            .retain(|presentation| presentation.surface_id != surface_id);
+        if self.focused_surface == surface_id {
+            self.focused_surface = 0;
+        }
+    }
+
     fn discarded(revision: u64) -> Self {
         Self {
             revision,
@@ -473,8 +505,9 @@ fn union_rect(left: Rect, right: Rect) -> Rect {
 
 #[cfg(test)]
 mod damage_tests {
-    use super::{intersect_rect, union_rect};
-    use display_proto::Rect;
+    use super::{AppPresentation, Node, Scene, intersect_rect, union_rect};
+    use crate::session::RoutingNode;
+    use display_proto::{Rect, SceneNodeKind, Size};
 
     #[test]
     fn scene_damage_is_clipped_to_output_then_conservatively_unioned() {
@@ -511,6 +544,76 @@ mod damage_tests {
                 y: 10,
                 width: 300,
                 height: 70,
+            }
+        );
+    }
+
+    #[test]
+    fn disconnected_surface_is_removed_from_unpresented_scene() {
+        let mut scene = Scene {
+            revision: 9,
+            output_size: Size {
+                width: 300,
+                height: 200,
+            },
+            damage: Rect::default(),
+            nodes: vec![
+                Node {
+                    kind: SceneNodeKind::DisplayList,
+                    window_group: 0,
+                    buffer_id: 1,
+                    bounds: Rect::default(),
+                    clip: Rect::default(),
+                    clip_masks: Vec::new(),
+                },
+                Node {
+                    kind: SceneNodeKind::ForeignSurface,
+                    window_group: 7,
+                    buffer_id: 2,
+                    bounds: Rect {
+                        x: 40,
+                        y: 30,
+                        width: 100,
+                        height: 80,
+                    },
+                    clip: Rect {
+                        x: 40,
+                        y: 30,
+                        width: 100,
+                        height: 80,
+                    },
+                    clip_masks: Vec::new(),
+                },
+            ],
+            finishes_move: false,
+            desktop_buffers: vec![1],
+            app_presentations: vec![AppPresentation {
+                surface_id: 7,
+                revision: 3,
+                previous: None,
+            }],
+            routing: vec![RoutingNode {
+                surface_id: 7,
+                window_group: 7,
+                bounds: Rect::default(),
+                input: Vec::new(),
+            }],
+            focused_surface: 7,
+        };
+
+        scene.revoke_surface(7);
+
+        assert_eq!(scene.nodes.len(), 1);
+        assert!(scene.routing.is_empty());
+        assert!(scene.app_presentations.is_empty());
+        assert_eq!(scene.focused_surface, 0);
+        assert_eq!(
+            scene.damage,
+            Rect {
+                x: 40,
+                y: 30,
+                width: 100,
+                height: 80,
             }
         );
     }

@@ -285,9 +285,13 @@ pub(super) fn complete(
             _ => Err(DisplayError::Device),
         },
         RuntimeStage::VirglFlush => match payload {
-            CommandPayload::None => Ok(SequenceCompletion::update(Some(
-                DisplayUpdate::RenderCompleted(fence),
-            ))),
+            CommandPayload::None => {
+                control.resources.deactivate();
+                control.scanout.presented(control.mode);
+                Ok(SequenceCompletion::update(Some(
+                    DisplayUpdate::RenderCompleted(fence),
+                )))
+            }
             _ => Err(DisplayError::Device),
         },
     }
@@ -301,7 +305,9 @@ fn finish_scanout(
         Some(RuntimeOperation::Scanout(target)) => target,
         _ => return Err(DisplayError::Device),
     };
+    let mode = target.mode(&control.resources);
     let evicted = control.resources.complete(target, true, false);
+    control.scanout.presented(mode);
     if let Some(boot) = control.resources.release(0)? {
         let resource_id = boot.id();
         control.operation = Some(RuntimeOperation::RetireBoot { boot, evicted });
@@ -340,6 +346,7 @@ fn unref_disabled(
             Some(RuntimeOperation::Disable(resources)) => resources,
             _ => return Err(DisplayError::Device),
         };
+        control.scanout.complete_disable();
         Ok(SequenceCompletion::operation(
             pending.operation_fence,
             SequenceRetirement::Disabled(resources),

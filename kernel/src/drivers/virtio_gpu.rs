@@ -21,6 +21,8 @@ mod graphics_command;
 use damage::DamageTransition;
 mod resource;
 use resource::{CursorResourceSet, ResourceSet, RuntimeOperation};
+mod scanout_state;
+use scanout_state::ScanoutState;
 mod sequence;
 mod sequence_policy;
 use sequence::{SequenceAction, SequenceCompletion};
@@ -204,6 +206,10 @@ struct ControlQueue {
     // OWNER: resources 唯一拥有两个 fixed resource ID、active slot、backing lifetime 与
     // DIRTYFB synchronization fact；复制 cache 会让 eviction DMA 与 allocator 回收竞态。
     resources: ResourceSet,
+    // OWNER: scanout 是 completion-confirmed active CRTC mode 的唯一 adapter fact；它不
+    // 从 2D residency 推导，因为 VirGL framebuffer 可以在 resident slots 为空时仍拥有
+    // hardware scanout。缺失该状态会让 DRM OFD close 无法编码 resource-id-zero disable。
+    scanout: ScanoutState,
     // OWNER: cursor_resource 独占规范要求的固定 64x64 ARGB 2D resource 与 backing。
     // 若复用 VirGL texture，QEMU/UTM 可以完成 cursorq 命令却无法取得标准 2D 像素。
     cursor_resource: CursorResourceSet,
@@ -280,6 +286,7 @@ impl VirtIOGpuDevice {
             commands: CommandSlots::try_new()?,
             capset: None,
             resources: ResourceSet::empty(),
+            scanout: ScanoutState::disabled(),
             cursor_resource: CursorResourceSet::empty(),
             operation: None,
             damage: DamageTransition::try_new()?,
@@ -327,7 +334,10 @@ impl VirtIOGpuDevice {
         )?)
         .ok()?;
         Self::initialize_scanout(&adapter.device, &adapter.control, mode, &framebuffer)?;
-        adapter.control.lock().resources = ResourceSet::with_boot(framebuffer, mode);
+        let mut control = adapter.control.lock();
+        control.resources = ResourceSet::with_boot(framebuffer, mode);
+        control.scanout.presented(mode);
+        drop(control);
 
         Arc::try_new(adapter).ok()
     }
@@ -591,7 +601,7 @@ impl DisplayDevice for VirtIOGpuDevice {
     }
 
     fn disable_scanout(&self) -> Result<u64, DisplayError> {
-        self.disable_resident()
+        self.disable_active_scanout()
     }
 
     fn poll_update(&self) -> Result<Option<DisplayUpdate>, DisplayError> {

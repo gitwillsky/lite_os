@@ -212,6 +212,8 @@
   与 Node API 不存在。
 - terminal helper stdin/stdout 使用长度前缀 binary protocol，stderr 只诊断。screen update 按完整脏行，
   cell metadata 标记“已写入”状态与宽字符 continuation，并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；已写入状态区分原文空格与未使用空白，避免软换行重排吞掉行尾内容；
+  update header 的前景/背景是 palette 7/0 的终端默认色，不能使用任意分片边界处 parser 的当前 SGR
+  rendition，否则 TUI 尚未发送 reset 时会把整个未占用 viewport 错染为瞬态颜色；
   最多一个 update 在途，ACK 前变更合并；
   terminfo 同时发布通用 `Ss`/`Se` 和 Vim 外部 terminfo loader 使用的 `SI`/`EI`；resize 发送完整
   grid。helper argv 必须在 `--` 后显式给出，不提供默认 shell或 command-string parser。
@@ -229,6 +231,8 @@
   before-unload hook。PTY child exit 使 terminal-session 同码退出，React terminal 随后退出。
 - compositor 必须在 connection teardown 沿唯一 owner path 撤销 pending configure/commit、scene
   references、clipboard request、accelerator sequence、pointer/key state 与所有 GEM mapping/handle。
+  `POLLHUP/POLLERR` 是高于残留可读 frame 的 terminal transition；app teardown 必须先撤销其 pending
+  paint、accepted/presented scene、routing、focus 与 grab，再释放 stream 和 GPU buffer。
   partial decode、allocation 或 SCM_RIGHTS failure 不得发布 resource identity。
 - boot fallback 由 compositor 在取得 DRM 后立即一次性绘制，之后不运行 timer 或 progress animation。
   checked identity 资产只保存按最终物理像素生成的紧凑 logo/title/status premultiplied ARGB 图层，

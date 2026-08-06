@@ -239,6 +239,10 @@ mod virtio_net_rx_slots;
 mod virtio_gpu_sequence_policy;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/drivers/virtio_gpu/scanout_state.rs"]
+mod virtio_gpu_scanout_state;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/drm/fence_timeline.rs"]
 mod drm_fence_timeline;
 

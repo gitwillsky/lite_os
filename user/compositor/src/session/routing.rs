@@ -14,10 +14,9 @@ use super::{MoveGrab, PointerCapture, Session, invalid};
 
 impl Session {
     pub(super) fn clear_pointer_capture(&mut self, surface_id: Option<u32>) {
-        if self
-            .pointer_capture
-            .is_some_and(|capture| surface_id.is_none_or(|id| capture.surface_id == id))
-        {
+        if self.pointer_capture.is_some_and(|capture| {
+            surface_id.is_none_or(|id| capture.surface_id == id || capture.window_group == id)
+        }) {
             self.pointer_capture = None;
         }
         if self

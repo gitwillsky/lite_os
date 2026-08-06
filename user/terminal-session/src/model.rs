@@ -155,7 +155,12 @@ pub trait Grid {
     fn rows(&self) -> usize;
     /// Returns the visible cursor as `(column, row)`, matching the `columns`/`rows` order.
     fn cursor(&self) -> Option<(usize, usize)>;
-    /// Returns the current default `(foreground, background)` SGR colors.
+    /// Returns the terminal default `(foreground, background)` palette colors.
+    ///
+    /// These colors paint the unoccupied viewport and cursor. They are
+    /// independent of the parser's current SGR rendition; publishing that
+    /// transient state would recolor the whole viewport when a TUI update is
+    /// framed between a color selection and its reset sequence.
     fn default_colors(&self) -> (u32, u32);
     fn cursor_style(&self) -> u16;
     /// Returns whether DEC application-cursor mode currently owns navigation-key encoding.
@@ -436,7 +441,7 @@ impl Grid for Model {
     }
 
     fn default_colors(&self) -> (u32, u32) {
-        (self.foreground, self.background)
+        (self.palette[7], self.palette[0])
     }
 
     fn cursor_style(&self) -> u16 {

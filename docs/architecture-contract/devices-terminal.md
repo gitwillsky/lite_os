@@ -144,6 +144,8 @@
   display update；operation fence 只能在 flush completion 发布。两条 command 不得经 completion round-trip
   串行提交，否则一次 page flip 会多付一次 host event-loop/display-sync 延迟。失败保持当前 operation owner，
   publication 前由原 rollback seam 恢复。
+  completion-confirmed active CRTC mode 由 adapter 的单一 scanout state 拥有，不得从 2D residency
+  推导；VirGL framebuffer 在 resident slots 为空时仍必须能沿同一 resource-id-zero transaction disable。
 - concrete VirtIO adapter 的 `Drop` 必须先写 device status 0，并等待读回 0 证明 reset 完成、同步
   撤销设备对所有 descriptor 的 ownership，再释放 queue、fixed slot 与 cached mapping；初始化进入
   `DRIVER_OK` 后的任意失败也必须由同一 owner drop 路径 reset。缺少读回或该顺序会把仍可 DMA 的页

@@ -434,8 +434,8 @@ impl Session {
         }
         let (
             listener_ready,
-            desktop_ready,
-            app_ready,
+            desktop_events,
+            app_events,
             input_ready,
             flip_ready,
             hotplug_ready,
@@ -475,13 +475,17 @@ impl Session {
             unix::poll(&mut descriptors[..descriptor_count], None)?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(desktop_polled);
-            let desktop_ready = desktop_polled && descriptors[1].returned() != PollEvents::EMPTY;
-            let mut app_ready = [false; MAX_APP_SURFACES];
-            for (ready, descriptor) in app_ready[..app_count]
+            let desktop_events = if desktop_polled {
+                descriptors[1].returned()
+            } else {
+                PollEvents::EMPTY
+            };
+            let mut app_events = [PollEvents::EMPTY; MAX_APP_SURFACES];
+            for (events, descriptor) in app_events[..app_count]
                 .iter_mut()
                 .zip(&descriptors[1 + desktop_offset..wake_offset])
             {
-                *ready = descriptor.returned() != PollEvents::EMPTY;
+                *events = descriptor.returned();
             }
             let input_ready = descriptors[wake_offset..flip_offset]
                 .iter()
@@ -491,8 +495,8 @@ impl Session {
             let agent_ready = descriptors[agent_offset].returned() != PollEvents::EMPTY;
             (
                 listener_ready,
-                desktop_ready,
-                app_ready,
+                desktop_events,
+                app_events,
                 input_ready,
                 flip_ready,
                 hotplug_ready,
@@ -516,9 +520,38 @@ impl Session {
         if listener_ready && let Err(error) = self.accept() {
             eprintln!("compositor: rejected connection: {error}");
         }
+        if connection_closed(desktop_events) {
+            eprintln!("compositor: desktop disconnected: poll hangup");
+            self.reset_epoch();
+            self.pending_cursor_shape = None;
+            self.pointer_surface = None;
+            return Ok(Activity {
+                scene: None,
+                paint: self.pending_paint.drain(..).collect(),
+                move_begin: None,
+                input: input_ready,
+                flip: flip_ready,
+                epoch_reset: true,
+                output,
+            });
+        }
+        // 1. HANGUP is a terminal connection transition even when unread frames
+        // remain in the socket. Reading one buffered app commit first would
+        // publish paint for an owner that can no longer receive Accepted, and
+        // that BrokenPipe used to unwind the compositor's DRM owner.
+        for (surface_id, events) in app_ids[..app_count]
+            .iter()
+            .copied()
+            .zip(app_events[..app_count].iter().copied())
+        {
+            if connection_closed(events) {
+                eprintln!("compositor: app {surface_id} disconnected: poll hangup");
+                self.remove_app(surface_id);
+            }
+        }
         let mut scene = None;
         let mut move_begin = None;
-        if desktop_ready {
+        if desktop_events.contains(PollEvents::READ) {
             match self.receive_desktop() {
                 Ok(messages::DesktopMessage::Scene(accepted)) => scene = Some(accepted),
                 Ok(messages::DesktopMessage::Move(request)) => move_begin = Some(request),
@@ -540,14 +573,23 @@ impl Session {
                 }
             }
         }
-        for (surface_id, ready) in app_ids[..app_count]
+        for (surface_id, events) in app_ids[..app_count]
             .iter()
             .copied()
-            .zip(app_ready[..app_count].iter().copied())
+            .zip(app_events[..app_count].iter().copied())
         {
-            if ready && let Err(error) = self.receive_app(surface_id) {
+            if !connection_closed(events)
+                && events.contains(PollEvents::READ)
+                && let Err(error) = self.receive_app(surface_id)
+            {
                 eprintln!("compositor: app {surface_id} disconnected: {error}");
                 self.remove_app(surface_id);
+                if let Some(accepted) = scene.as_mut() {
+                    accepted.revoke_surface(surface_id);
+                }
+                if move_begin.is_some_and(|request| request.surface_id == surface_id) {
+                    move_begin = None;
+                }
             }
         }
         Ok(Activity {
@@ -662,13 +704,29 @@ impl Session {
         if self.apps.remove(&surface_id).is_none() {
             return;
         }
+        let owner = Owner::App(surface_id);
         self.spice_agent.remove_surface(surface_id);
+        // 1. Revoke every compositor reference before releasing the app's GPU
+        // buffers. Otherwise close can leave input or move composition pointing
+        // at an owner that no longer has a stream or pixels.
+        revoke_surface_paint(&mut self.pending_paint, surface_id);
+        revoke_surface_routing(&mut self.routing, surface_id);
+        self.presented_nodes
+            .retain(|node| node.window_group != surface_id);
+        if self.focused_surface == surface_id {
+            self.focused_surface = 0;
+        }
+        if self.pointer_surface == Some(surface_id) {
+            self.set_pointer_surface(None);
+        }
+        self.clear_pointer_capture(Some(surface_id));
+        // 2. No scene, paint, routing, focus or grab owner can now name these
+        // resources, so teardown may release them atomically.
         self.buffers
             .values
-            .retain(|_, buffer| buffer.owner != Owner::App(surface_id));
-        self.paint.remove_owner(Owner::App(surface_id));
-        self.idle_targets.remove(&Owner::App(surface_id));
-        self.clear_pointer_capture(Some(surface_id));
+            .retain(|_, buffer| buffer.owner != owner);
+        self.paint.remove_owner(owner);
+        self.idle_targets.remove(&owner);
         if let Ok(stream) = self.desktop_stream() {
             let mut bytes = [0u8; 24];
             if let Some(message) = (AppClosed { surface_id }).encode(&mut bytes) {
@@ -729,6 +787,18 @@ impl Drop for Session {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn connection_closed(events: PollEvents) -> bool {
+    events.contains(PollEvents::HANGUP) || events.contains(PollEvents::ERROR)
+}
+
+fn revoke_surface_paint(pending: &mut VecDeque<Owner>, surface_id: u32) {
+    pending.retain(|owner| *owner != Owner::App(surface_id));
+}
+
+fn revoke_surface_routing(routing: &mut Vec<RoutingNode>, surface_id: u32) {
+    routing.retain(|node| node.surface_id != surface_id && node.window_group != surface_id);
 }
 
 #[cfg(test)]

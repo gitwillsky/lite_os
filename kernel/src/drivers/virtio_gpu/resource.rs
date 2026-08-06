@@ -317,6 +317,12 @@ impl ResourceSet {
         evicted
     }
 
+    /// @description 在 VirGL framebuffer 接管 hardware scanout 后撤销 2D active slot。
+    /// @return 无返回值；resident resource 仍保留到统一 disable/RMFB owner 回收。
+    pub(super) fn deactivate(&mut self) {
+        self.active = None;
+    }
+
     /// @description 回滚尚未进入 avail ring 的 target reservation。
     /// @param target publication 前失败的独占 target。
     /// @return 未发布的新 resource，供 caller 在 control lock 外析构。
@@ -333,13 +339,6 @@ impl ResourceSet {
                 Some(next)
             }
         }
-    }
-
-    /// @description 读取 active resource mode，供 resource_id=0 disable transaction 使用。
-    /// @return 存在 active resource 时返回其 mode。
-    pub(super) fn active_mode(&self) -> Option<DisplayMode> {
-        self.active
-            .and_then(|slot| self.slots[slot].as_ref().map(|resource| resource.mode))
     }
 
     /// @description 摘下一个 inactive framebuffer 的 resident resource。
@@ -661,16 +660,13 @@ impl VirtIOGpuDevice {
 
     /// @description 以 resource_id=0 禁用 scanout 并移交全部 residency owner。
     /// @return SET_SCANOUT→UNREF transaction fence。
-    /// @errors 无 active resource、已有 operation 或 controlq publication failure。
-    pub(super) fn disable_resident(&self) -> Result<u64, DisplayError> {
+    /// @errors 无 completion-confirmed scanout、已有 operation 或 controlq publication failure。
+    pub(super) fn disable_active_scanout(&self) -> Result<u64, DisplayError> {
         let mut control = self.control.lock();
         if control.commands.has_pending() || control.operation.is_some() {
             return Err(DisplayError::WouldBlock);
         }
-        let mode = control
-            .resources
-            .active_mode()
-            .ok_or(DisplayError::Device)?;
+        let mode = control.scanout.mode().ok_or(DisplayError::Device)?;
         let resources = control.resources.take_all();
         control.operation = Some(RuntimeOperation::Disable(resources));
         let result = self.submit_command(
