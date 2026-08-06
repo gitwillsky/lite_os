@@ -214,6 +214,8 @@
   cell metadata 标记“已写入”状态与宽字符 continuation，并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；已写入状态区分原文空格与未使用空白，避免软换行重排吞掉行尾内容；
   update header 的前景/背景是 palette 7/0 的终端默认色，不能使用任意分片边界处 parser 的当前 SGR
   rendition，否则 TUI 尚未发送 reset 时会把整个未占用 viewport 错染为瞬态颜色；
+  PTY resize 与 React raster 共用完整 client area 的 8×16 logical cell，row/column zero 必须从
+  client origin `(0,0)` 开始，不得增加未计入 grid dimensions 的视觉 padding；
   最多一个 update 在途，ACK 前变更合并；
   terminfo 同时发布通用 `Ss`/`Se` 和 Vim 外部 terminfo loader 使用的 `SI`/`EI`；resize 发送完整
   grid。helper argv 必须在 `--` 后显式给出，不提供默认 shell或 command-string parser。

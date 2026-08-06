@@ -117,6 +117,55 @@ fn explorer_apps_mount_with_all_first_frame_assets() {
 }
 
 #[test]
+fn terminal_grid_starts_at_the_exact_client_origin() {
+    let root = std::env::var_os("LITE_UI_TEST_ASSETS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+    let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
+    let bundle = fs::read(root.join("terminal/main.js")).expect("terminal bundle");
+    let (host, state) = host(Role::App, root.join("terminal"));
+    let mut engine = Engine::open(Role::App).expect("terminal engine must open");
+    engine.install_host(host);
+    engine
+        .evaluate("runtime.js", &runtime)
+        .expect("load runtime");
+    engine.run_jobs().expect("runtime jobs");
+    engine
+        .evaluate("terminal.js", &bundle)
+        .expect("mount terminal");
+    engine.run_jobs().expect("terminal jobs");
+
+    let scene = state.scene_if_dirty().expect("terminal root");
+    let nodes: Vec<_> = scene
+        .iter()
+        .flat_map(|node| descendants(node).into_iter())
+        .collect();
+    for class_name in ["terminal__run", "terminal__cursor"] {
+        let style = nodes
+            .iter()
+            .find(|node| {
+                node.props
+                    .get("className")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(class_name)
+            })
+            .and_then(|node| node.props.get("style"))
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| panic!("{class_name} inline position"));
+        assert_eq!(
+            style.get("left").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "{class_name} column zero must align with the client left edge"
+        );
+        assert_eq!(
+            style.get("top").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "{class_name} row zero must align with the client top edge"
+        );
+    }
+}
+
+#[test]
 fn quickjs_bridge_publishes_only_the_latest_complete_scene() {
     let (host, state) = host(Role::Desktop, PathBuf::from("/"));
     let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
