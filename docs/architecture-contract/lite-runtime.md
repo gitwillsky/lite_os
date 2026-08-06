@@ -67,6 +67,9 @@
 
 - `display-proto` 是唯一 graphical userspace IPC seam。握手版本必须精确相等并永久选择
   `HELLO_DESKTOP` 或 `HELLO_APP`；不得 capability negotiation、兼容消息或同连接角色切换。
+- display-list frame 上限必须由 `MAX_DISPLAY_COMMANDS` 与单命令 `MAX_GLYPHS_PER_RUN` 的最大 wire
+  长度精确推导，合法的高密度文本列表不得在外层 framing 被拒绝。compositor 收包与 LiteUI 编码只按
+  header 声明/实际长度分配 heap storage；不得按该最坏上限建立栈数组或逐帧清零最大缓冲。
 - scene 是不超过 64 KiB、最多 128 node 的完整 snapshot；session 最多 32 app surface。compositor
   必须先完整 decode/validate surface identity、configure serial、bounds、clip、input/opaque region、buffer
   ownership 与 quota，再原子替换 accepted scene；失败保留旧 scene。

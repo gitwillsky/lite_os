@@ -1,7 +1,8 @@
 use display_proto::{
     BorderStyle, ClipMask, CornerRadius, DisplayCommand, DisplayListCommit, Glyph, Glyphs,
-    GradientStop, GradientStops, ImageRepeat, ImageSampling, MessageKind, Rect, Size,
-    TextureCreate, TextureFormat, TexturePublish, TextureRect, TextureWrite, parse_frame,
+    GradientStop, GradientStops, ImageRepeat, ImageSampling, MAX_DISPLAY_COMMANDS,
+    MAX_GLYPHS_PER_RUN, MAX_MESSAGE, MessageKind, Rect, Size, TextureCreate, TextureFormat,
+    TexturePublish, TextureRect, TextureWrite, parse_frame,
 };
 
 const RADII: [CornerRadius; 4] = [
@@ -125,6 +126,26 @@ fn display_list_rejects_unbalanced_groups_and_non_finite_values() {
         )
         .is_none()
     );
+}
+
+#[test]
+fn outer_frame_quota_covers_every_allowed_maximum_glyph_run() {
+    let glyphs = vec![
+        Glyph {
+            source: rect(0, 0, 16, 32),
+            destination: rect(0, 0, 16, 32),
+        };
+        MAX_GLYPHS_PER_RUN
+    ];
+    let command = DisplayCommand::GlyphRun {
+        texture_id: 1,
+        color: 0xffff_ffff,
+        offset: [0.0; 2],
+        blur: 0.0,
+        glyphs: Glyphs::from_slice(&glyphs),
+    };
+    let commands = vec![command; MAX_DISPLAY_COMMANDS];
+    assert_eq!(DisplayListCommit::encoded_len(&commands), Some(MAX_MESSAGE));
 }
 
 #[test]

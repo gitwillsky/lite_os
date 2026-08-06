@@ -2,7 +2,7 @@
 
 use std::io;
 
-use display_proto::{ClipboardRead, ClipboardWrite, MAX_MESSAGE, send_message};
+use display_proto::{ClipboardRead, ClipboardWrite, MAX_CONTROL_MESSAGE, send_message};
 
 use super::Display;
 
@@ -21,7 +21,7 @@ impl Display {
 
     /// Publishes complete UTF-8 text as the system clipboard.
     pub fn clipboard_write(&self, text: String) -> io::Result<()> {
-        let mut bytes = vec![0u8; MAX_MESSAGE];
+        let mut bytes = vec![0u8; MAX_CONTROL_MESSAGE];
         let message = ClipboardWrite {
             surface_id: self.surface_id,
             text,

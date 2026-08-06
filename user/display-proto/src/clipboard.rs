@@ -68,7 +68,7 @@ impl ClipboardWrite {
         let mut reader = PayloadReader::new(payload);
         let surface_id = reader.u32()?;
         let length = reader.u32()? as usize;
-        if length > MAX_CLIPBOARD_TEXT || HEADER_LEN + 8 + length > crate::MAX_MESSAGE {
+        if length > MAX_CLIPBOARD_TEXT || HEADER_LEN + 8 + length > crate::MAX_CONTROL_MESSAGE {
             return None;
         }
         let text = core::str::from_utf8(reader.bytes(length)?).ok()?.to_owned();
@@ -108,7 +108,7 @@ impl ClipboardData {
         let surface_id = reader.u32()?;
         let request_id = reader.u64()?;
         let length = reader.u32()? as usize;
-        if length > MAX_CLIPBOARD_TEXT || HEADER_LEN + 16 + length > crate::MAX_MESSAGE {
+        if length > MAX_CLIPBOARD_TEXT || HEADER_LEN + 16 + length > crate::MAX_CONTROL_MESSAGE {
             return None;
         }
         let text = core::str::from_utf8(reader.bytes(length)?).ok()?.to_owned();

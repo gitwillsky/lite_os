@@ -3,8 +3,8 @@
 use std::io;
 
 use display_proto::{
-    MAX_MESSAGE, Size, TextureCreate, TextureDestroy, TextureFormat, TexturePublish, TextureWrite,
-    send_message,
+    MAX_CONTROL_MESSAGE, Size, TextureCreate, TextureDestroy, TextureFormat, TexturePublish,
+    TextureWrite, send_message,
 };
 
 use super::Display;
@@ -51,7 +51,7 @@ impl Display {
     ) -> io::Result<()> {
         let byte_len = u32::try_from(bytes.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "texture is too large"))?;
-        let mut frame = [0u8; MAX_MESSAGE];
+        let mut frame = [0u8; MAX_CONTROL_MESSAGE];
         let create = TextureCreate {
             texture_id,
             size,
@@ -62,7 +62,7 @@ impl Display {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid texture"))?;
         send_message(&self.stream, create)?;
 
-        const CHUNK: usize = MAX_MESSAGE - display_proto::HEADER_LEN - 12;
+        const CHUNK: usize = MAX_CONTROL_MESSAGE - display_proto::HEADER_LEN - 12;
         for (index, chunk) in bytes.chunks(CHUNK).enumerate() {
             let offset = index
                 .checked_mul(CHUNK)

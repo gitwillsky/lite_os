@@ -3,8 +3,8 @@
 use std::io;
 
 use display_proto::{
-    AcceleratorSet, CloseRequest, Configure, DisplayListCommit, MessageKind, MoveBegin,
-    SetCursorShape, TextureCreate, TextureDestroy, TexturePublish, TextureWrite,
+    AcceleratorSet, CloseRequest, Configure, MessageKind, MoveBegin, SetCursorShape, TextureCreate,
+    TextureDestroy, TexturePublish, TextureWrite,
 };
 
 use super::{Owner, Scene, Session, invalid, wire::receive};
@@ -48,9 +48,7 @@ impl Session {
                 Ok(DesktopMessage::Idle)
             }
             MessageKind::DisplayListCommit => {
-                DisplayListCommit::parse(&payload)
-                    .ok_or_else(|| invalid("invalid display list"))?;
-                self.paint.commit_list(Owner::Desktop, &payload)?;
+                self.paint.commit_list(Owner::Desktop, payload)?;
                 self.queue_paint(Owner::Desktop);
                 Ok(DesktopMessage::Idle)
             }
@@ -119,9 +117,7 @@ impl Session {
                     .ok_or_else(|| invalid("invalid texture destroy"))?,
             ),
             MessageKind::DisplayListCommit => {
-                DisplayListCommit::parse(&payload)
-                    .ok_or_else(|| invalid("invalid display list"))?;
-                self.paint.commit_list(Owner::App(surface_id), &payload)?;
+                self.paint.commit_list(Owner::App(surface_id), payload)?;
                 self.queue_paint(Owner::App(surface_id));
                 Ok(())
             }

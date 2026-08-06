@@ -16,8 +16,8 @@ use std::{
 
 use display_proto::{
     AcceleratorChord, AcceleratorSet, CloseRequest, Configure, HelloApp, HelloDesktop, InputScroll,
-    MAX_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect, SetCursorShape, Size,
-    Welcome, parse_frame, recv_frame_blocking, send_message,
+    MAX_CONTROL_MESSAGE, MessageKind, MoveBegin, PROTOCOL_VERSION, PointerPhase, Rect,
+    SetCursorShape, Size, Welcome, parse_frame, recv_frame_blocking, send_message,
 };
 use linux_uapi::unix::{self, PollEvents, PollFd};
 
@@ -89,8 +89,8 @@ pub struct Display {
     /// the same public monotonic sequence. Without this owner, retained paint
     /// can name an intervening scene revision that has no pixel target.
     paint_revision: u64,
-    /// 持久 commit 编码缓冲,替代每帧 64KiB 栈数组(MAX_MESSAGE 一次性驻留,
-    /// 不再反复清零栈页)。只被 commit 路径独占使用,无重入。
+    /// 持久 scene 编码缓冲；scene 保持 64 KiB control quota，不随高密度
+    /// display-list 的派生上限扩张。只被 commit 路径独占使用，无重入。
     staging: Vec<u8>,
     pending: VecDeque<Event>,
     submitted: VecDeque<u64>,
@@ -115,7 +115,7 @@ impl Display {
         }
         .ok_or_else(|| io::Error::other("display handshake encoding failed"))?;
         send_message(&stream, hello)?;
-        let mut input = [0u8; MAX_MESSAGE];
+        let mut input = [0u8; 64];
         let length = recv_frame_blocking(&stream, &mut input)?;
         let frame = parse_frame(&input[..length])
             .filter(|frame| frame.kind() == MessageKind::Welcome)
@@ -142,7 +142,7 @@ impl Display {
             output_serial: welcome.output_serial,
             revision: 0,
             paint_revision: 0,
-            staging: vec![0; MAX_MESSAGE],
+            staging: vec![0; MAX_CONTROL_MESSAGE],
             pending: VecDeque::new(),
             submitted: VecDeque::new(),
             accepted: HashSet::new(),
@@ -407,7 +407,7 @@ impl Display {
     }
 
     fn receive(&self) -> io::Result<WireEvent> {
-        let mut bytes = [0u8; MAX_MESSAGE];
+        let mut bytes = [0u8; MAX_CONTROL_MESSAGE];
         let length = recv_frame_blocking(&self.stream, &mut bytes)?;
         if length == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "display EOF"));

@@ -503,6 +503,34 @@ pub enum DisplayCommand<'a> {
     },
 }
 
+impl DisplayCommand<'_> {
+    fn encoded_len(self) -> Option<usize> {
+        Some(match self {
+            Self::PushGroup(_) => 8,
+            Self::PopGroup | Self::PopClip | Self::PopOpacity => 4,
+            Self::PushClip(_) => 52,
+            Self::PushOpacity(_) => 8,
+            Self::SolidRect { .. } => 56,
+            Self::LinearGradient { stops, .. } => {
+                if stops.is_empty() || stops.len() > MAX_GRADIENT_STOPS {
+                    return None;
+                }
+                72usize.checked_add(stops.len().checked_mul(8)?)?
+            }
+            Self::Border { .. } => 100,
+            Self::BoxShadow { .. } => 76,
+            Self::Image { .. } => 84,
+            Self::GlyphRun { glyphs, .. } => {
+                if glyphs.is_empty() || glyphs.len() > MAX_GLYPHS_PER_RUN {
+                    return None;
+                }
+                28usize.checked_add(glyphs.len().checked_mul(32)?)?
+            }
+            Self::BackdropBlur { .. } => 56,
+        })
+    }
+}
+
 /// Borrowed, fully validated immutable display-list snapshot.
 #[derive(Clone, Copy, Debug)]
 pub struct DisplayListCommit<'a> {
@@ -607,6 +635,25 @@ impl<'a> DisplayListWriter<'a> {
 }
 
 impl<'a> DisplayListCommit<'a> {
+    /// Returns the exact frame bytes required by one command list.
+    ///
+    /// # Parameters
+    ///
+    /// - `commands`: Complete immutable paint stream to size.
+    ///
+    /// # Returns
+    ///
+    /// The frame length including its header, or `None` when a command count,
+    /// gradient, glyph run, or arithmetic result exceeds the protocol quota.
+    pub fn encoded_len(commands: &[DisplayCommand<'_>]) -> Option<usize> {
+        if commands.len() > MAX_DISPLAY_COMMANDS {
+            return None;
+        }
+        commands.iter().try_fold(52usize, |length, command| {
+            length.checked_add(command.encoded_len()?)
+        })
+    }
+
     /// Encodes an atomic display list. Stack groups must be exactly balanced.
     pub fn encode<'output>(
         output: &'output mut [u8],

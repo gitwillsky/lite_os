@@ -4,8 +4,8 @@ use std::{io, os::unix::net::UnixStream};
 
 use display_proto::{
     Accepted, AppClosed, AppOpened, ClipboardData, CloseRequest, Configure, ConfigureReady,
-    Discarded, InputKey, InputPointer, InputScroll, MAX_MESSAGE, MessageKind, MoveComplete,
-    OutputConfigure, Presented, SurfaceActivated, parse_frame, recv_frame_blocking,
+    Discarded, InputKey, InputPointer, InputScroll, MessageKind, MoveComplete, OutputConfigure,
+    Presented, SurfaceActivated, parse_frame, recv_frame_blocking,
 };
 
 use super::{Event, invalid};
@@ -18,7 +18,7 @@ pub(super) enum WireEvent {
 }
 
 pub(super) fn receive_configure(stream: &UnixStream, surface_id: u32) -> io::Result<Configure> {
-    let mut bytes = [0u8; MAX_MESSAGE];
+    let mut bytes = [0u8; 40];
     let length = recv_frame_blocking(stream, &mut bytes)?;
     let frame = parse_frame(&bytes[..length])
         .filter(|frame| frame.kind() == MessageKind::Configure)

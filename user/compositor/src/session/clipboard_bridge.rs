@@ -3,7 +3,7 @@
 use std::io;
 
 use display_proto::{
-    ClipboardData, ClipboardRead, ClipboardWrite, MAX_MESSAGE, MessageKind, send_message,
+    ClipboardData, ClipboardRead, ClipboardWrite, MAX_CONTROL_MESSAGE, MessageKind, send_message,
 };
 use linux_uapi::unix::{PollEvents, PollFd};
 
@@ -98,7 +98,7 @@ impl Session {
             };
             &app.stream
         };
-        let mut bytes = vec![0u8; MAX_MESSAGE];
+        let mut bytes = vec![0u8; MAX_CONTROL_MESSAGE];
         let message = data
             .encode(&mut bytes)
             .ok_or_else(|| io::Error::other("clipboard data encoding failed"))?;

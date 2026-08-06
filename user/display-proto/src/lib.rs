@@ -38,10 +38,10 @@ pub use scene::{
     SceneNodes,
 };
 pub use surface::{Accepted, Configure, ConfigureReady, Discarded, OutputConfigure, Presented};
-pub use transport::{recv_frame_blocking, send_message};
+pub use transport::{recv_frame_blocking, recv_message_owned, send_message};
 
 /// The only supported protocol version; no negotiation or compat decoder.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// compositor 监听的唯一 socket path。
 pub const SOCKET_PATH: &str = "/run/display.sock";
@@ -49,8 +49,23 @@ pub const SOCKET_PATH: &str = "/run/display.sock";
 /// frame header 字节数：`len: u32` 与 `kind: u32`。
 pub const HEADER_LEN: usize = 8;
 
-/// 单条完整 frame 的最大尺寸。
-pub const MAX_MESSAGE: usize = 64 * 1024;
+/// Maximum GPU paint operations in one immutable display list.
+pub const MAX_DISPLAY_COMMANDS: usize = 2048;
+
+/// Maximum glyph quads carried by one display-list command.
+pub const MAX_GLYPHS_PER_RUN: usize = 256;
+
+/// Maximum size of control, scene and staged-transfer frames.
+pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
+
+/// Maximum size of one complete protocol frame.
+///
+/// A glyph run is the largest command: seven scalar fields followed by two
+/// rectangles per glyph. Deriving this bound from the public command quotas is
+/// required so a structurally valid display list cannot fail only at outer
+/// framing when a dense terminal or document fills the viewport.
+pub const MAX_MESSAGE: usize =
+    HEADER_LEN + 3 * 8 + 16 + 4 + MAX_DISPLAY_COMMANDS * (7 * 4 + MAX_GLYPHS_PER_RUN * 2 * 16);
 
 /// 一个 session 可同时存在的普通 app surface 上限。
 pub const MAX_APP_SURFACES: usize = 32;
@@ -70,17 +85,11 @@ pub const MAX_NODE_CLIP_MASKS: usize = 16;
 /// 单个 scene node 允许的 damage rectangle 上限。
 pub const MAX_NODE_DAMAGE_RECTS: usize = 64;
 
-/// Maximum GPU paint operations in one immutable display list.
-pub const MAX_DISPLAY_COMMANDS: usize = 2048;
-
 /// Maximum nested CSS clip or opacity groups in one display list.
 pub const MAX_DISPLAY_STACK_DEPTH: usize = 16;
 
 /// Maximum color stops in one CSS linear gradient primitive.
 pub const MAX_GRADIENT_STOPS: usize = 16;
-
-/// Maximum glyph quads carried by one display-list command.
-pub const MAX_GLYPHS_PER_RUN: usize = 256;
 
 /// Maximum immutable textures owned by one display connection.
 pub const MAX_CLIENT_TEXTURES: usize = 256;

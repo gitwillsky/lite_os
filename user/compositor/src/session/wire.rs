@@ -7,21 +7,12 @@ use std::{
 };
 
 use display_proto::{
-    Accepted, Discarded, MAX_MESSAGE, MessageKind, Presented, parse_frame, recv_frame_blocking,
-    send_message,
+    Accepted, Discarded, MessageKind, Presented, recv_message_owned, send_message,
 };
 use linux_uapi::drm::FlipEvent;
 
-use super::invalid;
-
 pub(super) fn receive(stream: &UnixStream) -> io::Result<(MessageKind, Vec<u8>)> {
-    let mut bytes = vec![0u8; MAX_MESSAGE];
-    let length = recv_frame_blocking(stream, &mut bytes)?;
-    if length == 0 {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "display EOF"));
-    }
-    let frame = parse_frame(&bytes[..length]).ok_or_else(|| invalid("invalid display frame"))?;
-    Ok((frame.kind(), frame.payload().to_vec()))
+    recv_message_owned(stream)?.ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))
 }
 
 pub(super) fn send_accepted(stream: &UnixStream, revision: u64) -> io::Result<()> {

@@ -1,8 +1,8 @@
 //! Atomic desktop flat-scene snapshot.
 
 use crate::{
-    MAX_INPUT_RECTS, MAX_NODE_CLIP_MASKS, MAX_NODE_DAMAGE_RECTS, MAX_NODE_INPUT_RECTS,
-    MAX_SCENE_NODES, Rect,
+    HEADER_LEN, MAX_CONTROL_MESSAGE, MAX_INPUT_RECTS, MAX_NODE_CLIP_MASKS, MAX_NODE_DAMAGE_RECTS,
+    MAX_NODE_INPUT_RECTS, MAX_SCENE_NODES, Rect,
     codec::{FrameWriter, MessageKind, PayloadReader},
 };
 
@@ -209,11 +209,15 @@ impl<'a> SceneCommit<'a> {
         for node in nodes {
             node.encode(&mut writer)?;
         }
-        writer.finish()
+        let message = writer.finish()?;
+        (message.len() <= MAX_CONTROL_MESSAGE).then_some(message)
     }
 
     /// Parses and fully validates the bounded node stream.
     pub fn parse(payload: &[u8]) -> Option<SceneCommit<'_>> {
+        if HEADER_LEN.checked_add(payload.len())? > MAX_CONTROL_MESSAGE {
+            return None;
+        }
         let mut reader = PayloadReader::new(payload);
         let revision = reader.u64()?;
         let output_serial = reader.u64()?;

@@ -1,7 +1,7 @@
 //! Owned LiteUI paint output lowered into the display protocol on submission.
 
 use display_proto::{
-    BorderStyle, ClipMask, CornerRadius, DisplayCommand, DisplayListWriter, Glyph, Glyphs,
+    BorderStyle, ClipMask, CornerRadius, DisplayCommand, DisplayListCommit, Glyph, Glyphs,
     GradientStop, GradientStops, ImageRepeat, ImageSampling, MAX_MESSAGE, Rect, Size,
     TextureFormat, TextureRect,
 };
@@ -189,8 +189,17 @@ impl GpuFrame {
         configuration_serial: u64,
         previous_paint_revision: u64,
     ) -> Option<Vec<u8>> {
-        let mut bytes = vec![0; MAX_MESSAGE];
-        let mut writer = DisplayListWriter::new(
+        let commands = self
+            .commands
+            .iter()
+            .map(GpuCommand::borrowed)
+            .collect::<Vec<_>>();
+        let length = display_proto::DisplayListCommit::encoded_len(&commands)?;
+        if length > MAX_MESSAGE {
+            return None;
+        }
+        let mut bytes = vec![0; length];
+        let written = DisplayListCommit::encode(
             &mut bytes,
             revision,
             configuration_serial,
@@ -200,13 +209,83 @@ impl GpuFrame {
                 0
             },
             self.output.damage.first().copied().unwrap_or_default(),
-            self.commands.len(),
-        )?;
-        for command in &self.commands {
-            writer.push(command.borrowed())?;
-        }
-        let length = writer.finish()?.len();
-        bytes.truncate(length);
+            &commands,
+        )?
+        .len();
+        (written == length).then_some(())?;
         Some(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use display_proto::{
+        DisplayListCommit, Glyph, MAX_CONTROL_MESSAGE, MessageKind, Rect, parse_frame,
+    };
+
+    use super::{GpuCommand, GpuFrame};
+
+    #[test]
+    fn dense_terminal_viewport_encodes_beyond_control_frame_quota() {
+        // The reported 3008x1692 physical output exposes a 188x52 terminal
+        // grid. htop is allowed to paint every cell; the old 64 KiB outer
+        // frame quota rejected this valid list after the renderer built it.
+        let glyph = Glyph {
+            source: Rect {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 32,
+            },
+            destination: Rect {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 32,
+            },
+        };
+        let glyph_count = 188 * 52;
+        let commands = (0..glyph_count)
+            .collect::<Vec<_>>()
+            .chunks(display_proto::MAX_GLYPHS_PER_RUN)
+            .map(|chunk| GpuCommand::GlyphRun {
+                texture_id: 1,
+                color: 0xffff_ffff,
+                offset: [0.0; 2],
+                blur: 0.0,
+                glyphs: vec![glyph; chunk.len()],
+            })
+            .collect();
+        let mut output = super::super::empty_output();
+        output.damage.push(Rect {
+            x: 0,
+            y: 0,
+            width: 3008,
+            height: 1692,
+        });
+        let frame = GpuFrame {
+            commands,
+            uploads: Vec::new(),
+            output,
+            retired_textures: Vec::new(),
+            reuses_previous: false,
+            paint_changed: true,
+        };
+
+        let encoded = frame.encode(1, 1, 0).expect("dense terminal list");
+        assert!(encoded.len() > MAX_CONTROL_MESSAGE);
+        let wire = parse_frame(&encoded).expect("large display frame");
+        assert_eq!(wire.kind(), MessageKind::DisplayListCommit);
+        let commit = DisplayListCommit::parse(wire.payload()).expect("valid dense display list");
+        assert_eq!(
+            commit
+                .commands()
+                .map(|command| match command {
+                    display_proto::DisplayCommand::GlyphRun { glyphs, .. } => glyphs.len(),
+                    _ => 0,
+                })
+                .sum::<usize>(),
+            glyph_count,
+        );
     }
 }

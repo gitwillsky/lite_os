@@ -151,9 +151,9 @@ impl PaintStore {
 
     /// Publishes one fully validated display list only after all texture
     /// references resolve to immutable resources of the required format.
-    pub(super) fn commit_list(&mut self, owner: Owner, payload: &[u8]) -> io::Result<()> {
-        let commit =
-            DisplayListCommit::parse(payload).ok_or_else(|| invalid("invalid GPU display list"))?;
+    pub(super) fn commit_list(&mut self, owner: Owner, payload: Vec<u8>) -> io::Result<()> {
+        let commit = DisplayListCommit::parse(&payload)
+            .ok_or_else(|| invalid("invalid GPU display list"))?;
         if self
             .lists
             .get(&owner)
@@ -182,17 +182,14 @@ impl PaintStore {
                 }
             }
         }
-        let mut stored = Vec::new();
-        stored
-            .try_reserve_exact(payload.len())
-            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        stored.extend_from_slice(payload);
+        let revision = commit.revision;
+        let configuration_serial = commit.configuration_serial;
         self.lists.insert(
             owner,
             PublishedList {
-                revision: commit.revision,
-                configuration_serial: commit.configuration_serial,
-                payload: stored,
+                revision,
+                configuration_serial,
+                payload,
             },
         );
         Ok(())

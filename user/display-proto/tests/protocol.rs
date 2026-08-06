@@ -4,7 +4,7 @@ use display_proto::{
     AcceleratorChord, AcceleratorSet, Accepted, AppOpened, CURSOR_DEFAULT, CURSOR_NONE,
     CURSOR_RESIZE_NWSE, ClipMask, ClipMasks, ClipboardData, ClipboardRead, ClipboardWrite,
     CornerRadius, Discarded, HelloApp, InputKey, InputPointer, InputScroll, MAX_ACCELERATORS,
-    MAX_CLIPBOARD_TEXT, MAX_MESSAGE, MessageKind, MoveBegin, MoveComplete, OutputConfigure,
+    MAX_CLIPBOARD_TEXT, MAX_CONTROL_MESSAGE, MessageKind, MoveBegin, MoveComplete, OutputConfigure,
     PROTOCOL_VERSION, PointerPhase, Presented, Rect, Rectangles, SceneCommit, SceneNode,
     SceneNodeKind, SetCursorShape, Size, parse_frame, recv_frame_blocking,
 };
@@ -248,7 +248,7 @@ fn scroll_round_trips_surface_local_coordinates_and_signed_deltas() {
 
 #[test]
 fn clipboard_round_trips_utf8_identity_and_rejects_oversize() {
-    let mut bytes = vec![0u8; MAX_MESSAGE];
+    let mut bytes = vec![0u8; MAX_CONTROL_MESSAGE];
     let read = ClipboardRead {
         surface_id: 9,
         request_id: 44,

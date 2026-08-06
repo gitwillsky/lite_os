@@ -3,8 +3,8 @@
 use std::{io, os::unix::net::UnixStream};
 
 use display_proto::{
-    HelloApp, HelloDesktop, MAX_APP_SURFACES, MAX_MESSAGE, MessageKind, PROTOCOL_VERSION, Welcome,
-    parse_frame, recv_frame_blocking, send_message,
+    HelloApp, HelloDesktop, MAX_APP_SURFACES, MessageKind, PROTOCOL_VERSION, Welcome, parse_frame,
+    recv_frame_blocking, send_message,
 };
 
 use super::{App, Desktop, Session, invalid, wire::valid_app_id};
@@ -16,7 +16,7 @@ impl Session {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
             Err(error) => return Err(error),
         };
-        let mut bytes = [0u8; MAX_MESSAGE];
+        let mut bytes = [0u8; 128];
         let length = recv_frame_blocking(&stream, &mut bytes)?;
         if length == 0 {
             return Err(invalid("invalid display handshake"));
