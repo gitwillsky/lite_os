@@ -81,13 +81,22 @@ pub(super) fn apply_event(
             "desktop",
             json!({"type":"activated","surfaceId":surface_id}),
         ),
-        Event::MoveComplete { surface_id, x, y } => {
+        Event::MoveComplete {
+            surface_id,
+            x,
+            y,
+            move_token,
+        } => {
             // The compositor clamps the move destination to the authorized
             // limits. Clamp a stray negative from a race to the origin so the
             // native and React copies of the canonical bounds remain aligned.
             let x = x.max(0);
             let y = y.max(0);
             state.move_surface(surface_id, x as u32, y as u32)?;
+            // Relay the grab token so the scene commit that applies this move
+            // (the React re-render the `moved` event triggers) echoes it back
+            // and the compositor retires the grab on token match.
+            state.set_pending_move_token(move_token);
             (
                 "desktop",
                 json!({"type":"moved","surfaceId":surface_id,"x":x,"y":y}),

@@ -88,6 +88,11 @@ pub struct State {
     surfaces: RefCell<Vec<Surface>>,
     next_configure: Cell<u64>,
     focused_surface: Cell<u32>,
+    /// Move grab token from the compositor's last `MoveComplete`, echoed once in
+    /// the next scene commit so the compositor retires the grab on token match.
+    /// Set when the desktop processes `MoveComplete`, cleared after the commit
+    /// that carries it — a one-shot the desktop never interprets, only relays.
+    pending_move_token: Cell<u64>,
     timers: RefCell<Vec<(u64, Instant)>>,
     playback_granted: Cell<bool>,
     viewport: Cell<Size>,
@@ -175,6 +180,18 @@ impl State {
         self.focused_surface.get()
     }
 
+    /// Records the move grab token from a compositor `MoveComplete`, to be
+    /// echoed once in the next scene commit.
+    pub fn set_pending_move_token(&self, token: u64) {
+        self.pending_move_token.set(token);
+    }
+
+    /// Takes the pending move grab token (one-shot: cleared to zero), so exactly
+    /// one scene commit carries it back to the compositor.
+    pub fn take_pending_move_token(&self) -> u64 {
+        self.pending_move_token.replace(0)
+    }
+
     /// Records one compositor-authenticated physical input activation.
     pub fn grant_media_playback(&self) {
         self.playback_granted.set(true);
@@ -206,7 +223,14 @@ impl State {
     }
 
     /// Adds one compositor-published app surface to desktop policy state.
+    ///
+    /// Focus is *not* assigned here: JS `open` is the sole z-order/focus
+    /// authority (it drives `focus()` on the `opened` event). This registry is
+    /// pure existence + metadata, carrying no ordering or focus semantics.
     pub fn open_surface(&self, id: u32, app_id: String) {
+        // Cascade off the count of currently-live surfaces, not a monotonic
+        // counter. A monotonic index never decremented on close, so open/close
+        // churn drifted the `% 4` slot and walked new windows off-screen.
         let index = self.surfaces.borrow().len() as u32;
         let (title, icon) = app_registry::app_metadata(&app_id);
         let bounds = match app_id.as_str() {
@@ -246,35 +270,35 @@ impl State {
             bounds,
             configure: None,
         });
-        self.focused_surface.set(id);
     }
 
     /// Removes one disconnected app surface from desktop policy state.
+    ///
+    /// Focus fallback is *not* chosen here — JS `open` owns it. Closing the
+    /// focused surface only clears the keyboard target to the desktop (0) so a
+    /// key never routes to a dead surface; JS then assigns the next focus
+    /// through its own z-order/workspace policy on the `closed` event.
     pub fn close_surface(&self, id: u32) {
         self.surfaces
             .borrow_mut()
             .retain(|surface| surface.id != id);
         if self.focused_surface.get() == id {
-            self.focused_surface.set(
-                self.surfaces
-                    .borrow()
-                    .last()
-                    .map_or(0, |surface| surface.id),
-            );
+            self.focused_surface.set(0);
         }
     }
 
     pub(crate) fn move_surface(&self, id: u32, x: u32, y: u32) -> Result<(), EngineError> {
         let mut surfaces = self.surfaces.borrow_mut();
-        // A move can name a surface that just disconnected: the desktop's
-        // resize/move commit references a window whose app closed mid-drag, one
-        // React frame before the `closed` event prunes it (and native
-        // MoveComplete can race the same way). The desktop reconciles on the
-        // next AppClosed, so a missing surface here is a transient race, not
-        // corruption — no-op instead of throwing (which, uncaught in JS, would
-        // exit the whole desktop under panic=abort).
+        // Guest-side mirror of the compositor's one-frame surface-set lag (see
+        // `Session::app_is_live` in the compositor): the desktop's resize/move
+        // commit can name a window whose app closed mid-drag, one React frame
+        // before the `closed` event prunes it (native MoveComplete races the
+        // same way). The desktop reconciles on the next AppClosed, so a missing
+        // surface here is a recoverable race, not corruption — no-op instead of
+        // throwing, which (uncaught in JS) would exit the whole desktop under
+        // panic=abort.
         let Some(surface) = surfaces.iter_mut().find(|surface| surface.id == id) else {
-            eprintln!("lite-ui: move for unknown surface {id} dropped (disconnect race)");
+            eprintln!("lite-ui: move for surface {id} dropped (app disconnect race)");
             return Ok(());
         };
         surface.bounds.x = x;
@@ -364,6 +388,7 @@ impl Host {
             surfaces: RefCell::new(Vec::new()),
             next_configure: Cell::new(1),
             focused_surface: Cell::new(0),
+            pending_move_token: Cell::new(0),
             timers: RefCell::new(Vec::new()),
             playback_granted: Cell::new(false),
             viewport: Cell::new(viewport),

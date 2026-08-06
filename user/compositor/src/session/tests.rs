@@ -11,6 +11,7 @@ fn app_records_only_its_first_presented_scene() {
         pending: None,
         current: None,
         first_scene_presented: false,
+        close_deadline: None,
     };
 
     assert!(!app.first_scene_presented);
@@ -31,6 +32,19 @@ fn buffered_hangup_is_a_terminal_connection_event() {
     assert!(connection_closed(PollEvents::READ | PollEvents::HANGUP));
     assert!(connection_closed(PollEvents::ERROR));
     assert!(!connection_closed(PollEvents::READ));
+}
+
+#[test]
+fn close_deadline_arms_once_and_never_pushes_out() {
+    // A repeated CloseRequest (desktop re-committing a close-in-progress) must
+    // not keep extending the deadline, or a wedged app could defeat the timeout
+    // by racing further commits. `get_or_insert_with` — the exact call in
+    // `route_close` — arms it once and keeps the first deadline.
+    let first = Instant::now() + CLOSE_TIMEOUT;
+    let mut deadline: Option<Instant> = None;
+    assert_eq!(*deadline.get_or_insert_with(|| first), first);
+    let later = Instant::now() + CLOSE_TIMEOUT + Duration::from_secs(60);
+    assert_eq!(*deadline.get_or_insert_with(|| later), first, "must not push out");
 }
 
 #[test]

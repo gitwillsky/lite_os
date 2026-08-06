@@ -21,6 +21,8 @@ impl Display {
     ///
     /// - `buffer_id`: Desktop buffer containing the complete retained raster.
     /// - `focused_surface`: Surface receiving keyboard events after presentation.
+    /// - `move_token`: Grab token to echo when this commit applies a completed
+    ///   compositor move; zero when no move is finalizing.
     /// - `foreign`: Ready embedded client surfaces in React paint order.
     /// - `windows`: System window frames in React z-order.
     /// - `overlays`: Fixed global chrome repainted above every window.
@@ -37,6 +39,7 @@ impl Display {
     pub fn commit_desktop(
         &mut self,
         focused_surface: u32,
+        move_token: u64,
         foreign: &[ForeignLayer],
         windows: &[WindowFrame],
         overlays: &[Overlay],
@@ -143,6 +146,7 @@ impl Display {
             revision,
             self.output_serial,
             focused_surface,
+            move_token,
             &nodes,
         )
         .ok_or_else(|| io::Error::other("scene encoding failed"))?;

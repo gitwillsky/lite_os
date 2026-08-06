@@ -64,6 +64,7 @@ pub(super) fn parse_event(
                 surface_id: event.surface_id,
                 x: event.x,
                 y: event.y,
+                move_token: event.move_token,
             })
         }
         MessageKind::ConfigureReady if own_surface == 0 => {

@@ -13,7 +13,7 @@ use linux_uapi::drm::FlipEvent;
 
 use super::buffers::Owner;
 use super::wire::{send_accepted, send_discarded, send_presented};
-use super::{MoveGrab, RoutingNode, Session, invalid};
+use super::{Content, MoveGrab, RoutingNode, Session, invalid};
 
 pub(super) fn app_first_scene_presented_marker(surface_id: u32) -> String {
     format!("compositor: app {surface_id} first scene presented\n")
@@ -100,17 +100,13 @@ impl Session {
         if commit.output_serial != self.output_serial {
             return self.discard_commit(commit);
         }
-        // App disconnect always races the desktop's next commit: the compositor
-        // removes a dead app before AppClosed reaches the desktop, so focus or
-        // a foreign node may still reference it. That reference can only be
-        // explained by the race, so clamp/skip it; every later violation
-        // (unknown buffer, bad geometry, stale serial) stays epoch-fatal.
+        // Recoverable disconnect race — see `Session::app_is_live`. Focus or a
+        // foreign node may still reference an app the compositor just dropped;
+        // clamp/skip it. Every later violation (unknown buffer, bad geometry,
+        // stale serial) stays epoch-fatal.
         let focused_surface =
-            if commit.focused_surface != 0 && !self.apps.contains_key(&commit.focused_surface) {
-                eprintln!(
-                    "compositor: focus {} clamped to desktop after app disconnect",
-                    commit.focused_surface
-                );
+            if commit.focused_surface != 0 && !self.app_is_live(commit.focused_surface) {
+                Self::log_surface_race("scene focus", commit.focused_surface);
                 0
             } else {
                 commit.focused_surface
@@ -127,13 +123,8 @@ impl Session {
         };
         let mut damage = Rect::default();
         for node in commit.nodes() {
-            if node.kind == SceneNodeKind::ForeignSurface
-                && !self.apps.contains_key(&node.source_id)
-            {
-                eprintln!(
-                    "compositor: foreign surface {} skipped after app disconnect",
-                    node.source_id
-                );
+            if node.kind == SceneNodeKind::ForeignSurface && !self.app_is_live(node.source_id) {
+                Self::log_surface_race("scene foreign surface", node.source_id);
                 continue;
             }
             for changed in node.damage.iter() {
@@ -141,9 +132,10 @@ impl Session {
                     damage = union_rect(damage, changed);
                 }
             }
-            // The composited bounds default to the declared node size; the
-            // foreign-surface fallback may clamp them to a stale buffer's real
-            // size so composite_node never reads past the source.
+            // The composited bounds default to the declared node size (correct
+            // for display lists). The foreign-surface arm overrides them with
+            // the chosen content's true buffer size so a held frame paints
+            // unstretched.
             let mut node_bounds = node.bounds;
             let buffer_id = match node.kind {
                 SceneNodeKind::DisplayList => {
@@ -171,94 +163,55 @@ impl Session {
                     render_id
                 }
                 SceneNodeKind::ForeignSurface => {
-                    let app = self
-                        .apps
-                        .get(&node.source_id)
-                        .expect("validated foreign surface");
-                    // Prefer the exact-serial content (pending, else current),
-                    // which matches the node bounds and adopts cleanly. If
-                    // neither matches the node's serial — a normal in-flight
-                    // configure handshake mid resize/maximize — fall back to the
-                    // app's last-presented `current` content of ANY serial rather
-                    // than skipping the node. Skipping leaves the region cleared
-                    // to black for that frame; with the app committing a new
-                    // serial almost every frame during a rapid resize, that
-                    // produced a sustained black flicker. Showing slightly-stale
-                    // (older-serial/older-size) content for a frame is
-                    // imperceptible; a black flash is not.
-                    let exact = app
-                        .pending
-                        .as_ref()
-                        .filter(|content| content.configure_serial == node.configure_serial)
-                        .or_else(|| {
-                            app.current
-                                .as_ref()
-                                .filter(|content| content.configure_serial == node.configure_serial)
-                        });
-                    let (content, exact_match) = match exact {
-                        Some(content) => (content, true),
-                        // Fall back to ANY content the app holds, newest-first:
-                        // prefer `current` (already presented) but accept
-                        // `pending` (staged, its buffer is validated) when there
-                        // is no current yet — during a rapid resize the app's
-                        // only content is often a pending buffer at a serial the
-                        // node hasn't caught up to. Showing it a frame early/late
-                        // beats clearing to black.
-                        None => match app.current.as_ref().or(app.pending.as_ref()) {
-                            Some(content) => (content, false),
-                            None => {
-                                // The app has committed NO buffer at all yet
-                                // (first-frame handshake): nothing to show, and no
-                                // prior frame to flicker against, so skip.
-                                eprintln!(
-                                    "compositor: foreign surface {} serial {} not ready, skipped",
-                                    node.source_id, node.configure_serial
-                                );
-                                continue;
-                            }
-                        },
+                    let Some(app) = self.apps.get(&node.source_id) else {
+                        // Independent of the earlier live-app skip's position —
+                        // see fix 7. A dropped app here is the disconnect race.
+                        Session::log_surface_race("scene foreign content", node.source_id);
+                        continue;
                     };
-                    let buffer = &self.buffers.values[&content.buffer_id];
-                    // The node bounds drive composite_node's source indexing, so
-                    // they MUST equal the content buffer's real size or the copy
-                    // reads out of bounds. On the exact-serial path they already
-                    // agree (the desktop laid the node out for this size). On the
-                    // fallback path the stale buffer can differ, so clamp the
-                    // node's bounds to the buffer size (keeping the origin); the
-                    // uncovered edge shows the desktop-owned window body, never a
-                    // black clear.
-                    let mut effective_bounds = node.bounds;
-                    if buffer.size.width != node.bounds.width
-                        || buffer.size.height != node.bounds.height
-                    {
-                        if exact_match {
-                            // Exact serial but wrong geometry is a transient
-                            // layout/handshake disagreement; keep the previous
-                            // skip semantics (self-heals next commit).
-                            eprintln!(
-                                "compositor: foreign surface {} geometry {}x{} != node {}x{}, skipped",
-                                node.source_id,
-                                buffer.size.width,
-                                buffer.size.height,
-                                node.bounds.width,
-                                node.bounds.height
-                            );
-                            continue;
-                        }
-                        effective_bounds.width = buffer.size.width;
-                        effective_bounds.height = buffer.size.height;
-                    }
-                    node_bounds = effective_bounds;
-                    if exact_match
-                        && app
-                            .pending
-                            .as_ref()
-                            .is_some_and(|pending| pending.buffer_id == content.buffer_id)
-                        && !adoptions.contains(&node.source_id)
-                    {
+                    // Two deterministic paths, no per-frame heuristic:
+                    // Two deterministic paths, no per-frame heuristic:
+                    //
+                    // 1. EXACT: the app has drawn the node's requested serial
+                    //    (pending preferred over current). Composite it; adopt
+                    //    the pending buffer so the flip presents it.
+                    // 2. HOLD-LAST: the app has not yet drawn this serial (the
+                    //    normal in-flight configure handshake mid resize) — hold
+                    //    the last-presented `current` frame. A held frame keeps
+                    //    its OWN serial and OWN real size; it is never stretched
+                    //    to the requested serial's geometry.
+                    //
+                    // Either way the composited bounds come from the chosen
+                    // content's true buffer size (`choice.size`), so a held
+                    // frame paints at its real size over the desktop-owned
+                    // window body — never black-cleared, never geometry-guessed.
+                    // Only when the app has committed no buffer at all (first
+                    // frame) is there nothing to show, and the node is skipped.
+                    let Some(choice) = select_foreign_content(
+                        app.pending.as_ref(),
+                        app.current.as_ref(),
+                        node.configure_serial,
+                    ) else {
+                        eprintln!(
+                            "compositor: foreign surface {} serial {} not ready, skipped",
+                            node.source_id, node.configure_serial
+                        );
+                        continue;
+                    };
+                    // Composite at the content's true buffer size and the node's
+                    // origin. The GPU sampler already sources from the real
+                    // texture dims, so this only fixes the destination rect: a
+                    // held (older-size) frame paints unstretched.
+                    node_bounds = Rect {
+                        x: node.bounds.x,
+                        y: node.bounds.y,
+                        width: choice.size.width,
+                        height: choice.size.height,
+                    };
+                    if choice.adopt && !adoptions.contains(&node.source_id) {
                         adoptions.push(node.source_id);
                     }
-                    content.buffer_id
+                    choice.buffer_id
                 }
             };
             routing.push(RoutingNode {
@@ -308,15 +261,9 @@ impl Session {
         let desktop = self.desktop.as_mut().expect("validated desktop");
         desktop.last_revision = commit.revision;
         send_accepted(&desktop.stream, commit.revision)?;
-        let finishes_move = self.move_grab.is_some_and(|grab| {
-            grab.ending
-                && nodes.iter().any(|node| {
-                    node.kind == SceneNodeKind::DisplayList
-                        && node.window_group == grab.surface_id
-                        && node.clip.x == grab.origin.0 + grab.offset.0
-                        && node.clip.y == grab.origin.1 + grab.offset.1
-                })
-        });
+        // Token equality alone retires the grab — never pixel geometry. See
+        // `move_grab_finishes`.
+        let finishes_move = move_grab_finishes(self.move_grab, commit.move_token);
         Ok(Scene {
             revision: commit.revision,
             output_size: self.display,
@@ -493,6 +440,76 @@ impl Scene {
     }
 }
 
+/// Whether an accepted scene finalizes the active move grab.
+///
+/// The grab retires only when it is `ending` (its `MoveComplete` was sent) and
+/// the commit echoes its exact `move_token`. Geometry is never compared, so the
+/// logical↔physical rounding round-trip can no longer strand the underlay
+/// buffer by making a coordinate equality silently fail. A zero commit token
+/// (no move finalizing) never matches a live grab's non-zero token.
+fn move_grab_finishes(grab: Option<MoveGrab>, commit_token: u64) -> bool {
+    grab.is_some_and(|grab| grab.ending && commit_token == grab.move_token)
+}
+
+/// The chosen foreign-surface content for one accepted scene node.
+struct ForeignChoice {
+    /// Compositor buffer to composite.
+    buffer_id: u32,
+    /// The buffer's true pixel size; the node is composited at this size so a
+    /// held (older-serial) frame is never stretched to the requested geometry.
+    size: display_proto::Size,
+    /// Whether this is the app's exact-serial `pending` buffer and must be
+    /// adopted (promoted `pending` → `current`) when the scene is presented.
+    adopt: bool,
+}
+
+/// Picks which foreign-surface content one scene node composites, with no
+/// per-frame heuristic — the two deterministic paths documented at the call
+/// site (EXACT / HOLD-LAST).
+///
+/// # Parameters
+///
+/// - `pending`: The app's staged (accepted, not yet presented) content.
+/// - `current`: The app's last-presented content.
+/// - `serial`: The `configure_serial` the scene node requested.
+///
+/// # Returns
+///
+/// `None` only when the app has committed no buffer at all (first-frame
+/// handshake): there is nothing to show and no prior pixels to flicker against,
+/// so the caller skips the node.
+fn select_foreign_content(
+    pending: Option<&Content>,
+    current: Option<&Content>,
+    serial: u64,
+) -> Option<ForeignChoice> {
+    // EXACT (pending): the app drew the requested serial and it is staged —
+    // composite and adopt it so the flip presents it.
+    if let Some(pending) = pending.filter(|content| content.configure_serial == serial) {
+        return Some(ForeignChoice {
+            buffer_id: pending.buffer_id,
+            size: pending.size,
+            adopt: true,
+        });
+    }
+    // EXACT (current): the requested serial is already presented — show it,
+    // nothing to adopt.
+    if let Some(current) = current.filter(|content| content.configure_serial == serial) {
+        return Some(ForeignChoice {
+            buffer_id: current.buffer_id,
+            size: current.size,
+            adopt: false,
+        });
+    }
+    // HOLD-LAST: the requested serial is still in flight — hold the previous
+    // presented frame verbatim (its own serial, its own real size).
+    current.map(|current| ForeignChoice {
+        buffer_id: current.buffer_id,
+        size: current.size,
+        adopt: false,
+    })
+}
+
 fn intersect_rect(left: Rect, right: Rect) -> Option<Rect> {
     let x1 = left.x.max(right.x);
     let y1 = left.y.max(right.y);
@@ -539,7 +556,10 @@ fn union_rect(left: Rect, right: Rect) -> Rect {
 
 #[cfg(test)]
 mod damage_tests {
-    use super::{AppPresentation, Node, Scene, SceneMove, intersect_rect, union_rect};
+    use super::{
+        AppPresentation, Content, ForeignChoice, Node, Scene, SceneMove, intersect_rect,
+        move_grab_finishes, select_foreign_content, union_rect,
+    };
     use crate::session::{MoveGrab, RoutingNode};
     use display_proto::{Rect, SceneNodeKind, Size};
 
@@ -636,6 +656,7 @@ mod damage_tests {
         };
         let grab = MoveGrab {
             surface_id: 7,
+            move_token: 1,
             underlay_buffer_id: 2,
             down: (20, 20),
             origin: (40, 30),
@@ -665,5 +686,97 @@ mod damage_tests {
                 height: 80,
             }
         );
+    }
+
+    fn content(serial: u64, buffer_id: u32, size: (u32, u32)) -> Content {
+        Content {
+            revision: buffer_id as u64,
+            configure_serial: serial,
+            buffer_id,
+            size: Size {
+                width: size.0,
+                height: size.1,
+            },
+        }
+    }
+
+    fn choice(result: Option<ForeignChoice>) -> (u32, (u32, u32), bool) {
+        let choice = result.expect("content available");
+        (
+            choice.buffer_id,
+            (choice.size.width, choice.size.height),
+            choice.adopt,
+        )
+    }
+
+    #[test]
+    fn exact_serial_pending_is_composited_at_its_size_and_adopted() {
+        let pending = content(5, 11, (800, 600));
+        let current = content(4, 10, (400, 300));
+        assert_eq!(
+            choice(select_foreign_content(Some(&pending), Some(&current), 5)),
+            (11, (800, 600), true)
+        );
+    }
+
+    #[test]
+    fn exact_serial_already_current_is_shown_without_adopting() {
+        // pending is at a different serial; the node's serial matches current.
+        let pending = content(6, 11, (800, 600));
+        let current = content(5, 10, (640, 480));
+        assert_eq!(
+            choice(select_foreign_content(Some(&pending), Some(&current), 5)),
+            (10, (640, 480), false)
+        );
+    }
+
+    #[test]
+    fn in_flight_serial_holds_last_current_verbatim_no_stretch() {
+        // The node requests serial 7, which neither buffer has drawn yet. The
+        // previous presented frame (serial 5, 400x300) is held at its OWN size,
+        // never stretched to the requested geometry, and never adopted.
+        let pending = content(6, 11, (800, 600));
+        let current = content(5, 10, (400, 300));
+        assert_eq!(
+            choice(select_foreign_content(Some(&pending), Some(&current), 7)),
+            (10, (400, 300), false)
+        );
+    }
+
+    #[test]
+    fn first_frame_with_no_current_is_skipped() {
+        // Only a pending buffer at a non-matching serial exists (no presented
+        // frame yet): nothing to hold, so the node is skipped rather than
+        // showing a staged buffer the node's serial never requested.
+        let pending = content(6, 11, (800, 600));
+        assert!(select_foreign_content(Some(&pending), None, 7).is_none());
+        assert!(select_foreign_content(None, None, 7).is_none());
+    }
+
+    fn move_grab(token: u64, ending: bool) -> MoveGrab {
+        MoveGrab {
+            surface_id: 7,
+            move_token: token,
+            underlay_buffer_id: 2,
+            down: (0, 0),
+            origin: (0, 0),
+            offset: (0, 0),
+            limits: (0, 0, 100, 100),
+            ending,
+        }
+    }
+
+    #[test]
+    fn move_retires_only_on_matching_token_of_an_ending_grab() {
+        // Ending grab, exact token → finalizes.
+        assert!(move_grab_finishes(Some(move_grab(5, true)), 5));
+        // Ending grab, different token → not this commit.
+        assert!(!move_grab_finishes(Some(move_grab(5, true)), 6));
+        // Not yet ending (MoveComplete not sent) → never finalizes.
+        assert!(!move_grab_finishes(Some(move_grab(5, false)), 5));
+        // Zero commit token (no move finalizing) never matches a live grab.
+        assert!(!move_grab_finishes(Some(move_grab(5, true)), 0));
+        // No active grab.
+        assert!(!move_grab_finishes(None, 5));
     }
 }

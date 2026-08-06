@@ -26,6 +26,7 @@ use std::{
     fs, io,
     os::fd::{AsFd, BorrowedFd},
     os::unix::net::{UnixListener, UnixStream},
+    time::{Duration, Instant},
 };
 
 use display_proto::{
@@ -37,6 +38,11 @@ use linux_uapi::{
     kobject::KobjectUevent,
     unix::{self, PollEvents, PollFd},
 };
+
+/// How long a `CloseRequest` may go unacknowledged before the compositor
+/// force-removes the app. A cooperative app disconnects near-immediately; this
+/// only bounds a wedged one so its window is never stuck open forever.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One presented surface's hit-test region, retained for input routing.
 #[derive(Clone)]
@@ -59,6 +65,10 @@ struct PointerCapture {
 #[derive(Clone, Copy)]
 struct MoveGrab {
     surface_id: u32,
+    /// Monotonic identity echoed back through `MoveComplete` → `SceneCommit`.
+    /// The grab retires when a commit's `move_token` equals this — geometry is
+    /// never compared.
+    move_token: u64,
     underlay_buffer_id: u32,
     down: (i32, i32),
     origin: (i32, i32),
@@ -77,6 +87,10 @@ struct Content {
     revision: u64,
     configure_serial: u64,
     buffer_id: u32,
+    /// Real pixel size of `buffer_id`. A foreign node is always composited at
+    /// its content's true size, so the presented bounds derive from here rather
+    /// than from the node's declared (possibly not-yet-drawn) serial size.
+    size: Size,
 }
 
 struct App {
@@ -88,6 +102,12 @@ struct App {
     current: Option<Content>,
     // Prevents automation from clicking before this window enters input routing.
     first_scene_presented: bool,
+    /// Deadline after which an unacknowledged `CloseRequest` is enforced by
+    /// force-removing the app. A well-behaved app disconnects on `Close`, which
+    /// removes it far sooner; this only bounds a wedged app that ignores the
+    /// request, so its window can never be stuck open forever. `None` until the
+    /// desktop routes a close to this app.
+    close_deadline: Option<Instant>,
 }
 
 /// One compositor epoch. Desktop disconnect clears every app and client buffer.
@@ -117,6 +137,10 @@ pub struct Session {
     focused_surface: u32,
     pointer_capture: Option<PointerCapture>,
     move_grab: Option<MoveGrab>,
+    /// Monotonic source of `MoveGrab::move_token`. A move that never round-trips
+    /// (app died mid-drag) simply leaves an unused token; the counter only ever
+    /// increases, so a stale scene can never accidentally match a live grab.
+    next_move_token: u64,
     // Records that the canonical move offset changed since input last asked
     // scanout to draw. Without it, clamped pointer motion submits duplicate flips.
     move_changed: bool,
@@ -191,6 +215,7 @@ impl Session {
             focused_surface: 0,
             pointer_capture: None,
             move_grab: None,
+            next_move_token: 1,
             move_changed: false,
             presented_nodes: Vec::new(),
             desktop_current_buffers: Vec::new(),
@@ -388,6 +413,7 @@ impl Session {
                     revision,
                     configure_serial: configuration_serial,
                     buffer_id: id,
+                    size,
                 });
                 send_accepted(&app.stream, revision)?;
                 let mut bytes = [0u8; 32];
@@ -472,7 +498,13 @@ impl Session {
             descriptor_count += 1;
             let agent_offset =
                 self.append_spice_agent_poll(&mut descriptors, &mut descriptor_count);
-            unix::poll(&mut descriptors[..descriptor_count], None)?;
+            // Bound the otherwise-unbounded wait by the nearest pending close
+            // deadline so a wedged app's window is force-removed on schedule
+            // even when nothing else wakes the loop. `Some(ZERO)` if already due.
+            let timeout = self
+                .next_close_deadline()
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            unix::poll(&mut descriptors[..descriptor_count], timeout)?;
             let listener_ready = descriptors[0].returned().contains(PollEvents::READ);
             let desktop_offset = usize::from(desktop_polled);
             let desktop_events = if desktop_polled {
@@ -592,6 +624,17 @@ impl Session {
                 }
             }
         }
+        // A wedged app that ignored its CloseRequest past the deadline is
+        // force-removed here, exactly like a poll-hangup disconnect: revoke it
+        // from any in-flight scene and cancel a matching pending move.
+        for surface_id in self.enforce_close_deadlines() {
+            if let Some(accepted) = scene.as_mut() {
+                accepted.revoke_surface(surface_id);
+            }
+            if move_begin.is_some_and(|request| request.surface_id == surface_id) {
+                move_begin = None;
+            }
+        }
         Ok(Activity {
             scene,
             paint: self.pending_paint.drain(..).collect(),
@@ -643,20 +686,17 @@ impl Session {
     }
 
     fn route_configure(&mut self, configure: Configure) -> io::Result<()> {
-        // The desktop bakes a Configure from React state and can legitimately
-        // target an app the compositor already removed: an app disconnect races
-        // the desktop's next commit (the compositor drops the app before
-        // AppClosed reaches the desktop). That is the same recoverable race the
-        // scene path skips for foreign surfaces — swallow it here instead of
-        // tearing down the whole desktop epoch. Every other violation
-        // (non-monotonic serial, encoding failure, socket error) stays fatal.
-        let Some(app) = self.apps.get_mut(&configure.surface_id) else {
-            eprintln!(
-                "compositor: configure for unknown app {} dropped (disconnect race)",
-                configure.surface_id
-            );
+        // Recoverable disconnect race — see `Session::app_is_live`. Every other
+        // violation (non-monotonic serial, encoding failure, socket error)
+        // stays fatal below.
+        if !self.app_is_live(configure.surface_id) {
+            Self::log_surface_race("configure", configure.surface_id);
             return Ok(());
-        };
+        }
+        let app = self
+            .apps
+            .get_mut(&configure.surface_id)
+            .expect("app checked live");
         if app
             .configure
             .is_some_and(|current| configure.serial <= current.serial)
@@ -672,20 +712,48 @@ impl Session {
         Ok(())
     }
 
-    fn route_close(&self, surface_id: u32) -> io::Result<()> {
-        // Same disconnect race as `route_configure`: the desktop may close a
-        // window whose app already vanished. Nothing left to forward the request
-        // to, and the desktop will reconcile on the next AppClosed — a no-op, not
-        // a fatal protocol error.
-        let Some(app) = self.apps.get(&surface_id) else {
-            eprintln!("compositor: close for unknown app {surface_id} dropped (disconnect race)");
+    fn route_close(&mut self, surface_id: u32) -> io::Result<()> {
+        // Recoverable disconnect race — see `Session::app_is_live`. Nothing left
+        // to forward to; the desktop reconciles on the next AppClosed.
+        if !self.app_is_live(surface_id) {
+            Self::log_surface_race("close", surface_id);
             return Ok(());
-        };
+        }
+        let app = self.apps.get_mut(&surface_id).expect("app checked live");
+        // Arm the enforcement deadline on the first close request only, so a
+        // repeated request (the desktop re-committing a close-in-progress) can
+        // never keep pushing the deadline out and defeat the timeout.
+        app.close_deadline.get_or_insert_with(|| Instant::now() + CLOSE_TIMEOUT);
         let mut bytes = [0u8; 24];
         let message = CloseRequest { surface_id }
             .encode(&mut bytes)
             .ok_or_else(|| io::Error::other("close encoding failed"))?;
         send_message(&app.stream, message)
+    }
+
+    /// Earliest pending close-enforcement deadline across all apps, if any. The
+    /// poll wait is bounded by this so a wedged app that ignores `CloseRequest`
+    /// is force-removed rather than leaving its window stuck open forever.
+    fn next_close_deadline(&self) -> Option<Instant> {
+        self.apps.values().filter_map(|app| app.close_deadline).min()
+    }
+
+    /// Force-removes every app whose close-enforcement deadline has passed.
+    /// Returns the surfaces removed so the caller can revoke them from an
+    /// in-flight scene, mirroring a poll-hangup disconnect.
+    fn enforce_close_deadlines(&mut self) -> Vec<u32> {
+        let now = Instant::now();
+        let expired: Vec<u32> = self
+            .apps
+            .iter()
+            .filter(|(_, app)| app.close_deadline.is_some_and(|deadline| deadline <= now))
+            .map(|(id, _)| *id)
+            .collect();
+        for surface_id in &expired {
+            eprintln!("compositor: app {surface_id} ignored close, force-removing");
+            self.remove_app(*surface_id);
+        }
+        expired
     }
 
     fn notify_opened(&self, surface_id: u32) -> io::Result<()> {
@@ -740,6 +808,34 @@ impl Session {
             .as_ref()
             .map(|desktop| &desktop.stream)
             .ok_or_else(|| io::Error::other("desktop is not connected"))
+    }
+
+    /// The single choke point for the compositor's one-frame surface-set lag.
+    ///
+    /// The desktop bakes every Configure/Close/scene node from React state, so
+    /// it can legitimately reference a surface the compositor just removed: an
+    /// app disconnect races the desktop's next commit, because the compositor
+    /// drops the app before its `AppClosed` reaches the desktop. The desktop
+    /// reconciles on that next `AppClosed`, so a reference to a now-unknown
+    /// surface is a *recoverable race*, never corruption — the caller drops the
+    /// stale reference instead of tearing down the whole desktop epoch.
+    ///
+    /// Every desktop-driven path that names a surface routes its "does this app
+    /// still exist?" decision through here, so the recoverable-race boundary
+    /// lives in exactly one place. Callers that hit the race log through
+    /// [`Session::log_surface_race`] with a site tag; every *other* violation
+    /// (non-monotonic serial, unknown desktop buffer, bad geometry, stale
+    /// output serial) stays epoch-fatal at its own call site.
+    fn app_is_live(&self, surface_id: u32) -> bool {
+        self.apps.contains_key(&surface_id)
+    }
+
+    /// Records one dropped desktop reference to a surface lost to the disconnect
+    /// race described on [`Session::app_is_live`]. `site` identifies the path so
+    /// the shared invariant keeps per-path diagnostics without duplicating the
+    /// rationale at every call site.
+    fn log_surface_race(site: &str, surface_id: u32) {
+        eprintln!("compositor: {site} for surface {surface_id} dropped (app disconnect race)");
     }
 
     fn take_surface_id(&mut self) -> io::Result<u32> {

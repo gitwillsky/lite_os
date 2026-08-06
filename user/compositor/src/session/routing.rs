@@ -245,6 +245,10 @@ impl Session {
         let capture = capture.expect("validated move capture");
         let frame = frame.expect("validated move frame");
         let underlay_buffer_id = self.take_buffer_id()?;
+        let move_token = self.next_move_token;
+        self.next_move_token = move_token
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("move token exhausted"))?;
         self.buffers.values.insert(
             underlay_buffer_id,
             super::buffers::Buffer {
@@ -258,6 +262,7 @@ impl Session {
         );
         self.move_grab = Some(MoveGrab {
             surface_id: request.surface_id,
+            move_token,
             underlay_buffer_id,
             down: capture.down,
             origin: (frame.x, frame.y),
@@ -333,6 +338,7 @@ impl Session {
             surface_id: grab.surface_id,
             x: (grab.origin.0 + grab.offset.0) / scale,
             y: (grab.origin.1 + grab.offset.1) / scale,
+            move_token: grab.move_token,
         };
         let mut bytes = [0u8; 32];
         let encoded = message
@@ -416,6 +422,7 @@ mod tests {
     fn grab(ending: bool) -> MoveGrab {
         MoveGrab {
             surface_id: 1,
+            move_token: 1,
             underlay_buffer_id: 2,
             down: (100, 80),
             origin: (200, 120),

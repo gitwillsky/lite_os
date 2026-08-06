@@ -181,6 +181,10 @@ pub struct SceneCommit<'a> {
     pub output_serial: u64,
     /// Focused app surface, or zero when desktop itself receives keyboard input.
     pub focused_surface: u32,
+    /// Move grab this scene finalizes, echoed from the compositor's
+    /// [`MoveComplete`](crate::MoveComplete); zero when no move is completing.
+    /// The compositor retires the grab on token equality, not on geometry.
+    pub move_token: u64,
     node_payload: &'a [u8],
     node_count: usize,
 }
@@ -194,6 +198,7 @@ impl<'a> SceneCommit<'a> {
         revision: u64,
         output_serial: u64,
         focused_surface: u32,
+        move_token: u64,
         nodes: &[SceneNode<'_>],
     ) -> Option<&'b [u8]> {
         if nodes.len() > MAX_SCENE_NODES
@@ -205,6 +210,7 @@ impl<'a> SceneCommit<'a> {
         writer.u64(revision)?;
         writer.u64(output_serial)?;
         writer.u32(focused_surface)?;
+        writer.u64(move_token)?;
         writer.u32(u32::try_from(nodes.len()).ok()?)?;
         for node in nodes {
             node.encode(&mut writer)?;
@@ -222,11 +228,14 @@ impl<'a> SceneCommit<'a> {
         let revision = reader.u64()?;
         let output_serial = reader.u64()?;
         let focused_surface = reader.u32()?;
+        let move_token = reader.u64()?;
         let node_count = reader.u32()? as usize;
         if node_count > MAX_SCENE_NODES {
             return None;
         }
-        let node_payload = reader.bytes(payload.len().checked_sub(24)?)?;
+        // Header consumed above: revision(8) + output_serial(8) +
+        // focused_surface(4) + move_token(8) + node_count(4) = 32 bytes.
+        let node_payload = reader.bytes(payload.len().checked_sub(32)?)?;
         reader.finish()?;
 
         // 1. Validate every variable-length node before exposing the scene.
@@ -246,6 +255,7 @@ impl<'a> SceneCommit<'a> {
             revision,
             output_serial,
             focused_surface,
+            move_token,
             node_payload,
             node_count,
         })

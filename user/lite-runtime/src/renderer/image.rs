@@ -195,7 +195,17 @@ pub(super) fn decode_png(path: &Path) -> io::Result<Image> {
                 0xff00_0000 | u32::from(*value) << 16 | u32::from(*value) << 8 | u32::from(*value)
             })
             .collect(),
-        png::ColorType::Indexed => unreachable!("indexed PNG was not normalized"),
+        // `normalize_to_color8` should expand a palette to RGB(A), but a
+        // malformed indexed PNG (e.g. a color type the transform doesn't
+        // recognize) can still reach here. This is fully guest-controlled input
+        // (an app's asset), so a decode error degrades to the caller's
+        // transparent fallback rather than panicking the whole renderer.
+        png::ColorType::Indexed => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "indexed PNG was not normalized to a supported color type",
+            ));
+        }
     };
     Ok(Image {
         width: info.width as usize,

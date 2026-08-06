@@ -59,6 +59,7 @@ impl Session {
                         pending: None,
                         current: None,
                         first_scene_presented: false,
+                        close_deadline: None,
                     },
                 );
                 self.notify_opened(surface_id)?;

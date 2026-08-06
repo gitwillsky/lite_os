@@ -141,6 +141,11 @@ pub struct MoveComplete {
     pub x: i32,
     /// Final logical top edge.
     pub y: i32,
+    /// Grab identity. The desktop echoes it in the scene commit that applies
+    /// this move; the compositor retires the grab on token equality alone,
+    /// never on pixel-coordinate matching (which the logical↔physical rounding
+    /// round-trip could silently break, stranding the underlay buffer).
+    pub move_token: u64,
 }
 
 impl MoveComplete {
@@ -153,6 +158,7 @@ impl MoveComplete {
         writer.u32(self.surface_id)?;
         writer.u32(self.x as u32)?;
         writer.u32(self.y as u32)?;
+        writer.u64(self.move_token)?;
         writer.finish()
     }
 
@@ -163,6 +169,7 @@ impl MoveComplete {
             surface_id: reader.u32()?,
             x: reader.u32()? as i32,
             y: reader.u32()? as i32,
+            move_token: reader.u64()?,
         };
         reader.finish()?;
         (message.surface_id != 0).then_some(message)

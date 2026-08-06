@@ -169,6 +169,10 @@ export default function Desktop() {
       return next;
     });
     if (event.type === "opened") {
+      // JS `open` is the sole focus authority — the native registry no longer
+      // self-focuses a new surface, so drive both the visual active state and
+      // the compositor keyboard target here.
+      focus(event.surface.id);
       setActiveId(event.surface.id);
     }
     if (event.type === "activated" && !minimizedRef.current.has(event.surfaceId)) {
@@ -183,7 +187,25 @@ export default function Desktop() {
       setOpen((current) => applySurfaceMove(current, event.surfaceId, event.x, event.y));
     }
     if (event.type === "closed") {
-      setActiveId((current) => current === event.surfaceId ? 0 : current);
+      // JS `open` is the sole focus authority: the native registry cleared its
+      // keyboard target to the desktop when the surface closed, so when the
+      // closed window was active we pick its replacement here (last visible in
+      // the active workspace, same policy as minimize) and drive `focus()`.
+      // Without this the compositor would route keys to nothing until the next
+      // click.
+      setActiveId((current) => {
+        if (current !== event.surfaceId) return current;
+        const fallback = openRef.current
+          .filter((surface) =>
+            surface.id !== event.surfaceId
+            && surfaceWorkspaceRef.current.get(surface.id) === activeWorkspaceRef.current
+            && !minimizedRef.current.has(surface.id),
+          )
+          .at(-1);
+        const next = fallback?.id ?? 0;
+        focus(next);
+        return next;
+      });
       setMinimized((current) => {
         const next = new Set(current);
         next.delete(event.surfaceId);

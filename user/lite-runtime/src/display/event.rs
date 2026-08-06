@@ -13,8 +13,15 @@ pub enum Event {
     AppClosed { surface_id: u32 },
     /// A pointer-down hit a foreign surface; the desktop should raise it.
     SurfaceActivated { surface_id: u32 },
-    /// A compositor-side move ended at one canonical logical position.
-    MoveComplete { surface_id: u32, x: i32, y: i32 },
+    /// A compositor-side move ended at one canonical logical position. The
+    /// `move_token` must be echoed in the scene commit that applies this move so
+    /// the compositor retires the grab.
+    MoveComplete {
+        surface_id: u32,
+        x: i32,
+        y: i32,
+        move_token: u64,
+    },
     /// App pixels for one desktop configure are ready.
     ConfigureReady { surface_id: u32, serial: u64 },
     /// Desktop selected a new app client size.

@@ -353,6 +353,7 @@ fn render_latest(
             let damage = [display.physical_rect()];
             display.commit_desktop(
                 state.focused_surface(),
+                state.take_pending_move_token(),
                 &presentation.foreign,
                 &presentation.windows,
                 &presentation.overlays,
@@ -373,6 +374,7 @@ fn render_latest(
         Mode::Desktop if frame.paint_changed => {
             display.commit_desktop(
                 state.focused_surface(),
+                state.take_pending_move_token(),
                 &output.foreign,
                 &output.windows,
                 &output.overlays,
