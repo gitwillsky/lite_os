@@ -25,7 +25,7 @@
   `musicu.fcg` + `UrlGetVkey`（加密 `mflac/mgg` 与母带/全景声档位不支持——无法解密或超出解码器
   能力），网易云 level 只取 `jymaster/hires/lossless/exhigh/standard`；平台只给试听片段时按
   `freeTrialPrivilege` 如实标注。`desktop/src`（`DesktopExt` + `registry.rs`）独占启动器策略
-  （`apps.list` 扫描 `app.json`、`apps.launch`、`desktop.shutdown`）。`file-manager`/`my-computer` 无扩展，只用库内
+  （`apps.list` 扫描 `app.json`、`apps.launch`、`desktop.shutdown`/`desktop.restart`）。`file-manager`/`my-computer` 无扩展，只用库内
   `fs.*`。窗口机制（surfaces/configure/move/focus/close、accelerators、`audio-system.*` 音量）与终端
   PTY 是运行时集成的 compositor 客户端/IO 基础设施，留在库内（terminal 由 `terminal` 二进制以库内
   `id=="terminal"` 路径激活），不属于应用策略。扩展只经 `ExtensionCx` 用通用原语（requestId、
@@ -36,7 +36,7 @@
   `renderer/layout/flex.rs` 独占 Flexbox longhand lowering，`renderer/backdrop/kernel.rs` 独占
   allocation-free blur kernel，`style/selector.rs` 独占 selector/specificity/pseudo-class matching，
   `display/allocation.rs` 独占 buffer allocation round-trip，
-  `host/filesystem.rs` 独占 filesystem-backed `File` 的只读文件系统 host bridge；`audio/` 独占每进程
+  `host/filesystem.rs` 独占 list/read/capacity、filesystem-backed `File` 与文件变更的 host bridge；`audio/` 独占每进程
   media worker、decode/resample、seek generation 与 audio-service transport。
 - `compositor/session.rs` 保存 epoch 与 client registry；`session/client.rs` 只负责握手和连接角色固定；
   `session/output.rs` 独占 DRM hotplug 到 desktop output configure 的状态转换；
@@ -215,7 +215,8 @@
 - `<image>` 与 background 只接受 app-relative PNG 或 host 发出的 opaque `ImageSource`；路径必须在
   `assets/` 内且不能包含 `..`。PNG 的 indexed/grayscale/grayscale-alpha/RGB/RGBA 输入统一规范化为
   8-bit 预乘 ARGB；SVG/JPEG/WebP 在 host build 转为 PNG；target 无网络、data URL 或动画图。
-- `lite:fs.open(path)` 返回 filesystem-backed 标准 `File`；`URL.createObjectURL(file)` 只发布当前
+- `lite:fs.capacity(path)` 从同一次 `statvfs` 快照返回 total/used/available bytes；`lite:fs.open(path)`
+  返回 filesystem-backed 标准 `File`；`URL.createObjectURL(file)` 只发布当前
   process 内 opaque `blob:` source。`<audio>` 只接受 app-relative resource 与该 `blob:` source，
   不接受 ambient `file:` path、network/data URL 或私有 path-play API。
 - raster 唯一使用 GPU display-list/VirGL 路径；盒、边框、图片、渐变、阴影与 swash A8 glyph mask
@@ -234,8 +235,9 @@
 - desktop-only `lite:apps` 扫描一层 registry，提供只读 metadata、opaque icon 与 `launch(id)`；
   desktop-only `lite:desktop` 提供 surface lifecycle/configure/close/move 与 `setAccelerators(chords)`
   （全量替换 global accelerator table，不超过 16 条，空表清空；chord 命中后的完整 down/up sequence
-  经全局 `onKeyDown` 到达 desktop）。desktop 注册 Alt+Tab（按当前 z-order 激活下一非最小化窗口）
-  与 Alt+F4（关闭 active 窗口）。desktop-only `lite:audio-system` 只投影 audio-service master snapshot
+  经全局 `onKeyDown` 到达 desktop）。desktop 注册 Ctrl+Space（切换 Command Center）、Alt+Tab
+  （按当前 z-order 激活下一非最小化窗口）与 Alt+F4（关闭 active 窗口），并以 `shutdown()`/
+  `restart()` 发起显式电源操作。desktop-only `lite:audio-system` 只投影 audio-service master snapshot
   和更新请求，System Center 的音量与静音控件直接消费该唯一状态；普通 app 无法加载该 module。
   desktop 首次呈现固定启动 Files 与 Terminal；后续应用由 Command Center 或 Dock 启动。普通 helper 只通过
   `lite:process.spawn(argv, stdio)`，不解析 shell string。

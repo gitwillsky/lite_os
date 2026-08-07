@@ -214,6 +214,7 @@ declare module "lite:desktop" {
    */
   export const setAccelerators: (chords: AcceleratorChord[]) => string;
   export const shutdown: () => string;
+  export const restart: () => string;
   export const clock: () => number;
 }
 
@@ -256,12 +257,27 @@ declare module "lite:fs" {
     truncated?: boolean;
     error?: string;
   }
+  /** One atomic statvfs projection for the filesystem containing `path`. */
+  export interface FsCapacityResult {
+    /** Absolute path whose mounted filesystem was queried. */
+    path: string;
+    /** Complete filesystem size in bytes; absent when `error` is present. */
+    totalBytes?: number;
+    /** Allocated bytes, excluding filesystem-reserved free blocks. */
+    usedBytes?: number;
+    /** Bytes available to an unprivileged writer. */
+    availableBytes?: number;
+    /** Stable errno-style failure code; capacity fields are absent on error. */
+    error?: string;
+  }
   // Mutations return the affected path and an optional error code (absent on
   // success); see the host/filesystem bounded read/write seam.
   export interface FsWriteResult {
     path: string;
     error?: string;
   }
+  /** Returns real capacity for the mounted filesystem containing `path`. */
+  export const capacity: (path: string) => FsCapacityResult;
   export const list: (path: string) => FsListResult;
   export const read: (path: string) => FsReadResult;
   export const open: (path: string) => File;

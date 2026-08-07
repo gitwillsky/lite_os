@@ -4,7 +4,7 @@
 //! desktop role, with one [`DesktopExt`] extension that owns desktop *policy*:
 //! - `apps.list`   — scan the installed-application registry (`<apps_root>/*/app.json`).
 //! - `apps.launch` — launch a checked app as its own `/bin/<id>` binary.
-//! - `desktop.shutdown` — request system power-off.
+//! - `desktop.shutdown` / `desktop.restart` — request an explicit system power action.
 //!
 //! The surface *mechanism* (`desktop.surfaces/configure/move/focus/close`,
 //! accelerators) and `audio-system.*` volume control remain in the runtime
@@ -43,6 +43,10 @@ impl HostExtension for DesktopExt {
             "apps.launch" => Some(self.launch(cx, payload)),
             "desktop.shutdown" => {
                 cx.push_action(Action::Shutdown);
+                Some(Ok(String::new()))
+            }
+            "desktop.restart" => {
+                cx.push_action(Action::Restart);
                 Some(Ok(String::new()))
             }
             _ => None,

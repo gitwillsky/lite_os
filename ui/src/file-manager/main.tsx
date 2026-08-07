@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { list } from "lite:fs";
+import { capacity, list } from "lite:fs";
 import type { FsEntry } from "lite:fs";
 import { ContextMenu } from "../design-system/context-menu.tsx";
 import {
@@ -65,6 +65,18 @@ function iconFor16(entry: FsEntry): string {
   return entry.kind === "dir" || entry.kind === "symlink"
     ? "assets/folder-16.png"
     : "assets/file-16.png";
+}
+
+/** Formats filesystem byte counts for the compact storage summary. */
+function formatCapacity(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 || value >= 10 ? 0 : 1)} ${units[unit]}`;
 }
 
 /** One "Recent files" row: a real file plus the folder it lives in. */
@@ -198,24 +210,38 @@ export default function FileManager() {
       .filter((file) => file.name.toLowerCase().includes(normalized));
     // Re-scan when the query changes or we (re)enter Home via a browser refresh.
   }, [atRoot, query, browser.entries]);
+  // Refresh capacity whenever the browser publishes a new listing. A cached
+  // fixed fill would drift after mutations and falsely present itself as live.
+  const storage = useMemo(() => capacity("/"), [browser.entries]);
+  const storageTotal = storage.totalBytes ?? 0;
+  const storageUsed = storage.usedBytes ?? 0;
+  const storagePercent = storageTotal === 0
+    ? 0
+    : Math.min(100, Math.max(0, storageUsed / storageTotal * 100));
+  const storageLabel = storage.error || storageTotal === 0
+    ? "Capacity unavailable"
+    : `${formatCapacity(storageUsed)} / ${formatCapacity(storageTotal)}`;
 
   return (
     <div className="aurora-root explorer explorer--files" onClick={closeMenu} onKeyDown={onKeyDown}>
       <div className="explorer__body">
         <Sidebar className="files-sidebar">
-          <SidebarItem label="Home" glyph="home" active={path === "/root"} onClick={() => browser.navigate("/root")}/>
-          <SidebarItem label="Documents" glyph="document" active={path === "/root/Documents"} onClick={() => browser.navigate("/root/Documents")}/>
-          <SidebarItem label="Downloads" glyph="download" active={path === "/root/Downloads"} onClick={() => browser.navigate("/root/Downloads")}/>
-          <SidebarItem label="Pictures" glyph="picture" active={path === "/root/Pictures"} onClick={() => browser.navigate("/root/Pictures")}/>
-          <SidebarItem label="Music" glyph="music" active={path === "/root/Music"} onClick={() => browser.navigate("/root/Music")}/>
-          <SidebarItem label="Videos" glyph="video" active={path === "/root/Videos"} onClick={() => browser.navigate("/root/Videos")}/>
+          <SidebarItem label="Home" icon="assets/sidebar-home.png" active={path === "/root"} onClick={() => browser.navigate("/root")}/>
+          <SidebarItem label="Documents" icon="assets/sidebar-documents.png" active={path === "/root/Documents"} onClick={() => browser.navigate("/root/Documents")}/>
+          <SidebarItem label="Downloads" icon="assets/sidebar-downloads.png" active={path === "/root/Downloads"} onClick={() => browser.navigate("/root/Downloads")}/>
+          <SidebarItem label="Pictures" icon="assets/sidebar-pictures.png" active={path === "/root/Pictures"} onClick={() => browser.navigate("/root/Pictures")}/>
+          <SidebarItem label="Music" icon="assets/sidebar-music.png" active={path === "/root/Music"} onClick={() => browser.navigate("/root/Music")}/>
+          <SidebarItem label="Videos" icon="assets/sidebar-videos.png" active={path === "/root/Videos"} onClick={() => browser.navigate("/root/Videos")}/>
           <div className="sidebar-separator"/>
-          <SidebarItem label="Storage" glyph="storage" active={path === "/"} onClick={() => browser.navigate("/")}/>
-          {/* Presentational disk-usage bar: lite:fs has no statfs, so the fill
-              is a fixed visual matching the concept, not a live measurement. */}
+          <SidebarItem label="Storage" icon="assets/sidebar-storage.png" active={path === "/"} onClick={() => browser.navigate("/")}/>
           <div className="files-storage">
-            <span className="sidebar-glyph sidebar-glyph--storage"><span/><span/><span/></span>
-            <div className="files-storage__track"><div className="files-storage__fill"/></div>
+            <img className="files-storage__icon" src="assets/sidebar-storage.png"/>
+            <div className="files-storage__details">
+              <span className="files-storage__label">{storageLabel}</span>
+              <div className="files-storage__track">
+                <div className="files-storage__fill" style={{ width: `${storagePercent}%` }}/>
+              </div>
+            </div>
           </div>
         </Sidebar>
         <div className="files-content">
@@ -259,7 +285,7 @@ export default function FileManager() {
                       }}
                     >
                       <img className="icon-cell__img" src={iconFor(entry)}/>
-                      <span className="icon-cell__label">{entry.name}</span>
+                      <span className="icon-cell__label control-label">{entry.name}</span>
                     </button>
                   ))}
                   {homeFolders.length === 0 && <span className="command-empty">No folders</span>}
@@ -278,8 +304,8 @@ export default function FileManager() {
                         onDoubleClick={() => browser.navigate(parentPath(file.path))}
                       >
                         <img className="recent-row__icon" src="assets/file-16.png"/>
-                        <span className="recent-row__name">{file.name}</span>
-                        <span className="recent-row__when">{formatRecent(file.mtime, now)}</span>
+                        <span className="recent-row__name control-label">{file.name}</span>
+                        <span className="recent-row__when control-label">{formatRecent(file.mtime, now)}</span>
                       </button>
                     ))
                   )}

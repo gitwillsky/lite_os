@@ -18,6 +18,7 @@ path = "src/lib.rs"
 cssparser.workspace = true
 display-proto.workspace = true
 linux-uapi.workspace = true
+libc.workspace = true
 parley.workspace = true
 swash.workspace = true
 png = "=0.18.0"

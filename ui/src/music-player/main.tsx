@@ -137,7 +137,7 @@ function PlayerButton({ label, active, primary, disabled, onClick }: {
   const className = `player-button${active ? " player-button--active" : ""}${primary ? " player-button--primary" : ""}`;
   return (
     <button className={className} disabled={disabled} onClick={onClick}>
-      <span>{label}</span>
+      <span className="control-label">{label}</span>
     </button>
   );
 }

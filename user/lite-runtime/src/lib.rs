@@ -488,6 +488,12 @@ fn process_actions(
                     .stdout(Stdio::null())
                     .spawn()?;
             }
+            Action::Restart => {
+                Command::new("/bin/reboot")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .spawn()?;
+            }
             Action::TerminalInput(payload) => terminal
                 .as_deref_mut()
                 .ok_or("terminal action outside terminal app")?

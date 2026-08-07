@@ -26,6 +26,8 @@ pub enum Action {
     SetAccelerators(Vec<display_proto::AcceleratorChord>),
     /// Request system shutdown.
     Shutdown,
+    /// Request system restart.
+    Restart,
     /// Send bytes to the terminal helper.
     TerminalInput(Vec<u8>),
     /// Request one asynchronous standard Clipboard API read.

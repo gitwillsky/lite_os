@@ -6,8 +6,10 @@ pub(super) use mutations::{copy, mkdir, remove, rename};
 
 use std::{
     collections::BTreeMap,
+    ffi::CString,
     fs,
     io::{self, Read, Seek},
+    mem::MaybeUninit,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -165,6 +167,72 @@ fn media_type(path: &str) -> &'static str {
         Some("mka" | "webm") => "audio/webm",
         _ => "application/octet-stream",
     }
+}
+
+/// Returns the capacity of the mounted filesystem containing one absolute path.
+///
+/// The byte counts share one `statvfs` snapshot so the UI cannot combine total
+/// and free values from different filesystem states. Reserved blocks remain
+/// unavailable but not used: `usedBytes` follows `f_blocks - f_bfree`, while
+/// `availableBytes` exposes `f_bavail` for future write-availability displays.
+pub(super) fn capacity(path: &str) -> String {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Capacity {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_bytes: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        used_bytes: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        available_bytes: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<&'static str>,
+    }
+    let error = |code: &'static str| Capacity {
+        path: path.to_owned(),
+        total_bytes: None,
+        used_bytes: None,
+        available_bytes: None,
+        error: Some(code),
+    };
+    if !path.starts_with('/') {
+        return serde_json::to_string(&error("EINVAL")).unwrap_or_default();
+    }
+    let native_path = match CString::new(path) {
+        Ok(path) => path,
+        Err(_) => return serde_json::to_string(&error("EINVAL")).unwrap_or_default(),
+    };
+    let mut statistics = MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `native_path` is NUL-terminated and lives across the call;
+    // `statistics` is aligned writable storage for exactly one `statvfs`.
+    if unsafe { libc::statvfs(native_path.as_ptr(), statistics.as_mut_ptr()) } != 0 {
+        return serde_json::to_string(&error(io_error_code(&io::Error::last_os_error())))
+            .unwrap_or_default();
+    }
+    // SAFETY: POSIX requires a successful `statvfs` call to initialize the
+    // complete output structure; the failure branch returned above.
+    let statistics = unsafe { statistics.assume_init() };
+    let fragment_size = if statistics.f_frsize == 0 {
+        statistics.f_bsize
+    } else {
+        statistics.f_frsize
+    } as u64;
+    let total_bytes = (statistics.f_blocks as u64).saturating_mul(fragment_size);
+    let free_bytes = (statistics.f_bfree as u64)
+        .saturating_mul(fragment_size)
+        .min(total_bytes);
+    let available_bytes = (statistics.f_bavail as u64)
+        .saturating_mul(fragment_size)
+        .min(total_bytes);
+    serde_json::to_string(&Capacity {
+        path: path.to_owned(),
+        total_bytes: Some(total_bytes),
+        used_bytes: Some(total_bytes - free_bytes),
+        available_bytes: Some(available_bytes),
+        error: None,
+    })
+    .unwrap_or_default()
 }
 
 /// Lists one absolute directory without following reported symlinks.
@@ -332,6 +400,34 @@ mod tests {
     use std::{fs, path::PathBuf, time::UNIX_EPOCH};
 
     use super::Files;
+
+    #[test]
+    fn capacity_uses_one_real_filesystem_snapshot_and_rejects_relative_paths() {
+        let capacity = serde_json::from_str::<serde_json::Value>(&super::capacity("/tmp"))
+            .expect("capacity json");
+        let total = capacity
+            .get("totalBytes")
+            .and_then(serde_json::Value::as_u64)
+            .expect("total bytes");
+        let used = capacity
+            .get("usedBytes")
+            .and_then(serde_json::Value::as_u64)
+            .expect("used bytes");
+        let available = capacity
+            .get("availableBytes")
+            .and_then(serde_json::Value::as_u64)
+            .expect("available bytes");
+        assert!(total > 0);
+        assert!(used <= total);
+        assert!(available <= total);
+
+        let relative = serde_json::from_str::<serde_json::Value>(&super::capacity("tmp"))
+            .expect("relative-path error json");
+        assert_eq!(
+            relative.get("error").and_then(serde_json::Value::as_str),
+            Some("EINVAL")
+        );
+    }
 
     #[test]
     fn directory_listing_reports_each_entry_mtime() {

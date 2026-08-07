@@ -7,7 +7,7 @@ autolib = false
 
 # The desktop shell: the generic runtime library plus a `DesktopExt` that owns
 # desktop *policy* — the application launcher registry (scanning app.json),
-# launching apps as their own `/bin/<id>` binaries, and shutdown. The surface
+# launching apps as their own `/bin/<id>` binaries, and system power actions. The surface
 # *mechanism* (configure/move/focus/close, accelerators) and system-volume
 # control stay in the runtime library as Role::Desktop compositor-client
 # infrastructure.

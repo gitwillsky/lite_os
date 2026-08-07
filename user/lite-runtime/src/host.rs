@@ -609,6 +609,7 @@ impl NativeHost for Host {
             "terminal.paste" if self.role == Role::App => self.terminal_paste(payload),
             "clipboard.read" => self.clipboard_read(),
             "clipboard.write" => self.clipboard_write(payload),
+            "fs.capacity" if self.role == Role::App => Ok(filesystem::capacity(payload)),
             "fs.list" if self.role == Role::App => Ok(filesystem::list(payload)),
             "fs.read" if self.role == Role::App => Ok(filesystem::read(payload)),
             "fs.mkdir" if self.role == Role::App => Ok(filesystem::mkdir(payload)),

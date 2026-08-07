@@ -590,6 +590,7 @@ dependencies = [
  "audio-proto",
  "cssparser",
  "display-proto",
+ "libc",
  "linux-uapi",
  "parley",
  "png",

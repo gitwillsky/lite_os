@@ -8,9 +8,9 @@ use quickjs_runtime::{Engine, EngineError, Role};
 use super::{Action, ExtensionCx, Host, HostExtension};
 
 /// Desktop-policy stand-in for the bundle tests. The real desktop policy
-/// (`apps.list`/`apps.launch`/`desktop.shutdown`) lives in the `desktop` binary
+/// (`apps.list`/`apps.launch`/`desktop.shutdown`/`desktop.restart`) lives in the `desktop` binary
 /// crate as a `HostExtension`; the library cannot depend on that crate, so this
-/// mirrors the same three ops (validating the extension seam end to end: the JS
+/// mirrors the same four ops (validating the extension seam end to end: the JS
 /// bundle invokes them and the produced `Action`s reach the run loop's queue).
 struct DesktopTestExt;
 
@@ -30,6 +30,10 @@ impl HostExtension for DesktopTestExt {
             }
             "desktop.shutdown" => {
                 cx.push_action(Action::Shutdown);
+                Some(Ok(String::new()))
+            }
+            "desktop.restart" => {
+                cx.push_action(Action::Restart);
                 Some(Ok(String::new()))
             }
             _ => None,
@@ -519,6 +523,7 @@ fn command_launch_unmounts_the_panel_in_the_same_react_commit() {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
     let runtime = fs::read(root.join("runtime.js")).expect("runtime bundle");
     let desktop = fs::read(root.join("desktop/main.js")).expect("desktop bundle");
+    let desktop_root = root.join("desktop");
     let (host, state) = host(Role::Desktop, root);
     let mut engine = Engine::open(Role::Desktop).expect("desktop engine must open");
     engine.install_host(host);
@@ -555,6 +560,16 @@ fn command_launch_unmounts_the_panel_in_the_same_react_commit() {
     engine.run_jobs().expect("command center jobs");
 
     let scene = state.scene_if_dirty().expect("command center scene");
+    for src in scene
+        .iter()
+        .flat_map(|node| descendants(node).into_iter())
+        .filter_map(|node| node.props.get("src").and_then(serde_json::Value::as_str))
+    {
+        assert!(
+            desktop_root.join(src).is_file(),
+            "command center asset missing from bundle: {src}"
+        );
+    }
     let music_listener = scene
         .iter()
         .flat_map(|node| descendants(node).into_iter())
@@ -571,7 +586,38 @@ fn command_launch_unmounts_the_panel_in_the_same_react_commit() {
         .and_then(|node| node.props.get("onClick"))
         .and_then(serde_json::Value::as_u64)
         .expect("Music command listener");
+    let restart_listener = scene
+        .iter()
+        .flat_map(|node| descendants(node).into_iter())
+        .find(|node| {
+            node.props
+                .get("className")
+                .and_then(serde_json::Value::as_str)
+                == Some("cc-session-action")
+                && descendants(node).into_iter().any(|child| {
+                    child.props.get("src").and_then(serde_json::Value::as_str)
+                        == Some("assets/restart.png")
+                })
+        })
+        .and_then(|node| node.props.get("onClick"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("Restart command listener");
     drop(scene);
+    engine
+        .evaluate(
+            "restart.js",
+            format!("globalThis.__liteDispatch([{restart_listener}],{{\"type\":\"click\"}});")
+                .as_bytes(),
+        )
+        .expect("request restart");
+    engine.run_jobs().expect("restart jobs");
+    assert!(
+        state
+            .take_actions()
+            .iter()
+            .any(|action| matches!(action, super::Action::Restart)),
+        "Restart command must publish the production restart action"
+    );
     engine
         .evaluate(
             "launch-music.js",
@@ -628,7 +674,7 @@ fn has_window(scene: &[crate::tree::Node], surface_id: u64) -> bool {
 /// timers the runtime scheduled, so startup effects run exactly as the
 /// event loop drives them in the guest.
 #[test]
-fn checked_desktop_bundle_registers_its_accelerator_chords() {
+fn checked_desktop_bundle_registers_and_handles_global_shortcuts() {
     let root = std::env::var_os("LITE_UI_TEST_ASSETS")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
@@ -671,10 +717,14 @@ fn checked_desktop_bundle_registers_its_accelerator_chords() {
     assert_eq!(
         chords,
         [
-            // Escape dismisses global panels; Alt uses modifier-mask bit 4.
+            // Escape dismisses global panels; Ctrl/Alt use modifier-mask bits 2/4.
             display_proto::AcceleratorChord {
                 modifiers: 0,
                 code: 1
+            },
+            display_proto::AcceleratorChord {
+                modifiers: 2,
+                code: 57
             },
             display_proto::AcceleratorChord {
                 modifiers: 4,
@@ -685,6 +735,41 @@ fn checked_desktop_bundle_registers_its_accelerator_chords() {
                 code: 62
             },
         ]
+    );
+
+    let scene = state.scene_if_dirty().expect("desktop root");
+    let desktop_key_listener = scene
+        .iter()
+        .flat_map(|node| descendants(node).into_iter())
+        .find(|node| node.props.get("id").and_then(serde_json::Value::as_str) == Some("desktop"))
+        .and_then(|node| node.props.get("onKeyDown"))
+        .and_then(serde_json::Value::as_u64)
+        .expect("desktop key listener");
+    drop(scene);
+    engine
+        .evaluate(
+            "ctrl-space.js",
+            format!(
+                "globalThis.__liteDispatch([{desktop_key_listener}],{{\"type\":\"keydown\",\"code\":57,\"value\":1,\"modifiers\":2}});"
+            )
+            .as_bytes(),
+        )
+        .expect("dispatch Ctrl+Space");
+    engine.run_jobs().expect("shortcut jobs");
+    let scene = state
+        .scene_if_dirty()
+        .expect("Ctrl+Space must publish the command center");
+    assert!(
+        scene
+            .iter()
+            .flat_map(|node| descendants(node).into_iter())
+            .any(|node| {
+                node.props
+                    .get("className")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("command-center")
+            }),
+        "Ctrl+Space must open the command center"
     );
 }
 

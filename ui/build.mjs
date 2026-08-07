@@ -30,6 +30,7 @@ const liteModules = {
     export const configure = (id, width, height) => Number(globalThis.__liteNative("desktop.configure", id + ":" + width + ":" + height));
     export const setAccelerators = (chords) => globalThis.__liteNative("desktop.accelerators.set", JSON.stringify(chords));
     export const shutdown = () => globalThis.__liteNative("desktop.shutdown", "");
+    export const restart = () => globalThis.__liteNative("desktop.restart", "");
     export const clock = () => Number(globalThis.__liteNative("time.clock", ""));
   `,
   "lite:terminal": `
@@ -45,6 +46,7 @@ const liteModules = {
     export const setMuted = (muted) => globalThis.__liteNative("audio-system.muted", String(muted));
   `,
   "lite:fs": `
+    export const capacity = (path) => JSON.parse(globalThis.__liteNative("fs.capacity", path));
     export const list = (path) => JSON.parse(globalThis.__liteNative("fs.list", path));
     export const read = (path) => JSON.parse(globalThis.__liteNative("fs.read", path));
     export const open = (path) => globalThis.__liteFile(JSON.parse(globalThis.__liteNative("fs.open", path)));
@@ -272,15 +274,8 @@ for (const [id, entryName, styleName] of products) {
     for (const name of ["liteos.png", "files.png", "terminal.png", "monitor.png", "package.png", "settings.png", "wallpaper.png"]) {
       await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
     }
-    // Command Center recent list reuses the generic file sprite.
-    await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
-    // Aurora status / quick-settings glyphs (topbar, System Center, Command Center).
-    for (const name of [
-      "wifi.png", "network.png", "battery.png", "battery-lg.png",
-      "bluetooth.png", "night-light.png", "do-not-disturb.png", "airplane.png", "focus.png",
-      "brightness.png", "volume.png", "speakers.png",
-      "microphone.png", "all-apps.png", "lock.png", "sleep.png", "restart.png", "power.png",
-    ]) {
+    // System shell glyphs referenced by the live status and session controls.
+    for (const name of ["volume.png", "all-apps.png", "restart.png", "power.png"]) {
       await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
     }
     await copyFile(join(root, "../assets/splash/aurora-background.png"), join(assets, "aurora-background.png"));
@@ -292,6 +287,9 @@ for (const [id, entryName, styleName] of products) {
     // Toolbar navigation uses the shared 48px Aurora glyph masters.
     for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "nav-home.png"]) {
       await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
+    }
+    for (const name of ["home.png", "documents.png", "downloads.png", "pictures.png", "music.png", "videos.png", "storage.png"]) {
+      await copyFile(join(root, `../assets/aurora-sidebar-src/${name}`), join(assets, `sidebar-${name}`));
     }
     await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
     await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));

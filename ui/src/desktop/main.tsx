@@ -7,6 +7,7 @@ import {
   configure,
   focus,
   move,
+  restart,
   setAccelerators,
   shutdown,
   surfaces,
@@ -22,7 +23,9 @@ import { Splash } from "./splash.tsx";
 const MIN_WINDOW = { width: 260, height: 180 };
 const KEY_ESC = 1;
 const KEY_TAB = 15;
+const KEY_SPACE = 57;
 const KEY_F4 = 62;
+const MOD_CONTROL = 2;
 const MOD_ALT = 4;
 const WORKSPACE_COUNT = 3;
 
@@ -232,6 +235,7 @@ export default function Desktop() {
   useEffect(() => {
     setAccelerators([
       { modifiers: 0, code: KEY_ESC },
+      { modifiers: MOD_CONTROL, code: KEY_SPACE },
       { modifiers: MOD_ALT, code: KEY_TAB },
       { modifiers: MOD_ALT, code: KEY_F4 },
     ]);
@@ -241,6 +245,9 @@ export default function Desktop() {
     const event = raw as LiteKeyEvent;
     if (event.code === KEY_ESC && event.value === 1) {
       setPanel(null);
+    }
+    if (event.code === KEY_SPACE && event.value === 1 && (event.modifiers & MOD_CONTROL) !== 0) {
+      setPanel((current) => current === "command" ? null : "command");
     }
     if (event.code === KEY_F4 && event.value === 1 && (event.modifiers & MOD_ALT) !== 0) {
       const id = activeIdRef.current;
@@ -332,6 +339,7 @@ export default function Desktop() {
     id: app.id,
     name: app.id === "file-manager" ? "Files" : app.name,
     icon: appIcon(app.id),
+    running: open.some((surface) => surface.appId === app.id),
   }));
   const selectWorkspace = useCallback((workspace: number) => {
     setActiveWorkspace(workspace);
@@ -351,7 +359,9 @@ export default function Desktop() {
   );
   const workspaceViews = Array.from({ length: WORKSPACE_COUNT }, (_, id) => ({
     id,
-    windows: open.filter((surface) => surfaceWorkspace.get(surface.id) === id),
+    windows: open
+      .filter((surface) => surfaceWorkspace.get(surface.id) === id)
+      .map((surface) => ({ ...surface, minimized: minimized.has(surface.id) })),
   }));
   const time = `${String(clock.getHours()).padStart(2, "0")}:${String(clock.getMinutes()).padStart(2, "0")}`;
   const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -363,6 +373,8 @@ export default function Desktop() {
       <TopBar
         panel={panel}
         time={time}
+        volume={master.percent}
+        muted={master.muted}
         activeWorkspace={activeWorkspace}
         workspaceCount={WORKSPACE_COUNT}
         onPanel={setPanel}
@@ -419,6 +431,7 @@ export default function Desktop() {
           activeWorkspace={activeWorkspace}
           onLaunch={(id) => { launch(id); setPanel(null); }}
           onClose={() => setPanel(null)}
+          onRestart={restart}
           onShutdown={shutdown}
         />
       )}
@@ -440,9 +453,10 @@ export default function Desktop() {
             date={date}
             volume={master.percent}
             muted={master.muted}
+            activeWorkspace={activeWorkspace}
+            openWindows={open.length}
             onVolume={setVolume}
             onMuted={() => setMuted(!master.muted)}
-            onClose={() => setPanel(null)}
           />
         </>
       )}

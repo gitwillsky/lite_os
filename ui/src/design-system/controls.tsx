@@ -30,7 +30,7 @@ export function Button({ label, default: isDefault, disabled, onClick }: {
 }) {
   return (
     <button className={`button${isDefault ? " button--default" : ""}`} disabled={disabled} onClick={onClick}>
-      <span>{label}</span>
+      <span className="control-label">{label}</span>
     </button>
   );
 }
@@ -85,22 +85,16 @@ export function Sidebar({ children, className }: { children: React.ReactNode; cl
 }
 
 /** One semantic sidebar destination. */
-export function SidebarItem({ label, icon, glyph, active, onClick }: {
+export function SidebarItem({ label, icon, active, onClick }: {
   label: string;
-  icon?: string;
-  glyph?: "home" | "document" | "download" | "picture" | "music" | "video" | "storage";
+  icon: string;
   active?: boolean;
   onClick: () => void;
 }) {
   return (
     <button className={`sidebar-item${active ? " sidebar-item--active" : ""}`} onClick={onClick}>
-      {icon && <img src={icon}/>}
-      {glyph && (
-        <span className={`sidebar-glyph sidebar-glyph--${glyph}`}>
-          <span/><span/><span/>
-        </span>
-      )}
-      <span>{label}</span>
+      <img className="sidebar-item__icon" src={icon}/>
+      <span className="control-label">{label}</span>
     </button>
   );
 }
@@ -168,7 +162,7 @@ export function CheckBox({ label, checked, disabled, onToggle }: {
   return (
     <button className="checkbox" disabled={disabled} onClick={onToggle}>
       <span className="checkbox__box">{checked ? <SystemIcon name="check"/> : null}</span>
-      <span>{label}</span>
+      <span className="control-label">{label}</span>
     </button>
   );
 }
@@ -183,7 +177,7 @@ export function Radio({ label, checked, disabled, onSelect }: {
   return (
     <button className="radio" disabled={disabled} onClick={onSelect}>
       <span className="radio__circle">{checked ? <span className="radio__dot"/> : null}</span>
-      <span>{label}</span>
+      <span className="control-label">{label}</span>
     </button>
   );
 }
@@ -219,7 +213,7 @@ export function MenuBar({ menus, labelX, stride }: {
 function MenuBarLabel({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button className="menu-bar__item" onClick={onClick}>
-      {label}
+      <span className="control-label">{label}</span>
     </button>
   );
 }
@@ -249,7 +243,7 @@ export function ToolbarButton({ icon, label, disabled, dropdown, onClick }: {
     <div className="toolbar-button-group">
       <button className="toolbar-button" disabled={disabled} onClick={activate}>
         <img className="toolbar-button__icon" src={icon}/>
-        {label && <span className="toolbar-button__label">{label}</span>}
+        {label && <span className="toolbar-button__label control-label">{label}</span>}
       </button>
       {dropdown && <ToolbarCaret disabled={disabled} onOpen={() => setOpen(true)}/>}
       {dropdown && open && (
@@ -282,7 +276,7 @@ export function GroupBox({ title, expanded, onToggle, children }: {
   return (
     <div className="group-box">
       <button className="group-box__head" onClick={onToggle}>
-        <span>{title}</span>
+        <span className="control-label">{title}</span>
         <span className="group-box__chev"><img className="group-box__chev-img" src={expanded ? "assets/chev-up.png" : "assets/chev-down.png"}/></span>
       </button>
       {expanded && <div className="group-box__body">{children}</div>}
@@ -298,7 +292,7 @@ export function TaskLink({ label, disabled, onClick }: {
 }) {
   return (
     <button className="task-link" disabled={disabled} onClick={onClick}>
-      {label}
+      <span className="control-label">{label}</span>
     </button>
   );
 }
@@ -365,7 +359,7 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
       {go && (
         <button className="go-button" onClick={go.onClick}>
           <img className="go-button__icon" src={go.icon}/>
-          <span>{go.label}</span>
+          <span className="control-label">{go.label}</span>
         </button>
       )}
       {dropItems && open && (

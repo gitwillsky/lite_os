@@ -10,7 +10,8 @@
   级联（`invoke_media` 之后），不写进库：`music-player` 的 `MusicExt` 独占 QQ/网易云请求构造与
   eapi 加密、可选登录态文件（`/root/music-credentials.json`）、TLS/HTTP
   栈与流式下载 worker（唯一链接 ureq/rustls/ring 的二进制）；`desktop` 的 `DesktopExt` 独占启动器
-  策略（`apps.list` 扫描 `app.json`、`apps.launch` 校验后 spawn `/bin/<id>`、`desktop.shutdown`）。
+  策略（`apps.list` 扫描 `app.json`、`apps.launch` 校验后 spawn `/bin/<id>`、`desktop.shutdown`/
+  `desktop.restart` 映射显式电源操作）。
   `HostExtension` 只经 `ExtensionCx` 使用**通用**原语（`next_request_id`、`events().emit(channel,…)`
   worker→run-loop 事件、`register_stream`/`remove_stream` 流注册、`push_action`、`apps_root`），
   不得把应用语义漏进库。窗口**机制**（`desktop.surfaces/configure/move/focus/close`、accelerators、
@@ -50,8 +51,9 @@
   `renderer/layout/flex`（Flexbox longhand lowering）、`renderer/backdrop/kernel`（box blur kernel）、
   `style/selector`（选择器解析、specificity 与动态伪类匹配）、`display/allocation`
   （同步分配期间的协议推进）、`display/scene`（desktop flat-scene z-order/input 构造与原子提交）、
-  `host/filesystem`（有界 list/read 与
-  mkdir/remove/rename/copy，并提供 filesystem-backed `File` bridge，路径必须绝对、payload 有界，
+  `host/filesystem`（有界 list/read/capacity 与
+  mkdir/remove/rename/copy，并提供 filesystem-backed `File` bridge，路径必须绝对、payload 有界；
+  capacity 只由一次 `libc::statvfs` 快照投影，NUL 结尾 path 与成功后初始化完整 output 是该 unsafe seam 的安全前提，
   仅 app session）和 `audio`（worker/media state/decoder/service transport）。
   compositor 的 connection handshake/role assignment 只属于 `session/client`；这些子模块不得复制
   父模块持有的 session、renderer、display 或 host state。

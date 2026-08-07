@@ -31,7 +31,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
             disabled={item.disabled}
             onClick={() => { item.onSelect?.(); onClose(); }}
           >
-            <span>{item.label}</span>
+            <span className="control-label">{item.label}</span>
           </button>
         )
       ))}
