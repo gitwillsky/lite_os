@@ -101,7 +101,7 @@ export function Window({
         onDoubleClick={() => onToggleMaximize(id)}
       >
         <span className={`window__icon-frame window__icon-frame--${appId}`}>
-          <img className="window__icon" src={icon}/>
+          <img className="window__icon" src={icon} alt=""/>
         </span>
         <span className="window__title">{title}</span>
         <div
@@ -112,7 +112,7 @@ export function Window({
           <button className="window-control" aria-label="Minimize" onClick={() => onMinimize(id)}>
             <span className="window-control__minimize"/>
           </button>
-          <button className="window-control" aria-label="Maximize" onClick={() => onToggleMaximize(id)}>
+          <button className="window-control" aria-label={maximized ? "Restore" : "Maximize"} onClick={() => onToggleMaximize(id)}>
             <span className={maximized ? "window-control__restore" : "window-control__maximize"}/>
           </button>
           <button className="window-control window-control--close" aria-label="Close" onClick={() => onClose(id)}>

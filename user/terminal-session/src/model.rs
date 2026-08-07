@@ -5,12 +5,15 @@ mod cursor;
 mod parser;
 mod reflow;
 mod screen;
+mod selection;
 mod style;
+mod viewport;
 #[cfg(test)]
 mod wide_tests;
 
 use cursor::CursorStyle;
 use reflow::{History, allocate_grid, free_grid, resize_screen};
+use selection::Selection;
 
 pub const ATTR_BOLD: u16 = 1 << 0;
 pub const ATTR_DIM: u16 = 1 << 1;
@@ -165,7 +168,6 @@ pub trait Grid {
     fn cursor_style(&self) -> u16;
     /// Returns whether DEC application-cursor mode currently owns navigation-key encoding.
     fn application_cursor_keys(&self) -> bool;
-    fn cell(&self, row: usize, column: usize) -> Cell;
 }
 
 pub struct Model {
@@ -213,6 +215,11 @@ pub struct Model {
     g1_charset: u8,
     active_charset: u8,
     direct_graphics: bool,
+    // OWNER: selection follows the active VT grid. Without keeping it beside
+    // the cells, the React projection cannot resolve wide characters or soft wraps correctly.
+    selection: Option<Selection>,
+    selection_dirty: bool,
+    viewport_offset: usize,
 }
 
 pub struct ResizeCandidate {
@@ -277,12 +284,18 @@ impl Model {
             g1_charset: b'B',
             active_charset: 0,
             direct_graphics: false,
+            selection: None,
+            selection_dirty: false,
+            viewport_offset: 0,
         };
         model.reset_tab_stops();
         Some(model)
     }
 
     pub fn feed(&mut self, bytes: &[u8], mut reply: impl FnMut(&[u8])) {
+        if !bytes.is_empty() {
+            self.clear_selection();
+        }
         self.mark_cursor();
         for &byte in bytes {
             self.feed_byte(byte, &mut reply);
@@ -325,6 +338,8 @@ impl Model {
         self.g1_charset = b'B';
         self.active_charset = 0;
         self.direct_graphics = false;
+        self.viewport_offset = 0;
+        self.clear_selection();
         self.reset_tab_stops();
         self.reset_style();
         self.clear_screen();
@@ -337,6 +352,11 @@ impl Model {
 
     pub fn clear_dirty(&mut self, row: usize) {
         unsafe { *self.dirty.add(row) = DirtySpan::CLEAN };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cell(&self, row: usize, column: usize) -> Cell {
+        self.cell_at(row, column)
     }
 
     pub fn mark_all(&mut self) {
@@ -413,6 +433,8 @@ impl Model {
         self.reverse_screen = candidate.reverse_screen;
         self.blink_visible = candidate.blink_visible;
         self.dirty = candidate.dirty;
+        self.viewport_offset = 0;
+        self.clear_selection();
         self.scroll_top = 0;
         self.scroll_bottom = self.rows;
         self.reset_tab_stops();
@@ -433,7 +455,7 @@ impl Grid for Model {
     }
 
     fn cursor(&self) -> Option<(usize, usize)> {
-        if !self.cursor_visible {
+        if !self.cursor_visible || self.viewport_offset != 0 {
             return None;
         }
         let screen = self.active();
@@ -450,10 +472,6 @@ impl Grid for Model {
 
     fn application_cursor_keys(&self) -> bool {
         self.application_cursor_keys
-    }
-
-    fn cell(&self, row: usize, column: usize) -> Cell {
-        unsafe { *self.active().cells.add(row * self.columns + column) }
     }
 }
 

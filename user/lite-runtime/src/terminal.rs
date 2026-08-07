@@ -26,6 +26,8 @@ const RESIZE: u32 = 2;
 const ACK: u32 = 3;
 const UPDATE: u32 = 4;
 const EXIT: u32 = 5;
+const SELECT: u32 = 6;
+const SCROLL: u32 = 7;
 const APPLICATION_CURSOR_KEYS: u32 = 1;
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 
@@ -116,6 +118,7 @@ impl Terminal {
         let (cursor_shape, cursor_blinking) =
             cursor_appearance(self.screen.cursor_style).expect("validated cursor style");
         Ok(Some(json!({
+            "columns": self.screen.columns,
             "rows": self.screen.rows,
             "cursor": {
                 "column": self.screen.cursor.0,
@@ -126,6 +129,9 @@ impl Terminal {
             },
             "foreground": self.screen.foreground,
             "background": self.screen.background,
+            "selection": self.screen.selection,
+            "scrollOffset": self.screen.scroll_offset,
+            "historyRows": self.screen.history_rows,
         })))
     }
 
@@ -209,6 +215,7 @@ fn translate_key(
         } else {
             b"\x1b[A"
         }),
+        104 => Some(b"\x1b[5~"),
         105 => Some(if application_cursor_keys {
             b"\x1bOD"
         } else {
@@ -313,6 +320,10 @@ mod tests {
         payload.extend_from_slice(&FG.to_le_bytes()); // default foreground
         payload.extend_from_slice(&BG.to_le_bytes()); // default background
         payload.extend_from_slice(&0u32.to_le_bytes()); // normal cursor-key mode
+        payload.extend_from_slice(&[0xff; 8]); // no selection
+        payload.extend_from_slice(&0u32.to_le_bytes()); // selection text length
+        payload.extend_from_slice(&0u16.to_le_bytes()); // live viewport
+        payload.extend_from_slice(&0u16.to_le_bytes()); // empty scrollback
         payload.extend_from_slice(&1u16.to_le_bytes()); // dirty row index
         payload.extend_from_slice(&0u16.to_le_bytes());
         for character in ['a', 'b', 'c'] {

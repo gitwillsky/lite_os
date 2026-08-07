@@ -34,17 +34,34 @@
   clipboard 与 media 契约上，不构成浏览器兼容承诺。
 - `lite-runtime` renderer 独占 CSS scroll offset、最新 scroll-port/scrollbar geometry 与 scrollbar drag；
   offset 只以 React host instance 的稳定 node id 寻址，节点消失时必须同步回收，应用不得复制该状态。
+- `renderer/transform.rs` 是 CSS translate 的唯一解析 owner；百分比必须按节点自身 border box 宽/高解析，
+  retained bounds 与 paint/hit walk 必须消费同一个结果，禁止布局、绘制与命中各自近似。
 - `lite-runtime` input dispatcher 独占文档内 hover、pointer-capture target 与表单控件焦点；target/焦点
   只保存稳定 node id，每次事件必须从最新 hit snapshot 解析当前 listener。禁止 capture listener id，
   否则 React commit 替换 inline handler 后会把后续 motion/up 投递给已删除的回调。文本 `<input>`
   左键按下聚焦，键码经唯一 keymap（与终端共用键码表）转字符后以受控语义派发 `onInput` 新值；
   水平 `<input type=range>` 由同一焦点 owner 按 min/max/step 规范化 value，pointer down/drag 与方向键
   default action 派发字符串 `onInput`，disabled 控件既不聚焦也不派发。控制键仍先投递焦点节点的
-  `onKeyDown`；无焦点时键盘退回全局 `onKeyDown`（终端/桌面 Escape）。文本光标与 range UA 外观都由
+  `onKeyDown`；无 DOM 焦点时键盘只退回最深的非 form-control 容器 `onKeyDown`（终端/桌面/打开的菜单），
+  未聚焦 input/range/button 不得因 paint order 抢占应用快捷键。关闭态组件不得保留临时容器
+  `onKeyDown`。焦点按钮的 Enter/Space 由 button activation 独占：只投递按钮自身 `onKeyDown` 并执行
+  一次携带 `keyboard=true`、不伪造 pointer 坐标的 native click，不再冒泡给祖先快捷键 owner；其他键仍按
+  DOM 路径冒泡。plain Tab/Shift+Tab
+  必须在最新 paint-order hit snapshot 的可聚焦控件中正/反遍历；Ctrl/Alt/Super 组合不得进入该 default
+  action。`data-lite-focus-scope` 的最近 host ancestor 定义 modal focus trap，renderer 是 active scope、
+  opener restore 与 scope 内 traversal 的唯一 owner；scope 出现时必须自动进入其首个控件，消失时恢复仍
+  存活的 opener，禁止 React 复制 focus index。应用层受控文本必须停止其
+  输入按键的文档内冒泡，range 必须停止方向键等 default-action 按键，避免窗口级快捷键同时消费输入；
+  未被组件消费的 Escape 允许冒泡给应用的 dialog/menu owner。由合成器注册的全局 accelerator 仍独立
+  投递给桌面。文本光标与 range UA 外观都由
   `renderer/paint` 按同一焦点绘制；不新增 imperative focus state seam。
   pointer/click/wheel 必须从最深 hit target 沿稳定 host parent id 构造唯一冒泡路径，并在同一次
   `__liteDispatch` 中按 target→root 投递；`stopPropagation()`/`stopImmediatePropagation()` 必须阻止
-  后续 ancestor。禁止用“所有包含该坐标的 listener”近似冒泡，否则重叠 sibling 会收到错误事件。
+  后续 ancestor。compositor 必须把该 pointer transition 同一时刻的 Shift/Ctrl/Alt/Super mask 写入
+  `InputPointer`，runtime 原样投影到 pointer/click/double-click payload；应用不得另存键盘事件来猜测
+  Ctrl/Shift 点击，否则焦点切换或 key routing 会留下过期 modifier。禁止用“所有包含该坐标的 listener”
+  近似冒泡，否则重叠 sibling 会收到错误事件。modal scrim 与 shell panel 的可见空白区域必须注册
+  pointer barrier；纯背景像素不进入 hit tree，若只画 overlay 而没有 listener，点击会穿透到后方控件。
 - `lite-runtime` 内部 owner seam 固定为 `input`（事件状态）、`input/dispatch`（DOM 冒泡与表单默认动作）、
   `renderer/gpu_paint`（帧布局与完整 immutable display list）、`renderer/retained`
   （文档/fixed identity、geometry 与 damage）、
@@ -194,7 +211,9 @@
   只做 fixed chord 精确匹配（modifier mask 精确相等，repeat 不触发）：命中后进入 key grab，grab 期间
   全部 key 事件（含 modifier 自身变化与无关 key）路由 desktop（surface_id=0），chord 的全部 key 松开
   （次序无关）才结束并恢复 focused surface 路由；desktop 断开或 epoch reset 强制结束。modifier mask
-  位定义固定为 Shift=1、Ctrl=2、Alt=4、Super=8。窗口 policy 与 shortcut action 不得进入 compositor。
+  位定义固定为 Shift=1、Ctrl=2、Alt=4、Super=8。裸 Escape 不得注册为 global accelerator；shell panel
+  打开时 desktop 必须显式取得 keyboard focus，关闭后恢复当前 workspace 的 active surface，使应用内
+  Escape 契约不被 shell 截走。窗口 policy 与 shortcut action 不得进入 compositor。
 - compositor 的 `spice_agent` 是 monitor/clipboard capability、session clipboard 与 SPICE vdagent
   transport 的唯一 owner。VDI client port 承载 monitor/clipboard，VDI server port 的标准 13-byte
   mouse-state 只做 framing 校验后丢弃；UTM/QEMU 必须以 `agent-mouse=off` 禁止 host 把 motion 改投该
@@ -218,6 +237,11 @@
   与 Node API 不存在。
 - terminal helper stdin/stdout 使用长度前缀 binary protocol，stderr 只诊断。screen update 按完整脏行，
   cell metadata 标记“已写入”状态与宽字符 continuation，并携带 DECSCUSR 的 block/underline/bar 与 blink 状态；已写入状态区分原文空格与未使用空白，避免软换行重排吞掉行尾内容；
+  selection control 只携带 pointer-down/focus cell，helper 必须将宽字符尾随格归一到 leading cell，并在
+  update 中投影规范化的 inclusive start/end 与 UTF-8 文本；跨行文本遇 soft-wrap 不得插入伪换行；
+  scroll control 使用相对 logical rows，helper 必须钳制到 retained primary history、在新输出滚屏时保持
+  已离开 live bottom 的 viewport 锚点，并投影 scroll offset/history rows；alternate screen 不得暴露 primary
+  history，非 live viewport 不得投影实时 cursor；
   update header 的前景/背景是 palette 7/0 的终端默认色，不能使用任意分片边界处 parser 的当前 SGR
   rendition，否则 TUI 尚未发送 reset 时会把整个未占用 viewport 错染为瞬态颜色；
   PTY resize 与 React raster 共用完整 client area 的 8×16 logical cell，row/column zero 必须从
@@ -227,7 +251,8 @@
   grid。helper argv 必须在 `--` 后显式给出，不提供默认 shell或 command-string parser。
 - Clipboard API native host call 只能排队 nonblocking display request；compositor 的 focused-surface
   check 是唯一授权点。文本框 native paste 必须保存 node/request identity，异步结果若焦点或 node
-  已变化就丢弃；Terminal paste 只写既有 PTY input protocol，不建立 clipboard-specific helper seam。
+  已变化就丢弃；Terminal copy 只发布 helper selection 投影，paste 只写既有 PTY input protocol，均不建立
+  clipboard-specific helper seam。PTY input/output 或 resize 使可见 cell 身份变化时必须清除旧 selection。
 
 ## Failure and cleanup
 
@@ -238,7 +263,9 @@
 - close request 同步 unmount 唯一 React root、关闭 helper/fd、断开 display 并退出；应用不可 veto，也没有
   before-unload hook。窗口 control 的 pointer-down/double-click 必须在 titlebar drag owner 前终止传播；
   desktop close request 不得提前删除 React surface，只有 compositor 发布的 `AppClosed` 可以同时撤销
-  native surface identity 与 minimized/maximized/resize/workspace policy。PTY child exit 使
+  native surface identity 与 minimized/maximized/resize/workspace policy。workspace move 只修改 desktop
+  拥有的 surface assignment，不重建 native surface；active 窗口被移出当前 workspace 时必须立即把
+  compositor focus 交给当前 workspace 最后的非最小化窗口（没有则交回 desktop）。PTY child exit 使
   terminal-session 同码退出，React terminal 随后退出。
 - compositor 必须在 connection teardown 沿唯一 owner path 撤销 pending configure/commit、scene
   references、clipboard request、accelerator sequence、pointer/key state 与所有 GEM mapping/handle。

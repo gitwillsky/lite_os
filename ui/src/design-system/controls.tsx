@@ -3,6 +3,8 @@ import { ContextMenu } from "./context-menu.tsx";
 import { SYSTEM_ICON_GLYPHS } from "./system-icons.generated.ts";
 import type { SystemIconName } from "./system-icons.generated.ts";
 
+const KEY_ESC = 1;
+
 export type { SystemIconName } from "./system-icons.generated.ts";
 
 /** Shared typed system icon backed by the checked, self-hosted PUA font. */
@@ -19,17 +21,20 @@ export interface MenuItem {
   id: string;
   label: string;
   onSelect?: () => void;
+  disabled?: boolean;
+  separator?: boolean;
 }
 
 /** Shared semantic push button. Visual states are standard CSS pseudo-classes. */
-export function Button({ label, default: isDefault, disabled, onClick }: {
+export function Button({ label, default: isDefault, danger, disabled, onClick }: {
   label: string;
   default?: boolean;
+  danger?: boolean;
   disabled?: boolean;
   onClick?: () => void;
 }) {
   return (
-    <button className={`button${isDefault ? " button--default" : ""}`} disabled={disabled} onClick={onClick}>
+    <button className={`button${isDefault ? " button--default" : ""}${danger ? " button--danger" : ""}`} disabled={disabled} onClick={onClick}>
       <span className="control-label">{label}</span>
     </button>
   );
@@ -56,24 +61,39 @@ export function TextInput({ value, width, className, autoFocus, placeholder, onI
       placeholder={placeholder}
       value={value}
       onInput={(event) => onInput?.((event as unknown as { value: string }).value)}
-      onKeyDown={onKeyDown}
+      onKeyDown={(event) => {
+        (event as unknown as LiteKeyEvent).stopPropagation();
+        onKeyDown?.(event);
+      }}
     />
   );
 }
 
 /** Shared search field used by system and application toolbars. */
-export function SearchField({ value, placeholder, onInput }: {
+export function SearchField({ value, placeholder, onInput, onEscape }: {
   value: string;
   placeholder: string;
   onInput: (value: string) => void;
+  /** Clears the owning search before Escape falls through to app-level actions. */
+  onEscape?: () => void;
 }) {
   return (
     <div className="search-field">
       <SystemIcon name="search" className="search-glyph"/>
       <input
+        aria-label={placeholder}
         value={value}
         placeholder={placeholder}
         onInput={(event) => onInput((event as unknown as { value: string }).value)}
+        onKeyDown={(rawEvent) => {
+          const event = rawEvent as unknown as LiteKeyEvent;
+          if (event.code === KEY_ESC && value && event.value === 1 && onEscape) {
+            event.stopPropagation();
+            onEscape();
+          } else if (event.code !== KEY_ESC) {
+            event.stopPropagation();
+          }
+        }}
       />
     </div>
   );
@@ -92,8 +112,12 @@ export function SidebarItem({ label, icon, active, onClick }: {
   onClick: () => void;
 }) {
   return (
-    <button className={`sidebar-item${active ? " sidebar-item--active" : ""}`} onClick={onClick}>
-      <img className="sidebar-item__icon" src={icon}/>
+    <button
+      className={`sidebar-item${active ? " sidebar-item--active" : ""}`}
+      aria-current={active ? "page" : undefined}
+      onClick={onClick}
+    >
+      <img className="sidebar-item__icon" src={icon} alt=""/>
       <span className="control-label">{label}</span>
     </button>
   );
@@ -109,6 +133,7 @@ export function ViewSwitch({ mode, onChange }: {
       <button
         className={`view-switch__button${mode === "icons" ? " view-switch__button--active" : ""}`}
         aria-label="Grid view"
+        aria-pressed={mode === "icons"}
         onClick={() => onChange("icons")}
       >
         <span className="view-switch__grid"><span/><span/><span/><span/></span>
@@ -116,6 +141,7 @@ export function ViewSwitch({ mode, onChange }: {
       <button
         className={`view-switch__button${mode === "details" ? " view-switch__button--active" : ""}`}
         aria-label="List view"
+        aria-pressed={mode === "details"}
         onClick={() => onChange("details")}
       >
         <span className="view-switch__list"><span/><span/><span/></span>
@@ -144,6 +170,10 @@ export function RangeInput({ value, min, max, step, disabled, className, onInput
       step={step}
       value={value}
       disabled={disabled}
+      onKeyDown={(rawEvent) => {
+        const event = rawEvent as unknown as LiteKeyEvent;
+        if (event.code !== KEY_ESC) event.stopPropagation();
+      }}
       onInput={(event) => {
         const value = Number((event as unknown as { value: string }).value);
         if (Number.isFinite(value)) onInput(value);
@@ -160,7 +190,7 @@ export function CheckBox({ label, checked, disabled, onToggle }: {
   onToggle?: () => void;
 }) {
   return (
-    <button className="checkbox" disabled={disabled} onClick={onToggle}>
+    <button className="checkbox" aria-pressed={checked} disabled={disabled} onClick={onToggle}>
       <span className="checkbox__box">{checked ? <SystemIcon name="check"/> : null}</span>
       <span className="control-label">{label}</span>
     </button>
@@ -175,7 +205,7 @@ export function Radio({ label, checked, disabled, onSelect }: {
   onSelect?: () => void;
 }) {
   return (
-    <button className="radio" disabled={disabled} onClick={onSelect}>
+    <button className="radio" aria-pressed={checked} disabled={disabled} onClick={onSelect}>
       <span className="radio__circle">{checked ? <span className="radio__dot"/> : null}</span>
       <span className="control-label">{label}</span>
     </button>
@@ -195,24 +225,46 @@ export function MenuBar({ menus, labelX, stride }: {
   const close = useCallback(() => setOpen(null), []);
   const active = open === null ? null : menus[open];
   return (
-    <div className="menu-bar" onClick={close}>
+    <div
+      className="menu-bar"
+      onClick={close}
+      onKeyDown={open !== null ? (rawEvent) => {
+        const event = rawEvent as unknown as LiteKeyEvent;
+        event.stopPropagation();
+        if (event.code === KEY_ESC && event.value === 1) close();
+      } : undefined}
+    >
       {menus.map((menu, index) => (
         <MenuBarLabel
           key={menu.label}
           label={menu.label}
-          onClick={() => setOpen(menu.items ? index : null)}
+          active={open === index}
+          disabled={!menu.items}
+          onClick={() => setOpen((current) => menu.items && current !== index ? index : null)}
         />
       ))}
       {active?.items && (
-        <ContextMenu x={labelX + (open ?? 0) * stride} y={20} items={active.items} onClose={close}/>
+        <ContextMenu x={labelX + (open ?? 0) * stride} y={30} items={active.items} onClose={close}/>
       )}
     </div>
   );
 }
 
-function MenuBarLabel({ label, onClick }: { label: string; onClick: () => void }) {
+function MenuBarLabel({ label, active, disabled, onClick }: {
+  label: string;
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
   return (
-    <button className="menu-bar__item" onClick={onClick}>
+    <button
+      className={`menu-bar__item${active ? " menu-bar__item--active" : ""}`}
+      disabled={disabled}
+      onClick={(rawEvent) => {
+        (rawEvent as unknown as LitePointerEvent).stopPropagation();
+        onClick();
+      }}
+    >
       <span className="control-label">{label}</span>
     </button>
   );
@@ -236,16 +288,25 @@ export function ToolbarButton({ icon, label, disabled, dropdown, onClick }: {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   const activate = () => {
-    if (onClick) onClick();
-    else if (dropdown) setOpen(true);
+    if (onClick) {
+      close();
+      onClick();
+    } else if (dropdown) setOpen((current) => !current);
   };
   return (
-    <div className="toolbar-button-group">
+    <div
+      className="toolbar-button-group"
+      onKeyDown={open ? (rawEvent) => {
+        const event = rawEvent as unknown as LiteKeyEvent;
+        event.stopPropagation();
+        if (event.code === KEY_ESC && event.value === 1) close();
+      } : undefined}
+    >
       <button className="toolbar-button" disabled={disabled} onClick={activate}>
         <img className="toolbar-button__icon" src={icon}/>
         {label && <span className="toolbar-button__label control-label">{label}</span>}
       </button>
-      {dropdown && <ToolbarCaret disabled={disabled} onOpen={() => setOpen(true)}/>}
+      {dropdown && <ToolbarCaret disabled={disabled} onOpen={() => setOpen((current) => !current)}/>}
       {dropdown && open && (
         <ContextMenu x={dropdown.at.x} y={dropdown.at.y} items={dropdown.items} onClose={close}/>
       )}
@@ -275,7 +336,7 @@ export function GroupBox({ title, expanded, onToggle, children }: {
 }) {
   return (
     <div className="group-box">
-      <button className="group-box__head" onClick={onToggle}>
+      <button className="group-box__head" aria-expanded={expanded} onClick={onToggle}>
         <span className="control-label">{title}</span>
         <span className="group-box__chev"><img className="group-box__chev-img" src={expanded ? "assets/chev-up.png" : "assets/chev-down.png"}/></span>
       </button>
@@ -315,7 +376,7 @@ export function StatusBarCell({ icon, text }: { icon?: string; text: string }) {
 /** Address combo box: sunken field (icon + text or edit input) with a chevron
  * dropdown of quick targets and an optional Go button. The bar owns the
  * dropdown; `draft !== null` switches the display text for the edit field. */
-export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChange, onCommit, onCancel, dropItems, go }: {
+export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChange, onCommit, onCancel, dropItems, dropAt, go }: {
   label: string;
   icon: string;
   text: string;
@@ -325,14 +386,29 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
   onCommit: () => void;
   onCancel: () => void;
   dropItems?: MenuItem[];
+  /** Viewport-local placement for the optional dropdown menu. */
+  dropAt?: { x: number; y: number };
   go?: { label: string; icon: string; onClick: () => void };
 }) {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   return (
-    <div className="address-bar">
+    <div
+      className="address-bar"
+      onKeyDown={open ? (rawEvent) => {
+        const event = rawEvent as unknown as LiteKeyEvent;
+        event.stopPropagation();
+        if (event.code === KEY_ESC && event.value === 1) close();
+      } : undefined}
+    >
       <span className="address-bar__label">{label}</span>
-      <div className="combo-box" onClick={onBeginEdit}>
+      <div
+        className="combo-box"
+        onClick={draft === null ? () => {
+          close();
+          onBeginEdit();
+        } : undefined}
+      >
         <img className="combo-box__icon" src={icon}/>
         {draft === null ? (
           <span className="combo-box__text">{text}</span>
@@ -343,7 +419,8 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
             value={draft}
             onInput={(event) => onDraftChange((event as unknown as { value: string }).value)}
             onKeyDown={(event) => {
-              const key = event as unknown as { code: number; value: number };
+              const key = event as unknown as LiteKeyEvent;
+              key.stopPropagation();
               if (key.value === 0) return;
               if (key.code === KEY_ENTER) onCommit();
               else if (key.code === KEY_ESC) onCancel();
@@ -351,9 +428,16 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
           />
         )}
         {dropItems && (
-          <span className="combo-box__drop" onClick={() => setOpen(true)}>
+          <button
+            className="combo-box__drop"
+            aria-label="Show address history"
+            onClick={(rawEvent) => {
+              (rawEvent as unknown as LitePointerEvent).stopPropagation();
+              setOpen((current) => !current);
+            }}
+          >
             <img className="combo-box__caret" src="assets/caret-down.png"/>
-          </span>
+          </button>
         )}
       </div>
       {go && (
@@ -363,14 +447,13 @@ export function AddressBar({ label, icon, text, draft, onBeginEdit, onDraftChang
         </button>
       )}
       {dropItems && open && (
-        <ContextMenu x={8} y={64} items={dropItems} onClose={close}/>
+        <ContextMenu x={dropAt?.x ?? 8} y={dropAt?.y ?? 64} items={dropItems} onClose={close}/>
       )}
     </div>
   );
 }
 
 // evdev keycodes delivered on a focused input's onKeyDown for commit/cancel.
-const KEY_ESC = 1;
 const KEY_ENTER = 28;
 
 /** Shared modal dialog base: overlay + titled frame + content + action row.
@@ -384,7 +467,16 @@ export function Dialog({ title, wide, onClose, actions, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className="dialog-overlay">
+    <div
+      className="dialog-overlay"
+      data-lite-focus-scope={true}
+      onPointerDown={(rawEvent) => {
+        // LiteUI only creates pointer hit regions for interactive nodes. The
+        // handler makes the visual scrim a real modal barrier; without it a
+        // click outside the dialog can target a file-row button underneath.
+        (rawEvent as unknown as LitePointerEvent).stopPropagation();
+      }}
+    >
       <div className={`dialog${wide ? " dialog--wide" : ""}`}>
         <div className="dialog__title"><span>{title}</span></div>
         <div className="dialog__body">{children}</div>

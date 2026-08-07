@@ -440,6 +440,10 @@ impl Model {
                 25 => self.cursor_visible = enabled,
                 1000 => self.mouse_mode = if enabled { 2 } else { 0 },
                 47 | 1047 => {
+                    if self.alternate_active != enabled {
+                        self.viewport_offset = 0;
+                        self.clear_selection();
+                    }
                     self.alternate_active = enabled;
                     if enabled {
                         self.clear_screen();
@@ -456,10 +460,14 @@ impl Model {
                 1049 => {
                     if enabled && !self.alternate_active {
                         self.save_cursor();
+                        self.viewport_offset = 0;
+                        self.clear_selection();
                         self.alternate_active = true;
                         self.clear_screen();
                     } else if !enabled && self.alternate_active {
                         self.alternate_active = false;
+                        self.viewport_offset = 0;
+                        self.clear_selection();
                         self.restore_cursor();
                         self.mark_all();
                     }

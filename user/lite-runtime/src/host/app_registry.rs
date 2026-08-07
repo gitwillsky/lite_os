@@ -14,7 +14,7 @@ pub(super) fn app_metadata(id: &str) -> (&'static str, &'static str) {
         "terminal" => ("Terminal", "assets/terminal.png"),
         "my-computer" => ("Computer", "assets/package.png"),
         "file-manager" => ("Files", "assets/files.png"),
-        "music-player" => ("Music", "assets/monitor.png"),
+        "music-player" => ("Music", "assets/music.png"),
         _ => ("Application", "assets/terminal.png"),
     }
 }

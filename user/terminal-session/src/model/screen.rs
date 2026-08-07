@@ -193,6 +193,7 @@ impl Model {
             for row in 0..count {
                 self.history.push_screen_row(self.primary, row);
             }
+            self.preserve_viewport_on_history_push(count);
         }
         let blank = self.blank_cell();
         let screen = self.active_mut();

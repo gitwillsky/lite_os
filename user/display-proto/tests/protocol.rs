@@ -125,6 +125,7 @@ fn lifecycle_and_input_preserve_exact_surface_routing() {
         phase: PointerPhase::Down,
         button: 272,
         buttons: 1,
+        modifiers: 2,
         x: 17,
         y: 23,
     }
@@ -139,6 +140,7 @@ fn lifecycle_and_input_preserve_exact_surface_routing() {
             phase: PointerPhase::Down,
             button: 272,
             buttons: 1,
+            modifiers: 2,
             x: 17,
             y: 23,
         }
@@ -356,8 +358,8 @@ fn scene_round_trips_variable_regions_and_node_kinds() {
         damage: Rectangles::from_slice(&damage),
     }];
     let mut bytes = [0u8; 512];
-    let encoded = SceneCommit::encode(&mut bytes, 22, 3, 8, 0, &nodes)
-        .expect("bounded scene must encode");
+    let encoded =
+        SceneCommit::encode(&mut bytes, 22, 3, 8, 0, &nodes).expect("bounded scene must encode");
     let frame = parse_frame(encoded).expect("scene frame must parse");
     let scene = SceneCommit::parse(frame.payload()).expect("scene payload must validate fully");
     assert_eq!(scene.output_serial, 3);

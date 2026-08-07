@@ -32,6 +32,7 @@ use crate::{
 #[derive(Clone)]
 struct GpuWalk {
     parent_node_id: Option<u64>,
+    focus_scope: Option<u64>,
     window_frame: Option<Rect>,
     window_group: Option<u32>,
     clip: Option<PhysicalRect>,
@@ -157,6 +158,7 @@ impl Renderer {
                     text_texture_id,
                     GpuWalk {
                         parent_node_id: None,
+                        focus_scope: None,
                         window_frame: None,
                         window_group: None,
                         clip: None,
@@ -300,7 +302,8 @@ impl Renderer {
             return Ok(());
         }
         let layout = tree.layout(node.id).map_err(taffy_error)?;
-        let translation = super::transform_translation(&node.computed);
+        let translation =
+            super::transform_translation(&node.computed, (layout.size.width, layout.size.height));
         let origin = (
             parent.0 + layout.location.x + translation.0,
             parent.1 + layout.location.y + translation.1,
@@ -528,6 +531,9 @@ impl Renderer {
         }
         let mut child_walk = walk.clone();
         child_walk.parent_node_id = Some(node.source.id);
+        if node.source.props.contains_key("data-lite-focus-scope") {
+            child_walk.focus_scope = Some(node.source.id);
+        }
         child_walk.fixed_context = fixed_context;
         child_walk.hits_enabled = hits_enabled(walk.hits_enabled, &node.computed);
         if node.source.props.contains_key("data-lite-window") {
@@ -900,6 +906,15 @@ impl Renderer {
             None
         };
         let button = node.source.kind == "button" && !disabled_button;
+        // Form-control key handlers only participate through the focused DOM
+        // route. Letting an unfocused input/range/button become the document
+        // fallback steals application shortcuts merely because it was painted
+        // later than the root owner.
+        let global_key_listener = if node.source.kind != "input" && node.source.kind != "button" {
+            interactive("onKeyDown")
+        } else {
+            None
+        };
         let focusable =
             editable.is_some() || range.is_some_and(|range| !range.disabled()) || button;
         if focusable && takes_autofocus(&node.source.props, self.focused) {
@@ -916,6 +931,11 @@ impl Renderer {
                 y: hit.y,
                 width: hit.width,
                 height: hit.height,
+                focus_scope: if node.source.props.contains_key("data-lite-focus-scope") {
+                    Some(node.source.id)
+                } else {
+                    walk.focus_scope
+                },
                 pointer_down: interactive("onPointerDown"),
                 pointer_move: listener(&node.source, "onPointerMove"),
                 pointer_up: interactive("onPointerUp"),
@@ -931,9 +951,9 @@ impl Renderer {
                 range,
                 button,
             });
-        }
-        if let Some(listener) = interactive("onKeyDown") {
-            output.key_listener = Some(listener);
+            if let Some(listener) = global_key_listener {
+                output.key_listener = Some(listener);
+            }
         }
         Ok(())
     }

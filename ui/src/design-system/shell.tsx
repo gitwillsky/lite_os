@@ -1,8 +1,11 @@
 import React, { useMemo, useState } from "react";
-import { SystemIcon } from "./controls.tsx";
+import { RangeInput, SystemIcon } from "./controls.tsx";
 import { CloseGlyph } from "./window.tsx";
 
+const KEY_ESC = 1;
 const KEY_ENTER = 28;
+const stopPanelPointer = (rawEvent: unknown) =>
+  (rawEvent as LitePointerEvent).stopPropagation();
 
 export type ShellPanel = "command" | "overview" | "system" | null;
 
@@ -29,11 +32,21 @@ export function TopBar({
   const toggle = (next: Exclude<ShellPanel, null>) => onPanel(panel === next ? null : next);
   return (
     <div className="topbar">
-      <button className="topbar__brand" onClick={() => toggle("command")}>
+      <button
+        className="topbar__brand"
+        aria-label="Open applications"
+        aria-pressed={panel === "command"}
+        onClick={() => toggle("command")}
+      >
         <span className="lite-mark"><span/></span>
         <span className="control-label">LiteOS</span>
       </button>
-      <button className="workspace-switcher" onClick={() => toggle("overview")}>
+      <button
+        className="workspace-switcher"
+        aria-label={`Open workspace overview; Workspace ${activeWorkspace + 1} active`}
+        aria-pressed={panel === "overview"}
+        onClick={() => toggle("overview")}
+      >
         <span className="control-label">Workspace {activeWorkspace + 1}</span>
         <span className="workspace-dots">
           {Array.from({ length: workspaceCount }, (_, index) => (
@@ -44,8 +57,13 @@ export function TopBar({
           ))}
         </span>
       </button>
-      <button className="topbar__status" onClick={() => toggle("system")}>
-        <img className="status-glyph" src="assets/volume.png"/>
+      <button
+        className="topbar__status"
+        aria-label={`Open system controls; ${muted ? "muted" : `volume ${volume} percent`}; ${time}`}
+        aria-pressed={panel === "system"}
+        onClick={() => toggle("system")}
+      >
+        <img className="status-glyph" src="assets/volume.png" alt=""/>
         <span className="topbar__volume control-label">{muted ? "Muted" : `${volume}%`}</span>
         <span className="topbar__divider"/>
         <span className="control-label">{time}</span>
@@ -72,9 +90,10 @@ export function Dock({ items }: { items: DockItem[] }) {
           key={item.id}
           className={`dock-item${item.active ? " dock-item--active" : ""}`}
           aria-label={item.label}
+          aria-pressed={item.active}
           onClick={item.onClick}
         >
-          <img src={item.icon}/>
+          <img src={item.icon} alt=""/>
           {(item.running || item.active) && <span className="dock-item__running"/>}
           <span className="dock-item__label">{item.label}</span>
         </button>
@@ -107,6 +126,7 @@ export function CommandCenter({
   onShutdown: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [sessionAction, setSessionAction] = useState<"restart" | "shutdown" | null>(null);
   const matches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return normalized
@@ -119,7 +139,26 @@ export function CommandCenter({
   return (
     <>
       <button className="shell-scrim" aria-label="Close command center" onClick={onClose}/>
-      <div className="command-center">
+      <div
+        className="command-center"
+        data-lite-focus-scope={true}
+        onPointerDown={stopPanelPointer}
+        onKeyDown={(rawEvent) => {
+          const event = rawEvent as unknown as LiteKeyEvent;
+          if (event.value !== 1) return;
+          if (event.code === KEY_ESC) {
+            event.stopPropagation();
+            if (sessionAction) setSessionAction(null);
+            else if (query) setQuery("");
+            else onClose();
+          } else if (event.code === KEY_ENTER) {
+            event.stopPropagation();
+            if (sessionAction === "restart") onRestart();
+            else if (sessionAction === "shutdown") onShutdown();
+            else if (matches[0]) onLaunch(matches[0].id);
+          }
+        }}
+      >
         <div className="cc-sidebar">
           <div className="cc-sidebar__brand">
             <span className="lite-mark"><span/></span>
@@ -128,8 +167,14 @@ export function CommandCenter({
               <span className="cc-sidebar__sub">Workspace {activeWorkspace + 1}</span>
             </div>
           </div>
-          <button className="cc-sidebar__all">
-            <img src="assets/all-apps.png"/>
+          <button
+            className="cc-sidebar__all"
+            onClick={() => {
+              setQuery("");
+              setSessionAction(null);
+            }}
+          >
+            <img src="assets/all-apps.png" alt=""/>
             <span className="control-label">All apps</span>
           </button>
         </div>
@@ -141,12 +186,6 @@ export function CommandCenter({
               value={query}
               placeholder="Search applications"
               onInput={(event) => setQuery((event as unknown as { value: string }).value)}
-              onKeyDown={(raw) => {
-                const event = raw as unknown as LiteKeyEvent;
-                if (event.code === KEY_ENTER && event.value !== 0 && matches[0]) {
-                  onLaunch(matches[0].id);
-                }
-              }}
             />
             <span className="key-hint"><span className="control-label">Ctrl</span></span>
             <span className="key-hint"><span className="control-label">Space</span></span>
@@ -159,7 +198,7 @@ export function CommandCenter({
             <div className="command-grid">
               {matches.map((app) => (
                 <button key={app.id} className="command-app" onClick={() => onLaunch(app.id)}>
-                  <img src={app.icon}/>
+                  <img src={app.icon} alt=""/>
                   <span className="control-label">{app.name}</span>
                   <span className={`command-app__state control-label${app.running ? " command-app__state--running" : ""}`}>
                     {app.running ? "Running" : "Open"}
@@ -170,20 +209,49 @@ export function CommandCenter({
             </div>
           </div>
           <div className="cc-footer">
-            <span className="cc-footer__hint">
-              <span className="key-hint"><span className="control-label">Enter</span></span>
-              <span>Open first result</span>
-            </span>
-            <div className="cc-session-actions">
-              <button className="cc-session-action" onClick={onRestart}>
-                <img src="assets/restart.png"/>
-                <span className="control-label">Restart</span>
-              </button>
-              <button className="cc-session-action cc-session-action--danger" onClick={onShutdown}>
-                <img src="assets/power.png"/>
-                <span className="control-label">Power off</span>
-              </button>
-            </div>
+            {sessionAction === null ? (
+              <>
+                <span className="cc-footer__hint">
+                  {matches.length > 0 ? (
+                    <>
+                      <span className="key-hint"><span className="control-label">Enter</span></span>
+                      <span>Open first result</span>
+                    </>
+                  ) : (
+                    <span>Adjust the search to find an application</span>
+                  )}
+                </span>
+                <div className="cc-session-actions">
+                  <button className="cc-session-action" onClick={() => setSessionAction("restart")}>
+                    <img src="assets/restart.png" alt=""/>
+                    <span className="control-label">Restart</span>
+                  </button>
+                  <button className="cc-session-action cc-session-action--danger" onClick={() => setSessionAction("shutdown")}>
+                    <img src="assets/power.png" alt=""/>
+                    <span className="control-label">Power off</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="cc-session-confirmation">
+                  {sessionAction === "restart" ? "Restart LiteOS now?" : "Power off LiteOS now?"}
+                </span>
+                <div className="cc-session-actions">
+                  <button className="cc-session-action" onClick={() => setSessionAction(null)}>
+                    <span className="control-label">Cancel</span>
+                  </button>
+                  <button
+                    className="cc-session-action cc-session-action--danger"
+                    onClick={sessionAction === "restart" ? onRestart : onShutdown}
+                  >
+                    <span className="control-label">
+                      {sessionAction === "restart" ? "Restart now" : "Power off now"}
+                    </span>
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -202,6 +270,7 @@ export function WorkspaceOverview({
   activeWorkspace,
   onActivate,
   onSelect,
+  onMoveWindow,
   onCloseWindow,
   onClose,
 }: {
@@ -209,6 +278,7 @@ export function WorkspaceOverview({
   activeWorkspace: number;
   onActivate: (id: number) => void;
   onSelect: (id: number) => void;
+  onMoveWindow: (id: number, workspace: number) => void;
   onCloseWindow: (id: number) => void;
   onClose: () => void;
 }) {
@@ -217,10 +287,10 @@ export function WorkspaceOverview({
     <>
       <button className="shell-scrim overview__scrim" aria-label="Close workspace overview" onClick={onClose}/>
       <div className="overview">
-        <div className="overview__panel">
+        <div className="overview__panel" data-lite-focus-scope={true} onPointerDown={stopPanelPointer}>
           <div className="overview__header">
             <div className="overview__title-group">
-              <span className="overview__mark"><img src="assets/all-apps.png"/></span>
+              <span className="overview__mark"><img src="assets/all-apps.png" alt=""/></span>
               <span className="overview__title">Workspaces</span>
             </div>
             <span className="overview__summary">{workspaces.length} workspaces</span>
@@ -230,22 +300,20 @@ export function WorkspaceOverview({
               <button
                 key={workspace.id}
                 className={`workspace-card${workspace.id === activeWorkspace ? " workspace-card--active" : ""}`}
+                aria-label={`Switch to Workspace ${workspace.id + 1}; ${workspace.windows.length === 0 ? "empty" : `${workspace.windows.length} ${workspace.windows.length === 1 ? "window" : "windows"}`}`}
+                aria-pressed={workspace.id === activeWorkspace}
                 onClick={() => onSelect(workspace.id)}
               >
                 {workspace.windows.length > 0 ? (
                   <div className="workspace-card__preview">
                     {workspace.windows.slice(0, 2).map((window, index) => (
-                      <div
+                      <span
                         key={window.id}
                         className={`mini-window mini-window--${index}${window.minimized ? " mini-window--minimized" : ""}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onActivate(window.id);
-                        }}
                       >
-                        <img src={window.icon}/>
+                        <img src={window.icon} alt=""/>
                         <span>{window.title}</span>
-                      </div>
+                      </span>
                     ))}
                   </div>
                 ) : (
@@ -272,36 +340,62 @@ export function WorkspaceOverview({
                 <span className="command-empty">No open windows on this workspace</span>
               ) : (
                 activeWindows.map((window) => (
-                  <button
+                  <div
                     key={window.id}
                     className={`win-card${window.minimized ? " win-card--minimized" : ""}`}
-                    onClick={() => onActivate(window.id)}
                   >
                     <div className="win-card__head">
-                      <img className="win-card__icon" src={window.icon}/>
-                      <span className="win-card__title control-label">{window.title}</span>
-                      {window.minimized && <span className="win-card__state control-label">Minimized</span>}
-                      <span
+                      <button
+                        className="win-card__activate"
+                        aria-label={`${window.minimized ? "Restore" : "Activate"} ${window.title}`}
+                        onClick={() => onActivate(window.id)}
+                      >
+                        <img className="win-card__icon" src={window.icon} alt=""/>
+                        <span className="win-card__title control-label">{window.title}</span>
+                        {window.minimized && <span className="win-card__state control-label">Minimized</span>}
+                      </button>
+                      <div className="win-card__moves">
+                        {workspaces.filter((workspace) => workspace.id !== activeWorkspace).map((workspace) => (
+                          <button
+                            key={workspace.id}
+                            className="win-card__move"
+                            aria-label={`Move ${window.title} to Workspace ${workspace.id + 1}`}
+                            onClick={() => onMoveWindow(window.id, workspace.id)}
+                          >
+                            <span className="control-label">Move W{workspace.id + 1}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <button
                         className="win-card__close"
-                        aria-label="Close window"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onCloseWindow(window.id);
-                        }}
+                        aria-label={`Close ${window.title}`}
+                        onClick={() => onCloseWindow(window.id)}
                       >
                         <CloseGlyph/>
-                      </span>
+                      </button>
                     </div>
-                    <div className="win-card__preview"/>
-                  </button>
+                    <button
+                      className="win-card__preview"
+                      aria-label={`${window.minimized ? "Restore" : "Activate"} ${window.title}`}
+                      onClick={() => onActivate(window.id)}
+                    >
+                      <img className="win-card__preview-icon" src={window.icon} alt=""/>
+                      <span className="control-label">
+                        {window.minimized ? "Restore window" : "Activate window"}
+                      </span>
+                    </button>
+                  </div>
                 ))
               )}
             </div>
           </div>
           <div className="overview__footer">
-            <span className="overview__escape">
+            <span className="overview__shortcuts">
               <span className="key-hint"><span className="control-label">Esc</span></span>
               <span>Close</span>
+              <span className="key-hint"><span className="control-label">Ctrl</span></span>
+              <span className="key-hint"><span className="control-label">Alt</span></span>
+              <span>Left / Right to switch</span>
             </span>
             <span className="overview__count">Workspace {activeWorkspace + 1} active</span>
           </div>
@@ -332,7 +426,7 @@ export function SystemCenter({
   onMuted: () => void;
 }) {
   return (
-    <div className="system-center">
+    <div className="system-center" data-lite-focus-scope={true} onPointerDown={stopPanelPointer}>
       <div className="system-center__header">
         <span className="system-center__title">System Center</span>
         <div className="system-center__clock">
@@ -354,13 +448,13 @@ export function SystemCenter({
         <img className="sc-slider__icon" src="assets/volume.png"/>
         <span className="sc-slider__label">Volume</span>
         <span className="sc-slider__value">{muted ? "Muted" : `${volume}%`}</span>
-        <input
-          className="range-input sc-slider__range"
-          type="range"
+        <RangeInput
+          className="sc-slider__range"
           min={0}
           max={100}
+          step={1}
           value={volume}
-          onInput={(event) => onVolume(Number((event as unknown as { value: string }).value))}
+          onInput={onVolume}
         />
       </div>
       <div className="sc-session-card">

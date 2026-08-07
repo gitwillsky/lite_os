@@ -386,6 +386,7 @@ fn render_latest(
     }
     interactions.hits = output.hits;
     interactions.key_listener = output.key_listener;
+    let focus_changed = renderer.reconcile_focus_scope(&interactions.hits);
     input::reconcile_cursor(interactions, display)?;
     // Drop a hovered key whose region vanished from the rebuilt hit list (e.g.
     // the menu closed). The JS component unmounts and resets its own hover
@@ -402,6 +403,13 @@ fn render_latest(
             windows: output.windows,
             overlays: output.overlays,
         });
+    }
+    if focus_changed {
+        // Focus pseudo-state belongs to the renderer, not React. Repaint it in
+        // the same host turn so entering a modal never waits for another input
+        // event before its first control becomes the keyboard owner.
+        state.invalidate_scene();
+        render_latest(mode, state, display, renderer, interactions)?;
     }
     Ok(())
 }
@@ -498,6 +506,19 @@ fn process_actions(
                 .as_deref_mut()
                 .ok_or("terminal action outside terminal app")?
                 .input(&payload)?,
+            Action::TerminalSelect {
+                anchor_column,
+                anchor_row,
+                focus_column,
+                focus_row,
+            } => terminal
+                .as_deref_mut()
+                .ok_or("terminal selection outside terminal app")?
+                .select(anchor_column, anchor_row, focus_column, focus_row)?,
+            Action::TerminalScroll(lines) => terminal
+                .as_deref_mut()
+                .ok_or("terminal scroll outside terminal app")?
+                .scroll(lines)?,
             Action::TerminalPaste(text) => terminal
                 .as_deref_mut()
                 .ok_or("terminal paste outside terminal app")?

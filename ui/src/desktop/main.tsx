@@ -20,20 +20,36 @@ import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts"
 import { applySurfaceMove, fitSurfaceFrame, reconcileSurfaces } from "./surface-state.ts";
 import { Splash } from "./splash.tsx";
 
-const MIN_WINDOW = { width: 260, height: 180 };
+const DEFAULT_MIN_WINDOW = { width: 360, height: 240 };
+const APP_MIN_WINDOWS: Record<string, { width: number; height: number }> = {
+  "file-manager": { width: 760, height: 460 },
+  "my-computer": { width: 700, height: 440 },
+  "music-player": { width: 600, height: 420 },
+  terminal: { width: 360, height: 220 },
+};
 const KEY_ESC = 1;
 const KEY_TAB = 15;
 const KEY_SPACE = 57;
+const KEY_LEFT_ALT = 56;
 const KEY_F4 = 62;
+const KEY_RIGHT_ALT = 100;
+const MOD_SHIFT = 1;
+const KEY_LEFT = 105;
+const KEY_RIGHT = 106;
 const MOD_CONTROL = 2;
 const MOD_ALT = 4;
 const WORKSPACE_COUNT = 3;
+const WORK_AREA_SIDE_MARGIN = 12;
+const WORK_AREA_TOP = 56;
+// The 84px Dock sits 20px above the bottom. Reserving another 12px keeps
+// maximized status bars and resize targets visible instead of painting under it.
+const WORK_AREA_BOTTOM = 116;
 
 const dockApps = [
   { id: "file-manager", label: "Files", icon: "assets/files.png", title: "Files" },
   { id: "terminal", label: "Terminal", icon: "assets/terminal.png", title: "Terminal" },
-  { id: "music-player", label: "Music", icon: "assets/monitor.png", title: "Music" },
-  { id: "my-computer", label: "Workspace", icon: "assets/package.png", title: "Computer" },
+  { id: "music-player", label: "Music", icon: "assets/music.png", title: "Music" },
+  { id: "my-computer", label: "Computer", icon: "assets/package.png", title: "Computer" },
 ];
 
 const appIcon = (id: string) => dockApps.find((item) => item.id === id)?.icon ?? "assets/package.png";
@@ -41,13 +57,19 @@ const appIcon = (id: string) => dockApps.find((item) => item.id === id)?.icon ??
 const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
 
 const workArea = (screen: { width: number; height: number }): Rect => {
-  const x = Math.min(12, Math.max(0, screen.width - 1));
-  const y = Math.min(56, Math.max(0, screen.height - 55));
+  const x = Math.min(WORK_AREA_SIDE_MARGIN, Math.max(0, screen.width - 1));
+  const y = Math.min(WORK_AREA_TOP, Math.max(0, screen.height - 55));
   return {
     x,
     y,
-    width: Math.max(1, screen.width - x - Math.min(12, screen.width - x - 1)),
-    height: Math.max(55, screen.height - y - Math.min(74, screen.height - y - 55)),
+    width: Math.max(
+      1,
+      screen.width - x - Math.min(WORK_AREA_SIDE_MARGIN, screen.width - x - 1),
+    ),
+    height: Math.max(
+      55,
+      screen.height - y - Math.min(WORK_AREA_BOTTOM, screen.height - y - 55),
+    ),
   };
 };
 
@@ -76,6 +98,12 @@ export default function Desktop() {
   const resizePreviewRef = useRef(resizePreview);
   resizePreviewRef.current = resizePreview;
   const [panel, setPanel] = useState<ShellPanel>(null);
+  const panelRef = useRef(panel);
+  panelRef.current = panel;
+  // One Alt hold owns a stable window order. Rebuilding from z-order after
+  // every activation would bounce between newly raised windows instead of
+  // walking the original switcher sequence.
+  const switcher = useRef<{ ids: number[]; index: number } | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [master, setMaster] = useState({ percent: 75, muted: false });
   const booted = useRef(false);
@@ -97,6 +125,18 @@ export default function Desktop() {
       clearTimeout(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (panel !== null) {
+      focus(0);
+      return;
+    }
+    const active = openRef.current.find((surface) => surface.id === activeIdRef.current);
+    const visible = active
+      && surfaceWorkspaceRef.current.get(active.id) === activeWorkspaceRef.current
+      && !minimizedRef.current.has(active.id);
+    focus(visible ? active.id : 0);
+  }, [panel]);
 
   useEffect(() => {
     const resize = () => setScreen(viewport());
@@ -173,23 +213,23 @@ export default function Desktop() {
     });
     if (event.type === "opened") {
       // JS `open` is the sole focus authority — the native registry no longer
-      // self-focuses a new surface, so drive both the visual active state and
-      // the compositor keyboard target here.
-      focus(event.surface.id);
+      // self-focuses a new surface. Record it as active, but keep compositor
+      // keyboard focus on desktop while a shell panel owns interaction.
+      if (panelRef.current === null) focus(event.surface.id);
       setActiveId(event.surface.id);
     }
-    if (event.type === "activated" && !minimizedRef.current.has(event.surfaceId)) {
-      // App-surface activation is an asynchronous compositor reconciliation,
-      // not a click through the current shell overlay. Closing `panel` here
-      // lets a delayed activation from the prior launch dismiss a newly opened
-      // Command Center; window chrome and the scrim already own synchronous
-      // panel dismissal.
+    if (event.type === "activated"
+      && panelRef.current === null
+      && !minimizedRef.current.has(event.surfaceId)) {
+      // A delayed activation from an earlier launch must not steal keyboard
+      // focus from a shell panel that has since opened.
       synchronizeActivation(event.surfaceId);
     }
     if (event.type === "moved") {
       setOpen((current) => applySurfaceMove(current, event.surfaceId, event.x, event.y));
     }
     if (event.type === "closed") {
+      switcher.current = null;
       // JS `open` is the sole focus authority: the native registry cleared its
       // keyboard target to the desktop when the surface closed, so when the
       // closed window was active we pick its replacement here (last visible in
@@ -232,17 +272,38 @@ export default function Desktop() {
     }
   }), [desktopArea, synchronizeActivation]);
 
+  const selectWorkspace = useCallback((workspace: number) => {
+    if (workspace < 0 || workspace >= WORKSPACE_COUNT) return;
+    switcher.current = null;
+    setActiveWorkspace(workspace);
+    activeWorkspaceRef.current = workspace;
+    const next = openRef.current
+      .filter((surface) =>
+        surfaceWorkspaceRef.current.get(surface.id) === workspace
+        && !minimizedRef.current.has(surface.id),
+      )
+      .at(-1);
+    focus(next?.id ?? 0);
+    setActiveId(next?.id ?? 0);
+    setPanel(null);
+  }, []);
+
   useEffect(() => {
     setAccelerators([
-      { modifiers: 0, code: KEY_ESC },
       { modifiers: MOD_CONTROL, code: KEY_SPACE },
+      { modifiers: MOD_CONTROL | MOD_ALT, code: KEY_LEFT },
+      { modifiers: MOD_CONTROL | MOD_ALT, code: KEY_RIGHT },
       { modifiers: MOD_ALT, code: KEY_TAB },
+      { modifiers: MOD_ALT | MOD_SHIFT, code: KEY_TAB },
       { modifiers: MOD_ALT, code: KEY_F4 },
     ]);
   }, []);
 
   const onDesktopKey = (raw: unknown) => {
     const event = raw as LiteKeyEvent;
+    if ((event.code === KEY_LEFT_ALT || event.code === KEY_RIGHT_ALT) && event.value === 0) {
+      switcher.current = null;
+    }
     if (event.code === KEY_ESC && event.value === 1) {
       setPanel(null);
     }
@@ -250,23 +311,50 @@ export default function Desktop() {
       setPanel((current) => current === "command" ? null : "command");
     }
     if (event.code === KEY_F4 && event.value === 1 && (event.modifiers & MOD_ALT) !== 0) {
+      if (panel !== null) {
+        setPanel(null);
+        return;
+      }
       const id = activeIdRef.current;
       if (id) closeWindow(id);
     }
+    if (event.value === 1 && event.modifiers === (MOD_CONTROL | MOD_ALT)) {
+      if (event.code === KEY_LEFT) {
+        selectWorkspace((activeWorkspaceRef.current + WORKSPACE_COUNT - 1) % WORKSPACE_COUNT);
+      } else if (event.code === KEY_RIGHT) {
+        selectWorkspace((activeWorkspaceRef.current + 1) % WORKSPACE_COUNT);
+      }
+    }
     if (event.code === KEY_TAB && event.value === 1 && (event.modifiers & MOD_ALT) !== 0) {
-      const candidates = openRef.current.filter((surface) =>
-        surfaceWorkspaceRef.current.get(surface.id) === activeWorkspaceRef.current
-        && !minimizedRef.current.has(surface.id),
-      );
-      const index = candidates.findIndex((surface) => surface.id === activeIdRef.current);
-      const next = candidates[(index + 1) % candidates.length];
-      if (next) activate(next.id);
+      const available = openRef.current
+        .filter((surface) => surfaceWorkspaceRef.current.get(surface.id) === activeWorkspaceRef.current)
+        .map((surface) => surface.id);
+      if (available.length === 0) return;
+      const current = switcher.current;
+      const sameCycle = current
+        && current.ids.length === available.length
+        && current.ids.every((id) => available.includes(id));
+      if (!sameCycle) {
+        switcher.current = {
+          ids: available,
+          index: Math.max(0, available.indexOf(activeIdRef.current)),
+        };
+      }
+      const cycle = switcher.current!;
+      const direction = (event.modifiers & MOD_SHIFT) !== 0 ? 1 : -1;
+      cycle.index = (cycle.index + direction + cycle.ids.length) % cycle.ids.length;
+      activate(cycle.ids[cycle.index]);
     }
   };
 
-  const launchOrActivate = useCallback((app: typeof dockApps[number]) => {
-    const existing = openRef.current.find((surface) => surface.appId === app.id);
-    existing ? activate(existing.id) : launch(app.id);
+  const launchOrActivate = useCallback((appId: string) => {
+    const existing = openRef.current.filter((surface) => surface.appId === appId).at(-1);
+    if (existing) {
+      activate(existing.id);
+      return;
+    }
+    launch(appId);
+    setPanel(null);
   }, [activate]);
 
   const minimizeWindow = useCallback((id: number) => {
@@ -313,11 +401,16 @@ export default function Desktop() {
   }, [desktopArea, maximized]);
 
   const resizeWindow = useCallback((id: number, candidate: ResizeCandidate) => {
+    // Each app has a distinct smallest usable layout. A single tiny frame
+    // limit lets explorer sidebars and player transport controls overlap;
+    // the work-area clamp still wins on genuinely small displays.
+    const surface = openRef.current.find((item) => item.id === id);
+    const minimum = surface ? APP_MIN_WINDOWS[surface.appId] ?? DEFAULT_MIN_WINDOW : DEFAULT_MIN_WINDOW;
     const bounds = constrainResize(
       candidate,
       desktopArea,
-      Math.min(MIN_WINDOW.width, desktopArea.width),
-      Math.min(MIN_WINDOW.height, desktopArea.height),
+      Math.min(minimum.width, desktopArea.width),
+      Math.min(minimum.height, desktopArea.height),
     );
     setResizePreview((current) => new Map(current).set(id, bounds));
   }, [desktopArea]);
@@ -341,18 +434,25 @@ export default function Desktop() {
     icon: appIcon(app.id),
     running: open.some((surface) => surface.appId === app.id),
   }));
-  const selectWorkspace = useCallback((workspace: number) => {
-    setActiveWorkspace(workspace);
-    activeWorkspaceRef.current = workspace;
-    const next = openRef.current
-      .filter((surface) =>
-        surfaceWorkspaceRef.current.get(surface.id) === workspace
-        && !minimizedRef.current.has(surface.id),
-      )
-      .at(-1);
-    focus(next?.id ?? 0);
-    setActiveId(next?.id ?? 0);
-    setPanel(null);
+  const moveWindowToWorkspace = useCallback((id: number, workspace: number) => {
+    if (workspace < 0 || workspace >= WORKSPACE_COUNT) return;
+    const previousWorkspace = surfaceWorkspaceRef.current.get(id);
+    if (previousWorkspace === undefined || previousWorkspace === workspace) return;
+    const nextWorkspaces = new Map(surfaceWorkspaceRef.current).set(id, workspace);
+    surfaceWorkspaceRef.current = nextWorkspaces;
+    setSurfaceWorkspace(nextWorkspaces);
+    if (id === activeIdRef.current && previousWorkspace === activeWorkspaceRef.current) {
+      const fallback = openRef.current
+        .filter((surface) =>
+          surface.id !== id
+          && nextWorkspaces.get(surface.id) === activeWorkspaceRef.current
+          && !minimizedRef.current.has(surface.id),
+        )
+        .at(-1);
+      const next = fallback?.id ?? 0;
+      focus(next);
+      setActiveId(next);
+    }
   }, []);
   const visible = open.filter((surface) =>
     surfaceWorkspace.get(surface.id) === activeWorkspace && !minimized.has(surface.id),
@@ -414,13 +514,14 @@ export default function Desktop() {
       <Dock items={[
         { id: "liteos", label: "LiteOS", icon: "assets/liteos.png", active: panel === "command", onClick: () => setPanel(panel === "command" ? null : "command") },
         ...dockApps.map((app) => {
-          const surface = open.find((item) => item.appId === app.id);
+          const appSurfaces = open.filter((surface) => surface.appId === app.id);
           return {
             ...app,
-            running: Boolean(surface),
-            active: surface?.id === activeId
-              && surfaceWorkspace.get(surface.id) === activeWorkspace,
-            onClick: () => launchOrActivate(app),
+            running: appSurfaces.length > 0,
+            active: appSurfaces.some((surface) =>
+              surface.id === activeId
+              && surfaceWorkspace.get(surface.id) === activeWorkspace),
+            onClick: () => launchOrActivate(app.id),
           };
         }),
         { id: "settings", label: "Settings", icon: "assets/settings.png", active: panel === "system", onClick: () => setPanel(panel === "system" ? null : "system") },
@@ -429,7 +530,7 @@ export default function Desktop() {
         <CommandCenter
           apps={commandApps}
           activeWorkspace={activeWorkspace}
-          onLaunch={(id) => { launch(id); setPanel(null); }}
+          onLaunch={launchOrActivate}
           onClose={() => setPanel(null)}
           onRestart={restart}
           onShutdown={shutdown}
@@ -441,6 +542,7 @@ export default function Desktop() {
           activeWorkspace={activeWorkspace}
           onActivate={activate}
           onSelect={selectWorkspace}
+          onMoveWindow={moveWindowToWorkspace}
           onCloseWindow={closeWindow}
           onClose={() => setPanel(null)}
         />

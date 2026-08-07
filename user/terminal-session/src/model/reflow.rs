@@ -33,6 +33,10 @@ impl History {
         self.len = 0;
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
     pub(super) fn push_screen_row(&mut self, screen: Screen, row: usize) {
         // SAFETY: callers pass a row inside the model's primary grid, and History is recreated with
         // that same column count on every resize. Reading exactly one row therefore stays inside
@@ -58,7 +62,7 @@ impl History {
         self.cells[offset..offset + self.columns].copy_from_slice(cells);
     }
 
-    fn row(&self, row: usize) -> &[Cell] {
+    pub(super) fn row(&self, row: usize) -> &[Cell] {
         debug_assert!(row < self.len);
         let slot = (self.start + row) % SCROLLBACK_ROWS;
         let offset = slot * self.columns;

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 const DESKTOP_ICON_NAMES: [&str; 6] = [
     "files.png",
     "terminal.png",
-    "monitor.png",
+    "music.png",
     "package.png",
     "settings.png",
     "liteos.png",
@@ -96,13 +96,10 @@ mod tests {
     #[test]
     fn manifest_icon_is_constrained_to_shipped_desktop_assets() {
         assert_eq!(
-            super::normalize_icon(Some("assets/monitor.png")),
-            "assets/monitor.png"
+            super::normalize_icon(Some("assets/music.png")),
+            "assets/music.png"
         );
-        assert_eq!(
-            super::normalize_icon(Some("monitor.png")),
-            "assets/monitor.png"
-        );
+        assert_eq!(super::normalize_icon(Some("music.png")), "assets/music.png");
         assert_eq!(
             super::normalize_icon(Some("assets/custom.png")),
             super::FALLBACK_ICON

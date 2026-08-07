@@ -10,6 +10,7 @@
   font-family: monospace;
   font-size: 14px;
   line-height: 16px;
+  cursor: text;
 }
 .terminal__run {
   position: absolute;
@@ -18,8 +19,47 @@
 }
 .terminal__cursor {
   position: absolute;
+  z-index: 3;
   background: #35c8ff;
   box-shadow: 0 0 8px rgba(53, 200, 255, 0.7);
+}
+
+.terminal__selection {
+  position: absolute;
+  z-index: 2;
+  background: rgba(36, 136, 255, 0.42);
+  pointer-events: none;
+}
+
+.terminal__notice {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 4;
+  padding: 5px 9px;
+  border: 1px solid rgba(115, 205, 255, 0.46);
+  border-radius: 7px;
+  background: rgba(7, 19, 34, 0.92);
+  color: #d8f3ff;
+  font-family: sans-serif;
+  font-size: 12px;
+  line-height: 16px;
+  pointer-events: none;
+}
+
+.terminal__scrollback {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 4;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(7, 19, 34, 0.88);
+  color: #9cc9dd;
+  font-family: sans-serif;
+  font-size: 11px;
+  line-height: 15px;
+  pointer-events: none;
 }
 
 @keyframes terminal-cursor-blink {

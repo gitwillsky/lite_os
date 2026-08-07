@@ -25,21 +25,40 @@ pub(super) struct Run {
     pub(super) bold: bool,
 }
 
+/// One visible terminal cell coordinate.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(super) struct CellPosition {
+    pub(super) column: usize,
+    pub(super) row: usize,
+}
+
+/// One normalized inclusive selection with helper-produced UTF-8 text.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(super) struct Selection {
+    pub(super) start: CellPosition,
+    pub(super) end: CellPosition,
+    pub(super) text: String,
+}
+
 /// Latest decoded helper screen: per-row style runs, the `(column, row)`
 /// cursor and the current default colors.
 #[derive(Default)]
 pub(super) struct ScreenState {
+    pub(super) columns: usize,
     pub(super) rows: Vec<Vec<Run>>,
     pub(super) cursor: (u16, u16),
     pub(super) cursor_style: u16,
     pub(super) foreground: u32,
     pub(super) background: u32,
     pub(super) application_cursor_keys: bool,
+    pub(super) selection: Option<Selection>,
+    pub(super) scroll_offset: usize,
+    pub(super) history_rows: usize,
 }
 
 impl ScreenState {
     pub(super) fn apply_update(&mut self, payload: &[u8]) -> io::Result<()> {
-        if payload.len() < 24 {
+        if payload.len() < 40 {
             return Err(invalid("terminal update header truncated"));
         }
         let columns = read_u16(payload, 0)? as usize;
@@ -60,10 +79,25 @@ impl ScreenState {
             return Err(invalid("terminal input mode invalid"));
         }
         self.application_cursor_keys = input_modes & APPLICATION_CURSOR_KEYS != 0;
+        self.columns = columns;
+        let selection_coordinates = [
+            read_u16(payload, 24)?,
+            read_u16(payload, 26)?,
+            read_u16(payload, 28)?,
+            read_u16(payload, 30)?,
+        ];
+        let selection_text_len = read_u32(payload, 32)? as usize;
+        let scroll_offset = read_u16(payload, 36)? as usize;
+        let history_rows = read_u16(payload, 38)? as usize;
+        if scroll_offset > history_rows {
+            return Err(invalid("terminal scrollback geometry invalid"));
+        }
+        self.scroll_offset = scroll_offset;
+        self.history_rows = history_rows;
         if self.rows.len() != rows {
             self.rows = vec![Vec::new(); rows];
         }
-        let mut offset = 24usize;
+        let mut offset = 40usize;
         for _ in 0..dirty {
             let row = read_u16(payload, offset)? as usize;
             if row >= rows || read_u16(payload, offset + 2)? != 0 {
@@ -81,9 +115,57 @@ impl ScreenState {
             self.rows[row] = runs(bytes, self.background);
             offset += columns * 16;
         }
+        let selection_text = payload
+            .get(
+                offset
+                    ..offset
+                        .checked_add(selection_text_len)
+                        .ok_or_else(|| invalid("terminal selection overflow"))?,
+            )
+            .ok_or_else(|| invalid("terminal selection truncated"))?;
+        offset += selection_text_len;
         if offset != payload.len() {
             return Err(invalid("terminal update has trailing bytes"));
         }
+        let no_selection = selection_coordinates
+            .iter()
+            .all(|coordinate| *coordinate == u16::MAX);
+        self.selection = if no_selection {
+            if selection_text_len != 0 {
+                return Err(invalid("terminal empty selection carries text"));
+            }
+            None
+        } else {
+            if selection_coordinates
+                .iter()
+                .any(|coordinate| *coordinate == u16::MAX)
+            {
+                return Err(invalid("terminal selection sentinel invalid"));
+            }
+            let start = CellPosition {
+                column: usize::from(selection_coordinates[0]),
+                row: usize::from(selection_coordinates[1]),
+            };
+            let end = CellPosition {
+                column: usize::from(selection_coordinates[2]),
+                row: usize::from(selection_coordinates[3]),
+            };
+            if start.column >= columns
+                || end.column >= columns
+                || start.row >= rows
+                || end.row >= rows
+                || (start.row, start.column) > (end.row, end.column)
+            {
+                return Err(invalid("terminal selection geometry invalid"));
+            }
+            Some(Selection {
+                start,
+                end,
+                text: std::str::from_utf8(selection_text)
+                    .map_err(|_| invalid("terminal selection text invalid"))?
+                    .to_owned(),
+            })
+        };
         Ok(())
     }
 }

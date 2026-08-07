@@ -2,7 +2,7 @@
   "id": "music-player",
   "name": "Music",
   "description": "Stream from QQ Music & NetEase, or play local files",
-  "icon": "assets/monitor.png",
+  "icon": "assets/music.png",
   "entry": "main.js",
   "style": "style.css"
 }

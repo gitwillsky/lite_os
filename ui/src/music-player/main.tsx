@@ -10,6 +10,7 @@ const AUDIO_EXTENSIONS = new Set([
   "ogg", "oga", "m4a", "mp4", "mka", "webm",
 ]);
 const KEY_ENTER = 28;
+const KEY_ESC = 1;
 const KEY_SPACE = 57;
 const KEY_UP = 103;
 const KEY_LEFT = 105;
@@ -99,6 +100,21 @@ function localTrack(path: string, name: string): Track {
   return { kind: "local", title, artist, src: path };
 }
 
+function remoteTrack(result: RemoteResult): Track {
+  return {
+    kind: "remote",
+    title: result.title,
+    artist: result.artist,
+    src: "",
+    source: result.source,
+    id: result.id,
+    album: result.album,
+    cover: result.cover,
+    durationMs: result.durationMs,
+    vip: result.vip,
+  };
+}
+
 function localTracksAt(path: string, entries: FsEntry[]): Track[] {
   return entries.filter(isAudio).map((entry) =>
     localTrack(joinPath(path, entry.name), entry.name));
@@ -127,8 +143,19 @@ function extFromUrl(url: string): string {
   return AUDIO_EXTENSIONS.has(ext) ? ext : "mp3";
 }
 
-function PlayerButton({ label, active, primary, disabled, onClick }: {
+/** Builds one no-repeat shuffle pass with the current track first. */
+function shuffledOrder(length: number, current: number): number[] {
+  const order = Array.from({ length }, (_, index) => index).filter((index) => index !== current);
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [order[index], order[swap]] = [order[swap], order[index]];
+  }
+  return current >= 0 && current < length ? [current, ...order] : order;
+}
+
+function PlayerButton({ label, icon, active, primary, disabled, onClick }: {
   label: string;
+  icon?: string;
   active?: boolean;
   primary?: boolean;
   disabled?: boolean;
@@ -136,7 +163,8 @@ function PlayerButton({ label, active, primary, disabled, onClick }: {
 }) {
   const className = `player-button${active ? " player-button--active" : ""}${primary ? " player-button--primary" : ""}`;
   return (
-    <button className={className} disabled={disabled} onClick={onClick}>
+    <button className={className} aria-pressed={active} disabled={disabled} onClick={onClick}>
+      {icon && <img className="player-button__icon" src={icon} alt=""/>}
       <span className="control-label">{label}</span>
     </button>
   );
@@ -146,6 +174,11 @@ export default function MusicPlayer() {
   const audio = useRef<LiteAudioElement>(null);
   const objectUrl = useRef<string | null>(null);
   const activeStream = useRef<number | null>(null);
+  // Monotonic request owners prevent an older search or track resolution from
+  // publishing after a newer user action. Without them, a slow response can
+  // replace newer results or begin playing the previously selected track.
+  const searchGeneration = useRef(0);
+  const playbackGeneration = useRef(0);
   const [view, setView] = useState<PlayerView>("search");
 
   // Online search state.
@@ -165,6 +198,7 @@ export default function MusicPlayer() {
   const [browserPath, setBrowserPath] = useState(MUSIC_ROOT);
   const [browserEntries, setBrowserEntries] = useState<FsEntry[]>([]);
   const [browserError, setBrowserError] = useState<string | null>(null);
+  const [browserNotice, setBrowserNotice] = useState<string | null>(null);
 
   // Playback state.
   const [queue, setQueue] = useState<Track[]>([]);
@@ -177,6 +211,22 @@ export default function MusicPlayer() {
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+  const shuffleRef = useRef(shuffle);
+  shuffleRef.current = shuffle;
+  // The shuffle deck and cursor preserve a no-repeat pass and make Previous
+  // retrace actual history. Without them, random selection repeats tracks and
+  // cannot honor Repeat Off at the end of one pass.
+  const shuffleDeck = useRef<number[]>([]);
+  const shuffleCursor = useRef(0);
+
+  const resetShuffle = useCallback((length: number, current: number) => {
+    const order = shuffledOrder(length, current);
+    shuffleDeck.current = order;
+    shuffleCursor.current = 0;
+    return order;
+  }, []);
 
   const closeStream = useCallback(() => {
     if (activeStream.current !== null) {
@@ -187,7 +237,7 @@ export default function MusicPlayer() {
   }, []);
 
   // Points the audio element at a src and optionally plays.
-  const playSrc = useCallback((src: string, play: boolean) => {
+  const playSrc = useCallback((src: string, play: boolean, generation: number) => {
     const element = audio.current;
     if (!element) return;
     element.pause();
@@ -196,15 +246,16 @@ export default function MusicPlayer() {
     setDuration(Number.NaN);
     setPlaybackError(null);
     if (play) {
-      void element.play().catch((reason: unknown) => setPlaybackError(message(reason)));
+      void element.play().catch((reason: unknown) => {
+        if (playbackGeneration.current === generation) setPlaybackError(message(reason));
+      });
     }
   }, []);
 
   // Resolves a remote track's playable URL (highest quality first), opens a
   // stream, and points the audio element at it.
-  const resolveAndStream = useCallback(async (track: Track) => {
+  const resolveAndStream = useCallback(async (track: Track, generation: number) => {
     if (!track.source || !track.id) return;
-    closeStream();
     setResolving(true);
     setPlaybackError(null);
     try {
@@ -216,6 +267,7 @@ export default function MusicPlayer() {
         const reply = await net.songUrl(track.source === "netease"
           ? { source: "netease", id: track.id, level: NETEASE_LEVELS[tier] }
           : { source: "qq", id: track.id, qualityIndex: tier });
+        if (playbackGeneration.current !== generation) return;
         const resolution = parseSongUrlReply(reply);
         if (resolution.reason) {
           reason = resolution.reason;
@@ -237,8 +289,13 @@ export default function MusicPlayer() {
       setTrialClip(trial);
       const ext = extFromUrl(url);
       const streamId = net.streamOpen(url, ext);
+      if (playbackGeneration.current !== generation) {
+        net.streamClose(streamId);
+        return;
+      }
       activeStream.current = streamId;
       net.watchStream(streamId, (event) => {
+        if (playbackGeneration.current !== generation || activeStream.current !== streamId) return;
         if (event.error) {
           setPlaybackError(event.error);
           setBuffering(null);
@@ -249,48 +306,76 @@ export default function MusicPlayer() {
       });
       setResolving(false);
       if (containerStreams(ext)) {
-        playSrc(`stream:${streamId}`, true);
+        playSrc(`stream:${streamId}`, true, generation);
       } else {
         // moov-at-tail container: wait for full download, then play.
         await new Promise<void>((resolve) => {
           const tick = () => {
+            if (playbackGeneration.current !== generation) {
+              resolve();
+              return;
+            }
             const stat = net.streamStat(streamId);
             if (stat.done || stat.error) resolve();
             else setTimeout(tick, 200);
           };
           tick();
         });
-        playSrc(`stream:${streamId}`, true);
+        if (playbackGeneration.current !== generation) return;
+        playSrc(`stream:${streamId}`, true, generation);
       }
     } catch (reason) {
+      if (playbackGeneration.current !== generation) return;
       setResolving(false);
       setPlaybackError(message(reason));
     }
-  }, [closeStream, playSrc]);
+  }, [playSrc]);
 
   // Activates queue[index]: routes local vs remote playback.
   const activate = useCallback((tracks: Track[], index: number, play: boolean) => {
     const track = tracks[index];
     if (!track) return;
+    const queueChanged = queueRef.current !== tracks;
+    queueRef.current = tracks;
+    if (shuffleRef.current) {
+      const position = queueChanged ? -1 : shuffleDeck.current.indexOf(index);
+      if (position >= 0) shuffleCursor.current = position;
+      else resetShuffle(tracks.length, index);
+    }
     setQueue(tracks);
     setCurrentIndex(index);
     setView("now-playing");
     setTrialClip(false);
+    const generation = playbackGeneration.current + 1;
+    playbackGeneration.current = generation;
+    if (audio.current) {
+      audio.current.pause();
+      // A remote URL is resolved asynchronously. Keeping the previous src here
+      // makes Play after a resolution failure restart the old track.
+      audio.current.src = "";
+    }
+    closeStream();
+    if (objectUrl.current) {
+      URL.revokeObjectURL(objectUrl.current);
+      objectUrl.current = null;
+    }
+    setPosition(0);
+    setDuration(Number.NaN);
+    setPlaybackError(null);
     if (track.kind === "local") {
       try {
-        closeStream();
-        if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+        setResolving(false);
         const file = open(track.src);
         const url = URL.createObjectURL(file);
         objectUrl.current = url;
-        playSrc(url, play);
+        playSrc(url, play, generation);
       } catch (reason) {
         setPlaybackError(message(reason));
       }
     } else if (track.source && track.id) {
-      void resolveAndStream(track);
+      void resolveAndStream(track, generation);
     }
-  }, [closeStream, playSrc, resolveAndStream]);
+  }, [closeStream, playSrc, resetShuffle, resolveAndStream]);
 
   // --- Local library browsing ---
   useEffect(() => {
@@ -298,19 +383,25 @@ export default function MusicPlayer() {
     if (result.error) {
       setBrowserEntries([]);
       setBrowserError(`${browserPath}: ${result.error}`);
+      setBrowserNotice(null);
       return;
     }
-    const entries = (result.entries ?? []).slice().sort((left, right) => {
+    const entries = (result.entries ?? [])
+      .filter((entry) => !entry.name.startsWith(".") && (entry.kind === "dir" || isAudio(entry)))
+      .slice().sort((left, right) => {
       if ((left.kind === "dir") !== (right.kind === "dir")) return left.kind === "dir" ? -1 : 1;
       return left.name.localeCompare(right.name);
     });
     setBrowserEntries(entries);
-    setBrowserError(result.truncated
+    setBrowserError(null);
+    setBrowserNotice(result.truncated
       ? "The directory contains more entries than can be displayed."
       : null);
   }, [browserPath]);
 
   useEffect(() => () => {
+    searchGeneration.current += 1;
+    playbackGeneration.current += 1;
     audio.current?.pause();
     if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
     closeStream();
@@ -332,11 +423,14 @@ export default function MusicPlayer() {
   const runSearch = useCallback(async () => {
     const trimmed = query.trim();
     if (!trimmed) return;
+    const generation = searchGeneration.current + 1;
+    searchGeneration.current = generation;
     setSearching(true);
     setSearchError(null);
     setResults([]);
     try {
       const reply = await net.search(source, trimmed, 25);
+      if (searchGeneration.current !== generation) return;
       if (reply.error) {
         setSearchError(
           source === "qq"
@@ -351,35 +445,53 @@ export default function MusicPlayer() {
       setResults(parsed);
       if (parsed.length === 0) setSearchError("No results.");
     } catch (reason) {
+      if (searchGeneration.current !== generation) return;
       setSearchError(message(reason));
     }
-    setSearching(false);
+    if (searchGeneration.current === generation) setSearching(false);
   }, [query, source]);
 
+  const selectSource = useCallback((next: Source) => {
+    if (next === source) return;
+    // Cancel publication from the old provider; otherwise its slower response
+    // can repopulate results after the source indicator has already changed.
+    searchGeneration.current += 1;
+    setSource(next);
+    setSearching(false);
+    setResults([]);
+    setSearchError(null);
+  }, [source]);
+
+  const clearSearch = useCallback(() => {
+    // Invalidating the request owner prevents a late provider response from
+    // repopulating results after the user has visibly dismissed the search.
+    searchGeneration.current += 1;
+    setSearching(false);
+    setQuery("");
+    setResults([]);
+    setSearchError(null);
+  }, []);
+
   const playRemoteResult = useCallback((result: RemoteResult) => {
-    const track: Track = {
-      kind: "remote",
-      title: result.title,
-      artist: result.artist,
-      src: "",
-      source: result.source,
-      id: result.id,
-      album: result.album,
-      cover: result.cover,
-      durationMs: result.durationMs,
-      vip: result.vip,
-    };
-    const locals = queue.filter((entry) => entry.kind === "local");
-    activate([...locals, track], locals.length, true);
-  }, [activate, queue]);
+    const tracks = results.map(remoteTrack);
+    const index = results.findIndex((entry) => entry.source === result.source && entry.id === result.id);
+    if (index >= 0) activate(tracks, index, true);
+  }, [activate, results]);
 
   const togglePlayback = useCallback(() => {
     const element = audio.current;
     if (!element) return;
     if (currentIndex < 0 && queue.length > 0) {
       activate(queue, 0, true);
+    } else if (element.paused && !element.src && currentIndex >= 0) {
+      // Retrying a failed local open or remote URL resolution must rebuild the
+      // current source; play() on an empty element cannot recover it.
+      activate(queue, currentIndex, true);
     } else if (element.paused) {
-      void element.play().catch((reason: unknown) => setPlaybackError(message(reason)));
+      const generation = playbackGeneration.current;
+      void element.play().catch((reason: unknown) => {
+        if (playbackGeneration.current === generation) setPlaybackError(message(reason));
+      });
     } else {
       element.pause();
     }
@@ -387,10 +499,20 @@ export default function MusicPlayer() {
 
   const stepTrack = useCallback((delta: number) => {
     if (queue.length === 0) return;
+    if (shuffle && queue.length > 1) {
+      let position = shuffleCursor.current + (delta > 0 ? 1 : -1);
+      if (position < 0 || position >= shuffleDeck.current.length) {
+        const order = resetShuffle(queue.length, currentIndex);
+        position = delta > 0 ? 1 : order.length - 1;
+      }
+      shuffleCursor.current = position;
+      activate(queue, shuffleDeck.current[position], true);
+      return;
+    }
     const base = currentIndex < 0 ? (delta > 0 ? -1 : 0) : currentIndex;
     const index = (base + delta + queue.length) % queue.length;
     activate(queue, index, true);
-  }, [activate, currentIndex, queue]);
+  }, [activate, currentIndex, queue, resetShuffle, shuffle]);
 
   const seekTo = useCallback((seconds: number) => {
     const element = audio.current;
@@ -407,9 +529,22 @@ export default function MusicPlayer() {
   const handleEnded = useCallback(() => {
     setPlaying(false);
     if (repeat === "one" || queue.length === 0) return;
+    if (shuffle) {
+      const position = shuffleCursor.current + 1;
+      if (position < shuffleDeck.current.length) {
+        shuffleCursor.current = position;
+        activate(queue, shuffleDeck.current[position], true);
+      } else if (repeat === "all") {
+        const order = resetShuffle(queue.length, currentIndex);
+        const next = order.length > 1 ? 1 : 0;
+        shuffleCursor.current = next;
+        activate(queue, order[next], true);
+      }
+      return;
+    }
     if (currentIndex + 1 < queue.length) activate(queue, currentIndex + 1, true);
     else if (repeat === "all") activate(queue, 0, true);
-  }, [activate, currentIndex, queue, repeat]);
+  }, [activate, currentIndex, queue, repeat, resetShuffle, shuffle]);
 
   const openBrowserEntry = useCallback((entry: FsEntry) => {
     if (entry.kind === "dir") {
@@ -424,11 +559,23 @@ export default function MusicPlayer() {
 
   const cycleRepeat = () =>
     setRepeat((mode) => mode === "off" ? "all" : mode === "all" ? "one" : "off");
+  const toggleShuffle = () => {
+    const next = !shuffleRef.current;
+    shuffleRef.current = next;
+    setShuffle(next);
+    if (next) resetShuffle(queueRef.current.length, currentIndex);
+    else {
+      shuffleDeck.current = [];
+      shuffleCursor.current = 0;
+    }
+  };
 
   const handleKey = (rawEvent: unknown) => {
     const event = rawEvent as LiteKeyEvent;
     if (event.value === 0) return;
-    if (event.code === KEY_SPACE) togglePlayback();
+    if (event.code === KEY_ESC && event.value === 1
+      && view === "search" && (query || results.length > 0 || searchError || searching)) clearSearch();
+    else if (event.code === KEY_SPACE && event.value === 1) togglePlayback();
     else if (event.code === KEY_LEFT) seekTo(position - 5);
     else if (event.code === KEY_RIGHT) seekTo(position + 5);
     else if (event.code === KEY_UP) changeVolume(volume + 0.05);
@@ -456,8 +603,8 @@ export default function MusicPlayer() {
         <div className="player__search">
           <div className="player__searchbar">
             <div className="player__sources">
-              <PlayerButton label="NetEase" active={source === "netease"} onClick={() => setSource("netease")}/>
-              <PlayerButton label="QQ Music" active={source === "qq"} onClick={() => setSource("qq")}/>
+              <PlayerButton label="NetEase" active={source === "netease"} onClick={() => selectSource("netease")}/>
+              <PlayerButton label="QQ Music" active={source === "qq"} onClick={() => selectSource("qq")}/>
             </div>
             <TextInput
               className="player__search-input"
@@ -466,12 +613,18 @@ export default function MusicPlayer() {
               onInput={setQuery}
               onKeyDown={(event) => {
                 const key = event as unknown as LiteKeyEvent;
-                if (key.code === KEY_ENTER && key.value !== 0) runSearch();
+                if (key.value !== 1) return;
+                if (key.code === KEY_ENTER) runSearch();
+                else if (key.code === KEY_ESC && (query || results.length > 0 || searchError || searching)) clearSearch();
               }}
             />
-            <PlayerButton label={searching ? "Searching..." : "Search"} primary disabled={searching} onClick={runSearch}/>
+            <PlayerButton label={searching ? "Searching..." : "Search"} icon="assets/search.png" primary disabled={searching || !query.trim()} onClick={runSearch}/>
           </div>
           <div className="player__results">
+            {searching && <span className="player__empty">Searching {source === "netease" ? "NetEase" : "QQ Music"}...</span>}
+            {!searching && !searchError && results.length === 0 && (
+              <span className="player__empty">Search by song, artist, or album.</span>
+            )}
             {searchError && <span className="player__empty">{searchError}</span>}
             {results.map((result) => (
               <div
@@ -522,10 +675,10 @@ export default function MusicPlayer() {
             <span className="player__time player__time--end">{formatTime(duration)}</span>
           </div>
           <div className="player__transport">
-            <PlayerButton label="Prev" disabled={queue.length === 0} onClick={() => stepTrack(-1)}/>
-            <PlayerButton label={playing ? "Pause" : "Play"} primary disabled={queue.length === 0 && !currentTrack} onClick={togglePlayback}/>
-            <PlayerButton label="Next" disabled={queue.length === 0} onClick={() => stepTrack(1)}/>
-            <PlayerButton label={shuffle ? "Shuffle: On" : "Shuffle: Off"} active={shuffle} onClick={() => setShuffle((value) => !value)}/>
+            <PlayerButton label="Prev" icon="assets/prev.png" disabled={queue.length === 0} onClick={() => stepTrack(-1)}/>
+            <PlayerButton label={playing ? "Pause" : "Play"} icon={playing ? "assets/pause.png" : "assets/play.png"} primary disabled={resolving || (queue.length === 0 && !currentTrack)} onClick={togglePlayback}/>
+            <PlayerButton label="Next" icon="assets/next.png" disabled={queue.length === 0} onClick={() => stepTrack(1)}/>
+            <PlayerButton label={shuffle ? "Shuffle: On" : "Shuffle: Off"} active={shuffle} onClick={toggleShuffle}/>
             <PlayerButton label={repeatLabel} active={repeat !== "off"} onClick={cycleRepeat}/>
           </div>
           <div className="player__volume">
@@ -554,11 +707,15 @@ export default function MusicPlayer() {
                 <img className="player__browser-icon" src={entry.kind === "dir" ? "assets/folder.png" : "assets/file-16.png"}/>
                 <span className="player__browser-name">{entry.name}</span>
                 <span className="player__browser-type">
-                  {entry.kind === "dir" ? "Folder" : isAudio(entry) ? "Audio" : "Unsupported"}
+                  {entry.kind === "dir" ? "Folder" : "Audio"}
                 </span>
+                <PlayerButton label={entry.kind === "dir" ? "Open" : "Play"} onClick={() => openBrowserEntry(entry)}/>
               </div>
             ))}
-            {browserEntries.length === 0 && !browserError && <span className="player__empty">This folder is empty.</span>}
+            {browserEntries.length === 0 && !browserError && (
+              <span className="player__empty">No folders or supported audio files here.</span>
+            )}
+            {browserNotice && <span className="player__notice">{browserNotice}</span>}
             {browserError && <span className="player__error">{browserError}</span>}
           </div>
         </div>
@@ -575,6 +732,7 @@ export default function MusicPlayer() {
         onTimeUpdate={(event) => setPosition((event.currentTarget as unknown as LiteAudioElement).currentTime)}
         onEnded={handleEnded}
         onError={(event) => {
+          if (resolving) return;
           const element = event.currentTarget as unknown as LiteAudioElement;
           setPlaybackError(element.error?.message ?? "Unsupported or damaged audio file");
         }}

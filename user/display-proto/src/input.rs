@@ -38,6 +38,8 @@ pub struct InputPointer {
     pub button: u32,
     /// Current left/right/middle bit mask.
     pub buttons: u32,
+    /// Stable Shift/Ctrl/Alt/Super modifier mask at this transition.
+    pub modifiers: u32,
     /// Target-local logical x coordinate.
     pub x: i32,
     /// Target-local logical y coordinate.
@@ -53,6 +55,7 @@ impl InputPointer {
         writer.u32(self.phase as u32)?;
         writer.u32(self.button)?;
         writer.u32(self.buttons)?;
+        writer.u32(self.modifiers)?;
         writer.u32(self.x as u32)?;
         writer.u32(self.y as u32)?;
         writer.finish()
@@ -67,6 +70,7 @@ impl InputPointer {
             phase: PointerPhase::parse(reader.u32()?)?,
             button: reader.u32()?,
             buttons: reader.u32()?,
+            modifiers: reader.u32()?,
             x: reader.u32()? as i32,
             y: reader.u32()? as i32,
         };

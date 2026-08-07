@@ -45,6 +45,12 @@ fn parse_u32(value: Option<&str>, name: &str) -> Result<u32, EngineError> {
         .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
 }
 
+fn parse_u16(value: Option<&str>, name: &str) -> Result<u16, EngineError> {
+    value
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| EngineError::from_host(format!("invalid {name}")))
+}
+
 fn parse_u64(value: Option<&str>, name: &str) -> Result<u64, EngineError> {
     value
         .and_then(|value| value.parse().ok())
@@ -600,10 +606,31 @@ impl NativeHost for Host {
             // (terminal-session DEFAULT_COLORS indices 7 and 0); the first real
             // screen update replaces both colors and rows.
             "terminal.connect" if self.role == Role::App => Ok(
-                r#"{"rows":[[{"text":"Connecting to LiteOS terminal...","fg":13358561,"bg":1053720,"bold":false}]],"cursor":{"column":0,"row":0},"foreground":13358561,"background":1053720}"#.to_owned(),
+                r#"{"columns":80,"rows":[[{"text":"Connecting to LiteOS terminal...","columns":32,"fg":13358561,"bg":1053720,"bold":false}]],"cursor":{"column":0,"row":0},"foreground":13358561,"background":1053720,"selection":null,"scrollOffset":0,"historyRows":0}"#.to_owned(),
             ),
             "terminal.input" if self.role == Role::App => {
                 self.state.actions.borrow_mut().push(Action::TerminalInput(payload.as_bytes().to_vec()));
+                Ok(String::new())
+            }
+            "terminal.select" if self.role == Role::App => {
+                let mut fields = payload.split(':');
+                let selection = Action::TerminalSelect {
+                    anchor_column: parse_u16(fields.next(), "terminal selection anchor column")?,
+                    anchor_row: parse_u16(fields.next(), "terminal selection anchor row")?,
+                    focus_column: parse_u16(fields.next(), "terminal selection focus column")?,
+                    focus_row: parse_u16(fields.next(), "terminal selection focus row")?,
+                };
+                if fields.next().is_some() {
+                    return Err(EngineError::from_host("invalid terminal selection"));
+                }
+                self.state.actions.borrow_mut().push(selection);
+                Ok(String::new())
+            }
+            "terminal.scroll" if self.role == Role::App => {
+                self.state.actions.borrow_mut().push(Action::TerminalScroll(parse_i32(
+                    Some(payload),
+                    "terminal scroll lines",
+                )?));
                 Ok(String::new())
             }
             "terminal.paste" if self.role == Role::App => self.terminal_paste(payload),

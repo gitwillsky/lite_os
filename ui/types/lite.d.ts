@@ -51,13 +51,19 @@ declare function dispatchEvent(event: Event): boolean;
 
 /** Pointer payload delivered to onClick / onPointer / onContextMenu handlers. */
 interface LitePointerEvent {
-  type: "pointer";
+  type: "pointer" | "click" | "dblclick";
   phase: "motion" | "down" | "up";
   x: number;
   y: number;
   button: number;
   buttons: number;
+  /** Shift/Ctrl/Alt/Super mask captured with this pointer transition. */
+  modifiers: number;
   serial: number;
+  /** DOM-style click count (0 for keyboard activation). */
+  detail?: number;
+  /** True only for the coordinate-free click synthesized by Enter/Space. */
+  keyboard?: boolean;
   stopPropagation(): void;
   stopImmediatePropagation(): void;
 }
@@ -68,6 +74,10 @@ interface LiteKeyEvent {
   code: number;
   value: number;
   modifiers: number;
+  /** Stops delivery to ancestor key handlers without cancelling input defaults. */
+  stopPropagation(): void;
+  /** Stops delivery to all remaining handlers on the current event route. */
+  stopImmediatePropagation(): void;
 }
 
 /** Pixel-mode wheel payload delivered to onWheel handlers. */
@@ -112,10 +122,18 @@ type LiteDesktopEvent =
 
 /** Terminal screen snapshot (loosely typed; only the terminal app reads it). */
 interface LiteScreen {
+  columns: number;
   rows: Array<Array<{ text: string; columns: number; fg: number; bg: number; bold: boolean }>>;
   cursor: { column: number; row: number; blinking?: boolean; shape?: string; visible?: boolean };
   foreground: number;
   background: number;
+  selection: null | {
+    start: { column: number; row: number };
+    end: { column: number; row: number };
+    text: string;
+  };
+  scrollOffset: number;
+  historyRows: number;
 }
 
 /** Frozen first-milestone HTMLMediaElement public instance returned by React refs. */
@@ -221,6 +239,13 @@ declare module "lite:desktop" {
 declare module "lite:terminal" {
   export const connect: (argv: string[]) => LiteScreen;
   export const input: (event: LiteKeyEvent) => string;
+  export const select: (
+    anchorColumn: number,
+    anchorRow: number,
+    focusColumn: number,
+    focusRow: number,
+  ) => string;
+  export const scroll: (lines: number) => string;
   export const paste: (text: string) => string;
 }
 

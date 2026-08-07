@@ -375,7 +375,8 @@ fn collect_bounds(
         return Ok(());
     }
     let layout = tree.layout(node.id).map_err(taffy_error)?;
-    let translation = transform_translation(&node.computed);
+    let translation =
+        transform_translation(&node.computed, (layout.size.width, layout.size.height));
     let origin = (
         parent.0 + layout.location.x + translation.0,
         parent.1 + layout.location.y + translation.1,

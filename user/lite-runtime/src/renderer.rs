@@ -104,7 +104,7 @@ pub struct RenderOutput {
     pub overlays: Vec<Overlay>,
     /// Pointer listeners in React paint order.
     pub hits: Vec<HitRegion>,
-    /// Deepest keyboard listener in the current tree.
+    /// Deepest visible non-form-control keyboard listener in the current tree.
     pub key_listener: Option<u64>,
     /// Physical desktop pixels changed relative to the preceding rendered
     /// revision. The compositor recomposes only these rectangles.
@@ -129,6 +129,8 @@ pub struct HitRegion {
     pub width: f32,
     /// Height in logical CSS pixels.
     pub height: f32,
+    /// Nearest `data-lite-focus-scope` host ancestor, including self.
+    pub focus_scope: Option<u64>,
     /// `onPointerDown` listener identity.
     pub pointer_down: Option<u64>,
     /// `onPointerMove` listener identity.
@@ -149,7 +151,7 @@ pub struct HitRegion {
     pub wheel: Option<u64>,
     /// `onKeyDown` listener identity for this node. Focused keyboard events
     /// bubble through these listeners along `parent_node_id`; the deepest
-    /// global listener remains the target when no control owns focus.
+    /// non-form-control listener remains the fallback when no control owns focus.
     pub key_down: Option<u64>,
     /// Requested fixed standard cursor shape (`display_proto::CURSOR_*`).
     pub cursor: u32,
@@ -211,6 +213,10 @@ pub struct Renderer {
     scroll_drag: Option<ScrollDrag>,
     /// Stable node id of the focused form control, or `None`.
     focused: Option<u64>,
+    /// Topmost focus scope from the latest hit snapshot.
+    focus_scope: Option<u64>,
+    /// Focusable node that opened the current scope, restored on scope exit.
+    focus_restore: Option<u64>,
     /// Native caret, selection and horizontal scroll keyed by stable host id.
     ///
     /// React owns the controlled value, while this renderer-owned state mirrors
@@ -253,6 +259,8 @@ impl Renderer {
             scrollbars: Vec::new(),
             scroll_drag: None,
             focused: None,
+            focus_scope: None,
+            focus_restore: None,
             text_controls: HashMap::new(),
             hover_target: None,
             active_target: None,
@@ -285,6 +293,82 @@ impl Renderer {
 
     pub fn focused(&self) -> Option<u64> {
         self.focused
+    }
+
+    /// Reconciles modal focus ownership against the latest paint-ordered hits.
+    ///
+    /// Entering a scope moves focus inside it and remembers the opener; leaving
+    /// restores that opener when it still exists. Without this reconciliation,
+    /// a visually covered button can keep receiving Enter/Space behind a modal.
+    pub(crate) fn reconcile_focus_scope(&mut self, hits: &[HitRegion]) -> bool {
+        let next_scope = hits.iter().rev().find_map(|hit| hit.focus_scope);
+        let focusable = |hit: &&HitRegion| {
+            hit.editable.is_some() || hit.range.is_some_and(|range| !range.disabled()) || hit.button
+        };
+        let candidates = hits
+            .iter()
+            .filter(focusable)
+            .filter(|hit| hit.focus_scope == next_scope)
+            .collect::<Vec<_>>();
+        let current = self
+            .focused
+            .and_then(|id| hits.iter().find(|hit| hit.node_id == id && focusable(&hit)));
+
+        let target = if next_scope != self.focus_scope {
+            match (self.focus_scope, next_scope) {
+                (None, Some(_)) => {
+                    self.focus_restore = current
+                        .filter(|hit| hit.focus_scope != next_scope)
+                        .map(|hit| hit.node_id);
+                    current
+                        .filter(|hit| hit.focus_scope == next_scope)
+                        .map(|hit| hit.node_id)
+                        .or_else(|| candidates.first().map(|hit| hit.node_id))
+                }
+                (Some(_), None) => {
+                    let restore = self.focus_restore.take();
+                    restore.filter(|id| candidates.iter().any(|hit| hit.node_id == *id))
+                }
+                (Some(_), Some(_)) => candidates.first().map(|hit| hit.node_id),
+                (None, None) => current.map(|hit| hit.node_id),
+            }
+        } else if next_scope.is_none() {
+            current.map(|hit| hit.node_id)
+        } else if current.is_some_and(|hit| hit.focus_scope == next_scope) {
+            current.map(|hit| hit.node_id)
+        } else {
+            candidates.first().map(|hit| hit.node_id)
+        };
+        self.focus_scope = next_scope;
+        self.set_focus(target)
+    }
+
+    /// Moves focus once through the active scope's paint-ordered controls.
+    pub(crate) fn traverse_focus(&mut self, hits: &[HitRegion], backwards: bool) -> Option<bool> {
+        let scope = hits.iter().rev().find_map(|hit| hit.focus_scope);
+        let candidates = hits
+            .iter()
+            .filter(|hit| {
+                hit.focus_scope == scope
+                    && (hit.editable.is_some()
+                        || hit.range.is_some_and(|range| !range.disabled())
+                        || hit.button)
+            })
+            .map(|hit| hit.node_id)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return scope.map(|_| self.set_focus(None));
+        }
+        let current = self
+            .focused
+            .and_then(|id| candidates.iter().position(|item| *item == id));
+        let index = match (current, backwards) {
+            (Some(0), true) | (None, true) => candidates.len() - 1,
+            (Some(index), true) => index - 1,
+            (Some(index), false) => (index + 1) % candidates.len(),
+            (None, false) => 0,
+        };
+        Some(self.set_focus(Some(candidates[index])))
     }
 
     pub fn set_hover_target(&mut self, node_id: Option<u64>) -> bool {

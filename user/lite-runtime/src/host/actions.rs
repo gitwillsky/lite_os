@@ -30,6 +30,15 @@ pub enum Action {
     Restart,
     /// Send bytes to the terminal helper.
     TerminalInput(Vec<u8>),
+    /// Replace the terminal helper's visible-grid selection.
+    TerminalSelect {
+        anchor_column: u16,
+        anchor_row: u16,
+        focus_column: u16,
+        focus_row: u16,
+    },
+    /// Move the terminal helper's scrollback viewport by signed rows.
+    TerminalScroll(i32),
     /// Request one asynchronous standard Clipboard API read.
     ClipboardRead(u64),
     /// Publish complete UTF-8 text through the standard Clipboard API.

@@ -49,6 +49,7 @@ impl Session {
         phase: PointerPhase,
         button: u32,
         buttons: u32,
+        modifiers: u32,
         serial: u64,
     ) -> io::Result<()> {
         let hit = self.routing.iter().rev().find(|node| {
@@ -136,6 +137,7 @@ impl Session {
             phase,
             button,
             buttons,
+            modifiers,
             x: (x - bounds.x) / scale,
             y: (y - bounds.y) / scale,
         };

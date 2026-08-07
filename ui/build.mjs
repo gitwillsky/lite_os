@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -13,6 +13,53 @@ const products = [
   ["my-computer", "src/my-computer/entry.tsx", "src/my-computer/style.css"],
   ["music-player", "src/music-player/entry.tsx", "src/music-player/style.css"],
 ];
+
+const asset = (source, outputName = basename(source)) => [source, outputName];
+// One source-of-truth manifest drives both packaging and `--check`. Without
+// validating this list in check mode, a JSX asset reference can typecheck while
+// release packaging later fails because its self-hosted bitmap is absent.
+const productAssets = {
+  desktop: [
+    ...["liteos.png", "files.png", "terminal.png", "package.png", "settings.png", "wallpaper.png"]
+      .map((name) => asset(`../assets/aurora/${name}`)),
+    asset("../assets/music-online-src/app-256.png", "music.png"),
+    ...["volume.png", "all-apps.png", "restart.png", "power.png"]
+      .map((name) => asset(`../assets/aurora-glyphs-src/${name}`)),
+    asset("../assets/splash/aurora-background.png"),
+    asset("../assets/splash/aurora-logo.png"),
+  ],
+  terminal: [asset("../assets/aurora/terminal.png")],
+  "file-manager": [
+    asset("../assets/aurora/files.png"),
+    asset("../assets/aurora/view-grid.png"),
+    ...["nav-back.png", "nav-forward.png", "nav-up.png", "nav-home.png"]
+      .map((name) => asset(`../assets/aurora-glyphs-src/${name}`)),
+    ...["home.png", "documents.png", "downloads.png", "pictures.png", "music.png", "videos.png", "storage.png"]
+      .map((name) => asset(`../assets/aurora-sidebar-src/${name}`, `sidebar-${name}`)),
+    ...["file.png", "folder.png", "folder-16.png", "file-16.png", "caret-down.png"]
+      .map((name) => asset(`../assets/sprites-src/${name}`)),
+  ],
+  "my-computer": [
+    ...["package.png", "files.png", "view-grid.png"]
+      .map((name) => asset(`../assets/aurora/${name}`)),
+    ...["nav-back.png", "nav-forward.png", "nav-up.png"]
+      .map((name) => asset(`../assets/aurora-glyphs-src/${name}`)),
+    asset("../assets/sprites-src/icon-drive.png", "drive.png"),
+    asset("../assets/sprites-src/icon-drive-16.png", "drive-16.png"),
+    ...["file.png", "folder.png", "folder-16.png", "file-16.png", "chev-up.png", "chev-down.png", "caret-down.png"]
+      .map((name) => asset(`../assets/sprites-src/${name}`)),
+  ],
+  "music-player": [
+    asset("../assets/music-online-src/app-256.png", "music.png"),
+    asset("../assets/sprites-src/folder.png"),
+    asset("../assets/sprites-src/file-16.png"),
+    ...[
+      "badge-netease.png", "badge-qq.png", "play.png", "pause.png",
+      "prev.png", "next.png", "search.png",
+      "cover-placeholder.png",
+    ].map((name) => asset(`../assets/music-online-src/${name}`)),
+  ],
+};
 
 const liteModules = {
   "lite:apps": `
@@ -37,6 +84,9 @@ const liteModules = {
     globalThis.liteTerminalSubscribe = (callback) => globalThis.__liteSubscribe("terminal", callback);
     export const connect = (argv) => JSON.parse(globalThis.__liteNative("terminal.connect", JSON.stringify(argv)));
     export const input = (event) => globalThis.__liteNative("terminal.input", JSON.stringify(event));
+    export const select = (anchorColumn, anchorRow, focusColumn, focusRow) =>
+      globalThis.__liteNative("terminal.select", [anchorColumn, anchorRow, focusColumn, focusRow].join(":"));
+    export const scroll = (lines) => globalThis.__liteNative("terminal.scroll", String(lines));
     export const paste = (text) => globalThis.__liteNative("terminal.paste", text);
   `,
   "lite:audio-system": `
@@ -141,6 +191,24 @@ const reactSystemPlugin = {
     }));
   },
 };
+
+const buildProduct = (id, entryName, outfile) => build({
+  entryPoints: [join(root, entryName)],
+  ...(outfile ? { outfile } : { write: false }),
+  bundle: true,
+  format: "esm",
+  platform: "neutral",
+  target: "es2023",
+  jsx: "automatic",
+  minifySyntax: true,
+  minifyWhitespace: true,
+  define: { "process.env.NODE_ENV": '"production"' },
+  plugins: [liteModulePlugin(id), reactSystemPlugin],
+  logLevel: "warning",
+});
+
+const referencedAssets = (source) =>
+  Array.from(source.matchAll(/["']assets\/([^"']+)["']/g), (match) => match[1]);
 
 const properties = new Set([
   "accent-color", "align-items", "background", "background-color", "background-image", "background-position",
@@ -250,84 +318,30 @@ for (const [id, entryName, styleName] of products) {
   // 共享主题在前、app 自有样式在后，后者可覆盖同名类。整体过验证器。
   const style = `${sharedTheme}\n${appStyle}`;
   validateCss(stylePath, style);
-  if (checkOnly) continue;
+  const assetsToPackage = productAssets[id];
+  await Promise.all(assetsToPackage.map(([source]) => readFile(join(root, source))));
+  if (checkOnly) {
+    const bundle = await buildProduct(id, entryName);
+    const references = bundle.outputFiles.flatMap((file) => referencedAssets(file.text));
+    references.push(...referencedAssets(appStyle));
+    if (id !== "desktop") {
+      references.push(...referencedAssets(await readFile(join(root, `src/${id}/app.json`), "utf8")));
+    }
+    const packaged = new Set(assetsToPackage.map(([, outputName]) => outputName));
+    const missing = Array.from(new Set(references.filter((name) => !packaged.has(name))));
+    if (missing.length > 0) {
+      throw new Error(`${id}: referenced assets are not packaged: ${missing.join(", ")}`);
+    }
+    continue;
+  }
   const directory = join(output, id);
   await mkdir(directory, { recursive: true });
-  await build({
-    entryPoints: [join(root, entryName)],
-    outfile: join(directory, "main.js"),
-    bundle: true,
-    format: "esm",
-    platform: "neutral",
-    target: "es2023",
-    jsx: "automatic",
-    minifySyntax: true,
-    minifyWhitespace: true,
-    define: { "process.env.NODE_ENV": '"production"' },
-    plugins: [liteModulePlugin(id), reactSystemPlugin],
-    logLevel: "warning",
-  });
+  await buildProduct(id, entryName, join(directory, "main.js"));
   await writeFile(join(directory, "style.css"), style);
   const assets = join(directory, "assets");
   await mkdir(assets, { recursive: true });
-  if (id === "desktop") {
-    for (const name of ["liteos.png", "files.png", "terminal.png", "monitor.png", "package.png", "settings.png", "wallpaper.png"]) {
-      await copyFile(join(root, `../assets/aurora/${name}`), join(assets, name));
-    }
-    // System shell glyphs referenced by the live status and session controls.
-    for (const name of ["volume.png", "all-apps.png", "restart.png", "power.png"]) {
-      await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
-    }
-    await copyFile(join(root, "../assets/splash/aurora-background.png"), join(assets, "aurora-background.png"));
-    await copyFile(join(root, "../assets/splash/aurora-logo.png"), join(assets, "aurora-logo.png"));
-  }
-  if (id === "file-manager") {
-    await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
-    await copyFile(join(root, "../assets/aurora/view-grid.png"), join(assets, "view-grid.png"));
-    // Toolbar navigation uses the shared 48px Aurora glyph masters.
-    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png", "nav-home.png"]) {
-      await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
-    }
-    for (const name of ["home.png", "documents.png", "downloads.png", "pictures.png", "music.png", "videos.png", "storage.png"]) {
-      await copyFile(join(root, `../assets/aurora-sidebar-src/${name}`), join(assets, `sidebar-${name}`));
-    }
-    await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
-    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
-    await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
-  }
-  if (id === "my-computer") {
-    await copyFile(join(root, "../assets/aurora/package.png"), join(assets, "package.png"));
-    await copyFile(join(root, "../assets/aurora/files.png"), join(assets, "files.png"));
-    await copyFile(join(root, "../assets/aurora/view-grid.png"), join(assets, "view-grid.png"));
-    // Toolbar navigation uses the shared 48px Aurora glyph masters.
-    for (const name of ["nav-back.png", "nav-forward.png", "nav-up.png"]) {
-      await copyFile(join(root, `../assets/aurora-glyphs-src/${name}`), join(assets, name));
-    }
-    await copyFile(join(root, "../assets/sprites-src/icon-drive.png"), join(assets, "drive.png"));
-    await copyFile(join(root, "../assets/sprites-src/icon-drive-16.png"), join(assets, "drive-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/file.png"), join(assets, "file.png"));
-    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
-    await copyFile(join(root, "../assets/sprites-src/folder-16.png"), join(assets, "folder-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
-    await copyFile(join(root, "../assets/sprites-src/chev-up.png"), join(assets, "chev-up.png"));
-    await copyFile(join(root, "../assets/sprites-src/chev-down.png"), join(assets, "chev-down.png"));
-    await copyFile(join(root, "../assets/sprites-src/caret-down.png"), join(assets, "caret-down.png"));
-  }
-  if (id === "music-player") {
-    await copyFile(join(root, "../assets/aurora/monitor.png"), join(assets, "monitor.png"));
-    await copyFile(join(root, "../assets/sprites-src/folder.png"), join(assets, "folder.png"));
-    await copyFile(join(root, "../assets/sprites-src/file-16.png"), join(assets, "file-16.png"));
-    await copyFile(join(root, "../assets/music/跟太阳系说再见/cover.png"), join(assets, "solar-system-cover.png"));
-    // Codex-generated online-music UI glyphs (Aurora cyan/purple theme).
-    for (const name of [
-      "badge-netease.png", "badge-qq.png", "play.png", "pause.png",
-      "prev.png", "next.png", "search.png", "buffering.png",
-      "cover-placeholder.png",
-    ]) {
-      await copyFile(join(root, `../assets/music-online-src/${name}`), join(assets, name));
-    }
+  for (const [source, outputName] of assetsToPackage) {
+    await copyFile(join(root, source), join(assets, outputName));
   }
   if (id !== "desktop") {
     await copyFile(join(root, `src/${id}/app.json`), join(directory, "app.json"));

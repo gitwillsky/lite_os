@@ -23,7 +23,7 @@ impl HostExtension for DesktopTestExt {
     ) -> Option<Result<String, EngineError>> {
         match operation {
             // Two shipped bundles are enough for the launcher-driven tests.
-            "apps.list" => Some(Ok(r#"[{"id":"music-player","name":"Music","description":"","icon":"assets/monitor.png"},{"id":"terminal","name":"Terminal","description":"","icon":"assets/terminal.png"}]"#.to_owned())),
+            "apps.list" => Some(Ok(r#"[{"id":"music-player","name":"Music","description":"","icon":"assets/music.png"},{"id":"terminal","name":"Terminal","description":"","icon":"assets/terminal.png"}]"#.to_owned())),
             "apps.launch" => {
                 cx.push_action(Action::Launch(payload.to_owned()));
                 Some(Ok(String::new()))
@@ -580,7 +580,7 @@ fn command_launch_unmounts_the_panel_in_the_same_react_commit() {
                 == Some("command-app")
                 && descendants(node).into_iter().any(|child| {
                     child.props.get("src").and_then(serde_json::Value::as_str)
-                        == Some("assets/monitor.png")
+                        == Some("assets/music.png")
                 })
         })
         .and_then(|node| node.props.get("onClick"))

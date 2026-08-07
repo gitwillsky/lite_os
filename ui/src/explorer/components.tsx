@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { FsEntry } from "lite:fs";
 import { SystemIcon, TextInput } from "../design-system/controls.tsx";
 import type { MenuItem } from "../design-system/controls.tsx";
@@ -11,6 +11,20 @@ export type { MenuItem };
 // evdev keycodes delivered on a focused input's onKeyDown for commit/cancel.
 const KEY_ESC = 1;
 const KEY_ENTER = 28;
+const KEY_UP = 103;
+const KEY_LEFT = 105;
+const KEY_RIGHT = 106;
+const KEY_DOWN = 108;
+
+function handleTreeKey(rawEvent: unknown, expanded: boolean, expandable: boolean, onToggle: () => void) {
+  const event = rawEvent as unknown as LiteKeyEvent;
+  if (![KEY_UP, KEY_LEFT, KEY_RIGHT, KEY_DOWN].includes(event.code)) return;
+  // Tree controls own directional keys. Letting them bubble would move the
+  // unrelated file-list selection while focus visibly remains in the tree.
+  event.stopPropagation();
+  if (event.value !== 1 || event.modifiers !== 0 || !expandable) return;
+  if ((event.code === KEY_RIGHT && !expanded) || (event.code === KEY_LEFT && expanded)) onToggle();
+}
 
 /** Inline rename field shared by the icon/list/details views. Explorer behavior:
  * the box hugs the current text (real atlas advances, recomputed on every
@@ -34,7 +48,7 @@ export function RenameInput({ value, maxWidth, onChange, onCommit, onCancel }: {
       onInput={onChange}
       onKeyDown={(rawEvent) => {
         const key = rawEvent as { code: number; value: number };
-        if (key.value === 0) return;
+        if (key.value !== 1) return;
         if (key.code === KEY_ENTER) onCommit();
         else if (key.code === KEY_ESC) onCancel();
       }}
@@ -46,6 +60,9 @@ interface FolderViewChrome {
   viewMode: ViewMode;
   entries: FsEntry[];
   error: string | null;
+  notice: string | null;
+  /** Empty-folder/search result message in the owning app's locale. */
+  emptyLabel: string;
   iconLarge: (entry: FsEntry) => string;
   iconSmall: (entry: FsEntry) => string;
   entryType: (entry: FsEntry) => string;
@@ -55,12 +72,14 @@ interface FolderViewChrome {
   sort: SortState;
   onSort: (column: SortColumn) => void;
   selected: string[];
+  /** Names cut from the visible directory, rendered subdued until Paste. */
+  cut: string[];
   renaming: string | null;
   renameDraft: string;
   /** Icon-cell content width the rename box may not exceed (list/details use
    * a wider fixed cap). */
   renameMaxWidth: number;
-  onSelect: (entry: FsEntry) => void;
+  onSelect: (entry: FsEntry, modifiers: number) => void;
   onOpen: (entry: FsEntry) => void;
   onEntryMenu: (entry: FsEntry, x: number, y: number) => void;
   onBlankMenu?: (x: number, y: number) => void;
@@ -82,21 +101,22 @@ function HeaderCell({ className, column, label, sort, onSort }: {
 }) {
   const direction = sort.column === column ? (sort.ascending ? "sort-up" : "sort-down") : null;
   return (
-    <span className={className} onClick={() => onSort(column)}>
+    <button className={className} onClick={() => onSort(column)}>
       <span>{label}</span>
       {direction && <SystemIcon name={direction}/>}
-    </span>
+    </button>
   );
 }
 
 interface RowProps {
   entry: FsEntry;
   selected: boolean;
+  cut: boolean;
   renaming: boolean;
   renameDraft: string;
   renameMaxWidth: number;
   icon: string;
-  onSelect: (entry: FsEntry) => void;
+  onSelect: (entry: FsEntry, modifiers: number) => void;
   onOpen: (entry: FsEntry) => void;
   onEntryMenu: (entry: FsEntry, x: number, y: number) => void;
   onRenameDraftChange: (value: string) => void;
@@ -106,10 +126,15 @@ interface RowProps {
 
 function rowCallbacks(props: RowProps) {
   return {
-    onClick: () => props.onSelect(props.entry),
+    onClick: (rawEvent: unknown) => {
+      const event = rawEvent as LitePointerEvent;
+      event.stopPropagation();
+      props.onSelect(props.entry, event.modifiers);
+    },
     onDoubleClick: () => props.onOpen(props.entry),
     onContextMenu: (rawEvent: unknown) => {
-      const event = rawEvent as { x: number; y: number };
+      const event = rawEvent as LitePointerEvent;
+      event.stopPropagation();
       props.onEntryMenu(props.entry, event.x, event.y);
     },
   };
@@ -134,7 +159,7 @@ function RenameOrLabel({ className, name, props }: {
 }
 
 function IconCell(props: RowProps) {
-  const className = `icon-cell${props.selected ? " icon-cell--sel" : ""}`;
+  const className = `icon-cell${props.selected ? " icon-cell--sel" : ""}${props.cut ? " icon-cell--cut" : ""}`;
   return (
     <div className={className} {...rowCallbacks(props)}>
       <img className="icon-cell__img" src={props.icon}/>
@@ -144,7 +169,7 @@ function IconCell(props: RowProps) {
 }
 
 function ListRow(props: RowProps) {
-  const className = `list-row${props.selected ? " list-row--sel" : ""}`;
+  const className = `list-row${props.selected ? " list-row--sel" : ""}${props.cut ? " list-row--cut" : ""}`;
   return (
     <div className={className} {...rowCallbacks(props)}>
       <img className="list-row__img" src={props.icon}/>
@@ -158,7 +183,7 @@ function DetailsRow(props: RowProps & {
   size: string;
   mtime: string;
 }) {
-  const className = `details-row${props.selected ? " details-row--sel" : ""}`;
+  const className = `details-row${props.selected ? " details-row--sel" : ""}${props.cut ? " details-row--cut" : ""}`;
   return (
     <div className={className} {...rowCallbacks(props)}>
       <img className="details-row__img" src={props.icon}/>
@@ -174,10 +199,11 @@ function DetailsRow(props: RowProps & {
  * selection, inline rename and context menus. All fs logic lives in the
  * `useBrowser` hook; this component is pure rendering. */
 export function FolderView(props: FolderViewChrome) {
-  const { viewMode, entries, error, selected, renaming, renameDraft } = props;
+  const { viewMode, entries, error, notice, selected, renaming, renameDraft } = props;
   const rowProps = (entry: FsEntry): RowProps => ({
     entry,
     selected: selected.includes(entry.name),
+    cut: props.cut.includes(entry.name),
     renaming: renaming === entry.name,
     renameDraft,
     renameMaxWidth: viewMode === "icons" ? props.renameMaxWidth : 280,
@@ -199,18 +225,22 @@ export function FolderView(props: FolderViewChrome) {
       } : undefined}
     >
       {error && <div className="folder-view__note">{error}</div>}
+      {notice && <div className="folder-view__notice">{notice}</div>}
       {props.heading && <div className="cat-heading">{props.heading}</div>}
-      {viewMode === "icons" && (
+      {entries.length === 0 && !error && (
+        <div className="folder-view__empty">{props.emptyLabel}</div>
+      )}
+      {entries.length > 0 && viewMode === "icons" && (
         <div className="icon-grid">
           {entries.map((entry) => <IconCell key={entry.name} {...rowProps(entry)}/>)}
         </div>
       )}
-      {viewMode === "list" && (
+      {entries.length > 0 && viewMode === "list" && (
         <div className="list-view">
           {entries.map((entry) => <ListRow key={entry.name} {...rowProps(entry)}/>)}
         </div>
       )}
-      {viewMode === "details" && (
+      {entries.length > 0 && viewMode === "details" && (
         <div className="details-view">
           <div className="details-header">
             <HeaderCell className="details-col-name" column="name" label={props.columns.name} sort={props.sort} onSort={props.onSort}/>
@@ -238,13 +268,14 @@ export function subdirs(path: string): FsEntry[] {
   return fsListing(path).entries.filter((entry) => entry.kind === "dir" || entry.kind === "symlink");
 }
 
-function TreeRow({ path, label, icon, depth, current, expanded, onToggle, onNavigate }: {
+function TreeRow({ path, label, icon, depth, current, expanded, expandable, onToggle, onNavigate }: {
   path: string;
   label: string;
   icon: string;
   depth: number;
   current: boolean;
   expanded: boolean;
+  expandable: boolean;
   onToggle: () => void;
   onNavigate: (path: string) => void;
 }) {
@@ -253,28 +284,72 @@ function TreeRow({ path, label, icon, depth, current, expanded, onToggle, onNavi
     <div
       className={className}
       style={{ paddingLeft: 4 + depth * 14 }}
-      onClick={() => onNavigate(path)}
     >
-      <span className="tree__toggle" onClick={onToggle}>
-        <SystemIcon name={expanded ? "chevron-down" : "chevron-right"}/>
-      </span>
-      <img className="tree__icon" src={icon}/>
-      <span className="tree__label">{label}</span>
+      {expandable ? (
+        <button
+          className="tree__toggle"
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${label}`}
+          aria-expanded={expanded}
+          onKeyDown={(event) => handleTreeKey(event, expanded, expandable, onToggle)}
+          onClick={onToggle}
+        >
+          <SystemIcon name={expanded ? "chevron-down" : "chevron-right"}/>
+        </button>
+      ) : <span className="tree__toggle"/>}
+      <button
+        className="tree__destination"
+        aria-current={current ? "page" : undefined}
+        onKeyDown={(event) => handleTreeKey(event, expanded, expandable, onToggle)}
+        onClick={() => onNavigate(path)}
+      >
+        <img className="tree__icon" src={icon} alt=""/>
+        <span className="tree__label">{label}</span>
+      </button>
     </div>
   );
 }
 
-/** Lazy-loaded directory tree. Children are listed on first
- * expand (lite:fs list is synchronous), the chevron toggles expansion, clicking a row
- * navigates. The current location's row stays highlighted. */
-export function FolderTree({ roots, currentPath, listDirs, onNavigate }: {
+/** Lazy-loaded directory tree. Children are listed on first expand or while
+ * revealing the current path (lite:fs list is synchronous); the chevron
+ * toggles expansion and clicking a row navigates. */
+export function FolderTree({ roots, currentPath, revision, listDirs, onNavigate }: {
   roots: { path: string; label: string; icon: string }[];
   currentPath: string;
+  /** Changes after filesystem mutations so expanded nodes do not stay stale. */
+  revision: unknown;
   listDirs: (path: string) => FsEntry[];
   onNavigate: (path: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(() => new Map());
+  useEffect(() => {
+    if (!currentPath.startsWith("/") || currentPath === "/") return;
+    const parts = currentPath.split("/").filter(Boolean);
+    const parents = ["/"];
+    let parent = "";
+    for (const part of parts.slice(0, -1)) {
+      parent += `/${part}`;
+      parents.push(parent);
+    }
+    setExpanded((current) => {
+      if (parents.every((path) => current.has(path))) return current;
+      const next = new Set(current);
+      for (const path of parents) next.add(path);
+      return next;
+    });
+    setChildren((current) => {
+      if (parents.every((path) => current.has(path))) return current;
+      const next = new Map(current);
+      for (const path of parents) {
+        if (!next.has(path)) next.set(path, listDirs(path));
+      }
+      return next;
+    });
+  }, [currentPath, listDirs]);
+  useEffect(() => {
+    if (expanded.size === 0) return;
+    setChildren(new Map(Array.from(expanded, (path) => [path, listDirs(path)])));
+  }, [expanded, listDirs, revision]);
   const toggle = (path: string) => {
     setExpanded((current) => {
       const next = new Set(current);
@@ -289,6 +364,7 @@ export function FolderTree({ roots, currentPath, listDirs, onNavigate }: {
 
   const renderNode = (path: string, label: string, icon: string, depth: number): React.ReactNode[] => {
     const open = expanded.has(path);
+    const knownChildren = children.get(path);
     const rows: React.ReactNode[] = [
       <TreeRow
         key={path}
@@ -298,12 +374,13 @@ export function FolderTree({ roots, currentPath, listDirs, onNavigate }: {
         depth={depth}
         current={currentPath === path}
         expanded={open}
+        expandable={knownChildren === undefined || knownChildren.length > 0}
         onToggle={() => toggle(path)}
         onNavigate={onNavigate}
       />,
     ];
     if (open) {
-      for (const entry of children.get(path) ?? []) {
+      for (const entry of knownChildren ?? []) {
         rows.push(...renderNode(`${path === "/" ? "" : path}/${entry.name}`, entry.name, "assets/folder-16.png", depth + 1));
       }
     }

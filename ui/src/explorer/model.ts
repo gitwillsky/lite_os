@@ -6,13 +6,24 @@ export const KEY_ESC = 1;
 export const KEY_BACKSPACE = 14;
 export const KEY_ENTER = 28;
 export const KEY_A = 30;
+export const KEY_L = 38;
 export const KEY_X = 45;
 export const KEY_C = 46;
 export const KEY_V = 47;
+export const KEY_N = 49;
 export const KEY_F2 = 60;
+export const KEY_F5 = 63;
+export const KEY_UP = 103;
+export const KEY_LEFT = 105;
+export const KEY_RIGHT = 106;
+export const KEY_DOWN = 108;
 export const KEY_DELETE = 111;
+/** display-proto modifier mask bit for either Shift key. */
+export const MOD_SHIFT = 1;
 /** display-proto modifier mask bit for either Ctrl key. */
 export const MOD_CONTROL = 2;
+/** display-proto modifier mask bit for either Alt key. */
+export const MOD_ALT = 4;
 
 // Logical-pixel advances of the checked liteos-ui.a8p regular face at 11px
 // (atlas pixel_size 22 ÷ deviceScaleFactor 2), extracted from the atlas itself
@@ -58,6 +69,46 @@ export function baseName(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   const cut = trimmed.lastIndexOf("/");
   return cut < 0 ? trimmed : trimmed.slice(cut + 1);
+}
+
+/** Returns an unused Explorer-style copy name, preserving file suffixes only. */
+export function freshCopyName(taken: Set<string>, original: string, preserveSuffix = true): string {
+  if (!taken.has(original)) return original;
+  const dot = original.lastIndexOf(".");
+  const hasSuffix = preserveSuffix && dot > 0 && dot < original.length - 1;
+  const stem = hasSuffix ? original.slice(0, dot) : original;
+  const suffix = hasSuffix ? original.slice(dot) : "";
+  let index = 1;
+  let candidate = `${stem} copy${suffix}`;
+  while (taken.has(candidate)) {
+    index += 1;
+    candidate = `${stem} copy (${index})${suffix}`;
+  }
+  return candidate;
+}
+
+/** Maps stable filesystem errno names to concise explorer-facing copy. */
+export function formatFsError(code: string, language: "en" | "zh"): string {
+  const messages = language === "zh" ? {
+    EEXIST: "目标位置已存在同名项目。",
+    EACCES: "没有权限执行此操作。",
+    EPERM: "此操作不被允许。",
+    ENOENT: "项目或位置已不存在。",
+    ENOSPC: "磁盘空间不足。",
+    EINVAL: "名称或目标位置无效。",
+    EISDIR: "目标是文件夹，无法按文件处理。",
+    ENOTDIR: "路径中的某一项不是文件夹。",
+  } : {
+    EEXIST: "An item with that name already exists at the destination.",
+    EACCES: "You do not have permission to perform this operation.",
+    EPERM: "This operation is not permitted.",
+    ENOENT: "The item or location no longer exists.",
+    ENOSPC: "There is not enough free disk space.",
+    EINVAL: "The name or destination is invalid.",
+    EISDIR: "The destination is a folder, not a file.",
+    ENOTDIR: "Part of the path is not a folder.",
+  };
+  return messages[code as keyof typeof messages] ?? code;
 }
 
 export function formatSize(entry: FsEntry): string {

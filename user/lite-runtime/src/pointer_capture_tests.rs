@@ -12,6 +12,7 @@ fn hit(node_id: u64, pointer_move: u64, pointer_up: u64) -> HitRegion {
         y: 0.0,
         width: 10.0,
         height: 10.0,
+        focus_scope: None,
         pointer_down: Some(1),
         pointer_move: Some(pointer_move),
         pointer_up: Some(pointer_up),

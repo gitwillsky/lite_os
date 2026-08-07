@@ -45,13 +45,20 @@
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
   Promise job drain、值转换、exception、heap/stack 与 interrupt budget。`lite-runtime` 只消费其安全窄接口。
 - React desktop 是 graphical session 的唯一窗口 policy owner：保存窗口位置与尺寸、层级、active state、
-  最小化/最大化、decorations、Top Bar、Dock、Workspace Overview、Command Center、System Center、
-  壁纸与应用启动。
+  最小化/最大化和 workspace assignment；Workspace Overview 负责切换 workspace 及移动已有窗口，移动
+  active 窗口离开当前 workspace 时由 desktop 选择当前 workspace 的最后一个可见窗口作为 focus fallback。
+  decorations、Top Bar、Dock、Command Center、System Center、壁纸与应用启动也只属于 desktop。
+  desktop work area 必须同时避开 Top Bar 与 Dock 的完整可见矩形；最大化窗口的状态栏和 resize target
+  不得落在 Dock 后方。
 - `terminal-session` 是无窗体 helper，独占 PTY、VT parser、screen、cursor、scrollback 与 selection；
-  React terminal 只绘制网格并转发输入、尺寸与 clipboard 操作。
+  selection 在 helper 内按可见 cell 归一化宽字符尾随格、按 soft-wrap 生成 UTF-8 文本。React terminal
+  只转发拖选/scroll 坐标、绘制 viewport 与 selection 投影，并调用标准 clipboard API。滚轮或
+  Shift+PageUp/PageDown 浏览固定 scrollback，输入时回到 live bottom；离开 live bottom 后隐藏实时 cursor。
 - LiteUI runtime 提供标准异步 `navigator.clipboard.readText()`/`writeText()`。受控文本框使用
   Ctrl/Cmd+C/X/V，当前 append-only caret 模型下 copy/cut 作用于完整 value、paste 追加到 value；
-  Terminal 使用 Ctrl+Shift+V 或 macOS Cmd+V，把 UTF-8 文本作为一帧 PTY input。
+  Terminal 使用 Ctrl+Shift+C/V 或 macOS Cmd+C/V 复制 helper 生成的 selection 文本、或把 UTF-8
+  clipboard 文本作为一帧 PTY input；右键菜单提供 Copy、Paste 与 Select visible screen，成功/失败由
+  终端内短时状态反馈呈现。
 - `ui/design-system` 是唯一 Aurora presentation owner：独占 token、窗口 chrome、系统 shell、菜单、表单、
   Sidebar、Toolbar 与 Dialog。应用只组合这些语义组件与业务内容；LiteUI theme-free，compositor 不包含窗口主题。
   `SystemIcon` 是排序、树形展开、搜索与状态图标的唯一入口；`assets/fonts/liteos-icons.json` 独占名称/PUA
@@ -158,7 +165,9 @@
 - host primitive 固定为 `<div>`、`<span>`、`<img>`、`<input>`、`<button>` 与 `<audio>`；
   `<input>` 支持受控文本框和标准水平 `type=range`：range 的 min/max/step/value 由 renderer
   规范化，pointer drag 与方向键默认动作派发字符串 `onInput`，UA 轨道/滑块由 renderer 绘制并消费
-  标准 `accent-color` 计算值。
+  标准 `accent-color` 计算值。button、文本 input 与 enabled range 进入 paint-order Tab/Shift+Tab
+  顺序；`data-lite-focus-scope` 让 modal/menu/shell panel 自动捕获焦点、scope 内循环并在关闭后恢复
+  opener。没有任何 focusable hit 的应用不消费 Tab，因此 Terminal 仍把它发送给 PTY。
   `<audio>` 投影冻结的 HTMLMediaElement playback surface 与 UA controls，其他 controls 是 React
   component。desktop 用带 `data-lite-window`/`data-lite-surface` 的 `<div>` 把 decoration 与 foreign
   surface 标为同一 compositor move group，不新增私有 `<window>`/`<surface>` primitive。
@@ -185,8 +194,9 @@
   子树先离屏合成再整体按 alpha 混合。`pointer-events: none` 关闭整个子树的 hit/scroll 注册，
   不支持后代用 `auto` 重新开启。`box-sizing` 支持 `content-box`/`border-box`，但 UA 默认是
   `border-box`（偏离 Web 初始值 `content-box`），theme.css 全部按 border-box 编写。
-  CSS Transforms 支持不改变 layout 的 `translate()`/`translateX()`/`translateY()`，paint、descendant
-  coordinate 与 hit region 使用同一变换；CSS Animations 支持 `@keyframes` 的 `from`/`to`/百分比帧及
+  CSS Transforms 支持不改变 layout 的 `translate()`/`translateX()`/`translateY()`；`px` 直接映射逻辑
+  像素，百分比按节点自身 border box 的宽/高解析，paint、descendant coordinate 与 hit region 使用同一
+  变换；CSS Animations 支持 `@keyframes` 的 `from`/`to`/百分比帧及
   单项 `animation` shorthand，CSS Transitions 支持单 property `transition` shorthand。数值、px 长度
   与 translate 在 presentation timeline 上插值，其他 property 按 discrete interpolation；`display`
   与 `none` 之间按 Web 离散特例在进入时的 0%/退出时的 100% 切换；
@@ -229,34 +239,42 @@
 ## 应用与构建
 
 - launchable app 位于 `/usr/share/liteos/apps/<id>/`，固定包含 `app.json`、`main.js`、`style.css` 与
-  `assets/icon.png`；目录名必须等于 manifest id。desktop bundle 独立位于
+  manifest `icon` 指向的 app-relative 自持 PNG；目录名必须等于 manifest id。desktop launcher 将该名称
+  约束到 desktop 自身实际发布的 app identity icon 集合。desktop bundle 独立位于
   `/usr/share/liteos/desktop/`，不会进入应用 registry。
 - host 以单一 `package-lock.json`、esbuild 和 `lite-ui-build` 构建 JS/JSX/TS/TSX；target 不包含
   Node/npm、dev server、HMR、runtime download 或 QuickJS bytecode。React/runtime module 只安装一次到
-  `/usr/lib/lite-runtime/`。
+  `/usr/lib/lite-runtime/`。每个 product 的自持 bitmap 由同一 asset manifest 同时驱动 `--check` 与
+  release copy；资源缺失必须在静态检查阶段失败，不能等 rootfs 打包时才发现。
 - target ESM loader 只接受固定 system bare specifier；项目相对 import 在 host 合并进 `main.js`。
   不支持 runtime relative/dynamic import、CommonJS、remote import 或 version negotiation。
 - desktop-only `lite:apps` 扫描一层 registry，提供只读 metadata、opaque icon 与 `launch(id)`；
   desktop-only `lite:desktop` 提供 surface lifecycle/configure/close/move 与 `setAccelerators(chords)`
   （全量替换 global accelerator table，不超过 16 条，空表清空；chord 命中后的完整 down/up sequence
-  经全局 `onKeyDown` 到达 desktop）。desktop 注册 Ctrl+Space（切换 Command Center）、Alt+Tab
-  （按当前 z-order 激活下一非最小化窗口）与 Alt+F4（关闭 active 窗口），并以 `shutdown()`/
+  经全局 `onKeyDown` 到达 desktop）。desktop 注册 Ctrl+Space（切换 Command Center）、Alt+Tab/
+  Shift+Alt+Tab（在一次 Alt 按住周期的稳定 workspace 窗口快照中正反遍历，激活时恢复最小化窗口）
+  、Ctrl+Alt+Left/Right（循环切换 workspace 并恢复其最后一个可见窗口）与 Alt+F4（关闭 active 窗口），并以 `shutdown()`/
   `restart()` 发起显式电源操作。desktop-only `lite:audio-system` 只投影 audio-service master snapshot
   和更新请求，System Center 的音量与静音控件直接消费该唯一状态；普通 app 无法加载该 module。
   desktop 首次呈现固定启动 Files 与 Terminal；后续应用由 Command Center 或 Dock 启动。普通 helper 只通过
   `lite:process.spawn(argv, stdio)`，不解析 shell string。
+- Explorer-style apps share Ctrl+A/C/X/V/L、Ctrl+Shift+N、F2/F5/Delete、Alt+Left/Right 与
+  arrow/Enter navigation；Escape 按“关闭 modal/menu → 清搜索 → 取消 cut 或清选择”的可见状态顺序处理。
+  Files 首页文件夹与 Recent action 复用标准 button activation，因此 pointer 单击与键盘 Enter/Space 都能打开；
+  My Computer 的文件树将 Left/Right 留给展开/折叠，不得把方向键冒泡成右侧文件列表选择。
 
 ## 当前边界
 
 - GUI 进程当前与 desktop 同等可信，但不共享 DRM OFD。应用只提交有界 GPU display list 与 immutable
   texture payload；compositor 是 VirGL context、resource、render target 与 scanout 的唯一 owner。
   权限模型和进一步隔离 transport 属于后续破坏性协议升级。
-- input v1 只有 US keyboard、pointer、wheel、focus、repeat、plain-text clipboard 与基础 keyboard
+- input v1 只有 US keyboard、携带 Shift/Ctrl/Alt/Super 快照的 pointer、wheel、focus、repeat、plain-text clipboard 与基础 keyboard
   accessibility；`cursor` 只支持固定 arrow、hidden、pointer 与四向 resize shape，不支持 URL/custom bitmap。
   非默认 CSS cursor 即使没有 React listener 也建立命中区域；host/style 重绘后会在最新 pointer position
   重新求值，因此元素消失或 `pointer-events` 改变不需要用户移动鼠标才能恢复正确 cursor。
   clipboard 单次最多 60 KiB UTF-8，不支持 image、file、HTML、primary selection 或 Finder
-  drag-and-drop。无 IME、dead key、layout switch、ARIA/screen reader、drag-and-drop 或 touch。
+  drag-and-drop。Terminal 拖选范围限于当前可见 viewport；无 IME、dead key、layout switch、
+  ARIA/screen reader、drag-and-drop 或 touch。
 - Web media 当前只提供标准音频播放，不提供 capture、Web Audio、MSE、MediaStream、remote playback、
   EME、track 或非 `1x` playbackRate；精确 codec 与状态边界见音频领域文档。
 - 视觉还原不生成 screenshot preview 或 Golden，不进入自动门禁；最终由真实启动人工验收。

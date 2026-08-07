@@ -31,12 +31,19 @@
 .player-button {
   min-width: 64px;
   height: 32px;
+  gap: 6px;
   padding: 0 12px;
   border: 1px solid var(--aurora-border);
   border-radius: 9px;
   color: var(--aurora-muted);
   background: rgba(25, 38, 59, 0.62);
   white-space: nowrap;
+}
+
+.player-button__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
 }
 
 .player-button:hover {
@@ -247,6 +254,16 @@
   color: #ffd7de;
   background: rgba(126, 22, 47, 0.5);
   text-align: center;
+}
+
+.player__notice {
+  display: flex;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(53, 200, 255, 0.34);
+  border-radius: 9px;
+  color: var(--aurora-cyan);
+  background: rgba(53, 200, 255, 0.08);
 }
 
 .player__library {

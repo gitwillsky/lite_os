@@ -59,8 +59,37 @@ export function CannotOpenDialog({ name, message, onClose, closeLabel }: {
   closeLabel: string;
 }) {
   return (
-    <Dialog title={name} onClose={onClose}>
+    <Dialog
+      title={name}
+      onClose={onClose}
+      actions={<Button label={closeLabel} default onClick={onClose}/>}
+    >
       <div className="dialog__note"><span>{message(name)}</span></div>
+    </Dialog>
+  );
+}
+
+/** Explicit confirmation before permanent filesystem deletion. */
+export function DeleteConfirmDialog({ title, message, deleteLabel, cancelLabel, onConfirm, onClose }: {
+  title: string;
+  message: string;
+  deleteLabel: string;
+  cancelLabel: string;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      title={title}
+      onClose={onClose}
+      actions={(
+        <>
+          <Button label={cancelLabel} onClick={onClose}/>
+          <Button label={deleteLabel} danger default onClick={onConfirm}/>
+        </>
+      )}
+    >
+      <div className="dialog__note"><span>{message}</span></div>
     </Dialog>
   );
 }
@@ -74,14 +103,17 @@ export function PropertiesDialog({ title, rows, onClose, closeLabel }: {
   closeLabel: string;
 }) {
   return (
-    <Dialog title={title} onClose={onClose}>
+    <Dialog
+      title={title}
+      onClose={onClose}
+      actions={<Button label={closeLabel} default onClick={onClose}/>}
+    >
       {rows.map(([label, value]) => (
         <div key={label} className="properties-row">
           <span className="properties-row__label">{label}</span>
           <span className="properties-row__value">{value}</span>
         </div>
       ))}
-      <Button label={closeLabel} default onClick={onClose}/>
     </Dialog>
   );
 }

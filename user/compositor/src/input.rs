@@ -225,6 +225,7 @@ impl Input {
             PointerPhase::Motion,
             0,
             self.buttons,
+            self.modifiers,
             self.take_serial(),
         )
     }
@@ -253,6 +254,7 @@ impl Input {
             phase,
             button,
             self.buttons,
+            self.modifiers,
             self.take_serial(),
         )
     }

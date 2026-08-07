@@ -31,6 +31,10 @@ use crate::{
 /// Linux evdev `BTN_RIGHT`; the compositor forwards raw button codes and the
 /// right button opens context menus rather than starting a drag or click.
 const BTN_RIGHT: u32 = 273;
+const KEY_TAB: u32 = 15;
+const KEY_UP: u32 = 103;
+const KEY_DOWN: u32 = 108;
+const MOD_SHIFT: u32 = 1;
 
 #[derive(Clone, Copy)]
 pub(super) struct PointerCapture {
@@ -144,7 +148,7 @@ pub(super) fn apply_event(
 /// Routes one key event. When an `<input>` is focused and still present in the
 /// latest hits, `keydown` first bubbles from that target through its actual DOM
 /// ancestors; the renderer then applies the button/range/text default action.
-/// Otherwise the deepest global `onKeyDown` receives the transition.
+/// Otherwise the deepest visible non-form-control `onKeyDown` receives it.
 fn dispatch_key(
     state: &State,
     engine: &mut Engine,
@@ -153,6 +157,35 @@ fn dispatch_key(
     display: &Display,
     key: display_proto::InputKey,
 ) -> Result<(), Box<dyn Error>> {
+    if key.code == KEY_TAB && key.value == 1 && key.modifiers & !MOD_SHIFT == 0 {
+        if let Some(changed) =
+            renderer.traverse_focus(&interactions.hits, key.modifiers & MOD_SHIFT != 0)
+        {
+            if changed || renderer.set_active_target(None) {
+                state.invalidate_scene();
+            }
+            return Ok(());
+        }
+    }
+    let focused_scope_button = renderer.focused().is_some_and(|node_id| {
+        interactions
+            .hits
+            .iter()
+            .any(|hit| hit.node_id == node_id && hit.button && hit.focus_scope.is_some())
+    });
+    if focused_scope_button
+        && matches!(key.code, KEY_UP | KEY_DOWN)
+        && key.value != 0
+        && key.modifiers == 0
+    {
+        if renderer
+            .traverse_focus(&interactions.hits, key.code == KEY_UP)
+            .is_some_and(|changed| changed)
+        {
+            state.invalidate_scene();
+        }
+        return Ok(());
+    }
     // The focused input must still exist in the current scene; a React commit
     // may have removed it, in which case focus falls away and the key routes
     // globally (never to a stale node).
@@ -176,22 +209,38 @@ fn dispatch_key(
         if interactions.modifiers.apply(key.code, key.value) {
             return Ok(());
         }
+        let activation_key = button && matches!(key.code, 28 | 57); // KEY_ENTER / KEY_SPACE
         if key.value != 0 {
-            dispatch_bubbling(
-                engine,
-                &interactions.hits,
-                Some(node_id),
-                |hit| hit.key_down,
-                json!({
-                    "type":"key",
-                    "code":key.code,
-                    "value":key.value,
-                    "modifiers":key.modifiers
-                }),
-            )?;
+            let payload = json!({
+                "type":"key",
+                "code":key.code,
+                "value":key.value,
+                "modifiers":key.modifiers
+            });
+            if activation_key {
+                // LiteKeyEvent intentionally has no DOM target metadata, so an
+                // ancestor cannot distinguish button activation from a global
+                // Enter/Space shortcut. Keep activation keys at the focused
+                // button; its native click below is the sole action owner.
+                if let Some(listener) = interactions
+                    .hits
+                    .iter()
+                    .find(|hit| hit.node_id == node_id)
+                    .and_then(|hit| hit.key_down)
+                {
+                    dispatch_listener(engine, listener, payload)?;
+                }
+            } else {
+                dispatch_bubbling(
+                    engine,
+                    &interactions.hits,
+                    Some(node_id),
+                    |hit| hit.key_down,
+                    payload,
+                )?;
+            }
         }
         if button {
-            let activation_key = matches!(key.code, 28 | 57); // KEY_ENTER / KEY_SPACE
             if activation_key {
                 let pressed = key.value != 0;
                 if renderer.set_active_target(pressed.then_some(node_id)) {
@@ -353,6 +402,7 @@ fn dispatch_pointer(
         "y":pointer.y,
         "button":pointer.button,
         "buttons":pointer.buttons,
+        "modifiers":pointer.modifiers,
         "serial":pointer.serial
     });
     let css_target = interactions
@@ -504,6 +554,7 @@ fn dispatch_pointer(
                     "y":pointer.y,
                     "button":pointer.button,
                     "buttons":pointer.buttons,
+                    "modifiers":pointer.modifiers,
                     "serial":pointer.serial
                 });
                 dispatch_bubbling(
@@ -532,6 +583,7 @@ fn dispatch_pointer(
                             "y":pointer.y,
                             "button":pointer.button,
                             "buttons":pointer.buttons,
+                            "modifiers":pointer.modifiers,
                             "serial":pointer.serial
                         }),
                     )?;
