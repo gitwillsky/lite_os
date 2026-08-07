@@ -61,7 +61,9 @@
   callback 的唯一 owner；其他 crate 不得声明 QuickJS extern、raw pointer 或复制 exception cleanup。
 - `terminal-session` 独占 PTY child、VT state、scrollback、selection 与 dirty rows；React terminal 不得
   复制 parser/screen state。`ui/design-system` 独占 Aurora token、assets 与系统组件；应用不得复制窗口
-  chrome、shell、菜单、表单、Sidebar、Toolbar、Dialog 或结构/状态图标样式；字符不得代替系统图标。
+  chrome、shell、菜单、表单、Sidebar、Toolbar、Dialog 或结构/状态图标样式。结构/状态图标只能经 typed
+  `SystemIcon` 使用 `assets/fonts/liteos-icons.json` 生成的 PUA 映射与 checked `liteos-icons` face；普通
+  Unicode 字符、调用点硬编码 PUA 或应用直接声明该 font family 均不得代替系统图标。
   app identity icon 与 filesystem content icon 必须使用不同资产，禁止把带 tile 的应用图标复用于文件对象；
   compositor 与 LiteUI 不读取主题。
 

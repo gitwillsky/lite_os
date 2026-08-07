@@ -214,6 +214,7 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
         "/bin/terminal",
         "/bin/terminal-session",
         "/usr/lib/lite-runtime/runtime.js",
+        "/usr/share/liteos/liteos-icons.ttf",
         "/usr/share/liteos/desktop/main.js",
         "/usr/share/liteos/apps/terminal/app.json",
         "/usr/share/liteos/apps/music-player/app.json",
@@ -252,6 +253,7 @@ fn check_ui_product(root: &Path, errors: &mut Vec<String>) {
         "ui/package-lock.json",
         "ui/src/runtime/renderer.ts",
         "ui/src/design-system/shell.tsx",
+        "ui/src/design-system/system-icons.generated.ts",
         "ui/src/design-system/window.tsx",
         "ui/src/desktop/main.tsx",
         "ui/src/desktop/style.css",
@@ -398,8 +400,9 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
 }
 
 fn check_assets(root: &Path, errors: &mut Vec<String>) {
-    // Checked UI faces: subsetted Noto Sans CJK SC OpenType (CFF outlines,
-    // "OTTO" sfnt version) consumed by the runtime parley/swash text path.
+    // Checked UI text faces: subsetted Noto Sans CJK SC OpenType (CFF
+    // outlines, "OTTO" sfnt version) consumed by the runtime parley/swash
+    // text path.
     for (path, size) in [
         ("assets/fonts/liteos-ui-regular.otf", 1_528_936),
         ("assets/fonts/liteos-ui-bold.otf", 1_532_156),
@@ -408,6 +411,10 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
         if face.get(..4) != Some(b"OTTO") || face.len() != size {
             errors.push(format!("{path}: checked UI face identity changed"));
         }
+    }
+    let icon_face = fs::read(root.join("assets/fonts/liteos-icons.ttf")).unwrap_or_default();
+    if icon_face.get(..4) != Some(b"\0\x01\0\0") || icon_face.len() != 1_376 {
+        errors.push("assets/fonts/liteos-icons.ttf: checked icon face identity changed".to_owned());
     }
     let terminal_atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
     if terminal_atlas.get(..8) != Some(b"LTA8\0\0\0\x03") || terminal_atlas.len() != 9_172_472 {

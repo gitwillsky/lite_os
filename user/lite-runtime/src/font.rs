@@ -1,5 +1,6 @@
 //! Runtime proportional text: parley shaping and line breaking over the two
-//! checked Noto Sans CJK SC subsets; glyph bitmap raster lives in `raster`.
+//! checked Noto Sans CJK SC subsets and the checked LiteOS icon face; glyph
+//! bitmap raster lives in `raster`.
 
 mod gpu;
 mod raster;
@@ -24,6 +25,16 @@ use raster::{GlyphCache, GlyphKey};
 
 const REGULAR_PATH: &str = "/usr/share/liteos/liteos-ui-regular.otf";
 const BOLD_PATH: &str = "/usr/share/liteos/liteos-ui-bold.otf";
+const ICON_PATH: &str = "/usr/share/liteos/liteos-icons.ttf";
+const ICON_CSS_FAMILY: &str = "liteos-icons";
+
+/// Exact registered outline face that owns one rasterized UI glyph.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) enum FaceKind {
+    Regular,
+    Bold,
+    Icon,
+}
 
 /// Visual movement over shaped cluster boundaries in a single-line control.
 #[derive(Clone, Copy)]
@@ -75,6 +86,7 @@ const LAYOUT_CACHE_CAPACITY: usize = 512;
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct LayoutKey {
     text: String,
+    icon_family: bool,
     size_bits: u32,
     weight_bits: u32,
     leading_bits: u32,
@@ -118,19 +130,24 @@ impl LayoutCache {
 
 /// Runtime text engine for the proportional UI faces.
 ///
-/// Holds the two checked Noto Sans CJK SC subsets registered with a fontique
-/// collection, plus the parley/swash scratch contexts and the glyph/layout
-/// caches. All contexts sit behind `RefCell` because `measure`/`draw` take
-/// `&self` (callers in the paint walk hold `&Renderer`) while shaping and
-/// raster mutate scratch state; the render thread is the only caller and no
-/// method nests another `Font` call under a live borrow, so borrows never
-/// conflict.
+/// Holds the two checked Noto Sans CJK SC subsets and the checked LiteOS icon
+/// face registered with a fontique collection, plus the parley/swash scratch
+/// contexts and the glyph/layout caches. All contexts sit behind `RefCell`
+/// because `measure`/`draw` take `&self` (callers in the paint walk hold
+/// `&Renderer`) while shaping and raster mutate scratch state; the render
+/// thread is the only caller and no method nests another `Font` call under a
+/// live borrow, so borrows never conflict.
 pub struct Font {
     regular: Face,
     bold: Face,
+    icon: Face,
     /// Family name fontique parsed from the registered faces, pushed as the
     /// font stack of every layout so the collection resolves to these faces.
     family: String,
+    /// Dedicated PUA family selected only by `font-family: liteos-icons`.
+    /// Keeping it separate prevents ordinary text from silently becoming a
+    /// system icon when content happens to contain a Private Use character.
+    icon_family: String,
     fcx: RefCell<FontContext>,
     lcx: RefCell<LayoutContext<()>>,
     scx: RefCell<ScaleContext>,
@@ -139,26 +156,44 @@ pub struct Font {
 }
 
 impl Font {
-    /// Opens both checked UI faces and registers them with the collection.
+    /// Opens the three checked UI faces and registers them with the collection.
     ///
     /// # Errors
     ///
     /// Returns an error when a face is missing, unreadable, or fontique finds
     /// no family in it (truncated or wrong file).
     pub fn open() -> io::Result<Self> {
-        Self::from_faces(fs::read(REGULAR_PATH)?, fs::read(BOLD_PATH)?)
+        Self::from_faces(
+            fs::read(REGULAR_PATH)?,
+            fs::read(BOLD_PATH)?,
+            fs::read(ICON_PATH)?,
+        )
     }
 
-    /// Registers both faces from in-memory font bytes.
+    /// Registers the regular, bold, and icon faces from in-memory font bytes.
     ///
     /// `pub(crate)` for renderer integration tests, which load the checked
     /// faces from `assets/fonts` instead of the guest rootfs paths.
-    pub(crate) fn from_faces(regular: Vec<u8>, bold: Vec<u8>) -> io::Result<Self> {
+    ///
+    /// # Arguments
+    ///
+    /// * `regular` - Checked regular UI font bytes.
+    /// * `bold` - Checked bold UI font bytes.
+    /// * `icon` - Checked LiteOS PUA icon font bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any face has no family, the text faces disagree on
+    /// their family, or the icon face aliases the text family.
+    pub(crate) fn from_faces(regular: Vec<u8>, bold: Vec<u8>, icon: Vec<u8>) -> io::Result<Self> {
         let regular = Face {
             bytes: Arc::new(FaceBytes(regular.into_boxed_slice())),
         };
         let bold = Face {
             bytes: Arc::new(FaceBytes(bold.into_boxed_slice())),
+        };
+        let icon = Face {
+            bytes: Arc::new(FaceBytes(icon.into_boxed_slice())),
         };
         let mut fcx = FontContext::new();
         let mut family = None;
@@ -181,10 +216,27 @@ impl Font {
             }
             family = Some(name);
         }
+        let registered = fcx
+            .collection
+            .register_fonts(Blob::new(icon.bytes.clone()), None);
+        let Some((icon_family_id, _)) = registered.first() else {
+            return Err(invalid("icon face registers no family"));
+        };
+        let icon_family = fcx
+            .collection
+            .family_name(*icon_family_id)
+            .ok_or_else(|| invalid("icon face family name is missing"))?
+            .to_owned();
+        let family = family.expect("two text faces registered");
+        if icon_family == family {
+            return Err(invalid("icon face aliases the text family"));
+        }
         Ok(Self {
             regular,
             bold,
-            family: family.expect("two faces registered"),
+            icon,
+            family,
+            icon_family,
             fcx: RefCell::new(fcx),
             lcx: RefCell::new(LayoutContext::new()),
             scx: RefCell::new(ScaleContext::new()),
@@ -335,8 +387,10 @@ impl Font {
         let font_size = style.px("font-size", 11.0) * SCALE;
         let weight = font_weight(style);
         let leading = line_height(style, font_size);
+        let icon_family = style.get("font-family") == Some(ICON_CSS_FAMILY);
         let key = LayoutKey {
             text: text.to_owned(),
+            icon_family,
             size_bits: font_size.to_bits(),
             weight_bits: weight.value().to_bits(),
             leading_bits: leading.to_bits(),
@@ -352,8 +406,13 @@ impl Font {
         builder.push_default(StyleProperty::FontSize(font_size));
         builder.push_default(StyleProperty::FontWeight(weight));
         builder.push_default(StyleProperty::LineHeight(LineHeight::Absolute(leading)));
+        let family = if icon_family {
+            &self.icon_family
+        } else {
+            &self.family
+        };
         builder.push_default(StyleProperty::FontFamily(FontFamily::Source(
-            self.family.as_str().into(),
+            family.as_str().into(),
         )));
         if !wrap {
             builder.push_default(StyleProperty::TextWrapMode(TextWrapMode::NoWrap));
@@ -399,14 +458,30 @@ impl Font {
         kept
     }
 
-    /// Maps a shaped run's font back to the bold face by blob identity.
-    /// fontique only ever returns the two blobs registered in `from_faces`,
-    /// so a mismatch is impossible; it still falls back to regular rather
-    /// than panicking (a wrong face renders the right text at the wrong
-    /// weight).
-    fn is_bold(&self, font: &FontData) -> bool {
+    /// Maps a shaped run's font back to its checked face by blob identity.
+    /// fontique only returns the three blobs registered in `from_faces`; a
+    /// mismatch falls back to regular rather than turning malformed content
+    /// into a renderer panic.
+    fn face_kind(&self, font: &FontData) -> FaceKind {
         let data: &[u8] = font.data.as_ref();
-        data.as_ptr() == self.bold.bytes.0.as_ptr() && data.len() == self.bold.bytes.0.len()
+        if data.as_ptr() == self.bold.bytes.0.as_ptr() && data.len() == self.bold.bytes.0.len() {
+            FaceKind::Bold
+        } else if data.as_ptr() == self.icon.bytes.0.as_ptr()
+            && data.len() == self.icon.bytes.0.len()
+        {
+            FaceKind::Icon
+        } else {
+            FaceKind::Regular
+        }
+    }
+
+    /// Returns the owned bytes for one exact checked face.
+    fn face(&self, kind: FaceKind) -> &Face {
+        match kind {
+            FaceKind::Regular => &self.regular,
+            FaceKind::Bold => &self.bold,
+            FaceKind::Icon => &self.icon,
+        }
     }
 }
 

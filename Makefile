@@ -40,7 +40,7 @@ WORKFLOW := $(PYTHON) scripts/workflow.py
 .PHONY: \
 	build-kernel build-bootloader build-musl build-rootfs build-rust-std \
 	prepare-rootfs reset-rootfs sync-userland prepare-agent-development \
-	run-agent-development build-apk-apps regen-font regen-ui-font run run-gui \
+	run-agent-development build-apk-apps regen-font regen-ui-font regen-icon-font run run-gui \
 	run-gdb clean clean-musl clean-busybox build verify verify-fast \
 	verify-runtime verify-riscv64-secondary verify-unit \
 	verify-architecture-benchmark verify-architecture-release \
@@ -51,7 +51,7 @@ WORKFLOW := $(PYTHON) scripts/workflow.py
 
 build-kernel build-bootloader build-musl build-rootfs build-rust-std \
 prepare-rootfs reset-rootfs sync-userland prepare-agent-development \
-run-agent-development build-apk-apps regen-font regen-ui-font run run-gui \
+run-agent-development build-apk-apps regen-font regen-ui-font regen-icon-font run run-gui \
 run-gdb clean clean-musl clean-busybox build verify verify-fast verify-runtime \
 verify-riscv64-secondary verify-unit verify-architecture-benchmark \
 verify-architecture-release verify-runtime-gates verify-runtime-boot \

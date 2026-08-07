@@ -54,8 +54,9 @@
   Terminal 使用 Ctrl+Shift+V 或 macOS Cmd+V，把 UTF-8 文本作为一帧 PTY input。
 - `ui/design-system` 是唯一 Aurora presentation owner：独占 token、窗口 chrome、系统 shell、菜单、表单、
   Sidebar、Toolbar 与 Dialog。应用只组合这些语义组件与业务内容；LiteUI theme-free，compositor 不包含窗口主题。
-  `SystemIcon` 提供不依赖字体字形的排序、树形展开与状态图标；应用图标和文件系统内容图标是不同语义资产，
-  前者使用 256px Aurora master，后者使用透明 256px 大图与 32px Retina 小图。
+  `SystemIcon` 是排序、树形展开、搜索与状态图标的唯一入口；`assets/fonts/liteos-icons.json` 独占名称/PUA
+  映射，`scripts/generate_icon_font.py` 确定性生成自持 `liteos-icons.ttf` 与 TypeScript 类型映射。应用图标和
+  文件系统内容图标是不同语义资产，前者使用 256px Aurora master，后者使用透明 256px 大图与 32px Retina 小图。
 
 ## 显示与调度
 
@@ -208,7 +209,10 @@
   `devicePixelRatio` 与 `addEventListener("resize", ...)`。最终 box edge 从绝对逻辑坐标独立 snap 到物理像素。
 - text 由 Parley shaping/layout、swash 运行时栅格化：任意 `font-size` px 生效，`font-weight` 数值按
   CSS Fonts 匹配映射到 subsetted Noto Sans regular/bold（`assets/fonts/liteos-ui-{regular,bold}.otf`，
-  4111 codepoint，由 `scripts/generate_ui_font.py` 生成并发布到 `/usr/share/liteos/`）；
+  4111 codepoint，由 `scripts/generate_ui_font.py` 生成并发布到 `/usr/share/liteos/`）。同一字体 owner 另行
+  注册 `/usr/share/liteos/liteos-icons.ttf`；只有 `font-family: liteos-icons` 选择该 PUA face，layout/glyph
+  cache identity 同时包含 family/face，普通文本不会命中图标字形。字体随 rootfs 自持发布，不存在
+  browser `@font-face`、CDN 或运行时网络加载；
   `line-height` 支持 px/倍数/百分比，`white-space: normal/pre-wrap` 经 Parley line breaking 真换行。
   generic `monospace` 使用 JetBrains Mono 固定单格 advance；宽字符占两格，combining grapheme 附着前格。
   字形 cache 有界（LRU）并使用 grayscale antialiasing。

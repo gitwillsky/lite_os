@@ -1,0 +1,13 @@
+{
+  "family": "LiteOS Icons",
+  "cssFamily": "liteos-icons",
+  "icons": [
+    { "name": "chevron-right", "codepoint": "E000" },
+    { "name": "chevron-down", "codepoint": "E001" },
+    { "name": "sort-up", "codepoint": "E002" },
+    { "name": "sort-down", "codepoint": "E003" },
+    { "name": "playing", "codepoint": "E004" },
+    { "name": "check", "codepoint": "E005" },
+    { "name": "search", "codepoint": "E006" }
+  ]
+}

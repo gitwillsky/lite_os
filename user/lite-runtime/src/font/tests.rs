@@ -8,8 +8,40 @@ fn test_font() -> Font {
     Font::from_faces(
         fs::read(fonts.join("liteos-ui-regular.otf")).expect("regular UI face"),
         fs::read(fonts.join("liteos-ui-bold.otf")).expect("bold UI face"),
+        fs::read(fonts.join("liteos-icons.ttf")).expect("system icon face"),
     )
     .expect("UI faces register")
+}
+
+#[test]
+fn checked_pua_glyph_uses_the_dedicated_icon_face() {
+    let font = test_font();
+    let style = computed(
+        ".t { font-family: liteos-icons; font-size: 16px; line-height: 16px; color: #12bde8; }",
+    );
+    let bounds = crate::renderer::PhysicalRect {
+        x1: 0,
+        y1: 0,
+        x2: 64,
+        y2: 64,
+    };
+    let layout = font.build_layout(&style, "\u{e006}", false, None);
+    let face = layout
+        .lines()
+        .flat_map(|line| line.items())
+        .find_map(|item| match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(run) => {
+                Some(font.face_kind(run.run().font()))
+            }
+            _ => None,
+        })
+        .expect("icon glyph run");
+    assert!(matches!(face, FaceKind::Icon));
+    let mut atlas = GlyphAtlas::new();
+    let runs = font.gpu_text(&mut atlas, bounds, None, &style, "\u{e006}");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].color, 0xff12_bde8);
+    assert_eq!(runs[0].glyphs.len(), 1);
 }
 
 fn computed(css: &str) -> Computed {

@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { SystemIcon } from "./controls.tsx";
 import { CloseGlyph } from "./window.tsx";
 
 const KEY_ENTER = 28;
@@ -134,7 +135,7 @@ export function CommandCenter({
         </div>
         <div className="cc-main">
           <div className="command-search">
-            <span className="search-glyph"><span/></span>
+            <SystemIcon name="search" className="search-glyph"/>
             <input
               autoFocus={true}
               value={query}

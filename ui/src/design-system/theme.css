@@ -29,90 +29,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 1px;
   flex: none;
-  position: relative;
+  color: var(--aurora-muted);
+  font-family: liteos-icons;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: normal;
+  line-height: 12px;
 }
 
-.system-icon__mark {
-  position: absolute;
-  width: 7px;
-  height: 7px;
-}
-
-.system-icon--chevron-right .system-icon__mark:first-child {
-  left: 2px;
-  top: 0;
-  background: linear-gradient(45deg, transparent 41%, var(--aurora-muted) 42%, var(--aurora-muted) 58%, transparent 59%);
-}
-
-.system-icon--chevron-right .system-icon__mark:last-child {
-  left: 2px;
-  top: 5px;
-  background: linear-gradient(135deg, transparent 41%, var(--aurora-muted) 42%, var(--aurora-muted) 58%, transparent 59%);
-}
-
-.system-icon--chevron-down .system-icon__mark:first-child,
-.system-icon--sort-down .system-icon__mark:first-child {
-  left: 0;
-  top: 2px;
-  background: linear-gradient(135deg, transparent 41%, var(--aurora-muted) 42%, var(--aurora-muted) 58%, transparent 59%);
-}
-
-.system-icon--chevron-down .system-icon__mark:last-child,
-.system-icon--sort-down .system-icon__mark:last-child {
-  left: 5px;
-  top: 2px;
-  background: linear-gradient(45deg, transparent 41%, var(--aurora-muted) 42%, var(--aurora-muted) 58%, transparent 59%);
-}
-
-.system-icon--sort-up .system-icon__mark:first-child {
-  left: 0;
-  top: 3px;
-  background: linear-gradient(45deg, transparent 41%, var(--aurora-muted) 42%, var(--aurora-muted) 58%, transparent 59%);
-}
-
-.system-icon--sort-up .system-icon__mark:last-child {
-  left: 5px;
-  top: 3px;
-  background: linear-gradient(135deg, transparent 41%, var(--aurora-muted) 42%, var(--aurora-muted) 58%, transparent 59%);
-}
-
-.system-icon--playing {
-  align-items: flex-end;
-}
-
-.system-icon--playing .system-icon__mark {
-  position: static;
-  width: 2px;
-  height: 5px;
-  border: 0;
-  border-radius: 1px;
-  background: var(--aurora-cyan);
-}
-
-.system-icon--playing .system-icon__mark:nth-child(2) {
-  height: 9px;
-}
-
-.system-icon--playing .system-icon__mark:nth-child(3) {
-  height: 7px;
-}
-
-.system-icon--check .system-icon__mark:first-child {
-  left: 0;
-  top: 4px;
-  width: 6px;
-  height: 6px;
-  background: linear-gradient(135deg, transparent 41%, var(--aurora-cyan) 42%, var(--aurora-cyan) 60%, transparent 61%);
-}
-
-.system-icon--check .system-icon__mark:last-child {
-  left: 3px;
-  top: 1px;
-  width: 9px;
-  height: 9px;
-  background: linear-gradient(45deg, transparent 41%, var(--aurora-cyan) 42%, var(--aurora-cyan) 58%, transparent 59%);
+.system-icon--playing,
+.system-icon--check {
+  color: var(--aurora-cyan);
 }
 
 button {
@@ -664,24 +592,11 @@ button:disabled {
 }
 
 .search-glyph {
-  position: relative;
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   margin-left: 18px;
-  flex: none;
-  border: 2px solid var(--aurora-muted);
-  border-radius: 8px;
-}
-
-.search-glyph span {
-  position: absolute;
-  right: -5px;
-  bottom: -4px;
-  width: 6px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--aurora-muted);
-  transform: translate(-1px, -1px);
+  font-size: 16px;
+  line-height: 16px;
 }
 
 .command-search input {
@@ -1456,7 +1371,7 @@ button:disabled {
 .search-field .search-glyph {
   position: absolute;
   left: 12px;
-  top: 10px;
+  top: 9px;
   margin-left: 0;
   pointer-events: none;
   z-index: 1;

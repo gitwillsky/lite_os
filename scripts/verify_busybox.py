@@ -1343,6 +1343,10 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
             "/usr/share/liteos/liteos-ui-bold.otf",
         ),
         UserlandArtifact(
+            ROOT / "assets/fonts/liteos-icons.ttf",
+            "/usr/share/liteos/liteos-icons.ttf",
+        ),
+        UserlandArtifact(
             ROOT / "assets/fonts/liteos-terminal.a8",
             "/usr/share/liteos/liteos-terminal.a8",
         ),
@@ -1653,6 +1657,7 @@ def create_image(
         "/usr/share/liteos/cursor-resize-nwse.lc2",
         "/usr/share/liteos/liteos-ui-regular.otf",
         "/usr/share/liteos/liteos-ui-bold.otf",
+        "/usr/share/liteos/liteos-icons.ttf",
         "/usr/share/liteos/liteos-terminal.a8",
         "/usr/lib/lite-runtime/runtime.js",
         "/usr/share/liteos/desktop/main.js",
@@ -1769,6 +1774,7 @@ def create_published_image(
         ROOT / "assets/fonts/liteos-terminal.a8",
         ROOT / "assets/fonts/liteos-ui-regular.otf",
         ROOT / "assets/fonts/liteos-ui-bold.otf",
+        ROOT / "assets/fonts/liteos-icons.ttf",
         ROOT / "assets/bootlogo.xrgb",
         ROOT / "assets/cursor.lc2",
         ROOT / "assets/cursor-pointer.lc2",

@@ -1,15 +1,15 @@
 import React, { useCallback, useState } from "react";
 import { ContextMenu } from "./context-menu.tsx";
+import { SYSTEM_ICON_GLYPHS } from "./system-icons.generated.ts";
+import type { SystemIconName } from "./system-icons.generated.ts";
 
-export type SystemIconName = "chevron-right" | "chevron-down" | "sort-up" | "sort-down" | "playing" | "check";
+export type { SystemIconName } from "./system-icons.generated.ts";
 
-/** Shared geometry-backed system icon. These marks must not depend on font
- * coverage: using text glyphs makes their shape vary with the UI font atlas. */
+/** Shared typed system icon backed by the checked, self-hosted PUA font. */
 export function SystemIcon({ name, className = "" }: { name: SystemIconName; className?: string }) {
-  const marks = name === "playing" ? 3 : 2;
   return (
     <span className={`system-icon system-icon--${name}${className ? ` ${className}` : ""}`} aria-hidden="true">
-      {Array.from({ length: marks }, (_, index) => <span key={index} className="system-icon__mark"/>)}
+      {SYSTEM_ICON_GLYPHS[name]}
     </span>
   );
 }
@@ -69,7 +69,7 @@ export function SearchField({ value, placeholder, onInput }: {
 }) {
   return (
     <div className="search-field">
-      <span className="search-glyph"><span/></span>
+      <SystemIcon name="search" className="search-glyph"/>
       <input
         value={value}
         placeholder={placeholder}

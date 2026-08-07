@@ -1,4 +1,4 @@
-//! A8 glyph bitmap raster (swash) and its bounded LRU cache for the UI font.
+//! A8 glyph bitmap raster (swash) and its bounded LRU cache for UI fonts.
 
 use std::collections::HashMap;
 
@@ -6,6 +6,8 @@ use swash::{
     FontRef,
     scale::{Render, ScaleContext, Source},
 };
+
+use super::FaceKind;
 
 /// Glyph bitmap cache capacity in entries.
 ///
@@ -24,7 +26,7 @@ const GLYPH_CACHE_CAPACITY: usize = 2048;
 /// fractions, so bit equality matches cache equality.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct GlyphKey {
-    pub(super) bold: bool,
+    pub(super) face: FaceKind,
     pub(super) glyph: u32,
     pub(super) size_bits: u32,
 }

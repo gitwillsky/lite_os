@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use display_proto::{Glyph, Rect, Size};
 use parley::{Alignment, AlignmentOptions, layout::PositionedLayoutItem};
 
-use super::{Font, GlyphKey, wraps};
+use super::{FaceKind, Font, GlyphKey, wraps};
 use crate::{renderer::PhysicalRect, style::Computed};
 
 const ATLAS_WIDTH: usize = 2048;
@@ -15,7 +15,7 @@ const MAX_ATLAS_GLYPHS: usize = 4096;
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub(crate) enum AtlasKey {
     Ui {
-        bold: bool,
+        face: FaceKind,
         glyph: u32,
         size_bits: u32,
         italic: bool,
@@ -170,7 +170,7 @@ impl Font {
                 let PositionedLayoutItem::GlyphRun(run) = item else {
                     continue;
                 };
-                let bold = self.is_bold(run.run().font());
+                let face = self.face_kind(run.run().font());
                 let size = run.run().font_size();
                 for glyph in run.positioned_glyphs() {
                     let pen = (bounds.x1 as f32 + glyph.x).round() as i32;
@@ -180,7 +180,7 @@ impl Font {
                         &mut glyphs,
                         clip,
                         GlyphKey {
-                            bold,
+                            face,
                             glyph: glyph.id,
                             size_bits: size.to_bits(),
                         },
@@ -229,7 +229,7 @@ impl Font {
                 let PositionedLayoutItem::GlyphRun(run) = item else {
                     continue;
                 };
-                let bold = self.is_bold(run.run().font());
+                let face = self.face_kind(run.run().font());
                 let size = run.run().font_size();
                 for glyph in run.positioned_glyphs() {
                     self.gpu_glyph(
@@ -237,7 +237,7 @@ impl Font {
                         &mut glyphs,
                         clip,
                         GlyphKey {
-                            bold,
+                            face,
                             glyph: glyph.id,
                             size_bits: size.to_bits(),
                         },
@@ -271,7 +271,7 @@ impl Font {
         let mut cache = self.cache.borrow_mut();
         if cache.get(key).is_none() {
             drop(cache);
-            let face = if key.bold { &self.bold } else { &self.regular };
+            let face = self.face(key.face);
             let Some(rasterized) =
                 super::raster::rasterize(&mut self.scx.borrow_mut(), &face.bytes.0, key)
             else {
@@ -283,7 +283,7 @@ impl Font {
         let glyph = cache.get(key).expect("glyph inserted");
         let (width, x_offset) = oblique_geometry(glyph, italic);
         let atlas_key = AtlasKey::Ui {
-            bold: key.bold,
+            face: key.face,
             glyph: key.glyph,
             size_bits: key.size_bits,
             italic,

@@ -96,7 +96,7 @@ make verify
 | `sync-userland`、`reset-rootfs` | 准备或恢复开发镜像 |
 | `verify-unit`、`verify-architecture-benchmark` | 定位 host/static/unit 问题 |
 | `verify-runtime-*`、`verify-runtime-gates` | 定位单个 guest 门禁；由 `verify-runtime` 统一串行调用 |
-| `regen-font`、`regen-ui-font`、`clean*`、`gdb`、`addr2line` | 维护和调试工具 |
+| `regen-font`、`regen-ui-font`、`regen-icon-font`、`clean*`、`gdb`、`addr2line` | 维护和调试工具 |
 
 ## Agent 开发镜像
 
