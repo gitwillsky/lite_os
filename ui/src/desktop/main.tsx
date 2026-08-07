@@ -13,7 +13,15 @@ import {
   surfaces,
 } from "lite:desktop";
 import { Window } from "../design-system/window.tsx";
-import { Dock, CommandCenter, SystemCenter, TopBar, WorkspaceOverview } from "../design-system/shell.tsx";
+import {
+  DOCK_DEFAULT_ICON_SIZE,
+  Dock,
+  CommandCenter,
+  SystemCenter,
+  TopBar,
+  WorkspaceOverview,
+  dockOuterHeight,
+} from "../design-system/shell.tsx";
 import type { ShellPanel } from "../design-system/shell.tsx";
 import { constrainResize, frameStyle } from "../design-system/window-geometry.ts";
 import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts";
@@ -41,9 +49,9 @@ const MOD_ALT = 4;
 const WORKSPACE_COUNT = 3;
 const WORK_AREA_SIDE_MARGIN = 12;
 const WORK_AREA_TOP = 56;
-// The 84px Dock sits 20px above the bottom. Reserving another 12px keeps
-// maximized status bars and resize targets visible instead of painting under it.
-const WORK_AREA_BOTTOM = 116;
+const DOCK_BOTTOM_OFFSET = 20;
+const DOCK_WORK_AREA_GAP = 12;
+const AUTO_HIDE_WORK_AREA_BOTTOM = 12;
 
 const dockApps = [
   { id: "file-manager", label: "Files", icon: "assets/files.png", title: "Files" },
@@ -56,7 +64,7 @@ const appIcon = (id: string) => dockApps.find((item) => item.id === id)?.icon ??
 
 const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
 
-const workArea = (screen: { width: number; height: number }): Rect => {
+const workArea = (screen: { width: number; height: number }, bottomInset: number): Rect => {
   const x = Math.min(WORK_AREA_SIDE_MARGIN, Math.max(0, screen.width - 1));
   const y = Math.min(WORK_AREA_TOP, Math.max(0, screen.height - 55));
   return {
@@ -68,14 +76,24 @@ const workArea = (screen: { width: number; height: number }): Rect => {
     ),
     height: Math.max(
       55,
-      screen.height - y - Math.min(WORK_AREA_BOTTOM, screen.height - y - 55),
+      screen.height - y - Math.min(bottomInset, screen.height - y - 55),
     ),
   };
 };
 
 export default function Desktop() {
   const [screen, setScreen] = useState(viewport);
-  const desktopArea = useMemo(() => workArea(screen), [screen]);
+  const [dockIconSize, setDockIconSize] = useState(DOCK_DEFAULT_ICON_SIZE);
+  const [dockAutoHide, setDockAutoHide] = useState(false);
+  // A visible Dock owns its full chrome plus breathing room. Auto-hide releases
+  // that space; without the remaining inset, bottom resize targets touch the output edge.
+  const dockBottomInset = dockAutoHide
+    ? AUTO_HIDE_WORK_AREA_BOTTOM
+    : dockOuterHeight(dockIconSize) + DOCK_BOTTOM_OFFSET + DOCK_WORK_AREA_GAP;
+  const desktopArea = useMemo(
+    () => workArea(screen, dockBottomInset),
+    [dockBottomInset, screen],
+  );
   const [open, setOpen] = useState(() => surfaces());
   const openRef = useRef(open);
   openRef.current = open;
@@ -511,21 +529,25 @@ export default function Desktop() {
       {Array.from(resizePreview, ([id, bounds]) => (
         <div key={id} className="window-resize-preview" style={frameStyle(bounds)}/>
       ))}
-      <Dock items={[
-        { id: "liteos", label: "LiteOS", icon: "assets/liteos.png", active: panel === "command", onClick: () => setPanel(panel === "command" ? null : "command") },
-        ...dockApps.map((app) => {
-          const appSurfaces = open.filter((surface) => surface.appId === app.id);
-          return {
-            ...app,
-            running: appSurfaces.length > 0,
-            active: appSurfaces.some((surface) =>
-              surface.id === activeId
-              && surfaceWorkspace.get(surface.id) === activeWorkspace),
-            onClick: () => launchOrActivate(app.id),
-          };
-        }),
-        { id: "settings", label: "Settings", icon: "assets/settings.png", active: panel === "system", onClick: () => setPanel(panel === "system" ? null : "system") },
-      ]}/>
+      <Dock
+        iconSize={dockIconSize}
+        autoHide={dockAutoHide}
+        items={[
+          { id: "liteos", label: "LiteOS", icon: "assets/liteos.png", active: panel === "command", onClick: () => setPanel(panel === "command" ? null : "command") },
+          ...dockApps.map((app) => {
+            const appSurfaces = open.filter((surface) => surface.appId === app.id);
+            return {
+              ...app,
+              running: appSurfaces.length > 0,
+              active: appSurfaces.some((surface) =>
+                surface.id === activeId
+                && surfaceWorkspace.get(surface.id) === activeWorkspace),
+              onClick: () => launchOrActivate(app.id),
+            };
+          }),
+          { id: "settings", label: "Settings", icon: "assets/settings.png", active: panel === "system", onClick: () => setPanel(panel === "system" ? null : "system") },
+        ]}
+      />
       {panel === "command" && (
         <CommandCenter
           apps={commandApps}
@@ -557,8 +579,12 @@ export default function Desktop() {
             muted={master.muted}
             activeWorkspace={activeWorkspace}
             openWindows={open.length}
+            dockIconSize={dockIconSize}
+            dockAutoHide={dockAutoHide}
             onVolume={setVolume}
             onMuted={() => setMuted(!master.muted)}
+            onDockIconSize={setDockIconSize}
+            onDockAutoHide={() => setDockAutoHide(!dockAutoHide)}
           />
         </>
       )}

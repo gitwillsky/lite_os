@@ -48,8 +48,10 @@
   最小化/最大化和 workspace assignment；Workspace Overview 负责切换 workspace 及移动已有窗口，移动
   active 窗口离开当前 workspace 时由 desktop 选择当前 workspace 的最后一个可见窗口作为 focus fallback。
   decorations、Top Bar、Dock、Command Center、System Center、壁纸与应用启动也只属于 desktop。
-  desktop work area 必须同时避开 Top Bar 与 Dock 的完整可见矩形；最大化窗口的状态栏和 resize target
-  不得落在 Dock 后方。
+  Dock 图标尺寸、自动隐藏与底边唤出状态由 desktop 独占，System Center 只修改该状态。desktop work area
+  必须避开 Top Bar；Dock 常驻时还必须避开其按当前尺寸计算的完整可见矩形，使最大化窗口的状态栏和
+  resize target 不落在 Dock 后方；自动隐藏时只保留底边 resize inset，Dock host 的底边命中区以
+  pointer enter/leave 唤出和收起 Dock。
 - `terminal-session` 是无窗体 helper，独占 PTY、VT parser、screen、cursor、scrollback 与 selection；
   selection 在 helper 内按可见 cell 归一化宽字符尾随格、按 soft-wrap 生成 UTF-8 文本。React terminal
   只转发拖选/scroll 坐标、绘制 viewport 与 selection 投影，并调用标准 clipboard API。滚轮或

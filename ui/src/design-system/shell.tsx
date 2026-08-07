@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { RangeInput, SystemIcon } from "./controls.tsx";
+import { CheckBox, RangeInput, SystemIcon } from "./controls.tsx";
 import { CloseGlyph } from "./window.tsx";
 
 const KEY_ESC = 1;
@@ -81,23 +81,85 @@ interface DockItem {
   onClick: () => void;
 }
 
-/** Pinned/running application switcher. Global panels live in the top bar. */
-export function Dock({ items }: { items: DockItem[] }) {
+export const DOCK_DEFAULT_ICON_SIZE = 58;
+export const DOCK_MIN_ICON_SIZE = 44;
+export const DOCK_MAX_ICON_SIZE = 72;
+const DOCK_ITEM_GAP = 14;
+const DOCK_HORIZONTAL_PADDING = 18;
+const DOCK_BOTTOM_OFFSET = 20;
+const DOCK_REVEAL_HEIGHT = 12;
+
+/** Returns the visible Dock chrome height for one icon size.
+ *
+ * @param iconSize - Square application icon size in logical pixels.
+ * @returns The Dock background height in logical pixels.
+ */
+export function dockOuterHeight(iconSize: number) {
+  return iconSize + 26;
+}
+
+/** macOS-style pinned/running application switcher with a bottom-edge reveal zone. */
+export function Dock({ items, iconSize, autoHide }: {
+  items: DockItem[];
+  iconSize: number;
+  autoHide: boolean;
+}) {
+  const [pointerNear, setPointerNear] = useState(false);
+  const shown = !autoHide || pointerNear;
+  const itemWidth = iconSize + 8;
+  const itemHeight = iconSize + 14;
+  const dockHeight = dockOuterHeight(iconSize);
+  const dockWidth = items.length * itemWidth
+    + Math.max(0, items.length - 1) * DOCK_ITEM_GAP
+    + DOCK_HORIZONTAL_PADDING * 2;
+  const hostHeight = shown ? dockHeight + DOCK_BOTTOM_OFFSET : DOCK_REVEAL_HEIGHT;
+
   return (
-    <div className="dock">
-      {items.map((item) => (
+    <div
+      className="dock-host"
+      style={{ width: dockWidth, height: hostHeight }}
+      onPointerEnter={autoHide ? () => setPointerNear(true) : undefined}
+      onPointerLeave={autoHide ? () => setPointerNear(false) : undefined}
+    >
+      <div
+        className={`dock${shown ? "" : " dock--hidden"}`}
+        aria-hidden={!shown}
+        style={{
+          width: dockWidth,
+          height: dockHeight,
+          borderRadius: Math.round(dockHeight * 0.285),
+          transform: shown ? "translateY(0px)" : `translateY(${dockHeight + DOCK_BOTTOM_OFFSET}px)`,
+        }}
+      >
+        {items.map((item) => (
+          <button
+            key={item.id}
+            className={`dock-item${item.active ? " dock-item--active" : ""}`}
+            style={{ width: itemWidth, height: itemHeight }}
+            aria-label={item.label}
+            aria-pressed={item.active}
+            disabled={!shown}
+            onClick={item.onClick}
+          >
+            <img
+              src={item.icon}
+              alt=""
+              style={{ width: iconSize, height: iconSize, borderRadius: Math.round(iconSize * 0.22) }}
+            />
+            {(item.running || item.active) && (
+              <span className="dock-item__running" style={{ left: Math.round((itemWidth - 7) / 2) }}/>
+            )}
+            <span className="dock-item__label" style={{ bottom: itemHeight + 10 }}>{item.label}</span>
+          </button>
+        ))}
+      </div>
+      {autoHide && !shown && (
         <button
-          key={item.id}
-          className={`dock-item${item.active ? " dock-item--active" : ""}`}
-          aria-label={item.label}
-          aria-pressed={item.active}
-          onClick={item.onClick}
-        >
-          <img src={item.icon} alt=""/>
-          {(item.running || item.active) && <span className="dock-item__running"/>}
-          <span className="dock-item__label">{item.label}</span>
-        </button>
-      ))}
+          className="dock-reveal"
+          aria-label="Show Dock"
+          onClick={() => setPointerNear(true)}
+        />
+      )}
     </div>
   );
 }
@@ -413,8 +475,12 @@ export function SystemCenter({
   muted,
   activeWorkspace,
   openWindows,
+  dockIconSize,
+  dockAutoHide,
   onVolume,
   onMuted,
+  onDockIconSize,
+  onDockAutoHide,
 }: {
   time: string;
   date: string;
@@ -422,8 +488,12 @@ export function SystemCenter({
   muted: boolean;
   activeWorkspace: number;
   openWindows: number;
+  dockIconSize: number;
+  dockAutoHide: boolean;
   onVolume: (value: number) => void;
   onMuted: () => void;
+  onDockIconSize: (value: number) => void;
+  onDockAutoHide: () => void;
 }) {
   return (
     <div className="system-center" data-lite-focus-scope={true} onPointerDown={stopPanelPointer}>
@@ -456,6 +526,30 @@ export function SystemCenter({
           value={volume}
           onInput={onVolume}
         />
+      </div>
+      <div className="sc-dock-controls">
+        <div className="sc-dock-controls__header">
+          <div className="sc-dock-controls__copy">
+            <span className="sc-dock-controls__title">Dock</span>
+            <span>Size and visibility</span>
+          </div>
+          <span className="sc-dock-controls__value">{dockIconSize}px</span>
+        </div>
+        <RangeInput
+          className="sc-dock-controls__range"
+          min={DOCK_MIN_ICON_SIZE}
+          max={DOCK_MAX_ICON_SIZE}
+          step={2}
+          value={dockIconSize}
+          onInput={onDockIconSize}
+        />
+        <div className="sc-dock-controls__toggle">
+          <CheckBox
+            label="Automatically hide Dock"
+            checked={dockAutoHide}
+            onToggle={onDockAutoHide}
+          />
+        </div>
       </div>
       <div className="sc-session-card">
         <span className="sc-session-card__mark"><span/></span>

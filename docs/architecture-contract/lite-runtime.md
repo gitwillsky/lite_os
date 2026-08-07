@@ -23,8 +23,9 @@
   `session/output.rs` 独占 output serial 与 connector-size publication；
   `compositor/session/accelerator.rs` 独占 global accelerator chord 表与 key-grab 状态机；
   `display-proto/accelerator.rs` 独占 `AcceleratorSet` wire codec。
-- React desktop 独占 persistent window policy state。compositor 只保存已接受/已呈现 scene snapshot 与
-  move-grab temporary transform，不得复制窗口位置、z-order、active/minimized/maximized policy。
+- React desktop 独占 persistent window policy state，以及 Dock 尺寸、自动隐藏和底边唤出状态。
+  System Center 只修改该 desktop-owned state；compositor 只保存已接受/已呈现 scene snapshot 与
+  move-grab temporary transform，不得复制窗口位置、z-order、active/minimized/maximized/Dock policy。
 - 每个 app connection 独占一个 top-level surface content revision；一个 OS process/QuickJS VM/React
   root 只对应一个 surface。desktop scene 独占 foreign surface geometry，两类 revision 不互相代理。
 - `lite-runtime` UI thread 独占 QuickJS 与 mutable React host tree；render thread 只消费 immutable snapshot，
@@ -98,7 +99,8 @@
   imperative focus state seam。`<surface>` bounds 必须等于 adopted configure logical client size，禁止缩放。
 - desktop scene 的 node 顺序即 z 栈：全屏 Pixels 底图先行，随后每个窗口先按其 frame clip 重绘桌面像素、
   再叠加其 foreign surface，并在其后放置该窗口后绘制 React chrome 的 empty-clip input-only Pixels node；
-  overlay clip（Top Bar/Dock/系统面板）居末。同一桌面 buffer 可在多个 Pixels node 按 clip 复用；input-only
+  overlay clip（Top Bar/Dock/系统面板）居末；Dock 自动隐藏时，底边 reveal host 必须保留在 overlay input
+  层，且隐藏的 Dock button 不得进入 focus traversal。同一桌面 buffer 可在多个 Pixels node 按 clip 复用；input-only
   node 不得写像素。窗口 Pixels 使用 outer border-edge mask；foreign surface 必须携带其 DOM 位置实际
   生效的完整祖先 CSS overflow clip chain，并额外携带所属 `WindowFrame` 的 canonical outer mask；不得以
   外圆角替代祖先 chain，也不得使用全屏方形 clip。每个 mask 保留
