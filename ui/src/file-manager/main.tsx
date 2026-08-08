@@ -307,7 +307,15 @@ export default function FileManager() {
             <img className="files-storage__icon" src="assets/sidebar-storage.png"/>
             <div className="files-storage__details">
               <span className="files-storage__label">{storageLabel}</span>
-              <div className="files-storage__track">
+              <div
+                className="files-storage__track"
+                role="progressbar"
+                aria-label="Storage used"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={storage.error || storageTotal === 0 ? undefined : Math.round(storagePercent)}
+                aria-valuetext={storageLabel}
+              >
                 <div className="files-storage__fill" style={{ width: `${storagePercent}%` }}/>
               </div>
             </div>

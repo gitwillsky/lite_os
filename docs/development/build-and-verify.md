@@ -59,7 +59,8 @@
   只安装 production ESM bundle、CSS、PNG assets 与固定 system runtime，不安装 Node/npm、source map、
   dev server 或 runtime package cache。唯一 frontend build owner 是
   `scripts/verify_busybox.py` 的 `build_ui_assets()`；`--build-ui-assets-only` 只暴露该 owner 的已校验输出，
-  不建立第二条构建路径。
+  不建立第二条构建路径。每次 check/build 都验证 system icon manifest、generated PUA mapping 与 checked
+  TTF SHA-256 一致；bundle cache fingerprint 同时包含 icon manifest 与 TTF。
 - Make 只负责参数校验和稳定入口；`scripts/workflow.py` 是 build、run、verify 的唯一编排 owner。
   推荐入口只有 `build`、`run`、`run-gui`、`verify-fast`、`verify-runtime` 和 `verify`；其余目标仅用于
   局部诊断或资源准备，均不得再实现独立的依赖链。workflow 按一次 DAG 顺序准备共享产物，禁止递归

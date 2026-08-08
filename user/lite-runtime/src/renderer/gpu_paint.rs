@@ -109,6 +109,7 @@ impl Renderer {
             &root,
             &self.scroll_offsets,
             self.focused,
+            self.text_caret.visible_node(),
             &self.text_controls,
             screen.x2,
             screen.y2,
@@ -214,6 +215,7 @@ impl Renderer {
             &root,
             &self.scroll_offsets,
             self.focused,
+            self.text_caret.visible_node(),
             &self.text_controls,
             screen.x2,
             screen.y2,
@@ -726,7 +728,7 @@ impl Renderer {
                 );
             }
         }
-        if self.focused == Some(node.source.id) {
+        if self.text_caret.visible_node() == Some(node.source.id) {
             let caret_x = (content.x1 as i32 + (selection.caret_x - scroll_x).round() as i32)
                 .clamp(content.x1 as i32, content.x2.saturating_sub(1) as i32);
             let caret = PhysicalRect {

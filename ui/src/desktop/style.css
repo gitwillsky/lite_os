@@ -9,6 +9,26 @@
   background: url("assets/wallpaper.png") no-repeat center / cover;
 }
 
+.desktop-background-hit {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+.desktop-menu-scrim {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  cursor: default;
+  z-index: 1190;
+}
+
 .splash {
   display: none;
   position: fixed;

@@ -19,10 +19,12 @@ import {
   CommandCenter,
   SystemCenter,
   TopBar,
+  WindowSwitcher,
   WorkspaceOverview,
   dockOuterHeight,
 } from "../design-system/shell.tsx";
 import type { ShellPanel } from "../design-system/shell.tsx";
+import { ContextMenu } from "../design-system/context-menu.tsx";
 import { constrainResize, frameStyle } from "../design-system/window-geometry.ts";
 import type { Rect, ResizeCandidate } from "../design-system/window-geometry.ts";
 import { applySurfaceMove, fitSurfaceFrame, reconcileSurfaces } from "./surface-state.ts";
@@ -37,21 +39,57 @@ const APP_MIN_WINDOWS: Record<string, { width: number; height: number }> = {
 };
 const KEY_ESC = 1;
 const KEY_TAB = 15;
+const KEY_D = 32;
 const KEY_SPACE = 57;
 const KEY_LEFT_ALT = 56;
 const KEY_F4 = 62;
 const KEY_RIGHT_ALT = 100;
+const KEY_UP = 103;
 const MOD_SHIFT = 1;
 const KEY_LEFT = 105;
 const KEY_RIGHT = 106;
+const KEY_DOWN = 108;
 const MOD_CONTROL = 2;
 const MOD_ALT = 4;
+const MOD_SUPER = 8;
 const WORKSPACE_COUNT = 3;
 const WORK_AREA_SIDE_MARGIN = 12;
 const WORK_AREA_TOP = 56;
 const DOCK_BOTTOM_OFFSET = 20;
 const DOCK_WORK_AREA_GAP = 12;
 const AUTO_HIDE_WORK_AREA_BOTTOM = 12;
+const WINDOW_SWITCHER_VISIBLE_LIMIT = 8;
+const TOP_EDGE_SNAP_DISTANCE = 4;
+const TILE_GAP = 8;
+
+type DesktopMenuState = {
+  kind: "desktop";
+  x: number;
+  y: number;
+} | {
+  kind: "dock";
+  appId: string;
+  label: string;
+  x: number;
+  y: number;
+} | {
+  kind: "window";
+  surfaceId: number;
+  x: number;
+  y: number;
+};
+
+interface ShowDesktopState {
+  workspace: number;
+  ids: number[];
+}
+
+type WindowPlacementKind = "maximized" | "left" | "right";
+
+interface WindowPlacement {
+  kind: WindowPlacementKind;
+  restore: LiteFrame;
+}
 
 const dockApps = [
   { id: "file-manager", label: "Files", icon: "assets/files.png", title: "Files" },
@@ -59,10 +97,33 @@ const dockApps = [
   { id: "music-player", label: "Music", icon: "assets/music.png", title: "Music" },
   { id: "my-computer", label: "Computer", icon: "assets/package.png", title: "Computer" },
 ];
+// Files and Terminal own independent per-process window state. Restricting New
+// Window to them prevents duplicate music playback and redundant system views.
+const multiWindowApps = new Set(["file-manager", "terminal"]);
 
 const appIcon = (id: string) => dockApps.find((item) => item.id === id)?.icon ?? "assets/package.png";
 
 const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
+
+const placementFrame = (kind: WindowPlacementKind, area: Rect): Rect => {
+  if (kind === "maximized" || area.width < 2) return area;
+  const gap = Math.min(TILE_GAP, area.width - 2);
+  const leftWidth = Math.floor((area.width - gap) / 2);
+  if (kind === "left") return { ...area, width: leftWidth };
+  return {
+    x: area.x + leftWidth + gap,
+    y: area.y,
+    width: area.width - leftWidth - gap,
+    height: area.height,
+  };
+};
+
+const placementFits = (appId: string, kind: WindowPlacementKind, area: Rect) => {
+  if (kind === "maximized") return true;
+  const candidate = placementFrame(kind, area);
+  const minimum = APP_MIN_WINDOWS[appId] ?? DEFAULT_MIN_WINDOW;
+  return candidate.width >= minimum.width && candidate.height >= minimum.height;
+};
 
 const workArea = (screen: { width: number; height: number }, bottomInset: number): Rect => {
   const x = Math.min(WORK_AREA_SIDE_MARGIN, Math.max(0, screen.width - 1));
@@ -111,21 +172,34 @@ export default function Desktop() {
   const [minimized, setMinimized] = useState<Set<number>>(() => new Set());
   const minimizedRef = useRef(minimized);
   minimizedRef.current = minimized;
-  const [maximized, setMaximized] = useState<Map<number, LiteFrame>>(() => new Map());
+  const [showDesktopState, setShowDesktopState] = useState<ShowDesktopState | null>(null);
+  const [placements, setPlacements] = useState<Map<number, WindowPlacement>>(() => new Map());
   const [resizePreview, setResizePreview] = useState<Map<number, Rect>>(() => new Map());
   const resizePreviewRef = useRef(resizePreview);
   resizePreviewRef.current = resizePreview;
   const [panel, setPanel] = useState<ShellPanel>(null);
   const panelRef = useRef(panel);
   panelRef.current = panel;
+  const [desktopMenu, setDesktopMenu] = useState<DesktopMenuState | null>(null);
   // One Alt hold owns a stable window order. Rebuilding from z-order after
   // every activation would bounce between newly raised windows instead of
-  // walking the original switcher sequence.
-  const switcher = useRef<{ ids: number[]; index: number } | null>(null);
+  // walking the original switcher sequence; state also drives visible feedback.
+  const [windowSwitcher, setWindowSwitcher] = useState<{ ids: number[]; index: number } | null>(null);
   const [clock, setClock] = useState(() => new Date());
   const [master, setMaster] = useState({ percent: 75, muted: false });
   const booted = useRef(false);
   const listedApps = useMemo(() => apps(), []);
+
+  const changePanel = useCallback((next: ShellPanel) => {
+    setDesktopMenu(null);
+    setWindowSwitcher(null);
+    setPanel(next);
+  }, []);
+  const openDockMenu = useCallback((appId: string, label: string, x: number, y: number) => {
+    setPanel(null);
+    setWindowSwitcher(null);
+    setDesktopMenu({ kind: "dock", appId, label, x, y });
+  }, []);
 
   useEffect(() => {
     if (!booted.current && surfaces().length === 0) {
@@ -195,6 +269,11 @@ export default function Desktop() {
       next.delete(id);
       return next;
     });
+    setShowDesktopState((current) => {
+      if (!current?.ids.includes(id)) return current;
+      const ids = current.ids.filter((candidate) => candidate !== id);
+      return ids.length > 0 ? { ...current, ids } : null;
+    });
     setOpen((current) => {
       const index = current.findIndex((surface) => surface.id === id);
       if (index < 0 || index === current.length - 1) return current;
@@ -206,6 +285,7 @@ export default function Desktop() {
   }, []);
   const activate = useCallback((id: number) => {
     synchronizeActivation(id);
+    setDesktopMenu(null);
     setPanel(null);
   }, [synchronizeActivation]);
 
@@ -244,10 +324,37 @@ export default function Desktop() {
       synchronizeActivation(event.surfaceId);
     }
     if (event.type === "moved") {
+      const movedSurface = openRef.current.find((surface) => surface.id === event.surfaceId);
+      const restore = movedSurface?.bounds;
       setOpen((current) => applySurfaceMove(current, event.surfaceId, event.x, event.y));
+      const displaced = restore && (event.x !== restore.x || event.y !== restore.y);
+      const placement = event.y <= desktopArea.y + TOP_EDGE_SNAP_DISTANCE
+        ? "maximized"
+        : event.x <= desktopArea.x + TOP_EDGE_SNAP_DISTANCE
+          ? "left"
+          : restore && event.x + restore.width >= desktopArea.x + desktopArea.width - TOP_EDGE_SNAP_DISTANCE
+            ? "right"
+            : null;
+      const placeable = movedSurface && placement
+        ? placementFits(movedSurface.appId, placement, desktopArea)
+        : false;
+      if (restore && displaced && placement && placeable) {
+        setPlacements((current) => {
+          if (current.has(event.surfaceId)) return current;
+          return new Map(current).set(event.surfaceId, { kind: placement, restore });
+        });
+      }
     }
     if (event.type === "closed") {
-      switcher.current = null;
+      setWindowSwitcher(null);
+      setDesktopMenu((current) => current?.kind === "window" && current.surfaceId === event.surfaceId
+        ? null
+        : current);
+      setShowDesktopState((current) => {
+        if (!current?.ids.includes(event.surfaceId)) return current;
+        const ids = current.ids.filter((id) => id !== event.surfaceId);
+        return ids.length > 0 ? { ...current, ids } : null;
+      });
       // JS `open` is the sole focus authority: the native registry cleared its
       // keyboard target to the desktop when the surface closed, so when the
       // closed window was active we pick its replacement here (last visible in
@@ -272,7 +379,7 @@ export default function Desktop() {
         next.delete(event.surfaceId);
         return next;
       });
-      setMaximized((current) => {
+      setPlacements((current) => {
         const next = new Map(current);
         next.delete(event.surfaceId);
         return next;
@@ -290,9 +397,57 @@ export default function Desktop() {
     }
   }), [desktopArea, synchronizeActivation]);
 
+  const restoreShowDesktopWindows = useCallback(() => {
+    if (!showDesktopState) return [];
+    const liveIds = showDesktopState.ids.filter((id) =>
+      openRef.current.some((surface) => surface.id === id)
+      && surfaceWorkspaceRef.current.get(id) === showDesktopState.workspace,
+    );
+    setMinimized((current) => {
+      const next = new Set(current);
+      for (const id of liveIds) next.delete(id);
+      minimizedRef.current = next;
+      return next;
+    });
+    setShowDesktopState(null);
+    return liveIds;
+  }, [showDesktopState]);
+
+  const showDesktop = useCallback(() => {
+    setDesktopMenu(null);
+    setWindowSwitcher(null);
+    if (showDesktopState) {
+      const ids = restoreShowDesktopWindows();
+      const target = openRef.current.filter((surface) => ids.includes(surface.id)).at(-1);
+      focus(target?.id ?? 0);
+      setActiveId(target?.id ?? 0);
+      setPanel(null);
+      return;
+    }
+    const ids = openRef.current
+      .filter((surface) =>
+        surfaceWorkspaceRef.current.get(surface.id) === activeWorkspaceRef.current
+        && !minimizedRef.current.has(surface.id),
+      )
+      .map((surface) => surface.id);
+    if (ids.length === 0) return;
+    setMinimized((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.add(id);
+      minimizedRef.current = next;
+      return next;
+    });
+    setShowDesktopState({ workspace: activeWorkspaceRef.current, ids });
+    focus(0);
+    setActiveId(0);
+    setPanel(null);
+  }, [restoreShowDesktopWindows, showDesktopState]);
+
   const selectWorkspace = useCallback((workspace: number) => {
     if (workspace < 0 || workspace >= WORKSPACE_COUNT) return;
-    switcher.current = null;
+    if (workspace !== activeWorkspaceRef.current) restoreShowDesktopWindows();
+    setDesktopMenu(null);
+    setWindowSwitcher(null);
     setActiveWorkspace(workspace);
     activeWorkspaceRef.current = workspace;
     const next = openRef.current
@@ -304,7 +459,7 @@ export default function Desktop() {
     focus(next?.id ?? 0);
     setActiveId(next?.id ?? 0);
     setPanel(null);
-  }, []);
+  }, [restoreShowDesktopWindows]);
 
   useEffect(() => {
     setAccelerators([
@@ -314,21 +469,32 @@ export default function Desktop() {
       { modifiers: MOD_ALT, code: KEY_TAB },
       { modifiers: MOD_ALT | MOD_SHIFT, code: KEY_TAB },
       { modifiers: MOD_ALT, code: KEY_F4 },
+      { modifiers: MOD_SUPER, code: KEY_D },
+      { modifiers: MOD_SUPER, code: KEY_LEFT },
+      { modifiers: MOD_SUPER, code: KEY_RIGHT },
+      { modifiers: MOD_SUPER, code: KEY_UP },
+      { modifiers: MOD_SUPER, code: KEY_DOWN },
     ]);
   }, []);
 
   const onDesktopKey = (raw: unknown) => {
     const event = raw as LiteKeyEvent;
     if ((event.code === KEY_LEFT_ALT || event.code === KEY_RIGHT_ALT) && event.value === 0) {
-      switcher.current = null;
+      setWindowSwitcher(null);
     }
     if (event.code === KEY_ESC && event.value === 1) {
+      setDesktopMenu(null);
+      setWindowSwitcher(null);
       setPanel(null);
     }
     if (event.code === KEY_SPACE && event.value === 1 && (event.modifiers & MOD_CONTROL) !== 0) {
+      setDesktopMenu(null);
+      setWindowSwitcher(null);
       setPanel((current) => current === "command" ? null : "command");
     }
     if (event.code === KEY_F4 && event.value === 1 && (event.modifiers & MOD_ALT) !== 0) {
+      setDesktopMenu(null);
+      setWindowSwitcher(null);
       if (panel !== null) {
         setPanel(null);
         return;
@@ -343,25 +509,36 @@ export default function Desktop() {
         selectWorkspace((activeWorkspaceRef.current + 1) % WORKSPACE_COUNT);
       }
     }
+    if (event.code === KEY_D && event.value === 1 && event.modifiers === MOD_SUPER) {
+      showDesktop();
+    }
+    if (event.value === 1 && event.modifiers === MOD_SUPER) {
+      const id = activeIdRef.current;
+      if (!id) return;
+      if (event.code === KEY_LEFT) placeWindow(id, "left");
+      else if (event.code === KEY_RIGHT) placeWindow(id, "right");
+      else if (event.code === KEY_UP) placeWindow(id, "maximized");
+      else if (event.code === KEY_DOWN && placements.has(id)) togglePlacement(id);
+    }
     if (event.code === KEY_TAB && event.value === 1 && (event.modifiers & MOD_ALT) !== 0) {
       const available = openRef.current
         .filter((surface) => surfaceWorkspaceRef.current.get(surface.id) === activeWorkspaceRef.current)
         .map((surface) => surface.id);
       if (available.length === 0) return;
-      const current = switcher.current;
+      const current = windowSwitcher;
       const sameCycle = current
         && current.ids.length === available.length
         && current.ids.every((id) => available.includes(id));
-      if (!sameCycle) {
-        switcher.current = {
+      const cycle = sameCycle && current
+        ? current
+        : {
           ids: available,
           index: Math.max(0, available.indexOf(activeIdRef.current)),
         };
-      }
-      const cycle = switcher.current!;
       const direction = (event.modifiers & MOD_SHIFT) !== 0 ? 1 : -1;
-      cycle.index = (cycle.index + direction + cycle.ids.length) % cycle.ids.length;
-      activate(cycle.ids[cycle.index]);
+      const index = (cycle.index + direction + cycle.ids.length) % cycle.ids.length;
+      setWindowSwitcher({ ids: cycle.ids, index });
+      activate(cycle.ids[index]);
     }
   };
 
@@ -372,6 +549,7 @@ export default function Desktop() {
       return;
     }
     launch(appId);
+    setDesktopMenu(null);
     setPanel(null);
   }, [activate]);
 
@@ -391,21 +569,47 @@ export default function Desktop() {
     }
   }, []);
 
-  const toggleMaximize = useCallback((id: number) => {
-    setMaximized((current) => {
-      const next = new Map(current);
-      if (next.has(id)) {
+  const togglePlacement = useCallback((id: number) => {
+    const surface = openRef.current.find((item) => item.id === id);
+    if (!surface) return;
+    const placement = placements.get(id);
+    if (placement) {
+      const bounds = fitSurfaceFrame(placement.restore, desktopArea);
+      move(id, bounds.x, bounds.y);
+      setOpen((current) => current.map((surface) =>
+        surface.id === id ? { ...surface, bounds } : surface,
+      ));
+      setPlacements((current) => {
+        const next = new Map(current);
         next.delete(id);
-      } else {
-        const surface = openRef.current.find((item) => item.id === id);
-        if (surface) next.set(id, surface.bounds);
-      }
-      return next;
+        return next;
+      });
+      activate(id);
+      return;
+    }
+    setPlacements((current) => new Map(current).set(id, {
+      kind: "maximized",
+      restore: surface.bounds,
+    }));
+    activate(id);
+  }, [activate, desktopArea, placements]);
+
+  const placeWindow = useCallback((id: number, kind: WindowPlacementKind) => {
+    const surface = openRef.current.find((item) => item.id === id);
+    if (!surface || !placementFits(surface.appId, kind, desktopArea)) return;
+    setPlacements((current) => {
+      const placement = current.get(id);
+      if (placement?.kind === kind) return current;
+      return new Map(current).set(id, {
+        kind,
+        restore: placement?.restore ?? surface.bounds,
+      });
     });
-  }, []);
+    activate(id);
+  }, [activate, desktopArea]);
 
   const beginWindowMove = useCallback((id: number, serial: number) => {
-    if (maximized.has(id)) return;
+    if (placements.has(id)) return;
     const surface = openRef.current.find((item) => item.id === id);
     if (!surface) return;
     beginMove(
@@ -416,7 +620,7 @@ export default function Desktop() {
       desktopArea.x + desktopArea.width - surface.bounds.width,
       desktopArea.y + desktopArea.height - surface.bounds.height,
     );
-  }, [desktopArea, maximized]);
+  }, [desktopArea, placements]);
 
   const resizeWindow = useCallback((id: number, candidate: ResizeCandidate) => {
     // Each app has a distinct smallest usable layout. A single tiny frame
@@ -459,6 +663,11 @@ export default function Desktop() {
     const nextWorkspaces = new Map(surfaceWorkspaceRef.current).set(id, workspace);
     surfaceWorkspaceRef.current = nextWorkspaces;
     setSurfaceWorkspace(nextWorkspaces);
+    setShowDesktopState((current) => {
+      if (!current?.ids.includes(id)) return current;
+      const ids = current.ids.filter((candidate) => candidate !== id);
+      return ids.length > 0 ? { ...current, ids } : null;
+    });
     if (id === activeIdRef.current && previousWorkspace === activeWorkspaceRef.current) {
       const fallback = openRef.current
         .filter((surface) =>
@@ -481,6 +690,31 @@ export default function Desktop() {
       .filter((surface) => surfaceWorkspace.get(surface.id) === id)
       .map((surface) => ({ ...surface, minimized: minimized.has(surface.id) })),
   }));
+  // A session may own 32 surfaces. Limiting the visible neighborhood keeps the
+  // transient panel on-screen; without it, later selections would be clipped.
+  const switcherVisibleIds = windowSwitcher && windowSwitcher.ids.length > WINDOW_SWITCHER_VISIBLE_LIMIT
+    ? Array.from({ length: WINDOW_SWITCHER_VISIBLE_LIMIT }, (_, offset) => {
+      const start = windowSwitcher.index - Math.floor(WINDOW_SWITCHER_VISIBLE_LIMIT / 2);
+      return windowSwitcher.ids[(start + offset + windowSwitcher.ids.length) % windowSwitcher.ids.length];
+    })
+    : windowSwitcher?.ids ?? [];
+  const switcherWindows = windowSwitcher
+    ? switcherVisibleIds
+      .map((id) => open.find((surface) => surface.id === id))
+      .filter((surface): surface is LiteSurface => surface !== undefined)
+      .map((surface) => ({ ...surface, minimized: minimized.has(surface.id) }))
+    : [];
+  const switcherSelectedId = windowSwitcher?.ids[windowSwitcher.index] ?? 0;
+  const dockMenuSurfaces = desktopMenu?.kind === "dock"
+    ? open.filter((surface) => surface.appId === desktopMenu.appId)
+    : [];
+  const dockMenuTarget = dockMenuSurfaces.at(-1);
+  const dockMenuPlacement = dockMenuTarget ? placements.get(dockMenuTarget.id) : undefined;
+  const windowMenuTarget = desktopMenu?.kind === "window"
+    ? open.find((surface) => surface.id === desktopMenu.surfaceId)
+    : undefined;
+  const windowMenuPlacement = windowMenuTarget ? placements.get(windowMenuTarget.id) : undefined;
+  const windowMenuWorkspace = windowMenuTarget ? surfaceWorkspace.get(windowMenuTarget.id) : undefined;
   const time = `${String(clock.getHours()).padStart(2, "0")}:${String(clock.getMinutes()).padStart(2, "0")}`;
   const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -488,6 +722,16 @@ export default function Desktop() {
 
   return (
     <div id="desktop" className="aurora-root" onKeyDown={onDesktopKey}>
+      <div
+        className="desktop-background-hit"
+        onContextMenu={(rawEvent) => {
+          const event = rawEvent as unknown as LitePointerEvent;
+          event.stopPropagation();
+          setPanel(null);
+          setWindowSwitcher(null);
+          setDesktopMenu({ kind: "desktop", x: event.x, y: event.y });
+        }}
+      />
       <TopBar
         panel={panel}
         time={time}
@@ -495,10 +739,11 @@ export default function Desktop() {
         muted={master.muted}
         activeWorkspace={activeWorkspace}
         workspaceCount={WORKSPACE_COUNT}
-        onPanel={setPanel}
+        onPanel={changePanel}
       />
       {visible.map((surface) => {
-        const bounds = maximized.has(surface.id) ? desktopArea : surface.bounds;
+        const placement = placements.get(surface.id);
+        const bounds = placement ? placementFrame(placement.kind, desktopArea) : surface.bounds;
         return (
           <Window
             key={surface.id}
@@ -514,8 +759,13 @@ export default function Desktop() {
             onResize={resizeWindow}
             onResizeEnd={finishResize}
             onMinimize={minimizeWindow}
-            onToggleMaximize={toggleMaximize}
-            maximized={maximized.has(surface.id)}
+            onTogglePlacement={togglePlacement}
+            onOpenSystemMenu={(surfaceId, x, y) => {
+              activate(surfaceId);
+              setWindowSwitcher(null);
+              setDesktopMenu({ kind: "window", surfaceId, x, y });
+            }}
+            placed={placement !== undefined}
           >
             <div
               className="client-surface"
@@ -529,11 +779,26 @@ export default function Desktop() {
       {Array.from(resizePreview, ([id, bounds]) => (
         <div key={id} className="window-resize-preview" style={frameStyle(bounds)}/>
       ))}
+      {windowSwitcher && switcherWindows.length > 0 && (
+        <WindowSwitcher
+          windows={switcherWindows}
+          selectedId={switcherSelectedId}
+          position={windowSwitcher.index + 1}
+          total={windowSwitcher.ids.length}
+        />
+      )}
       <Dock
         iconSize={dockIconSize}
         autoHide={dockAutoHide}
         items={[
-          { id: "liteos", label: "LiteOS", icon: "assets/liteos.png", active: panel === "command", onClick: () => setPanel(panel === "command" ? null : "command") },
+          {
+            id: "liteos",
+            label: "LiteOS",
+            icon: "assets/liteos.png",
+            active: panel === "command",
+            onClick: () => changePanel(panel === "command" ? null : "command"),
+            onContextMenu: (x: number, y: number) => openDockMenu("liteos", "LiteOS", x, y),
+          },
           ...dockApps.map((app) => {
             const appSurfaces = open.filter((surface) => surface.appId === app.id);
             return {
@@ -543,9 +808,17 @@ export default function Desktop() {
                 surface.id === activeId
                 && surfaceWorkspace.get(surface.id) === activeWorkspace),
               onClick: () => launchOrActivate(app.id),
+              onContextMenu: (x: number, y: number) => openDockMenu(app.id, app.label, x, y),
             };
           }),
-          { id: "settings", label: "Settings", icon: "assets/settings.png", active: panel === "system", onClick: () => setPanel(panel === "system" ? null : "system") },
+          {
+            id: "settings",
+            label: "Settings",
+            icon: "assets/settings.png",
+            active: panel === "system",
+            onClick: () => changePanel(panel === "system" ? null : "system"),
+            onContextMenu: (x: number, y: number) => openDockMenu("settings", "Settings", x, y),
+          },
         ]}
       />
       {panel === "command" && (
@@ -553,7 +826,7 @@ export default function Desktop() {
           apps={commandApps}
           activeWorkspace={activeWorkspace}
           onLaunch={launchOrActivate}
-          onClose={() => setPanel(null)}
+          onClose={() => changePanel(null)}
           onRestart={restart}
           onShutdown={shutdown}
         />
@@ -566,12 +839,12 @@ export default function Desktop() {
           onSelect={selectWorkspace}
           onMoveWindow={moveWindowToWorkspace}
           onCloseWindow={closeWindow}
-          onClose={() => setPanel(null)}
+          onClose={() => changePanel(null)}
         />
       )}
       {panel === "system" && (
         <>
-          <button className="shell-scrim" aria-label="Close system center" onClick={() => setPanel(null)}/>
+          <button className="shell-scrim" aria-label="Close system center" onClick={() => changePanel(null)}/>
           <SystemCenter
             time={time}
             date={date}
@@ -585,6 +858,172 @@ export default function Desktop() {
             onMuted={() => setMuted(!master.muted)}
             onDockIconSize={setDockIconSize}
             onDockAutoHide={() => setDockAutoHide(!dockAutoHide)}
+            onClose={() => changePanel(null)}
+          />
+        </>
+      )}
+      {desktopMenu && (
+        <>
+          <button
+            className="desktop-menu-scrim"
+            aria-label="Close desktop menu"
+            onClick={() => setDesktopMenu(null)}
+            onContextMenu={(rawEvent) => {
+              const event = rawEvent as unknown as LitePointerEvent;
+              event.stopPropagation();
+              setDesktopMenu(null);
+            }}
+          />
+          <ContextMenu
+            x={desktopMenu.x}
+            y={desktopMenu.y}
+            items={desktopMenu.kind === "desktop"
+              ? [
+                { id: "command", label: "Open Command Center", onSelect: () => changePanel("command") },
+                { id: "apps-separator", label: "", separator: true },
+                { id: "files", label: "Open Files", onSelect: () => launchOrActivate("file-manager") },
+                {
+                  id: "terminal",
+                  label: "New Terminal Window",
+                  onSelect: () => {
+                    launch("terminal");
+                    changePanel(null);
+                  },
+                },
+                { id: "desktop-separator", label: "", separator: true },
+                {
+                  id: "show-desktop",
+                  label: showDesktopState ? "Restore Desktop Windows" : "Show Desktop",
+                  disabled: !showDesktopState && visible.length === 0,
+                  onSelect: showDesktop,
+                },
+                { id: "workspaces", label: "Workspace Overview", onSelect: () => changePanel("overview") },
+                { id: "settings", label: "System Center", onSelect: () => changePanel("system") },
+              ]
+              : desktopMenu.kind === "window"
+                ? windowMenuTarget ? [
+                  {
+                    id: "minimize-window",
+                    label: "Minimize",
+                    onSelect: () => minimizeWindow(windowMenuTarget.id),
+                  },
+                  { id: "placement-separator", label: "", separator: true },
+                  {
+                    id: "maximize-window",
+                    label: "Maximize",
+                    disabled: windowMenuPlacement?.kind === "maximized",
+                    onSelect: () => placeWindow(windowMenuTarget.id, "maximized"),
+                  },
+                  {
+                    id: "tile-window-left",
+                    label: "Tile Left",
+                    disabled: windowMenuPlacement?.kind === "left"
+                      || !placementFits(windowMenuTarget.appId, "left", desktopArea),
+                    onSelect: () => placeWindow(windowMenuTarget.id, "left"),
+                  },
+                  {
+                    id: "tile-window-right",
+                    label: "Tile Right",
+                    disabled: windowMenuPlacement?.kind === "right"
+                      || !placementFits(windowMenuTarget.appId, "right", desktopArea),
+                    onSelect: () => placeWindow(windowMenuTarget.id, "right"),
+                  },
+                  {
+                    id: "restore-window",
+                    label: "Restore",
+                    disabled: !windowMenuPlacement,
+                    onSelect: () => togglePlacement(windowMenuTarget.id),
+                  },
+                  { id: "workspace-separator", label: "", separator: true },
+                  ...Array.from({ length: WORKSPACE_COUNT }, (_, workspace) => workspace)
+                    .filter((workspace) => workspace !== windowMenuWorkspace)
+                    .map((workspace) => ({
+                      id: `move-workspace-${workspace}`,
+                      label: `Move to Workspace ${workspace + 1}`,
+                      onSelect: () => moveWindowToWorkspace(windowMenuTarget.id, workspace),
+                    })),
+                  { id: "close-separator", label: "", separator: true },
+                  {
+                    id: "close-window",
+                    label: "Close",
+                    onSelect: () => closeWindow(windowMenuTarget.id),
+                  },
+                ] : []
+                : desktopMenu.appId === "liteos"
+                  ? [{ id: "open-command", label: "Open Command Center", onSelect: () => changePanel("command") }]
+                  : desktopMenu.appId === "settings"
+                    ? [{ id: "open-settings", label: "Open System Center", onSelect: () => changePanel("system") }]
+                    : [
+                    {
+                      id: "open-app",
+                      label: open.some((surface) => surface.appId === desktopMenu.appId)
+                        ? `Show ${desktopMenu.label}`
+                        : `Open ${desktopMenu.label}`,
+                      onSelect: () => launchOrActivate(desktopMenu.appId),
+                    },
+                    ...(multiWindowApps.has(desktopMenu.appId)
+                      && open.some((surface) => surface.appId === desktopMenu.appId)
+                      ? [{
+                        id: "new-window",
+                        label: "New Window",
+                        onSelect: () => {
+                          launch(desktopMenu.appId);
+                          changePanel(null);
+                        },
+                      }]
+                      : []),
+                    ...(dockMenuSurfaces.length > 1 ? [
+                      { id: "windows-separator", label: "", separator: true },
+                      ...dockMenuSurfaces.map((surface, index) => {
+                        const workspace = surfaceWorkspace.get(surface.id);
+                        return {
+                          id: `show-window-${surface.id}`,
+                          label: `${index + 1}. ${surface.title}${workspace === undefined ? "" : ` · W${workspace + 1}`}${minimized.has(surface.id) ? " · Minimized" : ""}`,
+                          onSelect: () => activate(surface.id),
+                        };
+                      }),
+                    ] : []),
+                    ...(dockMenuTarget ? [
+                      { id: "window-separator", label: "", separator: true },
+                      {
+                        id: "maximize-window",
+                        label: "Maximize Window",
+                        disabled: dockMenuPlacement?.kind === "maximized",
+                        onSelect: () => placeWindow(dockMenuTarget.id, "maximized"),
+                      },
+                      {
+                        id: "tile-window-left",
+                        label: "Tile Window Left",
+                        disabled: dockMenuPlacement?.kind === "left"
+                          || !placementFits(desktopMenu.appId, "left", desktopArea),
+                        onSelect: () => placeWindow(dockMenuTarget.id, "left"),
+                      },
+                      {
+                        id: "tile-window-right",
+                        label: "Tile Window Right",
+                        disabled: dockMenuPlacement?.kind === "right"
+                          || !placementFits(desktopMenu.appId, "right", desktopArea),
+                        onSelect: () => placeWindow(dockMenuTarget.id, "right"),
+                      },
+                      {
+                        id: "restore-window",
+                        label: "Restore Window",
+                        disabled: !dockMenuPlacement,
+                        onSelect: () => togglePlacement(dockMenuTarget.id),
+                      },
+                      { id: "close-separator", label: "", separator: true },
+                      {
+                        id: "close-app",
+                        label: "Close All Windows",
+                        onSelect: () => {
+                          for (const surface of open.filter((surface) => surface.appId === desktopMenu.appId)) {
+                            closeWindow(surface.id);
+                          }
+                        },
+                      },
+                    ] : []),
+                    ]}
+            onClose={() => setDesktopMenu(null)}
           />
         </>
       )}

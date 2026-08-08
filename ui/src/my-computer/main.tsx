@@ -239,6 +239,8 @@ export default function MyComputer() {
       rows.push(["已用空间", formatBytes(driveUsed)]);
       rows.push(["可用空间", formatBytes(driveAvailable)]);
       rows.push(["容量", formatBytes(driveTotal)]);
+    } else {
+      rows.push(["容量", "暂不可用"]);
     }
     openProperties("本地磁盘 (C:) 属性", rows);
   }, [driveAvailable, driveStorage.error, driveTotal, driveUsed, openProperties]);
@@ -500,12 +502,20 @@ export default function MyComputer() {
                   <span className="detail-name">{focusedEntry.name}</span>
                   <span className="detail-line">类型： {atRoot ? "本地磁盘" : typeLabel(focusedEntry, TYPE_LABELS)}</span>
                   {atRoot && <span className="detail-line">文件系统： ext2</span>}
-                  {atRoot && driveStorage.error && <span className="detail-line">容量： 暂不可用</span>}
+                  {atRoot && (driveStorage.error || driveTotal === 0) && <span className="detail-line">容量： 暂不可用</span>}
                   {atRoot && !driveStorage.error && driveTotal > 0 && (
                     <>
                       <span className="detail-line">可用空间： {formatBytes(driveAvailable)}</span>
                       <span className="detail-line">总大小： {formatBytes(driveTotal)}</span>
-                      <div className="detail-capacity" aria-label={`已使用 ${Math.round(driveUsedPercent)}%`}>
+                      <div
+                        className="detail-capacity"
+                        role="progressbar"
+                        aria-label="磁盘已用空间"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(driveUsedPercent)}
+                        aria-valuetext={`${formatBytes(driveUsed)} / ${formatBytes(driveTotal)}`}
+                      >
                         <div className="detail-capacity__fill" style={{ width: `${driveUsedPercent}%` }}/>
                       </div>
                     </>

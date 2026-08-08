@@ -23,9 +23,15 @@
   `session/output.rs` 独占 output serial 与 connector-size publication；
   `compositor/session/accelerator.rs` 独占 global accelerator chord 表与 key-grab 状态机；
   `display-proto/accelerator.rs` 独占 `AcceleratorSet` wire codec。
-- React desktop 独占 persistent window policy state，以及 Dock 尺寸、自动隐藏和底边唤出状态。
+- React desktop 独占 persistent window policy state，以及 Dock 尺寸、自动隐藏和底边唤出状态。Dock 菜单的
+  window list 只投影 desktop 的 live surface/workspace/minimized state；maximize/left/right/restore 只修改
+  desktop 的单一 placement state，并与拖拽吸附共享应用最小尺寸约束。Dock 的 auto-hide timeout 只属于
+  Dock 组件：pointer re-entry 必须取消，unmount 必须清理，应用点击和菜单打开必须立即清除。
+- React desktop 分别保存 shell panel、context menu 与 Alt+Tab switcher 的最小 presentation state，但其
+  transition 必须保证最多一个交互式 overlay；打开新 overlay、激活窗口、切换 workspace 或 Show Desktop
+  时必须同步撤销不再有效的 menu/switcher，禁止陈旧 focus scope 覆盖新场景。
   System Center 只修改该 desktop-owned state；compositor 只保存已接受/已呈现 scene snapshot 与
-  move-grab temporary transform，不得复制窗口位置、z-order、active/minimized/maximized/Dock policy。
+  move-grab temporary transform，不得复制窗口位置、z-order、active/minimized/placement/Dock policy。
 - 每个 app connection 独占一个 top-level surface content revision；一个 OS process/QuickJS VM/React
   root 只对应一个 surface。desktop scene 独占 foreign surface geometry，两类 revision 不互相代理。
 - `lite-runtime` UI thread 独占 QuickJS 与 mutable React host tree；render thread 只消费 immutable snapshot，
@@ -51,7 +57,8 @@
   必须在最新 paint-order hit snapshot 的可聚焦控件中正/反遍历；Ctrl/Alt/Super 组合不得进入该 default
   action。`data-lite-focus-scope` 的最近 host ancestor 定义 modal focus trap，renderer 是 active scope、
   opener restore 与 scope 内 traversal 的唯一 owner；scope 出现时必须自动进入其首个控件，消失时恢复仍
-  存活的 opener，禁止 React 复制 focus index。应用层受控文本必须停止其
+  存活的 opener，禁止 React 复制 focus index。shell panel 的显式 close button 必须位于 scope DOM 末尾，
+  以绝对定位呈现在右上角，不得抢占搜索框或主要内容的首个焦点；应用层受控文本必须停止其
   输入按键的文档内冒泡，range 必须停止方向键等 default-action 按键，避免窗口级快捷键同时消费输入；
   未被组件消费的 Escape 允许冒泡给应用的 dialog/menu owner。由合成器注册的全局 accelerator 仍独立
   投递给桌面。文本光标与 range UA 外观都由
@@ -61,8 +68,9 @@
   后续 ancestor。compositor 必须把该 pointer transition 同一时刻的 Shift/Ctrl/Alt/Super mask 写入
   `InputPointer`，runtime 原样投影到 pointer/click/double-click payload；应用不得另存键盘事件来猜测
   Ctrl/Shift 点击，否则焦点切换或 key routing 会留下过期 modifier。禁止用“所有包含该坐标的 listener”
-  近似冒泡，否则重叠 sibling 会收到错误事件。modal scrim 与 shell panel 的可见空白区域必须注册
-  pointer barrier；纯背景像素不进入 hit tree，若只画 overlay 而没有 listener，点击会穿透到后方控件。
+  近似冒泡，否则重叠 sibling 会收到错误事件。modal scrim、desktop context-menu scrim 与 shell panel
+  的可见空白区域必须注册 pointer barrier；纯背景像素不进入 hit tree，若只画 overlay 而没有 listener，
+  点击会穿透到后方控件。
 - `lite-runtime` 内部 owner seam 固定为 `input`（事件状态）、`input/dispatch`（DOM 冒泡与表单默认动作）、
   `renderer/gpu_paint`（帧布局与完整 immutable display list）、`renderer/retained`
   （文档/fixed identity、geometry 与 damage）、
@@ -81,7 +89,9 @@
   复制 parser/screen state。`ui/design-system` 独占 Aurora token、assets 与系统组件；应用不得复制窗口
   chrome、shell、菜单、表单、Sidebar、Toolbar、Dialog 或结构/状态图标样式。结构/状态图标只能经 typed
   `SystemIcon` 使用 `assets/fonts/liteos-icons.json` 生成的 PUA 映射与 checked `liteos-icons` face；普通
-  Unicode 字符、调用点硬编码 PUA 或应用直接声明该 font family 均不得代替系统图标。
+  Unicode 字符、调用点硬编码 PUA 或应用直接声明该 font family 均不得代替系统图标。生成的 TypeScript
+  必须携带 checked TTF 的 SHA-256；`ui/build.mjs` 在所有 check/build 前验证 manifest mapping、CSS family
+  与该 font identity，发布 cache identity 必须包含 manifest 和 TTF。
   app identity icon 与 filesystem content icon 必须使用不同资产，禁止把带 tile 的应用图标复用于文件对象；
   compositor 与 LiteUI 不读取主题。
 
@@ -215,7 +225,9 @@
   （次序无关）才结束并恢复 focused surface 路由；desktop 断开或 epoch reset 强制结束。modifier mask
   位定义固定为 Shift=1、Ctrl=2、Alt=4、Super=8。裸 Escape 不得注册为 global accelerator；shell panel
   打开时 desktop 必须显式取得 keyboard focus，关闭后恢复当前 workspace 的 active surface，使应用内
-  Escape 契约不被 shell 截走。窗口 policy 与 shortcut action 不得进入 compositor。
+  Escape 契约不被 shell 截走。Alt+Tab 的稳定候选顺序、选择索引和非交互浮层只属于 desktop，并在 Alt
+  释放、workspace 切换或 surface 关闭时清除；Super+Left/Right/Up/Down 只调用 desktop 的单一 placement
+  owner，Super+D 只切换 desktop 的可逆 Show Desktop 集合；窗口 policy 与 shortcut action 不得进入 compositor。
 - compositor 的 `spice_agent` 是 monitor/clipboard capability、session clipboard 与 SPICE vdagent
   transport 的唯一 owner。VDI client port 承载 monitor/clipboard，VDI server port 的标准 13-byte
   mouse-state 只做 framing 校验后丢弃；UTM/QEMU 必须以 `agent-mouse=off` 禁止 host 把 motion 改投该
@@ -233,6 +245,10 @@
   reconciler 的同步事件边界并在返回前 commit，不同离散 input 不跨 turn
   合并。CSS timeline 只在 `PRESENTED` 后把活动 document 标 dirty，`ACCEPTED`、release 与 JavaScript
   timer 不得代替 refresh driver；snapshot arena 不可用时只记录 dirty，归还后从最新 host tree 生成。
+  原生文本 caret blink 是唯一非 CSS 的周期性 UI wake：只有 focused editable 存在时才注册单个
+  500ms native poll deadline，每次到期只切换 visible phase，编辑、caret move 或 pointer selection 必须重置为
+  visible。失焦或 editable 移除必须撤销 deadline；phase 必须进入 retained GPU identity 并只 damage 该
+  control bounds，不得借 JavaScript timer、CSS animation 或全屏 repaint 实现。
 - app entry 必须 default export 一个 component。target loader 仅接受固定 React/LiteUI system module；
   `lite:apps`、`lite:desktop` 与 `lite:audio-system` 必须拒绝普通 app session。应用可通过标准
   `<audio>` 与 `lite:fs` 的 filesystem-backed `File` 播放；native plugin、dlopen、应用自建 worker
@@ -264,8 +280,10 @@
   error 只终止该 app。desktop 的同类错误终止 epoch。LiteUI 只写 stderr，不显示 error page 或恢复 UI。
 - close request 同步 unmount 唯一 React root、关闭 helper/fd、断开 display 并退出；应用不可 veto，也没有
   before-unload hook。窗口 control 的 pointer-down/double-click 必须在 titlebar drag owner 前终止传播；
+  titlebar move 与 resize grip 只能由 `BTN_LEFT` 启动，titlebar right-click 只打开 desktop-owned system menu，
+  该菜单不得复制 minimize/placement/workspace/close policy；
   desktop close request 不得提前删除 React surface，只有 compositor 发布的 `AppClosed` 可以同时撤销
-  native surface identity 与 minimized/maximized/resize/workspace policy。workspace move 只修改 desktop
+  native surface identity 与 minimized/placement/resize/workspace policy。workspace move 只修改 desktop
   拥有的 surface assignment，不重建 native surface；active 窗口被移出当前 workspace 时必须立即把
   compositor focus 交给当前 workspace 最后的非最小化窗口（没有则交回 desktop）。PTY child exit 使
   terminal-session 同码退出，React terminal 随后退出。

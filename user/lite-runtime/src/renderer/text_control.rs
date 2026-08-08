@@ -1,7 +1,70 @@
 //! Native selection state for standard single-line text controls.
 
+use std::time::{Duration, Instant};
+
 use super::{Editable, Renderer};
 use crate::{font::CursorMove, keymap::TextEdit, style::Computed};
+
+const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Focus-scoped blink state for the single native text caret.
+pub(super) struct CaretBlink {
+    node_id: Option<u64>,
+    visible: bool,
+    deadline: Option<Instant>,
+}
+
+impl CaretBlink {
+    pub(super) fn new() -> Self {
+        Self {
+            node_id: None,
+            visible: false,
+            deadline: None,
+        }
+    }
+
+    pub(super) fn reconcile(&mut self, node_id: Option<u64>, now: Instant) -> bool {
+        if self.node_id == node_id {
+            return false;
+        }
+        let previous = self.visible_node();
+        self.node_id = node_id;
+        self.visible = node_id.is_some();
+        self.deadline = node_id.map(|_| now + CARET_BLINK_INTERVAL);
+        previous != self.visible_node()
+    }
+
+    pub(super) fn reset(&mut self, node_id: u64, now: Instant) -> bool {
+        if self.node_id != Some(node_id) {
+            return false;
+        }
+        let changed = !self.visible;
+        self.visible = true;
+        self.deadline = Some(now + CARET_BLINK_INTERVAL);
+        changed
+    }
+
+    pub(super) fn advance(&mut self, now: Instant) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        if deadline > now {
+            return false;
+        }
+        self.visible = !self.visible;
+        self.deadline = Some(now + CARET_BLINK_INTERVAL);
+        true
+    }
+
+    pub(super) fn next_delay(&self, now: Instant) -> Option<Duration> {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
+    pub(super) fn visible_node(&self) -> Option<u64> {
+        self.node_id.filter(|_| self.visible)
+    }
+}
 
 /// One controlled input's browser-owned editing state.
 #[derive(Clone, Copy, PartialEq)]
@@ -201,4 +264,33 @@ fn valid_boundary(value: &str, index: usize) -> usize {
         index -= 1;
     }
     index
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{CARET_BLINK_INTERVAL, CaretBlink};
+
+    #[test]
+    fn caret_blink_activates_toggles_resets_and_stops_with_focus() {
+        let start = Instant::now();
+        let mut blink = CaretBlink::new();
+
+        assert!(blink.reconcile(Some(7), start));
+        assert_eq!(blink.visible_node(), Some(7));
+        assert_eq!(blink.next_delay(start), Some(CARET_BLINK_INTERVAL));
+        assert!(!blink.advance(start + CARET_BLINK_INTERVAL - Duration::from_millis(1)));
+        assert!(blink.advance(start + CARET_BLINK_INTERVAL));
+        assert_eq!(blink.visible_node(), None);
+
+        let reset = start + CARET_BLINK_INTERVAL + Duration::from_millis(100);
+        assert!(blink.reset(7, reset));
+        assert_eq!(blink.visible_node(), Some(7));
+        assert_eq!(blink.next_delay(reset), Some(CARET_BLINK_INTERVAL));
+
+        assert!(blink.reconcile(None, reset));
+        assert_eq!(blink.visible_node(), None);
+        assert_eq!(blink.next_delay(reset), None);
+    }
 }

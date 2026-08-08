@@ -1,11 +1,25 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CheckBox, RangeInput, SystemIcon } from "./controls.tsx";
 import { CloseGlyph } from "./window.tsx";
 
 const KEY_ESC = 1;
 const KEY_ENTER = 28;
+const KEY_UP = 103;
+const KEY_DOWN = 108;
 const stopPanelPointer = (rawEvent: unknown) =>
   (rawEvent as LitePointerEvent).stopPropagation();
+
+function ShellPanelClose({ label, className, onClose }: {
+  label: string;
+  className: string;
+  onClose: () => void;
+}) {
+  return (
+    <button className={`shell-panel-close ${className}`} aria-label={label} onClick={onClose}>
+      <CloseGlyph/>
+    </button>
+  );
+}
 
 export type ShellPanel = "command" | "overview" | "system" | null;
 
@@ -33,7 +47,7 @@ export function TopBar({
   return (
     <div className="topbar">
       <button
-        className="topbar__brand"
+        className={`topbar__brand${panel === "command" ? " topbar__brand--active" : ""}`}
         aria-label="Open applications"
         aria-pressed={panel === "command"}
         onClick={() => toggle("command")}
@@ -58,7 +72,7 @@ export function TopBar({
         </span>
       </button>
       <button
-        className="topbar__status"
+        className={`topbar__status${panel === "system" ? " topbar__status--active" : ""}`}
         aria-label={`Open system controls; ${muted ? "muted" : `volume ${volume} percent`}; ${time}`}
         aria-pressed={panel === "system"}
         onClick={() => toggle("system")}
@@ -79,6 +93,7 @@ interface DockItem {
   running?: boolean;
   active?: boolean;
   onClick: () => void;
+  onContextMenu?: (x: number, y: number) => void;
 }
 
 export const DOCK_DEFAULT_ICON_SIZE = 58;
@@ -88,6 +103,7 @@ const DOCK_ITEM_GAP = 14;
 const DOCK_HORIZONTAL_PADDING = 18;
 const DOCK_BOTTOM_OFFSET = 20;
 const DOCK_REVEAL_HEIGHT = 12;
+const DOCK_HIDE_DELAY_MS = 180;
 
 /** Returns the visible Dock chrome height for one icon size.
  *
@@ -105,6 +121,31 @@ export function Dock({ items, iconSize, autoHide }: {
   autoHide: boolean;
 }) {
   const [pointerNear, setPointerNear] = useState(false);
+  // The pending timeout gives pointer motion across the Dock edge one short
+  // grace period. Without it, single-pixel boundary jitter repeatedly mounts
+  // and unmounts the complete flattened Dock display list.
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelHide = () => {
+    if (hideTimer.current === null) return;
+    clearTimeout(hideTimer.current);
+    hideTimer.current = null;
+  };
+  const showDock = () => {
+    cancelHide();
+    setPointerNear(true);
+  };
+  const hideDock = () => {
+    cancelHide();
+    setPointerNear(false);
+  };
+  const scheduleHide = () => {
+    cancelHide();
+    hideTimer.current = setTimeout(() => {
+      hideTimer.current = null;
+      setPointerNear(false);
+    }, DOCK_HIDE_DELAY_MS);
+  };
+  useEffect(() => () => cancelHide(), []);
   const shown = !autoHide || pointerNear;
   const itemWidth = iconSize + 8;
   const itemHeight = iconSize + 14;
@@ -118,46 +159,56 @@ export function Dock({ items, iconSize, autoHide }: {
     <div
       className="dock-host"
       style={{ width: dockWidth, height: hostHeight }}
-      onPointerEnter={autoHide ? () => setPointerNear(true) : undefined}
-      onPointerLeave={autoHide ? () => setPointerNear(false) : undefined}
+      onPointerEnter={autoHide ? showDock : undefined}
+      onPointerLeave={autoHide ? scheduleHide : undefined}
     >
-      <div
-        className={`dock${shown ? "" : " dock--hidden"}`}
-        aria-hidden={!shown}
-        style={{
-          width: dockWidth,
-          height: dockHeight,
-          borderRadius: Math.round(dockHeight * 0.285),
-          transform: shown ? "translateY(0px)" : `translateY(${dockHeight + DOCK_BOTTOM_OFFSET}px)`,
-        }}
-      >
-        {items.map((item) => (
-          <button
-            key={item.id}
-            className={`dock-item${item.active ? " dock-item--active" : ""}`}
-            style={{ width: itemWidth, height: itemHeight }}
-            aria-label={item.label}
-            aria-pressed={item.active}
-            disabled={!shown}
-            onClick={item.onClick}
-          >
-            <img
-              src={item.icon}
-              alt=""
-              style={{ width: iconSize, height: iconSize, borderRadius: Math.round(iconSize * 0.22) }}
-            />
-            {(item.running || item.active) && (
-              <span className="dock-item__running" style={{ left: Math.round((itemWidth - 7) / 2) }}/>
-            )}
-            <span className="dock-item__label" style={{ bottom: itemHeight + 10 }}>{item.label}</span>
-          </button>
-        ))}
-      </div>
+      {/* LiteUI flattens backdrop and descendant paint. Leaving a translated,
+          transparent Dock mounted would keep its labels and backdrop visible. */}
+      {shown && (
+        <div
+          className="dock"
+          style={{
+            width: dockWidth,
+            height: dockHeight,
+            borderRadius: Math.round(dockHeight * 0.285),
+          }}
+        >
+          {items.map((item) => (
+            <button
+              key={item.id}
+              className={`dock-item${item.active ? " dock-item--active" : ""}`}
+              style={{ width: itemWidth, height: itemHeight }}
+              aria-label={item.label}
+              aria-pressed={item.active}
+              onContextMenu={item.onContextMenu ? (rawEvent) => {
+                const event = rawEvent as unknown as LitePointerEvent;
+                event.stopPropagation();
+                item.onContextMenu?.(event.x, event.y);
+                if (autoHide) hideDock();
+              } : undefined}
+              onClick={() => {
+                item.onClick();
+                if (autoHide) hideDock();
+              }}
+            >
+              <img
+                src={item.icon}
+                alt=""
+                style={{ width: iconSize, height: iconSize, borderRadius: Math.round(iconSize * 0.22) }}
+              />
+              {(item.running || item.active) && (
+                <span className="dock-item__running" style={{ left: Math.round((itemWidth - 7) / 2) }}/>
+              )}
+              <span className="dock-item__label" style={{ bottom: itemHeight + 10 }}>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {autoHide && !shown && (
         <button
           className="dock-reveal"
           aria-label="Show Dock"
-          onClick={() => setPointerNear(true)}
+          onClick={showDock}
         />
       )}
     </div>
@@ -189,6 +240,7 @@ export function CommandCenter({
 }) {
   const [query, setQuery] = useState("");
   const [sessionAction, setSessionAction] = useState<"restart" | "shutdown" | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const matches = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return normalized
@@ -198,6 +250,9 @@ export function CommandCenter({
       )
       : apps;
   }, [apps, query]);
+  const effectiveSelectedIndex = matches.length === 0
+    ? 0
+    : Math.min(selectedIndex, matches.length - 1);
   return (
     <>
       <button className="shell-scrim" aria-label="Close command center" onClick={onClose}/>
@@ -211,13 +266,22 @@ export function CommandCenter({
           if (event.code === KEY_ESC) {
             event.stopPropagation();
             if (sessionAction) setSessionAction(null);
-            else if (query) setQuery("");
+            else if (query) {
+              setQuery("");
+              setSelectedIndex(0);
+            }
             else onClose();
           } else if (event.code === KEY_ENTER) {
             event.stopPropagation();
             if (sessionAction === "restart") onRestart();
             else if (sessionAction === "shutdown") onShutdown();
-            else if (matches[0]) onLaunch(matches[0].id);
+            else if (matches[effectiveSelectedIndex]) onLaunch(matches[effectiveSelectedIndex].id);
+          } else if (sessionAction === null && matches.length > 0 && event.code === KEY_UP) {
+            event.stopPropagation();
+            setSelectedIndex((effectiveSelectedIndex + matches.length - 1) % matches.length);
+          } else if (sessionAction === null && matches.length > 0 && event.code === KEY_DOWN) {
+            event.stopPropagation();
+            setSelectedIndex((effectiveSelectedIndex + 1) % matches.length);
           }
         }}
       >
@@ -233,6 +297,7 @@ export function CommandCenter({
             className="cc-sidebar__all"
             onClick={() => {
               setQuery("");
+              setSelectedIndex(0);
               setSessionAction(null);
             }}
           >
@@ -247,7 +312,10 @@ export function CommandCenter({
               autoFocus={true}
               value={query}
               placeholder="Search applications"
-              onInput={(event) => setQuery((event as unknown as { value: string }).value)}
+              onInput={(event) => {
+                setQuery((event as unknown as { value: string }).value);
+                setSelectedIndex(0);
+              }}
             />
             <span className="key-hint"><span className="control-label">Ctrl</span></span>
             <span className="key-hint"><span className="control-label">Space</span></span>
@@ -258,8 +326,14 @@ export function CommandCenter({
               <span className="command-section__count">{matches.length} available</span>
             </div>
             <div className="command-grid">
-              {matches.map((app) => (
-                <button key={app.id} className="command-app" onClick={() => onLaunch(app.id)}>
+              {matches.map((app, index) => (
+                <button
+                  key={app.id}
+                  className={`command-app${index === effectiveSelectedIndex ? " command-app--selected" : ""}`}
+                  aria-current={index === effectiveSelectedIndex}
+                  onPointerEnter={() => setSelectedIndex(index)}
+                  onClick={() => onLaunch(app.id)}
+                >
                   <img src={app.icon} alt=""/>
                   <span className="control-label">{app.name}</span>
                   <span className={`command-app__state control-label${app.running ? " command-app__state--running" : ""}`}>
@@ -277,7 +351,7 @@ export function CommandCenter({
                   {matches.length > 0 ? (
                     <>
                       <span className="key-hint"><span className="control-label">Enter</span></span>
-                      <span>Open first result</span>
+                      <span>Open selected result</span>
                     </>
                   ) : (
                     <span>Adjust the search to find an application</span>
@@ -316,6 +390,7 @@ export function CommandCenter({
             )}
           </div>
         </div>
+        <ShellPanelClose label="Close command center" className="command-center__close" onClose={onClose}/>
       </div>
     </>
   );
@@ -324,6 +399,51 @@ export function CommandCenter({
 interface WorkspaceView {
   id: number;
   windows: Array<LiteSurface & { minimized: boolean }>;
+}
+
+interface WindowSwitcherItem {
+  id: number;
+  title: string;
+  icon: string;
+  minimized: boolean;
+}
+
+/** Transient, non-interactive Alt+Tab selection feedback owned by desktop policy. */
+export function WindowSwitcher({ windows, selectedId, position, total }: {
+  windows: WindowSwitcherItem[];
+  selectedId: number;
+  position: number;
+  total: number;
+}) {
+  return (
+    <div className="window-switcher" aria-label="Window switcher">
+      <div className="window-switcher__panel">
+        <div className="window-switcher__header">
+          <span className="window-switcher__title control-label">Switch windows</span>
+          <span className="window-switcher__hint control-label">
+            {position} of {total} · Release Alt to select
+          </span>
+        </div>
+        <div className="window-switcher__list">
+          {windows.map((window) => {
+            const selected = window.id === selectedId;
+            return (
+              <div
+                key={window.id}
+                className={`window-switcher__item${selected ? " window-switcher__item--selected" : ""}`}
+              >
+                <img className="window-switcher__icon" src={window.icon} alt=""/>
+                <span className="window-switcher__name control-label">{window.title}</span>
+                <span className="window-switcher__state control-label">
+                  {window.minimized ? "Minimized" : selected ? "Selected" : "Open"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** Spatial overview of running windows and available workspaces. */
@@ -461,6 +581,7 @@ export function WorkspaceOverview({
             </span>
             <span className="overview__count">Workspace {activeWorkspace + 1} active</span>
           </div>
+          <ShellPanelClose label="Close workspace overview" className="overview__close" onClose={onClose}/>
         </div>
       </div>
     </>
@@ -481,6 +602,7 @@ export function SystemCenter({
   onMuted,
   onDockIconSize,
   onDockAutoHide,
+  onClose,
 }: {
   time: string;
   date: string;
@@ -494,6 +616,7 @@ export function SystemCenter({
   onMuted: () => void;
   onDockIconSize: (value: number) => void;
   onDockAutoHide: () => void;
+  onClose: () => void;
 }) {
   return (
     <div className="system-center" data-lite-focus-scope={true} onPointerDown={stopPanelPointer}>
@@ -519,6 +642,7 @@ export function SystemCenter({
         <span className="sc-slider__label">Volume</span>
         <span className="sc-slider__value">{muted ? "Muted" : `${volume}%`}</span>
         <RangeInput
+          ariaLabel="System volume"
           className="sc-slider__range"
           min={0}
           max={100}
@@ -536,6 +660,7 @@ export function SystemCenter({
           <span className="sc-dock-controls__value">{dockIconSize}px</span>
         </div>
         <RangeInput
+          ariaLabel="Dock icon size"
           className="sc-dock-controls__range"
           min={DOCK_MIN_ICON_SIZE}
           max={DOCK_MAX_ICON_SIZE}
@@ -551,6 +676,37 @@ export function SystemCenter({
           />
         </div>
       </div>
+      <div className="sc-shortcuts">
+        <span className="sc-shortcuts__title">Keyboard shortcuts</span>
+        <div className="sc-shortcut-row">
+          <span>Applications</span>
+          <span className="sc-shortcut-row__keys control-label">Ctrl + Space</span>
+        </div>
+        <div className="sc-shortcut-row">
+          <span>Switch windows</span>
+          <span className="sc-shortcut-row__keys control-label">Alt + Tab</span>
+        </div>
+        <div className="sc-shortcut-row">
+          <span>Change workspace</span>
+          <span className="sc-shortcut-row__keys control-label">Ctrl + Alt + Left / Right</span>
+        </div>
+        <div className="sc-shortcut-row">
+          <span>Tile window</span>
+          <span className="sc-shortcut-row__keys control-label">Super + Left / Right</span>
+        </div>
+        <div className="sc-shortcut-row">
+          <span>Maximize / restore</span>
+          <span className="sc-shortcut-row__keys control-label">Super + Up / Down</span>
+        </div>
+        <div className="sc-shortcut-row">
+          <span>Show / restore desktop</span>
+          <span className="sc-shortcut-row__keys control-label">Super + D</span>
+        </div>
+        <div className="sc-shortcut-row">
+          <span>Close window</span>
+          <span className="sc-shortcut-row__keys control-label">Alt + F4</span>
+        </div>
+      </div>
       <div className="sc-session-card">
         <span className="sc-session-card__mark"><span/></span>
         <div className="sc-session-card__copy">
@@ -560,6 +716,7 @@ export function SystemCenter({
           </span>
         </div>
       </div>
+      <ShellPanelClose label="Close system center" className="system-center__close" onClose={onClose}/>
     </div>
   );
 }

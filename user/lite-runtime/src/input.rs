@@ -283,6 +283,7 @@ fn dispatch_key(
                 key.code,
             )?
         {
+            renderer.reset_text_caret(node_id);
             state.invalidate_scene();
             return Ok(());
         }
@@ -295,12 +296,14 @@ fn dispatch_key(
                 _ => None,
             };
             if let Some(movement) = movement {
-                if renderer.move_control_cursor(
+                let changed = renderer.move_control_cursor(
                     node_id,
                     &editable,
                     movement,
                     interactions.modifiers.shift,
-                ) {
+                );
+                let blink_changed = renderer.reset_text_caret(node_id);
+                if changed || blink_changed {
                     state.invalidate_scene();
                 }
                 return Ok(());
@@ -311,18 +314,22 @@ fn dispatch_key(
                 _ => None,
             };
             if let Some(edge) = edge {
-                if renderer.set_control_focus(
+                let changed = renderer.set_control_focus(
                     node_id,
                     &editable.value,
                     edge,
                     interactions.modifiers.shift,
-                ) {
+                );
+                let blink_changed = renderer.reset_text_caret(node_id);
+                if changed || blink_changed {
                     state.invalidate_scene();
                 }
                 return Ok(());
             }
         }
         if let Some(edit) = keymap::text_edit(key.code, key.value, interactions.modifiers) {
+            renderer.reset_text_caret(node_id);
+            state.invalidate_scene();
             if let Some(on_input) = editable.on_input {
                 let next = renderer.edit_control(node_id, &editable, edit);
                 dispatch_listener(engine, on_input, json!({ "type": "input", "value": next }))?;
@@ -486,12 +493,14 @@ fn dispatch_pointer(
                     .find(|hit| hit.editable.is_some())
                     .cloned();
                 if let Some(hit) = text_target {
-                    if renderer.place_control_cursor(
+                    let changed = renderer.place_control_cursor(
                         hit.node_id,
                         hit.editable.as_ref().expect("text input hit"),
                         pointer.x,
                         interactions.modifiers.shift,
-                    ) {
+                    );
+                    let blink_changed = renderer.reset_text_caret(hit.node_id);
+                    if changed || blink_changed {
                         state.invalidate_scene();
                     }
                     interactions.pointer_capture = Some(PointerCapture {
@@ -529,10 +538,13 @@ fn dispatch_pointer(
         display_proto::PointerPhase::Up => {
             if let Some(capture) = interactions.pointer_capture.take() {
                 if let Some(hit) = capture.hit(&interactions.hits) {
-                    if let Some(editable) = &hit.editable
-                        && renderer.place_control_cursor(hit.node_id, editable, pointer.x, true)
-                    {
-                        state.invalidate_scene();
+                    if let Some(editable) = &hit.editable {
+                        let changed =
+                            renderer.place_control_cursor(hit.node_id, editable, pointer.x, true);
+                        let blink_changed = renderer.reset_text_caret(hit.node_id);
+                        if changed || blink_changed {
+                            state.invalidate_scene();
+                        }
                     }
                     if hit.range.is_some_and(|range| !range.disabled()) {
                         dispatch_range_pointer(engine, hit, pointer.x)?;
@@ -596,10 +608,13 @@ fn dispatch_pointer(
         display_proto::PointerPhase::Motion => {
             if let Some(capture) = interactions.pointer_capture {
                 if let Some(hit) = capture.hit(&interactions.hits) {
-                    if let Some(editable) = &hit.editable
-                        && renderer.place_control_cursor(hit.node_id, editable, pointer.x, true)
-                    {
-                        state.invalidate_scene();
+                    if let Some(editable) = &hit.editable {
+                        let changed =
+                            renderer.place_control_cursor(hit.node_id, editable, pointer.x, true);
+                        let blink_changed = renderer.reset_text_caret(hit.node_id);
+                        if changed || blink_changed {
+                            state.invalidate_scene();
+                        }
                     }
                     if hit.range.is_some_and(|range| !range.disabled()) {
                         dispatch_range_pointer(engine, hit, pointer.x)?;

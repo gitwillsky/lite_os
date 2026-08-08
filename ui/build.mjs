@@ -1,4 +1,5 @@
 import { build } from "esbuild";
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,52 @@ import { fileURLToPath } from "node:url";
 const root = dirname(fileURLToPath(import.meta.url));
 const output = join(root, "dist");
 const checkOnly = process.argv.includes("--check");
+const systemIconManifestPath = join(root, "../assets/fonts/liteos-icons.json");
+const systemIconFontPath = join(root, "../assets/fonts/liteos-icons.ttf");
+const systemIconMappingPath = join(root, "src/design-system/system-icons.generated.ts");
+
+async function verifySystemIconAssets() {
+  const [manifestSource, font, mapping] = await Promise.all([
+    readFile(systemIconManifestPath, "utf8"),
+    readFile(systemIconFontPath),
+    readFile(systemIconMappingPath, "utf8"),
+  ]);
+  const manifest = JSON.parse(manifestSource);
+  if (typeof manifest.cssFamily !== "string" || !Array.isArray(manifest.icons)) {
+    throw new Error("system icon manifest requires cssFamily and icons");
+  }
+  const expected = manifest.icons.map((icon) => {
+    if (typeof icon?.name !== "string" || !/^[a-z][a-z0-9-]*$/.test(icon.name)
+      || typeof icon.codepoint !== "string" || !/^[0-9A-F]{4,6}$/.test(icon.codepoint)) {
+      throw new Error(`invalid system icon manifest row: ${JSON.stringify(icon)}`);
+    }
+    const codepoint = Number.parseInt(icon.codepoint, 16);
+    if (codepoint < 0xE000 || codepoint > 0xF8FF) {
+      throw new Error(`system icon '${icon.name}' must use the BMP Private Use Area`);
+    }
+    return [icon.name, icon.codepoint];
+  });
+  if (new Set(expected.map(([name]) => name)).size !== expected.length
+    || new Set(expected.map(([, codepoint]) => codepoint)).size !== expected.length) {
+    throw new Error("system icon names and PUA codepoints must be unique");
+  }
+  const actual = Array.from(
+    mapping.matchAll(/^\s+"([^"]+)": "\\u([0-9A-F]{4,6})",$/gm),
+    (match) => [match[1], match[2]],
+  );
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error("generated SystemIcon mapping differs from the icon manifest");
+  }
+  if (!mapping.includes(`export const SYSTEM_ICON_FAMILY = ${JSON.stringify(manifest.cssFamily)};`)) {
+    throw new Error("generated SystemIcon CSS family differs from the icon manifest");
+  }
+  const fontSha256 = createHash("sha256").update(font).digest("hex");
+  if (!mapping.includes(`export const SYSTEM_ICON_FONT_SHA256 = ${JSON.stringify(fontSha256)};`)) {
+    throw new Error("checked system icon font differs from the generated TypeScript identity");
+  }
+}
+
+await verifySystemIconAssets();
 const products = [
   ["desktop", "src/desktop/entry.tsx", "src/desktop/style.css"],
   ["terminal", "src/terminal/entry.tsx", "src/terminal/style.css"],
@@ -290,6 +337,17 @@ function validateCss(path, source) {
   validate(source);
 }
 
+function validateDesktopSceneStyle(source) {
+  const match = source.match(/\.desktop-background-hit\s*\{([^}]*)\}/);
+  if (!match || !/\bposition\s*:\s*absolute\s*;/.test(match[1])
+    || /\bposition\s*:\s*fixed\s*;/.test(match[1])) {
+    throw new Error(
+      "desktop: .desktop-background-hit must stay in the absolute document layer; "
+      + "fixed nodes are composited above foreign app surfaces",
+    );
+  }
+}
+
 if (!checkOnly) {
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
@@ -315,6 +373,7 @@ const sharedTheme = await readFile(join(root, "src/design-system/theme.css"), "u
 for (const [id, entryName, styleName] of products) {
   const stylePath = join(root, styleName);
   const appStyle = await readFile(stylePath, "utf8");
+  if (id === "desktop") validateDesktopSceneStyle(appStyle);
   // 共享主题在前、app 自有样式在后，后者可覆盖同名类。整体过验证器。
   const style = `${sharedTheme}\n${appStyle}`;
   validateCss(stylePath, style);

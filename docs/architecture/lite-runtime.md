@@ -45,26 +45,59 @@
 - `quickjs-runtime` 是固定 QuickJS C ABI 的唯一 adapter，独占 Runtime/Context lifetime、ESM loader、
   Promise job drain、值转换、exception、heap/stack 与 interrupt budget。`lite-runtime` 只消费其安全窄接口。
 - React desktop 是 graphical session 的唯一窗口 policy owner：保存窗口位置与尺寸、层级、active state、
-  最小化/最大化和 workspace assignment；Workspace Overview 负责切换 workspace 及移动已有窗口，移动
+  最小化/placement 和 workspace assignment；Workspace Overview 负责切换 workspace 及移动已有窗口，移动
   active 窗口离开当前 workspace 时由 desktop 选择当前 workspace 的最后一个可见窗口作为 focus fallback。
+  最大化状态必须保存进入前的 canonical frame，restore 时按当前 work area 重新约束并实际写回该 frame；
+  compositor `MoveComplete` 是拖动结束的唯一吸附边界，frame 发生 displacement 且最终 top edge 落入
+  4px 阈值时由 desktop 最大化，left/right edge 落入阈值时使用同一个 placement owner 生成带 8px gap
+  的半屏 frame；半屏小于应用最小窗口时不得吸附。titlebar click、pointer motion 或普通 programmatic
+  move 不得触发吸附。maximized/left/right 都只保存一个 restore frame，统一由 Restore 退出。
+  Super+Left/Right 与 Super+Up/Down 是同一 placement owner 的全局 tile 和 maximize/restore 入口，
+  不建立第二套 frame 或 shortcut policy。
+  titlebar 只允许 evdev `BTN_LEFT` 启动 move，resize grip 也只允许该按键启动 resize；titlebar context menu
+  直接投影同一窗口的 minimize、placement、workspace assignment 与 close 动作，右键不得误入抓取状态。
   decorations、Top Bar、Dock、Command Center、System Center、壁纸与应用启动也只属于 desktop。
+  Command Center、Workspace Overview 与 System Center 同时提供显式 close button、scrim 和 Escape 关闭路径；
+  close button 位于 focus-scope DOM 末尾，视觉定位不得改变搜索框或主要内容的初始焦点。
+  shell panel、desktop/window/Dock context menu 与 Alt+Tab switcher 的打开转换互斥：新 overlay 必须清除
+  旧 overlay；window activation、workspace switch 与 Show Desktop 必须撤销不再对应当前场景的菜单。
+  Command Center 的搜索结果选择由 panel 内单一 index 持有；query 变化重置到首项，Up/Down 循环移动，
+  pointer hover 同步该 index，Enter 只启动当前选中结果。
+  Alt+Tab 在一次 Alt hold 内保存稳定的当前 workspace 窗口顺序，切换浮层只投影该 desktop-owned state，
+  不取得 focus 或 pointer input；Alt 释放、workspace 切换或 surface 关闭时清除该瞬时状态。
+  壁纸的 background hit layer 独占空白桌面右键入口，只暴露真实的应用、Workspace Overview 与
+  System Center 动作及当前 workspace 的 Show Desktop；Show Desktop 记录并只最小化当前可见窗口，
+  再次选择时只恢复该集合。窗口被激活、关闭或移出 workspace 时必须从集合移除，切换 workspace 前恢复
+  剩余集合，禁止把此前已最小化的窗口误恢复。Super+D 只切换这一可逆状态；菜单打开时透明 scrim 必须
+  阻止外部点击穿透到 app surface。
   Dock 图标尺寸、自动隐藏与底边唤出状态由 desktop 独占，System Center 只修改该状态。desktop work area
   必须避开 Top Bar；Dock 常驻时还必须避开其按当前尺寸计算的完整可见矩形，使最大化窗口的状态栏和
   resize target 不落在 Dock 后方；自动隐藏时只保留底边 resize inset，Dock host 的底边命中区以
-  pointer enter/leave 唤出和收起 Dock。
+  pointer enter 唤出 Dock；pointer leave 使用可取消的 180ms 宽限后条件卸载，避免边界抖动反复重建
+  flattened display list，应用点击或 context menu 打开仍立即收起。
+  Dock item context menu 只投影 desktop 已知的 app/window 状态：应用项可 open/show 或关闭其全部窗口，
+  多窗口应用还列出带 workspace/minimized 状态的每个真实窗口并允许精确激活；
+  最新窗口可通过同一个 placement owner 执行 maximize、left/right tile 与 restore，半屏动作复用拖拽吸附的
+  应用最小尺寸判定。Files/Terminal 可显式创建 New Window；Music/Computer 不暴露重复实例入口，避免重复播放
+  或无价值系统视图。
+  LiteOS 与 Settings 项只打开现有 shell panel，不声明 pin、recent 或其他未实现策略。
 - `terminal-session` 是无窗体 helper，独占 PTY、VT parser、screen、cursor、scrollback 与 selection；
   selection 在 helper 内按可见 cell 归一化宽字符尾随格、按 soft-wrap 生成 UTF-8 文本。React terminal
   只转发拖选/scroll 坐标、绘制 viewport 与 selection 投影，并调用标准 clipboard API。滚轮或
   Shift+PageUp/PageDown 浏览固定 scrollback，输入时回到 live bottom；离开 live bottom 后隐藏实时 cursor。
 - LiteUI runtime 提供标准异步 `navigator.clipboard.readText()`/`writeText()`。受控文本框使用
-  Ctrl/Cmd+C/X/V，当前 append-only caret 模型下 copy/cut 作用于完整 value、paste 追加到 value；
+  shaped caret/selection 实现 pointer 定位、方向键、Home/End 与 Ctrl/Cmd+C/X/V；原生 caret 在文本框
+  聚焦时每 500ms 切换一次可见相位，编辑或 pointer selection 后立即重置为可见。blink 只在聚焦期间
+  注册 native poll deadline，相位只使对应 control 的 retained GPU damage 失效，不使用 JavaScript timer；
   Terminal 使用 Ctrl+Shift+C/V 或 macOS Cmd+C/V 复制 helper 生成的 selection 文本、或把 UTF-8
   clipboard 文本作为一帧 PTY input；右键菜单提供 Copy、Paste 与 Select visible screen，成功/失败由
   终端内短时状态反馈呈现。
 - `ui/design-system` 是唯一 Aurora presentation owner：独占 token、窗口 chrome、系统 shell、菜单、表单、
   Sidebar、Toolbar 与 Dialog。应用只组合这些语义组件与业务内容；LiteUI theme-free，compositor 不包含窗口主题。
   `SystemIcon` 是排序、树形展开、搜索与状态图标的唯一入口；`assets/fonts/liteos-icons.json` 独占名称/PUA
-  映射，`scripts/generate_icon_font.py` 确定性生成自持 `liteos-icons.ttf` 与 TypeScript 类型映射。应用图标和
+  映射，`scripts/generate_icon_font.py` 确定性生成自持 `liteos-icons.ttf` 与携带 font SHA-256 的 TypeScript
+  类型映射。正常 UI build 必须在 bundle 前核对 manifest/name/PUA/CSS family、TypeScript mapping 与 TTF
+  identity，UI cache input 同时包含 manifest 和 TTF，禁止只在手工 regen 时发现漂移。应用图标和
   文件系统内容图标是不同语义资产，前者使用 256px Aurora master，后者使用透明 256px 大图与 32px Retina 小图。
 
 ## 显示与调度
@@ -231,7 +264,9 @@
 - `<image>` 与 background 只接受 app-relative PNG 或 host 发出的 opaque `ImageSource`；路径必须在
   `assets/` 内且不能包含 `..`。PNG 的 indexed/grayscale/grayscale-alpha/RGB/RGBA 输入统一规范化为
   8-bit 预乘 ARGB；SVG/JPEG/WebP 在 host build 转为 PNG；target 无网络、data URL 或动画图。
-- `lite:fs.capacity(path)` 从同一次 `statvfs` 快照返回 total/used/available bytes；`lite:fs.open(path)`
+- `lite:fs.capacity(path)` 从同一次 `statvfs` 快照返回 total/used/available bytes；Files 与 Computer 只显示
+  该真实快照，error 或零 total 统一呈现 unavailable，容量轨道投影 progressbar 的当前百分比与字节文本。
+  `lite:fs.open(path)`
   返回 filesystem-backed 标准 `File`；`URL.createObjectURL(file)` 只发布当前
   process 内 opaque `blob:` source。`<audio>` 只接受 app-relative resource 与该 `blob:` source，
   不接受 ambient `file:` path、network/data URL 或私有 path-play API。
@@ -255,7 +290,8 @@
   （全量替换 global accelerator table，不超过 16 条，空表清空；chord 命中后的完整 down/up sequence
   经全局 `onKeyDown` 到达 desktop）。desktop 注册 Ctrl+Space（切换 Command Center）、Alt+Tab/
   Shift+Alt+Tab（在一次 Alt 按住周期的稳定 workspace 窗口快照中正反遍历，激活时恢复最小化窗口）
-  、Ctrl+Alt+Left/Right（循环切换 workspace 并恢复其最后一个可见窗口）与 Alt+F4（关闭 active 窗口），并以 `shutdown()`/
+  、Ctrl+Alt+Left/Right（循环切换 workspace 并恢复其最后一个可见窗口）、Super+Left/Right（左右平铺）、
+  Super+Up/Down（最大化/恢复）、Super+D（显示/恢复桌面）与 Alt+F4（关闭 active 窗口），并以 `shutdown()`/
   `restart()` 发起显式电源操作。desktop-only `lite:audio-system` 只投影 audio-service master snapshot
   和更新请求，System Center 的音量与静音控件直接消费该唯一状态；普通 app 无法加载该 module。
   desktop 首次呈现固定启动 Files 与 Terminal；后续应用由 Command Center 或 Dock 启动。普通 helper 只通过

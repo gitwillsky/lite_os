@@ -167,6 +167,8 @@ UI_REQUIRED_OUTPUTS = (
     "music-player/assets/search.png",
 )
 UI_EXTERNAL_INPUTS = (
+    ROOT / "assets/fonts/liteos-icons.json",
+    ROOT / "assets/fonts/liteos-icons.ttf",
     ROOT / "assets/aurora/files.png",
     ROOT / "assets/aurora/liteos.png",
     ROOT / "assets/aurora/package.png",

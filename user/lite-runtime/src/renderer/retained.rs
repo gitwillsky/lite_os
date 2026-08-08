@@ -118,11 +118,14 @@ pub(super) fn classify_gpu_paint(
         .copied()
         .chain(previous.focused)
         .chain(current.focused)
+        .chain(previous.caret_visible)
+        .chain(current.caret_visible)
         .collect::<HashSet<_>>()
         .into_iter()
         .filter(|id| {
             previous.text_controls.get(id) != current.text_controls.get(id)
                 || (previous.focused == Some(*id)) != (current.focused == Some(*id))
+                || (previous.caret_visible == Some(*id)) != (current.caret_visible == Some(*id))
         })
         .flat_map(|id| {
             retained_bounds(previous, id)
@@ -180,6 +183,7 @@ pub(super) fn snapshot_gpu_frame(
     root: &RenderNode,
     scroll_offsets: &HashMap<u64, ScrollOffset>,
     focused: Option<u64>,
+    caret_visible: Option<u64>,
     text_controls: &HashMap<u64, text_control::State>,
     width: usize,
     height: usize,
@@ -212,6 +216,7 @@ pub(super) fn snapshot_gpu_frame(
         fixed,
         fixed_bounds,
         focused,
+        caret_visible,
         text_controls: text_controls.clone(),
         output: None,
         width,
@@ -714,6 +719,7 @@ mod tests {
             fixed: HashMap::new(),
             fixed_bounds: HashMap::new(),
             focused: None,
+            caret_visible: None,
             text_controls: HashMap::new(),
             output: None,
             width: 3008,
@@ -727,6 +733,35 @@ mod tests {
         assert!(matches!(
             classify_gpu_paint(Some(&frame(0.0)), &frame(32.0)),
             GpuPaint::Partial(damage) if damage == port
+        ));
+    }
+
+    #[test]
+    fn caret_blink_damages_only_the_focused_control() {
+        let control = PhysicalRect {
+            x1: 80,
+            y1: 100,
+            x2: 480,
+            y2: 164,
+        };
+        let frame = |visible: bool| RetainedGpuFrame {
+            document: Vec::new(),
+            bounds: HashMap::from([(7, control)]),
+            scroll_bounds: HashMap::new(),
+            scroll_offsets: HashMap::new(),
+            fixed: HashMap::new(),
+            fixed_bounds: HashMap::new(),
+            focused: Some(7),
+            caret_visible: visible.then_some(7),
+            text_controls: HashMap::new(),
+            output: None,
+            width: 3008,
+            height: 1692,
+        };
+
+        assert!(matches!(
+            classify_gpu_paint(Some(&frame(true)), &frame(false)),
+            GpuPaint::Partial(damage) if damage == control
         ));
     }
 }

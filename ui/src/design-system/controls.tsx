@@ -150,21 +150,36 @@ export function ViewSwitch({ mode, onChange }: {
   );
 }
 
-/** Standard controlled horizontal range using LiteUI's native range default
- * actions: pointer drag and arrow keys both emit a string-valued `onInput`. */
-export function RangeInput({ value, min, max, step, disabled, className, onInput }: {
+interface RangeInputProps {
+  /** Accessible name announced when the range owns keyboard focus. */
+  ariaLabel: string;
+  /** Current controlled numeric value. */
   value: number;
+  /** Inclusive minimum value. */
   min: number;
+  /** Inclusive maximum value. */
   max: number;
+  /** Keyboard and pointer quantization step. */
   step: number;
+  /** Prevents focus and value changes when true. */
   disabled?: boolean;
+  /** App-specific layout hook; range visuals remain design-system owned. */
   className?: string;
+  /** Receives one normalized finite value after native range input. */
   onInput: (value: number) => void;
-}) {
+}
+
+/** Standard controlled horizontal range using LiteUI's native range actions.
+ *
+ * Pointer drag and arrow keys both emit normalized values through `onInput`.
+ * Non-finite native payloads are ignored and this component does not throw.
+ */
+export function RangeInput({ ariaLabel, value, min, max, step, disabled, className, onInput }: RangeInputProps) {
   return (
     <input
       className={`range-input${disabled ? " range-input--disabled" : ""}${className ? ` ${className}` : ""}`}
       type="range"
+      aria-label={ariaLabel}
       min={min}
       max={max}
       step={step}

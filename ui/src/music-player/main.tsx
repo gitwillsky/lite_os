@@ -664,6 +664,7 @@ export default function MusicPlayer() {
           <div className="player__seek-row">
             <span className="player__time">{formatTime(position)}</span>
             <RangeInput
+              ariaLabel="Playback position"
               className="player__seek"
               min={0}
               max={seekMaximum}
@@ -683,7 +684,7 @@ export default function MusicPlayer() {
           </div>
           <div className="player__volume">
             <PlayerButton label={muted ? "Unmute" : "Mute"} active={muted} onClick={() => setMuted((value) => !value)}/>
-            <RangeInput className="player__volume-range" min={0} max={100} step={1} value={volume * 100} onInput={(value) => changeVolume(value / 100)}/>
+            <RangeInput ariaLabel="Player volume" className="player__volume-range" min={0} max={100} step={1} value={volume * 100} onInput={(value) => changeVolume(value / 100)}/>
             <span>{Math.round(volume * 100)}%</span>
           </div>
           {playbackError && <span className="player__error">{playbackError}</span>}

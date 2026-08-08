@@ -18,6 +18,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     path::PathBuf,
+    time::{Duration, Instant},
 };
 
 use display_proto::Size as DisplaySize;
@@ -76,6 +77,7 @@ struct RetainedGpuFrame {
     fixed: HashMap<u64, FixedSignatureNode>,
     fixed_bounds: HashMap<u64, PhysicalRect>,
     focused: Option<u64>,
+    caret_visible: Option<u64>,
     text_controls: HashMap<u64, text_control::State>,
     output: Option<RenderOutput>,
     width: usize,
@@ -223,6 +225,10 @@ pub struct Renderer {
     /// browser selection state. Without it every edit appends at the end and a
     /// long value paints outside the content box.
     text_controls: HashMap<u64, text_control::State>,
+    /// Focus-scoped native text-caret phase and its sole wake deadline.
+    /// Without this owner a focused caret is painted once and never alternates
+    /// between visible and hidden while the otherwise-idle document sleeps.
+    text_caret: text_control::CaretBlink,
     /// Current DOM pointer target used to derive `:hover` for the target and
     /// every ancestor before the next cascade.
     hover_target: Option<u64>,
@@ -262,6 +268,7 @@ impl Renderer {
             focus_scope: None,
             focus_restore: None,
             text_controls: HashMap::new(),
+            text_caret: text_control::CaretBlink::new(),
             hover_target: None,
             active_target: None,
             parents: HashMap::new(),
@@ -288,11 +295,62 @@ impl Renderer {
     pub fn set_focus(&mut self, node_id: Option<u64>) -> bool {
         let changed = self.focused != node_id;
         self.focused = node_id;
+        if changed {
+            self.text_caret.reconcile(None, Instant::now());
+        }
         changed
     }
 
     pub fn focused(&self) -> Option<u64> {
         self.focused
+    }
+
+    /// Reconciles the blink owner with the focused editable in the latest hit snapshot.
+    ///
+    /// # Parameters
+    ///
+    /// - `hits`: Latest paint-ordered interaction regions.
+    ///
+    /// # Returns
+    ///
+    /// `true` when caret visibility changed and the scene needs repainting.
+    pub(crate) fn reconcile_text_caret(&mut self, hits: &[HitRegion]) -> bool {
+        let editable = self.focused.filter(|node_id| {
+            hits.iter()
+                .any(|hit| hit.node_id == *node_id && hit.editable.is_some())
+        });
+        self.text_caret.reconcile(editable, Instant::now())
+    }
+
+    /// Makes the active text caret visible and restarts its blink interval.
+    ///
+    /// # Parameters
+    ///
+    /// - `node_id`: Stable host id of the edited text input.
+    ///
+    /// # Returns
+    ///
+    /// `true` when a hidden caret became visible and needs repainting.
+    pub(crate) fn reset_text_caret(&mut self, node_id: u64) -> bool {
+        self.text_caret.reset(node_id, Instant::now())
+    }
+
+    /// Advances an expired text-caret blink deadline.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the visible phase toggled and the scene needs repainting.
+    pub(crate) fn advance_text_caret_blink(&mut self) -> bool {
+        self.text_caret.advance(Instant::now())
+    }
+
+    /// Returns the maximum time the event loop may sleep before the caret toggles.
+    ///
+    /// # Returns
+    ///
+    /// Remaining duration for an active caret, or `None` without focused text input.
+    pub(crate) fn next_text_caret_blink_delay(&self) -> Option<Duration> {
+        self.text_caret.next_delay(Instant::now())
     }
 
     /// Reconciles modal focus ownership against the latest paint-ordered hits.

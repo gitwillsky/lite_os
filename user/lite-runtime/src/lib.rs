@@ -32,7 +32,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::{Command, Stdio},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use display_proto::{Configure, MoveBegin};
@@ -196,9 +196,14 @@ pub fn run(
     }
 
     loop {
-        let (display_ready, terminal_ready, audio_ready, extension_ready) =
-            wait(&display, terminal.as_ref(), &audio_events, &state)
-                .map_err(|error| owner_error("event wait", error))?;
+        let (display_ready, terminal_ready, audio_ready, extension_ready) = wait(
+            &display,
+            terminal.as_ref(),
+            &audio_events,
+            &state,
+            renderer.next_text_caret_blink_delay(),
+        )
+        .map_err(|error| owner_error("event wait", error))?;
         if display_ready {
             let event = display
                 .next_event()
@@ -302,8 +307,7 @@ pub fn run(
                 .run_jobs()
                 .map_err(|error| owner_error("extension JavaScript jobs", error))?;
         }
-        // 1. `setTimeout` callbacks fire after the poll wakes on their deadline;
-        //    an empty expiry means the wait ended on a display/terminal event.
+        // 1. Drain JavaScript timers whose poll deadline expired.
         for id in state.take_expired_timers() {
             let script = format!("globalThis.__liteTimer({id});");
             engine
@@ -313,6 +317,11 @@ pub fn run(
         engine
             .run_jobs()
             .map_err(|error| owner_error("timer JavaScript jobs", error))?;
+        // 2. Advance the sole native caret deadline without creating a JS timer.
+        if renderer.advance_text_caret_blink() {
+            state.invalidate_scene();
+        }
+        // 3. Apply resulting native actions, then render the latest combined state.
         process_actions(
             &state,
             &mut display,
@@ -387,6 +396,7 @@ fn render_latest(
     interactions.hits = output.hits;
     interactions.key_listener = output.key_listener;
     let focus_changed = renderer.reconcile_focus_scope(&interactions.hits);
+    let caret_changed = renderer.reconcile_text_caret(&interactions.hits);
     input::reconcile_cursor(interactions, display)?;
     // Drop a hovered key whose region vanished from the rebuilt hit list (e.g.
     // the menu closed). The JS component unmounts and resets its own hover
@@ -404,7 +414,7 @@ fn render_latest(
             overlays: output.overlays,
         });
     }
-    if focus_changed {
+    if focus_changed || caret_changed {
         // Focus pseudo-state belongs to the renderer, not React. Repaint it in
         // the same host turn so entering a modal never waits for another input
         // event before its first control becomes the keyboard owner.
@@ -535,6 +545,7 @@ fn wait(
     terminal: Option<&Terminal>,
     audio: &audio::Events,
     state: &State,
+    caret_delay: Option<Duration>,
 ) -> Result<(bool, bool, bool, bool), Box<dyn Error>> {
     if display.has_pending_event() {
         return Ok((true, false, false, false));
@@ -553,9 +564,15 @@ fn wait(
     if let Some(fd) = extension_fd {
         descriptors.push(PollFd::new(fd, PollEvents::READ));
     }
-    // Park at most until the nearest JavaScript timer deadline so `setTimeout`
-    // callbacks fire on time even when no display or terminal event arrives.
-    unix::poll(&mut descriptors, state.next_timer_delay())?;
+    // Park at most until the nearest JavaScript or native caret deadline so an
+    // otherwise-idle document still wakes exactly when its next UI state is due.
+    let timeout = match (state.next_timer_delay(), caret_delay) {
+        (Some(timer), Some(caret)) => Some(timer.min(caret)),
+        (Some(timer), None) => Some(timer),
+        (None, Some(caret)) => Some(caret),
+        (None, None) => None,
+    };
+    unix::poll(&mut descriptors, timeout)?;
     Ok((
         descriptors[0].returned() != PollEvents::EMPTY,
         terminal.is_some() && descriptors[1].returned() != PollEvents::EMPTY,

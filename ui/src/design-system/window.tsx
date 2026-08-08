@@ -2,6 +2,8 @@ import React, { useCallback, useRef } from "react";
 import { frameStyle, projectResize } from "./window-geometry.ts";
 import type { ResizeCandidate, ResizeEdge, ResizeOrigin } from "./window-geometry.ts";
 
+const BTN_LEFT = 272;
+
 /** CSS-drawn close glyph shared by every system-owned dismiss control. */
 export function CloseGlyph() {
   return (
@@ -32,8 +34,10 @@ interface WindowProps {
   onResize: (id: number, rect: ResizeCandidate) => void;
   onResizeEnd: (id: number) => void;
   onMinimize: (id: number) => void;
-  onToggleMaximize: (id: number) => void;
-  maximized: boolean;
+  onTogglePlacement: (id: number) => void;
+  /** Opens the desktop-owned system menu at viewport coordinates. */
+  onOpenSystemMenu: (id: number, x: number, y: number) => void;
+  placed: boolean;
 }
 
 /**
@@ -55,17 +59,20 @@ export function Window({
   onResize,
   onResizeEnd,
   onMinimize,
-  onToggleMaximize,
-  maximized,
+  onTogglePlacement,
+  onOpenSystemMenu,
+  placed,
 }: WindowProps) {
   const resize = useRef<ResizeOrigin & { edge: ResizeEdge } | null>(null);
 
   const beginDrag = useCallback((event: LitePointerEvent) => {
+    if (event.button !== BTN_LEFT) return;
     onActivate(id);
     onMoveStart(id, event.serial);
   }, [id, onActivate, onMoveStart]);
 
   const beginResize = useCallback((edge: ResizeEdge) => (event: LitePointerEvent) => {
+    if (event.button !== BTN_LEFT) return;
     onActivate(id);
     resize.current = {
       edge,
@@ -98,7 +105,12 @@ export function Window({
       <div
         className="window__titlebar"
         onPointerDown={(event) => beginDrag(event as unknown as LitePointerEvent)}
-        onDoubleClick={() => onToggleMaximize(id)}
+        onDoubleClick={() => onTogglePlacement(id)}
+        onContextMenu={(rawEvent) => {
+          const event = rawEvent as unknown as LitePointerEvent;
+          event.stopPropagation();
+          onOpenSystemMenu(id, event.x, event.y);
+        }}
       >
         <span className={`window__icon-frame window__icon-frame--${appId}`}>
           <img className="window__icon" src={icon} alt=""/>
@@ -112,8 +124,8 @@ export function Window({
           <button className="window-control" aria-label="Minimize" onClick={() => onMinimize(id)}>
             <span className="window-control__minimize"/>
           </button>
-          <button className="window-control" aria-label={maximized ? "Restore" : "Maximize"} onClick={() => onToggleMaximize(id)}>
-            <span className={maximized ? "window-control__restore" : "window-control__maximize"}/>
+          <button className="window-control" aria-label={placed ? "Restore" : "Maximize"} onClick={() => onTogglePlacement(id)}>
+            <span className={placed ? "window-control__restore" : "window-control__maximize"}/>
           </button>
           <button className="window-control window-control--close" aria-label="Close" onClick={() => onClose(id)}>
             <CloseGlyph/>
@@ -121,7 +133,7 @@ export function Window({
         </div>
       </div>
       <div className="window__body">{children}</div>
-      {!maximized && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as ResizeEdge[]).map((edge) => (
+      {!placed && (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as ResizeEdge[]).map((edge) => (
         <div
           key={edge}
           className={`window__resize window__resize--${edge}`}
