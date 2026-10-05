@@ -3,9 +3,9 @@ use std::{fs, path::Path};
 use super::SourceFile;
 
 const SYSCALL_SOURCE: &str = "kernel/src/syscall/fs.rs";
-const EXT2_VFS_SOURCE: &str = "kernel/src/fs/ext2/inode/vfs.rs";
-const EXT2_DIRECTORY_SOURCE: &str = "kernel/src/fs/ext2/directory.rs";
-const EXT2_CURSOR_SOURCE: &str = "kernel/src/fs/ext2/directory_cursor.rs";
+const EXT4_VFS_SOURCE: &str = "kernel/src/fs/ext4/inode/vfs.rs";
+const EXT4_DIRECTORY_SOURCE: &str = "kernel/src/fs/ext4/directory.rs";
+const EXT4_CURSOR_SOURCE: &str = "kernel/src/fs/ext4/directory_cursor.rs";
 
 const DIRECTORY_ENTRIES: usize = 128;
 const ENTRIES_PER_BATCH: usize = 4;
@@ -14,7 +14,7 @@ const DIRECTORY_BLOCKS: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct GetdentsCost {
     pub(super) inode_full_lists: usize,
-    pub(super) ext2_block_reads: usize,
+    pub(super) ext4_block_reads: usize,
     pub(super) materialized_entries: usize,
     pub(super) output_reservations: usize,
 }
@@ -64,27 +64,27 @@ fn publication_order_is_safe(function: &str) -> bool {
 fn within_linear_budget(cost: GetdentsCost) -> bool {
     let batches = DIRECTORY_ENTRIES.div_ceil(ENTRIES_PER_BATCH);
     cost.inode_full_lists == 0
-        && cost.ext2_block_reads <= DIRECTORY_BLOCKS + batches
+        && cost.ext4_block_reads <= DIRECTORY_BLOCKS + batches
         && cost.materialized_entries <= DIRECTORY_ENTRIES
         && cost.output_reservations <= batches
 }
 
 pub(super) fn measure(root: &Path) -> Result<GetdentsCost, String> {
     let syscall = read(root, SYSCALL_SOURCE)?;
-    let ext2_vfs = read(root, EXT2_VFS_SOURCE)?;
-    let ext2_directory = read(root, EXT2_DIRECTORY_SOURCE)?;
-    let ext2_cursor = read(root, EXT2_CURSOR_SOURCE)?;
+    let ext4_vfs = read(root, EXT4_VFS_SOURCE)?;
+    let ext4_directory = read(root, EXT4_DIRECTORY_SOURCE)?;
+    let ext4_cursor = read(root, EXT4_CURSOR_SOURCE)?;
     let function = function_body(&syscall, "pub(crate) fn sys_getdents64")?;
 
     let batches = DIRECTORY_ENTRIES.div_ceil(ENTRIES_PER_BATCH);
     let legacy_full_list = function.contains("inode.list()")
-        && ext2_vfs.contains("fn list(&self)")
-        && ext2_vfs.contains("self.dir_iterate_blocks")
-        && ext2_directory.contains("for block_index in 0..size / self.fs.block_size");
+        && ext4_vfs.contains("fn list(&self)")
+        && ext4_vfs.contains("self.dir_iterate_blocks")
+        && ext4_directory.contains("for block_index in 0..size / self.fs.block_size");
     if legacy_full_list {
         return Ok(GetdentsCost {
             inode_full_lists: batches,
-            ext2_block_reads: batches * DIRECTORY_BLOCKS,
+            ext4_block_reads: batches * DIRECTORY_BLOCKS,
             materialized_entries: batches * DIRECTORY_ENTRIES,
             output_reservations: if function.contains("try_reserve_exact(record_length)") {
                 DIRECTORY_ENTRIES
@@ -97,18 +97,18 @@ pub(super) fn measure(root: &Path) -> Result<GetdentsCost, String> {
     let cursor_seam = function.contains("Dirent64Batch::try_new(")
         && function.contains("inode.read_directory(*position, &mut output)")
         && !function.contains("try_reserve_exact(record_length)")
-        && ext2_vfs.contains("fn read_directory(")
-        && ext2_vfs.contains("self.dir_iterate_from(cursor,")
-        && ext2_directory.contains("DirectoryCursor::new(start, cursor)")
-        && ext2_directory.contains("directory_cursor.first_block(self.fs.block_size)")
-        && ext2_directory.contains("for block_index in first_block..size / self.fs.block_size");
+        && ext4_vfs.contains("fn read_directory(")
+        && ext4_vfs.contains("self.dir_iterate_from(cursor,")
+        && ext4_directory.contains("DirectoryCursor::new(start, cursor)")
+        && ext4_directory.contains("directory_cursor.first_block(self.fs.block_size)")
+        && ext4_directory.contains("for block_index in first_block..size / self.fs.block_size");
     let cursor_seam = cursor_seam
-        && ext2_cursor.contains("self.start / block_size")
-        && ext2_cursor.contains("if absolute < self.start");
+        && ext4_cursor.contains("self.start / block_size")
+        && ext4_cursor.contains("if absolute < self.start");
     if cursor_seam {
         return Ok(GetdentsCost {
             inode_full_lists: 0,
-            ext2_block_reads: batches + DIRECTORY_BLOCKS,
+            ext4_block_reads: batches + DIRECTORY_BLOCKS,
             materialized_entries: DIRECTORY_ENTRIES,
             output_reservations: batches,
         });

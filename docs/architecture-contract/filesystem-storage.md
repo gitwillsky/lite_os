@@ -17,18 +17,18 @@
   dense `Option<FileDescriptor>` table。RV64 reviewed payload 为 table inline 24 B、root/branch 各
   1040 B、64-slot FileDescriptor chunk 1024 B；仅 fd 0 与 1,048,575 时 heap payload 为 5168 B，
   全物化时 metadata/chunk payload 上限分别为 134,160 B/16,777,216 B（不含 allocator header）。
-- ext2 owner 独占 inode/directory/link/allocation mutation；packed disk value 定义与字段保持
-  `fs::ext2` parent-private，`fs::ext2::layout` 只封装定长 decode/encode 与 raw byte access，
-  `fs::ext2::block_io` 封装 filesystem/device block 换算，`fs::ext2::inode` 独占 inode identity、
-  block mapping 与 VFS projection；`Ext2FileSystem` 的 64-entry metadata block cache 独占 directory/
-  indirect-pointer block identity 与 LRU reclaim；JBD2 journal 独占 transaction/commit/replay；page cache
-  独占 cached page lifecycle。
+- ext4 owner 独占 inode/directory/link/allocation mutation；packed disk value 定义与字段保持
+  `fs::ext4` parent-private，`fs::ext4::layout` 只封装定长 decode/encode 与 raw byte access，
+  `fs::ext4::block_io` 封装 filesystem/device block 换算，`fs::ext4::inode` 独占 inode identity 与
+  VFS projection，`fs::ext4::extent` 独占 logical-block mapping，`fs::ext4::htree` 独占 dx index，
+  `fs::ext4::metadata_csum` 独占全部 metadata checksum 公式；`Ext4FileSystem` 的 64-entry metadata
+  block cache 独占 directory/htree/extent/orphan block identity 与 LRU reclaim；JBD2 journal 独占
+  transaction/commit/replay；page cache 独占 cached page lifecycle。
 - JBD2 active transaction 是 allocation dirty-group bitset 的唯一 owner；bitset 必须在 transaction
   publication 前按 group count fallible reserve，OOM 不得开始 mutation。alloc/free 只能标记 group，
-  `MutationGuard::commit` 取走 dirty owner 后一次性生成 primary superblock、每个 dirty descriptor block
-  及其 sparse-backup replicas；禁止每 block 重建全 GDT 或另设 pending-dirty 双轨。
+  `MutationGuard::commit` 取走 dirty owner 后一次性生成 primary superblock 与每个 dirty descriptor block；禁止每 block 重建全 GDT 或另设 pending-dirty 双轨。
 - `RegularFileWrite` 的 write-sequence 与 operation gates 共同独占一次 syscall 的 position、append placement、storage transaction 和 resident-cache publication 顺序。
-- VFS namespace mutation 与 ext2 live-state transaction 使用 `TaskMutex` 逻辑 owner；其内部
+- VFS namespace mutation 与 ext4 live-state transaction 使用 `TaskMutex` 逻辑 owner；其内部
   spin gate 只发布 `Available/Held/Handoff(ticket)` 与预分配 waiter 链，logical guard 可以跨
   block I/O 和 task handoff，但不得保留 spin guard。竞争 waiter 必须进入 scheduler `Blocked`，
   unlock 在短锁内把 owner 直接交给最旧 ticket、锁外 exact wake；禁止恢复 spin/yield polling。
@@ -54,12 +54,13 @@
   截断为负 syscall return。
 - directory inode 只暴露 `read_directory(cursor, visitor)` 单轨 interface；`cursor` 是 adapter-owned
   opaque `d_off`，visitor Stop 不消费当前 entry。禁止恢复全量 `list()` 后按 OFD ordinal 截取。
-  ext2 使用下一 record 的 byte offset，并只从 cursor 所在 block 开始；并发 mutation 令旧 cookie
-  落入合并 record 时，在该 block 内向后对齐，因此已发布 entry 不重放、先前 block 不重读。
+  ext4 线性目录使用下一 record 的 byte offset，并只从 cursor 所在 block 开始；并发 mutation 令旧
+  cookie 落入合并 record 时，在该 block 内向后对齐。htree 目录使用 Linux 64-bit hash position
+  （`2 + (major << 31 | minor >> 1)`，EOF 为 `i64::MAX`），从 cursor 所在 collision run 起按 hash 输出。
 - `getdents64` 每批最多一次性预留用户容量与 64 KiB 上限的较小值；不得在 entry loop 内扩容。
   filesystem/编码/OOM/copyout 失败均不得发布候选 cursor，只有完整 copyout 后才在同一 OFD
   position transaction 提交。复杂度 gate 的 128-entry/4-entry-batch 模型要求零次全量 list、
-  entry 物化不超过 128、output reserve 不超过 32，ext2 block read 不超过 block 数加 batch 数。
+  entry 物化不超过 128、output reserve 不超过 32，ext4 block read 不超过 block 数加 batch 数。
 - pathname-backed OFD 必须保留 opened-entry identity；rename/unlink 不能把打开对象退化为字符串路径。
 - opened index 的 exact node 只保存 `Weak<OpenedFile>`，不得增加 Arc cycle；mutation
   只在 index lock 内复制 exact key/Weak，再在锁外 upgrade。成功的临时 Arc 排除 final
@@ -69,7 +70,7 @@
   必须在 index lock 外析构，否则最后 strong ref 会经 `OpenedFile::drop -> unregister`
   递归取得同一锁并在单 CPU 死锁。
 - packed disk layout、journal block、device adapter 与 syscall UAPI 不得穿过 VFS seam。
-- directory 与 indirect-pointer 读取只能经 filesystem-owned metadata block seam；journal stage 成功后必须
+- directory、htree、extent node 与 orphan block 读取只能经 filesystem-owned metadata block seam；journal stage 成功后必须
   在释放 journal lock 前更新或失效同 block cache identity，commit/home write 保持新 image，abort 与
   commit failure 必须失效 staged identity，truncate/free 必须在 block 可重用前失效旧 identity。cache
   miss admission 的 allocation 失败不得发布 partial entry；generation 改变时不得发布过期 miss。
@@ -82,16 +83,17 @@
   consistency scan 前，从 primary home blocks 重新 decode/validate superblock 与完整 GDT，验证
   immutable topology 未改变、清空 replay 前 cache identity，再一次性发布 runtime owner。禁止让
   replay 前的 `superblock/groups` 快照覆盖或解释 replay 后的 bitmap/inode state。
-- ext2 inode mutation 只能使用锁外 `InodeMutation` working copy；普通 inode spin guard 只允许
-  取得或发布一个完整 `Ext2InodeDisk` snapshot，不得跨 journal/block I/O。working copy 的类型
+- ext4 inode mutation 只能使用锁外 `InodeMutation` working copy；普通 inode spin guard 只允许
+  取得或发布一个完整 `Ext4InodeDisk` snapshot，不得跨 journal/block I/O。working copy 的类型
   lifetime 必须借用 `MutationGuard`，所以全部 live inode 发布必然发生在 commit 消费并释放
   filesystem mutation owner 之前；禁止恢复返回 `MutexGuard` 或依赖函数退出后的延迟发布。
 - mount consistency scan 每轮只在短 spin 临界区复制一个 group descriptor，再在锁外读取
   block/inode bitmap；即使 filesystem 尚未发布，也不得让普通 spin guard 跨 DriverIo sleep。
-- logical-block mapping 只能由 allocation-free `BlockPath` 分类 direct/single/double/triple 路径；strict
-  lookup 只把 sparse traversal 的零结果映射为 `NotFound`，allocation 使用同一 path。pointer metadata
-  只能通过 `PointerBlock` load/decode，禁止恢复 `map_block`/`map_block_sparse` 或 full/single-pointer
-  各自读取 block 的双轨实现。
+- logical-block mapping 只能由 `ExtentTree` 拥有：`lookup` 不分配，`map_block_sparse` 唯一委托
+  `lookup`，strict `map_block` 只把 hole 映射为 `NotFound`；insert/remove 使用同一 tree。禁止恢复
+  ext2 间接块映射或任何第二套 logical-block 路径。
+- 每个 metadata block 读入必须先校验 checksum 再解释内容，写出必须经同一 seal 函数；checksum 失败
+  返回 `InvalidFileSystem`，禁止跳过校验的读取路径。
 - regular write 以 256 logical pages/1 MiB 为最大 transient batch，并复用 page-cache
   storage batch 的 capacity backoff；非对齐 1 MiB 可触及 257 个 filesystem pages，必须由
   实际 journal `NoSpace` 退避，禁止假定固定物理页数。
@@ -104,11 +106,11 @@
 ## Failure and cleanup
 
 - rename/link/unlink/truncate 等 mutation 必须预留 journal/owner storage并提供完整 rollback；不能留下未索引 inode、错误 link count 或半提交 directory entry。
-- open-unlinked inode 的 `i_dtime` 是 orphan chain topology；final Drop 可在锁前只读 inode 状态作
-  admission，但 predecessor/successor 必须在取得 filesystem mutation owner 后重新读取并 journal。
-  禁止把锁前 successor 快照用于摘链，否则并发 reclaim 可把 head 指回已释放 inode。
+- open-unlinked inode 记入 orphan file slot；slot 内容只经 journal-aware metadata cache 读取，不保留
+  内存索引，因此 transaction abort 丢弃 staged block 即完成回滚。final Drop 可在锁前只读 inode 状态
+  作 admission，但 slot 必须在取得 filesystem mutation owner 后重新查找并 journal 清除。
 - final inode Drop 不得等待 task-only mutation owner；owner 忙时只发布 filesystem 级合并
-  retry bit，并由下一次 task-context mutation 在独立 transaction 中从 on-disk orphan chain
+  retry bit，并由下一次 task-context mutation 在独立 transaction 中从 on-disk orphan file
   选择一个 Weak 已失效的 inode 回收。普通 mutation 只读该 bit；缺失延迟 owner 会令
   scheduler/deferred context 在锁竞争时 panic，直接跳过则会把空间永久泄漏到下次挂载。
 - close/dup/CLOEXEC 在 fd-table lock 内只 detach；OFD drop、epoll/flock/record-lock consequence 在锁外执行。
@@ -117,21 +119,23 @@
 - opened membership 的 register node 必须在 publication 前可失败预分配；OOM
   不得留下 raw pointer 或半发布 location key。rename 只回收并重用原节点，
   不在 inode mutation 提交后引入新的 allocation failure。
-- `FileSystem::statistics` 是 fallible snapshot；ext2 取得 transaction owner 失败必须返回
+- `FileSystem::statistics` 是 fallible snapshot；ext4 取得 transaction owner 失败必须返回
   `OutOfMemory`，不得忽略 lock 结果后读取跨 superblock/group 的无锁中间状态。
 - regular gather 必须按 user-page 边界 copy，使单个跨有效/坏页 iovec 仍可提交坏页前 prefix；backend short/error 后只推进 durable prefix。RLIMIT_FSIZE 在 non-append copyin 前裁剪，append 在 operation lock 内按 inode end 裁剪并保持 SIGXFSZ/EFBIG 与 position 语义。
 - regular batching 的 blocking metric 使用 deterministic backend counters：对齐 1 MiB sequential
   write 必须只产生 1 个 journal transaction、至多 3 次 flush；257-page 非对齐形状必须证明
   capacity failure 无 publication 且退避后连续提交。wall time 仅作诊断，不作为 host gate。
 - metadata cache 使用真实 ext image 与 counting block device 作 deterministic gate：16 次重复 lookup、
-  cold-first getdents 与 warm single-indirect mapping 测试窗口的 device read/allocation attempts 分别
+  cold-first getdents 与 warm extent mapping 测试窗口的 device read/allocation attempts 分别
   不得超过 `0/0`、`1/2`、`0/0`；固定 64-entry 线性 probe 的 CPU 成本有严格上界，当前不另设
   不稳定的 host wall-time benchmark。
 - journal barrier 保持 `dirty-start + descriptor/data durable → commit durable → home checkpoint durable`
   三阶段；commit record 前必须存在 descriptor/data durability barrier，不能依赖同一 flush 内的
   device write ordering。最后 clean marker 可延迟到下一 transaction 的首 barrier，crash 只会幂等
   replay 已 durable home image。真实 counting-device gate 要求单次 1 MiB batch 保持 1 transaction 且最多
-  3 flush；固定 64 data block truncate（另含一个 indirect block）只允许一次 allocation metadata
-  materialization，当前单-group fixture 上限为 8 KiB metadata preparation。
-- ext2 mapping structure gate 固定覆盖 direct/single/double/triple 的 96-block toy address space，并要求
-  path classifier、metadata loader、heap path allocation、strict/sparse traversal 成本为 `1/1/0/1`。
+  3 flush；固定 64 data block truncate 只允许一次 allocation metadata
+  materialization，gate 上限为 32 KiB metadata preparation。
+- ext4 mapping structure gate 要求 extent lookup owner、lookup heap allocation、sparse delegation 与
+  残留间接块标识分别为 `1/0/1/0`。
+- ext4 conformance gate 在 fixture 副本上执行 htree 转换/两层 index、深层 extent、截断、跨目录
+  rename、symlink、hard link 与 orphan crash recovery，最后要求 `e2fsck -fn` 零错误。

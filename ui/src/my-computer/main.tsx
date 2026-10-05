@@ -63,7 +63,7 @@ type DialogState =
   | null;
 
 // The machine story is static and honest: QEMU attaches exactly one virtio-blk
-// disk (the ext2 rootfs, volume label LITEOS) and no optical/floppy drive, so
+// disk (the ext4 rootfs, volume label LITEOS) and no optical/floppy drive, so
 // 我的电脑 shows a single 本地磁盘 (C:) and no removable-devices group. The
 // virtual root is the empty path ""; double-clicking C: enters "/" in the SAME
 // window, and from there
@@ -234,7 +234,7 @@ export default function MyComputer() {
     setExpanded((current) => ({ ...current, [id]: !current[id] }));
 
   const driveProperties = useCallback(() => {
-    const rows: [string, string][] = [["类型", "本地磁盘"], ["文件系统", "ext2"]];
+    const rows: [string, string][] = [["类型", "本地磁盘"], ["文件系统", "ext4"]];
     if (!driveStorage.error && driveTotal > 0) {
       rows.push(["已用空间", formatBytes(driveUsed)]);
       rows.push(["可用空间", formatBytes(driveAvailable)]);
@@ -245,7 +245,7 @@ export default function MyComputer() {
     openProperties("本地磁盘 (C:) 属性", rows);
   }, [driveAvailable, driveStorage.error, driveTotal, driveUsed, openProperties]);
   const computerProperties = useCallback(() =>
-    openProperties("我的电脑 属性", [["系统", "LiteOS"], ["磁盘", "本地磁盘 (C:)"], ["文件系统", "ext2"]]), [openProperties]);
+    openProperties("我的电脑 属性", [["系统", "LiteOS"], ["磁盘", "本地磁盘 (C:)"], ["文件系统", "ext4"]]), [openProperties]);
   const entryProperties = useCallback((entry: FsEntry) => {
     const rows: [string, string][] = [
       ["类型", typeLabel(entry, TYPE_LABELS)],
@@ -501,7 +501,7 @@ export default function MyComputer() {
                   <img className="detail-icon" src={atRoot ? "assets/drive.png" : iconFor(focusedEntry)}/>
                   <span className="detail-name">{focusedEntry.name}</span>
                   <span className="detail-line">类型： {atRoot ? "本地磁盘" : typeLabel(focusedEntry, TYPE_LABELS)}</span>
-                  {atRoot && <span className="detail-line">文件系统： ext2</span>}
+                  {atRoot && <span className="detail-line">文件系统： ext4</span>}
                   {atRoot && (driveStorage.error || driveTotal === 0) && <span className="detail-line">容量： 暂不可用</span>}
                   {atRoot && !driveStorage.error && driveTotal > 0 && (
                     <>

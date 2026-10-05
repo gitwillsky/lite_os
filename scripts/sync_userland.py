@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from build_cache import cache_lock, fingerprint, sha256
 from build_target import target_from_environment
-from ext2_image import find_debugfs, recover_ext2_journal
+from ext4_image import find_debugfs, recover_ext4_journal
 from verify_busybox import WORK, UserlandArtifact, build_graphical_userland
 from verify_musl import cached_musl_paths, find_compiler
 
@@ -179,7 +179,7 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
             fcntl.lockf(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError(f"development image is already in use: {image}") from error
-        recover_ext2_journal(image)
+        recover_ext4_journal(image)
         previous = read_stamp(image)
         if previous is not None and previous.get("identity") == identity:
             print(f"userland sync cache hit: {identity[:12]}")

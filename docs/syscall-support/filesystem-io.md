@@ -11,9 +11,9 @@
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |
 | 33 | `mknodat` | Partial | 已支持 inode/device types |
-| 34 | `mkdirat` | Complete | ext2 directory transaction |
+| 34 | `mkdirat` | Complete | ext4 directory transaction |
 | 35 | `unlinkat` | Complete | file/directory unlink 与 lifecycle |
-| 36 | `symlinkat` | Complete | ext2 symlink |
+| 36 | `symlinkat` | Complete | ext4 fast/slow symlink |
 | 37 | `linkat` | Partial | hardlink 与 link-count limit；部分 flags 未开放 |
 | 38 | `renameat` | Complete | 普通原子移动与替换 |
 | 43 | `statfs` | Complete | 已挂载 filesystem projection |
@@ -27,7 +27,7 @@
 | 53 | `fchmodat` | Partial | pathname mode 与已声明 flags |
 | 54 | `fchownat` | Partial | owner mutation 与已声明 flags |
 | 55 | `fchown` | Complete | OFD inode owner mutation |
-| 56 | `openat` | Partial | ext2/devfs/devpts/procfs/sysfs objects；`O_CREAT` lookup/create 在 VFS namespace transaction 内原子提交，非 `O_EXCL` 并发创建打开 winner |
+| 56 | `openat` | Partial | ext4/devfs/devpts/procfs/sysfs objects；`O_CREAT` lookup/create 在 VFS namespace transaction 内原子提交，非 `O_EXCL` 并发创建打开 winner |
 | 57 | `close` | Complete | detach 后锁外 consequence |
 | 61 | `getdents64` | Complete | opaque directory `d_off` cursor、64 KiB bounded batch 与 copyout 后 publication |
 | 62 | `lseek` | Partial | seekable OFD types |

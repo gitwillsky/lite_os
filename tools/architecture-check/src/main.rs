@@ -12,7 +12,7 @@ mod documentation_contract;
 mod epoll_cost;
 #[cfg(test)]
 mod epoll_cost_tests;
-mod ext2_mapping_cost;
+mod ext4_mapping_cost;
 mod fallible_collections_contract;
 mod fallible_map_cost;
 mod filesystem_blocking_lock_contract;
@@ -100,7 +100,7 @@ fn main() -> ExitCode {
     address_space_lock_contract::check(&sources, &mut errors);
     deferred_context_contract::check(&sources, &mut errors);
     epoll_cost::check(&root, &mut errors);
-    ext2_mapping_cost::check(&root, &mut errors);
+    ext4_mapping_cost::check(&root, &mut errors);
     fallible_map_cost::check(&sources, &mut errors);
     fp_context_contract::check(&root, &mut errors);
     filesystem_blocking_lock_contract::check(&sources, &mut errors);

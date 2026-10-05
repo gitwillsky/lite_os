@@ -117,11 +117,11 @@ fn kernel_main(context: entry::BootContext) -> ! {
 fn mount_root_filesystem() {
     let device =
         drivers::block::get_primary_block_device().expect("boot requires one primary block device");
-    let filesystem = fs::Ext2FileSystem::new(device).expect("invalid ext2 root filesystem");
+    let filesystem = fs::Ext4FileSystem::new(device).expect("invalid ext4 root filesystem");
     fs::vfs()
         .mount_root(b"root", filesystem)
         .expect("root filesystem mounted more than once");
-    info!("ext2 root filesystem mounted at /");
+    info!("ext4 root filesystem mounted at /");
     fs::vfs()
         .mount_at(b"/dev", b"devfs", fs::DevFileSystem::instance())
         .expect("failed to mount devfs at /dev");

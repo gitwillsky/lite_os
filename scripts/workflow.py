@@ -18,6 +18,7 @@ from typing import Mapping, Sequence
 
 from build_target import acceleration_from_environment, target_from_environment
 from host_topology import default_guest_cpu_count
+from ext4_image import find_e2fsck
 from utm_runtime import run_gui as run_utm_gui
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -151,7 +152,7 @@ def reset_rootfs(environment: Mapping[str, str] | None = None, *, size_mib: str 
         paths["fs"].parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(paths["rootfs"], temporary)
         run(
-            python_script("resize_ext2_image.py", "--image", temporary, "--size-mib", size),
+            python_script("resize_ext4_image.py", "--image", temporary, "--size-mib", size),
             environment=environment,
         )
         os.replace(temporary, paths["fs"])
@@ -167,7 +168,7 @@ def prepare_rootfs(environment: Mapping[str, str] | None = None, *, size_mib: st
     if not paths["fs"].is_file():
         reset_rootfs(environment, size_mib=size)
         return
-    run(python_script("resize_ext2_image.py", "--image", paths["fs"], "--size-mib", size), environment=environment)
+    run(python_script("resize_ext4_image.py", "--image", paths["fs"], "--size-mib", size), environment=environment)
 
 
 def sync_userland(environment: Mapping[str, str] | None = None, *, size_mib: str | None = None) -> None:
@@ -293,20 +294,20 @@ def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory:
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
-def kernel_unit_ext2_fixture(environment: Mapping[str, str] | None = None) -> Path:
-    """用 ``create_fs.py`` 的唯一 ext2 layout 重新生成 kernel-unit 只读测试镜像。
+def kernel_unit_ext4_fixture(environment: Mapping[str, str] | None = None) -> Path:
+    """用 ``create_fs.py`` 的唯一 ext4 layout 重新生成 kernel-unit 只读测试镜像。
 
     1. ``/bin/init`` 写入 64 个 4K block 的固定 payload，使 block 12 必经 indirect mapping；
     2. 镜像携带 create_fs 的 4 MiB JBD2 journal，64 MiB 容量覆盖 1 MiB 单事务写入；
     3. 测试只把写入放进内存 overlay，fixture 不依赖产品 rootfs 构建或开发实例。
 
-    缺少该 fixture 时 ext2 cost/recovery 测试以 ``LITEOS_EXT2_FIXTURE`` 未设置失败。
+    缺少该 fixture 时 ext4 cost/recovery 测试以 ``LITEOS_EXT4_FIXTURE`` 未设置失败。
     """
     directory = ROOT / "target" / "kernel-unit"
     directory.mkdir(parents=True, exist_ok=True)
-    payload = directory / "ext2-init-payload"
+    payload = directory / "ext4-init-payload"
     payload.write_bytes(bytes(range(256)) * (64 * 4096 // 256))
-    image = directory / "ext2-fixture.img"
+    image = directory / "ext4-fixture.img"
     image.unlink(missing_ok=True)
     run(
         [PYTHON, "create_fs.py", "create", "--file", image, "--size", "64", "--init", payload],
@@ -318,7 +319,7 @@ def kernel_unit_ext2_fixture(environment: Mapping[str, str] | None = None) -> Pa
 
 def verify_unit(environment: Mapping[str, str] | None = None) -> None:
     """执行 kernel/architecture/syscall 与 user workspace 单元测试。"""
-    fixture = kernel_unit_ext2_fixture(environment)
+    fixture = kernel_unit_ext4_fixture(environment)
     run(
         [
             "cargo",
@@ -332,7 +333,12 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "syscall-abi",
         ],
-        environment=_env_with(environment, LITEOS_EXT2_FIXTURE=str(fixture)),
+        environment=_env_with(
+            environment,
+            LITEOS_EXT4_FIXTURE=str(fixture),
+            # conformance 测试用 make setup 安装的 e2fsprogs 裁决 kernel 写出的 ext4 结构。
+            LITEOS_E2FSCK=str(find_e2fsck()),
+        ),
     )
     assets = run(
         python_script("verify_busybox.py", "--build-ui-assets-only"),

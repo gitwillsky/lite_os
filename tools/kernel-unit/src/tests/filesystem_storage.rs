@@ -1,70 +1,64 @@
-use crate::{ext2_link_count, file_page_range, journal_layout, writeback_batch};
+use crate::{ext4_link_count, file_page_range, journal_layout, writeback_batch};
 
 #[cfg(test)]
-mod ext2_link_count_tests {
-    use super::ext2_link_count::{
-        LinkCountError, ParentLinkPlan, decrement, increment, plan_rename_parent_links,
+mod ext4_link_count_tests {
+    use super::ext4_link_count::{
+        EXT4_LINK_MAX, LinkCountError, ParentLinkPlan, decrement_directory, decrement_file,
+        increment_directory, increment_file, plan_rename_parent_links,
     };
 
     #[test]
-    fn ext2_link_transitions_enforce_the_fixed_limit_without_wrapping() {
-        assert_eq!(increment(31_999), Ok(32_000));
-        assert_eq!(increment(32_000), Err(LinkCountError::TooMany));
-        assert_eq!(decrement(0), Err(LinkCountError::Corrupt));
-        assert_eq!(decrement(1), Ok(0));
+    fn file_links_stop_at_the_ext4_limit_without_wrapping() {
+        assert_eq!(increment_file(EXT4_LINK_MAX - 1), Ok(EXT4_LINK_MAX));
+        assert_eq!(increment_file(EXT4_LINK_MAX), Err(LinkCountError::TooMany));
+        assert_eq!(decrement_file(0), Err(LinkCountError::Corrupt));
+        assert_eq!(decrement_file(1), Ok(0));
+    }
+
+    #[test]
+    fn dir_nlink_overflow_pins_directory_count_at_one() {
+        assert_eq!(increment_directory(2), Ok(3));
+        assert_eq!(increment_directory(EXT4_LINK_MAX - 1), Ok(EXT4_LINK_MAX));
+        assert_eq!(increment_directory(EXT4_LINK_MAX), Ok(1));
+        assert_eq!(increment_directory(1), Ok(1));
+        assert_eq!(decrement_directory(1), Ok(1));
+        assert_eq!(decrement_directory(3), Ok(2));
+        assert_eq!(decrement_directory(2), Err(LinkCountError::Corrupt));
+        assert_eq!(increment_directory(0), Err(LinkCountError::Corrupt));
     }
 
     #[test]
     fn cross_parent_directory_rename_plans_the_net_parent_deltas() {
         assert_eq!(
-            plan_rename_parent_links(7, 11, true, true, false),
+            plan_rename_parent_links(7, 11, true, false),
             Ok(Some(ParentLinkPlan::CrossParent {
                 old_parent: 6,
                 new_parent: 12,
             }))
         );
         assert_eq!(
-            plan_rename_parent_links(7, 32_000, true, true, false),
-            Err(LinkCountError::TooMany)
-        );
-        assert_eq!(
-            plan_rename_parent_links(7, 32_000, true, true, true),
+            plan_rename_parent_links(7, EXT4_LINK_MAX, true, false),
             Ok(Some(ParentLinkPlan::CrossParent {
                 old_parent: 6,
-                new_parent: 32_000,
+                new_parent: 1,
+            }))
+        );
+        assert_eq!(
+            plan_rename_parent_links(7, 9, true, true),
+            Ok(Some(ParentLinkPlan::CrossParent {
+                old_parent: 6,
+                new_parent: 9,
             }))
         );
     }
 
     #[test]
-    fn rename_parent_plan_distinguishes_zero_delta_and_same_parent_replacement() {
+    fn same_parent_rename_only_changes_links_when_replacing_a_directory() {
+        assert_eq!(plan_rename_parent_links(7, 7, false, false), Ok(None));
         assert_eq!(
-            plan_rename_parent_links(0, 32_000, true, false, false),
-            Ok(None)
-        );
-        assert_eq!(
-            plan_rename_parent_links(0, 32_000, false, true, false),
-            Ok(None)
-        );
-        assert_eq!(
-            plan_rename_parent_links(7, 7, true, false, true),
+            plan_rename_parent_links(7, 7, false, true),
             Ok(Some(ParentLinkPlan::SameParent { parent: 6 }))
         );
-    }
-
-    #[test]
-    fn repeated_ext2_link_plans_reach_but_never_cross_or_wrap_the_limit() {
-        let mut count = 0;
-        for expected in 1..=32_000 {
-            count = increment(count).unwrap();
-            assert_eq!(count, expected);
-        }
-        assert_eq!(increment(count), Err(LinkCountError::TooMany));
-        for expected in (0..32_000).rev() {
-            count = decrement(count).unwrap();
-            assert_eq!(count, expected);
-        }
-        assert_eq!(decrement(count), Err(LinkCountError::Corrupt));
     }
 }
 
@@ -258,7 +252,7 @@ mod writeback_tests {
     #[test]
     fn journal_layout_matches_descriptor_equation_at_boundaries() {
         for block_size in [1024, 2048, 4096] {
-            let tags = 1 + (block_size - 36) / 8;
+            let tags = 1 + (block_size - 48) / 16;
             for journal_blocks in 0..=(2 * tags + 8) {
                 let expected = (1..journal_blocks)
                     .filter(|writes| {

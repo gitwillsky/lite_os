@@ -3,10 +3,10 @@ use syn::Item;
 
 use super::SourceFile;
 
-const EXT2: &str = "kernel/src/fs/ext2.rs";
-const JOURNAL: &str = "kernel/src/fs/ext2/journal.rs";
-const INODE_MUTATION: &str = "kernel/src/fs/ext2/journal/inode_mutation.rs";
-const MOUNT: &str = "kernel/src/fs/ext2/mount.rs";
+const EXT4: &str = "kernel/src/fs/ext4.rs";
+const JOURNAL: &str = "kernel/src/fs/ext4/journal.rs";
+const INODE_MUTATION: &str = "kernel/src/fs/ext4/journal/inode_mutation.rs";
+const MOUNT: &str = "kernel/src/fs/ext4/mount.rs";
 const PAGE_CACHE: &str = "kernel/src/fs/page_cache.rs";
 const VFS: &str = "kernel/src/fs/vfs.rs";
 const MUTEX: &str = "kernel/src/sync/task_mutex.rs";
@@ -15,8 +15,8 @@ const ADAPTER: &str = "kernel/src/task/process_table/task_mutex_wait.rs";
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require_field(
         sources,
-        EXT2,
-        "Ext2FileSystem",
+        EXT4,
+        "Ext4FileSystem",
         "mutation",
         "TaskMutex < () >",
         errors,
@@ -99,8 +99,8 @@ fn require_mount_io_snapshot(sources: &[SourceFile], errors: &mut Vec<String>) {
     };
     for required in [
         "let group_count = self.groups.lock().len();",
-        "for i in 0..group_count",
-        "*groups.get(i).ok_or(FileSystemError::InvalidFileSystem)?",
+        "for group in 0..group_count",
+        "let descriptor = self.groups.lock()[group];",
     ] {
         if !mount.text.contains(required) {
             errors.push(format!(
@@ -122,7 +122,7 @@ fn require_inode_working_copy(sources: &[SourceFile], errors: &mut Vec<String>) 
     let Some(journal) = source(sources, JOURNAL, errors) else {
         return;
     };
-    if journal.text.contains("MutexGuard<'inode, Ext2InodeDisk>")
+    if journal.text.contains("MutexGuard<'inode, Ext4InodeDisk>")
         || !journal
             .text
             .contains("Result<InodeMutation<'mutation, 'inode>, FileSystemError>")
@@ -137,7 +137,7 @@ fn require_inode_working_copy(sources: &[SourceFile], errors: &mut Vec<String>) 
     };
     for required in [
         "struct InodeMutation",
-        "disk: Ext2InodeDisk",
+        "disk: Ext4InodeDisk",
         "transaction: PhantomData<&'mutation mut ()>",
         "impl Drop for InodeMutation",
         "*self.inode.disk.lock() = self.disk",

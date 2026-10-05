@@ -144,9 +144,11 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 
 - `architecture-check`：dependency、owner、interface、文档索引/链接/事实归属与退化模式的纯函数测试。
 - `kernel-unit`：复用 production path 的内存、文件、IPC、socket、codec、数据结构与错误边界测试。
-  ext2 cost/recovery 用例只读取 `verify_unit` 每次经 `create_fs.py` 重新生成的
-  `target/kernel-unit/ext2-fixture.img`（`LITEOS_EXT2_FIXTURE`），写入只进入内存 overlay；不读取产品
+  ext4 cost/recovery 用例只读取 `verify_unit` 每次经 `create_fs.py` 重新生成的
+  `target/kernel-unit/ext4-fixture.img`（`LITEOS_EXT4_FIXTURE`），写入只进入内存 overlay；不读取产品
   rootfs 或开发实例，因此 `verify-fast` 无需先构建 rootfs，直接 `cargo test` 会以变量未设置失败。
+  ext4 conformance 用例在 fixture 的临时副本上写入，再以 Homebrew e2fsprogs 的 `e2fsck -fn`
+  （`LITEOS_E2FSCK`）裁决零错误；PATH 上的其他 mke2fs/e2fsck 不参与解析。
 - `scheduler-unit`：preallocated ready heap 的 capacity/compaction/fail-stop 与 signal selection/generation 测试。
 - `user/` Cargo workspace：display protocol、compositor session/scanout、LiteUI host/render/input/scroll、
   QuickJS runtime 与 terminal-session 的单元及 codec 测试；LiteUI bundle 用例消费
@@ -287,7 +289,7 @@ TLS/HTTP 竖切共用一台 4-CPU guest，SQLite 独占持久化/断电恢复镜
 64 轮 parent/child 私有状态校验及下一次外部进程启动都成功后发布。SQLite writer A 必须在持有 `BEGIN IMMEDIATE` 后发布
 guest 内握手，writer B 才能进入 blocking record-lock 路径。SQLite crash gate 保持一个
 已 INSERT、未 COMMIT 的 WAL transaction，再在 guest 内精确 `SIGKILL` sqlite process；
-重新打开后必须 `integrity=ok` 且未提交 row 不可见。它不把无 journal ext2 的物理掉电恢复
+重新打开后必须 `integrity=ok` 且未提交 row 不可见。它不把只覆盖 metadata 的 ext4 journal 物理掉电恢复
 伪装成 SQLite 能力；QEMU SIGKILL 掉电仍由 filesystem 专项 gate 独立裁决。
 SQLite 第一阶段 `sync` 后由 host 结束 VM，再冷启动同一持久化镜像执行恢复策略；禁止在 HVF
 进程内用 system reset 串联两阶段，因为 QEMU 的 HVF exception handler 会触发 host `isv`

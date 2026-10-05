@@ -29,7 +29,7 @@ from utm_runtime import UTM_APP, UTM_INFO, UTM_VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
 DOWNLOADS = ROOT / "target" / "host-setup"
-# llvm 与 e2fsprogs 为 keg-only；verify_musl/ext2_image 已固定从 /opt/homebrew/opt 回退定位。
+# llvm 与 e2fsprogs 为 keg-only；verify_musl/ext4_image 已固定从 /opt/homebrew/opt 回退定位。
 BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "riscv64-elf-gcc", "openssl@3", "git-lfs")
 UTM_DMG_URL = f"https://github.com/utmapp/UTM/releases/download/v{UTM_VERSION}/UTM.dmg"
 UTM_DMG_SHA256 = "a8435c93cfb5f8bbfeea4b134cfad1ac66b67632b75e438c63b1a8ae043bef0e"

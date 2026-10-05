@@ -38,9 +38,10 @@ pub(crate) enum FileSystemError {
     TooManyLinks,
 }
 
+// kernel error 诊断在 host 测试中写入被捕获的 stderr；只有失败用例才显示，便于定位 fail-stop 原因。
 #[cfg(test)]
 macro_rules! error {
-    ($($argument:tt)*) => {{ let _ = core::format_args!($($argument)*); }};
+    ($($argument:tt)*) => {{ std::eprintln!($($argument)*); }};
 }
 
 #[cfg(test)]
@@ -136,10 +137,13 @@ mod timer {
 mod fs;
 
 #[cfg(test)]
-mod ext2_cost_tests;
+mod ext4_cost_tests;
 
 #[cfg(test)]
-mod ext2_recovery_tests;
+mod ext4_recovery_tests;
+
+#[cfg(test)]
+mod ext4_conformance_tests;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/directory.rs"]
@@ -147,8 +151,16 @@ mod ext2_recovery_tests;
 mod directory_stream;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext2/directory_cursor.rs"]
-mod ext2_directory_cursor;
+#[path = "../../../kernel/src/fs/ext4/directory_cursor.rs"]
+mod ext4_directory_cursor;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/ext4/checksum.rs"]
+mod ext4_checksum;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/ext4/dirhash.rs"]
+mod ext4_dirhash;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/fallible_tree.rs"]
@@ -195,7 +207,7 @@ mod indexed_slots;
 mod file_position;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext2/journal_layout.rs"]
+#[path = "../../../kernel/src/fs/ext4/journal_layout.rs"]
 mod journal_layout;
 
 #[cfg(test)]
@@ -405,8 +417,8 @@ mod timer_transaction_loop;
 mod terminal_output_order;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext2/link_count.rs"]
-mod ext2_link_count;
+#[path = "../../../kernel/src/fs/ext4/link_count.rs"]
+mod ext4_link_count;
 
 #[cfg(test)]
 mod file_position_tests;

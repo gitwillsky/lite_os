@@ -36,7 +36,7 @@ pub(crate) struct VirtualFileSystem {
     // 缺失 exact lifecycle membership 会迫使每个路径组件扫描全部 live Weak entries。
     opened: OpenedIndex,
     // OWNER: VFS inode identity → OFD-owned BSD flock state；若放进 fd table，fork 后的独立
-    // table 会复制锁，若放进 ext2 adapter，devfs 与其他 mounted inode 会形成第二套语义。
+    // table 会复制锁，若放进 ext4 adapter，devfs 与其他 mounted inode 会形成第二套语义。
     advisory_locks: Mutex<Vec<advisory_lock::AdvisoryFileLock>>,
     // OWNER: VFS inode identity → process-owned POSIX byte-range locks；若归 fd/OFD 所有，dup、fork
     // 与任一 descriptor close 会产生错误的锁生命周期。

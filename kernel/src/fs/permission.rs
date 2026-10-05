@@ -238,7 +238,7 @@ impl OwnerModeChange {
                         current.mode &= !0o2000;
                     }
                     // notify_change materializes an actual set-ID drop as
-                    // ATTR_MODE, so ext2 setattr_prepare requires owner/root
+                    // ATTR_MODE, so ext4 setattr_prepare requires owner/root
                     // even when both UID/GID arguments were sentinels.
                     if current.mode != original_mode && !privileged && identity.uid() != current.uid
                     {

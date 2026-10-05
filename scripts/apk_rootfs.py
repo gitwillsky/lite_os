@@ -80,7 +80,7 @@ def _stage_package_root(
     busybox_links: tuple[str, ...],
     stress_links: tuple[str, ...],
 ) -> Path:
-    """从唯一 ext2 image primitive 导出 package payload，并恢复 hardlink identity。"""
+    """从唯一 ext4 image primitive 导出 package payload，并恢复 hardlink identity。"""
     staging = workspace / "rootfs"
     staging.mkdir()
     run([str(debugfs), "-R", f"rdump / {staging}", str(image)])

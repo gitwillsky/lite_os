@@ -92,7 +92,7 @@ impl SharedPage for CachedPage {
 
     fn acquire_writer(&self) {
         // 在发布新 writable PTE 前提前回写旧的 unmapped dirty 页。高水位只影响慢路径，
-        // 且此时仍保留 3/4 物理容量供 ext2 journal staging，避免 OOM 后递归回写自锁。
+        // 且此时仍保留 3/4 物理容量供 ext4 journal staging，避免 OOM 后递归回写自锁。
         let dirty_limit = crate::memory::frame_statistics()
             .capacity_pages
             .div_ceil(DIRTY_LIMIT_DIVISOR);

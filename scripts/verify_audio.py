@@ -19,7 +19,7 @@ from pathlib import Path
 from audio_analysis import WavSignal, read_qemu_wav
 from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_payload
 from build_target import acceleration_from_environment, target_from_environment
-from ext2_image import recover_ext2_journal, run_debugfs
+from ext4_image import recover_ext4_journal, run_debugfs
 from qemu_gate import ANSI, QmpClient
 from utm_runtime import GateRuntime, start_gate
 
@@ -275,7 +275,7 @@ def inject_fixtures(image: Path) -> None:
     ]
     if missing:
         raise RuntimeError(f"audio fixtures are missing: {missing!r}")
-    recover_ext2_journal(image)
+    recover_ext4_journal(image)
     listing = run_debugfs(image, "stat /root/Music")
     if "File not found" in listing:
         raise RuntimeError("rootfs does not contain /root/Music")
@@ -1108,7 +1108,7 @@ def gate_inputs(image: Path) -> tuple[Path, ...]:
         ROOT / "scripts" / "qemu_gate.py",
         ROOT / "scripts" / "utm_runtime.py",
         ROOT / "scripts" / "audio_analysis.py",
-        ROOT / "scripts" / "ext2_image.py",
+        ROOT / "scripts" / "ext4_image.py",
         Path(__file__).resolve(),
         *fixtures,
     )

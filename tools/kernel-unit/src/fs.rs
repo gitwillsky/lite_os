@@ -171,5 +171,5 @@ pub(crate) mod permission {
     }
 }
 
-#[path = "../../../kernel/src/fs/ext2.rs"]
-pub(crate) mod ext2;
+#[path = "../../../kernel/src/fs/ext4.rs"]
+pub(crate) mod ext4;

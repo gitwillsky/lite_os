@@ -19,7 +19,7 @@ LiteOS 是架构中立的 Rust `no_std` kernel。通用代码只消费编译期�
 | 执行 | [arch、entry、CPU、trap、timer、sync](architecture/execution.md) |
 | 内存 | [frame、page table、VMA、user-copy](architecture/memory.md) |
 | 进程 | [Process、Thread、scheduler、signal、wait](architecture/process-scheduling.md) |
-| 存储 | [VFS、OFD、ext2、page cache](architecture/filesystem-storage.md) |
+| 存储 | [VFS、OFD、ext4、page cache](architecture/filesystem-storage.md) |
 | 通信 | [Pipe、epoll、socket 与 network](architecture/ipc-network.md) |
 | 设备 | [VirtIO、DRM、evdev、PTY 与 terminal](architecture/devices-terminal.md) |
 | 音频 | [HTMLMediaElement、系统 mixer、ALSA PCM 与 VirtIO Sound](architecture/audio.md) |

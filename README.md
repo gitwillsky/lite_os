@@ -66,7 +66,7 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 
 | 路径 | 内容 |
 |---|---|
-| `kernel/` | `no_std` kernel：`arch`/`platform` backend、内存、进程调度、VFS/ext2、IPC/socket、DRM/evdev/音频驱动、syscall |
+| `kernel/` | `no_std` kernel：`arch`/`platform` backend、内存、进程调度、VFS/ext4、IPC/socket、DRM/evdev/音频驱动、syscall |
 | `syscall-abi/` | Linux 64-bit syscall 编号与 UAPI 定义 |
 | `bootloader/` | RISC-V 启动链；AArch64 不需要 |
 | `user/` | Rust 用户态 workspace：compositor、lite-runtime（GUI/JS 运行时库）、各窗口应用、audio-service、terminal-session 等，见 [user/README.md](user/README.md) |
@@ -104,7 +104,7 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
   最大化/半屏、Dock、Alt+Tab 切换、文本光标闪烁与毛玻璃背景。
 - 窗口应用：文件管理器、终端（PTY）、音乐播放器（VirtIO Sound + 系统 mixer）、我的电脑。
 - 用户态：musl 动态链接、BusyBox、标准库 Rust 应用、Alpine APK 包管理（curl、SQLite、Git 闭包已验证）、TLS。
-- 存储与网络：ext2 + JBD2 journal、page cache；AF_UNIX、IPv4 TCP/UDP 与 AF_PACKET socket。
+- 存储与网络：ext4（`mke2fs -t ext4` 默认 profile：extent、htree、metadata_csum、orphan_file）+ JBD2 journal、page cache；AF_UNIX、IPv4 TCP/UDP 与 AF_PACKET socket。
 - Agent 开发镜像：guest 内可运行固定版本的 Node/npm 与 Codex/Claude CLI。
 - 新 Mac 可通过 `make setup` 一条命令准备开发环境。
 
@@ -113,7 +113,8 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 - 新增 `make setup`；Rust toolchain 升级到新 nightly，并为 AArch64 musl 补齐 compiler-rt `__multc3`。
 - OpenSSL、compiler-rt、npm 依赖改走国内镜像；`ui/package-lock.json` 去除私有 registry 地址。
 - 升级已被 Alpine 上游移除的 bootstrap 与应用 APK 版本。
-- kernel-unit 的 ext2 测试改用每次生成的独立 fixture，不再依赖残留的 `fs.img`。
+- root filesystem 从 ext2 直接升级为 ext4，不保留 ext2 路径；kernel-unit 以 `e2fsck -fn` 裁决 kernel 写出的结构。
+  已有开发镜像 `fs-aarch64.img` 需执行 `make reset-rootfs` 重建。
 
 ### 待处理
 

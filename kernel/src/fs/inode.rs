@@ -154,7 +154,7 @@ pub(crate) trait Inode: Send + Sync {
     ///
     /// # Returns
     ///
-    /// ext2 root 为 false；只读 devfs/procfs 为 true。
+    /// ext4 root 为 false；只读 devfs/procfs 为 true。
     fn is_read_only(&self) -> bool {
         false
     }

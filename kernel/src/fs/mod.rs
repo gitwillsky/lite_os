@@ -6,7 +6,7 @@ mod devfs;
 mod devpts;
 mod directory;
 mod epoll;
-mod ext2;
+mod ext4;
 mod file;
 mod inode;
 mod memfd;
@@ -26,7 +26,7 @@ pub(crate) use directory::{
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
 };
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent, EpollMemberships};
-pub(crate) use ext2::Ext2FileSystem;
+pub(crate) use ext4::Ext4FileSystem;
 pub(crate) use file::{
     CancelledFileReservation, CharacterDevice, Console, DetachedFileDescriptor,
     FileDescriptorError, FileDescriptorTable, KmsgDeviceRead, MAX_FILE_DESCRIPTORS, O_ACCMODE,

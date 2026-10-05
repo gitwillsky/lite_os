@@ -24,7 +24,7 @@ from build_cache import (
     write_manifest,
 )
 from build_target import target_from_environment
-from ext2_image import find_debugfs
+from ext4_image import find_debugfs
 from qemu_gate import boot, cpu_topology_markers
 from verify_busybox import start_http_gate, verify_elf
 from verify_musl import (

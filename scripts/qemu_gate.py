@@ -353,7 +353,7 @@ def boot(
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
     Args:
-        image: 作为唯一 root block device 的 ext2 镜像。
+        image: 作为唯一 root block device 的 ext4 镜像。
         smp: QEMU 向 DTB 暴露的 hart 数。
         markers: 成功前必须全部出现的输出标记。
         timeout_seconds: 单次冷启动的 monotonic deadline 秒数。

@@ -77,10 +77,16 @@
 - 来源：[BusyBox release](https://busybox.net/downloads/busybox-1.37.0.tar.bz2)；下载优先使用内容相同的[阿里云镜像](https://mirrors.aliyun.com/slackware/slackware64-current/source/installer/sources/busybox/busybox-1.37.0.tar.bz2)，失败时回退官方源。
 - 两者是固定 consumer，不制定 kernel ABI，也不能把固定 smoke 外推为通用兼容性。
 
-### ext2/JBD2
+### ext4/JBD2
 
-- on-disk 与 transaction 语义固定到 Linux `v7.1` 同一 commit。
-- 来源：[JBD2 文档](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/filesystems/ext4/journal.rst)、[固定实现](https://github.com/torvalds/linux/tree/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/jbd2)。
+- on-disk 与 transaction 语义固定到 Linux `v7.1` 同一 commit；feature profile 固定为 e2fsprogs
+  `1.47.4` `mke2fs -t ext4` 默认值，crc32c、half_md4 dirhash 与 checksum 公式以该版本
+  `lib/ext2fs` 为交叉校验对象。
+- 来源：[ext4 disk layout](https://github.com/torvalds/linux/tree/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/filesystems/ext4)、
+  [固定 ext4 实现](https://github.com/torvalds/linux/tree/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/ext4)、
+  [e2fsprogs v1.47.4](https://git.kernel.org/pub/scm/fs/ext2/e2fsprogs.git/tag/?h=v1.47.4)、
+  [JBD2 文档](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/filesystems/ext4/journal.rst)、
+  [固定 JBD2 实现](https://github.com/torvalds/linux/tree/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/jbd2)。
 
 ### Terminal
 

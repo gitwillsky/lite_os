@@ -13,7 +13,7 @@ use super::{
 impl CachedFile {
     pub(super) fn reclaim_under_pressure(&self, request: ReclaimRequest) -> ReclaimResult {
         // 1. 只有同时取得 cache mutation gates 才允许 dirty writeback；失败时仍扫描 clean 页。
-        //    直接等待会让 allocator 从 ext2 transaction 反向进入同一 mutation owner 而自锁。
+        //    直接等待会让 allocator 从 ext4 transaction 反向进入同一 mutation owner 而自锁。
         let sequence = self.write_sequence.try_lock();
         let operation = sequence.as_ref().and_then(|_| self.operation.try_lock());
         let allow_writeback = sequence.is_some() && operation.is_some();

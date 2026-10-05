@@ -19,10 +19,10 @@ from agent_cli_cache import (
     cached_agent_cli_artifacts,
 )
 from build_cache import fingerprint, sha256
-from ext2_image import (
-    ensure_ext2_capacity,
+from ext4_image import (
+    ensure_ext4_capacity,
     find_debugfs,
-    recover_ext2_journal,
+    recover_ext4_journal,
     run_debugfs,
 )
 from qemu_gate import boot
@@ -238,8 +238,8 @@ def prepare(
             fcntl.lockf(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError(f"development image is already in use: {image}") from error
-        recover_ext2_journal(image)
-        ensure_ext2_capacity(image, size_mib)
+        recover_ext4_journal(image)
+        ensure_ext4_capacity(image, size_mib)
         if (_read_stamp(image) or {}).get("identity") == identity:
             with tempfile.TemporaryDirectory(
                 prefix="liteos-agent-development-check-"
@@ -268,7 +268,7 @@ def prepare(
         memory=qemu_memory,
         success_settle_seconds=1.0,
     )
-    recover_ext2_journal(image)
+    recover_ext4_journal(image)
     with tempfile.TemporaryDirectory(
         prefix="liteos-agent-development-verify-"
     ) as temporary:

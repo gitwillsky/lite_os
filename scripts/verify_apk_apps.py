@@ -18,7 +18,7 @@ from build_cache import (
     runtime_gate_payload,
     sha256,
 )
-from ext2_image import find_debugfs, run_debugfs
+from ext4_image import find_debugfs, run_debugfs
 from qemu_gate import boot
 from tls_gate import install_runtime_tls_identity, start_https_gate
 
@@ -124,7 +124,7 @@ def install_applications(base_image: Path, directory: Path) -> Path:
             Path(__file__).resolve(),
             ROOT / "scripts/apk_apps_cache.py",
             ROOT / "scripts/apk_cache.py",
-            ROOT / "scripts/ext2_image.py",
+            ROOT / "scripts/ext4_image.py",
             ROOT / "scripts/qemu_gate.py",
             *apks.archives,
         ),
@@ -325,7 +325,7 @@ def main() -> int:
                 *target_runtime_artifacts(),
                 Path(__file__).resolve(),
                 ROOT / "scripts/apk_apps_cache.py",
-                ROOT / "scripts/ext2_image.py",
+                ROOT / "scripts/ext4_image.py",
                 ROOT / "scripts/https_gate.py",
                 ROOT / "scripts/qemu_gate.py",
                 ROOT / "scripts/tls_gate.py",

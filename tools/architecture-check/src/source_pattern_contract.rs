@@ -105,9 +105,9 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
             }
         }
         let lowercase = source.text.to_ascii_lowercase();
-        if lowercase.contains("read-only ext2")
-            || lowercase.contains("read_only ext2")
-            || source.text.contains("只读 ext2")
+        if lowercase.contains("read-only ext4")
+            || lowercase.contains("read_only ext4")
+            || source.text.contains("只读 ext4")
         {
             errors.push(format!(
                 "{}: banned pattern reintroduces read-only filesystem dual track",

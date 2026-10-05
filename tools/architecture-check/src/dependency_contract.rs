@@ -242,10 +242,10 @@ fn check_facade_path(source: &SourceFile, path: &[String], errors: &mut Vec<Stri
             ));
         }
         let forbidden = [
-            &["crate", "fs", "ext2"][..],
+            &["crate", "fs", "ext4"][..],
             &["crate", "fs", "file"][..],
             &["crate", "fs", "inode"][..],
-            &["crate", "fs", "Ext2FileSystem"][..],
+            &["crate", "fs", "Ext4FileSystem"][..],
             &["crate", "memory", "page_table"][..],
             &["crate", "task", "scheduler"][..],
         ];
@@ -268,10 +268,10 @@ fn check_facade_path(source: &SourceFile, path: &[String], errors: &mut Vec<Stri
         && path.get(1).is_some_and(|segment| segment == "fs")
         && path
             .get(2)
-            .is_some_and(|segment| segment == "Ext2FileSystem")
+            .is_some_and(|segment| segment == "Ext4FileSystem")
     {
         errors.push(format!(
-            "{}: task may consume filesystem interfaces but not the ext2 adapter",
+            "{}: task may consume filesystem interfaces but not the ext4 adapter",
             source.relative
         ));
     }

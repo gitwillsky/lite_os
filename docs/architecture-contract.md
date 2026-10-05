@@ -101,10 +101,10 @@
 | `kernel/src/fs/epoll.rs :: EpollMemberships.entries` | `Mutex < FallibleMap < ReverseKey , ReverseMembership > >` |
 | `kernel/src/fs/epoll.rs :: static SOURCE_INDEX` | `Mutex < FallibleMap < SourceIndexKey , SourceMembership > >` |
 | `kernel/src/fs/vfs/opened_index.rs :: OpenedIndex.entries` | `Mutex < FallibleMap < OpenedIndexKey , Weak < OpenedFile > > >` |
-| `kernel/src/fs/ext2.rs :: Ext2FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext2Inode > > >` |
-| `kernel/src/fs/ext2/journal.rs :: ActiveTransaction.writes` | `FallibleMap < u32 , Vec < u8 > >` |
-| `kernel/src/fs/ext2/journal/commit_owner.rs :: JournalCommit.writes` | `Arc < FallibleMap < u32 , Vec < u8 > > >` |
-| `kernel/src/fs/ext2/journal/commit_owner.rs :: JournalOwner::Committing[0]` | `Arc < FallibleMap < u32 , Vec < u8 > > >` |
+| `kernel/src/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
+| `kernel/src/fs/ext4/journal.rs :: ActiveTransaction.writes` | `FallibleMap < u64 , Vec < u8 > >` |
+| `kernel/src/fs/ext4/journal/commit_owner.rs :: JournalCommit.writes` | `Arc < FallibleMap < u64 , Vec < u8 > > >` |
+| `kernel/src/fs/ext4/journal/commit_owner.rs :: JournalOwner::Committing[0]` | `Arc < FallibleMap < u64 , Vec < u8 > > >` |
 | `kernel/src/fs/page_cache.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
 | `kernel/src/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
 | `kernel/src/arch/riscv64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |

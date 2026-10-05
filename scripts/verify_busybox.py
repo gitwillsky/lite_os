@@ -39,7 +39,7 @@ from build_cache import (
 )
 from qemu_gate import boot, cpu_topology_markers, power_cut
 from openssl_cache import OpenSslPaths, build_openssl
-from ext2_image import find_debugfs, find_mke2fs
+from ext4_image import find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
 from verify_musl import (
     MuslCachePaths,
@@ -65,7 +65,7 @@ BINARY_RECIPE_VERSION = 6
 # OWNER: verify_busybox 唯一发布 content-addressed rootfs image cache。
 # PROOF: 单一文件锁串行化 writer；create_image 完成全部 ownership 断言后才写 manifest，并把
 # 完整 fingerprint directory 原子发布为不可变 generation。
-# FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
+# FAILURE: 缺少该 cache 会让 ext4 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
 ROOTFS_RECIPE_VERSION = 14
 # APK assembly temporarily holds both the installed tree and its signed base
@@ -576,7 +576,7 @@ def install_kernel_stack_churn_gate(image: Path, directory: Path) -> None:
     """向 disposable image 注入双 CPU kernel-stack retirement 回归入口。
 
     Args:
-        image: 当前未被 QEMU 使用的 gate-private ext2 镜像。
+        image: 当前未被 QEMU 使用的 gate-private ext4 镜像。
         directory: host 临时命令与 inittab fixture 的唯一目录。
 
     Returns:
@@ -1857,7 +1857,7 @@ def create_published_image(
         ROOT / "scripts/apk_cache.py",
         ROOT / "scripts/apk_package.py",
         ROOT / "scripts/apk_rootfs.py",
-        ROOT / "scripts/ext2_image.py",
+        ROOT / "scripts/ext4_image.py",
         ROOT / "scripts/qemu_gate.py",
         find_mke2fs(),
         find_debugfs(),
@@ -1972,7 +1972,7 @@ def main() -> int:
                 Path(__file__).resolve(),
                 ROOT / "scripts/https_gate.py",
                 ROOT / "scripts/tls_gate.py",
-                ROOT / "scripts/ext2_image.py",
+                ROOT / "scripts/ext4_image.py",
                 ROOT / "scripts/apk_cache.py",
                 ROOT / "scripts/apk_package.py",
                 ROOT / "scripts/apk_rootfs.py",
@@ -2215,7 +2215,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_OBSERVABILITY_42",
-                    b"/bin/grep -q '^root / ext2 rw 0 0$' /proc/mounts && /bin/grep -q '^devfs /dev devfs ro 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc ro 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n",
+                    b"/bin/grep -q '^root / ext4 rw 0 0$' /proc/mounts && /bin/grep -q '^devfs /dev devfs ro 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc ro 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n",
                 ),
                 (
                     "LITEOS_FILESYSTEM_CAPACITY_42",
