@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::{Read, Seek, SeekFrom},
-    path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -11,7 +10,7 @@ use std::{
 
 use alloc::sync::Arc;
 
-use crate::ext2_cost_tests::COST_TEST_LOCK;
+use crate::ext2_cost_tests::{COST_TEST_LOCK, ext2_fixture_path};
 use crate::{
     InodeType,
     drivers::block::{BLOCK_SIZE, BlockDevice, BlockError},
@@ -41,9 +40,8 @@ struct RecoveryImage {
 
 impl RecoveryImage {
     fn open() -> Arc<Self> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fs.img");
         Arc::new(Self::from_parts(
-            File::open(path).expect("open repository ext image"),
+            File::open(ext2_fixture_path()).expect("open ext2 fixture image"),
             BTreeMap::new(),
         ))
     }

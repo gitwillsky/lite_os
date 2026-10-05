@@ -97,12 +97,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         ));
         return;
     };
-    for required in ["if cpus.is_empty()"] {
-        if !aarch64_platform.text.contains(required) {
-            errors.push(format!(
-                "{AARCH64_PLATFORM_PATH}: Apple HVF remote revoke must broadcast before delegating to the per-vCPU rendezvous owner; missing `{required}`"
-            ));
-        }
+    let required = "if cpus.is_empty()";
+    if !aarch64_platform.text.contains(required) {
+        errors.push(format!(
+            "{AARCH64_PLATFORM_PATH}: Apple HVF remote revoke must broadcast before delegating to the per-vCPU rendezvous owner; missing `{required}`"
+        ));
     }
     let broadcast = aarch64_platform
         .text

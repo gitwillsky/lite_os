@@ -50,6 +50,28 @@ LINUX_SHA256 = "691f44797fbe790dc8a321604c927087526ad27b6d649925d60f8eed0a2564a0
 MAKE_VERSION = "4.4.1"
 MAKE_URL = f"https://mirrors.kernel.org/gnu/make/make-{MAKE_VERSION}.tar.lz"
 MAKE_SHA256 = "8814ba072182b605d156d7589c19a43b89fc58ea479b9355146160946f8cf6e9"
+# compiler-builtins 自 nightly-2026-10-03 起只以 `extern "Rust"` 导出 f128 complex helper
+# （`__rust_multc3`），不再提供 C ABI `__multc3`；Clang 把 `long double _Complex` 乘法 lower
+# 为该符号，缺少补充时 musl `libc.so` 在 `cpowl.lo` 处以 undefined `__multc3` 链接失败。
+# 补充源码固定为 rustc 报告的同一 LLVM release；逐文件 SHA-256 覆盖 multc3.c 的完整 include 闭包。
+COMPILER_RT_VERSION = "23.1.1"
+# jsDelivr GitHub CDN 优先，raw.githubusercontent.com 兜底；两者都按下方逐文件摘要校验。
+COMPILER_RT_URLS = (
+    f"https://cdn.jsdelivr.net/gh/llvm/llvm-project@llvmorg-{COMPILER_RT_VERSION}"
+    "/compiler-rt/lib/builtins/",
+    f"https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-{COMPILER_RT_VERSION}"
+    "/compiler-rt/lib/builtins/",
+)
+COMPILER_RT_SOURCES = {
+    "multc3.c": "826cabd0ba1ac5a249b1ff5661b26a98aba7ebcbc251fdaebed64c20216e968c",
+    "fp_lib.h": "cf3a5301c95986a9b392edba32dfe7ac27d3352d266e284e528a09413f84f6cc",
+    "int_lib.h": "a5735bf1bfacecd6cf5785ed19ae62a981ff2f0923c38caa99f4af47f2be57b5",
+    "int_math.h": "ddc3abe104d4500630174d7e0c3190d203c968213eb189097f70aec55a33c352",
+    "int_types.h": "198552b25faf8a75b077ea145591cd7f6762b7f2712321b18f5e38fee8cc2a1e",
+    "int_util.h": "63d06198ab720a75c20bfd84be895c2746581b129168bae6201e7384bbb0473b",
+    "int_endianness.h": "ec5175561075845b7b16a92ad5ecdfd42a284de2736dd07e4ca7011b75c37709",
+}
+COMPILER_RT_SUPPLEMENT_SYMBOL = "__multc3"
 SOURCE_RECIPE_VERSION = 1
 SYSROOT_RECIPE_VERSION = 4
 SMOKE_RECIPE_VERSION = 4
@@ -243,6 +265,7 @@ def find_compiler() -> Path:
         "riscv64-linux-gnu-gcc",
         "riscv64-unknown-linux-gnu-gcc",
         "riscv64-unknown-elf-gcc",
+        "riscv64-elf-gcc",
     )
     fallback = "/opt/homebrew/bin/riscv64-unknown-elf-gcc"
     candidates = (*[shutil.which(name) for name in names], fallback)
@@ -289,8 +312,22 @@ def rustc_probe_environment() -> dict[str, str]:
     return environment
 
 
-def find_compiler_runtime(compiler: Path) -> Path:
-    """返回目标 compiler runtime；AArch64 只接受 hard-float AAPCS64 Rust builtins。"""
+def obtain_compiler_runtime(compiler: Path) -> Path:
+    """返回目标 compiler runtime archive。
+
+    RISC-V 直接使用 GCC ``libgcc``。AArch64 只接受 hard-float AAPCS64 Rust builtins，并按
+    ``COMPILER_RT_SOURCES`` 补入 C ABI ``__multc3``，合并为单一 archive，使所有 consumer 仍只
+    消费一条 runtime path。
+
+    Args:
+        compiler: 已定位的 userspace compiler driver。
+
+    Returns:
+        已发布且内容身份匹配的 runtime archive 绝对路径。
+
+    Raises:
+        RuntimeError: runtime 缺失、补充源码摘要不匹配，或固定 toolchain 已自行导出补充符号。
+    """
     if TARGET.arch == "riscv64":
         runtime = Path(
             run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()
@@ -299,6 +336,66 @@ def find_compiler_runtime(compiler: Path) -> Path:
             raise RuntimeError(f"RISC-V libgcc compiler runtime is missing: {runtime}")
         return runtime
 
+    builtins = pinned_compiler_builtins()
+    clang, _, archiver, ranlib = find_runtime_toolchain()
+    sources = obtain_compiler_rt_sources()
+    flags = (
+        f"--target={TARGET.linux_triple}",
+        "-march=armv8-a",
+        "-std=c11",
+        # 单个 complex 冷路径 helper，固定 O2 与上游 builtins 一致；正确性由 musl smoke 的
+        # Annex G 重算用例裁决，不增加 host benchmark。
+        "-O2",
+        "-fPIC",
+        "-ffreestanding",
+        "-fno-builtin",
+        "-ffunction-sections",
+        "-fdata-sections",
+        "-fvisibility=hidden",
+    )
+    payload = {
+        "kind": "aarch64-compiler-runtime",
+        "recipe_version": 1,
+        "compiler_builtins_sha256": sha256(builtins),
+        "compiler_rt": {"version": COMPILER_RT_VERSION, "sha256": COMPILER_RT_SOURCES},
+        "clang": tool_identity(clang),
+        "archiver": tool_identity(archiver),
+        "flags": list(flags),
+    }
+    identity = fingerprint(payload)
+    entry = WORK / "compiler-runtime" / identity
+    if manifest_matches(entry, payload, ("libcompiler-runtime.a",)):
+        return (entry / "libcompiler-runtime.a").resolve()
+
+    # 补充只覆盖 toolchain 缺口；toolchain 恢复导出后必须删除补充，避免两份实现并存。
+    defined = run(
+        [str(archiver.with_name("llvm-nm")), "--defined-only", "--format=just-symbols", str(builtins)],
+        ROOT,
+    ).split()
+    if COMPILER_RT_SUPPLEMENT_SYMBOL in defined:
+        raise RuntimeError(
+            f"pinned compiler_builtins already exports {COMPILER_RT_SUPPLEMENT_SYMBOL}; "
+            "remove the compiler-rt supplement from verify_musl.py"
+        )
+    generation = generation_directory(WORK / "compiler-runtime-generations", identity)
+    try:
+        supplement = generation / "multc3.o"
+        run([str(clang), *flags, "-I", str(sources), "-c", str(sources / "multc3.c"), "-o", str(supplement)], ROOT)
+        archive = generation / "libcompiler-runtime.a"
+        shutil.copyfile(builtins, archive)
+        run([str(archiver), "q", str(archive), str(supplement)], ROOT)
+        run([str(ranlib), str(archive)], ROOT)
+        supplement.unlink()
+        write_manifest(generation, payload)
+        publish_generation(generation, entry)
+    except BaseException:
+        shutil.rmtree(generation, ignore_errors=True)
+        raise
+    return (entry / "libcompiler-runtime.a").resolve()
+
+
+def pinned_compiler_builtins() -> Path:
+    """定位固定 Rust toolchain 的 hard-float AAPCS64 ``compiler_builtins`` rlib。"""
     rust_sysroot = Path(
         run(
             ["rustc", "--print", "sysroot"],
@@ -320,6 +417,42 @@ def find_compiler_runtime(compiler: Path) -> Path:
             f"is missing or ambiguous under {rust_sysroot}"
         )
     return candidates[0].resolve()
+
+
+def obtain_compiler_rt_sources() -> Path:
+    """下载并缓存固定 compiler-rt builtins 补充源码；全部摘要匹配后才发布目录。"""
+    payload = {
+        "kind": "compiler-rt-builtins-source",
+        "version": COMPILER_RT_VERSION,
+        "sha256": COMPILER_RT_SOURCES,
+    }
+    source = WORK / "compiler-rt-sources" / fingerprint(payload)
+    if manifest_matches(source, payload, tuple(COMPILER_RT_SOURCES)):
+        return source
+    temporary = temporary_directory(WORK / "compiler-rt-sources", "source")
+    try:
+        print(f"downloading compiler-rt {COMPILER_RT_VERSION} builtins supplement")
+        for name, digest in COMPILER_RT_SOURCES.items():
+            path = temporary / name
+            errors = []
+            for base in COMPILER_RT_URLS:
+                try:
+                    urllib.request.urlretrieve(base + name, path)
+                except Exception as error:
+                    errors.append(f"{base}{name}: {error}")
+                    continue
+                if sha256(path) == digest:
+                    break
+                errors.append(f"{base}{name}: SHA-256 mismatch")
+            else:
+                raise RuntimeError(
+                    f"failed to download compiler-rt {COMPILER_RT_VERSION} {name}:\n" + "\n".join(errors)
+                )
+        write_manifest(temporary, payload)
+        publish_directory(temporary, source)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    return source
 
 
 def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
@@ -367,7 +500,7 @@ def tool_identity(tool: Path, version_argument: str = "--version") -> dict[str, 
 
 def sysroot_payload(compiler: Path) -> dict[str, object]:
     clang, linker, archiver, ranlib = find_runtime_toolchain()
-    compiler_runtime = find_compiler_runtime(compiler)
+    compiler_runtime = obtain_compiler_runtime(compiler)
     return {
         "kind": "musl-runtime-sysroot",
         "recipe_version": SYSROOT_RECIPE_VERSION,
@@ -378,7 +511,7 @@ def sysroot_payload(compiler: Path) -> dict[str, object]:
         "compiler": compiler_identity(compiler),
         "compiler_runtime": {
             "kind": (
-                "pinned-rust-compiler-builtins"
+                "pinned-rust-compiler-builtins+compiler-rt-multc3"
                 if TARGET.arch == "aarch64"
                 else "gcc-libgcc"
             ),
@@ -426,7 +559,7 @@ def build_musl(
     build = temporary_directory(WORK / "builds", "build")
     generation = generation_directory(WORK / "install-generations", sysroot_fingerprint)
     clang, linker, archiver, ranlib = find_runtime_toolchain()
-    compiler_runtime = find_compiler_runtime(compiler)
+    compiler_runtime = obtain_compiler_runtime(compiler)
     gmake = obtain_gnu_make(jobs_override)
     lld_alias = build / "ld.lld"
     lld_alias.symlink_to(linker)
@@ -488,7 +621,7 @@ def cached_musl_paths(compiler: Path) -> MuslCachePaths:
     if not manifest_matches(install, payload, required) or not loader.is_symlink() or os.readlink(loader) != "/usr/lib/libc.so":
         raise RuntimeError("musl sysroot cache is missing; run verify_musl.py first")
     clang, linker, archiver, ranlib = find_runtime_toolchain()
-    compiler_runtime = find_compiler_runtime(compiler)
+    compiler_runtime = obtain_compiler_runtime(compiler)
     resolved_install = install.resolve()
     return MuslCachePaths(
         source.resolve(),
@@ -503,7 +636,7 @@ def cached_musl_paths(compiler: Path) -> MuslCachePaths:
 
 
 def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> dict[str, object]:
-    compiler_runtime = find_compiler_runtime(compiler)
+    compiler_runtime = obtain_compiler_runtime(compiler)
     return {
         "kind": "musl-smoke",
         "recipe_version": SMOKE_RECIPE_VERSION,
@@ -538,7 +671,7 @@ def link_smoke(
 
     generation = generation_directory(WORK / "smoke-generations", smoke_fingerprint)
     generation_output = generation / "musl-smoke"
-    compiler_runtime = find_compiler_runtime(compiler)
+    compiler_runtime = obtain_compiler_runtime(compiler)
     compiler_arguments = [str(compiler)]
     if TARGET.arch == "aarch64":
         compiler_arguments.extend(

@@ -476,8 +476,8 @@ impl<T> IndexedSlots<T> {
         }
         let (first_root, first_chunk, first_slot) = coordinates(minimum);
         let root = self.root.as_deref()?;
-        for root_index in first_root..ROOT_FANOUT {
-            let Some(branch) = root.branches[root_index].as_deref() else {
+        for (root_index, branch) in root.branches.iter().enumerate().skip(first_root) {
+            let Some(branch) = branch.as_deref() else {
                 continue;
             };
             let chunk_start = if root_index == first_root {
@@ -485,8 +485,8 @@ impl<T> IndexedSlots<T> {
             } else {
                 0
             };
-            for chunk_index in chunk_start..BRANCH_FANOUT {
-                let Some(chunk) = branch.chunks[chunk_index].as_deref() else {
+            for (chunk_index, chunk) in branch.chunks.iter().enumerate().skip(chunk_start) {
+                let Some(chunk) = chunk.as_deref() else {
                     continue;
                 };
                 let slot_start = if root_index == first_root && chunk_index == first_chunk {
@@ -494,12 +494,12 @@ impl<T> IndexedSlots<T> {
                 } else {
                     0
                 };
-                for slot in slot_start..CHUNK_SLOTS {
+                for (slot, entry) in chunk.entries.iter().enumerate().skip(slot_start) {
                     let fd = root_index * ROOT_SPAN + chunk_index * CHUNK_SLOTS + slot;
                     if fd >= self.logical_len {
                         return None;
                     }
-                    if chunk.entries[slot].as_ref().is_some_and(&predicate) {
+                    if entry.as_ref().is_some_and(&predicate) {
                         return Some(fd);
                     }
                 }

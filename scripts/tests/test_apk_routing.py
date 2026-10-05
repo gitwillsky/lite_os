@@ -39,7 +39,7 @@ class ApkRoutingTests(unittest.TestCase):
         self.assertEqual(len(packages), 3)
         self.assertEqual(
             cache.fingerprint({"packages": packages}),
-            "0bd762771bab9458800691167b7bdc44491815569492f812eee6257a3833b491",
+            "d61c1308c226b6307c347cce402b49eeae99a18b5d676dc09f051bf0c2f1e448",
         )
 
     def test_riscv64_package_digests_remain_fixed(self) -> None:
@@ -50,13 +50,13 @@ class ApkRoutingTests(unittest.TestCase):
         self.assertEqual(payload["arch"], "riscv64")
         self.assertEqual(
             cache.fingerprint({"packages": payload["packages"]}),
-            "beaa6b029968e99fdfd6639e07d7ac6f528bfc5b8d89ba3b0c598dd1a4fdcbe5",
+            "37f41c26e23c0df31d4f1e08b42d63cf546b1ea1d81a0008a6173473cab74755",
         )
         self.assertEqual(
             apps_cache.fingerprint(
                 {"packages": dict(apps_cache.fixed_application_packages())}
             ),
-            "8ed75e4f2fbb6a9bd22bc0e880b9d3fa9faa489618fb72287239a6fdb1903c84",
+            "54f514de0c84095fef333f6fb77eb5701000ec0156f50651ca3b7690544dc6dd",
         )
 
     def test_aarch64_application_digests_are_complete(self) -> None:
@@ -70,15 +70,15 @@ class ApkRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             apps_cache.fingerprint({"packages": dict(packages)}),
-            "bdd5e76818d0fabc60467bf489483d030e53b81e240aa3235183ae0159d45a38",
+            "208386750f628d8994d1408e2ad08d916af490cead4136ba40d74969db89ddbb",
         )
 
     def test_only_fixed_data_packages_accept_noarch_metadata(self) -> None:
         cache, _, _, _ = reload_apk_modules("aarch64", "hvf")
         noarch_packages = {
-            "ca-certificates-bundle-20260611-r0.apk": (
+            "ca-certificates-bundle-20260909-r0.apk": (
                 "ca-certificates-bundle",
-                "20260611-r0",
+                "20260909-r0",
             ),
             "git-init-template-2.49.1-r0.apk": ("git-init-template", "2.49.1-r0"),
             "ncurses-terminfo-base-6.5_p20250503-r0.apk": (

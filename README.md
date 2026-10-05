@@ -6,9 +6,10 @@ LiteOS 是一个以 Rust `no_std` 实现、面向多架构演进的紧凑型操�
 
 ## 快速开始
 
-准备 `qemu-system-riscv64` 后执行：
+Apple Silicon macOS 安装 Xcode Command Line Tools 与 Homebrew 后执行：
 
 ```bash
+make setup
 make build
 make run
 ```

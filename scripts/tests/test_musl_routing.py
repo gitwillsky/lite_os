@@ -126,7 +126,7 @@ class MuslRoutingTests(unittest.TestCase):
                     RuntimeError,
                     "aarch64-unknown-none hard-float compiler_builtins runtime",
                 ):
-                    module.find_compiler_runtime(Path("/usr/bin/clang"))
+                    module.obtain_compiler_runtime(Path("/usr/bin/clang"))
 
         self.assertNotIn("MAKEFLAGS", run.call_args.kwargs["env"])
         self.assertNotIn("MFLAGS", run.call_args.kwargs["env"])
@@ -153,7 +153,7 @@ class MuslRoutingTests(unittest.TestCase):
             runtime.touch()
             compiler = Path("/tool/riscv64-unknown-elf-gcc")
             with patch.object(module, "run", return_value=str(runtime)) as run:
-                selected = module.find_compiler_runtime(compiler)
+                selected = module.obtain_compiler_runtime(compiler)
 
         self.assertEqual(selected, runtime.resolve())
         self.assertEqual(
@@ -164,10 +164,16 @@ class MuslRoutingTests(unittest.TestCase):
     def test_pinned_aarch64_compiler_runtime_links_elf_machine_183(self) -> None:
         module = reload_verify_musl("aarch64", "hvf")
         compiler = module.find_compiler()
-        compiler_runtime = module.find_compiler_runtime(compiler)
-        _, linker, _, _ = module.find_runtime_toolchain()
+        compiler_runtime = module.obtain_compiler_runtime(compiler)
+        _, linker, archiver, _ = module.find_runtime_toolchain()
         self.assertEqual(compiler.name, "clang")
-        self.assertEqual(compiler_runtime.suffix, ".rlib")
+        self.assertEqual(compiler_runtime.name, "libcompiler-runtime.a")
+        symbols = module.run(
+            [str(archiver.with_name("llvm-nm")), "--defined-only", "--format=just-symbols", str(compiler_runtime)],
+            module.ROOT,
+        ).split()
+        self.assertIn(module.COMPILER_RT_SUPPLEMENT_SYMBOL, symbols)
+        self.assertIn("__muldc3", symbols)
 
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
@@ -196,6 +202,8 @@ class MuslRoutingTests(unittest.TestCase):
                     "-nostdlib",
                     "-Wl,-e,0",
                     "-Wl,-u,__divti3",
+                    # 补充对象依赖 rlib 内的 f128 arithmetic；合并 archive 必须单独闭合。
+                    "-Wl,-u,__multc3",
                     str(empty),
                     str(compiler_runtime),
                     "-o",

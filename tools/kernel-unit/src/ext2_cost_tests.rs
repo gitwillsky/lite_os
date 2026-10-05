@@ -31,6 +31,20 @@ use crate::{
 
 pub(crate) static COST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// 返回 `scripts/workflow.py` 的 `verify_unit` 生成的只读 ext2 fixture 路径。
+///
+/// fixture 由 `create_fs.py` 的唯一 ext2 layout 生成：4K block、JBD2 journal、`/bin` 与跨越
+/// direct block 的 `/bin/init`。测试写入只进入内存 overlay，不修改 fixture。
+///
+/// # Panics
+///
+/// 未设置 `LITEOS_EXT2_FIXTURE` 时 panic；直接 `cargo test` 必须改用 `make verify-unit`。
+pub(crate) fn ext2_fixture_path() -> PathBuf {
+    std::env::var_os("LITEOS_EXT2_FIXTURE")
+        .map(PathBuf::from)
+        .expect("LITEOS_EXT2_FIXTURE is unset; run `make verify-unit` to generate the ext2 fixture")
+}
+
 struct CountingImage {
     image: Mutex<File>,
     overlay: Mutex<BTreeMap<usize, Vec<u8>>>,
@@ -42,9 +56,8 @@ struct CountingImage {
 
 impl CountingImage {
     fn open() -> Arc<Self> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fs.img");
         Arc::new(Self {
-            image: Mutex::new(File::open(path).expect("open repository ext image")),
+            image: Mutex::new(File::open(ext2_fixture_path()).expect("open ext2 fixture image")),
             overlay: Mutex::new(BTreeMap::new()),
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),
@@ -125,7 +138,7 @@ impl BlockDevice for CountingImage {
 
 fn mounted() -> (Arc<CountingImage>, Arc<Ext2FileSystem>) {
     let image = CountingImage::open();
-    let fs = Ext2FileSystem::new(image.clone()).expect("mount repository ext image");
+    let fs = Ext2FileSystem::new(image.clone()).expect("mount ext2 fixture image");
     (image, fs)
 }
 
@@ -184,7 +197,7 @@ fn repeated_getdents_reuses_directory_metadata_block() {
 fn repeated_indirect_mapping_reuses_pointer_metadata_block() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let (image, fs) = mounted();
-    let inode = TestMappedInode::open(fs, &[b"bin", b"busybox"]).unwrap();
+    let inode = TestMappedInode::open(fs, &[b"bin", b"init"]).unwrap();
     inode.map_repeated(12, 1).unwrap();
     image.reset_reads();
     reset_test_allocation_attempts();

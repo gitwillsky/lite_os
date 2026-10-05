@@ -1263,6 +1263,9 @@ def build_audio_service(musl: MuslCachePaths) -> Path:
     )
 
 
+UI_NPM_REGISTRY = "https://registry.npmmirror.com"
+
+
 def build_ui_assets() -> Path:
     """以唯一 lockfile 构建共享 React runtime、desktop 与 app bundles。"""
     npm = shutil.which("npm")
@@ -1286,7 +1289,9 @@ def build_ui_assets() -> Path:
         print(f"LiteUI asset cache hit: {identity[:12]}")
         return entry / "output"
 
-    run([npm, "ci", "--ignore-scripts"], ui)
+    # lockfile 只记录官方 registry URL 与 sha512 integrity；npm 默认把官方 host 替换为
+    # 这里的国内镜像，内容仍由 lockfile integrity 校验，镜像不会成为依赖身份的一部分。
+    run([npm, "ci", "--ignore-scripts", f"--registry={UI_NPM_REGISTRY}"], ui)
     run([npm, "run", "check"], ui)
     run([npm, "run", "build"], ui)
     output = ui / "dist"

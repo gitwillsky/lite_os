@@ -19,7 +19,8 @@
   外发布 readiness，最后一个 backend Arc 析构必须移除 record，禁止 per-tick 扫描全部 descriptor。
 - userspace builder 独占 target-native compiler/linker/compiler runtime 与固定 package/key/cache 输入：
   AArch64 使用 Clang、固定 `rust-lld` 和 hard-float AAPCS64 `aarch64-unknown-none`
-  `compiler_builtins`；softfloat builtins 只属于 kernel，链接进 musl 会让 FP helper return ABI
+  `compiler_builtins`，并合并同版本 LLVM compiler-rt 的 C ABI `__multc3` 为单一 runtime archive；
+  softfloat builtins 只属于 kernel，链接进 musl 会让 FP helper return ABI
   与调用方分裂。RISC-V 使用 GCC 与 `libgcc`。产品 userspace 每个架构只保留一条 runtime。
 - Rust std builder 独占固定 rust-src `std/panic_abort` 与同 revision LLVM libunwind 的 source-list
   build；Cargo 最终链接由 build-std 的 `compiler_builtins` 独占，不能再追加 musl builder 的外部

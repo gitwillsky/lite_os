@@ -66,7 +66,6 @@ impl PlaybackPcm {
             raw::open(
                 path.as_ptr(),
                 raw::O_RDWR | raw::O_NONBLOCK | raw::O_CLOEXEC,
-                0,
             )
         };
         if raw_fd < 0 {

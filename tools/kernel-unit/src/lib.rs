@@ -1,4 +1,4 @@
-#![cfg_attr(test, feature(allocator_api))]
+#![cfg_attr(test, feature(allocator_ext))]
 // Host fixtures load selected production leaves both alone and through their real parent module.
 #![cfg_attr(test, allow(clippy::duplicate_mod))]
 

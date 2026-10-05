@@ -4,6 +4,13 @@
 
 ## 环境
 
+- Apple Silicon macOS 先安装 Xcode Command Line Tools（`xcode-select --install`）与 Homebrew，
+  再执行 `make setup`。`scripts/host_setup.py` 是 host 工具安装的唯一 owner：用 Homebrew 安装
+  `llvm`（Clang、`llvm-ar`、`llvm-ranlib`、`llvm-readelf`）、`e2fsprogs`、`qemu`、`riscv64-elf-gcc`、
+  `openssl@3`、`git-lfs`，PATH 缺少 `node`/`npm` 时安装 `node`；安装 rustup 并按
+  `rust-toolchain.toml` 安装固定 toolchain；按固定 SHA-256 安装 UTM v4.7.5；最后 `git lfs pull`
+  预置音乐。各步骤幂等；已存在非固定版本 UTM 时 fail-stop，不覆盖用户应用。缺少 `llvm` 会让
+  musl 构建以 `Clang, LLVM archive tools, and the pinned Rust rust-lld are required` 失败。
 - Rust 版本、组件和 target 由 `rust-toolchain.toml` 固定；精确 revision 见 [规范基线](../standards-baseline.md)。
 - `ARCH` 默认 `aarch64`，只接受 `aarch64` 与 `riscv64`；它统一选择 kernel target、Linux userspace target、QEMU、musl loader 与 Alpine repository architecture，未知值在 Make 解析期失败。
 - `ACCEL` 默认 `hvf`，只接受 `hvf` 与 `tcg`。`riscv64 + hvf` 在构建前硬失败；RISC-V 必须显式选择 `ACCEL=tcg`，AArch64 的 TCG 诊断路径也必须显式选择，不能从 HVF 静默回退。
@@ -49,8 +56,12 @@
   transport-neutral VirtIO Console adapter 汇合。
 - AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的
   `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
-  `aarch64-unknown-none-softfloat`，两者不得混用。任一 runtime 缺失或歧义都必须在发布 sysroot
-  前失败，musl smoke 必须实际验证 `strtod` 返回与 FP arithmetic。RISC-V 保留 GCC 与其 `libgcc` runtime 路径。
+  `aarch64-unknown-none-softfloat`，两者不得混用。固定 `compiler_builtins` 只以 `extern "Rust"`
+  导出 f128 complex helper，`scripts/verify_musl.py` 因此从 rustc 同版本 LLVM compiler-rt 逐文件
+  校验 `multc3.c` 闭包，编译 C ABI `__multc3` 并与 rlib 合并为唯一 `libcompiler-runtime.a`；
+  toolchain 自身再次导出该符号时构建 fail-stop，要求删除补充。任一 runtime 缺失或歧义都必须在
+  发布 sysroot 前失败，musl smoke 必须实际验证 `strtod` 返回、FP arithmetic 与
+  `long double _Complex` Annex G 重算。RISC-V 保留 GCC 与其 `libgcc` runtime 路径。
 - 标准 Rust userspace 由单一 `user/` Cargo workspace/lockfile 构建；产品应用与
   `scripts/verify_rust_std.py` fixture 都使用固定 rust-src。Cargo 直接生成最终 binary，禁用 bundled
   musl CRT，动态链接项目 musl，并静态链接同 revision LLVM libunwind；禁止 staticlib 后手工二次链接。libunwind 是 panic/backtrace
@@ -62,7 +73,7 @@
   不建立第二条构建路径。每次 check/build 都验证 system icon manifest、generated PUA mapping 与 checked
   TTF SHA-256 一致；bundle cache fingerprint 同时包含 icon manifest 与 TTF。
 - Make 只负责参数校验和稳定入口；`scripts/workflow.py` 是 build、run、verify 的唯一编排 owner。
-  推荐入口只有 `build`、`run`、`run-gui`、`verify-fast`、`verify-runtime` 和 `verify`；其余目标仅用于
+  推荐入口只有 `setup`、`build`、`run`、`run-gui`、`verify-fast`、`verify-runtime` 和 `verify`；其余目标仅用于
   局部诊断或资源准备，均不得再实现独立的依赖链。workflow 按一次 DAG 顺序准备共享产物，禁止递归
   `make` 重复声明 kernel、bootloader、musl 或 rootfs 前置条件。
 - `verify-fast` 覆盖 host/static/unit；`verify-runtime` 只构建一次后串行运行完整 runtime gates；`verify`
@@ -78,6 +89,7 @@
 ## 推荐入口
 
 ```bash
+make setup
 make build
 make run
 make run-gui
@@ -132,6 +144,9 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 
 - `architecture-check`：dependency、owner、interface、文档索引/链接/事实归属与退化模式的纯函数测试。
 - `kernel-unit`：复用 production path 的内存、文件、IPC、socket、codec、数据结构与错误边界测试。
+  ext2 cost/recovery 用例只读取 `verify_unit` 每次经 `create_fs.py` 重新生成的
+  `target/kernel-unit/ext2-fixture.img`（`LITEOS_EXT2_FIXTURE`），写入只进入内存 overlay；不读取产品
+  rootfs 或开发实例，因此 `verify-fast` 无需先构建 rootfs，直接 `cargo test` 会以变量未设置失败。
 - `scheduler-unit`：preallocated ready heap 的 capacity/compaction/fail-stop 与 signal selection/generation 测试。
 - `user/` Cargo workspace：display protocol、compositor session/scanout、LiteUI host/render/input/scroll、
   QuickJS runtime 与 terminal-session 的单元及 codec 测试；LiteUI bundle 用例消费

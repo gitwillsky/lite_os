@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use crate::memory::KERNEL_SPACE;

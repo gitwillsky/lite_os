@@ -54,10 +54,14 @@
 
 ### Rust toolchain
 
-- `nightly-2026-07-12`；rustc commit `be8e82435eb04fbe75ed5286b52735366e160bed`；LLVM `22.1.8`。
-- 来源：[固定 rustc commit](https://github.com/rust-lang/rust/commit/be8e82435eb04fbe75ed5286b52735366e160bed) 与仓库 `rust-toolchain.toml`。
+- `nightly-2026-10-03`；rustc commit `0abfedbc7cd4e725f126913880c95800394f7c37`；LLVM `23.1.1`。
+- 来源：[固定 rustc commit](https://github.com/rust-lang/rust/commit/0abfedbc7cd4e725f126913880c95800394f7c37) 与仓库 `rust-toolchain.toml`。
 - 标准 userspace 的 `std`、`panic_abort` 与静态 LLVM libunwind 都取自该 toolchain 安装的同 revision
   rust-src；不得从 host LLVM、滚动系统 libunwind 或另一 Rust revision 回退。
+- AArch64 musl compiler runtime 的唯一外部补充是 LLVM `llvmorg-23.1.1` compiler-rt
+  `lib/builtins/multc3.c` 及其 include 闭包，逐文件 SHA-256 固定在 `scripts/verify_musl.py`；
+  该 toolchain 的 `compiler_builtins` 只以 `extern "Rust"` 导出 f128 complex helper。
+- 来源：[LLVM compiler-rt builtins（llvmorg-23.1.1）](https://github.com/llvm/llvm-project/tree/llvmorg-23.1.1/compiler-rt/lib/builtins)。
 
 ### smoltcp
 
@@ -148,19 +152,19 @@
   repository policy 精确启用同镜像的 `v3.22/main` 与 `v3.22/community`，不启用 edge/testing。
   固定 bootstrap repository
   固定文件，下载后必须通过固定 SHA-256 校验。AArch64 的
-  `apk-tools-static 2.14.10-r0`、`alpine-keys 2.5-r0`、
-  `ca-certificates-bundle 20260611-r0` SHA-256 依次为
-  `3e22f80dd0272dc487e4ca84b2c6b660ca392cbad970764efe9ef9555b806ac8`、
+  `apk-tools-static 2.14.12-r0`、`alpine-keys 2.5-r0`、
+  `ca-certificates-bundle 20260909-r0` SHA-256 依次为
+  `69f8d3f981440d9f2b69771b2718cc038c50e73cdbbecbc4416430ffc29ed70a`、
   `2e4c85ae16cabeb53b4145006f883bf8e57d454bd3faff14d35ec7d8a0d05b1a`、
-  `ae45c92eba28db3434058980c40930d3653663e5251cb04c9fd49a94ca00c93b`。
+  `2309bfdee4fea4172d2c775e44608b6b204b729732f5a6da97a28c21357ed034`。
 - RISC-V 的同三包 SHA-256 依次为
-  `85419c4d80eceb12af9cc3be178dce3599ef04679c46eee25175b6673c14cd43`、
+  `3b94df19b7d84aee21e6bab7c5689a9627067df44f83b96a8c172aada8013cc2`、
   `ca4835c8907791ab172fc64e53a81ab4ed06ff21c493d2a7fe8f66a80e2ea200`、
-  `537dcb625ede1cb81e751dd92552b2715a35fdd72cdb43a965a055f14900d529`；curl/SQLite/Git
+  `687a1d048b9f8212e9e429831ef0c77e4fa8f5fc3dd261ac4e392dc1a262c21f`；curl/SQLite/Git
   应用闭包也由各架构的固定摘要完整锁定，禁止 latest 或跨架构推导。
 - 本项目从官方 AArch64 repository 固定的闭包中，只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个数据包以 `.PKGINFO arch=noarch` 发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。
 - OpenSSL `3.5.7`；commit `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`；tarball SHA-256 `a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`。
-- 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、[OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)。
+- 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、[OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)；构建优先从阿里云/清华 Gentoo distfiles 镜像获取同一 tarball，官方 release 兜底，均以上述 SHA-256 裁决。
 
 ## 裁决顺序
 

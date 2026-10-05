@@ -34,9 +34,12 @@ OPENSSL_CONFIGURE_TARGET = {
     "riscv64": "linux64-riscv64",
 }[TARGET.arch]
 OPENSSL_VERSION = "3.5.7"
-OPENSSL_URL = (
+# 国内 Gentoo distfiles 镜像优先，官方 GitHub release 兜底；每个来源都必须命中同一 SHA-256。
+OPENSSL_URLS = (
+    f"https://mirrors.aliyun.com/gentoo/distfiles/9d/openssl-{OPENSSL_VERSION}.tar.gz",
+    f"https://mirrors.tuna.tsinghua.edu.cn/gentoo/distfiles/9d/openssl-{OPENSSL_VERSION}.tar.gz",
     "https://github.com/openssl/openssl/releases/download/"
-    f"openssl-{OPENSSL_VERSION}/openssl-{OPENSSL_VERSION}.tar.gz"
+    f"openssl-{OPENSSL_VERSION}/openssl-{OPENSSL_VERSION}.tar.gz",
 )
 OPENSSL_SHA256 = "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
 CA_BUNDLE_VERSION = "2026-05-14"
@@ -59,23 +62,33 @@ class OpenSslPaths:
     fingerprint: str
 
 
-def _download(url: str, destination: Path, expected_sha256: str, label: str) -> None:
+def _download(urls: tuple[str, ...], destination: Path, expected_sha256: str, label: str) -> None:
+    """按顺序尝试固定来源，首个摘要匹配的产物原子发布到 ``destination``。
+
+    Raises:
+        RuntimeError: 全部来源下载失败或摘要不匹配。
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file() and sha256(destination) == expected_sha256:
         return
     destination.unlink(missing_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".download")
+    errors = []
+    for url in urls:
+        temporary.unlink(missing_ok=True)
+        print(f"downloading {label} from {url}")
+        try:
+            urllib.request.urlretrieve(url, temporary)
+        except Exception as error:
+            errors.append(f"{url}: {error}")
+            continue
+        if sha256(temporary) != expected_sha256:
+            errors.append(f"{url}: SHA-256 mismatch")
+            continue
+        temporary.replace(destination)
+        return
     temporary.unlink(missing_ok=True)
-    print(f"downloading {label}")
-    try:
-        urllib.request.urlretrieve(url, temporary)
-    except Exception as error:
-        temporary.unlink(missing_ok=True)
-        raise RuntimeError(f"failed to download {url}: {error}") from error
-    if sha256(temporary) != expected_sha256:
-        temporary.unlink(missing_ok=True)
-        raise RuntimeError(f"{label} SHA-256 mismatch")
-    temporary.replace(destination)
+    raise RuntimeError(f"failed to download {label}:\n" + "\n".join(errors))
 
 
 def _source() -> tuple[Path, str]:
@@ -87,7 +100,7 @@ def _source() -> tuple[Path, str]:
     }
     source_fingerprint = fingerprint(payload)
     archive = WORK / f"openssl-{OPENSSL_VERSION}.tar.gz"
-    _download(OPENSSL_URL, archive, OPENSSL_SHA256, f"OpenSSL {OPENSSL_VERSION}")
+    _download(OPENSSL_URLS, archive, OPENSSL_SHA256, f"OpenSSL {OPENSSL_VERSION}")
     source = WORK / "sources" / source_fingerprint
     if manifest_matches(source, payload, ("Configure", "VERSION.dat")):
         return source, source_fingerprint
@@ -106,7 +119,7 @@ def _source() -> tuple[Path, str]:
 
 def _ca_bundle() -> Path:
     bundle = WORK / f"cacert-{CA_BUNDLE_VERSION}.pem"
-    _download(CA_BUNDLE_URL, bundle, CA_BUNDLE_SHA256, "Mozilla CA bundle")
+    _download((CA_BUNDLE_URL,), bundle, CA_BUNDLE_SHA256, "Mozilla CA bundle")
     return bundle
 
 

@@ -431,7 +431,8 @@ const _: () = assert!(size_of::<SockAddrNl>() == 12);
 const _: () = assert!(DRM_IOCTL_DROP_MASTER == 0x0000_641f);
 
 unsafe extern "C" {
-    pub(crate) fn open(path: *const c_char, flags: c_int, mode: u32) -> c_int;
+    // musl/POSIX `open` 是 variadic；`mode` 只在 `O_CREAT`/`O_TMPFILE` 时读取，当前调用者都不创建文件。
+    pub(crate) fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     pub(crate) fn ioctl(fd: c_int, request: usize, argument: *mut c_void) -> c_int;
     pub(crate) fn mmap(
         address: *mut c_void,

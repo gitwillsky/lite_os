@@ -166,12 +166,16 @@ impl Ext2Inode {
             let keep = ceil_div(size as usize, self.fs.block_size);
             let mut inode = mutation.inode(self)?;
             let mut freed = 0u32;
-            for index in keep..12 {
-                if inode.i_block[index] != 0 {
-                    freed += self.free_tree(inode.i_block[index], 0)?;
-                    inode.i_block[index] = 0;
+            // packed inode 字段不能取引用，先复制 block map 再整体写回。take 先截断到 12 个
+            // direct block；keep 超过 12 时 skip 产生空迭代，不越界。
+            let mut blocks = inode.i_block;
+            for block in blocks.iter_mut().take(12).skip(keep) {
+                if *block != 0 {
+                    freed += self.free_tree(*block, 0)?;
+                    *block = 0;
                 }
             }
+            inode.i_block = blocks;
             let count = self.fs.block_size / 4;
             let roots = [
                 (12, 1, 12),

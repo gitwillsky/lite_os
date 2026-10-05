@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -40,6 +41,17 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 / "target/aarch64-unknown-none-softfloat/release/kernel",
             ),
         )
+
+    def test_ui_lockfile_resolves_only_through_official_registry(self) -> None:
+        # npm 只把官方 host 替换为 UI_NPM_REGISTRY；私有 registry URL 会绕过镜像并在其他 host 上失败。
+        lockfile = json.loads((SCRIPTS.parent / "ui/package-lock.json").read_text())
+        resolved = {
+            entry["resolved"].split("/", 3)[2]
+            for entry in lockfile["packages"].values()
+            if "resolved" in entry
+        }
+
+        self.assertEqual(resolved, {"registry.npmjs.org"})
 
     def test_login_path_exposes_npm_global_commands(self) -> None:
         module = reload_busybox("aarch64", "hvf")

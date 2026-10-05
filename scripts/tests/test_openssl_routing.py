@@ -34,6 +34,29 @@ class OpenSslRoutingTests(unittest.TestCase):
                 self.assertEqual(module.TARGET.arch, arch)
                 self.assertEqual(module.OPENSSL_CONFIGURE_TARGET, expected)
 
+    def test_download_skips_unavailable_and_mismatched_sources(self) -> None:
+        module = reload_openssl("aarch64", "hvf")
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "openssl.tar.gz"
+
+            def download(url: str, path: Path) -> None:
+                if url == module.OPENSSL_URLS[0]:
+                    raise OSError("mirror unavailable")
+                path.write_bytes(b"tampered" if url == module.OPENSSL_URLS[1] else b"verified")
+
+            def digest(path: Path) -> str:
+                return module.OPENSSL_SHA256 if path.read_bytes() == b"verified" else "mismatch"
+
+            with (
+                patch.object(module.urllib.request, "urlretrieve", side_effect=download) as retrieve,
+                patch.object(module, "sha256", side_effect=digest),
+            ):
+                module._download(module.OPENSSL_URLS, destination, module.OPENSSL_SHA256, "OpenSSL")
+            published = destination.read_bytes()
+
+        self.assertEqual([call.args[0] for call in retrieve.call_args_list], list(module.OPENSSL_URLS))
+        self.assertEqual(published, b"verified")
+
     def test_unknown_architecture_is_rejected_before_mapping(self) -> None:
         with patch.dict(
             os.environ,

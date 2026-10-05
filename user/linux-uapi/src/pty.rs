@@ -59,7 +59,6 @@ impl PtySession {
             raw::open(
                 path.as_ptr(),
                 raw::O_RDWR | raw::O_NONBLOCK | raw::O_CLOEXEC,
-                0,
             )
         };
         if master_raw < 0 {
@@ -76,7 +75,7 @@ impl PtySession {
         )?;
         let slave_path = CString::new(format!("/dev/pts/{index}"))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid PTY path"))?;
-        let slave_raw = unsafe { raw::open(slave_path.as_ptr(), raw::O_RDWR | raw::O_CLOEXEC, 0) };
+        let slave_raw = unsafe { raw::open(slave_path.as_ptr(), raw::O_RDWR | raw::O_CLOEXEC) };
         if slave_raw < 0 {
             return Err(io::Error::last_os_error());
         }

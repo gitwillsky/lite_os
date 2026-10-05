@@ -31,37 +31,37 @@ ALPINE_REPOSITORY = (
     f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main/{ALPINE_ARCH}"
 )
 BOOTSTRAP_PACKAGE_NAMES = (
-    "apk-tools-static-2.14.10-r0.apk",
+    "apk-tools-static-2.14.12-r0.apk",
     "alpine-keys-2.5-r0.apk",
-    "ca-certificates-bundle-20260611-r0.apk",
+    "ca-certificates-bundle-20260909-r0.apk",
 )
 _BOOTSTRAP_PACKAGES_BY_ARCH: dict[str, dict[str, str]] = {
     "riscv64": {
         BOOTSTRAP_PACKAGE_NAMES[0]: (
-            "85419c4d80eceb12af9cc3be178dce3599ef04679c46eee25175b6673c14cd43"
+            "3b94df19b7d84aee21e6bab7c5689a9627067df44f83b96a8c172aada8013cc2"
         ),
         BOOTSTRAP_PACKAGE_NAMES[1]: (
             "ca4835c8907791ab172fc64e53a81ab4ed06ff21c493d2a7fe8f66a80e2ea200"
         ),
         BOOTSTRAP_PACKAGE_NAMES[2]: (
-            "537dcb625ede1cb81e751dd92552b2715a35fdd72cdb43a965a055f14900d529"
+            "687a1d048b9f8212e9e429831ef0c77e4fa8f5fc3dd261ac4e392dc1a262c21f"
         ),
     },
     "aarch64": {
         BOOTSTRAP_PACKAGE_NAMES[0]: (
-            "3e22f80dd0272dc487e4ca84b2c6b660ca392cbad970764efe9ef9555b806ac8"
+            "69f8d3f981440d9f2b69771b2718cc038c50e73cdbbecbc4416430ffc29ed70a"
         ),
         BOOTSTRAP_PACKAGE_NAMES[1]: (
             "2e4c85ae16cabeb53b4145006f883bf8e57d454bd3faff14d35ec7d8a0d05b1a"
         ),
         BOOTSTRAP_PACKAGE_NAMES[2]: (
-            "ae45c92eba28db3434058980c40930d3653663e5251cb04c9fd49a94ca00c93b"
+            "2309bfdee4fea4172d2c775e44608b6b204b729732f5a6da97a28c21357ed034"
         ),
     },
 }
 FIXED_NOARCH_PACKAGES = frozenset(
     {
-        "ca-certificates-bundle-20260611-r0.apk",
+        "ca-certificates-bundle-20260909-r0.apk",
         "git-init-template-2.49.1-r0.apk",
         "ncurses-terminfo-base-6.5_p20250503-r0.apk",
     }

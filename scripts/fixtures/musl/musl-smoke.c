@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
+#include <complex.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <poll.h>
 #include <signal.h>
@@ -128,11 +130,19 @@ int main(int argc, char **argv, char **envp)
 	void *allocation;
 	char *number_end;
 	double number;
+	/* volatile 阻止常量折叠：(inf + NaN i) * (1 + 0i) 的 inline 快路径两分量均为 NaN，
+	 * 必须真正调用 compiler runtime `__multc3` 完成 Annex G 重算，结果实部为 +inf。 */
+	volatile long double complex_real = INFINITY;
+	volatile long double complex_imaginary = NAN;
+	volatile long double complex_unit = 1.0L;
+	long double _Complex complex_product;
 
 	if (argc != 1 || !argv || !argv[0] || !envp || envp[0]) return 1;
 	if (sysconf(_SC_PAGESIZE) != 4096 || getpid() <= 0) return 2;
 	number = strtod("1.5", &number_end);
-	if (*number_end != '\0' || number != 1.5 || number + 0.5 != 2.0) {
+	complex_product = CMPLXL(complex_real, complex_imaginary) * CMPLXL(complex_unit, 0.0L);
+	if (*number_end != '\0' || number != 1.5 || number + 0.5 != 2.0
+	    || !isinf(creall(complex_product)) || creall(complex_product) < 0) {
 		write(STDOUT_FILENO, floating_point_failed, sizeof floating_point_failed - 1);
 		return 2;
 	}

@@ -486,9 +486,10 @@ impl TaskControlBlock {
     pub(crate) fn caught_signal_set(&self, candidates: u64) -> u64 {
         let state = self.process.signal_state.lock();
         let mut result = 0;
-        for signal in 1..=64 {
+        // actions 长度为 65 且 0 号不是 signal；skip(1) 恰好覆盖 1..=64。
+        for (signal, &action) in state.actions.iter().enumerate().skip(1) {
             let bit = 1u64 << (signal - 1);
-            if candidates & bit != 0 && !signal_is_ignored(signal, state.actions[signal]) {
+            if candidates & bit != 0 && !signal_is_ignored(signal, action) {
                 result |= bit;
             }
         }

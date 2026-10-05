@@ -149,8 +149,13 @@ impl Display for PlatformInfo {
                 plic.base_addr, plic.size
             )?;
         }
-        for i in 0..self.virtio_count {
-            if let Some(dev) = &self.virtio_devices[i] {
+        for (i, device) in self
+            .virtio_devices
+            .iter()
+            .take(self.virtio_count)
+            .enumerate()
+        {
+            if let Some(dev) = device {
                 writeln!(
                     f,
                     "  VirtIO[{}]: {:#x}-{:#x}, IRQ: {}",

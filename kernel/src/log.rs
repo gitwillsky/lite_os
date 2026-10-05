@@ -251,9 +251,9 @@ impl Logger {
 
     fn is_module_enabled(&self, module: &str) -> bool {
         // Check if module has specific filter
-        for i in 0..self.filter_count {
-            if self.module_filters[i].matches(module) {
-                return self.module_filters[i].enabled;
+        for filter in self.module_filters.iter().take(self.filter_count) {
+            if filter.matches(module) {
+                return filter.enabled;
             }
         }
         // Use default state if no specific filter found

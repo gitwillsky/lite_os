@@ -93,6 +93,11 @@ def target_paths(environment: Mapping[str, str] | None = None) -> dict[str, Path
     }
 
 
+def setup_host(environment: Mapping[str, str] | None = None) -> None:
+    """一次性安装 macOS host 构建、运行与门禁所需的外部工具。"""
+    run(python_script("host_setup.py"), environment=environment)
+
+
 def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     """构建所选架构 kernel，并生成其启动 artifact。"""
     profile = _profile(environment)
@@ -288,8 +293,32 @@ def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory:
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
+def kernel_unit_ext2_fixture(environment: Mapping[str, str] | None = None) -> Path:
+    """用 ``create_fs.py`` 的唯一 ext2 layout 重新生成 kernel-unit 只读测试镜像。
+
+    1. ``/bin/init`` 写入 64 个 4K block 的固定 payload，使 block 12 必经 indirect mapping；
+    2. 镜像携带 create_fs 的 4 MiB JBD2 journal，64 MiB 容量覆盖 1 MiB 单事务写入；
+    3. 测试只把写入放进内存 overlay，fixture 不依赖产品 rootfs 构建或开发实例。
+
+    缺少该 fixture 时 ext2 cost/recovery 测试以 ``LITEOS_EXT2_FIXTURE`` 未设置失败。
+    """
+    directory = ROOT / "target" / "kernel-unit"
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = directory / "ext2-init-payload"
+    payload.write_bytes(bytes(range(256)) * (64 * 4096 // 256))
+    image = directory / "ext2-fixture.img"
+    image.unlink(missing_ok=True)
+    run(
+        [PYTHON, "create_fs.py", "create", "--file", image, "--size", "64", "--init", payload],
+        environment=environment,
+        capture=True,
+    )
+    return image
+
+
 def verify_unit(environment: Mapping[str, str] | None = None) -> None:
     """执行 kernel/architecture/syscall 与 user workspace 单元测试。"""
+    fixture = kernel_unit_ext2_fixture(environment)
     run(
         [
             "cargo",
@@ -303,7 +332,7 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "syscall-abi",
         ],
-        environment=environment,
+        environment=_env_with(environment, LITEOS_EXT2_FIXTURE=str(fixture)),
     )
     assets = run(
         python_script("verify_busybox.py", "--build-ui-assets-only"),
@@ -566,6 +595,7 @@ def clean_busybox(environment: Mapping[str, str] | None = None) -> None:
 def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
     """执行一个公开 workflow scope。"""
     simple = {
+        "setup": setup_host,
         "build-kernel": build_kernel,
         "build-bootloader": build_bootloader,
         "build-musl": build_musl,

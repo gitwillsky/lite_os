@@ -38,7 +38,7 @@ export GDB ADDR2LINE
 WORKFLOW := $(PYTHON) scripts/workflow.py
 
 .PHONY: \
-	build-kernel build-bootloader build-musl build-rootfs build-rust-std \
+	setup build-kernel build-bootloader build-musl build-rootfs build-rust-std \
 	prepare-rootfs reset-rootfs sync-userland prepare-agent-development \
 	run-agent-development build-apk-apps regen-font regen-ui-font regen-icon-font run run-gui \
 	run-gdb clean clean-musl clean-busybox build verify verify-fast \
@@ -49,7 +49,7 @@ WORKFLOW := $(PYTHON) scripts/workflow.py
 	verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std \
 	verify-busybox verify-apk-apps gdb addr2line
 
-build-kernel build-bootloader build-musl build-rootfs build-rust-std \
+setup build-kernel build-bootloader build-musl build-rootfs build-rust-std \
 prepare-rootfs reset-rootfs sync-userland prepare-agent-development \
 run-agent-development build-apk-apps regen-font regen-ui-font regen-icon-font run run-gui \
 run-gdb clean clean-musl clean-busybox build verify verify-fast verify-runtime \
