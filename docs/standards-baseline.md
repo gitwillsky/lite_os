@@ -164,7 +164,9 @@
   应用闭包也由各架构的固定摘要完整锁定，禁止 latest 或跨架构推导。
 - 本项目从官方 AArch64 repository 固定的闭包中，只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个数据包以 `.PKGINFO arch=noarch` 发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。
 - OpenSSL `3.5.7`；commit `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`；tarball SHA-256 `a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`。
-- 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、[OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)；构建优先从阿里云/清华 Gentoo distfiles 镜像获取同一 tarball，官方 release 兜底，均以上述 SHA-256 裁决。
+- 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、
+  [OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)；
+  构建优先从阿里云/清华 Gentoo distfiles 镜像获取同一 tarball，官方 release 兜底，均以上述 SHA-256 裁决。
 
 ## 裁决顺序
 

@@ -309,7 +309,7 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
         ),
         (
             "user/compositor/src/gpu.rs",
-            "const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 1;",
+            "const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 3;",
             "GPU effects must reuse one protocol-bounded target pool",
         ),
         (
@@ -344,7 +344,7 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
         ),
         (
             "user/compositor/src/session.rs",
-            "self.idle_targets.insert(buffer.owner, buffer.pixels)",
+            "self.idle_targets.insert(\n            buffer.owner,\n            buffers::PaintTarget {\n                pixels: buffer.pixels,",
             "retired GPU paint targets must return to the per-owner reuse path",
         ),
         (
