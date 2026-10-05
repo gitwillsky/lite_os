@@ -27,8 +27,11 @@ WORK = ROOT / "target" / "apk-runtime" / TARGET.arch
 ALPINE_BRANCH = "v3.22"
 ALPINE_ARCH = TARGET.alpine_arch
 ALPINE_MIRROR = "https://mirrors.ustc.edu.cn/alpine"
-ALPINE_REPOSITORY = (
-    f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main/{ALPINE_ARCH}"
+# 固定 APK 先走国内镜像；镜像返回 4xx/5xx 时回退官方 CDN。两者内容由同一 SHA-256 裁决，
+# 缺少回退时镜像的瞬时故障会让所有 APK gate 失败。
+ALPINE_PACKAGE_REPOSITORIES = (
+    f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main/{ALPINE_ARCH}",
+    f"https://dl-cdn.alpinelinux.org/alpine/{ALPINE_BRANCH}/main/{ALPINE_ARCH}",
 )
 BOOTSTRAP_PACKAGE_NAMES = (
     "apk-tools-static-2.14.12-r0.apk",
@@ -142,14 +145,23 @@ def download(name: str, expected_sha256: str) -> Path:
     archive.unlink(missing_ok=True)
     temporary = archive.with_suffix(".download")
     temporary.unlink(missing_ok=True)
-    try:
-        urllib.request.urlretrieve(f"{ALPINE_REPOSITORY}/{name}", temporary)
-    except Exception as error:
-        temporary.unlink(missing_ok=True)
-        raise RuntimeError(f"failed to download fixed Alpine package {name}: {error}") from error
-    if sha256(temporary) != expected_sha256:
-        temporary.unlink(missing_ok=True)
-        raise RuntimeError(f"Alpine package SHA-256 mismatch: {name}")
+    errors = []
+    for repository in ALPINE_PACKAGE_REPOSITORIES:
+        try:
+            urllib.request.urlretrieve(f"{repository}/{name}", temporary)
+        except Exception as error:
+            errors.append(f"{repository}: {error}")
+            temporary.unlink(missing_ok=True)
+            continue
+        if sha256(temporary) != expected_sha256:
+            errors.append(f"{repository}: SHA-256 mismatch")
+            temporary.unlink(missing_ok=True)
+            continue
+        break
+    else:
+        raise RuntimeError(
+            f"failed to download fixed Alpine package {name}:\n" + "\n".join(errors)
+        )
     try:
         verify_package_metadata(temporary, name)
     except Exception:

@@ -173,6 +173,7 @@
 - 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、
   [OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)；
   构建优先从阿里云/清华 Gentoo distfiles 镜像获取同一 tarball，官方 release 兜底，均以上述 SHA-256 裁决。
+  固定 APK 先从中科大镜像下载，失败时回退官方 `dl-cdn.alpinelinux.org`，同样以固定 SHA-256 裁决。
 
 ## 裁决顺序
 

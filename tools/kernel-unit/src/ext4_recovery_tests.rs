@@ -366,3 +366,45 @@ fn reclaimed_inode_final_drop_does_not_reclaim_again() {
     );
     assert_eq!(test_mount_allocation_state(&fs), before);
 }
+
+#[test]
+fn torn_uncommitted_transaction_is_discarded_instead_of_failing_mount() {
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    let (image, fs) = mounted();
+    let root = fs.root_inode().unwrap();
+    // 第一个 flush 是 commit record 之前的 descriptor/data barrier。
+    image.snapshot_after_flushes(1);
+    root.create(
+        b"torn-transaction",
+        InodeType::File,
+        CreateMetadata {
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+        },
+    )
+    .unwrap();
+    let crashed = image.crash_clone();
+    {
+        // 模拟 descriptor 已落盘而首个 data slot 仍是旧内容的 torn write。
+        let mut overlay = crashed.overlay.lock().unwrap();
+        let descriptor = overlay
+            .iter()
+            .find(|(_, bytes)| {
+                u32::from_be_bytes(bytes[..4].try_into().unwrap()) == JBD2_MAGIC
+                    && u32::from_be_bytes(bytes[4..8].try_into().unwrap()) == JBD2_DESCRIPTOR_BLOCK
+            })
+            .map(|(block, _)| *block)
+            .expect("descriptor reached the crash snapshot");
+        overlay.insert(descriptor + 1, vec![0; BLOCK_SIZE]);
+    }
+    let recovered =
+        Ext4FileSystem::new(crashed).expect("uncommitted torn transaction must be discarded");
+    assert!(matches!(
+        recovered
+            .root_inode()
+            .unwrap()
+            .find_child(b"torn-transaction"),
+        Err(FileSystemError::NotFound)
+    ));
+}

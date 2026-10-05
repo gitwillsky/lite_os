@@ -45,7 +45,13 @@ MUSL_URLS = (
 )
 MUSL_SHA256 = "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
 LINUX_VERSION = "7.1"
-LINUX_URL = f"https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-{LINUX_VERSION}.tar.xz"
+# 国内 kernel.org 镜像优先，官方 CDN 兜底；全部按 LINUX_SHA256 裁决。缺少回退时官方 CDN 的
+# 瞬时 TLS 故障会让首次构建该架构 sysroot 的 gate 直接失败。
+LINUX_URLS = (
+    f"https://mirrors.tuna.tsinghua.edu.cn/kernel/v7.x/linux-{LINUX_VERSION}.tar.xz",
+    f"https://mirrors.aliyun.com/linux-kernel/v7.x/linux-{LINUX_VERSION}.tar.xz",
+    f"https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-{LINUX_VERSION}.tar.xz",
+)
 LINUX_SHA256 = "691f44797fbe790dc8a321604c927087526ad27b6d649925d60f8eed0a2564a0"
 MAKE_VERSION = "4.4.1"
 MAKE_URL = f"https://mirrors.kernel.org/gnu/make/make-{MAKE_VERSION}.tar.lz"
@@ -92,16 +98,23 @@ if TARGET.arch == "aarch64":
     )
     LINUX_HEADER_ARCH = "arm64"
     ELF_MACHINE = "AArch64"
+    # hard-float AAPCS64；kernel 的 softfloat builtins 链接进 musl 会让 FP helper return ABI 分裂。
+    RUST_BUILTINS_TARGET = "aarch64-unknown-none"
+    COMPILER_RT_TARGET_FLAGS = ("-march=armv8-a",)
 else:
     SMOKE_LINK_ARGUMENTS = (
         *COMMON_SMOKE_LINK_ARGUMENTS,
         "-no-pie",
-        "-Wl,-Ttext-segment=0x10000",
+        "-Wl,--image-base=0x10000",
         "-march=rv64gc",
         "-mabi=lp64d",
     )
     LINUX_HEADER_ARCH = "riscv"
     ELF_MACHINE = "RISC-V"
+    # lp64d medany：代码只含 PC-relative 重定位，可进入 libc.so。Homebrew 只提供裸机
+    # riscv64-elf libgcc（medlow 绝对 HI20/LO12），链接 shared libc 会失败。
+    RUST_BUILTINS_TARGET = "riscv64gc-unknown-none-elf"
+    COMPILER_RT_TARGET_FLAGS = ("-march=rv64gc", "-mabi=lp64d")
 
 
 @dataclass(frozen=True)
@@ -206,11 +219,22 @@ def obtain_linux_source() -> Path:
         archive.unlink(missing_ok=True)
         temporary_archive = archive.with_suffix(".download")
         temporary_archive.unlink(missing_ok=True)
-        print(f"downloading Linux UAPI {LINUX_VERSION}")
-        urllib.request.urlretrieve(LINUX_URL, temporary_archive)
-        if sha256(temporary_archive) != LINUX_SHA256:
-            temporary_archive.unlink(missing_ok=True)
-            raise RuntimeError("Linux release tarball SHA-256 mismatch")
+        errors = []
+        for url in LINUX_URLS:
+            print(f"downloading Linux UAPI {LINUX_VERSION} from {url}")
+            try:
+                urllib.request.urlretrieve(url, temporary_archive)
+            except Exception as error:
+                errors.append(f"{url}: {error}")
+                temporary_archive.unlink(missing_ok=True)
+                continue
+            if sha256(temporary_archive) != LINUX_SHA256:
+                errors.append(f"{url}: SHA-256 mismatch")
+                temporary_archive.unlink(missing_ok=True)
+                continue
+            break
+        else:
+            raise RuntimeError("failed to download Linux release tarball:\n" + "\n".join(errors))
         temporary_archive.replace(archive)
     source = WORK / "linux-sources" / fingerprint(payload)
     if manifest_matches(source, payload, ("Makefile", "include/uapi/linux/vt.h")):
@@ -259,20 +283,8 @@ def obtain_gnu_make(jobs_override: int | None) -> Path:
 
 
 def find_compiler() -> Path:
-    if TARGET.arch == "aarch64":
-        return find_clang()
-    names = (
-        "riscv64-linux-gnu-gcc",
-        "riscv64-unknown-linux-gnu-gcc",
-        "riscv64-unknown-elf-gcc",
-        "riscv64-elf-gcc",
-    )
-    fallback = "/opt/homebrew/bin/riscv64-unknown-elf-gcc"
-    candidates = (*[shutil.which(name) for name in names], fallback)
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            return Path(candidate).resolve()
-    raise RuntimeError(f"an {TARGET.arch} GCC cross compiler is required")
+    """返回两个架构共用的 userspace compiler driver（Clang，按 ``--target`` 选择后端）。"""
+    return find_clang()
 
 
 def find_clang() -> Path:
@@ -315,7 +327,7 @@ def rustc_probe_environment() -> dict[str, str]:
 def obtain_compiler_runtime(compiler: Path) -> Path:
     """返回目标 compiler runtime archive。
 
-    RISC-V 直接使用 GCC ``libgcc``。AArch64 只接受 hard-float AAPCS64 Rust builtins，并按
+    两个架构都使用固定 Rust toolchain 的 bare-metal ``compiler_builtins``，并按
     ``COMPILER_RT_SOURCES`` 补入 C ABI ``__multc3``，合并为单一 archive，使所有 consumer 仍只
     消费一条 runtime path。
 
@@ -328,20 +340,12 @@ def obtain_compiler_runtime(compiler: Path) -> Path:
     Raises:
         RuntimeError: runtime 缺失、补充源码摘要不匹配，或固定 toolchain 已自行导出补充符号。
     """
-    if TARGET.arch == "riscv64":
-        runtime = Path(
-            run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()
-        ).resolve()
-        if not runtime.is_file():
-            raise RuntimeError(f"RISC-V libgcc compiler runtime is missing: {runtime}")
-        return runtime
-
     builtins = pinned_compiler_builtins()
     clang, _, archiver, ranlib = find_runtime_toolchain()
     sources = obtain_compiler_rt_sources()
     flags = (
         f"--target={TARGET.linux_triple}",
-        "-march=armv8-a",
+        *COMPILER_RT_TARGET_FLAGS,
         "-std=c11",
         # 单个 complex 冷路径 helper，固定 O2 与上游 builtins 一致；正确性由 musl smoke 的
         # Annex G 重算用例裁决，不增加 host benchmark。
@@ -354,7 +358,7 @@ def obtain_compiler_runtime(compiler: Path) -> Path:
         "-fvisibility=hidden",
     )
     payload = {
-        "kind": "aarch64-compiler-runtime",
+        "kind": f"{TARGET.arch}-compiler-runtime",
         "recipe_version": 1,
         "compiler_builtins_sha256": sha256(builtins),
         "compiler_rt": {"version": COMPILER_RT_VERSION, "sha256": COMPILER_RT_SOURCES},
@@ -395,7 +399,7 @@ def obtain_compiler_runtime(compiler: Path) -> Path:
 
 
 def pinned_compiler_builtins() -> Path:
-    """定位固定 Rust toolchain 的 hard-float AAPCS64 ``compiler_builtins`` rlib。"""
+    """定位固定 Rust toolchain 中 ``RUST_BUILTINS_TARGET`` 的 ``compiler_builtins`` rlib。"""
     rust_sysroot = Path(
         run(
             ["rustc", "--print", "sysroot"],
@@ -407,13 +411,13 @@ def pinned_compiler_builtins() -> Path:
         sorted(
             (
                 rust_sysroot
-                / "lib/rustlib/aarch64-unknown-none/lib"
+                / f"lib/rustlib/{RUST_BUILTINS_TARGET}/lib"
             ).glob("libcompiler_builtins-*.rlib")
         )
     )
     if len(candidates) != 1 or not candidates[0].is_file():
         raise RuntimeError(
-            "pinned Rust aarch64-unknown-none hard-float compiler_builtins runtime "
+            f"pinned Rust {RUST_BUILTINS_TARGET} compiler_builtins runtime "
             f"is missing or ambiguous under {rust_sysroot}"
         )
     return candidates[0].resolve()
@@ -484,12 +488,9 @@ def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
 
 
 def compiler_identity(compiler: Path) -> dict[str, object]:
-    target_argument = []
-    if TARGET.arch == "aarch64":
-        target_argument = [f"--target={TARGET.linux_triple}"]
     return {
         "path": str(compiler),
-        "target": run([str(compiler), *target_argument, "-dumpmachine"], ROOT).strip(),
+        "target": run([str(compiler), f"--target={TARGET.linux_triple}", "-dumpmachine"], ROOT).strip(),
         "version": run([str(compiler), "--version"], ROOT).splitlines()[0],
     }
 
@@ -510,11 +511,7 @@ def sysroot_payload(compiler: Path) -> dict[str, object]:
         "linux_uapi": {"version": LINUX_VERSION, "archive_sha256": LINUX_SHA256},
         "compiler": compiler_identity(compiler),
         "compiler_runtime": {
-            "kind": (
-                "pinned-rust-compiler-builtins+compiler-rt-multc3"
-                if TARGET.arch == "aarch64"
-                else "gcc-libgcc"
-            ),
+            "kind": "pinned-rust-compiler-builtins+compiler-rt-multc3",
             "path": str(compiler_runtime),
             "sha256": sha256(compiler_runtime),
         },
@@ -672,14 +669,11 @@ def link_smoke(
     generation = generation_directory(WORK / "smoke-generations", smoke_fingerprint)
     generation_output = generation / "musl-smoke"
     compiler_runtime = obtain_compiler_runtime(compiler)
-    compiler_arguments = [str(compiler)]
-    if TARGET.arch == "aarch64":
-        compiler_arguments.extend(
-            [
-                f"--target={TARGET.linux_triple}",
-                f"--ld-path={install / 'toolchain/ld.lld'}",
-            ]
-        )
+    compiler_arguments = [
+        str(compiler),
+        f"--target={TARGET.linux_triple}",
+        f"--ld-path={install / 'toolchain/ld.lld'}",
+    ]
     published = False
     try:
         run(

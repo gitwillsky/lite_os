@@ -191,6 +191,11 @@ impl PlatformInfo {
         const VIRTIO: &str = "virtio_mmio";
         const RTC: &str = "rtc";
         const PLIC: &str = "plic";
+        /// QEMU 11 起 PLIC 节点名为 `interrupt-controller@…`；节点名只用于选择候选，
+        /// 身份由 `compatible` 裁决，因为 hart-local `cpu-intc` 也使用该名称。
+        const INTERRUPT_CONTROLLER: &str = "interrupt-controller";
+        /// Linux `irq-sifive-plic` 匹配的 PLIC compatible。
+        const PLIC_COMPATIBLES: [&str; 2] = ["sifive,plic-1.0.0", "riscv,plic0"];
 
         let mut ans = PlatformInfo {
             dtb: dtb_addr..dtb_addr,
@@ -216,8 +221,9 @@ impl PlatformInfo {
         let mut current_rtc_reg: Option<Range<usize>> = None;
         let mut current_rtc_irq: Option<u32> = None;
 
-        // 用于临时存储当前 PLIC 设备的信息
+        // 当前 PLIC 候选节点的 reg 与 compatible 匹配结果；两者都出现后才发布，与属性顺序无关。
         let mut current_plic_reg: Option<Range<usize>> = None;
+        let mut current_plic_compatible = false;
 
         // SAFETY: firmware passes the physical DTB pointer unchanged in `a1`; early kernel
         // identity mapping covers it, and the parser validates the header and structure bounds.
@@ -259,6 +265,7 @@ impl PlatformInfo {
                         || name.starts_with(VIRTIO)
                         || name.starts_with(RTC)
                         || name.starts_with(PLIC)
+                        || name.starts_with(INTERRUPT_CONTROLLER)
                     {
                         if name.starts_with(VIRTIO) {
                             // SOC 下的 VirtIO 设备
@@ -268,9 +275,9 @@ impl PlatformInfo {
                             // SOC 下的 RTC 设备
                             current_rtc_reg = None;
                             current_rtc_irq = None;
-                        } else if name.starts_with(PLIC) {
-                            // SOC 下的 PLIC 设备
+                        } else if name.starts_with(PLIC) || name.starts_with(INTERRUPT_CONTROLLER) {
                             current_plic_reg = None;
+                            current_plic_compatible = false;
                         }
                         WalkOperation::StepInto
                     } else {
@@ -347,18 +354,15 @@ impl PlatformInfo {
                         }
                     }
                     WalkOperation::StepOver
-                } else if node.starts_with(PLIC) {
-                    // PLIC 设备的 reg 属性
-                    if let Some(reg_range) = reg.next() {
-                        current_plic_reg = Some(reg_range);
-                        // PLIC 不需要 irq 属性，直接创建设备
-                        if let Some(range) = current_plic_reg.as_ref() {
-                            ans.plic_device = Some(PLICDevice {
-                                base_addr: range.start,
-                                size: range.end - range.start,
-                            });
-                            current_plic_reg = None;
-                        }
+                } else if node.starts_with(PLIC) || node.starts_with(INTERRUPT_CONTROLLER) {
+                    current_plic_reg = reg.next();
+                    if let (Some(range), true) =
+                        (current_plic_reg.as_ref(), current_plic_compatible)
+                    {
+                        ans.plic_device = Some(PLICDevice {
+                            base_addr: range.start,
+                            size: range.end - range.start,
+                        });
                     }
                     WalkOperation::StepOver
                 } else {
@@ -412,6 +416,22 @@ impl PlatformInfo {
                             current_rtc_irq = None;
                         }
                     }
+                }
+                WalkOperation::StepOver
+            }
+            DtbObj::Property(Property::Compatible(mut compatibles))
+                if ctx.name().starts_with(PLIC) || ctx.name().starts_with(INTERRUPT_CONTROLLER) =>
+            {
+                current_plic_compatible = compatibles.any(|compatible| {
+                    PLIC_COMPATIBLES
+                        .iter()
+                        .any(|expected| compatible == Str::from(*expected))
+                });
+                if let (Some(range), true) = (current_plic_reg.as_ref(), current_plic_compatible) {
+                    ans.plic_device = Some(PLICDevice {
+                        base_addr: range.start,
+                        size: range.end - range.start,
+                    });
                 }
                 WalkOperation::StepOver
             }

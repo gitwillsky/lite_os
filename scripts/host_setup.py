@@ -3,7 +3,7 @@
 
 本脚本只安装 workflow 已经消费的外部工具，不改变任何构建输入的解析规则：
 1. 校验 macOS/arm64 与 Xcode Command Line Tools；
-2. 用 Homebrew 安装 Clang/LLVM archive 工具、e2fsprogs、QEMU、RISC-V GCC、OpenSSL、
+2. 用 Homebrew 安装 Clang/LLVM archive 工具、e2fsprogs、QEMU、OpenSSL、
    git-lfs，以及缺失时的 Node.js；
 3. 安装 rustup 并按 ``rust-toolchain.toml`` 安装固定 nightly、组件与 target；
 4. 按固定 SHA-256 安装 UTM v4.7.5；
@@ -30,7 +30,7 @@ from utm_runtime import UTM_APP, UTM_INFO, UTM_VERSION
 ROOT = Path(__file__).resolve().parent.parent
 DOWNLOADS = ROOT / "target" / "host-setup"
 # llvm 与 e2fsprogs 为 keg-only；verify_musl/ext4_image 已固定从 /opt/homebrew/opt 回退定位。
-BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "riscv64-elf-gcc", "openssl@3", "git-lfs")
+BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "openssl@3", "git-lfs")
 UTM_DMG_URL = f"https://github.com/utmapp/UTM/releases/download/v{UTM_VERSION}/UTM.dmg"
 UTM_DMG_SHA256 = "a8435c93cfb5f8bbfeea4b134cfad1ac66b67632b75e438c63b1a8ae043bef0e"
 RUSTUP_INIT_URL = "https://static.rust-lang.org/rustup/dist/aarch64-apple-darwin/rustup-init"

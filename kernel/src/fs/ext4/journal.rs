@@ -299,7 +299,9 @@ impl Journal {
     /// 按 journal superblock sequence 扫描并重放唯一已提交未 checkpoint 事务。
     ///
     /// descriptor 或 commit checksum 不符视为事务未提交；已提交事务的 data tag checksum
-    /// 不符则拒绝挂载，避免部分 replay。
+    /// 不符则拒绝挂载，避免部分 replay。未提交事务的 data slot 可能仍是上一事务的 image
+    /// （crash 发生在 descriptor 与 data durable 之间），因此 tag checksum 只在找到有效 commit
+    /// 后裁决，与 Linux `do_one_pass` 只在 PASS_REPLAY 校验 tag 一致。
     pub(super) fn recover(&mut self, fs: &Ext4FileSystem) -> Result<(), FileSystemError> {
         let start = be32(&self.superblock, 28)? as usize;
         let sequence = be32(&self.superblock, 24)?;
@@ -326,6 +328,7 @@ impl Journal {
         let tail = fs.block_size - JBD2_BLOCK_TAIL_SIZE;
         let mut cursor = start;
         let mut replay = Vec::new();
+        let mut corrupt_block = None;
         loop {
             let mut header = zeroed(fs.block_size)?;
             self.journal_read(fs, cursor, &mut header)?;
@@ -353,9 +356,10 @@ impl Journal {
                         }
                         let mut data = zeroed(fs.block_size)?;
                         self.journal_read(fs, cursor, &mut data)?;
-                        if tag_checksum(self.checksum_seed, sequence, &data) != expected {
-                            error!("journal block {cursor} checksum mismatch");
-                            return Err(FileSystemError::InvalidFileSystem);
+                        if corrupt_block.is_none()
+                            && tag_checksum(self.checksum_seed, sequence, &data) != expected
+                        {
+                            corrupt_block = Some(cursor);
                         }
                         if flags & JBD2_FLAG_ESCAPE != 0 {
                             data[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
@@ -373,7 +377,14 @@ impl Journal {
                 JBD2_COMMIT_BLOCK => {
                     let committed = be32(&header, JBD2_COMMIT_CHECKSUM_OFFSET)?
                         == block_checksum(self.checksum_seed, &header, JBD2_COMMIT_CHECKSUM_OFFSET);
-                    return Ok(committed.then_some(replay));
+                    if !committed {
+                        return Ok(None);
+                    }
+                    if let Some(cursor) = corrupt_block {
+                        error!("journal block {cursor} checksum mismatch");
+                        return Err(FileSystemError::InvalidFileSystem);
+                    }
+                    return Ok(Some(replay));
                 }
                 _ => return Ok(None),
             }

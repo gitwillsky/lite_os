@@ -6,7 +6,7 @@
 
 - Apple Silicon macOS 先安装 Xcode Command Line Tools（`xcode-select --install`）与 Homebrew，
   再执行 `make setup`。`scripts/host_setup.py` 是 host 工具安装的唯一 owner：用 Homebrew 安装
-  `llvm`（Clang、`llvm-ar`、`llvm-ranlib`、`llvm-readelf`）、`e2fsprogs`、`qemu`、`riscv64-elf-gcc`、
+  `llvm`（Clang、`llvm-ar`、`llvm-ranlib`、`llvm-readelf`）、`e2fsprogs`、`qemu`、
   `openssl@3`、`git-lfs`，PATH 缺少 `node`/`npm` 时安装 `node`；安装 rustup 并按
   `rust-toolchain.toml` 安装固定 toolchain；按固定 SHA-256 安装 UTM v4.7.5；最后 `git lfs pull`
   预置音乐。各步骤幂等；已存在非固定版本 UTM 时 fail-stop，不覆盖用户应用。缺少 `llvm` 会让
@@ -54,14 +54,16 @@
   结束后精确恢复原配置与 inode。`run`/`run-gdb` 只保留无窗口 QEMU/MMIO 拓扑作为非图形验证与调试
   入口，不是第二个 GUI 产品实现；两条设备 transport 在同一个
   transport-neutral VirtIO Console adapter 汇合。
-- AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的
-  `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
-  `aarch64-unknown-none-softfloat`，两者不得混用。固定 `compiler_builtins` 只以 `extern "Rust"`
+- userspace compiler owner 是含目标 backend 的 Clang driver、固定 Rust toolchain 的 `rust-lld` 与
+  固定 bare-metal `compiler_builtins`：AArch64 为 hard-float AAPCS64 `aarch64-unknown-none`（kernel
+  独立使用 `aarch64-unknown-none-softfloat`，两者不得混用），RISC-V 为 lp64d medany
+  `riscv64gc-unknown-none-elf`。固定 `compiler_builtins` 只以 `extern "Rust"`
   导出 f128 complex helper，`scripts/verify_musl.py` 因此从 rustc 同版本 LLVM compiler-rt 逐文件
   校验 `multc3.c` 闭包，编译 C ABI `__multc3` 并与 rlib 合并为唯一 `libcompiler-runtime.a`；
   toolchain 自身再次导出该符号时构建 fail-stop，要求删除补充。任一 runtime 缺失或歧义都必须在
   发布 sysroot 前失败，musl smoke 必须实际验证 `strtod` 返回、FP arithmetic 与
-  `long double _Complex` Annex G 重算。RISC-V 保留 GCC 与其 `libgcc` runtime 路径。
+  `long double _Complex` Annex G 重算。Homebrew 裸机 `libgcc` 是 medlow 非 PIC 代码，不能进入
+  `libc.so`，因此不作为任一架构的 userspace runtime。
 - 标准 Rust userspace 由单一 `user/` Cargo workspace/lockfile 构建；产品应用与
   `scripts/verify_rust_std.py` fixture 都使用固定 rust-src。Cargo 直接生成最终 binary，禁用 bundled
   musl CRT，动态链接项目 musl，并静态链接同 revision LLVM libunwind；禁止 staticlib 后手工二次链接。libunwind 是 panic/backtrace

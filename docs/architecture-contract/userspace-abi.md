@@ -18,10 +18,11 @@
   `TimerFdBackend` OFD seam 消费 counter/readiness，不反向依赖 task；deadline 到期在 timer lock
   外发布 readiness，最后一个 backend Arc 析构必须移除 record，禁止 per-tick 扫描全部 descriptor。
 - userspace builder 独占 target-native compiler/linker/compiler runtime 与固定 package/key/cache 输入：
-  AArch64 使用 Clang、固定 `rust-lld` 和 hard-float AAPCS64 `aarch64-unknown-none`
-  `compiler_builtins`，并合并同版本 LLVM compiler-rt 的 C ABI `__multc3` 为单一 runtime archive；
-  softfloat builtins 只属于 kernel，链接进 musl 会让 FP helper return ABI
-  与调用方分裂。RISC-V 使用 GCC 与 `libgcc`。产品 userspace 每个架构只保留一条 runtime。
+  两个架构都使用 Clang、固定 `rust-lld` 与固定 Rust bare-metal `compiler_builtins`（AArch64 为
+  hard-float AAPCS64 `aarch64-unknown-none`，RISC-V 为 lp64d medany `riscv64gc-unknown-none-elf`），
+  并合并同版本 LLVM compiler-rt 的 C ABI `__multc3` 为单一 runtime archive；softfloat builtins 只属于
+  kernel，链接进 musl 会让 FP helper return ABI 与调用方分裂。裸机 `libgcc` 是 medlow 非 PIC
+  代码，不能进入 `libc.so`。产品 userspace 每个架构只保留一条 runtime。
 - Rust std builder 独占固定 rust-src `std/panic_abort` 与同 revision LLVM libunwind 的 source-list
   build；Cargo 最终链接由 build-std 的 `compiler_builtins` 独占，不能再追加 musl builder 的外部
   compiler runtime。最终 ELF 必须动态依赖唯一 musl `libc.so`，libunwind 只允许静态进入 consumer。

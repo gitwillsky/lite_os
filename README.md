@@ -19,7 +19,7 @@ React 图形桌面。通用 kernel 只通过编译期静态 `arch` 与 `platform
 然后在仓库根目录执行：
 
 ```bash
-make setup     # 安装 LLVM、QEMU、e2fsprogs、RISC-V GCC、rustup 固定 toolchain、UTM 与 Git LFS 资产
+make setup     # 安装 LLVM、QEMU、e2fsprogs、rustup 固定 toolchain、UTM 与 Git LFS 资产
 make build     # 构建 kernel、musl、BusyBox、OpenSSL、图形用户态与 rootfs 基线
 make run-gui   # 在 UTM 窗口中启动图形桌面
 ```
@@ -118,7 +118,8 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 
 ### 待处理
 
-- **`make verify` 尚未在新 toolchain 下完整通过**，runtime gate 与 RISC-V 次级门禁尚未执行。
+- `make verify` 中除 UI 交互门禁外均已通过（含 RISC-V 次级门禁）。`verify_audio` 依赖固定屏幕坐标点击
+  Command Center/System Center，Dock 与布局调整后不稳定；`verify_frame_timing` 尚未执行。重心回到 UI 前先暂缓。
 - 当前重心不在 UI：桌面全局快捷键表与命令中心启动面板的 bundle 测试已移除，后续回到 UI 时需按当时的交互设计重建。
 - architecture-check 仍有 1000 行 review 提示（非失败）：`compositor/src/gpu.rs`、`gpu/paint.rs`、
   `display-proto/src/paint.rs`、`lite-runtime/src/renderer/gpu_paint.rs`，继续扩展前应先审视其 owner/interface 拆分。
