@@ -34,9 +34,15 @@ const _: () = {
     assert!(KERNEL_STACK_CONTEXT_OFFSET + size_of::<UserContext>() <= KERNEL_STACK_CONTEXT_RESERVE);
 };
 
-/// @description 判断 UserContext 是否由 AArch64 TTBR1 kernel-stack window 保活。
-/// @param address context virtual address。
-/// @return 地址位于 kernel stack window 时为 true。
+/// 判断 UserContext 是否由 AArch64 TTBR1 kernel-stack window 保活。
+///
+/// # Parameters
+///
+/// - `address`: context virtual address。
+///
+/// # Returns
+///
+/// 地址位于 kernel stack window 时为 true。
 pub(crate) fn is_kernel_stack_user_context(address: usize) -> bool {
     (super::mmu::KERNEL_STACK_REGION_START..super::mmu::KERNEL_STACK_REGION_TOP).contains(&address)
 }

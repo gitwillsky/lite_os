@@ -22,49 +22,65 @@ use super::clone_errno::{
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_ARG_STRING_BYTES: usize = 32 * 4096;
 
-/// @description 按 Linux `exit` 语义终止 calling Thread。
+/// 按 Linux `exit` 语义终止 calling Thread。
 ///
-/// @param exit_code 用户态退出状态。
-/// @return 此函数不返回。
+/// # Parameters
+///
+/// - `exit_code`: 用户态退出状态。
+///
+/// # Returns
+///
+/// 此函数不返回。
 pub(crate) fn sys_exit(exit_code: i32) -> ! {
     exit_current_thread(exit_code)
 }
 
-/// @description 按 Linux `exit_group` 语义终止 calling Thread 所属 Process。
+/// 按 Linux `exit_group` 语义终止 calling Thread 所属 Process。
 ///
-/// @param exit_code 用户态退出状态，kernel 只保留低 8 bit。
-/// @return 此函数不返回。
+/// # Parameters
+///
+/// - `exit_code`: 用户态退出状态，kernel 只保留低 8 bit。
+///
+/// # Returns
+///
+/// 此函数不返回。
 pub(crate) fn sys_exit_group(exit_code: i32) -> ! {
     exit_current_group(exit_code)
 }
 
-/// @description 返回当前进程标识。
+/// 返回当前进程标识。
 ///
-/// @return 当前任务的 PID。
+/// # Returns
+///
+/// 当前任务的 PID。
 pub(crate) fn sys_get_pid() -> isize {
     current_task()
         .expect("getpid requires a current task")
         .tgid() as isize
 }
 
-/// @description 返回当前进程的父进程标识。
+/// 返回当前进程的父进程标识。
 ///
-/// @return process graph 中的 parent TGID；init 返回零。
+/// # Returns
+///
+/// process graph 中的 parent TGID；init 返回零。
 pub(crate) fn sys_get_ppid() -> isize {
     let task = current_task().expect("getppid requires a current task");
     parent_pid(task.tgid()) as isize
 }
 
-/// @description 返回当前线程标识；单线程模型中与 PID 相同。
+/// 返回当前线程标识；单线程模型中与 PID 相同。
 ///
-/// @return 当前任务的 TID。
+/// # Returns
+///
+/// 当前任务的 TID。
 pub(crate) fn sys_get_tid() -> isize {
     current_task()
         .expect("gettid requires a current task")
         .tid() as isize
 }
 
-fn process_group_error(error: ProcessGroupError) -> isize {
+pub(super) fn process_group_error(error: ProcessGroupError) -> isize {
     match error {
         ProcessGroupError::NotFound => -errno::ESRCH,
         ProcessGroupError::Permission => -errno::EPERM,
@@ -80,46 +96,68 @@ fn set_process_group_error(error: SetProcessGroupError) -> isize {
     }
 }
 
-/// @description 修改 caller 或其直接 child 的 process group membership。
+/// 修改 caller 或其直接 child 的 process group membership。
 ///
-/// @param pid 零表示 caller，否则为 direct child TGID。
-/// @param pgid 零表示目标 TGID，否则为同 session process group。
-/// @return 成功返回零；目标/权限错误返回负 errno。
+/// # Parameters
+///
+/// - `pid`: 零表示 caller，否则为 direct child TGID。
+/// - `pgid`: 零表示目标 TGID，否则为同 session process group。
+///
+/// # Returns
+///
+/// 成功返回零；目标/权限错误返回负 errno。
 pub(crate) fn sys_setpgid(pid: usize, pgid: usize) -> isize {
     set_process_group(pid, pgid).map_or_else(set_process_group_error, |()| 0)
 }
 
-/// @description 查询 live/zombie Process 的 process group ID。
+/// 查询 live/zombie Process 的 process group ID。
 ///
-/// @param pid 零表示 caller。
-/// @return PGID 或负 errno。
+/// # Parameters
+///
+/// - `pid`: 零表示 caller。
+///
+/// # Returns
+///
+/// PGID 或负 errno。
 pub(crate) fn sys_getpgid(pid: usize) -> isize {
     process_group(pid).map_or_else(process_group_error, |value| value as isize)
 }
 
-/// @description 查询 live/zombie Process 的 session ID。
+/// 查询 live/zombie Process 的 session ID。
 ///
-/// @param pid 零表示 caller。
-/// @return SID 或负 errno。
+/// # Parameters
+///
+/// - `pid`: 零表示 caller。
+///
+/// # Returns
+///
+/// SID 或负 errno。
 pub(crate) fn sys_getsid(pid: usize) -> isize {
     session_id(pid).map_or_else(process_group_error, |value| value as isize)
 }
 
-/// @description 创建以 caller TGID 命名的新 session 与 process group。
+/// 创建以 caller TGID 命名的新 session 与 process group。
 ///
-/// @return 新 SID；caller 已是 process-group leader 时返回 `EPERM`。
+/// # Returns
+///
+/// 新 SID；caller 已是 process-group leader 时返回 `EPERM`。
 pub(crate) fn sys_setsid() -> isize {
     create_session().map_or_else(process_group_error, |value| value as isize)
 }
 
-/// @description 实现 fork、vfork 与 pthread-shaped Linux/riscv64 clone。
+/// 实现 fork、vfork 与 pthread-shaped Linux 64-bit clone。
 ///
-/// @param flags 当前必须精确为 `SIGCHLD`。
-/// @param stack fork 必须为零；vfork 可提供 aligned child SP；pthread clone 必须非零。
-/// @param parent_tid fork flags 未启用对应语义，按 Linux 规则忽略。
-/// @param tls fork flags 未启用对应语义，按 Linux 规则忽略。
-/// @param child_tid fork flags 未启用对应语义，按 Linux 规则忽略。
-/// @return parent 获得 child PID，child 获得零；失败返回负 errno。
+/// # Parameters
+///
+/// - `flags`: 当前必须精确为 `SIGCHLD`。
+/// - `stack`: fork 必须为零；vfork 可提供 aligned child SP；pthread clone 必须非零。
+/// - `parent_tid`: fork flags 未启用对应语义，按 Linux 规则忽略。
+/// - `tls`: fork flags 未启用对应语义，按 Linux 规则忽略。
+/// - `child_tid`: fork flags 未启用对应语义，按 Linux 规则忽略。
+///
+/// # Returns
+///
+/// parent 获得 child PID，child 获得零；失败返回负 errno。
 pub(crate) fn sys_clone(
     flags: usize,
     stack: usize,
@@ -191,21 +229,31 @@ pub(crate) fn sys_clone(
     }
 }
 
-/// @description 设置 calling Thread 的 clear-child-tid 地址。
+/// 设置 calling Thread 的 clear-child-tid 地址。
 ///
-/// @param address 零表示清除，否则 thread exit 时写零并 futex wake。
-/// @return calling TID。
+/// # Parameters
+///
+/// - `address`: 零表示清除，否则 thread exit 时写零并 futex wake。
+///
+/// # Returns
+///
+/// calling TID。
 pub(crate) fn sys_set_tid_address(address: usize) -> isize {
     current_task()
         .expect("set_tid_address requires current task")
         .set_clear_child_tid(address) as isize
 }
 
-/// @description 注册 calling Thread 的 Linux robust-list head。
+/// 注册 calling Thread 的 Linux robust-list head。
 ///
-/// @param head 用户 robust_list_head 地址；零且 length 正确时注销。
-/// @param length RV64 必须为 24 bytes。
-/// @return 成功返回零，形状错误返回 `EINVAL`。
+/// # Parameters
+///
+/// - `head`: 用户 robust_list_head 地址；零且 length 正确时注销。
+/// - `length`: LP64 必须为 24 bytes。
+///
+/// # Returns
+///
+/// 成功返回零，形状错误返回 `EINVAL`。
 pub(crate) fn sys_set_robust_list(head: usize, length: usize) -> isize {
     current_task()
         .expect("set_robust_list requires current task")
@@ -213,13 +261,18 @@ pub(crate) fn sys_set_robust_list(head: usize, length: usize) -> isize {
         .map_or(-errno::EINVAL, |()| 0)
 }
 
-/// @description 等待并消费直接 child 的最小 exit record。
+/// 等待并消费直接 child 的最小 exit record。
 ///
-/// @param pid `-1` 表示任一 child，正数表示指定 child。
-/// @param status 可为空；非空时写入 Linux wait status word。
-/// @param options 当前接受 `WNOHANG/WUNTRACED/WCONTINUED` 的任意组合。
-/// @param rusage 当前必须为空，避免返回未实现的资源统计。
-/// @return child PID、WNOHANG 的零，或负 Linux errno。
+/// # Parameters
+///
+/// - `pid`: `-1` 表示任一 child，正数表示指定 child。
+/// - `status`: 可为空；非空时写入 Linux wait status word。
+/// - `options`: 当前接受 `WNOHANG/WUNTRACED/WCONTINUED` 的任意组合。
+/// - `rusage`: 当前必须为空，避免返回未实现的资源统计。
+///
+/// # Returns
+///
+/// child PID、WNOHANG 的零，或负 Linux errno。
 pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *mut u8) -> isize {
     const WNOHANG: usize = 1;
     const WUNTRACED: usize = 2;
@@ -254,12 +307,17 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
     record.pid as isize
 }
 
-/// @description 用新的 RV64 ET_EXEC 或动态 PIE 映像、参数和环境替换当前进程。
+/// 用新的 native ET_EXEC 或动态 PIE 映像、参数和环境替换当前进程。
 ///
-/// @param path NUL 结尾的可执行文件路径字节。
-/// @param argv NUL 结尾的参数指针数组。
-/// @param envp NUL 结尾的环境指针数组。
-/// @return 新上下文准备完成时返回零，失败返回负 errno。
+/// # Parameters
+///
+/// - `path`: NUL 结尾的可执行文件路径字节。
+/// - `argv`: NUL 结尾的参数指针数组。
+/// - `envp`: NUL 结尾的环境指针数组。
+///
+/// # Returns
+///
+/// 新上下文准备完成时返回零，失败返回负 errno。
 pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;

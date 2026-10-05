@@ -31,7 +31,7 @@ struct DamageCommand {
     live: bool,
 }
 
-/// @description controlq 内无分配保存、批量发布并回收一次 DIRTYFB transaction。
+/// controlq 内无分配保存、批量发布并回收一次 DIRTYFB transaction。
 pub(super) struct DamageTransition {
     rectangles: [DisplayRect; MAX_DAMAGE_RECTS],
     count: usize,
@@ -46,8 +46,11 @@ pub(super) struct DamageTransition {
 }
 
 impl DamageTransition {
-    /// @description 构造尚未承载 active damage operation 的固定 scratch。
-    /// @return clip、batch 与 fence cursor 全部为空的 state。
+    /// 构造尚未承载 active damage operation 的固定 scratch。
+    ///
+    /// # Returns
+    ///
+    /// clip、batch 与 fence cursor 全部为空的 state。
     pub(super) fn try_new() -> Option<Self> {
         let mut commands = Vec::new();
         commands.try_reserve_exact(DAMAGE_BATCH_CAPACITY).ok()?;
@@ -82,9 +85,12 @@ impl DamageTransition {
         })
     }
 
-    /// @description 以已验证的 fixed clip copy 开始一次 damage operation。
-    /// @param rectangles 不再访问 userspace 的完整固定副本。
-    /// @param count 有效 prefix，必须位于 1..=MAX_DAMAGE_RECTS。
+    /// 以已验证的 fixed clip copy 开始一次 damage operation。
+    ///
+    /// # Parameters
+    ///
+    /// - `rectangles`: 不再访问 userspace 的完整固定副本。
+    /// - `count`: 有效 prefix，必须位于 1..=MAX_DAMAGE_RECTS。
     pub(super) fn begin(&mut self, rectangles: [DisplayRect; MAX_DAMAGE_RECTS], count: usize) {
         assert!(
             (1..=MAX_DAMAGE_RECTS).contains(&count),
@@ -114,14 +120,23 @@ impl DamageTransition {
         self.completed = 0;
     }
 
-    /// @description 向同一 avail publication 批量加入最多 15 个相互独立的 TRANSFER。
-    /// @param queue 当前无其他 pending command 的 controlq。
-    /// @param next_fence adapter 唯一的 command fence allocator。
-    /// @param operation_fence 已由 CREATE/UNREF 建立的 operation fence；首批可为空。
-    /// @param mode target framebuffer 的 linear mode。
-    /// @param resource_id 所有 transfer 共同更新的 resident resource。
-    /// @return 整个 DIRTYFB transaction 的稳定 operation fence。
-    /// @errors fence 空间耗尽或 request 编码失败返回 Device/InvalidRectangle。
+    /// 向同一 avail publication 批量加入最多 15 个相互独立的 TRANSFER。
+    ///
+    /// # Parameters
+    ///
+    /// - `queue`: 当前无其他 pending command 的 controlq。
+    /// - `next_fence`: adapter 唯一的 command fence allocator。
+    /// - `operation_fence`: 已由 CREATE/UNREF 建立的 operation fence；首批可为空。
+    /// - `mode`: target framebuffer 的 linear mode。
+    /// - `resource_id`: 所有 transfer 共同更新的 resident resource。
+    ///
+    /// # Returns
+    ///
+    /// 整个 DIRTYFB transaction 的稳定 operation fence。
+    ///
+    /// # Errors
+    ///
+    /// fence 空间耗尽或 request 编码失败返回 Device/InvalidRectangle。
     pub(super) fn publish_next(
         &mut self,
         queue: &mut VirtQueue,
@@ -192,11 +207,20 @@ impl DamageTransition {
         Ok(self.operation_fence)
     }
 
-    /// @description 验证并回收一个可乱序到达的 batch completion。
-    /// @param head used ring 返回、尚未由 VirtQueue 回收的 descriptor head。
-    /// @param length device 声明写入的 response bytes，必须精确覆盖 control header。
-    /// @return 当前 batch 全部完成时为 true。
-    /// @errors head、response type 或 fence 不匹配返回 Device。
+    /// 验证并回收一个可乱序到达的 batch completion。
+    ///
+    /// # Parameters
+    ///
+    /// - `head`: used ring 返回、尚未由 VirtQueue 回收的 descriptor head。
+    /// - `length`: device 声明写入的 response bytes，必须精确覆盖 control header。
+    ///
+    /// # Returns
+    ///
+    /// 当前 batch 全部完成时为 true。
+    ///
+    /// # Errors
+    ///
+    /// head、response type 或 fence 不匹配返回 Device。
     pub(super) fn complete(&mut self, head: u16, length: usize) -> Result<bool, DisplayError> {
         if length != RESPONSE_SIZE {
             return Err(DisplayError::Device);
@@ -217,38 +241,50 @@ impl DamageTransition {
         Ok(self.completed == self.batch_count)
     }
 
-    /// @description 判断 controlq 当前是否由 damage batch 独占 pending descriptors。
-    /// @return 至少一只 TRANSFER command 尚在 used-ring completion 前时返回 true。
+    /// 判断 controlq 当前是否由 damage batch 独占 pending descriptors。
+    ///
+    /// # Returns
+    ///
+    /// 至少一只 TRANSFER command 尚在 used-ring completion 前时返回 true。
     pub(super) fn batch_active(&self) -> bool {
         self.batch_count != 0
     }
 
-    /// @description 结束已全部回收的 batch，使下一批或最终 FLUSH 可发布。
+    /// 结束已全部回收的 batch，使下一批或最终 FLUSH 可发布。
     pub(super) fn finish_batch(&mut self) {
         assert_eq!(self.completed, self.batch_count);
         self.batch_count = 0;
         self.completed = 0;
     }
 
-    /// @description 判断 fixed clip prefix 是否仍有尚未发布的 TRANSFER。
-    /// @return next cursor 尚未到达有效 clip count 时返回 true。
+    /// 判断 fixed clip prefix 是否仍有尚未发布的 TRANSFER。
+    ///
+    /// # Returns
+    ///
+    /// next cursor 尚未到达有效 clip count 时返回 true。
     pub(super) fn has_remaining(&self) -> bool {
         self.next < self.count
     }
 
-    /// @description 返回覆盖全部 transfer clip 的单一最终 flush rectangle。
-    /// @return begin 时由全部已验证 clip 计算出的最小 bounding rectangle。
+    /// 返回覆盖全部 transfer clip 的单一最终 flush rectangle。
+    ///
+    /// # Returns
+    ///
+    /// begin 时由全部已验证 clip 计算出的最小 bounding rectangle。
     pub(super) fn flush_rectangle(&self) -> DisplayRect {
         self.flush
     }
 
-    /// @description 返回首批 command 或更早 CREATE/UNREF 建立的 operation fence。
-    /// @return 整个 DIRTYFB transaction 对 DRM 暴露的稳定 fence。
+    /// 返回首批 command 或更早 CREATE/UNREF 建立的 operation fence。
+    ///
+    /// # Returns
+    ///
+    /// 整个 DIRTYFB transaction 对 DRM 暴露的稳定 fence。
     pub(super) fn operation_fence(&self) -> u64 {
         self.operation_fence
     }
 
-    /// @description 取消尚未进入 avail ring 的 damage state。
+    /// 取消尚未进入 avail ring 的 damage state。
     pub(super) fn cancel(&mut self) {
         assert_eq!(self.batch_count, 0);
         self.count = 0;
@@ -258,13 +294,22 @@ impl DamageTransition {
 }
 
 impl VirtIOGpuDevice {
-    /// @description 验证 damage、预留两槽 resource，并提交首个 batch/创建 command。
-    /// @param identity DRM framebuffer 的全局单调 identity。
-    /// @param mode target framebuffer 的 canonical linear mode。
-    /// @param backing target SG lifetime owner。
-    /// @param rectangles 1..=32 个非空、位于 mode 内的 rectangle。
-    /// @return 整个 DIRTYFB transaction 的稳定 operation fence。
-    /// @errors identity/backing、rectangle、已有 operation 或 publication failure。
+    /// 验证 damage、预留两槽 resource，并提交首个 batch/创建 command。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity。
+    /// - `mode`: target framebuffer 的 canonical linear mode。
+    /// - `backing`: target SG lifetime owner。
+    /// - `rectangles`: 1..=32 个非空、位于 mode 内的 rectangle。
+    ///
+    /// # Returns
+    ///
+    /// 整个 DIRTYFB transaction 的稳定 operation fence。
+    ///
+    /// # Errors
+    ///
+    /// identity/backing、rectangle、已有 operation 或 publication failure。
     pub(super) fn submit_resident_damage(
         &self,
         identity: u64,

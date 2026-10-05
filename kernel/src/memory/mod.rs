@@ -41,7 +41,7 @@ pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::{
     DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexKey,
     MappingResourceLimits, MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome,
-    UserAccessError, UserFaultLimits,
+    SegmentationCause, UserAccessError, UserFaultLimits,
 };
 pub(crate) use permissions::MapPermission;
 pub(crate) use shared_file::{
@@ -82,10 +82,11 @@ pub(crate) fn signal_trampoline_entry() -> usize {
 // hardirq/kernel-SSIP paths must never traverse the page table, or same-CPU reentry will deadlock.
 pub(crate) static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 
-/// @description 初始化构造动态 logical CPU topology 所需的 kernel allocator。
+/// 初始化构造动态 logical CPU topology 所需的 kernel allocator。
 ///
-/// @return 无返回值。
-/// @errors allocator 重复初始化或内存布局损坏时 fail-stop。
+/// # Errors
+///
+/// allocator 重复初始化或内存布局损坏时 fail-stop。
 pub(crate) fn init_allocator() {
     heap_allocator::init();
 }
@@ -117,7 +118,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         .expect("Failed to map kernel trampoline");
 
     for region in platform::kernel_mmio_regions() {
-        debug!("[init_kernel_space] platform MMIO: {region:#x?}");
+        debug!("platform MMIO: {region:#x?}");
         let virtual_range = crate::arch::mmu::physical_range_to_virtual(region);
         memory_set
             .push(
@@ -136,10 +137,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel text section
     let stext_addr = stext as *const () as usize;
     let etext_addr = etext as *const () as usize;
-    debug!(
-        "[init_kernel_space] .text section: {:#x} - {:#x}",
-        stext_addr, etext_addr
-    );
+    debug!(".text section: {:#x} - {:#x}", stext_addr, etext_addr);
     memory_set
         .push(
             MapArea::new(
@@ -156,10 +154,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel read only data
     let srodata_addr = srodata as *const () as usize;
     let erodata_addr = erodata as *const () as usize;
-    debug!(
-        "[init_kernel_space] .rodata section: {:#x} - {:#x}",
-        srodata_addr, erodata_addr
-    );
+    debug!(".rodata section: {:#x} - {:#x}", srodata_addr, erodata_addr);
     memory_set
         .push(
             MapArea::new(
@@ -176,10 +171,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel data
     let sdata_addr = sdata as *const () as usize;
     let edata_addr = edata as *const () as usize;
-    debug!(
-        "[init_kernel_space] .data section: {:#x} - {:#x}",
-        sdata_addr, edata_addr
-    );
+    debug!(".data section: {:#x} - {:#x}", sdata_addr, edata_addr);
     memory_set
         .push(
             MapArea::new(
@@ -196,10 +188,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel bss section
     let sbss_addr = sbss as *const () as usize;
     let ebss_addr = ebss as *const () as usize;
-    debug!(
-        "[init_kernel_space] .bss section: {:#x} - {:#x}",
-        sbss_addr, ebss_addr
-    );
+    debug!(".bss section: {:#x} - {:#x}", sbss_addr, ebss_addr);
     memory_set
         .push(
             MapArea::new(
@@ -219,7 +208,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     let boot_stack_top_addr = boot_stack_top as *const () as usize;
     let mapped_bottom = boot_stack_bottom_addr + PAGE_SIZE;
     debug!(
-        "[init_kernel_space] boot stack: {:#x} - {:#x} (guard @ {:#x})",
+        "boot stack: {:#x} - {:#x} (guard @ {:#x})",
         mapped_bottom, boot_stack_top_addr, boot_stack_bottom_addr
     );
     memory_set
@@ -242,7 +231,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         let direct_map_start = crate::arch::mmu::physical_to_virtual(ekernel_phys);
         let direct_map_end = crate::arch::mmu::physical_to_virtual(memory_end_addr.as_usize());
         debug!(
-            "[init_kernel_space] kernel physmap (RW, NX): {:#x} - {:#x}",
+            "kernel physmap (RW, NX): {:#x} - {:#x}",
             direct_map_start, direct_map_end
         );
         memory_set

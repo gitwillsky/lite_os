@@ -13,11 +13,20 @@ use super::{
 
 const RESOURCE_IDS: [u32; 2] = [BOOT_RESOURCE_ID, ALTERNATE_RESOURCE_ID];
 
-/// @description 验证 framebuffer mode 可由给定 SG backing 完整覆盖。
-/// @param mode framebuffer 的 canonical linear mode。
-/// @param backing 在 device operation 完成前保持存活的 SG owner。
-/// @return backing 容量和 VirtIO 32-bit length 均合法时返回成功。
-/// @errors pitch×height 溢出、超过 backing 或超过 VirtIO length 时返回 InvalidRectangle。
+/// 验证 framebuffer mode 可由给定 SG backing 完整覆盖。
+///
+/// # Parameters
+///
+/// - `mode`: framebuffer 的 canonical linear mode。
+/// - `backing`: 在 device operation 完成前保持存活的 SG owner。
+///
+/// # Returns
+///
+/// backing 容量和 VirtIO 32-bit length 均合法时返回成功。
+///
+/// # Errors
+///
+/// pitch×height 溢出、超过 backing 或超过 VirtIO length 时返回 InvalidRectangle。
 pub(super) fn validate_backing(
     mode: DisplayMode,
     backing: &DeviceBacking,
@@ -37,7 +46,7 @@ pub(super) fn validate_backing(
     Ok(())
 }
 
-/// @description 唯一在途 display transaction 及其资源生命周期 owner。
+/// 唯一在途 display transaction 及其资源生命周期 owner。
 pub(super) enum RuntimeOperation {
     Scanout(ResourceTarget),
     Damage(ResourceTarget),
@@ -50,13 +59,13 @@ pub(super) enum RuntimeOperation {
     Disable(ResourceSnapshot),
 }
 
-/// @description 已 CREATE+ATTACH、由 cursorq 唯一读取的标准 2D cursor resource。
+/// 已 CREATE+ATTACH、由 cursorq 唯一读取的标准 2D cursor resource。
 pub(super) struct CursorResource {
     identity: u64,
     backing: Arc<DeviceBacking>,
 }
 
-/// @description 一次 cursor upload 对固定 resource ID 的独占替换计划。
+/// 一次 cursor upload 对固定 resource ID 的独占替换计划。
 pub(super) enum CursorTarget {
     Resident,
     New {
@@ -65,22 +74,31 @@ pub(super) enum CursorTarget {
     },
 }
 
-/// @description VirtIO-GPU 唯一 64x64 ARGB 2D cursor resource owner。
+/// VirtIO-GPU 唯一 64x64 ARGB 2D cursor resource owner。
 pub(super) struct CursorResourceSet {
     resident: Option<CursorResource>,
 }
 
 impl CursorResourceSet {
-    /// @description 构造尚未发布 cursor resource 的初始状态。
+    /// 构造尚未发布 cursor resource 的初始状态。
     pub(super) const fn empty() -> Self {
         Self { resident: None }
     }
 
-    /// @description 为一个 stable dumb buffer 准备复用或替换固定 cursor resource。
-    /// @param identity DRM dumb buffer 的全局单调 identity。
-    /// @param backing 64x64 ARGB pixels 的 SG lifetime owner。
-    /// @return 当前 resource target；不同 identity 会先独占摘下旧 owner。
-    /// @errors identity 被复用于不同 backing 时返回 Device。
+    /// 为一个 stable dumb buffer 准备复用或替换固定 cursor resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM dumb buffer 的全局单调 identity。
+    /// - `backing`: 64x64 ARGB pixels 的 SG lifetime owner。
+    ///
+    /// # Returns
+    ///
+    /// 当前 resource target；不同 identity 会先独占摘下旧 owner。
+    ///
+    /// # Errors
+    ///
+    /// identity 被复用于不同 backing 时返回 Device。
     pub(super) fn prepare(
         &mut self,
         identity: u64,
@@ -100,8 +118,11 @@ impl CursorResourceSet {
         })
     }
 
-    /// @description 发布已完成 CREATE+ATTACH+TRANSFER 的 cursor target。
-    /// @return 被替换且已完成 RESOURCE_UNREF 的旧 backing owner。
+    /// 发布已完成 CREATE+ATTACH+TRANSFER 的 cursor target。
+    ///
+    /// # Returns
+    ///
+    /// 被替换且已完成 RESOURCE_UNREF 的旧 backing owner。
     pub(super) fn complete(&mut self, target: CursorTarget) -> Option<CursorResource> {
         match target {
             CursorTarget::Resident => None,
@@ -113,8 +134,11 @@ impl CursorResourceSet {
         }
     }
 
-    /// @description 回滚尚未进入 avail ring 的 cursor replacement。
-    /// @return 未发布的新 backing owner。
+    /// 回滚尚未进入 avail ring 的 cursor replacement。
+    ///
+    /// # Returns
+    ///
+    /// 未发布的新 backing owner。
     pub(super) fn cancel(&mut self, target: CursorTarget) -> Option<CursorResource> {
         match target {
             CursorTarget::Resident => None,
@@ -131,12 +155,12 @@ impl CursorResourceSet {
 }
 
 impl CursorTarget {
-    /// @description 返回 target 使用的固定 VirtIO cursor resource ID。
+    /// 返回 target 使用的固定 VirtIO cursor resource ID。
     pub(super) const fn id(&self) -> u32 {
         CURSOR_RESOURCE_ID
     }
 
-    /// @description 返回替换前是否必须先完成 RESOURCE_UNREF。
+    /// 返回替换前是否必须先完成 RESOURCE_UNREF。
     pub(super) fn evicts(&self) -> bool {
         matches!(
             self,
@@ -147,12 +171,12 @@ impl CursorTarget {
         )
     }
 
-    /// @description 返回是否必须执行 CREATE+ATTACH，而非仅上传已有 resource。
+    /// 返回是否必须执行 CREATE+ATTACH，而非仅上传已有 resource。
     pub(super) fn is_new(&self) -> bool {
         matches!(self, Self::New { .. })
     }
 
-    /// @description 克隆本次 upload 必须保活的 SG backing owner。
+    /// 克隆本次 upload 必须保活的 SG backing owner。
     pub(super) fn backing_owner(&self, resources: &CursorResourceSet) -> Arc<DeviceBacking> {
         match self {
             Self::Resident => resources
@@ -166,7 +190,7 @@ impl CursorTarget {
     }
 }
 
-/// @description 一个已 CREATE+ATTACH、可在后续 flip/damage 中复用的 host resource。
+/// 一个已 CREATE+ATTACH、可在后续 flip/damage 中复用的 host resource。
 pub(super) struct ResidentResource {
     id: u32,
     identity: u64,
@@ -175,7 +199,7 @@ pub(super) struct ResidentResource {
     synchronized: bool,
 }
 
-/// @description 一次 operation 对固定 residency set 中目标 resource 的独占计划。
+/// 一次 operation 对固定 residency set 中目标 resource 的独占计划。
 pub(super) enum ResourceTarget {
     Resident(usize),
     New {
@@ -185,27 +209,30 @@ pub(super) enum ResourceTarget {
     },
 }
 
-/// @description VirtIO-GPU 唯一的两槽 resource residency owner。
+/// VirtIO-GPU 唯一的两槽 resource residency owner。
 pub(super) struct ResourceSet {
     slots: [Option<ResidentResource>; 2],
     active: Option<usize>,
 }
 
-/// @description disable transaction 独占持有、可无损回滚的完整 residency snapshot。
+/// disable transaction 独占持有、可无损回滚的完整 residency snapshot。
 pub(super) struct ResourceSnapshot {
     slots: [Option<ResidentResource>; 2],
     active: Option<usize>,
 }
 
-/// @description RMFB 从 residency set 摘下、等待 RESOURCE_UNREF completion 的 owner。
+/// RMFB 从 residency set 摘下、等待 RESOURCE_UNREF completion 的 owner。
 pub(super) struct ResourceRelease {
     slot: usize,
     resource: ResidentResource,
 }
 
 impl ResourceSet {
-    /// @description 构造 boot initialization 尚未发布 resource 的空集合。
-    /// @return 两槽均为空且无 active slot 的集合。
+    /// 构造 boot initialization 尚未发布 resource 的空集合。
+    ///
+    /// # Returns
+    ///
+    /// 两槽均为空且无 active slot 的集合。
     pub(super) const fn empty() -> Self {
         Self {
             slots: [None, None],
@@ -213,10 +240,16 @@ impl ResourceSet {
         }
     }
 
-    /// @description 以 firmware boot scanout 建立初始 residency set。
-    /// @param backing boot scanout 仍被 device 引用的 SG backing。
-    /// @param mode boot resource 的固定 XRGB8888 mode。
-    /// @return slot 0 active、slot 1 vacant 的两槽集合。
+    /// 以 firmware boot scanout 建立初始 residency set。
+    ///
+    /// # Parameters
+    ///
+    /// - `backing`: boot scanout 仍被 device 引用的 SG backing。
+    /// - `mode`: boot resource 的固定 XRGB8888 mode。
+    ///
+    /// # Returns
+    ///
+    /// slot 0 active、slot 1 vacant 的两槽集合。
     pub(super) fn with_boot(backing: Arc<DeviceBacking>, mode: DisplayMode) -> Self {
         Self {
             slots: [
@@ -233,12 +266,21 @@ impl ResourceSet {
         }
     }
 
-    /// @description 为 stable DRM buffer 取得 resident slot 或预留唯一 inactive slot。
-    /// @param identity DRM framebuffer 的全局单调 identity。
-    /// @param mode framebuffer 的完整 linear mode。
-    /// @param backing 从 publication 到 eviction completion 必须保持存活的 SG owner。
-    /// @return resident target，或携带待 CREATE resource 与有界 eviction owner 的 new target。
-    /// @errors identity 被复用于不同 backing/mode，或两槽状态损坏时返回 Device。
+    /// 为 stable DRM buffer 取得 resident slot 或预留唯一 inactive slot。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity。
+    /// - `mode`: framebuffer 的完整 linear mode。
+    /// - `backing`: 从 publication 到 eviction completion 必须保持存活的 SG owner。
+    ///
+    /// # Returns
+    ///
+    /// resident target，或携带待 CREATE resource 与有界 eviction owner 的 new target。
+    ///
+    /// # Errors
+    ///
+    /// identity 被复用于不同 backing/mode，或两槽状态损坏时返回 Device。
     pub(super) fn prepare(
         &mut self,
         identity: u64,
@@ -281,11 +323,17 @@ impl ResourceSet {
         })
     }
 
-    /// @description 原子提交 target 的 residency/synchronization 结果。
-    /// @param target 当前唯一 operation 持有的 target。
-    /// @param activate 完成后该 slot 是否成为 hardware scanout。
-    /// @param synchronized userspace 显式 DIRTYFB 后是否可跳过下一次 full transfer。
-    /// @return 已完成 RESOURCE_UNREF、可在 control lock 外析构的旧 resource。
+    /// 原子提交 target 的 residency/synchronization 结果。
+    ///
+    /// # Parameters
+    ///
+    /// - `target`: 当前唯一 operation 持有的 target。
+    /// - `activate`: 完成后该 slot 是否成为 hardware scanout。
+    /// - `synchronized`: userspace 显式 DIRTYFB 后是否可跳过下一次 full transfer。
+    ///
+    /// # Returns
+    ///
+    /// 已完成 RESOURCE_UNREF、可在 control lock 外析构的旧 resource。
     pub(super) fn complete(
         &mut self,
         target: ResourceTarget,
@@ -317,15 +365,24 @@ impl ResourceSet {
         evicted
     }
 
-    /// @description 在 VirGL framebuffer 接管 hardware scanout 后撤销 2D active slot。
-    /// @return 无返回值；resident resource 仍保留到统一 disable/RMFB owner 回收。
+    /// 在 VirGL framebuffer 接管 hardware scanout 后撤销 2D active slot。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；resident resource 仍保留到统一 disable/RMFB owner 回收。
     pub(super) fn deactivate(&mut self) {
         self.active = None;
     }
 
-    /// @description 回滚尚未进入 avail ring 的 target reservation。
-    /// @param target publication 前失败的独占 target。
-    /// @return 未发布的新 resource，供 caller 在 control lock 外析构。
+    /// 回滚尚未进入 avail ring 的 target reservation。
+    ///
+    /// # Parameters
+    ///
+    /// - `target`: publication 前失败的独占 target。
+    ///
+    /// # Returns
+    ///
+    /// 未发布的新 resource，供 caller 在 control lock 外析构。
     pub(super) fn cancel(&mut self, target: ResourceTarget) -> Option<ResidentResource> {
         match target {
             ResourceTarget::Resident(_) => None,
@@ -341,10 +398,19 @@ impl ResourceSet {
         }
     }
 
-    /// @description 摘下一个 inactive framebuffer 的 resident resource。
-    /// @param identity DRM framebuffer 的全局单调 identity。
-    /// @return 未 resident 时为 None；resident 时返回独占 release owner。
-    /// @errors identity 仍是 active scanout 时返回 Device，必须先走 disable transaction。
+    /// 摘下一个 inactive framebuffer 的 resident resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity。
+    ///
+    /// # Returns
+    ///
+    /// 未 resident 时为 None；resident 时返回独占 release owner。
+    ///
+    /// # Errors
+    ///
+    /// identity 仍是 active scanout 时返回 Device，必须先走 disable transaction。
     pub(super) fn release(
         &mut self,
         identity: u64,
@@ -367,15 +433,21 @@ impl ResourceSet {
         }))
     }
 
-    /// @description 恢复尚未进入 avail ring 的 RMFB release reservation。
-    /// @param release publication 前失败的完整 resource owner。
+    /// 恢复尚未进入 avail ring 的 RMFB release reservation。
+    ///
+    /// # Parameters
+    ///
+    /// - `release`: publication 前失败的完整 resource owner。
     pub(super) fn restore_release(&mut self, release: ResourceRelease) {
         assert!(self.slots[release.slot].is_none());
         self.slots[release.slot] = Some(release.resource);
     }
 
-    /// @description 把全部 residency owner 移交给 disable operation。
-    /// @return 最多两个仍需 RESOURCE_UNREF 的 resource。
+    /// 把全部 residency owner 移交给 disable operation。
+    ///
+    /// # Returns
+    ///
+    /// 最多两个仍需 RESOURCE_UNREF 的 resource。
     pub(super) fn take_all(&mut self) -> ResourceSnapshot {
         ResourceSnapshot {
             slots: core::mem::take(&mut self.slots),
@@ -383,8 +455,11 @@ impl ResourceSet {
         }
     }
 
-    /// @description 恢复尚未发布的 disable transaction。
-    /// @param resources take_all 返回且尚未进入 avail ring 的完整集合。
+    /// 恢复尚未发布的 disable transaction。
+    ///
+    /// # Parameters
+    ///
+    /// - `resources`: take_all 返回且尚未进入 avail ring 的完整集合。
     pub(super) fn restore_all(&mut self, resources: ResourceSnapshot) {
         assert!(self.slots.iter().all(Option::is_none));
         self.active = resources.active;
@@ -399,14 +474,20 @@ impl ResourceSet {
 }
 
 impl ResourceTarget {
-    /// @description 判断 target 是否需要 CREATE+ATTACH。
-    /// @return 尚未 resident 时返回 true。
+    /// 判断 target 是否需要 CREATE+ATTACH。
+    ///
+    /// # Returns
+    ///
+    /// 尚未 resident 时返回 true。
     pub(super) fn is_new(&self) -> bool {
         matches!(self, Self::New { .. })
     }
 
-    /// @description 返回必须先完成 UNREF 的 bounded eviction resource ID。
-    /// @return 占用目标 inactive slot 的旧 resource ID；无 eviction 时返回 None。
+    /// 返回必须先完成 UNREF 的 bounded eviction resource ID。
+    ///
+    /// # Returns
+    ///
+    /// 占用目标 inactive slot 的旧 resource ID；无 eviction 时返回 None。
     pub(super) fn evicted_id(&self) -> Option<u32> {
         match self {
             Self::Resident(_) => None,
@@ -414,9 +495,15 @@ impl ResourceTarget {
         }
     }
 
-    /// @description 返回 target 对应的 stable VirtIO resource ID。
-    /// @param resources resident target 的唯一 residency owner。
-    /// @return target 绑定的固定两槽 resource ID。
+    /// 返回 target 对应的 stable VirtIO resource ID。
+    ///
+    /// # Parameters
+    ///
+    /// - `resources`: resident target 的唯一 residency owner。
+    ///
+    /// # Returns
+    ///
+    /// target 绑定的固定两槽 resource ID。
     pub(super) fn id(&self, resources: &ResourceSet) -> u32 {
         match self {
             Self::Resident(slot) => resources.resident(*slot).id,
@@ -424,9 +511,15 @@ impl ResourceTarget {
         }
     }
 
-    /// @description 返回 target 捕获的 framebuffer mode。
-    /// @param resources resident target 的唯一 residency owner。
-    /// @return target 创建或复用时验证过的 canonical mode。
+    /// 返回 target 捕获的 framebuffer mode。
+    ///
+    /// # Parameters
+    ///
+    /// - `resources`: resident target 的唯一 residency owner。
+    ///
+    /// # Returns
+    ///
+    /// target 创建或复用时验证过的 canonical mode。
     pub(super) fn mode(&self, resources: &ResourceSet) -> DisplayMode {
         match self {
             Self::Resident(slot) => resources.resident(*slot).mode,
@@ -434,9 +527,15 @@ impl ResourceTarget {
         }
     }
 
-    /// @description 克隆 target 的 SG lifetime owner，供 request codec 锁内短借用。
-    /// @param resources resident target 的唯一 residency owner。
-    /// @return 保证 command completion 前 backing 存活的共享 owner。
+    /// 克隆 target 的 SG lifetime owner，供 request codec 锁内短借用。
+    ///
+    /// # Parameters
+    ///
+    /// - `resources`: resident target 的唯一 residency owner。
+    ///
+    /// # Returns
+    ///
+    /// 保证 command completion 前 backing 存活的共享 owner。
     pub(super) fn backing_owner(&self, resources: &ResourceSet) -> Arc<DeviceBacking> {
         match self {
             Self::Resident(slot) => resources.resident(*slot).backing.clone(),
@@ -444,9 +543,15 @@ impl ResourceTarget {
         }
     }
 
-    /// @description 判断 resident target 是否已由显式 DIRTYFB 同步到 host。
-    /// @param resources resident target 的唯一 residency owner。
-    /// @return resident 且最近一次 DIRTYFB 已完成时返回 true；new target 返回 false。
+    /// 判断 resident target 是否已由显式 DIRTYFB 同步到 host。
+    ///
+    /// # Parameters
+    ///
+    /// - `resources`: resident target 的唯一 residency owner。
+    ///
+    /// # Returns
+    ///
+    /// resident 且最近一次 DIRTYFB 已完成时返回 true；new target 返回 false。
     pub(super) fn synchronized(&self, resources: &ResourceSet) -> bool {
         match self {
             Self::Resident(slot) => resources.resident(*slot).synchronized,
@@ -456,24 +561,36 @@ impl ResourceTarget {
 }
 
 impl ResidentResource {
-    /// @description 返回 disable operation 要解绑的 VirtIO resource ID。
-    /// @return resource 创建时绑定的固定两槽 ID。
+    /// 返回 disable operation 要解绑的 VirtIO resource ID。
+    ///
+    /// # Returns
+    ///
+    /// resource 创建时绑定的固定两槽 ID。
     pub(super) fn id(&self) -> u32 {
         self.id
     }
 }
 
 impl ResourceRelease {
-    /// @description 返回 RMFB transaction 要解绑的 VirtIO resource ID。
-    /// @return release 独占持有的 resident resource ID。
+    /// 返回 RMFB transaction 要解绑的 VirtIO resource ID。
+    ///
+    /// # Returns
+    ///
+    /// release 独占持有的 resident resource ID。
     pub(super) fn id(&self) -> u32 {
         self.resource.id
     }
 }
 
-/// @description 构造覆盖整个 framebuffer 的 canonical damage rectangle。
-/// @param mode framebuffer 的有效 mode。
-/// @return 原点为零、尺寸等于 mode 的 rectangle。
+/// 构造覆盖整个 framebuffer 的 canonical damage rectangle。
+///
+/// # Parameters
+///
+/// - `mode`: framebuffer 的有效 mode。
+///
+/// # Returns
+///
+/// 原点为零、尺寸等于 mode 的 rectangle。
 pub(super) fn full_rectangle(mode: DisplayMode) -> crate::drivers::DisplayRect {
     crate::drivers::DisplayRect {
         x: 0,
@@ -483,10 +600,19 @@ pub(super) fn full_rectangle(mode: DisplayMode) -> crate::drivers::DisplayRect {
     }
 }
 
-/// @description 从 scanout/damage transaction 取得其唯一 resource target。
-/// @param operation 当前唯一在途 display transaction。
-/// @return scanout 或 damage 持有的 target 借用。
-/// @errors operation 缺失或类型不拥有 target 时返回 Device。
+/// 从 scanout/damage transaction 取得其唯一 resource target。
+///
+/// # Parameters
+///
+/// - `operation`: 当前唯一在途 display transaction。
+///
+/// # Returns
+///
+/// scanout 或 damage 持有的 target 借用。
+///
+/// # Errors
+///
+/// operation 缺失或类型不拥有 target 时返回 Device。
 pub(super) fn operation_target_ref(
     operation: &Option<RuntimeOperation>,
 ) -> Result<&ResourceTarget, DisplayError> {
@@ -496,11 +622,20 @@ pub(super) fn operation_target_ref(
     }
 }
 
-/// @description 解析当前 transaction target 的 mode 与 stable VirtIO resource ID。
-/// @param operation 当前唯一在途 display transaction。
-/// @param resources resident target 的唯一 residency owner。
-/// @return target 的 canonical mode 与 VirtIO resource ID。
-/// @errors operation 缺失或类型不拥有 target 时返回 Device。
+/// 解析当前 transaction target 的 mode 与 stable VirtIO resource ID。
+///
+/// # Parameters
+///
+/// - `operation`: 当前唯一在途 display transaction。
+/// - `resources`: resident target 的唯一 residency owner。
+///
+/// # Returns
+///
+/// target 的 canonical mode 与 VirtIO resource ID。
+///
+/// # Errors
+///
+/// operation 缺失或类型不拥有 target 时返回 Device。
 pub(super) fn operation_target(
     operation: &Option<RuntimeOperation>,
     resources: &ResourceSet,
@@ -509,11 +644,20 @@ pub(super) fn operation_target(
     Ok((target.mode(resources), target.id(resources)))
 }
 
-/// @description 从 disable snapshot 中查找指定 slot 起的下一只 resource。
-/// @param operation 必须是持有完整 snapshot 的 disable transaction。
-/// @param start 首个允许返回的 slot index。
-/// @return 下一只 resource 的 slot 与 VirtIO ID；不存在时返回 None。
-/// @errors operation 不是 disable transaction 时返回 Device。
+/// 从 disable snapshot 中查找指定 slot 起的下一只 resource。
+///
+/// # Parameters
+///
+/// - `operation`: 必须是持有完整 snapshot 的 disable transaction。
+/// - `start`: 首个允许返回的 slot index。
+///
+/// # Returns
+///
+/// 下一只 resource 的 slot 与 VirtIO ID；不存在时返回 None。
+///
+/// # Errors
+///
+/// operation 不是 disable transaction 时返回 Device。
 pub(super) fn disabled_resource(
     operation: &Option<RuntimeOperation>,
     start: usize,
@@ -531,12 +675,21 @@ pub(super) fn disabled_resource(
 }
 
 impl VirtIOGpuDevice {
-    /// @description 上传一个标准 DRM dumb buffer 到唯一 VirtIO 2D cursor resource。
-    /// @param identity dumb buffer 的 stable device identity。
-    /// @param backing 64x64x4 cursor backing；operation completion 前保持存活。
-    /// @return 替换旧 resource 时完成 UNREF→CREATE→ATTACH→TRANSFER，否则完成 TRANSFER
+    /// 上传一个标准 DRM dumb buffer 到唯一 VirtIO 2D cursor resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: dumb buffer 的 stable device identity。
+    /// - `backing`: 64x64x4 cursor backing；operation completion 前保持存活。
+    ///
+    /// # Returns
+    ///
+    /// 替换旧 resource 时完成 UNREF→CREATE→ATTACH→TRANSFER，否则完成 TRANSFER
     /// 的单一 fence。
-    /// @errors backing geometry、control transaction 或 queue publication failure。
+    ///
+    /// # Errors
+    ///
+    /// backing geometry、control transaction 或 queue publication failure。
     pub(super) fn submit_cursor_resource_upload(
         &self,
         identity: u64,
@@ -581,12 +734,21 @@ impl VirtIOGpuDevice {
         result
     }
 
-    /// @description 以两槽 residency protocol 提交 scanout switch。
-    /// @param identity DRM framebuffer 的全局单调 identity。
-    /// @param mode target framebuffer 的 canonical mode。
-    /// @param backing target SG lifetime owner。
-    /// @return 完整 switch operation fence。
-    /// @errors backing/mode、residency 或 controlq publication failure。
+    /// 以两槽 residency protocol 提交 scanout switch。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity。
+    /// - `mode`: target framebuffer 的 canonical mode。
+    /// - `backing`: target SG lifetime owner。
+    ///
+    /// # Returns
+    ///
+    /// 完整 switch operation fence。
+    ///
+    /// # Errors
+    ///
+    /// backing/mode、residency 或 controlq publication failure。
     pub(super) fn submit_resident_scanout(
         &self,
         identity: u64,
@@ -630,10 +792,19 @@ impl VirtIOGpuDevice {
         result
     }
 
-    /// @description 提交 RMFB 对 inactive resident resource 的显式 UNREF。
-    /// @param identity DRM framebuffer 的全局单调 identity。
-    /// @return 未 resident 时为 None；否则返回完整 release operation fence。
-    /// @errors active identity、已有 operation 或 controlq publication failure。
+    /// 提交 RMFB 对 inactive resident resource 的显式 UNREF。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity。
+    ///
+    /// # Returns
+    ///
+    /// 未 resident 时为 None；否则返回完整 release operation fence。
+    ///
+    /// # Errors
+    ///
+    /// active identity、已有 operation 或 controlq publication failure。
     pub(super) fn release_resident(&self, identity: u64) -> Result<Option<u64>, DisplayError> {
         let mut control = self.control.lock();
         if control.commands.has_pending() || control.operation.is_some() {
@@ -658,9 +829,15 @@ impl VirtIOGpuDevice {
         result.map(Some)
     }
 
-    /// @description 以 resource_id=0 禁用 scanout 并移交全部 residency owner。
-    /// @return SET_SCANOUT→UNREF transaction fence。
-    /// @errors 无 completion-confirmed scanout、已有 operation 或 controlq publication failure。
+    /// 以 resource_id=0 禁用 scanout 并移交全部 residency owner。
+    ///
+    /// # Returns
+    ///
+    /// SET_SCANOUT→UNREF transaction fence。
+    ///
+    /// # Errors
+    ///
+    /// 无 completion-confirmed scanout、已有 operation 或 controlq publication failure。
     pub(super) fn disable_active_scanout(&self) -> Result<u64, DisplayError> {
         let mut control = self.control.lock();
         if control.commands.has_pending() || control.operation.is_some() {

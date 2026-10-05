@@ -80,10 +80,19 @@ pub(crate) fn canonicalize_virtual_address(address: usize) -> usize {
     if raw & sign == 0 { raw } else { raw | !mask }
 }
 
-/// @description 发布平台 MMIO 的唯一 TTBR1 映射投影。
-/// @param regions platform 已验证的 MMIO physical ranges。
-/// @return 无返回值；发布后 `physical_to_virtual` 与 `virtual_to_physical` 共享同一映射表。
-/// @errors high MMIO 总跨度超过架构窗口、range 跨越 direct-map 边界或重复发布时 fail-stop。
+/// 发布平台 MMIO 的唯一 TTBR1 映射投影。
+///
+/// # Parameters
+///
+/// - `regions`: platform 已验证的 MMIO physical ranges。
+///
+/// # Returns
+///
+/// 无返回值；发布后 `physical_to_virtual` 与 `virtual_to_physical` 共享同一映射表。
+///
+/// # Errors
+///
+/// high MMIO 总跨度超过架构窗口、range 跨越 direct-map 边界或重复发布时 fail-stop。
 pub(crate) fn initialize_kernel_mmio<I>(regions: I)
 where
     I: IntoIterator<Item = Range<usize>>,
@@ -144,9 +153,15 @@ where
     KERNEL_MMIO_MAPPINGS.call_once(|| mappings);
 }
 
-/// @description 将受支持的物理地址转换为 TTBR1 kernel mapping 地址。
-/// @param address 已经按 platform memory/MMIO fact 验证的物理地址。
-/// @return 可供 kernel 解引用的 canonical virtual address。
+/// 将受支持的物理地址转换为 TTBR1 kernel mapping 地址。
+///
+/// # Parameters
+///
+/// - `address`: 已经按 platform memory/MMIO fact 验证的物理地址。
+///
+/// # Returns
+///
+/// 可供 kernel 解引用的 canonical virtual address。
 pub(crate) fn physical_to_virtual(address: usize) -> usize {
     if address < DIRECT_MAP_SIZE {
         return DIRECT_MAP_BASE
@@ -166,10 +181,19 @@ pub(crate) fn physical_to_virtual(address: usize) -> usize {
     panic!("AArch64 physical address has no kernel mapping");
 }
 
-/// @description 将同一已发布映射内的半开物理区间转换为半开 TTBR1 kernel 区间。
-/// @param range 已经按 platform fact 验证且不为空的 physical range。
-/// @return 与输入等长、可供 `MapArea` 使用的 canonical virtual range。
-/// @errors range 跨 direct-map 与 high-MMIO seam、未发布或溢出时 fail-stop。
+/// 将同一已发布映射内的半开物理区间转换为半开 TTBR1 kernel 区间。
+///
+/// # Parameters
+///
+/// - `range`: 已经按 platform fact 验证且不为空的 physical range。
+///
+/// # Returns
+///
+/// 与输入等长、可供 `MapArea` 使用的 canonical virtual range。
+///
+/// # Errors
+///
+/// range 跨 direct-map 与 high-MMIO seam、未发布或溢出时 fail-stop。
 pub(crate) fn physical_range_to_virtual(range: Range<usize>) -> Range<usize> {
     assert!(
         range.start < range.end,
@@ -208,9 +232,15 @@ pub(crate) fn physical_range_to_virtual(range: Range<usize>) -> Range<usize> {
     virtual_start..virtual_end
 }
 
-/// @description 尝试把 TTBR1 kernel mapping 地址还原为物理地址。
-/// @param address kernel virtual address。
-/// @return 地址属于 direct-map 或已发布 high-MMIO window 时返回物理地址，否则返回 `None`。
+/// 尝试把 TTBR1 kernel mapping 地址还原为物理地址。
+///
+/// # Parameters
+///
+/// - `address`: kernel virtual address。
+///
+/// # Returns
+///
+/// 地址属于 direct-map 或已发布 high-MMIO window 时返回物理地址，否则返回 `None`。
 pub(crate) fn virtual_to_physical(address: usize) -> Option<usize> {
     let address = canonicalize_virtual_address(address);
     let offset = address.checked_sub(DIRECT_MAP_BASE)?;
@@ -314,8 +344,11 @@ pub(super) fn release_address_space_id_after_global_fence(identifier: usize) {
     assert_ne!(previous & bit, 0, "address-space identifier released twice");
 }
 
-/// @description 激活全局 TTBR1 kernel page-table root，不修改当前 TTBR0 user root。
-/// @param root_page 由 live kernel page-table owner 持有的物理根页号。
+/// 激活全局 TTBR1 kernel page-table root，不修改当前 TTBR0 user root。
+///
+/// # Parameters
+///
+/// - `root_page`: 由 live kernel page-table owner 持有的物理根页号。
 pub(crate) fn activate_kernel(root_page: usize) {
     let root = (root_page as u64) << PAGE_SHIFT;
     assert_eq!(root & (PAGE_SIZE as u64 - 1), 0);

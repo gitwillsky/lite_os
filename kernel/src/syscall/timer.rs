@@ -6,7 +6,7 @@ use crate::{
 mod posix;
 pub(crate) use posix::*;
 
-/// @description Linux/riscv64 `timespec` 的最小 64 位布局。
+/// Linux 64-bit `timespec` 的最小 64 位布局。
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct TimeSpec {
@@ -25,11 +25,16 @@ const CLOCK_BOOTTIME: i32 = 7;
 const TIMER_ABSTIME: i32 = 1;
 const ITIMER_REAL: usize = 0;
 
-/// @description 按 Linux RV64 legacy timeval ABI 返回 realtime 与固定 UTC timezone。
+/// 按 Linux LP64 legacy timeval ABI 返回 realtime 与固定 UTC timezone。
 ///
-/// @param timeval 可选的用户态 16-byte `{ i64 sec, i64 usec }` 输出地址。
-/// @param timezone 可选的用户态 8-byte `{ i32 minuteswest, i32 dsttime }` 输出地址。
-/// @return 成功返回零；任一非空输出地址不可写返回 `-EFAULT`。
+/// # Parameters
+///
+/// - `timeval`: 可选的用户态 16-byte `{ i64 sec, i64 usec }` 输出地址。
+/// - `timezone`: 可选的用户态 8-byte `{ i32 minuteswest, i32 dsttime }` 输出地址。
+///
+/// # Returns
+///
+/// 成功返回零；任一非空输出地址不可写返回 `-EFAULT`。
 pub(crate) fn sys_gettimeofday(timeval: usize, timezone: usize) -> isize {
     let task = current_task().expect("gettimeofday requires a current task");
     // 1. Linux 先写 timeval；timezone fault 不回滚已经完成的 timeval copyout。
@@ -71,11 +76,16 @@ fn encode_itimerval(interval_us: u64, value_us: u64) -> [u8; 32] {
     bytes
 }
 
-/// @description 查询当前 Process 的 Linux ITIMER_REAL。
+/// 查询当前 Process 的 Linux ITIMER_REAL。
 ///
-/// @param which 仅接受 `ITIMER_REAL`。
-/// @param output 32-byte `itimerval` userspace pointer。
-/// @return 成功返回零；selector 或 user-copy 错误返回负 errno。
+/// # Parameters
+///
+/// - `which`: 仅接受 `ITIMER_REAL`。
+/// - `output`: 32-byte `itimerval` userspace pointer。
+///
+/// # Returns
+///
+/// 成功返回零；selector 或 user-copy 错误返回负 errno。
 pub(crate) fn sys_getitimer(which: usize, output: usize) -> isize {
     if which != ITIMER_REAL {
         return -EINVAL;
@@ -97,12 +107,17 @@ pub(crate) fn sys_getitimer(which: usize, output: usize) -> isize {
     .map_or(-EFAULT, |()| 0)
 }
 
-/// @description 原子替换当前 Process 的 Linux ITIMER_REAL，并由 timer softirq 发布 SIGALRM。
+/// 原子替换当前 Process 的 Linux ITIMER_REAL，并由 timer softirq 发布 SIGALRM。
 ///
-/// @param which 仅接受 `ITIMER_REAL`。
-/// @param replacement 32-byte `itimerval` userspace pointer；value 为零时解除定时。
-/// @param previous 可选旧值输出 pointer。
-/// @return 成功返回零；timeval、selector 或 user-copy 错误返回负 errno。
+/// # Parameters
+///
+/// - `which`: 仅接受 `ITIMER_REAL`。
+/// - `replacement`: 32-byte `itimerval` userspace pointer；value 为零时解除定时。
+/// - `previous`: 可选旧值输出 pointer。
+///
+/// # Returns
+///
+/// 成功返回零；timeval、selector 或 user-copy 错误返回负 errno。
 pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -> isize {
     if which != ITIMER_REAL {
         return -EINVAL;
@@ -181,11 +196,16 @@ fn finish_sleep(result: WaitResult, deadline_ns: u64, remaining: *mut TimeSpec) 
     }
 }
 
-/// @description 按相对单调时间挂起当前任务。
+/// 按相对单调时间挂起当前任务。
 ///
-/// @param req 用户态请求时间；空指针返回 `EFAULT`。
-/// @param rem 被 signal 中断时的可选剩余时间输出地址。
-/// @return 成功返回零，失败返回负 errno。
+/// # Parameters
+///
+/// - `req`: 用户态请求时间；空指针返回 `EFAULT`。
+/// - `rem`: 被 signal 中断时的可选剩余时间输出地址。
+///
+/// # Returns
+///
+/// 成功返回零，失败返回负 errno。
 pub(crate) fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     if req.is_null() {
         return -EFAULT;
@@ -212,13 +232,18 @@ pub(crate) fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     finish_sleep(crate::task::sleep_until(deadline), deadline, rem)
 }
 
-/// @description 按 Linux clock selector 执行 relative 或 absolute interruptible sleep。
+/// 按 Linux clock selector 执行 relative 或 absolute interruptible sleep。
 ///
-/// @param clock_id 当前支持 `CLOCK_REALTIME` 与 `CLOCK_MONOTONIC`。
-/// @param flags `TIMER_ABSTIME` 选择 absolute deadline；Linux 对其他位不赋予语义。
-/// @param req 用户态 64-bit timespec 请求地址。
-/// @param rem relative sleep 被 signal 中断时的可选剩余时间输出；absolute 模式不修改。
-/// @return 到期返回 0；非法时间/clock、未支持 CPU clock、user-copy 或 signal 返回负 errno。
+/// # Parameters
+///
+/// - `clock_id`: 当前支持 `CLOCK_REALTIME` 与 `CLOCK_MONOTONIC`。
+/// - `flags`: `TIMER_ABSTIME` 选择 absolute deadline；Linux 对其他位不赋予语义。
+/// - `req`: 用户态 64-bit timespec 请求地址。
+/// - `rem`: relative sleep 被 signal 中断时的可选剩余时间输出；absolute 模式不修改。
+///
+/// # Returns
+///
+/// 到期返回 0；非法时间/clock、未支持 CPU clock、user-copy 或 signal 返回负 errno。
 pub(crate) fn sys_clock_nanosleep(
     clock_id: i32,
     flags: i32,
@@ -269,11 +294,16 @@ pub(crate) fn sys_clock_nanosleep(
     )
 }
 
-/// @description 查询 Linux 进程可观察的 wall、monotonic 或 calling task CPU clock。
+/// 查询 Linux 进程可观察的 wall、monotonic 或 calling task CPU clock。
 ///
-/// @param clock_id Linux realtime、monotonic、raw/coarse/boottime 或 process/thread CPU clock。
-/// @param result 用户态 timespec 输出地址。
-/// @return 成功返回 0，非法 clock ID 返回 -EINVAL，copyout fault 返回 -EFAULT。
+/// # Parameters
+///
+/// - `clock_id`: Linux realtime、monotonic、raw/coarse/boottime 或 process/thread CPU clock。
+/// - `result`: 用户态 timespec 输出地址。
+///
+/// # Returns
+///
+/// 成功返回 0，非法 clock ID 返回 -EINVAL，copyout fault 返回 -EFAULT。
 pub(crate) fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
     let value = match clock_id {
         CLOCK_REALTIME
@@ -328,11 +358,16 @@ pub(crate) fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
     }
 }
 
-/// @description 查询 LiteOS 已实现 Linux clocks 的实际可观察分辨率。
+/// 查询 LiteOS 已实现 Linux clocks 的实际可观察分辨率。
 ///
-/// @param clock_id Linux realtime、monotonic、raw/coarse/boottime 或 process/thread CPU clock。
-/// @param result 可为空的用户态 timespec 输出地址；为空时只校验 clock ID。
-/// @return 成功返回 0，非法 clock ID 返回 -EINVAL，copyout fault 返回 -EFAULT。
+/// # Parameters
+///
+/// - `clock_id`: Linux realtime、monotonic、raw/coarse/boottime 或 process/thread CPU clock。
+/// - `result`: 可为空的用户态 timespec 输出地址；为空时只校验 clock ID。
+///
+/// # Returns
+///
+/// 成功返回 0，非法 clock ID 返回 -EINVAL，copyout fault 返回 -EFAULT。
 pub(crate) fn sys_clock_getres(clock_id: i32, result: *mut TimeSpec) -> isize {
     let nanoseconds = match clock_id {
         CLOCK_REALTIME

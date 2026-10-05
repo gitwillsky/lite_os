@@ -12,7 +12,7 @@ pub(crate) struct ProcThreadSnapshot {
     pub(crate) io: ProcIoSnapshot,
 }
 
-/// @description procfs adapter 使用的 Linux task I/O counters。
+/// procfs adapter 使用的 Linux task I/O counters。
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ProcIoSnapshot {
     pub(crate) read_characters: u64,
@@ -51,7 +51,7 @@ pub(crate) struct ProcProcessSnapshot {
     pub(crate) io: ProcIoSnapshot,
 }
 
-/// @description 一个 live descriptor number 与其 Linux procfs symlink target 快照。
+/// 一个 live descriptor number 与其 Linux procfs symlink target 快照。
 pub(crate) struct ProcFileDescriptorSnapshot {
     pub(crate) fd: usize,
     pub(crate) target: Vec<u8>,

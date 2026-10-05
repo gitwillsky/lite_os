@@ -30,12 +30,18 @@ fn write_regular_descriptor(
     })
 }
 
-/// @description 执行 scalar/writev 共用的唯一 sequential write descriptor dispatch。
-/// @param task userspace address owner 与 SIGPIPE/RLIMIT source。
-/// @param ofd 已完成 access/capability 检查的共享 OFD。
-/// @param vectors scalar one-element 或已导入的 RV64 iovec 序列。
-/// @param total_length vectors 的 checked 总长度。
-/// @return byte count、partial count 或负 errno。
+/// 执行 scalar/writev 共用的唯一 sequential write descriptor dispatch。
+///
+/// # Parameters
+///
+/// - `task`: userspace address owner 与 SIGPIPE/RLIMIT source。
+/// - `ofd`: 已完成 access/capability 检查的共享 OFD。
+/// - `vectors`: scalar one-element 或已导入的 LP64 iovec 序列。
+/// - `total_length`: vectors 的 checked 总长度。
+///
+/// # Returns
+///
+/// byte count、partial count 或负 errno。
 pub(super) fn write_descriptor(
     task: &TaskControlBlock,
     ofd: &Arc<OpenFileDescription>,
@@ -98,8 +104,12 @@ pub(super) fn write_descriptor(
                         }
                         PipeWrite::Broken => {
                             // 3. peer close 始终投递 SIGPIPE；已有进度时 syscall 只暴露 partial count。
-                            send_thread_signal(task.tgid(), task.tid(), 13)
-                                .expect("current sequential pipe writer must exist");
+                            send_thread_signal(
+                                task.tgid(),
+                                task.tid(),
+                                crate::task::signal_number::SIGPIPE,
+                            )
+                            .expect("current sequential pipe writer must exist");
                             return if written == 0 {
                                 -errno::EPIPE
                             } else {
@@ -179,8 +189,12 @@ pub(super) fn write_descriptor(
                             crate::socket::SocketError::BrokenPipe,
                         )) => {
                             // 3. 即使已有进度，peer close 仍投递 SIGPIPE，但返回值保留已写 byte count。
-                            send_thread_signal(task.tgid(), task.tid(), 13)
-                                .expect("current sequential socket writer must exist");
+                            send_thread_signal(
+                                task.tgid(),
+                                task.tid(),
+                                crate::task::signal_number::SIGPIPE,
+                            )
+                            .expect("current sequential socket writer must exist");
                             return if written == 0 {
                                 -errno::EPIPE
                             } else {

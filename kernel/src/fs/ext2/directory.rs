@@ -1,9 +1,15 @@
 use super::*;
 
 impl Ext2Inode {
-    /// @description 释放 namespace lookup Arc，重新取得 concrete inode 并冻结真实 external ownership。
-    /// @return concrete inode 与是否存在除本地 owner 之外的 live Arc。
-    /// @errors inode reload 的 filesystem、I/O 或 allocation 错误。
+    /// 释放 namespace lookup Arc，重新取得 concrete inode 并冻结真实 external ownership。
+    ///
+    /// # Returns
+    ///
+    /// concrete inode 与是否存在除本地 owner 之外的 live Arc。
+    ///
+    /// # Errors
+    ///
+    /// inode reload 的 filesystem、I/O 或 allocation 错误。
     pub(super) fn reload_after_lookup(
         &self,
         lookup: Arc<dyn Inode>,
@@ -15,10 +21,19 @@ impl Ext2Inode {
         Ok((inode, externally_held))
     }
 
-    /// @description 在 active mutation 中向目录块插入唯一 ext2 dir entry。
-    /// @param mutation 为目录 inode 扩容时先捕获 live disk preimage 的 transaction owner。
-    /// @return entry 与可能增长的 directory size 已 staged。
-    /// @errors 块分配、layout、journal、I/O 或 rollback reserve 错误。
+    /// 在 active mutation 中向目录块插入唯一 ext2 dir entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `mutation`: 为目录 inode 扩容时先捕获 live disk preimage 的 transaction owner。
+    ///
+    /// # Returns
+    ///
+    /// entry 与可能增长的 directory size 已 staged。
+    ///
+    /// # Errors
+    ///
+    /// 块分配、layout、journal、I/O 或 rollback reserve 错误。
     pub(super) fn add_dir_entry_locked(
         &self,
         mutation: &mut MutationGuard<'_>,
@@ -104,11 +119,20 @@ impl Ext2Inode {
         Err(FileSystemError::NoSpace)
     }
 
-    /// @description 在 active mutation 中删除名称精确匹配的 ext2 dir entry。
-    /// @param mutation 证明 caller 持有唯一 active journal transaction；目录不收缩，无 live inode preimage。
-    /// @param name 已经 namespace seam 校验的 raw component。
-    /// @return 被删除 entry 的 inode number，directory size 不收缩。
-    /// @errors entry 不存在、record layout、block mapping、journal 或 I/O 错误。
+    /// 在 active mutation 中删除名称精确匹配的 ext2 dir entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `mutation`: 证明 caller 持有唯一 active journal transaction；目录不收缩，无 live inode preimage。
+    /// - `name`: 已经 namespace seam 校验的 raw component。
+    ///
+    /// # Returns
+    ///
+    /// 被删除 entry 的 inode number，directory size 不收缩。
+    ///
+    /// # Errors
+    ///
+    /// entry 不存在、record layout、block mapping、journal 或 I/O 错误。
     pub(super) fn remove_dir_entry_locked(
         &self,
         _mutation: &mut MutationGuard<'_>,
@@ -158,11 +182,20 @@ impl Ext2Inode {
         Err(FileSystemError::NotFound)
     }
 
-    /// @description 从 opaque byte cursor 所在块开始校验并遍历 ext directory entry。
-    /// @param cursor 上次消费 entry 的 next byte offset；stale/misaligned cursor 向后对齐到记录边界。
-    /// @param visit 收到 next byte cursor、按值 header 与本次调用内有效的 raw name。
-    /// @return 当前已消费 cursor 与 EOF；Stop 不消费当前 entry。
-    /// @errors inode size、record layout、block mapping 或 I/O 无效时返回明确错误。
+    /// 从 opaque byte cursor 所在块开始校验并遍历 ext directory entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `cursor`: 上次消费 entry 的 next byte offset；stale/misaligned cursor 向后对齐到记录边界。
+    /// - `visit`: 收到 next byte cursor、按值 header 与本次调用内有效的 raw name。
+    ///
+    /// # Returns
+    ///
+    /// 当前已消费 cursor 与 EOF；Stop 不消费当前 entry。
+    ///
+    /// # Errors
+    ///
+    /// inode size、record layout、block mapping 或 I/O 无效时返回明确错误。
     pub(super) fn dir_iterate_from<F>(
         &self,
         cursor: u64,
@@ -233,11 +266,20 @@ impl Ext2Inode {
         })
     }
 
-    /// @description 在同一 mutation transaction 中分配 inode、保存 target 并发布 symlink entry。
-    /// @param name 当前目录内的新 entry 名称。
-    /// @param target 不含 NUL 的 raw target bytes；不在此解析。
-    /// @return 新 Ext2Inode owner。
-    /// @errors 类型、名称、重复、空间、内存或 I/O 错误。
+    /// 在同一 mutation transaction 中分配 inode、保存 target 并发布 symlink entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: 当前目录内的新 entry 名称。
+    /// - `target`: 不含 NUL 的 raw target bytes；不在此解析。
+    ///
+    /// # Returns
+    ///
+    /// 新 Ext2Inode owner。
+    ///
+    /// # Errors
+    ///
+    /// 类型、名称、重复、空间、内存或 I/O 错误。
     pub(super) fn create_symlink(
         &self,
         name: &[u8],
@@ -292,11 +334,20 @@ impl Ext2Inode {
         Ok(child)
     }
 
-    /// @description 在同一 mutation transaction 中增加 target link count 并发布目录项。
-    /// @param name 当前目录内的新 entry 名称。
-    /// @param target VFS 保活且已通过 mount identity 检查的目标。
-    /// @return mutation journal checkpoint 完成时成功。
-    /// @errors 目录目标、跨 filesystem、重复、link limit、空间或 I/O 错误。
+    /// 在同一 mutation transaction 中增加 target link count 并发布目录项。
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: 当前目录内的新 entry 名称。
+    /// - `target`: VFS 保活且已通过 mount identity 检查的目标。
+    ///
+    /// # Returns
+    ///
+    /// mutation journal checkpoint 完成时成功。
+    ///
+    /// # Errors
+    ///
+    /// 目录目标、跨 filesystem、重复、link limit、空间或 I/O 错误。
     pub(super) fn create_hard_link(
         &self,
         name: &[u8],
@@ -340,7 +391,7 @@ impl Ext2Inode {
         mutation.commit()
     }
 
-    /// @description 在唯一 ext2 mutation domain 内完成 rename 与 parent-link net plan。
+    /// 在唯一 ext2 mutation domain 内完成 rename 与 parent-link net plan。
     pub(super) fn rename_entry(
         &self,
         old_name: &[u8],

@@ -45,7 +45,7 @@ pub(in crate::drivers) struct DmaBuffer<const SIZE: usize> {
     segments: Box<[DmaSegment]>,
 }
 
-/// @description 由 device 完整初始化的 fixed DMA bytes 与 mapping proof 的共同 owner。
+/// 由 device 完整初始化的 fixed DMA bytes 与 mapping proof 的共同 owner。
 ///
 /// bytes 从未在提交前预零；adapter 只能在 used-ring 验证 descriptor identity 与 returned
 /// length 后投影 initialized prefix。Drop 前必须 reset device，避免 device 写入已释放 allocation。
@@ -56,9 +56,15 @@ pub(in crate::drivers) struct DeviceWriteBuffer<const SIZE: usize> {
 
 impl<const SIZE: usize> DeviceWriteBuffer<SIZE> {
     #[cfg(not(test))]
-    /// @description 分配未初始化 fixed bytes 并缓存完整 kernel-VA→physical mapping。
-    /// @return 成功时返回地址稳定的 DMA owner。
-    /// @errors allocation、mapping、range 或 kernel translation 失败时返回 `DmaMappingError`。
+    /// 分配未初始化 fixed bytes 并缓存完整 kernel-VA→physical mapping。
+    ///
+    /// # Returns
+    ///
+    /// 成功时返回地址稳定的 DMA owner。
+    ///
+    /// # Errors
+    ///
+    /// allocation、mapping、range 或 kernel translation 失败时返回 `DmaMappingError`。
     pub(in crate::drivers) fn try_uninit() -> Result<Self, DmaMappingError> {
         let mut bytes = Vec::new();
         bytes
@@ -83,9 +89,15 @@ impl<const SIZE: usize> DeviceWriteBuffer<SIZE> {
         })
     }
 
-    /// @description 投影已由 adapter 验证为非空且 bounded 的 device-write prefix。
-    /// @param length descriptor 允许 device 写入的 prefix 长度，必须在 `1..=SIZE`。
-    /// @return 借用当前 mapping 的 writable descriptor segments。
+    /// 投影已由 adapter 验证为非空且 bounded 的 device-write prefix。
+    ///
+    /// # Parameters
+    ///
+    /// - `length`: descriptor 允许 device 写入的 prefix 长度，必须在 `1..=SIZE`。
+    ///
+    /// # Returns
+    ///
+    /// 借用当前 mapping 的 writable descriptor segments。
     pub(in crate::drivers) fn writable_prefix(&self, length: usize) -> DmaSlice<'_> {
         assert!(length != 0 && length <= SIZE);
         DmaSlice {
@@ -95,9 +107,15 @@ impl<const SIZE: usize> DeviceWriteBuffer<SIZE> {
         }
     }
 
-    /// @description 投影已由 device 初始化的 prefix。
-    /// @param length used ring 已证明由 device 写入的 prefix 长度。
-    /// @return 与固定 DMA owner 共同存活的 initialized byte slice。
+    /// 投影已由 device 初始化的 prefix。
+    ///
+    /// # Parameters
+    ///
+    /// - `length`: used ring 已证明由 device 写入的 prefix 长度。
+    ///
+    /// # Returns
+    ///
+    /// 与固定 DMA owner 共同存活的 initialized byte slice。
     ///
     /// # Safety
     ///

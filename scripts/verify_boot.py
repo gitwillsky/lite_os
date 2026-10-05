@@ -87,8 +87,8 @@ def boot_product_graphics(image: Path, kernel: Path) -> None:
         image,
         kernel,
         (
-            "[Audio] VirtIO Sound capability ready",
-            "[Platform] VirtIO console PCI transport on IRQ",
+            "VirtIO Sound capability ready",
+            "VirtIO console PCI transport on IRQ",
             "VirtIO input event0",
             "VirtIO input event1",
             "VirtIO GPU",

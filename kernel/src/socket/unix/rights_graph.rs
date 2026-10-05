@@ -65,7 +65,7 @@ static GRAPH: Once<Mutex<RightsGraph>> = Once::new();
 // check. Detach deliberately bypasses this gate so revocation can make progress synchronously.
 static COLLECTOR: Mutex<()> = Mutex::new(());
 
-/// @description transport lock 内 fast attach 的内部结果；不直接泄漏为 socket errno。
+/// transport lock 内 fast attach 的内部结果；不直接泄漏为 socket errno。
 pub(super) enum AttachError {
     /// 当前 UID quota 需要在 transport lock 外执行 cycle collection。
     NeedsCollection,
@@ -471,15 +471,24 @@ fn graph() -> &'static Mutex<RightsGraph> {
     GRAPH.call_once(|| Mutex::new(RightsGraph::new()))
 }
 
-/// @description 在 transport owner lock 内尝试原子附着一个 SCM_RIGHTS batch。
-/// @param uid sender 的 real UID；所有 Process 共享同一 inflight quota。
-/// @param limit sender 在 sendmsg 时捕获的 RLIMIT_NOFILE soft limit。
-/// @param batch_id 本 control batch 的稳定唯一 identity。
-/// @param count 本 batch 的全部 descriptor 数，包含非 AF_UNIX file。
-/// @param sources 按 node id 排序的 AF_UNIX source nodes，保留重复边。
-/// @param target transport commit 后拥有本 batch 的 receive endpoint。
-/// @return graph edge 与 UID counter 已一起发布。
-/// @errors graph/scratch reserve 失败返回 Socket(NoMemory)；quota 超限返回 NeedsCollection，
+/// 在 transport owner lock 内尝试原子附着一个 SCM_RIGHTS batch。
+///
+/// # Parameters
+///
+/// - `uid`: sender 的 real UID；所有 Process 共享同一 inflight quota。
+/// - `limit`: sender 在 sendmsg 时捕获的 RLIMIT_NOFILE soft limit。
+/// - `batch_id`: 本 control batch 的稳定唯一 identity。
+/// - `count`: 本 batch 的全部 descriptor 数，包含非 AF_UNIX file。
+/// - `sources`: 按 node id 排序的 AF_UNIX source nodes，保留重复边。
+/// - `target`: transport commit 后拥有本 batch 的 receive endpoint。
+///
+/// # Returns
+///
+/// graph edge 与 UID counter 已一起发布。
+///
+/// # Errors
+///
+/// graph/scratch reserve 失败返回 Socket(NoMemory)；quota 超限返回 NeedsCollection，
 /// caller 必须释放 transport lock 后调用 collect 并重试。
 pub(super) fn try_attach(
     uid: u32,
@@ -502,12 +511,21 @@ pub(super) fn try_attach(
         .map_err(AttachError::Socket)
 }
 
-/// @description 在任何 transport lock 外回收不可达 AF_UNIX rights cycle。
-/// @param uid 待取得 quota 的 sender real UID。
-/// @param limit sender 当前 RLIMIT_NOFILE soft limit。
-/// @param count 下一 attach 将增加的全部 descriptor 数。
-/// @return 已有并发 detach 释放 quota，或至少一个 dead SCC 已被 revoke。
-/// @errors 没有可回收 SCC 且 quota 仍超限时返回 TooManyReferences。
+/// 在任何 transport lock 外回收不可达 AF_UNIX rights cycle。
+///
+/// # Parameters
+///
+/// - `uid`: 待取得 quota 的 sender real UID。
+/// - `limit`: sender 当前 RLIMIT_NOFILE soft limit。
+/// - `count`: 下一 attach 将增加的全部 descriptor 数。
+///
+/// # Returns
+///
+/// 已有并发 detach 释放 quota，或至少一个 dead SCC 已被 revoke。
+///
+/// # Errors
+///
+/// 没有可回收 SCC 且 quota 仍超限时返回 TooManyReferences。
 pub(super) fn collect(uid: u32, limit: usize, count: usize) -> Result<(), SocketError> {
     let _collector = COLLECTOR.lock();
     let mut state = graph().lock();
@@ -536,13 +554,19 @@ pub(super) fn collect(uid: u32, limit: usize, count: usize) -> Result<(), Socket
         .ok_or(SocketError::TooManyReferences)
 }
 
-/// @description 从 graph 与 UID counter 无分配摘除一个已消费/关闭 batch。
-/// @param uid attach 时记录的 sender real UID。
-/// @param batch_id 待摘除 control batch 的稳定 identity。
-/// @param count attach 时计入 UID inflight 的全部 descriptor 数。
-/// @param sources 按 node id 排序的 AF_UNIX source nodes。
-/// @param target attach 时记录的 receiver node identity。
-/// @return 无返回值；不存在或计数下溢表示内部 lifecycle 损坏并 fail-stop。
+/// 从 graph 与 UID counter 无分配摘除一个已消费/关闭 batch。
+///
+/// # Parameters
+///
+/// - `uid`: attach 时记录的 sender real UID。
+/// - `batch_id`: 待摘除 control batch 的稳定 identity。
+/// - `count`: attach 时计入 UID inflight 的全部 descriptor 数。
+/// - `sources`: 按 node id 排序的 AF_UNIX source nodes。
+/// - `target`: attach 时记录的 receiver node identity。
+///
+/// # Returns
+///
+/// 无返回值；不存在或计数下溢表示内部 lifecycle 损坏并 fail-stop。
 pub(super) fn detach(uid: u32, batch_id: u64, count: usize, sources: &[UnixNode], target: u64) {
     graph().lock().detach(uid, batch_id, count, sources, target);
 }

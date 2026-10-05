@@ -8,19 +8,19 @@ use core::{
 
 use super::WaitCompletion;
 
-/// @description task mutex waiter 的精确 scheduler membership identity。
+/// task mutex waiter 的精确 scheduler membership identity。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskMutexWaitKey {
     owner: usize,
     ticket: u64,
 }
 
-/// @description scheduler 为 task-context mutex waiter 提供的 opaque target。
+/// scheduler 为 task-context mutex waiter 提供的 opaque target。
 pub(crate) trait TaskMutexWaitTarget: Send + Sync {
-    /// @description 原子发布 membership，并在 unlock 尚未发生时阻塞当前 task。
+    /// 原子发布 membership，并在 unlock 尚未发生时阻塞当前 task。
     fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskMutexWaitKey);
 
-    /// @description 消费精确 membership 并使 blocked task 可运行。
+    /// 消费精确 membership 并使 blocked task 可运行。
     fn wake(self: Arc<Self>, key: TaskMutexWaitKey);
 }
 
@@ -30,7 +30,7 @@ type WaitTargetFactory = fn() -> Option<Arc<dyn TaskMutexWaitTarget>>;
 // fail-stop，不能退回 spin/yield polling。
 static WAIT_TARGET_FACTORY: spin::Once<WaitTargetFactory> = spin::Once::new();
 
-/// @description 安装 task mutex 唯一 scheduler adapter。
+/// 安装 task mutex 唯一 scheduler adapter。
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn install_wait_target_factory(factory: WaitTargetFactory) {
     assert!(
@@ -71,7 +71,7 @@ impl TaskMutexWaitTarget for TestThreadTarget {
     }
 }
 
-/// @description task mutex waiter metadata 分配失败。
+/// task mutex waiter metadata 分配失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskMutexOutOfMemory;
 
@@ -128,7 +128,7 @@ impl Waiter {
     }
 }
 
-/// @description 在不可回滚 transaction 前预分配的一份 task-mutex waiter metadata。
+/// 在不可回滚 transaction 前预分配的一份 task-mutex waiter metadata。
 ///
 /// 同一 preparation 可依次等待多个 mutex；每次 guard 成功取得后 queue 不再保留 waiter
 /// 引用，下一次 arm 才会覆写 identity。缺少该 preflight 时，post-commit invalidation
@@ -146,8 +146,11 @@ impl core::fmt::Debug for TaskMutexWaitPreparation {
 }
 
 impl TaskMutexWaitPreparation {
-    /// @description 为当前 task 预分配可复用 waiter metadata。
-    /// @errors control block 分配失败返回 OutOfMemory。
+    /// 为当前 task 预分配可复用 waiter metadata。
+    ///
+    /// # Errors
+    ///
+    /// control block 分配失败返回 OutOfMemory。
     pub(crate) fn prepare() -> Result<Self, TaskMutexOutOfMemory> {
         Ok(Self {
             waiter: Waiter::allocate()?,
@@ -234,7 +237,7 @@ impl LockState {
     }
 }
 
-/// @description 可跨调度和可睡眠 I/O 保活的 task-context mutex。
+/// 可跨调度和可睡眠 I/O 保活的 task-context mutex。
 ///
 /// state spin lock 只保护 owner bit 与预分配 waiter 链；guard 不保留该 spin lock。竞争
 /// task 发布精确 scheduler membership 后进入 Blocked，unlock 摘取一个 FIFO waiter 并在
@@ -246,7 +249,7 @@ pub(crate) struct TaskMutex<T: ?Sized> {
 }
 
 impl<T> TaskMutex<T> {
-    /// @description 创建未锁定的 task mutex。
+    /// 创建未锁定的 task mutex。
     pub(crate) const fn new(value: T) -> Self {
         Self {
             state: spin::Mutex::new(LockState::new()),
@@ -257,9 +260,15 @@ impl<T> TaskMutex<T> {
 }
 
 impl<T: ?Sized> TaskMutex<T> {
-    /// @description 阻塞取得 task-context guard。
-    /// @return 独占 guard。
-    /// @errors waiter metadata 分配失败时返回 `TaskMutexOutOfMemory`。
+    /// 阻塞取得 task-context guard。
+    ///
+    /// # Returns
+    ///
+    /// 独占 guard。
+    ///
+    /// # Errors
+    ///
+    /// waiter metadata 分配失败时返回 `TaskMutexOutOfMemory`。
     pub(crate) fn lock(&self) -> Result<TaskMutexGuard<'_, T>, TaskMutexOutOfMemory> {
         if let Some(guard) = self.try_lock() {
             return Ok(guard);
@@ -268,9 +277,15 @@ impl<T: ?Sized> TaskMutex<T> {
         Ok(self.lock_prepared(&mut preparation))
     }
 
-    /// @description 使用 caller 已预分配的 waiter metadata 阻塞取得 guard。
-    /// @param preparation 当前 task 独占、且前一次 acquisition 已完成的 preparation。
-    /// @return 独占 guard；本阶段不再分配，因此适用于不可回滚 transaction 的提交尾部。
+    /// 使用 caller 已预分配的 waiter metadata 阻塞取得 guard。
+    ///
+    /// # Parameters
+    ///
+    /// - `preparation`: 当前 task 独占、且前一次 acquisition 已完成的 preparation。
+    ///
+    /// # Returns
+    ///
+    /// 独占 guard；本阶段不再分配，因此适用于不可回滚 transaction 的提交尾部。
     pub(crate) fn lock_prepared(
         &self,
         preparation: &mut TaskMutexWaitPreparation,
@@ -302,7 +317,7 @@ impl<T: ?Sized> TaskMutex<T> {
         TaskMutexGuard::new(self)
     }
 
-    /// @description 仅在当前无 owner 时取得 guard，不排队、不分配。
+    /// 仅在当前无 owner 时取得 guard，不排队、不分配。
     pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
         let mut state = self.state.lock();
         if state.ownership != Ownership::Available {
@@ -336,7 +351,7 @@ unsafe impl<T: ?Sized + Send> Send for TaskMutex<T> {}
 // SAFETY: only one live guard can access value, published through the state lock handoff.
 unsafe impl<T: ?Sized + Send> Sync for TaskMutex<T> {}
 
-/// @description `TaskMutex` 的 task-context 独占 guard。
+/// `TaskMutex` 的 task-context 独占 guard。
 #[must_use = "dropping the guard releases the task mutex"]
 pub(crate) struct TaskMutexGuard<'a, T: ?Sized> {
     mutex: &'a TaskMutex<T>,

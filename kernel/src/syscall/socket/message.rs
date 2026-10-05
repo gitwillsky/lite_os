@@ -83,7 +83,7 @@ fn send_error(
     completed: usize,
 ) -> isize {
     if error == SocketError::BrokenPipe && completed == 0 && flags & MSG_NOSIGNAL == 0 {
-        send_thread_signal(task.tgid(), task.tid(), 13)
+        send_thread_signal(task.tgid(), task.tid(), crate::task::signal_number::SIGPIPE)
             .expect("current socket sender must remain live");
     }
     if completed == 0 {
@@ -259,7 +259,7 @@ fn send_message(
     send_one_message(&context, bytes.initialized(), &mut rights)
 }
 
-/// @description Linux sendmsg scatter/gather ABI，复用唯一 socket send path。
+/// Linux sendmsg scatter/gather ABI，复用唯一 socket send path。
 pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
     if flags & !(MSG_DONTWAIT | MSG_NOSIGNAL) != 0 {
         return -errno::EOPNOTSUPP;
@@ -411,7 +411,7 @@ pub(crate) fn sys_recvfrom(
     }
 }
 
-/// @description Linux recvmsg scatter/gather、MSG_PEEK 与 IPv4 PKTINFO ancillary ABI。
+/// Linux recvmsg scatter/gather、MSG_PEEK 与 IPv4 PKTINFO ancillary ABI。
 pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
     if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT | super::control::MSG_CMSG_CLOEXEC) != 0 {
         return -errno::EOPNOTSUPP;

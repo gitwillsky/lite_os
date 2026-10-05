@@ -16,12 +16,21 @@ const O_EXCL: u32 = 0x80;
 const O_TRUNC: u32 = 0x200;
 const O_DIRECTORY: u32 = 0x10000;
 
-/// @description 校验 directory/search permission 后原子替换 Process 唯一 cwd identity。
-/// @param task cwd owner。
-/// @param opened pathname 或 fd 已解析出的 opened-entry identity。
-/// @param identity 本次 operation 唯一 effective-credentials snapshot。
-/// @return 成功返回 0；失败返回负 errno 且 cwd 保持不变。
-/// @error 非目录返回 `ENOTDIR`；metadata 或 search permission 失败返回对应 errno。
+/// 校验 directory/search permission 后原子替换 Process 唯一 cwd identity。
+///
+/// # Parameters
+///
+/// - `task`: cwd owner。
+/// - `opened`: pathname 或 fd 已解析出的 opened-entry identity。
+/// - `identity`: 本次 operation 唯一 effective-credentials snapshot。
+///
+/// # Returns
+///
+/// 成功返回 0；失败返回负 errno 且 cwd 保持不变。
+///
+/// # Errors
+///
+/// 非目录返回 `ENOTDIR`；metadata 或 search permission 失败返回对应 errno。
 fn change_directory(
     task: &TaskControlBlock,
     opened: Arc<OpenedFile>,
@@ -42,7 +51,7 @@ fn change_directory(
     0
 }
 
-/// @description 校验 pathname search permission 后替换 Process cwd opened entry。
+/// 校验 pathname search permission 后替换 Process cwd opened entry。
 pub(crate) fn sys_chdir(name: *const u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -60,11 +69,20 @@ pub(crate) fn sys_chdir(name: *const u8) -> isize {
     change_directory(&task, opened, &identity)
 }
 
-/// @description 按 Linux `fchdir` 从 live descriptor 的 opened entry 替换 Process cwd。
-/// @param fd 当前 Process descriptor number。
-/// @return 成功返回 0；失败返回负 errno 且 cwd 保持不变。
-/// @error descriptor 不存在返回 `EBADF`；非 pathname-backed 或非目录 fd 返回 `ENOTDIR`。
-/// @error metadata 或 search permission 失败返回对应 errno。
+/// 按 Linux `fchdir` 从 live descriptor 的 opened entry 替换 Process cwd。
+///
+/// # Parameters
+///
+/// - `fd`: 当前 Process descriptor number。
+///
+/// # Returns
+///
+/// 成功返回 0；失败返回负 errno 且 cwd 保持不变。
+///
+/// # Errors
+///
+/// - descriptor 不存在返回 `EBADF`；非 pathname-backed 或非目录 fd 返回 `ENOTDIR`。
+/// - metadata 或 search permission 失败返回对应 errno。
 pub(crate) fn sys_fchdir(fd: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -79,7 +97,7 @@ pub(crate) fn sys_fchdir(fd: usize) -> isize {
     change_directory(&task, opened, &identity)
 }
 
-/// @description 以 effective credentials 执行 open/create permission 并发布 OFD。
+/// 以 effective credentials 执行 open/create permission 并发布 OFD。
 pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;

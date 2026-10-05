@@ -5,14 +5,14 @@ use crate::{
     task::{CredentialUpdateError, current_task},
 };
 
-/// @description 返回当前 Process 的 real/effective UID/GID。
+/// 返回当前 Process 的 real/effective UID/GID。
 pub(crate) fn sys_get_id(uid: bool, effective: bool) -> isize {
     current_task()
         .expect("identity syscall requires current task")
         .credential_id(uid, effective) as isize
 }
 
-/// @description 按 Linux setuid/setgid 规则更新 Process credentials。
+/// 按 Linux setuid/setgid 规则更新 Process credentials。
 pub(crate) fn sys_set_id(uid: bool, value: u32) -> isize {
     current_task()
         .expect("set identity requires current task")
@@ -20,7 +20,7 @@ pub(crate) fn sys_set_id(uid: bool, value: u32) -> isize {
         .map_or(-errno::EPERM, |()| 0)
 }
 
-/// @description 向三个用户指针写出 real/effective/saved UID/GID。
+/// 向三个用户指针写出 real/effective/saved UID/GID。
 pub(crate) fn sys_get_res_ids(uid: bool, pointers: [usize; 3]) -> isize {
     let task = current_task().expect("getresid requires current task");
     let values = task.credential_res_ids(uid);
@@ -32,7 +32,7 @@ pub(crate) fn sys_get_res_ids(uid: bool, pointers: [usize; 3]) -> isize {
     0
 }
 
-/// @description 原子应用 setresuid/setresgid 三元组。
+/// 原子应用 setresuid/setresgid 三元组。
 pub(crate) fn sys_set_res_ids(uid: bool, values: [u32; 3]) -> isize {
     current_task()
         .expect("setresid requires current task")
@@ -40,7 +40,7 @@ pub(crate) fn sys_set_res_ids(uid: bool, values: [u32; 3]) -> isize {
         .map_or(-errno::EPERM, |()| 0)
 }
 
-/// @description 实现 Linux getgroups size query 与 group array copyout。
+/// 实现 Linux getgroups size query 与 group array copyout。
 pub(crate) fn sys_getgroups(size: usize, list: usize) -> isize {
     let task = current_task().expect("getgroups requires current task");
     let groups = match task.supplementary_groups() {
@@ -73,7 +73,7 @@ pub(crate) fn sys_getgroups(size: usize, list: usize) -> isize {
     }
 }
 
-/// @description 仅允许 effective root 原子替换 supplementary groups。
+/// 仅允许 effective root 原子替换 supplementary groups。
 pub(crate) fn sys_setgroups(size: usize, list: usize) -> isize {
     const NGROUPS_MAX: usize = 65_536;
     if size > NGROUPS_MAX {
@@ -111,7 +111,7 @@ pub(crate) fn sys_setgroups(size: usize, list: usize) -> isize {
     )
 }
 
-/// @description 替换 Process umask 并返回旧的低 9-bit mask。
+/// 替换 Process umask 并返回旧的低 9-bit mask。
 pub(crate) fn sys_umask(mask: u32) -> isize {
     current_task()
         .expect("umask requires current task")

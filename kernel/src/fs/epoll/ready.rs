@@ -44,11 +44,20 @@ impl Epoll {
         Self::refresh_with_events(state, key, Some(current));
     }
 
-    /// @description source notifier 持 epoll owner 时无等待地刷新单个 ready membership。
-    /// @param state 当前 epoll 的唯一 state guard。
-    /// @param key 被 source index 精确路由的 interest。
-    /// @return 已取得精确 backend 快照且确认 ready 时为 true；竞争时保守入队但返回 false。
-    /// @errors 不分配、不睡眠；`None` 快照由 task-context delivery 精确复查。
+    /// source notifier 持 epoll owner 时无等待地刷新单个 ready membership。
+    ///
+    /// # Parameters
+    ///
+    /// - `state`: 当前 epoll 的唯一 state guard。
+    /// - `key`: 被 source index 精确路由的 interest。
+    ///
+    /// # Returns
+    ///
+    /// 已取得精确 backend 快照且确认 ready 时为 true；竞争时保守入队但返回 false。
+    ///
+    /// # Errors
+    ///
+    /// 不分配、不睡眠；`None` 快照由 task-context delivery 精确复查。
     pub(super) fn refresh_source_locked(state: &mut EpollState, key: InterestKey) -> bool {
         let Some(interest) = state.interests.get(&key) else {
             return false;
@@ -60,7 +69,7 @@ impl Epoll {
         Self::refresh_with_events(state, key, current)
     }
 
-    /// @description 只复制当前 ready memberships，不扫描全部 interests。
+    /// 只复制当前 ready memberships，不扫描全部 interests。
     pub(crate) fn ready_snapshot(&self, maximum: usize) -> Result<Vec<EpollInterest>, ()> {
         let mut state = self.state.lock();
         let mut snapshot = Vec::new();

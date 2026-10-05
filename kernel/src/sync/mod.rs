@@ -1,4 +1,4 @@
-//! @description 提供 kernel 执行上下文感知的同步原语。
+//! 提供 kernel 执行上下文感知的同步原语。
 //!
 //! 普通 `spin` lock 只适用于中断路径不可达的短临界区；同时由 task context 和
 //! interrupt context 访问的数据必须使用本模块的 IRQ-safe lock。二者 guard 都禁止
@@ -22,9 +22,11 @@ pub(crate) use wait_completion::WaitCompletion;
 // 缺少全局序列时，嵌套 epoll 无法区分不同 source 上数值相同的局部 generation，ET 会漏报。
 static READINESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// @description 分配一个跨所有可等待 I/O source 单调递增的 readiness generation。
+/// 分配一个跨所有可等待 I/O source 单调递增的 readiness generation。
 ///
-/// @return 非零 generation；仅用于事件 identity，不承载数据发布同步。
+/// # Returns
+///
+/// 非零 generation；仅用于事件 identity，不承载数据发布同步。
 pub(crate) fn next_readiness_generation() -> u64 {
     READINESS_GENERATION
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -33,7 +35,7 @@ pub(crate) fn next_readiness_generation() -> u64 {
         .expect("readiness generation exhausted")
 }
 
-/// @description 当前 CPU 的 architecture local-interrupt 屏蔽 guard。
+/// 当前 CPU 的 architecture local-interrupt 屏蔽 guard。
 ///
 /// 构造时保存并关闭本地中断；释放时仅在原状态为 enabled 时恢复。
 /// 嵌套 guard 的内层观察到中断已关闭，因此不会提前打开中断。
@@ -45,10 +47,15 @@ pub(crate) struct LocalIrqGuard {
 }
 
 impl LocalIrqGuard {
-    /// @description 关闭当前 CPU 的 local interrupt 并返回恢复 guard。
+    /// 关闭当前 CPU 的 local interrupt 并返回恢复 guard。
     ///
-    /// @return 离开作用域时恢复构造前 local-interrupt 状态的 guard。
-    /// @errors 无可恢复错误；必须在 kernel execution context 调用。
+    /// # Returns
+    ///
+    /// 离开作用域时恢复构造前 local-interrupt 状态的 guard。
+    ///
+    /// # Errors
+    ///
+    /// 无可恢复错误；必须在 kernel execution context 调用。
     #[inline(always)]
     pub(crate) fn disable() -> Self {
         let state = crate::arch::interrupt::disable_local();
@@ -60,8 +67,11 @@ impl LocalIrqGuard {
         }
     }
 
-    /// @description 把 IRQ restore consequence 移交给同一 CPU 的另一个 kernel stack。
-    /// @return 可暂存于 per-CPU scheduler slot 的 transfer token。
+    /// 把 IRQ restore consequence 移交给同一 CPU 的另一个 kernel stack。
+    ///
+    /// # Returns
+    ///
+    /// 可暂存于 per-CPU scheduler slot 的 transfer token。
     pub(crate) fn into_transfer(mut self) -> LocalIrqTransfer {
         LocalIrqTransfer {
             state: self.state.take(),
@@ -82,7 +92,7 @@ impl Drop for LocalIrqGuard {
     }
 }
 
-/// @description scheduler context switch 跨 kernel stack 携带的 local IRQ restore consequence。
+/// scheduler context switch 跨 kernel stack 携带的 local IRQ restore consequence。
 ///
 /// token 可存入静态 per-CPU slot，但 Drop 会核对 logical CPU；若错误跨 CPU 移动会在修改
 /// interrupt state 前 fail-stop。缺失该 token 会把 task→task handoff 永久留在 IRQ-disabled。
@@ -107,7 +117,7 @@ impl Drop for LocalIrqTransfer {
     }
 }
 
-/// @description 屏蔽 architecture local interrupt 的非睡眠互斥锁。
+/// 屏蔽 architecture local interrupt 的非睡眠互斥锁。
 ///
 /// 该锁防止同 CPU interrupt reentrancy，并由底层 spin mutex 串行化其他 CPU。
 /// guard 内禁止调度、阻塞 I/O 或执行无界工作。
@@ -116,11 +126,15 @@ pub(crate) struct IrqMutex<T: ?Sized> {
 }
 
 impl<T> IrqMutex<T> {
-    /// @description 创建 IRQ-safe mutex。
+    /// 创建 IRQ-safe mutex。
     ///
-    /// @param value 由 mutex 唯一保护的初始值。
-    /// @return 包含该值的未加锁 mutex。
-    /// @errors 无错误。
+    /// # Parameters
+    ///
+    /// - `value`: 由 mutex 唯一保护的初始值。
+    ///
+    /// # Returns
+    ///
+    /// 包含该值的未加锁 mutex。
     pub(crate) const fn new(value: T) -> Self {
         Self {
             inner: spin::Mutex::new(value),
@@ -129,10 +143,15 @@ impl<T> IrqMutex<T> {
 }
 
 impl<T: ?Sized> IrqMutex<T> {
-    /// @description 先关闭本地中断，再自旋获取互斥锁。
+    /// 先关闭本地中断，再自旋获取互斥锁。
     ///
-    /// @return 可变访问受保护值的 guard；释放顺序固定为 unlock 后恢复 local interrupt。
-    /// @errors 不返回错误；递归获取同一 mutex 会永久自旋，调用者必须遵守锁序。
+    /// # Returns
+    ///
+    /// 可变访问受保护值的 guard；释放顺序固定为 unlock 后恢复 local interrupt。
+    ///
+    /// # Errors
+    ///
+    /// 不返回错误；递归获取同一 mutex 会永久自旋，调用者必须遵守锁序。
     #[inline(always)]
     pub(crate) fn lock(&self) -> IrqMutexGuard<'_, T> {
         let irq = LocalIrqGuard::disable();
@@ -144,7 +163,7 @@ impl<T: ?Sized> IrqMutex<T> {
     }
 }
 
-/// @description `IrqMutex` 的非睡眠访问 guard。
+/// `IrqMutex` 的非睡眠访问 guard。
 pub(crate) struct IrqMutexGuard<'a, T: ?Sized> {
     lock: Option<spin::MutexGuard<'a, T>>,
     irq: Option<LocalIrqGuard>,

@@ -44,7 +44,7 @@ fn maximum_send_length(protocol: MessageProtocol) -> Option<usize> {
     }
 }
 
-/// @description 在 payload gather 前验证 protocol-owned atomic message bound。
+/// 在 payload gather 前验证 protocol-owned atomic message bound。
 pub(super) fn validate_send_length(protocol: MessageProtocol, length: usize) -> Result<(), ()> {
     if maximum_send_length(protocol).is_some_and(|maximum| length > maximum) {
         Err(())
@@ -53,8 +53,11 @@ pub(super) fn validate_send_length(protocol: MessageProtocol, length: usize) -> 
     }
 }
 
-/// @description 为 stream send 选择一次 backend call 的固定上限 staging capacity。
-/// @return stream 返回有界 capacity；atomic/unsupported protocol 返回 None。
+/// 为 stream send 选择一次 backend call 的固定上限 staging capacity。
+///
+/// # Returns
+///
+/// stream 返回有界 capacity；atomic/unsupported protocol 返回 None。
 pub(super) fn stream_send_capacity(
     protocol: MessageProtocol,
     requested: usize,
@@ -66,7 +69,7 @@ pub(super) fn stream_send_capacity(
     }
 }
 
-/// @description 把 userspace receive capacity 投影为一次 backend call 的最大有用 storage。
+/// 把 userspace receive capacity 投影为一次 backend call 的最大有用 storage。
 pub(super) fn receive_capacity(
     protocol: MessageProtocol,
     requested: usize,

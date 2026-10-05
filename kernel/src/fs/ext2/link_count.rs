@@ -14,7 +14,7 @@ pub(super) enum ParentLinkPlan {
     CrossParent { old_parent: u16, new_parent: u16 },
 }
 
-/// @description Computes one ext2 link-count increment without saturation or wraparound.
+/// Computes one ext2 link-count increment without saturation or wraparound.
 pub(super) fn increment(count: u16) -> Result<u16, LinkCountError> {
     if count >= EXT2_LINK_MAX {
         Err(LinkCountError::TooMany)
@@ -23,13 +23,16 @@ pub(super) fn increment(count: u16) -> Result<u16, LinkCountError> {
     }
 }
 
-/// @description Computes one ext2 link-count decrement and rejects an impossible underflow.
+/// Computes one ext2 link-count decrement and rejects an impossible underflow.
 pub(super) fn decrement(count: u16) -> Result<u16, LinkCountError> {
     count.checked_sub(1).ok_or(LinkCountError::Corrupt)
 }
 
-/// @description Plans the net parent-link transition before a rename edits the namespace.
-/// @return 非目录或同父无替换为 None；同父替换与跨父移动返回精确最终计数。
+/// Plans the net parent-link transition before a rename edits the namespace.
+///
+/// # Returns
+///
+/// 非目录或同父无替换为 None；同父替换与跨父移动返回精确最终计数。
 pub(super) fn plan_rename_parent_links(
     old_parent: u16,
     new_parent: u16,

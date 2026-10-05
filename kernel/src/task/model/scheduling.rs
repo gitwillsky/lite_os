@@ -32,7 +32,7 @@ const NICE_TO_WEIGHT_RECIPROCAL: [u32; 40] = [
    119_304_647, 148_102_320, 186_737_708, 238_609_294, 286_331_153,
 ];
 
-/// @description 以紧凑 topology index 表示 Thread 可运行的 logical CPU 集合。
+/// 以紧凑 topology index 表示 Thread 可运行的 logical CPU 集合。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(in crate::task) struct CpuAffinity(CpuSet);
 
@@ -41,39 +41,53 @@ impl CpuAffinity {
         cpu::active()
     }
 
-    /// @description 构造包含动态 topology 全部 possible CPU 的初始 affinity。
+    /// 构造包含动态 topology 全部 possible CPU 的初始 affinity。
     ///
-    /// @return 非空 logical CPU mask；CPU 尚未 active 不影响初始继承集合。
+    /// # Returns
+    ///
+    /// 非空 logical CPU mask；CPU 尚未 active 不影响初始继承集合。
     pub(in crate::task) fn all_possible() -> Self {
         Self(cpu::possible())
     }
 
-    /// @description 将 userspace logical CPU mask 收敛到当前 active scheduler topology。
+    /// 将 userspace logical CPU mask 收敛到当前 active scheduler topology。
     ///
-    /// @param bits Linux CPU index bitmap。
-    /// @return 至少保留一个 active CPU 时返回规范化 affinity，否则返回 `None`。
+    /// # Parameters
+    ///
+    /// - `bits`: Linux CPU index bitmap。
+    ///
+    /// # Returns
+    ///
+    /// 至少保留一个 active CPU 时返回规范化 affinity，否则返回 `None`。
     pub(in crate::task) fn from_user_bits(bits: usize) -> Option<Self> {
         let effective = CpuSet::from_native_word(bits) & Self::active_set();
         (!effective.is_empty()).then_some(Self(effective))
     }
 
-    /// @description 投影当前 active CPU 上实际生效的 logical mask。
+    /// 投影当前 active CPU 上实际生效的 logical mask。
     ///
-    /// @return stored affinity 与 active topology 的交集。
+    /// # Returns
+    ///
+    /// stored affinity 与 active topology 的交集。
     pub(in crate::task) fn effective_bits(self) -> usize {
         (self.0 & Self::active_set()).native_word()
     }
 
-    /// @description 判断 affinity 是否包含指定 logical CPU。
+    /// 判断 affinity 是否包含指定 logical CPU。
     ///
-    /// @param cpu logical CPU identity。
-    /// @return 对应 bit 已设置时返回 `true`。
+    /// # Parameters
+    ///
+    /// - `cpu`: logical CPU identity。
+    ///
+    /// # Returns
+    ///
+    /// 对应 bit 已设置时返回 `true`。
     pub(in crate::task) fn allows(self, cpu: CpuId) -> bool {
         self.0.contains(cpu)
     }
 }
 
-/// @description blocked task 的唯一 wait registration membership ID。
+/// blocked task 的唯一 wait registration membership ID。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum WaitMembership {
     Deadline(u64),
@@ -89,7 +103,7 @@ pub(crate) enum WaitMembership {
     TaskMutex(crate::sync::TaskMutexWaitKey),
 }
 
-/// @description blocked task 恢复时由唯一 wait registration 发布的结果。
+/// blocked task 恢复时由唯一 wait registration 发布的结果。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum WaitResult {
     Woken,
@@ -122,7 +136,7 @@ pub(crate) struct Sched {
     process_runtime_us: Arc<AtomicU64>,
 }
 
-/// @description 调度器唯一拥有和解释的 Thread 运行状态。
+/// 调度器唯一拥有和解释的 Thread 运行状态。
 pub(crate) struct SchedulingEntity {
     // state/generation/wait_key 必须在一个 IRQ-safe 临界区内转换；拆锁会允许重复 enqueue。
     pub(crate) state: IrqMutex<SchedulingState>,
@@ -131,7 +145,7 @@ pub(crate) struct SchedulingEntity {
     pub(crate) last_cpu: AtomicUsize,
 }
 
-/// @description run state、enqueue generation 与 wait membership 的唯一权威。
+/// run state、enqueue generation 与 wait membership 的唯一权威。
 #[derive(Debug)]
 pub(crate) struct SchedulingState {
     run_state: RunState,
@@ -143,7 +157,7 @@ pub(crate) struct SchedulingState {
     pub(in crate::task) cpu_affinity: CpuAffinity,
 }
 
-/// @description 已发布 `RunState::Ready`、但尚未提交 per-CPU Ready 投影的线性 token。
+/// 已发布 `RunState::Ready`、但尚未提交 per-CPU Ready 投影的线性 token。
 ///
 /// 只有 processor owner 能消费该 token；遗失会让 load/tick projection 与唯一 run state
 /// 分裂，因此 Drop 必须 fail-stop。token 非 Copy，禁止同一 transition 重复计数。
@@ -173,7 +187,7 @@ impl Drop for ReadyTransition<'_> {
     }
 }
 
-/// @description 已撤销 `RunState::Ready`、但尚未撤销 per-CPU Ready 投影的线性 token。
+/// 已撤销 `RunState::Ready`、但尚未撤销 per-CPU Ready 投影的线性 token。
 #[must_use = "Ready retirement must commit its per-CPU membership projection"]
 pub(in crate::task) struct ReadyRetirement<'owner> {
     cpu: CpuId,
@@ -199,10 +213,15 @@ impl Drop for ReadyRetirement<'_> {
 }
 
 impl SchedulingState {
-    /// @description 构造没有 runqueue/wait membership 的新 Thread 调度状态。
+    /// 构造没有 runqueue/wait membership 的新 Thread 调度状态。
     ///
-    /// @param cpu_affinity 创建者继承或初始化的唯一 CPU 集合。
-    /// @return `New` 状态且 generation 为零的 scheduling owner。
+    /// # Parameters
+    ///
+    /// - `cpu_affinity`: 创建者继承或初始化的唯一 CPU 集合。
+    ///
+    /// # Returns
+    ///
+    /// `New` 状态且 generation 为零的 scheduling owner。
     pub(super) fn new(cpu_affinity: CpuAffinity) -> Self {
         Self {
             run_state: RunState::New,
@@ -213,13 +232,13 @@ impl SchedulingState {
         }
     }
 
-    /// @description 只读投影 authoritative run state。
+    /// 只读投影 authoritative run state。
     #[inline(always)]
     pub(in crate::task) fn run_state(&self) -> RunState {
         self.run_state
     }
 
-    /// @description 在不进入或离开 Ready membership 时替换 run state。
+    /// 在不进入或离开 Ready membership 时替换 run state。
     ///
     /// Ready ingress/egress 必须使用返回线性 token 的专用 transition；两侧任一为
     /// Ready 都表示 caller 绕过了 per-CPU projection transaction，必须 fail-stop。
@@ -233,7 +252,7 @@ impl SchedulingState {
         self.run_state = state;
     }
 
-    /// @description 创建新的唯一 Ready generation，并使此前所有 queue entry 失效。
+    /// 创建新的唯一 Ready generation，并使此前所有 queue entry 失效。
     #[inline(always)]
     pub(in crate::task) fn transition_to_ready(&mut self, cpu: CpuId) -> ReadyTransition<'_> {
         assert!(
@@ -264,7 +283,7 @@ impl SchedulingState {
         }
     }
 
-    /// @description 原子验证 queue token 并把 authoritative Ready state 改为 Running。
+    /// 原子验证 queue token 并把 authoritative Ready state 改为 Running。
     #[inline(always)]
     pub(in crate::task) fn transition_ready_to_running(
         &mut self,
@@ -284,7 +303,7 @@ impl SchedulingState {
         }
     }
 
-    /// @description 把 authoritative Ready state 改为保留 runnable resume 的 Stopped。
+    /// 把 authoritative Ready state 改为保留 runnable resume 的 Stopped。
     #[inline(always)]
     pub(in crate::task) fn transition_ready_to_stopped(&mut self) -> ReadyRetirement<'_> {
         let cpu = match self.run_state {
@@ -301,9 +320,11 @@ impl SchedulingState {
         }
     }
 
-    /// @description 判断 Thread 是否仍在 affinity 排除的 CPU 上持有执行/切出 ownership。
+    /// 判断 Thread 是否仍在 affinity 排除的 CPU 上持有执行/切出 ownership。
     ///
-    /// @return Running 或尚未完成 scheduler handoff 的过渡状态位于禁止 CPU 时返回 `true`。
+    /// # Returns
+    ///
+    /// Running 或尚未完成 scheduler handoff 的过渡状态位于禁止 CPU 时返回 `true`。
     pub(in crate::task) fn executes_outside_affinity(&self) -> bool {
         let cpu = match self.run_state {
             RunState::Running { cpu }
@@ -322,13 +343,17 @@ impl SchedulingState {
 }
 
 impl Sched {
-    /// @description 创建尚未运行、累计时间为零的 Thread scheduling policy。
+    /// 创建尚未运行、累计时间为零的 Thread scheduling policy。
     ///
-    /// @param nice 继承或初始化后的 Linux nice 值。
-    /// @param vruntime 由 placement/fork policy 选择的初始 virtual runtime。
-    /// @param process_runtime_us 所属 Process 的唯一聚合 CPU runtime owner。
-    /// @return inactive 且 total runtime 为零的 policy。
-    /// @errors 无错误。
+    /// # Parameters
+    ///
+    /// - `nice`: 继承或初始化后的 Linux nice 值。
+    /// - `vruntime`: 由 placement/fork policy 选择的初始 virtual runtime。
+    /// - `process_runtime_us`: 所属 Process 的唯一聚合 CPU runtime owner。
+    ///
+    /// # Returns
+    ///
+    /// inactive 且 total runtime 为零的 policy。
     pub(super) fn new(nice: i32, vruntime: u64, process_runtime_us: Arc<AtomicU64>) -> Self {
         Self {
             active_runtime_start: None,
@@ -342,11 +367,15 @@ impl Sched {
         }
     }
 
-    /// @description 按 Linux sched_fork 语义派生 child 的独立 scheduling policy。
+    /// 按 Linux sched_fork 语义派生 child 的独立 scheduling policy。
     ///
-    /// @param process_runtime_us child 所属 Process 的唯一聚合 CPU runtime owner。
-    /// @return 继承 vruntime；reset-on-fork 生效时负 nice 归零且 child 清除该 flag。
-    /// @errors 无错误。
+    /// # Parameters
+    ///
+    /// - `process_runtime_us`: child 所属 Process 的唯一聚合 CPU runtime owner。
+    ///
+    /// # Returns
+    ///
+    /// 继承 vruntime；reset-on-fork 生效时负 nice 归零且 child 清除该 flag。
     pub(super) fn forked(&self, process_runtime_us: Arc<AtomicU64>) -> Self {
         let reset = self.reset_on_fork;
         Self {
@@ -361,11 +390,15 @@ impl Sched {
         }
     }
 
-    /// @description 查询或替换当前唯一支持的 `SCHED_OTHER` reset-on-fork 属性。
+    /// 查询或替换当前唯一支持的 `SCHED_OTHER` reset-on-fork 属性。
     ///
-    /// @param replacement `None` 只查询；`Some` 原子替换 flag。
-    /// @return 修改前的 reset-on-fork 值。
-    /// @errors 无错误。
+    /// # Parameters
+    ///
+    /// - `replacement`: `None` 只查询；`Some` 原子替换 flag。
+    ///
+    /// # Returns
+    ///
+    /// 修改前的 reset-on-fork 值。
     pub(in crate::task) fn reset_on_fork(&mut self, replacement: Option<bool>) -> bool {
         let previous = self.reset_on_fork;
         if let Some(replacement) = replacement {
@@ -374,11 +407,19 @@ impl Sched {
         previous
     }
 
-    /// @description 查询或替换唯一 policy owner 中的 Linux nice 值。
+    /// 查询或替换唯一 policy owner 中的 Linux nice 值。
     ///
-    /// @param replacement `None` 只查询；`Some` 必须已经规范化到 -20..19。
-    /// @return 修改前的 nice 值。
-    /// @panics replacement 越出 Linux nice 范围时 panic。
+    /// # Parameters
+    ///
+    /// - `replacement`: `None` 只查询；`Some` 必须已经规范化到 -20..19。
+    ///
+    /// # Returns
+    ///
+    /// 修改前的 nice 值。
+    ///
+    /// # Panics
+    ///
+    /// replacement 越出 Linux nice 范围时 panic。
     pub(in crate::task) fn nice(&mut self, replacement: Option<i32>) -> i32 {
         let previous = self.nice;
         if let Some(replacement) = replacement {
@@ -388,10 +429,15 @@ impl Sched {
         previous
     }
 
-    /// @description 查询或替换当前 Thread 的 Linux encoded I/O priority。
+    /// 查询或替换当前 Thread 的 Linux encoded I/O priority。
     ///
-    /// @param replacement None 只查询；Some 已由 syscall seam 校验 class/data encoding。
-    /// @return 修改前的 encoded `IOPRIO_PRIO_VALUE`。
+    /// # Parameters
+    ///
+    /// - `replacement`: None 只查询；Some 已由 syscall seam 校验 class/data encoding。
+    ///
+    /// # Returns
+    ///
+    /// 修改前的 encoded `IOPRIO_PRIO_VALUE`。
     pub(in crate::task) fn io_priority(&mut self, replacement: Option<u16>) -> u16 {
         let previous = self.io_priority;
         if let Some(replacement) = replacement {
@@ -404,11 +450,19 @@ impl Sched {
         (20 + self.nice).clamp(0, 39)
     }
 
-    /// @description 开始一个尚未提交的 active CPU slice。
+    /// 开始一个尚未提交的 active CPU slice。
     ///
-    /// @param start_time_us monotonic CPU dispatch 时刻。
-    /// @return 无返回值；slice 起点由 policy lock 唯一发布。
-    /// @panics 前一个 slice 尚未 finish，或 monotonic 微秒计数耗尽时 panic。
+    /// # Parameters
+    ///
+    /// - `start_time_us`: monotonic CPU dispatch 时刻。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；slice 起点由 policy lock 唯一发布。
+    ///
+    /// # Panics
+    ///
+    /// 前一个 slice 尚未 finish，或 monotonic 微秒计数耗尽时 panic。
     pub(in crate::task) fn begin_runtime(&mut self, start_time_us: u64) {
         let encoded = start_time_us
             .checked_add(1)
@@ -426,11 +480,19 @@ impl Sched {
         );
     }
 
-    /// @description 恰好一次结束 active CPU slice，并累计 Thread、Process、CPU 与 vruntime。
+    /// 恰好一次结束 active CPU slice，并累计 Thread、Process、CPU 与 vruntime。
     ///
-    /// @param end_time_us monotonic deschedule 时刻。
-    /// @return 无返回值；全部 runtime owner 已同步推进。
-    /// @panics 没有 active slice，表示 caller 重复提交或绕过 begin 时 panic。
+    /// # Parameters
+    ///
+    /// - `end_time_us`: monotonic deschedule 时刻。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；全部 runtime owner 已同步推进。
+    ///
+    /// # Panics
+    ///
+    /// 没有 active slice，表示 caller 重复提交或绕过 begin 时 panic。
     pub(in crate::task) fn finish_runtime(&mut self, end_time_us: u64) {
         let start_time_us = self
             .active_runtime_start
@@ -443,11 +505,19 @@ impl Sched {
         self.commit_runtime(end_time_us.saturating_sub(start_time_us), priority);
     }
 
-    /// @description 在不结束 active slice 的前提下提交 timer tick 前已消耗的 CPU runtime。
+    /// 在不结束 active slice 的前提下提交 timer tick 前已消耗的 CPU runtime。
     ///
-    /// @param checkpoint_us monotonic timer deferred-work 时刻。
-    /// @return 无返回值；Thread、Process、CPU runtime 与 vruntime 同步推进，dispatch weight 保持冻结。
-    /// @panics 没有 active slice，或 monotonic 微秒计数耗尽时 panic。
+    /// # Parameters
+    ///
+    /// - `checkpoint_us`: monotonic timer deferred-work 时刻。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；Thread、Process、CPU runtime 与 vruntime 同步推进，dispatch weight 保持冻结。
+    ///
+    /// # Panics
+    ///
+    /// 没有 active slice，或 monotonic 微秒计数耗尽时 panic。
     pub(in crate::task) fn checkpoint_runtime(&mut self, checkpoint_us: u64) {
         // 1. 原子地把 active 起点推进到 checkpoint，后续 finish 只提交剩余增量。
         let encoded = checkpoint_us
@@ -502,11 +572,16 @@ impl Sched {
 }
 
 impl TaskControlBlock {
-    /// @description 快照 Thread 创建时刻、调度属性与已累计 CPU runtime。
+    /// 快照 Thread 创建时刻、调度属性与已累计 CPU runtime。
     ///
-    /// @param active_now_us calling Thread 传入本次 monotonic 时刻以包含尚未提交的 active slice；
-    /// 其他 Thread 传入 `None`，保持跨 CPU 最多一个 scheduler tick 的 bounded-stale 读取。
-    /// @return `(start_time_us, nice, priority, runtime_us)`；读取不修改任何 owner。
+    /// # Parameters
+    ///
+    /// - `active_now_us`: calling Thread 传入本次 monotonic 时刻以包含尚未提交的 active slice；
+    ///   其他 Thread 传入 `None`，保持跨 CPU 最多一个 scheduler tick 的 bounded-stale 读取。
+    ///
+    /// # Returns
+    ///
+    /// `(start_time_us, nice, priority, runtime_us)`；读取不修改任何 owner。
     pub(in crate::task) fn thread_statistics(
         &self,
         active_now_us: Option<u64>,
@@ -522,11 +597,19 @@ impl TaskControlBlock {
         )
     }
 
-    /// @description 快照 calling Thread 与所属 Process 的 scheduler CPU runtime。
+    /// 快照 calling Thread 与所属 Process 的 scheduler CPU runtime。
     ///
-    /// @param now_us 本次查询共用的 monotonic 微秒时刻。
-    /// @return `(process_runtime_us, thread_runtime_us)`；均包含 calling Thread 尚未提交的 active slice。
-    /// @panics calling Thread 当前没有 active slice，表示 syscall 绕过 scheduler running ownership。
+    /// # Parameters
+    ///
+    /// - `now_us`: 本次查询共用的 monotonic 微秒时刻。
+    ///
+    /// # Returns
+    ///
+    /// `(process_runtime_us, thread_runtime_us)`；均包含 calling Thread 尚未提交的 active slice。
+    ///
+    /// # Panics
+    ///
+    /// calling Thread 当前没有 active slice，表示 syscall 绕过 scheduler running ownership。
     pub(crate) fn cpu_runtime_snapshot(&self, now_us: u64) -> (u64, u64) {
         let policy = self.scheduling.policy.lock();
         let active_runtime_us = policy.active_runtime_delta(now_us);

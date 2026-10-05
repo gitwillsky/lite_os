@@ -30,7 +30,7 @@ static DIRTY_PAGES: AtomicUsize = AtomicUsize::new(0);
 // writable fault 同时扫描相同 owner，放大 CPU/FLUSH，而跳过者仍由后续 cadence 重试。
 static DIRTY_THROTTLE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// @description page-cache owner 在单次读取边界投影的全局页统计。
+/// page-cache owner 在单次读取边界投影的全局页统计。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PageCacheStatistics {
     /// 当前由 CachedFile 强拥有的 resident pages。
@@ -317,7 +317,7 @@ fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError
     Ok(file)
 }
 
-/// @description 持久 page-cache 与只读动态快照共用的 regular-file I/O facade。
+/// 持久 page-cache 与只读动态快照共用的 regular-file I/O facade。
 ///
 /// syscall 在一次 read/write 操作内复用该值，避免每个 user-copy chunk 重复读取 inode
 /// metadata、获取全局 FILES lock 并查找同一个 ordered entry。
@@ -328,7 +328,7 @@ enum RegularFileBackend {
     Volatile(Arc<dyn Inode>),
 }
 
-/// @description 一次 regular-file cache read 的 logical 与实际 storage 结果。
+/// 一次 regular-file cache read 的 logical 与实际 storage 结果。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RegularFileRead {
     /// 复制到 kernel output 的 logical file bytes。
@@ -337,7 +337,7 @@ pub(crate) struct RegularFileRead {
     pub(crate) storage_bytes: usize,
 }
 
-/// @description 持有单 inode write-sequence ownership 的一次 regular-file mutation。
+/// 持有单 inode write-sequence ownership 的一次 regular-file mutation。
 ///
 /// Drop 无条件释放 gate；error、signal 或 partial user-copy 都不会遗留 transaction owner。
 pub(crate) struct RegularFileWrite<'a> {
@@ -346,12 +346,21 @@ pub(crate) struct RegularFileWrite<'a> {
 }
 
 impl RegularFile {
-    /// @description 将 regular inode 解析为持久 page-cache owner 或只读动态快照。
-    /// @param inode 目标 regular inode。
-    /// @return 可在本次 I/O 内复用的 facade；volatile inode 不注册全局 cache entry。
-    /// @error `InvalidOperation` 表示 inode 不是 regular file。
-    /// @error inode metadata 读取失败时透传 filesystem error。
-    /// @error 首次注册 memory reclaimer 失败时返回 `OutOfMemory`。
+    /// 将 regular inode 解析为持久 page-cache owner 或只读动态快照。
+    ///
+    /// # Parameters
+    ///
+    /// - `inode`: 目标 regular inode。
+    ///
+    /// # Returns
+    ///
+    /// 可在本次 I/O 内复用的 facade；volatile inode 不注册全局 cache entry。
+    ///
+    /// # Errors
+    ///
+    /// - `InvalidOperation` 表示 inode 不是 regular file。
+    /// - inode metadata 读取失败时透传 filesystem error。
+    /// - 首次注册 memory reclaimer 失败时返回 `OutOfMemory`。
     pub(crate) fn from_inode(inode: Arc<dyn Inode>) -> Result<Self, FileSystemError> {
         if inode.inode_type() != InodeType::File {
             return Err(FileSystemError::InvalidOperation);
@@ -362,8 +371,11 @@ impl RegularFile {
         cached_file(inode).map(|file| Self(RegularFileBackend::Cached(file)))
     }
 
-    /// @description 返回持久文件的唯一 page-cache backing identity。
-    /// @return 持久文件返回 filesystem/inode identity；动态快照没有 cache identity，返回 None。
+    /// 返回持久文件的唯一 page-cache backing identity。
+    ///
+    /// # Returns
+    ///
+    /// 持久文件返回 filesystem/inode identity；动态快照没有 cache identity，返回 None。
     pub(crate) fn id(&self) -> Option<SharedFileId> {
         match &self.0 {
             RegularFileBackend::Cached(file) => Some(file.id),
@@ -371,8 +383,11 @@ impl RegularFile {
         }
     }
 
-    /// @description 返回当前 regular-file byte size。
-    /// @return filesystem metadata owner 的当前 i_size 投影。
+    /// 返回当前 regular-file byte size。
+    ///
+    /// # Returns
+    ///
+    /// filesystem metadata owner 的当前 i_size 投影。
     pub(crate) fn size(&self) -> u64 {
         match &self.0 {
             RegularFileBackend::Cached(file) => file.inode.size(),
@@ -380,13 +395,22 @@ impl RegularFile {
         }
     }
 
-    /// @description 从持久 page cache 或只读动态 inode 读取 regular-file bytes。
-    /// @param offset 文件 byte offset。
-    /// @param output kernel-owned 输出缓冲区。
-    /// @return 实际读取字节数；EOF 返回零。
-    /// @error cache fill 分配失败时返回 `OutOfMemory`。
-    /// @error size snapshot 后并发 truncate 越过当前 page 时返回 `InvalidOperation`。
-    /// @error storage read 失败或短读时返回对应 filesystem error。
+    /// 从持久 page cache 或只读动态 inode 读取 regular-file bytes。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 文件 byte offset。
+    /// - `output`: kernel-owned 输出缓冲区。
+    ///
+    /// # Returns
+    ///
+    /// 实际读取字节数；EOF 返回零。
+    ///
+    /// # Errors
+    ///
+    /// - cache fill 分配失败时返回 `OutOfMemory`。
+    /// - size snapshot 后并发 truncate 越过当前 page 时返回 `InvalidOperation`。
+    /// - storage read 失败或短读时返回对应 filesystem error。
     pub(crate) fn read(
         &self,
         offset: u64,
@@ -424,9 +448,15 @@ impl RegularFile {
         })
     }
 
-    /// @description 开始一次不可被其他 regular-file mutation 穿插的 write operation。
-    /// @return 持有 per-inode write-sequence gate 的 mutation facade；Drop 自动释放。
-    /// @error 只读动态 inode 返回 `ReadOnly`。
+    /// 开始一次不可被其他 regular-file mutation 穿插的 write operation。
+    ///
+    /// # Returns
+    ///
+    /// 持有 per-inode write-sequence gate 的 mutation facade；Drop 自动释放。
+    ///
+    /// # Errors
+    ///
+    /// 只读动态 inode 返回 `ReadOnly`。
     pub(crate) fn begin_write(&self) -> Result<RegularFileWrite<'_>, FileSystemError> {
         let RegularFileBackend::Cached(file) = &self.0 else {
             return Err(FileSystemError::ReadOnly);
@@ -479,11 +509,17 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSyste
     Ok(())
 }
 
-/// @description 在 page-cache operation domain 内预分配 regular-file backing blocks。
-/// @param inode 目标 regular inode。
-/// @param offset byte range 起点。
-/// @param length 非零 byte range 长度。
-/// @return allocation 与可能的 size extension 完成；cached contents 保持不变。
+/// 在 page-cache operation domain 内预分配 regular-file backing blocks。
+///
+/// # Parameters
+///
+/// - `inode`: 目标 regular inode。
+/// - `offset`: byte range 起点。
+/// - `length`: 非零 byte range 长度。
+///
+/// # Returns
+///
+/// allocation 与可能的 size extension 完成；cached contents 保持不变。
 pub(crate) fn allocate(
     inode: Arc<dyn Inode>,
     offset: u64,
@@ -546,9 +582,11 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
     Ok(())
 }
 
-/// @description 从唯一 CachedFile page maps 汇总一次全局 resident/dirty/reclaimable 快照。
+/// 从唯一 CachedFile page maps 汇总一次全局 resident/dirty/reclaimable 快照。
 ///
-/// @return 只读统计；不触发 fill、writeback 或 reclaim。
+/// # Returns
+///
+/// 只读统计；不触发 fill、writeback 或 reclaim。
 pub(crate) fn statistics() -> PageCacheStatistics {
     let files = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
     let mut statistics = PageCacheStatistics {

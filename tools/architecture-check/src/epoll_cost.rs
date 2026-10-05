@@ -4,9 +4,9 @@ const EPOLL_OWNER_SOURCE: &str = "kernel/src/fs/epoll.rs";
 const EPOLL_READY_SOURCE: &str = "kernel/src/fs/epoll/ready.rs";
 const EPOLL_SYSCALL_SOURCE: &str = "kernel/src/syscall/epoll.rs";
 const WAIT_KEY_SOURCE: &str = "kernel/src/syscall/poll/wait_keys.rs";
-const PIPE_NOTIFY_SOURCE: &str = "kernel/src/task/task_manager/pipe_wait.rs";
-const WAIT_PREPARATION_SOURCE: &str = "kernel/src/task/task_manager/wait_registry/preparation.rs";
-const CONSOLE_NOTIFY_SOURCE: &str = "kernel/src/task/task_manager/console_wait.rs";
+const PIPE_NOTIFY_SOURCE: &str = "kernel/src/task/process_table/pipe_wait.rs";
+const WAIT_PREPARATION_SOURCE: &str = "kernel/src/task/process_table/wait_registry/preparation.rs";
+const CONSOLE_NOTIFY_SOURCE: &str = "kernel/src/task/process_table/console_wait.rs";
 const UNIX_LIFECYCLE_SOURCE: &str = "kernel/src/socket/unix/lifecycle.rs";
 
 const INTERESTS: usize = 128;

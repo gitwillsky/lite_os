@@ -1,6 +1,6 @@
 use super::{InetEndpoint, InetSocket, SocketError, stack};
 
-/// @description NetworkStack endpoint owner 保存的标准 SOL_SOCKET policy。
+/// NetworkStack endpoint owner 保存的标准 SOL_SOCKET policy。
 #[derive(Clone, Copy, Default)]
 pub(super) struct InetSocketOptions {
     /// 控制地址冲突是否允许两个 endpoint 共同 opt-in；缺失会让 daemon restart 错误 EADDRINUSE。
@@ -15,10 +15,19 @@ pub(super) struct InetSocketOptions {
 }
 
 impl InetSocket {
-    /// @description 设置 Linux `SO_REUSEADDR` 并由 endpoint owner 参与 bind collision policy。
-    /// @param enabled 非零 option value 的布尔投影。
-    /// @return endpoint 存在时返回 unit。
-    /// @errors endpoint 已被删除时返回 NotConnected。
+    /// 设置 Linux `SO_REUSEADDR` 并由 endpoint owner 参与 bind collision policy。
+    ///
+    /// # Parameters
+    ///
+    /// - `enabled`: 非零 option value 的布尔投影。
+    ///
+    /// # Returns
+    ///
+    /// endpoint 存在时返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// endpoint 已被删除时返回 NotConnected。
     pub(in crate::socket) fn set_reuse_address(&self, enabled: bool) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
         let mut network = stack()?.lock()?;
@@ -56,10 +65,19 @@ impl InetSocket {
         Ok(())
     }
 
-    /// @description 设置 UDP limited/subnet broadcast 发送授权。
-    /// @param enabled 非零 option value 的布尔投影。
-    /// @return UDP endpoint 存在时返回 unit。
-    /// @errors TCP 返回 OperationNotSupported；endpoint 消失返回 NotConnected。
+    /// 设置 UDP limited/subnet broadcast 发送授权。
+    ///
+    /// # Parameters
+    ///
+    /// - `enabled`: 非零 option value 的布尔投影。
+    ///
+    /// # Returns
+    ///
+    /// UDP endpoint 存在时返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// TCP 返回 OperationNotSupported；endpoint 消失返回 NotConnected。
     pub(in crate::socket) fn set_broadcast(&self, enabled: bool) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
         if let InetEndpoint::Raw(handle) = self.endpoint {
@@ -76,10 +94,19 @@ impl InetSocket {
         Ok(())
     }
 
-    /// @description 将 endpoint 绑定到当前唯一标准 interface `eth0`，空名称解除绑定。
-    /// @param name NUL 已剥离的 interface name bytes。
-    /// @return binding 状态提交给 endpoint owner 后返回 unit。
-    /// @errors 未知 interface 返回 NoDevice；endpoint 消失返回 NotConnected。
+    /// 将 endpoint 绑定到当前唯一标准 interface `eth0`，空名称解除绑定。
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: NUL 已剥离的 interface name bytes。
+    ///
+    /// # Returns
+    ///
+    /// binding 状态提交给 endpoint owner 后返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// 未知 interface 返回 NoDevice；endpoint 消失返回 NotConnected。
     pub(in crate::socket) fn bind_to_device(&self, name: &[u8]) -> Result<(), SocketError> {
         if !name.is_empty() && name != b"eth0" {
             return Err(SocketError::NoDevice);

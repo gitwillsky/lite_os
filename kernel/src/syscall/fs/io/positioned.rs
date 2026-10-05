@@ -34,13 +34,18 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     result
 }
 
-/// @description 从 regular-file OFD 的显式 offset 读取，不修改共享 OFD offset。
+/// 从 regular-file OFD 的显式 offset 读取，不修改共享 OFD offset。
 ///
-/// @param fd 源 descriptor。
-/// @param pointer userspace 输出地址。
-/// @param length 最大读取长度。
-/// @param offset 非负文件偏移。
-/// @return byte count、EOF 零或负 errno。
+/// # Parameters
+///
+/// - `fd`: 源 descriptor。
+/// - `pointer`: userspace 输出地址。
+/// - `length`: 最大读取长度。
+/// - `offset`: 非负文件偏移。
+///
+/// # Returns
+///
+/// byte count、EOF 零或负 errno。
 pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64) -> isize {
     positioned_read(
         fd,
@@ -52,13 +57,18 @@ pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64)
     )
 }
 
-/// @description 向 regular-file OFD 的显式 offset 写入，不修改共享 OFD offset。
+/// 向 regular-file OFD 的显式 offset 写入，不修改共享 OFD offset。
 ///
-/// @param fd 目标 descriptor。
-/// @param vectors 按序消费的 userspace buffers。
-/// @param offset 非负文件偏移；Linux `O_APPEND` OFD 仍在 inode end 执行写入。
-/// @param append_override `pwritev2` 对 OFD O_APPEND 的 operation-local override。
-/// @return byte count、partial count 或负 errno。
+/// # Parameters
+///
+/// - `fd`: 目标 descriptor。
+/// - `vectors`: 按序消费的 userspace buffers。
+/// - `offset`: 非负文件偏移；Linux `O_APPEND` OFD 仍在 inode end 执行写入。
+/// - `append_override`: `pwritev2` 对 OFD O_APPEND 的 operation-local override。
+///
+/// # Returns
+///
+/// byte count、partial count 或负 errno。
 fn positioned_write(
     fd: usize,
     vectors: &[UserIoVec],
@@ -112,13 +122,18 @@ fn positioned_write(
     result
 }
 
-/// @description 向 regular-file OFD 的显式 offset 写入，不修改共享 OFD offset。
+/// 向 regular-file OFD 的显式 offset 写入，不修改共享 OFD offset。
 ///
-/// @param fd 目标 descriptor。
-/// @param pointer userspace 输入地址。
-/// @param length 待写入长度。
-/// @param offset 非负文件偏移；Linux legacy pwrite64 仍继承 OFD 的 O_APPEND。
-/// @return byte count、partial count 或负 errno。
+/// # Parameters
+///
+/// - `fd`: 目标 descriptor。
+/// - `pointer`: userspace 输入地址。
+/// - `length`: 待写入长度。
+/// - `offset`: 非负文件偏移；Linux legacy pwrite64 仍继承 OFD 的 O_APPEND。
+///
+/// # Returns
+///
+/// byte count、partial count 或负 errno。
 pub(crate) fn sys_pwrite64(fd: usize, pointer: usize, length: usize, offset: i64) -> isize {
     positioned_write(
         fd,
@@ -155,33 +170,51 @@ fn positioned_writev(
     positioned_write(fd, &vectors, offset, append_override)
 }
 
-/// @description 按 Linux preadv ABI 从显式 offset scatter read，不修改共享 OFD offset。
-/// @param fd 源 descriptor。
-/// @param iovector userspace iovec 数组。
-/// @param count iovec 数量。
-/// @param offset 非负显式 offset。
-/// @return byte count、partial count 或负 errno。
+/// 按 Linux preadv ABI 从显式 offset scatter read，不修改共享 OFD offset。
+///
+/// # Parameters
+///
+/// - `fd`: 源 descriptor。
+/// - `iovector`: userspace iovec 数组。
+/// - `count`: iovec 数量。
+/// - `offset`: 非负显式 offset。
+///
+/// # Returns
+///
+/// byte count、partial count 或负 errno。
 pub(crate) fn sys_preadv(fd: usize, iovector: usize, count: usize, offset: i64) -> isize {
     positioned_readv(fd, iovector, count, offset)
 }
 
-/// @description 按 Linux pwritev ABI 向显式 offset gather write，不修改共享 OFD offset。
-/// @param fd 目标 descriptor。
-/// @param iovector userspace iovec 数组。
-/// @param count iovec 数量。
-/// @param offset 非负显式 offset。
-/// @return byte count、partial count 或负 errno。
+/// 按 Linux pwritev ABI 向显式 offset gather write，不修改共享 OFD offset。
+///
+/// # Parameters
+///
+/// - `fd`: 目标 descriptor。
+/// - `iovector`: userspace iovec 数组。
+/// - `count`: iovec 数量。
+/// - `offset`: 非负显式 offset。
+///
+/// # Returns
+///
+/// byte count、partial count 或负 errno。
 pub(crate) fn sys_pwritev(fd: usize, iovector: usize, count: usize, offset: i64) -> isize {
     positioned_writev(fd, iovector, count, offset, None)
 }
 
-/// @description 实现 Linux preadv2；offset=-1 使用共享 OFD offset，其余为 positioned read。
-/// @param fd 源 descriptor。
-/// @param iovector userspace iovec 数组。
-/// @param count iovec 数量。
-/// @param offset 显式 offset 或 -1。
-/// @param flags 当前同步 VFS 不支持异步/缓存 hint，非零 flags 返回 EOPNOTSUPP。
-/// @return byte count、partial count 或负 errno。
+/// 实现 Linux preadv2；offset=-1 使用共享 OFD offset，其余为 positioned read。
+///
+/// # Parameters
+///
+/// - `fd`: 源 descriptor。
+/// - `iovector`: userspace iovec 数组。
+/// - `count`: iovec 数量。
+/// - `offset`: 显式 offset 或 -1。
+/// - `flags`: 当前同步 VFS 不支持异步/缓存 hint，非零 flags 返回 EOPNOTSUPP。
+///
+/// # Returns
+///
+/// byte count、partial count 或负 errno。
 pub(crate) fn sys_preadv2(
     fd: usize,
     iovector: usize,
@@ -204,13 +237,19 @@ const RWF_APPEND: u32 = 0x10;
 const RWF_NOAPPEND: u32 = 0x20;
 const SUPPORTED_WRITE_FLAGS: u32 = RWF_DSYNC | RWF_SYNC | RWF_APPEND | RWF_NOAPPEND;
 
-/// @description 实现 Linux pwritev2 的 append override 与同步写语义。
-/// @param fd 目标 descriptor。
-/// @param iovector userspace iovec 数组。
-/// @param count iovec 数量。
-/// @param offset 显式 offset 或 -1。
-/// @param flags 支持 RWF_DSYNC/RWF_SYNC/RWF_APPEND/RWF_NOAPPEND；其他 flags 返回 EOPNOTSUPP。
-/// @return byte count、partial count 或负 errno。
+/// 实现 Linux pwritev2 的 append override 与同步写语义。
+///
+/// # Parameters
+///
+/// - `fd`: 目标 descriptor。
+/// - `iovector`: userspace iovec 数组。
+/// - `count`: iovec 数量。
+/// - `offset`: 显式 offset 或 -1。
+/// - `flags`: 支持 RWF_DSYNC/RWF_SYNC/RWF_APPEND/RWF_NOAPPEND；其他 flags 返回 EOPNOTSUPP。
+///
+/// # Returns
+///
+/// byte count、partial count 或负 errno。
 pub(crate) fn sys_pwritev2(
     fd: usize,
     iovector: usize,

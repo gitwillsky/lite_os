@@ -1,4 +1,4 @@
-//! @description QEMU `virt` AArch64 machine backend。
+//! QEMU `virt` AArch64 machine backend。
 
 use core::fmt;
 
@@ -42,10 +42,11 @@ pub(crate) fn initialize(boot: BootInfo) {
     console::validate_discovered_base();
 }
 
-/// @description 初始化 AArch64 interrupt controller 与逐 CPU TLB rendezvous state。
+/// 初始化 AArch64 interrupt controller 与逐 CPU TLB rendezvous state。
 ///
-/// @return 无返回值。
-/// @errors controller 或 rendezvous 初始化失败时 fail-stop。
+/// # Errors
+///
+/// controller 或 rendezvous 初始化失败时 fail-stop。
 pub(crate) fn initialize_devices() {
     devices::initialize();
     tlb_shootdown::initialize();
@@ -115,12 +116,21 @@ pub(crate) fn arm_timer(deadline: u64) -> Result<(), TimerArmError> {
     Ok(())
 }
 
-/// @description 广播 full translation fence，并等待每颗 AArch64 `virt` 目标 vCPU 越过 flush point。
-/// @param cpus 至少一个可能持有 stale translation 的 logical CPU；空集合无需硬件操作。
-/// @param start_address generic owner 归一化的起始地址；本 backend 为可靠性升级为 full broadcast。
-/// @param size generic owner 归一化的区间长度；本 backend 为可靠性升级为 full broadcast。
-/// @return source `VMALLE1IS` 完成且每颗目标 vCPU 的 SGI handler 发布 ack 后成功。
-/// @errors SGI 投递失败时返回 `TlbShootdownError`。
+/// 广播 full translation fence，并等待每颗 AArch64 `virt` 目标 vCPU 越过 flush point。
+///
+/// # Parameters
+///
+/// - `cpus`: 至少一个可能持有 stale translation 的 logical CPU；空集合无需硬件操作。
+/// - `start_address`: generic owner 归一化的起始地址；本 backend 为可靠性升级为 full broadcast。
+/// - `size`: generic owner 归一化的区间长度；本 backend 为可靠性升级为 full broadcast。
+///
+/// # Returns
+///
+/// source `VMALLE1IS` 完成且每颗目标 vCPU 的 SGI handler 发布 ack 后成功。
+///
+/// # Errors
+///
+/// SGI 投递失败时返回 `TlbShootdownError`。
 pub(crate) fn synchronize_tlb(
     cpus: crate::cpu::CpuSet,
     start_address: usize,
@@ -136,9 +146,11 @@ pub(crate) fn synchronize_tlb(
     tlb_shootdown::synchronize(cpus)
 }
 
-/// @description 在 AArch64 SGI completion seam 消费当前 vCPU 的 TLB request。
+/// 在 AArch64 SGI completion seam 消费当前 vCPU 的 TLB request。
 ///
-/// @return 没有新 request 时不执行操作。
+/// # Returns
+///
+/// 没有新 request 时不执行操作。
 pub(crate) fn complete_pending_ipi() {
     tlb_shootdown::complete_pending();
 }

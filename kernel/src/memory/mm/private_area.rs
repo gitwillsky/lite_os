@@ -23,13 +23,13 @@ enum PrivateSource {
     },
 }
 
-/// @description private file/ELF VMA 的不可变 fault source；resident 私有页仍只由 MapArea 持有。
+/// private file/ELF VMA 的不可变 fault source；resident 私有页仍只由 MapArea 持有。
 #[derive(Clone)]
 pub(super) struct PrivateFileArea {
     source: PrivateSource,
 }
 
-/// @description private-file fault 在 private frame 分配前冻结的瞬时 backing snapshot。
+/// private-file fault 在 private frame 分配前冻结的瞬时 backing snapshot。
 pub(super) enum PrivateFaultPreparation {
     Executable,
     Cached(Arc<dyn SharedPage>),
@@ -62,7 +62,7 @@ impl fmt::Debug for PrivateFileArea {
 }
 
 impl PrivateFileArea {
-    /// @description 为 PT_LOAD 建立按页随机读取的 backing，不复制完整 segment。
+    /// 为 PT_LOAD 建立按页随机读取的 backing，不复制完整 segment。
     pub(super) fn executable(
         source: Arc<dyn ExecutableSource>,
         data_start: usize,
@@ -79,7 +79,7 @@ impl PrivateFileArea {
         }
     }
 
-    /// @description 为 MAP_PRIVATE regular file 建立 page-cache read seam。
+    /// 为 MAP_PRIVATE regular file 建立 page-cache read seam。
     pub(super) fn cached_file(
         source: Arc<dyn SharedFileMapping>,
         data_start: usize,
@@ -100,7 +100,7 @@ impl PrivateFileArea {
         u64::try_from(delta).ok()
     }
 
-    /// @description 判断当前 fault page 是否仍有文件对象覆盖；truncate 后的整页返回 SIGBUS。
+    /// 判断当前 fault page 是否仍有文件对象覆盖；truncate 后的整页返回 SIGBUS。
     pub(super) fn faultable(&self, vpn: VirtualPageNumber) -> Result<bool, MemoryError> {
         match &self.source {
             PrivateSource::Executable { .. } => Ok(true),
@@ -114,8 +114,11 @@ impl PrivateFileArea {
         }
     }
 
-    /// @description 在 private frame allocation/reclaim 前稳定当前 fault page。
-    /// @return cached page Arc 与 truncate 的 operation domain 线性化；EOF 不分配任何页。
+    /// 在 private frame allocation/reclaim 前稳定当前 fault page。
+    ///
+    /// # Returns
+    ///
+    /// cached page Arc 与 truncate 的 operation domain 线性化；EOF 不分配任何页。
     pub(super) fn prepare_fault(
         &self,
         vpn: VirtualPageNumber,
@@ -140,10 +143,15 @@ impl PrivateFileArea {
         }
     }
 
-    /// @description 判断 resident private page 是否仍包含文件数据，而非纯 BSS/EOF 零页。
+    /// 判断 resident private page 是否仍包含文件数据，而非纯 BSS/EOF 零页。
     ///
-    /// @param vpn 待分类的 VMA virtual page number。
-    /// @return page 与 executable/file 数据区间存在非空交集时为 true。
+    /// # Parameters
+    ///
+    /// - `vpn`: 待分类的 VMA virtual page number。
+    ///
+    /// # Returns
+    ///
+    /// page 与 executable/file 数据区间存在非空交集时为 true。
     pub(super) fn has_file_bytes(&self, vpn: VirtualPageNumber) -> bool {
         match &self.source {
             PrivateSource::Executable {
@@ -173,7 +181,7 @@ impl PrivateFileArea {
         }
     }
 
-    /// @description 投影 truncate 后首个必须撤销的 cached private VMA page。
+    /// 投影 truncate 后首个必须撤销的 cached private VMA page。
     pub(super) fn first_stale_page(
         &self,
         vma_start: VirtualPageNumber,
@@ -196,7 +204,7 @@ impl PrivateFileArea {
             .map(VirtualPageNumber::from_vpn)
     }
 
-    /// @description 从 allocation 前冻结的 backing snapshot 填充 fault page。
+    /// 从 allocation 前冻结的 backing snapshot 填充 fault page。
     pub(super) fn fill(
         &self,
         vpn: VirtualPageNumber,

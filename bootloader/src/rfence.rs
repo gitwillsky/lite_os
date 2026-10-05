@@ -30,7 +30,7 @@ fn dtb_hart_mask() -> usize {
     crate::BOARD_INFO.wait().hart_mask
 }
 
-/// @description SBI RFENCE 的同步 M-mode 实现。
+/// SBI RFENCE 的同步 M-mode 实现。
 pub(crate) struct Rfence;
 
 impl Rfence {

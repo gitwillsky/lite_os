@@ -16,7 +16,7 @@ enum FrameAllocError {
     Duplicate,
 }
 
-/// @description 物理页请求是否允许消耗 kernel progress reserve。
+/// 物理页请求是否允许消耗 kernel progress reserve。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FrameAllocationClass {
     /// 用户 residency、页表与可失败 kernel 工作；触及低水位时必须返回 OOM。
@@ -27,7 +27,7 @@ pub(crate) enum FrameAllocationClass {
     KernelCritical,
 }
 
-/// @description frame allocator 唯一 owner 的瞬时容量与碎片快照。
+/// frame allocator 唯一 owner 的瞬时容量与碎片快照。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FrameStatistics {
     /// allocator 管辖的总页数。
@@ -38,7 +38,7 @@ pub(crate) struct FrameStatistics {
     pub(crate) free_blocks: [usize; usize::BITS as usize],
 }
 
-/// @description 一个或多个连续物理页的唯一 RAII owner。
+/// 一个或多个连续物理页的唯一 RAII owner。
 pub(crate) struct FrameTracker {
     /// 连续区间的首个物理页号。
     pub(crate) ppn: PhysicalPageNumber,
@@ -53,19 +53,30 @@ impl FrameTracker {
         tracker
     }
 
-    /// @description 从已经撤销其他 owner publication 的物理 extent 重建唯一 RAII owner。
-    /// @param ppn order-aligned extent 首个物理页号。
-    /// @param pages 非零 2ⁿ 页数，frame allocator 中仍标记为 allocated。
-    /// @return 不清零内容的唯一 FrameTracker。
-    /// @safety caller 必须证明完整 extent 当前没有其他 owner、引用或 allocator membership。
+    /// 从已经撤销其他 owner publication 的物理 extent 重建唯一 RAII owner。
+    ///
+    /// # Parameters
+    ///
+    /// - `ppn`: order-aligned extent 首个物理页号。
+    /// - `pages`: 非零 2ⁿ 页数，frame allocator 中仍标记为 allocated。
+    ///
+    /// # Returns
+    ///
+    /// 不清零内容的唯一 FrameTracker。
+    ///
+    /// # Safety
+    ///
+    /// caller 必须证明完整 extent 当前没有其他 owner、引用或 allocator membership。
     // SAFETY: caller must transfer one complete still-allocated frame extent with no aliases.
     pub(in crate::memory) unsafe fn from_raw(ppn: PhysicalPageNumber, pages: usize) -> Self {
         Self { ppn, pages }
     }
 
-    /// @description 独占借用 tracker 拥有的连续物理页内容。
+    /// 独占借用 tracker 拥有的连续物理页内容。
     ///
-    /// @return 生命周期绑定到 tracker 独占借用的可写字节切片。
+    /// # Returns
+    ///
+    /// 生命周期绑定到 tracker 独占借用的可写字节切片。
     pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
         let len = self
             .pages
@@ -76,9 +87,11 @@ impl FrameTracker {
         unsafe { core::slice::from_raw_parts_mut(self.ppn.as_page_mut_ptr(), len) }
     }
 
-    /// @description 只读借用 tracker 拥有的连续物理页内容。
+    /// 只读借用 tracker 拥有的连续物理页内容。
     ///
-    /// @return 生命周期绑定到 tracker 的只读字节切片。
+    /// # Returns
+    ///
+    /// 生命周期绑定到 tracker 的只读字节切片。
     pub(crate) fn bytes(&self) -> &[u8] {
         let len = self
             .pages
@@ -404,12 +417,16 @@ impl FrameAllocator {
     }
 }
 
-/// @description 发布覆盖给定物理区间的唯一 frame allocator。
+/// 发布覆盖给定物理区间的唯一 frame allocator。
 ///
-/// @param start_addr allocator 可用区间起点。
-/// @param end_addr allocator 可用区间 exclusive end。
-/// @return 无返回值。
-/// @errors 空区间、零页或重复初始化时 fail-stop。
+/// # Parameters
+///
+/// - `start_addr`: allocator 可用区间起点。
+/// - `end_addr`: allocator 可用区间 exclusive end。
+///
+/// # Errors
+///
+/// 空区间、零页或重复初始化时 fail-stop。
 pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
     assert!(
         FRAME_ALLOCATOR.get().is_none(),
@@ -458,7 +475,7 @@ fn alloc_unzeroed_raw() -> Option<FrameTracker> {
         .map(|ppn| FrameTracker { ppn, pages: 1 })
 }
 
-/// @description 从唯一 frame allocator 分配一页；触及 kernel progress 低水位时回收后重试。
+/// 从唯一 frame allocator 分配一页；触及 kernel progress 低水位时回收后重试。
 pub(crate) fn alloc() -> Option<FrameTracker> {
     if let Some(frame) = alloc_raw() {
         return Some(frame);
@@ -467,10 +484,19 @@ pub(crate) fn alloc() -> Option<FrameTracker> {
     alloc_raw()
 }
 
-/// @description 分配一页并在 publication 前用完整 source page 覆盖其旧内容。
-/// @param source 必须恰好为一页；仅供 COW 等完整覆盖路径使用。
-/// @return 成功返回不经过 zero-fill、但已完全初始化的唯一 FrameTracker。
-/// @errors 内存回收后仍无空闲页时返回 None；长度不是一页表示 caller 破坏安全契约并 fail-stop。
+/// 分配一页并在 publication 前用完整 source page 覆盖其旧内容。
+///
+/// # Parameters
+///
+/// - `source`: 必须恰好为一页；仅供 COW 等完整覆盖路径使用。
+///
+/// # Returns
+///
+/// 成功返回不经过 zero-fill、但已完全初始化的唯一 FrameTracker。
+///
+/// # Errors
+///
+/// 内存回收后仍无空闲页时返回 None；长度不是一页表示 caller 破坏安全契约并 fail-stop。
 pub(crate) fn alloc_copy(source: &[u8]) -> Option<FrameTracker> {
     assert_eq!(
         source.len(),
@@ -487,11 +513,16 @@ pub(crate) fn alloc_copy(source: &[u8]) -> Option<FrameTracker> {
     Some(frame)
 }
 
-/// @description 分配并清零指定数量的连续物理页。
+/// 分配并清零指定数量的连续物理页。
 ///
-/// @param pages 非零页数。
-/// @param class 是否允许消耗 kernel progress reserve。
-/// @return 成功返回唯一 `FrameTracker`，实际页数向上取整为 2ⁿ 以保证
+/// # Parameters
+///
+/// - `pages`: 非零页数。
+/// - `class`: 是否允许消耗 kernel progress reserve。
+///
+/// # Returns
+///
+/// 成功返回唯一 `FrameTracker`，实际页数向上取整为 2ⁿ 以保证
 /// 同尺寸对齐；回收后仍无该 order 区间返回 `None`。
 pub(crate) fn alloc_contiguous(pages: usize, class: FrameAllocationClass) -> Option<FrameTracker> {
     let mut tracker = alloc_contiguous_uninitialized(pages, class)?;
@@ -499,15 +530,23 @@ pub(crate) fn alloc_contiguous(pages: usize, class: FrameAllocationClass) -> Opt
     Some(tracker)
 }
 
-/// @description 为 kernel global allocator 分配不做 dead zero-fill 的连续 extent。
-///
-/// @param pages 非零页数；实际页数按 buddy order 向上取整。
-/// @return 成功返回尚未发布、内容不可读的唯一 extent owner。
-/// @errors 回收后仍没有可用 `KernelHeap` extent 时返回 `None`。
+/// 为 kernel global allocator 分配不做 dead zero-fill 的连续 extent。
 ///
 /// Rust allocator 的成功分配结果本来就是 uninitialized storage；只有 heap owner
 /// 可以调用本 seam。若把它用于 user mapping、DMA read buffer 或任何 partial-init
 /// publication，旧物理页内容会被观察到。
+///
+/// # Parameters
+///
+/// - `pages`: 非零页数；实际页数按 buddy order 向上取整。
+///
+/// # Returns
+///
+/// 成功返回尚未发布、内容不可读的唯一 extent owner。
+///
+/// # Errors
+///
+/// 回收后仍没有可用 `KernelHeap` extent 时返回 `None`。
 pub(in crate::memory) fn alloc_heap_extent(pages: usize) -> Option<FrameTracker> {
     alloc_contiguous_uninitialized(pages, FrameAllocationClass::KernelHeap)
 }
@@ -528,9 +567,11 @@ fn alloc_contiguous_uninitialized(
     res.map(|(ppn, pages)| FrameTracker { ppn, pages })
 }
 
-/// @description 返回 frame allocator 管辖范围的总页数与当前空闲页数。
+/// 返回 frame allocator 管辖范围的总页数与当前空闲页数。
 ///
-/// @return 容量、空闲页和每 order block 数；均来自唯一 allocator 状态。
+/// # Returns
+///
+/// 容量、空闲页和每 order block 数；均来自唯一 allocator 状态。
 pub(crate) fn statistics() -> FrameStatistics {
     FRAME_ALLOCATOR.wait().lock().statistics()
 }

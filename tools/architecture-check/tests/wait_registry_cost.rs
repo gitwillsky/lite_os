@@ -56,15 +56,15 @@ fn callback_is_under_lock(body: &str, lock: &str, callback: &str) -> bool {
 }
 
 fn measure() -> WaitRegistryCost {
-    let registry = read("kernel/src/task/task_manager/wait_registry.rs");
-    let task_manager = read("kernel/src/task/task_manager.rs");
-    let pipe_wait = read("kernel/src/task/task_manager/pipe_wait.rs");
+    let registry = read("kernel/src/task/process_table/wait_registry.rs");
+    let process_table = read("kernel/src/task/process_table.rs");
+    let pipe_wait = read("kernel/src/task/process_table/pipe_wait.rs");
     let global_owner = registry.contains("static INDEXED_WAIT_QUEUE: IrqMutex<IndexedWaitQueue>");
     let sharded_owner = registry.contains("WAIT_SHARD_COUNT")
         && registry.contains("shards: [IrqMutex<WaitShard>; WAIT_SHARD_COUNT]")
         && !global_owner;
 
-    let wait_for_poll = function_body(&task_manager, "pub(crate) fn wait_for_poll(");
+    let wait_for_poll = function_body(&process_table, "pub(crate) fn wait_for_poll(");
     let wake_pipe_waiters = function_body(&pipe_wait, "fn wake_pipe_waiters(");
     let readiness_callbacks_under_registry_lock = usize::from(callback_is_under_lock(
         wait_for_poll,

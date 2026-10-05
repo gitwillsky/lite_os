@@ -6,7 +6,7 @@ enum InputStorage<'a> {
     Slice(&'a mut [MaybeUninit<u8>]),
 }
 
-/// @description user-copy 初始化、backend 只读的 syscall-local staging owner。
+/// user-copy 初始化、backend 只读的 syscall-local staging owner。
 ///
 /// storage 从不预清零；只有一次成功 copyin 已覆盖的 prefix 可由 `initialized` 投影。
 pub(crate) struct UserInputStaging<'a> {
@@ -16,10 +16,19 @@ pub(crate) struct UserInputStaging<'a> {
 }
 
 impl UserInputStaging<'static> {
-    /// @description 分配指定 capacity 的未初始化 byte storage。
-    /// @param capacity 本 operation 最大 staging byte count。
-    /// @return initialized prefix 为空的 owner。
-    /// @error allocator 无法保留 storage 时返回 unit。
+    /// 分配指定 capacity 的未初始化 byte storage。
+    ///
+    /// # Parameters
+    ///
+    /// - `capacity`: 本 operation 最大 staging byte count。
+    ///
+    /// # Returns
+    ///
+    /// initialized prefix 为空的 owner。
+    ///
+    /// # Errors
+    ///
+    /// allocator 无法保留 storage 时返回 unit。
     pub(crate) fn try_new(capacity: usize) -> Result<Self, ()> {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(capacity).map_err(|_| ())?;
@@ -33,7 +42,7 @@ impl UserInputStaging<'static> {
 }
 
 impl<'a> UserInputStaging<'a> {
-    /// @description 把 stack/borrowed uninitialized storage 纳入同一 copyin 契约。
+    /// 把 stack/borrowed uninitialized storage 纳入同一 copyin 契约。
     pub(crate) fn from_slice(bytes: &'a mut [MaybeUninit<u8>]) -> Self {
         Self {
             storage: InputStorage::Slice(bytes),
@@ -74,7 +83,7 @@ impl<'a> UserInputStaging<'a> {
         self.prepared = 0;
     }
 
-    /// @description 投影已由 user-copy 完整初始化的唯一 prefix。
+    /// 投影已由 user-copy 完整初始化的唯一 prefix。
     pub(crate) fn initialized(&self) -> &[u8] {
         let pointer = match &self.storage {
             InputStorage::Vector(bytes) => bytes.as_ptr(),

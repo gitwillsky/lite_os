@@ -17,10 +17,15 @@ pub(crate) const ELF_MACHINE: u16 = 183;
 /// Linux arm64 baseline FP/Advanced SIMD capability bits exposed to userspace.
 pub(crate) const ELF_HWCAP: usize = (1 << 0) | (1 << 1);
 
-/// @description 校验 Linux/AArch64 ELF header 的 architecture flags。
+/// 校验 Linux/AArch64 ELF header 的 architecture flags。
 ///
-/// @param flags ELF64 header 的 `e_flags`。
-/// @return AArch64 保留字段为零时返回 true。
+/// # Parameters
+///
+/// - `flags`: ELF64 header 的 `e_flags`。
+///
+/// # Returns
+///
+/// AArch64 保留字段为零时返回 true。
 pub(crate) const fn valid_elf_flags(flags: u32) -> bool {
     flags == 0
 }
@@ -128,11 +133,17 @@ impl UserContext {
         self.kernel_cpu_id = logical_cpu;
     }
 
-    /// @description 编码标准 Linux/arm64 `rt_sigframe` 并捕获 live FPSIMD state。
-    /// @param info 128-byte siginfo image。
-    /// @param stack delivery 前的 alternate stack state。
-    /// @param signal_mask delivery 前的 blocked mask。
-    /// @return 4688-byte architecture-owned frame。
+    /// 编码标准 Linux/arm64 `rt_sigframe` 并捕获 live FPSIMD state。
+    ///
+    /// # Parameters
+    ///
+    /// - `info`: 128-byte siginfo image。
+    /// - `stack`: delivery 前的 alternate stack state。
+    /// - `signal_mask`: delivery 前的 blocked mask。
+    ///
+    /// # Returns
+    ///
+    /// 4688-byte architecture-owned frame。
     pub(crate) fn capture_signal_frame(
         &self,
         info: [u8; 128],
@@ -154,10 +165,19 @@ impl UserContext {
         frame
     }
 
-    /// @description 验证并恢复 Linux/arm64 integer 与 live FPSIMD signal state。
-    /// @param frame 从当前用户 SP 完整复制得到的 owned frame。
-    /// @return `(x0, signal_mask, alternate_stack)`。
-    /// @errors context chain、EL0 PSTATE 或用户 PC 非法时 context/live FP 均保持不变。
+    /// 验证并恢复 Linux/arm64 integer 与 live FPSIMD signal state。
+    ///
+    /// # Parameters
+    ///
+    /// - `frame`: 从当前用户 SP 完整复制得到的 owned frame。
+    ///
+    /// # Returns
+    ///
+    /// `(x0, signal_mask, alternate_stack)`。
+    ///
+    /// # Errors
+    ///
+    /// context chain、EL0 PSTATE 或用户 PC 非法时 context/live FP 均保持不变。
     pub(crate) fn restore_signal_frame(
         &mut self,
         frame: &SignalFrame,

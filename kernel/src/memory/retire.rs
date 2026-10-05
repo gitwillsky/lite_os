@@ -1,11 +1,19 @@
-/// @description 在保留全部 translation backing owner 时撤销 publication，并同步完成 TLB fence。
+/// 在保留全部 translation backing owner 时撤销 publication，并同步完成 TLB fence。
 ///
-/// @param retained 必须跨 fence 保活的 frame、device 或 writer owner；也可以是仍拥有这些
-/// owner 的独占领域引用。
-/// @param revoke 只撤销 PTE/translation publication，不得释放 `retained` 中的 owner。
-/// @param synchronize 在全部目标 CPU 上同步完成对应 translation fence。
-/// @return fence 成功后返回原 retained state，调用者此时才可释放 owner。
-/// @errors fence 失败时遗忘 retained state 并返回原错误；调用者必须随即 fail-stop，禁止
+/// # Parameters
+///
+/// - `retained`: 必须跨 fence 保活的 frame、device 或 writer owner；也可以是仍拥有这些
+///   owner 的独占领域引用。
+/// - `revoke`: 只撤销 PTE/translation publication，不得释放 `retained` 中的 owner。
+/// - `synchronize`: 在全部目标 CPU 上同步完成对应 translation fence。
+///
+/// # Returns
+///
+/// fence 成功后返回原 retained state，调用者此时才可释放 owner。
+///
+/// # Errors
+///
+/// fence 失败时遗忘 retained state 并返回原错误；调用者必须随即 fail-stop，禁止
 /// unwinding 释放硬件仍可能引用的 owner。
 pub(super) fn revoke_and_synchronize<T, E>(
     mut retained: T,
@@ -24,7 +32,7 @@ pub(super) fn revoke_and_synchronize<T, E>(
     }
 }
 
-/// @description private reclaim round-robin walk 的 probe 位置与已提交 cursor。
+/// private reclaim round-robin walk 的 probe 位置与已提交 cursor。
 ///
 /// revoke 扫描与 release replay 共用同一状态机，保证对同一 resident 序列得到同一 final
 /// cursor。不变量：committed cursor 只推进到最后一个实际扫描页的下一位置（未扫描任何页时
@@ -39,10 +47,15 @@ pub(super) struct PrivateReclaimWalk {
 }
 
 impl PrivateReclaimWalk {
-    /// @description 从 persistent reclaim cursor 建立一次 walk。
+    /// 从 persistent reclaim cursor 建立一次 walk。
     ///
-    /// @param initial 本轮扫描的起始 VPN，也是 wrap 后允许扫描的下界（不含）。
-    /// @return probe 与 committed 都从 initial 开始的 walk。
+    /// # Parameters
+    ///
+    /// - `initial`: 本轮扫描的起始 VPN，也是 wrap 后允许扫描的下界（不含）。
+    ///
+    /// # Returns
+    ///
+    /// probe 与 committed 都从 initial 开始的 walk。
     pub(super) const fn new(initial: usize) -> Self {
         Self {
             initial,
@@ -52,14 +65,16 @@ impl PrivateReclaimWalk {
         }
     }
 
-    /// @description 返回下一次 resident 查询的起点 VPN。
+    /// 返回下一次 resident 查询的起点 VPN。
     pub(super) const fn probe(&self) -> usize {
         self.probe
     }
 
-    /// @description probe 之后已无 resident 时把 probe 回绕到 VPN 0；已回绕过则扫描结束。
+    /// probe 之后已无 resident 时把 probe 回绕到 VPN 0；已回绕过则扫描结束。
     ///
-    /// @return true 表示本次调用执行了回绕、walk 继续；false 表示 walk 已完整结束。
+    /// # Returns
+    ///
+    /// true 表示本次调用执行了回绕、walk 继续；false 表示 walk 已完整结束。
     pub(super) fn wrap_or_finish(&mut self) -> bool {
         if self.wrapped {
             return false;
@@ -69,10 +84,15 @@ impl PrivateReclaimWalk {
         true
     }
 
-    /// @description 提交一个已扫描 resident 并把 probe 与 committed 推进到其下一位置。
+    /// 提交一个已扫描 resident 并把 probe 与 committed 推进到其下一位置。
     ///
-    /// @param vpn 本次扫描的 resident VPN。
-    /// @return false 表示 walk 回绕后已回到 initial 之后，该页属于上一圈，不得重复扫描，
+    /// # Parameters
+    ///
+    /// - `vpn`: 本次扫描的 resident VPN。
+    ///
+    /// # Returns
+    ///
+    /// false 表示 walk 回绕后已回到 initial 之后，该页属于上一圈，不得重复扫描，
     /// walk 结束且 cursor 不推进。
     pub(super) fn advance(&mut self, vpn: usize) -> bool {
         if self.wrapped && vpn >= self.initial {
@@ -84,7 +104,7 @@ impl PrivateReclaimWalk {
         true
     }
 
-    /// @description 返回本 walk 提交的最终 cursor；恒等于最后一个扫描页的下一位置。
+    /// 返回本 walk 提交的最终 cursor；恒等于最后一个扫描页的下一位置。
     pub(super) const fn committed(&self) -> usize {
         self.committed
     }
@@ -99,11 +119,17 @@ pub(super) struct ReclaimReleaseDecision {
     pub(super) reclaimed: bool,
 }
 
-/// @description 按 release-time owner count 和 request target 决定 resident release。
-/// @param reclaimed 本次 replay 已实际计入的物理页数。
-/// @param target request 允许返回的最大回收页数。
-/// @param release_owner_count fence 完成后、release replay 当前观察到的 Arc strong count。
-/// @return target 已满足时保留 resident；否则释放，并仅将唯一 owner 计为物理回收。
+/// 按 release-time owner count 和 request target 决定 resident release。
+///
+/// # Parameters
+///
+/// - `reclaimed`: 本次 replay 已实际计入的物理页数。
+/// - `target`: request 允许返回的最大回收页数。
+/// - `release_owner_count`: fence 完成后、release replay 当前观察到的 Arc strong count。
+///
+/// # Returns
+///
+/// target 已满足时保留 resident；否则释放，并仅将唯一 owner 计为物理回收。
 pub(super) const fn reclaim_release_decision(
     reclaimed: usize,
     target: usize,

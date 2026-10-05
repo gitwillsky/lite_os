@@ -1,4 +1,4 @@
-//! @description Linux character-device projection for the selected VirtIO Console byte stream.
+//! Linux character-device projection for the selected VirtIO Console byte stream.
 
 use alloc::sync::Arc;
 use spin::Once;
@@ -8,7 +8,7 @@ use crate::{
     ipc::{Pipe, PipeDirection, PipeEnd},
 };
 
-/// @description Character-device byte-stream error.
+/// Character-device byte-stream error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Error {
     /// The current operation would block.
@@ -26,7 +26,7 @@ impl From<PortError> for Error {
     }
 }
 
-/// @description System-wide projection of one standard VirtIO port.
+/// System-wide projection of one standard VirtIO port.
 pub(crate) struct Port {
     device: Arc<VirtIOConsoleDevice>,
     notification_read: Arc<PipeEnd>,
@@ -37,10 +37,16 @@ pub(crate) struct Port {
 // Without one publication, separate devfs opens could signal different Pipes and lose wakeups.
 static PORT: Once<Arc<Port>> = Once::new();
 
-/// @description Publish the selected adapter and its task-aware readiness source.
-/// @param device Platform-owned physical adapter.
-/// @param notification Read/write endpoints used only for merged readiness edges.
-/// @return The first complete publication succeeds.
+/// Publish the selected adapter and its task-aware readiness source.
+///
+/// # Parameters
+///
+/// - `device`: Platform-owned physical adapter.
+/// - `notification`: Read/write endpoints used only for merged readiness edges.
+///
+/// # Returns
+///
+/// The first complete publication succeeds.
 pub(crate) fn init(
     device: Arc<VirtIOConsoleDevice>,
     notification: (Arc<PipeEnd>, Arc<PipeEnd>),
@@ -58,23 +64,38 @@ pub(crate) fn init(
     Ok(())
 }
 
-/// @description Open the system VirtIO port character backend.
-/// @return A shared byte-stream handle, or `None` when this platform has no port.
+/// Open the system VirtIO port character backend.
+///
+/// # Returns
+///
+/// A shared byte-stream handle, or `None` when this platform has no port.
 pub(crate) fn open() -> Option<Arc<Port>> {
     PORT.get().cloned()
 }
 
 impl Port {
-    /// @description Consume available device bytes without sleeping.
-    /// @param output Kernel-owned destination.
-    /// @return Byte count or a precise readiness/device error.
+    /// Consume available device bytes without sleeping.
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: Kernel-owned destination.
+    ///
+    /// # Returns
+    ///
+    /// Byte count or a precise readiness/device error.
     pub(crate) fn read(&self, output: &mut [u8]) -> Result<usize, Error> {
         self.device.read(output).map_err(Into::into)
     }
 
-    /// @description Submit a bounded byte fragment without sleeping.
-    /// @param input Kernel-owned source.
-    /// @return Submitted byte count or a precise readiness/device error.
+    /// Submit a bounded byte fragment without sleeping.
+    ///
+    /// # Parameters
+    ///
+    /// - `input`: Kernel-owned source.
+    ///
+    /// # Returns
+    ///
+    /// Submitted byte count or a precise readiness/device error.
     pub(crate) fn write(&self, input: &[u8]) -> Result<usize, Error> {
         self.device.write(input).map_err(Into::into)
     }
@@ -116,8 +137,11 @@ impl Port {
     }
 }
 
-/// @description Drain adapter completions and publish one merged task readiness edge.
-/// @return `true` when a bounded pass left queue backlog.
+/// Drain adapter completions and publish one merged task readiness edge.
+///
+/// # Returns
+///
+/// `true` when a bounded pass left queue backlog.
 pub(crate) fn dispatch_work() -> bool {
     let Some(port) = PORT.get() else {
         return false;

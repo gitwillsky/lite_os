@@ -7,9 +7,10 @@ mod loader;
 mod memory_barrier;
 mod model;
 mod pid;
+mod process_table;
 mod processor;
 mod scheduler;
-mod task_manager;
+pub(crate) mod signal_number;
 
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use memory_barrier::{
@@ -23,32 +24,33 @@ pub(crate) use model::{
     SignalDelivery, SignalStack, SignalStackError, StopResume, StopTransition, TaskControlBlock,
     WaitMembership, WaitResult,
 };
-pub(crate) use processor::*;
-pub(crate) use task_manager::advisory_lock::{
+pub(crate) use process_table::advisory_lock::{
     AdvisoryLockWaitError, install_advisory_lock_notifier, wait_for_advisory_lock,
     wait_for_record_lock,
 };
-pub(crate) use task_manager::timer_queue::{
+pub(crate) use process_table::timer_queue::{
     PosixTimerClock, PosixTimerNotification, TimerFileClock, create_posix_timer, create_timer_fd,
     delete_posix_timer, posix_timer, posix_timer_overrun, real_timer, remove_posix_timers_for_exec,
     set_posix_timer, set_real_timer,
 };
-pub(crate) use task_manager::*;
+pub(crate) use process_table::*;
+pub(crate) use processor::*;
 
 const INIT_PROC_NAME: &[u8] = b"/bin/init";
 
-/// @description 在任何启动期 external/software trap 前构造 membarrier per-CPU state。
+/// 在任何启动期 external/software trap 前构造 membarrier per-CPU state。
 ///
-/// @return 无返回值。
-/// @errors 重复初始化或 allocation failure 时 fail-stop。
+/// # Errors
+///
+/// 重复初始化或 allocation failure 时 fail-stop。
 pub(crate) fn initialize_interrupt_state() {
     memory_barrier::initialize();
 }
 
-/// @description 首次 restore 的 task 在进入 architecture trap-return 前完成前一 outgoing
+/// 首次 restore 的 task 在进入 architecture trap-return 前完成前一 outgoing
 /// task 的 handoff consequence；已有 task 在 context-switch continuation 中走同一 seam。
 fn resume_new_task() -> ! {
-    task_manager::context_switch::complete_pending_handoff();
+    process_table::context_switch::complete_pending_handoff();
     let resume = current_task()
         .expect("new task resumed without Processor current ownership")
         .kernel_resume_target();
@@ -64,8 +66,8 @@ pub(crate) fn init(
     // processor topology first so the installed wait-target factory can safely observe `None`;
     // reversing these calls makes `current_task()` wait forever on an uninitialized topology.
     processor::init_topology();
-    task_manager::initialize_driver_io_wait();
-    task_manager::task_mutex_wait::initialize();
+    process_table::initialize_driver_io_wait();
+    process_table::task_mutex_wait::initialize();
     install_advisory_lock_notifier();
     let mut path = Vec::new();
     path.try_reserve_exact(INIT_PROC_NAME.len())

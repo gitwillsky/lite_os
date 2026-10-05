@@ -16,7 +16,7 @@ use super::{
         ReserveOrWait,
     },
     io_completion::{self, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
-    virtio_completion_irq::VirtIoCompletionIrq,
+    virtio_completion_irq::VirtIOCompletionIrq,
     virtio_queue::{DmaBuffer, VirtQueue},
 };
 
@@ -59,7 +59,7 @@ pub(crate) struct VirtIOBlockDevice {
     slots: Box<[RequestSlot]>,
     capacity: u64,
     supports_flush: bool,
-    completion_irq: VirtIoCompletionIrq,
+    completion_irq: VirtIOCompletionIrq,
 }
 
 impl VirtIOBlockDevice {
@@ -131,7 +131,7 @@ impl VirtIOBlockDevice {
             slots: slots.into_boxed_slice(),
             capacity,
             supports_flush: driver_features & VIRTIO_BLK_F_FLUSH != 0,
-            completion_irq: VirtIoCompletionIrq::new(),
+            completion_irq: VirtIOCompletionIrq::new(),
         })
         .ok()
     }

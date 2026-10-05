@@ -20,10 +20,16 @@ fn lock_error(error: AdvisoryLockError) -> isize {
     }
 }
 
-/// @description 按 Linux flock ABI 管理 OFD-associated whole-file advisory lock。
-/// @param fd 任意 pathname-backed open file descriptor。
-/// @param operation LOCK_SH/LOCK_EX/LOCK_UN，可附加 LOCK_NB。
-/// @return 成功返回零；冲突、signal、fd、operation、容量或 backend 错误返回负 errno。
+/// 按 Linux flock ABI 管理 OFD-associated whole-file advisory lock。
+///
+/// # Parameters
+///
+/// - `fd`: 任意 pathname-backed open file descriptor。
+/// - `operation`: LOCK_SH/LOCK_EX/LOCK_UN，可附加 LOCK_NB。
+///
+/// # Returns
+///
+/// 成功返回零；冲突、signal、fd、operation、容量或 backend 错误返回负 errno。
 pub(crate) fn sys_flock(fd: usize, operation: usize) -> isize {
     if operation & !(LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN) != 0 {
         return -errno::EINVAL;

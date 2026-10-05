@@ -1,4 +1,4 @@
-/// Linux/RV64 regular-file mmap page range construction failure.
+/// Linux LP64 regular-file mmap page range construction failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FilePageRangeError {
     /// mmap length is zero or the file offset is not page aligned.

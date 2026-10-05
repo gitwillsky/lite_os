@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{SocketAddress, encode_address, errno, interface_snapshot, socket_error};
 use crate::{
-    fs::{FileDescriptorError, OpenFileDescription},
+    fs::OpenFileDescription,
     socket::{Socket, SocketDomain, UnixPassedFile, UnixRights},
     task::{ReceivedFdTransaction, TaskControlBlock},
 };
@@ -23,22 +23,22 @@ fn align(length: usize) -> Option<usize> {
     length.checked_add(7).map(|value| value & !7)
 }
 
-fn file_error(error: FileDescriptorError) -> isize {
-    match error {
-        FileDescriptorError::NotFound => -errno::EBADF,
-        FileDescriptorError::Limit => -errno::EMFILE,
-        FileDescriptorError::OutOfMemory => -errno::ENOMEM,
-        FileDescriptorError::Busy => -errno::EBUSY,
-    }
-}
-
-/// @description 解析 sendmsg control list，并在一次 fd-table snapshot 中捕获 SCM_RIGHTS。
-/// @param task caller 与 fd-table owner。
-/// @param socket 目标 socket façade，用于 domain policy。
-/// @param pointer raw msg_control。
-/// @param length raw msg_controllen。
-/// @return 无 rights 或一条合并且保持用户顺序的 rights 集合。
-/// @errors malformed/unsupported cmsg、无效 fd、地址 policy 或 OOM 返回标准 errno。
+/// 解析 sendmsg control list，并在一次 fd-table snapshot 中捕获 SCM_RIGHTS。
+///
+/// # Parameters
+///
+/// - `task`: caller 与 fd-table owner。
+/// - `socket`: 目标 socket façade，用于 domain policy。
+/// - `pointer`: raw msg_control。
+/// - `length`: raw msg_controllen。
+///
+/// # Returns
+///
+/// 无 rights 或一条合并且保持用户顺序的 rights 集合。
+///
+/// # Errors
+///
+/// malformed/unsupported cmsg、无效 fd、地址 policy 或 OOM 返回标准 errno。
 pub(super) fn parse_send(
     task: &TaskControlBlock,
     socket: &Arc<Socket>,
@@ -121,7 +121,9 @@ pub(super) fn parse_send(
     if descriptors.is_empty() {
         return Ok(None);
     }
-    let files = task.fd_capture_many(&descriptors).map_err(file_error)?;
+    let files = task
+        .fd_capture_many(&descriptors)
+        .map_err(crate::syscall::file_descriptor_error)?;
     let mut passed: Vec<Arc<dyn UnixPassedFile>> = Vec::new();
     passed
         .try_reserve_exact(files.len())
@@ -156,12 +158,17 @@ fn prepare_rights<'task>(
         drop(rights);
         return Ok((None, true));
     }
-    let mut transaction = task.fd_prepare_received(fit).map_err(file_error)?;
+    let mut transaction = task
+        .fd_prepare_received(fit)
+        .map_err(crate::syscall::file_descriptor_error)?;
     let mut limit_truncated = false;
     for file in rights.into_files().into_iter().take(fit) {
         let file = Arc::downcast::<OpenFileDescription>(file.into_any())
             .expect("AF_UNIX rights contained a non-OFD capability");
-        if !transaction.reserve(file, cloexec).map_err(file_error)? {
+        if !transaction
+            .reserve(file, cloexec)
+            .map_err(crate::syscall::file_descriptor_error)?
+        {
             limit_truncated = true;
             break;
         }
@@ -200,7 +207,7 @@ fn write_rights(
     Ok(space)
 }
 
-/// @description recvmsg ancillary ABI 的用户输出目标。
+/// recvmsg ancillary ABI 的用户输出目标。
 pub(super) struct ReceiveTarget<'a> {
     /// 当前 fd-table 与 user-copy owner。
     pub(super) task: &'a TaskControlBlock,
@@ -212,7 +219,7 @@ pub(super) struct ReceiveTarget<'a> {
     pub(super) control: (usize, usize),
 }
 
-/// @description socket backend 已提交、等待编码到 recvmsg 的 ancillary 内容。
+/// socket backend 已提交、等待编码到 recvmsg 的 ancillary 内容。
 pub(super) struct ReceiveContent {
     /// backend source address。
     pub(super) source: Option<SocketAddress>,
@@ -228,11 +235,20 @@ pub(super) struct ReceiveContent {
     pub(super) truncated: bool,
 }
 
-/// @description 编码 recvmsg name/control/flags，并把收到的 rights 发布进 fd table。
-/// @param target caller、msghdr 与 name/control user buffers。
-/// @param content backend source、packet info、rights 与 output flags。
-/// @return metadata 与 fd publication 成功。
-/// @errors copyout 或 transaction staging OOM 返回标准 errno；fd limit 通过 MSG_CTRUNC 报告。
+/// 编码 recvmsg name/control/flags，并把收到的 rights 发布进 fd table。
+///
+/// # Parameters
+///
+/// - `target`: caller、msghdr 与 name/control user buffers。
+/// - `content`: backend source、packet info、rights 与 output flags。
+///
+/// # Returns
+///
+/// metadata 与 fd publication 成功。
+///
+/// # Errors
+///
+/// copyout 或 transaction staging OOM 返回标准 errno；fd limit 通过 MSG_CTRUNC 报告。
 pub(super) fn write_receive(
     target: ReceiveTarget<'_>,
     content: ReceiveContent,

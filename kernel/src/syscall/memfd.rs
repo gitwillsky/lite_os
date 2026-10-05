@@ -9,10 +9,16 @@ use super::errno;
 const MFD_CLOEXEC: u32 = 0x0001;
 const MFD_ALLOW_SEALING: u32 = 0x0002;
 
-/// @description 创建 Linux tmpfs-backed anonymous regular file descriptor。
-/// @param name 最多 249 bytes 的 NUL-terminated diagnostic name。
-/// @param flags `MFD_CLOEXEC|MFD_ALLOW_SEALING` 子集。
-/// @return 新 descriptor 或负 Linux errno。
+/// 创建 Linux tmpfs-backed anonymous regular file descriptor。
+///
+/// # Parameters
+///
+/// - `name`: 最多 249 bytes 的 NUL-terminated diagnostic name。
+/// - `flags`: `MFD_CLOEXEC|MFD_ALLOW_SEALING` 子集。
+///
+/// # Returns
+///
+/// 新 descriptor 或负 Linux errno。
 pub(crate) fn sys_memfd_create(name: usize, flags: u32) -> isize {
     if name == 0 || flags & !(MFD_CLOEXEC | MFD_ALLOW_SEALING) != 0 {
         return -errno::EINVAL;

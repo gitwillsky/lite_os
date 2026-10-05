@@ -104,14 +104,19 @@ impl ResourceLimits {
         Ok(old)
     }
 
-    /// @description 根据 Process 累计 CPU 时间生成 Linux RLIMIT_CPU 信号决策。
+    /// 根据 Process 累计 CPU 时间生成 Linux RLIMIT_CPU 信号决策。
     ///
-    /// @param runtime_us Process 中全部 Thread 累计的 CPU 微秒数。
-    /// @return 首次达到 soft limit 及其后每个 CPU 秒返回 SIGXCPU；达到 hard limit 返回 SIGKILL。
+    /// # Parameters
+    ///
+    /// - `runtime_us`: Process 中全部 Thread 累计的 CPU 微秒数。
+    ///
+    /// # Returns
+    ///
+    /// 首次达到 soft limit 及其后每个 CPU 秒返回 SIGXCPU；达到 hard limit 返回 SIGKILL。
     pub(super) fn cpu_signal(&mut self, runtime_us: u64) -> Option<usize> {
         let limit = self.values[RLIMIT_CPU];
         if limit.hard != RLIM_INFINITY && runtime_us >= limit.hard.saturating_mul(1_000_000) {
-            return Some(9);
+            return Some(crate::task::signal_number::SIGKILL);
         }
         if limit.soft == RLIM_INFINITY || runtime_us < limit.soft.saturating_mul(1_000_000) {
             return None;
@@ -124,10 +129,10 @@ impl ResourceLimits {
             return None;
         }
         self.last_cpu_signal_second = Some(elapsed_second);
-        Some(24)
+        Some(crate::task::signal_number::SIGXCPU)
     }
 
-    /// @description fork 复制限制值，但 child 的 CPU 消耗与 SIGXCPU cadence 从零开始。
+    /// fork 复制限制值，但 child 的 CPU 消耗与 SIGXCPU cadence 从零开始。
     pub(super) fn forked(&self) -> Self {
         Self {
             values: self.values,
@@ -167,7 +172,7 @@ impl TaskControlBlock {
             .load(core::sync::atomic::Ordering::Relaxed)
     }
 
-    /// @description 快照当前 Process 的 stack/address-space fault 边界，供 trap 与 user-copy 共用。
+    /// 快照当前 Process 的 stack/address-space fault 边界，供 trap 与 user-copy 共用。
     pub(super) fn user_fault_limits(&self) -> crate::memory::UserFaultLimits {
         crate::memory::UserFaultLimits::new(
             self.resource_limit(RLIMIT_STACK)

@@ -143,8 +143,8 @@ impl MemorySet {
             return Ok(PageFaultOutcome::BusError);
         }
         let mut prepared_private_frame = match preflight {
-            FaultPreflight::SegmentationFault => {
-                return Ok(PageFaultOutcome::SegmentationFault);
+            FaultPreflight::SegmentationFault(cause) => {
+                return Ok(PageFaultOutcome::SegmentationFault(cause));
             }
             FaultPreflight::BusError => return Ok(PageFaultOutcome::BusError),
             FaultPreflight::Device
@@ -176,7 +176,7 @@ impl MemorySet {
                     Self::complete_stale_translation_fault(vpn);
                     PageFaultOutcome::Handled
                 }
-                None => PageFaultOutcome::SegmentationFault,
+                None => PageFaultOutcome::SegmentationFault(SegmentationCause::AccessDenied),
             });
         }
         if let Some(shared) = &area.shared_anonymous {
@@ -222,7 +222,9 @@ impl MemorySet {
             {
                 return match self.handle_cow_fault(address)? {
                     true => Ok(PageFaultOutcome::Handled),
-                    false => Ok(PageFaultOutcome::SegmentationFault),
+                    false => Ok(PageFaultOutcome::SegmentationFault(
+                        SegmentationCause::AccessDenied,
+                    )),
                 };
             }
             if area.lazy_private && !area.data_frames.contains_key(&vpn) {
@@ -273,7 +275,9 @@ impl MemorySet {
                     Self::complete_stale_translation_fault(vpn);
                     Ok(PageFaultOutcome::Handled)
                 }
-                _ => Ok(PageFaultOutcome::SegmentationFault),
+                _ => Ok(PageFaultOutcome::SegmentationFault(
+                    SegmentationCause::AccessDenied,
+                )),
             };
         }
         let shared = area.shared_file.as_mut().unwrap();

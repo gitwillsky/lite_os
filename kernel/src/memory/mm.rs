@@ -50,7 +50,7 @@ use shootdown::{
 use vma_index_state::{VmaContribution, VmaIndexState};
 pub(crate) use {
     error::{ElfLoadError, MemoryError, UserAccessError},
-    fault_preflight::FaultAccess as PageFaultAccess,
+    fault_preflight::{FaultAccess as PageFaultAccess, SegmentationCause},
     futex_key::FutexKey,
     mapping_request::{
         DeviceMappingSource, FileMappingError, FileMappingSource, MappingResourceLimits,
@@ -59,7 +59,7 @@ pub(crate) use {
     mmap::PageFaultOutcome,
     user_access::UserFaultLimits,
 };
-/// @description Linux `mm_struct` 中 program break 的唯一进程级元数据。
+/// Linux `mm_struct` 中 program break 的唯一进程级元数据。
 #[derive(Debug, Clone, Copy)]
 struct ProgramBreak {
     /// ELF writable image 之后允许的最小 break。
@@ -265,10 +265,15 @@ impl MemorySet {
         self.page_table.translate(vpn)
     }
 
-    /// @description 将 kernel virtual address 翻译为物理地址值，不返回底层映射引用。
+    /// 将 kernel virtual address 翻译为物理地址值，不返回底层映射引用。
     ///
-    /// @param virtual_address kernel 需要提交给设备的虚拟地址。
-    /// @return leaf PTE 存在时返回包含页内偏移的物理地址，否则返回 `None`。
+    /// # Parameters
+    ///
+    /// - `virtual_address`: kernel 需要提交给设备的虚拟地址。
+    ///
+    /// # Returns
+    ///
+    /// leaf PTE 存在时返回包含页内偏移的物理地址，否则返回 `None`。
     pub(crate) fn translate_kernel_address(
         &self,
         virtual_address: VirtualAddress,
@@ -293,12 +298,17 @@ impl MemorySet {
         Ok(())
     }
 
-    /// @description 查询或原子提交 program break；实际页统一表示为 anonymous VMA。
+    /// 查询或原子提交 program break；实际页统一表示为 anonymous VMA。
     ///
-    /// @param new_break 零表示查询，否则为期望的新 byte address。
-    /// @param address_space_limit 当前进程 `RLIMIT_AS` soft limit。
-    /// @param data_limit 当前进程 `RLIMIT_DATA` soft limit。
-    /// @return 成功返回当前或已提交的新 break；失败保持精确 break 与全部 VMA 不变。
+    /// # Parameters
+    ///
+    /// - `new_break`: 零表示查询，否则为期望的新 byte address。
+    /// - `address_space_limit`: 当前进程 `RLIMIT_AS` soft limit。
+    /// - `data_limit`: 当前进程 `RLIMIT_DATA` soft limit。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回当前或已提交的新 break；失败保持精确 break 与全部 VMA 不变。
     pub(crate) fn set_program_break(
         &mut self,
         new_break: usize,
@@ -337,10 +347,15 @@ impl MemorySet {
         Ok(new_break)
     }
 
-    /// @description 为 RISC-V 共享地址空间中的新 Thread 分配独立 supervisor trap-context 页。
+    /// 为 RISC-V 共享地址空间中的新 Thread 分配独立 supervisor trap-context 页。
     ///
-    /// @param tid 全局唯一且大于 init TID 的线程标识；只参与 RISC-V 临时 VA 投影。
-    /// @return 成功返回该线程唯一 trap-context VA；冲突或溢出返回错误。
+    /// # Parameters
+    ///
+    /// - `tid`: 全局唯一且大于 init TID 的线程标识；只参与 RISC-V 临时 VA 投影。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回该线程唯一 trap-context VA；冲突或溢出返回错误。
     pub(crate) fn allocate_thread_trap_context(
         &mut self,
         tid: usize,
@@ -359,10 +374,15 @@ impl MemorySet {
         Ok(address)
     }
 
-    /// @description 解除已退出 RISC-V Thread 的唯一 supervisor trap-context 页。
+    /// 解除已退出 RISC-V Thread 的唯一 supervisor trap-context 页。
     ///
-    /// @param address `allocate_thread_trap_context` 返回的页对齐地址。
-    /// @return 无返回值；缺失映射表示退出清理重复并 fail-stop。
+    /// # Parameters
+    ///
+    /// - `address`: `allocate_thread_trap_context` 返回的页对齐地址。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；缺失映射表示退出清理重复并 fail-stop。
     pub(crate) fn remove_thread_trap_context(&mut self, address: usize) {
         let vpn = VirtualAddress::from(address).floor();
         self.remove_area_with_start_vpn(vpn);

@@ -17,7 +17,7 @@ pub(super) struct EventTimes {
     pub(super) monotonic_ns: u64,
 }
 
-/// @description 单 evdev OFD 的有界 packet ring 与 timestamp clock owner。
+/// 单 evdev OFD 的有界 packet ring 与 timestamp clock owner。
 pub(super) struct ClientQueue {
     buffer: [InputEvent; CLIENT_BUFFER_SIZE],
     head: usize,

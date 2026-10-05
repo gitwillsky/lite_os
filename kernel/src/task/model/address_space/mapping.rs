@@ -72,14 +72,19 @@ impl TaskControlBlock {
         )
     }
 
-    /// @description 将 DRM 已授权的 device backing 映射进 calling Process AddressSpace。
+    /// 将 DRM 已授权的 device backing 映射进 calling Process AddressSpace。
     ///
-    /// @param address 零为内核选址，非零为 hint 或 exact address。
-    /// @param length 映射字节长度。
-    /// @param permission 用户 read/write/none 权限。
-    /// @param fixed_noreplace 是否禁止覆盖已有 VMA。
-    /// @param source 已验证 handle 与 mmap offset 的 backing owner。
-    /// @return 成功返回 mapping 起点；范围、权限或内存错误保持 transaction 未发布。
+    /// # Parameters
+    ///
+    /// - `address`: 零为内核选址，非零为 hint 或 exact address。
+    /// - `length`: 映射字节长度。
+    /// - `permission`: 用户 read/write/none 权限。
+    /// - `fixed_noreplace`: 是否禁止覆盖已有 VMA。
+    /// - `source`: 已验证 handle 与 mmap offset 的 backing owner。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 mapping 起点；范围、权限或内存错误保持 transaction 未发布。
     pub(crate) fn map_device(
         &self,
         address: usize,
@@ -152,13 +157,18 @@ impl TaskControlBlock {
             .advise_user_mapping(address, length, advice)
     }
 
-    /// @description 通过 calling Process 的唯一 AddressSpace owner 建立 anonymous shared mapping。
+    /// 通过 calling Process 的唯一 AddressSpace owner 建立 anonymous shared mapping。
     ///
-    /// @param address 零为内核选址，非零为 hint 或 fixed_noreplace exact address。
-    /// @param length 非零 mapping 字节长度。
-    /// @param permission 用户页权限。
-    /// @param fixed_noreplace 是否禁止覆盖已有 VMA。
-    /// @return 成功返回 mapping 起点；非法范围、冲突或内存不足返回 MemoryError。
+    /// # Parameters
+    ///
+    /// - `address`: 零为内核选址，非零为 hint 或 fixed_noreplace exact address。
+    /// - `length`: 非零 mapping 字节长度。
+    /// - `permission`: 用户页权限。
+    /// - `fixed_noreplace`: 是否禁止覆盖已有 VMA。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 mapping 起点；非法范围、冲突或内存不足返回 MemoryError。
     pub(crate) fn map_shared_anonymous(
         &self,
         address: usize,

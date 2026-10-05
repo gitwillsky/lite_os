@@ -98,7 +98,7 @@ STREAM_LIFECYCLE_RE = re.compile(r"audio-service: stream (start|close) id=(\d+)"
 FATAL_MARKERS = (
     "panicked at",
     "[ERROR]",
-    "[Audio] ALSA playback XRUN",
+    "ALSA playback XRUN",
     "audio-service: unavailable",
     "LITE_AUDIO event=error",
 )
@@ -665,7 +665,7 @@ def run_audio_gate(
         #    allowed, but START and WAV frames are forbidden before physical play.
         capture.wait_all(
             (
-                "[Audio] VirtIO Sound capability ready",
+                "VirtIO Sound capability ready",
                 "audio-service: ready",
                 "compositor: desktop first scene presented",
                 "lite-ui: desktop ready",

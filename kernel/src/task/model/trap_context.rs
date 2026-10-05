@@ -1,9 +1,15 @@
 use super::*;
 
 impl AddressSpace {
-    /// @description 为 Thread owner 解析一次 architecture-selected trap-context backing。
-    /// @param binding 已在 Thread 创建时分类的 typed address/backing 配对。
-    /// @return 与 caller 保活的 KernelStack/AddressSpace 配对的唯一 context owner。
+    /// 为 Thread owner 解析一次 architecture-selected trap-context backing。
+    ///
+    /// # Parameters
+    ///
+    /// - `binding`: 已在 Thread 创建时分类的 typed address/backing 配对。
+    ///
+    /// # Returns
+    ///
+    /// 与 caller 保活的 KernelStack/AddressSpace 配对的唯一 context owner。
     pub(super) fn bind_user_context(
         &self,
         binding: ContextBinding,
@@ -20,10 +26,16 @@ impl AddressSpace {
         Ok(unsafe { ContextOwner::bind(binding.address(), pointer, binding.backing()) })
     }
 
-    /// @description exec commit 时重绑定 AddressSpace-backed owner；kernel-stack owner 不变。
-    /// @param owner 当前 Thread 的唯一 context owner。
-    /// @param address 新映像中的 canonical trap-context VA。
-    /// @return 无返回值；mapping 缺失属于 kernel invariant failure。
+    /// exec commit 时重绑定 AddressSpace-backed owner；kernel-stack owner 不变。
+    ///
+    /// # Parameters
+    ///
+    /// - `owner`: 当前 Thread 的唯一 context owner。
+    /// - `address`: 新映像中的 canonical trap-context VA。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；mapping 缺失属于 kernel invariant failure。
     pub(super) fn rebind_user_context(&self, owner: &ContextOwner<UserContext>, address: usize) {
         if matches!(owner.binding().backing(), ContextBacking::KernelStack) {
             return;
@@ -69,19 +81,21 @@ impl AddressSpace {
 }
 
 impl TaskControlBlock {
-    /// @description 取得当前 Thread 的 context-switch 保存区锁。
+    /// 取得当前 Thread 的 context-switch 保存区锁。
     ///
-    /// @return KernelContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
+    /// # Returns
+    ///
+    /// KernelContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
     pub(crate) fn kernel_context(&self) -> &Mutex<KernelContext> {
         &self.thread.kernel_cx
     }
 
-    /// @description 取得首次 scheduler continuation 完成后进入的 architecture trap-return。
+    /// 取得首次 scheduler continuation 完成后进入的 architecture trap-return。
     pub(in crate::task) fn kernel_resume_target(&self) -> crate::arch::context::KernelResume {
         self.thread.kernel_trap_return
     }
 
-    /// @description 退休 Thread trap context，并删除非 canonical temporary mapping。
+    /// 退休 Thread trap context，并删除非 canonical temporary mapping。
     pub(in crate::task) fn remove_thread_trap_context(&self) {
         let binding = self.thread.user_context.retire();
         if !binding.requires_retirement_wait(TRAP_CONTEXT) {
@@ -108,8 +122,11 @@ impl TaskControlBlock {
         self.thread.user_context.snapshot_for_clone()
     }
 
-    /// @description 读取 syscall input registers 并原地推进 ecall PC。
-    /// @return `(number, a0..a5, ecall_pc)`；不复制其余 UserContext。
+    /// 读取 syscall input registers 并原地推进 syscall instruction PC。
+    ///
+    /// # Returns
+    ///
+    /// `(number, 六个 argument register, syscall instruction PC)`；不复制其余 UserContext。
     pub(crate) fn take_syscall_request(&self) -> (usize, [usize; 6], usize) {
         self.thread.user_context.with(|context| {
             let request = context.take_syscall_request();
@@ -117,15 +134,18 @@ impl TaskControlBlock {
         })
     }
 
-    /// @description 原地发布 syscall a0 completion，不复制其余 UserContext。
+    /// 原地发布 syscall a0 completion，不复制其余 UserContext。
     pub(crate) fn complete_syscall(&self, completion: crate::arch::context::SyscallCompletion) {
         self.thread
             .user_context
             .with(|context| context.complete_syscall(completion));
     }
 
-    /// @description user return 前唯一发布 CPU-local trap metadata。
-    /// @return 同一 transaction 配对的 trampoline trap-context VA。
+    /// user return 前唯一发布 CPU-local trap metadata。
+    ///
+    /// # Returns
+    ///
+    /// 同一 transaction 配对的 trampoline trap-context VA。
     pub(crate) fn prepare_user_return(&self, logical_cpu: usize) -> usize {
         self.thread
             .user_context
@@ -133,16 +153,18 @@ impl TaskControlBlock {
             .0
     }
 
-    /// @description 投影当前用户 PC，不复制 UserContext。
+    /// 投影当前用户 PC，不复制 UserContext。
     pub(crate) fn user_program_counter(&self) -> usize {
         self.thread
             .user_context
             .with(|context| context.program_counter())
     }
 
-    /// @description 由静态 architecture backend 检查并处理一次用户 illegal instruction。
+    /// 由静态 architecture backend 检查并处理一次用户 illegal instruction。
     ///
-    /// @return lazy architecture state 已初始化时 Retry；真正非法时返回带 fault address 的 Signal。
+    /// # Returns
+    ///
+    /// lazy architecture state 已初始化时 Retry；真正非法时返回带 fault address 的 Signal。
     pub(crate) fn handle_illegal_instruction(
         &self,
     ) -> Result<(), crate::arch::IllegalInstructionFault> {
@@ -162,7 +184,7 @@ impl TaskControlBlock {
             .with(|context| context.finish_illegal_instruction(result))
     }
 
-    /// @description 投影当前用户 SP，不复制 UserContext。
+    /// 投影当前用户 SP，不复制 UserContext。
     pub(crate) fn user_stack_pointer(&self) -> usize {
         self.thread
             .user_context

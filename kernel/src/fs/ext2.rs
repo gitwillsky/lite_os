@@ -315,7 +315,7 @@ fn ceil_div(a: usize, b: usize) -> usize {
     a.div_ceil(b)
 }
 
-/// @description 单一根挂载的同步读写 ext2 revision 1 文件系统。
+/// 单一根挂载的同步读写 ext2 revision 1 文件系统。
 pub(crate) struct Ext2FileSystem {
     device: Arc<dyn BlockDevice>,
     superblock: Mutex<Ext2SuperBlock>,

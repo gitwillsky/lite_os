@@ -274,10 +274,19 @@ pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
     }
 }
 
-/// @description 在 deferred source 通知中无等待地投影 raw IPv4 readiness。
-/// @param handle raw smoltcp handle。
-/// @return owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
-/// @errors 不消费 adapter error；pending device failure 投影为 error readiness。
+/// 在 deferred source 通知中无等待地投影 raw IPv4 readiness。
+///
+/// # Parameters
+///
+/// - `handle`: raw smoltcp handle。
+///
+/// # Returns
+///
+/// owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
+///
+/// # Errors
+///
+/// 不消费 adapter error；pending device failure 投影为 error readiness。
 pub(super) fn try_poll_state(handle: SocketHandle) -> Option<SocketPollState> {
     let network = super::try_observe_stack()?;
     let mut readiness = poll_state_locked(&network, handle);
@@ -330,11 +339,16 @@ impl InetSocket {
     }
 }
 
-/// @description 从完整 protocol state 精确删除 raw endpoint 与 SocketSet slot。
-/// @param network 已由 protocol owner 独占的完整 NetworkStack。
-/// @param handle final InetSocket 唯一持有的 raw handle。
-/// @return 无返回值。
-/// @errors 重复 identity 按幂等 remove 处理。
+/// 从完整 protocol state 精确删除 raw endpoint 与 SocketSet slot。
+///
+/// # Parameters
+///
+/// - `network`: 已由 protocol owner 独占的完整 NetworkStack。
+/// - `handle`: final InetSocket 唯一持有的 raw handle。
+///
+/// # Errors
+///
+/// 重复 identity 按幂等 remove 处理。
 pub(super) fn drop_endpoint(network: &mut NetworkStack, handle: SocketHandle) {
     network.raw_endpoints.remove(&handle);
     network.sockets.remove(handle);

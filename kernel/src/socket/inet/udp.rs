@@ -26,11 +26,20 @@ fn placeholder_socket() -> udp::Socket<'static> {
     )
 }
 
-/// @description 分配 UDP packet buffer，并在唯一 NetworkStack 注册 handle。
-/// @param network 唯一协议栈 owner。
-/// @param endpoint 完整 Arc 发布前的弱引用占位。
-/// @return 已注册的 smoltcp handle。
-/// @errors buffer 分配失败返回 `NoMemory`。
+/// 分配 UDP packet buffer，并在唯一 NetworkStack 注册 handle。
+///
+/// # Parameters
+///
+/// - `network`: 唯一协议栈 owner。
+/// - `endpoint`: 完整 Arc 发布前的弱引用占位。
+///
+/// # Returns
+///
+/// 已注册的 smoltcp handle。
+///
+/// # Errors
+///
+/// buffer 分配失败返回 `NoMemory`。
 pub(super) fn create_endpoint(
     network: &mut NetworkStack,
     endpoint: Weak<InetSocket>,
@@ -104,11 +113,20 @@ impl NetworkStack {
     }
 }
 
-/// @description 绑定 UDP 本地地址；port 0 经唯一 allocator 分配 ephemeral port。
-/// @param handle UDP smoltcp handle。
-/// @param address 请求的本地 IPv4 endpoint。
-/// @return 成功返回 unit。
-/// @errors 返回状态、地址、冲突或分配错误。
+/// 绑定 UDP 本地地址；port 0 经唯一 allocator 分配 ephemeral port。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+/// - `address`: 请求的本地 IPv4 endpoint。
+///
+/// # Returns
+///
+/// 成功返回 unit。
+///
+/// # Errors
+///
+/// 返回状态、地址、冲突或分配错误。
 pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), SocketError> {
     let mut network = stack()?.lock()?;
     if network
@@ -156,11 +174,20 @@ pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), Soc
     Ok(())
 }
 
-/// @description 为 UDP endpoint 记录默认 peer，并按需完成隐式 bind。
-/// @param handle UDP smoltcp handle。
-/// @param peer 默认远端 endpoint。
-/// @return 成功返回 unit。
-/// @errors 远端无效、端口耗尽或 endpoint 消失时返回错误。
+/// 为 UDP endpoint 记录默认 peer，并按需完成隐式 bind。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+/// - `peer`: 默认远端 endpoint。
+///
+/// # Returns
+///
+/// 成功返回 unit。
+///
+/// # Errors
+///
+/// 远端无效、端口耗尽或 endpoint 消失时返回错误。
 pub(super) fn connect(handle: SocketHandle, peer: InetAddress) -> Result<(), SocketError> {
     if peer.port == 0 || peer.address.is_unspecified() {
         return Err(SocketError::AddressNotAvailable);
@@ -191,10 +218,19 @@ fn is_broadcast(address: Ipv4Addr, interface: super::InterfaceState) -> bool {
     u32::from(address) == (u32::from(local) | host_mask)
 }
 
-/// @description 读取 UDP handle 的权威本地 endpoint。
-/// @param handle UDP smoltcp handle。
-/// @return 本地地址；未 bind 时为 unspecified:0。
-/// @errors NetworkStack 未初始化时返回错误。
+/// 读取 UDP handle 的权威本地 endpoint。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+///
+/// # Returns
+///
+/// 本地地址；未 bind 时为 unspecified:0。
+///
+/// # Errors
+///
+/// NetworkStack 未初始化时返回错误。
 pub(super) fn address(handle: SocketHandle) -> Result<InetAddress, SocketError> {
     let network = stack()?.lock()?;
     let endpoint = network
@@ -207,10 +243,19 @@ pub(super) fn address(handle: SocketHandle) -> Result<InetAddress, SocketError> 
     })
 }
 
-/// @description 读取 connected UDP 的默认 peer。
-/// @param handle UDP smoltcp handle。
-/// @return 默认远端 endpoint。
-/// @errors 未 connect 或 endpoint 已删除时返回 `NotConnected`。
+/// 读取 connected UDP 的默认 peer。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+///
+/// # Returns
+///
+/// 默认远端 endpoint。
+///
+/// # Errors
+///
+/// 未 connect 或 endpoint 已删除时返回 `NotConnected`。
 pub(super) fn peer_address(handle: SocketHandle) -> Result<InetAddress, SocketError> {
     stack()?
         .lock()?
@@ -220,12 +265,21 @@ pub(super) fn peer_address(handle: SocketHandle) -> Result<InetAddress, SocketEr
         .ok_or(SocketError::NotConnected)
 }
 
-/// @description 向显式目标或 connected peer 原子排队一个 UDP datagram。
-/// @param handle UDP smoltcp handle。
-/// @param input 完整 datagram payload。
-/// @param target 可选显式远端 endpoint。
-/// @return 成功排队的完整 payload 长度。
-/// @errors 返回 datagram 大小、route、地址、buffer 或 endpoint 错误。
+/// 向显式目标或 connected peer 原子排队一个 UDP datagram。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+/// - `input`: 完整 datagram payload。
+/// - `target`: 可选显式远端 endpoint。
+///
+/// # Returns
+///
+/// 成功排队的完整 payload 长度。
+///
+/// # Errors
+///
+/// 返回 datagram 大小、route、地址、buffer 或 endpoint 错误。
 pub(super) fn send(
     handle: SocketHandle,
     input: &[u8],
@@ -278,13 +332,22 @@ pub(super) fn send(
     Ok(written)
 }
 
-/// @description 接收或窥视一个 UDP datagram，并保留原始 datagram 长度。
-/// @param endpoint OFD-facing endpoint，用于消费 readiness notification。
-/// @param handle UDP smoltcp handle。
-/// @param output kernel-owned 输出缓冲区。
-/// @param peek 为 true 时不消费 datagram。
-/// @return copied/full length、source 与 local destination。
-/// @errors 无可用 datagram 时返回 `Again`。
+/// 接收或窥视一个 UDP datagram，并保留原始 datagram 长度。
+///
+/// # Parameters
+///
+/// - `endpoint`: OFD-facing endpoint，用于消费 readiness notification。
+/// - `handle`: UDP smoltcp handle。
+/// - `output`: kernel-owned 输出缓冲区。
+/// - `peek`: 为 true 时不消费 datagram。
+///
+/// # Returns
+///
+/// copied/full length、source 与 local destination。
+///
+/// # Errors
+///
+/// 无可用 datagram 时返回 `Again`。
 pub(super) fn receive(
     endpoint: &InetSocket,
     handle: SocketHandle,
@@ -338,11 +401,20 @@ pub(super) fn receive(
     Ok(result)
 }
 
-/// @description 设置 UDP `IP_PKTINFO` ancillary 投影开关。
-/// @param handle UDP smoltcp handle。
-/// @param enabled 是否在 recvmsg 生成 pktinfo。
-/// @return endpoint state 已更新时返回 unit。
-/// @errors stack/endpoint 不可用或 owner waiter OOM 时返回对应 socket error。
+/// 设置 UDP `IP_PKTINFO` ancillary 投影开关。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+/// - `enabled`: 是否在 recvmsg 生成 pktinfo。
+///
+/// # Returns
+///
+/// endpoint state 已更新时返回 unit。
+///
+/// # Errors
+///
+/// stack/endpoint 不可用或 owner waiter OOM 时返回对应 socket error。
 pub(super) fn set_packet_info(handle: SocketHandle, enabled: bool) -> Result<(), SocketError> {
     stack()?
         .lock()?
@@ -353,10 +425,15 @@ pub(super) fn set_packet_info(handle: SocketHandle, enabled: bool) -> Result<(),
     Ok(())
 }
 
-/// @description 查询 UDP `IP_PKTINFO` 开关。
-/// @param handle UDP smoltcp handle。
-/// @return 已启用且 endpoint 存在时返回 true。
-/// @errors 无错误。
+/// 查询 UDP `IP_PKTINFO` 开关。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+///
+/// # Returns
+///
+/// 已启用且 endpoint 存在时返回 true。
 pub(super) fn packet_info(handle: SocketHandle) -> bool {
     stack().is_ok_and(|stack| {
         stack.lock().ok().is_some_and(|network| {
@@ -368,10 +445,19 @@ pub(super) fn packet_info(handle: SocketHandle) -> bool {
     })
 }
 
-/// @description 从唯一 UDP handle 投影 OFD readiness。
-/// @param handle UDP smoltcp handle。
-/// @return readable/writable/error/hangup 状态。
-/// @errors stack 不可用时返回 error readiness。
+/// 从唯一 UDP handle 投影 OFD readiness。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+///
+/// # Returns
+///
+/// readable/writable/error/hangup 状态。
+///
+/// # Errors
+///
+/// stack 不可用时返回 error readiness。
 pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
     let Ok(stack) = stack() else {
         return SocketPollState::error();
@@ -388,10 +474,19 @@ pub(super) fn poll_state(handle: SocketHandle) -> SocketPollState {
     }
 }
 
-/// @description 在 deferred source 通知中无等待地投影 UDP readiness。
-/// @param handle UDP smoltcp handle。
-/// @return owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
-/// @errors 不消费 adapter error；pending device failure 投影为 error readiness。
+/// 在 deferred source 通知中无等待地投影 UDP readiness。
+///
+/// # Parameters
+///
+/// - `handle`: UDP smoltcp handle。
+///
+/// # Returns
+///
+/// owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
+///
+/// # Errors
+///
+/// 不消费 adapter error；pending device failure 投影为 error readiness。
 pub(super) fn try_poll_state(handle: SocketHandle) -> Option<SocketPollState> {
     let network = super::try_observe_stack()?;
     let socket = network.sockets.get::<udp::Socket<'static>>(handle);
@@ -403,11 +498,16 @@ pub(super) fn try_poll_state(handle: SocketHandle) -> Option<SocketPollState> {
     })
 }
 
-/// @description 删除 UDP metadata 与同一个 smoltcp handle。
-/// @param network 已由 protocol owner 独占的完整 NetworkStack。
-/// @param handle UDP smoltcp handle。
-/// @return 无返回值。
-/// @errors 重复删除或 stack 未初始化时幂等忽略。
+/// 删除 UDP metadata 与同一个 smoltcp handle。
+///
+/// # Parameters
+///
+/// - `network`: 已由 protocol owner 独占的完整 NetworkStack。
+/// - `handle`: UDP smoltcp handle。
+///
+/// # Errors
+///
+/// 重复删除或 stack 未初始化时幂等忽略。
 pub(super) fn drop_endpoint(network: &mut NetworkStack, handle: SocketHandle) {
     if let Some(state) = network.endpoints.remove(&handle) {
         if let Some(lease) = state.port_lease {

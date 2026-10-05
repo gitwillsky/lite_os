@@ -43,9 +43,11 @@ impl DerefMut for NetworkStackGuard<'_> {
 }
 
 impl NetworkStackGuard<'_> {
-    /// @description 返回本轮 fixed-budget final cleanup 后是否仍有 backlog。
-    /// @return 尚有 cleanup identity 时为 true；caller 必须回投 Network bit。
-    /// @errors 无错误。
+    /// 返回本轮 fixed-budget final cleanup 后是否仍有 backlog。
+    ///
+    /// # Returns
+    ///
+    /// 尚有 cleanup identity 时为 true；caller 必须回投 Network bit。
     pub(super) const fn cleanup_backlog(&self) -> bool {
         self.cleanup_backlog
     }
@@ -65,10 +67,19 @@ pub(super) struct NetworkStackOwner {
 }
 
 impl NetworkStackOwner {
-    /// @description 创建唯一 IPv4 protocol owner 与空 final-cleanup ring。
-    /// @param stack 已完整装配且尚未发布的唯一 NetworkStack。
-    /// @return 无第二份 state 的 owner。
-    /// @errors 不分配且无失败路径；零 cleanup capacity 由 const invariant fail-stop。
+    /// 创建唯一 IPv4 protocol owner 与空 final-cleanup ring。
+    ///
+    /// # Parameters
+    ///
+    /// - `stack`: 已完整装配且尚未发布的唯一 NetworkStack。
+    ///
+    /// # Returns
+    ///
+    /// 无第二份 state 的 owner。
+    ///
+    /// # Errors
+    ///
+    /// 不分配且无失败路径；零 cleanup capacity 由 const invariant fail-stop。
     pub(super) fn new(stack: NetworkStack) -> Self {
         Self {
             state: TaskMutex::new(NetworkStackState {
@@ -79,9 +90,15 @@ impl NetworkStackOwner {
         }
     }
 
-    /// @description 可睡眠取得唯一 NetworkStack owner。
-    /// @return 完整协议状态 guard。
-    /// @errors waiter metadata 分配失败时返回 `NoMemory`。
+    /// 可睡眠取得唯一 NetworkStack owner。
+    ///
+    /// # Returns
+    ///
+    /// 完整协议状态 guard。
+    ///
+    /// # Errors
+    ///
+    /// waiter metadata 分配失败时返回 `NoMemory`。
     pub(super) fn lock(&self) -> Result<NetworkStackGuard<'_>, SocketError> {
         self.state
             .lock()
@@ -92,9 +109,15 @@ impl NetworkStackOwner {
             .map_err(|_| SocketError::NoMemory)
     }
 
-    /// @description deferred poll 无等待地取得完整协议状态。
-    /// @return owner 正忙或仍有 payload loan 时返回 `None`，由 caller 回投 Network bit。
-    /// @errors 无错误且不分配 waiter；竞争只返回 `None`。
+    /// deferred poll 无等待地取得完整协议状态。
+    ///
+    /// # Returns
+    ///
+    /// owner 正忙或仍有 payload loan 时返回 `None`，由 caller 回投 Network bit。
+    ///
+    /// # Errors
+    ///
+    /// 无错误且不分配 waiter；竞争只返回 `None`。
     pub(super) fn try_poll(&self) -> Option<NetworkStackGuard<'_>> {
         let mut state = self.state.try_lock()?;
         // cleanup 可以先处理其他 endpoint；同一 endpoint 的 final Drop 不可能与 active loan
@@ -109,9 +132,15 @@ impl NetworkStackOwner {
         })
     }
 
-    /// @description readiness 通知路径无等待地观察完整协议状态。
-    /// @return owner 正忙或 payload loan 使 SocketSet 暂时不完整时返回 `None`。
-    /// @errors 无错误且不消费 device error 或 cleanup command。
+    /// readiness 通知路径无等待地观察完整协议状态。
+    ///
+    /// # Returns
+    ///
+    /// owner 正忙或 payload loan 使 SocketSet 暂时不完整时返回 `None`。
+    ///
+    /// # Errors
+    ///
+    /// 无错误且不消费 device error 或 cleanup command。
     pub(super) fn try_observe(&self) -> Option<NetworkStackGuard<'_>> {
         let state = self.state.try_lock()?;
         if state.payload_loans != 0 {
@@ -123,12 +152,21 @@ impl NetworkStackOwner {
         })
     }
 
-    /// @description 在 stack owner 外执行一个 endpoint-local payload 操作。
-    /// @param take 用同类型 placeholder 从 SocketSet 取出真实 socket。
-    /// @param operation 只访问借出的 socket并执行 payload copy。
-    /// @param restore 把真实 socket 归还原 handle，并消费 placeholder。
-    /// @return operation 的结果。
-    /// @errors owner waiter 预分配、take 或 operation 失败时返回 socket error；restore 不分配。
+    /// 在 stack owner 外执行一个 endpoint-local payload 操作。
+    ///
+    /// # Parameters
+    ///
+    /// - `take`: 用同类型 placeholder 从 SocketSet 取出真实 socket。
+    /// - `operation`: 只访问借出的 socket并执行 payload copy。
+    /// - `restore`: 把真实 socket 归还原 handle，并消费 placeholder。
+    ///
+    /// # Returns
+    ///
+    /// operation 的结果。
+    ///
+    /// # Errors
+    ///
+    /// owner waiter 预分配、take 或 operation 失败时返回 socket error；restore 不分配。
     pub(super) fn with_payload_loan<T, R>(
         &self,
         take: impl FnOnce(&mut NetworkStack) -> Result<T, SocketError>,
@@ -163,10 +201,19 @@ impl NetworkStackOwner {
         result
     }
 
-    /// @description final InetSocket drop 无等待清理；owner 正忙时把固定 identity 交给下一轮 poll。
-    /// @param endpoint exactly-once final Drop 保有且尚未释放 slot 的 identity。
-    /// @return 无返回值；deferred publication 会同时回投 Network bit。
-    /// @errors 超过 SocketSet capacity 表示 lifetime 不变量破坏并 fail-stop，不设 overflow fallback。
+    /// final InetSocket drop 无等待清理；owner 正忙时把固定 identity 交给下一轮 poll。
+    ///
+    /// # Parameters
+    ///
+    /// - `endpoint`: exactly-once final Drop 保有且尚未释放 slot 的 identity。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；deferred publication 会同时回投 Network bit。
+    ///
+    /// # Errors
+    ///
+    /// 超过 SocketSet capacity 表示 lifetime 不变量破坏并 fail-stop，不设 overflow fallback。
     pub(super) fn cleanup_or_defer(&self, endpoint: InetEndpoint) {
         if let Some(mut state) = self.state.try_lock() {
             super::cleanup_endpoint(&mut state.stack, endpoint);

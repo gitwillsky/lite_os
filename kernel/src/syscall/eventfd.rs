@@ -7,10 +7,16 @@ use crate::{
 
 const EFD_SEMAPHORE: u32 = 1;
 
-/// @description 创建 Linux eventfd counter OFD，并按 flags 原子发布 descriptor。
-/// @param initial 初始 32-bit counter。
-/// @param flags 只接受 EFD_SEMAPHORE/EFD_NONBLOCK/EFD_CLOEXEC。
-/// @return 新 fd；flags、内存或 fd limit 失败返回负 errno。
+/// 创建 Linux eventfd counter OFD，并按 flags 原子发布 descriptor。
+///
+/// # Parameters
+///
+/// - `initial`: 初始 32-bit counter。
+/// - `flags`: 只接受 EFD_SEMAPHORE/EFD_NONBLOCK/EFD_CLOEXEC。
+///
+/// # Returns
+///
+/// 新 fd；flags、内存或 fd limit 失败返回负 errno。
 pub(crate) fn sys_eventfd2(initial: u32, flags: u32) -> isize {
     if flags & !(EFD_SEMAPHORE | O_NONBLOCK | O_CLOEXEC) != 0 {
         return -errno::EINVAL;

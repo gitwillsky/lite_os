@@ -7,7 +7,7 @@
 - ProcessorTopology 的 per-CPU pending handoff slot 独占已经保存 context、尚未提交
   Ready/Blocked/Stopped consequence 的 outgoing owner。slot 同时携带原 logical CPU 的 IRQ
   restore token；next task 或 idle continuation 必须恰好消费一次，禁止从 task identity 重建。
-- TaskManager process graph 独占 identity、parent/child、creator-Thread、group/session、exit/wait
+- ProcessTable process graph 独占 identity、parent/child、creator-Thread、group/session、exit/wait
   与 process timer relation；`parent.children`、global `TID -> TGID`、creator children 与
   `(SID, PGID) -> members` 是同一 graph owner 的 projection，不得复制成第二套 lifecycle state。
 - `WaitRegistry` 独占全部 wait registration 与 source index；固定 16 个 shard 只按稳定

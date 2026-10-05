@@ -73,8 +73,11 @@ impl CommandEncoder {
         self.words.len()
     }
 
-    /// @description 判断编码器是否尚未包含命令字。
-    /// @return 没有任何已编码命令时返回 `true`。
+    /// 判断编码器是否尚未包含命令字。
+    ///
+    /// # Returns
+    ///
+    /// 没有任何已编码命令时返回 `true`。
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }

@@ -1,29 +1,39 @@
 use alloc::{sync::Arc, vec::Vec};
 
-/// @description 可执行文件的只读随机访问 seam；文件系统 adapter 是唯一具体实现 owner。
+/// 可执行文件的只读随机访问 seam；文件系统 adapter 是唯一具体实现 owner。
 pub(crate) trait ExecutableSource: Send + Sync {
-    /// @description 返回创建 source 时观察到的文件长度。
+    /// 返回创建 source 时观察到的文件长度。
     ///
-    /// @return 后续 read boundary validation 使用的稳定 byte length。
+    /// # Returns
+    ///
+    /// 后续 read boundary validation 使用的稳定 byte length。
     fn len(&self) -> usize;
 
-    /// @description 从指定文件偏移完整读取目标缓冲区，short read 与 I/O error 均失败。
+    /// 从指定文件偏移完整读取目标缓冲区，short read 与 I/O error 均失败。
     ///
-    /// @param offset 文件起始位置的 byte offset。
-    /// @param buffer 必须完整填充的 destination slice。
-    /// @return 完整读取返回 unit。
-    /// @errors source I/O error、越界或 short read 返回错误。
+    /// # Parameters
+    ///
+    /// - `offset`: 文件起始位置的 byte offset。
+    /// - `buffer`: 必须完整填充的 destination slice。
+    ///
+    /// # Returns
+    ///
+    /// 完整读取返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// source I/O error、越界或 short read 返回错误。
     fn read_exact_at(&self, offset: usize, buffer: &mut [u8]) -> Result<(), ()>;
 }
 
-/// @description ELF object type；只保留当前 loader 接受的 ET_EXEC 与 ET_DYN。
+/// ELF object type；只保留当前 loader 接受的 ET_EXEC 与 ET_DYN。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ElfKind {
     Executable,
     SharedObject,
 }
 
-/// @description 已校验的 PT_LOAD 描述；不复制 segment 文件内容。
+/// 已校验的 PT_LOAD 描述；不复制 segment 文件内容。
 pub(super) struct LoadSegment {
     pub(super) file_offset: usize,
     pub(super) file_size: usize,
@@ -32,7 +42,7 @@ pub(super) struct LoadSegment {
     pub(super) flags: u32,
 }
 
-/// @description 单次解析得到的 ELF 映射计划；source 是 segment bytes 的唯一来源。
+/// 单次解析得到的 ELF 映射计划；source 是 segment bytes 的唯一来源。
 pub(crate) struct ParsedElf {
     pub(super) source: Arc<dyn ExecutableSource>,
     pub(super) kind: ElfKind,
@@ -43,24 +53,29 @@ pub(crate) struct ParsedElf {
     pub(super) load_segments: Vec<LoadSegment>,
 }
 
-/// @description exec transaction 使用的主程序与可选动态解释器映射计划。
+/// exec transaction 使用的主程序与可选动态解释器映射计划。
 pub(crate) struct ExecutableImage {
     pub(super) main: ParsedElf,
     pub(super) interpreter: Option<ParsedElf>,
 }
 
 impl ExecutableImage {
-    /// @description 组合由同一 ELF parser 产生的主程序与动态解释器映射计划。
+    /// 组合由同一 ELF parser 产生的主程序与动态解释器映射计划。
     ///
-    /// @param main 已校验的主程序映射计划。
-    /// @param interpreter PT_INTERP 指向且已独立校验的动态解释器映射计划。
-    /// @return 单次 exec transaction 的完整 immutable input。
+    /// # Parameters
+    ///
+    /// - `main`: 已校验的主程序映射计划。
+    /// - `interpreter`: PT_INTERP 指向且已独立校验的动态解释器映射计划。
+    ///
+    /// # Returns
+    ///
+    /// 单次 exec transaction 的完整 immutable input。
     pub(crate) fn new(main: ParsedElf, interpreter: Option<ParsedElf>) -> Self {
         Self { main, interpreter }
     }
 }
 
-/// @description bounded ELF parsing 的稳定失败分类，不泄漏 parser 实现细节。
+/// bounded ELF parsing 的稳定失败分类，不泄漏 parser 实现细节。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutableParseError {
     /// metadata buffer 或 owned mapping plan 分配失败。
@@ -71,22 +86,38 @@ pub(crate) enum ExecutableParseError {
     Io,
 }
 
-/// @description 解析主程序并提取唯一 PT_INTERP pathname。
+/// 解析主程序并提取唯一 PT_INTERP pathname。
 ///
-/// @param source 可执行文件的只读随机访问源。
-/// @return 已校验映射计划与可选的绝对 PT_INTERP path。
-/// @errors 返回资源耗尽、非法 ELF 或 source 读取失败。
+/// # Parameters
+///
+/// - `source`: 可执行文件的只读随机访问源。
+///
+/// # Returns
+///
+/// 已校验映射计划与可选的绝对 PT_INTERP path。
+///
+/// # Errors
+///
+/// 返回资源耗尽、非法 ELF 或 source 读取失败。
 pub(crate) fn parse_main_elf(
     source: Arc<dyn ExecutableSource>,
 ) -> Result<(ParsedElf, Option<Vec<u8>>), ExecutableParseError> {
     parse_elf(source, true)
 }
 
-/// @description 解析动态解释器；出现嵌套 PT_INTERP 时直接拒绝。
+/// 解析动态解释器；出现嵌套 PT_INTERP 时直接拒绝。
 ///
-/// @param source 动态解释器的只读随机访问源。
-/// @return 已校验的唯一映射计划。
-/// @errors 返回资源耗尽、非法 ELF 或 source 读取失败。
+/// # Parameters
+///
+/// - `source`: 动态解释器的只读随机访问源。
+///
+/// # Returns
+///
+/// 已校验的唯一映射计划。
+///
+/// # Errors
+///
+/// 返回资源耗尽、非法 ELF 或 source 读取失败。
 pub(crate) fn parse_interpreter_elf(
     source: Arc<dyn ExecutableSource>,
 ) -> Result<ParsedElf, ExecutableParseError> {

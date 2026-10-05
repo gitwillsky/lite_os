@@ -211,11 +211,19 @@ impl PortNamespace {
 
     /// 原子取得指定 local tuple membership。
     ///
-    /// @param port host-order local port。
-    /// @param address `None` 表示 wildcard，`Some` 表示 exact IPv4。
-    /// @param reuse_address endpoint 当前 `SO_REUSEADDR` 分类。
-    /// @return 成功返回必须由 endpoint 持有并精确释放的 token。
-    /// @errors tuple 冲突返回 `AddressInUse`；AVL 预留失败返回 `NoMemory`，两者均不发布状态。
+    /// # Parameters
+    ///
+    /// - `port`: host-order local port。
+    /// - `address`: `None` 表示 wildcard，`Some` 表示 exact IPv4。
+    /// - `reuse_address`: endpoint 当前 `SO_REUSEADDR` 分类。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回必须由 endpoint 持有并精确释放的 token。
+    ///
+    /// # Errors
+    ///
+    /// tuple 冲突返回 `AddressInUse`；AVL 预留失败返回 `NoMemory`，两者均不发布状态。
     pub(super) fn acquire(
         &mut self,
         port: u16,
@@ -276,10 +284,18 @@ impl PortNamespace {
 
     /// 从 cursor 开始按 word 查找一个完全空闲的 ephemeral port。
     ///
-    /// @param address 最终 bind 的 wildcard/exact IPv4；不能将 specific port-0 降级为 wildcard。
-    /// @param reuse_address endpoint 当前 `SO_REUSEADDR` 分类。
-    /// @return 最多读取 257 个 bitmap word 后返回已取得 token。
-    /// @errors 范围耗尽返回 `AddressInUse`；membership AVL 预留失败返回 `NoMemory`。
+    /// # Parameters
+    ///
+    /// - `address`: 最终 bind 的 wildcard/exact IPv4；不能将 specific port-0 降级为 wildcard。
+    /// - `reuse_address`: endpoint 当前 `SO_REUSEADDR` 分类。
+    ///
+    /// # Returns
+    ///
+    /// 最多读取 257 个 bitmap word 后返回已取得 token。
+    ///
+    /// # Errors
+    ///
+    /// 范围耗尽返回 `AddressInUse`；membership AVL 预留失败返回 `NoMemory`。
     pub(super) fn acquire_ephemeral(
         &mut self,
         address: Option<Ipv4Addr>,
@@ -294,10 +310,18 @@ impl PortNamespace {
 
     /// 预留 accepted TCP endpoint 的 exact local tuple membership storage。
     ///
-    /// @param lease listener 当前 membership，只读借用且不改变其 claim。
-    /// @param address established child 的权威 local IPv4。
-    /// @return 可在同一 stack owner 临界区内无分配提交的 token。
-    /// @errors exact-address node OOM 返回 `NoMemory`，namespace 不变。
+    /// # Parameters
+    ///
+    /// - `lease`: listener 当前 membership，只读借用且不改变其 claim。
+    /// - `address`: established child 的权威 local IPv4。
+    ///
+    /// # Returns
+    ///
+    /// 可在同一 stack owner 临界区内无分配提交的 token。
+    ///
+    /// # Errors
+    ///
+    /// exact-address node OOM 返回 `NoMemory`，namespace 不变。
     pub(super) fn prepare_retain_for_address(
         &self,
         lease: PortLease,
@@ -330,9 +354,17 @@ impl PortNamespace {
 
     /// 无分配发布已预留的 accepted TCP exact membership。
     ///
-    /// @param prepared 在同一 `NetworkStack` lock 周期内产生的未发布 token。
-    /// @return listener claim 已清除、address 已精确化的 accepted lease。
-    /// @errors 无可恢复错误；跨 owner 或中途修改 namespace 会 fail-stop，否则会发布无 owner membership。
+    /// # Parameters
+    ///
+    /// - `prepared`: 在同一 `NetworkStack` lock 周期内产生的未发布 token。
+    ///
+    /// # Returns
+    ///
+    /// listener claim 已清除、address 已精确化的 accepted lease。
+    ///
+    /// # Errors
+    ///
+    /// 无可恢复错误；跨 owner 或中途修改 namespace 会 fail-stop，否则会发布无 owner membership。
     pub(super) fn commit_retained(&mut self, prepared: PreparedPortLease) -> PortLease {
         let PreparedPortLease {
             lease,
@@ -354,10 +386,18 @@ impl PortNamespace {
 
     /// 预留 active connect 把 wildcard membership 迁移到 exact source IPv4 的 storage。
     ///
-    /// @param lease fresh TCP endpoint 当前 membership。
-    /// @param address 已验证的单 interface source IPv4。
-    /// @return 可在 connect 成功后无分配提交的 token。
-    /// @errors exact-address node OOM 返回 `NoMemory`，原 wildcard membership 不变。
+    /// # Parameters
+    ///
+    /// - `lease`: fresh TCP endpoint 当前 membership。
+    /// - `address`: 已验证的单 interface source IPv4。
+    ///
+    /// # Returns
+    ///
+    /// 可在 connect 成功后无分配提交的 token。
+    ///
+    /// # Errors
+    ///
+    /// exact-address node OOM 返回 `NoMemory`，原 wildcard membership 不变。
     pub(super) fn prepare_readdress(
         &self,
         lease: PortLease,
@@ -391,9 +431,17 @@ impl PortNamespace {
 
     /// 无分配把 active TCP membership 迁移到已选定的 exact source IPv4。
     ///
-    /// @param prepared 在同一 stack owner 临界区内、connect 之前产生的 token。
-    /// @return 已精确化的 lease，caller 必须回写 endpoint state。
-    /// @errors 无可恢复错误；跨 owner 或重复提交会 fail-stop，否则会破坏 exact occupancy。
+    /// # Parameters
+    ///
+    /// - `prepared`: 在同一 stack owner 临界区内、connect 之前产生的 token。
+    ///
+    /// # Returns
+    ///
+    /// 已精确化的 lease，caller 必须回写 endpoint state。
+    ///
+    /// # Errors
+    ///
+    /// 无可恢复错误；跨 owner 或重复提交会 fail-stop，否则会破坏 exact occupancy。
     pub(super) fn commit_readdress(&mut self, prepared: PreparedPortReaddress) -> PortLease {
         let PreparedPortReaddress {
             previous,
@@ -420,9 +468,17 @@ impl PortNamespace {
 
     /// 把 bound TCP membership 原子提升为唯一的重叠 listener claim。
     ///
-    /// @param lease 尚未 listening 的 TCP membership。
-    /// @return 带 listener claim 的新 token，必须回写 endpoint state。
-    /// @errors wildcard 或同 exact address 已有 listener 时返回 `AddressInUse`；不依赖 `SO_REUSEADDR`。
+    /// # Parameters
+    ///
+    /// - `lease`: 尚未 listening 的 TCP membership。
+    ///
+    /// # Returns
+    ///
+    /// 带 listener claim 的新 token，必须回写 endpoint state。
+    ///
+    /// # Errors
+    ///
+    /// wildcard 或同 exact address 已有 listener 时返回 `AddressInUse`；不依赖 `SO_REUSEADDR`。
     pub(super) fn claim_listener(&mut self, lease: PortLease) -> Result<PortLease, PortError> {
         let occupancy = self
             .entries
@@ -461,9 +517,17 @@ impl PortNamespace {
 
     /// 回滚尚未发布到 endpoint mode 的 listener claim。
     ///
-    /// @param lease `claim_listener` 返回但尚未写入 endpoint 的 token。
-    /// @return 无返回值；base membership 仍存在，需要时由 caller 另行 release。
-    /// @errors token 不属于该 namespace 时 fail-stop，避免静默损坏 listener 计数。
+    /// # Parameters
+    ///
+    /// - `lease`: `claim_listener` 返回但尚未写入 endpoint 的 token。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；base membership 仍存在，需要时由 caller 另行 release。
+    ///
+    /// # Errors
+    ///
+    /// token 不属于该 namespace 时 fail-stop，避免静默损坏 listener 计数。
     pub(super) fn release_listener_claim(&mut self, lease: PortLease) {
         let occupancy = self
             .entries
@@ -495,10 +559,18 @@ impl PortNamespace {
 
     /// 更新已绑定 endpoint 的 `SO_REUSEADDR` classification。
     ///
-    /// @param lease endpoint 当前持有的 token。
-    /// @param reuse_address 新分类。
-    /// @return 已切换分类的 token，caller 必须回写，否则 drop 会从错误计数器释放。
-    /// @errors 无可恢复错误；不属于该 namespace 的 token 会 fail-stop。
+    /// # Parameters
+    ///
+    /// - `lease`: endpoint 当前持有的 token。
+    /// - `reuse_address`: 新分类。
+    ///
+    /// # Returns
+    ///
+    /// 已切换分类的 token，caller 必须回写，否则 drop 会从错误计数器释放。
+    ///
+    /// # Errors
+    ///
+    /// 无可恢复错误；不属于该 namespace 的 token 会 fail-stop。
     pub(super) fn set_reuse(&mut self, lease: PortLease, reuse_address: bool) -> PortLease {
         if lease.reuse_address == reuse_address {
             return lease;
@@ -551,9 +623,17 @@ impl PortNamespace {
 
     /// 精确释放 endpoint 持有的一份 membership。
     ///
-    /// @param lease 从 acquire/commit/set_reuse/claim 最后返回并由该 endpoint 持有的 token。
-    /// @return 无返回值；最后一份会同时清除 bitmap 与 map entry。
-    /// @errors 重复释放或过期 token 会 fail-stop，防止把仍在使用的 port 标记为空闲。
+    /// # Parameters
+    ///
+    /// - `lease`: 从 acquire/commit/set_reuse/claim 最后返回并由该 endpoint 持有的 token。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；最后一份会同时清除 bitmap 与 map entry。
+    ///
+    /// # Errors
+    ///
+    /// 重复释放或过期 token 会 fail-stop，防止把仍在使用的 port 标记为空闲。
     pub(super) fn release(&mut self, lease: PortLease) {
         if lease.listener {
             self.release_listener_claim(lease);

@@ -1,4 +1,4 @@
-//! @description Linux ALSA playback state、position、poll 与 OFD lifecycle owner。
+//! Linux ALSA playback state、position、poll 与 OFD lifecycle owner。
 
 use alloc::sync::{Arc, Weak};
 use spin::{Mutex, Once};
@@ -73,11 +73,20 @@ pub(crate) struct PcmFile {
 // OWNER: audio domain exclusively publishes and revokes the single playback adapter.
 static AUDIO_DEVICE: Once<Arc<AudioDevice>> = Once::new();
 
-/// @description 把 platform PCM adapter 与 task-aware readiness pipe 装配为 ALSA device。
-/// @param output 唯一 physical output adapter。
-/// @param notification read/write notification endpoints。
-/// @return 首次初始化成功。
-/// @errors 重复初始化、observer publication 或内存分配失败。
+/// 把 platform PCM adapter 与 task-aware readiness pipe 装配为 ALSA device。
+///
+/// # Parameters
+///
+/// - `output`: 唯一 physical output adapter。
+/// - `notification`: read/write notification endpoints。
+///
+/// # Returns
+///
+/// 首次初始化成功。
+///
+/// # Errors
+///
+/// 重复初始化、observer publication 或内存分配失败。
 pub(crate) fn init(
     output: Arc<dyn PcmOutput>,
     notification: (Arc<PipeEnd>, Arc<PipeEnd>),
@@ -98,14 +107,20 @@ pub(crate) fn init(
     Ok(())
 }
 
-/// @description platform 是否发布了可用 PCM output。
+/// platform 是否发布了可用 PCM output。
 pub(crate) fn available() -> bool {
     AUDIO_DEVICE.get().is_some()
 }
 
-/// @description 独占打开第一个 playback substream。
-/// @return 新 OFD-owned PCM file。
-/// @errors 无设备、已有 live open 或分配失败。
+/// 独占打开第一个 playback substream。
+///
+/// # Returns
+///
+/// 新 OFD-owned PCM file。
+///
+/// # Errors
+///
+/// 无设备、已有 live open 或分配失败。
 pub(crate) fn open() -> Result<Arc<PcmFile>, AudioError> {
     let device = AUDIO_DEVICE.get().cloned().ok_or(AudioError::Device)?;
     let mut opened = device.opened.lock();
@@ -128,13 +143,16 @@ pub(crate) fn open() -> Result<Arc<PcmFile>, AudioError> {
     })
     .map_err(|_| AudioError::Device)?;
     *opened = Arc::downgrade(&file);
-    crate::info!("[Audio] ALSA playback opened");
+    crate::info!("ALSA playback opened");
     Ok(file)
 }
 
 impl PcmFile {
-    /// @description 配置唯一 48kHz/stereo/F32_LE/MMAP-or-RW-interleaved hardware contract。
-    /// @param parameters 从 Linux `snd_pcm_hw_params` 解码的领域值。
+    /// 配置唯一 48kHz/stereo/F32_LE/MMAP-or-RW-interleaved hardware contract。
+    ///
+    /// # Parameters
+    ///
+    /// - `parameters`: 从 Linux `snd_pcm_hw_params` 解码的领域值。
     pub(crate) fn hardware_parameters(
         &self,
         parameters: HardwareParameters,
@@ -155,11 +173,11 @@ impl PcmFile {
             .lock()
             .configure()
             .map_err(|_| AudioError::InvalidState)?;
-        crate::info!("[Audio] ALSA playback configured");
+        crate::info!("ALSA playback configured");
         Ok(())
     }
 
-    /// @description 设置 wake/start/stop/boundary software parameters。
+    /// 设置 wake/start/stop/boundary software parameters。
     pub(crate) fn software_parameters(
         &self,
         parameters: SoftwareParameters,
@@ -214,7 +232,7 @@ impl PcmFile {
             .lock()
             .start()
             .map_err(|_| AudioError::InvalidState)?;
-        crate::info!("[Audio] ALSA playback started");
+        crate::info!("ALSA playback started");
         Ok(())
     }
 
@@ -230,12 +248,15 @@ impl PcmFile {
             .lock()
             .drop_stream()
             .map_err(|_| AudioError::InvalidState)?;
-        crate::info!("[Audio] ALSA playback stopped");
+        crate::info!("ALSA playback stopped");
         Ok(())
     }
 
-    /// @description 提交一个完整 hardware period。
-    /// @param bytes 256 frame 的 native little-endian float bytes。
+    /// 提交一个完整 hardware period。
+    ///
+    /// # Parameters
+    ///
+    /// - `bytes`: 256 frame 的 native little-endian float bytes。
     pub(crate) fn write_period(&self, bytes: &[u8]) -> Result<(), AudioError> {
         let _operation = self.operation.lock();
         if !self.state.lock().writable() {
@@ -258,9 +279,12 @@ impl PcmFile {
         }
     }
 
-    /// @description 返回 ALSA data mmap 的固定 1024-frame backing。
-    /// @param offset 只接受 `SNDRV_PCM_MMAP_OFFSET_DATA=0`。
-    /// @param length 必须覆盖完整 hardware buffer。
+    /// 返回 ALSA data mmap 的固定 1024-frame backing。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 只接受 `SNDRV_PCM_MMAP_OFFSET_DATA=0`。
+    /// - `length`: 必须覆盖完整 hardware buffer。
     pub(crate) fn mapping(
         &self,
         offset: u64,
@@ -275,8 +299,11 @@ impl PcmFile {
         ))
     }
 
-    /// @description 从 ALSA mmap ring 提交 application pointer 的整 period 增量。
-    /// @param new_application_pointer 以 software boundary 为模的用户指针。
+    /// 从 ALSA mmap ring 提交 application pointer 的整 period 增量。
+    ///
+    /// # Parameters
+    ///
+    /// - `new_application_pointer`: 以 software boundary 为模的用户指针。
     pub(crate) fn commit_application_pointer(
         &self,
         new_application_pointer: u64,
@@ -308,7 +335,7 @@ impl PcmFile {
         Ok(())
     }
 
-    /// @description level-triggered PCM poll projection。
+    /// level-triggered PCM poll projection。
     pub(crate) fn poll_events(&self, events: i16) -> i16 {
         const ERROR: i16 = 0x008;
         const HANGUP: i16 = 0x010;
@@ -355,10 +382,7 @@ impl PcmCompletionObserver for AudioDevice {
             if let Some(completed_periods) = completed_periods
                 && completed_periods.is_multiple_of(256)
             {
-                crate::debug!(
-                    "[Audio] ALSA playback periods completed: {}",
-                    completed_periods
-                );
+                crate::debug!("ALSA playback periods completed: {}", completed_periods);
             }
             self.notification_write.signal_readiness();
         }
@@ -370,7 +394,7 @@ impl PcmCompletionObserver for AudioDevice {
             let previous = state.state;
             state.xrun();
             if previous != state.state {
-                crate::info!("[Audio] ALSA playback XRUN");
+                crate::info!("ALSA playback XRUN");
             }
             drop(state);
             self.notification_write.signal_readiness();
@@ -380,7 +404,7 @@ impl PcmCompletionObserver for AudioDevice {
     fn disconnected(&self) {
         if let Some(file) = self.opened.lock().upgrade() {
             file.state.lock().disconnect();
-            crate::info!("[Audio] ALSA playback reset");
+            crate::info!("ALSA playback reset");
             self.notification_write.signal_readiness();
         }
     }

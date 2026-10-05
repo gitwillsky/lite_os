@@ -22,16 +22,24 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
     },
 ];
 
-/// @description 返回 architecture-check 实际加载的源码根，避免目录约束复制 domain 清单。
-/// @return 按权威 domain 清单顺序产生源码根的 iterator。
-/// @errors 无错误。
+/// 返回 architecture-check 实际加载的源码根，避免目录约束复制 domain 清单。
+///
+/// # Returns
+///
+/// 按权威 domain 清单顺序产生源码根的 iterator。
 pub(super) fn source_roots() -> impl Iterator<Item = &'static str> {
     SOURCE_DOMAINS.iter().map(|domain| domain.root)
 }
 
-/// @description 定位 architecture-check 所属 workspace 根目录。
-/// @return 两级父目录归一化后的 workspace 根。
-/// @errors 布局不满足 `tools/architecture-check` 不变量时 fail-stop。
+/// 定位 architecture-check 所属 workspace 根目录。
+///
+/// # Returns
+///
+/// 两级父目录归一化后的 workspace 根。
+///
+/// # Errors
+///
+/// 布局不满足 `tools/architecture-check` 不变量时 fail-stop。
 pub(super) fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -40,10 +48,19 @@ pub(super) fn repository_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// @description 递归收集目录中的 Rust 源文件。
-/// @param directory 待扫描根；files 接收发现的路径。
-/// @return 完整遍历后返回 unit。
-/// @errors 任一目录或 entry 不可读时返回带路径的错误。
+/// 递归收集目录中的 Rust 源文件。
+///
+/// # Parameters
+///
+/// - `directory`: 待扫描根；files 接收发现的路径。
+///
+/// # Returns
+///
+/// 完整遍历后返回 unit。
+///
+/// # Errors
+///
+/// 任一目录或 entry 不可读时返回带路径的错误。
 pub(super) fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("failed to read {}: {error}", directory.display()))?;
@@ -60,10 +77,19 @@ pub(super) fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(
     Ok(())
 }
 
-/// @description 从所有权清单加载、解析并标注 architecture-check 的生产源码输入。
-/// @param root workspace 根目录。
-/// @return 排序、解析并带 module owner 的统一源码快照。
-/// @errors 读取、解析或相对路径归一化失败时返回错误。
+/// 从所有权清单加载、解析并标注 architecture-check 的生产源码输入。
+///
+/// # Parameters
+///
+/// - `root`: workspace 根目录。
+///
+/// # Returns
+///
+/// 排序、解析并带 module owner 的统一源码快照。
+///
+/// # Errors
+///
+/// 读取、解析或相对路径归一化失败时返回错误。
 pub(super) fn load_sources(root: &Path) -> Result<Vec<SourceFile>, String> {
     let mut sources = Vec::new();
     for domain in SOURCE_DOMAINS {

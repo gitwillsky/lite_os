@@ -60,7 +60,7 @@ pub(crate) const O_APPEND: u32 = 0x400;
 pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_CLOEXEC: u32 = 0x80000;
 
-/// @description OFD 后端；character device、pipe 和 inode 共享同一 fd 表。
+/// OFD 后端；character device、pipe 和 inode 共享同一 fd 表。
 pub(crate) enum OpenFileKind {
     Character(CharacterDevice),
     Pipe(Arc<PipeEnd>),
@@ -72,33 +72,49 @@ pub(crate) enum OpenFileKind {
     MemFile(Arc<crate::fs::MemFile>),
 }
 
-/// @description console 文件后端 seam；具体 platform adapter 只在 composition root 装配。
+/// console 文件后端 seam；具体 platform adapter 只在 composition root 装配。
 pub(crate) trait Console: Send + Sync {
-    /// @description 非阻塞读取当前 IRQ ring 中已有 console bytes。
+    /// 非阻塞读取当前 IRQ ring 中已有 console bytes。
     ///
-    /// @param bytes kernel-owned 输出缓冲区。
-    /// @return 已有输入长度；零表示调用方必须进入 console wait；设备失败返回 `IoError`。
+    /// # Parameters
+    ///
+    /// - `bytes`: kernel-owned 输出缓冲区。
+    ///
+    /// # Returns
+    ///
+    /// 已有输入长度；零表示调用方必须进入 console wait；设备失败返回 `IoError`。
     fn read(&self, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
 
-    /// @description 查询 console 是否可读，只允许在 wait owner lock 内封闭 read/enqueue race。
+    /// 查询 console 是否可读，只允许在 wait owner lock 内封闭 read/enqueue race。
     fn input_ready(&self) -> bool;
 
-    /// @description 原子丢弃 adapter 尚未交给 line discipline 的全部 raw input。
-    /// @return 被丢弃的 byte 数。
+    /// 原子丢弃 adapter 尚未交给 line discipline 的全部 raw input。
+    ///
+    /// # Returns
+    ///
+    /// 被丢弃的 byte 数。
     fn discard_input(&self) -> usize;
 
-    /// @description 原子丢弃 adapter 尚未被终端 peer 消费的全部 output。
-    /// @return 被丢弃的 byte 数；同步直写设备没有 pending output 时返回零。
+    /// 原子丢弃 adapter 尚未被终端 peer 消费的全部 output。
+    ///
+    /// # Returns
+    ///
+    /// 被丢弃的 byte 数；同步直写设备没有 pending output 时返回零。
     fn discard_output(&self) -> usize;
 
-    /// @description 同步且不睡眠等待地写出完整或部分 console 字节流。
+    /// 同步且不睡眠等待地写出完整或部分 console 字节流。
     ///
-    /// @param bytes kernel 已完成 user-copy 的连续字节。
-    /// @return 实际写出长度；底层 console 失败返回 `IoError`。返回时不得保留待发送队列。
+    /// # Parameters
+    ///
+    /// - `bytes`: kernel 已完成 user-copy 的连续字节。
+    ///
+    /// # Returns
+    ///
+    /// 实际写出长度；底层 console 失败返回 `IoError`。返回时不得保留待发送队列。
     fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError>;
 }
 
-/// @description Linux open file description，共享偏移和状态标志。
+/// Linux open file description，共享偏移和状态标志。
 pub(crate) struct OpenFileDescription {
     pub(crate) kind: OpenFileKind,
     position: FilePosition,
@@ -136,24 +152,42 @@ impl OpenFileDescription {
         result
     }
 
-    /// @description 在该 OFD 共享 position 的唯一临界区内执行一次完整操作。
-    /// @param operation 依赖并可推进当前 position 的完整 operation。
-    /// @return operation 的原始返回值。
+    /// 在该 OFD 共享 position 的唯一临界区内执行一次完整操作。
+    ///
+    /// # Parameters
+    ///
+    /// - `operation`: 依赖并可推进当前 position 的完整 operation。
+    ///
+    /// # Returns
+    ///
+    /// operation 的原始返回值。
     pub(crate) fn with_position<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> R {
         self.position.with(operation)
     }
 
-    /// @description 返回该 OFD 共享 position 的瞬时快照，不推进 position。
-    /// @return 当前共享 position。
+    /// 返回该 OFD 共享 position 的瞬时快照，不推进 position。
+    ///
+    /// # Returns
+    ///
+    /// 当前共享 position。
     pub(crate) fn position_snapshot(&self) -> u64 {
         self.position.snapshot()
     }
 
-    /// @description 原子计算并发布 signed Linux file position；失败时保持原值。
-    /// @param offset signed byte delta。
-    /// @param base 把当前 position 投影为本次 seek 基准的 closure。
-    /// @return 成功发布的新 position。
-    /// @errors 结果为负或超出 `i64::MAX` 时返回错误。
+    /// 原子计算并发布 signed Linux file position；失败时保持原值。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: signed byte delta。
+    /// - `base`: 把当前 position 投影为本次 seek 基准的 closure。
+    ///
+    /// # Returns
+    ///
+    /// 成功发布的新 position。
+    ///
+    /// # Errors
+    ///
+    /// 结果为负或超出 `i64::MAX` 时返回错误。
     pub(crate) fn seek_position(
         &self,
         offset: i64,
@@ -162,13 +196,19 @@ impl OpenFileDescription {
         self.position.seek(offset, base)
     }
 
-    /// @description 按全局地址顺序锁定两个不同 OFD 的 positions，并保持 caller 参数顺序。
+    /// 按全局地址顺序锁定两个不同 OFD 的 positions，并保持 caller 参数顺序。
     ///
     /// 同一 OFD 返回 `None`，caller 必须单独定义单 position 的操作语义。
-    /// @param first caller 语义中的第一个 OFD。
-    /// @param second caller 语义中的第二个 OFD。
-    /// @param operation 同时依赖并可推进两个 positions 的完整 operation。
-    /// @return OFD 不同时返回 operation 结果；相同时返回 `None`。
+    ///
+    /// # Parameters
+    ///
+    /// - `first`: caller 语义中的第一个 OFD。
+    /// - `second`: caller 语义中的第二个 OFD。
+    /// - `operation`: 同时依赖并可推进两个 positions 的完整 operation。
+    ///
+    /// # Returns
+    ///
+    /// OFD 不同时返回 operation 结果；相同时返回 `None`。
     pub(crate) fn with_positions<R>(
         first: &Self,
         second: &Self,
@@ -177,7 +217,7 @@ impl OpenFileDescription {
         FilePosition::with_pair(&first.position, &second.position, operation)
     }
 
-    /// @description 从唯一 OFD backend 投影 poll/epoll readiness，不注册 waiter。
+    /// 从唯一 OFD backend 投影 poll/epoll readiness，不注册 waiter。
     pub(crate) fn poll_events(&self, events: i16) -> i16 {
         const INPUT: i16 = 0x001;
         const OUTPUT: i16 = 0x004;
@@ -227,10 +267,19 @@ impl OpenFileDescription {
         result
     }
 
-    /// @description 在 deferred source 通知中无等待地投影 OFD readiness。
-    /// @param events caller 关注的 poll event mask。
-    /// @return backend 可立即观察时返回 event bits；owner 竞争时返回 `None`。
-    /// @errors 不分配、不睡眠，也不注册 task waiter。
+    /// 在 deferred source 通知中无等待地投影 OFD readiness。
+    ///
+    /// # Parameters
+    ///
+    /// - `events`: caller 关注的 poll event mask。
+    ///
+    /// # Returns
+    ///
+    /// backend 可立即观察时返回 event bits；owner 竞争时返回 `None`。
+    ///
+    /// # Errors
+    ///
+    /// 不分配、不睡眠，也不注册 task waiter。
     pub(crate) fn try_poll_events(&self, events: i16) -> Option<i16> {
         match &self.kind {
             OpenFileKind::Socket(socket) => socket
@@ -240,10 +289,15 @@ impl OpenFileDescription {
         }
     }
 
-    /// @description 返回当前 OFD 最近一次可观察 I/O 状态变化的全局 generation。
+    /// 返回当前 OFD 最近一次可观察 I/O 状态变化的全局 generation。
     ///
-    /// @param events caller 关注的 poll event mask。
-    /// @return 跨 source 可比较的 generation；不支持 epoll 的 inode/device 返回零。
+    /// # Parameters
+    ///
+    /// - `events`: caller 关注的 poll event mask。
+    ///
+    /// # Returns
+    ///
+    /// 跨 source 可比较的 generation；不支持 epoll 的 inode/device 返回零。
     pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
         match &self.kind {
             OpenFileKind::Character(device) => device.readiness_generation(),
@@ -258,9 +312,11 @@ impl OpenFileDescription {
         }
     }
 
-    /// @description 判断 backend 是否提供可注册 wait source，而非仅提供同步 poll 结果。
+    /// 判断 backend 是否提供可注册 wait source，而非仅提供同步 poll 结果。
     ///
-    /// @return 可加入 epoll 返回 true；regular inode/null/zero 返回 false 并映射 EPERM。
+    /// # Returns
+    ///
+    /// 可加入 epoll 返回 true；regular inode/null/zero 返回 false 并映射 EPERM。
     pub(crate) fn epoll_pollable(&self) -> bool {
         match &self.kind {
             OpenFileKind::Character(device) => device.epoll_pollable(),
@@ -273,9 +329,15 @@ impl OpenFileDescription {
         }
     }
 
-    /// @description 把 OFD 投影为 epoll 持久 source index 使用的固定 source 集合。
-    /// @param events interest event mask；决定是否需要 read/write 两个方向。
-    /// @return 最多两个稳定 source identity；无异步 source 返回空集合。
+    /// 把 OFD 投影为 epoll 持久 source index 使用的固定 source 集合。
+    ///
+    /// # Parameters
+    ///
+    /// - `events`: interest event mask；决定是否需要 read/write 两个方向。
+    ///
+    /// # Returns
+    ///
+    /// 最多两个稳定 source identity；无异步 source 返回空集合。
     pub(crate) fn readiness_sources(&self, events: i16) -> ReadinessSources {
         const INPUT: i16 = 0x001;
         const OUTPUT: i16 = 0x004;
@@ -373,12 +435,17 @@ impl OpenFileDescription {
         sources
     }
 
-    /// @description 构造继承给 init 的 console OFD，并保留 devfs opened entry。
+    /// 构造继承给 init 的 console OFD，并保留 devfs opened entry。
     ///
-    /// @param terminal 共享 TTY owner。
-    /// @param backing_opened `/dev/console` opened entry，用于 metadata、fstatfs 与 procfs。
-    /// @param flags OFD status flags。
-    /// @return 新 console OFD。
+    /// # Parameters
+    ///
+    /// - `terminal`: 共享 TTY owner。
+    /// - `backing_opened`: `/dev/console` opened entry，用于 metadata、fstatfs 与 procfs。
+    /// - `flags`: OFD status flags。
+    ///
+    /// # Returns
+    ///
+    /// 新 console OFD。
     pub(crate) fn terminal(
         terminal: Arc<Terminal>,
         backing_opened: Arc<OpenedFile>,
@@ -399,13 +466,18 @@ impl OpenFileDescription {
         .map_err(|_| ())
     }
 
-    /// @description 构造 pathname 打开的 character-device OFD。
+    /// 构造 pathname 打开的 character-device OFD。
     ///
-    /// @param kind device identity。
-    /// @param terminal 共享 TTY owner。
-    /// @param flags OFD status flags。
-    /// @param backing_opened 打开时的 devfs opened entry，用于 metadata、fstatfs 与 procfs。
-    /// @return 新 character-device OFD。
+    /// # Parameters
+    ///
+    /// - `kind`: device identity。
+    /// - `terminal`: 共享 TTY owner。
+    /// - `flags`: OFD status flags。
+    /// - `backing_opened`: 打开时的 devfs opened entry，用于 metadata、fstatfs 与 procfs。
+    ///
+    /// # Returns
+    ///
+    /// 新 character-device OFD。
     pub(crate) fn character(
         kind: DeviceKind,
         terminal: Arc<Terminal>,
@@ -437,7 +509,7 @@ impl OpenFileDescription {
         .map_err(|_| ())
     }
 
-    /// @description 构造 pathname-less memfd OFD。
+    /// 构造 pathname-less memfd OFD。
     pub(crate) fn mem_file(file: Arc<crate::fs::MemFile>, flags: u32) -> Result<Arc<Self>, ()> {
         Arc::try_new(Self {
             kind: OpenFileKind::MemFile(file),
@@ -526,8 +598,11 @@ impl OpenFileDescription {
         }
     }
 
-    /// @description 返回 pathname-backed OFD 的稳定 opened-entry identity。
-    /// @return regular/directory/character OFD 返回 opened entry；anonymous OFD 返回 None。
+    /// 返回 pathname-backed OFD 的稳定 opened-entry identity。
+    ///
+    /// # Returns
+    ///
+    /// regular/directory/character OFD 返回 opened entry；anonymous OFD 返回 None。
     pub(crate) fn opened_ref(&self) -> Option<Arc<OpenedFile>> {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.clone()),
@@ -541,10 +616,15 @@ impl OpenFileDescription {
         }
     }
 
-    /// @description 取得该 OFD backing filesystem 的统计；anonymous pipe 使用 pipefs 语义。
+    /// 取得该 OFD backing filesystem 的统计；anonymous pipe 使用 pipefs 语义。
     ///
-    /// @return mounted inode 的 VFS 快照，或 Linux simple_statfs 形状的 pipefs 快照。
-    /// @errors 无 backing filesystem 的 OFD 返回 `InvalidFileSystem`。
+    /// # Returns
+    ///
+    /// mounted inode 的 VFS 快照，或 Linux simple_statfs 形状的 pipefs 快照。
+    ///
+    /// # Errors
+    ///
+    /// 无 backing filesystem 的 OFD 返回 `InvalidFileSystem`。
     pub(crate) fn filesystem_statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         match &self.kind {
             OpenFileKind::Inode(opened) => vfs().statistics(opened.inode()),

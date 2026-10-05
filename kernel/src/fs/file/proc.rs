@@ -4,9 +4,15 @@ use super::{OpenFileDescription, OpenFileKind};
 use crate::fs::{FileSystemError, try_format_bytes, vfs};
 
 impl OpenFileDescription {
-    /// @description 投影 Linux `/proc/<pid>/fd/<n>` symbolic-link target。
-    /// @return pathname-backed OFD 返回 VFS opened path；anonymous backend 返回标准 label。
-    /// @errors VFS opened-entry 链损坏或内存不足时返回明确错误。
+    /// 投影 Linux `/proc/<pid>/fd/<n>` symbolic-link target。
+    ///
+    /// # Returns
+    ///
+    /// pathname-backed OFD 返回 VFS opened path；anonymous backend 返回标准 label。
+    ///
+    /// # Errors
+    ///
+    /// VFS opened-entry 链损坏或内存不足时返回明确错误。
     pub(crate) fn proc_target(&self) -> Result<Vec<u8>, FileSystemError> {
         if let Some(opened) = self.opened_ref() {
             return vfs().opened_path(&opened);

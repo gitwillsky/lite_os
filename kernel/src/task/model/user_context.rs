@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_transaction_restores_request_registers_and_ecall_pc() {
+    fn restart_transaction_restores_request_registers_and_syscall_pc() {
         let (owner, _) = owner();
         owner.with(|context| {
             context.registers[..3].copy_from_slice(&[11, 12, 13]);

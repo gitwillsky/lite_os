@@ -241,14 +241,17 @@ impl Inode for DevPtsInode {
     }
 }
 
-/// @description Unix98 PTY slave namespace filesystem；节点生命周期由 pty registry 投影。
+/// Unix98 PTY slave namespace filesystem；节点生命周期由 pty registry 投影。
 pub(crate) struct DevPtsFileSystem {
     root: Arc<DevPtsInode>,
 }
 
 impl DevPtsFileSystem {
-    /// @description 构造挂载到 `/dev/pts` 的独立 devpts instance。
-    /// @return 新 filesystem；root 或 filesystem Arc OOM 返回错误。
+    /// 构造挂载到 `/dev/pts` 的独立 devpts instance。
+    ///
+    /// # Returns
+    ///
+    /// 新 filesystem；root 或 filesystem Arc OOM 返回错误。
     pub(crate) fn new() -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
             root: DevPtsInode::new(DevPtsNode::Root)?,

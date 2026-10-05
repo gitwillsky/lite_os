@@ -76,10 +76,19 @@ impl<'ast> Visit<'ast> for PatternVisitor {
     }
 }
 
-/// @description 检查跨源码退化模式、单一路径和领域目录命名约束。
-/// @param root 用于目录检查；sources 是统一源码快照；errors 接收违规。
-/// @return 无；全部违规一次收集。
-/// @errors 源码或目录违规均追加到 errors。
+/// 检查跨源码退化模式、单一路径和领域目录命名约束。
+///
+/// # Parameters
+///
+/// - `root`: 用于目录检查；sources 是统一源码快照；errors 接收违规。
+///
+/// # Returns
+///
+/// 无；全部违规一次收集。
+///
+/// # Errors
+///
+/// 源码或目录违规均追加到 errors。
 pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String>) {
     let banned_text = [
         ("MAX_CORES", "fixed CPU capacity"),
@@ -104,6 +113,17 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
                 "{}: banned pattern reintroduces read-only filesystem dual track",
                 source.relative
             ));
+        }
+        // RustDoc 只使用段落与 `# Parameters`/`# Returns`/`# Errors` 等 section；JSDoc 风格
+        // `@tag` 在 rustdoc 中只是普通文本，混用会让同一 crate 出现两套文档约定。
+        for (index, line) in source.lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("/// @") || trimmed.starts_with("//! @") {
+                errors.push(format!(
+                    "{}: doc comment uses a JSDoc `@tag`; use RustDoc sections",
+                    source.at(index + 1)
+                ));
+            }
         }
         let mut visitor = PatternVisitor::default();
         visitor.visit_file(&source.syntax);

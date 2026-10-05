@@ -1,4 +1,4 @@
-//! @description QEMU `virt` AArch64 DTB discovery 与 immutable machine facts owner。
+//! QEMU `virt` AArch64 DTB discovery 与 immutable machine facts owner。
 
 use alloc::vec::Vec;
 use core::{fmt, ops::Range};
@@ -13,13 +13,13 @@ const MAX_VIRTIO_DEVICES: usize = 32;
 // OWNER: discovery publishes the only immutable AArch64 QEMU machine description.
 static PLATFORM_INFO: Once<PlatformInfo> = Once::new();
 
-/// @description AArch64 Linux boot protocol 在 `x0` 交付的 DTB physical address。
+/// AArch64 Linux boot protocol 在 `x0` 交付的 DTB physical address。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BootInfo(usize);
 
 impl BootInfo {
-    /// @description 将 raw entry handoff 封装为 platform-owned token。
+    /// 将 raw entry handoff 封装为 platform-owned token。
     pub(crate) fn from_firmware_opaque(value: usize) -> Self {
         Self(value)
     }

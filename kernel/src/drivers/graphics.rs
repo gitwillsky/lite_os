@@ -4,7 +4,7 @@ use crate::memory::DeviceBacking;
 
 use super::{DisplayDevice, DisplayError, DisplayMode, DisplayRect};
 
-/// @description 由 VirtIO-GPU 独立 cursorq 消费的硬件光标命令。
+/// 由 VirtIO-GPU 独立 cursorq 消费的硬件光标命令。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CursorCommand {
     /// 只移动当前光标，不重新读取像素。
@@ -32,7 +32,7 @@ pub(crate) enum CursorCommand {
     },
 }
 
-/// @description VirGL capset 的 stable identity 与 exact byte contract。
+/// VirGL capset 的 stable identity 与 exact byte contract。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VirglCapsetInfo {
     /// `VIRTIO_GPU_CAPSET_VIRGL` 或 `VIRTIO_GPU_CAPSET_VIRGL2`。
@@ -43,7 +43,7 @@ pub(crate) struct VirglCapsetInfo {
     pub(crate) size: usize,
 }
 
-/// @description VirGL 3D transfer 使用的三维半开区域。
+/// VirGL 3D transfer 使用的三维半开区域。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VirglBox {
     /// 左上前方 X 坐标。
@@ -60,7 +60,7 @@ pub(crate) struct VirglBox {
     pub(crate) depth: u32,
 }
 
-/// @description 标准 VirtIO-GPU 3D transfer 的数据流向。
+/// 标准 VirtIO-GPU 3D transfer 的数据流向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VirglTransferDirection {
     /// 从 guest backing 上传到 host resource。
@@ -69,7 +69,7 @@ pub(crate) enum VirglTransferDirection {
     FromHost,
 }
 
-/// @description 一条标准 VirtIO-GPU VirGL controlq operation。
+/// 一条标准 VirtIO-GPU VirGL controlq operation。
 #[derive(Clone)]
 pub(crate) enum VirglCommand<'a> {
     /// 创建一个 VirGL context。
@@ -184,13 +184,22 @@ pub(crate) enum VirglCommand<'a> {
     },
 }
 
-/// @description 同时拥有 scanout 与 VirGL controlq 的唯一 graphics adapter seam。
+/// 同时拥有 scanout 与 VirGL controlq 的唯一 graphics adapter seam。
 pub(crate) trait GraphicsDevice: DisplayDevice {
-    /// @description 把一个 64x64 ARGB dumb buffer 上传到规范要求的 2D cursor resource。
-    /// @param identity DRM dumb buffer 的全局单调 identity。
-    /// @param backing cursor pixels 的 SG lifetime owner。
-    /// @return CREATE/ATTACH/TRANSFER 完整完成后发布的 adapter fence。
-    /// @errors 已有非 render control transaction 时返回 `WouldBlock`；几何或 device failure
+    /// 把一个 64x64 ARGB dumb buffer 上传到规范要求的 2D cursor resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM dumb buffer 的全局单调 identity。
+    /// - `backing`: cursor pixels 的 SG lifetime owner。
+    ///
+    /// # Returns
+    ///
+    /// CREATE/ATTACH/TRANSFER 完整完成后发布的 adapter fence。
+    ///
+    /// # Errors
+    ///
+    /// 已有非 render control transaction 时返回 `WouldBlock`；几何或 device failure
     /// 返回稳定 display error。
     fn submit_cursor_upload(
         &self,
@@ -198,47 +207,98 @@ pub(crate) trait GraphicsDevice: DisplayDevice {
         backing: Arc<DeviceBacking>,
     ) -> Result<u64, DisplayError>;
 
-    /// @description 向独立 cursorq 提交一条需要 exact completion 的光标图像更新。
-    /// @param command 已由 DRM 验证 resource、geometry 与 master ownership 的命令。
-    /// @return cursorq 单调 completion sequence。
-    /// @errors 前一条 cursor command 尚未完成时返回 `WouldBlock`；queue 或 device failure
+    /// 向独立 cursorq 提交一条需要 exact completion 的光标图像更新。
+    ///
+    /// # Parameters
+    ///
+    /// - `command`: 已由 DRM 验证 resource、geometry 与 master ownership 的命令。
+    ///
+    /// # Returns
+    ///
+    /// cursorq 单调 completion sequence。
+    ///
+    /// # Errors
+    ///
+    /// 前一条 cursor command 尚未完成时返回 `WouldBlock`；queue 或 device failure
     /// 返回 `Device`。
     fn submit_cursor(&self, command: CursorCommand) -> Result<u64, DisplayError>;
 
-    /// @description 异步移动硬件光标；cursorq 忙时由 adapter 覆盖尚未发布的旧坐标。
-    /// @param x scanout 0 中的水平位置。
-    /// @param y scanout 0 中的垂直位置。
-    /// @return adapter 接受当前最新位置后返回 unit，不等待 device completion。
-    /// @errors queue 或 device failure 返回 `Device`。
+    /// 异步移动硬件光标；cursorq 忙时由 adapter 覆盖尚未发布的旧坐标。
+    ///
+    /// # Parameters
+    ///
+    /// - `x`: scanout 0 中的水平位置。
+    /// - `y`: scanout 0 中的垂直位置。
+    ///
+    /// # Returns
+    ///
+    /// adapter 接受当前最新位置后返回 unit，不等待 device completion。
+    ///
+    /// # Errors
+    ///
+    /// queue 或 device failure 返回 `Device`。
     fn move_cursor(&self, x: u32, y: u32) -> Result<(), DisplayError>;
 
-    /// @description 返回 adapter 初始化时固定选中的 VirGL capset。
-    /// @return host 未提供 VirGL 时为 `None`；有能力时返回 exact identity/version/size。
+    /// 返回 adapter 初始化时固定选中的 VirGL capset。
+    ///
+    /// # Returns
+    ///
+    /// host 未提供 VirGL 时为 `None`；有能力时返回 exact identity/version/size。
     fn virgl_capset_info(&self) -> Option<VirglCapsetInfo>;
 
-    /// @description 返回标准 `VIRTIO_GPU_F_CONTEXT_INIT` 是否已协商。
-    /// @return true 表示 userspace 可用 `DRM_IOCTL_VIRTGPU_CONTEXT_INIT` 显式选择 capset；
+    /// 返回标准 `VIRTIO_GPU_F_CONTEXT_INIT` 是否已协商。
+    ///
+    /// # Returns
+    ///
+    /// true 表示 userspace 可用 `DRM_IOCTL_VIRTGPU_CONTEXT_INIT` 显式选择 capset；
     /// false 时 VirGL context 仍可按 legacy `context_init=0` 惰性创建。
     fn supports_virgl_context_init(&self) -> bool;
 
-    /// @description 复制 adapter 初始化时缓存的 immutable VirGL capset。
-    /// @param output userspace UAPI 已验证长度后提供的 kernel output buffer。
-    /// @return exact capability byte 数。
-    /// @errors output 小于 capset size 或 adapter 不支持 VirGL 时返回 `Device`。
+    /// 复制 adapter 初始化时缓存的 immutable VirGL capset。
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: userspace UAPI 已验证长度后提供的 kernel output buffer。
+    ///
+    /// # Returns
+    ///
+    /// exact capability byte 数。
+    ///
+    /// # Errors
+    ///
+    /// output 小于 capset size 或 adapter 不支持 VirGL 时返回 `Device`。
     fn copy_virgl_capset(&self, output: &mut [u8]) -> Result<usize, DisplayError>;
 
-    /// @description 向唯一 controlq 异步提交一条标准 VirGL operation。
-    /// @param command 已由 DRM domain 验证 ownership 与参数的 operation。
-    /// @return 可由 DRM wait 观察的单调 adapter fence。
-    /// @errors 已有 command 在途返回 `WouldBlock`；编码、queue 或 device failure 返回
+    /// 向唯一 controlq 异步提交一条标准 VirGL operation。
+    ///
+    /// # Parameters
+    ///
+    /// - `command`: 已由 DRM domain 验证 ownership 与参数的 operation。
+    ///
+    /// # Returns
+    ///
+    /// 可由 DRM wait 观察的单调 adapter fence。
+    ///
+    /// # Errors
+    ///
+    /// 已有 command 在途返回 `WouldBlock`；编码、queue 或 device failure 返回
     /// `Device`。
     fn submit_virgl(&self, command: VirglCommand<'_>) -> Result<u64, DisplayError>;
 
-    /// @description 原子执行 GPU resource 的 SET_SCANOUT → RESOURCE_FLUSH presentation chain。
-    /// @param mode 当前 CRTC mode；resource geometry 必须完全一致。
-    /// @param resource_id 已由同一 VirGL context 完成渲染的 host resource。
-    /// @return 只在两个 command 都完成后发布的单一 operation fence。
-    /// @errors controlq busy、mode/resource 非法或 device failure。
+    /// 原子执行 GPU resource 的 SET_SCANOUT → RESOURCE_FLUSH presentation chain。
+    ///
+    /// # Parameters
+    ///
+    /// - `mode`: 当前 CRTC mode；resource geometry 必须完全一致。
+    /// - `resource_id`: 已由同一 VirGL context 完成渲染的 host resource。
+    ///
+    /// # Returns
+    ///
+    /// 只在两个 command 都完成后发布的单一 operation fence。
+    ///
+    /// # Errors
+    ///
+    /// controlq busy、mode/resource 非法或 device failure。
     fn submit_virgl_scanout(
         &self,
         mode: DisplayMode,

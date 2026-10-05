@@ -4,7 +4,7 @@ use super::{FileSystemError, InodeType};
 
 pub(crate) const MAX_GETDENTS_BATCH_BYTES: usize = 64 * 1024;
 
-/// @description 一次 directory iteration callback 内有效的 borrowed entry。
+/// 一次 directory iteration callback 内有效的 borrowed entry。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DirectoryEntry<'a> {
     pub(crate) inode: u64,
@@ -12,27 +12,36 @@ pub(crate) struct DirectoryEntry<'a> {
     pub(crate) name: &'a [u8],
 }
 
-/// @description visitor 对当前 entry 的 publication 决策。
+/// visitor 对当前 entry 的 publication 决策。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectoryVisit {
     Continue,
     Stop,
 }
 
-/// @description filesystem directory cursor 的一次推进结果。
+/// filesystem directory cursor 的一次推进结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DirectoryRead {
     pub(crate) cursor: u64,
     pub(crate) eof: bool,
 }
 
-/// @description VFS directory iteration 的同步 consumer seam。
+/// VFS directory iteration 的同步 consumer seam。
 pub(crate) trait DirectoryVisitor {
-    /// @description 尝试消费当前 live entry。
-    /// @param next_cursor 消费成功后应写入 `d_off` 并发布到 OFD 的 opaque cursor。
-    /// @param entry 名称仅在本调用内有效。
-    /// @return Continue 表示 entry 已消费；Stop 表示未消费且 cursor 必须保持原值。
-    /// @errors consumer 无法表示 cursor 或编码时返回错误。
+    /// 尝试消费当前 live entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `next_cursor`: 消费成功后应写入 `d_off` 并发布到 OFD 的 opaque cursor。
+    /// - `entry`: 名称仅在本调用内有效。
+    ///
+    /// # Returns
+    ///
+    /// Continue 表示 entry 已消费；Stop 表示未消费且 cursor 必须保持原值。
+    ///
+    /// # Errors
+    ///
+    /// consumer 无法表示 cursor 或编码时返回错误。
     fn visit(
         &mut self,
         next_cursor: u64,
@@ -40,7 +49,7 @@ pub(crate) trait DirectoryVisitor {
     ) -> Result<DirectoryVisit, FileSystemError>;
 }
 
-/// @description 为内存型目录实现从 ordinal cursor 直接开始的单轨迭代 owner。
+/// 为内存型目录实现从 ordinal cursor 直接开始的单轨迭代 owner。
 pub(crate) struct IndexedDirectory<'a> {
     cursor: u64,
     start: usize,
@@ -49,10 +58,16 @@ pub(crate) struct IndexedDirectory<'a> {
 }
 
 impl<'a> IndexedDirectory<'a> {
-    /// @description 绑定一次 indexed directory read。
-    /// @param cursor 前次发布的 ordinal cookie。
-    /// @param visitor 本次同步 consumer。
-    /// @return 保存 cursor publication 规则的迭代 owner。
+    /// 绑定一次 indexed directory read。
+    ///
+    /// # Parameters
+    ///
+    /// - `cursor`: 前次发布的 ordinal cookie。
+    /// - `visitor`: 本次同步 consumer。
+    ///
+    /// # Returns
+    ///
+    /// 保存 cursor publication 规则的迭代 owner。
     pub(crate) fn new(cursor: u64, visitor: &'a mut dyn DirectoryVisitor) -> Self {
         Self {
             cursor,
@@ -62,13 +77,16 @@ impl<'a> IndexedDirectory<'a> {
         }
     }
 
-    /// @description 返回 caller 应开始产生 entry 的零基 index。
+    /// 返回 caller 应开始产生 entry 的零基 index。
     pub(crate) fn start_index(&self) -> usize {
         self.start
     }
 
-    /// @description 按原目录 index 投递 entry；早于 start_index 的项不触发 visitor。
-    /// @return true 表示继续；false 表示当前 entry 未消费并停止产生后续项。
+    /// 按原目录 index 投递 entry；早于 start_index 的项不触发 visitor。
+    ///
+    /// # Returns
+    ///
+    /// true 表示继续；false 表示当前 entry 未消费并停止产生后续项。
     pub(crate) fn emit(
         &mut self,
         index: usize,
@@ -96,7 +114,7 @@ impl<'a> IndexedDirectory<'a> {
         }
     }
 
-    /// @description 在 caller 已遍历到目录结尾后完成本批。
+    /// 在 caller 已遍历到目录结尾后完成本批。
     pub(crate) fn finish(self) -> DirectoryRead {
         DirectoryRead {
             cursor: self.cursor,
@@ -105,7 +123,7 @@ impl<'a> IndexedDirectory<'a> {
     }
 }
 
-/// @description 一次有界 Linux `dirent64` batch encoder；构造后不会再次分配。
+/// 一次有界 Linux `dirent64` batch encoder；构造后不会再次分配。
 pub(crate) struct Dirent64Batch {
     bytes: Vec<u8>,
     limit: usize,
@@ -114,9 +132,15 @@ pub(crate) struct Dirent64Batch {
 }
 
 impl Dirent64Batch {
-    /// @description 一次性预留本批全部输出容量。
-    /// @param capacity 已由 syscall 上限约束的用户 buffer bytes。
-    /// @return 空 batch；容量不足返回 OutOfMemory，且尚未触碰 filesystem cursor。
+    /// 一次性预留本批全部输出容量。
+    ///
+    /// # Parameters
+    ///
+    /// - `capacity`: 已由 syscall 上限约束的用户 buffer bytes。
+    ///
+    /// # Returns
+    ///
+    /// 空 batch；容量不足返回 OutOfMemory，且尚未触碰 filesystem cursor。
     pub(crate) fn try_new(capacity: usize) -> Result<Self, FileSystemError> {
         let mut bytes = Vec::new();
         bytes

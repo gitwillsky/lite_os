@@ -1,4 +1,4 @@
-/// @description frame allocator 从物理区间前缀保留的 metadata 布局。
+/// frame allocator 从物理区间前缀保留的 metadata 布局。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FrameMetadataLayout {
     /// metadata 独占且不进入 buddy allocator 的物理页数。
@@ -7,12 +7,20 @@ pub(crate) struct FrameMetadataLayout {
     pub(crate) allocatable_pages: usize,
 }
 
-/// @description 计算一 byte/frame 状态表所需的自举物理页。
+/// 计算一 byte/frame 状态表所需的自举物理页。
 ///
-/// @param total_pages kernel image 之后、物理内存末端之前的总页数。
-/// @param page_size architecture 物理页大小，单位 byte。
-/// @return 同时容纳 metadata 与至少一个 allocatable frame 时返回唯一布局。
-/// @errors 零容量、零页长、算术溢出或 metadata 吃掉完整区间时返回 None。
+/// # Parameters
+///
+/// - `total_pages`: kernel image 之后、物理内存末端之前的总页数。
+/// - `page_size`: architecture 物理页大小，单位 byte。
+///
+/// # Returns
+///
+/// 同时容纳 metadata 与至少一个 allocatable frame 时返回唯一布局。
+///
+/// # Errors
+///
+/// 零容量、零页长、算术溢出或 metadata 吃掉完整区间时返回 None。
 pub(crate) fn frame_metadata_layout(
     total_pages: usize,
     page_size: usize,

@@ -6,8 +6,16 @@ use crate::{
     cpu::{self, DeferredWork},
     drivers,
     memory::TRAMPOLINE,
+    memory::{MemoryError, PageFaultAccess, PageFaultOutcome, SegmentationCause},
     syscall::{self, SyscallOutcome},
-    task::{self, SignalDelivery, exit_current_group_by_signal, stop_current_process},
+    task::{
+        self, SignalDelivery, exit_current_group_by_signal,
+        signal_number::{
+            BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL, SIGKILL,
+            SIGSEGV, SIGTRAP, TRAP_BRKPT,
+        },
+        stop_current_process,
+    },
     timer,
 };
 
@@ -68,41 +76,22 @@ pub(crate) fn handle_user_trap() -> ! {
         }
         TrapEvent::UnsupportedInterrupt => panic!("unsupported user interrupt"),
         TrapEvent::IllegalInstruction => {
-            if let Some(current) = task::current_task() {
-                match current.handle_illegal_instruction() {
-                    Ok(()) => {
-                        // PC 保持不变；return path 使用初始化后的 architecture state 重试原指令。
-                    }
-                    Err(fault) => {
-                        current
-                            .queue_synchronous_fault(
-                                4,
-                                task::PendingSignal::synchronous_fault(1, fault.address()),
-                            )
-                            .expect("SIGILL synchronous delivery must accept a valid current task");
-                    }
-                }
-            } else {
-                error!("[kernel] IllegalInstruction with no current task");
-                exit_current_group_by_signal(4);
+            let current = task::current_task().expect("user illegal instruction without a task");
+            // Ok 时 PC 保持不变；return path 使用初始化后的 architecture state 重试原指令。
+            if let Err(fault) = current.handle_illegal_instruction() {
+                force_synchronous_fault(&current, SIGILL, ILL_ILLOPC, fault.address());
             }
         }
         TrapEvent::Breakpoint => {
-            if let Some(current) = task::current_task() {
-                let address = current.user_program_counter();
-                current
-                    .queue_synchronous_fault(5, task::PendingSignal::synchronous_fault(1, address))
-                    .expect("SIGTRAP synchronous delivery must accept a valid current task");
-            } else {
-                error!("[kernel] breakpoint with no current task");
-                exit_current_group_by_signal(5);
-            }
+            let current = task::current_task().expect("user breakpoint without a task");
+            let address = current.user_program_counter();
+            force_synchronous_fault(&current, SIGTRAP, TRAP_BRKPT, address);
         }
         TrapEvent::UserEnvironmentCall => {
             if let Some(current) = task::current_task() {
-                // 1. transaction 只读取 a7/a0..a5/sepc 并原地推进 PC；不允许 context
+                // 1. transaction 只读取 syscall number/argument register 与 syscall PC 并原地推进 PC；不允许 context
                 // 引用跨 syscall，因为 execve 会把同一 owner rebind 到新 AddressSpace。
-                let (syscall_id, args, ecall_pc) = current.take_syscall_request();
+                let (syscall_id, args, syscall_pc) = current.take_syscall_request();
                 // sys_exit 不返回；若保留该 Arc，它会永久留在即将释放的 task stack 上。
                 drop(current);
                 let result = syscall::syscall(syscall_id, args);
@@ -120,39 +109,29 @@ pub(crate) fn handle_user_trap() -> ! {
                         current.complete_syscall(SyscallCompletion::Interrupted(
                             crate::syscall::INTERRUPTED_RESULT,
                         ));
-                        current.arm_syscall_restart(syscall_id, args, ecall_pc);
+                        current.arm_syscall_restart(syscall_id, args, syscall_pc);
                     }
                 }
             } else {
-                error!("[kernel] UserEnvCall with no current task, terminating");
-                panic!("UserEnvCall with no current task");
+                panic!("user syscall without a current task");
             }
         }
         TrapEvent::InstructionPageFault { address } => {
-            handle_user_page_fault(address, crate::memory::PageFaultAccess::Execute);
+            handle_user_page_fault(address, PageFaultAccess::Execute);
         }
         TrapEvent::StorePageFault { address } => {
-            handle_user_page_fault(address, crate::memory::PageFaultAccess::Write);
+            handle_user_page_fault(address, PageFaultAccess::Write);
         }
         TrapEvent::LoadPageFault { address } => {
-            handle_user_page_fault(address, crate::memory::PageFaultAccess::Read);
+            handle_user_page_fault(address, PageFaultAccess::Read);
         }
         TrapEvent::LoadAccessFault { address } | TrapEvent::StoreAccessFault { address } => {
-            if let Some(current) = task::current_task() {
-                let program_counter = current.user_program_counter();
-                error!(
-                    "[kernel] access fault in application, bad addr = {address:#x}, pc = {program_counter:#x}, core dumped.",
-                );
-            } else {
-                error!(
-                    "[kernel] access fault with no current task, bad addr = {address:#x}, core dumped.",
-                );
-            }
-            exit_current_group_by_signal(11);
+            let current = task::current_task().expect("user access fault without a task");
+            force_synchronous_fault(&current, SIGSEGV, SEGV_ACCERR, address);
         }
         TrapEvent::UnsupportedException { address } => {
-            error!("[kernel] unsupported application exception, fault address={address:#x}");
-            exit_current_group_by_signal(4);
+            let current = task::current_task().expect("user exception without a task");
+            force_synchronous_fault(&current, SIGILL, ILL_ILLTRP, address);
         }
     }
 
@@ -168,23 +147,56 @@ pub(crate) fn handle_user_trap() -> ! {
     trap_return();
 }
 
-fn handle_user_page_fault(address: usize, access: crate::memory::PageFaultAccess) {
-    let outcome = task::current_task().map(|current| current.handle_page_fault(address, access));
-    match outcome {
-        Some(Ok(crate::memory::PageFaultOutcome::Handled)) => {}
-        Some(Ok(crate::memory::PageFaultOutcome::BusError)) => {
-            debug!("shared file mapping beyond EOF, VA:{address:#x}");
-            exit_current_group_by_signal(7);
+/// 按 Linux `force_sig_fault` 语义向当前 Thread 发布同步 fault signal。
+///
+/// caught 且未屏蔽的 handler 保持不变；blocked 或 `SIG_IGN` 在同一事务中恢复默认并解除屏蔽，
+/// 使 handler 能处理 guard page、feature probe 等可恢复 fault，而默认 disposition 仍终止进程。
+///
+/// # Parameters
+///
+/// - `current`: 触发 trap 的当前 Thread。
+/// - `signal`: 同步 fault signal number。
+/// - `code`: signal-specific 正 `si_code`。
+/// - `address`: 写入 `si_addr` 的 fault 地址。
+///
+/// # Panics
+///
+/// 当前 Thread 拒绝合法 forced fault 时视为 signal owner 不变量破坏并 fail-stop。
+fn force_synchronous_fault(
+    current: &task::TaskControlBlock,
+    signal: usize,
+    code: i32,
+    address: usize,
+) {
+    current
+        .queue_synchronous_fault(
+            signal,
+            task::PendingSignal::synchronous_fault(code, address),
+        )
+        .expect("synchronous fault delivery must accept a valid current task");
+}
+
+fn handle_user_page_fault(address: usize, access: PageFaultAccess) {
+    let current = task::current_task().expect("user page fault without a task");
+    match current.handle_page_fault(address, access) {
+        Ok(PageFaultOutcome::Handled) => {}
+        // file mapping 越过 EOF 与 backing I/O 失败均是 Linux `VM_FAULT_SIGBUS`。
+        Ok(PageFaultOutcome::BusError) | Err(MemoryError::Io) => {
+            force_synchronous_fault(&current, SIGBUS, BUS_ADRERR, address);
         }
-        // 物理页耗尽不是 address violation；缺少该分支会把真实 OOM 静默伪装为 SIGSEGV，
+        // 物理页耗尽不是 address violation；缺少该分支会把真实 OOM 伪装为可捕获的 SIGSEGV，
         // 让 userspace 无法区分坏指针与无 swap 系统的 memory-pressure termination。
-        Some(Err(error)) if error.is_out_of_memory() => {
+        Err(error) if error.is_out_of_memory() => {
             debug!("user page fault out of memory, VA:{address:#x}");
-            exit_current_group_by_signal(9);
+            // exit 不返回；必须先释放当前 TCB Arc，避免其永久留在即将释放的 task stack 上。
+            drop(current);
+            exit_current_group_by_signal(SIGKILL);
         }
-        Some(Ok(crate::memory::PageFaultOutcome::SegmentationFault)) | Some(Err(_)) | None => {
-            debug!("user page fault, VA:{address:#x}");
-            exit_current_group_by_signal(11);
+        Ok(PageFaultOutcome::SegmentationFault(SegmentationCause::AccessDenied)) => {
+            force_synchronous_fault(&current, SIGSEGV, SEGV_ACCERR, address);
+        }
+        Ok(PageFaultOutcome::SegmentationFault(SegmentationCause::Unmapped)) | Err(_) => {
+            force_synchronous_fault(&current, SIGSEGV, SEGV_MAPERR, address);
         }
     }
 }
@@ -209,8 +221,9 @@ pub(crate) fn trap_return() -> ! {
                 exit_current_group_by_signal(signal);
             }
             Err(_) => {
+                // signal frame 无法写入用户栈：按 Linux `force_sigsegv` 以 SIGSEGV 终止。
                 drop(delivery_task);
-                exit_current_group_by_signal(11);
+                exit_current_group_by_signal(SIGSEGV);
             }
         }
     }

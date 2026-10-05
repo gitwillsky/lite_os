@@ -25,7 +25,7 @@ pub(crate) use advisory_lock::{
 };
 pub(crate) use record_lock::{PreparedRecordLock, RecordLockMode, RecordLockRange};
 
-/// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
+/// 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {
     root_fs: Mutex<Option<RootMount>>,
     mounts: Mutex<Vec<Mount>>,
@@ -326,13 +326,21 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// @description 将一个 filesystem adapter 挂到已存在的 root-namespace 目录。
+    /// 将一个 filesystem adapter 挂到已存在的 root-namespace 目录。
     ///
-    /// @param path absolute mountpoint pathname；必须解析为尚未挂载的目录。
-    /// @param source `/proc/mounts` 中的 mount source label。
-    /// @param filesystem mount 后由 root inode owner 保活的 filesystem adapter。
-    /// @return mount publication 完成时成功。
-    /// @errors 路径、类型、重复 mount、adapter root 或内存分配失败时返回明确错误。
+    /// # Parameters
+    ///
+    /// - `path`: absolute mountpoint pathname；必须解析为尚未挂载的目录。
+    /// - `source`: `/proc/mounts` 中的 mount source label。
+    /// - `filesystem`: mount 后由 root inode owner 保活的 filesystem adapter。
+    ///
+    /// # Returns
+    ///
+    /// mount publication 完成时成功。
+    ///
+    /// # Errors
+    ///
+    /// 路径、类型、重复 mount、adapter root 或内存分配失败时返回明确错误。
     pub(crate) fn mount_at(
         &self,
         path: &[u8],
@@ -378,11 +386,19 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// @description 取得 inode 所属 mounted filesystem 的最终 Linux statfs 快照。
+    /// 取得 inode 所属 mounted filesystem 的最终 Linux statfs 快照。
     ///
-    /// @param inode pathname 或 OFD 已解析出的 inode。
-    /// @return adapter 统计加当前 VFS mount flags。
-    /// @errors inode 不属于当前 namespace 中的 mounted filesystem 时返回 `InvalidFileSystem`。
+    /// # Parameters
+    ///
+    /// - `inode`: pathname 或 OFD 已解析出的 inode。
+    ///
+    /// # Returns
+    ///
+    /// adapter 统计加当前 VFS mount flags。
+    ///
+    /// # Errors
+    ///
+    /// inode 不属于当前 namespace 中的 mounted filesystem 时返回 `InvalidFileSystem`。
     pub(crate) fn statistics(
         &self,
         inode: Arc<dyn Inode>,
@@ -405,10 +421,15 @@ impl VirtualFileSystem {
         Ok(statistics)
     }
 
-    /// @description 将当前 root namespace 投影为 Linux `/proc/mounts` 文本。
+    /// 将当前 root namespace 投影为 Linux `/proc/mounts` 文本。
     ///
-    /// @return root 与所有 boot mounts 的 escaped mntent records。
-    /// @errors mountpoint 反向解析失败或内存不足时返回明确文件系统错误。
+    /// # Returns
+    ///
+    /// root 与所有 boot mounts 的 escaped mntent records。
+    ///
+    /// # Errors
+    ///
+    /// mountpoint 反向解析失败或内存不足时返回明确文件系统错误。
     pub(crate) fn mount_table(&self) -> Result<Vec<u8>, FileSystemError> {
         let root = self
             .root_fs
@@ -438,19 +459,33 @@ impl VirtualFileSystem {
         Ok(output)
     }
 
-    /// @description 将 persistent root filesystem 的已提交写入同步到 block device stable storage。
+    /// 将 persistent root filesystem 的已提交写入同步到 block device stable storage。
     ///
-    /// @return flush 完成时成功。
-    /// @errors 根文件系统未挂载或 block device flush 失败时返回明确文件系统错误。
+    /// # Returns
+    ///
+    /// flush 完成时成功。
+    ///
+    /// # Errors
+    ///
+    /// 根文件系统未挂载或 block device flush 失败时返回明确文件系统错误。
     pub(crate) fn sync(&self) -> Result<(), FileSystemError> {
         super::sync_all()?;
         self.root_inode()?.sync_storage()
     }
 
-    /// @description 从 root namespace 打开并保留标准 opened-entry identity。
-    /// @param path 绝对 pathname。
-    /// @return VFS-owned opened entry。
-    /// @errors pathname、权限或内存失败时返回明确错误。
+    /// 从 root namespace 打开并保留标准 opened-entry identity。
+    ///
+    /// # Parameters
+    ///
+    /// - `path`: 绝对 pathname。
+    ///
+    /// # Returns
+    ///
+    /// VFS-owned opened entry。
+    ///
+    /// # Errors
+    ///
+    /// pathname、权限或内存失败时返回明确错误。
     pub(crate) fn open_file(&self, path: &[u8]) -> Result<Arc<OpenedFile>, FileSystemError> {
         if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
@@ -468,12 +503,21 @@ impl VirtualFileSystem {
             .map(|opened| opened.inode())
     }
 
-    /// @description 相对 opened directory 解析 pathname 并保留最终目录项身份。
-    /// @param start 相对 lookup 起点；None 表示 root。
-    /// @param path raw pathname。
-    /// @param identity traversal credential snapshot。
-    /// @return 最终 opened entry。
-    /// @errors traversal、symlink 或资源失败时返回明确错误。
+    /// 相对 opened directory 解析 pathname 并保留最终目录项身份。
+    ///
+    /// # Parameters
+    ///
+    /// - `start`: 相对 lookup 起点；None 表示 root。
+    /// - `path`: raw pathname。
+    /// - `identity`: traversal credential snapshot。
+    ///
+    /// # Returns
+    ///
+    /// 最终 opened entry。
+    ///
+    /// # Errors
+    ///
+    /// traversal、symlink 或资源失败时返回明确错误。
     pub(crate) fn open_file_at(
         &self,
         start: Option<Arc<OpenedFile>>,
@@ -487,12 +531,20 @@ impl VirtualFileSystem {
         self.resolve_from(start, path, false, identity)
     }
 
-    /// @description 解析 pathname 但保留最后一个 symbolic-link inode，供 Linux lstat 使用。
+    /// 解析 pathname 但保留最后一个 symbolic-link inode，供 Linux lstat 使用。
     ///
-    /// @param start 相对路径的起始目录；None 表示 root。
-    /// @param path raw pathname；中间 symbolic link 正常跟随，只保留未尾随的最终 link。
-    /// @return 普通路径返回目标 inode，末项 symbolic link 返回 link inode 本身。
-    /// @errors 路径不存在、symlink loop 或底层文件系统失败时返回错误。
+    /// # Parameters
+    ///
+    /// - `start`: 相对路径的起始目录；None 表示 root。
+    /// - `path`: raw pathname；中间 symbolic link 正常跟随，只保留未尾随的最终 link。
+    ///
+    /// # Returns
+    ///
+    /// 普通路径返回目标 inode，末项 symbolic link 返回 link inode 本身。
+    ///
+    /// # Errors
+    ///
+    /// 路径不存在、symlink loop 或底层文件系统失败时返回错误。
     pub(crate) fn open_at_no_follow(
         &self,
         start: Option<Arc<OpenedFile>>,
@@ -507,11 +559,19 @@ impl VirtualFileSystem {
             .map(|opened| opened.inode())
     }
 
-    /// @description 从目录 inode identity 反向解析当前 namespace 中的 raw absolute path。
+    /// 从目录 inode identity 反向解析当前 namespace 中的 raw absolute path。
     ///
-    /// @param inode 必须属于当前 root filesystem 且为目录。
-    /// @return root 返回 `/`；其他目录返回当前目录项关系对应的 absolute path。
-    /// @errors inode 已不可达、目录关系损坏、跨 filesystem 或底层 I/O 失败时返回明确错误。
+    /// # Parameters
+    ///
+    /// - `inode`: 必须属于当前 root filesystem 且为目录。
+    ///
+    /// # Returns
+    ///
+    /// root 返回 `/`；其他目录返回当前目录项关系对应的 absolute path。
+    ///
+    /// # Errors
+    ///
+    /// inode 已不可达、目录关系损坏、跨 filesystem 或底层 I/O 失败时返回明确错误。
     pub(crate) fn absolute_path(
         &self,
         opened: Arc<OpenedFile>,
@@ -522,10 +582,19 @@ impl VirtualFileSystem {
         opened.path(false)
     }
 
-    /// @description 投影 procfs fd symlink 使用的 opened pathname。
-    /// @param opened live OFD/cwd opened entry。
-    /// @return 当前路径；任一祖先已删除时追加 Linux ` (deleted)` 后缀。
-    /// @errors opened-entry 链损坏或内存不足时返回明确错误。
+    /// 投影 procfs fd symlink 使用的 opened pathname。
+    ///
+    /// # Parameters
+    ///
+    /// - `opened`: live OFD/cwd opened entry。
+    ///
+    /// # Returns
+    ///
+    /// 当前路径；任一祖先已删除时追加 Linux ` (deleted)` 后缀。
+    ///
+    /// # Errors
+    ///
+    /// opened-entry 链损坏或内存不足时返回明确错误。
     pub(crate) fn opened_path(&self, opened: &Arc<OpenedFile>) -> Result<Vec<u8>, FileSystemError> {
         opened.path(true)
     }

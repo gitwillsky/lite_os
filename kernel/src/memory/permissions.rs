@@ -3,7 +3,7 @@ use bitflags::bitflags;
 use crate::arch::mmu::PagePermissions;
 
 bitflags! {
-    /// @description VMA 的 architecture-neutral access policy。
+    /// VMA 的 architecture-neutral access policy。
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct MapPermission: u8 {
         const R = 1 << 0;

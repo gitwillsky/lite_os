@@ -2,10 +2,19 @@ use std::{fs, path::Path};
 
 use super::SourceFile;
 
-/// @description 检查静态 arch/platform façade、raw ABI 与 target dependency containment。
-/// @param root 定位 manifest 与 retired paths；sources 是统一源码快照；errors 接收违规。
-/// @return 无；全部违规一次收集。
-/// @errors 源码、路径或 manifest 违规均追加到 errors。
+/// 检查静态 arch/platform façade、raw ABI 与 target dependency containment。
+///
+/// # Parameters
+///
+/// - `root`: 定位 manifest 与 retired paths；sources 是统一源码快照；errors 接收违规。
+///
+/// # Returns
+///
+/// 无；全部违规一次收集。
+///
+/// # Errors
+///
+/// 源码、路径或 manifest 违规均追加到 errors。
 pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String>) {
     for source in sources
         .iter()

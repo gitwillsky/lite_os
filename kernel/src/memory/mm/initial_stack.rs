@@ -14,14 +14,19 @@ pub(super) struct ElfAuxInfo {
 }
 
 impl ElfAuxInfo {
-    /// @description 组合 main ELF 与 optional interpreter 的 Linux auxv facts。
+    /// 组合 main ELF 与 optional interpreter 的 Linux auxv facts。
     ///
-    /// @param phdr AT_PHDR virtual address。
-    /// @param phent AT_PHENT entry size。
-    /// @param phnum AT_PHNUM entry count。
-    /// @param entry AT_ENTRY main ELF entry。
-    /// @param base AT_BASE interpreter load bias；static executable 为零。
-    /// @return immutable initial-stack auxv input。
+    /// # Parameters
+    ///
+    /// - `phdr`: AT_PHDR virtual address。
+    /// - `phent`: AT_PHENT entry size。
+    /// - `phnum`: AT_PHNUM entry count。
+    /// - `entry`: AT_ENTRY main ELF entry。
+    /// - `base`: AT_BASE interpreter load bias；static executable 为零。
+    ///
+    /// # Returns
+    ///
+    /// immutable initial-stack auxv input。
     pub(super) fn new(phdr: usize, phent: usize, phnum: usize, entry: usize, base: usize) -> Self {
         Self {
             phdr,
@@ -34,15 +39,23 @@ impl ElfAuxInfo {
 }
 
 impl MemorySet {
-    /// @description 构造 Linux ELF64 argc/argv/envp/auxv 初始栈，并保持 16-byte alignment。
+    /// 构造 Linux ELF64 argc/argv/envp/auxv 初始栈，并保持 16-byte alignment。
     ///
-    /// @param stack_top 已映射用户栈的 exclusive upper bound。
-    /// @param args script rewrite 后且不含 NUL 的 argv strings。
-    /// @param envs 不含 NUL 的 envp strings。
-    /// @param execfn 用户传给 execve 的原始 pathname。
-    /// @param aux 最终 main ELF 与 interpreter 产生的 auxv facts。
-    /// @return 16-byte aligned initial stack pointer。
-    /// @errors stack size/地址无效、user copy、entropy 或 allocation 失败。
+    /// # Parameters
+    ///
+    /// - `stack_top`: 已映射用户栈的 exclusive upper bound。
+    /// - `args`: script rewrite 后且不含 NUL 的 argv strings。
+    /// - `envs`: 不含 NUL 的 envp strings。
+    /// - `execfn`: 用户传给 execve 的原始 pathname。
+    /// - `aux`: 最终 main ELF 与 interpreter 产生的 auxv facts。
+    ///
+    /// # Returns
+    ///
+    /// 16-byte aligned initial stack pointer。
+    ///
+    /// # Errors
+    ///
+    /// stack size/地址无效、user copy、entropy 或 allocation 失败。
     pub(super) fn build_initial_stack(
         &mut self,
         stack_top: usize,

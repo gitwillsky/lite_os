@@ -1,18 +1,33 @@
 use super::*;
 
 impl TaskControlBlock {
-    /// @description 以 COW 用户页构造 fork child；多线程 parent 只复制 calling Thread。
-    /// @param pid TaskManager 已唯一分配、尚未发布的 child TGID/TID。
-    /// @return 成功返回尚处于 New 状态的 child；OOM 时 parent 完全不变。
+    /// 以 COW 用户页构造 fork child；多线程 parent 只复制 calling Thread。
+    ///
+    /// # Parameters
+    ///
+    /// - `pid`: ProcessTable 已唯一分配、尚未发布的 child TGID/TID。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回尚处于 New 状态的 child；OOM 时 parent 完全不变。
     pub(in crate::task) fn fork_process(&self, pid: ProcessId) -> Result<Self, MemoryError> {
         self.clone_process(pid, false, 0)
     }
 
-    /// @description 以同一 AddressSpace 构造尚未发布的 vfork child。
-    /// @param pid TaskManager 已唯一分配的 child TGID/TID。
-    /// @param child_stack 非零时覆盖 child SP；零值继承 parent SP。
-    /// @return 成功返回 New child；parent 必须在发布后阻塞到 child exec/exit。
-    /// @errors 地址空间或 Process 资源分配失败时返回 MemoryError。
+    /// 以同一 AddressSpace 构造尚未发布的 vfork child。
+    ///
+    /// # Parameters
+    ///
+    /// - `pid`: ProcessTable 已唯一分配的 child TGID/TID。
+    /// - `child_stack`: 非零时覆盖 child SP；零值继承 parent SP。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 New child；parent 必须在发布后阻塞到 child exec/exit。
+    ///
+    /// # Errors
+    ///
+    /// 地址空间或 Process 资源分配失败时返回 MemoryError。
     pub(in crate::task) fn vfork_process(
         &self,
         pid: ProcessId,

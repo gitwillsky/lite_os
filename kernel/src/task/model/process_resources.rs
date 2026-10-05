@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use super::TaskControlBlock;
 use crate::fs::{OpenedFile, Terminal};
 
-/// @description Process 当前目录与可执行映像的唯一 pathname-state owner。
+/// Process 当前目录与可执行映像的唯一 pathname-state owner。
 pub(super) struct ProcessPaths {
     // OWNER: ProcessPaths 独占 VFS opened cwd identity；只保存 inode 会使 rename 后的
     // getcwd 与相对 lookup 分裂。
@@ -14,47 +14,73 @@ pub(super) struct ProcessPaths {
 }
 
 impl TaskControlBlock {
-    /// @description 复制当前 Process 工作目录的唯一 inode identity。
-    /// @return 当前目录的共享 inode。
+    /// 复制当前 Process 工作目录的唯一 inode identity。
+    ///
+    /// # Returns
+    ///
+    /// 当前目录的共享 inode。
     pub(crate) fn working_directory(&self) -> Arc<OpenedFile> {
         self.process.paths.lock().cwd.clone()
     }
 
-    /// @description 原子替换当前 Process 的工作目录 identity。
-    /// @param opened 已由 VFS 证明为目录的 opened entry。
-    /// @return 无返回值。
+    /// 原子替换当前 Process 的工作目录 identity。
+    ///
+    /// # Parameters
+    ///
+    /// - `opened`: 已由 VFS 证明为目录的 opened entry。
     pub(crate) fn set_working_directory(&self, opened: Arc<OpenedFile>) {
         self.process.paths.lock().cwd = opened;
     }
 
-    /// @description 返回当前 Process 可继承的 controlling Terminal identity。
-    /// @return 与 `/dev/tty` 当前解析目标相同的 Arc。
+    /// 返回当前 Process 可继承的 controlling Terminal identity。
+    ///
+    /// # Returns
+    ///
+    /// 与 `/dev/tty` 当前解析目标相同的 Arc。
     pub(crate) fn terminal(&self) -> Arc<Terminal> {
         self.process.terminal.lock().clone()
     }
 
-    /// @description 投影当前 Process controlling terminal 的 Linux proc stat identity。
-    /// @param session process graph 唯一拥有的当前 SID。
-    /// @return `(tty_nr, tpgid)`；handle 未控制该 session 时为 `(0, -1)`。
+    /// 投影当前 Process controlling terminal 的 Linux proc stat identity。
+    ///
+    /// # Parameters
+    ///
+    /// - `session`: process graph 唯一拥有的当前 SID。
+    ///
+    /// # Returns
+    ///
+    /// `(tty_nr, tpgid)`；handle 未控制该 session 时为 `(0, -1)`。
     pub(crate) fn terminal_proc_identity(&self, session: usize) -> (u32, isize) {
         self.process.terminal.lock().proc_identity(session)
     }
 
-    /// @description 在成功 TIOCSCTTY 后原子替换 Process controlling Terminal。
-    /// @param terminal 已由 Terminal owner 接受当前 session 的新 identity。
-    /// @return 无返回值；后续 fork 与 `/dev/tty` lookup 观察同一 Arc。
+    /// 在成功 TIOCSCTTY 后原子替换 Process controlling Terminal。
+    ///
+    /// # Parameters
+    ///
+    /// - `terminal`: 已由 Terminal owner 接受当前 session 的新 identity。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；后续 fork 与 `/dev/tty` lookup 观察同一 Arc。
     pub(in crate::task) fn set_terminal(&self, terminal: Arc<Terminal>) {
         *self.process.terminal.lock() = terminal;
     }
 
-    /// @description 返回当前 Process/thread group ID。
-    /// @return TGID；Linux getpid 与 process-directed lookup 使用该值。
+    /// 返回当前 Process/thread group ID。
+    ///
+    /// # Returns
+    ///
+    /// TGID；Linux getpid 与 process-directed lookup 使用该值。
     pub(crate) fn tgid(&self) -> usize {
         self.process.tgid.0
     }
 
-    /// @description 返回当前 Thread ID。
-    /// @return 与 TGID 数值独立、由 ThreadContext 唯一拥有的 TID。
+    /// 返回当前 Thread ID。
+    ///
+    /// # Returns
+    ///
+    /// 与 TGID 数值独立、由 ThreadContext 唯一拥有的 TID。
     pub(crate) fn tid(&self) -> usize {
         self.thread.tid
     }

@@ -1,4 +1,6 @@
-use crate::memory::{FrameAllocationClass, FrameTracker, PhysicalAddress, alloc_contiguous};
+use crate::memory::{
+    FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalAddress, alloc_contiguous,
+};
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -33,12 +35,12 @@ pub(super) struct UsedDescriptor {
 }
 
 impl UsedDescriptor {
-    /// @description 返回 device 声明完成的 descriptor chain head。
+    /// 返回 device 声明完成的 descriptor chain head。
     pub(super) fn head(&self) -> u16 {
         self.head
     }
 
-    /// @description 返回 device 声明写入的 completion length。
+    /// 返回 device 声明写入的 completion length。
     pub(super) fn length(&self) -> u32 {
         self.length
     }
@@ -94,7 +96,7 @@ pub(super) struct VirtQueue {
     pending_used: Option<u16>,
     // OWNER: ring/token/chain corruption 后永久关闭本 queue；reset 是唯一退出策略。
     failed: bool,
-    // Shadow descriptors that device can't access - inspired by virtio-drivers
+    // OWNER: driver-private descriptor shadow；device 可写的 descriptor table 不作为 free-list 真相源。
     desc_shadow: Vec<VirtqDesc>,
     _frame_tracker: FrameTracker,
     addresses: VirtQueueAddresses,
@@ -102,41 +104,29 @@ pub(super) struct VirtQueue {
 
 impl VirtQueue {
     pub(super) fn new(size: u16) -> Option<Self> {
-        if size == 0 || size & (size - 1) != 0 {
-            error!(
-                "[VirtQueue] Invalid queue size: {} (must be power of 2)",
-                size
-            );
-            return None; // 队列大小必须是2的幂
+        // VirtIO 1.x split virtqueue 的 queue size 必须是非零 2 的幂。
+        if !size.is_power_of_two() {
+            error!("invalid virtqueue size {size}: must be a non-zero power of two");
+            return None;
         }
-
-        debug!("[VirtQueue] Creating queue with size={}", size);
 
         let mut desc_shadow = Vec::new();
         desc_shadow.try_reserve_exact(size as usize).ok()?;
 
-        // 计算需要的内存大小 - 严格按照VirtIO规范进行对齐
+        // VirtIO 1.x §2.7 split virtqueue 三段分别对齐 descriptor 16、driver 2、device 4 byte；
+        // transport 独立发布三段物理地址，因此不采用 legacy 单一 PFN 的 queue_align 布局。
+        // 1. descriptor table 位于页首，满足 16-byte 对齐；
+        // 2. driver area：flags + idx + ring[size] + used_event，紧随 descriptor table（16 的倍数）；
+        // 3. device area：flags + idx + ring[size] of 8-byte elem + avail_event，向上对齐到 4。
         let desc_size = size_of::<VirtqDesc>() * size as usize;
-
-        // Available ring: flags(2) + idx(2) + ring[size](2*size) + used_event(2)
-        let avail_size = 2 + 2 + 2 * size as usize + 2;
         let avail_offset = desc_size;
-
-        // Legacy 设备要求 used ring 按 queue_align 对齐；统一按 4096 对齐，兼容性更好
-        let queue_align: usize = 4096;
-        let used_offset = (avail_offset + avail_size + (queue_align - 1)) & !(queue_align - 1);
-        // Used ring: flags(2) + idx(2) + ring[size](8*size) + avail_event(2)
+        let avail_size = 2 + 2 + 2 * size as usize + 2;
+        let used_offset = (avail_offset + avail_size).next_multiple_of(4);
         let used_size = 2 + 2 + 8 * size as usize + 2;
-
-        // 总大小对齐到页边界
-        let total_size = (used_offset + used_size + 4095) & !4095;
-
-        // 分配足够的连续页面
-        let pages_needed = total_size.div_ceil(4096);
-        debug!("[VirtQueue] Allocating {} pages for queue", pages_needed);
+        let pages_needed = (used_offset + used_size).div_ceil(PAGE_SIZE);
         let frame_tracker = alloc_contiguous(pages_needed, FrameAllocationClass::KernelCritical)?;
 
-        let base_pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * 4096);
+        let base_pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * PAGE_SIZE);
         let base_va = base_pa.as_mut_ptr::<u8>() as usize;
 
         let desc = base_va as *mut VirtqDesc;
@@ -171,10 +161,7 @@ impl VirtQueue {
             (*used).idx = AtomicU16::new(0);
         }
 
-        debug!(
-            "[VirtQueue] Successfully created queue: size={}, num_free={}",
-            size, size
-        );
+        debug!("created virtqueue: size={size}, pages={pages_needed}");
         Some(VirtQueue {
             size,
             desc,
@@ -196,15 +183,20 @@ impl VirtQueue {
         })
     }
 
-    /// @description 返回 MMIO v2 queue publication 所需的三段物理地址。
+    /// 返回 MMIO v2 queue publication 所需的三段物理地址。
     ///
-    /// @return descriptor、available 与 used ring 的稳定物理基址。
+    /// # Returns
+    ///
+    /// descriptor、available 与 used ring 的稳定物理基址。
     pub(super) fn addresses(&self) -> VirtQueueAddresses {
         self.addresses
     }
 
-    /// @description 返回尚未被 driver-owned descriptor chain 占用的 entry 数量。
-    /// @return 外层 queue lock 下稳定的 free-list 容量。
+    /// 返回尚未被 driver-owned descriptor chain 占用的 entry 数量。
+    ///
+    /// # Returns
+    ///
+    /// 外层 queue lock 下稳定的 free-list 容量。
     pub(super) fn free_descriptor_count(&self) -> u16 {
         self.num_free
     }
@@ -272,9 +264,15 @@ impl VirtQueue {
         self.add_batch_to_avail(core::slice::from_ref(&desc_idx));
     }
 
-    /// @description 把一组已完整构造的 descriptor chain 作为一次 available publication 提交。
-    /// @param heads 按 device 必须执行的顺序排列、且尚未发布的 descriptor head。
-    /// @return 无返回值；空 batch 不改变 available ring。
+    /// 把一组已完整构造的 descriptor chain 作为一次 available publication 提交。
+    ///
+    /// # Parameters
+    ///
+    /// - `heads`: 按 device 必须执行的顺序排列、且尚未发布的 descriptor head。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；空 batch 不改变 available ring。
     pub(super) fn add_batch_to_avail(&mut self, heads: &[u16]) {
         if heads.is_empty() {
             return;
@@ -306,10 +304,15 @@ impl VirtQueue {
         }
     }
 
-    /// @description 从 used ring 摘取一个尚未回收的 completion token。
+    /// 从 used ring 摘取一个尚未回收的 completion token。
     ///
-    /// @return 无 completion 时为 `None`；成功 token 只暴露 head/length，不改变 free list。
-    /// @errors ring identity 越界，或上一个 token 未合法回收时返回错误；caller 必须 reset。
+    /// # Returns
+    ///
+    /// 无 completion 时为 `None`；成功 token 只暴露 head/length，不改变 free list。
+    ///
+    /// # Errors
+    ///
+    /// ring identity 越界，或上一个 token 未合法回收时返回错误；caller 必须 reset。
     pub(super) fn used(&mut self) -> Result<Option<UsedDescriptor>, ()> {
         if self.failed || self.pending_used.is_some() {
             return Err(());
@@ -353,11 +356,19 @@ impl VirtQueue {
         }
     }
 
-    /// @description 在 concrete adapter 已 exactly-once claim completion 后回收 descriptor。
+    /// 在 concrete adapter 已 exactly-once claim completion 后回收 descriptor。
     ///
-    /// @param completion 当前 queue 的唯一 pending token。
-    /// @return chain 完整回到 free list时成功。
-    /// @errors token 不属于本 queue、不是当前 pending head 或 chain 损坏时返回错误；队列保持
+    /// # Parameters
+    ///
+    /// - `completion`: 当前 queue 的唯一 pending token。
+    ///
+    /// # Returns
+    ///
+    /// chain 完整回到 free list时成功。
+    ///
+    /// # Errors
+    ///
+    /// token 不属于本 queue、不是当前 pending head 或 chain 损坏时返回错误；队列保持
     /// terminal pending 状态，caller 必须 reset，禁止重试或局部回收。
     pub(super) fn recycle_used(&mut self, completion: UsedDescriptor) -> Result<(), ()> {
         if completion.queue != self.addresses.descriptor
@@ -374,9 +385,11 @@ impl VirtQueue {
         Ok(())
     }
 
-    /// @description 非破坏性检查 used ring 是否尚有未回收 completion。
+    /// 非破坏性检查 used ring 是否尚有未回收 completion。
     ///
-    /// @return device 发布的 used index 领先当前 consumer 时返回 `true`。
+    /// # Returns
+    ///
+    /// device 发布的 used index 领先当前 consumer 时返回 `true`。
     pub(super) fn has_used(&self) -> bool {
         // SAFETY: used ring 在 `_frame_tracker` 生命周期内有效；Acquire 与 device 的
         // used publication 配对，本方法不读取 ring payload。
@@ -435,10 +448,15 @@ impl VirtQueue {
         }
     }
 
-    /// @description 回收尚未发布到 available ring 的 descriptor chain。
+    /// 回收尚未发布到 available ring 的 descriptor chain。
     ///
-    /// @param head `add_dma` 返回、但 adapter validation 拒绝发布的 chain head。
-    /// @return chain 完整回到 free list 时成功；queue ownership 已损坏时返回错误。
+    /// # Parameters
+    ///
+    /// - `head`: `add_dma` 返回、但 adapter validation 拒绝发布的 chain head。
+    ///
+    /// # Returns
+    ///
+    /// chain 完整回到 free list 时成功；queue ownership 已损坏时返回错误。
     pub(super) fn retire_unpublished(&mut self, head: u16) -> Result<(), ()> {
         self.recycle_descriptors(head)
     }

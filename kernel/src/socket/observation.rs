@@ -51,9 +51,15 @@ impl Socket {
         }
     }
 
-    /// @description 在 deferred source 通知中无等待地投影 socket readiness。
-    /// @return AF_INET owner 竞争时返回 `None`；其他 backend 立即返回状态。
-    /// @errors 不分配、不睡眠，也不消费 adapter error。
+    /// 在 deferred source 通知中无等待地投影 socket readiness。
+    ///
+    /// # Returns
+    ///
+    /// AF_INET owner 竞争时返回 `None`；其他 backend 立即返回状态。
+    ///
+    /// # Errors
+    ///
+    /// 不分配、不睡眠，也不消费 adapter error。
     pub(crate) fn try_poll_state(&self) -> Option<SocketPollState> {
         match &self.backend {
             SocketBackend::Unix(socket) => Some(socket.poll_state()),
@@ -79,9 +85,11 @@ impl Socket {
         }
     }
 
-    /// @description 返回 socket blocking/poll 使用的唯一 wait sources，并保留 notification/data 语义。
+    /// 返回 socket blocking/poll 使用的唯一 wait sources，并保留 notification/data 语义。
     ///
-    /// @return 当前 backend 的 source 列表；interface-control socket 没有可等待 source。
+    /// # Returns
+    ///
+    /// 当前 backend 的 source 列表；interface-control socket 没有可等待 source。
     pub(crate) fn wait_sources(&self, events: i16) -> (SocketWaitSources, Option<SocketWaitGuard>) {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.wait_sources(events),
@@ -98,9 +106,11 @@ impl Socket {
         }
     }
 
-    /// @description 在 poll registry owner lock 内清理 adapter edge token，使同一临界区可做 level recheck。
+    /// 在 poll registry owner lock 内清理 adapter edge token，使同一临界区可做 level recheck。
     ///
-    /// @return 无返回值；AF_UNIX stream 保留真实 data Pipe 内容。
+    /// # Returns
+    ///
+    /// 无返回值；AF_UNIX stream 保留真实 data Pipe 内容。
     pub(crate) fn prepare_wait(&self) {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.consume_wait_notifications(),

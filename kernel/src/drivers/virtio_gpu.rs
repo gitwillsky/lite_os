@@ -233,7 +233,7 @@ struct VirglCapset {
     bytes: [u8; MAX_CAPSET_SIZE],
 }
 
-/// @description VirtIO-GPU 2D single-scanout adapter。
+/// VirtIO-GPU 2D single-scanout adapter。
 pub(crate) struct VirtIOGpuDevice {
     device: VirtIODevice,
     context_init: bool,
@@ -247,11 +247,19 @@ pub(crate) struct VirtIOGpuDevice {
 }
 
 impl VirtIOGpuDevice {
-    /// @description 初始化 MMIO v2 controlq，查询第一个 enabled scanout 并建立 2D resource。
+    /// 初始化 MMIO v2 controlq，查询第一个 enabled scanout 并建立 2D resource。
     ///
-    /// @param base_addr DTB VirtIO MMIO 基址。
-    /// @return 已绑定单 scanout 的 GPU adapter。
-    /// @errors feature、queue、mode、frame allocation 或命令失败返回 `None`。
+    /// # Parameters
+    ///
+    /// - `base_addr`: DTB VirtIO MMIO 基址。
+    ///
+    /// # Returns
+    ///
+    /// 已绑定单 scanout 的 GPU adapter。
+    ///
+    /// # Errors
+    ///
+    /// feature、queue、mode、frame allocation 或命令失败返回 `None`。
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 16 {
@@ -539,9 +547,11 @@ impl VirtIOGpuDevice {
         }
     }
 
-    /// @description 构造持有 GPU owner 的 IRQ handler。
+    /// 构造持有 GPU owner 的 IRQ handler。
     ///
-    /// @return 只确认 control/config interrupt 的 handler。
+    /// # Returns
+    ///
+    /// 只确认 control/config interrupt 的 handler。
     pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::try_new(VirtIOGpuIrqHandler {
             device: self.clone(),

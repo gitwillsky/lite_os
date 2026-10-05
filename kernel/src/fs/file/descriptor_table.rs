@@ -11,7 +11,7 @@ use indexed_slots::{IndexedSlots, SlotInsertError};
 
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = indexed_slots::MAX_FILE_DESCRIPTORS;
 
-/// @description fd-table 查找、resource limit 与 owner metadata OOM 的稳定失败分类。
+/// fd-table 查找、resource limit 与 owner metadata OOM 的稳定失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileDescriptorError {
     NotFound,
@@ -37,7 +37,7 @@ struct FileDescriptor {
 
 const _: () = assert!(
     core::mem::size_of::<Option<FileDescriptor>>() == 16,
-    "fd-index memory proof assumes the reviewed RV64 descriptor slot layout"
+    "fd-index memory proof assumes the reviewed LP64 descriptor slot layout"
 );
 
 impl FileDescriptor {
@@ -84,17 +84,20 @@ impl Drop for FileDescriptor {
     }
 }
 
-/// @description 已从 fd table 原子摘除、等待在 Process files lock 外完成析构的 entry。
+/// 已从 fd table 原子摘除、等待在 Process files lock 外完成析构的 entry。
 pub(crate) struct DetachedFileDescriptor(FileDescriptor);
 
-/// @description 已回滚、等待在 Process files lock 外析构的不可见 recvmsg slot。
+/// 已回滚、等待在 Process files lock 外析构的不可见 recvmsg slot。
 pub(crate) struct CancelledFileReservation {
     _descriptor: FileDescriptor,
 }
 
 impl DetachedFileDescriptor {
-    /// @description 完成 descriptor_refs/epoll/flock cleanup，并保留 OFD 供 record-lock cleanup。
-    /// @return 被关闭 descriptor 原先引用的 OFD。
+    /// 完成 descriptor_refs/epoll/flock cleanup，并保留 OFD 供 record-lock cleanup。
+    ///
+    /// # Returns
+    ///
+    /// 被关闭 descriptor 原先引用的 OFD。
     pub(crate) fn finish_close(self) -> Arc<OpenFileDescription> {
         let ofd = self.0.ofd.clone();
         drop(self);
@@ -102,7 +105,7 @@ impl DetachedFileDescriptor {
     }
 }
 
-/// @description 进程 fd table；slot、FD_CLOEXEC 与 descriptor publication 的唯一 owner。
+/// 进程 fd table；slot、FD_CLOEXEC 与 descriptor publication 的唯一 owner。
 pub(crate) struct FileDescriptorTable {
     slots: IndexedSlots<FileDescriptor>,
 }
@@ -119,22 +122,34 @@ impl FileDescriptorTable {
         }
     }
 
-    /// @description 返回当前 fd table 已发布过的 logical slot capacity。
-    /// @return 包含空洞与未物化 radix path 的容量，对应 Linux `/proc/<pid>/status` FDSize。
+    /// 返回当前 fd table 已发布过的 logical slot capacity。
+    ///
+    /// # Returns
+    ///
+    /// 包含空洞与未物化 radix path 的容量，对应 Linux `/proc/<pid>/status` FDSize。
     pub(crate) fn slot_capacity(&self) -> usize {
         self.slots.len()
     }
 
-    /// @description 只遍历并复制 materialized published entries，同时保持每个 entry 共享原 OFD Arc。
-    /// @return 成功返回独立 descriptor table；kernel heap 耗尽会回滚已克隆引用并返回错误。
+    /// 只遍历并复制 materialized published entries，同时保持每个 entry 共享原 OFD Arc。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回独立 descriptor table；kernel heap 耗尽会回滚已克隆引用并返回错误。
     pub(crate) fn try_clone(&self) -> Result<Self, ()> {
         let slots = self.slots.try_clone_where(|entry| entry.published)?;
         Ok(Self { slots })
     }
 
-    /// @description 构造 init 的三个 inherited console descriptor。
-    /// @param terminal 唯一 TTY owner；backing opened entry 从已挂载 devfs 解析一次。
-    /// @return fd 0/1/2 分别为 console read/write/write OFD 的 descriptor table。
+    /// 构造 init 的三个 inherited console descriptor。
+    ///
+    /// # Parameters
+    ///
+    /// - `terminal`: 唯一 TTY owner；backing opened entry 从已挂载 devfs 解析一次。
+    ///
+    /// # Returns
+    ///
+    /// fd 0/1/2 分别为 console read/write/write OFD 的 descriptor table。
     pub(crate) fn with_terminal(terminal: Arc<Terminal>) -> Result<Self, ()> {
         let backing_opened = vfs()
             .open_file(b"/dev/console")
@@ -168,10 +183,19 @@ impl FileDescriptorTable {
             .map(|entry| entry.ofd.clone())
     }
 
-    /// @description 在一次 fd-table owner lock 内捕获完整 SCM_RIGHTS descriptor 集合。
-    /// @param descriptors 用户 cmsg 中按序验证的 descriptor numbers。
-    /// @return 与输入同序、共享原 OFD 的 Arc 集合。
-    /// @errors 任一 fd 不存在时整批返回 NotFound；staging OOM 返回 OutOfMemory。
+    /// 在一次 fd-table owner lock 内捕获完整 SCM_RIGHTS descriptor 集合。
+    ///
+    /// # Parameters
+    ///
+    /// - `descriptors`: 用户 cmsg 中按序验证的 descriptor numbers。
+    ///
+    /// # Returns
+    ///
+    /// 与输入同序、共享原 OFD 的 Arc 集合。
+    ///
+    /// # Errors
+    ///
+    /// 任一 fd 不存在时整批返回 NotFound；staging OOM 返回 OutOfMemory。
     pub(crate) fn capture_many(
         &self,
         descriptors: &[usize],
@@ -198,12 +222,18 @@ impl FileDescriptorTable {
             .map_err(Into::into)
     }
 
-    /// @description 原子分配 pipe/socketpair 的两个 descriptor entry。
-    /// @param first 第一个 OFD。
-    /// @param second 第二个 OFD。
-    /// @param cloexec 两个 descriptor 的 FD_CLOEXEC 初值。
-    /// @param limit Process 当前 fd limit。
-    /// @return 两个 fd；容量不足时 fd table 不变。
+    /// 原子分配 pipe/socketpair 的两个 descriptor entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `first`: 第一个 OFD。
+    /// - `second`: 第二个 OFD。
+    /// - `cloexec`: 两个 descriptor 的 FD_CLOEXEC 初值。
+    /// - `limit`: Process 当前 fd limit。
+    ///
+    /// # Returns
+    ///
+    /// 两个 fd；容量不足时 fd table 不变。
     pub(crate) fn allocate_pair(
         &mut self,
         first: Arc<OpenFileDescription>,
@@ -221,12 +251,21 @@ impl FileDescriptorTable {
             .map_err(Into::into)
     }
 
-    /// @description 为单个 SCM_RIGHTS file 占用最低空闲、但 lookup 不可见的 fd slot。
-    /// @param file 待接收 OFD；reservation/cancel/publication 全程拥有其引用。
-    /// @param cloexec 对应 MSG_CMSG_CLOEXEC。
-    /// @param limit Process 当前 fd limit。
-    /// @return 已占用且不可由 get/close/dup 观察的 fd number。
-    /// @errors fd limit 或 backing OOM 返回稳定分类及未安装 OFD，caller 必须在表锁外析构。
+    /// 为单个 SCM_RIGHTS file 占用最低空闲、但 lookup 不可见的 fd slot。
+    ///
+    /// # Parameters
+    ///
+    /// - `file`: 待接收 OFD；reservation/cancel/publication 全程拥有其引用。
+    /// - `cloexec`: 对应 MSG_CMSG_CLOEXEC。
+    /// - `limit`: Process 当前 fd limit。
+    ///
+    /// # Returns
+    ///
+    /// 已占用且不可由 get/close/dup 观察的 fd number。
+    ///
+    /// # Errors
+    ///
+    /// fd limit 或 backing OOM 返回稳定分类及未安装 OFD，caller 必须在表锁外析构。
     pub(crate) fn reserve_received(
         &mut self,
         file: Arc<OpenFileDescription>,
@@ -250,9 +289,15 @@ impl FileDescriptorTable {
             })
     }
 
-    /// @description 无分配原子提交一次 recvmsg 已完成全部 copyout 的 reservations。
-    /// @param descriptors 仍由同一 receive transaction 唯一拥有的 reserved slots。
-    /// @return 无返回值；任一错误 token 在改变可见性前 fail-stop。
+    /// 无分配原子提交一次 recvmsg 已完成全部 copyout 的 reservations。
+    ///
+    /// # Parameters
+    ///
+    /// - `descriptors`: 仍由同一 receive transaction 唯一拥有的 reserved slots。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；任一错误 token 在改变可见性前 fail-stop。
     pub(crate) fn publish_received(&mut self, descriptors: &[usize]) {
         for &fd in descriptors {
             let entry = self
@@ -271,9 +316,15 @@ impl FileDescriptorTable {
         }
     }
 
-    /// @description 无分配摘除 copyout 失败的 receive reservation。
-    /// @param fd 仍不可见的 reserved slot。
-    /// @return 独立 cleanup capability，调用者必须在 files lock 外析构。
+    /// 无分配摘除 copyout 失败的 receive reservation。
+    ///
+    /// # Parameters
+    ///
+    /// - `fd`: 仍不可见的 reserved slot。
+    ///
+    /// # Returns
+    ///
+    /// 独立 cleanup capability，调用者必须在 files lock 外析构。
     pub(crate) fn cancel_received(&mut self, fd: usize) -> CancelledFileReservation {
         CancelledFileReservation {
             _descriptor: self
@@ -283,9 +334,15 @@ impl FileDescriptorTable {
         }
     }
 
-    /// @description 原子摘除一个 entry，不在 fd-table owner lock 内执行其 Drop cleanup。
-    /// @param fd 待关闭 descriptor。
-    /// @return detached entry；空洞或越界返回错误。
+    /// 原子摘除一个 entry，不在 fd-table owner lock 内执行其 Drop cleanup。
+    ///
+    /// # Parameters
+    ///
+    /// - `fd`: 待关闭 descriptor。
+    ///
+    /// # Returns
+    ///
+    /// detached entry；空洞或越界返回错误。
     pub(crate) fn detach(&mut self, fd: usize) -> Result<DetachedFileDescriptor, ()> {
         self.slots
             .take_if(fd, |entry| entry.published)
@@ -293,8 +350,11 @@ impl FileDescriptorTable {
             .ok_or(())
     }
 
-    /// @description 从 live Process 原子取走全部 fd entry，供 exit 在 files lock 外关闭。
-    /// @return 拥有原全部 entry 的独立 table；self 变为空 table。
+    /// 从 live Process 原子取走全部 fd entry，供 exit 在 files lock 外关闭。
+    ///
+    /// # Returns
+    ///
+    /// 拥有原全部 entry 的独立 table；self 变为空 table。
     pub(crate) fn take_all(&mut self) -> Self {
         Self {
             slots: self.slots.take_all(),
@@ -312,8 +372,11 @@ impl FileDescriptorTable {
         self.allocate(ofd, minimum, cloexec, limit)
     }
 
-    /// @description 原子发布目标 descriptor，并 detach 被替换 entry 供锁外 cleanup。
-    /// @return 旧目标 entry；目标原为空洞时返回 None。
+    /// 原子发布目标 descriptor，并 detach 被替换 entry 供锁外 cleanup。
+    ///
+    /// # Returns
+    ///
+    /// 旧目标 entry；目标原为空洞时返回 None。
     pub(crate) fn duplicate_to(
         &mut self,
         old: usize,
@@ -352,10 +415,16 @@ impl FileDescriptorTable {
         Ok(())
     }
 
-    /// @description 从 cursor 单调扫描并 detach 一批 FD_CLOEXEC entries。
-    /// @param cursor 下一待检查 slot；每个 slot 在一次 exec cleanup 中只访问一次。
-    /// @param output caller 提供的非空、已清空固定栈 batch。
-    /// @return 本批 detached entry 数；零表示 cursor 已到 table 末尾。
+    /// 从 cursor 单调扫描并 detach 一批 FD_CLOEXEC entries。
+    ///
+    /// # Parameters
+    ///
+    /// - `cursor`: 下一待检查 slot；每个 slot 在一次 exec cleanup 中只访问一次。
+    /// - `output`: caller 提供的非空、已清空固定栈 batch。
+    ///
+    /// # Returns
+    ///
+    /// 本批 detached entry 数；零表示 cursor 已到 table 末尾。
     pub(crate) fn take_cloexec_batch(
         &mut self,
         cursor: &mut usize,
@@ -386,8 +455,11 @@ impl FileDescriptorTable {
         count
     }
 
-    /// @description 在 fd-table lock 内复制 live descriptor/OFD identity，供 procfs 锁外解析路径。
-    /// @return 按 fd 递增的 `(descriptor, OFD)` 快照；内存不足返回错误。
+    /// 在 fd-table lock 内复制 live descriptor/OFD identity，供 procfs 锁外解析路径。
+    ///
+    /// # Returns
+    ///
+    /// 按 fd 递增的 `(descriptor, OFD)` 快照；内存不足返回错误。
     pub(crate) fn snapshot(&self) -> Result<Vec<(usize, Arc<OpenFileDescription>)>, ()> {
         let count = self
             .slots

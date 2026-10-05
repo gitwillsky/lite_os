@@ -9,7 +9,7 @@ pub(crate) const KERNEL_STACK_CONTEXT_RESERVE: usize = 0;
 pub(crate) const USER_CONTEXT_PLACEMENT: crate::arch::UserContextPlacement =
     crate::arch::UserContextPlacement::AddressSpace;
 
-/// @description U-mode 与 S-mode trap 路径之间共享的完整用户执行上下文。
+/// U-mode 与 S-mode trap 路径之间共享的完整用户执行上下文。
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub(crate) struct UserContext {
@@ -48,22 +48,28 @@ const _: () = {
 };
 
 impl UserContext {
-    /// @description 设置用户栈指针。
+    /// 设置用户栈指针。
     ///
-    /// @param sp 满足用户 ABI 对齐要求的栈顶。
-    /// @return 无返回值。
+    /// # Parameters
+    ///
+    /// - `sp`: 满足用户 ABI 对齐要求的栈顶。
     pub(crate) fn set_sp(&mut self, sp: usize) {
         self.x[2] = sp;
     }
 
-    /// @description 构造首次进入用户程序所需的 trap context。
+    /// 构造首次进入用户程序所需的 trap context。
     ///
-    /// @param entry ELF 入口虚拟地址。
-    /// @param sp 用户初始栈指针。
-    /// @param kernel_satp kernel 页表 token。
-    /// @param kernel_sp 当前任务内核栈顶。
-    /// @param trap_handler S-mode trap handler 地址。
-    /// @return 通用寄存器、浮点寄存器和 fcsr 均为零的初始上下文。
+    /// # Parameters
+    ///
+    /// - `entry`: ELF 入口虚拟地址。
+    /// - `sp`: 用户初始栈指针。
+    /// - `kernel_satp`: kernel 页表 token。
+    /// - `kernel_sp`: 当前任务内核栈顶。
+    /// - `trap_handler`: S-mode trap handler 地址。
+    ///
+    /// # Returns
+    ///
+    /// 通用寄存器、浮点寄存器和 fcsr 均为零的初始上下文。
     pub(crate) fn app_init_context(
         entry: usize,
         sp: usize,
@@ -100,8 +106,11 @@ impl UserContext {
         cx
     }
 
-    /// @description 在短 context transaction 中分类 illegal instruction。
-    /// @return `FS=Off` 时请求 transaction 外解码；其他状态直接形成同步 SIGILL。
+    /// 在短 context transaction 中分类 illegal instruction。
+    ///
+    /// # Returns
+    ///
+    /// `FS=Off` 时请求 transaction 外解码；其他状态直接形成同步 SIGILL。
     pub(crate) fn illegal_instruction_probe(&self) -> IllegalInstructionProbe {
         let address = self.sepc;
         if self.sstatus.fs() == sstatus::FS::Off {
@@ -111,7 +120,7 @@ impl UserContext {
         }
     }
 
-    /// @description 在第二个短 transaction 中提交已验证的 lazy-FP transition。
+    /// 在第二个短 transaction 中提交已验证的 lazy-FP transition。
     pub(crate) fn finish_illegal_instruction(
         &mut self,
         result: Result<IllegalInstructionRetry, IllegalInstructionFault>,
@@ -134,7 +143,7 @@ impl UserContext {
     }
 }
 
-/// @description 在 ContextOwner transaction 外执行可能取得 AddressSpace lock 的指令读取。
+/// 在 ContextOwner transaction 外执行可能取得 AddressSpace lock 的指令读取。
 pub(crate) fn inspect_illegal_instruction(
     probe: IllegalInstructionProbe,
     read_halfword: impl FnMut(usize, &mut [u8]) -> bool,

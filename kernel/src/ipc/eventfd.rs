@@ -17,7 +17,7 @@ pub(crate) enum EventFdWrite {
     Full,
 }
 
-/// @description Linux eventfd 的唯一 64-bit counter owner 与 readiness source。
+/// Linux eventfd 的唯一 64-bit counter owner 与 readiness source。
 pub(crate) struct EventFd {
     counter: Mutex<u64>,
     semaphore: bool,
@@ -28,12 +28,18 @@ pub(crate) struct EventFd {
 }
 
 impl EventFd {
-    /// @description 从两对 notification Pipe 构造 eventfd；counter 不复制到其他 owner。
-    /// @param initial 初始 counter。
-    /// @param semaphore EFD_SEMAPHORE read 是否每次只消费一。
-    /// @param read_pair readable edge 的 read/write notification endpoints。
-    /// @param write_pair writable edge 的 read/write notification endpoints。
-    /// @return 共享 eventfd owner；control block 分配失败返回空错误。
+    /// 从两对 notification Pipe 构造 eventfd；counter 不复制到其他 owner。
+    ///
+    /// # Parameters
+    ///
+    /// - `initial`: 初始 counter。
+    /// - `semaphore`: EFD_SEMAPHORE read 是否每次只消费一。
+    /// - `read_pair`: readable edge 的 read/write notification endpoints。
+    /// - `write_pair`: writable edge 的read/write notification endpoints。
+    ///
+    /// # Returns
+    ///
+    /// 共享 eventfd owner；control block 分配失败返回空错误。
     pub(crate) fn new(
         initial: u64,
         semaphore: bool,
@@ -104,9 +110,15 @@ impl EventFd {
         }
     }
 
-    /// @description 投影调用者关心方向的最新 readiness generation。
-    /// @param events Linux poll event mask；同时关心读写时返回两者较新值。
-    /// @return 可用于 edge-triggered 变更检测的单调 generation。
+    /// 投影调用者关心方向的最新 readiness generation。
+    ///
+    /// # Parameters
+    ///
+    /// - `events`: Linux poll event mask；同时关心读写时返回两者较新值。
+    ///
+    /// # Returns
+    ///
+    /// 可用于 edge-triggered 变更检测的单调 generation。
     pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
         let mut generation = 0;
         if events & 0x001 != 0 {

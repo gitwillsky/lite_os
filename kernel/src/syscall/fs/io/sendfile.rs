@@ -2,16 +2,25 @@ use super::*;
 
 const MAX_RW_COUNT: usize = 0x7fff_f000;
 
-/// @description 将一次 regular-file 到 regular-file 的 kernel-owned copy 提交给 page cache。
-/// @param task 当前 caller，提供 RLIMIT_FSIZE 与 SIGXFSZ target。
-/// @param input 已解析的输入 page-cache facade。
-/// @param output 已解析的输出 page-cache facade。
-/// @param input_position 本次操作唯一输入 offset owner。
-/// @param output_position 本次操作唯一输出 OFD offset owner。
-/// @param count Linux MAX_RW_COUNT 截断后的最大传输长度。
-/// @return 已传输字节数、EOF 零、首错负 errno 或已有进度后的 partial count。
-/// @error 同一文件的实际传输区间重叠返回 `EINVAL`。
-/// @error 输出越过 RLIMIT_FSIZE 时返回 `EFBIG` 并投递 SIGXFSZ。
+/// 将一次 regular-file 到 regular-file 的 kernel-owned copy 提交给 page cache。
+///
+/// # Parameters
+///
+/// - `task`: 当前 caller，提供 RLIMIT_FSIZE 与 SIGXFSZ target。
+/// - `input`: 已解析的输入 page-cache facade。
+/// - `output`: 已解析的输出 page-cache facade。
+/// - `input_position`: 本次操作唯一输入 offset owner。
+/// - `output_position`: 本次操作唯一输出 OFD offset owner。
+/// - `count`: Linux MAX_RW_COUNT 截断后的最大传输长度。
+///
+/// # Returns
+///
+/// 已传输字节数、EOF 零、首错负 errno 或已有进度后的 partial count。
+///
+/// # Errors
+///
+/// - 同一文件的实际传输区间重叠返回 `EINVAL`。
+/// - 输出越过 RLIMIT_FSIZE 时返回 `EFBIG` 并投递 SIGXFSZ。
 fn copy_regular_file(
     task: &TaskControlBlock,
     input: &RegularFile,
@@ -88,12 +97,18 @@ fn copy_regular_file(
     total as isize
 }
 
-/// @description 按全局 OFD identity 顺序取得两个共享 offset，避免反向 sendfile 形成 ABBA。
-/// @param task 当前 caller。
-/// @param input 输入 OFD 与 page-cache facade。
-/// @param output 输出 OFD 与 page-cache facade。
-/// @param count 最大传输长度。
-/// @return copy byte count、EOF、partial count 或负 errno。
+/// 按全局 OFD identity 顺序取得两个共享 offset，避免反向 sendfile 形成 ABBA。
+///
+/// # Parameters
+///
+/// - `task`: 当前 caller。
+/// - `input`: 输入 OFD 与 page-cache facade。
+/// - `output`: 输出 OFD 与 page-cache facade。
+/// - `count`: 最大传输长度。
+///
+/// # Returns
+///
+/// copy byte count、EOF、partial count 或负 errno。
 fn copy_from_shared_offset(
     task: &TaskControlBlock,
     input_ofd: &Arc<OpenFileDescription>,
@@ -116,16 +131,25 @@ fn copy_from_shared_offset(
     .expect("distinct OFDs must own distinct file positions")
 }
 
-/// @description 完成 descriptor 校验并执行 regular-file 到 regular-file copy。
-/// @param task 当前 caller 与 fd-table owner。
-/// @param output_fd 以 write access 打开的输出 descriptor。
-/// @param input_fd 以 read access 打开的输入 descriptor。
-/// @param input_position 显式输入 offset；为空时使用并更新输入 OFD offset。
-/// @param count 最大传输长度；按 Linux MAX_RW_COUNT 截断。
-/// @return 已传输字节数、EOF 零、partial count 或负 errno。
-/// @error descriptor/access 错误返回 `EBADF`；当前 scope 外 backend 返回 `EINVAL/ESPIPE`。
-/// @error 重叠同文件区间返回 `EINVAL`。
-/// @error 输出带 O_APPEND 返回 `EINVAL`；storage、内存与 RLIMIT 错误透传对应 errno。
+/// 完成 descriptor 校验并执行 regular-file 到 regular-file copy。
+///
+/// # Parameters
+///
+/// - `task`: 当前 caller 与 fd-table owner。
+/// - `output_fd`: 以 write access 打开的输出 descriptor。
+/// - `input_fd`: 以 read access 打开的输入 descriptor。
+/// - `input_position`: 显式输入 offset；为空时使用并更新输入 OFD offset。
+/// - `count`: 最大传输长度；按 Linux MAX_RW_COUNT 截断。
+///
+/// # Returns
+///
+/// 已传输字节数、EOF 零、partial count 或负 errno。
+///
+/// # Errors
+///
+/// - descriptor/access 错误返回 `EBADF`；当前 scope 外 backend 返回 `EINVAL/ESPIPE`。
+/// - 重叠同文件区间返回 `EINVAL`。
+/// - 输出带 O_APPEND 返回 `EINVAL`；storage、内存与 RLIMIT 错误透传对应 errno。
 fn do_sendfile(
     task: &TaskControlBlock,
     output_fd: usize,
@@ -186,14 +210,23 @@ fn do_sendfile(
     })
 }
 
-/// @description 实现 Linux/riscv64 `sendfile` 的 regular-file 到 regular-file 数据路径。
-/// @param output_fd 以 write access 打开的输出 descriptor。
-/// @param input_fd 以 read access 打开的输入 descriptor。
-/// @param offset 可空的 userspace signed 64-bit 输入 offset；非空时不修改输入 OFD offset。
-/// @param count 最大传输长度；按 Linux MAX_RW_COUNT 截断。
-/// @return 已传输字节数、EOF 零、partial count 或负 errno。
-/// @error 坏 offset pointer 返回 `EFAULT`；非法 signed offset 返回 `EINVAL`。
-/// @error descriptor、backend、storage、重叠区间与 RLIMIT 错误由数据路径返回。
+/// 实现 Linux 64-bit `sendfile` 的 regular-file 到 regular-file 数据路径。
+///
+/// # Parameters
+///
+/// - `output_fd`: 以 write access 打开的输出 descriptor。
+/// - `input_fd`: 以 read access 打开的输入 descriptor。
+/// - `offset`: 可空的 userspace signed 64-bit 输入 offset；非空时不修改输入 OFD offset。
+/// - `count`: 最大传输长度；按 Linux MAX_RW_COUNT 截断。
+///
+/// # Returns
+///
+/// 已传输字节数、EOF 零、partial count 或负 errno。
+///
+/// # Errors
+///
+/// - 坏 offset pointer 返回 `EFAULT`；非法 signed offset 返回 `EINVAL`。
+/// - descriptor、backend、storage、重叠区间与 RLIMIT 错误由数据路径返回。
 pub(crate) fn sys_sendfile(
     output_fd: usize,
     input_fd: usize,

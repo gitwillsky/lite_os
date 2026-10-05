@@ -3,9 +3,15 @@ use alloc::sync::Arc;
 use super::*;
 
 impl Ext2FileSystem {
-    /// @description 在普通 task mutation 前回收一个因 final Drop 无法等待而延迟的 orphan。
-    /// @return 没有待处理 inode，或一个 dead orphan 已独立提交时成功。
-    /// @errors orphan chain、inode、journal 或 block I/O 无效时返回对应错误并保留重试 bit。
+    /// 在普通 task mutation 前回收一个因 final Drop 无法等待而延迟的 orphan。
+    ///
+    /// # Returns
+    ///
+    /// 没有待处理 inode，或一个 dead orphan 已独立提交时成功。
+    ///
+    /// # Errors
+    ///
+    /// orphan chain、inode、journal 或 block I/O 无效时返回对应错误并保留重试 bit。
     pub(super) fn reclaim_pending_orphan(&self) -> Result<(), FileSystemError> {
         // 普通 mutation 只做 shared load；每次 I/O 都写同一 cache line 会把无 pending 的
         // 多核 ext2 transaction 人为串行化。
@@ -48,10 +54,19 @@ impl Ext2FileSystem {
         Err(FileSystemError::InvalidFileSystem)
     }
 
-    /// @description 将无目录项但仍被 OFD 持有的 inode 原子加入 ext orphan chain。
-    /// @param inode link count 仍为正且由 caller 保活的目标。
-    /// @return inode 与 superblock head 已 staged 时成功。
-    /// @errors 重复入链、on-disk 状态或 I/O 无效时返回错误。
+    /// 将无目录项但仍被 OFD 持有的 inode 原子加入 ext orphan chain。
+    ///
+    /// # Parameters
+    ///
+    /// - `inode`: link count 仍为正且由 caller 保活的目标。
+    ///
+    /// # Returns
+    ///
+    /// inode 与 superblock head 已 staged 时成功。
+    ///
+    /// # Errors
+    ///
+    /// 重复入链、on-disk 状态或 I/O 无效时返回错误。
     pub(super) fn defer_reclaim_locked(
         &self,
         mutation: &mut MutationGuard<'_>,
@@ -71,11 +86,20 @@ impl Ext2FileSystem {
         self.write_primary_superblock()
     }
 
-    /// @description 从 ext orphan chain 摘除即将完成最终回收的 inode。
-    /// @param target 即将回收的 inode number。
-    /// @param target_next target 的 on-disk orphan successor。
-    /// @return head 或 predecessor 已指向 successor 时成功。
-    /// @errors target 不在有限无环 chain、inode 或 I/O 无效时返回错误。
+    /// 从 ext orphan chain 摘除即将完成最终回收的 inode。
+    ///
+    /// # Parameters
+    ///
+    /// - `target`: 即将回收的 inode number。
+    /// - `target_next`: target 的 on-disk orphan successor。
+    ///
+    /// # Returns
+    ///
+    /// head 或 predecessor 已指向 successor 时成功。
+    ///
+    /// # Errors
+    ///
+    /// target 不在有限无环 chain、inode 或 I/O 无效时返回错误。
     pub(super) fn remove_orphan_locked(
         &self,
         mutation: &mut MutationGuard<'_>,
@@ -120,9 +144,15 @@ impl Ext2FileSystem {
         Err(FileSystemError::InvalidFileSystem)
     }
 
-    /// @description mount-time 回收 journal replay 后仍在 orphan chain 的全部 inode。
-    /// @return chain 为空且每个遗留 inode 已经单独 journal checkpoint 时成功。
-    /// @errors chain 越界/成环、inode、allocator、journal 或 I/O 无效时拒绝挂载。
+    /// mount-time 回收 journal replay 后仍在 orphan chain 的全部 inode。
+    ///
+    /// # Returns
+    ///
+    /// chain 为空且每个遗留 inode 已经单独 journal checkpoint 时成功。
+    ///
+    /// # Errors
+    ///
+    /// chain 越界/成环、inode、allocator、journal 或 I/O 无效时拒绝挂载。
     pub(super) fn recover_orphans(&self) -> Result<(), FileSystemError> {
         let limit = self.superblock.lock().s_inodes_count;
         for _ in 0..limit {

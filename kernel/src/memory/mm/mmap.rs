@@ -6,13 +6,13 @@ mod device;
 mod fault;
 mod protection;
 
-/// @description 一次用户页访问 fault 的领域结果。
+/// 一次用户页访问 fault 的领域结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageFaultOutcome {
     /// 请求的访问权限已经由 live leaf PTE 满足，原指令可直接重试。
     Handled,
-    /// 地址不属于允许该访问的用户 VMA。
-    SegmentationFault,
+    /// 地址不属于允许该访问的用户 VMA；cause 区分未映射与权限拒绝。
+    SegmentationFault(SegmentationCause),
     /// file mapping 地址属于 VMA，但已越过 backing object 的有效范围。
     BusError,
 }
@@ -20,9 +20,14 @@ pub(crate) enum PageFaultOutcome {
 impl MemorySet {
     /// 使用 ordered neighbors 判断 `[start,end)` 是否与任意 live VMA 相交。
     ///
-    /// @param start inclusive 起始 VPN。
-    /// @param end exclusive 结束 VPN。
-    /// @return 区间非空且 floor/ceiling 均不相交时为 true。
+    /// # Parameters
+    ///
+    /// - `start`: inclusive 起始 VPN。
+    /// - `end`: exclusive 结束 VPN。
+    ///
+    /// # Returns
+    ///
+    /// 区间非空且 floor/ceiling 均不相交时为 true。
     pub(super) fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
         if start >= end
             || self
@@ -64,13 +69,18 @@ impl MemorySet {
         (end <= user_end).then(|| start.into()..end.into())
     }
 
-    /// @description 建立按需分配的 anonymous private 用户映射。
+    /// 建立按需分配的 anonymous private 用户映射。
     ///
-    /// @param address 零表示由内核选址；非零是 page-aligned hint 或 fixed-noreplace 地址。
-    /// @param length 非零字节长度，向上取整到整页。
-    /// @param permission 用户页权限；必须含 U，允许 PROT_NONE 与 Linux W+X 映射。
-    /// @param fixed_noreplace 为真时地址冲突返回 `AddressInUse`，不替换既有 VMA。
-    /// @return 成功返回 page-aligned 起始地址；任何失败都不改变页表或 VMA 表。
+    /// # Parameters
+    ///
+    /// - `address`: 零表示由内核选址；非零是 page-aligned hint 或 fixed-noreplace 地址。
+    /// - `length`: 非零字节长度，向上取整到整页。
+    /// - `permission`: 用户页权限；必须含 U，允许 PROT_NONE 与 Linux W+X 映射。
+    /// - `fixed_noreplace`: 为真时地址冲突返回 `AddressInUse`，不替换既有 VMA。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 page-aligned 起始地址；任何失败都不改变页表或 VMA 表。
     pub(crate) fn map_anonymous(
         &mut self,
         address: usize,
@@ -127,7 +137,7 @@ impl MemorySet {
         Ok(start_address)
     }
 
-    /// @description 建立按需 fault 的 file-backed private 映射。
+    /// 建立按需 fault 的 file-backed private 映射。
     pub(crate) fn map_private_file(
         &mut self,
         address: usize,
@@ -179,7 +189,7 @@ impl MemorySet {
         Ok(start)
     }
 
-    /// @description 建立 lazy file-backed shared mapping；page cache 是所有 resident page 的唯一 owner。
+    /// 建立 lazy file-backed shared mapping；page cache 是所有 resident page 的唯一 owner。
     pub(crate) fn map_shared_file(
         &mut self,
         address: usize,
@@ -389,11 +399,16 @@ impl MemorySet {
         self.commit_area(left);
     }
 
-    /// @description 解除 anonymous 或 file-backed private 页；未映射洞按 Linux 语义忽略。
+    /// 解除 anonymous 或 file-backed private 页；未映射洞按 Linux 语义忽略。
     ///
-    /// @param address page-aligned 起始地址。
-    /// @param length 非零字节长度，向上取整到整页。
-    /// @return 成功返回空值；若触及非 anonymous VMA 则保持全部映射不变并拒绝。
+    /// # Parameters
+    ///
+    /// - `address`: page-aligned 起始地址。
+    /// - `length`: 非零字节长度，向上取整到整页。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回空值；若触及非 anonymous VMA 则保持全部映射不变并拒绝。
     pub(crate) fn unmap_user_mapping(
         &mut self,
         address: usize,

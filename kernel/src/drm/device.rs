@@ -17,11 +17,20 @@ pub(super) fn display_error(error: DisplayError) -> DrmError {
 }
 
 impl DrmFile {
-    /// @description 删除本 OFD 创建的 framebuffer，并显式释放 adapter residency。
-    /// @param id device-wide framebuffer ID。
-    /// @return object 已删除、disable/RESOURCE_UNREF 的 exact-fence wait token，或 adapter
+    /// 删除本 OFD 创建的 framebuffer，并显式释放 adapter residency。
+    ///
+    /// # Parameters
+    ///
+    /// - `id`: device-wide framebuffer ID。
+    ///
+    /// # Returns
+    ///
+    /// object 已删除、disable/RESOURCE_UNREF 的 exact-fence wait token，或 adapter
     /// readiness retry token。
-    /// @errors object 不存在返回 NotFound；adapter failure 返回对应错误。
+    ///
+    /// # Errors
+    ///
+    /// object 不存在返回 NotFound；adapter failure 返回对应错误。
     pub(crate) fn remove_framebuffer(&self, id: u32) -> Result<FramebufferRemoval, DrmError> {
         let mut completion = self.device.completion.lock();
         {
@@ -393,13 +402,21 @@ fn complete_graphics_cleanup(device: &DrmDevice, fence: u64) {
 // 缺失单例会让多个 card0 实例竞争同一 hardware scanout 与 completion queue。
 static PRIMARY_DRM: Once<Arc<DrmDevice>> = Once::new();
 
-/// @description 从通用 display seam 与统一 wait notification Pipe 初始化 primary DRM owner。
+/// 从通用 display seam 与统一 wait notification Pipe 初始化 primary DRM owner。
 ///
-/// @param display DTB 选中的唯一 single-scanout adapter。
-/// @param completion_read 只由 DRM waiter 排空的 notification endpoint。
-/// @param completion_write deferred completion 发布 endpoint。
-/// @return owner 成功发布时返回 unit。
-/// @errors 重复初始化或内存不足返回 unit error。
+/// # Parameters
+///
+/// - `display`: DTB 选中的唯一 single-scanout adapter。
+/// - `completion_read`: 只由 DRM waiter 排空的 notification endpoint。
+/// - `completion_write`: deferred completion 发布 endpoint。
+///
+/// # Returns
+///
+/// owner 成功发布时返回 unit。
+///
+/// # Errors
+///
+/// 重复初始化或内存不足返回 unit error。
 pub(crate) fn init(
     display: Arc<dyn GraphicsDevice>,
     completion_read: Arc<PipeEnd>,
@@ -423,13 +440,13 @@ pub(crate) fn init(
             reset_after_owner: None,
         }),
         state: Mutex::new(DrmDeviceState {
-            buffer_identities: IdAllocator::new(1),
+            buffer_identities: PublicationIdAllocator::new(1),
             next_file_identity: 1,
-            framebuffer_ids: IdAllocator::new(4),
-            context_ids: IdAllocator::new(1),
+            framebuffer_ids: PublicationIdAllocator::new(4),
+            context_ids: PublicationIdAllocator::new(1),
             // VirtIO resource IDs 1/2 belong to scanout residency and 3 to the standard 2D
             // hardware cursor; VirGL allocations start after those adapter-owned identities.
-            graphics_resource_ids: IdAllocator::new(4),
+            graphics_resource_ids: PublicationIdAllocator::new(4),
             graphics_cleanups: FallibleMap::new(),
             master: None,
             mode,
@@ -441,9 +458,15 @@ pub(crate) fn init(
     Ok(())
 }
 
-/// @description 打开 primary DRM card 的新 OFD backend。
-/// @return 共享 hardware owner、独立 file identity 的 backend。
-/// @errors primary DRM 未初始化或 control block OOM 返回 unit error。
+/// 打开 primary DRM card 的新 OFD backend。
+///
+/// # Returns
+///
+/// 共享 hardware owner、独立 file identity 的 backend。
+///
+/// # Errors
+///
+/// primary DRM 未初始化或 control block OOM 返回 unit error。
 pub(crate) fn open() -> Result<Arc<DrmFile>, ()> {
     let device = PRIMARY_DRM.get().cloned().ok_or(())?;
     let file_identity = {
@@ -456,7 +479,7 @@ pub(crate) fn open() -> Result<Arc<DrmFile>, ()> {
         device,
         file_identity,
         state: Mutex::new(DrmFileState {
-            handle_ids: IdAllocator::new(1),
+            handle_ids: PublicationIdAllocator::new(1),
             buffers: FallibleMap::new(),
             context: None,
             graphics_buffers: FallibleMap::new(),
@@ -474,11 +497,19 @@ pub(crate) fn open() -> Result<Arc<DrmFile>, ()> {
     Ok(file)
 }
 
-/// @description 在 deferred context 有界推进一次 GPU controlq completion。
+/// 在 deferred context 有界推进一次 GPU controlq completion。
 ///
-/// @param timestamp_ns task deferred owner 在本批次取得的 monotonic completion 时刻。
-/// @return 无返回值；每个 IRQ 只推进一个 resource transaction stage。
-/// @errors 未初始化、descriptor/fence 损坏或 device failure 直接 fail-stop。
+/// # Parameters
+///
+/// - `timestamp_ns`: task deferred owner 在本批次取得的 monotonic completion 时刻。
+///
+/// # Returns
+///
+/// 无返回值；每个 IRQ 只推进一个 resource transaction stage。
+///
+/// # Errors
+///
+/// 未初始化、descriptor/fence 损坏或 device failure 直接 fail-stop。
 pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     let drm = PRIMARY_DRM
         .get()
@@ -615,8 +646,5 @@ fn publish_mode_change(drm: &DrmDevice, mode: DisplayMode) {
     drop(state);
     crate::socket::publish_drm_hotplug();
     drm.completion_write.signal_readiness();
-    info!(
-        "[DRM] display mode changed to {}x{}",
-        mode.width, mode.height
-    );
+    info!("display mode changed to {}x{}", mode.width, mode.height);
 }

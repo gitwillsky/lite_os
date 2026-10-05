@@ -18,7 +18,7 @@ const FORMAT_B8G8R8A8_UNORM: u32 = 1;
 const FORMAT_B8G8R8X8_UNORM: u32 = 2;
 const FORMAT_R8_UNORM: u32 = 64;
 
-/// @description `DRM_IOCTL_VIRTGPU_RESOURCE_CREATE` 的无 pointer 领域输入。
+/// `DRM_IOCTL_VIRTGPU_RESOURCE_CREATE` 的无 pointer 领域输入。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VirglResourceCreate {
     pub(crate) target: u32,
@@ -34,7 +34,7 @@ pub(crate) struct VirglResourceCreate {
     pub(crate) size: u64,
 }
 
-/// @description 一个 file-private VirGL GEM/resource 的稳定 UAPI metadata。
+/// 一个 file-private VirGL GEM/resource 的稳定 UAPI metadata。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VirglResourceInfo {
     pub(crate) handle: u32,
@@ -42,7 +42,7 @@ pub(crate) struct VirglResourceInfo {
     pub(crate) size: u32,
 }
 
-/// @description 一次 file-private VirGL resource transfer 的已解码领域输入。
+/// 一次 file-private VirGL resource transfer 的已解码领域输入。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VirglTransfer {
     /// 本 OFD 拥有的 GEM handle。
@@ -67,7 +67,7 @@ pub(super) struct VirglContext {
 }
 
 impl VirglContext {
-    /// @description 把 OFD-owned resource map 移入创建 context 时预分配的 cleanup node。
+    /// 把 OFD-owned resource map 移入创建 context 时预分配的 cleanup node。
     pub(super) fn into_cleanup(
         mut self,
         buffers: FallibleMap<u32, Arc<VirglBuffer>>,
@@ -81,14 +81,14 @@ impl VirglContext {
     }
 }
 
-/// @description DRM OFD 关闭后由 device completion owner 串行推进的 VirGL 回收队列。
+/// DRM OFD 关闭后由 device completion owner 串行推进的 VirGL 回收队列。
 pub(super) struct VirglCleanup {
     context_id: u32,
     buffers: FallibleMap<u32, Arc<VirglBuffer>>,
     in_flight: Option<(u64, VirglCleanupAction)>,
 }
 
-/// @description 一次 OFD 回收中当前可提交的标准 VirtIO-GPU operation。
+/// 一次 OFD 回收中当前可提交的标准 VirtIO-GPU operation。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum VirglCleanupAction {
     Resource { handle: u32, resource_id: u32 },
@@ -96,7 +96,7 @@ pub(super) enum VirglCleanupAction {
 }
 
 impl VirglCleanupAction {
-    /// @description 降低为不包含 kernel owner 的标准 adapter command。
+    /// 降低为不包含 kernel owner 的标准 adapter command。
     pub(super) const fn command(self) -> VirglCommand<'static> {
         match self {
             Self::Resource { resource_id, .. } => VirglCommand::ResourceUnref { resource_id },
@@ -114,7 +114,7 @@ impl VirglCleanup {
         }
     }
 
-    /// @description 在 adapter 空闲时选择一个 fence 已完成的 resource，全部释放后销毁 context。
+    /// 在 adapter 空闲时选择一个 fence 已完成的 resource，全部释放后销毁 context。
     pub(super) fn next_action(&self, completed: u64) -> Option<VirglCleanupAction> {
         if self.in_flight.is_some() {
             return None;
@@ -136,18 +136,18 @@ impl VirglCleanup {
             })
     }
 
-    /// @description 记录已由 adapter 接受的唯一回收 operation 与 exact fence。
+    /// 记录已由 adapter 接受的唯一回收 operation 与 exact fence。
     pub(super) fn record_submission(&mut self, action: VirglCleanupAction, fence: u64) {
         assert!(self.in_flight.replace((fence, action)).is_none());
     }
 
-    /// @description 判断 completion fence 是否属于本 cleanup queue 的当前 operation。
+    /// 判断 completion fence 是否属于本 cleanup queue 的当前 operation。
     pub(super) fn owns_fence(&self, fence: u64) -> bool {
         self.in_flight
             .is_some_and(|(expected, _)| expected == fence)
     }
 
-    /// @description 消费 exact completion；返回 true 表示 context 已销毁且队列可删除。
+    /// 消费 exact completion；返回 true 表示 context 已销毁且队列可删除。
     pub(super) fn complete(&mut self, fence: u64) -> bool {
         let Some((expected, action)) = self.in_flight else {
             return false;
@@ -182,7 +182,7 @@ pub(super) struct VirglBuffer {
     pub(super) last_fence: Mutex<u64>,
 }
 
-/// @description 尚未发布、但已预留 device context identity 的 transaction。
+/// 尚未发布、但已预留 device context identity 的 transaction。
 pub(crate) struct PreparedVirglContext<'file> {
     file: &'file DrmFile,
     reservation: Option<UnpublishedId<u32>>,
@@ -194,8 +194,11 @@ pub(crate) struct PreparedVirglContext<'file> {
 }
 
 impl PreparedVirglContext<'_> {
-    /// @description 返回应提交给 adapter 的标准 CTX_CREATE operation。
-    /// @return context identity、capset init 与 debug name 全部绑定的 command。
+    /// 返回应提交给 adapter 的标准 CTX_CREATE operation。
+    ///
+    /// # Returns
+    ///
+    /// context identity、capset init 与 debug name 全部绑定的 command。
     pub(crate) fn command(&self) -> VirglCommand<'_> {
         VirglCommand::ContextCreate {
             context_id: self.id,
@@ -204,7 +207,7 @@ impl PreparedVirglContext<'_> {
         }
     }
 
-    /// @description 在 CTX_CREATE fence 完成后无失败发布 file context。
+    /// 在 CTX_CREATE fence 完成后无失败发布 file context。
     pub(crate) fn publish(mut self) {
         let reservation = self
             .reservation
@@ -237,7 +240,7 @@ impl Drop for PreparedVirglContext<'_> {
     }
 }
 
-/// @description 已完成 backing、handle/resource identity 与 map node 预留的 transaction。
+/// 已完成 backing、handle/resource identity 与 map node 预留的 transaction。
 pub(crate) struct PreparedVirglResource<'file> {
     file: &'file DrmFile,
     handle: Option<UnpublishedId<u32>>,
@@ -250,7 +253,7 @@ pub(crate) struct PreparedVirglResource<'file> {
     entry: Option<VacantEntry<u32, Arc<VirglBuffer>>>,
 }
 
-/// @description 已从 file handle namespace 摘除、等待完成 host 销毁的 VirGL resource。
+/// 已从 file handle namespace 摘除、等待完成 host 销毁的 VirGL resource。
 ///
 /// transaction 失败时 `Drop` 使用原 AVL node 无分配恢复 handle；成功时
 /// `publish` 消费 backing。缺少该事务会让并发 exec 在 unref 后继续引用 resource，
@@ -295,7 +298,7 @@ impl Drop for PreparedVirglClose<'_> {
 }
 
 impl PreparedVirglResource<'_> {
-    /// @description 返回 host resource create operation。
+    /// 返回 host resource create operation。
     pub(crate) fn create_command(&self) -> VirglCommand<'static> {
         VirglCommand::ResourceCreate3d {
             resource_id: self.resource_id,
@@ -312,7 +315,7 @@ impl PreparedVirglResource<'_> {
         }
     }
 
-    /// @description 返回 guest backing attach operation。
+    /// 返回 guest backing attach operation。
     pub(crate) fn attach_command(&self) -> VirglCommand<'static> {
         VirglCommand::ResourceAttachBacking {
             resource_id: self.resource_id,
@@ -325,7 +328,7 @@ impl PreparedVirglResource<'_> {
         }
     }
 
-    /// @description 返回 context/resource ownership attach operation。
+    /// 返回 context/resource ownership attach operation。
     pub(crate) fn context_attach_command(&self) -> VirglCommand<'static> {
         VirglCommand::ContextAttachResource {
             context_id: self.context_id,
@@ -333,7 +336,7 @@ impl PreparedVirglResource<'_> {
         }
     }
 
-    /// @description 返回 UAPI copyout 所需的 stable identities。
+    /// 返回 UAPI copyout 所需的 stable identities。
     pub(crate) fn info(&self) -> VirglResourceInfo {
         VirglResourceInfo {
             handle: self.handle_id,
@@ -342,7 +345,7 @@ impl PreparedVirglResource<'_> {
         }
     }
 
-    /// @description 在三个 host operation 与 UAPI copyout 全部成功后发布 GEM handle。
+    /// 在三个 host operation 与 UAPI copyout 全部成功后发布 GEM handle。
     pub(crate) fn publish(mut self) {
         let handle = self
             .handle
@@ -364,7 +367,7 @@ impl PreparedVirglResource<'_> {
             .publish(resource);
     }
 
-    /// @description 返回 host rollback 所需 context/resource identities。
+    /// 返回 host rollback 所需 context/resource identities。
     pub(crate) const fn identities(&self) -> (u32, u32) {
         (self.context_id, self.resource_id)
     }
@@ -433,10 +436,19 @@ fn virgl_resource_stride(create: VirglResourceCreate) -> Result<u32, DrmError> {
 }
 
 impl DrmFile {
-    /// @description 取得并保活一个满足 VirtIO-GPU cursorq 固定 geometry 的 dumb buffer。
-    /// @param handle 当前 OFD 的标准 DRM dumb GEM handle。
-    /// @return 64x64x4 guest-backed pixel owner。
-    /// @errors handle 不存在或 resource contract 不匹配。
+    /// 取得并保活一个满足 VirtIO-GPU cursorq 固定 geometry 的 dumb buffer。
+    ///
+    /// # Parameters
+    ///
+    /// - `handle`: 当前 OFD 的标准 DRM dumb GEM handle。
+    ///
+    /// # Returns
+    ///
+    /// 64x64x4 guest-backed pixel owner。
+    ///
+    /// # Errors
+    ///
+    /// handle 不存在或 resource contract 不匹配。
     pub(super) fn cursor_resource(&self, handle: u32) -> Result<Arc<DumbBuffer>, DrmError> {
         let state = self.state.lock();
         let buffer = state.buffers.get(&handle).ok_or(DrmError::NotFound)?;
@@ -446,10 +458,19 @@ impl DrmFile {
         Ok(buffer.clone())
     }
 
-    /// @description 把标准 dumb cursor pixels 上传到 adapter-owned 2D resource。
-    /// @param handle 当前 OFD 的 64x64x4 dumb GEM handle。
-    /// @return 完整 2D CREATE/ATTACH/TRANSFER fence，或 adapter readiness retry。
-    /// @errors 非 master、CRTC inactive、handle/geometry 非法或 device failure。
+    /// 把标准 dumb cursor pixels 上传到 adapter-owned 2D resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `handle`: 当前 OFD 的 64x64x4 dumb GEM handle。
+    ///
+    /// # Returns
+    ///
+    /// 完整 2D CREATE/ATTACH/TRANSFER fence，或 adapter readiness retry。
+    ///
+    /// # Errors
+    ///
+    /// 非 master、CRTC inactive、handle/geometry 非法或 device failure。
     pub(crate) fn upload_cursor(&self, handle: u32) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
@@ -485,7 +506,7 @@ impl DrmFile {
         }))
     }
 
-    /// @description 返回 host 固定的 VirGL capset ABI。
+    /// 返回 host 固定的 VirGL capset ABI。
     pub(crate) fn virgl_capset_info(&self) -> Result<VirglCapsetInfo, DrmError> {
         self.device
             .display
@@ -493,7 +514,7 @@ impl DrmFile {
             .ok_or(DrmError::Device)
     }
 
-    /// @description 复制 immutable VirGL capset bytes。
+    /// 复制 immutable VirGL capset bytes。
     pub(crate) fn copy_virgl_capset(&self, output: &mut [u8]) -> Result<usize, DrmError> {
         self.device
             .display
@@ -501,16 +522,25 @@ impl DrmFile {
             .map_err(super::device::display_error)
     }
 
-    /// @description 返回此 adapter 是否支持显式 VirGL context 参数。
+    /// 返回此 adapter 是否支持显式 VirGL context 参数。
     pub(crate) fn supports_virgl_context_init(&self) -> bool {
         self.device.display.supports_virgl_context_init()
     }
 
-    /// @description 预留本 OFD 的唯一 VirGL context。
-    /// @param capset_id 必须等于 adapter 选中的 VirGL capset。
-    /// @param name 最多 64-byte explicit debug name。
-    /// @return 尚未发布、可先提交 CTX_CREATE 的 transaction。
-    /// @errors 重复初始化、capset 不匹配、名称过长或 identity OOM/耗尽。
+    /// 预留本 OFD 的唯一 VirGL context。
+    ///
+    /// # Parameters
+    ///
+    /// - `capset_id`: 必须等于 adapter 选中的 VirGL capset。
+    /// - `name`: 最多 64-byte explicit debug name。
+    ///
+    /// # Returns
+    ///
+    /// 尚未发布、可先提交 CTX_CREATE 的 transaction。
+    ///
+    /// # Errors
+    ///
+    /// 重复初始化、capset 不匹配、名称过长或 identity OOM/耗尽。
     pub(crate) fn prepare_virgl_context(
         &self,
         capset_id: u32,
@@ -525,8 +555,11 @@ impl DrmFile {
         self.prepare_context(capset_id, name)
     }
 
-    /// @description 按 Linux virtio-gpu legacy 语义准备首个 3D resource 的惰性 context。
-    /// @return context 已存在时为 None；否则返回 `context_init=0` 的 CTX_CREATE transaction。
+    /// 按 Linux virtio-gpu legacy 语义准备首个 3D resource 的惰性 context。
+    ///
+    /// # Returns
+    ///
+    /// context 已存在时为 None；否则返回 `context_init=0` 的 CTX_CREATE transaction。
     pub(crate) fn prepare_legacy_virgl_context(
         &self,
     ) -> Result<Option<PreparedVirglContext<'_>>, DrmError> {
@@ -575,10 +608,19 @@ impl DrmFile {
         })
     }
 
-    /// @description 预留一个标准 VirGL resource 与 file-private GEM handle。
-    /// @param create 已从 Linux UAPI 解码的 resource geometry/format/storage contract。
-    /// @return host create/attach 完成前不可查询的 prepared transaction。
-    /// @errors context 未初始化、geometry/size 非法、backing 或 namespace OOM。
+    /// 预留一个标准 VirGL resource 与 file-private GEM handle。
+    ///
+    /// # Parameters
+    ///
+    /// - `create`: 已从 Linux UAPI 解码的 resource geometry/format/storage contract。
+    ///
+    /// # Returns
+    ///
+    /// host create/attach 完成前不可查询的 prepared transaction。
+    ///
+    /// # Errors
+    ///
+    /// context 未初始化、geometry/size 非法、backing 或 namespace OOM。
     pub(crate) fn prepare_virgl_resource(
         &self,
         create: VirglResourceCreate,
@@ -647,10 +689,19 @@ impl DrmFile {
         })
     }
 
-    /// @description 提交一个已验证 ownership 的 VirGL operation。
-    /// @param command 不含 userspace pointer 的标准 operation。
-    /// @return exact-fence wait 或 adapter-readiness retry token。
-    /// @errors adapter failure 返回稳定 DRM error。
+    /// 提交一个已验证 ownership 的 VirGL operation。
+    ///
+    /// # Parameters
+    ///
+    /// - `command`: 不含 userspace pointer 的标准 operation。
+    ///
+    /// # Returns
+    ///
+    /// exact-fence wait 或 adapter-readiness retry token。
+    ///
+    /// # Errors
+    ///
+    /// adapter failure 返回稳定 DRM error。
     pub(crate) fn submit_virgl(
         &self,
         command: VirglCommand<'_>,
@@ -678,7 +729,7 @@ impl DrmFile {
         }))
     }
 
-    /// @description 查询本 OFD 的 VirGL resource metadata。
+    /// 查询本 OFD 的 VirGL resource metadata。
     pub(crate) fn virgl_resource_info(&self, handle: u32) -> Result<VirglResourceInfo, DrmError> {
         let state = self.state.lock();
         let buffer = state
@@ -692,10 +743,19 @@ impl DrmFile {
         })
     }
 
-    /// @description 原子撤销 handle 可见性并准备标准 GEM_CLOSE host lifecycle。
-    /// @param handle 本 OFD 中待关闭的 VirGL GEM handle。
-    /// @return 可等待最后 fence 并提交标准 RESOURCE_UNREF 的回滚事务。
-    /// @errors handle 不存在或仍被 KMS framebuffer 引用。
+    /// 原子撤销 handle 可见性并准备标准 GEM_CLOSE host lifecycle。
+    ///
+    /// # Parameters
+    ///
+    /// - `handle`: 本 OFD 中待关闭的 VirGL GEM handle。
+    ///
+    /// # Returns
+    ///
+    /// 可等待最后 fence 并提交标准 RESOURCE_UNREF 的回滚事务。
+    ///
+    /// # Errors
+    ///
+    /// handle 不存在或仍被 KMS framebuffer 引用。
     pub(crate) fn prepare_virgl_close(
         &self,
         handle: u32,
@@ -724,7 +784,7 @@ impl DrmFile {
         })
     }
 
-    /// @description 返回一个 VirGL GEM handle 的 page-aligned mmap fake offset。
+    /// 返回一个 VirGL GEM handle 的 page-aligned mmap fake offset。
     pub(crate) fn map_virgl(&self, handle: u32) -> Result<u64, DrmError> {
         if handle == 0 || !self.state.lock().graphics_buffers.contains_key(&handle) {
             return Err(DrmError::NotFound);
@@ -732,10 +792,19 @@ impl DrmFile {
         Ok(u64::from(handle) << super::DUMB_OFFSET_SHIFT)
     }
 
-    /// @description 为一个 resource 构造已验证的 host transfer command。
-    /// @param transfer 已解码的 handle、方向、区域与 backing layout。
-    /// @return 只含已验证 identity 和 geometry 的 adapter command。
-    /// @errors context/handle 不存在，或 transfer 超出 backing/resource 返回 DRM error。
+    /// 为一个 resource 构造已验证的 host transfer command。
+    ///
+    /// # Parameters
+    ///
+    /// - `transfer`: 已解码的 handle、方向、区域与 backing layout。
+    ///
+    /// # Returns
+    ///
+    /// 只含已验证 identity 和 geometry 的 adapter command。
+    ///
+    /// # Errors
+    ///
+    /// context/handle 不存在，或 transfer 超出 backing/resource 返回 DRM error。
     pub(crate) fn transfer_command(
         &self,
         transfer: VirglTransfer,
@@ -817,7 +886,7 @@ impl DrmFile {
         })
     }
 
-    /// @description 验证 execbuffer resource set 并返回 file context identity。
+    /// 验证 execbuffer resource set 并返回 file context identity。
     pub(crate) fn validate_exec_resources(&self, handles: &[u32]) -> Result<u32, DrmError> {
         let state = self.state.lock();
         let context = state.context.as_ref().ok_or(DrmError::Invalid)?;
@@ -829,7 +898,7 @@ impl DrmFile {
         Ok(context.id)
     }
 
-    /// @description 把一次已提交 fence 原子发布给所有引用的 GEM resource。
+    /// 把一次已提交 fence 原子发布给所有引用的 GEM resource。
     pub(crate) fn record_virgl_fence(&self, handles: &[u32], fence: u64) -> Result<(), DrmError> {
         let state = self.state.lock();
         for handle in handles {
@@ -842,7 +911,7 @@ impl DrmFile {
         Ok(())
     }
 
-    /// @description 返回 handle 最近一次 exec/transfer fence 的 wait token。
+    /// 返回 handle 最近一次 exec/transfer fence 的 wait token。
     pub(crate) fn virgl_wait(&self, handle: u32) -> Result<Option<DrmWait>, DrmError> {
         let state = self.state.lock();
         let fence = *state

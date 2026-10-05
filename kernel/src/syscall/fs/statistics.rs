@@ -8,11 +8,16 @@ use super::pathname::{ferr, path};
 
 const STATFS_BYTES: usize = 120;
 
-/// @description 按 Linux v7.1 RV64 `statfs` ABI 返回 pathname 所属 filesystem 的统计。
+/// 按 Linux v7.1 LP64 `statfs` ABI 返回 pathname 所属 filesystem 的统计。
 ///
-/// @param name NUL 结尾 raw pathname；相对路径从当前 cwd 解析。
-/// @param address 用户态 120-byte `struct statfs` 输出地址。
-/// @return 成功返回零；pathname、filesystem 或 copyout 失败返回负 errno。
+/// # Parameters
+///
+/// - `name`: NUL 结尾 raw pathname；相对路径从当前 cwd 解析。
+/// - `address`: 用户态 120-byte `struct statfs` 输出地址。
+///
+/// # Returns
+///
+/// 成功返回零；pathname、filesystem 或 copyout 失败返回负 errno。
 pub(crate) fn sys_statfs(name: *const u8, address: usize) -> isize {
     let task = current_task().expect("statfs requires a current task");
     let path = match path(&task, name) {
@@ -31,11 +36,16 @@ pub(crate) fn sys_statfs(name: *const u8, address: usize) -> isize {
     copy_statistics(&task, address, &statistics)
 }
 
-/// @description 按 Linux v7.1 RV64 `fstatfs` ABI 返回 descriptor backing filesystem 的统计。
+/// 按 Linux v7.1 LP64 `fstatfs` ABI 返回 descriptor backing filesystem 的统计。
 ///
-/// @param fd 当前 Process 的 descriptor。
-/// @param address 用户态 120-byte `struct statfs` 输出地址。
-/// @return 成功返回零；无效 descriptor、filesystem 或 copyout 失败返回负 errno。
+/// # Parameters
+///
+/// - `fd`: 当前 Process 的 descriptor。
+/// - `address`: 用户态 120-byte `struct statfs` 输出地址。
+///
+/// # Returns
+///
+/// 成功返回零；无效 descriptor、filesystem 或 copyout 失败返回负 errno。
 pub(crate) fn sys_fstatfs(fd: usize, address: usize) -> isize {
     let task = current_task().expect("fstatfs requires a current task");
     let Some(ofd) = task.fd_get(fd) else {
@@ -54,7 +64,7 @@ fn copy_statistics(
     statistics: &FileSystemStatistics,
 ) -> isize {
     let mut bytes = [0u8; STATFS_BYTES];
-    // 1. asm-generic RV64 使用 64-bit __kernel_long_t，并在 offset 56 放置两个 u32 fsid word。
+    // 1. asm-generic LP64 使用 64-bit __kernel_long_t，并在 offset 56 放置两个 u32 fsid word。
     for (offset, value) in [
         statistics.magic,
         statistics.block_size,

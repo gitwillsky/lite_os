@@ -1,6 +1,6 @@
 use crate::drivers::DisplayMode;
 
-/// @description completion-confirmed hardware scanout 的 canonical 状态。
+/// completion-confirmed hardware scanout 的 canonical 状态。
 ///
 /// 该状态独立于 2D residency cache：VirGL framebuffer 可以在 resident slot
 /// 全部退休后继续拥有 scanout。close 若从 residency 推导 active mode，会错误报告
@@ -10,27 +10,34 @@ pub(super) struct ScanoutState {
 }
 
 impl ScanoutState {
-    /// @description 创建尚无 hardware scanout binding 的状态。
-    /// @return disabled scanout state。
+    /// 创建尚无 hardware scanout binding 的状态。
+    ///
+    /// # Returns
+    ///
+    /// disabled scanout state。
     pub(super) const fn disabled() -> Self {
         Self { mode: None }
     }
 
-    /// @description 发布已完成 2D 或 VirGL presentation 的 active mode。
-    /// @param mode completion-confirmed CRTC mode。
-    /// @return 无返回值。
+    /// 发布已完成 2D 或 VirGL presentation 的 active mode。
+    ///
+    /// # Parameters
+    ///
+    /// - `mode`: completion-confirmed CRTC mode。
     pub(super) fn presented(&mut self, mode: DisplayMode) {
         self.mode = Some(mode);
     }
 
-    /// @description 返回编码 scanout disable 所需的 exact active mode。
-    /// @return active 时返回 mode，disabled 时返回 None。
+    /// 返回编码 scanout disable 所需的 exact active mode。
+    ///
+    /// # Returns
+    ///
+    /// active 时返回 mode，disabled 时返回 None。
     pub(super) const fn mode(&self) -> Option<DisplayMode> {
         self.mode
     }
 
-    /// @description 完成 resource-id-zero disable transition。
-    /// @return 无返回值。
+    /// 完成 resource-id-zero disable transition。
     pub(super) fn complete_disable(&mut self) {
         self.mode = None;
     }

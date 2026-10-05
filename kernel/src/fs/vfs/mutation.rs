@@ -4,7 +4,7 @@ use super::{AccessIdentity, FileSystemError, Inode, InodeType, OpenedFile, Virtu
 use crate::fs::CreateMetadata;
 
 impl VirtualFileSystem {
-    /// @description 校验 parent access、umask/setgid inheritance 后创建 inode。
+    /// 校验 parent access、umask/setgid inheritance 后创建 inode。
     pub(crate) fn create_at(
         &self,
         start: Option<Arc<OpenedFile>>,
@@ -24,15 +24,23 @@ impl VirtualFileSystem {
         self.create_at_locked(start, path, kind, mode, identity)
     }
 
-    /// @description 在 namespace mutation transaction 中原子打开或创建普通文件。
+    /// 在 namespace mutation transaction 中原子打开或创建普通文件。
     ///
-    /// @param start relative path 的起始 opened entry；absolute path 会由 VFS 从 root 解析。
-    /// @param path 已从 userspace 复制并验证的 pathname bytes。
-    /// @param mode 创建时已经过 caller umask 收敛的 permission bits。
-    /// @param identity 本次 operation 的 effective credential snapshot。
-    /// @param exclusive true 表示已存在时返回 `AlreadyExists`，对应 `O_EXCL`。
-    /// @return 已存在或本事务新建文件的唯一 opened entry。
-    /// @errors 传播 lookup、permission、allocation 与 filesystem mutation 错误。
+    /// # Parameters
+    ///
+    /// - `start`: relative path 的起始 opened entry；absolute path 会由 VFS 从 root 解析。
+    /// - `path`: 已从 userspace 复制并验证的 pathname bytes。
+    /// - `mode`: 创建时已经过 caller umask 收敛的 permission bits。
+    /// - `identity`: 本次 operation 的 effective credential snapshot。
+    /// - `exclusive`: true 表示已存在时返回 `AlreadyExists`，对应 `O_EXCL`。
+    ///
+    /// # Returns
+    ///
+    /// 已存在或本事务新建文件的唯一 opened entry。
+    ///
+    /// # Errors
+    ///
+    /// 传播 lookup、permission、allocation 与 filesystem mutation 错误。
     pub(crate) fn open_or_create_file_at(
         &self,
         start: Option<Arc<OpenedFile>>,
@@ -107,7 +115,7 @@ impl VirtualFileSystem {
             .register(OpenedFile::child(inode, parent, &name)?)
     }
 
-    /// @description 校验 parent access 后创建 owner-aware symbolic link。
+    /// 校验 parent access 后创建 owner-aware symbolic link。
     pub(crate) fn symlink_at(
         &self,
         start: Option<Arc<OpenedFile>>,
@@ -143,7 +151,7 @@ impl VirtualFileSystem {
         )
     }
 
-    /// @description 执行 protected-hardlink、parent access 与 cross-mount policy。
+    /// 执行 protected-hardlink、parent access 与 cross-mount policy。
     pub(crate) fn link_at(
         &self,
         target: Arc<dyn Inode>,
@@ -176,7 +184,7 @@ impl VirtualFileSystem {
         parent_inode.link(&name, target)
     }
 
-    /// @description 执行 parent access 与 sticky-directory policy 后删除 entry。
+    /// 执行 parent access 与 sticky-directory policy 后删除 entry。
     pub(crate) fn unlink_at(
         &self,
         start: Option<Arc<OpenedFile>>,
@@ -218,7 +226,7 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// @description 对源/目标 parent 与 sticky owner 统一授权后原子 rename。
+    /// 对源/目标 parent 与 sticky owner 统一授权后原子 rename。
     pub(crate) fn rename_at(
         &self,
         old_start: Option<Arc<OpenedFile>>,

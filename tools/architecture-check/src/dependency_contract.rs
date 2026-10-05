@@ -141,10 +141,19 @@ fn allowed_dependencies(root: &Path) -> Result<BTreeMap<String, BTreeSet<String>
     Ok(rules)
 }
 
-/// @description 对已加载源码执行正向 module dependency 与 façade containment 契约。
-/// @param root 定位权威 dependency matrix；sources 是统一源码快照；errors 接收违规。
-/// @return 无；全部违规一次收集。
-/// @errors matrix 读取/格式错误与源码违规均追加到 errors。
+/// 对已加载源码执行正向 module dependency 与 façade containment 契约。
+///
+/// # Parameters
+///
+/// - `root`: 定位权威 dependency matrix；sources 是统一源码快照；errors 接收违规。
+///
+/// # Returns
+///
+/// 无；全部违规一次收集。
+///
+/// # Errors
+///
+/// matrix 读取/格式错误与源码违规均追加到 errors。
 pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String>) {
     let allowlist = match allowed_dependencies(root) {
         Ok(allowlist) => allowlist,

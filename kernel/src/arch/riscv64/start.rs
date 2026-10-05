@@ -84,17 +84,20 @@ unsafe extern "C" fn _start() -> ! {
     )
 }
 
-/// @description 获取 SBI HSM secondary 使用的统一 S-mode 入口。
+/// 获取 SBI HSM secondary 使用的统一 S-mode 入口。
 ///
-/// @return `_start` 的物理入口地址。
-/// @errors 无错误。
+/// # Returns
+///
+/// `_start` 的物理入口地址。
 pub(crate) fn entry_address() -> usize {
     _start as *const () as usize
 }
 
-/// @description 由唯一 cold-boot hart 清零 BSS。
+/// 由唯一 cold-boot hart 清零 BSS。
 ///
-/// @errors bootloader 若错误地同时放行多个 hart，会破坏该单写者前提。
+/// # Errors
+///
+/// bootloader 若错误地同时放行多个 hart，会破坏该单写者前提。
 extern "C" fn clear_bss() {
     // SAFETY: linker script provides immutable address symbols delimiting the kernel BSS.
     unsafe extern "C" {

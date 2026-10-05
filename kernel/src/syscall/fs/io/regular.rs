@@ -1,11 +1,17 @@
 use super::*;
 
-/// @description 将一个或多个 userspace vector 作为一次 contiguous regular-file read 执行。
-/// @param task userspace address owner。
-/// @param file 已解析 page-cache identity 的 regular file。
-/// @param position 本次操作唯一 byte offset；仅在成功 copyout 后推进。
-/// @param vectors 按序消费的 userspace buffers。
-/// @return 总读取字节数、EOF 零、首错负 errno 或已有进度后的 partial count。
+/// 将一个或多个 userspace vector 作为一次 contiguous regular-file read 执行。
+///
+/// # Parameters
+///
+/// - `task`: userspace address owner。
+/// - `file`: 已解析 page-cache identity 的 regular file。
+/// - `position`: 本次操作唯一 byte offset；仅在成功 copyout 后推进。
+/// - `vectors`: 按序消费的 userspace buffers。
+///
+/// # Returns
+///
+/// 总读取字节数、EOF 零、首错负 errno 或已有进度后的 partial count。
 pub(super) fn read_vectors(
     task: &TaskControlBlock,
     file: &RegularFile,
@@ -74,9 +80,15 @@ pub(super) struct PreparedRegularWriteStaging {
 }
 
 impl PreparedRegularWriteStaging {
-    /// @description 在任何 regular-file gate 或 publication 前准备未初始化 bounded staging。
-    /// @param total_length 已检查的 syscall request 总长度。
-    /// @return 小请求使用 stack；大请求最多使用 1 MiB heap，reserve 失败退回一页 stack。
+    /// 在任何 regular-file gate 或 publication 前准备未初始化 bounded staging。
+    ///
+    /// # Parameters
+    ///
+    /// - `total_length`: 已检查的 syscall request 总长度。
+    ///
+    /// # Returns
+    ///
+    /// 小请求使用 stack；大请求最多使用 1 MiB heap，reserve 失败退回一页 stack。
     pub(super) fn prepare(total_length: usize) -> Self {
         let desired = total_length.min(RegularFileWrite::MAX_STAGING_BYTES);
         let mut heap = Vec::new();
@@ -94,8 +106,11 @@ impl PreparedRegularWriteStaging {
         }
     }
 
-    /// @description 借出已经分配、不会在使用期间扩容的 initialized-prefix owner。
-    /// @return capacity 不超过 1 MiB 的 syscall-local input staging。
+    /// 借出已经分配、不会在使用期间扩容的 initialized-prefix owner。
+    ///
+    /// # Returns
+    ///
+    /// capacity 不超过 1 MiB 的 syscall-local input staging。
     pub(super) fn as_input_staging(&mut self) -> UserInputStaging<'_> {
         if self.heap.is_empty() {
             UserInputStaging::from_slice(&mut self.stack[..self.length])
@@ -105,15 +120,21 @@ impl PreparedRegularWriteStaging {
     }
 }
 
-/// @description 将一个或多个 userspace vector 作为一次 contiguous regular-file write 执行。
-/// @param task userspace address owner 与 RLIMIT_FSIZE/SIGXFSZ source。
-/// @param file 持有整次 syscall write-sequence ownership 的 regular-file mutation facade。
-/// @param position 本次操作唯一 byte offset；append 时投影实际 inode-end placement。
-/// @param vectors 按序消费的 userspace buffers。
-/// @param append 本次 operation 是否按 O_APPEND/RWF_APPEND 选择 inode end；若逐 chunk 重读 flags，
-/// 并发 F_SETFL 会把一次 syscall 分裂为 append 与 positioned 两种语义。
-/// @param staging 在 position/write-sequence gate 外完成 allocation 的 initialized-prefix owner。
-/// @return 总写入字节数、首错负 errno 或已有进度后的 partial count。
+/// 将一个或多个 userspace vector 作为一次 contiguous regular-file write 执行。
+///
+/// # Parameters
+///
+/// - `task`: userspace address owner 与 RLIMIT_FSIZE/SIGXFSZ source。
+/// - `file`: 持有整次 syscall write-sequence ownership 的 regular-file mutation facade。
+/// - `position`: 本次操作唯一 byte offset；append 时投影实际 inode-end placement。
+/// - `vectors`: 按序消费的 userspace buffers。
+/// - `append`: 本次 operation 是否按 O_APPEND/RWF_APPEND 选择 inode end；若逐 chunk 重读 flags，
+///   并发 F_SETFL 会把一次 syscall 分裂为 append 与 positioned 两种语义。
+/// - `staging`: 在 position/write-sequence gate 外完成 allocation 的 initialized-prefix owner。
+///
+/// # Returns
+///
+/// 总写入字节数、首错负 errno 或已有进度后的 partial count。
 pub(super) fn write_vectors(
     task: &TaskControlBlock,
     file: &RegularFileWrite<'_>,

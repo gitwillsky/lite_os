@@ -30,9 +30,11 @@ static ROOT_STACK: [StackCell; constants::HART_MASK_BITS] =
 static HSM_CELLS: [hsm_cell::HsmCell<Supervisor>; constants::HART_MASK_BITS] =
     [const { hsm_cell::HsmCell::new() }; constants::HART_MASK_BITS];
 
-/// @description 在访问任何固定数组前验证 `mhartid`，然后定位当前 hart 的 trap stack。
+/// 在访问任何固定数组前验证 `mhartid`，然后定位当前 hart 的 trap stack。
 ///
-/// @return 正常路径返回调用者；非法 hart 永久 fail-stop。
+/// # Returns
+///
+/// 正常路径返回调用者；非法 hart 永久 fail-stop。
 #[unsafe(naked)]
 // SAFETY: called before Rust from M-mode entry; assembly bounds mhartid before indexing the static
 // stack array and establishes sp/mscratch without observing uninitialized Rust state.
@@ -69,32 +71,39 @@ fn local_stack() -> &'static mut Stack {
     unsafe { &mut *ROOT_STACK[hart].0.get() }
 }
 
-/// @description 为当前 hart 安装 fast-trap stack。
-///
-/// @return 无返回值。
+/// 为当前 hart 安装 fast-trap stack。
 pub(crate) fn prepare_for_trap() {
     local_stack().load_as_stack();
 }
 
-/// @description 获取当前 hart 的 local HSM handle。
+/// 获取当前 hart 的 local HSM handle。
 ///
-/// @return 仅当前 hart 可调用的状态转换 handle。
+/// # Returns
+///
+/// 仅当前 hart 可调用的状态转换 handle。
 pub(crate) fn local_hsm() -> hsm_cell::LocalHsmCell<'static, Supervisor> {
     // SAFETY: 数组索引来自当前 hart，handle 不会传给远端。
     unsafe { HSM_CELLS[hart_id()].local() }
 }
 
-/// @description 获取当前 hart 的 remote HSM handle，用于 cold-boot start 发布。
+/// 获取当前 hart 的 remote HSM handle，用于 cold-boot start 发布。
 ///
-/// @return 当前 hart 对应的共享 remote handle。
+/// # Returns
+///
+/// 当前 hart 对应的共享 remote handle。
 pub(crate) fn local_remote_hsm() -> hsm_cell::RemoteHsmCell<'static, Supervisor> {
     HSM_CELLS[hart_id()].remote()
 }
 
-/// @description 获取指定合法 hart 的 remote HSM handle。
+/// 获取指定合法 hart 的 remote HSM handle。
 ///
-/// @param hart_id 目标 hart ID。
-/// @return 越界返回 `None`，合法索引返回共享 handle。
+/// # Parameters
+///
+/// - `hart_id`: 目标 hart ID。
+///
+/// # Returns
+///
+/// 越界返回 `None`，合法索引返回共享 handle。
 pub(crate) fn remote_hsm(hart_id: usize) -> Option<hsm_cell::RemoteHsmCell<'static, Supervisor>> {
     HSM_CELLS.get(hart_id).map(hsm_cell::HsmCell::remote)
 }

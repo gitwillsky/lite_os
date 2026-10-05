@@ -17,7 +17,7 @@ pub(super) struct OpenedIndexKey {
     registration: usize,
 }
 
-/// @description live OpenedFile 的唯一 exact lifecycle/path index。
+/// live OpenedFile 的唯一 exact lifecycle/path index。
 pub(super) struct OpenedIndex {
     // key 以 namespace path identity 为前缀、Arc allocation identity 为末段；同一
     // directory entry 的重复 lookup 各有独立 membership，rename/unlink 只访问前缀范围。
@@ -33,7 +33,7 @@ impl OpenedIndex {
         }
     }
 
-    /// @description 预分配并发布一个 exact opened membership。
+    /// 预分配并发布一个 exact opened membership。
     pub(super) fn register(
         &self,
         opened: Arc<OpenedFile>,
@@ -53,7 +53,7 @@ impl OpenedIndex {
         Ok(opened)
     }
 
-    /// @description OpenedFile final Drop 精确撤销唯一 membership。
+    /// OpenedFile final Drop 精确撤销唯一 membership。
     pub(super) fn unregister(&self, key: OpenedIndexKey) {
         assert!(
             self.entries.lock().remove(&key).is_some(),
@@ -61,7 +61,7 @@ impl OpenedIndex {
         );
     }
 
-    /// @description 只标记精确 namespace entry 前缀下的 live opened instances。
+    /// 只标记精确 namespace entry 前缀下的 live opened instances。
     pub(super) fn mark_unlinked(&self, parent: (usize, u64), name: &[u8], inode: (usize, u64)) {
         let path = OpenedPathKey {
             parent,
@@ -95,7 +95,7 @@ impl OpenedIndex {
         }
     }
 
-    /// @description 回收原 membership 节点并无分配地移动精确前缀范围。
+    /// 回收原 membership 节点并无分配地移动精确前缀范围。
     pub(super) fn move_entries(
         &self,
         old_parent: (usize, u64),

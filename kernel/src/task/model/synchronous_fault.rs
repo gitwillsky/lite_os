@@ -9,10 +9,15 @@ pub(super) struct SynchronousFaultPolicy {
 
 /// 计算 Linux `force_sig_info_to_task(HANDLER_CURRENT)` 的同步 fault 规范化策略。
 ///
-/// @param signal `1..=64` 的 Linux signal number。
-/// @param handler 当前 disposition；0 为默认，1 为忽略，其余为 caught handler。
-/// @param signal_mask 当前 Thread blocked mask。
-/// @return ignored 或 blocked 时恢复默认 disposition，并始终解除当前 signal 屏蔽。
+/// # Parameters
+///
+/// - `signal`: `1..=64` 的 Linux signal number。
+/// - `handler`: 当前 disposition；0 为默认，1 为忽略，其余为 caught handler。
+/// - `signal_mask`: 当前 Thread blocked mask。
+///
+/// # Returns
+///
+/// ignored 或 blocked 时恢复默认 disposition，并始终解除当前 signal 屏蔽。
 pub(super) fn force_synchronous_fault(
     signal: usize,
     handler: usize,
@@ -28,9 +33,14 @@ pub(super) fn force_synchronous_fault(
 
 /// 合并 standard signal coalescing 中不可丢失的 forced consequence。
 ///
-/// @param existing 当前首个可见 siginfo 携带的 forced 标记。
-/// @param incoming 同号后续 generation 的 forced 标记。
-/// @return 无返回值；除 forced 标记外的首个 siginfo 由 caller 原样保留。
+/// # Parameters
+///
+/// - `existing`: 当前首个可见 siginfo 携带的 forced 标记。
+/// - `incoming`: 同号后续 generation 的 forced 标记。
+///
+/// # Returns
+///
+/// 无返回值；除 forced 标记外的首个 siginfo 由 caller 原样保留。
 pub(super) fn merge_forced(existing: &mut bool, incoming: bool) {
     *existing |= incoming;
 }

@@ -38,9 +38,14 @@ fn is_floating_point_instruction(bytes: &[u8]) -> bool {
 
 /// 从用户 instruction stream 精确读取并判断一次 lazy-FP trap。
 ///
-/// @param program_counter trap 保存的用户 PC。
-/// @param copy architecture-neutral copyin adapter；每次只请求一个 16-bit halfword。
-/// @return 完整读取且编码属于 F/D 或 FP CSR 时返回 true；copy fault/overflow/其他编码返回 false。
+/// # Parameters
+///
+/// - `program_counter`: trap 保存的用户 PC。
+/// - `copy`: architecture-neutral copyin adapter；每次只请求一个 16-bit halfword。
+///
+/// # Returns
+///
+/// 完整读取且编码属于 F/D 或 FP CSR 时返回 true；copy fault/overflow/其他编码返回 false。
 pub(crate) fn is_floating_point_instruction_at(
     program_counter: usize,
     mut copy: impl FnMut(usize, &mut [u8]) -> bool,

@@ -6,11 +6,20 @@ use crate::{fallible_tree::FallibleMap, ipc::PipeEnd};
 
 use super::*;
 
-/// @description 把一个 established listener handle 转移给新 TCP Socket/OFD facade。
-/// @param socket listener identity。
-/// @param notify accepted endpoint 拥有的 notification Pipe。
-/// @return 持有原 established smoltcp handle 的 accepted endpoint。
-/// @errors 返回 `Again`、状态、地址或分配错误，且不会丢失已建立连接。
+/// 把一个 established listener handle 转移给新 TCP Socket/OFD facade。
+///
+/// # Parameters
+///
+/// - `socket`: listener identity。
+/// - `notify`: accepted endpoint 拥有的 notification Pipe。
+///
+/// # Returns
+///
+/// 持有原 established smoltcp handle 的 accepted endpoint。
+///
+/// # Errors
+///
+/// 返回 `Again`、状态、地址或分配错误，且不会丢失已建立连接。
 pub(in crate::socket::inet) fn accept(
     socket: &InetSocket,
     notify: (Arc<PipeEnd>, Arc<PipeEnd>),

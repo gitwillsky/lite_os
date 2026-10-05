@@ -5,11 +5,17 @@ pub(super) struct PtyInputActions {
     pub(super) signals: u64,
 }
 
-/// @description 决定 PTY slave readiness 与 foreground signal 路由。
-/// @param cooked_ready 当前批次是否已发布可读 cooked input/EOF。
-/// @param raw_backlog 固定 256-byte line-discipline 批次后是否仍有 raw input。
-/// @param signals line discipline 生成的 Linux signal bitset。
-/// @return raw/cooked 任一可前进就通知 slave；signals 原样交给 task composition callback。
+/// 决定 PTY slave readiness 与 foreground signal 路由。
+///
+/// # Parameters
+///
+/// - `cooked_ready`: 当前批次是否已发布可读 cooked input/EOF。
+/// - `raw_backlog`: 固定 256-byte line-discipline 批次后是否仍有 raw input。
+/// - `signals`: line discipline 生成的 Linux signal bitset。
+///
+/// # Returns
+///
+/// raw/cooked 任一可前进就通知 slave；signals 原样交给 task composition callback。
 pub(super) const fn pty_input_actions(
     cooked_ready: bool,
     raw_backlog: bool,

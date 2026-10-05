@@ -1,9 +1,15 @@
-/// @description 清除 line discipline 已接收但 userspace 尚未读取的全部状态。
-/// @param input_head cooked ring 当前 head。
-/// @param input_len cooked ring 当前 byte 数。
-/// @param line_len canonical 模式尚未提交的当前行长度。
-/// @param eof_pending 尚未由 read 消费的 canonical EOF。
-/// @return 清理前是否存在任何 pending cooked/line/EOF state。
+/// 清除 line discipline 已接收但 userspace 尚未读取的全部状态。
+///
+/// # Parameters
+///
+/// - `input_head`: cooked ring 当前 head。
+/// - `input_len`: cooked ring 当前 byte 数。
+/// - `line_len`: canonical 模式尚未提交的当前行长度。
+/// - `eof_pending`: 尚未由 read 消费的 canonical EOF。
+///
+/// # Returns
+///
+/// 清理前是否存在任何 pending cooked/line/EOF state。
 pub(super) fn clear_pending(
     input_head: &mut usize,
     input_len: &mut usize,
@@ -18,10 +24,16 @@ pub(super) fn clear_pending(
     changed
 }
 
-/// @description 清除固定 raw ring 的 cursor 与全部未消费 bytes。
-/// @param head raw ring 当前 head。
-/// @param length raw ring 当前 byte 数。
-/// @return 被丢弃的 byte 数。
+/// 清除固定 raw ring 的 cursor 与全部未消费 bytes。
+///
+/// # Parameters
+///
+/// - `head`: raw ring 当前 head。
+/// - `length`: raw ring 当前 byte 数。
+///
+/// # Returns
+///
+/// 被丢弃的 byte 数。
 pub(crate) fn clear_raw(head: &mut usize, length: &mut usize) -> usize {
     let discarded = *length;
     *head = 0;

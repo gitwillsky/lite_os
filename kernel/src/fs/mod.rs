@@ -54,7 +54,7 @@ pub(crate) use vfs::{
     PreparedRecordLock, RecordLockMode, RecordLockRange, init as init_vfs, vfs,
 };
 
-/// @description filesystem adapter 向 VFS 投影的容量、inode 与类型快照。
+/// filesystem adapter 向 VFS 投影的容量、inode 与类型快照。
 pub(crate) struct FileSystemStatistics {
     /// `/proc/mounts` 使用的 filesystem type name。
     pub(crate) type_name: &'static str,
@@ -122,7 +122,7 @@ fn try_format_bytes(arguments: fmt::Arguments<'_>) -> Result<Vec<u8>, FileSystem
     Ok(bytes.0)
 }
 
-/// @description 为 VFS 提供根 inode 的文件系统实例。
+/// 为 VFS 提供根 inode 的文件系统实例。
 pub(crate) trait FileSystem: Send + Sync {
     /// 加载该文件系统的根 inode。
     ///
@@ -135,9 +135,14 @@ pub(crate) trait FileSystem: Send + Sync {
     /// 根 inode 无法从磁盘读取或数据无效时返回错误。
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
 
-    /// @description 取得一次 filesystem-owned 容量与 inode 统计快照。
+    /// 取得一次 filesystem-owned 容量与 inode 统计快照。
     ///
-    /// @return 当前统计；不得缓存或从 VFS/syscall 反向推导。
-    /// @errors snapshot 所需的 owner wait metadata 分配失败时返回 `OutOfMemory`。
+    /// # Returns
+    ///
+    /// 当前统计；不得缓存或从 VFS/syscall 反向推导。
+    ///
+    /// # Errors
+    ///
+    /// snapshot 所需的 owner wait metadata 分配失败时返回 `OutOfMemory`。
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
 }

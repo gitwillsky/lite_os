@@ -3,9 +3,13 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use spin::Once;
 
-use crate::{arch, config, cpu, platform};
+use crate::{arch, cpu, platform};
 
 mod deadline;
+
+/// scheduler tick 频率（Linux `HZ`）；每个 CPU 以 timebase / HZ 的固定间隔编程 local timer。
+const TICKS_PER_SEC: u64 = 100;
+const _: () = assert!(TICKS_PER_SEC != 0);
 
 // OWNER: timer module owns the calibrated scheduler tick interval.
 static TICK_INTERVAL_VALUE: AtomicU64 = AtomicU64::new(0);
@@ -23,9 +27,11 @@ static REALTIME_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
 // OWNER: timer module publishes whether the realtime offset is valid.
 static REALTIME_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// @description 返回 Unix epoch realtime 纳秒值。
+/// 返回 Unix epoch realtime 纳秒值。
 ///
-/// @return RTC 启动 offset 加 monotonic；初始化前直接读取 platform realtime，失败则使用固定 epoch offset。
+/// # Returns
+///
+/// RTC 启动 offset 加 monotonic；初始化前直接读取 platform realtime，失败则使用固定 epoch offset。
 pub(crate) fn get_realtime_ns() -> u64 {
     if REALTIME_INITIALIZED.load(Ordering::Acquire) {
         return REALTIME_OFFSET_NS
@@ -35,10 +41,15 @@ pub(crate) fn get_realtime_ns() -> u64 {
     platform::read_realtime_ns().unwrap_or(1_704_067_200u64 * NSEC_PER_SEC)
 }
 
-/// @description 返回本次启动时刻对应的 Unix epoch 秒数。
+/// 返回本次启动时刻对应的 Unix epoch 秒数。
 ///
-/// @return RTC 校准得到的 realtime offset，按秒向下取整。
-/// @panics `init_rtc` 尚未发布 realtime offset 时 panic，避免 procfs 输出伪造启动时间。
+/// # Returns
+///
+/// RTC 校准得到的 realtime offset，按秒向下取整。
+///
+/// # Panics
+///
+/// `init_rtc` 尚未发布 realtime offset 时 panic，避免 procfs 输出伪造启动时间。
 pub(crate) fn boot_epoch_seconds() -> u64 {
     assert!(
         REALTIME_INITIALIZED.load(Ordering::Acquire),
@@ -47,11 +58,19 @@ pub(crate) fn boot_epoch_seconds() -> u64 {
     REALTIME_OFFSET_NS.load(Ordering::Relaxed) / NSEC_PER_SEC
 }
 
-/// @description 将 absolute realtime timestamp 转换为同一启动域的 monotonic deadline。
+/// 将 absolute realtime timestamp 转换为同一启动域的 monotonic deadline。
 ///
-/// @param realtime_ns Unix epoch 纳秒 timestamp。
-/// @return 减去 immutable boot offset 的 monotonic deadline；已早于 monotonic epoch 时返回零。
-/// @panics `init_rtc` 尚未发布 realtime offset 时 panic，避免用未校准时钟安排 sleep。
+/// # Parameters
+///
+/// - `realtime_ns`: Unix epoch 纳秒 timestamp。
+///
+/// # Returns
+///
+/// 减去 immutable boot offset 的 monotonic deadline；已早于 monotonic epoch 时返回零。
+///
+/// # Panics
+///
+/// `init_rtc` 尚未发布 realtime offset 时 panic，避免用未校准时钟安排 sleep。
 pub(crate) fn realtime_deadline_to_monotonic_ns(realtime_ns: u64) -> u64 {
     assert!(
         REALTIME_INITIALIZED.load(Ordering::Acquire),
@@ -74,20 +93,30 @@ pub(crate) fn get_time_ns() -> u64 {
     ((current_mtime as u128 * NSEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
-/// @description 返回 DTB time counter 经整数纳秒换算后的最小可观察粒度。
+/// 返回 DTB time counter 经整数纳秒换算后的最小可观察粒度。
 ///
-/// @return 单个 timebase tick 的纳秒数，向上取整且至少为 1ns。
-/// @panics DTB `timebase-frequency` 为零时 panic；该平台契约缺失时不能伪造分辨率。
+/// # Returns
+///
+/// 单个 timebase tick 的纳秒数，向上取整且至少为 1ns。
+///
+/// # Panics
+///
+/// DTB `timebase-frequency` 为零时 panic；该平台契约缺失时不能伪造分辨率。
 pub(crate) fn monotonic_resolution_ns() -> u64 {
     let frequency = platform::timebase_frequency();
     assert!(frequency != 0, "DTB timebase-frequency must be non-zero");
     (NSEC_PER_SEC as u128).div_ceil(frequency as u128) as u64
 }
 
-/// @description 返回 timer owner 实际用于 scheduler preemption 的基础时间片。
+/// 返回 timer owner 实际用于 scheduler preemption 的基础时间片。
 ///
-/// @return 已校准 tick interval 对应的纳秒数，向上取整。
-/// @errors timer 尚未初始化或 DTB timebase-frequency 为零时 fail-stop。
+/// # Returns
+///
+/// 已校准 tick interval 对应的纳秒数，向上取整。
+///
+/// # Errors
+///
+/// timer 尚未初始化或 DTB timebase-frequency 为零时 fail-stop。
 pub(crate) fn scheduler_quantum_ns() -> u64 {
     let interval = TICK_INTERVAL_VALUE.load(Ordering::Acquire);
     assert_ne!(
@@ -124,9 +153,7 @@ pub(crate) fn enable_timer_interrupt() {
         time_base_freq != 0,
         "DTB timebase-frequency must be non-zero"
     );
-    let ticks_per_sec = config::TICKS_PER_SEC as u64;
-    assert!(ticks_per_sec != 0, "TICKS_PER_SEC must be non-zero");
-    let interval = time_base_freq / ticks_per_sec;
+    let interval = time_base_freq / TICKS_PER_SEC;
     assert!(interval != 0, "timer tick rate exceeds timebase frequency");
 
     // 2. Release 发布 interval，set_next_timer_interrupt 的 Acquire 保证不会读到未初始化值。
@@ -139,10 +166,15 @@ pub(crate) fn enable_timer_interrupt() {
     }
 }
 
-/// @description 在非 boot CPU 进入 scheduler idle 前关闭本地周期 tick。
+/// 在非 boot CPU 进入 scheduler idle 前关闭本地周期 tick。
 ///
-/// @return 无返回值；boot CPU 不得调用，它保留 always-armed housekeeping/liveness tick。
-/// @errors caller 必须持有当前 CPU 的 local IRQ guard，且当前 CPU 不得运行 task。
+/// # Returns
+///
+/// 无返回值；boot CPU 不得调用，它保留 always-armed housekeeping/liveness tick。
+///
+/// # Errors
+///
+/// caller 必须持有当前 CPU 的 local IRQ guard，且当前 CPU 不得运行 task。
 pub(crate) fn suspend_local_idle_tick() {
     assert_ne!(
         cpu::current_id(),
@@ -152,10 +184,15 @@ pub(crate) fn suspend_local_idle_tick() {
     arch::interrupt::disable_timer_source();
 }
 
-/// @description 在非 boot CPU 离开 scheduler idle、运行 task 前恢复本地抢占 tick。
+/// 在非 boot CPU 离开 scheduler idle、运行 task 前恢复本地抢占 tick。
 ///
-/// @return 无返回值；首个 deadline 严格晚于当前 counter。
-/// @errors caller 必须持有当前 CPU 的 local IRQ guard，且 timer 已完成全局初始化。
+/// # Returns
+///
+/// 无返回值；首个 deadline 严格晚于当前 counter。
+///
+/// # Errors
+///
+/// caller 必须持有当前 CPU 的 local IRQ guard，且 timer 已完成全局初始化。
 pub(crate) fn resume_local_idle_tick() {
     set_next_timer_interrupt();
     // SAFETY: the fresh local deadline was programmed while local IRQ delivery remains masked.

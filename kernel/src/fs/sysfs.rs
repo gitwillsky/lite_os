@@ -321,16 +321,21 @@ impl Inode for SysInode {
     }
 }
 
-/// @description immutable DTB logical CPU topology 的只读 sysfs adapter。
+/// immutable DTB logical CPU topology 的只读 sysfs adapter。
 pub(crate) struct SysFileSystem {
     root: Arc<SysInode>,
 }
 
 impl SysFileSystem {
-    /// @description 创建只投影 Linux CPU topology 节点的 sysfs。
+    /// 创建只投影 Linux CPU topology 节点的 sysfs。
     ///
-    /// @param cpu_count composition root 从 CpuTopology 取得的非零 logical CPU 数。
-    /// @return 独立 sysfs instance；不复制任何可变 online/hotplug 状态。
+    /// # Parameters
+    ///
+    /// - `cpu_count`: composition root 从 CpuTopology 取得的非零 logical CPU 数。
+    ///
+    /// # Returns
+    ///
+    /// 独立 sysfs instance；不复制任何可变 online/hotplug 状态。
     pub(crate) fn new(cpu_count: usize) -> Result<Arc<Self>, FileSystemError> {
         assert_ne!(cpu_count, 0, "sysfs requires non-empty CPU topology");
         let root = SysInode::new(cpu_count, SysNode::Root)?;

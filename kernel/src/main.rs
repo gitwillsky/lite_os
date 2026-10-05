@@ -51,7 +51,6 @@ fn kernel_main(context: entry::BootContext) -> ! {
     init_local_arch(context.hardware_cpu());
 
     log::init();
-    log::disable_module("kernel::task::loader");
     memory::init_allocator();
     platform::initialize(context.platform());
     platform::verify_firmware();

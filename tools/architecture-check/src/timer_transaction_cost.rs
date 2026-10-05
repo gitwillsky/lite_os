@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
-const QUEUE_SOURCE: &str = "kernel/src/task/task_manager/timer_queue.rs";
-const TRANSACTION_SOURCE: &str = "kernel/src/task/task_manager/timer_queue/transaction.rs";
-const LOOP_SOURCE: &str = "kernel/src/task/task_manager/timer_queue/transaction_loop.rs";
+const QUEUE_SOURCE: &str = "kernel/src/task/process_table/timer_queue.rs";
+const TRANSACTION_SOURCE: &str = "kernel/src/task/process_table/timer_queue/transaction.rs";
+const LOOP_SOURCE: &str = "kernel/src/task/process_table/timer_queue/transaction_loop.rs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TimerTransactionCost {

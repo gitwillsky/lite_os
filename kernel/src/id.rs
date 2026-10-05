@@ -5,8 +5,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // `/proc/<pid>/fd` 的 anonymous inode labels 会在不同对象类型间发生 identity collision。
 static NEXT_RUNTIME_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// @description 分配一个本次 boot 内不复用的 kernel object identity。
-/// @return 非零 identity；仅用于对象命名，不承担内存发布同步。
+/// 分配一个本次 boot 内不复用的 kernel object identity。
+///
+/// # Returns
+///
+/// 非零 identity；仅用于对象命名，不承担内存发布同步。
 pub(crate) fn next_runtime_object_id() -> u64 {
     NEXT_RUNTIME_OBJECT_ID
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -30,8 +33,11 @@ impl IdAllocator {
         }
     }
 
-    /// @description 分配 ID，并同时为它未来的析构回收预留空间。
-    /// @return 成功返回唯一 ID；heap 无法预留回收槽位时返回错误。
+    /// 分配 ID，并同时为它未来的析构回收预留空间。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回唯一 ID；heap 无法预留回收槽位时返回错误。
     pub(crate) fn alloc(&mut self) -> Result<usize, ()> {
         if let Some(id) = self.recycled.pop() {
             Ok(id)

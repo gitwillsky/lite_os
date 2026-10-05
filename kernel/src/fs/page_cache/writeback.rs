@@ -89,7 +89,7 @@ impl CachedFile {
         ReclaimResult::new(reclaimed_pages, scanned_pages)
     }
 
-    /// @description 以固定 resident scan batch 写回 range，并只发布成功提交的 clean prefix。
+    /// 以固定 resident scan batch 写回 range，并只发布成功提交的 clean prefix。
     pub(super) fn writeback_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
         let end = offset.saturating_add(length);
         // 1. operation lock 保证本次 writeback 的 EOF 不被 write/truncate 改动；只读取一次，

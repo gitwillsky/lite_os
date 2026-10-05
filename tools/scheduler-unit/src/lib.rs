@@ -10,7 +10,7 @@ mod preallocated_heap;
 mod preemption_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/task_manager/signal/selection_result.rs"]
+#[path = "../../../kernel/src/task/process_table/signal/selection_result.rs"]
 mod signal_selection_result;
 
 #[cfg(test)]

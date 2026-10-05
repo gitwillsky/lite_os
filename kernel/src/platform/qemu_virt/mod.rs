@@ -1,4 +1,4 @@
-//! @description QEMU `virt` platform 的编译期静态 façade。
+//! QEMU `virt` platform 的编译期静态 façade。
 
 #[cfg(target_arch = "riscv64")]
 #[macro_use]
@@ -13,7 +13,7 @@ use aarch64 as selected;
 #[cfg(target_arch = "riscv64")]
 use riscv64 as selected;
 
-/// @description GIC/PLIC claim 后交给 generic trap domain 的语义中断与 opaque completion token。
+/// GIC/PLIC claim 后交给 generic trap domain 的语义中断与 opaque completion token。
 // RISC-V external claim 只产生 Device；其 local timer/software traps 不经过 controller seam。
 // 缺少该 target-owned lint projection 时，保留的语义 union 会被 `-D warnings` 误判为 dead code。
 #[cfg_attr(

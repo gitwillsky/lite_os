@@ -1,7 +1,7 @@
-//! @description Linux/riscv64 `rt_sigframe` 的 architecture-owned byte-exact codec。
+//! Linux/riscv64 `rt_sigframe` 的 architecture-owned byte-exact codec。
 
 pub(crate) const SIGNAL_FRAME_SIZE: usize = 1080;
-/// @description 保持既有 Linux/riscv64 `MINSIGSTKSZ` ABI。
+/// 保持既有 Linux/riscv64 `MINSIGSTKSZ` ABI。
 pub(crate) const MIN_SIGNAL_STACK_SIZE: usize = 2048;
 const SIGINFO_SIZE: usize = 128;
 const UCONTEXT_OFFSET: usize = SIGINFO_SIZE;
@@ -13,7 +13,7 @@ const FLOATING_POINT_OFFSET: usize = REGISTERS_OFFSET + 32 * 8;
 
 const _: () = assert!(FLOATING_POINT_OFFSET + 528 == SIGNAL_FRAME_SIZE);
 
-/// @description Linux `stack_t` 中 signal frame 必须保存的 architecture-neutral 值。
+/// Linux `stack_t` 中 signal frame 必须保存的 architecture-neutral 值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SignalStack {
     sp: usize,
@@ -22,49 +22,49 @@ pub(crate) struct SignalStack {
 }
 
 impl SignalStack {
-    /// @description 构造待写入 `ucontext_t.uc_stack` 的快照。
+    /// 构造待写入 `ucontext_t.uc_stack` 的快照。
     pub(crate) const fn new(sp: usize, flags: i32, size: usize) -> Self {
         Self { sp, flags, size }
     }
 
-    /// @description 返回 alternate stack base。
+    /// 返回 alternate stack base。
     pub(crate) const fn sp(self) -> usize {
         self.sp
     }
 
-    /// @description 返回 Linux `SS_*` flags。
+    /// 返回 Linux `SS_*` flags。
     pub(crate) const fn flags(self) -> i32 {
         self.flags
     }
 
-    /// @description 返回 alternate stack byte size。
+    /// 返回 alternate stack byte size。
     pub(crate) const fn size(self) -> usize {
         self.size
     }
 }
 
-/// @description 不受 task module 解释的 Linux/RISC-V signal machine context。
+/// 不受 task module 解释的 Linux/RISC-V signal machine context。
 #[derive(Clone, Copy)]
 pub(super) struct SignalMachineContext {
     pub(super) registers: [usize; 32],
     pub(super) floating_point: [u8; 528],
 }
 
-/// @description 已解码的 RISC-V frame metadata 与 machine context。
+/// 已解码的 RISC-V frame metadata 与 machine context。
 pub(super) struct DecodedSignalFrame {
     pub(super) machine: SignalMachineContext,
     pub(super) signal_mask: u64,
     pub(super) signal_stack: SignalStack,
 }
 
-/// @description 固定 1080-byte、与旧 ABI byte-for-byte 相同的 Linux/riscv64 frame。
+/// 固定 1080-byte、与旧 ABI byte-for-byte 相同的 Linux/riscv64 frame。
 #[repr(C, align(8))]
 pub(crate) struct SignalFrame {
     bytes: [u8; SIGNAL_FRAME_SIZE],
 }
 
 impl SignalFrame {
-    /// @description 编码旧 RISC-V frame layout，不增加 extension 或 padding。
+    /// 编码旧 RISC-V frame layout，不增加 extension 或 padding。
     pub(super) fn encode(
         info: [u8; SIGINFO_SIZE],
         signal_stack: SignalStack,
@@ -96,24 +96,24 @@ impl SignalFrame {
         frame
     }
 
-    /// @description 构造供 user-copy 填充的零 frame。
+    /// 构造供 user-copy 填充的零 frame。
     pub(crate) const fn zeroed() -> Self {
         Self {
             bytes: [0; SIGNAL_FRAME_SIZE],
         }
     }
 
-    /// @description 返回 frame 的 immutable user-copy bytes。
+    /// 返回 frame 的 immutable user-copy bytes。
     pub(crate) const fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
-    /// @description 返回 frame 的 mutable user-copy bytes。
+    /// 返回 frame 的 mutable user-copy bytes。
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         &mut self.bytes
     }
 
-    /// @description 解码旧 RISC-V frame；extension validation 由 UserContext restore 完成。
+    /// 解码旧 RISC-V frame；extension validation 由 UserContext restore 完成。
     pub(super) fn decode(&self) -> DecodedSignalFrame {
         let mut registers = [0usize; 32];
         for (index, register) in registers.iter_mut().enumerate() {

@@ -3,13 +3,18 @@ use crate::{
     system::{self, ResetKind},
 };
 
-/// @description 验证 Linux reboot magic/command 并映射到 SBI whole-system reset。
+/// 验证 Linux reboot magic/command 并映射到 SBI whole-system reset。
 ///
-/// @param magic 必须为 `LINUX_REBOOT_MAGIC1`。
-/// @param magic2 接受 Linux 当前及历史兼容 magic2。
-/// @param command CAD toggle、halt/poweroff 或 restart command。
-/// @param argument `RESTART2` 的用户字符串；当前 platform 不支持 restart reason。
-/// @return CAD toggle 返回零；reset 成功不返回；非法参数或 SBI 错误返回负 errno。
+/// # Parameters
+///
+/// - `magic`: 必须为 `LINUX_REBOOT_MAGIC1`。
+/// - `magic2`: 接受 Linux 当前及历史兼容 magic2。
+/// - `command`: CAD toggle、halt/poweroff 或 restart command。
+/// - `argument`: `RESTART2` 的用户字符串；当前 platform 不支持 restart reason。
+///
+/// # Returns
+///
+/// CAD toggle 返回零；reset 成功不返回；非法参数或 SBI 错误返回负 errno。
 pub(crate) fn sys_reboot(magic: usize, magic2: usize, command: usize, argument: usize) -> isize {
     const MAGIC1: usize = 0xfee1_dead;
     const MAGIC2: [usize; 4] = [0x2812_1969, 0x0512_1996, 0x1604_1998, 0x2011_2000];

@@ -1,4 +1,4 @@
-//! @description Apple HVF 上以 SGI rendezvous 确认每颗目标 vCPU 已越过 broadcast flush point。
+//! Apple HVF 上以 SGI rendezvous 确认每颗目标 vCPU 已越过 broadcast flush point。
 
 use alloc::{boxed::Box, vec::Vec};
 use core::{
@@ -21,10 +21,11 @@ static CPU_STATES: Once<Box<[TlbCpuState]>> = Once::new();
 // OWNER: generation 只分配 rendezvous identity；合并 SGI 由目标 CPU 完成最大 generation。
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// @description 按已发布 logical topology 初始化唯一 TLB rendezvous table。
+/// 按已发布 logical topology 初始化唯一 TLB rendezvous table。
 ///
-/// @return 无返回值。
-/// @errors 重复初始化或 allocation failure 时 fail-stop。
+/// # Errors
+///
+/// 重复初始化或 allocation failure 时 fail-stop。
 pub(super) fn initialize() {
     assert!(
         CPU_STATES.get().is_none(),
@@ -53,9 +54,11 @@ fn next_generation() -> u64 {
         .expect("AArch64 TLB rendezvous generation exhausted")
 }
 
-/// @description 在当前 vCPU 确认最新的 source-side broadcast TLB request。
+/// 在当前 vCPU 确认最新的 source-side broadcast TLB request。
 ///
-/// @return 没有新 request 时不执行操作；否则在 barrier 后发布 completion。
+/// # Returns
+///
+/// 没有新 request 时不执行操作；否则在 barrier 后发布 completion。
 pub(super) fn complete_pending() {
     let state = &states()[cpu::current_id().index()];
     let requested = state.request.load(Ordering::Acquire);
@@ -66,11 +69,19 @@ pub(super) fn complete_pending() {
     state.completion.fetch_max(requested, Ordering::Release);
 }
 
-/// @description 在 source broadcast 后强制每颗目标 vCPU 越过 HVF flush point 并等待精确 ack。
+/// 在 source broadcast 后强制每颗目标 vCPU 越过 HVF flush point 并等待精确 ack。
 ///
-/// @param targets generic memory owner 选出的全部 remote logical CPU。
-/// @return 全部目标 completion 不早于本次 generation 时成功。
-/// @errors SGI 投递失败时返回 platform TLB shootdown error。
+/// # Parameters
+///
+/// - `targets`: generic memory owner 选出的全部 remote logical CPU。
+///
+/// # Returns
+///
+/// 全部目标 completion 不早于本次 generation 时成功。
+///
+/// # Errors
+///
+/// SGI 投递失败时返回 platform TLB shootdown error。
 pub(super) fn synchronize(targets: CpuSet) -> Result<(), super::TlbShootdownError> {
     if targets.is_empty() {
         return Ok(());

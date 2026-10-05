@@ -1,4 +1,4 @@
-//! @description VirtIO 1.4 modern PCI transport register codec.
+//! VirtIO 1.4 modern PCI transport register codec.
 
 use super::bus::{BusError, MmioBus};
 use super::virtio::VirtQueueAddresses;
@@ -20,7 +20,7 @@ const QUEUE_DRIVER: usize = 0x28;
 const QUEUE_DEVICE: usize = 0x30;
 const NO_VECTOR: u16 = u16::MAX;
 
-/// @description A validated modern VirtIO PCI capability set using legacy INTx.
+/// A validated modern VirtIO PCI capability set using legacy INTx.
 pub(crate) struct PciTransport {
     common: MmioBus,
     notify: MmioBus,
@@ -30,13 +30,19 @@ pub(crate) struct PciTransport {
 }
 
 impl PciTransport {
-    /// @description Build one transport from capability-derived MMIO windows.
-    /// @param common `VIRTIO_PCI_CAP_COMMON_CFG` window.
-    /// @param notify `VIRTIO_PCI_CAP_NOTIFY_CFG` window.
-    /// @param isr `VIRTIO_PCI_CAP_ISR_CFG` window.
-    /// @param device Optional device-specific configuration window.
-    /// @param notify_multiplier Capability-defined notification stride.
-    /// @return A transport whose accesses stay inside capability windows.
+    /// Build one transport from capability-derived MMIO windows.
+    ///
+    /// # Parameters
+    ///
+    /// - `common`: `VIRTIO_PCI_CAP_COMMON_CFG` window.
+    /// - `notify`: `VIRTIO_PCI_CAP_NOTIFY_CFG` window.
+    /// - `isr`: `VIRTIO_PCI_CAP_ISR_CFG` window.
+    /// - `device`: Optional device-specific configuration window.
+    /// - `notify_multiplier`: Capability-defined notification stride.
+    ///
+    /// # Returns
+    ///
+    /// A transport whose accesses stay inside capability windows.
     #[allow(
         dead_code,
         reason = "PCI capability assembly is owned by platform backends that discover PCI"

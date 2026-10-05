@@ -1,4 +1,4 @@
-//! @description VirtIO entropy used-ring length/generation validation policy。
+//! VirtIO entropy used-ring length/generation validation policy。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CompletionValidity {

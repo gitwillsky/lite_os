@@ -72,13 +72,18 @@ pub(crate) unsafe fn write_mmio_u32(address: usize, value: u32) {
     unsafe { core::ptr::write_volatile(address as *mut u32, value) };
 }
 
-/// @description Order all earlier normal-memory writes before a following MMIO output.
-///
-/// @return No value; later MMIO writes cannot become visible before earlier memory writes.
-/// @errors No recoverable error.
+/// Order all earlier normal-memory writes before a following MMIO output.
 ///
 /// OWNER: `arch::io` owns the target-specific normal-memory-to-device ordering mechanism.
 /// Without this `w -> o` edge, a device doorbell can pass the shared-memory state it publishes.
+///
+/// # Returns
+///
+/// No value; later MMIO writes cannot become visible before earlier memory writes.
+///
+/// # Errors
+///
+/// No recoverable error.
 #[inline(always)]
 pub(crate) fn before_mmio_write() {
     // SAFETY: `fence` changes only architectural ordering.  Omitting `nomem` also makes this a

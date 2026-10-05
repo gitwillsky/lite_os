@@ -12,8 +12,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // 可能比较相等，回归测试便无法覆盖 ET identity。
 static READINESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// @description 为 host kernel-unit fixture 分配单调 readiness generation。
-/// @return 本测试进程内不重复的 generation。
+/// 为 host kernel-unit fixture 分配单调 readiness generation。
+///
+/// # Returns
+///
+/// 本测试进程内不重复的 generation。
 pub(crate) fn next_readiness_generation() -> u64 {
     READINESS_GENERATION.fetch_add(1, Ordering::Relaxed)
 }

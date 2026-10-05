@@ -57,13 +57,18 @@ const DRM_IOCTL_VIRTGPU_WAIT: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x48, 8);
 const DRM_IOCTL_VIRTGPU_GET_CAPS: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x49, 24);
 const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x4b, 16);
 
-/// @description 分发 Linux DRM/KMS topology query 与 dumb-buffer ioctl 子集。
+/// 分发 Linux DRM/KMS topology query 与 dumb-buffer ioctl 子集。
 ///
-/// @param task 当前 userspace address-space owner。
-/// @param file `/dev/dri/card0` 打开的 DRM OFD backend。
-/// @param request Linux DRM ioctl number，size/direction 必须精确匹配 RV64 UAPI。
-/// @param argument request structure 的 userspace address。
-/// @return 成功返回零；pointer、object ID 或未支持 request 返回负 errno。
+/// # Parameters
+///
+/// - `task`: 当前 userspace address-space owner。
+/// - `file`: `/dev/dri/card0` 打开的 DRM OFD backend。
+/// - `request`: Linux DRM ioctl number，size/direction 必须精确匹配 LP64 UAPI。
+/// - `argument`: request structure 的 userspace address。
+///
+/// # Returns
+///
+/// 成功返回零；pointer、object ID 或未支持 request 返回负 errno。
 pub(in crate::syscall) fn drm_ioctl(
     task: &TaskControlBlock,
     file: &Arc<DrmFile>,

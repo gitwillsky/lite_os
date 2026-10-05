@@ -51,11 +51,16 @@ pub(crate) fn sys_close(fd: usize) -> isize {
     })
 }
 
-/// @description 创建一对共享 anonymous pipe 的 Linux read/write descriptors。
+/// 创建一对共享 anonymous pipe 的 Linux read/write descriptors。
 ///
-/// @param descriptors 用户态 `int[2]` 输出地址。
-/// @param flags 只接受 `O_CLOEXEC|O_NONBLOCK`。
-/// @return 成功返回零；参数、fd 容量、内存或 copyout 错误返回负 errno。
+/// # Parameters
+///
+/// - `descriptors`: 用户态 `int[2]` 输出地址。
+/// - `flags`: 只接受 `O_CLOEXEC|O_NONBLOCK`。
+///
+/// # Returns
+///
+/// 成功返回零；参数、fd 容量、内存或 copyout 错误返回负 errno。
 pub(crate) fn sys_pipe2(descriptors: usize, flags: u32) -> isize {
     if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
         return -errno::EINVAL;
@@ -125,7 +130,7 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
         return -errno::EBADF;
     }
     if size > task.file_size_limit() {
-        send_kernel_thread_signal(task.tgid(), task.tid(), 25)
+        send_kernel_thread_signal(task.tgid(), task.tid(), crate::task::signal_number::SIGXFSZ)
             .expect("current ftruncate caller must exist");
         return -errno::EFBIG;
     }
@@ -135,12 +140,18 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
         .map_or_else(|e| e, |_| 0)
 }
 
-/// @description 实现 Linux fallocate mode=0 的 regular-file space reservation。
-/// @param fd 必须以 write access 打开的 regular-file descriptor。
-/// @param mode 当前只接受零；其他 Linux allocation mode 明确返回 EOPNOTSUPP。
-/// @param offset 非负 byte range 起点。
-/// @param length 正数 byte range 长度。
-/// @return 成功返回零；fd、range、RLIMIT_FSIZE、空间或 I/O 错误返回负 errno。
+/// 实现 Linux fallocate mode=0 的 regular-file space reservation。
+///
+/// # Parameters
+///
+/// - `fd`: 必须以 write access 打开的 regular-file descriptor。
+/// - `mode`: 当前只接受零；其他 Linux allocation mode 明确返回 EOPNOTSUPP。
+/// - `offset`: 非负 byte range 起点。
+/// - `length`: 正数 byte range 长度。
+///
+/// # Returns
+///
+/// 成功返回零；fd、range、RLIMIT_FSIZE、空间或 I/O 错误返回负 errno。
 pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) -> isize {
     if mode != 0 {
         return -errno::EOPNOTSUPP;
@@ -173,7 +184,7 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
         return -errno::ENODEV;
     }
     if end > task.file_size_limit() {
-        send_kernel_thread_signal(task.tgid(), task.tid(), 25)
+        send_kernel_thread_signal(task.tgid(), task.tid(), crate::task::signal_number::SIGXFSZ)
             .expect("current fallocate caller must exist");
         return -errno::EFBIG;
     }
@@ -192,25 +203,37 @@ pub(super) fn sync_file(fd: usize) -> isize {
     })
 }
 
-/// @description 把一个 inode-backed OFD 的数据与 metadata 提交到 stable storage。
+/// 把一个 inode-backed OFD 的数据与 metadata 提交到 stable storage。
 ///
-/// @param fd 要同步的 descriptor。
-/// @return 成功返回零；非 inode fd 或底层 I/O 失败返回负 errno。
+/// # Parameters
+///
+/// - `fd`: 要同步的 descriptor。
+///
+/// # Returns
+///
+/// 成功返回零；非 inode fd 或底层 I/O 失败返回负 errno。
 pub(crate) fn sys_fsync(fd: usize) -> isize {
     sync_file(fd)
 }
 
-/// @description 提交文件数据及恢复该数据所需 metadata；当前同步 journal 模型与 fsync 共用提交边界。
+/// 提交文件数据及恢复该数据所需 metadata；当前同步 journal 模型与 fsync 共用提交边界。
 ///
-/// @param fd 要同步的 descriptor。
-/// @return 成功返回零；非 inode fd 或底层 I/O 失败返回负 errno。
+/// # Parameters
+///
+/// - `fd`: 要同步的 descriptor。
+///
+/// # Returns
+///
+/// 成功返回零；非 inode fd 或底层 I/O 失败返回负 errno。
 pub(crate) fn sys_fdatasync(fd: usize) -> isize {
     sync_file(fd)
 }
 
-/// @description 将唯一 mounted filesystem 的已提交写入同步到 stable storage。
+/// 将唯一 mounted filesystem 的已提交写入同步到 stable storage。
 ///
-/// @return 按 Linux sync ABI 固定返回零；单个 writeback error 不通过该入口报告。
+/// # Returns
+///
+/// 按 Linux sync ABI 固定返回零；单个 writeback error 不通过该入口报告。
 pub(crate) fn sys_sync() -> isize {
     let _ = vfs().sync();
     0
@@ -349,13 +372,18 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     }
 }
 
-/// @description 按 Linux utimensat ABI 更新 pathname inode 的访问与修改时间。
+/// 按 Linux utimensat ABI 更新 pathname inode 的访问与修改时间。
 ///
-/// @param fd 相对路径的目录 fd，或 AT_FDCWD；绝对路径忽略该值。
-/// @param name NUL 结尾 pathname。
-/// @param times 两个 RV64 timespec；空指针表示二者均取当前 realtime。
-/// @param flags 仅接受 AT_SYMLINK_NOFOLLOW。
-/// @return 成功返回零；路径、时间、flag、用户地址、只读或 I/O 错误返回负 errno。
+/// # Parameters
+///
+/// - `fd`: 相对路径的目录 fd，或 AT_FDCWD；绝对路径忽略该值。
+/// - `name`: NUL 结尾 pathname。
+/// - `times`: 两个 LP64 timespec；空指针表示二者均取当前 realtime。
+/// - `flags`: 仅接受 AT_SYMLINK_NOFOLLOW。
+///
+/// # Returns
+///
+/// 成功返回零；路径、时间、flag、用户地址、只读或 I/O 错误返回负 errno。
 pub(crate) fn sys_utimensat(
     fd: isize,
     name: *const u8,

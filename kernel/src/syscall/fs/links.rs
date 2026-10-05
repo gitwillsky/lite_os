@@ -9,12 +9,17 @@ use super::pathname::{base, ferr, path, path_allow_empty};
 const AT_SYMLINK_FOLLOW: usize = 0x400;
 const AT_EMPTY_PATH: usize = 0x1000;
 
-/// @description 按 Linux symlinkat ABI 创建保存 raw target 的 symbolic link。
+/// 按 Linux symlinkat ABI 创建保存 raw target 的 symbolic link。
 ///
-/// @param target NUL 结尾且不为空的 raw target pathname，不相对 new_dirfd 解析。
-/// @param new_dirfd 新链接为相对路径时使用的目录 fd，或 AT_FDCWD。
-/// @param new_path NUL 结尾的新链接 pathname。
-/// @return 成功返回零；用户地址、pathname、空间、只读或 I/O 错误返回负 errno。
+/// # Parameters
+///
+/// - `target`: NUL 结尾且不为空的 raw target pathname，不相对 new_dirfd 解析。
+/// - `new_dirfd`: 新链接为相对路径时使用的目录 fd，或 AT_FDCWD。
+/// - `new_path`: NUL 结尾的新链接 pathname。
+///
+/// # Returns
+///
+/// 成功返回零；用户地址、pathname、空间、只读或 I/O 错误返回负 errno。
 pub(crate) fn sys_symlinkat(target: *const u8, new_dirfd: isize, new_path: *const u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -36,14 +41,19 @@ pub(crate) fn sys_symlinkat(target: *const u8, new_dirfd: isize, new_path: *cons
         .map_or_else(ferr, |_| 0)
 }
 
-/// @description 按 Linux linkat ABI 为非目录 inode 创建同 filesystem 硬链接。
+/// 按 Linux linkat ABI 为非目录 inode 创建同 filesystem 硬链接。
 ///
-/// @param old_dirfd old_path 为相对路径时的目录 fd；AT_EMPTY_PATH 时为目标 fd。
-/// @param old_path 默认不跟随 final symlink；AT_EMPTY_PATH 时允许空字符串。
-/// @param new_dirfd 新链接为相对路径时使用的目录 fd，或 AT_FDCWD。
-/// @param new_path NUL 结尾的新硬链接 pathname。
-/// @param flags 只接受 AT_SYMLINK_FOLLOW 与 AT_EMPTY_PATH。
-/// @return 成功返回零；flags、fd、类型、跨 filesystem 或底层 mutation 错误返回负 errno。
+/// # Parameters
+///
+/// - `old_dirfd`: old_path 为相对路径时的目录 fd；AT_EMPTY_PATH 时为目标 fd。
+/// - `old_path`: 默认不跟随 final symlink；AT_EMPTY_PATH 时允许空字符串。
+/// - `new_dirfd`: 新链接为相对路径时使用的目录 fd，或 AT_FDCWD。
+/// - `new_path`: NUL 结尾的新硬链接 pathname。
+/// - `flags`: 只接受 AT_SYMLINK_FOLLOW 与 AT_EMPTY_PATH。
+///
+/// # Returns
+///
+/// 成功返回零；flags、fd、类型、跨 filesystem 或底层 mutation 错误返回负 errno。
 pub(crate) fn sys_linkat(
     old_dirfd: isize,
     old_path: *const u8,

@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::{println, sync::IrqMutex};
 
-/// Log levels in order of severity
+/// 按严重程度递增排列的 kernel log level。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub(crate) enum LogLevel {
@@ -14,8 +14,8 @@ pub(crate) enum LogLevel {
 }
 
 impl LogLevel {
-    /// Get the colored string representation of the log level
-    pub(crate) fn colored_str(&self) -> &'static str {
+    /// 返回 UART 输出使用的 ANSI 着色 level 名称。
+    fn colored_str(&self) -> &'static str {
         match self {
             LogLevel::Debug => "\x1b[36mDEBUG\x1b[0m", // Cyan
             LogLevel::Info => "\x1b[32mINFO\x1b[0m",   // Green
@@ -40,8 +40,6 @@ impl fmt::Display for LogLevel {
     }
 }
 
-/// Maximum number of module filters
-const MAX_MODULE_FILTERS: usize = 32;
 const KMSG_RECORD_CAPACITY: usize = 128;
 const KMSG_MESSAGE_CAPACITY: usize = 192;
 pub(crate) const KMSG_READ_BUFFER_SIZE: usize = 256;
@@ -92,7 +90,7 @@ impl<const N: usize> Write for FixedBytes<N> {
     }
 }
 
-/// @description 一次 `/dev/kmsg` record 读取结果。
+/// 一次 `/dev/kmsg` record 读取结果。
 pub(crate) enum KmsgRead {
     /// 一个完整 Linux devkmsg text record。
     Record(usize),
@@ -104,23 +102,32 @@ pub(crate) enum KmsgRead {
     BufferTooSmall,
 }
 
-/// @description `/dev/kmsg` OFD 独占的 sequence cursor。
+/// `/dev/kmsg` OFD 独占的 sequence cursor。
 pub(crate) struct KmsgReader {
     cursor: IrqMutex<u64>,
 }
 
 impl KmsgReader {
-    /// @description 从当前环中最老的仍可读取 record 打开一个独立 reader。
-    /// @return 不分配的 OFD-local cursor。
+    /// 从当前环中最老的仍可读取 record 打开一个独立 reader。
+    ///
+    /// # Returns
+    ///
+    /// 不分配的 OFD-local cursor。
     pub(crate) fn open() -> Self {
         Self {
             cursor: IrqMutex::new(LOGGER.lock().oldest_sequence()),
         }
     }
 
-    /// @description 读取且仅消费一个 Linux `/dev/kmsg` text record。
-    /// @param output kernel-owned 连续缓冲区；不足时 cursor 不前进。
-    /// @return 完整 record 长度、空、覆盖或 buffer-too-small 状态。
+    /// 读取且仅消费一个 Linux `/dev/kmsg` text record。
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: kernel-owned 连续缓冲区；不足时 cursor 不前进。
+    ///
+    /// # Returns
+    ///
+    /// 完整 record 长度、空、覆盖或 buffer-too-small 状态。
     pub(crate) fn read(&self, output: &mut [u8]) -> KmsgRead {
         let mut cursor = self.cursor.lock();
         let logger = LOGGER.lock();
@@ -151,62 +158,28 @@ impl KmsgReader {
         KmsgRead::Record(wire.length)
     }
 
-    /// @description 查询当前 cursor 是否落后于 producer 或已发生覆盖。
-    /// @return 下一次 read 不会返回 Empty 时为 true。
+    /// 查询当前 cursor 是否落后于 producer 或已发生覆盖。
+    ///
+    /// # Returns
+    ///
+    /// 下一次 read 不会返回 Empty 时为 true。
     pub(crate) fn readable(&self) -> bool {
         let cursor = *self.cursor.lock();
         cursor != LOGGER.lock().next_sequence
     }
 
-    /// @description 返回 producer sequence 作为只读 readiness generation。
-    /// @return 每发布一条 record 严格递增的 generation。
+    /// 返回 producer sequence 作为只读 readiness generation。
+    ///
+    /// # Returns
+    ///
+    /// 每发布一条 record 严格递增的 generation。
     pub(crate) fn readiness_generation(&self) -> u64 {
         LOGGER.lock().next_sequence
     }
 }
 
-/// Module filter entry
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ModuleFilter {
-    name: [u8; 32], // Fixed-size module name
-    name_len: usize,
-    enabled: bool,
-}
-
-impl ModuleFilter {
-    const fn new() -> Self {
-        Self {
-            name: [0; 32],
-            name_len: 0,
-            enabled: true,
-        }
-    }
-
-    fn set_name(&mut self, name: &str) {
-        let bytes = name.as_bytes();
-        let len = core::cmp::min(bytes.len(), 31); // Leave space for null terminator
-        self.name[..len].copy_from_slice(&bytes[..len]);
-        self.name[len] = 0; // Null terminator
-        self.name_len = len;
-    }
-
-    fn matches(&self, module: &str) -> bool {
-        if self.name_len == 0 {
-            return false;
-        }
-        let module_bytes = module.as_bytes();
-        if module_bytes.len() != self.name_len {
-            return false;
-        }
-        &self.name[..self.name_len] == module_bytes
-    }
-}
-
-/// Global logger configuration
-pub(crate) struct Logger {
-    module_filters: [ModuleFilter; MAX_MODULE_FILTERS],
-    filter_count: usize,
-    default_enabled: bool, // Default state for modules not in filter list
+/// kernel log ring 与 UART 输出的唯一 owner。
+struct Logger {
     // OWNER: logger 在 UART 输出前同步提交唯一 bounded boot-log ring；若另设 fs/procfs
     // cache，会让 sequence、覆盖与文本内容形成需要人工同步的第二份状态。
     records: [KmsgRecord; KMSG_RECORD_CAPACITY],
@@ -216,9 +189,6 @@ pub(crate) struct Logger {
 impl Logger {
     const fn new() -> Self {
         Self {
-            module_filters: [ModuleFilter::new(); MAX_MODULE_FILTERS],
-            filter_count: 0,
-            default_enabled: true, // By default, all modules are enabled
             records: [KmsgRecord::EMPTY; KMSG_RECORD_CAPACITY],
             next_sequence: 0,
         }
@@ -229,89 +199,51 @@ impl Logger {
             .saturating_sub(KMSG_RECORD_CAPACITY as u64)
     }
 
-    pub(crate) fn disable_module(&mut self, module: &str) -> bool {
-        // First check if module already exists in filters
-        for i in 0..self.filter_count {
-            if self.module_filters[i].matches(module) {
-                self.module_filters[i].enabled = false;
-                return true;
-            }
-        }
-
-        // Add new filter if space available
-        if self.filter_count < MAX_MODULE_FILTERS {
-            self.module_filters[self.filter_count].set_name(module);
-            self.module_filters[self.filter_count].enabled = false;
-            self.filter_count += 1;
-            true
-        } else {
-            false // No space for more filters
-        }
-    }
-
-    fn is_module_enabled(&self, module: &str) -> bool {
-        // Check if module has specific filter
-        for filter in self.module_filters.iter().take(self.filter_count) {
-            if filter.matches(module) {
-                return filter.enabled;
-            }
-        }
-        // Use default state if no specific filter found
-        self.default_enabled
-    }
-
-    pub(crate) fn log(&mut self, level: LogLevel, module: &str, args: fmt::Arguments) {
-        if self.is_module_enabled(module) {
-            let hart_id = crate::cpu::current_id().index();
-            let mut message = FixedBytes::<KMSG_MESSAGE_CAPACITY>::new();
-            write!(message, "[CPU-{hart_id}] [{module}] {args}")
-                .expect("fixed kmsg message formatting failed");
-            let sequence = self.next_sequence;
-            self.records[sequence as usize % KMSG_RECORD_CAPACITY] = KmsgRecord {
-                sequence,
-                timestamp_us: crate::timer::get_time_us(),
-                priority: level.syslog_priority(),
-                length: u8::try_from(message.length).expect("kmsg message capacity exceeds u8"),
-                message: message.bytes,
-            };
-            self.next_sequence = sequence.checked_add(1).expect("kmsg sequence exhausted");
-            println!(
-                "[\x1b[35mCPU-{}\x1b[0m] [{}] [\x1b[34m{}\x1b[0m] {}",
-                hart_id, level, module, args
-            );
-        }
+    fn log(&mut self, level: LogLevel, module: &str, args: fmt::Arguments) {
+        let cpu = crate::cpu::current_id().index();
+        let mut message = FixedBytes::<KMSG_MESSAGE_CAPACITY>::new();
+        write!(message, "[CPU-{cpu}] [{module}] {args}")
+            .expect("fixed kmsg message formatting failed");
+        let sequence = self.next_sequence;
+        self.records[sequence as usize % KMSG_RECORD_CAPACITY] = KmsgRecord {
+            sequence,
+            timestamp_us: crate::timer::get_time_us(),
+            priority: level.syslog_priority(),
+            length: u8::try_from(message.length).expect("kmsg message capacity exceeds u8"),
+            message: message.bytes,
+        };
+        self.next_sequence = sequence.checked_add(1).expect("kmsg sequence exhausted");
+        println!(
+            "[\x1b[35mCPU-{}\x1b[0m] [{}] [\x1b[34m{}\x1b[0m] {}",
+            cpu, level, module, args
+        );
     }
 }
 
 // logger 可由 task、hardirq 和 softirq 调用；普通 spin lock 会在同 CPU 中断重入时自死锁。
-// OWNER: logging module owns the process-wide logger registered with the log facade.
+// OWNER: log module 独占全局 logger；所有 log macro 经 `__log` 进入同一 ring 与 UART 输出。
 static LOGGER: IrqMutex<Logger> = IrqMutex::new(Logger::new());
 // OWNER: logging module owns the global severity threshold independently from ring/filter state.
 // Missing the macro-side load would evaluate filtered arguments and take LOGGER's IRQ lock.
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 
-/// Set the global log level
+/// 设置全局 severity threshold。
 fn set_log_level(level: LogLevel) {
     LOG_LEVEL.store(level as u8, Ordering::Release);
 }
 
-/// @description 在构造 format arguments 前判断 severity threshold。
+/// 在构造 format arguments 前判断 severity threshold。
 pub(crate) fn enabled(level: LogLevel) -> bool {
     level as u8 >= LOG_LEVEL.load(Ordering::Acquire)
 }
 
-/// Disable logging for a specific module
-pub(crate) fn disable_module(module: &str) -> bool {
-    LOGGER.lock().disable_module(module)
-}
-
-/// Internal logging function
+/// log macro 的唯一入口；调用方必须先经 `enabled` 判断 threshold。
 pub(crate) fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
     debug_assert!(enabled(level));
     LOGGER.lock().log(level, module, args);
 }
 
-/// Debug level logging macro
+/// Debug level log macro。
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {
@@ -321,7 +253,7 @@ macro_rules! debug {
     };
 }
 
-/// Info level logging macro
+/// Info level log macro。
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {
@@ -331,7 +263,7 @@ macro_rules! info {
     };
 }
 
-/// Warning level logging macro
+/// Warn level log macro。
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => {
@@ -341,7 +273,7 @@ macro_rules! warn {
     };
 }
 
-/// Error level logging macro
+/// Error level log macro。
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
@@ -351,7 +283,7 @@ macro_rules! error {
     };
 }
 
-/// Initialize logging with the build-profile default owned by this module.
+/// 按 build profile 初始化 severity threshold：debug 构建输出 Debug，release 构建从 Info 起。
 pub(crate) fn init() {
     #[cfg(debug_assertions)]
     set_log_level(LogLevel::Debug);

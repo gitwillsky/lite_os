@@ -58,6 +58,5 @@ pub(crate) use user_context::{
 global_asm!(include_str!("trap.S"));
 global_asm!(include_str!("switch.S"));
 
-/// @description RISC-V exec 的 live FP state 已随 UserContext 替换，无额外 CPU-local image。
-/// @return 无返回值。
+/// RISC-V exec 的 live FP state 已随 UserContext 替换，无额外 CPU-local image。
 pub(crate) fn reset_live_floating_point() {}

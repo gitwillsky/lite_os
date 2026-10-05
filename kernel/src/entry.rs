@@ -1,8 +1,8 @@
-//! @description Raw architecture callback codec and typed generic-kernel handoff。
+//! Raw architecture callback codec and typed generic-kernel handoff。
 
 use crate::{cpu::HardwareCpuId, platform::BootInfo};
 
-/// @description 完整且已类型化的单 CPU firmware boot handoff。
+/// 完整且已类型化的单 CPU firmware boot handoff。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BootContext {
     hardware_cpu: HardwareCpuId,
@@ -10,10 +10,16 @@ pub(crate) struct BootContext {
 }
 
 impl BootContext {
-    /// @description 由 architecture entry 将 firmware register ABI 封装为 typed handoff。
-    /// @param hardware_cpu platform 提供的 opaque hardware CPU identity。
-    /// @param platform platform boot description 的 typed token。
-    /// @return generic kernel 唯一消费的 boot context。
+    /// 由 architecture entry 将 firmware register ABI 封装为 typed handoff。
+    ///
+    /// # Parameters
+    ///
+    /// - `hardware_cpu`: platform 提供的 opaque hardware CPU identity。
+    /// - `platform`: platform boot description 的 typed token。
+    ///
+    /// # Returns
+    ///
+    /// generic kernel 唯一消费的 boot context。
     pub(crate) fn new(hardware_cpu: HardwareCpuId, platform: BootInfo) -> Self {
         Self {
             hardware_cpu,
@@ -21,14 +27,20 @@ impl BootContext {
         }
     }
 
-    /// @description 投影本次 entry 的 hardware CPU identity。
-    /// @return 不泄漏 raw integer 的 typed identity。
+    /// 投影本次 entry 的 hardware CPU identity。
+    ///
+    /// # Returns
+    ///
+    /// 不泄漏 raw integer 的 typed identity。
     pub(crate) fn hardware_cpu(self) -> HardwareCpuId {
         self.hardware_cpu
     }
 
-    /// @description 投影本次 entry 的 platform boot token。
-    /// @return 只由 platform façade 解释的 typed token。
+    /// 投影本次 entry 的 platform boot token。
+    ///
+    /// # Returns
+    ///
+    /// 只由 platform façade 解释的 typed token。
     pub(crate) fn platform(self) -> BootInfo {
         self.platform
     }

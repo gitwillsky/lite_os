@@ -1,7 +1,7 @@
 use super::*;
 
 impl MemorySet {
-    /// @description 修改完整 anonymous/file/ELF 区间权限，并按 VMA 边界原子拆分。
+    /// 修改完整 anonymous/file/ELF 区间权限，并按 VMA 边界原子拆分。
     pub(crate) fn protect_user_mapping(
         &mut self,
         address: usize,

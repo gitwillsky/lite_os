@@ -26,7 +26,7 @@ fn init_interrupt_controller() {
         Ok(controller) => {
             INTERRUPT_CONTROLLER.call_once(|| IrqMutex::new(controller));
         }
-        Err(error) => error!("[Platform] PLIC initialization failed: {:?}", error),
+        Err(error) => error!("PLIC initialization failed: {:?}", error),
     }
 }
 
@@ -36,7 +36,7 @@ pub(crate) fn initialize() {
     init_uart_console();
     // 扫描和初始化设备
     scan_and_init_devices();
-    info!("[Platform] Device initialization completed");
+    info!("Device initialization completed");
 }
 
 /// 扫描并初始化所有设备
@@ -49,33 +49,27 @@ fn scan_and_init_devices() {
 
 /// 初始化VirtIO设备
 fn init_virtio_devices(board_info: &PlatformInfo) {
-    info!(
-        "[Platform] Scanning {} VirtIO devices",
-        board_info.virtio_count
-    );
-    info!("[Platform] Board info debug:\n{}", board_info);
+    info!("Scanning {} VirtIO devices", board_info.virtio_count);
+    info!("Board info debug:\n{}", board_info);
 
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
             info!(
-                "[Platform] Attempting to probe VirtIO device {} at {:#x}, size={:#x}",
+                "Attempting to probe VirtIO device {} at {:#x}, size={:#x}",
                 i, base_addr, virtio_dev.size
             );
             info!(
-                "[Platform] Processing VirtIO device {}/{}",
+                "Processing VirtIO device {}/{}",
                 i + 1,
                 board_info.virtio_count
             );
 
             let Some(device_id) = read_virtio_device_id(base_addr, virtio_dev.size) else {
-                warn!("[Platform] Invalid VirtIO MMIO window at {:#x}", base_addr);
+                warn!("Invalid VirtIO MMIO window at {:#x}", base_addr);
                 continue;
             };
-            info!(
-                "[Platform] VirtIO device {} has device ID: {:#x}",
-                i, device_id
-            );
+            info!("VirtIO device {} has device ID: {:#x}", i, device_id);
 
             match device_id {
                 1 => init_virtio_net_device(board_info, virtio_dev.irq, base_addr),
@@ -86,7 +80,7 @@ fn init_virtio_devices(board_info: &PlatformInfo) {
                 18 => init_virtio_input_device(board_info, virtio_dev.irq, base_addr),
                 25 => init_virtio_sound_device(board_info, virtio_dev.irq, base_addr),
                 _ => info!(
-                    "[Platform] Unrecognized VirtIO device ID {:#x} at {:#x}",
+                    "Unrecognized VirtIO device ID {:#x} at {:#x}",
                     device_id, base_addr
                 ),
             }
@@ -103,7 +97,7 @@ fn init_virtio_console_device(board_info: &PlatformInfo, irq: u32, base_addr: us
         "virtio-console requires a registered IRQ"
     );
     info!(
-        "[Platform] VirtIO console clipboard port registered at {:#x}",
+        "VirtIO console clipboard port registered at {:#x}",
         base_addr
     );
 }
@@ -127,7 +121,7 @@ fn init_virtio_input_device(board_info: &PlatformInfo, irq: u32, base_addr: usiz
         "virtio-input requires a registered IRQ"
     );
     info!(
-        "[Platform] VirtIO input event{} registered at {:#x}, name={}",
+        "VirtIO input event{} registered at {:#x}, name={}",
         index,
         base_addr,
         core::str::from_utf8(device.name()).unwrap_or("<non-utf8>")
@@ -143,7 +137,7 @@ fn init_virtio_net_device(board_info: &PlatformInfo, irq: u32, base_addr: usize)
         "virtio-net requires a registered IRQ"
     );
     info!(
-        "[Platform] VirtIO network registered at {:#x}, mac={:02x?}",
+        "VirtIO network registered at {:#x}, mac={:02x?}",
         base_addr,
         crate::drivers::network::network_device()
             .expect("network binding disappeared")
@@ -159,7 +153,7 @@ fn init_virtio_rng_device(board_info: &PlatformInfo, irq: u32, base_addr: usize)
         maybe_register_irq(board_info, irq, device.irq_handler_for(), "rng"),
         "virtio-rng requires a registered IRQ"
     );
-    info!("[Platform] VirtIO RNG registered at {:#x}", base_addr);
+    info!("VirtIO RNG registered at {:#x}", base_addr);
 }
 
 fn init_virtio_gpu_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
@@ -172,7 +166,7 @@ fn init_virtio_gpu_device(board_info: &PlatformInfo, irq: u32, base_addr: usize)
         "virtio-gpu requires a registered IRQ"
     );
     info!(
-        "[Platform] VirtIO GPU registered at {:#x}, mode={}x{} pitch={}",
+        "VirtIO GPU registered at {:#x}, mode={}x{} pitch={}",
         base_addr, mode.width, mode.height, mode.pitch
     );
 }
@@ -195,33 +189,27 @@ fn maybe_register_irq(
     if let Some(controller) = interrupt_controller() {
         let mut ctrl = controller.lock();
         let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
-            error!(
-                "[Platform] Failed to register {} IRQ handler: {:?}",
-                label, e
-            );
+            error!("Failed to register {} IRQ handler: {:?}", label, e);
             Err(())
         } else if let Err(e) = ctrl.set_priority(irq) {
-            error!("[Platform] Failed to set {} IRQ priority: {:?}", label, e);
+            error!("Failed to set {} IRQ priority: {:?}", label, e);
             Err(())
         } else {
             let boot_cpu = crate::cpu::boot_id();
             if let Err(e) = ctrl.set_affinity(irq, crate::cpu::CpuSet::singleton(boot_cpu)) {
-                warn!("[Platform] Failed to set {} IRQ affinity: {:?}", label, e);
+                warn!("Failed to set {} IRQ affinity: {:?}", label, e);
             } else {
                 info!(
-                    "[Platform] Set {} IRQ affinity to boot hart {}",
+                    "Set {} IRQ affinity to boot hart {}",
                     label,
                     boot_cpu.index()
                 );
             }
             if let Err(e) = ctrl.enable_interrupt(irq) {
-                error!("[Platform] Failed to enable {} IRQ {}: {:?}", label, irq, e);
+                error!("Failed to enable {} IRQ {}: {:?}", label, irq, e);
                 Err(())
             } else {
-                info!(
-                    "[Platform] Registered {} IRQ handler on vector {}",
-                    label, irq
-                );
+                info!("Registered {} IRQ handler on vector {}", label, irq);
                 Ok(())
             }
         };
@@ -245,26 +233,23 @@ fn init_uart_console() {
 }
 
 fn init_virtio_blk_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
-    info!("[Platform] Creating VirtIOBlockDevice at {:#x}", base_addr);
+    info!("Creating VirtIOBlockDevice at {:#x}", base_addr);
     if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
         let virtio_arc = virtio_block.clone();
         match crate::drivers::block::register_block_device(virtio_arc.clone()) {
             Ok(device_id) => {
                 info!(
-                    "[Platform] VirtIO Block device #{} registered at {:#x}",
+                    "VirtIO Block device #{} registered at {:#x}",
                     device_id, base_addr
                 );
             }
             Err(e) => {
-                error!("[Platform] Failed to register block device: {:?}", e);
+                error!("Failed to register block device: {:?}", e);
             }
         }
         let _ = maybe_register_irq(board_info, irq, virtio_block.irq_handler_for(), "blk");
     } else {
-        warn!(
-            "[Platform] Failed to create VirtIO Block device at {:#x}",
-            base_addr
-        );
+        warn!("Failed to create VirtIO Block device at {:#x}", base_addr);
     }
 }
 
@@ -275,7 +260,7 @@ pub(crate) fn handle_external_interrupt() {
         let result = controller.lock().handle_pending_interrupts();
         if result.is_err() {
             #[cfg(debug_assertions)]
-            debug!("[Platform] Interrupt handling failed: {:?}", result);
+            debug!("Interrupt handling failed: {:?}", result);
         }
     }
 }

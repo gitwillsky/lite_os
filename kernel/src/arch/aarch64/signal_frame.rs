@@ -1,9 +1,9 @@
-//! @description Linux/arm64 `rt_sigframe` 的纯字节 codec 与 extension-chain validator。
+//! Linux/arm64 `rt_sigframe` 的纯字节 codec 与 extension-chain validator。
 
 use core::ops::Range;
 
 pub(crate) const SIGNAL_FRAME_SIZE: usize = 4688;
-/// @description Linux/arm64 `MINSIGSTKSZ`，为标准 frame 与 handler entry 保留余量。
+/// Linux/arm64 `MINSIGSTKSZ`，为标准 frame 与 handler entry 保留余量。
 pub(crate) const MIN_SIGNAL_STACK_SIZE: usize = 5120;
 const SIGINFO_SIZE: usize = 128;
 const UCONTEXT_OFFSET: usize = SIGINFO_SIZE;
@@ -33,7 +33,7 @@ const _: () = {
     assert!(TERMINATOR_OFFSET + 8 <= SIGNAL_FRAME_SIZE);
 };
 
-/// @description Linux `stack_t` 中 signal frame 必须保存的 architecture-neutral 值。
+/// Linux `stack_t` 中 signal frame 必须保存的 architecture-neutral 值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SignalStack {
     sp: usize,
@@ -42,32 +42,38 @@ pub(crate) struct SignalStack {
 }
 
 impl SignalStack {
-    /// @description 构造待写入 `ucontext_t.uc_stack` 的快照。
-    /// @param sp alternate stack base。
-    /// @param flags Linux `SS_*` flags。
-    /// @param size alternate stack byte size。
-    /// @return owned stack snapshot。
+    /// 构造待写入 `ucontext_t.uc_stack` 的快照。
+    ///
+    /// # Parameters
+    ///
+    /// - `sp`: alternate stack base。
+    /// - `flags`: Linux `SS_*` flags。
+    /// - `size`: alternate stack byte size。
+    ///
+    /// # Returns
+    ///
+    /// owned stack snapshot。
     pub(crate) const fn new(sp: usize, flags: i32, size: usize) -> Self {
         Self { sp, flags, size }
     }
 
-    /// @description 返回 alternate stack base。
+    /// 返回 alternate stack base。
     pub(crate) const fn sp(self) -> usize {
         self.sp
     }
 
-    /// @description 返回 Linux `SS_*` flags。
+    /// 返回 Linux `SS_*` flags。
     pub(crate) const fn flags(self) -> i32 {
         self.flags
     }
 
-    /// @description 返回 alternate stack byte size。
+    /// 返回 alternate stack byte size。
     pub(crate) const fn size(self) -> usize {
         self.size
     }
 }
 
-/// @description 已完成全部 structural validation 的 arm64 integer signal state。
+/// 已完成全部 structural validation 的 arm64 integer signal state。
 pub(super) struct DecodedSignalFrame {
     pub(super) registers: [usize; 31],
     pub(super) stack_pointer: usize,
@@ -77,22 +83,28 @@ pub(super) struct DecodedSignalFrame {
     pub(super) signal_stack: SignalStack,
 }
 
-/// @description 固定 4688-byte、16-byte aligned 的 Linux/arm64 `rt_sigframe` image。
+/// 固定 4688-byte、16-byte aligned 的 Linux/arm64 `rt_sigframe` image。
 #[repr(C, align(16))]
 pub(crate) struct SignalFrame {
     bytes: [u8; SIGNAL_FRAME_SIZE],
 }
 
 impl SignalFrame {
-    /// @description 构造包含唯一 FPSIMD record 与 terminator 的 signal frame。
-    /// @param info 128-byte Linux `siginfo_t` image。
-    /// @param signal_stack delivery 前的 alternate stack 状态。
-    /// @param signal_mask delivery 前的 blocked signal mask。
-    /// @param registers x0..x30。
-    /// @param stack_pointer EL0 SP。
-    /// @param program_counter EL0 PC。
-    /// @param pstate EL0 PSTATE/SPSR image。
-    /// @return FPSIMD payload 尚为零、可由唯一 capture asm 填充的 frame。
+    /// 构造包含唯一 FPSIMD record 与 terminator 的 signal frame。
+    ///
+    /// # Parameters
+    ///
+    /// - `info`: 128-byte Linux `siginfo_t` image。
+    /// - `signal_stack`: delivery 前的 alternate stack 状态。
+    /// - `signal_mask`: delivery 前的 blocked signal mask。
+    /// - `registers`: x0..x30。
+    /// - `stack_pointer`: EL0 SP。
+    /// - `program_counter`: EL0 PC。
+    /// - `pstate`: EL0 PSTATE/SPSR image。
+    ///
+    /// # Returns
+    ///
+    /// FPSIMD payload 尚为零、可由唯一 capture asm 填充的 frame。
     pub(super) fn encode(
         info: [u8; SIGINFO_SIZE],
         signal_stack: SignalStack,
@@ -128,39 +140,51 @@ impl SignalFrame {
         frame
     }
 
-    /// @description 构造供 user-copy 填充的零 frame。
-    /// @return 全部 bytes 为零的 owned frame。
+    /// 构造供 user-copy 填充的零 frame。
+    ///
+    /// # Returns
+    ///
+    /// 全部 bytes 为零的 owned frame。
     pub(crate) const fn zeroed() -> Self {
         Self {
             bytes: [0; SIGNAL_FRAME_SIZE],
         }
     }
 
-    /// @description 返回 frame 的 immutable user-copy bytes。
+    /// 返回 frame 的 immutable user-copy bytes。
     pub(crate) const fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
-    /// @description 返回 frame 的 mutable user-copy bytes。
+    /// 返回 frame 的 mutable user-copy bytes。
     pub(crate) fn as_bytes_mut(&mut self) -> &mut [u8] {
         &mut self.bytes
     }
 
-    /// @description 返回唯一 FPSIMD payload 的 mutable capture address。
-    /// @return pointer+8 为 16-byte aligned vregs，覆盖 fpsr/fpcr/vregs 的 pointer。
+    /// 返回唯一 FPSIMD payload 的 mutable capture address。
+    ///
+    /// # Returns
+    ///
+    /// pointer+8 为 16-byte aligned vregs，覆盖 fpsr/fpcr/vregs 的 pointer。
     pub(super) fn fpsimd_state_mut_ptr(&mut self) -> *mut u8 {
         // FPSIMD_STATE_OFFSET+8 has a compile-time 16-byte vregs alignment proof above.
         self.bytes.as_mut_ptr().wrapping_add(FPSIMD_STATE_OFFSET)
     }
 
-    /// @description 返回经 validation 后唯一 FPSIMD payload 的 restore address。
+    /// 返回经 validation 后唯一 FPSIMD payload 的 restore address。
     pub(super) fn fpsimd_state_ptr(&self) -> *const u8 {
         self.bytes.as_ptr().wrapping_add(FPSIMD_STATE_OFFSET)
     }
 
-    /// @description 完整验证 ucontext prefix、FPSIMD chain 与 terminator 后解码 integer state。
-    /// @return validated integer state；FP payload 保持在 frame 中供 asm restore。
-    /// @errors unknown/duplicate/missing record、非法 size/alignment/terminator 或非零尾部。
+    /// 完整验证 ucontext prefix、FPSIMD chain 与 terminator 后解码 integer state。
+    ///
+    /// # Returns
+    ///
+    /// validated integer state；FP payload 保持在 frame 中供 asm restore。
+    ///
+    /// # Errors
+    ///
+    /// unknown/duplicate/missing record、非法 size/alignment/terminator 或非零尾部。
     pub(super) fn decode(
         &self,
         user_address_end: usize,
@@ -227,7 +251,7 @@ impl SignalFrame {
     }
 }
 
-/// @description 用户提供的 arm64 `rt_sigframe` validation failure。
+/// 用户提供的 arm64 `rt_sigframe` validation failure。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InvalidSignalFrame;
 

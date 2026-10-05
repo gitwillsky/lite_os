@@ -88,7 +88,9 @@ impl MapArea {
 
     /// 返回 structural publication 同步提交的 stack identity 与 RLIMIT contribution。
     ///
-    /// @return 由当前 range/kind/permission/backing 计算的完整 contribution。
+    /// # Returns
+    ///
+    /// 由当前 range/kind/permission/backing 计算的完整 contribution。
     pub(super) fn index_contribution(&self) -> VmaContribution {
         VmaContribution {
             start: self.vpn_range.start.as_usize(),

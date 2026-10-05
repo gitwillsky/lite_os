@@ -3,7 +3,7 @@ use spin::Once;
 
 use crate::{drivers::GraphicsDevice, memory::DeviceBacking};
 
-/// @description single-scanout adapter 的 canonical CVT/scanout 显示模式。
+/// single-scanout adapter 的 canonical CVT/scanout 显示模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DisplayMode {
     /// 8-pixel granular 水平 pixel 数；connector、resource 与 scanout 必须共用该值。
@@ -14,7 +14,7 @@ pub(crate) struct DisplayMode {
     pub(crate) pitch: u32,
 }
 
-/// @description scanout 坐标系中的半开 damage rectangle。
+/// scanout 坐标系中的半开 damage rectangle。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DisplayRect {
     /// 左上角水平 pixel。
@@ -27,7 +27,7 @@ pub(crate) struct DisplayRect {
     pub(crate) height: u32,
 }
 
-/// @description display command 的稳定失败分类。
+/// display command 的稳定失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DisplayError {
     /// 已有 command 尚未完成，调用方应等待 completion edge。
@@ -38,7 +38,7 @@ pub(crate) enum DisplayError {
     Device,
 }
 
-/// @description deferred display work 对上层发布的单一更新事实。
+/// deferred display work 对上层发布的单一更新事实。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DisplayUpdate {
     /// 一次 userspace scanout、damage 或 disable operation 已完整完成。
@@ -56,19 +56,31 @@ pub(crate) enum DisplayUpdate {
     CursorCompleted(u64),
 }
 
-/// @description 不泄漏具体 adapter 的 single-scanout display seam。
+/// 不泄漏具体 adapter 的 single-scanout display seam。
 pub(crate) trait DisplayDevice: Send + Sync {
-    /// @description 返回 connector 最新 preferred mode。
-    /// @return 同一代 width、height 与 pitch；与 active CRTC mode 相互独立。
+    /// 返回 connector 最新 preferred mode。
+    ///
+    /// # Returns
+    ///
+    /// 同一代 width、height 与 pitch；与 active CRTC mode 相互独立。
     fn mode(&self) -> DisplayMode;
 
-    /// @description 异步把一个 XRGB8888 scatter/gather backing 切换为指定 scanout mode。
-    /// @param identity DRM framebuffer 的全局单调 identity，用于命中 resident resource。
-    /// @param mode 本次 transaction 捕获的 display-info mode。
-    /// @param backing 至少覆盖固定 mode pitch × height；adapter 从提交到资源解绑完成独立
-    /// 保活该 owner。
-    /// @return operation fence；已有 transaction 时返回 `WouldBlock`。
-    /// @errors backing 太小返回 `InvalidRectangle`；queue 满、MMIO 或 response 失败返回
+    /// 异步把一个 XRGB8888 scatter/gather backing 切换为指定 scanout mode。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity，用于命中 resident resource。
+    /// - `mode`: 本次 transaction 捕获的 display-info mode。
+    /// - `backing`: 至少覆盖固定 mode pitch × height；adapter 从提交到资源解绑完成独立
+    ///   保活该 owner。
+    ///
+    /// # Returns
+    ///
+    /// operation fence；已有 transaction 时返回 `WouldBlock`。
+    ///
+    /// # Errors
+    ///
+    /// backing 太小返回 `InvalidRectangle`；queue 满、MMIO 或 response 失败返回
     /// `Device`。
     fn submit_scanout(
         &self,
@@ -77,13 +89,22 @@ pub(crate) trait DisplayDevice: Send + Sync {
         backing: Arc<DeviceBacking>,
     ) -> Result<u64, DisplayError>;
 
-    /// @description 把指定 stable framebuffer 的若干 damage rectangle 批量传输到 host。
-    /// @param identity DRM framebuffer 的全局单调 identity，用于复用 resident resource。
-    /// @param mode target framebuffer 的完整 linear mode。
-    /// @param backing target framebuffer 的 SG owner；adapter 保活到 eviction completion。
-    /// @param rectangles 1..=32 个已合并、非空且位于 target mode 内的 rectangle。
-    /// @return blocking DIRTYFB 等待的 operation fence。
-    /// @errors identity/backing 不一致、rectangle 越界、已有 operation 或 device failure。
+    /// 把指定 stable framebuffer 的若干 damage rectangle 批量传输到 host。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity，用于复用 resident resource。
+    /// - `mode`: target framebuffer 的完整 linear mode。
+    /// - `backing`: target framebuffer 的 SG owner；adapter 保活到 eviction completion。
+    /// - `rectangles`: 1..=32 个已合并、非空且位于 target mode 内的 rectangle。
+    ///
+    /// # Returns
+    ///
+    /// blocking DIRTYFB 等待的 operation fence。
+    ///
+    /// # Errors
+    ///
+    /// identity/backing 不一致、rectangle 越界、已有 operation 或 device failure。
     fn submit_damage(
         &self,
         identity: u64,
@@ -92,20 +113,41 @@ pub(crate) trait DisplayDevice: Send + Sync {
         rectangles: &[DisplayRect],
     ) -> Result<u64, DisplayError>;
 
-    /// @description 释放一个已删除 framebuffer 对应的 inactive resident resource。
-    /// @param identity DRM framebuffer 的全局单调 identity。
-    /// @return resource 未 resident 时为 None；否则返回 RESOURCE_UNREF operation fence。
-    /// @errors identity 仍 active、已有 operation 或 device failure。
+    /// 释放一个已删除 framebuffer 对应的 inactive resident resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `identity`: DRM framebuffer 的全局单调 identity。
+    ///
+    /// # Returns
+    ///
+    /// resource 未 resident 时为 None；否则返回 RESOURCE_UNREF operation fence。
+    ///
+    /// # Errors
+    ///
+    /// identity 仍 active、已有 operation 或 device failure。
     fn release_buffer(&self, identity: u64) -> Result<Option<u64>, DisplayError>;
 
-    /// @description 以标准 resource_id=0 禁用 scanout，再解绑并释放 active resource。
-    /// @return disable operation fence；hardware 不再引用 backing 后才完成。
-    /// @errors 无 active resource、已有 operation 或 device failure。
+    /// 以标准 resource_id=0 禁用 scanout，再解绑并释放 active resource。
+    ///
+    /// # Returns
+    ///
+    /// disable operation fence；hardware 不再引用 backing 后才完成。
+    ///
+    /// # Errors
+    ///
+    /// 无 active resource、已有 operation 或 device failure。
     fn disable_scanout(&self) -> Result<u64, DisplayError>;
 
-    /// @description 有界消费一个 controlq/config 更新，并推进 transaction state。
-    /// @return scanout 最终完成或 mode 改变时返回领域更新；无更新返回 `None`。
-    /// @errors descriptor、fence 或 device response 不匹配返回 `Device`。
+    /// 有界消费一个 controlq/config 更新，并推进 transaction state。
+    ///
+    /// # Returns
+    ///
+    /// scanout 最终完成或 mode 改变时返回领域更新；无更新返回 `None`。
+    ///
+    /// # Errors
+    ///
+    /// descriptor、fence 或 device response 不匹配返回 `Device`。
     fn poll_update(&self) -> Result<Option<DisplayUpdate>, DisplayError>;
 }
 
@@ -113,11 +155,19 @@ pub(crate) trait DisplayDevice: Send + Sync {
 // IRQ handler 与后续 DRM fd 会各自决定设备生命周期，scanout backing 可能提前释放。
 static PRIMARY_DISPLAY: Once<Arc<dyn GraphicsDevice>> = Once::new();
 
-/// @description 发布唯一 primary display adapter。
+/// 发布唯一 primary display adapter。
 ///
-/// @param device 已完成 mode-set 且拥有 scanout backing 的 display adapter。
-/// @return 首次发布成功返回 unit。
-/// @errors primary display 已存在时返回 unit error。
+/// # Parameters
+///
+/// - `device`: 已完成 mode-set 且拥有 scanout backing 的 display adapter。
+///
+/// # Returns
+///
+/// 首次发布成功返回 unit。
+///
+/// # Errors
+///
+/// primary display 已存在时返回 unit error。
 pub(super) fn register(device: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     if PRIMARY_DISPLAY.get().is_some() {
         return Err(());
@@ -126,8 +176,11 @@ pub(super) fn register(device: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     Ok(())
 }
 
-/// @description 取得 DTB 选中的唯一 primary display。
-/// @return adapter 已发布时返回共享 seam；无 GPU 时返回 `None`。
+/// 取得 DTB 选中的唯一 primary display。
+///
+/// # Returns
+///
+/// adapter 已发布时返回共享 seam；无 GPU 时返回 `None`。
 pub(crate) fn primary_display() -> Option<Arc<dyn GraphicsDevice>> {
     PRIMARY_DISPLAY.get().cloned()
 }

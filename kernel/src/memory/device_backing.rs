@@ -6,7 +6,7 @@ use super::{FrameAllocationClass, FrameTracker, address::PhysicalPageNumber, all
 const MAX_EXTENT_PAGES: usize = 64;
 const MAX_EXTENTS: usize = 256;
 
-/// @description device mapping 与 DMA consumer 共享的精确页数 scatter/gather backing。
+/// device mapping 与 DMA consumer 共享的精确页数 scatter/gather backing。
 pub(crate) struct DeviceBacking {
     extents: Vec<DeviceExtent>,
     pages: usize,
@@ -18,11 +18,16 @@ struct DeviceExtent {
 }
 
 impl DeviceBacking {
-    /// @description 以不超过 256 KiB 的 buddy extent 事务化分配指定页数。
+    /// 以不超过 256 KiB 的 buddy extent 事务化分配指定页数。
     ///
-    /// @param pages 非零逻辑页数；成功 backing 的物理页数与其精确相等。
-    /// @param class 本次物理页分配是否可消耗 kernel progress reserve。
-    /// @return 成功返回唯一 backing owner；任一 extent 失败时回收完整 prefix 并返回 None。
+    /// # Parameters
+    ///
+    /// - `pages`: 非零逻辑页数；成功 backing 的物理页数与其精确相等。
+    /// - `class`: 本次物理页分配是否可消耗 kernel progress reserve。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回唯一 backing owner；任一 extent 失败时回收完整 prefix 并返回 None。
     pub(crate) fn try_allocate(pages: usize, class: FrameAllocationClass) -> Option<Self> {
         if pages == 0 {
             return None;
@@ -55,16 +60,24 @@ impl DeviceBacking {
         Some(Self { extents, pages })
     }
 
-    /// @description 返回 backing 的精确逻辑页数。
-    /// @return 非零页数，不包含 buddy rounding waste。
+    /// 返回 backing 的精确逻辑页数。
+    ///
+    /// # Returns
+    ///
+    /// 非零页数，不包含 buddy rounding waste。
     pub(crate) fn pages(&self) -> usize {
         self.pages
     }
 
-    /// @description 把逻辑 page index 投影到唯一物理页。
+    /// 把逻辑 page index 投影到唯一物理页。
     ///
-    /// @param index 小于 `pages()` 的逻辑页 index。
-    /// @return index 有效时返回对应物理页，否则返回 None。
+    /// # Parameters
+    ///
+    /// - `index`: 小于 `pages()` 的逻辑页 index。
+    ///
+    /// # Returns
+    ///
+    /// index 有效时返回对应物理页，否则返回 None。
     pub(crate) fn page(&self, index: usize) -> Option<PhysicalPageNumber> {
         if index >= self.pages {
             return None;
@@ -82,27 +95,44 @@ impl DeviceBacking {
             .map(PhysicalPageNumber::from)
     }
 
-    /// @description 返回 DMA attach 使用的稳定物理 extent 数。
-    /// @return 1..=256；backing lifetime 内不变。
+    /// 返回 DMA attach 使用的稳定物理 extent 数。
+    ///
+    /// # Returns
+    ///
+    /// 1..=256；backing lifetime 内不变。
     pub(crate) fn extent_count(&self) -> usize {
         self.extents.len()
     }
 
-    /// @description 按稳定 index 返回一个物理连续 extent。
+    /// 按稳定 index 返回一个物理连续 extent。
     ///
-    /// @param index 小于 `extent_count()` 的 extent index。
-    /// @return 有效时返回起始物理页与精确页数，否则返回 None。
+    /// # Parameters
+    ///
+    /// - `index`: 小于 `extent_count()` 的 extent index。
+    ///
+    /// # Returns
+    ///
+    /// 有效时返回起始物理页与精确页数，否则返回 None。
     pub(crate) fn extent(&self, index: usize) -> Option<(PhysicalPageNumber, usize)> {
         self.extents
             .get(index)
             .map(|extent| (extent.frames.ppn, extent.frames.pages))
     }
 
-    /// @description 从逻辑 byte range 复制 device backing 内容到 kernel buffer。
-    /// @param offset backing 内 byte offset。
-    /// @param output kernel-owned initialized output。
-    /// @return range 完整有效时成功。
-    /// @errors range 越界或算术溢出返回 unit。
+    /// 从逻辑 byte range 复制 device backing 内容到 kernel buffer。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: backing 内 byte offset。
+    /// - `output`: kernel-owned initialized output。
+    ///
+    /// # Returns
+    ///
+    /// range 完整有效时成功。
+    ///
+    /// # Errors
+    ///
+    /// range 越界或算术溢出返回 unit。
     pub(crate) fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), ()> {
         let capacity = self.pages.checked_mul(super::PAGE_SIZE).ok_or(())?;
         let end = offset.checked_add(output.len()).ok_or(())?;

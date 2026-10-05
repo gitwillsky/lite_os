@@ -72,17 +72,29 @@ pub(super) fn cvt_mode(mode: DisplayMode) -> DrmMode {
 }
 
 impl DrmFile {
-    /// @description 读取当前 single-connector preferred mode。
-    /// @return 与最新已提交 VirtIO display-info resolution 对应的 Linux CVT 60 Hz mode。
+    /// 读取当前 single-connector preferred mode。
+    ///
+    /// # Returns
+    ///
+    /// 与最新已提交 VirtIO display-info resolution 对应的 Linux CVT 60 Hz mode。
     pub(crate) fn mode(&self) -> DrmMode {
         cvt_mode(self.device.state.lock().mode)
     }
 
-    /// @description Validate and canonicalize a userspace-selected single-output CVT mode.
-    /// @param width Requested horizontal pixels, aligned to the CVT 8-pixel cell.
-    /// @param height Requested vertical pixels.
-    /// @return Adapter mode and its exact Linux UAPI encoding.
-    /// @errors Zero, unaligned or out-of-product-range geometry returns `Invalid`.
+    /// Validate and canonicalize a userspace-selected single-output CVT mode.
+    ///
+    /// # Parameters
+    ///
+    /// - `width`: Requested horizontal pixels, aligned to the CVT 8-pixel cell.
+    /// - `height`: Requested vertical pixels.
+    ///
+    /// # Returns
+    ///
+    /// Adapter mode and its exact Linux UAPI encoding.
+    ///
+    /// # Errors
+    ///
+    /// Zero, unaligned or out-of-product-range geometry returns `Invalid`.
     pub(crate) fn requested_mode(
         &self,
         width: u32,
@@ -105,8 +117,11 @@ impl DrmFile {
         Ok((mode, cvt_mode(mode)))
     }
 
-    /// @description 原子读取 completion 已确认的 active CRTC framebuffer 与 mode。
-    /// @return 尚未由 userspace modeset 时返回 `None`。
+    /// 原子读取 completion 已确认的 active CRTC framebuffer 与 mode。
+    ///
+    /// # Returns
+    ///
+    /// 尚未由 userspace modeset 时返回 `None`。
     pub(crate) fn active_crtc(&self) -> Option<(u32, DrmMode)> {
         self.device
             .completion

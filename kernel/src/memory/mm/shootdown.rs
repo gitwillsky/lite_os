@@ -44,7 +44,7 @@ pub(in crate::memory) struct TranslationCommit {
 }
 
 impl TranslationCommit {
-    /// @description 构造尚未记录 PTE mutation 的空 commit。
+    /// 构造尚未记录 PTE mutation 的空 commit。
     pub(in crate::memory) const fn new() -> Self {
         Self {
             first_page: usize::MAX,
@@ -56,21 +56,24 @@ impl TranslationCommit {
         }
     }
 
-    /// @description 为 architecture 允许保留旧 invalid/restrictive translation 的 fault 建立 local commit。
+    /// 为 architecture 允许保留旧 invalid/restrictive translation 的 fault 建立 local commit。
     pub(super) fn stale_fault(page: usize) -> Self {
         let mut commit = Self::new();
         commit.record(page, TranslationTransition::Relax);
         commit
     }
 
-    /// @description 合并一个由 PageTable owner 判定的 leaf transition。
-    /// @param page 目标 virtual page number。
-    /// @param transition invalid/valid/permission/physical identity 的语义变化。
+    /// 合并一个由 PageTable owner 判定的 leaf transition。
+    ///
+    /// # Parameters
+    ///
+    /// - `page`: 目标 virtual page number。
+    /// - `transition`: invalid/valid/permission/physical identity 的语义变化。
     pub(in crate::memory) fn record(&mut self, page: usize, transition: TranslationTransition) {
         self.record_range(page, 1, transition);
     }
 
-    /// @description 合并一个 contiguous leaf span；huge leaf revoke 必须覆盖完整 translation。
+    /// 合并一个 contiguous leaf span；huge leaf revoke 必须覆盖完整 translation。
     pub(in crate::memory) fn record_range(
         &mut self,
         first_page: usize,
@@ -89,10 +92,14 @@ impl TranslationCommit {
         });
     }
 
-    /// @description 记录本次 PTE transaction 发布 executable view 的物理页范围。
-    /// @param first_physical_page 首个被写入并将变为可执行的物理页号。
-    /// @param page_count 连续物理页数；多个记录合并成一个保守覆盖区间。
-    /// @note caller 必须在 synchronize 前完成 instruction bytes 写入。
+    /// 记录本次 PTE transaction 发布 executable view 的物理页范围。
+    ///
+    /// caller 必须在 synchronize 前完成 instruction bytes 写入。
+    ///
+    /// # Parameters
+    ///
+    /// - `first_physical_page`: 首个被写入并将变为可执行的物理页号。
+    /// - `page_count`: 连续物理页数；多个记录合并成一个保守覆盖区间。
     pub(in crate::memory) fn record_instruction_publication(
         &mut self,
         first_physical_page: usize,
@@ -112,12 +119,12 @@ impl TranslationCommit {
             self.instruction_end_physical_page.max(end_physical_page);
     }
 
-    /// @description 显式结束从未发布/激活的 page-table mutation，不执行 fence。
+    /// 显式结束从未发布/激活的 page-table mutation，不执行 fence。
     pub(super) fn finish_unpublished(mut self) {
         self.retired_table_pages.clear();
     }
 
-    /// @description 把 architecture 已摘除的空 table owners 保活到 revoke fence 完成。
+    /// 把 architecture 已摘除的空 table owners 保活到 revoke fence 完成。
     pub(in crate::memory) fn retain_table_pages(
         &mut self,
         pages: impl IntoIterator<Item = VacantEntry<usize, FrameTracker>>,
@@ -167,8 +174,11 @@ impl TranslationCommit {
         }
     }
 
-    /// @description 提交最小 local range fence，并只为 revoke/replace 同步远端 CPU。
-    /// @return 所有必需 target 完成 fence 后成功；firmware 失败时返回原错误。
+    /// 提交最小 local range fence，并只为 revoke/replace 同步远端 CPU。
+    ///
+    /// # Returns
+    ///
+    /// 所有必需 target 完成 fence 后成功；firmware 失败时返回原错误。
     #[cfg(not(test))]
     pub(super) fn synchronize(&mut self) -> Result<(), TranslationSynchronizationError> {
         let plan = self.plan(crate::cpu::online().iter().count());
@@ -260,10 +270,16 @@ pub(super) struct FencePlan {
     pub(super) remote_instruction_targets: usize,
 }
 
-/// @description 在 retained owner 内撤销 translations，以唯一 commit 同步后才允许释放 owner。
-/// @param retained 必须跨 remote fence 保活的 frame/device/writer owner。
-/// @param revoke 只修改 PTE 并把 transition 记录进给定 token。
-/// @return fence 完成后返回 owner；失败时泄漏 owner 供 caller fail-stop。
+/// 在 retained owner 内撤销 translations，以唯一 commit 同步后才允许释放 owner。
+///
+/// # Parameters
+///
+/// - `retained`: 必须跨 remote fence 保活的 frame/device/writer owner。
+/// - `revoke`: 只修改 PTE 并把 transition 记录进给定 token。
+///
+/// # Returns
+///
+/// fence 完成后返回 owner；失败时泄漏 owner 供 caller fail-stop。
 #[cfg(not(test))]
 pub(super) fn revoke_and_commit<T>(
     mut retained: T,
@@ -280,10 +296,14 @@ pub(super) fn revoke_and_commit<T>(
     }
 }
 
-/// @description 在 address-space owner 释放 ASID/frames 前同步清空全部 CPU translation。
-/// @return 当前 CPU 与所有其他 online/possible CPU 完成 full fence 后成功。
-/// @note 这是 address-space retirement，不是 leaf mutation 的兼容路径；caller 必须在
+/// 在 address-space owner 释放 ASID/frames 前同步清空全部 CPU translation。
+///
+/// 这是 address-space retirement，不是 leaf mutation 的兼容路径；caller 必须在
 /// 成功返回前保留完整 MemorySet owner，失败时 fail-stop 且不得复用 ASID。
+///
+/// # Returns
+///
+/// 当前 CPU 与所有其他 online/possible CPU 完成 full fence 后成功。
 #[cfg(not(test))]
 pub(super) fn synchronize_address_space_retirement()
 -> Result<(), crate::platform::TlbShootdownError> {

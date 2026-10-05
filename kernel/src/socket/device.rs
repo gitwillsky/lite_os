@@ -15,7 +15,7 @@ use crate::drivers::network::{
 const ETHERNET_MTU: usize = 1514;
 const RECEIVE_CAPACITY: usize = 2048;
 
-/// @description 将 kernel Ethernet device seam 适配为 smoltcp token device。
+/// 将 kernel Ethernet device seam 适配为 smoltcp token device。
 pub(super) struct EthernetDevice {
     device: Arc<dyn NetworkDevice>,
     // OWNER: adapter 独占 callback 无法返回的首个 typed error；外层唯一 NetworkStack
@@ -25,10 +25,15 @@ pub(super) struct EthernetDevice {
 }
 
 impl EthernetDevice {
-    /// @description 创建不复制硬件状态的协议栈 adapter。
+    /// 创建不复制硬件状态的协议栈 adapter。
     ///
-    /// @param device DTB 选中的唯一 Ethernet device。
-    /// @return 只持共享设备 Arc 的 adapter。
+    /// # Parameters
+    ///
+    /// - `device`: DTB 选中的唯一 Ethernet device。
+    ///
+    /// # Returns
+    ///
+    /// 只持共享设备 Arc 的 adapter。
     pub(super) fn new(device: Arc<dyn NetworkDevice>) -> Self {
         Self {
             device,
@@ -44,11 +49,19 @@ impl EthernetDevice {
         self.device.statistics()
     }
 
-    /// @description 有界回收设备 TX completion。
+    /// 有界回收设备 TX completion。
     ///
-    /// @param budget 本轮最多回收的 descriptor head 数。
-    /// @return backlog 与 capacity transition。
-    /// @errors 设备或 used ring 损坏时返回错误。
+    /// # Parameters
+    ///
+    /// - `budget`: 本轮最多回收的 descriptor head 数。
+    ///
+    /// # Returns
+    ///
+    /// backlog 与 capacity transition。
+    ///
+    /// # Errors
+    ///
+    /// 设备或 used ring 损坏时返回错误。
     pub(super) fn poll_completions(
         &self,
         budget: usize,
@@ -56,21 +69,29 @@ impl EthernetDevice {
         self.capture(self.device.poll_completions(budget))
     }
 
-    /// @description 把本轮重新发布的 RX buffers 一次通知给设备。
+    /// 把本轮重新发布的 RX buffers 一次通知给设备。
     ///
-    /// @return 成功或 transport 错误。
+    /// # Returns
+    ///
+    /// 成功或 transport 错误。
     pub(super) fn finish_receive_batch(&self) -> Result<(), NetworkError> {
         self.capture(self.device.finish_receive_batch())
     }
 
-    /// @description 读取但不消费 callback 锁存的首个 adapter error。
-    /// @return pending error；没有错误返回 `None`。
+    /// 读取但不消费 callback 锁存的首个 adapter error。
+    ///
+    /// # Returns
+    ///
+    /// pending error；没有错误返回 `None`。
     pub(super) fn pending_error(&self) -> Option<NetworkError> {
         self.pending_error.get()
     }
 
-    /// @description 在 syscall seam 消费 callback 锁存的首个 adapter error。
-    /// @return pending error；没有错误返回 `None`。
+    /// 在 syscall seam 消费 callback 锁存的首个 adapter error。
+    ///
+    /// # Returns
+    ///
+    /// pending error；没有错误返回 `None`。
     pub(super) fn take_error(&self) -> Option<NetworkError> {
         self.pending_error.replace(None)
     }

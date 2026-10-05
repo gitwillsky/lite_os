@@ -56,33 +56,60 @@ pub(super) fn proc_text(arguments: fmt::Arguments<'_>) -> Result<Vec<u8>, FileSy
     Ok(output.finish())
 }
 
-/// @description procfs 读取 kernel 状态的窄接口；状态仍由 task、memory 与 processor 唯一拥有。
+/// procfs 读取 kernel 状态的窄接口；状态仍由 task、memory 与 processor 唯一拥有。
 pub(crate) trait ProcSource: Send + Sync {
-    /// @description 在一次读取边界取得自洽的只读快照。
+    /// 在一次读取边界取得自洽的只读快照。
     fn snapshot(&self) -> Result<ProcSnapshot, FileSystemError>;
 
-    /// @description 返回正在解析 `/proc/self` 的 calling process TGID。
-    /// @return user process context 返回 TGID；无 current task 返回 None。
+    /// 返回正在解析 `/proc/self` 的 calling process TGID。
+    ///
+    /// # Returns
+    ///
+    /// user process context 返回 TGID；无 current task 返回 None。
     fn current_pid(&self) -> Option<usize>;
 
-    /// @description 按 TGID 从目标 MemorySet argument range 读取实时 argv bytes。
-    /// @param pid live process TGID。
-    /// @return 存在且 argument range 可读时返回 NUL 分隔 bytes；不存在返回 None。
-    /// @errors kernel snapshot buffer OOM 返回明确文件系统错误。
+    /// 按 TGID 从目标 MemorySet argument range 读取实时 argv bytes。
+    ///
+    /// # Parameters
+    ///
+    /// - `pid`: live process TGID。
+    ///
+    /// # Returns
+    ///
+    /// 存在且 argument range 可读时返回 NUL 分隔 bytes；不存在返回 None。
+    ///
+    /// # Errors
+    ///
+    /// kernel snapshot buffer OOM 返回明确文件系统错误。
     fn process_arguments(&self, pid: usize) -> Result<Option<Vec<u8>>, FileSystemError>;
 
-    /// @description 按 TGID 投影 live fd/OFD identity，不复制 backend 状态。
-    /// @param pid live process TGID。
-    /// @return process 存在且快照成功时返回按 fd 排序的 targets；否则返回 None。
+    /// 按 TGID 投影 live fd/OFD identity，不复制 backend 状态。
+    ///
+    /// # Parameters
+    ///
+    /// - `pid`: live process TGID。
+    ///
+    /// # Returns
+    ///
+    /// process 存在且快照成功时返回按 fd 排序的 targets；否则返回 None。
     fn process_file_descriptors(
         &self,
         pid: usize,
     ) -> Result<Option<Vec<ProcFileDescriptorSnapshot>>, FileSystemError>;
 
-    /// @description 按 TGID 投影 live process 的最终 main ELF opened-entry identity。
-    /// @param pid live process TGID。
-    /// @return process 存在且访问允许时返回 executable opened entry；否则返回 None。
-    /// @errors 权限或内存失败返回明确文件系统错误。
+    /// 按 TGID 投影 live process 的最终 main ELF opened-entry identity。
+    ///
+    /// # Parameters
+    ///
+    /// - `pid`: live process TGID。
+    ///
+    /// # Returns
+    ///
+    /// process 存在且访问允许时返回 executable opened entry；否则返回 None。
+    ///
+    /// # Errors
+    ///
+    /// 权限或内存失败返回明确文件系统错误。
     fn process_executable(&self, pid: usize) -> Result<Option<Arc<OpenedFile>>, FileSystemError>;
 }
 

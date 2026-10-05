@@ -10,9 +10,11 @@ pub(crate) struct KernelStack {
 }
 
 impl KernelStack {
-    /// @description 分配带 guard page 的 kernel stack，供可失败的 process 创建事务使用。
+    /// 分配带 guard page 的 kernel stack，供可失败的 process 创建事务使用。
     ///
-    /// @return 成功返回唯一 stack handle；frame OOM 时回滚映射并归还 handle。
+    /// # Returns
+    ///
+    /// 成功返回唯一 stack handle；frame OOM 时回滚映射并归还 handle。
     pub(crate) fn try_new() -> Result<Self, MemoryError> {
         let handle = KernelStackHandle(
             KERNEL_STACK_HANDLE_ALLOCATOR
@@ -41,8 +43,11 @@ impl KernelStack {
             .expect("kernel stack context reserve exceeds mapping")
     }
 
-    /// @description 返回 architecture 选择的 kernel-stack-owned UserContext 地址。
-    /// @return AArch64 为保留顶页 metadata 后的 context；RISC-V 为 None。
+    /// 返回 architecture 选择的 kernel-stack-owned UserContext 地址。
+    ///
+    /// # Returns
+    ///
+    /// AArch64 为保留顶页 metadata 后的 context；RISC-V 为 None。
     pub(crate) fn user_context_address(&self) -> Option<usize> {
         let (_, mapped_top) = kernel_stack_position(self.handle.0);
         match crate::arch::context::USER_CONTEXT_PLACEMENT {

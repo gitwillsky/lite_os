@@ -275,7 +275,7 @@ impl Ext2Inode {
         Ok((offset, written))
     }
 
-    /// @description 为 range 中的 hole 分配清零 blocks，并在完成后提交新 i_size。
+    /// 为 range 中的 hole 分配清零 blocks，并在完成后提交新 i_size。
     pub(super) fn allocate_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
         const BLOCKS_PER_TRANSACTION: u64 = 64;
         if self.inode_type() != InodeType::File {

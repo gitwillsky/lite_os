@@ -173,7 +173,7 @@ static HEAP_STATE: Mutex<HeapState> = Mutex::new(HeapState::new());
 // 分别以 Relaxed 原子提交，只提供瞬时统计，不参与 lifetime 判定。
 static DIRECT_PAGES: AtomicUsize = AtomicUsize::new(0);
 
-/// @description global heap 当前占用的 frame-backed 物理页快照。
+/// global heap 当前占用的 frame-backed 物理页快照。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct HeapStatistics {
     /// live slab 与 direct extent 合计页数；不包含静态 bootstrap arena。
@@ -512,9 +512,15 @@ pub(crate) fn init() {
     *BOOTSTRAP_OFFSET.lock() = 0;
 }
 
-/// @description 按已发布的 logical CPU topology 构造 per-CPU 小对象 cache。
-/// @return 无返回值；每个 logical CPU 恰有一个 cache cell。
-/// @errors topology 未发布、零 CPU 或重复初始化时 fail-stop。
+/// 按已发布的 logical CPU topology 构造 per-CPU 小对象 cache。
+///
+/// # Returns
+///
+/// 无返回值；每个 logical CPU 恰有一个 cache cell。
+///
+/// # Errors
+///
+/// topology 未发布、零 CPU 或重复初始化时 fail-stop。
 pub(crate) fn init_cpu_caches() {
     assert!(
         crate::cpu::is_initialized(),
@@ -536,14 +542,20 @@ pub(crate) fn init_cpu_caches() {
     CPU_HEAP_CACHES.call_once(|| CpuHeapCaches(caches));
 }
 
-/// @description 在 frame allocator 初始化后原子切换到可回收的 slab/direct heap。
-/// @return 无返回值；重复调用保持启用状态。
+/// 在 frame allocator 初始化后原子切换到可回收的 slab/direct heap。
+///
+/// # Returns
+///
+/// 无返回值；重复调用保持启用状态。
 pub(crate) fn enable_frame_backed_growth() {
     FRAME_BACKED_GROWTH.store(true, Ordering::Release);
 }
 
-/// @description 读取唯一 heap owners 的常数时间 resident page projection。
-/// @return slab 与 direct extent 合计页数，不扫描 slab、cache 或 allocation。
+/// 读取唯一 heap owners 的常数时间 resident page projection。
+///
+/// # Returns
+///
+/// slab 与 direct extent 合计页数，不扫描 slab、cache 或 allocation。
 pub(crate) fn statistics() -> HeapStatistics {
     let _irq = LocalIrqGuard::disable();
     let slab_pages = HEAP_STATE.lock().slab_pages;

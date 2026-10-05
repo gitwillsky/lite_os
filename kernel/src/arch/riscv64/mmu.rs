@@ -38,30 +38,54 @@ pub(crate) const KERNEL_STACK_REGION_TOP: usize = TRAP_CONTEXT_ADDRESS;
 /// 保持既有 Sv39 用户上界 guard 布局的初始用户栈 exclusive top。
 pub(crate) const USER_STACK_TOP: usize = USER_ADDRESS_END - PAGE_SIZE;
 
-/// @description 将 raw integer 限制到 RISC-V physical-address width。
-/// @param address generic memory 传入的地址值。
-/// @return backend 可表达的 physical address。
+/// 将 raw integer 限制到 RISC-V physical-address width。
+///
+/// # Parameters
+///
+/// - `address`: generic memory 传入的地址值。
+///
+/// # Returns
+///
+/// backend 可表达的 physical address。
 pub(crate) fn normalize_physical_address(address: usize) -> usize {
     address & ((1usize << PHYSICAL_ADDRESS_WIDTH) - 1)
 }
 
-/// @description 将 raw page number 限制到 RISC-V physical-page width。
-/// @param page generic memory 传入的 page number。
-/// @return backend 可表达的 physical page number。
+/// 将 raw page number 限制到 RISC-V physical-page width。
+///
+/// # Parameters
+///
+/// - `page`: generic memory 传入的 page number。
+///
+/// # Returns
+///
+/// backend 可表达的 physical page number。
 pub(crate) fn normalize_physical_page(page: usize) -> usize {
     page & ((1usize << (PHYSICAL_ADDRESS_WIDTH - PAGE_SHIFT)) - 1)
 }
 
-/// @description 将 raw page number 限制到 Sv39 virtual-page width。
-/// @param page generic memory 传入的 page number。
-/// @return backend 可表达的 virtual page number。
+/// 将 raw page number 限制到 Sv39 virtual-page width。
+///
+/// # Parameters
+///
+/// - `page`: generic memory 传入的 page number。
+///
+/// # Returns
+///
+/// backend 可表达的 virtual page number。
 pub(crate) fn normalize_virtual_page(page: usize) -> usize {
     page & ((1usize << (VIRTUAL_ADDRESS_WIDTH - PAGE_SHIFT)) - 1)
 }
 
-/// @description 将 raw Sv39 value 转换为 pointer 可用的 canonical virtual address。
-/// @param address generic memory 保存的 virtual-address bits。
-/// @return 按 Sv39 sign-extension 规则 canonicalize 的地址。
+/// 将 raw Sv39 value 转换为 pointer 可用的 canonical virtual address。
+///
+/// # Parameters
+///
+/// - `address`: generic memory 保存的 virtual-address bits。
+///
+/// # Returns
+///
+/// 按 Sv39 sign-extension 规则 canonicalize 的地址。
 pub(crate) fn canonicalize_virtual_address(address: usize) -> usize {
     let mask = (1usize << VIRTUAL_ADDRESS_WIDTH) - 1;
     let sign_bit = 1usize << (VIRTUAL_ADDRESS_WIDTH - 1);
@@ -73,17 +97,22 @@ pub(crate) fn canonicalize_virtual_address(address: usize) -> usize {
     }
 }
 
-/// @description 发布平台 MMIO 映射；Sv39 当前使用物理地址恒等映射，因此无需额外窗口。
-/// @param regions platform 已验证的 MMIO physical ranges。
-/// @return 无返回值。
-/// @errors 当前 backend 不产生额外映射失败；超出 physical width 仍由地址 façade fail-stop。
+/// 发布平台 MMIO 映射；Sv39 当前使用物理地址恒等映射，因此无需额外窗口。
+///
+/// # Parameters
+///
+/// - `regions`: platform 已验证的 MMIO physical ranges。
+///
+/// # Errors
+///
+/// 当前 backend 不产生额外映射失败；超出 physical width 仍由地址 façade fail-stop。
 pub(crate) fn initialize_kernel_mmio<I>(_regions: I)
 where
     I: IntoIterator<Item = Range<usize>>,
 {
 }
 
-/// @description RISC-V 当前保持恒等 direct map，把 physical fact 转为 kernel address。
+/// RISC-V 当前保持恒等 direct map，把 physical fact 转为 kernel address。
 pub(crate) fn physical_to_virtual(address: usize) -> usize {
     assert_eq!(
         address,
@@ -93,10 +122,19 @@ pub(crate) fn physical_to_virtual(address: usize) -> usize {
     DIRECT_MAP_BASE + normalize_physical_address(address)
 }
 
-/// @description 将 Sv39 恒等映射中的半开物理区间转换为 kernel virtual range。
-/// @param range 已经按 platform fact 验证且不为空的 physical range。
-/// @return 与输入相同的 virtual range。
-/// @errors physical range 反向或超出 backend physical width 时 fail-stop。
+/// 将 Sv39 恒等映射中的半开物理区间转换为 kernel virtual range。
+///
+/// # Parameters
+///
+/// - `range`: 已经按 platform fact 验证且不为空的 physical range。
+///
+/// # Returns
+///
+/// 与输入相同的 virtual range。
+///
+/// # Errors
+///
+/// physical range 反向或超出 backend physical width 时 fail-stop。
 pub(crate) fn physical_range_to_virtual(range: Range<usize>) -> Range<usize> {
     assert!(
         range.start < range.end,
@@ -107,13 +145,13 @@ pub(crate) fn physical_range_to_virtual(range: Range<usize>) -> Range<usize> {
     start..end
 }
 
-/// @description RISC-V 当前恒等 direct map 的逆变换。
+/// RISC-V 当前恒等 direct map 的逆变换。
 pub(crate) fn virtual_to_physical(address: usize) -> Option<usize> {
     let normalized = normalize_physical_address(address);
     (normalized == address).then_some(normalized)
 }
 
-/// @description RISC-V Sv39 address-space token；raw `satp` encoding 不跨越 arch seam。
+/// RISC-V Sv39 address-space token；raw `satp` encoding 不跨越 arch seam。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AddressSpaceToken(usize);
@@ -122,7 +160,7 @@ pub(crate) struct AddressSpaceToken(usize);
 pub(crate) type KernelTrapToken = AddressSpaceToken;
 
 impl AddressSpaceToken {
-    /// @description 从 Sv39 root physical page number 构造 address-space token。
+    /// 从 Sv39 root physical page number 构造 address-space token。
     pub(crate) fn from_root_page(root_page: usize, address_space_id: usize) -> Self {
         assert!(
             root_page < 1usize << 44,
@@ -141,7 +179,7 @@ impl AddressSpaceToken {
     }
 }
 
-/// @description 探测并验证当前 hart 的 `satp.ASID` 宽度。
+/// 探测并验证当前 hart 的 `satp.ASID` 宽度。
 ///
 /// 每个 CPU 在进入共享 execution 前调用；boot CPU 发布全局容量，secondary 必须得到相同
 /// 结果。恢复原 `satp` 后执行一次全量 fence，缺失它会让探测期间的临时 ASID translation
@@ -179,8 +217,11 @@ pub(crate) fn initialize_address_space_identifiers() {
     }
 }
 
-/// @description 分配一个跨全部 CPU 保持同一 address-space identity 的非零 ASID。
-/// @return 可用 ASID；容量耗尽时返回 None。
+/// 分配一个跨全部 CPU 保持同一 address-space identity 的非零 ASID。
+///
+/// # Returns
+///
+/// 可用 ASID；容量耗尽时返回 None。
 pub(super) fn allocate_address_space_id() -> Option<usize> {
     let capacity = ADDRESS_SPACE_ID_CAPACITY.load(Ordering::Acquire);
     assert_ne!(capacity, 0, "ASID allocator used before CPU initialization");
@@ -221,13 +262,16 @@ fn prepare_local_activation(token: AddressSpaceToken, logical_cpu: usize) {
     seen.fetch_or(cpu_bit, Ordering::Release);
 }
 
-/// @description 为 trampoline 的下一次 user `satp` 切换准备 CPU-local ASID state。
+/// 为 trampoline 的下一次 user `satp` 切换准备 CPU-local ASID state。
 pub(crate) fn prepare_user_activation(token: AddressSpaceToken, logical_cpu: usize) {
     prepare_local_activation(token, logical_cpu);
 }
 
-/// @description 在 caller 已完成全 CPU translation invalidation 后释放 ASID。
-/// @param identifier 待复用的非零、当前已分配 ID。
+/// 在 caller 已完成全 CPU translation invalidation 后释放 ASID。
+///
+/// # Parameters
+///
+/// - `identifier`: 待复用的非零、当前已分配 ID。
 pub(super) fn release_address_space_id_after_global_fence(identifier: usize) {
     let word = &ADDRESS_SPACE_IDS[identifier / usize::BITS as usize];
     let bit = 1usize << (identifier % usize::BITS as usize);
@@ -235,9 +279,11 @@ pub(super) fn release_address_space_id_after_global_fence(identifier: usize) {
     assert_ne!(previous & bit, 0, "address-space identifier released twice");
 }
 
-/// @description 激活当前 CPU 的 tagged Sv39 address space。
+/// 激活当前 CPU 的 tagged Sv39 address space。
 ///
-/// @param token 由 live page-table root 构造的 token。
+/// # Parameters
+///
+/// - `token`: 由 live page-table root 构造的 token。
 pub(crate) fn activate(token: AddressSpaceToken) {
     prepare_local_activation(token, super::startup::current_logical_id());
     // SAFETY: token encodes a live Sv39 root and globally unique ASID. Page-table mutation and
@@ -247,20 +293,23 @@ pub(crate) fn activate(token: AddressSpaceToken) {
     }
 }
 
-/// @description RISC-V kernel/user 共享同一 Sv39 root，激活 kernel root 等价于普通激活。
+/// RISC-V kernel/user 共享同一 Sv39 root，激活 kernel root 等价于普通激活。
 pub(crate) fn activate_kernel(token: AddressSpaceToken) {
     activate(token);
 }
 
-/// @description 失效当前 CPU 的全部 S-stage translations。
+/// 失效当前 CPU 的全部 S-stage translations。
 pub(crate) fn flush_local() {
     // SAFETY: kernel executes in S-mode and the instruction only affects local TLB state.
     unsafe { asm!("sfence.vma") };
 }
 
-/// @description 失效当前 CPU 上覆盖 `[start, start + size)` 的 S-stage translations。
-/// @param start page-aligned canonical virtual address。
-/// @param size 非零、page-aligned 字节数。
+/// 失效当前 CPU 上覆盖 `[start, start + size)` 的 S-stage translations。
+///
+/// # Parameters
+///
+/// - `start`: page-aligned canonical virtual address。
+/// - `size`: 非零、page-aligned 字节数。
 pub(crate) fn flush_local_range(start: usize, size: usize) {
     debug_assert_eq!(start % PAGE_SIZE, 0);
     debug_assert_ne!(size, 0);

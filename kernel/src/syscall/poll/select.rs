@@ -8,7 +8,7 @@ use crate::{
 use super::{POLLERR, POLLHUP, POLLIN, POLLOUT, POLLPRI};
 use crate::syscall::timer::{TimeSpec, decode_timespec};
 
-/// @description pselect6 fd-set input/output codec；wait orchestration 不接触 bitmap storage。
+/// pselect6 fd-set input/output codec；wait orchestration 不接触 bitmap storage。
 pub(super) struct SelectSets {
     byte_count: usize,
     addresses: [usize; 3],
@@ -16,12 +16,21 @@ pub(super) struct SelectSets {
 }
 
 impl SelectSets {
-    /// @description 一次性导入 read/write/except fd sets。
-    /// @param task 当前 userspace address-space owner。
-    /// @param count fd upper bound。
-    /// @param addresses read/write/except userspace addresses；零表示缺省集合。
-    /// @return 完整 codec state。
-    /// @errors allocation/copy failure 返回 Linux 负 errno。
+    /// 一次性导入 read/write/except fd sets。
+    ///
+    /// # Parameters
+    ///
+    /// - `task`: 当前 userspace address-space owner。
+    /// - `count`: fd upper bound。
+    /// - `addresses`: read/write/except userspace addresses；零表示缺省集合。
+    ///
+    /// # Returns
+    ///
+    /// 完整 codec state。
+    ///
+    /// # Errors
+    ///
+    /// allocation/copy failure 返回 Linux 负 errno。
     pub(super) fn load(
         task: &TaskControlBlock,
         count: usize,
@@ -39,9 +48,15 @@ impl SelectSets {
         })
     }
 
-    /// @description 将一个 fd 的三个输入 bitmap 投影为 poll event mask。
-    /// @param fd 非负且小于 pselect count 的 descriptor number。
-    /// @return POLLIN/POLLOUT/POLLPRI 组合。
+    /// 将一个 fd 的三个输入 bitmap 投影为 poll event mask。
+    ///
+    /// # Parameters
+    ///
+    /// - `fd`: 非负且小于 pselect count 的 descriptor number。
+    ///
+    /// # Returns
+    ///
+    /// POLLIN/POLLOUT/POLLPRI 组合。
     pub(super) fn events(&self, fd: usize) -> i16 {
         let mut events = 0;
         if fd_is_set(self.input[0].initialized(), fd) {
@@ -56,10 +71,16 @@ impl SelectSets {
         events
     }
 
-    /// @description 编码并原样覆盖 pselect 的三个输出集合。
-    /// @param task 当前 userspace address-space owner。
-    /// @param descriptors `(fd, requested, returned)` readiness 投影。
-    /// @return 至少在一个集合中 ready 的 fd 数，或 Linux 负 errno。
+    /// 编码并原样覆盖 pselect 的三个输出集合。
+    ///
+    /// # Parameters
+    ///
+    /// - `task`: 当前 userspace address-space owner。
+    /// - `descriptors`: `(fd, requested, returned)` readiness 投影。
+    ///
+    /// # Returns
+    ///
+    /// 至少在一个集合中 ready 的 fd 数，或 Linux 负 errno。
     pub(super) fn copy_results(
         &self,
         task: &TaskControlBlock,
@@ -100,11 +121,20 @@ impl SelectSets {
     }
 }
 
-/// @description 将 pselect relative timespec 归一化为 monotonic deadline。
-/// @param task 当前 userspace address-space owner。
-/// @param timeout 可空 RV64 timespec pointer。
-/// @return None 表示无限等待，Some 表示 absolute deadline。
-/// @errors invalid timespec、overflow 或 copy failure 返回 Linux 负 errno。
+/// 将 pselect relative timespec 归一化为 monotonic deadline。
+///
+/// # Parameters
+///
+/// - `task`: 当前 userspace address-space owner。
+/// - `timeout`: 可空 LP64 timespec pointer。
+///
+/// # Returns
+///
+/// None 表示无限等待，Some 表示 absolute deadline。
+///
+/// # Errors
+///
+/// invalid timespec、overflow 或 copy failure 返回 Linux 负 errno。
 pub(super) fn deadline(task: &TaskControlBlock, timeout: usize) -> Result<Option<u64>, isize> {
     if timeout == 0 {
         return Ok(None);
@@ -128,11 +158,20 @@ pub(super) fn deadline(task: &TaskControlBlock, timeout: usize) -> Result<Option
         .ok_or(-errno::EINVAL)
 }
 
-/// @description 导入 pselect6 `{sigmask,size}` 并发布临时 signal mask。
-/// @param task 当前 Thread owner。
-/// @param argument 可空 RV64 pair pointer。
-/// @return true 表示 caller 必须在 ready/timeout 路径恢复临时 mask。
-/// @errors size/copy failure 返回 Linux 负 errno。
+/// 导入 pselect6 `{sigmask,size}` 并发布临时 signal mask。
+///
+/// # Parameters
+///
+/// - `task`: 当前 Thread owner。
+/// - `argument`: 可空 LP64 pair pointer。
+///
+/// # Returns
+///
+/// true 表示 caller 必须在 ready/timeout 路径恢复临时 mask。
+///
+/// # Errors
+///
+/// size/copy failure 返回 Linux 负 errno。
 pub(super) fn install_signal_mask(task: &TaskControlBlock, argument: usize) -> Result<bool, isize> {
     if argument == 0 {
         return Ok(false);

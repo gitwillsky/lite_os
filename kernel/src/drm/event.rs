@@ -5,7 +5,7 @@ use crate::ipc::{Pipe, PipeDirection};
 
 pub(super) const EVENT_QUEUE_CAPACITY: usize = 4096 / DrmEvent::SIZE;
 
-/// @description 一个 Linux RV64 `drm_event_vblank` page-flip completion 值。
+/// 一个 Linux LP64 `drm_event_vblank` page-flip completion 值。
 #[derive(Clone, Copy)]
 pub(crate) struct DrmEvent {
     pub(super) user_data: u64,
@@ -23,8 +23,11 @@ impl DrmEvent {
         sequence: 0,
     };
 
-    /// @description 编码 Linux RV64 `drm_event_vblank` page-flip completion。
-    /// @return 32-byte native-endian `DRM_EVENT_FLIP_COMPLETE` payload。
+    /// 编码 Linux LP64 `drm_event_vblank` page-flip completion。
+    ///
+    /// # Returns
+    ///
+    /// 32-byte native-endian `DRM_EVENT_FLIP_COMPLETE` payload。
     pub(crate) fn encode(self) -> [u8; Self::SIZE] {
         let mut bytes = [0u8; Self::SIZE];
         bytes[0..4].copy_from_slice(&2u32.to_ne_bytes());
@@ -76,21 +79,33 @@ impl EventQueue {
 }
 
 impl DrmFile {
-    /// @description 返回当前 OFD 已排队的完整 DRM event 数。
-    /// @return 零表示 read 必须阻塞或返回 EAGAIN。
+    /// 返回当前 OFD 已排队的完整 DRM event 数。
+    ///
+    /// # Returns
+    ///
+    /// 零表示 read 必须阻塞或返回 EAGAIN。
     pub(crate) fn readable_event_count(&self) -> usize {
         self.events.lock().len()
     }
 
-    /// @description 原子消费不超过 output 长度的完整 DRM events。
-    /// @param output kernel stack staging event slice。
-    /// @return 实际消费的 event 数。
+    /// 原子消费不超过 output 长度的完整 DRM events。
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: kernel stack staging event slice。
+    ///
+    /// # Returns
+    ///
+    /// 实际消费的 event 数。
     pub(crate) fn read_events(&self, output: &mut [DrmEvent]) -> usize {
         self.events.lock().read(output)
     }
 
-    /// @description 排空旧 completion token 后复查当前 OFD event level readiness。
-    /// @return 仍需阻塞时返回共享 device Pipe；已有 event 返回 None。
+    /// 排空旧 completion token 后复查当前 OFD event level readiness。
+    ///
+    /// # Returns
+    ///
+    /// 仍需阻塞时返回共享 device Pipe；已有 event 返回 None。
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
         if self.readable_event_count() != 0 {
             return None;
@@ -99,8 +114,11 @@ impl DrmFile {
         (self.readable_event_count() == 0).then(|| self.device.completion_read.pipe())
     }
 
-    /// @description 返回 DRM event wait source 的单调 generation。
-    /// @return 可供 epoll edge-triggered 比较的 generation。
+    /// 返回 DRM event wait source 的单调 generation。
+    ///
+    /// # Returns
+    ///
+    /// 可供 epoll edge-triggered 比较的 generation。
     pub(crate) fn readiness_generation(&self) -> u64 {
         self.device
             .completion_read
@@ -108,8 +126,11 @@ impl DrmFile {
             .readiness_generation(PipeDirection::Read)
     }
 
-    /// @description 取得 poll registration 使用的共享 completion notification Pipe。
-    /// @return device read-side Pipe Arc。
+    /// 取得 poll registration 使用的共享 completion notification Pipe。
+    ///
+    /// # Returns
+    ///
+    /// device read-side Pipe Arc。
     pub(crate) fn notification_pipe(&self) -> Arc<Pipe> {
         self.device.completion_read.pipe()
     }

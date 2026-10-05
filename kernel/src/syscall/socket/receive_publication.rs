@@ -1,9 +1,18 @@
-/// @description 保证 prepared capabilities 只在全部 recvmsg copyout 成功后发布。
-/// @param transaction 可选的领域专用 prepared transaction。
-/// @param copyout 执行 name、control 与 msghdr metadata 的完整用户输出。
-/// @param publish 消费成功 transaction 的无失败 publication 操作。
-/// @return copyout 结果；错误路径先析构 transaction 并触发其 rollback。
-/// @errors 原样转发 copyout 错误；publication 本身不得失败。
+/// 保证 prepared capabilities 只在全部 recvmsg copyout 成功后发布。
+///
+/// # Parameters
+///
+/// - `transaction`: 可选的领域专用 prepared transaction。
+/// - `copyout`: 执行 name、control 与 msghdr metadata 的完整用户输出。
+/// - `publish`: 消费成功 transaction 的无失败 publication 操作。
+///
+/// # Returns
+///
+/// copyout 结果；错误路径先析构 transaction 并触发其 rollback。
+///
+/// # Errors
+///
+/// 原样转发 copyout 错误；publication 本身不得失败。
 pub(super) fn after_copyout<T, E>(
     transaction: Option<T>,
     copyout: impl FnOnce(Option<&T>) -> Result<(), E>,

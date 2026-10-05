@@ -48,10 +48,15 @@ fn memory_errno(error: MemoryError) -> isize {
     }
 }
 
-/// @description 查询或设置当前进程的数据段结尾。
+/// 查询或设置当前进程的数据段结尾。
 ///
-/// @param new_brk 新的数据段结尾；为零时查询当前值。
-/// @return Linux `brk` 语义：成功返回新 break，失败返回未改变的旧 break。
+/// # Parameters
+///
+/// - `new_brk`: 新的数据段结尾；为零时查询当前值。
+///
+/// # Returns
+///
+/// Linux `brk` 语义：成功返回新 break，失败返回未改变的旧 break。
 pub(crate) fn sys_brk(new_brk: usize) -> isize {
     let task = current_task().expect("brk requires a current task");
     let current = task
@@ -60,15 +65,20 @@ pub(crate) fn sys_brk(new_brk: usize) -> isize {
     task.set_program_break(new_brk).unwrap_or(current) as isize
 }
 
-/// @description 建立 Linux/riscv64 anonymous/file private 或 shared mapping。
+/// 建立 Linux 64-bit anonymous/file private 或 shared mapping。
 ///
-/// @param address 零或地址 hint；`MAP_FIXED_NOREPLACE` 时必须页对齐且非零。
-/// @param length 非零映射长度。
-/// @param prot `PROT_NONE/READ/WRITE/EXEC` 的任意合法组合。
-/// @param flags 必须选择一个 `MAP_PRIVATE/MAP_SHARED`，可附加已声明的 semantic/advisory variants。
-/// @param fd anonymous mapping 必须传 `-1`；file mapping 为 readable regular-file fd。
-/// @param offset anonymous mapping 必须传零。
-/// @return 成功返回映射地址；失败返回负 Linux errno。
+/// # Parameters
+///
+/// - `address`: 零或地址 hint；`MAP_FIXED_NOREPLACE` 时必须页对齐且非零。
+/// - `length`: 非零映射长度。
+/// - `prot`: `PROT_NONE/READ/WRITE/EXEC` 的任意合法组合。
+/// - `flags`: 必须选择一个 `MAP_PRIVATE/MAP_SHARED`，可附加已声明的 semantic/advisory variants。
+/// - `fd`: anonymous mapping 必须传 `-1`；file mapping 为 readable regular-file fd。
+/// - `offset`: anonymous mapping 必须传零。
+///
+/// # Returns
+///
+/// 成功返回映射地址；失败返回负 Linux errno。
 pub(crate) fn sys_mmap(
     address: usize,
     length: usize,
@@ -213,7 +223,7 @@ pub(crate) fn sys_mmap(
     result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
 }
 
-/// @description 按 Linux 语义同步覆盖区间内的 file-backed MAP_SHARED mappings。
+/// 按 Linux 语义同步覆盖区间内的 file-backed MAP_SHARED mappings。
 pub(crate) fn sys_msync(address: usize, length: usize, flags: usize) -> isize {
     const MS_ASYNC: usize = 1;
     const MS_INVALIDATE: usize = 2;
@@ -248,11 +258,16 @@ fn msync_errno(error: MemoryError) -> isize {
     }
 }
 
-/// @description 解除 Linux/riscv64 anonymous private 映射，允许区间包含未映射洞。
+/// 解除 Linux 64-bit anonymous private 映射，允许区间包含未映射洞。
 ///
-/// @param address page-aligned 起始地址。
-/// @param length 非零长度，向上取整到整页。
-/// @return 成功返回零；非法范围或触及非 anonymous VMA 返回负 errno。
+/// # Parameters
+///
+/// - `address`: page-aligned 起始地址。
+/// - `length`: 非零长度，向上取整到整页。
+///
+/// # Returns
+///
+/// 成功返回零；非法范围或触及非 anonymous VMA 返回负 errno。
 pub(crate) fn sys_munmap(address: usize, length: usize) -> isize {
     current_task()
         .expect("munmap requires a current task")
@@ -260,12 +275,17 @@ pub(crate) fn sys_munmap(address: usize, length: usize) -> isize {
         .map_or_else(|error| -memory_errno(error), |()| 0)
 }
 
-/// @description 修改完整用户 VMA 区间的页权限，保留 Linux 对合法 `PROT_*` 组合的语义。
+/// 修改完整用户 VMA 区间的页权限，保留 Linux 对合法 `PROT_*` 组合的语义。
 ///
-/// @param address page-aligned 起始地址。
-/// @param length 非零长度，向上取整到整页。
-/// @param prot `PROT_NONE/READ/WRITE/EXEC` 子集。
-/// @return 成功返回零；缺页、越界或权限策略失败返回负 errno。
+/// # Parameters
+///
+/// - `address`: page-aligned 起始地址。
+/// - `length`: 非零长度，向上取整到整页。
+/// - `prot`: `PROT_NONE/READ/WRITE/EXEC` 子集。
+///
+/// # Returns
+///
+/// 成功返回零；缺页、越界或权限策略失败返回负 errno。
 pub(crate) fn sys_mprotect(address: usize, length: usize, prot: usize) -> isize {
     let permission = match permission_from_prot(prot) {
         Ok(permission) => permission,
@@ -277,7 +297,7 @@ pub(crate) fn sys_mprotect(address: usize, length: usize, prot: usize) -> isize 
         .map_or_else(|error| -memory_errno(error), |()| 0)
 }
 
-/// @description 应用 Linux/riscv64 madvise residency policy，不维护 syscall 层 shadow state。
+/// 应用 Linux 64-bit madvise residency policy，不维护 syscall 层 shadow state。
 pub(crate) fn sys_madvise(address: usize, length: usize, advice: usize) -> isize {
     if !address.is_multiple_of(crate::memory::PAGE_SIZE) {
         return -errno::EINVAL;

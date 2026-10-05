@@ -18,7 +18,7 @@ pub(crate) enum AddressSpaceKind {
     User,
 }
 
-/// @description Architecture page-table page allocation seam。
+/// Architecture page-table page allocation seam。
 ///
 /// Implementor owns physical-frame policy and lifetime; the Sv39 walker owns only table layout。
 pub(crate) trait TablePage: Sized {
@@ -26,7 +26,7 @@ pub(crate) trait TablePage: Sized {
     fn physical_page(&self) -> usize;
 }
 
-/// @description leaf revoke 时从 active page-table topology 摘除、等待 fence 的 table owners。
+/// leaf revoke 时从 active page-table topology 摘除、等待 fence 的 table owners。
 pub(crate) struct RetiredTablePages<Page> {
     entries: [Option<VacantEntry<usize, Page>>; 2],
 }
@@ -62,7 +62,7 @@ impl<Page> IntoIterator for RetiredTablePages<Page> {
     }
 }
 
-/// @description 一次 leaf revoke 的完整 virtual span 与 fence-retained table owners。
+/// 一次 leaf revoke 的完整 virtual span 与 fence-retained table owners。
 pub(crate) struct Unmapped<Page> {
     first_page: usize,
     page_count: usize,
@@ -148,7 +148,7 @@ impl PageTableEntry {
     }
 }
 
-/// @description Sv39 page-table mechanism parameterized by a static frame owner adapter。
+/// Sv39 page-table mechanism parameterized by a static frame owner adapter。
 pub(crate) struct PageTable<Page: TablePage> {
     root_page: usize,
     table_pages: FallibleMap<usize, Page>,
@@ -182,19 +182,19 @@ impl<Page: TablePage> PageTable<Page> {
         AddressSpaceToken::from_root_page(self.root_page, self.address_space_id)
     }
 
-    /// @description 激活 RISC-V kernel Sv39 root；该 backend 保持单 root 契约。
+    /// 激活 RISC-V kernel Sv39 root；该 backend 保持单 root 契约。
     pub(crate) fn activate_kernel(&self) {
         assert_eq!(self.kind, AddressSpaceKind::Kernel);
         super::mmu::activate_kernel(self.token());
     }
 
-    /// @description 返回 RISC-V user trap 切回 kernel root 所需 token。
+    /// 返回 RISC-V user trap 切回 kernel root 所需 token。
     pub(crate) fn kernel_trap_token(&self) -> super::mmu::KernelTrapToken {
         assert_eq!(self.kind, AddressSpaceKind::Kernel);
         self.token()
     }
 
-    /// @description 在 generic owner 已完成 local/remote 全量 fence 后退休 ASID。
+    /// 在 generic owner 已完成 local/remote 全量 fence 后退休 ASID。
     pub(crate) fn release_address_space_id_after_global_fence(&mut self) {
         assert_ne!(self.address_space_id, 0, "page-table ASID retired twice");
         release_address_space_id_after_global_fence(self.address_space_id);
@@ -338,7 +338,7 @@ impl<Page: TablePage> PageTable<Page> {
         Ok(())
     }
 
-    /// @description 用最大 leaf 映射等长、物理连续的 Sv39 region。
+    /// 用最大 leaf 映射等长、物理连续的 Sv39 region。
     pub(crate) fn map_contiguous_range(
         &mut self,
         virtual_start_page: usize,

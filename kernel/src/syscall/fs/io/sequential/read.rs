@@ -21,12 +21,18 @@ fn read_regular_descriptor(
     ofd.with_position(|offset| read_regular_vectors(task, &file, offset, vectors))
 }
 
-/// @description 执行 scalar/readv 共用的唯一 sequential read descriptor dispatch。
-/// @param task userspace address owner。
-/// @param ofd 已完成 access/capability 检查的共享 OFD。
-/// @param vectors scalar one-element 或已导入的 RV64 iovec 序列。
-/// @param total_length vectors 的 checked 总 capacity。
-/// @return byte count、EOF、partial count 或负 errno。
+/// 执行 scalar/readv 共用的唯一 sequential read descriptor dispatch。
+///
+/// # Parameters
+///
+/// - `task`: userspace address owner。
+/// - `ofd`: 已完成 access/capability 检查的共享 OFD。
+/// - `vectors`: scalar one-element 或已导入的 LP64 iovec 序列。
+/// - `total_length`: vectors 的 checked 总 capacity。
+///
+/// # Returns
+///
+/// byte count、EOF、partial count 或负 errno。
 pub(super) fn read_descriptor(
     task: &TaskControlBlock,
     ofd: &Arc<OpenFileDescription>,
@@ -411,7 +417,7 @@ pub(super) fn read_descriptor(
                         }
                         continue;
                     }
-                    // 3. ABI 只发布完整的 24-byte RV64 input_event；整批编码后一次 scatter，
+                    // 3. ABI 只发布完整的 24-byte LP64 input_event；整批编码后一次 scatter，
                     // 避免每个 event 重走 user range fault/validation。
                     for (index, event) in events.iter().take(read).enumerate() {
                         let offset = index * EVENT_SIZE;

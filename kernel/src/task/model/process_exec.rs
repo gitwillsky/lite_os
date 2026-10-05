@@ -1,8 +1,14 @@
 use super::*;
 
-/// @description 为 exec/task constructor 构造可失败的共享 owner。
-/// @param value 尚未发布、失败时可直接析构的 owner value。
-/// @return Arc control block 分配成功时返回 owner；失败返回 ELF OutOfMemory。
+/// 为 exec/task constructor 构造可失败的共享 owner。
+///
+/// # Parameters
+///
+/// - `value`: 尚未发布、失败时可直接析构的 owner value。
+///
+/// # Returns
+///
+/// Arc control block 分配成功时返回 owner；失败返回 ELF OutOfMemory。
 pub(super) fn try_elf_arc<T>(value: T) -> Result<Arc<T>, ElfLoadError> {
     Arc::try_new(value).map_err(|_| ElfLoadError::OutOfMemory)
 }
@@ -20,12 +26,20 @@ pub(super) fn process_name(path: &[u8]) -> Result<Vec<u8>, ElfLoadError> {
 }
 
 impl TaskControlBlock {
-    /// @description 原子准备并提交当前单线程 Process 的新 ELF 映像。
+    /// 原子准备并提交当前单线程 Process 的新 ELF 映像。
     ///
-    /// @param loaded 已完成 pathname/script/ELF resolution 的 immutable exec input。
-    /// @param envs 写入新用户栈的环境。
-    /// @return 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
-    /// @errors 不支持的 ELF 与内存不足分别映射为 `ElfLoadError`。
+    /// # Parameters
+    ///
+    /// - `loaded`: 已完成 pathname/script/ELF resolution 的 immutable exec input。
+    /// - `envs`: 写入新用户栈的环境。
+    ///
+    /// # Returns
+    ///
+    /// 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
+    ///
+    /// # Errors
+    ///
+    /// 不支持的 ELF 与内存不足分别映射为 `ElfLoadError`。
     pub(crate) fn execve_replace(
         &self,
         loaded: &LoadedExecutable,
@@ -44,7 +58,7 @@ impl TaskControlBlock {
 
         // exec 准备完成后进入不可失败的提交阶段；先发布 has_execed，才能与 parent setpgid
         // 在 process graph lock 上建立确定顺序，避免新映像已经生效而 parent 仍错误改组。
-        super::super::task_manager::mark_process_exec(self.tgid());
+        super::super::process_table::mark_process_exec(self.tgid());
 
         // Linux exec 在旧 mm 仍可访问时完成 robust owner-death publication，并清除
         // per-Thread registration；否则相同 VA 在新映像中会被误当成旧 robust list。
@@ -95,13 +109,15 @@ impl TaskControlBlock {
         }
         // vfork parent 只能在完整 exec commit 且 RISC-V child 临时 trap VMA 已删除后恢复；
         // AArch64 context 随独立 KernelStack 保活。提前唤醒会让共享旧 mm 的 detach 顺序失效。
-        super::super::task_manager::vfork::complete_vfork_exec(self.tgid());
+        super::super::process_table::vfork::complete_vfork_exec(self.tgid());
         Ok(())
     }
 
-    /// @description 返回当前映像的稳定 VFS opened-entry identity。
+    /// 返回当前映像的稳定 VFS opened-entry identity。
     ///
-    /// @return fork 继承且 exec 原子替换的 main ELF opened entry。
+    /// # Returns
+    ///
+    /// fork 继承且 exec 原子替换的 main ELF opened entry。
     pub(crate) fn process_executable(&self) -> Arc<crate::fs::OpenedFile> {
         self.process.paths.lock().executable.clone()
     }

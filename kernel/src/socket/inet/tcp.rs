@@ -48,7 +48,7 @@ enum TcpMode {
     },
 }
 
-/// @description NetworkStack 唯一拥有的 TCP endpoint lifecycle 与 smoltcp handle 集合。
+/// NetworkStack 唯一拥有的 TCP endpoint lifecycle 与 smoltcp handle 集合。
 pub(super) struct TcpEndpointState {
     /// 只在释放 stack lock 后用于 readiness notification 的 OFD-facing 弱引用。
     pub(super) endpoint: Weak<InetSocket>,
@@ -76,11 +76,20 @@ fn allocate_endpoint_id(network: &mut NetworkStack) -> Result<usize, SocketError
     Ok(id)
 }
 
-/// @description 分配 closed TCP handle，并注册唯一 endpoint state。
-/// @param network 唯一 NetworkStack owner。
-/// @param endpoint facade weak identity；调用方返回后立即发布完整 Arc。
-/// @return 稳定 TCP endpoint id。
-/// @errors id 或 buffer 分配失败返回 `NoMemory`。
+/// 分配 closed TCP handle，并注册唯一 endpoint state。
+///
+/// # Parameters
+///
+/// - `network`: 唯一 NetworkStack owner。
+/// - `endpoint`: facade weak identity；调用方返回后立即发布完整 Arc。
+///
+/// # Returns
+///
+/// 稳定 TCP endpoint id。
+///
+/// # Errors
+///
+/// id 或 buffer 分配失败返回 `NoMemory`。
 pub(super) fn create_endpoint(
     network: &mut NetworkStack,
     endpoint: Weak<InetSocket>,
@@ -147,11 +156,20 @@ fn listen_endpoint(address: InetAddress) -> IpListenEndpoint {
     }
 }
 
-/// @description 绑定 fresh TCP endpoint；port 0 经唯一 allocator 分配 ephemeral port。
-/// @param socket TCP facade identity。
-/// @param address 请求的 IPv4 address 与 port。
-/// @return 成功取得本地 endpoint 后返回 unit。
-/// @errors 返回地址、状态、冲突或分配错误。
+/// 绑定 fresh TCP endpoint；port 0 经唯一 allocator 分配 ephemeral port。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+/// - `address`: 请求的 IPv4 address 与 port。
+///
+/// # Returns
+///
+/// 成功取得本地 endpoint 后返回 unit。
+///
+/// # Errors
+///
+/// 返回地址、状态、冲突或分配错误。
 pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let mut network = stack()?.lock()?;
@@ -194,11 +212,20 @@ pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), Sock
     Ok(())
 }
 
-/// @description 将 fresh TCP endpoint 原子转换为有界 passive listener。
-/// @param socket TCP facade identity。
-/// @param backlog 请求深度，截断到文档声明的 kernel 上限。
-/// @return 全部 listen handle 就绪后返回 unit。
-/// @errors 返回状态、地址或分配错误，且不会发布半初始化 listener。
+/// 将 fresh TCP endpoint 原子转换为有界 passive listener。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+/// - `backlog`: 请求深度，截断到文档声明的 kernel 上限。
+///
+/// # Returns
+///
+/// 全部 listen handle 就绪后返回 unit。
+///
+/// # Errors
+///
+/// 返回状态、地址或分配错误，且不会发布半初始化 listener。
 pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let mut network = stack()?.lock()?;
@@ -304,11 +331,20 @@ pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketEr
     Ok(())
 }
 
-/// @description 通过唯一 interface context 启动 active TCP handshake。
-/// @param socket TCP facade identity。
-/// @param peer 远端 IPv4 endpoint。
-/// @return SYN 提交后返回 `InProgress`；完成状态通过 readiness 观察。
-/// @errors 返回标准地址、route、状态或 in-progress 错误。
+/// 通过唯一 interface context 启动 active TCP handshake。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+/// - `peer`: 远端 IPv4 endpoint。
+///
+/// # Returns
+///
+/// SYN 提交后返回 `InProgress`；完成状态通过 readiness 观察。
+///
+/// # Errors
+///
+/// 返回标准地址、route、状态或 in-progress 错误。
 pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), SocketError> {
     if peer.port == 0 || peer.address.is_unspecified() {
         return Err(SocketError::AddressNotAvailable);
@@ -395,10 +431,19 @@ pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), Sock
     Err(SocketError::InProgress)
 }
 
-/// @description 读取权威 local TCP endpoint。
-/// @param socket TCP facade identity。
-/// @return bound/listening/connected 或 unspecified 本地地址。
-/// @errors endpoint 删除后返回 `NotConnected`。
+/// 读取权威 local TCP endpoint。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+///
+/// # Returns
+///
+/// bound/listening/connected 或 unspecified 本地地址。
+///
+/// # Errors
+///
+/// endpoint 删除后返回 `NotConnected`。
 pub(super) fn address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
     let id = endpoint_id(socket);
     let network = stack()?.lock()?;
@@ -432,10 +477,19 @@ pub(super) fn address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
     ))
 }
 
-/// @description 读取权威 connected TCP peer endpoint。
-/// @param socket TCP facade identity。
-/// @return 远端 IPv4 endpoint。
-/// @errors tuple 尚未建立或 endpoint 已删除时返回 `NotConnected`。
+/// 读取权威 connected TCP peer endpoint。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+///
+/// # Returns
+///
+/// 远端 IPv4 endpoint。
+///
+/// # Errors
+///
+/// tuple 尚未建立或 endpoint 已删除时返回 `NotConnected`。
 pub(super) fn peer_address(socket: &InetSocket) -> Result<InetAddress, SocketError> {
     let id = endpoint_id(socket);
     let network = stack()?.lock()?;
@@ -454,10 +508,19 @@ pub(super) fn peer_address(socket: &InetSocket) -> Result<InetAddress, SocketErr
         .ok_or(SocketError::NotConnected)
 }
 
-/// @description 在 OFD writable/error wakeup 后解析 active-connect 完成状态。
-/// @param socket TCP facade identity。
-/// @return 仅在 established 后返回 unit。
-/// @errors 返回 in-progress、refusal 或无效状态错误。
+/// 在 OFD writable/error wakeup 后解析 active-connect 完成状态。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+///
+/// # Returns
+///
+/// 仅在 established 后返回 unit。
+///
+/// # Errors
+///
+/// 返回 in-progress、refusal 或无效状态错误。
 pub(super) fn connection_result(socket: &InetSocket) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let network = stack()?.lock()?;

@@ -14,9 +14,15 @@ fn publish(cpu: CpuId) {
     );
 }
 
-/// @description 消费线性 Ready token 并提交唯一 per-CPU logical-load projection。
-/// @param transition SchedulingState lock 内刚产生且尚未消费的 token。
-/// @return 本次 Ready generation，供同一 transaction 构造物理 queue token。
+/// 消费线性 Ready token 并提交唯一 per-CPU logical-load projection。
+///
+/// # Parameters
+///
+/// - `transition`: SchedulingState lock 内刚产生且尚未消费的 token。
+///
+/// # Returns
+///
+/// 本次 Ready generation，供同一 transaction 构造物理 queue token。
 #[inline(always)]
 pub(super) fn commit_ready_transition(transition: ReadyTransition<'_>) -> u64 {
     let (previous, target, generation) = transition.consume_ready_projection_parts();
@@ -41,8 +47,11 @@ fn retire(cpu: CpuId) {
     assert_ne!(previous, 0, "Ready membership count underflow");
 }
 
-/// @description 消费线性 Ready-retirement token 并撤销 per-CPU logical-load projection。
-/// @param retirement SchedulingState lock 内刚产生且尚未消费的 token。
+/// 消费线性 Ready-retirement token 并撤销 per-CPU logical-load projection。
+///
+/// # Parameters
+///
+/// - `retirement`: SchedulingState lock 内刚产生且尚未消费的 token。
 #[inline(always)]
 pub(super) fn commit_ready_retirement(retirement: ReadyRetirement<'_>) {
     retire(retirement.consume_ready_projection_cpu());

@@ -45,10 +45,16 @@ fn chmod_inode(task: &TaskControlBlock, inode: alloc::sync::Arc<dyn Inode>, mode
         .map_or_else(ferr, |()| 0)
 }
 
-/// @description 按 Linux fchmod ABI 修改已打开 inode 的 permission 与 special bits。
-/// @param fd 指向 inode-backed open file description 的文件描述符。
-/// @param mode 新的低 12-bit mode。
-/// @return 成功为零，fd 无效返回 EBADF，其他失败返回对应负 errno。
+/// 按 Linux fchmod ABI 修改已打开 inode 的 permission 与 special bits。
+///
+/// # Parameters
+///
+/// - `fd`: 指向 inode-backed open file description 的文件描述符。
+/// - `mode`: 新的低 12-bit mode。
+///
+/// # Returns
+///
+/// 成功为零，fd 无效返回 EBADF，其他失败返回对应负 errno。
 pub(crate) fn sys_fchmod(fd: usize, mode: u32) -> isize {
     let task = current_task().expect("fchmod requires current task");
     let Some(ofd) = task.fd_get(fd) else {
@@ -61,11 +67,17 @@ pub(crate) fn sys_fchmod(fd: usize, mode: u32) -> isize {
     chmod_inode(&task, inode, mode)
 }
 
-/// @description 按 Linux fchmodat ABI 修改 inode permission 与 special bits。
-/// @param dirfd 相对 pathname 的目录 fd。
-/// @param name NUL 结尾 pathname。
-/// @param mode 新的低 12-bit mode。
-/// @return 成功为零，失败返回负 errno。
+/// 按 Linux fchmodat ABI 修改 inode permission 与 special bits。
+///
+/// # Parameters
+///
+/// - `dirfd`: 相对 pathname 的目录 fd。
+/// - `name`: NUL 结尾 pathname。
+/// - `mode`: 新的低 12-bit mode。
+///
+/// # Returns
+///
+/// 成功为零，失败返回负 errno。
 pub(crate) fn sys_fchmodat(dirfd: isize, name: *const u8, mode: u32) -> isize {
     let task = current_task().expect("fchmodat requires current task");
     let inode = match target(&task, dirfd, name, 0) {
@@ -94,11 +106,17 @@ fn chown_inode(
         )
 }
 
-/// @description 按 Linux fchown ABI 修改已打开 inode 的 owner/group 并更新 ctime。
-/// @param fd 指向 inode-backed open file description 的文件描述符。
-/// @param owner u32::MAX 保留 UID，否则为新 owner。
-/// @param group u32::MAX 保留 GID，否则为新 group。
-/// @return 成功为零；fd 无效或 anonymous fd 返回 EBADF，其他失败返回负 errno。
+/// 按 Linux fchown ABI 修改已打开 inode 的 owner/group 并更新 ctime。
+///
+/// # Parameters
+///
+/// - `fd`: 指向 inode-backed open file description 的文件描述符。
+/// - `owner`: u32::MAX 保留 UID，否则为新 owner。
+/// - `group`: u32::MAX 保留 GID，否则为新 group。
+///
+/// # Returns
+///
+/// 成功为零；fd 无效或 anonymous fd 返回 EBADF，其他失败返回负 errno。
 pub(crate) fn sys_fchown(fd: usize, owner: u32, group: u32) -> isize {
     let task = current_task().expect("fchown requires current task");
     let Some(ofd) = task.fd_get(fd) else {
@@ -110,13 +128,19 @@ pub(crate) fn sys_fchown(fd: usize, owner: u32, group: u32) -> isize {
     chown_inode(&task, inode, owner, group)
 }
 
-/// @description 按 Linux fchownat ABI 原子修改 inode owner/group 并更新 ctime。
-/// @param dirfd 相对 pathname 的目录 fd，或 AT_EMPTY_PATH 时的 fd。
-/// @param name pathname；AT_EMPTY_PATH 时可为空。
-/// @param owner u32::MAX 保留 UID，否则为新 owner。
-/// @param group u32::MAX 保留 GID，否则为新 group。
-/// @param flags 只接受 AT_SYMLINK_NOFOLLOW/AT_EMPTY_PATH。
-/// @return 成功为零，失败返回负 errno。
+/// 按 Linux fchownat ABI 原子修改 inode owner/group 并更新 ctime。
+///
+/// # Parameters
+///
+/// - `dirfd`: 相对 pathname 的目录 fd，或 AT_EMPTY_PATH 时的 fd。
+/// - `name`: pathname；AT_EMPTY_PATH 时可为空。
+/// - `owner`: u32::MAX 保留 UID，否则为新 owner。
+/// - `group`: u32::MAX 保留 GID，否则为新 group。
+/// - `flags`: 只接受 AT_SYMLINK_NOFOLLOW/AT_EMPTY_PATH。
+///
+/// # Returns
+///
+/// 成功为零，失败返回负 errno。
 pub(crate) fn sys_fchownat(
     dirfd: isize,
     name: *const u8,

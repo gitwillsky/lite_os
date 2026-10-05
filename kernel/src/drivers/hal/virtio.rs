@@ -32,7 +32,7 @@ pub(in crate::drivers) const VIRTIO_MMIO_INT_CONFIG: u32 = 2;
 
 const VIRTIO_MMIO_MAGIC: u32 = 0x7472_6976;
 
-/// @description VirtIO MMIO v2 split-queue 的三段物理地址。
+/// VirtIO MMIO v2 split-queue 的三段物理地址。
 #[derive(Clone, Copy)]
 pub(in crate::drivers) struct VirtQueueAddresses {
     pub(in crate::drivers) descriptor: u64,
@@ -40,7 +40,7 @@ pub(in crate::drivers) struct VirtQueueAddresses {
     pub(in crate::drivers) device: u64,
 }
 
-/// @description 为 VirtIO MMIO v2 设备提供 feature、queue 与 config 事务接口。
+/// 为 VirtIO MMIO v2 设备提供 feature、queue 与 config 事务接口。
 pub(in crate::drivers) struct VirtIODevice {
     transport: Transport,
     device_id: u32,
@@ -79,10 +79,16 @@ impl VirtIODevice {
         })
     }
 
-    /// @description Wrap a capability-validated modern VirtIO PCI function.
-    /// @param device_id VirtIO device type derived from the PCI identity.
-    /// @param transport Common/notify/ISR capability owner.
-    /// @return A transport-neutral device consumed by the existing adapter.
+    /// Wrap a capability-validated modern VirtIO PCI function.
+    ///
+    /// # Parameters
+    ///
+    /// - `device_id`: VirtIO device type derived from the PCI identity.
+    /// - `transport`: Common/notify/ISR capability owner.
+    ///
+    /// # Returns
+    ///
+    /// A transport-neutral device consumed by the existing adapter.
     #[allow(
         dead_code,
         reason = "PCI transport is constructed only by platform backends that discover PCI"
@@ -114,9 +120,15 @@ impl VirtIODevice {
         self.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER)
     }
 
-    /// @description 发起 device reset，并等待 transport 读回完成状态。
-    /// @return device status 已为 0、queue 不再 live 时返回 unit。
-    /// @errors MMIO window 无效时返回 `InvalidAddress`；device 不完成 reset 时保活 DMA 并等待。
+    /// 发起 device reset，并等待 transport 读回完成状态。
+    ///
+    /// # Returns
+    ///
+    /// device status 已为 0、queue 不再 live 时返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// MMIO window 无效时返回 `InvalidAddress`；device 不完成 reset 时保活 DMA 并等待。
     pub(in crate::drivers) fn reset(&self) -> Result<(), BusError> {
         self.set_status(0)?;
         while self.get_status()? != 0 {
@@ -125,11 +137,19 @@ impl VirtIODevice {
         Ok(())
     }
 
-    /// @description 以 low/high selector 发布完整 64-bit driver feature set。
+    /// 以 low/high selector 发布完整 64-bit driver feature set。
     ///
-    /// @param features 已与 device feature 相交且必须含 `VIRTIO_F_VERSION_1`。
-    /// @return 两个 feature word 全部写入后返回 unit。
-    /// @errors 缺少 version feature 或 MMIO 访问失败返回 `InvalidAddress`。
+    /// # Parameters
+    ///
+    /// - `features`: 已与 device feature 相交且必须含 `VIRTIO_F_VERSION_1`。
+    ///
+    /// # Returns
+    ///
+    /// 两个 feature word 全部写入后返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// 缺少 version feature 或 MMIO 访问失败返回 `InvalidAddress`。
     pub(in crate::drivers) fn set_driver_features(&self, features: u64) -> Result<(), BusError> {
         if features & VIRTIO_F_VERSION_1 == 0 {
             return Err(BusError::InvalidAddress);
@@ -145,10 +165,15 @@ impl VirtIODevice {
         }
     }
 
-    /// @description 以 low/high selector 读取完整 64-bit device feature set。
+    /// 以 low/high selector 读取完整 64-bit device feature set。
     ///
-    /// @return device 发布的全部 feature bits。
-    /// @errors MMIO 访问失败返回 `InvalidAddress`。
+    /// # Returns
+    ///
+    /// device 发布的全部 feature bits。
+    ///
+    /// # Errors
+    ///
+    /// MMIO 访问失败返回 `InvalidAddress`。
     pub(in crate::drivers) fn device_features(&self) -> Result<u64, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => {
@@ -176,11 +201,19 @@ impl VirtIODevice {
         }
     }
 
-    /// @description 读取一个尚未发布 queue 的最大长度。
+    /// 读取一个尚未发布 queue 的最大长度。
     ///
-    /// @param index device-defined queue index。
-    /// @return 非零且可由 `u16` 表达的最大 descriptor 数。
-    /// @errors queue 不存在、已 ready 或 MMIO 失败返回 `InvalidAddress`。
+    /// # Parameters
+    ///
+    /// - `index`: device-defined queue index。
+    ///
+    /// # Returns
+    ///
+    /// 非零且可由 `u16` 表达的最大 descriptor 数。
+    ///
+    /// # Errors
+    ///
+    /// queue 不存在、已 ready 或 MMIO 失败返回 `InvalidAddress`。
     pub(in crate::drivers) fn queue_max_size(&self, index: u32) -> Result<u16, BusError> {
         match &self.transport {
             Transport::Pci(pci) => pci.queue_max_size(index),
@@ -195,13 +228,21 @@ impl VirtIODevice {
         }
     }
 
-    /// @description 选择并发布一个 MMIO v2 split virtqueue。
+    /// 选择并发布一个 MMIO v2 split virtqueue。
     ///
-    /// @param index device-defined queue index。
-    /// @param requested driver 选择的二次幂 queue size。
-    /// @param addresses descriptor、available 和 used ring 的物理基址。
-    /// @return device 接受 queue size 并完成 ready publication 后返回 unit。
-    /// @errors queue 不存在、已 ready、size 无效或 MMIO 失败返回 `InvalidAddress`。
+    /// # Parameters
+    ///
+    /// - `index`: device-defined queue index。
+    /// - `requested`: driver 选择的二次幂 queue size。
+    /// - `addresses`: descriptor、available 和 used ring 的物理基址。
+    ///
+    /// # Returns
+    ///
+    /// device 接受 queue size 并完成 ready publication 后返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// queue 不存在、已 ready、size 无效或 MMIO 失败返回 `InvalidAddress`。
     pub(in crate::drivers) fn configure_queue(
         &self,
         index: u32,
@@ -272,10 +313,19 @@ impl VirtIODevice {
         Err(BusError::InvalidAddress)
     }
 
-    /// @description 读取 device-specific config 的单个 little-endian u32。
-    /// @param offset 相对 device config 起点的 byte offset。
-    /// @return volatile 读取值。
-    /// @errors offset 超出 MMIO window 返回 `InvalidAddress`。
+    /// 读取 device-specific config 的单个 little-endian u32。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 device config 起点的 byte offset。
+    ///
+    /// # Returns
+    ///
+    /// volatile 读取值。
+    ///
+    /// # Errors
+    ///
+    /// offset 超出 MMIO window 返回 `InvalidAddress`。
     pub(in crate::drivers) fn read_config_u32(&self, offset: usize) -> Result<u32, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u32(CONFIG + offset),
@@ -283,11 +333,20 @@ impl VirtIODevice {
         }
     }
 
-    /// @description 写入 device-specific config 的单个 little-endian u32。
-    /// @param offset 相对 device config 起点的 byte offset。
-    /// @param value 由具体 device protocol 定义的值。
-    /// @return 写入成功返回 unit。
-    /// @errors offset 超出 MMIO window 返回 `InvalidAddress`。
+    /// 写入 device-specific config 的单个 little-endian u32。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 device config 起点的 byte offset。
+    /// - `value`: 由具体 device protocol 定义的值。
+    ///
+    /// # Returns
+    ///
+    /// 写入成功返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// offset 超出 MMIO window 返回 `InvalidAddress`。
     pub(in crate::drivers) fn write_config_u32(
         &self,
         offset: usize,
@@ -299,10 +358,19 @@ impl VirtIODevice {
         }
     }
 
-    /// @description 读取 device-specific config 的单个 byte。
-    /// @param offset 相对 device config 起点的 byte offset。
-    /// @return volatile 读取值。
-    /// @errors offset 超出 MMIO window 返回 `InvalidAddress`。
+    /// 读取 device-specific config 的单个 byte。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 device config 起点的 byte offset。
+    ///
+    /// # Returns
+    ///
+    /// volatile 读取值。
+    ///
+    /// # Errors
+    ///
+    /// offset 超出 MMIO window 返回 `InvalidAddress`。
     pub(in crate::drivers) fn read_config_u8(&self, offset: usize) -> Result<u8, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u8(CONFIG + offset),
@@ -310,11 +378,20 @@ impl VirtIODevice {
         }
     }
 
-    /// @description 写入 device-specific config 的单个 byte。
-    /// @param offset 相对 device config 起点的 byte offset。
-    /// @param value 由具体 device protocol 定义的值。
-    /// @return 写入成功返回 unit。
-    /// @errors offset 超出 MMIO window 返回 `InvalidAddress`。
+    /// 写入 device-specific config 的单个 byte。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 device config 起点的 byte offset。
+    /// - `value`: 由具体 device protocol 定义的值。
+    ///
+    /// # Returns
+    ///
+    /// 写入成功返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// offset 超出 MMIO window 返回 `InvalidAddress`。
     pub(in crate::drivers) fn write_config_u8(
         &self,
         offset: usize,
@@ -326,9 +403,15 @@ impl VirtIODevice {
         }
     }
 
-    /// @description 读取 device config 的原子性 generation。
-    /// @return 当前 generation value。
-    /// @errors MMIO 访问失败返回 `InvalidAddress`。
+    /// 读取 device config 的原子性 generation。
+    ///
+    /// # Returns
+    ///
+    /// 当前 generation value。
+    ///
+    /// # Errors
+    ///
+    /// MMIO 访问失败返回 `InvalidAddress`。
     pub(in crate::drivers) fn config_generation(&self) -> Result<u32, BusError> {
         match &self.transport {
             Transport::Mmio(bus) => bus.read_u32(CONFIG_GENERATION),

@@ -4,13 +4,19 @@ use super::errno;
 
 const PAIR_SIZE: usize = 16;
 
-/// @description 实现 Linux/riscv64 `riscv_hwprobe` value-query ABI，并保守公布所有 hart 共同能力。
-/// @param pairs userspace `struct riscv_hwprobe` 数组地址。
-/// @param pair_count 数组元素数量。
-/// @param cpusetsize 可选 logical CPU mask 的 byte 数；零且 cpus 为 null 表示全部 online CPU。
-/// @param cpus 可选 little-endian logical CPU mask 地址。
-/// @param flags 当前只接受 value-query 的零 flags。
-/// @return 成功返回零；无 online CPU、flags、地址或长度无效时返回 Linux 负 errno。
+/// 实现 Linux/riscv64 `riscv_hwprobe` value-query ABI，并保守公布所有 hart 共同能力。
+///
+/// # Parameters
+///
+/// - `pairs`: userspace `struct riscv_hwprobe` 数组地址。
+/// - `pair_count`: 数组元素数量。
+/// - `cpusetsize`: 可选 logical CPU mask 的 byte 数；零且 cpus 为 null 表示全部 online CPU。
+/// - `cpus`: 可选 little-endian logical CPU mask 地址。
+/// - `flags`: 当前只接受 value-query 的零 flags。
+///
+/// # Returns
+///
+/// 成功返回零；无 online CPU、flags、地址或长度无效时返回 Linux 负 errno。
 pub(crate) fn sys_riscv_hwprobe(
     pairs: usize,
     pair_count: usize,

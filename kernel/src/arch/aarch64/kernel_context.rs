@@ -42,10 +42,16 @@ impl KernelContext {
         context
     }
 
-    /// @description 构造 clone/fork/vfork child，并继承 calling task 的 live FP/NEON image。
-    /// @param kernel_sp child 独占 kernel stack top。
-    /// @param trap_return child 首次 restore 后进入的 continuation。
-    /// @return integer continuation 已初始化、vector state 来自当前 CPU live task 的 context。
+    /// 构造 clone/fork/vfork child，并继承 calling task 的 live FP/NEON image。
+    ///
+    /// # Parameters
+    ///
+    /// - `kernel_sp`: child 独占 kernel stack top。
+    /// - `trap_return`: child 首次 restore 后进入的 continuation。
+    ///
+    /// # Returns
+    ///
+    /// integer continuation 已初始化、vector state 来自当前 CPU live task 的 context。
     pub(crate) fn clone_for_trap_return(kernel_sp: usize, trap_return: KernelResume) -> Self {
         let mut context = Self::goto_trap_return(kernel_sp, trap_return);
         // SAFETY: context is aligned, uniquely owned and unpublished; the current task exclusively

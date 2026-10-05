@@ -80,7 +80,7 @@ struct KobjectRegistry {
     endpoints: FallibleMap<u64, Weak<KobjectSocket>>,
 }
 
-/// @description NETLINK_KOBJECT_UEVENT 的只读 multicast datagram endpoint。
+/// NETLINK_KOBJECT_UEVENT 的只读 multicast datagram endpoint。
 pub(super) struct KobjectSocket {
     state: Mutex<KobjectSocketState>,
     notify_read: Arc<PipeEnd>,
@@ -242,7 +242,7 @@ impl KobjectSocket {
     }
 }
 
-/// @description 向已 bind group 1 的 endpoint 无分配广播一次标准 DRM hotplug uevent。
+/// 向已 bind group 1 的 endpoint 无分配广播一次标准 DRM hotplug uevent。
 pub(crate) fn publish_drm_hotplug() {
     let mut registry = registry().lock();
     registry

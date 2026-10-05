@@ -4,7 +4,7 @@ use crate::{drivers::network::NetworkStatistics, socket::SocketError};
 
 use super::{NETWORK_STACK, stack};
 
-/// @description standard interface ioctl 消费的不可变 Ethernet 配置快照。
+/// standard interface ioctl 消费的不可变 Ethernet 配置快照。
 #[derive(Clone, Copy)]
 pub(crate) struct InterfaceSnapshot {
     pub(crate) mac: [u8; 6],
@@ -13,7 +13,7 @@ pub(crate) struct InterfaceSnapshot {
     pub(crate) up: bool,
 }
 
-/// @description procfs 消费的 interface 配置与 adapter counter 快照。
+/// procfs 消费的 interface 配置与 adapter counter 快照。
 #[derive(Clone, Copy)]
 pub(crate) struct NetworkSnapshot {
     pub(crate) address: Option<Ipv4Addr>,

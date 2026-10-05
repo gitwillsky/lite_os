@@ -6,13 +6,18 @@ use crate::{
 
 use super::{base, ferr, path};
 
-/// @description 按 Linux readlinkat ABI 读取末项 symbolic-link 的原始 target bytes。
+/// 按 Linux readlinkat ABI 读取末项 symbolic-link 的原始 target bytes。
 ///
-/// @param fd 相对路径的目录 fd，或 AT_FDCWD；绝对路径忽略该值。
-/// @param name NUL 结尾 pathname。
-/// @param buffer 用户目标缓冲区；结果不追加 NUL。
-/// @param size 最大复制字节数，零返回 EINVAL。
-/// @return 实际复制长度；路径、类型、用户地址或 I/O 错误返回负 errno。
+/// # Parameters
+///
+/// - `fd`: 相对路径的目录 fd，或 AT_FDCWD；绝对路径忽略该值。
+/// - `name`: NUL 结尾 pathname。
+/// - `buffer`: 用户目标缓冲区；结果不追加 NUL。
+/// - `size`: 最大复制字节数，零返回 EINVAL。
+///
+/// # Returns
+///
+/// 实际复制长度；路径、类型、用户地址或 I/O 错误返回负 errno。
 pub(crate) fn sys_readlinkat(fd: isize, name: *const u8, buffer: *mut u8, size: usize) -> isize {
     if size == 0 {
         return -errno::EINVAL;

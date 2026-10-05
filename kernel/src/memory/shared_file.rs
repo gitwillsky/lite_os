@@ -8,14 +8,14 @@ use spin::{Mutex, Once};
 
 use super::{address::PhysicalPageNumber, config::PAGE_SIZE, frame_allocator};
 
-/// @description 跨 fs/memory seam 标识一个 mounted filesystem inode。
+/// 跨 fs/memory seam 标识一个 mounted filesystem inode。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SharedFileId {
     pub(crate) filesystem: usize,
     pub(crate) inode: u64,
 }
 
-/// @description page-cache 获取共享页时的稳定失败分类。
+/// page-cache 获取共享页时的稳定失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SharedFileError {
     OutOfMemory,
@@ -23,33 +23,39 @@ pub(crate) enum SharedFileError {
     BeyondEof,
 }
 
-/// @description 可同时被用户页表与 kernel page cache 引用的单页物理存储。
+/// 可同时被用户页表与 kernel page cache 引用的单页物理存储。
 #[derive(Debug)]
 pub(crate) struct SharedFrame {
     frame: frame_allocator::FrameTracker,
 }
 
 impl SharedFrame {
-    /// @description 分配并清零一个共享物理页。
-    /// @return 成功返回唯一 owner；物理内存耗尽返回 OutOfMemory。
+    /// 分配并清零一个共享物理页。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回唯一 owner；物理内存耗尽返回 OutOfMemory。
     pub(crate) fn allocate() -> Result<Self, SharedFileError> {
         frame_allocator::alloc()
             .map(|frame| Self { frame })
             .ok_or(SharedFileError::OutOfMemory)
     }
 
-    /// @description 返回页表映射使用的物理页号。
+    /// 返回页表映射使用的物理页号。
     pub(crate) fn ppn(&self) -> PhysicalPageNumber {
         self.frame.ppn
     }
 
-    /// @description 独占借用尚未发布的共享页内容，供 page-cache miss 直接填充 storage bytes。
-    /// @return 生命周期绑定到 `SharedFrame` 独占借用的完整页切片。
+    /// 独占借用尚未发布的共享页内容，供 page-cache miss 直接填充 storage bytes。
+    ///
+    /// # Returns
+    ///
+    /// 生命周期绑定到 `SharedFrame` 独占借用的完整页切片。
     pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
         self.frame.bytes_mut()
     }
 
-    /// @description 从共享页复制到 kernel buffer。
+    /// 从共享页复制到 kernel buffer。
     pub(crate) fn read(&self, offset: usize, output: &mut [u8]) {
         assert!(offset <= PAGE_SIZE && output.len() <= PAGE_SIZE - offset);
         // SAFETY: frame 在 self 生命周期内保持分配；范围已验证。U-mode 可并发修改该页，
@@ -63,7 +69,7 @@ impl SharedFrame {
         };
     }
 
-    /// @description 从 kernel buffer 写入共享页并立即对现有 PTE 可见。
+    /// 从 kernel buffer 写入共享页并立即对现有 PTE 可见。
     pub(crate) fn write(&self, offset: usize, input: &[u8]) {
         assert!(offset <= PAGE_SIZE && input.len() <= PAGE_SIZE - offset);
         // SAFETY: frame 在 self 生命周期内保持分配；范围已验证。raw physical write 不创建
@@ -77,7 +83,7 @@ impl SharedFrame {
         };
     }
 
-    /// @description 将页内指定偏移到页尾清零，供 truncate 隐藏旧 EOF 尾部数据。
+    /// 将页内指定偏移到页尾清零，供 truncate 隐藏旧 EOF 尾部数据。
     pub(crate) fn zero_from(&self, offset: usize) {
         assert!(offset <= PAGE_SIZE);
         // SAFETY: offset 已限制在当前 live frame 内，write_bytes 不越过页尾。
@@ -91,14 +97,14 @@ impl SharedFrame {
     }
 }
 
-/// @description MemorySet 持有的共享 cache page interface。
+/// MemorySet 持有的共享 cache page interface。
 pub(crate) trait SharedPage: Send + Sync + Debug {
     fn frame(&self) -> &SharedFrame;
     fn acquire_writer(&self);
     fn release_writer(&self);
 }
 
-/// @description file-backed shared VMA 消费的 page-cache interface。
+/// file-backed shared VMA 消费的 page-cache interface。
 pub(crate) trait SharedFileMapping: Send + Sync + Debug {
     fn id(&self) -> SharedFileId;
     fn size(&self) -> u64;
@@ -106,13 +112,19 @@ pub(crate) trait SharedFileMapping: Send + Sync + Debug {
     fn sync_range(&self, offset: u64, length: u64) -> Result<(), SharedFileError>;
 }
 
-/// @description memory subsystem 对 live AddressSpace 的反向维护 interface。
+/// memory subsystem 对 live AddressSpace 的反向维护 interface。
 pub(crate) trait MemoryMappingOwner: Send + Sync {
-    /// @description 撤销指定文件新 EOF 外的全部 live translation。
-    /// @param id mounted inode identity。
-    /// @param size 已提交的文件长度。
-    /// @param wait truncate 在 storage mutation 前预分配、可跨 owner 复用的 waiter。
-    /// @return 无返回值；preparation 保证本提交尾部不再分配或失败。
+    /// 撤销指定文件新 EOF 外的全部 live translation。
+    ///
+    /// # Parameters
+    ///
+    /// - `id`: mounted inode identity。
+    /// - `size`: 已提交的文件长度。
+    /// - `wait`: truncate 在 storage mutation 前预分配、可跨 owner 复用的 waiter。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；preparation 保证本提交尾部不再分配或失败。
     fn invalidate_shared_file(
         &self,
         id: SharedFileId,
@@ -121,7 +133,7 @@ pub(crate) trait MemoryMappingOwner: Send + Sync {
     );
 }
 
-/// @description 一次 direct-reclaim adapter 调用的页目标与扫描上限。
+/// 一次 direct-reclaim adapter 调用的页目标与扫描上限。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ReclaimRequest {
     target_pages: usize,
@@ -129,10 +141,15 @@ pub(crate) struct ReclaimRequest {
 }
 
 impl ReclaimRequest {
-    /// @description 为物理页目标建立固定放大率的扫描预算。
+    /// 为物理页目标建立固定放大率的扫描预算。
     ///
-    /// @param target_pages 本轮最多需要释放的物理页数。
-    /// @return 扫描预算至少覆盖 256 个 resident entry，且不会发生整数溢出。
+    /// # Parameters
+    ///
+    /// - `target_pages`: 本轮最多需要释放的物理页数。
+    ///
+    /// # Returns
+    ///
+    /// 扫描预算至少覆盖 256 个 resident entry，且不会发生整数溢出。
     pub(crate) fn for_target(target_pages: usize) -> Self {
         Self {
             target_pages,
@@ -147,18 +164,18 @@ impl ReclaimRequest {
         }
     }
 
-    /// @description 返回本 adapter 最多需要释放的物理页数。
+    /// 返回本 adapter 最多需要释放的物理页数。
     pub(crate) fn target_pages(self) -> usize {
         self.target_pages
     }
 
-    /// @description 返回本 adapter 最多可检查的 resident entry 数。
+    /// 返回本 adapter 最多可检查的 resident entry 数。
     pub(crate) fn scan_pages(self) -> usize {
         self.scan_pages
     }
 }
 
-/// @description 一次 direct-reclaim adapter 调用的实际工作量。
+/// 一次 direct-reclaim adapter 调用的实际工作量。
 #[must_use = "reclaim progress and scan cost must be propagated to the caller"]
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ReclaimResult {
@@ -166,7 +183,7 @@ pub(crate) struct ReclaimResult {
     scanned_pages: usize,
 }
 
-/// @description direct reclaim 唯一 registry owner 的累计工作量。
+/// direct reclaim 唯一 registry owner 的累计工作量。
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ReclaimStatistics {
     /// 非零页目标的 direct-reclaim 调用数。
@@ -178,11 +195,16 @@ pub(crate) struct ReclaimStatistics {
 }
 
 impl ReclaimResult {
-    /// @description 构造 adapter 的实际回收结果。
+    /// 构造 adapter 的实际回收结果。
     ///
-    /// @param reclaimed_pages 已释放回 frame allocator 的物理页数。
-    /// @param scanned_pages 已检查的 resident entry 数。
-    /// @return 保留两项独立计数的结果；撤销共享 frame 的单个映射不会伪报物理页释放。
+    /// # Parameters
+    ///
+    /// - `reclaimed_pages`: 已释放回 frame allocator 的物理页数。
+    /// - `scanned_pages`: 已检查的 resident entry 数。
+    ///
+    /// # Returns
+    ///
+    /// 保留两项独立计数的结果；撤销共享 frame 的单个映射不会伪报物理页释放。
     pub(crate) const fn new(reclaimed_pages: usize, scanned_pages: usize) -> Self {
         Self {
             reclaimed_pages,
@@ -191,12 +213,17 @@ impl ReclaimResult {
     }
 }
 
-/// @description frame allocator 慢路径使用的物理页回收 seam；具体 owner 不泄漏到 memory 下层。
+/// frame allocator 慢路径使用的物理页回收 seam；具体 owner 不泄漏到 memory 下层。
 pub(crate) trait MemoryReclaimer: Send + Sync {
-    /// @description 在 adapter 自己的 owner lock 下执行一次有界 direct reclaim。
+    /// 在 adapter 自己的 owner lock 下执行一次有界 direct reclaim。
     ///
-    /// @param request 需要释放的页目标与允许检查的 resident entry 上限。
-    /// @return 实际释放和扫描的页数；两项都不得超过 request 对应上限。
+    /// # Parameters
+    ///
+    /// - `request`: 需要释放的页目标与允许检查的 resident entry 上限。
+    ///
+    /// # Returns
+    ///
+    /// 实际释放和扫描的页数；两项都不得超过 request 对应上限。
     fn reclaim_pages(&self, request: ReclaimRequest) -> ReclaimResult;
 }
 
@@ -230,7 +257,7 @@ fn reclaimer_registry() -> &'static Mutex<ReclaimerRegistry> {
     })
 }
 
-/// @description 注册一个 address-space invalidator，registry 只保留 weak lifetime。
+/// 注册一个 address-space invalidator，registry 只保留 weak lifetime。
 pub(crate) fn register_memory_mapping_owner(
     owner: Arc<dyn MemoryMappingOwner>,
 ) -> Result<(), SharedFileError> {
@@ -250,7 +277,7 @@ pub(crate) fn register_memory_mapping_owner(
     Ok(())
 }
 
-/// @description 注册一个只保留 weak lifetime 的物理页回收 owner。
+/// 注册一个只保留 weak lifetime 的物理页回收 owner。
 pub(crate) fn register_memory_reclaimer(
     owner: Arc<dyn MemoryReclaimer>,
 ) -> Result<(), SharedFileError> {
@@ -273,11 +300,17 @@ pub(crate) fn register_memory_reclaimer(
     Ok(())
 }
 
-/// @description 在不分配内存且不持有 registry lock 回调的前提下撤销所有 EOF 外 PTE。
-/// @param id 已完成 storage truncate 的 mounted inode identity。
-/// @param size 已提交的新文件字节长度。
-/// @param wait storage mutation 前已成功准备的 blocking-acquisition metadata。
-/// @return 所有本轮可见的 live AddressSpace 均已完成 invalidation。
+/// 在不分配内存且不持有 registry lock 回调的前提下撤销所有 EOF 外 PTE。
+///
+/// # Parameters
+///
+/// - `id`: 已完成 storage truncate 的 mounted inode identity。
+/// - `size`: 已提交的新文件字节长度。
+/// - `wait`: storage mutation 前已成功准备的 blocking-acquisition metadata。
+///
+/// # Returns
+///
+/// 所有本轮可见的 live AddressSpace 均已完成 invalidation。
 pub(crate) fn invalidate_shared_file(
     id: SharedFileId,
     size: u64,
@@ -298,10 +331,15 @@ pub(crate) fn invalidate_shared_file(
     }
 }
 
-/// @description 轮转请求 resident owner 执行有页数和扫描上限的 direct reclaim。
+/// 轮转请求 resident owner 执行有页数和扫描上限的 direct reclaim。
 ///
-/// @param limit 本轮最多需要释放的物理页数；零值不扫描。
-/// @return 所有 adapter 合计的实际释放与扫描页数。
+/// # Parameters
+///
+/// - `limit`: 本轮最多需要释放的物理页数；零值不扫描。
+///
+/// # Returns
+///
+/// 所有 adapter 合计的实际释放与扫描页数。
 pub(crate) fn reclaim_pages(limit: usize) -> ReclaimResult {
     if limit == 0 {
         return ReclaimResult::default();
@@ -363,9 +401,11 @@ pub(crate) fn reclaim_pages(limit: usize) -> ReclaimResult {
     result
 }
 
-/// @description 返回 direct reclaim registry 的累计工作量。
+/// 返回 direct reclaim registry 的累计工作量。
 ///
-/// @return 调用、扫描和实际回收计数的同锁快照。
+/// # Returns
+///
+/// 调用、扫描和实际回收计数的同锁快照。
 pub(crate) fn reclaim_statistics() -> ReclaimStatistics {
     reclaimer_registry().lock().statistics
 }

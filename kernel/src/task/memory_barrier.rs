@@ -25,10 +25,11 @@ static CPU_STATES: Once<Box<[BarrierCpuState]>> = Once::new();
 // OWNER: task membarrier mechanism 分配不可复用的全局 rendezvous generation。
 static NEXT_MEMORY_BARRIER: AtomicU64 = AtomicU64::new(1);
 
-/// @description 按 logical CPU topology 构造唯一 membarrier rendezvous table。
+/// 按 logical CPU topology 构造唯一 membarrier rendezvous table。
 ///
-/// @return 无返回值。
-/// @errors 重复初始化或 allocation failure 时 fail-stop。
+/// # Errors
+///
+/// 重复初始化或 allocation failure 时 fail-stop。
 pub(super) fn initialize() {
     assert!(CPU_STATES.get().is_none(), "membarrier initialized twice");
     let mut states = Vec::new();
@@ -54,9 +55,11 @@ fn next_generation() -> u64 {
         .expect("memory-barrier generation exhausted")
 }
 
-/// @description 消费当前 logical CPU 最新的同步屏障请求并发布 completion。
+/// 消费当前 logical CPU 最新的同步屏障请求并发布 completion。
 ///
-/// @return 无待处理请求时不执行 fence；否则在 completion 发布前执行 full memory barrier。
+/// # Returns
+///
+/// 无待处理请求时不执行 fence；否则在 completion 发布前执行 full memory barrier。
 pub(crate) fn complete_pending() {
     let state = &states()[cpu::current_id().index()];
     let requested = state.request.load(Ordering::Acquire);
@@ -102,16 +105,18 @@ fn synchronize() {
     fence(Ordering::SeqCst);
 }
 
-/// @description 为当前 Task 的 AddressSpace 注册 private expedited memory barrier。
+/// 为当前 Task 的 AddressSpace 注册 private expedited memory barrier。
 pub(crate) fn register_private_memory_barrier() {
     current_task()
         .expect("membarrier syscall requires a current task")
         .register_private_memory_barrier();
 }
 
-/// @description 对已注册 AddressSpace 执行同步 private memory barrier。
+/// 对已注册 AddressSpace 执行同步 private memory barrier。
 ///
-/// @return 已注册并完成所有 active CPU 屏障时返回 true；未注册返回 false。
+/// # Returns
+///
+/// 已注册并完成所有 active CPU 屏障时返回 true；未注册返回 false。
 pub(crate) fn synchronize_private_memory() -> bool {
     let task = current_task().expect("membarrier syscall requires a current task");
     if !task.private_memory_barrier_registered() {

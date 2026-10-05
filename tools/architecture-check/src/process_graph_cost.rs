@@ -3,11 +3,11 @@ use syn::{ExprCall, ExprForLoop, ExprMethodCall, Item, ItemFn, visit::Visit};
 
 use super::SourceFile;
 
-const PROCESS_EXIT: &str = "kernel/src/task/task_manager/process_exit.rs";
-const PARENT_DEATH: &str = "kernel/src/task/task_manager/parent_death.rs";
-const PROCESS_GROUP: &str = "kernel/src/task/task_manager/process_group.rs";
-const WAIT_CHILD: &str = "kernel/src/task/task_manager/wait_child.rs";
-const THREAD_SELECTOR: &str = "kernel/src/task/task_manager/thread_selector.rs";
+const PROCESS_EXIT: &str = "kernel/src/task/process_table/process_exit.rs";
+const PARENT_DEATH: &str = "kernel/src/task/process_table/parent_death.rs";
+const PROCESS_GROUP: &str = "kernel/src/task/process_table/process_group.rs";
+const WAIT_CHILD: &str = "kernel/src/task/process_table/wait_child.rs";
+const THREAD_SELECTOR: &str = "kernel/src/task/process_table/thread_selector.rs";
 
 const PROCESSES: usize = 1024;
 const THREADS_PER_PROCESS: usize = 8;

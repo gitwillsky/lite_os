@@ -3,14 +3,14 @@ use alloc::{sync::Arc, vec::Vec};
 use super::{VirtualFileSystem, advisory_lock::PreparedLockAttempt};
 use crate::fs::{AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, OpenFileDescription};
 
-/// @description POSIX process-associated byte-range lock mode。
+/// POSIX process-associated byte-range lock mode。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecordLockMode {
     Read,
     Write,
 }
 
-/// @description 规范化后的半开 byte range；`end=None` 表示延伸到 EOF 之后。
+/// 规范化后的半开 byte range；`end=None` 表示延伸到 EOF 之后。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RecordLockRange {
     pub(crate) start: u64,
@@ -27,7 +27,7 @@ impl RecordLockRange {
     }
 }
 
-/// @description `F_GETLK` 投影的第一个冲突 lock。
+/// `F_GETLK` 投影的第一个冲突 lock。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RecordLockConflict {
     pub(crate) owner: usize,
@@ -43,8 +43,9 @@ pub(super) struct RecordLock {
     range: RecordLockRange,
 }
 
-/// @description POSIX record-lock mutation 的锁外 staging storage 与稳定请求参数。
-/// @ownership `next`/`normalized` 只保存未发布或替换下来的 table backing；最终 swap
+/// POSIX record-lock mutation 的锁外 staging storage 与稳定请求参数。
+///
+/// `next`/`normalized` 只保存未发布或替换下来的 table backing；最终 swap
 /// 后旧 table 在 VFS owner lock 外析构。
 pub(crate) struct PreparedRecordLock {
     key: AdvisoryLockKey,
@@ -90,13 +91,22 @@ impl VirtualFileSystem {
         Self::advisory_identity(ofd).map(|(key, _)| key)
     }
 
-    /// @description 解析 record-lock identity，但不分配或修改 lock table。
-    /// @param ofd pathname-backed OFD。
-    /// @param owner calling Process TGID。
-    /// @param requested read/write acquisition 或 unlock。
-    /// @param range 已规范化的半开 byte range。
-    /// @return 可在 wait-registry 解锁窗口保留的 mutation transaction。
-    /// @errors anonymous OFD 或 inode metadata 失败。
+    /// 解析 record-lock identity，但不分配或修改 lock table。
+    ///
+    /// # Parameters
+    ///
+    /// - `ofd`: pathname-backed OFD。
+    /// - `owner`: calling Process TGID。
+    /// - `requested`: read/write acquisition 或 unlock。
+    /// - `range`: 已规范化的半开 byte range。
+    ///
+    /// # Returns
+    ///
+    /// 可在 wait-registry 解锁窗口保留的 mutation transaction。
+    ///
+    /// # Errors
+    ///
+    /// anonymous OFD 或 inode metadata 失败。
     pub(crate) fn prepare_record_lock(
         &self,
         ofd: &Arc<OpenFileDescription>,
@@ -114,10 +124,19 @@ impl VirtualFileSystem {
         })
     }
 
-    /// @description 按当前 record-lock table 在所有 owner lock 外扩充两个 commit buffer。
-    /// @param prepared 尚未提交的稳定 mutation transaction。
-    /// @return storage 覆盖观察到的最坏 split 数；并发增长由最终尝试要求重试。
-    /// @errors 容量算术或 backing allocation 失败返回 `NoLocks`。
+    /// 按当前 record-lock table 在所有 owner lock 外扩充两个 commit buffer。
+    ///
+    /// # Parameters
+    ///
+    /// - `prepared`: 尚未提交的稳定 mutation transaction。
+    ///
+    /// # Returns
+    ///
+    /// storage 覆盖观察到的最坏 split 数；并发增长由最终尝试要求重试。
+    ///
+    /// # Errors
+    ///
+    /// 容量算术或 backing allocation 失败返回 `NoLocks`。
     pub(crate) fn reserve_record_lock_storage(
         &self,
         prepared: &mut PreparedRecordLock,
@@ -149,9 +168,15 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// @description 在 record-lock owner 下复查冲突并以预留双 buffer 无失败提交。
-    /// @param prepared 锁外准备且 identity/range 不变的 mutation transaction。
-    /// @return acquired/blocked，或 table 增长且 state 未修改的 `NeedsStorage`。
+    /// 在 record-lock owner 下复查冲突并以预留双 buffer 无失败提交。
+    ///
+    /// # Parameters
+    ///
+    /// - `prepared`: 锁外准备且 identity/range 不变的 mutation transaction。
+    ///
+    /// # Returns
+    ///
+    /// acquired/blocked，或 table 增长且 state 未修改的 `NeedsStorage`。
     pub(crate) fn try_prepared_record_lock(
         &self,
         prepared: &mut PreparedRecordLock,
@@ -246,14 +271,22 @@ impl VirtualFileSystem {
         ))
     }
 
-    /// @description 查询不同 Process 在 range 上持有的第一个不兼容 POSIX lock。
+    /// 查询不同 Process 在 range 上持有的第一个不兼容 POSIX lock。
     ///
-    /// @param ofd pathname-backed OFD。
-    /// @param owner calling Process TGID。
-    /// @param mode read/write requested mode。
-    /// @param range 已按 whence 归一化的半开 byte range。
-    /// @return 冲突 lock；不存在时返回 None。
-    /// @errors anonymous OFD 或 inode metadata 失败。
+    /// # Parameters
+    ///
+    /// - `ofd`: pathname-backed OFD。
+    /// - `owner`: calling Process TGID。
+    /// - `mode`: read/write requested mode。
+    /// - `range`: 已按 whence 归一化的半开 byte range。
+    ///
+    /// # Returns
+    ///
+    /// 冲突 lock；不存在时返回 None。
+    ///
+    /// # Errors
+    ///
+    /// anonymous OFD 或 inode metadata 失败。
     pub(crate) fn record_lock_conflict(
         &self,
         ofd: &Arc<OpenFileDescription>,
@@ -280,14 +313,22 @@ impl VirtualFileSystem {
             }))
     }
 
-    /// @description 原子取得、转换或释放一个 Process 的 POSIX byte-range lock。
+    /// 原子取得、转换或释放一个 Process 的 POSIX byte-range lock。
     ///
-    /// @param ofd pathname-backed OFD。
-    /// @param owner calling Process TGID。
-    /// @param requested Some(read/write) 取得或转换；None 解锁。
-    /// @param range 已按 whence 归一化的半开 byte range。
-    /// @return 已提交或被其他 Process 阻塞，并携带统一 inode wait key。
-    /// @errors anonymous OFD、inode metadata 失败或 lock table 内存不足。
+    /// # Parameters
+    ///
+    /// - `ofd`: pathname-backed OFD。
+    /// - `owner`: calling Process TGID。
+    /// - `requested`: Some(read/write) 取得或转换；None 解锁。
+    /// - `range`: 已按 whence 归一化的半开 byte range。
+    ///
+    /// # Returns
+    ///
+    /// 已提交或被其他 Process 阻塞，并携带统一 inode wait key。
+    ///
+    /// # Errors
+    ///
+    /// anonymous OFD、inode metadata 失败或 lock table 内存不足。
     pub(crate) fn try_record_lock(
         &self,
         ofd: &Arc<OpenFileDescription>,
@@ -306,11 +347,16 @@ impl VirtualFileSystem {
         }
     }
 
-    /// @description 任一 descriptor close 时释放该 Process 在同一 inode 上的全部 POSIX locks。
+    /// 任一 descriptor close 时释放该 Process 在同一 inode 上的全部 POSIX locks。
     ///
-    /// @param owner closing Process TGID。
-    /// @param ofd 被关闭 descriptor 的 OFD。
-    /// @return 无返回值；anonymous OFD 没有 record-lock state。
+    /// # Parameters
+    ///
+    /// - `owner`: closing Process TGID。
+    /// - `ofd`: 被关闭 descriptor 的 OFD。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；anonymous OFD 没有 record-lock state。
     pub(crate) fn release_record_locks_for_file(
         &self,
         owner: usize,
@@ -330,10 +376,15 @@ impl VirtualFileSystem {
         }
     }
 
-    /// @description Process exit 时释放其跨全部 inode 的 POSIX locks。
+    /// Process exit 时释放其跨全部 inode 的 POSIX locks。
     ///
-    /// @param owner exiting Process TGID。
-    /// @return 无返回值；每个受影响 inode 的 waiter 都会被唤醒。
+    /// # Parameters
+    ///
+    /// - `owner`: exiting Process TGID。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；每个受影响 inode 的 waiter 都会被唤醒。
     pub(crate) fn release_process_record_locks(&self, owner: usize) {
         loop {
             let key = {

@@ -120,13 +120,22 @@ struct PreparedClientStream {
 }
 
 impl UnixSocket {
-    /// @description 原子建立 client/server stream endpoints 并发布到 listener backlog。
-    /// @param client 发起连接且仍处于 Initial 的 endpoint。
-    /// @param listener 已进入 Listening 的目标 endpoint。
-    /// @param resources 只在 listener capacity reservation 成功后调用的 transport factory。
-    /// @param client_credentials connect transaction 捕获的 caller credentials。
-    /// @return 两端状态与 backlog publication 全部成功。
-    /// @errors 类型、状态、backlog 或内存约束不满足时不发布半连接。
+    /// 原子建立 client/server stream endpoints 并发布到 listener backlog。
+    ///
+    /// # Parameters
+    ///
+    /// - `client`: 发起连接且仍处于 Initial 的 endpoint。
+    /// - `listener`: 已进入 Listening 的目标 endpoint。
+    /// - `resources`: 只在 listener capacity reservation 成功后调用的 transport factory。
+    /// - `client_credentials`: connect transaction 捕获的 caller credentials。
+    ///
+    /// # Returns
+    ///
+    /// 两端状态与 backlog publication 全部成功。
+    ///
+    /// # Errors
+    ///
+    /// 类型、状态、backlog 或内存约束不满足时不发布半连接。
     pub(crate) fn connect_stream<F>(
         client: &Arc<Self>,
         listener: &Arc<Self>,
@@ -186,13 +195,22 @@ impl UnixSocket {
         Ok(())
     }
 
-    /// @description 将两个未发布 AF_UNIX endpoints 建立为 socketpair。
-    /// @param first 第一端。
-    /// @param second 第二端。
-    /// @param first_to_second 第一端到第二端的 Pipe。
-    /// @param second_to_first 第二端到第一端的 Pipe。
-    /// @return 对称 peer state 提交成功。
-    /// @errors 当前构造路径已预分配全部资源，不产生运行时错误。
+    /// 将两个未发布 AF_UNIX endpoints 建立为 socketpair。
+    ///
+    /// # Parameters
+    ///
+    /// - `first`: 第一端。
+    /// - `second`: 第二端。
+    /// - `first_to_second`: 第一端到第二端的 Pipe。
+    /// - `second_to_first`: 第二端到第一端的 Pipe。
+    ///
+    /// # Returns
+    ///
+    /// 对称 peer state 提交成功。
+    ///
+    /// # Errors
+    ///
+    /// 当前构造路径已预分配全部资源，不产生运行时错误。
     pub(crate) fn pair(
         first: &Arc<Self>,
         second: &Arc<Self>,
@@ -243,10 +261,19 @@ impl UnixSocket {
         Ok(())
     }
 
-    /// @description 连接 datagram endpoint 并冻结 peer credentials。
-    /// @param peer_socket 目标 datagram endpoint。
-    /// @return peer identity publication 成功。
-    /// @errors 任一 endpoint 不是 datagram 时返回 WrongType。
+    /// 连接 datagram endpoint 并冻结 peer credentials。
+    ///
+    /// # Parameters
+    ///
+    /// - `peer_socket`: 目标 datagram endpoint。
+    ///
+    /// # Returns
+    ///
+    /// peer identity publication 成功。
+    ///
+    /// # Errors
+    ///
+    /// 任一 endpoint 不是 datagram 时返回 WrongType。
     pub(crate) fn connect_datagram(&self, peer_socket: &Arc<Self>) -> Result<(), SocketError> {
         if self.socket_type != SocketType::Datagram
             || peer_socket.socket_type != SocketType::Datagram
@@ -269,9 +296,15 @@ impl UnixSocket {
         Ok(())
     }
 
-    /// @description 从 listener backlog 原子取出一个 accepted endpoint。
-    /// @return backlog 头部 endpoint。
-    /// @errors 非 listener 或 backlog 为空时返回明确错误。
+    /// 从 listener backlog 原子取出一个 accepted endpoint。
+    ///
+    /// # Returns
+    ///
+    /// backlog 头部 endpoint。
+    ///
+    /// # Errors
+    ///
+    /// 非 listener 或 backlog 为空时返回明确错误。
     pub(crate) fn accept(&self) -> Result<Arc<Self>, SocketError> {
         let mut state = self.state.lock();
         let SocketState::Listening { backlog } = &mut *state else {
@@ -283,9 +316,15 @@ impl UnixSocket {
         Ok(accepted)
     }
 
-    /// @description 投影连接建立时冻结的 peer credentials。
-    /// @return stream/datagram peer 的 Linux `ucred`。
-    /// @errors 尚未连接或 listener endpoint 返回 NotConnected。
+    /// 投影连接建立时冻结的 peer credentials。
+    ///
+    /// # Returns
+    ///
+    /// stream/datagram peer 的 Linux `ucred`。
+    ///
+    /// # Errors
+    ///
+    /// 尚未连接或 listener endpoint 返回 NotConnected。
     pub(crate) fn peer_credentials(&self) -> Result<UnixCredentials, SocketError> {
         match &*self.state.lock() {
             SocketState::Stream {

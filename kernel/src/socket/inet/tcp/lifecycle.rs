@@ -2,10 +2,14 @@ use super::*;
 
 /// 释放 TCP endpoint，同时保留 connected FIN/TIME_WAIT 协议生命周期。
 ///
-/// @param network 已由 protocol owner 独占的完整 NetworkStack。
-/// @param id 正在析构的 facade 所持稳定 endpoint id。
-/// @return 无返回值。
-/// @errors endpoint 缺失或已删除时幂等忽略。
+/// # Parameters
+///
+/// - `network`: 已由 protocol owner 独占的完整 NetworkStack。
+/// - `id`: 正在析构的 facade 所持稳定 endpoint id。
+///
+/// # Errors
+///
+/// endpoint 缺失或已删除时幂等忽略。
 pub(in crate::socket::inet) fn drop_endpoint(network: &mut NetworkStack, id: usize) {
     let Some(mode) = network.tcp_endpoints.get(&id).map(|state| state.mode) else {
         return;

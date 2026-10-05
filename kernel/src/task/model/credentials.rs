@@ -7,7 +7,7 @@ const ROOT_ID: u32 = 0;
 const DEFAULT_UMASK: u32 = 0o022;
 const UNCHANGED_ID: u32 = u32::MAX;
 
-/// @description Process 唯一拥有的 Linux 用户、组与文件创建 mask。
+/// Process 唯一拥有的 Linux 用户、组与文件创建 mask。
 #[derive(Clone)]
 pub(super) struct Credentials {
     real_uid: u32,
@@ -23,14 +23,20 @@ pub(super) struct Credentials {
 }
 
 impl TaskControlBlock {
-    /// @description 取得一次权限判断身份快照。
-    /// @param effective true 选择 effective ID，false 选择 real ID。
-    /// @return 包含 supplementary groups 的独立快照。
+    /// 取得一次权限判断身份快照。
+    ///
+    /// # Parameters
+    ///
+    /// - `effective`: true 选择 effective ID，false 选择 real ID。
+    ///
+    /// # Returns
+    ///
+    /// 包含 supplementary groups 的独立快照。
     pub(crate) fn access_identity(&self, effective: bool) -> AccessIdentity {
         self.process.credentials.lock().access_identity(effective)
     }
 
-    /// @description 读取 real/effective UID 或 GID。
+    /// 读取 real/effective UID 或 GID。
     pub(crate) fn credential_id(&self, uid: bool, effective: bool) -> u32 {
         let credentials = self.process.credentials.lock();
         if uid {
@@ -40,7 +46,7 @@ impl TaskControlBlock {
         }
     }
 
-    /// @description 读取 real/effective/saved UID 或 GID 三元组。
+    /// 读取 real/effective/saved UID 或 GID 三元组。
     pub(crate) fn credential_res_ids(&self, uid: bool) -> [u32; 3] {
         let credentials = self.process.credentials.lock();
         if uid {
@@ -50,7 +56,7 @@ impl TaskControlBlock {
         }
     }
 
-    /// @description 判断 caller credentials 是否允许向 target 发送 user signal。
+    /// 判断 caller credentials 是否允许向 target 发送 user signal。
     pub(crate) fn may_signal(&self, target: &TaskControlBlock) -> bool {
         let sender = self.process.credentials.lock().resuids();
         let target = target.process.credentials.lock().resuids();
@@ -60,10 +66,15 @@ impl TaskControlBlock {
                 .any(|uid| *uid == target[0] || *uid == target[2])
     }
 
-    /// @description 以一次 caller credential 快照判断 Linux scheduler 修改权限。
+    /// 以一次 caller credential 快照判断 Linux scheduler 修改权限。
     ///
-    /// @param target 待修改的 Thread；credentials 由其所属 Process 唯一拥有。
-    /// @return 无权限返回 `None`；同 owner 返回 `Some(false)`；effective root 返回 `Some(true)`。
+    /// # Parameters
+    ///
+    /// - `target`: 待修改的 Thread；credentials 由其所属 Process 唯一拥有。
+    ///
+    /// # Returns
+    ///
+    /// 无权限返回 `None`；同 owner 返回 `Some(false)`；effective root 返回 `Some(true)`。
     pub(in crate::task) fn scheduler_privilege_for(
         &self,
         target: &TaskControlBlock,
@@ -75,7 +86,7 @@ impl TaskControlBlock {
             .then_some(privileged)
     }
 
-    /// @description 原子执行 setuid 或 setgid credential transition。
+    /// 原子执行 setuid 或 setgid credential transition。
     pub(crate) fn set_credential_id(&self, uid: bool, value: u32) -> Result<(), ()> {
         let mut credentials = self.process.credentials.lock();
         let previous = if uid {
@@ -102,7 +113,7 @@ impl TaskControlBlock {
         result
     }
 
-    /// @description 原子执行 setresuid 或 setresgid credential transition。
+    /// 原子执行 setresuid 或 setresgid credential transition。
     pub(crate) fn set_credential_res_ids(&self, uid: bool, values: [u32; 3]) -> Result<(), ()> {
         let mut credentials = self.process.credentials.lock();
         let previous = if uid {
@@ -129,7 +140,7 @@ impl TaskControlBlock {
         result
     }
 
-    /// @description 复制当前 supplementary group list。
+    /// 复制当前 supplementary group list。
     pub(crate) fn supplementary_groups(&self) -> Result<Vec<u32>, ()> {
         let credentials = self.process.credentials.lock();
         let mut groups = Vec::new();
@@ -140,7 +151,7 @@ impl TaskControlBlock {
         Ok(groups)
     }
 
-    /// @description 以 effective-root policy 替换 supplementary group list。
+    /// 以 effective-root policy 替换 supplementary group list。
     pub(crate) fn set_supplementary_groups(
         &self,
         groups: Vec<u32>,
@@ -148,12 +159,12 @@ impl TaskControlBlock {
         self.process.credentials.lock().set_groups(groups)
     }
 
-    /// @description 原子替换 umask 并返回旧值。
+    /// 原子替换 umask 并返回旧值。
     pub(crate) fn replace_umask(&self, mask: u32) -> u32 {
         self.process.credentials.lock().replace_umask(mask)
     }
 
-    /// @description 将 Process umask 应用于用户提供的 inode mode。
+    /// 将 Process umask 应用于用户提供的 inode mode。
     pub(crate) fn creation_mode(&self, mode: u32) -> u32 {
         self.process.credentials.lock().creation_mode(mode)
     }
@@ -332,7 +343,7 @@ impl Credentials {
     }
 }
 
-/// @description credential replacement 的 permission 与 owner allocation 失败分类。
+/// credential replacement 的 permission 与 owner allocation 失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CredentialUpdateError {
     Permission,

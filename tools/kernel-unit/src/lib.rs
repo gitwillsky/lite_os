@@ -342,7 +342,7 @@ mod getrandom_flags_tests;
 mod pty_input_notification;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/task_manager/console_batch.rs"]
+#[path = "../../../kernel/src/task/process_table/console_batch.rs"]
 mod console_batch;
 
 #[cfg(test)]
@@ -381,23 +381,23 @@ mod aarch64_va39;
 mod riscv64_signal_frame;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/task_manager/thread_activation.rs"]
+#[path = "../../../kernel/src/task/process_table/thread_activation.rs"]
 mod thread_activation;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/task_manager/wait_publication.rs"]
+#[path = "../../../kernel/src/task/process_table/wait_publication.rs"]
 mod wait_publication;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/task_manager/snapshot_staging.rs"]
+#[path = "../../../kernel/src/task/process_table/snapshot_staging.rs"]
 mod snapshot_staging;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/task_manager/timer_queue/preparation_policy.rs"]
+#[path = "../../../kernel/src/task/process_table/timer_queue/preparation_policy.rs"]
 mod timer_preparation_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/task_manager/timer_queue/transaction_loop.rs"]
+#[path = "../../../kernel/src/task/process_table/timer_queue/transaction_loop.rs"]
 mod timer_transaction_loop;
 
 #[cfg(test)]

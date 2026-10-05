@@ -10,7 +10,7 @@ impl Ext2FileSystem {
         let magic = sb.s_magic;
         if magic != EXT2_SUPER_MAGIC {
             error!(
-                "[EXT2] Invalid magic number: 0x{:x}, expected 0x{:x}",
+                "Invalid magic number: 0x{:x}, expected 0x{:x}",
                 magic, EXT2_SUPER_MAGIC
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -18,30 +18,30 @@ impl Ext2FileSystem {
 
         // Validate filesystem block size (1024, 2048, 4096)
         if ![1024, 2048, 4096].contains(&block_size) {
-            error!("[EXT2] Unsupported block size: {}", block_size);
+            error!("Unsupported block size: {}", block_size);
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate revision level (copy to avoid unaligned access)
         let rev_level = sb.s_rev_level;
         if rev_level != 1 {
-            error!("[EXT2] Unsupported revision level: {}", rev_level);
+            error!("Unsupported revision level: {}", rev_level);
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Check basic consistency
         if sb.s_inodes_count == 0 || sb.s_blocks_count == 0 {
-            error!("[EXT2] Invalid superblock: zero inodes or blocks");
+            error!("Invalid superblock: zero inodes or blocks");
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         if sb.s_free_inodes_count > sb.s_inodes_count {
-            error!("[EXT2] Invalid superblock: free inodes count exceeds total");
+            error!("Invalid superblock: free inodes count exceeds total");
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         if sb.s_free_blocks_count > sb.s_blocks_count {
-            error!("[EXT2] Invalid superblock: free blocks count exceeds total");
+            error!("Invalid superblock: free blocks count exceeds total");
             return Err(FileSystemError::InvalidFileSystem);
         }
 
@@ -52,20 +52,20 @@ impl Ext2FileSystem {
             sb.s_inode_size as usize
         };
         if inode_size < 128 || inode_size > block_size || (inode_size & (inode_size - 1)) != 0 {
-            error!("[EXT2] Invalid inode size: {}", inode_size);
+            error!("Invalid inode size: {}", inode_size);
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Check blocks per group (copy to avoid unaligned access)
         let blocks_per_group = sb.s_blocks_per_group;
         if blocks_per_group == 0 || blocks_per_group > block_size as u32 * 8 {
-            error!("[EXT2] Invalid blocks per group: {}", blocks_per_group);
+            error!("Invalid blocks per group: {}", blocks_per_group);
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Check inodes per group
         if sb.s_inodes_per_group == 0 {
-            error!("[EXT2] Invalid inodes per group: 0");
+            error!("Invalid inodes per group: 0");
             return Err(FileSystemError::InvalidFileSystem);
         }
 
@@ -74,7 +74,7 @@ impl Ext2FileSystem {
         let expected_first_data_block = if block_size == 1024 { 1 } else { 0 };
         if first_data_block != expected_first_data_block {
             error!(
-                "[EXT2] Unexpected first data block: {}, expected {}",
+                "Unexpected first data block: {}, expected {}",
                 first_data_block, expected_first_data_block
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -87,13 +87,13 @@ impl Ext2FileSystem {
             let unsupported_incompat = feature_incompat & !EXT2_FEATURE_INCOMPAT_SUPPORTED;
             if unsupported_incompat != 0 {
                 error!(
-                    "[EXT2] Unsupported incompatible features: 0x{:x}",
+                    "Unsupported incompatible features: 0x{:x}",
                     unsupported_incompat
                 );
                 return Err(FileSystemError::InvalidFileSystem);
             }
             if feature_incompat & EXT2_FEATURE_INCOMPAT_FILETYPE == 0 {
-                error!("[EXT2] directory entries without file_type are unsupported");
+                error!("directory entries without file_type are unsupported");
                 return Err(FileSystemError::InvalidFileSystem);
             }
 
@@ -103,7 +103,7 @@ impl Ext2FileSystem {
             let unsupported_compat = sb.s_feature_compat & !EXT2_FEATURE_COMPAT_SUPPORTED;
             if unsupported_compat != 0 {
                 error!(
-                    "[EXT2] Unsupported compatible features: 0x{:x}",
+                    "Unsupported compatible features: 0x{:x}",
                     unsupported_compat
                 );
                 return Err(FileSystemError::InvalidFileSystem);
@@ -115,7 +115,7 @@ impl Ext2FileSystem {
                 return Err(FileSystemError::InvalidFileSystem);
             }
             if feature_ro_compat & EXT2_FEATURE_RO_COMPAT_LARGE_FILE == 0 {
-                error!("[EXT2] revision 1 volume does not declare large_file");
+                error!("revision 1 volume does not declare large_file");
                 return Err(FileSystemError::InvalidFileSystem);
             }
         }
@@ -144,35 +144,26 @@ impl Ext2FileSystem {
 
         // Validate block bitmap location
         if block_bitmap == 0 {
-            error!(
-                "[EXT2] Group {}: invalid block bitmap location (0)",
-                group_index
-            );
+            error!("Group {}: invalid block bitmap location (0)", group_index);
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate inode bitmap location
         if inode_bitmap == 0 {
-            error!(
-                "[EXT2] Group {}: invalid inode bitmap location (0)",
-                group_index
-            );
+            error!("Group {}: invalid inode bitmap location (0)", group_index);
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate inode table location
         if inode_table == 0 {
-            error!(
-                "[EXT2] Group {}: invalid inode table location (0)",
-                group_index
-            );
+            error!("Group {}: invalid inode table location (0)", group_index);
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate free block count
         if free_blocks_count as usize > blocks_per_group {
             error!(
-                "[EXT2] Group {}: free blocks count {} exceeds blocks per group {}",
+                "Group {}: free blocks count {} exceeds blocks per group {}",
                 group_index, free_blocks_count, blocks_per_group
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -181,7 +172,7 @@ impl Ext2FileSystem {
         // Validate free inode count
         if free_inodes_count as usize > inodes_per_group {
             error!(
-                "[EXT2] Group {}: free inodes count {} exceeds inodes per group {}",
+                "Group {}: free inodes count {} exceeds inodes per group {}",
                 group_index, free_inodes_count, inodes_per_group
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -190,7 +181,7 @@ impl Ext2FileSystem {
         // Validate used directories count
         if used_dirs_count as usize > inodes_per_group {
             error!(
-                "[EXT2] Group {}: used dirs count {} exceeds inodes per group {}",
+                "Group {}: used dirs count {} exceeds inodes per group {}",
                 group_index, used_dirs_count, inodes_per_group
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -200,7 +191,7 @@ impl Ext2FileSystem {
         let used_inodes = inodes_per_group - free_inodes_count as usize;
         if used_dirs_count as usize > used_inodes {
             error!(
-                "[EXT2] Group {}: used dirs count {} exceeds used inodes {}",
+                "Group {}: used dirs count {} exceeds used inodes {}",
                 group_index, used_dirs_count, used_inodes
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -254,7 +245,7 @@ impl Ext2FileSystem {
             if bitmap_free_blocks != free_blocks as usize
                 || bitmap_free_inodes != free_inodes as usize
             {
-                error!("[EXT2] Group {} bitmap/descriptor free-count mismatch", i);
+                error!("Group {} bitmap/descriptor free-count mismatch", i);
                 return Err(FileSystemError::InvalidFileSystem);
             }
 
@@ -267,7 +258,7 @@ impl Ext2FileSystem {
 
             if block_bitmap < group_start || block_bitmap >= group_end {
                 error!(
-                    "[EXT2] Group {}: block bitmap {} outside group range [{}, {})",
+                    "Group {}: block bitmap {} outside group range [{}, {})",
                     i, block_bitmap, group_start, group_end
                 );
                 return Err(FileSystemError::InvalidFileSystem);
@@ -275,7 +266,7 @@ impl Ext2FileSystem {
 
             if inode_bitmap < group_start || inode_bitmap >= group_end {
                 error!(
-                    "[EXT2] Group {}: inode bitmap {} outside group range [{}, {})",
+                    "Group {}: inode bitmap {} outside group range [{}, {})",
                     i, inode_bitmap, group_start, group_end
                 );
                 return Err(FileSystemError::InvalidFileSystem);
@@ -283,7 +274,7 @@ impl Ext2FileSystem {
 
             if inode_table < group_start || inode_table >= group_end {
                 error!(
-                    "[EXT2] Group {}: inode table {} outside group range [{}, {})",
+                    "Group {}: inode table {} outside group range [{}, {})",
                     i, inode_table, group_start, group_end
                 );
                 return Err(FileSystemError::InvalidFileSystem);
@@ -298,7 +289,7 @@ impl Ext2FileSystem {
 
         if total_free_blocks != sb_free_blocks {
             error!(
-                "[EXT2] Free blocks count mismatch: superblock={}, group_descriptors={}",
+                "Free blocks count mismatch: superblock={}, group_descriptors={}",
                 sb_free_blocks, total_free_blocks
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -306,7 +297,7 @@ impl Ext2FileSystem {
 
         if total_free_inodes != sb_free_inodes {
             error!(
-                "[EXT2] Free inodes count mismatch: superblock={}, group_descriptors={}",
+                "Free inodes count mismatch: superblock={}, group_descriptors={}",
                 sb_free_inodes, total_free_inodes
             );
             return Err(FileSystemError::InvalidFileSystem);
@@ -316,16 +307,16 @@ impl Ext2FileSystem {
         match self.read_inode_disk(2) {
             Ok(root_inode) => {
                 if (root_inode.i_mode & 0xF000) != 0x4000 {
-                    error!("[EXT2] Root inode is not a directory");
+                    error!("Root inode is not a directory");
                     return Err(FileSystemError::InvalidFileSystem);
                 }
                 if root_inode.i_links_count == 0 {
-                    error!("[EXT2] Root inode has zero link count");
+                    error!("Root inode has zero link count");
                     return Err(FileSystemError::InvalidFileSystem);
                 }
             }
             Err(_) => {
-                error!("[EXT2] Cannot read root inode");
+                error!("Cannot read root inode");
                 return Err(FileSystemError::InvalidFileSystem);
             }
         }
@@ -368,7 +359,7 @@ impl Ext2FileSystem {
             && recovered_uuid == original_uuid
             && recovered_journal_uuid == original_journal_uuid;
         if !topology_unchanged {
-            error!("[EXT2] Journal replay changed immutable mount topology");
+            error!("Journal replay changed immutable mount topology");
             return Err(FileSystemError::InvalidFileSystem);
         }
 
@@ -455,7 +446,7 @@ impl Ext2FileSystem {
         let block_size = 1024usize << superblock.s_log_block_size;
         // Comprehensive superblock validation
         if let Err(e) = Self::validate_superblock(&superblock, block_size) {
-            error!("[EXT2] Superblock validation failed: {:?}", e);
+            error!("Superblock validation failed: {:?}", e);
             return Err(e);
         }
 
@@ -505,7 +496,7 @@ impl Ext2FileSystem {
 
             // Validate group descriptor
             if let Err(e) = Self::validate_group_descriptor(&gd, i, &superblock) {
-                error!("[EXT2] Group descriptor {} validation failed: {:?}", i, e);
+                error!("Group descriptor {} validation failed: {:?}", i, e);
                 return Err(e);
             }
 

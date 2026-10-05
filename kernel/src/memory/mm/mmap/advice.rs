@@ -2,7 +2,7 @@ use super::*;
 use crate::memory::page_table::PageTableError;
 
 impl MemorySet {
-    /// @description 对完整用户 VMA 区间应用 Linux madvise residency 语义。
+    /// 对完整用户 VMA 区间应用 Linux madvise residency 语义。
     pub(crate) fn advise_user_mapping(
         &mut self,
         address: usize,
@@ -50,7 +50,7 @@ impl MemorySet {
             for vpn in range.start.as_usize()..range.end.as_usize() {
                 match self.handle_page_fault(vpn * config::PAGE_SIZE, PageFaultAccess::Read)? {
                     PageFaultOutcome::Handled => {}
-                    PageFaultOutcome::SegmentationFault | PageFaultOutcome::BusError => {
+                    PageFaultOutcome::SegmentationFault(_) | PageFaultOutcome::BusError => {
                         return Err(MemoryError::InvalidRange);
                     }
                 }
@@ -170,10 +170,15 @@ impl MemorySet {
         })
     }
 
-    /// @description 有界回收 MADV_FREE 页与可从 immutable backing 重建的 clean private 页。
+    /// 有界回收 MADV_FREE 页与可从 immutable backing 重建的 clean private 页。
     ///
-    /// @param request 需要释放的物理页目标与 resident entry 扫描上限。
-    /// @return 实际释放和扫描的页数；共享 COW frame 只撤销本 mm 映射，不伪报释放。
+    /// # Parameters
+    ///
+    /// - `request`: 需要释放的物理页目标与 resident entry 扫描上限。
+    ///
+    /// # Returns
+    ///
+    /// 实际释放和扫描的页数；共享 COW frame 只撤销本 mm 映射，不伪报释放。
     pub(crate) fn reclaim_private_pages(&mut self, request: ReclaimRequest) -> ReclaimResult {
         if request.target_pages() == 0 || request.scan_pages() == 0 {
             return ReclaimResult::default();

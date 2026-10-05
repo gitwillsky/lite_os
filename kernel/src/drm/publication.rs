@@ -98,7 +98,7 @@ impl Drop for BufferIdentityReservation<'_> {
     }
 }
 
-/// @description 已完成 backing/node/handle 预留、尚未发布到 file namespace 的 dumb buffer。
+/// 已完成 backing/node/handle 预留、尚未发布到 file namespace 的 dumb buffer。
 pub(crate) struct PreparedDumbBuffer<'file> {
     handle: DumbHandleReservation<'file>,
     identity: BufferIdentityReservation<'file>,
@@ -121,10 +121,19 @@ impl<'file> PreparedDumbBuffer<'file> {
         }
     }
 
-    /// @description 执行完整 UAPI copyout，并只在成功后无分配发布 handle。
-    /// @param copyout 接收无 pointer 结果并完成 userspace 输出。
-    /// @return copyout 与 publication 全部成功。
-    /// @errors 原样转发 copyout 错误；错误路径回收 backing/node 并释放未发布 handle。
+    /// 执行完整 UAPI copyout，并只在成功后无分配发布 handle。
+    ///
+    /// # Parameters
+    ///
+    /// - `copyout`: 接收无 pointer 结果并完成 userspace 输出。
+    ///
+    /// # Returns
+    ///
+    /// copyout 与 publication 全部成功。
+    ///
+    /// # Errors
+    ///
+    /// 原样转发 copyout 错误；错误路径回收 backing/node 并释放未发布 handle。
     pub(crate) fn complete<E>(
         self,
         copyout: impl FnOnce(DumbBufferInfo) -> Result<(), E>,
@@ -195,7 +204,7 @@ impl Drop for FramebufferIdReservation<'_> {
     }
 }
 
-/// @description 已完成 KMS object/node 预留、尚未发布到 device namespace 的 framebuffer。
+/// 已完成 KMS object/node 预留、尚未发布到 device namespace 的 framebuffer。
 pub(crate) struct PreparedFramebuffer<'file> {
     id: FramebufferIdReservation<'file>,
     entry: VacantEntry<u32, Framebuffer>,
@@ -209,10 +218,19 @@ impl<'file> PreparedFramebuffer<'file> {
         Self { id, entry }
     }
 
-    /// @description 执行完整 UAPI copyout，并只在成功后无分配发布 framebuffer ID。
-    /// @param copyout 接收预留 ID 并完成 userspace 输出。
-    /// @return copyout 与 publication 全部成功。
-    /// @errors 原样转发 copyout 错误；错误路径回收 node/object 并释放未发布 ID。
+    /// 执行完整 UAPI copyout，并只在成功后无分配发布 framebuffer ID。
+    ///
+    /// # Parameters
+    ///
+    /// - `copyout`: 接收预留 ID 并完成 userspace 输出。
+    ///
+    /// # Returns
+    ///
+    /// copyout 与 publication 全部成功。
+    ///
+    /// # Errors
+    ///
+    /// 原样转发 copyout 错误；错误路径回收 node/object 并释放未发布 ID。
     pub(crate) fn complete<E>(self, copyout: impl FnOnce(u32) -> Result<(), E>) -> Result<(), E> {
         after_copyout(
             self,

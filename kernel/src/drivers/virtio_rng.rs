@@ -1,4 +1,4 @@
-//! @description VirtIO entropy adapter with fixed DMA ownership and deferred IRQ completion.
+//! VirtIO entropy adapter with fixed DMA ownership and deferred IRQ completion.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::MaybeUninit;
@@ -16,7 +16,7 @@ use super::{
         ReserveOrWait,
     },
     io_completion::{self, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
-    virtio_completion_irq::VirtIoCompletionIrq,
+    virtio_completion_irq::VirtIOCompletionIrq,
     virtio_queue::{DeviceWriteBuffer, VirtQueue},
 };
 
@@ -47,12 +47,12 @@ struct RngQueue {
     failed: bool,
 }
 
-/// @description Modern VirtIO entropy adapter；hardirq 仅 ack/publish，safe point 有界回收。
+/// Modern VirtIO entropy adapter；hardirq 仅 ack/publish，safe point 有界回收。
 pub(crate) struct VirtIORngDevice {
     device: VirtIODevice,
     queue: Mutex<RngQueue>,
     slots: Box<[RequestSlot]>,
-    completion_irq: VirtIoCompletionIrq,
+    completion_irq: VirtIOCompletionIrq,
 }
 
 impl VirtIORngDevice {
@@ -107,7 +107,7 @@ impl VirtIORngDevice {
                 failed: false,
             }),
             slots: slots.into_boxed_slice(),
-            completion_irq: VirtIoCompletionIrq::new(),
+            completion_irq: VirtIOCompletionIrq::new(),
         })
         .ok()
     }
@@ -426,12 +426,12 @@ pub(super) fn register(device: Arc<VirtIORngDevice>) -> Result<(), ()> {
     Ok(())
 }
 
-/// @description 用唯一 virtio-rng source 完整初始化 caller-owned output。
+/// 用唯一 virtio-rng source 完整初始化 caller-owned output。
 pub(crate) fn fill_entropy(bytes: &mut [MaybeUninit<u8>]) -> Result<(), ()> {
     ENTROPY_DEVICE.get().ok_or(())?.fill(bytes)
 }
 
-/// @description 在 safe point 回收固定批次 entropy completion。
+/// 在 safe point 回收固定批次 entropy completion。
 pub(super) fn dispatch_completion_work() -> bool {
     ENTROPY_DEVICE
         .get()

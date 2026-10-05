@@ -97,7 +97,7 @@ fn clone_shared_file_area(
 }
 
 impl MemorySet {
-    /// @description 为 fork 共享用户 frame 并把可写映射转换为 COW；supervisor frame 仍独立复制。
+    /// 为 fork 共享用户 frame 并把可写映射转换为 COW；supervisor frame 仍独立复制。
     pub(crate) fn try_clone_for_fork(&mut self) -> Result<Self, MemoryError> {
         let mut cloned = Self::try_new()?;
         cloned.code_range = self.code_range.clone();
@@ -168,7 +168,7 @@ impl MemorySet {
         Ok(cloned)
     }
 
-    /// @description 处理可写用户 VMA 上的 COW store fault。
+    /// 处理可写用户 VMA 上的 COW store fault。
     pub(crate) fn handle_cow_fault(&mut self, address: usize) -> Result<bool, MemoryError> {
         let vpn = VirtualAddress::from(address).floor();
         let Some((_, area)) = self.areas.floor_mut(&vpn) else {

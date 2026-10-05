@@ -95,7 +95,7 @@ pub(super) struct PendingCommand {
 }
 
 impl PendingCommand {
-    /// @description 返回当前 stage 唯一合法的 device-written response 长度。
+    /// 返回当前 stage 唯一合法的 device-written response 长度。
     pub(super) const fn response_length(&self) -> usize {
         if matches!(self.stage, RuntimeStage::DisplayInfo) {
             DISPLAY_INFO_SIZE

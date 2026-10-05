@@ -43,10 +43,19 @@ pub(super) enum FaultResidency {
     Private { lazy: bool, resident: bool },
 }
 
+/// 不可恢复 user fault 的原因，决定 Linux `SIGSEGV` 的 `si_code`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SegmentationCause {
+    /// 没有用户 VMA 覆盖该地址（`SEGV_MAPERR`）。
+    Unmapped,
+    /// VMA 存在但不允许本次访问（`SEGV_ACCERR`）。
+    AccessDenied,
+}
+
 /// Allocation-free decision made before the fault path may reclaim memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FaultPreflight {
-    SegmentationFault,
+    SegmentationFault(SegmentationCause),
     BusError,
     Device,
     SharedAnonymous,
@@ -62,8 +71,15 @@ pub(super) fn preflight_fault<E>(
     file: impl FnOnce() -> Result<FileFaultState, E>,
     residency: impl FnOnce() -> FaultResidency,
 ) -> Result<FaultPreflight, E> {
-    if !contains || !permissions.user {
-        return Ok(FaultPreflight::SegmentationFault);
+    if !contains {
+        return Ok(FaultPreflight::SegmentationFault(
+            SegmentationCause::Unmapped,
+        ));
+    }
+    if !permissions.user {
+        return Ok(FaultPreflight::SegmentationFault(
+            SegmentationCause::AccessDenied,
+        ));
     }
     let permitted = match access {
         FaultAccess::Read => permissions.read,
@@ -71,7 +87,9 @@ pub(super) fn preflight_fault<E>(
         FaultAccess::Execute => permissions.execute,
     };
     if !permitted {
-        return Ok(FaultPreflight::SegmentationFault);
+        return Ok(FaultPreflight::SegmentationFault(
+            SegmentationCause::AccessDenied,
+        ));
     }
     let file = file()?;
     if matches!(file, FileFaultState::BeyondEof) {

@@ -2,9 +2,8 @@ use crate::{
     fs::{PtyMaster, Terminal, TerminalAccess},
     syscall::errno,
     task::{
-        ProcessGroupError, TaskControlBlock, TerminalAccessError, check_terminal_access,
-        claim_controlling_terminal, resize_terminal, set_terminal_foreground_group,
-        terminal_foreground_group,
+        TaskControlBlock, TerminalAccessError, check_terminal_access, claim_controlling_terminal,
+        resize_terminal, set_terminal_foreground_group, terminal_foreground_group,
     },
 };
 
@@ -24,12 +23,18 @@ const TIOCGSID: usize = 0x5429;
 const TIOCGPTN: usize = 0x8004_5430;
 const TIOCSPTLCK: usize = 0x4004_5431;
 
-/// @description 实现 Unix98 PTY master 专属 ioctl，并把通用 TTY request 投影到 slave。
-/// @param task 当前 userspace address-space owner。
-/// @param master `/dev/ptmx` OFD backend。
-/// @param request Linux generic或 PTY master ioctl request。
-/// @param argument request-specific userspace pointer/value。
-/// @return 成功返回零；pointer/request 错误返回标准负 errno。
+/// 实现 Unix98 PTY master 专属 ioctl，并把通用 TTY request 投影到 slave。
+///
+/// # Parameters
+///
+/// - `task`: 当前 userspace address-space owner。
+/// - `master`: `/dev/ptmx` OFD backend。
+/// - `request`: Linux generic或 PTY master ioctl request。
+/// - `argument`: request-specific userspace pointer/value。
+///
+/// # Returns
+///
+/// 成功返回零；pointer/request 错误返回标准负 errno。
 pub(super) fn pty_master_ioctl(
     task: &TaskControlBlock,
     master: &PtyMaster,
@@ -52,19 +57,16 @@ pub(super) fn pty_master_ioctl(
     }
 }
 
-fn tty_error(error: ProcessGroupError) -> isize {
-    match error {
-        ProcessGroupError::NotFound => -errno::ESRCH,
-        ProcessGroupError::Permission => -errno::EPERM,
-        ProcessGroupError::NotTerminal => -errno::ENOTTY,
-    }
-}
-
-/// @description 将 task-owned TTY job-control 结果翻译为 syscall 内部结果。
+/// 将 task-owned TTY job-control 结果翻译为 syscall 内部结果。
 ///
-/// @param terminal 正在访问的 TTY owner。
-/// @param access 输入、输出或状态修改。
-/// @return 允许访问时成功；EIO 或内部 restart sentinel 时返回对应错误。
+/// # Parameters
+///
+/// - `terminal`: 正在访问的 TTY owner。
+/// - `access`: 输入、输出或状态修改。
+///
+/// # Returns
+///
+/// 允许访问时成功；EIO 或内部 restart sentinel 时返回对应错误。
 pub(super) fn guard_terminal_access(
     terminal: &Terminal,
     access: TerminalAccess,
@@ -75,12 +77,17 @@ pub(super) fn guard_terminal_access(
     })
 }
 
-/// @description 实现唯一 Terminal OFD 的 Linux termios/session/foreground ioctl 子集。
+/// 实现唯一 Terminal OFD 的 Linux termios/session/foreground ioctl 子集。
 ///
-/// @param fd 必须指向 Terminal OFD。
-/// @param request Linux generic TTY ioctl request。
-/// @param argument request-specific value 或用户指针。
-/// @return 成功返回零；fd、用户地址、session/group 或 request 错误返回负 errno。
+/// # Parameters
+///
+/// - `fd`: 必须指向 Terminal OFD。
+/// - `request`: Linux generic TTY ioctl request。
+/// - `argument`: request-specific value 或用户指针。
+///
+/// # Returns
+///
+/// 成功返回零；fd、用户地址、session/group 或 request 错误返回负 errno。
 pub(super) fn tty_ioctl(
     task: &TaskControlBlock,
     terminal: &alloc::sync::Arc<Terminal>,
@@ -120,12 +127,13 @@ pub(super) fn tty_ioctl(
             terminal.flush(input, output);
             0
         }
-        TIOCSCTTY => claim_controlling_terminal(terminal, argument).map_or_else(tty_error, |()| 0),
+        TIOCSCTTY => claim_controlling_terminal(terminal, argument)
+            .map_or_else(super::process::process_group_error, |()| 0),
         TIOCGPGRP => match terminal_foreground_group(terminal) {
             Ok(pgid) => task
                 .copy_to_user(argument, &(pgid as i32).to_ne_bytes())
                 .map_or(-errno::EFAULT, |()| 0),
-            Err(error) => tty_error(error),
+            Err(error) => super::process::process_group_error(error),
         },
         TIOCSPGRP => {
             if let Err(error) = guard_terminal_access(terminal, TerminalAccess::StateChange) {
@@ -139,7 +147,8 @@ pub(super) fn tty_ioctl(
             if pgid <= 0 {
                 return -errno::EINVAL;
             }
-            set_terminal_foreground_group(terminal, pgid as usize).map_or_else(tty_error, |()| 0)
+            set_terminal_foreground_group(terminal, pgid as usize)
+                .map_or_else(super::process::process_group_error, |()| 0)
         }
         TIOCGWINSZ => task
             .copy_to_user(argument, &terminal.window_size())

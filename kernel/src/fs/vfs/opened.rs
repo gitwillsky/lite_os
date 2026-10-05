@@ -37,7 +37,7 @@ impl FileName {
     }
 }
 
-/// @description VFS namespace 中一次 pathname lookup 得到的稳定 opened-entry identity。
+/// VFS namespace 中一次 pathname lookup 得到的稳定 opened-entry identity。
 pub(crate) struct OpenedFile {
     inode: Arc<dyn Inode>,
     // OWNER: VFS 唯一更新打开目录项的 parent/name/deleted 关系；若 OFD 自行缓存路径，
@@ -151,12 +151,20 @@ impl OpenedFile {
         Ok((self.inode.filesystem_id(), self.inode.metadata()?.inode))
     }
 
-    /// @description 从稳定 opened-entry 链投影当前 namespace pathname。
+    /// 从稳定 opened-entry 链投影当前 namespace pathname。
     ///
-    /// @param deleted_suffix 为 true 时按 procfs 规则为已删除链追加 ` (deleted)`；
-    /// false 时已删除链返回 `NotFound`，供 getcwd 使用。
-    /// @return 当前绝对路径。
-    /// @errors opened-entry 链损坏、形成环或内存不足时返回明确错误。
+    /// # Parameters
+    ///
+    /// - `deleted_suffix`: 为 true 时按 procfs 规则为已删除链追加 ` (deleted)`；
+    ///   false 时已删除链返回 `NotFound`，供 getcwd 使用。
+    ///
+    /// # Returns
+    ///
+    /// 当前绝对路径。
+    ///
+    /// # Errors
+    ///
+    /// opened-entry 链损坏、形成环或内存不足时返回明确错误。
     pub(super) fn path(&self, deleted_suffix: bool) -> Result<Vec<u8>, FileSystemError> {
         let mut components = Vec::new();
         let mut current = self.location.lock().parent.clone();

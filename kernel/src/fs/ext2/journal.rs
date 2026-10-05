@@ -28,7 +28,7 @@ const JBD2_FLAG_LAST_TAG: u16 = 8;
 const MAX_LIVE_INODE_UNDOS: usize = 4;
 const _: () = assert!(core::mem::size_of::<Option<(Arc<Ext2Inode>, Ext2InodeDisk)>>() == 136);
 
-/// @description 标准 JBD2 journal inode 的单事务 redo-log owner。
+/// 标准 JBD2 journal inode 的单事务 redo-log owner。
 pub(super) struct Journal {
     blocks: Vec<u32>,
     superblock: Vec<u8>,
@@ -46,10 +46,19 @@ struct ActiveTransaction {
 }
 
 impl Journal {
-    /// @description 从固定 journal inode 加载并验证 JBD2 v2 superblock 与 block mapping。
-    /// @param fs 已加载 superblock/group table、尚未发布 journal owner 的 filesystem。
-    /// @return clean 或待 replay 的唯一 Journal owner。
-    /// @errors journal inode、mapping、layout、feature 或 I/O 无效时拒绝挂载。
+    /// 从固定 journal inode 加载并验证 JBD2 v2 superblock 与 block mapping。
+    ///
+    /// # Parameters
+    ///
+    /// - `fs`: 已加载 superblock/group table、尚未发布 journal owner 的 filesystem。
+    ///
+    /// # Returns
+    ///
+    /// clean 或待 replay 的唯一 Journal owner。
+    ///
+    /// # Errors
+    ///
+    /// journal inode、mapping、layout、feature 或 I/O 无效时拒绝挂载。
     pub(super) fn load(fs: &Arc<Ext2FileSystem>) -> Result<Self, FileSystemError> {
         let journal_inode = fs.superblock.lock().s_journal_inum;
         if journal_inode == 0 {
@@ -104,9 +113,15 @@ impl Journal {
         })
     }
 
-    /// @description 读取 active transaction 中覆盖指定 home block 的最新 staged bytes。
-    /// @param block filesystem home block number。
-    /// @return 未 staged 返回 None，否则返回完整 block snapshot。
+    /// 读取 active transaction 中覆盖指定 home block 的最新 staged bytes。
+    ///
+    /// # Parameters
+    ///
+    /// - `block`: filesystem home block number。
+    ///
+    /// # Returns
+    ///
+    /// 未 staged 返回 None，否则返回完整 block snapshot。
     pub(super) fn copy_staged(&self, block: u32, output: &mut [u8]) -> bool {
         let Some(bytes) = self
             .active
@@ -119,12 +134,21 @@ impl Journal {
         true
     }
 
-    /// @description 把一次完整 home-block image 去重加入 active redo write-set。
-    /// @param block filesystem home block number。
-    /// @param bytes 完整的新 block image。
-    /// @param block_size 当前 filesystem block size。
-    /// @return staged 成功时返回零值。
-    /// @errors journal aborted、无 active transaction 或 block size 不匹配时返回错误。
+    /// 把一次完整 home-block image 去重加入 active redo write-set。
+    ///
+    /// # Parameters
+    ///
+    /// - `block`: filesystem home block number。
+    /// - `bytes`: 完整的新 block image。
+    /// - `block_size`: 当前 filesystem block size。
+    ///
+    /// # Returns
+    ///
+    /// staged 成功时返回零值。
+    ///
+    /// # Errors
+    ///
+    /// journal aborted、无 active transaction 或 block size 不匹配时返回错误。
     pub(super) fn stage(
         &mut self,
         block: u32,
@@ -235,10 +259,19 @@ impl Journal {
         self.journal_write(fs, 0, &self.superblock)
     }
 
-    /// @description 按 journal superblock sequence 扫描并重放唯一已提交未 checkpoint 事务。
-    /// @param fs 提供绕过 staging 的 home/journal block I/O 与 FLUSH。
-    /// @return committed transaction 已幂等 replay、journal 重新标记 clean 时成功。
-    /// @errors descriptor/tag/sequence 越界、feature 不支持或 I/O 失败时拒绝挂载。
+    /// 按 journal superblock sequence 扫描并重放唯一已提交未 checkpoint 事务。
+    ///
+    /// # Parameters
+    ///
+    /// - `fs`: 提供绕过 staging 的 home/journal block I/O 与 FLUSH。
+    ///
+    /// # Returns
+    ///
+    /// committed transaction 已幂等 replay、journal 重新标记 clean 时成功。
+    ///
+    /// # Errors
+    ///
+    /// descriptor/tag/sequence 越界、feature 不支持或 I/O 失败时拒绝挂载。
     pub(super) fn recover(&mut self, fs: &Ext2FileSystem) -> Result<(), FileSystemError> {
         let start = be32(&self.superblock, 28)? as usize;
         if start == 0 {
@@ -393,7 +426,7 @@ fn zeroed(length: usize) -> Result<Vec<u8>, FileSystemError> {
     Ok(bytes)
 }
 
-/// @description mutation mutex、lazy runtime undo set 与 journal transaction 的唯一 RAII owner。
+/// mutation mutex、lazy runtime undo set 与 journal transaction 的唯一 RAII owner。
 pub(super) struct MutationGuard<'a> {
     fs: &'a Ext2FileSystem,
     _lock: TaskMutexGuard<'a, ()>,
@@ -409,18 +442,36 @@ pub(super) struct MutationGuard<'a> {
 }
 
 impl<'a> MutationGuard<'a> {
-    /// @description 取得唯一 mutation lock、冻结 allocator snapshot 并开始空 redo write-set。
-    /// @param fs journal 已加载且未 aborted 的 filesystem。
-    /// @return 拥有 transaction 与 rollback snapshot 的 guard。
-    /// @errors journal 缺失、aborted 或 transaction 重入时返回错误。
+    /// 取得唯一 mutation lock、冻结 allocator snapshot 并开始空 redo write-set。
+    ///
+    /// # Parameters
+    ///
+    /// - `fs`: journal 已加载且未 aborted 的 filesystem。
+    ///
+    /// # Returns
+    ///
+    /// 拥有 transaction 与 rollback snapshot 的 guard。
+    ///
+    /// # Errors
+    ///
+    /// journal 缺失、aborted 或 transaction 重入时返回错误。
     pub(super) fn begin(fs: &'a Ext2FileSystem) -> Result<Self, FileSystemError> {
         Self::begin_after(fs, || Ok(())).map(|(guard, ())| guard)
     }
 
-    /// @description 仅在无需等待时取得 mutation owner 并开始空 transaction。
-    /// @param fs journal 已加载且未 aborted 的 filesystem。
-    /// @return owner 空闲时返回完整 guard，忙时返回 `None` 且不执行任何 prepare。
-    /// @errors owner 取得后的 snapshot 或 journal begin 失败返回对应错误。
+    /// 仅在无需等待时取得 mutation owner 并开始空 transaction。
+    ///
+    /// # Parameters
+    ///
+    /// - `fs`: journal 已加载且未 aborted 的 filesystem。
+    ///
+    /// # Returns
+    ///
+    /// owner 空闲时返回完整 guard，忙时返回 `None` 且不执行任何 prepare。
+    ///
+    /// # Errors
+    ///
+    /// owner 取得后的 snapshot 或 journal begin 失败返回对应错误。
     pub(super) fn try_begin(fs: &'a Ext2FileSystem) -> Result<Option<Self>, FileSystemError> {
         let Some(lock) = fs.mutation.try_lock() else {
             return Ok(None);
@@ -428,9 +479,15 @@ impl<'a> MutationGuard<'a> {
         Self::begin_after_lock(fs, lock, || Ok(())).map(|(guard, ())| Some(guard))
     }
 
-    /// @description 取得 mutation lock，执行无副作用 live-state prepare，成功后才冻结 rollback 并开 journal。
-    /// @param prepare 只读当前 mutation domain、不得发布状态的 fallible prepare。
-    /// @return guard 与锁内准备结果；prepare 失败不分配 snapshot、不发布 active transaction。
+    /// 取得 mutation lock，执行无副作用 live-state prepare，成功后才冻结 rollback 并开 journal。
+    ///
+    /// # Parameters
+    ///
+    /// - `prepare`: 只读当前 mutation domain、不得发布状态的 fallible prepare。
+    ///
+    /// # Returns
+    ///
+    /// guard 与锁内准备结果；prepare 失败不分配 snapshot、不发布 active transaction。
     pub(super) fn begin_after<T>(
         fs: &'a Ext2FileSystem,
         prepare: impl FnOnce() -> Result<T, FileSystemError>,
@@ -478,10 +535,19 @@ impl<'a> MutationGuard<'a> {
         ))
     }
 
-    /// @description 首次可变访问 live inode 时先捕获其唯一 rollback preimage。
-    /// @param inode 当前 filesystem inode-cache 中由 caller 保活的 inode。
-    /// @return 已建立 abort 恢复证明、锁外可修改的 inode working copy。
-    /// @errors cache owner 分裂或超过当前事务已证明的四 inode 上限返回 invalid operation。
+    /// 首次可变访问 live inode 时先捕获其唯一 rollback preimage。
+    ///
+    /// # Parameters
+    ///
+    /// - `inode`: 当前 filesystem inode-cache 中由 caller 保活的 inode。
+    ///
+    /// # Returns
+    ///
+    /// 已建立 abort 恢复证明、锁外可修改的 inode working copy。
+    ///
+    /// # Errors
+    ///
+    /// cache owner 分裂或超过当前事务已证明的四 inode 上限返回 invalid operation。
     pub(super) fn inode<'mutation, 'inode>(
         &'mutation mut self,
         inode: &'inode Ext2Inode,
@@ -517,10 +583,19 @@ impl<'a> MutationGuard<'a> {
         Ok(InodeMutation::new(inode, disk))
     }
 
-    /// @description 在 transient inode 可能被修改前登记 abort 删除责任。
-    /// @param number 本 transaction 新分配、或已进入 final Drop 无法保活 Arc 的 inode number。
-    /// @return 后续 inode mutation/cache publication 不再需要 rollback state。
-    /// @errors 同一 transaction 出现第二 transient inode 返回 invalid operation。
+    /// 在 transient inode 可能被修改前登记 abort 删除责任。
+    ///
+    /// # Parameters
+    ///
+    /// - `number`: 本 transaction 新分配、或已进入 final Drop 无法保活 Arc 的 inode number。
+    ///
+    /// # Returns
+    ///
+    /// 后续 inode mutation/cache publication 不再需要 rollback state。
+    ///
+    /// # Errors
+    ///
+    /// 同一 transaction 出现第二 transient inode 返回 invalid operation。
     pub(super) fn discard_inode_on_abort(&mut self, number: u32) -> Result<(), FileSystemError> {
         match self.discarded_inode {
             Some(existing) if existing == number => Ok(()),
@@ -532,9 +607,15 @@ impl<'a> MutationGuard<'a> {
         }
     }
 
-    /// @description 按 journal→commit→home→clean 顺序持久化并消费本次 guard。
-    /// @return 所有 home blocks 已 checkpoint 到 stable-storage capability 时成功。
-    /// @errors journal 容量或 block I/O/FLUSH 失败时返回错误并 fail-stop 后续 mutation。
+    /// 按 journal→commit→home→clean 顺序持久化并消费本次 guard。
+    ///
+    /// # Returns
+    ///
+    /// 所有 home blocks 已 checkpoint 到 stable-storage capability 时成功。
+    ///
+    /// # Errors
+    ///
+    /// journal 容量或 block I/O/FLUSH 失败时返回错误并 fail-stop 后续 mutation。
     pub(super) fn commit(mut self) -> Result<(), FileSystemError> {
         let allocation_dirty = self
             .fs

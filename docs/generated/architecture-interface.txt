@@ -705,7 +705,6 @@ kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn writable (& se
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn xrun (& mut self)
 kernel/src/audio/state.rs :: pub (crate) struct PcmStateOwner
 kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
-kernel/src/config.rs :: pub (crate) const TICKS_PER_SEC : usize = 100
 kernel/src/cpu/deferred.rs :: enum DeferredWork :: Console = 1 << 1
 kernel/src/cpu/deferred.rs :: enum DeferredWork :: Display = 1 << 4
 kernel/src/cpu/deferred.rs :: enum DeferredWork :: DriverIo = 1 << 6
@@ -792,6 +791,11 @@ kernel/src/drivers/block.rs :: trait BlockDevice :: fn dispatch_completions (& s
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn flush (& self) -> Result < () , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn read_block (& self , block_id : usize , buf : & mut [u8]) -> Result < usize , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn write_block (& self , block_id : usize , buf : & [u8]) -> Result < usize , BlockError >
+kernel/src/drivers/console_input.rs :: pub (super) fn discard_input () -> usize
+kernel/src/drivers/console_input.rs :: pub (super) fn init () -> Result < () , InterruptError >
+kernel/src/drivers/console_input.rs :: pub (super) fn input_ready () -> bool
+kernel/src/drivers/console_input.rs :: pub (super) fn publish_received (bytes : & [u8])
+kernel/src/drivers/console_input.rs :: pub (super) fn read (bytes : & mut [u8]) -> usize
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " rectangle 越过当前 scanout。"] InvalidRectangle
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " transport、queue 或 response 损坏。"] Device
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
@@ -1075,11 +1079,6 @@ kernel/src/drivers/network.rs :: trait NetworkDevice :: fn reserve_transmit (& s
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn statistics (& self) -> NetworkStatistics
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn submit_transmit (& self , reservation : u16 , frame : & [u8]) -> Result < () , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn transmit_available (& self) -> bool
-kernel/src/drivers/uart.rs :: pub (super) fn discard_input () -> usize
-kernel/src/drivers/uart.rs :: pub (super) fn init () -> Result < () , InterruptError >
-kernel/src/drivers/uart.rs :: pub (super) fn input_ready () -> bool
-kernel/src/drivers/uart.rs :: pub (super) fn publish_received (bytes : & [u8])
-kernel/src/drivers/uart.rs :: pub (super) fn read (bytes : & mut [u8]) -> usize
 kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) struct VirtIOBlockDevice
@@ -1094,10 +1093,10 @@ kernel/src/drivers/virtio_blk/policy.rs :: pub (super) enum CompletionStatus
 kernel/src/drivers/virtio_blk/policy.rs :: pub (super) enum RequestOperation
 kernel/src/drivers/virtio_blk/policy.rs :: pub (super) fn decode_status (status : u8) -> CompletionStatus
 kernel/src/drivers/virtio_blk/policy.rs :: pub (super) fn valid_block (capacity_sectors : u64 , block : usize , length : usize) -> bool
-kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIoCompletionIrq :: const fn new () -> Self
-kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIoCompletionIrq :: fn acknowledge_and_defer (& self , device : & VirtIODevice)
-kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIoCompletionIrq :: fn take_transport_error (& self) -> bool
-kernel/src/drivers/virtio_completion_irq.rs :: pub (super) struct VirtIoCompletionIrq
+kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: const fn new () -> Self
+kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge_and_defer (& self , device : & VirtIODevice)
+kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn take_transport_error (& self) -> bool
+kernel/src/drivers/virtio_completion_irq.rs :: pub (super) struct VirtIOCompletionIrq
 kernel/src/drivers/virtio_console.rs :: enum PortError :: # [doc = " No byte or transmit slot is currently available."] WouldBlock
 kernel/src/drivers/virtio_console.rs :: enum PortError :: # [doc = " The selected named port is closed or the transport failed."] Disconnected
 kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: backlog : bool
@@ -1679,12 +1678,12 @@ kernel/src/drm/publication_order.rs :: enum ReservationError :: # [doc = " monot
 kernel/src/drm/publication_order.rs :: enum ReservationError :: # [doc = " rollback token 的唯一节点无法预留。"] OutOfMemory
 kernel/src/drm/publication_order.rs :: pub (super) enum ReservationError
 kernel/src/drm/publication_order.rs :: pub (super) fn after_copyout < T , E > (prepared : T , copyout : impl FnOnce (& T) -> Result < () , E > , publish : impl FnOnce (T) ,) -> Result < () , E >
-kernel/src/drm/publication_order.rs :: pub (super) impl IdAllocator < T > :: const fn new (first : T) -> Self
-kernel/src/drm/publication_order.rs :: pub (super) impl IdAllocator < T > :: fn publish (& mut self , reservation : UnpublishedId < T >)
-kernel/src/drm/publication_order.rs :: pub (super) impl IdAllocator < T > :: fn reserve (& mut self) -> Result < UnpublishedId < T > , ReservationError >
-kernel/src/drm/publication_order.rs :: pub (super) impl IdAllocator < T > :: fn rollback (& mut self , reservation : UnpublishedId < T >)
+kernel/src/drm/publication_order.rs :: pub (super) impl PublicationIdAllocator < T > :: const fn new (first : T) -> Self
+kernel/src/drm/publication_order.rs :: pub (super) impl PublicationIdAllocator < T > :: fn publish (& mut self , reservation : UnpublishedId < T >)
+kernel/src/drm/publication_order.rs :: pub (super) impl PublicationIdAllocator < T > :: fn reserve (& mut self) -> Result < UnpublishedId < T > , ReservationError >
+kernel/src/drm/publication_order.rs :: pub (super) impl PublicationIdAllocator < T > :: fn rollback (& mut self , reservation : UnpublishedId < T >)
 kernel/src/drm/publication_order.rs :: pub (super) impl UnpublishedId < T > :: fn id (& self) -> T
-kernel/src/drm/publication_order.rs :: pub (super) struct IdAllocator < T >
+kernel/src/drm/publication_order.rs :: pub (super) struct PublicationIdAllocator < T >
 kernel/src/drm/publication_order.rs :: pub (super) struct UnpublishedId < T >
 kernel/src/drm/publication_order.rs :: pub (super) trait Identity
 kernel/src/drm/publication_order.rs :: trait Identity :: fn checked_next (self) -> Option < Self >
@@ -2769,19 +2768,13 @@ kernel/src/log.rs :: pub (crate) const KMSG_READ_BUFFER_SIZE : usize = 256
 kernel/src/log.rs :: pub (crate) enum KmsgRead
 kernel/src/log.rs :: pub (crate) enum LogLevel
 kernel/src/log.rs :: pub (crate) fn __log (level : LogLevel , module : & str , args : fmt :: Arguments)
-kernel/src/log.rs :: pub (crate) fn disable_module (module : & str) -> bool
 kernel/src/log.rs :: pub (crate) fn enabled (level : LogLevel) -> bool
 kernel/src/log.rs :: pub (crate) fn init ()
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn open () -> Self
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn read (& self , output : & mut [u8]) -> KmsgRead
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn readable (& self) -> bool
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn readiness_generation (& self) -> u64
-kernel/src/log.rs :: pub (crate) impl LogLevel :: fn colored_str (& self) -> & 'static str
-kernel/src/log.rs :: pub (crate) impl Logger :: fn disable_module (& mut self , module : & str) -> bool
-kernel/src/log.rs :: pub (crate) impl Logger :: fn log (& mut self , level : LogLevel , module : & str , args : fmt :: Arguments)
 kernel/src/log.rs :: pub (crate) struct KmsgReader
-kernel/src/log.rs :: pub (crate) struct Logger
-kernel/src/log.rs :: pub (crate) struct ModuleFilter
 kernel/src/memory/address.rs :: pub (crate) impl PhysicalAddress :: fn as_mut_ptr < T > (& self) -> * mut T
 kernel/src/memory/address.rs :: pub (crate) impl PhysicalAddress :: fn as_ptr < T > (& self) -> * const T
 kernel/src/memory/address.rs :: pub (crate) impl PhysicalAddress :: fn as_usize (& self) -> usize
@@ -2895,7 +2888,7 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_add
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mm.rs :: pub (crate) use area :: { MapArea , MapType }
-kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: FaultAccess as PageFaultAccess , futex_key :: FutexKey , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingResourceLimits , MemoryAdvice , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
+kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_key :: FutexKey , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingResourceLimits , MemoryAdvice , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
 kernel/src/memory/mm.rs :: pub (super) mod shootdown
 kernel/src/memory/mm/area.rs :: enum MapType :: Framed
 kernel/src/memory/mm/area.rs :: enum MapType :: KernelMapped
@@ -2971,7 +2964,7 @@ kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: BusError
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: Device
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: NeedsPrivateFrame
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: Private
-kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: SegmentationFault
+kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: SegmentationFault (SegmentationCause)
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: SharedAnonymous
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultPreflight :: SharedFile
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultResidency :: Device
@@ -2981,7 +2974,10 @@ kernel/src/memory/mm/fault_preflight.rs :: enum FaultResidency :: SharedFile
 kernel/src/memory/mm/fault_preflight.rs :: enum FileFaultState :: Available
 kernel/src/memory/mm/fault_preflight.rs :: enum FileFaultState :: BeyondEof
 kernel/src/memory/mm/fault_preflight.rs :: enum FileFaultState :: NotFile
+kernel/src/memory/mm/fault_preflight.rs :: enum SegmentationCause :: # [doc = " VMA 存在但不允许本次访问（`SEGV_ACCERR`）。"] AccessDenied
+kernel/src/memory/mm/fault_preflight.rs :: enum SegmentationCause :: # [doc = " 没有用户 VMA 覆盖该地址（`SEGV_MAPERR`）。"] Unmapped
 kernel/src/memory/mm/fault_preflight.rs :: pub (crate) enum FaultAccess
+kernel/src/memory/mm/fault_preflight.rs :: pub (crate) enum SegmentationCause
 kernel/src/memory/mm/fault_preflight.rs :: pub (super) enum FaultPreflight
 kernel/src/memory/mm/fault_preflight.rs :: pub (super) enum FaultResidency
 kernel/src/memory/mm/fault_preflight.rs :: pub (super) enum FileFaultState
@@ -3035,7 +3031,7 @@ kernel/src/memory/mm/mapping_request.rs :: pub (super) FileMappingSource :: page
 kernel/src/memory/mm/mapping_request.rs :: pub (super) MappingResourceLimits :: address_space : u64
 kernel/src/memory/mm/mapping_request.rs :: pub (super) MappingResourceLimits :: data : u64
 kernel/src/memory/mm/mmap.rs :: enum PageFaultOutcome :: # [doc = " file mapping 地址属于 VMA，但已越过 backing object 的有效范围。"] BusError
-kernel/src/memory/mm/mmap.rs :: enum PageFaultOutcome :: # [doc = " 地址不属于允许该访问的用户 VMA。"] SegmentationFault
+kernel/src/memory/mm/mmap.rs :: enum PageFaultOutcome :: # [doc = " 地址不属于允许该访问的用户 VMA；cause 区分未映射与权限拒绝。"] SegmentationFault (SegmentationCause)
 kernel/src/memory/mm/mmap.rs :: enum PageFaultOutcome :: # [doc = " 请求的访问权限已经由 live leaf PTE 满足，原指令可直接重试。"] Handled
 kernel/src/memory/mm/mmap.rs :: pub (crate) enum PageFaultOutcome
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn invalidate_shared_file (& mut self , id : SharedFileId , size : u64)
@@ -3171,7 +3167,7 @@ kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , Ex
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocationClass , FrameTracker , alloc_contiguous , statistics as frame_statistics , }
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexKey , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , UserFaultLimits , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexKey , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , SegmentationCause , UserAccessError , UserFaultLimits , }
 kernel/src/memory/mod.rs :: pub (crate) use permissions :: MapPermission
 kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , }
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn activate_kernel (& self)
@@ -3244,6 +3240,12 @@ kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn sync_range (& 
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn acquire_writer (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn frame (& self) -> & SharedFrame
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
+kernel/src/platform/mod.rs :: enum ResetKind :: ColdReboot
+kernel/src/platform/mod.rs :: enum ResetKind :: Shutdown
+kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。"] SystemFailure
+kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " 用户或系统策略主动请求。"] Requested
+kernel/src/platform/mod.rs :: pub (crate) enum ResetKind
+kernel/src/platform/mod.rs :: pub (crate) enum ResetReason
 kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
@@ -3319,7 +3321,7 @@ kernel/src/platform/qemu_virt/aarch64/pci.rs :: pub (crate) fn find_console (hos
 kernel/src/platform/qemu_virt/aarch64/pci.rs :: pub (crate) struct VirtioPciFunction
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn enable_receive ()
 kernel/src/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn initialize (base : usize , size : usize ,) -> Result < Arc < dyn InterruptHandler > , InterruptError >
-kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) fn reset_system (reset_type : usize , _reset_reason : usize) -> Result < () , ResetError >
+kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) fn reset_system (kind : crate :: platform :: ResetKind , _reason : crate :: platform :: ResetReason ,) -> Result < () , ResetError >
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) fn start_cpu (hardware_cpu_id : crate :: cpu :: HardwareCpuId , entry_address : usize , boot : super :: BootInfo ,) -> Result < () , CpuStartError >
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) fn verify ()
 kernel/src/platform/qemu_virt/aarch64/psci.rs :: pub (crate) struct CpuStartError
@@ -3375,7 +3377,7 @@ kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (super) impl BootInfo 
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn arm_timer (timer_value : u64) -> Result < () , TimerArmError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn debug_console_write (byte : u8) -> Result < () , FirmwareError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn debug_console_write_bytes (bytes : & [u8]) -> Result < () , FirmwareError >
-kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn reset_system (reset_type : usize , reset_reason : usize) -> Result < () , ResetError >
+kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn reset_system (kind : crate :: platform :: ResetKind , reason : crate :: platform :: ResetReason ,) -> Result < () , ResetError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn send_ipi (cpus : crate :: cpu :: CpuSet) -> Result < () , FirmwareError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn start_cpu (hardware_cpu_id : crate :: cpu :: HardwareCpuId , start_address : usize , boot : super :: BootInfo ,) -> Result < () , CpuStartError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn synchronize_instruction_cache (cpus : crate :: cpu :: CpuSet ,) -> Result < () , InstructionFenceError >
@@ -4119,11 +4121,12 @@ kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_PRIVATE : usize = 0x02
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_SHARED : usize = 0x01
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_STACK : usize = 0x2_0000
 kernel/src/syscall/mmap_flags.rs :: pub (super) const fn mmap_flags_supported (flags : usize) -> bool
-kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 将 Linux 返回值或负 errno 写回 `a0`。"] Return (isize)
-kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 ecall。"] Restart
+kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 将 Linux 返回值或负 errno 写回 architecture syscall return register。"] Return (isize)
+kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 syscall instruction。"] Restart
 kernel/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize = - errno :: EINTR
 kernel/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> SyscallOutcome
+kernel/src/syscall/mod.rs :: pub (in crate :: syscall) fn file_descriptor_error (error : crate :: fs :: FileDescriptorError) -> isize
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_ppoll (poll_fds : usize , count : usize , timeout : usize , signal_mask : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_pselect6 (count : usize , read_set : usize , write_set : usize , except_set : usize , timeout : usize , signal_argument : usize ,) -> isize
 kernel/src/syscall/poll.rs :: pub (super) fn prepare_wait_sources (ofd : & Arc < OpenFileDescription >)
@@ -4158,6 +4161,7 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_set_tid_address (address : u
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setpgid (pid : usize , pgid : usize) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setsid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
+kernel/src/syscall/process.rs :: pub (super) fn process_group_error (error : ProcessGroupError) -> isize
 kernel/src/syscall/process_control.rs :: pub (crate) fn sys_prctl (option : usize , argument : usize) -> isize
 kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
@@ -4306,9 +4310,6 @@ kernel/src/syscall/user_iovec/input_staging.rs :: pub (crate) impl UserInputStag
 kernel/src/syscall/user_iovec/input_staging.rs :: pub (crate) impl UserInputStaging < 'a > :: unsafe fn publish (& mut self , initialized : usize)
 kernel/src/syscall/user_iovec/input_staging.rs :: pub (crate) impl UserInputStaging < 'static > :: fn try_new (capacity : usize) -> Result < Self , () >
 kernel/src/syscall/user_iovec/input_staging.rs :: pub (crate) struct UserInputStaging < 'a >
-kernel/src/system.rs :: enum ResetKind :: ColdReboot
-kernel/src/system.rs :: enum ResetKind :: Shutdown
-kernel/src/system.rs :: pub (crate) enum ResetKind
 kernel/src/system.rs :: pub (crate) fn current_cpu_index () -> usize
 kernel/src/system.rs :: pub (crate) fn decode_architecture_syscall (syscall_id : usize) -> Option < usize >
 kernel/src/system.rs :: pub (crate) fn identity () -> [& 'static str ; 6]
@@ -4316,6 +4317,7 @@ kernel/src/system.rs :: pub (crate) fn online_cpu_mask () -> usize
 kernel/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , crate :: platform :: ResetError >
 kernel/src/system.rs :: pub (crate) fn set_ctrl_alt_del (enabled : bool)
 kernel/src/system.rs :: pub (crate) fn time_counter_frequency () -> u64
+kernel/src/system.rs :: pub (crate) use crate :: platform :: ResetKind
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS pathname 解析或 executable source 读取失败。"] FileSystem (FileSystemError)
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " script interpreter rewrite 超过 Linux 固定上限。"] InterpreterLoop
@@ -4337,13 +4339,14 @@ kernel/src/task/memory_barrier.rs :: pub (crate) fn synchronize_private_memory (
 kernel/src/task/memory_barrier.rs :: pub (super) fn initialize ()
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) fn initialize_interrupt_state ()
+kernel/src/task/mod.rs :: pub (crate) mod signal_number
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
 kernel/src/task/mod.rs :: pub (crate) use model :: { CredentialUpdateError , IoStatistics , PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ReceivedFdTransaction , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
+kernel/src/task/mod.rs :: pub (crate) use process_table :: *
+kernel/src/task/mod.rs :: pub (crate) use process_table :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
+kernel/src/task/mod.rs :: pub (crate) use process_table :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerFileClock , create_posix_timer , create_timer_fd , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
-kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
-kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
-kernel/src/task/mod.rs :: pub (crate) use task_manager :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerFileClock , create_posix_timer , create_timer_fd , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
 kernel/src/task/mod.rs :: pub (in crate :: task) use model :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: enum RunState :: Blocked
 kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : crate :: cpu :: CpuId , }
@@ -4366,7 +4369,7 @@ kernel/src/task/model.rs :: pub (crate) TaskControlBlock :: scheduling : Schedul
 kernel/src/task/model.rs :: pub (crate) enum RunState
 kernel/src/task/model.rs :: pub (crate) enum StopResume
 kernel/src/task/model.rs :: pub (crate) enum StopTransition
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn arm_syscall_restart (& self , syscall_id : usize , args : [usize ; 6] , ecall_pc : usize)
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn arm_syscall_restart (& self , syscall_id : usize , args : [usize ; 6] , syscall_pc : usize ,)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn begin_signal_suspend (& self , temporary : u64) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signal_set (& self , candidates : u64) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
@@ -4728,6 +4731,457 @@ kernel/src/task/pid.rs :: pub (super) ProcessId :: <tuple> : usize
 kernel/src/task/pid.rs :: pub (super) const PID_MAX : usize = 0x3fff_ffff
 kernel/src/task/pid.rs :: pub (super) impl ProcessId :: const fn allocated (value : usize) -> Self
 kernel/src/task/pid.rs :: pub (super) struct ProcessId
+kernel/src/task/process_table.rs :: enum SignalWaitError :: Again
+kernel/src/task/process_table.rs :: enum SignalWaitError :: Interrupted
+kernel/src/task/process_table.rs :: enum SignalWaitError :: OutOfMemory
+kernel/src/task/process_table.rs :: pub (crate) enum SignalWaitError
+kernel/src/task/process_table.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
+kernel/src/task/process_table.rs :: pub (crate) fn run_tasks () -> !
+kernel/src/task/process_table.rs :: pub (crate) fn sleep_until (deadline_ns : u64) -> WaitResult
+kernel/src/task/process_table.rs :: pub (crate) fn suspend_current_and_run_next ()
+kernel/src/task/process_table.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
+kernel/src/task/process_table.rs :: pub (crate) fn wait_for_poll (mut keys : alloc :: vec :: Vec < PollWaitKey > , deadline : Option < u64 > , ready : impl FnOnce () -> bool ,) -> WaitResult
+kernel/src/task/process_table.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
+kernel/src/task/process_table.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64) -> WaitResult
+kernel/src/task/process_table.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
+kernel/src/task/process_table.rs :: pub (crate) use console_wait :: { drain_terminal_input , wait_for_console }
+kernel/src/task/process_table.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
+kernel/src/task/process_table.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
+kernel/src/task/process_table.rs :: pub (crate) use parent_death :: parent_death_signal
+kernel/src/task/process_table.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
+kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
+kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
+kernel/src/task/process_table.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
+kernel/src/task/process_table.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
+kernel/src/task/process_table.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
+kernel/src/task/process_table.rs :: pub (crate) use resource_limit :: process_resource_limit
+kernel/src/task/process_table.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_kernel_thread_signal_info , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
+kernel/src/task/process_table.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal , publish_terminal_input_signals , resize_terminal , }
+kernel/src/task/process_table.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
+kernel/src/task/process_table.rs :: pub (crate) use thread_selector :: { parent_pid , thread_count }
+kernel/src/task/process_table.rs :: pub (crate) use vfork :: { ProcessCloneError , fork_current_process , vfork_current_process }
+kernel/src/task/process_table.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , release_child_status , wait_child , }
+kernel/src/task/process_table.rs :: pub (crate) use wait_key :: PollWaitKey
+kernel/src/task/process_table.rs :: pub (in crate :: task) mod advisory_lock
+kernel/src/task/process_table.rs :: pub (in crate :: task) mod task_mutex_wait
+kernel/src/task/process_table.rs :: pub (in crate :: task) mod timer_queue
+kernel/src/task/process_table.rs :: pub (in crate :: task) mod vfork
+kernel/src/task/process_table.rs :: pub (in crate :: task) use futex :: futex_wake_with_key
+kernel/src/task/process_table.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
+kernel/src/task/process_table.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
+kernel/src/task/process_table.rs :: pub (super) fn scheduler_deferred_safe_point ()
+kernel/src/task/process_table.rs :: pub (super) mod context_switch
+kernel/src/task/process_table.rs :: pub (super) use io_wait :: initialize_driver_io_wait
+kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: FileSystem (crate :: fs :: FileSystemError)
+kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: Interrupted
+kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: NoLocks
+kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: Unsupported
+kernel/src/task/process_table/advisory_lock.rs :: pub (crate) enum AdvisoryLockWaitError
+kernel/src/task/process_table/advisory_lock.rs :: pub (crate) fn install_advisory_lock_notifier ()
+kernel/src/task/process_table/advisory_lock.rs :: pub (crate) fn wait_for_advisory_lock (ofd : & Arc < OpenFileDescription > , mode : AdvisoryLockMode ,) -> Result < () , AdvisoryLockWaitError >
+kernel/src/task/process_table/advisory_lock.rs :: pub (crate) fn wait_for_record_lock (ofd : & Arc < OpenFileDescription > , owner : usize , mode : RecordLockMode , range : RecordLockRange ,) -> Result < () , AdvisoryLockWaitError >
+kernel/src/task/process_table/affinity.rs :: enum SchedulerAffinityError :: Empty
+kernel/src/task/process_table/affinity.rs :: enum SchedulerAffinityError :: NotFound
+kernel/src/task/process_table/affinity.rs :: enum SchedulerAffinityError :: Permission
+kernel/src/task/process_table/affinity.rs :: pub (crate) enum SchedulerAffinityError
+kernel/src/task/process_table/affinity.rs :: pub (crate) fn scheduler_affinity (tid : usize , replacement : Option < usize > ,) -> Result < usize , SchedulerAffinityError >
+kernel/src/task/process_table/console_batch.rs :: pub (super) const CONSOLE_WAKE_BATCH : usize = 32
+kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: const fn is_full (& self) -> bool
+kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: const fn new () -> Self
+kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: const fn selected (& self) -> usize
+kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: fn groups (& self) -> & [Option < usize >]
+kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: fn record (& mut self , group : Option < usize >)
+kernel/src/task/process_table/console_batch.rs :: pub (super) struct ConsoleWakeBatch
+kernel/src/task/process_table/console_wait.rs :: pub (crate) fn drain_terminal_input (terminal : & crate :: fs :: Terminal) -> Result < () , () >
+kernel/src/task/process_table/console_wait.rs :: pub (crate) fn wait_for_console (deadline : Option < u64 > , input_ready : impl FnOnce () -> bool ,) -> WaitResult
+kernel/src/task/process_table/console_wait.rs :: pub (super) fn process_terminal_input () -> bool
+kernel/src/task/process_table/console_wait.rs :: pub (super) fn wake_console_waiters () -> bool
+kernel/src/task/process_table/context_switch.rs :: pub (in crate :: task) fn complete_pending_handoff ()
+kernel/src/task/process_table/context_switch.rs :: pub (super) fn prepare_current_block < Owner > (task : & Arc < TaskControlBlock > , mut owner : Owner , publish : impl FnOnce (& mut Owner , Arc < TaskControlBlock >) -> WaitMembership ,) -> PreparedBlock
+kernel/src/task/process_table/context_switch.rs :: pub (super) fn schedule_with_task_context (task : Arc < TaskControlBlock >)
+kernel/src/task/process_table/context_switch.rs :: pub (super) fn switch_from_idle (task : Arc < TaskControlBlock >)
+kernel/src/task/process_table/context_switch.rs :: pub (super) impl PreparedBlock :: fn suspend (mut self) -> WaitResult
+kernel/src/task/process_table/context_switch.rs :: pub (super) struct PreparedBlock
+kernel/src/task/process_table/deferred.rs :: pub (crate) fn dispatch_pending_deferred_work ()
+kernel/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " WAIT value 或 CMP_REQUEUE expected 不匹配。"] Again
+kernel/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " absolute monotonic deadline 已到期。"] TimedOut
+kernel/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " futex word 不可从 calling address space 读取。"] Fault
+kernel/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " wait registry 无法在 publication 前预留完整 membership。"] OutOfMemory
+kernel/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " 可投递 signal 中断了阻塞等待。"] Interrupted
+kernel/src/task/process_table/futex.rs :: enum FutexWaitError :: # [doc = " 地址未对齐、为空或 bitset 为空。"] Invalid
+kernel/src/task/process_table/futex.rs :: pub (crate) enum FutexWaitError
+kernel/src/task/process_table/futex.rs :: pub (crate) fn futex_requeue (task : & TaskControlBlock , source : usize , target : usize , private : bool , wake_count : usize , requeue_count : usize , compare : Option < u32 > ,) -> Result < usize , FutexWaitError >
+kernel/src/task/process_table/futex.rs :: pub (crate) fn futex_wait (task : Arc < TaskControlBlock > , address : usize , expected : u32 , private : bool , deadline : Option < u64 > , bitset : u32 ,) -> Result < () , FutexWaitError >
+kernel/src/task/process_table/futex.rs :: pub (crate) fn futex_wake (task : & TaskControlBlock , address : usize , private : bool , count : usize , bitset : u32 ,) -> Result < usize , FutexWaitError >
+kernel/src/task/process_table/futex.rs :: pub (in crate :: task) fn futex_wake_with_key (count : usize , bitset : u32 , with_key : impl FnOnce (& mut dyn FnMut (FutexKey)) -> Result < () , UserAccessError > ,) -> Result < usize , FutexWaitError >
+kernel/src/task/process_table/io_wait.rs :: pub (in crate :: task) fn initialize_driver_io_wait ()
+kernel/src/task/process_table/load_average.rs :: pub (super) fn update (now_us : u64)
+kernel/src/task/process_table/load_average.rs :: pub (super) impl LoadAverage :: const fn new () -> Self
+kernel/src/task/process_table/load_average.rs :: pub (super) impl LoadAverage :: fn values (& self) -> [u64 ; 3]
+kernel/src/task/process_table/load_average.rs :: pub (super) struct LoadAverage
+kernel/src/task/process_table/parent_death.rs :: pub (crate) fn parent_death_signal (replacement : Option < usize >) -> Result < usize , () >
+kernel/src/task/process_table/parent_death.rs :: pub (super) fn drain_parent_death_signals ()
+kernel/src/task/process_table/parent_death.rs :: pub (super) fn mark_parent_exit (graph : & mut ProcessGraph , parent_tgid : usize , parent_tid : usize , replacement_tid : usize ,)
+kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn create_notification_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
+kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
+kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult
+kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn wait_for_pipe_until (pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
+kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller process group，非零选择 PGID。"] Group (u32)
+kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller real UID，非零选择给定 UID。"] User (u32)
+kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller，非零选择全局 TID。"] Process (u32)
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyError :: Access
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyError :: Invalid
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyError :: NotFound
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyError :: OutOfMemory
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyError :: Permission
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyRequest :: # [doc = " 保留 policy 与 reset-on-fork，只校验并设置 legacy priority。"] SetParameters { # [doc = " Linux `struct sched_param.sched_priority`。"] priority : i32 , }
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyRequest :: # [doc = " 原子替换 legacy policy、reset-on-fork 与 priority。"] Replace { # [doc = " Linux legacy scheduler policy 与可选 reset-on-fork bit。"] policy : i32 , # [doc = " Linux `struct sched_param.sched_priority`。"] priority : i32 , }
+kernel/src/task/process_table/policy.rs :: enum SchedulerPolicyRequest :: # [doc = " 查询 policy，不修改目标。"] Query
+kernel/src/task/process_table/policy.rs :: pub (crate) enum SchedulerNiceSelector
+kernel/src/task/process_table/policy.rs :: pub (crate) enum SchedulerPolicyError
+kernel/src/task/process_table/policy.rs :: pub (crate) enum SchedulerPolicyRequest
+kernel/src/task/process_table/policy.rs :: pub (crate) fn scheduler_io_priority (tid : usize , replacement : Option < u16 > ,) -> Result < u16 , SchedulerPolicyError >
+kernel/src/task/process_table/policy.rs :: pub (crate) fn scheduler_nice (selector : SchedulerNiceSelector , replacement : Option < i32 > ,) -> Result < i32 , SchedulerPolicyError >
+kernel/src/task/process_table/policy.rs :: pub (crate) fn scheduler_policy (tid : usize , request : SchedulerPolicyRequest ,) -> Result < i32 , SchedulerPolicyError >
+kernel/src/task/process_table/policy.rs :: pub (crate) fn scheduler_rr_interval (tid : usize) -> Result < u64 , SchedulerPolicyError >
+kernel/src/task/process_table/process_exit.rs :: enum ProcessExitStatus :: Exited (u8)
+kernel/src/task/process_table/process_exit.rs :: enum ProcessExitStatus :: Signaled (u8)
+kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_group (code : i32) -> !
+kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_group_by_signal (signal : usize) -> !
+kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_if_group_exiting ()
+kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_thread (code : i32) -> !
+kernel/src/task/process_table/process_exit.rs :: pub (super) enum ProcessExitStatus
+kernel/src/task/process_table/process_exit.rs :: pub (super) impl ProcessExitStatus :: fn wait_status (self) -> i32
+kernel/src/task/process_table/process_group.rs :: enum ProcessGroupError :: NotFound
+kernel/src/task/process_table/process_group.rs :: enum ProcessGroupError :: NotTerminal
+kernel/src/task/process_table/process_group.rs :: enum ProcessGroupError :: Permission
+kernel/src/task/process_table/process_group.rs :: enum SetProcessGroupError :: Executed
+kernel/src/task/process_table/process_group.rs :: enum SetProcessGroupError :: NotFound
+kernel/src/task/process_table/process_group.rs :: enum SetProcessGroupError :: Permission
+kernel/src/task/process_table/process_group.rs :: pub (crate) enum ProcessGroupError
+kernel/src/task/process_table/process_group.rs :: pub (crate) enum SetProcessGroupError
+kernel/src/task/process_table/process_group.rs :: pub (crate) fn claim_controlling_terminal (terminal : & Arc < crate :: fs :: Terminal > , force : usize ,) -> Result < () , ProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (crate) fn create_session () -> Result < usize , ProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (crate) fn process_group (pid : usize) -> Result < usize , ProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (crate) fn session_id (pid : usize) -> Result < usize , ProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (crate) fn set_process_group (pid : usize , pgid : usize) -> Result < () , SetProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (crate) fn set_terminal_foreground_group (terminal : & crate :: fs :: Terminal , pgid : usize ,) -> Result < () , ProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (crate) fn terminal_foreground_group (terminal : & crate :: fs :: Terminal ,) -> Result < usize , ProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (in crate :: task) fn current_process_group_is_orphaned (tgid : usize) -> bool
+kernel/src/task/process_table/process_group.rs :: pub (in crate :: task) fn mark_process_exec (tgid : usize)
+kernel/src/task/process_table/process_group.rs :: pub (super) fn process_group_is_orphaned (graph : & ProcessGraph , session : usize , process_group : usize ,) -> bool
+kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: free_memory_bytes : u64
+kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: load_milli : [u64 ; 3]
+kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: task_count : usize
+kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: total_memory_bytes : u64
+kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: uptime_us : u64
+kernel/src/task/process_table/procfs.rs :: pub (crate) fn system_info_snapshot () -> SystemInfoSnapshot
+kernel/src/task/process_table/procfs.rs :: pub (crate) struct KernelProcSource
+kernel/src/task/process_table/procfs.rs :: pub (crate) struct SystemInfoSnapshot
+kernel/src/task/process_table/resource_limit.rs :: pub (crate) fn process_resource_limit (pid : usize , resource : usize , replacement : Option < ResourceLimit > ,) -> Result < ResourceLimit , ResourceLimitError >
+kernel/src/task/process_table/resource_limit.rs :: pub (super) fn enforce_cpu_limit (task : & Arc < TaskControlBlock >)
+kernel/src/task/process_table/resource_limit.rs :: pub (super) impl ProcessSlotSnapshot :: fn allows_current (& self) -> bool
+kernel/src/task/process_table/resource_limit.rs :: pub (super) impl ProcessSlotSnapshot :: fn capture (& mut self) -> Result < () , usize >
+kernel/src/task/process_table/resource_limit.rs :: pub (super) impl ProcessSlotSnapshot :: fn prepare (minimum_capacity : usize) -> Result < Self , MemoryError >
+kernel/src/task/process_table/resource_limit.rs :: pub (super) struct ProcessSlotSnapshot
+kernel/src/task/process_table/signal.rs :: enum SignalSendError :: InvalidSignal
+kernel/src/task/process_table/signal.rs :: enum SignalSendError :: NotFound
+kernel/src/task/process_table/signal.rs :: enum SignalSendError :: Permission
+kernel/src/task/process_table/signal.rs :: pub (crate) enum SignalSendError
+kernel/src/task/process_table/signal.rs :: pub (crate) fn send_kernel_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
+kernel/src/task/process_table/signal.rs :: pub (crate) fn send_kernel_thread_signal_info (tgid : usize , tid : usize , signal : usize , info : PendingSignal ,) -> Result < () , SignalSendError >
+kernel/src/task/process_table/signal.rs :: pub (crate) fn send_process_signal (pid : i32 , signal : usize) -> Result < () , SignalSendError >
+kernel/src/task/process_table/signal.rs :: pub (crate) fn send_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
+kernel/src/task/process_table/signal.rs :: pub (crate) fn send_tid_signal (tid : usize , signal : usize) -> Result < () , SignalSendError >
+kernel/src/task/process_table/signal.rs :: pub (crate) use job_control :: stop_current_process
+kernel/src/task/process_table/signal.rs :: pub (super) fn interrupt_waiting_task (task : & Arc < TaskControlBlock >) -> bool
+kernel/src/task/process_table/signal.rs :: pub (super) fn send_kernel_process_signal (tgid : usize , signal : usize , info : PendingSignal) -> bool
+kernel/src/task/process_table/signal.rs :: pub (super) fn send_process_group_signal (pgid : usize , signal : usize) -> usize
+kernel/src/task/process_table/signal.rs :: pub (super) use job_control :: { ChildEvents , JobControlState , complete_process_stop }
+kernel/src/task/process_table/signal/job_control.rs :: enum JobControlState :: Running
+kernel/src/task/process_table/signal/job_control.rs :: enum JobControlState :: Stopped
+kernel/src/task/process_table/signal/job_control.rs :: enum JobControlState :: Stopping (usize)
+kernel/src/task/process_table/signal/job_control.rs :: pub (crate) fn stop_current_process (signal : usize)
+kernel/src/task/process_table/signal/job_control.rs :: pub (in crate :: task :: process_table) ChildEvents :: continued : bool
+kernel/src/task/process_table/signal/job_control.rs :: pub (in crate :: task :: process_table) ChildEvents :: stopped : Option < usize >
+kernel/src/task/process_table/signal/job_control.rs :: pub (in crate :: task :: process_table) enum JobControlState
+kernel/src/task/process_table/signal/job_control.rs :: pub (in crate :: task :: process_table) fn complete_process_stop (tgid : usize)
+kernel/src/task/process_table/signal/job_control.rs :: pub (in crate :: task :: process_table) struct ChildEvents
+kernel/src/task/process_table/signal/job_control.rs :: pub (super) fn continue_process_locked (graph : & mut ProcessGraph , tgid : usize ,) -> Option < JobNotification >
+kernel/src/task/process_table/signal/job_control.rs :: pub (super) fn publish_job_notification (notification : Option < JobNotification >)
+kernel/src/task/process_table/signal/job_control.rs :: pub (super) fn resume_for_fatal_signal_locked (graph : & mut ProcessGraph , tgid : usize)
+kernel/src/task/process_table/signal/job_control.rs :: pub (super) struct JobNotification
+kernel/src/task/process_table/signal/selection_result.rs :: enum SelectionAttempt :: # [doc = " A matching live process failed the existing permission policy."] Denied
+kernel/src/task/process_table/signal/selection_result.rs :: enum SelectionAttempt :: # [doc = " Signal generation completed, including ignored or coalesced signals."] Generated
+kernel/src/task/process_table/signal/selection_result.rs :: enum SelectionAttempt :: # [doc = " Signal zero completed a permitted existence probe without generation."] Probe
+kernel/src/task/process_table/signal/selection_result.rs :: enum SelectionOutcome :: NotFound
+kernel/src/task/process_table/signal/selection_result.rs :: enum SelectionOutcome :: Permission
+kernel/src/task/process_table/signal/selection_result.rs :: enum SelectionOutcome :: Success (usize)
+kernel/src/task/process_table/signal/selection_result.rs :: pub (super) enum SelectionAttempt
+kernel/src/task/process_table/signal/selection_result.rs :: pub (super) enum SelectionOutcome
+kernel/src/task/process_table/signal/selection_result.rs :: pub (super) impl SelectionResult :: const fn finish (self) -> SelectionOutcome
+kernel/src/task/process_table/signal/selection_result.rs :: pub (super) impl SelectionResult :: const fn new () -> Self
+kernel/src/task/process_table/signal/selection_result.rs :: pub (super) impl SelectionResult :: fn record (& mut self , attempt : SelectionAttempt)
+kernel/src/task/process_table/signal/selection_result.rs :: pub (super) struct SelectionResult
+kernel/src/task/process_table/snapshot_staging.rs :: enum SnapshotCapacity :: Capture
+kernel/src/task/process_table/snapshot_staging.rs :: enum SnapshotCapacity :: Retry { minimum : usize }
+kernel/src/task/process_table/snapshot_staging.rs :: pub (super) const fn snapshot_capacity (capacity : usize , required : usize) -> SnapshotCapacity
+kernel/src/task/process_table/snapshot_staging.rs :: pub (super) enum SnapshotCapacity
+kernel/src/task/process_table/task_mutex_wait.rs :: pub (in crate :: task) fn initialize ()
+kernel/src/task/process_table/terminal_access.rs :: enum TerminalAccessError :: Io
+kernel/src/task/process_table/terminal_access.rs :: enum TerminalAccessError :: Restart
+kernel/src/task/process_table/terminal_access.rs :: pub (crate) enum TerminalAccessError
+kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
+kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn hangup_terminal (terminal : & Terminal)
+kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn publish_terminal_input_signals (terminal : & Terminal , signals : u64)
+kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn resize_terminal (terminal : & Terminal , window_size : [u8 ; 8])
+kernel/src/task/process_table/thread_activation.rs :: enum ActivationTransition :: None
+kernel/src/task/process_table/thread_activation.rs :: enum ActivationTransition :: ReadyNew
+kernel/src/task/process_table/thread_activation.rs :: enum ActivationTransition :: ResumeStoppedNew
+kernel/src/task/process_table/thread_activation.rs :: enum ActivationTransition :: StopNew
+kernel/src/task/process_table/thread_activation.rs :: enum PreActivationState :: # [doc = " group stop 消费了 New，但 SIGCONT 仍必须恢复为 New 而非提前 Ready。"] StoppedNew
+kernel/src/task/process_table/thread_activation.rs :: enum PreActivationState :: # [doc = " 尚未被 job-control 消费的原始 New。"] New
+kernel/src/task/process_table/thread_activation.rs :: enum PreActivationState :: # [doc = " 已存在正常 scheduler membership；activation 不得重复发布。"] Activated
+kernel/src/task/process_table/thread_activation.rs :: pub (super) ActivationDecision :: inherit_group_exit : bool
+kernel/src/task/process_table/thread_activation.rs :: pub (super) ActivationDecision :: transition : ActivationTransition
+kernel/src/task/process_table/thread_activation.rs :: pub (super) const fn new_thread_activation (state : PreActivationState , group_exiting : bool , job_control_running : bool ,) -> ActivationDecision
+kernel/src/task/process_table/thread_activation.rs :: pub (super) enum ActivationTransition
+kernel/src/task/process_table/thread_activation.rs :: pub (super) enum PreActivationState
+kernel/src/task/process_table/thread_activation.rs :: pub (super) struct ActivationDecision
+kernel/src/task/process_table/thread_clone.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
+kernel/src/task/process_table/thread_clone.rs :: enum ThreadCloneError :: ResourceLimit
+kernel/src/task/process_table/thread_clone.rs :: pub (crate) enum ThreadCloneError
+kernel/src/task/process_table/thread_clone.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
+kernel/src/task/process_table/thread_selector.rs :: pub (crate) fn parent_pid (pid : usize) -> usize
+kernel/src/task/process_table/thread_selector.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
+kernel/src/task/process_table/thread_selector.rs :: pub (super) fn scheduler_thread (tid : usize , caller : & Arc < TaskControlBlock > ,) -> Option < Arc < TaskControlBlock > >
+kernel/src/task/process_table/thread_selector.rs :: pub (super) fn thread_by_tid (graph : & ProcessGraph , tid : usize ,) -> Option < (usize , Arc < TaskControlBlock >) >
+kernel/src/task/process_table/timer_queue.rs :: enum ExpiredTimer :: File { target : Arc < dyn TimerFdBackend > , elapsed : u64 , }
+kernel/src/task/process_table/timer_queue.rs :: enum ExpiredTimer :: Posix (ExpiredPosixTimer)
+kernel/src/task/process_table/timer_queue.rs :: enum ExpiredTimer :: Real (usize)
+kernel/src/task/process_table/timer_queue.rs :: enum ExpiredTimer :: Silent
+kernel/src/task/process_table/timer_queue.rs :: enum PosixTimerClock :: Monotonic
+kernel/src/task/process_table/timer_queue.rs :: enum PosixTimerClock :: Realtime
+kernel/src/task/process_table/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_NONE`：推进 timer，但不发布 signal。"] None
+kernel/src/task/process_table/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_SIGNAL`：向创建进程发布 signal。"] Process { signal : usize , value : u64 }
+kernel/src/task/process_table/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_THREAD_ID`：向创建进程中的指定 Thread 发布 signal。"] Thread { tid : usize , signal : usize , value : u64 , }
+kernel/src/task/process_table/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `timer_create(..., NULL, ...)`：SIGALRM，且 `sival_int` 为分配后的 timer ID。"] Default
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) enum PosixTimerClock
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) enum PosixTimerNotification
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn create_posix_timer (tgid : usize , clock : PosixTimerClock , notification : PosixTimerNotification ,) -> Result < i32 , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn delete_posix_timer (tgid : usize , id : i32) -> Result < () , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn posix_timer (tgid : usize , id : i32 , now_ns : u64) -> Result < TimerSetting , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn posix_timer_overrun (tgid : usize , id : i32) -> Result < i32 , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn real_timer (tgid : usize , now_ns : u64) -> Result < TimerSetting , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn remove_posix_timers_for_exec (tgid : usize)
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn set_posix_timer (tgid : usize , id : i32 , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) fn set_real_timer (tgid : usize , value_ns : u64 , interval_ns : u64 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (crate) use timer_file :: { TimerFileClock , create_timer_fd }
+kernel/src/task/process_table/timer_queue.rs :: pub (super) ExpiredPosixTimer :: id : i32
+kernel/src/task/process_table/timer_queue.rs :: pub (super) ExpiredPosixTimer :: notification : PosixTimerNotification
+kernel/src/task/process_table/timer_queue.rs :: pub (super) ExpiredPosixTimer :: overrun : i32
+kernel/src/task/process_table/timer_queue.rs :: pub (super) ExpiredPosixTimer :: tgid : usize
+kernel/src/task/process_table/timer_queue.rs :: pub (super) enum ExpiredTimer
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: const fn new () -> Self
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn delete_posix (& mut self , tgid : usize , id : i32) -> Result < () , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn has_expired (& self , now_ns : u64) -> bool
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn pop_expired (& mut self , now_ns : u64) -> Option < ExpiredTimer >
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn posix (& self , tgid : usize , id : i32 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn posix_overrun (& self , tgid : usize , id : i32) -> Result < i32 , TimerError >
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn real (& self , tgid : usize , now_ns : u64) -> TimerSetting
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn remove_posix_timers (& mut self , tgid : usize)
+kernel/src/task/process_table/timer_queue.rs :: pub (super) impl TimerQueue :: fn remove_process (& mut self , tgid : usize)
+kernel/src/task/process_table/timer_queue.rs :: pub (super) struct ExpiredPosixTimer
+kernel/src/task/process_table/timer_queue.rs :: pub (super) struct TimerQueue
+kernel/src/task/process_table/timer_queue/period.rs :: pub (super) fn next_period (expiration : u64 , interval_ns : u64 , now_ns : u64) -> (Option < u64 > , u64)
+kernel/src/task/process_table/timer_queue/posix_creation.rs :: pub (super) impl TimerQueue :: fn commit_posix_create (& mut self , prepared : PreparedPosixCreate ,) -> Result < () , PreparedPosixCreate >
+kernel/src/task/process_table/timer_queue/posix_creation.rs :: pub (super) impl TimerQueue :: fn next_posix_id (& self , tgid : usize) -> Result < i32 , TimerError >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedPosixCreate :: key : (usize , i32)
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedPosixCreate :: timer_node : VacantEntry < (usize , i32) , PosixTimer >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: absolute : bool
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: deadline_node : Option < VacantEntry < (u64 , TimerIdentity) , () > >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: interval_ns : u64
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: key : (usize , i32)
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: value_ns : u64
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: deadline_node : Option < VacantEntry < (u64 , TimerIdentity) , () > >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: replacement : Option < RealTimer >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: tgid : usize
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: timer_node : Option < VacantEntry < usize , RealTimer > >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) impl PreparedPosixCreate :: fn prepare (tgid : usize , id : i32 , clock : PosixTimerClock , notification : PosixTimerNotification ,) -> Result < Self , TimerError >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) impl PreparedPosixCreate :: fn retarget (mut self , id : i32) -> Self
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) impl PreparedPosixReplacement :: fn prepare (tgid : usize , id : i32 , value_ns : u64 , interval_ns : u64 , absolute : bool , deadline_needed : bool ,) -> Result < Self , TimerError >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) impl PreparedRealReplacement :: fn prepare (tgid : usize , value_ns : u64 , interval_ns : u64 , now_ns : u64 , needs : TimerReplacementNeeds ,) -> Result < Self , TimerError >
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) struct PreparedPosixCreate
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) struct PreparedPosixReplacement
+kernel/src/task/process_table/timer_queue/preparation.rs :: pub (super) struct PreparedRealReplacement
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: enum PosixCreateAction :: Commit
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: enum PosixCreateAction :: RetargetPreparedNode
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: pub (super) TimerReplacementNeeds :: deadline : bool
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: pub (super) TimerReplacementNeeds :: record : bool
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: pub (super) const fn posix_create_action (id_occupied : bool) -> PosixCreateAction
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: pub (super) const fn posix_deadline_needed (deadline_exists : bool , replacement_deadline : bool ,) -> bool
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: pub (super) const fn real_replacement_needs (record_exists : bool , deadline_exists : bool , replacement_record : bool , replacement_deadline : bool ,) -> TimerReplacementNeeds
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: pub (super) enum PosixCreateAction
+kernel/src/task/process_table/timer_queue/preparation_policy.rs :: pub (super) struct TimerReplacementNeeds
+kernel/src/task/process_table/timer_queue/timer_file.rs :: enum TimerFileClock :: Boottime
+kernel/src/task/process_table/timer_queue/timer_file.rs :: enum TimerFileClock :: Monotonic
+kernel/src/task/process_table/timer_queue/timer_file.rs :: enum TimerFileClock :: Realtime
+kernel/src/task/process_table/timer_queue/timer_file.rs :: pub (crate) enum TimerFileClock
+kernel/src/task/process_table/timer_queue/timer_file.rs :: pub (crate) fn create_timer_fd (clock : TimerFileClock ,) -> Result < Arc < dyn TimerFdBackend > , TimerError >
+kernel/src/task/process_table/timer_queue/timer_file.rs :: pub (super) impl TimerQueue :: fn pop_expired_timer_file (& mut self , id : u64 , expiration : u64 , mut deadline : crate :: fallible_tree :: VacantEntry < (u64 , TimerIdentity) , () > , now_ns : u64 ,) -> super :: ExpiredTimer
+kernel/src/task/process_table/timer_queue/timer_file.rs :: pub (super) struct TimerFile
+kernel/src/task/process_table/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Create a POSIX timer, optionally requiring a live target thread."] PosixCreate { tgid : usize , thread : Option < usize > }
+kernel/src/task/process_table/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Replace or disarm an existing process-owned POSIX timer."] PosixReplace { tgid : usize }
+kernel/src/task/process_table/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Replace or disarm the process-owned ITIMER_REAL record."] ItimerReal { tgid : usize }
+kernel/src/task/process_table/timer_queue/transaction.rs :: pub (super) enum TimerTransactionPolicy
+kernel/src/task/process_table/timer_queue/transaction.rs :: pub (super) fn execute_timer_transaction < Plan , Prepared , Output > (policy : TimerTransactionPolicy , mut plan : impl FnMut (& TimerQueue) -> Result < Plan , TimerError > , prepare : impl FnMut (Plan , Option < Prepared >) -> Result < Prepared , TimerError > , mut commit : impl FnMut (& mut TimerQueue , Prepared ,) -> Result < TimerTransactionCommit < Prepared , Output > , TimerError > ,) -> Result < Output , TimerError >
+kernel/src/task/process_table/timer_queue/transaction.rs :: pub (super) impl TimerTransactionPolicy :: const fn itimer_real (tgid : usize) -> Self
+kernel/src/task/process_table/timer_queue/transaction.rs :: pub (super) impl TimerTransactionPolicy :: const fn posix_create (tgid : usize , notification : PosixTimerNotification) -> Self
+kernel/src/task/process_table/timer_queue/transaction.rs :: pub (super) impl TimerTransactionPolicy :: const fn posix_replace (tgid : usize) -> Self
+kernel/src/task/process_table/timer_queue/transaction_loop.rs :: enum TimerTransactionCommit :: # [doc = " Final state changed; retry with an optional reusable unpublished owner."] Retry (Option < Prepared >)
+kernel/src/task/process_table/timer_queue/transaction_loop.rs :: enum TimerTransactionCommit :: # [doc = " Publication succeeded and produced the syscall-visible output."] Complete (Output)
+kernel/src/task/process_table/timer_queue/transaction_loop.rs :: pub (super) enum TimerTransactionCommit < Prepared , Output >
+kernel/src/task/process_table/timer_queue/transaction_loop.rs :: pub (super) fn run_timer_transaction < Plan , Prepared , Output , Error > (mut initial_validate : impl FnMut () -> Result < () , Error > , mut plan : impl FnMut () -> Result < Plan , Error > , mut prepare : impl FnMut (Plan , Option < Prepared >) -> Result < Prepared , Error > , mut final_commit : impl FnMut (Prepared) -> Result < TimerTransactionCommit < Prepared , Output > , Error > ,) -> Result < Output , Error >
+kernel/src/task/process_table/vfork.rs :: enum ProcessCloneError :: Memory (crate :: memory :: MemoryError)
+kernel/src/task/process_table/vfork.rs :: enum ProcessCloneError :: ResourceLimit
+kernel/src/task/process_table/vfork.rs :: pub (crate) enum ProcessCloneError
+kernel/src/task/process_table/vfork.rs :: pub (crate) fn fork_current_process () -> Result < usize , ProcessCloneError >
+kernel/src/task/process_table/vfork.rs :: pub (crate) fn vfork_current_process (child_stack : usize) -> Result < usize , ProcessCloneError >
+kernel/src/task/process_table/vfork.rs :: pub (in crate :: task) fn complete_vfork_exec (child_pid : usize)
+kernel/src/task/process_table/vfork.rs :: pub (super) fn complete_vfork (child_pid : usize)
+kernel/src/task/process_table/vfork.rs :: pub (super) fn wake_parent (parent : Arc < TaskControlBlock > , child_pid : usize)
+kernel/src/task/process_table/wait_child.rs :: enum ChildStatusKind :: Continued
+kernel/src/task/process_table/wait_child.rs :: enum ChildStatusKind :: Exited
+kernel/src/task/process_table/wait_child.rs :: enum ChildStatusKind :: Stopped
+kernel/src/task/process_table/wait_child.rs :: enum WaitChildError :: Interrupted
+kernel/src/task/process_table/wait_child.rs :: enum WaitChildError :: InvalidSelector
+kernel/src/task/process_table/wait_child.rs :: enum WaitChildError :: NoChild
+kernel/src/task/process_table/wait_child.rs :: enum WaitChildError :: OutOfMemory
+kernel/src/task/process_table/wait_child.rs :: pub (crate) ChildExit :: pid : usize
+kernel/src/task/process_table/wait_child.rs :: pub (crate) ChildExit :: status : i32
+kernel/src/task/process_table/wait_child.rs :: pub (crate) enum WaitChildError
+kernel/src/task/process_table/wait_child.rs :: pub (crate) fn consume_child_status (record : ChildExit)
+kernel/src/task/process_table/wait_child.rs :: pub (crate) fn release_child_status (record : ChildExit)
+kernel/src/task/process_table/wait_child.rs :: pub (crate) fn wait_child (selector : isize , nohang : bool , include_stopped : bool , include_continued : bool ,) -> Result < Option < ChildExit > , WaitChildError >
+kernel/src/task/process_table/wait_child.rs :: pub (crate) struct ChildExit
+kernel/src/task/process_table/wait_child.rs :: pub (super) ChildWaitClaim :: kind : ChildStatusKind
+kernel/src/task/process_table/wait_child.rs :: pub (super) ChildWaitClaim :: waiter : usize
+kernel/src/task/process_table/wait_child.rs :: pub (super) enum ChildStatusKind
+kernel/src/task/process_table/wait_child.rs :: pub (super) fn take_child_waiters (node : & mut ProcessNode ,) -> FallibleMap < usize , Arc < TaskControlBlock > >
+kernel/src/task/process_table/wait_child.rs :: pub (super) struct ChildWaitClaim
+kernel/src/task/process_table/wait_key.rs :: enum IndexedWaitKind :: AdvisoryLock
+kernel/src/task/process_table/wait_key.rs :: enum IndexedWaitKind :: Console
+kernel/src/task/process_table/wait_key.rs :: enum IndexedWaitKind :: Deadline
+kernel/src/task/process_table/wait_key.rs :: enum IndexedWaitKind :: Futex { key : FutexKey , bitset : u32 , }
+kernel/src/task/process_table/wait_key.rs :: enum IndexedWaitKind :: Pipe { identity : usize , condition : PipeWaitCondition , }
+kernel/src/task/process_table/wait_key.rs :: enum IndexedWaitKind :: Poll
+kernel/src/task/process_table/wait_key.rs :: enum IndexedWaitKind :: Signal { mask : u64 , }
+kernel/src/task/process_table/wait_key.rs :: enum PollWaitKey :: Console { events : i16 , exclusive : bool , wake_group : Option < usize > , }
+kernel/src/task/process_table/wait_key.rs :: enum PollWaitKey :: Pipe { identity : usize , direction : PipeDirection , events : i16 , exclusive : bool , wake_group : Option < usize > , }
+kernel/src/task/process_table/wait_key.rs :: pub (crate) enum PollWaitKey
+kernel/src/task/process_table/wait_key.rs :: pub (crate) impl PollWaitKey :: fn console (events : i16 , exclusive : bool , wake_group : Option < usize >) -> Self
+kernel/src/task/process_table/wait_key.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Self
+kernel/src/task/process_table/wait_key.rs :: pub (super) enum IndexedWaitKind
+kernel/src/task/process_table/wait_key.rs :: pub (super) impl PollWaitKey :: fn exclusive (self) -> bool
+kernel/src/task/process_table/wait_key.rs :: pub (super) impl PollWaitKey :: fn matches_console (self , ready : i16) -> bool
+kernel/src/task/process_table/wait_key.rs :: pub (super) impl PollWaitKey :: fn matches_pipe (self , identity : usize , direction : PipeDirection , ready : i16 ,) -> bool
+kernel/src/task/process_table/wait_key.rs :: pub (super) impl PollWaitKey :: fn normalize (keys : & mut Vec < Self >)
+kernel/src/task/process_table/wait_key.rs :: pub (super) impl PollWaitKey :: fn wake_group (self) -> Option < usize >
+kernel/src/task/process_table/wait_publication.rs :: enum ChildWaitPublication :: ConsumeEvent
+kernel/src/task/process_table/wait_publication.rs :: enum ChildWaitPublication :: Interrupted
+kernel/src/task/process_table/wait_publication.rs :: enum ChildWaitPublication :: OutOfMemory
+kernel/src/task/process_table/wait_publication.rs :: enum ChildWaitPublication :: Publish
+kernel/src/task/process_table/wait_publication.rs :: enum ChildWaitPublication :: ReturnNoHang
+kernel/src/task/process_table/wait_publication.rs :: pub (super) const fn child_wait_publication (event_ready : bool , nohang : bool , interrupted : bool , storage_ready : bool ,) -> ChildWaitPublication
+kernel/src/task/process_table/wait_publication.rs :: pub (super) enum ChildWaitPublication
+kernel/src/task/process_table/wait_registry.rs :: enum CancelOutcome :: Cancelled
+kernel/src/task/process_table/wait_registry.rs :: enum CancelOutcome :: Notified (WaitResult)
+kernel/src/task/process_table/wait_registry.rs :: pub (in crate :: task :: process_table) fn arm_current (task : & Arc < crate :: task :: TaskControlBlock > , prepared : Result < PreparedWait , () > , recheck : impl FnOnce () -> Option < WaitResult > , membership : impl FnOnce (u64) -> crate :: task :: WaitMembership ,) -> Result < super :: context_switch :: PreparedBlock , WaitResult >
+kernel/src/task/process_table/wait_registry.rs :: pub (in crate :: task :: process_table) use batch :: ClaimedBatch
+kernel/src/task/process_table/wait_registry.rs :: pub (super) SourceWake :: claimed : Option < ClaimedWait >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) SourceWake :: group : Option < usize >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) const WAIT_SHARD_COUNT : usize = 16
+kernel/src/task/process_table/wait_registry.rs :: pub (super) enum CancelOutcome
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitArmGuard < '_ > :: fn arm (& mut self) -> u64
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn allocate_ticket (& self) -> WaitTicket
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn expire_one (& self , now : u64) -> Option < SourceWake >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn has_expired_deadline (& self , now : u64) -> bool
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn publish (& 'static self , prepared : PreparedWait) -> PublishedWait
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_advisory_one (& self , key : AdvisoryLockKey) -> Option < SourceWake >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_console_one (& self , exclusive : bool , ready : i16 , excluded_groups : & [Option < usize >] ,) -> Option < SourceWake >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_futex_one (& self , key : FutexKey , bitset : u32) -> Option < SourceWake >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_pipe_one (& self , identity : usize , direction : PipeDirection , exclusive : bool , ready : i16 , state : PipePollState , excluded_groups : & crate :: fallible_tree :: FallibleMap < usize , () > ,) -> Option < SourceWake >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) static WAIT_REGISTRY : WaitRegistry
+kernel/src/task/process_table/wait_registry.rs :: pub (super) struct PreparedIndex
+kernel/src/task/process_table/wait_registry.rs :: pub (super) struct PreparedWait
+kernel/src/task/process_table/wait_registry.rs :: pub (super) struct PublishedWait
+kernel/src/task/process_table/wait_registry.rs :: pub (super) struct SourceWake
+kernel/src/task/process_table/wait_registry.rs :: pub (super) struct WaitArmGuard < 'a >
+kernel/src/task/process_table/wait_registry.rs :: pub (super) struct WaitRegistry
+kernel/src/task/process_table/wait_registry.rs :: pub (super) struct WaitTicket
+kernel/src/task/process_table/wait_registry.rs :: pub (super) use registration :: ClaimedWait
+kernel/src/task/process_table/wait_registry/batch.rs :: pub (in crate :: task :: process_table) impl ClaimedBatch :: const fn new () -> Self
+kernel/src/task/process_table/wait_registry/batch.rs :: pub (in crate :: task :: process_table) impl ClaimedBatch :: fn pop (& mut self) -> Option < ClaimedWait >
+kernel/src/task/process_table/wait_registry/batch.rs :: pub (in crate :: task :: process_table) impl ClaimedBatch :: fn push (& mut self , mut claimed : ClaimedWait)
+kernel/src/task/process_table/wait_registry/batch.rs :: pub (in crate :: task :: process_table) struct ClaimedBatch
+kernel/src/task/process_table/wait_registry/key.rs :: enum WaitIndexKey :: AdvisoryLock { key : AdvisoryLockKey , id : u64 , }
+kernel/src/task/process_table/wait_registry/key.rs :: enum WaitIndexKey :: Console { exclusive : bool , id : u64 , }
+kernel/src/task/process_table/wait_registry/key.rs :: enum WaitIndexKey :: Deadline { deadline : u64 , id : u64 , }
+kernel/src/task/process_table/wait_registry/key.rs :: enum WaitIndexKey :: Futex { key : FutexKey , id : u64 , }
+kernel/src/task/process_table/wait_registry/key.rs :: enum WaitIndexKey :: Pipe { identity : usize , direction : u8 , exclusive : bool , id : u64 , }
+kernel/src/task/process_table/wait_registry/key.rs :: enum WaitIndexKey :: Task { tid : usize , id : u64 , }
+kernel/src/task/process_table/wait_registry/key.rs :: pub (super) const fn pipe_direction (direction : PipeDirection) -> u8
+kernel/src/task/process_table/wait_registry/key.rs :: pub (super) enum WaitIndexKey
+kernel/src/task/process_table/wait_registry/key.rs :: pub (super) impl WaitIndexKey :: fn shard (self) -> usize
+kernel/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_advisory_lock (self , key : AdvisoryLockKey , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_console (self , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_deadline (self , deadline : u64 , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_futex (self , key : FutexKey , bitset : u32 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_pipe (self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_poll (self , keys : Vec < PollWaitKey > , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_signal (self , mask : u64 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/process_table/wait_registry/publication.rs :: pub (in crate :: task :: process_table) impl PublishedWait :: fn cancel (mut self) -> CancelOutcome
+kernel/src/task/process_table/wait_registry/publication.rs :: pub (in crate :: task :: process_table) impl PublishedWait :: fn prepare_arm (mut self ,) -> Result < WaitArmGuard < 'static > , WaitResult >
+kernel/src/task/process_table/wait_registry/registration.rs :: enum NotifyOutcome :: Armed (ClaimedWait)
+kernel/src/task/process_table/wait_registry/registration.rs :: enum NotifyOutcome :: BeforeArm
+kernel/src/task/process_table/wait_registry/registration.rs :: enum NotifyOutcome :: Stale
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (in crate :: task :: process_table) ClaimedWait :: id : u64
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (in crate :: task :: process_table) ClaimedWait :: kind : IndexedWaitKind
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (in crate :: task :: process_table) ClaimedWait :: task : Arc < TaskControlBlock >
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (in crate :: task :: process_table) struct ClaimedWait
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) ClaimedWait :: staging : Option < VacantEntry < WaitIndexKey , Arc < WaitRegistration > > >
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) WaitRegistration :: id : u64
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) WaitRegistration :: keys : Mutex < Vec < WaitIndexKey > >
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) WaitRegistration :: kind : Mutex < IndexedWaitKind >
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) WaitRegistration :: poll_keys : Option < Vec < PollWaitKey > >
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) WaitRegistration :: state : AtomicU8
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) WaitRegistration :: task : Arc < TaskControlBlock >
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const ARMED : u8 = 3
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const ARMING : u8 = 1
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const ARMING_LOCKED : u8 = 2
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const CANCELLED : u8 = 9
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const CLAIMED : u8 = 10
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const CLAIMING : u8 = 5
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const NOTIFIED_INTERRUPTED : u8 = 8
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const NOTIFIED_TIMEOUT : u8 = 7
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const NOTIFIED_WOKEN : u8 = 6
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const PREPARED : u8 = 0
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) const REQUEUEING : u8 = 4
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) enum NotifyOutcome
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) impl WaitRegistration :: fn notified_result (state : u8) -> Option < WaitResult >
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) impl WaitRegistration :: fn notified_state (result : WaitResult) -> u8
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) impl WaitRegistration :: fn state (& self) -> u8
+kernel/src/task/process_table/wait_registry/registration.rs :: pub (super) struct WaitRegistration
+kernel/src/task/process_table/wait_registry/requeue.rs :: pub (in crate :: task :: process_table) impl WaitRegistry :: fn requeue_futex (& self , source : FutexKey , target : FutexKey , count : usize ,) -> usize
+kernel/src/task/process_table/wait_registry/shard.rs :: pub (super) WaitShard :: index : FallibleMap < WaitIndexKey , Arc < WaitRegistration > >
+kernel/src/task/process_table/wait_registry/shard.rs :: pub (super) impl LockedWaitShards < 'a > :: fn lock (shards : & 'a [IrqMutex < WaitShard > ; WAIT_SHARD_COUNT] , keys : & [WaitIndexKey] ,) -> Self
+kernel/src/task/process_table/wait_registry/shard.rs :: pub (super) impl LockedWaitShards < 'a > :: fn lock_with_extra (shards : & 'a [IrqMutex < WaitShard > ; WAIT_SHARD_COUNT] , keys : & [WaitIndexKey] , extra : Option < WaitIndexKey > ,) -> Self
+kernel/src/task/process_table/wait_registry/shard.rs :: pub (super) impl LockedWaitShards < 'a > :: fn shard_mut (& mut self , shard : usize) -> & mut WaitShard
+kernel/src/task/process_table/wait_registry/shard.rs :: pub (super) impl WaitShard :: const fn new () -> Self
+kernel/src/task/process_table/wait_registry/shard.rs :: pub (super) struct LockedWaitShards < 'a >
+kernel/src/task/process_table/wait_registry/shard.rs :: pub (super) struct WaitShard
+kernel/src/task/process_table/wait_registry/task_source.rs :: pub (in crate :: task :: process_table) impl WaitRegistry :: fn interrupt_task (& self , task : & Arc < crate :: task :: TaskControlBlock > ,) -> Option < SourceWake >
+kernel/src/task/process_table/wait_registry/task_source.rs :: pub (in crate :: task :: process_table) impl WaitRegistry :: fn wake_signal_registration (& self , task : & Arc < crate :: task :: TaskControlBlock > ,) -> Option < SourceWake >
 kernel/src/task/processor.rs :: pub (crate) Processor :: current : Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) fn cpu_runtime_snapshot () -> Result < Vec < (usize , u64) > , () >
 kernel/src/task/processor.rs :: pub (crate) fn idle_return () -> !
@@ -4801,457 +5255,29 @@ kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedH
 kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn try_with_capacity (capacity : usize) -> Result < Self , () >
 kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) struct PreallocatedHeap < T : Ord >
 kernel/src/task/scheduler/preemption_policy.rs :: pub (crate) fn local_ready_preempts (current_vruntime : Option < u64 > , ready_vruntime : Option < u64 > ,) -> bool
-kernel/src/task/task_manager.rs :: enum SignalWaitError :: Again
-kernel/src/task/task_manager.rs :: enum SignalWaitError :: Interrupted
-kernel/src/task/task_manager.rs :: enum SignalWaitError :: OutOfMemory
-kernel/src/task/task_manager.rs :: pub (crate) enum SignalWaitError
-kernel/src/task/task_manager.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
-kernel/src/task/task_manager.rs :: pub (crate) fn run_tasks () -> !
-kernel/src/task/task_manager.rs :: pub (crate) fn sleep_until (deadline_ns : u64) -> WaitResult
-kernel/src/task/task_manager.rs :: pub (crate) fn suspend_current_and_run_next ()
-kernel/src/task/task_manager.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
-kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_poll (mut keys : alloc :: vec :: Vec < PollWaitKey > , deadline : Option < u64 > , ready : impl FnOnce () -> bool ,) -> WaitResult
-kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
-kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64) -> WaitResult
-kernel/src/task/task_manager.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
-kernel/src/task/task_manager.rs :: pub (crate) use console_wait :: { drain_terminal_input , wait_for_console }
-kernel/src/task/task_manager.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
-kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
-kernel/src/task/task_manager.rs :: pub (crate) use parent_death :: parent_death_signal
-kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
-kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
-kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
-kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
-kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
-kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
-kernel/src/task/task_manager.rs :: pub (crate) use resource_limit :: process_resource_limit
-kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_kernel_thread_signal_info , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
-kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal , publish_terminal_input_signals , resize_terminal , }
-kernel/src/task/task_manager.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
-kernel/src/task/task_manager.rs :: pub (crate) use thread_selector :: { parent_pid , thread_count }
-kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { ProcessCloneError , fork_current_process , vfork_current_process }
-kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , release_child_status , wait_child , }
-kernel/src/task/task_manager.rs :: pub (crate) use wait_key :: PollWaitKey
-kernel/src/task/task_manager.rs :: pub (in crate :: task) mod advisory_lock
-kernel/src/task/task_manager.rs :: pub (in crate :: task) mod task_mutex_wait
-kernel/src/task/task_manager.rs :: pub (in crate :: task) mod timer_queue
-kernel/src/task/task_manager.rs :: pub (in crate :: task) mod vfork
-kernel/src/task/task_manager.rs :: pub (in crate :: task) use futex :: futex_wake_with_key
-kernel/src/task/task_manager.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
-kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
-kernel/src/task/task_manager.rs :: pub (super) fn scheduler_deferred_safe_point ()
-kernel/src/task/task_manager.rs :: pub (super) mod context_switch
-kernel/src/task/task_manager.rs :: pub (super) use io_wait :: initialize_driver_io_wait
-kernel/src/task/task_manager/advisory_lock.rs :: enum AdvisoryLockWaitError :: FileSystem (crate :: fs :: FileSystemError)
-kernel/src/task/task_manager/advisory_lock.rs :: enum AdvisoryLockWaitError :: Interrupted
-kernel/src/task/task_manager/advisory_lock.rs :: enum AdvisoryLockWaitError :: NoLocks
-kernel/src/task/task_manager/advisory_lock.rs :: enum AdvisoryLockWaitError :: Unsupported
-kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) enum AdvisoryLockWaitError
-kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) fn install_advisory_lock_notifier ()
-kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) fn wait_for_advisory_lock (ofd : & Arc < OpenFileDescription > , mode : AdvisoryLockMode ,) -> Result < () , AdvisoryLockWaitError >
-kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) fn wait_for_record_lock (ofd : & Arc < OpenFileDescription > , owner : usize , mode : RecordLockMode , range : RecordLockRange ,) -> Result < () , AdvisoryLockWaitError >
-kernel/src/task/task_manager/affinity.rs :: enum SchedulerAffinityError :: Empty
-kernel/src/task/task_manager/affinity.rs :: enum SchedulerAffinityError :: NotFound
-kernel/src/task/task_manager/affinity.rs :: enum SchedulerAffinityError :: Permission
-kernel/src/task/task_manager/affinity.rs :: pub (crate) enum SchedulerAffinityError
-kernel/src/task/task_manager/affinity.rs :: pub (crate) fn scheduler_affinity (tid : usize , replacement : Option < usize > ,) -> Result < usize , SchedulerAffinityError >
-kernel/src/task/task_manager/console_batch.rs :: pub (super) const CONSOLE_WAKE_BATCH : usize = 32
-kernel/src/task/task_manager/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: const fn is_full (& self) -> bool
-kernel/src/task/task_manager/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: const fn new () -> Self
-kernel/src/task/task_manager/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: const fn selected (& self) -> usize
-kernel/src/task/task_manager/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: fn groups (& self) -> & [Option < usize >]
-kernel/src/task/task_manager/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: fn record (& mut self , group : Option < usize >)
-kernel/src/task/task_manager/console_batch.rs :: pub (super) struct ConsoleWakeBatch
-kernel/src/task/task_manager/console_wait.rs :: pub (crate) fn drain_terminal_input (terminal : & crate :: fs :: Terminal) -> Result < () , () >
-kernel/src/task/task_manager/console_wait.rs :: pub (crate) fn wait_for_console (deadline : Option < u64 > , input_ready : impl FnOnce () -> bool ,) -> WaitResult
-kernel/src/task/task_manager/console_wait.rs :: pub (super) fn process_terminal_input () -> bool
-kernel/src/task/task_manager/console_wait.rs :: pub (super) fn wake_console_waiters () -> bool
-kernel/src/task/task_manager/context_switch.rs :: pub (in crate :: task) fn complete_pending_handoff ()
-kernel/src/task/task_manager/context_switch.rs :: pub (super) fn prepare_current_block < Owner > (task : & Arc < TaskControlBlock > , mut owner : Owner , publish : impl FnOnce (& mut Owner , Arc < TaskControlBlock >) -> WaitMembership ,) -> PreparedBlock
-kernel/src/task/task_manager/context_switch.rs :: pub (super) fn schedule_with_task_context (task : Arc < TaskControlBlock >)
-kernel/src/task/task_manager/context_switch.rs :: pub (super) fn switch_from_idle (task : Arc < TaskControlBlock >)
-kernel/src/task/task_manager/context_switch.rs :: pub (super) impl PreparedBlock :: fn suspend (mut self) -> WaitResult
-kernel/src/task/task_manager/context_switch.rs :: pub (super) struct PreparedBlock
-kernel/src/task/task_manager/deferred.rs :: pub (crate) fn dispatch_pending_deferred_work ()
-kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " WAIT value 或 CMP_REQUEUE expected 不匹配。"] Again
-kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " absolute monotonic deadline 已到期。"] TimedOut
-kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " futex word 不可从 calling address space 读取。"] Fault
-kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " wait registry 无法在 publication 前预留完整 membership。"] OutOfMemory
-kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " 可投递 signal 中断了阻塞等待。"] Interrupted
-kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " 地址未对齐、为空或 bitset 为空。"] Invalid
-kernel/src/task/task_manager/futex.rs :: pub (crate) enum FutexWaitError
-kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_requeue (task : & TaskControlBlock , source : usize , target : usize , private : bool , wake_count : usize , requeue_count : usize , compare : Option < u32 > ,) -> Result < usize , FutexWaitError >
-kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_wait (task : Arc < TaskControlBlock > , address : usize , expected : u32 , private : bool , deadline : Option < u64 > , bitset : u32 ,) -> Result < () , FutexWaitError >
-kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_wake (task : & TaskControlBlock , address : usize , private : bool , count : usize , bitset : u32 ,) -> Result < usize , FutexWaitError >
-kernel/src/task/task_manager/futex.rs :: pub (in crate :: task) fn futex_wake_with_key (count : usize , bitset : u32 , with_key : impl FnOnce (& mut dyn FnMut (FutexKey)) -> Result < () , UserAccessError > ,) -> Result < usize , FutexWaitError >
-kernel/src/task/task_manager/io_wait.rs :: pub (in crate :: task) fn initialize_driver_io_wait ()
-kernel/src/task/task_manager/load_average.rs :: pub (super) fn update (now_us : u64)
-kernel/src/task/task_manager/load_average.rs :: pub (super) impl LoadAverage :: const fn new () -> Self
-kernel/src/task/task_manager/load_average.rs :: pub (super) impl LoadAverage :: fn values (& self) -> [u64 ; 3]
-kernel/src/task/task_manager/load_average.rs :: pub (super) struct LoadAverage
-kernel/src/task/task_manager/parent_death.rs :: pub (crate) fn parent_death_signal (replacement : Option < usize >) -> Result < usize , () >
-kernel/src/task/task_manager/parent_death.rs :: pub (super) fn drain_parent_death_signals ()
-kernel/src/task/task_manager/parent_death.rs :: pub (super) fn mark_parent_exit (graph : & mut ProcessGraph , parent_tgid : usize , parent_tid : usize , replacement_tid : usize ,)
-kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_notification_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
-kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
-kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult
-kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe_until (pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
-kernel/src/task/task_manager/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller process group，非零选择 PGID。"] Group (u32)
-kernel/src/task/task_manager/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller real UID，非零选择给定 UID。"] User (u32)
-kernel/src/task/task_manager/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller，非零选择全局 TID。"] Process (u32)
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyError :: Access
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyError :: Invalid
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyError :: NotFound
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyError :: OutOfMemory
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyError :: Permission
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyRequest :: # [doc = " 保留 policy 与 reset-on-fork，只校验并设置 legacy priority。"] SetParameters { # [doc = " Linux `struct sched_param.sched_priority`。"] priority : i32 , }
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyRequest :: # [doc = " 原子替换 legacy policy、reset-on-fork 与 priority。"] Replace { # [doc = " Linux legacy scheduler policy 与可选 reset-on-fork bit。"] policy : i32 , # [doc = " Linux `struct sched_param.sched_priority`。"] priority : i32 , }
-kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyRequest :: # [doc = " 查询 policy，不修改目标。"] Query
-kernel/src/task/task_manager/policy.rs :: pub (crate) enum SchedulerNiceSelector
-kernel/src/task/task_manager/policy.rs :: pub (crate) enum SchedulerPolicyError
-kernel/src/task/task_manager/policy.rs :: pub (crate) enum SchedulerPolicyRequest
-kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_io_priority (tid : usize , replacement : Option < u16 > ,) -> Result < u16 , SchedulerPolicyError >
-kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_nice (selector : SchedulerNiceSelector , replacement : Option < i32 > ,) -> Result < i32 , SchedulerPolicyError >
-kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_policy (tid : usize , request : SchedulerPolicyRequest ,) -> Result < i32 , SchedulerPolicyError >
-kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_rr_interval (tid : usize) -> Result < u64 , SchedulerPolicyError >
-kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Exited (u8)
-kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Signaled (u8)
-kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_group (code : i32) -> !
-kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_group_by_signal (signal : usize) -> !
-kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_if_group_exiting ()
-kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_thread (code : i32) -> !
-kernel/src/task/task_manager/process_exit.rs :: pub (super) enum ProcessExitStatus
-kernel/src/task/task_manager/process_exit.rs :: pub (super) impl ProcessExitStatus :: fn wait_status (self) -> i32
-kernel/src/task/task_manager/process_group.rs :: enum ProcessGroupError :: NotFound
-kernel/src/task/task_manager/process_group.rs :: enum ProcessGroupError :: NotTerminal
-kernel/src/task/task_manager/process_group.rs :: enum ProcessGroupError :: Permission
-kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: Executed
-kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: NotFound
-kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: Permission
-kernel/src/task/task_manager/process_group.rs :: pub (crate) enum ProcessGroupError
-kernel/src/task/task_manager/process_group.rs :: pub (crate) enum SetProcessGroupError
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn claim_controlling_terminal (terminal : & Arc < crate :: fs :: Terminal > , force : usize ,) -> Result < () , ProcessGroupError >
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn create_session () -> Result < usize , ProcessGroupError >
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn process_group (pid : usize) -> Result < usize , ProcessGroupError >
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn session_id (pid : usize) -> Result < usize , ProcessGroupError >
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn set_process_group (pid : usize , pgid : usize) -> Result < () , SetProcessGroupError >
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn set_terminal_foreground_group (terminal : & crate :: fs :: Terminal , pgid : usize ,) -> Result < () , ProcessGroupError >
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn terminal_foreground_group (terminal : & crate :: fs :: Terminal ,) -> Result < usize , ProcessGroupError >
-kernel/src/task/task_manager/process_group.rs :: pub (in crate :: task) fn current_process_group_is_orphaned (tgid : usize) -> bool
-kernel/src/task/task_manager/process_group.rs :: pub (in crate :: task) fn mark_process_exec (tgid : usize)
-kernel/src/task/task_manager/process_group.rs :: pub (super) fn process_group_is_orphaned (graph : & ProcessGraph , session : usize , process_group : usize ,) -> bool
-kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: free_memory_bytes : u64
-kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: load_milli : [u64 ; 3]
-kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: task_count : usize
-kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: total_memory_bytes : u64
-kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: uptime_us : u64
-kernel/src/task/task_manager/procfs.rs :: pub (crate) fn system_info_snapshot () -> SystemInfoSnapshot
-kernel/src/task/task_manager/procfs.rs :: pub (crate) struct KernelProcSource
-kernel/src/task/task_manager/procfs.rs :: pub (crate) struct SystemInfoSnapshot
-kernel/src/task/task_manager/resource_limit.rs :: pub (crate) fn process_resource_limit (pid : usize , resource : usize , replacement : Option < ResourceLimit > ,) -> Result < ResourceLimit , ResourceLimitError >
-kernel/src/task/task_manager/resource_limit.rs :: pub (super) fn enforce_cpu_limit (task : & Arc < TaskControlBlock >)
-kernel/src/task/task_manager/resource_limit.rs :: pub (super) impl ProcessSlotSnapshot :: fn allows_current (& self) -> bool
-kernel/src/task/task_manager/resource_limit.rs :: pub (super) impl ProcessSlotSnapshot :: fn capture (& mut self) -> Result < () , usize >
-kernel/src/task/task_manager/resource_limit.rs :: pub (super) impl ProcessSlotSnapshot :: fn prepare (minimum_capacity : usize) -> Result < Self , MemoryError >
-kernel/src/task/task_manager/resource_limit.rs :: pub (super) struct ProcessSlotSnapshot
-kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: InvalidSignal
-kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: NotFound
-kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: Permission
-kernel/src/task/task_manager/signal.rs :: pub (crate) enum SignalSendError
-kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_kernel_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
-kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_kernel_thread_signal_info (tgid : usize , tid : usize , signal : usize , info : PendingSignal ,) -> Result < () , SignalSendError >
-kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_process_signal (pid : i32 , signal : usize) -> Result < () , SignalSendError >
-kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
-kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_tid_signal (tid : usize , signal : usize) -> Result < () , SignalSendError >
-kernel/src/task/task_manager/signal.rs :: pub (crate) use job_control :: stop_current_process
-kernel/src/task/task_manager/signal.rs :: pub (super) fn interrupt_waiting_task (task : & Arc < TaskControlBlock >) -> bool
-kernel/src/task/task_manager/signal.rs :: pub (super) fn send_kernel_process_signal (tgid : usize , signal : usize , info : PendingSignal) -> bool
-kernel/src/task/task_manager/signal.rs :: pub (super) fn send_process_group_signal (pgid : usize , signal : usize) -> usize
-kernel/src/task/task_manager/signal.rs :: pub (super) use job_control :: { ChildEvents , JobControlState , complete_process_stop }
-kernel/src/task/task_manager/signal/job_control.rs :: enum JobControlState :: Running
-kernel/src/task/task_manager/signal/job_control.rs :: enum JobControlState :: Stopped
-kernel/src/task/task_manager/signal/job_control.rs :: enum JobControlState :: Stopping (usize)
-kernel/src/task/task_manager/signal/job_control.rs :: pub (crate) fn stop_current_process (signal : usize)
-kernel/src/task/task_manager/signal/job_control.rs :: pub (in crate :: task :: task_manager) ChildEvents :: continued : bool
-kernel/src/task/task_manager/signal/job_control.rs :: pub (in crate :: task :: task_manager) ChildEvents :: stopped : Option < usize >
-kernel/src/task/task_manager/signal/job_control.rs :: pub (in crate :: task :: task_manager) enum JobControlState
-kernel/src/task/task_manager/signal/job_control.rs :: pub (in crate :: task :: task_manager) fn complete_process_stop (tgid : usize)
-kernel/src/task/task_manager/signal/job_control.rs :: pub (in crate :: task :: task_manager) struct ChildEvents
-kernel/src/task/task_manager/signal/job_control.rs :: pub (super) fn continue_process_locked (graph : & mut ProcessGraph , tgid : usize ,) -> Option < JobNotification >
-kernel/src/task/task_manager/signal/job_control.rs :: pub (super) fn publish_job_notification (notification : Option < JobNotification >)
-kernel/src/task/task_manager/signal/job_control.rs :: pub (super) fn resume_for_fatal_signal_locked (graph : & mut ProcessGraph , tgid : usize)
-kernel/src/task/task_manager/signal/job_control.rs :: pub (super) struct JobNotification
-kernel/src/task/task_manager/signal/selection_result.rs :: enum SelectionAttempt :: # [doc = " A matching live process failed the existing permission policy."] Denied
-kernel/src/task/task_manager/signal/selection_result.rs :: enum SelectionAttempt :: # [doc = " Signal generation completed, including ignored or coalesced signals."] Generated
-kernel/src/task/task_manager/signal/selection_result.rs :: enum SelectionAttempt :: # [doc = " Signal zero completed a permitted existence probe without generation."] Probe
-kernel/src/task/task_manager/signal/selection_result.rs :: enum SelectionOutcome :: NotFound
-kernel/src/task/task_manager/signal/selection_result.rs :: enum SelectionOutcome :: Permission
-kernel/src/task/task_manager/signal/selection_result.rs :: enum SelectionOutcome :: Success (usize)
-kernel/src/task/task_manager/signal/selection_result.rs :: pub (super) enum SelectionAttempt
-kernel/src/task/task_manager/signal/selection_result.rs :: pub (super) enum SelectionOutcome
-kernel/src/task/task_manager/signal/selection_result.rs :: pub (super) impl SelectionResult :: const fn finish (self) -> SelectionOutcome
-kernel/src/task/task_manager/signal/selection_result.rs :: pub (super) impl SelectionResult :: const fn new () -> Self
-kernel/src/task/task_manager/signal/selection_result.rs :: pub (super) impl SelectionResult :: fn record (& mut self , attempt : SelectionAttempt)
-kernel/src/task/task_manager/signal/selection_result.rs :: pub (super) struct SelectionResult
-kernel/src/task/task_manager/snapshot_staging.rs :: enum SnapshotCapacity :: Capture
-kernel/src/task/task_manager/snapshot_staging.rs :: enum SnapshotCapacity :: Retry { minimum : usize }
-kernel/src/task/task_manager/snapshot_staging.rs :: pub (super) const fn snapshot_capacity (capacity : usize , required : usize) -> SnapshotCapacity
-kernel/src/task/task_manager/snapshot_staging.rs :: pub (super) enum SnapshotCapacity
-kernel/src/task/task_manager/task_mutex_wait.rs :: pub (in crate :: task) fn initialize ()
-kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: Io
-kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: Restart
-kernel/src/task/task_manager/terminal_access.rs :: pub (crate) enum TerminalAccessError
-kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
-kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn hangup_terminal (terminal : & Terminal)
-kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn publish_terminal_input_signals (terminal : & Terminal , signals : u64)
-kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn resize_terminal (terminal : & Terminal , window_size : [u8 ; 8])
-kernel/src/task/task_manager/thread_activation.rs :: enum ActivationTransition :: None
-kernel/src/task/task_manager/thread_activation.rs :: enum ActivationTransition :: ReadyNew
-kernel/src/task/task_manager/thread_activation.rs :: enum ActivationTransition :: ResumeStoppedNew
-kernel/src/task/task_manager/thread_activation.rs :: enum ActivationTransition :: StopNew
-kernel/src/task/task_manager/thread_activation.rs :: enum PreActivationState :: # [doc = " group stop 消费了 New，但 SIGCONT 仍必须恢复为 New 而非提前 Ready。"] StoppedNew
-kernel/src/task/task_manager/thread_activation.rs :: enum PreActivationState :: # [doc = " 尚未被 job-control 消费的原始 New。"] New
-kernel/src/task/task_manager/thread_activation.rs :: enum PreActivationState :: # [doc = " 已存在正常 scheduler membership；activation 不得重复发布。"] Activated
-kernel/src/task/task_manager/thread_activation.rs :: pub (super) ActivationDecision :: inherit_group_exit : bool
-kernel/src/task/task_manager/thread_activation.rs :: pub (super) ActivationDecision :: transition : ActivationTransition
-kernel/src/task/task_manager/thread_activation.rs :: pub (super) const fn new_thread_activation (state : PreActivationState , group_exiting : bool , job_control_running : bool ,) -> ActivationDecision
-kernel/src/task/task_manager/thread_activation.rs :: pub (super) enum ActivationTransition
-kernel/src/task/task_manager/thread_activation.rs :: pub (super) enum PreActivationState
-kernel/src/task/task_manager/thread_activation.rs :: pub (super) struct ActivationDecision
-kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
-kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: ResourceLimit
-kernel/src/task/task_manager/thread_clone.rs :: pub (crate) enum ThreadCloneError
-kernel/src/task/task_manager/thread_clone.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
-kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn parent_pid (pid : usize) -> usize
-kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
-kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn scheduler_thread (tid : usize , caller : & Arc < TaskControlBlock > ,) -> Option < Arc < TaskControlBlock > >
-kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn thread_by_tid (graph : & ProcessGraph , tid : usize ,) -> Option < (usize , Arc < TaskControlBlock >) >
-kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: File { target : Arc < dyn TimerFdBackend > , elapsed : u64 , }
-kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Posix (ExpiredPosixTimer)
-kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Real (usize)
-kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Silent
-kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerClock :: Monotonic
-kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerClock :: Realtime
-kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_NONE`：推进 timer，但不发布 signal。"] None
-kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_SIGNAL`：向创建进程发布 signal。"] Process { signal : usize , value : u64 }
-kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_THREAD_ID`：向创建进程中的指定 Thread 发布 signal。"] Thread { tid : usize , signal : usize , value : u64 , }
-kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `timer_create(..., NULL, ...)`：SIGALRM，且 `sival_int` 为分配后的 timer ID。"] Default
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum PosixTimerClock
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum PosixTimerNotification
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn create_posix_timer (tgid : usize , clock : PosixTimerClock , notification : PosixTimerNotification ,) -> Result < i32 , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn delete_posix_timer (tgid : usize , id : i32) -> Result < () , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn posix_timer (tgid : usize , id : i32 , now_ns : u64) -> Result < TimerSetting , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn posix_timer_overrun (tgid : usize , id : i32) -> Result < i32 , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn real_timer (tgid : usize , now_ns : u64) -> Result < TimerSetting , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn remove_posix_timers_for_exec (tgid : usize)
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn set_posix_timer (tgid : usize , id : i32 , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn set_real_timer (tgid : usize , value_ns : u64 , interval_ns : u64 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (crate) use timer_file :: { TimerFileClock , create_timer_fd }
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: id : i32
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: notification : PosixTimerNotification
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: overrun : i32
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: tgid : usize
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) enum ExpiredTimer
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: const fn new () -> Self
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn delete_posix (& mut self , tgid : usize , id : i32) -> Result < () , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn has_expired (& self , now_ns : u64) -> bool
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn pop_expired (& mut self , now_ns : u64) -> Option < ExpiredTimer >
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn posix (& self , tgid : usize , id : i32 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn posix_overrun (& self , tgid : usize , id : i32) -> Result < i32 , TimerError >
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn real (& self , tgid : usize , now_ns : u64) -> TimerSetting
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn remove_posix_timers (& mut self , tgid : usize)
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn remove_process (& mut self , tgid : usize)
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) struct ExpiredPosixTimer
-kernel/src/task/task_manager/timer_queue.rs :: pub (super) struct TimerQueue
-kernel/src/task/task_manager/timer_queue/period.rs :: pub (super) fn next_period (expiration : u64 , interval_ns : u64 , now_ns : u64) -> (Option < u64 > , u64)
-kernel/src/task/task_manager/timer_queue/posix_creation.rs :: pub (super) impl TimerQueue :: fn commit_posix_create (& mut self , prepared : PreparedPosixCreate ,) -> Result < () , PreparedPosixCreate >
-kernel/src/task/task_manager/timer_queue/posix_creation.rs :: pub (super) impl TimerQueue :: fn next_posix_id (& self , tgid : usize) -> Result < i32 , TimerError >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedPosixCreate :: key : (usize , i32)
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedPosixCreate :: timer_node : VacantEntry < (usize , i32) , PosixTimer >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: absolute : bool
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: deadline_node : Option < VacantEntry < (u64 , TimerIdentity) , () > >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: interval_ns : u64
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: key : (usize , i32)
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedPosixReplacement :: value_ns : u64
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: deadline_node : Option < VacantEntry < (u64 , TimerIdentity) , () > >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: replacement : Option < RealTimer >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: tgid : usize
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) PreparedRealReplacement :: timer_node : Option < VacantEntry < usize , RealTimer > >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) impl PreparedPosixCreate :: fn prepare (tgid : usize , id : i32 , clock : PosixTimerClock , notification : PosixTimerNotification ,) -> Result < Self , TimerError >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) impl PreparedPosixCreate :: fn retarget (mut self , id : i32) -> Self
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) impl PreparedPosixReplacement :: fn prepare (tgid : usize , id : i32 , value_ns : u64 , interval_ns : u64 , absolute : bool , deadline_needed : bool ,) -> Result < Self , TimerError >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) impl PreparedRealReplacement :: fn prepare (tgid : usize , value_ns : u64 , interval_ns : u64 , now_ns : u64 , needs : TimerReplacementNeeds ,) -> Result < Self , TimerError >
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) struct PreparedPosixCreate
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) struct PreparedPosixReplacement
-kernel/src/task/task_manager/timer_queue/preparation.rs :: pub (super) struct PreparedRealReplacement
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: enum PosixCreateAction :: Commit
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: enum PosixCreateAction :: RetargetPreparedNode
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) TimerReplacementNeeds :: deadline : bool
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) TimerReplacementNeeds :: record : bool
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) const fn posix_create_action (id_occupied : bool) -> PosixCreateAction
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) const fn posix_deadline_needed (deadline_exists : bool , replacement_deadline : bool ,) -> bool
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) const fn real_replacement_needs (record_exists : bool , deadline_exists : bool , replacement_record : bool , replacement_deadline : bool ,) -> TimerReplacementNeeds
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) enum PosixCreateAction
-kernel/src/task/task_manager/timer_queue/preparation_policy.rs :: pub (super) struct TimerReplacementNeeds
-kernel/src/task/task_manager/timer_queue/timer_file.rs :: enum TimerFileClock :: Boottime
-kernel/src/task/task_manager/timer_queue/timer_file.rs :: enum TimerFileClock :: Monotonic
-kernel/src/task/task_manager/timer_queue/timer_file.rs :: enum TimerFileClock :: Realtime
-kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (crate) enum TimerFileClock
-kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (crate) fn create_timer_fd (clock : TimerFileClock ,) -> Result < Arc < dyn TimerFdBackend > , TimerError >
-kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (super) impl TimerQueue :: fn pop_expired_timer_file (& mut self , id : u64 , expiration : u64 , mut deadline : crate :: fallible_tree :: VacantEntry < (u64 , TimerIdentity) , () > , now_ns : u64 ,) -> super :: ExpiredTimer
-kernel/src/task/task_manager/timer_queue/timer_file.rs :: pub (super) struct TimerFile
-kernel/src/task/task_manager/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Create a POSIX timer, optionally requiring a live target thread."] PosixCreate { tgid : usize , thread : Option < usize > }
-kernel/src/task/task_manager/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Replace or disarm an existing process-owned POSIX timer."] PosixReplace { tgid : usize }
-kernel/src/task/task_manager/timer_queue/transaction.rs :: enum TimerTransactionPolicy :: # [doc = " Replace or disarm the process-owned ITIMER_REAL record."] ItimerReal { tgid : usize }
-kernel/src/task/task_manager/timer_queue/transaction.rs :: pub (super) enum TimerTransactionPolicy
-kernel/src/task/task_manager/timer_queue/transaction.rs :: pub (super) fn execute_timer_transaction < Plan , Prepared , Output > (policy : TimerTransactionPolicy , mut plan : impl FnMut (& TimerQueue) -> Result < Plan , TimerError > , prepare : impl FnMut (Plan , Option < Prepared >) -> Result < Prepared , TimerError > , mut commit : impl FnMut (& mut TimerQueue , Prepared ,) -> Result < TimerTransactionCommit < Prepared , Output > , TimerError > ,) -> Result < Output , TimerError >
-kernel/src/task/task_manager/timer_queue/transaction.rs :: pub (super) impl TimerTransactionPolicy :: const fn itimer_real (tgid : usize) -> Self
-kernel/src/task/task_manager/timer_queue/transaction.rs :: pub (super) impl TimerTransactionPolicy :: const fn posix_create (tgid : usize , notification : PosixTimerNotification) -> Self
-kernel/src/task/task_manager/timer_queue/transaction.rs :: pub (super) impl TimerTransactionPolicy :: const fn posix_replace (tgid : usize) -> Self
-kernel/src/task/task_manager/timer_queue/transaction_loop.rs :: enum TimerTransactionCommit :: # [doc = " Final state changed; retry with an optional reusable unpublished owner."] Retry (Option < Prepared >)
-kernel/src/task/task_manager/timer_queue/transaction_loop.rs :: enum TimerTransactionCommit :: # [doc = " Publication succeeded and produced the syscall-visible output."] Complete (Output)
-kernel/src/task/task_manager/timer_queue/transaction_loop.rs :: pub (super) enum TimerTransactionCommit < Prepared , Output >
-kernel/src/task/task_manager/timer_queue/transaction_loop.rs :: pub (super) fn run_timer_transaction < Plan , Prepared , Output , Error > (mut initial_validate : impl FnMut () -> Result < () , Error > , mut plan : impl FnMut () -> Result < Plan , Error > , mut prepare : impl FnMut (Plan , Option < Prepared >) -> Result < Prepared , Error > , mut final_commit : impl FnMut (Prepared) -> Result < TimerTransactionCommit < Prepared , Output > , Error > ,) -> Result < Output , Error >
-kernel/src/task/task_manager/vfork.rs :: enum ProcessCloneError :: Memory (crate :: memory :: MemoryError)
-kernel/src/task/task_manager/vfork.rs :: enum ProcessCloneError :: ResourceLimit
-kernel/src/task/task_manager/vfork.rs :: pub (crate) enum ProcessCloneError
-kernel/src/task/task_manager/vfork.rs :: pub (crate) fn fork_current_process () -> Result < usize , ProcessCloneError >
-kernel/src/task/task_manager/vfork.rs :: pub (crate) fn vfork_current_process (child_stack : usize) -> Result < usize , ProcessCloneError >
-kernel/src/task/task_manager/vfork.rs :: pub (in crate :: task) fn complete_vfork_exec (child_pid : usize)
-kernel/src/task/task_manager/vfork.rs :: pub (super) fn complete_vfork (child_pid : usize)
-kernel/src/task/task_manager/vfork.rs :: pub (super) fn wake_parent (parent : Arc < TaskControlBlock > , child_pid : usize)
-kernel/src/task/task_manager/wait_child.rs :: enum ChildStatusKind :: Continued
-kernel/src/task/task_manager/wait_child.rs :: enum ChildStatusKind :: Exited
-kernel/src/task/task_manager/wait_child.rs :: enum ChildStatusKind :: Stopped
-kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: Interrupted
-kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: InvalidSelector
-kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: NoChild
-kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: OutOfMemory
-kernel/src/task/task_manager/wait_child.rs :: pub (crate) ChildExit :: pid : usize
-kernel/src/task/task_manager/wait_child.rs :: pub (crate) ChildExit :: status : i32
-kernel/src/task/task_manager/wait_child.rs :: pub (crate) enum WaitChildError
-kernel/src/task/task_manager/wait_child.rs :: pub (crate) fn consume_child_status (record : ChildExit)
-kernel/src/task/task_manager/wait_child.rs :: pub (crate) fn release_child_status (record : ChildExit)
-kernel/src/task/task_manager/wait_child.rs :: pub (crate) fn wait_child (selector : isize , nohang : bool , include_stopped : bool , include_continued : bool ,) -> Result < Option < ChildExit > , WaitChildError >
-kernel/src/task/task_manager/wait_child.rs :: pub (crate) struct ChildExit
-kernel/src/task/task_manager/wait_child.rs :: pub (super) ChildWaitClaim :: kind : ChildStatusKind
-kernel/src/task/task_manager/wait_child.rs :: pub (super) ChildWaitClaim :: waiter : usize
-kernel/src/task/task_manager/wait_child.rs :: pub (super) enum ChildStatusKind
-kernel/src/task/task_manager/wait_child.rs :: pub (super) fn take_child_waiters (node : & mut ProcessNode ,) -> FallibleMap < usize , Arc < TaskControlBlock > >
-kernel/src/task/task_manager/wait_child.rs :: pub (super) struct ChildWaitClaim
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: AdvisoryLock
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Console
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Deadline
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Futex { key : FutexKey , bitset : u32 , }
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Pipe { identity : usize , condition : PipeWaitCondition , }
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Poll
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Signal { mask : u64 , }
-kernel/src/task/task_manager/wait_key.rs :: enum PollWaitKey :: Console { events : i16 , exclusive : bool , wake_group : Option < usize > , }
-kernel/src/task/task_manager/wait_key.rs :: enum PollWaitKey :: Pipe { identity : usize , direction : PipeDirection , events : i16 , exclusive : bool , wake_group : Option < usize > , }
-kernel/src/task/task_manager/wait_key.rs :: pub (crate) enum PollWaitKey
-kernel/src/task/task_manager/wait_key.rs :: pub (crate) impl PollWaitKey :: fn console (events : i16 , exclusive : bool , wake_group : Option < usize >) -> Self
-kernel/src/task/task_manager/wait_key.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Self
-kernel/src/task/task_manager/wait_key.rs :: pub (super) enum IndexedWaitKind
-kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn exclusive (self) -> bool
-kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn matches_console (self , ready : i16) -> bool
-kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn matches_pipe (self , identity : usize , direction : PipeDirection , ready : i16 ,) -> bool
-kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn normalize (keys : & mut Vec < Self >)
-kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn wake_group (self) -> Option < usize >
-kernel/src/task/task_manager/wait_publication.rs :: enum ChildWaitPublication :: ConsumeEvent
-kernel/src/task/task_manager/wait_publication.rs :: enum ChildWaitPublication :: Interrupted
-kernel/src/task/task_manager/wait_publication.rs :: enum ChildWaitPublication :: OutOfMemory
-kernel/src/task/task_manager/wait_publication.rs :: enum ChildWaitPublication :: Publish
-kernel/src/task/task_manager/wait_publication.rs :: enum ChildWaitPublication :: ReturnNoHang
-kernel/src/task/task_manager/wait_publication.rs :: pub (super) const fn child_wait_publication (event_ready : bool , nohang : bool , interrupted : bool , storage_ready : bool ,) -> ChildWaitPublication
-kernel/src/task/task_manager/wait_publication.rs :: pub (super) enum ChildWaitPublication
-kernel/src/task/task_manager/wait_registry.rs :: enum CancelOutcome :: Cancelled
-kernel/src/task/task_manager/wait_registry.rs :: enum CancelOutcome :: Notified (WaitResult)
-kernel/src/task/task_manager/wait_registry.rs :: pub (in crate :: task :: task_manager) fn arm_current (task : & Arc < crate :: task :: TaskControlBlock > , prepared : Result < PreparedWait , () > , recheck : impl FnOnce () -> Option < WaitResult > , membership : impl FnOnce (u64) -> crate :: task :: WaitMembership ,) -> Result < super :: context_switch :: PreparedBlock , WaitResult >
-kernel/src/task/task_manager/wait_registry.rs :: pub (in crate :: task :: task_manager) use batch :: ClaimedBatch
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) SourceWake :: claimed : Option < ClaimedWait >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) SourceWake :: group : Option < usize >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) const WAIT_SHARD_COUNT : usize = 16
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) enum CancelOutcome
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitArmGuard < '_ > :: fn arm (& mut self) -> u64
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn allocate_ticket (& self) -> WaitTicket
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn expire_one (& self , now : u64) -> Option < SourceWake >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn has_expired_deadline (& self , now : u64) -> bool
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn publish (& 'static self , prepared : PreparedWait) -> PublishedWait
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_advisory_one (& self , key : AdvisoryLockKey) -> Option < SourceWake >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_console_one (& self , exclusive : bool , ready : i16 , excluded_groups : & [Option < usize >] ,) -> Option < SourceWake >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_futex_one (& self , key : FutexKey , bitset : u32) -> Option < SourceWake >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl WaitRegistry :: fn wake_pipe_one (& self , identity : usize , direction : PipeDirection , exclusive : bool , ready : i16 , state : PipePollState , excluded_groups : & crate :: fallible_tree :: FallibleMap < usize , () > ,) -> Option < SourceWake >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) static WAIT_REGISTRY : WaitRegistry
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct PreparedIndex
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct PreparedWait
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct PublishedWait
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct SourceWake
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct WaitArmGuard < 'a >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct WaitRegistry
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct WaitTicket
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) use registration :: ClaimedWait
-kernel/src/task/task_manager/wait_registry/batch.rs :: pub (in crate :: task :: task_manager) impl ClaimedBatch :: const fn new () -> Self
-kernel/src/task/task_manager/wait_registry/batch.rs :: pub (in crate :: task :: task_manager) impl ClaimedBatch :: fn pop (& mut self) -> Option < ClaimedWait >
-kernel/src/task/task_manager/wait_registry/batch.rs :: pub (in crate :: task :: task_manager) impl ClaimedBatch :: fn push (& mut self , mut claimed : ClaimedWait)
-kernel/src/task/task_manager/wait_registry/batch.rs :: pub (in crate :: task :: task_manager) struct ClaimedBatch
-kernel/src/task/task_manager/wait_registry/key.rs :: enum WaitIndexKey :: AdvisoryLock { key : AdvisoryLockKey , id : u64 , }
-kernel/src/task/task_manager/wait_registry/key.rs :: enum WaitIndexKey :: Console { exclusive : bool , id : u64 , }
-kernel/src/task/task_manager/wait_registry/key.rs :: enum WaitIndexKey :: Deadline { deadline : u64 , id : u64 , }
-kernel/src/task/task_manager/wait_registry/key.rs :: enum WaitIndexKey :: Futex { key : FutexKey , id : u64 , }
-kernel/src/task/task_manager/wait_registry/key.rs :: enum WaitIndexKey :: Pipe { identity : usize , direction : u8 , exclusive : bool , id : u64 , }
-kernel/src/task/task_manager/wait_registry/key.rs :: enum WaitIndexKey :: Task { tid : usize , id : u64 , }
-kernel/src/task/task_manager/wait_registry/key.rs :: pub (super) const fn pipe_direction (direction : PipeDirection) -> u8
-kernel/src/task/task_manager/wait_registry/key.rs :: pub (super) enum WaitIndexKey
-kernel/src/task/task_manager/wait_registry/key.rs :: pub (super) impl WaitIndexKey :: fn shard (self) -> usize
-kernel/src/task/task_manager/wait_registry/preparation.rs :: pub (in crate :: task :: task_manager) impl WaitTicket :: fn prepare_advisory_lock (self , key : AdvisoryLockKey , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry/preparation.rs :: pub (in crate :: task :: task_manager) impl WaitTicket :: fn prepare_console (self , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry/preparation.rs :: pub (in crate :: task :: task_manager) impl WaitTicket :: fn prepare_deadline (self , deadline : u64 , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry/preparation.rs :: pub (in crate :: task :: task_manager) impl WaitTicket :: fn prepare_futex (self , key : FutexKey , bitset : u32 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry/preparation.rs :: pub (in crate :: task :: task_manager) impl WaitTicket :: fn prepare_pipe (self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry/preparation.rs :: pub (in crate :: task :: task_manager) impl WaitTicket :: fn prepare_poll (self , keys : Vec < PollWaitKey > , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry/preparation.rs :: pub (in crate :: task :: task_manager) impl WaitTicket :: fn prepare_signal (self , mask : u64 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry/publication.rs :: pub (in crate :: task :: task_manager) impl PublishedWait :: fn cancel (mut self) -> CancelOutcome
-kernel/src/task/task_manager/wait_registry/publication.rs :: pub (in crate :: task :: task_manager) impl PublishedWait :: fn prepare_arm (mut self ,) -> Result < WaitArmGuard < 'static > , WaitResult >
-kernel/src/task/task_manager/wait_registry/registration.rs :: enum NotifyOutcome :: Armed (ClaimedWait)
-kernel/src/task/task_manager/wait_registry/registration.rs :: enum NotifyOutcome :: BeforeArm
-kernel/src/task/task_manager/wait_registry/registration.rs :: enum NotifyOutcome :: Stale
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (in crate :: task :: task_manager) ClaimedWait :: id : u64
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (in crate :: task :: task_manager) ClaimedWait :: kind : IndexedWaitKind
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (in crate :: task :: task_manager) ClaimedWait :: task : Arc < TaskControlBlock >
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (in crate :: task :: task_manager) struct ClaimedWait
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) ClaimedWait :: staging : Option < VacantEntry < WaitIndexKey , Arc < WaitRegistration > > >
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) WaitRegistration :: id : u64
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) WaitRegistration :: keys : Mutex < Vec < WaitIndexKey > >
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) WaitRegistration :: kind : Mutex < IndexedWaitKind >
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) WaitRegistration :: poll_keys : Option < Vec < PollWaitKey > >
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) WaitRegistration :: state : AtomicU8
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) WaitRegistration :: task : Arc < TaskControlBlock >
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const ARMED : u8 = 3
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const ARMING : u8 = 1
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const ARMING_LOCKED : u8 = 2
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const CANCELLED : u8 = 9
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const CLAIMED : u8 = 10
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const CLAIMING : u8 = 5
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const NOTIFIED_INTERRUPTED : u8 = 8
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const NOTIFIED_TIMEOUT : u8 = 7
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const NOTIFIED_WOKEN : u8 = 6
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const PREPARED : u8 = 0
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) const REQUEUEING : u8 = 4
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) enum NotifyOutcome
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) impl WaitRegistration :: fn notified_result (state : u8) -> Option < WaitResult >
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) impl WaitRegistration :: fn notified_state (result : WaitResult) -> u8
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) impl WaitRegistration :: fn state (& self) -> u8
-kernel/src/task/task_manager/wait_registry/registration.rs :: pub (super) struct WaitRegistration
-kernel/src/task/task_manager/wait_registry/requeue.rs :: pub (in crate :: task :: task_manager) impl WaitRegistry :: fn requeue_futex (& self , source : FutexKey , target : FutexKey , count : usize ,) -> usize
-kernel/src/task/task_manager/wait_registry/shard.rs :: pub (super) WaitShard :: index : FallibleMap < WaitIndexKey , Arc < WaitRegistration > >
-kernel/src/task/task_manager/wait_registry/shard.rs :: pub (super) impl LockedWaitShards < 'a > :: fn lock (shards : & 'a [IrqMutex < WaitShard > ; WAIT_SHARD_COUNT] , keys : & [WaitIndexKey] ,) -> Self
-kernel/src/task/task_manager/wait_registry/shard.rs :: pub (super) impl LockedWaitShards < 'a > :: fn lock_with_extra (shards : & 'a [IrqMutex < WaitShard > ; WAIT_SHARD_COUNT] , keys : & [WaitIndexKey] , extra : Option < WaitIndexKey > ,) -> Self
-kernel/src/task/task_manager/wait_registry/shard.rs :: pub (super) impl LockedWaitShards < 'a > :: fn shard_mut (& mut self , shard : usize) -> & mut WaitShard
-kernel/src/task/task_manager/wait_registry/shard.rs :: pub (super) impl WaitShard :: const fn new () -> Self
-kernel/src/task/task_manager/wait_registry/shard.rs :: pub (super) struct LockedWaitShards < 'a >
-kernel/src/task/task_manager/wait_registry/shard.rs :: pub (super) struct WaitShard
-kernel/src/task/task_manager/wait_registry/task_source.rs :: pub (in crate :: task :: task_manager) impl WaitRegistry :: fn interrupt_task (& self , task : & Arc < crate :: task :: TaskControlBlock > ,) -> Option < SourceWake >
-kernel/src/task/task_manager/wait_registry/task_source.rs :: pub (in crate :: task :: task_manager) impl WaitRegistry :: fn wake_signal_registration (& self , task : & Arc < crate :: task :: TaskControlBlock > ,) -> Option < SourceWake >
+kernel/src/task/signal_number.rs :: pub (crate) const BUS_ADRERR : i32 = 2
+kernel/src/task/signal_number.rs :: pub (crate) const ILL_ILLOPC : i32 = 1
+kernel/src/task/signal_number.rs :: pub (crate) const ILL_ILLTRP : i32 = 4
+kernel/src/task/signal_number.rs :: pub (crate) const SEGV_ACCERR : i32 = 2
+kernel/src/task/signal_number.rs :: pub (crate) const SEGV_MAPERR : i32 = 1
+kernel/src/task/signal_number.rs :: pub (crate) const SIGALRM : usize = 14
+kernel/src/task/signal_number.rs :: pub (crate) const SIGBUS : usize = 7
+kernel/src/task/signal_number.rs :: pub (crate) const SIGCHLD : usize = 17
+kernel/src/task/signal_number.rs :: pub (crate) const SIGCONT : usize = 18
+kernel/src/task/signal_number.rs :: pub (crate) const SIGHUP : usize = 1
+kernel/src/task/signal_number.rs :: pub (crate) const SIGILL : usize = 4
+kernel/src/task/signal_number.rs :: pub (crate) const SIGKILL : usize = 9
+kernel/src/task/signal_number.rs :: pub (crate) const SIGPIPE : usize = 13
+kernel/src/task/signal_number.rs :: pub (crate) const SIGSEGV : usize = 11
+kernel/src/task/signal_number.rs :: pub (crate) const SIGSTOP : usize = 19
+kernel/src/task/signal_number.rs :: pub (crate) const SIGTRAP : usize = 5
+kernel/src/task/signal_number.rs :: pub (crate) const SIGTTIN : usize = 21
+kernel/src/task/signal_number.rs :: pub (crate) const SIGTTOU : usize = 22
+kernel/src/task/signal_number.rs :: pub (crate) const SIGURG : usize = 23
+kernel/src/task/signal_number.rs :: pub (crate) const SIGWINCH : usize = 28
+kernel/src/task/signal_number.rs :: pub (crate) const SIGXCPU : usize = 24
+kernel/src/task/signal_number.rs :: pub (crate) const SIGXFSZ : usize = 25
+kernel/src/task/signal_number.rs :: pub (crate) const TRAP_BRKPT : i32 = 1
 kernel/src/timer.rs :: pub (crate) fn boot_epoch_seconds () -> u64
 kernel/src/timer.rs :: pub (crate) fn enable_timer_interrupt ()
 kernel/src/timer.rs :: pub (crate) fn get_realtime_ns () -> u64

@@ -81,7 +81,7 @@ impl<T> RadixRoot<T> {
     }
 }
 
-/// @description 与 sparse radix 同步维护的 lowest-free summary owner。
+/// 与 sparse radix 同步维护的 lowest-free summary owner。
 ///
 /// Fullness bits 保存在对应 radix node，避免第二棵 dense bitmap；本 owner 只保留已有的
 /// conservative occupied prefix。所有 occupancy transition 必须经 `IndexedSlots`，否则
@@ -212,7 +212,7 @@ pub(super) enum SlotInsertError {
     OutOfMemory,
 }
 
-/// @description sparse fixed-depth radix 与 lowest-free summary 的唯一复合 owner。
+/// sparse fixed-depth radix 与 lowest-free summary 的唯一复合 owner。
 ///
 /// 7/7/6-bit 路径把 lookup/replace/take 固定为三层；root、branch、64-slot chunk 全部在
 /// occupancy publication 前 fallible prepare。`logical_len` 保留 Linux FDSize 语义，关闭
@@ -428,7 +428,7 @@ impl<T> IndexedSlots<T> {
         Ok(None)
     }
 
-    /// @description 按 fd 递增遍历 occupied entries，不读取未物化 chunk 的 slot array。
+    /// 按 fd 递增遍历 occupied entries，不读取未物化 chunk 的 slot array。
     pub(super) fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
         self.root.as_deref().into_iter().flat_map(|root| {
             root.branches
@@ -465,7 +465,7 @@ impl<T> IndexedSlots<T> {
         })
     }
 
-    /// @description 从 minimum 开始只扫描 materialized radix path，返回首个匹配 fd。
+    /// 从 minimum 开始只扫描 materialized radix path，返回首个匹配 fd。
     pub(super) fn find_from(
         &self,
         minimum: usize,
@@ -536,8 +536,11 @@ impl<T> IndexedSlots<T> {
 }
 
 impl<T: Clone> IndexedSlots<T> {
-    /// @description 只克隆 include 选中的 materialized entries，并保留 logical capacity。
-    /// @errors 任一 radix allocation 失败时析构完整 partial clone，source 保持不变。
+    /// 只克隆 include 选中的 materialized entries，并保留 logical capacity。
+    ///
+    /// # Errors
+    ///
+    /// 任一 radix allocation 失败时析构完整 partial clone，source 保持不变。
     pub(super) fn try_clone_where(&self, include: impl Fn(&T) -> bool) -> Result<Self, ()> {
         let mut allocation = || Ok(());
         self.try_clone_where_with_allocation(include, &mut allocation)

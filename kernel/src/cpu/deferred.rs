@@ -1,4 +1,4 @@
-//! @description Per-CPU merged deferred-work publication and consumption owner。
+//! Per-CPU merged deferred-work publication and consumption owner。
 
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -53,7 +53,7 @@ fn pending(cpu: CpuId) -> &'static AtomicU32 {
     &PENDING.wait()[cpu.index()]
 }
 
-/// @description 合并发布 calling CPU 的 deferred work 并经 platform 触发 local notification。
+/// 合并发布 calling CPU 的 deferred work 并经 platform 触发 local notification。
 pub(crate) fn raise(work: DeferredWork) {
     let previous = pending(current_id()).fetch_or(work as u32, Ordering::Release);
     // 空→非空 transition 唯一签发 local edge；非空 bitmap 已拥有尚待 safe point 消费的
@@ -64,7 +64,7 @@ pub(crate) fn raise(work: DeferredWork) {
     }
 }
 
-/// @description 原子取得 calling CPU 的全部 deferred work。
+/// 原子取得 calling CPU 的全部 deferred work。
 ///
 /// SSIP 同时承载 remote membarrier IPI，只能由 software-interrupt handler 按
 /// `clear SSIP -> complete barrier request` 的顺序确认。若在这里清除 SSIP，远端恰好

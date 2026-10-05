@@ -30,45 +30,63 @@ pub(crate) enum PcmOutputError {
 
 /// PCM completion 进入通用 audio owner 的窄通知 seam。
 pub(crate) trait PcmCompletionObserver: Send + Sync {
-    /// @description device 完整消费一个 period 后推进 hardware position。
-    /// @param frames 本次完成的固定 frame 数。
+    /// device 完整消费一个 period 后推进 hardware position。
+    ///
+    /// # Parameters
+    ///
+    /// - `frames`: 本次完成的固定 frame 数。
     fn period_completed(&self, frames: usize);
 
-    /// @description device 报告 underrun，当前 stream 进入 XRUN。
+    /// device 报告 underrun，当前 stream 进入 XRUN。
     fn xrun(&self);
 
-    /// @description reset/failure 已不可逆撤销当前 stream。
+    /// reset/failure 已不可逆撤销当前 stream。
     fn disconnected(&self);
 }
 
 /// 不泄漏 VirtIO queue/config 的通用 PCM playback adapter。
 pub(crate) trait PcmOutput: Send + Sync {
-    /// @description 一次性安装 completion observer。
-    /// @param observer `kernel::audio` 拥有的 position/readiness sink。
-    /// @errors observer 已安装或 adapter 已失败时返回 `Device`。
+    /// 一次性安装 completion observer。
+    ///
+    /// # Parameters
+    ///
+    /// - `observer`: `kernel::audio` 拥有的 position/readiness sink。
+    ///
+    /// # Errors
+    ///
+    /// observer 已安装或 adapter 已失败时返回 `Device`。
     fn set_observer(&self, observer: Arc<dyn PcmCompletionObserver>) -> Result<(), PcmOutputError>;
 
-    /// @description 按固定正规形配置唯一 playback stream。
-    /// @errors device 不支持固定格式或 lifecycle 非法时返回错误。
+    /// 按固定正规形配置唯一 playback stream。
+    ///
+    /// # Errors
+    ///
+    /// device 不支持固定格式或 lifecycle 非法时返回错误。
     fn configure(&self) -> Result<(), PcmOutputError>;
 
-    /// @description 准备已配置 stream 与固定 DMA period slots。
+    /// 准备已配置 stream 与固定 DMA period slots。
     fn prepare(&self) -> Result<(), PcmOutputError>;
 
-    /// @description 启动已准备或已停止的 stream。
+    /// 启动已准备或已停止的 stream。
     fn start(&self) -> Result<(), PcmOutputError>;
 
-    /// @description 停止 stream，并完成全部已经发布的 I/O。
+    /// 停止 stream，并完成全部已经发布的 I/O。
     fn stop(&self) -> Result<(), PcmOutputError>;
 
-    /// @description 释放 device stream resources，回到可重新配置状态。
+    /// 释放 device stream resources，回到可重新配置状态。
     fn release(&self) -> Result<(), PcmOutputError>;
 
-    /// @description 发布一个完整 256-frame interleaved float period。
-    /// @param bytes 长度必须恰为 [`PCM_PERIOD_BYTES`]。
-    /// @errors 无空闲 slot 返回 `WouldBlock`；device/lifecycle 错误按类别返回。
+    /// 发布一个完整 256-frame interleaved float period。
+    ///
+    /// # Parameters
+    ///
+    /// - `bytes`: 长度必须恰为 [`PCM_PERIOD_BYTES`]。
+    ///
+    /// # Errors
+    ///
+    /// 无空闲 slot 返回 `WouldBlock`；device/lifecycle 错误按类别返回。
     fn submit_period(&self, bytes: &[u8]) -> Result<(), PcmOutputError>;
 
-    /// @description 当前至少有一个可提交 period slot 时返回 true。
+    /// 当前至少有一个可提交 period slot 时返回 true。
     fn writable(&self) -> bool;
 }

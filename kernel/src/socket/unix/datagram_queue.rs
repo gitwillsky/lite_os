@@ -15,7 +15,7 @@ pub(super) enum PushError<T> {
     NoMemory(T),
 }
 
-/// @description 固定消息数上限的 AF_UNIX datagram receive queue owner。
+/// 固定消息数上限的 AF_UNIX datagram receive queue owner。
 pub(super) struct DatagramQueue<T> {
     entries: VecDeque<T>,
 }
@@ -27,7 +27,9 @@ impl<T> DatagramQueue<T> {
         }
     }
 
-    /// @return 成功提交，或携带未消费 item 的 full/allocation failure。
+    /// # Returns
+    ///
+    /// 成功提交，或携带未消费 item 的 full/allocation failure。
     pub(super) fn push(&mut self, item: T) -> Result<(), PushError<T>> {
         if self.is_full() {
             return Err(PushError::Full(item));
@@ -39,7 +41,9 @@ impl<T> DatagramQueue<T> {
         Ok(())
     }
 
-    /// @return FIFO item，以及本次 pop 是否完成 full -> non-full transition。
+    /// # Returns
+    ///
+    /// FIFO item，以及本次 pop 是否完成 full -> non-full transition。
     pub(super) fn pop(&mut self) -> Option<(T, bool)> {
         let was_full = self.is_full();
         self.entries.pop_front().map(|item| (item, was_full))
@@ -57,8 +61,11 @@ impl<T> DatagramQueue<T> {
         self.entries.len()
     }
 
-    /// @description 无分配摘除全部 queued messages，供 cycle GC 在 owner lock 外析构 rights。
-    /// @return 原 queue backing 与全部 entries；self 立即变为空 queue。
+    /// 无分配摘除全部 queued messages，供 cycle GC 在 owner lock 外析构 rights。
+    ///
+    /// # Returns
+    ///
+    /// 原 queue backing 与全部 entries；self 立即变为空 queue。
     pub(super) fn take_all(&mut self) -> VecDeque<T> {
         core::mem::take(&mut self.entries)
     }

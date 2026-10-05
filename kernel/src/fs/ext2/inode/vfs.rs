@@ -360,7 +360,7 @@ impl Drop for Ext2Inode {
             let result = self.reclaim_dropped_orphan();
             if let Err(error) = result {
                 error!(
-                    "[EXT2] failed to reclaim unlinked inode {}: {:?}",
+                    "failed to reclaim unlinked inode {}: {:?}",
                     self.inode_num, error
                 );
             }

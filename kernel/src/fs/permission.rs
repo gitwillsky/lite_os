@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{FileSystemError, InodeMetadata, InodeType};
 
-/// @description VFS permission evaluator 消费的不可变调用身份；状态仍由 Process 独占。
+/// VFS permission evaluator 消费的不可变调用身份；状态仍由 Process 独占。
 #[derive(Clone)]
 pub(crate) struct AccessIdentity {
     uid: u32,
@@ -11,11 +11,17 @@ pub(crate) struct AccessIdentity {
 }
 
 impl AccessIdentity {
-    /// @description 构造一次 real/effective identity 快照。
-    /// @param uid 用于本次检查的用户 ID。
-    /// @param gid 用于本次检查的主组 ID。
-    /// @param groups Process 不可变 supplementary group snapshot；空集合不分配。
-    /// @return 不持有 Process lock 的权限输入。
+    /// 构造一次 real/effective identity 快照。
+    ///
+    /// # Parameters
+    ///
+    /// - `uid`: 用于本次检查的用户 ID。
+    /// - `gid`: 用于本次检查的主组 ID。
+    /// - `groups`: Process 不可变 supplementary group snapshot；空集合不分配。
+    ///
+    /// # Returns
+    ///
+    /// 不持有 Process lock 的权限输入。
     pub(crate) fn new(uid: u32, gid: u32, groups: Option<Arc<Vec<u32>>>) -> Self {
         Self { uid, gid, groups }
     }
@@ -24,21 +30,33 @@ impl AccessIdentity {
         Self::new(0, 0, None)
     }
 
-    /// @description 返回本次检查使用的 UID。
-    /// @return real 或 effective UID，由 Process snapshot 构造者决定。
+    /// 返回本次检查使用的 UID。
+    ///
+    /// # Returns
+    ///
+    /// real 或 effective UID，由 Process snapshot 构造者决定。
     pub(crate) fn uid(&self) -> u32 {
         self.uid
     }
 
-    /// @description 返回本次检查使用的 primary GID。
-    /// @return real 或 effective GID，由 Process snapshot 构造者决定。
+    /// 返回本次检查使用的 primary GID。
+    ///
+    /// # Returns
+    ///
+    /// real 或 effective GID，由 Process snapshot 构造者决定。
     pub(crate) fn gid(&self) -> u32 {
         self.gid
     }
 
-    /// @description 判断 GID 是否属于 primary 或 supplementary groups。
-    /// @param gid 待查询的组 ID。
-    /// @return membership 存在时为 true。
+    /// 判断 GID 是否属于 primary 或 supplementary groups。
+    ///
+    /// # Parameters
+    ///
+    /// - `gid`: 待查询的组 ID。
+    ///
+    /// # Returns
+    ///
+    /// membership 存在时为 true。
     pub(crate) fn in_group(&self, gid: u32) -> bool {
         self.gid == gid
             || self
@@ -47,10 +65,16 @@ impl AccessIdentity {
                 .is_some_and(|groups| groups.contains(&gid))
     }
 
-    /// @description 按 owner/group/other 与 root execute 规则判断 inode access。
-    /// @param metadata inode 的同一时刻元数据快照。
-    /// @param requested Linux R/W/X bit mask。
-    /// @return 所有请求 bit 均允许时为 true。
+    /// 按 owner/group/other 与 root execute 规则判断 inode access。
+    ///
+    /// # Parameters
+    ///
+    /// - `metadata`: inode 的同一时刻元数据快照。
+    /// - `requested`: Linux R/W/X bit mask。
+    ///
+    /// # Returns
+    ///
+    /// 所有请求 bit 均允许时为 true。
     pub(crate) fn permits(&self, metadata: InodeMetadata, requested: u8) -> bool {
         if self.uid == 0 {
             return requested & 1 == 0 || metadata.mode & 0o111 != 0;
@@ -65,10 +89,16 @@ impl AccessIdentity {
         granted & requested == requested
     }
 
-    /// @description 将 permission predicate 转换为 VFS AccessDenied。
-    /// @param metadata inode 元数据快照。
-    /// @param requested Linux R/W/X bit mask。
-    /// @return 允许为 Ok，否则为 AccessDenied。
+    /// 将 permission predicate 转换为 VFS AccessDenied。
+    ///
+    /// # Parameters
+    ///
+    /// - `metadata`: inode 元数据快照。
+    /// - `requested`: Linux R/W/X bit mask。
+    ///
+    /// # Returns
+    ///
+    /// 允许为 Ok，否则为 AccessDenied。
     pub(crate) fn require(
         &self,
         metadata: InodeMetadata,
@@ -80,7 +110,7 @@ impl AccessIdentity {
     }
 }
 
-/// @description chmod/chown 的语义请求；VFS permission evaluator 在 live inode state 上唯一授权。
+/// chmod/chown 的语义请求；VFS permission evaluator 在 live inode state 上唯一授权。
 pub(crate) struct OwnerModeChange {
     identity: AccessIdentity,
     operation: OwnerModeOperation,
@@ -91,7 +121,7 @@ enum OwnerModeOperation {
     Chown { uid: Option<u32>, gid: Option<u32> },
 }
 
-/// @description filesystem mutation owner 提供的一次 live owner/mode state；授权结果仍由同一值返回。
+/// filesystem mutation owner 提供的一次 live owner/mode state；授权结果仍由同一值返回。
 pub(super) struct OwnerModeState {
     kind: InodeType,
     mode: u16,
@@ -123,7 +153,7 @@ impl OwnerModeState {
 }
 
 impl OwnerModeChange {
-    /// @description 构造已脱离 Process lock 的 chmod 请求；授权延迟到 filesystem live-state lock 内。
+    /// 构造已脱离 Process lock 的 chmod 请求；授权延迟到 filesystem live-state lock 内。
     pub(crate) fn chmod(identity: AccessIdentity, mode: u32) -> Self {
         Self {
             identity,
@@ -131,7 +161,7 @@ impl OwnerModeChange {
         }
     }
 
-    /// @description 构造已把 `-1` ABI sentinel 解码为 None 的 chown 请求。
+    /// 构造已把 `-1` ABI sentinel 解码为 None 的 chown 请求。
     pub(crate) fn chown(identity: AccessIdentity, uid: Option<u32>, gid: Option<u32>) -> Self {
         Self {
             identity,
@@ -139,7 +169,7 @@ impl OwnerModeChange {
         }
     }
 
-    /// @description 对 immutable/read-only inode snapshot 保留与 writable inode 相同的权限错误顺序。
+    /// 对 immutable/read-only inode snapshot 保留与 writable inode 相同的权限错误顺序。
     pub(super) fn authorize_metadata(self, metadata: InodeMetadata) -> Result<(), FileSystemError> {
         let mode = u16::try_from(metadata.mode).map_err(|_| FileSystemError::InvalidOperation)?;
         self.authorize(OwnerModeState::new(
@@ -151,9 +181,15 @@ impl OwnerModeChange {
         .map(|_| ())
     }
 
-    /// @description 对 mutation owner 提供的 live state 唯一执行 owner/group/set-ID policy。
-    /// @param current mutation lock 下读取的同一 inode mode/UID/GID。
-    /// @return 已授权的完整 replacement state；无权限返回 PermissionDenied。
+    /// 对 mutation owner 提供的 live state 唯一执行 owner/group/set-ID policy。
+    ///
+    /// # Parameters
+    ///
+    /// - `current`: mutation lock 下读取的同一 inode mode/UID/GID。
+    ///
+    /// # Returns
+    ///
+    /// 已授权的完整 replacement state；无权限返回 PermissionDenied。
     pub(super) fn authorize(
         self,
         mut current: OwnerModeState,
@@ -221,7 +257,7 @@ impl OwnerModeChange {
     }
 }
 
-/// @description 新 inode 的 mode 与 owner，由 VFS 在 parent policy 后一次决定。
+/// 新 inode 的 mode 与 owner，由 VFS 在 parent policy 后一次决定。
 #[derive(Clone, Copy)]
 pub(crate) struct CreateMetadata {
     pub(crate) mode: u32,

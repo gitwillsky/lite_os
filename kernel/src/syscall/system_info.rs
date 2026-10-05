@@ -6,12 +6,17 @@ use crate::{
 const SYSINFO_BYTES: usize = 112;
 const LOAD_SCALE: u64 = 1 << 16;
 
-/// @description 返回 calling Thread 所在的 Linux logical CPU 与 NUMA node。
+/// 返回 calling Thread 所在的 Linux logical CPU 与 NUMA node。
 ///
-/// @param cpu 可选的用户态 `unsigned int` CPU 输出地址。
-/// @param node 可选的用户态 `unsigned int` NUMA node 输出地址。
-/// @param cache Linux 已废弃且忽略的 getcpu cache pointer。
-/// @return 成功返回 0；任一非空输出地址不可写返回 `-EFAULT`。
+/// # Parameters
+///
+/// - `cpu`: 可选的用户态 `unsigned int` CPU 输出地址。
+/// - `node`: 可选的用户态 `unsigned int` NUMA node 输出地址。
+/// - `cache`: Linux 已废弃且忽略的 getcpu cache pointer。
+///
+/// # Returns
+///
+/// 成功返回 0；任一非空输出地址不可写返回 `-EFAULT`。
 pub(crate) fn sys_getcpu(cpu: usize, node: usize, cache: usize) -> isize {
     let _ = cache;
     let cpu_index = u32::try_from(crate::system::current_cpu_index())
@@ -26,10 +31,15 @@ pub(crate) fn sys_getcpu(cpu: usize, node: usize, cache: usize) -> isize {
     if faulted { -errno::EFAULT } else { 0 }
 }
 
-/// @description 按 Linux v7.1 RV64 `struct sysinfo` ABI 返回系统运行状态。
+/// 按 Linux v7.1 LP64 `struct sysinfo` ABI 返回系统运行状态。
 ///
-/// @param address 用户态 112-byte `struct sysinfo` 输出地址。
-/// @return 成功返回 0；用户地址不可写返回 `-EFAULT`。
+/// # Parameters
+///
+/// - `address`: 用户态 112-byte `struct sysinfo` 输出地址。
+///
+/// # Returns
+///
+/// 成功返回 0；用户地址不可写返回 `-EFAULT`。
 pub(crate) fn sys_sysinfo(address: usize) -> isize {
     let snapshot = system_info_snapshot();
     let bytes = encode_system_info(&snapshot);
@@ -54,7 +64,7 @@ fn encode_system_info(snapshot: &SystemInfoSnapshot) -> [u8; SYSINFO_BYTES] {
             load_milli.saturating_mul(LOAD_SCALE) / 1_000,
         );
     }
-    // 3. RV64 可直接用 byte-valued RAM 字段，因此 mem_unit 固定为 1；未实现的
+    // 3. LP64 可直接用 byte-valued RAM 字段，因此 mem_unit 固定为 1；未实现的
     // swap/highmem/shared/buffer 字段保持零，避免伪造不存在的内核状态。
     write_u64(&mut bytes, 32, snapshot.total_memory_bytes);
     write_u64(&mut bytes, 40, snapshot.free_memory_bytes);

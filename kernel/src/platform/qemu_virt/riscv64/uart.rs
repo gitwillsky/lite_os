@@ -1,4 +1,4 @@
-//! @description QEMU `virt` 16550 RX register adapter。
+//! QEMU `virt` 16550 RX register adapter。
 
 use alloc::sync::Arc;
 use spin::Once;

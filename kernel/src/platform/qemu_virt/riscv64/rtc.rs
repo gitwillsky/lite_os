@@ -7,7 +7,7 @@ pub(crate) enum RtcError {
     InvalidRange,
 }
 
-/// @description 从 Goldfish RTC MMIO 读取 realtime 纳秒值。
+/// 从 Goldfish RTC MMIO 读取 realtime 纳秒值。
 pub(crate) struct GoldfishRTCDevice {
     base_addr: usize,
 }

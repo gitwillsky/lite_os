@@ -18,7 +18,7 @@ pub(crate) enum AddressSpaceKind {
     User,
 }
 
-/// @description Architecture page-table page allocation seam。
+/// Architecture page-table page allocation seam。
 ///
 /// Implementor owns physical-frame policy and lifetime; the AArch64 39-bit walker owns only table layout。
 pub(crate) trait TablePage: Sized {
@@ -26,7 +26,7 @@ pub(crate) trait TablePage: Sized {
     fn physical_page(&self) -> usize;
 }
 
-/// @description leaf revoke 时从 active page-table topology 摘除、等待 fence 的 table owners。
+/// leaf revoke 时从 active page-table topology 摘除、等待 fence 的 table owners。
 pub(crate) struct RetiredTablePages<Page> {
     entries: [Option<VacantEntry<usize, Page>>; 2],
 }
@@ -62,7 +62,7 @@ impl<Page> IntoIterator for RetiredTablePages<Page> {
     }
 }
 
-/// @description 一次 leaf revoke 的完整 virtual span 与 fence-retained table owners。
+/// 一次 leaf revoke 的完整 virtual span 与 fence-retained table owners。
 pub(crate) struct Unmapped<Page> {
     first_page: usize,
     page_count: usize,
@@ -146,7 +146,7 @@ impl PageTableEntry {
     }
 }
 
-/// @description AArch64 39-bit page-table mechanism parameterized by a static frame owner adapter。
+/// AArch64 39-bit page-table mechanism parameterized by a static frame owner adapter。
 pub(crate) struct PageTable<Page: TablePage> {
     root_page: usize,
     table_pages: FallibleMap<usize, Page>,
@@ -188,19 +188,19 @@ impl<Page: TablePage> PageTable<Page> {
         AddressSpaceToken::from_root_page(self.root_page, self.address_space_id)
     }
 
-    /// @description 把 kernel root 安装到 TTBR1；user root 只经 token 写 TTBR0。
+    /// 把 kernel root 安装到 TTBR1；user root 只经 token 写 TTBR0。
     pub(crate) fn activate_kernel(&self) {
         assert_eq!(self.kind, AddressSpaceKind::Kernel);
         mmu::activate_kernel(self.root_page);
     }
 
-    /// @description 返回 AArch64 TTBR1 常驻 trap capability；它不编码可写入 TTBR0 的 root。
+    /// 返回 AArch64 TTBR1 常驻 trap capability；它不编码可写入 TTBR0 的 root。
     pub(crate) fn kernel_trap_token(&self) -> KernelTrapToken {
         assert_eq!(self.kind, AddressSpaceKind::Kernel);
         KernelTrapToken
     }
 
-    /// @description 在 generic owner 已完成 local/remote 全量 fence 后退休 ASID。
+    /// 在 generic owner 已完成 local/remote 全量 fence 后退休 ASID。
     pub(crate) fn release_address_space_id_after_global_fence(&mut self) {
         if self.kind == AddressSpaceKind::Kernel {
             return;
@@ -351,7 +351,7 @@ impl<Page: TablePage> PageTable<Page> {
         Ok(())
     }
 
-    /// @description 用最大 leaf 映射等长、物理连续的 AArch64 39-bit region。
+    /// 用最大 leaf 映射等长、物理连续的 AArch64 39-bit region。
     pub(crate) fn map_contiguous_range(
         &mut self,
         virtual_start_page: usize,

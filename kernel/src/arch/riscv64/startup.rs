@@ -1,4 +1,4 @@
-//! @description RISC-V secondary CPU entry 所需的 immutable startup topology。
+//! RISC-V secondary CPU entry 所需的 immutable startup topology。
 
 use alloc::{boxed::Box, vec::Vec};
 use core::{
@@ -11,7 +11,7 @@ use crate::config::KERNEL_STACK_SIZE;
 
 const UNPUBLISHED_TABLE: usize = usize::MAX;
 
-/// @description 一个 architecture startup slot 的构造输入。
+/// 一个 architecture startup slot 的构造输入。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StartupCpu {
     hardware_id: usize,
@@ -19,7 +19,7 @@ pub(crate) struct StartupCpu {
 }
 
 impl StartupCpu {
-    /// @description 绑定 platform hardware identity 与 generic logical CPU identity。
+    /// 绑定 platform hardware identity 与 generic logical CPU identity。
     pub(crate) fn new(hardware_id: usize, logical_id: usize) -> Self {
         Self {
             hardware_id,
@@ -31,7 +31,7 @@ impl StartupCpu {
 #[repr(C, align(4096))]
 struct StartupStack([MaybeUninit<u8>; KERNEL_STACK_SIZE]);
 
-/// @description secondary naked entry 唯一消费的 CPU identity 与独占栈。
+/// secondary naked entry 唯一消费的 CPU identity 与独占栈。
 #[repr(C, align(64))]
 struct StartupEntry {
     hardware_id: usize,
@@ -76,11 +76,15 @@ const _: () = {
     assert!(ENTRY_SIZE.is_multiple_of(64));
 };
 
-/// @description 一次性构造并发布 secondary startup table。
+/// 一次性构造并发布 secondary startup table。
 ///
-/// @param cpus 按 logical ID 排序且 hardware ID 唯一的 startup inputs。
-/// @return 无返回值。
-/// @errors 空 topology、重复初始化或 allocation failure 时 fail-stop。
+/// # Parameters
+///
+/// - `cpus`: 按 logical ID 排序且 hardware ID 唯一的 startup inputs。
+///
+/// # Errors
+///
+/// 空 topology、重复初始化或 allocation failure 时 fail-stop。
 pub(crate) fn initialize(cpus: impl ExactSizeIterator<Item = StartupCpu>) {
     assert!(
         STARTUP_TOPOLOGY.get().is_none(),
@@ -100,14 +104,14 @@ pub(crate) fn initialize(cpus: impl ExactSizeIterator<Item = StartupCpu>) {
     TABLE_ADDRESS.store(entries.as_ptr() as usize, Ordering::Release);
 }
 
-/// @description 将 boot CPU 的 tp 从 firmware hardware ID 切换为 generic logical ID。
+/// 将 boot CPU 的 tp 从 firmware hardware ID 切换为 generic logical ID。
 pub(crate) fn install_boot_logical_id(logical_id: usize) {
     // SAFETY: boot CPU owns tp before entering scheduler; all later kernel code interprets tp as
     // logical CpuId, matching the value installed by secondary entry assembly.
     unsafe { core::arch::asm!("mv tp, {}", in(reg) logical_id, options(nomem, nostack)) };
 }
 
-/// @description 读取 calling CPU 的 generic logical ID。
+/// 读取 calling CPU 的 generic logical ID。
 #[inline(always)]
 pub(crate) fn current_logical_id() -> usize {
     let logical_id: usize;
@@ -118,15 +122,16 @@ pub(crate) fn current_logical_id() -> usize {
     logical_id
 }
 
-/// @description 读取 entry 当前保存在 tp 的 identity；startup publication 前为 hardware ID。
+/// 读取 entry 当前保存在 tp 的 identity；startup publication 前为 hardware ID。
 pub(crate) fn entry_identity() -> usize {
     current_logical_id()
 }
 
-/// @description 初始化当前 CPU 的 RISC-V execution status。
+/// 初始化当前 CPU 的 RISC-V execution status。
 ///
-/// @return 无返回值。
-/// @errors 仅允许在 S-mode CPU-local 初始化路径调用。
+/// # Errors
+///
+/// 仅允许在 S-mode CPU-local 初始化路径调用。
 pub(crate) fn initialize_local_execution() {
     super::mmu::initialize_address_space_identifiers();
     super::instruction_cache::initialize_local();

@@ -1,4 +1,4 @@
-//! @description VirtIO block status 与 logical block validation policy。
+//! VirtIO block status 与 logical block validation policy。
 
 const BLOCK_BYTES: u32 = 4096;
 

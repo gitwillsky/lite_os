@@ -1,4 +1,4 @@
-//! @description VirtIO Console multiport adapter for the standard SPICE agent byte stream.
+//! VirtIO Console multiport adapter for the standard SPICE agent byte stream.
 
 mod byte_ring;
 mod wire;
@@ -34,7 +34,7 @@ const PORT_READY: u16 = 3;
 const PORT_OPEN: u16 = 6;
 const PORT_NAME: u16 = 7;
 
-/// @description VirtIO port byte-stream operation failure.
+/// VirtIO port byte-stream operation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PortError {
     /// No byte or transmit slot is currently available.
@@ -43,7 +43,7 @@ pub(crate) enum PortError {
     Disconnected,
 }
 
-/// @description One deferred VirtIO Console drain result.
+/// One deferred VirtIO Console drain result.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PortActivity {
     /// Receive bytes or disconnect state changed.
@@ -98,23 +98,35 @@ struct State {
     reset_issued: bool,
 }
 
-/// @description Modern VirtIO Console adapter selecting `com.redhat.spice.0`.
+/// Modern VirtIO Console adapter selecting `com.redhat.spice.0`.
 pub(crate) struct VirtIOConsoleDevice {
     device: VirtIODevice,
     state: Mutex<State>,
 }
 
 impl VirtIOConsoleDevice {
-    /// @description Initialize the standard multiport queues and announce guest readiness.
-    /// @param base_addr DTB VirtIO MMIO base.
-    /// @return A complete adapter, or `None` when required features/queues are absent.
+    /// Initialize the standard multiport queues and announce guest readiness.
+    ///
+    /// # Parameters
+    ///
+    /// - `base_addr`: DTB VirtIO MMIO base.
+    ///
+    /// # Returns
+    ///
+    /// A complete adapter, or `None` when required features/queues are absent.
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         Self::from_device(VirtIODevice::new(base_addr, 0x1000).ok()?)
     }
 
-    /// @description Initialize the UTM-provided modern VirtIO PCI console function.
-    /// @param transport Capability-validated PCI common/notify/ISR windows.
-    /// @return The same named-port adapter used by VirtIO MMIO, or `None` on negotiation failure.
+    /// Initialize the UTM-provided modern VirtIO PCI console function.
+    ///
+    /// # Parameters
+    ///
+    /// - `transport`: Capability-validated PCI common/notify/ISR windows.
+    ///
+    /// # Returns
+    ///
+    /// The same named-port adapter used by VirtIO MMIO, or `None` on negotiation failure.
     #[allow(
         dead_code,
         reason = "PCI console assembly is owned by platform backends that discover PCI"
@@ -251,10 +263,16 @@ impl VirtIOConsoleDevice {
         Some(())
     }
 
-    /// @description Configure the queue pair belonging to the named port ID.
-    /// @param state Adapter state that will own the selected pair.
-    /// @param port_id VirtIO Console port identity from `PORT_NAME`.
-    /// @return `Some` after the exact pair is live and RX descriptors are posted.
+    /// Configure the queue pair belonging to the named port ID.
+    ///
+    /// # Parameters
+    ///
+    /// - `state`: Adapter state that will own the selected pair.
+    /// - `port_id`: VirtIO Console port identity from `PORT_NAME`.
+    ///
+    /// # Returns
+    ///
+    /// `Some` after the exact pair is live and RX descriptors are posted.
     fn select_data_queues(&self, state: &mut State, port_id: u32) -> Option<()> {
         let (receive_index, transmit_index) = data_queue_indices(port_id)?;
         if let (Some(receive), Some(transmit)) = (&state.data_rx, &state.data_tx) {
@@ -289,9 +307,15 @@ impl VirtIOConsoleDevice {
         Some(())
     }
 
-    /// @description Read currently buffered bytes without sleeping.
-    /// @param output Kernel-owned destination.
-    /// @return Positive byte count, `WouldBlock`, or terminal disconnect.
+    /// Read currently buffered bytes without sleeping.
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: Kernel-owned destination.
+    ///
+    /// # Returns
+    ///
+    /// Positive byte count, `WouldBlock`, or terminal disconnect.
     pub(crate) fn read(&self, output: &mut [u8]) -> Result<usize, PortError> {
         let mut state = self.state.lock();
         if state.failed || !state.open {
@@ -305,9 +329,15 @@ impl VirtIOConsoleDevice {
         }
     }
 
-    /// @description Submit one bounded byte-stream fragment without sleeping.
-    /// @param input Bytes for the selected named port.
-    /// @return Submitted byte count, `WouldBlock`, or terminal disconnect.
+    /// Submit one bounded byte-stream fragment without sleeping.
+    ///
+    /// # Parameters
+    ///
+    /// - `input`: Bytes for the selected named port.
+    ///
+    /// # Returns
+    ///
+    /// Submitted byte count, `WouldBlock`, or terminal disconnect.
     pub(crate) fn write(&self, input: &[u8]) -> Result<usize, PortError> {
         if input.is_empty() {
             return Ok(0);
@@ -382,8 +412,11 @@ impl VirtIOConsoleDevice {
         !state.failed && state.open
     }
 
-    /// @description Drain a bounded batch from all four queues at a safe point.
-    /// @return Read/write level transitions and remaining backlog.
+    /// Drain a bounded batch from all four queues at a safe point.
+    ///
+    /// # Returns
+    ///
+    /// Read/write level transitions and remaining backlog.
     pub(crate) fn dispatch(&self) -> PortActivity {
         let before_readable = self.readable();
         let before_writable = self.writable();

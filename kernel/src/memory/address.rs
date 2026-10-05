@@ -118,16 +118,20 @@ impl PhysicalAddress {
         self.0
     }
 
-    /// @description 将物理地址表示为只读裸指针，不创建引用或声明别名关系。
+    /// 将物理地址表示为只读裸指针，不创建引用或声明别名关系。
     ///
-    /// @return 指向 architecture kernel mapping 的裸指针；调用方在解引用前必须证明映射、对齐和生命周期有效。
+    /// # Returns
+    ///
+    /// 指向 architecture kernel mapping 的裸指针；调用方在解引用前必须证明映射、对齐和生命周期有效。
     pub(crate) fn as_ptr<T>(&self) -> *const T {
         crate::arch::mmu::physical_to_virtual(self.0) as *const T
     }
 
-    /// @description 将物理地址表示为可写裸指针，不创建引用或声明独占访问。
+    /// 将物理地址表示为可写裸指针，不创建引用或声明独占访问。
     ///
-    /// @return 指向 architecture kernel mapping 的裸指针；调用方在解引用前必须证明映射、对齐、生命周期和独占访问有效。
+    /// # Returns
+    ///
+    /// 指向 architecture kernel mapping 的裸指针；调用方在解引用前必须证明映射、对齐、生命周期和独占访问有效。
     pub(crate) fn as_mut_ptr<T>(&self) -> *mut T {
         crate::arch::mmu::physical_to_virtual(self.0) as *mut T
     }
@@ -183,17 +187,21 @@ impl From<VirtualPageNumber> for VirtualAddress {
 }
 
 impl PhysicalPageNumber {
-    /// @description 返回物理页起始位置的只读裸指针，不创建引用。
+    /// 返回物理页起始位置的只读裸指针，不创建引用。
     ///
-    /// @return 指向该物理页第一个字节的裸指针；调用方负责证明页帧仍存活。
+    /// # Returns
+    ///
+    /// 指向该物理页第一个字节的裸指针；调用方负责证明页帧仍存活。
     pub(crate) fn as_page_ptr(self) -> *const u8 {
         let pa: PhysicalAddress = self.into();
         pa.as_ptr()
     }
 
-    /// @description 返回物理页起始位置的可写裸指针，不创建引用。
+    /// 返回物理页起始位置的可写裸指针，不创建引用。
     ///
-    /// @return 指向该物理页第一个字节的裸指针；调用方负责证明页帧存活且当前访问独占。
+    /// # Returns
+    ///
+    /// 指向该物理页第一个字节的裸指针；调用方负责证明页帧存活且当前访问独占。
     pub(crate) fn as_page_mut_ptr(self) -> *mut u8 {
         let pa: PhysicalAddress = self.into();
         pa.as_mut_ptr()

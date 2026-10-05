@@ -59,12 +59,12 @@ impl PageTable {
         self.0.kernel_trap_token()
     }
 
-    /// @description 激活显式声明为 kernel 的 architecture root。
+    /// 激活显式声明为 kernel 的 architecture root。
     pub(crate) fn activate_kernel(&self) {
         self.0.activate_kernel();
     }
 
-    /// @description 在全 CPU fence 完成后把 architecture ASID 交还唯一 allocator。
+    /// 在全 CPU fence 完成后把 architecture ASID 交还唯一 allocator。
     pub(crate) fn release_address_space_id_after_global_fence(&mut self) {
         self.0.release_address_space_id_after_global_fence();
     }

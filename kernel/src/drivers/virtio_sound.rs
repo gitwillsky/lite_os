@@ -1,4 +1,4 @@
-//! @description VirtIO Sound device ID 25 的单 playback-stream adapter。
+//! VirtIO Sound device ID 25 的单 playback-stream adapter。
 
 use alloc::{sync::Arc, vec::Vec};
 use spin::{Mutex, Once};
@@ -8,7 +8,7 @@ use super::{
     PcmOutputError, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
     VirtIODevice,
     audio_output::{PCM_BUFFER_BYTES, PCM_CHANNELS, PCM_PERIOD_BYTES, PCM_PERIODS},
-    virtio_completion_irq::VirtIoCompletionIrq,
+    virtio_completion_irq::VirtIOCompletionIrq,
     virtio_queue::{DmaBuffer, VirtQueue},
 };
 
@@ -55,14 +55,23 @@ pub(crate) struct VirtIOSoundDevice {
     // Without it, concurrent ALSA ioctls can both validate stale lifecycle state.
     command: Mutex<()>,
     observer: Once<Arc<dyn PcmCompletionObserver>>,
-    completion_irq: VirtIoCompletionIrq,
+    completion_irq: VirtIOCompletionIrq,
 }
 
 impl VirtIOSoundDevice {
-    /// @description 识别 ID25、配置四个规范队列并验证唯一 output stream 能力。
-    /// @param base_addr platform 已映射的 DTB VirtIO-MMIO base。
-    /// @return 完整初始化但尚未配置 PCM 参数的 adapter。
-    /// @errors feature、queue、DMA、stream 数或固定 PCM 能力不满足时返回 `None`。
+    /// 识别 ID25、配置四个规范队列并验证唯一 output stream 能力。
+    ///
+    /// # Parameters
+    ///
+    /// - `base_addr`: platform 已映射的 DTB VirtIO-MMIO base。
+    ///
+    /// # Returns
+    ///
+    /// 完整初始化但尚未配置 PCM 参数的 adapter。
+    ///
+    /// # Errors
+    ///
+    /// feature、queue、DMA、stream 数或固定 PCM 能力不满足时返回 `None`。
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 25 {
@@ -130,11 +139,11 @@ impl VirtIOSoundDevice {
             queues: Mutex::new(owner),
             command: Mutex::new(()),
             observer: Once::new(),
-            completion_irq: VirtIoCompletionIrq::new(),
+            completion_irq: VirtIOCompletionIrq::new(),
         })
         .ok()?;
         adapter.query_and_validate_stream()?;
-        crate::info!("[Audio] VirtIO Sound capability ready");
+        crate::info!("VirtIO Sound capability ready");
         Some(adapter)
     }
 
@@ -519,8 +528,11 @@ impl InterruptHandler for VirtIOSoundIrqHandler {
     }
 }
 
-/// @description 在统一 safe point 回收 bounded audio completions。
-/// @return adapter 仍有 backlog 时返回 true。
+/// 在统一 safe point 回收 bounded audio completions。
+///
+/// # Returns
+///
+/// adapter 仍有 backlog 时返回 true。
 pub(super) fn dispatch_completion_work(device: &VirtIOSoundDevice) -> bool {
     device.reclaim()
 }

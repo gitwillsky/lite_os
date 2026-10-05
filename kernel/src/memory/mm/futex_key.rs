@@ -1,6 +1,6 @@
 use super::*;
 
-/// @description TaskManager 使用的不透明 futex wait identity；memory owner 负责把用户地址
+/// ProcessTable 使用的不透明 futex wait identity；memory owner 负责把用户地址
 /// 归一化为 address-space、匿名共享 backing 或 shared-file offset。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FutexKey {
@@ -18,13 +18,18 @@ pub(crate) enum FutexKey {
 }
 
 impl MemorySet {
-    /// @description 将 futex 用户地址归一化为稳定 wait identity，并在同一地址空间锁内
+    /// 将 futex 用户地址归一化为稳定 wait identity，并在同一地址空间锁内
     /// 验证该 u32 当前可读。
     ///
-    /// @param address 4-byte aligned futex word 地址。
-    /// @param address_space private mapping 的唯一 AddressSpace identity。
-    /// @param private 强制使用 address-space key；false 时共享 VMA 使用 backing/file key。
-    /// @return 可读地址对应的 key；未映射、越界或共享 fault 失败返回 user fault。
+    /// # Parameters
+    ///
+    /// - `address`: 4-byte aligned futex word 地址。
+    /// - `address_space`: private mapping 的唯一 AddressSpace identity。
+    /// - `private`: 强制使用 address-space key；false 时共享 VMA 使用 backing/file key。
+    ///
+    /// # Returns
+    ///
+    /// 可读地址对应的 key；未映射、越界或共享 fault 失败返回 user fault。
     pub(crate) fn futex_key(
         &mut self,
         address: usize,

@@ -60,7 +60,7 @@ pub(crate) struct InetAddress {
     pub(crate) port: u16,
 }
 
-/// @description Linux `sockaddr_ll` 的 domain value，不暴露 userspace padding。
+/// Linux `sockaddr_ll` 的 domain value，不暴露 userspace padding。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PacketAddress {
     pub(crate) protocol: u16,
@@ -71,14 +71,14 @@ pub(crate) struct PacketAddress {
     pub(crate) address: [u8; 8],
 }
 
-/// @description Linux `sockaddr_nl` 中与 KOBJECT_UEVENT 有关的语义字段。
+/// Linux `sockaddr_nl` 中与 KOBJECT_UEVENT 有关的语义字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NetlinkAddress {
     pub(crate) port_id: u32,
     pub(crate) groups: u32,
 }
 
-/// @description Linux AF_UNIX peer credential 的 domain value。
+/// Linux AF_UNIX peer credential 的 domain value。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UnixCredentials {
     pub(crate) pid: i32,
@@ -162,7 +162,7 @@ enum SocketBackend {
     InterfaceControl,
 }
 
-/// @description OFD 唯一 socket backend facade；AF_UNIX/AF_INET adapter 不穿透 fs seam。
+/// OFD 唯一 socket backend facade；AF_UNIX/AF_INET adapter 不穿透 fs seam。
 pub(crate) struct Socket {
     // Socket facade 唯一持有 procfs anonymous inode identity；accepted socket 必须取得新 identity，
     // 否则用户态无法区分 listener 与已接受连接。
@@ -172,14 +172,14 @@ pub(crate) struct Socket {
     backend: SocketBackend,
 }
 
-/// @description AF_UNIX stream connect 所需的双向 Pipe 与 server notification 资源。
+/// AF_UNIX stream connect 所需的双向 Pipe 与 server notification 资源。
 pub(crate) struct UnixConnectResources {
     pub(crate) server_notify: (Arc<PipeEnd>, Arc<PipeEnd>),
     pub(crate) client_to_server: (Arc<PipeEnd>, Arc<PipeEnd>),
     pub(crate) server_to_client: (Arc<PipeEnd>, Arc<PipeEnd>),
 }
 
-/// @description socket adapter 暴露给 poll 层的 wait source；内部 edge 通知与真实 data Pipe 保持语义分离。
+/// socket adapter 暴露给 poll 层的 wait source；内部 edge 通知与真实 data Pipe 保持语义分离。
 pub(crate) enum SocketWaitSource {
     /// 内部 notification Pipe 只表示“socket 状态发生变化”，不继承 userspace event mask。
     Notification(Arc<Pipe>),
@@ -193,13 +193,18 @@ pub(crate) enum SocketWaitSource {
 pub(crate) type SocketWaitSources = [Option<SocketWaitSource>; 2];
 
 impl Socket {
-    /// @description 创建 AF_UNIX、AF_INET 或 AF_PACKET endpoint，并一次性校验组合。
+    /// 创建 AF_UNIX、AF_INET 或 AF_PACKET endpoint，并一次性校验组合。
     ///
-    /// @param domain Linux socket domain。
-    /// @param socket_type stream/datagram type。
-    /// @param protocol 零或 domain 对应的标准 protocol number。
-    /// @param notify 接入统一 poll wait owner 的 notification Pipe endpoints。
-    /// @return 唯一 socket facade；不支持组合或内存不足返回 `SocketError`。
+    /// # Parameters
+    ///
+    /// - `domain`: Linux socket domain。
+    /// - `socket_type`: stream/datagram type。
+    /// - `protocol`: 零或 domain 对应的标准 protocol number。
+    /// - `notify`: 接入统一 poll wait owner 的 notification Pipe endpoints。
+    ///
+    /// # Returns
+    ///
+    /// 唯一 socket facade；不支持组合或内存不足返回 `SocketError`。
     pub(crate) fn new(
         domain: SocketDomain,
         socket_type: SocketType,
@@ -278,11 +283,20 @@ impl Socket {
         }
     }
 
-    /// @description 将 AF_UNIX endpoint 绑定到已创建的 VFS socket inode。
-    /// @param address canonical pathname sockaddr value。
-    /// @param identity VFS 返回的稳定 inode identity。
-    /// @return endpoint namespace publication 成功。
-    /// @errors 非 AF_UNIX、重复 bind、collision 或 OOM 返回明确错误。
+    /// 将 AF_UNIX endpoint 绑定到已创建的 VFS socket inode。
+    ///
+    /// # Parameters
+    ///
+    /// - `address`: canonical pathname sockaddr value。
+    /// - `identity`: VFS 返回的稳定 inode identity。
+    ///
+    /// # Returns
+    ///
+    /// endpoint namespace publication 成功。
+    ///
+    /// # Errors
+    ///
+    /// 非 AF_UNIX、重复 bind、collision 或 OOM 返回明确错误。
     pub(crate) fn bind_unix_path(
         self: &Arc<Self>,
         address: UnixAddress,
@@ -355,10 +369,19 @@ impl Socket {
         UnixSocket::pair(first, second, first_to_second, second_to_first)
     }
 
-    /// @description 从 listener 接受连接，并为 AF_INET accepted endpoint 注入独立 wait source。
-    /// @param notify AF_INET notification Pipe；AF_UNIX 使用 connect 时已建立的 transport。
-    /// @return 新 Socket facade。
-    /// @errors 暂无连接、状态无效或资源不足时返回错误。
+    /// 从 listener 接受连接，并为 AF_INET accepted endpoint 注入独立 wait source。
+    ///
+    /// # Parameters
+    ///
+    /// - `notify`: AF_INET notification Pipe；AF_UNIX 使用 connect 时已建立的 transport。
+    ///
+    /// # Returns
+    ///
+    /// 新 Socket facade。
+    ///
+    /// # Errors
+    ///
+    /// 暂无连接、状态无效或资源不足时返回错误。
     pub(crate) fn accept_with_notify(
         &self,
         notify: Option<(Arc<PipeEnd>, Arc<PipeEnd>)>,
@@ -381,14 +404,20 @@ impl Socket {
         }
     }
 
-    /// @description 返回 `/proc/<pid>/fd` 使用的本次 boot 稳定 socket identity。
+    /// 返回 `/proc/<pid>/fd` 使用的本次 boot 稳定 socket identity。
     pub(crate) fn object_id(&self) -> u64 {
         self.object_id
     }
 
-    /// @description 解析可能异步完成的 domain connect 结果。
-    /// @return 已完成连接返回 unit。
-    /// @errors 返回进行中、拒绝或未连接错误。
+    /// 解析可能异步完成的 domain connect 结果。
+    ///
+    /// # Returns
+    ///
+    /// 已完成连接返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// 返回进行中、拒绝或未连接错误。
     pub(crate) fn connection_result(&self) -> Result<(), SocketError> {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.connection_result(),
@@ -399,9 +428,11 @@ impl Socket {
         }
     }
 
-    /// @description 原子读取并清除 domain pending error。
-    /// @return pending error；没有时为 None。
-    /// @errors 无错误。
+    /// 原子读取并清除 domain pending error。
+    ///
+    /// # Returns
+    ///
+    /// pending error；没有时为 None。
     pub(crate) fn take_error(&self) -> Option<SocketError> {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.take_error(),
@@ -479,7 +510,7 @@ impl Socket {
         .map_err(|()| SocketError::MessageTooLarge)
     }
 
-    /// @description 为 stream send 选择固定上限 staging；atomic protocol 返回 None。
+    /// 为 stream send 选择固定上限 staging；atomic protocol 返回 None。
     pub(crate) fn stream_send_staging_capacity(
         &self,
         requested: usize,
@@ -492,7 +523,7 @@ impl Socket {
         )
     }
 
-    /// @description 选择一次 receive 的最大有用 staging capacity，不暴露 backend variant。
+    /// 选择一次 receive 的最大有用 staging capacity，不暴露 backend variant。
     pub(crate) fn receive_staging_capacity(&self, requested: usize, stream_max: usize) -> usize {
         message_limits::receive_capacity(
             message_limits::protocol(self.domain, self.socket_type),
@@ -513,11 +544,17 @@ impl Socket {
         }
     }
 
-    /// @description 发送 payload，并只允许 AF_UNIX backend 原子提交 SCM_RIGHTS。
-    /// @param input 本次 byte payload。
-    /// @param target 可选显式 socket address。
-    /// @param rights 尚未提交的 passed-file capability 集合。
-    /// @return 实际 byte count；失败时 rights 不被消费。
+    /// 发送 payload，并只允许 AF_UNIX backend 原子提交 SCM_RIGHTS。
+    ///
+    /// # Parameters
+    ///
+    /// - `input`: 本次 byte payload。
+    /// - `target`: 可选显式 socket address。
+    /// - `rights`: 尚未提交的 passed-file capability 集合。
+    ///
+    /// # Returns
+    ///
+    /// 实际 byte count；失败时 rights 不被消费。
     pub(crate) fn send_to_with_rights(
         &self,
         input: &[u8],

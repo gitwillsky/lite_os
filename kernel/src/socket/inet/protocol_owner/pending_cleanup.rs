@@ -15,10 +15,19 @@ pub(super) struct PendingCleanup<T: Copy, const N: usize> {
 pub(super) struct Full;
 
 impl<T: Copy, const N: usize> PendingCleanup<T, N> {
-    /// @description 创建空的固定容量 cleanup ring。
-    /// @param N 与生产 SocketSet capacity 相同的 compile-time slot 数。
-    /// @return head/tail/length 全零的 ring。
-    /// @errors N 为零时 const invariant fail-stop。
+    /// 创建空的固定容量 cleanup ring。
+    ///
+    /// # Parameters
+    ///
+    /// - `N`: 与生产 SocketSet capacity 相同的 compile-time slot 数。
+    ///
+    /// # Returns
+    ///
+    /// head/tail/length 全零的 ring。
+    ///
+    /// # Errors
+    ///
+    /// N 为零时 const invariant fail-stop。
     pub(super) const fn new() -> Self {
         assert!(N != 0, "pending cleanup ring requires non-zero capacity");
         Self {
@@ -29,10 +38,19 @@ impl<T: Copy, const N: usize> PendingCleanup<T, N> {
         }
     }
 
-    /// @description O(1) 发布一个 exactly-once final-drop identity。
-    /// @param value 仍占用唯一 endpoint slot、因此尚不可能被复用的 identity。
-    /// @return 成功时返回 unit。
-    /// @errors 达到 active SocketSet slot 上限时返回 `Full`，表示 owner 不变量被破坏。
+    /// O(1) 发布一个 exactly-once final-drop identity。
+    ///
+    /// # Parameters
+    ///
+    /// - `value`: 仍占用唯一 endpoint slot、因此尚不可能被复用的 identity。
+    ///
+    /// # Returns
+    ///
+    /// 成功时返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// 达到 active SocketSet slot 上限时返回 `Full`，表示 owner 不变量被破坏。
     pub(super) fn publish(&mut self, value: T) -> Result<(), Full> {
         if self.length == N {
             return Err(Full);
@@ -44,9 +62,15 @@ impl<T: Copy, const N: usize> PendingCleanup<T, N> {
         Ok(())
     }
 
-    /// @description O(1) 摘取最早发布的 cleanup identity。
-    /// @return 空 ring 返回 `None`，否则返回唯一 identity 并立即释放对应 ring slot。
-    /// @errors length 与 slot publication 分裂时 fail-stop，不提供损坏状态 fallback。
+    /// O(1) 摘取最早发布的 cleanup identity。
+    ///
+    /// # Returns
+    ///
+    /// 空 ring 返回 `None`，否则返回唯一 identity 并立即释放对应 ring slot。
+    ///
+    /// # Errors
+    ///
+    /// length 与 slot publication 分裂时 fail-stop，不提供损坏状态 fallback。
     pub(super) fn pop(&mut self) -> Option<T> {
         if self.length == 0 {
             return None;
@@ -59,9 +83,11 @@ impl<T: Copy, const N: usize> PendingCleanup<T, N> {
         Some(value)
     }
 
-    /// @description 判断 fixed-budget drain 后是否仍需回投 deferred work。
-    /// @return ring 非空时为 true。
-    /// @errors 无错误。
+    /// 判断 fixed-budget drain 后是否仍需回投 deferred work。
+    ///
+    /// # Returns
+    ///
+    /// ring 非空时为 true。
     pub(super) const fn has_pending(&self) -> bool {
         self.length != 0
     }

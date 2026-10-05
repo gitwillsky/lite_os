@@ -25,7 +25,7 @@ mod mode;
 mod publication;
 mod publication_order;
 pub(crate) use publication::{PreparedDumbBuffer, PreparedFramebuffer};
-use publication_order::IdAllocator;
+use publication_order::PublicationIdAllocator;
 
 struct CompletionState {
     // OWNER: pending 同时绑定 adapter fence 与 scanout/damage/disable 领域结果；若拆分，
@@ -88,13 +88,13 @@ struct ActiveScanout {
 struct DrmDeviceState {
     // OWNER: allocator 只回收 publication 前失败的 buffer identity；若仅保留 monotonic next，
     // 并发 transaction 的非尾部 copyout failure 会永久烧掉 identity。
-    buffer_identities: IdAllocator<u64>,
+    buffer_identities: PublicationIdAllocator<u64>,
     next_file_identity: u64,
     // OWNER: framebuffer allocator 与 device-wide object map 同锁；rollback storage 在 reserve
     // 时预留，copyout failure 可按任意并发顺序无分配回收未发布 ID。
-    framebuffer_ids: IdAllocator<u32>,
-    context_ids: IdAllocator<u32>,
-    graphics_resource_ids: IdAllocator<u32>,
+    framebuffer_ids: PublicationIdAllocator<u32>,
+    context_ids: PublicationIdAllocator<u32>,
+    graphics_resource_ids: PublicationIdAllocator<u32>,
     // OWNER: 每个 context 创建时预分配 cleanup node；OFD Drop 只移动现有 AVL nodes，
     // 因而即使进程在 OOM/abort 路径退出也不会遗留 host VirGL resource/context。
     graphics_cleanups: FallibleMap<u32, graphics::VirglCleanup>,
@@ -135,7 +135,7 @@ enum FramebufferBacking {
 struct DrmFileState {
     // OWNER: handle allocator 与同 OFD map 共用 transaction lock；若独立递增，两个并发
     // CREATE_DUMB 可预留同一 handle，后提交者会覆盖前一个 object access。
-    handle_ids: IdAllocator<u32>,
+    handle_ids: PublicationIdAllocator<u32>,
     // OWNER: buffers 是当前 OFD 唯一 GEM handle namespace；缺失 file-private collection
     // 会让不同 open 通过猜测 handle/offset 访问彼此 backing。
     buffers: FallibleMap<u32, Arc<DumbBuffer>>,
@@ -148,7 +148,7 @@ struct DrmFileState {
     was_master: bool,
 }
 
-/// @description Linux DRM/KMS domain 的 primary display owner。
+/// Linux DRM/KMS domain 的 primary display owner。
 struct DrmDevice {
     display: Arc<dyn GraphicsDevice>,
     completion_read: Arc<PipeEnd>,
@@ -161,7 +161,7 @@ struct DrmDevice {
     state: Mutex<DrmDeviceState>,
 }
 
-/// @description 一个打开的 Linux DRM card OFD backend。
+/// 一个打开的 Linux DRM card OFD backend。
 pub(crate) struct DrmFile {
     device: Arc<DrmDevice>,
     file_identity: u64,
@@ -173,7 +173,7 @@ pub(crate) struct DrmFile {
     events: Mutex<EventQueue>,
 }
 
-/// @description DRM dumb-buffer 操作的稳定领域错误。
+/// DRM dumb-buffer 操作的稳定领域错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DrmError {
     /// UAPI 参数、尺寸或 fake offset 非法。
@@ -192,7 +192,7 @@ pub(crate) enum DrmError {
     Permission,
 }
 
-/// @description RMFB transaction 的无分配进度结果。
+/// RMFB transaction 的无分配进度结果。
 pub(crate) enum FramebufferRemoval {
     /// object 已从 device namespace 删除。
     Removed,
@@ -202,7 +202,7 @@ pub(crate) enum FramebufferRemoval {
     Retry(DrmRetry),
 }
 
-/// @description 一次 DRM operation 的同步提交结果。
+/// 一次 DRM operation 的同步提交结果。
 pub(crate) enum DrmSubmission {
     /// operation 已发布；caller 必须等待其 exact fence。
     Wait(DrmWait),
@@ -210,7 +210,7 @@ pub(crate) enum DrmSubmission {
     Retry(DrmRetry),
 }
 
-/// @description 一次硬件光标命令的同步提交结果。
+/// 一次硬件光标命令的同步提交结果。
 pub(crate) enum DrmCursorSubmission {
     /// command 已发布；caller 必须等待 cursorq exact sequence。
     Wait(DrmCursorWait),
@@ -218,13 +218,13 @@ pub(crate) enum DrmCursorSubmission {
     Retry(DrmRetry),
 }
 
-/// @description 一个不泄漏 adapter fence 编码的 DRM completion wait token。
+/// 一个不泄漏 adapter fence 编码的 DRM completion wait token。
 pub(crate) struct DrmWait {
     device: Arc<DrmDevice>,
     fence: u64,
 }
 
-/// @description 一个保活光标 resource 直到 cursorq 已复制像素的 wait token。
+/// 一个保活光标 resource 直到 cursorq 已复制像素的 wait token。
 pub(crate) struct DrmCursorWait {
     device: Arc<DrmDevice>,
     sequence: u64,
@@ -233,20 +233,23 @@ pub(crate) struct DrmCursorWait {
     _resource: Option<Arc<DumbBuffer>>,
 }
 
-/// @description 一个不泄漏 adapter transaction 的 DRM retry wait token。
+/// 一个不泄漏 adapter transaction 的 DRM retry wait token。
 pub(crate) struct DrmRetry {
     device: Arc<DrmDevice>,
     generation: u64,
 }
 
 impl DrmWait {
-    /// @description 返回与该 wait token 绑定的 exact adapter fence。
+    /// 返回与该 wait token 绑定的 exact adapter fence。
     pub(crate) const fn fence(&self) -> u64 {
         self.fence
     }
 
-    /// @description 排空旧 edge 并原子化地准备 scheduler wait。
-    /// @return fence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
+    /// 排空旧 edge 并原子化地准备 scheduler wait。
+    ///
+    /// # Returns
+    ///
+    /// fence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
         if self.device.completion.lock().timeline.completed() >= self.fence {
             return None;
@@ -258,8 +261,11 @@ impl DrmWait {
 }
 
 impl DrmCursorWait {
-    /// @description 排空旧 edge 并原子化地准备 cursorq completion wait。
-    /// @return sequence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
+    /// 排空旧 edge 并原子化地准备 cursorq completion wait。
+    ///
+    /// # Returns
+    ///
+    /// sequence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
         if self.device.completion.lock().cursor_completed >= self.sequence {
             return None;
@@ -271,8 +277,11 @@ impl DrmCursorWait {
 }
 
 impl DrmRetry {
-    /// @description 排空旧 edge 并原子化地准备 adapter-readiness wait。
-    /// @return 取得 token 后已有 transaction 完成返回 None；否则返回统一 Pipe source。
+    /// 排空旧 edge 并原子化地准备 adapter-readiness wait。
+    ///
+    /// # Returns
+    ///
+    /// 取得 token 后已有 transaction 完成返回 None；否则返回统一 Pipe source。
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
         if self.device.completion.lock().adapter_generation != self.generation {
             return None;
@@ -283,7 +292,7 @@ impl DrmRetry {
     }
 }
 
-/// @description `DRM_IOCTL_MODE_CREATE_DUMB` 的无 pointer 结果。
+/// `DRM_IOCTL_MODE_CREATE_DUMB` 的无 pointer 结果。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DumbBufferInfo {
     /// 当前 OFD namespace 内的新 handle。
@@ -294,7 +303,7 @@ pub(crate) struct DumbBufferInfo {
     pub(crate) size: u64,
 }
 
-/// @description legacy `DRM_IOCTL_MODE_GETFB` 的无 pointer 结果。
+/// legacy `DRM_IOCTL_MODE_GETFB` 的无 pointer 结果。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FramebufferInfo {
     /// framebuffer pixel width。
@@ -307,7 +316,7 @@ pub(crate) struct FramebufferInfo {
     pub(crate) handle: u32,
 }
 
-/// @description Linux `drm_mode_modeinfo` 的领域投影，不包含 userspace pointer。
+/// Linux `drm_mode_modeinfo` 的领域投影，不包含 userspace pointer。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DrmMode {
     pub(crate) clock: u32,
@@ -325,14 +334,23 @@ pub(crate) struct DrmMode {
 }
 
 impl DrmFile {
-    /// @description 通过独立 cursorq 切换 64x64 ARGB 光标；handle=None 表示隐藏。
-    /// @param handle 当前 OFD 中已经完成标准 2D host transfer 的 dumb handle。
-    /// @param x scanout 0 水平位置。
-    /// @param y scanout 0 垂直位置。
-    /// @param hot_x resource 内水平热点。
-    /// @param hot_y resource 内垂直热点。
-    /// @return exact cursor completion wait 或 adapter readiness retry token。
-    /// @errors 非 master、CRTC inactive、resource/geometry 非法或 device failure。
+    /// 通过独立 cursorq 切换 64x64 ARGB 光标；handle=None 表示隐藏。
+    ///
+    /// # Parameters
+    ///
+    /// - `handle`: 当前 OFD 中已经完成标准 2D host transfer 的 dumb handle。
+    /// - `x`: scanout 0 水平位置。
+    /// - `y`: scanout 0 垂直位置。
+    /// - `hot_x`: resource 内水平热点。
+    /// - `hot_y`: resource 内垂直热点。
+    ///
+    /// # Returns
+    ///
+    /// exact cursor completion wait 或 adapter readiness retry token。
+    ///
+    /// # Errors
+    ///
+    /// 非 master、CRTC inactive、resource/geometry 非法或 device failure。
     pub(crate) fn update_cursor(
         &self,
         handle: Option<u32>,
@@ -369,11 +387,20 @@ impl DrmFile {
         classify_cursor_submission(self, generation, resource, result)
     }
 
-    /// @description 通过独立 cursorq 移动当前硬件光标，不读取或重绘 scene resource。
-    /// @param x scanout 0 水平位置。
-    /// @param y scanout 0 垂直位置。
-    /// @return adapter 接受最新位置后返回 unit，不等待 cursorq completion。
-    /// @errors 非 master、CRTC inactive 或 device failure。
+    /// 通过独立 cursorq 移动当前硬件光标，不读取或重绘 scene resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `x`: scanout 0 水平位置。
+    /// - `y`: scanout 0 垂直位置。
+    ///
+    /// # Returns
+    ///
+    /// adapter 接受最新位置后返回 unit，不等待 cursorq completion。
+    ///
+    /// # Errors
+    ///
+    /// 非 master、CRTC inactive 或 device failure。
     pub(crate) fn move_cursor(&self, x: u32, y: u32) -> Result<(), DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
@@ -387,14 +414,22 @@ impl DrmFile {
         result.map_err(device::display_error)
     }
 
-    /// @description 准备 file-private XRGB8888 linear dumb buffer，不提前发布 handle。
+    /// 准备 file-private XRGB8888 linear dumb buffer，不提前发布 handle。
     ///
-    /// @param width 非零 pixel width。
-    /// @param height 非零 pixel height。
-    /// @param bpp 仅支持标准 XRGB8888 color mode 32。
-    /// @param flags Linux UAPI 要求为零。
-    /// @return 已预留全部 fallible storage 的 publication transaction。
-    /// @errors 参数/溢出返回 Invalid；frame/control/node OOM 返回 OutOfMemory；identity/handle
+    /// # Parameters
+    ///
+    /// - `width`: 非零 pixel width。
+    /// - `height`: 非零 pixel height。
+    /// - `bpp`: 仅支持标准 XRGB8888 color mode 32。
+    /// - `flags`: Linux UAPI 要求为零。
+    ///
+    /// # Returns
+    ///
+    /// 已预留全部 fallible storage 的 publication transaction。
+    ///
+    /// # Errors
+    ///
+    /// 参数/溢出返回 Invalid；frame/control/node OOM 返回 OutOfMemory；identity/handle
     /// 耗尽返回 NoSpace。
     pub(crate) fn prepare_dumb(
         &self,
@@ -445,10 +480,19 @@ impl DrmFile {
         Ok(PreparedDumbBuffer::new(handle, identity, entry, info))
     }
 
-    /// @description 为 file-private dumb handle 返回后续 mmap 使用的 fake byte offset。
-    /// @param handle 当前 OFD namespace 内的 GEM handle。
-    /// @return handle 仍 live 时返回 page-aligned、非零且同 OFD 稳定的 offset。
-    /// @errors handle 不存在返回 NotFound。
+    /// 为 file-private dumb handle 返回后续 mmap 使用的 fake byte offset。
+    ///
+    /// # Parameters
+    ///
+    /// - `handle`: 当前 OFD namespace 内的 GEM handle。
+    ///
+    /// # Returns
+    ///
+    /// handle 仍 live 时返回 page-aligned、非零且同 OFD 稳定的 offset。
+    ///
+    /// # Errors
+    ///
+    /// handle 不存在返回 NotFound。
     pub(crate) fn map_dumb(&self, handle: u32) -> Result<u64, DrmError> {
         // 临时跟踪：lookup 失败时打印当前 namespace（排查 SET_BUFFER adopt 后移除）。
         let state = self.state.lock();
@@ -458,7 +502,7 @@ impl DrmFile {
                 keys.push(*key);
             }
             crate::warn!(
-                "[DRM] map_dumb miss: handle={} file_identity={} keys={:?}",
+                "map_dumb miss: handle={} file_identity={} keys={:?}",
                 handle,
                 self.file_identity,
                 keys
@@ -468,10 +512,19 @@ impl DrmFile {
         Ok(u64::from(handle) << DUMB_OFFSET_SHIFT)
     }
 
-    /// @description 删除 file-private GEM handle；已有 VMA 继续独立保活 backing。
-    /// @param handle 当前 OFD namespace 内的 handle。
-    /// @return 删除成功返回 unit。
-    /// @errors handle 不存在返回 NotFound。
+    /// 删除 file-private GEM handle；已有 VMA 继续独立保活 backing。
+    ///
+    /// # Parameters
+    ///
+    /// - `handle`: 当前 OFD namespace 内的 handle。
+    ///
+    /// # Returns
+    ///
+    /// 删除成功返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// handle 不存在返回 NotFound。
     pub(crate) fn destroy_dumb(&self, handle: u32) -> Result<(), DrmError> {
         let removed = self.state.lock().buffers.remove(&handle);
         let buffer = removed.ok_or(DrmError::NotFound)?;
@@ -481,12 +534,20 @@ impl DrmFile {
         Ok(())
     }
 
-    /// @description 解析 mmap fake offset，并把 object 引用转交给 VMA transaction。
+    /// 解析 mmap fake offset，并把 object 引用转交给 VMA transaction。
     ///
-    /// @param offset `MAP_DUMB` 返回的 exact byte offset。
-    /// @param length 请求映射的非零字节长度，不得超过 object logical size。
-    /// @return 携带独立 Arc lifetime 与不可复用 identity 的 device mapping source。
-    /// @errors offset/length 非法返回 Invalid；object 已销毁返回 NotFound。
+    /// # Parameters
+    ///
+    /// - `offset`: `MAP_DUMB` 返回的 exact byte offset。
+    /// - `length`: 请求映射的非零字节长度，不得超过 object logical size。
+    ///
+    /// # Returns
+    ///
+    /// 携带独立 Arc lifetime 与不可复用 identity 的 device mapping source。
+    ///
+    /// # Errors
+    ///
+    /// offset/length 非法返回 Invalid；object 已销毁返回 NotFound。
     pub(crate) fn mapping(
         &self,
         offset: u64,
@@ -526,14 +587,22 @@ impl DrmFile {
         ))
     }
 
-    /// @description 准备 device-wide legacy framebuffer object，不提前发布 ID。
+    /// 准备 device-wide legacy framebuffer object，不提前发布 ID。
     ///
-    /// @param handle 当前 OFD 的 dumb handle。
-    /// @param width framebuffer pixel width。
-    /// @param height framebuffer pixel height。
-    /// @param pitch linear scanline bytes，必须与 dumb allocation 一致。
-    /// @return 已预留全部 fallible storage 的 publication transaction。
-    /// @errors handle/尺寸非法返回对应错误；ID/node 耗尽返回 NoSpace/OutOfMemory。
+    /// # Parameters
+    ///
+    /// - `handle`: 当前 OFD 的 dumb handle。
+    /// - `width`: framebuffer pixel width。
+    /// - `height`: framebuffer pixel height。
+    /// - `pitch`: linear scanline bytes，必须与 dumb allocation 一致。
+    ///
+    /// # Returns
+    ///
+    /// 已预留全部 fallible storage 的 publication transaction。
+    ///
+    /// # Errors
+    ///
+    /// handle/尺寸非法返回对应错误；ID/node 耗尽返回 NoSpace/OutOfMemory。
     pub(crate) fn prepare_framebuffer(
         &self,
         handle: u32,
@@ -590,14 +659,20 @@ impl DrmFile {
         Ok(PreparedFramebuffer::new(id, entry))
     }
 
-    /// @description 返回当前 device-wide framebuffer object 数量。
+    /// 返回当前 device-wide framebuffer object 数量。
     pub(crate) fn framebuffer_count(&self) -> usize {
         self.device.state.lock().framebuffers.len()
     }
 
-    /// @description 按升序 index 读取一个 framebuffer ID，供 racy two-call KMS query 使用。
-    /// @param index 从零开始的 object index。
-    /// @return 当前 snapshot 中对应 ID；并发增删导致越界返回 None。
+    /// 按升序 index 读取一个 framebuffer ID，供 racy two-call KMS query 使用。
+    ///
+    /// # Parameters
+    ///
+    /// - `index`: 从零开始的 object index。
+    ///
+    /// # Returns
+    ///
+    /// 当前 snapshot 中对应 ID；并发增删导致越界返回 None。
     pub(crate) fn framebuffer_id(&self, index: usize) -> Option<u32> {
         self.device
             .state
@@ -608,10 +683,19 @@ impl DrmFile {
             .map(|(&id, _)| id)
     }
 
-    /// @description 查询本 OFD 创建的 legacy framebuffer metadata。
-    /// @param id device-wide framebuffer ID。
-    /// @return owner 匹配时返回 metadata；未建模 master 权限时 handle 固定为零。
-    /// @errors object 不存在或属于其他 OFD 返回 NotFound。
+    /// 查询本 OFD 创建的 legacy framebuffer metadata。
+    ///
+    /// # Parameters
+    ///
+    /// - `id`: device-wide framebuffer ID。
+    ///
+    /// # Returns
+    ///
+    /// owner 匹配时返回 metadata；未建模 master 权限时 handle 固定为零。
+    ///
+    /// # Errors
+    ///
+    /// object 不存在或属于其他 OFD 返回 NotFound。
     pub(crate) fn framebuffer(&self, id: u32) -> Result<FramebufferInfo, DrmError> {
         let (width, height, pitch) = {
             let state = self.device.state.lock();
@@ -631,8 +715,11 @@ impl DrmFile {
         })
     }
 
-    /// @description 读取已经由 GPU completion 确认的 active framebuffer ID。
-    /// @return 尚未由 userspace modeset 时返回 None；否则返回 device-wide object ID。
+    /// 读取已经由 GPU completion 确认的 active framebuffer ID。
+    ///
+    /// # Returns
+    ///
+    /// 尚未由 userspace modeset 时返回 None；否则返回 device-wide object ID。
     pub(crate) fn active_framebuffer(&self) -> Option<u32> {
         self.device
             .completion
@@ -641,11 +728,19 @@ impl DrmFile {
             .map(|active| active.framebuffer)
     }
 
-    /// @description 异步提交一个本 OFD framebuffer 为固定 single-scanout backing。
+    /// 异步提交一个本 OFD framebuffer 为固定 single-scanout backing。
     ///
-    /// @param id device-wide framebuffer object ID。
-    /// @return 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
-    /// @errors object/尺寸非法、event queue 满或 adapter failure 返回稳定领域错误。
+    /// # Parameters
+    ///
+    /// - `id`: device-wide framebuffer object ID。
+    ///
+    /// # Returns
+    ///
+    /// 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
+    ///
+    /// # Errors
+    ///
+    /// object/尺寸非法、event queue 满或 adapter failure 返回稳定领域错误。
     pub(crate) fn page_flip(
         self: &Arc<Self>,
         id: u32,
@@ -674,10 +769,19 @@ impl DrmFile {
         )
     }
 
-    /// @description 同步 modeset 到指定 framebuffer，不忙等 GPU completion。
-    /// @param id device-wide framebuffer object ID。
-    /// @return 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
-    /// @errors object/尺寸/权限非法或 adapter failure 返回稳定领域错误。
+    /// 同步 modeset 到指定 framebuffer，不忙等 GPU completion。
+    ///
+    /// # Parameters
+    ///
+    /// - `id`: device-wide framebuffer object ID。
+    ///
+    /// # Returns
+    ///
+    /// 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
+    ///
+    /// # Errors
+    ///
+    /// object/尺寸/权限非法或 adapter failure 返回稳定领域错误。
     pub(crate) fn set_crtc(&self, id: u32, mode: DisplayMode) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
@@ -691,12 +795,21 @@ impl DrmFile {
         )
     }
 
-    /// @description 同步把任一本 OFD framebuffer 的 dirty rectangles 传输到 resident resource。
-    /// @param id 属于本 OFD 的 framebuffer object ID；允许在 page flip 前同步 inactive buffer。
-    /// @param rectangles 0..=32 个半开 scanout rectangle；零个表示 full framebuffer。
-    /// @return Linux 语义下零 clips 扩展为 full framebuffer；返回 exact-fence wait token，
+    /// 同步把任一本 OFD framebuffer 的 dirty rectangles 传输到 resident resource。
+    ///
+    /// # Parameters
+    ///
+    /// - `id`: 属于本 OFD 的 framebuffer object ID；允许在 page flip 前同步 inactive buffer。
+    /// - `rectangles`: 0..=32 个半开 scanout rectangle；零个表示 full framebuffer。
+    ///
+    /// # Returns
+    ///
+    /// Linux 语义下零 clips 扩展为 full framebuffer；返回 exact-fence wait token，
     /// 或 adapter readiness retry token。
-    /// @errors framebuffer 非本 OFD或 rectangle/device failure。
+    ///
+    /// # Errors
+    ///
+    /// framebuffer 非本 OFD或 rectangle/device failure。
     pub(crate) fn dirty_framebuffer(
         &self,
         id: u32,
@@ -737,9 +850,15 @@ impl DrmFile {
         )
     }
 
-    /// @description 同步以 resource_id=0 禁用 scanout，并清除 active framebuffer state。
-    /// @return 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
-    /// @errors permission 或 adapter failure 返回稳定领域错误。
+    /// 同步以 resource_id=0 禁用 scanout，并清除 active framebuffer state。
+    ///
+    /// # Returns
+    ///
+    /// 已提交 transaction 的 exact-fence wait token，或 adapter readiness retry token。
+    ///
+    /// # Errors
+    ///
+    /// permission 或 adapter failure 返回稳定领域错误。
     pub(crate) fn disable_crtc(&self) -> Result<DrmSubmission, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);

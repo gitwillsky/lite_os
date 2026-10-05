@@ -75,9 +75,14 @@ unsafe impl<K: Sync, V: Sync> Sync for NodeSlot<K, V> {}
 impl<K, V> NodeSlot<K, V> {
     /// 用完整领域值初始化预留 storage。
     ///
-    /// @param key 待发布 key。
-    /// @param value 待发布 value。
-    /// @return 可无分配提交的 entry token。
+    /// # Parameters
+    ///
+    /// - `key`: 待发布 key。
+    /// - `value`: 待发布 value。
+    ///
+    /// # Returns
+    ///
+    /// 可无分配提交的 entry token。
     pub(crate) fn fill(mut self, key: K, value: V) -> VacantEntry<K, V> {
         self.0.write(Node::new(key, value));
         // SAFETY: storage 刚由 `write` 完整初始化为一个 Node，且 self 按值消费，
@@ -99,7 +104,9 @@ impl<K, V> VacantEntry<K, V> {
 
     /// 修改尚未发布的 key，不执行分配。
     ///
-    /// @param key 新 key；调用者必须在提交前维持唯一性。
+    /// # Parameters
+    ///
+    /// - `key`: 新 key；调用者必须在提交前维持唯一性。
     pub(crate) fn set_key(&mut self, key: K) {
         self.0.key = key;
     }
@@ -145,8 +152,13 @@ impl<K, V> FallibleMap<K, V> {
 
     /// 从第一个不小于 `start` 的 key 开始升序迭代。
     ///
-    /// @param start inclusive lower bound。
-    /// @return 不分配临时栈的有序迭代器。
+    /// # Parameters
+    ///
+    /// - `start`: inclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// 不分配临时栈的有序迭代器。
     pub(crate) fn iter_from(&self, start: &K) -> Iter<'_, K, V>
     where
         K: Ord,
@@ -164,8 +176,9 @@ impl<K, V> FallibleMap<K, V> {
 
     /// 对全部 value 按 key 顺序执行 mutation，不改变树结构。
     ///
-    /// @param visit 每个 entry 的访问逻辑。
-    /// @return 无返回值。
+    /// # Parameters
+    ///
+    /// - `visit`: 每个 entry 的访问逻辑。
     pub(crate) fn for_each_mut(&mut self, mut visit: impl FnMut(&K, &mut V)) {
         fn walk<K, V>(node: &mut Link<K, V>, visit: &mut impl FnMut(&K, &mut V)) {
             let Some(node) = node else {
@@ -181,8 +194,13 @@ impl<K, V> FallibleMap<K, V> {
 
     /// 对全部 value 按 key 顺序执行可失败 mutation，不改变树结构。
     ///
-    /// @param visit 每个 entry 的访问逻辑；首个错误终止遍历。
-    /// @return 全部访问成功时为空值，否则返回原始错误。
+    /// # Parameters
+    ///
+    /// - `visit`: 每个 entry 的访问逻辑；首个错误终止遍历。
+    ///
+    /// # Returns
+    ///
+    /// 全部访问成功时为空值，否则返回原始错误。
     pub(crate) fn try_for_each_mut<E>(
         &mut self,
         mut visit: impl FnMut(&K, &mut V) -> Result<(), E>,
@@ -206,8 +224,13 @@ impl<K, V> FallibleMap<K, V> {
 impl<K: Ord, V> FallibleMap<K, V> {
     /// 查询精确 key。
     ///
-    /// @param key 查询 key。
-    /// @return 已存在 value 的共享引用。
+    /// # Parameters
+    ///
+    /// - `key`: 查询 key。
+    ///
+    /// # Returns
+    ///
+    /// 已存在 value 的共享引用。
     pub(crate) fn get(&self, key: &K) -> Option<&V> {
         let mut cursor = self.root.as_deref();
         while let Some(node) = cursor {
@@ -222,8 +245,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 可变查询精确 key。
     ///
-    /// @param key 查询 key。
-    /// @return 已存在 value 的独占引用。
+    /// # Parameters
+    ///
+    /// - `key`: 查询 key。
+    ///
+    /// # Returns
+    ///
+    /// 已存在 value 的独占引用。
     pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         let mut cursor = self.root.as_deref_mut();
         while let Some(node) = cursor {
@@ -238,8 +266,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 判断精确 key 是否存在。
     ///
-    /// @param key 查询 key。
-    /// @return key 存在时为 true。
+    /// # Parameters
+    ///
+    /// - `key`: 查询 key。
+    ///
+    /// # Returns
+    ///
+    /// key 存在时为 true。
     pub(crate) fn contains_key(&self, key: &K) -> bool {
         self.get(key).is_some()
     }
@@ -278,8 +311,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 查询不小于 key 的最小 entry。
     ///
-    /// @param key inclusive lower bound。
-    /// @return key/value 邻居；不存在时返回 None。
+    /// # Parameters
+    ///
+    /// - `key`: inclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// key/value 邻居；不存在时返回 None。
     pub(crate) fn ceiling(&self, key: &K) -> Option<(&K, &V)> {
         let mut cursor = self.root.as_deref();
         let mut candidate = None;
@@ -298,8 +336,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 查询严格大于 key 的最小 entry。
     ///
-    /// @param key exclusive lower bound。
-    /// @return key/value 邻居；不存在时返回 None。
+    /// # Parameters
+    ///
+    /// - `key`: exclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// key/value 邻居；不存在时返回 None。
     pub(crate) fn successor(&self, key: &K) -> Option<(&K, &V)> {
         let mut cursor = self.root.as_deref();
         let mut candidate = None;
@@ -343,9 +386,14 @@ impl<K: Ord, V> FallibleMap<K, V> {
     ///
     /// 新 key 的 node 在任何结构 mutation 前通过 `Box::try_new_uninit` 完成；失败时表保持不变。
     ///
-    /// @param key entry key。
-    /// @param value entry value。
-    /// @return 替换时返回旧 value；新 key 返回 None；节点 OOM 返回 `OutOfMemory`。
+    /// # Parameters
+    ///
+    /// - `key`: entry key。
+    /// - `value`: entry value。
+    ///
+    /// # Returns
+    ///
+    /// 替换时返回旧 value；新 key 返回 None；节点 OOM 返回 `OutOfMemory`。
     pub(crate) fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
         if let Some(current) = self.get_mut(&key) {
             return Ok(Some(core::mem::replace(current, value)));
@@ -357,16 +405,23 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 在尚未取得目标 owner lock 时预分配一个 entry node。
     ///
-    /// @param key 待发布 key。
-    /// @param value 与 token 同寿命的待发布 value。
-    /// @return 可无分配提交的 token；节点 OOM 时返回错误。
+    /// # Parameters
+    ///
+    /// - `key`: 待发布 key。
+    /// - `value`: 与 token 同寿命的待发布 value。
+    ///
+    /// # Returns
+    ///
+    /// 可无分配提交的 token；节点 OOM 时返回错误。
     pub(crate) fn try_prepare(key: K, value: V) -> Result<VacantEntry<K, V>, OutOfMemory> {
         Ok(Self::try_reserve_node()?.fill(key, value))
     }
 
     /// 仅预留一个节点 allocation，领域值可在后续 transaction 阶段产生。
     ///
-    /// @return 成功返回未初始化 storage；OOM 时无任何状态变化。
+    /// # Returns
+    ///
+    /// 成功返回未初始化 storage；OOM 时无任何状态变化。
     pub(crate) fn try_reserve_node() -> Result<NodeSlot<K, V>, OutOfMemory> {
         Box::<Node<K, V>>::try_new_uninit()
             .map(NodeSlot)
@@ -375,9 +430,14 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 在任何外部状态提交前分配新 key 的唯一节点。
     ///
-    /// @param key 必须尚不存在的 entry key。
-    /// @param value 与节点一起保存在 token 中的 value。
-    /// @return 可无分配提交的 token；节点 OOM 时原表不变。
+    /// # Parameters
+    ///
+    /// - `key`: 必须尚不存在的 entry key。
+    /// - `value`: 与节点一起保存在 token 中的 value。
+    ///
+    /// # Returns
+    ///
+    /// 可无分配提交的 token；节点 OOM 时原表不变。
     pub(crate) fn try_prepare_vacant(
         &self,
         key: K,
@@ -389,8 +449,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 无分配发布一个已准备的新 entry。
     ///
-    /// @param entry 同一表在未发生结构 mutation 期间创建的 vacant token。
-    /// @return 无返回值；重复 key 表示事务不变量损坏并 fail-stop。
+    /// # Parameters
+    ///
+    /// - `entry`: 同一表在未发生结构 mutation 期间创建的 vacant token。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；重复 key 表示事务不变量损坏并 fail-stop。
     pub(crate) fn commit_vacant(&mut self, entry: VacantEntry<K, V>) {
         let mut entry = entry;
         assert!(
@@ -422,8 +487,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 删除精确 key，不执行分配。
     ///
-    /// @param key 待删除 key。
-    /// @return 原 value；key 不存在时为 None。
+    /// # Parameters
+    ///
+    /// - `key`: 待删除 key。
+    ///
+    /// # Returns
+    ///
+    /// 原 value；key 不存在时为 None。
     pub(crate) fn remove(&mut self, key: &K) -> Option<V> {
         let entry = self.take_entry(key)?;
         let Node { value, .. } = *entry.0;
@@ -432,8 +502,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 删除精确 key 并保留其已分配节点作为未发布 token。
     ///
-    /// @param key 待删除 key。
-    /// @return 可修改 key/value 后重新提交的 token；不存在时为 None。
+    /// # Parameters
+    ///
+    /// - `key`: 待删除 key。
+    ///
+    /// # Returns
+    ///
+    /// 可修改 key/value 后重新提交的 token；不存在时为 None。
     pub(crate) fn take_entry(&mut self, key: &K) -> Option<VacantEntry<K, V>> {
         let (has_two_children, successor) = {
             let mut cursor = self.root.as_deref();
@@ -478,16 +553,26 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 原地保留满足 predicate 的 entry，不分配遍历快照。
     ///
-    /// @param keep 依次观察 key/value，返回 false 的 entry 会被删除。
-    /// @return 无返回值；一次 ownership pass 与一次平衡重建均不分配节点。
+    /// # Parameters
+    ///
+    /// - `keep`: 依次观察 key/value，返回 false 的 entry 会被删除。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；一次 ownership pass 与一次平衡重建均不分配节点。
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
         (self.root, self.len) = retain_linear(self.root.take(), &mut keep);
     }
 
     /// 把 `at..` 的节点移动到新表，不分配节点。
     ///
-    /// @param at 新表的 inclusive lower bound。
-    /// @return 拥有全部 `key >= at` entry 的表。
+    /// # Parameters
+    ///
+    /// - `at`: 新表的 inclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// 拥有全部 `key >= at` entry 的表。
     pub(crate) fn split_off(&mut self, at: &K) -> Self {
         let original_len = self.len;
         let (mut left, right) = split(self.root.take(), at);
@@ -510,8 +595,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
 
     /// 把严格位于当前表之后的另一个表整体移动进当前表，不分配节点。
     ///
-    /// @param other 全部 key 必须严格大于当前表的最大 key；成功后为空。
-    /// @return 无返回值；重复或无序输入表示 caller contract 损坏并 fail-stop，且两表不变。
+    /// # Parameters
+    ///
+    /// - `other`: 全部 key 必须严格大于当前表的最大 key；成功后为空。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；重复或无序输入表示 caller contract 损坏并 fail-stop，且两表不变。
     pub(crate) fn append_ordered_disjoint(&mut self, other: &mut Self) {
         if let (Some(left_max), Some((right_min, _))) =
             (last_key(&self.root), other.first_key_value())

@@ -7,7 +7,7 @@ const FUTEX_TID_MASK: u32 = PID_MAX as u32;
 const ROBUST_LIST_LIMIT: usize = 2048;
 
 impl AddressSpace {
-    /// @description 在一次 mm-lock 临界区内原子替换 robust futex word。
+    /// 在一次 mm-lock 临界区内原子替换 robust futex word。
     fn compare_exchange_robust_word(
         &self,
         address: usize,
@@ -21,7 +21,7 @@ impl AddressSpace {
             .compare_exchange_user_u32(address, current, replacement, fault_limits)
     }
 
-    /// @description 用本次 cleanup 的 old-mm/limits snapshot 解析并唤醒一个 robust waiter。
+    /// 用本次 cleanup 的 old-mm/limits snapshot 解析并唤醒一个 robust waiter。
     fn wake_robust_waiter(&self, address: usize, fault_limits: UserFaultLimits) {
         let _ = crate::task::futex_wake_with_key(1, u32::MAX, |consume| {
             self.with_futex_key(address, false, fault_limits, consume)
@@ -38,11 +38,17 @@ impl TaskControlBlock {
         Ok(())
     }
 
-    /// @description 发布一个 non-PI robust futex 的 owner-death 状态。
-    /// @param entry robust-list node 地址。
-    /// @param offset node 到 futex word 的 signed byte offset。
-    /// @param pending_operation true 表示 `list_op_pending` 的 unlock/acquire 窗口。
-    /// @return 完成或 owner 已转移为 Ok；地址、读取或 CAS fault 为 Err 并终止本次 traversal。
+    /// 发布一个 non-PI robust futex 的 owner-death 状态。
+    ///
+    /// # Parameters
+    ///
+    /// - `entry`: robust-list node 地址。
+    /// - `offset`: node 到 futex word 的 signed byte offset。
+    /// - `pending_operation`: true 表示 `list_op_pending` 的 unlock/acquire 窗口。
+    ///
+    /// # Returns
+    ///
+    /// 完成或 owner 已转移为 Ok；地址、读取或 CAS fault 为 Err 并终止本次 traversal。
     fn mark_robust_futex_dead(
         &self,
         address_space: &AddressSpace,

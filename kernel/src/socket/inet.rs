@@ -131,9 +131,15 @@ fn stack() -> Result<&'static NetworkStackOwner, SocketError> {
     Ok(stack)
 }
 
-/// @description epoll source 通知路径无等待地取得完整 IPv4 协议状态。
-/// @return stack 未初始化、owner 竞争或 payload loan 存在时返回 `None`。
-/// @errors 不消费 adapter error，也不分配或注册 task waiter。
+/// epoll source 通知路径无等待地取得完整 IPv4 协议状态。
+///
+/// # Returns
+///
+/// stack 未初始化、owner 竞争或 payload loan 存在时返回 `None`。
+///
+/// # Errors
+///
+/// 不消费 adapter error，也不分配或注册 task waiter。
 fn try_observe_stack() -> Option<NetworkStackGuard<'static>> {
     NETWORK_STACK.get()?.try_observe()
 }
@@ -204,7 +210,7 @@ impl NetworkStack {
     }
 }
 
-/// @description 由 composition root 在 device discovery 后创建唯一 IPv4 stack。
+/// 由 composition root 在 device discovery 后创建唯一 IPv4 stack。
 pub(crate) fn init() {
     let Some(network_device) = network_device() else {
         return;
@@ -244,10 +250,15 @@ pub(crate) fn init() {
     });
 }
 
-/// @description 在 softirq context 有界推进 RX/TX、ARP、IPv4 与 UDP 状态。
+/// 在 softirq context 有界推进 RX/TX、ARP、IPv4 与 UDP 状态。
 ///
-/// @return RX budget 用尽且调用者必须重新投递 network softirq 时返回 `true`。
-/// @errors stack 尚未初始化时返回 `false`，不产生错误。
+/// # Returns
+///
+/// RX budget 用尽且调用者必须重新投递 network softirq 时返回 `true`。
+///
+/// # Errors
+///
+/// stack 尚未初始化时返回 `false`，不产生错误。
 pub(crate) fn dispatch_network_work() -> bool {
     if let Some(stack) = NETWORK_STACK.get() {
         let Some(mut network) = stack.try_poll() else {
@@ -279,7 +290,7 @@ enum InetEndpoint {
     Raw(SocketHandle),
 }
 
-/// @description AF_INET UDP/TCP endpoint facade；协议状态和地址均保存在唯一 NetworkStack。
+/// AF_INET UDP/TCP endpoint facade；协议状态和地址均保存在唯一 NetworkStack。
 pub(super) struct InetSocket {
     endpoint: InetEndpoint,
     // OWNER: only this endpoint operation lock prevents two callers from borrowing the same
@@ -290,11 +301,20 @@ pub(super) struct InetSocket {
 }
 
 impl InetSocket {
-    /// @description 创建 UDP 或 TCP endpoint，并把协议状态注册到唯一 NetworkStack。
-    /// @param socket_type AF_INET datagram 或 stream 类型。
-    /// @param notify endpoint 独占的 readiness notification Pipe。
-    /// @return 完整 InetSocket facade Arc。
-    /// @errors stack 不可用或协议 buffer 分配失败时返回错误。
+    /// 创建 UDP 或 TCP endpoint，并把协议状态注册到唯一 NetworkStack。
+    ///
+    /// # Parameters
+    ///
+    /// - `socket_type`: AF_INET datagram 或 stream 类型。
+    /// - `notify`: endpoint 独占的 readiness notification Pipe。
+    ///
+    /// # Returns
+    ///
+    /// 完整 InetSocket facade Arc。
+    ///
+    /// # Errors
+    ///
+    /// stack 不可用或协议 buffer 分配失败时返回错误。
     pub(super) fn new(
         socket_type: super::SocketType,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
@@ -451,10 +471,19 @@ impl InetSocket {
         udp_endpoint::packet_info(handle)
     }
 
-    /// @description 把 TCP endpoint 转换为 passive listener。
-    /// @param backlog 请求的 accept queue 深度。
-    /// @return listener 完整发布后返回 unit。
-    /// @errors UDP、无效状态、地址或分配失败时返回错误。
+    /// 把 TCP endpoint 转换为 passive listener。
+    ///
+    /// # Parameters
+    ///
+    /// - `backlog`: 请求的 accept queue 深度。
+    ///
+    /// # Returns
+    ///
+    /// listener 完整发布后返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// UDP、无效状态、地址或分配失败时返回错误。
     pub(super) fn listen(&self, backlog: usize) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
@@ -464,10 +493,19 @@ impl InetSocket {
         }
     }
 
-    /// @description 接受一个 TCP connection，并转移到独立 InetSocket facade。
-    /// @param notify accepted endpoint 独占的 readiness notification Pipe。
-    /// @return 持有 established handle 的新 endpoint。
-    /// @errors 非 listener、暂无连接或分配失败时返回错误。
+    /// 接受一个 TCP connection，并转移到独立 InetSocket facade。
+    ///
+    /// # Parameters
+    ///
+    /// - `notify`: accepted endpoint 独占的 readiness notification Pipe。
+    ///
+    /// # Returns
+    ///
+    /// 持有 established handle 的新 endpoint。
+    ///
+    /// # Errors
+    ///
+    /// 非 listener、暂无连接或分配失败时返回错误。
     pub(super) fn accept(
         &self,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
@@ -480,9 +518,15 @@ impl InetSocket {
         }
     }
 
-    /// @description 读取 active TCP connect 的最终状态。
-    /// @return established 返回 unit；UDP connect 立即视为成功。
-    /// @errors TCP 仍在进行、被拒绝或未连接时返回错误。
+    /// 读取 active TCP connect 的最终状态。
+    ///
+    /// # Returns
+    ///
+    /// established 返回 unit；UDP connect 立即视为成功。
+    ///
+    /// # Errors
+    ///
+    /// TCP 仍在进行、被拒绝或未连接时返回错误。
     pub(super) fn connection_result(&self) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
@@ -496,9 +540,11 @@ impl InetSocket {
         }
     }
 
-    /// @description 读取并清除 endpoint pending error。
-    /// @return TCP pending error；UDP 或无错误时为 None。
-    /// @errors 无错误。
+    /// 读取并清除 endpoint pending error。
+    ///
+    /// # Returns
+    ///
+    /// TCP pending error；UDP 或无错误时为 None。
     pub(super) fn take_error(&self) -> Option<SocketError> {
         let _operation = self.operation.lock();
         if let Some(stack) = NETWORK_STACK.get()
@@ -512,10 +558,19 @@ impl InetSocket {
             .flatten()
     }
 
-    /// @description 提交 TCP receive/send half-close。
-    /// @param how Linux `SHUT_RD/WR/RDWR` selector。
-    /// @return 成功返回 unit。
-    /// @errors UDP 或未连接 TCP 返回错误。
+    /// 提交 TCP receive/send half-close。
+    ///
+    /// # Parameters
+    ///
+    /// - `how`: Linux `SHUT_RD/WR/RDWR` selector。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// UDP 或未连接 TCP 返回错误。
     pub(super) fn shutdown(&self, how: usize) -> Result<(), SocketError> {
         let _operation = self.operation.lock();
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {

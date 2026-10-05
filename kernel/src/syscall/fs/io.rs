@@ -22,7 +22,7 @@ use crate::syscall::user_iovec::{
     fallible_staging_capacity, import_iovecs as import_raw_iovecs, with_prepared_staging,
 };
 
-/// @description fs vector I/O policy wrapper；raw ABI import 与 SSIZE_MAX owner 保持分离。
+/// fs vector I/O policy wrapper；raw ABI import 与 SSIZE_MAX owner 保持分离。
 fn import_iovecs(
     task: &TaskControlBlock,
     iovector: usize,

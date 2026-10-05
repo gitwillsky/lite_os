@@ -1,12 +1,18 @@
 use super::*;
 
 impl MapArea {
-    /// @description 撤销当前 VMA 的 leaf/reserved translation，但继续保留全部 backing owner。
+    /// 撤销当前 VMA 的 leaf/reserved translation，但继续保留全部 backing owner。
     ///
-    /// @param page_table 当前 AddressSpace 的唯一页表 owner。
-    /// @return 无返回值；不存在的 leaf 表示尚未 fault-in 或 rollback 已撤销。
-    /// @note live mapping 的 caller 必须在同步 TLB fence 完成后才 Drop self；缺少该顺序会让
+    /// live mapping 的 caller 必须在同步 TLB fence 完成后才 Drop self；缺少该顺序会让
     /// remote CPU 通过 stale translation 访问已经复用的 frame 或已释放的 device backing。
+    ///
+    /// # Parameters
+    ///
+    /// - `page_table`: 当前 AddressSpace 的唯一页表 owner。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；不存在的 leaf 表示尚未 fault-in 或 rollback 已撤销。
     pub(in crate::memory) fn unmap(
         &mut self,
         page_table: &mut PageTable,
@@ -40,10 +46,11 @@ pub(crate) struct PreparedAreaRetirement {
 }
 
 impl PreparedAreaRetirement {
-    /// @description 同步完成 detached VMA 的 translation fence，再释放全部 backing owner。
+    /// 同步完成 detached VMA 的 translation fence，再释放全部 backing owner。
     ///
-    /// @return 无返回值。
-    /// @errors platform shootdown 失败时保留 owner 并 fail-stop。
+    /// # Errors
+    ///
+    /// platform shootdown 失败时保留 owner 并 fail-stop。
     pub(crate) fn synchronize(mut self) {
         self.commit
             .synchronize()
@@ -74,11 +81,19 @@ impl Drop for PreparedAreaRetirement {
 }
 
 impl MemorySet {
-    /// @description 在页表 owner 内摘除 VMA/PTE，但把 backing 与 fence token 移交给 caller。
+    /// 在页表 owner 内摘除 VMA/PTE，但把 backing 与 fence token 移交给 caller。
     ///
-    /// @param start_vpn 待移除 area 的精确起始 VPN。
-    /// @return 可在 MemorySet lock 释放后同步的唯一 retirement owner。
-    /// @errors 目标 VMA 缺失时 fail-stop。
+    /// # Parameters
+    ///
+    /// - `start_vpn`: 待移除 area 的精确起始 VPN。
+    ///
+    /// # Returns
+    ///
+    /// 可在 MemorySet lock 释放后同步的唯一 retirement owner。
+    ///
+    /// # Errors
+    ///
+    /// 目标 VMA 缺失时 fail-stop。
     pub(crate) fn prepare_area_retirement(
         &mut self,
         start_vpn: VirtualPageNumber,
@@ -94,10 +109,15 @@ impl MemorySet {
         }
     }
 
-    /// @description 撤销并释放一个完整 area，同时封闭 remote stale translation 窗口。
+    /// 撤销并释放一个完整 area，同时封闭 remote stale translation 窗口。
     ///
-    /// @param start_vpn 待移除 area 的精确起始 VPN。
-    /// @return fence 完成后释放 area owner；目标缺失或 shootdown 失败时 fail-stop。
+    /// # Parameters
+    ///
+    /// - `start_vpn`: 待移除 area 的精确起始 VPN。
+    ///
+    /// # Returns
+    ///
+    /// fence 完成后释放 area owner；目标缺失或 shootdown 失败时 fail-stop。
     pub(crate) fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
         self.prepare_area_retirement(start_vpn).synchronize();
     }

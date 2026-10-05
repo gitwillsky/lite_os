@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::{Mutex, Once};
 
-/// @description VirtIO input transport 产生的无 timestamp 原始事件。
+/// VirtIO input transport 产生的无 timestamp 原始事件。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RawInputEvent {
     pub(crate) event_type: u16,
@@ -9,7 +9,7 @@ pub(crate) struct RawInputEvent {
     pub(crate) value: i32,
 }
 
-/// @description Linux input identity 的 transport-neutral 投影。
+/// Linux input identity 的 transport-neutral 投影。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct InputId {
     pub(crate) bustype: u16,
@@ -18,7 +18,7 @@ pub(crate) struct InputId {
     pub(crate) version: u16,
 }
 
-/// @description absolute axis 的 immutable limits；live value 由 input core 拥有。
+/// absolute axis 的 immutable limits；live value 由 input core 拥有。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct InputAbsInfo {
     pub(crate) minimum: i32,
@@ -33,33 +33,67 @@ pub(crate) enum InputDeviceError {
     Device,
 }
 
-/// @description 不泄漏 VirtIO queue/config 的通用 input adapter seam。
+/// 不泄漏 VirtIO queue/config 的通用 input adapter seam。
 pub(crate) trait InputDevice: Send + Sync {
-    /// @return 不含 NUL 的设备名称 bytes。
+    /// # Returns
+    ///
+    /// 不含 NUL 的设备名称 bytes。
     fn name(&self) -> &[u8];
-    /// @return 不含 NUL 的稳定 platform path bytes。
+    /// # Returns
+    ///
+    /// 不含 NUL 的稳定 platform path bytes。
     fn physical_path(&self) -> &[u8];
-    /// @return 不含 NUL 的唯一 serial bytes；空 slice 表示设备未提供。
+    /// # Returns
+    ///
+    /// 不含 NUL 的唯一 serial bytes；空 slice 表示设备未提供。
     fn serial(&self) -> &[u8];
-    /// @return immutable bus/vendor/product/version identity。
+    /// # Returns
+    ///
+    /// immutable bus/vendor/product/version identity。
     fn id(&self) -> InputId;
-    /// @return `INPUT_PROP_*` bitmap 的最低有效 bytes。
+    /// # Returns
+    ///
+    /// `INPUT_PROP_*` bitmap 的最低有效 bytes。
     fn properties(&self) -> &[u8];
-    /// @return 支持的 `EV_*` type bitmap。
+    /// # Returns
+    ///
+    /// 支持的 `EV_*` type bitmap。
     fn event_types(&self) -> &[u8];
-    /// @param event_type Linux `EV_*` value。
-    /// @return 对应 code bitmap；不支持该 type 返回空 slice。
+    /// # Parameters
+    ///
+    /// - `event_type`: Linux `EV_*` value。
+    ///
+    /// # Returns
+    ///
+    /// 对应 code bitmap；不支持该 type 返回空 slice。
     fn event_codes(&self, event_type: u16) -> &[u8];
-    /// @param code Linux `ABS_*` value。
-    /// @return device 声明的 axis limits。
+    /// # Parameters
+    ///
+    /// - `code`: Linux `ABS_*` value。
+    ///
+    /// # Returns
+    ///
+    /// device 声明的 axis limits。
     fn abs_info(&self, code: u16) -> Option<InputAbsInfo>;
-    /// @return 一个已完成事件；eventq 暂空返回 `None`。
-    /// @errors used ring、descriptor 或 event shape 损坏返回 `Device`。
+    /// # Returns
+    ///
+    /// 一个已完成事件；eventq 暂空返回 `None`。
+    ///
+    /// # Errors
+    ///
+    /// used ring、descriptor 或 event shape 损坏返回 `Device`。
     fn receive_event(&self) -> Result<Option<RawInputEvent>, InputDeviceError>;
-    /// @return 本批 repost 成功返回 unit。
-    /// @errors queue notification 失败返回 `Device`。
+    /// # Returns
+    ///
+    /// 本批 repost 成功返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// queue notification 失败返回 `Device`。
     fn finish_receive_batch(&self) -> Result<(), InputDeviceError>;
-    /// @return eventq 尚有未消费 used entry 时为 true。
+    /// # Returns
+    ///
+    /// eventq 尚有未消费 used entry 时为 true。
     fn has_pending_event(&self) -> bool;
 }
 
@@ -71,10 +105,19 @@ fn registry() -> &'static Mutex<Vec<Arc<dyn InputDevice>>> {
     INPUT_DEVICES.call_once(|| Mutex::new(Vec::new()))
 }
 
-/// @description 按 DTB probe 顺序注册一个 input adapter。
-/// @param device 已完成 feature/queue 初始化的唯一 adapter Arc。
-/// @return 后续 `/dev/input/eventN` 使用的零基 index。
-/// @errors registry 扩容失败返回原 device。
+/// 按 DTB probe 顺序注册一个 input adapter。
+///
+/// # Parameters
+///
+/// - `device`: 已完成 feature/queue 初始化的唯一 adapter Arc。
+///
+/// # Returns
+///
+/// 后续 `/dev/input/eventN` 使用的零基 index。
+///
+/// # Errors
+///
+/// registry 扩容失败返回原 device。
 pub(super) fn register(device: Arc<dyn InputDevice>) -> Result<usize, Arc<dyn InputDevice>> {
     let mut devices = registry().lock();
     if devices.try_reserve(1).is_err() {
@@ -85,15 +128,24 @@ pub(super) fn register(device: Arc<dyn InputDevice>) -> Result<usize, Arc<dyn In
     Ok(index)
 }
 
-/// @description 读取已注册 raw input adapter 数量。
-/// @return DTB probe 完成后的稳定数量。
+/// 读取已注册 raw input adapter 数量。
+///
+/// # Returns
+///
+/// DTB probe 完成后的稳定数量。
 pub(crate) fn device_count() -> usize {
     registry().lock().len()
 }
 
-/// @description 按 event index 取得 raw adapter。
-/// @param index `register` 返回的稳定 index。
-/// @return 对应 adapter Arc；越界返回 `None`。
+/// 按 event index 取得 raw adapter。
+///
+/// # Parameters
+///
+/// - `index`: `register` 返回的稳定 index。
+///
+/// # Returns
+///
+/// 对应 adapter Arc；越界返回 `None`。
 pub(crate) fn device(index: usize) -> Option<Arc<dyn InputDevice>> {
     registry().lock().get(index).cloned()
 }

@@ -14,11 +14,20 @@ use super::{
     },
 };
 
-/// @description 把 DRM 已验证的 VirGL operation 编码到 adapter-owned DMA request。
-/// @param command context/resource ownership 已在 DRM domain 固定的 operation。
-/// @param request 唯一 controlq request storage；publication 前由本函数完整覆写。
-/// @return opcode、exact request length 与 VirGL completion stage。
-/// @errors 非法尺寸、空 identity、未对齐 command stream 或 request 溢出返回稳定 display
+/// 把 DRM 已验证的 VirGL operation 编码到 adapter-owned DMA request。
+///
+/// # Parameters
+///
+/// - `command`: context/resource ownership 已在 DRM domain 固定的 operation。
+/// - `request`: 唯一 controlq request storage；publication 前由本函数完整覆写。
+///
+/// # Returns
+///
+/// opcode、exact request length 与 VirGL completion stage。
+///
+/// # Errors
+///
+/// 非法尺寸、空 identity、未对齐 command stream 或 request 溢出返回稳定 display
 /// error。
 pub(super) fn prepare(
     command: VirglCommand<'_>,

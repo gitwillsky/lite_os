@@ -16,14 +16,19 @@ const SO_RCVTIMEO: usize = 20;
 const SO_SNDTIMEO: usize = 21;
 const IFNAMSIZ: usize = 16;
 
-/// @description 设置已实现的 Linux IP 与 SOL_SOCKET endpoint policy。
+/// 设置已实现的 Linux IP 与 SOL_SOCKET endpoint policy。
 ///
-/// @param fd socket descriptor。
-/// @param level Linux option level。
-/// @param option option number。
-/// @param value option-specific userspace pointer。
-/// @param length option buffer 长度。
-/// @return 成功返回零；descriptor、option、user-copy 或 domain 错误返回负 errno。
+/// # Parameters
+///
+/// - `fd`: socket descriptor。
+/// - `level`: Linux option level。
+/// - `option`: option number。
+/// - `value`: option-specific userspace pointer。
+/// - `length`: option buffer 长度。
+///
+/// # Returns
+///
+/// 成功返回零；descriptor、option、user-copy 或 domain 错误返回负 errno。
 pub(crate) fn sys_setsockopt(
     fd: usize,
     level: usize,
@@ -134,14 +139,19 @@ fn read_interface_name(value: usize, length: usize) -> Result<&'static [u8], isi
     }
 }
 
-/// @description 查询 Linux SOL_SOCKET 的只读 socket type 与 pending error。
+/// 查询 Linux SOL_SOCKET 的只读 socket type 与 pending error。
 ///
-/// @param fd socket descriptor。
-/// @param level Linux option level，必须为 `SOL_SOCKET`。
-/// @param option `SO_TYPE` 或 `SO_ERROR`。
-/// @param value output userspace pointer。
-/// @param length 指向 input capacity/output actual length 的 userspace pointer。
-/// @return 成功返回零；descriptor、option 或 user-copy 错误返回负 errno。
+/// # Parameters
+///
+/// - `fd`: socket descriptor。
+/// - `level`: Linux option level，必须为 `SOL_SOCKET`。
+/// - `option`: `SO_TYPE` 或 `SO_ERROR`。
+/// - `value`: output userspace pointer。
+/// - `length`: 指向 input capacity/output actual length 的 userspace pointer。
+///
+/// # Returns
+///
+/// 成功返回零；descriptor、option 或 user-copy 错误返回负 errno。
 pub(crate) fn sys_getsockopt(
     fd: usize,
     level: usize,

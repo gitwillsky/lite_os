@@ -22,24 +22,34 @@ pub(crate) enum TimerError {
     Exhausted,
 }
 
-/// @description fs 持有 timerfd OFD 时使用的 task-domain backend seam。
+/// fs 持有 timerfd OFD 时使用的 task-domain backend seam。
 ///
 /// fs 只消费 counter 与 readiness，不反向依赖 task timer queue。最后一个 backend `Arc`
 /// 析构时由实现方同步移除 timer record；缺失该 seam 会让 fs → task 形成反向依赖。
 pub(crate) trait TimerFdBackend: Send + Sync {
-    /// @description 取得 anonymous inode 使用的稳定 runtime identity。
+    /// 取得 anonymous inode 使用的稳定 runtime identity。
     ///
-    /// @return backend 生命周期内唯一 object id。
+    /// # Returns
+    ///
+    /// backend 生命周期内唯一 object id。
     fn object_id(&self) -> u64;
 
-    /// @description 原子替换 setting，并清除旧 setting 的未读 expiration。
+    /// 原子替换 setting，并清除旧 setting 的未读 expiration。
     ///
-    /// @param value_ns 首次到期时间；零表示 disarm。
-    /// @param interval_ns 周期；零表示 one-shot。
-    /// @param absolute value 是否属于 timer clock 的绝对时间域。
-    /// @param now_ns 本次 syscall 的固定 monotonic snapshot。
-    /// @return 替换前的相对 setting。
-    /// @errors timer 已关闭或 deadline node 分配失败。
+    /// # Parameters
+    ///
+    /// - `value_ns`: 首次到期时间；零表示 disarm。
+    /// - `interval_ns`: 周期；零表示 one-shot。
+    /// - `absolute`: value 是否属于 timer clock 的绝对时间域。
+    /// - `now_ns`: 本次 syscall 的固定 monotonic snapshot。
+    ///
+    /// # Returns
+    ///
+    /// 替换前的相对 setting。
+    ///
+    /// # Errors
+    ///
+    /// timer 已关闭或 deadline node 分配失败。
     fn replace(
         &self,
         value_ns: u64,
@@ -48,40 +58,58 @@ pub(crate) trait TimerFdBackend: Send + Sync {
         now_ns: u64,
     ) -> Result<TimerSetting, TimerError>;
 
-    /// @description 查询当前相对 setting。
+    /// 查询当前相对 setting。
     ///
-    /// @param now_ns 本次 syscall 的固定 monotonic snapshot。
-    /// @return 当前相对 setting。
-    /// @errors timer 已关闭时返回 `NotFound`。
+    /// # Parameters
+    ///
+    /// - `now_ns`: 本次 syscall 的固定 monotonic snapshot。
+    ///
+    /// # Returns
+    ///
+    /// 当前相对 setting。
+    ///
+    /// # Errors
+    ///
+    /// timer 已关闭时返回 `NotFound`。
     fn setting(&self, now_ns: u64) -> Result<TimerSetting, TimerError>;
 
-    /// @description 消费全部未读 expiration。
+    /// 消费全部未读 expiration。
     ///
-    /// @return 非零 counter，或当前为空。
+    /// # Returns
+    ///
+    /// 非零 counter，或当前为空。
     fn read(&self) -> TimerFdRead;
 
-    /// @description 查询 counter 是否非零。
+    /// 查询 counter 是否非零。
     ///
-    /// @return poll read readiness。
+    /// # Returns
+    ///
+    /// poll read readiness。
     fn readable(&self) -> bool;
 
-    /// @description 取得 poll/epoll 等待的 notification pipe。
+    /// 取得 poll/epoll 等待的 notification pipe。
     ///
-    /// @return 共享 readiness source。
+    /// # Returns
+    ///
+    /// 共享 readiness source。
     fn notification_pipe(&self) -> Arc<Pipe>;
 
-    /// @description 查询当前 readiness generation。
+    /// 查询当前 readiness generation。
     ///
-    /// @return notification pipe read generation。
+    /// # Returns
+    ///
+    /// notification pipe read generation。
     fn readiness_generation(&self) -> u64;
 
-    /// @description timer queue 在 owner lock 外发布一批到期次数。
+    /// timer queue 在 owner lock 外发布一批到期次数。
     ///
-    /// @param elapsed 本次 deadline 跨过的周期数，至少为一。
+    /// # Parameters
+    ///
+    /// - `elapsed`: 本次 deadline 跨过的周期数，至少为一。
     fn expire(&self, elapsed: u64);
 }
 
-/// @description 在通用 OFD 中保持 thin Arc layout 的 timerfd façade。
+/// 在通用 OFD 中保持 thin Arc layout 的 timerfd façade。
 ///
 /// 动态 backend 只藏在本 owner 内；若把 fat trait pointer 直接放进 `OpenFileKind`，会扩大所有
 /// OFD 的 hot enum layout，而非只让实际 timerfd 支付间接层与额外 control block 成本。
@@ -90,11 +118,19 @@ pub(crate) struct TimerFd {
 }
 
 impl TimerFd {
-    /// @description 为 task-domain backend 构造 fs-owned thin façade。
+    /// 为 task-domain backend 构造 fs-owned thin façade。
     ///
-    /// @param backend timer setting、counter 与 lifecycle 的唯一实现。
-    /// @return 可放入通用 OFD 的共享 façade。
-    /// @errors façade control block 分配失败。
+    /// # Parameters
+    ///
+    /// - `backend`: timer setting、counter 与 lifecycle 的唯一实现。
+    ///
+    /// # Returns
+    ///
+    /// 可放入通用 OFD 的共享 façade。
+    ///
+    /// # Errors
+    ///
+    /// façade control block 分配失败。
     pub(crate) fn new(backend: Arc<dyn TimerFdBackend>) -> Result<Arc<Self>, ()> {
         Arc::try_new(Self { backend }).map_err(|_| ())
     }

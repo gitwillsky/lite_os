@@ -21,7 +21,7 @@ pub(crate) enum PipeDirection {
     Write,
 }
 
-/// @description blocking pipe I/O 的精确完成条件；写等待携带本次原子写所需的完整容量。
+/// blocking pipe I/O 的精确完成条件；写等待携带本次原子写所需的完整容量。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PipeWaitCondition {
     Readable,
@@ -29,9 +29,11 @@ pub(crate) enum PipeWaitCondition {
 }
 
 impl PipeWaitCondition {
-    /// @description 返回该 blocking condition 所属的 endpoint direction，并验证写容量范围。
+    /// 返回该 blocking condition 所属的 endpoint direction，并验证写容量范围。
     ///
-    /// @return read/write endpoint direction；非法写容量破坏 kernel 调用契约并 fail-stop。
+    /// # Returns
+    ///
+    /// read/write endpoint direction；非法写容量破坏 kernel 调用契约并 fail-stop。
     pub(crate) fn direction(self) -> PipeDirection {
         match self {
             Self::Readable => PipeDirection::Read,
@@ -57,7 +59,7 @@ pub(crate) enum PipeWrite {
     Broken,
 }
 
-/// @description byte ring 写入语义；匿名 pipe 保证 `PIPE_BUF` 原子性，stream socket 允许短写。
+/// byte ring 写入语义；匿名 pipe 保证 `PIPE_BUF` 原子性，stream socket 允许短写。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PipeWriteMode {
     Pipe,
@@ -74,10 +76,15 @@ pub(crate) struct PipePollState {
 }
 
 impl PipePollState {
-    /// @description 判断同一 PipeState snapshot 是否满足 blocking I/O 的精确完成条件。
+    /// 判断同一 PipeState snapshot 是否满足 blocking I/O 的精确完成条件。
     ///
-    /// @param condition read data/EOF 或一笔 `PIPE_BUF` 范围内原子写所需的完整容量。
-    /// @return 条件已满足或 write endpoint 已 broken 时返回 true。
+    /// # Parameters
+    ///
+    /// - `condition`: read data/EOF 或一笔 `PIPE_BUF` 范围内原子写所需的完整容量。
+    ///
+    /// # Returns
+    ///
+    /// 条件已满足或 write endpoint 已 broken 时返回 true。
     pub(crate) fn satisfies(self, condition: PipeWaitCondition) -> bool {
         match condition {
             PipeWaitCondition::Readable => self.readable,
@@ -100,7 +107,7 @@ struct PipeState {
     write_generation: u64,
 }
 
-/// @description data/notification Pipe 的唯一 byte ring、generation 与 endpoint lifecycle owner。
+/// data/notification Pipe 的唯一 byte ring、generation 与 endpoint lifecycle owner。
 pub(crate) struct Pipe {
     // Pipe owner 分配一次并由两个 endpoint 共享；缺失时 read/write fd 会报告不同 pipe inode。
     object_id: u64,
@@ -109,20 +116,30 @@ pub(crate) struct Pipe {
 }
 
 impl Pipe {
-    /// @description 创建一对唯一 read/write endpoint。
+    /// 创建一对唯一 read/write endpoint。
     ///
-    /// @param notifier 在状态变为可读、可写、EOF 或 broken 时唤醒 task registry。
-    /// @return 两个 endpoint；kernel heap 不足返回错误。
+    /// # Parameters
+    ///
+    /// - `notifier`: 在状态变为可读、可写、EOF 或 broken 时唤醒 task registry。
+    ///
+    /// # Returns
+    ///
+    /// 两个 endpoint；kernel heap 不足返回错误。
     pub(crate) fn pair(
         notifier: Arc<dyn PipeNotifier>,
     ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
         Self::pair_with_capacity(notifier, PIPE_CAPACITY)
     }
 
-    /// @description 创建只承载合并 readiness token 的一字节 Pipe endpoints。
+    /// 创建只承载合并 readiness token 的一字节 Pipe endpoints。
     ///
-    /// @param notifier 与 data Pipe 共用的 task wait-registry 通知 seam。
-    /// @return 两个 endpoint；kernel heap 不足返回错误。
+    /// # Parameters
+    ///
+    /// - `notifier`: 与 data Pipe 共用的 task wait-registry 通知 seam。
+    ///
+    /// # Returns
+    ///
+    /// 两个 endpoint；kernel heap 不足返回错误。
     pub(crate) fn notification_pair(
         notifier: Arc<dyn PipeNotifier>,
     ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
@@ -172,10 +189,15 @@ impl Pipe {
         self.object_id
     }
 
-    /// @description 在 Pipe owner lock 下复查 blocking I/O 的精确完成条件。
+    /// 在 Pipe owner lock 下复查 blocking I/O 的精确完成条件。
     ///
-    /// @param condition read data/EOF 或一笔原子写所需的完整容量。
-    /// @return 当前状态满足条件时返回 true。
+    /// # Parameters
+    ///
+    /// - `condition`: read data/EOF 或一笔原子写所需的完整容量。
+    ///
+    /// # Returns
+    ///
+    /// 当前状态满足条件时返回 true。
     pub(crate) fn wait_ready(&self, condition: PipeWaitCondition) -> bool {
         self.poll_state(condition.direction()).satisfies(condition)
     }
@@ -200,10 +222,15 @@ impl Pipe {
         }
     }
 
-    /// @description 返回指定 endpoint 最近一次可观察状态变化的全局 generation。
+    /// 返回指定 endpoint 最近一次可观察状态变化的全局 generation。
     ///
-    /// @param direction read 侧跟踪 data/EOF，write 侧跟踪 space/broken-pipe。
-    /// @return 跨 I/O source 可比较的 generation。
+    /// # Parameters
+    ///
+    /// - `direction`: read 侧跟踪 data/EOF，write 侧跟踪 space/broken-pipe。
+    ///
+    /// # Returns
+    ///
+    /// 跨 I/O source 可比较的 generation。
     pub(crate) fn readiness_generation(&self, direction: PipeDirection) -> u64 {
         let state = self.state.lock();
         match direction {
@@ -311,9 +338,11 @@ impl Pipe {
         self.notifier.notify(self);
     }
 
-    /// @description 发布一次合并的内核 readiness edge，并无条件通知 wait registry。
+    /// 发布一次合并的内核 readiness edge，并无条件通知 wait registry。
     ///
-    /// @return 无返回值；Pipe 已无 reader 时幂等忽略。
+    /// # Returns
+    ///
+    /// 无返回值；Pipe 已无 reader 时幂等忽略。
     fn signal_readiness(self: &Arc<Self>) {
         let notify = {
             let mut state = self.state.lock();
@@ -336,9 +365,11 @@ impl Pipe {
         }
     }
 
-    /// @description 在 wait registry owner lock 内消费合并 readiness token，不反向通知同一 registry。
+    /// 在 wait registry owner lock 内消费合并 readiness token，不反向通知同一 registry。
     ///
-    /// @return 排空时观察到的 read generation；即使 token 已被其他 waiter 消费，
+    /// # Returns
+    ///
+    /// 排空时观察到的 read generation；即使 token 已被其他 waiter 消费，
     /// generation 仍可证明某份更早的 snapshot 已失效。
     fn drain_readiness(self: &Arc<Self>) -> u64 {
         let mut state = self.state.lock();
@@ -351,9 +382,11 @@ impl Pipe {
         generation
     }
 
-    /// @description 丢弃 byte ring 中尚未由 reader 消费的全部数据。
+    /// 丢弃 byte ring 中尚未由 reader 消费的全部数据。
     ///
-    /// @return 被丢弃的 byte 数；read/write readiness generation 均已推进。
+    /// # Returns
+    ///
+    /// 被丢弃的 byte 数；read/write readiness generation 均已推进。
     fn discard_buffered(self: &Arc<Self>) -> usize {
         let discarded = {
             let mut state = self.state.lock();
@@ -373,7 +406,7 @@ impl Pipe {
     }
 }
 
-/// @description 一个 OFD-owned anonymous pipe endpoint；dup/fork 共享同一 endpoint Arc。
+/// 一个 OFD-owned anonymous pipe endpoint；dup/fork 共享同一 endpoint Arc。
 pub(crate) struct PipeEnd {
     pipe: Arc<Pipe>,
     direction: PipeDirection,
@@ -393,10 +426,16 @@ impl PipeEnd {
         self.pipe.read(output, maximum)
     }
 
-    /// @description 从 pipe 读取至 receive sink，但不越过 protocol/control barrier。
-    /// @param output initialized-prefix owner。
-    /// @param maximum 本次最多追加的 byte count。
-    /// @return byte count、empty 或 EOF。
+    /// 从 pipe 读取至 receive sink，但不越过 protocol/control barrier。
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: initialized-prefix owner。
+    /// - `maximum`: 本次最多追加的 byte count。
+    ///
+    /// # Returns
+    ///
+    /// byte count、empty 或 EOF。
     pub(crate) fn read_bounded(&self, output: &mut ReceiveBuffer<'_>, maximum: usize) -> PipeRead {
         self.pipe.read(output, maximum)
     }
@@ -405,34 +444,52 @@ impl PipeEnd {
         self.pipe.write(input, PipeWriteMode::Pipe)
     }
 
-    /// @description 按 stream 语义写入当前可用容量，允许返回非零短写。
+    /// 按 stream 语义写入当前可用容量，允许返回非零短写。
     ///
-    /// @param input 待写入的连续字节。
-    /// @return 写入字节数、无容量或 peer 已关闭。
+    /// # Parameters
+    ///
+    /// - `input`: 待写入的连续字节。
+    ///
+    /// # Returns
+    ///
+    /// 写入字节数、无容量或 peer 已关闭。
     pub(crate) fn write_stream(&self, input: &[u8]) -> PipeWrite {
         self.pipe.write(input, PipeWriteMode::Stream)
     }
 
-    /// @description 将本 Pipe 作为内核 readiness notification source 发布一次 edge。
+    /// 将本 Pipe 作为内核 readiness notification source 发布一次 edge。
     ///
-    /// @return 无返回值；token 已存在时仍推进 generation 并通知 wait registry。
-    /// @errors 只允许 write endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
+    /// # Returns
+    ///
+    /// 无返回值；token 已存在时仍推进 generation 并通知 wait registry。
+    ///
+    /// # Errors
+    ///
+    /// 只允许 write endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
     pub(crate) fn signal_readiness(&self) {
         assert_eq!(self.direction, PipeDirection::Write);
         self.pipe.signal_readiness();
     }
 
-    /// @description 在内核 wait owner 临界区排空 readiness token，不消费任何 userspace data Pipe。
+    /// 在内核 wait owner 临界区排空 readiness token，不消费任何 userspace data Pipe。
     ///
-    /// @return 排空时观察到的 read generation；该值在 token 被消费后仍保持。
-    /// @errors 只允许 read endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
+    /// # Returns
+    ///
+    /// 排空时观察到的 read generation；该值在 token 被消费后仍保持。
+    ///
+    /// # Errors
+    ///
+    /// 只允许 read endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
     pub(crate) fn drain_readiness(&self) -> u64 {
         assert_eq!(self.direction, PipeDirection::Read);
         self.pipe.drain_readiness()
     }
 
-    /// @description 丢弃 write endpoint 已发布、read endpoint 尚未消费的全部 bytes。
-    /// @return 被丢弃的 byte 数。
+    /// 丢弃 write endpoint 已发布、read endpoint 尚未消费的全部 bytes。
+    ///
+    /// # Returns
+    ///
+    /// 被丢弃的 byte 数。
     pub(crate) fn discard_buffered(&self) -> usize {
         assert_eq!(self.direction, PipeDirection::Write);
         self.pipe.discard_buffered()

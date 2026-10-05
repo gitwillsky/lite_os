@@ -125,7 +125,7 @@ struct ThreadContext {
     // OWNER: sigsuspend 临时 mask 对应的原 mask；signal frame 必须恢复它而非临时值。
     suspend_restore_mask: Mutex<Option<u64>>,
     // OWNER: ThreadContext 独占一次 interrupted syscall 到 signal-frame 构造之间的 replay record。
-    // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 ecall 或把内部结果泄漏给用户态。
+    // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 syscall instruction 或把内部结果泄漏给用户态。
     syscall_restart: Mutex<Option<SyscallRestart>>,
     // OWNER: Thread 独占 Linux pdeath signal 与已生成但尚未投递的 parent-exit event；
     // 如果放进 Process，任一 sibling 的 prctl 会错误覆盖其他 Thread 的设置。
@@ -137,12 +137,12 @@ struct ThreadContext {
     io_accounting: IoAccounting,
 }
 
-/// @description signal handler 返回后重放一次 Linux/riscv64 ecall 的完整寄存输入。
+/// signal handler 返回后重放一次 Linux syscall instruction 的完整寄存输入。
 #[derive(Debug, Clone, Copy)]
 struct SyscallRestart {
     syscall_id: usize,
     args: [usize; 6],
-    ecall_pc: usize,
+    syscall_pc: usize,
 }
 
 #[derive(Debug, Default)]
@@ -151,7 +151,7 @@ struct ParentDeathState {
     pending: Option<(usize, usize)>,
 }
 
-/// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
+/// Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
 struct Process {
     tgid: ProcessId,
     // OWNER: Process 独占 Linux comm 与进程创建时刻；fork 创建新时刻，exec 原子替换 comm。
@@ -186,7 +186,7 @@ struct Process {
     signal_state: Mutex<ProcessSignalState>,
 }
 
-/// @description 当前单线程 Process、Thread 与 SchedulingEntity 的组合边界。
+/// 当前单线程 Process、Thread 与 SchedulingEntity 的组合边界。
 pub(crate) struct TaskControlBlock {
     process: Arc<Process>,
     thread: ThreadContext,
@@ -289,13 +289,18 @@ impl TaskControlBlock {
         Ok(tcb)
     }
 
-    /// @description 在当前 Process 内创建共享资源的独立 Thread 执行实体。
+    /// 在当前 Process 内创建共享资源的独立 Thread 执行实体。
     ///
-    /// @param tid TaskManager 分配的全局唯一 TID。
-    /// @param user_stack child 首次返回用户态使用的栈顶。
-    /// @param tls 写入 child `tp(x4)` 的 TLS pointer。
-    /// @param clear_child_tid thread exit 时清零并 futex-wake 的用户地址。
-    /// @return 成功返回 New Thread；任何映射失败都不发布 scheduler membership。
+    /// # Parameters
+    ///
+    /// - `tid`: ProcessTable 分配的全局唯一 TID。
+    /// - `user_stack`: child 首次返回用户态使用的栈顶。
+    /// - `tls`: 写入 child `tp(x4)` 的 TLS pointer。
+    /// - `clear_child_tid`: thread exit 时清零并 futex-wake 的用户地址。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 New Thread；任何映射失败都不发布 scheduler membership。
     pub(super) fn clone_thread(
         &self,
         tid: usize,
@@ -373,9 +378,15 @@ impl TaskControlBlock {
         self.tid()
     }
 
-    /// @description 查询或替换 calling Thread 的 Linux parent-death signal。
-    /// @param replacement `Some(signal)` 设置 `0..=64` 中的 signal；`None` 只查询。
-    /// @return 修改前的 signal；调用者在 process-graph lock 内完成 parent-exit 排序。
+    /// 查询或替换 calling Thread 的 Linux parent-death signal。
+    ///
+    /// # Parameters
+    ///
+    /// - `replacement`: `Some(signal)` 设置 `0..=64` 中的 signal；`None` 只查询。
+    ///
+    /// # Returns
+    ///
+    /// 修改前的 signal；调用者在 process-graph lock 内完成 parent-exit 排序。
     pub(in crate::task) fn parent_death_signal(&self, replacement: Option<usize>) -> usize {
         let mut state = self.thread.parent_death.lock();
         let previous = state.signal;
@@ -385,9 +396,15 @@ impl TaskControlBlock {
         previous
     }
 
-    /// @description 在 creator parent Thread 退出事务中冻结一次 process-directed signal。
-    /// @param parent_tgid 退出 parent 的 thread-group ID，用作 Linux `si_pid`。
-    /// @return 无返回值；signal 为零时不生成事件。
+    /// 在 creator parent Thread 退出事务中冻结一次 process-directed signal。
+    ///
+    /// # Parameters
+    ///
+    /// - `parent_tgid`: 退出 parent 的 thread-group ID，用作 Linux `si_pid`。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；signal 为零时不生成事件。
     pub(in crate::task) fn mark_parent_death(&self, parent_tgid: usize) {
         let mut state = self.thread.parent_death.lock();
         if state.signal != 0 {
@@ -395,31 +412,51 @@ impl TaskControlBlock {
         }
     }
 
-    /// @description 消费已由 process graph 冻结的 parent-death signal。
-    /// @return `(signal,parent_tgid)`；没有待投递事件时为 `None`。
+    /// 消费已由 process graph 冻结的 parent-death signal。
+    ///
+    /// # Returns
+    ///
+    /// `(signal,parent_tgid)`；没有待投递事件时为 `None`。
     pub(in crate::task) fn take_parent_death(&self) -> Option<(usize, usize)> {
         self.thread.parent_death.lock().pending.take()
     }
 
-    /// @description 按 Linux credential transition 规则清除 calling Thread 的 pdeath 设置。
-    /// @return 无返回值；已生成的 pending event 不撤销。
+    /// 按 Linux credential transition 规则清除 calling Thread 的 pdeath 设置。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；已生成的 pending event 不撤销。
     pub(in crate::task) fn clear_parent_death_signal(&self) {
-        super::task_manager::parent_death_signal(Some(0))
+        super::process_table::parent_death_signal(Some(0))
             .expect("credential transition requires current live Thread");
     }
 
-    /// @description 查询或原子替换当前 Process 共享的 signal disposition。
+    /// 查询或原子替换当前 Process 共享的 signal disposition。
     ///
-    /// @param signal Linux signal number。
-    /// @param replacement 新 disposition；`None` 仅查询。
-    /// @return 修改前的 disposition。
-    /// @errors signal 越界，或尝试修改 SIGKILL/SIGSTOP 时返回 `Err(())`。
+    /// # Parameters
+    ///
+    /// - `signal`: Linux signal number。
+    /// - `replacement`: 新 disposition；`None` 仅查询。
+    ///
+    /// # Returns
+    ///
+    /// 修改前的 disposition。
+    ///
+    /// # Errors
+    ///
+    /// signal 越界，或尝试修改 SIGKILL/SIGSTOP 时返回 `Err(())`。
     pub(crate) fn signal_action(
         &self,
         signal: usize,
         replacement: Option<SignalAction>,
     ) -> Result<SignalAction, ()> {
-        if signal == 0 || signal > 64 || matches!(signal, 9 | 19) && replacement.is_some() {
+        if signal == 0
+            || signal > 64
+            || matches!(
+                signal,
+                crate::task::signal_number::SIGKILL | crate::task::signal_number::SIGSTOP
+            ) && replacement.is_some()
+        {
             return Err(());
         }
         let mut state = self.process.signal_state.lock();
@@ -431,12 +468,20 @@ impl TaskControlBlock {
         Ok(old)
     }
 
-    /// @description 查询或按 Linux `SIG_BLOCK/UNBLOCK/SETMASK` 更新当前 Thread mask。
+    /// 查询或按 Linux `SIG_BLOCK/UNBLOCK/SETMASK` 更新当前 Thread mask。
     ///
-    /// @param how mask 更新方式；仅查询时忽略。
-    /// @param replacement 待应用的 mask；`None` 仅查询。
-    /// @return 修改前的 mask。
-    /// @errors 更新时 `how` 非法返回 `Err(())`。
+    /// # Parameters
+    ///
+    /// - `how`: mask 更新方式；仅查询时忽略。
+    /// - `replacement`: 待应用的 mask；`None` 仅查询。
+    ///
+    /// # Returns
+    ///
+    /// 修改前的 mask。
+    ///
+    /// # Errors
+    ///
+    /// 更新时 `how` 非法返回 `Err(())`。
     pub(crate) fn signal_mask(&self, how: usize, replacement: Option<u64>) -> Result<u64, ()> {
         const SIG_BLOCK: usize = 0;
         const SIG_UNBLOCK: usize = 1;
@@ -455,10 +500,15 @@ impl TaskControlBlock {
         Ok(old)
     }
 
-    /// @description 安装 sigsuspend 临时 mask，并保存 signal frame 应恢复的旧 mask。
+    /// 安装 sigsuspend 临时 mask，并保存 signal frame 应恢复的旧 mask。
     ///
-    /// @param temporary 用户提供且将 SIGKILL/SIGSTOP 清除后的 mask。
-    /// @return 修改前 mask。
+    /// # Parameters
+    ///
+    /// - `temporary`: 用户提供且将 SIGKILL/SIGSTOP 清除后的 mask。
+    ///
+    /// # Returns
+    ///
+    /// 修改前 mask。
     pub(crate) fn begin_signal_suspend(&self, temporary: u64) -> u64 {
         let mut mask = self.thread.signal_mask.lock();
         let old = *mask;
@@ -469,9 +519,11 @@ impl TaskControlBlock {
         old
     }
 
-    /// @description ppoll 在非 signal 完成路径撤销临时 mask。
+    /// ppoll 在非 signal 完成路径撤销临时 mask。
     ///
-    /// @return 成功恢复返回 `Ok(())`；没有 active 临时 mask 返回 `Err(())`。
+    /// # Returns
+    ///
+    /// 成功恢复返回 `Ok(())`；没有 active 临时 mask 返回 `Err(())`。
     pub(crate) fn restore_temporary_signal_mask(&self) -> Result<(), ()> {
         let mut mask = self.thread.signal_mask.lock();
         let old = self.thread.suspend_restore_mask.lock().take().ok_or(())?;
@@ -479,10 +531,15 @@ impl TaskControlBlock {
         Ok(())
     }
 
-    /// @description 从候选 set 排除当前 disposition 明确忽略的 signal。
+    /// 从候选 set 排除当前 disposition 明确忽略的 signal。
     ///
-    /// @param candidates 临时 mask 下未屏蔽的 signal set。
-    /// @return 会进入 handler 或默认终止路径的 signal set。
+    /// # Parameters
+    ///
+    /// - `candidates`: 临时 mask 下未屏蔽的 signal set。
+    ///
+    /// # Returns
+    ///
+    /// 会进入 handler 或默认终止路径的 signal set。
     pub(crate) fn caught_signal_set(&self, candidates: u64) -> u64 {
         let state = self.process.signal_state.lock();
         let mut result = 0;
@@ -496,20 +553,30 @@ impl TaskControlBlock {
         result
     }
 
-    /// @description 判断当前 Thread 是否可接收指定 process-directed signal。
+    /// 判断当前 Thread 是否可接收指定 process-directed signal。
     ///
-    /// @param signal 已校验的 Linux signal number。
-    /// @return 未屏蔽且 disposition 不忽略时返回 true。
+    /// # Parameters
+    ///
+    /// - `signal`: 已校验的 Linux signal number。
+    ///
+    /// # Returns
+    ///
+    /// 未屏蔽且 disposition 不忽略时返回 true。
     pub(super) fn accepts_process_signal(&self, signal: usize) -> bool {
         let mask = self.thread.signal_mask.lock();
         let state = self.process.signal_state.lock();
         *mask & (1u64 << (signal - 1)) == 0 && !signal_is_ignored(signal, state.actions[signal])
     }
 
-    /// @description 判断 global init 是否应在 generation 阶段丢弃默认 disposition signal。
+    /// 判断 global init 是否应在 generation 阶段丢弃默认 disposition signal。
     ///
-    /// @param signal 已校验的 Linux signal number。
-    /// @return PID 1 对不可捕获 signal，或对当前未屏蔽的默认 action 返回 true。
+    /// # Parameters
+    ///
+    /// - `signal`: 已校验的 Linux signal number。
+    ///
+    /// # Returns
+    ///
+    /// PID 1 对不可捕获 signal，或对当前未屏蔽的默认 action 返回 true。
     pub(super) fn ignores_generated_signal_as_init(&self, signal: usize) -> bool {
         if self.tgid() != crate::task::pid::INIT_PID {
             return false;
@@ -517,14 +584,22 @@ impl TaskControlBlock {
         let mask = self.thread.signal_mask.lock();
         let state = self.process.signal_state.lock();
         state.actions[signal].handler == 0
-            && (matches!(signal, 9 | 19) || *mask & (1u64 << (signal - 1)) == 0)
+            && (matches!(
+                signal,
+                crate::task::signal_number::SIGKILL | crate::task::signal_number::SIGSTOP
+            ) || *mask & (1u64 << (signal - 1)) == 0)
     }
 
-    /// @description 原子检查给定 signal set 是否含 pending signal，并在成立时执行短操作。
+    /// 原子检查给定 signal set 是否含 pending signal，并在成立时执行短操作。
     ///
-    /// @param mask `rt_sigtimedwait` 正在等待的 signal set。
-    /// @param action 与统一 wait owner lock 配合的非阻塞操作。
-    /// @return set 中有 pending signal 时返回操作结果，否则返回 None。
+    /// # Parameters
+    ///
+    /// - `mask`: `rt_sigtimedwait` 正在等待的 signal set。
+    /// - `action`: 与统一 wait owner lock 配合的非阻塞操作。
+    ///
+    /// # Returns
+    ///
+    /// set 中有 pending signal 时返回操作结果，否则返回 None。
     pub(super) fn with_pending_signal<T>(
         &self,
         mask: u64,
@@ -535,27 +610,39 @@ impl TaskControlBlock {
         ((pending.bits | state.pending.bits) & mask != 0).then(action)
     }
 
-    /// @description 消费 signal set 中编号最小的 coalesced standard signal。
+    /// 消费 signal set 中编号最小的 coalesced standard signal。
     ///
-    /// @param mask 待消费的 signal set。
-    /// @return signal number 与其首个 siginfo 来源；没有匹配时返回 None。
+    /// # Parameters
+    ///
+    /// - `mask`: 待消费的 signal set。
+    ///
+    /// # Returns
+    ///
+    /// signal number 与其首个 siginfo 来源；没有匹配时返回 None。
     pub(super) fn take_pending_signal(&self, mask: u64) -> Option<(usize, PendingSignal)> {
         let mut state = self.process.signal_state.lock();
         let mut pending = self.thread.pending_signals.lock();
         pending.take(mask).or_else(|| state.pending.take(mask))
     }
 
-    /// @description 查询当前 Thread 是否有未屏蔽 pending signal。
+    /// 查询当前 Thread 是否有未屏蔽 pending signal。
     ///
-    /// @return 至少一个 signal 可在 trap return 交付时返回 true。
+    /// # Returns
+    ///
+    /// 至少一个 signal 可在 trap return 交付时返回 true。
     pub(super) fn has_deliverable_signal(&self) -> bool {
         self.with_deliverable_signal(|| ()).is_some()
     }
 
-    /// @description 持有 mask/pending 锁复查 signal，并在其仍可交付时执行一次操作。
+    /// 持有 mask/pending 锁复查 signal，并在其仍可交付时执行一次操作。
     ///
-    /// @param action 必须与 wait owner lock 配合的短临界区，不得阻塞或调度。
-    /// @return signal 仍可交付时返回 action 结果，否则返回 None。
+    /// # Parameters
+    ///
+    /// - `action`: 必须与 wait owner lock 配合的短临界区，不得阻塞或调度。
+    ///
+    /// # Returns
+    ///
+    /// signal 仍可交付时返回 action 结果，否则返回 None。
     pub(super) fn with_deliverable_signal<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
         let mask = self.thread.signal_mask.lock();
         let state = self.process.signal_state.lock();
@@ -569,21 +656,31 @@ impl TaskControlBlock {
             .then(action)
     }
 
-    /// @description 登记一次已转换为 userspace `EINTR` 的可重启 syscall。
+    /// 登记一次已转换为 userspace `EINTR` 的可重启 syscall。
     ///
-    /// @param syscall_id Linux/riscv64 syscall number。
-    /// @param args 原始 `a0..a5` 六个参数。
-    /// @param ecall_pc 原始 ecall 指令地址。
-    /// @return 无返回值。
-    pub(crate) fn arm_syscall_restart(&self, syscall_id: usize, args: [usize; 6], ecall_pc: usize) {
-        // RV64GC 的 IALIGN=16，32-bit ecall 可以从 2-byte 边界开始；要求 4-byte 对齐会误杀合法 RVC 指令流。
-        assert_eq!(ecall_pc & 0x1, 0, "restart ecall PC must be aligned");
+    /// # Parameters
+    ///
+    /// - `syscall_id`: asm-generic Linux syscall number。
+    /// - `args`: 原始六个 syscall argument register。
+    /// - `syscall_pc`: 原始 syscall instruction 地址。
+    pub(crate) fn arm_syscall_restart(
+        &self,
+        syscall_id: usize,
+        args: [usize; 6],
+        syscall_pc: usize,
+    ) {
+        // 只要求 architecture 最小指令对齐：RISC-V RVC 的 IALIGN=16，32-bit ecall 可从 2-byte 边界开始；要求 4-byte 对齐会误杀合法 RVC 指令流。
+        assert_eq!(
+            syscall_pc & 0x1,
+            0,
+            "restart syscall instruction PC must be aligned"
+        );
         let mut restart = self.thread.syscall_restart.lock();
         assert!(restart.is_none(), "syscall restart armed twice");
         *restart = Some(SyscallRestart {
             syscall_id,
             args,
-            ecall_pc,
+            syscall_pc,
         });
     }
 

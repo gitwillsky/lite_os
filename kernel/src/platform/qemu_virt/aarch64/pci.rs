@@ -1,4 +1,4 @@
-//! @description QEMU `virt` generic ECAM host and the UTM VirtIO Console function.
+//! QEMU `virt` generic ECAM host and the UTM VirtIO Console function.
 
 use super::discovery::PciHostInfo;
 use crate::drivers::{MmioBus, PciTransport};
@@ -32,7 +32,7 @@ struct Capability {
     length: usize,
 }
 
-/// @description One discovered modern VirtIO PCI function and its routed INTx vector.
+/// One discovered modern VirtIO PCI function and its routed INTx vector.
 pub(crate) struct VirtioPciFunction {
     pub(crate) device_id: u32,
     pub(crate) interrupt: u32,

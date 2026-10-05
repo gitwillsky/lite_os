@@ -54,9 +54,15 @@ fn registry() -> Result<&'static Mutex<PacketRegistry>, SocketError> {
     PACKET_REGISTRY.get().ok_or(SocketError::NetworkUnreachable)
 }
 
-/// @description 初始化唯一 AF_PACKET registry，并共享 DTB 选中的 Ethernet device seam。
-/// @return device 已发现时发布 registry；无网络设备时保持未初始化。
-/// @errors 无返回错误；重复调用由 Once 保持幂等。
+/// 初始化唯一 AF_PACKET registry，并共享 DTB 选中的 Ethernet device seam。
+///
+/// # Returns
+///
+/// device 已发现时发布 registry；无网络设备时保持未初始化。
+///
+/// # Errors
+///
+/// 无返回错误；重复调用由 Once 保持幂等。
 pub(super) fn init() {
     let Some(device) = network_device() else {
         return;
@@ -70,7 +76,7 @@ pub(super) fn init() {
     });
 }
 
-/// @description Linux AF_PACKET/SOCK_DGRAM endpoint；只暴露去除 Ethernet header 的 L3 packet。
+/// Linux AF_PACKET/SOCK_DGRAM endpoint；只暴露去除 Ethernet header 的 L3 packet。
 pub(super) struct PacketSocket {
     id: usize,
     notify_read: Arc<PipeEnd>,
@@ -78,11 +84,20 @@ pub(super) struct PacketSocket {
 }
 
 impl PacketSocket {
-    /// @description 创建绑定指定 network-byte-order protocol 的 packet endpoint。
-    /// @param protocol `socket(2)` 传入的 network-byte-order EtherType。
-    /// @param notify endpoint 独占的 readiness notification Pipe。
-    /// @return 已注册且可被 RX tap 发现的 endpoint Arc。
-    /// @errors protocol 不是 IPv4、registry 未初始化或 id 耗尽时返回错误。
+    /// 创建绑定指定 network-byte-order protocol 的 packet endpoint。
+    ///
+    /// # Parameters
+    ///
+    /// - `protocol`: `socket(2)` 传入的 network-byte-order EtherType。
+    /// - `notify`: endpoint 独占的 readiness notification Pipe。
+    ///
+    /// # Returns
+    ///
+    /// 已注册且可被 RX tap 发现的 endpoint Arc。
+    ///
+    /// # Errors
+    ///
+    /// protocol 不是 IPv4、registry 未初始化或 id 耗尽时返回错误。
     pub(super) fn new(
         protocol: usize,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
@@ -118,10 +133,19 @@ impl PacketSocket {
         Ok(endpoint)
     }
 
-    /// @description 将 endpoint 绑定到唯一 Ethernet interface 与 IPv4 EtherType。
-    /// @param address userspace `sockaddr_ll` 的完整语义值。
-    /// @return 首次有效绑定返回 unit。
-    /// @errors interface、protocol、hardware address 形状或重复绑定无效时返回错误。
+    /// 将 endpoint 绑定到唯一 Ethernet interface 与 IPv4 EtherType。
+    ///
+    /// # Parameters
+    ///
+    /// - `address`: userspace `sockaddr_ll` 的完整语义值。
+    ///
+    /// # Returns
+    ///
+    /// 首次有效绑定返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// interface、protocol、hardware address 形状或重复绑定无效时返回错误。
     pub(super) fn bind(&self, address: PacketAddress) -> Result<(), SocketError> {
         if address.interface_index != INTERFACE_INDEX
             || u16::from_be(address.protocol) != ETH_P_IP
@@ -144,9 +168,15 @@ impl PacketSocket {
         Ok(())
     }
 
-    /// @description 返回 endpoint 权威 `sockaddr_ll` binding。
-    /// @return 未 bind 时 ifindex 为零，其余字段保持 Linux packet socket 形状。
-    /// @errors registry 或 endpoint 已消失时返回错误。
+    /// 返回 endpoint 权威 `sockaddr_ll` binding。
+    ///
+    /// # Returns
+    ///
+    /// 未 bind 时 ifindex 为零，其余字段保持 Linux packet socket 形状。
+    ///
+    /// # Errors
+    ///
+    /// registry 或 endpoint 已消失时返回错误。
     pub(super) fn address(&self) -> Result<PacketAddress, SocketError> {
         let registry = registry()?.lock();
         let state = registry
@@ -163,11 +193,20 @@ impl PacketSocket {
         })
     }
 
-    /// @description 以 SOCK_DGRAM 语义发送一个无 Ethernet header 的 L3 packet。
-    /// @param input 完整 IPv4 packet。
-    /// @param target 必须包含唯一 interface 与六字节 destination MAC。
-    /// @return 成功提交的 L3 byte count。
-    /// @errors target/MTU 无效或 adapter 发送失败时返回标准 socket error。
+    /// 以 SOCK_DGRAM 语义发送一个无 Ethernet header 的 L3 packet。
+    ///
+    /// # Parameters
+    ///
+    /// - `input`: 完整 IPv4 packet。
+    /// - `target`: 必须包含唯一 interface 与六字节 destination MAC。
+    ///
+    /// # Returns
+    ///
+    /// 成功提交的 L3 byte count。
+    ///
+    /// # Errors
+    ///
+    /// target/MTU 无效或 adapter 发送失败时返回标准 socket error。
     pub(super) fn send_to(
         &self,
         input: &[u8],
@@ -211,11 +250,20 @@ impl PacketSocket {
         Ok(input.len())
     }
 
-    /// @description 接收或窥视一个无 Ethernet header 的 packet，并保留原始 packet 长度。
-    /// @param output kernel-owned 输出 buffer。
-    /// @param peek true 时不消费 queue head。
-    /// @return copied/full length 与 source `sockaddr_ll`。
-    /// @errors queue 为空返回 Again；registry 状态损坏返回 NotConnected。
+    /// 接收或窥视一个无 Ethernet header 的 packet，并保留原始 packet 长度。
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: kernel-owned 输出 buffer。
+    /// - `peek`: true 时不消费 queue head。
+    ///
+    /// # Returns
+    ///
+    /// copied/full length 与 source `sockaddr_ll`。
+    ///
+    /// # Errors
+    ///
+    /// queue 为空返回 Again；registry 状态损坏返回 NotConnected。
     pub(super) fn receive(
         &self,
         output: &mut ReceiveBuffer<'_>,
@@ -241,9 +289,15 @@ impl PacketSocket {
         Ok((count, full_length, source))
     }
 
-    /// @description 从唯一 receive queue 投影 packet endpoint readiness。
-    /// @return queue 非空时 readable，TX pool 尚有 free slot 时 writable。
-    /// @errors registry 消失投影为 not-readable；发送时再返回具体错误。
+    /// 从唯一 receive queue 投影 packet endpoint readiness。
+    ///
+    /// # Returns
+    ///
+    /// queue 非空时 readable，TX pool 尚有 free slot 时 writable。
+    ///
+    /// # Errors
+    ///
+    /// registry 消失投影为 not-readable；发送时再返回具体错误。
     pub(super) fn poll_state(&self) -> SocketPollState {
         let readable = registry().is_ok_and(|registry| {
             registry
@@ -260,18 +314,22 @@ impl PacketSocket {
         }
     }
 
-    /// @description 读取 packet endpoint notification source 的 readiness generation。
-    /// @return Pipe read side 当前 generation。
-    /// @errors 无错误。
+    /// 读取 packet endpoint notification source 的 readiness generation。
+    ///
+    /// # Returns
+    ///
+    /// Pipe read side 当前 generation。
     pub(super) fn readiness_generation(&self) -> u64 {
         self.notify_read
             .pipe()
             .readiness_generation(PipeDirection::Read)
     }
 
-    /// @description 把 packet notification Pipe 投影给统一 OFD wait seam。
-    /// @return 单一 read-direction wait source。
-    /// @errors 无错误。
+    /// 把 packet notification Pipe 投影给统一 OFD wait seam。
+    ///
+    /// # Returns
+    ///
+    /// 单一 read-direction wait source。
     pub(super) fn wait_sources(&self) -> super::SocketWaitSources {
         [
             Some(SocketWaitSource::Notification(self.notify_read.pipe())),
@@ -279,9 +337,11 @@ impl PacketSocket {
         ]
     }
 
-    /// @description 在 registry lock 已释放后发布一次 level-triggered readable 通知。
-    /// @return 无返回值。
-    /// @errors notification 已存在或 Pipe 已关闭时幂等忽略。
+    /// 在 registry lock 已释放后发布一次 level-triggered readable 通知。
+    ///
+    /// # Errors
+    ///
+    /// notification 已存在或 Pipe 已关闭时幂等忽略。
     pub(super) fn notify(&self) {
         self.notify_write.signal_readiness();
     }
@@ -290,9 +350,11 @@ impl PacketSocket {
         self.consume_wait_notifications();
     }
 
-    /// @description 排空已观察的 packet readiness edge，供统一 poll registration 在 owner lock 内执行。
+    /// 排空已观察的 packet readiness edge，供统一 poll registration 在 owner lock 内执行。
     ///
-    /// @return 无返回值；实际 queue readiness 由随后的 level recheck 决定。
+    /// # Returns
+    ///
+    /// 无返回值；实际 queue readiness 由随后的 level recheck 决定。
     pub(super) fn consume_wait_notifications(&self) {
         self.notify_read.drain_readiness();
     }
@@ -306,10 +368,19 @@ impl Drop for PacketSocket {
     }
 }
 
-/// @description 在 smoltcp 解析前将一个 Ethernet frame 镜像给匹配的 packet endpoints。
-/// @param frame 包含 Ethernet header 的完整 RX frame。
-/// @return 本轮从 empty 转为 readable、且需在 NetworkStack 解锁后唤醒的 endpoints。
-/// @errors 损坏、非 IPv4、未绑定或队列已满的 frame 被丢弃，不改变 L3 ingress。
+/// 在 smoltcp 解析前将一个 Ethernet frame 镜像给匹配的 packet endpoints。
+///
+/// # Parameters
+///
+/// - `frame`: 包含 Ethernet header 的完整 RX frame。
+///
+/// # Returns
+///
+/// 本轮从 empty 转为 readable、且需在 NetworkStack 解锁后唤醒的 endpoints。
+///
+/// # Errors
+///
+/// 损坏、非 IPv4、未绑定或队列已满的 frame 被丢弃，不改变 L3 ingress。
 pub(super) fn deliver(frame: &[u8]) {
     if frame.len() < ETH_HEADER_LENGTH || u16::from_be_bytes([frame[12], frame[13]]) != ETH_P_IP {
         return;
@@ -366,10 +437,15 @@ pub(super) fn deliver(frame: &[u8]) {
     });
 }
 
-/// @description 在 TX capacity 从零转为非零时向全部 packet endpoint 发布 writable edge。
+/// 在 TX capacity 从零转为非零时向全部 packet endpoint 发布 writable edge。
 ///
-/// @return 无返回值；没有 live endpoint 时为空操作。
-/// @errors 不分配；实际 Pipe notification 由 NetworkStack lock 外的统一 drain 完成。
+/// # Returns
+///
+/// 无返回值；没有 live endpoint 时为空操作。
+///
+/// # Errors
+///
+/// 不分配；实际 Pipe notification 由 NetworkStack lock 外的统一 drain 完成。
 pub(super) fn publish_transmit_ready() {
     let Some(registry) = PACKET_REGISTRY.get() else {
         return;
@@ -380,9 +456,15 @@ pub(super) fn publish_transmit_ready() {
         .for_each_mut(|_, state| state.notification_pending = true);
 }
 
-/// @description 按 endpoint ID 取出下一个待发布的 packet readable edge。
-/// @param after exclusive ID cursor。
-/// @return live 且拥有 pending edge 的最小后继 endpoint；返回前原子消费 edge。
+/// 按 endpoint ID 取出下一个待发布的 packet readable edge。
+///
+/// # Parameters
+///
+/// - `after`: exclusive ID cursor。
+///
+/// # Returns
+///
+/// live 且拥有 pending edge 的最小后继 endpoint；返回前原子消费 edge。
 pub(super) fn take_pending_notification(after: usize) -> Option<(usize, Arc<PacketSocket>)> {
     let mut registry = PACKET_REGISTRY.get()?.lock();
     let (id, endpoint) = registry

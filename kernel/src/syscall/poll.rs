@@ -96,9 +96,15 @@ fn prepare_descriptors(descriptors: &[PollDescriptor]) {
     }
 }
 
-/// @description 在 wait-key snapshot 后准备同一 OFD tree 的 concrete adapters。
-/// @param ofd source tree root。
-/// @return 无返回值；adapter preparation 不分配。
+/// 在 wait-key snapshot 后准备同一 OFD tree 的 concrete adapters。
+///
+/// # Parameters
+///
+/// - `ofd`: source tree root。
+///
+/// # Returns
+///
+/// 无返回值；adapter preparation 不分配。
 pub(super) fn prepare_wait_sources(ofd: &Arc<OpenFileDescription>) {
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { terminal, pty, .. }) => {
@@ -128,11 +134,16 @@ pub(super) fn prepare_wait_sources(ofd: &Arc<OpenFileDescription>) {
     }
 }
 
-/// @description 通过统一 wait registry 等待一个 OFD 达到指定 level readiness。
+/// 通过统一 wait registry 等待一个 OFD 达到指定 level readiness。
 ///
-/// @param ofd 要等待的唯一 open-file description。
-/// @param events Linux poll event mask。
-/// @return source wake、signal interruption；无 deadline，因此不会 timeout。
+/// # Parameters
+///
+/// - `ofd`: 要等待的唯一 open-file description。
+/// - `events`: Linux poll event mask。
+///
+/// # Returns
+///
+/// source wake、signal interruption；无 deadline，因此不会 timeout。
 pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitResult {
     let mut keys = PollWaitKeys::new();
     if keys.add_interest(ofd, i16::MAX, false, None).is_err() {
@@ -145,9 +156,15 @@ pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitR
     })
 }
 
-/// @description 等待一次 AF_UNIX datagram send 的具体 target queue 恢复容量。
-/// @param blocker socket facade 持有的 opaque target projection。
-/// @return source wake、signal interruption或 wait-key allocation failure。
+/// 等待一次 AF_UNIX datagram send 的具体 target queue 恢复容量。
+///
+/// # Parameters
+///
+/// - `blocker`: socket facade 持有的 opaque target projection。
+///
+/// # Returns
+///
+/// source wake、signal interruption或 wait-key allocation failure。
 pub(super) fn wait_for_socket_send(blocker: &SocketSendBlocker) -> WaitResult {
     let mut keys = PollWaitKeys::new();
     if keys
@@ -161,14 +178,19 @@ pub(super) fn wait_for_socket_send(blocker: &SocketSendBlocker) -> WaitResult {
     wait_for_poll(keys, None, || guards.changed() || blocker.is_ready())
 }
 
-/// @description 实现 Linux RV64 ppoll 的 fd readiness、timeout 与临时 signal mask。
+/// 实现 Linux LP64 ppoll 的 fd readiness、timeout 与临时 signal mask。
 ///
-/// @param poll_fds userspace 8-byte `struct pollfd` 数组。
-/// @param count descriptor 数量，受当前 fd-table capacity 约束。
-/// @param timeout 可选 relative monotonic timespec。
-/// @param signal_mask 可选 8-byte 临时 mask。
-/// @param signal_set_size signal_mask 非空时必须为 8。
-/// @return ready fd 数、零 timeout，或负 errno。
+/// # Parameters
+///
+/// - `poll_fds`: userspace 8-byte `struct pollfd` 数组。
+/// - `count`: descriptor 数量，受当前 fd-table capacity 约束。
+/// - `timeout`: 可选 relative monotonic timespec。
+/// - `signal_mask`: 可选 8-byte 临时 mask。
+/// - `signal_set_size`: signal_mask 非空时必须为 8。
+///
+/// # Returns
+///
+/// ready fd 数、零 timeout，或负 errno。
 pub(crate) fn sys_ppoll(
     poll_fds: usize,
     count: usize,
@@ -300,14 +322,20 @@ pub(crate) fn sys_ppoll(
     }
 }
 
-/// @description 实现 Linux RV64 `pselect6` fd-set readiness、timeout 与原子临时 signal mask。
-/// @param count 检查的 fd 上界，不得超过 fd table capacity。
-/// @param read_set 可选 read fd bitmap。
-/// @param write_set 可选 write fd bitmap。
-/// @param except_set 可选 exceptional-condition fd bitmap。
-/// @param timeout 可选 relative monotonic timespec。
-/// @param signal_argument 可选 `{ mask pointer, sigset size }` pair。
-/// @return 至少在一个输出集合中就绪的 fd 数、零 timeout，或 Linux 负 errno。
+/// 实现 Linux LP64 `pselect6` fd-set readiness、timeout 与原子临时 signal mask。
+///
+/// # Parameters
+///
+/// - `count`: 检查的 fd 上界，不得超过 fd table capacity。
+/// - `read_set`: 可选 read fd bitmap。
+/// - `write_set`: 可选 write fd bitmap。
+/// - `except_set`: 可选 exceptional-condition fd bitmap。
+/// - `timeout`: 可选 relative monotonic timespec。
+/// - `signal_argument`: 可选 `{ mask pointer, sigset size }` pair。
+///
+/// # Returns
+///
+/// 至少在一个输出集合中就绪的 fd 数、零 timeout，或 Linux 负 errno。
 pub(crate) fn sys_pselect6(
     count: usize,
     read_set: usize,

@@ -63,10 +63,10 @@
   scheduler processor topology 必须先于 wait-target factory 建立；随后加载 `/bin/init` 的 block I/O
   才能安全观察“无 current task”并选择 bootstrap WFI。反序会让 `current_task()` 永久等待尚未建立
   的 topology。bootstrap wait 每次睡眠前必须检查一次 used ring；若 completion 已在 S-mode external
-  delivery 启用前发布，必须经同一 `VirtIoCompletionIrq` owner 先 ack 已断言的 device line 再 reclaim，
+  delivery 启用前发布，必须经同一 `VirtIOCompletionIrq` owner 先 ack 已断言的 device line 再 reclaim，
   使下一次慢 completion 能产生可唤醒 WFI 的新中断。enable-to-WFI 窗口
   由上述 trap-PC resume 规则关闭；这不是 MMIO polling 或 spin fallback。
-- block/RNG hardirq 共用 `VirtIoCompletionIrq`：status/ack 成功时精确确认 bits，读取或 ack 失败时
+- block/RNG hardirq 共用 `VirtIOCompletionIrq`：status/ack 成功时精确确认 bits，读取或 ack 失败时
   发布 transport-error latch，并无条件发布一次 `DriverIo` deferred work；safe point 消费 error 后
   reset/fail 全部 request。吞掉 MMIO error 会让已 claim 的唯一 IRQ edge 后 waiter 永久睡眠。
 - platform 是 concrete adapter 的唯一装配者；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。

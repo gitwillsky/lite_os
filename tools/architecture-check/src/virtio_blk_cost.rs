@@ -96,7 +96,7 @@ fn bootstrap_wait_factory_ordered(sources: &[SourceFile]) -> bool {
     };
     let Some(factory) = source
         .text
-        .find("task_manager::initialize_driver_io_wait();")
+        .find("process_table::initialize_driver_io_wait();")
     else {
         return false;
     };

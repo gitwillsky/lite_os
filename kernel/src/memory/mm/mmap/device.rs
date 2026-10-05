@@ -1,15 +1,20 @@
 use super::*;
 
 impl MemorySet {
-    /// @description 建立直接映射 DRM/GEM physical extent 的共享 device VMA。
+    /// 建立直接映射 DRM/GEM physical extent 的共享 device VMA。
     ///
-    /// @param address 零表示由内核选址；非零是 hint 或 exact 地址。
-    /// @param length 非零字节长度，不得超过 backing extent。
-    /// @param permission 用户 read/write/none 权限；device mapping 不可执行。
-    /// @param fixed_noreplace 为真时必须精确使用 address，冲突不替换。
-    /// @param source DRM 已完成 handle/offset/length 授权的 backing view。
-    /// @param address_space_limit 当前 Process `RLIMIT_AS` soft limit。
-    /// @return 成功返回映射起始地址；失败不留下 PTE 或 VMA owner。
+    /// # Parameters
+    ///
+    /// - `address`: 零表示由内核选址；非零是 hint 或 exact 地址。
+    /// - `length`: 非零字节长度，不得超过 backing extent。
+    /// - `permission`: 用户 read/write/none 权限；device mapping 不可执行。
+    /// - `fixed_noreplace`: 为真时必须精确使用 address，冲突不替换。
+    /// - `source`: DRM 已完成 handle/offset/length 授权的 backing view。
+    /// - `address_space_limit`: 当前 Process `RLIMIT_AS` soft limit。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回映射起始地址；失败不留下 PTE 或 VMA owner。
     pub(crate) fn map_device(
         &mut self,
         address: usize,

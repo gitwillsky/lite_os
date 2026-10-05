@@ -12,7 +12,7 @@ use crate::cpu::HardwareCpuId;
 // OWNER: platform discovery publishes the immutable machine description for the kernel lifetime.
 static PLATFORM_INFO: Once<PlatformInfo> = Once::new();
 
-/// @description QEMU virt firmware 交付的 opaque device-tree handoff。
+/// QEMU virt firmware 交付的 opaque device-tree handoff。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BootInfo(usize);
@@ -27,11 +27,15 @@ impl BootInfo {
     }
 }
 
-/// @description 解析 firmware 交付的 QEMU `virt` flattened device tree。
+/// 解析 firmware 交付的 QEMU `virt` flattened device tree。
 ///
-/// @param device_tree_address identity-mapped DTB physical address。
-/// @return 无返回值。
-/// @errors DTB 无效或重复初始化时 fail-stop。
+/// # Parameters
+///
+/// - `device_tree_address`: identity-mapped DTB physical address。
+///
+/// # Errors
+///
+/// DTB 无效或重复初始化时 fail-stop。
 pub(crate) fn initialize(boot: BootInfo) {
     PLATFORM_INFO.call_once(|| PlatformInfo::parse(boot.address()));
 }
@@ -44,15 +48,20 @@ pub(crate) fn validate_boot_info(boot: BootInfo) {
     );
 }
 
-/// @description 获取已发布的 immutable platform description。
+/// 获取已发布的 immutable platform description。
 ///
-/// @return kernel lifetime 内唯一的 QEMU `virt` description。
-/// @errors platform 尚未初始化时等待 publication。
+/// # Returns
+///
+/// kernel lifetime 内唯一的 QEMU `virt` description。
+///
+/// # Errors
+///
+/// platform 尚未初始化时等待 publication。
 pub(crate) fn info() -> &'static PlatformInfo {
     PLATFORM_INFO.wait()
 }
 
-/// @description 迭代 platform 中所有 enabled hardware CPU identity。
+/// 迭代 platform 中所有 enabled hardware CPU identity。
 pub(crate) fn hardware_cpu_ids() -> impl ExactSizeIterator<Item = HardwareCpuId> {
     HardwareCpuIds(info().hardware_cpu_ids.iter())
 }

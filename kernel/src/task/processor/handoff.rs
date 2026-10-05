@@ -5,12 +5,17 @@ pub(super) struct PendingHandoff {
     irq: LocalIrqTransfer,
 }
 
-/// @description 把已经停止执行、尚未完成 scheduling consequence 的 outgoing owner
+/// 把已经停止执行、尚未完成 scheduling consequence 的 outgoing owner
 /// 发布到当前 CPU；next task 或 idle continuation 唯一消费。
-/// @param task context save target 的唯一 outgoing owner。
-/// @param irq 进入 scheduler transaction 前的 local IRQ restore consequence。
-/// @return 无返回值。
-/// @panics 当前 CPU 已有未消费 handoff 时 fail-stop。
+///
+/// # Parameters
+///
+/// - `task`: context save target 的唯一 outgoing owner。
+/// - `irq`: 进入 scheduler transaction 前的 local IRQ restore consequence。
+///
+/// # Panics
+///
+/// 当前 CPU 已有未消费 handoff 时 fail-stop。
 pub(in crate::task) fn publish_pending_handoff(task: Arc<TaskControlBlock>, irq: LocalIrqGuard) {
     with_current_processor(|processor| {
         assert!(
@@ -24,9 +29,15 @@ pub(in crate::task) fn publish_pending_handoff(task: Arc<TaskControlBlock>, irq:
     });
 }
 
-/// @description 消费前一次 kernel context switch 留下的 outgoing owner 与 IRQ guard。
-/// @return 没有 task→task/task→idle handoff 时返回 None。
-/// @panics 无。
+/// 消费前一次 kernel context switch 留下的 outgoing owner 与 IRQ guard。
+///
+/// # Returns
+///
+/// 没有 task→task/task→idle handoff 时返回 None。
+///
+/// # Panics
+///
+/// 无。
 pub(in crate::task) fn take_pending_handoff() -> Option<(Arc<TaskControlBlock>, LocalIrqTransfer)> {
     with_current_processor(|processor| {
         processor
@@ -36,11 +47,20 @@ pub(in crate::task) fn take_pending_handoff() -> Option<(Arc<TaskControlBlock>, 
     })
 }
 
-/// @description runqueue 没有 successor 时，取消可继续执行 task 的过渡态，避免自我 yield
+/// runqueue 没有 successor 时，取消可继续执行 task 的过渡态，避免自我 yield
 /// 仍进入 idle；真正 Blocking/Stopped 或 affinity 禁止当前 CPU 时返回 false。
-/// @param task 已撤销 Processor current、尚未发布 post-switch consequence 的 outgoing owner。
-/// @return 当前 logical CPU 可继续执行该 task 时返回 true。
-/// @panics current/load/state owner 不一致时 fail-stop。
+///
+/// # Parameters
+///
+/// - `task`: 已撤销 Processor current、尚未发布 post-switch consequence 的 outgoing owner。
+///
+/// # Returns
+///
+/// 当前 logical CPU 可继续执行该 task 时返回 true。
+///
+/// # Panics
+///
+/// current/load/state owner 不一致时 fail-stop。
 pub(in crate::task) fn resume_without_switch(task: &Arc<TaskControlBlock>) -> bool {
     let cpu = cpu::current_id();
     with_current_processor(|processor| {

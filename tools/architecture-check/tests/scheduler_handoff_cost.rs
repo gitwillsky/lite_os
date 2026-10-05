@@ -48,8 +48,8 @@ fn function_body<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
 }
 
 fn measure() -> HandoffCost {
-    let task_manager = read("kernel/src/task/task_manager.rs");
-    let context_switch = read("kernel/src/task/task_manager/context_switch.rs");
+    let process_table = read("kernel/src/task/process_table.rs");
+    let context_switch = read("kernel/src/task/process_table/context_switch.rs");
     let handoff = read("kernel/src/task/processor/handoff.rs");
     let sync = read("kernel/src/sync/mod.rs");
     let task = read("kernel/src/task/mod.rs");
@@ -57,7 +57,7 @@ fn measure() -> HandoffCost {
         function_body(&context_switch, "pub(super) fn schedule_with_task_context(").is_some_and(
             |body| body.contains("switch_kernel_context(task_cx_ptr, idle_task_cx_ptr)"),
         );
-    let legacy_dispatch = function_body(&task_manager, "fn switch_to_task(").is_some_and(|body| {
+    let legacy_dispatch = function_body(&process_table, "fn switch_to_task(").is_some_and(|body| {
         body.contains("switch_kernel_context(idle_task_cx_ptr, next_task_cx_ptr)")
     });
     let direct_handoff = function_body(&context_switch, "fn select_task_switch_target(")

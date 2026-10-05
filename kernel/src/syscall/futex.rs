@@ -88,15 +88,20 @@ fn futex_error(error: FutexWaitError) -> isize {
     }
 }
 
-/// @description 实现 Linux/riscv64 非 PI futex wait/wake/bitset/requeue 语义。
+/// 实现 Linux 64-bit 非 PI futex wait/wake/bitset/requeue 语义。
 ///
-/// @param address source futex word，必须 4-byte aligned 且当前可读。
-/// @param operation Linux FUTEX command，可附加 PRIVATE/CLOCK_REALTIME flag。
-/// @param value WAIT expected 或 wake count。
-/// @param timeout WAIT timespec pointer，或 REQUEUE 的 requeue count。
-/// @param target REQUEUE target futex word。
-/// @param value3 WAIT/WAKE bitset，或 CMP_REQUEUE expected value。
-/// @return 成功返回零或受影响 waiter 数；失败返回负 Linux errno。
+/// # Parameters
+///
+/// - `address`: source futex word，必须 4-byte aligned 且当前可读。
+/// - `operation`: Linux FUTEX command，可附加 PRIVATE/CLOCK_REALTIME flag。
+/// - `value`: WAIT expected 或 wake count。
+/// - `timeout`: WAIT timespec pointer，或 REQUEUE 的 requeue count。
+/// - `target`: REQUEUE target futex word。
+/// - `value3`: WAIT/WAKE bitset，或 CMP_REQUEUE expected value。
+///
+/// # Returns
+///
+/// 成功返回零或受影响 waiter 数；失败返回负 Linux errno。
 pub(crate) fn sys_futex(
     address: usize,
     operation: usize,

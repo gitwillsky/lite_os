@@ -28,11 +28,16 @@ struct UserSignalStack {
 
 const _: () = assert!(core::mem::size_of::<UserSignalStack>() == 24);
 
-/// @description 实现 Linux process/process-group signal selector 与 signal-zero probe。
+/// 实现 Linux process/process-group signal selector 与 signal-zero probe。
 ///
-/// @param pid `>0` 为 TGID，`0` 为 caller PGID，`-1` 为除 init/caller 外全部，`<-1` 为 PGID。
-/// @param signal Linux signal number；零只做 existence 与 fixed-root permission probe。
-/// @return 至少一个 live Process 匹配返回零；否则返回标准负 errno。
+/// # Parameters
+///
+/// - `pid`: `>0` 为 TGID，`0` 为 caller PGID，`-1` 为除 init/caller 外全部，`<-1` 为 PGID。
+/// - `signal`: Linux signal number；零只做 existence 与 fixed-root permission probe。
+///
+/// # Returns
+///
+/// 至少一个 live Process 匹配返回零；否则返回标准负 errno。
 pub(crate) fn sys_kill(pid: i32, signal: usize) -> isize {
     if signal > 64 {
         return -errno::EINVAL;
@@ -45,13 +50,18 @@ pub(crate) fn sys_kill(pid: i32, signal: usize) -> isize {
     }
 }
 
-/// @description 实现 Linux RV64 `rt_sigaction` 的 disposition 查询与替换。
+/// 实现 Linux LP64 `rt_sigaction` 的 disposition 查询与替换。
 ///
-/// @param signal Linux signal number。
-/// @param action 新 24-byte action 地址；零表示仅查询。
-/// @param old_action 旧 action 输出地址；零表示不输出。
-/// @param signal_set_size userspace sigset 大小，必须为 8。
-/// @return 成功返回零，失败返回负 errno。
+/// # Parameters
+///
+/// - `signal`: Linux signal number。
+/// - `action`: 新 24-byte action 地址；零表示仅查询。
+/// - `old_action`: 旧 action 输出地址；零表示不输出。
+/// - `signal_set_size`: userspace sigset 大小，必须为 8。
+///
+/// # Returns
+///
+/// 成功返回零，失败返回负 errno。
 pub(crate) fn sys_rt_sigaction(
     signal: usize,
     action: usize,
@@ -101,13 +111,18 @@ pub(crate) fn sys_rt_sigaction(
     0
 }
 
-/// @description 实现当前 Thread 的 Linux `rt_sigprocmask`。
+/// 实现当前 Thread 的 Linux `rt_sigprocmask`。
 ///
-/// @param how `SIG_BLOCK/UNBLOCK/SETMASK` 对应值。
-/// @param set 新 mask 地址；零表示仅查询。
-/// @param old_set 旧 mask 输出地址；零表示不输出。
-/// @param signal_set_size userspace sigset 大小，必须为 8。
-/// @return 成功返回零，失败返回负 errno。
+/// # Parameters
+///
+/// - `how`: `SIG_BLOCK/UNBLOCK/SETMASK` 对应值。
+/// - `set`: 新 mask 地址；零表示仅查询。
+/// - `old_set`: 旧 mask 输出地址；零表示不输出。
+/// - `signal_set_size`: userspace sigset 大小，必须为 8。
+///
+/// # Returns
+///
+/// 成功返回零，失败返回负 errno。
 pub(crate) fn sys_rt_sigprocmask(
     how: usize,
     set: usize,
@@ -137,12 +152,17 @@ pub(crate) fn sys_rt_sigprocmask(
     0
 }
 
-/// @description 实现 Linux thread-group-aware signal 投递与 signal-zero probe。
+/// 实现 Linux thread-group-aware signal 投递与 signal-zero probe。
 ///
-/// @param tgid 目标 Process ID。
-/// @param tid 目标 Thread ID。
-/// @param signal Linux signal number。
-/// @return 成功返回零，失败返回负 errno。
+/// # Parameters
+///
+/// - `tgid`: 目标 Process ID。
+/// - `tid`: 目标 Thread ID。
+/// - `signal`: Linux signal number。
+///
+/// # Returns
+///
+/// 成功返回零，失败返回负 errno。
 pub(crate) fn sys_tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
     if signal > 64 {
         return -errno::EINVAL;
@@ -153,11 +173,16 @@ pub(crate) fn sys_tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
     send_thread_signal(tgid, tid, signal).map_or_else(signal_send_errno, |()| 0)
 }
 
-/// @description 实现 Linux `tkill` 的全局 TID selector，并复用 thread-signal routing。
+/// 实现 Linux `tkill` 的全局 TID selector，并复用 thread-signal routing。
 ///
-/// @param tid 目标 Thread ID。
-/// @param signal Linux signal number；零只做 existence probe。
-/// @return 成功返回零；signal 非法返回 `EINVAL`，TID 不存在返回 `ESRCH`。
+/// # Parameters
+///
+/// - `tid`: 目标 Thread ID。
+/// - `signal`: Linux signal number；零只做 existence probe。
+///
+/// # Returns
+///
+/// 成功返回零；signal 非法返回 `EINVAL`，TID 不存在返回 `ESRCH`。
 pub(crate) fn sys_tkill(tid: usize, signal: usize) -> isize {
     if signal > 64 {
         return -errno::EINVAL;
@@ -165,11 +190,16 @@ pub(crate) fn sys_tkill(tid: usize, signal: usize) -> isize {
     send_tid_signal(tid, signal).map_or_else(signal_send_errno, |()| 0)
 }
 
-/// @description 查询并可选替换当前 Thread 的 Linux RV64 alternate signal stack。
+/// 查询并可选替换当前 Thread 的 Linux LP64 alternate signal stack。
 ///
-/// @param new_stack 新 24-byte `stack_t` 地址；零表示仅查询。
-/// @param old_stack 旧 `stack_t` 输出地址；零表示不输出。
-/// @return 成功返回零；用户地址、active stack、flags 或长度非法时返回负 errno。
+/// # Parameters
+///
+/// - `new_stack`: 新 24-byte `stack_t` 地址；零表示仅查询。
+/// - `old_stack`: 旧 `stack_t` 输出地址；零表示不输出。
+///
+/// # Returns
+///
+/// 成功返回零；用户地址、active stack、flags 或长度非法时返回负 errno。
 pub(crate) fn sys_sigaltstack(new_stack: usize, old_stack: usize) -> isize {
     let task = current_task().expect("sigaltstack requires current task");
     let replacement = if new_stack == 0 {
@@ -179,7 +209,7 @@ pub(crate) fn sys_sigaltstack(new_stack: usize, old_stack: usize) -> isize {
         if task.copy_from_user(new_stack, &mut bytes).is_err() {
             return -errno::EFAULT;
         }
-        // SAFETY: bytes has the exact RV64 stack_t size; read_unaligned yields an owned value.
+        // SAFETY: bytes has the exact LP64 stack_t size; read_unaligned yields an owned value.
         let stack = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<UserSignalStack>()) };
         Some(SignalStack {
             sp: stack.sp,
@@ -222,11 +252,16 @@ fn signal_send_errno(error: SignalSendError) -> isize {
     }
 }
 
-/// @description 原子安装临时 mask 并等待一个将由 trap-return handler 消费的 signal。
+/// 原子安装临时 mask 并等待一个将由 trap-return handler 消费的 signal。
 ///
-/// @param mask 8-byte userspace signal set 地址。
-/// @param signal_set_size 必须为 8。
-/// @return 捕获 signal 后固定返回 `EINTR`；frame 恢复调用前 mask。
+/// # Parameters
+///
+/// - `mask`: 8-byte userspace signal set 地址。
+/// - `signal_set_size`: 必须为 8。
+///
+/// # Returns
+///
+/// 捕获 signal 后固定返回 `EINTR`；frame 恢复调用前 mask。
 pub(crate) fn sys_rt_sigsuspend(mask: usize, signal_set_size: usize) -> isize {
     if signal_set_size != 8 {
         return -errno::EINVAL;
@@ -257,13 +292,18 @@ pub(crate) fn sys_rt_sigsuspend(mask: usize, signal_set_size: usize) -> isize {
     }
 }
 
-/// @description 实现 Linux RV64 `rt_sigtimedwait` 的 standard-signal 消费与可选 timeout。
+/// 实现 Linux LP64 `rt_sigtimedwait` 的 standard-signal 消费与可选 timeout。
 ///
-/// @param set 8-byte signal set 地址。
-/// @param info 可选 128-byte `siginfo_t` 输出地址。
-/// @param timeout 可选相对 monotonic `timespec` 地址；零表示无限等待。
-/// @param signal_set_size userspace sigset 大小，必须为 8。
-/// @return 成功返回 signal number；timeout、无关 signal 或用户内存错误返回负 errno。
+/// # Parameters
+///
+/// - `set`: 8-byte signal set 地址。
+/// - `info`: 可选 128-byte `siginfo_t` 输出地址。
+/// - `timeout`: 可选相对 monotonic `timespec` 地址；零表示无限等待。
+/// - `signal_set_size`: userspace sigset 大小，必须为 8。
+///
+/// # Returns
+///
+/// 成功返回 signal number；timeout、无关 signal 或用户内存错误返回负 errno。
 pub(crate) fn sys_rt_sigtimedwait(
     set: usize,
     info: usize,
@@ -324,9 +364,11 @@ pub(crate) fn sys_rt_sigtimedwait(
     signal as isize
 }
 
-/// @description 从当前用户 sp 指向的唯一 RV64 rt frame 恢复 signal 前上下文。
+/// 从当前用户 sp 指向的唯一 LP64 rt frame 恢复 signal 前上下文。
 ///
-/// @return 成功时返回恢复后的用户 a0，坏 frame 返回 `-EFAULT`。
+/// # Returns
+///
+/// 成功时返回恢复后的用户 a0，坏 frame 返回 `-EFAULT`。
 pub(crate) fn sys_rt_sigreturn() -> isize {
     match current_task()
         .expect("rt_sigreturn requires current task")

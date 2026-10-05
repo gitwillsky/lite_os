@@ -11,7 +11,7 @@ const EMPTY_ENTRY: FenceEntry = FenceEntry {
     complete: false,
 };
 
-/// @description 保存 adapter 已公开 fence 的提交顺序与乱序完成事实。
+/// 保存 adapter 已公开 fence 的提交顺序与乱序完成事实。
 struct FenceTimeline {
     entries: [FenceEntry; FENCE_TIMELINE_CAPACITY],
     head: usize,
@@ -20,8 +20,11 @@ struct FenceTimeline {
 }
 
 impl FenceTimeline {
-    /// @description 构造尚无公开 submission 的 fence timeline。
-    /// @return completed watermark 与 pending ring 均为空的 owner。
+    /// 构造尚无公开 submission 的 fence timeline。
+    ///
+    /// # Returns
+    ///
+    /// completed watermark 与 pending ring 均为空的 owner。
     const fn new() -> Self {
         Self {
             entries: [EMPTY_ENTRY; FENCE_TIMELINE_CAPACITY],
@@ -31,9 +34,15 @@ impl FenceTimeline {
         }
     }
 
-    /// @description 按 adapter publication 顺序登记一个 userspace 可等待的 fence。
-    /// @param fence adapter 返回的非零单调 fence；内部 command fence 可以形成空洞。
-    /// @errors fence 非单调或超过 controlq 最大 descriptor head 数时返回 unit error。
+    /// 按 adapter publication 顺序登记一个 userspace 可等待的 fence。
+    ///
+    /// # Parameters
+    ///
+    /// - `fence`: adapter 返回的非零单调 fence；内部 command fence 可以形成空洞。
+    ///
+    /// # Errors
+    ///
+    /// fence 非单调或超过 controlq 最大 descriptor head 数时返回 unit error。
     fn submit(&mut self, fence: u64) -> Result<(), ()> {
         let previous = if self.count == 0 {
             self.completed
@@ -53,10 +62,19 @@ impl FenceTimeline {
         Ok(())
     }
 
-    /// @description 记录一个 exact fence completion，并推进连续公开 submission 水位。
-    /// @param fence device response 已验证的 exact operation fence。
-    /// @return 所有更早公开 fence 都完成后可安全暴露给 waiter 的新水位。
-    /// @errors fence 未登记或重复完成时返回 unit error。
+    /// 记录一个 exact fence completion，并推进连续公开 submission 水位。
+    ///
+    /// # Parameters
+    ///
+    /// - `fence`: device response 已验证的 exact operation fence。
+    ///
+    /// # Returns
+    ///
+    /// 所有更早公开 fence 都完成后可安全暴露给 waiter 的新水位。
+    ///
+    /// # Errors
+    ///
+    /// fence 未登记或重复完成时返回 unit error。
     fn complete(&mut self, fence: u64) -> Result<u64, ()> {
         let entry = (0..self.count)
             .map(|offset| (self.head + offset) % FENCE_TIMELINE_CAPACITY)
@@ -75,8 +93,11 @@ impl FenceTimeline {
         Ok(self.completed)
     }
 
-    /// @description 返回所有更早公开 submission 均已完成的 fence 水位。
-    /// @return waiter 可安全使用 `>= fence` 比较的单调值。
+    /// 返回所有更早公开 submission 均已完成的 fence 水位。
+    ///
+    /// # Returns
+    ///
+    /// waiter 可安全使用 `>= fence` 比较的单调值。
     const fn completed(&self) -> u64 {
         self.completed
     }

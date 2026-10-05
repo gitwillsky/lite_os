@@ -18,11 +18,20 @@ fn identity(metadata: InodeMetadata) -> UnixPathIdentity {
     }
 }
 
-/// @description 解析并授权 pathname socket inode，保活 inode 至 caller 完成 registry lookup。
-/// @param address canonical pathname sockaddr value。
-/// @param require_write connect 需要目标 socket inode write permission 时为 true。
-/// @return inode lifetime guard 与稳定 registry identity。
-/// @errors pathname、类型、权限或 I/O 失败返回标准 errno。
+/// 解析并授权 pathname socket inode，保活 inode 至 caller 完成 registry lookup。
+///
+/// # Parameters
+///
+/// - `address`: canonical pathname sockaddr value。
+/// - `require_write`: connect 需要目标 socket inode write permission 时为 true。
+///
+/// # Returns
+///
+/// inode lifetime guard 与稳定 registry identity。
+///
+/// # Errors
+///
+/// pathname、类型、权限或 I/O 失败返回标准 errno。
 pub(super) fn resolve(
     address: &UnixAddress,
     require_write: bool,
@@ -46,10 +55,16 @@ pub(super) fn resolve(
     Ok((inode, identity(metadata)))
 }
 
-/// @description 创建真实 VFS socket inode并发布 AF_UNIX runtime binding。
-/// @param socket 尚未绑定的 AF_UNIX endpoint。
-/// @param address canonical pathname sockaddr value。
-/// @return 成功返回零；失败回滚尚未成功发布的目录项。
+/// 创建真实 VFS socket inode并发布 AF_UNIX runtime binding。
+///
+/// # Parameters
+///
+/// - `socket`: 尚未绑定的 AF_UNIX endpoint。
+/// - `address`: canonical pathname sockaddr value。
+///
+/// # Returns
+///
+/// 成功返回零；失败回滚尚未成功发布的目录项。
 pub(super) fn bind(socket: &Arc<Socket>, address: UnixAddress) -> isize {
     let task = current_task().expect("AF_UNIX pathname bind requires current task");
     let access = task.access_identity(true);

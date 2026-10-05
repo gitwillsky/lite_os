@@ -11,10 +11,10 @@ use crate::{
     },
 };
 
-/// @description argv/envp strings、NUL 与 pointer slots 共用的 exec byte budget。
+/// argv/envp strings、NUL 与 pointer slots 共用的 exec byte budget。
 pub(crate) const EXEC_ARGUMENT_BYTES_LIMIT: usize = 128 * 1024;
 
-/// @description pathname、script rewrite、权限检查与 ELF mapping plan 的完整加载结果。
+/// pathname、script rewrite、权限检查与 ELF mapping plan 的完整加载结果。
 pub(crate) struct LoadedExecutable {
     image: ExecutableImage,
     executable: Arc<OpenedFile>,
@@ -24,11 +24,19 @@ pub(crate) struct LoadedExecutable {
 }
 
 impl LoadedExecutable {
-    /// @description 从最终 ELF plan 与 rewritten argv transactionally 构造新地址空间。
+    /// 从最终 ELF plan 与 rewritten argv transactionally 构造新地址空间。
     ///
-    /// @param environments 已从 userspace 完整复制且不含 NUL 的 envp strings。
-    /// @return 新 MemorySet、initial sp 与 entry point。
-    /// @errors ELF mapping、initial stack、source I/O 或资源失败。
+    /// # Parameters
+    ///
+    /// - `environments`: 已从 userspace 完整复制且不含 NUL 的 envp strings。
+    ///
+    /// # Returns
+    ///
+    /// 新 MemorySet、initial sp 与 entry point。
+    ///
+    /// # Errors
+    ///
+    /// ELF mapping、initial stack、source I/O 或资源失败。
     pub(super) fn build_address_space(
         &self,
         environments: &[Vec<u8>],
@@ -47,16 +55,20 @@ impl LoadedExecutable {
         )
     }
 
-    /// @description 返回用户传给 execve 的原始 pathname，用于 AT_EXECFN 与 process comm。
+    /// 返回用户传给 execve 的原始 pathname，用于 AT_EXECFN 与 process comm。
     ///
-    /// @return 不含 NUL 的 immutable pathname bytes。
+    /// # Returns
+    ///
+    /// 不含 NUL 的 immutable pathname bytes。
     pub(super) fn execfn(&self) -> &[u8] {
         &self.execfn
     }
 
-    /// @description 返回最终 ELF 的稳定 opened-entry identity，供 `/proc/<pid>/exe` 投影。
+    /// 返回最终 ELF 的稳定 opened-entry identity，供 `/proc/<pid>/exe` 投影。
     ///
-    /// @return main ELF 对应的 VFS opened entry；script rewrite 已解析到实际 interpreter。
+    /// # Returns
+    ///
+    /// main ELF 对应的 VFS opened entry；script rewrite 已解析到实际 interpreter。
     pub(super) fn executable(&self) -> Arc<OpenedFile> {
         self.executable.clone()
     }
@@ -66,7 +78,7 @@ impl LoadedExecutable {
     }
 }
 
-/// @description executable pathname 解析、权限检查与 mapping plan 构造失败原因。
+/// executable pathname 解析、权限检查与 mapping plan 构造失败原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProgramLoadError {
     /// 有界 probe、ELF metadata、argv rewrite 或 mapping plan 分配失败。
@@ -116,14 +128,22 @@ struct ScriptRewrite {
     argument_bytes: usize,
 }
 
-/// @description 解析 pathname，按 Linux binfmt_script 规则重写 argv，最终构造唯一 ELF image。
+/// 解析 pathname，按 Linux binfmt_script 规则重写 argv，最终构造唯一 ELF image。
 ///
-/// @param working_directory relative pathname 与 relative script interpreter 的解析起点。
-/// @param path 用户传入且不含 NUL 的原始 exec pathname；成功后成为 AT_EXECFN。
-/// @param arguments 已从 userspace 完整复制的 argv。
-/// @param argument_bytes 当前 argv/envp 的受限 byte accounting。
-/// @return 最终 ELF image、重写后的 argv 与原始 AT_EXECFN pathname。
-/// @errors 返回 pathname、权限、资源、argument limit、interpreter loop 或格式错误。
+/// # Parameters
+///
+/// - `working_directory`: relative pathname 与 relative script interpreter 的解析起点。
+/// - `path`: 用户传入且不含 NUL 的原始 exec pathname；成功后成为 AT_EXECFN。
+/// - `arguments`: 已从 userspace 完整复制的 argv。
+/// - `argument_bytes`: 当前 argv/envp 的受限 byte accounting。
+///
+/// # Returns
+///
+/// 最终 ELF image、重写后的 argv 与原始 AT_EXECFN pathname。
+///
+/// # Errors
+///
+/// 返回 pathname、权限、资源、argument limit、interpreter loop 或格式错误。
 pub(crate) fn load_executable(
     working_directory: Arc<OpenedFile>,
     path: Vec<u8>,

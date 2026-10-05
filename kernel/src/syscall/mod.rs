@@ -47,7 +47,7 @@ use timerfd::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
 pub(crate) const INTERRUPTED_RESULT: isize = -errno::EINTR;
 
-fn file_descriptor_error(error: crate::fs::FileDescriptorError) -> isize {
+pub(in crate::syscall) fn file_descriptor_error(error: crate::fs::FileDescriptorError) -> isize {
     -match error {
         crate::fs::FileDescriptorError::NotFound => errno::EBADF,
         crate::fs::FileDescriptorError::Limit => errno::EMFILE,
@@ -56,19 +56,24 @@ fn file_descriptor_error(error: crate::fs::FileDescriptorError) -> isize {
     }
 }
 
-/// @description syscall dispatcher 向 trap layer 返回的唯一控制结果。
+/// syscall dispatcher 向 trap layer 返回的唯一控制结果。
 pub(crate) enum SyscallOutcome {
-    /// 将 Linux 返回值或负 errno 写回 `a0`。
+    /// 将 Linux 返回值或负 errno 写回 architecture syscall return register。
     Return(isize),
-    /// 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 ecall。
+    /// 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 syscall instruction。
     Restart,
 }
 
-/// @description 解码一个 Linux/riscv64 syscall，并隔离不得暴露给用户态的内部重启结果。
+/// 解码一个 asm-generic Linux syscall，并隔离不得暴露给用户态的内部重启结果。
 ///
-/// @param syscall_id `a7` 中的 Linux/riscv64 syscall number。
-/// @param args `a0..a5` 中的六个原始参数。
-/// @return 普通返回值/负 errno，或只允许 trap layer 消费的重启控制结果。
+/// # Parameters
+///
+/// - `syscall_id`: architecture syscall-number register 中的 asm-generic Linux syscall number。
+/// - `args`: 六个 syscall argument register 的原始值。
+///
+/// # Returns
+///
+/// 普通返回值/负 errno，或只允许 trap layer 消费的重启控制结果。
 pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
     let result = match crate::system::decode_architecture_syscall(syscall_id) {
         None => match syscall_id {

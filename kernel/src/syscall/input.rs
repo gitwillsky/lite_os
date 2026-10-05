@@ -123,12 +123,18 @@ fn copy_variable(
     Ok(count as isize)
 }
 
-/// @description 分发 Linux evdev query、clock 与 exclusive-grab ioctl 子集。
-/// @param task 当前 userspace address-space owner。
-/// @param file `/dev/input/eventN` 的独立 client backend。
-/// @param request Linux input ioctl number。
-/// @param argument request-specific pointer；`EVIOCGRAB/EVIOCREVOKE` 按 Linux 语义解释为标量。
-/// @return fixed ioctl 返回零；variable query 返回复制 byte count；失败返回负 errno。
+/// 分发 Linux evdev query、clock 与 exclusive-grab ioctl 子集。
+///
+/// # Parameters
+///
+/// - `task`: 当前 userspace address-space owner。
+/// - `file`: `/dev/input/eventN` 的独立 client backend。
+/// - `request`: Linux input ioctl number。
+/// - `argument`: request-specific pointer；`EVIOCGRAB/EVIOCREVOKE` 按 Linux 语义解释为标量。
+///
+/// # Returns
+///
+/// fixed ioctl 返回零；variable query 返回复制 byte count；失败返回负 errno。
 pub(in crate::syscall) fn input_ioctl(
     task: &TaskControlBlock,
     file: &Arc<InputFile>,

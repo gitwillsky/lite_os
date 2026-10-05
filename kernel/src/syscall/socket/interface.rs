@@ -78,13 +78,18 @@ fn copy_ifconf(task: &TaskControlBlock, argument: usize) -> isize {
         .map_or(-errno::EFAULT, |()| 0)
 }
 
-/// @description 实现 BusyBox/标准工具消费的 Linux AF_INET interface ioctl ABI。
+/// 实现 BusyBox/标准工具消费的 Linux AF_INET interface ioctl ABI。
 ///
-/// @param task 当前 address-space owner，仅用于 ifreq copyin/copyout。
-/// @param socket 发起 ioctl 的 OFD socket facade，必须属于 AF_INET。
-/// @param request Linux SIOC request number。
-/// @param argument `ifreq` 或 `ifconf` userspace pointer。
-/// @return 配置/查询成功返回零；address、name、request 或 user-copy 错误返回负 errno。
+/// # Parameters
+///
+/// - `task`: 当前 address-space owner，仅用于 ifreq copyin/copyout。
+/// - `socket`: 发起 ioctl 的 OFD socket facade，必须属于 AF_INET。
+/// - `request`: Linux SIOC request number。
+/// - `argument`: `ifreq` 或 `ifconf` userspace pointer。
+///
+/// # Returns
+///
+/// 配置/查询成功返回零；address、name、request 或 user-copy 错误返回负 errno。
 pub(in crate::syscall) fn socket_ioctl(
     task: &TaskControlBlock,
     socket: &Socket,

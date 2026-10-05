@@ -214,12 +214,17 @@ fn set_lock(
     }
 }
 
-/// @description 实现 descriptor flags/status、dup 与 POSIX process-associated record locks。
+/// 实现 descriptor flags/status、dup 与 POSIX process-associated record locks。
 ///
-/// @param fd source descriptor。
-/// @param command Linux F_* command。
-/// @param argument command-specific integer 或 `struct flock *`。
-/// @return command result 或负 errno/internal restart sentinel。
+/// # Parameters
+///
+/// - `fd`: source descriptor。
+/// - `command`: Linux F_* command。
+/// - `argument`: command-specific integer 或 `struct flock *`。
+///
+/// # Returns
+///
+/// command result 或负 errno/internal restart sentinel。
 pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
     let task = current_task().expect("fcntl requires current task");
     match command {

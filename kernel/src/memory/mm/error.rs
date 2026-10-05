@@ -3,9 +3,15 @@ use core::error::Error;
 
 use crate::memory::page_table::PageTableError;
 
-/// @description 为 memory transaction 构造可失败的共享 owner。
-/// @param value 尚未发布、失败时可直接析构的 owner value。
-/// @return Arc control block 分配成功时返回 owner；失败返回统一 OutOfMemory。
+/// 为 memory transaction 构造可失败的共享 owner。
+///
+/// # Parameters
+///
+/// - `value`: 尚未发布、失败时可直接析构的 owner value。
+///
+/// # Returns
+///
+/// Arc control block 分配成功时返回 owner；失败返回统一 OutOfMemory。
 pub(super) fn try_memory_arc<T>(value: T) -> Result<Arc<T>, MemoryError> {
     Arc::try_new(value).map_err(|_| MemoryError::OutOfMemory)
 }
@@ -42,9 +48,11 @@ impl core::fmt::Display for MemoryError {
 impl Error for MemoryError {}
 
 impl MemoryError {
-    /// @description 判断失败是否来自物理页或页表页资源耗尽，不向上层泄漏页表错误类型。
+    /// 判断失败是否来自物理页或页表页资源耗尽，不向上层泄漏页表错误类型。
     ///
-    /// @return 资源耗尽返回 true，其他地址或权限错误返回 false。
+    /// # Returns
+    ///
+    /// 资源耗尽返回 true，其他地址或权限错误返回 false。
     pub(crate) fn is_out_of_memory(self) -> bool {
         matches!(
             self,
@@ -56,7 +64,7 @@ impl MemoryError {
     }
 }
 
-/// @description 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
+/// 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UserAccessError {
     /// 地址为空、非用户 canonical 地址、未映射或权限不匹配。
@@ -82,7 +90,7 @@ impl core::fmt::Display for UserAccessError {
 
 impl Error for UserAccessError {}
 
-/// @description 构造新用户映像时需要暴露给 `execve` 的失败分类。
+/// 构造新用户映像时需要暴露给 `execve` 的失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ElfLoadError {
     /// 物理页或页表页分配失败。

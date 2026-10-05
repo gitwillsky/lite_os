@@ -1,10 +1,15 @@
 use super::*;
 
-/// @description 在 active CPU 中选择近似负载最低者。
+/// 在 active CPU 中选择近似负载最低者。
 ///
-/// @param task 只读取 last-CPU hint，不改变其状态。
-/// @param affinity 调用方从同一 SchedulingState transaction 取得的 CPU 集合。
-/// @return 被选中的 CPU ID。
+/// # Parameters
+///
+/// - `task`: 只读取 last-CPU hint，不改变其状态。
+/// - `affinity`: 调用方从同一 SchedulingState transaction 取得的 CPU 集合。
+///
+/// # Returns
+///
+/// 被选中的 CPU ID。
 pub(super) fn select_cpu(task: &TaskControlBlock, affinity: CpuAffinity) -> CpuId {
     // Relaxed 只用于分散扫描起点，不承担任何状态发布。
     let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % cpu::count();
@@ -74,11 +79,16 @@ fn new_task_placement_floor(cpu: CpuId) -> u64 {
     floor
 }
 
-/// @description 将新建 Task 从 New 转换为唯一 Ready membership，并按目标 CPU 的
+/// 将新建 Task 从 New 转换为唯一 Ready membership，并按目标 CPU 的
 /// Ready/inbound vruntime floor 完成公平 placement。
 ///
-/// @param task process graph 已拥有的初始 Task。
-/// @return 选中的 CPU。
+/// # Parameters
+///
+/// - `task`: process graph 已拥有的初始 Task。
+///
+/// # Returns
+///
+/// 选中的 CPU。
 pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> CpuId {
     let mut scheduling = task.scheduling.state.lock();
     assert_eq!(

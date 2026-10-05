@@ -5,8 +5,8 @@ use super::SourceFile;
 
 const TRAP_SOURCE: &str = "kernel/src/trap/mod.rs";
 const CPU_DEFERRED_SOURCE: &str = "kernel/src/cpu/deferred.rs";
-const TASK_MANAGER_SOURCE: &str = "kernel/src/task/task_manager.rs";
-const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/task/task_manager/context_switch.rs";
+const PROCESS_TABLE_SOURCE: &str = "kernel/src/task/process_table.rs";
+const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/task/process_table/context_switch.rs";
 const VIRTIO_LOCKS: &[(&str, &str, &str, &str)] = &[
     (
         "kernel/src/drivers/virtio_net.rs",
@@ -33,12 +33,12 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push(format!("{TRAP_SOURCE}: missing deferred execution owner"));
         return;
     };
-    let Some(task_manager) = sources
+    let Some(process_table) = sources
         .iter()
-        .find(|source| source.relative == TASK_MANAGER_SOURCE)
+        .find(|source| source.relative == PROCESS_TABLE_SOURCE)
     else {
         errors.push(format!(
-            "{TASK_MANAGER_SOURCE}: missing scheduler deferred safe point"
+            "{PROCESS_TABLE_SOURCE}: missing scheduler deferred safe point"
         ));
         return;
     };
@@ -47,7 +47,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_unique_ssip_acknowledger(sources, errors);
     check_kernel_trap_does_not_dispatch(trap, errors);
     check_user_return_dispatches(trap, errors);
-    check_idle_dispatch_is_irq_closed(task_manager, errors);
+    check_idle_dispatch_is_irq_closed(process_table, errors);
     check_task_handoff_dispatch_is_irq_closed(sources, errors);
     check_unique_dispatch_callers(sources, errors);
     check_deferred_notification_coalescing(sources, errors);
@@ -129,7 +129,7 @@ fn check_unique_dispatch_callers(sources: &[SourceFile], errors: &mut Vec<String
         callers.extend(core::iter::repeat_n(source.relative.as_str(), calls.count));
     }
     callers.sort_unstable();
-    let mut expected = vec![TASK_MANAGER_SOURCE, TRAP_SOURCE];
+    let mut expected = vec![PROCESS_TABLE_SOURCE, TRAP_SOURCE];
     expected.sort_unstable();
     if callers != expected {
         errors.push(format!(
@@ -404,7 +404,7 @@ fn check_user_return_dispatches(source: &SourceFile, errors: &mut Vec<String>) {
 
 fn check_idle_dispatch_is_irq_closed(source: &SourceFile, errors: &mut Vec<String>) {
     let Some(run_tasks) = function(source, "run_tasks") else {
-        errors.push(format!("{TASK_MANAGER_SOURCE}: missing run_tasks"));
+        errors.push(format!("{PROCESS_TABLE_SOURCE}: missing run_tasks"));
         return;
     };
     let body = run_tasks.block.to_token_stream().to_string();
@@ -449,7 +449,7 @@ fn check_idle_dispatch_is_irq_closed(source: &SourceFile, errors: &mut Vec<Strin
             && wait < restore
     ) {
         errors.push(format!(
-            "{TASK_MANAGER_SOURCE}: idle scheduler must resume the local tick before task switch and suspend it before exact-PC WFI while the local IRQ guard remains held"
+            "{PROCESS_TABLE_SOURCE}: idle scheduler must resume the local tick before task switch and suspend it before exact-PC WFI while the local IRQ guard remains held"
         ));
     }
 }

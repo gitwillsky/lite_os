@@ -96,7 +96,7 @@ struct PtyState {
     slave_opens: usize,
 }
 
-/// @description Unix98 PTY master/slave 共用的 line-discipline 与生命周期 owner。
+/// Unix98 PTY master/slave 共用的 line-discipline 与生命周期 owner。
 pub(crate) struct PtyPair {
     index: u32,
     owner_uid: u32,
@@ -112,30 +112,33 @@ pub(crate) struct PtyPair {
     state: Mutex<PtyState>,
 }
 
-/// @description `/dev/ptmx` OFD 的 raw master stream backend。
+/// `/dev/ptmx` OFD 的 raw master stream backend。
 pub(crate) struct PtyMaster {
     pair: Arc<PtyPair>,
     output: Arc<PipeEnd>,
 }
 
-/// @description 一个已成功打开的 `/dev/pts/N` slave OFD 生命周期引用。
+/// 一个已成功打开的 `/dev/pts/N` slave OFD 生命周期引用。
 pub(crate) struct PtySlave {
     pair: Arc<PtyPair>,
 }
 
 impl PtyMaster {
-    /// @description 返回对应 `/dev/pts/N` index。
+    /// 返回对应 `/dev/pts/N` index。
     pub(crate) fn index(&self) -> u32 {
         self.pair.index
     }
 
-    /// @description 修改 slave lock；unlockpt 以零开放 slave pathname。
-    /// @param locked 非零 ioctl value 对应 true。
+    /// 修改 slave lock；unlockpt 以零开放 slave pathname。
+    ///
+    /// # Parameters
+    ///
+    /// - `locked`: 非零 ioctl value 对应 true。
     pub(crate) fn set_locked(&self, locked: bool) {
         self.pair.state.lock().locked = locked;
     }
 
-    /// @description 取得 slave 的唯一 Terminal owner，供 generic TTY ioctl 使用。
+    /// 取得 slave 的唯一 Terminal owner，供 generic TTY ioctl 使用。
     pub(crate) fn terminal(&self) -> &Arc<Terminal> {
         &self.pair.terminal
     }
@@ -235,14 +238,20 @@ impl PtySlave {
         self.pair.slave_notification_read.pipe()
     }
 
-    /// @description 返回 slave→master byte stream 的 write-side wait source。
-    /// @return 与 `write` 使用同一容量/peer lifecycle owner 的 Pipe。
+    /// 返回 slave→master byte stream 的 write-side wait source。
+    ///
+    /// # Returns
+    ///
+    /// 与 `write` 使用同一容量/peer lifecycle owner 的 Pipe。
     pub(crate) fn output_pipe(&self) -> Arc<Pipe> {
         self.pair.console.output.pipe()
     }
 
-    /// @description 查询 slave output 当前是否至少可原子提交一个 terminal chunk。
-    /// @return master live 且 byte pipe 有空闲容量时为 true。
+    /// 查询 slave output 当前是否至少可原子提交一个 terminal chunk。
+    ///
+    /// # Returns
+    ///
+    /// master live 且 byte pipe 有空闲容量时为 true。
     pub(crate) fn output_writable(&self) -> bool {
         self.output_pipe()
             .poll_state(crate::ipc::PipeDirection::Write)
@@ -250,9 +259,15 @@ impl PtySlave {
             >= PTY_OUTPUT_ATOMIC_CAPACITY
     }
 
-    /// @description 计算一次 terminal retry 保证前进所需的保守 byte-pipe 容量。
-    /// @param input_length 尚未提交的 syscall staging bytes，范围为 1..=512。
-    /// @return 覆盖 ONLCR 扩张且不超过单次 terminal atomic chunk 的等待容量。
+    /// 计算一次 terminal retry 保证前进所需的保守 byte-pipe 容量。
+    ///
+    /// # Parameters
+    ///
+    /// - `input_length`: 尚未提交的 syscall staging bytes，范围为 1..=512。
+    ///
+    /// # Returns
+    ///
+    /// 覆盖 ONLCR 扩张且不超过单次 terminal atomic chunk 的等待容量。
     pub(crate) fn output_write_minimum(input_length: usize) -> usize {
         input_length
             .saturating_mul(2)
@@ -315,13 +330,19 @@ struct PipeFactories {
 // slots 允许最后一个 endpoint 关闭后原位复用；缺失此 registry 会让 devpts 与 ptmx pair 分裂。
 static PTYS: Once<Mutex<PtyRegistry>> = Once::new();
 
-/// @description 装配 Unix98 PTY transport 与 controlling-terminal hangup seam。
-/// @param data_factory composition root 提供的 64 KiB output Pipe constructor。
-/// @param notification_factory composition root 提供的一字节 readiness Pipe constructor。
-/// @param hangup task owner 提供的无分配 SIGHUP/SIGCONT notifier。
-/// @param input_signals task owner 提供的 foreground ISIG notifier；只在 Terminal locks 外调用，
-/// 空 bitset 必须幂等完成。
-/// @return 首次初始化成功；重复初始化返回错误。
+/// 装配 Unix98 PTY transport 与 controlling-terminal hangup seam。
+///
+/// # Parameters
+///
+/// - `data_factory`: composition root 提供的 64 KiB output Pipe constructor。
+/// - `notification_factory`: composition root 提供的一字节 readiness Pipe constructor。
+/// - `hangup`: task owner 提供的无分配 SIGHUP/SIGCONT notifier。
+/// - `input_signals`: task owner 提供的 foreground ISIG notifier；只在 Terminal locks 外调用，
+///   空 bitset 必须幂等完成。
+///
+/// # Returns
+///
+/// 首次初始化成功；重复初始化返回错误。
 pub(crate) fn init(
     data_factory: PipeFactory,
     notification_factory: PipeFactory,
@@ -345,10 +366,16 @@ pub(crate) fn init(
     Ok(())
 }
 
-/// @description 分配新 Unix98 pair，并把 ptmx opener 记录为 slave inode owner。
-/// @param owner_uid open `/dev/ptmx` 时的 effective UID。
-/// @param owner_gid open `/dev/ptmx` 时的 effective GID。
-/// @return master；Pipe、Terminal、Arc 或 registry storage OOM 返回错误。
+/// 分配新 Unix98 pair，并把 ptmx opener 记录为 slave inode owner。
+///
+/// # Parameters
+///
+/// - `owner_uid`: open `/dev/ptmx` 时的 effective UID。
+/// - `owner_gid`: open `/dev/ptmx` 时的 effective GID。
+///
+/// # Returns
+///
+/// master；Pipe、Terminal、Arc 或 registry storage OOM 返回错误。
 pub(crate) fn open_master(
     owner_uid: u32,
     owner_gid: u32,
@@ -421,9 +448,15 @@ pub(crate) fn open_master(
     .map_err(|_| FileSystemError::OutOfMemory)
 }
 
-/// @description 打开 live 且已 unlock 的 `/dev/pts/N` slave。
-/// @param index TIOCGPTN 返回的 device index。
-/// @return 独立 slave open 引用；不存在返回 NotFound，锁定或 master 已关闭返回 IoError。
+/// 打开 live 且已 unlock 的 `/dev/pts/N` slave。
+///
+/// # Parameters
+///
+/// - `index`: TIOCGPTN 返回的 device index。
+///
+/// # Returns
+///
+/// 独立 slave open 引用；不存在返回 NotFound，锁定或 master 已关闭返回 IoError。
 pub(crate) fn open_slave(index: u32) -> Result<Arc<PtySlave>, FileSystemError> {
     let pair = PTYS
         .get()
@@ -462,9 +495,15 @@ pub(crate) fn slave_exists(index: u32) -> bool {
     })
 }
 
-/// @description 读取 live slave 的唯一 owner snapshot，供 devpts metadata 与 VFS permission 共用。
-/// @param index TIOCGPTN 返回的 device index。
-/// @return master 存活时返回 ptmx opener 的 effective UID/GID，否则 None。
+/// 读取 live slave 的唯一 owner snapshot，供 devpts metadata 与 VFS permission 共用。
+///
+/// # Parameters
+///
+/// - `index`: TIOCGPTN 返回的 device index。
+///
+/// # Returns
+///
+/// master 存活时返回 ptmx opener 的 effective UID/GID，否则 None。
 pub(crate) fn slave_owner(index: u32) -> Option<(u32, u32)> {
     PTYS.get().and_then(|registry| {
         registry
@@ -477,8 +516,11 @@ pub(crate) fn slave_owner(index: u32) -> Option<(u32, u32)> {
     })
 }
 
-/// @description 为 devpts getdents 取得当前 live master index 快照。
-/// @return 升序 index；快照 storage OOM 返回错误。
+/// 为 devpts getdents 取得当前 live master index 快照。
+///
+/// # Returns
+///
+/// 升序 index；快照 storage OOM 返回错误。
 pub(crate) fn slave_indices() -> Result<Vec<u32>, FileSystemError> {
     let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?.lock();
     let mut indices = Vec::new();

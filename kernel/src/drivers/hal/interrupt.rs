@@ -21,7 +21,7 @@ impl fmt::Display for InterruptError {
     }
 }
 
-/// @description 设备中断处理接口；vector 已由 interrupt controller claim。
+/// 设备中断处理接口；vector 已由 interrupt controller claim。
 pub(crate) trait InterruptHandler: Send + Sync {
     fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError>;
 }

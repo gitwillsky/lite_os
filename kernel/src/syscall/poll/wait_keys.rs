@@ -8,7 +8,7 @@ use crate::{
 
 use super::{POLLHUP, POLLIN, POLLOUT};
 
-/// @description 一次 poll/epoll wait publication 的唯一 transient source-key builder。
+/// 一次 poll/epoll wait publication 的唯一 transient source-key builder。
 ///
 /// 所有 OFD 与嵌套 epoll source 直接追加到同一个摊销增长 Vec；caller 只负责选择
 /// interest，不能为每个 interest 构造临时 key collection。
@@ -22,7 +22,7 @@ enum PollWaitGuard {
     Socket(SocketWaitGuard),
 }
 
-/// @description wait publication 前捕获的全部 source-snapshot guards。
+/// wait publication 前捕获的全部 source-snapshot guards。
 pub(in crate::syscall) struct PollWaitGuards {
     entries: Vec<PollWaitGuard>,
 }
@@ -35,8 +35,11 @@ impl PollWaitKeys {
         }
     }
 
-    /// @description 加入使旧 epoll interest snapshot 失效的 ctl/close notification source。
-    /// @param epoll notification owner。
+    /// 加入使旧 epoll interest snapshot 失效的 ctl/close notification source。
+    ///
+    /// # Parameters
+    ///
+    /// - `epoll`: notification owner。
     pub(in crate::syscall) fn add_epoll_change_source(
         &mut self,
         epoll: &Arc<Epoll>,
@@ -65,10 +68,13 @@ impl PollWaitKeys {
         Ok(())
     }
 
-    /// @description 把一个 OFD interest 递归展开为 source-native wait keys。
-    /// @param events interest mask，包含 caller 所需 ERR/HUP policy。
-    /// @param exclusive 该 interest 是否参与 EPOLLEXCLUSIVE wake-one。
-    /// @param wake_group 同一顶层 epoll instance 的稳定 identity。
+    /// 把一个 OFD interest 递归展开为 source-native wait keys。
+    ///
+    /// # Parameters
+    ///
+    /// - `events`: interest mask，包含 caller 所需 ERR/HUP policy。
+    /// - `exclusive`: 该 interest 是否参与 EPOLLEXCLUSIVE wake-one。
+    /// - `wake_group`: 同一顶层 epoll instance 的稳定 identity。
     pub(in crate::syscall) fn add_interest(
         &mut self,
         ofd: &Arc<OpenFileDescription>,
@@ -192,7 +198,7 @@ impl PollWaitKeys {
         Ok(())
     }
 
-    /// @description 将 facade-provided socket source 追加到唯一 transient key backing。
+    /// 将 facade-provided socket source 追加到唯一 transient key backing。
     pub(super) fn add_socket_source(
         &mut self,
         source: SocketWaitSource,
@@ -214,7 +220,7 @@ impl PollWaitKeys {
         })
     }
 
-    /// @description 把完成的 key backing 与 snapshot guards 转移给 wait orchestration。
+    /// 把完成的 key backing 与 snapshot guards 转移给 wait orchestration。
     pub(in crate::syscall) fn finish(self) -> (Vec<PollWaitKey>, PollWaitGuards) {
         (
             self.keys,
@@ -232,8 +238,11 @@ impl PollWaitKeys {
 }
 
 impl PollWaitGuards {
-    /// @description 在 registry owner lock 内排空 change token 并验证每份预建 snapshot。
-    /// @return 任一 generation 已变化时返回 true；不分配、不 clone、不展开 source keys。
+    /// 在 registry owner lock 内排空 change token 并验证每份预建 snapshot。
+    ///
+    /// # Returns
+    ///
+    /// 任一 generation 已变化时返回 true；不分配、不 clone、不展开 source keys。
     pub(in crate::syscall) fn changed(&self) -> bool {
         let mut changed = false;
         for guard in &self.entries {

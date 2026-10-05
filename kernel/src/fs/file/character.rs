@@ -6,7 +6,7 @@ use crate::fs::{AccessIdentity, DeviceKind, FileSystemError, PtyMaster, PtySlave
 use crate::input::InputFile;
 use crate::log::KmsgReader;
 
-/// @description character-device seam 对 `/dev/kmsg` 单 record read 的稳定结果。
+/// character-device seam 对 `/dev/kmsg` 单 record read 的稳定结果。
 pub(crate) enum KmsgDeviceRead {
     /// 一个完整 record 及其长度。
     Record(usize),
@@ -18,7 +18,7 @@ pub(crate) enum KmsgDeviceRead {
     BufferTooSmall,
 }
 
-/// @description 标准 character-device OFD backend；设备 identity 与运行时 owner 保持在一起。
+/// 标准 character-device OFD backend；设备 identity 与运行时 owner 保持在一起。
 pub(crate) enum CharacterDevice {
     Null,
     Zero,
@@ -43,9 +43,15 @@ impl CharacterDevice {
     const OUTPUT: i16 = 0x004;
     pub(crate) const KMSG_RECORD_MAX: usize = crate::log::KMSG_READ_BUFFER_SIZE;
 
-    /// @description 从 kmsg backend 消费一个完整 record。
-    /// @param output kernel-owned record buffer。
-    /// @return kmsg device 的单 record 结果；非 kmsg backend 不得调用。
+    /// 从 kmsg backend 消费一个完整 record。
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: kernel-owned record buffer。
+    ///
+    /// # Returns
+    ///
+    /// kmsg device 的单 record 结果；非 kmsg backend 不得调用。
     pub(crate) fn read_kmsg(&self, output: &mut [u8]) -> KmsgDeviceRead {
         let Self::Kmsg(reader) = self else {
             panic!("read_kmsg called for non-kmsg character device")
@@ -58,11 +64,16 @@ impl CharacterDevice {
         }
     }
 
-    /// @description 从 devfs device identity 构造唯一 character backend。
+    /// 从 devfs device identity 构造唯一 character backend。
     ///
-    /// @param kind pathname inode 发布的标准设备 identity。
-    /// @param terminal TTY/console 共享的 line-discipline owner。
-    /// @return 对应 backend；设备状态错误与 OOM 保留为明确 filesystem error。
+    /// # Parameters
+    ///
+    /// - `kind`: pathname inode 发布的标准设备 identity。
+    /// - `terminal`: TTY/console 共享的 line-discipline owner。
+    ///
+    /// # Returns
+    ///
+    /// 对应 backend；设备状态错误与 OOM 保留为明确 filesystem error。
     pub(super) fn open(
         kind: DeviceKind,
         terminal: Arc<Terminal>,
@@ -111,9 +122,15 @@ impl CharacterDevice {
         })
     }
 
-    /// @description 投影 character backend 的 level readiness。
-    /// @param events caller 关注的 poll mask。
-    /// @return 当前立即满足的 event bits。
+    /// 投影 character backend 的 level readiness。
+    ///
+    /// # Parameters
+    ///
+    /// - `events`: caller 关注的 poll mask。
+    ///
+    /// # Returns
+    ///
+    /// 当前立即满足的 event bits。
     pub(super) fn poll_events(&self, events: i16) -> i16 {
         match self {
             Self::Null | Self::Zero => events & (Self::INPUT | Self::OUTPUT),
@@ -166,8 +183,11 @@ impl CharacterDevice {
         }
     }
 
-    /// @description 返回 character backend 最近一次可观察 readiness generation。
-    /// @return 不提供异步 source 的设备返回零。
+    /// 返回 character backend 最近一次可观察 readiness generation。
+    ///
+    /// # Returns
+    ///
+    /// 不提供异步 source 的设备返回零。
     pub(super) fn readiness_generation(&self) -> u64 {
         match self {
             Self::Terminal { terminal, pty, .. } => pty.as_ref().map_or_else(
@@ -186,7 +206,9 @@ impl CharacterDevice {
         }
     }
 
-    /// @return backend 有可注册异步 wait source 时为 true。
+    /// # Returns
+    ///
+    /// backend 有可注册异步 wait source 时为 true。
     pub(super) fn epoll_pollable(&self) -> bool {
         matches!(
             self,

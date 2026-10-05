@@ -71,7 +71,7 @@ enum SocketState {
     },
 }
 
-/// @description AF_UNIX endpoint 的连接、监听队列、datagram 边界与地址 owner。
+/// AF_UNIX endpoint 的连接、监听队列、datagram 边界与地址 owner。
 pub(crate) struct UnixSocket {
     // OWNER: node_id 在 backend 构造时唯一分配，pathname/accept/socketpair 都只传递 capability；
     // 缺失稳定 identity 会迫使 SCM graph 以可复用地址或 Arc 指针猜测 node。
@@ -153,8 +153,11 @@ impl UnixSocket {
             .is_none_or(|owner| owner.externally_referenced(inflight))
     }
 
-    /// @description 清理 GC 已证明不可达 endpoint 中的全部 inflight rights。
-    /// @return 无返回值；bytes 可保留，但所有 control capability 在 socket lock 外释放。
+    /// 清理 GC 已证明不可达 endpoint 中的全部 inflight rights。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；bytes 可保留，但所有 control capability 在 socket lock 外释放。
     pub(super) fn revoke_rights(&self) {
         let mut state = self.state.lock();
         let receive = match &mut *state {
@@ -180,11 +183,20 @@ impl UnixSocket {
         self.bind_key(address, NamespaceKey::Abstract(address))
     }
 
-    /// @description 将已由 VFS 创建并授权的 pathname inode 绑定到 endpoint。
-    /// @param address 对 getsockname/peername 保留的 canonical pathname。
-    /// @param identity VFS socket inode 的稳定 identity。
-    /// @return namespace 与 endpoint 原子 publication 成功。
-    /// @errors endpoint 已绑定、identity collision 或 OOM 返回明确错误。
+    /// 将已由 VFS 创建并授权的 pathname inode 绑定到 endpoint。
+    ///
+    /// # Parameters
+    ///
+    /// - `address`: 对 getsockname/peername 保留的 canonical pathname。
+    /// - `identity`: VFS socket inode 的稳定 identity。
+    ///
+    /// # Returns
+    ///
+    /// namespace 与 endpoint 原子 publication 成功。
+    ///
+    /// # Errors
+    ///
+    /// endpoint 已绑定、identity collision 或 OOM 返回明确错误。
     pub(crate) fn bind_path(
         self: &Arc<Self>,
         address: UnixAddress,
@@ -332,11 +344,17 @@ impl UnixSocket {
         self.write_with_rights(input, &mut None)
     }
 
-    /// @description 发送 bytes，并在 AF_UNIX message/stream barrier 上附着可选 rights。
-    /// @param input 本次 byte payload。
-    /// @param target datagram 显式目标；None 使用 connected peer。
-    /// @param rights 尚未提交的 SCM_RIGHTS；仅在 payload commit 成功后取走。
-    /// @return 实际 byte count；失败时 rights 保持归 caller 所有。
+    /// 发送 bytes，并在 AF_UNIX message/stream barrier 上附着可选 rights。
+    ///
+    /// # Parameters
+    ///
+    /// - `input`: 本次 byte payload。
+    /// - `target`: datagram 显式目标；None 使用 connected peer。
+    /// - `rights`: 尚未提交的 SCM_RIGHTS；仅在 payload commit 成功后取走。
+    ///
+    /// # Returns
+    ///
+    /// 实际 byte count；失败时 rights 保持归 caller 所有。
     pub(crate) fn send_to_with_rights(
         &self,
         input: &[u8],
@@ -406,10 +424,15 @@ impl UnixSocket {
         }
     }
 
-    /// @description 投影 socket 所有可能无条件返回或被请求的 poll 状态变化 generation。
+    /// 投影 socket 所有可能无条件返回或被请求的 poll 状态变化 generation。
     ///
-    /// @param events poll interest；stream 的 HUP/ERR 无条件返回，因此仍观察收发两侧。
-    /// @return 跨 I/O source 可比较的 generation。
+    /// # Parameters
+    ///
+    /// - `events`: poll interest；stream 的 HUP/ERR 无条件返回，因此仍观察收发两侧。
+    ///
+    /// # Returns
+    ///
+    /// 跨 I/O source 可比较的 generation。
     pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
         let state = self.state.lock();
         match &*state {
@@ -452,9 +475,11 @@ impl UnixSocket {
         }
     }
 
-    /// @description 投影 AF_UNIX wait sources；stream 暴露真实 data Pipe，其余类型暴露内部 edge notification。
+    /// 投影 AF_UNIX wait sources；stream 暴露真实 data Pipe，其余类型暴露内部 edge notification。
     ///
-    /// @return 与当前 socket 类型和 endpoint lifecycle 一致的 source 列表。
+    /// # Returns
+    ///
+    /// 与当前 socket 类型和 endpoint lifecycle 一致的 source 列表。
     pub(in crate::socket) fn wait_sources(
         self: &Arc<Self>,
         events: i16,
@@ -514,9 +539,11 @@ impl UnixSocket {
         self.notify_read.drain_readiness();
     }
 
-    /// @description 排空 listener/datagram 的内部 readiness edge；stream 的 wait source 是真实 data Pipe，禁止从此消费。
+    /// 排空 listener/datagram 的内部 readiness edge；stream 的 wait source 是真实 data Pipe，禁止从此消费。
     ///
-    /// @return 无返回值；实际 socket readiness 由随后的 level recheck 决定。
+    /// # Returns
+    ///
+    /// 无返回值；实际 socket readiness 由随后的 level recheck 决定。
     pub(in crate::socket) fn consume_wait_notifications(&self) {
         let peer = match &*self.state.lock() {
             SocketState::Stream { .. } => return,

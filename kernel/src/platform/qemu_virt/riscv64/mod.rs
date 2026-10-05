@@ -1,4 +1,4 @@
-//! @description QEMU `virt` RISC-V backend implementation。
+//! QEMU `virt` RISC-V backend implementation。
 
 #[macro_use]
 pub(crate) mod console;
@@ -18,13 +18,13 @@ pub(crate) use firmware::{
     synchronize_tlb, verify_firmware,
 };
 
-/// @description claim 并处理当前 RISC-V external interrupt batch。
+/// claim 并处理当前 RISC-V external interrupt batch。
 pub(crate) fn claim_interrupt() -> super::ClaimedInterrupt {
     handle_external_interrupt();
     super::ClaimedInterrupt::Device(0)
 }
 
-/// @description PLIC handler 已在 batch 内 exactly-once complete；此处只消费 typed token。
+/// PLIC handler 已在 batch 内 exactly-once complete；此处只消费 typed token。
 pub(crate) fn complete_interrupt(claim: super::ClaimedInterrupt) {
     assert!(
         matches!(claim, super::ClaimedInterrupt::Device(_)),
@@ -33,30 +33,37 @@ pub(crate) fn complete_interrupt(claim: super::ClaimedInterrupt) {
     let _ = claim.completion_token();
 }
 
-/// @description 触发 calling hart 的 local supervisor software interrupt。
+/// 触发 calling hart 的 local supervisor software interrupt。
 pub(crate) fn notify_self() {
     crate::arch::interrupt::raise_software();
 }
 
-/// @description RISC-V SBI RFENCE 由 firmware trap owner 完成，不使用 platform SGI mailbox。
-///
-/// @return 无返回值。
+/// RISC-V SBI RFENCE 由 firmware trap owner 完成，不使用 platform SGI mailbox。
 pub(crate) fn complete_pending_ipi() {}
 
-/// @description 投影 platform 可分配 physical memory 的 exclusive end。
-/// @return 已验证 DTB memory range 的 end address。
+/// 投影 platform 可分配 physical memory 的 exclusive end。
+///
+/// # Returns
+///
+/// 已验证 DTB memory range 的 end address。
 pub(crate) fn physical_memory_end() -> usize {
     discovery::info().mem.end
 }
 
-/// @description 投影 architecture counter 的 platform frequency。
-/// @return DTB `timebase-frequency`，零值由 timer owner fail-stop。
+/// 投影 architecture counter 的 platform frequency。
+///
+/// # Returns
+///
+/// DTB `timebase-frequency`，零值由 timer owner fail-stop。
 pub(crate) fn timebase_frequency() -> u64 {
     discovery::info().time_base_freq
 }
 
-/// @description 枚举 kernel address space 必须 identity-map 的 platform MMIO regions。
-/// @return UART、VirtIO window、RTC 与 PLIC 的非空区间；concrete device facts 不穿过 seam。
+/// 枚举 kernel address space 必须 identity-map 的 platform MMIO regions。
+///
+/// # Returns
+///
+/// UART、VirtIO window、RTC 与 PLIC 的非空区间；concrete device facts 不穿过 seam。
 pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usize>> {
     let info = discovery::info();
     let mut regions = [None, None, None, None];
@@ -94,8 +101,11 @@ pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usi
     regions.into_iter().flatten()
 }
 
-/// @description 从 platform realtime source 读取一次 Unix epoch 纳秒值。
-/// @return RTC 存在且 MMIO read 成功时返回时间，否则返回 `None`。
+/// 从 platform realtime source 读取一次 Unix epoch 纳秒值。
+///
+/// # Returns
+///
+/// RTC 存在且 MMIO read 成功时返回时间，否则返回 `None`。
 pub(crate) fn read_realtime_ns() -> Option<u64> {
     let resource = discovery::info().rtc_device?;
     rtc::GoldfishRTCDevice::new(resource.base_addr, resource.size)

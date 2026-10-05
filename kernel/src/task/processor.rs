@@ -32,14 +32,16 @@ pub(crate) use placement::enqueue_new_task;
 use placement::{ready_entry, select_cpu};
 use ready_membership::{commit_ready_retirement, commit_ready_transition};
 
-/// @description context switch 异常返回时的 fail-stop 目标。
+/// context switch 异常返回时的 fail-stop 目标。
 ///
-/// @return 永不返回。
+/// # Returns
+///
+/// 永不返回。
 pub(crate) fn idle_return() -> ! {
     panic!("idle context returned unexpectedly");
 }
 
-/// @description 仅由所属 CPU 可变访问的调度执行状态。
+/// 仅由所属 CPU 可变访问的调度执行状态。
 pub(crate) struct Processor {
     cpu_id: CpuId,
     pub(crate) current: Option<Arc<TaskControlBlock>>,
@@ -64,31 +66,42 @@ impl Processor {
         }
     }
 
-    /// @description 获取当前 CPU idle context 的稳定地址。
+    /// 获取当前 CPU idle context 的稳定地址。
     ///
-    /// @return 指向当前 CPU `KernelContext` 的唯一可变指针。
+    /// # Returns
+    ///
+    /// 指向当前 CPU `KernelContext` 的唯一可变指针。
     pub(crate) fn idle_context_ptr(&mut self) -> *mut KernelContext {
         &mut self.idle_context
     }
 
-    /// @description 把已完成 Ready 状态转换的 entry 加入本地 runqueue。
+    /// 把已完成 Ready 状态转换的 entry 加入本地 runqueue。
     ///
-    /// @param entry generation 必须对应 `Ready { cpu: self }`。
-    /// @return Ready entity 的 vruntime 严格早于 current 时返回 true，供 delivery 决定 reschedule。
+    /// # Parameters
+    ///
+    /// - `entry`: generation 必须对应 `Ready { cpu: self }`。
+    ///
+    /// # Returns
+    ///
+    /// Ready entity 的 vruntime 严格早于 current 时返回 true，供 delivery 决定 reschedule。
     pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) -> bool {
         ready_queue::add_ready_entry(self, entry)
     }
 
-    /// @description 消费 stale entry，原子完成 Ready → Running 与 current 发布。
+    /// 消费 stale entry，原子完成 Ready → Running 与 current 发布。
     ///
-    /// @return 队列为空时返回 `None`，否则返回唯一取出的任务引用。
+    /// # Returns
+    ///
+    /// 队列为空时返回 `None`，否则返回唯一取出的任务引用。
     pub(crate) fn select_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         ready_queue::select_task(self)
     }
 
-    /// @description 撤销当前 CPU 的 running ownership 与负载发布。
+    /// 撤销当前 CPU 的 running ownership 与负载发布。
     ///
-    /// @return 当前 Task；空 current 表示调用路径破坏调度状态并返回 None。
+    /// # Returns
+    ///
+    /// 当前 Task；空 current 表示调用路径破坏调度状态并返回 None。
     pub(crate) fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
         let current = self.current.take()?;
         let previous = current_per_cpu()
@@ -98,9 +111,7 @@ impl Processor {
         Some(current)
     }
 
-    /// @description 把远端 mailbox 中的任务转移到当前 CPU scheduler。
-    ///
-    /// @return 无返回值。
+    /// 把远端 mailbox 中的任务转移到当前 CPU scheduler。
     pub(crate) fn drain_inbound_to_local(&mut self) {
         ready_queue::drain_inbound_to_local(self);
     }
@@ -121,6 +132,9 @@ impl Processor {
 struct PerCpuProcessor {
     local: UnsafeCell<MaybeUninit<Processor>>,
     initialized: AtomicBool,
+    // OWNER: owner CPU 在 IRQ-disabled borrow 内独占 `local`；嵌套 `with_current_processor`
+    // 会同时存在两个 `&mut Processor`，属于 undefined behavior。缺失该 flag 时只能靠文档约束闭包。
+    borrowed: AtomicBool,
     // SchedulingState transition 同锁发布该 CPU 的精确 Ready membership 数；它只投影
     // logical load，不拥有 heap/mailbox token，Relaxed 过期值只影响瞬时选核 hint。
     ready_entries: AtomicUsize,
@@ -141,10 +155,11 @@ struct PerCpuProcessor {
 }
 
 impl PerCpuProcessor {
-    /// @description 创建尚未由 owner CPU 初始化的 processor slot。
+    /// 创建尚未由 owner CPU 初始化的 processor slot。
     ///
-    /// @return 空 local processor、mailbox 和负载计数。
-    /// @errors 无错误。
+    /// # Returns
+    ///
+    /// 空 local processor、mailbox 和负载计数。
     fn new(queue_capacity: usize) -> Self {
         let mut inbound = VecDeque::new();
         inbound
@@ -153,6 +168,7 @@ impl PerCpuProcessor {
         Self {
             local: UnsafeCell::new(MaybeUninit::uninit()),
             initialized: AtomicBool::new(false),
+            borrowed: AtomicBool::new(false),
             ready_entries: AtomicUsize::new(0),
             running_entries: AtomicUsize::new(0),
             reschedule_requested: AtomicBool::new(false),
@@ -199,10 +215,11 @@ struct ProcessorTopology {
 // OWNER: processor module owns scheduler-local state for every platform CPU.
 static PROCESSOR_TOPOLOGY: spin::Once<ProcessorTopology> = spin::Once::new();
 
-/// @description 按 CpuTopology 的 logical-index 顺序构造唯一 scheduler processor slots。
+/// 按 CpuTopology 的 logical-index 顺序构造唯一 scheduler processor slots。
 ///
-/// @return 无返回值。
-/// @errors 重复初始化或 arch/task topology 顺序分裂时 fail-stop。
+/// # Errors
+///
+/// 重复初始化或 arch/task topology 顺序分裂时 fail-stop。
 pub(super) fn init_topology() {
     assert!(
         PROCESSOR_TOPOLOGY.get().is_none(),
@@ -249,61 +266,85 @@ fn current_per_cpu() -> &'static PerCpuProcessor {
     processor_at(cpu::current_id().index())
 }
 
-fn local_processor() -> &'static mut Processor {
+/// 在关闭本地 S-mode 中断期间访问当前 CPU 独占的 processor。
+///
+/// # Parameters
+///
+/// - `f`: 不得保存或泄漏 `Processor` 引用的同步闭包。
+///
+/// # Returns
+///
+/// 闭包的返回值。
+///
+/// # Errors
+///
+/// `tp` 越界属于内核不变量破坏。
+pub(crate) fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> R {
+    let _irq = LocalIrqGuard::disable();
+    // 1. 中断关闭保证同 CPU 的 trap handler 不能在该 mutable borrow 存活时再次借用；
+    // 2. borrowed flag 拒绝闭包内的嵌套调用，使唯一 `&mut Processor` 由运行时而非文档保证；
+    // 3. kernel panic 不展开，因此只在闭包正常返回后释放 flag。
     let slot = current_slot();
-    let cpu = slot.cpu_id;
     let processor = &slot.processor;
+    assert!(
+        !processor.borrowed.swap(true, Ordering::Relaxed),
+        "nested current Processor borrow"
+    );
     // initialized 只由当前 CPU 在关闭 local interrupt 时读写，不承担跨 CPU 发布；缺失会重复构造 Processor。
     if !processor.initialized.load(Ordering::Relaxed) {
-        // SAFETY: 只有当前 logical CPU 能到达自己的 slot.local，且 generic trap 不开启嵌套中断。
+        // SAFETY: 只有当前 logical CPU 能到达自己的 slot.local，且 borrowed flag 证明无其他引用。
         unsafe {
-            (*processor.local.get()).write(Processor::new(cpu, processor.queue_capacity));
+            (*processor.local.get()).write(Processor::new(slot.cpu_id, processor.queue_capacity));
         }
         processor.initialized.store(true, Ordering::Relaxed);
     }
-    // SAFETY: 与上面的 per-CPU 唯一所有权约束相同，initialized 证明对象已构造。
-    unsafe { (*processor.local.get()).assume_init_mut() }
+    // SAFETY: initialized 证明对象已构造；IRQ guard 与 borrowed flag 证明这是该 CPU 上唯一
+    // 存活的 `&mut Processor`，且引用不超出本次闭包调用。
+    let local = unsafe { (*processor.local.get()).assume_init_mut() };
+    let result = f(local);
+    processor.borrowed.store(false, Ordering::Relaxed);
+    result
 }
 
-/// @description 在关闭本地 S-mode 中断期间访问当前 CPU 独占的 processor。
+/// 将当前 exiting Task 在 task stack 上的 owner 移交给所属 CPU。
 ///
-/// @param f 不得保存或泄漏 `Processor` 引用的同步闭包。
-/// @return 闭包的返回值。
-/// @errors `tp` 越界属于内核不变量破坏。
-pub(crate) fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> R {
-    let _irq = LocalIrqGuard::disable();
-    // 中断关闭保证同 CPU 的 trap handler 不能在该 mutable borrow 存活时再次借用 local processor。
-    f(local_processor())
-}
-
-/// @description 将当前 exiting Task 在 task stack 上的 owner 移交给所属 CPU。
+/// # Parameters
 ///
-/// @param task 必须是已从 current、PID index 与 runqueue 移除的退出任务。
-/// @return 无返回值；slot 未先 drain 表示 terminal ownership 协议损坏并 panic。
+/// - `task`: 必须是已从 current、PID index 与 runqueue 移除的退出任务。
+///
+/// # Returns
+///
+/// 无返回值；slot 未先 drain 表示 terminal ownership 协议损坏并 panic。
 pub(super) fn defer_task_reap(task: Arc<TaskControlBlock>) {
     with_current_processor(|processor| processor.defer_reap(task));
 }
 
-/// @description 在 idle stack 上取得并释放 deferred exiting Task。
+/// 在 idle stack 上取得并释放 deferred exiting Task。
 ///
-/// @return slot 为空时不执行操作；存在任务时 deferred Arc 在本函数返回前于 idle stack Drop。
+/// # Returns
+///
+/// slot 为空时不执行操作；存在任务时 deferred Arc 在本函数返回前于 idle stack Drop。
 pub(super) fn reap_deferred_task() {
     let task = with_current_processor(Processor::take_deferred_reap);
     drop(task);
 }
 
-/// @description 标记当前 CPU 在返回用户态前需要重新调度。
+/// 标记当前 CPU 在返回用户态前需要重新调度。
 ///
-/// @return 无返回值；flag 仅由当前 CPU 在关中断临界区访问。
+/// # Returns
+///
+/// 无返回值；flag 仅由当前 CPU 在关中断临界区访问。
 pub(crate) fn request_reschedule() {
     current_per_cpu()
         .reschedule_requested
         .store(true, Ordering::Release);
 }
 
-/// @description 消费当前 CPU 的 reschedule flag。
+/// 消费当前 CPU 的 reschedule flag。
 ///
-/// @return 本次用户态返回是否应先 yield。
+/// # Returns
+///
+/// 本次用户态返回是否应先 yield。
 pub(crate) fn take_reschedule() -> bool {
     current_per_cpu()
         .reschedule_requested
@@ -322,22 +363,34 @@ fn publish_reschedule_at(cpu_id: CpuId) {
     }
 }
 
-/// @description 投递 Ready entry；busy target 同步 reschedule，避免 syscall writer 饿死 Ready reader。
+/// 投递 Ready entry；busy target 同步 reschedule，避免 syscall writer 饿死 Ready reader。
 ///
-/// @param cpu_id 目标 CPU ID。
-/// @param entry 带 generation 的 membership token。
-/// @return 无返回值。
-/// @errors 目标越界、未 active 或 platform IPI 失败均触发内核不变量失败，不做 CPU fallback。
+/// # Parameters
+///
+/// - `cpu_id`: 目标 CPU ID。
+/// - `entry`: 带 generation 的 membership token。
+///
+/// # Errors
+///
+/// 目标越界、未 active 或 platform IPI 失败均触发内核不变量失败，不做 CPU fallback。
 fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry) {
     ready_queue::deliver_ready_entry(cpu_id, entry);
 }
 
-/// @description 原子替换 Thread affinity，并迁移位于已禁止 CPU 的 Ready membership。
+/// 原子替换 Thread affinity，并迁移位于已禁止 CPU 的 Ready membership。
 ///
-/// @param task TaskManager process graph 定位并保活的 live Thread。
-/// @param affinity 已与 active topology 相交且非空的新 affinity。
-/// @return 无返回值；Ready entry 已迁移，Running migration 由 affinity orchestration 同步完成。
-/// @errors 无可恢复错误；无 active CPU 或状态不变量破坏时 fail-stop。
+/// # Parameters
+///
+/// - `task`: ProcessTable process graph 定位并保活的 live Thread。
+/// - `affinity`: 已与 active topology 相交且非空的新 affinity。
+///
+/// # Returns
+///
+/// 无返回值；Ready entry 已迁移，Running migration 由 affinity orchestration 同步完成。
+///
+/// # Errors
+///
+/// 无可恢复错误；无 active CPU 或状态不变量破坏时 fail-stop。
 pub(in crate::task) fn replace_task_affinity(task: &Arc<TaskControlBlock>, affinity: CpuAffinity) {
     let mut replacement = None;
     let mut stale_cpu = None;
@@ -361,12 +414,17 @@ pub(in crate::task) fn replace_task_affinity(task: &Arc<TaskControlBlock>, affin
     }
 }
 
-/// @description 消费一个明确 deadline wait membership，并完成无丢失唤醒转换。
+/// 消费一个明确 deadline wait membership，并完成无丢失唤醒转换。
 ///
-/// @param task wait queue 移出的 task owner。
-/// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
-/// @param result deadline 到期或 signal interruption 的唯一结果。
-/// @return 本次调用真正消费 membership 时返回 true；重复/stale wake 返回 false。
+/// # Parameters
+///
+/// - `task`: wait queue 移出的 task owner。
+/// - `wait_id`: 必须与 SchedulingState 中记录的 ID 相同。
+/// - `result`: deadline 到期或 signal interruption 的唯一结果。
+///
+/// # Returns
+///
+/// 本次调用真正消费 membership 时返回 true；重复/stale wake 返回 false。
 pub(super) fn wake_deadline_task(
     task: Arc<TaskControlBlock>,
     wait_id: u64,
@@ -375,21 +433,31 @@ pub(super) fn wake_deadline_task(
     wake_waiting_task(task, WaitMembership::Deadline(wait_id), Some(result))
 }
 
-/// @description 消费 child-exit wait membership，并完成无丢失唤醒转换。
+/// 消费 child-exit wait membership，并完成无丢失唤醒转换。
 ///
-/// @param task Process graph 移出的唯一 waiter owner。
-/// @param result child exit 或 signal interruption 的唯一结果。
-/// @return membership 有效时返回 true；stale wake 返回 false。
+/// # Parameters
+///
+/// - `task`: Process graph 移出的唯一 waiter owner。
+/// - `result`: child exit 或 signal interruption 的唯一结果。
+///
+/// # Returns
+///
+/// membership 有效时返回 true；stale wake 返回 false。
 pub(super) fn wake_child_task(task: Arc<TaskControlBlock>, result: WaitResult) -> bool {
     wake_waiting_task(task, WaitMembership::Child, Some(result))
 }
 
-/// @description 消费 futex wait membership，并发布 wake/timeout/interruption 结果。
+/// 消费 futex wait membership，并发布 wake/timeout/interruption 结果。
 ///
-/// @param task indexed wait registry 移出的 task owner。
-/// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
-/// @param result futex wait 的唯一完成结果。
-/// @return membership 有效时返回 true；stale wake 返回 false。
+/// # Parameters
+///
+/// - `task`: indexed wait registry 移出的 task owner。
+/// - `wait_id`: 必须与 SchedulingState 中记录的 ID 相同。
+/// - `result`: futex wait 的唯一完成结果。
+///
+/// # Returns
+///
+/// membership 有效时返回 true；stale wake 返回 false。
 pub(super) fn wake_futex_task(
     task: Arc<TaskControlBlock>,
     wait_id: u64,
@@ -398,12 +466,17 @@ pub(super) fn wake_futex_task(
     wake_waiting_task(task, WaitMembership::Futex(wait_id), Some(result))
 }
 
-/// @description 消费 console wait membership，并完成 deferred IRQ wake 转换。
+/// 消费 console wait membership，并完成 deferred IRQ wake 转换。
 ///
-/// @param task indexed wait registry 移出的 task owner。
-/// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
-/// @param result UART input 或 VTIME deadline 的唯一完成结果。
-/// @return membership 有效时返回 true；stale wake 返回 false。
+/// # Parameters
+///
+/// - `task`: indexed wait registry 移出的 task owner。
+/// - `wait_id`: 必须与 SchedulingState 中记录的 ID 相同。
+/// - `result`: UART input 或 VTIME deadline 的唯一完成结果。
+///
+/// # Returns
+///
+/// membership 有效时返回 true；stale wake 返回 false。
 pub(super) fn wake_console_task(
     task: Arc<TaskControlBlock>,
     wait_id: u64,
@@ -412,12 +485,17 @@ pub(super) fn wake_console_task(
     wake_waiting_task(task, WaitMembership::Console(wait_id), Some(result))
 }
 
-/// @description 消费 `rt_sigtimedwait` membership，并发布 signal/timeout/interruption 结果。
+/// 消费 `rt_sigtimedwait` membership，并发布 signal/timeout/interruption 结果。
 ///
-/// @param task indexed wait registry 移出的 task owner。
-/// @param wait_id 必须与 claimed registration 和 SchedulingState 同时一致。
-/// @param result 匹配 signal、timeout 或无关 signal interruption。
-/// @return membership 有效时返回 true；stale wake 返回 false。
+/// # Parameters
+///
+/// - `task`: indexed wait registry 移出的 task owner。
+/// - `wait_id`: 必须与 claimed registration 和 SchedulingState 同时一致。
+/// - `result`: 匹配 signal、timeout 或无关 signal interruption。
+///
+/// # Returns
+///
+/// membership 有效时返回 true；stale wake 返回 false。
 pub(super) fn wake_signal_task(
     task: Arc<TaskControlBlock>,
     wait_id: u64,
@@ -450,12 +528,21 @@ pub(super) fn wake_poll_task(
     wake_waiting_task(task, WaitMembership::Poll(wait_id), Some(result))
 }
 
-/// @description 消费指定 wait membership，并经 scheduler 唯一状态机发布 ready transition。
-/// @param task wait owner 移出的 blocked task Arc。
-/// @param expected 调用方持有的精确 wait identity。
-/// @param result 恢复后由 blocked syscall 消费的完成结果。
-/// @return membership 匹配并成功消费返回 true；stale wake 返回 false。
-/// @errors 无错误；状态不变量破坏时 fail-stop。
+/// 消费指定 wait membership，并经 scheduler 唯一状态机发布 ready transition。
+///
+/// # Parameters
+///
+/// - `task`: wait owner 移出的 blocked task Arc。
+/// - `expected`: 调用方持有的精确 wait identity。
+/// - `result`: 恢复后由 blocked syscall 消费的完成结果。
+///
+/// # Returns
+///
+/// membership 匹配并成功消费返回 true；stale wake 返回 false。
+///
+/// # Errors
+///
+/// 无错误；状态不变量破坏时 fail-stop。
 pub(in crate::task) fn wake_waiting_task(
     task: Arc<TaskControlBlock>,
     expected: WaitMembership,
@@ -508,10 +595,15 @@ pub(in crate::task) fn wake_waiting_task(
     true
 }
 
-/// @description 在 next task 或 idle continuation 上完成 Blocking/WakePending/Preempting handoff。
+/// 在 next task 或 idle continuation 上完成 Blocking/WakePending/Preempting handoff。
 ///
-/// @param task context 已由该 CPU 保存、pending slot 唯一保活的 outgoing task。
-/// @return 无返回值；Ready 只在 task context 已停止执行后发布。
+/// # Parameters
+///
+/// - `task`: context 已由该 CPU 保存、pending slot 唯一保活的 outgoing task。
+///
+/// # Returns
+///
+/// 无返回值；Ready 只在 task context 已停止执行后发布。
 pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool {
     let cpu = cpu::current_id();
     let mut stopped = false;

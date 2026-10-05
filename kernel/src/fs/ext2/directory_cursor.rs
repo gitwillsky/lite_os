@@ -1,4 +1,4 @@
-/// @description ext2 directory byte cookie 在单批遍历中的唯一推进 owner。
+/// ext2 directory byte cookie 在单批遍历中的唯一推进 owner。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DirectoryCursor {
     start: usize,
@@ -20,7 +20,7 @@ impl DirectoryCursor {
         self.start / block_size
     }
 
-    /// @description 判断 record 相对初始 cookie 的位置，并向后修正落入 merged record 的 stale cookie。
+    /// 判断 record 相对初始 cookie 的位置，并向后修正落入 merged record 的 stale cookie。
     pub(super) fn locate(&mut self, absolute: usize, next: usize) -> RecordPosition {
         if next <= self.start {
             return RecordPosition::Skip;

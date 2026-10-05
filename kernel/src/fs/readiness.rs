@@ -1,7 +1,7 @@
 use crate::ipc::{Pipe, PipeDirection};
 use alloc::sync::Arc;
 
-/// @description epoll persistent source index 使用的 domain-neutral readiness identity。
+/// epoll persistent source index 使用的 domain-neutral readiness identity。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ReadinessSource {
     Console,
@@ -20,7 +20,7 @@ impl ReadinessSource {
     }
 }
 
-/// @description 一个 OFD interest 的固定上限 source projection；构造与遍历均不分配。
+/// 一个 OFD interest 的固定上限 source projection；构造与遍历均不分配。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ReadinessSources {
     entries: [Option<ReadinessSource>; 2],

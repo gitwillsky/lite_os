@@ -52,7 +52,7 @@ struct QueueState {
     statistics: NetworkStatistics,
 }
 
-/// @description VirtIO MMIO v2 Ethernet adapter；queue 与 DMA buffer 生命周期由实例唯一拥有。
+/// VirtIO MMIO v2 Ethernet adapter；queue 与 DMA buffer 生命周期由实例唯一拥有。
 pub(crate) struct VirtIONetworkDevice {
     device: VirtIODevice,
     mac: [u8; 6],
@@ -65,10 +65,15 @@ pub(crate) struct VirtIONetworkDevice {
 }
 
 impl VirtIONetworkDevice {
-    /// @description 初始化 feature、RX/TX split virtqueue 与永久 RX DMA buffers。
+    /// 初始化 feature、RX/TX split virtqueue 与永久 RX DMA buffers。
     ///
-    /// @param base_addr DTB VirtIO MMIO base。
-    /// @return 完整设备；类型、feature、queue 或 allocation 不满足时返回 `None`。
+    /// # Parameters
+    ///
+    /// - `base_addr`: DTB VirtIO MMIO base。
+    ///
+    /// # Returns
+    ///
+    /// 完整设备；类型、feature、queue 或 allocation 不满足时返回 `None`。
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 1 {

@@ -7,11 +7,20 @@ use crate::ipc::ReceiveBuffer;
 use crate::socket::inet::{InetSocket, NetworkStack, from_ip, stack};
 use crate::socket::{InetAddress, SocketError, SocketPollState};
 
-/// @description 向 TCP send buffer 排队 partial stream bytes，并有界推进 egress。
-/// @param socket TCP facade identity。
-/// @param input kernel-owned input bytes。
-/// @return 本次实际排队字节数。
-/// @errors 未连接、peer 关闭、pending error 或 buffer 满时返回标准 socket error。
+/// 向 TCP send buffer 排队 partial stream bytes，并有界推进 egress。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+/// - `input`: kernel-owned input bytes。
+///
+/// # Returns
+///
+/// 本次实际排队字节数。
+///
+/// # Errors
+///
+/// 未连接、peer 关闭、pending error 或 buffer 满时返回标准 socket error。
 pub(in crate::socket::inet) fn send(
     socket: &InetSocket,
     input: &[u8],
@@ -64,12 +73,21 @@ pub(in crate::socket::inet) fn send(
     Ok(written)
 }
 
-/// @description 接收或窥视 TCP stream bytes，并在 peer FIN 后投影 EOF。
-/// @param socket TCP facade identity。
-/// @param output kernel-owned output buffer。
-/// @param peek 为 true 时不推进 receive sequence。
-/// @return copied length、同值 stream full length、peer 与无 ancillary local address。
-/// @errors 未连接、暂无数据或 reset 时返回标准 socket error。
+/// 接收或窥视 TCP stream bytes，并在 peer FIN 后投影 EOF。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+/// - `output`: kernel-owned output buffer。
+/// - `peek`: 为 true 时不推进 receive sequence。
+///
+/// # Returns
+///
+/// copied length、同值 stream full length、peer 与无 ancillary local address。
+///
+/// # Errors
+///
+/// 未连接、暂无数据或 reset 时返回标准 socket error。
 pub(in crate::socket::inet) fn receive(
     socket: &InetSocket,
     output: &mut ReceiveBuffer<'_>,
@@ -172,10 +190,19 @@ pub(in crate::socket::inet) fn receive(
     Ok(result)
 }
 
-/// @description 从唯一 TCP endpoint state 投影 OFD readiness。
-/// @param socket TCP facade identity。
-/// @return listener/connect/connected 对应的 poll state。
-/// @errors endpoint 不可用时返回 error readiness。
+/// 从唯一 TCP endpoint state 投影 OFD readiness。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+///
+/// # Returns
+///
+/// listener/connect/connected 对应的 poll state。
+///
+/// # Errors
+///
+/// endpoint 不可用时返回 error readiness。
 pub(in crate::socket::inet) fn poll_state(socket: &InetSocket) -> SocketPollState {
     let Ok(stack) = stack() else {
         return SocketPollState::error();
@@ -189,10 +216,19 @@ pub(in crate::socket::inet) fn poll_state(socket: &InetSocket) -> SocketPollStat
         .map_or(SocketPollState::error(), |state| state.poll_state(&network))
 }
 
-/// @description 在 deferred source 通知中无等待地投影 TCP readiness。
-/// @param socket TCP facade identity。
-/// @return owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
-/// @errors 不消费 adapter error；pending device failure 投影为 error readiness。
+/// 在 deferred source 通知中无等待地投影 TCP readiness。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+///
+/// # Returns
+///
+/// owner 可立即观察且 SocketSet 完整时返回状态，否则返回 `None`。
+///
+/// # Errors
+///
+/// 不消费 adapter error；pending device failure 投影为 error readiness。
 pub(in crate::socket::inet) fn try_poll_state(socket: &InetSocket) -> Option<SocketPollState> {
     let network = super::super::try_observe_stack()?;
     let mut readiness = network
@@ -204,10 +240,15 @@ pub(in crate::socket::inet) fn try_poll_state(socket: &InetSocket) -> Option<Soc
 }
 
 impl TcpEndpointState {
-    /// @description 在已持有 NetworkStack lock 时计算 endpoint readiness。
-    /// @param network 唯一协议栈 owner。
-    /// @return 不注册 waiter 的状态快照。
-    /// @errors 无错误。
+    /// 在已持有 NetworkStack lock 时计算 endpoint readiness。
+    ///
+    /// # Parameters
+    ///
+    /// - `network`: 唯一协议栈 owner。
+    ///
+    /// # Returns
+    ///
+    /// 不注册 waiter 的状态快照。
     pub(in crate::socket::inet) fn poll_state(&self, network: &NetworkStack) -> SocketPollState {
         match self.mode {
             TcpMode::Fresh { .. } => SocketPollState {
@@ -253,10 +294,15 @@ impl TcpEndpointState {
     }
 }
 
-/// @description 在协议 poll 内提交 connect/FIN/reset 状态。
-/// @param network 唯一协议栈 owner。
-/// @return 无返回值。
-/// @errors 状态不变量破坏时 fail-stop。
+/// 在协议 poll 内提交 connect/FIN/reset 状态。
+///
+/// # Parameters
+///
+/// - `network`: 唯一协议栈 owner。
+///
+/// # Errors
+///
+/// 状态不变量破坏时 fail-stop。
 pub(in crate::socket::inet) fn maintain(network: &mut NetworkStack) {
     let NetworkStack {
         tcp_endpoints,
@@ -312,7 +358,7 @@ pub(in crate::socket::inet) fn maintain(network: &mut NetworkStack) {
     });
 }
 
-/// @description egress 已观察 FIN/reset 后回收 Closed orphan 及其 socket handles。
+/// egress 已观察 FIN/reset 后回收 Closed orphan 及其 socket handles。
 pub(in crate::socket::inet) fn reap_orphans(network: &mut NetworkStack) {
     let NetworkStack {
         tcp_endpoints,
@@ -339,10 +385,19 @@ pub(in crate::socket::inet) fn reap_orphans(network: &mut NetworkStack) {
     });
 }
 
-/// @description 原子读取并清除 TCP pending error，供 `SO_ERROR` 使用。
-/// @param socket TCP facade identity。
-/// @return 尚未消费的错误；没有时为 None。
-/// @errors stack/endpoint 不可用时按无 pending error 处理。
+/// 原子读取并清除 TCP pending error，供 `SO_ERROR` 使用。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+///
+/// # Returns
+///
+/// 尚未消费的错误；没有时为 None。
+///
+/// # Errors
+///
+/// stack/endpoint 不可用时按无 pending error 处理。
 pub(in crate::socket::inet) fn take_error(socket: &InetSocket) -> Option<SocketError> {
     stack()
         .ok()?
@@ -354,11 +409,20 @@ pub(in crate::socket::inet) fn take_error(socket: &InetSocket) -> Option<SocketE
         .take()
 }
 
-/// @description 按 Linux `SHUT_RD/WR/RDWR` 更新 TCP half-close 状态。
-/// @param socket TCP facade identity。
-/// @param how 0、1 或 2；syscall 层已完成范围校验。
-/// @return 成功提交 half-close 返回 unit。
-/// @errors 非 connected endpoint 返回 `NotConnected`。
+/// 按 Linux `SHUT_RD/WR/RDWR` 更新 TCP half-close 状态。
+///
+/// # Parameters
+///
+/// - `socket`: TCP facade identity。
+/// - `how`: 0、1 或 2；syscall 层已完成范围校验。
+///
+/// # Returns
+///
+/// 成功提交 half-close 返回 unit。
+///
+/// # Errors
+///
+/// 非 connected endpoint 返回 `NotConnected`。
 pub(in crate::socket::inet) fn shutdown(
     socket: &InetSocket,
     how: usize,

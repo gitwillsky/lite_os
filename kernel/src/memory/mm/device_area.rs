@@ -4,7 +4,7 @@ use core::ops::Range;
 
 use super::*;
 
-/// @description device-backed VMA partition 对不可回收物理 extent 的共享 view。
+/// device-backed VMA partition 对不可回收物理 extent 的共享 view。
 #[derive(Debug, Clone)]
 pub(super) struct DeviceArea {
     /// backing 释放后仍不复用的共享 futex identity。
@@ -16,13 +16,18 @@ pub(super) struct DeviceArea {
 }
 
 impl DeviceArea {
-    /// @description 按 VMA split 边界派生三个共享 backing view。
+    /// 按 VMA split 边界派生三个共享 backing view。
     ///
-    /// @param area 原 device view。
-    /// @param original_start 原 VMA 首页。
-    /// @param start middle partition 首页。
-    /// @param end right partition 首页。
-    /// @return left/middle/right 对应 view；原 VMA 非 device 时全部为空。
+    /// # Parameters
+    ///
+    /// - `area`: 原 device view。
+    /// - `original_start`: 原 VMA 首页。
+    /// - `start`: middle partition 首页。
+    /// - `end`: right partition 首页。
+    ///
+    /// # Returns
+    ///
+    /// left/middle/right 对应 view；原 VMA 非 device 时全部为空。
     pub(super) fn partition(
         area: Option<Self>,
         original_start: VirtualPageNumber,
@@ -51,13 +56,18 @@ impl DeviceArea {
 }
 
 impl MapArea {
-    /// @description 构造直接映射物理 extent 的 device-backed 用户 VMA。
+    /// 构造直接映射物理 extent 的 device-backed 用户 VMA。
     ///
-    /// @param start_va VMA 起始虚拟地址。
-    /// @param end_va VMA exclusive 结束地址。
-    /// @param permissions 用户页权限。
-    /// @param source DRM 已验证长度和访问权的 backing source。
-    /// @return 尚未提交页表的 device MapArea。
+    /// # Parameters
+    ///
+    /// - `start_va`: VMA 起始虚拟地址。
+    /// - `end_va`: VMA exclusive 结束地址。
+    /// - `permissions`: 用户页权限。
+    /// - `source`: DRM 已验证长度和访问权的 backing source。
+    ///
+    /// # Returns
+    ///
+    /// 尚未提交页表的 device MapArea。
     pub(in crate::memory::mm) fn device(
         start_va: VirtualAddress,
         end_va: VirtualAddress,
@@ -84,7 +94,7 @@ impl MapArea {
         area.backing.page(index).ok_or(MemoryError::InvalidRange)
     }
 
-    /// @description 将 device extent 直接映射到当前页表，不建立第二份 resident index。
+    /// 将 device extent 直接映射到当前页表，不建立第二份 resident index。
     pub(super) fn map_device_area(
         &self,
         page_table: &mut PageTable,
@@ -106,7 +116,7 @@ impl MapArea {
         Ok(())
     }
 
-    /// @description 撤销 device VMA 的全部 leaf/reserved slots；backing 由 Arc 独立保活。
+    /// 撤销 device VMA 的全部 leaf/reserved slots；backing 由 Arc 独立保活。
     pub(super) fn unmap_device_area(
         &self,
         page_table: &mut PageTable,
@@ -117,7 +127,7 @@ impl MapArea {
         }
     }
 
-    /// @description 在不改变 backing owner 的前提下切换 device VMA 页权限。
+    /// 在不改变 backing owner 的前提下切换 device VMA 页权限。
     pub(super) fn protect_device_area(
         &self,
         page_table: &mut PageTable,
@@ -140,7 +150,7 @@ impl MapArea {
         Ok(())
     }
 
-    /// @description fork 时共享同一 device extent 并为 child 建立等价页表。
+    /// fork 时共享同一 device extent 并为 child 建立等价页表。
     pub(super) fn try_clone_device_into(
         &self,
         page_table: &mut PageTable,

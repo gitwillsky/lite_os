@@ -48,11 +48,16 @@ fn descriptor(fd: usize) -> Result<alloc::sync::Arc<TimerFd>, isize> {
     }
 }
 
-/// @description 创建 Linux timerfd OFD，并注册 immutable clock domain。
+/// 创建 Linux timerfd OFD，并注册 immutable clock domain。
 ///
-/// @param clock_id 只接受 CLOCK_REALTIME、CLOCK_MONOTONIC 与 CLOCK_BOOTTIME。
-/// @param flags 只接受 TFD_NONBLOCK/TFD_CLOEXEC。
-/// @return 新 fd；clock、flags、内存或 fd limit 失败返回负 errno。
+/// # Parameters
+///
+/// - `clock_id`: 只接受 CLOCK_REALTIME、CLOCK_MONOTONIC 与 CLOCK_BOOTTIME。
+/// - `flags`: 只接受 TFD_NONBLOCK/TFD_CLOEXEC。
+///
+/// # Returns
+///
+/// 新 fd；clock、flags、内存或 fd limit 失败返回负 errno。
 pub(crate) fn sys_timerfd_create(clock_id: i32, flags: u32) -> isize {
     let clock = match clock_id {
         0 => TimerFileClock::Realtime,
@@ -80,13 +85,18 @@ pub(crate) fn sys_timerfd_create(clock_id: i32, flags: u32) -> isize {
         .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }
 
-/// @description 原子替换 timerfd setting，并可返回旧的相对 setting。
+/// 原子替换 timerfd setting，并可返回旧的相对 setting。
 ///
-/// @param fd timerfd descriptor。
-/// @param flags 只接受 TFD_TIMER_ABSTIME。
-/// @param replacement 用户态 itimerspec。
-/// @param previous 可为空的旧 setting 输出地址。
-/// @return 成功返回零；fd、flag、timespec、copy 或资源错误返回负 errno。
+/// # Parameters
+///
+/// - `fd`: timerfd descriptor。
+/// - `flags`: 只接受 TFD_TIMER_ABSTIME。
+/// - `replacement`: 用户态 itimerspec。
+/// - `previous`: 可为空的旧 setting 输出地址。
+///
+/// # Returns
+///
+/// 成功返回零；fd、flag、timespec、copy 或资源错误返回负 errno。
 pub(crate) fn sys_timerfd_settime(
     fd: usize,
     flags: u32,
@@ -130,11 +140,16 @@ pub(crate) fn sys_timerfd_settime(
     0
 }
 
-/// @description 查询 timerfd 当前相对 setting。
+/// 查询 timerfd 当前相对 setting。
 ///
-/// @param fd timerfd descriptor。
-/// @param output 用户态 itimerspec 输出地址。
-/// @return 成功返回零；fd、copy 或 lifecycle 错误返回负 errno。
+/// # Parameters
+///
+/// - `fd`: timerfd descriptor。
+/// - `output`: 用户态 itimerspec 输出地址。
+///
+/// # Returns
+///
+/// 成功返回零；fd、copy 或 lifecycle 错误返回负 errno。
 pub(crate) fn sys_timerfd_gettime(fd: usize, output: usize) -> isize {
     let timer = match descriptor(fd) {
         Ok(timer) => timer,

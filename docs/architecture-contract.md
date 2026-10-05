@@ -49,7 +49,7 @@
 | `syscall` | `audio`, `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `system`, `task`, `timer`, `virtio_port` | 只编解码标准 UAPI/OFD operation；不得绕过领域 façade 接触 adapter |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch`, `cpu`, `platform` | whole-system policy；ISA 用户事实只经 `arch::user`，CPU/firmware 只经各自 facade |
-| `timer` | `arch`, `config`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |
+| `timer` | `arch`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |
 | `log` | `cpu`, `platform`, `sync`, `timer` | 日志策略、有界 record owner 与输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `lang_item` | `arch`, `cpu`, `platform` | 只使用 typed diagnostic identity 与 architecture/platform fail-stop mechanism |
@@ -94,7 +94,7 @@
 | `kernel/src/drm.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
 | `kernel/src/drm.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
 | `kernel/src/drm/graphics.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
-| `kernel/src/drm/publication_order.rs :: IdAllocator.reusable` | `FallibleMap < T , () >` |
+| `kernel/src/drm/publication_order.rs :: PublicationIdAllocator.reusable` | `FallibleMap < T , () >` |
 | `kernel/src/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
 | `kernel/src/fs/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |
 | `kernel/src/fs/epoll.rs :: EpollState.ready` | `FallibleMap < InterestKey , () >` |
@@ -125,21 +125,21 @@
 | `kernel/src/socket/unix/rights_graph.rs :: RightsGraph.nodes` | `FallibleMap < u64 , Arc < GraphNode > >` |
 | `kernel/src/socket/unix/rights_graph.rs :: RightsGraph.uid_inflight` | `FallibleMap < u32 , usize >` |
 | `kernel/src/socket/unix/stream_backlog.rs :: StreamBacklog.pending` | `FallibleMap < u64 , T >` |
-| `kernel/src/task/task_manager.rs :: ProcessGraph.nodes` | `FallibleMap < usize , ProcessNode >` |
-| `kernel/src/task/task_manager.rs :: ProcessGraph.groups` | `FallibleMap < (usize , usize) , ProcessGroupIndex >` |
-| `kernel/src/task/task_manager.rs :: ProcessGraph.threads` | `FallibleMap < usize , ThreadIndex >` |
-| `kernel/src/task/task_manager.rs :: ProcessNode.children` | `FallibleMap < usize , () >` |
-| `kernel/src/task/task_manager.rs :: ProcessNode.child_waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
-| `kernel/src/task/task_manager.rs :: ProcessState::Live[0]` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
-| `kernel/src/task/task_manager.rs :: ProcessGroupIndex.members` | `FallibleMap < usize , () >` |
-| `kernel/src/task/task_manager.rs :: ThreadIndex.created_children` | `FallibleMap < usize , () >` |
-| `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.deadline_index` | `FallibleMap < (u64 , TimerIdentity) , () >` |
-| `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.posix_timers` | `FallibleMap < (usize , i32) , PosixTimer >` |
-| `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.real_timers` | `FallibleMap < usize , RealTimer >` |
-| `kernel/src/task/task_manager/timer_queue.rs :: TimerQueue.timer_files` | `FallibleMap < u64 , TimerFile >` |
-| `kernel/src/task/task_manager/signal/job_control.rs :: JobNotification.waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
-| `kernel/src/task/task_manager/wait_registry/batch.rs :: ClaimedBatch.entries` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
-| `kernel/src/task/task_manager/wait_registry/shard.rs :: WaitShard.index` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
+| `kernel/src/task/process_table.rs :: ProcessGraph.nodes` | `FallibleMap < usize , ProcessNode >` |
+| `kernel/src/task/process_table.rs :: ProcessGraph.groups` | `FallibleMap < (usize , usize) , ProcessGroupIndex >` |
+| `kernel/src/task/process_table.rs :: ProcessGraph.threads` | `FallibleMap < usize , ThreadIndex >` |
+| `kernel/src/task/process_table.rs :: ProcessNode.children` | `FallibleMap < usize , () >` |
+| `kernel/src/task/process_table.rs :: ProcessNode.child_waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
+| `kernel/src/task/process_table.rs :: ProcessState::Live[0]` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
+| `kernel/src/task/process_table.rs :: ProcessGroupIndex.members` | `FallibleMap < usize , () >` |
+| `kernel/src/task/process_table.rs :: ThreadIndex.created_children` | `FallibleMap < usize , () >` |
+| `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.deadline_index` | `FallibleMap < (u64 , TimerIdentity) , () >` |
+| `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.posix_timers` | `FallibleMap < (usize , i32) , PosixTimer >` |
+| `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.real_timers` | `FallibleMap < usize , RealTimer >` |
+| `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.timer_files` | `FallibleMap < u64 , TimerFile >` |
+| `kernel/src/task/process_table/signal/job_control.rs :: JobNotification.waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
+| `kernel/src/task/process_table/wait_registry/batch.rs :: ClaimedBatch.entries` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
+| `kernel/src/task/process_table/wait_registry/shard.rs :: WaitShard.index` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
 
 ## 4. Source size contract
 

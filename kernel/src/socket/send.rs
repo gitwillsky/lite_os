@@ -2,7 +2,7 @@ use alloc::sync::{Arc, Weak};
 
 use super::{SocketError, SocketWaitSource, UnixSocket};
 
-/// @description syscall send orchestration 可等待的 opaque target-capacity projection。
+/// syscall send orchestration 可等待的 opaque target-capacity projection。
 pub(crate) struct SocketSendBlocker {
     target: Arc<UnixSocket>,
 }
@@ -25,7 +25,7 @@ impl SocketSendBlocker {
     }
 }
 
-/// @description 一次 wait-key expansion 捕获的 AF_UNIX datagram peer identity guard。
+/// 一次 wait-key expansion 捕获的 AF_UNIX datagram peer identity guard。
 pub(crate) struct SocketWaitGuard {
     socket: Arc<UnixSocket>,
     peer: Option<Weak<UnixSocket>>,
@@ -41,7 +41,7 @@ impl SocketWaitGuard {
     }
 }
 
-/// @description send failure 将普通 source backpressure 与 AF_UNIX target capacity 分离。
+/// send failure 将普通 source backpressure 与 AF_UNIX target capacity 分离。
 pub(crate) enum SocketSendError {
     WouldBlock,
     PeerFull(SocketSendBlocker),

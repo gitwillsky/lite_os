@@ -9,7 +9,7 @@ use super::*;
 // Relaxed is sufficient because the counter only provides uniqueness, not memory publication.
 static NEXT_SHARED_ANONYMOUS_ID: AtomicU64 = AtomicU64::new(0);
 
-/// @description 匿名共享 VMA 的唯一页帧与 futex identity owner；由所有 fork descendant 共享。
+/// 匿名共享 VMA 的唯一页帧与 futex identity owner；由所有 fork descendant 共享。
 #[derive(Debug)]
 pub(super) struct AnonymousSharedBacking {
     /// 不复用的 process-independent futex backing identity。
@@ -21,10 +21,15 @@ pub(super) struct AnonymousSharedBacking {
 }
 
 impl AnonymousSharedBacking {
-    /// @description 创建空的匿名共享 backing，物理页由首次 fault 按索引发布。
+    /// 创建空的匿名共享 backing，物理页由首次 fault 按索引发布。
     ///
-    /// @param page_count backing 持有的物理页数。
-    /// @return 成功返回唯一共享 owner；容量或物理页不足返回 OutOfMemory。
+    /// # Parameters
+    ///
+    /// - `page_count`: backing 持有的物理页数。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回唯一共享 owner；容量或物理页不足返回 OutOfMemory。
     pub(super) fn allocate(page_count: usize) -> Result<Arc<Self>, MemoryError> {
         if page_count == 0 {
             return Err(MemoryError::InvalidRange);
@@ -63,7 +68,7 @@ impl AnonymousSharedBacking {
     }
 }
 
-/// @description 一个匿名共享 VMA partition 对 backing 与首个 backing page 的引用。
+/// 一个匿名共享 VMA partition 对 backing 与首个 backing page 的引用。
 #[derive(Debug, Clone)]
 pub(super) struct SharedAnonymousArea {
     /// 跨 fork 与 VMA partition 共享的 backing owner。
@@ -73,13 +78,18 @@ pub(super) struct SharedAnonymousArea {
 }
 
 impl SharedAnonymousArea {
-    /// @description 按 VMA split 边界派生 left/middle/right backing view，不复制页帧。
+    /// 按 VMA split 边界派生 left/middle/right backing view，不复制页帧。
     ///
-    /// @param shared 原 VMA 的可选共享 metadata。
-    /// @param original_start 原 VMA 首页。
-    /// @param start middle partition 首页。
-    /// @param end right partition 首页。
-    /// @return 三个 partition 的 metadata；原 VMA 非共享时全部为 None。
+    /// # Parameters
+    ///
+    /// - `shared`: 原 VMA 的可选共享 metadata。
+    /// - `original_start`: 原 VMA 首页。
+    /// - `start`: middle partition 首页。
+    /// - `end`: right partition 首页。
+    ///
+    /// # Returns
+    ///
+    /// 三个 partition 的 metadata；原 VMA 非共享时全部为 None。
     pub(super) fn partition(
         shared: Option<Self>,
         original_start: VirtualPageNumber,
@@ -107,7 +117,7 @@ impl SharedAnonymousArea {
     }
 }
 
-/// @description shared-file resident page 及其 writer 引用所有权。
+/// shared-file resident page 及其 writer 引用所有权。
 #[derive(Debug)]
 pub(super) struct SharedResident {
     /// 文件页缓存提供的共享物理页。
@@ -117,11 +127,16 @@ pub(super) struct SharedResident {
 }
 
 impl SharedResident {
-    /// @description 建立 resident owner，并在 writable mapping 下取得 writer claim。
+    /// 建立 resident owner，并在 writable mapping 下取得 writer claim。
     ///
-    /// @param page 共享文件页。
-    /// @param writer 是否取得 writer claim。
-    /// @return 持有对应生命周期 claim 的 resident owner。
+    /// # Parameters
+    ///
+    /// - `page`: 共享文件页。
+    /// - `writer`: 是否取得 writer claim。
+    ///
+    /// # Returns
+    ///
+    /// 持有对应生命周期 claim 的 resident owner。
     pub(super) fn new(page: Arc<dyn SharedPage>, writer: bool) -> Self {
         if writer {
             page.acquire_writer();
@@ -138,7 +153,7 @@ impl Drop for SharedResident {
     }
 }
 
-/// @description shared-file VMA 的文件 identity、validated page range 与 resident-page owner。
+/// shared-file VMA 的文件 identity、validated page range 与 resident-page owner。
 #[derive(Debug)]
 pub(super) struct SharedFileArea {
     /// 文件系统提供的共享 mapping adapter。
@@ -150,7 +165,7 @@ pub(super) struct SharedFileArea {
 }
 
 impl SharedFileArea {
-    /// @description 按 VMA split 边界派生精确 validated file-page views。
+    /// 按 VMA split 边界派生精确 validated file-page views。
     pub(super) fn partition(
         shared: Option<Self>,
         original: Range<VirtualPageNumber>,
@@ -230,7 +245,7 @@ impl SharedFileArea {
             .subrange(u64::try_from(delta).ok()?, u64::try_from(count).ok()?)
     }
 
-    /// @description 同步一个 VMA 子区间对应的精确 validated file byte range。
+    /// 同步一个 VMA 子区间对应的精确 validated file byte range。
     pub(super) fn sync_vma_range(
         &self,
         vma_start: VirtualPageNumber,
@@ -252,13 +267,18 @@ impl SharedFileArea {
 }
 
 impl MapArea {
-    /// @description 用指定 backing 构造 eager 匿名共享 VMA。
+    /// 用指定 backing 构造 eager 匿名共享 VMA。
     ///
-    /// @param start_va VMA 起始虚拟地址。
-    /// @param end_va VMA 结束虚拟地址，不包含该地址。
-    /// @param permissions 用户页权限。
-    /// @param backing 完整覆盖 VMA 的共享页帧 owner。
-    /// @return 尚未提交页表的 MapArea。
+    /// # Parameters
+    ///
+    /// - `start_va`: VMA 起始虚拟地址。
+    /// - `end_va`: VMA 结束虚拟地址，不包含该地址。
+    /// - `permissions`: 用户页权限。
+    /// - `backing`: 完整覆盖 VMA 的共享页帧 owner。
+    ///
+    /// # Returns
+    ///
+    /// 尚未提交页表的 MapArea。
     pub(super) fn shared_anonymous(
         start_va: VirtualAddress,
         end_va: VirtualAddress,
@@ -273,14 +293,19 @@ impl MapArea {
         area
     }
 
-    /// @description 构造尚未 fault-in resident page 的 shared-file VMA。
+    /// 构造尚未 fault-in resident page 的 shared-file VMA。
     ///
-    /// @param start_va VMA 起始虚拟地址。
-    /// @param end_va VMA 结束虚拟地址，不包含该地址。
-    /// @param permissions 用户页权限。
-    /// @param mapping 文件系统共享 mapping adapter。
-    /// @param pages 与 VMA 页数相同的已验证文件页范围。
-    /// @return 尚未提交页表的 MapArea。
+    /// # Parameters
+    ///
+    /// - `start_va`: VMA 起始虚拟地址。
+    /// - `end_va`: VMA 结束虚拟地址，不包含该地址。
+    /// - `permissions`: 用户页权限。
+    /// - `mapping`: 文件系统共享 mapping adapter。
+    /// - `pages`: 与 VMA 页数相同的已验证文件页范围。
+    ///
+    /// # Returns
+    ///
+    /// 尚未提交页表的 MapArea。
     pub(super) fn shared_file(
         start_va: VirtualAddress,
         end_va: VirtualAddress,
@@ -303,10 +328,15 @@ impl MapArea {
         area
     }
 
-    /// @description 将匿名共享 VMA 的 backing frames 提交到页表。
+    /// 将匿名共享 VMA 的 backing frames 提交到页表。
     ///
-    /// @param page_table 当前 AddressSpace 的页表 owner。
-    /// @return 当前 area 非匿名共享时返回 false；成功映射返回 true；页表冲突返回错误。
+    /// # Parameters
+    ///
+    /// - `page_table`: 当前 AddressSpace 的页表 owner。
+    ///
+    /// # Returns
+    ///
+    /// 当前 area 非匿名共享时返回 false；成功映射返回 true；页表冲突返回错误。
     pub(super) fn map_shared_anonymous(
         &self,
         page_table: &mut PageTable,
@@ -318,10 +348,15 @@ impl MapArea {
         Ok(true)
     }
 
-    /// @description 判断相邻匿名 VMA 是否可在不改变 private/shared identity 下合并。
+    /// 判断相邻匿名 VMA 是否可在不改变 private/shared identity 下合并。
     ///
-    /// @param right 紧邻当前 area 右侧的候选 VMA。
-    /// @return 权限一致且同属 private，或同一 backing 的连续区间时返回 true。
+    /// # Parameters
+    ///
+    /// - `right`: 紧邻当前 area 右侧的候选 VMA。
+    ///
+    /// # Returns
+    ///
+    /// 权限一致且同属 private，或同一 backing 的连续区间时返回 true。
     pub(super) fn anonymous_mergeable(&self, right: &Self) -> bool {
         if self.kind != VmaKind::Anonymous
             || right.kind != VmaKind::Anonymous

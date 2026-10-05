@@ -5,7 +5,7 @@ use super::SourceFile;
 
 const ADDRESS_SPACE: &str = "kernel/src/task/model/address_space.rs";
 const TASK_ACCESS: &str = "kernel/src/task/model/address_space/task_access.rs";
-const EXIT: &str = "kernel/src/task/task_manager/process_exit.rs";
+const EXIT: &str = "kernel/src/task/process_table/process_exit.rs";
 const MUTEX: &str = "kernel/src/sync/task_mutex.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {

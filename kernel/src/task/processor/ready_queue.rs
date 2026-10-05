@@ -1,9 +1,15 @@
 use super::*;
 
-/// @description 将已发布 Ready generation 的 entry 加入 owner CPU runqueue。
-/// @param processor 当前 CPU 独占的 scheduler 执行状态。
-/// @param entry 已属于 processor CPU 的 membership token。
-/// @return Ready entity 的 vruntime 严格早于 current 时返回 true。
+/// 将已发布 Ready generation 的 entry 加入 owner CPU runqueue。
+///
+/// # Parameters
+///
+/// - `processor`: 当前 CPU 独占的 scheduler 执行状态。
+/// - `entry`: 已属于 processor CPU 的 membership token。
+///
+/// # Returns
+///
+/// Ready entity 的 vruntime 严格早于 current 时返回 true。
 pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -> bool {
     let slot = current_per_cpu();
     make_runqueue_room(processor, 1);
@@ -56,9 +62,15 @@ fn compact_full_mailbox(inbound: &mut VecDeque<RunQueueEntry>, cpu_id: CpuId, ca
     inbound.retain(|candidate| candidate.is_current_ready(cpu_id));
 }
 
-/// @description 消费 stale entry，完成唯一 Ready → Running membership 转换。
-/// @param processor 当前 CPU 独占的 scheduler 执行状态。
-/// @return 队列为空时返回 `None`，否则返回唯一取出的任务。
+/// 消费 stale entry，完成唯一 Ready → Running membership 转换。
+///
+/// # Parameters
+///
+/// - `processor`: 当前 CPU 独占的 scheduler 执行状态。
+///
+/// # Returns
+///
+/// 队列为空时返回 `None`，否则返回唯一取出的任务。
 pub(super) fn select_task(processor: &mut Processor) -> Option<Arc<TaskControlBlock>> {
     assert!(
         processor.current.is_none(),
@@ -94,9 +106,11 @@ pub(super) fn select_task(processor: &mut Processor) -> Option<Arc<TaskControlBl
     }
 }
 
-/// @description 在一次 mailbox lock 内批量转移本轮 inbound snapshot。
-/// @param processor 当前 CPU 独占的 scheduler 执行状态。
-/// @return 无返回值。
+/// 在一次 mailbox lock 内批量转移本轮 inbound snapshot。
+///
+/// # Parameters
+///
+/// - `processor`: 当前 CPU 独占的 scheduler 执行状态。
 pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
     let slot = current_per_cpu();
     // 锁内只消费进入本轮时的 snapshot；后续 delivery 等待锁，
@@ -126,11 +140,16 @@ pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
     publish_vruntime_floor(processor, slot);
 }
 
-/// @description 投递 Ready entry；本地按 CFS policy 抢占，远端只发布 mailbox wake edge。
-/// @param cpu_id 目标 logical CPU identity。
-/// @param entry 带 generation 的 membership token。
-/// @return 无返回值。
-/// @errors 目标越界、未 active 或 platform IPI 失败均 fail-stop。
+/// 投递 Ready entry；本地按 CFS policy 抢占，远端只发布 mailbox wake edge。
+///
+/// # Parameters
+///
+/// - `cpu_id`: 目标 logical CPU identity。
+/// - `entry`: 带 generation 的 membership token。
+///
+/// # Errors
+///
+/// 目标越界、未 active 或 platform IPI 失败均 fail-stop。
 #[inline(always)]
 pub(super) fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry) {
     if cpu_id == cpu::current_id() {
@@ -169,9 +188,15 @@ fn deliver_remote(cpu_id: CpuId, entry: RunQueueEntry) {
 }
 
 impl RunQueueEntry {
-    /// @description 核对 entry generation 与唯一 SchedulingState Ready membership。
-    /// @param cpu 容器所属 CPU ID。
-    /// @return 该 entry 仍是当前唯一 Ready membership 时返回 true。
+    /// 核对 entry generation 与唯一 SchedulingState Ready membership。
+    ///
+    /// # Parameters
+    ///
+    /// - `cpu`: 容器所属 CPU ID。
+    ///
+    /// # Returns
+    ///
+    /// 该 entry 仍是当前唯一 Ready membership 时返回 true。
     fn is_current_ready(&self, cpu: CpuId) -> bool {
         matches!(
             self.task.scheduling.state.lock().run_state(),

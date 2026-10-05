@@ -20,8 +20,13 @@ pub(super) struct PrivateResident {
 impl PrivateResident {
     /// 构造尚未被写脏或标记 MADV_FREE 的驻留页。
     ///
-    /// @param frame 已在发布前完整初始化的物理页 owner。
-    /// @return 与 frame 同时提交的初始 residency 状态。
+    /// # Parameters
+    ///
+    /// - `frame`: 已在发布前完整初始化的物理页 owner。
+    ///
+    /// # Returns
+    ///
+    /// 与 frame 同时提交的初始 residency 状态。
     pub(super) fn new(frame: Arc<FrameTracker>) -> Self {
         Self {
             frame,

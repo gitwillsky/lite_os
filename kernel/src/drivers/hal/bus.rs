@@ -4,7 +4,7 @@ pub(crate) enum BusError {
     InvalidAddress,
 }
 
-/// @description 提供有边界和对齐检查、并由静态 arch façade 固定指令形态的 MMIO 访问。
+/// 提供有边界和对齐检查、并由静态 arch façade 固定指令形态的 MMIO 访问。
 pub(crate) struct MmioBus {
     base_addr: usize,
     size: usize,
@@ -31,21 +31,39 @@ impl MmioBus {
         Ok(address)
     }
 
-    /// @description 从 MMIO window 读取一个 byte。
-    /// @param offset 相对 window base 的 byte offset。
-    /// @return volatile 读取值。
-    /// @errors offset 越界返回 `InvalidAddress`。
+    /// 从 MMIO window 读取一个 byte。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 window base 的 byte offset。
+    ///
+    /// # Returns
+    ///
+    /// volatile 读取值。
+    ///
+    /// # Errors
+    ///
+    /// offset 越界返回 `InvalidAddress`。
     pub(crate) fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
         let address = self.address(offset, core::mem::size_of::<u8>())?;
         // SAFETY: `address` 已由本 window 完成范围检查；arch owner 保证单次 device access。
         Ok(unsafe { crate::arch::read_mmio_u8(address) })
     }
 
-    /// @description 向 MMIO window 写入一个 byte。
-    /// @param offset 相对 window base 的 byte offset。
-    /// @param value 要发布的 byte。
-    /// @return 写入成功返回 unit。
-    /// @errors offset 越界返回 `InvalidAddress`。
+    /// 向 MMIO window 写入一个 byte。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 window base 的 byte offset。
+    /// - `value`: 要发布的 byte。
+    ///
+    /// # Returns
+    ///
+    /// 写入成功返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// offset 越界返回 `InvalidAddress`。
     pub(crate) fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
         let address = self.address(offset, core::mem::size_of::<u8>())?;
         // SAFETY: `address` 已由本 window 完成范围检查；arch owner 保证单次 device access。
@@ -53,21 +71,39 @@ impl MmioBus {
         Ok(())
     }
 
-    /// @description 从 MMIO window 读取一个 little-endian 16-bit halfword。
-    /// @param offset 相对 window base 的 byte offset。
-    /// @return volatile 读取值。
-    /// @errors offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
+    /// 从 MMIO window 读取一个 little-endian 16-bit halfword。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 window base 的 byte offset。
+    ///
+    /// # Returns
+    ///
+    /// volatile 读取值。
+    ///
+    /// # Errors
+    ///
+    /// offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
     pub(crate) fn read_u16(&self, offset: usize) -> Result<u16, BusError> {
         let address = self.address(offset, core::mem::size_of::<u16>())?;
         // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。
         Ok(unsafe { crate::arch::read_mmio_u16(address) })
     }
 
-    /// @description 向 MMIO window 写入一个 little-endian 16-bit halfword。
-    /// @param offset 相对 window base 的 byte offset。
-    /// @param value 要发布的 halfword。
-    /// @return 写入成功返回 unit。
-    /// @errors offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
+    /// 向 MMIO window 写入一个 little-endian 16-bit halfword。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 相对 window base 的 byte offset。
+    /// - `value`: 要发布的 halfword。
+    ///
+    /// # Returns
+    ///
+    /// 写入成功返回 unit。
+    ///
+    /// # Errors
+    ///
+    /// offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
     pub(crate) fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError> {
         let address = self.address(offset, core::mem::size_of::<u16>())?;
         // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。

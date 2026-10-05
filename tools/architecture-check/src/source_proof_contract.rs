@@ -63,10 +63,19 @@ impl<'ast> Visit<'ast> for UnsafeVisitor {
     }
 }
 
-/// @description 检查二进制全局 owner 声明与每个 unsafe/extern 的局部安全证明。
-/// @param sources 统一源码快照；errors 接收缺失 owner 或 SAFETY proof 的位置。
-/// @return 无；全部违规一次收集。
-/// @errors 源码证明缺失均追加到 errors。
+/// 检查二进制全局 owner 声明与每个 unsafe/extern 的局部安全证明。
+///
+/// # Parameters
+///
+/// - `sources`: 统一源码快照；errors 接收缺失 owner 或 SAFETY proof 的位置。
+///
+/// # Returns
+///
+/// 无；全部违规一次收集。
+///
+/// # Errors
+///
+/// 源码证明缺失均追加到 errors。
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_global_owners(sources, errors);
     check_unsafe_proofs(sources, errors);

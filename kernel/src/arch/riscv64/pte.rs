@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
 bitflags! {
-    /// @description Generic memory domain 可表达的 architecture-neutral mapping 权限。
+    /// Generic memory domain 可表达的 architecture-neutral mapping 权限。
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) struct PagePermissions: u8 {
         const READ = 1 << 0;
@@ -29,9 +29,15 @@ bitflags! {
     }
 }
 
-/// @description 将语义 mapping permissions 编码为合法 RISC-V leaf PTE flags。
-/// @param permissions generic memory domain 请求的权限。
-/// @return 合法编码；write-without-read 在 RISC-V 上不可表达时返回 `None`。
+/// 将语义 mapping permissions 编码为合法 RISC-V leaf PTE flags。
+///
+/// # Parameters
+///
+/// - `permissions`: generic memory domain 请求的权限。
+///
+/// # Returns
+///
+/// 合法编码；write-without-read 在 RISC-V 上不可表达时返回 `None`。
 pub(super) fn encode(permissions: PagePermissions) -> Option<RiscvPteFlags> {
     if permissions.contains(PagePermissions::DEVICE)
         && permissions.intersects(PagePermissions::EXECUTE | PagePermissions::USER)
@@ -64,9 +70,15 @@ pub(super) fn encode(permissions: PagePermissions) -> Option<RiscvPteFlags> {
     Some(flags)
 }
 
-/// @description 从已验证 RISC-V leaf PTE 投影语义 mapping permissions。
-/// @param flags backend 私有 raw PTE flags。
-/// @return 不包含 valid/accessed/dirty encoding bit 的语义权限。
+/// 从已验证 RISC-V leaf PTE 投影语义 mapping permissions。
+///
+/// # Parameters
+///
+/// - `flags`: backend 私有 raw PTE flags。
+///
+/// # Returns
+///
+/// 不包含 valid/accessed/dirty encoding bit 的语义权限。
 pub(super) fn decode(flags: RiscvPteFlags) -> PagePermissions {
     let mut permissions = PagePermissions::empty();
     if flags.contains(RiscvPteFlags::R) {

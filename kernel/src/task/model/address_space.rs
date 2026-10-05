@@ -5,7 +5,7 @@ use core::sync::atomic::AtomicBool;
 mod mapping;
 mod task_access;
 
-/// @description Process owner 向 task façade 发布的 procfs 统计快照。
+/// Process owner 向 task façade 发布的 procfs 统计快照。
 pub(in crate::task) struct ProcessStatistics {
     /// Process 共享 comm。
     pub(in crate::task) comm: Vec<u8>,
@@ -62,9 +62,15 @@ impl AddressSpace {
             .user_page_statistics())
     }
 
-    /// @description 按 Linux mm argument range 复制当前 Process 的实时 argv bytes。
-    /// @return range 可读时返回 NUL 分隔 bytes。
-    /// @errors unmap/protection 或 kernel buffer OOM 返回精确 user-access 错误。
+    /// 按 Linux mm argument range 复制当前 Process 的实时 argv bytes。
+    ///
+    /// # Returns
+    ///
+    /// range 可读时返回 NUL 分隔 bytes。
+    ///
+    /// # Errors
+    ///
+    /// unmap/protection 或 kernel buffer OOM 返回精确 user-access 错误。
     pub(super) fn process_arguments(&self) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.memory_set
             .lock()
@@ -107,13 +113,18 @@ impl AddressSpace {
             )
     }
 
-    /// @description 在 AddressSpace owner 下建立唯一 anonymous shared mapping。
+    /// 在 AddressSpace owner 下建立唯一 anonymous shared mapping。
     ///
-    /// @param address 零为内核选址，非零为 hint 或 fixed_noreplace exact address。
-    /// @param length 非零 mapping 字节长度。
-    /// @param permission 用户页权限。
-    /// @param fixed_noreplace 是否禁止覆盖已有 VMA。
-    /// @return 成功返回 mapping 起点；非法范围、冲突或内存不足返回 MemoryError。
+    /// # Parameters
+    ///
+    /// - `address`: 零为内核选址，非零为 hint 或 fixed_noreplace exact address。
+    /// - `length`: 非零 mapping 字节长度。
+    /// - `permission`: 用户页权限。
+    /// - `fixed_noreplace`: 是否禁止覆盖已有 VMA。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 mapping 起点；非法范围、冲突或内存不足返回 MemoryError。
     pub(super) fn map_shared_anonymous(
         &self,
         address: usize,
@@ -134,12 +145,17 @@ impl AddressSpace {
             )
     }
 
-    /// @description 在 AddressSpace owner lock 内验证 futex word 并生成稳定 key。
+    /// 在 AddressSpace owner lock 内验证 futex word 并生成稳定 key。
     ///
-    /// @param address 用户 futex 地址。
-    /// @param private true 强制 address-space scope，false 允许共享 backing scope。
-    /// @param consume 在 AddressSpace lock 内消费稳定 key 的闭包。
-    /// @return 成功返回 memory-domain key；不可读映射返回 user access error。
+    /// # Parameters
+    ///
+    /// - `address`: 用户 futex 地址。
+    /// - `private`: true 强制 address-space scope，false 允许共享 backing scope。
+    /// - `consume`: 在 AddressSpace lock 内消费稳定 key 的闭包。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回 memory-domain key；不可读映射返回 user access error。
     pub(super) fn with_futex_key<R>(
         &self,
         address: usize,
@@ -156,12 +172,17 @@ impl AddressSpace {
         Ok(consume(key))
     }
 
-    /// @description 在同一个 AddressSpace owner lock 内解析 futex key 并读取当前 word。
+    /// 在同一个 AddressSpace owner lock 内解析 futex key 并读取当前 word。
     ///
-    /// @param address 用户 futex 地址。
-    /// @param private true 强制 address-space scope，false 允许共享 backing scope。
-    /// @param consume 在锁内消费稳定 key 与当前 u32 value 的闭包。
-    /// @return 成功返回闭包结果；不可读映射返回 user access error。
+    /// # Parameters
+    ///
+    /// - `address`: 用户 futex 地址。
+    /// - `private`: true 强制 address-space scope，false 允许共享 backing scope。
+    /// - `consume`: 在锁内消费稳定 key 与当前 u32 value 的闭包。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回闭包结果；不可读映射返回 user access error。
     pub(super) fn with_futex_word<R>(
         &self,
         address: usize,
@@ -180,13 +201,18 @@ impl AddressSpace {
         Ok(consume(key, u32::from_ne_bytes(bytes)))
     }
 
-    /// @description 在同一个 AddressSpace owner lock 内解析两个 futex key 并读取 source word。
+    /// 在同一个 AddressSpace owner lock 内解析两个 futex key 并读取 source word。
     ///
-    /// @param source source futex 用户地址。
-    /// @param target target futex 用户地址。
-    /// @param private true 强制 address-space scope，false 允许共享 backing scope。
-    /// @param consume 在锁内消费两个 key 与 source u32 value 的闭包。
-    /// @return 成功返回闭包结果；任一映射不可读时返回 user access error。
+    /// # Parameters
+    ///
+    /// - `source`: source futex 用户地址。
+    /// - `target`: target futex 用户地址。
+    /// - `private`: true 强制 address-space scope，false 允许共享 backing scope。
+    /// - `consume`: 在锁内消费两个 key 与 source u32 value 的闭包。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回闭包结果；任一映射不可读时返回 user access error。
     pub(super) fn with_futex_requeue<R>(
         &self,
         source: usize,
@@ -300,11 +326,16 @@ impl AddressSpace {
             .advise_user_mapping(address, length, advice)
     }
 
-    /// @description 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
+    /// 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
     ///
-    /// @param user_address 用户源地址。
-    /// @param destination kernel 目标缓冲区。
-    /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
+    /// # Parameters
+    ///
+    /// - `user_address`: 用户源地址。
+    /// - `destination`: kernel 目标缓冲区。
+    ///
+    /// # Returns
+    ///
+    /// 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
     pub(super) fn copy_from_user(
         &self,
         user_address: usize,
@@ -341,11 +372,16 @@ impl AddressSpace {
             .copy_instruction_halfword(user_address, destination, limits)
     }
 
-    /// @description 将 kernel 缓冲区复制到用户地址空间，地址空间锁覆盖整个复制。
+    /// 将 kernel 缓冲区复制到用户地址空间，地址空间锁覆盖整个复制。
     ///
-    /// @param user_address 用户目标地址。
-    /// @param source kernel 源缓冲区。
-    /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
+    /// # Parameters
+    ///
+    /// - `user_address`: 用户目标地址。
+    /// - `source`: kernel 源缓冲区。
+    ///
+    /// # Returns
+    ///
+    /// 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
     pub(super) fn copy_to_user(
         &self,
         user_address: usize,
@@ -358,7 +394,7 @@ impl AddressSpace {
             .copy_to_user(user_address, source, limits)
     }
 
-    /// @description 在单次 AddressSpace owner transaction 内 fault-in 并清零用户范围。
+    /// 在单次 AddressSpace owner transaction 内 fault-in 并清零用户范围。
     pub(super) fn zero_user(
         &self,
         user_address: usize,
@@ -371,11 +407,17 @@ impl AddressSpace {
             .zero_user(user_address, length, limits)
     }
 
-    /// @description 在不修改内容的前提下准备并验证完整 userspace write range。
-    /// @param user_address 用户目标首地址。
-    /// @param length 必须可写的 byte 数。
-    /// @param limits fault-in 可消耗的资源上限。
-    /// @return 完整范围可写返回 Ok；fault、权限或资源失败返回错误。
+    /// 在不修改内容的前提下准备并验证完整 userspace write range。
+    ///
+    /// # Parameters
+    ///
+    /// - `user_address`: 用户目标首地址。
+    /// - `length`: 必须可写的 byte 数。
+    /// - `limits`: fault-in 可消耗的资源上限。
+    ///
+    /// # Returns
+    ///
+    /// 完整范围可写返回 Ok；fault、权限或资源失败返回错误。
     pub(super) fn validate_user_write(
         &self,
         user_address: usize,
@@ -388,11 +430,16 @@ impl AddressSpace {
             .validate_user_write(user_address, length, limits)
     }
 
-    /// @description 从用户空间复制有上限的 NUL 结尾字节串。
+    /// 从用户空间复制有上限的 NUL 结尾字节串。
     ///
-    /// @param user_address 用户字符串首地址。
-    /// @param max_len 包含终止 NUL 的最大总字节数。
-    /// @return 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
+    /// # Parameters
+    ///
+    /// - `user_address`: 用户字符串首地址。
+    /// - `max_len`: 包含终止 NUL 的最大总字节数。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
     pub(super) fn copy_user_c_string(
         &self,
         user_address: usize,

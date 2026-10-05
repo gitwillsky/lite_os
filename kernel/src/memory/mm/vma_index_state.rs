@@ -48,7 +48,9 @@ impl VmaIndexState {
 
     /// 在 prepared AVL node 无失败发布前登记贡献。
     ///
-    /// @param contribution 与即将 commit 的唯一 node 完全对应。
+    /// # Parameters
+    ///
+    /// - `contribution`: 与即将 commit 的唯一 node 完全对应。
     pub(super) fn publish(&mut self, contribution: VmaContribution) {
         if contribution.stack {
             assert!(
@@ -69,7 +71,9 @@ impl VmaIndexState {
 
     /// 在 AVL node 离开 live index 后撤销其完整贡献。
     ///
-    /// @param contribution 与刚由 index 取出的唯一 node 完全对应。
+    /// # Parameters
+    ///
+    /// - `contribution`: 与刚由 index 取出的唯一 node 完全对应。
     pub(super) fn retire(&mut self, contribution: VmaContribution) {
         if contribution.stack {
             assert_eq!(

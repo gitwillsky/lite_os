@@ -1,4 +1,4 @@
-//! @description Linux memfd anonymous-file storage 与 seal owner。
+//! Linux memfd anonymous-file storage 与 seal owner。
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use spin::Mutex;
@@ -21,10 +21,16 @@ pub(crate) struct MemFile {
 }
 
 impl MemFile {
-    /// @description 创建空 anonymous file。
-    /// @param name `/proc/<pid>/fd` 使用的 Linux memfd diagnostic name。
-    /// @param allow_sealing 未设置 `MFD_ALLOW_SEALING` 时初始带 `F_SEAL_SEAL`。
-    /// @return 新 memfd inode owner。
+    /// 创建空 anonymous file。
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: `/proc/<pid>/fd` 使用的 Linux memfd diagnostic name。
+    /// - `allow_sealing`: 未设置 `MFD_ALLOW_SEALING` 时初始带 `F_SEAL_SEAL`。
+    ///
+    /// # Returns
+    ///
+    /// 新 memfd inode owner。
     pub(crate) fn new(name: Vec<u8>, allow_sealing: bool) -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
             inode: crate::id::next_runtime_object_id(),
@@ -34,10 +40,19 @@ impl MemFile {
         .map_err(|_| FileSystemError::OutOfMemory)
     }
 
-    /// @description 原子追加受支持 seal。
-    /// @param seals `F_SEAL_SEAL|SHRINK|GROW` 子集。
-    /// @return 新 seal mask。
-    /// @errors 已 sealed 或要求 WRITE/FUTURE_WRITE 等未实现语义时返回明确错误。
+    /// 原子追加受支持 seal。
+    ///
+    /// # Parameters
+    ///
+    /// - `seals`: `F_SEAL_SEAL|SHRINK|GROW` 子集。
+    ///
+    /// # Returns
+    ///
+    /// 新 seal mask。
+    ///
+    /// # Errors
+    ///
+    /// 已 sealed 或要求 WRITE/FUTURE_WRITE 等未实现语义时返回明确错误。
     pub(crate) fn add_seals(&self, seals: u32) -> Result<u32, FileSystemError> {
         self.state.lock().add_seals(seals).map_err(state_error)
     }

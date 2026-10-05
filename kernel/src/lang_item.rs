@@ -2,8 +2,7 @@ use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
-    // SAFETY: panic handling disables only the current CPU's local interrupt state before entering
-    // a non-returning diagnostic path.
+    // 只关闭当前 CPU 的 local interrupt，再进入不返回的诊断与 fail-stop 路径。
     crate::arch::interrupt::disable_for_fail_stop();
 
     // 输出基本的 panic 信息
@@ -26,7 +25,10 @@ fn panic_handler(info: &PanicInfo) -> ! {
 
     // 1. platform reset 是整个 SMP 系统的 fail-stop 路径；仅停住当前 CPU 会让其他 CPU
     // 在全局不变量已经失效后继续修改共享状态。
-    let _ = crate::platform::reset_system(0, 1);
+    let _ = crate::platform::reset_system(
+        crate::platform::ResetKind::Shutdown,
+        crate::platform::ResetReason::SystemFailure,
+    );
 
     // 2. firmware 不支持或错误返回时，当前 CPU 保持中断关闭并永久停机。
     loop {

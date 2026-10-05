@@ -102,7 +102,7 @@ struct ReverseMembership {
     interest: InterestKey,
 }
 
-/// @description OFD 拥有的 epoll reverse-membership index。
+/// OFD 拥有的 epoll reverse-membership index。
 ///
 /// ADD 在 interest 可观察前预分配并发布节点；最后 close 只取出该 OFD
 /// 的精确 memberships。缺失该 owner 会退化成 P×E 全局扫描。
@@ -134,7 +134,7 @@ static EPOLLS: Once<Mutex<Vec<Weak<Epoll>>>> = Once::new();
 // OWNER: 串行化 ctl、source rebind 与 final-close graph mutation，避免并发 ADD 越过 cycle check。
 static EPOLL_GRAPH: Mutex<()> = Mutex::new(());
 
-/// @description epoll interest、ready membership、ET generation 与 ONESHOT state 的唯一 owner。
+/// epoll interest、ready membership、ET generation 与 ONESHOT state 的唯一 owner。
 pub(crate) struct Epoll {
     state: Mutex<EpollState>,
     notification_read: Arc<PipeEnd>,
@@ -376,7 +376,7 @@ impl Epoll {
         self.notification_read.drain_readiness() != snapshot_generation
     }
 
-    /// @description 最后 descriptor close 只消费目标 OFD 的 reverse memberships。
+    /// 最后 descriptor close 只消费目标 OFD 的 reverse memberships。
     pub(crate) fn release_file(closed: &Arc<OpenFileDescription>) {
         while let Some(membership) = closed.epoll_memberships.take_first() {
             let Some(epoll) = membership.epoll.upgrade() else {
@@ -391,7 +391,7 @@ impl Epoll {
         }
     }
 
-    /// @description Pipe state mutation 后精确 refresh 其持久 epoll memberships。
+    /// Pipe state mutation 后精确 refresh 其持久 epoll memberships。
     pub(crate) fn notify_pipe_source(pipe: &Arc<Pipe>) {
         for direction in [
             crate::ipc::PipeDirection::Read,

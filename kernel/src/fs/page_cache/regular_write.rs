@@ -30,11 +30,20 @@ impl RegularFileWrite<'_> {
         .map(|committed| (committed.offset, committed.bytes))
     }
 
-    /// @description 向 regular-file storage 写入并同步更新 resident cache pages。
-    /// @param offset 文件 byte offset。
-    /// @param input kernel-owned 输入缓冲区。
-    /// @return storage 实际写入字节数。
-    /// @error storage mutation 失败时透传 filesystem error。
+    /// 向 regular-file storage 写入并同步更新 resident cache pages。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 文件 byte offset。
+    /// - `input`: kernel-owned 输入缓冲区。
+    ///
+    /// # Returns
+    ///
+    /// storage 实际写入字节数。
+    ///
+    /// # Errors
+    ///
+    /// storage mutation 失败时透传 filesystem error。
     pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
         if input.is_empty() {
             return Ok(0);
@@ -56,11 +65,20 @@ impl RegularFileWrite<'_> {
         .map(|(_, written)| written)
     }
 
-    /// @description 在 page-cache operation lock 内原子执行受最大文件大小约束的 append。
-    /// @param input 待追加数据。
-    /// @param size_limit caller 的 RLIMIT_FSIZE soft limit。
-    /// @return append 起始 offset 与实际字节数；已到上限时返回零字节，由 syscall 生成 SIGXFSZ/EFBIG。
-    /// @error storage mutation 失败时透传 filesystem error。
+    /// 在 page-cache operation lock 内原子执行受最大文件大小约束的 append。
+    ///
+    /// # Parameters
+    ///
+    /// - `input`: 待追加数据。
+    /// - `size_limit`: caller 的 RLIMIT_FSIZE soft limit。
+    ///
+    /// # Returns
+    ///
+    /// append 起始 offset 与实际字节数；已到上限时返回零字节，由 syscall 生成 SIGXFSZ/EFBIG。
+    ///
+    /// # Errors
+    ///
+    /// storage mutation 失败时透传 filesystem error。
     pub(crate) fn append(
         &self,
         input: &[u8],

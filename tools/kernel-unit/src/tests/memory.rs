@@ -4,7 +4,7 @@ use crate::fault_preflight;
 mod fault_preflight_tests {
     use super::fault_preflight::{
         FaultAccess, FaultPermissions, FaultPreflight, FaultResidency, FileFaultState,
-        preflight_fault,
+        SegmentationCause, preflight_fault,
     };
 
     #[test]
@@ -23,7 +23,10 @@ mod fault_preflight_tests {
         )
         .unwrap();
 
-        assert_eq!(outcome, FaultPreflight::SegmentationFault);
+        assert_eq!(
+            outcome,
+            FaultPreflight::SegmentationFault(SegmentationCause::Unmapped)
+        );
     }
 
     #[test]
@@ -58,7 +61,7 @@ mod fault_preflight_tests {
                     },
                 )
                 .unwrap(),
-                FaultPreflight::SegmentationFault
+                FaultPreflight::SegmentationFault(SegmentationCause::AccessDenied)
             );
         }
     }

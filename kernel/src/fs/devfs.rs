@@ -435,13 +435,13 @@ impl Inode for DevInode {
     }
 }
 
-/// @description 固定设备集合的只读 devfs adapter。
+/// 固定设备集合的只读 devfs adapter。
 pub(crate) struct DevFileSystem {
     root: Arc<DevInode>,
 }
 
 impl DevFileSystem {
-    /// @description 取得标准 character nodes 与 procfs fd aliases 的唯一 device filesystem。
+    /// 取得标准 character nodes 与 procfs fd aliases 的唯一 device filesystem。
     pub(crate) fn instance() -> Arc<Self> {
         DEVICE_FILESYSTEM
             .call_once(|| {

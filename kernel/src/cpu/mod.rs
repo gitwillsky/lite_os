@@ -1,4 +1,4 @@
-//! @description 架构无关的 logical CPU identity、topology 与 lifecycle owner。
+//! 架构无关的 logical CPU identity、topology 与 lifecycle owner。
 
 use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -7,36 +7,36 @@ use spin::Once;
 mod deferred;
 pub(crate) use deferred::{DeferredWork, raise as raise_deferred, take as take_deferred};
 
-/// @description Platform/firmware 使用的 opaque hardware CPU identity。
+/// Platform/firmware 使用的 opaque hardware CPU identity。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct HardwareCpuId(usize);
 
 impl HardwareCpuId {
-    /// @description 从已验证 platform description 构造 hardware identity。
+    /// 从已验证 platform description 构造 hardware identity。
     pub(crate) fn from_raw(raw: usize) -> Self {
         Self(raw)
     }
 
-    /// @description 仅供 arch/platform backend 编码 firmware identity。
+    /// 仅供 arch/platform backend 编码 firmware identity。
     pub(crate) fn raw(self) -> usize {
         self.0
     }
 }
 
-/// @description Kernel domain 使用的紧凑 logical CPU identity。
+/// Kernel domain 使用的紧凑 logical CPU identity。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CpuId(usize);
 
 impl CpuId {
-    /// @description 获取只用于数组索引或标准 Linux CPU number 投影的值。
+    /// 获取只用于数组索引或标准 Linux CPU number 投影的值。
     pub(crate) fn index(self) -> usize {
         self.0
     }
 }
 
-/// @description 只包含 logical CPU identity 的 bounded 集合。
+/// 只包含 logical CPU identity 的 bounded 集合。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CpuSet(usize);
@@ -68,15 +68,20 @@ impl CpuSet {
         CpuSetIter(self.0)
     }
 
-    /// @description 从 Linux native-word logical CPU bitmap 构造集合。
+    /// 从 Linux native-word logical CPU bitmap 构造集合。
     ///
-    /// @param bits bit N 表示 logical CPU N。
-    /// @return 丢弃 topology 范围外 bit 后的集合。
+    /// # Parameters
+    ///
+    /// - `bits`: bit N 表示 logical CPU N。
+    ///
+    /// # Returns
+    ///
+    /// 丢弃 topology 范围外 bit 后的集合。
     pub(crate) fn from_native_word(bits: usize) -> Self {
         Self(bits) & possible()
     }
 
-    /// @description 投影 Linux native-word CPU mask；只允许 ABI codec 使用。
+    /// 投影 Linux native-word CPU mask；只允许 ABI codec 使用。
     pub(crate) fn native_word(self) -> usize {
         self.0
     }
@@ -120,12 +125,16 @@ struct CpuTopology {
 // OWNER: cpu module uniquely publishes hardware/logical identity and CPU lifecycle state.
 static CPU_TOPOLOGY: Once<CpuTopology> = Once::new();
 
-/// @description 构造 logical topology 并发布 arch startup table。
+/// 构造 logical topology 并发布 arch startup table。
 ///
-/// @param hardware_ids platform discovery 顺序中的所有 enabled CPU identities。
-/// @param boot_hardware_id 首个进入 kernel 的 hardware identity。
-/// @return 无返回值。
-/// @errors 空/重复/过宽 topology、boot CPU 缺失或 allocation failure 时 fail-stop。
+/// # Parameters
+///
+/// - `hardware_ids`: platform discovery 顺序中的所有 enabled CPU identities。
+/// - `boot_hardware_id`: 首个进入 kernel 的 hardware identity。
+///
+/// # Errors
+///
+/// 空/重复/过宽 topology、boot CPU 缺失或 allocation failure 时 fail-stop。
 pub(crate) fn initialize(
     hardware_ids: impl IntoIterator<Item = HardwareCpuId>,
     boot_hardware_id: HardwareCpuId,
@@ -196,9 +205,11 @@ pub(crate) fn current_id() -> CpuId {
         .unwrap_or_else(|| panic!("logical CPU {index} is absent from topology"))
 }
 
-/// @description 获取当前 execution context 对应的 hardware CPU identity。
+/// 获取当前 execution context 对应的 hardware CPU identity。
 ///
-/// @return topology 发布后从 logical identity 映射；cold boot 早期封装 arch entry identity。
+/// # Returns
+///
+/// topology 发布后从 logical identity 映射；cold boot 早期封装 arch entry identity。
 pub(crate) fn executing_hardware_id() -> HardwareCpuId {
     if is_initialized() {
         hardware_id(current_id())
@@ -207,10 +218,15 @@ pub(crate) fn executing_hardware_id() -> HardwareCpuId {
     }
 }
 
-/// @description 将已验证的 logical index 映射为 CPU identity。
+/// 将已验证的 logical index 映射为 CPU identity。
 ///
-/// @param index topology 中的零基 logical index。
-/// @return topology 中存在时返回对应 identity，否则返回 `None`。
+/// # Parameters
+///
+/// - `index`: topology 中的零基 logical index。
+///
+/// # Returns
+///
+/// topology 中存在时返回对应 identity，否则返回 `None`。
 pub(crate) fn id_at(index: usize) -> Option<CpuId> {
     topology().states.get(index).map(|state| state.id)
 }

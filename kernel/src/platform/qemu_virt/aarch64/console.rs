@@ -1,4 +1,4 @@
-//! @description QEMU `virt` PL011 early/runtime output endpoint。
+//! QEMU `virt` PL011 early/runtime output endpoint。
 
 const EARLY_PL011_BASE: usize = 0x0900_0000;
 const DATA_REGISTER: usize = 0x00;
@@ -61,7 +61,7 @@ impl core::fmt::Write for PanicConsoleWriter {
     }
 }
 
-/// @description 轮询 PL011 TX FIFO 写出一个 byte。
+/// 轮询 PL011 TX FIFO 写出一个 byte。
 ///
 /// discovery publication 前使用 QEMU `virt` 固定 early base；publication 后只消费已验证
 /// DTB base。若 early base 与 DTB 不一致，platform initialize 会 fail-stop，避免继续向未知 MMIO 写入。

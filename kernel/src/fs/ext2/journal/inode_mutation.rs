@@ -5,7 +5,7 @@ use core::{
 
 use crate::fs::ext2::{Ext2Inode, Ext2InodeDisk};
 
-/// @description mutation owner 的 inode working copy；Drop 时用短 spin 临界区发布 live state。
+/// mutation owner 的 inode working copy；Drop 时用短 spin 临界区发布 live state。
 ///
 /// ext2 的唯一 mutation mutex 已排除并发 writer，因此 working copy 不需要在 journal/block
 /// I/O 期间保留 inode spin lock。读者在发布前看到旧 snapshot，发布后看到完整新 snapshot，

@@ -17,7 +17,7 @@ enum ContiguousAttemptError<Error> {
     Short,
 }
 
-/// @description 按成功提交的最大已知 chunk 顺序处理固定 writeback batch。
+/// 按成功提交的最大已知 chunk 顺序处理固定 writeback batch。
 ///
 /// capacity error 只在 chunk 大于一项时触发二分退避；成功后才调用 `publish`，
 /// 因此后续失败不会把尚未提交的 suffix 标 clean。
@@ -47,13 +47,19 @@ pub(super) fn commit_with_backoff<T, Error>(
     Ok(())
 }
 
-/// @description 以固定 logical-unit 上限提交连续 byte prefix，并复用 capacity 二分退避。
-/// @param byte_count 非零 byte 数，最多 `REGULAR_WRITE_BATCH_PAGES * unit_bytes`。
-/// @param unit_bytes 退避的最小 logical unit；通常为 page size。
-/// @param commit 接收当前已提交 byte 数与本次连续 byte 数，返回实际 storage offset/bytes。
-/// @param publish 每个成功 durable transaction 后发布对应 byte range。
-/// @param capacity_error 标识可在未 publication 时缩小 transaction 重试的 backend error。
-/// @return 全部提交、storage short 或后续错误前已提交的连续 prefix；首笔 backend error 原样返回。
+/// 以固定 logical-unit 上限提交连续 byte prefix，并复用 capacity 二分退避。
+///
+/// # Parameters
+///
+/// - `byte_count`: 非零 byte 数，最多 `REGULAR_WRITE_BATCH_PAGES * unit_bytes`。
+/// - `unit_bytes`: 退避的最小 logical unit；通常为 page size。
+/// - `commit`: 接收当前已提交 byte 数与本次连续 byte 数，返回实际 storage offset/bytes。
+/// - `publish`: 每个成功 durable transaction 后发布对应 byte range。
+/// - `capacity_error`: 标识可在未 publication 时缩小 transaction 重试的 backend error。
+///
+/// # Returns
+///
+/// 全部提交、storage short 或后续错误前已提交的连续 prefix；首笔 backend error 原样返回。
 pub(super) fn commit_contiguous_prefix_with_backoff<Error>(
     byte_count: usize,
     unit_bytes: usize,

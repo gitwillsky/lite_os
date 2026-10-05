@@ -2,13 +2,16 @@ use super::*;
 use core::sync::atomic::Ordering;
 
 impl Process {
-    /// @description 取得当前 Process 唯一 AddressSpace handle 的保活引用。
+    /// 取得当前 Process 唯一 AddressSpace handle 的保活引用。
     pub(in crate::task::model) fn address_space(&self) -> Arc<AddressSpace> {
         self.address_space.lock().clone()
     }
 
-    /// @description 在 exec commit point 原子替换 AddressSpace handle。
-    /// @return 替换前的 owner。
+    /// 在 exec commit point 原子替换 AddressSpace handle。
+    ///
+    /// # Returns
+    ///
+    /// 替换前的 owner。
     pub(in crate::task::model) fn replace_address_space(
         &self,
         replacement: Arc<AddressSpace>,
@@ -44,7 +47,7 @@ impl TaskControlBlock {
         )
     }
 
-    /// @description 直接初始化 syscall-owned staging；成功前 caller 不得读取 destination。
+    /// 直接初始化 syscall-owned staging；成功前 caller 不得读取 destination。
     pub(crate) fn copy_from_user_uninit(
         &self,
         user_address: usize,
@@ -121,7 +124,7 @@ impl TaskControlBlock {
         )
     }
 
-    /// @description 返回当前 AddressSpace 生命周期内不变的 arch token。
+    /// 返回当前 AddressSpace 生命周期内不变的 arch token。
     pub(crate) fn user_token(&self) -> crate::arch::mmu::AddressSpaceToken {
         self.process.address_space().token
     }
@@ -176,8 +179,11 @@ impl TaskControlBlock {
         self.process.address_space().process_arguments()
     }
 
-    /// @description 从 Process 与 AddressSpace owner 取得一次 procfs 统计快照。
-    /// @errors comm 或 task-mutex waiter storage OOM 时返回错误。
+    /// 从 Process 与 AddressSpace owner 取得一次 procfs 统计快照。
+    ///
+    /// # Errors
+    ///
+    /// comm 或 task-mutex waiter storage OOM 时返回错误。
     pub(in crate::task) fn process_statistics(&self) -> Result<ProcessStatistics, ()> {
         let (virtual_pages, resident_pages, shared_pages, text_pages, data_pages) = self
             .process

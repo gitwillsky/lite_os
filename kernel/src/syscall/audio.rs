@@ -1,4 +1,4 @@
-//! @description Linux 7.1 native 64-bit ALSA PCM ioctl codec。
+//! Linux 7.1 native 64-bit ALSA PCM ioctl codec。
 
 use alloc::sync::Arc;
 
@@ -160,7 +160,7 @@ fn sync_pointer(task: &TaskControlBlock, file: &PcmFile, argument: usize) -> Res
         .map_err(|_| errno::EFAULT)
 }
 
-/// @description 分发系统音频服务消费的 Linux ALSA PCM ioctl 子集。
+/// 分发系统音频服务消费的 Linux ALSA PCM ioctl 子集。
 pub(in crate::syscall) fn audio_ioctl(
     task: &TaskControlBlock,
     ofd: &Arc<OpenFileDescription>,

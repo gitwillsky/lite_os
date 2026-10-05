@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 use super::VirtualFileSystem;
 use crate::fs::{FileSystemError, OpenFileDescription};
 
-/// @description 一个 mounted inode 在本机 advisory-lock domain 内的稳定 identity。
+/// 一个 mounted inode 在本机 advisory-lock domain 内的稳定 identity。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct AdvisoryLockKey {
     filesystem: usize,
@@ -11,21 +11,24 @@ pub(crate) struct AdvisoryLockKey {
 }
 
 impl AdvisoryLockKey {
-    /// @description 向 task wait registry 投影稳定、无 adapter 泄漏的 source identity。
-    /// @return mounted filesystem 与 inode identity。
+    /// 向 task wait registry 投影稳定、无 adapter 泄漏的 source identity。
+    ///
+    /// # Returns
+    ///
+    /// mounted filesystem 与 inode identity。
     pub(crate) const fn wait_identity(self) -> (usize, u64) {
         (self.filesystem, self.inode)
     }
 }
 
-/// @description Linux flock 的两种持有模式。
+/// Linux flock 的两种持有模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdvisoryLockMode {
     Shared,
     Exclusive,
 }
 
-/// @description 一次非阻塞 lock-table mutation 的结果。
+/// 一次非阻塞 lock-table mutation 的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdvisoryLockAttempt {
     Acquired {
@@ -38,7 +41,7 @@ pub(crate) enum AdvisoryLockAttempt {
     },
 }
 
-/// @description prepared lock-table transaction 的无分配尝试结果。
+/// prepared lock-table transaction 的无分配尝试结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreparedLockAttempt {
     /// 尝试已线性化为取得或冲突。
@@ -47,7 +50,7 @@ pub(crate) enum PreparedLockAttempt {
     NeedsStorage,
 }
 
-/// @description flock lock-record 分配或 backing inode 解析错误。
+/// flock lock-record 分配或 backing inode 解析错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdvisoryLockError {
     Unsupported,
@@ -55,10 +58,13 @@ pub(crate) enum AdvisoryLockError {
     FileSystem(FileSystemError),
 }
 
-/// @description VFS advisory-lock owner 向 task wait owner 发布 inode 状态变化的反向 seam。
+/// VFS advisory-lock owner 向 task wait owner 发布 inode 状态变化的反向 seam。
 pub(crate) trait AdvisoryLockNotifier: Send + Sync {
-    /// @description 唤醒指定 inode 上的全部 interruptible flock waiter 重新竞争。
-    /// @param key 已释放或降级的 mounted inode identity。
+    /// 唤醒指定 inode 上的全部 interruptible flock waiter 重新竞争。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 已释放或降级的 mounted inode identity。
     fn notify(&self, key: AdvisoryLockKey);
 }
 
@@ -68,8 +74,9 @@ pub(super) struct AdvisoryFileLock {
     shared: Vec<usize>,
 }
 
-/// @description BSD flock acquisition 的锁外 staging storage 与稳定 identity。
-/// @ownership `table`/`shared` 只保存未发布或被替换的 Vec backing；成功 commit 后旧
+/// BSD flock acquisition 的锁外 staging storage 与稳定 identity。
+///
+/// `table`/`shared` 只保存未发布或被替换的 Vec backing；成功 commit 后旧
 /// backing 由本对象带到 lock 外析构。
 pub(crate) struct PreparedAdvisoryLock {
     key: AdvisoryLockKey,
@@ -97,19 +104,31 @@ impl VirtualFileSystem {
         ))
     }
 
-    /// @description 安装 advisory-lock 到 task wait registry 的唯一通知 adapter。
-    /// @param notifier task layer 实现的无状态 wake adapter。
+    /// 安装 advisory-lock 到 task wait registry 的唯一通知 adapter。
+    ///
+    /// # Parameters
+    ///
+    /// - `notifier`: task layer 实现的无状态 wake adapter。
     pub(crate) fn set_advisory_lock_notifier(&self, notifier: Arc<dyn AdvisoryLockNotifier>) {
         let mut slot = self.advisory_lock_notifier.lock();
         assert!(slot.is_none(), "advisory-lock notifier installed twice");
         *slot = Some(notifier);
     }
 
-    /// @description 解析 flock identity，但不分配或修改 lock table。
-    /// @param ofd live open file description。
-    /// @param requested shared/exclusive acquisition mode。
-    /// @return 可跨 wait-registry 解锁窗口保留的 acquisition transaction。
-    /// @errors anonymous OFD 或 inode metadata 失败。
+    /// 解析 flock identity，但不分配或修改 lock table。
+    ///
+    /// # Parameters
+    ///
+    /// - `ofd`: live open file description。
+    /// - `requested`: shared/exclusive acquisition mode。
+    ///
+    /// # Returns
+    ///
+    /// 可跨 wait-registry 解锁窗口保留的 acquisition transaction。
+    ///
+    /// # Errors
+    ///
+    /// anonymous OFD 或 inode metadata 失败。
     pub(crate) fn prepare_advisory_lock(
         &self,
         ofd: &Arc<OpenFileDescription>,
@@ -125,10 +144,19 @@ impl VirtualFileSystem {
         })
     }
 
-    /// @description 按当前 flock table 形状在所有 owner lock 外扩充 staging storage。
-    /// @param prepared 尚未提交的同 inode acquisition transaction。
-    /// @return storage 足以覆盖观察到的 table；并发增长由最终尝试返回 `NeedsStorage`。
-    /// @errors 容量算术或 backing allocation 失败返回 `NoLocks`。
+    /// 按当前 flock table 形状在所有 owner lock 外扩充 staging storage。
+    ///
+    /// # Parameters
+    ///
+    /// - `prepared`: 尚未提交的同 inode acquisition transaction。
+    ///
+    /// # Returns
+    ///
+    /// storage 足以覆盖观察到的 table；并发增长由最终尝试返回 `NeedsStorage`。
+    ///
+    /// # Errors
+    ///
+    /// 容量算术或 backing allocation 失败返回 `NoLocks`。
     pub(crate) fn reserve_advisory_lock_storage(
         &self,
         prepared: &mut PreparedAdvisoryLock,
@@ -168,9 +196,15 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// @description 在 flock owner 下复查冲突并以预留 Vec backing 无失败提交。
-    /// @param prepared 锁外准备且 identity 不变的 acquisition transaction。
-    /// @return acquired/blocked，或容量不足且 state 完全未修改的 `NeedsStorage`。
+    /// 在 flock owner 下复查冲突并以预留 Vec backing 无失败提交。
+    ///
+    /// # Parameters
+    ///
+    /// - `prepared`: 锁外准备且 identity 不变的 acquisition transaction。
+    ///
+    /// # Returns
+    ///
+    /// acquired/blocked，或容量不足且 state 完全未修改的 `NeedsStorage`。
     pub(crate) fn try_prepared_advisory_lock(
         &self,
         prepared: &mut PreparedAdvisoryLock,
@@ -264,11 +298,20 @@ impl VirtualFileSystem {
         })
     }
 
-    /// @description 在 inode-wide lock table 内尝试取得或转换一个 OFD-owned flock。
-    /// @param ofd live open file description；dup/fork descriptor 共享其 pointer identity。
-    /// @param requested shared 或 exclusive 模式。
-    /// @return 已取得或当前冲突；转换先释放旧模式，并标记是否需要唤醒其他 waiter。
-    /// @errors anonymous OFD、lock record 内存不足或 inode metadata 失败。
+    /// 在 inode-wide lock table 内尝试取得或转换一个 OFD-owned flock。
+    ///
+    /// # Parameters
+    ///
+    /// - `ofd`: live open file description；dup/fork descriptor 共享其 pointer identity。
+    /// - `requested`: shared 或 exclusive 模式。
+    ///
+    /// # Returns
+    ///
+    /// 已取得或当前冲突；转换先释放旧模式，并标记是否需要唤醒其他 waiter。
+    ///
+    /// # Errors
+    ///
+    /// anonymous OFD、lock record 内存不足或 inode metadata 失败。
     pub(crate) fn try_advisory_lock(
         &self,
         ofd: &Arc<OpenFileDescription>,
@@ -298,9 +341,15 @@ impl VirtualFileSystem {
         Ok(removed)
     }
 
-    /// @description 按 OFD identity 删除其唯一 flock record，不重新进入 backing filesystem。
-    /// @param owner 最后一个 descriptor 正在关闭的 OFD pointer identity。
-    /// @return 实际释放的 mounted inode identity；未持锁返回 None。
+    /// 按 OFD identity 删除其唯一 flock record，不重新进入 backing filesystem。
+    ///
+    /// # Parameters
+    ///
+    /// - `owner`: 最后一个 descriptor 正在关闭的 OFD pointer identity。
+    ///
+    /// # Returns
+    ///
+    /// 实际释放的 mounted inode identity；未持锁返回 None。
     fn remove_advisory_lock_owner(&self, owner: usize) -> Option<AdvisoryLockKey> {
         let mut locks = self.advisory_locks.lock();
         let index = locks
@@ -318,10 +367,19 @@ impl VirtualFileSystem {
         Some(key)
     }
 
-    /// @description 显式释放一个 OFD 持有的 flock，并在状态变化后唤醒 waiter。
-    /// @param ofd 任一 live duplicate descriptor 解析出的共享 OFD。
-    /// @return 未持锁也按 Linux LOCK_UN 语义成功。
-    /// @errors anonymous OFD 或 inode metadata 失败。
+    /// 显式释放一个 OFD 持有的 flock，并在状态变化后唤醒 waiter。
+    ///
+    /// # Parameters
+    ///
+    /// - `ofd`: 任一 live duplicate descriptor 解析出的共享 OFD。
+    ///
+    /// # Returns
+    ///
+    /// 未持锁也按 Linux LOCK_UN 语义成功。
+    ///
+    /// # Errors
+    ///
+    /// anonymous OFD 或 inode metadata 失败。
     pub(crate) fn unlock_advisory_lock(
         &self,
         ofd: &Arc<OpenFileDescription>,
@@ -332,8 +390,11 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// @description 最后一个 duplicate descriptor 关闭时释放 OFD-owned flock。
-    /// @param ofd descriptor_refs 已降为零、但 Arc 仍保持存活的 OFD。
+    /// 最后一个 duplicate descriptor 关闭时释放 OFD-owned flock。
+    ///
+    /// # Parameters
+    ///
+    /// - `ofd`: descriptor_refs 已降为零、但 Arc 仍保持存活的 OFD。
     pub(crate) fn release_advisory_lock(&self, ofd: &Arc<OpenFileDescription>) {
         let owner = Arc::as_ptr(ofd) as usize;
         if let Some(key) = self.remove_advisory_lock_owner(owner) {
@@ -341,8 +402,11 @@ impl VirtualFileSystem {
         }
     }
 
-    /// @description 在不持 advisory lock-table 锁时投递一次状态变化通知。
-    /// @param key waiter 需要重新竞争的 inode identity。
+    /// 在不持 advisory lock-table 锁时投递一次状态变化通知。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: waiter 需要重新竞争的 inode identity。
     pub(crate) fn notify_advisory_lock(&self, key: AdvisoryLockKey) {
         let notifier = self.advisory_lock_notifier.lock().clone();
         if let Some(notifier) = notifier {

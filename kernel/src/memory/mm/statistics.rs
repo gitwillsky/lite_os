@@ -1,8 +1,11 @@
 use super::*;
 
 impl MemorySet {
-    /// @description 按 Linux `task_statm` 口径投影用户 VMA 页数；不计 kernel-only trap context。
-    /// @return `(size, resident, shared, text, data)`，单位均为页。
+    /// 按 Linux `task_statm` 口径投影用户 VMA 页数；不计 kernel-only trap context。
+    ///
+    /// # Returns
+    ///
+    /// `(size, resident, shared, text, data)`，单位均为页。
     pub(crate) fn user_page_statistics(&self) -> (usize, usize, usize, usize, usize) {
         let text = if self.code_range.is_empty() {
             0

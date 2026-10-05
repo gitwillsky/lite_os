@@ -1,4 +1,4 @@
-//! @description QEMU `virt` PL011 RX register adapter。
+//! QEMU `virt` PL011 RX register adapter。
 
 use alloc::sync::Arc;
 use spin::Once;

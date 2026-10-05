@@ -2,7 +2,7 @@ use crate::{random::EntropyBatch, syscall::errno, task::current_task};
 
 use super::getrandom_flags::getrandom_flags_supported;
 
-/// @description 以 virtio-rng 为唯一 entropy source 实现 Linux getrandom。
+/// 以 virtio-rng 为唯一 entropy source 实现 Linux getrandom。
 pub(crate) fn sys_getrandom(buffer: usize, length: usize, flags: usize) -> isize {
     if !getrandom_flags_supported(flags) {
         return -errno::EINVAL;

@@ -1,4 +1,4 @@
-//! @description QEMU `virt` GICv3 distributor、redistributor 与 ICC system-register owner。
+//! QEMU `virt` GICv3 distributor、redistributor 与 ICC system-register owner。
 
 use alloc::sync::Arc;
 use core::arch::asm;
@@ -335,10 +335,10 @@ impl GicV3 {
                 if let Some(handler) = self.handlers.get(&device).cloned() {
                     if let Err(_error) = handler.handle_interrupt(device) {
                         #[cfg(debug_assertions)]
-                        crate::debug!("[Platform] GIC handler {} failed: {:?}", device, _error);
+                        crate::debug!("GIC handler {} failed: {:?}", device, _error);
                     }
                 } else {
-                    crate::error!("[Platform] unregistered GIC interrupt {}", device);
+                    crate::error!("unregistered GIC interrupt {}", device);
                 }
                 ClaimedInterrupt::Device(device)
             }

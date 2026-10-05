@@ -53,7 +53,7 @@ struct EventQueueState {
     failed: bool,
 }
 
-/// @description modern MMIO VirtIO input adapter；eventq DMA 与 metadata 由实例唯一拥有。
+/// modern MMIO VirtIO input adapter；eventq DMA 与 metadata 由实例唯一拥有。
 pub(crate) struct VirtIOInputDevice {
     device: VirtIODevice,
     metadata: InputMetadata,
@@ -64,10 +64,19 @@ pub(crate) struct VirtIOInputDevice {
 }
 
 impl VirtIOInputDevice {
-    /// @description 初始化 VirtIO input metadata 与永久 eventq receive slots。
-    /// @param base_addr DTB VirtIO MMIO base。
-    /// @return 完整 adapter Arc。
-    /// @errors transport、metadata、queue 或 allocation 不满足时返回 `None`。
+    /// 初始化 VirtIO input metadata 与永久 eventq receive slots。
+    ///
+    /// # Parameters
+    ///
+    /// - `base_addr`: DTB VirtIO MMIO base。
+    ///
+    /// # Returns
+    ///
+    /// 完整 adapter Arc。
+    ///
+    /// # Errors
+    ///
+    /// transport、metadata、queue 或 allocation 不满足时返回 `None`。
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 18 {
@@ -246,8 +255,11 @@ impl VirtIOInputDevice {
         })
     }
 
-    /// @description 构造只确认 VirtIO interrupt 并投递 input softirq 的 handler。
-    /// @return 与 adapter 同生命周期的 IRQ handler Arc。
+    /// 构造只确认 VirtIO interrupt 并投递 input softirq 的 handler。
+    ///
+    /// # Returns
+    ///
+    /// 与 adapter 同生命周期的 IRQ handler Arc。
     pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::try_new(VirtIOInputIrqHandler {
             device: self.clone(),

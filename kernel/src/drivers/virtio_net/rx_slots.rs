@@ -75,9 +75,15 @@ where
         self.slots.len()
     }
 
-    /// @description 在 descriptor recycle 前验证并 claim adapter-owned RX slot。
-    /// @return head 唯一对应 Posted slot 且 returned length 合法时返回 capability。
-    /// @errors unknown/duplicate head 或 device length 越界时返回 `None`，caller 必须 reset。
+    /// 在 descriptor recycle 前验证并 claim adapter-owned RX slot。
+    ///
+    /// # Returns
+    ///
+    /// head 唯一对应 Posted slot 且 returned length 合法时返回 capability。
+    ///
+    /// # Errors
+    ///
+    /// unknown/duplicate head 或 device length 越界时返回 `None`，caller 必须 reset。
     pub(super) fn claim(
         &mut self,
         head: u16,
@@ -91,7 +97,7 @@ where
         Some(ReceiveClaim { slot_index })
     }
 
-    /// @description 在 VirtQueue 已回收合法 completion 后复制 payload 并 repost 同一 slot。
+    /// 在 VirtQueue 已回收合法 completion 后复制 payload 并 repost 同一 slot。
     pub(super) fn complete<Q: ReceiveQueue<B>>(
         &mut self,
         queue: &mut Q,

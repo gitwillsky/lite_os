@@ -13,7 +13,7 @@ use super::{
 };
 
 impl MemorySet {
-    /// @description 从已校验 ELF plan 构造受 rlimit 约束的新地址空间、初始栈与 entry。
+    /// 从已校验 ELF plan 构造受 rlimit 约束的新地址空间、初始栈与 entry。
     pub(crate) fn from_elf(
         image: &ExecutableImage,
         args: &[Vec<u8>],
@@ -104,12 +104,20 @@ impl MemorySet {
         Ok((memory_set, actual_stack_top, entry_point))
     }
 
-    /// @description 按唯一的已解析映射计划装载 ELF；segment bytes 逐页来自 source。
+    /// 按唯一的已解析映射计划装载 ELF；segment bytes 逐页来自 source。
     ///
-    /// @param image 单次 parser 产生的 immutable ELF mapping plan。
-    /// @param load_bias ET_EXEC 为零，PIE 或 interpreter 使用固定非零基址。
-    /// @return entry、auxv program-header facts 与最高 segment end。
-    /// @errors 地址、权限、映射、资源或 source 读取失败；调用方丢弃新 MemorySet。
+    /// # Parameters
+    ///
+    /// - `image`: 单次 parser 产生的 immutable ELF mapping plan。
+    /// - `load_bias`: ET_EXEC 为零，PIE 或 interpreter 使用固定非零基址。
+    ///
+    /// # Returns
+    ///
+    /// entry、auxv program-header facts 与最高 segment end。
+    ///
+    /// # Errors
+    ///
+    /// 地址、权限、映射、资源或 source 读取失败；调用方丢弃新 MemorySet。
     pub(super) fn map_elf_image(
         &mut self,
         image: &ParsedElf,

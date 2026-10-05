@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::TaskControlBlock;
 
-/// @description Linux task I/O accounting 的不可变读取快照。
+/// Linux task I/O accounting 的不可变读取快照。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct IoStatistics {
     pub(crate) read_characters: u64,
@@ -13,7 +13,7 @@ pub(crate) struct IoStatistics {
     pub(crate) write_bytes: u64,
 }
 
-/// @description 一个 Thread 或 Process 的唯一并发 I/O counter owner。
+/// 一个 Thread 或 Process 的唯一并发 I/O counter owner。
 ///
 /// Thread 与 Process 各有独立 Linux 统计口径：每次完成路径同步递增当前 Thread 与所属
 /// Process；缺少 Process owner 会在 worker 退出后丢失 `/proc/<tgid>/io` 历史。
@@ -65,50 +65,76 @@ impl IoAccounting {
 }
 
 impl TaskControlBlock {
-    /// @description 记录一次成功 read-family operation 的 logical byte 与 syscall 计数。
+    /// 记录一次成功 read-family operation 的 logical byte 与 syscall 计数。
     ///
-    /// @param result Linux byte result 或 operation errno；只有非负结果推进 rchar。
-    /// @return 无返回值；当前 Thread 与 Process 聚合 owner 同步推进。
+    /// # Parameters
+    ///
+    /// - `result`: Linux byte result 或 operation errno；只有非负结果推进 rchar。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；当前 Thread 与 Process 聚合 owner 同步推进。
     pub(crate) fn account_read_result(&self, result: isize) {
         self.thread.io_accounting.account_read_result(result);
         self.process.io_accounting.account_read_result(result);
     }
 
-    /// @description 记录一次成功 write-family operation 的 logical byte 与 syscall 计数。
+    /// 记录一次成功 write-family operation 的 logical byte 与 syscall 计数。
     ///
-    /// @param result Linux byte result 或 operation errno；只有非负结果推进 wchar。
-    /// @return 无返回值；当前 Thread 与 Process 聚合 owner 同步推进。
+    /// # Parameters
+    ///
+    /// - `result`: Linux byte result 或 operation errno；只有非负结果推进 wchar。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；当前 Thread 与 Process 聚合 owner 同步推进。
     pub(crate) fn account_write_result(&self, result: isize) {
         self.thread.io_accounting.account_write_result(result);
         self.process.io_accounting.account_write_result(result);
     }
 
-    /// @description 记录本次 regular read 实际触发 cache-miss storage fill 的字节数。
+    /// 记录本次 regular read 实际触发 cache-miss storage fill 的字节数。
     ///
-    /// @param bytes filesystem storage owner 成功读取的字节数。
-    /// @return 无返回值；cache hit 必须传零，防止把 logical read 冒充 block I/O。
+    /// # Parameters
+    ///
+    /// - `bytes`: filesystem storage owner 成功读取的字节数。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；cache hit 必须传零，防止把 logical read 冒充 block I/O。
     pub(crate) fn account_read_storage(&self, bytes: usize) {
         self.thread.io_accounting.account_read_storage(bytes);
         self.process.io_accounting.account_read_storage(bytes);
     }
 
-    /// @description 记录本次 synchronous regular write 实际提交给 storage 的字节数。
+    /// 记录本次 synchronous regular write 实际提交给 storage 的字节数。
     ///
-    /// @param bytes filesystem storage owner 成功写入的字节数。
-    /// @return 无返回值；partial write 只累计已提交前缀。
+    /// # Parameters
+    ///
+    /// - `bytes`: filesystem storage owner 成功写入的字节数。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；partial write 只累计已提交前缀。
     pub(crate) fn account_write_storage(&self, bytes: usize) {
         self.thread.io_accounting.account_write_storage(bytes);
         self.process.io_accounting.account_write_storage(bytes);
     }
 
-    /// @description 取得当前 Thread 的 Linux I/O counter 快照。
-    /// @return `/proc/<tgid>/task/<tid>/io` 使用的当前值。
+    /// 取得当前 Thread 的 Linux I/O counter 快照。
+    ///
+    /// # Returns
+    ///
+    /// `/proc/<tgid>/task/<tid>/io` 使用的当前值。
     pub(in crate::task) fn thread_io_statistics(&self) -> IoStatistics {
         self.thread.io_accounting.snapshot()
     }
 
-    /// @description 取得当前 Process 全生命周期聚合 I/O counter 快照。
-    /// @return `/proc/<tgid>/io` 使用的当前值，包含已退出 Thread。
+    /// 取得当前 Process 全生命周期聚合 I/O counter 快照。
+    ///
+    /// # Returns
+    ///
+    /// `/proc/<tgid>/io` 使用的当前值，包含已退出 Thread。
     pub(in crate::task) fn process_io_statistics(&self) -> IoStatistics {
         self.process.io_accounting.snapshot()
     }

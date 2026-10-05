@@ -13,7 +13,7 @@
   与 rollback。Process 的 `ProcessPaths` 在同一锁下唯一拥有 cwd 与最终 main ELF
   opened-entry identity：fork 复制两个 identity，vfork child 取得独立 path owner，exec 只原子
   替换 executable。procfs 只投影 `/proc/<pid>/exe` magic link，不缓存第二份 pathname。
-- `TaskManager::TimerQueue` 独占 timerfd immutable clock、setting 与 active deadline membership；
+- `ProcessTable::TimerQueue` 独占 timerfd immutable clock、setting 与 active deadline membership；
   task-domain `TimerFd` backend 独占未读 expiration counter 和 notification endpoint。fs 只通过
   `TimerFdBackend` OFD seam 消费 counter/readiness，不反向依赖 task；deadline 到期在 timer lock
   外发布 readiness，最后一个 backend Arc 析构必须移除 record，禁止 per-tick 扫描全部 descriptor。
@@ -63,6 +63,12 @@
   consequence；缺失该合并会让同步 fault 返回同一 PC 无限 trap 或错误吞掉 capability probe。
 - architecture breakpoint 必须发布当前 Thread 的 forced `SIGTRAP/TRAP_BRKPT` 与 fault PC；
   trap layer 不推进 architecture PC，也不得绕过已注册 signal handler 直接退出。
+- 不可恢复的 user page fault 与 SIGILL 共享同一 forced fault policy：无 VMA 覆盖投递
+  `SIGSEGV/SEGV_MAPERR`，VMA 拒绝本次访问投递 `SIGSEGV/SEGV_ACCERR`，file mapping 越过 EOF 或
+  backing I/O 失败投递 `SIGBUS/BUS_ADRERR`；access fault 投递 `SIGSEGV/SEGV_ACCERR`，未支持的
+  user exception 投递 `SIGILL/ILL_ILLTRP`，`si_addr` 均为 fault 地址。trap layer 不得直接终止进程，
+  否则 guard page、JIT 与 fault-recovery handler 无法运行；唯一例外是物理页耗尽按 OOM 语义以
+  SIGKILL 终止，不伪装为可捕获的地址错误。
 - timerfd create/set/get/read 必须使用 Linux asm-generic 编号与 64-bit itimerspec/counter layout；
   timer replacement、deadline index 与 unread counter reset 构成同一串行 operation，readiness 必须进入
   既有 poll/epoll source。`TFD_TIMER_CANCEL_ON_SET` 在 realtime clock-set ABI 开放前明确返回 `EINVAL`。

@@ -12,7 +12,7 @@ use crate::task::TaskControlBlock;
 /// Linux limits one vector I/O operation to 1024 iovec entries.
 pub(super) const IOV_MAX: usize = 1024;
 
-/// Linux RV64 userspace `struct iovec` layout.
+/// Linux LP64 userspace `struct iovec` layout.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct UserIoVec {
@@ -51,11 +51,17 @@ fn checked_iovec_address(base: usize, index: usize) -> Option<usize> {
         .and_then(|offset| base.checked_add(offset))
 }
 
-/// @description 从唯一 raw RV64 iovec ABI 布局按 userspace page 批量导入 entries。
-/// @param iovector userspace iovec array address；count 为零时允许为零。
-/// @param count entry count，最大 IOV_MAX。
-/// @param copy 执行一次连续 userspace copyin 的 adapter。
-/// @return 保持 userspace 顺序的 raw entries；不解释 subsystem length policy。
+/// 从唯一 raw LP64 iovec ABI 布局按 userspace page 批量导入 entries。
+///
+/// # Parameters
+///
+/// - `iovector`: userspace iovec array address；count 为零时允许为零。
+/// - `count`: entry count，最大 IOV_MAX。
+/// - `copy`: 执行一次连续 userspace copyin 的 adapter。
+///
+/// # Returns
+///
+/// 保持 userspace 顺序的 raw entries；不解释 subsystem length policy。
 pub(super) fn import_iovecs_with(
     iovector: usize,
     count: usize,
@@ -106,7 +112,7 @@ pub(super) fn import_iovecs_with(
     Ok(vectors)
 }
 
-/// @description 生产 user-copy adapter；raw importer 不拥有 errno policy。
+/// 生产 user-copy adapter；raw importer 不拥有 errno policy。
 #[cfg(not(test))]
 pub(super) fn import_iovecs(
     task: &TaskControlBlock,
@@ -118,7 +124,7 @@ pub(super) fn import_iovecs(
     })
 }
 
-/// @description 验证每个非空 userspace buffer 的 half-open address range。
+/// 验证每个非空 userspace buffer 的 half-open address range。
 pub(super) fn validate_user_buffers(vectors: &[UserIoVec]) -> Result<(), BufferError> {
     for vector in vectors {
         if vector.length == 0 {
@@ -135,7 +141,7 @@ pub(super) fn validate_user_buffers(vectors: &[UserIoVec]) -> Result<(), BufferE
     Ok(())
 }
 
-/// @description 按 caller 选择的 maximum 计算 checked vector total。
+/// 按 caller 选择的 maximum 计算 checked vector total。
 pub(super) fn checked_total_length(
     vectors: &[UserIoVec],
     maximum: usize,
@@ -152,9 +158,15 @@ pub(super) fn checked_total_length(
     Ok(total)
 }
 
-/// @description 按 caller 选择的上限截断 vector suffix，并返回可传输 prefix 总长。
-/// @param vectors 保持 entry 顺序；越过 maximum 的 entry length 被截断，后续置零。
-/// @return 不超过 maximum 的有效总长；不拥有任何 subsystem errno policy。
+/// 按 caller 选择的上限截断 vector suffix，并返回可传输 prefix 总长。
+///
+/// # Parameters
+///
+/// - `vectors`: 保持 entry 顺序；越过 maximum 的 entry length 被截断，后续置零。
+///
+/// # Returns
+///
+/// 不超过 maximum 的有效总长；不拥有任何 subsystem errno policy。
 pub(super) fn project_total_length(vectors: &mut [UserIoVec], maximum: usize) -> usize {
     let mut total = 0usize;
     for vector in vectors {
@@ -165,16 +177,22 @@ pub(super) fn project_total_length(vectors: &mut [UserIoVec], maximum: usize) ->
     total
 }
 
-/// @description 返回 remaining request 的下一段固定上限 staging capacity。
+/// 返回 remaining request 的下一段固定上限 staging capacity。
 pub(super) fn bounded_staging_capacity(remaining: usize, maximum: usize) -> usize {
     remaining.min(maximum)
 }
 
-/// @description 在 stack fast path 与可选 heap staging 之间选择实际容量。
-/// @param desired 已由 subsystem maximum 限制的期望 byte 数。
-/// @param stack_capacity allocation-free fallback 容量。
-/// @param heap_ready 大 staging 的 reserve 是否已在 publication 前成功。
-/// @return 小请求保持精确容量；大请求仅在 reserve 成功时扩大，否则退回 stack。
+/// 在 stack fast path 与可选 heap staging 之间选择实际容量。
+///
+/// # Parameters
+///
+/// - `desired`: 已由 subsystem maximum 限制的期望 byte 数。
+/// - `stack_capacity`: allocation-free fallback 容量。
+/// - `heap_ready`: 大 staging 的 reserve 是否已在 publication 前成功。
+///
+/// # Returns
+///
+/// 小请求保持精确容量；大请求仅在 reserve 成功时扩大，否则退回 stack。
 pub(super) fn fallible_staging_capacity(
     desired: usize,
     stack_capacity: usize,
@@ -187,13 +205,20 @@ pub(super) fn fallible_staging_capacity(
     }
 }
 
-/// @description 在 operation callback 外拥有并最终释放已准备好的 transient staging。
-/// @param prepared callback 开始前已完成 storage 分配的 staging owner。
-/// @param operation 可包含 OFD position/write-sequence gate；只能借用 prepared owner。
-/// @return operation 的原样结果；staging 在 callback 返回、相关 gate 释放后才析构。
-/// @note 这里只保证 staging reserve/drop 不与 gate 重叠；user fault 与 backend
+/// 在 operation callback 外拥有并最终释放已准备好的 transient staging。
+///
+/// 这里只保证 staging reserve/drop 不与 gate 重叠；user fault 与 backend
 /// transaction 仍可按各自契约分配。若把 staging 生命周期操作移入 callback，allocator/reclaimer
 /// 可能在 filesystem spin lock 内重入。
+///
+/// # Parameters
+///
+/// - `prepared`: callback 开始前已完成 storage 分配的 staging owner。
+/// - `operation`: 可包含 OFD position/write-sequence gate；只能借用 prepared owner。
+///
+/// # Returns
+///
+/// operation 的原样结果；staging 在 callback 返回、相关 gate 释放后才析构。
 pub(super) fn with_prepared_staging<Staging, Output>(
     mut prepared: Staging,
     operation: impl FnOnce(&mut Staging) -> Output,
@@ -212,7 +237,7 @@ pub(super) struct StagedCopy {
     pub(super) faulted: bool,
 }
 
-/// @description 一次 scatter/gather I/O 内唯一的 userspace progress owner。
+/// 一次 scatter/gather I/O 内唯一的 userspace progress owner。
 pub(super) struct UserIoCursor<'a> {
     vectors: &'a [UserIoVec],
     index: usize,
@@ -234,7 +259,7 @@ impl<'a> UserIoCursor<'a> {
         self.completed
     }
 
-    /// @description 不推进 progress 地 gather prefix；caller 只 commit backend 已消费 bytes。
+    /// 不推进 progress 地 gather prefix；caller 只 commit backend 已消费 bytes。
     pub(super) fn stage_with(
         &self,
         output: &mut [u8],
@@ -388,7 +413,7 @@ impl<'a> UserIoCursor<'a> {
         staged
     }
 
-    /// @description 只提交 backend 已消费的 staged prefix，避免 short send 跳过 suffix。
+    /// 只提交 backend 已消费的 staged prefix，避免 short send 跳过 suffix。
     pub(super) fn advance(&mut self, mut count: usize) {
         while count != 0 {
             let vector = self.vectors[self.index];
@@ -404,9 +429,15 @@ impl<'a> UserIoCursor<'a> {
         }
     }
 
-    /// @description 按 iovec range 清零，并仅提交已经成功完成的 vector progress。
-    /// @param zero 接收 checked address 与该 vector 的剩余长度；一次调用覆盖完整连续 range。
-    /// @return 本次成功清零的总字节数；失败时保留先前 vector 的 partial progress。
+    /// 按 iovec range 清零，并仅提交已经成功完成的 vector progress。
+    ///
+    /// # Parameters
+    ///
+    /// - `zero`: 接收 checked address 与该 vector 的剩余长度；一次调用覆盖完整连续 range。
+    ///
+    /// # Returns
+    ///
+    /// 本次成功清零的总字节数；失败时保留先前 vector 的 partial progress。
     pub(super) fn zero_with(
         &mut self,
         mut zero: impl FnMut(usize, usize) -> Result<(), ()>,

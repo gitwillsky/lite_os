@@ -1,14 +1,20 @@
-//! @description Linux/RISC-V 用户执行约定与 raw register context 之间的唯一转换。
+//! Linux/RISC-V 用户执行约定与 raw register context 之间的唯一转换。
 
 use super::{
     UserContext,
     signal_frame::{SignalFrame, SignalMachineContext, SignalStack},
 };
-/// @description Linux utsname 使用的 architecture machine identity。
+/// Linux utsname 使用的 architecture machine identity。
 pub(crate) const MACHINE_NAME: &str = "riscv64";
-/// @description 解码当前 RISC-V backend 独占的 Linux syscall number。
-/// @param syscall_id raw Linux syscall number。
-/// @return 当前仅接纳 `riscv_hwprobe`；其他编号由通用 dispatcher 处理。
+/// 解码当前 RISC-V backend 独占的 Linux syscall number。
+///
+/// # Parameters
+///
+/// - `syscall_id`: raw Linux syscall number。
+///
+/// # Returns
+///
+/// 当前仅接纳 `riscv_hwprobe`；其他编号由通用 dispatcher 处理。
 pub(crate) const fn decode_private_syscall(syscall_id: usize) -> Option<usize> {
     if syscall_id == syscall_abi::SYSCALL_RISCV_HWPROBE {
         Some(syscall_id)
@@ -24,15 +30,20 @@ pub(crate) const ELF_HWCAP: usize = (1 << 0)
     | (1 << (b'I' - b'A'))
     | (1 << (b'M' - b'A'));
 
-/// @description 校验 Linux/RISC-V ELF header 的 architecture flags。
+/// 校验 Linux/RISC-V ELF header 的 architecture flags。
 ///
-/// @param flags ELF64 header 的 `e_flags`。
-/// @return flags 仅包含当前支持的 RVC/float ABI 编码且没有保留编码时返回 true。
+/// # Parameters
+///
+/// - `flags`: ELF64 header 的 `e_flags`。
+///
+/// # Returns
+///
+/// flags 仅包含当前支持的 RVC/float ABI 编码且没有保留编码时返回 true。
 pub(crate) const fn valid_elf_flags(flags: u32) -> bool {
     flags & !0x7 == 0 && flags & 0x6 != 0x6
 }
 
-/// @description 已从 RISC-V user context 取出的完整 syscall request。
+/// 已从 RISC-V user context 取出的完整 syscall request。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SyscallRequest {
     number: usize,
@@ -41,37 +52,39 @@ pub(crate) struct SyscallRequest {
 }
 
 impl SyscallRequest {
-    /// @description 获取 Linux/riscv64 syscall number。
+    /// 获取 Linux/riscv64 syscall number。
     pub(crate) fn number(self) -> usize {
         self.number
     }
 
-    /// @description 获取按 a0..a5 顺序保存的 syscall arguments。
+    /// 获取按 a0..a5 顺序保存的 syscall arguments。
     pub(crate) fn arguments(self) -> [usize; 6] {
         self.arguments
     }
 
-    /// @description 获取触发 request 的 ecall instruction address。
+    /// 获取触发 request 的 ecall instruction address。
     pub(crate) fn instruction(self) -> usize {
         self.instruction
     }
 }
 
-/// @description syscall dispatcher 对 user register state 的语义结果。
+/// syscall dispatcher 对 user register state 的语义结果。
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SyscallCompletion {
     Return(isize),
     Interrupted(isize),
 }
 
-/// @description 用户提供的 signal machine context validation failure。
+/// 用户提供的 signal machine context validation failure。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InvalidSignalContext;
 
 impl UserContext {
-    /// @description 读取 syscall registers 并把 PC 推进到 ecall 之后。
+    /// 读取 syscall registers 并把 PC 推进到 ecall 之后。
     ///
-    /// @return owned request；返回后 context 已准备写入 syscall completion。
+    /// # Returns
+    ///
+    /// owned request；返回后 context 已准备写入 syscall completion。
     pub(crate) fn take_syscall_request(&mut self) -> SyscallRequest {
         let request = SyscallRequest {
             number: self.x[17],
@@ -87,7 +100,7 @@ impl UserContext {
         request
     }
 
-    /// @description 将 syscall completion 写入 RISC-V return register。
+    /// 将 syscall completion 写入 RISC-V return register。
     pub(crate) fn complete_syscall(&mut self, completion: SyscallCompletion) {
         self.x[10] = match completion {
             SyscallCompletion::Return(result) => result as usize,
@@ -95,7 +108,7 @@ impl UserContext {
         };
     }
 
-    /// @description 恢复一次被 signal 中断且需要重放的 ecall register state。
+    /// 恢复一次被 signal 中断且需要重放的 ecall register state。
     pub(crate) fn restart_syscall(
         &mut self,
         number: usize,
@@ -114,17 +127,17 @@ impl UserContext {
         self.sepc = instruction;
     }
 
-    /// @description 获取用户 program counter。
+    /// 获取用户 program counter。
     pub(crate) fn program_counter(&self) -> usize {
         self.sepc
     }
 
-    /// @description 获取用户 stack pointer。
+    /// 获取用户 stack pointer。
     pub(crate) fn stack_pointer(&self) -> usize {
         self.x[2]
     }
 
-    /// @description 为 clone 创建的 child 准备首次 user return。
+    /// 为 clone 创建的 child 准备首次 user return。
     pub(crate) fn prepare_thread_clone(
         &mut self,
         user_stack: usize,
@@ -136,7 +149,7 @@ impl UserContext {
         self.prepare_child_return(kernel_stack);
     }
 
-    /// @description 为 fork/vfork child 准备首次 user return。
+    /// 为 fork/vfork child 准备首次 user return。
     pub(crate) fn prepare_process_clone(&mut self, user_stack: Option<usize>, kernel_stack: usize) {
         if let Some(user_stack) = user_stack {
             self.x[2] = user_stack;
@@ -153,7 +166,7 @@ impl UserContext {
         self.kernel_gp = 0;
     }
 
-    /// @description 发布下一次 user trap entry 恢复 kernel tp/gp 所需的 CPU-local metadata。
+    /// 发布下一次 user trap entry 恢复 kernel tp/gp 所需的 CPU-local metadata。
     pub(crate) fn prepare_kernel_return(&mut self, logical_cpu: usize) {
         let kernel_gp: usize;
         // SAFETY: reading gp has no memory effect and preserves the kernel global-pointer value
@@ -163,11 +176,17 @@ impl UserContext {
         self.kernel_gp = kernel_gp;
     }
 
-    /// @description 编码 byte-for-byte 保持既有 ABI 的 Linux/RISC-V `rt_sigframe`。
-    /// @param info 128-byte siginfo image。
-    /// @param stack delivery 前的 alternate stack state。
-    /// @param signal_mask delivery 前的 blocked mask。
-    /// @return architecture-owned 1080-byte frame。
+    /// 编码 byte-for-byte 保持既有 ABI 的 Linux/RISC-V `rt_sigframe`。
+    ///
+    /// # Parameters
+    ///
+    /// - `info`: 128-byte siginfo image。
+    /// - `stack`: delivery 前的 alternate stack state。
+    /// - `signal_mask`: delivery 前的 blocked mask。
+    ///
+    /// # Returns
+    ///
+    /// architecture-owned 1080-byte frame。
     pub(crate) fn capture_signal_frame(
         &self,
         info: [u8; 128],
@@ -193,11 +212,19 @@ impl UserContext {
         }
     }
 
-    /// @description 恢复经完整验证的 Linux signal machine context。
+    /// 恢复经完整验证的 Linux signal machine context。
     ///
-    /// @param machine 用户 frame 中的 owned machine context。
-    /// @return 恢复后的 syscall result register a0。
-    /// @errors unsupported extension header 非零时返回 `InvalidSignalContext`，context 不变。
+    /// # Parameters
+    ///
+    /// - `machine`: 用户 frame 中的 owned machine context。
+    ///
+    /// # Returns
+    ///
+    /// 恢复后的 syscall result register a0。
+    ///
+    /// # Errors
+    ///
+    /// unsupported extension header 非零时返回 `InvalidSignalContext`，context 不变。
     fn restore_signal_machine_context(
         &mut self,
         machine: &SignalMachineContext,
@@ -229,10 +256,19 @@ impl UserContext {
         Ok(self.x[10])
     }
 
-    /// @description 解码并恢复既有 Linux/RISC-V signal frame。
-    /// @param frame 从当前用户 SP 完整复制得到的 owned frame。
-    /// @return `(a0, signal_mask, alternate_stack)`。
-    /// @errors unsupported extension header 非零时 context 不变并返回错误。
+    /// 解码并恢复既有 Linux/RISC-V signal frame。
+    ///
+    /// # Parameters
+    ///
+    /// - `frame`: 从当前用户 SP 完整复制得到的 owned frame。
+    ///
+    /// # Returns
+    ///
+    /// `(a0, signal_mask, alternate_stack)`。
+    ///
+    /// # Errors
+    ///
+    /// unsupported extension header 非零时 context 不变并返回错误。
     pub(crate) fn restore_signal_frame(
         &mut self,
         frame: &SignalFrame,
@@ -242,7 +278,7 @@ impl UserContext {
         Ok((result, decoded.signal_mask, decoded.signal_stack))
     }
 
-    /// @description 安装 Linux/RISC-V signal handler entry register state。
+    /// 安装 Linux/RISC-V signal handler entry register state。
     pub(crate) fn enter_signal_handler(
         &mut self,
         trampoline: usize,

@@ -2,7 +2,7 @@ use crate::task::{ResourceLimit, ResourceLimitError, current_task, process_resou
 
 use super::errno;
 
-/// @description 实现 Linux/riscv64 prlimit64 的 Process owner、权限与 copyout 顺序。
+/// 实现 Linux 64-bit prlimit64 的 Process owner、权限与 copyout 顺序。
 pub(crate) fn sys_prlimit64(
     pid: usize,
     resource: usize,

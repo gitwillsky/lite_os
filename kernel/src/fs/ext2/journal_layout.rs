@@ -1,4 +1,4 @@
-/// @description 已验证 JBD2 journal 的 descriptor 与 transaction 容量事实。
+/// 已验证 JBD2 journal 的 descriptor 与 transaction 容量事实。
 ///
 /// 一个 descriptor 的首 tag 额外携带 UUID，后续 tag 复用 UUID；journal 的 block 0
 /// 属于 superblock，另保留一个 commit block。该 immutable 值由 Journal 唯一保存，
@@ -10,8 +10,11 @@ pub(super) struct JournalLayout {
 }
 
 impl JournalLayout {
-    /// @description 从 journal block 数与 filesystem block size 推导精确 layout。
-    /// @return 至少能容纳 descriptor、一个 data image 与 commit 时返回 layout。
+    /// 从 journal block 数与 filesystem block size 推导精确 layout。
+    ///
+    /// # Returns
+    ///
+    /// 至少能容纳 descriptor、一个 data image 与 commit 时返回 layout。
     pub(super) fn new(journal_blocks: usize, block_size: usize) -> Option<Self> {
         // 12-byte header + first 8-byte tag + 16-byte UUID。
         let remaining_tag_bytes = block_size.checked_sub(36)?;

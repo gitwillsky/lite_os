@@ -9,21 +9,27 @@ use riscv::{
 
 use super::mmu::AddressSpaceToken;
 
-/// @description User trampoline 跳转目标的 opaque architecture entry。
+/// User trampoline 跳转目标的 opaque architecture entry。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UserTrapEntry(usize);
 
 impl UserTrapEntry {
-    /// @description 仅向同 backend 的 UserContext 编码 trampoline target。
-    /// @return linked architecture entry address。
+    /// 仅向同 backend 的 UserContext 编码 trampoline target。
+    ///
+    /// # Returns
+    ///
+    /// linked architecture entry address。
     pub(super) fn encoded(self) -> usize {
         self.0
     }
 }
 
-/// @description 返回 task context 应保存的 opaque user trap entry。
-/// @return 当前 RISC-V backend 的 typed entry token。
+/// 返回 task context 应保存的 opaque user trap entry。
+///
+/// # Returns
+///
+/// 当前 RISC-V backend 的 typed entry token。
 pub(crate) fn user_entry() -> UserTrapEntry {
     // SAFETY: entry codec exports this symbol with the trap.S user-entry ABI.
     unsafe extern "C" {
@@ -32,7 +38,7 @@ pub(crate) fn user_entry() -> UserTrapEntry {
     UserTrapEntry(__liteos_user_trap as *const () as usize)
 }
 
-/// @description ISA-neutral trap event delivered to the kernel trap domain。
+/// ISA-neutral trap event delivered to the kernel trap domain。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrapEvent {
     TimerInterrupt,
@@ -50,14 +56,14 @@ pub(crate) enum TrapEvent {
     UnsupportedException { address: usize },
 }
 
-/// @description Kernel exception diagnostic with raw CSR encoding hidden inside arch backend。
+/// Kernel exception diagnostic with raw CSR encoding hidden inside arch backend。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct KernelException {
     pub(crate) event: TrapEvent,
     pub(crate) program_counter: usize,
 }
 
-/// @description 解码当前 RISC-V trap CSR 为通用语义事件。
+/// 解码当前 RISC-V trap CSR 为通用语义事件。
 pub(crate) fn event() -> TrapEvent {
     let cause = scause::read().cause();
     let address = stval::read();
@@ -82,9 +88,15 @@ pub(crate) fn event() -> TrapEvent {
     }
 }
 
-/// @description 捕获已解码 kernel trap 的 architecture diagnostic snapshot。
-/// @param event generic trap domain 已取得的唯一语义事件。
-/// @return 同一事件与当前 program counter 的一致诊断值。
+/// 捕获已解码 kernel trap 的 architecture diagnostic snapshot。
+///
+/// # Parameters
+///
+/// - `event`: generic trap domain 已取得的唯一语义事件。
+///
+/// # Returns
+///
+/// 同一事件与当前 program counter 的一致诊断值。
 pub(crate) fn kernel_exception(event: TrapEvent) -> KernelException {
     KernelException {
         event,
@@ -92,7 +104,7 @@ pub(crate) fn kernel_exception(event: TrapEvent) -> KernelException {
     }
 }
 
-/// @description 安装 linked kernel trap entry 到当前 CPU。
+/// 安装 linked kernel trap entry 到当前 CPU。
 pub(crate) fn install_kernel_entry() {
     // SAFETY: trap.S defines this linked entry with the RISC-V supervisor trap ABI.
     unsafe extern "C" {
@@ -105,12 +117,17 @@ pub(crate) fn install_kernel_entry() {
     unsafe { stvec::write(value) };
 }
 
-/// @description 完成 RISC-V trampoline restore 并返回指定用户 address space。
+/// 完成 RISC-V trampoline restore 并返回指定用户 address space。
 ///
-/// @param context_address 用户映射中的 UserContext virtual address。
-/// @param address_space live Sv39 address-space token。
-/// @param trampoline_address 每个 address space 中统一映射的 trampoline virtual address。
-/// @return 不返回。
+/// # Parameters
+///
+/// - `context_address`: 用户映射中的 UserContext virtual address。
+/// - `address_space`: live Sv39 address-space token。
+/// - `trampoline_address`: 每个 address space 中统一映射的 trampoline virtual address。
+///
+/// # Returns
+///
+/// 不返回。
 pub(crate) fn return_to_user(
     context_address: usize,
     address_space: AddressSpaceToken,

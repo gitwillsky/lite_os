@@ -1,4 +1,4 @@
-//! @description PSCI 0.2+ HVC conduit owner for QEMU `virt`。
+//! PSCI 0.2+ HVC conduit owner for QEMU `virt`。
 
 use core::{arch::asm, fmt};
 
@@ -55,11 +55,14 @@ pub(crate) fn start_cpu(
     .map_err(CpuStartError)
 }
 
-pub(crate) fn reset_system(reset_type: usize, _reset_reason: usize) -> Result<(), ResetError> {
-    let function = match reset_type {
-        0 => PSCI_SYSTEM_OFF,
-        1 => PSCI_SYSTEM_RESET,
-        _ => return Err(ResetError(FirmwareError(-2))),
+/// 通过 PSCI 关闭或冷重启整个系统；PSCI 没有 reset reason 字段，因此忽略 `_reason`。
+pub(crate) fn reset_system(
+    kind: crate::platform::ResetKind,
+    _reason: crate::platform::ResetReason,
+) -> Result<(), ResetError> {
+    let function = match kind {
+        crate::platform::ResetKind::Shutdown => PSCI_SYSTEM_OFF,
+        crate::platform::ResetKind::ColdReboot => PSCI_SYSTEM_RESET,
     };
     result(call(function, [0, 0, 0])).map_err(ResetError)
 }

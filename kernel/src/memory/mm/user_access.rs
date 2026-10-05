@@ -6,7 +6,7 @@ use core::{
 
 use super::*;
 
-/// @description 单次用户缺页可使用的 Process 级虚拟内存资源边界。
+/// 单次用户缺页可使用的 Process 级虚拟内存资源边界。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UserFaultLimits {
     pub(crate) stack: u64,
@@ -14,11 +14,16 @@ pub(crate) struct UserFaultLimits {
 }
 
 impl UserFaultLimits {
-    /// @description 构造来自当前 Process `RLIMIT_STACK/RLIMIT_AS` 的 fault 边界。
+    /// 构造来自当前 Process `RLIMIT_STACK/RLIMIT_AS` 的 fault 边界。
     ///
-    /// @param stack 最大 grow-down stack 字节数。
-    /// @param address_space 最大用户 VMA 总字节数。
-    /// @return 可在一次 fault/copy transaction 内复用的不可变限制快照。
+    /// # Parameters
+    ///
+    /// - `stack`: 最大 grow-down stack 字节数。
+    /// - `address_space`: 最大用户 VMA 总字节数。
+    ///
+    /// # Returns
+    ///
+    /// 可在一次 fault/copy transaction 内复用的不可变限制快照。
     pub(crate) const fn new(stack: u64, address_space: u64) -> Self {
         Self {
             stack,
@@ -26,12 +31,12 @@ impl UserFaultLimits {
         }
     }
 
-    /// @description 为只允许命中既有 VMA 的内核读取构造边界，不允许隐式扩栈。
+    /// 为只允许命中既有 VMA 的内核读取构造边界，不允许隐式扩栈。
     pub(super) const fn existing_mappings() -> Self {
         Self::new(0, u64::MAX)
     }
 
-    /// @description 为 exec transaction 构造固定初始栈边界。
+    /// 为 exec transaction 构造固定初始栈边界。
     pub(super) const fn initial_exec() -> Self {
         Self::new(config::USER_STACK_SIZE as u64, u64::MAX)
     }
@@ -79,13 +84,21 @@ impl MemorySet {
         }
     }
 
-    /// @description Fault-in 并验证完整用户读取范围，不复制内容。
+    /// Fault-in 并验证完整用户读取范围，不复制内容。
     ///
-    /// @param address 用户范围首地址。
-    /// @param length 用户范围字节数。
-    /// @param limits lazy fault 可消耗的资源上限。
-    /// @return 完整范围已驻留且具备 `U|R` 权限时返回 exclusive end。
-    /// @errors 地址、权限、fault 或资源失败返回 `UserAccessError`。
+    /// # Parameters
+    ///
+    /// - `address`: 用户范围首地址。
+    /// - `length`: 用户范围字节数。
+    /// - `limits`: lazy fault 可消耗的资源上限。
+    ///
+    /// # Returns
+    ///
+    /// 完整范围已驻留且具备 `U|R` 权限时返回 exclusive end。
+    ///
+    /// # Errors
+    ///
+    /// 地址、权限、fault 或资源失败返回 `UserAccessError`。
     pub(super) fn prepare_user_read(
         &mut self,
         address: usize,
@@ -105,13 +118,21 @@ impl MemorySet {
         Ok(end)
     }
 
-    /// @description 完成 COW/dirty 转换并验证完整用户写入范围，不复制内容。
+    /// 完成 COW/dirty 转换并验证完整用户写入范围，不复制内容。
     ///
-    /// @param address 用户范围首地址。
-    /// @param length 用户范围字节数。
-    /// @param limits lazy fault 可消耗的资源上限。
-    /// @return 完整范围已驻留且具备 `U|W` 权限时返回 exclusive end。
-    /// @errors 地址、权限、fault 或资源失败返回 `UserAccessError`。
+    /// # Parameters
+    ///
+    /// - `address`: 用户范围首地址。
+    /// - `length`: 用户范围字节数。
+    /// - `limits`: lazy fault 可消耗的资源上限。
+    ///
+    /// # Returns
+    ///
+    /// 完整范围已驻留且具备 `U|W` 权限时返回 exclusive end。
+    ///
+    /// # Errors
+    ///
+    /// 地址、权限、fault 或资源失败返回 `UserAccessError`。
     fn prepare_user_write(
         &mut self,
         address: usize,
@@ -133,7 +154,7 @@ impl MemorySet {
         Ok(end)
     }
 
-    /// @description 完整 fault/校验后，从用户页复制到 kernel-owned 缓冲区。
+    /// 完整 fault/校验后，从用户页复制到 kernel-owned 缓冲区。
     pub(crate) fn copy_from_user(
         &mut self,
         address: usize,
@@ -151,11 +172,17 @@ impl MemorySet {
         self.copy_from_user_uninit(address, destination, limits)
     }
 
-    /// @description 完整 fault/校验后直接初始化 kernel destination，避免预清零 staging。
-    /// @param address 用户源范围首地址。
-    /// @param destination 尚未初始化、由 caller 独占的 kernel byte storage。
-    /// @param limits fault 可消耗的资源上限。
-    /// @return 成功时 destination 全部初始化；失败时 caller 不得读取其内容。
+    /// 完整 fault/校验后直接初始化 kernel destination，避免预清零 staging。
+    ///
+    /// # Parameters
+    ///
+    /// - `address`: 用户源范围首地址。
+    /// - `destination`: 尚未初始化、由 caller 独占的 kernel byte storage。
+    /// - `limits`: fault 可消耗的资源上限。
+    ///
+    /// # Returns
+    ///
+    /// 成功时 destination 全部初始化；失败时 caller 不得读取其内容。
     pub(crate) fn copy_from_user_uninit(
         &mut self,
         address: usize,
@@ -182,10 +209,16 @@ impl MemorySet {
         Ok(())
     }
 
-    /// @description 从 U|X mapping 精确读取一个 RISC-V instruction halfword。
-    /// @param address 2-byte aligned 用户 instruction address。
-    /// @param destination 固定两字节 kernel buffer。
-    /// @return execute fault 完成且 U|X leaf 可读时成功；权限、地址或资源错误时失败。
+    /// 从 U|X mapping 精确读取一个 RISC-V instruction halfword。
+    ///
+    /// # Parameters
+    ///
+    /// - `address`: 2-byte aligned 用户 instruction address。
+    /// - `destination`: 固定两字节 kernel buffer。
+    ///
+    /// # Returns
+    ///
+    /// execute fault 完成且 U|X leaf 可读时成功；权限、地址或资源错误时失败。
     pub(crate) fn copy_instruction_halfword(
         &mut self,
         address: usize,
@@ -215,7 +248,7 @@ impl MemorySet {
         Ok(())
     }
 
-    /// @description 完整解析 lazy/COW 页后，将 kernel-owned 字节复制到用户页。
+    /// 完整解析 lazy/COW 页后，将 kernel-owned 字节复制到用户页。
     pub(crate) fn copy_to_user(
         &mut self,
         address: usize,
@@ -242,12 +275,21 @@ impl MemorySet {
         Ok(())
     }
 
-    /// @description 完整 fault/校验一次用户范围，并直接把目标页内容清零。
-    /// @param address 用户目标起点。
-    /// @param length 清零字节数。
-    /// @param limits lazy/COW fault 可使用的 Process 资源边界。
-    /// @return 完整范围清零成功返回 Ok。
-    /// @errors 地址、权限、fault、overflow 或资源失败返回 `UserAccessError`。
+    /// 完整 fault/校验一次用户范围，并直接把目标页内容清零。
+    ///
+    /// # Parameters
+    ///
+    /// - `address`: 用户目标起点。
+    /// - `length`: 清零字节数。
+    /// - `limits`: lazy/COW fault 可使用的 Process 资源边界。
+    ///
+    /// # Returns
+    ///
+    /// 完整范围清零成功返回 Ok。
+    ///
+    /// # Errors
+    ///
+    /// 地址、权限、fault、overflow 或资源失败返回 `UserAccessError`。
     pub(crate) fn zero_user(
         &mut self,
         address: usize,
@@ -296,7 +338,7 @@ impl MemorySet {
         Ok(atomic.compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire))
     }
 
-    /// @description 从用户空间复制有上限的 NUL 结尾字节串。
+    /// 从用户空间复制有上限的 NUL 结尾字节串。
     pub(crate) fn copy_user_c_string(
         &mut self,
         address: usize,

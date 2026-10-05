@@ -22,14 +22,14 @@ pub(crate) enum TerminalAccess {
     StateChange,
 }
 
-/// @description line discipline 对一次 read 的明确结果；Empty 与 canonical EOF 不混淆。
+/// line discipline 对一次 read 的明确结果；Empty 与 canonical EOF 不混淆。
 pub(crate) enum TerminalRead {
     Bytes(usize),
     Eof,
     Empty,
 }
 
-/// @description 当前 termios 对一次 terminal read 规定的完成条件。
+/// 当前 termios 对一次 terminal read 规定的完成条件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalReadMode {
     /// canonical line discipline 只发布完整行或 EOF。
@@ -92,7 +92,7 @@ impl TerminalState {
     }
 }
 
-/// @description console device、termios 与 session/foreground ownership 的唯一 TTY 对象。
+/// console device、termios 与 session/foreground ownership 的唯一 TTY 对象。
 pub(crate) struct Terminal {
     console: Arc<dyn Console>,
     // OWNER: 每个 Terminal 永久绑定创建它的实际 character device；`/dev/tty` 只是当前
@@ -109,11 +109,16 @@ pub(crate) struct Terminal {
 }
 
 impl Terminal {
-    /// @description 用 Linux 风格 sane defaults 包装唯一 platform console。
+    /// 用 Linux 风格 sane defaults 包装唯一 platform console。
     ///
-    /// @param console raw byte device adapter。
-    /// @param device `/dev/console` 或实际 `/dev/pts/N` identity；不得传入 `/dev/tty` 别名。
-    /// @return 可由所有 console OFD 共享的 TTY owner。
+    /// # Parameters
+    ///
+    /// - `console`: raw byte device adapter。
+    /// - `device`: `/dev/console` 或实际 `/dev/pts/N` identity；不得传入 `/dev/tty` 别名。
+    ///
+    /// # Returns
+    ///
+    /// 可由所有 console OFD 共享的 TTY owner。
     pub(crate) fn new(console: Arc<dyn Console>, device: DeviceKind) -> Result<Arc<Self>, ()> {
         assert_ne!(
             device,
@@ -152,9 +157,15 @@ impl Terminal {
         .map_err(|_| ())
     }
 
-    /// @description 一次锁快照投影 Linux proc stat 的 controlling-terminal 字段。
-    /// @param session 目标 Process 的 process-graph session ID。
-    /// @return `(tty_nr, tpgid)`；无 controlling terminal 时固定为 `(0, -1)`。
+    /// 一次锁快照投影 Linux proc stat 的 controlling-terminal 字段。
+    ///
+    /// # Parameters
+    ///
+    /// - `session`: 目标 Process 的 process-graph session ID。
+    ///
+    /// # Returns
+    ///
+    /// `(tty_nr, tpgid)`；无 controlling terminal 时固定为 `(0, -1)`。
     pub(crate) fn proc_identity(&self, session: usize) -> (u32, isize) {
         let state = self.state.lock();
         if state.controlling_session != Some(session) {
@@ -169,10 +180,15 @@ impl Terminal {
         )
     }
 
-    /// @description 从 line discipline 唯一 cooked queue 非阻塞读取。
+    /// 从 line discipline 唯一 cooked queue 非阻塞读取。
     ///
-    /// @param bytes kernel-owned 目标缓冲区。
-    /// @return bytes、canonical EOF 或当前无完整输入。
+    /// # Parameters
+    ///
+    /// - `bytes`: kernel-owned 目标缓冲区。
+    ///
+    /// # Returns
+    ///
+    /// bytes、canonical EOF 或当前无完整输入。
     pub(crate) fn read(&self, bytes: &mut [u8]) -> TerminalRead {
         let mut state = self.state.lock();
         if state.input_len == 0 {
@@ -191,10 +207,15 @@ impl Terminal {
         TerminalRead::Bytes(count)
     }
 
-    /// @description 从唯一 termios owner 投影一次 read 的 canonical/VMIN/VTIME 语义。
+    /// 从唯一 termios owner 投影一次 read 的 canonical/VMIN/VTIME 语义。
     ///
-    /// @param capacity 本次 userspace read 可接收的最大字节数。
-    /// @return canonical 模式，或已按 capacity 收敛的 noncanonical 完成条件。
+    /// # Parameters
+    ///
+    /// - `capacity`: 本次 userspace read 可接收的最大字节数。
+    ///
+    /// # Returns
+    ///
+    /// canonical 模式，或已按 capacity 收敛的 noncanonical 完成条件。
     pub(crate) fn read_mode(&self, capacity: usize) -> TerminalReadMode {
         const ICANON: u32 = 0x2;
         const VTIME: usize = 5;
@@ -221,17 +242,28 @@ impl Terminal {
         self.input_ready() || self.console.input_ready()
     }
 
-    /// @description 返回 cooked input 最近一次变为可观察输入的全局 generation。
+    /// 返回 cooked input 最近一次变为可观察输入的全局 generation。
     ///
-    /// @return 跨 I/O source 可比较的 generation。
+    /// # Returns
+    ///
+    /// 跨 I/O source 可比较的 generation。
     pub(crate) fn readiness_generation(&self) -> u64 {
         self.state.lock().input_generation
     }
 
-    /// @description 在 Terminal→Console 唯一锁序下同步写出一批 terminal output。
-    /// @param bytes kernel-owned output bytes。
-    /// @return Console 已同步接收的 input byte 数。
-    /// @errors Console adapter 写失败时返回 `IoError`。
+    /// 在 Terminal→Console 唯一锁序下同步写出一批 terminal output。
+    ///
+    /// # Parameters
+    ///
+    /// - `bytes`: kernel-owned output bytes。
+    ///
+    /// # Returns
+    ///
+    /// Console 已同步接收的 input byte 数。
+    ///
+    /// # Errors
+    ///
+    /// Console adapter 写失败时返回 `IoError`。
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError> {
         let _output = self.output_transaction.lock();
         let output_flags = self.state.lock().output_flags();
@@ -267,10 +299,15 @@ impl Terminal {
         Ok(bytes.len())
     }
 
-    /// @description 在 deferred context 将 UART raw ring 唯一转换进 termios line discipline。
+    /// 在 deferred context 将 UART raw ring 唯一转换进 termios line discipline。
     ///
-    /// @return 本批输入生成的 Linux signal bitset，以及 raw ring 是否仍有 backlog。
-    /// @errors 底层 UART 读写失败或固定 cooked queue 已满时返回 `IoError`。
+    /// # Returns
+    ///
+    /// 本批输入生成的 Linux signal bitset，以及 raw ring 是否仍有 backlog。
+    ///
+    /// # Errors
+    ///
+    /// 底层 UART 读写失败或固定 cooked queue 已满时返回 `IoError`。
     pub(crate) fn drain_input(&self) -> Result<TerminalInputBatch, FileSystemError> {
         const IGNCR: u32 = 0x80;
         const ICRNL: u32 = 0x100;
@@ -403,12 +440,17 @@ impl Terminal {
         })
     }
 
-    /// @description 根据 controlling session、foreground group 与 TOSTOP 决定后台访问 signal。
+    /// 根据 controlling session、foreground group 与 TOSTOP 决定后台访问 signal。
     ///
-    /// @param session caller 的 session ID。
-    /// @param process_group caller 的 process group ID。
-    /// @param access 输入、输出或 TTY 状态修改。
-    /// @return 非 controlling/background 豁免返回 `None`，否则返回 SIGTTIN/SIGTTOU。
+    /// # Parameters
+    ///
+    /// - `session`: caller 的 session ID。
+    /// - `process_group`: caller 的 process group ID。
+    /// - `access`: 输入、输出或 TTY 状态修改。
+    ///
+    /// # Returns
+    ///
+    /// 非 controlling/background 豁免返回 `None`，否则返回 SIGTTIN/SIGTTOU。
     pub(crate) fn background_signal(
         &self,
         session: usize,
@@ -444,17 +486,29 @@ impl Terminal {
         self.state.lock().termios = termios;
     }
 
-    /// @description 在当前同步 Console output contract 的 drain point 应用 termios。
-    /// @param termios 完整 Linux kernel termios layout。
-    /// @return 无返回值；Console::write 返回后 Terminal 不保留待发送 output，因此无需等待队列。
+    /// 在当前同步 Console output contract 的 drain point 应用 termios。
+    ///
+    /// # Parameters
+    ///
+    /// - `termios`: 完整 Linux kernel termios layout。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；Console::write 返回后 Terminal 不保留待发送 output，因此无需等待队列。
     pub(crate) fn set_termios_after_output(&self, termios: [u8; KERNEL_TERMIOS_SIZE]) {
         let _output = self.output_transaction.lock();
         self.state.lock().termios = termios;
     }
 
-    /// @description 在同步 output drain point 丢弃 raw/cooked input 后应用 termios。
-    /// @param termios 完整 Linux kernel termios layout。
-    /// @return 无返回值；termios 已应用且所有调用前 pending input 已不可见。
+    /// 在同步 output drain point 丢弃 raw/cooked input 后应用 termios。
+    ///
+    /// # Parameters
+    ///
+    /// - `termios`: 完整 Linux kernel termios layout。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；termios 已应用且所有调用前 pending input 已不可见。
     pub(crate) fn flush_input_and_set_termios(&self, termios: [u8; KERNEL_TERMIOS_SIZE]) {
         let _output = self.output_transaction.lock();
         let _input = self.input_transaction.lock();
@@ -476,11 +530,16 @@ impl Terminal {
         }
     }
 
-    /// @description 丢弃调用前尚未消费的 terminal input/output。
+    /// 丢弃调用前尚未消费的 terminal input/output。
     ///
-    /// @param input true 时清除 adapter raw input、cooked queue、partial canonical line 与 EOF。
-    /// @param output true 时清除 adapter 尚未由 terminal peer 消费的 output。
-    /// @return 无返回值；所选方向在同一 output→input transaction 顺序下完成。
+    /// # Parameters
+    ///
+    /// - `input`: true 时清除 adapter raw input、cooked queue、partial canonical line 与 EOF。
+    /// - `output`: true 时清除 adapter 尚未由 terminal peer 消费的 output。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；所选方向在同一 output→input transaction 顺序下完成。
     pub(crate) fn flush(&self, input: bool, output: bool) {
         assert!(input || output, "terminal flush requires a direction");
         let _output = self.output_transaction.lock();
@@ -512,9 +571,15 @@ impl Terminal {
         self.state.lock().window_size
     }
 
-    /// @description 原子替换窗口尺寸，并返回需要接收 `SIGWINCH` 的 foreground group。
-    /// @param window_size Linux `struct winsize` 的 8-byte native layout。
-    /// @return 尺寸变化且存在 foreground group 时返回 PGID；未变化或无 group 返回 `None`。
+    /// 原子替换窗口尺寸，并返回需要接收 `SIGWINCH` 的 foreground group。
+    ///
+    /// # Parameters
+    ///
+    /// - `window_size`: Linux `struct winsize` 的 8-byte native layout。
+    ///
+    /// # Returns
+    ///
+    /// 尺寸变化且存在 foreground group 时返回 PGID；未变化或无 group 返回 `None`。
     pub(crate) fn set_window_size(&self, window_size: [u8; 8]) -> Option<usize> {
         let mut state = self.state.lock();
         if state.window_size == window_size {
@@ -541,10 +606,15 @@ impl Terminal {
         Ok(())
     }
 
-    /// @description 原子释放 controlling session 并取走退出时应接收 SIGHUP 的 foreground PGID。
+    /// 原子释放 controlling session 并取走退出时应接收 SIGHUP 的 foreground PGID。
     ///
-    /// @param session 正在退出的 session leader ID。
-    /// @return session 匹配时返回原 foreground PGID，否则返回 None。
+    /// # Parameters
+    ///
+    /// - `session`: 正在退出的 session leader ID。
+    ///
+    /// # Returns
+    ///
+    /// session 匹配时返回原 foreground PGID，否则返回 None。
     pub(crate) fn release_session(&self, session: usize) -> Option<usize> {
         let mut state = self.state.lock();
         if state.controlling_session == Some(session) {
@@ -554,8 +624,11 @@ impl Terminal {
         None
     }
 
-    /// @description 原子执行 PTY vhangup，清除 controlling session 与 foreground owner。
-    /// @return 原 foreground PGID；task owner 用它投递 SIGHUP/SIGCONT。
+    /// 原子执行 PTY vhangup，清除 controlling session 与 foreground owner。
+    ///
+    /// # Returns
+    ///
+    /// 原 foreground PGID；task owner 用它投递 SIGHUP/SIGCONT。
     pub(crate) fn hangup(&self) -> Option<usize> {
         let mut state = self.state.lock();
         state.controlling_session = None;
