@@ -31,4 +31,5 @@
 ## Known limits
 
 - 没有 QEMU `virt` 之外的 machine backend，也没有真实硬件启动声明。
-- 设备发现只覆盖当前 QEMU `virt` 已接入的 modern VirtIO 路径。
+- 设备发现只覆盖当前 QEMU `virt` 已接入的 modern VirtIO 路径。DTB 解码由 verify-unit 以当前 host QEMU
+  `dumpdtb` 输出测试；QEMU 升级改变 DTB 布局时在 unit 阶段失败。

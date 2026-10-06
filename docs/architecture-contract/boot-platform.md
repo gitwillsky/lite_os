@@ -5,6 +5,10 @@
 - RISC-V `bootloader` 独占 M-mode firmware state、machine trap stack、PMP 与 RustSBI service；AArch64 不得依赖该 domain。
 - `bootloader::rfence` 独占每 hart 的 request/range/ack mailbox 与 broadcast serialization lock；`STARTS`/`SIZES` 只由持锁 sender 在 request Release 前写，并由目标 hart 在 request Acquire 后读。
 - `platform::qemu_virt::riscv64` 独占 SBI/PLIC machine codec；`platform::qemu_virt::aarch64` 独占 PSCI/GICv3/PL011/PL031 machine codec。共同 façade 独占 DTB machine facts 与具体设备装配。
+- 各架构 `device_tree` 独占 DTB 到 `PlatformInfo` 的纯解码；`discovery` 只独占 boot handoff 指针、
+  一次性 publication 与 hardware CPU 投影。`qemu_virt::virtio_mmio` 独占 VirtIO-MMIO transport 识别与
+  有界 transport 表；`qemu_virt::virtio_binding` 是 device ID 到 driver adapter 的唯一装配表，两个架构
+  只注入 physical→virtual 映射与 interrupt 注册回调，禁止恢复各架构自带的 `init_virtio_*` 分派。
 - `arch::<target>::io` 独占 MMIO 指令与 normal-memory/device ordering mechanism；通用
   `drivers::hal::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
   不得直接选择 target 指令形态。
@@ -16,6 +20,12 @@
 - platform 向上只公开 typed `BootInfo`、`PlatformInfo`、firmware operation、linear interrupt token 与通用 device façade。GIC/PLIC claim backend 必须直接构造 `Timer/Device/Software/Spurious`
   语义 variant；禁止用 `u8 kind` 私有 ABI 再做第二次运行时翻译。
 - hardware address、hart ID、SBI status、PLIC context 和 concrete VirtIO adapter 不得进入 generic domain。
+- DTB 设备身份只由 `compatible` 裁决；只有 DTB 规范强制的 `memory`、`cpus`、`cpu@` 节点名可作为身份。
+  AArch64 的 PL011/PL031/GICv3/PCI 以节点名选择候选并以 compatible 断言。QEMU 11 已把 PLIC 改名为
+  `interrupt-controller@…`，按名称前缀识别会让设备在升级后静默消失。节点属性在下一个 `SubNode`
+  事件或遍历结束时提交，与属性顺序无关。
+- `device_tree::parse` 与 `virtio_mmio` 为 `pub(crate)`，唯一的 crate 外调用方是 kernel-unit 的 host
+  DTB fixture 测试；generic domain 不得引用。
 - `platform::qemu_virt` 的 PLIC register codec 只编码 source ID `1..=1023`；`0` 是 claim 哨兵，越过单个 context `0x80` enable bitmap 的 ID 必须在 MMIO 前拒绝。
 - 新 machine 必须作为独立 compile-time platform backend 接入；禁止在 generic code 追加 target 分支。
 - AArch64 backend 必须验证 GICv3、PSCI HVC、PL011、PL031 与 `dma-coherent`。PCI host
@@ -34,6 +44,9 @@
 ## Failure and cleanup
 
 - boot capability、DTB、CPU mapping 或 required device 初始化失败时 fail-stop，禁止以默认 topology 或 guessed address 继续。
+- RISC-V 缺少 PLIC/UART/UART interrupt、任一 `virtio,mmio` 节点缺少 window 或 interrupt、transport 超过 32
+  个，或 interrupt controller 拒绝注册时，必须带设备/vector/原因 fail-stop；静默返回会让设备永远收不到
+  interrupt。VirtIO device ID 0 表示空 transport，不是错误。
 - PLIC handler 返回错误或 source 未注册时，platform 仍须对每个已 claim vector 恰好 complete 一次。
 - secondary publication 使用 Release/Acquire；未完成全局 publication 的 CPU 不得观察或修改 generic state。
 - GICv3 claim 产生的 opaque token 必须在同一 CPU exactly-once EOI；timer PPI 必须在 EOI 前重新 arm，software SGI 必须在 EOI 后消费同步 request。

@@ -1,12 +1,9 @@
-use alloc::vec::Vec;
-use core::{
-    fmt::{self, Display},
-    ops::Range,
-};
+//! RISC-V QEMU `virt` DTB handoff 与 immutable machine facts publication owner。
 
-use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
+use dtb_walker::{Dtb, HeaderError};
 use spin::Once;
 
+use super::device_tree::PlatformInfo;
 use crate::cpu::HardwareCpuId;
 
 // OWNER: platform discovery publishes the immutable machine description for the kernel lifetime.
@@ -37,7 +34,20 @@ impl BootInfo {
 ///
 /// DTB 无效或重复初始化时 fail-stop。
 pub(crate) fn initialize(boot: BootInfo) {
-    PLATFORM_INFO.call_once(|| PlatformInfo::parse(boot.address()));
+    PLATFORM_INFO.call_once(|| {
+        // SAFETY: firmware passes the physical DTB pointer unchanged in `a1`; early kernel
+        // identity mapping covers it, and dtb-walker validates header and structure bounds.
+        let dtb = unsafe {
+            Dtb::from_raw_parts_filtered(boot.address() as *const u8, |error| {
+                matches!(
+                    error,
+                    HeaderError::Misaligned(4) | HeaderError::LastCompVersion(_)
+                )
+            })
+        }
+        .expect("invalid RISC-V DTB");
+        super::device_tree::parse(dtb, boot.address())
+    });
 }
 
 pub(crate) fn validate_boot_info(boot: BootInfo) {
@@ -57,7 +67,7 @@ pub(crate) fn validate_boot_info(boot: BootInfo) {
 /// # Errors
 ///
 /// platform 尚未初始化时等待 publication。
-pub(crate) fn info() -> &'static PlatformInfo {
+pub(super) fn info() -> &'static PlatformInfo {
     PLATFORM_INFO.wait()
 }
 
@@ -80,379 +90,4 @@ impl ExactSizeIterator for HardwareCpuIds {
     fn len(&self) -> usize {
         self.0.len()
     }
-}
-
-pub(crate) struct StringInLine<const N: usize>(usize, [u8; N]);
-
-/// VirtIO MMIO 设备信息
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct VirtIODevice {
-    pub(crate) base_addr: usize,
-    pub(crate) size: usize,
-    pub(crate) irq: u32,
-}
-
-/// RTC 设备信息
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RTCDevice {
-    pub(crate) base_addr: usize,
-    pub(crate) size: usize,
-    pub(crate) irq: u32,
-}
-
-/// PLIC 中断控制器信息
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PLICDevice {
-    pub(crate) base_addr: usize,
-    pub(crate) size: usize,
-}
-
-pub(crate) struct PlatformInfo {
-    pub(crate) dtb: Range<usize>,
-    pub(crate) model: StringInLine<128>,
-    hardware_cpu_ids: Vec<usize>,
-    pub(crate) time_base_freq: u64,
-    pub(crate) mem: Range<usize>,
-    pub(crate) uart: Range<usize>,
-    pub(crate) uart_irq: u32,
-    pub(crate) test: Range<usize>,
-    pub(crate) clint: Range<usize>,
-    pub(crate) virtio_devices: [Option<VirtIODevice>; 20],
-    pub(crate) virtio_count: usize,
-    pub(crate) rtc_device: Option<RTCDevice>,
-    pub(crate) plic_device: Option<PLICDevice>,
-}
-
-impl<const N: usize> Display for StringInLine<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // SAFETY: DTB parser only appends bytes from validated UTF-8 node/property names and
-        // `self.0` is maintained as the initialized prefix length.
-        write!(f, "{}", unsafe {
-            core::str::from_utf8_unchecked(&self.1[..self.0])
-        })
-    }
-}
-
-impl Display for PlatformInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "DTB: {:#x?}", self.dtb)?;
-        writeln!(f, "Model: {}", self.model)?;
-        writeln!(f, "Hardware CPUs: {:?}", self.hardware_cpu_ids)?;
-        writeln!(f, "Time Base Frequency: {}", self.time_base_freq)?;
-        writeln!(f, "Memory: {:#x?}", self.mem)?;
-        writeln!(f, "UART: {:#x?}, IRQ: {}", self.uart, self.uart_irq)?;
-        writeln!(f, "Test: {:#x?}", self.test)?;
-        writeln!(f, "CLINT: {:#x?}", self.clint)?;
-        writeln!(f, "VirtIO Devices: {} found", self.virtio_count)?;
-        if let Some(rtc) = self.rtc_device {
-            writeln!(
-                f,
-                "RTC Device: base={:#x}, size={:#x}, irq={}",
-                rtc.base_addr, rtc.size, rtc.irq
-            )?;
-        }
-        if let Some(plic) = self.plic_device {
-            writeln!(
-                f,
-                "PLIC Device: base={:#x}, size={:#x}",
-                plic.base_addr, plic.size
-            )?;
-        }
-        for (i, device) in self
-            .virtio_devices
-            .iter()
-            .take(self.virtio_count)
-            .enumerate()
-        {
-            if let Some(dev) = device {
-                writeln!(
-                    f,
-                    "  VirtIO[{}]: {:#x}-{:#x}, IRQ: {}",
-                    i,
-                    dev.base_addr,
-                    dev.base_addr + dev.size,
-                    dev.irq
-                )?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl PlatformInfo {
-    pub(crate) fn parse(dtb_addr: usize) -> Self {
-        const CPUS: &str = "cpus";
-        const MEM: &str = "memory";
-        const SOC: &str = "soc";
-        const UART: &str = "uart";
-        const SERIAL: &str = "serial";
-        const TEST: &str = "test";
-        const CLINT: &str = "clint";
-        const VIRTIO: &str = "virtio_mmio";
-        const RTC: &str = "rtc";
-        const PLIC: &str = "plic";
-        /// QEMU 11 起 PLIC 节点名为 `interrupt-controller@…`；节点名只用于选择候选，
-        /// 身份由 `compatible` 裁决，因为 hart-local `cpu-intc` 也使用该名称。
-        const INTERRUPT_CONTROLLER: &str = "interrupt-controller";
-        /// Linux `irq-sifive-plic` 匹配的 PLIC compatible。
-        const PLIC_COMPATIBLES: [&str; 2] = ["sifive,plic-1.0.0", "riscv,plic0"];
-
-        let mut ans = PlatformInfo {
-            dtb: dtb_addr..dtb_addr,
-            model: StringInLine(0, [0; 128]),
-            hardware_cpu_ids: Vec::new(),
-            mem: 0..0,
-            uart: 0..0,
-            uart_irq: 0,
-            test: 0..0,
-            clint: 0..0,
-            time_base_freq: 0,
-            virtio_devices: [None; 20],
-            virtio_count: 0,
-            rtc_device: None,
-            plic_device: None,
-        };
-
-        // 用于临时存储当前 VirtIO 设备的信息
-        let mut current_virtio_reg: Option<Range<usize>> = None;
-        let mut current_virtio_irq: Option<u32> = None;
-
-        // 用于临时存储当前 RTC 设备的信息
-        let mut current_rtc_reg: Option<Range<usize>> = None;
-        let mut current_rtc_irq: Option<u32> = None;
-
-        // 当前 PLIC 候选节点的 reg 与 compatible 匹配结果；两者都出现后才发布，与属性顺序无关。
-        let mut current_plic_reg: Option<Range<usize>> = None;
-        let mut current_plic_compatible = false;
-
-        // SAFETY: firmware passes the physical DTB pointer unchanged in `a1`; early kernel
-        // identity mapping covers it, and the parser validates the header and structure bounds.
-        let dtb = unsafe {
-            Dtb::from_raw_parts_filtered(dtb_addr as *const u8, |node| {
-                matches!(
-                    node,
-                    HeaderError::Misaligned(4) | HeaderError::LastCompVersion(_)
-                )
-            })
-        }
-        .unwrap();
-
-        ans.dtb.end += dtb.total_size();
-        dtb.walk(|ctx, obj| match obj {
-            DtbObj::SubNode { name, .. } => {
-                let current = ctx.name();
-                if ctx.is_root() {
-                    if name == Str::from(CPUS) || name == Str::from(SOC) || name.starts_with(MEM) {
-                        WalkOperation::StepInto
-                    } else if name.starts_with(VIRTIO) {
-                        // 遇到 VirtIO 设备节点，准备解析
-                        current_virtio_reg = None;
-                        current_virtio_irq = None;
-                        WalkOperation::StepInto
-                    } else if name.starts_with(RTC) {
-                        // 遇到 RTC 设备节点，准备解析
-                        current_rtc_reg = None;
-                        current_rtc_irq = None;
-                        WalkOperation::StepInto
-                    } else {
-                        WalkOperation::StepOver
-                    }
-                } else if current == Str::from(SOC) {
-                    if name.starts_with(UART)
-                        || name.starts_with(TEST)
-                        || name.starts_with(CLINT)
-                        || name.starts_with(SERIAL)
-                        || name.starts_with(VIRTIO)
-                        || name.starts_with(RTC)
-                        || name.starts_with(PLIC)
-                        || name.starts_with(INTERRUPT_CONTROLLER)
-                    {
-                        if name.starts_with(VIRTIO) {
-                            // SOC 下的 VirtIO 设备
-                            current_virtio_reg = None;
-                            current_virtio_irq = None;
-                        } else if name.starts_with(RTC) {
-                            // SOC 下的 RTC 设备
-                            current_rtc_reg = None;
-                            current_rtc_irq = None;
-                        } else if name.starts_with(PLIC) || name.starts_with(INTERRUPT_CONTROLLER) {
-                            current_plic_reg = None;
-                            current_plic_compatible = false;
-                        }
-                        WalkOperation::StepInto
-                    } else {
-                        WalkOperation::StepOver
-                    }
-                } else if current == Str::from(CPUS) && name.starts_with("cpu@") {
-                    WalkOperation::StepInto
-                } else {
-                    WalkOperation::StepOver
-                }
-            }
-            DtbObj::Property(Property::Model(model)) if ctx.is_root() => {
-                ans.model.0 = model.as_bytes().len();
-                ans.model.1[..ans.model.0].copy_from_slice(model.as_bytes());
-                WalkOperation::StepOver
-            }
-            DtbObj::Property(Property::Reg(mut reg)) => {
-                let node = ctx.name();
-                if node.starts_with(UART) || node.starts_with(SERIAL) {
-                    ans.uart = reg.next().unwrap();
-                    WalkOperation::StepOver
-                } else if node.starts_with(TEST) {
-                    ans.test = reg.next().unwrap();
-                    WalkOperation::StepOut
-                } else if node.starts_with(CLINT) {
-                    ans.clint = reg.next().unwrap();
-                    WalkOperation::StepOut
-                } else if node.starts_with(MEM) {
-                    ans.mem = reg.next().unwrap();
-                    WalkOperation::StepOut
-                } else if node.starts_with("cpu@") {
-                    let hardware_cpu_id = reg.next().unwrap().start;
-                    ans.hardware_cpu_ids
-                        .try_reserve(1)
-                        .expect("hardware CPU discovery allocation failed");
-                    ans.hardware_cpu_ids.push(hardware_cpu_id);
-                    WalkOperation::StepOver
-                } else if node.starts_with(VIRTIO) {
-                    // VirtIO 设备的 reg 属性
-                    if let Some(reg_range) = reg.next() {
-                        current_virtio_reg = Some(reg_range);
-                        // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) =
-                            (current_virtio_reg.as_ref(), current_virtio_irq)
-                        {
-                            if ans.virtio_count < 20 {
-                                ans.virtio_devices[ans.virtio_count] = Some(VirtIODevice {
-                                    base_addr: range.start,
-                                    size: range.end - range.start,
-                                    irq,
-                                });
-                                ans.virtio_count += 1;
-                            }
-                            current_virtio_reg = None;
-                            current_virtio_irq = None;
-                        }
-                    }
-                    WalkOperation::StepOver
-                } else if node.starts_with(RTC) {
-                    // RTC 设备的 reg 属性
-                    if let Some(reg_range) = reg.next() {
-                        current_rtc_reg = Some(reg_range);
-                        // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) =
-                            (current_rtc_reg.as_ref(), current_rtc_irq)
-                        {
-                            ans.rtc_device = Some(RTCDevice {
-                                base_addr: range.start,
-                                size: range.end - range.start,
-                                irq,
-                            });
-                            current_rtc_reg = None;
-                            current_rtc_irq = None;
-                        }
-                    }
-                    WalkOperation::StepOver
-                } else if node.starts_with(PLIC) || node.starts_with(INTERRUPT_CONTROLLER) {
-                    current_plic_reg = reg.next();
-                    if let (Some(range), true) =
-                        (current_plic_reg.as_ref(), current_plic_compatible)
-                    {
-                        ans.plic_device = Some(PLICDevice {
-                            base_addr: range.start,
-                            size: range.end - range.start,
-                        });
-                    }
-                    WalkOperation::StepOver
-                } else {
-                    WalkOperation::StepOver
-                }
-            }
-            DtbObj::Property(Property::General { name, value }) => {
-                let node = ctx.name();
-                if name == Str::from("timebase-frequency") {
-                    ans.time_base_freq = bytes_to_usize(value) as u64;
-                } else if name == Str::from("interrupts")
-                    && (node.starts_with(UART) || node.starts_with(SERIAL))
-                {
-                    if let Some(first_4_bytes) = value.get(0..4) {
-                        ans.uart_irq = bytes_to_u32(first_4_bytes);
-                    }
-                } else if name == Str::from("interrupts") && node.starts_with(VIRTIO) {
-                    // VirtIO 设备的中断号
-                    if let Some(first_4_bytes) = value.get(0..4) {
-                        current_virtio_irq = Some(bytes_to_u32(first_4_bytes));
-                        // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) =
-                            (current_virtio_reg.as_ref(), current_virtio_irq)
-                        {
-                            if ans.virtio_count < 20 {
-                                ans.virtio_devices[ans.virtio_count] = Some(VirtIODevice {
-                                    base_addr: range.start,
-                                    size: range.end - range.start,
-                                    irq,
-                                });
-                                ans.virtio_count += 1;
-                            }
-                            current_virtio_reg = None;
-                            current_virtio_irq = None;
-                        }
-                    }
-                } else if name == Str::from("interrupts") && node.starts_with(RTC) {
-                    // RTC 设备的中断号
-                    if let Some(first_4_bytes) = value.get(0..4) {
-                        current_rtc_irq = Some(bytes_to_u32(first_4_bytes));
-                        // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) =
-                            (current_rtc_reg.as_ref(), current_rtc_irq)
-                        {
-                            ans.rtc_device = Some(RTCDevice {
-                                base_addr: range.start,
-                                size: range.end - range.start,
-                                irq,
-                            });
-                            current_rtc_reg = None;
-                            current_rtc_irq = None;
-                        }
-                    }
-                }
-                WalkOperation::StepOver
-            }
-            DtbObj::Property(Property::Compatible(mut compatibles))
-                if ctx.name().starts_with(PLIC) || ctx.name().starts_with(INTERRUPT_CONTROLLER) =>
-            {
-                current_plic_compatible = compatibles.any(|compatible| {
-                    PLIC_COMPATIBLES
-                        .iter()
-                        .any(|expected| compatible == Str::from(*expected))
-                });
-                if let (Some(range), true) = (current_plic_reg.as_ref(), current_plic_compatible) {
-                    ans.plic_device = Some(PLICDevice {
-                        base_addr: range.start,
-                        size: range.end - range.start,
-                    });
-                }
-                WalkOperation::StepOver
-            }
-            DtbObj::Property(_) => WalkOperation::StepOver,
-        });
-        ans
-    }
-}
-
-fn bytes_to_usize(bytes: &[u8]) -> usize {
-    let mut result = 0;
-    for byte in bytes {
-        result = (result << 8) | *byte as usize;
-    }
-    result
-}
-
-fn bytes_to_u32(bytes: &[u8]) -> u32 {
-    let mut result = 0u32;
-    for byte in bytes {
-        result = (result << 8) | *byte as u32;
-    }
-    result
 }

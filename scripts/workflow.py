@@ -297,7 +297,7 @@ def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory:
 def kernel_unit_ext4_fixture(environment: Mapping[str, str] | None = None) -> Path:
     """用 ``create_fs.py`` 的唯一 ext4 layout 重新生成 kernel-unit 只读测试镜像。
 
-    1. ``/bin/init`` 写入 64 个 4K block 的固定 payload，使 block 12 必经 indirect mapping；
+    1. ``/bin/init`` 写入 64 个 4K block 的固定 payload，供 extent mapping 成本测试读取；
     2. 镜像携带 create_fs 的 4 MiB JBD2 journal，64 MiB 容量覆盖 1 MiB 单事务写入；
     3. 测试只把写入放进内存 overlay，fixture 不依赖产品 rootfs 构建或开发实例。
 
@@ -317,9 +317,49 @@ def kernel_unit_ext4_fixture(environment: Mapping[str, str] | None = None) -> Pa
     return image
 
 
+def kernel_unit_dtb_fixtures(environment: Mapping[str, str] | None = None) -> dict[str, str]:
+    """用 host QEMU ``dumpdtb`` 为两个架构生成 DTB 解码测试 fixture。
+
+    machine 配置与 runtime gate 完全相同（TCG、2 CPU），QEMU 只写出 DTB 后退出，不执行 guest。
+    每次重新生成：QEMU 升级改变节点命名或布局时，DTB 解码测试在 unit 阶段即失败。
+
+    Returns:
+        ``LITEOS_<ARCH>_DTB`` 到 fixture 路径的环境变量映射。
+    """
+    directory = ROOT / "target" / "kernel-unit"
+    directory.mkdir(parents=True, exist_ok=True)
+    variables = {}
+    for arch in ("aarch64", "riscv64"):
+        target = target_from_environment({"ARCH": arch})
+        qemu = shutil.which(target.qemu_binary)
+        if qemu is None:
+            raise RuntimeError(f"{target.qemu_binary} is required; run `make setup`")
+        fixture = directory / f"qemu-virt-{arch}.dtb"
+        fixture.unlink(missing_ok=True)
+        run(
+            [
+                qemu,
+                "-machine",
+                f"{target.qemu_machine('tcg')},dumpdtb={fixture}",
+                "-cpu",
+                target.qemu_cpu("tcg"),
+                "-smp",
+                "2",
+                "-m",
+                "256M",
+                "-nographic",
+            ],
+            environment=environment,
+            capture=True,
+        )
+        variables[f"LITEOS_{arch.upper()}_DTB"] = str(fixture)
+    return variables
+
+
 def verify_unit(environment: Mapping[str, str] | None = None) -> None:
     """执行 kernel/architecture/syscall 与 user workspace 单元测试。"""
     fixture = kernel_unit_ext4_fixture(environment)
+    dtb_fixtures = kernel_unit_dtb_fixtures(environment)
     run(
         [
             "cargo",
@@ -338,6 +378,7 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             LITEOS_EXT4_FIXTURE=str(fixture),
             # conformance 测试用 make setup 安装的 e2fsprogs 裁决 kernel 写出的 ext4 结构。
             LITEOS_E2FSCK=str(find_e2fsck()),
+            **dtb_fixtures,
         ),
     )
     assets = run(

@@ -145,6 +145,25 @@ mod ext4_recovery_tests;
 #[cfg(test)]
 mod ext4_conformance_tests;
 
+// 与 kernel `platform::qemu_virt` 相同的模块形状，使生产 DTB 解码器的 `super::super` 路径成立。
+// inline module 上的 `#[path]` 把其子模块的基准目录设为 kernel 的真实 `qemu_virt/`。
+#[cfg(test)]
+#[path = "../../../kernel/src/platform/qemu_virt"]
+mod qemu_virt {
+    pub(crate) mod virtio_mmio;
+
+    pub(crate) mod aarch64 {
+        pub(crate) mod device_tree;
+    }
+
+    pub(crate) mod riscv64 {
+        pub(crate) mod device_tree;
+    }
+}
+
+#[cfg(test)]
+mod platform_device_tree_tests;
+
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/directory.rs"]
 #[allow(dead_code)]

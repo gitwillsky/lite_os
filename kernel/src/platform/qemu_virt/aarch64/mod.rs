@@ -4,6 +4,7 @@ use core::fmt;
 
 #[macro_use]
 pub(crate) mod console;
+mod device_tree;
 mod devices;
 mod discovery;
 mod gicv3;
@@ -76,23 +77,12 @@ pub(crate) fn timebase_frequency() -> u64 {
 
 pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usize>> {
     let info = discovery::info();
-    let mut virtio_start = usize::MAX;
-    let mut virtio_end = 0usize;
-    for device in info.virtio_devices[..info.virtio_count].iter().flatten() {
-        virtio_start = virtio_start.min(device.base_addr);
-        virtio_end = virtio_end.max(
-            device
-                .base_addr
-                .checked_add(device.size)
-                .expect("validated VirtIO range overflow"),
-        );
-    }
     [
         Some(info.uart.base_addr..info.uart.base_addr + info.uart.size),
         Some(info.rtc.range()),
         Some(info.gic.distributor.range()),
         Some(info.gic.redistributor.range()),
-        (virtio_start < virtio_end).then_some(virtio_start..virtio_end),
+        info.virtio.span(),
         Some(info.pci.ecam.range()),
         Some(info.pci.mmio32.range()),
     ]

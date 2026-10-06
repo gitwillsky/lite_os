@@ -3356,38 +3356,39 @@ kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn write_byte (byte : u8) -> Result < () , ConsoleError >
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) struct ConsoleError
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (super) fn validate_discovered_base ()
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) GicV3Info :: distributor : RangeValue
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) GicV3Info :: redistributor : RangeValue
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :: base_addr : usize
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :: irq : u32
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :: size : usize
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PciHostInfo :: ecam : RangeValue
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PciHostInfo :: mmio32 : RangeValue
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: gic : GicV3Info
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: pci : PciHostInfo
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: rtc : RangeValue
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: uart : MmioDevice
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: virtio : VirtioMmioTransports
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) RangeValue :: size : usize
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) RangeValue :: start : usize
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) fn parse (dtb : Dtb < '_ > , physical : usize) -> PlatformInfo
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) impl PciHostInfo :: fn interrupt (self , slot : usize , pin : usize) -> Option < u32 >
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) impl RangeValue :: fn range (self) -> Range < usize >
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct GicV3Info
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct MmioDevice
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct PciHostInfo
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct PlatformInfo
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct RangeValue
 kernel/src/platform/qemu_virt/aarch64/devices.rs :: pub (crate) fn initialize ()
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) GicV3Info :: distributor : RangeValue
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) GicV3Info :: redistributor : RangeValue
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) MmioDevice :: base_addr : usize
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) MmioDevice :: irq : u32
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) MmioDevice :: size : usize
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PciHostInfo :: ecam : RangeValue
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PciHostInfo :: mmio32 : RangeValue
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: gic : GicV3Info
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: pci : PciHostInfo
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: rtc : RangeValue
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: uart : MmioDevice
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: virtio_count : usize
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) PlatformInfo :: virtio_devices : [Option < MmioDevice > ; MAX_VIRTIO_DEVICES]
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) RangeValue :: size : usize
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) RangeValue :: start : usize
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn hardware_cpu_ids () -> impl ExactSizeIterator < Item = HardwareCpuId >
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn info () -> & 'static PlatformInfo
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn info_if_initialized () -> Option < & 'static PlatformInfo >
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) impl BootInfo :: fn from_firmware_opaque (value : usize) -> Self
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) impl PciHostInfo :: fn interrupt (self , slot : usize , pin : usize) -> Option < u32 >
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) impl RangeValue :: fn range (self) -> Range < usize >
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct BootInfo
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct GicV3Info
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct MmioDevice
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct PciHostInfo
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct PlatformInfo
-kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) struct RangeValue
+kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (super) fn info () -> & 'static PlatformInfo
+kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (super) fn info_if_initialized () -> Option < & 'static PlatformInfo >
 kernel/src/platform/qemu_virt/aarch64/discovery.rs :: pub (super) impl BootInfo :: fn address (self) -> usize
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn claim_interrupt () -> ClaimedInterrupt
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn complete_interrupt (claim : ClaimedInterrupt)
@@ -3442,40 +3443,25 @@ kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo ,
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: plic : Range < usize >
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: rtc : Option < Range < usize > >
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: timebase_frequency : u64
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: uart : Range < usize >
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: uart_irq : u32
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: virtio : VirtioMmioTransports
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) fn parse (dtb : Dtb < '_ > , physical : usize) -> PlatformInfo
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) struct PlatformInfo
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn handle_external_interrupt ()
 kernel/src/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn initialize ()
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PLICDevice :: base_addr : usize
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PLICDevice :: size : usize
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: clint : Range < usize >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: mem : Range < usize >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: model : StringInLine < 128 >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: plic_device : Option < PLICDevice >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: rtc_device : Option < RTCDevice >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: test : Range < usize >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: time_base_freq : u64
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: uart : Range < usize >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: uart_irq : u32
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: virtio_count : usize
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) PlatformInfo :: virtio_devices : [Option < VirtIODevice > ; 20]
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) RTCDevice :: base_addr : usize
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) RTCDevice :: irq : u32
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) RTCDevice :: size : usize
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) VirtIODevice :: base_addr : usize
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) VirtIODevice :: irq : u32
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) VirtIODevice :: size : usize
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn hardware_cpu_ids () -> impl ExactSizeIterator < Item = HardwareCpuId >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn info () -> & 'static PlatformInfo
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) impl BootInfo :: fn from_firmware_opaque (value : usize) -> Self
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) impl PlatformInfo :: fn parse (dtb_addr : usize) -> Self
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) struct BootInfo
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) struct PLICDevice
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) struct PlatformInfo
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) struct RTCDevice
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) struct StringInLine < const N : usize >
-kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) struct VirtIODevice
+kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (super) fn info () -> & 'static PlatformInfo
 kernel/src/platform/qemu_virt/riscv64/discovery.rs :: pub (super) impl BootInfo :: fn address (self) -> usize
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn arm_timer (timer_value : u64) -> Result < () , TimerArmError >
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) fn debug_console_write (byte : u8) -> Result < () , FirmwareError >
@@ -3523,6 +3509,24 @@ kernel/src/platform/qemu_virt/riscv64/rtc.rs :: pub (crate) impl GoldfishRTCDevi
 kernel/src/platform/qemu_virt/riscv64/rtc.rs :: pub (crate) struct GoldfishRTCDevice
 kernel/src/platform/qemu_virt/riscv64/uart.rs :: pub (super) fn enable_receive ()
 kernel/src/platform/qemu_virt/riscv64/uart.rs :: pub (super) fn initialize (base : usize , size : usize ,) -> Result < Arc < dyn InterruptHandler > , InterruptError >
+kernel/src/platform/qemu_virt/virtio_binding.rs :: pub (super) fn bind (transports : & VirtioMmioTransports , map_base : fn (usize) -> usize , register_irq : & mut RegisterIrq < '_ > ,)
+kernel/src/platform/qemu_virt/virtio_binding.rs :: pub (super) fn publish_console (device : Arc < VirtIOConsoleDevice > , irq : u32 , register_irq : & mut RegisterIrq < '_ > ,)
+kernel/src/platform/qemu_virt/virtio_binding.rs :: pub (super) type RegisterIrq < 'a > = dyn FnMut (u32 , Arc < dyn InterruptHandler > , & 'static str) + 'a
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: base_addr : usize
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: irq : u32
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: size : usize
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: const fn new () -> Self
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn begin_node (& mut self)
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn compatible (& mut self , mut values : StrList < '_ >)
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn finish (mut self) -> VirtioMmioTransports
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn interrupt (& mut self , irq : Option < u32 >)
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn reg (& mut self , range : Option < Range < usize > >)
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioTransports :: fn iter (& self) -> impl Iterator < Item = & VirtioMmioTransport >
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioTransports :: fn len (& self) -> usize
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) impl VirtioMmioTransports :: fn span (& self) -> Option < Range < usize > >
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) struct VirtioMmioScan
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransport
+kernel/src/platform/qemu_virt/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransports
 kernel/src/random.rs :: enum RandomError :: # [doc = " entropy device 未注册、失败或返回非法 completion。"] DeviceUnavailable
 kernel/src/random.rs :: pub (crate) enum RandomError
 kernel/src/random.rs :: pub (crate) impl EntropyBatch < CAPACITY > :: fn fill (& mut self , length : usize) -> Result < & [u8] , RandomError >

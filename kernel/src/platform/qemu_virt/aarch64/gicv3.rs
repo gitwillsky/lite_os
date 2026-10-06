@@ -12,7 +12,7 @@ use crate::{
     sync::IrqMutex,
 };
 
-use super::{super::ClaimedInterrupt, discovery::GicV3Info};
+use super::{super::ClaimedInterrupt, device_tree::GicV3Info};
 
 const TIMER_PPI: u32 = 27;
 const SOFTWARE_SGI: u32 = 1;

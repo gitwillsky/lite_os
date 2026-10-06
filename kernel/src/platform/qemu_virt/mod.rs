@@ -8,6 +8,9 @@ mod riscv64;
 #[macro_use]
 mod aarch64;
 
+mod virtio_binding;
+mod virtio_mmio;
+
 #[cfg(target_arch = "aarch64")]
 use aarch64 as selected;
 #[cfg(target_arch = "riscv64")]

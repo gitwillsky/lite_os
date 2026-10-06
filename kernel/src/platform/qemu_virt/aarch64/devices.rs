@@ -1,11 +1,10 @@
-//! AArch64 QEMU `virt` GICv3 与现有 VirtIO-MMIO adapter 静态装配。
+//! AArch64 QEMU `virt` GICv3、PL011 与 VirtIO adapter 静态装配。
 
-use super::{discovery, gicv3, pl011};
-use crate::drivers::{
-    DisplayDevice, InputDevice, MmioBus, VirtIOBlockDevice, VirtIOConsoleDevice, VirtIOGpuDevice,
-    VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice,
-};
-use crate::{error, info, warn};
+use alloc::sync::Arc;
+
+use super::{super::virtio_binding, discovery, gicv3, pl011};
+use crate::drivers::{InterruptHandler, VirtIOConsoleDevice};
+use crate::info;
 
 fn mapped_base(physical: usize) -> usize {
     crate::arch::mmu::physical_to_virtual(physical)
@@ -15,7 +14,8 @@ pub(crate) fn initialize() {
     let platform = discovery::info();
     gicv3::initialize(platform.gic).expect("GICv3 initialization failed");
     initialize_pl011();
-    initialize_virtio_devices();
+    initialize_pci_console();
+    virtio_binding::bind(&platform.virtio, mapped_base, &mut register_irq);
     info!("AArch64 device initialization completed");
 }
 
@@ -28,37 +28,7 @@ fn initialize_pl011() {
     pl011::enable_receive();
 }
 
-fn initialize_virtio_devices() {
-    let platform = discovery::info();
-    initialize_pci_console();
-    info!("Scanning {} AArch64 VirtIO devices", platform.virtio_count);
-    for device in platform.virtio_devices[..platform.virtio_count]
-        .iter()
-        .flatten()
-    {
-        let Some(device_id) = MmioBus::new(mapped_base(device.base_addr), device.size)
-            .ok()
-            .and_then(|bus| bus.read_u32(0x08).ok())
-        else {
-            warn!("Invalid VirtIO MMIO window at {:#x}", device.base_addr);
-            continue;
-        };
-        match device_id {
-            1 => initialize_network(device),
-            2 => initialize_block(device),
-            3 => initialize_console(device),
-            4 => initialize_rng(device),
-            16 => initialize_gpu(device),
-            18 => initialize_input(device),
-            25 => initialize_sound(device),
-            _ => info!(
-                "Unrecognized VirtIO device ID {:#x} at {:#x}",
-                device_id, device.base_addr
-            ),
-        }
-    }
-}
-
+/// UTM 产品路径通过 PCI transport 暴露 virtio-console；QEMU 门禁使用 MMIO transport。
 fn initialize_pci_console() {
     let Some(function) = super::pci::find_console(discovery::info().pci) else {
         return;
@@ -69,95 +39,11 @@ fn initialize_pci_console() {
     );
     let device =
         VirtIOConsoleDevice::from_pci(function.transport).expect("virtio-console PCI init failed");
-    crate::drivers::register_virtio_port(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-console clipboard port is supported"));
-    register_irq(
-        function.interrupt,
-        device.irq_handler_for(),
-        "virtio-console-pci",
-    );
+    virtio_binding::publish_console(device, function.interrupt, &mut register_irq);
     info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
 }
 
-fn initialize_console(resource: &discovery::MmioDevice) {
-    let device = VirtIOConsoleDevice::new(mapped_base(resource.base_addr))
-        .expect("virtio-console init failed");
-    crate::drivers::register_virtio_port(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-console clipboard port is supported"));
-    register_irq(resource.irq, device.irq_handler_for(), "virtio-console");
-    info!("VirtIO console clipboard port at {:#x}", resource.base_addr);
-}
-
-fn initialize_sound(resource: &discovery::MmioDevice) {
-    let device =
-        VirtIOSoundDevice::new(mapped_base(resource.base_addr)).expect("virtio-sound init failed");
-    crate::drivers::register_audio_output(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-sound device is supported"));
-    register_irq(resource.irq, device.irq_handler_for(), "virtio-sound");
-}
-
-fn initialize_input(resource: &discovery::MmioDevice) {
-    let device =
-        VirtIOInputDevice::new(mapped_base(resource.base_addr)).expect("virtio-input init failed");
-    let index = crate::drivers::register_input_device(device.clone())
-        .unwrap_or_else(|_| panic!("VirtIO input registry allocation failed"));
-    register_irq(resource.irq, device.irq_handler_for(), "virtio-input");
-    info!(
-        "VirtIO input event{} at {:#x}, name={}",
-        index,
-        resource.base_addr,
-        core::str::from_utf8(device.name()).unwrap_or("<non-utf8>")
-    );
-}
-
-fn initialize_network(resource: &discovery::MmioDevice) {
-    let device =
-        VirtIONetworkDevice::new(mapped_base(resource.base_addr)).expect("virtio-net init failed");
-    crate::drivers::register_network_device(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-net device is supported"));
-    register_irq(resource.irq, device.irq_handler_for(), "virtio-net");
-    info!("VirtIO network at {:#x}", resource.base_addr);
-}
-
-fn initialize_rng(resource: &discovery::MmioDevice) {
-    let device =
-        VirtIORngDevice::new(mapped_base(resource.base_addr)).expect("virtio-rng init failed");
-    crate::drivers::register_entropy_device(device.clone())
-        .expect("only one virtio-rng device is supported");
-    register_irq(resource.irq, device.irq_handler_for(), "virtio-rng");
-    info!("VirtIO RNG at {:#x}", resource.base_addr);
-}
-
-fn initialize_gpu(resource: &discovery::MmioDevice) {
-    let device =
-        VirtIOGpuDevice::new(mapped_base(resource.base_addr)).expect("virtio-gpu init failed");
-    let mode = device.mode();
-    crate::drivers::register_display_device(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-gpu device is supported"));
-    register_irq(resource.irq, device.irq_handler_for(), "virtio-gpu");
-    info!(
-        "VirtIO GPU at {:#x}, mode={}x{} pitch={}",
-        resource.base_addr, mode.width, mode.height, mode.pitch
-    );
-}
-
-fn initialize_block(resource: &discovery::MmioDevice) {
-    let Some(device) = VirtIOBlockDevice::new(mapped_base(resource.base_addr)) else {
-        warn!("Failed to create VirtIO block at {:#x}", resource.base_addr);
-        return;
-    };
-    match crate::drivers::block::register_block_device(device.clone()) {
-        Ok(device_id) => info!("VirtIO block #{} at {:#x}", device_id, resource.base_addr),
-        Err(error) => error!("VirtIO block registration failed: {:?}", error),
-    }
-    register_irq(resource.irq, device.irq_handler_for(), "virtio-block");
-}
-
-fn register_irq(
-    vector: u32,
-    handler: alloc::sync::Arc<dyn crate::drivers::InterruptHandler>,
-    label: &str,
-) {
+fn register_irq(vector: u32, handler: Arc<dyn InterruptHandler>, label: &'static str) {
     let affinity = crate::cpu::CpuSet::singleton(crate::cpu::boot_id());
     gicv3::register_device(vector, handler, affinity)
         .unwrap_or_else(|error| panic!("{label} IRQ {vector} registration failed: {error}"));

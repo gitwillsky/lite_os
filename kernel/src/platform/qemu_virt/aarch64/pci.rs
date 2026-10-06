@@ -1,6 +1,6 @@
 //! QEMU `virt` generic ECAM host and the UTM VirtIO Console function.
 
-use super::discovery::PciHostInfo;
+use super::device_tree::PciHostInfo;
 use crate::drivers::{MmioBus, PciTransport};
 
 const CONFIG_BYTES: usize = 4096;
