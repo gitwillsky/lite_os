@@ -143,16 +143,9 @@ mod tests {
     use super::*;
     use crate::ipc::{Pipe, PipeNotifier};
 
-    struct TestNotifier;
-
-    impl PipeNotifier for TestNotifier {
-        fn notify(&self, _pipe: &Arc<Pipe>) {}
-    }
-
     fn eventfd(initial: u64, semaphore: bool) -> Arc<EventFd> {
-        let notifier: Arc<dyn PipeNotifier> = Arc::new(TestNotifier);
-        let read_pair = Pipe::notification_pair(notifier.clone()).expect("read notification pair");
-        let write_pair = Pipe::notification_pair(notifier).expect("write notification pair");
+        let read_pair = Pipe::notification_pair().expect("read notification pair");
+        let write_pair = Pipe::notification_pair().expect("write notification pair");
         EventFd::new(initial, semaphore, read_pair, write_pair).expect("eventfd")
     }
 

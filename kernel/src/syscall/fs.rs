@@ -37,7 +37,7 @@ use crate::{
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
     task::{
-        TaskControlBlock, WaitResult, create_pipe_endpoints, current_task, drain_terminal_input,
+        TaskControlBlock, WaitResult, current_task, drain_terminal_input,
         send_kernel_thread_signal, send_thread_signal, wait_for_pipe,
     },
 };
@@ -66,7 +66,7 @@ pub(crate) fn sys_pipe2(descriptors: usize, flags: u32) -> isize {
         return -errno::EINVAL;
     }
     let task = current_task().expect("pipe2 requires current task");
-    let (reader, writer) = match create_pipe_endpoints() {
+    let (reader, writer) = match crate::ipc::Pipe::pair() {
         Ok(pair) => pair,
         Err(()) => return -errno::ENOMEM,
     };

@@ -76,6 +76,9 @@ pub(in crate::task) fn run_kernel_thread() -> ! {
 
 /// 初始化 processor topology 与全部 scheduler wait adapter，使内核线程可以入队。
 ///
+/// 前置条件：VFS 已初始化（advisory-lock notifier 安装进 VFS）；必须先于任何创建 Pipe 或可等待
+/// 对象的子系统，否则其状态变化无法唤醒 waiter。
+///
 /// 必须先于根文件系统挂载：bootstrap mount 与 executable loading 会在尚无 current task 时
 /// 发出 block I/O，wait-target factory 需要已初始化的 topology 才能安全观察到 `None`；
 /// 颠倒顺序会让 `current_task()` 在未初始化的 topology 上永久等待。
@@ -83,6 +86,7 @@ pub(crate) fn initialize() {
     processor::init_topology();
     process_table::initialize_driver_io_wait();
     process_table::task_wait::initialize();
+    process_table::pipe_wait::install_pipe_notifier();
     install_advisory_lock_notifier();
 }
 

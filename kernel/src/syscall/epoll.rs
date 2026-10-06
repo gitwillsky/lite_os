@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     fs::{Epoll, EpollChange, EpollEvent, OpenFileDescription, OpenFileKind},
-    task::{WaitResult, create_notification_endpoints, current_task, wait_for_poll},
+    task::{WaitResult, current_task, wait_for_poll},
 };
 
 use super::{
@@ -90,7 +90,7 @@ pub(crate) fn sys_epoll_create1(flags: usize) -> isize {
     if flags & !EPOLL_CLOEXEC != 0 {
         return -errno::EINVAL;
     }
-    let (notification_read, notification_write) = match create_notification_endpoints() {
+    let (notification_read, notification_write) = match crate::ipc::Pipe::notification_pair() {
         Ok(value) => value,
         Err(()) => return -errno::ENOMEM,
     };

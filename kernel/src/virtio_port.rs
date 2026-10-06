@@ -42,18 +42,16 @@ static PORT: Once<Arc<Port>> = Once::new();
 /// # Parameters
 ///
 /// - `device`: Platform-owned physical adapter.
-/// - `notification`: Read/write endpoints used only for merged readiness edges.
 ///
 /// # Returns
 ///
 /// The first complete publication succeeds.
-pub(crate) fn init(
-    device: Arc<VirtIOConsoleDevice>,
-    notification: (Arc<PipeEnd>, Arc<PipeEnd>),
-) -> Result<(), ()> {
+pub(crate) fn init(device: Arc<VirtIOConsoleDevice>) -> Result<(), ()> {
     if PORT.get().is_some() {
         return Err(());
     }
+    // 只承载合并 readiness edge 的 read/write endpoints。
+    let notification = crate::ipc::Pipe::notification_pair()?;
     let port = Arc::try_new(Port {
         device,
         notification_read: notification.0,

@@ -78,7 +78,6 @@ static AUDIO_DEVICE: Once<Arc<AudioDevice>> = Once::new();
 /// # Parameters
 ///
 /// - `output`: 唯一 physical output adapter。
-/// - `notification`: read/write notification endpoints。
 ///
 /// # Returns
 ///
@@ -87,13 +86,11 @@ static AUDIO_DEVICE: Once<Arc<AudioDevice>> = Once::new();
 /// # Errors
 ///
 /// 重复初始化、observer publication 或内存分配失败。
-pub(crate) fn init(
-    output: Arc<dyn PcmOutput>,
-    notification: (Arc<PipeEnd>, Arc<PipeEnd>),
-) -> Result<(), ()> {
+pub(crate) fn init(output: Arc<dyn PcmOutput>) -> Result<(), ()> {
     if AUDIO_DEVICE.get().is_some() {
         return Err(());
     }
+    let notification = crate::ipc::Pipe::notification_pair()?;
     let device = Arc::try_new(AudioDevice {
         output: output.clone(),
         notification_read: notification.0,

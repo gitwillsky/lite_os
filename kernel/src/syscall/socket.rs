@@ -7,7 +7,7 @@ use crate::{
         SocketError, SocketType, UnixAddress, UnixConnectResources, UnixCredentials,
         configure_address, configure_gateway, configure_netmask, configure_up, interface_snapshot,
     },
-    task::{self, TaskControlBlock, WaitResult, current_task},
+    task::{TaskControlBlock, WaitResult, current_task},
 };
 
 use super::{errno, poll::wait_for_ofd};
@@ -114,7 +114,7 @@ fn new_socket(
     protocol: usize,
 ) -> Result<Arc<Socket>, isize> {
     let credentials = (domain == SocketDomain::Unix).then(current_unix_credentials);
-    task::create_notification_endpoints()
+    crate::ipc::Pipe::notification_pair()
         .map_err(|_| -errno::ENOMEM)
         .and_then(|notify| {
             Socket::new(domain, kind, protocol, notify, credentials).map_err(socket_error)
@@ -291,11 +291,11 @@ pub(crate) fn sys_socketpair(domain: usize, kind: usize, protocol: usize, output
         Ok(socket) => socket,
         Err(error) => return error,
     };
-    let first_to_second = match task::create_pipe_endpoints() {
+    let first_to_second = match crate::ipc::Pipe::pair() {
         Ok(pair) => pair,
         Err(_) => return -errno::ENOMEM,
     };
-    let second_to_first = match task::create_pipe_endpoints() {
+    let second_to_first = match crate::ipc::Pipe::pair() {
         Ok(pair) => pair,
         Err(_) => return -errno::ENOMEM,
     };
@@ -380,15 +380,15 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
     };
     let unix_identity = unix_path.as_ref().map(|(_, identity)| *identity);
     let resources = || {
-        let server_notify = match task::create_notification_endpoints() {
+        let server_notify = match crate::ipc::Pipe::notification_pair() {
             Ok(value) => value,
             Err(_) => return Err(SocketError::NoMemory),
         };
-        let client_to_server = match task::create_pipe_endpoints() {
+        let client_to_server = match crate::ipc::Pipe::pair() {
             Ok(value) => value,
             Err(_) => return Err(SocketError::NoMemory),
         };
-        let server_to_client = match task::create_pipe_endpoints() {
+        let server_to_client = match crate::ipc::Pipe::pair() {
             Ok(value) => value,
             Err(_) => return Err(SocketError::NoMemory),
         };
@@ -426,7 +426,7 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
         Err(error) => return error,
     };
     let accept_notify = if listener.domain() == SocketDomain::Inet {
-        match task::create_notification_endpoints() {
+        match crate::ipc::Pipe::notification_pair() {
             Ok(value) => Some(value),
             Err(_) => return -errno::ENOMEM,
         }

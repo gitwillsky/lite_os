@@ -4,7 +4,7 @@
 
 - concrete VirtIO adapter 独占 queue、DMA、descriptor、completion 与 reset state；`drivers` 只发布通用 device seam。
 - VirtIO Console adapter 独占 control RX/TX 与 exact-name 命中的唯一 data RX/TX pair、fixed RX/TX slot、named-port control state、
-  byte ring 与 terminal reset；`virtio_port` domain 独占 task notification Pipe。`drivers` 只发布
+  byte ring 与 terminal reset；`virtio_port` domain 独占自己创建的 notification Pipe。`drivers` 只发布
   唯一物理 byte-stream seam，devfs 不复制 connected/readable/writable state。`VirtIODevice` 的
   transport enum 是 MMIO 与 PCI 的唯一分派点；两种 transport 不得各自实现 console adapter。
 - `VirtQueue` 独占 split-ring cursor、descriptor free list 与单一 pending-used latch；`used()` 只摘取

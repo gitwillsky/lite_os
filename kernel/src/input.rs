@@ -554,11 +554,7 @@ fn current_times() -> EventTimes {
 // OFD 只持 Arc。缺失该 immutable owner 会让 event minor、client registry 与 hardware 分裂。
 static INPUT_DEVICES: Once<Vec<Arc<EvdevDevice>>> = Once::new();
 
-/// 将全部 DTB input adapters 与 task-aware notification Pipe 装配为 evdev devices。
-///
-/// # Parameters
-///
-/// - `create_notification`: 为每个 device 创建一对 read/write notification endpoints。
+/// 将全部 DTB input adapters 与各自的 notification Pipe 装配为 evdev devices。
 ///
 /// # Returns
 ///
@@ -567,9 +563,7 @@ static INPUT_DEVICES: Once<Vec<Arc<EvdevDevice>>> = Once::new();
 /// # Errors
 ///
 /// Pipe、device control block 或 registry allocation 失败返回 unit。
-pub(crate) fn init(
-    mut create_notification: impl FnMut() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()>,
-) -> Result<(), ()> {
+pub(crate) fn init() -> Result<(), ()> {
     if INPUT_DEVICES.get().is_some() {
         return Err(());
     }
@@ -578,7 +572,7 @@ pub(crate) fn init(
     devices.try_reserve_exact(count).map_err(|_| ())?;
     for index in 0..count {
         let adapter = crate::drivers::input_device(index).ok_or(())?;
-        let notification = create_notification()?;
+        let notification = crate::ipc::Pipe::notification_pair()?;
         devices.push(
             Arc::try_new(EvdevDevice {
                 adapter,

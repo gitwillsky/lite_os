@@ -7,7 +7,6 @@ use crate::ipc::{Pipe, PipeEnd, PipeRead, PipeWrite};
 #[path = "pty/input_notification.rs"]
 mod input_notification;
 
-type PipeFactory = fn() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()>;
 type HangupNotifier = fn(&Terminal);
 type InputSignalNotifier = fn(&Terminal, u64);
 const PTY_INPUT_CAPACITY: usize = 4096;
@@ -314,28 +313,19 @@ impl Drop for PtySlave {
 }
 
 struct PtyRegistry {
-    pipes: PipeFactories,
     hangup: HangupNotifier,
     input_signals: InputSignalNotifier,
     slots: Vec<Weak<PtyPair>>,
 }
 
-#[derive(Clone, Copy)]
-struct PipeFactories {
-    data: PipeFactory,
-    notification: PipeFactory,
-}
-
-// OWNER: pty module 唯一拥有 Unix98 index namespace、生命周期和 transport factory。weak
+// OWNER: pty module 唯一拥有 Unix98 index namespace 与生命周期。weak
 // slots 允许最后一个 endpoint 关闭后原位复用；缺失此 registry 会让 devpts 与 ptmx pair 分裂。
 static PTYS: Once<Mutex<PtyRegistry>> = Once::new();
 
-/// 装配 Unix98 PTY transport 与 controlling-terminal hangup seam。
+/// 装配 Unix98 PTY 的 controlling-terminal hangup 与 ISIG seam。
 ///
 /// # Parameters
 ///
-/// - `data_factory`: composition root 提供的 64 KiB output Pipe constructor。
-/// - `notification_factory`: composition root 提供的一字节 readiness Pipe constructor。
 /// - `hangup`: task owner 提供的无分配 SIGHUP/SIGCONT notifier。
 /// - `input_signals`: task owner 提供的 foreground ISIG notifier；只在 Terminal locks 外调用，
 ///   空 bitset 必须幂等完成。
@@ -343,21 +333,12 @@ static PTYS: Once<Mutex<PtyRegistry>> = Once::new();
 /// # Returns
 ///
 /// 首次初始化成功；重复初始化返回错误。
-pub(crate) fn init(
-    data_factory: PipeFactory,
-    notification_factory: PipeFactory,
-    hangup: HangupNotifier,
-    input_signals: InputSignalNotifier,
-) -> Result<(), ()> {
+pub(crate) fn init(hangup: HangupNotifier, input_signals: InputSignalNotifier) -> Result<(), ()> {
     if PTYS.get().is_some() {
         return Err(());
     }
     PTYS.call_once(|| {
         Mutex::new(PtyRegistry {
-            pipes: PipeFactories {
-                data: data_factory,
-                notification: notification_factory,
-            },
             hangup,
             input_signals,
             slots: Vec::new(),
@@ -381,15 +362,16 @@ pub(crate) fn open_master(
     owner_gid: u32,
 ) -> Result<Arc<PtyMaster>, FileSystemError> {
     let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
-    let (pipes, hangup, input_signals) = {
+    let (hangup, input_signals) = {
         let registry = registry.lock();
-        (registry.pipes, registry.hangup, registry.input_signals)
+        (registry.hangup, registry.input_signals)
     };
-    let (output_read, output_write) = (pipes.data)().map_err(|()| FileSystemError::OutOfMemory)?;
+    let (output_read, output_write) =
+        crate::ipc::Pipe::pair().map_err(|()| FileSystemError::OutOfMemory)?;
     let (slave_notification_read, slave_notification_write) =
-        (pipes.notification)().map_err(|()| FileSystemError::OutOfMemory)?;
+        crate::ipc::Pipe::notification_pair().map_err(|()| FileSystemError::OutOfMemory)?;
     let (master_notification_read, master_notification_write) =
-        (pipes.notification)().map_err(|()| FileSystemError::OutOfMemory)?;
+        crate::ipc::Pipe::notification_pair().map_err(|()| FileSystemError::OutOfMemory)?;
     let console = Arc::try_new(PtyConsole {
         output: output_write,
         master_notification: master_notification_write.clone(),

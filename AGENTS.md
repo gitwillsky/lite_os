@@ -30,7 +30,7 @@
 - 通用 kernel 只通过编译期静态 `arch`/`platform` façade 使用后端；禁止 `dyn Architecture`、运行时架构分派、固定 CPU 数、双轨实现和兼容路径。
 - target `cfg`、CSR、汇编、寄存器布局、页表编码属于 `arch`；machine、firmware、DTB、中断控制器和设备装配属于 `platform`。具体 adapter 不得穿过 seam。
 - `arch` 拥有执行上下文、trap 解码和 MMU mechanism；`platform` 拥有 machine facts 与 adapter 装配；通用领域只使用 logical `CpuId`/`CpuSet`，hardware identity 不是领域索引。
-- `entry` 只编解码 raw boot/trap ABI；`main.rs` 只装配；`trap` 只接收语义事件并投递领域；`syscall` 只负责 ABI、user-copy 与 errno。
+- `entry` 只编解码 raw boot/trap ABI；`main.rs` 只装配；`trap` 只接收语义事件并投递领域；`syscall` 只负责通用 ABI、user-copy 与 errno；设备专属 UAPI 由设备子系统经注册的文件操作拥有。
 - 下层不得依赖上层。每个复合状态只有一个 owner；禁止复制状态并人工同步。默认 private；扩大 scoped interface 必须更新 contract 并说明调用者。
 - 禁止私有 ABI。新增 unsafe、global、lock、Atomic、Once、cache 或 flag 必须记录安全/所有权证明与缺失时的失败后果。
 - 新能力与问题修复必须对照固定的一手规范和成熟 kernel 语义。范围缩减必须在 ABI 矩阵或当前架构限制中精确记录，不能以“能跑”代替正确语义。

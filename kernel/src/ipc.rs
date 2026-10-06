@@ -93,8 +93,37 @@ impl PipePollState {
     }
 }
 
+/// Pipe 状态变为可读、可写、EOF 或 broken 时的唤醒出口；由 scheduler 安装唯一实现。
 pub(crate) trait PipeNotifier: Send + Sync {
     fn notify(&self, pipe: &Arc<Pipe>);
+}
+
+// OWNER: task 初始化时安装的唯一 wait-registry 唤醒出口。全部 Pipe 共用它，任何层都能直接创建
+// Pipe 而无需由 composition root 注入工厂；缺失时状态变化无法唤醒阻塞的 reader/writer/poller。
+static PIPE_NOTIFIER: spin::Once<&'static dyn PipeNotifier> = spin::Once::new();
+
+/// 安装 Pipe 的唯一唤醒出口。
+///
+/// # Panics
+///
+/// 重复安装时 panic。
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn install_pipe_notifier(notifier: &'static dyn PipeNotifier) {
+    assert!(
+        PIPE_NOTIFIER.get().is_none(),
+        "pipe notifier installed twice"
+    );
+    PIPE_NOTIFIER.call_once(|| notifier);
+}
+
+/// 发布一次 Pipe 状态变化。
+///
+/// scheduler 安装 notifier 之前不存在任何 task，因此也不存在可唤醒的 waiter 或 poller；
+/// 启动期子系统在该窗口内创建并 signal 的 Pipe 由首个 waiter 在登记后复查状态观察到。
+fn publish_state_change(pipe: &Arc<Pipe>) {
+    if let Some(notifier) = PIPE_NOTIFIER.get() {
+        notifier.notify(pipe);
+    }
 }
 
 struct PipeState {
@@ -112,7 +141,6 @@ pub(crate) struct Pipe {
     // Pipe owner 分配一次并由两个 endpoint 共享；缺失时 read/write fd 会报告不同 pipe inode。
     object_id: u64,
     state: Mutex<PipeState>,
-    notifier: Arc<dyn PipeNotifier>,
 }
 
 impl Pipe {
@@ -125,10 +153,8 @@ impl Pipe {
     /// # Returns
     ///
     /// 两个 endpoint；kernel heap 不足返回错误。
-    pub(crate) fn pair(
-        notifier: Arc<dyn PipeNotifier>,
-    ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
-        Self::pair_with_capacity(notifier, PIPE_CAPACITY)
+    pub(crate) fn pair() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+        Self::pair_with_capacity(PIPE_CAPACITY)
     }
 
     /// 创建只承载合并 readiness token 的一字节 Pipe endpoints。
@@ -140,16 +166,11 @@ impl Pipe {
     /// # Returns
     ///
     /// 两个 endpoint；kernel heap 不足返回错误。
-    pub(crate) fn notification_pair(
-        notifier: Arc<dyn PipeNotifier>,
-    ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
-        Self::pair_with_capacity(notifier, NOTIFICATION_CAPACITY)
+    pub(crate) fn notification_pair() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+        Self::pair_with_capacity(NOTIFICATION_CAPACITY)
     }
 
-    fn pair_with_capacity(
-        notifier: Arc<dyn PipeNotifier>,
-        capacity: NonZeroUsize,
-    ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+    fn pair_with_capacity(capacity: NonZeroUsize) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
         let capacity = capacity.get();
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(capacity).map_err(|_| ())?;
@@ -165,7 +186,6 @@ impl Pipe {
                 read_generation: crate::sync::next_readiness_generation(),
                 write_generation: crate::sync::next_readiness_generation(),
             }),
-            notifier,
         })
         .map_err(|_| ())?;
         let read = Arc::try_new(PipeEnd {
@@ -272,7 +292,7 @@ impl Pipe {
             }
         };
         if matches!(result, PipeRead::Bytes(_)) {
-            self.notifier.notify(self);
+            publish_state_change(self);
         }
         result
     }
@@ -314,7 +334,7 @@ impl Pipe {
             }
         };
         if matches!(result, PipeWrite::Bytes(_)) {
-            self.notifier.notify(self);
+            publish_state_change(self);
         }
         result
     }
@@ -335,7 +355,7 @@ impl Pipe {
                 }
             }
         }
-        self.notifier.notify(self);
+        publish_state_change(self);
     }
 
     /// 发布一次合并的内核 readiness edge，并无条件通知 wait registry。
@@ -361,7 +381,7 @@ impl Pipe {
             }
         };
         if notify {
-            self.notifier.notify(self);
+            publish_state_change(self);
         }
     }
 
@@ -400,7 +420,7 @@ impl Pipe {
             discarded
         };
         if discarded != 0 {
-            self.notifier.notify(self);
+            publish_state_change(self);
         }
         discarded
     }
@@ -506,15 +526,9 @@ impl Drop for PipeEnd {
 mod tests {
     use super::*;
 
-    struct TestNotifier;
-
-    impl PipeNotifier for TestNotifier {
-        fn notify(&self, _pipe: &Arc<Pipe>) {}
-    }
-
     #[test]
     fn output_flush_discards_unread_pipe_bytes() {
-        let (read, write) = Pipe::pair(Arc::new(TestNotifier)).expect("pipe");
+        let (read, write) = Pipe::pair().expect("pipe");
         assert_eq!(write.write(b"pending"), PipeWrite::Bytes(7));
 
         assert_eq!(write.discard_buffered(), 7);

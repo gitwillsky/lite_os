@@ -1,38 +1,21 @@
 use super::*;
-use crate::ipc::{Pipe, PipeDirection, PipeEnd, PipeNotifier, PipeWaitCondition};
+use crate::ipc::{Pipe, PipeDirection, PipeNotifier, PipeWaitCondition};
 
 struct TaskPipeNotifier;
+
+// OWNER: 无状态的唯一 wait-registry 唤醒出口；由 `install_pipe_notifier` 安装进 ipc。
+static TASK_PIPE_NOTIFIER: TaskPipeNotifier = TaskPipeNotifier;
+
+/// 把 task wait registry 安装为全部 Pipe 的唤醒出口。
+pub(in crate::task) fn install_pipe_notifier() {
+    crate::ipc::install_pipe_notifier(&TASK_PIPE_NOTIFIER);
+}
 
 impl PipeNotifier for TaskPipeNotifier {
     fn notify(&self, pipe: &Arc<Pipe>) {
         crate::fs::Epoll::notify_pipe_source(pipe);
         wake_pipe_waiters(pipe);
     }
-}
-
-fn create_endpoints(
-    pair: impl FnOnce(Arc<dyn PipeNotifier>) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()>,
-) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
-    let notifier = Arc::try_new(TaskPipeNotifier).map_err(|_| ())?;
-    pair(notifier)
-}
-
-/// 创建绑定统一 task wait registry 的 64 KiB data Pipe endpoints。
-///
-/// # Returns
-///
-/// anonymous pipe、AF_UNIX transport 与 PTY output 使用的 read/write endpoints。
-pub(crate) fn create_pipe_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
-    create_endpoints(Pipe::pair)
-}
-
-/// 创建绑定同一 task wait registry 的一字节 notification Pipe endpoints。
-///
-/// # Returns
-///
-/// DRM/input/PTY/epoll/eventfd/socket readiness 使用的 read/write token endpoints。
-pub(crate) fn create_notification_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
-    create_endpoints(Pipe::notification_pair)
 }
 
 fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {

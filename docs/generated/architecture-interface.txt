@@ -655,7 +655,7 @@ kernel/src/audio.rs :: pub (crate) SoftwareParameters :: boundary : u64
 kernel/src/audio.rs :: pub (crate) SoftwareParameters :: start_threshold : u64
 kernel/src/audio.rs :: pub (crate) SoftwareParameters :: stop_threshold : u64
 kernel/src/audio.rs :: pub (crate) fn available () -> bool
-kernel/src/audio.rs :: pub (crate) fn init (output : Arc < dyn PcmOutput > , notification : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < () , () >
+kernel/src/audio.rs :: pub (crate) fn init (output : Arc < dyn PcmOutput >) -> Result < () , () >
 kernel/src/audio.rs :: pub (crate) fn open () -> Result < Arc < PcmFile > , AudioError >
 kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn commit_application_pointer (& self , new_application_pointer : u64 ,) -> Result < () , AudioError >
 kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn drop_stream (& self) -> Result < () , AudioError >
@@ -1554,7 +1554,7 @@ kernel/src/drm.rs :: pub (crate) use graphics :: VirglResourceCreate
 kernel/src/drm.rs :: pub (crate) use graphics :: VirglTransfer
 kernel/src/drm.rs :: pub (crate) use publication :: { PreparedDumbBuffer , PreparedFramebuffer }
 kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work (timestamp_ns : u64)
-kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn GraphicsDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
+kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn GraphicsDevice >) -> Result < () , () >
 kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
 kernel/src/drm/device.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
 kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
@@ -2582,7 +2582,7 @@ kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_routes (network 
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_uptime (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_vmstat (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u64) -> u64
-kernel/src/fs/pty.rs :: pub (crate) fn init (data_factory : PipeFactory , notification_factory : PipeFactory , hangup : HangupNotifier , input_signals : InputSignalNotifier ,) -> Result < () , () >
+kernel/src/fs/pty.rs :: pub (crate) fn init (hangup : HangupNotifier , input_signals : InputSignalNotifier) -> Result < () , () >
 kernel/src/fs/pty.rs :: pub (crate) fn open_master (owner_uid : u32 , owner_gid : u32 ,) -> Result < Arc < PtyMaster > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn open_slave (index : u32) -> Result < Arc < PtySlave > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn slave_exists (index : u32) -> bool
@@ -2776,7 +2776,7 @@ kernel/src/input.rs :: pub (crate) enum InputError
 kernel/src/input.rs :: pub (crate) enum InputString
 kernel/src/input.rs :: pub (crate) fn device_count () -> usize
 kernel/src/input.rs :: pub (crate) fn dispatch_input_work () -> bool
-kernel/src/input.rs :: pub (crate) fn init (mut create_notification : impl FnMut () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () > ,) -> Result < () , () >
+kernel/src/input.rs :: pub (crate) fn init () -> Result < () , () >
 kernel/src/input.rs :: pub (crate) fn open (index : usize) -> Result < Arc < InputFile > , InputError >
 kernel/src/input.rs :: pub (crate) impl InputEvent :: fn encode (self) -> [u8 ; 24]
 kernel/src/input.rs :: pub (crate) impl InputFile :: fn absolute_info (& self , code : u16) -> Result < AbsoluteInfo , InputError >
@@ -2832,10 +2832,11 @@ kernel/src/ipc.rs :: pub (crate) enum PipeDirection
 kernel/src/ipc.rs :: pub (crate) enum PipeRead
 kernel/src/ipc.rs :: pub (crate) enum PipeWaitCondition
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
+kernel/src/ipc.rs :: pub (crate) fn install_pipe_notifier (notifier : & 'static dyn PipeNotifier)
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
-kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn notification_pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn notification_pair () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn object_id (& self) -> u64
-kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool
@@ -4891,7 +4892,7 @@ kernel/src/task/process_table.rs :: pub (crate) use console_wait :: { drain_term
 kernel/src/task/process_table.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
 kernel/src/task/process_table.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
 kernel/src/task/process_table.rs :: pub (crate) use parent_death :: parent_death_signal
-kernel/src/task/process_table.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
+kernel/src/task/process_table.rs :: pub (crate) use pipe_wait :: { wait_for_pipe , wait_for_pipe_until }
 kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
 kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/process_table.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
@@ -4906,6 +4907,7 @@ kernel/src/task/process_table.rs :: pub (crate) use vfork :: { ProcessCloneError
 kernel/src/task/process_table.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , release_child_status , wait_child , }
 kernel/src/task/process_table.rs :: pub (crate) use wait_key :: PollWaitKey
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod advisory_lock
+kernel/src/task/process_table.rs :: pub (in crate :: task) mod pipe_wait
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod task_wait
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod timer_queue
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod vfork
@@ -4965,10 +4967,9 @@ kernel/src/task/process_table/load_average.rs :: pub (super) struct LoadAverage
 kernel/src/task/process_table/parent_death.rs :: pub (crate) fn parent_death_signal (replacement : Option < usize >) -> Result < usize , () >
 kernel/src/task/process_table/parent_death.rs :: pub (super) fn drain_parent_death_signals ()
 kernel/src/task/process_table/parent_death.rs :: pub (super) fn mark_parent_exit (graph : & mut ProcessGraph , parent_tgid : usize , parent_tid : usize , replacement_tid : usize ,)
-kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn create_notification_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
-kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult
 kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn wait_for_pipe_until (pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
+kernel/src/task/process_table/pipe_wait.rs :: pub (in crate :: task) fn install_pipe_notifier ()
 kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller process group，非零选择 PGID。"] Group (u32)
 kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller real UID，非零选择给定 UID。"] User (u32)
 kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller，非零选择全局 TID。"] Process (u32)
@@ -5442,7 +5443,7 @@ kernel/src/virtio_port.rs :: enum Error :: # [doc = " The current operation woul
 kernel/src/virtio_port.rs :: enum Error :: # [doc = " The named port is closed or the device failed."] Disconnected
 kernel/src/virtio_port.rs :: pub (crate) enum Error
 kernel/src/virtio_port.rs :: pub (crate) fn dispatch_work () -> bool
-kernel/src/virtio_port.rs :: pub (crate) fn init (device : Arc < VirtIOConsoleDevice > , notification : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < () , () >
+kernel/src/virtio_port.rs :: pub (crate) fn init (device : Arc < VirtIOConsoleDevice >) -> Result < () , () >
 kernel/src/virtio_port.rs :: pub (crate) fn open () -> Option < Arc < Port > >
 kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn notification_pipe (& self) -> Arc < Pipe >
 kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn poll_events (& self , events : i16) -> i16

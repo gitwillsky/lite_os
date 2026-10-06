@@ -81,7 +81,7 @@ fn bootstrap_interrupt_state_precedes_devices(root: &Path) -> bool {
     };
     main.find("task::initialize_interrupt_state();")
         .zip(main.find("platform::initialize_devices();"))
-        .zip(main.find("task::initialize();"))
+        .zip(main.find("task::spawn_init("))
         .is_some_and(|((interrupt_state, devices), task)| {
             interrupt_state < devices && devices < task
         })

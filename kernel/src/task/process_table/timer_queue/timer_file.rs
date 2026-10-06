@@ -247,8 +247,7 @@ impl TimerQueue {
 pub(crate) fn create_timer_fd(
     clock: TimerFileClock,
 ) -> Result<Arc<dyn TimerFdBackend>, TimerError> {
-    let pair =
-        super::super::create_notification_endpoints().map_err(|()| TimerError::OutOfMemory)?;
+    let pair = crate::ipc::Pipe::notification_pair().map_err(|()| TimerError::OutOfMemory)?;
     let timer = TimerFd::new(pair)?;
     let id = timer.object_id;
     let backend: Arc<dyn TimerFdBackend> = timer.clone();

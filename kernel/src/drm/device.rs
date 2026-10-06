@@ -407,8 +407,6 @@ static PRIMARY_DRM: Once<Arc<DrmDevice>> = Once::new();
 /// # Parameters
 ///
 /// - `display`: DTB 选中的唯一 single-scanout adapter。
-/// - `completion_read`: 只由 DRM waiter 排空的 notification endpoint。
-/// - `completion_write`: deferred completion 发布 endpoint。
 ///
 /// # Returns
 ///
@@ -417,14 +415,12 @@ static PRIMARY_DRM: Once<Arc<DrmDevice>> = Once::new();
 /// # Errors
 ///
 /// 重复初始化或内存不足返回 unit error。
-pub(crate) fn init(
-    display: Arc<dyn GraphicsDevice>,
-    completion_read: Arc<PipeEnd>,
-    completion_write: Arc<PipeEnd>,
-) -> Result<(), ()> {
+pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     if PRIMARY_DRM.get().is_some() {
         return Err(());
     }
+    // completion_read 只由 DRM waiter 排空；completion_write 由 deferred completion 发布。
+    let (completion_read, completion_write) = crate::ipc::Pipe::notification_pair()?;
     let mode = display.mode();
     let owner = Arc::try_new(DrmDevice {
         display,

@@ -64,36 +64,23 @@ fn kernel_main(context: entry::BootContext) -> ! {
     memory::init();
     timer::init_rtc();
     fs::init_vfs();
+    // scheduler topology 与全部 wait adapter（含 Pipe 唤醒出口与 VFS advisory-lock 通知）必须在
+    // VFS 之后、任何会创建可等待对象的子系统之前安装。
+    task::initialize();
     platform::initialize_devices();
     if let Some(output) = drivers::primary_audio_output() {
-        let notification = task::create_notification_endpoints()
-            .expect("ALSA PCM readiness notification allocation failed");
-        audio::init(output, notification).expect("ALSA PCM initialization failed");
+        audio::init(output).expect("ALSA PCM initialization failed");
     }
     if let Some(display) = drivers::primary_display() {
-        let (completion_read, completion_write) = task::create_notification_endpoints()
-            .expect("DRM completion notification allocation failed");
-        drm::device::init(display, completion_read, completion_write)
-            .expect("primary DRM initialization failed");
+        drm::device::init(display).expect("primary DRM initialization failed");
     }
-    input::init(task::create_notification_endpoints).expect("evdev input initialization failed");
+    input::init().expect("evdev input initialization failed");
     if let Some(port) = drivers::primary_virtio_port() {
-        virtio_port::init(
-            port,
-            task::create_notification_endpoints()
-                .expect("VirtIO port readiness notification allocation failed"),
-        )
-        .expect("VirtIO port initialization failed");
+        virtio_port::init(port).expect("VirtIO port initialization failed");
     }
-    fs::init_pty(
-        task::create_pipe_endpoints,
-        task::create_notification_endpoints,
-        task::hangup_terminal,
-        task::publish_terminal_input_signals,
-    )
-    .expect("Unix98 PTY initialization failed");
+    fs::init_pty(task::hangup_terminal, task::publish_terminal_input_signals)
+        .expect("Unix98 PTY initialization failed");
     socket::init();
-    task::initialize();
     mount_filesystems();
     task::spawn_init(
         arch::trap::user_entry(),

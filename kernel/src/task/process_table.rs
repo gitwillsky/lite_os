@@ -26,7 +26,7 @@ mod futex;
 mod io_wait;
 mod load_average;
 mod parent_death;
-mod pipe_wait;
+pub(in crate::task) mod pipe_wait;
 mod policy;
 mod process_exit;
 mod process_group;
@@ -55,9 +55,7 @@ pub(in crate::task) use futex::futex_wake_with_key;
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
 pub(super) use io_wait::initialize_driver_io_wait;
 pub(crate) use parent_death::parent_death_signal;
-pub(crate) use pipe_wait::{
-    create_notification_endpoints, create_pipe_endpoints, wait_for_pipe, wait_for_pipe_until,
-};
+pub(crate) use pipe_wait::{wait_for_pipe, wait_for_pipe_until};
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
 pub(crate) use policy::{
     SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
