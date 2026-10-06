@@ -46,7 +46,7 @@ impl TaskControlBlock {
         // posix_spawn child 的 stack/errno-pipe 操作脱离 parent mm，破坏标准 handoff。
         let tid = pid.0;
         // 1. 先构造地址空间和所有可能失败的 process-owned 资源，发布前不修改 process graph。
-        let parent_address_space = self.process.address_space();
+        let parent_address_space = self.process().address_space();
         let address_space = if share_user_memory {
             parent_address_space.clone()
         } else {
@@ -58,21 +58,21 @@ impl TaskControlBlock {
             AddressSpace::new(memory_set)?
         };
         let paths = {
-            let parent_paths = self.process.paths.lock();
+            let parent_paths = self.process().paths.lock();
             ProcessPaths {
                 cwd: parent_paths.cwd.clone(),
                 executable: parent_paths.executable.clone(),
             }
         };
         let files = self
-            .process
+            .process()
             .files
             .lock()
             .try_clone()
             .map_err(|_| MemoryError::OutOfMemory)?;
-        let signal_actions = self.process.signal_state.lock().actions;
-        let credentials = self.process.credentials.lock().clone();
-        let resource_limits = self.process.resource_limits.lock().forked();
+        let signal_actions = self.process().signal_state.lock().actions;
+        let credentials = self.process().credentials.lock().clone();
+        let resource_limits = self.process().resource_limits.lock().forked();
         let cpu_limit_active = resource_limits.cpu_limit_active();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
@@ -86,9 +86,9 @@ impl TaskControlBlock {
             .last_cpu
             .load(core::sync::atomic::Ordering::Relaxed);
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
-        let alternate_signal_stack = *self.thread.alternate_signal_stack.lock();
+        let alternate_signal_stack = *self.thread().alternate_signal_stack.lock();
         let start_time_us = get_time_us();
-        let parent_comm = self.process.comm.lock();
+        let parent_comm = self.process().comm.lock();
         let mut comm = Vec::new();
         comm.try_reserve_exact(parent_comm.len())
             .map_err(|_| MemoryError::OutOfMemory)?;
@@ -106,7 +106,7 @@ impl TaskControlBlock {
             cpu_limit_active: core::sync::atomic::AtomicBool::new(cpu_limit_active),
             cpu_runtime_us: cpu_runtime_us.clone(),
             io_accounting: io_accounting.clone(),
-            terminal: Mutex::new(self.process.terminal.lock().clone()),
+            terminal: Mutex::new(self.process().terminal.lock().clone()),
             signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
         })
         .map_err(|_| MemoryError::OutOfMemory)?;
@@ -138,28 +138,32 @@ impl TaskControlBlock {
         child_trap
             .prepare_process_clone((child_stack != 0).then_some(child_stack), kernel_stack_top);
         let child = Self {
-            process,
-            thread: ThreadContext {
+            kind: TaskKind::User {
+                process,
+                thread: ThreadContext {
+                    user_context,
+                    kernel_trap_handler: self.thread().kernel_trap_handler,
+                    kernel_trap_return: self.thread().kernel_trap_return,
+                    memory_retirement_wait: Mutex::new(memory_retirement_wait),
+                    clear_child_tid: Mutex::new(None),
+                    robust_list: Mutex::new(None),
+                    signal_mask: Mutex::new(*self.thread().signal_mask.lock()),
+                    pending_signals: Mutex::new(PendingSignals::new()),
+                    suspend_restore_mask: Mutex::new(None),
+                    syscall_restart: Mutex::new(None),
+                    parent_death: Mutex::new(ParentDeathState::default()),
+                    alternate_signal_stack: Mutex::new(alternate_signal_stack),
+                    io_accounting: IoAccounting::default(),
+                },
+            },
+            execution: ExecutionContext {
                 tid,
                 start_time_us,
                 kernel_stack,
-                user_context,
                 kernel_cx: Mutex::new(KernelContext::clone_for_trap_return(
                     kernel_stack_top,
                     crate::task::resume_new_task,
                 )),
-                kernel_trap_handler: self.thread.kernel_trap_handler,
-                kernel_trap_return: self.thread.kernel_trap_return,
-                memory_retirement_wait: Mutex::new(memory_retirement_wait),
-                clear_child_tid: Mutex::new(None),
-                robust_list: Mutex::new(None),
-                signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
-                pending_signals: Mutex::new(PendingSignals::new()),
-                suspend_restore_mask: Mutex::new(None),
-                syscall_restart: Mutex::new(None),
-                parent_death: Mutex::new(ParentDeathState::default()),
-                alternate_signal_stack: Mutex::new(alternate_signal_stack),
-                io_accounting: IoAccounting::default(),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState::new(cpu_affinity)),

@@ -75,8 +75,8 @@ impl TaskControlBlock {
     ///
     /// 无返回值；当前 Thread 与 Process 聚合 owner 同步推进。
     pub(crate) fn account_read_result(&self, result: isize) {
-        self.thread.io_accounting.account_read_result(result);
-        self.process.io_accounting.account_read_result(result);
+        self.thread().io_accounting.account_read_result(result);
+        self.process().io_accounting.account_read_result(result);
     }
 
     /// 记录一次成功 write-family operation 的 logical byte 与 syscall 计数。
@@ -89,8 +89,8 @@ impl TaskControlBlock {
     ///
     /// 无返回值；当前 Thread 与 Process 聚合 owner 同步推进。
     pub(crate) fn account_write_result(&self, result: isize) {
-        self.thread.io_accounting.account_write_result(result);
-        self.process.io_accounting.account_write_result(result);
+        self.thread().io_accounting.account_write_result(result);
+        self.process().io_accounting.account_write_result(result);
     }
 
     /// 记录本次 regular read 实际触发 cache-miss storage fill 的字节数。
@@ -103,8 +103,8 @@ impl TaskControlBlock {
     ///
     /// 无返回值；cache hit 必须传零，防止把 logical read 冒充 block I/O。
     pub(crate) fn account_read_storage(&self, bytes: usize) {
-        self.thread.io_accounting.account_read_storage(bytes);
-        self.process.io_accounting.account_read_storage(bytes);
+        self.thread().io_accounting.account_read_storage(bytes);
+        self.process().io_accounting.account_read_storage(bytes);
     }
 
     /// 记录本次 synchronous regular write 实际提交给 storage 的字节数。
@@ -117,8 +117,8 @@ impl TaskControlBlock {
     ///
     /// 无返回值；partial write 只累计已提交前缀。
     pub(crate) fn account_write_storage(&self, bytes: usize) {
-        self.thread.io_accounting.account_write_storage(bytes);
-        self.process.io_accounting.account_write_storage(bytes);
+        self.thread().io_accounting.account_write_storage(bytes);
+        self.process().io_accounting.account_write_storage(bytes);
     }
 
     /// 取得当前 Thread 的 Linux I/O counter 快照。
@@ -127,7 +127,7 @@ impl TaskControlBlock {
     ///
     /// `/proc/<tgid>/task/<tid>/io` 使用的当前值。
     pub(in crate::task) fn thread_io_statistics(&self) -> IoStatistics {
-        self.thread.io_accounting.snapshot()
+        self.thread().io_accounting.snapshot()
     }
 
     /// 取得当前 Process 全生命周期聚合 I/O counter 快照。
@@ -136,6 +136,6 @@ impl TaskControlBlock {
     ///
     /// `/proc/<tgid>/io` 使用的当前值，包含已退出 Thread。
     pub(in crate::task) fn process_io_statistics(&self) -> IoStatistics {
-        self.process.io_accounting.snapshot()
+        self.process().io_accounting.snapshot()
     }
 }

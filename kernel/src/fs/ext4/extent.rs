@@ -363,7 +363,9 @@ impl<'a> ExtentTree<'a> {
     fn allocate_node(&mut self, depth: u16) -> Result<Node, FileSystemError> {
         let mut bytes = try_zeroed(self.fs.block_size)?;
         header(&mut bytes, self.block_capacity() as u16, depth);
-        let block = self.fs.allocate_block(self.goal, &bytes)?;
+        let block = self
+            .fs
+            .allocate_block(self.goal, &bytes, BlockKind::Metadata)?;
         self.sector_delta += self.sectors_per_block();
         Ok(Node {
             location: Some(block),

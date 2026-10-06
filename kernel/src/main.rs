@@ -93,8 +93,9 @@ fn kernel_main(context: entry::BootContext) -> ! {
     )
     .expect("Unix98 PTY initialization failed");
     socket::init();
-    mount_root_filesystem();
-    task::init(
+    task::initialize();
+    mount_filesystems();
+    task::spawn_init(
         arch::trap::user_entry(),
         trap::trap_return,
         Arc::try_new(PlatformConsole).expect("platform console allocation failed"),
@@ -114,14 +115,20 @@ fn kernel_main(context: entry::BootContext) -> ! {
     enter_scheduler()
 }
 
-fn mount_root_filesystem() {
+fn mount_filesystems() {
     let device =
         drivers::block::get_primary_block_device().expect("boot requires one primary block device");
-    let filesystem = fs::Ext4FileSystem::new(device).expect("invalid ext4 root filesystem");
-    fs::vfs()
-        .mount_root(b"root", filesystem)
-        .expect("root filesystem mounted more than once");
-    info!("ext4 root filesystem mounted at /");
+    fs::mount_root(
+        device,
+        fs::KernelThreadSupport {
+            spawn: task::spawn_kernel_thread,
+            sleep_until: |deadline| {
+                task::sleep_until(deadline);
+            },
+        },
+    )
+    .unwrap_or_else(|error| panic!("root filesystem mount failed: {error:?}"));
+    info!("root filesystem mounted at /");
     fs::vfs()
         .mount_at(b"/dev", b"devfs", fs::DevFileSystem::instance())
         .expect("failed to mount devfs at /dev");

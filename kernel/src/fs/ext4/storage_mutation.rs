@@ -73,7 +73,7 @@ impl Ext4Inode {
                     return Ok((block, false));
                 }
                 // unwritten block 先 staged 完整新内容，再把映射转为 initialized。
-                self.fs.write_fs_block(block, contents)?;
+                self.fs.write_data_block(block, contents)?;
                 tree.mark_written(file_block)?;
                 block
             }
@@ -81,7 +81,7 @@ impl Ext4Inode {
                 let goal = left.map_or(tree.default_goal(), |left| {
                     left.physical + u64::from(file_block - left.logical)
                 });
-                let block = self.fs.allocate_block(goal, contents)?;
+                let block = self.fs.allocate_block(goal, contents, BlockKind::Data)?;
                 tree.insert(Extent {
                     logical: file_block,
                     length: 1,
@@ -136,14 +136,14 @@ impl Ext4Inode {
                 let (block, initialized) =
                     self.ensure_block_mapped_with_contents(mutation, file_block, Some(bytes))?;
                 if !initialized {
-                    self.fs.write_fs_block(block, bytes)?;
+                    self.fs.write_data_block(block, bytes)?;
                 }
             } else {
                 let block = self.ensure_block_mapped(mutation, file_block)?;
                 let mut data = try_zeroed(self.fs.block_size)?;
                 self.fs.read_fs_block(block, &mut data)?;
                 data[block_offset..block_offset + count].copy_from_slice(&buf[done..done + count]);
-                self.fs.write_fs_block(block, &data)?;
+                self.fs.write_data_block(block, &data)?;
             }
             done += count;
         }

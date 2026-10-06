@@ -17,6 +17,7 @@ pub(crate) use memory_barrier::{
     complete_pending as complete_pending_memory_barrier, register_private_memory_barrier,
     synchronize_private_memory,
 };
+pub(crate) use model::KernelThreadBody;
 pub(in crate::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
 pub(crate) use model::{
     CredentialUpdateError, IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC,
@@ -57,18 +58,44 @@ fn resume_new_task() -> ! {
     resume()
 }
 
-pub(crate) fn init(
+/// 内核线程首次调度的 continuation：完成 handoff、打开本地中断并运行线程主体。
+///
+/// 新执行体首次恢复时的本地中断状态取决于前一个 outgoing task；内核线程不经过
+/// user trap-return，因此必须在这里显式打开，否则主体会在屏蔽中断下运行并延迟 tick 与 I/O
+/// completion。
+pub(in crate::task) fn run_kernel_thread() -> ! {
+    process_table::context_switch::complete_pending_handoff();
+    let body = current_task()
+        .expect("kernel thread resumed without Processor current ownership")
+        .take_kernel_thread_body();
+    // SAFETY: 内核线程只由 `spawn_kernel_thread` 在 trap vector 与 platform interrupt controller
+    // 初始化完成后创建，满足 scheduler interrupt 的初始化顺序。
+    unsafe { crate::arch::interrupt::enable_scheduler_interrupts() };
+    body()
+}
+
+/// 初始化 processor topology 与全部 scheduler wait adapter，使内核线程可以入队。
+///
+/// 必须先于根文件系统挂载：bootstrap mount 与 executable loading 会在尚无 current task 时
+/// 发出 block I/O，wait-target factory 需要已初始化的 topology 才能安全观察到 `None`；
+/// 颠倒顺序会让 `current_task()` 在未初始化的 topology 上永久等待。
+pub(crate) fn initialize() {
+    processor::init_topology();
+    process_table::initialize_driver_io_wait();
+    process_table::task_wait::initialize();
+    install_advisory_lock_notifier();
+}
+
+/// 从已挂载的根文件系统加载 `/bin/init` 并发布唯一 init process。
+///
+/// # Panics
+///
+/// `/bin/init` 缺失或 init task 分配失败时 fail-stop。
+pub(crate) fn spawn_init(
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
     console: Arc<dyn Console>,
 ) {
-    // Bootstrap executable loading can issue block I/O before a current task exists. Build the
-    // processor topology first so the installed wait-target factory can safely observe `None`;
-    // reversing these calls makes `current_task()` wait forever on an uninitialized topology.
-    processor::init_topology();
-    process_table::initialize_driver_io_wait();
-    process_table::task_mutex_wait::initialize();
-    install_advisory_lock_notifier();
     let mut path = Vec::new();
     path.try_reserve_exact(INIT_PROC_NAME.len())
         .expect("failed to allocate init pathname");

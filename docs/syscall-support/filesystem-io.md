@@ -43,8 +43,8 @@
 | 78 | `readlinkat` | Complete | symlink与 procfs fd projection |
 | 79 | `newfstatat` | Partial | supported objects 与 flags |
 | 80 | `fstat` | Complete | supported OFD objects |
-| 81 | `sync` | Complete | mounted writable filesystem flush |
-| 82 | `fsync` | Complete | file data/metadata durability boundary |
+| 81 | `sync` | Complete | 提交 ext4 running transaction；返回时全部已返回写入 durable |
+| 82 | `fsync` | Complete | 提交包含该文件的 running transaction；提交失败返回 `EIO` 且 journal fail-stop |
 | 83 | `fdatasync` | Complete | data durability boundary |
 | 88 | `utimensat` | Partial | inode timestamps 与已声明 flags |
 | 166 | `umask` | Complete | Process-owned mask |
@@ -55,4 +55,4 @@
 
 ## 已知缺口
 
-没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring、background writeback daemon 或完整 block I/O priority enforcement。
+没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring 或完整 block I/O priority enforcement。

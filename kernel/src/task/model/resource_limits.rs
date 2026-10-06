@@ -167,7 +167,7 @@ impl TaskControlBlock {
     }
 
     pub(in crate::task) fn process_cpu_runtime_us(&self) -> u64 {
-        self.process
+        self.process()
             .cpu_runtime_us
             .load(core::sync::atomic::Ordering::Relaxed)
     }
@@ -185,7 +185,7 @@ impl TaskControlBlock {
     }
 
     pub(crate) fn resource_limit(&self, resource: usize) -> Option<ResourceLimit> {
-        self.process.resource_limits.lock().get(resource)
+        self.process().resource_limits.lock().get(resource)
     }
 
     pub(in crate::task) fn replace_resource_limit(
@@ -196,14 +196,16 @@ impl TaskControlBlock {
     ) -> Result<ResourceLimit, ResourceLimitError> {
         use core::sync::atomic::Ordering;
 
-        let mut limits = self.process.resource_limits.lock();
+        let mut limits = self.process().resource_limits.lock();
         let previous_cpu_active = limits.cpu_limit_active();
         let replacement_cpu_active =
             replacement.soft != RLIM_INFINITY || replacement.hard != RLIM_INFINITY;
         if resource == RLIMIT_CPU && replacement_cpu_active {
             // Publish the conservative true state before the finite limit becomes visible. A
             // concurrent switch may take one harmless extra lock, but cannot skip enforcement.
-            self.process.cpu_limit_active.store(true, Ordering::Release);
+            self.process()
+                .cpu_limit_active
+                .store(true, Ordering::Release);
         }
         let result = limits.replace(resource, replacement, privileged);
         if resource == RLIMIT_CPU {
@@ -212,7 +214,7 @@ impl TaskControlBlock {
             } else {
                 previous_cpu_active
             };
-            self.process
+            self.process()
                 .cpu_limit_active
                 .store(active, Ordering::Release);
         }
@@ -222,9 +224,9 @@ impl TaskControlBlock {
     pub(in crate::task) fn resource_cpu_signal(&self, runtime_us: u64) -> Option<usize> {
         use core::sync::atomic::Ordering;
 
-        if !self.process.cpu_limit_active.load(Ordering::Acquire) {
+        if !self.process().cpu_limit_active.load(Ordering::Acquire) {
             return None;
         }
-        self.process.resource_limits.lock().cpu_signal(runtime_us)
+        self.process().resource_limits.lock().cpu_signal(runtime_us)
     }
 }

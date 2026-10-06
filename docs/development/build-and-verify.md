@@ -151,6 +151,8 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
   rootfs 或开发实例，因此 `verify-fast` 无需先构建 rootfs，直接 `cargo test` 会以变量未设置失败。
   ext4 conformance 用例在 fixture 的临时副本上写入，再以 Homebrew e2fsprogs 的 `e2fsck -fn`
   （`LITEOS_E2FSCK`）裁决零错误；PATH 上的其他 mke2fs/e2fsck 不参与解析。
+  ext4 写路径门禁在 sync 后裁决三类代表负载的 transaction/flush/设备写入上界，崩溃矩阵在提交的每个
+  barrier 后崩溃并以 `e2fsck -fn` 裁决恢复结果。
   platform DTB 解码用例读取 `verify_unit` 以 runtime gate 相同 machine 配置（TCG、2 CPU）经 QEMU
   `dumpdtb` 现场生成的 `target/kernel-unit/qemu-virt-{aarch64,riscv64}.dtb`（`LITEOS_<ARCH>_DTB`）。
 - `scheduler-unit`：preallocated ready heap 的 capacity/compaction/fail-stop 与 signal selection/generation 测试。

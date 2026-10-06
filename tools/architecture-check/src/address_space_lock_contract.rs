@@ -44,7 +44,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     if task_access.text.contains("memory_set.lock().token()")
         || !task_access
             .text
-            .contains("self.process.address_space().token")
+            .contains("self.process().address_space().token")
     {
         errors.push(format!(
             "{TASK_ACCESS}: IRQ-disabled trap return must read the immutable token without locking"

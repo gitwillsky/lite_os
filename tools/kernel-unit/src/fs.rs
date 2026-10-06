@@ -173,3 +173,16 @@ pub(crate) mod permission {
 
 #[path = "../../../kernel/src/fs/ext4.rs"]
 pub(crate) mod ext4;
+
+/// 与 kernel `fs::SpawnKernelThread` 相同的注入签名；host 测试不创建内核线程。
+#[allow(dead_code)]
+pub(crate) type SpawnKernelThread =
+    fn(&'static str, alloc::boxed::Box<dyn FnOnce() -> ! + Send>) -> Result<(), ()>;
+
+/// 与 kernel `fs::KernelThreadSupport` 相同的 task 能力形状。
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) struct KernelThreadSupport {
+    pub(crate) spawn: SpawnKernelThread,
+    pub(crate) sleep_until: fn(u64),
+}

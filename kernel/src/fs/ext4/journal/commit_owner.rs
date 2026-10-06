@@ -1,14 +1,12 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 
-use crate::fallible_tree::FallibleMap;
-
-use super::{ActiveTransaction, Ext4FileSystem, FileSystemError, Journal};
+use super::{Ext4FileSystem, FileSystemError, Journal, RunningTransaction, StagedBlocks};
 
 /// Journal runtime 的唯一状态；commit loan 期间只发布不可变 staged view。
 pub(in crate::fs::ext4) enum JournalOwner {
     Unavailable,
     Ready(Journal),
-    Committing(Arc<FallibleMap<u64, Vec<u8>>>),
+    Committing(Arc<StagedBlocks>),
 }
 
 impl JournalOwner {
@@ -19,6 +17,13 @@ impl JournalOwner {
     pub(in crate::fs::ext4) fn install(&mut self, journal: Journal) {
         assert!(matches!(self, Self::Unavailable));
         *self = Self::Ready(journal);
+    }
+
+    pub(in crate::fs::ext4) fn ready_mut_ref(&self) -> Result<&Journal, FileSystemError> {
+        match self {
+            Self::Ready(journal) => Ok(journal),
+            Self::Unavailable | Self::Committing(_) => Err(FileSystemError::InvalidOperation),
+        }
     }
 
     pub(in crate::fs::ext4) fn ready_mut(&mut self) -> Result<&mut Journal, FileSystemError> {
@@ -33,7 +38,7 @@ impl JournalOwner {
             Self::Ready(journal) => {
                 return journal.copy_staged(block, output);
             }
-            Self::Committing(writes) => writes.get(&block),
+            Self::Committing(staged) => staged.get(block),
             Self::Unavailable => None,
         };
         let Some(bytes) = bytes else {
@@ -48,15 +53,15 @@ impl JournalOwner {
 pub(super) struct JournalCommit<'a> {
     fs: &'a Ext4FileSystem,
     journal: Option<Journal>,
-    writes: Arc<FallibleMap<u64, Vec<u8>>>,
+    writes: Arc<StagedBlocks>,
 }
 
 impl<'a> JournalCommit<'a> {
     pub(super) fn begin(fs: &'a Ext4FileSystem) -> Result<Self, FileSystemError> {
-        // Arc control block 必须在状态转换前分配；OOM 时 active transaction 仍可由
-        // MutationGuard::drop 完整 abort，不留下 Committing 空洞。
-        let mut writes = Arc::<FallibleMap<u64, Vec<u8>>>::try_new_uninit()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
+        // Arc control block 必须在状态转换前分配；OOM 时 running transaction 保持完整，
+        // 不留下 Committing 空洞。
+        let mut writes =
+            Arc::<StagedBlocks>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
         let mut owner = fs.journal.lock();
         let current = core::mem::replace(&mut *owner, JournalOwner::Unavailable);
         let mut journal = match current {
@@ -66,17 +71,8 @@ impl<'a> JournalCommit<'a> {
                 return Err(FileSystemError::InvalidOperation);
             }
         };
-        let ActiveTransaction {
-            writes: staged,
-            allocation_dirty,
-        } = match journal.active.take() {
-            Some(active) => active,
-            None => {
-                *owner = JournalOwner::Ready(journal);
-                return Err(FileSystemError::InvalidOperation);
-            }
-        };
-        assert!(allocation_dirty.is_empty());
+        // running 在 commit 后整体丢弃：已释放 range 随之解除，可再次分配。
+        let RunningTransaction { staged, .. } = core::mem::take(&mut journal.running);
         Arc::get_mut(&mut writes)
             .expect("unpublished commit view must be unique")
             .write(staged);

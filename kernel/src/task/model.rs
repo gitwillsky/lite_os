@@ -103,15 +103,10 @@ pub(crate) enum StopResume {
 }
 #[derive(Debug)]
 struct ThreadContext {
-    tid: usize,
-    // OWNER: ThreadContext 独占线程创建时刻；若复用 Process 创建时刻，后建 pthread 的
-    // `/proc/<tgid>/task/<tid>/stat` starttime 会错误回退到主线程启动时间。
-    start_time_us: u64,
-    // OWNER: binding 字段先于 backing 字段析构；正常退出/rollback 还会显式 retire，字段顺序
-    // 保证任何兜底 Task drop 也先销毁裸 pointer wrapper，再解除 AArch64 kernel-stack mapping。
+    // OWNER: binding 先于 TaskControlBlock.execution 中的 kernel stack backing 析构；正常退出/
+    // rollback 还会显式 retire，字段顺序保证兜底 drop 也先销毁裸 pointer wrapper，再解除
+    // AArch64 kernel-stack mapping。
     user_context: ContextOwner<UserContext>,
-    kernel_stack: KernelStack,
-    kernel_cx: Mutex<KernelContext>,
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
     // OWNER: 仅 RISC-V 动态 trap VMA 预留 memory-retirement waiter；AArch64 kernel-stack
@@ -186,14 +181,142 @@ struct Process {
     signal_state: Mutex<ProcessSignalState>,
 }
 
-/// 当前单线程 Process、Thread 与 SchedulingEntity 的组合边界。
+/// 用户任务与内核线程共有的执行体：调度身份、内核栈与内核上下文。
+#[derive(Debug)]
+struct ExecutionContext {
+    tid: usize,
+    // OWNER: 执行体独占创建时刻；若复用 Process 创建时刻，后建 pthread 的
+    // `/proc/<tgid>/task/<tid>/stat` starttime 会错误回退到主线程启动时间。
+    start_time_us: u64,
+    kernel_stack: KernelStack,
+    kernel_cx: Mutex<KernelContext>,
+}
+
+/// 内核线程主体；首次调度时由 `run_kernel_thread` 取走并运行一次。
+pub(crate) type KernelThreadBody = alloc::boxed::Box<dyn FnOnce() -> ! + Send>;
+
+/// 只在内核态运行、没有用户地址空间与 Process 的调度实体。
+struct KernelThread {
+    name: &'static str,
+    // OWNER: 首次运行前的唯一主体；缺失 take 语义会让同一主体被第二次 continuation 重入。
+    body: Mutex<Option<KernelThreadBody>>,
+}
+
+/// 调度实体承载的执行种类。
+// User 是热路径上的常态且只存于 Arc<TaskControlBlock> 内；装箱只会给每个用户线程增加一次分配
+// 与一层间接访问，而内核线程数量固定且极少，变体大小差异只浪费其少量内存。
+#[allow(
+    clippy::large_enum_variant,
+    reason = "inline user thread state avoids a per-thread allocation on the hot path"
+)]
+enum TaskKind {
+    User {
+        process: Arc<Process>,
+        thread: ThreadContext,
+    },
+    Kernel(KernelThread),
+}
+
+/// 用户 Thread（Process + ThreadContext）或内核线程与 SchedulingEntity 的组合边界。
 pub(crate) struct TaskControlBlock {
-    process: Arc<Process>,
-    thread: ThreadContext,
+    // OWNER: kind 必须先于 execution 声明：Rust 按声明顺序析构，user context binding 必须先于
+    // kernel stack backing 销毁，否则 AArch64 会在解除 kernel-stack mapping 后访问 binding。
+    kind: TaskKind,
+    execution: ExecutionContext,
     pub(crate) scheduling: SchedulingEntity,
 }
 
 impl TaskControlBlock {
+    /// 构造只在内核态运行的调度实体。
+    ///
+    /// # Parameters
+    ///
+    /// - `tid`: 由 PID allocator 分配、不与任何用户 TID/TGID 冲突的执行体 identity。
+    /// - `name`: 诊断名称。
+    /// - `body`: 首次调度后运行、永不返回的线程主体。
+    ///
+    /// # Returns
+    ///
+    /// 尚未进入 scheduler 的 New 内核线程。
+    ///
+    /// # Errors
+    ///
+    /// kernel stack 或 runtime 计数分配失败时返回 `OutOfMemory`。
+    pub(super) fn new_kernel_thread(
+        tid: usize,
+        name: &'static str,
+        body: KernelThreadBody,
+    ) -> Result<Self, MemoryError> {
+        let kernel_stack = KernelStack::try_new()?;
+        let kernel_stack_top = kernel_stack.get_top();
+        let cpu_runtime_us =
+            Arc::try_new(AtomicU64::new(0)).map_err(|_| MemoryError::OutOfMemory)?;
+        Ok(Self {
+            kind: TaskKind::Kernel(KernelThread {
+                name,
+                body: Mutex::new(Some(body)),
+            }),
+            execution: ExecutionContext {
+                tid,
+                start_time_us: get_time_us(),
+                kernel_stack,
+                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
+                    kernel_stack_top,
+                    crate::task::run_kernel_thread,
+                )),
+            },
+            scheduling: SchedulingEntity {
+                state: IrqMutex::new(SchedulingState::new(CpuAffinity::all_possible())),
+                policy: Mutex::new(Sched::new(0, 0, cpu_runtime_us)),
+                last_cpu: AtomicUsize::new(crate::cpu::current_id().index()),
+            },
+        })
+    }
+
+    /// 返回该实体是否为内核线程。
+    pub(in crate::task) fn is_kernel_thread(&self) -> bool {
+        matches!(self.kind, TaskKind::Kernel(_))
+    }
+
+    /// 取走内核线程主体；只允许首次调度 continuation 调用一次。
+    ///
+    /// # Panics
+    ///
+    /// 用户任务或主体已被取走时 panic。
+    pub(in crate::task) fn take_kernel_thread_body(&self) -> KernelThreadBody {
+        let TaskKind::Kernel(thread) = &self.kind else {
+            panic!("user task {} has no kernel thread body", self.execution.tid);
+        };
+        thread
+            .body
+            .lock()
+            .take()
+            .unwrap_or_else(|| panic!("kernel thread {} body started twice", thread.name))
+    }
+
+    /// 用户 Thread 所属 Process。
+    ///
+    /// 内核线程只运行 `run_kernel_thread` 主体，从不进入 user trap、syscall、signal delivery
+    /// 或 process lifecycle，这些是本访问器的全部调用方；因此内核线程分支不可达。
+    fn process(&self) -> &Arc<Process> {
+        match &self.kind {
+            TaskKind::User { process, .. } => process,
+            TaskKind::Kernel(thread) => {
+                panic!("kernel thread {} has no user process", thread.name)
+            }
+        }
+    }
+
+    /// 用户 Thread 的 user-mode 状态；不可达性证明同 [`Self::process`]。
+    fn thread(&self) -> &ThreadContext {
+        match &self.kind {
+            TaskKind::User { thread, .. } => thread,
+            TaskKind::Kernel(thread) => {
+                panic!("kernel thread {} has no user thread state", thread.name)
+            }
+        }
+    }
+
     pub(super) fn new_with_pid(
         loaded: &LoadedExecutable,
         pid: ProcessId,
@@ -248,28 +371,32 @@ impl TaskControlBlock {
             signal_state: Mutex::new(ProcessSignalState::new([SignalAction::default(); 65])),
         })?;
         let tcb = Self {
-            process,
-            thread: ThreadContext {
+            kind: TaskKind::User {
+                process,
+                thread: ThreadContext {
+                    user_context,
+                    kernel_trap_handler,
+                    kernel_trap_return,
+                    memory_retirement_wait: Mutex::new(memory_retirement_wait),
+                    clear_child_tid: Mutex::new(None),
+                    robust_list: Mutex::new(None),
+                    signal_mask: Mutex::new(0),
+                    pending_signals: Mutex::new(PendingSignals::new()),
+                    suspend_restore_mask: Mutex::new(None),
+                    syscall_restart: Mutex::new(None),
+                    parent_death: Mutex::new(ParentDeathState::default()),
+                    alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
+                    io_accounting: IoAccounting::default(),
+                },
+            },
+            execution: ExecutionContext {
                 tid,
                 start_time_us,
                 kernel_stack,
-                user_context,
                 kernel_cx: Mutex::new(KernelContext::goto_trap_return(
                     kernel_stack_top,
                     crate::task::resume_new_task,
                 )),
-                kernel_trap_handler,
-                kernel_trap_return,
-                memory_retirement_wait: Mutex::new(memory_retirement_wait),
-                clear_child_tid: Mutex::new(None),
-                robust_list: Mutex::new(None),
-                signal_mask: Mutex::new(0),
-                pending_signals: Mutex::new(PendingSignals::new()),
-                suspend_restore_mask: Mutex::new(None),
-                syscall_restart: Mutex::new(None),
-                parent_death: Mutex::new(ParentDeathState::default()),
-                alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
-                io_accounting: IoAccounting::default(),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState::new(CpuAffinity::all_possible())),
@@ -313,7 +440,7 @@ impl TaskControlBlock {
         }
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let address_space = self.process.address_space();
+        let address_space = self.process().address_space();
         let context_binding = match kernel_stack.user_context_address() {
             Some(address) => ContextBinding::kernel_stack(address),
             None => ContextBinding::address_space(
@@ -335,32 +462,36 @@ impl TaskControlBlock {
         child_trap.prepare_thread_clone(user_stack, tls, kernel_stack_top);
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
         let child = Self {
-            process: self.process.clone(),
-            thread: ThreadContext {
+            kind: TaskKind::User {
+                process: self.process().clone(),
+                thread: ThreadContext {
+                    user_context,
+                    kernel_trap_handler: self.thread().kernel_trap_handler,
+                    kernel_trap_return: self.thread().kernel_trap_return,
+                    memory_retirement_wait: Mutex::new(memory_retirement_wait),
+                    clear_child_tid: Mutex::new(clear_child_tid),
+                    robust_list: Mutex::new(None),
+                    signal_mask: Mutex::new(*self.thread().signal_mask.lock()),
+                    pending_signals: Mutex::new(PendingSignals::new()),
+                    suspend_restore_mask: Mutex::new(None),
+                    syscall_restart: Mutex::new(None),
+                    parent_death: Mutex::new(ParentDeathState::default()),
+                    alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
+                    io_accounting: IoAccounting::default(),
+                },
+            },
+            execution: ExecutionContext {
                 tid,
                 start_time_us: get_time_us(),
                 kernel_stack,
-                user_context,
                 kernel_cx: Mutex::new(KernelContext::clone_for_trap_return(
                     kernel_stack_top,
                     crate::task::resume_new_task,
                 )),
-                kernel_trap_handler: self.thread.kernel_trap_handler,
-                kernel_trap_return: self.thread.kernel_trap_return,
-                memory_retirement_wait: Mutex::new(memory_retirement_wait),
-                clear_child_tid: Mutex::new(clear_child_tid),
-                robust_list: Mutex::new(None),
-                signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
-                pending_signals: Mutex::new(PendingSignals::new()),
-                suspend_restore_mask: Mutex::new(None),
-                syscall_restart: Mutex::new(None),
-                parent_death: Mutex::new(ParentDeathState::default()),
-                alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
-                io_accounting: IoAccounting::default(),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState::new(cpu_affinity)),
-                policy: Mutex::new(policy.forked(self.process.cpu_runtime_us.clone())),
+                policy: Mutex::new(policy.forked(self.process().cpu_runtime_us.clone())),
                 last_cpu: AtomicUsize::new(
                     self.scheduling
                         .last_cpu
@@ -374,7 +505,7 @@ impl TaskControlBlock {
     }
 
     pub(crate) fn set_clear_child_tid(&self, address: usize) -> usize {
-        *self.thread.clear_child_tid.lock() = (address != 0).then_some(address);
+        *self.thread().clear_child_tid.lock() = (address != 0).then_some(address);
         self.tid()
     }
 
@@ -388,7 +519,7 @@ impl TaskControlBlock {
     ///
     /// 修改前的 signal；调用者在 process-graph lock 内完成 parent-exit 排序。
     pub(in crate::task) fn parent_death_signal(&self, replacement: Option<usize>) -> usize {
-        let mut state = self.thread.parent_death.lock();
+        let mut state = self.thread().parent_death.lock();
         let previous = state.signal;
         if let Some(signal) = replacement {
             state.signal = signal;
@@ -406,7 +537,7 @@ impl TaskControlBlock {
     ///
     /// 无返回值；signal 为零时不生成事件。
     pub(in crate::task) fn mark_parent_death(&self, parent_tgid: usize) {
-        let mut state = self.thread.parent_death.lock();
+        let mut state = self.thread().parent_death.lock();
         if state.signal != 0 {
             state.pending = Some((state.signal, parent_tgid));
         }
@@ -418,7 +549,7 @@ impl TaskControlBlock {
     ///
     /// `(signal,parent_tgid)`；没有待投递事件时为 `None`。
     pub(in crate::task) fn take_parent_death(&self) -> Option<(usize, usize)> {
-        self.thread.parent_death.lock().pending.take()
+        self.thread().parent_death.lock().pending.take()
     }
 
     /// 按 Linux credential transition 规则清除 calling Thread 的 pdeath 设置。
@@ -459,7 +590,7 @@ impl TaskControlBlock {
         {
             return Err(());
         }
-        let mut state = self.process.signal_state.lock();
+        let mut state = self.process().signal_state.lock();
         let old = state.actions[signal];
         if let Some(mut action) = replacement {
             action.mask = normalize_signal_mask(action.mask);
@@ -486,7 +617,7 @@ impl TaskControlBlock {
         const SIG_BLOCK: usize = 0;
         const SIG_UNBLOCK: usize = 1;
         const SIG_SETMASK: usize = 2;
-        let mut mask = self.thread.signal_mask.lock();
+        let mut mask = self.thread().signal_mask.lock();
         let old = *mask;
         if let Some(value) = replacement {
             let value = normalize_signal_mask(value);
@@ -510,9 +641,9 @@ impl TaskControlBlock {
     ///
     /// 修改前 mask。
     pub(crate) fn begin_signal_suspend(&self, temporary: u64) -> u64 {
-        let mut mask = self.thread.signal_mask.lock();
+        let mut mask = self.thread().signal_mask.lock();
         let old = *mask;
-        let mut restore = self.thread.suspend_restore_mask.lock();
+        let mut restore = self.thread().suspend_restore_mask.lock();
         assert!(restore.is_none(), "nested sigsuspend state");
         *restore = Some(old);
         *mask = normalize_signal_mask(temporary);
@@ -525,8 +656,8 @@ impl TaskControlBlock {
     ///
     /// 成功恢复返回 `Ok(())`；没有 active 临时 mask 返回 `Err(())`。
     pub(crate) fn restore_temporary_signal_mask(&self) -> Result<(), ()> {
-        let mut mask = self.thread.signal_mask.lock();
-        let old = self.thread.suspend_restore_mask.lock().take().ok_or(())?;
+        let mut mask = self.thread().signal_mask.lock();
+        let old = self.thread().suspend_restore_mask.lock().take().ok_or(())?;
         *mask = old;
         Ok(())
     }
@@ -541,7 +672,7 @@ impl TaskControlBlock {
     ///
     /// 会进入 handler 或默认终止路径的 signal set。
     pub(crate) fn caught_signal_set(&self, candidates: u64) -> u64 {
-        let state = self.process.signal_state.lock();
+        let state = self.process().signal_state.lock();
         let mut result = 0;
         // actions 长度为 65 且 0 号不是 signal；skip(1) 恰好覆盖 1..=64。
         for (signal, &action) in state.actions.iter().enumerate().skip(1) {
@@ -563,8 +694,8 @@ impl TaskControlBlock {
     ///
     /// 未屏蔽且 disposition 不忽略时返回 true。
     pub(super) fn accepts_process_signal(&self, signal: usize) -> bool {
-        let mask = self.thread.signal_mask.lock();
-        let state = self.process.signal_state.lock();
+        let mask = self.thread().signal_mask.lock();
+        let state = self.process().signal_state.lock();
         *mask & (1u64 << (signal - 1)) == 0 && !signal_is_ignored(signal, state.actions[signal])
     }
 
@@ -581,8 +712,8 @@ impl TaskControlBlock {
         if self.tgid() != crate::task::pid::INIT_PID {
             return false;
         }
-        let mask = self.thread.signal_mask.lock();
-        let state = self.process.signal_state.lock();
+        let mask = self.thread().signal_mask.lock();
+        let state = self.process().signal_state.lock();
         state.actions[signal].handler == 0
             && (matches!(
                 signal,
@@ -605,8 +736,11 @@ impl TaskControlBlock {
         mask: u64,
         action: impl FnOnce() -> T,
     ) -> Option<T> {
-        let state = self.process.signal_state.lock();
-        let pending = self.thread.pending_signals.lock();
+        if self.is_kernel_thread() {
+            return None;
+        }
+        let state = self.process().signal_state.lock();
+        let pending = self.thread().pending_signals.lock();
         ((pending.bits | state.pending.bits) & mask != 0).then(action)
     }
 
@@ -620,8 +754,11 @@ impl TaskControlBlock {
     ///
     /// signal number 与其首个 siginfo 来源；没有匹配时返回 None。
     pub(super) fn take_pending_signal(&self, mask: u64) -> Option<(usize, PendingSignal)> {
-        let mut state = self.process.signal_state.lock();
-        let mut pending = self.thread.pending_signals.lock();
+        if self.is_kernel_thread() {
+            return None;
+        }
+        let mut state = self.process().signal_state.lock();
+        let mut pending = self.thread().pending_signals.lock();
         pending.take(mask).or_else(|| state.pending.take(mask))
     }
 
@@ -644,9 +781,12 @@ impl TaskControlBlock {
     ///
     /// signal 仍可交付时返回 action 结果，否则返回 None。
     pub(super) fn with_deliverable_signal<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
-        let mask = self.thread.signal_mask.lock();
-        let state = self.process.signal_state.lock();
-        let pending = self.thread.pending_signals.lock();
+        if self.is_kernel_thread() {
+            return None;
+        }
+        let mask = self.thread().signal_mask.lock();
+        let state = self.process().signal_state.lock();
+        let pending = self.thread().pending_signals.lock();
         let available = (pending.bits | state.pending.bits) & !*mask;
         (1..=64)
             .any(|signal| {
@@ -675,7 +815,7 @@ impl TaskControlBlock {
             0,
             "restart syscall instruction PC must be aligned"
         );
-        let mut restart = self.thread.syscall_restart.lock();
+        let mut restart = self.thread().syscall_restart.lock();
         assert!(restart.is_none(), "syscall restart armed twice");
         *restart = Some(SyscallRestart {
             syscall_id,
@@ -685,6 +825,6 @@ impl TaskControlBlock {
     }
 
     pub(super) fn take_clear_child_tid(&self) -> Option<usize> {
-        self.thread.clear_child_tid.lock().take()
+        self.thread().clear_child_tid.lock().take()
     }
 }

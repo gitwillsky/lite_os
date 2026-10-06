@@ -37,6 +37,10 @@
   的固定边界转移，普通 trap 不复制 q0-q31。exit、exec、vfork、robust-list 和 group-exit
   均有明确 point of no return 与清理顺序。
 
+- 内核线程与用户 Thread 共用调度器、kernel context 切换、DriverIo/`TaskMutex`/`TaskEvent` 阻塞与
+  deadline 睡眠；它们没有 Process，不出现在 process graph。当前唯一内核线程是每个 ext4 filesystem
+  的写回线程。
+
 ## Known limits
 
 - scheduler 当前提供 Linux `SCHED_OTHER`/nice 语义子集，不包含实时调度 class。

@@ -169,6 +169,7 @@ impl Ext4FileSystem {
         &self,
         goal: u64,
         contents: &[u8],
+        kind: BlockKind,
     ) -> Result<u64, FileSystemError> {
         if contents.len() != self.block_size {
             return Err(FileSystemError::IoError);
@@ -189,7 +190,16 @@ impl Ext4FileSystem {
                 step if step == group_count => 0..goal_bit.min(limit),
                 _ => 0..limit,
             };
-            let Some(local) = range.into_iter().find(|index| !bit(&bitmap, *index)) else {
+            let first_block = self.group_first_block(group);
+            let local = {
+                let owner = self.journal.lock();
+                let journal = owner.ready_mut_ref()?;
+                range.into_iter().find(|index| {
+                    !bit(&bitmap, *index)
+                        && !journal.is_uncommitted_free(first_block + *index as u64)
+                })
+            };
+            let Some(local) = local else {
                 continue;
             };
             set_bit(&mut bitmap, local, true);
@@ -204,8 +214,11 @@ impl Ext4FileSystem {
                 let free = superblock.free_blocks_count();
                 superblock.set_free_blocks_count(free - 1);
             }
-            let block = self.group_first_block(group) + local as u64;
-            self.write_fs_block(block, contents)?;
+            let block = first_block + local as u64;
+            match kind {
+                BlockKind::Metadata => self.write_fs_block(block, contents)?,
+                BlockKind::Data => self.write_data_block(block, contents)?,
+            }
             return Ok(block);
         }
         Err(FileSystemError::NoSpace)
@@ -217,6 +230,10 @@ impl Ext4FileSystem {
     ///
     /// 范围越界、释放未分配 block 或 bitmap 损坏时返回 `InvalidFileSystem`。
     pub(super) fn free_blocks(&self, start: u64, count: u64) -> Result<(), FileSystemError> {
+        self.journal
+            .lock()
+            .ready_mut()?
+            .record_freed(start, count)?;
         let mut block = start;
         let end = start
             .checked_add(count)

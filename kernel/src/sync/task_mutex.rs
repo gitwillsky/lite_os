@@ -6,82 +6,22 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use super::WaitCompletion;
-
-/// task mutex waiter 的精确 scheduler membership identity。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TaskMutexWaitKey {
-    owner: usize,
-    ticket: u64,
-}
-
-/// scheduler 为 task-context mutex waiter 提供的 opaque target。
-pub(crate) trait TaskMutexWaitTarget: Send + Sync {
-    /// 原子发布 membership，并在 unlock 尚未发生时阻塞当前 task。
-    fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskMutexWaitKey);
-
-    /// 消费精确 membership 并使 blocked task 可运行。
-    fn wake(self: Arc<Self>, key: TaskMutexWaitKey);
-}
-
-type WaitTargetFactory = fn() -> Option<Arc<dyn TaskMutexWaitTarget>>;
-
-// OWNER: task topology 初始化后只安装一次 scheduler adapter；缺失时启动期竞争必须
-// fail-stop，不能退回 spin/yield polling。
-static WAIT_TARGET_FACTORY: spin::Once<WaitTargetFactory> = spin::Once::new();
-
-/// 安装 task mutex 唯一 scheduler adapter。
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn install_wait_target_factory(factory: WaitTargetFactory) {
-    assert!(
-        WAIT_TARGET_FACTORY.get().is_none(),
-        "task mutex wait factory installed twice"
-    );
-    WAIT_TARGET_FACTORY.call_once(|| factory);
-}
-
-fn current_wait_target() -> Option<Arc<dyn TaskMutexWaitTarget>> {
-    if let Some(target) = WAIT_TARGET_FACTORY.get().and_then(|factory| factory()) {
-        return Some(target);
-    }
-    #[cfg(test)]
-    {
-        Some(Arc::new(TestThreadTarget(std::thread::current())))
-    }
-    #[cfg(not(test))]
-    None
-}
-
-#[cfg(test)]
-struct TestThreadTarget(std::thread::Thread);
-
-#[cfg(test)]
-impl TaskMutexWaitTarget for TestThreadTarget {
-    fn sleep(self: Arc<Self>, completion: &WaitCompletion, _key: TaskMutexWaitKey) {
-        if !completion.begin_arming() || completion.finish_arming() {
-            return;
-        }
-        while !completion.is_complete() {
-            std::thread::park();
-        }
-    }
-
-    fn wake(self: Arc<Self>, _key: TaskMutexWaitKey) {
-        self.0.unpark();
-    }
-}
+use super::{
+    WaitCompletion,
+    task_wait::{TaskWaitKey, TaskWaitTarget, current_wait_target},
+};
 
 /// task mutex waiter metadata 分配失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskMutexOutOfMemory;
 
 struct Waiter {
-    key: TaskMutexWaitKey,
+    key: TaskWaitKey,
     // OWNER: completion 独立保活，使 unlock 能先释放最后一个 queue/publisher waiter 引用，
     // 再发布完成。若 token 内嵌于 waiter，arming task 可在 publisher Arc 释放前恢复，
     // 导致 preparation 无法重新取得唯一 waiter ownership。
     completion: Arc<WaitCompletion>,
-    target: Option<Arc<dyn TaskMutexWaitTarget>>,
+    target: Option<Arc<dyn TaskWaitTarget>>,
     next: spin::Mutex<Option<Arc<Waiter>>>,
 }
 
@@ -89,7 +29,7 @@ impl Waiter {
     fn allocate() -> Result<Arc<Self>, TaskMutexOutOfMemory> {
         let completion = Arc::try_new(WaitCompletion::new()).map_err(|_| TaskMutexOutOfMemory)?;
         Arc::try_new(Self {
-            key: TaskMutexWaitKey {
+            key: TaskWaitKey {
                 owner: 0,
                 ticket: 0,
             },
@@ -166,7 +106,7 @@ impl TaskMutexWaitPreparation {
                 current.checked_add(1)
             })
             .expect("task mutex waiter ticket exhausted");
-        waiter.key = TaskMutexWaitKey {
+        waiter.key = TaskWaitKey {
             owner: core::ptr::from_ref(mutex).cast::<()>() as usize,
             ticket,
         };
@@ -187,8 +127,8 @@ impl TaskMutexWaitPreparation {
 }
 
 struct Wake {
-    target: Arc<dyn TaskMutexWaitTarget>,
-    key: TaskMutexWaitKey,
+    target: Arc<dyn TaskWaitTarget>,
+    key: TaskWaitKey,
 }
 
 impl Wake {

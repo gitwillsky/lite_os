@@ -22,14 +22,14 @@ impl Process {
 
 impl TaskControlBlock {
     pub(in crate::task) fn register_private_memory_barrier(&self) {
-        self.process
+        self.process()
             .address_space()
             .private_memory_barrier_registered
             .store(true, Ordering::Release);
     }
 
     pub(in crate::task) fn private_memory_barrier_registered(&self) -> bool {
-        self.process
+        self.process()
             .address_space()
             .private_memory_barrier_registered
             .load(Ordering::Acquire)
@@ -40,7 +40,7 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [u8],
     ) -> Result<(), UserAccessError> {
-        self.process.address_space().copy_from_user(
+        self.process().address_space().copy_from_user(
             user_address,
             destination,
             self.user_fault_limits(),
@@ -53,7 +53,7 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [core::mem::MaybeUninit<u8>],
     ) -> Result<(), UserAccessError> {
-        self.process.address_space().copy_from_user_uninit(
+        self.process().address_space().copy_from_user_uninit(
             user_address,
             destination,
             self.user_fault_limits(),
@@ -65,7 +65,7 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [u8; 2],
     ) -> Result<(), UserAccessError> {
-        self.process.address_space().copy_instruction_halfword(
+        self.process().address_space().copy_instruction_halfword(
             user_address,
             destination,
             self.user_fault_limits(),
@@ -77,7 +77,7 @@ impl TaskControlBlock {
         user_address: usize,
         source: &[u8],
     ) -> Result<(), UserAccessError> {
-        self.process
+        self.process()
             .address_space()
             .copy_to_user(user_address, source, self.user_fault_limits())
     }
@@ -87,7 +87,7 @@ impl TaskControlBlock {
         user_address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.process
+        self.process()
             .address_space()
             .zero_user(user_address, length, self.user_fault_limits())
     }
@@ -97,7 +97,7 @@ impl TaskControlBlock {
         user_address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.process.address_space().validate_user_write(
+        self.process().address_space().validate_user_write(
             user_address,
             length,
             self.user_fault_limits(),
@@ -105,7 +105,7 @@ impl TaskControlBlock {
     }
 
     pub(in crate::task) fn write_clone_tid_values(&self, addresses: [Option<usize>; 2], tid: i32) {
-        self.process.address_space().write_clone_tid_values(
+        self.process().address_space().write_clone_tid_values(
             addresses,
             tid,
             self.user_fault_limits(),
@@ -117,7 +117,7 @@ impl TaskControlBlock {
         user_address: usize,
         max_len: usize,
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.process.address_space().copy_user_c_string(
+        self.process().address_space().copy_user_c_string(
             user_address,
             max_len,
             self.user_fault_limits(),
@@ -126,7 +126,7 @@ impl TaskControlBlock {
 
     /// 返回当前 AddressSpace 生命周期内不变的 arch token。
     pub(crate) fn user_token(&self) -> crate::arch::mmu::AddressSpaceToken {
-        self.process.address_space().token
+        self.process().address_space().token
     }
 
     pub(crate) fn with_futex_key<R>(
@@ -135,7 +135,7 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process.address_space().with_futex_key(
+        self.process().address_space().with_futex_key(
             address,
             private,
             self.user_fault_limits(),
@@ -149,7 +149,7 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process.address_space().with_futex_word(
+        self.process().address_space().with_futex_word(
             address,
             private,
             self.user_fault_limits(),
@@ -164,7 +164,7 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey, FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process.address_space().with_futex_requeue(
+        self.process().address_space().with_futex_requeue(
             source,
             target,
             private,
@@ -176,7 +176,7 @@ impl TaskControlBlock {
     pub(in crate::task) fn process_arguments(
         &self,
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.process.address_space().process_arguments()
+        self.process().address_space().process_arguments()
     }
 
     /// 从 Process 与 AddressSpace owner 取得一次 procfs 统计快照。
@@ -186,11 +186,11 @@ impl TaskControlBlock {
     /// comm 或 task-mutex waiter storage OOM 时返回错误。
     pub(in crate::task) fn process_statistics(&self) -> Result<ProcessStatistics, ()> {
         let (virtual_pages, resident_pages, shared_pages, text_pages, data_pages) = self
-            .process
+            .process()
             .address_space()
             .page_statistics()
             .map_err(|_| ())?;
-        let comm = self.process.comm.lock();
+        let comm = self.process().comm.lock();
         let mut comm_snapshot = alloc::vec::Vec::new();
         comm_snapshot
             .try_reserve_exact(comm.len())
@@ -198,13 +198,13 @@ impl TaskControlBlock {
         comm_snapshot.extend_from_slice(&comm);
         Ok(ProcessStatistics {
             comm: comm_snapshot,
-            start_time_us: self.process.start_time_us,
+            start_time_us: self.process().start_time_us,
             virtual_pages,
             resident_pages,
             shared_pages,
             text_pages,
             data_pages,
-            fd_size: self.process.files.lock().slot_capacity(),
+            fd_size: self.process().files.lock().slot_capacity(),
         })
     }
 }

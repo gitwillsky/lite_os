@@ -10,7 +10,7 @@ const MOUNT: &str = "kernel/src/fs/ext4/mount.rs";
 const PAGE_CACHE: &str = "kernel/src/fs/page_cache.rs";
 const VFS: &str = "kernel/src/fs/vfs.rs";
 const MUTEX: &str = "kernel/src/sync/task_mutex.rs";
-const ADAPTER: &str = "kernel/src/task/process_table/task_mutex_wait.rs";
+const ADAPTER: &str = "kernel/src/task/process_table/task_wait.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require_field(
@@ -82,12 +82,12 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     };
     for required in [
         "prepare_current_block",
-        "WaitMembership::TaskMutex(key)",
+        "WaitMembership::TaskWait(key)",
         "assert!(crate::task::processor::wake_waiting_task",
     ] {
         if !adapter.text.contains(required) {
             errors.push(format!(
-                "{ADAPTER}: task mutex scheduler adapter lost `{required}`"
+                "{ADAPTER}: task wait scheduler adapter lost `{required}`"
             ));
         }
     }

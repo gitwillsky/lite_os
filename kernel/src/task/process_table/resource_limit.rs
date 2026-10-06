@@ -113,6 +113,9 @@ impl ProcessSlotSnapshot {
 
 /// 在 runtime account 后按 Process 级 RLIMIT_CPU 投递 SIGXCPU/SIGKILL。
 pub(super) fn enforce_cpu_limit(task: &Arc<TaskControlBlock>) {
+    if task.is_kernel_thread() {
+        return;
+    }
     let runtime_us = task.process_cpu_runtime_us();
     let Some(signal) = task.resource_cpu_signal(runtime_us) else {
         return;

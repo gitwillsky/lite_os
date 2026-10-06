@@ -158,7 +158,7 @@ impl TaskControlBlock {
         replacement: Option<SignalStack>,
     ) -> Result<SignalStack, SignalStackError> {
         let user_sp = self.user_stack_pointer();
-        let mut state = self.thread.alternate_signal_stack.lock();
+        let mut state = self.thread().alternate_signal_stack.lock();
         let old = state.snapshot(user_sp);
         if let Some(replacement) = replacement {
             state.replace(user_sp, replacement)?;
@@ -187,7 +187,7 @@ impl TaskControlBlock {
         use_alternate: bool,
         frame_size: usize,
     ) -> Result<(usize, SignalStack), UserAccessError> {
-        self.thread
+        self.thread()
             .alternate_signal_stack
             .lock()
             .frame(user_sp, use_alternate, frame_size)
@@ -199,7 +199,7 @@ impl TaskControlBlock {
     ///
     /// 无返回值；普通 registration 保持不变。
     pub(super) fn commit_signal_stack_delivery(&self) {
-        let mut state = self.thread.alternate_signal_stack.lock();
+        let mut state = self.thread().alternate_signal_stack.lock();
         // SS_AUTODISARM 只在 frame 已完整写入后消费；提前清除会让 copyout fault 永久丢失
         // registration，缺失该分支则 swapcontext 离开 handler 后可能复用已失效的 altstack。
         if state.flags & SS_AUTODISARM != 0 {
@@ -221,7 +221,7 @@ impl TaskControlBlock {
         // Linux sigreturn 只把读取 ucontext 的 EFAULT 视为坏 frame；registration 本身的
         // EPERM/EINVAL/ENOMEM 被压平，避免用户修改 uc_stack 使已恢复的寄存器失效。
         let _ = self
-            .thread
+            .thread()
             .alternate_signal_stack
             .lock()
             .replace(restored_sp, saved);
@@ -229,6 +229,6 @@ impl TaskControlBlock {
 
     /// exec commit 时清除 calling Thread 的 alternate signal stack。
     pub(super) fn reset_signal_stack_for_exec(&self) {
-        *self.thread.alternate_signal_stack.lock() = AlternateSignalStack::disabled();
+        *self.thread().alternate_signal_stack.lock() = AlternateSignalStack::disabled();
     }
 }

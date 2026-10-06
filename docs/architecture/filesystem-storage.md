@@ -20,8 +20,11 @@
 - 目录以单 block 线性布局起步，满后转换为 half_md4 htree（最多两层 index）；readdir 按 hash 顺序推进。
 - open-unlinked inode 记入 orphan file slot；final Drop 只尝试非阻塞取得 mutation owner，竞争时由
   filesystem 合并 retry，下一次 task mutation 前回收一个已无 live Weak identity 的 orphan。
-- JBD2 active transaction 同时拥有 redo block set 与 allocation dirty-group bitset；commit 前一次性物化
-  primary superblock 与受影响 descriptor block。backup superblock/GDT 保持 mkfs 时的内容，由 e2fsck 维护。
+- ext4 写路径是 Linux `data=ordered` + group commit：`write`/`create`/`rename` 等 mutation 只把
+  staged metadata 与文件数据并入内存中的 running transaction 后返回；metadata 经 JBD2 原子提交，
+  数据不进 journal、在 commit record 之前直接写回 home。running transaction 由 `fsync`/`sync`、
+  journal 容量、16 MiB 数据上限或 5 秒年龄触发提交；每个 ext4 filesystem 的写回内核线程负责空闲期的
+  5 秒上限。backup superblock/GDT 保持 mkfs 时的内容，由 e2fsck 维护。
 - JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从
   primary home blocks 重新发布 superblock/GDT runtime owner，再执行 orphan recovery 与一致性扫描。
 - page cache 唯一拥有 shared file page identity、dirty/writeback 状态和 reclaim cursor；VMA 与 filesystem 通过 shared-page seam 交互。
@@ -35,7 +38,9 @@
 ## Known limits
 
 - 当前持久存储范围是单个启动卷与固定 ext4/JBD2 profile。
-- 没有通用 block scheduler、后台 writeback daemon 或多个可热插拔持久卷策略。
+- 没有通用 block scheduler 或多个可热插拔持久卷策略。
+- 已返回的写入在 `fsync`/`sync` 前最多可能丢失 5 秒（与 Linux `commit=5` 一致）；块分配仍发生在
+  `write` 时，没有 delayed allocation。
 - ext4 磁盘保存纳秒时间戳与 crtime，但 VFS metadata 只投影非负秒数；`utimensat` 的纳秒部分与
   `statx` birth time 不对用户可见。
 - orphan file 满时 open-unlinked 返回 `NoSpace`，不回退到 legacy orphan chain。

@@ -10,7 +10,7 @@ impl TaskControlBlock {
             .resource_limit(RLIMIT_DATA)
             .expect("RLIMIT_DATA must exist")
             .soft;
-        self.process
+        self.process()
             .address_space()
             .memory_set
             .lock()
@@ -27,7 +27,7 @@ impl TaskControlBlock {
     ) -> Result<usize, MemoryError> {
         let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
         let data_limit = self.resource_limit(RLIMIT_DATA).unwrap().soft;
-        self.process.address_space().map_anonymous(
+        self.process().address_space().map_anonymous(
             address,
             length,
             permission,
@@ -46,7 +46,7 @@ impl TaskControlBlock {
     ) -> Result<usize, MemoryError> {
         let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
         let data_limit = self.resource_limit(RLIMIT_DATA).unwrap().soft;
-        self.process.address_space().map_private_file(
+        self.process().address_space().map_private_file(
             address,
             permission,
             fixed_noreplace,
@@ -63,7 +63,7 @@ impl TaskControlBlock {
         source: FileMappingSource,
     ) -> Result<usize, MemoryError> {
         let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
-        self.process.address_space().map_shared_file(
+        self.process().address_space().map_shared_file(
             address,
             permission,
             fixed_noreplace,
@@ -94,7 +94,7 @@ impl TaskControlBlock {
         source: DeviceMappingSource,
     ) -> Result<usize, MemoryError> {
         let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
-        self.process.address_space().map_device(
+        self.process().address_space().map_device(
             address,
             length,
             permission,
@@ -110,7 +110,7 @@ impl TaskControlBlock {
         length: usize,
         writeback: bool,
     ) -> Result<(), MemoryError> {
-        self.process
+        self.process()
             .address_space()
             .sync_shared_mapping(address, length, writeback)
     }
@@ -120,7 +120,7 @@ impl TaskControlBlock {
         address: usize,
         access: PageFaultAccess,
     ) -> Result<PageFaultOutcome, MemoryError> {
-        self.process
+        self.process()
             .address_space()
             .handle_page_fault(address, access, self.user_fault_limits())
     }
@@ -130,7 +130,7 @@ impl TaskControlBlock {
         address: usize,
         length: usize,
     ) -> Result<(), MemoryError> {
-        self.process
+        self.process()
             .address_space()
             .unmap_user_mapping(address, length)
     }
@@ -141,7 +141,7 @@ impl TaskControlBlock {
         length: usize,
         permission: MapPermission,
     ) -> Result<(), MemoryError> {
-        self.process
+        self.process()
             .address_space()
             .protect_user_mapping(address, length, permission)
     }
@@ -152,7 +152,7 @@ impl TaskControlBlock {
         length: usize,
         advice: crate::memory::MemoryAdvice,
     ) -> Result<(), MemoryError> {
-        self.process
+        self.process()
             .address_space()
             .advise_user_mapping(address, length, advice)
     }
@@ -177,7 +177,7 @@ impl TaskControlBlock {
         fixed_noreplace: bool,
     ) -> Result<usize, MemoryError> {
         let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
-        self.process.address_space().map_shared_anonymous(
+        self.process().address_space().map_shared_anonymous(
             address,
             length,
             permission,

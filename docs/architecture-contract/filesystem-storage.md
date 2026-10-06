@@ -24,9 +24,19 @@
   `fs::ext4::metadata_csum` 独占全部 metadata checksum 公式；`Ext4FileSystem` 的 64-entry metadata
   block cache 独占 directory/htree/extent/orphan block identity 与 LRU reclaim；JBD2 journal 独占
   transaction/commit/replay；page cache 独占 cached page lifecycle。
-- JBD2 active transaction 是 allocation dirty-group bitset 的唯一 owner；bitset 必须在 transaction
-  publication 前按 group count fallible reserve，OOM 不得开始 mutation。alloc/free 只能标记 group，
-  `MutationGuard::commit` 取走 dirty owner 后一次性生成 primary superblock 与每个 dirty descriptor block；禁止每 block 重建全 GDT 或另设 pending-dirty 双轨。
+- ext4 写路径固定为 Linux `data=ordered` + group commit：每次 mutation 的 handle overlay 独占本次
+  staged metadata/data、释放的 block range 与 allocation dirty-group bitset；bitset 必须在 handle 发布前
+  按 group count fallible reserve，OOM 不得开始 mutation。`MutationGuard::commit` 一次性物化 primary
+  superblock 与每个 dirty descriptor block 后，以只移动 tree node 的方式把 overlay 原子并入唯一
+  running transaction；并入后 mutation 对内存可见且不可回滚，并入前的任何失败都只丢弃 overlay。
+- running transaction 独占全部未提交 metadata、ordered data 与未提交释放 range。metadata 经 JBD2
+  原子提交；data 不进 journal，必须在 commit record 之前写回 home 并共用同一 durability barrier。
+  未提交事务释放的 block 在提交前不得重新分配，否则崩溃后旧文件会指向新文件已写回的数据。
+- running transaction 只在以下时机提交：handle 并入后 metadata 超过单个 journal transaction 容量
+  （先提交 running，再并入）、staged data 超过 16 MiB、年龄超过 5 秒、`fsync`/`fdatasync`/`sync`。
+  每个 ext4 filesystem 在 mount 时创建一个写回内核线程（对应 Linux jbd2）：running transaction
+  由空变非空时经 `TaskEvent` 唤醒，睡到开始时刻加 5 秒后在 mutation owner 下提交；没有未提交
+  mutation 时线程无限期阻塞，不产生周期唤醒。
 - `RegularFileWrite` 的 write-sequence 与 operation gates 共同独占一次 syscall 的 position、append placement、storage transaction 和 resident-cache publication 顺序。
 - VFS namespace mutation 与 ext4 live-state transaction 使用 `TaskMutex` 逻辑 owner；其内部
   spin gate 只发布 `Available/Held/Handoff(ticket)` 与预分配 waiter 链，logical guard 可以跨
@@ -78,7 +88,7 @@
   descriptor/data flush、home checkpoint 与 clean-state write 全部在 owner lock 外执行。commit
   期间 reader 只短暂取得 staged view，cache miss 可继续访问 home device；禁止把 block I/O
   重新放回 journal spin guard。commit failure 必须清空 metadata cache 并把 journal 标记为
-  fail-stop，后续 mutation 不得另走无 journal 兼容路径。
+  fail-stop，后续 mutation 不得另走无 journal 兼容路径；`fsync`/`sync` 报告该提交失败的 EIO。
 - mount journal replay 若更新了 home blocks，必须在任何 superblock home write、orphan reclaim 或
   consistency scan 前，从 primary home blocks 重新 decode/validate superblock 与完整 GDT，验证
   immutable topology 未改变、清空 replay 前 cache identity，再一次性发布 runtime owner。禁止让
@@ -129,13 +139,18 @@
   cold-first getdents 与 warm extent mapping 测试窗口的 device read/allocation attempts 分别
   不得超过 `0/0`、`1/2`、`0/0`；固定 64-entry 线性 probe 的 CPU 成本有严格上界，当前不另设
   不稳定的 host wall-time benchmark。
-- journal barrier 保持 `dirty-start + descriptor/data durable → commit durable → home checkpoint durable`
-  三阶段；commit record 前必须存在 descriptor/data durability barrier，不能依赖同一 flush 内的
-  device write ordering。最后 clean marker 可延迟到下一 transaction 的首 barrier，crash 只会幂等
-  replay 已 durable home image。真实 counting-device gate 要求单次 1 MiB batch 保持 1 transaction 且最多
-  3 flush；固定 64 data block truncate 只允许一次 allocation metadata
+- journal barrier 保持 `dirty-start + ordered data/descriptor/metadata durable → commit durable →
+  home checkpoint durable` 三阶段；commit record 前必须存在 durability barrier，不能依赖同一 flush 内的
+  device write ordering。只有 data 而没有 metadata 的提交直接写回 home 后单次 barrier。最后 clean
+  marker 可延迟到下一 transaction 的首 barrier，crash 只会幂等 replay 已 durable home image。真实
+  counting-device gate 要求单次 1 MiB batch 在 sync 后保持 1 transaction 且最多 3 flush；100 个小文件、
+  256 次追加与 4 MiB 顺序写在 sync 后各只形成 1 个 transaction、至多 3 flush，设备写入不超过 data
+  block 数加 64（改造前分别为 200/257/65 个 transaction，数据经 journal 写两次）；固定 64 data block truncate 只允许一次 allocation metadata
   materialization，gate 上限为 32 KiB metadata preparation。
 - ext4 mapping structure gate 要求 extent lookup owner、lookup heap allocation、sparse delegation 与
   残留间接块标识分别为 `1/0/1/0`。
+- ext4 崩溃矩阵在一个 running transaction 内混合 mkdir/create/write/truncate/rename/unlink，于 sync
+  前与提交的每个 barrier 后崩溃：mount 必须成功，可见状态必须是完整旧状态或完整新状态（含 ordered
+  data 内容），且 `e2fsck -fn` 零错误。
 - ext4 conformance gate 在 fixture 副本上执行 htree 转换/两层 index、深层 extent、截断、跨目录
   rename、symlink、hard link 与 orphan crash recovery，最后要求 `e2fsck -fn` 零错误。

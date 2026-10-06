@@ -360,8 +360,8 @@ impl TaskControlBlock {
         if signal == 0 || signal > 64 || !info.is_forced_fault() {
             return Err(());
         }
-        let mut signal_mask = self.thread.signal_mask.lock();
-        let mut state = self.process.signal_state.lock();
+        let mut signal_mask = self.thread().signal_mask.lock();
+        let mut state = self.process().signal_state.lock();
         let policy = super::synchronous_fault::force_synchronous_fault(
             signal,
             state.actions[signal].handler,
@@ -371,7 +371,7 @@ impl TaskControlBlock {
             state.actions[signal] = SignalAction::default();
         }
         *signal_mask = policy.signal_mask;
-        self.thread.pending_signals.lock().queue(signal, info);
+        self.thread().pending_signals.lock().queue(signal, info);
         Ok(())
     }
 
@@ -399,19 +399,19 @@ impl TaskControlBlock {
         if signal == 0 || signal > 64 {
             return Err(());
         }
-        let mut state = self.process.signal_state.lock();
+        let mut state = self.process().signal_state.lock();
         let conflicting = signal_conflicting_mask(signal);
         if conflicting != 0 {
             state.pending.discard(conflicting);
             for thread in threads {
-                thread.thread.pending_signals.lock().discard(conflicting);
+                thread.thread().pending_signals.lock().discard(conflicting);
             }
         }
         let action = state.actions[signal];
         if action.handler == 1 {
             return Ok(());
         }
-        self.thread.pending_signals.lock().queue(signal, info);
+        self.thread().pending_signals.lock().queue(signal, info);
         Ok(())
     }
 
@@ -439,11 +439,11 @@ impl TaskControlBlock {
         if signal == 0 || signal > 64 {
             return Err(());
         }
-        let mut state = self.process.signal_state.lock();
+        let mut state = self.process().signal_state.lock();
         let conflicting = signal_conflicting_mask(signal);
         state.pending.discard(conflicting);
         for thread in threads {
-            thread.thread.pending_signals.lock().discard(conflicting);
+            thread.thread().pending_signals.lock().discard(conflicting);
         }
         if state.actions[signal].handler == 1 {
             return Ok(false);
@@ -475,7 +475,7 @@ use crate::arch::context::{SIGNAL_FRAME_SIZE, SignalFrame, SignalStack as ArchSi
 
 impl TaskControlBlock {
     fn apply_syscall_restart(&self, context: &mut UserContext) {
-        let Some(restart) = self.thread.syscall_restart.lock().take() else {
+        let Some(restart) = self.thread().syscall_restart.lock().take() else {
             return;
         };
         context.restart_syscall(restart.syscall_id, restart.args, restart.syscall_pc);
@@ -496,17 +496,17 @@ impl TaskControlBlock {
         const SA_NODEFER: usize = 0x4000_0000;
         const SA_RESETHAND: usize = 0x8000_0000;
         loop {
-            let selection_mask = *self.thread.signal_mask.lock();
+            let selection_mask = *self.thread().signal_mask.lock();
             let selected = {
-                let mut state = self.process.signal_state.lock();
-                let mut pending = self.thread.pending_signals.lock();
+                let mut state = self.process().signal_state.lock();
+                let mut pending = self.thread().pending_signals.lock();
                 pending
                     .take(!selection_mask)
                     .or_else(|| state.pending.take(!selection_mask))
                     .map(|(signal, info)| (signal, info, state.actions[signal]))
             };
             let Some((signal, signal_info, action)) = selected else {
-                self.thread.syscall_restart.lock().take();
+                self.thread().syscall_restart.lock().take();
                 return Ok(SignalDelivery::None);
             };
             if signal_is_ignored(signal, action) {
@@ -526,30 +526,30 @@ impl TaskControlBlock {
                 {
                     continue;
                 }
-                self.thread.suspend_restore_mask.lock().take();
-                self.thread
+                self.thread().suspend_restore_mask.lock().take();
+                self.thread()
                     .user_context
                     .with(|context| self.apply_syscall_restart(context));
                 return Ok(SignalDelivery::Stop(signal));
             }
             if action.handler == 0 {
-                self.thread.suspend_restore_mask.lock().take();
-                self.thread.syscall_restart.lock().take();
+                self.thread().suspend_restore_mask.lock().take();
+                self.thread().syscall_restart.lock().take();
                 return Ok(SignalDelivery::Terminate(signal));
             }
 
             let old_mask = self
-                .thread
+                .thread()
                 .suspend_restore_mask
                 .lock()
                 .take()
                 .unwrap_or(selection_mask);
 
-            let user_stack_pointer = self.thread.user_context.with(|context| {
+            let user_stack_pointer = self.thread().user_context.with(|context| {
                 if action.flags & SA_RESTART != 0 {
                     self.apply_syscall_restart(context);
                 } else {
-                    self.thread.syscall_restart.lock().take();
+                    self.thread().syscall_restart.lock().take();
                 }
                 context.stack_pointer()
             });
@@ -558,7 +558,7 @@ impl TaskControlBlock {
                 action.flags & SA_ONSTACK != 0,
                 SIGNAL_FRAME_SIZE,
             )?;
-            let frame = self.thread.user_context.with(|context| {
+            let frame = self.thread().user_context.with(|context| {
                 context.capture_signal_frame(
                     signal_info.encode(signal),
                     ArchSignalStack::new(saved_stack.sp, saved_stack.flags, saved_stack.size),
@@ -571,11 +571,11 @@ impl TaskControlBlock {
             if action.flags & SA_NODEFER == 0 {
                 new_mask |= 1u64 << (signal - 1);
             }
-            *self.thread.signal_mask.lock() = normalize_signal_mask(new_mask);
+            *self.thread().signal_mask.lock() = normalize_signal_mask(new_mask);
             if action.flags & SA_RESETHAND != 0 {
-                self.process.signal_state.lock().actions[signal] = SignalAction::default();
+                self.process().signal_state.lock().actions[signal] = SignalAction::default();
             }
-            self.thread.user_context.with(|context| {
+            self.thread().user_context.with(|context| {
                 context.enter_signal_handler(
                     crate::memory::signal_trampoline_entry(),
                     frame_address,
@@ -601,7 +601,7 @@ impl TaskControlBlock {
         let mut frame = SignalFrame::zeroed();
         self.copy_from_user(frame_address, frame.as_bytes_mut())?;
         let (result, signal_mask, signal_stack, restored_sp) =
-            self.thread.user_context.with(|context| {
+            self.thread().user_context.with(|context| {
                 let (result, signal_mask, signal_stack) = context
                     .restore_signal_frame(&frame)
                     .map_err(|_| UserAccessError::Fault)?;
@@ -612,7 +612,7 @@ impl TaskControlBlock {
                     context.stack_pointer(),
                 ))
             })?;
-        *self.thread.signal_mask.lock() = normalize_signal_mask(signal_mask);
+        *self.thread().signal_mask.lock() = normalize_signal_mask(signal_mask);
         self.restore_signal_stack(
             restored_sp,
             SignalStack {

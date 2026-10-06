@@ -166,18 +166,18 @@ fn journal_flushes_descriptor_and_data_before_commit_record() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let (image, fs) = mounted();
     image.reset_journal_order();
-    fs.root_inode()
-        .unwrap()
-        .create(
-            b"journal-precommit-barrier",
-            InodeType::File,
-            CreateMetadata {
-                mode: 0o644,
-                uid: 0,
-                gid: 0,
-            },
-        )
-        .unwrap();
+    let root = fs.root_inode().unwrap();
+    root.create(
+        b"journal-precommit-barrier",
+        InodeType::File,
+        CreateMetadata {
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+        },
+    )
+    .unwrap();
+    root.sync_storage().unwrap();
     assert!(
         image.commit_had_preflush.load(Ordering::Relaxed),
         "journal commit became writable before descriptor/data durability barrier"
@@ -201,6 +201,8 @@ fn recovery_reloads_allocation_metadata_owners_after_replay() {
             },
         )
         .unwrap();
+    // 崩溃点：commit record 已 durable、home checkpoint 尚未完成。
+    root.sync_storage().unwrap();
     drop(file);
     drop(root);
     drop(fs);
@@ -232,9 +234,12 @@ fn recovery_publishes_replayed_orphan_head_before_reclaim() {
         )
         .unwrap();
     file.write_storage(0, &[0x5a]).unwrap();
+    root.sync_storage().unwrap();
 
+    // 崩溃点：unlink 事务的 commit record 已 durable、home checkpoint 尚未完成。
     image.snapshot_after_flushes(2);
     root.unlink(b"replay-orphan-owner", false).unwrap();
+    root.sync_storage().unwrap();
     let recovered =
         Ext4FileSystem::new(image.crash_clone()).expect("mount replayed orphan transaction");
 
@@ -384,6 +389,7 @@ fn torn_uncommitted_transaction_is_discarded_instead_of_failing_mount() {
         },
     )
     .unwrap();
+    root.sync_storage().unwrap();
     let crashed = image.crash_clone();
     {
         // 模拟 descriptor 已落盘而首个 data slot 仍是旧内容的 torn write。
@@ -407,4 +413,125 @@ fn torn_uncommitted_transaction_is_discarded_instead_of_failing_mount() {
             .find_child(b"torn-transaction"),
         Err(FileSystemError::NotFound)
     ));
+}
+
+const MATRIX_FILE: CreateMetadata = CreateMetadata {
+    mode: 0o644,
+    uid: 0,
+    gid: 0,
+};
+const MATRIX_DIRECTORY: CreateMetadata = CreateMetadata {
+    mode: 0o755,
+    uid: 0,
+    gid: 0,
+};
+const BLOCK: usize = BLOCK_SIZE;
+
+/// 把 fixture 与崩溃后挂载产生的 overlay 物化为独立镜像，供 e2fsck 裁决。
+fn materialize(image: &RecoveryImage, name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("{}-{name}", std::process::id()));
+    std::fs::copy(ext4_fixture_path(), &path).expect("copy ext4 fixture");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open materialized image");
+    for (block, bytes) in image.overlay.lock().unwrap().iter() {
+        use std::io::Write;
+        file.seek(SeekFrom::Start((*block * BLOCK_SIZE) as u64))
+            .unwrap();
+        file.write_all(bytes).unwrap();
+    }
+    path
+}
+
+fn read_exact(inode: &Arc<dyn crate::fs::Inode>, offset: u64, length: usize) -> Vec<u8> {
+    let mut bytes = alloc::vec![0xEE; length];
+    assert_eq!(inode.read_storage(offset, &mut bytes).unwrap(), length);
+    bytes
+}
+
+/// 一个 running transaction 内混合 create/mkdir/write/truncate/rename/unlink，在 sync 之前与提交
+/// 过程中的每个 barrier 之后崩溃：恢复后必须是完整旧状态或完整新状态，且 e2fsck 零错误。
+#[test]
+fn crash_at_every_commit_barrier_recovers_old_or_new_state() {
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    // 提交固定为三个 barrier：descriptor/data → commit record → home checkpoint。
+    for crash_after_flush in 0..=3 {
+        let (image, fs) = mounted();
+        let root = fs.root_inode().unwrap();
+        // 已持久的基线状态。
+        let keep = root.create(b"keep", InodeType::File, MATRIX_FILE).unwrap();
+        keep.write_storage(0, &[0x4b; 8 * BLOCK]).unwrap();
+        root.create(b"victim", InodeType::File, MATRIX_FILE)
+            .unwrap()
+            .write_storage(0, &[0x56; BLOCK])
+            .unwrap();
+        root.sync_storage().unwrap();
+
+        // 同一 running transaction 中的全部 mutation。
+        let directory = root
+            .create(b"dir", InodeType::Directory, MATRIX_DIRECTORY)
+            .unwrap();
+        let directory_inode = directory.metadata().unwrap().inode;
+        directory
+            .create(b"new", InodeType::File, MATRIX_FILE)
+            .unwrap()
+            .write_storage(0, &[0x11; 2 * BLOCK])
+            .unwrap();
+        keep.truncate_storage(3 * BLOCK as u64).unwrap();
+        root.rename(b"keep", directory_inode, b"kept", false)
+            .unwrap();
+        root.unlink(b"victim", false).unwrap();
+
+        let crashed = if crash_after_flush == 0 {
+            image.snapshot_after_flushes(1);
+            image.flush().unwrap();
+            image.crash_clone()
+        } else {
+            image.snapshot_after_flushes(crash_after_flush);
+            root.sync_storage().unwrap();
+            image.crash_clone()
+        };
+        drop((keep, directory, root));
+        drop(fs);
+
+        let recovered = Ext4FileSystem::new(crashed.clone())
+            .unwrap_or_else(|error| panic!("crash point {crash_after_flush}: mount {error:?}"));
+        let root = recovered.root_inode().unwrap();
+        let committed = crash_after_flush >= 2;
+        if committed {
+            let directory = root.find_child(b"dir").expect("committed directory");
+            let new = directory.find_child(b"new").expect("committed file");
+            assert_eq!(read_exact(&new, 0, 2 * BLOCK), [0x11; 2 * BLOCK]);
+            let kept = directory.find_child(b"kept").expect("renamed file");
+            assert_eq!(kept.size(), 3 * BLOCK as u64);
+            assert_eq!(read_exact(&kept, 0, 3 * BLOCK), [0x4b; 3 * BLOCK]);
+            assert!(matches!(
+                root.find_child(b"keep"),
+                Err(FileSystemError::NotFound)
+            ));
+            assert!(matches!(
+                root.find_child(b"victim"),
+                Err(FileSystemError::NotFound)
+            ));
+        } else {
+            assert!(matches!(
+                root.find_child(b"dir"),
+                Err(FileSystemError::NotFound)
+            ));
+            let keep = root
+                .find_child(b"keep")
+                .expect("uncommitted rename discarded");
+            assert_eq!(keep.size(), 8 * BLOCK as u64);
+            assert_eq!(read_exact(&keep, 0, 8 * BLOCK), [0x4b; 8 * BLOCK]);
+            assert!(root.find_child(b"victim").is_ok());
+        }
+        // mount 期间的 orphan/replay 结果同样必须持久化后再交给 e2fsck。
+        root.sync_storage().unwrap();
+        drop(root);
+        drop(recovered);
+        let path = materialize(&crashed, &format!("crash-matrix-{crash_after_flush}.img"));
+        crate::ext4_conformance_tests::e2fsck_clean(&path);
+        std::fs::remove_file(path).unwrap();
+    }
 }

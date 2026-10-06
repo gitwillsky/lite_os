@@ -69,16 +69,16 @@ impl TaskControlBlock {
 
         // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
         // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。
-        let kernel_stack_top = self.thread.kernel_stack.get_top();
-        let old_context_binding = self.thread.user_context.binding();
-        let old_address_space = self.process.replace_address_space(new_address_space);
-        self.process
+        let kernel_stack_top = self.execution.kernel_stack.get_top();
+        let old_context_binding = self.thread().user_context.binding();
+        let old_address_space = self.process().replace_address_space(new_address_space);
+        self.process()
             .address_space()
-            .rebind_user_context(&self.thread.user_context, TRAP_CONTEXT);
-        self.process.paths.lock().executable = new_executable;
-        *self.process.comm.lock() = new_comm;
+            .rebind_user_context(&self.thread().user_context, TRAP_CONTEXT);
+        self.process().paths.lock().executable = new_executable;
+        *self.process().comm.lock() = new_comm;
         self.close_cloexec_files();
-        self.process
+        self.process()
             .signal_state
             .lock()
             .reset_dispositions_for_exec();
@@ -95,7 +95,7 @@ impl TaskControlBlock {
             user_sp,
             KERNEL_SPACE.wait().lock().kernel_trap_token(),
             kernel_stack_top,
-            self.thread.kernel_trap_handler,
+            self.thread().kernel_trap_handler,
         ));
         // exec 不继承旧 image 的 live FP/NEON state；AArch64 在显式 asm boundary 清零，
         // RISC-V state 已由上面的新 UserContext image 覆盖。缺失该 hook 会跨 exec 泄漏寄存器。
@@ -119,6 +119,6 @@ impl TaskControlBlock {
     ///
     /// fork 继承且 exec 原子替换的 main ELF opened entry。
     pub(crate) fn process_executable(&self) -> Arc<crate::fs::OpenedFile> {
-        self.process.paths.lock().executable.clone()
+        self.process().paths.lock().executable.clone()
     }
 }

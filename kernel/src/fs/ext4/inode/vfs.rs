@@ -151,7 +151,7 @@ impl Inode for Ext4Inode {
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
-        self.fs.device.flush().map_err(block_error)
+        self.fs.sync_journal()
     }
 
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {

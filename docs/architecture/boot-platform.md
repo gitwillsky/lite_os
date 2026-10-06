@@ -28,6 +28,10 @@
 - SBI mask、Sv39、CSR 与汇编都是 backend mechanism，不是通用 kernel contract。
 - RFENCE 使用每 hart 单槽 request/range/ack mailbox；全局 sender lock 串行发布，目标 hart 按 SBI `[start,size)` 逐页 fence 后 ack。whole-address-space 只使用规范定义的两个 sentinel。
 
+- 启动装配顺序：设备初始化 → `task::initialize`（processor topology 与 wait adapter）→
+  `fs::mount_root`（由 fs 选择根文件系统类型并创建其写回内核线程）→ `task::spawn_init`。composition
+  root 只注入 `KernelThreadSupport`，不依赖具体文件系统类型。
+
 ## Known limits
 
 - 没有 QEMU `virt` 之外的 machine backend，也没有真实硬件启动声明。

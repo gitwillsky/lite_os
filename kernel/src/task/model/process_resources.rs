@@ -20,7 +20,7 @@ impl TaskControlBlock {
     ///
     /// 当前目录的共享 inode。
     pub(crate) fn working_directory(&self) -> Arc<OpenedFile> {
-        self.process.paths.lock().cwd.clone()
+        self.process().paths.lock().cwd.clone()
     }
 
     /// 原子替换当前 Process 的工作目录 identity。
@@ -29,7 +29,7 @@ impl TaskControlBlock {
     ///
     /// - `opened`: 已由 VFS 证明为目录的 opened entry。
     pub(crate) fn set_working_directory(&self, opened: Arc<OpenedFile>) {
-        self.process.paths.lock().cwd = opened;
+        self.process().paths.lock().cwd = opened;
     }
 
     /// 返回当前 Process 可继承的 controlling Terminal identity。
@@ -38,7 +38,7 @@ impl TaskControlBlock {
     ///
     /// 与 `/dev/tty` 当前解析目标相同的 Arc。
     pub(crate) fn terminal(&self) -> Arc<Terminal> {
-        self.process.terminal.lock().clone()
+        self.process().terminal.lock().clone()
     }
 
     /// 投影当前 Process controlling terminal 的 Linux proc stat identity。
@@ -51,7 +51,7 @@ impl TaskControlBlock {
     ///
     /// `(tty_nr, tpgid)`；handle 未控制该 session 时为 `(0, -1)`。
     pub(crate) fn terminal_proc_identity(&self, session: usize) -> (u32, isize) {
-        self.process.terminal.lock().proc_identity(session)
+        self.process().terminal.lock().proc_identity(session)
     }
 
     /// 在成功 TIOCSCTTY 后原子替换 Process controlling Terminal。
@@ -64,7 +64,7 @@ impl TaskControlBlock {
     ///
     /// 无返回值；后续 fork 与 `/dev/tty` lookup 观察同一 Arc。
     pub(in crate::task) fn set_terminal(&self, terminal: Arc<Terminal>) {
-        *self.process.terminal.lock() = terminal;
+        *self.process().terminal.lock() = terminal;
     }
 
     /// 返回当前 Process/thread group ID。
@@ -73,7 +73,10 @@ impl TaskControlBlock {
     ///
     /// TGID；Linux getpid 与 process-directed lookup 使用该值。
     pub(crate) fn tgid(&self) -> usize {
-        self.process.tgid.0
+        if self.is_kernel_thread() {
+            return self.execution.tid;
+        }
+        self.process().tgid.0
     }
 
     /// 返回当前 Thread ID。
@@ -82,6 +85,6 @@ impl TaskControlBlock {
     ///
     /// 与 TGID 数值独立、由 ThreadContext 唯一拥有的 TID。
     pub(crate) fn tid(&self) -> usize {
-        self.thread.tid
+        self.execution.tid
     }
 }

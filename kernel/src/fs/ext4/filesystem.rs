@@ -1,5 +1,5 @@
 use super::*;
-use crate::fs::FileSystemStatistics;
+use crate::fs::{FileSystemStatistics, KernelThreadSupport};
 
 impl FileSystem for Ext4FileSystem {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -50,5 +50,76 @@ impl FileSystem for Ext4FileSystem {
             fragment_size: self.block_size as u64,
             flags: 0,
         })
+    }
+}
+
+impl Ext4FileSystem {
+    /// 提交 running transaction；`fsync`、`fdatasync` 与 `sync` 的持久化边界。
+    ///
+    /// 每次提交都以 home checkpoint 后的 barrier 结束，因此已提交事务都已 durable；提交后不再
+    /// 需要额外 flush。没有 running transaction 时不产生任何 I/O。
+    ///
+    /// # Errors
+    ///
+    /// mutation owner 取得失败返回 `OutOfMemory`；提交 I/O 失败返回错误并使 journal fail-stop。
+    pub(super) fn sync_journal(&self) -> Result<(), FileSystemError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        self.commit_running_transaction()
+    }
+
+    /// 创建本 filesystem 的写回内核线程（对应 Linux 每个 journal 的 jbd2 线程）。
+    ///
+    /// # Errors
+    ///
+    /// 线程主体或内核线程分配失败时返回 `OutOfMemory`。
+    pub(in crate::fs) fn start_writeback(
+        self: &Arc<Self>,
+        threads: KernelThreadSupport,
+    ) -> Result<(), FileSystemError> {
+        let filesystem = self.clone();
+        let sleep_until = threads.sleep_until;
+        let body = alloc::boxed::Box::try_new(move || filesystem.run_writeback_daemon(sleep_until))
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        (threads.spawn)("ext4-writeback", body).map_err(|_| FileSystemError::OutOfMemory)
+    }
+
+    /// 写回线程主体：running transaction 出现后，在其年龄达到提交间隔时提交。
+    ///
+    /// 1. 没有未提交 mutation 时阻塞在 `commit_event`，不产生周期唤醒；
+    /// 2. 被唤醒后睡到 running transaction 开始时刻加提交间隔；
+    /// 3. 取得 mutation owner 并提交此刻累积的全部 mutation。若期间已由 `fsync` 或容量阈值
+    ///    提交，第 3 步为空操作；之后新建的 running transaction 会再次 signal。
+    ///
+    /// # Parameters
+    ///
+    /// - `sleep_until`: composition root 注入的 absolute monotonic deadline 睡眠；fs 不依赖 task。
+    fn run_writeback_daemon(self: Arc<Self>, sleep_until: fn(u64)) -> ! {
+        loop {
+            self.commit_event.wait();
+            let started = self
+                .journal
+                .lock()
+                .ready_mut_ref()
+                .ok()
+                .and_then(|journal| journal.running_started_ns());
+            let Some(started) = started else {
+                continue;
+            };
+            sleep_until(started.saturating_add(journal::COMMIT_INTERVAL_NS));
+            if let Err(error) = self.commit_aged() {
+                error!("ext4 writeback commit failed: {:?}", error);
+            }
+        }
+    }
+
+    fn commit_aged(&self) -> Result<(), FileSystemError> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        self.commit_running_transaction()
     }
 }

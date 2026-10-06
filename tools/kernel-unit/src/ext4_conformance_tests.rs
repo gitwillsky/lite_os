@@ -120,7 +120,7 @@ fn mount(path: &PathBuf) -> Arc<Ext4FileSystem> {
     Ext4FileSystem::new(Arc::new(WritableImage(Mutex::new(file)))).expect("mount ext4 image")
 }
 
-fn e2fsck_clean(path: &PathBuf) {
+pub(crate) fn e2fsck_clean(path: &PathBuf) {
     let e2fsck =
         std::env::var_os("LITEOS_E2FSCK").expect("LITEOS_E2FSCK is unset; run `make verify-unit`");
     let output = Command::new(e2fsck)
@@ -280,6 +280,8 @@ fn kernel_written_htree_extents_and_orphans_pass_e2fsck() {
         .unwrap();
     open.write_storage(0, &[7; 3 * FS_BLOCK]).unwrap();
     root.unlink(b"open-unlinked", false).unwrap();
+    // 写回是延迟的：只有 sync 之后的状态承诺在崩溃后可见。
+    root.sync_storage().unwrap();
     core::mem::forget(open);
     drop((big, moved, nested, directory, root));
     core::mem::forget(fs);
@@ -301,6 +303,8 @@ fn kernel_written_htree_extents_and_orphans_pass_e2fsck() {
         check.iter().all(|byte| *byte == 18),
         "block 36 holds extent 18"
     );
+    // 没有 unmount：sync 是 e2fsck 裁决前唯一的持久化边界。
+    root.sync_storage().unwrap();
     drop((big, root));
     drop(remounted);
     e2fsck_clean(&path);
@@ -331,6 +335,7 @@ fn htree_second_index_level_passes_e2fsck() {
     for index in [1, 6001, LINKS - 1] {
         assert!(directory.find_child(&name(index)).is_ok());
     }
+    root.sync_storage().unwrap();
     drop((target, directory, root));
     drop(fs);
     e2fsck_clean(&path);

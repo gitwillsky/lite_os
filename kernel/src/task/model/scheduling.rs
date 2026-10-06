@@ -100,7 +100,7 @@ pub(crate) enum WaitMembership {
     AdvisoryLock(u64),
     Poll(u64),
     DriverIo(crate::drivers::io_completion::IoWaitKey),
-    TaskMutex(crate::sync::TaskMutexWaitKey),
+    TaskWait(crate::sync::TaskWaitKey),
 }
 
 /// blocked task 恢复时由唯一 wait registration 发布的结果。
@@ -590,7 +590,7 @@ impl TaskControlBlock {
         let active_runtime_us =
             active_now_us.map_or(0, |now_us| policy.active_runtime_delta(now_us));
         (
-            self.thread.start_time_us,
+            self.execution.start_time_us,
             policy.nice,
             policy.get_dynamic_priority(),
             policy.total_runtime_us.saturating_add(active_runtime_us),
@@ -615,7 +615,7 @@ impl TaskControlBlock {
         let active_runtime_us = policy.active_runtime_delta(now_us);
         let thread_runtime_us = policy.total_runtime_us.saturating_add(active_runtime_us);
         let process_runtime_us = self
-            .process
+            .process()
             .cpu_runtime_us
             .load(Ordering::Relaxed)
             .saturating_add(active_runtime_us);

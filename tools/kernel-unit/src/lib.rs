@@ -130,6 +130,12 @@ mod timer {
     pub(crate) fn get_realtime_ns() -> u64 {
         1_800_000_000_000_000_000
     }
+
+    /// 固定 monotonic 时刻：host 测试中 running transaction 永不因年龄到期，提交只由容量、
+    /// 数据上限或显式 sync 触发，使设备成本可确定复现。
+    pub(crate) fn get_time_ns() -> u64 {
+        1_000_000_000
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +155,10 @@ mod ext4_conformance_tests;
 // inline module 上的 `#[path]` 把其子模块的基准目录设为 kernel 的真实 `qemu_virt/`。
 #[cfg(test)]
 #[path = "../../../kernel/src/platform/qemu_virt"]
+#[allow(
+    dead_code,
+    reason = "host tests read only the decoded facts they assert; boot-only fields stay unused"
+)]
 mod qemu_virt {
     pub(crate) mod virtio_mmio;
 

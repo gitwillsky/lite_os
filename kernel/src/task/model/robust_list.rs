@@ -34,7 +34,7 @@ impl TaskControlBlock {
         if length != 3 * core::mem::size_of::<usize>() {
             return Err(());
         }
-        *self.thread.robust_list.lock() = (head != 0).then_some(head);
+        *self.thread().robust_list.lock() = (head != 0).then_some(head);
         Ok(())
     }
 
@@ -105,11 +105,11 @@ impl TaskControlBlock {
     }
 
     pub(in crate::task) fn cleanup_robust_list(&self) {
-        let Some(head) = self.thread.robust_list.lock().take() else {
+        let Some(head) = self.thread().robust_list.lock().take() else {
             return;
         };
         let fault_limits = self.user_fault_limits();
-        let address_space = self.process.address_space();
+        let address_space = self.process().address_space();
         let mut header = [0u8; 3 * core::mem::size_of::<usize>()];
         if address_space
             .copy_from_user(head, &mut header, fault_limits)

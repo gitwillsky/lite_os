@@ -4,10 +4,11 @@ use crate::arch::context::KernelContext;
 use crate::{
     cpu,
     fallible_tree::{FallibleMap, NodeSlot, VacantEntry},
+    memory::MemoryError,
     sync::{IrqMutex, LocalIrqGuard},
     task::{
-        PendingSignal, Processor, RunState, StopResume, TaskControlBlock, WaitMembership,
-        WaitResult,
+        KernelThreadBody, PendingSignal, Processor, RunState, StopResume, TaskControlBlock,
+        WaitMembership, WaitResult,
         pid::{INIT_PID, PID_MAX, ProcessId},
         processor::{begin_preempt_running_task, enqueue_new_task},
         with_current_processor,
@@ -33,7 +34,7 @@ mod procfs;
 mod resource_limit;
 mod signal;
 mod snapshot_staging;
-pub(in crate::task) mod task_mutex_wait;
+pub(in crate::task) mod task_wait;
 mod terminal_access;
 mod thread_activation;
 mod thread_clone;
@@ -354,6 +355,32 @@ static PROCESS_TABLE: ProcessTable = ProcessTable::new();
 /// - `task`: TGID 必须为 INIT_PID 且尚未进入 process graph。
 pub(super) fn add_init_task(task: Arc<TaskControlBlock>) {
     PROCESS_TABLE.add_init(task);
+}
+
+/// 创建并调度一个只在内核态运行的线程。
+///
+/// 内核线程从 PID allocator 取得 TID（allocator 单调且永不复用，因此不与任何用户 TID/TGID
+/// 冲突），但不进入 process graph：`kill`、`wait`、`/proc` 都看不到它，也没有信号与 rlimit。
+///
+/// # Parameters
+///
+/// - `name`: 诊断名称。
+/// - `body`: 永不返回的线程主体；可以阻塞在 `TaskMutex`、`TaskEvent`、DriverIo 与 `sleep_until`。
+///
+/// # Errors
+///
+/// TID 耗尽或 kernel stack 分配失败时返回 `OutOfMemory`，不发布任何 scheduler state。
+pub(crate) fn spawn_kernel_thread(
+    name: &'static str,
+    body: KernelThreadBody,
+) -> Result<(), MemoryError> {
+    let tid = PROCESS_TABLE
+        .allocate_pid()
+        .ok_or(MemoryError::OutOfMemory)?;
+    let task = Arc::try_new(TaskControlBlock::new_kernel_thread(tid.0, name, body)?)
+        .map_err(|_| MemoryError::OutOfMemory)?;
+    enqueue_new_task(task);
+    Ok(())
 }
 
 /// 为一次 ppoll 在多个 I/O source index 上发布唯一 wait registration。

@@ -41,7 +41,7 @@ impl ReceivedFdTransaction<'_> {
         let limit = self.task.file_descriptor_limit();
         let reservation = {
             self.task
-                .process
+                .process()
                 .files
                 .lock()
                 .reserve_received(file, cloexec, limit)
@@ -94,7 +94,7 @@ impl Drop for ReceivedFdTransaction<'_> {
 
 impl TaskControlBlock {
     pub(crate) fn fd_get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
-        self.process.files.lock().get(fd)
+        self.process().files.lock().get(fd)
     }
 
     pub(crate) fn fd_allocate(
@@ -102,7 +102,7 @@ impl TaskControlBlock {
         ofd: Arc<OpenFileDescription>,
         cloexec: bool,
     ) -> Result<usize, FileDescriptorError> {
-        self.process
+        self.process()
             .files
             .lock()
             .allocate(ofd, 0, cloexec, self.file_descriptor_limit())
@@ -114,7 +114,7 @@ impl TaskControlBlock {
         second: Arc<OpenFileDescription>,
         cloexec: bool,
     ) -> Result<(usize, usize), FileDescriptorError> {
-        self.process.files.lock().allocate_pair(
+        self.process().files.lock().allocate_pair(
             first,
             second,
             cloexec,
@@ -139,7 +139,7 @@ impl TaskControlBlock {
         &self,
         descriptors: &[usize],
     ) -> Result<alloc::vec::Vec<Arc<OpenFileDescription>>, FileDescriptorError> {
-        self.process.files.lock().capture_many(descriptors)
+        self.process().files.lock().capture_many(descriptors)
     }
 
     /// 创建一次 recvmsg 独占、尚未包含 reservation 的 SCM_RIGHTS transaction。
@@ -179,7 +179,7 @@ impl TaskControlBlock {
     ///
     /// 无返回值；错误 token fail-stop。
     fn fd_publish_received(&self, descriptors: &[usize]) {
-        self.process.files.lock().publish_received(descriptors);
+        self.process().files.lock().publish_received(descriptors);
     }
 
     /// 回滚 copyout 失败的 receive reservation。
@@ -192,11 +192,11 @@ impl TaskControlBlock {
     ///
     /// 锁外 cleanup capability；caller 丢弃即可完成 descriptor_refs cleanup。
     fn fd_cancel_received(&self, fd: usize) -> CancelledFileReservation {
-        self.process.files.lock().cancel_received(fd)
+        self.process().files.lock().cancel_received(fd)
     }
 
     pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
-        let descriptor = self.process.files.lock().detach(fd)?;
+        let descriptor = self.process().files.lock().detach(fd)?;
         let ofd = descriptor.finish_close();
         vfs().release_record_locks_for_file(self.tgid(), &ofd);
         Ok(())
@@ -208,7 +208,7 @@ impl TaskControlBlock {
     ///
     /// 无返回值；OFD Drop 在 files lock 外执行并可唤醒 pipe peer。
     pub(crate) fn close_all_files(&self) {
-        let files = self.process.files.lock().take_all();
+        let files = self.process().files.lock().take_all();
         vfs().release_process_record_locks(self.tgid());
         drop(files);
     }
@@ -224,7 +224,7 @@ impl TaskControlBlock {
             core::array::from_fn(|_| None);
         loop {
             let count = self
-                .process
+                .process()
                 .files
                 .lock()
                 .take_cloexec_batch(&mut cursor, &mut batch);
@@ -247,7 +247,7 @@ impl TaskControlBlock {
         minimum: usize,
         cloexec: bool,
     ) -> Result<usize, FileDescriptorError> {
-        self.process
+        self.process()
             .files
             .lock()
             .duplicate(old, minimum, cloexec, self.file_descriptor_limit())
@@ -260,7 +260,7 @@ impl TaskControlBlock {
         cloexec: bool,
     ) -> Result<usize, FileDescriptorError> {
         let replaced = {
-            let mut files = self.process.files.lock();
+            let mut files = self.process().files.lock();
             files.duplicate_to(old, new, cloexec, self.file_descriptor_limit())?
         };
         if let Some(descriptor) = replaced {
@@ -271,11 +271,11 @@ impl TaskControlBlock {
     }
 
     pub(crate) fn fd_flags(&self, fd: usize) -> Result<u32, ()> {
-        self.process.files.lock().descriptor_flags(fd)
+        self.process().files.lock().descriptor_flags(fd)
     }
 
     pub(crate) fn fd_set_flags(&self, fd: usize, flags: u32) -> Result<(), ()> {
-        self.process.files.lock().set_descriptor_flags(fd, flags)
+        self.process().files.lock().set_descriptor_flags(fd, flags)
     }
 
     /// 在 Process fd-table owner lock 内解析两个 descriptor 并执行一次操作。
@@ -295,7 +295,7 @@ impl TaskControlBlock {
         second: usize,
         operation: impl FnOnce(Arc<OpenFileDescription>, Arc<OpenFileDescription>) -> R,
     ) -> Option<R> {
-        let files = self.process.files.lock();
+        let files = self.process().files.lock();
         let first = files.get(first)?;
         let second = files.get(second)?;
         Some(operation(first, second))
@@ -309,7 +309,7 @@ impl TaskControlBlock {
     pub(crate) fn process_file_descriptors(
         &self,
     ) -> Option<alloc::vec::Vec<ProcFileDescriptorSnapshot>> {
-        let descriptions = self.process.files.lock().snapshot().ok()?;
+        let descriptions = self.process().files.lock().snapshot().ok()?;
         let mut snapshots = alloc::vec::Vec::new();
         snapshots.try_reserve_exact(descriptions.len()).ok()?;
         for (fd, ofd) in descriptions {

@@ -2,9 +2,16 @@
 mod wait_completion;
 pub(crate) use wait_completion::WaitCompletion;
 
+#[path = "../../../kernel/src/sync/task_wait.rs"]
+mod task_wait;
+
 #[path = "../../../kernel/src/sync/task_mutex.rs"]
 mod task_mutex;
 pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard};
+
+#[path = "../../../kernel/src/sync/task_event.rs"]
+mod task_event;
+pub(crate) use task_event::TaskEvent;
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

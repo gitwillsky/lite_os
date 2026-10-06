@@ -53,16 +53,75 @@ pub(super) struct Journal {
     checksum_seed: u32,
     sequence: u32,
     active: Option<ActiveTransaction>,
+    running: RunningTransaction,
     failed: bool,
 }
 
 /// 已提交事务按日志顺序的 (home block, image) 列表。
 type ReplaySet = Vec<(u64, Vec<u8>)>;
 
+/// 同一 transaction 层暂存的完整 home-block image。
+///
+/// 一个 block 在同一层只属于一种：未提交事务释放的 block 不得重新分配（见
+/// [`Journal::is_uncommitted_free`]），因此 metadata 与 data 不会在同层交换身份。
+#[derive(Default)]
+pub(super) struct StagedBlocks {
+    /// 经 journal 原子提交的 metadata。
+    metadata: FallibleMap<u64, Vec<u8>>,
+    /// Linux `data=ordered` 文件数据：不进 journal，在 commit record 之前直接写回 home。
+    data: FallibleMap<u64, Vec<u8>>,
+}
+
+impl StagedBlocks {
+    pub(super) fn get(&self, block: u64) -> Option<&Vec<u8>> {
+        self.metadata.get(&block).or_else(|| self.data.get(&block))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.metadata.is_empty() && self.data.is_empty()
+    }
+}
+
+/// 暂存 image 的提交方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlockKind {
+    Metadata,
+    Data,
+}
+
+/// 单个 mutation 的 handle overlay；abort 直接丢弃，commit 时整体并入 running transaction。
 struct ActiveTransaction {
-    writes: FallibleMap<u64, Vec<u8>>,
+    staged: StagedBlocks,
+    /// 已释放、所属 transaction 尚未提交的 block range：`start -> end`（不含）。
+    ///
+    /// ordered data 在 commit record 之前写回 home。若未提交事务释放的 block 被另一文件重新分配并
+    /// 写入数据，崩溃后 replay 不包含该释放，旧文件就会指向新文件的数据；因此这些 range 在提交前
+    /// 不得分配（Linux 以同样规则保护 `data=ordered`）。
+    freed: FallibleMap<u64, u64>,
     allocation_dirty: AllocationDirty,
 }
+
+/// 尚未提交的 group-commit transaction。
+#[derive(Default)]
+pub(super) struct RunningTransaction {
+    staged: StagedBlocks,
+    /// 本事务累积的未提交释放 range；语义同 [`ActiveTransaction`] 的 `freed`。
+    freed: FallibleMap<u64, u64>,
+    /// 首个 mutation 并入的 monotonic 时刻；空事务为 0。
+    started_ns: u64,
+}
+
+impl RunningTransaction {
+    fn is_empty(&self) -> bool {
+        self.staged.is_empty()
+    }
+}
+
+/// running transaction 的最长年龄（Linux `commit=` 默认 5 秒）；超过即由提交线程或下一次
+/// mutation 提交，限定崩溃时丢失的已返回写入窗口。
+pub(super) const COMMIT_INTERVAL_NS: u64 = 5_000_000_000;
+/// running transaction 暂存数据的上限；超过即同步提交，限定 ordered data 占用的内核内存。
+const RUNNING_DATA_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Linux `jbd2_superblock_csum`：checksum 字段按零参与，覆盖完整 1024-byte superblock。
 fn superblock_checksum(superblock: &[u8]) -> u32 {
@@ -155,47 +214,56 @@ impl Journal {
             checksum_seed,
             sequence,
             active: None,
+            running: RunningTransaction::default(),
             failed: false,
         })
     }
 
-    /// 读取 active transaction 中覆盖指定 home block 的最新 staged bytes。
+    /// 按 handle overlay → running transaction 的新旧顺序读取 staged image。
     pub(super) fn copy_staged(&self, block: u64, output: &mut [u8]) -> bool {
-        let Some(bytes) = self
+        let bytes = self
             .active
             .as_ref()
-            .and_then(|active| active.writes.get(&block))
-        else {
+            .and_then(|active| active.staged.get(block))
+            .or_else(|| self.running.staged.get(block));
+        let Some(bytes) = bytes else {
             return false;
         };
         output.copy_from_slice(bytes);
         true
     }
 
-    /// 把一次完整 home-block image 去重加入 active redo write-set。
+    /// 把一次完整 home-block image 去重加入当前 handle overlay。
     ///
     /// # Errors
     ///
-    /// journal aborted、无 active transaction、容量耗尽或 block size 不匹配时返回错误。
+    /// journal aborted、无 active handle、单个 handle 的 metadata 超过 journal 容量或 block size
+    /// 不匹配时返回错误。
     pub(super) fn stage(
         &mut self,
         block: u64,
         bytes: &[u8],
         block_size: usize,
+        kind: BlockKind,
     ) -> Result<(), FileSystemError> {
         if self.failed || bytes.len() != block_size {
             return Err(FileSystemError::IoError);
         }
-        let writes = &mut self
+        let capacity = test_stage_capacity(self.layout.write_capacity());
+        let staged = &mut self
             .active
             .as_mut()
             .ok_or(FileSystemError::InvalidOperation)?
-            .writes;
+            .staged;
+        let writes = match kind {
+            BlockKind::Metadata => &mut staged.metadata,
+            BlockKind::Data => &mut staged.data,
+        };
         if let Some(image) = writes.get_mut(&block) {
             image.copy_from_slice(bytes);
             return Ok(());
         }
-        if writes.len() >= test_stage_capacity(self.layout.write_capacity()) {
+        if kind == BlockKind::Metadata && writes.len() >= capacity {
             return Err(FileSystemError::NoSpace);
         }
         let mut image = Vec::new();
@@ -209,6 +277,37 @@ impl Journal {
         Ok(())
     }
 
+    /// 在当前 handle 记录一段释放的 block range。
+    ///
+    /// # Errors
+    ///
+    /// 无 active handle 或 range node 分配失败时返回错误。
+    pub(super) fn record_freed(&mut self, start: u64, count: u64) -> Result<(), FileSystemError> {
+        let end = start
+            .checked_add(count)
+            .ok_or(FileSystemError::InvalidFileSystem)?;
+        let freed = &mut self
+            .active
+            .as_mut()
+            .ok_or(FileSystemError::InvalidOperation)?
+            .freed;
+        let entry =
+            FallibleMap::try_prepare(start, end).map_err(|_| FileSystemError::OutOfMemory)?;
+        freed.commit_vacant(entry);
+        Ok(())
+    }
+
+    /// block 是否由尚未提交的 handle 或 running transaction 释放。
+    pub(super) fn is_uncommitted_free(&self, block: u64) -> bool {
+        let contains = |ranges: &FallibleMap<u64, u64>| {
+            ranges.floor(&block).is_some_and(|(_, end)| block < *end)
+        };
+        self.active
+            .as_ref()
+            .is_some_and(|active| contains(&active.freed))
+            || contains(&self.running.freed)
+    }
+
     fn begin(&mut self, group_count: usize) -> Result<(), FileSystemError> {
         if self.failed {
             return Err(FileSystemError::IoError);
@@ -217,7 +316,8 @@ impl Journal {
             return Err(FileSystemError::InvalidOperation);
         }
         self.active = Some(ActiveTransaction {
-            writes: FallibleMap::new(),
+            staged: StagedBlocks::default(),
+            freed: FallibleMap::new(),
             allocation_dirty: AllocationDirty::try_new(group_count)?,
         });
         Ok(())
@@ -243,13 +343,71 @@ impl Journal {
     }
 
     fn abort(&mut self, fs: &Ext4FileSystem) {
-        if let Some(writes) = &self.active {
+        if let Some(active) = &self.active {
             let mut cache = fs.metadata_cache.lock();
-            for (block, _) in &writes.writes {
+            for (block, _) in active
+                .staged
+                .metadata
+                .iter()
+                .chain(active.staged.data.iter())
+            {
                 cache.invalidate(*block);
             }
         }
         self.active = None;
+    }
+
+    /// handle 并入后 running metadata 是否仍在单个 journal transaction 容量内。
+    fn active_fits_running(&self) -> bool {
+        let Some(active) = &self.active else {
+            return true;
+        };
+        let added = active
+            .staged
+            .metadata
+            .iter()
+            .filter(|(block, _)| !self.running.staged.metadata.contains_key(block))
+            .count();
+        self.running.staged.metadata.len() + added <= self.layout.write_capacity()
+    }
+
+    /// 把 handle overlay 原子并入 running transaction。
+    ///
+    /// 只移动既有 tree node（`take_entry`/`commit_vacant`），不分配内存，因此 handle 成功后不会
+    /// 留下半并入状态。
+    ///
+    /// # Returns
+    ///
+    /// running transaction 由空变为非空时为 `true`，调用方据此唤醒提交线程。
+    fn merge_active(&mut self, now_ns: u64) -> bool {
+        let Some(mut active) = self.active.take() else {
+            return false;
+        };
+        debug_assert!(active.allocation_dirty.is_empty());
+        let was_empty = self.running.is_empty();
+        move_entries(
+            &mut active.staged.metadata,
+            &mut self.running.staged.metadata,
+        );
+        move_entries(&mut active.staged.data, &mut self.running.staged.data);
+        move_entries(&mut active.freed, &mut self.running.freed);
+        if was_empty && !self.running.is_empty() {
+            self.running.started_ns = now_ns;
+            return true;
+        }
+        false
+    }
+
+    /// running transaction 是否已到达年龄或数据上限。
+    fn running_commit_due(&self, now_ns: u64, block_size: usize) -> bool {
+        !self.running.is_empty()
+            && (now_ns.saturating_sub(self.running.started_ns) >= COMMIT_INTERVAL_NS
+                || self.running.staged.data.len() * block_size >= RUNNING_DATA_LIMIT_BYTES)
+    }
+
+    /// 非空 running transaction 的开始时刻。
+    pub(super) fn running_started_ns(&self) -> Option<u64> {
+        (!self.running.is_empty()).then_some(self.running.started_ns)
     }
 
     fn journal_read(
@@ -397,10 +555,18 @@ impl Journal {
     fn commit_inner(
         &mut self,
         fs: &Ext4FileSystem,
-        writes: &FallibleMap<u64, Vec<u8>>,
+        staged: &StagedBlocks,
     ) -> Result<(), FileSystemError> {
-        if writes.is_empty() {
+        if staged.is_empty() {
             return Ok(());
+        }
+        let writes = &staged.metadata;
+        if writes.is_empty() {
+            // 纯覆盖已映射 block 的数据没有需要排序的 metadata：写回 home 后单次 barrier 即持久。
+            for (block, bytes) in &staged.data {
+                fs.write_fs_block_home(*block, bytes)?;
+            }
+            return fs.device.flush().map_err(block_error);
         }
         record_test_transaction();
         let tag_capacity = self.layout.tags_per_descriptor();
@@ -411,6 +577,11 @@ impl Journal {
         );
         let sequence = self.sequence;
         self.write_state(fs, 1, sequence)?;
+        // ordered data 与 descriptor/metadata image 共用 commit record 前的 durability barrier；
+        // 缺失它时崩溃可留下 durable commit 与旧 data，replay 后 metadata 指向未写入的 block。
+        for (block, bytes) in &staged.data {
+            fs.write_fs_block_home(*block, bytes)?;
+        }
         let uuid = fs.superblock.lock().s_uuid;
         let tail = fs.block_size - JBD2_BLOCK_TAIL_SIZE;
         let mut cursor = 1;
@@ -712,7 +883,17 @@ impl<'a> MutationGuard<'a> {
     ///
     /// # Errors
     ///
-    /// journal 容量或 block I/O/FLUSH 失败时返回错误并 fail-stop 后续 mutation。
+    /// 把本次 mutation 原子并入 running transaction，并在到期时提交。
+    ///
+    /// 1. 物化 allocation metadata 到 handle overlay；
+    /// 2. running 无法再容纳该 handle 的 metadata 时，先提交 running（handle 仍可 abort）；
+    /// 3. 无分配地并入 running，此后 mutation 对内存可见且不可回滚；
+    /// 4. running 达到年龄或数据上限时同步提交。
+    ///
+    /// # Errors
+    ///
+    /// 第 2 步失败时 guard drop 回滚本次 mutation；第 4 步失败时 journal 已 fail-stop，
+    /// 后续 mutation 全部失败。
     pub(super) fn commit(mut self) -> Result<(), FileSystemError> {
         let allocation_dirty = self
             .fs
@@ -721,8 +902,23 @@ impl<'a> MutationGuard<'a> {
             .ready_mut()?
             .take_allocation_dirty()?;
         self.fs.write_dirty_allocation_metadata(&allocation_dirty)?;
-        commit_owner::JournalCommit::begin(self.fs)?.commit()?;
+        if !self.fs.journal.lock().ready_mut()?.active_fits_running() {
+            self.fs.commit_running_transaction()?;
+        }
+        let now = crate::timer::get_time_ns();
+        let (started, due) = {
+            let mut owner = self.fs.journal.lock();
+            let journal = owner.ready_mut()?;
+            let started = journal.merge_active(now);
+            (started, journal.running_commit_due(now, self.fs.block_size))
+        };
         self.committed = true;
+        if started {
+            self.fs.commit_event.signal();
+        }
+        if due {
+            self.fs.commit_running_transaction()?;
+        }
         Ok(())
     }
 }
@@ -743,5 +939,38 @@ impl Drop for MutationGuard<'_> {
         if let Some(number) = self.discarded_inode {
             self.fs.inode_cache.lock().remove(&number);
         }
+    }
+}
+
+/// 把 `source` 的全部 node 移入 `target`；同 key 时以 `source` 的新 image 覆盖。
+fn move_entries<V>(source: &mut FallibleMap<u64, V>, target: &mut FallibleMap<u64, V>) {
+    while let Some(key) = source.first_key_value().map(|(key, _)| *key) {
+        let entry = source
+            .take_entry(&key)
+            .expect("first key must remain present while moving");
+        match target.get_mut(&key) {
+            Some(existing) => *existing = entry.into_value(),
+            None => target.commit_vacant(entry),
+        }
+    }
+}
+
+impl Ext4FileSystem {
+    /// 同步提交当前 running transaction；调用方必须持有 mutation owner。
+    ///
+    /// # Errors
+    ///
+    /// journal 不可用或提交 I/O 失败时返回错误，journal 进入 fail-stop。
+    pub(super) fn commit_running_transaction(&self) -> Result<(), FileSystemError> {
+        if self
+            .journal
+            .lock()
+            .ready_mut()?
+            .running_started_ns()
+            .is_none()
+        {
+            return Ok(());
+        }
+        commit_owner::JournalCommit::begin(self)?.commit()
     }
 }

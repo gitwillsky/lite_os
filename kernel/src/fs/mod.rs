@@ -26,7 +26,6 @@ pub(crate) use directory::{
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
 };
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent, EpollMemberships};
-pub(crate) use ext4::Ext4FileSystem;
 pub(crate) use file::{
     CancelledFileReservation, CharacterDevice, Console, DetachedFileDescriptor,
     FileDescriptorError, FileDescriptorTable, KmsgDeviceRead, MAX_FILE_DESCRIPTORS, O_ACCMODE,
@@ -145,4 +144,38 @@ pub(crate) trait FileSystem: Send + Sync {
     ///
     /// snapshot 所需的 owner wait metadata 分配失败时返回 `OutOfMemory`。
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
+}
+
+/// task 注入的内核线程创建入口：诊断名称与永不返回的主体。
+pub(crate) type SpawnKernelThread = fn(
+    &'static str,
+    alloc::boxed::Box<dyn FnOnce() -> ! + Send>,
+) -> Result<(), crate::memory::MemoryError>;
+
+/// fs 创建后台内核线程所需的 task 能力；fs 不依赖 task，由 composition root 注入。
+#[derive(Clone, Copy)]
+pub(crate) struct KernelThreadSupport {
+    /// 创建并调度一个永不返回的内核线程。
+    pub(crate) spawn: SpawnKernelThread,
+    /// 阻塞当前 task 到 absolute monotonic deadline。
+    pub(crate) sleep_until: fn(u64),
+}
+
+/// 在 `device` 上挂载根文件系统，并启动其后台写回。
+///
+/// 当前唯一支持的持久根是固定 profile 的 ext4（见 standards baseline）；新增磁盘文件系统时
+/// 在这里按 superblock 探测选择，而不是让 composition root 依赖具体类型。
+///
+/// # Errors
+///
+/// 设备上不是受支持的 ext4、根已挂载或写回线程创建失败时返回错误。
+pub(crate) fn mount_root(
+    device: Arc<dyn crate::drivers::block::BlockDevice>,
+    threads: KernelThreadSupport,
+) -> Result<(), FileSystemError> {
+    let filesystem = ext4::Ext4FileSystem::new(device)?;
+    vfs()
+        .mount_root(b"root", filesystem.clone())
+        .map_err(|_| FileSystemError::AlreadyExists)?;
+    filesystem.start_writeback(threads)
 }

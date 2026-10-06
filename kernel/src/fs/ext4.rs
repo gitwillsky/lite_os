@@ -21,7 +21,7 @@ use super::{
 use crate::{
     drivers::block::{BLOCK_SIZE, BlockDevice, BlockError},
     fallible_tree::FallibleMap,
-    sync::TaskMutex,
+    sync::{TaskEvent, TaskMutex},
 };
 
 fn block_error(error: BlockError) -> FileSystemError {
@@ -102,7 +102,7 @@ use cost_test_support::{
 use directory_cursor::{DirectoryCursor, RecordPosition};
 use dirhash::HashSignedness;
 use inode::Ext4Inode;
-use journal::{Journal, JournalOwner, MutationGuard};
+use journal::{BlockKind, Journal, JournalOwner, MutationGuard};
 use metadata_cache::MetadataBlockCache;
 use orphan::OrphanFile;
 
@@ -562,8 +562,11 @@ pub(crate) struct Ext4FileSystem {
     // OWNER: ext4 journal 同时拥有唯一 active transaction write-set 与 recovery sequence；
     // 缺失该 owner 会让 home metadata 与 commit record 形成两套不可恢复的写入状态。
     journal: Mutex<JournalOwner>,
-    // OWNER: orphan file 的物理 block 与 inode→slot 索引只由 mutation owner 修改；缺失索引会
-    // 让每次 unlink/reclaim 线性扫描全部 orphan block。
+    // OWNER: running transaction 由空变非空时唤醒写回线程；缺失时空闲期写入不会在 5 秒内持久，
+    // 而无条件周期唤醒会在没有脏数据时持续打断空闲 CPU。
+    commit_event: TaskEvent,
+    // OWNER: orphan file 的不可变布局（物理 block 与 checksum seed）；slot 内容只经 journal-aware
+    // metadata cache 读取，缺失它会让 unlink/reclaim 无法定位持久 orphan 记录。
     orphan: Mutex<OrphanFile>,
     // OWNER: this filesystem alone maps a filesystem block identity to reusable directory/extent
     // bytes. Writes update an existing identity; free/abort invalidate it, preventing block reuse

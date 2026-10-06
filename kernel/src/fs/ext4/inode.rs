@@ -209,7 +209,7 @@ impl Ext4Inode {
                 let mut data = try_zeroed(self.fs.block_size)?;
                 self.fs.read_fs_block(block, &mut data)?;
                 data[(size % block_size) as usize..].fill(0);
-                self.fs.write_fs_block(block, &data)?;
+                self.fs.write_data_block(block, &data)?;
             }
             // 2. 释放 keep 之后的全部 extent 与空 tree 节点。
             let mut inode = mutation.inode(self)?;

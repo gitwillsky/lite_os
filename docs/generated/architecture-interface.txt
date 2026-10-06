@@ -1807,7 +1807,7 @@ kernel/src/fs/epoll/ready.rs :: pub (crate) impl Epoll :: fn ready_snapshot (& s
 kernel/src/fs/epoll/ready.rs :: pub (super) impl Epoll :: fn refresh_locked (state : & mut EpollState , key : InterestKey)
 kernel/src/fs/epoll/ready.rs :: pub (super) impl Epoll :: fn refresh_source_locked (state : & mut EpollState , key : InterestKey) -> bool
 kernel/src/fs/ext4.rs :: pub (crate) struct Ext4FileSystem
-kernel/src/fs/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_block (& self , goal : u64 , contents : & [u8] ,) -> Result < u64 , FileSystemError >
+kernel/src/fs/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_block (& self , goal : u64 , contents : & [u8] , kind : BlockKind ,) -> Result < u64 , FileSystemError >
 kernel/src/fs/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_inode (& self , preferred_group : usize , directory : bool ,) -> Result < u32 , FileSystemError >
 kernel/src/fs/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn block_bitmap (& self , group : usize) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn count_free (bitmap : & [u8] , limit : usize) -> usize
@@ -1834,6 +1834,7 @@ kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_from (device : & Arc < dyn BlockDevice > , fs_block_size : usize , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_home (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_metadata_block (& self , fs_block_id : u64 ,) -> Result < Arc < Vec < u8 > > , FileSystemError >
+kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_data_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block_home (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/checksum.rs :: pub (crate) fn crc32c (mut crc : u32 , bytes : & [u8]) -> u32
@@ -1897,6 +1898,8 @@ kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn root (&
 kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn sector_delta (& self) -> i64
 kernel/src/fs/ext4/extent.rs :: pub (super) struct Extent
 kernel/src/fs/ext4/extent.rs :: pub (super) struct ExtentTree < 'a >
+kernel/src/fs/ext4/filesystem.rs :: pub (in crate :: fs) impl Ext4FileSystem :: fn start_writeback (self : & Arc < Self > , threads : KernelThreadSupport ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext4/filesystem.rs :: pub (super) impl Ext4FileSystem :: fn sync_journal (& self) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/htree.rs :: pub (super) const HTREE_EOF_POS : u64 = i64 :: MAX as u64
 kernel/src/fs/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn append_directory_block (& self , mutation : & mut MutationGuard < '_ > ,) -> Result < (u32 , u64) , FileSystemError >
 kernel/src/fs/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_add (& self , mutation : & mut MutationGuard < '_ > , child : u32 , name : & [u8] , file_type : u8 ,) -> Result < () , FileSystemError >
@@ -1932,24 +1935,35 @@ kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn create_mode (kind : InodeType
 kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn file_type (kind : InodeType) -> u8
 kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn from_file_type (file_type : u8) -> InodeType
 kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn from_mode (mode : u16) -> InodeType
+kernel/src/fs/ext4/journal.rs :: enum BlockKind :: Data
+kernel/src/fs/ext4/journal.rs :: enum BlockKind :: Metadata
+kernel/src/fs/ext4/journal.rs :: pub (super) const COMMIT_INTERVAL_NS : u64 = 5_000_000_000
+kernel/src/fs/ext4/journal.rs :: pub (super) enum BlockKind
+kernel/src/fs/ext4/journal.rs :: pub (super) impl Ext4FileSystem :: fn commit_running_transaction (& self) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn copy_staged (& self , block : u64 , output : & mut [u8]) -> bool
+kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn is_uncommitted_free (& self , block : u64) -> bool
 kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn load (fs : & Arc < Ext4FileSystem >) -> Result < Self , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn mark_allocation_dirty (& mut self , group : usize) -> Result < () , FileSystemError >
+kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn record_freed (& mut self , start : u64 , count : u64) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn recover (& mut self , fs : & Ext4FileSystem) -> Result < () , FileSystemError >
-kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u64 , bytes : & [u8] , block_size : usize ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn running_started_ns (& self) -> Option < u64 >
+kernel/src/fs/ext4/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u64 , bytes : & [u8] , block_size : usize , kind : BlockKind ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin_after < T > (fs : & 'a Ext4FileSystem , prepare : impl FnOnce () -> Result < T , FileSystemError > ,) -> Result < (Self , T) , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn discard_inode_on_abort (& mut self , number : u32) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn inode < 'mutation , 'inode > (& 'mutation mut self , inode : & 'inode Ext4Inode ,) -> Result < InodeMutation < 'mutation , 'inode > , FileSystemError >
 kernel/src/fs/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn try_begin (fs : & 'a Ext4FileSystem) -> Result < Option < Self > , FileSystemError >
+kernel/src/fs/ext4/journal.rs :: pub (super) impl StagedBlocks :: fn get (& self , block : u64) -> Option < & Vec < u8 > >
 kernel/src/fs/ext4/journal.rs :: pub (super) struct Journal
 kernel/src/fs/ext4/journal.rs :: pub (super) struct MutationGuard < 'a >
+kernel/src/fs/ext4/journal.rs :: pub (super) struct RunningTransaction
+kernel/src/fs/ext4/journal.rs :: pub (super) struct StagedBlocks
 kernel/src/fs/ext4/journal.rs :: pub (super) use commit_owner :: JournalOwner
 kernel/src/fs/ext4/journal/codec.rs :: pub (super) fn be32 (bytes : & [u8] , offset : usize) -> Result < u32 , FileSystemError >
 kernel/src/fs/ext4/journal/codec.rs :: pub (super) fn put_be32 (bytes : & mut [u8] , offset : usize , value : u32) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/journal/codec.rs :: pub (super) fn put_header (bytes : & mut [u8] , kind : u32 , sequence : u32 ,) -> Result < () , FileSystemError >
-kernel/src/fs/ext4/journal/commit_owner.rs :: enum JournalOwner :: Committing (Arc < FallibleMap < u64 , Vec < u8 > > >)
+kernel/src/fs/ext4/journal/commit_owner.rs :: enum JournalOwner :: Committing (Arc < StagedBlocks >)
 kernel/src/fs/ext4/journal/commit_owner.rs :: enum JournalOwner :: Ready (Journal)
 kernel/src/fs/ext4/journal/commit_owner.rs :: enum JournalOwner :: Unavailable
 kernel/src/fs/ext4/journal/commit_owner.rs :: pub (in crate :: fs :: ext4) enum JournalOwner
@@ -1957,6 +1971,7 @@ kernel/src/fs/ext4/journal/commit_owner.rs :: pub (in crate :: fs :: ext4) impl 
 kernel/src/fs/ext4/journal/commit_owner.rs :: pub (in crate :: fs :: ext4) impl JournalOwner :: fn copy_staged (& self , block : u64 , output : & mut [u8]) -> bool
 kernel/src/fs/ext4/journal/commit_owner.rs :: pub (in crate :: fs :: ext4) impl JournalOwner :: fn install (& mut self , journal : Journal)
 kernel/src/fs/ext4/journal/commit_owner.rs :: pub (in crate :: fs :: ext4) impl JournalOwner :: fn ready_mut (& mut self) -> Result < & mut Journal , FileSystemError >
+kernel/src/fs/ext4/journal/commit_owner.rs :: pub (in crate :: fs :: ext4) impl JournalOwner :: fn ready_mut_ref (& self) -> Result < & Journal , FileSystemError >
 kernel/src/fs/ext4/journal/commit_owner.rs :: pub (super) impl JournalCommit < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
 kernel/src/fs/ext4/journal/commit_owner.rs :: pub (super) impl JournalCommit < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/journal/commit_owner.rs :: pub (super) struct JournalCommit < 'a >
@@ -2334,14 +2349,18 @@ kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: fsid : [u32 ; 2]
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: magic : u64
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: name_length : u64
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: type_name : & 'static str
+kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: sleep_until : fn (u64)
+kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: spawn : SpawnKernelThread
 kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
+kernel/src/fs/mod.rs :: pub (crate) fn mount_root (device : Arc < dyn crate :: drivers :: block :: BlockDevice > , threads : KernelThreadSupport ,) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: pub (crate) struct FileSystemStatistics
+kernel/src/fs/mod.rs :: pub (crate) struct KernelThreadSupport
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
+kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str , alloc :: boxed :: Box < dyn FnOnce () -> ! + Send > ,) -> Result < () , crate :: memory :: MemoryError >
 kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use devpts :: DevPtsFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent , EpollMemberships }
-kernel/src/fs/mod.rs :: pub (crate) use ext4 :: Ext4FileSystem
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , CharacterDevice , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , KmsgDeviceRead , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , character_write_chunk , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , Inode , InodeMetadata , InodeType , StorageWriter }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
@@ -3996,9 +4015,14 @@ kernel/src/sync/mod.rs :: pub (crate) struct IrqMutex < T : ? Sized >
 kernel/src/sync/mod.rs :: pub (crate) struct IrqMutexGuard < 'a , T : ? Sized >
 kernel/src/sync/mod.rs :: pub (crate) struct LocalIrqGuard
 kernel/src/sync/mod.rs :: pub (crate) struct LocalIrqTransfer
-kernel/src/sync/mod.rs :: pub (crate) use task_mutex :: { TaskMutex , TaskMutexGuard , TaskMutexWaitKey , TaskMutexWaitPreparation , TaskMutexWaitTarget , install_wait_target_factory as install_task_mutex_wait_target_factory , }
+kernel/src/sync/mod.rs :: pub (crate) use task_event :: TaskEvent
+kernel/src/sync/mod.rs :: pub (crate) use task_mutex :: { TaskMutex , TaskMutexGuard , TaskMutexWaitPreparation }
+kernel/src/sync/mod.rs :: pub (crate) use task_wait :: { TaskWaitKey , TaskWaitTarget , install_wait_target_factory }
 kernel/src/sync/mod.rs :: pub (crate) use wait_completion :: WaitCompletion
-kernel/src/sync/task_mutex.rs :: pub (crate) fn install_wait_target_factory (factory : WaitTargetFactory)
+kernel/src/sync/task_event.rs :: pub (crate) impl TaskEvent :: const fn new () -> Self
+kernel/src/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn signal (& self)
+kernel/src/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait (& self)
+kernel/src/sync/task_event.rs :: pub (crate) struct TaskEvent
 kernel/src/sync/task_mutex.rs :: pub (crate) impl TaskMutex < T > :: const fn new (value : T) -> Self
 kernel/src/sync/task_mutex.rs :: pub (crate) impl TaskMutex < T > :: fn lock (& self) -> Result < TaskMutexGuard < '_ , T > , TaskMutexOutOfMemory >
 kernel/src/sync/task_mutex.rs :: pub (crate) impl TaskMutex < T > :: fn lock_prepared (& self , preparation : & mut TaskMutexWaitPreparation ,) -> TaskMutexGuard < '_ , T >
@@ -4007,11 +4031,15 @@ kernel/src/sync/task_mutex.rs :: pub (crate) impl TaskMutexWaitPreparation :: fn
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutex < T : ? Sized >
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexGuard < 'a , T : ? Sized >
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexOutOfMemory
-kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexWaitKey
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexWaitPreparation
-kernel/src/sync/task_mutex.rs :: pub (crate) trait TaskMutexWaitTarget
-kernel/src/sync/task_mutex.rs :: trait TaskMutexWaitTarget :: fn sleep (self : Arc < Self > , completion : & WaitCompletion , key : TaskMutexWaitKey)
-kernel/src/sync/task_mutex.rs :: trait TaskMutexWaitTarget :: fn wake (self : Arc < Self > , key : TaskMutexWaitKey)
+kernel/src/sync/task_wait.rs :: pub (crate) fn install_wait_target_factory (factory : WaitTargetFactory)
+kernel/src/sync/task_wait.rs :: pub (crate) struct TaskWaitKey
+kernel/src/sync/task_wait.rs :: pub (crate) trait TaskWaitTarget
+kernel/src/sync/task_wait.rs :: pub (super) TaskWaitKey :: owner : usize
+kernel/src/sync/task_wait.rs :: pub (super) TaskWaitKey :: ticket : u64
+kernel/src/sync/task_wait.rs :: pub (super) fn current_wait_target () -> Option < Arc < dyn TaskWaitTarget > >
+kernel/src/sync/task_wait.rs :: trait TaskWaitTarget :: fn sleep (self : Arc < Self > , completion : & WaitCompletion , key : TaskWaitKey)
+kernel/src/sync/task_wait.rs :: trait TaskWaitTarget :: fn wake (self : Arc < Self > , key : TaskWaitKey)
 kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: const fn new () -> Self
 kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn begin_arming (& self) -> bool
 kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn complete (& self) -> bool
@@ -4444,16 +4472,19 @@ kernel/src/task/memory_barrier.rs :: pub (crate) fn complete_pending ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn register_private_memory_barrier ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn synchronize_private_memory () -> bool
 kernel/src/task/memory_barrier.rs :: pub (super) fn initialize ()
-kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : Arc < dyn Console > ,)
+kernel/src/task/mod.rs :: pub (crate) fn initialize ()
 kernel/src/task/mod.rs :: pub (crate) fn initialize_interrupt_state ()
+kernel/src/task/mod.rs :: pub (crate) fn spawn_init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) mod signal_number
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
+kernel/src/task/mod.rs :: pub (crate) use model :: KernelThreadBody
 kernel/src/task/mod.rs :: pub (crate) use model :: { CredentialUpdateError , IoStatistics , PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ReceivedFdTransaction , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use process_table :: *
 kernel/src/task/mod.rs :: pub (crate) use process_table :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
 kernel/src/task/mod.rs :: pub (crate) use process_table :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerFileClock , create_posix_timer , create_timer_fd , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
+kernel/src/task/mod.rs :: pub (in crate :: task) fn run_kernel_thread () -> !
 kernel/src/task/mod.rs :: pub (in crate :: task) use model :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: enum RunState :: Blocked
 kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : crate :: cpu :: CpuId , }
@@ -4484,6 +4515,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_ch
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < SignalAction > ,) -> Result < SignalAction , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
 kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
+kernel/src/task/model.rs :: pub (crate) type KernelThreadBody  = alloc :: boxed :: Box < dyn FnOnce () -> ! + Send >
 kernel/src/task/model.rs :: pub (crate) use alternate_signal_stack :: { SignalStack , SignalStackError }
 kernel/src/task/model.rs :: pub (crate) use credentials :: CredentialUpdateError
 kernel/src/task/model.rs :: pub (crate) use file_descriptions :: ReceivedFdTransaction
@@ -4492,8 +4524,10 @@ kernel/src/task/model.rs :: pub (crate) use resource_limits :: { RLIM_INFINITY ,
 kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState , WaitMembership , WaitResult }
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn clear_parent_death_signal (& self)
+kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn is_kernel_thread (& self) -> bool
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn mark_parent_death (& self , parent_tgid : usize)
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn parent_death_signal (& self , replacement : Option < usize >) -> usize
+kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn take_kernel_thread_body (& self) -> KernelThreadBody
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn take_parent_death (& self) -> Option < (usize , usize) >
 kernel/src/task/model.rs :: pub (in crate :: task) use resource_limits :: RLIMIT_NICE
 kernel/src/task/model.rs :: pub (in crate :: task) use scheduling :: { CpuAffinity , ReadyRetirement , ReadyTransition }
@@ -4501,6 +4535,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_proc
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_kernel_thread (tid : usize , name : & 'static str , body : KernelThreadBody ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_pending_signal (& self , mask : u64) -> Option < (usize , PendingSignal) >
@@ -4711,7 +4746,7 @@ kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Futex (u64)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Pipe (u64)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Poll (u64)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Signal (u64)
-kernel/src/task/model/scheduling.rs :: enum WaitMembership :: TaskMutex (crate :: sync :: TaskMutexWaitKey)
+kernel/src/task/model/scheduling.rs :: enum WaitMembership :: TaskWait (crate :: sync :: TaskWaitKey)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Vfork (usize)
 kernel/src/task/model/scheduling.rs :: enum WaitResult :: Interrupted
 kernel/src/task/model/scheduling.rs :: enum WaitResult :: OutOfMemory
@@ -4845,6 +4880,7 @@ kernel/src/task/process_table.rs :: pub (crate) enum SignalWaitError
 kernel/src/task/process_table.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/process_table.rs :: pub (crate) fn run_tasks () -> !
 kernel/src/task/process_table.rs :: pub (crate) fn sleep_until (deadline_ns : u64) -> WaitResult
+kernel/src/task/process_table.rs :: pub (crate) fn spawn_kernel_thread (name : & 'static str , body : KernelThreadBody ,) -> Result < () , MemoryError >
 kernel/src/task/process_table.rs :: pub (crate) fn suspend_current_and_run_next ()
 kernel/src/task/process_table.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/process_table.rs :: pub (crate) fn wait_for_poll (mut keys : alloc :: vec :: Vec < PollWaitKey > , deadline : Option < u64 > , ready : impl FnOnce () -> bool ,) -> WaitResult
@@ -4870,7 +4906,7 @@ kernel/src/task/process_table.rs :: pub (crate) use vfork :: { ProcessCloneError
 kernel/src/task/process_table.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , release_child_status , wait_child , }
 kernel/src/task/process_table.rs :: pub (crate) use wait_key :: PollWaitKey
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod advisory_lock
-kernel/src/task/process_table.rs :: pub (in crate :: task) mod task_mutex_wait
+kernel/src/task/process_table.rs :: pub (in crate :: task) mod task_wait
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod timer_queue
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod vfork
 kernel/src/task/process_table.rs :: pub (in crate :: task) use futex :: futex_wake_with_key
@@ -5034,7 +5070,7 @@ kernel/src/task/process_table/snapshot_staging.rs :: enum SnapshotCapacity :: Ca
 kernel/src/task/process_table/snapshot_staging.rs :: enum SnapshotCapacity :: Retry { minimum : usize }
 kernel/src/task/process_table/snapshot_staging.rs :: pub (super) const fn snapshot_capacity (capacity : usize , required : usize) -> SnapshotCapacity
 kernel/src/task/process_table/snapshot_staging.rs :: pub (super) enum SnapshotCapacity
-kernel/src/task/process_table/task_mutex_wait.rs :: pub (in crate :: task) fn initialize ()
+kernel/src/task/process_table/task_wait.rs :: pub (in crate :: task) fn initialize ()
 kernel/src/task/process_table/terminal_access.rs :: enum TerminalAccessError :: Io
 kernel/src/task/process_table/terminal_access.rs :: enum TerminalAccessError :: Restart
 kernel/src/task/process_table/terminal_access.rs :: pub (crate) enum TerminalAccessError

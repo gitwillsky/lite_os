@@ -10,12 +10,21 @@
 - ProcessTable process graph 独占 identity、parent/child、creator-Thread、group/session、exit/wait
   与 process timer relation；`parent.children`、global `TID -> TGID`、creator children 与
   `(SID, PGID) -> members` 是同一 graph owner 的 projection，不得复制成第二套 lifecycle state。
+- `TaskControlBlock` 由共有 `ExecutionContext`（TID、kernel stack、kernel context）与
+  `TaskKind::{User, Kernel}` 组成。只有 `User` 拥有 Process 与 user-mode thread state；内核线程只运行
+  `run_kernel_thread` 主体，从不进入 user trap、syscall、signal delivery 或 process lifecycle，因此
+  `process()`/`thread()` 对内核线程不可达。`kind` 必须先于 `execution` 声明，使 user context binding
+  先于 kernel stack backing 析构。
+- 内核线程 TID 取自单调、永不复用的 PID allocator，但不进入 process graph：`kill`、`wait`、`/proc`
+  不可见，没有信号、CPU rlimit 与用户地址空间；`tgid()` 返回自身 TID。
 - `WaitRegistry` 独占全部 wait registration 与 source index；固定 16 个 shard 只按稳定
   source identity 路由，registration 的 exact key list 是跨 shard claim/cancel 的唯一反向
   metadata。signal disposition/pending 分别由 Process/Thread 对应 signal state 独占。
-- `sync::TaskMutex` 独占 task-only blocking owner 的 FIFO ticket、wait chain 与 handoff；task
-  domain 只实现 opaque `TaskMutexWaitTarget`，把完整 `(owner address, ticket)` 投影为唯一
-  `WaitMembership::TaskMutex`。scheduler adapter 在 processor topology 后只安装一次；缺失、
+- `sync::TaskMutex` 独占 task-only blocking owner 的 FIFO ticket、wait chain 与 handoff；
+  `sync::TaskEvent` 独占单等待者自动复位事件的 pending/waiter/completion。两者共用
+  `sync::task_wait` 的唯一 scheduler adapter：task domain 只实现 opaque `TaskWaitTarget`，把完整
+  `(owner address, ticket)` 投影为唯一 `WaitMembership::TaskWait`。`TaskEvent` 先登记 waiter 再复查
+  pending，signal 先发布 pending 再取走 waiter，任一交错都不丢失唤醒。scheduler adapter 在 processor topology 后只安装一次；缺失、
   重复安装、ticket 回绕或 exact wake mismatch 都必须 fail-stop，不能退回 runnable polling。
 
 ## Interface
@@ -55,6 +64,10 @@
   预分配 waiter。
 
 ## Failure and cleanup
+
+- `task::spawn_kernel_thread` 在 TID、kernel stack 或主体分配失败时返回 `OutOfMemory` 且不发布任何
+  scheduler state。内核线程首次运行时显式打开本地中断：新执行体首次恢复时的中断状态取决于前一个
+  outgoing task，缺失时主体会在屏蔽中断下运行并延迟 tick 与 I/O completion。
 
 - wait ID 由单一 AtomicU64 无锁签发；全部 source node 与 registration storage 在 shard
   lock 外准备。publication 先进入 `Arming`，readiness/backend/signal 复查只在 shard lock

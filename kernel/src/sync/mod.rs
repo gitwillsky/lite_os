@@ -10,12 +10,13 @@ use core::{
     sync::atomic::{AtomicU64, Ordering, compiler_fence},
 };
 
+mod task_event;
 mod task_mutex;
+mod task_wait;
 mod wait_completion;
-pub(crate) use task_mutex::{
-    TaskMutex, TaskMutexGuard, TaskMutexWaitKey, TaskMutexWaitPreparation, TaskMutexWaitTarget,
-    install_wait_target_factory as install_task_mutex_wait_target_factory,
-};
+pub(crate) use task_event::TaskEvent;
+pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
+pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, install_wait_target_factory};
 pub(crate) use wait_completion::WaitCompletion;
 
 // OWNER: 该原子只分配跨 I/O source 可比较的 readiness generation，不发布其他内存。

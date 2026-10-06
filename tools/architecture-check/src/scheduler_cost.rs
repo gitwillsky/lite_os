@@ -30,7 +30,7 @@ fn measure(root: &Path) -> Result<SchedulerCost, String> {
     let limits = read(root, LIMIT_SOURCE)?;
     let ready_queue = read(root, READY_QUEUE_SOURCE)?;
     let preemption_policy = read(root, PREEMPTION_POLICY_SOURCE)?;
-    let legacy = limits.contains("self.process.resource_limits.lock().cpu_signal(runtime_us)")
+    let legacy = limits.contains("self.process().resource_limits.lock().cpu_signal(runtime_us)")
         && !model.contains("cpu_limit_active: AtomicBool");
     if legacy {
         return Ok(SchedulerCost {
@@ -42,9 +42,9 @@ fn measure(root: &Path) -> Result<SchedulerCost, String> {
         });
     }
     let fast_path = model.contains("cpu_limit_active: AtomicBool")
-        && limits.contains("if !self.process.cpu_limit_active.load(")
+        && limits.contains("if !self.process().cpu_limit_active.load(")
         && limits.contains("return None;")
-        && limits.contains("self.process.resource_limits.lock().cpu_signal(runtime_us)");
+        && limits.contains("self.process().resource_limits.lock().cpu_signal(runtime_us)");
     if fast_path {
         return Ok(SchedulerCost {
             unlimited_cpu_limit_locks: 0,

@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc};
 
 use crate::{
     InodeType,
@@ -277,20 +277,37 @@ fn truncate_then_reuse_cannot_resurrect_cached_block_bytes() {
         .unwrap();
     first.truncate_storage(0).unwrap();
 
+    // 1. data=ordered：未提交事务释放的 block 在提交前不得重新分配，否则崩溃后旧文件会指向
+    //    新文件已写回 home 的数据。
     let second = root
         .create(b"cache-reuse-second", InodeType::File, metadata)
         .unwrap();
-    assert_eq!(second.write_storage(offset, &[0xa5]).unwrap(), 1);
-    let second_mapping = TestMappedInode::open(fs, &[b"cache-reuse-second"])
+    assert_eq!(second.write_storage(offset, &[0x3c]).unwrap(), 1);
+    let second_mapping = TestMappedInode::open(fs.clone(), &[b"cache-reuse-second"])
+        .unwrap()
+        .map_repeated(12, 2)
+        .unwrap();
+    assert_ne!(
+        second_mapping, first_mapping,
+        "uncommitted free must not be reallocated"
+    );
+
+    // 2. 提交后释放的 block 可复用，且新 owner 读到的是自己的数据而不是缓存中的旧 image。
+    root.sync_storage().unwrap();
+    let third = root
+        .create(b"cache-reuse-third", InodeType::File, metadata)
+        .unwrap();
+    assert_eq!(third.write_storage(offset, &[0xa5]).unwrap(), 1);
+    let third_mapping = TestMappedInode::open(fs, &[b"cache-reuse-third"])
         .unwrap()
         .map_repeated(12, 2)
         .unwrap();
     assert_eq!(
-        second_mapping, first_mapping,
-        "fixture must exercise physical block reuse"
+        third_mapping, first_mapping,
+        "fixture must exercise physical block reuse after commit"
     );
     let mut byte = [0];
-    assert_eq!(second.read_storage(offset, &mut byte).unwrap(), 1);
+    assert_eq!(third.read_storage(offset, &mut byte).unwrap(), 1);
     assert_eq!(byte, [0xa5]);
 }
 
@@ -360,6 +377,7 @@ fn one_mibibyte_write_has_bounded_transaction_barriers() {
         completed += count;
         storage_calls += 1;
     }
+    root.sync_storage().unwrap();
     let costs = test_write_costs();
     let checkpoint_writes = costs.home_writes - costs.journal_writes;
     eprintln!(
@@ -404,6 +422,7 @@ fn truncate_batches_allocation_metadata_for_fixed_block_count() {
     reset_test_allocation_attempts();
     reset_test_write_costs();
     file.truncate_storage(0).unwrap();
+    root.sync_storage().unwrap();
     let costs = test_write_costs();
     let checkpoint_writes = costs.home_writes - costs.journal_writes;
     eprintln!(
@@ -429,7 +448,7 @@ fn truncate_batches_allocation_metadata_for_fixed_block_count() {
 }
 
 #[test]
-fn failed_commit_rolls_back_dirty_allocation_and_recovery_ignores_it() {
+fn failed_commit_fails_stop_and_recovery_ignores_it() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let (image, fs) = mounted();
     let root = fs.root_inode().unwrap();
@@ -444,27 +463,30 @@ fn failed_commit_rolls_back_dirty_allocation_and_recovery_ignores_it() {
             },
         )
         .unwrap();
+    file.write_storage(0, &[0x77]).unwrap();
+    // commit record 前的 barrier 失败：sync 必须报告 EIO，journal 进入 fail-stop。
     image.fail_next_flush();
-    assert!(matches!(
-        file.write_storage(0, &[0x77]),
-        Err(FileSystemError::IoError)
-    ));
-    assert_eq!(
-        file.size(),
-        0,
-        "live inode must roll back after failed commit"
+    assert!(matches!(root.sync_storage(), Err(FileSystemError::IoError)));
+    assert!(
+        matches!(
+            file.write_storage(1, &[0x78]),
+            Err(FileSystemError::IoError)
+        ),
+        "mutation after a failed commit must not reach a second write path"
     );
     drop(file);
     drop(root);
     drop(fs);
 
-    let recovered = Ext4FileSystem::new(image).expect("remount after uncommitted journal write");
-    let recovered_file = recovered
-        .root_inode()
-        .unwrap()
-        .find_child(b"commit-failure-recovery")
-        .unwrap();
-    assert_eq!(recovered_file.size(), 0);
+    // 未写出 commit record 的事务在 replay 时整体丢弃。
+    let recovered = Ext4FileSystem::new(image).expect("remount after failed commit");
+    assert!(matches!(
+        recovered
+            .root_inode()
+            .unwrap()
+            .find_child(b"commit-failure-recovery"),
+        Err(FileSystemError::NotFound)
+    ));
 }
 
 #[test]
@@ -532,4 +554,92 @@ fn concurrent_truncate_and_sparse_write_publish_one_serial_order() {
         }
     }
     file.write_storage(0, &[0x7f]).unwrap();
+}
+
+/// 一类写负载在 `sync` 后的确定性设备成本。
+#[derive(Debug, Clone, Copy)]
+struct WorkloadCost {
+    transactions: usize,
+    device_writes: usize,
+    flushes: usize,
+}
+
+fn measure_workload(name: &str, workload: impl FnOnce(&Arc<dyn crate::fs::Inode>)) -> WorkloadCost {
+    let (image, fs) = mounted();
+    let root = fs.root_inode().unwrap();
+    image.reset_writes();
+    reset_test_write_costs();
+    workload(&root);
+    root.sync_storage().unwrap();
+    let cost = WorkloadCost {
+        transactions: test_write_costs().transactions,
+        device_writes: image.writes(),
+        flushes: image.flushes(),
+    };
+    eprintln!(
+        "EXT4_WORKLOAD {name}: transactions={} device_writes={} flushes={}",
+        cost.transactions, cost.device_writes, cost.flushes
+    );
+    cost
+}
+
+const FILE_METADATA: CreateMetadata = CreateMetadata {
+    mode: 0o644,
+    uid: 0,
+    gid: 0,
+};
+
+/// 写路径的设备成本门禁：小文件批量创建、同一文件小块追加、大文件顺序写。
+#[test]
+fn write_workloads_have_bounded_device_cost() {
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    // 1. 100 个 4 KiB 小文件：每个文件一次 create + 一次 write。
+    let small_files = measure_workload("small_files_100x4k", |root| {
+        for index in 0..100 {
+            let file = root
+                .create(
+                    format!("small-{index:03}").as_bytes(),
+                    InodeType::File,
+                    FILE_METADATA,
+                )
+                .unwrap();
+            file.write_storage(0, &[index as u8; BLOCK_SIZE]).unwrap();
+        }
+    });
+    // 2. 同一文件 256 次 4 KiB 追加（日志、下载流式落盘）。
+    let appends = measure_workload("append_256x4k", |root| {
+        let file = root
+            .create(b"append", InodeType::File, FILE_METADATA)
+            .unwrap();
+        for index in 0..256u64 {
+            file.write_storage(index * BLOCK_SIZE as u64, &[index as u8; BLOCK_SIZE])
+                .unwrap();
+        }
+    });
+    // 3. 4 MiB 顺序写，每次 64 KiB。
+    let sequential = measure_workload("sequential_4m_64k", |root| {
+        let file = root
+            .create(b"sequential", InodeType::File, FILE_METADATA)
+            .unwrap();
+        let chunk = [0x5a; 64 * 1024];
+        for index in 0..64u64 {
+            file.write_storage(index * chunk.len() as u64, &chunk)
+                .unwrap();
+        }
+    });
+    // data=ordered + group commit：每类负载在 sync 时只形成一个事务、三个 barrier；数据只写
+    // 一次 home，设备写入只比数据 block 数多出有界的 metadata/journal 开销。改造前三类负载
+    // 分别为 200/257/65 个事务、601/772/196 次 flush，数据经 journal 写两次。
+    for (name, cost, data_blocks) in [
+        ("small_files_100x4k", small_files, 100),
+        ("append_256x4k", appends, 256),
+        ("sequential_4m_64k", sequential, 1024),
+    ] {
+        assert_eq!(cost.transactions, 1, "{name}: {cost:?}");
+        assert!(cost.flushes <= 3, "{name}: {cost:?}");
+        assert!(
+            cost.device_writes <= data_blocks + 64,
+            "{name}: data written more than once or unbounded metadata: {cost:?}"
+        );
+    }
 }

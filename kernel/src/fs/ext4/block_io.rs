@@ -104,15 +104,34 @@ impl Ext4FileSystem {
         }
     }
 
+    /// 暂存一个 metadata block；提交时经 journal 原子写入。
     pub(super) fn write_fs_block(
         &self,
         fs_block_id: u64,
         buf: &[u8],
     ) -> Result<(), FileSystemError> {
+        self.stage_block(fs_block_id, buf, BlockKind::Metadata)
+    }
+
+    /// 暂存一个文件数据 block；提交时在 commit record 之前直接写回 home（`data=ordered`）。
+    pub(super) fn write_data_block(
+        &self,
+        fs_block_id: u64,
+        buf: &[u8],
+    ) -> Result<(), FileSystemError> {
+        self.stage_block(fs_block_id, buf, BlockKind::Data)
+    }
+
+    fn stage_block(
+        &self,
+        fs_block_id: u64,
+        buf: &[u8],
+        kind: BlockKind,
+    ) -> Result<(), FileSystemError> {
         let mut owner = self.journal.lock();
         owner
             .ready_mut()?
-            .stage(fs_block_id, buf, self.block_size)?;
+            .stage(fs_block_id, buf, self.block_size, kind)?;
         self.metadata_cache
             .lock()
             .update_if_present(fs_block_id, buf);
