@@ -37,16 +37,16 @@
 | `sync` | `arch`, `cpu` | 锁与 IRQ transfer 只依赖本地中断 mechanism 和 logical `CpuId`；transfer token 在错误 CPU restore 时 fail-stop，禁止把 hardware identity 引入同步领域 |
 | `memory` | `arch`, `config`, `cpu`, `fallible_tree`, `id`, `platform`, `random`, `sync` | VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding |
 | `drivers` | `arch`, `cpu`, `fallible_tree`, `memory`, `sync` | 只保存设备模型与通用 interrupt interface；具体 PLIC/DTB 装配属于 platform |
-| `virtio_port` | `drivers`, `ipc` | 拥有唯一 named byte-stream 的 task readiness、blocking/poll projection；不解析 SPICE message 或感知 platform/QEMU |
-| `audio` | `drivers`, `id`, `ipc`, `memory` | 拥有 Linux ALSA PCM playback 领域状态、position、poll/xrun 与 OFD backend；只经通用 PCM output seam 使用 device adapter |
-| `drm` | `drivers`, `fallible_tree`, `ipc`, `memory`, `socket`, `sync` | 只消费通用 display seam；GEM handle 使用统一 fallible ordered publication；connector mode 变化只经 socket façade 发布标准 kobject uevent，不感知 VirtIO adapter、task、filesystem 或 syscall ABI |
-| `input` | `drivers`, `ipc`, `sync`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域；不感知 VirtIO adapter、task、filesystem 或 syscall ABI |
+| `virtio_port` | `cpu`, `drivers`, `fs`, `ipc` | 拥有唯一 named byte-stream 的 task readiness、blocking/poll projection，并经 fs 字符设备注册表发布 `virtio-ports/*` 节点；不解析 SPICE message 或感知 platform/QEMU |
+| `audio` | `drivers`, `fs`, `id`, `ipc`, `memory` | 拥有 Linux ALSA PCM playback 领域状态、position、poll/xrun、`snd/pcmC0D0p` 设备文件与 PCM ioctl UAPI；只经通用 PCM output seam 使用 device adapter |
+| `drm` | `cpu`, `drivers`, `fallible_tree`, `fs`, `ipc`, `memory`, `socket`, `sync` | 只消费通用 display seam；拥有 `dri/card0` 设备文件与 DRM/virtio-gpu ioctl UAPI；GEM handle 用统一 fallible ordered publication；mode 变化只经 socket 发布 kobject uevent；不感知 VirtIO adapter 或 task |
+| `input` | `cpu`, `drivers`, `fs`, `ipc`, `sync`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域、`input/eventN` 设备文件与 evdev ioctl UAPI；不感知 VirtIO adapter 或 task |
 | `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
 | `socket` | `drivers`, `fallible_tree`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
-| `fs` | `audio`, `drivers`, `drm`, `fallible_tree`, `id`, `input`, `ipc`, `log`, `memory`, `socket`, `sync`, `timer`, `virtio_port` | 只经 block、OFD、anonymous-id、socket-OFD、shared-page 与 named byte-stream seam 使用对应领域 |
-| `task` | `arch`, `cpu`, `drivers`, `drm`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer`, `virtio_port` | 调度只用 logical CPU identity；deferred safe point 投递各领域 completion |
+| `fs` | `drivers`, `fallible_tree`, `id`, `ipc`, `log`, `memory`, `random`, `socket`, `sync`, `timer` | 拥有字符设备注册表、devfs/devpts、TTY 与 mem 设备；只经 block、anonymous-id、socket-OFD、shared-page 与 entropy seam 使用对应领域；session/signal 经 task 安装的 `JobControl` |
+| `task` | `arch`, `cpu`, `drivers`, `fallible_tree`, `fs`, `id`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer` | 调度只用 logical CPU identity；deferred safe point 处理核心向量，设备类 completion 只经 `cpu` 注册的 handler 投递 |
 | `trap` | `arch`, `cpu`, `drivers`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
-| `syscall` | `audio`, `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer`, `virtio_port` | 只编解码标准 UAPI/OFD operation；不得绕过领域 façade 接触 adapter；只经 `sync::WaitResult` 消费阻塞结果 |
+| `syscall` | `fs`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer` | 只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::device::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果 |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch`, `cpu`, `platform` | whole-system policy；ISA 用户事实只经 `arch::user`，CPU/firmware 只经各自 facade |
 | `timer` | `arch`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |

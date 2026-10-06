@@ -654,9 +654,7 @@ kernel/src/audio.rs :: pub (crate) SoftwareParameters :: available_min : u64
 kernel/src/audio.rs :: pub (crate) SoftwareParameters :: boundary : u64
 kernel/src/audio.rs :: pub (crate) SoftwareParameters :: start_threshold : u64
 kernel/src/audio.rs :: pub (crate) SoftwareParameters :: stop_threshold : u64
-kernel/src/audio.rs :: pub (crate) fn available () -> bool
 kernel/src/audio.rs :: pub (crate) fn init (output : Arc < dyn PcmOutput >) -> Result < () , () >
-kernel/src/audio.rs :: pub (crate) fn open () -> Result < Arc < PcmFile > , AudioError >
 kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn commit_application_pointer (& self , new_application_pointer : u64 ,) -> Result < () , AudioError >
 kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn drop_stream (& self) -> Result < () , AudioError >
 kernel/src/audio.rs :: pub (crate) impl PcmFile :: fn free_hardware (& self) -> Result < () , AudioError >
@@ -676,6 +674,34 @@ kernel/src/audio.rs :: pub (crate) struct PcmStatus
 kernel/src/audio.rs :: pub (crate) struct SoftwareParameters
 kernel/src/audio.rs :: pub (crate) use crate :: drivers :: { PCM_BUFFER_FRAMES , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmOutputError as AudioError , }
 kernel/src/audio.rs :: pub (crate) use state :: PcmState
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DELAY : usize = 0x8008_4121
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DROP : usize = 0x0000_4143
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_FREE : usize = 0x0000_4112
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_PARAMS : usize = 0xc260_4111
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PREPARE : usize = 0x0000_4140
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PVERSION : usize = 0x8004_4100
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_START : usize = 0x0000_4142
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_STATUS : usize = 0x8098_4120
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SW_PARAMS : usize = 0xc088_4113
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SYNC_PTR : usize = 0xc088_4123
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_WRITEI_FRAMES : usize = 0x4018_4150
+kernel/src/audio/codec.rs :: pub (super) const HW_PARAMS_BYTES : usize = 608
+kernel/src/audio/codec.rs :: pub (super) const PCM_PROTOCOL_VERSION : i32 = 0x0002_0012
+kernel/src/audio/codec.rs :: pub (super) const STATUS_BYTES : usize = 152
+kernel/src/audio/codec.rs :: pub (super) const SW_PARAMS_BYTES : usize = 136
+kernel/src/audio/codec.rs :: pub (super) const SYNC_PTR_BYTES : usize = 136
+kernel/src/audio/codec.rs :: pub (super) const XFER_BYTES : usize = 24
+kernel/src/audio/codec.rs :: pub (super) fn exact_interval (bytes : & [u8] , parameter : usize) -> Option < u32 >
+kernel/src/audio/codec.rs :: pub (super) fn exact_mask (bytes : & [u8] , offset : usize) -> Option < i32 >
+kernel/src/audio/codec.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
+kernel/src/audio/codec.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
+kernel/src/audio/codec.rs :: pub (super) fn stop_or_error (completed : usize , error : isize) -> Result < () , isize >
+kernel/src/audio/codec.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
+kernel/src/audio/codec.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
+kernel/src/audio/ioctl.rs :: pub (super) fn ioctl (file : & PcmFile , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
+kernel/src/audio/pcm_file.rs :: pub (super) const PCM_NUMBER : DeviceNumber = DeviceNumber :: new (116 , 16)
+kernel/src/audio/pcm_file.rs :: pub (super) const PCM_PATH : & [u8] = b"snd/pcmC0D0p"
+kernel/src/audio/pcm_file.rs :: pub (super) struct PcmDriver
 kernel/src/audio/state.rs :: enum PcmState :: Disconnected = 8
 kernel/src/audio/state.rs :: enum PcmState :: Open = 0
 kernel/src/audio/state.rs :: enum PcmState :: Prepared = 2
@@ -705,20 +731,15 @@ kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn writable (& se
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn xrun (& mut self)
 kernel/src/audio/state.rs :: pub (crate) struct PcmStateOwner
 kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: Console = 1 << 1
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: Display = 1 << 4
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: DriverIo = 1 << 6
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: Input = 1 << 5
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: Network = 1 << 2
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: Timer = 1
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: TimerBacklog = 1 << 3
-kernel/src/cpu/deferred.rs :: enum DeferredWork :: VirtioPort = 1 << 7
-kernel/src/cpu/deferred.rs :: pub (crate) enum DeferredWork
 kernel/src/cpu/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
+kernel/src/cpu/deferred.rs :: pub (crate) fn register (handler : DeferredHandler) -> Result < DeferredWork , () >
 kernel/src/cpu/deferred.rs :: pub (crate) fn take () -> DeferredWorkSet
 kernel/src/cpu/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn contains (self , work : DeferredWork) -> bool
 kernel/src/cpu/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn is_empty (self) -> bool
+kernel/src/cpu/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn run_registered (self , now_ns : u64)
+kernel/src/cpu/deferred.rs :: pub (crate) struct DeferredWork
 kernel/src/cpu/deferred.rs :: pub (crate) struct DeferredWorkSet
+kernel/src/cpu/deferred.rs :: pub (crate) type DeferredHandler  = fn (u64) -> bool
 kernel/src/cpu/deferred.rs :: pub (super) fn initialize (cpu_count : usize)
 kernel/src/cpu/mod.rs :: pub (crate) fn active () -> CpuSet
 kernel/src/cpu/mod.rs :: pub (crate) fn boot_id () -> CpuId
@@ -749,7 +770,7 @@ kernel/src/cpu/mod.rs :: pub (crate) struct CpuId
 kernel/src/cpu/mod.rs :: pub (crate) struct CpuSet
 kernel/src/cpu/mod.rs :: pub (crate) struct CpuSetIter
 kernel/src/cpu/mod.rs :: pub (crate) struct HardwareCpuId
-kernel/src/cpu/mod.rs :: pub (crate) use deferred :: { DeferredWork , raise as raise_deferred , take as take_deferred }
+kernel/src/cpu/mod.rs :: pub (crate) use deferred :: { DeferredWork , raise as raise_deferred , register as register_deferred , take as take_deferred , }
 kernel/src/drivers/audio_output.rs :: enum PcmOutputError :: # [doc = " adapter 当前所有 period slot 均由 device 持有。"] WouldBlock
 kernel/src/drivers/audio_output.rs :: enum PcmOutputError :: # [doc = " command 与当前 device lifecycle 不匹配。"] InvalidState
 kernel/src/drivers/audio_output.rs :: enum PcmOutputError :: # [doc = " transport、completion 或 device status 已损坏。"] Device
@@ -818,6 +839,7 @@ kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayRect
 kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
 kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn GraphicsDevice >) -> Result < () , () >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn bind_completion_work (& self , work : crate :: cpu :: DeferredWork)
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn disable_scanout (& self) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_update (& self) -> Result < Option < DisplayUpdate > , DisplayError >
@@ -955,6 +977,7 @@ kernel/src/drivers/input.rs :: pub (crate) struct RawInputEvent
 kernel/src/drivers/input.rs :: pub (crate) trait InputDevice
 kernel/src/drivers/input.rs :: pub (super) fn register (device : Arc < dyn InputDevice >) -> Result < usize , Arc < dyn InputDevice > >
 kernel/src/drivers/input.rs :: trait InputDevice :: fn abs_info (& self , code : u16) -> Option < InputAbsInfo >
+kernel/src/drivers/input.rs :: trait InputDevice :: fn bind_completion_work (& self , work : crate :: cpu :: DeferredWork)
 kernel/src/drivers/input.rs :: trait InputDevice :: fn event_codes (& self , event_type : u16) -> & [u8]
 kernel/src/drivers/input.rs :: trait InputDevice :: fn event_types (& self) -> & [u8]
 kernel/src/drivers/input.rs :: trait InputDevice :: fn finish_receive_batch (& self) -> Result < () , InputDeviceError >
@@ -1103,6 +1126,7 @@ kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: backlog : bo
 kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: readable_changed : bool
 kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: writable_changed : bool
 kernel/src/drivers/virtio_console.rs :: pub (crate) enum PortError
+kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn bind_completion_work (& self , work : crate :: cpu :: DeferredWork)
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn connected (& self) -> bool
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn dispatch (& self) -> PortActivity
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn from_pci (transport : PciTransport) -> Option < Arc < Self > >
@@ -1553,11 +1577,13 @@ kernel/src/drm.rs :: pub (crate) use event :: DrmEvent
 kernel/src/drm.rs :: pub (crate) use graphics :: VirglResourceCreate
 kernel/src/drm.rs :: pub (crate) use graphics :: VirglTransfer
 kernel/src/drm.rs :: pub (crate) use publication :: { PreparedDumbBuffer , PreparedFramebuffer }
-kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work (timestamp_ns : u64)
+kernel/src/drm/card_file.rs :: pub (super) const CARD_NUMBER : DeviceNumber = DeviceNumber :: new (226 , 0)
+kernel/src/drm/card_file.rs :: pub (super) const CARD_PATH : & [u8] = b"dri/card0"
+kernel/src/drm/card_file.rs :: pub (super) struct CardDriver
 kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn GraphicsDevice >) -> Result < () , () >
-kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
 kernel/src/drm/device.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
 kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
+kernel/src/drm/device.rs :: pub (super) fn open () -> Result < Arc < DrmFile > , () >
 kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_damage (& self , completion : & mut CompletionState , framebuffer_id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmWait , DrmError >
 kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_disable (& self , completion : & mut CompletionState ,) -> Result < DrmWait , DrmError >
 kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_scanout (& self , completion : & mut CompletionState , mode : DisplayMode , framebuffer_id : u32 , event : Option < PendingEvent > ,) -> Result < DrmWait , DrmError >
@@ -1652,6 +1678,21 @@ kernel/src/drm/graphics.rs :: pub (super) impl VirglContext :: fn into_cleanup (
 kernel/src/drm/graphics.rs :: pub (super) struct VirglBuffer
 kernel/src/drm/graphics.rs :: pub (super) struct VirglCleanup
 kernel/src/drm/graphics.rs :: pub (super) struct VirglContext
+kernel/src/drm/ioctl.rs :: pub (super) fn drm_errno (error : DrmError) -> isize
+kernel/src/drm/ioctl.rs :: pub (super) fn ioctl (file : & Arc < DrmFile > , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
+kernel/src/drm/ioctl/publication.rs :: pub (super) fn add_framebuffer (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/publication.rs :: pub (super) fn add_framebuffer2 (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/publication.rs :: pub (super) fn create_dumb (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn context_init (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn execbuffer (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn gem_close (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn get_caps (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn get_param (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn map (user : & dyn UserMemory , file : & DrmFile , argument : usize) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn resource_create (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn resource_info (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn transfer (user : & dyn UserMemory , file : & DrmFile , argument : usize , direction : VirglTransferDirection ,) -> Result < () , isize >
+kernel/src/drm/ioctl/virtgpu.rs :: pub (super) fn wait (user : & dyn UserMemory , file : & DrmFile , argument : usize) -> Result < () , isize >
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn drop_master (& self , privileged : bool) -> Result < () , DrmError >
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn is_master (& self) -> bool
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn set_master (& self , privileged : bool) -> Result < () , DrmError >
@@ -1743,6 +1784,81 @@ kernel/src/fallible_tree/topology.rs :: pub (super) fn retain_linear < K , V > (
 kernel/src/fallible_tree/topology.rs :: pub (super) fn split < K : Ord , V > (root : Link < K , V > , at : & K) -> (Link < K , V > , Link < K , V >)
 kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn instance () -> Arc < Self >
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
+kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 其他 Linux errno。"] Errno (isize)
+kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 后台进程组访问终端已收到 job-control signal，syscall 必须按 `ERESTARTSYS` 重启。"] Restart
+kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 非阻塞操作当前无法推进（`EAGAIN`）。"] WouldBlock
+kernel/src/fs/device.rs :: enum DeviceWaitSource :: # [doc = " Pipe 的一个方向；`events` 为该源满足时可唤醒的 poll 位。"] Pipe { pipe : Arc < Pipe > , direction : PipeDirection , events : i16 , }
+kernel/src/fs/device.rs :: enum DeviceWaitSource :: # [doc = " platform console 输入。"] Console
+kernel/src/fs/device.rs :: enum RegistryEntry :: # [doc = " `devices` 下标。"] Device (usize)
+kernel/src/fs/device.rs :: enum RegistryEntry :: # [doc = " `directories` 下标。"] Directory (usize)
+kernel/src/fs/device.rs :: pub (crate) DeviceNumber :: major : u32
+kernel/src/fs/device.rs :: pub (crate) DeviceNumber :: minor : u32
+kernel/src/fs/device.rs :: pub (crate) IoctlCall :: argument : usize
+kernel/src/fs/device.rs :: pub (crate) IoctlCall :: nonblocking : bool
+kernel/src/fs/device.rs :: pub (crate) IoctlCall :: privileged : bool
+kernel/src/fs/device.rs :: pub (crate) IoctlCall :: request : usize
+kernel/src/fs/device.rs :: pub (crate) IoctlCall :: user : & 'a dyn UserMemory
+kernel/src/fs/device.rs :: pub (crate) MapRequest :: executable : bool
+kernel/src/fs/device.rs :: pub (crate) MapRequest :: fd_readable : bool
+kernel/src/fs/device.rs :: pub (crate) MapRequest :: fd_writable : bool
+kernel/src/fs/device.rs :: pub (crate) MapRequest :: shared : bool
+kernel/src/fs/device.rs :: pub (crate) MapRequest :: writable : bool
+kernel/src/fs/device.rs :: pub (crate) OpenRequest :: identity : & 'a AccessIdentity
+kernel/src/fs/device.rs :: pub (crate) OpenRequest :: number : DeviceNumber
+kernel/src/fs/device.rs :: pub (crate) enum DeviceError
+kernel/src/fs/device.rs :: pub (crate) enum DeviceWaitSource
+kernel/src/fs/device.rs :: pub (crate) fn open (request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
+kernel/src/fs/device.rs :: pub (crate) fn register_driver (first : DeviceNumber , count : u32 , driver : Arc < dyn CharacterDriver > ,) -> Result < () , FileSystemError >
+kernel/src/fs/device.rs :: pub (crate) fn register_node (path : & [u8] , number : DeviceNumber , permissions : u32 ,) -> Result < () , FileSystemError >
+kernel/src/fs/device.rs :: pub (crate) fn wait_ready (file : & dyn DeviceFile , events : i16 , nonblocking : bool ,) -> Result < () , DeviceError >
+kernel/src/fs/device.rs :: pub (crate) impl DeviceError :: const fn errno (self) -> isize
+kernel/src/fs/device.rs :: pub (crate) impl DeviceNumber :: const fn encode (self) -> u64
+kernel/src/fs/device.rs :: pub (crate) impl DeviceNumber :: const fn new (major : u32 , minor : u32) -> Self
+kernel/src/fs/device.rs :: pub (crate) impl DeviceWaitSources :: const fn new () -> Self
+kernel/src/fs/device.rs :: pub (crate) impl DeviceWaitSources :: fn is_empty (& self) -> bool
+kernel/src/fs/device.rs :: pub (crate) impl DeviceWaitSources :: fn iter (& self) -> impl Iterator < Item = & DeviceWaitSource >
+kernel/src/fs/device.rs :: pub (crate) impl DeviceWaitSources :: fn pipe (pipe : Arc < Pipe > , events : i16) -> Self
+kernel/src/fs/device.rs :: pub (crate) impl DeviceWaitSources :: fn push (& mut self , source : DeviceWaitSource)
+kernel/src/fs/device.rs :: pub (crate) struct DeviceNumber
+kernel/src/fs/device.rs :: pub (crate) struct DeviceWaitSources
+kernel/src/fs/device.rs :: pub (crate) struct IoctlCall < 'a >
+kernel/src/fs/device.rs :: pub (crate) struct MapRequest
+kernel/src/fs/device.rs :: pub (crate) struct OpenRequest < 'a >
+kernel/src/fs/device.rs :: pub (crate) struct UserFault
+kernel/src/fs/device.rs :: pub (crate) trait CharacterDriver
+kernel/src/fs/device.rs :: pub (crate) trait DeviceFile
+kernel/src/fs/device.rs :: pub (crate) trait UserInput
+kernel/src/fs/device.rs :: pub (crate) trait UserMemory
+kernel/src/fs/device.rs :: pub (crate) trait UserOutput
+kernel/src/fs/device.rs :: pub (super) DeviceNode :: mode : u32
+kernel/src/fs/device.rs :: pub (super) DeviceNode :: number : DeviceNumber
+kernel/src/fs/device.rs :: pub (super) DeviceNode :: path : Vec < u8 >
+kernel/src/fs/device.rs :: pub (super) enum RegistryEntry
+kernel/src/fs/device.rs :: pub (super) fn device (index : usize) -> Option < Arc < DeviceNode > >
+kernel/src/fs/device.rs :: pub (super) fn directory_path (index : usize , output : & mut Vec < u8 >) -> Result < () , FileSystemError >
+kernel/src/fs/device.rs :: pub (super) fn for_each_child (parent : & [u8] , mut visit : impl FnMut (RegistryEntry , & [u8] , u32) -> bool ,)
+kernel/src/fs/device.rs :: pub (super) fn lookup (parent : & [u8] , name : & [u8]) -> Option < RegistryEntry >
+kernel/src/fs/device.rs :: pub (super) struct DeviceNode
+kernel/src/fs/device.rs :: trait CharacterDriver :: fn open (& self , request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
+kernel/src/fs/device.rs :: trait DeviceFile :: fn ioctl (& self , _call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
+kernel/src/fs/device.rs :: trait DeviceFile :: fn mmap (& self , _offset : u64 , _length : usize , _request : MapRequest ,) -> Result < DeviceMappingSource , DeviceError >
+kernel/src/fs/device.rs :: trait DeviceFile :: fn poll (& self , events : i16) -> i16
+kernel/src/fs/device.rs :: trait DeviceFile :: fn prepare_wait (& self , _events : i16) -> Option < Arc < Pipe > >
+kernel/src/fs/device.rs :: trait DeviceFile :: fn read (& self , _output : & mut dyn UserOutput , _nonblocking : bool) -> Result < () , DeviceError >
+kernel/src/fs/device.rs :: trait DeviceFile :: fn readiness_generation (& self) -> u64
+kernel/src/fs/device.rs :: trait DeviceFile :: fn wait_sources (& self , _events : i16) -> DeviceWaitSources
+kernel/src/fs/device.rs :: trait DeviceFile :: fn write (& self , _input : & mut dyn UserInput , _nonblocking : bool) -> Result < () , DeviceError >
+kernel/src/fs/device.rs :: trait UserInput :: fn consume (& mut self , count : usize)
+kernel/src/fs/device.rs :: trait UserInput :: fn copy (& self , bytes : & mut [u8]) -> Result < () , UserFault >
+kernel/src/fs/device.rs :: trait UserInput :: fn remaining (& self) -> usize
+kernel/src/fs/device.rs :: trait UserMemory :: fn read (& self , address : usize , bytes : & mut [u8]) -> Result < () , UserFault >
+kernel/src/fs/device.rs :: trait UserMemory :: fn read_c_string (& self , address : usize , maximum : usize) -> Result < Vec < u8 > , UserFault >
+kernel/src/fs/device.rs :: trait UserMemory :: fn validate_write (& self , address : usize , length : usize) -> Result < () , UserFault >
+kernel/src/fs/device.rs :: trait UserMemory :: fn write (& self , address : usize , bytes : & [u8]) -> Result < () , UserFault >
+kernel/src/fs/device.rs :: trait UserOutput :: fn remaining (& self) -> usize
+kernel/src/fs/device.rs :: trait UserOutput :: fn reserve (& self , length : usize) -> Result < () , UserFault >
+kernel/src/fs/device.rs :: trait UserOutput :: fn write (& mut self , bytes : & [u8]) -> Result < () , UserFault >
+kernel/src/fs/device.rs :: trait UserOutput :: fn zero_remaining (& mut self) -> Result < () , UserFault >
 kernel/src/fs/devpts.rs :: pub (crate) impl DevPtsFileSystem :: fn new () -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/devpts.rs :: pub (crate) struct DevPtsFileSystem
 kernel/src/fs/directory.rs :: enum DirectoryVisit :: Continue
@@ -2056,7 +2172,7 @@ kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write
 kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/ext4/xattr.rs :: pub (super) impl Ext4FileSystem :: fn release_xattr_block (& self , disk : & mut Ext4InodeDisk ,) -> Result < () , FileSystemError >
-kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
+kernel/src/fs/file.rs :: enum OpenFileKind :: # [doc = " 经字符设备注册表打开、由设备子系统实现的设备文件。"] Device (Arc < dyn crate :: fs :: device :: DeviceFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < OpenedFile >)
@@ -2074,7 +2190,7 @@ kernel/src/fs/file.rs :: pub (crate) const O_RDONLY : u32 = 0
 kernel/src/fs/file.rs :: pub (crate) const O_RDWR : u32 = 2
 kernel/src/fs/file.rs :: pub (crate) const O_WRONLY : u32 = 1
 kernel/src/fs/file.rs :: pub (crate) enum OpenFileKind
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , identity : & AccessIdentity , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn device (file : Arc < dyn crate :: fs :: device :: DeviceFile > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn event_fd (event : Arc < EventFd > , flags : u32) -> Result < Arc < Self > , () >
@@ -2090,14 +2206,12 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn readiness_ge
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn readiness_sources (& self , events : i16) -> ReadinessSources
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn seek_position (& self , offset : i64 , base : impl FnOnce (u64) -> u64 ,) -> Result < u64 , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn socket (socket : Arc < Socket > , flags : u32) -> Result < Arc < Self > , () >
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_opened : Arc < OpenedFile > , flags : u32 ,) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn timer_fd (timer : Arc < TimerFd > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn try_poll_events (& self , events : i16) -> Option < i16 >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn with_position < R > (& self , operation : impl FnOnce (& mut u64) -> R) -> R
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn with_positions < R > (first : & Self , second : & Self , operation : impl FnOnce (& mut u64 , & mut u64) -> R ,) -> Option < R >
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
 kernel/src/fs/file.rs :: pub (crate) trait Console
-kernel/src/fs/file.rs :: pub (crate) use character :: { CharacterDevice , KmsgDeviceRead }
 kernel/src/fs/file.rs :: pub (crate) use descriptor_table :: { CancelledFileReservation , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , }
 kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess , TerminalRead , TerminalReadMode , character_write_chunk , }
 kernel/src/fs/file.rs :: pub (in crate :: fs) use terminal :: clear_terminal_raw_input
@@ -2107,27 +2221,6 @@ kernel/src/fs/file.rs :: trait Console :: fn discard_output (& self) -> usize
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Audio (Arc < crate :: audio :: PcmFile >)
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Drm (Arc < DrmFile >)
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Entropy
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Input { file : Arc < InputFile > , }
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Kmsg (KmsgReader)
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Null
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: PtyMaster (Arc < PtyMaster >)
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , pty : Option < Arc < PtySlave > > , }
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: VirtioPort (Arc < crate :: virtio_port :: Port >)
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Zero
-kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " caller buffer 过小。"] BufferTooSmall
-kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " producer 尚无新 record。"] Empty
-kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " reader cursor 已被环覆盖。"] Overrun
-kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " 一个完整 record 及其长度。"] Record (usize)
-kernel/src/fs/file/character.rs :: pub (crate) enum CharacterDevice
-kernel/src/fs/file/character.rs :: pub (crate) enum KmsgDeviceRead
-kernel/src/fs/file/character.rs :: pub (crate) impl CharacterDevice :: fn read_kmsg (& self , output : & mut [u8]) -> KmsgDeviceRead
-kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn epoll_pollable (& self) -> bool
-kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal > , identity : & AccessIdentity ,) -> Result < Self , FileSystemError >
-kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn poll_events (& self , events : i16) -> i16
-kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn readiness_generation (& self) -> u64
 kernel/src/fs/file/descriptor_table.rs :: enum FileDescriptorError :: Busy
 kernel/src/fs/file/descriptor_table.rs :: enum FileDescriptorError :: Limit
 kernel/src/fs/file/descriptor_table.rs :: enum FileDescriptorError :: NotFound
@@ -2152,7 +2245,7 @@ kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn take_all (& mut self) -> Self
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn take_cloexec_batch (& mut self , cursor : & mut usize , output : & mut [Option < DetachedFileDescriptor >] ,) -> usize
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
-kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Result < Self , () >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn with_console () -> Result < Self , FileSystemError >
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) struct CancelledFileReservation
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) struct DetachedFileDescriptor
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) struct FileDescriptorTable
@@ -2195,13 +2288,14 @@ kernel/src/fs/file/terminal.rs :: pub (crate) enum TerminalReadMode
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn background_signal (& self , session : usize , process_group : usize , access : TerminalAccess ,) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn claim_session (& self , session : usize , foreground_pgid : usize) -> Result < () , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn controlling_session (& self) -> Option < usize >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn device_number (& self) -> DeviceNumber
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn drain_input (& self) -> Result < TerminalInputBatch , FileSystemError >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn flush (& self , input : bool , output : bool)
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn flush_input_and_set_termios (& self , termios : [u8 ; KERNEL_TERMIOS_SIZE])
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn foreground_pgid (& self , session : usize) -> Result < usize , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn hangup (& self) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn input_ready (& self) -> bool
-kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console > , device : DeviceKind) -> Result < Arc < Self > , () >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console > , device : DeviceNumber) -> Result < Arc < Self > , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn proc_identity (& self , session : usize) -> (u32 , isize)
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read (& self , bytes : & mut [u8]) -> TerminalRead
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read_mode (& self , capacity : usize) -> TerminalReadMode
@@ -2228,19 +2322,6 @@ kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) fn terminal_input_chun
 kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
 kernel/src/fs/file/terminal_flush.rs :: pub (crate) fn clear_raw (head : & mut usize , length : & mut usize) -> usize
 kernel/src/fs/file/terminal_flush.rs :: pub (super) fn clear_pending (input_head : & mut usize , input_len : & mut usize , line_len : & mut usize , eof_pending : & mut bool ,) -> bool
-kernel/src/fs/inode.rs :: enum DeviceKind :: AudioPcmPlayback
-kernel/src/fs/inode.rs :: enum DeviceKind :: Console
-kernel/src/fs/inode.rs :: enum DeviceKind :: DriCard0
-kernel/src/fs/inode.rs :: enum DeviceKind :: InputEvent (u16)
-kernel/src/fs/inode.rs :: enum DeviceKind :: Kmsg
-kernel/src/fs/inode.rs :: enum DeviceKind :: Null
-kernel/src/fs/inode.rs :: enum DeviceKind :: Ptmx
-kernel/src/fs/inode.rs :: enum DeviceKind :: PtySlave (u32)
-kernel/src/fs/inode.rs :: enum DeviceKind :: Random
-kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
-kernel/src/fs/inode.rs :: enum DeviceKind :: Urandom
-kernel/src/fs/inode.rs :: enum DeviceKind :: VirtioPort
-kernel/src/fs/inode.rs :: enum DeviceKind :: Zero
 kernel/src/fs/inode.rs :: enum InodeType :: CharacterDevice = 3
 kernel/src/fs/inode.rs :: enum InodeType :: Directory = 1
 kernel/src/fs/inode.rs :: enum InodeType :: Fifo = 4
@@ -2251,7 +2332,7 @@ kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: atime : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: block_size : u32
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: blocks : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: ctime : u64
-kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: device : Option < DeviceKind >
+kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: device : Option < crate :: fs :: device :: DeviceNumber >
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: filesystem : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: gid : u32
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: inode : u64
@@ -2261,11 +2342,7 @@ kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: mode : u32
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: mtime : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: size : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: uid : u32
-kernel/src/fs/inode.rs :: pub (crate) enum DeviceKind
 kernel/src/fs/inode.rs :: pub (crate) enum InodeType
-kernel/src/fs/inode.rs :: pub (crate) impl DeviceKind :: fn inode (self) -> u64
-kernel/src/fs/inode.rs :: pub (crate) impl DeviceKind :: fn mode (self) -> u32
-kernel/src/fs/inode.rs :: pub (crate) impl DeviceKind :: fn numbers (self) -> (u32 , u32)
 kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
 kernel/src/fs/inode.rs :: pub (crate) trait StorageWriter
@@ -2273,7 +2350,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn allocate_storage (& self , _offset :
 kernel/src/fs/inode.rs :: trait Inode :: fn append_storage (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn create (& self , name : & [u8] , kind : InodeType , metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
-kernel/src/fs/inode.rs :: trait Inode :: fn device_kind (& self) -> Option < DeviceKind >
+kernel/src/fs/inode.rs :: trait Inode :: fn device_number (& self) -> Option < crate :: fs :: device :: DeviceNumber >
 kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn follow_link (& self) -> Option < Arc < OpenedFile > >
@@ -2297,6 +2374,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , rem
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/mem.rs :: pub (super) fn register () -> Result < () , FileSystemError >
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn add_seals (& self , seals : u32) -> Result < u32 , FileSystemError >
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn name (& self) -> & [u8]
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn new (name : Vec < u8 > , allow_sealing : bool) -> Result < Arc < Self > , FileSystemError >
@@ -2319,6 +2397,7 @@ kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn seals (& sel
 kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn truncate (& mut self , size : usize) -> Result < () , MemFileStateError >
 kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn write (& mut self , offset : usize , input : & [u8] ,) -> Result < usize , MemFileStateError >
 kernel/src/fs/memfd/state.rs :: pub (super) struct MemFileState
+kernel/src/fs/mod.rs :: enum FileSystemError :: # [doc = " 设备号没有 driver，或 driver 当前不提供该设备（`ENXIO`）。"] NoDevice
 kernel/src/fs/mod.rs :: enum FileSystemError :: AccessDenied
 kernel/src/fs/mod.rs :: enum FileSystemError :: AlreadyExists
 kernel/src/fs/mod.rs :: enum FileSystemError :: Busy
@@ -2352,7 +2431,9 @@ kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: type_name : & 'stati
 kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: sleep_until : fn (u64)
 kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: spawn : SpawnKernelThread
 kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
+kernel/src/fs/mod.rs :: pub (crate) fn init_vfs ()
 kernel/src/fs/mod.rs :: pub (crate) fn mount_root (device : Arc < dyn crate :: drivers :: block :: BlockDevice > , threads : KernelThreadSupport ,) -> Result < () , FileSystemError >
+kernel/src/fs/mod.rs :: pub (crate) mod device
 kernel/src/fs/mod.rs :: pub (crate) struct FileSystemStatistics
 kernel/src/fs/mod.rs :: pub (crate) struct KernelThreadSupport
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
@@ -2361,17 +2442,17 @@ kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use devpts :: DevPtsFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent , EpollMemberships }
-kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , CharacterDevice , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , KmsgDeviceRead , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , character_write_chunk , }
-kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , Inode , InodeMetadata , InodeType , StorageWriter }
+kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
+kernel/src/fs/mod.rs :: pub (crate) use inode :: { Inode , InodeMetadata , InodeType , StorageWriter }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
-kernel/src/fs/mod.rs :: pub (crate) use pty :: { PtyMaster , PtySlave , init as init_pty }
 kernel/src/fs/mod.rs :: pub (crate) use readiness :: { ReadinessSource , ReadinessSources }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs :: SysFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use timerfd :: { TimerError , TimerFd , TimerFdBackend , TimerFdRead , TimerSetting }
-kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , RecordLockMode , RecordLockRange , init as init_vfs , vfs , }
+kernel/src/fs/mod.rs :: pub (crate) use tty :: { JobControl , console as console_terminal , drain_input as drain_terminal_input , init as init_tty , install_job_control , }
+kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , RecordLockMode , RecordLockRange , vfs , }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: dirty_pages : usize
@@ -2582,9 +2663,6 @@ kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_routes (network 
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_uptime (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_vmstat (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u64) -> u64
-kernel/src/fs/pty.rs :: pub (crate) fn init (hangup : HangupNotifier , input_signals : InputSignalNotifier) -> Result < () , () >
-kernel/src/fs/pty.rs :: pub (crate) fn open_master (owner_uid : u32 , owner_gid : u32 ,) -> Result < Arc < PtyMaster > , FileSystemError >
-kernel/src/fs/pty.rs :: pub (crate) fn open_slave (index : u32) -> Result < Arc < PtySlave > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn slave_exists (index : u32) -> bool
 kernel/src/fs/pty.rs :: pub (crate) fn slave_indices () -> Result < Vec < u32 > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn slave_owner (index : u32) -> Option < (u32 , u32) >
@@ -2611,6 +2689,9 @@ kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn write (& self , bytes : 
 kernel/src/fs/pty.rs :: pub (crate) struct PtyMaster
 kernel/src/fs/pty.rs :: pub (crate) struct PtyPair
 kernel/src/fs/pty.rs :: pub (crate) struct PtySlave
+kernel/src/fs/pty.rs :: pub (super) fn init () -> Result < () , FileSystemError >
+kernel/src/fs/pty.rs :: pub (super) fn open_master (owner_uid : u32 , owner_gid : u32 ,) -> Result < Arc < PtyMaster > , FileSystemError >
+kernel/src/fs/pty.rs :: pub (super) fn open_slave (index : u32) -> Result < Arc < PtySlave > , FileSystemError >
 kernel/src/fs/pty/input_notification.rs :: pub (super) PtyInputActions :: notify_slave : bool
 kernel/src/fs/pty/input_notification.rs :: pub (super) PtyInputActions :: signals : u64
 kernel/src/fs/pty/input_notification.rs :: pub (super) const fn pty_input_actions (cooked_ready : bool , raw_backlog : bool , signals : u64 ,) -> PtyInputActions
@@ -2653,6 +2734,24 @@ kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn readable (& self) -> bool
 kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn readiness_generation (& self) -> u64
 kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn replace (& self , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
 kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn setting (& self , now_ns : u64) -> Result < TimerSetting , TimerError >
+kernel/src/fs/tty.rs :: pub (crate) fn console () -> Arc < Terminal >
+kernel/src/fs/tty.rs :: pub (crate) fn drain_input (terminal : & Terminal) -> Result < bool , FileSystemError >
+kernel/src/fs/tty.rs :: pub (crate) fn init (console : Arc < dyn Console >) -> Result < () , FileSystemError >
+kernel/src/fs/tty.rs :: pub (crate) fn install_job_control (control : & 'static dyn JobControl)
+kernel/src/fs/tty.rs :: pub (crate) trait JobControl
+kernel/src/fs/tty.rs :: pub (super) const PTS_MAJOR : u32 = 136
+kernel/src/fs/tty.rs :: pub (super) const PTS_MINOR_COUNT : u32 = 1 << 20
+kernel/src/fs/tty.rs :: pub (super) fn deliver_input_signals (terminal : & Terminal , signals : u64)
+kernel/src/fs/tty.rs :: pub (super) fn hangup (terminal : & Terminal)
+kernel/src/fs/tty.rs :: trait JobControl :: fn check_access (& self , terminal : & Terminal , access : TerminalAccess) -> Result < () , DeviceError >
+kernel/src/fs/tty.rs :: trait JobControl :: fn claim_controlling (& self , terminal : & Arc < Terminal > , force : usize) -> Result < () , DeviceError >
+kernel/src/fs/tty.rs :: trait JobControl :: fn controlling_terminal (& self) -> Option < Arc < Terminal > >
+kernel/src/fs/tty.rs :: trait JobControl :: fn foreground_group (& self , terminal : & Terminal) -> Result < usize , DeviceError >
+kernel/src/fs/tty.rs :: trait JobControl :: fn set_foreground_group (& self , terminal : & Terminal , pgid : usize) -> Result < () , DeviceError >
+kernel/src/fs/tty.rs :: trait JobControl :: fn signal_group (& self , pgid : usize , signal : usize)
+kernel/src/fs/tty.rs :: trait JobControl :: fn wait_for_console (& self , deadline : Option < u64 > , input_ready : & dyn Fn () -> bool) -> WaitResult
+kernel/src/fs/tty/ioctl.rs :: pub (super) fn pty_master (master : & PtyMaster , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
+kernel/src/fs/tty/ioctl.rs :: pub (super) fn terminal (terminal : & Arc < Terminal > , call : & IoctlCall < '_ > ,) -> Result < isize , DeviceError >
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , opened : Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
@@ -2760,7 +2859,6 @@ kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn dealloc (& mut self , id 
 kernel/src/id.rs :: pub (crate) struct IdAllocator
 kernel/src/input.rs :: enum InputError :: Busy
 kernel/src/input.rs :: enum InputError :: Invalid
-kernel/src/input.rs :: enum InputError :: NotFound
 kernel/src/input.rs :: enum InputError :: OutOfMemory
 kernel/src/input.rs :: enum InputError :: Revoked
 kernel/src/input.rs :: enum InputString :: Name
@@ -2774,10 +2872,7 @@ kernel/src/input.rs :: pub (crate) AbsoluteInfo :: resolution : i32
 kernel/src/input.rs :: pub (crate) AbsoluteInfo :: value : i32
 kernel/src/input.rs :: pub (crate) enum InputError
 kernel/src/input.rs :: pub (crate) enum InputString
-kernel/src/input.rs :: pub (crate) fn device_count () -> usize
-kernel/src/input.rs :: pub (crate) fn dispatch_input_work () -> bool
 kernel/src/input.rs :: pub (crate) fn init () -> Result < () , () >
-kernel/src/input.rs :: pub (crate) fn open (index : usize) -> Result < Arc < InputFile > , InputError >
 kernel/src/input.rs :: pub (crate) impl InputEvent :: fn encode (self) -> [u8 ; 24]
 kernel/src/input.rs :: pub (crate) impl InputFile :: fn absolute_info (& self , code : u16) -> Result < AbsoluteInfo , InputError >
 kernel/src/input.rs :: pub (crate) impl InputFile :: fn copy_bitmap (& self , event_type : Option < u16 > , output : & mut [u8] ,) -> Result < usize , InputError >
@@ -2812,6 +2907,11 @@ kernel/src/input/client_queue.rs :: pub (super) impl ClientQueue :: fn readable_
 kernel/src/input/client_queue.rs :: pub (super) impl ClientQueue :: fn set_clock (& mut self , clock : InputClock , times : EventTimes)
 kernel/src/input/client_queue.rs :: pub (super) struct ClientQueue
 kernel/src/input/client_queue.rs :: pub (super) struct EventTimes
+kernel/src/input/evdev_file.rs :: pub (super) const fn device_number (index : usize) -> DeviceNumber
+kernel/src/input/evdev_file.rs :: pub (super) struct EvdevDriver
+kernel/src/input/ioctl.rs :: pub (super) fn fault (_ : crate :: fs :: device :: UserFault) -> DeviceError
+kernel/src/input/ioctl.rs :: pub (super) fn input_error (error : InputError) -> DeviceError
+kernel/src/input/ioctl.rs :: pub (super) fn ioctl (file : & Arc < InputFile > , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
 kernel/src/ipc.rs :: enum PipeDirection :: Read
 kernel/src/ipc.rs :: enum PipeDirection :: Write
 kernel/src/ipc.rs :: enum PipeRead :: Bytes (usize)
@@ -4055,32 +4155,6 @@ kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn fini
 kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn is_complete (& self) -> bool
 kernel/src/sync/wait_completion.rs :: pub (crate) impl WaitCompletion :: fn reset (& self)
 kernel/src/sync/wait_completion.rs :: pub (crate) struct WaitCompletion
-kernel/src/syscall/audio.rs :: pub (in crate :: syscall) fn audio_ioctl (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , file : & Arc < PcmFile > , request : usize , argument : usize ,) -> isize
-kernel/src/syscall/audio.rs :: pub (in crate :: syscall) use codec :: { SNDRV_PCM_IOCTL_DELAY , SNDRV_PCM_IOCTL_DROP , SNDRV_PCM_IOCTL_HW_FREE , SNDRV_PCM_IOCTL_HW_PARAMS , SNDRV_PCM_IOCTL_PREPARE , SNDRV_PCM_IOCTL_PVERSION , SNDRV_PCM_IOCTL_START , SNDRV_PCM_IOCTL_STATUS , SNDRV_PCM_IOCTL_SW_PARAMS , SNDRV_PCM_IOCTL_SYNC_PTR , SNDRV_PCM_IOCTL_WRITEI_FRAMES , }
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DELAY : usize = 0x8008_4121
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DROP : usize = 0x0000_4143
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_FREE : usize = 0x0000_4112
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_PARAMS : usize = 0xc260_4111
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PREPARE : usize = 0x0000_4140
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PVERSION : usize = 0x8004_4100
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_START : usize = 0x0000_4142
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_STATUS : usize = 0x8098_4120
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SW_PARAMS : usize = 0xc088_4113
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SYNC_PTR : usize = 0xc088_4123
-kernel/src/syscall/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_WRITEI_FRAMES : usize = 0x4018_4150
-kernel/src/syscall/audio/codec.rs :: pub (super) const HW_PARAMS_BYTES : usize = 608
-kernel/src/syscall/audio/codec.rs :: pub (super) const PCM_PROTOCOL_VERSION : i32 = 0x0002_0012
-kernel/src/syscall/audio/codec.rs :: pub (super) const STATUS_BYTES : usize = 152
-kernel/src/syscall/audio/codec.rs :: pub (super) const SW_PARAMS_BYTES : usize = 136
-kernel/src/syscall/audio/codec.rs :: pub (super) const SYNC_PTR_BYTES : usize = 136
-kernel/src/syscall/audio/codec.rs :: pub (super) const XFER_BYTES : usize = 24
-kernel/src/syscall/audio/codec.rs :: pub (super) fn exact_interval (bytes : & [u8] , parameter : usize) -> Option < u32 >
-kernel/src/syscall/audio/codec.rs :: pub (super) fn exact_mask (bytes : & [u8] , offset : usize) -> Option < i32 >
-kernel/src/syscall/audio/codec.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
-kernel/src/syscall/audio/codec.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
-kernel/src/syscall/audio/codec.rs :: pub (super) fn stop_or_error (completed : usize , error : isize) -> Result < () , isize >
-kernel/src/syscall/audio/codec.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
-kernel/src/syscall/audio/codec.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
 kernel/src/syscall/clone_errno.rs :: pub (super) const fn clone_resource_errno () -> isize
 kernel/src/syscall/clone_errno.rs :: pub (super) const fn process_clone_memory_errno (out_of_memory : bool) -> isize
 kernel/src/syscall/clone_errno.rs :: pub (super) const fn thread_clone_memory_errno (out_of_memory : bool) -> isize
@@ -4091,21 +4165,11 @@ kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_id (uid : bool , val
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_res_ids (uid : bool , values : [u32 ; 3]) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_setgroups (size : usize , list : usize) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_umask (mask : u32) -> isize
-kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_errno (error : DrmError) -> isize
-kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_ioctl (task : & TaskControlBlock , file : & Arc < DrmFile > , request : usize , argument : usize ,) -> isize
-kernel/src/syscall/drm/publication.rs :: pub (super) fn add_framebuffer (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/publication.rs :: pub (super) fn add_framebuffer2 (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/publication.rs :: pub (super) fn create_dumb (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn context_init (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn execbuffer (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn gem_close (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn get_caps (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn get_param (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn map (task : & TaskControlBlock , file : & DrmFile , argument : usize) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn resource_create (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn resource_info (task : & TaskControlBlock , file : & DrmFile , argument : usize ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn transfer (task : & TaskControlBlock , file : & DrmFile , argument : usize , direction : VirglTransferDirection ,) -> Result < () , isize >
-kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn wait (task : & TaskControlBlock , file : & DrmFile , argument : usize) -> Result < () , isize >
+kernel/src/syscall/device.rs :: pub (super) fn device_error (error : DeviceError) -> isize
+kernel/src/syscall/device.rs :: pub (super) fn ioctl_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , request : usize , argument : usize ,) -> isize
+kernel/src/syscall/device.rs :: pub (super) fn map_request (shared : bool , writable : bool , executable : bool , fd_writable : bool ,) -> MapRequest
+kernel/src/syscall/device.rs :: pub (super) fn read_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize ,) -> isize
+kernel/src/syscall/device.rs :: pub (super) fn write_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_pwait (epoll_fd_number : usize , events : usize , maximum : usize , timeout_ms : isize , signal_mask : usize , signal_set_size : usize ,) -> isize
@@ -4190,7 +4254,6 @@ kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_INSECURE : usize
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_NONBLOCK : usize = 0x1
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_RANDOM : usize = 0x2
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const fn getrandom_flags_supported (flags : usize) -> bool
-kernel/src/syscall/input.rs :: pub (in crate :: syscall) fn input_ioctl (task : & TaskControlBlock , file : & Arc < InputFile > , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/membarrier.rs :: pub (super) fn sys_membarrier (command : usize , flags : usize , _cpu_id : usize) -> isize
 kernel/src/syscall/memfd.rs :: pub (crate) fn sys_memfd_create (name : usize , flags : u32) -> isize
@@ -4344,9 +4407,6 @@ kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_settime (id : i32 
 kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_create (clock_id : i32 , flags : u32) -> isize
 kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_gettime (fd : usize , output : usize) -> isize
 kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_settime (fd : usize , flags : u32 , replacement : usize , previous : usize ,) -> isize
-kernel/src/syscall/tty.rs :: pub (super) fn guard_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , isize >
-kernel/src/syscall/tty.rs :: pub (super) fn pty_master_ioctl (task : & TaskControlBlock , master : & PtyMaster , request : usize , argument : usize ,) -> isize
-kernel/src/syscall/tty.rs :: pub (super) fn tty_ioctl (task : & TaskControlBlock , terminal : & alloc :: sync :: Arc < Terminal > , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/user_iovec.rs :: enum BufferError :: AddressOverflow
 kernel/src/syscall/user_iovec.rs :: enum BufferError :: NullBase
 kernel/src/syscall/user_iovec.rs :: enum ImportError :: AddressOverflow
@@ -4374,7 +4434,6 @@ kernel/src/syscall/user_iovec.rs :: pub (super) fn validate_user_buffers (vector
 kernel/src/syscall/user_iovec.rs :: pub (super) fn with_prepared_staging < Staging , Output > (mut prepared : Staging , operation : impl FnOnce (& mut Staging) -> Output ,) -> Output
 kernel/src/syscall/user_iovec.rs :: pub (super) impl UserIoCursor < 'a > :: fn advance (& mut self , mut count : usize)
 kernel/src/syscall/user_iovec.rs :: pub (super) impl UserIoCursor < 'a > :: fn completed (& self) -> usize
-kernel/src/syscall/user_iovec.rs :: pub (super) impl UserIoCursor < 'a > :: fn copy_from_user (& mut self , task : & TaskControlBlock , output : & mut [u8] ,) -> Result < usize , () >
 kernel/src/syscall/user_iovec.rs :: pub (super) impl UserIoCursor < 'a > :: fn copy_from_user_into (& mut self , task : & TaskControlBlock , staging : & mut UserInputStaging < '_ > , length : usize ,) -> Result < usize , () >
 kernel/src/syscall/user_iovec.rs :: pub (super) impl UserIoCursor < 'a > :: fn copy_to_user (& mut self , task : & TaskControlBlock , input : & [u8] ,) -> Result < usize , () >
 kernel/src/syscall/user_iovec.rs :: pub (super) impl UserIoCursor < 'a > :: fn new (vectors : & 'a [UserIoVec]) -> Self
@@ -4426,8 +4485,7 @@ kernel/src/task/memory_barrier.rs :: pub (crate) fn synchronize_private_memory (
 kernel/src/task/memory_barrier.rs :: pub (super) fn initialize ()
 kernel/src/task/mod.rs :: pub (crate) fn initialize ()
 kernel/src/task/mod.rs :: pub (crate) fn initialize_interrupt_state ()
-kernel/src/task/mod.rs :: pub (crate) fn spawn_init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : Arc < dyn Console > ,)
-kernel/src/task/mod.rs :: pub (crate) mod signal_number
+kernel/src/task/mod.rs :: pub (crate) fn spawn_init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
 kernel/src/task/mod.rs :: pub (crate) use model :: KernelThreadBody
@@ -4488,7 +4546,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_kernel_thread (tid : usize , name : & 'static str , body : KernelThreadBody ,) -> Result < Self , MemoryError >
-kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_pending_signal (& self , mask : u64) -> Option < (usize , PendingSignal) >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_deliverable_signal < T > (& self , action : impl FnOnce () -> T) -> Option < T >
@@ -4834,18 +4892,16 @@ kernel/src/task/process_table.rs :: pub (crate) fn wait_for_poll (mut keys : all
 kernel/src/task/process_table.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
 kernel/src/task/process_table.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64) -> WaitResult
 kernel/src/task/process_table.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
-kernel/src/task/process_table.rs :: pub (crate) use console_wait :: { drain_terminal_input , wait_for_console }
 kernel/src/task/process_table.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
 kernel/src/task/process_table.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
 kernel/src/task/process_table.rs :: pub (crate) use parent_death :: parent_death_signal
 kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
 kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/process_table.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
-kernel/src/task/process_table.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
+kernel/src/task/process_table.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , create_session , process_group , session_id , set_process_group , }
 kernel/src/task/process_table.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
 kernel/src/task/process_table.rs :: pub (crate) use resource_limit :: process_resource_limit
 kernel/src/task/process_table.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_kernel_thread_signal_info , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
-kernel/src/task/process_table.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal , publish_terminal_input_signals , resize_terminal , }
 kernel/src/task/process_table.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
 kernel/src/task/process_table.rs :: pub (crate) use thread_selector :: { parent_pid , thread_count }
 kernel/src/task/process_table.rs :: pub (crate) use vfork :: { ProcessCloneError , fork_current_process , vfork_current_process }
@@ -4862,6 +4918,7 @@ kernel/src/task/process_table.rs :: pub (super) fn add_init_task (task : Arc < T
 kernel/src/task/process_table.rs :: pub (super) fn scheduler_deferred_safe_point ()
 kernel/src/task/process_table.rs :: pub (super) mod context_switch
 kernel/src/task/process_table.rs :: pub (super) use io_wait :: initialize_driver_io_wait
+kernel/src/task/process_table.rs :: pub (super) use terminal_access :: install_job_control
 kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: FileSystem (crate :: fs :: FileSystemError)
 kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: Interrupted
 kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: NoLocks
@@ -4882,9 +4939,8 @@ kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBa
 kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: fn groups (& self) -> & [Option < usize >]
 kernel/src/task/process_table/console_batch.rs :: pub (super) impl ConsoleWakeBatch :: fn record (& mut self , group : Option < usize >)
 kernel/src/task/process_table/console_batch.rs :: pub (super) struct ConsoleWakeBatch
-kernel/src/task/process_table/console_wait.rs :: pub (crate) fn drain_terminal_input (terminal : & crate :: fs :: Terminal) -> Result < () , () >
-kernel/src/task/process_table/console_wait.rs :: pub (crate) fn wait_for_console (deadline : Option < u64 > , input_ready : impl FnOnce () -> bool ,) -> WaitResult
 kernel/src/task/process_table/console_wait.rs :: pub (super) fn process_terminal_input () -> bool
+kernel/src/task/process_table/console_wait.rs :: pub (super) fn wait_for_console (deadline : Option < u64 > , input_ready : & dyn Fn () -> bool ,) -> WaitResult
 kernel/src/task/process_table/console_wait.rs :: pub (super) fn wake_console_waiters () -> bool
 kernel/src/task/process_table/context_switch.rs :: pub (in crate :: task) fn complete_pending_handoff ()
 kernel/src/task/process_table/context_switch.rs :: pub (super) fn prepare_current_block < Owner > (task : & Arc < TaskControlBlock > , mut owner : Owner , publish : impl FnOnce (& mut Owner , Arc < TaskControlBlock >) -> WaitMembership ,) -> PreparedBlock
@@ -4947,16 +5003,16 @@ kernel/src/task/process_table/process_group.rs :: enum SetProcessGroupError :: N
 kernel/src/task/process_table/process_group.rs :: enum SetProcessGroupError :: Permission
 kernel/src/task/process_table/process_group.rs :: pub (crate) enum ProcessGroupError
 kernel/src/task/process_table/process_group.rs :: pub (crate) enum SetProcessGroupError
-kernel/src/task/process_table/process_group.rs :: pub (crate) fn claim_controlling_terminal (terminal : & Arc < crate :: fs :: Terminal > , force : usize ,) -> Result < () , ProcessGroupError >
 kernel/src/task/process_table/process_group.rs :: pub (crate) fn create_session () -> Result < usize , ProcessGroupError >
 kernel/src/task/process_table/process_group.rs :: pub (crate) fn process_group (pid : usize) -> Result < usize , ProcessGroupError >
 kernel/src/task/process_table/process_group.rs :: pub (crate) fn session_id (pid : usize) -> Result < usize , ProcessGroupError >
 kernel/src/task/process_table/process_group.rs :: pub (crate) fn set_process_group (pid : usize , pgid : usize) -> Result < () , SetProcessGroupError >
-kernel/src/task/process_table/process_group.rs :: pub (crate) fn set_terminal_foreground_group (terminal : & crate :: fs :: Terminal , pgid : usize ,) -> Result < () , ProcessGroupError >
-kernel/src/task/process_table/process_group.rs :: pub (crate) fn terminal_foreground_group (terminal : & crate :: fs :: Terminal ,) -> Result < usize , ProcessGroupError >
 kernel/src/task/process_table/process_group.rs :: pub (in crate :: task) fn current_process_group_is_orphaned (tgid : usize) -> bool
 kernel/src/task/process_table/process_group.rs :: pub (in crate :: task) fn mark_process_exec (tgid : usize)
+kernel/src/task/process_table/process_group.rs :: pub (super) fn claim_controlling_terminal (terminal : & Arc < crate :: fs :: Terminal > , force : usize ,) -> Result < () , ProcessGroupError >
 kernel/src/task/process_table/process_group.rs :: pub (super) fn process_group_is_orphaned (graph : & ProcessGraph , session : usize , process_group : usize ,) -> bool
+kernel/src/task/process_table/process_group.rs :: pub (super) fn set_terminal_foreground_group (terminal : & crate :: fs :: Terminal , pgid : usize ,) -> Result < () , ProcessGroupError >
+kernel/src/task/process_table/process_group.rs :: pub (super) fn terminal_foreground_group (terminal : & crate :: fs :: Terminal ,) -> Result < usize , ProcessGroupError >
 kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: free_memory_bytes : u64
 kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: load_milli : [u64 ; 3]
 kernel/src/task/process_table/procfs.rs :: pub (crate) SystemInfoSnapshot :: task_count : usize
@@ -5015,13 +5071,7 @@ kernel/src/task/process_table/snapshot_staging.rs :: enum SnapshotCapacity :: Re
 kernel/src/task/process_table/snapshot_staging.rs :: pub (super) const fn snapshot_capacity (capacity : usize , required : usize) -> SnapshotCapacity
 kernel/src/task/process_table/snapshot_staging.rs :: pub (super) enum SnapshotCapacity
 kernel/src/task/process_table/task_wait.rs :: pub (in crate :: task) fn initialize ()
-kernel/src/task/process_table/terminal_access.rs :: enum TerminalAccessError :: Io
-kernel/src/task/process_table/terminal_access.rs :: enum TerminalAccessError :: Restart
-kernel/src/task/process_table/terminal_access.rs :: pub (crate) enum TerminalAccessError
-kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
-kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn hangup_terminal (terminal : & Terminal)
-kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn publish_terminal_input_signals (terminal : & Terminal , signals : u64)
-kernel/src/task/process_table/terminal_access.rs :: pub (crate) fn resize_terminal (terminal : & Terminal , window_size : [u8 ; 8])
+kernel/src/task/process_table/terminal_access.rs :: pub (in crate :: task) fn install_job_control ()
 kernel/src/task/process_table/thread_activation.rs :: enum ActivationTransition :: None
 kernel/src/task/process_table/thread_activation.rs :: enum ActivationTransition :: ReadyNew
 kernel/src/task/process_table/thread_activation.rs :: enum ActivationTransition :: ResumeStoppedNew
@@ -5342,29 +5392,6 @@ kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedH
 kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn try_with_capacity (capacity : usize) -> Result < Self , () >
 kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) struct PreallocatedHeap < T : Ord >
 kernel/src/task/scheduler/preemption_policy.rs :: pub (crate) fn local_ready_preempts (current_vruntime : Option < u64 > , ready_vruntime : Option < u64 > ,) -> bool
-kernel/src/task/signal_number.rs :: pub (crate) const BUS_ADRERR : i32 = 2
-kernel/src/task/signal_number.rs :: pub (crate) const ILL_ILLOPC : i32 = 1
-kernel/src/task/signal_number.rs :: pub (crate) const ILL_ILLTRP : i32 = 4
-kernel/src/task/signal_number.rs :: pub (crate) const SEGV_ACCERR : i32 = 2
-kernel/src/task/signal_number.rs :: pub (crate) const SEGV_MAPERR : i32 = 1
-kernel/src/task/signal_number.rs :: pub (crate) const SIGALRM : usize = 14
-kernel/src/task/signal_number.rs :: pub (crate) const SIGBUS : usize = 7
-kernel/src/task/signal_number.rs :: pub (crate) const SIGCHLD : usize = 17
-kernel/src/task/signal_number.rs :: pub (crate) const SIGCONT : usize = 18
-kernel/src/task/signal_number.rs :: pub (crate) const SIGHUP : usize = 1
-kernel/src/task/signal_number.rs :: pub (crate) const SIGILL : usize = 4
-kernel/src/task/signal_number.rs :: pub (crate) const SIGKILL : usize = 9
-kernel/src/task/signal_number.rs :: pub (crate) const SIGPIPE : usize = 13
-kernel/src/task/signal_number.rs :: pub (crate) const SIGSEGV : usize = 11
-kernel/src/task/signal_number.rs :: pub (crate) const SIGSTOP : usize = 19
-kernel/src/task/signal_number.rs :: pub (crate) const SIGTRAP : usize = 5
-kernel/src/task/signal_number.rs :: pub (crate) const SIGTTIN : usize = 21
-kernel/src/task/signal_number.rs :: pub (crate) const SIGTTOU : usize = 22
-kernel/src/task/signal_number.rs :: pub (crate) const SIGURG : usize = 23
-kernel/src/task/signal_number.rs :: pub (crate) const SIGWINCH : usize = 28
-kernel/src/task/signal_number.rs :: pub (crate) const SIGXCPU : usize = 24
-kernel/src/task/signal_number.rs :: pub (crate) const SIGXFSZ : usize = 25
-kernel/src/task/signal_number.rs :: pub (crate) const TRAP_BRKPT : i32 = 1
 kernel/src/timer.rs :: pub (crate) fn boot_epoch_seconds () -> u64
 kernel/src/timer.rs :: pub (crate) fn enable_timer_interrupt ()
 kernel/src/timer.rs :: pub (crate) fn get_realtime_ns () -> u64
@@ -5382,16 +5409,5 @@ kernel/src/trap/mod.rs :: pub (crate) fn handle_kernel_trap ()
 kernel/src/trap/mod.rs :: pub (crate) fn handle_user_trap () -> !
 kernel/src/trap/mod.rs :: pub (crate) fn init ()
 kernel/src/trap/mod.rs :: pub (crate) fn trap_return () -> !
-kernel/src/virtio_port.rs :: enum Error :: # [doc = " The current operation would block."] WouldBlock
-kernel/src/virtio_port.rs :: enum Error :: # [doc = " The named port is closed or the device failed."] Disconnected
-kernel/src/virtio_port.rs :: pub (crate) enum Error
-kernel/src/virtio_port.rs :: pub (crate) fn dispatch_work () -> bool
 kernel/src/virtio_port.rs :: pub (crate) fn init (device : Arc < VirtIOConsoleDevice >) -> Result < () , () >
-kernel/src/virtio_port.rs :: pub (crate) fn open () -> Option < Arc < Port > >
-kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn notification_pipe (& self) -> Arc < Pipe >
-kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn poll_events (& self , events : i16) -> i16
-kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn prepare_to_block (& self , events : i16) -> Option < Arc < Pipe > >
-kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn read (& self , output : & mut [u8]) -> Result < usize , Error >
-kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn readiness_generation (& self) -> u64
-kernel/src/virtio_port.rs :: pub (crate) impl Port :: fn write (& self , input : & [u8]) -> Result < usize , Error >
 kernel/src/virtio_port.rs :: pub (crate) struct Port

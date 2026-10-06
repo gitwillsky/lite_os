@@ -27,19 +27,28 @@
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
-- `fs::pty` 独占 PTY registry/pair；Terminal 独占 session/foreground/termios/winsize。userspace terminal
-  helper 与 graphical session owner 由 [LiteUI 契约](lite-runtime.md) 维护。
+- `fs::device` 独占字符设备注册表：driver 按单 major 内的 minor 区间登记（Linux `cdev_add`），
+  devfs 节点按路径登记（devtmpfs）；devpts 等动态节点只登记 driver 区间。设备子系统以
+  `DeviceFile` 拥有记录边界、阻塞、poll 唤醒源、ioctl UAPI 与 mmap 裁决，fs/devfs/syscall 不认识
+  具体设备种类。
+- `fs::tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
+  `null`/`zero`/`random`/`urandom`/`kmsg`。`fs::pty` 独占 PTY registry/pair；Terminal 独占
+  session/foreground/termios/winsize 与创建时绑定的实际设备号。userspace terminal helper 与
+  graphical session owner 由 [LiteUI 契约](lite-runtime.md) 维护。
 - userspace `linux-uapi` 独占 DRM/evdev/PTY/process/poll ancillary 的 raw musl FFI；`OwnedFd`、
   `DumbBuffer`、`InputDevice`、`PtySession` 与 `SessionChild` 独占对应资源 cleanup。应用不得复制
   layout、constant、extern block 或裸 owner。
 
 ## Interface
 
+- 设备类 deferred vector 由消费领域（drm、input、virtio_port）以 `cpu::register_deferred` 分配并经
+  device seam 的 `bind_completion_work` 绑定给 adapter；adapter 只经 `raise_completion` 发布，绑定时补发
+  一次以消费绑定前已到达的 completion。核心向量（timer、console、network、driver I/O）是固定常量。
 - VirtIO hardirq handler 只读写 interrupt status/ack 并发布合并 deferred bit，不得取得
   queue/control/event lock、遍历 `KERNEL_SPACE` 或回收 descriptor。net、GPU、input 的 ordinary
   adapter lock 只允许 task context 与统一 user-return/idle deferred safe point 进入；禁止为个别
   adapter 增设 IRQ-lock 兼容路径。
-- VirtIO Console hardirq 只发布 `VirtioPort`；deferred pass 必须先 claim/validate/recycle completion，
+- VirtIO Console hardirq 只发布 `virtio_port` 绑定的 deferred vector；deferred pass 必须先 claim/validate/recycle completion，
   再 repost RX descriptor，并按每次 repost 通知对应 queue。用“used ring 仍有数据”代替 repost
   notification 会在恰好 drain 完一批后永久停止 host→guest stream，禁止这种近似。
 - `PORT_OPEN` 与 `PORT_NAME` 顺序没有领域保证；adapter 必须分别保存 host-open 与 exact-name match，
@@ -74,7 +83,14 @@
   `cap.offset + queue_notify_off * notify_off_multiplier` 计算 doorbell，禁用 MSI-X 并只消费 DTB
   `interrupt-map` 给出的 INTx。BAR、capability chain、queue size 或 route 非法时不得发布半初始化 adapter。
 - QEMU `virt` 必须在任何 VirtIO queue publication 前证明 root `dma-coherent`；缺失时 fail-stop，禁止增加 bounce buffer、每次提交 cache flush 或“先运行再探测”的兼容路径。
-- DRM/evdev syscall 只编码固定 Linux UAPI。devfs 只发布 object identity，不拥有 device state。
+- DRM/evdev/ALSA/TTY ioctl UAPI 由各设备子系统经 `DeviceFile::ioctl` 编解码；syscall 只提供
+  `UserMemory`、`O_NONBLOCK` 与调用者特权位。devfs 只按注册表发布 node identity，不拥有 device state。
+- 设备读写经 `UserOutput`/`UserInput` 游标（Linux `iov_iter` 子集）直接交付：破坏性出队（evdev/DRM
+  event、PTY master、virtio port）前必须先 `reserve` 整批目标，出队后的 copy 才不会因 fault 丢数据；
+  写入先 `copy` 再按设备实际接受量 `consume`。syscall 以游标累计进度为结果，已有进度时优先返回进度。
+  设备只在尚未交付任何字节时阻塞。
+- `/dev/tty` 是调用者 controlling terminal 的别名：open 按该 Terminal 的设备号重开底层 console 或
+  pts，读写与唤醒源与直接打开一致；caller session 没有 controlling TTY 时返回 `ENXIO`。
 - `/dev/virtio-ports/com.redhat.spice.0` 是 mode `0600` 的 character byte stream：read/write 支持
   blocking 与 `O_NONBLOCK`，poll/epoll 只投影 adapter level readiness 与 disconnect。它不是私有
   clipboard syscall；SPICE agent framing 完全属于 compositor userspace。compositor 必须在同一个
@@ -122,10 +138,12 @@
   必须重新发布 deferred work，不能依赖用户可见 readiness 继续 drain。
 - PTY master syscall write 的 user-copy chunk 同样限制为 256 bytes，并在返回前同步 drain 完整
   chunk；因此用户可见 `POLLIN` 只投影 cooked input/canonical EOF，未成行 raw bytes 只供内部
-  `wait_ready(raw || cooked)` 封闭进度竞态。其他 character backend 保持 512-byte chunk；
-  architecture fence 直接解析 `CharacterDevice::poll_events` 与 sequential-write production dispatch，
-  禁止 user-visible poll 改用 raw readiness，或 PTY master 退回 512-byte character chunk。
-- PTY registry 通过 composition root 保存不可变 input-signal callback；PTY master drain 生成的 ISIG bitset 必须由 task owner 路由到当时的 foreground process group，filesystem 不得反向依赖 task graph。
+  `wait_ready(raw || cooked)` 封闭进度竞态。其他 terminal 写入保持 512-byte chunk；architecture
+  fence 直接解析 `fs/tty.rs` 的 `TerminalFile::poll` 与 `PtyMasterFile`/`TerminalFile::write`，禁止
+  user-visible poll 改用 raw readiness，或 PTY master 退回 512-byte chunk。
+- session、process group 与 signal 只经 task 在 `task::initialize` 安装的 `fs::JobControl` 访问；PTY master
+  drain 与 console deferred drain 生成的 ISIG bitset、master close 的 SIGHUP/SIGCONT 与 TIOCSWINSZ 的
+  SIGWINCH 都由 fs TTY 经它路由到当时的 foreground process group，filesystem 不得反向依赖 task graph。
 - DMA/storage 与完整物理 segment mapping 必须在 publication 前预留；跨页 buffer 按缓存 segment
   精确消耗 descriptor capacity，mapping 失败不得发布部分 chain。queue ownership、fence 或 mapping
   损坏时 fail-stop，不得退回运行期 translation。

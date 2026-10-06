@@ -386,7 +386,7 @@ impl VirtIORngDevice {
             }
         }
         if self.drain_failed_capacity_waiters() {
-            crate::cpu::raise_deferred(crate::cpu::DeferredWork::DriverIo);
+            crate::cpu::raise_deferred(crate::cpu::DeferredWork::DRIVER_IO);
         }
     }
 

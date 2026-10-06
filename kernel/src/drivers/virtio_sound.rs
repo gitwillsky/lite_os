@@ -240,7 +240,7 @@ impl VirtIOSoundDevice {
         if status != 0 {
             self.device.interrupt_ack(status).ok()?;
             if polled_control_ack_requires_deferred(status) {
-                crate::cpu::raise_deferred(crate::cpu::DeferredWork::DriverIo);
+                crate::cpu::raise_deferred(crate::cpu::DeferredWork::DRIVER_IO);
             }
         }
         (read_u32(owner.control_response.as_slice(), 0)? == S_OK).then_some(())

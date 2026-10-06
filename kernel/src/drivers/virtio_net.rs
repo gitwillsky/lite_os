@@ -343,7 +343,7 @@ impl NetworkDevice for VirtIONetworkDevice {
         }
         drop(queues);
         if was_full {
-            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Network);
+            crate::cpu::raise_deferred(crate::cpu::DeferredWork::NETWORK);
         }
     }
 
@@ -470,7 +470,7 @@ impl InterruptHandler for VirtIONetworkIrqHandler {
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
         if status & VIRTIO_MMIO_INT_VRING != 0 {
-            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Network);
+            crate::cpu::raise_deferred(crate::cpu::DeferredWork::NETWORK);
         }
         Ok(())
     }

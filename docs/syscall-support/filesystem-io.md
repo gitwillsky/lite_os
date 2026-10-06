@@ -56,3 +56,8 @@
 ## 已知缺口
 
 没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring 或完整 block I/O priority enforcement。
+
+字符设备读写的范围缩减：`/dev/kmsg` 无新 record 时不阻塞而返回 `EAGAIN`，写入（printk 注入）返回
+`EOPNOTSUPP`；`/dev/random`/`/dev/urandom` 写入（混入 entropy pool）返回 `EOPNOTSUPP`；
+`/dev/snd/pcmC0D0p` 的 `read`/`write` 返回 `EOPNOTSUPP`，PCM 数据只经 `SNDRV_PCM_IOCTL_WRITEI_FRAMES`
+或 mmap ring 传输；`/dev/dri/card0` 的 `write` 返回 `EOPNOTSUPP`。

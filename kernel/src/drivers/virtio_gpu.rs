@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 use crate::memory::{DeviceBacking, FrameAllocationClass, PAGE_SIZE};
 
@@ -244,9 +244,19 @@ pub(crate) struct VirtIOGpuDevice {
     // OWNER: cursorq 是光标移动的唯一 fast path；它与 controlq 分锁，避免 scene render
     // 持锁时把 pointer motion 重新串行到耗时 VirGL command 后面。
     cursor: Mutex<CursorQueue>,
+    // OWNER: 消费者在初始化时绑定一次的 completion deferred vector；hardirq 与 deferred
+    // 续批只发布它。绑定前没有消费者，completion 留在 used ring 由绑定时的补偿发布消费。
+    completion_work: Once<crate::cpu::DeferredWork>,
 }
 
 impl VirtIOGpuDevice {
+    /// 发布已绑定的 completion vector；未绑定时没有消费者，忽略。
+    fn raise_completion(&self) {
+        if let Some(work) = self.completion_work.get() {
+            crate::cpu::raise_deferred(*work);
+        }
+    }
+
     /// 初始化 MMIO v2 controlq，查询第一个 enabled scanout 并建立 2D resource。
     ///
     /// # Parameters
@@ -326,6 +336,7 @@ impl VirtIOGpuDevice {
             context_init: features & VIRTIO_GPU_F_CONTEXT_INIT != 0,
             control,
             cursor,
+            completion_work: Once::new(),
         };
         if features & VIRTIO_GPU_F_VIRGL != 0 {
             let capset = Self::load_virgl_capset(&adapter.device, &adapter.control)?;
@@ -576,13 +587,18 @@ impl InterruptHandler for VirtIOGpuIrqHandler {
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
         if status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG) != 0 {
-            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Display);
+            self.device.raise_completion();
         }
         Ok(())
     }
 }
 
 impl DisplayDevice for VirtIOGpuDevice {
+    fn bind_completion_work(&self, work: crate::cpu::DeferredWork) {
+        self.completion_work.call_once(|| work);
+        crate::cpu::raise_deferred(work);
+    }
+
     fn mode(&self) -> DisplayMode {
         self.control.lock().mode
     }
@@ -619,7 +635,7 @@ impl DisplayDevice for VirtIOGpuDevice {
             Ok(Some(sequence)) => {
                 // 一个合并 IRQ 还可能同时携带 controlq completion；再次调度一次，避免
                 // cursor fast path 吞掉 scene waiter 的唯一 completion edge。
-                crate::cpu::raise_deferred(crate::cpu::DeferredWork::Display);
+                self.raise_completion();
                 return Ok(Some(DisplayUpdate::CursorCompleted(sequence)));
             }
             Ok(None) => {}
@@ -737,7 +753,7 @@ impl DisplayDevice for VirtIOGpuDevice {
             }
         }
         if control.queue.has_used() {
-            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Display);
+            self.raise_completion();
         }
         if let Some(completion) = completion {
             drop(control);

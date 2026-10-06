@@ -5,7 +5,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Once;
 
 mod deferred;
-pub(crate) use deferred::{DeferredWork, raise as raise_deferred, take as take_deferred};
+pub(crate) use deferred::{
+    DeferredWork, raise as raise_deferred, register as register_deferred, take as take_deferred,
+};
 
 /// Platform/firmware 使用的 opaque hardware CPU identity。
 #[repr(transparent)]

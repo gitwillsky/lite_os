@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 use super::{
     InputAbsInfo, InputDevice, InputDeviceError, InputId, InterruptError, InterruptHandler,
@@ -61,6 +61,9 @@ pub(crate) struct VirtIOInputDevice {
     // hardirq 只发布 deferred bit，consumer 只在 user-return/idle safe point 进入；若从
     // kernel SSIP 直接消费，同 CPU 可重入本锁并永久自旋。
     events: Mutex<EventQueueState>,
+    // OWNER: 消费者在初始化时绑定一次的 completion deferred vector；hardirq 与 deferred
+    // 续批只发布它。绑定前没有消费者，completion 留在 used ring 由绑定时的补偿发布消费。
+    completion_work: Once<crate::cpu::DeferredWork>,
 }
 
 impl VirtIOInputDevice {
@@ -128,6 +131,7 @@ impl VirtIOInputDevice {
         Arc::try_new(Self {
             device,
             metadata,
+            completion_work: Once::new(),
             events: Mutex::new(EventQueueState {
                 queue,
                 slots,
@@ -283,6 +287,11 @@ fn bit_is_set(bits: &[u8], bit: u16) -> bool {
 }
 
 impl InputDevice for VirtIOInputDevice {
+    fn bind_completion_work(&self, work: crate::cpu::DeferredWork) {
+        self.completion_work.call_once(|| work);
+        crate::cpu::raise_deferred(work);
+    }
+
     fn name(&self) -> &[u8] {
         &self.metadata.name
     }
@@ -402,6 +411,15 @@ impl InputDevice for VirtIOInputDevice {
     }
 }
 
+impl VirtIOInputDevice {
+    /// 发布已绑定的 completion vector；未绑定时没有消费者，忽略。
+    fn raise_completion(&self) {
+        if let Some(work) = self.completion_work.get() {
+            crate::cpu::raise_deferred(*work);
+        }
+    }
+}
+
 impl Drop for VirtIOInputDevice {
     fn drop(&mut self) {
         // Reset revokes device-writable event descriptors before cached mappings are released.
@@ -425,7 +443,7 @@ impl InterruptHandler for VirtIOInputIrqHandler {
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
         if status & VIRTIO_MMIO_INT_VRING != 0 {
-            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Input);
+            self.device.raise_completion();
         }
         Ok(())
     }

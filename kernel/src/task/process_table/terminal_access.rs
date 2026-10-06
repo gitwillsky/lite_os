@@ -6,6 +6,8 @@ use super::*;
 /// task 为 fs TTY 提供的唯一 job-control 实现。
 struct TaskJobControl;
 
+// OWNER: 无状态的唯一 job-control 实现；由 `install_job_control` 安装进 fs TTY。缺失时 fs 无法
+// 判定后台访问或投递 SIGTTIN/SIGTTOU/SIGHUP/SIGWINCH 与 ISIG。
 static TASK_JOB_CONTROL: TaskJobControl = TaskJobControl;
 
 /// 在任何 TTY open 之前把 job control 安装到 fs。

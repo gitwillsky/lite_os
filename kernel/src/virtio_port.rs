@@ -78,7 +78,10 @@ pub(crate) fn init(device: Arc<VirtIOConsoleDevice>) -> Result<(), ()> {
     })
     .map_err(|_| ())?;
     let driver = Arc::try_new(PortDriver).map_err(|_| ())?;
+    let work = crate::cpu::register_deferred(port_work)?;
+    let adapter = port.device.clone();
     PORT.call_once(|| port);
+    adapter.bind_completion_work(work);
     device::register_driver(PORT_NUMBER, 1, driver).map_err(|_| ())?;
     device::register_node(PORT_PATH, PORT_NUMBER, 0o600).map_err(|_| ())
 }
@@ -173,7 +176,11 @@ impl DeviceFile for Port {
 /// # Returns
 ///
 /// `true` when a bounded pass left queue backlog.
-pub(crate) fn dispatch_work() -> bool {
+fn port_work(_now_ns: u64) -> bool {
+    dispatch_work()
+}
+
+fn dispatch_work() -> bool {
     let Some(port) = PORT.get() else {
         return false;
     };

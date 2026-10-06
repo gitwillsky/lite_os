@@ -31,3 +31,11 @@ Status: Active
    BusyBox gate。
 6. F4：解析 DTB `/chosen/bootargs` 的 `init=`、`root=`、`console=` → boot gate。
 7. F6/F7：console 适配器归位；初始化顺序由类型或围栏约束 → `make verify`。
+
+## 进度
+
+- 步骤 1–3 已完成：字符设备注册表（driver 区间 + devfs 节点）、`DeviceFile` 与 `UserOutput`/`UserInput`
+  游标、mem/TTY/evdev/DRM/ALSA/virtio-port 设备文件、`JobControl` hook、`syscall_abi::{errno, signal}`、
+  设备类 deferred vector 注册。持久事实已写入 `architecture/devices-terminal.md`、设备与终端契约、依赖表
+  与 `syscall-support/filesystem-io.md`。
+- 下一步：步骤 4（F2）。

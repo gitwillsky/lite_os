@@ -21,9 +21,9 @@
 - VirtIO Console adapter 只协商 modern multiport，固定选择 `com.redhat.spice.0`；同一个 transport-neutral adapter 在 UTM 产品路径消费 modern VirtIO PCI common/notify/ISR capabilities，在 headless gate 消费 modern MMIO，绝不复制 queue 或 port state。它拥有 control
   RX/TX、exact-name 命中后按 port id 选择的唯一 data RX/TX pair、named-port open state 与 64 KiB
   byte ring。UTM 可以先枚举 `org.qemu.guest_agent.0`，因此 data queue 不得固定为 port 1 的 4/5；
-  port 0 使用 0/1，port N 使用 `2N+2`/`2N+3`。hardirq 只 ack 并发布
-  `VirtioPort` deferred work；safe point 验证 completion、repost RX、通知 queue 并经
-  `virtio_port` domain 唤醒 task。devfs 只把该 stream 发布为
+  port 0 使用 0/1，port N 使用 `2N+2`/`2N+3`。hardirq 只 ack 并发布 `virtio_port` 注册绑定的
+  deferred vector；safe point 验证 completion、repost RX、通知 queue 并经 `virtio_port` domain
+  唤醒 task。`virtio_port` 经字符设备注册表把该 stream 发布为
   `/dev/virtio-ports/com.redhat.spice.0`。
 - GPU runtime completion 由独立 sequence owner 验证 fence/response 与 stage 顺序，阶段分支只选择
   下一条 `GpuCommand`；统一 command seam 负责 wire encoding、长度与 queue publication。
@@ -42,7 +42,7 @@
   创建 init `AT_RANDOM` 的唯一 cold-boot caller WFI。64 KiB `getrandom` 或 entropy-device read 从
   256 个 256-byte batch 降为 16 个 heap-backed 4 KiB batch；固定 64-poll 模型的 MMIO polling/
   spin 从 64/64 降为 0/0，output/DMA 覆盖前预零从 131072/4096 bytes 降为 0/0。
-- DRM owner 组合 display operation、GEM/framebuffer、KMS、damage fence、master 与 event；syscall 只编码 Linux DRM UAPI。
+- DRM owner 组合 display operation、GEM/framebuffer、KMS、damage fence、master 与 event，并经 `dri/card0` 设备文件拥有 Linux DRM UAPI。
   VirtIO-GPU config change 更新唯一 connector preferred mode，并只通过标准 DRM kobject hotplug
   uevent 通知 userspace；preferred mode 与已完成的 active CRTC mode 独立，旧 CRTC 在 userspace
   modeset 新 generation 前仍可 page-flip。同步 DRM ioctl 遇到 adapter 内部 display-info transaction
@@ -55,8 +55,15 @@
   completion 水位与 controlq fence 分离。纯 position update 异步发布，slot 忙时只保留尚未发布的最新
   坐标，并继承 cursorq 当前 resource 可见性；shape update 才等待 exact completion，因此 pointer motion
   不受 scene render、vblank 或旧坐标 completion 排队影响。
-- input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke；VirtIO input adapter 只提供 raw event/config。
-- PTY registry、pair 与 Terminal session/foreground/winsize 各守自己的 seam；控制面使用标准 PTY、termios、ANSI/ECMA-48。
+- input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke，并经 `input/eventN` 设备文件拥有 evdev UAPI；VirtIO input adapter 只提供 raw event/config。
+- 字符设备采用 Linux cdev/devtmpfs 模型：设备子系统向 `fs::device` 注册 minor 区间 driver 与 devfs 节点，
+  open 按 inode 设备号找到 driver，返回的 `DeviceFile` 拥有读写、poll、ioctl 与 mmap；fs、devfs 与 syscall
+  不认识具体设备。mem（`null`/`zero`/`random`/`urandom`/`kmsg`）与 TTY（`tty`/`console`/`ptmx`/`pts/N`）
+  由 fs 自身注册；pts 设备号为 Linux `(136, index)`。
+- 系统 console Terminal 是 fs TTY 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 deferred UART 输入共享它；
+  `/dev/tty` 按调用者 controlling terminal 的设备号重开底层设备。PTY registry、pair 与 Terminal
+  session/foreground/winsize 各守自己的 seam；job control 只经 task 安装的 `JobControl`；控制面使用标准
+  PTY、termios、ANSI/ECMA-48。
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
   [图形会话与 LiteUI](lite-runtime.md) 唯一维护；本文件只拥有 kernel device 与 PTY 事实。
 

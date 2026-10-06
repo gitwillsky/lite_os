@@ -593,6 +593,12 @@ pub(crate) fn init() -> Result<(), ()> {
     }
     let count = devices.len();
     INPUT_DEVICES.call_once(|| devices);
+    if count != 0 {
+        let work = crate::cpu::register_deferred(input_work)?;
+        for device in INPUT_DEVICES.get().into_iter().flatten() {
+            device.adapter.bind_completion_work(work);
+        }
+    }
     let driver = Arc::try_new(evdev_file::EvdevDriver).map_err(|_| ())?;
     let count_minors = u32::try_from(count).map_err(|_| ())?;
     if count_minors != 0 {
@@ -638,7 +644,11 @@ fn event_path(index: usize, output: &mut [u8; 16]) -> usize {
 /// # Errors
 ///
 /// queue/transport 损坏直接 fail-stop，禁止在 owner 不确定后继续 DMA。
-pub(crate) fn dispatch_input_work() -> bool {
+fn input_work(_now_ns: u64) -> bool {
+    dispatch_input_work()
+}
+
+fn dispatch_input_work() -> bool {
     let Some(devices) = INPUT_DEVICES.get() else {
         return false;
     };

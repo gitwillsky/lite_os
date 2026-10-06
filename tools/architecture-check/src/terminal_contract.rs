@@ -1,30 +1,25 @@
-use syn::{
-    Arm, Expr, ExprCall, ExprMacro, ImplItem, Item, Pat, Path, Token, Type,
-    parse::{Parse, ParseStream},
-    visit::Visit,
-};
+use syn::{Expr, ExprCall, ExprLit, ImplItem, ImplItemFn, Item, Lit, Path, Type, visit::Visit};
 
 use super::SourceFile;
 
-const CHARACTER_PATH: &str = "kernel/src/fs/file/character.rs";
-const SEQUENTIAL_WRITE_PATH: &str = "kernel/src/syscall/fs/io/sequential/write.rs";
+const TTY_PATH: &str = "kernel/src/fs/tty.rs";
 
-/// 校验 PTY user-visible readiness 与 syscall input batch 的 production dispatch。
+/// 校验 TTY user-visible readiness 与 PTY master input batch 的 production 实现。
+///
+/// 1. `TerminalFile::poll` 只能投影一次 cooked `terminal.input_ready()`，不得暴露
+///    `wait_ready()` 的 raw backlog；
+/// 2. `PtyMasterFile::write` 必须以 `character_write_chunk(.., true)` 取 256-byte
+///    line-discipline 预算，`TerminalFile::write` 以 `false` 取普通 512-byte chunk。
 pub(super) fn check_terminal_contract(sources: &[SourceFile], errors: &mut Vec<String>) {
-    check_character_poll(sources, errors);
-    check_character_write_chunk(sources, errors);
-}
-
-fn source<'a>(
-    sources: &'a [SourceFile],
-    path: &str,
-    errors: &mut Vec<String>,
-) -> Option<&'a SourceFile> {
-    let source = sources.iter().find(|source| source.relative == path);
-    if source.is_none() {
-        errors.push(format!("missing PTY contract production source: {path}"));
-    }
-    source
+    let Some(source) = sources.iter().find(|source| source.relative == TTY_PATH) else {
+        errors.push(format!(
+            "missing TTY contract production source: {TTY_PATH}"
+        ));
+        return;
+    };
+    check_terminal_poll(source, errors);
+    check_write_chunk(source, "PtyMasterFile", true, errors);
+    check_write_chunk(source, "TerminalFile", false, errors);
 }
 
 fn path_ends_with(path: &Path, expected: &[&str]) -> bool {
@@ -41,8 +36,45 @@ fn type_ends_with(ty: &Type, expected: &str) -> bool {
     matches!(ty, Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == expected))
 }
 
-fn terminal_arm(arm: &Arm) -> bool {
-    matches!(&arm.pat, Pat::Struct(pattern) if path_ends_with(&pattern.path, &["Self", "Terminal"]))
+/// `DeviceFile for <self_type>` 中名为 `method` 的全部实现。
+fn device_file_methods<'a>(
+    source: &'a SourceFile,
+    self_type: &str,
+    method: &str,
+) -> Vec<&'a ImplItemFn> {
+    source
+        .syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(item_impl)
+                if type_ends_with(&item_impl.self_ty, self_type)
+                    && item_impl
+                        .trait_
+                        .as_ref()
+                        .is_some_and(|(_, path, _)| path_ends_with(path, &["DeviceFile"])) =>
+            {
+                Some(item_impl)
+            }
+            _ => None,
+        })
+        .flat_map(|item_impl| item_impl.items.iter())
+        .filter_map(|item| match item {
+            ImplItem::Fn(function) if function.sig.ident == method => Some(function),
+            _ => None,
+        })
+        .collect()
+}
+
+/// receiver 是 `terminal` 变量或 `.terminal` 字段。
+fn is_terminal(receiver: &Expr) -> bool {
+    match receiver {
+        Expr::Path(path) => path_ends_with(&path.path, &["terminal"]),
+        Expr::Field(field) => {
+            matches!(&field.member, syn::Member::Named(name) if name == "terminal")
+        }
+        _ => false,
+    }
 }
 
 #[derive(Default)]
@@ -53,8 +85,7 @@ struct TerminalReadinessCalls {
 
 impl<'ast> Visit<'ast> for TerminalReadinessCalls {
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if matches!(&*call.receiver, Expr::Path(receiver) if path_ends_with(&receiver.path, &["terminal"]))
-        {
+        if is_terminal(&call.receiver) {
             match call.method.to_string().as_str() {
                 "input_ready" => self.cooked += 1,
                 "wait_ready" => self.raw_or_cooked += 1,
@@ -63,114 +94,24 @@ impl<'ast> Visit<'ast> for TerminalReadinessCalls {
         }
         syn::visit::visit_expr_method_call(self, call);
     }
-
-    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
-        if let Expr::Path(function) = &*call.func {
-            if path_ends_with(&function.path, &["Terminal", "input_ready"]) {
-                self.cooked += 1;
-            } else if path_ends_with(&function.path, &["Terminal", "wait_ready"]) {
-                self.raw_or_cooked += 1;
-            }
-        }
-        syn::visit::visit_expr_call(self, call);
-    }
 }
 
-fn check_character_poll(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let Some(source) = source(sources, CHARACTER_PATH, errors) else {
-        return;
-    };
-    let mut methods = 0usize;
-    let mut terminal_arms = 0usize;
-    for item in &source.syntax.items {
-        let Item::Impl(item_impl) = item else {
-            continue;
-        };
-        if !type_ends_with(&item_impl.self_ty, "CharacterDevice") {
-            continue;
-        }
-        for item in &item_impl.items {
-            let ImplItem::Fn(method) = item else {
-                continue;
-            };
-            if method.sig.ident != "poll_events" {
-                continue;
-            }
-            methods += 1;
-            let mut matches = Vec::new();
-            PollMatchVisitor {
-                matches: &mut matches,
-            }
-            .visit_block(&method.block);
-            for expression in matches {
-                for arm in &expression.arms {
-                    if !terminal_arm(arm) {
-                        continue;
-                    }
-                    terminal_arms += 1;
-                    let mut calls = TerminalReadinessCalls::default();
-                    calls.visit_expr(&arm.body);
-                    if calls.cooked != 1 || calls.raw_or_cooked != 0 {
-                        errors.push(format!(
-                            "{CHARACTER_PATH}: CharacterDevice::Terminal poll must project exactly one `terminal.input_ready()` call and must not expose `wait_ready()` raw backlog"
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    if methods != 1 || terminal_arms != 1 {
+fn check_terminal_poll(source: &SourceFile, errors: &mut Vec<String>) {
+    let methods = device_file_methods(source, "TerminalFile", "poll");
+    if methods.len() != 1 {
         errors.push(format!(
-            "{CHARACTER_PATH}: expected one CharacterDevice::poll_events method with one Terminal arm; found {methods} method(s) and {terminal_arms} arm(s)"
+            "{TTY_PATH}: expected one `DeviceFile::poll` for TerminalFile; found {}",
+            methods.len()
+        ));
+        return;
+    }
+    let mut calls = TerminalReadinessCalls::default();
+    calls.visit_block(&methods[0].block);
+    if calls.cooked != 1 || calls.raw_or_cooked != 0 {
+        errors.push(format!(
+            "{TTY_PATH}: TerminalFile poll must project exactly one `terminal.input_ready()` call and must not expose `wait_ready()` raw backlog"
         ));
     }
-}
-
-struct PollMatchVisitor<'out, 'ast> {
-    matches: &'out mut Vec<&'ast syn::ExprMatch>,
-}
-
-impl<'ast> Visit<'ast> for PollMatchVisitor<'_, 'ast> {
-    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
-        self.matches.push(expression);
-        syn::visit::visit_expr_match(self, expression);
-    }
-}
-
-struct MatchesArguments {
-    expression: Expr,
-    _comma: Token![,],
-    pattern: Pat,
-}
-
-impl Parse for MatchesArguments {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        Ok(Self {
-            expression: input.parse()?,
-            _comma: input.parse()?,
-            pattern: input.call(Pat::parse_single)?,
-        })
-    }
-}
-
-fn is_pty_master_selection(expression: &Expr) -> bool {
-    let Expr::Macro(ExprMacro { mac, .. }) = expression else {
-        return false;
-    };
-    if !path_ends_with(&mac.path, &["matches"]) {
-        return false;
-    }
-    let Ok(arguments) = syn::parse2::<MatchesArguments>(mac.tokens.clone()) else {
-        return false;
-    };
-    matches!(
-        (arguments.expression, arguments.pattern),
-        (Expr::Path(expression), Pat::TupleStruct(pattern))
-            if path_ends_with(&expression.path, &["device"])
-                && path_ends_with(&pattern.path, &["CharacterDevice", "PtyMaster"])
-                && pattern.elems.len() == 1
-                && matches!(pattern.elems.first(), Some(Pat::Wild(_)))
-    )
 }
 
 #[derive(Default)]
@@ -188,29 +129,30 @@ impl<'ast> Visit<'ast> for CharacterWriteChunkCalls {
     }
 }
 
-fn check_character_write_chunk(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let Some(source) = source(sources, SEQUENTIAL_WRITE_PATH, errors) else {
-        return;
-    };
-    let functions = source
-        .syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == "write_descriptor" => Some(function),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+fn is_bool(expression: &Expr, expected: bool) -> bool {
+    matches!(expression, Expr::Lit(ExprLit { lit: Lit::Bool(value), .. }) if value.value == expected)
+}
+
+fn check_write_chunk(
+    source: &SourceFile,
+    self_type: &str,
+    pty_master: bool,
+    errors: &mut Vec<String>,
+) {
+    let methods = device_file_methods(source, self_type, "write");
     let mut calls = CharacterWriteChunkCalls::default();
-    for function in &functions {
-        calls.visit_block(&function.block);
+    for method in &methods {
+        calls.visit_block(&method.block);
     }
-    if functions.len() != 1
+    if methods.len() != 1
         || calls.selections.len() != 1
-        || !calls.selections.iter().all(is_pty_master_selection)
+        || !calls
+            .selections
+            .iter()
+            .all(|selection| is_bool(selection, pty_master))
     {
         errors.push(format!(
-            "{SEQUENTIAL_WRITE_PATH}: write_descriptor must select its sole character chunk with `matches!(device, CharacterDevice::PtyMaster(_))` so PTY master uses the 256-byte input budget"
+            "{TTY_PATH}: {self_type}::write must select its sole chunk with `character_write_chunk(.., {pty_master})`; PTY master uses the 256-byte input budget"
         ));
     }
 }
@@ -231,59 +173,39 @@ mod tests {
     }
 
     fn fixtures(poll_readiness: &str, chunk_selection: &str) -> Vec<SourceFile> {
-        vec![
-            parsed(
-                CHARACTER_PATH,
-                &format!(
-                    r#"
-                    enum CharacterDevice {{ Terminal {{ terminal: Terminal }}, Null }}
-                    impl CharacterDevice {{
-                        fn poll_events(&self, events: i16) -> i16 {{
-                            match self {{
-                                Self::Terminal {{ terminal }} => if terminal.{poll_readiness}() {{ events }} else {{ 0 }},
-                                Self::Null => 0,
-                            }}
-                        }}
+        vec![parsed(
+            TTY_PATH,
+            &format!(
+                r#"
+                impl DeviceFile for TerminalFile {{
+                    fn poll(&self, events: i16) -> i16 {{
+                        if self.terminal.{poll_readiness}() {{ events }} else {{ 0 }}
                     }}
-                    "#
-                ),
-            ),
-            parsed(
-                SEQUENTIAL_WRITE_PATH,
-                &format!(
-                    r#"
-                    fn write_descriptor(device: &CharacterDevice, remaining: usize) {{
-                        character_write_chunk(remaining, {chunk_selection});
+                    fn write(&self, input: &mut dyn UserInput) {{
+                        character_write_chunk(input.remaining(), false);
                     }}
-                    "#
-                ),
+                }}
+                impl DeviceFile for PtyMasterFile {{
+                    fn write(&self, input: &mut dyn UserInput) {{
+                        character_write_chunk(input.remaining(), {chunk_selection});
+                    }}
+                }}
+                "#
             ),
-        ]
+        )]
     }
 
     #[test]
     fn production_pty_dispatch_shape_is_accepted() {
         let mut errors = Vec::new();
-        check_terminal_contract(
-            &fixtures(
-                "input_ready",
-                "matches!(device, CharacterDevice::PtyMaster(_))",
-            ),
-            &mut errors,
-        );
+        check_terminal_contract(&fixtures("input_ready", "true"), &mut errors);
         assert!(errors.is_empty(), "{errors:#?}");
     }
 
     #[test]
     fn raw_backlog_cannot_become_user_visible_poll_readiness() {
         let mut errors = Vec::new();
-        check_terminal_contract(
-            &fixtures(
-                "wait_ready",
-                "matches!(device, CharacterDevice::PtyMaster(_))",
-            ),
-            &mut errors,
-        );
+        check_terminal_contract(&fixtures("wait_ready", "true"), &mut errors);
         assert_eq!(errors.len(), 1, "{errors:#?}");
     }
 

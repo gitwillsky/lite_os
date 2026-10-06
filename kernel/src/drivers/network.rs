@@ -237,7 +237,7 @@ pub(crate) fn network_device() -> Option<Arc<dyn NetworkDevice>> {
 /// 发布本 CPU 的 network deferred work，由 user-return/idle safe point 消费。
 #[cfg(not(test))]
 pub(crate) fn request_poll() {
-    crate::cpu::raise_deferred(crate::cpu::DeferredWork::Network);
+    crate::cpu::raise_deferred(crate::cpu::DeferredWork::NETWORK);
 }
 
 #[cfg(test)]

@@ -35,6 +35,10 @@ pub(crate) enum InputDeviceError {
 
 /// 不泄漏 VirtIO queue/config 的通用 input adapter seam。
 pub(crate) trait InputDevice: Send + Sync {
+    /// 绑定消费者分配的 completion deferred vector；绑定前到达的 completion 由绑定时的一次
+    /// 发布补偿。
+    fn bind_completion_work(&self, work: crate::cpu::DeferredWork);
+
     /// # Returns
     ///
     /// 不含 NUL 的设备名称 bytes。

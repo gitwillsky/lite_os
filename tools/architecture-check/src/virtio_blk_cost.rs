@@ -128,7 +128,7 @@ fn measure(sources: &[SourceFile]) -> Result<VirtioBlockCost, String> {
         spin_iterations,
         queue_lock_hold_polls: usize::from(locked_wait) * DELAYED_POLLS,
         max_inflight: if source.text.contains("IoCompletion")
-            && source.text.contains("DeferredWork::DriverIo")
+            && source.text.contains("DeferredWork::DRIVER_IO")
         {
             request_slot_count(source).unwrap_or(1)
         } else {

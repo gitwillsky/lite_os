@@ -450,7 +450,9 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
         }),
     })
     .map_err(|_| ())?;
+    let display = owner.display.clone();
     PRIMARY_DRM.call_once(|| owner);
+    display.bind_completion_work(crate::cpu::register_deferred(display_work)?);
     let driver = Arc::try_new(super::card_file::CardDriver).map_err(|_| ())?;
     crate::fs::device::register_driver(super::card_file::CARD_NUMBER, 1, driver).map_err(|_| ())?;
     crate::fs::device::register_node(
@@ -513,7 +515,12 @@ pub(super) fn open() -> Result<Arc<DrmFile>, ()> {
 /// # Errors
 ///
 /// 未初始化、descriptor/fence 损坏或 device failure 直接 fail-stop。
-pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
+fn display_work(timestamp_ns: u64) -> bool {
+    dispatch_display_work(timestamp_ns);
+    false
+}
+
+fn dispatch_display_work(timestamp_ns: u64) {
     let drm = PRIMARY_DRM
         .get()
         .expect("display softirq arrived before DRM initialization");

@@ -70,7 +70,7 @@ fn expire_timers(now_ns: u64) {
     }
     // 3. 超出 batch 的到期项仅合并发布一个 bit；无界循环会饿死 I/O 与 user return。
     if backlog {
-        cpu::raise_deferred(DeferredWork::TimerBacklog);
+        cpu::raise_deferred(DeferredWork::TIMER_BACKLOG);
     }
 }
 
@@ -123,7 +123,7 @@ fn wake_expired_tasks(now_ns: u64) {
     }
     // 3. backlog 只发布一个合并 bit；直接无界循环会让 I/O 与 user return 永久饥饿。
     if backlog {
-        cpu::raise_deferred(DeferredWork::TimerBacklog);
+        cpu::raise_deferred(DeferredWork::TIMER_BACKLOG);
     }
 }
 
@@ -136,7 +136,7 @@ pub(crate) fn dispatch_pending_deferred_work() {
     if work.is_empty() {
         return;
     }
-    if work.contains(DeferredWork::Timer) {
+    if work.contains(DeferredWork::TIMER) {
         let now_us = crate::timer::get_time_us();
         if let Some(task) = current_task() {
             task.scheduling.policy.lock().checkpoint_runtime(now_us);
@@ -145,37 +145,29 @@ pub(crate) fn dispatch_pending_deferred_work() {
         load_average::update(now_us);
         expire_timers(get_time_ns());
         request_tick_reschedule();
-    } else if work.contains(DeferredWork::TimerBacklog) {
+    } else if work.contains(DeferredWork::TIMER_BACKLOG) {
         wake_expired_tasks(get_time_ns());
         expire_timers(get_time_ns());
     }
-    if work.contains(DeferredWork::Console) {
+    if work.contains(DeferredWork::CONSOLE) {
         let input_backlog = process_terminal_input();
         let waiter_backlog = wake_console_waiters();
         if input_backlog || waiter_backlog {
-            cpu::raise_deferred(DeferredWork::Console);
+            cpu::raise_deferred(DeferredWork::CONSOLE);
         }
     }
-    if work.contains(DeferredWork::Display) {
-        crate::drm::device::dispatch_display_work(get_time_ns());
+    work.run_registered(get_time_ns());
+    if work.contains(DeferredWork::DRIVER_IO) && crate::drivers::dispatch_io_completion_work() {
+        cpu::raise_deferred(DeferredWork::DRIVER_IO);
     }
-    if work.contains(DeferredWork::Input) && crate::input::dispatch_input_work() {
-        cpu::raise_deferred(DeferredWork::Input);
-    }
-    if work.contains(DeferredWork::VirtioPort) && crate::virtio_port::dispatch_work() {
-        cpu::raise_deferred(DeferredWork::VirtioPort);
-    }
-    if work.contains(DeferredWork::DriverIo) && crate::drivers::dispatch_io_completion_work() {
-        cpu::raise_deferred(DeferredWork::DriverIo);
-    }
-    let network_due = work.contains(DeferredWork::Network)
-        || work.contains(DeferredWork::Timer) && crate::socket::network_work_due();
+    let network_due = work.contains(DeferredWork::NETWORK)
+        || work.contains(DeferredWork::TIMER) && crate::socket::network_work_due();
     if network_due {
         // RX budget 用尽时必须再次发布同一 deferred work；否则 used ring 中没有新 IRQ edge
         // 的 frame 可能永久滞留。timer deadline 同样在此推进 ARP/UDP egress；缺失时丢失
         // 首个 ARP reply 后将永远不重试。requeue 由 task deferred owner 执行，socket 不反向依赖 arch。
         if crate::socket::dispatch_network_work() {
-            cpu::raise_deferred(DeferredWork::Network);
+            cpu::raise_deferred(DeferredWork::NETWORK);
         }
     }
 }

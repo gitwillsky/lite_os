@@ -224,10 +224,45 @@ fn check_virtio_irq_and_lock_contract(sources: &[SourceFile], errors: &mut Vec<S
         };
         let mut audit = HardirqAudit::default();
         audit.visit_block(&handler.block);
-        if audit.deferred_publications != 1 || !audit.forbidden.is_empty() {
+        // adapter 经 `raise_completion` 发布消费者绑定的 vector 时，其函数体本身必须恰好发布一次
+        // 且同样不得进入 queue/page-table state。
+        if audit.bound_publications != 0 {
+            let helpers = source
+                .syntax
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Impl(implementation) => Some(implementation),
+                    _ => None,
+                })
+                .flat_map(|implementation| implementation.items.iter())
+                .filter_map(|item| match item {
+                    ImplItem::Fn(method) if method.sig.ident == "raise_completion" => Some(method),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let mut helper_audit = HardirqAudit::default();
+            if let [helper] = helpers.as_slice() {
+                helper_audit.visit_block(&helper.block);
+            }
+            if helpers.len() != 1
+                || helper_audit.deferred_publications != 1
+                || helper_audit.bound_publications != 0
+                || !helper_audit.forbidden.is_empty()
+            {
+                errors.push(format!(
+                    "{path}: raise_completion must be the sole helper and publish exactly one deferred bit without entering queue/page-table state; publications={}, forbidden={:?}",
+                    helper_audit.deferred_publications, helper_audit.forbidden
+                ));
+            }
+        }
+        if audit.deferred_publications + audit.bound_publications != 1
+            || !audit.forbidden.is_empty()
+        {
             errors.push(format!(
                 "{path}: VirtIO hardirq must publish exactly one deferred bit and may not enter queue/page-table state; publications={}, forbidden={:?}",
-                audit.deferred_publications, audit.forbidden
+                audit.deferred_publications + audit.bound_publications,
+                audit.forbidden
             ));
         }
     }
@@ -236,6 +271,8 @@ fn check_virtio_irq_and_lock_contract(sources: &[SourceFile], errors: &mut Vec<S
 #[derive(Default)]
 struct HardirqAudit {
     deferred_publications: usize,
+    /// 经 adapter `raise_completion` 发布消费者绑定 vector 的次数。
+    bound_publications: usize,
     forbidden: Vec<String>,
 }
 
@@ -262,6 +299,9 @@ impl<'ast> Visit<'ast> for HardirqAudit {
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         let method = call.method.to_string();
+        if method == "raise_completion" {
+            self.bound_publications += 1;
+        }
         if matches!(
             method.as_str(),
             "lock" | "add_buffer" | "used" | "poll" | "poll_update" | "receive_event"

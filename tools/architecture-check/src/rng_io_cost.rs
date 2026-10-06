@@ -78,7 +78,7 @@ pub(super) fn measure(root: &Path) -> Result<RngIoCost, String> {
             && rng.contains("acknowledge_and_defer")
             && rng.contains("dispatch_completion_work")
             && virtio_irq.contains("Err(_) => true")
-            && virtio_irq.contains("DeferredWork::DriverIo"),
+            && virtio_irq.contains("DeferredWork::DRIVER_IO"),
     );
     let getrandom_batches = batches(&getrandom);
     let dev_random_batches = batches(&dev_random);

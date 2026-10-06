@@ -4,7 +4,7 @@ mod byte_ring;
 mod wire;
 
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 use super::PciTransport;
 use super::{
@@ -102,9 +102,26 @@ struct State {
 pub(crate) struct VirtIOConsoleDevice {
     device: VirtIODevice,
     state: Mutex<State>,
+    // OWNER: 消费者在初始化时绑定一次的 completion deferred vector；hardirq 与 deferred
+    // 续批只发布它。绑定前没有消费者，completion 留在 used ring 由绑定时的补偿发布消费。
+    completion_work: Once<crate::cpu::DeferredWork>,
 }
 
 impl VirtIOConsoleDevice {
+    /// 发布已绑定的 completion vector；未绑定时没有消费者，忽略。
+    fn raise_completion(&self) {
+        if let Some(work) = self.completion_work.get() {
+            crate::cpu::raise_deferred(*work);
+        }
+    }
+
+    /// 绑定消费者分配的 completion deferred vector；绑定前到达的 completion 由绑定时的一次
+    /// 发布补偿。
+    pub(crate) fn bind_completion_work(&self, work: crate::cpu::DeferredWork) {
+        self.completion_work.call_once(|| work);
+        crate::cpu::raise_deferred(work);
+    }
+
     /// Initialize the standard multiport queues and announce guest readiness.
     ///
     /// # Parameters
@@ -164,6 +181,7 @@ impl VirtIOConsoleDevice {
 
         let adapter = Arc::try_new(Self {
             device,
+            completion_work: Once::new(),
             state: Mutex::new(State {
                 control_rx,
                 control_tx,
@@ -686,7 +704,7 @@ impl InterruptHandler for VirtIOConsoleIrqHandler {
             .device
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
-        crate::cpu::raise_deferred(crate::cpu::DeferredWork::VirtioPort);
+        self.device.raise_completion();
         Ok(())
     }
 }
