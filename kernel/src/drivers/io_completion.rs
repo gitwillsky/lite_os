@@ -2,15 +2,36 @@
 
 use crate::sync::WaitCompletion;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 #[path = "io_completion/request_owner.rs"]
 pub(in crate::drivers) mod request_owner;
 
-/// scheduler membership 中稳定区分 driver adapter 的领域 identity。
+/// scheduler membership 中区分 driver adapter 实例的 identity；每个 adapter 构造时分配一次。
+///
+/// 同类设备可有多个实例，按种类区分会让两个块设备的同一 slot/generation 得到相同 wait key，
+/// completion 可能唤醒另一设备的 waiter。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IoDevice {
-    Block,
-    Entropy,
+pub(crate) struct IoDevice(u32);
+
+// OWNER: 下一个 adapter 实例 identity；只递增，`fetch_add` 保证并发构造取得不同值。
+static NEXT_IO_DEVICE: AtomicU32 = AtomicU32::new(0);
+
+impl IoDevice {
+    /// 为新 adapter 分配实例 identity。
+    pub(crate) fn allocate() -> Self {
+        Self(NEXT_IO_DEVICE.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// 经共享 `DRIVER_IO` deferred vector 发布 completion 的 adapter。
+pub(crate) trait CompletionSource: Send + Sync {
+    /// 在 task/idle safe point 回收一批有界 completion。
+    ///
+    /// # Returns
+    ///
+    /// 预算用尽仍有 completion 时为 true。
+    fn dispatch_completions(&self) -> bool;
 }
 
 /// 同一 adapter 内区分 submitted request 与 capacity membership。
@@ -128,8 +149,9 @@ pub(crate) fn current_wait_target() -> Option<Arc<dyn IoWaitTarget>> {
 mod tests {
     #[test]
     fn request_identity_preserves_full_generation_width() {
-        let older = super::IoWaitKey::request(super::IoDevice::Entropy, 7, u64::MAX - 1);
-        let newer = super::IoWaitKey::request(super::IoDevice::Entropy, 7, u64::MAX);
+        let device = super::IoDevice::allocate();
+        let older = super::IoWaitKey::request(device, 7, u64::MAX - 1);
+        let newer = super::IoWaitKey::request(device, 7, u64::MAX);
         assert_ne!(older, newer);
     }
 }

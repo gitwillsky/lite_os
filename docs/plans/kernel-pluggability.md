@@ -34,8 +34,10 @@ Status: Active
 
 ## 进度
 
-- 步骤 1–3 已完成：字符设备注册表（driver 区间 + devfs 节点）、`DeviceFile` 与 `UserOutput`/`UserInput`
+- 步骤 1–3 落地：字符设备注册表（driver 区间 + devfs 节点）、`DeviceFile` 与 `UserOutput`/`UserInput`
   游标、mem/TTY/evdev/DRM/ALSA/virtio-port 设备文件、`JobControl` hook、`syscall_abi::{errno, signal}`、
   设备类 deferred vector 注册。持久事实已写入 `architecture/devices-terminal.md`、设备与终端契约、依赖表
   与 `syscall-support/filesystem-io.md`。
-- 下一步：步骤 4（F2）。
+- 步骤 4 落地：`drivers::registry` 统一设备类注册表、`PortDevice`/`EntropySource` seam、`CompletionSource`
+  自报与按实例分配的 `IoDevice`。
+- 下一步：步骤 5（F3）。

@@ -63,10 +63,6 @@ impl BlockDevice for WritableImage {
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
-
-    fn dispatch_completions(&self) -> bool {
-        false
-    }
 }
 
 struct Names(Vec<Vec<u8>>);

@@ -76,7 +76,8 @@ pub(super) fn measure(root: &Path) -> Result<RngIoCost, String> {
     let deferred_paths = usize::from(
         virtio_block.contains("acknowledge_and_defer")
             && rng.contains("acknowledge_and_defer")
-            && rng.contains("dispatch_completion_work")
+            && rng.contains("impl CompletionSource for VirtIORngDevice")
+            && rng.contains("register_completion_source(adapter.clone())")
             && virtio_irq.contains("Err(_) => true")
             && virtio_irq.contains("DeferredWork::DRIVER_IO"),
     );

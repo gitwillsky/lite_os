@@ -2,11 +2,14 @@ mod audio_output;
 pub(crate) mod block;
 mod console_input;
 mod display;
+mod entropy;
 mod graphics;
 mod hal;
 mod input;
 pub(crate) mod io_completion;
 pub(crate) mod network;
+mod port;
+mod registry;
 mod virtio_blk;
 mod virtio_completion_irq;
 mod virtio_console;
@@ -21,9 +24,8 @@ pub(crate) use audio_output::{
     PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_RATE,
     PcmCompletionObserver, PcmOutput, PcmOutputError,
 };
-pub(crate) use display::{
-    DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
-};
+pub(crate) use display::{DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate};
+pub(crate) use entropy::EntropySource;
 pub(crate) use graphics::{
     CursorCommand, GraphicsDevice, VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection,
 };
@@ -34,117 +36,20 @@ use hal::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
 };
 pub(crate) use input::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
-pub(crate) use input::{device as input_device, device_count as input_device_count};
+pub(crate) use port::{PortActivity, PortDevice, PortError};
+pub(crate) use registry::{
+    block_device, dispatch_io_completion_work, display_device, fill_entropy, input_device,
+    input_device_count, network_device, pcm_output, port_device, register_block_device,
+    register_display_device, register_entropy_source, register_input_device,
+    register_network_device, register_pcm_output, register_port_device,
+};
 pub(crate) use virtio_blk::VirtIOBlockDevice;
-pub(crate) use virtio_console::{PortError, VirtIOConsoleDevice};
+pub(crate) use virtio_console::VirtIOConsoleDevice;
 pub(crate) use virtio_gpu::VirtIOGpuDevice;
 pub(crate) use virtio_input::VirtIOInputDevice;
 pub(crate) use virtio_net::VirtIONetworkDevice;
 pub(crate) use virtio_rng::VirtIORngDevice;
 pub(crate) use virtio_sound::VirtIOSoundDevice;
-
-use spin::Once;
-
-// OWNER: drivers registry retains the only physical PCM output adapter after platform discovery.
-// 缺少单一 publication 会让两个 ALSA owner 分别控制同一 VirtIO stream。
-static AUDIO_OUTPUT: Once<alloc::sync::Arc<VirtIOSoundDevice>> = Once::new();
-// OWNER: drivers registry retains the only physical named VirtIO port after platform discovery.
-// Missing single publication would let two byte-stream owners race one SPICE vdagent channel.
-static VIRTIO_PORT: Once<alloc::sync::Arc<VirtIOConsoleDevice>> = Once::new();
-
-pub(crate) use virtio_rng::fill_entropy;
-
-/// Platform backend 可用的窄设备注册 seam。
-pub(crate) fn register_input_device(
-    device: alloc::sync::Arc<dyn InputDevice>,
-) -> Result<usize, alloc::sync::Arc<dyn InputDevice>> {
-    input::register(device)
-}
-
-pub(crate) fn register_network_device(
-    device: alloc::sync::Arc<dyn network::NetworkDevice>,
-) -> Result<(), ()> {
-    network::register_network_device(device).map_err(|_| ())
-}
-
-pub(crate) fn register_entropy_device(device: alloc::sync::Arc<VirtIORngDevice>) -> Result<(), ()> {
-    virtio_rng::register(device)
-}
-
-/// 注册唯一 physical PCM output adapter。
-///
-/// # Parameters
-///
-/// - `device`: platform 已完成 DTB identity 与 IRQ 装配的 VirtIO Sound adapter。
-///
-/// # Returns
-///
-/// 首次发布成功；重复设备返回原子失败。
-pub(crate) fn register_audio_output(device: alloc::sync::Arc<VirtIOSoundDevice>) -> Result<(), ()> {
-    if AUDIO_OUTPUT.get().is_some() {
-        return Err(());
-    }
-    AUDIO_OUTPUT.call_once(|| device);
-    Ok(())
-}
-
-/// Register the unique physical VirtIO Console clipboard port.
-///
-/// # Parameters
-///
-/// - `device`: Platform-proven modern VirtIO Console adapter.
-///
-/// # Returns
-///
-/// The first publication succeeds; a duplicate device fails atomically.
-pub(crate) fn register_virtio_port(
-    device: alloc::sync::Arc<VirtIOConsoleDevice>,
-) -> Result<(), ()> {
-    if VIRTIO_PORT.get().is_some() {
-        return Err(());
-    }
-    VIRTIO_PORT.call_once(|| device);
-    Ok(())
-}
-
-/// Return the transport-neutral byte stream used by the vdagent service.
-///
-/// # Returns
-///
-/// The selected port, or `None` when the platform did not publish one.
-pub(crate) fn primary_virtio_port() -> Option<alloc::sync::Arc<VirtIOConsoleDevice>> {
-    VIRTIO_PORT.get().cloned()
-}
-
-/// 取得 kernel audio owner 可消费的 transport-neutral PCM seam。
-///
-/// # Returns
-///
-/// platform 未发现 sound device 时为 `None`。
-pub(crate) fn primary_audio_output() -> Option<alloc::sync::Arc<dyn PcmOutput>> {
-    AUDIO_OUTPUT
-        .get()
-        .map(|device| device.clone() as alloc::sync::Arc<dyn PcmOutput>)
-}
-
-/// 在 task/idle safe point 各回收一批有界 driver I/O completion。
-///
-/// # Returns
-///
-/// 任一设备仍有 backlog 时返回 `true`，caller 必须重新发布 `DriverIo` work。
-pub(crate) fn dispatch_io_completion_work() -> bool {
-    block::dispatch_completion_work()
-        | virtio_rng::dispatch_completion_work()
-        | AUDIO_OUTPUT
-            .get()
-            .is_some_and(|device| virtio_sound::dispatch_completion_work(device))
-}
-
-pub(crate) fn register_display_device(
-    device: alloc::sync::Arc<dyn GraphicsDevice>,
-) -> Result<(), ()> {
-    display::register(device)
-}
 
 pub(crate) fn initialize_console_input() -> Result<(), InterruptError> {
     console_input::init()

@@ -6,7 +6,10 @@ use alloc::{
 use spin::{Mutex, Once};
 
 use crate::{
-    drivers::network::{NetworkDevice, NetworkError, NetworkTransmit, network_device},
+    drivers::{
+        network::{NetworkDevice, NetworkError, NetworkTransmit},
+        network_device,
+    },
     fallible_tree::FallibleMap,
     ipc::ReceiveBuffer,
     ipc::{PipeDirection, PipeEnd},
@@ -64,7 +67,7 @@ fn registry() -> Result<&'static Mutex<PacketRegistry>, SocketError> {
 ///
 /// 无返回错误；重复调用由 Once 保持幂等。
 pub(super) fn init() {
-    let Some(device) = network_device() else {
+    let Some(device) = network_device(0) else {
         return;
     };
     PACKET_REGISTRY.call_once(|| {

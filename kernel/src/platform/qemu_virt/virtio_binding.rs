@@ -76,8 +76,8 @@ pub(super) fn publish_console(
     irq: u32,
     register_irq: &mut RegisterIrq<'_>,
 ) {
-    crate::drivers::register_virtio_port(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-console clipboard port is supported"));
+    crate::drivers::register_port_device(device.clone())
+        .unwrap_or_else(|_| panic!("named port registry allocation failed"));
     register_irq(irq, device.irq_handler_for(), "virtio-console");
 }
 
@@ -92,8 +92,8 @@ fn bind_console(transport: &VirtioMmioTransport, base: usize, register_irq: &mut
 
 fn bind_sound(transport: &VirtioMmioTransport, base: usize, register_irq: &mut RegisterIrq<'_>) {
     let device = VirtIOSoundDevice::new(base).expect("virtio-sound init failed");
-    crate::drivers::register_audio_output(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-sound device is supported"));
+    crate::drivers::register_pcm_output(device.clone())
+        .unwrap_or_else(|_| panic!("PCM output registry allocation failed"));
     register_irq(transport.irq, device.irq_handler_for(), "virtio-sound");
 }
 
@@ -113,15 +113,15 @@ fn bind_input(transport: &VirtioMmioTransport, base: usize, register_irq: &mut R
 fn bind_network(transport: &VirtioMmioTransport, base: usize, register_irq: &mut RegisterIrq<'_>) {
     let device = VirtIONetworkDevice::new(base).expect("virtio-net init failed");
     crate::drivers::register_network_device(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-net device is supported"));
+        .unwrap_or_else(|_| panic!("network registry allocation failed"));
     register_irq(transport.irq, device.irq_handler_for(), "virtio-net");
     info!("VirtIO network at {:#x}", transport.base_addr);
 }
 
 fn bind_entropy(transport: &VirtioMmioTransport, base: usize, register_irq: &mut RegisterIrq<'_>) {
     let device = VirtIORngDevice::new(base).expect("virtio-rng init failed");
-    crate::drivers::register_entropy_device(device.clone())
-        .expect("only one virtio-rng device is supported");
+    crate::drivers::register_entropy_source(device.clone())
+        .unwrap_or_else(|_| panic!("entropy registry allocation failed"));
     register_irq(transport.irq, device.irq_handler_for(), "virtio-rng");
     info!("VirtIO RNG at {:#x}", transport.base_addr);
 }
@@ -130,7 +130,7 @@ fn bind_gpu(transport: &VirtioMmioTransport, base: usize, register_irq: &mut Reg
     let device = VirtIOGpuDevice::new(base).expect("virtio-gpu init failed");
     let mode = device.mode();
     crate::drivers::register_display_device(device.clone())
-        .unwrap_or_else(|_| panic!("only one virtio-gpu device is supported"));
+        .unwrap_or_else(|_| panic!("display registry allocation failed"));
     register_irq(transport.irq, device.irq_handler_for(), "virtio-gpu");
     info!(
         "VirtIO GPU at {:#x}, mode={}x{} pitch={}",
@@ -146,9 +146,9 @@ fn bind_block(transport: &VirtioMmioTransport, base: usize, register_irq: &mut R
         );
         return;
     };
-    match crate::drivers::block::register_block_device(device.clone()) {
-        Ok(device_id) => info!("VirtIO block #{} at {:#x}", device_id, transport.base_addr),
-        Err(registration) => error!("VirtIO block registration failed: {:?}", registration),
+    match crate::drivers::register_block_device(device.clone()) {
+        Ok(index) => info!("VirtIO block #{} at {:#x}", index, transport.base_addr),
+        Err(_) => error!("VirtIO block registry allocation failed"),
     }
     register_irq(transport.irq, device.irq_handler_for(), "virtio-block");
 }

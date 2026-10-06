@@ -149,10 +149,6 @@ impl BlockDevice for RecoveryImage {
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
-
-    fn dispatch_completions(&self) -> bool {
-        false
-    }
 }
 
 fn mounted() -> (Arc<RecoveryImage>, Arc<Ext4FileSystem>) {

@@ -68,14 +68,16 @@ fn kernel_main(context: entry::BootContext) -> ! {
     // VFS 之后、任何会创建可等待对象的子系统之前安装。
     task::initialize();
     platform::initialize_devices();
-    if let Some(output) = drivers::primary_audio_output() {
+    // ALSA、DRM 与 SPICE port 领域当前各只绑定首个已发现 adapter（card0/pcmC0D0p/唯一 named
+    // port）；其余同类 adapter 已注册但不发布节点。
+    if let Some(output) = drivers::pcm_output(0) {
         audio::init(output).expect("ALSA PCM initialization failed");
     }
-    if let Some(display) = drivers::primary_display() {
+    if let Some(display) = drivers::display_device(0) {
         drm::device::init(display).expect("primary DRM initialization failed");
     }
     input::init().expect("evdev input initialization failed");
-    if let Some(port) = drivers::primary_virtio_port() {
+    if let Some(port) = drivers::port_device(0) {
         virtio_port::init(port).expect("VirtIO port initialization failed");
     }
     fs::init_tty(Arc::try_new(PlatformConsole).expect("platform console allocation failed"))
@@ -100,7 +102,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
 
 fn mount_filesystems() {
     let device =
-        drivers::block::get_primary_block_device().expect("boot requires one primary block device");
+        drivers::block_device(0).expect("boot requires a block device for the root filesystem");
     fs::mount_root(
         device,
         fs::KernelThreadSupport {

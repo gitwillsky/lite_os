@@ -130,10 +130,6 @@ impl BlockDevice for CountingImage {
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
-
-    fn dispatch_completions(&self) -> bool {
-        false
-    }
 }
 
 fn mounted() -> (Arc<CountingImage>, Arc<Ext4FileSystem>) {

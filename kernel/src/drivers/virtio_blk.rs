@@ -15,7 +15,7 @@ use super::{
         CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner, RequestOwnerError,
         ReserveOrWait,
     },
-    io_completion::{self, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
+    io_completion::{self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
     virtio_completion_irq::VirtIOCompletionIrq,
     virtio_queue::{DmaBuffer, VirtQueue},
 };
@@ -60,6 +60,8 @@ pub(crate) struct VirtIOBlockDevice {
     capacity: u64,
     supports_flush: bool,
     completion_irq: VirtIOCompletionIrq,
+    /// scheduler wait key 中区分本 adapter 实例的 identity。
+    io_device: IoDevice,
 }
 
 impl VirtIOBlockDevice {
@@ -116,12 +118,12 @@ impl VirtIOBlockDevice {
                 }),
             });
         }
-        let requests =
-            RequestOwner::new(queue_size as usize, BLOCK_REQUEST_SLOTS, IoDevice::Block)?;
+        let io_device = IoDevice::allocate();
+        let requests = RequestOwner::new(queue_size as usize, BLOCK_REQUEST_SLOTS, io_device)?;
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
 
-        Arc::try_new(Self {
+        let adapter = Arc::try_new(Self {
             device,
             queue: Mutex::new(BlockQueue {
                 queue,
@@ -132,8 +134,12 @@ impl VirtIOBlockDevice {
             capacity,
             supports_flush: driver_features & VIRTIO_BLK_F_FLUSH != 0,
             completion_irq: VirtIOCompletionIrq::new(),
+            io_device,
         })
-        .ok()
+        .ok()?;
+        // 构造成功即自报为 `DRIVER_IO` completion 源；登记失败时放弃 adapter（Drop 复位设备）。
+        super::registry::register_completion_source(adapter.clone()).ok()?;
+        Some(adapter)
     }
 
     fn validate_block(&self, block_id: usize, len: usize) -> Result<(), BlockError> {
@@ -258,7 +264,7 @@ impl VirtIOBlockDevice {
         let slot = &self.slots[identity.slot as usize];
         let waiter = slot.data.lock().waiter.clone();
         if let Some(waiter) = waiter {
-            waiter.sleep(&slot.completion, Self::request_id(identity));
+            waiter.sleep(&slot.completion, self.request_id(identity));
         } else {
             while !slot.completion.is_complete() {
                 // Close completion-before-sleep: if the used entry arrived while S-mode external
@@ -303,8 +309,8 @@ impl VirtIOBlockDevice {
         result
     }
 
-    fn request_id(identity: RequestIdentity) -> IoWaitKey {
-        IoWaitKey::request(IoDevice::Block, identity.slot, identity.generation)
+    fn request_id(&self, identity: RequestIdentity) -> IoWaitKey {
+        IoWaitKey::request(self.io_device, identity.slot, identity.generation)
     }
 
     fn execute(
@@ -372,7 +378,7 @@ impl VirtIOBlockDevice {
                     if slot.completion.complete()
                         && let Some(waiter) = waiter
                     {
-                        *wake = Some((waiter, Self::request_id(identity)));
+                        *wake = Some((waiter, self.request_id(identity)));
                     }
                 }
                 Some(owner.queue.has_used())
@@ -430,7 +436,7 @@ impl VirtIOBlockDevice {
                     if slot.completion.complete()
                         && let Some(waiter) = waiter
                     {
-                        wakes[identity.slot as usize] = Some((waiter, Self::request_id(identity)));
+                        wakes[identity.slot as usize] = Some((waiter, self.request_id(identity)));
                     }
                 }
                 true
@@ -479,7 +485,9 @@ impl BlockDevice for VirtIOBlockDevice {
             Ok(())
         }
     }
+}
 
+impl CompletionSource for VirtIOBlockDevice {
     fn dispatch_completions(&self) -> bool {
         self.reclaim_completions()
     }

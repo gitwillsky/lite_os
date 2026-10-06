@@ -2,11 +2,14 @@
 
 ## 当前设计
 
-- `platform` 发现并装配具体 adapter；`drivers` 只公开 block、network、display、input、RTC、RNG、
-  named byte-stream port 与 interrupt 等通用 seam。
+- `platform` 发现并装配具体 adapter；`drivers` 只公开 block、network、display、input、PCM output、
+  entropy、named byte-stream port 与 interrupt 等通用 seam。`drivers::registry` 为每个设备类保存一个
+  按发现顺序编号、只追加的多实例注册表，注册只接受 trait 对象；选择实例是消费领域的策略：根文件
+  系统、IPv4/AF_PACKET、DRM、ALSA、SPICE port 与 entropy 当前绑定 index 0，evdev 发布全部 input。
 - VirtIO queue 与 DMA payload 由各 adapter 拥有；block/RNG 的 request slot、descriptor identity、
   lost-wake handshake 与 capacity wait 由 `drivers::io_completion` 统一拥有。hardirq 共用
-  transport-error latch，只确认 MMIO 并发布 `DriverIo` deferred bit，不进入 ordinary adapter lock，completion 在统一
+  transport-error latch，只确认 MMIO 并发布 `DriverIo` deferred bit，不进入 ordinary adapter lock；使用该
+  vector 的 adapter 构造成功时自报为 `CompletionSource`，completion 在统一
   user-return/idle safe point 消费；VirtIO-net RX 由单一 slot lifecycle owner 原子
   claim/repost/retire。
 - split virtqueue 摘取 used entry 只产生一个 `UsedDescriptor` capability，不立即回收 chain；

@@ -13,7 +13,7 @@ use smoltcp::{
 use spin::Mutex;
 
 use crate::{
-    drivers::network::network_device, fallible_tree::FallibleMap, ipc::PipeEnd, ipc::ReceiveBuffer,
+    drivers::network_device, fallible_tree::FallibleMap, ipc::PipeEnd, ipc::ReceiveBuffer,
     timer::get_time_us,
 };
 
@@ -212,7 +212,8 @@ impl NetworkStack {
 
 /// 由 composition root 在 device discovery 后创建唯一 IPv4 stack。
 pub(crate) fn init() {
-    let Some(network_device) = network_device() else {
+    // 单接口协议栈绑定首个 Ethernet 设备；AF_PACKET 使用同一接口。
+    let Some(network_device) = network_device(0) else {
         return;
     };
     let mac = network_device.mac_address();

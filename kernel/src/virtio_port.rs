@@ -5,7 +5,7 @@ use spin::Once;
 use syscall_abi::errno;
 
 use crate::{
-    drivers::{PortError, VirtIOConsoleDevice},
+    drivers::{PortDevice, PortError},
     fs::{
         FileSystemError,
         device::{
@@ -31,7 +31,7 @@ const PORT_PATH: &[u8] = b"virtio-ports/com.redhat.spice.0";
 
 /// System-wide projection of one standard VirtIO port.
 pub(crate) struct Port {
-    device: Arc<VirtIOConsoleDevice>,
+    device: Arc<dyn PortDevice>,
     notification_read: Arc<PipeEnd>,
     notification_write: Arc<PipeEnd>,
 }
@@ -65,7 +65,7 @@ impl CharacterDriver for PortDriver {
 /// # Errors
 ///
 /// 重复初始化、Pipe/注册表分配失败返回 unit error。
-pub(crate) fn init(device: Arc<VirtIOConsoleDevice>) -> Result<(), ()> {
+pub(crate) fn init(device: Arc<dyn PortDevice>) -> Result<(), ()> {
     if PORT.get().is_some() {
         return Err(());
     }

@@ -1,6 +1,3 @@
-use alloc::sync::Arc;
-use spin::Mutex;
-
 /// 启动块设备错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlockError {
@@ -8,7 +5,6 @@ pub(crate) enum BlockError {
     IoError,
     DeviceError,
     OutOfMemory,
-    AlreadyRegistered,
 }
 
 /// 为文件系统提供同步固定块读写与持久化屏障。
@@ -58,36 +54,6 @@ pub(crate) trait BlockDevice: Send + Sync {
 
     /// 返回逻辑块字节数。
     fn block_size(&self) -> usize;
-
-    /// Reclaim a bounded completion batch outside hardirq context.
-    fn dispatch_completions(&self) -> bool;
-}
-
-// OWNER: block layer owns the single root-device binding; platform discovery sets it once.
-static PRIMARY_BLOCK_DEVICE: spin::Once<Mutex<Option<Arc<dyn BlockDevice>>>> = spin::Once::new();
-
-fn primary_slot() -> &'static Mutex<Option<Arc<dyn BlockDevice>>> {
-    PRIMARY_BLOCK_DEVICE.call_once(|| Mutex::new(None))
-}
-
-/// 注册唯一启动块设备。
-pub(crate) fn register_block_device(device: Arc<dyn BlockDevice>) -> Result<usize, BlockError> {
-    let mut slot = primary_slot().lock();
-    if slot.is_some() {
-        return Err(BlockError::AlreadyRegistered);
-    }
-    *slot = Some(device);
-    Ok(0)
-}
-
-/// 取得唯一启动块设备。
-pub(crate) fn get_primary_block_device() -> Option<Arc<dyn BlockDevice>> {
-    primary_slot().lock().clone()
-}
-
-/// Dispatch primary-device completion work at a task/idle safe point.
-pub(crate) fn dispatch_completion_work() -> bool {
-    get_primary_block_device().is_some_and(|device| device.dispatch_completions())
 }
 
 pub(crate) const BLOCK_SIZE: usize = 4096;

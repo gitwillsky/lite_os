@@ -8,9 +8,9 @@ use spin::{Mutex, Once};
 
 use super::PciTransport;
 use super::{
-    InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
-    VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
-    VirtIODevice,
+    InterruptError, InterruptHandler, InterruptVector, PortActivity, PortDevice, PortError,
+    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
+    VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     virtio_queue::{DmaBuffer, UsedDescriptor, VirtQueue},
 };
 use byte_ring::ByteRing;
@@ -33,26 +33,6 @@ const PORT_REMOVE: u16 = 2;
 const PORT_READY: u16 = 3;
 const PORT_OPEN: u16 = 6;
 const PORT_NAME: u16 = 7;
-
-/// VirtIO port byte-stream operation failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PortError {
-    /// No byte or transmit slot is currently available.
-    WouldBlock,
-    /// The selected named port is closed or the transport failed.
-    Disconnected,
-}
-
-/// One deferred VirtIO Console drain result.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct PortActivity {
-    /// Receive bytes or disconnect state changed.
-    pub(crate) readable_changed: bool,
-    /// A transmit slot became available or the port disconnected.
-    pub(crate) writable_changed: bool,
-    /// At least one queue still contains a completion after the bounded pass.
-    pub(crate) backlog: bool,
-}
 
 struct ReceiveSlot<const SIZE: usize> {
     bytes: DmaBuffer<SIZE>,
@@ -113,13 +93,6 @@ impl VirtIOConsoleDevice {
         if let Some(work) = self.completion_work.get() {
             crate::cpu::raise_deferred(*work);
         }
-    }
-
-    /// 绑定消费者分配的 completion deferred vector；绑定前到达的 completion 由绑定时的一次
-    /// 发布补偿。
-    pub(crate) fn bind_completion_work(&self, work: crate::cpu::DeferredWork) {
-        self.completion_work.call_once(|| work);
-        crate::cpu::raise_deferred(work);
     }
 
     /// Initialize the standard multiport queues and announce guest readiness.
@@ -325,183 +298,6 @@ impl VirtIOConsoleDevice {
         Some(())
     }
 
-    /// Read currently buffered bytes without sleeping.
-    ///
-    /// # Parameters
-    ///
-    /// - `output`: Kernel-owned destination.
-    ///
-    /// # Returns
-    ///
-    /// Positive byte count, `WouldBlock`, or terminal disconnect.
-    pub(crate) fn read(&self, output: &mut [u8]) -> Result<usize, PortError> {
-        let mut state = self.state.lock();
-        if state.failed || !state.open {
-            return Err(PortError::Disconnected);
-        }
-        let count = state.stream.pop(output);
-        if count == 0 {
-            Err(PortError::WouldBlock)
-        } else {
-            Ok(count)
-        }
-    }
-
-    /// Submit one bounded byte-stream fragment without sleeping.
-    ///
-    /// # Parameters
-    ///
-    /// - `input`: Bytes for the selected named port.
-    ///
-    /// # Returns
-    ///
-    /// Submitted byte count, `WouldBlock`, or terminal disconnect.
-    pub(crate) fn write(&self, input: &[u8]) -> Result<usize, PortError> {
-        if input.is_empty() {
-            return Ok(0);
-        }
-        let count = input.len().min(TX_BYTES);
-        let mut state = self.state.lock();
-        if state.failed || !state.open {
-            return Err(PortError::Disconnected);
-        }
-        let data_tx = state.data_tx.as_mut().ok_or(PortError::Disconnected)?;
-        let slot_index = data_tx
-            .slots
-            .iter()
-            .position(|slot| !slot.busy)
-            .ok_or(PortError::WouldBlock)?;
-        let queue_index = data_tx.index;
-        let TransmitQueue {
-            queue,
-            slots,
-            by_head,
-            ..
-        } = data_tx;
-        let slot = &mut slots[slot_index];
-        slot.bytes[..count].copy_from_slice(&input[..count]);
-        let payload = slot
-            .bytes
-            .readable(0..count)
-            .map_err(|_| PortError::Disconnected)?;
-        let head = queue
-            .add_dma(&[payload])
-            .map_err(|_| PortError::WouldBlock)?;
-        if by_head[head as usize].replace(slot_index as u16).is_some() {
-            state.failed = true;
-            state.reset_issued = true;
-            drop(state);
-            let _ = self.device.reset();
-            return Err(PortError::Disconnected);
-        }
-        slot.busy = true;
-        queue.add_to_avail(head);
-        drop(state);
-        if self.device.notify_queue(queue_index).is_err() {
-            let mut state = self.state.lock();
-            state.failed = true;
-            if !state.reset_issued {
-                state.reset_issued = true;
-                drop(state);
-                let _ = self.device.reset();
-            }
-            return Err(PortError::Disconnected);
-        }
-        Ok(count)
-    }
-
-    pub(crate) fn readable(&self) -> bool {
-        let state = self.state.lock();
-        state.failed || !state.open || !state.stream.is_empty()
-    }
-
-    pub(crate) fn writable(&self) -> bool {
-        let state = self.state.lock();
-        !state.failed
-            && state.open
-            && state
-                .data_tx
-                .as_ref()
-                .is_some_and(|queue| queue.slots.iter().any(|slot| !slot.busy))
-    }
-
-    pub(crate) fn connected(&self) -> bool {
-        let state = self.state.lock();
-        !state.failed && state.open
-    }
-
-    /// Drain a bounded batch from all four queues at a safe point.
-    ///
-    /// # Returns
-    ///
-    /// Read/write level transitions and remaining backlog.
-    pub(crate) fn dispatch(&self) -> PortActivity {
-        let before_readable = self.readable();
-        let before_writable = self.writable();
-        let mut state = self.state.lock();
-        if state.failed {
-            let reset = !state.reset_issued;
-            state.reset_issued = true;
-            drop(state);
-            if reset {
-                let _ = self.device.reset();
-            }
-            return PortActivity::default();
-        }
-        let mut notify_control_rx = false;
-        let mut notify_data_rx = false;
-        // 1. Reclaim only a bounded number of completions in deferred context.
-        // 2. Remember each RX repost because avail publication, not residual used entries, requires
-        //    a device notification; omitting this can permanently stall a drained clipboard queue.
-        // 3. Reset once after releasing the state lock when any queue invariant fails.
-        for _ in 0..32 {
-            let progressed = self.reclaim_control_tx(&mut state)
-                | self.reclaim_control_rx(&mut state, &mut notify_control_rx)
-                | self.reclaim_data_tx(&mut state)
-                | self.reclaim_data_rx(&mut state, &mut notify_data_rx);
-            if state.failed || !progressed {
-                break;
-            }
-        }
-        let backlog = state.control_rx.queue.has_used()
-            || state.control_tx.queue.has_used()
-            || state
-                .data_rx
-                .as_ref()
-                .is_some_and(|queue| queue.queue.has_used())
-            || state
-                .data_tx
-                .as_ref()
-                .is_some_and(|queue| queue.queue.has_used());
-        let after_readable = state.failed || !state.open || !state.stream.is_empty();
-        let after_writable = !state.failed
-            && state.open
-            && state
-                .data_tx
-                .as_ref()
-                .is_some_and(|queue| queue.slots.iter().any(|slot| !slot.busy));
-        let reset = state.failed && !state.reset_issued;
-        if reset {
-            state.reset_issued = true;
-        }
-        let data_rx_index = state.data_rx.as_ref().map(|queue| queue.index);
-        drop(state);
-        if notify_control_rx {
-            let _ = self.device.notify_queue(CONTROL_RX_QUEUE);
-        }
-        if notify_data_rx && let Some(index) = data_rx_index {
-            let _ = self.device.notify_queue(index);
-        }
-        if reset {
-            let _ = self.device.reset();
-        }
-        PortActivity {
-            readable_changed: before_readable != after_readable,
-            writable_changed: before_writable != after_writable,
-            backlog,
-        }
-    }
-
     fn reclaim_control_tx(&self, state: &mut State) -> bool {
         match Self::reclaim_transmit(&mut state.control_tx) {
             Ok(progressed) => progressed,
@@ -680,6 +476,192 @@ impl VirtIOConsoleDevice {
         Arc::new(VirtIOConsoleIrqHandler {
             device: self.clone(),
         })
+    }
+}
+
+impl PortDevice for VirtIOConsoleDevice {
+    /// Read currently buffered bytes without sleeping.
+    ///
+    /// # Parameters
+    ///
+    /// - `output`: Kernel-owned destination.
+    ///
+    /// # Returns
+    ///
+    /// Positive byte count, `WouldBlock`, or terminal disconnect.
+    fn read(&self, output: &mut [u8]) -> Result<usize, PortError> {
+        let mut state = self.state.lock();
+        if state.failed || !state.open {
+            return Err(PortError::Disconnected);
+        }
+        let count = state.stream.pop(output);
+        if count == 0 {
+            Err(PortError::WouldBlock)
+        } else {
+            Ok(count)
+        }
+    }
+
+    /// Submit one bounded byte-stream fragment without sleeping.
+    ///
+    /// # Parameters
+    ///
+    /// - `input`: Bytes for the selected named port.
+    ///
+    /// # Returns
+    ///
+    /// Submitted byte count, `WouldBlock`, or terminal disconnect.
+    fn write(&self, input: &[u8]) -> Result<usize, PortError> {
+        if input.is_empty() {
+            return Ok(0);
+        }
+        let count = input.len().min(TX_BYTES);
+        let mut state = self.state.lock();
+        if state.failed || !state.open {
+            return Err(PortError::Disconnected);
+        }
+        let data_tx = state.data_tx.as_mut().ok_or(PortError::Disconnected)?;
+        let slot_index = data_tx
+            .slots
+            .iter()
+            .position(|slot| !slot.busy)
+            .ok_or(PortError::WouldBlock)?;
+        let queue_index = data_tx.index;
+        let TransmitQueue {
+            queue,
+            slots,
+            by_head,
+            ..
+        } = data_tx;
+        let slot = &mut slots[slot_index];
+        slot.bytes[..count].copy_from_slice(&input[..count]);
+        let payload = slot
+            .bytes
+            .readable(0..count)
+            .map_err(|_| PortError::Disconnected)?;
+        let head = queue
+            .add_dma(&[payload])
+            .map_err(|_| PortError::WouldBlock)?;
+        if by_head[head as usize].replace(slot_index as u16).is_some() {
+            state.failed = true;
+            state.reset_issued = true;
+            drop(state);
+            let _ = self.device.reset();
+            return Err(PortError::Disconnected);
+        }
+        slot.busy = true;
+        queue.add_to_avail(head);
+        drop(state);
+        if self.device.notify_queue(queue_index).is_err() {
+            let mut state = self.state.lock();
+            state.failed = true;
+            if !state.reset_issued {
+                state.reset_issued = true;
+                drop(state);
+                let _ = self.device.reset();
+            }
+            return Err(PortError::Disconnected);
+        }
+        Ok(count)
+    }
+
+    fn readable(&self) -> bool {
+        let state = self.state.lock();
+        state.failed || !state.open || !state.stream.is_empty()
+    }
+
+    fn writable(&self) -> bool {
+        let state = self.state.lock();
+        !state.failed
+            && state.open
+            && state
+                .data_tx
+                .as_ref()
+                .is_some_and(|queue| queue.slots.iter().any(|slot| !slot.busy))
+    }
+
+    fn connected(&self) -> bool {
+        let state = self.state.lock();
+        !state.failed && state.open
+    }
+
+    /// Drain a bounded batch from all four queues at a safe point.
+    ///
+    /// # Returns
+    ///
+    /// Read/write level transitions and remaining backlog.
+    fn dispatch(&self) -> PortActivity {
+        let before_readable = self.readable();
+        let before_writable = self.writable();
+        let mut state = self.state.lock();
+        if state.failed {
+            let reset = !state.reset_issued;
+            state.reset_issued = true;
+            drop(state);
+            if reset {
+                let _ = self.device.reset();
+            }
+            return PortActivity::default();
+        }
+        let mut notify_control_rx = false;
+        let mut notify_data_rx = false;
+        // 1. Reclaim only a bounded number of completions in deferred context.
+        // 2. Remember each RX repost because avail publication, not residual used entries, requires
+        //    a device notification; omitting this can permanently stall a drained clipboard queue.
+        // 3. Reset once after releasing the state lock when any queue invariant fails.
+        for _ in 0..32 {
+            let progressed = self.reclaim_control_tx(&mut state)
+                | self.reclaim_control_rx(&mut state, &mut notify_control_rx)
+                | self.reclaim_data_tx(&mut state)
+                | self.reclaim_data_rx(&mut state, &mut notify_data_rx);
+            if state.failed || !progressed {
+                break;
+            }
+        }
+        let backlog = state.control_rx.queue.has_used()
+            || state.control_tx.queue.has_used()
+            || state
+                .data_rx
+                .as_ref()
+                .is_some_and(|queue| queue.queue.has_used())
+            || state
+                .data_tx
+                .as_ref()
+                .is_some_and(|queue| queue.queue.has_used());
+        let after_readable = state.failed || !state.open || !state.stream.is_empty();
+        let after_writable = !state.failed
+            && state.open
+            && state
+                .data_tx
+                .as_ref()
+                .is_some_and(|queue| queue.slots.iter().any(|slot| !slot.busy));
+        let reset = state.failed && !state.reset_issued;
+        if reset {
+            state.reset_issued = true;
+        }
+        let data_rx_index = state.data_rx.as_ref().map(|queue| queue.index);
+        drop(state);
+        if notify_control_rx {
+            let _ = self.device.notify_queue(CONTROL_RX_QUEUE);
+        }
+        if notify_data_rx && let Some(index) = data_rx_index {
+            let _ = self.device.notify_queue(index);
+        }
+        if reset {
+            let _ = self.device.reset();
+        }
+        PortActivity {
+            readable_changed: before_readable != after_readable,
+            writable_changed: before_writable != after_writable,
+            backlog,
+        }
+    }
+
+    /// 绑定消费者分配的 completion deferred vector；绑定前到达的 completion 由绑定时的一次
+    /// 发布补偿。
+    fn bind_completion_work(&self, work: crate::cpu::DeferredWork) {
+        self.completion_work.call_once(|| work);
+        crate::cpu::raise_deferred(work);
     }
 }
 

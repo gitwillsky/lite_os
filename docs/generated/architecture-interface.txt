@@ -796,19 +796,14 @@ kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn start (& self) -> Re
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn stop (& self) -> Result < () , PcmOutputError >
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn submit_period (& self , bytes : & [u8]) -> Result < () , PcmOutputError >
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn writable (& self) -> bool
-kernel/src/drivers/block.rs :: enum BlockError :: AlreadyRegistered
 kernel/src/drivers/block.rs :: enum BlockError :: DeviceError
 kernel/src/drivers/block.rs :: enum BlockError :: InvalidBlock
 kernel/src/drivers/block.rs :: enum BlockError :: IoError
 kernel/src/drivers/block.rs :: enum BlockError :: OutOfMemory
 kernel/src/drivers/block.rs :: pub (crate) const BLOCK_SIZE : usize = 4096
 kernel/src/drivers/block.rs :: pub (crate) enum BlockError
-kernel/src/drivers/block.rs :: pub (crate) fn dispatch_completion_work () -> bool
-kernel/src/drivers/block.rs :: pub (crate) fn get_primary_block_device () -> Option < Arc < dyn BlockDevice > >
-kernel/src/drivers/block.rs :: pub (crate) fn register_block_device (device : Arc < dyn BlockDevice >) -> Result < usize , BlockError >
 kernel/src/drivers/block.rs :: pub (crate) trait BlockDevice
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn block_size (& self) -> usize
-kernel/src/drivers/block.rs :: trait BlockDevice :: fn dispatch_completions (& self) -> bool
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn flush (& self) -> Result < () , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn read_block (& self , block_id : usize , buf : & mut [u8]) -> Result < usize , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn write_block (& self , block_id : usize , buf : & [u8]) -> Result < usize , BlockError >
@@ -834,11 +829,9 @@ kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: x : u32
 kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: y : u32
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayError
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayUpdate
-kernel/src/drivers/display.rs :: pub (crate) fn primary_display () -> Option < Arc < dyn GraphicsDevice > >
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayRect
 kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
-kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn GraphicsDevice >) -> Result < () , () >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn bind_completion_work (& self , work : crate :: cpu :: DeferredWork)
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn disable_scanout (& self) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
@@ -846,6 +839,8 @@ kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_update (& self) 
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn release_buffer (& self , identity : u64) -> Result < Option < u64 > , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_damage (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > , rectangles : & [DisplayRect] ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/entropy.rs :: pub (crate) trait EntropySource
+kernel/src/drivers/entropy.rs :: trait EntropySource :: fn fill (& self , bytes : & mut [MaybeUninit < u8 >]) -> Result < () , () >
 kernel/src/drivers/graphics.rs :: enum CursorCommand :: # [doc = " 切换光标资源并同时设置位置与热点；resource 0 表示隐藏。"] Update { # [doc = " Scanout 0 中的水平位置。"] x : u32 , # [doc = " Scanout 0 中的垂直位置。"] y : u32 , # [doc = " true 使用 adapter-owned 2D cursor resource；false 表示隐藏。"] visible : bool , # [doc = " Resource 内的水平热点。"] hot_x : u32 , # [doc = " Resource 内的垂直热点。"] hot_y : u32 , }
 kernel/src/drivers/graphics.rs :: enum CursorCommand :: # [doc = " 只移动当前光标，不重新读取像素。"] Move { # [doc = " Scanout 0 中的水平位置。"] x : u32 , # [doc = " Scanout 0 中的垂直位置。"] y : u32 , # [doc = " 当前 cursor resource 是否可见。QEMU 10 的 MOVE 路径仍以 resource_id"] # [doc = " 控制 host pointer 可见性；缺失该状态会让每次移动都隐藏刚更新的光标。"] visible : bool , }
 kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 从 context 可见对象集合删除 resource。"] ContextDetachResource { # [doc = " 已创建的 context identity。"] context_id : u32 , # [doc = " 已 attach 的 resource identity。"] resource_id : u32 , }
@@ -969,13 +964,10 @@ kernel/src/drivers/input.rs :: pub (crate) RawInputEvent :: code : u16
 kernel/src/drivers/input.rs :: pub (crate) RawInputEvent :: event_type : u16
 kernel/src/drivers/input.rs :: pub (crate) RawInputEvent :: value : i32
 kernel/src/drivers/input.rs :: pub (crate) enum InputDeviceError
-kernel/src/drivers/input.rs :: pub (crate) fn device (index : usize) -> Option < Arc < dyn InputDevice > >
-kernel/src/drivers/input.rs :: pub (crate) fn device_count () -> usize
 kernel/src/drivers/input.rs :: pub (crate) struct InputAbsInfo
 kernel/src/drivers/input.rs :: pub (crate) struct InputId
 kernel/src/drivers/input.rs :: pub (crate) struct RawInputEvent
 kernel/src/drivers/input.rs :: pub (crate) trait InputDevice
-kernel/src/drivers/input.rs :: pub (super) fn register (device : Arc < dyn InputDevice >) -> Result < usize , Arc < dyn InputDevice > >
 kernel/src/drivers/input.rs :: trait InputDevice :: fn abs_info (& self , code : u16) -> Option < InputAbsInfo >
 kernel/src/drivers/input.rs :: trait InputDevice :: fn bind_completion_work (& self , work : crate :: cpu :: DeferredWork)
 kernel/src/drivers/input.rs :: trait InputDevice :: fn event_codes (& self , event_type : u16) -> & [u8]
@@ -988,22 +980,23 @@ kernel/src/drivers/input.rs :: trait InputDevice :: fn physical_path (& self) ->
 kernel/src/drivers/input.rs :: trait InputDevice :: fn properties (& self) -> & [u8]
 kernel/src/drivers/input.rs :: trait InputDevice :: fn receive_event (& self) -> Result < Option < RawInputEvent > , InputDeviceError >
 kernel/src/drivers/input.rs :: trait InputDevice :: fn serial (& self) -> & [u8]
-kernel/src/drivers/io_completion.rs :: enum IoDevice :: Block
-kernel/src/drivers/io_completion.rs :: enum IoDevice :: Entropy
 kernel/src/drivers/io_completion.rs :: enum IoWaitKind :: Capacity (u64)
 kernel/src/drivers/io_completion.rs :: enum IoWaitKind :: Request { slot : u16 , generation : u64 }
 kernel/src/drivers/io_completion.rs :: pub (crate) IoWaitKey :: device : IoDevice
 kernel/src/drivers/io_completion.rs :: pub (crate) IoWaitKey :: kind : IoWaitKind
-kernel/src/drivers/io_completion.rs :: pub (crate) enum IoDevice
 kernel/src/drivers/io_completion.rs :: pub (crate) enum IoWaitKind
 kernel/src/drivers/io_completion.rs :: pub (crate) fn current_wait_target () -> Option < Arc < dyn IoWaitTarget > >
 kernel/src/drivers/io_completion.rs :: pub (crate) fn install_wait_target_factory (factory : WaitTargetFactory)
+kernel/src/drivers/io_completion.rs :: pub (crate) impl IoDevice :: fn allocate () -> Self
 kernel/src/drivers/io_completion.rs :: pub (crate) impl IoWaitKey :: const fn request (device : IoDevice , slot : u16 , generation : u64) -> Self
+kernel/src/drivers/io_completion.rs :: pub (crate) struct IoDevice
 kernel/src/drivers/io_completion.rs :: pub (crate) struct IoWaitKey
+kernel/src/drivers/io_completion.rs :: pub (crate) trait CompletionSource
 kernel/src/drivers/io_completion.rs :: pub (crate) trait IoWaitTarget
 kernel/src/drivers/io_completion.rs :: pub (crate) type IoCompletion  = WaitCompletion
 kernel/src/drivers/io_completion.rs :: pub (in crate :: drivers) impl IoWaitKey :: const fn capacity (device : IoDevice , ticket : u64) -> Self
 kernel/src/drivers/io_completion.rs :: pub (in crate :: drivers) mod request_owner
+kernel/src/drivers/io_completion.rs :: trait CompletionSource :: fn dispatch_completions (& self) -> bool
 kernel/src/drivers/io_completion.rs :: trait IoWaitTarget :: fn sleep (self : Arc < Self > , completion : & IoCompletion , request : IoWaitKey)
 kernel/src/drivers/io_completion.rs :: trait IoWaitTarget :: fn wake (self : Arc < Self > , request : IoWaitKey)
 kernel/src/drivers/io_completion/request_owner.rs :: enum CommitOrWait :: # [doc = " capacity 仍满，waiter 已进入 FIFO index，caller 必须等待 outcome。"] Waiting (Arc < CapacityWait >)
@@ -1044,35 +1037,27 @@ kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) s
 kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) struct RequestOwner
 kernel/src/drivers/mod.rs :: pub (crate) fn console_input_ready () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn discard_console_input () -> usize
-kernel/src/drivers/mod.rs :: pub (crate) fn dispatch_io_completion_work () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn initialize_console_input () -> Result < () , InterruptError >
-kernel/src/drivers/mod.rs :: pub (crate) fn primary_audio_output () -> Option < alloc :: sync :: Arc < dyn PcmOutput > >
-kernel/src/drivers/mod.rs :: pub (crate) fn primary_virtio_port () -> Option < alloc :: sync :: Arc < VirtIOConsoleDevice > >
 kernel/src/drivers/mod.rs :: pub (crate) fn publish_console_input (bytes : & [u8])
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
-kernel/src/drivers/mod.rs :: pub (crate) fn register_audio_output (device : alloc :: sync :: Arc < VirtIOSoundDevice >) -> Result < () , () >
-kernel/src/drivers/mod.rs :: pub (crate) fn register_display_device (device : alloc :: sync :: Arc < dyn GraphicsDevice > ,) -> Result < () , () >
-kernel/src/drivers/mod.rs :: pub (crate) fn register_entropy_device (device : alloc :: sync :: Arc < VirtIORngDevice >) -> Result < () , () >
-kernel/src/drivers/mod.rs :: pub (crate) fn register_input_device (device : alloc :: sync :: Arc < dyn InputDevice > ,) -> Result < usize , alloc :: sync :: Arc < dyn InputDevice > >
-kernel/src/drivers/mod.rs :: pub (crate) fn register_network_device (device : alloc :: sync :: Arc < dyn network :: NetworkDevice > ,) -> Result < () , () >
-kernel/src/drivers/mod.rs :: pub (crate) fn register_virtio_port (device : alloc :: sync :: Arc < VirtIOConsoleDevice > ,) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/drivers/mod.rs :: pub (crate) mod network
 kernel/src/drivers/mod.rs :: pub (crate) use audio_output :: { PCM_BUFFER_FRAMES , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmCompletionObserver , PcmOutput , PcmOutputError , }
-kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , primary_display , }
+kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate }
+kernel/src/drivers/mod.rs :: pub (crate) use entropy :: EntropySource
 kernel/src/drivers/mod.rs :: pub (crate) use graphics :: { CursorCommand , GraphicsDevice , VirglBox , VirglCapsetInfo , VirglCommand , VirglTransferDirection , }
 kernel/src/drivers/mod.rs :: pub (crate) use hal :: PciTransport
 kernel/src/drivers/mod.rs :: pub (crate) use hal :: { InterruptError , InterruptHandler , InterruptVector , MmioBus }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
-kernel/src/drivers/mod.rs :: pub (crate) use input :: { device as input_device , device_count as input_device_count }
+kernel/src/drivers/mod.rs :: pub (crate) use port :: { PortActivity , PortDevice , PortError }
+kernel/src/drivers/mod.rs :: pub (crate) use registry :: { block_device , dispatch_io_completion_work , display_device , fill_entropy , input_device , input_device_count , network_device , pcm_output , port_device , register_block_device , register_display_device , register_entropy_source , register_input_device , register_network_device , register_pcm_output , register_port_device , }
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_blk :: VirtIOBlockDevice
-kernel/src/drivers/mod.rs :: pub (crate) use virtio_console :: { PortError , VirtIOConsoleDevice }
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_console :: VirtIOConsoleDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_gpu :: VirtIOGpuDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_input :: VirtIOInputDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_net :: VirtIONetworkDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: VirtIORngDevice
-kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: fill_entropy
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_sound :: VirtIOSoundDevice
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " transport、queue 或设备返回了不可恢复错误。"] Device
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " 帧超过设备或调用方 buffer 能表达的 MTU。"] FrameTooLarge
@@ -1084,7 +1069,6 @@ kernel/src/drivers/network.rs :: pub (crate) NetworkStatistics :: received_packe
 kernel/src/drivers/network.rs :: pub (crate) NetworkStatistics :: transmitted_bytes : u64
 kernel/src/drivers/network.rs :: pub (crate) NetworkStatistics :: transmitted_packets : u64
 kernel/src/drivers/network.rs :: pub (crate) enum NetworkError
-kernel/src/drivers/network.rs :: pub (crate) fn network_device () -> Option < Arc < dyn NetworkDevice > >
 kernel/src/drivers/network.rs :: pub (crate) fn request_poll ()
 kernel/src/drivers/network.rs :: pub (crate) impl NetworkTransmit :: fn reserve (device : Arc < dyn NetworkDevice >) -> Result < Self , NetworkError >
 kernel/src/drivers/network.rs :: pub (crate) impl NetworkTransmit :: fn submit (mut self , frame : & [u8]) -> Result < () , NetworkError >
@@ -1092,7 +1076,6 @@ kernel/src/drivers/network.rs :: pub (crate) struct NetworkCompletion
 kernel/src/drivers/network.rs :: pub (crate) struct NetworkStatistics
 kernel/src/drivers/network.rs :: pub (crate) struct NetworkTransmit
 kernel/src/drivers/network.rs :: pub (crate) trait NetworkDevice
-kernel/src/drivers/network.rs :: pub (super) fn register_network_device (device : Arc < dyn NetworkDevice > ,) -> Result < () , Arc < dyn NetworkDevice > >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn cancel_transmit (& self , reservation : u16)
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn mac_address (& self) -> [u8 ; 6]
@@ -1102,6 +1085,38 @@ kernel/src/drivers/network.rs :: trait NetworkDevice :: fn reserve_transmit (& s
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn statistics (& self) -> NetworkStatistics
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn submit_transmit (& self , reservation : u16 , frame : & [u8]) -> Result < () , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn transmit_available (& self) -> bool
+kernel/src/drivers/port.rs :: enum PortError :: # [doc = " No byte or transmit slot is currently available."] WouldBlock
+kernel/src/drivers/port.rs :: enum PortError :: # [doc = " The selected named port is closed or the transport failed."] Disconnected
+kernel/src/drivers/port.rs :: pub (crate) PortActivity :: backlog : bool
+kernel/src/drivers/port.rs :: pub (crate) PortActivity :: readable_changed : bool
+kernel/src/drivers/port.rs :: pub (crate) PortActivity :: writable_changed : bool
+kernel/src/drivers/port.rs :: pub (crate) enum PortError
+kernel/src/drivers/port.rs :: pub (crate) struct PortActivity
+kernel/src/drivers/port.rs :: pub (crate) trait PortDevice
+kernel/src/drivers/port.rs :: trait PortDevice :: fn bind_completion_work (& self , work : crate :: cpu :: DeferredWork)
+kernel/src/drivers/port.rs :: trait PortDevice :: fn connected (& self) -> bool
+kernel/src/drivers/port.rs :: trait PortDevice :: fn dispatch (& self) -> PortActivity
+kernel/src/drivers/port.rs :: trait PortDevice :: fn read (& self , output : & mut [u8]) -> Result < usize , PortError >
+kernel/src/drivers/port.rs :: trait PortDevice :: fn readable (& self) -> bool
+kernel/src/drivers/port.rs :: trait PortDevice :: fn writable (& self) -> bool
+kernel/src/drivers/port.rs :: trait PortDevice :: fn write (& self , input : & [u8]) -> Result < usize , PortError >
+kernel/src/drivers/registry.rs :: pub (crate) fn block_device (index : usize) -> Option < Arc < dyn BlockDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn dispatch_io_completion_work () -> bool
+kernel/src/drivers/registry.rs :: pub (crate) fn display_device (index : usize) -> Option < Arc < dyn GraphicsDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn fill_entropy (bytes : & mut [MaybeUninit < u8 >]) -> Result < () , () >
+kernel/src/drivers/registry.rs :: pub (crate) fn input_device (index : usize) -> Option < Arc < dyn InputDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn input_device_count () -> usize
+kernel/src/drivers/registry.rs :: pub (crate) fn network_device (index : usize) -> Option < Arc < dyn NetworkDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn pcm_output (index : usize) -> Option < Arc < dyn PcmOutput > >
+kernel/src/drivers/registry.rs :: pub (crate) fn port_device (index : usize) -> Option < Arc < dyn PortDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn register_block_device (device : Arc < dyn BlockDevice > ,) -> Result < usize , Arc < dyn BlockDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn register_display_device (device : Arc < dyn GraphicsDevice > ,) -> Result < usize , Arc < dyn GraphicsDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn register_entropy_source (device : Arc < dyn EntropySource > ,) -> Result < usize , Arc < dyn EntropySource > >
+kernel/src/drivers/registry.rs :: pub (crate) fn register_input_device (device : Arc < dyn InputDevice > ,) -> Result < usize , Arc < dyn InputDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn register_network_device (device : Arc < dyn NetworkDevice > ,) -> Result < usize , Arc < dyn NetworkDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn register_pcm_output (device : Arc < dyn PcmOutput >) -> Result < usize , Arc < dyn PcmOutput > >
+kernel/src/drivers/registry.rs :: pub (crate) fn register_port_device (device : Arc < dyn PortDevice > ,) -> Result < usize , Arc < dyn PortDevice > >
+kernel/src/drivers/registry.rs :: pub (super) fn register_completion_source (source : Arc < dyn CompletionSource > ,) -> Result < usize , Arc < dyn CompletionSource > >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) struct VirtIOBlockDevice
@@ -1120,23 +1135,9 @@ kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIOCompletion
 kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn acknowledge_and_defer (& self , device : & VirtIODevice)
 kernel/src/drivers/virtio_completion_irq.rs :: pub (super) impl VirtIOCompletionIrq :: fn take_transport_error (& self) -> bool
 kernel/src/drivers/virtio_completion_irq.rs :: pub (super) struct VirtIOCompletionIrq
-kernel/src/drivers/virtio_console.rs :: enum PortError :: # [doc = " No byte or transmit slot is currently available."] WouldBlock
-kernel/src/drivers/virtio_console.rs :: enum PortError :: # [doc = " The selected named port is closed or the transport failed."] Disconnected
-kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: backlog : bool
-kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: readable_changed : bool
-kernel/src/drivers/virtio_console.rs :: pub (crate) PortActivity :: writable_changed : bool
-kernel/src/drivers/virtio_console.rs :: pub (crate) enum PortError
-kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn bind_completion_work (& self , work : crate :: cpu :: DeferredWork)
-kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn connected (& self) -> bool
-kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn dispatch (& self) -> PortActivity
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn from_pci (transport : PciTransport) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
-kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn read (& self , output : & mut [u8]) -> Result < usize , PortError >
-kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn readable (& self) -> bool
-kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn writable (& self) -> bool
-kernel/src/drivers/virtio_console.rs :: pub (crate) impl VirtIOConsoleDevice :: fn write (& self , input : & [u8]) -> Result < usize , PortError >
-kernel/src/drivers/virtio_console.rs :: pub (crate) struct PortActivity
 kernel/src/drivers/virtio_console.rs :: pub (crate) struct VirtIOConsoleDevice
 kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn is_empty (& self) -> bool
 kernel/src/drivers/virtio_console/byte_ring.rs :: pub (super) impl ByteRing :: fn new () -> Option < Self >
@@ -1454,12 +1455,9 @@ kernel/src/drivers/virtio_queue/dma.rs :: pub (super) enum DmaChainRequirement
 kernel/src/drivers/virtio_queue/dma.rs :: pub (super) fn descriptor_requirement (buffers : & [DmaSlice < '_ >] , capacity : usize ,) -> DmaChainRequirement
 kernel/src/drivers/virtio_queue/dma.rs :: pub (super) impl DmaSlice < '_ > :: fn for_each_segment (& self , mut visit : impl FnMut (u64 , usize , bool))
 kernel/src/drivers/virtio_queue/dma.rs :: pub (super) impl DmaSlice < '_ > :: fn segment_count (& self) -> usize
-kernel/src/drivers/virtio_rng.rs :: pub (crate) fn fill_entropy (bytes : & mut [MaybeUninit < u8 >]) -> Result < () , () >
 kernel/src/drivers/virtio_rng.rs :: pub (crate) impl VirtIORngDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_rng.rs :: pub (crate) impl VirtIORngDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_rng.rs :: pub (crate) struct VirtIORngDevice
-kernel/src/drivers/virtio_rng.rs :: pub (super) fn dispatch_completion_work () -> bool
-kernel/src/drivers/virtio_rng.rs :: pub (super) fn register (device : Arc < VirtIORngDevice >) -> Result < () , () >
 kernel/src/drivers/virtio_rng/completion_policy.rs :: enum CompletionValidity :: Corrupt
 kernel/src/drivers/virtio_rng/completion_policy.rs :: enum CompletionValidity :: Initialized (usize)
 kernel/src/drivers/virtio_rng/completion_policy.rs :: pub (super) enum CompletionValidity
@@ -1467,7 +1465,6 @@ kernel/src/drivers/virtio_rng/completion_policy.rs :: pub (super) fn validate_co
 kernel/src/drivers/virtio_sound.rs :: pub (crate) impl VirtIOSoundDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_sound.rs :: pub (crate) impl VirtIOSoundDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_sound.rs :: pub (crate) struct VirtIOSoundDevice
-kernel/src/drivers/virtio_sound.rs :: pub (super) fn dispatch_completion_work (device : & VirtIOSoundDevice) -> bool
 kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Configured
 kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Failed
 kernel/src/drivers/virtio_sound/lifecycle.rs :: enum DeviceState :: Prepared
@@ -5409,5 +5406,5 @@ kernel/src/trap/mod.rs :: pub (crate) fn handle_kernel_trap ()
 kernel/src/trap/mod.rs :: pub (crate) fn handle_user_trap () -> !
 kernel/src/trap/mod.rs :: pub (crate) fn init ()
 kernel/src/trap/mod.rs :: pub (crate) fn trap_return () -> !
-kernel/src/virtio_port.rs :: pub (crate) fn init (device : Arc < VirtIOConsoleDevice >) -> Result < () , () >
+kernel/src/virtio_port.rs :: pub (crate) fn init (device : Arc < dyn PortDevice >) -> Result < () , () >
 kernel/src/virtio_port.rs :: pub (crate) struct Port

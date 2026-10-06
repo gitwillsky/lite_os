@@ -2,20 +2,20 @@
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::MaybeUninit;
-use spin::{Mutex, Once};
+use spin::Mutex;
 
 #[path = "virtio_rng/completion_policy.rs"]
 mod completion_policy;
 use completion_policy::{CompletionValidity, validate_completion};
 
 use super::{
-    InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
+    EntropySource, InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
     VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VirtIODevice,
     io_completion::request_owner::{
         CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner, RequestOwnerError,
         ReserveOrWait,
     },
-    io_completion::{self, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
+    io_completion::{self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
     virtio_completion_irq::VirtIOCompletionIrq,
     virtio_queue::{DeviceWriteBuffer, VirtQueue},
 };
@@ -24,9 +24,6 @@ const ENTROPY_CHUNK_SIZE: usize = 4096;
 const RNG_REQUEST_SLOTS: usize = 4;
 const COMPLETION_BATCH: usize = 8;
 const CAPACITY_FAILURE_BATCH: usize = 8;
-
-/// OWNER: virtio-rng driver owns the only kernel entropy device binding.
-static ENTROPY_DEVICE: Once<Arc<VirtIORngDevice>> = Once::new();
 
 struct RequestData {
     buffer: DeviceWriteBuffer<ENTROPY_CHUNK_SIZE>,
@@ -53,6 +50,8 @@ pub(crate) struct VirtIORngDevice {
     queue: Mutex<RngQueue>,
     slots: Box<[RequestSlot]>,
     completion_irq: VirtIOCompletionIrq,
+    /// scheduler wait key 中区分本 adapter 实例的 identity。
+    io_device: IoDevice,
 }
 
 impl VirtIORngDevice {
@@ -95,11 +94,11 @@ impl VirtIORngDevice {
                 }),
             });
         }
-        let requests =
-            RequestOwner::new(queue_size as usize, RNG_REQUEST_SLOTS, IoDevice::Entropy)?;
+        let io_device = IoDevice::allocate();
+        let requests = RequestOwner::new(queue_size as usize, RNG_REQUEST_SLOTS, io_device)?;
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
-        Arc::try_new(Self {
+        let adapter = Arc::try_new(Self {
             device,
             queue: Mutex::new(RngQueue {
                 queue,
@@ -108,8 +107,12 @@ impl VirtIORngDevice {
             }),
             slots: slots.into_boxed_slice(),
             completion_irq: VirtIOCompletionIrq::new(),
+            io_device,
         })
-        .ok()
+        .ok()?;
+        // 构造成功即自报为 `DRIVER_IO` completion 源；登记失败时放弃 adapter（Drop 复位设备）。
+        super::registry::register_completion_source(adapter.clone()).ok()?;
+        Some(adapter)
     }
 
     fn wait_for_capacity(&self) -> Result<RequestIdentity, ()> {
@@ -191,7 +194,7 @@ impl VirtIORngDevice {
         let slot = &self.slots[identity.slot as usize];
         let waiter = slot.data.lock().waiter.clone();
         if let Some(waiter) = waiter {
-            waiter.sleep(&slot.completion, Self::request_id(identity));
+            waiter.sleep(&slot.completion, self.request_id(identity));
         } else {
             while !slot.completion.is_complete() {
                 // Use the same IRQ ack owner before reclaiming a completion that predated
@@ -241,21 +244,8 @@ impl VirtIORngDevice {
         result
     }
 
-    fn fill(&self, bytes: &mut [MaybeUninit<u8>]) -> Result<(), ()> {
-        let mut initialized = 0usize;
-        while initialized < bytes.len() {
-            let requested = (bytes.len() - initialized).min(ENTROPY_CHUNK_SIZE);
-            let identity = self.submit(requested)?;
-            self.wait(identity);
-            let completed =
-                self.finish(identity, &mut bytes[initialized..initialized + requested])?;
-            initialized += completed;
-        }
-        Ok(())
-    }
-
-    fn request_id(identity: RequestIdentity) -> IoWaitKey {
-        IoWaitKey::request(IoDevice::Entropy, identity.slot, identity.generation)
+    fn request_id(&self, identity: RequestIdentity) -> IoWaitKey {
+        IoWaitKey::request(self.io_device, identity.slot, identity.generation)
     }
 
     fn reclaim_completions(&self) -> bool {
@@ -314,7 +304,7 @@ impl VirtIORngDevice {
                     if slot.completion.complete()
                         && let Some(waiter) = waiter
                     {
-                        *wake = Some((waiter, Self::request_id(identity)));
+                        *wake = Some((waiter, self.request_id(identity)));
                     }
                 }
                 Some(owner.queue.has_used())
@@ -372,7 +362,7 @@ impl VirtIORngDevice {
                     if slot.completion.complete()
                         && let Some(waiter) = waiter
                     {
-                        wakes[identity.slot as usize] = Some((waiter, Self::request_id(identity)));
+                        wakes[identity.slot as usize] = Some((waiter, self.request_id(identity)));
                     }
                 }
                 true
@@ -398,6 +388,27 @@ impl VirtIORngDevice {
     }
 }
 
+impl EntropySource for VirtIORngDevice {
+    fn fill(&self, bytes: &mut [MaybeUninit<u8>]) -> Result<(), ()> {
+        let mut initialized = 0usize;
+        while initialized < bytes.len() {
+            let requested = (bytes.len() - initialized).min(ENTROPY_CHUNK_SIZE);
+            let identity = self.submit(requested)?;
+            self.wait(identity);
+            let completed =
+                self.finish(identity, &mut bytes[initialized..initialized + requested])?;
+            initialized += completed;
+        }
+        Ok(())
+    }
+}
+
+impl CompletionSource for VirtIORngDevice {
+    fn dispatch_completions(&self) -> bool {
+        self.reclaim_completions()
+    }
+}
+
 impl Drop for VirtIORngDevice {
     fn drop(&mut self) {
         // Reset is the DMA revocation barrier required before fixed uninitialized buffers drop.
@@ -416,24 +427,4 @@ impl InterruptHandler for VirtIORngIrqHandler {
             .acknowledge_and_defer(&self.device.device);
         Ok(())
     }
-}
-
-pub(super) fn register(device: Arc<VirtIORngDevice>) -> Result<(), ()> {
-    if ENTROPY_DEVICE.get().is_some() {
-        return Err(());
-    }
-    ENTROPY_DEVICE.call_once(|| device);
-    Ok(())
-}
-
-/// 用唯一 virtio-rng source 完整初始化 caller-owned output。
-pub(crate) fn fill_entropy(bytes: &mut [MaybeUninit<u8>]) -> Result<(), ()> {
-    ENTROPY_DEVICE.get().ok_or(())?.fill(bytes)
-}
-
-/// 在 safe point 回收固定批次 entropy completion。
-pub(super) fn dispatch_completion_work() -> bool {
-    ENTROPY_DEVICE
-        .get()
-        .is_some_and(|device| device.reclaim_completions())
 }

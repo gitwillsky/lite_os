@@ -23,9 +23,12 @@
   前保活 64×64 B8G8R8A8 dumb backing。
 - `drivers::io_completion` 是 block/RNG 共用的唯一 request slot、descriptor identity、completion
   handshake 与 capacity membership owner；typed `IoWaitKey { device, kind }` 保留完整 slot、
-  generation 与 ticket，不位打包或复制 adapter 私有 wait ABI。block 的 16 个 fixed slots 独占
+  generation 与 ticket，不位打包或复制 adapter 私有 wait ABI。`device` 是每个 adapter 构造时分配的
+  实例 identity，而非设备种类；同类多实例按种类区分会让 completion 唤醒另一设备的 waiter。block 的 16 个 fixed slots 独占
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
+- `drivers::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
+  稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
 - `fs::device` 独占字符设备注册表：driver 按单 major 内的 minor 区间登记（Linux `cdev_add`），
   devfs 节点按路径登记（devtmpfs）；devpts 等动态节点只登记 driver 区间。设备子系统以

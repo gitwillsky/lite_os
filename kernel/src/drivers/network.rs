@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use spin::{Mutex, Once};
 
 /// network device seam 的错误分类；协议栈不得感知具体 VirtIO adapter。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,43 +194,6 @@ pub(crate) trait NetworkDevice: Send + Sync {
     ///
     /// 自设备初始化后的 RX/TX byte 与 packet 数。
     fn statistics(&self) -> NetworkStatistics;
-}
-
-// OWNER: driver network seam uniquely owns the DTB-selected Ethernet device. A second binding
-// would split MAC identity and RX ownership between protocol-stack instances.
-static PRIMARY_NETWORK_DEVICE: Once<Mutex<Option<Arc<dyn NetworkDevice>>>> = Once::new();
-
-fn binding() -> &'static Mutex<Option<Arc<dyn NetworkDevice>>> {
-    PRIMARY_NETWORK_DEVICE.call_once(|| Mutex::new(None))
-}
-
-/// 发布 DTB 扫描选中的唯一 Ethernet device。
-///
-/// # Parameters
-///
-/// - `device`: 已完成 feature negotiation 与 queue 初始化的设备。
-///
-/// # Returns
-///
-/// 首次注册成功；已有设备返回原 Arc，调用方必须拒绝双 owner。
-pub(super) fn register_network_device(
-    device: Arc<dyn NetworkDevice>,
-) -> Result<(), Arc<dyn NetworkDevice>> {
-    let mut slot = binding().lock();
-    if slot.is_some() {
-        return Err(device);
-    }
-    *slot = Some(device);
-    Ok(())
-}
-
-/// 获取协议栈使用的唯一 Ethernet device。
-///
-/// # Returns
-///
-/// 已注册设备；平台没有 network device 时返回 `None`。
-pub(crate) fn network_device() -> Option<Arc<dyn NetworkDevice>> {
-    binding().lock().clone()
 }
 
 /// 发布本 CPU 的 network deferred work，由 user-return/idle safe point 消费。

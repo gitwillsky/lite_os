@@ -1,6 +1,3 @@
-use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
-
 /// VirtIO input transport 产生的无 timestamp 原始事件。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RawInputEvent {
@@ -99,57 +96,4 @@ pub(crate) trait InputDevice: Send + Sync {
     ///
     /// eventq 尚有未消费 used entry 时为 true。
     fn has_pending_event(&self) -> bool;
-}
-
-// OWNER: drivers input registry 唯一保存 DTB 枚举顺序与 raw adapter Arc；input core 只按
-// index 取得不可变快照。缺失该 owner 会让 devfs event minor 与 IRQ adapter 身份分裂。
-static INPUT_DEVICES: Once<Mutex<Vec<Arc<dyn InputDevice>>>> = Once::new();
-
-fn registry() -> &'static Mutex<Vec<Arc<dyn InputDevice>>> {
-    INPUT_DEVICES.call_once(|| Mutex::new(Vec::new()))
-}
-
-/// 按 DTB probe 顺序注册一个 input adapter。
-///
-/// # Parameters
-///
-/// - `device`: 已完成 feature/queue 初始化的唯一 adapter Arc。
-///
-/// # Returns
-///
-/// 后续 `/dev/input/eventN` 使用的零基 index。
-///
-/// # Errors
-///
-/// registry 扩容失败返回原 device。
-pub(super) fn register(device: Arc<dyn InputDevice>) -> Result<usize, Arc<dyn InputDevice>> {
-    let mut devices = registry().lock();
-    if devices.try_reserve(1).is_err() {
-        return Err(device);
-    }
-    let index = devices.len();
-    devices.push(device);
-    Ok(index)
-}
-
-/// 读取已注册 raw input adapter 数量。
-///
-/// # Returns
-///
-/// DTB probe 完成后的稳定数量。
-pub(crate) fn device_count() -> usize {
-    registry().lock().len()
-}
-
-/// 按 event index 取得 raw adapter。
-///
-/// # Parameters
-///
-/// - `index`: `register` 返回的稳定 index。
-///
-/// # Returns
-///
-/// 对应 adapter Arc；越界返回 `None`。
-pub(crate) fn device(index: usize) -> Option<Arc<dyn InputDevice>> {
-    registry().lock().get(index).cloned()
 }

@@ -8,6 +8,7 @@ use super::{
     PcmOutputError, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
     VirtIODevice,
     audio_output::{PCM_BUFFER_BYTES, PCM_CHANNELS, PCM_PERIOD_BYTES, PCM_PERIODS},
+    io_completion::CompletionSource,
     virtio_completion_irq::VirtIOCompletionIrq,
     virtio_queue::{DmaBuffer, VirtQueue},
 };
@@ -144,6 +145,8 @@ impl VirtIOSoundDevice {
         .ok()?;
         adapter.query_and_validate_stream()?;
         crate::info!("VirtIO Sound capability ready");
+        // 构造成功即自报为 `DRIVER_IO` completion 源；登记失败时放弃 adapter（Drop 复位设备）。
+        super::registry::register_completion_source(adapter.clone()).ok()?;
         Some(adapter)
     }
 
@@ -508,6 +511,12 @@ impl PcmOutput for VirtIOSoundDevice {
     }
 }
 
+impl CompletionSource for VirtIOSoundDevice {
+    fn dispatch_completions(&self) -> bool {
+        self.reclaim()
+    }
+}
+
 impl Drop for VirtIOSoundDevice {
     fn drop(&mut self) {
         // Reset 是释放 control/event/tx/rx DMA owner 前的唯一 device revocation barrier。
@@ -526,13 +535,4 @@ impl InterruptHandler for VirtIOSoundIrqHandler {
             .acknowledge_and_defer(&self.device.device);
         Ok(())
     }
-}
-
-/// 在统一 safe point 回收 bounded audio completions。
-///
-/// # Returns
-///
-/// adapter 仍有 backlog 时返回 true。
-pub(super) fn dispatch_completion_work(device: &VirtIOSoundDevice) -> bool {
-    device.reclaim()
 }

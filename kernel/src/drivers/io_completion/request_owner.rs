@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn fixed_capacity_and_descriptor_identity_are_single_owned() {
-        let mut owner = RequestOwner::new(8, 2, IoDevice::Block).unwrap();
+        let mut owner = RequestOwner::new(8, 2, IoDevice::allocate()).unwrap();
         let ReserveOrWait::Reserved(first) = owner.reserve_or_wait() else {
             panic!("first slot missing")
         };
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn rejected_completion_is_drained_and_released_exactly_once() {
-        let mut owner = RequestOwner::new(8, 2, IoDevice::Block).unwrap();
+        let mut owner = RequestOwner::new(8, 2, IoDevice::allocate()).unwrap();
         let ReserveOrWait::Reserved(identity) = owner.reserve_or_wait() else {
             panic!("slot missing")
         };
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn terminal_failure_publishes_capacity_outcome_without_leaking_slot() {
-        let mut owner = RequestOwner::new(8, 1, IoDevice::Entropy).unwrap();
+        let mut owner = RequestOwner::new(8, 1, IoDevice::allocate()).unwrap();
         let ReserveOrWait::Reserved(active) = owner.reserve_or_wait() else {
             panic!("slot missing")
         };
