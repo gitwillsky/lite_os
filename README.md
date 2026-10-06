@@ -125,7 +125,5 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
   `display-proto/src/paint.rs`、`lite-runtime/src/renderer/gpu_paint.rs`，继续扩展前应先审视其 owner/interface 拆分。
 - `scripts/tests` 中两个既有失败：`test_release_gates` 的 AArch64 trap-cost 合成用例期望与检查器不一致；
   `test_audio_analysis` 使用 `from scripts...` 导入，在 `scripts/` 下运行时失败。
-- Agent 开发镜像的 `nodejs` 与 `ca-certificates` 固定版本已被 Alpine 移除，新机器上
-  `make prepare-agent-development` 会下载失败，需要升级版本与摘要。
 - 主要能力缺口（详见 ABI 矩阵）：IPv6、namespace/seccomp 等隔离机制（因此 Agent 镜像无 sandbox）、
   futex PI、queued realtime signal、swap/后台回写、inotify、io_uring、System V IPC。

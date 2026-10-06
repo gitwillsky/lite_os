@@ -39,7 +39,7 @@ class AgentDevelopmentTests(unittest.TestCase):
         self.assertTrue(
             {
                 "bash-5.2.37-r0.apk",
-                "nodejs-22.23.0-r0.apk",
+                "nodejs-22.23.2-r0.apk",
                 "npm-11.6.4-r0.apk",
                 "libgcc-14.2.0-r6.apk",
                 "libstdc++-14.2.0-r6.apk",

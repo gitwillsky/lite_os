@@ -14,7 +14,7 @@ if $APK info -e claude-code; then
     $APK del claude-code
 fi
 $APK add /run/liteos-agent/apks/*.apk
-$APK info -e 'nodejs=22.23.0-r0'
+$APK info -e 'nodejs=22.23.2-r0'
 $APK info -e 'npm=11.6.4-r0'
 $APK info -e 'bash=5.2.37-r0'
 $APK info -e 'git=2.49.1-r0'
@@ -27,7 +27,7 @@ echo LITEOS_AGENT_APKS_READY
 mkdir -p /usr/share/liteos
 rm -rf /run/liteos-agent/npm-cache
 mkdir -p /run/liteos-agent/npm-cache
-# 大型原生 package 在 ext3 上展开时可能合法地超过 runtime gate 的静默窗口。后台 owner 与
+# 大型原生 package 在 ext4 上展开时可能合法地超过 runtime gate 的静默窗口。后台 owner 与
 # `wait` 保留真实退出状态，固定 heartbeat 只证明 bootstrap 仍在推进，不放宽成功条件。
 tar -xf /run/liteos-agent/npm-cache.tar -C /run/liteos-agent &
 cache_pid=$!

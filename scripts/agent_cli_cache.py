@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from apk_apps_cache import cached_application_apks
-from apk_cache import ALPINE_ARCH, ALPINE_BRANCH, ALPINE_MIRROR
+from apk_cache import ALPINE_ARCH, ALPINE_BRANCH, ALPINE_DOWNLOAD_MIRRORS
 from build_cache import (
     cache_lock,
     fingerprint,
@@ -67,12 +67,12 @@ NPM_PACKAGE_INTEGRITIES = (
 AGENT_ALPINE_PACKAGES = (
     ("main", "ada-libs-2.9.2-r4.apk", "58147891c4ae32752fd81792dfec19c71b8d88661c4aa30db3f26600df33bb28"),
     ("main", "bash-5.2.37-r0.apk", "411e1fec2dccd603bc9f23586f7b8df2211613ece49b20c71c17412ab2667c44"),
-    ("main", "ca-certificates-20260611-r0.apk", "6b491dcda951129c80e8d7b0f509253ab640b20653b208d3b0994d893189b3f5"),
+    ("main", "ca-certificates-20260909-r0.apk", "b281f0245c7998f8d72541e301b259e370eae9491b66881a27380e544cba432b"),
     ("main", "icu-data-en-76.1-r1.apk", "2c2d36d47c82d0f6cff1b549044fe3562f327f944971ef367b9c40eeb35aa6e8"),
     ("main", "icu-libs-76.1-r1.apk", "6c9dd2e6b0ddc6e7d5fd2a21b427799d7ca4f7e8b5aad72d17e84520db3cd249"),
     ("main", "libgcc-14.2.0-r6.apk", "ba1835eec3ad8a120efd3d5020e561d53553a0513763a08f509e3ce6d4baa9ca"),
     ("main", "libstdc++-14.2.0-r6.apk", "0d2f054057a4f932e985a129eccb79908b40964185139a0a609aed3032aba064"),
-    ("main", "nodejs-22.23.0-r0.apk", "8320f5e9cd6d37225d19a8fa66e437589c14300bc0386841b7f88ec44b74da20"),
+    ("main", "nodejs-22.23.2-r0.apk", "3834a57bf5af6310b400c1458b2350b2a0e560aa1de7e8a164e93867602fc5e4"),
     ("community", "npm-11.6.4-r0.apk", "0ec0386135848268c5d316b2f28f2cbac7084686df20919e727942914f74cbfe"),
     ("community", "ripgrep-14.1.1-r0.apk", "f9c145aca9868a3a90d57d4eb89a4c1c92bc4f06870311d230856f68cf6e58bd"),
     ("main", "simdjson-3.12.0-r0.apk", "5605c691ab62e5a0071d065b5afdd5c3740d763821d689a6bf54e46c95916974"),
@@ -117,8 +117,8 @@ def _run(command: list[str]) -> str:
     return result.stdout
 
 
-def _download(url: str, name: str, expected_sha256: str) -> Path:
-    """下载一个固定 APK，并只在摘要匹配后发布到共享 cache。"""
+def _download(urls: tuple[str, ...], name: str, expected_sha256: str) -> Path:
+    """按顺序从 ``urls`` 下载一个固定 APK，并只在摘要匹配后发布到共享 cache。"""
     archives = WORK / "archives"
     archives.mkdir(parents=True, exist_ok=True)
     destination = archives / name
@@ -128,19 +128,22 @@ def _download(url: str, name: str, expected_sha256: str) -> Path:
     destination.unlink(missing_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".download")
     temporary.unlink(missing_ok=True)
-    try:
-        urllib.request.urlretrieve(url, temporary)
+    errors = []
+    for url in urls:
+        try:
+            urllib.request.urlretrieve(url, temporary)
+        except Exception as error:
+            errors.append(f"{url}: {error}")
+            temporary.unlink(missing_ok=True)
+            continue
         actual = sha256(temporary)
         if actual != expected_sha256:
-            raise RuntimeError(
-                f"Agent artifact SHA-256 mismatch: {name}; "
-                f"expected={expected_sha256}, actual={actual}"
-            )
+            errors.append(f"{url}: SHA-256 mismatch, actual={actual}")
+            temporary.unlink(missing_ok=True)
+            continue
         os.replace(temporary, destination)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-    return destination
+        return destination
+    raise RuntimeError(f"failed to download Agent artifact {name}:\n" + "\n".join(errors))
 
 
 def _package_identity(name: str) -> tuple[str, str]:
@@ -365,11 +368,11 @@ def cached_agent_cli_artifacts() -> AgentCliArtifacts:
         npm_cache_archive = _cached_npm_cache_archive()
         development_apks = []
         for repository, name, digest in AGENT_ALPINE_PACKAGES:
-            url = (
-                f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/{repository}/"
-                f"{ALPINE_ARCH}/{name}"
+            urls = tuple(
+                f"{mirror}/{ALPINE_BRANCH}/{repository}/{ALPINE_ARCH}/{name}"
+                for mirror in ALPINE_DOWNLOAD_MIRRORS
             )
-            archive = _download(url, name, digest)
+            archive = _download(urls, name, digest)
             package, version = _package_identity(name)
             _verify_apk(archive, package, version)
             development_apks.append(archive)
