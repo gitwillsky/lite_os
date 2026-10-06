@@ -16,7 +16,7 @@ use write::write_descriptor;
 ///
 /// ready 返回 Ok；signal interruption 返回 `-EINTR`。
 fn block_on_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> Result<(), isize> {
-    match wait_for_pipe(pipe, condition) {
+    match pipe.wait(condition, None) {
         WaitResult::Woken => Ok(()),
         WaitResult::Interrupted => Err(-errno::EINTR),
         WaitResult::TimedOut => panic!("pipe I/O wait cannot time out"),

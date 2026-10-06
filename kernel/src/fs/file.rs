@@ -1,5 +1,3 @@
-#[path = "file/character.rs"]
-mod character;
 #[path = "file/descriptor_table.rs"]
 mod descriptor_table;
 #[path = "file/position.rs"]
@@ -7,7 +5,6 @@ mod position;
 #[path = "file/proc.rs"]
 mod proc;
 mod terminal;
-pub(crate) use character::{CharacterDevice, KmsgDeviceRead};
 pub(crate) use descriptor_table::{
     CancelledFileReservation, DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable,
     MAX_FILE_DESCRIPTORS,
@@ -24,8 +21,8 @@ use spin::Mutex;
 use position::FilePosition;
 
 use super::{
-    AccessIdentity, DeviceKind, Epoll, EpollMemberships, FileSystemError, FileSystemStatistics,
-    Inode, OpenedFile, ReadinessSource, ReadinessSources, TimerFd, vfs,
+    Epoll, EpollMemberships, FileSystemError, FileSystemStatistics, Inode, OpenedFile,
+    ReadinessSource, ReadinessSources, TimerFd, vfs,
 };
 use crate::{
     ipc::{EventFd, PipeEnd},
@@ -62,7 +59,8 @@ pub(crate) const O_CLOEXEC: u32 = 0x80000;
 
 /// OFD 后端；character device、pipe 和 inode 共享同一 fd 表。
 pub(crate) enum OpenFileKind {
-    Character(CharacterDevice),
+    /// 经字符设备注册表打开、由设备子系统实现的设备文件。
+    Device(Arc<dyn crate::fs::device::DeviceFile>),
     Pipe(Arc<PipeEnd>),
     Socket(Arc<Socket>),
     Epoll(Arc<Epoll>),
@@ -226,7 +224,7 @@ impl OpenFileDescription {
         let mut result = 0;
         match &self.kind {
             OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => result = events & (INPUT | OUTPUT),
-            OpenFileKind::Character(device) => result = device.poll_events(events),
+            OpenFileKind::Device(file) => result = file.poll(events),
             OpenFileKind::Pipe(endpoint) => {
                 let state = endpoint.pipe().poll_state(endpoint.direction());
                 if events & INPUT != 0 && state.readable {
@@ -300,7 +298,7 @@ impl OpenFileDescription {
     /// 跨 source 可比较的 generation；不支持 epoll 的 inode/device 返回零。
     pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
         match &self.kind {
-            OpenFileKind::Character(device) => device.readiness_generation(),
+            OpenFileKind::Device(file) => file.readiness_generation(),
             OpenFileKind::Pipe(endpoint) => {
                 endpoint.pipe().readiness_generation(endpoint.direction())
             }
@@ -319,7 +317,7 @@ impl OpenFileDescription {
     /// 可加入 epoll 返回 true；regular inode/null/zero 返回 false 并映射 EPERM。
     pub(crate) fn epoll_pollable(&self) -> bool {
         match &self.kind {
-            OpenFileKind::Character(device) => device.epoll_pollable(),
+            OpenFileKind::Device(file) => !file.wait_sources(0x001 | 0x004).is_empty(),
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
@@ -343,51 +341,15 @@ impl OpenFileDescription {
         const OUTPUT: i16 = 0x004;
         let mut sources = ReadinessSources::new();
         match &self.kind {
-            OpenFileKind::Character(CharacterDevice::Terminal { pty, .. }) => {
-                if let Some(slave) = pty {
-                    sources.push(ReadinessSource::pipe(
-                        &slave.notification_pipe(),
-                        crate::ipc::PipeDirection::Read,
-                    ));
-                    if events & OUTPUT != 0 {
-                        sources.push(ReadinessSource::pipe(
-                            &slave.output_pipe(),
-                            crate::ipc::PipeDirection::Write,
-                        ));
-                    }
-                } else {
-                    sources.push(ReadinessSource::Console);
+            OpenFileKind::Device(file) => {
+                for source in file.wait_sources(events).iter() {
+                    sources.push(match source {
+                        crate::fs::device::DeviceWaitSource::Pipe {
+                            pipe, direction, ..
+                        } => ReadinessSource::pipe(pipe, *direction),
+                        crate::fs::device::DeviceWaitSource::Console => ReadinessSource::Console,
+                    });
                 }
-            }
-            OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
-                sources.push(ReadinessSource::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                ));
-            }
-            OpenFileKind::Character(CharacterDevice::Drm(file)) => {
-                sources.push(ReadinessSource::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                ));
-            }
-            OpenFileKind::Character(CharacterDevice::Audio(file)) => {
-                sources.push(ReadinessSource::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                ));
-            }
-            OpenFileKind::Character(CharacterDevice::VirtioPort(port)) => {
-                sources.push(ReadinessSource::pipe(
-                    &port.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                ));
-            }
-            OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
-                sources.push(ReadinessSource::pipe(
-                    &master.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                ));
             }
             OpenFileKind::Pipe(endpoint) => sources.push(ReadinessSource::pipe(
                 &endpoint.pipe(),
@@ -435,59 +397,24 @@ impl OpenFileDescription {
         sources
     }
 
-    /// 构造继承给 init 的 console OFD，并保留 devfs opened entry。
+    /// 构造经字符设备注册表打开的设备 OFD。
     ///
     /// # Parameters
     ///
-    /// - `terminal`: 共享 TTY owner。
-    /// - `backing_opened`: `/dev/console` opened entry，用于 metadata、fstatfs 与 procfs。
-    /// - `flags`: OFD status flags。
-    ///
-    /// # Returns
-    ///
-    /// 新 console OFD。
-    pub(crate) fn terminal(
-        terminal: Arc<Terminal>,
-        backing_opened: Arc<OpenedFile>,
-        flags: u32,
-    ) -> Result<Arc<Self>, ()> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::Character(CharacterDevice::Terminal {
-                terminal,
-                kind: DeviceKind::Console,
-                pty: None,
-            }),
-            position: FilePosition::new(),
-            flags: Mutex::new(flags),
-            character_opened: Some(backing_opened),
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-        })
-        .map_err(|_| ())
-    }
-
-    /// 构造 pathname 打开的 character-device OFD。
-    ///
-    /// # Parameters
-    ///
-    /// - `kind`: device identity。
-    /// - `terminal`: 共享 TTY owner。
+    /// - `file`: driver 返回的打开设备文件。
     /// - `flags`: OFD status flags。
     /// - `backing_opened`: 打开时的 devfs opened entry，用于 metadata、fstatfs 与 procfs。
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// 新 character-device OFD。
-    pub(crate) fn character(
-        kind: DeviceKind,
-        terminal: Arc<Terminal>,
-        identity: &AccessIdentity,
+    /// OFD 分配失败返回 `OutOfMemory`。
+    pub(crate) fn device(
+        file: Arc<dyn crate::fs::device::DeviceFile>,
         flags: u32,
         backing_opened: Arc<OpenedFile>,
     ) -> Result<Arc<Self>, FileSystemError> {
-        let device = CharacterDevice::open(kind, terminal, identity)?;
         Arc::try_new(Self {
-            kind: OpenFileKind::Character(device),
+            kind: OpenFileKind::Device(file),
             position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: Some(backing_opened),
@@ -589,7 +516,7 @@ impl OpenFileDescription {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.inode()),
             OpenFileKind::MemFile(file) => Some(file.clone()),
-            OpenFileKind::Character(_) => None,
+            OpenFileKind::Device(_) => None,
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
@@ -607,7 +534,7 @@ impl OpenFileDescription {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.clone()),
             OpenFileKind::MemFile(_) => None,
-            OpenFileKind::Character(_) => self.character_opened.clone(),
+            OpenFileKind::Device(_) => self.character_opened.clone(),
             OpenFileKind::Pipe(_)
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
@@ -642,7 +569,7 @@ impl OpenFileDescription {
                 fragment_size: 4096,
                 flags: 0x20,
             }),
-            OpenFileKind::Character(_) => vfs().statistics(
+            OpenFileKind::Device(_) => vfs().statistics(
                 self.character_opened
                     .clone()
                     .ok_or(FileSystemError::InvalidFileSystem)?

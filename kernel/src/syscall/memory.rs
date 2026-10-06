@@ -1,5 +1,5 @@
 use crate::{
-    fs::{CharacterDevice, InodeType, O_ACCMODE, O_RDONLY, O_WRONLY, OpenFileKind},
+    fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY, OpenFileKind},
     memory::{FileMappingError, FileMappingSource, MapPermission, MemoryAdvice, MemoryError},
     task::current_task,
 };
@@ -136,34 +136,17 @@ pub(crate) fn sys_mmap(
         if access_mode == O_WRONLY {
             return -errno::EACCES;
         }
-        if let OpenFileKind::Character(CharacterDevice::Drm(file)) = &ofd.kind {
-            if sharing != MAP_SHARED || permission.contains(MapPermission::X) {
-                return -errno::EINVAL;
+        if let OpenFileKind::Device(file) = &ofd.kind {
+            let request = super::device::map_request(
+                sharing == MAP_SHARED,
+                permission.contains(MapPermission::W),
+                permission.contains(MapPermission::X),
+                access_mode != O_RDONLY,
+            );
+            match file.mmap(offset as u64, length, request) {
+                Ok(source) => PreparedMapping::Device(source),
+                Err(error) => return super::device::device_error(error),
             }
-            if permission.contains(MapPermission::W) && access_mode == O_RDONLY {
-                return -errno::EACCES;
-            }
-            let source = match file.mapping(offset as u64, length) {
-                Ok(source) => source,
-                Err(error) => return -super::drm::drm_errno(error),
-            };
-            PreparedMapping::Device(source)
-        } else if let OpenFileKind::Character(CharacterDevice::Audio(file)) = &ofd.kind {
-            if sharing != MAP_SHARED
-                || permission.contains(MapPermission::X)
-                || !permission.contains(MapPermission::W)
-            {
-                return -errno::EINVAL;
-            }
-            if access_mode == O_RDONLY {
-                return -errno::EACCES;
-            }
-            let source = match file.mapping(offset as u64, length) {
-                Ok(source) => source,
-                Err(crate::audio::AudioError::InvalidState) => return -errno::EINVAL,
-                Err(_) => return -errno::EIO,
-            };
-            PreparedMapping::Device(source)
         } else {
             let Some(inode) = ofd.inode_ref() else {
                 return -errno::ENODEV;

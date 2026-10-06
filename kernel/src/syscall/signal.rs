@@ -1,7 +1,8 @@
+use crate::sync::WaitResult;
 use crate::{
     syscall::errno,
     task::{
-        SignalAction, SignalSendError, SignalStack, SignalStackError, SignalWaitError, WaitResult,
+        SignalAction, SignalSendError, SignalStack, SignalStackError, SignalWaitError,
         current_task, send_process_signal, send_thread_signal, send_tid_signal, wait_for_signal,
         wait_for_signal_delivery,
     },

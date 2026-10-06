@@ -138,6 +138,7 @@ dependencies = [
  "bitflags 2.9.1",
  "dtb-walker",
  "spin",
+ "syscall-abi",
 ]
 
 [[package]]

@@ -7,7 +7,7 @@ const IO_COMPLETION_SOURCE: &str = "kernel/src/drivers/io_completion.rs";
 const WAIT_COMPLETION_SOURCE: &str = "kernel/src/sync/wait_completion.rs";
 const VIRTIO_IRQ_SOURCE: &str = "kernel/src/drivers/virtio_completion_irq.rs";
 const GETRANDOM_SOURCE: &str = "kernel/src/syscall/random.rs";
-const READ_SOURCE: &str = "kernel/src/syscall/fs/io/sequential/read.rs";
+const DEV_RANDOM_SOURCE: &str = "kernel/src/fs/mem.rs";
 
 const DELAYED_POLLS: usize = 64;
 const MODEL_BYTES: usize = 64 * 1024;
@@ -60,7 +60,7 @@ pub(super) fn measure(root: &Path) -> Result<RngIoCost, String> {
     let wait_completion = read(root, WAIT_COMPLETION_SOURCE).unwrap_or_default();
     let virtio_irq = read(root, VIRTIO_IRQ_SOURCE).unwrap_or_default();
     let getrandom = read(root, GETRANDOM_SOURCE)?;
-    let read_source = read(root, READ_SOURCE)?;
+    let dev_random = read(root, DEV_RANDOM_SOURCE)?;
 
     let completion_owner_tracks = usize::from(block.contains("Completion(AtomicU8"))
         + usize::from(rng.contains("Ok(None) => core::hint::spin_loop()"))
@@ -81,9 +81,9 @@ pub(super) fn measure(root: &Path) -> Result<RngIoCost, String> {
             && virtio_irq.contains("DeferredWork::DriverIo"),
     );
     let getrandom_batches = batches(&getrandom);
-    let dev_random_batches = batches(&read_source);
+    let dev_random_batches = batches(&dev_random);
     let preinitialized_output_bytes = usize::from(getrandom.contains("[0u8; 256]")) * MODEL_BYTES
-        + usize::from(read_source.contains("[0u8; 256]")) * MODEL_BYTES;
+        + usize::from(dev_random.contains("[0u8; 256]")) * MODEL_BYTES;
     let preinitialized_dma_bytes = usize::from(rng.contains("DmaBuffer::try_zeroed()")) * 4096;
 
     Ok(RngIoCost {
@@ -116,7 +116,10 @@ fn bootstrap_completion_precedes_wfi(source: &str) -> bool {
 }
 
 fn batches(source: &str) -> usize {
-    if source.contains("EntropyBatch::<4096>") {
+    if source.contains("EntropyBatch::<4096>")
+        || (source.contains("EntropyBatch::<ENTROPY_BATCH_BYTES>")
+            && source.contains("const ENTROPY_BATCH_BYTES: usize = 4096;"))
+    {
         MODEL_BYTES / 4096
     } else if source.contains("[0u8; 256]") {
         MODEL_BYTES / 256

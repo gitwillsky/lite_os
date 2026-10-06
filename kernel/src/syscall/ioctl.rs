@@ -1,18 +1,11 @@
 use crate::{
-    fs::{CharacterDevice, O_NONBLOCK, OpenFileKind},
+    fs::{O_NONBLOCK, OpenFileKind},
     task::current_task,
 };
 
 const FIONBIO: usize = 0x5421;
 
-use super::audio::audio_ioctl;
-use super::drm::drm_ioctl;
-use super::input::input_ioctl;
-use super::{
-    errno,
-    socket::socket_ioctl,
-    tty::{pty_master_ioctl, tty_ioctl},
-};
+use super::{errno, socket::socket_ioctl};
 
 /// 按 OFD backend 分发 Linux ioctl；TTY 与 socket policy 留在各自 ABI module。
 ///
@@ -51,20 +44,8 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
         return 0;
     }
     match &ofd.kind {
-        OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
-            tty_ioctl(&task, terminal, request, argument)
-        }
-        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
-            pty_master_ioctl(&task, master, request, argument)
-        }
-        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
-            drm_ioctl(&task, file, request, argument)
-        }
-        OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
-            input_ioctl(&task, file, request, argument)
-        }
-        OpenFileKind::Character(CharacterDevice::Audio(file)) => {
-            audio_ioctl(&task, &ofd, file, request, argument)
+        OpenFileKind::Device(file) => {
+            super::device::ioctl_device(&task, &ofd, file.as_ref(), request, argument)
         }
         OpenFileKind::Socket(socket) => socket_ioctl(&task, socket, request, argument),
         _ => -errno::ENOTTY,

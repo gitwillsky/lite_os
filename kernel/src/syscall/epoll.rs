@@ -1,8 +1,9 @@
+use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     fs::{Epoll, EpollChange, EpollEvent, OpenFileDescription, OpenFileKind},
-    task::{WaitResult, current_task, wait_for_poll},
+    task::{current_task, wait_for_poll},
 };
 
 use super::{

@@ -6,17 +6,14 @@ use crate::{
     memfd_state::{
         F_SEAL_GROW, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_WRITE, MemFileState, MemFileStateError,
     },
-    poll_notification::wait_event,
     virtio_sound_lifecycle::{DeviceState, polled_control_ack_requires_deferred, unique_slot_for},
     virtio_sound_wire,
 };
 
 #[test]
-fn alsa_direct_poll_uses_notification_read_edge_then_rechecks_output_level() {
-    const POLLIN: i16 = 0x001;
+fn alsa_poll_rechecks_output_level() {
     const POLLOUT: i16 = 0x004;
 
-    assert_eq!(wait_event(), POLLIN);
     assert_eq!(project(POLLOUT, false), 0);
     assert_eq!(project(POLLOUT, true), POLLOUT);
 }

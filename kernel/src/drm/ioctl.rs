@@ -1,15 +1,17 @@
+//! Linux DRM/KMS 与 virtio-gpu ioctl UAPI 子集。
+
 use alloc::sync::Arc;
+use syscall_abi::errno;
 
 use crate::{
     drm::{
         DisplayRect, DrmCursorSubmission, DrmCursorWait, DrmError, DrmFile, DrmRetry,
         DrmSubmission, DrmWait, FramebufferRemoval, VirglTransferDirection,
     },
+    fs::device::{DeviceError, IoctlCall, UserMemory},
     ipc::PipeWaitCondition,
-    task::{TaskControlBlock, WaitResult, wait_for_pipe},
+    sync::WaitResult,
 };
-
-use super::errno;
 
 mod publication;
 mod virtgpu;
@@ -61,65 +63,64 @@ const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x4b
 ///
 /// # Parameters
 ///
-/// - `task`: 当前 userspace address-space owner。
 /// - `file`: `/dev/dri/card0` 打开的 DRM OFD backend。
-/// - `request`: Linux DRM ioctl number，size/direction 必须精确匹配 LP64 UAPI。
-/// - `argument`: request structure 的 userspace address。
+/// - `call`: Linux DRM ioctl number（size/direction 必须精确匹配 LP64 UAPI）、request
+///   structure 的 userspace address 与调用者权限。
 ///
 /// # Returns
 ///
-/// 成功返回零；pointer、object ID 或未支持 request 返回负 errno。
-pub(in crate::syscall) fn drm_ioctl(
-    task: &TaskControlBlock,
-    file: &Arc<DrmFile>,
-    request: usize,
-    argument: usize,
-) -> isize {
-    let result = match request {
-        DRM_IOCTL_VERSION => version(task, argument),
-        DRM_IOCTL_GET_CAP => get_cap(task, argument),
-        DRM_IOCTL_SET_MASTER => set_master(task, file),
-        DRM_IOCTL_DROP_MASTER => drop_master(task, file),
-        DRM_IOCTL_GEM_CLOSE => virtgpu::gem_close(task, file, argument),
-        DRM_IOCTL_MODE_GETRESOURCES => resources(task, file, argument),
-        DRM_IOCTL_MODE_GETCRTC => crtc(task, file, argument),
-        DRM_IOCTL_MODE_SETCRTC => set_crtc(task, file, argument),
-        DRM_IOCTL_MODE_GETENCODER => encoder(task, argument),
-        DRM_IOCTL_MODE_GETCONNECTOR => connector(task, file, argument),
-        DRM_IOCTL_MODE_GETFB => framebuffer(task, file, argument),
-        DRM_IOCTL_MODE_ADDFB => publication::add_framebuffer(task, file, argument),
-        DRM_IOCTL_MODE_RMFB => remove_framebuffer(task, file, argument),
-        DRM_IOCTL_MODE_PAGE_FLIP => page_flip(task, file, argument),
-        DRM_IOCTL_MODE_DIRTYFB => dirty_framebuffer(task, file, argument),
-        DRM_IOCTL_MODE_CREATE_DUMB => publication::create_dumb(task, file, argument),
-        DRM_IOCTL_MODE_MAP_DUMB => map_dumb(task, file, argument),
-        DRM_IOCTL_MODE_DESTROY_DUMB => destroy_dumb(task, file, argument),
-        DRM_IOCTL_MODE_CURSOR2 => cursor2(task, file, argument),
-        DRM_IOCTL_MODE_ADDFB2 => publication::add_framebuffer2(task, file, argument),
-        DRM_IOCTL_VIRTGPU_MAP => virtgpu::map(task, file, argument),
-        DRM_IOCTL_VIRTGPU_EXECBUFFER => virtgpu::execbuffer(task, file, argument),
-        DRM_IOCTL_VIRTGPU_GETPARAM => virtgpu::get_param(task, file, argument),
-        DRM_IOCTL_VIRTGPU_RESOURCE_CREATE => virtgpu::resource_create(task, file, argument),
-        DRM_IOCTL_VIRTGPU_RESOURCE_INFO => virtgpu::resource_info(task, file, argument),
+/// 成功返回零。
+///
+/// # Errors
+///
+/// pointer、object ID 或未支持 request 返回对应 errno。
+pub(super) fn ioctl(file: &Arc<DrmFile>, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
+    let (user, argument) = (call.user, call.argument);
+    let result = match call.request {
+        DRM_IOCTL_VERSION => version(user, argument),
+        DRM_IOCTL_GET_CAP => get_cap(user, argument),
+        DRM_IOCTL_SET_MASTER => file.set_master(call.privileged).map_err(drm_errno),
+        DRM_IOCTL_DROP_MASTER => file.drop_master(call.privileged).map_err(drm_errno),
+        DRM_IOCTL_GEM_CLOSE => virtgpu::gem_close(user, file, argument),
+        DRM_IOCTL_MODE_GETRESOURCES => resources(user, file, argument),
+        DRM_IOCTL_MODE_GETCRTC => crtc(user, file, argument),
+        DRM_IOCTL_MODE_SETCRTC => set_crtc(user, file, argument),
+        DRM_IOCTL_MODE_GETENCODER => encoder(user, argument),
+        DRM_IOCTL_MODE_GETCONNECTOR => connector(user, file, argument),
+        DRM_IOCTL_MODE_GETFB => framebuffer(user, file, argument),
+        DRM_IOCTL_MODE_ADDFB => publication::add_framebuffer(user, file, argument),
+        DRM_IOCTL_MODE_RMFB => remove_framebuffer(user, file, argument),
+        DRM_IOCTL_MODE_PAGE_FLIP => page_flip(user, file, argument),
+        DRM_IOCTL_MODE_DIRTYFB => dirty_framebuffer(user, file, argument),
+        DRM_IOCTL_MODE_CREATE_DUMB => publication::create_dumb(user, file, argument),
+        DRM_IOCTL_MODE_MAP_DUMB => map_dumb(user, file, argument),
+        DRM_IOCTL_MODE_DESTROY_DUMB => destroy_dumb(user, file, argument),
+        DRM_IOCTL_MODE_CURSOR2 => cursor2(user, file, argument),
+        DRM_IOCTL_MODE_ADDFB2 => publication::add_framebuffer2(user, file, argument),
+        DRM_IOCTL_VIRTGPU_MAP => virtgpu::map(user, file, argument),
+        DRM_IOCTL_VIRTGPU_EXECBUFFER => virtgpu::execbuffer(user, file, argument),
+        DRM_IOCTL_VIRTGPU_GETPARAM => virtgpu::get_param(user, file, argument),
+        DRM_IOCTL_VIRTGPU_RESOURCE_CREATE => virtgpu::resource_create(user, file, argument),
+        DRM_IOCTL_VIRTGPU_RESOURCE_INFO => virtgpu::resource_info(user, file, argument),
         DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST => {
-            virtgpu::transfer(task, file, argument, VirglTransferDirection::FromHost)
+            virtgpu::transfer(user, file, argument, VirglTransferDirection::FromHost)
         }
         DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST => {
-            virtgpu::transfer(task, file, argument, VirglTransferDirection::ToHost)
+            virtgpu::transfer(user, file, argument, VirglTransferDirection::ToHost)
         }
-        DRM_IOCTL_VIRTGPU_WAIT => virtgpu::wait(task, file, argument),
-        DRM_IOCTL_VIRTGPU_GET_CAPS => virtgpu::get_caps(task, file, argument),
-        DRM_IOCTL_VIRTGPU_CONTEXT_INIT => virtgpu::context_init(task, file, argument),
-        _ => return -errno::ENOTTY,
+        DRM_IOCTL_VIRTGPU_WAIT => virtgpu::wait(user, file, argument),
+        DRM_IOCTL_VIRTGPU_GET_CAPS => virtgpu::get_caps(user, file, argument),
+        DRM_IOCTL_VIRTGPU_CONTEXT_INIT => virtgpu::context_init(user, file, argument),
+        _ => Err(errno::ENOTTY),
     };
-    result.map_or_else(|error| -error, |()| 0)
+    result.map(|()| 0).map_err(DeviceError::Errno)
 }
 
-fn version(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
+fn version(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
     const NAME: &[u8] = b"liteos";
     const DATE: &[u8] = b"20260714";
     const DESCRIPTION: &[u8] = b"LiteOS VirtIO GPU";
-    let mut bytes = copy_in::<64>(task, argument)?;
+    let mut bytes = copy_in::<64>(user, argument)?;
     let name_length = read_u64(&bytes, 16)?;
     let name_pointer = read_u64(&bytes, 24)?;
     let date_length = read_u64(&bytes, 32)?;
@@ -127,9 +128,9 @@ fn version(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
     let description_length = read_u64(&bytes, 48)?;
     let description_pointer = read_u64(&bytes, 56)?;
 
-    copy_string(task, name_pointer, name_length, NAME)?;
-    copy_string(task, date_pointer, date_length, DATE)?;
-    copy_string(task, description_pointer, description_length, DESCRIPTION)?;
+    copy_string(user, name_pointer, name_length, NAME)?;
+    copy_string(user, date_pointer, date_length, DATE)?;
+    copy_string(user, description_pointer, description_length, DESCRIPTION)?;
     bytes.fill(0);
     write_u32(&mut bytes, 0, 1)?;
     write_u64(&mut bytes, 16, NAME.len() as u64)?;
@@ -138,11 +139,11 @@ fn version(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
     write_u64(&mut bytes, 40, date_pointer)?;
     write_u64(&mut bytes, 48, DESCRIPTION.len() as u64)?;
     write_u64(&mut bytes, 56, description_pointer)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
-fn get_cap(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<16>(task, argument)?;
+fn get_cap(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<16>(user, argument)?;
     let value = match read_u64(&bytes, 0)? {
         1 => 1,
         2 => 1,
@@ -154,28 +155,18 @@ fn get_cap(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
         _ => return Err(errno::EINVAL),
     };
     write_u64(&mut bytes, 8, value)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
-fn set_master(task: &TaskControlBlock, file: &DrmFile) -> Result<(), isize> {
-    file.set_master(task.credential_id(true, true) == 0)
-        .map_err(drm_errno)
-}
-
-fn drop_master(task: &TaskControlBlock, file: &DrmFile) -> Result<(), isize> {
-    file.drop_master(task.credential_id(true, true) == 0)
-        .map_err(drm_errno)
-}
-
-fn map_dumb(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<16>(task, argument)?;
+fn map_dumb(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<16>(user, argument)?;
     let offset = file.map_dumb(read_u32(&bytes, 0)?).map_err(drm_errno)?;
     write_u64(&mut bytes, 8, offset)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
-fn destroy_dumb(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let bytes = copy_in::<4>(task, argument)?;
+fn destroy_dumb(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let bytes = copy_in::<4>(user, argument)?;
     file.destroy_dumb(read_u32(&bytes, 0)?)
         .map_err(|error| match error {
             // Linux drm_gem_handle_delete 对 file-private handle miss 返回 EINVAL。
@@ -184,8 +175,8 @@ fn destroy_dumb(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Res
         })
 }
 
-fn framebuffer(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<28>(task, argument)?;
+fn framebuffer(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<28>(user, argument)?;
     let id = read_u32(&bytes, 0)?;
     let info = file.framebuffer(id).map_err(drm_errno)?;
     bytes.fill(0);
@@ -196,15 +187,11 @@ fn framebuffer(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Resu
     write_u32(&mut bytes, 16, 32)?;
     write_u32(&mut bytes, 20, 24)?;
     write_u32(&mut bytes, 24, info.handle)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
-fn remove_framebuffer(
-    task: &TaskControlBlock,
-    file: &DrmFile,
-    argument: usize,
-) -> Result<(), isize> {
-    let bytes = copy_in::<4>(task, argument)?;
+fn remove_framebuffer(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let bytes = copy_in::<4>(user, argument)?;
     let id = read_u32(&bytes, 0)?;
     loop {
         match file.remove_framebuffer(id).map_err(drm_errno)? {
@@ -215,7 +202,7 @@ fn remove_framebuffer(
     }
 }
 
-pub(in crate::syscall) fn drm_errno(error: DrmError) -> isize {
+pub(super) fn drm_errno(error: DrmError) -> isize {
     match error {
         DrmError::Invalid => errno::EINVAL,
         DrmError::NotFound => errno::ENOENT,
@@ -227,18 +214,18 @@ pub(in crate::syscall) fn drm_errno(error: DrmError) -> isize {
     }
 }
 
-fn resources(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<64>(task, argument)?;
-    copy_framebuffer_ids(task, file, read_u64(&bytes, 0)?, read_u32(&bytes, 32)?)?;
-    copy_id_array(task, read_u64(&bytes, 8)?, read_u32(&bytes, 36)?, CRTC_ID)?;
+fn resources(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<64>(user, argument)?;
+    copy_framebuffer_ids(user, file, read_u64(&bytes, 0)?, read_u32(&bytes, 32)?)?;
+    copy_id_array(user, read_u64(&bytes, 8)?, read_u32(&bytes, 36)?, CRTC_ID)?;
     copy_id_array(
-        task,
+        user,
         read_u64(&bytes, 16)?,
         read_u32(&bytes, 40)?,
         CONNECTOR_ID,
     )?;
     copy_id_array(
-        task,
+        user,
         read_u64(&bytes, 24)?,
         read_u32(&bytes, 44)?,
         ENCODER_ID,
@@ -256,11 +243,11 @@ fn resources(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result
     write_u32(&mut bytes, 52, mode.hdisplay.into())?;
     write_u32(&mut bytes, 56, mode.vdisplay.into())?;
     write_u32(&mut bytes, 60, mode.vdisplay.into())?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
 fn copy_framebuffer_ids(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     pointer: u64,
     capacity: u32,
@@ -273,13 +260,13 @@ fn copy_framebuffer_ids(
             .ok()
             .and_then(|pointer| pointer.checked_add(index * 4))
             .ok_or(errno::EFAULT)?;
-        copy_out(task, address, &id.to_ne_bytes())?;
+        copy_out(user, address, &id.to_ne_bytes())?;
     }
     Ok(())
 }
 
-fn crtc(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<104>(task, argument)?;
+fn crtc(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<104>(user, argument)?;
     if read_u32(&bytes, 12)? != CRTC_ID {
         return Err(errno::ENOENT);
     }
@@ -292,11 +279,11 @@ fn crtc(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), 
         encode_mode(&mut mode, active_mode)?;
         bytes[36..104].copy_from_slice(&mode);
     }
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
-fn set_crtc(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Result<(), isize> {
-    let bytes = copy_in::<104>(task, argument)?;
+fn set_crtc(user: &dyn UserMemory, file: &Arc<DrmFile>, argument: usize) -> Result<(), isize> {
+    let bytes = copy_in::<104>(user, argument)?;
     if read_u32(&bytes, 12)? != CRTC_ID || read_u32(&bytes, 20)? != 0 || read_u32(&bytes, 24)? != 0
     {
         return Err(errno::EINVAL);
@@ -311,7 +298,7 @@ fn set_crtc(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Re
     }
     let connector_pointer = read_u64(&bytes, 0)?;
     let connector_address = usize::try_from(connector_pointer).map_err(|_| errno::EFAULT)?;
-    if read_u32(&copy_in::<4>(task, connector_address)?, 0)? != CONNECTOR_ID {
+    if read_u32(&copy_in::<4>(user, connector_address)?, 0)? != CONNECTOR_ID {
         return Err(errno::ENOENT);
     }
     loop {
@@ -340,8 +327,8 @@ fn set_crtc(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Re
     }
 }
 
-fn page_flip(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Result<(), isize> {
-    let bytes = copy_in::<24>(task, argument)?;
+fn page_flip(user: &dyn UserMemory, file: &Arc<DrmFile>, argument: usize) -> Result<(), isize> {
+    let bytes = copy_in::<24>(user, argument)?;
     let flags = read_u32(&bytes, 8)?;
     if read_u32(&bytes, 0)? != CRTC_ID
         || flags & !1 != 0
@@ -362,11 +349,11 @@ fn page_flip(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> R
     }
 }
 
-fn cursor2(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
+fn cursor2(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
     const CURSOR_BO: u32 = 1;
     const CURSOR_MOVE: u32 = 2;
 
-    let bytes = copy_in::<36>(task, argument)?;
+    let bytes = copy_in::<36>(user, argument)?;
     let flags = read_u32(&bytes, 0)?;
     if flags == 0 || flags & !(CURSOR_BO | CURSOR_MOVE) != 0 || read_u32(&bytes, 4)? != CRTC_ID {
         return Err(errno::EINVAL);
@@ -422,15 +409,11 @@ fn submit_cursor(
     }
 }
 
-fn dirty_framebuffer(
-    task: &TaskControlBlock,
-    file: &DrmFile,
-    argument: usize,
-) -> Result<(), isize> {
+fn dirty_framebuffer(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
     const MAX_CLIPS: usize = 32;
     const ANNOTATE_COPY: u32 = 1;
 
-    let bytes = copy_in::<24>(task, argument)?;
+    let bytes = copy_in::<24>(user, argument)?;
     let framebuffer = read_u32(&bytes, 0)?;
     let flags = read_u32(&bytes, 4)? & 3;
     let count = usize::try_from(read_u32(&bytes, 12)?).map_err(|_| errno::EINVAL)?;
@@ -448,7 +431,7 @@ fn dirty_framebuffer(
             .ok()
             .and_then(|pointer| pointer.checked_add(index * 8))
             .ok_or(errno::EFAULT)?;
-        let clip = copy_in::<8>(task, address)?;
+        let clip = copy_in::<8>(user, address)?;
         let x1 = u32::from(read_u16(&clip, 0)?);
         let y1 = u32::from(read_u16(&clip, 2)?);
         let x2 = u32::from(read_u16(&clip, 4)?);
@@ -482,7 +465,7 @@ fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
         let Some(pipe) = wait.prepare_to_block() else {
             return Ok(());
         };
-        match wait_for_pipe(&pipe, PipeWaitCondition::Readable) {
+        match pipe.wait(PipeWaitCondition::Readable, None) {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),
@@ -496,7 +479,7 @@ fn wait_cursor(wait: DrmCursorWait) -> Result<(), isize> {
         let Some(pipe) = wait.prepare_to_block() else {
             return Ok(());
         };
-        match wait_for_pipe(&pipe, PipeWaitCondition::Readable) {
+        match pipe.wait(PipeWaitCondition::Readable, None) {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),
@@ -510,7 +493,7 @@ fn wait_retry(retry: DrmRetry) -> Result<(), isize> {
         let Some(pipe) = retry.prepare_to_block() else {
             return Ok(());
         };
-        match wait_for_pipe(&pipe, PipeWaitCondition::Readable) {
+        match pipe.wait(PipeWaitCondition::Readable, None) {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),
@@ -519,8 +502,8 @@ fn wait_retry(retry: DrmRetry) -> Result<(), isize> {
     }
 }
 
-fn encoder(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<20>(task, argument)?;
+fn encoder(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<20>(user, argument)?;
     if read_u32(&bytes, 0)? != ENCODER_ID {
         return Err(errno::ENOENT);
     }
@@ -529,11 +512,11 @@ fn encoder(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
     write_u32(&mut bytes, 4, 5)?;
     write_u32(&mut bytes, 8, CRTC_ID)?;
     write_u32(&mut bytes, 12, 1)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
-fn connector(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<80>(task, argument)?;
+fn connector(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<80>(user, argument)?;
     if read_u32(&bytes, 48)? != CONNECTOR_ID {
         return Err(errno::ENOENT);
     }
@@ -542,13 +525,13 @@ fn connector(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result
     let mode_capacity = read_u32(&bytes, 32)?;
     let encoder_capacity = read_u32(&bytes, 40)?;
     if encoder_capacity >= 1 {
-        copy_u32(task, encoder_pointer, ENCODER_ID)?;
+        copy_u32(user, encoder_pointer, ENCODER_ID)?;
     }
     if mode_capacity >= 1 {
         let mut mode = [0u8; 68];
         encode_mode(&mut mode, file.mode())?;
         copy_out(
-            task,
+            user,
             usize::try_from(mode_pointer).map_err(|_| errno::EFAULT)?,
             &mode,
         )?;
@@ -564,7 +547,7 @@ fn connector(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result
     write_u32(&mut bytes, 52, 15)?;
     write_u32(&mut bytes, 56, 1)?;
     write_u32(&mut bytes, 60, 1)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
 fn encode_mode(bytes: &mut [u8; 68], mode: crate::drm::DrmMode) -> Result<(), isize> {
@@ -606,28 +589,23 @@ fn write_decimal(output: &mut [u8], value: u32) -> usize {
     length
 }
 
-fn copy_id_array(
-    task: &TaskControlBlock,
-    pointer: u64,
-    capacity: u32,
-    id: u32,
-) -> Result<(), isize> {
+fn copy_id_array(user: &dyn UserMemory, pointer: u64, capacity: u32, id: u32) -> Result<(), isize> {
     if capacity >= 1 {
-        copy_u32(task, pointer, id)?;
+        copy_u32(user, pointer, id)?;
     }
     Ok(())
 }
 
-fn copy_u32(task: &TaskControlBlock, pointer: u64, value: u32) -> Result<(), isize> {
+fn copy_u32(user: &dyn UserMemory, pointer: u64, value: u32) -> Result<(), isize> {
     copy_out(
-        task,
+        user,
         usize::try_from(pointer).map_err(|_| errno::EFAULT)?,
         &value.to_ne_bytes(),
     )
 }
 
 fn copy_string(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     pointer: u64,
     capacity: u64,
     value: &[u8],
@@ -639,24 +617,23 @@ fn copy_string(
         return Ok(());
     }
     copy_out(
-        task,
+        user,
         usize::try_from(pointer).map_err(|_| errno::EFAULT)?,
         &value[..count],
     )
 }
 
-fn copy_in<const N: usize>(task: &TaskControlBlock, address: usize) -> Result<[u8; N], isize> {
+fn copy_in<const N: usize>(user: &dyn UserMemory, address: usize) -> Result<[u8; N], isize> {
     let mut bytes = [0u8; N];
-    task.copy_from_user(address, &mut bytes)
-        .map_err(|_| errno::EFAULT)?;
+    user.read(address, &mut bytes).map_err(|_| errno::EFAULT)?;
     Ok(bytes)
 }
 
-fn copy_out(task: &TaskControlBlock, address: usize, bytes: &[u8]) -> Result<(), isize> {
+fn copy_out(user: &dyn UserMemory, address: usize, bytes: &[u8]) -> Result<(), isize> {
     if address == 0 {
         return Err(errno::EFAULT);
     }
-    task.copy_to_user(address, bytes).map_err(|_| errno::EFAULT)
+    user.write(address, bytes).map_err(|_| errno::EFAULT)
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, isize> {

@@ -451,7 +451,14 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     })
     .map_err(|_| ())?;
     PRIMARY_DRM.call_once(|| owner);
-    Ok(())
+    let driver = Arc::try_new(super::card_file::CardDriver).map_err(|_| ())?;
+    crate::fs::device::register_driver(super::card_file::CARD_NUMBER, 1, driver).map_err(|_| ())?;
+    crate::fs::device::register_node(
+        super::card_file::CARD_PATH,
+        super::card_file::CARD_NUMBER,
+        0o666,
+    )
+    .map_err(|_| ())
 }
 
 /// 打开 primary DRM card 的新 OFD backend。
@@ -463,7 +470,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
 /// # Errors
 ///
 /// primary DRM 未初始化或 control block OOM 返回 unit error。
-pub(crate) fn open() -> Result<Arc<DrmFile>, ()> {
+pub(super) fn open() -> Result<Arc<DrmFile>, ()> {
     let device = PRIMARY_DRM.get().cloned().ok_or(())?;
     let file_identity = {
         let mut state = device.state.lock();

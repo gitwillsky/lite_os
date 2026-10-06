@@ -1,6 +1,7 @@
+use crate::sync::WaitResult;
 use crate::{
     syscall::errno::{EFAULT, EINTR, EINVAL, ENOMEM, EOPNOTSUPP},
-    task::{WaitResult, current_task},
+    task::current_task,
 };
 
 mod posix;

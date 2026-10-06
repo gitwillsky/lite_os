@@ -107,7 +107,7 @@ pub(super) fn write_descriptor(
                             send_thread_signal(
                                 task.tgid(),
                                 task.tid(),
-                                crate::task::signal_number::SIGPIPE,
+                                syscall_abi::signal::SIGPIPE,
                             )
                             .expect("current sequential pipe writer must exist");
                             return if written == 0 {
@@ -192,7 +192,7 @@ pub(super) fn write_descriptor(
                             send_thread_signal(
                                 task.tgid(),
                                 task.tid(),
-                                crate::task::signal_number::SIGPIPE,
+                                syscall_abi::signal::SIGPIPE,
                             )
                             .expect("current sequential socket writer must exist");
                             return if written == 0 {
@@ -284,197 +284,8 @@ pub(super) fn write_descriptor(
         }
         OpenFileKind::TimerFd(_) => -errno::EINVAL,
         OpenFileKind::Epoll(_) => unreachable!("epoll write rejected before descriptor dispatch"),
-        OpenFileKind::Character(device) => {
-            if let CharacterDevice::Terminal {
-                terminal,
-                kind: DeviceKind::Tty | DeviceKind::PtySlave(_),
-                ..
-            } = device
-                && let Err(error) = guard_terminal_access(terminal, TerminalAccess::Output)
-            {
-                return error;
-            }
-            if matches!(
-                device,
-                CharacterDevice::Entropy
-                    | CharacterDevice::Kmsg(_)
-                    | CharacterDevice::Drm(_)
-                    | CharacterDevice::Input { .. }
-                    | CharacterDevice::Audio(_)
-            ) {
-                return -errno::EOPNOTSUPP;
-            }
-            let mut cursor = UserIoCursor::new(vectors);
-            let mut input = [0u8; 512];
-            let mut written = 0usize;
-            while written < total_length {
-                let requested = character_write_chunk(
-                    total_length - written,
-                    matches!(device, CharacterDevice::PtyMaster(_)),
-                );
-                let copied = match cursor.copy_from_user(task, &mut input[..requested]) {
-                    Ok(copied) => copied,
-                    Err(()) => {
-                        return if written == 0 {
-                            -errno::EFAULT
-                        } else {
-                            written as isize
-                        };
-                    }
-                };
-                assert_eq!(copied, requested, "character gather ended early");
-                let count = match device {
-                    CharacterDevice::Null | CharacterDevice::Zero => requested,
-                    CharacterDevice::Terminal {
-                        pty: Some(slave), ..
-                    } => loop {
-                        match slave.write(&input[..requested]) {
-                            Ok(0) if written != 0 => return written as isize,
-                            Ok(0) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
-                                return -errno::EAGAIN;
-                            }
-                            Ok(0) => match crate::task::wait_for_pipe(
-                                &slave.output_pipe(),
-                                PipeWaitCondition::Writable {
-                                    minimum: crate::fs::PtySlave::output_write_minimum(requested),
-                                },
-                            ) {
-                                WaitResult::Woken => {}
-                                WaitResult::Interrupted => {
-                                    return if written == 0 {
-                                        -errno::EINTR
-                                    } else {
-                                        written as isize
-                                    };
-                                }
-                                WaitResult::TimedOut => unreachable!(),
-                                WaitResult::OutOfMemory => {
-                                    return if written == 0 {
-                                        -errno::ENOMEM
-                                    } else {
-                                        written as isize
-                                    };
-                                }
-                            },
-                            Ok(count) => break count,
-                            Err(error) => {
-                                return if written == 0 {
-                                    ferr(error)
-                                } else {
-                                    written as isize
-                                };
-                            }
-                        }
-                    },
-                    CharacterDevice::Terminal {
-                        terminal,
-                        pty: None,
-                        ..
-                    } => match terminal.write(&input[..requested]) {
-                        Ok(count) => count,
-                        Err(error) => {
-                            return if written == 0 {
-                                ferr(error)
-                            } else {
-                                written as isize
-                            };
-                        }
-                    },
-                    CharacterDevice::PtyMaster(master) => loop {
-                        match master.write(&input[..requested]) {
-                            Ok(0) if written != 0 => return written as isize,
-                            Ok(0) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
-                                return -errno::EAGAIN;
-                            }
-                            Ok(0) => {
-                                let wait = match master.prepare_write_to_block() {
-                                    None => WaitResult::Woken,
-                                    Some(pipe) => crate::task::wait_for_pipe(
-                                        &pipe,
-                                        PipeWaitCondition::Readable,
-                                    ),
-                                };
-                                match wait {
-                                    WaitResult::Woken => {}
-                                    WaitResult::Interrupted => {
-                                        return if written == 0 {
-                                            -errno::EINTR
-                                        } else {
-                                            written as isize
-                                        };
-                                    }
-                                    WaitResult::TimedOut => unreachable!(),
-                                    WaitResult::OutOfMemory => {
-                                        return if written == 0 {
-                                            -errno::ENOMEM
-                                        } else {
-                                            written as isize
-                                        };
-                                    }
-                                }
-                            }
-                            Ok(count) => break count,
-                            Err(error) => {
-                                return if written == 0 {
-                                    ferr(error)
-                                } else {
-                                    written as isize
-                                };
-                            }
-                        }
-                    },
-                    CharacterDevice::VirtioPort(port) => loop {
-                        match port.write(&input[..requested]) {
-                            Ok(count) => break count,
-                            Err(crate::virtio_port::Error::WouldBlock) if written != 0 => {
-                                return written as isize;
-                            }
-                            Err(crate::virtio_port::Error::WouldBlock)
-                                if *ofd.flags.lock() & O_NONBLOCK != 0 =>
-                            {
-                                return -errno::EAGAIN;
-                            }
-                            Err(crate::virtio_port::Error::WouldBlock) => {
-                                match crate::syscall::poll::wait_for_ofd(ofd, 0x004) {
-                                    WaitResult::Woken => {}
-                                    WaitResult::Interrupted => {
-                                        return if written == 0 {
-                                            -errno::EINTR
-                                        } else {
-                                            written as isize
-                                        };
-                                    }
-                                    WaitResult::TimedOut => unreachable!(),
-                                    WaitResult::OutOfMemory => {
-                                        return if written == 0 {
-                                            -errno::ENOMEM
-                                        } else {
-                                            written as isize
-                                        };
-                                    }
-                                }
-                            }
-                            Err(crate::virtio_port::Error::Disconnected) => {
-                                return if written == 0 {
-                                    -errno::EIO
-                                } else {
-                                    written as isize
-                                };
-                            }
-                        }
-                    },
-                    CharacterDevice::Entropy => unreachable!("entropy write rejected above"),
-                    CharacterDevice::Kmsg(_) => unreachable!("kmsg write rejected above"),
-                    CharacterDevice::Drm(_) => unreachable!("DRM write rejected above"),
-                    CharacterDevice::Input { .. } => unreachable!("input write rejected above"),
-                    CharacterDevice::Audio(_) => unreachable!("PCM write uses WRITEI ioctl"),
-                };
-                written += count;
-                if count < requested {
-                    return written as isize;
-                }
-            }
-            written as isize
+        OpenFileKind::Device(file) => {
+            crate::syscall::device::write_device(task, ofd, file.as_ref(), vectors, total_length)
         }
     }
 }

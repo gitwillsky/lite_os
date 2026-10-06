@@ -1,14 +1,12 @@
-mod audio;
 mod clone_errno;
 mod credentials;
-mod drm;
+mod device;
 mod epoll;
-mod errno;
+use syscall_abi::errno;
 mod eventfd;
 mod fs;
 mod futex;
 mod getrandom_flags;
-mod input;
 mod ioctl;
 mod membarrier;
 mod memfd;
@@ -28,7 +26,6 @@ mod system_identity;
 mod system_info;
 mod timer;
 mod timerfd;
-mod tty;
 mod user_iovec;
 
 use crate::syscall::{

@@ -1,132 +1,109 @@
-use crate::fs::{Terminal, TerminalAccess};
+use crate::fs::{JobControl, Terminal, TerminalAccess, device::DeviceError};
+use syscall_abi::errno;
 
 use super::*;
 
-/// TTY job-control access check 的领域错误。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TerminalAccessError {
-    Io,
-    Restart,
+/// task 为 fs TTY 提供的唯一 job-control 实现。
+struct TaskJobControl;
+
+static TASK_JOB_CONTROL: TaskJobControl = TaskJobControl;
+
+/// 在任何 TTY open 之前把 job control 安装到 fs。
+pub(in crate::task) fn install_job_control() {
+    crate::fs::install_job_control(&TASK_JOB_CONTROL);
 }
 
-/// 执行 PTY master close 的 controlling-terminal hangup consequence。
-///
-/// # Parameters
-///
-/// - `terminal`: 正在失去 master endpoint 的唯一 Terminal owner。
-///
-/// # Returns
-///
-/// 无返回值；没有 foreground process group 时幂等完成。
-pub(crate) fn hangup_terminal(terminal: &Terminal) {
-    let Some(pgid) = terminal.hangup() else {
-        return;
-    };
-    send_process_group_signal(pgid, crate::task::signal_number::SIGHUP);
-    send_process_group_signal(pgid, crate::task::signal_number::SIGCONT);
+fn process_group_error(error: ProcessGroupError) -> DeviceError {
+    DeviceError::Errno(match error {
+        ProcessGroupError::NotFound => errno::ESRCH,
+        ProcessGroupError::Permission => errno::EPERM,
+        ProcessGroupError::NotTerminal => errno::ENOTTY,
+    })
 }
 
-/// 把 line discipline 生成的 ISIG bitset 路由到当前 foreground process group。
-///
-/// # Parameters
-///
-/// - `terminal`: 提供 controlling foreground group 的唯一 TTY owner。
-/// - `signals`: 一批输入生成的 Linux signal bitset。
-///
-/// # Returns
-///
-/// 无 foreground group 或空 bitset 时幂等完成；取得 group snapshot 后释放 Terminal lock，
-/// 再执行 signal generation。
-pub(crate) fn publish_terminal_input_signals(terminal: &Terminal, signals: u64) {
-    let Some(pgid) = terminal.signal_target_group() else {
-        return;
-    };
-    for signal in 1..=64 {
-        if signals & (1u64 << (signal - 1)) != 0 {
-            send_process_group_signal(pgid, signal);
-        }
-    }
-}
-
-/// 提交 TTY window size，并按 Linux tty resize 语义通知 foreground group。
-///
-/// # Parameters
-///
-/// - `terminal`: `TIOCSWINSZ` fd 指向的唯一 Terminal owner。
-/// - `window_size`: 已完整 copy-in 的 Linux `struct winsize` bytes。
-///
-/// # Returns
-///
-/// 无返回值；尺寸未变化或无 foreground group 时幂等完成。
-pub(crate) fn resize_terminal(terminal: &Terminal, window_size: [u8; 8]) {
-    if let Some(pgid) = terminal.set_window_size(window_size) {
-        send_process_group_signal(pgid, crate::task::signal_number::SIGWINCH);
-    }
-}
-
-/// 对 controlling TTY 后台访问执行唯一 job-control 判定与 signal generation。
-///
-/// # Parameters
-///
-/// - `terminal`: caller 正在访问的 TTY owner。
-/// - `access`: 输入、输出或 TTY 状态修改。
-///
-/// # Returns
-///
-/// foreground、非 controlling TTY 或允许的后台输出返回成功。
-///
-/// # Errors
-///
-/// blocked/ignored SIGTTIN 或 orphaned group 返回 `Io`；已发布 SIGTTIN/SIGTTOU 返回 `Restart`。
-pub(crate) fn check_terminal_access(
-    terminal: &Terminal,
-    access: TerminalAccess,
-) -> Result<(), TerminalAccessError> {
-    let task = current_task().expect("TTY access requires current task");
-    let (session, process_group, orphaned) = {
-        let graph = PROCESS_TABLE.graph.lock();
-        let node = graph
-            .nodes
-            .get(&task.tgid())
-            .expect("TTY caller missing from process graph");
-        let session = node.session;
-        let process_group = node.process_group;
-        let orphaned = !graph.nodes.values().any(|member| {
-            member.session == session
-                && member.process_group == process_group
-                && matches!(member.state, ProcessState::Live(_))
-                && member.parent.is_some_and(|parent| {
-                    graph.nodes.get(&parent).is_some_and(|parent| {
-                        parent.session == session && parent.process_group != process_group
+impl JobControl for TaskJobControl {
+    /// 1. 一次 process graph 快照取得 caller session、process group 与 POSIX orphan 状态；
+    /// 2. Terminal 判定是否需要 SIGTTIN/SIGTTOU；
+    /// 3. signal 被阻塞或忽略时 SIGTTIN 返回 `EIO`、SIGTTOU 放行；孤儿 group 返回 `EIO`；
+    ///    否则向 caller group 投递 signal 并要求 syscall 重启。
+    fn check_access(&self, terminal: &Terminal, access: TerminalAccess) -> Result<(), DeviceError> {
+        let task = current_task().expect("TTY access requires current task");
+        let (session, process_group, orphaned) = {
+            let graph = PROCESS_TABLE.graph.lock();
+            let node = graph
+                .nodes
+                .get(&task.tgid())
+                .expect("TTY caller missing from process graph");
+            let session = node.session;
+            let process_group = node.process_group;
+            let orphaned = !graph.nodes.values().any(|member| {
+                member.session == session
+                    && member.process_group == process_group
+                    && matches!(member.state, ProcessState::Live(_))
+                    && member.parent.is_some_and(|parent| {
+                        graph.nodes.get(&parent).is_some_and(|parent| {
+                            parent.session == session && parent.process_group != process_group
+                        })
                     })
-                })
-        });
-        (session, process_group, orphaned)
-    };
-    let Some(signal) = terminal.background_signal(session, process_group, access) else {
-        return Ok(());
-    };
-    let mask = task
-        .signal_mask(0, None)
-        .expect("signal mask query cannot fail");
-    let action = task
-        .signal_action(signal, None)
-        .expect("TTY job-control signal must be valid");
-    let blocked_or_ignored = mask & (1u64 << (signal - 1)) != 0 || action.handler == 1;
-    if blocked_or_ignored {
-        return if signal == crate::task::signal_number::SIGTTIN {
-            Err(TerminalAccessError::Io)
-        } else {
-            Ok(())
+            });
+            (session, process_group, orphaned)
         };
+        let Some(signal) = terminal.background_signal(session, process_group, access) else {
+            return Ok(());
+        };
+        let mask = task
+            .signal_mask(0, None)
+            .expect("signal mask query cannot fail");
+        let action = task
+            .signal_action(signal, None)
+            .expect("TTY job-control signal must be valid");
+        let blocked_or_ignored = mask & (1u64 << (signal - 1)) != 0 || action.handler == 1;
+        if blocked_or_ignored {
+            return if signal == syscall_abi::signal::SIGTTIN {
+                Err(DeviceError::Errno(errno::EIO))
+            } else {
+                Ok(())
+            };
+        }
+        if orphaned {
+            return Err(DeviceError::Errno(errno::EIO));
+        }
+        assert_ne!(
+            send_process_group_signal(process_group, signal),
+            0,
+            "current TTY process group disappeared"
+        );
+        Err(DeviceError::Restart)
     }
-    if orphaned {
-        return Err(TerminalAccessError::Io);
+
+    fn signal_group(&self, pgid: usize, signal: usize) {
+        send_process_group_signal(pgid, signal);
     }
-    assert_ne!(
-        send_process_group_signal(process_group, signal),
-        0,
-        "current TTY process group disappeared"
-    );
-    Err(TerminalAccessError::Restart)
+
+    fn wait_for_console(
+        &self,
+        deadline: Option<u64>,
+        input_ready: &dyn Fn() -> bool,
+    ) -> WaitResult {
+        super::console_wait::wait_for_console(deadline, input_ready)
+    }
+
+    fn controlling_terminal(&self) -> Option<Arc<Terminal>> {
+        let task = current_task()?;
+        let session = session_id(0).ok()?;
+        let terminal = task.terminal();
+        (terminal.controlling_session() == Some(session)).then_some(terminal)
+    }
+
+    fn claim_controlling(&self, terminal: &Arc<Terminal>, force: usize) -> Result<(), DeviceError> {
+        claim_controlling_terminal(terminal, force).map_err(process_group_error)
+    }
+
+    fn foreground_group(&self, terminal: &Terminal) -> Result<usize, DeviceError> {
+        terminal_foreground_group(terminal).map_err(process_group_error)
+    }
+
+    fn set_foreground_group(&self, terminal: &Terminal, pgid: usize) -> Result<(), DeviceError> {
+        set_terminal_foreground_group(terminal, pgid).map_err(process_group_error)
+    }
 }

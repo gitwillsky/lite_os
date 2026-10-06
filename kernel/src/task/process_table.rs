@@ -1,3 +1,4 @@
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::arch::context::KernelContext;
@@ -8,7 +9,7 @@ use crate::{
     sync::{IrqMutex, LocalIrqGuard},
     task::{
         KernelThreadBody, PendingSignal, Processor, RunState, StopResume, TaskControlBlock,
-        WaitMembership, WaitResult,
+        WaitMembership,
         pid::{INIT_PID, PID_MAX, ProcessId},
         processor::{begin_preempt_running_task, enqueue_new_task},
         with_current_processor,
@@ -47,7 +48,6 @@ mod wait_publication;
 mod wait_registry;
 
 pub(crate) use affinity::{SchedulerAffinityError, scheduler_affinity};
-pub(crate) use console_wait::{drain_terminal_input, wait_for_console};
 use console_wait::{process_terminal_input, wake_console_waiters};
 use context_switch::{schedule_with_task_context, switch_from_idle};
 pub(crate) use deferred::dispatch_pending_deferred_work;
@@ -55,7 +55,6 @@ pub(in crate::task) use futex::futex_wake_with_key;
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
 pub(super) use io_wait::initialize_driver_io_wait;
 pub(crate) use parent_death::parent_death_signal;
-pub(crate) use pipe_wait::{wait_for_pipe, wait_for_pipe_until};
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
 pub(crate) use policy::{
     SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
@@ -66,9 +65,11 @@ pub(crate) use process_exit::{
     exit_current_thread,
 };
 pub(crate) use process_group::{
-    ProcessGroupError, SetProcessGroupError, claim_controlling_terminal, create_session,
-    process_group, session_id, set_process_group, set_terminal_foreground_group,
-    terminal_foreground_group,
+    ProcessGroupError, SetProcessGroupError, create_session, process_group, session_id,
+    set_process_group,
+};
+use process_group::{
+    claim_controlling_terminal, set_terminal_foreground_group, terminal_foreground_group,
 };
 pub(in crate::task) use process_group::{current_process_group_is_orphaned, mark_process_exec};
 pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
@@ -80,10 +81,7 @@ pub(crate) use signal::{
     send_process_signal, send_thread_signal, send_tid_signal, stop_current_process,
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
-pub(crate) use terminal_access::{
-    TerminalAccessError, check_terminal_access, hangup_terminal, publish_terminal_input_signals,
-    resize_terminal,
-};
+pub(super) use terminal_access::install_job_control;
 pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
 pub(crate) use thread_selector::{parent_pid, thread_count};
 use vfork::complete_vfork;
@@ -320,7 +318,7 @@ impl ProcessTable {
             thread
                 .queue_signal(
                     core::iter::empty(),
-                    crate::task::signal_number::SIGKILL,
+                    syscall_abi::signal::SIGKILL,
                     PendingSignal::kernel(),
                 )
                 .expect("kernel SIGKILL must be valid");

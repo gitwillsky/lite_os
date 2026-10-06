@@ -1,8 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{Ordering, fence};
 
-use super::{O_RDONLY, O_WRONLY, OpenFileDescription, Terminal};
-use crate::fs::{Epoll, vfs};
+use super::{O_RDONLY, O_WRONLY, OpenFileDescription};
+use crate::fs::{AccessIdentity, Epoll, FileSystemError, vfs};
 
 #[path = "indexed_slots.rs"]
 mod indexed_slots;
@@ -143,23 +143,32 @@ impl FileDescriptorTable {
 
     /// 构造 init 的三个 inherited console descriptor。
     ///
-    /// # Parameters
+    /// `/dev/console` 从已挂载 devfs 解析一次，经字符设备注册表打开；fd 0/1/2 分别为只读、
+    /// 只写、只写 OFD。
     ///
-    /// - `terminal`: 唯一 TTY owner；backing opened entry 从已挂载 devfs 解析一次。
+    /// # Errors
     ///
-    /// # Returns
-    ///
-    /// fd 0/1/2 分别为 console read/write/write OFD 的 descriptor table。
-    pub(crate) fn with_terminal(terminal: Arc<Terminal>) -> Result<Self, ()> {
+    /// console 设备打开或 descriptor storage 分配失败返回对应 filesystem error。
+    pub(crate) fn with_console() -> Result<Self, FileSystemError> {
         let backing_opened = vfs()
             .open_file(b"/dev/console")
             .expect("mounted console device must resolve");
+        let number = backing_opened
+            .inode()
+            .device_number()
+            .expect("/dev/console must carry a device number");
+        let identity = AccessIdentity::root();
+        let open = |flags| {
+            crate::fs::device::open(&crate::fs::device::OpenRequest {
+                number,
+                identity: &identity,
+            })
+            .and_then(|file| OpenFileDescription::device(file, flags, backing_opened.clone()))
+        };
+        let input = open(O_RDONLY)?;
+        let output = open(O_WRONLY)?;
+        let error = open(O_WRONLY)?;
         let mut table = Self::empty();
-        let input =
-            OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_RDONLY)?;
-        let output =
-            OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_WRONLY)?;
-        let error = OpenFileDescription::terminal(terminal, backing_opened, O_WRONLY)?;
         table
             .slots
             .insert_pair_with(3, || {
@@ -168,11 +177,11 @@ impl FileDescriptorTable {
                     FileDescriptor::new(output, false),
                 )
             })
-            .map_err(|_| ())?;
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         table
             .slots
             .insert_with(0, 3, || FileDescriptor::new(error, false))
-            .map_err(|_| ())?;
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         Ok(table)
     }
 

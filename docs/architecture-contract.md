@@ -46,7 +46,7 @@
 | `fs` | `audio`, `drivers`, `drm`, `fallible_tree`, `id`, `input`, `ipc`, `log`, `memory`, `socket`, `sync`, `timer`, `virtio_port` | 只经 block、OFD、anonymous-id、socket-OFD、shared-page 与 named byte-stream seam 使用对应领域 |
 | `task` | `arch`, `cpu`, `drivers`, `drm`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer`, `virtio_port` | 调度只用 logical CPU identity；deferred safe point 投递各领域 completion |
 | `trap` | `arch`, `cpu`, `drivers`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
-| `syscall` | `audio`, `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `system`, `task`, `timer`, `virtio_port` | 只编解码标准 UAPI/OFD operation；不得绕过领域 façade 接触 adapter |
+| `syscall` | `audio`, `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer`, `virtio_port` | 只编解码标准 UAPI/OFD operation；不得绕过领域 façade 接触 adapter；只经 `sync::WaitResult` 消费阻塞结果 |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch`, `cpu`, `platform` | whole-system policy；ISA 用户事实只经 `arch::user`，CPU/firmware 只经各自 facade |
 | `timer` | `arch`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |

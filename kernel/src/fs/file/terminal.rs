@@ -1,7 +1,8 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use super::{Console, DeviceKind, FileSystemError};
+use super::{Console, FileSystemError};
+use crate::fs::device::DeviceNumber;
 
 mod input_batch;
 pub(crate) use input_batch::{TERMINAL_INPUT_BATCH_BYTES, character_write_chunk};
@@ -98,7 +99,7 @@ pub(crate) struct Terminal {
     // OWNER: 每个 Terminal 永久绑定创建它的实际 character device；`/dev/tty` 只是当前
     // Process handle 的别名。缺失该 identity 会让关闭所有 tty fd 后的 `/proc/pid/stat`
     // 无法继续准确投影 controlling terminal。
-    device: DeviceKind,
+    device: DeviceNumber,
     // OWNER: output transaction 串行化同步 write、echo 与 TCSETSW/F drain point。若继续借用
     // state lock 覆盖 Console callback，PTY readiness 回调会重入 input_ready 并自锁。
     output_transaction: Mutex<()>,
@@ -114,17 +115,12 @@ impl Terminal {
     /// # Parameters
     ///
     /// - `console`: raw byte device adapter。
-    /// - `device`: `/dev/console` 或实际 `/dev/pts/N` identity；不得传入 `/dev/tty` 别名。
+    /// - `device`: `/dev/console` 或实际 `/dev/pts/N` 的设备号；不得传入 `/dev/tty` 别名。
     ///
     /// # Returns
     ///
     /// 可由所有 console OFD 共享的 TTY owner。
-    pub(crate) fn new(console: Arc<dyn Console>, device: DeviceKind) -> Result<Arc<Self>, ()> {
-        assert_ne!(
-            device,
-            DeviceKind::Tty,
-            "terminal cannot own /dev/tty alias"
-        );
+    pub(crate) fn new(console: Arc<dyn Console>, device: DeviceNumber) -> Result<Arc<Self>, ()> {
         let mut termios = [0u8; KERNEL_TERMIOS_SIZE];
         termios[0..4].copy_from_slice(&0x500u32.to_ne_bytes());
         termios[4..8].copy_from_slice(&0x5u32.to_ne_bytes());
@@ -157,6 +153,11 @@ impl Terminal {
         .map_err(|_| ())
     }
 
+    /// 创建时绑定的实际设备号；`/dev/tty` 据此重新打开 controlling terminal。
+    pub(crate) fn device_number(&self) -> DeviceNumber {
+        self.device
+    }
+
     /// 一次锁快照投影 Linux proc stat 的 controlling-terminal 字段。
     ///
     /// # Parameters
@@ -171,11 +172,9 @@ impl Terminal {
         if state.controlling_session != Some(session) {
             return (0, -1);
         }
-        let (major, minor) = self.device.numbers();
-        // Linux new_encode_dev 保留低 8-bit minor，并把扩展 minor 放到 bit 20 以上。
-        let device = (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12);
+        // proc stat `tty_nr` 是 Linux new_encode_dev 的 32-bit 投影。
         (
-            device,
+            self.device.encode() as u32,
             state.foreground_pgid.map_or(-1, |pgid| pgid as isize),
         )
     }
@@ -358,11 +357,11 @@ impl Terminal {
                     }
                     let control = |index: usize| state.termios[17 + index];
                     let signal = if local_flags & ISIG != 0 && byte == control(0) {
-                        Some(2usize)
+                        Some(syscall_abi::signal::SIGINT)
                     } else if local_flags & ISIG != 0 && byte == control(1) {
-                        Some(3usize)
+                        Some(syscall_abi::signal::SIGQUIT)
                     } else if local_flags & ISIG != 0 && byte == control(10) {
-                        Some(20usize)
+                        Some(syscall_abi::signal::SIGTSTP)
                     } else {
                         None
                     };
@@ -467,10 +466,12 @@ impl Terminal {
             return None;
         }
         match access {
-            TerminalAccess::Input => Some(21),
-            TerminalAccess::Output if state.local_flags() & TOSTOP != 0 => Some(22),
+            TerminalAccess::Input => Some(syscall_abi::signal::SIGTTIN),
+            TerminalAccess::Output if state.local_flags() & TOSTOP != 0 => {
+                Some(syscall_abi::signal::SIGTTOU)
+            }
             TerminalAccess::Output => None,
-            TerminalAccess::StateChange => Some(22),
+            TerminalAccess::StateChange => Some(syscall_abi::signal::SIGTTOU),
         }
     }
 

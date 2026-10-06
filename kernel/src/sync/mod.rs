@@ -16,7 +16,7 @@ mod task_wait;
 mod wait_completion;
 pub(crate) use task_event::TaskEvent;
 pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
-pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, install_wait_target_factory};
+pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
 pub(crate) use wait_completion::WaitCompletion;
 
 // OWNER: 该原子只分配跨 I/O source 可比较的 readiness generation，不发布其他内存。

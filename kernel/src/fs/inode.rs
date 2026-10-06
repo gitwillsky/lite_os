@@ -15,83 +15,6 @@ pub(crate) enum InodeType {
     Socket = 5,
 }
 
-/// devfs inode 与打开后的 character OFD 共享的标准设备 identity。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeviceKind {
-    Null,
-    Zero,
-    Random,
-    Urandom,
-    Kmsg,
-    Tty,
-    Console,
-    Ptmx,
-    PtySlave(u32),
-    DriCard0,
-    InputEvent(u16),
-    AudioPcmPlayback,
-    VirtioPort,
-}
-
-impl DeviceKind {
-    /// 返回 Linux conventional character-device major/minor。
-    pub(crate) fn numbers(self) -> (u32, u32) {
-        match self {
-            Self::Null => (1, 3),
-            Self::Zero => (1, 5),
-            Self::Random => (1, 8),
-            Self::Urandom => (1, 9),
-            Self::Kmsg => (1, 11),
-            Self::Tty => (5, 0),
-            Self::Console => (5, 1),
-            Self::Ptmx => (5, 2),
-            Self::PtySlave(index) => (136 + index / 256, index % 256),
-            Self::DriCard0 => (226, 0),
-            Self::InputEvent(index) => (13, 64 + u32::from(index)),
-            Self::AudioPcmPlayback => (116, 16),
-            // VirtIO ports use a dynamically allocated Linux character major; LiteOS reserves
-            // this local devfs identity because pathname/protocol, not the number, is the ABI.
-            Self::VirtioPort => (253, 1),
-        }
-    }
-
-    pub(crate) fn inode(self) -> u64 {
-        match self {
-            Self::Null => 2,
-            Self::Zero => 3,
-            Self::Random => 10,
-            Self::Urandom => 11,
-            Self::Kmsg => 17,
-            Self::Tty => 4,
-            Self::Console => 5,
-            Self::Ptmx => 15,
-            Self::PtySlave(index) => 0x1_0000 + u64::from(index),
-            Self::DriCard0 => 13,
-            Self::InputEvent(index) => 0x100 + u64::from(index),
-            Self::AudioPcmPlayback => 18,
-            Self::VirtioPort => 21,
-        }
-    }
-
-    pub(crate) fn mode(self) -> u32 {
-        match self {
-            Self::Kmsg
-            | Self::Console
-            | Self::PtySlave(_)
-            | Self::InputEvent(_)
-            | Self::AudioPcmPlayback
-            | Self::VirtioPort => 0o020600,
-            Self::Null
-            | Self::Zero
-            | Self::Random
-            | Self::Urandom
-            | Self::Tty
-            | Self::Ptmx
-            | Self::DriCard0 => 0o020666,
-        }
-    }
-}
-
 /// VFS 与 Linux stat/getdents 共享的稳定 inode 元数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InodeMetadata {
@@ -108,7 +31,8 @@ pub(crate) struct InodeMetadata {
     pub(crate) atime: u64,
     pub(crate) mtime: u64,
     pub(crate) ctime: u64,
-    pub(crate) device: Option<DeviceKind>,
+    /// 字符设备的 `st_rdev`；普通 inode 为 `None`。
+    pub(crate) device: Option<crate::fs::device::DeviceNumber>,
 }
 
 /// 一次 filesystem-owned storage batch 内的顺序 byte writer。
@@ -159,8 +83,8 @@ pub(crate) trait Inode: Send + Sync {
         false
     }
 
-    /// 标识由 devfs 打开的 character device；普通 filesystem inode 返回 None。
-    fn device_kind(&self) -> Option<DeviceKind> {
+    /// 经字符设备注册表打开的设备号；普通 filesystem inode 返回 None。
+    fn device_number(&self) -> Option<crate::fs::device::DeviceNumber> {
         None
     }
 

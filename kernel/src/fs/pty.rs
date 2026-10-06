@@ -7,8 +7,6 @@ use crate::ipc::{Pipe, PipeEnd, PipeRead, PipeWrite};
 #[path = "pty/input_notification.rs"]
 mod input_notification;
 
-type HangupNotifier = fn(&Terminal);
-type InputSignalNotifier = fn(&Terminal, u64);
 const PTY_INPUT_CAPACITY: usize = 4096;
 const PTY_OUTPUT_ATOMIC_CAPACITY: usize = 512;
 
@@ -106,8 +104,6 @@ pub(crate) struct PtyPair {
     slave_notification_write: Arc<PipeEnd>,
     master_notification_read: Arc<PipeEnd>,
     master_notification_write: Arc<PipeEnd>,
-    hangup: HangupNotifier,
-    input_signals: InputSignalNotifier,
     state: Mutex<PtyState>,
 }
 
@@ -197,7 +193,7 @@ impl PtyMaster {
             batch.signals,
         );
         if actions.signals != 0 {
-            (self.pair.input_signals)(&self.pair.terminal, actions.signals);
+            super::tty::deliver_input_signals(&self.pair.terminal, actions.signals);
         }
         if actions.notify_slave {
             self.pair.slave_notification_write.signal_readiness();
@@ -223,7 +219,7 @@ impl Drop for PtyMaster {
             //    shell 在 master 关闭后仍持有一个永远不会产生输入的 controlling TTY。
             self.pair.slave_notification_write.signal_readiness();
             self.pair.master_notification_write.signal_readiness();
-            (self.pair.hangup)(&self.pair.terminal);
+            super::tty::hangup(&self.pair.terminal);
         }
     }
 }
@@ -313,8 +309,6 @@ impl Drop for PtySlave {
 }
 
 struct PtyRegistry {
-    hangup: HangupNotifier,
-    input_signals: InputSignalNotifier,
     slots: Vec<Weak<PtyPair>>,
 }
 
@@ -322,28 +316,16 @@ struct PtyRegistry {
 // slots 允许最后一个 endpoint 关闭后原位复用；缺失此 registry 会让 devpts 与 ptmx pair 分裂。
 static PTYS: Once<Mutex<PtyRegistry>> = Once::new();
 
-/// 装配 Unix98 PTY 的 controlling-terminal hangup 与 ISIG seam。
+/// 创建 Unix98 PTY index registry。
 ///
-/// # Parameters
+/// # Errors
 ///
-/// - `hangup`: task owner 提供的无分配 SIGHUP/SIGCONT notifier。
-/// - `input_signals`: task owner 提供的 foreground ISIG notifier；只在 Terminal locks 外调用，
-///   空 bitset 必须幂等完成。
-///
-/// # Returns
-///
-/// 首次初始化成功；重复初始化返回错误。
-pub(crate) fn init(hangup: HangupNotifier, input_signals: InputSignalNotifier) -> Result<(), ()> {
+/// 重复初始化返回 `AlreadyExists`。
+pub(super) fn init() -> Result<(), FileSystemError> {
     if PTYS.get().is_some() {
-        return Err(());
+        return Err(FileSystemError::AlreadyExists);
     }
-    PTYS.call_once(|| {
-        Mutex::new(PtyRegistry {
-            hangup,
-            input_signals,
-            slots: Vec::new(),
-        })
-    });
+    PTYS.call_once(|| Mutex::new(PtyRegistry { slots: Vec::new() }));
     Ok(())
 }
 
@@ -357,15 +339,11 @@ pub(crate) fn init(hangup: HangupNotifier, input_signals: InputSignalNotifier) -
 /// # Returns
 ///
 /// master；Pipe、Terminal、Arc 或 registry storage OOM 返回错误。
-pub(crate) fn open_master(
+pub(super) fn open_master(
     owner_uid: u32,
     owner_gid: u32,
 ) -> Result<Arc<PtyMaster>, FileSystemError> {
     let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
-    let (hangup, input_signals) = {
-        let registry = registry.lock();
-        (registry.hangup, registry.input_signals)
-    };
     let (output_read, output_write) =
         crate::ipc::Pipe::pair().map_err(|()| FileSystemError::OutOfMemory)?;
     let (slave_notification_read, slave_notification_write) =
@@ -396,8 +374,14 @@ pub(crate) fn open_master(
             .map_err(|_| FileSystemError::OutOfMemory)?;
         u32::try_from(registry.slots.len()).map_err(|_| FileSystemError::NoSpace)?
     };
-    let terminal = Terminal::new(console.clone(), crate::fs::DeviceKind::PtySlave(index))
-        .map_err(|()| FileSystemError::OutOfMemory)?;
+    if index >= super::tty::PTS_MINOR_COUNT {
+        return Err(FileSystemError::NoSpace);
+    }
+    let terminal = Terminal::new(
+        console.clone(),
+        super::device::DeviceNumber::new(super::tty::PTS_MAJOR, index),
+    )
+    .map_err(|()| FileSystemError::OutOfMemory)?;
     let pair = Arc::try_new(PtyPair {
         index,
         owner_uid,
@@ -408,8 +392,6 @@ pub(crate) fn open_master(
         slave_notification_write,
         master_notification_read,
         master_notification_write,
-        hangup,
-        input_signals,
         state: Mutex::new(PtyState {
             locked: true,
             master_open: true,
@@ -439,7 +421,7 @@ pub(crate) fn open_master(
 /// # Returns
 ///
 /// 独立 slave open 引用；不存在返回 NotFound，锁定或 master 已关闭返回 IoError。
-pub(crate) fn open_slave(index: u32) -> Result<Arc<PtySlave>, FileSystemError> {
+pub(super) fn open_slave(index: u32) -> Result<Arc<PtySlave>, FileSystemError> {
     let pair = PTYS
         .get()
         .ok_or(FileSystemError::InvalidOperation)?

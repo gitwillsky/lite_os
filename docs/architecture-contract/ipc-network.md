@@ -3,9 +3,10 @@
 ## Owner
 
 - `ipc::Pipe` 独占 byte ring、endpoint count、atomicity 与 readiness generation。
-- 全部 Pipe 共用 task 在 `task::initialize` 安装的唯一 `PipeNotifier`；任何领域都直接调用
-  `Pipe::pair`/`Pipe::notification_pair` 创建 endpoint，禁止恢复由 composition root 注入的
-  pipe/notification 工厂。安装前不存在任何 task，因此不存在可唤醒的 waiter 或 poller。
+- 全部 Pipe 共用 task 在 `task::initialize` 安装的唯一 `PipeScheduler`（唤醒与阻塞）；任何领域都
+  直接调用 `Pipe::pair`/`Pipe::notification_pair` 创建 endpoint，并只经 `Pipe::wait` 阻塞，禁止恢复
+  composition root 注入的 pipe 工厂或领域直接调用 task 的 pipe wait。安装前不存在任何 task，因此
+  不存在可唤醒的 waiter 或 poller。
 - `ipc::ReceiveBuffer` 独占 kernel receive staging 的 initialized prefix；heap storage 只保留 capacity，backend 只能通过 append 扩展可读取前缀。
 - `fs::Epoll` 独占 interest、incremental ready membership、ET/ONESHOT 与 nesting state；
   持久 source index 把 Pipe/console edge 精确路由到 interest，OFD reverse index 独占

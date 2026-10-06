@@ -1,3 +1,4 @@
+use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::num::NonZeroUsize;
 use spin::Mutex;
@@ -93,36 +94,45 @@ impl PipePollState {
     }
 }
 
-/// Pipe 状态变为可读、可写、EOF 或 broken 时的唤醒出口；由 scheduler 安装唯一实现。
-pub(crate) trait PipeNotifier: Send + Sync {
+/// scheduler 为 Pipe 提供的唤醒与阻塞实现；全内核只安装一份。
+pub(crate) trait PipeScheduler: Send + Sync {
+    /// Pipe 状态变为可读、可写、EOF 或 broken 时唤醒等待者与 poller。
     fn notify(&self, pipe: &Arc<Pipe>);
+
+    /// 阻塞当前 task 直到 `condition` 成立、`deadline` 到期或被可交付 signal 中断。
+    fn wait(
+        &self,
+        pipe: &Arc<Pipe>,
+        condition: PipeWaitCondition,
+        deadline: Option<u64>,
+    ) -> WaitResult;
 }
 
-// OWNER: task 初始化时安装的唯一 wait-registry 唤醒出口。全部 Pipe 共用它，任何层都能直接创建
-// Pipe 而无需由 composition root 注入工厂；缺失时状态变化无法唤醒阻塞的 reader/writer/poller。
-static PIPE_NOTIFIER: spin::Once<&'static dyn PipeNotifier> = spin::Once::new();
+// OWNER: task 初始化时安装的唯一 Pipe scheduler。全部 Pipe 共用它，任何层都能直接创建并阻塞
+// 等待 Pipe 而无需依赖 task；缺失时状态变化无法唤醒阻塞的 reader/writer/poller。
+static PIPE_SCHEDULER: spin::Once<&'static dyn PipeScheduler> = spin::Once::new();
 
-/// 安装 Pipe 的唯一唤醒出口。
+/// 安装 Pipe 的唯一 scheduler。
 ///
 /// # Panics
 ///
 /// 重复安装时 panic。
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn install_pipe_notifier(notifier: &'static dyn PipeNotifier) {
+pub(crate) fn install_pipe_scheduler(scheduler: &'static dyn PipeScheduler) {
     assert!(
-        PIPE_NOTIFIER.get().is_none(),
-        "pipe notifier installed twice"
+        PIPE_SCHEDULER.get().is_none(),
+        "pipe scheduler installed twice"
     );
-    PIPE_NOTIFIER.call_once(|| notifier);
+    PIPE_SCHEDULER.call_once(|| scheduler);
 }
 
 /// 发布一次 Pipe 状态变化。
 ///
-/// scheduler 安装 notifier 之前不存在任何 task，因此也不存在可唤醒的 waiter 或 poller；
+/// scheduler 安装之前不存在任何 task，因此也不存在可唤醒的 waiter 或 poller；
 /// 启动期子系统在该窗口内创建并 signal 的 Pipe 由首个 waiter 在登记后复查状态观察到。
 fn publish_state_change(pipe: &Arc<Pipe>) {
-    if let Some(notifier) = PIPE_NOTIFIER.get() {
-        notifier.notify(pipe);
+    if let Some(scheduler) = PIPE_SCHEDULER.get() {
+        scheduler.notify(pipe);
     }
 }
 
@@ -152,6 +162,27 @@ impl Pipe {
     ///
     /// # Returns
     ///
+    /// 阻塞当前 task 直到 `condition` 成立、`deadline` 到期或被可交付 signal 中断。
+    ///
+    /// # Parameters
+    ///
+    /// - `condition`: read data/EOF 或写入所需容量/broken peer。
+    /// - `deadline`: 可选 absolute monotonic 纳秒 deadline。
+    ///
+    /// # Panics
+    ///
+    /// scheduler 尚未安装（不在 task context）时 panic。
+    pub(crate) fn wait(
+        self: &Arc<Self>,
+        condition: PipeWaitCondition,
+        deadline: Option<u64>,
+    ) -> WaitResult {
+        PIPE_SCHEDULER
+            .get()
+            .expect("pipe wait requires the installed scheduler")
+            .wait(self, condition, deadline)
+    }
+
     /// 两个 endpoint；kernel heap 不足返回错误。
     pub(crate) fn pair() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
         Self::pair_with_capacity(PIPE_CAPACITY)

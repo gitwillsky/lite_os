@@ -2,29 +2,32 @@
 
 use alloc::sync::Arc;
 use spin::Once;
+use syscall_abi::errno;
 
 use crate::{
     drivers::{PortError, VirtIOConsoleDevice},
+    fs::{
+        FileSystemError,
+        device::{
+            self, CharacterDriver, DeviceError, DeviceFile, DeviceNumber, DeviceWaitSources,
+            OpenRequest, UserFault, UserInput, UserOutput,
+        },
+    },
     ipc::{Pipe, PipeDirection, PipeEnd},
 };
 
-/// Character-device byte-stream error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Error {
-    /// The current operation would block.
-    WouldBlock,
-    /// The named port is closed or the device failed.
-    Disconnected,
-}
+const POLLIN: i16 = 0x001;
+const POLLOUT: i16 = 0x004;
+const POLLERR: i16 = 0x008;
+const POLLHUP: i16 = 0x010;
+/// 单次 adapter 读写的 kernel 中转上限。
+const TRANSFER_BYTES: usize = 4096;
 
-impl From<PortError> for Error {
-    fn from(value: PortError) -> Self {
-        match value {
-            PortError::WouldBlock => Self::WouldBlock,
-            PortError::Disconnected => Self::Disconnected,
-        }
-    }
-}
+/// VirtIO ports use a dynamically allocated Linux character major; LiteOS reserves this local
+/// identity because the pathname/protocol, not the number, is the ABI.
+const PORT_NUMBER: DeviceNumber = DeviceNumber::new(253, 1);
+/// SPICE agent 的标准 named-port 路径。
+const PORT_PATH: &[u8] = b"virtio-ports/com.redhat.spice.0";
 
 /// System-wide projection of one standard VirtIO port.
 pub(crate) struct Port {
@@ -37,7 +40,19 @@ pub(crate) struct Port {
 // Without one publication, separate devfs opens could signal different Pipes and lose wakeups.
 static PORT: Once<Arc<Port>> = Once::new();
 
-/// Publish the selected adapter and its task-aware readiness source.
+/// 打开唯一 port 的 driver。
+struct PortDriver;
+
+impl CharacterDriver for PortDriver {
+    fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
+        PORT.get()
+            .cloned()
+            .map(|port| port as Arc<dyn DeviceFile>)
+            .ok_or(FileSystemError::NotFound)
+    }
+}
+
+/// Publish the selected adapter and register its character device.
 ///
 /// # Parameters
 ///
@@ -46,6 +61,10 @@ static PORT: Once<Arc<Port>> = Once::new();
 /// # Returns
 ///
 /// The first complete publication succeeds.
+///
+/// # Errors
+///
+/// 重复初始化、Pipe/注册表分配失败返回 unit error。
 pub(crate) fn init(device: Arc<VirtIOConsoleDevice>) -> Result<(), ()> {
     if PORT.get().is_some() {
         return Err(());
@@ -58,80 +77,94 @@ pub(crate) fn init(device: Arc<VirtIOConsoleDevice>) -> Result<(), ()> {
         notification_write: notification.1,
     })
     .map_err(|_| ())?;
+    let driver = Arc::try_new(PortDriver).map_err(|_| ())?;
     PORT.call_once(|| port);
-    Ok(())
+    device::register_driver(PORT_NUMBER, 1, driver).map_err(|_| ())?;
+    device::register_node(PORT_PATH, PORT_NUMBER, 0o600).map_err(|_| ())
 }
 
-/// Open the system VirtIO port character backend.
-///
-/// # Returns
-///
-/// A shared byte-stream handle, or `None` when this platform has no port.
-pub(crate) fn open() -> Option<Arc<Port>> {
-    PORT.get().cloned()
+fn port_error(error: PortError) -> DeviceError {
+    match error {
+        PortError::WouldBlock => DeviceError::WouldBlock,
+        PortError::Disconnected => DeviceError::Errno(errno::EIO),
+    }
 }
 
-impl Port {
-    /// Consume available device bytes without sleeping.
-    ///
-    /// # Parameters
-    ///
-    /// - `output`: Kernel-owned destination.
-    ///
-    /// # Returns
-    ///
-    /// Byte count or a precise readiness/device error.
-    pub(crate) fn read(&self, output: &mut [u8]) -> Result<usize, Error> {
-        self.device.read(output).map_err(Into::into)
-    }
+fn fault(_: UserFault) -> DeviceError {
+    DeviceError::Errno(errno::EFAULT)
+}
 
-    /// Submit a bounded byte fragment without sleeping.
-    ///
-    /// # Parameters
-    ///
-    /// - `input`: Kernel-owned source.
-    ///
-    /// # Returns
-    ///
-    /// Submitted byte count or a precise readiness/device error.
-    pub(crate) fn write(&self, input: &[u8]) -> Result<usize, Error> {
-        self.device.write(input).map_err(Into::into)
-    }
-
-    pub(crate) fn poll_events(&self, events: i16) -> i16 {
-        const INPUT: i16 = 0x001;
-        const OUTPUT: i16 = 0x004;
-        const ERROR: i16 = 0x008;
-        const HANGUP: i16 = 0x010;
-        let mut ready = 0;
-        if !self.device.connected() {
-            return ERROR | HANGUP;
+impl DeviceFile for Port {
+    /// 字节流：一次 read 交付一批当前可得数据；无数据时按 `nonblocking` 等待。
+    fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
+        let mut buffer = [0u8; TRANSFER_BYTES];
+        let requested = output.remaining().min(buffer.len());
+        // adapter read 会出队数据；先证明目标可写，避免 fault 丢弃已出队字节。
+        output.reserve(requested).map_err(fault)?;
+        loop {
+            match self.device.read(&mut buffer[..requested]) {
+                Err(PortError::WouldBlock) => device::wait_ready(self, POLLIN, nonblocking)?,
+                result => {
+                    let count = result.map_err(port_error)?;
+                    return output.write(&buffer[..count]).map_err(fault);
+                }
+            }
         }
+    }
+
+    /// 写出全部输入；只在尚未写出任何字节时阻塞，已有进度后队列满即返回部分完成。
+    fn write(&self, input: &mut dyn UserInput, nonblocking: bool) -> Result<(), DeviceError> {
+        let mut buffer = [0u8; TRANSFER_BYTES];
+        let mut progressed = false;
+        while input.remaining() != 0 {
+            let requested = input.remaining().min(buffer.len());
+            input.copy(&mut buffer[..requested]).map_err(fault)?;
+            let written = loop {
+                match self.device.write(&buffer[..requested]) {
+                    Err(PortError::WouldBlock) if progressed => return Ok(()),
+                    Err(PortError::WouldBlock) => device::wait_ready(self, POLLOUT, nonblocking)?,
+                    result => break result.map_err(port_error)?,
+                }
+            };
+            input.consume(written);
+            progressed = true;
+            if written < requested {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn poll(&self, events: i16) -> i16 {
+        if !self.device.connected() {
+            return POLLERR | POLLHUP;
+        }
+        let mut ready = 0;
         if self.device.readable() {
-            ready |= events & INPUT;
+            ready |= events & POLLIN;
         }
         if self.device.writable() {
-            ready |= events & OUTPUT;
+            ready |= events & POLLOUT;
         }
         ready
     }
 
-    pub(crate) fn readiness_generation(&self) -> u64 {
+    fn wait_sources(&self, events: i16) -> DeviceWaitSources {
+        DeviceWaitSources::pipe(self.notification_read.pipe(), events)
+    }
+
+    fn readiness_generation(&self) -> u64 {
         self.notification_read
             .pipe()
             .readiness_generation(PipeDirection::Read)
     }
 
-    pub(crate) fn notification_pipe(&self) -> Arc<Pipe> {
-        self.notification_read.pipe()
-    }
-
-    pub(crate) fn prepare_to_block(&self, events: i16) -> Option<Arc<Pipe>> {
-        if self.poll_events(events) != 0 {
+    fn prepare_wait(&self, events: i16) -> Option<Arc<Pipe>> {
+        if self.poll(events) != 0 {
             return None;
         }
         self.notification_read.drain_readiness();
-        (self.poll_events(events) == 0).then(|| self.notification_read.pipe())
+        (self.poll(events) == 0).then(|| self.notification_read.pipe())
     }
 }
 

@@ -195,7 +195,7 @@ pub(super) fn publish_job_notification(notification: Option<JobNotification>) {
     }
     send_kernel_process_signal(
         notification.parent,
-        crate::task::signal_number::SIGCHLD,
+        syscall_abi::signal::SIGCHLD,
         notification.info,
     );
 }

@@ -2832,13 +2832,14 @@ kernel/src/ipc.rs :: pub (crate) enum PipeDirection
 kernel/src/ipc.rs :: pub (crate) enum PipeRead
 kernel/src/ipc.rs :: pub (crate) enum PipeWaitCondition
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
-kernel/src/ipc.rs :: pub (crate) fn install_pipe_notifier (notifier : & 'static dyn PipeNotifier)
+kernel/src/ipc.rs :: pub (crate) fn install_pipe_scheduler (scheduler : & 'static dyn PipeScheduler)
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn notification_pair () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn object_id (& self) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait (self : & Arc < Self > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn discard_buffered (& self) -> usize
@@ -2854,10 +2855,11 @@ kernel/src/ipc.rs :: pub (crate) impl PipeWaitCondition :: fn direction (self) -
 kernel/src/ipc.rs :: pub (crate) struct Pipe
 kernel/src/ipc.rs :: pub (crate) struct PipeEnd
 kernel/src/ipc.rs :: pub (crate) struct PipePollState
-kernel/src/ipc.rs :: pub (crate) trait PipeNotifier
+kernel/src/ipc.rs :: pub (crate) trait PipeScheduler
 kernel/src/ipc.rs :: pub (crate) use eventfd :: { EventFd , EventFdRead , EventFdWrite }
 kernel/src/ipc.rs :: pub (crate) use receive_buffer :: ReceiveBuffer
-kernel/src/ipc.rs :: trait PipeNotifier :: fn notify (& self , pipe : & Arc < Pipe >)
+kernel/src/ipc.rs :: trait PipeScheduler :: fn notify (& self , pipe : & Arc < Pipe >)
+kernel/src/ipc.rs :: trait PipeScheduler :: fn wait (& self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
 kernel/src/ipc/eventfd.rs :: enum EventFdRead :: Empty
 kernel/src/ipc/eventfd.rs :: enum EventFdRead :: Value (u64)
 kernel/src/ipc/eventfd.rs :: enum EventFdWrite :: Full
@@ -4018,7 +4020,7 @@ kernel/src/sync/mod.rs :: pub (crate) struct LocalIrqGuard
 kernel/src/sync/mod.rs :: pub (crate) struct LocalIrqTransfer
 kernel/src/sync/mod.rs :: pub (crate) use task_event :: TaskEvent
 kernel/src/sync/mod.rs :: pub (crate) use task_mutex :: { TaskMutex , TaskMutexGuard , TaskMutexWaitPreparation }
-kernel/src/sync/mod.rs :: pub (crate) use task_wait :: { TaskWaitKey , TaskWaitTarget , install_wait_target_factory }
+kernel/src/sync/mod.rs :: pub (crate) use task_wait :: { TaskWaitKey , TaskWaitTarget , WaitResult , install_wait_target_factory }
 kernel/src/sync/mod.rs :: pub (crate) use wait_completion :: WaitCompletion
 kernel/src/sync/task_event.rs :: pub (crate) impl TaskEvent :: const fn new () -> Self
 kernel/src/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn signal (& self)
@@ -4033,6 +4035,11 @@ kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutex < T : ? Sized >
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexGuard < 'a , T : ? Sized >
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexOutOfMemory
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexWaitPreparation
+kernel/src/sync/task_wait.rs :: enum WaitResult :: # [doc = " absolute deadline 已到期。"] TimedOut
+kernel/src/sync/task_wait.rs :: enum WaitResult :: # [doc = " wait registration 元数据分配失败。"] OutOfMemory
+kernel/src/sync/task_wait.rs :: enum WaitResult :: # [doc = " 可交付 signal 中断了等待。"] Interrupted
+kernel/src/sync/task_wait.rs :: enum WaitResult :: # [doc = " 等待条件已由 owner 发布。"] Woken
+kernel/src/sync/task_wait.rs :: pub (crate) enum WaitResult
 kernel/src/sync/task_wait.rs :: pub (crate) fn install_wait_target_factory (factory : WaitTargetFactory)
 kernel/src/sync/task_wait.rs :: pub (crate) struct TaskWaitKey
 kernel/src/sync/task_wait.rs :: pub (crate) trait TaskWaitTarget
@@ -4102,62 +4109,6 @@ kernel/src/syscall/drm/virtgpu.rs :: pub (super) fn wait (task : & TaskControlBl
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_pwait (epoll_fd_number : usize , events : usize , maximum : usize , timeout_ms : isize , signal_mask : usize , signal_set_size : usize ,) -> isize
-kernel/src/syscall/errno.rs :: pub (crate) const E2BIG : isize = 7
-kernel/src/syscall/errno.rs :: pub (crate) const EACCES : isize = 13
-kernel/src/syscall/errno.rs :: pub (crate) const EADDRINUSE : isize = 98
-kernel/src/syscall/errno.rs :: pub (crate) const EADDRNOTAVAIL : isize = 99
-kernel/src/syscall/errno.rs :: pub (crate) const EAFNOSUPPORT : isize = 97
-kernel/src/syscall/errno.rs :: pub (crate) const EAGAIN : isize = 11
-kernel/src/syscall/errno.rs :: pub (crate) const EALREADY : isize = 114
-kernel/src/syscall/errno.rs :: pub (crate) const EBADF : isize = 9
-kernel/src/syscall/errno.rs :: pub (crate) const EBADFD : isize = 77
-kernel/src/syscall/errno.rs :: pub (crate) const EBUSY : isize = 16
-kernel/src/syscall/errno.rs :: pub (crate) const ECHILD : isize = 10
-kernel/src/syscall/errno.rs :: pub (crate) const ECONNREFUSED : isize = 111
-kernel/src/syscall/errno.rs :: pub (crate) const ECONNRESET : isize = 104
-kernel/src/syscall/errno.rs :: pub (crate) const EDESTADDRREQ : isize = 89
-kernel/src/syscall/errno.rs :: pub (crate) const EEXIST : isize = 17
-kernel/src/syscall/errno.rs :: pub (crate) const EFAULT : isize = 14
-kernel/src/syscall/errno.rs :: pub (crate) const EFBIG : isize = 27
-kernel/src/syscall/errno.rs :: pub (crate) const EINPROGRESS : isize = 115
-kernel/src/syscall/errno.rs :: pub (crate) const EINTR : isize = 4
-kernel/src/syscall/errno.rs :: pub (crate) const EINVAL : isize = 22
-kernel/src/syscall/errno.rs :: pub (crate) const EIO : isize = 5
-kernel/src/syscall/errno.rs :: pub (crate) const EISCONN : isize = 106
-kernel/src/syscall/errno.rs :: pub (crate) const EISDIR : isize = 21
-kernel/src/syscall/errno.rs :: pub (crate) const ELOOP : isize = 40
-kernel/src/syscall/errno.rs :: pub (crate) const EMFILE : isize = 24
-kernel/src/syscall/errno.rs :: pub (crate) const EMLINK : isize = 31
-kernel/src/syscall/errno.rs :: pub (crate) const EMSGSIZE : isize = 90
-kernel/src/syscall/errno.rs :: pub (crate) const ENAMETOOLONG : isize = 36
-kernel/src/syscall/errno.rs :: pub (crate) const ENETUNREACH : isize = 101
-kernel/src/syscall/errno.rs :: pub (crate) const ENODEV : isize = 19
-kernel/src/syscall/errno.rs :: pub (crate) const ENOENT : isize = 2
-kernel/src/syscall/errno.rs :: pub (crate) const ENOEXEC : isize = 8
-kernel/src/syscall/errno.rs :: pub (crate) const ENOLCK : isize = 37
-kernel/src/syscall/errno.rs :: pub (crate) const ENOMEM : isize = 12
-kernel/src/syscall/errno.rs :: pub (crate) const ENOPROTOOPT : isize = 92
-kernel/src/syscall/errno.rs :: pub (crate) const ENOSPC : isize = 28
-kernel/src/syscall/errno.rs :: pub (crate) const ENOSYS : isize = 38
-kernel/src/syscall/errno.rs :: pub (crate) const ENOTCONN : isize = 107
-kernel/src/syscall/errno.rs :: pub (crate) const ENOTDIR : isize = 20
-kernel/src/syscall/errno.rs :: pub (crate) const ENOTEMPTY : isize = 39
-kernel/src/syscall/errno.rs :: pub (crate) const ENOTSOCK : isize = 88
-kernel/src/syscall/errno.rs :: pub (crate) const ENOTTY : isize = 25
-kernel/src/syscall/errno.rs :: pub (crate) const ENXIO : isize = 6
-kernel/src/syscall/errno.rs :: pub (crate) const EOPNOTSUPP : isize = 95
-kernel/src/syscall/errno.rs :: pub (crate) const EOVERFLOW : isize = 75
-kernel/src/syscall/errno.rs :: pub (crate) const EPERM : isize = 1
-kernel/src/syscall/errno.rs :: pub (crate) const EPIPE : isize = 32
-kernel/src/syscall/errno.rs :: pub (crate) const EPROTONOSUPPORT : isize = 93
-kernel/src/syscall/errno.rs :: pub (crate) const ERANGE : isize = 34
-kernel/src/syscall/errno.rs :: pub (crate) const EROFS : isize = 30
-kernel/src/syscall/errno.rs :: pub (crate) const ESOCKTNOSUPPORT : isize = 94
-kernel/src/syscall/errno.rs :: pub (crate) const ESPIPE : isize = 29
-kernel/src/syscall/errno.rs :: pub (crate) const ESRCH : isize = 3
-kernel/src/syscall/errno.rs :: pub (crate) const ETIMEDOUT : isize = 110
-kernel/src/syscall/errno.rs :: pub (crate) const ETOOMANYREFS : isize = 109
-kernel/src/syscall/errno.rs :: pub (crate) const EXDEV : isize = 18
 kernel/src/syscall/eventfd.rs :: pub (crate) fn sys_eventfd2 (initial : u32 , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_close (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup (fd : usize) -> isize
@@ -4480,7 +4431,7 @@ kernel/src/task/mod.rs :: pub (crate) mod signal_number
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
 kernel/src/task/mod.rs :: pub (crate) use model :: KernelThreadBody
-kernel/src/task/mod.rs :: pub (crate) use model :: { CredentialUpdateError , IoStatistics , PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ReceivedFdTransaction , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
+kernel/src/task/mod.rs :: pub (crate) use model :: { CredentialUpdateError , IoStatistics , PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ReceivedFdTransaction , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , WaitMembership , }
 kernel/src/task/mod.rs :: pub (crate) use process_table :: *
 kernel/src/task/mod.rs :: pub (crate) use process_table :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
 kernel/src/task/mod.rs :: pub (crate) use process_table :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerFileClock , create_posix_timer , create_timer_fd , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
@@ -4522,7 +4473,7 @@ kernel/src/task/model.rs :: pub (crate) use credentials :: CredentialUpdateError
 kernel/src/task/model.rs :: pub (crate) use file_descriptions :: ReceivedFdTransaction
 kernel/src/task/model.rs :: pub (crate) use io_accounting :: IoStatistics
 kernel/src/task/model.rs :: pub (crate) use resource_limits :: { RLIM_INFINITY , RLIMIT_AS , RLIMIT_DATA , RLIMIT_NPROC , RLIMIT_STACK , ResourceLimit , ResourceLimitError , }
-kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState , WaitMembership , WaitResult }
+kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState , WaitMembership }
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn clear_parent_death_signal (& self)
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn is_kernel_thread (& self) -> bool
@@ -4749,10 +4700,6 @@ kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Poll (u64)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Signal (u64)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: TaskWait (crate :: sync :: TaskWaitKey)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Vfork (usize)
-kernel/src/task/model/scheduling.rs :: enum WaitResult :: Interrupted
-kernel/src/task/model/scheduling.rs :: enum WaitResult :: OutOfMemory
-kernel/src/task/model/scheduling.rs :: enum WaitResult :: TimedOut
-kernel/src/task/model/scheduling.rs :: enum WaitResult :: Woken
 kernel/src/task/model/scheduling.rs :: pub (crate) Sched :: nice : i32
 kernel/src/task/model/scheduling.rs :: pub (crate) Sched :: vruntime : u64
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: last_cpu : AtomicUsize
@@ -4761,7 +4708,6 @@ kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: state : I
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait : Option < WaitMembership >
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait_result : Option < WaitResult >
 kernel/src/task/model/scheduling.rs :: pub (crate) enum WaitMembership
-kernel/src/task/model/scheduling.rs :: pub (crate) enum WaitResult
 kernel/src/task/model/scheduling.rs :: pub (crate) impl Sched :: fn get_dynamic_priority (& self) -> i32
 kernel/src/task/model/scheduling.rs :: pub (crate) impl TaskControlBlock :: fn cpu_runtime_snapshot (& self , now_us : u64) -> (u64 , u64)
 kernel/src/task/model/scheduling.rs :: pub (crate) struct Sched
@@ -4892,7 +4838,6 @@ kernel/src/task/process_table.rs :: pub (crate) use console_wait :: { drain_term
 kernel/src/task/process_table.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
 kernel/src/task/process_table.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
 kernel/src/task/process_table.rs :: pub (crate) use parent_death :: parent_death_signal
-kernel/src/task/process_table.rs :: pub (crate) use pipe_wait :: { wait_for_pipe , wait_for_pipe_until }
 kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
 kernel/src/task/process_table.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/process_table.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
@@ -4967,9 +4912,7 @@ kernel/src/task/process_table/load_average.rs :: pub (super) struct LoadAverage
 kernel/src/task/process_table/parent_death.rs :: pub (crate) fn parent_death_signal (replacement : Option < usize >) -> Result < usize , () >
 kernel/src/task/process_table/parent_death.rs :: pub (super) fn drain_parent_death_signals ()
 kernel/src/task/process_table/parent_death.rs :: pub (super) fn mark_parent_exit (graph : & mut ProcessGraph , parent_tgid : usize , parent_tid : usize , replacement_tid : usize ,)
-kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult
-kernel/src/task/process_table/pipe_wait.rs :: pub (crate) fn wait_for_pipe_until (pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
-kernel/src/task/process_table/pipe_wait.rs :: pub (in crate :: task) fn install_pipe_notifier ()
+kernel/src/task/process_table/pipe_wait.rs :: pub (in crate :: task) fn install_pipe_scheduler ()
 kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller process group，非零选择 PGID。"] Group (u32)
 kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller real UID，非零选择给定 UID。"] User (u32)
 kernel/src/task/process_table/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller，非零选择全局 TID。"] Process (u32)

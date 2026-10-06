@@ -1,10 +1,12 @@
 use std::{fs, path::Path};
 
-const READ_SOURCE: &str = "kernel/src/syscall/fs/io/sequential/read.rs";
 const CURSOR_SOURCE: &str = "kernel/src/syscall/user_iovec.rs";
 const POLL_SOURCE: &str = "kernel/src/syscall/poll.rs";
+const DEVICE_CURSOR_SOURCE: &str = "kernel/src/syscall/device.rs";
+const ZERO_SOURCE: &str = "kernel/src/fs/mem.rs";
+const EVDEV_SOURCE: &str = "kernel/src/input/evdev_file.rs";
+const DRM_SOURCE: &str = "kernel/src/drm/card_file.rs";
 const BYTES: usize = 1024 * 1024;
-const LEGACY_CHUNK: usize = 512;
 const POLL_FDS: usize = 1024;
 const EVENT_BATCH: usize = 16;
 
@@ -19,7 +21,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
             user_copy_transactions: 1,
         }) => {}
         Ok(cost) => errors.push(format!(
-            "{READ_SOURCE}: scalar 1 MiB /dev/zero read must use one user-range transaction; B={BYTES}, measured {cost:?}"
+            "{ZERO_SOURCE}: scalar 1 MiB /dev/zero read must use one user-range transaction; B={BYTES}, measured {cost:?}"
         )),
         Err(error) => errors.push(error),
     }
@@ -33,50 +35,57 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     match measure_event_batch(root) {
         Ok(2) => {}
         Ok(copies) => errors.push(format!(
-            "{READ_SOURCE}: one DRM event batch must validate once and copy once; E={EVENT_BATCH}, measured user transactions={copies}"
+            "{DRM_SOURCE}: one DRM event batch must validate once and copy once; E={EVENT_BATCH}, measured user transactions={copies}"
         )),
         Err(error) => errors.push(error),
     }
     match measure_input_batch(root) {
         Ok(2) => {}
         Ok(copies) => errors.push(format!(
-            "{READ_SOURCE}: one evdev batch must validate once and copy once; E={EVENT_BATCH}, measured user transactions={copies}"
+            "{EVDEV_SOURCE}: one evdev batch must validate once and copy once; E={EVENT_BATCH}, measured user transactions={copies}"
         )),
         Err(error) => errors.push(error),
     }
 }
 
 fn measure_input_batch(root: &Path) -> Result<usize, String> {
-    let source = read(root, READ_SOURCE)?;
-    if source.contains("let mut encoded_events = [0u8; 16 * EVENT_SIZE]")
-        && source.contains("&encoded_events[..read * EVENT_SIZE]")
-    {
-        return Ok(2);
-    }
-    if source.contains("for event in events.iter().take(read)")
-        && source.contains("cursor.copy_to_user(task, &event.encode())")
-    {
-        return Ok(EVENT_BATCH + 1);
-    }
-    Err(format!(
-        "{READ_SOURCE}: evdev event copy seam is not recognized"
-    ))
+    measure_device_batch(root, EVDEV_SOURCE)
 }
 
 fn measure_event_batch(root: &Path) -> Result<usize, String> {
-    let source = read(root, READ_SOURCE)?;
-    if source.contains("let mut encoded = [0u8; 16 * EVENT_SIZE]")
-        && source.contains("&encoded[..read * EVENT_SIZE]")
+    measure_device_batch(root, DRM_SOURCE)
+}
+
+/// 去除全部空白，使锚点不受 rustfmt 换行影响。
+fn compact(source: &str) -> String {
+    source.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 度量设备 read 一批 `EVENT_BATCH` 个事件的用户事务数。
+///
+/// 1. 设备在出队前对整批目标 `reserve` 一次，编码进 kernel 批缓冲后 `write` 一次；
+/// 2. syscall 游标把 `reserve` 实现为一次 range validate、`write` 实现为一次 range copy；
+/// 3. 逐事件 `write` 的旧形状每批需要 `EVENT_BATCH` 次 copy 加一次 validate。
+fn measure_device_batch(root: &Path, device_source: &str) -> Result<usize, String> {
+    let device = compact(&read(root, device_source)?);
+    let cursor = compact(&read(root, DEVICE_CURSOR_SOURCE)?);
+    if !cursor.contains("fnreserve(&self,length:usize)->Result<(),UserFault>{self.cursor.validate_write_prefix(self.task,length)")
+        || !cursor.contains("fnwrite(&mutself,bytes:&[u8])->Result<(),UserFault>{debug_assert!(bytes.len()<=self.remaining());self.cursor.copy_to_user(self.task,bytes)")
+    {
+        return Err(format!(
+            "{DEVICE_CURSOR_SOURCE}: device user-output seam is not recognized"
+        ));
+    }
+    if device.contains(".reserve(requested*EVENT_SIZE)")
+        && device.contains(".write(&encoded[..read*EVENT_SIZE])")
     {
         return Ok(2);
     }
-    if source.contains("for event in events.iter().take(read)")
-        && source.contains("cursor.copy_to_user(task, &event.encode())")
-    {
+    if device.contains(".write(&event.encode())") {
         return Ok(EVENT_BATCH + 1);
     }
     Err(format!(
-        "{READ_SOURCE}: DRM event copy seam is not recognized"
+        "{device_source}: event batch copy seam is not recognized"
     ))
 }
 
@@ -101,16 +110,13 @@ fn measure_poll(root: &Path) -> Result<usize, String> {
 }
 
 fn measure(root: &Path) -> Result<ZeroReadCost, String> {
-    let read_source = read(root, READ_SOURCE)?;
+    let zero = compact(&read(root, ZERO_SOURCE)?);
+    let device_cursor = compact(&read(root, DEVICE_CURSOR_SOURCE)?);
     let cursor = read(root, CURSOR_SOURCE)?;
-    if read_source.contains("let zeroes = [0u8; 512]")
-        && read_source.contains("cursor.copy_to_user(task, &zeroes[..count])")
-    {
-        return Ok(ZeroReadCost {
-            user_copy_transactions: BYTES / LEGACY_CHUNK,
-        });
-    }
-    if read_source.contains("cursor.zero_to_user(task)")
+    if zero.contains("output.zero_remaining()")
+        && device_cursor.contains(
+            "fnzero_remaining(&mutself)->Result<(),UserFault>{self.cursor.zero_to_user(self.task)",
+        )
         && cursor.contains("pub(super) fn zero_to_user(")
         && cursor.contains("task.zero_user(address, count)")
     {
@@ -118,8 +124,13 @@ fn measure(root: &Path) -> Result<ZeroReadCost, String> {
             user_copy_transactions: 1,
         });
     }
+    if zero.contains("output.write(&zeroes") {
+        return Ok(ZeroReadCost {
+            user_copy_transactions: BYTES / 4096,
+        });
+    }
     Err(format!(
-        "{READ_SOURCE}: /dev/zero user-write seam is not recognized"
+        "{ZERO_SOURCE}: /dev/zero user-write seam is not recognized"
     ))
 }
 

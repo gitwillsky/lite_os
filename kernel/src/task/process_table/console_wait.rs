@@ -1,44 +1,18 @@
 use super::*;
 
+/// deferred 阶段把 UART raw input 推进系统 console 的 line discipline。
+///
+/// # Returns
+///
+/// raw input 仍有 backlog 时为 true。
 pub(super) fn process_terminal_input() -> bool {
-    let terminal = {
-        let graph = PROCESS_TABLE.graph.lock();
-        graph.nodes.values().find_map(|node| {
-            let ProcessState::Live(threads) = &node.state else {
-                return None;
-            };
-            threads.values().next().map(|task| task.terminal())
-        })
-    };
-    let Some(terminal) = terminal else {
-        return false;
-    };
-    match drain_terminal_input_batch(&terminal) {
+    match crate::fs::drain_terminal_input(&crate::fs::console_terminal()) {
         Ok(backlog) => backlog,
-        Err(()) => {
+        Err(_) => {
             debug!("TTY line discipline failed to drain UART input");
             false
         }
     }
-}
-
-/// 将指定 Terminal 的 raw input 送入 line discipline 并投递 foreground signals。
-///
-/// # Parameters
-///
-/// - `terminal`: console OFD 与 Process 共享的唯一 TTY owner。
-///
-/// # Returns
-///
-/// drain 成功返回 `Ok(())`；设备或固定 queue 失败返回 `Err(())`。
-pub(crate) fn drain_terminal_input(terminal: &crate::fs::Terminal) -> Result<(), ()> {
-    drain_terminal_input_batch(terminal).map(|_| ())
-}
-
-fn drain_terminal_input_batch(terminal: &crate::fs::Terminal) -> Result<bool, ()> {
-    let batch = terminal.drain_input().map_err(|_| ())?;
-    super::publish_terminal_input_signals(terminal, batch.signals);
-    Ok(batch.backlog)
 }
 
 /// 在统一 wait registry 中阻塞当前 console reader，封闭 read/enqueue IRQ race。
@@ -51,9 +25,9 @@ fn drain_terminal_input_batch(terminal: &crate::fs::Terminal) -> Result<bool, ()
 /// # Returns
 ///
 /// 输入已到达/IRQ 唤醒返回 `Woken`，到期返回 `TimedOut`，signal cancellation 返回 `Interrupted`。
-pub(crate) fn wait_for_console(
+pub(super) fn wait_for_console(
     deadline: Option<u64>,
-    input_ready: impl FnOnce() -> bool,
+    input_ready: &dyn Fn() -> bool,
 ) -> WaitResult {
     let task = current_task().expect("console wait requires current task");
     let ticket = WAIT_REGISTRY.allocate_ticket();

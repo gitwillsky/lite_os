@@ -1,11 +1,12 @@
 use crate::arch::context::KernelContext;
+use crate::sync::WaitResult;
 use crate::sync::{IrqMutex, LocalIrqGuard, LocalIrqTransfer};
 use crate::{
     cpu::{self, CpuId, CpuSet},
     platform,
     task::{
         CpuAffinity, ReadyRetirement, ReadyTransition, RunState, StopResume, StopTransition,
-        TaskControlBlock, WaitMembership, WaitResult,
+        TaskControlBlock, WaitMembership,
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
 };

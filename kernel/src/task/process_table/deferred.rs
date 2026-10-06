@@ -1,11 +1,9 @@
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
     cpu::{self, DeferredWork},
-    task::{
-        PendingSignal, TaskControlBlock, WaitResult, current_task,
-        processor::request_tick_reschedule,
-    },
+    task::{PendingSignal, TaskControlBlock, current_task, processor::request_tick_reschedule},
     timer::get_time_ns,
 };
 
@@ -40,7 +38,7 @@ fn expire_timers(now_ns: u64) {
             ExpiredTimer::Real(tgid) => {
                 let _ = send_kernel_process_signal(
                     tgid,
-                    crate::task::signal_number::SIGALRM,
+                    syscall_abi::signal::SIGALRM,
                     PendingSignal::kernel(),
                 );
             }

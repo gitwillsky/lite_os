@@ -260,7 +260,7 @@ fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
                 thread
                     .queue_signal(
                         core::iter::empty(),
-                        crate::task::signal_number::SIGKILL,
+                        syscall_abi::signal::SIGKILL,
                         PendingSignal::kernel(),
                     )
                     .expect("kernel SIGKILL must be valid");
@@ -510,7 +510,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                 PendingSignal::child_killed(task.tgid(), usize::from(signal))
             }
         };
-        send_kernel_process_signal(parent, crate::task::signal_number::SIGCHLD, info);
+        send_kernel_process_signal(parent, syscall_abi::signal::SIGCHLD, info);
     }
     let current = take_current_task().expect("exiting task lost current ownership");
     assert!(Arc::ptr_eq(&current, &task));

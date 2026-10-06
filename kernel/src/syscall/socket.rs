@@ -1,3 +1,4 @@
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
         SocketError, SocketType, UnixAddress, UnixConnectResources, UnixCredentials,
         configure_address, configure_gateway, configure_netmask, configure_up, interface_snapshot,
     },
-    task::{TaskControlBlock, WaitResult, current_task},
+    task::{TaskControlBlock, current_task},
 };
 
 use super::{errno, poll::wait_for_ofd};

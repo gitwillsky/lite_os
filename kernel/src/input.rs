@@ -8,6 +8,10 @@ use crate::{
 
 #[path = "input/client_queue.rs"]
 mod client_queue;
+#[path = "input/evdev_file.rs"]
+mod evdev_file;
+#[path = "input/ioctl.rs"]
+mod ioctl;
 use client_queue::{ClientQueue, EventTimes, InputClock};
 
 const EV_SYN: u16 = 0x00;
@@ -66,7 +70,6 @@ pub(crate) struct AbsoluteInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputError {
-    NotFound,
     OutOfMemory,
     Busy,
     Invalid,
@@ -588,39 +591,42 @@ pub(crate) fn init() -> Result<(), ()> {
             .map_err(|_| ())?,
         );
     }
+    let count = devices.len();
     INPUT_DEVICES.call_once(|| devices);
+    let driver = Arc::try_new(evdev_file::EvdevDriver).map_err(|_| ())?;
+    let count_minors = u32::try_from(count).map_err(|_| ())?;
+    if count_minors != 0 {
+        crate::fs::device::register_driver(evdev_file::device_number(0), count_minors, driver)
+            .map_err(|_| ())?;
+    }
+    for index in 0..count {
+        let mut path = [0u8; 16];
+        let length = event_path(index, &mut path);
+        crate::fs::device::register_node(&path[..length], evdev_file::device_number(index), 0o600)
+            .map_err(|_| ())?;
+    }
     Ok(())
 }
 
-/// 返回已发布 evdev device 数量。
-///
-/// # Returns
-///
-/// 初始化前为零，之后与 raw adapter count 恒等。
-pub(crate) fn device_count() -> usize {
-    INPUT_DEVICES.get().map_or(0, Vec::len)
-}
-
-/// 为 `/dev/input/eventN` 创建独立 client queue。
-///
-/// # Parameters
-///
-/// - `index`: devfs event minor index。
-///
-/// # Returns
-///
-/// 新 InputFile Arc。
-///
-/// # Errors
-///
-/// index 不存在或 allocation 失败返回精确错误。
-pub(crate) fn open(index: usize) -> Result<Arc<InputFile>, InputError> {
-    let device = INPUT_DEVICES
-        .get()
-        .and_then(|devices| devices.get(index))
-        .cloned()
-        .ok_or(InputError::NotFound)?;
-    InputFile::new(device)
+/// 写出 `input/eventN` 并返回长度。
+fn event_path(index: usize, output: &mut [u8; 16]) -> usize {
+    const PREFIX: &[u8] = b"input/event";
+    output[..PREFIX.len()].copy_from_slice(PREFIX);
+    let mut digits = [0u8; 5];
+    let mut value = index;
+    let mut count = 0;
+    loop {
+        digits[count] = b'0' + (value % 10) as u8;
+        count += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for offset in 0..count {
+        output[PREFIX.len() + offset] = digits[count - 1 - offset];
+    }
+    PREFIX.len() + count
 }
 
 /// 在 deferred context 有界消费所有 input eventq 并 fanout 到 evdev clients。

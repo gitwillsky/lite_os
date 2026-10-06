@@ -465,21 +465,6 @@ impl<'a> UserIoCursor<'a> {
     }
 
     #[cfg(not(test))]
-    pub(super) fn copy_from_user(
-        &mut self,
-        task: &TaskControlBlock,
-        output: &mut [u8],
-    ) -> Result<usize, ()> {
-        let staged = self.stage_from_user(task, output);
-        self.advance(staged.count);
-        if staged.faulted {
-            Err(())
-        } else {
-            Ok(staged.count)
-        }
-    }
-
-    #[cfg(not(test))]
     pub(super) fn copy_from_user_into(
         &mut self,
         task: &TaskControlBlock,

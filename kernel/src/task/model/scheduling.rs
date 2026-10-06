@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::WaitResult;
 use crate::{
     cpu::{self, CpuId, CpuSet},
     task::processor::account_current_cpu_runtime,
@@ -101,15 +102,6 @@ pub(crate) enum WaitMembership {
     Poll(u64),
     DriverIo(crate::drivers::io_completion::IoWaitKey),
     TaskWait(crate::sync::TaskWaitKey),
-}
-
-/// blocked task 恢复时由唯一 wait registration 发布的结果。
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum WaitResult {
-    Woken,
-    TimedOut,
-    Interrupted,
-    OutOfMemory,
 }
 
 #[derive(Debug)]

@@ -1,20 +1,29 @@
 use super::*;
-use crate::ipc::{Pipe, PipeDirection, PipeNotifier, PipeWaitCondition};
+use crate::ipc::{Pipe, PipeDirection, PipeScheduler, PipeWaitCondition};
 
-struct TaskPipeNotifier;
+struct TaskPipeScheduler;
 
-// OWNER: 无状态的唯一 wait-registry 唤醒出口；由 `install_pipe_notifier` 安装进 ipc。
-static TASK_PIPE_NOTIFIER: TaskPipeNotifier = TaskPipeNotifier;
+// OWNER: 无状态的唯一 wait-registry Pipe scheduler；由 `install_pipe_scheduler` 安装进 ipc。
+static TASK_PIPE_SCHEDULER: TaskPipeScheduler = TaskPipeScheduler;
 
-/// 把 task wait registry 安装为全部 Pipe 的唤醒出口。
-pub(in crate::task) fn install_pipe_notifier() {
-    crate::ipc::install_pipe_notifier(&TASK_PIPE_NOTIFIER);
+/// 把 task wait registry 安装为全部 Pipe 的唤醒与阻塞实现。
+pub(in crate::task) fn install_pipe_scheduler() {
+    crate::ipc::install_pipe_scheduler(&TASK_PIPE_SCHEDULER);
 }
 
-impl PipeNotifier for TaskPipeNotifier {
+impl PipeScheduler for TaskPipeScheduler {
     fn notify(&self, pipe: &Arc<Pipe>) {
         crate::fs::Epoll::notify_pipe_source(pipe);
         wake_pipe_waiters(pipe);
+    }
+
+    fn wait(
+        &self,
+        pipe: &Arc<Pipe>,
+        condition: PipeWaitCondition,
+        deadline: Option<u64>,
+    ) -> WaitResult {
+        wait_for_pipe_until(pipe, condition, deadline)
     }
 }
 
@@ -92,11 +101,6 @@ fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>) {
 ///
 /// # Returns
 ///
-/// ready 返回 Woken；signal 返回 Interrupted。
-pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> WaitResult {
-    wait_for_pipe_until(pipe, condition, None)
-}
-
 /// 阻塞到 pipe 条件满足、absolute deadline 到期或 signal interruption。
 ///
 /// # Parameters
@@ -108,7 +112,7 @@ pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> W
 /// # Returns
 ///
 /// ready、timeout、signal 或 wait publication OOM。
-pub(crate) fn wait_for_pipe_until(
+fn wait_for_pipe_until(
     pipe: &Arc<Pipe>,
     condition: PipeWaitCondition,
     deadline: Option<u64>,

@@ -83,7 +83,7 @@ fn send_error(
     completed: usize,
 ) -> isize {
     if error == SocketError::BrokenPipe && completed == 0 && flags & MSG_NOSIGNAL == 0 {
-        send_thread_signal(task.tgid(), task.tid(), crate::task::signal_number::SIGPIPE)
+        send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
             .expect("current socket sender must remain live");
     }
     if completed == 0 {

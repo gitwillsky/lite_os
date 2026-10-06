@@ -1,11 +1,10 @@
+//! Linux evdev ioctl UAPI 子集：query、clock、exclusive grab 与 revoke。
+
 use alloc::sync::Arc;
+use syscall_abi::errno;
 
-use crate::{
-    input::{InputError, InputFile, InputString},
-    task::TaskControlBlock,
-};
-
-use super::errno;
+use super::{InputError, InputFile, InputString};
+use crate::fs::device::{DeviceError, IoctlCall, UserMemory};
 
 const IOC_WRITE: usize = 1;
 const IOC_READ: usize = 2;
@@ -22,49 +21,40 @@ const EVIOCGRAB: usize = input_ioc(IOC_WRITE, 0x90, 4);
 const EVIOCREVOKE: usize = input_ioc(IOC_WRITE, 0x91, 4);
 const EVIOCSCLOCKID: usize = input_ioc(IOC_WRITE, 0xa0, 4);
 
-fn input_errno(error: InputError) -> isize {
-    match error {
-        InputError::NotFound => errno::ENOENT,
+pub(super) fn input_error(error: InputError) -> DeviceError {
+    DeviceError::Errno(match error {
         InputError::OutOfMemory => errno::ENOMEM,
         InputError::Busy => errno::EBUSY,
         InputError::Invalid => errno::EINVAL,
         InputError::Revoked => errno::ENODEV,
-    }
+    })
 }
 
-fn copy_out(task: &TaskControlBlock, argument: usize, bytes: &[u8]) -> Result<(), isize> {
+pub(super) fn fault(_: crate::fs::device::UserFault) -> DeviceError {
+    DeviceError::Errno(errno::EFAULT)
+}
+
+fn copy_out(user: &dyn UserMemory, argument: usize, bytes: &[u8]) -> Result<(), DeviceError> {
     if bytes.is_empty() {
         return Ok(());
     }
-    if argument == 0 {
-        return Err(errno::EFAULT);
-    }
-    task.copy_to_user(argument, bytes)
-        .map_err(|_| errno::EFAULT)
+    user.write(argument, bytes).map_err(fault)
 }
 
-fn copy_in_i32(task: &TaskControlBlock, argument: usize) -> Result<i32, isize> {
-    if argument == 0 {
-        return Err(errno::EFAULT);
-    }
+fn copy_in_i32(user: &dyn UserMemory, argument: usize) -> Result<i32, DeviceError> {
     let mut bytes = [0u8; 4];
-    task.copy_from_user(argument, &mut bytes)
-        .map_err(|_| errno::EFAULT)?;
+    user.read(argument, &mut bytes).map_err(fault)?;
     Ok(i32::from_ne_bytes(bytes))
 }
 
-fn copy_variable(
-    task: &TaskControlBlock,
-    file: &InputFile,
-    request: usize,
-    argument: usize,
-) -> Result<isize, isize> {
+fn copy_variable(file: &InputFile, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
+    let request = call.request;
     let direction = request >> 30 & 0x3;
     let size = request >> 16 & 0x3fff;
     let kind = request >> 8 & 0xff;
     let number = request & 0xff;
     if direction != IOC_READ || kind != INPUT_IOCTL_TYPE {
-        return Err(errno::ENOTTY);
+        return Err(DeviceError::Errno(errno::ENOTTY));
     }
 
     let mut bytes = [0u8; 129];
@@ -75,26 +65,25 @@ fn copy_variable(
         0x08 => file.copy_string(InputString::Serial, &mut bytes[..output_length]),
         0x09 => file
             .copy_bitmap(None, &mut bytes[..output_length])
-            .map_err(input_errno)?,
+            .map_err(input_error)?,
         0x18 => {
             let output = &mut bytes[..output_length];
-            if !output.is_empty()
-                && (argument == 0
-                    || task
-                        .validate_user_write(argument, output.len().min(96))
-                        .is_err())
-            {
-                return Err(errno::EFAULT);
+            // EVIOCGKEY 读取 key state 会结束 SYN_DROPPED 重同步；先证明输出可写，避免状态被
+            // 消费而用户未收到。
+            if !output.is_empty() {
+                call.user
+                    .validate_write(call.argument, output.len().min(96))
+                    .map_err(fault)?;
             }
             file.copy_key_state(output)
         }
         0x20..=0x3f => file
             .copy_bitmap(Some((number & 0x1f) as u16), &mut bytes[..output_length])
-            .map_err(input_errno)?,
+            .map_err(input_error)?,
         0x40..=0x7f => {
             let info = file
                 .absolute_info((number & 0x3f) as u16)
-                .map_err(input_errno)?;
+                .map_err(input_error)?;
             for (offset, value) in [
                 info.value,
                 info.minimum,
@@ -109,12 +98,12 @@ fn copy_variable(
                 bytes[offset * 4..offset * 4 + 4].copy_from_slice(&value.to_ne_bytes());
             }
             let count = size.min(24);
-            copy_out(task, argument, &bytes[..count])?;
+            copy_out(call.user, call.argument, &bytes[..count])?;
             return Ok(0);
         }
-        _ => return Err(errno::ENOTTY),
+        _ => return Err(DeviceError::Errno(errno::ENOTTY)),
     };
-    if let Err(error) = copy_out(task, argument, &bytes[..count]) {
+    if let Err(error) = copy_out(call.user, call.argument, &bytes[..count]) {
         if number == 0x18 {
             file.mark_sync_lost();
         }
@@ -125,27 +114,19 @@ fn copy_variable(
 
 /// 分发 Linux evdev query、clock 与 exclusive-grab ioctl 子集。
 ///
-/// # Parameters
-///
-/// - `task`: 当前 userspace address-space owner。
-/// - `file`: `/dev/input/eventN` 的独立 client backend。
-/// - `request`: Linux input ioctl number。
-/// - `argument`: request-specific pointer；`EVIOCGRAB/EVIOCREVOKE` 按 Linux 语义解释为标量。
-///
 /// # Returns
 ///
-/// fixed ioctl 返回零；variable query 返回复制 byte count；失败返回负 errno。
-pub(in crate::syscall) fn input_ioctl(
-    task: &TaskControlBlock,
-    file: &Arc<InputFile>,
-    request: usize,
-    argument: usize,
-) -> isize {
+/// fixed ioctl 返回零；variable query 返回复制 byte count。
+///
+/// # Errors
+///
+/// 已撤销返回 `ENODEV`；用户地址、参数或 request 错误返回对应 errno。
+pub(super) fn ioctl(file: &Arc<InputFile>, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
     if file.is_revoked() {
-        return -errno::ENODEV;
+        return Err(DeviceError::Errno(errno::ENODEV));
     }
-    let result = match request {
-        EVIOCGVERSION => copy_out(task, argument, &EV_VERSION.to_ne_bytes()).map(|()| 0),
+    match call.request {
+        EVIOCGVERSION => copy_out(call.user, call.argument, &EV_VERSION.to_ne_bytes()).map(|()| 0),
         EVIOCGID => {
             let id = file.id();
             let mut bytes = [0u8; 8];
@@ -153,22 +134,22 @@ pub(in crate::syscall) fn input_ioctl(
             bytes[2..4].copy_from_slice(&id.vendor.to_ne_bytes());
             bytes[4..6].copy_from_slice(&id.product.to_ne_bytes());
             bytes[6..8].copy_from_slice(&id.version.to_ne_bytes());
-            copy_out(task, argument, &bytes).map(|()| 0)
+            copy_out(call.user, call.argument, &bytes).map(|()| 0)
         }
-        EVIOCGRAB => InputFile::set_grab(file, argument != 0)
+        // EVIOCGRAB/EVIOCREVOKE 按 Linux 语义把 argument 解释为标量。
+        EVIOCGRAB => InputFile::set_grab(file, call.argument != 0)
             .map(|()| 0)
-            .map_err(input_errno),
+            .map_err(input_error),
         EVIOCREVOKE => {
-            if argument != 0 {
-                Err(errno::EINVAL)
+            if call.argument != 0 {
+                Err(DeviceError::Errno(errno::EINVAL))
             } else {
-                InputFile::revoke(file).map(|()| 0).map_err(input_errno)
+                InputFile::revoke(file).map(|()| 0).map_err(input_error)
             }
         }
-        EVIOCSCLOCKID => copy_in_i32(task, argument)
-            .and_then(|clock| file.set_clock(clock).map_err(input_errno))
+        EVIOCSCLOCKID => copy_in_i32(call.user, call.argument)
+            .and_then(|clock| file.set_clock(clock).map_err(input_error))
             .map(|()| 0),
-        _ => copy_variable(task, file, request, argument),
-    };
-    result.unwrap_or_else(|error| -error)
+        _ => copy_variable(file, call),
+    }
 }

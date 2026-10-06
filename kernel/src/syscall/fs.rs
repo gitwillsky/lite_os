@@ -1,3 +1,4 @@
+use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::mem;
 
@@ -29,20 +30,15 @@ pub(crate) use readlink::sys_readlinkat;
 
 use crate::{
     fs::{
-        CharacterDevice, DeviceKind, Dirent64Batch, InodeMetadata, InodeType,
-        MAX_GETDENTS_BATCH_BYTES, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY,
-        OpenFileDescription, OpenFileKind, RegularFile, RegularFileWrite, TerminalAccess,
-        TerminalRead, character_write_chunk, vfs,
+        Dirent64Batch, InodeMetadata, InodeType, MAX_GETDENTS_BATCH_BYTES, O_ACCMODE, O_APPEND,
+        O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, RegularFile,
+        RegularFileWrite, vfs,
     },
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
-    task::{
-        TaskControlBlock, WaitResult, current_task, drain_terminal_input,
-        send_kernel_thread_signal, send_thread_signal, wait_for_pipe,
-    },
+    task::{TaskControlBlock, current_task, send_kernel_thread_signal, send_thread_signal},
 };
 
-use super::tty::guard_terminal_access;
 const AT_FDCWD: isize = -100;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 pub(crate) fn sys_close(fd: usize) -> isize {
@@ -130,7 +126,7 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
         return -errno::EBADF;
     }
     if size > task.file_size_limit() {
-        send_kernel_thread_signal(task.tgid(), task.tid(), crate::task::signal_number::SIGXFSZ)
+        send_kernel_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGXFSZ)
             .expect("current ftruncate caller must exist");
         return -errno::EFBIG;
     }
@@ -184,7 +180,7 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
         return -errno::ENODEV;
     }
     if end > task.file_size_limit() {
-        send_kernel_thread_signal(task.tgid(), task.tid(), crate::task::signal_number::SIGXFSZ)
+        send_kernel_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGXFSZ)
             .expect("current fallocate caller must exist");
         return -errno::EFBIG;
     }
@@ -279,7 +275,9 @@ fn copy_stat(
             st_nlink: metadata.links,
             st_uid: metadata.uid,
             st_gid: metadata.gid,
-            st_rdev: metadata.device.map_or(0, encode_device),
+            st_rdev: metadata
+                .device
+                .map_or(0, crate::fs::device::DeviceNumber::encode),
             pad1: 0,
             st_size: metadata.size as i64,
             st_blksize: metadata.block_size as i32,
@@ -327,14 +325,6 @@ fn copy_stat(
         .map_or(-errno::EFAULT, |_| 0)
 }
 
-fn encode_device(device: DeviceKind) -> u64 {
-    let (major, minor) = device.numbers();
-    u64::from(minor & 0xff)
-        | (u64::from(major & 0xfff) << 8)
-        | (u64::from(minor & !0xff) << 12)
-        | (u64::from(major & !0xfff) << 32)
-}
-
 pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -348,7 +338,7 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
             Err(error) => ferr(error),
         },
         None => match &ofd.kind {
-            OpenFileKind::Character(_) => match ofd.opened_ref() {
+            OpenFileKind::Device(_) => match ofd.opened_ref() {
                 Some(opened) => match opened.inode().metadata() {
                     Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0, 0),
                     Err(error) => ferr(error),

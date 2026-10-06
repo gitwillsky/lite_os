@@ -3,12 +3,14 @@ use alloc::vec::Vec;
 use core::fmt::{self, Write};
 
 mod devfs;
+pub(crate) mod device;
 mod devpts;
 mod directory;
 mod epoll;
 mod ext4;
 mod file;
 mod inode;
+mod mem;
 mod memfd;
 mod page_cache;
 mod permission;
@@ -17,6 +19,7 @@ mod pty;
 mod readiness;
 mod sysfs;
 mod timerfd;
+mod tty;
 mod vfs;
 
 pub(crate) use devfs::DevFileSystem;
@@ -27,12 +30,12 @@ pub(crate) use directory::{
 };
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent, EpollMemberships};
 pub(crate) use file::{
-    CancelledFileReservation, CharacterDevice, Console, DetachedFileDescriptor,
-    FileDescriptorError, FileDescriptorTable, KmsgDeviceRead, MAX_FILE_DESCRIPTORS, O_ACCMODE,
-    O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind,
-    Terminal, TerminalAccess, TerminalRead, TerminalReadMode, character_write_chunk,
+    CancelledFileReservation, Console, DetachedFileDescriptor, FileDescriptorError,
+    FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK,
+    O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal, TerminalAccess,
 };
-pub(crate) use inode::{DeviceKind, Inode, InodeMetadata, InodeType, StorageWriter};
+use file::{TerminalRead, TerminalReadMode, character_write_chunk};
+pub(crate) use inode::{Inode, InodeMetadata, InodeType, StorageWriter};
 pub(crate) use memfd::MemFile;
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
@@ -43,14 +46,18 @@ pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcIoSnapshot,
     ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
 };
-pub(crate) use pty::{PtyMaster, PtySlave, init as init_pty};
+use pty::{PtyMaster, PtySlave};
 pub(crate) use readiness::{ReadinessSource, ReadinessSources};
 pub(crate) use sysfs::SysFileSystem;
 pub(crate) use timerfd::{TimerError, TimerFd, TimerFdBackend, TimerFdRead, TimerSetting};
+pub(crate) use tty::{
+    JobControl, console as console_terminal, drain_input as drain_terminal_input, init as init_tty,
+    install_job_control,
+};
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
     AdvisoryLockNotifier, OpenedFile, PreparedAdvisoryLock, PreparedLockAttempt,
-    PreparedRecordLock, RecordLockMode, RecordLockRange, init as init_vfs, vfs,
+    PreparedRecordLock, RecordLockMode, RecordLockRange, vfs,
 };
 
 /// filesystem adapter 向 VFS 投影的容量、inode 与类型快照。
@@ -101,6 +108,8 @@ pub(crate) enum FileSystemError {
     AccessDenied,
     Busy,
     TooManyLinks,
+    /// 设备号没有 driver，或 driver 当前不提供该设备（`ENXIO`）。
+    NoDevice,
 }
 
 struct FallibleBytes(Vec<u8>);
@@ -159,6 +168,16 @@ pub(crate) struct KernelThreadSupport {
     pub(crate) spawn: SpawnKernelThread,
     /// 阻塞当前 task 到 absolute monotonic deadline。
     pub(crate) sleep_until: fn(u64),
+}
+
+/// 创建全局 VFS 并注册 fs 自有的 mem 字符设备。
+///
+/// # Panics
+///
+/// 启动期注册表分配失败时 panic。
+pub(crate) fn init_vfs() {
+    vfs::init();
+    mem::register().expect("mem character device registration failed");
 }
 
 /// 在 `device` 上挂载根文件系统，并启动其后台写回。

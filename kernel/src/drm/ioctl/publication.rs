@@ -1,7 +1,8 @@
+use syscall_abi::errno;
+
 use crate::{
     drm::{DrmFile, DumbBufferInfo},
-    syscall::errno,
-    task::TaskControlBlock,
+    fs::device::UserMemory,
 };
 
 use super::{
@@ -9,11 +10,11 @@ use super::{
 };
 
 pub(super) fn create_dumb(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let mut bytes = copy_in::<32>(task, argument)?;
+    let mut bytes = copy_in::<32>(user, argument)?;
     let prepared = file
         .prepare_dumb(
             read_u32(&bytes, 4)?,
@@ -22,11 +23,11 @@ pub(super) fn create_dumb(
             read_u32(&bytes, 12)?,
         )
         .map_err(drm_errno)?;
-    prepared.complete(|info| publish_dumb(task, argument, &mut bytes, info))
+    prepared.complete(|info| publish_dumb(user, argument, &mut bytes, info))
 }
 
 fn publish_dumb(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     argument: usize,
     bytes: &mut [u8; 32],
     info: DumbBufferInfo,
@@ -35,15 +36,15 @@ fn publish_dumb(
     write_u32(bytes, 16, info.handle)?;
     write_u32(bytes, 20, info.pitch)?;
     write_u64(bytes, 24, info.size)?;
-    copy_out(task, argument, bytes)
+    copy_out(user, argument, bytes)
 }
 
 pub(super) fn add_framebuffer(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let mut bytes = copy_in::<28>(task, argument)?;
+    let mut bytes = copy_in::<28>(user, argument)?;
     if read_u32(&bytes, 16)? != 32 || read_u32(&bytes, 20)? != 24 {
         return Err(errno::EINVAL);
     }
@@ -55,15 +56,15 @@ pub(super) fn add_framebuffer(
             read_u32(&bytes, 12)?,
         )
         .map_err(drm_errno)?;
-    prepared.complete(|id| publish_framebuffer_id(task, argument, &mut bytes, id))
+    prepared.complete(|id| publish_framebuffer_id(user, argument, &mut bytes, id))
 }
 
 pub(super) fn add_framebuffer2(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let mut bytes = copy_in::<104>(task, argument)?;
+    let mut bytes = copy_in::<104>(user, argument)?;
     if read_u32(&bytes, 12)? != DRM_FORMAT_XRGB8888
         || read_u32(&bytes, 16)? != 0
         || (1..4).any(|plane| {
@@ -85,15 +86,15 @@ pub(super) fn add_framebuffer2(
             read_u32(&bytes, 36)?,
         )
         .map_err(drm_errno)?;
-    prepared.complete(|id| publish_framebuffer_id(task, argument, &mut bytes, id))
+    prepared.complete(|id| publish_framebuffer_id(user, argument, &mut bytes, id))
 }
 
 fn publish_framebuffer_id<const N: usize>(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     argument: usize,
     bytes: &mut [u8; N],
     id: u32,
 ) -> Result<(), isize> {
     write_u32(bytes, 0, id)?;
-    copy_out(task, argument, bytes)
+    copy_out(user, argument, bytes)
 }

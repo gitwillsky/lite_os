@@ -9,6 +9,12 @@ use crate::{
     memory::{DeviceBacking, DeviceMappingSource, FrameAllocationClass, PAGE_SIZE},
 };
 
+#[path = "audio/codec.rs"]
+mod codec;
+#[path = "audio/ioctl.rs"]
+mod ioctl;
+#[path = "audio/pcm_file.rs"]
+mod pcm_file;
 #[path = "audio/state.rs"]
 mod state;
 pub(crate) use state::PcmState;
@@ -101,12 +107,10 @@ pub(crate) fn init(output: Arc<dyn PcmOutput>) -> Result<(), ()> {
     let observer: Arc<dyn PcmCompletionObserver> = device.clone();
     output.set_observer(observer).map_err(|_| ())?;
     AUDIO_DEVICE.call_once(|| device);
-    Ok(())
-}
-
-/// platform 是否发布了可用 PCM output。
-pub(crate) fn available() -> bool {
-    AUDIO_DEVICE.get().is_some()
+    let driver = Arc::try_new(pcm_file::PcmDriver).map_err(|_| ())?;
+    crate::fs::device::register_driver(pcm_file::PCM_NUMBER, 1, driver).map_err(|_| ())?;
+    crate::fs::device::register_node(pcm_file::PCM_PATH, pcm_file::PCM_NUMBER, 0o600)
+        .map_err(|_| ())
 }
 
 /// 独占打开第一个 playback substream。
@@ -118,7 +122,7 @@ pub(crate) fn available() -> bool {
 /// # Errors
 ///
 /// 无设备、已有 live open 或分配失败。
-pub(crate) fn open() -> Result<Arc<PcmFile>, AudioError> {
+fn open() -> Result<Arc<PcmFile>, AudioError> {
     let device = AUDIO_DEVICE.get().cloned().ok_or(AudioError::Device)?;
     let mut opened = device.opened.lock();
     if opened.upgrade().is_some() {

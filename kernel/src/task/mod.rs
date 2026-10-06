@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::fs::{AccessIdentity, Console, vfs};
+use crate::fs::{AccessIdentity, vfs};
 use crate::task::pid::ProcessId;
 
 mod loader;
@@ -10,7 +10,6 @@ mod pid;
 mod process_table;
 mod processor;
 mod scheduler;
-pub(crate) mod signal_number;
 
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use memory_barrier::{
@@ -23,7 +22,7 @@ pub(crate) use model::{
     CredentialUpdateError, IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC,
     ReceivedFdTransaction, ResourceLimit, ResourceLimitError, RunState, SignalAction,
     SignalDelivery, SignalStack, SignalStackError, StopResume, StopTransition, TaskControlBlock,
-    WaitMembership, WaitResult,
+    WaitMembership,
 };
 pub(crate) use process_table::advisory_lock::{
     AdvisoryLockWaitError, install_advisory_lock_notifier, wait_for_advisory_lock,
@@ -86,7 +85,8 @@ pub(crate) fn initialize() {
     processor::init_topology();
     process_table::initialize_driver_io_wait();
     process_table::task_wait::initialize();
-    process_table::pipe_wait::install_pipe_notifier();
+    process_table::pipe_wait::install_pipe_scheduler();
+    process_table::install_job_control();
     install_advisory_lock_notifier();
 }
 
@@ -98,7 +98,6 @@ pub(crate) fn initialize() {
 pub(crate) fn spawn_init(
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
-    console: Arc<dyn Console>,
 ) {
     let mut path = Vec::new();
     path.try_reserve_exact(INIT_PROC_NAME.len())
@@ -129,7 +128,6 @@ pub(crate) fn spawn_init(
         ProcessId::init(),
         kernel_trap_handler,
         kernel_trap_return,
-        console,
     );
     match init_proc {
         Ok(init_proc) => {

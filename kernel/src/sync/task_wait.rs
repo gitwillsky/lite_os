@@ -4,6 +4,19 @@ use alloc::sync::Arc;
 
 use super::WaitCompletion;
 
+/// 一次 task-context 阻塞等待的结果；scheduler 与全部可等待对象共用。
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum WaitResult {
+    /// 等待条件已由 owner 发布。
+    Woken,
+    /// absolute deadline 已到期。
+    TimedOut,
+    /// 可交付 signal 中断了等待。
+    Interrupted,
+    /// wait registration 元数据分配失败。
+    OutOfMemory,
+}
+
 /// task-context 阻塞等待的精确 scheduler membership identity。
 ///
 /// `owner` 是同步对象地址，`ticket` 区分同一对象上的每次等待。

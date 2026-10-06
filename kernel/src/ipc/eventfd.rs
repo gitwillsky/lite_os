@@ -141,7 +141,7 @@ impl EventFd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::{Pipe, PipeNotifier};
+    use crate::ipc::Pipe;
 
     fn eventfd(initial: u64, semaphore: bool) -> Arc<EventFd> {
         let read_pair = Pipe::notification_pair().expect("read notification pair");

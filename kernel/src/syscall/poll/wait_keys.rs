@@ -1,12 +1,12 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{CharacterDevice, Epoll, OpenFileDescription, OpenFileKind},
+    fs::{Epoll, OpenFileDescription, OpenFileKind},
     socket::{SocketWaitGuard, SocketWaitSource},
     task::PollWaitKey,
 };
 
-use super::{POLLHUP, POLLIN, POLLOUT};
+use super::{POLLIN, POLLOUT};
 
 /// 一次 poll/epoll wait publication 的唯一 transient source-key builder。
 ///
@@ -83,72 +83,25 @@ impl PollWaitKeys {
         wake_group: Option<usize>,
     ) -> Result<(), ()> {
         match &ofd.kind {
-            OpenFileKind::Character(CharacterDevice::Terminal { pty, .. }) => {
-                if let Some(slave) = pty {
-                    self.push(PollWaitKey::pipe(
-                        &slave.notification_pipe(),
-                        crate::ipc::PipeDirection::Read,
-                        POLLIN,
-                        exclusive,
-                        wake_group,
-                    ))?;
-                    if events & POLLOUT != 0 {
-                        self.push(PollWaitKey::pipe(
-                            &slave.output_pipe(),
-                            crate::ipc::PipeDirection::Write,
-                            events,
+            OpenFileKind::Device(file) => {
+                for source in file.wait_sources(events).iter() {
+                    match source {
+                        crate::fs::device::DeviceWaitSource::Pipe {
+                            pipe,
+                            direction,
+                            events: wake_events,
+                        } => self.push(PollWaitKey::pipe(
+                            pipe,
+                            *direction,
+                            *wake_events,
                             exclusive,
                             wake_group,
-                        ))?;
+                        ))?,
+                        crate::fs::device::DeviceWaitSource::Console => {
+                            self.push(PollWaitKey::console(events, exclusive, wake_group))?
+                        }
                     }
-                } else {
-                    self.push(PollWaitKey::console(events, exclusive, wake_group))?;
                 }
-            }
-            OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
-                self.push(PollWaitKey::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    POLLIN,
-                    exclusive,
-                    wake_group,
-                ))?;
-            }
-            OpenFileKind::Character(CharacterDevice::Drm(file)) => {
-                self.push(PollWaitKey::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    POLLIN,
-                    exclusive,
-                    wake_group,
-                ))?;
-            }
-            OpenFileKind::Character(CharacterDevice::Audio(file)) => {
-                self.push(PollWaitKey::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    super::audio_notification_wait_event(),
-                    exclusive,
-                    wake_group,
-                ))?;
-            }
-            OpenFileKind::Character(CharacterDevice::VirtioPort(port)) => {
-                self.push(PollWaitKey::pipe(
-                    &port.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    events,
-                    exclusive,
-                    wake_group,
-                ))?;
-            }
-            OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
-                self.push(PollWaitKey::pipe(
-                    &master.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    POLLIN | POLLOUT | POLLHUP,
-                    exclusive,
-                    wake_group,
-                ))?;
             }
             OpenFileKind::Pipe(endpoint) => {
                 self.push(PollWaitKey::pipe(

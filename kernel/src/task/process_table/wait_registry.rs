@@ -1,3 +1,4 @@
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 use core::{
     hint::spin_loop,
@@ -11,7 +12,6 @@ use crate::{
     ipc::{PipeDirection, PipePollState},
     memory::FutexKey,
     sync::IrqMutex,
-    task::WaitResult,
 };
 
 mod batch;

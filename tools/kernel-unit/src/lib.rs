@@ -77,16 +77,6 @@ mod audio_readiness {
 }
 
 #[cfg(test)]
-mod poll_notification {
-    const POLLIN: i16 = 0x001;
-    include!("../../../kernel/src/syscall/poll/notification.rs");
-
-    pub(crate) const fn wait_event() -> i16 {
-        audio_notification_wait_event()
-    }
-}
-
-#[cfg(test)]
 #[path = "../../../kernel/src/drivers/virtio_sound/wire.rs"]
 mod virtio_sound_wire;
 
@@ -103,7 +93,7 @@ mod virtio_sound_lifecycle;
 mod memfd_state;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/audio/codec.rs"]
+#[path = "../../../kernel/src/audio/codec.rs"]
 mod alsa_codec;
 
 #[cfg(test)]
@@ -356,9 +346,7 @@ mod terminal_flush;
 mod terminal_input_batch;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/errno.rs"]
-#[allow(dead_code)]
-mod errno;
+use syscall_abi::errno;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/syscall/clone_errno.rs"]

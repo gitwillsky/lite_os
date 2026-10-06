@@ -5,11 +5,13 @@ use crate::{
         DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand, VirglResourceCreate,
         VirglTransferDirection,
     },
-    task::TaskControlBlock,
+    fs::device::UserMemory,
 };
 
+use syscall_abi::errno;
+
 use super::{
-    copy_in, copy_out, drm_errno, errno, read_u32, read_u64, wait_retry, wait_scanout, write_u32,
+    copy_in, copy_out, drm_errno, read_u32, read_u64, wait_retry, wait_scanout, write_u32,
     write_u64,
 };
 
@@ -31,11 +33,11 @@ const MAX_EXEC_RESOURCES: usize = 1024;
 const MAX_CONTEXT_PARAMS: usize = 4;
 
 pub(super) fn get_param(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let bytes = copy_in::<16>(task, argument)?;
+    let bytes = copy_in::<16>(user, argument)?;
     let value = match read_u64(&bytes, 0)? {
         VIRTGPU_PARAM_3D_FEATURES => u64::from(file.virgl_capset_info().is_ok()),
         VIRTGPU_PARAM_CAPSET_QUERY_FIX => 1,
@@ -51,18 +53,18 @@ pub(super) fn get_param(
         _ => return Err(errno::EINVAL),
     };
     copy_out(
-        task,
+        user,
         usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?,
         &value.to_ne_bytes(),
     )
 }
 
 pub(super) fn get_caps(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let bytes = copy_in::<24>(task, argument)?;
+    let bytes = copy_in::<24>(user, argument)?;
     let capset = file.virgl_capset_info().map_err(drm_errno)?;
     if read_u32(&bytes, 0)? != capset.id || read_u32(&bytes, 4)? != capset.version {
         return Err(errno::EINVAL);
@@ -78,7 +80,7 @@ pub(super) fn get_caps(
     let count = requested.min(capabilities.len());
     if count != 0 {
         copy_out(
-            task,
+            user,
             usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?,
             &capabilities[..count],
         )?;
@@ -87,11 +89,11 @@ pub(super) fn get_caps(
 }
 
 pub(super) fn context_init(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let bytes = copy_in::<16>(task, argument)?;
+    let bytes = copy_in::<16>(user, argument)?;
     let count = usize::try_from(read_u32(&bytes, 0)?).map_err(|_| errno::EINVAL)?;
     if count == 0 || count > MAX_CONTEXT_PARAMS || read_u32(&bytes, 4)? != 0 {
         return Err(errno::EINVAL);
@@ -103,7 +105,7 @@ pub(super) fn context_init(
         let address = pointer
             .checked_add(index.checked_mul(16).ok_or(errno::EFAULT)?)
             .ok_or(errno::EFAULT)?;
-        let parameter = copy_in::<16>(task, address)?;
+        let parameter = copy_in::<16>(user, address)?;
         let value = read_u64(&parameter, 8)?;
         match read_u64(&parameter, 0)? {
             VIRTGPU_CONTEXT_PARAM_CAPSET_ID => {
@@ -112,8 +114,8 @@ pub(super) fn context_init(
             VIRTGPU_CONTEXT_PARAM_NUM_RINGS if value == 1 => {}
             VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK if value == 0 => {}
             VIRTGPU_CONTEXT_PARAM_DEBUG_NAME => {
-                name = task
-                    .copy_user_c_string(usize::try_from(value).map_err(|_| errno::EFAULT)?, 65)
+                name = user
+                    .read_c_string(usize::try_from(value).map_err(|_| errno::EFAULT)?, 65)
                     .map_err(|_| errno::EFAULT)?;
                 if name.len() > 64 {
                     return Err(errno::EINVAL);
@@ -131,11 +133,11 @@ pub(super) fn context_init(
 }
 
 pub(super) fn resource_create(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let mut bytes = copy_in::<56>(task, argument)?;
+    let mut bytes = copy_in::<56>(user, argument)?;
     if read_u32(&bytes, 40)? != 0 {
         return Err(errno::EINVAL);
     }
@@ -164,7 +166,7 @@ pub(super) fn resource_create(
     let info = prepared.info();
     write_u32(&mut bytes, 40, info.handle)?;
     write_u32(&mut bytes, 44, info.resource_id)?;
-    if let Err(error) = copy_out(task, argument, &bytes) {
+    if let Err(error) = copy_out(user, argument, &bytes) {
         let (context_id, resource_id) = prepared.identities();
         let _ = submit_and_wait(
             file,
@@ -182,11 +184,11 @@ pub(super) fn resource_create(
 }
 
 pub(super) fn resource_info(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let mut bytes = copy_in::<16>(task, argument)?;
+    let mut bytes = copy_in::<16>(user, argument)?;
     let info = file
         .virgl_resource_info(read_u32(&bytes, 0)?)
         .map_err(drm_errno)?;
@@ -194,23 +196,23 @@ pub(super) fn resource_info(
     write_u32(&mut bytes, 0, info.handle)?;
     write_u32(&mut bytes, 4, info.resource_id)?;
     write_u32(&mut bytes, 8, info.size)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
-pub(super) fn map(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<16>(task, argument)?;
+pub(super) fn map(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<16>(user, argument)?;
     let offset = file.map_virgl(read_u32(&bytes, 8)?).map_err(drm_errno)?;
     write_u64(&mut bytes, 0, offset)?;
-    copy_out(task, argument, &bytes)
+    copy_out(user, argument, &bytes)
 }
 
 pub(super) fn transfer(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
     direction: VirglTransferDirection,
 ) -> Result<(), isize> {
-    let bytes = copy_in::<44>(task, argument)?;
+    let bytes = copy_in::<44>(user, argument)?;
     let handle = read_u32(&bytes, 0)?;
     let command = file
         .transfer_command(crate::drm::VirglTransfer {
@@ -235,11 +237,11 @@ pub(super) fn transfer(
 }
 
 pub(super) fn execbuffer(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let bytes = copy_in::<64>(task, argument)?;
+    let bytes = copy_in::<64>(user, argument)?;
     let flags = read_u32(&bytes, 0)?;
     let size = usize::try_from(read_u32(&bytes, 4)?).map_err(|_| errno::EINVAL)?;
     let count = usize::try_from(read_u32(&bytes, 24)?).map_err(|_| errno::EINVAL)?;
@@ -259,14 +261,14 @@ pub(super) fn execbuffer(
         return Err(errno::EINVAL);
     }
     let mut commands = try_zeroed(size)?;
-    task.copy_from_user(
+    user.read(
         usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?,
         &mut commands,
     )
     .map_err(|_| errno::EFAULT)?;
     let mut handles = try_zeroed(count.checked_mul(4).ok_or(errno::EINVAL)?)?;
     if !handles.is_empty() {
-        task.copy_from_user(
+        user.read(
             usize::try_from(read_u64(&bytes, 16)?).map_err(|_| errno::EFAULT)?,
             &mut handles,
         )
@@ -290,8 +292,8 @@ pub(super) fn execbuffer(
     file.record_virgl_fence(&decoded, fence).map_err(drm_errno)
 }
 
-pub(super) fn wait(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let bytes = copy_in::<8>(task, argument)?;
+pub(super) fn wait(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let bytes = copy_in::<8>(user, argument)?;
     let flags = read_u32(&bytes, 4)?;
     if flags & !VIRTGPU_WAIT_NOWAIT != 0 {
         return Err(errno::EINVAL);
@@ -310,11 +312,11 @@ pub(super) fn wait(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> 
 }
 
 pub(super) fn gem_close(
-    task: &TaskControlBlock,
+    user: &dyn UserMemory,
     file: &DrmFile,
     argument: usize,
 ) -> Result<(), isize> {
-    let bytes = copy_in::<8>(task, argument)?;
+    let bytes = copy_in::<8>(user, argument)?;
     if read_u32(&bytes, 4)? != 0 {
         return Err(errno::EINVAL);
     }

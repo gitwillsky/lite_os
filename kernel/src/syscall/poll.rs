@@ -1,18 +1,15 @@
+use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{CharacterDevice, OpenFileDescription, OpenFileKind},
+    fs::{OpenFileDescription, OpenFileKind},
     socket::SocketSendBlocker,
     syscall::errno,
-    task::{
-        PollWaitKey, TaskControlBlock, WaitResult, current_task, drain_terminal_input,
-        wait_for_poll,
-    },
+    task::{PollWaitKey, TaskControlBlock, current_task, wait_for_poll},
 };
 
 use super::timer::{TimeSpec, decode_timespec};
 
-include!("poll/notification.rs");
 mod select;
 mod wait_keys;
 pub(super) use wait_keys::{PollWaitGuards, PollWaitKeys};
@@ -107,24 +104,8 @@ fn prepare_descriptors(descriptors: &[PollDescriptor]) {
 /// 无返回值；adapter preparation 不分配。
 pub(super) fn prepare_wait_sources(ofd: &Arc<OpenFileDescription>) {
     match &ofd.kind {
-        OpenFileKind::Character(CharacterDevice::Terminal { terminal, pty, .. }) => {
-            if let Some(slave) = pty {
-                let _ = slave.prepare_to_block();
-            } else {
-                let _ = drain_terminal_input(terminal);
-            }
-        }
-        OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
-            let _ = file.prepare_to_block();
-        }
-        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
-            let _ = file.prepare_to_block();
-        }
-        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
-            let _ = master.prepare_to_block();
-        }
-        OpenFileKind::Character(CharacterDevice::VirtioPort(port)) => {
-            let _ = port.prepare_to_block(i16::MAX);
+        OpenFileKind::Device(file) => {
+            let _ = file.prepare_wait(i16::MAX);
         }
         // epoll 的持久 source index 已由 ctl 路径准备；poll 只等待
         // epoll 自身 notification，不重建嵌套 interest tree。

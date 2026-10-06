@@ -78,15 +78,11 @@ fn kernel_main(context: entry::BootContext) -> ! {
     if let Some(port) = drivers::primary_virtio_port() {
         virtio_port::init(port).expect("VirtIO port initialization failed");
     }
-    fs::init_pty(task::hangup_terminal, task::publish_terminal_input_signals)
-        .expect("Unix98 PTY initialization failed");
+    fs::init_tty(Arc::try_new(PlatformConsole).expect("platform console allocation failed"))
+        .expect("TTY initialization failed");
     socket::init();
     mount_filesystems();
-    task::spawn_init(
-        arch::trap::user_entry(),
-        trap::trap_return,
-        Arc::try_new(PlatformConsole).expect("platform console allocation failed"),
-    );
+    task::spawn_init(arch::trap::user_entry(), trap::trap_return);
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);
     for target in cpu::possible().iter() {

@@ -1,6 +1,11 @@
 use core::panic;
 use syscall_abi::SYSCALL_EXECVE;
 
+use syscall_abi::signal::{
+    BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL, SIGKILL, SIGSEGV,
+    SIGTRAP, TRAP_BRKPT,
+};
+
 use crate::{
     arch::{self, context::SyscallCompletion, trap::TrapEvent},
     cpu::{self, DeferredWork},
@@ -8,14 +13,7 @@ use crate::{
     memory::TRAMPOLINE,
     memory::{MemoryError, PageFaultAccess, PageFaultOutcome, SegmentationCause},
     syscall::{self, SyscallOutcome},
-    task::{
-        self, SignalDelivery, exit_current_group_by_signal,
-        signal_number::{
-            BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL, SIGKILL,
-            SIGSEGV, SIGTRAP, TRAP_BRKPT,
-        },
-        stop_current_process,
-    },
+    task::{self, SignalDelivery, exit_current_group_by_signal, stop_current_process},
     timer,
 };
 

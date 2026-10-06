@@ -49,7 +49,7 @@ impl OpenFileDescription {
                 target.extend_from_slice(b" (deleted)");
                 Ok(target)
             }
-            OpenFileKind::Character(_) | OpenFileKind::Inode(_) => {
+            OpenFileKind::Device(_) | OpenFileKind::Inode(_) => {
                 unreachable!("pathname-backed OFD lost opened identity")
             }
         }

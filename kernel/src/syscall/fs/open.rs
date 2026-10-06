@@ -2,11 +2,11 @@ use alloc::sync::Arc;
 
 use crate::{
     fs::{
-        AccessIdentity, DeviceKind, InodeType, O_ACCMODE, O_CLOEXEC, O_RDONLY, O_WRONLY,
-        OpenFileDescription, OpenedFile, vfs,
+        AccessIdentity, InodeType, O_ACCMODE, O_CLOEXEC, O_RDONLY, O_WRONLY, OpenFileDescription,
+        OpenedFile, vfs,
     },
     syscall::errno,
-    task::{TaskControlBlock, current_task, session_id},
+    task::{TaskControlBlock, current_task},
 };
 
 use super::pathname::{base, ferr, path};
@@ -153,22 +153,19 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     if !matches!(
         inode.inode_type(),
         InodeType::File | InodeType::Directory | InodeType::CharacterDevice
-    ) || inode.inode_type() == InodeType::CharacterDevice && inode.device_kind().is_none()
+    ) || inode.inode_type() == InodeType::CharacterDevice && inode.device_number().is_none()
     {
         return -errno::ENXIO;
     }
     let ofd_flags = flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
-    let ofd = if let Some(device) = inode.device_kind() {
-        let terminal = task.terminal();
-        if device == DeviceKind::Tty {
-            let Ok(session) = session_id(0) else {
-                return -errno::ENXIO;
-            };
-            if terminal.controlling_session() != Some(session) {
-                return -errno::ENXIO;
-            }
-        }
-        match OpenFileDescription::character(device, terminal, &identity, ofd_flags, opened) {
+    let ofd = if let Some(number) = inode.device_number() {
+        let request = crate::fs::device::OpenRequest {
+            number,
+            identity: &identity,
+        };
+        match crate::fs::device::open(&request)
+            .and_then(|file| OpenFileDescription::device(file, ofd_flags, opened))
+        {
             Ok(ofd) => ofd,
             Err(error) => return ferr(error),
         }

@@ -3,7 +3,12 @@ mod wait_completion;
 pub(crate) use wait_completion::WaitCompletion;
 
 #[path = "../../../kernel/src/sync/task_wait.rs"]
+#[allow(
+    dead_code,
+    reason = "host tests never construct scheduler wait outcomes"
+)]
 mod task_wait;
+pub(crate) use task_wait::WaitResult;
 
 #[path = "../../../kernel/src/sync/task_mutex.rs"]
 mod task_mutex;

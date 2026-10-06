@@ -22,6 +22,7 @@ pub(in crate::syscall) fn ferr(error: FileSystemError) -> isize {
         FileSystemError::AccessDenied => errno::EACCES,
         FileSystemError::Busy => errno::EBUSY,
         FileSystemError::TooManyLinks => errno::EMLINK,
+        FileSystemError::NoDevice => errno::ENXIO,
         FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
         FileSystemError::ReadOnly => errno::EROFS,
         FileSystemError::SymbolicLink => errno::ELOOP,

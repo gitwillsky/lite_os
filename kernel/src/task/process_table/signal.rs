@@ -126,7 +126,7 @@ fn send_selected_thread_signal(
             .ok_or(SignalSendError::NotFound)?;
         if kernel_info.is_none() {
             let sender_task = current_task().ok_or(SignalSendError::NotFound)?;
-            let same_session = signal == crate::task::signal_number::SIGCONT
+            let same_session = signal == syscall_abi::signal::SIGCONT
                 && graph.nodes.get(&sender_task.tgid()).is_some_and(|sender| {
                     sender.session == graph.nodes.get(&tgid).unwrap().session
                 });
@@ -147,10 +147,10 @@ fn send_selected_thread_signal(
                 .map_err(|()| SignalSendError::InvalidSignal)?;
             true
         };
-        let notification = if signal == crate::task::signal_number::SIGCONT {
+        let notification = if signal == syscall_abi::signal::SIGCONT {
             continue_process_locked(&mut graph, tgid)
         } else {
-            if signal == crate::task::signal_number::SIGKILL {
+            if signal == syscall_abi::signal::SIGKILL {
                 resume_for_fatal_signal_locked(&mut graph, tgid);
             }
             None
@@ -295,7 +295,7 @@ fn select_and_generate_process_signal(
             .clone();
         let permitted = sender.is_none_or(|sender| {
             sender.may_signal(&representative)
-                || signal == crate::task::signal_number::SIGCONT
+                || signal == syscall_abi::signal::SIGCONT
                     && graph
                         .nodes
                         .get(&sender.tgid())
@@ -326,10 +326,10 @@ fn select_and_generate_process_signal(
         };
         (eligible, queued)
     };
-    let notification = if signal == crate::task::signal_number::SIGCONT {
+    let notification = if signal == syscall_abi::signal::SIGCONT {
         continue_process_locked(&mut graph, tgid)
     } else {
-        if signal == crate::task::signal_number::SIGKILL {
+        if signal == syscall_abi::signal::SIGKILL {
             resume_for_fatal_signal_locked(&mut graph, tgid);
         }
         None

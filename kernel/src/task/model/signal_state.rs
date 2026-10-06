@@ -25,10 +25,10 @@ pub(super) fn signal_is_ignored(signal: usize, action: SignalAction) -> bool {
         || action.handler == 0
             && matches!(
                 signal,
-                crate::task::signal_number::SIGCHLD
-                    | crate::task::signal_number::SIGCONT
-                    | crate::task::signal_number::SIGURG
-                    | crate::task::signal_number::SIGWINCH
+                syscall_abi::signal::SIGCHLD
+                    | syscall_abi::signal::SIGCONT
+                    | syscall_abi::signal::SIGURG
+                    | syscall_abi::signal::SIGWINCH
             )
 }
 
@@ -36,7 +36,7 @@ pub(super) fn signal_is_default_stop(signal: usize, action: SignalAction) -> boo
     action.handler == 0
         && matches!(
             signal,
-            crate::task::signal_number::SIGSTOP..=crate::task::signal_number::SIGTTOU
+            syscall_abi::signal::SIGSTOP..=syscall_abi::signal::SIGTTOU
         )
 }
 
@@ -457,11 +457,11 @@ fn signal_conflicting_mask(signal: usize) -> u64 {
     const SIGCONT_MASK: u64 = 1u64 << (18 - 1);
     const STOP_MASK: u64 =
         (1u64 << (19 - 1)) | (1u64 << (20 - 1)) | (1u64 << (21 - 1)) | (1u64 << (22 - 1));
-    if signal == crate::task::signal_number::SIGCONT {
+    if signal == syscall_abi::signal::SIGCONT {
         STOP_MASK
     } else if matches!(
         signal,
-        crate::task::signal_number::SIGSTOP..=crate::task::signal_number::SIGTTOU
+        syscall_abi::signal::SIGSTOP..=syscall_abi::signal::SIGTTOU
     ) {
         SIGCONT_MASK
     } else {

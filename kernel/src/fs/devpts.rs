@@ -1,11 +1,15 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use super::{
-    DeviceKind, DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
+    DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
     FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
 };
 
+use super::device::DeviceNumber;
+
 const DEVPTS_FILESYSTEM_ID: usize = 5;
+/// pts 节点 mode：仅 owner 可读写。
+const PTY_SLAVE_MODE: u32 = 0o020600;
 const DEVPTS_SUPER_MAGIC: u64 = 0x1cd1;
 
 #[derive(Clone, Copy)]
@@ -90,8 +94,8 @@ impl Inode for DevPtsInode {
                 let (uid, gid) = super::pty::slave_owner(index).ok_or(FileSystemError::NotFound)?;
                 (
                     InodeType::CharacterDevice,
-                    DeviceKind::PtySlave(index).mode(),
-                    Some(DeviceKind::PtySlave(index)),
+                    PTY_SLAVE_MODE,
+                    Some(DeviceNumber::new(super::tty::PTS_MAJOR, index)),
                     uid,
                     gid,
                 )
@@ -138,10 +142,10 @@ impl Inode for DevPtsInode {
         true
     }
 
-    fn device_kind(&self) -> Option<DeviceKind> {
+    fn device_number(&self) -> Option<DeviceNumber> {
         match self.node {
             DevPtsNode::Root => None,
-            DevPtsNode::Slave(index) => Some(DeviceKind::PtySlave(index)),
+            DevPtsNode::Slave(index) => Some(DeviceNumber::new(super::tty::PTS_MAJOR, index)),
         }
     }
 

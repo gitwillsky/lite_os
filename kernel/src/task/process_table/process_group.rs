@@ -258,7 +258,7 @@ pub(in crate::task) fn mark_process_exec(tgid: usize) {
 /// # Errors
 ///
 /// 非 session leader/force 请求返回 Permission；TTY 属于其他 session 返回 Permission。
-pub(crate) fn claim_controlling_terminal(
+pub(super) fn claim_controlling_terminal(
     terminal: &Arc<crate::fs::Terminal>,
     force: usize,
 ) -> Result<(), ProcessGroupError> {
@@ -295,7 +295,7 @@ pub(crate) fn claim_controlling_terminal(
 /// # Errors
 ///
 /// fd 的 TTY 不属于 caller session 时返回 NotTerminal。
-pub(crate) fn terminal_foreground_group(
+pub(super) fn terminal_foreground_group(
     terminal: &crate::fs::Terminal,
 ) -> Result<usize, ProcessGroupError> {
     let session = session_id(0)?;
@@ -318,7 +318,7 @@ pub(crate) fn terminal_foreground_group(
 /// # Errors
 ///
 /// group 不存在/跨 session 返回 Permission；TTY 不属于 caller session 返回 NotTerminal。
-pub(crate) fn set_terminal_foreground_group(
+pub(super) fn set_terminal_foreground_group(
     terminal: &crate::fs::Terminal,
     pgid: usize,
 ) -> Result<(), ProcessGroupError> {

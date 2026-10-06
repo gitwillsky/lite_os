@@ -23,7 +23,7 @@ use spin::Mutex;
 
 use crate::{
     arch::context::{KernelContext, UserContext},
-    fs::{Console, FileDescriptorTable, Terminal, vfs},
+    fs::{FileDescriptorTable, Terminal, vfs},
     memory::{
         DeviceMappingSource, ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack,
         MapPermission, MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer,
@@ -52,7 +52,7 @@ pub(crate) use resource_limits::{
     ResourceLimitError,
 };
 pub(in crate::task) use scheduling::{CpuAffinity, ReadyRetirement, ReadyTransition};
-pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState, WaitMembership, WaitResult};
+pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState, WaitMembership};
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
 use user_context::{ContextBacking, ContextBinding, ContextOwner};
@@ -322,7 +322,6 @@ impl TaskControlBlock {
         pid: ProcessId,
         kernel_trap_handler: crate::arch::trap::UserTrapEntry,
         kernel_trap_return: crate::arch::context::KernelResume,
-        console: alloc::sync::Arc<dyn Console>,
     ) -> Result<Self, ElfLoadError> {
         let resource_limits = ResourceLimits::defaults();
         let cpu_limit_active = resource_limits.cpu_limit_active();
@@ -336,8 +335,7 @@ impl TaskControlBlock {
         let context_binding =
             ContextBinding::for_placement(kernel_stack.user_context_address(), TRAP_CONTEXT);
         let tid = pid.0;
-        let terminal = Terminal::new(console, crate::fs::DeviceKind::Console)
-            .map_err(|()| ElfLoadError::OutOfMemory)?;
+        let terminal = crate::fs::console_terminal();
         let address_space = AddressSpace::new(memory_set)?;
         let user_context = address_space.bind_user_context(context_binding)?;
         let memory_retirement_wait = if context_binding.requires_retirement_wait(TRAP_CONTEXT) {
@@ -359,8 +357,7 @@ impl TaskControlBlock {
             address_space: Mutex::new(address_space),
             paths: Mutex::new(paths),
             files: Mutex::new(
-                FileDescriptorTable::with_terminal(terminal.clone())
-                    .map_err(|()| ElfLoadError::OutOfMemory)?,
+                FileDescriptorTable::with_console().map_err(|_| ElfLoadError::OutOfMemory)?,
             ),
             credentials: Mutex::new(Credentials::root()),
             resource_limits: Mutex::new(resource_limits),
@@ -585,7 +582,7 @@ impl TaskControlBlock {
             || signal > 64
             || matches!(
                 signal,
-                crate::task::signal_number::SIGKILL | crate::task::signal_number::SIGSTOP
+                syscall_abi::signal::SIGKILL | syscall_abi::signal::SIGSTOP
             ) && replacement.is_some()
         {
             return Err(());
@@ -717,7 +714,7 @@ impl TaskControlBlock {
         state.actions[signal].handler == 0
             && (matches!(
                 signal,
-                crate::task::signal_number::SIGKILL | crate::task::signal_number::SIGSTOP
+                syscall_abi::signal::SIGKILL | syscall_abi::signal::SIGSTOP
             ) || *mask & (1u64 << (signal - 1)) == 0)
     }
 

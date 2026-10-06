@@ -1,6 +1,9 @@
 #![no_std]
 
-//! LiteOS 用户态与内核共享的系统调用编号。
+//! LiteOS 用户态与内核共享的系统调用编号、errno 与 signal number。
+
+pub mod errno;
+pub mod signal;
 
 pub const SYSCALL_GETCWD: usize = 17;
 pub const SYSCALL_EVENTFD2: usize = 19;
