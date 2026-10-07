@@ -229,11 +229,16 @@ impl OpenedFile {
 
 impl Drop for OpenedFile {
     fn drop(&mut self) {
-        let Some(key) = self.location.get_mut().registration.take() else {
-            return;
-        };
-        // Drop 在 Arc storage 解配前精确撤销 intrusive membership；缺失该步骤会
-        // 留下可被 pointer reuse 命中的悬垂 index entry。
-        super::vfs().opened.unregister(key);
+        let location = self.location.get_mut();
+        let deleted = location.deleted;
+        if let Some(key) = location.registration.take() {
+            // Drop 在 Arc storage 解配前精确撤销 intrusive membership；缺失该步骤会
+            // 留下可被 pointer reuse 命中的悬垂 index entry。
+            super::vfs().opened.unregister(key);
+        }
+        if deleted {
+            // 已删除条目的最后一个引用：若 inode 也没有其他 link，其 page cache 不应再拖住它。
+            super::super::page_cache::evict_if_unlinked(&self.inode, 1);
+        }
     }
 }

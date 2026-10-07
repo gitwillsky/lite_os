@@ -1,23 +1,20 @@
-//! Linux memfd anonymous-file storage 与 seal owner。
+//! Linux memfd anonymous file：一个只有名字和 seal 语义的 [`MemoryFile`] inode。
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use spin::Mutex;
 
 use super::{
-    CreateMetadata, DirectoryRead, DirectoryVisitor, FileSystemError, Inode, InodeMetadata,
-    InodeType, OpenedFile, OwnerModeChange,
+    CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError, Inode,
+    InodeMetadata, InodeType, MemoryFile, OpenedFile, OwnerModeChange, PageBudget,
 };
+use crate::memory::SharedFileId;
 
-#[path = "memfd/state.rs"]
-mod state;
-use state::{MemFileState, MemFileStateError};
 const MEMFD_FILESYSTEM_ID: usize = 6;
 
 /// `memfd_create` 产生的 anonymous regular inode。
 pub(crate) struct MemFile {
     inode: u64,
     name: Box<[u8]>,
-    state: Mutex<MemFileState>,
+    file: Arc<MemoryFile>,
 }
 
 impl MemFile {
@@ -30,12 +27,21 @@ impl MemFile {
     ///
     /// # Returns
     ///
-    /// 新 memfd inode owner。
+    /// 新 memfd inode owner；内容只受物理内存限制。
     pub(crate) fn new(name: Vec<u8>, allow_sealing: bool) -> Result<Arc<Self>, FileSystemError> {
+        let inode = crate::id::next_runtime_object_id();
+        let file = MemoryFile::new(
+            SharedFileId {
+                filesystem: MEMFD_FILESYSTEM_ID,
+                inode,
+            },
+            PageBudget::new(None)?,
+            allow_sealing,
+        )?;
         Arc::try_new(Self {
-            inode: crate::id::next_runtime_object_id(),
+            inode,
             name: name.into_boxed_slice(),
-            state: Mutex::new(MemFileState::new(allow_sealing)),
+            file,
         })
         .map_err(|_| FileSystemError::OutOfMemory)
     }
@@ -54,11 +60,11 @@ impl MemFile {
     ///
     /// 已 sealed 或要求 WRITE/FUTURE_WRITE 等未实现语义时返回明确错误。
     pub(crate) fn add_seals(&self, seals: u32) -> Result<u32, FileSystemError> {
-        self.state.lock().add_seals(seals).map_err(state_error)
+        self.file.add_seals(seals)
     }
 
-    pub(crate) fn seals(&self) -> u32 {
-        self.state.lock().seals()
+    pub(crate) fn seals(&self) -> Result<u32, FileSystemError> {
+        self.file.seals()
     }
 
     pub(crate) fn name(&self) -> &[u8] {
@@ -82,11 +88,12 @@ impl Inode for MemFile {
             uid: 0,
             gid: 0,
             size,
-            blocks: size.div_ceil(512),
+            // 512-byte 单位的已分配块：稀疏文件的洞不占用。
+            blocks: self.file.resident_pages()? as u64 * 8,
             block_size: 4096,
             atime: 0,
-            mtime: 0,
-            ctime: 0,
+            mtime: self.file.modified_seconds(),
+            ctime: self.file.modified_seconds(),
             device: None,
         })
     }
@@ -96,32 +103,35 @@ impl Inode for MemFile {
     }
 
     fn size(&self) -> u64 {
-        self.state.lock().len() as u64
+        self.file.size()
     }
 
     fn is_executable(&self) -> bool {
         false
     }
 
+    fn data_backing(&self) -> DataBacking {
+        DataBacking::Memory(self.file.clone())
+    }
+
     fn read_storage(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
-        let offset = usize::try_from(offset).map_err(|_| FileSystemError::InvalidOperation)?;
-        Ok(self.state.lock().read(offset, output))
+        self.file.read(offset, output)
     }
 
     fn write_storage(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
-        let offset = usize::try_from(offset).map_err(|_| FileSystemError::InvalidOperation)?;
-        self.state.lock().write(offset, input).map_err(state_error)
+        self.file.begin_write()?.write(offset, input)
     }
 
     fn append_storage(&self, input: &[u8]) -> Result<(u64, usize), FileSystemError> {
-        let offset = self.size();
-        let written = self.write_storage(offset, input)?;
-        Ok((offset, written))
+        self.file.begin_write()?.append(input, u64::MAX)
     }
 
     fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError> {
-        let size = usize::try_from(size).map_err(|_| FileSystemError::InvalidOperation)?;
-        self.state.lock().truncate(size).map_err(state_error)
+        self.file.truncate(size)
+    }
+
+    fn allocate_storage(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
+        self.file.allocate(offset, length)
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
@@ -169,13 +179,5 @@ impl Inode for MemFile {
 
     fn follow_link(&self) -> Option<Arc<OpenedFile>> {
         None
-    }
-}
-
-fn state_error(error: MemFileStateError) -> FileSystemError {
-    match error {
-        MemFileStateError::InvalidOperation => FileSystemError::InvalidOperation,
-        MemFileStateError::OutOfMemory => FileSystemError::OutOfMemory,
-        MemFileStateError::PermissionDenied => FileSystemError::PermissionDenied,
     }
 }

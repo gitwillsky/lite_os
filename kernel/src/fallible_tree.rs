@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use core::{cmp::Ordering, fmt, mem::MaybeUninit, ops::Index, ptr::NonNull};
+use core::{borrow::Borrow, cmp::Ordering, fmt, mem::MaybeUninit, ops::Index, ptr::NonNull};
 
 #[path = "fallible_tree/iter.rs"]
 mod iter;
@@ -231,10 +231,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// # Returns
     ///
     /// 已存在 value 的共享引用。
-    pub(crate) fn get(&self, key: &K) -> Option<&V> {
+    pub(crate) fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
         let mut cursor = self.root.as_deref();
         while let Some(node) = cursor {
-            match key.cmp(&node.key) {
+            match key.cmp(node.key.borrow()) {
                 Ordering::Less => cursor = node.left.as_deref(),
                 Ordering::Greater => cursor = node.right.as_deref(),
                 Ordering::Equal => return Some(&node.value),
@@ -252,10 +255,13 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// # Returns
     ///
     /// 已存在 value 的独占引用。
-    pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+    pub(crate) fn get_mut<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+    {
         let mut cursor = self.root.as_deref_mut();
         while let Some(node) = cursor {
-            match key.cmp(&node.key) {
+            match key.cmp(node.key.borrow()) {
                 Ordering::Less => cursor = node.left.as_deref_mut(),
                 Ordering::Greater => cursor = node.right.as_deref_mut(),
                 Ordering::Equal => return Some(&mut node.value),
@@ -273,7 +279,10 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// # Returns
     ///
     /// key 存在时为 true。
-    pub(crate) fn contains_key(&self, key: &K) -> bool {
+    pub(crate) fn contains_key<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
         self.get(key).is_some()
     }
 
@@ -494,7 +503,10 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// # Returns
     ///
     /// 原 value；key 不存在时为 None。
-    pub(crate) fn remove(&mut self, key: &K) -> Option<V> {
+    pub(crate) fn remove<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
         let entry = self.take_entry(key)?;
         let Node { value, .. } = *entry.0;
         Some(value)
@@ -509,12 +521,15 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// # Returns
     ///
     /// 可修改 key/value 后重新提交的 token；不存在时为 None。
-    pub(crate) fn take_entry(&mut self, key: &K) -> Option<VacantEntry<K, V>> {
+    pub(crate) fn take_entry<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<VacantEntry<K, V>>
+    where
+        K: Borrow<Q>,
+    {
         let (has_two_children, successor) = {
             let mut cursor = self.root.as_deref();
             loop {
                 let node = cursor?;
-                match key.cmp(&node.key) {
+                match key.cmp(node.key.borrow()) {
                     Ordering::Less => cursor = node.left.as_deref(),
                     Ordering::Greater => cursor = node.right.as_deref(),
                     Ordering::Equal => {
@@ -527,7 +542,7 @@ impl<K: Ord, V> FallibleMap<K, V> {
             let mut predecessor = None;
             let mut cursor = self.root.as_deref_mut();
             while let Some(node) = cursor {
-                if node.key < *key {
+                if node.key.borrow() < key {
                     predecessor = Some(NonNull::from(&mut *node));
                     cursor = node.right.as_deref_mut();
                 } else {

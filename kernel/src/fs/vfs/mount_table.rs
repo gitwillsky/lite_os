@@ -1,12 +1,13 @@
 use alloc::vec::Vec;
 
-use super::{FileSystemError, FileSystemStatistics};
+use super::{FileSystemError, FileSystemStatistics, MountFlags};
 
 pub(super) fn write_mount_record(
     output: &mut Vec<u8>,
     source: &[u8],
     target: &[u8],
     statistics: &FileSystemStatistics,
+    flags: MountFlags,
 ) -> Result<(), FileSystemError> {
     let escaped_fields = source
         .len()
@@ -15,7 +16,7 @@ pub(super) fn write_mount_record(
         .ok_or(FileSystemError::OutOfMemory)?;
     let required = escaped_fields
         .checked_add(statistics.type_name.len())
-        .and_then(|length| length.checked_add(16))
+        .and_then(|length| length.checked_add(40))
         .ok_or(FileSystemError::OutOfMemory)?;
     output
         .try_reserve(required)
@@ -25,11 +26,19 @@ pub(super) fn write_mount_record(
     write_field(output, target);
     output.push(b' ');
     output.extend_from_slice(statistics.type_name.as_bytes());
-    output.extend_from_slice(if statistics.flags & 1 != 0 {
-        b" ro 0 0\n"
-    } else {
-        b" rw 0 0\n"
-    });
+    // 文件系统自身只读（procfs 等）与挂载只读都显示为 `ro`。
+    let read_only = statistics.flags & 1 != 0 || flags.read_only();
+    output.extend_from_slice(if read_only { b" ro" } else { b" rw" });
+    for (set, name) in [
+        (flags.nosuid(), &b",nosuid"[..]),
+        (flags.nodev(), b",nodev"),
+        (flags.noexec(), b",noexec"),
+    ] {
+        if set {
+            output.extend_from_slice(name);
+        }
+    }
+    output.extend_from_slice(b" 0 0\n");
     Ok(())
 }
 

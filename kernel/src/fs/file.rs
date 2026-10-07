@@ -122,6 +122,17 @@ pub(crate) struct OpenFileDescription {
     // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
     // epoll 的 Linux close cleanup，缺失时会留下 fd reuse 可命中的旧 interest。
     descriptor_refs: AtomicUsize,
+    // 以写方式打开 inode 时登记的挂载写者；Drop 时归还。缺失则 `remount,ro` 看不到仍在写的 fd。
+    _write_open: Option<WriteOpen>,
+}
+
+/// 一个挂载上的“以写方式打开”登记，Drop 时撤销（Linux `mnt_drop_write` 的 OFD 版本）。
+struct WriteOpen(usize);
+
+impl Drop for WriteOpen {
+    fn drop(&mut self) {
+        crate::fs::vfs().end_write_open(self.0);
+    }
 }
 
 impl OpenFileDescription {
@@ -420,11 +431,26 @@ impl OpenFileDescription {
             character_opened: Some(backing_opened),
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
         })
         .map_err(|_| FileSystemError::OutOfMemory)
     }
 
-    pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Result<Arc<Self>, ()> {
+    /// 构造 pathname-backed regular/directory OFD。
+    ///
+    /// 以写方式打开（`O_WRONLY`/`O_RDWR`）时在挂载上登记一个写者，OFD 释放时撤销。
+    ///
+    /// # Errors
+    ///
+    /// 挂载为 read-only 返回 `ReadOnly`；分配失败返回 `OutOfMemory`。
+    pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Result<Arc<Self>, FileSystemError> {
+        let write_open = if flags & O_ACCMODE != O_RDONLY {
+            let filesystem = opened.inode().filesystem_id();
+            crate::fs::vfs().begin_write_open(filesystem)?;
+            Some(WriteOpen(filesystem))
+        } else {
+            None
+        };
         Arc::try_new(Self {
             kind: OpenFileKind::Inode(opened),
             position: FilePosition::new(),
@@ -432,8 +458,9 @@ impl OpenFileDescription {
             character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: write_open,
         })
-        .map_err(|_| ())
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     /// 构造 pathname-less memfd OFD。
@@ -445,6 +472,7 @@ impl OpenFileDescription {
             character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
         })
         .map_err(|_| ())
     }
@@ -457,6 +485,7 @@ impl OpenFileDescription {
             character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
         })
         .map_err(|_| ())
     }
@@ -469,6 +498,7 @@ impl OpenFileDescription {
             character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
         })
         .map_err(|_| ())?;
         let owner: Arc<dyn UnixPassedFile> = ofd.clone();
@@ -484,6 +514,7 @@ impl OpenFileDescription {
             character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
         })
         .map_err(|_| ())
     }
@@ -496,6 +527,7 @@ impl OpenFileDescription {
             character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
         })
         .map_err(|_| ())
     }
@@ -508,6 +540,7 @@ impl OpenFileDescription {
             character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
         })
         .map_err(|_| ())
     }

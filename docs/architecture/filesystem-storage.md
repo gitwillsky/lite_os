@@ -29,10 +29,27 @@
   primary home blocks 重新发布 superblock/GDT runtime owner，再执行 orphan recovery 与一致性扫描。
 - page cache 唯一拥有 shared file page identity、dirty/writeback 状态和 reclaim cursor；VMA 与 filesystem 通过 shared-page seam 交互。
 - 内核只挂载根文件系统（`fs::mount_root`，source 为 `/dev/<disk>`）与 `/dev` 上的 devtmpfs（Linux
-  `CONFIG_DEVTMPFS_MOUNT`）；`/proc`、`/sys`、`/dev/pts` 由 init 的 `/etc/init.d/rcS` 经 `mount(2)` 挂载。
-  `fs::mount` 按名称创建 `ext4`、`proc`、`sysfs`、`devpts`、`devtmpfs` 实例；伪文件系统每次挂载都分配
-  新的 filesystem instance id（Linux `get_anon_bdev`），因此各挂载有独立 `st_dev` 与 VFS identity。它们
-  不形成第二套 namespace 或对象状态。
+  `CONFIG_DEVTMPFS_MOUNT`）；`/proc`、`/sys`、`/dev/pts`、`/run`、`/tmp`、`/dev/shm` 由 init 的
+  `/etc/init.d/rcS` 经 `mount(2)` 挂载。文件系统类型是 `fs::FileSystemType` 注册表中的成员
+  （Linux `register_filesystem`）：`ext4`、`proc`、`sysfs`、`devpts`、`devtmpfs`、`tmpfs` 在 `init_vfs`
+  登记，`mount(2)` 的 `filesystemtype`、`rootfstype=` 与根挂载的候选都从同一张表解析。类型自己解析
+  `data` 选项并拒绝不认识的 key；VFS 只负责发布挂载，发布失败时调用 `FileSystem::shutdown`。
+  每个实例都分配新的 filesystem instance id（Linux `get_anon_bdev`），因此各挂载有独立 `st_dev` 与 VFS
+  identity，不形成第二套 namespace 或对象状态。
+- 内存型 regular file（tmpfs、memfd）的内容由 `fs::MemoryFile` 单份持有：稀疏页映射即文件内容，
+  不经 page cache。`Inode::data_backing` 区分 `PageCache`（持久文件）、`Snapshot`（procfs 即时生成）与
+  `Memory`；read/write/truncate/fallocate/mmap 按它分派。页在文件失去最后一个 link 与最后一个打开/映射引用
+  时随 `Arc` 释放并立即归还 `size=` 配额；page cache 的全局 registry 持有 inode 会让已删除文件的内容滞留到
+  下一次 `sync`，并让热数据占两份内存，所以内存型文件不得经过它。
+- tmpfs 的目录项按名字索引并按单调 cookie 迭代（`getdents` cursor 是上一项 cookie，`.`/`..` 固定为 1/2），
+  迭代中途创建或删除不会让位置漂移。`size=`/`nr_blocks=` 限制数据页，`nr_inodes=` 限制 inode；
+  `mode=`/`uid=`/`gid=` 决定根目录。`/dev/shm` 是 devfs 注册表声明的空目录，由 init 在其上挂载 tmpfs。
+- 挂载属性（`ro`、`nosuid`、`nodev`、`noexec`，位值与 `statfs.f_flags` 的 `ST_*` 一致）由 VFS 按挂载保存：
+  namespace 变更（create/unlink/rename/link/symlink）、chmod/chown/utimes 与以写方式打开得到 `EROFS`；
+  nodev 挂载上的设备节点不可 open（`EACCES`）；noexec 挂载上的文件不可 exec 或映射为可执行；nosuid 挂载上
+  exec 忽略 set-id 位。`MS_REMOUNT` 在同一把锁内替换属性：转为 read-only 时仍有以写方式打开的 OFD 返回
+  `EBUSY`（OFD 在创建时登记、释放时撤销写者），随后 filesystem 应用 `data`（失败则还原属性），最后同步。
+  `/proc/mounts` 与 `statfs` 反映这些属性。`MS_NOATIME` 等访问时间策略被接受：内核不在读取时维护 atime。
 - `umount2` 按 Linux 顺序拆除：VFS 判忙并摘下挂载 → 写回并逐出该实例的 page cache →
   `FileSystem::shutdown`（ext4 提交 journal 并让写回线程返回）。mmap 映射 pin 住来源打开条目（Linux
   `vm_file`），因此仍有映射的挂载保持忙。
@@ -47,6 +64,14 @@
 ## Known limits
 
 - 持久存储是固定 ext4/JBD2 profile；附加块设备可经 `mount(2)` 挂载，但没有分区、原始块 I/O 或 remount。
+- tmpfs 没有 swap：数据页只受 `size=` 与物理内存限制，`MAP_SHARED` 触碰超出配额的洞得到 `SIGBUS`
+  （与 Linux 一致）；可写映射建立时更新 `st_mtime`，之后的 store 不再经过内核。
+- 不支持 `huge=`、`mpol=`（没有大页与 NUMA 子系统）、xattr/ACL，也不支持 FIFO 与设备节点（只有 `bind`
+  创建的 socket）；`mknod` 对其余类型返回 `EOPNOTSUPP`。bind/move/propagation 挂载、`MS_SYNCHRONOUS`、
+  `MS_MANDLOCK`、`MS_NOSYMFOLLOW` 与同目录堆叠挂载返回 `EINVAL`/`EBUSY`。
+- tmpfs 目录树释放（umount 或最后一个引用消失）用常数栈的循环拆除，深度不受限。
+- 已删除文件的 page cache 在 unlink/rename 覆盖或最后一个打开条目释放时随 inode 逐出（Linux `evict_inode`），
+  ext4 的 orphan 回收不再等待下一次 `sync`；仍被打开或映射的文件保持存活。
 - 没有通用 block scheduler 或多个可热插拔持久卷策略。
 - 已返回的写入在 `fsync`/`sync` 前最多可能丢失 5 秒（与 Linux `commit=5` 一致）；块分配仍发生在
   `write` 时，没有 delayed allocation。

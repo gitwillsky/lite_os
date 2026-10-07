@@ -89,6 +89,7 @@ impl VirtualFileSystem {
             return Err(FileSystemError::AlreadyExists);
         }
         let parent_inode = parent.inode();
+        self.require_writable(parent_inode.filesystem_id())?;
         let parent_metadata = parent_inode.metadata()?;
         identity.require(parent_metadata, 3)?;
         let gid = if parent_metadata.mode & 0o2000 != 0 {
@@ -133,6 +134,7 @@ impl VirtualFileSystem {
         };
         let (parent, name) = self.parent_from(start, path, identity)?;
         let parent_inode = parent.inode();
+        self.require_writable(parent_inode.filesystem_id())?;
         let metadata = parent_inode.metadata()?;
         identity.require(metadata, 3)?;
         let gid = if metadata.mode & 0o2000 != 0 {
@@ -169,6 +171,7 @@ impl VirtualFileSystem {
         };
         let (parent, name) = self.parent_from(new_start, new_path, identity)?;
         let parent_inode = parent.inode();
+        self.require_writable(parent_inode.filesystem_id())?;
         identity.require(parent_inode.metadata()?, 3)?;
         let target_metadata = target.metadata()?;
         let safe_source = target_metadata.kind == InodeType::File
@@ -202,6 +205,7 @@ impl VirtualFileSystem {
         };
         let (parent, name) = self.parent_from(start, path, identity)?;
         let parent_inode = parent.inode();
+        self.require_writable(parent_inode.filesystem_id())?;
         let parent_metadata = parent_inode.metadata()?;
         identity.require(parent_metadata, 3)?;
         let target_inode = parent_inode.find_child(&name)?;
@@ -223,6 +227,7 @@ impl VirtualFileSystem {
             &name,
             (target_inode.filesystem_id(), target.inode),
         );
+        super::super::page_cache::evict_if_unlinked(&target_inode, 1);
         Ok(())
     }
 
@@ -252,6 +257,8 @@ impl VirtualFileSystem {
         let (new_parent, new_name) = self.parent_from(new_start, new_path, identity)?;
         let old_parent_inode = old_parent.inode();
         let new_parent_inode = new_parent.inode();
+        self.require_writable(old_parent_inode.filesystem_id())?;
+        self.require_writable(new_parent_inode.filesystem_id())?;
         let old_metadata = old_parent_inode.metadata()?;
         let new_metadata = new_parent_inode.metadata()?;
         identity.require(old_metadata, 3)?;
@@ -305,6 +312,9 @@ impl VirtualFileSystem {
                 &new_name,
                 identity,
             );
+        }
+        if let Some(target) = &target {
+            super::super::page_cache::evict_if_unlinked(target, 1);
         }
         self.opened.move_entries(
             (old_parent_inode.filesystem_id(), old_metadata.inode),

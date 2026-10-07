@@ -104,6 +104,10 @@
 | `kernel/src/fs/vfs/opened_index.rs :: OpenedIndex.entries` | `Mutex < FallibleMap < OpenedIndexKey , Weak < OpenedFile > > >` |
 | `kernel/src/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
 | `kernel/src/fs/ext4/journal.rs :: StagedBlocks.metadata` | `FallibleMap < u64 , Vec < u8 > >` |
+| `kernel/src/fs/memory_file/sparse.rs :: SparsePages.pages` | `FallibleMap < u64 , Arc < P > >` |
+| `kernel/src/fs/tmpfs.rs :: Namespace.inodes` | `FallibleMap < u64 , Weak < TmpInode > >` |
+| `kernel/src/fs/tmpfs/directory.rs :: Directory.names` | `FallibleMap < Key , Slot < T > >` |
+| `kernel/src/fs/tmpfs/directory.rs :: Directory.order` | `FallibleMap < u64 , Key >` |
 | `kernel/src/fs/ext4/journal.rs :: StagedBlocks.data` | `FallibleMap < u64 , Vec < u8 > >` |
 | `kernel/src/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
 | `kernel/src/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |

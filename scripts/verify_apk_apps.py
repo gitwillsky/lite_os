@@ -79,15 +79,15 @@ def inject_sysinit(
     inittab.write_text(guest_inittab(command))
     transaction = directory / f"{guest_script.stem}.debugfs"
     commands = [
-        f"write {guest_script} /run/{guest_script.name}",
-        f"set_inode_field /run/{guest_script.name} mode 0100755",
+        f"write {guest_script} /var/tmp/{guest_script.name}",
+        f"set_inode_field /var/tmp/{guest_script.name} mode 0100755",
     ]
     if include_network_helper:
         helper = FIXTURES / "network-up.sh"
         commands.extend(
             (
-                f"write {helper} /run/apk-network-up.sh",
-                "set_inode_field /run/apk-network-up.sh mode 0100755",
+                f"write {helper} /var/tmp/apk-network-up.sh",
+                "set_inode_field /var/tmp/apk-network-up.sh mode 0100755",
             )
         )
     commands.extend(("rm /etc/inittab", f"write {inittab} /etc/inittab"))
@@ -99,13 +99,13 @@ def inject_sqlite_recovery_assets(image: Path, directory: Path) -> None:
     """在 mutation 前注入下一次 boot policy，避免 crash 后用 debugfs 绕过 journal replay。"""
     recovery = FIXTURES / "sqlite-recovery.sh"
     inittab = directory / "sqlite-recovery.inittab"
-    inittab.write_text(guest_inittab(f"/bin/sh /run/{recovery.name}"))
+    inittab.write_text(guest_inittab(f"/bin/sh /var/tmp/{recovery.name}"))
     transaction = directory / "sqlite-recovery-assets.debugfs"
     transaction.write_text(
-        f"write {recovery} /run/{recovery.name}\n"
-        f"set_inode_field /run/{recovery.name} mode 0100755\n"
-        f"write {inittab} /run/sqlite-recovery.inittab\n"
-        f"write {ROOT / 'user' / 'base' / 'inittab'} /run/normal.inittab\n"
+        f"write {recovery} /var/tmp/{recovery.name}\n"
+        f"set_inode_field /var/tmp/{recovery.name} mode 0100755\n"
+        f"write {inittab} /var/tmp/sqlite-recovery.inittab\n"
+        f"write {ROOT / 'user' / 'base' / 'inittab'} /var/tmp/normal.inittab\n"
     )
     apply_debugfs_script(image, transaction)
 
@@ -140,15 +140,15 @@ def install_applications(base_image: Path, directory: Path) -> Path:
     shutil.copyfile(base_image, temporary)
     normal_inittab = ROOT / "user" / "base" / "inittab"
     bootstrap_inittab = directory / "install.inittab"
-    bootstrap_inittab.write_text(guest_inittab("/bin/sh /run/verify-apk-install.sh"))
+    bootstrap_inittab.write_text(guest_inittab("/bin/sh /var/tmp/verify-apk-install.sh"))
     transaction = directory / "install.debugfs"
     commands = [
-        "mkdir /run/apk-apps",
-        f"write {install_script} /run/verify-apk-install.sh",
-        "set_inode_field /run/verify-apk-install.sh mode 0100755",
-        f"write {normal_inittab} /run/normal.inittab",
+        "mkdir /var/tmp/apk-apps",
+        f"write {install_script} /var/tmp/verify-apk-install.sh",
+        "set_inode_field /var/tmp/verify-apk-install.sh mode 0100755",
+        f"write {normal_inittab} /var/tmp/normal.inittab",
     ]
-    commands.extend(f"write {archive} /run/apk-apps/{archive.name}" for archive in apks.archives)
+    commands.extend(f"write {archive} /var/tmp/apk-apps/{archive.name}" for archive in apks.archives)
     commands.extend(("rm /etc/inittab", f"write {bootstrap_inittab} /etc/inittab"))
     transaction.write_text("\n".join(commands) + "\n")
     apply_debugfs_script(temporary, transaction)
@@ -179,7 +179,7 @@ def install_applications(base_image: Path, directory: Path) -> Path:
     for package in ("curl", "sqlite", "git"):
         if f"P:{package}\n" not in installed_database:
             raise RuntimeError(f"guest APK transaction did not own {package}")
-    if ".apk" in run_debugfs(temporary, "ls -l /run"):
+    if ".apk" in run_debugfs(temporary, "ls -l /var/tmp"):
         raise RuntimeError("installed application image retains APK transport archives")
     temporary.replace(installed)
     publish_runtime_gate(stamp, payload)
@@ -226,7 +226,7 @@ def verify_network_applications(
         image,
         directory,
         script,
-        f"/bin/sh /run/{script.name} {port} {payload_hash} {commit}",
+        f"/bin/sh /var/tmp/{script.name} {port} {payload_hash} {commit}",
         include_network_helper=True,
     )
     boot(
@@ -249,7 +249,7 @@ def verify_sqlite(installed: Path, directory: Path) -> None:
     persistent = directory / "sqlite.img"
     shutil.copyfile(installed, persistent)
     script = FIXTURES / "sqlite.sh"
-    inject_sysinit(persistent, directory, script, f"/bin/sh /run/{script.name}")
+    inject_sysinit(persistent, directory, script, f"/bin/sh /var/tmp/{script.name}")
     inject_sqlite_recovery_assets(persistent, directory)
     boot(
         persistent,
@@ -277,7 +277,7 @@ def verify_sqlite(installed: Path, directory: Path) -> None:
         crashed,
         directory,
         crash,
-        f"/bin/sh /run/{crash.name}",
+        f"/bin/sh /var/tmp/{crash.name}",
     )
     boot(
         crashed,

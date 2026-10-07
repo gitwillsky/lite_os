@@ -140,7 +140,7 @@ def _stage_installation(
     normal_inittab = directory / "normal.inittab"
     if not _try_dump(
         image,
-        "/run/liteos-agent/normal.inittab",
+        "/var/tmp/liteos-agent/normal.inittab",
         normal_inittab,
     ):
         _dump(image, "/etc/inittab", normal_inittab)
@@ -163,43 +163,43 @@ def _stage_installation(
         + "\n"
     )
     bootstrap_inittab = directory / "bootstrap.inittab"
-    bootstrap_inittab.write_text(guest_inittab("/bin/sh /run/liteos-agent/install.sh"))
+    bootstrap_inittab.write_text(guest_inittab("/bin/sh /var/tmp/liteos-agent/install.sh"))
 
     stale_files = [
-        "/run/liteos-agent/install.sh",
-        "/run/liteos-agent/versions",
-        "/run/liteos-agent/stamp.json",
-        "/run/liteos-agent/normal.inittab",
-        "/run/liteos-agent/npm-cache.tar",
+        "/var/tmp/liteos-agent/install.sh",
+        "/var/tmp/liteos-agent/versions",
+        "/var/tmp/liteos-agent/stamp.json",
+        "/var/tmp/liteos-agent/normal.inittab",
+        "/var/tmp/liteos-agent/npm-cache.tar",
     ]
     stale_files.extend(
-        f"/run/liteos-agent/apks/{archive.name}"
+        f"/var/tmp/liteos-agent/apks/{archive.name}"
         for archive in artifacts.alpine_apks
     )
     commands = [f"rm {path}" for path in stale_files]
     commands.extend(
         (
-            "rmdir /run/liteos-agent/apks",
-            "rmdir /run/liteos-agent",
+            "rmdir /var/tmp/liteos-agent/apks",
+            "rmdir /var/tmp/liteos-agent",
         )
     )
     commands.extend(
         [
-            "mkdir /run/liteos-agent",
-            "mkdir /run/liteos-agent/apks",
-            f"write {INSTALL_SCRIPT} /run/liteos-agent/install.sh",
-            "set_inode_field /run/liteos-agent/install.sh mode 0100755",
-            f"write {versions} /run/liteos-agent/versions",
-            f"write {stamp} /run/liteos-agent/stamp.json",
-            f"write {normal_inittab} /run/liteos-agent/normal.inittab",
-            f"write {artifacts.npm_cache_archive} /run/liteos-agent/npm-cache.tar",
+            "mkdir /var/tmp/liteos-agent",
+            "mkdir /var/tmp/liteos-agent/apks",
+            f"write {INSTALL_SCRIPT} /var/tmp/liteos-agent/install.sh",
+            "set_inode_field /var/tmp/liteos-agent/install.sh mode 0100755",
+            f"write {versions} /var/tmp/liteos-agent/versions",
+            f"write {stamp} /var/tmp/liteos-agent/stamp.json",
+            f"write {normal_inittab} /var/tmp/liteos-agent/normal.inittab",
+            f"write {artifacts.npm_cache_archive} /var/tmp/liteos-agent/npm-cache.tar",
             "mkdir /usr/local/bin",
             "rm /usr/local/bin/codex",
             "rm /usr/local/bin/claude",
         ]
     )
     commands.extend(
-        f"write {archive} /run/liteos-agent/apks/{archive.name}"
+        f"write {archive} /var/tmp/liteos-agent/apks/{archive.name}"
         for archive in artifacts.alpine_apks
     )
     commands.extend(("rm /etc/inittab", f"write {bootstrap_inittab} /etc/inittab"))

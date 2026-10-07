@@ -40,6 +40,9 @@ fn target(
 }
 
 fn chmod_inode(task: &TaskControlBlock, inode: alloc::sync::Arc<dyn Inode>, mode: u32) -> isize {
+    if let Err(error) = vfs().require_writable(inode.filesystem_id()) {
+        return ferr(error);
+    }
     inode
         .change_owner_mode(OwnerModeChange::chmod(task.access_identity(true), mode))
         .map_or_else(ferr, |()| 0)
@@ -95,6 +98,9 @@ fn chown_inode(
 ) -> isize {
     let uid = (owner != u32::MAX).then_some(owner);
     let gid = (group != u32::MAX).then_some(group);
+    if let Err(error) = vfs().require_writable(inode.filesystem_id()) {
+        return ferr(error);
+    }
     inode
         .change_owner_mode(OwnerModeChange::chown(task.access_identity(true), uid, gid))
         .map_or_else(

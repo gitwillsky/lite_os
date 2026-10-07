@@ -1,5 +1,5 @@
 use super::{
-    FileSystemError, PAGE_SIZE, RegularFileWrite,
+    CachedWrite, FileSystemError, PAGE_SIZE, RegularFileWrite,
     writeback_batch::{REGULAR_WRITE_BATCH_PAGES, commit_contiguous_prefix_with_backoff},
 };
 
@@ -10,13 +10,35 @@ impl RegularFileWrite<'_> {
     /// 非对齐 byte range 可能触及 257 个 filesystem blocks，并由 storage capacity error 退避。
     pub(crate) const MAX_STAGING_BYTES: usize = REGULAR_WRITE_BATCH_PAGES * PAGE_SIZE;
 
+    /// 向文件写入 `input`；见 [`CachedWrite::write`] 与 [`MemoryWrite::write`](super::MemoryWrite)。
+    pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
+        match self {
+            Self::Cached(write) => write.write(offset, input),
+            Self::Memory(write) => write.write(offset, input),
+        }
+    }
+
+    /// 受 `size_limit` 约束的原子 append。
+    pub(crate) fn append(
+        &self,
+        input: &[u8],
+        size_limit: u64,
+    ) -> Result<(u64, usize), FileSystemError> {
+        match self {
+            Self::Cached(write) => write.append(input, size_limit),
+            Self::Memory(write) => write.append(input, size_limit),
+        }
+    }
+}
+
+impl CachedWrite<'_> {
     fn write_batched(
         &self,
         input: &[u8],
         mut write: impl FnMut(usize, &[u8]) -> Result<(u64, usize), FileSystemError>,
     ) -> Result<(u64, usize), FileSystemError> {
         assert!(!input.is_empty());
-        assert!(input.len() <= Self::MAX_STAGING_BYTES);
+        assert!(input.len() <= RegularFileWrite::MAX_STAGING_BYTES);
         commit_contiguous_prefix_with_backoff(
             input.len(),
             PAGE_SIZE,
@@ -44,7 +66,7 @@ impl RegularFileWrite<'_> {
     /// # Errors
     ///
     /// storage mutation 失败时透传 filesystem error。
-    pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
+    fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
         if input.is_empty() {
             return Ok(0);
         }
@@ -79,11 +101,7 @@ impl RegularFileWrite<'_> {
     /// # Errors
     ///
     /// storage mutation 失败时透传 filesystem error。
-    pub(crate) fn append(
-        &self,
-        input: &[u8],
-        size_limit: u64,
-    ) -> Result<(u64, usize), FileSystemError> {
+    fn append(&self, input: &[u8], size_limit: u64) -> Result<(u64, usize), FileSystemError> {
         let _operation = self
             .file
             .operation

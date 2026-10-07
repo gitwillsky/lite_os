@@ -2,7 +2,7 @@
 set -eu
 
 database=/root/sqlite-gate.db
-ready=/run/sqlite-crash-writer-active
+ready=/var/tmp/sqlite-crash-writer-active
 report_failure() {
     status=$?
     if [ "$status" -ne 0 ]; then
@@ -18,7 +18,7 @@ rm -f "$ready"
         'PRAGMA journal_mode=WAL;' \
         'BEGIN IMMEDIATE;' \
         'INSERT INTO records(value) VALUES("uncommitted-crash");' \
-        '.shell echo ready > /run/sqlite-crash-writer-active'
+        '.shell echo ready > /var/tmp/sqlite-crash-writer-active'
     # 覆盖最长 5 秒 marker 观察窗口并留出 kill 余量；30 秒会让 ash 长时间等待孤儿 job。
     sleep 10
     printf '%s\n' 'COMMIT;'

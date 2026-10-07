@@ -160,6 +160,12 @@ pub(crate) fn sys_mmap(
             {
                 return -errno::EACCES;
             }
+            // Linux `mmap_region`：noexec 挂载上的文件不可映射为可执行。
+            if permission.contains(MapPermission::X)
+                && crate::fs::vfs().mount_flags(inode.filesystem_id()).noexec()
+            {
+                return -errno::EPERM;
+            }
             let mapping = match crate::fs::mapping(inode.clone(), ofd.opened_ref()) {
                 Ok(mapping) => mapping,
                 Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,

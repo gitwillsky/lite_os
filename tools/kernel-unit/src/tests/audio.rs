@@ -3,9 +3,7 @@ use crate::{
     audio_readiness::project,
     audio_state::{PcmState, PcmStateOwner},
     drivers::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES},
-    memfd_state::{
-        F_SEAL_GROW, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_WRITE, MemFileState, MemFileStateError,
-    },
+    memory_seals::{F_SEAL_GROW, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_WRITE, SealError, Seals},
     virtio_sound_lifecycle::{DeviceState, polled_control_ack_requires_deferred, unique_slot_for},
     virtio_sound_wire,
 };
@@ -109,48 +107,36 @@ fn virtio_sound_wire_codec_is_little_endian_and_bounded() {
 }
 
 #[test]
-fn memfd_shared_storage_and_seals_are_one_state_machine() {
-    let mut state = MemFileState::new(true);
-    state.truncate(4096).unwrap();
-    assert_eq!(state.len(), 4096);
-    state.write(64, b"shared-pcm").unwrap();
-    let mut output = [0u8; 10];
-    assert_eq!(state.read(64, &mut output), output.len());
-    assert_eq!(&output, b"shared-pcm");
-
+fn seals_gate_growth_shrink_and_are_append_only() {
+    let mut seals = Seals::new(true);
+    assert_eq!(seals.check_truncate(0, 4096), Ok(()));
     assert_eq!(
-        state.add_seals(F_SEAL_GROW | F_SEAL_SHRINK).unwrap(),
+        seals.add(F_SEAL_GROW | F_SEAL_SHRINK).unwrap(),
         F_SEAL_GROW | F_SEAL_SHRINK
     );
     assert_eq!(
-        state.truncate(8192),
-        Err(MemFileStateError::PermissionDenied)
+        seals.check_truncate(4096, 8192),
+        Err(SealError::PermissionDenied)
     );
     assert_eq!(
-        state.truncate(2048),
-        Err(MemFileStateError::PermissionDenied)
+        seals.check_truncate(4096, 2048),
+        Err(SealError::PermissionDenied)
     );
-    assert_eq!(state.write(usize::MAX, &[]), Ok(0));
-    state.write(128, b"still-writable").unwrap();
+    assert_eq!(seals.check_write(4096, 4096), Ok(()));
     assert_eq!(
-        state.add_seals(F_SEAL_WRITE),
-        Err(MemFileStateError::InvalidOperation)
+        seals.check_write(4096, 4097),
+        Err(SealError::PermissionDenied)
     );
-    state.add_seals(F_SEAL_SEAL).unwrap();
-    assert_eq!(
-        state.add_seals(F_SEAL_GROW),
-        Err(MemFileStateError::PermissionDenied)
-    );
+    assert_eq!(seals.add(F_SEAL_WRITE), Err(SealError::InvalidOperation));
+    seals.add(F_SEAL_SEAL).unwrap();
+    assert_eq!(seals.add(F_SEAL_GROW), Err(SealError::PermissionDenied));
 }
 
 #[test]
 fn memfd_without_allow_sealing_starts_sealed() {
-    let mut state = MemFileState::new(false);
-    assert_eq!(state.seals(), F_SEAL_SEAL);
-    assert_eq!(
-        state.add_seals(F_SEAL_GROW),
-        Err(MemFileStateError::PermissionDenied)
-    );
+    let mut seals = Seals::new(false);
+    assert_eq!(seals.bits(), F_SEAL_SEAL);
+    assert_eq!(seals.add(F_SEAL_GROW), Err(SealError::PermissionDenied));
 }
 
 #[test]

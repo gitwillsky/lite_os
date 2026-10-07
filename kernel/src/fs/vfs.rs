@@ -5,6 +5,8 @@ use super::device::DeviceNumber;
 use super::{AccessIdentity, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeType};
 use crate::sync::TaskMutex;
 
+#[path = "vfs/mount_flags.rs"]
+mod mount_flags;
 #[path = "vfs/mount_table.rs"]
 mod mount_table;
 #[path = "vfs/mutation.rs"]
@@ -13,6 +15,7 @@ mod mutation;
 mod opened;
 #[path = "vfs/opened_index.rs"]
 mod opened_index;
+pub(crate) use mount_flags::MountFlags;
 use mount_table::write_mount_record;
 pub(crate) use opened::OpenedFile;
 use opened_index::OpenedIndex;
@@ -52,6 +55,15 @@ struct RootMount {
     root: Arc<OpenedFile>,
     /// 承载根文件系统的块设备。
     device: Option<DeviceNumber>,
+    attributes: MountAttributes,
+}
+
+/// 挂载属性与以写方式打开的 OFD 数；二者在同一把锁内变化，read-only remount 才能原子判忙。
+#[derive(Clone, Copy, Default)]
+struct MountAttributes {
+    flags: MountFlags,
+    // 以写方式打开的 OFD 数（Linux `mnt_writers`）：缺失时 `remount,ro` 之后仍有可写 fd 在改文件。
+    writers: usize,
 }
 
 struct Mount {
@@ -64,6 +76,7 @@ struct Mount {
     point: Arc<OpenedFile>,
     parent: Arc<OpenedFile>,
     root: Arc<OpenedFile>,
+    attributes: MountAttributes,
 }
 
 impl VirtualFileSystem {
@@ -327,6 +340,7 @@ impl VirtualFileSystem {
             filesystem: fs,
             root,
             device,
+            attributes: MountAttributes::default(),
         });
         Ok(())
     }
@@ -352,6 +366,7 @@ impl VirtualFileSystem {
     /// - `source`: `/proc/mounts` 中的 mount source。
     /// - `filesystem`: mount 后由 root inode owner 保活的 filesystem adapter。
     /// - `device`: 承载该文件系统的块设备号；nodev 文件系统为 `None`。
+    /// - `flags`: 挂载属性。
     ///
     /// # Errors
     ///
@@ -363,6 +378,7 @@ impl VirtualFileSystem {
         source: &[u8],
         filesystem: Arc<dyn FileSystem>,
         device: Option<DeviceNumber>,
+        flags: MountFlags,
     ) -> Result<(), FileSystemError> {
         if point.inode().inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
@@ -404,6 +420,7 @@ impl VirtualFileSystem {
             point,
             parent,
             root,
+            attributes: MountAttributes { flags, writers: 0 },
         });
         Ok(())
     }
@@ -447,6 +464,110 @@ impl VirtualFileSystem {
         Ok(mounts.remove(index).filesystem)
     }
 
+    /// 在 `mounts`/`root_fs` 锁内对承载 `filesystem_id` 的挂载属性执行 `visit`。
+    ///
+    /// 没有挂载承载该文件系统（例如匿名 memfd）时返回 `None`。
+    fn with_attributes<R>(
+        &self,
+        filesystem_id: usize,
+        visit: impl FnOnce(&mut MountAttributes) -> R,
+    ) -> Option<R> {
+        if let Some(root) = self.root_fs.lock().as_mut()
+            && root.root.inode().filesystem_id() == filesystem_id
+        {
+            return Some(visit(&mut root.attributes));
+        }
+        self.mounts
+            .lock()
+            .iter_mut()
+            .find(|mount| mount.root_identity.0 == filesystem_id)
+            .map(|mount| visit(&mut mount.attributes))
+    }
+
+    /// 承载 `filesystem_id` 的挂载属性；没有挂载时为空集合。
+    pub(crate) fn mount_flags(&self, filesystem_id: usize) -> MountFlags {
+        self.with_attributes(filesystem_id, |attributes| attributes.flags)
+            .unwrap_or_default()
+    }
+
+    /// 在会修改该文件系统的 namespace 或 metadata 的操作前调用（Linux `mnt_want_write`）。
+    ///
+    /// # Errors
+    ///
+    /// 挂载为 read-only 返回 `ReadOnly`。
+    pub(crate) fn require_writable(&self, filesystem_id: usize) -> Result<(), FileSystemError> {
+        if self.mount_flags(filesystem_id).read_only() {
+            return Err(FileSystemError::ReadOnly);
+        }
+        Ok(())
+    }
+
+    /// 登记一个以写方式打开的 OFD；与 `remount,ro` 在同一把锁内互斥。
+    ///
+    /// # Errors
+    ///
+    /// 挂载为 read-only 返回 `ReadOnly`。
+    pub(crate) fn begin_write_open(&self, filesystem_id: usize) -> Result<(), FileSystemError> {
+        self.with_attributes(filesystem_id, |attributes| {
+            if attributes.flags.read_only() {
+                return Err(FileSystemError::ReadOnly);
+            }
+            attributes.writers += 1;
+            Ok(())
+        })
+        .unwrap_or(Ok(()))
+    }
+
+    /// 撤销一次 [`Self::begin_write_open`]；挂载已被卸载时为空操作。
+    pub(crate) fn end_write_open(&self, filesystem_id: usize) {
+        self.with_attributes(filesystem_id, |attributes| {
+            attributes.writers = attributes
+                .writers
+                .checked_sub(1)
+                .expect("write-open count released without acquire");
+        });
+    }
+
+    /// 替换以 `root` 为根的挂载的属性（Linux `do_remount` 的 `MS_REMOUNT` 路径）。
+    ///
+    /// # Returns
+    ///
+    /// 该挂载的 filesystem 与旧属性；调用者在 filesystem 重配置失败时用 [`Self::restore_mount_flags`]
+    /// 还原。
+    ///
+    /// # Errors
+    ///
+    /// `root` 不是挂载根返回 `InvalidOperation`；转为 read-only 时仍有可写打开的 OFD 返回 `Busy`。
+    pub(crate) fn replace_mount_flags(
+        &self,
+        root: &Arc<OpenedFile>,
+        flags: MountFlags,
+    ) -> Result<(Arc<dyn FileSystem>, MountFlags), FileSystemError> {
+        let identity = Self::identity(&root.inode())?;
+        let swap = |attributes: &mut MountAttributes| {
+            if flags.read_only() && !attributes.flags.read_only() && attributes.writers != 0 {
+                return Err(FileSystemError::Busy);
+            }
+            Ok(core::mem::replace(&mut attributes.flags, flags))
+        };
+        if let Some(mount) = self.root_fs.lock().as_mut()
+            && Arc::ptr_eq(&mount.root, root)
+        {
+            return Ok((mount.filesystem.clone(), swap(&mut mount.attributes)?));
+        }
+        let mut mounts = self.mounts.lock();
+        let mount = mounts
+            .iter_mut()
+            .find(|mount| mount.root_identity == identity)
+            .ok_or(FileSystemError::InvalidOperation)?;
+        Ok((mount.filesystem.clone(), swap(&mut mount.attributes)?))
+    }
+
+    /// 还原 [`Self::replace_mount_flags`] 之前的属性。
+    pub(crate) fn restore_mount_flags(&self, filesystem_id: usize, flags: MountFlags) {
+        self.with_attributes(filesystem_id, |attributes| attributes.flags = flags);
+    }
+
     /// 取得 inode 所属 mounted filesystem 的最终 Linux statfs 快照。
     ///
     /// # Parameters
@@ -478,7 +599,7 @@ impl VirtualFileSystem {
         let mut statistics = filesystem
             .ok_or(FileSystemError::InvalidFileSystem)?
             .statistics()?;
-        statistics.flags |= 0x20;
+        statistics.flags |= 0x20 | self.mount_flags(filesystem_id).bits();
         Ok(statistics)
     }
 
@@ -495,7 +616,11 @@ impl VirtualFileSystem {
         let root = {
             let root = self.root_fs.lock();
             let root = root.as_ref().ok_or(FileSystemError::NotFound)?;
-            (owned_bytes(&root.source)?, root.filesystem.clone())
+            (
+                owned_bytes(&root.source)?,
+                root.filesystem.clone(),
+                root.attributes.flags,
+            )
         };
         let mounts = {
             let mounted = self.mounts.lock();
@@ -508,15 +633,22 @@ impl VirtualFileSystem {
                     owned_bytes(&mount.source)?,
                     mount.point.clone(),
                     mount.filesystem.clone(),
+                    mount.attributes.flags,
                 ));
             }
             snapshot
         };
         let mut output = Vec::new();
-        write_mount_record(&mut output, &root.0, b"/", &root.1.statistics()?)?;
-        for (source, point, filesystem) in mounts {
+        write_mount_record(&mut output, &root.0, b"/", &root.1.statistics()?, root.2)?;
+        for (source, point, filesystem, flags) in mounts {
             let target = self.absolute_path(point)?;
-            write_mount_record(&mut output, &source, &target, &filesystem.statistics()?)?;
+            write_mount_record(
+                &mut output,
+                &source,
+                &target,
+                &filesystem.statistics()?,
+                flags,
+            )?;
         }
         Ok(output)
     }

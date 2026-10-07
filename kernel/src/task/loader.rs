@@ -161,7 +161,11 @@ pub(crate) fn load_executable(
             .open_file_at(Some(working_directory.clone()), &current_path, identity)
             .map_err(ProgramLoadError::FileSystem)?;
         let inode = executable.inode();
-        let metadata = inode.metadata().map_err(ProgramLoadError::FileSystem)?;
+        let mut metadata = inode.metadata().map_err(ProgramLoadError::FileSystem)?;
+        if vfs().mount_flags(inode.filesystem_id()).nosuid() {
+            // nosuid 挂载上的 set-id 位在 exec 时被忽略（Linux `bprm_fill_uid`）。
+            metadata.mode &= !0o6000;
+        }
         identity
             .require(metadata, 1)
             .map_err(ProgramLoadError::FileSystem)?;
@@ -206,6 +210,10 @@ fn source(inode: Arc<dyn Inode>) -> Result<Arc<dyn ExecutableSource>, ProgramLoa
     }
     if !inode.is_executable() {
         return Err(ProgramLoadError::NotExecutable);
+    }
+    // Linux `may_open` 对 exec 的检查：noexec 挂载上的文件（含解释器）一律拒绝。
+    if vfs().mount_flags(inode.filesystem_id()).noexec() {
+        return Err(ProgramLoadError::FileSystem(FileSystemError::AccessDenied));
     }
     let length = usize::try_from(inode.size())
         .map_err(|_| ProgramLoadError::FileSystem(FileSystemError::IoError))?;

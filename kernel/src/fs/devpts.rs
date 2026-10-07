@@ -290,3 +290,22 @@ impl FileSystem for DevPtsFileSystem {
         })
     }
 }
+
+/// devpts 类型：不接受选项（`gid=`/`mode=`/`ptmxmode=` 尚未支持）。
+pub(super) struct DevPtsFileSystemType;
+
+impl super::mount::FileSystemType for DevPtsFileSystemType {
+    fn name(&self) -> &'static str {
+        "devpts"
+    }
+
+    fn create(
+        &self,
+        request: &super::mount::MountRequest<'_>,
+    ) -> Result<Arc<dyn super::FileSystem>, FileSystemError> {
+        if !super::mount_options::is_empty(request.options) {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        Ok(DevPtsFileSystem::new()?)
+    }
+}

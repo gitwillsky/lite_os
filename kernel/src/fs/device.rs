@@ -407,6 +407,63 @@ pub(super) fn block_device(number: DeviceNumber) -> Option<Arc<dyn BlockDevice>>
         .map(|(_, device)| device.clone())
 }
 
+/// `path` 的全部尚未登记的祖先目录（`include_path` 时含 `path` 自身）。
+fn missing_directories(
+    registry: &Registry,
+    path: &[u8],
+    include_path: bool,
+) -> Result<Vec<Vec<u8>>, FileSystemError> {
+    let mut missing = Vec::new();
+    let ends = path
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b'/')
+        .map(|(index, _)| index)
+        .chain(include_path.then_some(path.len()));
+    for end in ends {
+        let directory = &path[..end];
+        if registry.directories.iter().any(|known| known == directory)
+            || missing.iter().any(|known: &Vec<u8>| known == directory)
+        {
+            continue;
+        }
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(directory.len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        owned.extend_from_slice(directory);
+        missing
+            .try_reserve(1)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        missing.push(owned);
+    }
+    Ok(missing)
+}
+
+/// 在 devfs 发布一个空目录（例如供 init 挂载 tmpfs 的 `/dev/shm`；Linux 由 init 在可写的
+/// devtmpfs 里 `mkdir`，这里的 devfs 由注册表投影、不可写，所以由登记方声明）。
+///
+/// # Parameters
+///
+/// - `path`: 相对 `/dev` 的目录路径，祖先目录一并发布。
+///
+/// # Errors
+///
+/// 路径已被设备节点占用返回 `AlreadyExists`；分配失败返回 `OutOfMemory`。目录已登记时为空操作。
+pub(crate) fn register_directory(path: &[u8]) -> Result<(), FileSystemError> {
+    let mut registry = REGISTRY.lock();
+    if registry.devices.iter().any(|node| node.path == path) {
+        return Err(FileSystemError::AlreadyExists);
+    }
+    let missing = missing_directories(&registry, path, true)?;
+    registry
+        .directories
+        .try_reserve(missing.len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    registry.directories.extend(missing);
+    Ok(())
+}
+
 fn publish_node(
     path: &[u8],
     number: DeviceNumber,
@@ -438,27 +495,7 @@ fn publish_node(
         return Err(FileSystemError::AlreadyExists);
     }
     // 1. 先为全部缺失的祖先目录预留并构造条目，再一次性发布，失败时注册表保持不变。
-    let mut missing = Vec::new();
-    for (index, byte) in path.iter().enumerate() {
-        if *byte != b'/' {
-            continue;
-        }
-        let directory = &path[..index];
-        if registry.directories.iter().any(|known| known == directory)
-            || missing.iter().any(|known: &Vec<u8>| known == directory)
-        {
-            continue;
-        }
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(directory.len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        owned.extend_from_slice(directory);
-        missing
-            .try_reserve(1)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        missing.push(owned);
-    }
+    let missing = missing_directories(&registry, path, false)?;
     registry
         .directories
         .try_reserve(missing.len())

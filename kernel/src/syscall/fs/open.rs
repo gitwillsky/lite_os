@@ -159,6 +159,10 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     }
     let ofd_flags = flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
     let ofd = if let Some(number) = inode.device_number() {
+        // Linux `may_open`：nodev 挂载上的设备节点不可打开。
+        if vfs().mount_flags(inode.filesystem_id()).nodev() {
+            return -errno::EACCES;
+        }
         let request = crate::fs::device::OpenRequest {
             number,
             identity: &identity,
@@ -172,7 +176,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     } else {
         let ofd = match OpenFileDescription::inode(opened, ofd_flags) {
             Ok(ofd) => ofd,
-            Err(()) => return -errno::ENOMEM,
+            Err(error) => return ferr(error),
         };
         if flags & O_TRUNC != 0
             && flags & O_ACCMODE != O_RDONLY

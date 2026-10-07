@@ -8,11 +8,14 @@ mod devpts;
 mod directory;
 mod epoll;
 mod ext4;
+mod ext4_type;
 mod file;
 mod inode;
 mod mem;
 mod memfd;
+mod memory_file;
 mod mount;
+mod mount_options;
 mod page_cache;
 mod permission;
 mod procfs;
@@ -20,11 +23,10 @@ mod pty;
 mod readiness;
 mod sysfs;
 mod timerfd;
+mod tmpfs;
 mod tty;
 mod vfs;
 
-use devfs::DevFileSystem;
-use devpts::DevPtsFileSystem;
 pub(crate) use directory::{
     DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, Dirent64Batch,
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
@@ -36,22 +38,23 @@ pub(crate) use file::{
     O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal, TerminalAccess,
 };
 use file::{TerminalRead, TerminalReadMode, character_write_chunk};
-pub(crate) use inode::{Inode, InodeMetadata, InodeType, StorageWriter};
+pub(crate) use inode::{DataBacking, Inode, InodeMetadata, InodeType, StorageWriter};
 pub(crate) use memfd::MemFile;
-pub(crate) use mount::{FileSystemType, MountEnvironment, mount, mount_root, unmount};
+pub(crate) use memory_file::{MemoryFile, PageBudget};
+pub(crate) use mount::{
+    MountEnvironment, get_filesystem_type, mount, mount_root, register_filesystem, remount, unmount,
+};
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
     sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{AccessIdentity, CreateMetadata, OwnerModeChange};
-use procfs::ProcFileSystem;
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot, ProcNetworkSnapshot,
     ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
 };
 use pty::{PtyMaster, PtySlave};
 pub(crate) use readiness::{ReadinessSource, ReadinessSources};
-use sysfs::SysFileSystem;
 pub(crate) use timerfd::{TimerError, TimerFd, TimerFdBackend, TimerFdRead, TimerSetting};
 pub(crate) use tty::{
     JobControl, console as console_terminal, drain_input as drain_terminal_input, init as init_tty,
@@ -59,7 +62,7 @@ pub(crate) use tty::{
 };
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
-    AdvisoryLockNotifier, OpenedFile, PreparedAdvisoryLock, PreparedLockAttempt,
+    AdvisoryLockNotifier, MountFlags, OpenedFile, PreparedAdvisoryLock, PreparedLockAttempt,
     PreparedRecordLock, RecordLockMode, RecordLockRange, vfs,
 };
 
@@ -180,6 +183,24 @@ pub(crate) trait FileSystem: Send + Sync {
     fn shutdown(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
+
+    /// 以 `options` 重新配置运行中的实例（Linux `reconfigure`）；挂载属性（ro/nosuid/…）由 VFS 管理。
+    ///
+    /// # Parameters
+    ///
+    /// - `options`: `mount(2)` 的 `data` 字符串；空串表示不改变任何选项。
+    ///
+    /// # Errors
+    ///
+    /// 默认实现不支持任何选项，非空返回 `InvalidOperation`；实现在值无效或与当前状态冲突时返回
+    /// 对应错误，且失败时不得改变任何状态。
+    fn remount(&self, options: &[u8]) -> Result<(), FileSystemError> {
+        if mount_options::is_empty(options) {
+            Ok(())
+        } else {
+            Err(FileSystemError::InvalidOperation)
+        }
+    }
 }
 
 /// task 注入的内核线程创建入口：诊断名称与主体；主体返回即终止该线程。
@@ -214,6 +235,13 @@ pub(crate) struct ConsoleReady(());
 pub(crate) fn init_vfs() -> VfsReady {
     vfs::init();
     mem::register().expect("mem character device registration failed");
+    device::register_directory(b"shm").expect("/dev/shm registration failed");
+    register_filesystem(&ext4_type::Ext4FileSystemType).expect("ext4 type registration failed");
+    register_filesystem(&procfs::ProcFileSystemType).expect("proc type registration failed");
+    register_filesystem(&sysfs::SysFileSystemType).expect("sysfs type registration failed");
+    register_filesystem(&devpts::DevPtsFileSystemType).expect("devpts type registration failed");
+    register_filesystem(&devfs::DevFileSystemType).expect("devtmpfs type registration failed");
+    register_filesystem(&tmpfs::TmpFileSystemType).expect("tmpfs type registration failed");
     VfsReady(())
 }
 

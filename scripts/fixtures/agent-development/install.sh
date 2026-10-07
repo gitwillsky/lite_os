@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-. /run/liteos-agent/versions
+. /var/tmp/liteos-agent/versions
 APK='/sbin/apk.static --no-network --no-progress'
 # init 启动的非 login shell 不读取 /etc/profile；这里与产品 login/PTY owner 发布同一标准
 # PATH。缺少显式投影时 npm 已正确生成 /usr/local/bin 入口，bootstrap 却会误报 command not found。
@@ -13,7 +13,7 @@ export PATH
 if $APK info -e claude-code; then
     $APK del claude-code
 fi
-$APK add /run/liteos-agent/apks/*.apk
+$APK add /var/tmp/liteos-agent/apks/*.apk
 $APK info -e 'nodejs=22.23.2-r0'
 $APK info -e 'npm=11.6.4-r0'
 $APK info -e 'bash=5.2.37-r0'
@@ -25,11 +25,11 @@ echo LITEOS_AGENT_APKS_READY
 # 2. 用官方 npm 命令从固定 cache 安装两个包。cache 已由 host 对照 registry SRI 和
 # linux-arm64-musl optional package 验证；`--offline` 保证 Guest 不解析滚动版本。
 mkdir -p /usr/share/liteos
-rm -rf /run/liteos-agent/npm-cache
-mkdir -p /run/liteos-agent/npm-cache
+rm -rf /var/tmp/liteos-agent/npm-cache
+mkdir -p /var/tmp/liteos-agent/npm-cache
 # 大型原生 package 在 ext4 上展开时可能合法地超过 runtime gate 的静默窗口。后台 owner 与
 # `wait` 保留真实退出状态，固定 heartbeat 只证明 bootstrap 仍在推进，不放宽成功条件。
-tar -xf /run/liteos-agent/npm-cache.tar -C /run/liteos-agent &
+tar -xf /var/tmp/liteos-agent/npm-cache.tar -C /var/tmp/liteos-agent &
 cache_pid=$!
 while kill -0 "$cache_pid" 2>/dev/null; do
     echo LITEOS_AGENT_NPM_CACHE_EXTRACTING
@@ -46,7 +46,7 @@ registry=https://registry.npmjs.org/
 EOF
 npm install --global \
     --offline \
-    --cache /run/liteos-agent/npm-cache \
+    --cache /var/tmp/liteos-agent/npm-cache \
     --os=linux \
     --cpu=arm64 \
     --libc=musl \
@@ -92,10 +92,10 @@ rg --version
 echo "$codex_version"
 echo "$claude_version"
 
-cp /run/liteos-agent/stamp.json /usr/share/liteos/agent-development.json
+cp /var/tmp/liteos-agent/stamp.json /usr/share/liteos/agent-development.json
 chmod 0644 /usr/share/liteos/agent-development.json
-cp /run/liteos-agent/normal.inittab /etc/inittab
-rm -rf /run/liteos-agent
+cp /var/tmp/liteos-agent/normal.inittab /etc/inittab
+rm -rf /var/tmp/liteos-agent
 sync
 echo LITEOS_AGENT_DEVELOPMENT_READY
 while :; do sleep 1; done

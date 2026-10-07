@@ -378,3 +378,22 @@ impl FileSystem for SysFileSystem {
         })
     }
 }
+
+/// sysfs 类型：不接受选项。
+pub(super) struct SysFileSystemType;
+
+impl super::mount::FileSystemType for SysFileSystemType {
+    fn name(&self) -> &'static str {
+        "sysfs"
+    }
+
+    fn create(
+        &self,
+        request: &super::mount::MountRequest<'_>,
+    ) -> Result<Arc<dyn super::FileSystem>, FileSystemError> {
+        if !super::mount_options::is_empty(request.options) {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        Ok(SysFileSystem::new(request.environment.cpu_count)?)
+    }
+}

@@ -461,6 +461,11 @@ pub(crate) fn sys_utimensat(
             }
         }
     }
+    if values.iter().any(Option::is_some)
+        && let Err(error) = vfs().require_writable(inode.filesystem_id())
+    {
+        return ferr(error);
+    }
     inode
         .set_times(values[0], values[1])
         .map_or_else(ferr, |()| 0)

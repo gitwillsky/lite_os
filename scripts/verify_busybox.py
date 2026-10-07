@@ -386,9 +386,9 @@ def install_archive_fixtures(image: Path, directory: Path) -> None:
         archive.addfile(entry, io.BytesIO(payload))
     commands = directory / "archive-fixtures.debugfs"
     commands.write_text(
-        f"write {xz_fixture} /run/phase53.xz\n"
-        f"write {zip_fixture} /run/phase53.zip\n"
-        f"write {traversal_fixture} /run/phase53-traversal.tar\n"
+        f"write {xz_fixture} /var/tmp/phase53.xz\n"
+        f"write {zip_fixture} /var/tmp/phase53.zip\n"
+        f"write {traversal_fixture} /var/tmp/phase53-traversal.tar\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -412,8 +412,8 @@ def install_dhcp_gate_script(image: Path, directory: Path) -> None:
     )
     commands = directory / "dhcp-gate.debugfs"
     commands.write_text(
-        f"write {fixture} /run/dhcp-gate.sh\n"
-        "set_inode_field /run/dhcp-gate.sh mode 0100755\n"
+        f"write {fixture} /var/tmp/dhcp-gate.sh\n"
+        "set_inode_field /var/tmp/dhcp-gate.sh mode 0100755\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -470,8 +470,8 @@ def install_phase56_script(image: Path, directory: Path) -> None:
     )
     commands = directory / "phase56-debugfs.commands"
     commands.write_text(
-        f"write {fixture} /run/phase56.sh\n"
-        "set_inode_field /run/phase56.sh mode 0100755\n"
+        f"write {fixture} /var/tmp/phase56.sh\n"
+        "set_inode_field /var/tmp/phase56.sh mode 0100755\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -514,8 +514,8 @@ def install_phase57_script(image: Path, directory: Path) -> None:
     )
     commands = directory / "phase57-debugfs.commands"
     commands.write_text(
-        f"write {fixture} /run/phase57.sh\n"
-        "set_inode_field /run/phase57.sh mode 0100755\n"
+        f"write {fixture} /var/tmp/phase57.sh\n"
+        "set_inode_field /var/tmp/phase57.sh mode 0100755\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -560,8 +560,8 @@ def install_phase55_script(image: Path, directory: Path) -> None:
     )
     commands = directory / "phase55-debugfs.commands"
     commands.write_text(
-        f"write {fixture} /run/phase55.sh\n"
-        "set_inode_field /run/phase55.sh mode 0100755\n"
+        f"write {fixture} /var/tmp/phase55.sh\n"
+        "set_inode_field /var/tmp/phase55.sh mode 0100755\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -596,14 +596,14 @@ def install_kernel_stack_churn_gate(image: Path, directory: Path) -> None:
     fixture = ROOT / "scripts/fixtures/kernel-stack-churn.sh"
     commands = directory / "kernel-stack-churn.debugfs"
     commands.write_text(
-        f"write {fixture} /run/kernel-stack-churn.sh\n"
-        "set_inode_field /run/kernel-stack-churn.sh mode 0100755\n"
+        f"write {fixture} /var/tmp/kernel-stack-churn.sh\n"
+        "set_inode_field /var/tmp/kernel-stack-churn.sh mode 0100755\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
     install_guest_gate_init(
         image,
         directory,
-        "/run/kernel-stack-churn.sh",
+        "/var/tmp/kernel-stack-churn.sh",
         "kernel-stack-churn",
     )
 
@@ -1558,6 +1558,8 @@ def create_image(
         "mkdir /var/lib",
         "mkdir /var/lib/liteos",
         "mkdir /var/lib/liteos/audio",
+        "mkdir /var/tmp",
+        "set_inode_field /var/tmp mode 041777",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
         f"write {BUNDLED_MUSIC_SOURCE} {BUNDLED_MUSIC_DESTINATION}",
@@ -2021,9 +2023,9 @@ def main() -> int:
         shutil.copyfile(runtime_image, phase56_image)
         shutil.copyfile(runtime_image, phase57_image)
         shutil.copyfile(runtime_image, kernel_stack_churn_image)
-        install_guest_gate_init(phase55_image, runtime_path, "/run/phase55.sh", "phase55")
-        install_guest_gate_init(phase56_image, runtime_path, "/run/phase56.sh", "phase56")
-        install_guest_gate_init(phase57_image, runtime_path, "/run/phase57.sh", "phase57")
+        install_guest_gate_init(phase55_image, runtime_path, "/var/tmp/phase55.sh", "phase55")
+        install_guest_gate_init(phase56_image, runtime_path, "/var/tmp/phase56.sh", "phase56")
+        install_guest_gate_init(phase57_image, runtime_path, "/var/tmp/phase57.sh", "phase57")
         install_kernel_stack_churn_gate(kernel_stack_churn_image, runtime_path)
         # 该组合 gate 串行覆盖 50+ 次 UART interaction、TLS、archive、editor、并发 VFS 与
         # job-control；90 秒只是不受 host 调度影响的 liveness bound，不是性能阈值。热路径
@@ -2066,6 +2068,16 @@ def main() -> int:
                 "LITEOS_FILESYSTEM_CAPACITY_42",
                 "LITEOS_MOUNT_44",
                 "LITEOS_CMDLINE_45",
+                "LITEOS_TMPFS_46",
+                "LITEOS_TMPFS_47",
+                "LITEOS_TMPFS_48",
+                "LITEOS_TMPFS_49",
+                "LITEOS_TMPFS_DEEP_52",
+                "LITEOS_UNLINK_RELEASE_50",
+                "LITEOS_UNLINK_RELEASE_51",
+                "LITEOS_MOUNTFLAGS_53",
+                "LITEOS_MOUNTFLAGS_54",
+                "LITEOS_MOUNTFLAGS_55",
                 "LITEOS_LINKS_43",
                 "LITEOS_NAMESPACE_CONCURRENCY_43",
                 "LITEOS_BUSYBOX_CREDENTIALS_44",
@@ -2115,7 +2127,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_UNICODE_42",
-                    b"/bin/sh /run/dhcp-gate.sh\n",
+                    b"/bin/sh /var/tmp/dhcp-gate.sh\n",
                 ),
                 (
                     "LITEOS_DHCP_51",
@@ -2154,7 +2166,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TAR_53",
-                    b"printf bzip-phase-53 > /phase53/bzip.txt; bzip2 -c /phase53/bzip.txt > /phase53/bzip.txt.bz2; bzcat /phase53/bzip.txt.bz2 | cmp - /phase53/bzip.txt && xzcat /run/phase53.xz | grep -q '^xz-phase-53$' && unzip -q /run/phase53.zip -d /phase53/zip && grep -q '^zip-phase-53$' /phase53/zip/nested/zip.txt && echo LITEOS_COMPRESSION_$((7*7+4))\n",
+                    b"printf bzip-phase-53 > /phase53/bzip.txt; bzip2 -c /phase53/bzip.txt > /phase53/bzip.txt.bz2; bzcat /phase53/bzip.txt.bz2 | cmp - /phase53/bzip.txt && xzcat /var/tmp/phase53.xz | grep -q '^xz-phase-53$' && unzip -q /var/tmp/phase53.zip -d /phase53/zip && grep -q '^zip-phase-53$' /phase53/zip/nested/zip.txt && echo LITEOS_COMPRESSION_$((7*7+4))\n",
                 ),
                 (
                     "LITEOS_COMPRESSION_53",
@@ -2162,7 +2174,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TOOLS_53",
-                    b"tar -xf /run/phase53-traversal.tar -C /phase53/out 2>/dev/null || true; [ ! -e /phase53-escape ] && [ ! -e /phase53/phase53-escape ] && echo LITEOS_ARCHIVE_$((7*7+4))\n",
+                    b"tar -xf /var/tmp/phase53-traversal.tar -C /phase53/out 2>/dev/null || true; [ ! -e /phase53-escape ] && [ ! -e /phase53/phase53-escape ] && echo LITEOS_ARCHIVE_$((7*7+4))\n",
                 ),
                 (
                     "LITEOS_ARCHIVE_53",
@@ -2241,6 +2253,46 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_CMDLINE_45",
+                    b"/bin/mkdir -p /mnt/t && /bin/mount -t tmpfs -o size=1m,nr_inodes=24,mode=0700 tmpfs /mnt/t && [ \"$(/bin/stat -f -c %T /mnt/t)\" = tmpfs ] && [ \"$(/bin/stat -c %a /mnt/t)\" = 700 ] && [ \"$(/bin/stat -c %d /mnt/t)\" != \"$(/bin/stat -c %d /)\" ] && [ \"$(/bin/stat -f -c %T /run)\" = tmpfs ] && [ \"$(/bin/stat -f -c %T /tmp)\" = tmpfs ] && [ \"$(/bin/stat -f -c %T /dev/shm)\" = tmpfs ] && [ \"$(/bin/stat -c %a /tmp)\" = 1777 ] && ! /bin/mount -t tmpfs -o huge=always tmpfs /mnt/t 2>/dev/null && echo LITEOS_TMPFS_$((6*7+4))\n",
+                ),
+                (
+                    "LITEOS_TMPFS_46",
+                    b"echo hello >/mnt/t/a && /bin/ln /mnt/t/a /mnt/t/b && /bin/mkdir /mnt/t/d && /bin/mv /mnt/t/b /mnt/t/d/c && [ \"$(/bin/cat /mnt/t/d/c)\" = hello ] && [ \"$(/bin/stat -c %h /mnt/t/a)\" = 2 ] && /bin/ln -s a /mnt/t/s && [ \"$(/bin/readlink /mnt/t/s)\" = a ] && ! /bin/mv /mnt/t/d /mnt/t/d/sub 2>/dev/null && [ \"$(/bin/ls /mnt/t | /bin/wc -l)\" = 3 ] && echo LITEOS_TMPFS_$((6*7+5))\n",
+                ),
+                (
+                    "LITEOS_TMPFS_47",
+                    b"! /bin/dd if=/dev/zero of=/mnt/t/big bs=64k count=32 2>/dev/null && /bin/rm /mnt/t/big && /bin/dd if=/dev/zero of=/mnt/t/ok bs=64k count=8 2>/dev/null && [ \"$(/bin/stat -c %s /mnt/t/ok)\" = 524288 ] && /bin/rm /mnt/t/ok && exec 3>/mnt/t/held && /bin/dd if=/dev/zero bs=64k count=12 >&3 2>/dev/null && /bin/rm /mnt/t/held && ! /bin/dd if=/dev/zero of=/mnt/t/more bs=64k count=8 2>/dev/null && exec 3>&- && /bin/rm -f /mnt/t/more && /bin/dd if=/dev/zero of=/mnt/t/after bs=64k count=8 2>/dev/null && /bin/rm /mnt/t/after && echo LITEOS_TMPFS_$((6*7+6))\n",
+                ),
+                (
+                    "LITEOS_TMPFS_48",
+                    b"n=0; while /bin/touch /mnt/t/f$n 2>/dev/null; do n=$((n+1)); done; [ $n -gt 0 ] && [ $n -lt 24 ] && /bin/rm /mnt/t/f0 && /bin/touch /mnt/t/again && cd /mnt/t && ! /bin/umount /mnt/t 2>/dev/null && cd / && /bin/umount /mnt/t && [ ! -e /mnt/t/a ] && echo LITEOS_TMPFS_$((6*7+7))\n",
+                ),
+                (
+                    "LITEOS_TMPFS_49",
+                    b"/bin/mkdir -p /mnt/t2 && /bin/mount -t tmpfs tmpfs /mnt/t2 && cd /mnt/t2 && i=0; while [ $i -lt 600 ] && /bin/mkdir d 2>/dev/null && cd d; do i=$((i+1)); done; cd /; /bin/umount /mnt/t2 && [ $i -eq 600 ] && echo LITEOS_TMPFS_DEEP_$((6*7+10))\n",
+                ),
+                (
+                    "LITEOS_TMPFS_DEEP_52",
+                    b"free() { /bin/df -kP / | /bin/tail -n 1 | { read _ _ _ a _; echo $a; }; }; b=$(free); /bin/dd if=/dev/zero of=/rel bs=64k count=64 2>/dev/null; /bin/cat /rel >/dev/null; m=$(free); /bin/rm /rel; a=$(free); [ $((b-m)) -ge 3000 ] && [ $((a-b)) -le 256 ] && [ $((b-a)) -le 256 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+8))\n",
+                ),
+                (
+                    "LITEOS_UNLINK_RELEASE_50",
+                    b"/bin/dd if=/dev/zero of=/rel2 bs=64k count=64 2>/dev/null; /bin/cat /rel2 >/dev/null; exec 5</rel2; c=$(free); /bin/rm /rel2; d=$(free); [ $((d-c)) -le 256 ] && exec 5<&- && e=$(free) && [ $((e-d)) -ge 3000 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+9))\n",
+                ),
+                (
+                    "LITEOS_UNLINK_RELEASE_51",
+                    b"/bin/mkdir -p /mnt/r && /bin/mount -t tmpfs -o size=1m tmpfs /mnt/r && echo data >/mnt/r/f && printf '#!/bin/sh\\necho ran\\n' >/mnt/r/x && /bin/chmod 755 /mnt/r/x && [ \"$(/mnt/r/x)\" = ran ] && /bin/mount -t tmpfs -o remount,noexec tmpfs /mnt/r && ! /mnt/r/x 2>/dev/null && /bin/grep -q ' /mnt/r tmpfs rw,noexec ' /proc/mounts && /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r && /bin/grep -q ' /mnt/r tmpfs ro ' /proc/mounts && ! echo y >/mnt/r/g 2>/dev/null && ! /bin/rm /mnt/r/f 2>/dev/null && ! /bin/mv /mnt/r/f /mnt/r/h 2>/dev/null && ! /bin/chmod 600 /mnt/r/f 2>/dev/null && ! /bin/touch /mnt/r/f 2>/dev/null && [ \"$(/bin/cat /mnt/r/f)\" = data ] && echo LITEOS_MOUNTFLAGS_$((6*7+11))\n",
+                ),
+                (
+                    "LITEOS_MOUNTFLAGS_53",
+                    b"/bin/mount -t tmpfs -o remount,rw tmpfs /mnt/r && echo ok >/mnt/r/g && exec 3>/mnt/r/h && ! /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r 2>/dev/null && exec 3>&- && /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r && [ \"$(/bin/cat /mnt/r/g)\" = ok ] && echo LITEOS_MOUNTFLAGS_$((6*7+12))\n",
+                ),
+                (
+                    "LITEOS_MOUNTFLAGS_54",
+                    b"/bin/mount -t tmpfs -o remount,rw,size=2m tmpfs /mnt/r && /bin/dd if=/dev/zero of=/mnt/r/big bs=64k count=24 2>/dev/null && ! /bin/mount -t tmpfs -o remount,size=64k tmpfs /mnt/r 2>/dev/null && [ \"$(/bin/stat -f -c %b /mnt/r)\" = 512 ] && /bin/rm /mnt/r/big && /bin/mount -t tmpfs -o remount,size=64k tmpfs /mnt/r && [ \"$(/bin/stat -f -c %b /mnt/r)\" = 16 ] && /bin/umount /mnt/r && echo LITEOS_MOUNTFLAGS_$((6*7+13))\n",
+                ),
+                (
+                    "LITEOS_MOUNTFLAGS_55",
                     b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n",
                 ),
                 (
@@ -2587,8 +2639,8 @@ def main() -> int:
             4,
             (
                 f"echo LITEOS_APK_CRASH_ACTIVE; while :; do "
-                f"/sbin/apk --no-network add --allow-downgrades /run/{apk_crash_v1}; "
-                f"/sbin/apk --no-network add --upgrade /run/{apk_crash_v2}; done\n"
+                f"/sbin/apk --no-network add --allow-downgrades /var/tmp/{apk_crash_v1}; "
+                f"/sbin/apk --no-network add --upgrade /var/tmp/{apk_crash_v2}; done\n"
             ).encode(),
             "LITEOS_APK_CRASH_ACTIVE",
             0.02,
@@ -2601,7 +2653,7 @@ def main() -> int:
                 (
                     "Enter 'help' for a list of built-in commands.",
                     (
-                        f"/sbin/apk --no-network add --upgrade /run/{apk_crash_v3}; "
+                        f"/sbin/apk --no-network add --upgrade /var/tmp/{apk_crash_v3}; "
                         "[ \"$(/bin/dd if=/usr/share/liteos-apk/crash bs=8 count=1 2>/dev/null)\" = crash-v3 ] && "
                         "/sbin/apk info -e liteos-apk-crash && "
                         "echo LITEOS_APK_CRASH_RECOVERY_$((6*9+4))\n"

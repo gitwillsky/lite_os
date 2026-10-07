@@ -1,7 +1,11 @@
 #!/bin/sh
-# BusyBox init 的首个 sysinit。内核只挂载根文件系统与 /dev（devtmpfs）；其余伪文件系统由这里经
+# BusyBox init 的首个 sysinit。内核只挂载根文件系统与 /dev（devtmpfs）；其余文件系统由这里经
 # mount(2) 挂载，任何一个失败都让启动停在可诊断的错误上，而不是带着缺失的 /proc 继续。
+# /run、/tmp 与 /dev/shm 是易失内存文件系统（tmpfs）：重启后清空，且不占用根盘空间。
 set -e
 /bin/mount -t proc proc /proc
 /bin/mount -t sysfs sysfs /sys
 /bin/mount -t devpts devpts /dev/pts
+/bin/mount -t tmpfs -o mode=0755 tmpfs /run
+/bin/mount -t tmpfs -o mode=1777 tmpfs /tmp
+/bin/mount -t tmpfs -o mode=1777 tmpfs /dev/shm

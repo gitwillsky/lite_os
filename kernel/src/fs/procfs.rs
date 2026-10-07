@@ -264,8 +264,8 @@ impl Inode for ProcInode {
         false
     }
 
-    fn is_volatile(&self) -> bool {
-        true
+    fn data_backing(&self) -> super::inode::DataBacking {
+        super::inode::DataBacking::Snapshot
     }
 
     fn is_read_only(&self) -> bool {
@@ -628,5 +628,26 @@ impl FileSystem for ProcFileSystem {
             fragment_size: 4096,
             flags: 1,
         })
+    }
+}
+
+/// procfs 类型：不接受选项（`hidepid=`/`gid=` 尚未支持）。
+pub(super) struct ProcFileSystemType;
+
+impl super::mount::FileSystemType for ProcFileSystemType {
+    fn name(&self) -> &'static str {
+        "proc"
+    }
+
+    fn create(
+        &self,
+        request: &super::mount::MountRequest<'_>,
+    ) -> Result<Arc<dyn super::FileSystem>, FileSystemError> {
+        if !super::mount_options::is_empty(request.options) {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        Ok(ProcFileSystem::new(
+            request.environment.proc_source.clone(),
+        )?)
     }
 }

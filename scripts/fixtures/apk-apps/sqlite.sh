@@ -2,7 +2,7 @@
 set -eu
 
 database=/root/sqlite-gate.db
-lock_ready=/run/sqlite-writer-a-locked
+lock_ready=/var/tmp/sqlite-writer-a-locked
 report_failure() {
     status=$?
     if [ "$status" -ne 0 ]; then
@@ -27,7 +27,7 @@ sqlite3 "$database" 'PRAGMA journal_mode=WAL; INSERT INTO records(value) VALUES(
 (
     printf '%s\n' 'PRAGMA busy_timeout=5000;' 'BEGIN IMMEDIATE;' \
         'INSERT INTO records(value) VALUES("writer-a");' \
-        '.shell echo ready > /run/sqlite-writer-a-locked'
+        '.shell echo ready > /var/tmp/sqlite-writer-a-locked'
     sleep 2
     printf '%s\n' 'COMMIT;'
 ) | sqlite3 "$database" &
@@ -43,7 +43,7 @@ wait "$first"
 # 3. integrity、持久化 row set 与同步边界在 guest 内完成断言。
 [ "$(sqlite3 "$database" 'PRAGMA integrity_check;')" = ok ]
 [ "$(sqlite3 "$database" 'SELECT count(*) FROM records;')" -eq 5 ]
-cp /run/sqlite-recovery.inittab /etc/inittab
+cp /var/tmp/sqlite-recovery.inittab /etc/inittab
 sync
 echo LITEOS_SQLITE_APPLICATION_READY
 trap - EXIT

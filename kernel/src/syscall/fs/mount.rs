@@ -3,15 +3,36 @@
 use alloc::vec::Vec;
 
 use crate::{
-    fs::{FileSystemType, InodeType, vfs},
+    fs::{InodeType, MountFlags, get_filesystem_type, vfs},
     syscall::errno,
     task::{TaskControlBlock, current_task},
 };
 
 use super::pathname::{ferr, path};
 
+const MS_RDONLY: usize = 1;
+const MS_NOSUID: usize = 2;
+const MS_NODEV: usize = 4;
+const MS_NOEXEC: usize = 8;
+const MS_REMOUNT: usize = 32;
+/// 访问时间更新策略：内核不在读取时维护 atime，因此这些标志没有可观察的差别，按 Linux 接受。
+const MS_NOATIME: usize = 0x400;
+const MS_NODIRATIME: usize = 0x800;
+const MS_RELATIME: usize = 1 << 21;
+const MS_STRICTATIME: usize = 1 << 24;
 /// `MS_SILENT`：只抑制内核日志，不改变语义。
 const MS_SILENT: usize = 0x8000;
+/// 本实现接受的全部 mount flags；其余（bind、move、propagation、sync 等）返回 `EINVAL`。
+const MS_SUPPORTED: usize = MS_RDONLY
+    | MS_NOSUID
+    | MS_NODEV
+    | MS_NOEXEC
+    | MS_REMOUNT
+    | MS_NOATIME
+    | MS_NODIRATIME
+    | MS_RELATIME
+    | MS_STRICTATIME
+    | MS_SILENT;
 /// 旧 ABI 的 magic 高 16 位；Linux 在解析前剥除。
 const MS_MGC_MSK: usize = 0xffff_0000;
 const MS_MGC_VAL: usize = 0xc0ed_0000;
@@ -50,9 +71,11 @@ fn user_string(
 ///
 /// - `source`: 块设备类型为设备路径；nodev 类型只作为 `/proc/mounts` 的 source，可为 NULL。
 /// - `target`: mountpoint 目录。
-/// - `fstype`: `ext4`、`proc`、`sysfs`、`devpts` 或 `devtmpfs`。
-/// - `flags`: 只接受 `MS_SILENT`（可带 `MS_MGC_VAL`）；remount/bind/move 与挂载属性尚未支持。
-/// - `data`: 挂载选项；这些文件系统不接受选项，非空返回 `EINVAL`。
+/// - `fstype`: 已登记的文件系统类型名。
+/// - `flags`: `MS_RDONLY`、`MS_NOSUID`、`MS_NODEV`、`MS_NOEXEC`、`MS_REMOUNT`、访问时间策略与
+///   `MS_SILENT`（可带 `MS_MGC_VAL`）；bind/move/propagation/sync 等返回 `EINVAL`。`MS_REMOUNT` 整体替换
+///   目标挂载根的属性与选项。
+/// - `data`: 挂载选项字符串，由文件系统类型自己解析；类型不认识的选项返回 `EINVAL`。
 ///
 /// # Returns
 ///
@@ -74,26 +97,28 @@ pub(crate) fn sys_mount(
     } else {
         flags
     };
-    if flags & !MS_SILENT != 0 {
+    if flags & !MS_SUPPORTED != 0 {
         return -errno::EINVAL;
     }
-    if fstype.is_null() {
-        return -errno::EINVAL;
-    }
-    let kind = match user_string(&task, fstype, TYPE_MAX) {
-        Ok(name) => match FileSystemType::from_name(&name) {
-            Some(kind) => kind,
-            None => return -errno::ENODEV,
-        },
-        Err(error) => return error,
-    };
-    if !data.is_null() {
+    let attributes = MountFlags::from_bits(
+        [
+            (MS_RDONLY, MountFlags::READ_ONLY),
+            (MS_NOSUID, MountFlags::NOSUID),
+            (MS_NODEV, MountFlags::NODEV),
+            (MS_NOEXEC, MountFlags::NOEXEC),
+        ]
+        .into_iter()
+        .filter(|(flag, _)| flags & flag != 0)
+        .fold(0, |bits, (_, bit)| bits | u64::from(bit)),
+    );
+    let options = if data.is_null() {
+        Vec::new()
+    } else {
         match user_string(&task, data, OPTIONS_MAX) {
-            Ok(options) if options.is_empty() => {}
-            Ok(_) => return -errno::EINVAL,
+            Ok(options) => options,
             Err(error) => return error,
         }
-    }
+    };
     let identity = task.access_identity(true);
     let target = match path(&task, target) {
         Ok(target) => target,
@@ -103,6 +128,20 @@ pub(crate) fn sys_mount(
     let point = match vfs().open_file_at(start, &target, &identity) {
         Ok(point) => point,
         Err(error) => return ferr(error),
+    };
+    if flags & MS_REMOUNT != 0 {
+        // Linux `do_remount`：fstype 与 source 被忽略，属性被整体替换为本次 flags。
+        return crate::fs::remount(&point, attributes, &options).map_or_else(ferr, |()| 0);
+    }
+    if fstype.is_null() {
+        return -errno::EINVAL;
+    }
+    let kind = match user_string(&task, fstype, TYPE_MAX) {
+        Ok(name) => match get_filesystem_type(&name) {
+            Some(kind) => kind,
+            None => return -errno::ENODEV,
+        },
+        Err(error) => return error,
     };
     let (source, device) = if kind.requires_device() {
         let source = match path(&task, source) {
@@ -131,7 +170,7 @@ pub(crate) fn sys_mount(
         }
     };
     let label: &[u8] = if source.is_empty() { b"none" } else { &source };
-    crate::fs::mount(kind, label, device, point).map_or_else(ferr, |()| 0)
+    crate::fs::mount(kind, label, device, &options, attributes, point).map_or_else(ferr, |()| 0)
 }
 
 /// 卸载一个挂载（Linux `ksys_umount`）。

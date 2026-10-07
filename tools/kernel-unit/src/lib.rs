@@ -90,8 +90,12 @@ mod virtio_console_wire;
 mod virtio_sound_lifecycle;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/memfd/state.rs"]
-mod memfd_state;
+#[path = "../../../kernel/src/fs/memory_file/seals.rs"]
+mod memory_seals;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/memory_file/sparse.rs"]
+mod memory_sparse;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/audio/codec.rs"]
@@ -451,6 +455,10 @@ mod filesystem_storage_tests;
 #[cfg(test)]
 #[path = "tests/memory.rs"]
 mod memory_tests;
+
+#[cfg(test)]
+#[path = "tests/memory_file.rs"]
+mod memory_file_tests;
 
 #[cfg(test)]
 #[path = "tests/platform_execution.rs"]

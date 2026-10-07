@@ -269,7 +269,7 @@ def install_apk_crash_fixtures(
     )
     commands = workspace / "apk-crash.debugfs"
     commands.write_text(
-        "".join(f"write {package} /run/{package.name}\n" for package in packages)
+        "".join(f"write {package} /var/tmp/{package.name}\n" for package in packages)
     )
     run([str(debugfs), "-w", "-f", str(commands), str(image)])
     return tuple(package.name for package in packages)
@@ -293,7 +293,7 @@ def _inject_package_bootstrap(
     concurrent_b = next(path for path in fixtures if path.name.startswith("liteos-apk-concurrent-b-"))
     tampered = next(path for path in fixtures if path.name.startswith("liteos-apk-tamper-invalid-"))
     run_paths = " ".join(
-        f"/run/{name}"
+        f"/var/tmp/{name}"
         for name in (
             package.name,
             ca_certificates_bundle.name,
@@ -301,28 +301,28 @@ def _inject_package_bootstrap(
             *fixture,
         )
     )
-    application_paths = " ".join(f"/run/{path.name}" for path in application_packages)
+    application_paths = " ".join(f"/var/tmp/{path.name}" for path in application_packages)
     bootstrap_script = workspace / "apk-bootstrap.sh"
     bootstrap_script.write_text(
         "#!/bin/sh\n"
         "set -e\n"
         "APK='/sbin/apk.static --no-network'\n"
         "rm -f /etc/inittab\n"
-        f"$APK --initdb add /run/{ca_certificates_bundle.name} /run/{package.name} {application_paths}\n"
-        f"if $APK add /run/{probe_v1.name}; then exit 71; fi\n"
-        f"$APK add /run/{dependency.name} /run/{probe_v1.name}\n"
+        f"$APK --initdb add /var/tmp/{ca_certificates_bundle.name} /var/tmp/{package.name} {application_paths}\n"
+        f"if $APK add /var/tmp/{probe_v1.name}; then exit 71; fi\n"
+        f"$APK add /var/tmp/{dependency.name} /var/tmp/{probe_v1.name}\n"
         "[ \"$(cat /usr/share/liteos-apk/dependency)\" = dependency ]\n"
         "[ \"$(cat /usr/share/liteos-apk/probe)\" = version-1 ]\n"
-        f"$APK add --upgrade /run/{probe_v2.name}\n"
+        f"$APK add --upgrade /var/tmp/{probe_v2.name}\n"
         "[ \"$(cat /usr/share/liteos-apk/probe)\" = version-2 ]\n"
-        f"if $APK add /run/{tampered.name}; then exit 72; fi\n"
+        f"if $APK add /var/tmp/{tampered.name}; then exit 72; fi\n"
         "[ ! -e /usr/share/liteos-apk/tamper ]\n"
-        f"$APK add /run/{concurrent_a.name} & first=$!\n"
-        f"$APK add /run/{concurrent_b.name} & second=$!\n"
+        f"$APK add /var/tmp/{concurrent_a.name} & first=$!\n"
+        f"$APK add /var/tmp/{concurrent_b.name} & second=$!\n"
         "first_status=0; wait $first || first_status=$?\n"
         "second_status=0; wait $second || second_status=$?\n"
         "[ $first_status -eq 0 ] || [ $second_status -eq 0 ]\n"
-        f"$APK add /run/{concurrent_a.name} /run/{concurrent_b.name}\n"
+        f"$APK add /var/tmp/{concurrent_a.name} /var/tmp/{concurrent_b.name}\n"
         "$APK info -e liteos-apk-concurrent-a\n"
         "$APK info -e liteos-apk-concurrent-b\n"
         "$APK del liteos-apk-probe liteos-apk-dependency "
@@ -331,22 +331,22 @@ def _inject_package_bootstrap(
         "[ ! -e /usr/share/liteos-apk/dependency ]\n"
         "[ ! -e /usr/share/liteos-apk/concurrent-a ]\n"
         "[ ! -e /usr/share/liteos-apk/concurrent-b ]\n"
-        f"rm -f {run_paths} /run/apk-bootstrap.sh\n"
+        f"rm -f {run_paths} /var/tmp/apk-bootstrap.sh\n"
         "/bin/sync\n"
         "echo LITEOS_APK_PACKAGE_OPERATIONS_READY\n"
         "echo LITEOS_APK_ROOTFS_READY\n"
         "while :; do /bin/sleep 1; done\n"
     )
     bootstrap_inittab = workspace / "bootstrap.inittab"
-    bootstrap_inittab.write_text(guest_inittab("/bin/sh /run/apk-bootstrap.sh"))
+    bootstrap_inittab.write_text(guest_inittab("/bin/sh /var/tmp/apk-bootstrap.sh"))
     commands = workspace / "bootstrap.debugfs"
     commands.write_text(
-        f"write {package} /run/{package.name}\n"
-        f"write {ca_certificates_bundle} /run/{ca_certificates_bundle.name}\n"
-        + "".join(f"write {path} /run/{path.name}\n" for path in application_packages)
-        + "".join(f"write {path} /run/{path.name}\n" for path in fixtures)
-        + f"write {bootstrap_script} /run/apk-bootstrap.sh\n"
-        "set_inode_field /run/apk-bootstrap.sh mode 0100755\n"
+        f"write {package} /var/tmp/{package.name}\n"
+        f"write {ca_certificates_bundle} /var/tmp/{ca_certificates_bundle.name}\n"
+        + "".join(f"write {path} /var/tmp/{path.name}\n" for path in application_packages)
+        + "".join(f"write {path} /var/tmp/{path.name}\n" for path in fixtures)
+        + f"write {bootstrap_script} /var/tmp/apk-bootstrap.sh\n"
+        "set_inode_field /var/tmp/apk-bootstrap.sh mode 0100755\n"
         "rm /etc/inittab\n"
         f"write {bootstrap_inittab} /etc/inittab\n"
     )
@@ -382,7 +382,7 @@ def _verify_package_ownership(
         name = package.name.rsplit("-", 2)[0]
         if f"P:{name}" not in installed:
             raise RuntimeError(f"final rootfs lacks application APK ownership: {name}")
-    listing = run([str(debugfs), "-R", "ls -l /run", str(image)])
+    listing = run([str(debugfs), "-R", "ls -l /var/tmp", str(image)])
     if ".apk" in listing or "apk-bootstrap.sh" in listing:
         raise RuntimeError("final rootfs retains temporary APK bootstrap artifacts")
     for package in (

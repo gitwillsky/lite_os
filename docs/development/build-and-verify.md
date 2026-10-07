@@ -236,8 +236,17 @@ runtime gate 裁决，不用失真的 host wall-clock 阈值掩盖。
   mount、启动装配或 TTY 访问判定上取得；TTY 判定在改造前已取 process graph lock，新增的只是一次 hook
   虚调用。这些都不在每字节或每 completion 路径上，只作诊断，不增加 blocking gate。
 - 设备类 deferred vector 每个已发布 bit 一次函数指针调用，handler 表为只追加的 `Once` 槽位，无锁无分配。
-- mmap 的 `MappedFile` 在每次映射建立时分配一次，page fault 仍是一次 `dyn SharedFileMapping` 调用后直接
-  进入 page cache。
+- mmap 的 `MappedFile` 在每次映射建立时分配一次；page fault 是一次 `dyn SharedFileMapping` 调用，进入
+  page cache 或 `MemoryFile`（按 `Inode::data_backing` 在建立映射时选定）。
+
+内存型文件（tmpfs、memfd）同样不增加 wall-clock benchmark：
+
+- `MemoryFile` 的 read/write 在每次 syscall 取一次 `state` 锁，页查找是 `FallibleMap` 的 O(log n)；
+  它替换的是先前 memfd 的单 mutex 字节缓冲，并去掉 tmpfs 经 page cache 的第二份拷贝，没有新增每字节路径。
+  稀疏页、洞读零、短写与截断语义由 host 单元测试确定性裁决。
+- tmpfs 目录的名字索引与 cookie 索引各一次 O(log n) 树操作；`getdents` 每项一次额外名字查找。
+  树结构的比较次数上界已由 `FallibleMap` cost gate 固定，目录 cookie 的稳定性由 host 测试裁决。
+- tmpfs 的 `namespace` 与 inode 状态锁只在创建、删除、rename、link 上取得；read/write 与 mmap 完全不经过它们。
 
 VMA hot path 使用 deterministic structure gate，不增加受宿主调度影响的 wall-clock benchmark。
 production `VmaIndexState` transition tests 覆盖 stack grow、split/protect/merge、fork/exec 与
@@ -276,7 +285,10 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 - musl ELF/TLS/thread/signal/process consumer；process phase 在 sibling pthread 保持 runnable
   时执行普通 fork，并继续覆盖 wait、posix_spawn file actions 与并发 child waiter；
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
-- BusyBox init/ash、TTY、filesystem、IPC 与 network consumer；
+- BusyBox init/ash、TTY、filesystem（含 tmpfs 的 mount 选项、link/rename、`size=`/`nr_inodes=` 配额与
+  已删除但仍打开文件的空间归还）、IPC 与 network consumer；
+- init 把 `/run`、`/tmp`、`/dev/shm` 挂成 tmpfs，所以 gate 经 `debugfs` 写入镜像的安装载荷与脚本只能放在持久的
+  `/var/tmp`，不能放在 `/run`（会被 tmpfs 盖住）；
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice；
   curl timeout 后连续 64 次 fork 分别改写 parent/child shell state，再成功跨过下一次
   fork/exec，专门约束四 CPU migration 下的 COW remote TLB completion。

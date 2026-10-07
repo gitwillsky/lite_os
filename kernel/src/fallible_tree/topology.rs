@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use core::borrow::Borrow;
 use core::cmp::Ordering;
 
 use super::{Link, Node};
@@ -88,11 +89,14 @@ fn extract_min<K, V>(mut root: Box<Node<K, V>>) -> (Link<K, V>, Box<Node<K, V>>)
     (Some(rebalance(root)), minimum)
 }
 
-pub(super) fn remove_node<K: Ord, V>(root: Link<K, V>, key: &K) -> RemoveResult<K, V> {
+pub(super) fn remove_node<K: Ord + Borrow<Q>, Q: Ord + ?Sized, V>(
+    root: Link<K, V>,
+    key: &Q,
+) -> RemoveResult<K, V> {
     let Some(mut root) = root else {
         return (None, None);
     };
-    match key.cmp(&root.key) {
+    match key.cmp(root.key.borrow()) {
         Ordering::Less => {
             let (left, removed) = remove_node(root.left.take(), key);
             root.left = left;

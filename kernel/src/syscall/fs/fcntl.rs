@@ -281,7 +281,10 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
                 return -errno::EINVAL;
             };
             if command == F_GET_SEALS {
-                file.seals() as isize
+                match file.seals() {
+                    Ok(seals) => seals as isize,
+                    Err(_) => -errno::ENOMEM,
+                }
             } else {
                 let Ok(seals) = u32::try_from(argument) else {
                     return -errno::EINVAL;
@@ -290,6 +293,7 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
                     Ok(_) => 0,
                     Err(FileSystemError::PermissionDenied) => -errno::EPERM,
                     Err(FileSystemError::InvalidOperation) => -errno::EINVAL,
+                    Err(FileSystemError::OutOfMemory) => -errno::ENOMEM,
                     Err(_) => -errno::EIO,
                 }
             }

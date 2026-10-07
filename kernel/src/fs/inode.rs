@@ -52,6 +52,16 @@ impl<T: Inode + ?Sized> StorageWriter for DirectStorageWriter<'_, T> {
     }
 }
 
+/// regular file 内容的存放方式。
+pub(crate) enum DataBacking {
+    /// 持久文件：经全局 page cache 缓存 filesystem storage。
+    PageCache,
+    /// 每次读取即时生成的只读快照（procfs）：不缓存、不可 mmap、不可写。
+    Snapshot,
+    /// 内存型文件（tmpfs、memfd）：页即内容，由该 inode 独占，没有 backing storage。
+    Memory(alloc::sync::Arc<super::memory_file::MemoryFile>),
+}
+
 /// 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
 pub(crate) trait Inode: Send + Sync {
     fn filesystem_id(&self) -> usize;
@@ -64,15 +74,16 @@ pub(crate) trait Inode: Send + Sync {
 
     fn is_executable(&self) -> bool;
 
-    /// 标识内容由每次读取即时生成、不得进入 regular-file page cache 的只读文件。
+    /// regular file 内容的存放方式，决定 read/write 与 mmap 走哪条路径。
     ///
-    /// 缺少该区分会把第一次 `/proc/stat`、`/proc/<pid>/stat` 等快照永久缓存，令监控采样冻结。
+    /// 缺少 `Snapshot` 会把第一次 `/proc/stat` 等快照永久缓存，令监控采样冻结；缺少 `Memory` 会
+    /// 让内存型文件被 page cache 再缓存一份，并让已删除文件的内容滞留到下一次 `sync`。
     ///
     /// # Returns
     ///
-    /// procfs 等动态快照文件返回 true；持久文件返回 false。
-    fn is_volatile(&self) -> bool {
-        false
+    /// 持久文件为 [`DataBacking::PageCache`]（默认）。
+    fn data_backing(&self) -> DataBacking {
+        DataBacking::PageCache
     }
 
     /// 返回 inode 所属 filesystem adapter 是否拒绝持久 mutation。

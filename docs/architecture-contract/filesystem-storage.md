@@ -49,15 +49,24 @@
   unlock 在短锁内把 owner 直接交给最旧 ticket、锁外 exact wake；禁止恢复 spin/yield polling。
 - page-cache `operation`/`write_sequence` 同样是可跨 cache fill、writeback 与 storage mutation
   保活的 task-only blocking owner；只有 resident page map 与全局 registry 的短临界区使用 spin。
-- 每个 `MemFile` 的同一 mutex 同时拥有 anonymous bytes 与 seal mask；`ftruncate`/write 和
-  `F_ADD_SEALS` 必须在该 owner 内线性化，禁止用独立 atomic seal 留出 seal 与 resize 的竞态窗口。
+- 每个 `MemoryFile`（memfd 与 tmpfs regular file 共用）的 `state` 同时拥有文件长度、稀疏页与 seal mask；
+  `ftruncate`/write/fallocate 和 `F_ADD_SEALS` 必须在该 owner 内线性化，禁止用独立 atomic seal 留出
+  seal 与 resize 的竞态窗口。`write_sequence`（外层，整次 write/append/truncate/fallocate，持有期间会做用户
+  态拷贝）先于 `state`（内层，page fault 只取它）；`published_length` 是 `state` 的无锁只读投影，只在持有
+  `state` 时更新。页配额由 `PageBudget` 原子预留，页在最后一个 `Arc` 释放时归还。
+- 挂载属性与“以写方式打开的 OFD 数”同在 VFS 的 `MountAttributes`，由 `mounts`/`root_fs` 锁一起保护：
+  `begin_write_open` 与 `remount,ro` 的判忙互斥，OFD 的 `WriteOpen` 在 Drop 时撤销。读路径与 `read`/`write`
+  热路径不取该锁。
+- `fs::FileSystemType` 注册表只追加、在 `init_vfs` 发布；`MOUNT_TRANSACTION` 串行化 mount/umount 事务。
+  tmpfs 的目录结构变更先取 `Shared::namespace`，再取涉及的 inode 状态锁（rename 的两个目录按 inode 编号
+  顺序）；只读路径只取单个 inode 状态锁，因此不存在两个多锁路径互相等待。inode 编号只增不复用。
 
 ## Interface
 
 - filesystem 只通过 block seam 使用 driver，通过 shared-page seam 使用 memory，通过 unified backend façade 接入 pipe/socket/device。
 - `memfd_create` 只发布 anonymous regular OFD；`MFD_ALLOW_SEALING`、`F_ADD_SEALS`、
-  `F_GET_SEALS`、`ftruncate` 与 `MAP_SHARED` 沿既有 fd/inode/page-cache seam 工作，不注册 pathname
-  或引入私有 shared-memory ABI。当前 seal 子集为 `SEAL|SHRINK|GROW`，未支持的 write/hugetlb
+  `F_GET_SEALS`、`ftruncate` 与 `MAP_SHARED` 沿既有 fd/inode seam 工作（内容在 `MemoryFile`，经
+  `Inode::data_backing` 分派，不经 page cache），不注册 pathname 或引入私有 shared-memory ABI。当前 seal 子集为 `SEAL|SHRINK|GROW`，未支持的 write/hugetlb
   语义明确返回错误。
 - `openat(O_CREAT)` 的 final lookup 与 create 必须在同一个 VFS namespace mutation transaction
   内完成：存在且无 `O_EXCL` 时打开 winner，存在且有 `O_EXCL` 时返回 `EEXIST`，不存在时创建。

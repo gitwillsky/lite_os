@@ -174,6 +174,19 @@ pub(crate) mod permission {
     }
 }
 
+#[path = "../../../kernel/src/fs/mount_options.rs"]
+pub(crate) mod mount_options;
+
+#[path = "../../../kernel/src/fs/tmpfs/options.rs"]
+pub(crate) mod tmpfs_options;
+
+#[path = "../../../kernel/src/fs/tmpfs/directory.rs"]
+pub(crate) mod tmpfs_directory;
+
+#[cfg(test)]
+#[path = "tests/tmpfs.rs"]
+mod tmpfs_tests;
+
 #[path = "../../../kernel/src/fs/ext4.rs"]
 pub(crate) mod ext4;
 

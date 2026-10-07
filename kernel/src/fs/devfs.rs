@@ -375,3 +375,22 @@ impl FileSystem for DevFileSystem {
         })
     }
 }
+
+/// devtmpfs 类型：不接受选项。
+pub(super) struct DevFileSystemType;
+
+impl super::mount::FileSystemType for DevFileSystemType {
+    fn name(&self) -> &'static str {
+        "devtmpfs"
+    }
+
+    fn create(
+        &self,
+        request: &super::mount::MountRequest<'_>,
+    ) -> Result<Arc<dyn super::FileSystem>, FileSystemError> {
+        if !super::mount_options::is_empty(request.options) {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        Ok(DevFileSystem::new()?)
+    }
+}

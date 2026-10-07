@@ -1756,22 +1756,22 @@ kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn appe
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn ceiling (& self , key : & K) -> Option < (& K , & V) >
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn clear (& mut self)
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn commit_vacant (& mut self , entry : VacantEntry < K , V >)
-kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn contains_key (& self , key : & K) -> bool
+kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn contains_key < Q : Ord + ? Sized > (& self , key : & Q) -> bool where K : Borrow < Q > ,
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn first_key_value (& self) -> Option < (& K , & V) >
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn floor (& self , key : & K) -> Option < (& K , & V) >
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn floor_mut (& mut self , key : & K) -> Option < (& K , & mut V) >
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn for_each_mut (& mut self , mut visit : impl FnMut (& K , & mut V))
-kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn get (& self , key : & K) -> Option < & V >
-kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn get_mut (& mut self , key : & K) -> Option < & mut V >
+kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn get < Q : Ord + ? Sized > (& self , key : & Q) -> Option < & V > where K : Borrow < Q > ,
+kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn get_mut < Q : Ord + ? Sized > (& mut self , key : & Q) -> Option < & mut V > where K : Borrow < Q > ,
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn iter (& self) -> Iter < '_ , K , V >
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn iter_after (& self , start : & K) -> Iter < '_ , K , V > where K : Ord ,
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn iter_from (& self , start : & K) -> Iter < '_ , K , V > where K : Ord ,
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn predecessor (& self , key : & K) -> Option < (& K , & V) >
-kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn remove (& mut self , key : & K) -> Option < V >
+kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn remove < Q : Ord + ? Sized > (& mut self , key : & Q) -> Option < V > where K : Borrow < Q > ,
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn retain (& mut self , mut keep : impl FnMut (& K , & V) -> bool)
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn split_off (& mut self , at : & K) -> Self
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn successor (& self , key : & K) -> Option < (& K , & V) >
-kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn take_entry (& mut self , key : & K) -> Option < VacantEntry < K , V > >
+kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn take_entry < Q : Ord + ? Sized > (& mut self , key : & Q) -> Option < VacantEntry < K , V > > where K : Borrow < Q > ,
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn try_for_each_mut < E > (& mut self , mut visit : impl FnMut (& K , & mut V) -> Result < () , E > ,) -> Result < () , E >
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn try_insert (& mut self , key : K , value : V) -> Result < Option < V > , OutOfMemory >
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: fn try_prepare (key : K , value : V) -> Result < VacantEntry < K , V > , OutOfMemory >
@@ -1796,11 +1796,12 @@ kernel/src/fallible_tree/topology.rs :: pub (super) fn insert_absent < K : Ord ,
 kernel/src/fallible_tree/topology.rs :: pub (super) fn join_ordered < K , V > (left : Link < K , V > , right : Link < K , V >) -> Link < K , V >
 kernel/src/fallible_tree/topology.rs :: pub (super) fn join_with_root < K , V > (left : Link < K , V > , mut root : Box < Node < K , V > > , right : Link < K , V > ,) -> Link < K , V >
 kernel/src/fallible_tree/topology.rs :: pub (super) fn last_key < K , V > (root : & Link < K , V >) -> Option < & K >
-kernel/src/fallible_tree/topology.rs :: pub (super) fn remove_node < K : Ord , V > (root : Link < K , V > , key : & K) -> RemoveResult < K , V >
+kernel/src/fallible_tree/topology.rs :: pub (super) fn remove_node < K : Ord + Borrow < Q > , Q : Ord + ? Sized , V > (root : Link < K , V > , key : & Q ,) -> RemoveResult < K , V >
 kernel/src/fallible_tree/topology.rs :: pub (super) fn retain_linear < K , V > (root : Link < K , V > , keep : & mut impl FnMut (& K , & V) -> bool ,) -> (Link < K , V > , usize)
 kernel/src/fallible_tree/topology.rs :: pub (super) fn split < K : Ord , V > (root : Link < K , V > , at : & K) -> (Link < K , V > , Link < K , V >)
 kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn new () -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
+kernel/src/fs/devfs.rs :: pub (super) struct DevFileSystemType
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 其他 Linux errno。"] Errno (isize)
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 后台进程组访问终端已收到 job-control signal，syscall 必须按 `ERESTARTSYS` 重启。"] Restart
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 非阻塞操作当前无法推进（`EAGAIN`）。"] WouldBlock
@@ -1825,6 +1826,7 @@ kernel/src/fs/device.rs :: pub (crate) OpenRequest :: number : DeviceNumber
 kernel/src/fs/device.rs :: pub (crate) enum DeviceError
 kernel/src/fs/device.rs :: pub (crate) enum DeviceWaitSource
 kernel/src/fs/device.rs :: pub (crate) fn open (request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
+kernel/src/fs/device.rs :: pub (crate) fn register_directory (path : & [u8]) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn register_driver (first : DeviceNumber , count : u32 , driver : Arc < dyn CharacterDriver > ,) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn register_node (path : & [u8] , number : DeviceNumber , permissions : u32 ,) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn wait_ready (file : & dyn DeviceFile , events : i16 , nonblocking : bool ,) -> Result < () , DeviceError >
@@ -1882,6 +1884,7 @@ kernel/src/fs/device.rs :: trait UserOutput :: fn write (& mut self , bytes : & 
 kernel/src/fs/device.rs :: trait UserOutput :: fn zero_remaining (& mut self) -> Result < () , UserFault >
 kernel/src/fs/devpts.rs :: pub (crate) impl DevPtsFileSystem :: fn new () -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/devpts.rs :: pub (crate) struct DevPtsFileSystem
+kernel/src/fs/devpts.rs :: pub (super) struct DevPtsFileSystemType
 kernel/src/fs/directory.rs :: enum DirectoryVisit :: Continue
 kernel/src/fs/directory.rs :: enum DirectoryVisit :: Stop
 kernel/src/fs/directory.rs :: pub (crate) DirectoryEntry :: inode : u64
@@ -2193,6 +2196,7 @@ kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write
 kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/ext4/xattr.rs :: pub (super) impl Ext4FileSystem :: fn release_xattr_block (& self , disk : & mut Ext4InodeDisk ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext4_type.rs :: pub (super) struct Ext4FileSystemType
 kernel/src/fs/file.rs :: enum OpenFileKind :: # [doc = " 经字符设备注册表打开、由设备子系统实现的设备文件。"] Device (Arc < dyn crate :: fs :: device :: DeviceFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
@@ -2216,7 +2220,7 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn event_fd (event : Arc < EventFd > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn filesystem_statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (opened : Arc < OpenedFile > , flags : u32) -> Result < Arc < Self > , () >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (opened : Arc < OpenedFile > , flags : u32) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Option < Arc < dyn Inode > >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn mem_file (file : Arc < crate :: fs :: MemFile > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn opened_ref (& self) -> Option < Arc < OpenedFile > >
@@ -2343,6 +2347,9 @@ kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) fn terminal_input_chun
 kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
 kernel/src/fs/file/terminal_flush.rs :: pub (crate) fn clear_raw (head : & mut usize , length : & mut usize) -> usize
 kernel/src/fs/file/terminal_flush.rs :: pub (super) fn clear_pending (input_head : & mut usize , input_len : & mut usize , line_len : & mut usize , eof_pending : & mut bool ,) -> bool
+kernel/src/fs/inode.rs :: enum DataBacking :: # [doc = " 内存型文件（tmpfs、memfd）：页即内容，由该 inode 独占，没有 backing storage。"] Memory (alloc :: sync :: Arc < super :: memory_file :: MemoryFile >)
+kernel/src/fs/inode.rs :: enum DataBacking :: # [doc = " 持久文件：经全局 page cache 缓存 filesystem storage。"] PageCache
+kernel/src/fs/inode.rs :: enum DataBacking :: # [doc = " 每次读取即时生成的只读快照（procfs）：不缓存、不可 mmap、不可写。"] Snapshot
 kernel/src/fs/inode.rs :: enum InodeType :: BlockDevice = 6
 kernel/src/fs/inode.rs :: enum InodeType :: CharacterDevice = 3
 kernel/src/fs/inode.rs :: enum InodeType :: Directory = 1
@@ -2364,6 +2371,7 @@ kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: mode : u32
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: mtime : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: size : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: uid : u32
+kernel/src/fs/inode.rs :: pub (crate) enum DataBacking
 kernel/src/fs/inode.rs :: pub (crate) enum InodeType
 kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
@@ -2372,6 +2380,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn allocate_storage (& self , _offset :
 kernel/src/fs/inode.rs :: trait Inode :: fn append_storage (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn create (& self , name : & [u8] , kind : InodeType , metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn data_backing (& self) -> DataBacking
 kernel/src/fs/inode.rs :: trait Inode :: fn device_number (& self) -> Option < crate :: fs :: device :: DeviceNumber >
 kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
@@ -2379,7 +2388,6 @@ kernel/src/fs/inode.rs :: trait Inode :: fn follow_link (& self) -> Option < Arc
 kernel/src/fs/inode.rs :: trait Inode :: fn inode_type (& self) -> InodeType
 kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn is_read_only (& self) -> bool
-kernel/src/fs/inode.rs :: trait Inode :: fn is_volatile (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn link (& self , _name : & [u8] , _target : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_directory (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
@@ -2400,25 +2408,60 @@ kernel/src/fs/mem.rs :: pub (super) fn register () -> Result < () , FileSystemEr
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn add_seals (& self , seals : u32) -> Result < u32 , FileSystemError >
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn name (& self) -> & [u8]
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn new (name : Vec < u8 > , allow_sealing : bool) -> Result < Arc < Self > , FileSystemError >
-kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn seals (& self) -> u32
+kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn seals (& self) -> Result < u32 , FileSystemError >
 kernel/src/fs/memfd.rs :: pub (crate) struct MemFile
-kernel/src/fs/memfd/state.rs :: enum MemFileStateError :: InvalidOperation
-kernel/src/fs/memfd/state.rs :: enum MemFileStateError :: OutOfMemory
-kernel/src/fs/memfd/state.rs :: enum MemFileStateError :: PermissionDenied
-kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_FUTURE_WRITE : u32 = 0x0010
-kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_GROW : u32 = 0x0004
-kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_SEAL : u32 = 0x0001
-kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_SHRINK : u32 = 0x0002
-kernel/src/fs/memfd/state.rs :: pub (super) const F_SEAL_WRITE : u32 = 0x0008
-kernel/src/fs/memfd/state.rs :: pub (super) enum MemFileStateError
-kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn add_seals (& mut self , seals : u32) -> Result < u32 , MemFileStateError >
-kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn len (& self) -> usize
-kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn new (allow_sealing : bool) -> Self
-kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn read (& self , offset : usize , output : & mut [u8]) -> usize
-kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn seals (& self) -> u32
-kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn truncate (& mut self , size : usize) -> Result < () , MemFileStateError >
-kernel/src/fs/memfd/state.rs :: pub (super) impl MemFileState :: fn write (& mut self , offset : usize , input : & [u8] ,) -> Result < usize , MemFileStateError >
-kernel/src/fs/memfd/state.rs :: pub (super) struct MemFileState
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn add_seals (& self , seals : u32) -> Result < u32 , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn allocate (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn begin_write (& self) -> Result < MemoryWrite < '_ > , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn id (& self) -> SharedFileId
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn mapping (self : & Arc < Self >) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn modified_seconds (& self) -> u64
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn new (id : SharedFileId , budget : Arc < PageBudget > , allow_sealing : bool ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn resident_pages (& self) -> Result < usize , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn seals (& self) -> Result < u32 , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn size (& self) -> u64
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryFile :: fn truncate (& self , size : u64) -> Result < () , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryWrite < '_ > :: fn append (& self , input : & [u8] , size_limit : u64 ,) -> Result < (u64 , usize) , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl MemoryWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl PageBudget :: fn limit (& self) -> Option < u64 >
+kernel/src/fs/memory_file.rs :: pub (crate) impl PageBudget :: fn new (limit : Option < u64 >) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl PageBudget :: fn set_limit (& self , limit : Option < u64 >) -> Result < () , FileSystemError >
+kernel/src/fs/memory_file.rs :: pub (crate) impl PageBudget :: fn used (& self) -> u64
+kernel/src/fs/memory_file.rs :: pub (crate) struct MemoryFile
+kernel/src/fs/memory_file.rs :: pub (crate) struct MemoryWrite < 'a >
+kernel/src/fs/memory_file.rs :: pub (crate) struct PageBudget
+kernel/src/fs/memory_file/seals.rs :: enum SealError :: # [doc = " 已被 seal 禁止。"] PermissionDenied
+kernel/src/fs/memory_file/seals.rs :: enum SealError :: # [doc = " 请求了未知或尚未实现的 seal。"] InvalidOperation
+kernel/src/fs/memory_file/seals.rs :: pub (super) const F_SEAL_FUTURE_WRITE : u32 = 0x0010
+kernel/src/fs/memory_file/seals.rs :: pub (super) const F_SEAL_GROW : u32 = 0x0004
+kernel/src/fs/memory_file/seals.rs :: pub (super) const F_SEAL_SEAL : u32 = 0x0001
+kernel/src/fs/memory_file/seals.rs :: pub (super) const F_SEAL_SHRINK : u32 = 0x0002
+kernel/src/fs/memory_file/seals.rs :: pub (super) const F_SEAL_WRITE : u32 = 0x0008
+kernel/src/fs/memory_file/seals.rs :: pub (super) enum SealError
+kernel/src/fs/memory_file/seals.rs :: pub (super) impl Seals :: const fn bits (self) -> u32
+kernel/src/fs/memory_file/seals.rs :: pub (super) impl Seals :: const fn new (allow_sealing : bool) -> Self
+kernel/src/fs/memory_file/seals.rs :: pub (super) impl Seals :: fn add (& mut self , seals : u32) -> Result < u32 , SealError >
+kernel/src/fs/memory_file/seals.rs :: pub (super) impl Seals :: fn check_truncate (self , length : u64 , size : u64) -> Result < () , SealError >
+kernel/src/fs/memory_file/seals.rs :: pub (super) impl Seals :: fn check_write (self , length : u64 , end : u64) -> Result < () , SealError >
+kernel/src/fs/memory_file/seals.rs :: pub (super) struct Seals
+kernel/src/fs/memory_file/sparse.rs :: enum Stop :: # [doc = " 目录树节点分配失败。"] OutOfMemory
+kernel/src/fs/memory_file/sparse.rs :: enum Stop :: # [doc = " 页分配失败（配额或物理内存），原因由 `allocate` 给出。"] Allocator (E)
+kernel/src/fs/memory_file/sparse.rs :: pub (super) const PAGE_SIZE : usize = 4096
+kernel/src/fs/memory_file/sparse.rs :: pub (super) enum Stop < E >
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: const fn len (& self) -> u64
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: const fn new () -> Self
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: const fn resident_pages (& self) -> usize
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: fn allocate_range < E > (& mut self , offset : u64 , length : u64 , mut allocate : impl FnMut () -> Result < Arc < P > , E > ,) -> Result < () , Stop < E > >
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: fn page < E > (& mut self , index : u64 , allocate : impl FnMut () -> Result < Arc < P > , E > ,) -> Option < Result < Arc < P > , Stop < E > > >
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: fn read (& self , offset : u64 , output : & mut [u8]) -> usize
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: fn truncate (& mut self , size : u64)
+kernel/src/fs/memory_file/sparse.rs :: pub (super) impl SparsePages < P > :: fn write < E > (& mut self , offset : u64 , input : & [u8] , mut allocate : impl FnMut () -> Result < Arc < P > , E > ,) -> (usize , Option < Stop < E > >)
+kernel/src/fs/memory_file/sparse.rs :: pub (super) struct SparsePages < P >
+kernel/src/fs/memory_file/sparse.rs :: pub (super) trait PageBytes
+kernel/src/fs/memory_file/sparse.rs :: trait PageBytes :: fn read (& self , offset : usize , output : & mut [u8])
+kernel/src/fs/memory_file/sparse.rs :: trait PageBytes :: fn write (& self , offset : usize , input : & [u8])
+kernel/src/fs/memory_file/sparse.rs :: trait PageBytes :: fn zero_from (& self , offset : usize)
 kernel/src/fs/mod.rs :: enum FileSystemError :: # [doc = " 设备号没有 driver，或 driver 当前不提供该设备（`ENXIO`）。"] NoDevice
 kernel/src/fs/mod.rs :: enum FileSystemError :: AccessDenied
 kernel/src/fs/mod.rs :: enum FileSystemError :: AlreadyExists
@@ -2467,41 +2510,57 @@ kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str 
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent , EpollMemberships }
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
-kernel/src/fs/mod.rs :: pub (crate) use inode :: { Inode , InodeMetadata , InodeType , StorageWriter }
+kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , Inode , InodeMetadata , InodeType , StorageWriter }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
-kernel/src/fs/mod.rs :: pub (crate) use mount :: { FileSystemType , MountEnvironment , mount , mount_root , unmount }
+kernel/src/fs/mod.rs :: pub (crate) use memory_file :: { MemoryFile , PageBudget }
+kernel/src/fs/mod.rs :: pub (crate) use mount :: { MountEnvironment , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
 kernel/src/fs/mod.rs :: pub (crate) use readiness :: { ReadinessSource , ReadinessSources }
 kernel/src/fs/mod.rs :: pub (crate) use timerfd :: { TimerError , TimerFd , TimerFdBackend , TimerFdRead , TimerSetting }
 kernel/src/fs/mod.rs :: pub (crate) use tty :: { JobControl , console as console_terminal , drain_input as drain_terminal_input , init as init_tty , install_job_control , }
-kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , RecordLockMode , RecordLockRange , vfs , }
+kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , MountFlags , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , RecordLockMode , RecordLockRange , vfs , }
+kernel/src/fs/mod.rs :: trait FileSystem :: fn remount (& self , options : & [u8]) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn shutdown (& self) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
-kernel/src/fs/mount.rs :: enum FileSystemType :: DevPts
-kernel/src/fs/mount.rs :: enum FileSystemType :: DevTmpfs
-kernel/src/fs/mount.rs :: enum FileSystemType :: Ext4
-kernel/src/fs/mount.rs :: enum FileSystemType :: Proc
-kernel/src/fs/mount.rs :: enum FileSystemType :: Sys
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: cpu_count : usize
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: proc_source : Arc < dyn ProcSource >
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: threads : KernelThreadSupport
-kernel/src/fs/mount.rs :: pub (crate) enum FileSystemType
-kernel/src/fs/mount.rs :: pub (crate) fn mount (kind : FileSystemType , source : & [u8] , device : Option < DeviceNumber > , point : Arc < OpenedFile > ,) -> Result < () , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) MountRequest :: device : Option < DeviceNumber >
+kernel/src/fs/mount.rs :: pub (crate) MountRequest :: environment : & 'a MountEnvironment
+kernel/src/fs/mount.rs :: pub (crate) MountRequest :: options : & 'a [u8]
+kernel/src/fs/mount.rs :: pub (crate) fn get_filesystem_type (name : & [u8]) -> Option < & 'static dyn FileSystemType >
+kernel/src/fs/mount.rs :: pub (crate) fn mount (kind : & 'static dyn FileSystemType , source : & [u8] , device : Option < DeviceNumber > , options : & [u8] , flags : MountFlags , point : Arc < OpenedFile > ,) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn mount_root (environment : MountEnvironment , root : & [u8] , filesystem_type : Option < & [u8] > ,) -> Result < super :: RootMounted , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) fn register_filesystem (kind : & 'static dyn FileSystemType ,) -> Result < () , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) fn remount (root : & Arc < OpenedFile > , flags : MountFlags , options : & [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn unmount (root : & Arc < OpenedFile >) -> Result < () , FileSystemError >
-kernel/src/fs/mount.rs :: pub (crate) impl FileSystemType :: fn from_name (name : & [u8]) -> Option < Self >
-kernel/src/fs/mount.rs :: pub (crate) impl FileSystemType :: fn requires_device (self) -> bool
 kernel/src/fs/mount.rs :: pub (crate) struct MountEnvironment
+kernel/src/fs/mount.rs :: pub (crate) struct MountRequest < 'a >
+kernel/src/fs/mount.rs :: pub (crate) trait FileSystemType
+kernel/src/fs/mount.rs :: trait FileSystemType :: fn create (& self , request : & MountRequest < '_ >) -> Result < Arc < dyn FileSystem > , FileSystemError >
+kernel/src/fs/mount.rs :: trait FileSystemType :: fn name (& self) -> & 'static str
+kernel/src/fs/mount.rs :: trait FileSystemType :: fn requires_device (& self) -> bool
+kernel/src/fs/mount_options.rs :: pub (super) MountOption :: key : & 'a [u8]
+kernel/src/fs/mount_options.rs :: pub (super) MountOption :: value : Option < & 'a [u8] >
+kernel/src/fs/mount_options.rs :: pub (super) fn is_empty (options : & [u8]) -> bool
+kernel/src/fs/mount_options.rs :: pub (super) fn parse (options : & [u8]) -> impl Iterator < Item = MountOption < '_ > >
+kernel/src/fs/mount_options.rs :: pub (super) fn parse_number (value : & [u8]) -> Option < u64 >
+kernel/src/fs/mount_options.rs :: pub (super) fn parse_scaled (value : & [u8]) -> Option < u64 >
+kernel/src/fs/mount_options.rs :: pub (super) struct MountOption < 'a >
+kernel/src/fs/page_cache.rs :: enum RegularFileWrite :: Cached (CachedWrite < 'a >)
+kernel/src/fs/page_cache.rs :: enum RegularFileWrite :: Memory (MemoryWrite < 'a >)
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: dirty_pages : usize
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: reclaimable_pages : usize
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: resident_pages : usize
 kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: bytes : usize
 kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: storage_bytes : usize
+kernel/src/fs/page_cache.rs :: pub (crate) enum RegularFileWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 ,) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn evict_filesystem (filesystem_id : usize) -> Result < () , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) fn evict_if_unlinked (inode : & Arc < dyn Inode > , holders : usize)
 kernel/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > , opened : Option < Arc < OpenedFile > > ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn statistics () -> PageCacheStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
@@ -2512,10 +2571,10 @@ kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn from_inode (in
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn id (& self) -> Option < SharedFileId >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn read (& self , offset : u64 , output : & mut [u8] ,) -> Result < RegularFileRead , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn size (& self) -> u64
+kernel/src/fs/page_cache.rs :: pub (crate) struct CachedWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) struct PageCacheStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFile
 kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFileRead
-kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFileWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (super) impl CachedPage :: fn reclaimable (& self) -> bool
 kernel/src/fs/page_cache.rs :: pub (super) struct CachedPage
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) CachedPages :: entries : FallibleMap < u64 , Arc < CachedPage > >
@@ -2567,6 +2626,7 @@ kernel/src/fs/procfs.rs :: pub (crate) use snapshot :: { ProcCpuSnapshot , ProcF
 kernel/src/fs/procfs.rs :: pub (super) fn proc_text (arguments : fmt :: Arguments < '_ >) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs.rs :: pub (super) impl ProcText :: const fn new () -> Self
 kernel/src/fs/procfs.rs :: pub (super) impl ProcText :: fn finish (self) -> Vec < u8 >
+kernel/src/fs/procfs.rs :: pub (super) struct ProcFileSystemType
 kernel/src/fs/procfs.rs :: pub (super) struct ProcText
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_pid (& self) -> Option < usize >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn kernel_command_line (& self) -> & [u8]
@@ -2749,6 +2809,7 @@ kernel/src/fs/readiness.rs :: pub (crate) impl ReadinessSources :: fn push (& mu
 kernel/src/fs/readiness.rs :: pub (crate) struct ReadinessSources
 kernel/src/fs/sysfs.rs :: pub (crate) impl SysFileSystem :: fn new (cpu_count : usize) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/sysfs.rs :: pub (crate) struct SysFileSystem
+kernel/src/fs/sysfs.rs :: pub (super) struct SysFileSystemType
 kernel/src/fs/timerfd.rs :: enum TimerError :: Exhausted
 kernel/src/fs/timerfd.rs :: enum TimerError :: NotFound
 kernel/src/fs/timerfd.rs :: enum TimerError :: OutOfMemory
@@ -2777,6 +2838,29 @@ kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn readable (& self) -> bool
 kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn readiness_generation (& self) -> u64
 kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn replace (& self , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
 kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn setting (& self , now_ns : u64) -> Result < TimerSetting , TimerError >
+kernel/src/fs/tmpfs.rs :: pub (crate) struct TmpFileSystem
+kernel/src/fs/tmpfs.rs :: pub (crate) struct TmpInode
+kernel/src/fs/tmpfs.rs :: pub (super) struct TmpFileSystemType
+kernel/src/fs/tmpfs/directory.rs :: pub (super) const FIRST_ENTRY_COOKIE : u64 = 3
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: const fn len (& self) -> usize
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: const fn new () -> Self
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: fn entries_after (& self , after : u64) -> impl Iterator < Item = (u64 , & [u8] , & T) >
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: fn get (& self , name : & [u8]) -> Option < & T >
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: fn insert (& mut self , reserved : Reserved < T >)
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: fn pop_first (& mut self) -> Option < T >
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: fn remove (& mut self , name : & [u8]) -> Option < T >
+kernel/src/fs/tmpfs/directory.rs :: pub (super) impl Directory < T > :: fn reserve (name : & [u8] , value : T) -> Result < Reserved < T > , OutOfMemory >
+kernel/src/fs/tmpfs/directory.rs :: pub (super) struct Directory < T >
+kernel/src/fs/tmpfs/directory.rs :: pub (super) struct Reserved < T >
+kernel/src/fs/tmpfs/options.rs :: pub (super) Options :: blocks : Option < u64 >
+kernel/src/fs/tmpfs/options.rs :: pub (super) Options :: gid : u32
+kernel/src/fs/tmpfs/options.rs :: pub (super) Options :: inodes : Option < u64 >
+kernel/src/fs/tmpfs/options.rs :: pub (super) Options :: mode : u32
+kernel/src/fs/tmpfs/options.rs :: pub (super) Options :: uid : u32
+kernel/src/fs/tmpfs/options.rs :: pub (super) fn defaults (ram_pages : u64) -> Options
+kernel/src/fs/tmpfs/options.rs :: pub (super) fn parse (options : & [u8] , ram_pages : u64 , base : Options ,) -> Result < Options , InvalidOptions >
+kernel/src/fs/tmpfs/options.rs :: pub (super) struct InvalidOptions
+kernel/src/fs/tmpfs/options.rs :: pub (super) struct Options
 kernel/src/fs/tty.rs :: pub (crate) fn console () -> Arc < Terminal >
 kernel/src/fs/tty.rs :: pub (crate) fn drain_input (terminal : & Terminal) -> Result < bool , FileSystemError >
 kernel/src/fs/tty.rs :: pub (crate) fn init (console : Arc < dyn ConsoleDevice > ,) -> Result < super :: ConsoleReady , FileSystemError >
@@ -2798,8 +2882,11 @@ kernel/src/fs/tty/ioctl.rs :: pub (super) fn terminal (terminal : & Arc < Termin
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , opened : Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn begin_write_open (& self , filesystem_id : usize) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn device_mounted (& self , device : DeviceNumber) -> bool
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount (& self , point : Arc < OpenedFile > , source : & [u8] , filesystem : Arc < dyn FileSystem > , device : Option < DeviceNumber > ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn end_write_open (& self , filesystem_id : usize)
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount (& self , point : Arc < OpenedFile > , source : & [u8] , filesystem : Arc < dyn FileSystem > , device : Option < DeviceNumber > , flags : MountFlags ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_flags (& self , filesystem_id : usize) -> MountFlags
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , source : & [u8] , fs : Arc < dyn FileSystem > , device : Option < DeviceNumber > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_table (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn new () -> Self
@@ -2809,12 +2896,16 @@ kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file (& se
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at_no_follow (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn opened_path (& self , opened : & Arc < OpenedFile >) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn replace_mount_flags (& self , root : & Arc < OpenedFile > , flags : MountFlags ,) -> Result < (Arc < dyn FileSystem > , MountFlags) , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn require_writable (& self , filesystem_id : usize) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn restore_mount_flags (& self , filesystem_id : usize , flags : MountFlags)
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn statistics (& self , inode : Arc < dyn Inode > ,) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn sync (& self) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn unmount (& self , root : & Arc < OpenedFile > ,) -> Result < Arc < dyn FileSystem > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) static VFS_MANAGER : Once < VirtualFileSystem >
 kernel/src/fs/vfs.rs :: pub (crate) struct VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) use advisory_lock :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , PreparedAdvisoryLock , PreparedLockAttempt , }
+kernel/src/fs/vfs.rs :: pub (crate) use mount_flags :: MountFlags
 kernel/src/fs/vfs.rs :: pub (crate) use opened :: OpenedFile
 kernel/src/fs/vfs.rs :: pub (crate) use record_lock :: { PreparedRecordLock , RecordLockMode , RecordLockRange }
 kernel/src/fs/vfs/advisory_lock.rs :: enum AdvisoryLockAttempt :: Acquired { key : AdvisoryLockKey , wake_waiters : bool , }
@@ -2845,7 +2936,14 @@ kernel/src/fs/vfs/advisory_lock.rs :: pub (crate) trait AdvisoryLockNotifier
 kernel/src/fs/vfs/advisory_lock.rs :: pub (super) impl VirtualFileSystem :: fn advisory_identity (ofd : & Arc < OpenFileDescription > ,) -> Result < (AdvisoryLockKey , usize) , AdvisoryLockError >
 kernel/src/fs/vfs/advisory_lock.rs :: pub (super) struct AdvisoryFileLock
 kernel/src/fs/vfs/advisory_lock.rs :: trait AdvisoryLockNotifier :: fn notify (& self , key : AdvisoryLockKey)
-kernel/src/fs/vfs/mount_table.rs :: pub (super) fn write_mount_record (output : & mut Vec < u8 > , source : & [u8] , target : & [u8] , statistics : & FileSystemStatistics ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs/mount_flags.rs :: pub (crate) impl MountFlags :: const fn bits (self) -> u64
+kernel/src/fs/vfs/mount_flags.rs :: pub (crate) impl MountFlags :: const fn from_bits (bits : u64) -> Self
+kernel/src/fs/vfs/mount_flags.rs :: pub (crate) impl MountFlags :: const fn nodev (self) -> bool
+kernel/src/fs/vfs/mount_flags.rs :: pub (crate) impl MountFlags :: const fn noexec (self) -> bool
+kernel/src/fs/vfs/mount_flags.rs :: pub (crate) impl MountFlags :: const fn nosuid (self) -> bool
+kernel/src/fs/vfs/mount_flags.rs :: pub (crate) impl MountFlags :: const fn read_only (self) -> bool
+kernel/src/fs/vfs/mount_flags.rs :: pub (crate) struct MountFlags
+kernel/src/fs/vfs/mount_table.rs :: pub (super) fn write_mount_record (output : & mut Vec < u8 > , source : & [u8] , target : & [u8] , statistics : & FileSystemStatistics , flags : MountFlags ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , kind : InodeType , mode : u32 , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn link_at (& self , target : Arc < dyn Inode > , new_start : Option < Arc < OpenedFile > > , new_path : & [u8] , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn open_or_create_file_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , mode : u32 , identity : & AccessIdentity , exclusive : bool ,) -> Result < Arc < OpenedFile > , FileSystemError >

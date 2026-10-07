@@ -8,8 +8,8 @@ count=$(sqlite3 "$database" 'SELECT count(*) FROM records;')
 echo "LITEOS_SQLITE_RECOVERY_STATE integrity=$integrity count=$count"
 [ "$integrity" = ok ]
 [ "$count" -ge 1 ]
-if [ -f /run/normal.inittab ]; then
-    cp /run/normal.inittab /etc/inittab
+if [ -f /var/tmp/normal.inittab ]; then
+    cp /var/tmp/normal.inittab /etc/inittab
     sync
 fi
 echo LITEOS_SQLITE_RECOVERY_READY

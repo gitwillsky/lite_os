@@ -8,7 +8,7 @@ origin="https://liteos-gate.test:$port"
 curl_work=/tmp/curl-gate
 git_work=/tmp/git-gate
 export GIT_PAGER=cat
-. /run/apk-network-up.sh
+. /var/tmp/apk-network-up.sh
 start_gate_network
 echo LITEOS_APK_NETWORK_READY
 
