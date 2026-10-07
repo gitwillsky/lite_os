@@ -10,6 +10,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# kernel ext4 只挂载 e2fsprogs 1.47.4 `mke2fs -t ext4` 的固定默认 profile。
+# base_features 与 ext4 features 合起来恰为 kernel profile 的 16 个 feature。
+MKE2FS_CONFIG = """[defaults]
+\tbase_features = sparse_super,large_file,filetype,resize_inode,dir_index,ext_attr
+\tblocksize = 4096
+\tinode_size = 256
+\tinode_ratio = 16384
+
+[fs_types]
+\text4 = {
+\t\tfeatures = has_journal,extent,huge_file,flex_bg,metadata_csum,metadata_csum_seed,64bit,dir_nlink,extra_isize,orphan_file
+\t}
+"""
+
 
 def find_mke2fs() -> Path:
     """返回可执行 mke2fs；优先 make setup 安装的 Homebrew e2fsprogs，其次 PATH/system；均不存在时 fail-stop。"""

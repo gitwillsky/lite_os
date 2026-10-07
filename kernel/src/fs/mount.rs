@@ -43,6 +43,8 @@ pub(crate) struct MountRequest<'a> {
     pub(crate) environment: &'a MountEnvironment,
     /// 块设备类型的 source 设备号；nodev 类型为 `None`。
     pub(crate) device: Option<DeviceNumber>,
+    /// 以只读挂载（`MS_RDONLY`）：类型据此推迟写前准备，见 [`FileSystem::make_writable`]。
+    pub(crate) read_only: bool,
     /// `mount(2)` 的 `data` 选项字符串；由类型自己解析。
     pub(crate) options: &'a [u8],
 }
@@ -145,6 +147,7 @@ pub(crate) fn mount(
         .create(&MountRequest {
             environment: environment(),
             device,
+            read_only: flags.read_only(),
             options,
         })
         .and_then(|filesystem| {
@@ -180,7 +183,12 @@ pub(crate) fn remount(
         .map_err(|_| FileSystemError::OutOfMemory)?;
     let filesystem_id = root.inode().filesystem_id();
     let (filesystem, previous) = vfs().replace_mount_flags(root, flags)?;
-    if let Err(error) = filesystem.remount(options) {
+    let prepared = if previous.read_only() && !flags.read_only() {
+        filesystem.make_writable()
+    } else {
+        Ok(())
+    };
+    if let Err(error) = prepared.and_then(|()| filesystem.remount(options)) {
         vfs().restore_mount_flags(filesystem_id, previous);
         return Err(error);
     }
@@ -220,12 +228,44 @@ pub(crate) fn unmount(root: &Arc<OpenedFile>) -> Result<(), FileSystemError> {
     Ok(())
 }
 
-/// 按 Linux `name_to_dev_t` 解析 `root=`：`/dev/<disk>` 或十进制 `MAJ:MIN`。
+/// 按 Linux `name_to_dev_t` 解析 `root=`：`/dev/<disk>`、十进制 `MAJ:MIN`，或 `PARTUUID=`/`UUID=`/
+/// `LABEL=` 标识。
 ///
-/// `PARTUUID=`/`UUID=`/`LABEL=` 需要分区表或超级块扫描，尚未支持。
+/// 标识形式扫描已发布的块设备：`PARTUUID=` 比较分区表里的标识，`UUID=`/`LABEL=` 读取各设备上 ext4
+/// 超级块。同一标识匹配多个设备时取发布顺序中的第一个（Linux 同样如此）。
+///
+/// # Errors
+///
+/// 没有设备匹配返回 `NoDevice`；形式无法识别返回 `InvalidPath`。
 fn root_device_number(root: &[u8]) -> Result<DeviceNumber, FileSystemError> {
     if let Some(name) = root.strip_prefix(b"/dev/") {
         return device::block_number(name).ok_or(FileSystemError::NoDevice);
+    }
+    if let Some(wanted) = root.strip_prefix(b"PARTUUID=") {
+        // `PARTUUID=<id>/PARTNROFF=<n>` 的偏移形式尚未支持，按无法识别处理。
+        return device::block_nodes()?
+            .iter()
+            .find(|node| node.partuuid().is_some_and(|id| id.matches(wanted)))
+            .map(|node| node.number())
+            .ok_or(FileSystemError::NoDevice);
+    }
+    let (by_label, wanted) = match (root.strip_prefix(b"UUID="), root.strip_prefix(b"LABEL=")) {
+        (Some(wanted), _) => (false, Some(wanted)),
+        (_, Some(wanted)) => (true, Some(wanted)),
+        _ => (false, None),
+    };
+    if let Some(wanted) = wanted {
+        for node in device::block_nodes()? {
+            let mut superblock = [0u8; 1024];
+            if node
+                .read(1024, &mut superblock)
+                .is_ok_and(|count| count == superblock.len())
+                && super::block_identity::ext4_matches(&superblock, by_label, wanted)
+            {
+                return Ok(node.number());
+            }
+        }
+        return Err(FileSystemError::NoDevice);
     }
     let (major, minor) = core::str::from_utf8(root)
         .ok()
@@ -242,7 +282,8 @@ fn root_device_number(root: &[u8]) -> Result<DeviceNumber, FileSystemError> {
 /// # Parameters
 ///
 /// - `environment`: 之后 `mount(2)` 创建实例所需的能力；在此一次性安装。
-/// - `root`: `root=` 的值（`/dev/<disk>` 或 `MAJ:MIN`），同时作为 `/proc/mounts` 的 source。
+/// - `root`: `root=` 的值（`/dev/<disk>`、`MAJ:MIN`、`PARTUUID=`/`UUID=`/`LABEL=`），同时作为
+///   `/proc/mounts` 的 source。
 /// - `filesystem_type`: `rootfstype=`；缺省时依次尝试全部块设备类型（Linux `mount_block_root`）。
 /// - `flags`: 根的挂载属性；`ro` 启动参数给出只读，init 用 `mount -o remount,rw /` 转为可写。
 ///
@@ -286,6 +327,7 @@ pub(crate) fn mount_root(
         let filesystem = match kind.create(&MountRequest {
             environment,
             device: Some(number),
+            read_only: flags.read_only(),
             options: b"",
         }) {
             Ok(filesystem) => filesystem,
@@ -294,7 +336,14 @@ pub(crate) fn mount_root(
                 continue;
             }
         };
-        if let Err(error) = vfs().mount_root(root, filesystem.clone(), Some(number), flags) {
+        // `/proc/mounts` 的 source 是解析出的设备路径，而不是 `root=` 的标识形式（Linux 显示 `/dev/root`）。
+        let mut source = Vec::new();
+        source
+            .try_reserve_exact(b"/dev/".len() + block.name().len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        source.extend_from_slice(b"/dev/");
+        source.extend_from_slice(block.name());
+        if let Err(error) = vfs().mount_root(&source, filesystem.clone(), Some(number), flags) {
             let _ = filesystem.shutdown();
             block.end_mount();
             return Err(error);
@@ -303,6 +352,7 @@ pub(crate) fn mount_root(
         let devices = devtmpfs.create(&MountRequest {
             environment,
             device: None,
+            read_only: false,
             options: b"",
         })?;
         vfs().mount(

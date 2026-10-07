@@ -54,6 +54,10 @@ impl FileSystem for Ext4FileSystem {
     }
 
     /// 提交 running transaction（每次提交以 barrier 结束），再让写回线程退出。
+    fn make_writable(&self) -> Result<(), FileSystemError> {
+        Ext4FileSystem::make_writable(self)
+    }
+
     fn shutdown(&self) -> Result<(), FileSystemError> {
         let committed = self.sync_journal();
         self.stopping.store(true, Ordering::Release);

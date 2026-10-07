@@ -9,7 +9,8 @@ use spin::Mutex;
 use syscall_abi::errno;
 
 use super::device::{
-    DeviceError, DeviceFile, DeviceWaitSource, DeviceWaitSources, UserFault, UserInput, UserOutput,
+    DeviceError, DeviceFile, DeviceWaitSource, DeviceWaitSources, IoctlCall, UserFault, UserInput,
+    UserOutput,
 };
 use crate::{
     ipc::{
@@ -186,6 +187,23 @@ impl DeviceFile for FifoFile {
             });
         }
         sources
+    }
+
+    fn backing_pipe(&self) -> Option<Arc<Pipe>> {
+        Some(self.pipe.clone())
+    }
+
+    /// `FIONREAD`：未读字节数（写者与读者看到同一个环）。
+    fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
+        const FIONREAD: usize = 0x541b;
+        if call.request != FIONREAD {
+            return Err(DeviceError::Errno(errno::ENOTTY));
+        }
+        let buffered = i32::try_from(self.pipe.buffered_bytes()).unwrap_or(i32::MAX);
+        call.user
+            .write(call.argument, &buffered.to_ne_bytes())
+            .map_err(fault)?;
+        Ok(0)
     }
 
     fn readiness_generation(&self) -> u64 {

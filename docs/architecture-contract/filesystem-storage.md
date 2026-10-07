@@ -60,6 +60,8 @@
 - 块设备节点在 VFS 里只有一种视图：`OpenedFile::child` 经 `wrap_block_node` 发布 `BlockSpecial`；
   文件系统的块设备 inode 不实现设备 I/O。命名管道的 open 汇合等待 `PeerOpened`（对端累计打开次数），
   `Pipe.rendezvous_waiters` 使对端 open 即使不改变 readable/writable 也会走到唤醒路径。
+- 分区节点只经 `PartitionDevice` 把块号平移到整盘的同一 `BlockDevice`，不复制任何状态；`FileSystem::make_writable`
+  与 `Ext4FileSystem.writable` 共同保证写前准备（`RECOVER`、orphan 回收）恰好执行一次。
 - `BlockNode.claim` 是“已挂载”标志与写者计数的唯一原子字：`begin_writer`（OFD 创建）、`begin_mount`、
   `end_writer`（OFD Drop，不阻塞）、`end_mount` 都对它做 CAS/原子更新；块设备在 page cache 中的身份由
   `Inode::page_cache_id` 给出（与 devtmpfs 实例无关），挂载前经 `page_cache::evict_cached` 写回并逐出。

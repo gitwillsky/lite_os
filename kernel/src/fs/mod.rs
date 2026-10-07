@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
 
+mod block_identity;
 mod block_ioctl;
 mod block_node;
 mod block_range;
@@ -21,11 +22,14 @@ mod memory_file;
 mod mount;
 mod mount_options;
 mod page_cache;
+mod partition_device;
+mod partition_table;
 mod permission;
 mod procfs;
 mod pty;
 mod readiness;
 mod sysfs;
+mod sysfs_block;
 mod timerfd;
 mod tmpfs;
 mod tty;
@@ -192,6 +196,15 @@ pub(crate) trait FileSystem: Send + Sync {
         Ok(())
     }
 
+    /// 从只读转为可写（`remount,rw`）时，补做只读挂载推迟的写前准备（Linux `ext4_remount` 的 `ro → rw`）。
+    ///
+    /// # Errors
+    ///
+    /// 准备失败返回对应错误；VFS 会还原挂载属性，实例保持只读。
+    fn make_writable(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+
     /// 以 `options` 重新配置运行中的实例（Linux `reconfigure`）；挂载属性（ro/nosuid/…）由 VFS 管理。
     ///
     /// # Parameters
@@ -255,8 +268,30 @@ pub(crate) fn init_vfs() -> VfsReady {
 
 /// 块设备号 major：Linux 动态分配块 major 的首个值；fs 是块设备命名空间的唯一 owner。
 const BLOCK_MAJOR: u32 = 254;
-/// 每块盘预留的 minor 数（Linux virtio-blk `PART_BITS = 4`）；分区尚未支持。
+/// 每块盘预留的 minor 数（Linux virtio-blk `PART_BITS = 4`）：整盘一个，分区 1..=15。
 const DISK_MINORS: u32 = 16;
+
+/// 只保留可以发布为块设备节点的分区：起点与长度向下取整到 4 KiB 设备块。
+///
+/// 未对齐到 4 KiB 的分区（例如旧工具默认的 63 扇区起点）无法用整块读写表示，不发布；现代工具默认的
+/// 1 MiB 对齐满足要求。
+fn publishable_partitions(
+    partitions: Vec<partition_table::Partition>,
+) -> Vec<partition_table::Partition> {
+    const SECTORS_PER_BLOCK: u64 = 8;
+    partitions
+        .into_iter()
+        .filter_map(|partition| {
+            let sectors = partition.sectors / SECTORS_PER_BLOCK * SECTORS_PER_BLOCK;
+            (partition.start % SECTORS_PER_BLOCK == 0 && sectors != 0).then_some(
+                partition_table::Partition {
+                    sectors,
+                    ..partition
+                },
+            )
+        })
+        .collect()
+}
 
 /// 发布一个块设备：按发布顺序分配设备号，并创建 `/dev/<disk_name>` 节点（Linux `add_disk`）。
 ///
@@ -274,10 +309,80 @@ pub(crate) fn publish_block_device(
     name.try_reserve_exact(disk.disk_name().len())
         .map_err(|_| FileSystemError::OutOfMemory)?;
     name.extend_from_slice(disk.disk_name());
-    device::register_block(
-        &name,
-        device::DeviceNumber::new(BLOCK_MAJOR, minor),
-        0o660,
-        disk,
-    )
+    let number = device::DeviceNumber::new(BLOCK_MAJOR, minor);
+    device::register_block(&name, number, 0o660, disk, None)?;
+    publish_partitions(&name, number)
+}
+
+/// 读取整盘的分区表并为每个可发布的分区创建 `/dev/<disk><N>` 节点（Linux `add_partition`）。
+///
+/// 分区名遵循 Linux 约定：盘名以数字结尾时加 `p`（`nvme0n1p1`），否则直接接编号（`vda1`）。设备号为
+/// 整盘 minor 加分区号。单个分区发布失败只记录警告，不影响整盘与其余分区。
+fn publish_partitions(
+    disk_name: &[u8],
+    whole: device::DeviceNumber,
+) -> Result<(), FileSystemError> {
+    let Some(node) = device::block_node(whole) else {
+        return Err(FileSystemError::NoDevice);
+    };
+    let parsed = partition_table::parse(node.as_ref(), node.capacity() / 512);
+    let published = publishable_partitions(parsed.clone());
+    if published.len() != parsed.len() {
+        crate::warn!(
+            "{}: skipped {} partition(s) not aligned to 4 KiB",
+            core::str::from_utf8(disk_name).unwrap_or("?"),
+            parsed.len() - published.len()
+        );
+    }
+    // MBR 分区的 `PARTUUID` 由磁盘签名与分区号构成；GPT 分区用自己的 GUID。
+    let signature = partition_table::mbr_signature(node.as_ref());
+    for partition in &published {
+        let mut name = Vec::new();
+        name.try_reserve_exact(disk_name.len() + 4)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        name.extend_from_slice(disk_name);
+        if disk_name.last().is_some_and(u8::is_ascii_digit) {
+            name.push(b'p');
+        }
+        let mut digits = [0u8; 10];
+        let mut number = partition.number;
+        let mut length = 0;
+        while number != 0 {
+            digits[length] = b'0' + (number % 10) as u8;
+            number /= 10;
+            length += 1;
+        }
+        name.extend(digits[..length].iter().rev());
+        let device = Arc::try_new(partition_device::PartitionDevice::new(
+            name.clone(),
+            node.device().clone(),
+            (partition.start / 8) as usize,
+            (partition.sectors / 8) as usize,
+        ))
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        let number = device::DeviceNumber::new(whole.major, whole.minor + partition.number);
+        let info = block_node::PartitionInfo {
+            start: partition.start,
+            uuid: match (partition.guid, signature) {
+                (Some(guid), _) => Some(block_identity::PartUuid::Gpt(guid)),
+                (None, Some(signature)) => Some(block_identity::PartUuid::Mbr {
+                    signature,
+                    number: partition.number,
+                }),
+                (None, None) => None,
+            },
+        };
+        match device::register_block(&name, number, 0o660, device, Some(info)) {
+            Ok(()) => crate::info!(
+                "{}: partition {} start={} sectors={}",
+                core::str::from_utf8(&name).unwrap_or("?"),
+                partition.number,
+                partition.start,
+                partition.sectors
+            ),
+            Err(error) => crate::warn!("partition {} not published: {:?}", partition.number, error),
+        }
+    }
+    node.set_partitions(published);
+    Ok(())
 }

@@ -27,7 +27,7 @@ impl FileSystemType for Ext4FileSystemType {
         }
         let number = request.device.ok_or(FileSystemError::InvalidOperation)?;
         let disk = device::block_device(number).ok_or(FileSystemError::NoDevice)?;
-        let filesystem = Ext4FileSystem::new(disk)?;
+        let filesystem = Ext4FileSystem::new(disk, request.read_only)?;
         filesystem.start_writeback(request.environment.threads)?;
         Ok(filesystem)
     }

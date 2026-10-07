@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -156,8 +157,97 @@ static void device_nodes(const char *directory, int base)
 	CHECK(base + 7, close(fd) == 0 && unlink(path) == 0);
 }
 
+/* FIONREAD 与 F_GETPIPE_SZ/F_SETPIPE_SZ：匿名管道与 FIFO 共用同一个环。 */
+static void pipe_controls(int fd_read, int fd_write, int base)
+{
+	int pending = -1;
+	char buffer[16];
+	CHECK(base + 1, fcntl(fd_read, F_GETPIPE_SZ) == 65536);
+	CHECK(base + 2, ioctl(fd_read, FIONREAD, &pending) == 0 && pending == 0);
+	CHECK(base + 3, write(fd_write, "abcdef", 6) == 6);
+	CHECK(base + 4, ioctl(fd_read, FIONREAD, &pending) == 0 && pending == 6);
+	CHECK(base + 5, ioctl(fd_write, FIONREAD, &pending) == 0 && pending == 6);
+
+	/* 缩到一页：未读数据保留，容量按 2 的幂次取整；超过上限得到 EPERM。 */
+	CHECK(base + 6, fcntl(fd_write, F_SETPIPE_SZ, 4096) == 4096 && fcntl(fd_read, F_GETPIPE_SZ) == 4096);
+	CHECK(base + 7, read(fd_read, buffer, 3) == 3 && memcmp(buffer, "abc", 3) == 0);
+	CHECK(base + 8, fcntl(fd_write, F_SETPIPE_SZ, 5000) == 8192);
+	CHECK(base + 9, fcntl(fd_write, F_SETPIPE_SZ, 2 << 20) == -1 && errno == EPERM);
+	CHECK(base + 10, read(fd_read, buffer, 3) == 3 && memcmp(buffer, "def", 3) == 0);
+
+	/* 填满一页后写入得到 EAGAIN；扩容立即解除阻塞。 */
+	CHECK(base + 11, fcntl(fd_write, F_SETPIPE_SZ, 4096) == 4096);
+	int flags = fcntl(fd_write, F_GETFL);
+	CHECK(base + 12, fcntl(fd_write, F_SETFL, flags | O_NONBLOCK) == 0);
+	char page[4096];
+	memset(page, 'x', sizeof page);
+	CHECK(base + 13, write(fd_write, page, sizeof page) == (ssize_t)sizeof page);
+	CHECK(base + 14, write(fd_write, "y", 1) == -1 && errno == EAGAIN);
+	CHECK(base + 15, fcntl(fd_write, F_SETPIPE_SZ, 4097) == 8192);
+	CHECK(base + 16, write(fd_write, "y", 1) == 1);
+	CHECK(base + 17, ioctl(fd_read, FIONREAD, &pending) == 0 && pending == 4097);
+	/* 缩小到装不下未读数据：EBUSY，且不丢数据。 */
+	CHECK(base + 18, fcntl(fd_write, F_SETPIPE_SZ, 4096) == -1 && errno == EBUSY);
+	CHECK(base + 19, ioctl(fd_read, FIONREAD, &pending) == 0 && pending == 4097);
+}
+
+static void pipe_control_cases(void)
+{
+	int fds[2];
+	CHECK(500, pipe(fds) == 0);
+	pipe_controls(fds[0], fds[1], 500);
+	CHECK(520, close(fds[0]) == 0 && close(fds[1]) == 0);
+	const char *path = "/tmp/fifo-controls";
+	unlink(path);
+	CHECK(521, mknod(path, S_IFIFO | 0600, 0) == 0);
+	int reader = open(path, O_RDONLY | O_NONBLOCK);
+	int writer = open(path, O_WRONLY | O_NONBLOCK);
+	CHECK(522, reader >= 0 && writer >= 0);
+	pipe_controls(reader, writer, 530);
+	CHECK(550, close(reader) == 0 && close(writer) == 0 && unlink(path) == 0);
+	/* 不是管道的 fd：EBADF。 */
+	int plain = open("/tmp", O_RDONLY);
+	CHECK(551, plain >= 0 && fcntl(plain, F_GETPIPE_SZ) == -1 && errno == EBADF);
+	CHECK(552, close(plain) == 0);
+}
+
+#define BLKRRPART_REQUEST 0x125f
+#define BLKGETSIZE64_REQUEST 0x80081272UL
+
+static unsigned long long device_size(const char *path)
+{
+	unsigned long long size = 0;
+	int fd = open(path, O_RDONLY);
+	if (fd < 0 || ioctl(fd, BLKGETSIZE64_REQUEST, &size) != 0) size = 0;
+	if (fd >= 0) close(fd);
+	return size;
+}
+
+/* 分区节点：容量、越界写入、BLKRRPART 语义。scratch 盘由 gate 预先划成 4 MiB 与 10 MiB 两个分区。 */
+static void partitions(void)
+{
+	char byte = 'p';
+	CHECK(400, device_size("/dev/vdb1") == 4ull << 20);
+	CHECK(401, device_size("/dev/vdb2") == 10ull << 20);
+	int fd = open("/dev/vdb1", O_RDWR);
+	CHECK(402, fd >= 0);
+	/* 分区内的偏移互不影响，越过分区末尾得到 ENOSPC（而不是写进相邻分区）。 */
+	CHECK(403, pwrite(fd, &byte, 1, (4ll << 20) - 1) == 1);
+	CHECK(404, pwrite(fd, &byte, 1, 4ll << 20) == -1 && errno == ENOSPC);
+	CHECK(405, fsync(fd) == 0 && close(fd) == 0);
+	/* 整盘的分区表已被 gate 清零：重读与已发布的不同，节点集合不能热变化（EBUSY）；分区上是 EINVAL。 */
+	fd = open("/dev/vdb", O_RDWR);
+	CHECK(406, fd >= 0 && ioctl(fd, BLKRRPART_REQUEST, 0) == -1 && errno == EBUSY);
+	CHECK(407, close(fd) == 0);
+	fd = open("/dev/vdb1", O_RDONLY);
+	CHECK(408, fd >= 0 && ioctl(fd, BLKRRPART_REQUEST, 0) == -1 && errno == EINVAL);
+	CHECK(409, close(fd) == 0);
+}
+
 int main(void)
 {
+	pipe_control_cases();
+	partitions();
 	signal(SIGPIPE, SIG_IGN);
 	fifo_semantics("/tmp/fifo-probe", 0);
 	fifo_semantics("/var/tmp/fifo-probe", 100);

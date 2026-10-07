@@ -7,9 +7,17 @@ use super::{
 
 const SYSFS_MAGIC: u64 = 0x6265_6572;
 
+use super::sysfs_block::{self, BlockSysNode, Parent, Place};
+
 #[derive(Clone, Copy)]
 enum SysNode {
     Root,
+    /// `/sys/class`：只有 `block`。
+    ClassRoot,
+    /// `/sys/dev`：只有 `block`。
+    DevRoot,
+    /// 块设备子树（见 `sysfs_block`）。
+    Block(BlockSysNode),
     Devices,
     System,
     CpuRoot,
@@ -29,6 +37,9 @@ impl SysNode {
     fn inode(self) -> u64 {
         match self {
             Self::Root => 1,
+            Self::ClassRoot => 8,
+            Self::DevRoot => 9,
+            Self::Block(node) => node.inode(),
             Self::Devices => 2,
             Self::System => 3,
             Self::CpuRoot => 4,
@@ -42,9 +53,14 @@ impl SysNode {
 
     fn kind(self) -> InodeType {
         match self {
-            Self::Root | Self::Devices | Self::System | Self::CpuRoot | Self::Cpu(_) => {
-                InodeType::Directory
-            }
+            Self::Root
+            | Self::ClassRoot
+            | Self::DevRoot
+            | Self::Devices
+            | Self::System
+            | Self::CpuRoot
+            | Self::Cpu(_) => InodeType::Directory,
+            Self::Block(node) => node.kind(),
             Self::CpuSet(_) | Self::CpuOnline(_) => InodeType::File,
         }
     }
@@ -120,6 +136,7 @@ impl SysInode {
                 bytes.extend_from_slice(b"1\n");
                 Ok(bytes)
             }
+            SysNode::Block(node) => sysfs_block::contents(node),
             _ => Err(FileSystemError::IsDirectory),
         }
     }
@@ -135,6 +152,13 @@ impl SysInode {
     fn child(&self, name: &[u8]) -> Result<SysNode, FileSystemError> {
         let parent = match self.node {
             SysNode::Root => SysNode::Root,
+            SysNode::ClassRoot | SysNode::DevRoot => SysNode::Root,
+            SysNode::Block(node) => match sysfs_block::parent(node)? {
+                Parent::ClassRoot => SysNode::ClassRoot,
+                Parent::Root => SysNode::Root,
+                Parent::DevRoot => SysNode::DevRoot,
+                Parent::Block(parent) => SysNode::Block(parent),
+            },
             SysNode::Devices => SysNode::Root,
             SysNode::System => SysNode::Devices,
             SysNode::CpuRoot => SysNode::System,
@@ -151,6 +175,18 @@ impl SysInode {
         }
         match self.node {
             SysNode::Root if name == b"devices" => Ok(SysNode::Devices),
+            SysNode::Root if name == b"class" => Ok(SysNode::ClassRoot),
+            SysNode::Root if name == b"dev" => Ok(SysNode::DevRoot),
+            SysNode::Root if name == b"block" => {
+                Ok(SysNode::Block(BlockSysNode::Listing(Place::Block)))
+            }
+            SysNode::ClassRoot if name == b"block" => {
+                Ok(SysNode::Block(BlockSysNode::Listing(Place::ClassBlock)))
+            }
+            SysNode::DevRoot if name == b"block" => {
+                Ok(SysNode::Block(BlockSysNode::Listing(Place::DevBlock)))
+            }
+            SysNode::Block(node) => sysfs_block::lookup(node, name).map(SysNode::Block),
             SysNode::Devices if name == b"system" => Ok(SysNode::System),
             SysNode::System if name == b"cpu" => Ok(SysNode::CpuRoot),
             SysNode::CpuRoot => match name {
@@ -276,7 +312,28 @@ impl Inode for SysInode {
         emit!(self.node, b".");
         emit!(parent, b"..");
         match self.node {
-            SysNode::Root => emit!(SysNode::Devices, b"devices"),
+            SysNode::Root => {
+                emit!(SysNode::Devices, b"devices");
+                emit!(SysNode::ClassRoot, b"class");
+                emit!(
+                    SysNode::Block(BlockSysNode::Listing(Place::Block)),
+                    b"block"
+                );
+                emit!(SysNode::DevRoot, b"dev");
+            }
+            SysNode::ClassRoot => emit!(
+                SysNode::Block(BlockSysNode::Listing(Place::ClassBlock)),
+                b"block"
+            ),
+            SysNode::DevRoot => emit!(
+                SysNode::Block(BlockSysNode::Listing(Place::DevBlock)),
+                b"block"
+            ),
+            SysNode::Block(node) => {
+                for (child, name) in sysfs_block::children(node)? {
+                    emit!(SysNode::Block(child), &name);
+                }
+            }
             SysNode::Devices => emit!(SysNode::System, b"system"),
             SysNode::System => emit!(SysNode::CpuRoot, b"cpu"),
             SysNode::CpuRoot => {

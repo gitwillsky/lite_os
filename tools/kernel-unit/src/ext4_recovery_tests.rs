@@ -161,7 +161,7 @@ impl BlockDevice for RecoveryImage {
 
 fn mounted() -> (Arc<RecoveryImage>, Arc<Ext4FileSystem>) {
     let image = RecoveryImage::open();
-    let fs = Ext4FileSystem::new(image.clone()).expect("mount repository ext image");
+    let fs = Ext4FileSystem::new(image.clone(), false).expect("mount repository ext image");
     (image, fs)
 }
 
@@ -212,7 +212,8 @@ fn recovery_reloads_allocation_metadata_owners_after_replay() {
     drop(fs);
     image.restore_crash_snapshot();
 
-    let recovered = Ext4FileSystem::new(image).expect("mount committed journal crash snapshot");
+    let recovered =
+        Ext4FileSystem::new(image, false).expect("mount committed journal crash snapshot");
     recovered
         .root_inode()
         .unwrap()
@@ -245,7 +246,7 @@ fn recovery_publishes_replayed_orphan_head_before_reclaim() {
     root.unlink(b"replay-orphan-owner", false).unwrap();
     root.sync_storage().unwrap();
     let recovered =
-        Ext4FileSystem::new(image.crash_clone()).expect("mount replayed orphan transaction");
+        Ext4FileSystem::new(image.crash_clone(), false).expect("mount replayed orphan transaction");
 
     assert!(matches!(
         recovered
@@ -408,8 +409,8 @@ fn torn_uncommitted_transaction_is_discarded_instead_of_failing_mount() {
             .expect("descriptor reached the crash snapshot");
         overlay.insert(descriptor + 1, vec![0; BLOCK_SIZE]);
     }
-    let recovered =
-        Ext4FileSystem::new(crashed).expect("uncommitted torn transaction must be discarded");
+    let recovered = Ext4FileSystem::new(crashed, false)
+        .expect("uncommitted torn transaction must be discarded");
     assert!(matches!(
         recovered
             .root_inode()
@@ -499,7 +500,7 @@ fn crash_at_every_commit_barrier_recovers_old_or_new_state() {
         drop((keep, directory, root));
         drop(fs);
 
-        let recovered = Ext4FileSystem::new(crashed.clone())
+        let recovered = Ext4FileSystem::new(crashed.clone(), false)
             .unwrap_or_else(|error| panic!("crash point {crash_after_flush}: mount {error:?}"));
         let root = recovered.root_inode().unwrap();
         let committed = crash_after_flush >= 2;
@@ -538,4 +539,49 @@ fn crash_at_every_commit_barrier_recovers_old_or_new_state() {
         crate::ext4_conformance_tests::e2fsck_clean(&path);
         std::fs::remove_file(path).unwrap();
     }
+}
+
+#[test]
+fn read_only_mount_defers_orphan_reclaim_until_remount_writable() {
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    let (image, fs) = mounted();
+    let before = test_mount_allocation_state(&fs);
+    let root = fs.root_inode().unwrap();
+    let file = root
+        .create(
+            b"ro-orphan-owner",
+            InodeType::File,
+            CreateMetadata {
+                mode: 0o644,
+                uid: 0,
+                gid: 0,
+            },
+        )
+        .unwrap();
+    file.write_storage(0, &[0x5a]).unwrap();
+    root.sync_storage().unwrap();
+    // 与 recovery_publishes_replayed_orphan_head_before_reclaim 相同的崩溃点。
+    image.snapshot_after_flushes(2);
+    root.unlink(b"ro-orphan-owner", false).unwrap();
+    root.sync_storage().unwrap();
+
+    let crashed = image.crash_clone();
+    let recovered = Ext4FileSystem::new(crashed.clone(), true).expect("read-only mount");
+    // 只读：journal 已重放（目录项消失），但 orphan 的 inode 与数据块没有被回收。
+    assert!(matches!(
+        recovered
+            .root_inode()
+            .unwrap()
+            .find_child(b"ro-orphan-owner"),
+        Err(FileSystemError::NotFound)
+    ));
+    assert_ne!(
+        test_mount_allocation_state(&recovered),
+        before,
+        "a read-only mount must not reclaim orphans"
+    );
+    // remount,rw 补做写前准备，之后与可写挂载得到相同的 allocation state；重复调用是空操作。
+    FileSystem::make_writable(recovered.as_ref()).unwrap();
+    assert_eq!(test_mount_allocation_state(&recovered), before);
+    FileSystem::make_writable(recovered.as_ref()).unwrap();
 }

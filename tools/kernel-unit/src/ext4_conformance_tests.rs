@@ -121,7 +121,7 @@ fn mount(path: &PathBuf) -> Arc<Ext4FileSystem> {
         .write(true)
         .open(path)
         .expect("open writable ext4 image");
-    Ext4FileSystem::new(Arc::new(WritableImage(Mutex::new(file)))).expect("mount ext4 image")
+    Ext4FileSystem::new(Arc::new(WritableImage(Mutex::new(file))), false).expect("mount ext4 image")
 }
 
 pub(crate) fn e2fsck_clean(path: &PathBuf) {

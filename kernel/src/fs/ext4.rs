@@ -580,6 +580,9 @@ pub(crate) struct Ext4FileSystem {
     // NFS-style handle 与旧 inode 混淆，但不会破坏 checksum 正确性。
     next_generation: AtomicU32,
     self_ref: spin::Mutex<Weak<Ext4FileSystem>>,
+    // 写前准备（`RECOVER` 标志与 orphan 回收）已完成。只读挂载为 false，`remount,rw` 时才补做；缺失时
+    // 只读挂载会改磁盘，或 `remount,rw` 之后遗留的 orphan 永远不被回收。
+    writable: AtomicBool,
 }
 
 impl core::fmt::Debug for Ext4FileSystem {

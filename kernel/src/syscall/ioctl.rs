@@ -47,10 +47,29 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
         OpenFileKind::Device(file) => {
             super::device::ioctl_device(&task, &ofd, file.as_ref(), request, argument)
         }
+        OpenFileKind::Pipe(endpoint) => pipe_ioctl(&task, &endpoint.pipe(), request, argument),
         OpenFileKind::Inode(opened) => {
             super::device::ioctl_inode(&task, &ofd, opened.inode().as_ref(), request, argument)
         }
         OpenFileKind::Socket(socket) => socket_ioctl(&task, socket, request, argument),
         _ => -errno::ENOTTY,
+    }
+}
+
+/// 匿名管道的 ioctl：只有 `FIONREAD`。
+fn pipe_ioctl(
+    task: &crate::task::TaskControlBlock,
+    pipe: &alloc::sync::Arc<crate::ipc::Pipe>,
+    request: usize,
+    argument: usize,
+) -> isize {
+    const FIONREAD: usize = 0x541b;
+    if request != FIONREAD {
+        return -errno::ENOTTY;
+    }
+    let buffered = i32::try_from(pipe.buffered_bytes()).unwrap_or(i32::MAX);
+    match task.copy_to_user(argument, &buffered.to_ne_bytes()) {
+        Ok(()) => 0,
+        Err(_) => -errno::EFAULT,
     }
 }

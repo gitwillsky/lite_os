@@ -5,22 +5,9 @@ import tempfile
 import argparse
 import sys
 
-from scripts.ext4_image import find_debugfs, find_mke2fs
+from scripts.ext4_image import MKE2FS_CONFIG, find_debugfs, find_mke2fs
 
 BOOT_DIRECTORIES = ("/bin", "/dev", "/proc", "/sys")
-# kernel ext4 只挂载 e2fsprogs 1.47.4 `mke2fs -t ext4` 的固定默认 profile。
-# base_features 与 ext4 features 合起来恰为 kernel profile 的 16 个 feature。
-MKE2FS_CONFIG = """[defaults]
-\tbase_features = sparse_super,large_file,filetype,resize_inode,dir_index,ext_attr
-\tblocksize = 4096
-\tinode_size = 256
-\tinode_ratio = 16384
-
-[fs_types]
-\text4 = {
-\t\tfeatures = has_journal,extent,huge_file,flex_bg,metadata_csum,metadata_csum_seed,64bit,dir_nlink,extra_isize,orphan_file
-\t}
-"""
 
 def create_ext4_filesystem(filename, init_elf, size_mb=128):
     """创建固定 ext4 profile（4K block、256-byte inode、4 MiB JBD2 journal）的文件系统。"""

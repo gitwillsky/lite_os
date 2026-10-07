@@ -171,6 +171,11 @@ pub(crate) trait DeviceFile: Send + Sync {
         Err(DeviceError::Errno(errno::ESPIPE))
     }
 
+    /// 该设备背后的内核管道（只有 FIFO 有）；`F_GETPIPE_SZ`/`F_SETPIPE_SZ` 经它作用于同一个环。
+    fn backing_pipe(&self) -> Option<Arc<Pipe>> {
+        None
+    }
+
     /// 返回 `events` 中当前已就绪的 poll 位。
     fn poll(&self, events: i16) -> i16;
 
@@ -401,9 +406,15 @@ pub(super) fn register_block(
     number: DeviceNumber,
     permissions: u32,
     device: Arc<dyn BlockDevice>,
+    partition: Option<super::block_node::PartitionInfo>,
 ) -> Result<(), FileSystemError> {
     const S_IFBLK: u32 = 0o060000;
-    publish_node(path, number, S_IFBLK | (permissions & 0o7777), Some(device))
+    publish_node(
+        path,
+        number,
+        S_IFBLK | (permissions & 0o7777),
+        Some((device, partition)),
+    )
 }
 
 /// 已发布的块设备数量。
@@ -426,6 +437,21 @@ pub(super) fn block_number(path: &[u8]) -> Option<DeviceNumber> {
 /// 按块设备号取得 adapter（Linux `blkdev_get_no_open`）。
 pub(super) fn block_device(number: DeviceNumber) -> Option<Arc<dyn BlockDevice>> {
     block_node(number).map(|node| node.device().clone())
+}
+
+/// 全部已发布块设备（整盘与分区）按发布顺序的快照；索引在注册表只追加的前提下稳定。
+///
+/// # Errors
+///
+/// 分配失败返回 `OutOfMemory`。
+pub(crate) fn block_nodes() -> Result<Vec<Arc<BlockNode>>, FileSystemError> {
+    let registry = REGISTRY.lock();
+    let mut nodes = Vec::new();
+    nodes
+        .try_reserve_exact(registry.blocks.len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    nodes.extend(registry.blocks.iter().cloned());
+    Ok(nodes)
 }
 
 /// 按块设备号取得 bdev 状态（字节寻址 I/O 与挂载互斥）。
@@ -499,7 +525,10 @@ fn publish_node(
     path: &[u8],
     number: DeviceNumber,
     mode: u32,
-    block: Option<Arc<dyn BlockDevice>>,
+    block: Option<(
+        Arc<dyn BlockDevice>,
+        Option<super::block_node::PartitionInfo>,
+    )>,
 ) -> Result<(), FileSystemError> {
     let mut owned = Vec::new();
     owned
@@ -513,7 +542,7 @@ fn publish_node(
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
     let block = block
-        .map(|device| BlockNode::new(number, device))
+        .map(|(device, start)| BlockNode::new(number, device, start))
         .transpose()?;
     let mut registry = REGISTRY.lock();
     if registry

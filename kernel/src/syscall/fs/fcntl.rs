@@ -16,6 +16,8 @@ const F_GETLK: u32 = 5;
 const F_SETLK: u32 = 6;
 const F_SETLKW: u32 = 7;
 const F_DUPFD_CLOEXEC: u32 = 1030;
+const F_SETPIPE_SZ: u32 = 1031;
+const F_GETPIPE_SZ: u32 = 1032;
 const F_ADD_SEALS: u32 = 1033;
 const F_GET_SEALS: u32 = 1034;
 const F_RDLCK: i16 = 0;
@@ -271,6 +273,28 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
             } else {
                 task.fd_duplicate(fd, argument, true)
                     .map_or_else(super::super::file_descriptor_error, |value| value as isize)
+            }
+        }
+        F_SETPIPE_SZ | F_GETPIPE_SZ => {
+            let Some(ofd) = task.fd_get(fd) else {
+                return -errno::EBADF;
+            };
+            let pipe = match &ofd.kind {
+                OpenFileKind::Pipe(endpoint) => Some(endpoint.pipe()),
+                OpenFileKind::Device(file) => file.backing_pipe(),
+                _ => None,
+            };
+            let Some(pipe) = pipe else {
+                return -errno::EBADF;
+            };
+            if command == F_GETPIPE_SZ {
+                return pipe.capacity() as isize;
+            }
+            match pipe.resize(argument) {
+                Ok(capacity) => capacity as isize,
+                Err(crate::ipc::PipeResizeError::TooLarge) => -errno::EPERM,
+                Err(crate::ipc::PipeResizeError::Busy) => -errno::EBUSY,
+                Err(crate::ipc::PipeResizeError::OutOfMemory) => -errno::ENOMEM,
             }
         }
         F_ADD_SEALS | F_GET_SEALS => {

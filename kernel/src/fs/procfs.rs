@@ -3,11 +3,13 @@ use core::fmt::{self, Write};
 
 mod lookup;
 mod node;
+mod partitions;
 mod process;
 mod snapshot;
 mod system;
 use lookup::{decimal_name, find_process, find_thread, parse_pid};
 use node::ProcNode;
+use partitions::format_partitions;
 use process::{
     format_io, format_process_comm, format_process_stat, format_process_statm,
     format_process_status, format_thread_stat, format_thread_status,
@@ -138,6 +140,9 @@ impl ProcInode {
         if matches!(self.node, ProcNode::Mounts) {
             return vfs().mount_table();
         }
+        if matches!(self.node, ProcNode::Partitions) {
+            return format_partitions();
+        }
         if matches!(self.node, ProcNode::Cmdline) {
             let line = self.source.kernel_command_line();
             let mut contents = Vec::new();
@@ -173,8 +178,10 @@ impl ProcInode {
             ProcNode::Uptime => format_uptime(&snapshot),
             ProcNode::NetDev => format_network_devices(snapshot.network),
             ProcNode::NetRoute => format_network_routes(snapshot.network),
-            ProcNode::Mounts | ProcNode::Cmdline => {
-                unreachable!("mount table and command line handled before task snapshot")
+            ProcNode::Mounts | ProcNode::Partitions | ProcNode::Cmdline => {
+                unreachable!(
+                    "mount table, partitions and command line handled before task snapshot"
+                )
             }
             ProcNode::ProcessStat(pid) => format_process_stat(find_process(&snapshot, pid)?),
             ProcNode::ProcessStatus(pid) => format_process_status(find_process(&snapshot, pid)?),
@@ -381,6 +388,7 @@ impl Inode for ProcInode {
                     (4, InodeType::File, &b"loadavg"[..]),
                     (5, InodeType::File, &b"uptime"[..]),
                     (6, InodeType::File, &b"mounts"[..]),
+                    (14, InodeType::File, &b"partitions"[..]),
                     (13, InodeType::File, &b"cmdline"[..]),
                     (7, InodeType::Directory, &b"net"[..]),
                     (10, InodeType::SymLink, &b"self"[..]),
@@ -495,6 +503,7 @@ impl Inode for ProcInode {
                 b"loadavg" => ProcNode::LoadAvg,
                 b"uptime" => ProcNode::Uptime,
                 b"mounts" => ProcNode::Mounts,
+                b"partitions" => ProcNode::Partitions,
                 b"cmdline" => ProcNode::Cmdline,
                 b"net" => ProcNode::NetDir,
                 b"self" => ProcNode::SelfLink,

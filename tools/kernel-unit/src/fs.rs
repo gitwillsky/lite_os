@@ -136,6 +136,9 @@ pub(crate) trait Inode: Send + Sync {
 pub(crate) trait FileSystem: Send + Sync {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
+    fn make_writable(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
     fn shutdown(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
@@ -196,6 +199,20 @@ pub(crate) mod permission {
         }
     }
 }
+
+#[path = "../../../kernel/src/fs/block_identity.rs"]
+pub(crate) mod block_identity;
+
+#[cfg(test)]
+#[path = "tests/block_identity.rs"]
+mod block_identity_tests;
+
+#[path = "../../../kernel/src/fs/partition_table.rs"]
+pub(crate) mod partition_table;
+
+#[cfg(test)]
+#[path = "tests/partition_table.rs"]
+mod partition_table_tests;
 
 #[path = "../../../kernel/src/fs/block_range.rs"]
 pub(crate) mod block_range;

@@ -1800,6 +1800,17 @@ kernel/src/fallible_tree/topology.rs :: pub (super) fn last_key < K , V > (root 
 kernel/src/fallible_tree/topology.rs :: pub (super) fn remove_node < K : Ord + Borrow < Q > , Q : Ord + ? Sized , V > (root : Link < K , V > , key : & Q ,) -> RemoveResult < K , V >
 kernel/src/fallible_tree/topology.rs :: pub (super) fn retain_linear < K , V > (root : Link < K , V > , keep : & mut impl FnMut (& K , & V) -> bool ,) -> (Link < K , V > , usize)
 kernel/src/fallible_tree/topology.rs :: pub (super) fn split < K : Ord , V > (root : Link < K , V > , at : & K) -> (Link < K , V > , Link < K , V >)
+kernel/src/fs/block_identity.rs :: enum PartUuid :: # [doc = " GPT 分区项的唯一 GUID（磁盘上的混合字节序原样保存）。"] Gpt ([u8 ; 16])
+kernel/src/fs/block_identity.rs :: enum PartUuid :: # [doc = " MBR：32 位磁盘签名与分区号。"] Mbr { signature : u32 , number : u32 }
+kernel/src/fs/block_identity.rs :: pub (crate) enum PartUuid
+kernel/src/fs/block_identity.rs :: pub (crate) impl PartUuid :: fn matches (& self , text : & [u8]) -> bool
+kernel/src/fs/block_identity.rs :: pub (super) fn ext4_identity (superblock : & [u8]) -> Option < ([u8 ; 16] , & [u8]) >
+kernel/src/fs/block_identity.rs :: pub (super) fn ext4_matches (superblock : & [u8] , by_label : bool , wanted : & [u8]) -> bool
+kernel/src/fs/block_identity.rs :: pub (super) fn format_gpt_guid (bytes : & [u8 ; 16]) -> Text
+kernel/src/fs/block_identity.rs :: pub (super) fn format_uuid (bytes : & [u8 ; 16]) -> Text
+kernel/src/fs/block_identity.rs :: pub (super) impl PartUuid :: fn render (& self) -> Text
+kernel/src/fs/block_identity.rs :: pub (super) impl Text :: fn as_bytes (& self) -> & [u8]
+kernel/src/fs/block_identity.rs :: pub (super) struct Text
 kernel/src/fs/block_ioctl.rs :: pub (super) fn ioctl (block : & Arc < BlockNode > , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn begin_mount (& self) -> Result < () , FileSystemError >
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn begin_writer (& self) -> Result < () , FileSystemError >
@@ -1809,14 +1820,23 @@ kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn device (& self) 
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn end_mount (& self)
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn end_writer (& self)
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn flush (& self) -> Result < () , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn is_partition (& self) -> bool
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn mounted (& self) -> bool
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn name (& self) -> & [u8]
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn number (& self) -> DeviceNumber
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn partition_start (& self) -> Option < u64 >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn partuuid (& self) -> Option < PartUuid >
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn reread_partitions (& self) -> Result < () , FileSystemError >
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/block_node.rs :: pub (crate) struct BlockNode
 kernel/src/fs/block_node.rs :: pub (crate) struct BlockSpecial
+kernel/src/fs/block_node.rs :: pub (super) PartitionInfo :: start : u64
+kernel/src/fs/block_node.rs :: pub (super) PartitionInfo :: uuid : Option < PartUuid >
 kernel/src/fs/block_node.rs :: pub (super) fn wrap_block_node (inode : Arc < dyn Inode >) -> Result < Arc < dyn Inode > , FileSystemError >
-kernel/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn new (number : DeviceNumber , device : Arc < dyn BlockDevice > ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn new (number : DeviceNumber , device : Arc < dyn BlockDevice > , partition : Option < PartitionInfo > ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn set_partitions (& self , partitions : Vec < super :: partition_table :: Partition >)
+kernel/src/fs/block_node.rs :: pub (super) struct PartitionInfo
 kernel/src/fs/block_range.rs :: enum RangeError :: # [doc = " 写入起点已在设备末尾或之后（`ENOSPC`）。"] Full
 kernel/src/fs/block_range.rs :: enum RangeError :: # [doc = " 底层块读写失败。"] Store (E)
 kernel/src/fs/block_range.rs :: pub (super) enum RangeError < E >
@@ -1856,6 +1876,7 @@ kernel/src/fs/device.rs :: pub (crate) OpenRequest :: number : DeviceNumber
 kernel/src/fs/device.rs :: pub (crate) enum DeviceError
 kernel/src/fs/device.rs :: pub (crate) enum DeviceWaitSource
 kernel/src/fs/device.rs :: pub (crate) fn block_node (number : DeviceNumber) -> Option < Arc < BlockNode > >
+kernel/src/fs/device.rs :: pub (crate) fn block_nodes () -> Result < Vec < Arc < BlockNode > > , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn open (request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn register_directory (path : & [u8]) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn register_driver (first : DeviceNumber , count : u32 , driver : Arc < dyn CharacterDriver > ,) -> Result < () , FileSystemError >
@@ -1892,9 +1913,10 @@ kernel/src/fs/device.rs :: pub (super) fn device (index : usize) -> Option < Arc
 kernel/src/fs/device.rs :: pub (super) fn directory_path (index : usize , output : & mut Vec < u8 >) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (super) fn for_each_child (parent : & [u8] , mut visit : impl FnMut (RegistryEntry , & [u8] , u32) -> bool ,)
 kernel/src/fs/device.rs :: pub (super) fn lookup (parent : & [u8] , name : & [u8]) -> Option < RegistryEntry >
-kernel/src/fs/device.rs :: pub (super) fn register_block (path : & [u8] , number : DeviceNumber , permissions : u32 , device : Arc < dyn BlockDevice > ,) -> Result < () , FileSystemError >
+kernel/src/fs/device.rs :: pub (super) fn register_block (path : & [u8] , number : DeviceNumber , permissions : u32 , device : Arc < dyn BlockDevice > , partition : Option < super :: block_node :: PartitionInfo > ,) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (super) struct DeviceNode
 kernel/src/fs/device.rs :: trait CharacterDriver :: fn open (& self , request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
+kernel/src/fs/device.rs :: trait DeviceFile :: fn backing_pipe (& self) -> Option < Arc < Pipe > >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn ioctl (& self , _call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn mmap (& self , _offset : u64 , _length : usize , _request : MapRequest ,) -> Result < DeviceMappingSource , DeviceError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn poll (& self , events : i16) -> i16
@@ -2215,7 +2237,8 @@ kernel/src/fs/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn sea
 kernel/src/fs/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_inode (& self , inode_num : u32 , inode : & mut Ext4InodeDisk)
 kernel/src/fs/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_superblock (superblock : & mut Ext4SuperBlock)
 kernel/src/fs/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn superblock_checksum (superblock : & Ext4SuperBlock) -> u32
-kernel/src/fs/ext4/mount.rs :: pub (crate) impl Ext4FileSystem :: fn new (device : Arc < dyn BlockDevice >) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/ext4/mount.rs :: pub (crate) impl Ext4FileSystem :: fn new (device : Arc < dyn BlockDevice > , read_only : bool ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/ext4/mount.rs :: pub (super) impl Ext4FileSystem :: fn make_writable (& self) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/mount.rs :: pub (super) impl Ext4FileSystem :: fn validate_superblock (sb : & Ext4SuperBlock) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn defer_reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , inode : & Arc < Ext4Inode > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn load_orphan_file (& self) -> Result < OrphanFile , FileSystemError >
@@ -2572,6 +2595,7 @@ kernel/src/fs/mod.rs :: pub (crate) use readiness :: { ReadinessSource , Readine
 kernel/src/fs/mod.rs :: pub (crate) use timerfd :: { TimerError , TimerFd , TimerFdBackend , TimerFdRead , TimerSetting }
 kernel/src/fs/mod.rs :: pub (crate) use tty :: { JobControl , console as console_terminal , drain_input as drain_terminal_input , init as init_tty , install_job_control , }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , MountFlags , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , RecordLockMode , RecordLockRange , vfs , }
+kernel/src/fs/mod.rs :: trait FileSystem :: fn make_writable (& self) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn remount (& self , options : & [u8]) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn shutdown (& self) -> Result < () , FileSystemError >
@@ -2582,6 +2606,7 @@ kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: threads : KernelThread
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: device : Option < DeviceNumber >
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: environment : & 'a MountEnvironment
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: options : & 'a [u8]
+kernel/src/fs/mount.rs :: pub (crate) MountRequest :: read_only : bool
 kernel/src/fs/mount.rs :: pub (crate) fn get_filesystem_type (name : & [u8]) -> Option < & 'static dyn FileSystemType >
 kernel/src/fs/mount.rs :: pub (crate) fn mount (kind : & 'static dyn FileSystemType , source : & [u8] , device : Option < DeviceNumber > , options : & [u8] , flags : MountFlags , point : Arc < OpenedFile > ,) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn mount_root (environment : MountEnvironment , root : & [u8] , filesystem_type : Option < & [u8] > , flags : MountFlags ,) -> Result < super :: RootMounted , FileSystemError >
@@ -2650,6 +2675,20 @@ kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) const WRITEBACK_BATCH
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_contiguous_prefix_with_backoff < Error > (byte_count : usize , unit_bytes : usize , mut commit : impl FnMut (usize , usize) -> Result < (u64 , usize) , Error > , mut publish : impl FnMut (u64 , usize , usize) , mut capacity_error : impl FnMut (& Error) -> bool ,) -> Result < CommittedPrefix , Error >
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_with_backoff < T , Error > (entries : & [T] , mut commit : impl FnMut (& [T]) -> Result < () , Error > , mut publish : impl FnMut (& [T]) , mut capacity_error : impl FnMut (& Error) -> bool ,) -> Result < () , Error >
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) struct CommittedPrefix
+kernel/src/fs/partition_device.rs :: pub (super) impl PartitionDevice :: fn new (name : Vec < u8 > , parent : Arc < dyn BlockDevice > , first_block : usize , blocks : usize ,) -> Self
+kernel/src/fs/partition_device.rs :: pub (super) struct PartitionDevice
+kernel/src/fs/partition_table.rs :: pub (super) Partition :: guid : Option < [u8 ; 16] >
+kernel/src/fs/partition_table.rs :: pub (super) Partition :: number : u32
+kernel/src/fs/partition_table.rs :: pub (super) Partition :: sectors : u64
+kernel/src/fs/partition_table.rs :: pub (super) Partition :: start : u64
+kernel/src/fs/partition_table.rs :: pub (super) const MAX_PARTITIONS : usize = 15
+kernel/src/fs/partition_table.rs :: pub (super) const SECTOR : usize = 512
+kernel/src/fs/partition_table.rs :: pub (super) fn crc32 (bytes : & [u8]) -> u32
+kernel/src/fs/partition_table.rs :: pub (super) fn mbr_signature < S : SectorSource > (source : & S) -> Option < u32 >
+kernel/src/fs/partition_table.rs :: pub (super) fn parse < S : SectorSource > (source : & S , total_sectors : u64) -> Vec < Partition >
+kernel/src/fs/partition_table.rs :: pub (super) struct Partition
+kernel/src/fs/partition_table.rs :: pub (super) trait SectorSource
+kernel/src/fs/partition_table.rs :: trait SectorSource :: fn read (& self , lba : u64 , buffer : & mut [u8]) -> bool
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: gid : u32
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: mode : u32
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: uid : u32
@@ -2699,6 +2738,7 @@ kernel/src/fs/procfs/node.rs :: enum ProcNode :: Mounts
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: NetDev
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: NetDir
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: NetRoute
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: Partitions
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessCmdline (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessComm (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessDir (usize)
@@ -2725,6 +2765,7 @@ kernel/src/fs/procfs/node.rs :: enum ProcNode :: VmStat
 kernel/src/fs/procfs/node.rs :: pub (super) enum ProcNode
 kernel/src/fs/procfs/node.rs :: pub (super) impl ProcNode :: fn inode (self) -> u64
 kernel/src/fs/procfs/node.rs :: pub (super) impl ProcNode :: fn kind (self) -> InodeType
+kernel/src/fs/procfs/partitions.rs :: pub (super) fn format_partitions () -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_io (io : & ProcIoSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_comm (process : & ProcProcessSnapshot ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_stat (process : & ProcProcessSnapshot ,) -> Result < Vec < u8 > , FileSystemError >
@@ -2863,6 +2904,33 @@ kernel/src/fs/readiness.rs :: pub (crate) struct ReadinessSources
 kernel/src/fs/sysfs.rs :: pub (crate) impl SysFileSystem :: fn new (cpu_count : usize) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/sysfs.rs :: pub (crate) struct SysFileSystem
 kernel/src/fs/sysfs.rs :: pub (super) struct SysFileSystemType
+kernel/src/fs/sysfs_block.rs :: enum Attr :: Dev
+kernel/src/fs/sysfs_block.rs :: enum Attr :: Partition
+kernel/src/fs/sysfs_block.rs :: enum Attr :: Removable
+kernel/src/fs/sysfs_block.rs :: enum Attr :: Ro
+kernel/src/fs/sysfs_block.rs :: enum Attr :: Size
+kernel/src/fs/sysfs_block.rs :: enum Attr :: Start
+kernel/src/fs/sysfs_block.rs :: enum Attr :: Uevent
+kernel/src/fs/sysfs_block.rs :: enum BlockSysNode :: Attr (Place , usize , Attr)
+kernel/src/fs/sysfs_block.rs :: enum BlockSysNode :: Entry (Place , usize)
+kernel/src/fs/sysfs_block.rs :: enum BlockSysNode :: Listing (Place)
+kernel/src/fs/sysfs_block.rs :: enum Parent :: Block (BlockSysNode)
+kernel/src/fs/sysfs_block.rs :: enum Parent :: ClassRoot
+kernel/src/fs/sysfs_block.rs :: enum Parent :: DevRoot
+kernel/src/fs/sysfs_block.rs :: enum Parent :: Root
+kernel/src/fs/sysfs_block.rs :: enum Place :: # [doc = " `/sys/block`：只有整盘，按名字；整盘目录下还有它的分区目录。"] Block
+kernel/src/fs/sysfs_block.rs :: enum Place :: # [doc = " `/sys/class/block`：全部设备，按名字。"] ClassBlock
+kernel/src/fs/sysfs_block.rs :: enum Place :: # [doc = " `/sys/dev/block`：全部设备，按 `MAJ:MIN`。"] DevBlock
+kernel/src/fs/sysfs_block.rs :: pub (super) enum Attr
+kernel/src/fs/sysfs_block.rs :: pub (super) enum BlockSysNode
+kernel/src/fs/sysfs_block.rs :: pub (super) enum Parent
+kernel/src/fs/sysfs_block.rs :: pub (super) enum Place
+kernel/src/fs/sysfs_block.rs :: pub (super) fn children (node : BlockSysNode ,) -> Result < Vec < (BlockSysNode , Vec < u8 >) > , FileSystemError >
+kernel/src/fs/sysfs_block.rs :: pub (super) fn contents (node : BlockSysNode) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/sysfs_block.rs :: pub (super) fn lookup (node : BlockSysNode , name : & [u8]) -> Result < BlockSysNode , FileSystemError >
+kernel/src/fs/sysfs_block.rs :: pub (super) fn parent (node : BlockSysNode) -> Result < Parent , FileSystemError >
+kernel/src/fs/sysfs_block.rs :: pub (super) impl BlockSysNode :: fn inode (self) -> u64
+kernel/src/fs/sysfs_block.rs :: pub (super) impl BlockSysNode :: fn kind (self) -> InodeType
 kernel/src/fs/timerfd.rs :: enum TimerError :: Exhausted
 kernel/src/fs/timerfd.rs :: enum TimerError :: NotFound
 kernel/src/fs/timerfd.rs :: enum TimerError :: OutOfMemory
@@ -3115,6 +3183,9 @@ kernel/src/ipc.rs :: enum PipeDirection :: Write
 kernel/src/ipc.rs :: enum PipeRead :: Bytes (usize)
 kernel/src/ipc.rs :: enum PipeRead :: Empty
 kernel/src/ipc.rs :: enum PipeRead :: Eof
+kernel/src/ipc.rs :: enum PipeResizeError :: # [doc = " 未读数据装不进新容量（`EBUSY`）。"] Busy
+kernel/src/ipc.rs :: enum PipeResizeError :: # [doc = " 超过 [`PIPE_MAX_SIZE`]（`EPERM`）。"] TooLarge
+kernel/src/ipc.rs :: enum PipeResizeError :: OutOfMemory
 kernel/src/ipc.rs :: enum PipeWaitCondition :: # [doc = " 命名管道 open 汇合：对端自 `since` 之后又打开过一次。`waiter` 是等待者自己的方向。"] PeerOpened { waiter : PipeDirection , since : u64 , }
 kernel/src/ipc.rs :: enum PipeWaitCondition :: Readable
 kernel/src/ipc.rs :: enum PipeWaitCondition :: Writable { minimum : usize , }
@@ -3130,11 +3201,15 @@ kernel/src/ipc.rs :: pub (crate) PipePollState :: rendezvous : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: writable : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: write_capacity : usize
 kernel/src/ipc.rs :: pub (crate) const PIPE_BUF : usize = 4096
+kernel/src/ipc.rs :: pub (crate) const PIPE_MAX_SIZE : usize = 1024 * 1024
 kernel/src/ipc.rs :: pub (crate) enum PipeDirection
 kernel/src/ipc.rs :: pub (crate) enum PipeRead
+kernel/src/ipc.rs :: pub (crate) enum PipeResizeError
 kernel/src/ipc.rs :: pub (crate) enum PipeWaitCondition
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
 kernel/src/ipc.rs :: pub (crate) fn install_pipe_scheduler (scheduler : & 'static dyn PipeScheduler)
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn buffered_bytes (& self) -> usize
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn capacity (& self) -> usize
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn new_named () -> Result < Arc < Self > , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn notification_pair () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
@@ -3144,6 +3219,7 @@ kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair () -> Result < (Arc < Pipe
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn peer_snapshot (& self , waiter : PipeDirection) -> (usize , u64)
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn resize (self : & Arc < Self > , requested : usize) -> Result < usize , PipeResizeError >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait (self : & Arc < Self > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_for_peer (self : & Arc < Self > , waiter : PipeDirection , since : u64) -> WaitResult
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool

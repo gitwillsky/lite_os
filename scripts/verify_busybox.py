@@ -8,6 +8,7 @@ import contextlib
 import io
 import lzma
 import shutil
+import os
 import subprocess
 import sys
 import tarfile
@@ -39,7 +40,7 @@ from build_cache import (
 )
 from qemu_gate import SHELL_PROMPT, boot, cpu_topology_markers, guest_inittab, power_cut
 from openssl_cache import OpenSslPaths, build_openssl
-from ext4_image import find_debugfs, find_mke2fs
+from ext4_image import MKE2FS_CONFIG, find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
 from verify_musl import (
     MuslCachePaths,
@@ -54,8 +55,10 @@ TARGET = target_from_environment()
 WORK = ROOT / "target" / "busybox-runtime" / TARGET.arch
 # 主 BusyBox gate 以完整 kernel command line 冷启动：root/rootfstype/rootwait/console 由内核消费，
 # LITEOS_BOOT_ENV 按 Linux 规则转交 init 环境并由 init 派生的 shell 继承，/proc/cmdline 原样回显。
+# `root=LABEL=` 经超级块卷标解析根设备（不依赖设备枚举顺序）。
+# `ro` 让根以只读挂载，由 rcS 的 `mount -o remount,rw /` 转为可写——同时覆盖该路径与 ext4 补做 orphan 回收。
 BUSYBOX_KERNEL_ARGUMENTS = (
-    "root=/dev/vda rootfstype=ext4 rootwait "
+    "ro root=LABEL=LITEOS rootfstype=ext4 rootwait "
     f"console={'ttyAMA0' if TARGET.arch == 'aarch64' else 'ttyS0'} LITEOS_BOOT_ENV=42"
 )
 CONFIG_FRAGMENT = ROOT / "user" / "base" / "busybox.config"
@@ -960,6 +963,45 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
         if not published:
             shutil.rmtree(generation, ignore_errors=True)
     return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
+
+
+SCRATCH_DISK_BYTES = 16 * 1024 * 1024
+# MBR 分区（512 字节扇区）：p1 起点 1 MiB、长 4 MiB 用于裸 I/O；p2 起点 5 MiB、长 10 MiB 放 ext4。
+SCRATCH_PARTITIONS = ((2048, 8192), (10240, 20480))
+
+
+def create_scratch_disk(path: Path) -> None:
+    """创建裸块设备 gate 的第二块盘：MBR 两个 4 KiB 对齐分区，第二个分区内是固定 profile 的 ext4。"""
+    with path.open("wb") as disk:
+        # 首块是已知标记；MBR 表项与签名在 446..512，与标记不重叠。
+        header = bytearray(b"LITEOS-SCRATCH-DISK-HEADER".ljust(4096, b"\0"))
+        for slot, (start, sectors) in enumerate(SCRATCH_PARTITIONS):
+            entry = 446 + slot * 16
+            header[entry + 4] = 0x83
+            header[entry + 8 : entry + 12] = start.to_bytes(4, "little")
+            header[entry + 12 : entry + 16] = sectors.to_bytes(4, "little")
+        header[510:512] = b"\x55\xaa"
+        disk.write(header)
+        disk.truncate(SCRATCH_DISK_BYTES)
+    start, sectors = SCRATCH_PARTITIONS[1]
+    config = path.with_suffix(".conf")
+    config.write_text(MKE2FS_CONFIG)
+    try:
+        subprocess.run(
+            [
+                str(find_mke2fs()),
+                "-t", "ext4",
+                "-J", "size=4",
+                "-E", f"offset={start * 512}",
+                str(path),
+                f"{sectors * 512 // 1024}k",  # 单位是 KiB；不带单位时 mke2fs 按 1 KiB 解释块数
+            ],
+            check=True,
+            capture_output=True,
+            env={**os.environ, "MKE2FS_CONFIG": str(config)},
+        )
+    finally:
+        config.unlink(missing_ok=True)
 
 
 def build_musl_probe(musl: MuslCachePaths, name: str) -> Path:
@@ -2079,11 +2121,8 @@ def main() -> int:
             },
             runtime_path,
         )
-        # 裸块设备 gate 的第二块盘：4 MiB，首块写入已知标记，其余为零。
         scratch_disk = runtime_path / "scratch.img"
-        with scratch_disk.open("wb") as scratch:
-            scratch.write(b"LITEOS-SCRATCH-DISK-HEADER".ljust(4096, b"\0"))
-            scratch.truncate(4 * 1024 * 1024)
+        create_scratch_disk(scratch_disk)
         http_server, http_port = start_http_gate()
         https_server, https_port, gate_ca = start_https_gate(runtime_path)
         install_runtime_tls_identity(runtime_image, gate_ca, runtime_path, find_debugfs())
@@ -2160,6 +2199,8 @@ def main() -> int:
                 "LITEOS_BLOCK_58",
                 "LITEOS_BLOCK_59",
                 "LITEOS_BLOCK_60",
+                "LITEOS_PARTITION_61",
+                "LITEOS_BLOCKSYS_62",
                 "LITEOS_MEMFILE_42",
                 "LITEOS_SPECIAL_42",
                 "LITEOS_LINKS_43",
@@ -2389,7 +2430,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BLOCK_58",
-                    b"echo marker-at-tail | /bin/dd of=/dev/vdb bs=1 seek=4194290 2>/dev/null; ! /bin/dd if=/dev/zero of=/dev/vdb bs=4096 seek=1024 count=1 2>/dev/null && /bin/sync && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=4194290 count=11 2>/dev/null)\" = marker-at-t ] && echo LITEOS_BLOCK_$((6*7+17))\n",
+                    b"echo marker-at-tail | /bin/dd of=/dev/vdb bs=1 seek=16777202 2>/dev/null; ! /bin/dd if=/dev/zero of=/dev/vdb bs=4096 seek=4096 count=1 2>/dev/null && /bin/sync && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=16777202 count=11 2>/dev/null)\" = marker-at-t ] && echo LITEOS_BLOCK_$((6*7+17))\n",
                 ),
                 (
                     "LITEOS_BLOCK_59",
@@ -2397,6 +2438,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BLOCK_60",
+                    b"[ \"$(/bin/stat -c %t:%T /dev/vdb1)\" = fe:11 ] && [ \"$(/bin/stat -c %t:%T /dev/vdb2)\" = fe:12 ] && /bin/mkdir -p /mnt/p && /bin/mount -t ext4 /dev/vdb2 /mnt/p && echo on-partition >/mnt/p/f && [ \"$(/bin/cat /mnt/p/f)\" = on-partition ] && ! /bin/dd if=/dev/zero of=/dev/vdb2 bs=512 count=1 2>/dev/null && /bin/umount /mnt/p && /bin/mount -t ext4 /dev/vdb2 /mnt/p && [ \"$(/bin/cat /mnt/p/f)\" = on-partition ] && /bin/umount /mnt/p && echo LITEOS_PARTITION_$((6*7+19))\n",
+                ),
+                (
+                    "LITEOS_PARTITION_61",
+                    b"/bin/grep -q ' 10240 vdb2$' /proc/partitions && /bin/grep -q ' 4096 vdb1$' /proc/partitions && [ \"$(/bin/grep -c ' vd' /proc/partitions)\" = 4 ] && [ \"$(/bin/cat /sys/class/block/vdb2/dev)\" = 254:18 ] && [ \"$(/bin/cat /sys/class/block/vdb2/size)\" = 20480 ] && [ \"$(/bin/cat /sys/class/block/vdb2/start)\" = 10240 ] && [ \"$(/bin/cat /sys/class/block/vdb2/partition)\" = 2 ] && [ \"$(/bin/cat /sys/block/vdb/vdb2/start)\" = 10240 ] && [ -e /sys/block/vdb/size ] && [ ! -e /sys/block/vdb2 ] && [ \"$(/bin/grep DEVTYPE /sys/dev/block/254:18/uevent)\" = DEVTYPE=partition ] && /bin/grep -q '^PARTUUID=[0-9a-f]\\{8\\}-02$' /sys/block/vdb/vdb2/uevent && [ \"$(/bin/ls /sys/block | /bin/wc -l)\" = 2 ] && [ \"$(/bin/ls /sys/class/block | /bin/wc -l)\" = 4 ] && echo LITEOS_BLOCKSYS_$((6*7+20))\n",
+                ),
+                (
+                    "LITEOS_BLOCKSYS_62",
                     b"/var/tmp/memory-file-probe\n",
                 ),
                 (

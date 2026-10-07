@@ -203,11 +203,15 @@ impl Ext4FileSystem {
         Ok(())
     }
 
-    /// 从块设备加载并校验 ext4 元数据，重放 journal 并回收 orphan。
+    /// 从块设备加载并校验 ext4 元数据，重放 journal；可写挂载时再回收 orphan。
+    ///
+    /// 只读挂载与 Linux 一致：journal 照常重放（否则读到的元数据不一致），但不置 `RECOVER`、不回收
+    /// orphan（`ext4_orphan_cleanup` 在只读时跳过）；之后 `remount,rw` 经 [`Self::make_writable`] 补做。
     ///
     /// # Parameters
     ///
     /// - `device`: 存放 ext4 卷的块设备。
+    /// - `read_only`: 以只读挂载。
     ///
     /// # Returns
     ///
@@ -216,7 +220,10 @@ impl Ext4FileSystem {
     /// # Errors
     ///
     /// 设备 I/O 失败、checksum 不符、profile 之外的 feature 或元数据不一致时返回错误。
-    pub(crate) fn new(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>, FileSystemError> {
+    pub(crate) fn new(
+        device: Arc<dyn BlockDevice>,
+        read_only: bool,
+    ) -> Result<Arc<Self>, FileSystemError> {
         let device_block_size = device.block_size();
         if device_block_size != BLOCK_SIZE {
             return Err(FileSystemError::InvalidFileSystem);
@@ -256,6 +263,7 @@ impl Ext4FileSystem {
             groups: Mutex::new(Vec::new()),
             mutation: TaskMutex::new(()),
             pending_orphan_reclaim: AtomicBool::new(false),
+            writable: AtomicBool::new(false),
             journal: Mutex::new(JournalOwner::unavailable()),
             commit_event: TaskEvent::new(),
             stopping: AtomicBool::new(false),
@@ -279,13 +287,33 @@ impl Ext4FileSystem {
         // 2. orphan recovery 会写 allocation state；先验证 bitmap 与计数。
         fs.check_filesystem_consistency()?;
         *fs.orphan.lock() = fs.load_orphan_file()?;
-        fs.superblock.lock().s_feature_incompat |= EXT4_FEATURE_INCOMPAT_RECOVER;
-        fs.write_primary_superblock_home()?;
-        fs.device.flush().map_err(block_error)?;
-        // 3. 发布 journal owner 后才允许 mutation，回收 crash 前遗留的 orphan。
+        // 3. 发布 journal owner 后才允许 mutation；可写挂载立即回收 crash 前遗留的 orphan。
         fs.journal.lock().install(journal);
-        fs.recover_orphans()?;
-        fs.check_filesystem_consistency()?;
+        if !read_only {
+            fs.make_writable()?;
+        }
         Ok(fs)
+    }
+
+    /// 补做可写所需的写前准备：置 `RECOVER`、回收 crash 前遗留的 orphan。幂等。
+    ///
+    /// 可写挂载在 [`Self::new`] 内调用；只读挂载在 `remount,rw` 时才调用，之前磁盘上除 journal 重放外
+    /// 没有任何改动。
+    ///
+    /// # Errors
+    ///
+    /// 超级块写回、orphan 回收或一致性检查失败时返回错误。
+    pub(super) fn make_writable(&self) -> Result<(), FileSystemError> {
+        if self
+            .writable
+            .swap(true, core::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+        self.superblock.lock().s_feature_incompat |= EXT4_FEATURE_INCOMPAT_RECOVER;
+        self.write_primary_superblock_home()?;
+        self.device.flush().map_err(block_error)?;
+        self.recover_orphans()?;
+        self.check_filesystem_consistency()
     }
 }

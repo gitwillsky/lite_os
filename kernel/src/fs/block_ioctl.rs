@@ -51,8 +51,23 @@ pub(super) fn ioctl(block: &Arc<BlockNode>, call: &IoctlCall<'_>) -> Result<isiz
         // 没有 RAID/条带：最优 I/O 大小未知（0），对齐偏移为 0。
         BLKIOOPT | BLKALIGNOFF => put(call, &0u32.to_ne_bytes()),
         BLKROGET => put(call, &0i32.to_ne_bytes()),
-        // 没有分区表支持：整盘就是唯一的设备，重读分区表恒为空操作。
-        BLKRRPART => Ok(0),
+        // 只读分区表并与已发布的比较：相同为空操作；不同需要热移除/改号已发布的节点，注册表不支持，
+        // 返回 `EBUSY`（Linux 对分区上的 BLKRRPART 返回 `EINVAL`）。
+        BLKRRPART => {
+            if !call.privileged {
+                return Err(DeviceError::Errno(errno::EACCES));
+            }
+            if block.is_partition() {
+                return Err(DeviceError::Errno(errno::EINVAL));
+            }
+            block
+                .reread_partitions()
+                .map(|()| 0)
+                .map_err(|error| match error {
+                    FileSystemError::Busy => DeviceError::Errno(errno::EBUSY),
+                    _ => DeviceError::Errno(errno::EIO),
+                })
+        }
         BLKFLSBUF => {
             if !call.privileged {
                 return Err(DeviceError::Errno(errno::EACCES));

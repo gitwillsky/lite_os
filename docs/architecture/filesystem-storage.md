@@ -63,7 +63,7 @@
 
 ## Known limits
 
-- 持久存储是固定 ext4/JBD2 profile；附加块设备可经 `mount(2)` 挂载，没有分区表。
+- 持久存储是固定 ext4/JBD2 profile；附加块设备与分区可经 `mount(2)` 挂载；分区表解析见 `fs::partition_table`（纯函数，host 单测覆盖 MBR 逻辑分区链、GPT CRC 与备份表回退）。
 - FIFO、字符/块设备节点由 `Inode::mknod` 创建（ext4 把设备号按 Linux 旧/新编码存入 `i_block`，无 extent tree；
   tmpfs 存为 `Body::Special`）。FIFO 的内核 Pipe 由 `fs::fifo` 按 `(filesystem, inode)` 绑定，只持 `Weak`，
   生命周期由 endpoint 决定；打开的 FIFO 是一个持有 0~2 个 endpoint 的 `DeviceFile`，所以双向读写、
@@ -72,8 +72,12 @@
 - 原始块 I/O 经 page cache 缓冲，但 ext4 直接读写块层，二者不共享缓存，所以一块盘要么被挂载（节点只读、
   不缓冲）要么可写打开：挂载与“以写方式打开”由 `BlockNode` 的原子字互斥，挂载前写回并逐出该盘的缓冲页。
   只读打开并读取已挂载的盘看到的是已提交到块层的数据，不含 ext4 尚在内存 transaction 里的元数据。
-- 根以 `ro` 启动参数只读挂载时，ext4 仍会回放 journal 并清理 orphan（写块层）；Linux 的 `ro` 挂载同样回放
-  journal，但不做 orphan 清理。
+- 块设备枚举（`/proc/partitions`、`/sys/{class,}/block`、`/sys/dev/block`）每次读取都从设备注册表取快照，不缓存；
+  注册表只追加，下标即稳定身份（`sysfs_block`）。
+- 只读挂载 ext4 与 Linux 一致：journal 照常重放，但不置 `RECOVER`、不回收 orphan；`remount,rw` 经
+  `FileSystem::make_writable` 补做（幂等）。根以 `ro` 启动参数挂载后由 init 的 `remount,rw /` 转为可写。
+- 分区是整盘 `BlockDevice` 上的 4 KiB 对齐区间（`PartitionDevice`），自己有独立的 `BlockNode`：挂载与写者互斥
+  按节点独立；整盘与分区各有各的 page cache，重叠区域不保证一致（与 Linux 相同）。
 - tmpfs 没有 swap：数据页只受 `size=` 与物理内存限制，`MAP_SHARED` 触碰超出配额的洞得到 `SIGBUS`
   （与 Linux 一致）；可写映射建立时更新 `st_mtime`，之后的 store 不再经过内核。
 - 不支持 `huge=`、`mpol=`（没有大页与 NUMA 子系统）与 xattr/ACL。bind/move/propagation 挂载、`MS_SYNCHRONOUS`、

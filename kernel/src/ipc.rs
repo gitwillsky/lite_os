@@ -12,6 +12,18 @@ mod eventfd;
 pub(crate) use eventfd::{EventFd, EventFdRead, EventFdWrite};
 
 pub(crate) const PIPE_BUF: usize = 4096;
+/// `F_SETPIPE_SZ` 的上限（Linux `pipe-max-size` 默认值）；没有 CAP_SYS_RESOURCE 模型，所有调用者同限。
+pub(crate) const PIPE_MAX_SIZE: usize = 1024 * 1024;
+
+/// [`Pipe::resize`] 的失败原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipeResizeError {
+    /// 超过 [`PIPE_MAX_SIZE`]（`EPERM`）。
+    TooLarge,
+    /// 未读数据装不进新容量（`EBUSY`）。
+    Busy,
+    OutOfMemory,
+}
 const PIPE_CAPACITY: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
 const NOTIFICATION_CAPACITY: NonZeroUsize = NonZeroUsize::MIN;
 
@@ -335,6 +347,58 @@ impl Pipe {
         let result = self.wait(PipeWaitCondition::PeerOpened { waiter, since }, None);
         self.state.lock().rendezvous_waiters -= 1;
         result
+    }
+
+    /// 环里尚未读取的字节数（`FIONREAD`）。
+    pub(crate) fn buffered_bytes(&self) -> usize {
+        self.state.lock().length
+    }
+
+    /// 环的容量（`F_GETPIPE_SZ`）。
+    pub(crate) fn capacity(&self) -> usize {
+        self.state.lock().bytes.len()
+    }
+
+    /// 把环容量改为不小于 `requested` 的最小 2 的幂次页数（`F_SETPIPE_SZ`）。
+    ///
+    /// 新环在锁外分配，然后在锁内把未读数据线性化搬过去；失败时旧环原封不动。
+    ///
+    /// # Returns
+    ///
+    /// 新的容量。
+    ///
+    /// # Errors
+    ///
+    /// 超过 [`PIPE_MAX_SIZE`] 返回 `TooLarge`；未读数据多于新容量返回 `Busy`；分配失败返回
+    /// `OutOfMemory`。
+    pub(crate) fn resize(self: &Arc<Self>, requested: usize) -> Result<usize, PipeResizeError> {
+        if requested > PIPE_MAX_SIZE {
+            return Err(PipeResizeError::TooLarge);
+        }
+        // 至少一页；`PIPE_BUF` 原子写要求容量不小于一页。
+        let capacity = requested.max(PIPE_BUF).next_power_of_two();
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|_| PipeResizeError::OutOfMemory)?;
+        bytes.resize(capacity, 0);
+        {
+            let mut state = self.state.lock();
+            if state.length > capacity {
+                return Err(PipeResizeError::Busy);
+            }
+            let old = state.bytes.len();
+            let first = state.length.min(old - state.head);
+            bytes[..first].copy_from_slice(&state.bytes[state.head..state.head + first]);
+            let rest = state.length - first;
+            bytes[first..first + rest].copy_from_slice(&state.bytes[..rest]);
+            state.bytes = bytes;
+            state.head = 0;
+            // 容量变化可能让阻塞的 writer 立即可写。
+            state.write_generation = crate::sync::next_readiness_generation();
+        }
+        publish_state_change(self);
+        Ok(capacity)
     }
 
     pub(crate) fn identity(pipe: &Arc<Self>) -> usize {

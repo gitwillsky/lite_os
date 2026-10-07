@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use super::{
     CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError, Inode,
     InodeMetadata, InodeType, OwnerModeChange,
+    block_identity::PartUuid,
     block_range::{self, BlockStore, RangeError},
     device::{DeviceError, DeviceNumber, IoctlCall},
 };
@@ -18,10 +19,21 @@ use crate::drivers::block::{BlockDevice, BlockError};
 /// `claim` 的最高位：设备已被文件系统挂载。其余位是以写方式打开的 OFD 数。
 const MOUNTED: usize = 1 << (usize::BITS - 1);
 
+/// 分区在整盘中的位置与标识。
+#[derive(Clone, Copy)]
+pub(super) struct PartitionInfo {
+    pub(super) start: u64,
+    pub(super) uuid: Option<PartUuid>,
+}
+
 /// 一块已发布的磁盘。
 pub(crate) struct BlockNode {
     number: DeviceNumber,
     device: Arc<dyn BlockDevice>,
+    /// 整盘节点已发布的分区；分区节点为空。`BLKRRPART` 以它判断分区表是否变化。
+    partitions: spin::Mutex<Vec<super::partition_table::Partition>>,
+    /// 分区的位置与 `PARTUUID`；整盘为 `None`。
+    partition: Option<PartitionInfo>,
     // OWNER: 挂载标志与写者计数的唯一原子字：`begin_writer` 与 `begin_mount` 对同一个字做 CAS，
     // 因此“挂载时还有写者”与“挂载后又出现写者”都不可能发生。放在原子里而不是锁里，是因为
     // `end_writer` 由 OFD 的 Drop 调用，不能阻塞。缺失时 mkfs 式写入与 ext4 会同时改同一块盘。
@@ -59,13 +71,55 @@ impl BlockNode {
     pub(super) fn new(
         number: DeviceNumber,
         device: Arc<dyn BlockDevice>,
+        partition: Option<PartitionInfo>,
     ) -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
             number,
             device,
+            partitions: spin::Mutex::new(Vec::new()),
+            partition,
             claim: AtomicUsize::new(0),
         })
         .map_err(|_| FileSystemError::OutOfMemory)
+    }
+
+    pub(crate) fn is_partition(&self) -> bool {
+        self.partition.is_some()
+    }
+
+    /// 分区的 `PARTUUID`；整盘与没有可用标识的分区为 `None`。
+    pub(crate) fn partuuid(&self) -> Option<PartUuid> {
+        self.partition.and_then(|partition| partition.uuid)
+    }
+
+    /// 分区在整盘中的起始扇区（512 字节）；整盘为 `None`。
+    pub(crate) fn partition_start(&self) -> Option<u64> {
+        self.partition.map(|partition| partition.start)
+    }
+
+    /// `/dev` 下的节点名（`vda`、`vda1`）。
+    pub(crate) fn name(&self) -> &[u8] {
+        self.device.disk_name()
+    }
+
+    /// 记录整盘已发布的分区集合。
+    pub(super) fn set_partitions(&self, partitions: Vec<super::partition_table::Partition>) {
+        *self.partitions.lock() = partitions;
+    }
+
+    /// 重新读取分区表并与已发布集合比较（`BLKRRPART`）。
+    ///
+    /// # Errors
+    ///
+    /// 分区表与已发布的不同返回 `Busy`：设备注册表只追加，不支持热移除或改号已发布的分区节点。
+    pub(crate) fn reread_partitions(&self) -> Result<(), FileSystemError> {
+        let current = super::partition_table::parse(self, self.capacity() / 512);
+        let current = super::publishable_partitions(current);
+        if *self.partitions.lock() == current {
+            Ok(())
+        } else {
+            Err(FileSystemError::Busy)
+        }
     }
 
     pub(crate) fn number(&self) -> DeviceNumber {
@@ -313,5 +367,11 @@ impl Inode for BlockSpecial {
         _no_replace: bool,
     ) -> Result<(), FileSystemError> {
         Err(FileSystemError::NotDirectory)
+    }
+}
+
+impl super::partition_table::SectorSource for BlockNode {
+    fn read(&self, lba: u64, buffer: &mut [u8]) -> bool {
+        BlockNode::read(self, lba * 512, buffer).is_ok_and(|count| count == buffer.len())
     }
 }
