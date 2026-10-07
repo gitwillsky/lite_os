@@ -6,8 +6,8 @@ use crate::{
         vfs,
     },
     memory::{
-        ElfLoadError, ExecutableImage, ExecutableParseError, ExecutableSource, MemorySet,
-        parse_interpreter_elf, parse_main_elf,
+        ElfLoadError, ExecutableImage, ExecutableParseError, ExecutableSource, InitialStack,
+        MemorySet, parse_interpreter_elf, parse_main_elf,
     },
 };
 
@@ -44,11 +44,21 @@ impl LoadedExecutable {
         address_space_limit: u64,
         data_limit: u64,
     ) -> Result<(MemorySet, usize, usize), ElfLoadError> {
+        // 1. exec owns source I/O；未发布地址空间前完成 entropy，失败不替换旧 image。
+        let mut entropy =
+            crate::random::EntropyBatch::<16>::try_new().ok_or(ElfLoadError::OutOfMemory)?;
+        let random = entropy.fill(16).map_err(|_| ElfLoadError::Io)?;
+        // fill 成功返回恰好请求的 16 bytes；固定数组让 memory 无需重验 AT_RANDOM 长度。
+        let random = random.try_into().expect("AT_RANDOM entropy length");
+        // 2. memory 只消费 immutable 栈输入，不调用设备或 entropy facade。
         MemorySet::from_elf(
             &self.image,
-            &self.arguments,
-            environments,
-            &self.execfn,
+            InitialStack {
+                arguments: &self.arguments,
+                environments,
+                execfn: &self.execfn,
+                random,
+            },
             stack_limit,
             address_space_limit,
             data_limit,

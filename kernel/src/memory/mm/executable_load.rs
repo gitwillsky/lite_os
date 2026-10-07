@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use crate::memory::{
     address::VirtualAddress,
     config,
@@ -9,16 +7,29 @@ use crate::memory::{
 
 use super::{
     ElfLoadError, LoadedElf, MapArea, MapPermission, MapType, MemorySet, PageFaultAccess,
-    PageFaultOutcome, PrivateFileArea, initial_stack::ElfAuxInfo,
+    PageFaultOutcome, PrivateFileArea,
+    initial_stack::{ElfAuxInfo, InitialStack},
 };
 
 impl MemorySet {
     /// 从已校验 ELF plan 构造受 rlimit 约束的新地址空间、初始栈与 entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `image`: 已解析的 main ELF 与可选 interpreter。
+    /// - `stack`: exec 准备的初始栈 strings 与已初始化的 AT_RANDOM bytes。
+    /// - `stack_limit`, `address_space_limit`, `data_limit`: 本次 exec 的资源上限。
+    ///
+    /// # Returns
+    ///
+    /// 新 MemorySet、initial stack pointer 与 entry point。
+    ///
+    /// # Errors
+    ///
+    /// ELF、mapping、source I/O 或资源失败；未发布的新 MemorySet 随错误释放。
     pub(crate) fn from_elf(
         image: &ExecutableImage,
-        args: &[Vec<u8>],
-        envs: &[Vec<u8>],
-        execfn: &[u8],
+        stack: InitialStack<'_>,
         stack_limit: u64,
         address_space_limit: u64,
         data_limit: u64,
@@ -96,7 +107,7 @@ impl MemorySet {
             interpreter_base,
         );
         let actual_stack_top =
-            memory_set.build_initial_stack(user_stack_top, args, envs, execfn, aux, stack_limit)?;
+            memory_set.build_initial_stack(user_stack_top, stack, aux, stack_limit)?;
         if memory_set.virtual_bytes() > address_space_limit || memory_set.data_bytes() > data_limit
         {
             return Err(ElfLoadError::OutOfMemory);

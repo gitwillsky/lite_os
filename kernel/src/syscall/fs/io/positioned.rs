@@ -8,7 +8,7 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
+    if ofd.status_flags() & O_ACCMODE == O_WRONLY {
         return -errno::EBADF;
     }
     // 路径打开的文件与 memfd 都有 inode 内容；pipe、socket 与字符设备没有可定位的内容。
@@ -87,7 +87,7 @@ fn positioned_write(
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+    if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return -errno::EBADF;
     }
     // 路径打开的文件与 memfd 都有 inode 内容；pipe、socket 与字符设备没有可定位的内容。
@@ -112,7 +112,7 @@ fn positioned_write(
         Err(error) => return ferr(error),
     };
 
-    let append = append_override.unwrap_or_else(|| *ofd.flags.lock() & O_APPEND != 0);
+    let append = append_override.unwrap_or_else(|| ofd.status_flags() & O_APPEND != 0);
     let staging = PreparedRegularWriteStaging::prepare(total_length);
     let result = with_prepared_staging(staging, |staging| {
         let mut staging = staging.as_input_staging();

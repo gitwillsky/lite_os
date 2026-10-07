@@ -62,7 +62,7 @@ pub(super) fn read_descriptor(
                 match endpoint.read(&mut input) {
                     PipeRead::Bytes(read) => break read,
                     PipeRead::Eof => return 0,
-                    PipeRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    PipeRead::Empty if ofd.status_flags() & O_NONBLOCK != 0 => {
                         return -errno::EAGAIN;
                     }
                     PipeRead::Empty => {
@@ -92,7 +92,7 @@ pub(super) fn read_descriptor(
                 match socket.read(&mut input) {
                     Ok(read) => break read,
                     Err(crate::socket::SocketError::Again)
-                        if *ofd.flags.lock() & O_NONBLOCK != 0 =>
+                        if ofd.status_flags() & O_NONBLOCK != 0 =>
                     {
                         return -errno::EAGAIN;
                     }
@@ -128,7 +128,7 @@ pub(super) fn read_descriptor(
             let value = loop {
                 match event.read() {
                     crate::ipc::EventFdRead::Value(value) => break value,
-                    crate::ipc::EventFdRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    crate::ipc::EventFdRead::Empty if ofd.status_flags() & O_NONBLOCK != 0 => {
                         return -errno::EAGAIN;
                     }
                     crate::ipc::EventFdRead::Empty => {
@@ -159,7 +159,7 @@ pub(super) fn read_descriptor(
             let expirations = loop {
                 match timer.read() {
                     crate::file::TimerFdRead::Expirations(value) => break value,
-                    crate::file::TimerFdRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    crate::file::TimerFdRead::Empty if ofd.status_flags() & O_NONBLOCK != 0 => {
                         return -errno::EAGAIN;
                     }
                     crate::file::TimerFdRead::Empty => {

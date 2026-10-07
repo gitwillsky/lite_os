@@ -3,6 +3,9 @@
 ## Owner
 
 - VFS namespace/inode 拥有 pathname identity；OpenFileDescription 拥有 backend、file position、status flag 与 descriptor reference consequence。
+- OFD status lock 保持 private；syscall 只经 `status_flags` 查询，`set_status_flags` 更新当前
+  F_SETFL 支持的 O_APPEND/O_NONBLOCK，`set_nonblocking` 处理 FIONBIO。后者保留所有其他 flags，
+  与 F_SETFL 在同一临界区串行化；dup/fork 不复制状态 owner。
 - `OpenedIndex` 是 live opened-entry lifecycle/path membership 的唯一 owner；key 以
   parent inode identity/name/inode identity 为 namespace 前缀，以 Arc allocation identity 区分
   重复 lookup。register 只做 ordered insert，rename/unlink 只访问精确前缀，

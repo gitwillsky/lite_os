@@ -1,8 +1,3 @@
-use core::sync::atomic::{AtomicBool, Ordering};
-
-// OWNER: system module 唯一拥有 whole-system Ctrl-Alt-Delete policy。
-static CTRL_ALT_DEL_ENABLED: AtomicBool = AtomicBool::new(true);
-
 pub(crate) use crate::platform::ResetKind;
 
 /// 返回唯一的 immutable system/build identity，供标准 utsname ABI 投影。
@@ -77,17 +72,4 @@ pub(crate) fn online_cpu_mask() -> usize {
 /// firmware 异常返回时传播 typed platform error；成功通常不返回。
 pub(crate) fn reset(kind: ResetKind) -> Result<(), crate::platform::ResetError> {
     crate::platform::reset_system(kind, crate::platform::ResetReason::Requested)
-}
-
-/// 更新 Linux Ctrl-Alt-Delete 的 whole-system reset polic。
-///
-/// # Parameters
-///
-/// - `enabled`: true 表示未来 CAD input 直接重启，false 表示交由 PID 1 处理。
-///
-/// # Returns
-///
-/// 无返回值；策略使用原子状态，避免未来 input IRQ 与 syscall 并发时丢失更新。
-pub(crate) fn set_ctrl_alt_del(enabled: bool) {
-    CTRL_ALT_DEL_ENABLED.store(enabled, Ordering::Release);
 }

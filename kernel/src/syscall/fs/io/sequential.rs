@@ -42,7 +42,7 @@ fn readable_descriptor(
 ) -> Result<(Arc<TaskControlBlock>, Arc<OpenFileDescription>), isize> {
     let task = current_task().ok_or(-errno::ESRCH)?;
     let ofd = task.fd_get(fd).ok_or(-errno::EBADF)?;
-    if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
+    if ofd.status_flags() & O_ACCMODE == O_WRONLY {
         return Err(-errno::EBADF);
     }
     if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {
@@ -69,7 +69,7 @@ fn writable_descriptor(
 ) -> Result<(Arc<TaskControlBlock>, Arc<OpenFileDescription>), isize> {
     let task = current_task().ok_or(-errno::ESRCH)?;
     let ofd = task.fd_get(fd).ok_or(-errno::EBADF)?;
-    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+    if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return Err(-errno::EBADF);
     }
     if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {

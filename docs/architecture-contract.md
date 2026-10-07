@@ -45,7 +45,7 @@
 | `platform` | `arch`, `cpu`, `fallible_tree`, `hal`, `sync` | 编译期选择的 machine/firmware adapter；拥有 DTB、PSCI/SBI、GIC/PLIC、UART 与 TLB shootdown，并向 `virtio` 暴露 transport 表、PCI host、地址映射与 interrupt 注册；不认识设备类，也不依赖 `memory` |
 | `fallible_tree` | 无 | 无状态的确定性 AVL mechanism；提供显式 OOM publication、结构化 split 与 ordered-disjoint join，不拥有领域数据 |
 | `sync` | `arch`, `cpu` | 锁与 IRQ transfer 只依赖本地中断 mechanism 和 logical `CpuId`；transfer token 在错误 CPU restore 时 fail-stop，禁止把 hardware identity 引入同步领域 |
-| `memory` | `arch`, `config`, `cpu`, `fallible_tree`, `id`, `platform`, `random`, `sync` | VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding |
+| `memory` | `arch`, `config`, `cpu`, `fallible_tree`, `id`, `platform`, `sync` | VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding；初始栈只接收 exec 准备的 strings/AT_RANDOM，不访问 entropy device |
 | `drivers` | `deferred`, `fallible_tree`, `hal`, `memory`, `sync` | 设备类 seam（display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `virtio`，MMIO/中断/console 属于 `hal` |
 | `block` | `hal` | 块设备 trait 与只追加注册表、分区表（MBR/EBR/GPT）解析、分区视图、字节范围 I/O 与 `PARTUUID` 文本；驱动实现 trait，`fs` 只消费；分区表与范围 I/O 是可在 host 上单测的纯函数 |
 | `virtio` | `block`, `deferred`, `drivers`, `hal`, `memory`, `platform` | VirtIO transport（MMIO/PCI）、virtqueue/DMA、各设备类 adapter 与设备装配表 `binding`；只实现 `drivers`/`block` 的 seam，消费 platform 的设备发现事实，不依赖 `arch` |
@@ -58,7 +58,7 @@
 | `fs` | `block`, `deferred`, `fallible_tree`, `id`, `ipc`, `log`, `memory`, `random`, `sync`, `timer` | VFS、具体文件系统、字符设备注册表、inotify 与 mem/kmsg 设备（kmsg 经 `deferred` 唤醒）；OFD 归 `file`、终端归 `tty`，advisory lock 经 `LockHolder` 识别持锁者 |
 | `file` | `fallible_tree`, `fs`, `ipc`, `socket` | open file description、fd table、epoll/timerfd/readiness 与 inode/设备/pipe/socket/eventfd 后端的统一投影；fd 层位于 `fs` 与 `socket` 之上，是 VFS 之外唯一同时认识两者的 module |
 | `tty` | `fs`, `hal`, `ipc`, `sync`, `timer` | Terminal line discipline、`/dev/tty`/`console`/`ptmx`、Unix98 pty 与 devpts 文件系统；session、process group 与 signal 归 task，经 `install_job_control` 注入；经 `fs::device` 注册设备文件 |
-| `task` | `arch`, `cpu`, `deferred`, `drivers`, `fallible_tree`, `file`, `fs`, `id`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer`, `tty` | 调度只用 logical CPU identity；deferred safe point 处理核心向量，设备类 completion 只经 `cpu` 注册的 handler 投递 |
+| `task` | `arch`, `cpu`, `deferred`, `drivers`, `fallible_tree`, `file`, `fs`, `id`, `ipc`, `memory`, `platform`, `random`, `socket`, `sync`, `timer`, `tty` | 调度只用 logical CPU identity；exec 获取 AT_RANDOM；deferred safe point 处理核心向量，completion 经注册 handler 投递 |
 | `trap` | `arch`, `cpu`, `deferred`, `hal`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
 | `syscall` | `file`, `fs`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer` | 只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::device::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果 |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
@@ -71,6 +71,7 @@
 | `main` | `arch`, `audio`, `block`, `cmdline`, `config`, `cpu`, `deferred`, `drivers`, `drm`, `entry`, `fallible_tree`, `file`, `fs`, `hal`, `id`, `input`, `ipc`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap`, `tty`, `virtio`, `virtio_port` | 装配 |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
+正向 dependency matrix 必须无环；围栏检查 AST 与 macro token 路径（含 `$crate`、分组/别名 import），禁止 crate-root alias 绕过 owner。
 
 ### Fallible ordered-storage contract
 

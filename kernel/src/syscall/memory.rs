@@ -133,7 +133,7 @@ pub(crate) fn sys_mmap(
         let Some(ofd) = task.fd_get(fd as usize) else {
             return -errno::EBADF;
         };
-        let access_mode = *ofd.flags.lock() & O_ACCMODE;
+        let access_mode = ofd.status_flags() & O_ACCMODE;
         if access_mode == O_WRONLY {
             return -errno::EACCES;
         }

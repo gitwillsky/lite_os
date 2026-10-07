@@ -24,7 +24,7 @@ use position::FilePosition;
 
 use crate::fs::{
     BlockNode, FileSystemError, FileSystemStatistics, Inode, InodeType, LockHolder, O_ACCMODE,
-    O_RDONLY, O_RDWR, OpenedFile, vfs,
+    O_APPEND, O_NONBLOCK, O_RDONLY, O_RDWR, OpenedFile, vfs,
 };
 use crate::{
     ipc::{EventFd, PipeEnd},
@@ -68,7 +68,7 @@ pub(crate) enum OpenFileKind {
 pub(crate) struct OpenFileDescription {
     pub(crate) kind: OpenFileKind,
     position: FilePosition,
-    pub(crate) flags: Mutex<u32>,
+    flags: Mutex<u32>,
     character_opened: Option<Arc<OpenedFile>>,
     pub(super) epoll_memberships: EpollMemberships,
     // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
@@ -114,6 +114,48 @@ impl Drop for WriteOpen {
 }
 
 impl OpenFileDescription {
+    /// 返回 OFD 共享状态标志的瞬时快照，不包含 fd-table 的 descriptor flags。
+    ///
+    /// # Returns
+    ///
+    /// 当前 open/status flags；dup/fork descriptor 读取同一 owner。
+    pub(crate) fn status_flags(&self) -> u32 {
+        *self.flags.lock()
+    }
+
+    /// 按当前 F_SETFL 支持范围，原子替换 O_APPEND/O_NONBLOCK，保留其他 open flags。
+    ///
+    /// # Parameters
+    ///
+    /// - `flags`: 用户提供的 status flags；范围外的 bits 保持原值。
+    ///
+    /// # Returns
+    ///
+    /// 无；更新对共享该 OFD 的 descriptor 一次性可见。
+    pub(crate) fn set_status_flags(&self, flags: u32) {
+        let mut current = self.flags.lock();
+        let mutable = O_APPEND | O_NONBLOCK;
+        *current = (*current & !mutable) | (flags & mutable);
+    }
+
+    /// 为 FIONBIO 原子设置或清除 O_NONBLOCK，保留 O_APPEND 与所有其他 flags。
+    ///
+    /// # Parameters
+    ///
+    /// - `enabled`: true 为 nonblocking，false 为 blocking。
+    ///
+    /// # Returns
+    ///
+    /// 无；在唯一 status lock 下更新，避免覆盖并发 F_SETFL 的 O_APPEND。
+    pub(crate) fn set_nonblocking(&self, enabled: bool) {
+        let mut flags = self.flags.lock();
+        if enabled {
+            *flags |= O_NONBLOCK;
+        } else {
+            *flags &= !O_NONBLOCK;
+        }
+    }
+
     fn socket_poll_events(events: i16, state: crate::socket::SocketPollState) -> i16 {
         const INPUT: i16 = 0x001;
         const OUTPUT: i16 = 0x004;

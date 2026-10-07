@@ -1484,7 +1484,6 @@ kernel/src/file/mod.rs :: enum OpenFileKind :: MemFile (Arc < crate :: fs :: Mem
 kernel/src/file/mod.rs :: enum OpenFileKind :: Pipe (Arc < PipeEnd >)
 kernel/src/file/mod.rs :: enum OpenFileKind :: Socket (Arc < Socket >)
 kernel/src/file/mod.rs :: enum OpenFileKind :: TimerFd (Arc < TimerFd >)
-kernel/src/file/mod.rs :: pub (crate) OpenFileDescription :: flags : Mutex < u32 >
 kernel/src/file/mod.rs :: pub (crate) OpenFileDescription :: kind : OpenFileKind
 kernel/src/file/mod.rs :: pub (crate) enum OpenFileKind
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn anonymous_device (file : Arc < dyn crate :: fs :: device :: DeviceFile > , flags : u32 ,) -> Result < Arc < Self > , FileSystemError >
@@ -1504,7 +1503,10 @@ kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn position_sn
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn readiness_generation (& self , events : i16) -> u64
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn readiness_sources (& self , events : i16) -> ReadinessSources
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn seek_position (& self , offset : i64 , base : impl FnOnce (u64) -> u64 ,) -> Result < u64 , () >
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn set_nonblocking (& self , enabled : bool)
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn set_status_flags (& self , flags : u32)
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn socket (socket : Arc < Socket > , flags : u32) -> Result < Arc < Self > , () >
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn status_flags (& self) -> u32
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn timer_fd (timer : Arc < TimerFd > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn try_poll_events (& self , events : i16) -> Option < i16 >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn with_position < R > (& self , operation : impl FnOnce (& mut u64) -> R) -> R
@@ -2559,7 +2561,7 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_add
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mm.rs :: pub (crate) use area :: { MapArea , MapType }
-kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_key :: FutexKey , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingResourceLimits , MemoryAdvice , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
+kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_key :: FutexKey , initial_stack :: InitialStack , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingResourceLimits , MemoryAdvice , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
 kernel/src/memory/mm.rs :: pub (super) mod shootdown
 kernel/src/memory/mm/area.rs :: enum MapType :: Framed
 kernel/src/memory/mm/area.rs :: enum MapType :: KernelMapped
@@ -2626,7 +2628,7 @@ kernel/src/memory/mm/error.rs :: pub (crate) enum MemoryError
 kernel/src/memory/mm/error.rs :: pub (crate) enum UserAccessError
 kernel/src/memory/mm/error.rs :: pub (crate) impl MemoryError :: fn is_out_of_memory (self) -> bool
 kernel/src/memory/mm/error.rs :: pub (super) fn try_memory_arc < T > (value : T) -> Result < Arc < T > , MemoryError >
-kernel/src/memory/mm/executable_load.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (Self , usize , usize) , ElfLoadError >
+kernel/src/memory/mm/executable_load.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , stack : InitialStack < '_ > , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (Self , usize , usize) , ElfLoadError >
 kernel/src/memory/mm/executable_load.rs :: pub (super) impl MemorySet :: fn map_elf_image (& mut self , image : & ParsedElf , load_bias : usize ,) -> Result < LoadedElf , ElfLoadError >
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultAccess :: Execute
 kernel/src/memory/mm/fault_preflight.rs :: enum FaultAccess :: Read
@@ -2675,8 +2677,13 @@ kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 文件共享映
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 私有映射只在同一个 AddressSpace 内共享等待队列。"] Private { address_space : usize , address : usize , }
 kernel/src/memory/mm/futex_key.rs :: pub (crate) enum FutexKey
 kernel/src/memory/mm/futex_key.rs :: pub (crate) impl MemorySet :: fn futex_key (& mut self , address : usize , address_space : usize , private : bool , limits : UserFaultLimits ,) -> Result < FutexKey , UserAccessError >
+kernel/src/memory/mm/initial_stack.rs :: pub (crate) InitialStack :: arguments : & 'a [Vec < u8 >]
+kernel/src/memory/mm/initial_stack.rs :: pub (crate) InitialStack :: environments : & 'a [Vec < u8 >]
+kernel/src/memory/mm/initial_stack.rs :: pub (crate) InitialStack :: execfn : & 'a [u8]
+kernel/src/memory/mm/initial_stack.rs :: pub (crate) InitialStack :: random : & 'a [u8 ; 16]
+kernel/src/memory/mm/initial_stack.rs :: pub (crate) struct InitialStack < 'a >
 kernel/src/memory/mm/initial_stack.rs :: pub (super) impl ElfAuxInfo :: fn new (phdr : usize , phent : usize , phnum : usize , entry : usize , base : usize) -> Self
-kernel/src/memory/mm/initial_stack.rs :: pub (super) impl MemorySet :: fn build_initial_stack (& mut self , stack_top : usize , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , aux : ElfAuxInfo , stack_limit : u64 ,) -> Result < usize , ElfLoadError >
+kernel/src/memory/mm/initial_stack.rs :: pub (super) impl MemorySet :: fn build_initial_stack (& mut self , stack_top : usize , input : InitialStack < '_ > , aux : ElfAuxInfo , stack_limit : u64 ,) -> Result < usize , ElfLoadError >
 kernel/src/memory/mm/initial_stack.rs :: pub (super) struct ElfAuxInfo
 kernel/src/memory/mm/mapping_request.rs :: enum FileMappingError :: Invalid
 kernel/src/memory/mm/mapping_request.rs :: enum FileMappingError :: Overflow
@@ -2838,7 +2845,7 @@ kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , Ex
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocationClass , FrameTracker , alloc_contiguous , statistics as frame_statistics , }
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexKey , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , SegmentationCause , UserAccessError , UserFaultLimits , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexKey , InitialStack , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , SegmentationCause , UserAccessError , UserFaultLimits , }
 kernel/src/memory/mod.rs :: pub (crate) use permissions :: MapPermission
 kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , }
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn activate_kernel (& self)
@@ -4853,7 +4860,6 @@ kernel/src/system.rs :: pub (crate) fn decode_architecture_syscall (syscall_id :
 kernel/src/system.rs :: pub (crate) fn identity () -> [& 'static str ; 6]
 kernel/src/system.rs :: pub (crate) fn online_cpu_mask () -> usize
 kernel/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , crate :: platform :: ResetError >
-kernel/src/system.rs :: pub (crate) fn set_ctrl_alt_del (enabled : bool)
 kernel/src/system.rs :: pub (crate) fn time_counter_frequency () -> u64
 kernel/src/system.rs :: pub (crate) use crate :: platform :: ResetKind
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable

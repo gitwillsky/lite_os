@@ -52,6 +52,7 @@ pub(crate) use {
     error::{ElfLoadError, MemoryError, UserAccessError},
     fault_preflight::{FaultAccess as PageFaultAccess, SegmentationCause},
     futex_key::FutexKey,
+    initial_stack::InitialStack,
     mapping_request::{
         DeviceMappingSource, FileMappingError, FileMappingSource, MappingResourceLimits,
         MemoryAdvice,

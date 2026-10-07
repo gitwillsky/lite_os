@@ -16,7 +16,7 @@ fn write_regular_descriptor(
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
-    let append = *ofd.flags.lock() & O_APPEND != 0;
+    let append = ofd.status_flags() & O_APPEND != 0;
     let staging = PreparedRegularWriteStaging::prepare(total_length);
     with_prepared_staging(staging, |staging| {
         let mut staging = staging.as_input_staging();
@@ -95,7 +95,7 @@ pub(super) fn write_descriptor(
                             break;
                         }
                         PipeWrite::Full if written != 0 => return written as isize,
-                        PipeWrite::Full if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                        PipeWrite::Full if ofd.status_flags() & O_NONBLOCK != 0 => {
                             return -errno::EAGAIN;
                         }
                         PipeWrite::Full => {
@@ -170,7 +170,7 @@ pub(super) fn write_descriptor(
                         Err(
                             crate::socket::SocketSendError::WouldBlock
                             | crate::socket::SocketSendError::PeerFull(_),
-                        ) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                        ) if ofd.status_flags() & O_NONBLOCK != 0 => {
                             return -errno::EAGAIN;
                         }
                         Err(crate::socket::SocketSendError::WouldBlock) => {
@@ -254,7 +254,7 @@ pub(super) fn write_descriptor(
                             written += mem::size_of::<u64>();
                             break;
                         }
-                        crate::ipc::EventFdWrite::Full if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                        crate::ipc::EventFdWrite::Full if ofd.status_flags() & O_NONBLOCK != 0 => {
                             return if written == 0 {
                                 -errno::EAGAIN
                             } else {

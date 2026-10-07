@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <complex.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
 #include <poll.h>
@@ -10,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/auxv.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -71,6 +73,55 @@ static void *group_exit_worker(void *argument)
 {
 	(void)argument;
 	for (;;) sched_yield();
+}
+
+/* 1. AT_RANDOM 必须指向 16 个可读 bytes；2. dup/fork 共享 OFD flags；3. CAD 不得假成功。 */
+static int verify_exec_file_status(void)
+{
+	int descriptors[2];
+	if (pipe(descriptors) != 0) return 1;
+	const void *random = (const void *)getauxval(AT_RANDOM);
+	unsigned char bytes[16];
+	if (!random || write(descriptors[1], random, sizeof bytes) != sizeof bytes
+	    || read(descriptors[0], bytes, sizeof bytes) != sizeof bytes) return 2;
+	int alias = dup(descriptors[1]);
+	int original = fcntl(descriptors[1], F_GETFL);
+	if (alias < 0 || original < 0
+	    || fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) != 0
+	    || fcntl(alias, F_SETFL, O_RDONLY | O_APPEND | O_NONBLOCK | O_CLOEXEC) != 0
+	    || fcntl(descriptors[1], F_GETFL) != (original | O_APPEND | O_NONBLOCK)
+	    || fcntl(descriptors[1], F_GETFD) != FD_CLOEXEC
+	    || fcntl(alias, F_GETFD) != 0) return 3;
+	int blocking = 0;
+	if (ioctl(alias, FIONBIO, &blocking) != 0
+	    || fcntl(descriptors[1], F_GETFL) != (original | O_APPEND)) return 4;
+	pid_t child = fork();
+	if (child == 0) {
+		int nonblocking = 1;
+		_exit(ioctl(alias, FIONBIO, &nonblocking) == 0 ? 0 : 1);
+	}
+	int status;
+	if (child < 0 || waitpid(child, &status, 0) != child
+	    || !WIFEXITED(status) || WEXITSTATUS(status) != 0
+	    || fcntl(descriptors[1], F_GETFL) != (original | O_APPEND | O_NONBLOCK)
+	    || fcntl(alias, F_SETFL, 0) != 0
+	    || fcntl(descriptors[1], F_GETFL) != original) return 5;
+	if (close(alias) != 0 || close(descriptors[0]) != 0 || close(descriptors[1]) != 0) return 6;
+	const unsigned long magic2[] = { 0x28121969, 0x05121996, 0x16041998, 0x20112000 };
+	const unsigned long cad[] = { 0, 0x89abcdef };
+	for (unsigned int i = 0; i < sizeof magic2 / sizeof magic2[0]; i++) {
+		for (unsigned int j = 0; j < sizeof cad / sizeof cad[0]; j++) {
+			errno = 0;
+			if (syscall(SYS_reboot, 0xfee1deadUL, magic2[i], cad[j], 0) != -1
+			    || errno != EOPNOTSUPP) return 7;
+		}
+	}
+	errno = 0;
+	if (syscall(SYS_reboot, 0, magic2[0], cad[1], 0) != -1 || errno != EINVAL) return 8;
+	errno = 0;
+	if (syscall(SYS_reboot, 0xfee1deadUL, magic2[0], 0x76543210UL, 0) != -1
+	    || errno != EINVAL) return 9;
+	return 0;
 }
 
 int main(int argc, char **argv, char **envp)
@@ -142,6 +193,14 @@ int main(int argc, char **argv, char **envp)
 	    || strcmp(envp[0], "HOME=/") != 0 || strcmp(envp[1], "TERM=linux") != 0)
 		return 1;
 	if (sysconf(_SC_PAGESIZE) != 4096 || getpid() <= 0) return 2;
+	int exec_file_status_result = verify_exec_file_status();
+	if (exec_file_status_result != 0) {
+		static const char failed[] = "LiteOS musl exec/OFD/CAD failed step=";
+		char step[] = { (char)('0' + exec_file_status_result), '\n' };
+		write(STDOUT_FILENO, failed, sizeof failed - 1);
+		write(STDOUT_FILENO, step, sizeof step);
+		return 15;
+	}
 	number = strtod("1.5", &number_end);
 	complex_product = CMPLXL(complex_real, complex_imaginary) * CMPLXL(complex_unit, 0.0L);
 	if (*number_end != '\0' || number != 1.5 || number + 0.5 != 2.0

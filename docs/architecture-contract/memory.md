@@ -42,6 +42,9 @@
 
 ## Interface
 
+- `MemorySet::from_elf` 只消费 `InitialStack` 中已准备的 argv/envp/execfn 与固定 16-byte
+  AT_RANDOM payload。entropy acquisition 归 task exec loader，memory 不依赖 random/drivers；
+  entropy 失败在新地址空间发布前返回 source I/O error，不替换旧 image。
 - generic memory 只向 `arch::mmu` 提交语义权限、frame-owner adapter 与一次性 platform MMIO
   range publication；PTE bit、address token、mapping projection 与 fence instruction 不得泄漏。
 - kernel identity range 只向 architecture 提交精确 `[start,end)` 与统一 permissions；Sv39 walker 在不跨该边界的前提下选择最大对齐 1GiB/2MiB/4KiB leaf。generic translation 仍返回目标 4KiB physical page，不泄漏 leaf level。

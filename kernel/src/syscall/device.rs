@@ -148,7 +148,7 @@ pub(super) fn read_device(
         cursor: UserIoCursor::new(vectors),
         total_length,
     };
-    let result = file.read(&mut output, *ofd.flags.lock() & O_NONBLOCK != 0);
+    let result = file.read(&mut output, ofd.status_flags() & O_NONBLOCK != 0);
     progress_or(output.cursor.completed(), result)
 }
 
@@ -165,7 +165,7 @@ pub(super) fn write_device(
         cursor: UserIoCursor::new(vectors),
         total_length,
     };
-    let result = file.write(&mut input, *ofd.flags.lock() & O_NONBLOCK != 0);
+    let result = file.write(&mut input, ofd.status_flags() & O_NONBLOCK != 0);
     if result == Err(DeviceError::BrokenPipe) {
         // 无论是否已有进度，peer 关闭都投递 SIGPIPE；已有进度时返回值仍是已写字节数。
         crate::task::send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
@@ -212,7 +212,7 @@ fn ioctl_call<'a>(
         request,
         argument,
         user: memory,
-        nonblocking: *ofd.flags.lock() & O_NONBLOCK != 0,
+        nonblocking: ofd.status_flags() & O_NONBLOCK != 0,
         privileged: task.credential_id(true, true) == 0,
     }
 }

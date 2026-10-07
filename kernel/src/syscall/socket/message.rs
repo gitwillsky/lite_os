@@ -103,7 +103,7 @@ struct SendContext<'a> {
 
 impl SendContext<'_> {
     fn nonblocking(&self) -> bool {
-        self.flags & MSG_DONTWAIT != 0 || *self.ofd.flags.lock() & O_NONBLOCK != 0
+        self.flags & MSG_DONTWAIT != 0 || self.ofd.status_flags() & O_NONBLOCK != 0
     }
 }
 
@@ -396,7 +396,7 @@ pub(crate) fn sys_recvfrom(
                 };
             }
             Err(SocketError::Again)
-                if flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0 =>
+                if flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0 =>
             {
                 return -errno::EAGAIN;
             }
@@ -434,7 +434,7 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
         Ok(output) => output,
         Err(()) => return -errno::ENOMEM,
     };
-    let nonblocking = flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0;
+    let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true) {
             Ok(received) => {

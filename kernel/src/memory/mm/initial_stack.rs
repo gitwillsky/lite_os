@@ -4,6 +4,18 @@ use crate::memory::config;
 
 use super::{ElfLoadError, MemorySet, UserFaultLimits};
 
+/// exec 装载流程提供的 Linux 初始栈输入；memory 只负责布局与复制，不访问 entropy device。
+pub(crate) struct InitialStack<'a> {
+    /// script rewrite 后且不含 NUL 的 argv strings。
+    pub(crate) arguments: &'a [Vec<u8>],
+    /// 不含 NUL 的 envp strings。
+    pub(crate) environments: &'a [Vec<u8>],
+    /// 用户传给 execve 的原始 pathname。
+    pub(crate) execfn: &'a [u8],
+    /// 已由 entropy source 完整初始化的 16-byte AT_RANDOM payload。
+    pub(crate) random: &'a [u8; 16],
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ElfAuxInfo {
     phdr: usize,
@@ -44,9 +56,7 @@ impl MemorySet {
     /// # Parameters
     ///
     /// - `stack_top`: 已映射用户栈的 exclusive upper bound。
-    /// - `args`: script rewrite 后且不含 NUL 的 argv strings。
-    /// - `envs`: 不含 NUL 的 envp strings。
-    /// - `execfn`: 用户传给 execve 的原始 pathname。
+    /// - `input`: exec 已准备的 strings 与 AT_RANDOM payload。
     /// - `aux`: 最终 main ELF 与 interpreter 产生的 auxv facts。
     ///
     /// # Returns
@@ -55,13 +65,11 @@ impl MemorySet {
     ///
     /// # Errors
     ///
-    /// stack size/地址无效、user copy、entropy 或 allocation 失败。
+    /// stack size/地址无效、user copy 或 allocation 失败。
     pub(super) fn build_initial_stack(
         &mut self,
         stack_top: usize,
-        args: &[Vec<u8>],
-        envs: &[Vec<u8>],
-        execfn: &[u8],
+        input: InitialStack<'_>,
         aux: ElfAuxInfo,
         stack_limit: u64,
     ) -> Result<usize, ElfLoadError> {
@@ -76,7 +84,12 @@ impl MemorySet {
         const AT_RANDOM: usize = 25;
         const AT_EXECFN: usize = 31;
         const AUX_WORDS: usize = 20;
-        const RANDOM_BYTES: usize = 16;
+        let InitialStack {
+            arguments: args,
+            environments: envs,
+            execfn,
+            random,
+        } = input;
 
         let total_string_size = args
             .iter()
@@ -93,7 +106,7 @@ impl MemorySet {
                     .checked_add(1)
                     .and_then(|execfn_size| size.checked_add(execfn_size))
             })
-            .and_then(|size| size.checked_add(RANDOM_BYTES))
+            .and_then(|size| size.checked_add(random.len()))
             .ok_or(ElfLoadError::InvalidElf)?;
         let pointer_count = 1usize
             .checked_add(args.len())
@@ -154,11 +167,6 @@ impl MemorySet {
             .and_then(|address| address.checked_add(1))
             .ok_or(ElfLoadError::InvalidElf)?;
         let random_ptr = string_ptr;
-        let mut random = crate::random::EntropyBatch::<RANDOM_BYTES>::try_new()
-            .ok_or(ElfLoadError::OutOfMemory)?;
-        let random = random
-            .fill(RANDOM_BYTES)
-            .map_err(|_| ElfLoadError::InvalidElf)?;
         self.copy_to_user(random_ptr, random, fault_limits)
             .map_err(|_| ElfLoadError::InvalidElf)?;
 

@@ -402,7 +402,7 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
     };
     match client.connect(address, credentials, unix_identity, resources) {
         Ok(()) => 0,
-        Err(SocketError::InProgress) if *ofd.flags.lock() & O_NONBLOCK != 0 => -errno::EINPROGRESS,
+        Err(SocketError::InProgress) if ofd.status_flags() & O_NONBLOCK != 0 => -errno::EINPROGRESS,
         Err(SocketError::InProgress) => loop {
             match wait_for_ofd(&ofd, 4 | 8) {
                 WaitResult::Woken => match client.connection_result() {
@@ -462,7 +462,7 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
                 }
                 return fd as isize;
             }
-            Err(SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+            Err(SocketError::Again) if ofd.status_flags() & O_NONBLOCK != 0 => {
                 return -errno::EAGAIN;
             }
             Err(SocketError::Again) => match wait_for_ofd(&ofd, 1) {

@@ -162,12 +162,12 @@ fn do_sendfile(
     else {
         return -errno::EBADF;
     };
-    if *input_ofd.flags.lock() & O_ACCMODE == O_WRONLY
-        || *output_ofd.flags.lock() & O_ACCMODE == O_RDONLY
+    if input_ofd.status_flags() & O_ACCMODE == O_WRONLY
+        || output_ofd.status_flags() & O_ACCMODE == O_RDONLY
     {
         return -errno::EBADF;
     }
-    if *output_ofd.flags.lock() & O_APPEND != 0 {
+    if output_ofd.status_flags() & O_APPEND != 0 {
         return -errno::EINVAL;
     }
     let OpenFileKind::Inode(input_opened) = &input_ofd.kind else {

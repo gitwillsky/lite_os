@@ -39,7 +39,7 @@ pub(crate) use frame_allocator::{
 pub(crate) use heap_allocator::statistics as heap_statistics;
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::{
-    DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexKey,
+    DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexKey, InitialStack,
     MappingResourceLimits, MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome,
     SegmentationCause, UserAccessError, UserFaultLimits,
 };

@@ -4,7 +4,9 @@ use std::{
     path::Path,
 };
 
-use syn::{ItemUse, Path as SynPath, UseTree, visit::Visit};
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use quote::quote;
+use syn::{ItemUse, Macro, Path as SynPath, UseTree, visit::Visit};
 
 use super::SourceFile;
 
@@ -65,13 +67,74 @@ impl<'ast> Visit<'ast> for PathCollector {
         self.crate_root_alias |= aliases_crate_root(&item.tree);
         expand_use_tree(Vec::new(), &item.tree, &mut self.paths);
     }
+
+    fn visit_macro(&mut self, node: &'ast Macro) {
+        self.collect_macro_paths(node.tokens.clone());
+        syn::visit::visit_macro(self, node);
+    }
+}
+
+impl PathCollector {
+    // syn 不解析 macro token body；逐层扫描路径，包含 $crate 与 grouped use，忽略 literal。
+    fn collect_macro_paths(&mut self, stream: TokenStream) {
+        let tokens: Vec<_> = stream.into_iter().collect();
+        for (index, token) in tokens.iter().enumerate() {
+            if let TokenTree::Group(group) = token {
+                self.collect_macro_paths(group.stream());
+            }
+            if !matches!(token, TokenTree::Ident(ident) if ident == "crate") {
+                continue;
+            }
+            if matches!(tokens.get(index + 1), Some(TokenTree::Ident(ident)) if ident == "as") {
+                self.crate_root_alias = true;
+            }
+            let mut path = vec!["crate".to_owned()];
+            let mut cursor = index + 1;
+            while matches!(tokens.get(cursor), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+                && matches!(tokens.get(cursor + 1), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+            {
+                cursor += 2;
+                match tokens.get(cursor) {
+                    Some(TokenTree::Ident(ident)) => path.push(ident.to_string()),
+                    Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
+                        // 复用 import tree 展开，使 crate::{task as t, memory::{...}} 同样受检。
+                        if let Ok(tree) = syn::parse2::<UseTree>(quote!(#group)) {
+                            expand_use_tree(path.clone(), &tree, &mut self.paths);
+                            if path.len() == 1 {
+                                self.crate_root_alias |= aliases_root_members(&tree);
+                            }
+                        }
+                        break;
+                    }
+                    Some(TokenTree::Punct(p)) if p.as_char() == '*' && path.len() == 1 => {
+                        self.crate_root_alias = true;
+                        break;
+                    }
+                    _ => break,
+                }
+                cursor += 1;
+            }
+            self.paths.push(path);
+        }
+    }
+}
+
+fn aliases_root_members(tree: &UseTree) -> bool {
+    match tree {
+        UseTree::Rename(rename) => rename.ident == "self",
+        UseTree::Name(name) => name.ident == "self",
+        UseTree::Glob(_) => true,
+        UseTree::Group(group) => group.items.iter().any(aliases_root_members),
+        _ => false,
+    }
 }
 
 fn aliases_crate_root(tree: &UseTree) -> bool {
     match tree {
         UseTree::Rename(rename) => rename.ident == "crate",
         UseTree::Name(name) => name.ident == "crate",
-        UseTree::Path(path) if path.ident == "crate" => matches!(*path.tree, UseTree::Glob(_)),
+        UseTree::Path(path) if path.ident == "crate" => aliases_root_members(&path.tree),
+        UseTree::Group(group) => group.items.iter().any(aliases_crate_root),
         _ => false,
     }
 }
@@ -148,6 +211,44 @@ fn allowed_dependencies(root: &Path) -> Result<BTreeMap<String, BTreeSet<String>
     Ok(rules)
 }
 
+// 正向矩阵本身必须是 DAG；否则逐边允许检查会把环依赖合法化，包括不同 target 的边。
+fn dependency_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> Option<Vec<String>> {
+    fn visit(
+        owner: &str,
+        graph: &BTreeMap<String, BTreeSet<String>>,
+        active: &mut Vec<String>,
+        finished: &mut BTreeSet<String>,
+    ) -> Option<Vec<String>> {
+        if let Some(start) = active.iter().position(|node| node == owner) {
+            let mut cycle = active[start..].to_vec();
+            cycle.push(owner.to_owned());
+            return Some(cycle);
+        }
+        if finished.contains(owner) {
+            return None;
+        }
+        active.push(owner.to_owned());
+        if let Some(dependencies) = graph.get(owner) {
+            for dependency in dependencies {
+                if let Some(cycle) = visit(dependency, graph, active, finished) {
+                    return Some(cycle);
+                }
+            }
+        }
+        active.pop();
+        finished.insert(owner.to_owned());
+        None
+    }
+
+    let mut finished = BTreeSet::new();
+    for owner in graph.keys() {
+        if let Some(cycle) = visit(owner, graph, &mut Vec::new(), &mut finished) {
+            return Some(cycle);
+        }
+    }
+    None
+}
+
 /// 对已加载源码执行正向 module dependency 与 façade containment 契约。
 ///
 /// # Parameters
@@ -170,6 +271,12 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         }
     };
     let known: BTreeSet<&str> = KERNEL_MODULES.iter().copied().collect();
+    if let Some(cycle) = dependency_cycle(&allowlist) {
+        errors.push(format!(
+            "docs/architecture-contract.md: kernel dependency cycle: {}",
+            cycle.join(" -> ")
+        ));
+    }
     for source in sources
         .iter()
         .filter(|source| source.relative.starts_with("kernel/src/"))
@@ -228,6 +335,20 @@ fn check_facade_path(source: &SourceFile, path: &[String], errors: &mut Vec<Stri
     if path.first().is_none_or(|segment| segment != "crate") {
         return;
     }
+    let backend = path.get(2).map(String::as_str);
+    let concrete_arch = source.owner != "arch"
+        && path.get(1).is_some_and(|module| module == "arch")
+        && matches!(backend, Some("aarch64" | "riscv64"));
+    let concrete_platform = source.owner != "platform"
+        && path.get(1).is_some_and(|module| module == "platform")
+        && backend == Some("qemu_virt");
+    if concrete_arch || concrete_platform {
+        errors.push(format!(
+            "{}: concrete backend {} must remain behind its domain facade",
+            source.relative,
+            path.join("::")
+        ));
+    }
     if source.owner == "syscall" {
         if matches!(
             path.get(1).map(String::as_str),
@@ -274,3 +395,7 @@ fn check_facade_path(source: &SourceFile, path: &[String], errors: &mut Vec<Stri
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "dependency_contract_tests.rs"]
+mod tests;

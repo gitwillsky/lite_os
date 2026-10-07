@@ -1,4 +1,4 @@
-use crate::{file::OpenFileKind, fs::O_NONBLOCK, task::current_task};
+use crate::{file::OpenFileKind, task::current_task};
 
 const FIONBIO: usize = 0x5421;
 
@@ -32,12 +32,7 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
         if task.copy_from_user(argument, &mut bytes).is_err() {
             return -errno::EFAULT;
         }
-        let mut flags = ofd.flags.lock();
-        if i32::from_ne_bytes(bytes) == 0 {
-            *flags &= !O_NONBLOCK;
-        } else {
-            *flags |= O_NONBLOCK;
-        }
+        ofd.set_nonblocking(i32::from_ne_bytes(bytes) != 0);
         return 0;
     }
     match &ofd.kind {

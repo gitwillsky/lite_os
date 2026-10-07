@@ -184,8 +184,8 @@ fn set_lock(
         Ok(mode) => mode,
         Err(error) => return error,
     };
-    if requested == Some(RecordLockMode::Read) && *ofd.flags.lock() & O_ACCMODE == O_WRONLY
-        || requested == Some(RecordLockMode::Write) && *ofd.flags.lock() & O_ACCMODE == O_RDONLY
+    if requested == Some(RecordLockMode::Read) && ofd.status_flags() & O_ACCMODE == O_WRONLY
+        || requested == Some(RecordLockMode::Write) && ofd.status_flags() & O_ACCMODE == O_RDONLY
     {
         return -errno::EBADF;
     }
@@ -246,11 +246,9 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
             .map_or(-errno::EBADF, |()| 0),
         F_GETFL => task
             .fd_get(fd)
-            .map_or(-errno::EBADF, |ofd| *ofd.flags.lock() as isize),
+            .map_or(-errno::EBADF, |ofd| ofd.status_flags() as isize),
         F_SETFL => task.fd_get(fd).map_or(-errno::EBADF, |ofd| {
-            let mut flags = ofd.flags.lock();
-            *flags =
-                (*flags & !(O_APPEND | O_NONBLOCK)) | (argument as u32 & (O_APPEND | O_NONBLOCK));
+            ofd.set_status_flags(argument as u32);
             0
         }),
         F_GETLK | F_SETLK | F_SETLKW => {

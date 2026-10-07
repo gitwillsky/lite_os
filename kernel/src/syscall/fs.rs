@@ -130,7 +130,7 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+    if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return -errno::EBADF;
     }
     if size > task.file_size_limit() {
@@ -182,7 +182,7 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+    if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return -errno::EBADF;
     }
     let Some(inode) = ofd.inode_ref() else {

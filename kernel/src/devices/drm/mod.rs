@@ -496,19 +496,8 @@ impl DrmFile {
     ///
     /// handle 不存在返回 NotFound。
     pub(crate) fn map_dumb(&self, handle: u32) -> Result<u64, DrmError> {
-        // 临时跟踪：lookup 失败时打印当前 namespace（排查 SET_BUFFER adopt 后移除）。
         let state = self.state.lock();
         if handle == 0 || !state.buffers.contains_key(&handle) {
-            let mut keys = alloc::vec::Vec::new();
-            for (key, _) in state.buffers.iter() {
-                keys.push(*key);
-            }
-            crate::warn!(
-                "map_dumb miss: handle={} file_identity={} keys={:?}",
-                handle,
-                self.file_identity,
-                keys
-            );
             return Err(DrmError::NotFound);
         }
         Ok(u64::from(handle) << DUMB_OFFSET_SHIFT)
