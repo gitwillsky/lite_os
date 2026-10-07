@@ -68,7 +68,7 @@
 - `BlockNode.claim` 是“已挂载”标志与写者计数的唯一原子字：`begin_writer`（OFD 创建）、`begin_mount`、
   `end_writer`（OFD Drop，不阻塞）、`end_mount` 都对它做 CAS/原子更新；块设备在 page cache 中的身份由
   `Inode::page_cache_id` 给出（与 devtmpfs 实例无关），挂载前经 `page_cache::evict_cached` 写回并逐出。
-- `/dev/kmsg` 的唤醒经 logger 发布 `cpu` deferred vector → `fs::mem` 的合并 readiness Pipe；logger 在任何
+- `/dev/kmsg` 的唤醒经 logger 发布 `deferred` vector → `fs::mem` 的合并 readiness Pipe；logger 在任何
   上下文（含 hardirq）都只做原子发布，不取 scheduler 锁。`KmsgReader.gate` 序列化同一 OFD 的 reader，
   `cursor` 只在整条 record 交给用户后推进。
 - `fs::FileSystemType` 注册表只追加、在 `init_vfs` 发布；`MOUNT_TRANSACTION` 串行化 mount/umount 事务。

@@ -13,7 +13,7 @@ pub(in crate::task) fn install_pipe_scheduler() {
 
 impl PipeScheduler for TaskPipeScheduler {
     fn notify(&self, pipe: &Arc<Pipe>) {
-        crate::fs::Epoll::notify_pipe_source(pipe);
+        crate::file::Epoll::notify_pipe_source(pipe);
         wake_pipe_waiters(pipe);
     }
 

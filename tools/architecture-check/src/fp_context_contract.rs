@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const TRAP_SOURCE: &str = "kernel/src/arch/riscv64/trap.S";
+const TRAP_SOURCE: &str = "kernel/src/hardware/arch/riscv64/trap.S";
 
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     let path = root.join(TRAP_SOURCE);

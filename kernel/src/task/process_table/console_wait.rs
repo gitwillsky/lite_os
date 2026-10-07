@@ -6,7 +6,7 @@ use super::*;
 ///
 /// raw input 仍有 backlog 时为 true。
 pub(super) fn process_terminal_input() -> bool {
-    match crate::fs::drain_terminal_input(&crate::fs::console_terminal()) {
+    match crate::tty::drain_input(&crate::tty::console()) {
         Ok(backlog) => backlog,
         Err(_) => {
             debug!("TTY line discipline failed to drain UART input");
@@ -53,7 +53,7 @@ pub(super) fn wait_for_console(
 
 pub(super) fn wake_console_waiters() -> bool {
     const INPUT: i16 = 0x001;
-    crate::fs::Epoll::notify_console_source();
+    crate::file::Epoll::notify_console_source();
     let mut batch = console_batch::ConsoleWakeBatch::new();
     while !batch.is_full() {
         let Some(wake) = WAIT_REGISTRY.wake_console_one(false, INPUT, batch.groups()) else {

@@ -3,7 +3,7 @@ use spin::Mutex;
 
 use crate::{
     fallible_tree::FallibleMap,
-    fs::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting},
+    file::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting},
     ipc::{Pipe, PipeEnd},
 };
 

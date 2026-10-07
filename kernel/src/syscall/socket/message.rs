@@ -6,7 +6,7 @@ use super::{
     write_address,
 };
 use crate::{
-    fs::OpenFileDescription,
+    file::OpenFileDescription,
     ipc::ReceiveBuffer,
     socket::{Socket, SocketSendError},
     syscall::{

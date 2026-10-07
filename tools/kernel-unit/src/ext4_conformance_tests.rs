@@ -16,7 +16,7 @@ use alloc::{format, sync::Arc, vec::Vec};
 
 use crate::{
     InodeType,
-    drivers::block::{BLOCK_SIZE, BlockDevice, BlockError},
+    block::{BLOCK_SIZE, BlockDevice, BlockError},
     ext4_cost_tests::{COST_TEST_LOCK, ext4_fixture_path},
     fs::{
         CreateMetadata, DirectoryEntry, DirectoryVisit, DirectoryVisitor, FileSystem,

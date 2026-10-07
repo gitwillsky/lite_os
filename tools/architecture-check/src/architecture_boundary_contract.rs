@@ -118,11 +118,11 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     }
 
     for retired in [
-        "kernel/src/arch/riscv64/hart.rs",
-        "kernel/src/arch/aarch64/fp_instruction.rs",
+        "kernel/src/hardware/arch/riscv64/hart.rs",
+        "kernel/src/hardware/arch/aarch64/fp_instruction.rs",
         "kernel/src/task/context.rs",
         "kernel/src/task/trap_context.rs",
-        "kernel/src/drivers/platform.rs",
+        "kernel/src/devices/drivers/platform.rs",
     ] {
         if root.join(retired).exists() {
             errors.push(format!(

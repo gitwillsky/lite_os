@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use super::TaskControlBlock;
-use crate::fs::{OpenedFile, Terminal};
+use crate::{fs::OpenedFile, tty::Terminal};
 
 /// Process 当前目录与可执行映像的唯一 pathname-state owner。
 pub(super) struct ProcessPaths {

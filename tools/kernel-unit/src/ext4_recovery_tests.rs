@@ -13,7 +13,7 @@ use alloc::sync::Arc;
 use crate::ext4_cost_tests::{COST_TEST_LOCK, ext4_fixture_path};
 use crate::{
     InodeType,
-    drivers::block::{BLOCK_SIZE, BlockDevice, BlockError},
+    block::{BLOCK_SIZE, BlockDevice, BlockError},
     fs::{
         CreateMetadata, FileSystem, FileSystemError,
         ext4::{

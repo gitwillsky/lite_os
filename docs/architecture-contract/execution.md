@@ -75,8 +75,8 @@
 - illegal-instruction 首次分类与最终 state commit 各使用一个短 context transaction；可能取得
   AddressSpace lock 的 instruction copy 必须位于两者之间，禁止持有 context claim 跨阻塞锁。
 - deferred consumer 必须有界并可续批；hardirq 只确认硬件与发布 work，不执行无界领域逻辑。
-- `cpu::deferred` 对每个 logical CPU 的 bitmap 只在空→非空 transition 调用一次
-  `platform::notify_self`；bitmap 非空时已有 edge 或当前 hardirq continuation 负责抵达 safe point，
+- `deferred` 对每个 logical CPU 的 bitmap 只在空→非空 transition 调用一次
+  `arch::interrupt::raise_software`；bitmap 非空时已有 edge 或当前 hardirq continuation 负责抵达 safe point，
   重复发布只能合并 bit。缺少 transition 条件会让 AArch64 self-SGI 在 console raw ring 尚可读时
   无限重入，idle safe point 永远不能消费输入。
 - supervisor software interrupt 只负责先确认 local SSIP、再完成同步 memory-barrier request；这是

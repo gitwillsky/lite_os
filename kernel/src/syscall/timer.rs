@@ -148,10 +148,10 @@ pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -
         crate::timer::get_time_ns(),
     ) {
         Ok(value) => value,
-        Err(crate::fs::TimerError::NotFound | crate::fs::TimerError::Exhausted) => {
+        Err(crate::file::TimerError::NotFound | crate::file::TimerError::Exhausted) => {
             return -EINVAL;
         }
-        Err(crate::fs::TimerError::OutOfMemory) => return -ENOMEM,
+        Err(crate::file::TimerError::OutOfMemory) => return -ENOMEM,
     };
     if previous != 0
         && task

@@ -6,8 +6,9 @@
 use alloc::vec::Vec;
 
 use crate::{
+    file::OpenFileDescription,
     fs::{
-        O_NONBLOCK, OpenFileDescription,
+        O_NONBLOCK,
         device::{
             DeviceError, DeviceFile, IoctlCall, MapRequest, UserFault, UserInput, UserMemory,
             UserOutput,

@@ -170,7 +170,7 @@ pub(crate) struct InitProgram<'a> {
 pub(crate) fn spawn_init(
     _scheduler: SchedulerReady,
     _root: crate::fs::RootMounted,
-    _console: crate::fs::ConsoleReady,
+    _console: crate::tty::ConsoleReady,
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
     program: InitProgram<'_>,

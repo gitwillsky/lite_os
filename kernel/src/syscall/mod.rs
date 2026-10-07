@@ -44,12 +44,12 @@ use timerfd::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
 pub(crate) const INTERRUPTED_RESULT: isize = -errno::EINTR;
 
-pub(in crate::syscall) fn file_descriptor_error(error: crate::fs::FileDescriptorError) -> isize {
+pub(in crate::syscall) fn file_descriptor_error(error: crate::file::FileDescriptorError) -> isize {
     -match error {
-        crate::fs::FileDescriptorError::NotFound => errno::EBADF,
-        crate::fs::FileDescriptorError::Limit => errno::EMFILE,
-        crate::fs::FileDescriptorError::OutOfMemory => errno::ENOMEM,
-        crate::fs::FileDescriptorError::Busy => errno::EBUSY,
+        crate::file::FileDescriptorError::NotFound => errno::EBADF,
+        crate::file::FileDescriptorError::Limit => errno::EMFILE,
+        crate::file::FileDescriptorError::OutOfMemory => errno::ENOMEM,
+        crate::file::FileDescriptorError::Busy => errno::EBUSY,
     }
 }
 

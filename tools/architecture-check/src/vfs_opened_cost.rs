@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
-const VFS_SOURCE: &str = "kernel/src/fs/vfs.rs";
-const OPENED_SOURCE: &str = "kernel/src/fs/vfs/opened.rs";
-const OPENED_INDEX_SOURCE: &str = "kernel/src/fs/vfs/opened_index.rs";
+const VFS_SOURCE: &str = "kernel/src/storage/fs/vfs.rs";
+const OPENED_SOURCE: &str = "kernel/src/storage/fs/vfs/opened.rs";
+const OPENED_INDEX_SOURCE: &str = "kernel/src/storage/fs/vfs/opened_index.rs";
 const PATH_COMPONENTS: usize = 32;
 const LIVE_OPENED_FILES: usize = 4_096;
 const MATCHING_NAMESPACE_ENTRIES: usize = 8;

@@ -41,7 +41,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 
     if let Some(tree) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/fallible_tree.rs")
+        .find(|source| source.relative == "kernel/src/fallible_tree/mod.rs")
         && method_tokens(tree, "retain").is_none_or(|body| {
             body.contains("join_with_root")
                 || body.contains("join_ordered")
@@ -49,7 +49,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         })
     {
         errors.push(
-            "kernel/src/fallible_tree.rs: retain rebuilds at every node through AVL joins; require one linear ownership pass plus one linear balanced rebuild"
+            "kernel/src/fallible_tree/mod.rs: retain rebuilds at every node through AVL joins; require one linear ownership pass plus one linear balanced rebuild"
                 .to_owned(),
         );
     }

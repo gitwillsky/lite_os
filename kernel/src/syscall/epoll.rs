@@ -2,7 +2,7 @@ use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{Epoll, EpollChange, EpollEvent, OpenFileDescription, OpenFileKind},
+    file::{Epoll, EpollChange, EpollEvent, OpenFileDescription, OpenFileKind},
     task::{current_task, wait_for_poll},
 };
 
@@ -147,7 +147,7 @@ pub(crate) fn sys_epoll_ctl(
             OpenFileKind::Epoll(current) if Arc::ptr_eq(current, &epoll) => {
                 current.change(change, fd, watched, event)
             }
-            _ => Err(crate::fs::EpollChangeError::Invalid),
+            _ => Err(crate::file::EpollChangeError::Invalid),
         },
     );
     let Some(changed) = changed else {
@@ -155,12 +155,12 @@ pub(crate) fn sys_epoll_ctl(
     };
     changed.map_or_else(
         |error| -match error {
-            crate::fs::EpollChangeError::Exists => errno::EEXIST,
-            crate::fs::EpollChangeError::NotFound => errno::ENOENT,
-            crate::fs::EpollChangeError::Invalid => errno::EINVAL,
-            crate::fs::EpollChangeError::Permission => errno::EPERM,
-            crate::fs::EpollChangeError::Loop => errno::ELOOP,
-            crate::fs::EpollChangeError::NoMemory => errno::ENOMEM,
+            crate::file::EpollChangeError::Exists => errno::EEXIST,
+            crate::file::EpollChangeError::NotFound => errno::ENOENT,
+            crate::file::EpollChangeError::Invalid => errno::EINVAL,
+            crate::file::EpollChangeError::Permission => errno::EPERM,
+            crate::file::EpollChangeError::Loop => errno::ELOOP,
+            crate::file::EpollChangeError::NoMemory => errno::ENOMEM,
         },
         |()| 0,
     )

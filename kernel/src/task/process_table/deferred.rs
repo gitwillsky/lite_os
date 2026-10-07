@@ -2,7 +2,7 @@ use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
-    cpu::{self, DeferredWork},
+    deferred::{self, DeferredWork},
     task::{PendingSignal, TaskControlBlock, current_task, processor::request_tick_reschedule},
     timer::get_time_ns,
 };
@@ -70,7 +70,7 @@ fn expire_timers(now_ns: u64) {
     }
     // 3. 超出 batch 的到期项仅合并发布一个 bit；无界循环会饿死 I/O 与 user return。
     if backlog {
-        cpu::raise_deferred(DeferredWork::TIMER_BACKLOG);
+        deferred::raise(DeferredWork::TIMER_BACKLOG);
     }
 }
 
@@ -123,7 +123,7 @@ fn wake_expired_tasks(now_ns: u64) {
     }
     // 3. backlog 只发布一个合并 bit；直接无界循环会让 I/O 与 user return 永久饥饿。
     if backlog {
-        cpu::raise_deferred(DeferredWork::TIMER_BACKLOG);
+        deferred::raise(DeferredWork::TIMER_BACKLOG);
     }
 }
 
@@ -132,7 +132,7 @@ fn wake_expired_tasks(now_ns: u64) {
 /// kernel software-interrupt handler 不得调用本函数：它可重入持有普通 VirtIO queue、
 /// DRM completion 或 KERNEL_SPACE lock 的 syscall；在该栈上消费会永久自旋。
 pub(crate) fn dispatch_pending_deferred_work() {
-    let work = cpu::take_deferred();
+    let work = deferred::take();
     if work.is_empty() {
         return;
     }
@@ -153,12 +153,12 @@ pub(crate) fn dispatch_pending_deferred_work() {
         let input_backlog = process_terminal_input();
         let waiter_backlog = wake_console_waiters();
         if input_backlog || waiter_backlog {
-            cpu::raise_deferred(DeferredWork::CONSOLE);
+            deferred::raise(DeferredWork::CONSOLE);
         }
     }
     work.run_registered(get_time_ns());
     if work.contains(DeferredWork::DRIVER_IO) && crate::drivers::dispatch_io_completion_work() {
-        cpu::raise_deferred(DeferredWork::DRIVER_IO);
+        deferred::raise(DeferredWork::DRIVER_IO);
     }
     let network_due = work.contains(DeferredWork::NETWORK)
         || work.contains(DeferredWork::TIMER) && crate::socket::network_work_due();
@@ -167,7 +167,7 @@ pub(crate) fn dispatch_pending_deferred_work() {
         // 的 frame 可能永久滞留。timer deadline 同样在此推进 ARP/UDP egress；缺失时丢失
         // 首个 ARP reply 后将永远不重试。requeue 由 task deferred owner 执行，socket 不反向依赖 arch。
         if crate::socket::dispatch_network_work() {
-            cpu::raise_deferred(DeferredWork::NETWORK);
+            deferred::raise(DeferredWork::NETWORK);
         }
     }
 }

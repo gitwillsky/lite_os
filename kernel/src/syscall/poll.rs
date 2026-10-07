@@ -2,7 +2,7 @@ use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{OpenFileDescription, OpenFileKind},
+    file::{OpenFileDescription, OpenFileKind},
     socket::SocketSendBlocker,
     syscall::errno,
     task::{PollWaitKey, TaskControlBlock, current_task, wait_for_poll},

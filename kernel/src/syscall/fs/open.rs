@@ -1,9 +1,10 @@
 use alloc::sync::Arc;
 
 use crate::{
+    file::OpenFileDescription,
     fs::{
         AccessIdentity, FifoAccess, InodeType, O_ACCMODE, O_CLOEXEC, O_NONBLOCK, O_RDONLY,
-        O_WRONLY, OpenFileDescription, OpenedFile, vfs,
+        O_WRONLY, OpenedFile, vfs,
     },
     syscall::errno,
     task::{TaskControlBlock, current_task},

@@ -1,6 +1,6 @@
 //! MBR（含扩展/逻辑分区）与 GPT（含 CRC 校验与备份表回退）的解析。
 
-use super::partition_table::{Partition, SECTOR, SectorSource, crc32, mbr_signature, parse};
+use crate::block::partition_table::{Partition, SECTOR, SectorSource, crc32, mbr_signature, parse};
 use std::{vec, vec::Vec};
 
 struct Image(Vec<u8>);

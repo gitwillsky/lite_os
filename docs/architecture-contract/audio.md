@@ -4,7 +4,7 @@
 
 | Owner | 唯一职责 |
 |---|---|
-| `kernel::drivers::virtio_sound` | VirtIO Sound queue、DMA、command/completion、IRQ edge 与 reset |
+| `kernel::virtio::sound` | VirtIO Sound queue、DMA、command/completion、IRQ edge 与 reset |
 | `kernel::audio` | PCM device、ALSA playback state、position、poll/xrun 与 per-OFD state |
 | `platform::qemu_virt` | device ID 25 discovery、IRQ route 与 adapter 装配 |
 | `fs` | `/dev/snd/pcmC0D0p` pathname 和 character OFD publication |

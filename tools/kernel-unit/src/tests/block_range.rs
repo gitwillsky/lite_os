@@ -1,6 +1,6 @@
 //! 块设备节点的字节范围读写：对齐、头尾 read-modify-write、设备末尾截断与失败行为。
 
-use crate::fs::block_range::{BlockStore, RangeError, read_range, write_range};
+use crate::block::range::{BlockStore, RangeError, read_range, write_range};
 use std::{cell::RefCell, vec, vec::Vec};
 
 const BLOCK: usize = 8;

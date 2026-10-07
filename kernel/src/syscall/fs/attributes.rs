@@ -44,7 +44,7 @@ fn target(
         .map_err(ferr)
 }
 
-/// 属���变更的目标：inode，以及（有路径时）用于向父目录 watch 投递 `IN_ATTRIB` 的 opened entry。
+/// 属性变更的目标：inode，以及（有路径时）用于向父目录 watch 投递 `IN_ATTRIB` 的 opened entry。
 struct Target {
     inode: alloc::sync::Arc<dyn Inode>,
     opened: Option<alloc::sync::Arc<OpenedFile>>,

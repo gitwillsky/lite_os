@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const ARCH_TABLE: &str = "kernel/src/arch/riscv64/page_table.rs";
+const ARCH_TABLE: &str = "kernel/src/hardware/arch/riscv64/page_table.rs";
 const AREA: &str = "kernel/src/memory/mm/area.rs";
 const REGION_BYTES: usize = 128 * 1024 * 1024;
 const BASE_PAGE: usize = 4096;

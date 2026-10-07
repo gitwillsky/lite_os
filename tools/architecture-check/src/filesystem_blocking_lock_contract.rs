@@ -3,12 +3,12 @@ use syn::Item;
 
 use super::SourceFile;
 
-const EXT4: &str = "kernel/src/fs/ext4.rs";
-const JOURNAL: &str = "kernel/src/fs/ext4/journal.rs";
-const INODE_MUTATION: &str = "kernel/src/fs/ext4/journal/inode_mutation.rs";
-const MOUNT: &str = "kernel/src/fs/ext4/mount.rs";
-const PAGE_CACHE: &str = "kernel/src/fs/page_cache.rs";
-const VFS: &str = "kernel/src/fs/vfs.rs";
+const EXT4: &str = "kernel/src/storage/fs/ext4.rs";
+const JOURNAL: &str = "kernel/src/storage/fs/ext4/journal.rs";
+const INODE_MUTATION: &str = "kernel/src/storage/fs/ext4/journal/inode_mutation.rs";
+const MOUNT: &str = "kernel/src/storage/fs/ext4/mount.rs";
+const PAGE_CACHE: &str = "kernel/src/storage/fs/page_cache.rs";
+const VFS: &str = "kernel/src/storage/fs/vfs.rs";
 const MUTEX: &str = "kernel/src/sync/task_mutex.rs";
 const ADAPTER: &str = "kernel/src/task/process_table/task_wait.rs";
 

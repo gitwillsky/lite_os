@@ -2,7 +2,8 @@ use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
-    fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR, OpenFileDescription, OpenFileKind},
+    file::{OpenFileDescription, OpenFileKind},
+    fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR},
     socket::{
         InetAddress, NetlinkAddress, PacketAddress, Socket, SocketAddress, SocketDomain,
         SocketError, SocketType, UnixAddress, UnixConnectResources, UnixCredentials,

@@ -200,48 +200,34 @@ pub(crate) mod permission {
     }
 }
 
-#[path = "../../../kernel/src/fs/inotify/queue.rs"]
+#[path = "../../../kernel/src/storage/fs/inotify/queue.rs"]
 pub(crate) mod inotify_queue;
 
 #[cfg(test)]
 #[path = "tests/inotify_queue.rs"]
 mod inotify_queue_tests;
 
-#[path = "../../../kernel/src/fs/block_identity.rs"]
-pub(crate) mod block_identity;
+#[path = "../../../kernel/src/storage/fs/ext4_identity.rs"]
+pub(crate) mod ext4_identity;
 
 #[cfg(test)]
-#[path = "tests/block_identity.rs"]
-mod block_identity_tests;
+#[path = "tests/ext4_identity.rs"]
+mod ext4_identity_tests;
 
-#[path = "../../../kernel/src/fs/partition_table.rs"]
-pub(crate) mod partition_table;
-
-#[cfg(test)]
-#[path = "tests/partition_table.rs"]
-mod partition_table_tests;
-
-#[path = "../../../kernel/src/fs/block_range.rs"]
-pub(crate) mod block_range;
-
-#[cfg(test)]
-#[path = "tests/block_range.rs"]
-mod block_range_tests;
-
-#[path = "../../../kernel/src/fs/mount_options.rs"]
+#[path = "../../../kernel/src/storage/fs/mount_options.rs"]
 pub(crate) mod mount_options;
 
-#[path = "../../../kernel/src/fs/tmpfs/options.rs"]
+#[path = "../../../kernel/src/storage/fs/tmpfs/options.rs"]
 pub(crate) mod tmpfs_options;
 
-#[path = "../../../kernel/src/fs/tmpfs/directory.rs"]
+#[path = "../../../kernel/src/storage/fs/tmpfs/directory.rs"]
 pub(crate) mod tmpfs_directory;
 
 #[cfg(test)]
 #[path = "tests/tmpfs.rs"]
 mod tmpfs_tests;
 
-#[path = "../../../kernel/src/fs/ext4.rs"]
+#[path = "../../../kernel/src/storage/fs/ext4.rs"]
 pub(crate) mod ext4;
 
 /// 与 kernel `fs::SpawnKernelThread` 相同的注入签名；host 测试不创建内核线程。

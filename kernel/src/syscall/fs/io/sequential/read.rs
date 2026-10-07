@@ -158,11 +158,11 @@ pub(super) fn read_descriptor(
             }
             let expirations = loop {
                 match timer.read() {
-                    crate::fs::TimerFdRead::Expirations(value) => break value,
-                    crate::fs::TimerFdRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    crate::file::TimerFdRead::Expirations(value) => break value,
+                    crate::file::TimerFdRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
                         return -errno::EAGAIN;
                     }
-                    crate::fs::TimerFdRead::Empty => {
+                    crate::file::TimerFdRead::Empty => {
                         match crate::syscall::poll::wait_for_ofd(ofd, 1) {
                             WaitResult::Woken => {}
                             WaitResult::Interrupted => return -errno::EINTR,

@@ -62,8 +62,8 @@
 - 字符设备采用 Linux cdev/devtmpfs 模型：设备子系统向 `fs::device` 注册 minor 区间 driver 与 devfs 节点，
   open 按 inode 设备号找到 driver，返回的 `DeviceFile` 拥有读写、poll、ioctl 与 mmap；fs、devfs 与 syscall
   不认识具体设备。mem（`null`/`zero`/`random`/`urandom`/`kmsg`）与 TTY（`tty`/`console`/`ptmx`/`pts/N`）
-  由 fs 自身注册；pts 设备号为 Linux `(136, index)`。
-- 系统 console Terminal 是 fs TTY 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 deferred UART 输入共享它；
+  分别由 fs 与 `tty` 自身注册；pts 设备号为 Linux `(136, index)`。
+- 系统 console Terminal 是 `tty` 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 deferred UART 输入共享它；
   `/dev/tty` 按调用者 controlling terminal 的设备号重开底层设备。PTY registry、pair 与 Terminal
   session/foreground/winsize 各守自己的 seam；job control 只经 task 安装的 `JobControl`；控制面使用标准
   PTY、termios、ANSI/ECMA-48。

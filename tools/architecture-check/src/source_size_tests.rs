@@ -79,10 +79,10 @@ fn one_entry_enforces_production_unit_and_user_thresholds() {
     repository.write_lines("user/reject.c", 1_501);
     repository.write_lines("user/quickjs-runtime/vendor/quickjs/quickjs.c", 60_000);
     let sources = [
-        production("kernel/src/fs/accepted.rs", "fs", 1_000),
-        production("kernel/src/fs/review.rs", "fs", 1_001),
-        production("kernel/src/fs/review_limit.rs", "fs", 1_500),
-        production("kernel/src/fs/reject.rs", "fs", 1_501),
+        production("kernel/src/storage/fs/accepted.rs", "fs", 1_000),
+        production("kernel/src/storage/fs/review.rs", "fs", 1_001),
+        production("kernel/src/storage/fs/review_limit.rs", "fs", 1_500),
+        production("kernel/src/storage/fs/reject.rs", "fs", 1_501),
     ];
     let mut errors = Vec::new();
     let mut notices = Vec::new();
@@ -130,13 +130,13 @@ fn one_entry_enforces_production_unit_and_user_thresholds() {
 #[test]
 fn production_review_registry_preserves_its_exact_limit_ratchet() {
     let repository = TestRepository::new();
-    repository.review("kernel/src/fs/large.rs", 1_100, "fs");
+    repository.review("kernel/src/storage/fs/large.rs", 1_100, "fs");
     let mut errors = Vec::new();
     let mut notices = Vec::new();
 
     check(
         &repository.root,
-        &[production("kernel/src/fs/large.rs", "fs", 1_100)],
+        &[production("kernel/src/storage/fs/large.rs", "fs", 1_100)],
         &mut errors,
         &mut notices,
     );
@@ -145,7 +145,7 @@ fn production_review_registry_preserves_its_exact_limit_ratchet() {
 
     check(
         &repository.root,
-        &[production("kernel/src/fs/large.rs", "fs", 1_099)],
+        &[production("kernel/src/storage/fs/large.rs", "fs", 1_099)],
         &mut errors,
         &mut notices,
     );

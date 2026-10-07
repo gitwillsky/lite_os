@@ -145,7 +145,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
                 source.at(line)
             ));
         }
-        if source.relative == "kernel/src/drm/device.rs" {
+        if source.relative == "kernel/src/devices/drm/device.rs" {
             let mut hot_path = DisplayCompletionLogVisitor::default();
             hot_path.visit_file(&source.syntax);
             for (line, name) in hot_path.violations {
@@ -159,12 +159,12 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let gpu_boot = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu/boot.rs")
+        .find(|source| source.relative == "kernel/src/devices/virtio/gpu/boot.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let drm_mode = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/drm/mode.rs")
+        .find(|source| source.relative == "kernel/src/devices/drm/mode.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     if !gpu_boot.contains("let width = host_width - host_width % 8;")
@@ -178,17 +178,17 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let gpu_runtime = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu.rs")
+        .find(|source| source.relative == "kernel/src/devices/virtio/gpu.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let gpu_damage = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu/damage.rs")
+        .find(|source| source.relative == "kernel/src/devices/virtio/gpu/damage.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let gpu_resources = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu/resource.rs")
+        .find(|source| source.relative == "kernel/src/devices/virtio/gpu/resource.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     if !gpu_resources.contains("target.synchronized(&control.resources)")
@@ -207,7 +207,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let virtqueue = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/drivers/virtio_queue.rs")
+        .find(|source| source.relative == "kernel/src/devices/virtio/queue.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let ethernet_device = sources

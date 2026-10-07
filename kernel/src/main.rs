@@ -10,24 +10,41 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 extern crate alloc;
 
+// 模块树是扁平的（`crate::fs`、`crate::virtio` …），目录按领域分组：`hardware/`（ISA、machine、
+// CPU 与 boot ABI）、`storage/`（块层与文件系统）、`devices/`（设备模型、驱动与设备子系统）。
+// 依赖方向见 docs/architecture-contract.md；`#[path]` 只决定文件位置，不引入新的 module 层级。
+#[path = "hardware/arch/mod.rs"]
 mod arch;
+#[path = "devices/audio/mod.rs"]
 mod audio;
+#[path = "storage/block/mod.rs"]
+mod block;
 mod cmdline;
 mod config;
+#[path = "hardware/cpu/mod.rs"]
 mod cpu;
+#[path = "hardware/deferred.rs"]
+mod deferred;
+#[path = "hardware/entry.rs"]
 mod entry;
 #[macro_use]
+#[path = "hardware/platform/mod.rs"]
 mod platform;
 #[macro_use]
 mod log;
 
+#[path = "devices/drivers/mod.rs"]
 mod drivers;
+#[path = "devices/drm/mod.rs"]
 mod drm;
 mod fallible_tree;
+mod file;
+#[path = "storage/fs/mod.rs"]
 mod fs;
 mod lang_item;
 
 mod id;
+#[path = "devices/input/mod.rs"]
 mod input;
 mod ipc;
 mod memory;
@@ -39,6 +56,11 @@ mod system;
 mod task;
 mod timer;
 mod trap;
+#[path = "devices/tty/mod.rs"]
+mod tty;
+#[path = "devices/virtio/mod.rs"]
+mod virtio;
+#[path = "devices/virtio_port.rs"]
 mod virtio_port;
 
 /// 标记全局内核设施已完成初始化。
@@ -56,6 +78,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     platform::initialize(context.platform());
     platform::verify_firmware();
     cpu::initialize(platform::hardware_cpu_ids(), context.hardware_cpu());
+    deferred::initialize(cpu::count());
     task::initialize_interrupt_state();
     info!(
         "logical CPU topology initialized: count={}, boot={:?}",
@@ -78,7 +101,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     let scheduler = task::initialize(vfs);
     platform::initialize_devices();
     let mut disk_index = 0;
-    while let Some(disk) = drivers::block_device(disk_index) {
+    while let Some(disk) = block::device(disk_index) {
         fs::publish_block_device(disk).expect("block device publication failed");
         disk_index += 1;
     }
@@ -94,7 +117,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     if let Some(port) = drivers::port_device(0) {
         virtio_port::init(port).expect("VirtIO port initialization failed");
     }
-    let console = fs::init_tty(select_console(parameters.console.as_deref()))
+    let console = tty::init(select_console(parameters.console.as_deref()))
         .expect("TTY initialization failed");
     socket::init();
     let root = mount_filesystems(scheduler, &parameters);
@@ -139,8 +162,8 @@ fn mount_filesystems(
     let root = match &parameters.root {
         Some(root) => root.as_slice(),
         None => {
-            let disk = drivers::block_device(0)
-                .expect("boot requires a block device for the root filesystem");
+            let disk =
+                block::device(0).expect("boot requires a block device for the root filesystem");
             let mut path = alloc::vec::Vec::new();
             path.try_reserve_exact(b"/dev/".len() + disk.disk_name().len())
                 .expect("root path allocation failed");

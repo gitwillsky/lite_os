@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{SocketAddress, encode_address, errno, interface_snapshot, socket_error};
 use crate::{
-    fs::OpenFileDescription,
+    file::OpenFileDescription,
     socket::{Socket, SocketDomain, UnixPassedFile, UnixRights},
     task::{ReceivedFdTransaction, TaskControlBlock},
 };

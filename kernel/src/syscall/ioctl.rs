@@ -1,7 +1,4 @@
-use crate::{
-    fs::{O_NONBLOCK, OpenFileKind},
-    task::current_task,
-};
+use crate::{file::OpenFileKind, fs::O_NONBLOCK, task::current_task};
 
 const FIONBIO: usize = 0x5421;
 

@@ -46,7 +46,7 @@ pub(crate) fn sys_flock(fd: usize, operation: usize) -> isize {
     };
     if command == LOCK_UN {
         return vfs()
-            .unlock_advisory_lock(&ofd)
+            .unlock_advisory_lock(&ofd.lock_holder())
             .map_or_else(lock_error, |_| 0);
     }
     let mode = if command == LOCK_SH {
@@ -55,7 +55,7 @@ pub(crate) fn sys_flock(fd: usize, operation: usize) -> isize {
         AdvisoryLockMode::Exclusive
     };
     if operation & LOCK_NB != 0 {
-        return match vfs().try_advisory_lock(&ofd, mode) {
+        return match vfs().try_advisory_lock(&ofd.lock_holder(), mode) {
             Ok(AdvisoryLockAttempt::Acquired { key, wake_waiters }) => {
                 if wake_waiters {
                     vfs().notify_advisory_lock(key);

@@ -4,24 +4,24 @@ use syn::{Arm, Expr, ExprCall, ExprMatch, ImplItem, ImplItemFn, Item, ItemFn, Pa
 use super::SourceFile;
 
 const TRAP_SOURCE: &str = "kernel/src/trap/mod.rs";
-const CPU_DEFERRED_SOURCE: &str = "kernel/src/cpu/deferred.rs";
+const CPU_DEFERRED_SOURCE: &str = "kernel/src/hardware/deferred.rs";
 const PROCESS_TABLE_SOURCE: &str = "kernel/src/task/process_table.rs";
 const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/task/process_table/context_switch.rs";
 const VIRTIO_LOCKS: &[(&str, &str, &str, &str)] = &[
     (
-        "kernel/src/drivers/virtio_net.rs",
+        "kernel/src/devices/virtio/net.rs",
         "VirtIONetworkDevice",
         "queues",
         "Mutex < QueueState >",
     ),
     (
-        "kernel/src/drivers/virtio_input.rs",
+        "kernel/src/devices/virtio/input.rs",
         "VirtIOInputDevice",
         "events",
         "Mutex < EventQueueState >",
     ),
     (
-        "kernel/src/drivers/virtio_gpu.rs",
+        "kernel/src/devices/virtio/gpu.rs",
         "VirtIOGpuDevice",
         "control",
         "Mutex < ControlQueue >",
@@ -56,7 +56,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_driver_io_dispatch_lock_free(sources, errors);
 }
 
-const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/drivers/registry.rs";
+const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/devices/drivers/registry.rs";
 
 /// 方法调用名称计数器。
 #[derive(Default)]
@@ -116,7 +116,7 @@ fn check_deferred_notification_coalescing(sources: &[SourceFile], errors: &mut V
     let body = raise.block.to_token_stream().to_string();
     let publish = body.find("fetch_or");
     let transition = body.find("if previous == 0");
-    let notify = body.find("notify_self");
+    let notify = body.find("raise_software");
     if !matches!((publish, transition, notify), (Some(publish), Some(transition), Some(notify)) if publish < transition && transition < notify)
     {
         errors.push(format!(
@@ -323,12 +323,15 @@ struct HardirqAudit {
 impl<'ast> Visit<'ast> for HardirqAudit {
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
         if let Expr::Path(function) = &*call.func {
-            let name = function
+            let segments = function
                 .path
                 .segments
-                .last()
-                .map(|segment| segment.ident.to_string());
-            if name.as_deref() == Some("raise_deferred") {
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            let name = segments.last().cloned();
+            if matches!(segments.as_slice(), [.., module, name] if module == "deferred" && name == "raise")
+            {
                 self.deferred_publications += 1;
             }
             if matches!(
@@ -597,7 +600,7 @@ mod tests {
             &mut sources,
             DRIVER_REGISTRY_SOURCE,
             ".filter_map(Once::get)",
-            ".filter_map(Once::get).map(|source| { let _ = BLOCK_DEVICES.devices.lock(); source })",
+            ".filter_map(Once::get).map(|source| { let _ = NETWORK_DEVICES.devices.lock(); source })",
         );
         assert!(
             errors(&sources)
@@ -738,7 +741,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/drivers/virtio_net.rs",
+            "kernel/src/devices/virtio/net.rs",
             "        let status = self",
             "        self.queues.lock();\n        let status = self",
         );
@@ -754,7 +757,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/drivers/virtio_input.rs",
+            "kernel/src/devices/virtio/input.rs",
             "events: Mutex<EventQueueState>",
             "events: IrqMutex<EventQueueState>",
         );

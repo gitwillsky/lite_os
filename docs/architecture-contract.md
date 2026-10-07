@@ -26,35 +26,48 @@
 
 ## 2. Kernel dependency contract
 
+源码目录按领域分组，module 树保持扁平：
+
+- `kernel/src/hardware/`：`arch`、`platform`、`cpu`、`deferred`、`entry`。
+- `kernel/src/storage/`：`block`、`fs`。
+- `kernel/src/devices/`：`drivers`、`virtio`、`virtio_port`、`audio`、`drm`、`input`、`tty`。
+- 其余 module 直接位于 `kernel/src/`。分组目录经 `main.rs` 的 `#[path]` 声明，因此 module 路径（`crate::fs`）和下表 owner 名不含分组。
+- 领域 module 的根文件是 `<module>/mod.rs`；子文件用 `<name>.rs` 加同名目录，并显式 `#[path]` 声明。
+
 | Module | 允许依赖（机器读取） | 说明 |
 |---|---|---|
 | `arch` | `config`, `fallible_tree` | 编译期选择的 ISA mechanism；page-table frame owners 使用 fallible ordered storage 保持精确 physical identity，不消费 platform 或上层领域状态 |
 | `entry` | `cpu`, `platform`, `trap` | raw boot/trap callback ABI 的唯一 codec；boot 只构造 typed `BootContext`，trap 只投递 generic semantic handler |
 | `config` | 无 | 只保存无运行时依赖的常量 |
-| `cpu` | `arch`, `platform` | logical `CpuId`/`CpuSet`、hardware identity 映射与 online/active lifecycle 的唯一 owner；deferred bitmap 只以无 hardware identity 的 `platform::notify_self` 发布 local edge |
-| `platform` | `arch`, `cpu`, `drivers`, `fallible_tree`, `sync` | 编译期选择的 machine/firmware adapter；拥有 DTB、PSCI/SBI、GIC/PLIC、UART/VirtIO 装配；AArch64 firmware façade 只静态委托 arch timer/TLB/cache mechanism，不复制 CSR 实现 |
+| `cpu` | `arch` | logical `CpuId`/`CpuSet`、hardware identity 映射与 online/active lifecycle 的唯一 owner；不感知 platform，hardware identity 只在 platform/firmware 边界出现 |
+| `deferred` | `arch`, `cpu` | per-CPU merged deferred-work bitmap 与设备类 handler 注册表的唯一 owner；空→非空 transition 经 `arch::interrupt::raise_software` 发布 local edge，发布者不认识消费者；独立于 `cpu` 以免 CPU topology 依赖 platform |
+| `platform` | `arch`, `block`, `cpu`, `drivers`, `fallible_tree`, `sync`, `virtio` | 编译期选择的 machine/firmware adapter；拥有 DTB、PSCI/SBI、GIC/PLIC、UART/VirtIO 装配；AArch64 firmware façade 只静态委托 arch timer/TLB/cache mechanism，不复制 CSR 实现 |
 | `fallible_tree` | 无 | 无状态的确定性 AVL mechanism；提供显式 OOM publication、结构化 split 与 ordered-disjoint join，不拥有领域数据 |
 | `sync` | `arch`, `cpu` | 锁与 IRQ transfer 只依赖本地中断 mechanism 和 logical `CpuId`；transfer token 在错误 CPU restore 时 fail-stop，禁止把 hardware identity 引入同步领域 |
 | `memory` | `arch`, `config`, `cpu`, `fallible_tree`, `id`, `platform`, `random`, `sync` | VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding |
-| `drivers` | `arch`, `cpu`, `fallible_tree`, `memory`, `sync` | 只保存设备模型与通用 interrupt interface；具体 PLIC/DTB 装配属于 platform |
-| `virtio_port` | `cpu`, `drivers`, `fs`, `ipc` | 拥有唯一 named byte-stream 的 task readiness、blocking/poll projection，并经 fs 字符设备注册表发布 `virtio-ports/*` 节点；不解析 SPICE message 或感知 platform/QEMU |
+| `drivers` | `arch`, `deferred`, `fallible_tree`, `memory`, `sync` | 设备类 seam（console、display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表、driver I/O completion 与 MMIO/interrupt hal；块 seam 属于 `block`，总线 adapter 属于 `virtio` |
+| `block` | 无 | 块设备 trait 与只追加注册表、分区表（MBR/EBR/GPT）解析、分区视图、字节范围 I/O 与 `PARTUUID` 文本；驱动实现 trait，`fs` 只消费；分区表与范围 I/O 是可在 host 上单测的纯函数 |
+| `virtio` | `block`, `deferred`, `drivers`, `memory` | VirtIO transport（MMIO/PCI）、virtqueue/DMA 与各设备类 adapter；只实现 `drivers` 与 `block` 的 seam，不依赖 `arch`（MMIO 屏障与中断等待经 `drivers` hal），由 platform 在发现设备时构造并发布 |
+| `virtio_port` | `deferred`, `drivers`, `fs`, `ipc` | 拥有唯一 named byte-stream 的 task readiness、blocking/poll projection，并经 fs 字符设备注册表发布 `virtio-ports/*` 节点；不解析 SPICE message 或感知 platform/QEMU |
 | `audio` | `drivers`, `fs`, `id`, `ipc`, `memory` | 拥有 Linux ALSA PCM playback 领域状态、position、poll/xrun、`snd/pcmC0D0p` 设备文件与 PCM ioctl UAPI；只经通用 PCM output seam 使用 device adapter |
-| `drm` | `cpu`, `drivers`, `fallible_tree`, `fs`, `ipc`, `memory`, `socket`, `sync` | 只消费通用 display seam；拥有 `dri/card0` 设备文件与 DRM/virtio-gpu ioctl UAPI；GEM handle 用统一 fallible ordered publication；mode 变化只经 socket 发布 kobject uevent；不感知 VirtIO adapter 或 task |
-| `input` | `cpu`, `drivers`, `fs`, `ipc`, `sync`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域、`input/eventN` 设备文件与 evdev ioctl UAPI；不感知 VirtIO adapter 或 task |
+| `drm` | `deferred`, `drivers`, `fallible_tree`, `fs`, `ipc`, `memory`, `socket`, `sync` | 只消费通用 display seam；拥有 `dri/card0` 设备文件与 DRM/virtio-gpu ioctl UAPI；GEM handle 用 fallible ordered publication；mode 变化只经 socket 发布 uevent；不感知 VirtIO adapter 或 task |
+| `input` | `deferred`, `drivers`, `fs`, `ipc`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域、`input/eventN` 设备文件与 evdev ioctl UAPI；不感知 VirtIO adapter 或 task |
 | `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
 | `socket` | `drivers`, `fallible_tree`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
-| `fs` | `cpu`, `drivers`, `fallible_tree`, `id`, `ipc`, `log`, `memory`, `random`, `socket`, `sync`, `timer` | 字符设备注册表、devfs/devpts、TTY 与 mem 设备（kmsg 经 `cpu` deferred vector 唤醒）；其余领域只经 seam 使用 |
-| `task` | `arch`, `cpu`, `drivers`, `fallible_tree`, `fs`, `id`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer` | 调度只用 logical CPU identity；deferred safe point 处理核心向量，设备类 completion 只经 `cpu` 注册的 handler 投递 |
-| `trap` | `arch`, `cpu`, `drivers`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
-| `syscall` | `fs`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer` | 只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::device::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果 |
+| `fs` | `block`, `deferred`, `fallible_tree`, `id`, `ipc`, `log`, `memory`, `random`, `sync`, `timer` | VFS、具体文件系统、字符设备注册表、inotify 与 mem/kmsg 设备（kmsg 经 `deferred` 唤醒）；OFD 归 `file`、终端归 `tty`，advisory lock 经 `LockHolder` 识别持锁者 |
+| `file` | `fallible_tree`, `fs`, `ipc`, `socket` | open file description、fd table、epoll/timerfd/readiness 与 inode/设备/pipe/socket/eventfd 后端的统一投影；fd 层位于 `fs` 与 `socket` 之上，是 VFS 之外唯一同时认识两者的 module |
+| `tty` | `drivers`, `fs`, `ipc`, `sync`, `timer` | Terminal line discipline、`/dev/tty`/`console`/`ptmx`、Unix98 pty 与 devpts 文件系统；session、process group 与 signal 归 task，经 `install_job_control` 注入；经 `fs::device` 注册设备文件 |
+| `task` | `arch`, `cpu`, `deferred`, `drivers`, `fallible_tree`, `file`, `fs`, `id`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer`, `tty` | 调度只用 logical CPU identity；deferred safe point 处理核心向量，设备类 completion 只经 `cpu` 注册的 handler 投递 |
+| `trap` | `arch`, `cpu`, `deferred`, `drivers`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
+| `syscall` | `file`, `fs`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer` | 只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::device::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果 |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch`, `cpu`, `platform` | whole-system policy；ISA 用户事实只经 `arch::user`，CPU/firmware 只经各自 facade |
 | `timer` | `arch`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |
-| `log` | `cpu`, `platform`, `sync`, `timer` | 日志策略、有界 record owner 与输出在本 module 内闭合 |
+| `log` | `cpu`, `deferred`, `platform`, `sync`, `timer` | 日志策略、有界 record owner 与输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `cmdline` | 无 | 纯 kernel command line 解析：取出内核参数，其余按 Linux 规则转交 init |
 | `lang_item` | `arch`, `cpu`, `platform` | 只使用 typed diagnostic identity 与 architecture/platform fail-stop mechanism |
-| `main` | `arch`, `audio`, `cmdline`, `config`, `cpu`, `drivers`, `drm`, `entry`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root；不含 raw firmware/trap ABI |
+| `main` | `arch`, `audio`, `block`, `cmdline`, `config`, `cpu`, `deferred`, `drivers`, `drm`, `entry`, `fallible_tree`, `file`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap`, `tty`, `virtio`, `virtio_port` | 装配根 |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 
@@ -87,35 +100,35 @@
 
 | Location | Type |
 |---|---|
-| `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
-| `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
-| `kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
-| `kernel/src/drm.rs :: DrmDeviceState.graphics_cleanups` | `FallibleMap < u32 , graphics :: VirglCleanup >` |
-| `kernel/src/drm.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
-| `kernel/src/drm.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
-| `kernel/src/drm.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
-| `kernel/src/drm/graphics.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
-| `kernel/src/drm/publication_order.rs :: PublicationIdAllocator.reusable` | `FallibleMap < T , () >` |
-| `kernel/src/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
-| `kernel/src/fs/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |
-| `kernel/src/fs/epoll.rs :: EpollState.ready` | `FallibleMap < InterestKey , () >` |
-| `kernel/src/fs/epoll.rs :: EpollMemberships.entries` | `Mutex < FallibleMap < ReverseKey , ReverseMembership > >` |
-| `kernel/src/fs/epoll.rs :: static SOURCE_INDEX` | `Mutex < FallibleMap < SourceIndexKey , SourceMembership > >` |
-| `kernel/src/fs/inotify.rs :: WatchIndex.by_inode` | `FallibleMap < (usize , u64) , Vec < Arc < Watch > > >` |
-| `kernel/src/fs/vfs/opened_index.rs :: OpenedIndex.entries` | `Mutex < FallibleMap < OpenedIndexKey , Weak < OpenedFile > > >` |
-| `kernel/src/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
-| `kernel/src/fs/ext4/journal.rs :: StagedBlocks.metadata` | `FallibleMap < u64 , Vec < u8 > >` |
-| `kernel/src/fs/memory_file/sparse.rs :: SparsePages.pages` | `FallibleMap < u64 , Arc < P > >` |
-| `kernel/src/fs/tmpfs.rs :: Namespace.inodes` | `FallibleMap < u64 , Weak < TmpInode > >` |
-| `kernel/src/fs/tmpfs/directory.rs :: Directory.names` | `FallibleMap < Key , Slot < T > >` |
-| `kernel/src/fs/tmpfs/directory.rs :: Directory.order` | `FallibleMap < u64 , Key >` |
-| `kernel/src/fs/ext4/journal.rs :: StagedBlocks.data` | `FallibleMap < u64 , Vec < u8 > >` |
-| `kernel/src/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
-| `kernel/src/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |
-| `kernel/src/fs/page_cache.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
-| `kernel/src/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
-| `kernel/src/arch/riscv64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
-| `kernel/src/arch/aarch64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
+| `kernel/src/hardware/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
+| `kernel/src/hardware/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
+| `kernel/src/hardware/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
+| `kernel/src/devices/drm/mod.rs :: DrmDeviceState.graphics_cleanups` | `FallibleMap < u32 , graphics :: VirglCleanup >` |
+| `kernel/src/devices/drm/mod.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
+| `kernel/src/devices/drm/mod.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
+| `kernel/src/devices/drm/mod.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
+| `kernel/src/devices/drm/graphics.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
+| `kernel/src/devices/drm/publication_order.rs :: PublicationIdAllocator.reusable` | `FallibleMap < T , () >` |
+| `kernel/src/devices/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
+| `kernel/src/file/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |
+| `kernel/src/file/epoll.rs :: EpollState.ready` | `FallibleMap < InterestKey , () >` |
+| `kernel/src/file/epoll.rs :: EpollMemberships.entries` | `Mutex < FallibleMap < ReverseKey , ReverseMembership > >` |
+| `kernel/src/file/epoll.rs :: static SOURCE_INDEX` | `Mutex < FallibleMap < SourceIndexKey , SourceMembership > >` |
+| `kernel/src/storage/fs/inotify.rs :: WatchIndex.by_inode` | `FallibleMap < (usize , u64) , Vec < Arc < Watch > > >` |
+| `kernel/src/storage/fs/vfs/opened_index.rs :: OpenedIndex.entries` | `Mutex < FallibleMap < OpenedIndexKey , Weak < OpenedFile > > >` |
+| `kernel/src/storage/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
+| `kernel/src/storage/fs/ext4/journal.rs :: StagedBlocks.metadata` | `FallibleMap < u64 , Vec < u8 > >` |
+| `kernel/src/storage/fs/memory_file/sparse.rs :: SparsePages.pages` | `FallibleMap < u64 , Arc < P > >` |
+| `kernel/src/storage/fs/tmpfs.rs :: Namespace.inodes` | `FallibleMap < u64 , Weak < TmpInode > >` |
+| `kernel/src/storage/fs/tmpfs/directory.rs :: Directory.names` | `FallibleMap < Key , Slot < T > >` |
+| `kernel/src/storage/fs/tmpfs/directory.rs :: Directory.order` | `FallibleMap < u64 , Key >` |
+| `kernel/src/storage/fs/ext4/journal.rs :: StagedBlocks.data` | `FallibleMap < u64 , Vec < u8 > >` |
+| `kernel/src/storage/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
+| `kernel/src/storage/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |
+| `kernel/src/storage/fs/page_cache.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
+| `kernel/src/storage/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
+| `kernel/src/hardware/arch/riscv64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
+| `kernel/src/hardware/arch/aarch64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
 | `kernel/src/memory/mm/area.rs :: MapArea.data_frames` | `FallibleMap < VirtualPageNumber , PrivateResident >` |
 | `kernel/src/memory/mm.rs :: MemorySet.areas` | `FallibleMap < VirtualPageNumber , MapArea >` |
 | `kernel/src/memory/mm/shared_area.rs :: AnonymousSharedBacking.frames` | `Mutex < FallibleMap < usize , Arc < FrameTracker > > >` |

@@ -39,7 +39,7 @@
   `fs::init_vfs` → `VfsReady` → `task::initialize(VfsReady)` → `SchedulerReady`；内核线程能力只能由
   `task::kernel_thread_support(SchedulerReady)` 取得，因此 `MountEnvironment` 与 `fs::mount_root`
   （选择根文件系统类型、创建写回内核线程、挂载 devtmpfs）只能在调度器就绪后发生，并返回
-  `RootMounted`；`fs::init_tty` 返回 `ConsoleReady`；`task::spawn_init` 同时要求 `SchedulerReady`、
+  `RootMounted`；`tty::init` 返回 `ConsoleReady`；`task::spawn_init` 同时要求 `SchedulerReady`、
   `RootMounted` 与 `ConsoleReady`。顺序错误无法编译。composition root 不依赖具体文件系统类型或
   console adapter。
 - console 设备由 platform 以 Linux 设备名（aarch64 `ttyAMA0`、riscv64 `ttyS0`）与同步单字节输出原语

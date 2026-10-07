@@ -1,8 +1,9 @@
 use super::*;
+use crate::file::OpenFileDescription;
 use crate::fs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
-    AdvisoryLockNotifier, OpenFileDescription, PreparedAdvisoryLock, PreparedLockAttempt,
-    PreparedRecordLock, RecordLockMode, RecordLockRange, vfs,
+    AdvisoryLockNotifier, PreparedAdvisoryLock, PreparedLockAttempt, PreparedRecordLock,
+    RecordLockMode, RecordLockRange, vfs,
 };
 
 struct TaskAdvisoryLockNotifier;
@@ -211,7 +212,8 @@ pub(crate) fn wait_for_advisory_lock(
     ofd: &Arc<OpenFileDescription>,
     mode: AdvisoryLockMode,
 ) -> Result<(), AdvisoryLockWaitError> {
-    let transaction: PreparedAdvisoryLock = vfs().prepare_advisory_lock(ofd, mode)?;
+    let transaction: PreparedAdvisoryLock =
+        vfs().prepare_advisory_lock(&ofd.lock_holder(), mode)?;
     wait_for_file_lock(
         transaction,
         |transaction| vfs().reserve_advisory_lock_storage(transaction),
@@ -238,7 +240,7 @@ pub(crate) fn wait_for_record_lock(
     range: RecordLockRange,
 ) -> Result<(), AdvisoryLockWaitError> {
     let transaction: PreparedRecordLock =
-        vfs().prepare_record_lock(ofd, owner, Some(mode), range)?;
+        vfs().prepare_record_lock(&ofd.lock_holder(), owner, Some(mode), range)?;
     wait_for_file_lock(
         transaction,
         |transaction| vfs().reserve_record_lock_storage(transaction),

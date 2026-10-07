@@ -1,5 +1,6 @@
 use crate::{
-    fs::{O_CLOEXEC, O_NONBLOCK, OpenFileDescription},
+    file::OpenFileDescription,
+    fs::{O_CLOEXEC, O_NONBLOCK},
     ipc::EventFd,
     syscall::errno,
     task::current_task,

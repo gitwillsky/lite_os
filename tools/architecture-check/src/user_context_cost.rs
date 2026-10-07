@@ -7,7 +7,7 @@ use super::SourceFile;
 
 const TRAP_SOURCE: &str = "kernel/src/trap/mod.rs";
 const ADDRESS_SPACE_SOURCE: &str = "kernel/src/task/model/address_space.rs";
-const USER_CONTEXT_SOURCE: &str = "kernel/src/arch/riscv64/user_context.rs";
+const USER_CONTEXT_SOURCE: &str = "kernel/src/hardware/arch/riscv64/user_context.rs";
 const USER_CONTEXT_BYTES: usize = 72 * core::mem::size_of::<u64>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

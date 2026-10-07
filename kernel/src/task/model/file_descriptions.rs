@@ -1,10 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use super::TaskControlBlock;
-use crate::fs::{
+use crate::file::{
     CancelledFileReservation, DetachedFileDescriptor, FileDescriptorError, OpenFileDescription,
-    ProcFileDescriptorSnapshot, vfs,
 };
+use crate::fs::{ProcFileDescriptorSnapshot, vfs};
 
 const CLOEXEC_CLOSE_BATCH: usize = 32;
 
@@ -198,7 +198,7 @@ impl TaskControlBlock {
     pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
         let descriptor = self.process().files.lock().detach(fd)?;
         let ofd = descriptor.finish_close();
-        vfs().release_record_locks_for_file(self.tgid(), &ofd);
+        vfs().release_record_locks_for_file(self.tgid(), &ofd.lock_holder());
         Ok(())
     }
 
@@ -236,7 +236,7 @@ impl TaskControlBlock {
                     .take()
                     .expect("CLOEXEC batch count exceeded detached entries")
                     .finish_close();
-                vfs().release_record_locks_for_file(self.tgid(), &ofd);
+                vfs().release_record_locks_for_file(self.tgid(), &ofd.lock_holder());
             }
         }
     }
@@ -265,7 +265,7 @@ impl TaskControlBlock {
         };
         if let Some(descriptor) = replaced {
             let ofd = descriptor.finish_close();
-            vfs().release_record_locks_for_file(self.tgid(), &ofd);
+            vfs().release_record_locks_for_file(self.tgid(), &ofd.lock_holder());
         }
         Ok(new)
     }

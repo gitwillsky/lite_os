@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::{
     fallible_tree::FallibleMap,
-    fs::{TimerError, TimerFdBackend, TimerSetting},
+    file::{TimerError, TimerFdBackend, TimerSetting},
 };
 
 mod period;

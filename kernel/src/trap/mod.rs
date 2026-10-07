@@ -8,7 +8,7 @@ use syscall_abi::signal::{
 
 use crate::{
     arch::{self, context::SyscallCompletion, trap::TrapEvent},
-    cpu::{self, DeferredWork},
+    deferred::{self, DeferredWork},
     drivers,
     memory::TRAMPOLINE,
     memory::{MemoryError, PageFaultAccess, PageFaultOutcome, SegmentationCause},
@@ -32,7 +32,7 @@ fn handle_claimed_interrupt() {
         crate::platform::ClaimedInterrupt::Timer(_) => {
             // 先重置 level timer source，再 EOI；反序会让 GIC 立即重投同一 PPI。
             timer::set_next_timer_interrupt();
-            cpu::raise_deferred(DeferredWork::TIMER);
+            deferred::raise(DeferredWork::TIMER);
         }
         crate::platform::ClaimedInterrupt::Device(_) => {}
         crate::platform::ClaimedInterrupt::Software(_) => {}
@@ -60,12 +60,12 @@ pub(crate) fn handle_user_trap() -> ! {
         TrapEvent::TimerInterrupt => {
             // 仅重置下一次中断并发布 per-CPU deferred work，不在 hardirq 调度。
             timer::set_next_timer_interrupt();
-            cpu::raise_deferred(DeferredWork::TIMER);
+            deferred::raise(DeferredWork::TIMER);
         }
         TrapEvent::ExternalInterrupt => {
             handle_claimed_interrupt();
             if drivers::console::input_ready() {
-                cpu::raise_deferred(DeferredWork::CONSOLE);
+                deferred::raise(DeferredWork::CONSOLE);
             }
         }
         TrapEvent::SoftwareInterrupt => {
@@ -240,14 +240,14 @@ pub(crate) fn handle_kernel_trap() {
         TrapEvent::TimerInterrupt => {
             timer::set_next_timer_interrupt();
             // kernel/user timer 使用同一 per-CPU softirq；hardirq 不扫描任务表或分配。
-            cpu::raise_deferred(DeferredWork::TIMER);
+            deferred::raise(DeferredWork::TIMER);
         }
         TrapEvent::ExternalInterrupt => {
             // 内核态同步 I/O 可以被 external IRQ 打断；此处只确认 platform
             // interrupt-controller 状态，不在 hardirq 中调度。
             handle_claimed_interrupt();
             if drivers::console::input_ready() {
-                cpu::raise_deferred(DeferredWork::CONSOLE);
+                deferred::raise(DeferredWork::CONSOLE);
             }
         }
         TrapEvent::SoftwareInterrupt => {

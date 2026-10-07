@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
-const INODE_SOURCE: &str = "kernel/src/fs/ext4/inode.rs";
-const EXTENT_SOURCE: &str = "kernel/src/fs/ext4/extent.rs";
-const EXT4_ROOT: &str = "kernel/src/fs/ext4";
+const INODE_SOURCE: &str = "kernel/src/storage/fs/ext4/inode.rs";
+const EXTENT_SOURCE: &str = "kernel/src/storage/fs/ext4/extent.rs";
+const EXT4_ROOT: &str = "kernel/src/storage/fs/ext4";
 /// ext2 间接块映射的标识；任何一个重新出现都表示第二套 logical-block mapping。
 const RETIRED_INDIRECT_MARKERS: &[&str] = &["BlockPath", "pointer_block", "decode_pointer_block"];
 

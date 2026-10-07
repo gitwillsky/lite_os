@@ -221,7 +221,7 @@ fn check_document_ownership(
         "drivers::platform",
         "task::TrapContext",
         "task::TaskContext",
-        "kernel/src/arch/riscv64/hart.rs",
+        "kernel/src/hardware/arch/riscv64/hart.rs",
         "docs/architecture-interface.txt",
         "architecture/display-terminal.md",
         "architecture-contract/display-terminal.md",

@@ -7,7 +7,8 @@
   live opened entries。index node 只持有 Weak；namespace mutation 在锁外 upgrade，
   且被替换 parent 与临时 strong pin 均在 index lock 外析构，避免 final Drop 递归取锁。
   OpenFileDescription 拥有 backend、offset、status flags 与 descriptor reference
-  consequence；fd table 只拥有 slot 和 descriptor flags。
+  consequence；fd table 只拥有 slot 和 descriptor flags。二者属于 `file` module（位于 `fs` 与 `socket` 之上），VFS 的
+  advisory lock 只经 `LockHolder` 识别持锁者，不认识 OFD。
 - ext4 是当前可写 root filesystem，只接受 e2fsprogs 1.47.4 `mke2fs -t ext4` 默认 profile（extent、
   64bit、flex_bg、metadata_csum、dir_index、orphan_file、JBD2 `CSUM_V3`）；其余 feature 在 mount 时拒绝。
   inode、directory mutation、link count、allocation 与 JBD2 metadata journal 在 filesystem owner 内闭合。
@@ -63,7 +64,7 @@
 
 ## Known limits
 
-- 持久存储是固定 ext4/JBD2 profile；附加块设备与分区可经 `mount(2)` 挂载；分区表解析见 `fs::partition_table`（纯函数，host 单测覆盖 MBR 逻辑分区链、GPT CRC 与备份表回退）。
+- 持久存储是固定 ext4/JBD2 profile；附加块设备与分区可经 `mount(2)` 挂载；分区表解析见 `block::partition_table`（纯函数，host 单测覆盖 MBR 逻辑分区链、GPT CRC 与备份表回退）。
 - FIFO、字符/块设备节点由 `Inode::mknod` 创建（ext4 把设备号按 Linux 旧/新编码存入 `i_block`，无 extent tree；
   tmpfs 存为 `Body::Special`）。FIFO 的内核 Pipe 由 `fs::fifo` 按 `(filesystem, inode)` 绑定，只持 `Weak`，
   生命周期由 endpoint 决定；打开的 FIFO 是一个持有 0~2 个 endpoint 的 `DeviceFile`，所以双向读写、

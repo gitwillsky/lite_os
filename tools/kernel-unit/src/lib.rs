@@ -62,15 +62,19 @@ macro_rules! info {
 mod drivers;
 
 #[cfg(test)]
+#[allow(dead_code)]
+mod virtio;
+
+#[cfg(test)]
 mod sync;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/audio/state.rs"]
+#[path = "../../../kernel/src/devices/audio/state.rs"]
 mod audio_state;
 
 #[cfg(test)]
 mod audio_readiness {
-    include!("../../../kernel/src/audio/readiness.rs");
+    include!("../../../kernel/src/devices/audio/readiness.rs");
 
     pub(crate) const fn project(events: i16, writable: bool) -> i16 {
         project_playback_events(events, writable)
@@ -78,23 +82,23 @@ mod audio_readiness {
 }
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_sound/wire.rs"]
+#[path = "../../../kernel/src/devices/virtio/sound/wire.rs"]
 mod virtio_sound_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_console/wire.rs"]
+#[path = "../../../kernel/src/devices/virtio/console/wire.rs"]
 mod virtio_console_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_sound/lifecycle.rs"]
+#[path = "../../../kernel/src/devices/virtio/sound/lifecycle.rs"]
 mod virtio_sound_lifecycle;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/memory_file/seals.rs"]
+#[path = "../../../kernel/src/storage/fs/memory_file/seals.rs"]
 mod memory_seals;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/memory_file/sparse.rs"]
+#[path = "../../../kernel/src/storage/fs/memory_file/sparse.rs"]
 mod memory_sparse;
 
 #[cfg(test)]
@@ -102,7 +106,7 @@ mod memory_sparse;
 mod kmsg_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/audio/codec.rs"]
+#[path = "../../../kernel/src/devices/audio/codec.rs"]
 mod alsa_codec;
 
 #[cfg(test)]
@@ -120,7 +124,7 @@ mod receive_buffer;
 mod id;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/ipc.rs"]
+#[path = "../../../kernel/src/ipc/mod.rs"]
 #[allow(dead_code, unused_imports)]
 mod ipc;
 
@@ -153,7 +157,7 @@ mod ext4_conformance_tests;
 // 与 kernel `platform::qemu_virt` 相同的模块形状，使生产 DTB 解码器的 `super::super` 路径成立。
 // inline module 上的 `#[path]` 把其子模块的基准目录设为 kernel 的真实 `qemu_virt/`。
 #[cfg(test)]
-#[path = "../../../kernel/src/platform/qemu_virt"]
+#[path = "../../../kernel/src/hardware/platform/qemu_virt"]
 #[allow(
     dead_code,
     reason = "host tests read only the decoded facts they assert; boot-only fields stay unused"
@@ -174,24 +178,24 @@ mod qemu_virt {
 mod platform_device_tree_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/directory.rs"]
+#[path = "../../../kernel/src/storage/fs/directory.rs"]
 #[allow(dead_code)]
 mod directory_stream;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/directory_cursor.rs"]
+#[path = "../../../kernel/src/storage/fs/ext4/directory_cursor.rs"]
 mod ext4_directory_cursor;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/checksum.rs"]
+#[path = "../../../kernel/src/storage/fs/ext4/checksum.rs"]
 mod ext4_checksum;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/dirhash.rs"]
+#[path = "../../../kernel/src/storage/fs/ext4/dirhash.rs"]
 mod ext4_dirhash;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fallible_tree.rs"]
+#[path = "../../../kernel/src/fallible_tree/mod.rs"]
 #[allow(dead_code)]
 mod fallible_tree;
 
@@ -214,32 +218,31 @@ mod listen_backlog;
 mod inet_port_namespace_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/block.rs"]
 #[allow(dead_code)]
-mod block_device;
+mod block;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_blk/policy.rs"]
+#[path = "../../../kernel/src/devices/virtio/blk/policy.rs"]
 mod virtio_blk_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_rng/completion_policy.rs"]
+#[path = "../../../kernel/src/devices/virtio/rng/completion_policy.rs"]
 mod virtio_rng_completion_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/file/indexed_slots.rs"]
+#[path = "../../../kernel/src/file/indexed_slots.rs"]
 mod indexed_slots;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/file/position.rs"]
+#[path = "../../../kernel/src/file/position.rs"]
 mod file_position;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/journal_layout.rs"]
+#[path = "../../../kernel/src/storage/fs/ext4/journal_layout.rs"]
 mod journal_layout;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/page_cache/writeback_batch.rs"]
+#[path = "../../../kernel/src/storage/fs/page_cache/writeback_batch.rs"]
 mod writeback_batch;
 
 #[cfg(test)]
@@ -270,20 +273,20 @@ mod memory_retire;
 mod task_user_context;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_net/rx_slots.rs"]
+#[path = "../../../kernel/src/devices/virtio/net/rx_slots.rs"]
 mod virtio_net_rx_slots;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_gpu/sequence_policy.rs"]
+#[path = "../../../kernel/src/devices/virtio/gpu/sequence_policy.rs"]
 #[allow(dead_code)]
 mod virtio_gpu_sequence_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio_gpu/scanout_state.rs"]
+#[path = "../../../kernel/src/devices/virtio/gpu/scanout_state.rs"]
 mod virtio_gpu_scanout_state;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drm/fence_timeline.rs"]
+#[path = "../../../kernel/src/devices/drm/fence_timeline.rs"]
 mod drm_fence_timeline;
 
 #[cfg(test)]
@@ -291,19 +294,19 @@ mod drm_fence_timeline;
 mod timer_deadline;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/platform/qemu_virt/riscv64/plic_policy.rs"]
+#[path = "../../../kernel/src/hardware/platform/qemu_virt/riscv64/plic_policy.rs"]
 mod plic_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/riscv64/sv39.rs"]
+#[path = "../../../kernel/src/hardware/arch/riscv64/sv39.rs"]
 mod sv39;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/riscv64/pte.rs"]
+#[path = "../../../kernel/src/hardware/arch/riscv64/pte.rs"]
 mod riscv_pte;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/riscv64/fp_instruction.rs"]
+#[path = "../../../kernel/src/hardware/arch/riscv64/fp_instruction.rs"]
 mod riscv_fp_instruction;
 
 #[cfg(test)]
@@ -334,7 +337,7 @@ mod socket_message_limits;
 mod socket_receive_publication;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drm/publication_order.rs"]
+#[path = "../../../kernel/src/devices/drm/publication_order.rs"]
 mod drm_publication;
 
 #[cfg(test)]
@@ -342,16 +345,16 @@ mod drm_publication;
 mod network_device_error;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/network.rs"]
+#[path = "../../../kernel/src/devices/drivers/network.rs"]
 #[allow(dead_code)]
 mod network_transmit;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/file/terminal_flush.rs"]
+#[path = "../../../kernel/src/devices/tty/terminal_flush.rs"]
 mod terminal_flush;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/file/terminal/input_batch.rs"]
+#[path = "../../../kernel/src/devices/tty/terminal/input_batch.rs"]
 mod terminal_input_batch;
 
 #[cfg(test)]
@@ -376,7 +379,7 @@ mod getrandom_flags;
 mod getrandom_flags_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/pty/input_notification.rs"]
+#[path = "../../../kernel/src/devices/tty/pty/input_notification.rs"]
 mod pty_input_notification;
 
 #[cfg(test)]
@@ -392,7 +395,7 @@ mod clone_tid_store;
 mod synchronous_fault;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/aarch64/signal_frame.rs"]
+#[path = "../../../kernel/src/hardware/arch/aarch64/signal_frame.rs"]
 #[allow(dead_code)]
 mod aarch64_signal_frame;
 
@@ -404,17 +407,17 @@ mod fp_state {
 }
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/aarch64/kernel_context.rs"]
+#[path = "../../../kernel/src/hardware/arch/aarch64/kernel_context.rs"]
 #[allow(dead_code)]
 mod aarch64_kernel_context;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/aarch64/va39.rs"]
+#[path = "../../../kernel/src/hardware/arch/aarch64/va39.rs"]
 #[allow(dead_code)]
 mod aarch64_va39;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/riscv64/signal_frame.rs"]
+#[path = "../../../kernel/src/hardware/arch/riscv64/signal_frame.rs"]
 #[allow(dead_code)]
 mod riscv64_signal_frame;
 
@@ -443,7 +446,7 @@ mod timer_transaction_loop;
 mod terminal_output_order;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/link_count.rs"]
+#[path = "../../../kernel/src/storage/fs/ext4/link_count.rs"]
 mod ext4_link_count;
 
 #[cfg(test)]

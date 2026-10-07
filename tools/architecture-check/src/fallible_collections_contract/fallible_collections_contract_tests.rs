@@ -15,7 +15,7 @@ fn source(relative: &str, text: &str) -> SourceFile {
 
 fn fallible_tree_source() -> SourceFile {
     source(
-        "kernel/src/fallible_tree.rs",
+        "kernel/src/fallible_tree/mod.rs",
         r#"
             fn try_reserve_node() { Box::<Node>::try_new_uninit(); }
             fn try_prepare_vacant() { try_reserve_node(); }

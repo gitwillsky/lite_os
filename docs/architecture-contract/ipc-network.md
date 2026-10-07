@@ -8,7 +8,7 @@
   composition root 注入的 pipe 工厂或领域直接调用 task 的 pipe wait。安装前不存在任何 task，因此
   不存在可唤醒的 waiter 或 poller。
 - `ipc::ReceiveBuffer` 独占 kernel receive staging 的 initialized prefix；heap storage 只保留 capacity，backend 只能通过 append 扩展可读取前缀。
-- `fs::Epoll` 独占 interest、incremental ready membership、ET/ONESHOT 与 nesting state；
+- `file::Epoll` 独占 interest、incremental ready membership、ET/ONESHOT 与 nesting state；
   持久 source index 把 Pipe/console edge 精确路由到 interest，OFD reverse index 独占
   final-close detach membership；sharded WaitRegistry 只独占实际 task wait membership。
 - AF_UNIX socket、rights graph、IPv4 NetworkStack、AF_PACKET registry 与 kobject registry

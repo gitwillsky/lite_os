@@ -2,7 +2,7 @@ use syn::{Expr, ExprCall, ExprLit, ImplItem, ImplItemFn, Item, Lit, Path, Type, 
 
 use super::SourceFile;
 
-const TTY_PATH: &str = "kernel/src/fs/tty.rs";
+const TTY_PATH: &str = "kernel/src/devices/tty/mod.rs";
 
 /// 校验 TTY user-visible readiness 与 PTY master input batch 的 production 实现。
 ///
@@ -22,7 +22,7 @@ pub(super) fn check_terminal_contract(sources: &[SourceFile], errors: &mut Vec<S
     check_write_chunk(source, "TerminalFile", false, errors);
 }
 
-const PL011_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/pl011.rs";
+const PL011_PATH: &str = "kernel/src/hardware/platform/qemu_virt/aarch64/pl011.rs";
 
 /// PL011 RX hardirq 必须先清中断、再读空 FIFO。
 ///

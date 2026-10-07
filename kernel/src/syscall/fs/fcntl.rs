@@ -147,7 +147,7 @@ fn get_lock(task: &TaskControlBlock, ofd: &Arc<OpenFileDescription>, pointer: us
         Ok(range) => range,
         Err(error) => return error,
     };
-    match vfs().record_lock_conflict(ofd, task.tgid(), requested, range) {
+    match vfs().record_lock_conflict(&ofd.lock_holder(), task.tgid(), requested, range) {
         Ok(Some(conflict)) => {
             user.lock_type = match conflict.mode {
                 RecordLockMode::Read => F_RDLCK,
@@ -204,7 +204,7 @@ fn set_lock(
             Err(AdvisoryLockWaitError::FileSystem(error)) => ferr(error),
         };
     }
-    match vfs().try_record_lock(ofd, task.tgid(), requested, range) {
+    match vfs().try_record_lock(&ofd.lock_holder(), task.tgid(), requested, range) {
         Ok(AdvisoryLockAttempt::Acquired { key, wake_waiters }) => {
             if wake_waiters {
                 vfs().notify_advisory_lock(key);

@@ -50,7 +50,7 @@ impl ResourceLimits {
         };
         values[RLIMIT_NOFILE] = ResourceLimit {
             soft: 1024,
-            hard: crate::fs::MAX_FILE_DESCRIPTORS as u64,
+            hard: crate::file::MAX_FILE_DESCRIPTORS as u64,
         };
         values[RLIMIT_MEMLOCK] = ResourceLimit {
             soft: 64 * 1024,
@@ -86,7 +86,8 @@ impl ResourceLimits {
         if replacement.soft > replacement.hard {
             return Err(ResourceLimitError::InvalidLimit);
         }
-        if resource == RLIMIT_NOFILE && replacement.hard > crate::fs::MAX_FILE_DESCRIPTORS as u64 {
+        if resource == RLIMIT_NOFILE && replacement.hard > crate::file::MAX_FILE_DESCRIPTORS as u64
+        {
             return Err(ResourceLimitError::PermissionDenied);
         }
         let current = self
@@ -157,7 +158,7 @@ impl TaskControlBlock {
                 .soft,
         )
         .unwrap_or(usize::MAX)
-        .min(crate::fs::MAX_FILE_DESCRIPTORS)
+        .min(crate::file::MAX_FILE_DESCRIPTORS)
     }
 
     pub(crate) fn file_size_limit(&self) -> u64 {

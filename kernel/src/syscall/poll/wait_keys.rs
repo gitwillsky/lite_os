@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{Epoll, OpenFileDescription, OpenFileKind},
+    file::{Epoll, OpenFileDescription, OpenFileKind},
     socket::{SocketWaitGuard, SocketWaitSource},
     task::PollWaitKey,
 };

@@ -13,7 +13,7 @@ use alloc::{format, sync::Arc};
 
 use crate::{
     InodeType,
-    drivers::block::{BLOCK_SIZE, BlockDevice, BlockError},
+    block::{BLOCK_SIZE, BlockDevice, BlockError},
     fs::{
         CreateMetadata, DirectoryEntry, DirectoryVisit, DirectoryVisitor, FileSystem,
         FileSystemError,

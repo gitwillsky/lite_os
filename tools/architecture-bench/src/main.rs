@@ -1,11 +1,11 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-#[path = "../../../kernel/src/arch/aarch64/pte.rs"]
+#[path = "../../../kernel/src/hardware/arch/aarch64/pte.rs"]
 mod aarch64_pte;
 #[path = "../../../kernel/src/timer/deadline.rs"]
 mod timer_deadline;
-#[path = "../../../kernel/src/arch/aarch64/va39.rs"]
+#[path = "../../../kernel/src/hardware/arch/aarch64/va39.rs"]
 mod va39;
 
 const ITERATIONS: u64 = 2_000_000;

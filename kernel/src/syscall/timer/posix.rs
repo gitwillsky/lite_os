@@ -3,7 +3,7 @@ use super::{
     TIMER_ABSTIME, TimeSpec, decode_timespec, encode_timespec,
 };
 use crate::{
-    fs::{TimerError, TimerSetting},
+    file::{TimerError, TimerSetting},
     syscall::errno::{EAGAIN, EFAULT, EINVAL, ENOMEM, EOPNOTSUPP},
     task::{PosixTimerClock, PosixTimerNotification, current_task},
 };

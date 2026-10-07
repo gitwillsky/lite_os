@@ -1,7 +1,6 @@
 use crate::{
-    fs::{
-        O_CLOEXEC, O_NONBLOCK, OpenFileDescription, OpenFileKind, TimerError, TimerFd, TimerSetting,
-    },
+    file::{OpenFileDescription, OpenFileKind, TimerError, TimerFd, TimerSetting},
+    fs::{O_CLOEXEC, O_NONBLOCK},
     syscall::errno,
     task::{TimerFileClock, create_timer_fd, current_task},
 };

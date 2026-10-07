@@ -32,10 +32,10 @@ use pathname::{base, ferr, path};
 pub(crate) use readlink::sys_readlinkat;
 
 use crate::{
+    file::{OpenFileDescription, OpenFileKind},
     fs::{
         Dirent64Batch, InodeMetadata, InodeType, MAX_GETDENTS_BATCH_BYTES, O_ACCMODE, O_APPEND,
-        O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, RegularFile,
-        RegularFileWrite, vfs,
+        O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, RegularFile, RegularFileWrite, vfs,
     },
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,

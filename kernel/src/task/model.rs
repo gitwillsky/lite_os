@@ -23,7 +23,8 @@ use spin::Mutex;
 
 use crate::{
     arch::context::{KernelContext, UserContext},
-    fs::{FileDescriptorTable, Terminal, vfs},
+    file::FileDescriptorTable,
+    fs::vfs,
     memory::{
         DeviceMappingSource, ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack,
         MapPermission, MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer,
@@ -33,6 +34,7 @@ use crate::{
     sync::{IrqMutex, TaskMutex, TaskMutexWaitPreparation},
     task::{loader::LoadedExecutable, pid::ProcessId},
     timer::get_time_us,
+    tty::Terminal,
 };
 
 use address_space::AddressSpace;
@@ -340,7 +342,7 @@ impl TaskControlBlock {
         let context_binding =
             ContextBinding::for_placement(kernel_stack.user_context_address(), TRAP_CONTEXT);
         let tid = pid.0;
-        let terminal = crate::fs::console_terminal();
+        let terminal = crate::tty::console();
         let address_space = AddressSpace::new(memory_set)?;
         let user_context = address_space.bind_user_context(context_binding)?;
         let memory_retirement_wait = if context_binding.requires_retirement_wait(TRAP_CONTEXT) {

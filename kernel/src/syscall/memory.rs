@@ -1,5 +1,6 @@
 use crate::{
-    fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY, OpenFileKind},
+    file::OpenFileKind,
+    fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
     memory::{FileMappingError, FileMappingSource, MapPermission, MemoryAdvice, MemoryError},
     task::current_task,
 };

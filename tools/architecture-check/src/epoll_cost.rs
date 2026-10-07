@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
-const EPOLL_OWNER_SOURCE: &str = "kernel/src/fs/epoll.rs";
-const EPOLL_READY_SOURCE: &str = "kernel/src/fs/epoll/ready.rs";
+const EPOLL_OWNER_SOURCE: &str = "kernel/src/file/epoll.rs";
+const EPOLL_READY_SOURCE: &str = "kernel/src/file/epoll/ready.rs";
 const EPOLL_SYSCALL_SOURCE: &str = "kernel/src/syscall/epoll.rs";
 const WAIT_KEY_SOURCE: &str = "kernel/src/syscall/poll/wait_keys.rs";
 const PIPE_NOTIFY_SOURCE: &str = "kernel/src/task/process_table/pipe_wait.rs";

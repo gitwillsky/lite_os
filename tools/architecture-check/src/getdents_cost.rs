@@ -3,9 +3,9 @@ use std::{fs, path::Path};
 use super::SourceFile;
 
 const SYSCALL_SOURCE: &str = "kernel/src/syscall/fs.rs";
-const EXT4_VFS_SOURCE: &str = "kernel/src/fs/ext4/inode/vfs.rs";
-const EXT4_DIRECTORY_SOURCE: &str = "kernel/src/fs/ext4/directory.rs";
-const EXT4_CURSOR_SOURCE: &str = "kernel/src/fs/ext4/directory_cursor.rs";
+const EXT4_VFS_SOURCE: &str = "kernel/src/storage/fs/ext4/inode/vfs.rs";
+const EXT4_DIRECTORY_SOURCE: &str = "kernel/src/storage/fs/ext4/directory.rs";
+const EXT4_CURSOR_SOURCE: &str = "kernel/src/storage/fs/ext4/directory_cursor.rs";
 
 const DIRECTORY_ENTRIES: usize = 128;
 const ENTRIES_PER_BATCH: usize = 4;
@@ -29,7 +29,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     }
     for source in sources
         .iter()
-        .filter(|source| source.relative.starts_with("kernel/src/fs/"))
+        .filter(|source| source.relative.starts_with("kernel/src/storage/fs/"))
     {
         if source.text.contains("fn list(&self)") || source.text.contains("inode.list()") {
             errors.push(format!(

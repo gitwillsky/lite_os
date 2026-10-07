@@ -10,7 +10,7 @@
 - `VirtQueue` 独占 split-ring cursor、descriptor free list 与单一 pending-used latch；`used()` 只摘取
   ring entry 并返回不可复制的 `UsedDescriptor`，`recycle_used()` 只消费当前 queue 的唯一 token。
   adapter slot/generation/head、device length 与 response 尚未验证前，free list 不得改变。
-- `virtio_queue::DmaBuffer` 是 fixed bytes 与初始化时 kernel-VA→physical segments 的唯一共同
+- `virtio::queue::DmaBuffer` 是 fixed bytes 与初始化时 kernel-VA→physical segments 的唯一共同
   owner；adapter slot 从映射建立保持到 completion 或 reset，`VirtQueue` 只消费带 lifetime 的
   cached `DmaSlice`，不拥有、翻译或延长 backing 生命周期。
 - VirtIO-GPU `GpuCommand` 是 runtime opcode、wire length 与 completion stage 的唯一共同 owner；
@@ -28,16 +28,16 @@
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
 - `drivers::console` 独占 console RX ring 与通用串口 `ConsoleDevice`（platform 提供设备名与同步输出原语）；
-  fs 只经 `drivers::block` 与 `drivers::console` 两个 seam 使用设备。
+  `tty` 经它读写 raw 字节；块设备 seam 属于 `block`，`fs` 不依赖 `drivers`。
 - `drivers::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
-  稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型。
+  稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型；具体 adapter 位于 `virtio`，块设备注册表归 `block`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
 - `fs::device` 独占字符设备注册表：driver 按单 major 内的 minor 区间登记（Linux `cdev_add`），
   devfs 节点按路径登记（devtmpfs）；devpts 等动态节点只登记 driver 区间。设备子系统以
   `DeviceFile` 拥有记录边界、阻塞、poll 唤醒源、ioctl UAPI 与 mmap 裁决，fs/devfs/syscall 不认识
   具体设备种类。
-- `fs::tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
-  `null`/`zero`/`random`/`urandom`/`kmsg`。`fs::pty` 独占 PTY registry/pair；Terminal 独占
+- `tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
+  `null`/`zero`/`random`/`urandom`/`kmsg`。`tty::pty` 独占 PTY registry/pair；Terminal 独占
   session/foreground/termios/winsize 与创建时绑定的实际设备号。userspace terminal helper 与
   graphical session owner 由 [LiteUI 契约](lite-runtime.md) 维护。
 - userspace `linux-uapi` 独占 DRM/evdev/PTY/process/poll ancillary 的 raw musl FFI；`OwnedFd`、
@@ -46,7 +46,7 @@
 
 ## Interface
 
-- 设备类 deferred vector 由消费领域（drm、input、virtio_port）以 `cpu::register_deferred` 分配并经
+- 设备类 deferred vector 由消费领域（drm、input、virtio_port）以 `deferred::register` 分配并经
   device seam 的 `bind_completion_work` 绑定给 adapter；adapter 只经 `raise_completion` 发布，绑定时补发
   一次以消费绑定前已到达的 completion。核心向量（timer、console、network、driver I/O）是固定常量。
 - VirtIO hardirq handler 只读写 interrupt status/ack 并发布合并 deferred bit，不得取得
@@ -144,9 +144,9 @@
 - PTY master syscall write 的 user-copy chunk 同样限制为 256 bytes，并在返回前同步 drain 完整
   chunk；因此用户可见 `POLLIN` 只投影 cooked input/canonical EOF，未成行 raw bytes 只供内部
   `wait_ready(raw || cooked)` 封闭进度竞态。其他 terminal 写入保持 512-byte chunk；architecture
-  fence 直接解析 `fs/tty.rs` 的 `TerminalFile::poll` 与 `PtyMasterFile`/`TerminalFile::write`，禁止
+  fence 直接解析 `tty/mod.rs` 的 `TerminalFile::poll` 与 `PtyMasterFile`/`TerminalFile::write`，禁止
   user-visible poll 改用 raw readiness，或 PTY master 退回 512-byte chunk。
-- session、process group 与 signal 只经 task 在 `task::initialize` 安装的 `fs::JobControl` 访问；PTY master
+- session、process group 与 signal 只经 task 在 `task::initialize` 安装的 `tty::JobControl` 访问；PTY master
   drain 与 console deferred drain 生成的 ISIG bitset、master close 的 SIGHUP/SIGCONT 与 TIOCSWINSZ 的
   SIGWINCH 都由 fs TTY 经它路由到当时的 foreground process group，filesystem 不得反向依赖 task graph。
 - DMA/storage 与完整物理 segment mapping 必须在 publication 前预留；跨页 buffer 按缓存 segment

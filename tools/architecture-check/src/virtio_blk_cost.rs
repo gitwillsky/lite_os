@@ -3,9 +3,9 @@ use syn::{ImplItem, Item, ItemConst, ItemImpl, Lit, Type};
 
 use super::SourceFile;
 
-const SOURCE: &str = "kernel/src/drivers/virtio_blk.rs";
+const SOURCE: &str = "kernel/src/devices/virtio/blk.rs";
 const TASK_SOURCE: &str = "kernel/src/task/mod.rs";
-const INTERRUPT_SOURCE: &str = "kernel/src/arch/riscv64/interrupt.rs";
+const INTERRUPT_SOURCE: &str = "kernel/src/hardware/arch/riscv64/interrupt.rs";
 const DELAYED_POLLS: usize = 64;
 const LEGACY_SPINS_PER_POLL: usize = 200;
 

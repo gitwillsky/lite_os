@@ -14,8 +14,8 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
 }
 
 fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
-    let source =
-        fs::read_to_string(root.join("kernel/src/arch/aarch64/startup.rs")).unwrap_or_default();
+    let source = fs::read_to_string(root.join("kernel/src/hardware/arch/aarch64/startup.rs"))
+        .unwrap_or_default();
     for required in [
         "const EL0_VIRTUAL_COUNTER_ACCESS: u64 = 1 << 1;",
         "const EL0_CACHE_ACCESS: u64 = (1 << 26) | (1 << 15) | (1 << 14);",
@@ -26,7 +26,7 @@ fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
     ] {
         if !source.contains(required) {
             errors.push(format!(
-                "kernel/src/arch/aarch64/startup.rs: EL0 must receive the standard virtual-counter and cache-execution controls via `{required}`"
+                "kernel/src/hardware/arch/aarch64/startup.rs: EL0 must receive the standard virtual-counter and cache-execution controls via `{required}`"
             ));
         }
     }
@@ -293,12 +293,12 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             "pointer motion must use the hardware cursor queue without scene composition",
         ),
         (
-            "kernel/src/drivers/virtio_gpu.rs",
+            "kernel/src/devices/virtio/gpu.rs",
             "notify_queue(CURSOR_QUEUE)",
             "hardware cursor commands must use the dedicated VirtIO-GPU cursor queue",
         ),
         (
-            "kernel/src/drivers/virtio_gpu.rs",
+            "kernel/src/devices/virtio/gpu.rs",
             "cursor.latest_move = Some((x, y));",
             "cursor motion must coalesce in the adapter instead of blocking userspace",
         ),
