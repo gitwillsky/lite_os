@@ -12,6 +12,14 @@
 - `arch::<target>::io` 独占 MMIO 指令与 normal-memory/device ordering mechanism；通用
   `hal::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
   不得直接选择 target 指令形态。
+- platform 的设备寄存器（GICv3、PL011、PL031、16550、PLIC、Goldfish RTC）与 VirtIO 一样只经 `hal::MmioBus`：
+  构造时验证 window 的非空与地址上界，每次访问检查范围与实际地址对齐；子窗口必须包含于父窗口。
+  architecture-check 禁止 platform/devices 出现裸 volatile 访问，所有 owner（除 arch、hal）禁止直接
+  引用 raw MMIO primitive，包括分组/别名导入、指针方法与宏体。越界/未对齐访问由 adapter 报错或 fail-stop。
+- GIC claim/EOI 使用 ICC system register，不经过 MMIO window；PLIC claim/complete 使用检查后的 MMIO。
+  `architecture-bench` 直接复用 production `MmioBus`，在 host-owned aligned buffer 上测量有界 read/write
+  检查的 CPU 成本并使用既有宽阈值；不把 host buffer 测量当作目标硬件或中断延迟。双架构 release 与
+  boot gate 继续裁决实际 adapter 路径与活性。
 - 各 `arch::<target>::startup` 独占 secondary entry 前的 stack 和 raw identity projection；`cpu::CpuTopology` 独占进入 generic kernel 后的 identity mapping 与 lifecycle。
 
 ## Interface

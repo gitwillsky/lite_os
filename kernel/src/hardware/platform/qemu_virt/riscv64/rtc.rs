@@ -9,7 +9,7 @@ pub(crate) enum RtcError {
 
 /// 从 Goldfish RTC MMIO 读取 realtime 纳秒值。
 pub(crate) struct GoldfishRTCDevice {
-    base_addr: usize,
+    bus: crate::hal::MmioBus,
 }
 
 impl GoldfishRTCDevice {
@@ -28,13 +28,11 @@ impl GoldfishRTCDevice {
     ///
     /// 基址为零、区间不足 8 字节或地址溢出时返回 `InvalidRange`。
     pub(crate) fn new(base_addr: usize, size: usize) -> Result<Self, RtcError> {
-        if base_addr == 0
-            || size < RTC_TIME_HIGH + core::mem::size_of::<u32>()
-            || base_addr.checked_add(size).is_none()
-        {
+        if size < RTC_TIME_HIGH + core::mem::size_of::<u32>() {
             return Err(RtcError::InvalidRange);
         }
-        Ok(Self { base_addr })
+        let bus = crate::hal::MmioBus::new(base_addr, size).map_err(|_| RtcError::InvalidRange)?;
+        Ok(Self { bus })
     }
 
     /// 读取 Unix epoch realtime 纳秒值。
@@ -43,12 +41,15 @@ impl GoldfishRTCDevice {
     ///
     /// Goldfish RTC 高低 32 位寄存器组成的纳秒值。
     pub(crate) fn read_time_ns(&self) -> Result<u64, RtcError> {
-        // SAFETY: `new` 已验证 DTB MMIO 区间覆盖两个 32 位寄存器；
-        // 内核地址空间按设备页映射该区间，MMIO 读取必须使用 volatile。
-        let low =
-            unsafe { core::ptr::read_volatile((self.base_addr + RTC_TIME_LOW) as *const u32) };
-        let high =
-            unsafe { core::ptr::read_volatile((self.base_addr + RTC_TIME_HIGH) as *const u32) };
+        // 低字读取会锁存高字，先低后高。
+        let low = self
+            .bus
+            .read_u32(RTC_TIME_LOW)
+            .map_err(|_| RtcError::InvalidRange)?;
+        let high = self
+            .bus
+            .read_u32(RTC_TIME_HIGH)
+            .map_err(|_| RtcError::InvalidRange)?;
         Ok(((high as u64) << 32) | low as u64)
     }
 }

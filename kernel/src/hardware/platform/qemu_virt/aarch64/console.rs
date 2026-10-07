@@ -1,6 +1,8 @@
 //! QEMU `virt` PL011 early/runtime output endpoint。
 
 const EARLY_PL011_BASE: usize = 0x0900_0000;
+/// early console 只访问 DATA/FLAG 两个寄存器；QEMU `virt` 的 PL011 window 为一页。
+const EARLY_PL011_SIZE: usize = 0x1000;
 const DATA_REGISTER: usize = 0x00;
 const FLAG_REGISTER: usize = 0x18;
 const TRANSMIT_FIFO_FULL: u32 = 1 << 5;
@@ -66,20 +68,18 @@ impl core::fmt::Write for PanicConsoleWriter {
 /// discovery publication 前使用 QEMU `virt` 固定 early base；publication 后只消费已验证
 /// DTB base。若 early base 与 DTB 不一致，platform initialize 会 fail-stop，避免继续向未知 MMIO 写入。
 pub(crate) fn write_byte(byte: u8) -> Result<(), ConsoleError> {
-    let base = super::discovery::info_if_initialized()
-        .map(|info| info.uart.base_addr)
-        .unwrap_or(EARLY_PL011_BASE);
-    let base = crate::arch::mmu::physical_to_virtual(base);
-    // SAFETY: QEMU virt 固定 early PL011 或 discovery 已验证的永久 direct-mapped PL011；
-    // volatile 访问维持 device semantics，console lock 保证正常输出不会交错。
-    unsafe {
-        while core::ptr::read_volatile((base + FLAG_REGISTER) as *const u32) & TRANSMIT_FIFO_FULL
-            != 0
-        {
-            core::hint::spin_loop();
-        }
-        core::ptr::write_volatile((base + DATA_REGISTER) as *mut u32, byte as u32);
+    let (base, size) = super::discovery::info_if_initialized()
+        .map(|info| (info.uart.base_addr, info.uart.size))
+        .unwrap_or((EARLY_PL011_BASE, EARLY_PL011_SIZE));
+    let bus = crate::hal::MmioBus::new(crate::arch::mmu::physical_to_virtual(base), size)
+        .map_err(|_| ConsoleError)?;
+    // QEMU virt 固定 early PL011 或 discovery 已验证的永久 direct-mapped PL011；console lock 保证
+    // 正常输出不会交错。窗口访问失败说明 DTB 与寄存器布局不符，向调用者报告而不是继续写未知 MMIO。
+    while bus.read_u32(FLAG_REGISTER).map_err(|_| ConsoleError)? & TRANSMIT_FIFO_FULL != 0 {
+        core::hint::spin_loop();
     }
+    bus.write_u32(DATA_REGISTER, u32::from(byte))
+        .map_err(|_| ConsoleError)?;
     Ok(())
 }
 

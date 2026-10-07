@@ -287,8 +287,13 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         && mmio_bus.contains("crate::arch::write_mmio_u32(address, value)")
         && !mmio_bus.contains("read_volatile")
         && !mmio_bus.contains("write_volatile")
-        && gicv3.contains("crate::arch::read_mmio_u32(address)")
-        && gicv3.contains("crate::arch::write_mmio_u64(address, value)"))
+        && mmio_bus.contains("crate::arch::read_mmio_u64(address)")
+        && mmio_bus.contains("crate::arch::write_mmio_u64(address, value)")
+        && gicv3.contains("MmioBus")
+        && !gicv3.contains("crate::arch::read_mmio")
+        && !gicv3.contains("crate::arch::write_mmio")
+        && !gicv3.contains("read_volatile")
+        && !gicv3.contains("write_volatile"))
     {
         errors.push(
             "AArch64 MMIO must use the arch-owned exact base-register loads/stores required by QEMU HVF"

@@ -9,7 +9,7 @@ use crate::{
     arch::interrupt::SOFTWARE_SGI,
     cpu::{self, CpuSet},
     fallible_tree::FallibleMap,
-    hal::{InterruptError, InterruptHandler, InterruptVector},
+    hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus},
     sync::IrqMutex,
 };
 
@@ -54,60 +54,50 @@ pub(crate) struct GicV3 {
     handlers: FallibleMap<InterruptVector, Arc<dyn InterruptHandler>>,
 }
 
+/// GIC frame 的 MMIO window；越界或未对齐访问违反 DTB 不变量，fail-stop。
 #[derive(Clone, Copy)]
-struct MmioRange {
-    base: usize,
-    end: usize,
-}
+struct MmioRange(MmioBus);
 
 impl MmioRange {
     fn new(base: usize, size: usize) -> Result<Self, InterruptError> {
-        let end = base
-            .checked_add(size)
-            .filter(|_| base != 0 && size >= core::mem::size_of::<u64>())
-            .ok_or(InterruptError::InvalidVector)?;
-        Ok(Self { base, end })
-    }
-
-    fn address(self, offset: usize, width: usize) -> usize {
-        let address = self.base.checked_add(offset).expect("GIC MMIO overflow");
-        let access_end = address.checked_add(width).expect("GIC MMIO overflow");
-        assert!(access_end <= self.end, "GIC MMIO access exceeds DTB range");
-        address
+        if size < core::mem::size_of::<u64>() {
+            return Err(InterruptError::InvalidVector);
+        }
+        MmioBus::new(base, size)
+            .map(Self)
+            .map_err(|_| InterruptError::InvalidVector)
     }
 
     fn read32(self, offset: usize) -> u32 {
-        let address = self.address(offset, core::mem::size_of::<u32>());
-        // SAFETY: address is inside the DTB-validated, permanently mapped GIC MMIO range.
-        unsafe { crate::arch::read_mmio_u32(address) }
+        self.0
+            .read_u32(offset)
+            .expect("GIC register outside DTB range")
     }
 
     fn write32(self, offset: usize, value: u32) {
-        let address = self.address(offset, core::mem::size_of::<u32>());
-        // SAFETY: same bounded GIC MMIO ownership as read32.
-        unsafe { crate::arch::write_mmio_u32(address, value) };
+        self.0
+            .write_u32(offset, value)
+            .expect("GIC register outside DTB range");
     }
 
     fn read64(self, offset: usize) -> u64 {
-        let address = self.address(offset, core::mem::size_of::<u64>());
-        assert!(address.is_multiple_of(8), "unaligned GIC 64-bit register");
-        // SAFETY: address is aligned and inside the validated GIC MMIO range.
-        unsafe { crate::arch::read_mmio_u64(address) }
+        self.0
+            .read_u64(offset)
+            .expect("GIC 64-bit register outside DTB range or unaligned")
     }
 
     fn write64(self, offset: usize, value: u64) {
-        let address = self.address(offset, core::mem::size_of::<u64>());
-        assert!(address.is_multiple_of(8), "unaligned GIC 64-bit register");
-        // SAFETY: address is aligned and inside the validated GIC MMIO range.
-        unsafe { crate::arch::write_mmio_u64(address, value) };
+        self.0
+            .write_u64(offset, value)
+            .expect("GIC 64-bit register outside DTB range or unaligned");
     }
 
     fn subrange(self, offset: usize, size: usize) -> Self {
-        let base = self.address(offset, size);
-        Self {
-            base,
-            end: base + size,
-        }
+        Self(
+            self.0
+                .subwindow(offset, size)
+                .expect("GIC sub-frame outside DTB range"),
+        )
     }
 }
 

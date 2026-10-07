@@ -6,12 +6,12 @@ use super::plic_policy::{
 use crate::{
     cpu::{self, CpuSet},
     fallible_tree::FallibleMap,
-    hal::{InterruptError, InterruptHandler, InterruptVector},
+    hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus},
 };
 
 /// QEMU virt PLIC adapter。hardware context 编码仅存在于 platform backend。
 pub(super) struct PlicInterruptController {
-    base_addr: usize,
+    bus: MmioBus,
     possible_cpus: CpuSet,
     handlers: FallibleMap<InterruptVector, Arc<dyn InterruptHandler>>,
     affinities: FallibleMap<InterruptVector, CpuSet>,
@@ -58,16 +58,15 @@ impl PlicInterruptController {
         let required_priority_bytes = (MAX_INTERRUPT_VECTOR as usize)
             .checked_add(1)
             .and_then(|count| count.checked_mul(4));
-        if base_addr == 0
-            || base_addr.checked_add(size).is_none()
-            || required_context_bytes.is_none_or(|required| required > size)
+        if required_context_bytes.is_none_or(|required| required > size)
             || required_priority_bytes.is_none_or(|required| required > size)
         {
             return Err(InterruptError::InvalidVector);
         }
 
+        let bus = MmioBus::new(base_addr, size).map_err(|_| InterruptError::InvalidVector)?;
         let controller = Self {
-            base_addr,
+            bus,
             possible_cpus,
             handlers: FallibleMap::new(),
             affinities: FallibleMap::new(),
@@ -99,59 +98,64 @@ impl PlicInterruptController {
     }
 
     fn priority_offset(&self, vector: u32) -> usize {
-        self.base_addr + vector as usize * 4
+        vector as usize * 4
     }
 
     fn enable_offset(&self, context: u32) -> usize {
-        self.base_addr + 0x2000 + context as usize * 0x80
+        0x2000 + context as usize * 0x80
     }
 
     fn threshold_offset(&self, context: u32) -> usize {
-        self.base_addr + 0x200000 + context as usize * 0x1000
+        0x200000 + context as usize * 0x1000
     }
 
     fn claim_offset(&self, context: u32) -> usize {
-        self.base_addr + 0x200004 + context as usize * 0x1000
+        0x200004 + context as usize * 0x1000
+    }
+
+    // 构造器已验证 window 覆盖标准 priority/enable/context 几何；vector 与 context 在调用前验证，
+    // 因此越界或未对齐只可能是 PLIC 偏移计算 bug，fail-stop。
+    fn read_register(&self, offset: usize) -> u32 {
+        self.bus
+            .read_u32(offset)
+            .expect("PLIC register outside validated window")
+    }
+
+    fn write_register(&self, offset: usize, value: u32) {
+        self.bus
+            .write_u32(offset, value)
+            .expect("PLIC register outside validated window");
     }
 
     fn set_interrupt_priority_raw(&self, vector: u32, priority: u32) {
-        let address = self.priority_offset(vector);
-        // SAFETY: constructor validates the complete PLIC MMIO extent and caller validates vector.
-        unsafe { core::ptr::write_volatile(address as *mut u32, priority) };
+        self.write_register(self.priority_offset(vector), priority);
     }
 
     fn enable_for_context(&self, vector: u32, context: u32, enabled: bool) {
         let word_offset =
             enable_word_offset(vector).expect("PLIC vector must be validated before MMIO access");
         let bit = vector % u32::BITS;
-        let address = self.enable_offset(context) + word_offset;
-        // SAFETY: context comes from discovered CPUs and the validated vector remains within its
-        // 0x80-byte enable bitmap instead of crossing into the next context.
-        unsafe {
-            let current = core::ptr::read_volatile(address as *const u32);
-            let replacement = if enabled {
-                current | (1 << bit)
-            } else {
-                current & !(1 << bit)
-            };
-            core::ptr::write_volatile(address as *mut u32, replacement);
-        }
+        // context 来自已发现 CPU，已验证 vector 不会越过该 context 的 0x80-byte enable bitmap。
+        let offset = self.enable_offset(context) + word_offset;
+        let current = self.read_register(offset);
+        let replacement = if enabled {
+            current | (1 << bit)
+        } else {
+            current & !(1 << bit)
+        };
+        self.write_register(offset, replacement);
     }
 
     fn set_threshold(&self, context: u32, threshold: u32) {
-        let address = self.threshold_offset(context);
-        // SAFETY: context comes from a CPU validated by the constructor.
-        unsafe { core::ptr::write_volatile(address as *mut u32, threshold) };
+        self.write_register(self.threshold_offset(context), threshold);
     }
 
     fn claim(&self, context: u32) -> u32 {
-        // SAFETY: current CPU maps to a validated PLIC context; claim is a volatile device read.
-        unsafe { core::ptr::read_volatile(self.claim_offset(context) as *const u32) }
+        self.read_register(self.claim_offset(context))
     }
 
     fn complete(&self, context: u32, vector: u32) {
-        // SAFETY: current CPU maps to a validated PLIC context; complete is a volatile device write.
-        unsafe { core::ptr::write_volatile(self.claim_offset(context) as *mut u32, vector) };
+        self.write_register(self.claim_offset(context), vector);
     }
 }
 

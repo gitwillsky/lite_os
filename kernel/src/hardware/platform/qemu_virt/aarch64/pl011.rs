@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use spin::Once;
 
-use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus};
 
 const DATA: usize = 0x00;
 const FLAGS: usize = 0x18;
@@ -17,10 +17,7 @@ const RX_FIFO_LEVEL_MASK: u32 = 0b111 << 3;
 const RX_INTERRUPT: u32 = (1 << 4) | (1 << 6);
 const HARDIRQ_RX_BUDGET: usize = 64;
 
-struct Pl011 {
-    base: usize,
-    end: usize,
-}
+struct Pl011(MmioBus);
 
 // OWNER: AArch64 platform owns the unique PL011 MMIO endpoint; generic driver owns only RX bytes.
 static UART: Once<Pl011> = Once::new();
@@ -29,29 +26,15 @@ struct Pl011InterruptHandler;
 
 impl Pl011 {
     fn read(&self, offset: usize) -> u32 {
-        let address = self
-            .base
-            .checked_add(offset)
-            .expect("PL011 address overflow");
-        assert!(
-            address + core::mem::size_of::<u32>() <= self.end,
-            "PL011 register outside DTB range"
-        );
-        // SAFETY: address is an aligned PL011 register inside the permanent DTB MMIO mapping.
-        unsafe { core::ptr::read_volatile(address as *const u32) }
+        self.0
+            .read_u32(offset)
+            .expect("PL011 register outside DTB range")
     }
 
     fn write(&self, offset: usize, value: u32) {
-        let address = self
-            .base
-            .checked_add(offset)
-            .expect("PL011 address overflow");
-        assert!(
-            address + core::mem::size_of::<u32>() <= self.end,
-            "PL011 register outside DTB range"
-        );
-        // SAFETY: same bounded PL011 MMIO ownership as read; volatile preserves device writes.
-        unsafe { core::ptr::write_volatile(address as *mut u32, value) };
+        self.0
+            .write_u32(offset, value)
+            .expect("PL011 register outside DTB range");
     }
 }
 
@@ -78,12 +61,12 @@ pub(super) fn initialize(
     base: usize,
     size: usize,
 ) -> Result<Arc<dyn InterruptHandler>, InterruptError> {
-    let base = crate::arch::mmu::physical_to_virtual(base);
-    let end = base
-        .checked_add(size)
-        .filter(|_| base != 0 && size >= INTERRUPT_CLEAR + core::mem::size_of::<u32>())
-        .ok_or(InterruptError::InvalidVector)?;
-    UART.call_once(|| Pl011 { base, end });
+    if size < INTERRUPT_CLEAR + core::mem::size_of::<u32>() {
+        return Err(InterruptError::InvalidVector);
+    }
+    let bus = MmioBus::new(crate::arch::mmu::physical_to_virtual(base), size)
+        .map_err(|_| InterruptError::InvalidVector)?;
+    UART.call_once(|| Pl011(bus));
     Arc::try_new(Pl011InterruptHandler)
         .map(|handler| handler as Arc<dyn InterruptHandler>)
         .map_err(|_| InterruptError::NoMemory)

@@ -72,6 +72,38 @@ pub(crate) unsafe fn write_mmio_u32(address: usize, value: u32) {
     unsafe { core::ptr::write_volatile(address as *mut u32, value) };
 }
 
+/// Read one 64-bit doubleword from a caller-validated, 8-byte-aligned MMIO address.
+///
+/// # Safety
+///
+/// `address` must name a readable, 64-bit-aligned device register in a permanent MMIO mapping.
+// SAFETY: callers must prove the address is a readable aligned 64-bit device register.
+#[inline(always)]
+#[allow(
+    dead_code,
+    reason = "complete MMIO width set; only AArch64 GICv3 uses 64-bit registers"
+)]
+pub(crate) unsafe fn read_mmio_u64(address: usize) -> u64 {
+    // SAFETY: the caller owns range and alignment validity.
+    unsafe { core::ptr::read_volatile(address as *const u64) }
+}
+
+/// Write one 64-bit doubleword to a caller-validated, 8-byte-aligned MMIO address.
+///
+/// # Safety
+///
+/// `address` must name a writable, 64-bit-aligned device register in a permanent MMIO mapping.
+// SAFETY: callers must prove the address is a writable aligned 64-bit device register.
+#[inline(always)]
+#[allow(
+    dead_code,
+    reason = "complete MMIO width set; only AArch64 GICv3 uses 64-bit registers"
+)]
+pub(crate) unsafe fn write_mmio_u64(address: usize, value: u64) {
+    // SAFETY: the caller owns range and alignment validity.
+    unsafe { core::ptr::write_volatile(address as *mut u64, value) };
+}
+
 /// Order all earlier normal-memory writes before a following MMIO output.
 ///
 /// OWNER: `arch::io` owns the target-specific normal-memory-to-device ordering mechanism.

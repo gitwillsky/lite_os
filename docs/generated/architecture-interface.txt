@@ -1821,8 +1821,7 @@ kernel/src/hardware/arch/mod.rs :: pub (crate) mod trap
 kernel/src/hardware/arch/mod.rs :: pub (crate) mod user
 kernel/src/hardware/arch/mod.rs :: pub (crate) struct IllegalInstructionFault
 kernel/src/hardware/arch/mod.rs :: pub (crate) struct IllegalInstructionRetry
-kernel/src/hardware/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , secondary_entry , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , }
-kernel/src/hardware/arch/mod.rs :: pub (crate) use selected :: { read_mmio_u64 , write_mmio_u64 }
+kernel/src/hardware/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , read_mmio_u64 , secondary_entry , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , write_mmio_u64 , }
 kernel/src/hardware/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_instruction_cache
 kernel/src/hardware/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: raise_software
 kernel/src/hardware/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , disable_timer_source , enable_scheduler_interrupts , enable_timer_source , restore_local , wait_for_external_interrupt , wait_for_interrupt as wait , wait_with_local_irq_masked , }
@@ -1856,9 +1855,11 @@ kernel/src/hardware/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn restore_l
 kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) fn before_mmio_write ()
 kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn read_mmio_u16 (address : usize) -> u16
 kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn read_mmio_u32 (address : usize) -> u32
+kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn read_mmio_u64 (address : usize) -> u64
 kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn read_mmio_u8 (address : usize) -> u8
 kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn write_mmio_u16 (address : usize , value : u16)
 kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn write_mmio_u32 (address : usize , value : u32)
+kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn write_mmio_u64 (address : usize , value : u64)
 kernel/src/hardware/arch/riscv64/io.rs :: pub (crate) unsafe fn write_mmio_u8 (address : usize , value : u8)
 kernel/src/hardware/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn clone_for_trap_return (kernel_sp : usize , trap_return : KernelResume) -> Self
 kernel/src/hardware/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn goto_trap_return (kernel_sp : usize , trap_return : KernelResume) -> Self
@@ -1899,7 +1900,7 @@ kernel/src/hardware/arch/riscv64/mmu.rs :: pub (super) impl AddressSpaceToken ::
 kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) fn reset_live_floating_point ()
 kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) mod interrupt
 kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) use instruction_cache :: publish_range as publish_instruction_range
-kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , }
+kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , read_mmio_u64 , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , write_mmio_u64 , }
 kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) use kernel_context :: { KernelContext , KernelResume , switch_kernel_context }
 kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , USER_STACK_TOP , canonicalize_virtual_address , flush_local as flush_local_tlb , flush_local_range as flush_local_tlb_range , initialize_kernel_mmio , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_range_to_virtual , physical_to_virtual , virtual_to_physical , }
 kernel/src/hardware/arch/riscv64/mod.rs :: pub (crate) use page_table :: { AddressSpaceKind , PageTable as ArchitecturePageTable , PageTableEntry as ArchitecturePageTableEntry , PageTableError , TablePage , }
@@ -2097,9 +2098,12 @@ kernel/src/hardware/hal/bus.rs :: pub (crate) fn before_mmio_write ()
 kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
 kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u16 (& self , offset : usize) -> Result < u16 , BusError >
 kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u32 (& self , offset : usize) -> Result < u32 , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u64 (& self , offset : usize) -> Result < u64 , BusError >
 kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u8 (& self , offset : usize) -> Result < u8 , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn subwindow (& self , offset : usize , size : usize) -> Result < Self , BusError >
 kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u16 (& self , offset : usize , value : u16) -> Result < () , BusError >
 kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u64 (& self , offset : usize , value : u64) -> Result < () , BusError >
 kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
 kernel/src/hardware/hal/bus.rs :: pub (crate) struct MmioBus
 kernel/src/hardware/hal/console.rs :: pub (crate) fn console_device (index : usize) -> Option < Arc < dyn ConsoleDevice > >

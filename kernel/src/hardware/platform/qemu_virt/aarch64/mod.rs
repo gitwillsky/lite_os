@@ -95,12 +95,10 @@ pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usi
 
 pub(crate) fn read_realtime_ns() -> Option<u64> {
     let rtc = discovery::info().rtc;
-    if rtc.size < core::mem::size_of::<u32>() {
-        return None;
-    }
-    // SAFETY: discovery verified PL031 compatibility and a permanent MMIO range containing RTCDR.
-    let rtc_base = crate::arch::mmu::physical_to_virtual(rtc.start);
-    let seconds = unsafe { core::ptr::read_volatile(rtc_base as *const u32) };
+    // discovery 已验证 PL031 compatibility；RTCDR 位于 window 偏移 0。
+    let bus = crate::hal::MmioBus::new(crate::arch::mmu::physical_to_virtual(rtc.start), rtc.size)
+        .ok()?;
+    let seconds = bus.read_u32(0).ok()?;
     Some((seconds as u64).saturating_mul(1_000_000_000))
 }
 

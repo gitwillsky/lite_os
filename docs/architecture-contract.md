@@ -40,7 +40,7 @@
 | `entry` | `cpu`, `platform`, `trap` | raw boot/trap callback ABI 的唯一 codec；boot 只构造 typed `BootContext`，trap 只投递 generic semantic handler |
 | `config` | 无 | 只保存无运行时依赖的常量 |
 | `cpu` | `arch` | logical `CpuId`/`CpuSet`、hardware identity 映射与 online/active lifecycle 的唯一 owner；不感知 platform，hardware identity 只在 platform/firmware 边界出现 |
-| `hal` | `arch`, `sync` | MMIO 总线窗口、设备中断接口（handler/vector/error）、串口 console seam 与只追加设备注册表；位于 `platform` 与 `drivers` 之下，使 platform 不依赖任何设备类或 DMA 内存 |
+| `hal` | `arch`, `sync` | 硬件抽象与 platform/driver 共用的最小 seam；唯一的设备寄存器访问路径 `MmioBus`（platform 与 virtio 共用）、设备中断接口、串口 console seam 与只追加设备注册表；位于 `platform` 与 `drivers` 之下，platform 不依赖设备类或 DMA 内存 |
 | `deferred` | `arch`, `cpu` | per-CPU merged deferred-work bitmap 与设备类 handler 注册表的唯一 owner；空→非空 transition 经 `arch::interrupt::raise_software` 发布 local edge，发布者不认识消费者；独立于 `cpu` 以免 CPU topology 依赖 platform |
 | `platform` | `arch`, `cpu`, `fallible_tree`, `hal`, `sync` | 编译期选择的 machine/firmware adapter；拥有 DTB、PSCI/SBI、GIC/PLIC、UART 与 TLB shootdown，并向 `virtio` 暴露 transport 表、PCI host、地址映射与 interrupt 注册；不认识设备类，也不依赖 `memory` |
 | `fallible_tree` | 无 | 无状态的确定性 AVL mechanism；提供显式 OOM publication、结构化 split 与 ordered-disjoint join，不拥有领域数据 |

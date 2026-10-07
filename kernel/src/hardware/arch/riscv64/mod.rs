@@ -19,8 +19,8 @@ mod user_context;
 
 pub(crate) use instruction_cache::publish_range as publish_instruction_range;
 pub(crate) use io::{
-    before_mmio_write, read_mmio_u8, read_mmio_u16, read_mmio_u32, write_mmio_u8, write_mmio_u16,
-    write_mmio_u32,
+    before_mmio_write, read_mmio_u8, read_mmio_u16, read_mmio_u32, read_mmio_u64, write_mmio_u8,
+    write_mmio_u16, write_mmio_u32, write_mmio_u64,
 };
 pub(crate) use kernel_context::{KernelContext, KernelResume, switch_kernel_context};
 pub(crate) use mmu::{

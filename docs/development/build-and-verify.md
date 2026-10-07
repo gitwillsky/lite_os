@@ -177,7 +177,8 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 - 文档不记录本机测量值；阈值变化必须有实现和环境证据，不能为通过门禁直接放宽。
 
 当前 blocking benchmark 覆盖 timer deadline、AArch64 VA39 index/TLBI operand projection 与
-AArch64 semantic PTE encode/decode。target-specific 零成本边界还必须通过 release target
+AArch64 semantic PTE encode/decode，以及 production HAL MMIO window 的检查后 read/write。HAL 用
+对齐的 host buffer 隔离边界/对齐检查的 CPU 成本，不宣称设备延迟或 IRQ 时序。target-specific 零成本边界还必须通过 release target
 build、static architecture fence、symbol 与 disassembly 检查；host wall-clock 不能冒充
 target instruction cost。RISC-V 保留 backend 的 PTE 与 trap 性能约束由其 unit、release
 static gate 与 disassembly gate 继续负责。

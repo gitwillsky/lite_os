@@ -8,6 +8,12 @@ mod timer_deadline;
 #[path = "../../../kernel/src/hardware/arch/aarch64/va39.rs"]
 mod va39;
 
+#[path = "mmio_fixture.rs"]
+mod arch;
+#[allow(dead_code)]
+#[path = "../../../kernel/src/hardware/hal/bus.rs"]
+mod mmio_bus;
+
 const ITERATIONS: u64 = 2_000_000;
 const SAMPLES: usize = 5;
 const MAX_NANOSECONDS_PER_OPERATION: f64 = 200.0;
@@ -42,6 +48,16 @@ fn verify(name: &str, operation: impl FnMut(u64) -> usize + Copy) {
 }
 
 fn main() {
+    // 只测 production window validation 的 CPU 成本；buffer 不代表设备延迟或 IRQ 时序。
+    let mut registers = [0u64; 16];
+    let bus = mmio_bus::MmioBus::new(registers.as_mut_ptr() as usize, size_of_val(&registers))
+        .expect("benchmark buffer must be valid");
+    verify("HAL MMIO checked read/write", |iteration| {
+        let offset = black_box((iteration as usize % 16) * 8);
+        let bus = black_box(&bus);
+        bus.write_u64(offset, iteration).expect("aligned register");
+        bus.read_u64(offset).expect("aligned register") as usize
+    });
     verify("timer deadline", |iteration| {
         let previous = 10_000 + iteration % 997;
         let now = previous + iteration % 31;

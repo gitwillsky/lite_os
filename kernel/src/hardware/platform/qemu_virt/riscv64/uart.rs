@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use spin::Once;
 
-use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus};
 
 const RECEIVE_BUFFER: usize = 0;
 const INTERRUPT_ENABLE: usize = 1;
@@ -12,10 +12,7 @@ const DATA_READY: u8 = 1;
 const RECEIVED_DATA_INTERRUPT: u8 = 1;
 const HARDIRQ_RX_BUDGET: usize = 64;
 
-struct Uart16550 {
-    base: usize,
-    end: usize,
-}
+struct Uart16550(MmioBus);
 
 // OWNER: RISC-V platform owns the unique 16550 MMIO endpoint; generic driver owns only RX bytes.
 static UART: Once<Uart16550> = Once::new();
@@ -24,21 +21,15 @@ struct UartInterruptHandler;
 
 impl Uart16550 {
     fn read(&self, offset: usize) -> u8 {
-        assert!(
-            self.base + offset < self.end,
-            "16550 register outside DTB range"
-        );
-        // SAFETY: offset is a bounded 16550 byte register inside the permanent DTB MMIO mapping.
-        unsafe { core::ptr::read_volatile((self.base + offset) as *const u8) }
+        self.0
+            .read_u8(offset)
+            .expect("16550 register outside DTB range")
     }
 
     fn write(&self, offset: usize, value: u8) {
-        assert!(
-            self.base + offset < self.end,
-            "16550 register outside DTB range"
-        );
-        // SAFETY: same bounded 16550 MMIO ownership as read; volatile preserves device writes.
-        unsafe { core::ptr::write_volatile((self.base + offset) as *mut u8, value) };
+        self.0
+            .write_u8(offset, value)
+            .expect("16550 register outside DTB range");
     }
 }
 
@@ -60,11 +51,11 @@ pub(super) fn initialize(
     base: usize,
     size: usize,
 ) -> Result<Arc<dyn InterruptHandler>, InterruptError> {
-    let end = base
-        .checked_add(size)
-        .filter(|_| base != 0 && size > LINE_STATUS)
-        .ok_or(InterruptError::InvalidVector)?;
-    UART.call_once(|| Uart16550 { base, end });
+    if size <= LINE_STATUS {
+        return Err(InterruptError::InvalidVector);
+    }
+    let bus = MmioBus::new(base, size).map_err(|_| InterruptError::InvalidVector)?;
+    UART.call_once(|| Uart16550(bus));
     Arc::try_new(UartInterruptHandler)
         .map(|handler| handler as Arc<dyn InterruptHandler>)
         .map_err(|_| InterruptError::NoMemory)

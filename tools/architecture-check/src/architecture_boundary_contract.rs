@@ -1,6 +1,22 @@
 use std::{fs, path::Path};
 
+use proc_macro2::{TokenStream, TokenTree};
+use quote::ToTokens;
+
 use super::SourceFile;
+
+// 检查标识符而非文本子串：覆盖分组/别名导入、指针方法和宏体，忽略注释与字符串。
+fn contains_identifier(tokens: TokenStream, forbidden: impl Fn(&str) -> bool + Copy) -> bool {
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Ident(ident) => forbidden(&ident.to_string()),
+        TokenTree::Group(group) => contains_identifier(group.stream(), forbidden),
+        _ => false,
+    })
+}
+
+fn raw_mmio(name: &str) -> bool {
+    name.starts_with("read_mmio_") || name.starts_with("write_mmio_")
+}
 
 /// 检查静态 arch/platform façade、raw ABI 与 target dependency containment。
 ///
@@ -33,6 +49,24 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         {
             errors.push(format!(
                 "{}: target selection is restricted to static arch/platform facades",
+                source.relative
+            ));
+        }
+        if !matches!(source.owner.as_str(), "arch" | "hal")
+            && contains_identifier(source.syntax.to_token_stream(), raw_mmio)
+        {
+            errors.push(format!(
+                "{}: device register access must go through hal::MmioBus, not the raw arch MMIO primitives",
+                source.relative
+            ));
+        }
+        if (source.owner == "platform" || source.relative.starts_with("kernel/src/devices/"))
+            && contains_identifier(source.syntax.to_token_stream(), |name| {
+                matches!(name, "read_volatile" | "write_volatile")
+            })
+        {
+            errors.push(format!(
+                "{}: platform/devices registers must use hal::MmioBus (bounds, alignment and the arch-fixed access form), not raw volatile pointers",
                 source.relative
             ));
         }
@@ -147,5 +181,79 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         errors.push(
             "kernel/Cargo.toml: riscv crate must not be an unconditional dependency".to_owned(),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(owner: &str, relative: &str, text: &str) -> SourceFile {
+        SourceFile {
+            relative: relative.to_owned(),
+            owner: owner.to_owned(),
+            text: text.to_owned(),
+            lines: text.lines().map(str::to_owned).collect(),
+            syntax: syn::parse_file(text).expect("fixture must parse"),
+            binary_crate: true,
+        }
+    }
+
+    fn violations(owner: &str, relative: &str, text: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        check(
+            Path::new("/nonexistent"),
+            &[source(owner, relative, text)],
+            &mut errors,
+        );
+        errors
+            .into_iter()
+            .filter(|error| error.contains("MmioBus"))
+            .collect()
+    }
+
+    const PLATFORM: &str = "kernel/src/hardware/platform/qemu_virt/x.rs";
+    const DEVICE: &str = "kernel/src/devices/virtio/x.rs";
+
+    #[test]
+    fn register_access_through_hal_and_documentation_are_accepted() {
+        for (owner, path) in [("platform", PLATFORM), ("virtio", DEVICE)] {
+            for text in [
+                "fn f(bus: &crate::hal::MmioBus) { let _ = bus.read_u32(0); }",
+                "// read_volatile must stay behind HAL\nfn f() { let _ = \"arch::read_mmio_u32\"; }",
+            ] {
+                assert!(violations(owner, path, text).is_empty());
+            }
+        }
+        assert!(
+            violations(
+                "hal",
+                "kernel/src/hardware/hal/bus.rs",
+                "fn f() { unsafe { crate::arch::read_mmio_u32(0) }; }"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn raw_register_access_cannot_hide_in_imports_methods_or_macros() {
+        for (owner, path) in [("platform", PLATFORM), ("virtio", DEVICE)] {
+            for text in [
+                "fn f(p: *const u32) { unsafe { core::ptr::read_volatile(p) }; }",
+                "fn f(p: *mut u32) { unsafe { p.write_volatile(1) }; }",
+                "use core::ptr::{read_volatile as load};",
+                "use crate::arch::{read_mmio_u32 as load};",
+                "use crate::arch::{write_mmio_u64};",
+                "macro_rules! load { ($p:expr) => { unsafe { $p.read_volatile() } }; }",
+            ] {
+                assert_eq!(violations(owner, path, text).len(), 1, "{owner}: {text}");
+            }
+            for width in [8, 16, 32, 64] {
+                for access in ["read", "write"] {
+                    let text = format!("use crate::arch::{{{access}_mmio_u{width} as access}};");
+                    assert_eq!(violations(owner, path, &text).len(), 1);
+                }
+            }
+        }
     }
 }
