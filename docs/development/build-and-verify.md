@@ -224,6 +224,21 @@ frame/page table。kernel-stack retirement 还必须在释放 `KERNEL_SPACE` loc
 成本由 architecture static gate、四 CPU COW migration 与双 CPU kernel-stack churn
 runtime gate 裁决，不用失真的 host wall-clock 阈值掩盖。
 
+设备模型与驱动注册的间接层按成本归属分别裁决，不增加 host wall-clock benchmark：
+
+- `DRIVER_IO` completion dispatch 是唯一位于每次块/RNG/声卡 completion 上的新增路径：completion 源存放在
+  只追加的 `Once` 槽位，dispatch 无锁遍历、不克隆 `Arc`。`deferred_context_contract` 解析该函数并禁止
+  `lock`/`clone`/`cloned`，mutation 测试证明恢复加锁会失败。
+- 字符设备读写经一次 `dyn DeviceFile` 调用与 `UserOutput`/`UserInput` 游标：每次 syscall 一次虚调用，
+  用户事务数由 `io_copy_cost` 的确定性计数固定（1 MiB `/dev/zero` 一次事务，evdev/DRM 每批 validate 与
+  copy 各一次），不需要 wall-clock 阈值。
+- 设备类注册表、字符/块设备注册表、mount 事务锁与 `JobControl`/`PipeScheduler` hook 只在 open、
+  mount、启动装配或 TTY 访问判定上取得；TTY 判定在改造前已取 process graph lock，新增的只是一次 hook
+  虚调用。这些都不在每字节或每 completion 路径上，只作诊断，不增加 blocking gate。
+- 设备类 deferred vector 每个已发布 bit 一次函数指针调用，handler 表为只追加的 `Once` 槽位，无锁无分配。
+- mmap 的 `MappedFile` 在每次映射建立时分配一次，page fault 仍是一次 `dyn SharedFileMapping` 调用后直接
+  进入 page cache。
+
 VMA hot path 使用 deterministic structure gate，不增加受宿主调度影响的 wall-clock benchmark。
 production `VmaIndexState` transition tests 覆盖 stack grow、split/protect/merge、fork/exec 与
 unpublished rollback；AVL neighbor tests 对 16,384 entries 校验 comparison bound。

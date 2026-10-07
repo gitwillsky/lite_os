@@ -58,13 +58,17 @@ impl Pl011 {
 impl InterruptHandler for Pl011InterruptHandler {
     fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
         let uart = UART.wait();
+        // 1. 先清 RX/timeout 中断，再读空 FIFO。QEMU 的 PL011 只在 FIFO 由空变为 1 字节时置位 RX
+        //    中断；若先读空再清除，恰好在“最后一次检查为空”与“清除”之间到达的字节会把刚置位的
+        //    中断一并清掉，该字节留在 FIFO 且不会再有“空→1”的跳变，之后整个输入流永久停滞。
+        // 2. 先清后读时，读空之后才到达的字节置位的中断不会被清除，handler 返回后立即再次触发。
+        uart.write(INTERRUPT_CLEAR, RX_INTERRUPT);
         let mut bytes = [0u8; HARDIRQ_RX_BUDGET];
         let mut count = 0usize;
         while count < bytes.len() && uart.read(FLAGS) & RX_FIFO_EMPTY == 0 {
             bytes[count] = uart.read(DATA) as u8;
             count += 1;
         }
-        uart.write(INTERRUPT_CLEAR, RX_INTERRUPT);
         crate::drivers::console::publish_received(&bytes[..count]);
         Ok(())
     }

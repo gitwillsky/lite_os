@@ -53,6 +53,50 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_deferred_notification_coalescing(sources, errors);
     check_virtio_irq_and_lock_contract(sources, errors);
     check_kernel_space_lock_track(sources, errors);
+    check_driver_io_dispatch_lock_free(sources, errors);
+}
+
+const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/drivers/registry.rs";
+
+/// 方法调用名称计数器。
+#[derive(Default)]
+struct MethodCalls(Vec<String>);
+
+impl<'ast> Visit<'ast> for MethodCalls {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        self.0.push(call.method.to_string());
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+/// 每次块设备/RNG/声卡 completion 都经 `dispatch_io_completion_work` 遍历 completion 源：该热路径
+/// 只允许无锁读取只追加的 `Once` 槽位，不得取锁或克隆 `Arc`（引用计数原子操作）。
+fn check_driver_io_dispatch_lock_free(sources: &[SourceFile], errors: &mut Vec<String>) {
+    let Some(source) = sources
+        .iter()
+        .find(|source| source.relative == DRIVER_REGISTRY_SOURCE)
+    else {
+        errors.push(format!("{DRIVER_REGISTRY_SOURCE}: missing driver registry"));
+        return;
+    };
+    let Some(dispatch) = function(source, "dispatch_io_completion_work") else {
+        errors.push(format!(
+            "{DRIVER_REGISTRY_SOURCE}: missing dispatch_io_completion_work"
+        ));
+        return;
+    };
+    let mut calls = MethodCalls::default();
+    calls.visit_block(&dispatch.block);
+    let forbidden = calls
+        .0
+        .into_iter()
+        .filter(|method| matches!(method.as_str(), "lock" | "clone" | "cloned"))
+        .collect::<Vec<_>>();
+    if !forbidden.is_empty() {
+        errors.push(format!(
+            "{DRIVER_REGISTRY_SOURCE}: DRIVER_IO completion dispatch must read sources lock-free; found {forbidden:?}"
+        ));
+    }
 }
 
 fn check_deferred_notification_coalescing(sources: &[SourceFile], errors: &mut Vec<String>) {
@@ -543,6 +587,25 @@ mod tests {
         let mut errors = Vec::new();
         check(sources, &mut errors);
         errors
+    }
+
+    #[test]
+    fn driver_io_dispatch_is_lock_free() {
+        let mut sources = repository_sources();
+        assert!(errors(&sources).is_empty(), "{:#?}", errors(&sources));
+        mutate(
+            &mut sources,
+            DRIVER_REGISTRY_SOURCE,
+            ".filter_map(Once::get)",
+            ".filter_map(Once::get).map(|source| { let _ = BLOCK_DEVICES.devices.lock(); source })",
+        );
+        assert!(
+            errors(&sources)
+                .iter()
+                .any(|error| error.contains("completion dispatch must read sources lock-free")),
+            "{:#?}",
+            errors(&sources)
+        );
     }
 
     #[derive(Default)]

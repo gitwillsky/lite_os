@@ -6,7 +6,8 @@
 
 use alloc::{sync::Arc, vec::Vec};
 use core::mem::MaybeUninit;
-use spin::Mutex;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::{Mutex, Once};
 
 use super::{
     EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice, block::BlockDevice,
@@ -63,9 +64,16 @@ static ENTROPY_SOURCES: DeviceRegistry<dyn EntropySource> = DeviceRegistry::new(
 static PORT_DEVICES: DeviceRegistry<dyn PortDevice> = DeviceRegistry::new();
 // OWNER: console 设备的唯一发布点；TTY 按 `console=` 名称选择其一作为 `/dev/console`。
 static CONSOLE_DEVICES: DeviceRegistry<dyn ConsoleDevice> = DeviceRegistry::new();
+/// 共享 `DRIVER_IO` vector 的 completion 源上限：每个 virtio-blk、virtio-rng 与 virtio-sound adapter 各占一项。
+const COMPLETION_SOURCE_CAPACITY: usize = 16;
+
 // OWNER: 经共享 `DRIVER_IO` deferred vector 发布 completion 的全部 adapter；adapter 构造成功时
-// 自报。缺失某个源时其 completion 永远不被回收，同步 I/O waiter 永久睡眠。
-static COMPLETION_SOURCES: DeviceRegistry<dyn CompletionSource> = DeviceRegistry::new();
+// 自报。只追加的 `Once` 槽位使每次 completion dispatch 无锁读取；缺失某个源时其 completion
+// 永远不被回收，同步 I/O waiter 永久睡眠。
+static COMPLETION_SOURCES: [Once<Arc<dyn CompletionSource>>; COMPLETION_SOURCE_CAPACITY] =
+    [const { Once::new() }; COMPLETION_SOURCE_CAPACITY];
+// OWNER: 下一个未分配的 completion 源槽位；`fetch_add` 使并发注册取得不同槽位。
+static NEXT_COMPLETION_SOURCE: AtomicUsize = AtomicUsize::new(0);
 
 /// 发布一个块设备。
 ///
@@ -206,11 +214,16 @@ pub(crate) fn console_device(index: usize) -> Option<Arc<dyn ConsoleDevice>> {
 ///
 /// # Errors
 ///
-/// 注册表扩容失败时原样返回 adapter；调用方必须放弃该 adapter。
+/// 槽位已满时原样返回 adapter；调用方必须放弃该 adapter。
 pub(super) fn register_completion_source(
     source: Arc<dyn CompletionSource>,
 ) -> Result<usize, Arc<dyn CompletionSource>> {
-    COMPLETION_SOURCES.register(source)
+    let index = NEXT_COMPLETION_SOURCE.fetch_add(1, Ordering::Relaxed);
+    let Some(slot) = COMPLETION_SOURCES.get(index) else {
+        return Err(source);
+    };
+    slot.call_once(|| source);
+    Ok(index)
 }
 
 /// 在 task/idle safe point 让每个 completion 源回收一批有界 completion。
@@ -219,12 +232,11 @@ pub(super) fn register_completion_source(
 ///
 /// 任一源仍有 backlog 时返回 `true`，caller 必须重新发布 `DRIVER_IO`。
 pub(crate) fn dispatch_io_completion_work() -> bool {
-    let mut backlog = false;
-    let mut index = 0;
-    // 逐个取 Arc 后释放注册表锁再回收：回收会取得 adapter queue lock，不得嵌套在注册表锁内。
-    while let Some(source) = COMPLETION_SOURCES.get(index) {
-        backlog |= source.dispatch_completions();
-        index += 1;
-    }
-    backlog
+    // 全部槽位逐个检查而不在首个空槽停止：并发注册可能先分配槽位、稍后才发布。
+    COMPLETION_SOURCES
+        .iter()
+        .filter_map(Once::get)
+        .fold(false, |backlog, source| {
+            source.dispatch_completions() | backlog
+        })
 }

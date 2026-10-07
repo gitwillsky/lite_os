@@ -105,6 +105,7 @@ fn main() -> ExitCode {
     fp_context_contract::check(&root, &mut errors);
     filesystem_blocking_lock_contract::check(&sources, &mut errors);
     terminal_contract::check_terminal_contract(&sources, &mut errors);
+    terminal_contract::check_pl011_clears_before_draining(&sources, &mut errors);
     timer_transaction_cost::check(&root, &mut errors);
     translation_fence_contract::check(&sources, &mut errors);
     unix_connect_contract::check(&sources, &mut errors);

@@ -22,6 +22,38 @@ pub(super) fn check_terminal_contract(sources: &[SourceFile], errors: &mut Vec<S
     check_write_chunk(source, "TerminalFile", false, errors);
 }
 
+const PL011_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/pl011.rs";
+
+/// PL011 RX hardirq 必须先清中断、再读空 FIFO。
+///
+/// QEMU 的 PL011 只在 FIFO 由空变为 1 字节时置位 RX 中断；先读空再清除会让“最后一次检查为空”与
+/// “清除”之间到达的字节把刚置位的中断一并清掉，该字节留在 FIFO 且不再有“空→1”的跳变，输入流
+/// 永久停滞（表现为 vi 等逐字节读取的程序在突发输入后无响应）。
+pub(super) fn check_pl011_clears_before_draining(sources: &[SourceFile], errors: &mut Vec<String>) {
+    let Some(source) = sources.iter().find(|source| source.relative == PL011_PATH) else {
+        errors.push(format!(
+            "missing PL011 contract production source: {PL011_PATH}"
+        ));
+        return;
+    };
+    let compact: String = source.text.chars().filter(|c| !c.is_whitespace()).collect();
+    let clear = compact.find("uart.write(INTERRUPT_CLEAR,RX_INTERRUPT);");
+    let drain = compact.find("uart.read(DATA)");
+    let handler = compact.find("fnhandle_interrupt(");
+    let enable = compact.find("fnenable_receive(");
+    let ordered = matches!((handler, clear, drain), (Some(h), Some(c), Some(d)) if h < c && c < d);
+    // `enable_receive` 的初始化清除不属于 handler，必须排在 handler 之后且不得被误当作 handler 的清除。
+    let handler_clear_is_first = match (handler, clear, enable) {
+        (Some(h), Some(c), Some(e)) => h < c && c < e,
+        _ => false,
+    };
+    if !ordered || !handler_clear_is_first {
+        errors.push(format!(
+            "{PL011_PATH}: handle_interrupt must clear RX/timeout interrupts before draining the FIFO"
+        ));
+    }
+}
+
 fn path_ends_with(path: &Path, expected: &[&str]) -> bool {
     path.segments.len() >= expected.len()
         && path
@@ -193,6 +225,30 @@ mod tests {
                 "#
             ),
         )]
+    }
+
+    #[test]
+    fn pl011_interrupt_clear_cannot_move_after_the_drain() {
+        let root = super::super::repository_root();
+        let mut sources = super::super::load_sources(&root).expect("repository sources");
+        let mut errors = Vec::new();
+        check_pl011_clears_before_draining(&sources, &mut errors);
+        assert!(errors.is_empty(), "{errors:#?}");
+
+        let source = sources
+            .iter_mut()
+            .find(|source| source.relative == PL011_PATH)
+            .expect("PL011 source");
+        // 把 handler 里的清除移到读空循环之后（即原先的有缺陷顺序）。
+        let clear = "uart.write(INTERRUPT_CLEAR, RX_INTERRUPT);\n";
+        let start = source.text.find(clear).expect("handler clear anchor");
+        source.text.replace_range(start..start + clear.len(), "");
+        let publish = "crate::drivers::console::publish_received(";
+        let at = source.text.find(publish).expect("publish anchor");
+        source.text.insert_str(at, clear);
+        let mut errors = Vec::new();
+        check_pl011_clears_before_draining(&sources, &mut errors);
+        assert_eq!(errors.len(), 1, "{errors:#?}");
     }
 
     #[test]
