@@ -37,7 +37,7 @@ pub(crate) use directory::{
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
 };
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent, EpollMemberships};
-pub(crate) use fifo::{FifoOpenError, open as open_fifo};
+pub(crate) use fifo::{FifoAccess, FifoOpenError, open as open_fifo};
 pub(crate) use file::{
     CancelledFileReservation, Console, DetachedFileDescriptor, FileDescriptorError,
     FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK,

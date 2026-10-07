@@ -66,7 +66,8 @@
 - 持久存储是固定 ext4/JBD2 profile；附加块设备可经 `mount(2)` 挂载，没有分区表。
 - FIFO、字符/块设备节点由 `Inode::mknod` 创建（ext4 把设备号按 Linux 旧/新编码存入 `i_block`，无 extent tree；
   tmpfs 存为 `Body::Special`）。FIFO 的内核 Pipe 由 `fs::fifo` 按 `(filesystem, inode)` 绑定，只持 `Weak`，
-  生命周期由 endpoint 决定。VFS 发布 opened entry 时把任何文件系统里的块设备节点包装成 `BlockSpecial`：
+  生命周期由 endpoint 决定；打开的 FIFO 是一个持有 0~2 个 endpoint 的 `DeviceFile`，所以双向读写、
+  两路 poll/epoll source 与阻塞都走设备 seam，写入无 reader 时经 `DeviceError::BrokenPipe` 投递 `SIGPIPE`。VFS 发布 opened entry 时把任何文件系统里的块设备节点包装成 `BlockSpecial`：
   metadata/权限仍归节点所属文件系统，字节 I/O、容量、缓存身份、ioctl 与 fsync 统一落到 `BlockNode`。
 - 原始块 I/O 经 page cache 缓冲，但 ext4 直接读写块层，二者不共享缓存，所以一块盘要么被挂载（节点只读、
   不缓冲）要么可写打开：挂载与“以写方式打开”由 `BlockNode` 的原子字互斥，挂载前写回并逐出该盘的缓冲页。

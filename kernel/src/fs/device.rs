@@ -55,6 +55,8 @@ pub(crate) enum DeviceError {
     WouldBlock,
     /// 后台进程组访问终端已收到 job-control signal，syscall 必须按 `ERESTARTSYS` 重启。
     Restart,
+    /// 写入没有 reader 的管道（`EPIPE`）；syscall 层在返回前向写者投递 `SIGPIPE`（Linux `pipe_write`）。
+    BrokenPipe,
     /// 其他 Linux errno。
     Errno(isize),
 }
@@ -65,6 +67,7 @@ impl DeviceError {
         match self {
             Self::WouldBlock => errno::EAGAIN,
             Self::Restart => errno::EINTR,
+            Self::BrokenPipe => errno::EPIPE,
             Self::Errno(value) => value,
         }
     }

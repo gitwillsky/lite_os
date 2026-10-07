@@ -62,8 +62,9 @@ tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`�
 没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring 或完整 block I/O priority enforcement。
 
 FIFO：`open` 按 Linux `fifo_open` 汇合（阻塞只读等 writer、阻塞只写等 reader，非阻塞只写无 reader 为
-`ENXIO`），对端打开后立刻关闭也放行等待者；最后一个 endpoint 关闭时未读数据丢弃。`O_RDWR` 打开 FIFO 返回
-`EOPNOTSUPP`（pipe OFD 只有单向 endpoint），所以 shell 的 `exec 3<>fifo` 惯用法不可用。
+`ENXIO`），`O_RDWR` 不阻塞（`exec 3<>fifo` 可用）；对端打开后立刻关闭也放行等待者；最后一个 endpoint 关闭时
+未读数据丢弃。poll 的 `POLLIN` 只表示有数据，`POLLHUP` 只在曾有 writer 来过又全部离开之后出现；写入没有
+reader 的 FIFO 得到 `EPIPE` 并投递 `SIGPIPE`。
 
 块设备节点 `/dev/vdX`（`S_IFBLK`，major 254，每盘 16 个 minor）支持原始块 I/O：`read`/`write`/`pread`/
 `pwrite`/`lseek`（`SEEK_END` 为容量）/`fsync`/`mmap`，经 page cache 缓冲，任意字节偏移；写入在设备末尾截断，

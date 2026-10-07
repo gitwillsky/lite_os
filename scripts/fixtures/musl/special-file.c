@@ -3,6 +3,7 @@
  * 每一步失败都以步骤编号作为退出码；全部通过才打印唯一的成功 marker。 */
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -94,6 +95,41 @@ static void fifo_semantics(const char *path, int base)
 	CHECK(base + 21, waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 	CHECK(base + 22, close(writer) == 0);
 	CHECK(base + 23, stat(path, &info) == -1 && errno == ENOENT);
+
+	/* O_RDWR：同一个 fd 既是 reader 又是 writer，打开不阻塞，写入的数据可由自己读回。 */
+	CHECK(base + 24, mknod(path, S_IFIFO | 0600, 0) == 0);
+	int both = open(path, O_RDWR);
+	CHECK(base + 25, both >= 0);
+	CHECK(base + 26, write(both, "loop", 4) == 4 && read(both, buffer, sizeof buffer) == 4
+	      && memcmp(buffer, "loop", 4) == 0);
+
+	/* poll：尚无 writer 来过的 reader 不报 POLLHUP；writer 来过又离开之后才报；数据到来报 POLLIN。 */
+	CHECK(base + 27, close(both) == 0);
+	reader = open(path, O_RDONLY | O_NONBLOCK);
+	struct pollfd poll_reader = { .fd = reader, .events = POLLIN };
+	CHECK(base + 28, reader >= 0 && poll(&poll_reader, 1, 0) == 0);
+	writer = open(path, O_WRONLY | O_NONBLOCK);
+	CHECK(base + 29, writer >= 0 && poll(&poll_reader, 1, 0) == 0);
+	CHECK(base + 30, write(writer, "z", 1) == 1 && poll(&poll_reader, 1, 0) == 1
+	      && (poll_reader.revents & POLLIN));
+	CHECK(base + 31, read(reader, buffer, 1) == 1 && close(writer) == 0);
+	poll_reader.revents = 0;
+	CHECK(base + 32, poll(&poll_reader, 1, 0) == 1 && (poll_reader.revents & POLLHUP));
+	CHECK(base + 33, close(reader) == 0);
+
+	/* SIGPIPE：默认处置下，向没有 reader 的 FIFO 写入终止写者。 */
+	child = fork();
+	if (child == 0) {
+		int r = open(path, O_RDONLY | O_NONBLOCK);
+		int w = open(path, O_WRONLY | O_NONBLOCK);
+		if (r < 0 || w < 0 || close(r) != 0) _exit(1);
+		signal(SIGPIPE, SIG_DFL);
+		(void)!write(w, "x", 1);
+		_exit(2);
+	}
+	CHECK(base + 34, waitpid(child, &status, 0) == child && WIFSIGNALED(status)
+	      && WTERMSIG(status) == SIGPIPE);
+	CHECK(base + 35, unlink(path) == 0);
 }
 
 static void device_nodes(const char *directory, int base)

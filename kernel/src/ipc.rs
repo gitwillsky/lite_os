@@ -82,6 +82,8 @@ pub(crate) struct PipePollState {
     pub(crate) hangup: bool,
     pub(crate) error: bool,
     pub(crate) write_capacity: usize,
+    /// read 侧环里有未读数据；与 `readable` 不同，EOF 不算数据（命名管道的 `POLLIN` 只看数据）。
+    pub(crate) has_data: bool,
     /// 对端方向（read 侧看 writer、write 侧看 reader）累计被打开的次数；只有命名管道会增长。
     pub(crate) peer_opens: u64,
     /// 有任务正在命名管道 open 汇合里等待对端；唤醒路径据此在没有 poll 事件时仍检查等待者。
@@ -365,6 +367,7 @@ impl Pipe {
                 hangup: state.writers == 0,
                 error: false,
                 write_capacity: 0,
+                has_data: state.length != 0,
                 peer_opens: state.writer_opens,
                 rendezvous: state.rendezvous_waiters != 0,
             },
@@ -374,6 +377,7 @@ impl Pipe {
                 hangup: false,
                 error: state.readers == 0,
                 write_capacity: state.bytes.len() - state.length,
+                has_data: false,
                 peer_opens: state.reader_opens,
                 rendezvous: state.rendezvous_waiters != 0,
             },

@@ -2,10 +2,9 @@ use alloc::sync::Arc;
 
 use crate::{
     fs::{
-        AccessIdentity, InodeType, O_ACCMODE, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY,
-        OpenFileDescription, OpenedFile, vfs,
+        AccessIdentity, FifoAccess, InodeType, O_ACCMODE, O_CLOEXEC, O_NONBLOCK, O_RDONLY,
+        O_WRONLY, OpenFileDescription, OpenedFile, vfs,
     },
-    ipc::PipeDirection,
     syscall::errno,
     task::{TaskControlBlock, current_task},
 };
@@ -172,25 +171,24 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     }
     let ofd_flags = flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
     let ofd = if kind == InodeType::Fifo {
-        // `O_RDWR` 需要同时持有 reader 与 writer 的 OFD，目前的 pipe OFD 只有单向 endpoint。
-        let direction = match flags & O_ACCMODE {
-            O_RDONLY => PipeDirection::Read,
-            O_WRONLY => PipeDirection::Write,
-            _ => return -errno::EOPNOTSUPP,
+        let access = match flags & O_ACCMODE {
+            O_RDONLY => FifoAccess::Read,
+            O_WRONLY => FifoAccess::Write,
+            _ => FifoAccess::ReadWrite,
         };
         let identity = match inode.metadata() {
             Ok(metadata) => (inode.filesystem_id(), metadata.inode),
             Err(error) => return ferr(error),
         };
-        let end = match crate::fs::open_fifo(identity, direction, flags & O_NONBLOCK != 0) {
-            Ok(end) => end,
+        let file = match crate::fs::open_fifo(identity, access, flags & O_NONBLOCK != 0) {
+            Ok(file) => file,
             Err(crate::fs::FifoOpenError::NoReader) => return -errno::ENXIO,
             Err(crate::fs::FifoOpenError::Interrupted) => return -errno::EINTR,
             Err(crate::fs::FifoOpenError::OutOfMemory) => return -errno::ENOMEM,
         };
-        match OpenFileDescription::pipe(end, ofd_flags) {
+        match OpenFileDescription::device(file, ofd_flags, opened) {
             Ok(ofd) => ofd,
-            Err(()) => return -errno::ENOMEM,
+            Err(error) => return ferr(error),
         }
     } else if let (InodeType::CharacterDevice, Some(number)) = (kind, inode.device_number()) {
         let request = crate::fs::device::OpenRequest {

@@ -62,7 +62,7 @@ impl UserMemory for TaskUserMemory<'_> {
 pub(super) fn device_error(error: DeviceError) -> isize {
     match error {
         DeviceError::Restart => INTERNAL_RESTART_SYS,
-        DeviceError::WouldBlock | DeviceError::Errno(_) => -error.errno(),
+        DeviceError::WouldBlock | DeviceError::BrokenPipe | DeviceError::Errno(_) => -error.errno(),
     }
 }
 
@@ -165,6 +165,11 @@ pub(super) fn write_device(
         total_length,
     };
     let result = file.write(&mut input, *ofd.flags.lock() & O_NONBLOCK != 0);
+    if result == Err(DeviceError::BrokenPipe) {
+        // 无论是否已有进度，peer 关闭都投递 SIGPIPE；已有进度时返回值仍是已写字节数。
+        crate::task::send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
+            .expect("current device writer must exist");
+    }
     progress_or(input.cursor.completed(), result)
 }
 

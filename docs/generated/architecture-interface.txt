@@ -1832,6 +1832,7 @@ kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn new () -> Result 
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
 kernel/src/fs/devfs.rs :: pub (super) struct DevFileSystemType
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 其他 Linux errno。"] Errno (isize)
+kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 写入没有 reader 的管道（`EPIPE`）；syscall 层在返回前向写者投递 `SIGPIPE`（Linux `pipe_write`）。"] BrokenPipe
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 后台进程组访问终端已收到 job-control signal，syscall 必须按 `ERESTARTSYS` 重启。"] Restart
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 非阻塞操作当前无法推进（`EAGAIN`）。"] WouldBlock
 kernel/src/fs/device.rs :: enum DeviceWaitSource :: # [doc = " Pipe 的一个方向；`events` 为该源满足时可唤醒的 poll 位。"] Pipe { pipe : Arc < Pipe > , direction : PipeDirection , events : i16 , }
@@ -2232,11 +2233,16 @@ kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write
 kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/ext4/xattr.rs :: pub (super) impl Ext4FileSystem :: fn release_xattr_block (& self , disk : & mut Ext4InodeDisk ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4_type.rs :: pub (super) struct Ext4FileSystemType
+kernel/src/fs/fifo.rs :: enum FifoAccess :: Read
+kernel/src/fs/fifo.rs :: enum FifoAccess :: ReadWrite
+kernel/src/fs/fifo.rs :: enum FifoAccess :: Write
 kernel/src/fs/fifo.rs :: enum FifoOpenError :: # [doc = " 分配失败（`ENOMEM`）。"] OutOfMemory
 kernel/src/fs/fifo.rs :: enum FifoOpenError :: # [doc = " 等待对端期间被 signal 中断（`EINTR`/重启）。"] Interrupted
 kernel/src/fs/fifo.rs :: enum FifoOpenError :: # [doc = " 非阻塞只写打开时没有 reader（`ENXIO`）。"] NoReader
+kernel/src/fs/fifo.rs :: pub (crate) enum FifoAccess
 kernel/src/fs/fifo.rs :: pub (crate) enum FifoOpenError
-kernel/src/fs/fifo.rs :: pub (crate) fn open (identity : (usize , u64) , direction : PipeDirection , nonblocking : bool ,) -> Result < Arc < PipeEnd > , FifoOpenError >
+kernel/src/fs/fifo.rs :: pub (crate) fn open (identity : (usize , u64) , access : FifoAccess , nonblocking : bool ,) -> Result < Arc < dyn DeviceFile > , FifoOpenError >
+kernel/src/fs/fifo.rs :: pub (crate) struct FifoFile
 kernel/src/fs/file.rs :: enum OpenFileKind :: # [doc = " 经字符设备注册表打开、由设备子系统实现的设备文件。"] Device (Arc < dyn crate :: fs :: device :: DeviceFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
@@ -2553,7 +2559,7 @@ kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str 
 kernel/src/fs/mod.rs :: pub (crate) use block_node :: BlockNode
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent , EpollMemberships }
-kernel/src/fs/mod.rs :: pub (crate) use fifo :: { FifoOpenError , open as open_fifo }
+kernel/src/fs/mod.rs :: pub (crate) use fifo :: { FifoAccess , FifoOpenError , open as open_fifo }
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , Inode , InodeMetadata , InodeType , StorageWriter }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
@@ -3117,6 +3123,7 @@ kernel/src/ipc.rs :: enum PipeWrite :: Bytes (usize)
 kernel/src/ipc.rs :: enum PipeWrite :: Full
 kernel/src/ipc.rs :: pub (crate) PipePollState :: error : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: hangup : bool
+kernel/src/ipc.rs :: pub (crate) PipePollState :: has_data : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: peer_opens : u64
 kernel/src/ipc.rs :: pub (crate) PipePollState :: readable : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: rendezvous : bool
