@@ -1,7 +1,15 @@
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use spin::Once;
 
-use crate::{println, sync::IrqMutex};
+use crate::{
+    cpu::DeferredWork,
+    println,
+    sync::{IrqMutex, TaskMutex},
+};
+
+#[path = "log/kmsg_wire.rs"]
+mod kmsg_wire;
 
 /// 按严重程度递增排列的 kernel log level。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,15 +49,18 @@ impl fmt::Display for LogLevel {
 }
 
 const KMSG_RECORD_CAPACITY: usize = 128;
-const KMSG_MESSAGE_CAPACITY: usize = 192;
-pub(crate) const KMSG_READ_BUFFER_SIZE: usize = 256;
+/// 单条消息上限，与 Linux `LOG_LINE_MAX` 相同；更长的用户写入被截断。
+const KMSG_MESSAGE_CAPACITY: usize = 1024;
+/// 内核自身产生的 record 使用 facility 0（`LOG_KERN`）。
+const KMSG_USER_DEFAULT_LEVEL: u8 = 4;
 
 #[derive(Clone, Copy)]
 struct KmsgRecord {
     sequence: u64,
     timestamp_us: u64,
+    /// `facility << 3 | level`。
     priority: u8,
-    length: u8,
+    length: u16,
     message: [u8; KMSG_MESSAGE_CAPACITY],
 }
 
@@ -63,48 +74,61 @@ impl KmsgRecord {
     };
 }
 
-struct FixedBytes<const N: usize> {
-    bytes: [u8; N],
+/// 向定长槽位追加文本；写满后静默截断（与 Linux 对超长消息的处理一致）。
+struct SliceBytes<'a> {
+    bytes: &'a mut [u8],
     length: usize,
 }
 
-impl<const N: usize> FixedBytes<N> {
-    const fn new() -> Self {
-        Self {
-            bytes: [0; N],
-            length: 0,
-        }
-    }
-
-    fn append(&mut self, bytes: &[u8]) {
-        let count = bytes.len().min(N - self.length);
-        self.bytes[self.length..self.length + count].copy_from_slice(&bytes[..count]);
+impl Write for SliceBytes<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let count = text.len().min(self.bytes.len() - self.length);
+        self.bytes[self.length..self.length + count].copy_from_slice(&text.as_bytes()[..count]);
         self.length += count;
+        Ok(())
     }
 }
 
-impl<const N: usize> Write for FixedBytes<N> {
-    fn write_str(&mut self, text: &str) -> fmt::Result {
-        self.append(text.as_bytes());
+/// 把任意字节按 UTF-8 显示，非法序列显示为 U+FFFD。
+struct Lossy<'a>(&'a [u8]);
+
+impl fmt::Display for Lossy<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for chunk in self.0.utf8_chunks() {
+            formatter.write_str(chunk.valid())?;
+            if !chunk.invalid().is_empty() {
+                formatter.write_str("\u{fffd}")?;
+            }
+        }
         Ok(())
     }
 }
 
 /// 一次 `/dev/kmsg` record 读取结果。
-pub(crate) enum KmsgRead {
-    /// 一个完整 Linux devkmsg text record。
-    Record(usize),
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum KmsgRead<E> {
+    /// 一个完整 record 已交给 `emit`，cursor 已前进。
+    Record,
     /// reader 已追上当前 producer sequence。
     Empty,
     /// 环覆盖了 reader 尚未消费的 sequence；下一次读取从当前最老 record 继续。
     Overrun,
-    /// caller buffer 无法容纳一个完整 record。
+    /// caller buffer 无法容纳一个完整 record；cursor 不前进。
     BufferTooSmall,
+    /// `emit` 失败；cursor 不前进，record 下次读取时重新交出。
+    Emit(E),
+    /// 序列化同一 OFD 的并发 reader 时等待元数据分配失败。
+    OutOfMemory,
 }
 
 /// `/dev/kmsg` OFD 独占的 sequence cursor。
 pub(crate) struct KmsgReader {
-    cursor: IrqMutex<u64>,
+    // 下一条要交出的 sequence。只在持有 `gate` 时修改；poll 与 seek 只需要无锁读取最新值。
+    cursor: AtomicU64,
+    // OWNER: 序列化同一个 OFD（dup/fork 共享）的并发 reader。`emit` 会写用户内存并可能缺页，
+    // 所以不能用 IRQ/spin lock；缺失时两个 reader 会各自读到同一条 record 并各自前进 cursor，
+    // 丢掉下一条。
+    gate: TaskMutex<()>,
 }
 
 impl KmsgReader {
@@ -115,47 +139,66 @@ impl KmsgReader {
     /// 不分配的 OFD-local cursor。
     pub(crate) fn open() -> Self {
         Self {
-            cursor: IrqMutex::new(LOGGER.lock().oldest_sequence()),
+            cursor: AtomicU64::new(LOGGER.lock().oldest_sequence()),
+            gate: TaskMutex::new(()),
         }
     }
 
     /// 读取且仅消费一个 Linux `/dev/kmsg` text record。
     ///
+    /// 1. 在 logger 锁内只复制该条 record，随即释放锁；
+    /// 2. 在锁外编码并经 `emit` 交给调用者（可能触发缺页）；
+    /// 3. 全部交出后才推进 cursor，所以任何失败都不会丢 record。
+    ///
     /// # Parameters
     ///
-    /// - `output`: kernel-owned 连续缓冲区；不足时 cursor 不前进。
+    /// - `capacity`: 调用者缓冲字节数；放不下整条 record 时返回 `BufferTooSmall`。
+    /// - `emit`: 接收编码后的连续分片。
     ///
     /// # Returns
     ///
-    /// 完整 record 长度、空、覆盖或 buffer-too-small 状态。
-    pub(crate) fn read(&self, output: &mut [u8]) -> KmsgRead {
-        let mut cursor = self.cursor.lock();
-        let logger = LOGGER.lock();
-        let oldest = logger.oldest_sequence();
-        if *cursor < oldest {
-            *cursor = oldest;
-            return KmsgRead::Overrun;
+    /// 见 [`KmsgRead`]。
+    pub(crate) fn read<E>(
+        &self,
+        capacity: usize,
+        emit: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    ) -> KmsgRead<E> {
+        let Ok(_gate) = self.gate.lock() else {
+            return KmsgRead::OutOfMemory;
+        };
+        let cursor = self.cursor.load(Ordering::Acquire);
+        let record = {
+            let logger = LOGGER.lock();
+            let oldest = logger.oldest_sequence();
+            if cursor < oldest {
+                self.cursor.store(oldest, Ordering::Release);
+                return KmsgRead::Overrun;
+            }
+            if cursor == logger.next_sequence {
+                return KmsgRead::Empty;
+            }
+            let record = logger.records[cursor as usize % KMSG_RECORD_CAPACITY];
+            assert_eq!(record.sequence, cursor, "kmsg ring sequence drift");
+            record
+        };
+        match kmsg_wire::encode(
+            record.priority,
+            record.sequence,
+            record.timestamp_us,
+            &record.message[..usize::from(record.length)],
+            capacity,
+            emit,
+        ) {
+            Ok(kmsg_wire::Encoded::Done) => {
+                self.cursor.store(
+                    cursor.checked_add(1).expect("kmsg sequence exhausted"),
+                    Ordering::Release,
+                );
+                KmsgRead::Record
+            }
+            Ok(kmsg_wire::Encoded::TooSmall) => KmsgRead::BufferTooSmall,
+            Err(error) => KmsgRead::Emit(error),
         }
-        if *cursor == logger.next_sequence {
-            return KmsgRead::Empty;
-        }
-        let record = logger.records[*cursor as usize % KMSG_RECORD_CAPACITY];
-        assert_eq!(record.sequence, *cursor, "kmsg ring sequence drift");
-        let mut wire = FixedBytes::<KMSG_READ_BUFFER_SIZE>::new();
-        write!(
-            wire,
-            "{},{},{},-;",
-            record.priority, record.sequence, record.timestamp_us
-        )
-        .expect("fixed kmsg header formatting failed");
-        wire.append(&record.message[..usize::from(record.length)]);
-        wire.append(b"\n");
-        if output.len() < wire.length {
-            return KmsgRead::BufferTooSmall;
-        }
-        output[..wire.length].copy_from_slice(&wire.bytes[..wire.length]);
-        *cursor = (*cursor).checked_add(1).expect("kmsg sequence exhausted");
-        KmsgRead::Record(wire.length)
     }
 
     /// 查询当前 cursor 是否落后于 producer 或已发生覆盖。
@@ -164,8 +207,19 @@ impl KmsgReader {
     ///
     /// 下一次 read 不会返回 Empty 时为 true。
     pub(crate) fn readable(&self) -> bool {
-        let cursor = *self.cursor.lock();
-        cursor != LOGGER.lock().next_sequence
+        self.cursor.load(Ordering::Acquire) != LOGGER.lock().next_sequence
+    }
+
+    /// 移到环中最老的仍可读取 record（`SEEK_SET`/`SEEK_DATA`）。
+    pub(crate) fn seek_oldest(&self) {
+        self.cursor
+            .store(LOGGER.lock().oldest_sequence(), Ordering::Release);
+    }
+
+    /// 移到 producer 之后，只读取此后发布的 record（`SEEK_END`/`SEEK_HOLE`）。
+    pub(crate) fn seek_newest(&self) {
+        self.cursor
+            .store(LOGGER.lock().next_sequence, Ordering::Release);
     }
 
     /// 返回 producer sequence 作为只读 readiness generation。
@@ -199,19 +253,37 @@ impl Logger {
             .saturating_sub(KMSG_RECORD_CAPACITY as u64)
     }
 
+    /// 发布一条用户经 `/dev/kmsg` 写入的 record（Linux `devkmsg_write` → `printk_emit`）。
+    ///
+    /// record 总是进入环；是否同时输出到 UART 由调用者按 console loglevel 决定。消息直接写入环槽位，
+    /// 不经栈上临时副本：调用者可能在 hardirq 栈上。
+    fn log_user(&mut self, priority: u8, text: &[u8]) {
+        let length = text.len().min(KMSG_MESSAGE_CAPACITY);
+        let sequence = self.next_sequence;
+        let slot = &mut self.records[sequence as usize % KMSG_RECORD_CAPACITY];
+        slot.sequence = sequence;
+        slot.timestamp_us = crate::timer::get_time_us();
+        slot.priority = priority;
+        slot.length = length as u16;
+        slot.message[..length].copy_from_slice(&text[..length]);
+        self.next_sequence = sequence.checked_add(1).expect("kmsg sequence exhausted");
+    }
+
     fn log(&mut self, level: LogLevel, module: &str, args: fmt::Arguments) {
         let cpu = crate::cpu::current_id().index();
-        let mut message = FixedBytes::<KMSG_MESSAGE_CAPACITY>::new();
-        write!(message, "[CPU-{cpu}] [{module}] {args}")
-            .expect("fixed kmsg message formatting failed");
         let sequence = self.next_sequence;
-        self.records[sequence as usize % KMSG_RECORD_CAPACITY] = KmsgRecord {
-            sequence,
-            timestamp_us: crate::timer::get_time_us(),
-            priority: level.syslog_priority(),
-            length: u8::try_from(message.length).expect("kmsg message capacity exceeds u8"),
-            message: message.bytes,
+        // 直接格式化进环槽位：hardirq 也会走到这里，栈上不放 1 KiB 临时缓冲。
+        let slot = &mut self.records[sequence as usize % KMSG_RECORD_CAPACITY];
+        let mut message = SliceBytes {
+            bytes: &mut slot.message,
+            length: 0,
         };
+        write!(message, "[CPU-{cpu}] [{module}] {args}").expect("slice formatting never fails");
+        let length = message.length;
+        slot.sequence = sequence;
+        slot.timestamp_us = crate::timer::get_time_us();
+        slot.priority = level.syslog_priority();
+        slot.length = length as u16;
         self.next_sequence = sequence.checked_add(1).expect("kmsg sequence exhausted");
         println!(
             "[\x1b[35mCPU-{}\x1b[0m] [{}] [\x1b[34m{}\x1b[0m] {}",
@@ -254,6 +326,57 @@ pub(crate) fn enabled(level: LogLevel) -> bool {
 pub(crate) fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
     debug_assert!(enabled(level));
     LOGGER.lock().log(level, module, args);
+    publish_notification();
+}
+
+// OWNER: `/dev/kmsg` 的阻塞 reader 唤醒通道，由 fs 在启动期绑定一次。logger 可在 hardirq 与任何持锁
+// 上下文调用，不能在其中直接唤醒任务（会取 scheduler 锁），只能发布这个 deferred vector；缺失时
+// 阻塞在 `/dev/kmsg` 上的 reader 永远收不到新 record。
+static PUBLISH_WORK: Once<DeferredWork> = Once::new();
+
+/// 绑定 record 发布后要触发的 deferred vector；只能调用一次。
+pub(crate) fn bind_publish_work(work: DeferredWork) {
+    PUBLISH_WORK.call_once(|| work);
+}
+
+/// 在 logger 锁之外发布一次“有新 record”的合并通知。
+fn publish_notification() {
+    if let Some(work) = PUBLISH_WORK.get() {
+        crate::cpu::raise_deferred(*work);
+    }
+}
+
+/// 把一次 `/dev/kmsg` 写入作为 record 发布（Linux `devkmsg_write`）。
+///
+/// 解析 `<N>` 前缀得到 facility/level，去掉结尾换行；record 总是进入环，仅当 level 通过 console
+/// loglevel 时才同时输出到 UART。
+///
+/// # Parameters
+///
+/// - `input`: 用户写入的原始字节（调用者已按 `LOG_LINE_MAX` 截断）。
+pub(crate) fn publish_user_message(input: &[u8]) {
+    let (priority, text) = kmsg_wire::parse_user_message(input, KMSG_USER_DEFAULT_LEVEL);
+    let level = match priority & 7 {
+        0..=3 => LogLevel::Error,
+        4 => LogLevel::Warn,
+        5 | 6 => LogLevel::Info,
+        _ => LogLevel::Debug,
+    };
+    let cpu = crate::cpu::current_id().index();
+    {
+        let mut logger = LOGGER.lock();
+        logger.log_user(priority, text);
+        if enabled(level) {
+            // 输出与入环在同一把锁内，保证 UART 与环的顺序一致（与内核 record 相同）。
+            println!(
+                "[\x1b[35mCPU-{}\x1b[0m] [{}] [\x1b[34muser\x1b[0m] {}",
+                cpu,
+                level,
+                Lossy(&text[..text.len().min(KMSG_MESSAGE_CAPACITY)])
+            );
+        }
+    }
+    publish_notification();
 }
 
 /// Debug level log macro。

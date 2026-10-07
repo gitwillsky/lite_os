@@ -134,6 +134,10 @@ impl BlockDevice for CountingImage {
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
+
+    fn block_count(&self) -> u64 {
+        self.image.lock().unwrap().metadata().unwrap().len() / BLOCK_SIZE as u64
+    }
 }
 
 fn mounted() -> (Arc<CountingImage>, Arc<Ext4FileSystem>) {

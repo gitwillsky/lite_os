@@ -21,8 +21,8 @@ use spin::Mutex;
 use position::FilePosition;
 
 use super::{
-    Epoll, EpollMemberships, FileSystemError, FileSystemStatistics, Inode, OpenedFile,
-    ReadinessSource, ReadinessSources, TimerFd, vfs,
+    BlockNode, Epoll, EpollMemberships, FileSystemError, FileSystemStatistics, Inode, InodeType,
+    OpenedFile, ReadinessSource, ReadinessSources, TimerFd, vfs,
 };
 use crate::{
     ipc::{EventFd, PipeEnd},
@@ -126,12 +126,19 @@ pub(crate) struct OpenFileDescription {
     _write_open: Option<WriteOpen>,
 }
 
-/// 一个挂载上的“以写方式打开”登记，Drop 时撤销（Linux `mnt_drop_write` 的 OFD 版本）。
-struct WriteOpen(usize);
+/// 以写方式打开 inode 时的登记，Drop 时撤销：挂载上的写者（Linux `mnt_drop_write` 的 OFD 版本），
+/// 块设备节点还登记 bdev 写者（`BlockNode`），使“被挂载”与“有写者”互斥。
+struct WriteOpen {
+    filesystem: usize,
+    block: Option<Arc<BlockNode>>,
+}
 
 impl Drop for WriteOpen {
     fn drop(&mut self) {
-        crate::fs::vfs().end_write_open(self.0);
+        crate::fs::vfs().end_write_open(self.filesystem);
+        if let Some(block) = &self.block {
+            block.end_writer();
+        }
     }
 }
 
@@ -445,9 +452,23 @@ impl OpenFileDescription {
     /// 挂载为 read-only 返回 `ReadOnly`；分配失败返回 `OutOfMemory`。
     pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Result<Arc<Self>, FileSystemError> {
         let write_open = if flags & O_ACCMODE != O_RDONLY {
-            let filesystem = opened.inode().filesystem_id();
+            let inode = opened.inode();
+            let filesystem = inode.filesystem_id();
             crate::fs::vfs().begin_write_open(filesystem)?;
-            Some(WriteOpen(filesystem))
+            // 先构造 guard：后面的 bdev 登记失败时，它的 Drop 撤销已完成的挂载写者登记。
+            let mut guard = WriteOpen {
+                filesystem,
+                block: None,
+            };
+            if inode.inode_type() == InodeType::BlockDevice {
+                let block = inode
+                    .device_number()
+                    .and_then(crate::fs::device::block_node)
+                    .ok_or(FileSystemError::NoDevice)?;
+                block.begin_writer()?;
+                guard.block = Some(block);
+            }
+            Some(guard)
         } else {
             None
         };

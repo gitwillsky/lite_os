@@ -176,14 +176,39 @@ pub(super) fn ioctl_device(
     request: usize,
     argument: usize,
 ) -> isize {
-    let call = IoctlCall {
+    let memory = TaskUserMemory(task);
+    file.ioctl(&ioctl_call(&memory, task, ofd, request, argument))
+        .unwrap_or_else(device_error)
+}
+
+/// 路径打开的 inode 的专属 ioctl（块设备节点的 `BLK*`）。
+pub(super) fn ioctl_inode(
+    task: &TaskControlBlock,
+    ofd: &OpenFileDescription,
+    inode: &dyn crate::fs::Inode,
+    request: usize,
+    argument: usize,
+) -> isize {
+    let memory = TaskUserMemory(task);
+    inode
+        .ioctl(&ioctl_call(&memory, task, ofd, request, argument))
+        .unwrap_or_else(device_error)
+}
+
+fn ioctl_call<'a>(
+    memory: &'a TaskUserMemory<'_>,
+    task: &TaskControlBlock,
+    ofd: &OpenFileDescription,
+    request: usize,
+    argument: usize,
+) -> IoctlCall<'a> {
+    IoctlCall {
         request,
         argument,
-        user: &TaskUserMemory(task),
+        user: memory,
         nonblocking: *ofd.flags.lock() & O_NONBLOCK != 0,
         privileged: task.credential_id(true, true) == 0,
-    };
-    file.ioctl(&call).unwrap_or_else(device_error)
+    }
 }
 
 /// 构造设备裁决 mmap 所需的请求。

@@ -129,22 +129,35 @@ pub(crate) fn mount(
     let _transaction = MOUNT_TRANSACTION
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    if kind.requires_device() {
+    // 块设备类型先占用设备：没有写者才能挂载，之后节点的写入被拒绝（见 `BlockNode`）。
+    let claimed = if kind.requires_device() {
         let number = device.ok_or(FileSystemError::InvalidOperation)?;
         if vfs().device_mounted(number) {
             return Err(FileSystemError::Busy);
         }
+        let block = device::block_node(number).ok_or(FileSystemError::NoDevice)?;
+        block.begin_mount()?;
+        Some(block)
+    } else {
+        None
+    };
+    let published = kind
+        .create(&MountRequest {
+            environment: environment(),
+            device,
+            options,
+        })
+        .and_then(|filesystem| {
+            vfs()
+                .mount(point, source, filesystem.clone(), device, flags)
+                .inspect_err(|_| {
+                    let _ = filesystem.shutdown();
+                })
+        });
+    if let (Err(_), Some(block)) = (&published, &claimed) {
+        block.end_mount();
     }
-    let filesystem = kind.create(&MountRequest {
-        environment: environment(),
-        device,
-        options,
-    })?;
-    if let Err(error) = vfs().mount(point, source, filesystem.clone(), device, flags) {
-        let _ = filesystem.shutdown();
-        return Err(error);
-    }
-    Ok(())
+    published
 }
 
 /// 重新配置以 `root` 为根的挂载（Linux `do_remount`）。
@@ -193,12 +206,16 @@ pub(crate) fn unmount(root: &Arc<OpenedFile>) -> Result<(), FileSystemError> {
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
     let filesystem_id = root.inode().filesystem_id();
-    let filesystem = vfs().unmount(root)?;
+    let (filesystem, device) = vfs().unmount(root)?;
     if let Err(error) = page_cache::evict_filesystem(filesystem_id) {
         crate::warn!("umount page-cache writeback failed: {:?}", error);
     }
     if let Err(error) = filesystem.shutdown() {
         crate::warn!("umount filesystem shutdown failed: {:?}", error);
+    }
+    // 文件系统已写回并停止：设备重新可被打开写入。
+    if let Some(block) = device.and_then(device::block_node) {
+        block.end_mount();
     }
     Ok(())
 }
@@ -227,6 +244,7 @@ fn root_device_number(root: &[u8]) -> Result<DeviceNumber, FileSystemError> {
 /// - `environment`: 之后 `mount(2)` 创建实例所需的能力；在此一次性安装。
 /// - `root`: `root=` 的值（`/dev/<disk>` 或 `MAJ:MIN`），同时作为 `/proc/mounts` 的 source。
 /// - `filesystem_type`: `rootfstype=`；缺省时依次尝试全部块设备类型（Linux `mount_block_root`）。
+/// - `flags`: 根的挂载属性；`ro` 启动参数给出只读，init 用 `mount -o remount,rw /` 转为可写。
 ///
 /// # Returns
 ///
@@ -240,6 +258,7 @@ pub(crate) fn mount_root(
     environment: MountEnvironment,
     root: &[u8],
     filesystem_type: Option<&[u8]>,
+    flags: MountFlags,
 ) -> Result<super::RootMounted, FileSystemError> {
     assert!(ENVIRONMENT.get().is_none(), "root filesystem mounted twice");
     let environment = ENVIRONMENT.call_once(|| environment);
@@ -261,6 +280,8 @@ pub(crate) fn mount_root(
         None => block_types()?,
     };
     let mut last_error = FileSystemError::InvalidOperation;
+    let block = device::block_node(number).ok_or(FileSystemError::NoDevice)?;
+    block.begin_mount()?;
     for kind in candidates {
         let filesystem = match kind.create(&MountRequest {
             environment,
@@ -273,8 +294,9 @@ pub(crate) fn mount_root(
                 continue;
             }
         };
-        if let Err(error) = vfs().mount_root(root, filesystem.clone(), Some(number)) {
+        if let Err(error) = vfs().mount_root(root, filesystem.clone(), Some(number), flags) {
             let _ = filesystem.shutdown();
+            block.end_mount();
             return Err(error);
         }
         let devtmpfs = get_filesystem_type(b"devtmpfs").ok_or(FileSystemError::NoDevice)?;
@@ -292,6 +314,7 @@ pub(crate) fn mount_root(
         )?;
         return Ok(super::RootMounted(()));
     }
+    block.end_mount();
     Err(last_error)
 }
 

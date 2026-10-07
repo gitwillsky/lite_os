@@ -151,7 +151,7 @@ pub(crate) fn sys_mmap(
             let Some(inode) = ofd.inode_ref() else {
                 return -errno::ENODEV;
             };
-            if inode.inode_type() != InodeType::File {
+            if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
                 return -errno::ENODEV;
             }
             if sharing == MAP_SHARED

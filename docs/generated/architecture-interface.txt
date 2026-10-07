@@ -818,6 +818,7 @@ kernel/src/drivers/block.rs :: enum BlockError :: OutOfMemory
 kernel/src/drivers/block.rs :: pub (crate) const BLOCK_SIZE : usize = 4096
 kernel/src/drivers/block.rs :: pub (crate) enum BlockError
 kernel/src/drivers/block.rs :: pub (crate) trait BlockDevice
+kernel/src/drivers/block.rs :: trait BlockDevice :: fn block_count (& self) -> u64
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn block_size (& self) -> usize
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn disk_name (& self) -> & [u8]
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn flush (& self) -> Result < () , BlockError >
@@ -1799,6 +1800,32 @@ kernel/src/fallible_tree/topology.rs :: pub (super) fn last_key < K , V > (root 
 kernel/src/fallible_tree/topology.rs :: pub (super) fn remove_node < K : Ord + Borrow < Q > , Q : Ord + ? Sized , V > (root : Link < K , V > , key : & Q ,) -> RemoveResult < K , V >
 kernel/src/fallible_tree/topology.rs :: pub (super) fn retain_linear < K , V > (root : Link < K , V > , keep : & mut impl FnMut (& K , & V) -> bool ,) -> (Link < K , V > , usize)
 kernel/src/fallible_tree/topology.rs :: pub (super) fn split < K : Ord , V > (root : Link < K , V > , at : & K) -> (Link < K , V > , Link < K , V >)
+kernel/src/fs/block_ioctl.rs :: pub (super) fn ioctl (block : & Arc < BlockNode > , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn begin_mount (& self) -> Result < () , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn begin_writer (& self) -> Result < () , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn cache_id (& self) -> crate :: memory :: SharedFileId
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn capacity (& self) -> u64
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn device (& self) -> & Arc < dyn BlockDevice >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn end_mount (& self)
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn end_writer (& self)
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn flush (& self) -> Result < () , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn mounted (& self) -> bool
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn number (& self) -> DeviceNumber
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/block_node.rs :: pub (crate) struct BlockNode
+kernel/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn new (number : DeviceNumber , device : Arc < dyn BlockDevice > ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/block_range.rs :: enum RangeError :: # [doc = " 写入起点已在设备末尾或之后（`ENOSPC`）。"] Full
+kernel/src/fs/block_range.rs :: enum RangeError :: # [doc = " 底层块读写失败。"] Store (E)
+kernel/src/fs/block_range.rs :: pub (super) enum RangeError < E >
+kernel/src/fs/block_range.rs :: pub (super) fn read_range < S : BlockStore > (store : & S , offset : u64 , output : & mut [u8] , scratch : & mut [u8] ,) -> Result < usize , S :: Error >
+kernel/src/fs/block_range.rs :: pub (super) fn write_range < S : BlockStore > (store : & S , offset : u64 , input : & [u8] , scratch : & mut [u8] ,) -> Result < usize , RangeError < S :: Error > >
+kernel/src/fs/block_range.rs :: pub (super) trait BlockStore
+kernel/src/fs/block_range.rs :: trait BlockStore :: fn block_count (& self) -> u64
+kernel/src/fs/block_range.rs :: trait BlockStore :: fn block_size (& self) -> usize
+kernel/src/fs/block_range.rs :: trait BlockStore :: fn read_block (& self , block : usize , buffer : & mut [u8]) -> Result < () , Self :: Error >
+kernel/src/fs/block_range.rs :: trait BlockStore :: fn write_block (& self , block : usize , buffer : & [u8]) -> Result < () , Self :: Error >
+kernel/src/fs/block_range.rs :: trait BlockStore :: type Error
 kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn new () -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
 kernel/src/fs/devfs.rs :: pub (super) struct DevFileSystemType
@@ -1825,6 +1852,7 @@ kernel/src/fs/device.rs :: pub (crate) OpenRequest :: identity : & 'a AccessIden
 kernel/src/fs/device.rs :: pub (crate) OpenRequest :: number : DeviceNumber
 kernel/src/fs/device.rs :: pub (crate) enum DeviceError
 kernel/src/fs/device.rs :: pub (crate) enum DeviceWaitSource
+kernel/src/fs/device.rs :: pub (crate) fn block_node (number : DeviceNumber) -> Option < Arc < BlockNode > >
 kernel/src/fs/device.rs :: pub (crate) fn open (request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn register_directory (path : & [u8]) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn register_driver (first : DeviceNumber , count : u32 , driver : Arc < dyn CharacterDriver > ,) -> Result < () , FileSystemError >
@@ -1869,6 +1897,7 @@ kernel/src/fs/device.rs :: trait DeviceFile :: fn poll (& self , events : i16) -
 kernel/src/fs/device.rs :: trait DeviceFile :: fn prepare_wait (& self , _events : i16) -> Option < Arc < Pipe > >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn read (& self , _output : & mut dyn UserOutput , _nonblocking : bool) -> Result < () , DeviceError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn readiness_generation (& self) -> u64
+kernel/src/fs/device.rs :: trait DeviceFile :: fn seek (& self , _offset : i64 , _whence : u32) -> Result < u64 , DeviceError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn wait_sources (& self , _events : i16) -> DeviceWaitSources
 kernel/src/fs/device.rs :: trait DeviceFile :: fn write (& self , _input : & mut dyn UserInput , _nonblocking : bool) -> Result < () , DeviceError >
 kernel/src/fs/device.rs :: trait UserInput :: fn consume (& mut self , count : usize)
@@ -2386,10 +2415,12 @@ kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn follow_link (& self) -> Option < Arc < OpenedFile > >
 kernel/src/fs/inode.rs :: trait Inode :: fn inode_type (& self) -> InodeType
+kernel/src/fs/inode.rs :: trait Inode :: fn ioctl (& self , _call : & super :: device :: IoctlCall < '_ > ,) -> Result < isize , super :: device :: DeviceError >
 kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn is_read_only (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn link (& self , _name : & [u8] , _target : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn page_cache_id (& self) -> Result < crate :: memory :: SharedFileId , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_directory (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_storage (& self , offset : u64 , buf : & mut [u8]) -> Result < usize , FileSystemError >
@@ -2507,6 +2538,7 @@ kernel/src/fs/mod.rs :: pub (crate) struct RootMounted
 kernel/src/fs/mod.rs :: pub (crate) struct VfsReady
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
 kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str , alloc :: boxed :: Box < dyn FnOnce () + Send > ,) -> Result < () , crate :: memory :: MemoryError >
+kernel/src/fs/mod.rs :: pub (crate) use block_node :: BlockNode
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent , EpollMemberships }
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
@@ -2533,7 +2565,7 @@ kernel/src/fs/mount.rs :: pub (crate) MountRequest :: environment : & 'a MountEn
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: options : & 'a [u8]
 kernel/src/fs/mount.rs :: pub (crate) fn get_filesystem_type (name : & [u8]) -> Option < & 'static dyn FileSystemType >
 kernel/src/fs/mount.rs :: pub (crate) fn mount (kind : & 'static dyn FileSystemType , source : & [u8] , device : Option < DeviceNumber > , options : & [u8] , flags : MountFlags , point : Arc < OpenedFile > ,) -> Result < () , FileSystemError >
-kernel/src/fs/mount.rs :: pub (crate) fn mount_root (environment : MountEnvironment , root : & [u8] , filesystem_type : Option < & [u8] > ,) -> Result < super :: RootMounted , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) fn mount_root (environment : MountEnvironment , root : & [u8] , filesystem_type : Option < & [u8] > , flags : MountFlags ,) -> Result < super :: RootMounted , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn register_filesystem (kind : & 'static dyn FileSystemType ,) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn remount (root : & Arc < OpenedFile > , flags : MountFlags , options : & [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn unmount (root : & Arc < OpenedFile >) -> Result < () , FileSystemError >
@@ -2559,6 +2591,7 @@ kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: bytes : usize
 kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: storage_bytes : usize
 kernel/src/fs/page_cache.rs :: pub (crate) enum RegularFileWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 ,) -> Result < () , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) fn evict_cached (id : SharedFileId) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn evict_filesystem (filesystem_id : usize) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn evict_if_unlinked (inode : & Arc < dyn Inode > , holders : usize)
 kernel/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > , opened : Option < Arc < OpenedFile > > ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
@@ -2566,6 +2599,7 @@ kernel/src/fs/page_cache.rs :: pub (crate) fn statistics () -> PageCacheStatisti
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_inode (inode : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn truncate (inode : Arc < dyn Inode > , size : u64) -> Result < () , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) fn writeback_cached (id : SharedFileId) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn begin_write (& self) -> Result < RegularFileWrite < '_ > , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn from_inode (inode : Arc < dyn Inode >) -> Result < Self , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn id (& self) -> Option < SharedFileId >
@@ -2887,7 +2921,7 @@ kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn device_mounted 
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn end_write_open (& self , filesystem_id : usize)
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount (& self , point : Arc < OpenedFile > , source : & [u8] , filesystem : Arc < dyn FileSystem > , device : Option < DeviceNumber > , flags : MountFlags ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_flags (& self , filesystem_id : usize) -> MountFlags
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , source : & [u8] , fs : Arc < dyn FileSystem > , device : Option < DeviceNumber > ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , source : & [u8] , fs : Arc < dyn FileSystem > , device : Option < DeviceNumber > , flags : MountFlags ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_table (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn new () -> Self
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
@@ -2901,7 +2935,7 @@ kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn require_writabl
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn restore_mount_flags (& self , filesystem_id : usize , flags : MountFlags)
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn statistics (& self , inode : Arc < dyn Inode > ,) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn sync (& self) -> Result < () , FileSystemError >
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn unmount (& self , root : & Arc < OpenedFile > ,) -> Result < Arc < dyn FileSystem > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn unmount (& self , root : & Arc < OpenedFile > ,) -> Result < (Arc < dyn FileSystem > , Option < DeviceNumber >) , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) static VFS_MANAGER : Once < VirtualFileSystem >
 kernel/src/fs/vfs.rs :: pub (crate) struct VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) use advisory_lock :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , PreparedAdvisoryLock , PreparedLockAttempt , }
@@ -3125,26 +3159,36 @@ kernel/src/ipc/receive_buffer.rs :: pub (crate) impl ReceiveBuffer < 'a > :: fn 
 kernel/src/ipc/receive_buffer.rs :: pub (crate) impl ReceiveBuffer < 'a > :: fn remaining (& self) -> usize
 kernel/src/ipc/receive_buffer.rs :: pub (crate) impl ReceiveBuffer < 'static > :: fn try_new (limit : usize) -> Result < Self , () >
 kernel/src/ipc/receive_buffer.rs :: pub (crate) struct ReceiveBuffer < 'a >
-kernel/src/log.rs :: enum KmsgRead :: # [doc = " caller buffer 无法容纳一个完整 record。"] BufferTooSmall
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " `emit` 失败；cursor 不前进，record 下次读取时重新交出。"] Emit (E)
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " caller buffer 无法容纳一个完整 record；cursor 不前进。"] BufferTooSmall
 kernel/src/log.rs :: enum KmsgRead :: # [doc = " reader 已追上当前 producer sequence。"] Empty
-kernel/src/log.rs :: enum KmsgRead :: # [doc = " 一个完整 Linux devkmsg text record。"] Record (usize)
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " 一个完整 record 已交给 `emit`，cursor 已前进。"] Record
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " 序列化同一 OFD 的并发 reader 时等待元数据分配失败。"] OutOfMemory
 kernel/src/log.rs :: enum KmsgRead :: # [doc = " 环覆盖了 reader 尚未消费的 sequence；下一次读取从当前最老 record 继续。"] Overrun
 kernel/src/log.rs :: enum LogLevel :: Debug = 0
 kernel/src/log.rs :: enum LogLevel :: Error = 3
 kernel/src/log.rs :: enum LogLevel :: Info = 1
 kernel/src/log.rs :: enum LogLevel :: Warn = 2
-kernel/src/log.rs :: pub (crate) const KMSG_READ_BUFFER_SIZE : usize = 256
-kernel/src/log.rs :: pub (crate) enum KmsgRead
+kernel/src/log.rs :: pub (crate) enum KmsgRead < E >
 kernel/src/log.rs :: pub (crate) enum LogLevel
 kernel/src/log.rs :: pub (crate) fn __log (level : LogLevel , module : & str , args : fmt :: Arguments)
 kernel/src/log.rs :: pub (crate) fn apply_console_loglevel (level : u8)
+kernel/src/log.rs :: pub (crate) fn bind_publish_work (work : DeferredWork)
 kernel/src/log.rs :: pub (crate) fn enabled (level : LogLevel) -> bool
 kernel/src/log.rs :: pub (crate) fn init ()
+kernel/src/log.rs :: pub (crate) fn publish_user_message (input : & [u8])
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn open () -> Self
-kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn read (& self , output : & mut [u8]) -> KmsgRead
+kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn read < E > (& self , capacity : usize , emit : & mut dyn FnMut (& [u8]) -> Result < () , E > ,) -> KmsgRead < E >
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn readable (& self) -> bool
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn readiness_generation (& self) -> u64
+kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn seek_newest (& self)
+kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn seek_oldest (& self)
 kernel/src/log.rs :: pub (crate) struct KmsgReader
+kernel/src/log/kmsg_wire.rs :: enum Encoded :: # [doc = " `capacity` 不足以容纳整条 record；没有任何字节被交出。"] TooSmall
+kernel/src/log/kmsg_wire.rs :: enum Encoded :: # [doc = " 整条 record 已交给 `emit`。"] Done
+kernel/src/log/kmsg_wire.rs :: pub (super) enum Encoded
+kernel/src/log/kmsg_wire.rs :: pub (super) fn encode < E > (priority : u8 , sequence : u64 , timestamp_us : u64 , message : & [u8] , capacity : usize , emit : & mut dyn FnMut (& [u8]) -> Result < () , E > ,) -> Result < Encoded , E >
+kernel/src/log/kmsg_wire.rs :: pub (super) fn parse_user_message (input : & [u8] , default_level : u8) -> (u8 , & [u8])
 kernel/src/memory/address.rs :: pub (crate) impl PhysicalAddress :: fn as_mut_ptr < T > (& self) -> * mut T
 kernel/src/memory/address.rs :: pub (crate) impl PhysicalAddress :: fn as_ptr < T > (& self) -> * const T
 kernel/src/memory/address.rs :: pub (crate) impl PhysicalAddress :: fn as_usize (& self) -> usize
@@ -4316,6 +4360,7 @@ kernel/src/syscall/credentials.rs :: pub (crate) fn sys_setgroups (size : usize 
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_umask (mask : u32) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn device_error (error : DeviceError) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn ioctl_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , request : usize , argument : usize ,) -> isize
+kernel/src/syscall/device.rs :: pub (super) fn ioctl_inode (task : & TaskControlBlock , ofd : & OpenFileDescription , inode : & dyn crate :: fs :: Inode , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn map_request (shared : bool , writable : bool , executable : bool , fd_writable : bool ,) -> MapRequest
 kernel/src/syscall/device.rs :: pub (super) fn read_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn write_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize ,) -> isize

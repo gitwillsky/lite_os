@@ -61,10 +61,17 @@ tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`�
 
 没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring 或完整 block I/O priority enforcement。
 
-块设备节点 `/dev/vdX`（`S_IFBLK`，major 254，每盘 16 个 minor）只作为 `mount` 的 source 与
-`stat`/`getdents` 对象；以 `open` 做原始块 I/O 返回 `ENXIO`，分区尚未支持。
+块设备节点 `/dev/vdX`（`S_IFBLK`，major 254，每盘 16 个 minor）支持原始块 I/O：`read`/`write`/`pread`/
+`pwrite`/`lseek`（`SEEK_END` 为容量）/`fsync`/`mmap`，经 page cache 缓冲，任意字节偏移；写入在设备末尾截断，
+起点越界返回 `ENOSPC`。`BLKGETSIZE64`/`BLKGETSIZE`/`BLKSSZGET`/`BLKBSZGET`/`BLKPBSZGET`/`BLKIOMIN`/
+`BLKIOOPT`/`BLKALIGNOFF`/`BLKROGET`/`BLKRRPART`/`BLKFLSBUF` 可用。设备被文件系统挂载时不能以写方式打开
+（`EBUSY`），节点只读且不经缓冲；有写者时不能挂载。没有分区表（整盘即唯一设备）、`O_EXCL` 独占语义与
+`BLKDISCARD` 等。
 
-字符设备读写的范围缩减：`/dev/kmsg` 无新 record 时不阻塞而返回 `EAGAIN`，写入（printk 注入）返回
-`EOPNOTSUPP`；`/dev/random`/`/dev/urandom` 写入（混入 entropy pool）返回 `EOPNOTSUPP`；
+`/dev/kmsg`：read 无新 record 时阻塞（`O_NONBLOCK` 为 `EAGAIN`），缓冲放不下整条 record 为 `EINVAL`，
+环覆盖为一次 `EPIPE`；write 以 `<N>` 前缀发布用户 record（最长 1024 字节）；`lseek` 只接受偏移 0；
+poll/epoll 可用。record 没有 Linux 的 dictionary 续行，也不做 printk 限速。
+
+字符设备读写的范围缩减：`/dev/random`/`/dev/urandom` 写入（混入 entropy pool）返回 `EOPNOTSUPP`；
 `/dev/snd/pcmC0D0p` 的 `read`/`write` 返回 `EOPNOTSUPP`，PCM 数据只经 `SNDRV_PCM_IOCTL_WRITEI_FRAMES`
 或 mmap ring 传输；`/dev/dri/card0` 的 `write` 返回 `EOPNOTSUPP`。

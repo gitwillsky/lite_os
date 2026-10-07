@@ -72,11 +72,6 @@ fn kernel_main(context: entry::BootContext) -> ! {
         "kernel command line: {}",
         core::str::from_utf8(platform::kernel_command_line()).unwrap_or("<non-utf8>")
     );
-    // 只读根需要 remount 才能转为可写，尚未支持；明确拒绝而不是静默以可写挂载。
-    assert!(
-        !parameters.read_only_root,
-        "read-only root (ro) is not supported"
-    );
     timer::init_rtc();
     let vfs = fs::init_vfs();
     // 启动顺序由证明 token 约束：每一步只接受前置步骤返回的 token，顺序错误无法编译。
@@ -159,6 +154,11 @@ fn mount_filesystems(
         environment,
         root,
         parameters.root_filesystem_type.as_deref(),
+        if parameters.read_only_root {
+            fs::MountFlags::from_bits(u64::from(fs::MountFlags::READ_ONLY))
+        } else {
+            fs::MountFlags::default()
+        },
     )
     .unwrap_or_else(|error| {
         panic!(

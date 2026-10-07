@@ -18,7 +18,7 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
-    if inode.inode_type() != InodeType::File {
+    if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return -errno::ESPIPE;
     }
     if vectors.iter().all(|vector| vector.length == 0) {
@@ -92,7 +92,7 @@ fn positioned_write(
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
-    if inode.inode_type() != InodeType::File {
+    if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return -errno::ESPIPE;
     }
     if vectors.iter().all(|vector| vector.length == 0) {

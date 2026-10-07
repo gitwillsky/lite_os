@@ -2,6 +2,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
 
+mod block_ioctl;
+mod block_node;
+mod block_range;
 mod devfs;
 pub(crate) mod device;
 mod devpts;
@@ -27,6 +30,7 @@ mod tmpfs;
 mod tty;
 mod vfs;
 
+pub(crate) use block_node::BlockNode;
 pub(crate) use directory::{
     DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, Dirent64Batch,
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
@@ -137,6 +141,8 @@ fn try_format_bytes(arguments: fmt::Arguments<'_>) -> Result<Vec<u8>, FileSystem
 }
 
 /// 首个动态分配的 filesystem instance id；低值保留给不可挂载的内部文件系统（memfd）。
+/// 块设备节点在 page cache 中的 filesystem 身份；见 [`Inode::page_cache_id`]。
+const BDEV_FILESYSTEM_ID: usize = 7;
 const FIRST_DYNAMIC_FILESYSTEM_ID: usize = 0x100;
 
 // OWNER: 下一个 filesystem instance id（Linux `get_anon_bdev`）；只递增，每个挂载实例取得独立

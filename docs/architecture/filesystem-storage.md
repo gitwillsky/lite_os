@@ -63,7 +63,12 @@
 
 ## Known limits
 
-- 持久存储是固定 ext4/JBD2 profile；附加块设备可经 `mount(2)` 挂载，但没有分区、原始块 I/O 或 remount。
+- 持久存储是固定 ext4/JBD2 profile；附加块设备可经 `mount(2)` 挂载，没有分区表。
+- 原始块 I/O 经 page cache 缓冲，但 ext4 直接读写块层，二者不共享缓存，所以一块盘要么被挂载（节点只读、
+  不缓冲）要么可写打开：挂载与“以写方式打开”由 `BlockNode` 的原子字互斥，挂载前写回并逐出该盘的缓冲页。
+  只读打开并读取已挂载的盘看到的是已提交到块层的数据，不含 ext4 尚在内存 transaction 里的元数据。
+- 根以 `ro` 启动参数只读挂载时，ext4 仍会回放 journal 并清理 orphan（写块层）；Linux 的 `ro` 挂载同样回放
+  journal，但不做 orphan 清理。
 - tmpfs 没有 swap：数据页只受 `size=` 与物理内存限制，`MAP_SHARED` 触碰超出配额的洞得到 `SIGBUS`
   （与 Linux 一致）；可写映射建立时更新 `st_mtime`，之后的 store 不再经过内核。
 - 不支持 `huge=`、`mpol=`（没有大页与 NUMA 子系统）、xattr/ACL，也不支持 FIFO 与设备节点（只有 `bind`

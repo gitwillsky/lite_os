@@ -2007,6 +2007,11 @@ def main() -> int:
             dynamic_library,
             runtime_path,
         )
+        # 裸块设备 gate 的第二块盘：4 MiB，首块写入已知标记，其余为零。
+        scratch_disk = runtime_path / "scratch.img"
+        with scratch_disk.open("wb") as scratch:
+            scratch.write(b"LITEOS-SCRATCH-DISK-HEADER".ljust(4096, b"\0"))
+            scratch.truncate(4 * 1024 * 1024)
         http_server, http_port = start_http_gate()
         https_server, https_port, gate_ca = start_https_gate(runtime_path)
         install_runtime_tls_identity(runtime_image, gate_ca, runtime_path, find_debugfs())
@@ -2078,6 +2083,11 @@ def main() -> int:
                 "LITEOS_MOUNTFLAGS_53",
                 "LITEOS_MOUNTFLAGS_54",
                 "LITEOS_MOUNTFLAGS_55",
+                "LITEOS_KMSG_56",
+                "LITEOS_KMSG_57",
+                "LITEOS_BLOCK_58",
+                "LITEOS_BLOCK_59",
+                "LITEOS_BLOCK_60",
                 "LITEOS_LINKS_43",
                 "LITEOS_NAMESPACE_CONCURRENCY_43",
                 "LITEOS_BUSYBOX_CREDENTIALS_44",
@@ -2293,6 +2303,26 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_MOUNTFLAGS_55",
+                    b"exec 3</dev/kmsg && echo '<5>liteos-kmsg-probe' >/dev/kmsg && i=0 && while [ $i -lt 400 ]; do /bin/dd bs=4096 count=1 <&3 >/var/tmp/k 2>/dev/null; /bin/grep -q liteos-kmsg-probe /var/tmp/k && break; i=$((i+1)); done; /bin/grep -q '^13,[0-9]*,[0-9]*,-;liteos-kmsg-probe$' /var/tmp/k && echo LITEOS_KMSG_$((6*7+14))\n",
+                ),
+                (
+                    "LITEOS_KMSG_56",
+                    b"(/bin/sleep 1; echo '<6>liteos-kmsg-wake' >/dev/kmsg) & i=0; while [ $i -lt 400 ]; do /bin/dd bs=4096 count=1 <&3 >/var/tmp/k3 2>/dev/null; /bin/grep -q 'liteos-kmsg-wake$' /var/tmp/k3 && break; i=$((i+1)); done; wait; exec 3<&-; /bin/grep -q '^14,[0-9]*,[0-9]*,-;liteos-kmsg-wake$' /var/tmp/k3 && echo LITEOS_KMSG_$((6*7+15))\n",
+                ),
+                (
+                    "LITEOS_KMSG_57",
+                    b"[ \"$(/bin/dd if=/dev/vdb bs=1 count=26 2>/dev/null)\" = LITEOS-SCRATCH-DISK-HEADER ] && [ \"$(/bin/stat -c %t:%T /dev/vdb)\" = fe:10 ] && printf ABCDEFGHIJ | /bin/dd of=/dev/vdb bs=1 seek=4093 2>/dev/null && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=4093 count=10 2>/dev/null)\" = ABCDEFGHIJ ] && [ \"$(/bin/dd if=/dev/vdb bs=1 count=26 2>/dev/null)\" = LITEOS-SCRATCH-DISK-HEADER ] && echo LITEOS_BLOCK_$((6*7+16))\n",
+                ),
+                (
+                    "LITEOS_BLOCK_58",
+                    b"echo marker-at-tail | /bin/dd of=/dev/vdb bs=1 seek=4194290 2>/dev/null; ! /bin/dd if=/dev/zero of=/dev/vdb bs=4096 seek=1024 count=1 2>/dev/null && /bin/sync && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=4194290 count=11 2>/dev/null)\" = marker-at-t ] && echo LITEOS_BLOCK_$((6*7+17))\n",
+                ),
+                (
+                    "LITEOS_BLOCK_59",
+                    b"/bin/dd if=/dev/zero of=/dev/vdb bs=64k count=64 2>/dev/null && [ \"$(/bin/dd if=/dev/vdb bs=64k count=64 2>/dev/null | /bin/tr -d '\\000' | /bin/wc -c)\" -eq 0 ] && /bin/mkdir -p /mnt/b && exec 4>>/dev/vdb && ! /bin/mount -t ext4 /dev/vdb /mnt/b 2>/dev/null && exec 4>&- && ! /bin/dd if=/dev/zero of=/dev/vda bs=512 count=1 2>/dev/null && [ \"$(/bin/dd if=/dev/vda bs=1 skip=1080 count=2 2>/dev/null | /bin/tr '\\123\\357' 'SE')\" = SE ] && echo LITEOS_BLOCK_$((6*7+18))\n",
+                ),
+                (
+                    "LITEOS_BLOCK_60",
                     b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n",
                 ),
                 (
@@ -2535,6 +2565,7 @@ def main() -> int:
             persistent_writes=True,
             timeout_seconds=90,
             kernel_arguments=BUSYBOX_KERNEL_ARGUMENTS,
+            scratch_disk=scratch_disk,
         )
         boot(
             phase55_image,

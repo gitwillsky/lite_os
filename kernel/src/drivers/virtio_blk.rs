@@ -518,6 +518,10 @@ impl BlockDevice for VirtIOBlockDevice {
         BLOCK_SIZE
     }
 
+    fn block_count(&self) -> u64 {
+        self.capacity / (BLOCK_SIZE as u64 / 512)
+    }
+
     fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
         self.validate_block(block_id, buf.len())?;
         self.execute(RequestOperation::Write, block_id, Some(buf), None)?;

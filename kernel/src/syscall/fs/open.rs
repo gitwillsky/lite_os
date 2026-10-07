@@ -150,19 +150,24 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     if inode.inode_type() == InodeType::Directory && flags & O_ACCMODE != O_RDONLY {
         return -errno::EISDIR;
     }
-    if !matches!(
-        inode.inode_type(),
-        InodeType::File | InodeType::Directory | InodeType::CharacterDevice
-    ) || inode.inode_type() == InodeType::CharacterDevice && inode.device_number().is_none()
+    let kind = inode.inode_type();
+    let is_device = matches!(kind, InodeType::CharacterDevice | InodeType::BlockDevice);
+    if !matches!(kind, InodeType::File | InodeType::Directory) && !is_device
+        || is_device && inode.device_number().is_none()
+        || kind == InodeType::BlockDevice
+            && inode
+                .device_number()
+                .and_then(crate::fs::device::block_node)
+                .is_none()
     {
         return -errno::ENXIO;
     }
-    let ofd_flags = flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
-    let ofd = if let Some(number) = inode.device_number() {
+    if is_device && vfs().mount_flags(inode.filesystem_id()).nodev() {
         // Linux `may_open`：nodev 挂载上的设备节点不可打开。
-        if vfs().mount_flags(inode.filesystem_id()).nodev() {
-            return -errno::EACCES;
-        }
+        return -errno::EACCES;
+    }
+    let ofd_flags = flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
+    let ofd = if let (InodeType::CharacterDevice, Some(number)) = (kind, inode.device_number()) {
         let request = crate::fs::device::OpenRequest {
             number,
             identity: &identity,
@@ -178,8 +183,10 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
             Ok(ofd) => ofd,
             Err(error) => return ferr(error),
         };
+        // `O_TRUNC` 只截断 regular file；块设备节点按 Linux 忽略它。
         if flags & O_TRUNC != 0
             && flags & O_ACCMODE != O_RDONLY
+            && kind == InodeType::File
             && let Err(error) = crate::fs::truncate(inode.clone(), 0)
         {
             return ferr(error);

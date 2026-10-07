@@ -10,7 +10,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 use syscall_abi::errno;
 
-use super::{AccessIdentity, FileSystemError};
+use super::{AccessIdentity, BlockNode, FileSystemError};
 use crate::drivers::block::BlockDevice;
 use crate::{
     ipc::{Pipe, PipeDirection, PipeWaitCondition},
@@ -143,6 +143,19 @@ pub(crate) trait DeviceFile: Send + Sync {
     /// 从 `input` 写出；`input.remaining()` 至少为 1。
     fn write(&self, _input: &mut dyn UserInput, _nonblocking: bool) -> Result<(), DeviceError> {
         Err(DeviceError::Errno(errno::EINVAL))
+    }
+
+    /// 重新定位设备的读写位置（`lseek`）。设备不是随机访问介质时保持默认的 `ESPIPE`。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`/`whence`: `lseek` 的原始参数；语义由设备定义。
+    ///
+    /// # Returns
+    ///
+    /// 新位置（`lseek` 的返回值）。
+    fn seek(&self, _offset: i64, _whence: u32) -> Result<u64, DeviceError> {
+        Err(DeviceError::Errno(errno::ESPIPE))
     }
 
     /// 返回 `events` 中当前已就绪的 poll 位。
@@ -289,7 +302,7 @@ pub(super) struct DeviceNode {
 struct Registry {
     drivers: Vec<DriverRange>,
     /// 块设备号到 adapter；与字符设备号是独立命名空间（Linux `bdev` 与 `cdev`）。
-    blocks: Vec<(DeviceNumber, Arc<dyn BlockDevice>)>,
+    blocks: Vec<Arc<BlockNode>>,
     devices: Vec<Arc<DeviceNode>>,
     /// 设备路径中出现过的全部目录（相对 `/dev`，不含根）；只追加。
     directories: Vec<Vec<u8>>,
@@ -399,12 +412,17 @@ pub(super) fn block_number(path: &[u8]) -> Option<DeviceNumber> {
 
 /// 按块设备号取得 adapter（Linux `blkdev_get_no_open`）。
 pub(super) fn block_device(number: DeviceNumber) -> Option<Arc<dyn BlockDevice>> {
+    block_node(number).map(|node| node.device().clone())
+}
+
+/// 按块设备号取得 bdev 状态（字节寻址 I/O 与挂载互斥）。
+pub(crate) fn block_node(number: DeviceNumber) -> Option<Arc<BlockNode>> {
     REGISTRY
         .lock()
         .blocks
         .iter()
-        .find(|(registered, _)| *registered == number)
-        .map(|(_, device)| device.clone())
+        .find(|node| node.number() == number)
+        .cloned()
 }
 
 /// `path` 的全部尚未登记的祖先目录（`include_path` 时含 `path` 自身）。
@@ -481,6 +499,9 @@ fn publish_node(
         mode,
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
+    let block = block
+        .map(|device| BlockNode::new(number, device))
+        .transpose()?;
     let mut registry = REGISTRY.lock();
     if registry
         .devices
@@ -490,7 +511,7 @@ fn publish_node(
             && registry
                 .blocks
                 .iter()
-                .any(|(registered, _)| *registered == number)
+                .any(|registered| registered.number() == number)
     {
         return Err(FileSystemError::AlreadyExists);
     }
@@ -511,8 +532,8 @@ fn publish_node(
     // 2. 发布不再分配。
     registry.directories.extend(missing);
     registry.devices.push(node);
-    if let Some(device) = block {
-        registry.blocks.push((number, device));
+    if let Some(node) = block {
+        registry.blocks.push(node);
     }
     Ok(())
 }

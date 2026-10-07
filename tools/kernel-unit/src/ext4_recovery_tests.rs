@@ -153,6 +153,10 @@ impl BlockDevice for RecoveryImage {
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
+
+    fn block_count(&self) -> u64 {
+        self.image.lock().unwrap().metadata().unwrap().len() / BLOCK_SIZE as u64
+    }
 }
 
 fn mounted() -> (Arc<RecoveryImage>, Arc<Ext4FileSystem>) {

@@ -74,6 +74,31 @@ pub(crate) trait Inode: Send + Sync {
 
     fn is_executable(&self) -> bool;
 
+    /// 该 inode 的内容在 page cache 中的身份。
+    ///
+    /// 默认是 `(filesystem_id, inode number)`。块设备节点覆盖它：同一块盘可以出现在多个 devtmpfs
+    /// 实例里，必须共享同一份缓存，否则两个节点各自缓冲、互相看不到对方的写入。
+    ///
+    /// # Errors
+    ///
+    /// metadata 读取失败时透传。
+    fn page_cache_id(&self) -> Result<crate::memory::SharedFileId, FileSystemError> {
+        Ok(crate::memory::SharedFileId {
+            filesystem: self.filesystem_id(),
+            inode: self.metadata()?.inode,
+        })
+    }
+
+    /// inode 专属 ioctl（块设备节点的 `BLK*`）；UAPI 编解码由 inode 所属子系统拥有。
+    fn ioctl(
+        &self,
+        _call: &super::device::IoctlCall<'_>,
+    ) -> Result<isize, super::device::DeviceError> {
+        Err(super::device::DeviceError::Errno(
+            syscall_abi::errno::ENOTTY,
+        ))
+    }
+
     /// regular file 内容的存放方式，决定 read/write 与 mmap 走哪条路径。
     ///
     /// 缺少 `Snapshot` 会把第一次 `/proc/stat` 等快照永久缓存，令监控采样冻结；缺少 `Memory` 会

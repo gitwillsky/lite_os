@@ -101,6 +101,11 @@ pub(crate) fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
+    if let OpenFileKind::Device(file) = &ofd.kind {
+        return file
+            .seek(offset, whence)
+            .map_or_else(|error| -error.errno(), |position| position as isize);
+    }
     let Some(inode) = ofd.inode_ref() else {
         return -errno::ESPIPE;
     };

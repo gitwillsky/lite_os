@@ -57,6 +57,12 @@
 - 挂载属性与“以写方式打开的 OFD 数”同在 VFS 的 `MountAttributes`，由 `mounts`/`root_fs` 锁一起保护：
   `begin_write_open` 与 `remount,ro` 的判忙互斥，OFD 的 `WriteOpen` 在 Drop 时撤销。读路径与 `read`/`write`
   热路径不取该锁。
+- `BlockNode.claim` 是“已挂载”标志与写者计数的唯一原子字：`begin_writer`（OFD 创建）、`begin_mount`、
+  `end_writer`（OFD Drop，不阻塞）、`end_mount` 都对它做 CAS/原子更新；块设备在 page cache 中的身份由
+  `Inode::page_cache_id` 给出（与 devtmpfs 实例无关），挂载前经 `page_cache::evict_cached` 写回并逐出。
+- `/dev/kmsg` 的唤醒经 logger 发布 `cpu` deferred vector → `fs::mem` 的合并 readiness Pipe；logger 在任何
+  上下文（含 hardirq）都只做原子发布，不取 scheduler 锁。`KmsgReader.gate` 序列化同一 OFD 的 reader，
+  `cursor` 只在整条 record 交给用户后推进。
 - `fs::FileSystemType` 注册表只追加、在 `init_vfs` 发布；`MOUNT_TRANSACTION` 串行化 mount/umount 事务。
   tmpfs 的目录结构变更先取 `Shared::namespace`，再取涉及的 inode 状态锁（rename 的两个目录按 inode 编号
   顺序）；只读路径只取单个 inode 状态锁，因此不存在两个多锁路径互相等待。inode 编号只增不复用。

@@ -67,6 +67,10 @@ impl BlockDevice for WritableImage {
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
+
+    fn block_count(&self) -> u64 {
+        self.0.lock().unwrap().metadata().unwrap().len() / BLOCK_SIZE as u64
+    }
 }
 
 struct Names(Vec<Vec<u8>>);

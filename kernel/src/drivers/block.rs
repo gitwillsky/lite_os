@@ -57,6 +57,9 @@ pub(crate) trait BlockDevice: Send + Sync {
 
     /// 返回逻辑块字节数。
     fn block_size(&self) -> usize;
+
+    /// 返回设备的逻辑块总数（`block_size()` 单位）；裸块设备的容量与越界判定以它为准。
+    fn block_count(&self) -> u64;
 }
 
 pub(crate) const BLOCK_SIZE: usize = 4096;

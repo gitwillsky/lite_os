@@ -4,6 +4,8 @@
 # /run、/tmp 与 /dev/shm 是易失内存文件系统（tmpfs）：重启后清空，且不占用根盘空间。
 set -e
 /bin/mount -t proc proc /proc
+# 根可能以 ro 启动参数只读挂载（Linux 约定）：此处转为可写；已是可写时是空操作。
+/bin/mount -t ext4 -o remount,rw /
 /bin/mount -t sysfs sysfs /sys
 /bin/mount -t devpts devpts /dev/pts
 /bin/mount -t tmpfs -o mode=0755 tmpfs /run

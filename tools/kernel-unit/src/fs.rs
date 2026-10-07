@@ -174,6 +174,13 @@ pub(crate) mod permission {
     }
 }
 
+#[path = "../../../kernel/src/fs/block_range.rs"]
+pub(crate) mod block_range;
+
+#[cfg(test)]
+#[path = "tests/block_range.rs"]
+mod block_range_tests;
+
 #[path = "../../../kernel/src/fs/mount_options.rs"]
 pub(crate) mod mount_options;
 

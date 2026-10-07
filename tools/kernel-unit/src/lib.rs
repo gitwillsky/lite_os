@@ -98,6 +98,10 @@ mod memory_seals;
 mod memory_sparse;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/log/kmsg_wire.rs"]
+mod kmsg_wire;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/audio/codec.rs"]
 mod alsa_codec;
 
@@ -459,6 +463,10 @@ mod memory_tests;
 #[cfg(test)]
 #[path = "tests/memory_file.rs"]
 mod memory_file_tests;
+
+#[cfg(test)]
+#[path = "tests/kmsg.rs"]
+mod kmsg_tests;
 
 #[cfg(test)]
 #[path = "tests/platform_execution.rs"]

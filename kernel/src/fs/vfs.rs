@@ -328,6 +328,7 @@ impl VirtualFileSystem {
         source: &[u8],
         fs: Arc<dyn FileSystem>,
         device: Option<DeviceNumber>,
+        flags: MountFlags,
     ) -> Result<(), FileSystemError> {
         let source = owned_bytes(source)?;
         let mut root_fs = self.root_fs.lock();
@@ -340,7 +341,7 @@ impl VirtualFileSystem {
             filesystem: fs,
             root,
             device,
-            attributes: MountAttributes::default(),
+            attributes: MountAttributes { flags, writers: 0 },
         });
         Ok(())
     }
@@ -435,11 +436,12 @@ impl VirtualFileSystem {
     ///
     /// # Returns
     ///
-    /// 被摘下的 filesystem；调用方负责写回 page cache 并调用 [`FileSystem::shutdown`]。
+    /// 被摘下的 filesystem 与承载它的块设备；调用方负责写回 page cache、调用 [`FileSystem::shutdown`]
+    /// 并释放块设备的挂载占用。
     pub(crate) fn unmount(
         &self,
         root: &Arc<OpenedFile>,
-    ) -> Result<Arc<dyn FileSystem>, FileSystemError> {
+    ) -> Result<(Arc<dyn FileSystem>, Option<DeviceNumber>), FileSystemError> {
         let identity = Self::identity(&root.inode())?;
         let namespace_root = self
             .root_fs
@@ -461,7 +463,8 @@ impl VirtualFileSystem {
         {
             return Err(FileSystemError::Busy);
         }
-        Ok(mounts.remove(index).filesystem)
+        let mount = mounts.remove(index);
+        Ok((mount.filesystem, mount.device))
     }
 
     /// 在 `mounts`/`root_fs` 锁内对承载 `filesystem_id` 的挂载属性执行 `visit`。

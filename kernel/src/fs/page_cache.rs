@@ -291,15 +291,12 @@ impl MemoryReclaimer for CachedFile {
 static FILES: Once<Mutex<FallibleMap<SharedFileId, Arc<CachedFile>>>> = Once::new();
 
 fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError> {
-    if inode.inode_type() != InodeType::File
+    if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice)
         || !matches!(inode.data_backing(), DataBacking::PageCache)
     {
         return Err(FileSystemError::InvalidOperation);
     }
-    let id = SharedFileId {
-        filesystem: inode.filesystem_id(),
-        inode: inode.metadata()?.inode,
-    };
+    let id = inode.page_cache_id()?;
     let mut files = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
     if let Some(file) = files.get(&id) {
         return Ok(file.clone());
@@ -373,7 +370,7 @@ impl RegularFile {
     /// - inode metadata 读取失败时透传 filesystem error。
     /// - 首次注册 memory reclaimer 失败时返回 `OutOfMemory`。
     pub(crate) fn from_inode(inode: Arc<dyn Inode>) -> Result<Self, FileSystemError> {
-        if inode.inode_type() != InodeType::File {
+        if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
             return Err(FileSystemError::InvalidOperation);
         }
         match inode.data_backing() {
@@ -509,7 +506,7 @@ pub(crate) fn mapping(
     inode: Arc<dyn Inode>,
     opened: Option<Arc<OpenedFile>>,
 ) -> Result<Arc<dyn SharedFileMapping>, FileSystemError> {
-    if inode.inode_type() != InodeType::File {
+    if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return Err(FileSystemError::InvalidOperation);
     }
     let inner: Arc<dyn SharedFileMapping> = match inode.data_backing() {
@@ -719,9 +716,10 @@ pub(crate) fn allocate(
 }
 
 pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
-    if inode.inode_type() != InodeType::File {
+    if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return inode.sync_storage();
     }
+    let block_device = inode.inode_type() == InodeType::BlockDevice;
     let file = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?,
         // 内存型文件没有 backing storage，也不在 page cache 里，无事可同步。
@@ -735,7 +733,60 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
         .operation
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
+    file.writeback_range(0, u64::MAX)?;
+    if block_device {
+        // 块设备的“数据已写回”只到设备队列；fsync 还要求设备把它推进到稳定存储。
+        file.inode.sync_storage()?;
+    }
+    Ok(())
+}
+
+/// 取得 `id` 的缓存文件；没有缓存时为 `None`。
+fn lookup_cached(id: SharedFileId) -> Option<Arc<CachedFile>> {
+    FILES
+        .call_once(|| Mutex::new(FallibleMap::new()))
+        .lock()
+        .get(&id)
+        .cloned()
+}
+
+/// 写回 `id` 的全部脏页；没有缓存时为空操作。
+///
+/// # Errors
+///
+/// 写回失败透传 filesystem error。
+pub(crate) fn writeback_cached(id: SharedFileId) -> Result<(), FileSystemError> {
+    let Some(file) = lookup_cached(id) else {
+        return Ok(());
+    };
+    let _sequence = file
+        .write_sequence
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    let _operation = file
+        .operation
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
     file.writeback_range(0, u64::MAX)
+}
+
+/// 写回并逐出一个缓存文件（块设备在被文件系统挂载前使用）。
+///
+/// # Errors
+///
+/// 缓存仍被映射或有进行中的 I/O 返回 `Busy`；写回失败透传 filesystem error。没有缓存时为空操作。
+pub(crate) fn evict_cached(id: SharedFileId) -> Result<(), FileSystemError> {
+    writeback_cached(id)?;
+    let Some(file) = lookup_cached(id) else {
+        return Ok(());
+    };
+    let mut files = FILES.wait().lock();
+    // registry 与本函数各持一个引用；更多说明有映射或进行中的 I/O，此时逐出会让它们读到过期数据。
+    if Arc::strong_count(&file) > 2 {
+        return Err(FileSystemError::Busy);
+    }
+    files.remove(&id);
+    Ok(())
 }
 
 pub(crate) fn sync_all() -> Result<(), FileSystemError> {

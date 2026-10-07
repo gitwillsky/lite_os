@@ -104,6 +104,7 @@ def _qemu_command(
     qmp_socket: Path | None = None,
     memory: str | None = None,
     kernel_arguments: str | None = None,
+    scratch_disk: Path | None = None,
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -136,6 +137,18 @@ def _qemu_command(
             "-kernel",
             runtime.kernel_boot_artifact,
             *(("-append", kernel_arguments) if kernel_arguments is not None else ()),
+            # QEMU virt 为后声明的 virtio-mmio 设备分配更低的地址，guest 先探测到它；所以第二块盘
+            # （guest 内为 vdb，只用于裸块设备 I/O gate）必须先声明，root 盘才是 vda。
+            *(
+                (
+                    "-drive",
+                    f"file={scratch_disk},if=none,format=raw,id=x1",
+                    "-device",
+                    "virtio-blk-device,drive=x1",
+                )
+                if scratch_disk is not None
+                else ()
+            ),
             "-drive",
             f"file={image},if=none,format=raw,id=x0",
             "-device",
@@ -363,6 +376,7 @@ def boot(
     persistent_writes: bool = False,
     memory: str | None = None,
     kernel_arguments: str | None = None,
+    scratch_disk: Path | None = None,
 ) -> None:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
@@ -377,6 +391,7 @@ def boot(
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
         memory: 显式 Guest RAM；None 保留既有 runtime gate 的 QEMU 默认值。
         kernel_arguments: 经 `-append` 写入 DTB `/chosen/bootargs` 的 kernel command line。
+        scratch_disk: 作为第二块 virtio 盘（guest 内 `vdb`）附加的裸镜像；None 表示只有 root 盘。
 
     Returns:
         None；全部 marker 出现时返回。
@@ -397,6 +412,7 @@ def boot(
         smp,
         memory=memory,
         kernel_arguments=kernel_arguments,
+        scratch_disk=scratch_disk,
     )
     process = subprocess.Popen(
         command,
