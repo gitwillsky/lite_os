@@ -135,7 +135,9 @@ impl WaitTicket {
         keys.push(WaitIndexKey::Pipe {
             identity,
             direction: pipe_direction(condition.direction()),
-            exclusive: true,
+            // 读/写等待消耗被等待的资源（数据或容量），一次只需唤醒一个；命名管道的 open 汇合只是
+            // “对端到来”的广播，不消耗任何东西，必须唤醒全部等待者，否则多个同时阻塞的 open 只醒一个。
+            exclusive: !matches!(condition, PipeWaitCondition::PeerOpened { .. }),
             id: self.id,
         });
         self.prepare(

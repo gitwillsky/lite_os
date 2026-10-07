@@ -1041,6 +1041,7 @@ def build_musl_probe(musl: MuslCachePaths, name: str) -> Path:
                 "-Werror",
                 "-fPIE",
                 "-pie",
+                "-pthread",
                 "-o",
                 str(generation / binary),
             ],
@@ -2118,6 +2119,7 @@ def main() -> int:
             {
                 "memory-file-probe": build_musl_probe(musl, "memory-file"),
                 "special-file-probe": build_musl_probe(musl, "special-file"),
+                "fs-stress-probe": build_musl_probe(musl, "fs-stress"),
             },
             runtime_path,
         )
@@ -2754,6 +2756,7 @@ def main() -> int:
                 "LITEOS_COW_ISOLATION_42",
                 "LITEOS_SCHED_8_HARTS_42",
                 "LITEOS_STREAMING_EXEC_42",
+                "LITEOS_FSSTRESS_42",
             ),
             interactions=(
                 (
@@ -2783,6 +2786,10 @@ def main() -> int:
                 (
                     "LITEOS_SCHED_8_HARTS_42",
                     b"n=$(for p in $pids; do /bin/awk '{print $1}' /proc/$p/stat; done | /bin/sort -n | /bin/wc -l); [ \"$n\" -eq 8 ] && echo LITEOS_STREAMING_EXEC_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_STREAMING_EXEC_42",
+                    b"kill $pids; wait; /var/tmp/fs-stress-probe\n",
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
