@@ -345,7 +345,17 @@ impl Pipe {
     pub(crate) fn wait_for_peer(self: &Arc<Self>, waiter: PipeDirection, since: u64) -> WaitResult {
         self.state.lock().rendezvous_waiters += 1;
         let result = self.wait(PipeWaitCondition::PeerOpened { waiter, since }, None);
-        self.state.lock().rendezvous_waiters -= 1;
+        let others_waiting = {
+            let mut state = self.state.lock();
+            state.rendezvous_waiters -= 1;
+            state.rendezvous_waiters != 0
+        };
+        if others_waiting {
+            // 直接管道等待是 wake-one：一次对端到来只唤醒一个等待者，但对端到来不消耗任何东西，
+            // 所有同时阻塞的等待者都该放行。每个醒来的等待者接力再发布一次状态变化，由下一个等待者
+            // 继续（条件不满足的会被跳过），链式唤醒不需要放宽 wake-one 不变量。
+            publish_state_change(self);
+        }
         result
     }
 
