@@ -16,13 +16,13 @@ use super::{
     queue::{DmaBuffer, VirtQueue},
 };
 use crate::drivers::{
-    InterruptError, InterruptHandler, InterruptVector,
     io_completion::request_owner::{
         CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner, RequestOwnerError,
         ReserveOrWait,
     },
     io_completion::{self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
 };
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
@@ -226,7 +226,7 @@ impl VirtIOBlockDevice {
             }
         };
         waiter.wait(|| {
-            crate::drivers::wait_for_external_interrupt();
+            crate::hal::wait_for_external_interrupt();
             self.reclaim_completions();
         });
         waiter.take_outcome().map_err(Self::request_owner_error)
@@ -321,7 +321,7 @@ impl VirtIOBlockDevice {
                     self.reclaim_completions();
                     continue;
                 }
-                crate::drivers::wait_for_external_interrupt();
+                crate::hal::wait_for_external_interrupt();
             }
         }
     }

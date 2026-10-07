@@ -9,6 +9,7 @@ use spin::Once;
 use crate::sync::IrqMutex;
 
 use super::InterruptError;
+use super::registry::AppendOnlyRegistry;
 
 const RX_CAPACITY: usize = 1024;
 
@@ -139,6 +140,17 @@ pub(crate) fn register_serial(
     init_ring()?;
     let console =
         Arc::try_new(SerialConsole { name, output }).map_err(|_| InterruptError::NoMemory)?;
-    super::registry::register_console_device(console).map_err(|_| InterruptError::NoMemory)?;
+    CONSOLE_DEVICES
+        .register(console)
+        .map_err(|_| InterruptError::NoMemory)?;
     Ok(())
+}
+
+// OWNER: console 设备的唯一发布点；TTY 按 `console=` 名称选择其一作为 `/dev/console`。缺失时 platform 的
+// 串口与 tty 之间没有可枚举的 console 集合。
+static CONSOLE_DEVICES: AppendOnlyRegistry<dyn ConsoleDevice> = AppendOnlyRegistry::new();
+
+/// 第 `index` 个 console 设备。
+pub(crate) fn console_device(index: usize) -> Option<Arc<dyn ConsoleDevice>> {
+    CONSOLE_DEVICES.get(index)
 }

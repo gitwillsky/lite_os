@@ -11,7 +11,10 @@ mod plic_policy;
 mod rtc;
 mod uart;
 
-pub(crate) use devices::{handle_external_interrupt, initialize as initialize_devices};
+pub(crate) use devices::{
+    handle_external_interrupt, initialize as initialize_devices, map_device_window, pci_host,
+    register_device_interrupt, virtio_mmio_transports,
+};
 pub(crate) use discovery::{BootInfo, hardware_cpu_ids, initialize, validate_boot_info};
 pub(crate) use firmware::{
     InstructionFenceError, ResetError, TlbShootdownError, arm_timer, debug_console_write,

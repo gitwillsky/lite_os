@@ -285,17 +285,6 @@ kernel/src/devices/drivers/audio_output.rs :: trait PcmOutput :: fn start (& sel
 kernel/src/devices/drivers/audio_output.rs :: trait PcmOutput :: fn stop (& self) -> Result < () , PcmOutputError >
 kernel/src/devices/drivers/audio_output.rs :: trait PcmOutput :: fn submit_period (& self , bytes : & [u8]) -> Result < () , PcmOutputError >
 kernel/src/devices/drivers/audio_output.rs :: trait PcmOutput :: fn writable (& self) -> bool
-kernel/src/devices/drivers/console.rs :: pub (crate) fn input_ready () -> bool
-kernel/src/devices/drivers/console.rs :: pub (crate) fn publish_received (bytes : & [u8])
-kernel/src/devices/drivers/console.rs :: pub (crate) fn register_serial (name : & 'static [u8] , output : SerialOutput ,) -> Result < () , InterruptError >
-kernel/src/devices/drivers/console.rs :: pub (crate) struct ConsoleError
-kernel/src/devices/drivers/console.rs :: pub (crate) trait ConsoleDevice
-kernel/src/devices/drivers/console.rs :: pub (crate) type SerialOutput  = fn (u8) -> Result < () , ConsoleError >
-kernel/src/devices/drivers/console.rs :: trait ConsoleDevice :: fn discard_input (& self) -> usize
-kernel/src/devices/drivers/console.rs :: trait ConsoleDevice :: fn input_ready (& self) -> bool
-kernel/src/devices/drivers/console.rs :: trait ConsoleDevice :: fn name (& self) -> & [u8]
-kernel/src/devices/drivers/console.rs :: trait ConsoleDevice :: fn read (& self , bytes : & mut [u8]) -> usize
-kernel/src/devices/drivers/console.rs :: trait ConsoleDevice :: fn write (& self , bytes : & [u8]) -> Result < () , ConsoleError >
 kernel/src/devices/drivers/display.rs :: enum DisplayError :: # [doc = " rectangle 越过当前 scanout。"] InvalidRectangle
 kernel/src/devices/drivers/display.rs :: enum DisplayError :: # [doc = " transport、queue 或 response 损坏。"] Device
 kernel/src/devices/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
@@ -364,28 +353,6 @@ kernel/src/devices/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_virg
 kernel/src/devices/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_virgl_scanout (& self , mode : DisplayMode , resource_id : u32 ,) -> Result < u64 , DisplayError >
 kernel/src/devices/drivers/graphics.rs :: trait GraphicsDevice :: fn supports_virgl_context_init (& self) -> bool
 kernel/src/devices/drivers/graphics.rs :: trait GraphicsDevice :: fn virgl_capset_info (& self) -> Option < VirglCapsetInfo >
-kernel/src/devices/drivers/hal/bus.rs :: enum BusError :: InvalidAddress
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) enum BusError
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) fn before_mmio_write ()
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u16 (& self , offset : usize) -> Result < u16 , BusError >
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u32 (& self , offset : usize) -> Result < u32 , BusError >
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u8 (& self , offset : usize) -> Result < u8 , BusError >
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u16 (& self , offset : usize , value : u16) -> Result < () , BusError >
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
-kernel/src/devices/drivers/hal/bus.rs :: pub (crate) struct MmioBus
-kernel/src/devices/drivers/hal/interrupt.rs :: enum InterruptError :: DeviceFailure
-kernel/src/devices/drivers/hal/interrupt.rs :: enum InterruptError :: HandlerNotSet
-kernel/src/devices/drivers/hal/interrupt.rs :: enum InterruptError :: InvalidVector
-kernel/src/devices/drivers/hal/interrupt.rs :: enum InterruptError :: NoMemory
-kernel/src/devices/drivers/hal/interrupt.rs :: pub (crate) enum InterruptError
-kernel/src/devices/drivers/hal/interrupt.rs :: pub (crate) fn wait_for_external_interrupt ()
-kernel/src/devices/drivers/hal/interrupt.rs :: pub (crate) trait InterruptHandler
-kernel/src/devices/drivers/hal/interrupt.rs :: pub (crate) type InterruptVector  = u32
-kernel/src/devices/drivers/hal/interrupt.rs :: trait InterruptHandler :: fn handle_interrupt (& self , vector : InterruptVector) -> Result < () , InterruptError >
-kernel/src/devices/drivers/hal/mod.rs :: pub (crate) use bus :: { BusError , MmioBus , before_mmio_write }
-kernel/src/devices/drivers/hal/mod.rs :: pub (crate) use interrupt :: { InterruptError , InterruptHandler , InterruptVector , wait_for_external_interrupt , }
 kernel/src/devices/drivers/input.rs :: enum InputDeviceError :: Device
 kernel/src/devices/drivers/input.rs :: pub (crate) InputAbsInfo :: flat : i32
 kernel/src/devices/drivers/input.rs :: pub (crate) InputAbsInfo :: fuzz : i32
@@ -471,17 +438,15 @@ kernel/src/devices/drivers/io_completion/request_owner.rs :: pub (crate) struct 
 kernel/src/devices/drivers/io_completion/request_owner.rs :: pub (crate) struct PreparedCapacityWait
 kernel/src/devices/drivers/io_completion/request_owner.rs :: pub (crate) struct RequestIdentity
 kernel/src/devices/drivers/io_completion/request_owner.rs :: pub (crate) struct RequestOwner
-kernel/src/devices/drivers/mod.rs :: pub (crate) mod console
 kernel/src/devices/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/devices/drivers/mod.rs :: pub (crate) mod network
 kernel/src/devices/drivers/mod.rs :: pub (crate) use audio_output :: { PCM_BUFFER_BYTES , PCM_BUFFER_FRAMES , PCM_CHANNELS , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_PERIODS , PCM_RATE , PcmCompletionObserver , PcmOutput , PcmOutputError , }
 kernel/src/devices/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate }
 kernel/src/devices/drivers/mod.rs :: pub (crate) use entropy :: EntropySource
 kernel/src/devices/drivers/mod.rs :: pub (crate) use graphics :: { CursorCommand , GraphicsDevice , VirglBox , VirglCapsetInfo , VirglCommand , VirglTransferDirection , }
-kernel/src/devices/drivers/mod.rs :: pub (crate) use hal :: { BusError , InterruptError , InterruptHandler , InterruptVector , MmioBus , before_mmio_write , wait_for_external_interrupt , }
 kernel/src/devices/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/devices/drivers/mod.rs :: pub (crate) use port :: { PortActivity , PortDevice , PortError }
-kernel/src/devices/drivers/mod.rs :: pub (crate) use registry :: { console_device , dispatch_io_completion_work , display_device , fill_entropy , input_device , input_device_count , network_device , pcm_output , port_device , register_completion_source , register_display_device , register_entropy_source , register_input_device , register_network_device , register_pcm_output , register_port_device , }
+kernel/src/devices/drivers/mod.rs :: pub (crate) use registry :: { dispatch_io_completion_work , display_device , fill_entropy , input_device , input_device_count , network_device , pcm_output , port_device , register_completion_source , register_display_device , register_entropy_source , register_input_device , register_network_device , register_pcm_output , register_port_device , }
 kernel/src/devices/drivers/network.rs :: enum NetworkError :: # [doc = " transport、queue 或设备返回了不可恢复错误。"] Device
 kernel/src/devices/drivers/network.rs :: enum NetworkError :: # [doc = " 帧超过设备或调用方 buffer 能表达的 MTU。"] FrameTooLarge
 kernel/src/devices/drivers/network.rs :: enum NetworkError :: # [doc = " 设备暂时没有已完成的接收帧。"] WouldBlock
@@ -523,7 +488,6 @@ kernel/src/devices/drivers/port.rs :: trait PortDevice :: fn read (& self , outp
 kernel/src/devices/drivers/port.rs :: trait PortDevice :: fn readable (& self) -> bool
 kernel/src/devices/drivers/port.rs :: trait PortDevice :: fn writable (& self) -> bool
 kernel/src/devices/drivers/port.rs :: trait PortDevice :: fn write (& self , input : & [u8]) -> Result < usize , PortError >
-kernel/src/devices/drivers/registry.rs :: pub (crate) fn console_device (index : usize) -> Option < Arc < dyn ConsoleDevice > >
 kernel/src/devices/drivers/registry.rs :: pub (crate) fn dispatch_io_completion_work () -> bool
 kernel/src/devices/drivers/registry.rs :: pub (crate) fn display_device (index : usize) -> Option < Arc < dyn GraphicsDevice > >
 kernel/src/devices/drivers/registry.rs :: pub (crate) fn fill_entropy (bytes : & mut [MaybeUninit < u8 >]) -> Result < () , () >
@@ -539,7 +503,6 @@ kernel/src/devices/drivers/registry.rs :: pub (crate) fn register_input_device (
 kernel/src/devices/drivers/registry.rs :: pub (crate) fn register_network_device (device : Arc < dyn NetworkDevice > ,) -> Result < usize , Arc < dyn NetworkDevice > >
 kernel/src/devices/drivers/registry.rs :: pub (crate) fn register_pcm_output (device : Arc < dyn PcmOutput >) -> Result < usize , Arc < dyn PcmOutput > >
 kernel/src/devices/drivers/registry.rs :: pub (crate) fn register_port_device (device : Arc < dyn PortDevice > ,) -> Result < usize , Arc < dyn PortDevice > >
-kernel/src/devices/drivers/registry.rs :: pub (super) fn register_console_device (device : Arc < dyn ConsoleDevice > ,) -> Result < usize , Arc < dyn ConsoleDevice > >
 kernel/src/devices/drm/card_file.rs :: pub (super) const CARD_NUMBER : DeviceNumber = DeviceNumber :: new (226 , 0)
 kernel/src/devices/drm/card_file.rs :: pub (super) const CARD_PATH : & [u8] = b"dri/card0"
 kernel/src/devices/drm/card_file.rs :: pub (super) struct CardDriver
@@ -926,6 +889,7 @@ kernel/src/devices/tty/terminal/input_batch.rs :: pub (crate) fn terminal_input_
 kernel/src/devices/tty/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
 kernel/src/devices/tty/terminal_flush.rs :: pub (crate) fn clear_raw (head : & mut usize , length : & mut usize) -> usize
 kernel/src/devices/tty/terminal_flush.rs :: pub (super) fn clear_pending (input_head : & mut usize , input_len : & mut usize , line_len : & mut usize , eof_pending : & mut bool ,) -> bool
+kernel/src/devices/virtio/binding.rs :: pub (crate) fn bind_platform_devices ()
 kernel/src/devices/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/devices/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/devices/virtio/blk.rs :: pub (crate) struct VirtIOBlockDevice
@@ -1176,6 +1140,7 @@ kernel/src/devices/virtio/gpu/wire.rs :: pub (super) fn write_u64 (bytes : & mut
 kernel/src/devices/virtio/input.rs :: pub (crate) impl VirtIOInputDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/devices/virtio/input.rs :: pub (crate) impl VirtIOInputDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/devices/virtio/input.rs :: pub (crate) struct VirtIOInputDevice
+kernel/src/devices/virtio/mod.rs :: pub (crate) use binding :: bind_platform_devices
 kernel/src/devices/virtio/mod.rs :: pub (crate) use blk :: VirtIOBlockDevice
 kernel/src/devices/virtio/mod.rs :: pub (crate) use console :: VirtIOConsoleDevice
 kernel/src/devices/virtio/mod.rs :: pub (crate) use gpu :: VirtIOGpuDevice
@@ -1221,6 +1186,11 @@ kernel/src/devices/virtio/pci.rs :: pub (crate) impl PciTransport :: fn write_co
 kernel/src/devices/virtio/pci.rs :: pub (crate) impl PciTransport :: fn write_config_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
 kernel/src/devices/virtio/pci.rs :: pub (crate) struct PciTransport
 kernel/src/devices/virtio/pci.rs :: pub (in crate :: virtio) impl PciTransport :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses ,) -> Result < () , BusError >
+kernel/src/devices/virtio/pci_host.rs :: pub (super) VirtioPciFunction :: device_id : u32
+kernel/src/devices/virtio/pci_host.rs :: pub (super) VirtioPciFunction :: interrupt : u32
+kernel/src/devices/virtio/pci_host.rs :: pub (super) VirtioPciFunction :: transport : PciTransport
+kernel/src/devices/virtio/pci_host.rs :: pub (super) fn find_console (host : & PciHost) -> Option < VirtioPciFunction >
+kernel/src/devices/virtio/pci_host.rs :: pub (super) struct VirtioPciFunction
 kernel/src/devices/virtio/queue.rs :: enum VirtQueueError :: # [doc = " buffer 长度溢出或没有可发布的 segment。"] InvalidBuffer
 kernel/src/devices/virtio/queue.rs :: enum VirtQueueError :: # [doc = " 当前 free descriptor 不足。"] NoDescriptors
 kernel/src/devices/virtio/queue.rs :: pub (super) VirtQueue :: avail : * mut VirtqAvail
@@ -2121,13 +2091,54 @@ kernel/src/hardware/entry.rs :: pub (crate) impl BootContext :: fn hardware_cpu 
 kernel/src/hardware/entry.rs :: pub (crate) impl BootContext :: fn new (hardware_cpu : HardwareCpuId , platform : BootInfo) -> Self
 kernel/src/hardware/entry.rs :: pub (crate) impl BootContext :: fn platform (self) -> BootInfo
 kernel/src/hardware/entry.rs :: pub (crate) struct BootContext
+kernel/src/hardware/hal/bus.rs :: enum BusError :: InvalidAddress
+kernel/src/hardware/hal/bus.rs :: pub (crate) enum BusError
+kernel/src/hardware/hal/bus.rs :: pub (crate) fn before_mmio_write ()
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u16 (& self , offset : usize) -> Result < u16 , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u32 (& self , offset : usize) -> Result < u32 , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u8 (& self , offset : usize) -> Result < u8 , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u16 (& self , offset : usize , value : u16) -> Result < () , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) impl MmioBus :: fn write_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
+kernel/src/hardware/hal/bus.rs :: pub (crate) struct MmioBus
+kernel/src/hardware/hal/console.rs :: pub (crate) fn console_device (index : usize) -> Option < Arc < dyn ConsoleDevice > >
+kernel/src/hardware/hal/console.rs :: pub (crate) fn input_ready () -> bool
+kernel/src/hardware/hal/console.rs :: pub (crate) fn publish_received (bytes : & [u8])
+kernel/src/hardware/hal/console.rs :: pub (crate) fn register_serial (name : & 'static [u8] , output : SerialOutput ,) -> Result < () , InterruptError >
+kernel/src/hardware/hal/console.rs :: pub (crate) struct ConsoleError
+kernel/src/hardware/hal/console.rs :: pub (crate) trait ConsoleDevice
+kernel/src/hardware/hal/console.rs :: pub (crate) type SerialOutput  = fn (u8) -> Result < () , ConsoleError >
+kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn discard_input (& self) -> usize
+kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn input_ready (& self) -> bool
+kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn name (& self) -> & [u8]
+kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn read (& self , bytes : & mut [u8]) -> usize
+kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn write (& self , bytes : & [u8]) -> Result < () , ConsoleError >
+kernel/src/hardware/hal/interrupt.rs :: enum InterruptError :: DeviceFailure
+kernel/src/hardware/hal/interrupt.rs :: enum InterruptError :: HandlerNotSet
+kernel/src/hardware/hal/interrupt.rs :: enum InterruptError :: InvalidVector
+kernel/src/hardware/hal/interrupt.rs :: enum InterruptError :: NoMemory
+kernel/src/hardware/hal/interrupt.rs :: pub (crate) enum InterruptError
+kernel/src/hardware/hal/interrupt.rs :: pub (crate) fn wait_for_external_interrupt ()
+kernel/src/hardware/hal/interrupt.rs :: pub (crate) trait InterruptHandler
+kernel/src/hardware/hal/interrupt.rs :: pub (crate) type InterruptVector  = u32
+kernel/src/hardware/hal/interrupt.rs :: trait InterruptHandler :: fn handle_interrupt (& self , vector : InterruptVector) -> Result < () , InterruptError >
+kernel/src/hardware/hal/mod.rs :: pub (crate) mod console
+kernel/src/hardware/hal/mod.rs :: pub (crate) mod registry
+kernel/src/hardware/hal/mod.rs :: pub (crate) use bus :: { BusError , MmioBus , before_mmio_write }
+kernel/src/hardware/hal/mod.rs :: pub (crate) use interrupt :: { InterruptError , InterruptHandler , InterruptVector , wait_for_external_interrupt , }
+kernel/src/hardware/hal/registry.rs :: pub (crate) impl AppendOnlyRegistry < T > :: const fn new () -> Self
+kernel/src/hardware/hal/registry.rs :: pub (crate) impl AppendOnlyRegistry < T > :: fn count (& self) -> usize
+kernel/src/hardware/hal/registry.rs :: pub (crate) impl AppendOnlyRegistry < T > :: fn get (& self , index : usize) -> Option < Arc < T > >
+kernel/src/hardware/hal/registry.rs :: pub (crate) impl AppendOnlyRegistry < T > :: fn register (& self , device : Arc < T >) -> Result < usize , Arc < T > >
+kernel/src/hardware/hal/registry.rs :: pub (crate) struct AppendOnlyRegistry < T : ? Sized >
 kernel/src/hardware/platform/mod.rs :: enum ResetKind :: ColdReboot
 kernel/src/hardware/platform/mod.rs :: enum ResetKind :: Shutdown
 kernel/src/hardware/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。"] SystemFailure
 kernel/src/hardware/platform/mod.rs :: enum ResetReason :: # [doc = " 用户或系统策略主动请求。"] Requested
 kernel/src/hardware/platform/mod.rs :: pub (crate) enum ResetKind
 kernel/src/hardware/platform/mod.rs :: pub (crate) enum ResetReason
-kernel/src/hardware/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/hardware/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , PciHost , ResetError , TlbShootdownError , VirtioMmioTransport , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , map_device_window , pci_host , physical_memory_end , read_realtime_ns , register_device_interrupt , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , virtio_mmio_transports , }
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
@@ -2139,28 +2150,28 @@ kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) Gic
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :: base_addr : usize
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :: irq : u32
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :: size : usize
-kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PciHostInfo :: ecam : RangeValue
-kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PciHostInfo :: mmio32 : RangeValue
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: bootargs : Vec < u8 >
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: gic : GicV3Info
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
-kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: pci : PciHostInfo
+kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: pci : PciHost
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: rtc : RangeValue
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: uart : MmioDevice
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: virtio : VirtioMmioTransports
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) RangeValue :: size : usize
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) RangeValue :: start : usize
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) fn parse (dtb : Dtb < '_ > , physical : usize) -> PlatformInfo
-kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) impl PciHostInfo :: fn interrupt (self , slot : usize , pin : usize) -> Option < u32 >
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) impl RangeValue :: fn range (self) -> Range < usize >
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct GicV3Info
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct MmioDevice
-kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct PciHostInfo
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct PlatformInfo
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) struct RangeValue
 kernel/src/hardware/platform/qemu_virt/aarch64/devices.rs :: pub (crate) fn initialize ()
+kernel/src/hardware/platform/qemu_virt/aarch64/devices.rs :: pub (crate) fn map_device_window (physical : usize) -> usize
+kernel/src/hardware/platform/qemu_virt/aarch64/devices.rs :: pub (crate) fn pci_host () -> Option < & 'static PciHost >
+kernel/src/hardware/platform/qemu_virt/aarch64/devices.rs :: pub (crate) fn register_device_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
+kernel/src/hardware/platform/qemu_virt/aarch64/devices.rs :: pub (crate) fn virtio_mmio_transports () -> & 'static VirtioMmioTransports
 kernel/src/hardware/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn hardware_cpu_ids () -> impl ExactSizeIterator < Item = HardwareCpuId >
 kernel/src/hardware/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/hardware/platform/qemu_virt/aarch64/discovery.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
@@ -2194,14 +2205,10 @@ kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) mod console
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct InstructionFenceError
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TimerArmError
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) struct TlbShootdownError
+kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use devices :: { map_device_window , pci_host , register_device_interrupt , virtio_mmio_transports , }
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids }
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use gicv3 :: { claim_interrupt , complete_interrupt , send_ipi }
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) use psci :: { ResetError , reset_system , start_cpu }
-kernel/src/hardware/platform/qemu_virt/aarch64/pci.rs :: pub (crate) VirtioPciFunction :: device_id : u32
-kernel/src/hardware/platform/qemu_virt/aarch64/pci.rs :: pub (crate) VirtioPciFunction :: interrupt : u32
-kernel/src/hardware/platform/qemu_virt/aarch64/pci.rs :: pub (crate) VirtioPciFunction :: transport : PciTransport
-kernel/src/hardware/platform/qemu_virt/aarch64/pci.rs :: pub (crate) fn find_console (host : PciHostInfo) -> Option < VirtioPciFunction >
-kernel/src/hardware/platform/qemu_virt/aarch64/pci.rs :: pub (crate) struct VirtioPciFunction
 kernel/src/hardware/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn enable_receive ()
 kernel/src/hardware/platform/qemu_virt/aarch64/pl011.rs :: pub (super) fn initialize (base : usize , size : usize ,) -> Result < Arc < dyn InterruptHandler > , InterruptError >
 kernel/src/hardware/platform/qemu_virt/aarch64/psci.rs :: pub (crate) fn reset_system (kind : crate :: platform :: ResetKind , _reason : crate :: platform :: ResetReason ,) -> Result < () , ResetError >
@@ -2218,7 +2225,14 @@ kernel/src/hardware/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Softwa
 kernel/src/hardware/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Spurious
 kernel/src/hardware/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Timer (u32)
 kernel/src/hardware/platform/qemu_virt/mod.rs :: pub (crate) enum ClaimedInterrupt
-kernel/src/hardware/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/hardware/platform/qemu_virt/mod.rs :: pub (crate) use pci_host :: PciHost
+kernel/src/hardware/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , map_device_window , pci_host , physical_memory_end , read_realtime_ns , register_device_interrupt , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , virtio_mmio_transports , }
+kernel/src/hardware/platform/qemu_virt/mod.rs :: pub (crate) use virtio_mmio :: { VirtioMmioTransport , VirtioMmioTransports }
+kernel/src/hardware/platform/qemu_virt/pci_host.rs :: pub (crate) PciHost :: ecam : core :: ops :: Range < usize >
+kernel/src/hardware/platform/qemu_virt/pci_host.rs :: pub (crate) PciHost :: mmio32 : core :: ops :: Range < usize >
+kernel/src/hardware/platform/qemu_virt/pci_host.rs :: pub (crate) impl PciHost :: fn interrupt (& self , slot : usize , pin : usize) -> Option < u32 >
+kernel/src/hardware/platform/qemu_virt/pci_host.rs :: pub (crate) impl PciHost :: fn new (ecam : core :: ops :: Range < usize > , mmio32 : core :: ops :: Range < usize > , intx : [[u32 ; 4] ; 4] ,) -> Self
+kernel/src/hardware/platform/qemu_virt/pci_host.rs :: pub (crate) struct PciHost
 kernel/src/hardware/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
@@ -2236,6 +2250,10 @@ kernel/src/hardware/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) fn 
 kernel/src/hardware/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) struct PlatformInfo
 kernel/src/hardware/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn handle_external_interrupt ()
 kernel/src/hardware/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn initialize ()
+kernel/src/hardware/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn map_device_window (physical : usize) -> usize
+kernel/src/hardware/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn pci_host () -> Option < & 'static PciHost >
+kernel/src/hardware/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn register_device_interrupt (vector : u32 , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
+kernel/src/hardware/platform/qemu_virt/riscv64/devices.rs :: pub (crate) fn virtio_mmio_transports () -> & 'static VirtioMmioTransports
 kernel/src/hardware/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn hardware_cpu_ids () -> impl ExactSizeIterator < Item = HardwareCpuId >
 kernel/src/hardware/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/hardware/platform/qemu_virt/riscv64/discovery.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
@@ -2267,7 +2285,7 @@ kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn physical
 kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
 kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn timebase_frequency () -> u64
 kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) mod console
-kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: { handle_external_interrupt , initialize as initialize_devices }
+kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use devices :: { handle_external_interrupt , initialize as initialize_devices , map_device_window , pci_host , register_device_interrupt , virtio_mmio_transports , }
 kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids , initialize , validate_boot_info }
 kernel/src/hardware/platform/qemu_virt/riscv64/mod.rs :: pub (crate) use firmware :: { InstructionFenceError , ResetError , TlbShootdownError , arm_timer , debug_console_write , debug_console_write_bytes , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , verify_firmware , }
 kernel/src/hardware/platform/qemu_virt/riscv64/plic.rs :: pub (super) impl PlicInterruptController :: fn enable_interrupt (& mut self , vector : InterruptVector ,) -> Result < () , InterruptError >
@@ -2289,9 +2307,6 @@ kernel/src/hardware/platform/qemu_virt/riscv64/rtc.rs :: pub (crate) impl Goldfi
 kernel/src/hardware/platform/qemu_virt/riscv64/rtc.rs :: pub (crate) struct GoldfishRTCDevice
 kernel/src/hardware/platform/qemu_virt/riscv64/uart.rs :: pub (super) fn enable_receive ()
 kernel/src/hardware/platform/qemu_virt/riscv64/uart.rs :: pub (super) fn initialize (base : usize , size : usize ,) -> Result < Arc < dyn InterruptHandler > , InterruptError >
-kernel/src/hardware/platform/qemu_virt/virtio_binding.rs :: pub (super) fn bind (transports : & VirtioMmioTransports , map_base : fn (usize) -> usize , register_irq : & mut RegisterIrq < '_ > ,)
-kernel/src/hardware/platform/qemu_virt/virtio_binding.rs :: pub (super) fn publish_console (device : Arc < VirtIOConsoleDevice > , irq : u32 , register_irq : & mut RegisterIrq < '_ > ,)
-kernel/src/hardware/platform/qemu_virt/virtio_binding.rs :: pub (super) type RegisterIrq < 'a > = dyn FnMut (u32 , Arc < dyn InterruptHandler > , & 'static str) + 'a
 kernel/src/hardware/platform/qemu_virt/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: base_addr : usize
 kernel/src/hardware/platform/qemu_virt/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: irq : u32
 kernel/src/hardware/platform/qemu_virt/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: size : usize

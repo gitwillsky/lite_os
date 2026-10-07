@@ -8,7 +8,7 @@ mod riscv64;
 #[macro_use]
 mod aarch64;
 
-mod virtio_binding;
+mod pci_host;
 mod virtio_mmio;
 
 #[cfg(target_arch = "aarch64")]
@@ -39,10 +39,13 @@ impl ClaimedInterrupt {
     }
 }
 
+pub(crate) use pci_host::PciHost;
 pub(crate) use selected::{
     BootInfo, InstructionFenceError, ResetError, TlbShootdownError, arm_timer, claim_interrupt,
     complete_interrupt, complete_pending_ipi, console, hardware_cpu_ids, initialize,
-    initialize_devices, kernel_command_line, kernel_mmio_regions, physical_memory_end,
-    read_realtime_ns, reset_system, send_ipi, start_cpu, synchronize_instruction_cache,
-    synchronize_tlb, timebase_frequency, validate_boot_info, verify_firmware,
+    initialize_devices, kernel_command_line, kernel_mmio_regions, map_device_window, pci_host,
+    physical_memory_end, read_realtime_ns, register_device_interrupt, reset_system, send_ipi,
+    start_cpu, synchronize_instruction_cache, synchronize_tlb, timebase_frequency,
+    validate_boot_info, verify_firmware, virtio_mmio_transports,
 };
+pub(crate) use virtio_mmio::{VirtioMmioTransport, VirtioMmioTransports};

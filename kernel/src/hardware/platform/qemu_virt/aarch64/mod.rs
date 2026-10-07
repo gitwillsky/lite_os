@@ -8,7 +8,6 @@ mod device_tree;
 mod devices;
 mod discovery;
 mod gicv3;
-mod pci;
 mod pl011;
 mod psci;
 mod tlb_shootdown;
@@ -48,6 +47,10 @@ pub(crate) fn initialize(boot: BootInfo) {
 /// # Errors
 ///
 /// controller 或 rendezvous 初始化失败时 fail-stop。
+pub(crate) use devices::{
+    map_device_window, pci_host, register_device_interrupt, virtio_mmio_transports,
+};
+
 pub(crate) fn initialize_devices() {
     devices::initialize();
     tlb_shootdown::initialize();
@@ -83,8 +86,8 @@ pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usi
         Some(info.gic.distributor.range()),
         Some(info.gic.redistributor.range()),
         info.virtio.span(),
-        Some(info.pci.ecam.range()),
-        Some(info.pci.mmio32.range()),
+        Some(info.pci.ecam.clone()),
+        Some(info.pci.mmio32.clone()),
     ]
     .into_iter()
     .flatten()

@@ -11,9 +11,8 @@ use super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     queue::{DmaBuffer, UsedDescriptor, VirtQueue},
 };
-use crate::drivers::{
-    InterruptError, InterruptHandler, InterruptVector, PortActivity, PortDevice, PortError,
-};
+use crate::drivers::{PortActivity, PortDevice, PortError};
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 use byte_ring::ByteRing;
 use wire::{data_queue_indices, is_spice_port_name};
 

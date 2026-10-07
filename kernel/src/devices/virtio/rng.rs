@@ -14,13 +14,14 @@ use super::{
     queue::{DeviceWriteBuffer, VirtQueue},
 };
 use crate::drivers::{
-    EntropySource, InterruptError, InterruptHandler, InterruptVector,
+    EntropySource,
     io_completion::request_owner::{
         CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner, RequestOwnerError,
         ReserveOrWait,
     },
     io_completion::{self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
 };
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 
 const ENTROPY_CHUNK_SIZE: usize = 4096;
 const RNG_REQUEST_SLOTS: usize = 4;
@@ -144,7 +145,7 @@ impl VirtIORngDevice {
             // Cold boot builds init's AT_RANDOM before a current task exists. This architecture
             // seam temporarily enables only external IRQs, executes WFI, then restores both IRQ
             // states exactly; polling or spin fallback would deadlock an interrupt-driven queue.
-            crate::drivers::wait_for_external_interrupt();
+            crate::hal::wait_for_external_interrupt();
             self.reclaim_completions();
         });
         waiter.take_outcome().map_err(|_| ())
@@ -206,7 +207,7 @@ impl VirtIORngDevice {
                     self.reclaim_completions();
                     continue;
                 }
-                crate::drivers::wait_for_external_interrupt();
+                crate::hal::wait_for_external_interrupt();
             }
         }
     }

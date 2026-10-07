@@ -9,7 +9,6 @@ use spin::Once;
 use syscall_abi::{errno, signal};
 
 use crate::{
-    drivers::console::ConsoleDevice,
     fs::{
         FileSystemError,
         device::{
@@ -17,6 +16,7 @@ use crate::{
             DeviceWaitSources, IoctlCall, OpenRequest, UserFault, UserInput, UserOutput,
         },
     },
+    hal::console::ConsoleDevice,
     ipc::{Pipe, PipeDirection, PipeRead, PipeWaitCondition},
     sync::WaitResult,
 };

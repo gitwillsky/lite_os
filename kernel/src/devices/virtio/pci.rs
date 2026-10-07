@@ -1,7 +1,7 @@
 //! VirtIO 1.4 modern PCI transport register codec.
 
 use super::transport::VirtQueueAddresses;
-use crate::drivers::{BusError, MmioBus};
+use crate::hal::{BusError, MmioBus};
 
 const DEVICE_FEATURE_SELECT: usize = 0x00;
 const DEVICE_FEATURE: usize = 0x04;
@@ -133,7 +133,7 @@ impl PciTransport {
             .checked_mul(self.notify_multiplier)
             .and_then(|value| usize::try_from(value).ok())
             .ok_or(BusError::InvalidAddress)?;
-        crate::drivers::before_mmio_write();
+        crate::hal::before_mmio_write();
         self.notify.write_u16(offset, index)
     }
 

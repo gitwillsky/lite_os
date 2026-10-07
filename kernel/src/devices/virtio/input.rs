@@ -6,10 +6,8 @@ use super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     queue::{DmaBuffer, VirtQueue},
 };
-use crate::drivers::{
-    InputAbsInfo, InputDevice, InputDeviceError, InputId, InterruptError, InterruptHandler,
-    InterruptVector, RawInputEvent,
-};
+use crate::drivers::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 
 const EVENT_QUEUE: u32 = 0;
 const QUEUE_SIZE: u16 = 64;

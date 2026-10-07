@@ -43,7 +43,7 @@
   `RootMounted` 与 `ConsoleReady`。顺序错误无法编译。composition root 不依赖具体文件系统类型或
   console adapter。
 - console 设备由 platform 以 Linux 设备名（aarch64 `ttyAMA0`、riscv64 `ttyS0`）与同步单字节输出原语
-  经 `drivers::console::register_serial` 发布；composition root 按 `console=` 名称从 drivers 注册表
+  经 `hal::console::register_serial` 发布；composition root 按 `console=` 名称从 hal 注册表
   选择，fs TTY 把它包装为系统 console Terminal。
 
 ## Known limits

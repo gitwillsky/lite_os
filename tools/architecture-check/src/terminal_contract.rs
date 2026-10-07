@@ -243,7 +243,7 @@ mod tests {
         let clear = "uart.write(INTERRUPT_CLEAR, RX_INTERRUPT);\n";
         let start = source.text.find(clear).expect("handler clear anchor");
         source.text.replace_range(start..start + clear.len(), "");
-        let publish = "crate::drivers::console::publish_received(";
+        let publish = "crate::hal::console::publish_received(";
         let at = source.text.find(publish).expect("publish anchor");
         source.text.insert_str(at, clear);
         let mut errors = Vec::new();

@@ -27,6 +27,8 @@ mod cpu;
 mod deferred;
 #[path = "hardware/entry.rs"]
 mod entry;
+#[path = "hardware/hal/mod.rs"]
+mod hal;
 #[macro_use]
 #[path = "hardware/platform/mod.rs"]
 mod platform;
@@ -100,6 +102,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     // 启动顺序由证明 token 约束：每一步只接受前置步骤返回的 token，顺序错误无法编译。
     let scheduler = task::initialize(vfs);
     platform::initialize_devices();
+    virtio::bind_platform_devices();
     let mut disk_index = 0;
     while let Some(disk) = block::device(disk_index) {
         fs::publish_block_device(disk).expect("block device publication failed");
@@ -199,9 +202,9 @@ fn mount_filesystems(
 ///
 /// 名称不匹配任何已注册 console 时 fail-stop：每个进程都持有一个 terminal，不能像 Linux 那样
 /// 在没有 `/dev/console` 的情况下运行 init。
-fn select_console(name: Option<&[u8]>) -> Arc<dyn drivers::console::ConsoleDevice> {
+fn select_console(name: Option<&[u8]>) -> Arc<dyn crate::hal::console::ConsoleDevice> {
     let mut index = 0;
-    while let Some(device) = drivers::console_device(index) {
+    while let Some(device) = hal::console::console_device(index) {
         if name.is_none_or(|name| device.name() == name) {
             return device;
         }

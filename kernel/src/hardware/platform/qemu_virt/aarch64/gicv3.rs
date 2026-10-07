@@ -8,8 +8,8 @@ use spin::Once;
 use crate::{
     arch::interrupt::SOFTWARE_SGI,
     cpu::{self, CpuSet},
-    drivers::{InterruptError, InterruptHandler, InterruptVector},
     fallible_tree::FallibleMap,
+    hal::{InterruptError, InterruptHandler, InterruptVector},
     sync::IrqMutex,
 };
 

@@ -5,8 +5,8 @@ use super::plic_policy::{
 };
 use crate::{
     cpu::{self, CpuSet},
-    drivers::{InterruptError, InterruptHandler, InterruptVector},
     fallible_tree::FallibleMap,
+    hal::{InterruptError, InterruptHandler, InterruptVector},
 };
 
 /// QEMU virt PLIC adapter。hardware context 编码仅存在于 platform backend。

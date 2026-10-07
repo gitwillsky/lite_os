@@ -10,10 +10,8 @@ use super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     queue::{DmaBuffer, VirtQueue},
 };
-use crate::drivers::{
-    InterruptError, InterruptHandler, InterruptVector,
-    network::{NetworkDevice, NetworkError, NetworkStatistics},
-};
+use crate::drivers::network::{NetworkDevice, NetworkError, NetworkStatistics};
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
 const RX_QUEUE: u32 = 0;

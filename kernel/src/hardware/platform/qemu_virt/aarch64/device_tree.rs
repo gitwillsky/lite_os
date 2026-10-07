@@ -8,7 +8,10 @@ use core::{fmt, ops::Range};
 
 use dtb_walker::{Dtb, DtbObj, Property, Str, WalkOperation};
 
-use super::super::virtio_mmio::{VirtioMmioScan, VirtioMmioTransports};
+use super::super::{
+    PciHost,
+    virtio_mmio::{VirtioMmioScan, VirtioMmioTransports},
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MmioDevice {
@@ -21,20 +24,6 @@ pub(crate) struct MmioDevice {
 pub(crate) struct GicV3Info {
     pub(crate) distributor: RangeValue,
     pub(crate) redistributor: RangeValue,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PciHostInfo {
-    pub(crate) ecam: RangeValue,
-    pub(crate) mmio32: RangeValue,
-    intx: [[u32; 4]; 4],
-}
-
-impl PciHostInfo {
-    pub(crate) fn interrupt(self, slot: usize, pin: usize) -> Option<u32> {
-        let vector = *self.intx.get(slot)?.get(pin.checked_sub(1)?)?;
-        (vector != 0).then_some(vector)
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,7 +45,7 @@ pub(crate) struct PlatformInfo {
     pub(crate) uart: MmioDevice,
     pub(crate) rtc: RangeValue,
     pub(crate) gic: GicV3Info,
-    pub(crate) pci: PciHostInfo,
+    pub(crate) pci: PciHost,
     pub(crate) virtio: VirtioMmioTransports,
     /// `/chosen/bootargs`（kernel command line），不含结尾 NUL；没有该属性时为空。
     pub(crate) bootargs: Vec<u8>,
@@ -262,15 +251,17 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             valid_range_value(gic.distributor) && valid_range_value(gic.redistributor),
             "invalid GICv3 MMIO ranges"
         );
-        let pci = PciHostInfo {
-            ecam: pci_ecam
+        let pci = PciHost::new(
+            pci_ecam
                 .filter(|range| valid_range_value(*range))
-                .expect("PCI ECAM range missing"),
-            mmio32: pci_mmio32
+                .expect("PCI ECAM range missing")
+                .range(),
+            pci_mmio32
                 .filter(|range| valid_range_value(*range))
-                .expect("PCI 32-bit MMIO range missing"),
-            intx: pci_intx,
-        };
+                .expect("PCI 32-bit MMIO range missing")
+                .range(),
+            pci_intx,
+        );
         assert!(
             pci.interrupt(1, 1).is_some(),
             "PCI slot 1 INTx route missing"

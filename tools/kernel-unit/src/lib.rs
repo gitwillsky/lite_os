@@ -163,6 +163,8 @@ mod ext4_conformance_tests;
     reason = "host tests read only the decoded facts they assert; boot-only fields stay unused"
 )]
 mod qemu_virt {
+    pub(crate) mod pci_host;
+    pub(crate) use pci_host::PciHost;
     pub(crate) mod virtio_mmio;
 
     pub(crate) mod aarch64 {

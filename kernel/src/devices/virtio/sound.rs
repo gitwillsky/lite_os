@@ -9,10 +9,10 @@ use super::{
     queue::{DmaBuffer, VirtQueue},
 };
 use crate::drivers::{
-    InterruptError, InterruptHandler, InterruptVector, PCM_BUFFER_BYTES, PCM_CHANNELS,
-    PCM_PERIOD_BYTES, PCM_PERIODS, PcmCompletionObserver, PcmOutput, PcmOutputError,
-    io_completion::CompletionSource,
+    PCM_BUFFER_BYTES, PCM_CHANNELS, PCM_PERIOD_BYTES, PCM_PERIODS, PcmCompletionObserver,
+    PcmOutput, PcmOutputError, io_completion::CompletionSource,
 };
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 
 #[path = "sound/wire.rs"]
 mod wire;

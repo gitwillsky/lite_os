@@ -10,9 +10,9 @@ use super::{
 };
 use crate::drivers::{
     CursorCommand, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,
-    GraphicsDevice, InterruptError, InterruptHandler, InterruptVector, VirglCapsetInfo,
-    VirglCommand,
+    GraphicsDevice, VirglCapsetInfo, VirglCommand,
 };
+use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 
 mod wire;
 use wire::*;

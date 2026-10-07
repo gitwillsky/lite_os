@@ -5,6 +5,7 @@
 //! 注册表。通用内核只经 seam 使用设备，不感知本模块；本模块不依赖 `arch`，MMIO 访问与中断等待经
 //! `drivers` 的 hal façade。
 
+mod binding;
 mod blk;
 mod completion_irq;
 mod console;
@@ -12,11 +13,13 @@ mod gpu;
 mod input;
 mod net;
 mod pci;
+mod pci_host;
 mod queue;
 mod rng;
 mod sound;
 mod transport;
 
+pub(crate) use binding::bind_platform_devices;
 pub(crate) use blk::VirtIOBlockDevice;
 pub(crate) use console::VirtIOConsoleDevice;
 pub(crate) use gpu::VirtIOGpuDevice;

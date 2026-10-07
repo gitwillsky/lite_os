@@ -1,7 +1,7 @@
 //! QEMU `virt` generic ECAM host and the UTM VirtIO Console function.
 
-use super::device_tree::PciHostInfo;
-use crate::{drivers::MmioBus, virtio::PciTransport};
+use super::PciTransport;
+use crate::{hal::MmioBus, platform::PciHost};
 
 const CONFIG_BYTES: usize = 4096;
 const VENDOR_ID: usize = 0x00;
@@ -33,15 +33,15 @@ struct Capability {
 }
 
 /// One discovered modern VirtIO PCI function and its routed INTx vector.
-pub(crate) struct VirtioPciFunction {
-    pub(crate) device_id: u32,
-    pub(crate) interrupt: u32,
-    pub(crate) transport: PciTransport,
+pub(super) struct VirtioPciFunction {
+    pub(super) device_id: u32,
+    pub(super) interrupt: u32,
+    pub(super) transport: PciTransport,
 }
 
-pub(crate) fn find_console(host: PciHostInfo) -> Option<VirtioPciFunction> {
+pub(super) fn find_console(host: &PciHost) -> Option<VirtioPciFunction> {
     let mut allocation = host.mmio32.start;
-    let allocation_end = host.mmio32.start.checked_add(host.mmio32.size)?;
+    let allocation_end = host.mmio32.end;
     for slot in 0..32 {
         let config = function_config(host, 0, slot, 0)?;
         if config.read_u16(VENDOR_ID).ok()? != PCI_VENDOR_VIRTIO {
@@ -74,17 +74,13 @@ pub(crate) fn find_console(host: PciHostInfo) -> Option<VirtioPciFunction> {
     None
 }
 
-fn function_config(host: PciHostInfo, bus: usize, slot: usize, function: usize) -> Option<MmioBus> {
+fn function_config(host: &PciHost, bus: usize, slot: usize, function: usize) -> Option<MmioBus> {
     if bus >= 16 || slot >= 32 || function >= 8 {
         return None;
     }
     let offset = (bus << 20) | (slot << 15) | (function << 12);
     let physical = host.ecam.start.checked_add(offset)?;
-    MmioBus::new(
-        crate::arch::mmu::physical_to_virtual(physical),
-        CONFIG_BYTES,
-    )
-    .ok()
+    MmioBus::new(crate::platform::map_device_window(physical), CONFIG_BYTES).ok()
 }
 
 fn assign_memory_bars(
@@ -196,7 +192,7 @@ fn capability_bus(bars: &[Option<Bar>; 6], capability: Capability) -> Option<Mmi
     }
     let physical = bar.address.checked_add(capability.offset)?;
     MmioBus::new(
-        crate::arch::mmu::physical_to_virtual(physical),
+        crate::platform::map_device_window(physical),
         capability.length,
     )
     .ok()

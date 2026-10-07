@@ -1,5 +1,5 @@
 use super::pci::PciTransport;
-use crate::drivers::{BusError, MmioBus};
+use crate::hal::{BusError, MmioBus};
 
 const MAGIC: usize = 0x000;
 const VERSION: usize = 0x004;
@@ -278,7 +278,7 @@ impl VirtIODevice {
         // device observes its queue doorbell.
         match &self.transport {
             Transport::Mmio(bus) => {
-                crate::drivers::before_mmio_write();
+                crate::hal::before_mmio_write();
                 bus.write_u32(QUEUE_NOTIFY, queue)
             }
             Transport::Pci(pci) => pci.notify_queue(queue),

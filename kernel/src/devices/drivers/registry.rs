@@ -4,64 +4,33 @@
 //! driver-I/O completion 源各有一个只追加的注册表；index 是 adapter 的稳定 identity。选择哪个
 //! 实例是消费领域的策略，注册表不区分“主设备”。
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use spin::{Mutex, Once};
+use spin::Once;
 
 use super::{
-    EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice, console::ConsoleDevice,
+    EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice,
     io_completion::CompletionSource, network::NetworkDevice,
 };
-
-/// 一个设备类的全部已发布 adapter，按注册顺序编号，只追加。
-struct DeviceRegistry<T: ?Sized> {
-    devices: Mutex<Vec<Arc<T>>>,
-}
-
-impl<T: ?Sized> DeviceRegistry<T> {
-    const fn new() -> Self {
-        Self {
-            devices: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn register(&self, device: Arc<T>) -> Result<usize, Arc<T>> {
-        let mut devices = self.devices.lock();
-        if devices.try_reserve(1).is_err() {
-            return Err(device);
-        }
-        devices.push(device);
-        Ok(devices.len() - 1)
-    }
-
-    fn get(&self, index: usize) -> Option<Arc<T>> {
-        self.devices.lock().get(index).cloned()
-    }
-
-    fn count(&self) -> usize {
-        self.devices.lock().len()
-    }
-}
+use crate::hal::registry::AppendOnlyRegistry;
 
 // OWNER: Ethernet adapter 的唯一发布点；协议栈与 AF_PACKET 按 index 绑定同一接口，缺失时两者
 // 可能持有不同 adapter 而分裂 MAC 与 RX ownership。
-static NETWORK_DEVICES: DeviceRegistry<dyn NetworkDevice> = DeviceRegistry::new();
+static NETWORK_DEVICES: AppendOnlyRegistry<dyn NetworkDevice> = AppendOnlyRegistry::new();
 // OWNER: display adapter 的唯一发布点；IRQ handler 与 DRM 持有同一 Arc，缺失时 scanout backing
 // 生命周期由两方各自决定。
-static DISPLAY_DEVICES: DeviceRegistry<dyn GraphicsDevice> = DeviceRegistry::new();
+static DISPLAY_DEVICES: AppendOnlyRegistry<dyn GraphicsDevice> = AppendOnlyRegistry::new();
 // OWNER: input adapter 按发现顺序的唯一发布点；index 即 evdev minor，缺失时 devfs event 号与 IRQ
 // adapter 身份分裂。
-static INPUT_DEVICES: DeviceRegistry<dyn InputDevice> = DeviceRegistry::new();
+static INPUT_DEVICES: AppendOnlyRegistry<dyn InputDevice> = AppendOnlyRegistry::new();
 // OWNER: PCM playback adapter 的唯一发布点；缺失时两个 ALSA owner 可能控制同一 stream。
-static PCM_OUTPUTS: DeviceRegistry<dyn PcmOutput> = DeviceRegistry::new();
+static PCM_OUTPUTS: AppendOnlyRegistry<dyn PcmOutput> = AppendOnlyRegistry::new();
 // OWNER: entropy source 的唯一发布点；`getrandom` 与 `/dev/random` 共用首个 source。
-static ENTROPY_SOURCES: DeviceRegistry<dyn EntropySource> = DeviceRegistry::new();
+static ENTROPY_SOURCES: AppendOnlyRegistry<dyn EntropySource> = AppendOnlyRegistry::new();
 // OWNER: named byte-stream port 的唯一发布点；缺失时两个 byte-stream owner 可能竞争同一 SPICE
 // channel。
-static PORT_DEVICES: DeviceRegistry<dyn PortDevice> = DeviceRegistry::new();
-// OWNER: console 设备的唯一发布点；TTY 按 `console=` 名称选择其一作为 `/dev/console`。
-static CONSOLE_DEVICES: DeviceRegistry<dyn ConsoleDevice> = DeviceRegistry::new();
+static PORT_DEVICES: AppendOnlyRegistry<dyn PortDevice> = AppendOnlyRegistry::new();
 /// 共享 `DRIVER_IO` vector 的 completion 源上限：每个 virtio-blk、virtio-rng 与 virtio-sound adapter 各占一项。
 const COMPLETION_SOURCE_CAPACITY: usize = 16;
 
@@ -174,22 +143,6 @@ pub(crate) fn register_port_device(
 /// 第 `index` 个 named byte-stream port。
 pub(crate) fn port_device(index: usize) -> Option<Arc<dyn PortDevice>> {
     PORT_DEVICES.get(index)
-}
-
-/// 发布一个 console 设备。
-///
-/// # Errors
-///
-/// 注册表扩容失败时原样返回 adapter。
-pub(super) fn register_console_device(
-    device: Arc<dyn ConsoleDevice>,
-) -> Result<usize, Arc<dyn ConsoleDevice>> {
-    CONSOLE_DEVICES.register(device)
-}
-
-/// 第 `index` 个 console 设备。
-pub(crate) fn console_device(index: usize) -> Option<Arc<dyn ConsoleDevice>> {
-    CONSOLE_DEVICES.get(index)
 }
 
 /// 登记一个经 `DRIVER_IO` vector 发布 completion 的 adapter。

@@ -7,10 +7,10 @@
 - `platform::qemu_virt::riscv64` 独占 SBI/PLIC machine codec；`platform::qemu_virt::aarch64` 独占 PSCI/GICv3/PL011/PL031 machine codec。共同 façade 独占 DTB machine facts 与具体设备装配。
 - 各架构 `device_tree` 独占 DTB 到 `PlatformInfo` 的纯解码；`discovery` 只独占 boot handoff 指针、
   一次性 publication 与 hardware CPU 投影。`qemu_virt::virtio_mmio` 独占 VirtIO-MMIO transport 识别与
-  有界 transport 表；`qemu_virt::virtio_binding` 是 device ID 到 driver adapter 的唯一装配表，两个架构
-  只注入 physical→virtual 映射与 interrupt 注册回调，禁止恢复各架构自带的 `init_virtio_*` 分派。
+  有界 transport 表；`virtio::binding` 是 device ID 到 driver adapter 的唯一装配表，只消费 platform 给出的 transport 表、
+  PCI host、physical→virtual 映射与 interrupt 注册入口；platform 不认识任何设备类，禁止恢复各架构自带的 `init_virtio_*` 分派。
 - `arch::<target>::io` 独占 MMIO 指令与 normal-memory/device ordering mechanism；通用
-  `drivers::hal::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
+  `hal::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
   不得直接选择 target 指令形态。
 - 各 `arch::<target>::startup` 独占 secondary entry 前的 stack 和 raw identity projection；`cpu::CpuTopology` 独占进入 generic kernel 后的 identity mapping 与 lifecycle。
 

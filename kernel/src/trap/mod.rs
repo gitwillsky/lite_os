@@ -9,7 +9,6 @@ use syscall_abi::signal::{
 use crate::{
     arch::{self, context::SyscallCompletion, trap::TrapEvent},
     deferred::{self, DeferredWork},
-    drivers,
     memory::TRAMPOLINE,
     memory::{MemoryError, PageFaultAccess, PageFaultOutcome, SegmentationCause},
     syscall::{self, SyscallOutcome},
@@ -64,7 +63,7 @@ pub(crate) fn handle_user_trap() -> ! {
         }
         TrapEvent::ExternalInterrupt => {
             handle_claimed_interrupt();
-            if drivers::console::input_ready() {
+            if crate::hal::console::input_ready() {
                 deferred::raise(DeferredWork::CONSOLE);
             }
         }
@@ -246,7 +245,7 @@ pub(crate) fn handle_kernel_trap() {
             // 内核态同步 I/O 可以被 external IRQ 打断；此处只确认 platform
             // interrupt-controller 状态，不在 hardirq 中调度。
             handle_claimed_interrupt();
-            if drivers::console::input_ready() {
+            if crate::hal::console::input_ready() {
                 deferred::raise(DeferredWork::CONSOLE);
             }
         }
