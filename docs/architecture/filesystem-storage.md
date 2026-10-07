@@ -28,7 +28,16 @@
 - JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从
   primary home blocks 重新发布 superblock/GDT runtime owner，再执行 orphan recovery 与一致性扫描。
 - page cache 唯一拥有 shared file page identity、dirty/writeback 状态和 reclaim cursor；VMA 与 filesystem 通过 shared-page seam 交互。
-- devfs、devpts、procfs 与 sysfs 是 composition root 挂载的明确 adapter；它们不形成第二套 namespace 或对象状态。
+- 内核只挂载根文件系统（`fs::mount_root`，source 为 `/dev/<disk>`）与 `/dev` 上的 devtmpfs（Linux
+  `CONFIG_DEVTMPFS_MOUNT`）；`/proc`、`/sys`、`/dev/pts` 由 init 的 `/etc/init.d/rcS` 经 `mount(2)` 挂载。
+  `fs::mount` 按名称创建 `ext4`、`proc`、`sysfs`、`devpts`、`devtmpfs` 实例；伪文件系统每次挂载都分配
+  新的 filesystem instance id（Linux `get_anon_bdev`），因此各挂载有独立 `st_dev` 与 VFS identity。它们
+  不形成第二套 namespace 或对象状态。
+- `umount2` 按 Linux 顺序拆除：VFS 判忙并摘下挂载 → 写回并逐出该实例的 page cache →
+  `FileSystem::shutdown`（ext4 提交 journal 并让写回线程返回）。mmap 映射 pin 住来源打开条目（Linux
+  `vm_file`），因此仍有映射的挂载保持忙。
+- 块设备经 fs 块命名空间发布为 devfs `S_IFBLK` 节点；`mount` 的 source 经 `lookup_bdev` 解析为设备号，
+  同一块设备只能承载一个已挂载实例。
 - directory iteration 由 inode adapter 从 opaque cursor 直接推进：ext4 线性目录的 cursor 是下一 record byte
   offset，htree 目录的 cursor 是 hash 位置，内存型 adapter 使用 ordinal cookie；VFS 不物化完整目录，`getdents64` 只编码一个有界 batch。
 - close、dup replacement、CLOEXEC 与 SCM receive 遵守 reserve/detach/publish 顺序，可能析构或通知的 consequence 在 fd-table lock 外执行。
@@ -37,7 +46,7 @@
 
 ## Known limits
 
-- 当前持久存储范围是单个启动卷与固定 ext4/JBD2 profile。
+- 持久存储是固定 ext4/JBD2 profile；附加块设备可经 `mount(2)` 挂载，但没有分区、原始块 I/O 或 remount。
 - 没有通用 block scheduler 或多个可热插拔持久卷策略。
 - 已返回的写入在 `fsync`/`sync` 前最多可能丢失 5 秒（与 Linux `commit=5` 一致）；块分配仍发生在
   `write` 时，没有 delayed allocation。

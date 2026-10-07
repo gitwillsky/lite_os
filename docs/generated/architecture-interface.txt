@@ -730,6 +730,21 @@ kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn submit_period 
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn writable (& self) -> bool
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn xrun (& mut self)
 kernel/src/audio/state.rs :: pub (crate) struct PcmStateOwner
+kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " `loglevel=` 的值不是十进制整数。"] InvalidLogLevel
+kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 分配失败。"] OutOfMemory
+kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 转交 init 的 argv 超过 32 项（Linux 同样 panic）。"] TooManyArguments
+kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 转交 init 的环境超过 32 项。"] TooManyEnvironment
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: console : Option < Vec < u8 > >
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: init : Option < Vec < u8 > >
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: init_arguments : Vec < Vec < u8 > >
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: init_environment : Vec < Vec < u8 > >
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: log_level : Option < u8 >
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: read_only_root : bool
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: root : Option < Vec < u8 > >
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: root_filesystem_type : Option < Vec < u8 > >
+kernel/src/cmdline.rs :: pub (crate) enum CommandLineError
+kernel/src/cmdline.rs :: pub (crate) fn parse (line : & [u8]) -> Result < KernelParameters , CommandLineError >
+kernel/src/cmdline.rs :: pub (crate) struct KernelParameters
 kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
 kernel/src/cpu/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
 kernel/src/cpu/deferred.rs :: pub (crate) fn register (handler : DeferredHandler) -> Result < DeferredWork , () >
@@ -804,6 +819,7 @@ kernel/src/drivers/block.rs :: pub (crate) const BLOCK_SIZE : usize = 4096
 kernel/src/drivers/block.rs :: pub (crate) enum BlockError
 kernel/src/drivers/block.rs :: pub (crate) trait BlockDevice
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn block_size (& self) -> usize
+kernel/src/drivers/block.rs :: trait BlockDevice :: fn disk_name (& self) -> & [u8]
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn flush (& self) -> Result < () , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn read_block (& self , block_id : usize , buf : & mut [u8]) -> Result < usize , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn write_block (& self , block_id : usize , buf : & [u8]) -> Result < usize , BlockError >
@@ -1779,7 +1795,7 @@ kernel/src/fallible_tree/topology.rs :: pub (super) fn last_key < K , V > (root 
 kernel/src/fallible_tree/topology.rs :: pub (super) fn remove_node < K : Ord , V > (root : Link < K , V > , key : & K) -> RemoveResult < K , V >
 kernel/src/fallible_tree/topology.rs :: pub (super) fn retain_linear < K , V > (root : Link < K , V > , keep : & mut impl FnMut (& K , & V) -> bool ,) -> (Link < K , V > , usize)
 kernel/src/fallible_tree/topology.rs :: pub (super) fn split < K : Ord , V > (root : Link < K , V > , at : & K) -> (Link < K , V > , Link < K , V >)
-kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn instance () -> Arc < Self >
+kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn new () -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 其他 Linux errno。"] Errno (isize)
 kernel/src/fs/device.rs :: enum DeviceError :: # [doc = " 后台进程组访问终端已收到 job-control signal，syscall 必须按 `ERESTARTSYS` 重启。"] Restart
@@ -1831,10 +1847,14 @@ kernel/src/fs/device.rs :: pub (super) DeviceNode :: mode : u32
 kernel/src/fs/device.rs :: pub (super) DeviceNode :: number : DeviceNumber
 kernel/src/fs/device.rs :: pub (super) DeviceNode :: path : Vec < u8 >
 kernel/src/fs/device.rs :: pub (super) enum RegistryEntry
+kernel/src/fs/device.rs :: pub (super) fn block_count () -> usize
+kernel/src/fs/device.rs :: pub (super) fn block_device (number : DeviceNumber) -> Option < Arc < dyn BlockDevice > >
+kernel/src/fs/device.rs :: pub (super) fn block_number (path : & [u8]) -> Option < DeviceNumber >
 kernel/src/fs/device.rs :: pub (super) fn device (index : usize) -> Option < Arc < DeviceNode > >
 kernel/src/fs/device.rs :: pub (super) fn directory_path (index : usize , output : & mut Vec < u8 >) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (super) fn for_each_child (parent : & [u8] , mut visit : impl FnMut (RegistryEntry , & [u8] , u32) -> bool ,)
 kernel/src/fs/device.rs :: pub (super) fn lookup (parent : & [u8] , name : & [u8]) -> Option < RegistryEntry >
+kernel/src/fs/device.rs :: pub (super) fn register_block (path : & [u8] , number : DeviceNumber , permissions : u32 , device : Arc < dyn BlockDevice > ,) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (super) struct DeviceNode
 kernel/src/fs/device.rs :: trait CharacterDriver :: fn open (& self , request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn ioctl (& self , _call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
@@ -2319,6 +2339,7 @@ kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) fn terminal_input_chun
 kernel/src/fs/file/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
 kernel/src/fs/file/terminal_flush.rs :: pub (crate) fn clear_raw (head : & mut usize , length : & mut usize) -> usize
 kernel/src/fs/file/terminal_flush.rs :: pub (super) fn clear_pending (input_head : & mut usize , input_len : & mut usize , line_len : & mut usize , eof_pending : & mut bool ,) -> bool
+kernel/src/fs/inode.rs :: enum InodeType :: BlockDevice = 6
 kernel/src/fs/inode.rs :: enum InodeType :: CharacterDevice = 3
 kernel/src/fs/inode.rs :: enum InodeType :: Directory = 1
 kernel/src/fs/inode.rs :: enum InodeType :: Fifo = 4
@@ -2428,37 +2449,54 @@ kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: type_name : & 'stati
 kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: sleep_until : fn (u64)
 kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: spawn : SpawnKernelThread
 kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
+kernel/src/fs/mod.rs :: pub (crate) fn allocate_filesystem_id () -> usize
 kernel/src/fs/mod.rs :: pub (crate) fn init_vfs ()
-kernel/src/fs/mod.rs :: pub (crate) fn mount_root (device : Arc < dyn crate :: drivers :: block :: BlockDevice > , threads : KernelThreadSupport ,) -> Result < () , FileSystemError >
+kernel/src/fs/mod.rs :: pub (crate) fn publish_block_device (disk : Arc < dyn crate :: drivers :: block :: BlockDevice > ,) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: pub (crate) mod device
 kernel/src/fs/mod.rs :: pub (crate) struct FileSystemStatistics
 kernel/src/fs/mod.rs :: pub (crate) struct KernelThreadSupport
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
-kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str , alloc :: boxed :: Box < dyn FnOnce () -> ! + Send > ,) -> Result < () , crate :: memory :: MemoryError >
-kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
-kernel/src/fs/mod.rs :: pub (crate) use devpts :: DevPtsFileSystem
+kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str , alloc :: boxed :: Box < dyn FnOnce () + Send > ,) -> Result < () , crate :: memory :: MemoryError >
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent , EpollMemberships }
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { Inode , InodeMetadata , InodeType , StorageWriter }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
+kernel/src/fs/mod.rs :: pub (crate) use mount :: { FileSystemType , MountEnvironment , install_mount_environment , mount , mount_root , unmount , }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
-kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
+kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
 kernel/src/fs/mod.rs :: pub (crate) use readiness :: { ReadinessSource , ReadinessSources }
-kernel/src/fs/mod.rs :: pub (crate) use sysfs :: SysFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use timerfd :: { TimerError , TimerFd , TimerFdBackend , TimerFdRead , TimerSetting }
 kernel/src/fs/mod.rs :: pub (crate) use tty :: { JobControl , console as console_terminal , drain_input as drain_terminal_input , init as init_tty , install_job_control , }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , RecordLockMode , RecordLockRange , vfs , }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/mod.rs :: trait FileSystem :: fn shutdown (& self) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
+kernel/src/fs/mount.rs :: enum FileSystemType :: DevPts
+kernel/src/fs/mount.rs :: enum FileSystemType :: DevTmpfs
+kernel/src/fs/mount.rs :: enum FileSystemType :: Ext4
+kernel/src/fs/mount.rs :: enum FileSystemType :: Proc
+kernel/src/fs/mount.rs :: enum FileSystemType :: Sys
+kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: cpu_count : usize
+kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: proc_source : Arc < dyn ProcSource >
+kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: threads : KernelThreadSupport
+kernel/src/fs/mount.rs :: pub (crate) enum FileSystemType
+kernel/src/fs/mount.rs :: pub (crate) fn install_mount_environment (environment : MountEnvironment)
+kernel/src/fs/mount.rs :: pub (crate) fn mount (kind : FileSystemType , source : & [u8] , device : Option < DeviceNumber > , point : Arc < OpenedFile > ,) -> Result < () , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) fn mount_root (root : & [u8] , filesystem_type : Option < & [u8] > ,) -> Result < () , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) fn unmount (root : & Arc < OpenedFile >) -> Result < () , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) impl FileSystemType :: fn from_name (name : & [u8]) -> Option < Self >
+kernel/src/fs/mount.rs :: pub (crate) impl FileSystemType :: fn requires_device (self) -> bool
+kernel/src/fs/mount.rs :: pub (crate) struct MountEnvironment
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: dirty_pages : usize
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: reclaimable_pages : usize
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: resident_pages : usize
 kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: bytes : usize
 kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: storage_bytes : usize
 kernel/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 ,) -> Result < () , FileSystemError >
-kernel/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) fn evict_filesystem (filesystem_id : usize) -> Result < () , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > , opened : Option < Arc < OpenedFile > > ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn statistics () -> PageCacheStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_inode (inode : Arc < dyn Inode >) -> Result < () , FileSystemError >
@@ -2525,6 +2563,7 @@ kernel/src/fs/procfs.rs :: pub (super) impl ProcText :: const fn new () -> Self
 kernel/src/fs/procfs.rs :: pub (super) impl ProcText :: fn finish (self) -> Vec < u8 >
 kernel/src/fs/procfs.rs :: pub (super) struct ProcText
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_pid (& self) -> Option < usize >
+kernel/src/fs/procfs.rs :: trait ProcSource :: fn kernel_command_line (& self) -> & [u8]
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_arguments (& self , pid : usize) -> Result < Option < Vec < u8 > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_executable (& self , pid : usize) -> Result < Option < Arc < OpenedFile > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_file_descriptors (& self , pid : usize ,) -> Result < Option < Vec < ProcFileDescriptorSnapshot > > , FileSystemError >
@@ -2534,6 +2573,7 @@ kernel/src/fs/procfs/lookup.rs :: pub (super) fn find_process (snapshot : & Proc
 kernel/src/fs/procfs/lookup.rs :: pub (super) fn find_thread (process : & ProcProcessSnapshot , tid : usize ,) -> Result < & ProcThreadSnapshot , FileSystemError >
 kernel/src/fs/procfs/lookup.rs :: pub (super) fn parse_pid (name : & [u8]) -> Option < usize >
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: BuddyInfo
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: Cmdline
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: LoadAvg
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: MemInfo
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: Mounts
@@ -2752,17 +2792,20 @@ kernel/src/fs/tty/ioctl.rs :: pub (super) fn terminal (terminal : & Arc < Termin
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , opened : Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_at (& self , path : & [u8] , source : & 'static [u8] , filesystem : Arc < dyn FileSystem > ,) -> Result < () , FileSystemError >
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , source : & 'static [u8] , fs : Arc < dyn FileSystem > ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn device_mounted (& self , device : DeviceNumber) -> bool
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount (& self , point : Arc < OpenedFile > , source : & [u8] , filesystem : Arc < dyn FileSystem > , device : Option < DeviceNumber > ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , source : & [u8] , fs : Arc < dyn FileSystem > , device : Option < DeviceNumber > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_table (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn new () -> Self
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at_no_follow (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file (& self , path : & [u8]) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at_no_follow (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn opened_path (& self , opened : & Arc < OpenedFile >) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn statistics (& self , inode : Arc < dyn Inode > ,) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn sync (& self) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn unmount (& self , root : & Arc < OpenedFile > ,) -> Result < Arc < dyn FileSystem > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) static VFS_MANAGER : Once < VirtualFileSystem >
 kernel/src/fs/vfs.rs :: pub (crate) struct VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) use advisory_lock :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , PreparedAdvisoryLock , PreparedLockAttempt , }
@@ -2990,6 +3033,7 @@ kernel/src/log.rs :: pub (crate) const KMSG_READ_BUFFER_SIZE : usize = 256
 kernel/src/log.rs :: pub (crate) enum KmsgRead
 kernel/src/log.rs :: pub (crate) enum LogLevel
 kernel/src/log.rs :: pub (crate) fn __log (level : LogLevel , module : & str , args : fmt :: Arguments)
+kernel/src/log.rs :: pub (crate) fn apply_console_loglevel (level : u8)
 kernel/src/log.rs :: pub (crate) fn enabled (level : LogLevel) -> bool
 kernel/src/log.rs :: pub (crate) fn init ()
 kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn open () -> Self
@@ -3468,7 +3512,7 @@ kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。
 kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " 用户或系统策略主动请求。"] Requested
 kernel/src/platform/mod.rs :: pub (crate) enum ResetKind
 kernel/src/platform/mod.rs :: pub (crate) enum ResetReason
-kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , CONSOLE_NAME , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
@@ -3482,6 +3526,7 @@ kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) MmioDevice :: size : usize
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PciHostInfo :: ecam : RangeValue
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PciHostInfo :: mmio32 : RangeValue
+kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: bootargs : Vec < u8 >
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: gic : GicV3Info
 kernel/src/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >
@@ -3517,11 +3562,13 @@ kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn notify_self ()
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn register_device (vector : u32 , handler : Arc < dyn InterruptHandler > , affinity : CpuSet ,) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn send_ipi (cpus : CpuSet) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct GicV3
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) const CONSOLE_NAME : & [u8] = b"ttyAMA0"
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn arm_timer (deadline : u64) -> Result < () , TimerArmError >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn complete_pending_ipi ()
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn debug_console_write (byte : u8) -> Result < () , console :: ConsoleError >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn initialize_devices ()
+kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn kernel_command_line () -> & 'static [u8]
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn kernel_mmio_regions () -> impl Iterator < Item = core :: ops :: Range < usize > >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn physical_memory_end () -> usize
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
@@ -3558,10 +3605,11 @@ kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Software (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Spurious
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Timer (u32)
 kernel/src/platform/qemu_virt/mod.rs :: pub (crate) enum ClaimedInterrupt
-kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , CONSOLE_NAME , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
+kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: bootargs : Vec < u8 >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >
 kernel/src/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: memory : Range < usize >
@@ -3597,9 +3645,11 @@ kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct Instruct
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct ResetError
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct TimerArmError
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct TlbShootdownError
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) const CONSOLE_NAME : & [u8] = b"ttyS0"
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn claim_interrupt () -> super :: ClaimedInterrupt
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_interrupt (claim : super :: ClaimedInterrupt)
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_pending_ipi ()
+kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn kernel_command_line () -> & 'static [u8]
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn kernel_mmio_regions () -> impl Iterator < Item = core :: ops :: Range < usize > >
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn notify_self ()
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn physical_memory_end () -> usize
@@ -4186,6 +4236,7 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_newfstatat (fd : isize , name : *
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_pipe2 (descriptors : usize , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
+kernel/src/syscall/fs.rs :: pub (crate) mod mount
 kernel/src/syscall/fs.rs :: pub (crate) mod statistics
 kernel/src/syscall/fs.rs :: pub (crate) use access :: sys_faccessat
 kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmod , sys_fchmodat , sys_fchown , sys_fchownat }
@@ -4232,6 +4283,8 @@ kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn regular_write_allowanc
 kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn regular_write_chunk (total_length : usize , completed : usize , staging_capacity : usize ,) -> usize
 kernel/src/syscall/fs/links.rs :: pub (crate) fn sys_linkat (old_dirfd : isize , old_path : * const u8 , new_dirfd : isize , new_path : * const u8 , flags : usize ,) -> isize
 kernel/src/syscall/fs/links.rs :: pub (crate) fn sys_symlinkat (target : * const u8 , new_dirfd : isize , new_path : * const u8) -> isize
+kernel/src/syscall/fs/mount.rs :: pub (crate) fn sys_mount (source : * const u8 , target : * const u8 , fstype : * const u8 , flags : usize , data : * const u8 ,) -> isize
+kernel/src/syscall/fs/mount.rs :: pub (crate) fn sys_umount2 (target : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mkdirat (dirfd : isize , name : * const u8 , mode : u32) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mknodat (dirfd : isize , name : * const u8 , mode : u32 , _device : u64) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_renameat2 (old_dirfd : isize , old_name : * const u8 , new_dirfd : isize , new_name : * const u8 , flags : u32 ,) -> isize
@@ -4472,6 +4525,7 @@ kernel/src/task/loader.rs :: pub (crate) const EXEC_ARGUMENT_BYTES_LIMIT : usize
 kernel/src/task/loader.rs :: pub (crate) enum ProgramLoadError
 kernel/src/task/loader.rs :: pub (crate) fn load_executable (working_directory : Arc < OpenedFile > , path : Vec < u8 > , mut arguments : Vec < Vec < u8 > > , mut argument_bytes : usize , identity : & AccessIdentity ,) -> Result < LoadedExecutable , ProgramLoadError >
 kernel/src/task/loader.rs :: pub (crate) struct LoadedExecutable
+kernel/src/task/loader.rs :: pub (super) fn argument_cost (argument : & [u8]) -> Result < usize , ProgramLoadError >
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn build_address_space (& self , environments : & [Vec < u8 >] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (MemorySet , usize , usize) , ElfLoadError >
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn credential_metadata (& self) -> InodeMetadata
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn execfn (& self) -> & [u8]
@@ -4482,7 +4536,7 @@ kernel/src/task/memory_barrier.rs :: pub (crate) fn synchronize_private_memory (
 kernel/src/task/memory_barrier.rs :: pub (super) fn initialize ()
 kernel/src/task/mod.rs :: pub (crate) fn initialize ()
 kernel/src/task/mod.rs :: pub (crate) fn initialize_interrupt_state ()
-kernel/src/task/mod.rs :: pub (crate) fn spawn_init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume ,)
+kernel/src/task/mod.rs :: pub (crate) fn spawn_init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , init : Option < & [u8] > , arguments : & [Vec < u8 >] , environment : & [Vec < u8 >] ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
 kernel/src/task/mod.rs :: pub (crate) use model :: KernelThreadBody
@@ -4522,7 +4576,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_ch
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < SignalAction > ,) -> Result < SignalAction , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
 kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
-kernel/src/task/model.rs :: pub (crate) type KernelThreadBody  = alloc :: boxed :: Box < dyn FnOnce () -> ! + Send >
+kernel/src/task/model.rs :: pub (crate) type KernelThreadBody  = alloc :: boxed :: Box < dyn FnOnce () + Send >
 kernel/src/task/model.rs :: pub (crate) use alternate_signal_stack :: { SignalStack , SignalStackError }
 kernel/src/task/model.rs :: pub (crate) use credentials :: CredentialUpdateError
 kernel/src/task/model.rs :: pub (crate) use file_descriptions :: ReceivedFdTransaction
@@ -4543,7 +4597,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_kernel_thread (tid : usize , name : & 'static str , body : KernelThreadBody ,) -> Result < Self , MemoryError >
-kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume ,) -> Result < Self , ElfLoadError >
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , environment : & [Vec < u8 >] ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_pending_signal (& self , mask : u64) -> Option < (usize , PendingSignal) >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_deliverable_signal < T > (& self , action : impl FnOnce () -> T) -> Option < T >
@@ -4915,6 +4969,7 @@ kernel/src/task/process_table.rs :: pub (super) fn add_init_task (task : Arc < T
 kernel/src/task/process_table.rs :: pub (super) fn scheduler_deferred_safe_point ()
 kernel/src/task/process_table.rs :: pub (super) mod context_switch
 kernel/src/task/process_table.rs :: pub (super) use io_wait :: initialize_driver_io_wait
+kernel/src/task/process_table.rs :: pub (super) use process_exit :: exit_current_kernel_thread
 kernel/src/task/process_table.rs :: pub (super) use terminal_access :: install_job_control
 kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: FileSystem (crate :: fs :: FileSystemError)
 kernel/src/task/process_table/advisory_lock.rs :: enum AdvisoryLockWaitError :: Interrupted
@@ -4990,6 +5045,7 @@ kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_gro
 kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_group_by_signal (signal : usize) -> !
 kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_if_group_exiting ()
 kernel/src/task/process_table/process_exit.rs :: pub (crate) fn exit_current_thread (code : i32) -> !
+kernel/src/task/process_table/process_exit.rs :: pub (in crate :: task) fn exit_current_kernel_thread () -> !
 kernel/src/task/process_table/process_exit.rs :: pub (super) enum ProcessExitStatus
 kernel/src/task/process_table/process_exit.rs :: pub (super) impl ProcessExitStatus :: fn wait_status (self) -> i32
 kernel/src/task/process_table/process_group.rs :: enum ProcessGroupError :: NotFound

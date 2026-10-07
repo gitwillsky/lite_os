@@ -58,6 +58,8 @@ pub(crate) struct PlatformInfo {
     pub(crate) gic: GicV3Info,
     pub(crate) pci: PciHostInfo,
     pub(crate) virtio: VirtioMmioTransports,
+    /// `/chosen/bootargs`（kernel command line），不含结尾 NUL；没有该属性时为空。
+    pub(crate) bootargs: Vec<u8>,
 }
 
 impl fmt::Display for PlatformInfo {
@@ -118,6 +120,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
         let mut psci_compatible = false;
         let mut psci_hvc = false;
         let mut coherent_dma = false;
+        let mut bootargs = Vec::new();
 
         let dtb_range = physical
             ..physical
@@ -204,7 +207,13 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             }
             DtbObj::Property(Property::General { name, value }) => {
                 let node = context.name();
-                if name == Str::from("method") && is_psci_node(node) {
+                if name == Str::from("bootargs") && node == Str::from("chosen") {
+                    let line = value.split(|byte| *byte == 0).next().unwrap_or(&[]);
+                    bootargs
+                        .try_reserve_exact(line.len())
+                        .expect("bootargs allocation failed");
+                    bootargs.extend_from_slice(line);
+                } else if name == Str::from("method") && is_psci_node(node) {
                     psci_hvc = contains_string(value, "hvc");
                 } else if name == Str::from("interrupts") {
                     if is_uart_node(node) {
@@ -276,6 +285,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             gic,
             pci,
             virtio: virtio.finish(),
+            bootargs,
         }
     }
 }

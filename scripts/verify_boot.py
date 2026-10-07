@@ -39,6 +39,7 @@ def gate_inputs(
         busybox,
         musl_install / "usr/lib/libc.so",
         ROOT / "user/base/inittab",
+        ROOT / "user/base/rcS",
         ROOT / "create_fs.py",
         ROOT / "scripts/verify_busybox.py",
         Path(__file__).resolve(),

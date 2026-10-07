@@ -60,6 +60,7 @@ pub(crate) use policy::{
     SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
 };
 use process_exit::ProcessExitStatus;
+pub(super) use process_exit::exit_current_kernel_thread;
 pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
     exit_current_thread,

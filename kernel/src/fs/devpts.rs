@@ -7,7 +7,6 @@ use super::{
 
 use super::device::DeviceNumber;
 
-const DEVPTS_FILESYSTEM_ID: usize = 5;
 /// pts 节点 mode：仅 owner 可读写。
 const PTY_SLAVE_MODE: u32 = 0o020600;
 const DEVPTS_SUPER_MAGIC: u64 = 0x1cd1;
@@ -28,12 +27,17 @@ impl DevPtsNode {
 }
 
 struct DevPtsInode {
+    filesystem_id: usize,
     node: DevPtsNode,
 }
 
 impl DevPtsInode {
-    fn new(node: DevPtsNode) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self { node }).map_err(|_| FileSystemError::OutOfMemory)
+    fn new(filesystem_id: usize, node: DevPtsNode) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
+            filesystem_id,
+            node,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     fn child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -48,7 +52,7 @@ impl DevPtsInode {
             }
             (DevPtsNode::Slave(_), _) => return Err(FileSystemError::NotDirectory),
         };
-        Ok(Self::new(node)?)
+        Ok(Self::new(self.filesystem_id, node)?)
     }
 }
 
@@ -84,7 +88,7 @@ fn index_name(index: u32, output: &mut [u8; 10]) -> &[u8] {
 
 impl Inode for DevPtsInode {
     fn filesystem_id(&self) -> usize {
-        DEVPTS_FILESYSTEM_ID
+        self.filesystem_id
     }
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
@@ -102,7 +106,7 @@ impl Inode for DevPtsInode {
             }
         };
         Ok(InodeMetadata {
-            filesystem: DEVPTS_FILESYSTEM_ID as u64,
+            filesystem: self.filesystem_id as u64,
             inode: self.node.inode(),
             kind,
             mode,
@@ -258,7 +262,7 @@ impl DevPtsFileSystem {
     /// 新 filesystem；root 或 filesystem Arc OOM 返回错误。
     pub(crate) fn new() -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
-            root: DevPtsInode::new(DevPtsNode::Root)?,
+            root: DevPtsInode::new(super::allocate_filesystem_id(), DevPtsNode::Root)?,
         })
         .map_err(|_| FileSystemError::OutOfMemory)
     }
@@ -279,7 +283,7 @@ impl FileSystem for DevPtsFileSystem {
             blocks_available: 0,
             files: 0,
             files_free: 0,
-            fsid: [DEVPTS_FILESYSTEM_ID as u32, 0],
+            fsid: [self.root.filesystem_id as u32, 0],
             name_length: 255,
             fragment_size: 4096,
             flags: 0,

@@ -38,8 +38,9 @@
   均有明确 point of no return 与清理顺序。
 
 - 内核线程与用户 Thread 共用调度器、kernel context 切换、DriverIo/`TaskMutex`/`TaskEvent` 阻塞与
-  deadline 睡眠；它们没有 Process，不出现在 process graph。当前唯一内核线程是每个 ext4 filesystem
-  的写回线程。
+  deadline 睡眠；它们没有 Process，不出现在 process graph。主体返回即终止：关本地中断、撤销调度
+  ownership、交给 deferred reap 后切到 idle。当前唯一内核线程是每个 ext4 filesystem 的写回线程，umount
+  时返回。
 
 ## Known limits
 

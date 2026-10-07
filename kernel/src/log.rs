@@ -232,6 +232,19 @@ fn set_log_level(level: LogLevel) {
     LOG_LEVEL.store(level as u8, Ordering::Release);
 }
 
+/// 按 Linux console loglevel（`loglevel=`、`quiet`=4、`debug`=10）设置 severity threshold：
+/// level N 输出严重度数值小于 N 的消息（ERR=3、WARNING=4、INFO=6、DEBUG=7）。
+///
+/// 没有比 Error 更高的级别，N ≤ 3 按只输出 Error 处理；threshold 同时作用于 kmsg ring。
+pub(crate) fn apply_console_loglevel(level: u8) {
+    set_log_level(match level {
+        8.. => LogLevel::Debug,
+        7 => LogLevel::Info,
+        5 | 6 => LogLevel::Warn,
+        _ => LogLevel::Error,
+    });
+}
+
 /// 在构造 format arguments 前判断 severity threshold。
 pub(crate) fn enabled(level: LogLevel) -> bool {
     level as u8 >= LOG_LEVEL.load(Ordering::Acquire)

@@ -113,6 +113,9 @@ pub(crate) trait Inode: Send + Sync {
 pub(crate) trait FileSystem: Send + Sync {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
+    fn shutdown(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
 }
 
 pub(crate) struct FileSystemStatistics {
@@ -177,7 +180,7 @@ pub(crate) mod ext4;
 /// 与 kernel `fs::SpawnKernelThread` 相同的注入签名；host 测试不创建内核线程。
 #[allow(dead_code)]
 pub(crate) type SpawnKernelThread =
-    fn(&'static str, alloc::boxed::Box<dyn FnOnce() -> ! + Send>) -> Result<(), ()>;
+    fn(&'static str, alloc::boxed::Box<dyn FnOnce() + Send>) -> Result<(), ()>;
 
 /// 与 kernel `fs::KernelThreadSupport` 相同的 task 能力形状。
 #[allow(dead_code)]

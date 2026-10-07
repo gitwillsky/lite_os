@@ -89,3 +89,11 @@ pub(crate) fn read_realtime_ns() -> Option<u64> {
         .read_time_ns()
         .ok()
 }
+
+/// firmware 交付的 kernel command line（DTB `/chosen/bootargs`）。
+pub(crate) fn kernel_command_line() -> &'static [u8] {
+    &discovery::info().bootargs
+}
+
+/// 平台 console 的 Linux 设备名，供 `console=` 匹配。
+pub(crate) const CONSOLE_NAME: &[u8] = b"ttyS0";

@@ -11,6 +11,7 @@ pub(crate) enum InodeType {
     Directory = 1,
     SymLink = 2,
     CharacterDevice = 3,
+    BlockDevice = 6,
     Fifo = 4,
     Socket = 5,
 }

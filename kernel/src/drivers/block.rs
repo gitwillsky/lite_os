@@ -9,6 +9,9 @@ pub(crate) enum BlockError {
 
 /// 为文件系统提供同步固定块读写与持久化屏障。
 pub(crate) trait BlockDevice: Send + Sync {
+    /// 内核分配的磁盘名（不含 `/dev/`），例如 `vda`；adapter 的整个生命周期内不变。
+    fn disk_name(&self) -> &[u8];
+
     /// 读取一个完整逻辑块。
     ///
     /// # Parameters

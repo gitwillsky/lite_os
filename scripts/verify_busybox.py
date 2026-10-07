@@ -37,7 +37,7 @@ from build_cache import (
     temporary_directory,
     write_manifest,
 )
-from qemu_gate import boot, cpu_topology_markers, power_cut
+from qemu_gate import SHELL_PROMPT, boot, cpu_topology_markers, guest_inittab, power_cut
 from openssl_cache import OpenSslPaths, build_openssl
 from ext4_image import find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
@@ -52,6 +52,12 @@ from verify_musl import (
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
 WORK = ROOT / "target" / "busybox-runtime" / TARGET.arch
+# 主 BusyBox gate 以完整 kernel command line 冷启动：root/rootfstype/rootwait/console 由内核消费，
+# LITEOS_BOOT_ENV 按 Linux 规则转交 init 环境并由 init 派生的 shell 继承，/proc/cmdline 原样回显。
+BUSYBOX_KERNEL_ARGUMENTS = (
+    "root=/dev/vda rootfstype=ext4 rootwait "
+    f"console={'ttyAMA0' if TARGET.arch == 'aarch64' else 'ttyS0'} LITEOS_BOOT_ENV=42"
+)
 CONFIG_FRAGMENT = ROOT / "user" / "base" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URLS = (
@@ -279,6 +285,7 @@ BUSYBOX_LINKS = (
     "mkdir",
     "mktemp",
     "more",
+    "mount",
     "mv",
     "nc",
     "netstat",
@@ -324,6 +331,7 @@ BUSYBOX_LINKS = (
     "tr",
     "true",
     "tty",
+    "umount",
     "uniq",
     "uname",
     "uptime",
@@ -563,7 +571,7 @@ def install_guest_gate_init(
 ) -> None:
     """让 disposable image 由 BusyBox init 直接执行唯一 guest 自检脚本。"""
     fixture = directory / f"{gate_name}-inittab"
-    fixture.write_text(f"::sysinit:/bin/sh {script}\n")
+    fixture.write_text(guest_inittab(f"/bin/sh {script}"))
     commands = directory / f"{gate_name}-inittab.debugfs"
     commands.write_text(
         "rm /etc/inittab\n"
@@ -1356,6 +1364,7 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
         UserlandArtifact(build_session_launch(musl), "/bin/session-launch", 0o755),
         UserlandArtifact(build_terminal_session(musl), "/bin/terminal-session", 0o755),
         UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
+        UserlandArtifact(ROOT / "user/base/rcS", "/etc/init.d/rcS", 0o755),
         UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
         UserlandArtifact(
             ROOT / "user/base/graphical-session",
@@ -2055,6 +2064,8 @@ def main() -> int:
                 "LITEOS_TOOLS_42",
                 "LITEOS_OBSERVABILITY_42",
                 "LITEOS_FILESYSTEM_CAPACITY_42",
+                "LITEOS_MOUNT_44",
+                "LITEOS_CMDLINE_45",
                 "LITEOS_LINKS_43",
                 "LITEOS_NAMESPACE_CONCURRENCY_43",
                 "LITEOS_BUSYBOX_CREDENTIALS_44",
@@ -2215,10 +2226,21 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_OBSERVABILITY_42",
-                    b"/bin/grep -q '^root / ext4 rw 0 0$' /proc/mounts && /bin/grep -q '^devfs /dev devfs ro 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc ro 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n",
+                    b"/bin/grep -q '^/dev/vda / ext4 rw 0 0$' /proc/mounts && /bin/grep -q '^devtmpfs /dev devtmpfs ro 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc ro 0 0$' /proc/mounts && /bin/grep -q '^sysfs /sys sysfs ro 0 0$' /proc/mounts && /bin/grep -q '^devpts /dev/pts devpts rw 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n",
                 ),
                 (
                     "LITEOS_FILESYSTEM_CAPACITY_42",
+                    b"/bin/mkdir -p /mnt/proc2 && /bin/mount -t proc proc /mnt/proc2 && [ -r /mnt/proc2/meminfo ] && [ \"$(/bin/stat -c %d /mnt/proc2)\" != \"$(/bin/stat -c %d /proc)\" ] && cd /mnt/proc2 && ! /bin/umount /mnt/proc2 2>/dev/null && cd / && /bin/umount /mnt/proc2 && [ ! -e /mnt/proc2/meminfo ] && ! /bin/mount -t nosuchfs none /mnt/proc2 2>/dev/null && ! /bin/mount -t ext4 /dev/vda /mnt/proc2 2>/dev/null && ! /bin/umount / 2>/dev/null && /bin/ls -l /dev/vda | /bin/grep -q '^b' && echo LITEOS_MOUNT_$((6*7+2))\n",
+                ),
+                (
+                    "LITEOS_MOUNT_44",
+                    (
+                        f"[ \"$(/bin/cat /proc/cmdline)\" = '{BUSYBOX_KERNEL_ARGUMENTS}' ] && "
+                        "[ \"$LITEOS_BOOT_ENV\" = 42 ] && echo LITEOS_CMDLINE_$((6*7+3))\n"
+                    ).encode(),
+                ),
+                (
+                    "LITEOS_CMDLINE_45",
                     b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n",
                 ),
                 (
@@ -2273,7 +2295,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/dynamic-smoke spawn\n",
                 ),
                 (
@@ -2281,7 +2303,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/liteos-script 'alpha beta' omega\n",
                 ),
                 (
@@ -2289,7 +2311,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/rm -f /kill.pid; /bin/setsid /bin/sh -c 'echo $$ >/kill.pid; trap \"echo LITEOS_KILL_GROUP_$((6*7)); exit 0\" TERM; echo LITEOS_KILL_\"READY\"; while :; do /bin/sleep 1; done' &\n",
                 ),
                 (
@@ -2329,7 +2351,7 @@ def main() -> int:
                     b"\x03",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n",
                 ),
                 (
@@ -2337,7 +2359,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/dd if=/dev/tty of=/bgread bs=16 count=1 2>/dev/null & echo LITEOS_BG_READ_LAUNCHED_$((6*7))\n",
                 ),
                 (
@@ -2345,7 +2367,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_READ_STOPPED_$((6*7))\n",
                 ),
                 (
@@ -2353,7 +2375,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"fg\n",
                 ),
                 (
@@ -2361,7 +2383,7 @@ def main() -> int:
                     b"ttyinput\n",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/grep -q '^ttyinput$' /bgread && echo LITEOS_BG_READ_OK_$((6*7))\n",
                 ),
                 (
@@ -2369,7 +2391,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/sh -c 'trap \"\" 21; exec /bin/dd if=/dev/tty of=/ignored-read bs=1 count=1 2>/dev/null' & wait; [ ! -s /ignored-read ] && echo LITEOS_BG_READ_IGNORED_EIO_$((6*7))\n",
                 ),
                 (
@@ -2377,7 +2399,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/stty tostop </dev/tty; /bin/echo LITEOS_BG_WRITE_OK_$((6*7)) >/dev/tty & echo LITEOS_BG_WRITE_LAUNCHED_$((6*7))\n",
                 ),
                 (
@@ -2385,7 +2407,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_WRITE_STOPPED_$((6*7))\n",
                 ),
                 (
@@ -2393,7 +2415,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"fg\n",
                 ),
                 (
@@ -2401,7 +2423,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/sh -c 'trap \"\" 22; echo LITEOS_BG_WRITE_IGNORED_$((6*7)) >/dev/tty' & wait; /bin/stty -tostop </dev/tty\n",
                 ),
                 (
@@ -2409,7 +2431,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/kill -KILL 1; /bin/sleep 1; /bin/kill -0 1 && echo LITEOS_INIT_SURVIVED_$((6*7))\n",
                 ),
                 (
@@ -2417,7 +2439,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/rm -f /orphan-result; /bin/sh -c 'trap \"echo LITEOS_ORPHAN_HUP_42 >/orphan-result\" 1; /bin/kill -STOP $$; echo LITEOS_ORPHAN_CONT_42 >>/orphan-result' & echo LITEOS_ORPHAN_LAUNCHED_$((6*7))\n",
                 ),
                 (
@@ -2425,7 +2447,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_ORPHAN_STOPPED_$((6*7))\n",
                 ),
                 (
@@ -2433,7 +2455,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"exit\n",
                 ),
                 (
@@ -2449,7 +2471,7 @@ def main() -> int:
                     b"",
                 ),
                 (
-                    "/ # ",
+                    SHELL_PROMPT,
                     b"/bin/rm -f /session-hup; /bin/sh -c 'trap \"echo LITEOS_SESSION_HUP_42 >/session-hup; exit 0\" 1; /bin/kill -KILL $PPID; while :; do /bin/sleep 1; done'\n",
                 ),
                 (
@@ -2460,6 +2482,7 @@ def main() -> int:
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
             persistent_writes=True,
             timeout_seconds=90,
+            kernel_arguments=BUSYBOX_KERNEL_ARGUMENTS,
         )
         boot(
             phase55_image,

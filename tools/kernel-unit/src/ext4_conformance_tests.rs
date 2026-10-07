@@ -40,6 +40,10 @@ const FS_BLOCK: usize = 4096;
 struct WritableImage(Mutex<File>);
 
 impl BlockDevice for WritableImage {
+    fn disk_name(&self) -> &[u8] {
+        b"vda"
+    }
+
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
         let mut file = self.0.lock().unwrap();
         file.seek(SeekFrom::Start((block_id * BLOCK_SIZE) as u64))

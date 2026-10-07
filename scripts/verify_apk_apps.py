@@ -19,7 +19,7 @@ from build_cache import (
     sha256,
 )
 from ext4_image import find_debugfs, run_debugfs
-from qemu_gate import boot
+from qemu_gate import boot, guest_inittab
 from tls_gate import install_runtime_tls_identity, start_https_gate
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,7 +76,7 @@ def inject_sysinit(
 ) -> None:
     """把 guest 自验证脚本设为一次性 sysinit；host 只等待最终 marker。"""
     inittab = directory / f"{guest_script.stem}.inittab"
-    inittab.write_text(f"::sysinit:{command}\n")
+    inittab.write_text(guest_inittab(command))
     transaction = directory / f"{guest_script.stem}.debugfs"
     commands = [
         f"write {guest_script} /run/{guest_script.name}",
@@ -99,7 +99,7 @@ def inject_sqlite_recovery_assets(image: Path, directory: Path) -> None:
     """在 mutation 前注入下一次 boot policy，避免 crash 后用 debugfs 绕过 journal replay。"""
     recovery = FIXTURES / "sqlite-recovery.sh"
     inittab = directory / "sqlite-recovery.inittab"
-    inittab.write_text(f"::sysinit:/bin/sh /run/{recovery.name}\n")
+    inittab.write_text(guest_inittab(f"/bin/sh /run/{recovery.name}"))
     transaction = directory / "sqlite-recovery-assets.debugfs"
     transaction.write_text(
         f"write {recovery} /run/{recovery.name}\n"
@@ -140,7 +140,7 @@ def install_applications(base_image: Path, directory: Path) -> Path:
     shutil.copyfile(base_image, temporary)
     normal_inittab = ROOT / "user" / "base" / "inittab"
     bootstrap_inittab = directory / "install.inittab"
-    bootstrap_inittab.write_text("::sysinit:/bin/sh /run/verify-apk-install.sh\n")
+    bootstrap_inittab.write_text(guest_inittab("/bin/sh /run/verify-apk-install.sh"))
     transaction = directory / "install.debugfs"
     commands = [
         "mkdir /run/apk-apps",

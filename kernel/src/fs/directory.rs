@@ -200,6 +200,7 @@ impl DirectoryVisitor for Dirent64Batch {
             InodeType::Fifo => 1,
             InodeType::SymLink => 10,
             InodeType::CharacterDevice => 2,
+            InodeType::BlockDevice => 6,
             InodeType::Socket => 12,
             InodeType::File => 8,
         });

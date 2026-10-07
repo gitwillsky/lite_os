@@ -1,16 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::Once;
 
 use super::device::{self as registry, RegistryEntry};
 use super::{
     DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
     FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
 };
-
-const DEVICE_FILESYSTEM_ID: usize = 2;
-
-// OWNER: devfs module 唯一拥有 synthetic device filesystem；缺失会产生重复 st_dev/inode identity。
-static DEVICE_FILESYSTEM: Once<Arc<DevFileSystem>> = Once::new();
 
 #[derive(Clone, Copy)]
 enum DevNode {
@@ -21,6 +15,19 @@ enum DevNode {
     /// 注册表中的设备节点（`devices` 下标）。
     Registered(usize),
     Link(DevLink),
+}
+
+/// 注册节点的 inode type：按 mode 区分字符与块设备。
+///
+/// 只接收 mode 值：readdir 在持有注册表锁的 visitor 内调用，重新查询注册表会自旋死锁。
+fn node_type(mode: u32) -> InodeType {
+    const S_IFMT: u32 = 0o170000;
+    const S_IFBLK: u32 = 0o060000;
+    if mode & S_IFMT == S_IFBLK {
+        InodeType::BlockDevice
+    } else {
+        InodeType::CharacterDevice
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -177,7 +184,7 @@ impl Inode for DevInode {
     fn inode_type(&self) -> InodeType {
         match self.node {
             DevNode::Root | DevNode::Pts | DevNode::Directory(_) => InodeType::Directory,
-            DevNode::Registered(_) => InodeType::CharacterDevice,
+            DevNode::Registered(_) => node_type(self.node.mode()),
             DevNode::Link(_) => InodeType::SymLink,
         }
     }
@@ -280,7 +287,7 @@ impl Inode for DevInode {
         let parent = self.node.path()?;
         let mut ordinal = specifications.len();
         let mut result = Ok(true);
-        registry::for_each_child(&parent, |entry, name, _mode| {
+        registry::for_each_child(&parent, |entry, name, mode| {
             let index = ordinal;
             ordinal += 1;
             if index < stream.start_index() {
@@ -290,9 +297,7 @@ impl Inode for DevInode {
                 RegistryEntry::Directory(id) => {
                     (DevNode::Directory(id).inode(), InodeType::Directory)
                 }
-                RegistryEntry::Device(id) => {
-                    (DevNode::Registered(id).inode(), InodeType::CharacterDevice)
-                }
+                RegistryEntry::Device(id) => (DevNode::Registered(id).inode(), node_type(mode)),
             };
             result = stream.emit(index, DirectoryEntry { inode, kind, name });
             matches!(result, Ok(true))
@@ -335,17 +340,16 @@ pub(crate) struct DevFileSystem {
 }
 
 impl DevFileSystem {
-    /// 取得标准 character nodes 与 procfs fd aliases 的唯一 device filesystem。
-    pub(crate) fn instance() -> Arc<Self> {
-        DEVICE_FILESYSTEM
-            .call_once(|| {
-                Arc::try_new(Self {
-                    root: DevInode::new(DEVICE_FILESYSTEM_ID, DevNode::Root)
-                        .expect("failed to allocate devfs root"),
-                })
-                .expect("failed to allocate devfs")
-            })
-            .clone()
+    /// 创建一个 devtmpfs 视图实例；节点全部来自字符/块设备注册表，各实例内容相同。
+    ///
+    /// # Errors
+    ///
+    /// root inode 分配失败返回 `OutOfMemory`。
+    pub(crate) fn new() -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
+            root: DevInode::new(super::allocate_filesystem_id(), DevNode::Root)?,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 }
 
@@ -356,7 +360,7 @@ impl FileSystem for DevFileSystem {
 
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         Ok(FileSystemStatistics {
-            type_name: "devfs",
+            type_name: "devtmpfs",
             magic: 0x8584_58f6,
             block_size: 4096,
             blocks: 0,
@@ -364,7 +368,7 @@ impl FileSystem for DevFileSystem {
             blocks_available: 0,
             files: 0,
             files_free: 0,
-            fsid: [DEVICE_FILESYSTEM_ID as u32, 0],
+            fsid: [self.root.filesystem_id as u32, 0],
             name_length: 255,
             fragment_size: 4096,
             flags: 1,

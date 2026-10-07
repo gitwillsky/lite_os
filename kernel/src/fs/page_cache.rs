@@ -9,6 +9,7 @@ use crate::memory::{
 };
 use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
+use super::OpenedFile;
 use super::{FileSystemError, Inode, InodeType};
 
 mod reclaim;
@@ -471,10 +472,108 @@ impl RegularFile {
     }
 }
 
+/// 建立 file-backed mmap 的共享映射。
+///
+/// # Parameters
+///
+/// - `inode`: 被映射的 regular file。
+/// - `opened`: 映射来源 fd 的打开条目（Linux `vma->vm_file`）；映射存续期间 pin 住它，使所在挂载
+///   保持忙而不能被卸载。不属于任何挂载的 memfd 为 `None`。
+///
+/// # Errors
+///
+/// 非 regular file 返回 `InvalidOperation`；分配失败返回 `OutOfMemory`。
 pub(crate) fn mapping(
     inode: Arc<dyn Inode>,
+    opened: Option<Arc<OpenedFile>>,
 ) -> Result<Arc<dyn SharedFileMapping>, FileSystemError> {
-    cached_file(inode).map(|file| file as Arc<dyn SharedFileMapping>)
+    let file = cached_file(inode)?;
+    Arc::try_new(MappedFile {
+        file,
+        _opened: opened,
+    })
+    .map(|mapping| mapping as Arc<dyn SharedFileMapping>)
+    .map_err(|_| FileSystemError::OutOfMemory)
+}
+
+/// 一个 mmap 映射的 page-cache 视图，同时 pin 住来源打开条目。
+struct MappedFile {
+    file: Arc<CachedFile>,
+    _opened: Option<Arc<OpenedFile>>,
+}
+
+impl core::fmt::Debug for MappedFile {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("MappedFile")
+            .field("file", &self.file)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SharedFileMapping for MappedFile {
+    fn id(&self) -> SharedFileId {
+        self.file.id()
+    }
+
+    fn size(&self) -> u64 {
+        self.file.size()
+    }
+
+    fn page(&self, index: u64) -> Result<Arc<dyn SharedPage>, SharedFileError> {
+        self.file.page(index)
+    }
+
+    fn sync_range(&self, offset: u64, length: u64) -> Result<(), SharedFileError> {
+        self.file.sync_range(offset, length)
+    }
+}
+
+/// 写回并逐出一个 filesystem instance 的全部 cached file（umount 的 `sync_filesystem` +
+/// `evict_inodes`）。
+///
+/// 写回失败不阻止逐出：卸载已提交，与 Linux 相同只报告错误。
+///
+/// # Errors
+///
+/// 返回第一个写回错误。
+pub(crate) fn evict_filesystem(filesystem_id: usize) -> Result<(), FileSystemError> {
+    let files = {
+        let registry = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
+        let mut files = Vec::new();
+        files
+            .try_reserve_exact(registry.len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        files.extend(
+            registry
+                .values()
+                .filter(|file| file.id.filesystem == filesystem_id)
+                .cloned(),
+        );
+        files
+    };
+    let mut result = Ok(());
+    for file in files {
+        let written = file
+            .write_sequence
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)
+            .and_then(|_sequence| {
+                let _operation = file
+                    .operation
+                    .lock()
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                file.writeback_range(0, u64::MAX)
+            });
+        if let Err(error) = written {
+            result = result.and(Err(error));
+        }
+    }
+    FILES
+        .wait()
+        .lock()
+        .retain(|id, _| id.filesystem != filesystem_id);
+    result
 }
 
 pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSystemError> {

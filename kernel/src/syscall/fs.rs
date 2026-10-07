@@ -8,6 +8,7 @@ mod fcntl;
 mod flock;
 mod io;
 mod links;
+pub(crate) mod mount;
 mod namespace;
 mod open;
 mod pathname;

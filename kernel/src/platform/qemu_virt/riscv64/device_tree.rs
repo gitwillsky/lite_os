@@ -29,6 +29,8 @@ pub(crate) struct PlatformInfo {
     pub(crate) plic: Range<usize>,
     pub(crate) rtc: Option<Range<usize>>,
     pub(crate) virtio: VirtioMmioTransports,
+    /// `/chosen/bootargs`（kernel command line），不含结尾 NUL；没有该属性时为空。
+    pub(crate) bootargs: Vec<u8>,
 }
 
 impl fmt::Display for PlatformInfo {
@@ -121,6 +123,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
     let mut devices = Devices::default();
     let mut pending = PendingDevice::default();
     let mut virtio = VirtioMmioScan::new();
+    let mut bootargs = Vec::new();
 
     dtb.walk(|context, object| match object {
         DtbObj::SubNode { .. } => {
@@ -151,7 +154,14 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             WalkOperation::StepOver
         }
         DtbObj::Property(Property::General { name, value }) => {
-            if name == Str::from("timebase-frequency") && context.name() == Str::from("cpus") {
+            if name == Str::from("bootargs") && context.name() == Str::from("chosen") {
+                let line = value.split(|byte| *byte == 0).next().unwrap_or(&[]);
+                bootargs
+                    .try_reserve_exact(line.len())
+                    .expect("bootargs allocation failed");
+                bootargs.extend_from_slice(line);
+            } else if name == Str::from("timebase-frequency") && context.name() == Str::from("cpus")
+            {
                 timebase_frequency = be_uint(value);
             } else if name == Str::from("interrupts") {
                 // PLIC `#interrupt-cells = <1>`：首个 cell 即 source id。
@@ -185,6 +195,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             .expect("QEMU virt requires a sifive,plic-1.0.0/riscv,plic0 interrupt controller"),
         rtc: devices.rtc,
         virtio: virtio.finish(),
+        bootargs,
     }
 }
 

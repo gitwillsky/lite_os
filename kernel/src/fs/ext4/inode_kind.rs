@@ -13,6 +13,7 @@ pub(super) fn from_mode(mode: u16) -> InodeType {
     match mode & 0xF000 {
         0x1000 => InodeType::Fifo,
         0x2000 => InodeType::CharacterDevice,
+        0x6000 => InodeType::BlockDevice,
         0x4000 => InodeType::Directory,
         0xA000 => InodeType::SymLink,
         0xC000 => InodeType::Socket,
@@ -26,6 +27,7 @@ pub(super) fn from_file_type(file_type: u8) -> InodeType {
         2 => InodeType::Directory,
         7 => InodeType::SymLink,
         3 => InodeType::CharacterDevice,
+        4 => InodeType::BlockDevice,
         5 => InodeType::Fifo,
         6 => InodeType::Socket,
         _ => InodeType::File,
@@ -45,6 +47,7 @@ pub(super) fn file_type(kind: InodeType) -> u8 {
     match kind {
         InodeType::Fifo => 5,
         InodeType::CharacterDevice => 3,
+        InodeType::BlockDevice => 4,
         InodeType::Directory => 2,
         InodeType::File => 1,
         InodeType::SymLink => 7,

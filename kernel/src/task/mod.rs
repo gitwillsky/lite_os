@@ -11,6 +11,7 @@ mod process_table;
 mod processor;
 mod scheduler;
 
+use loader::LoadedExecutable;
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use memory_barrier::{
     complete_pending as complete_pending_memory_barrier, register_private_memory_barrier,
@@ -35,8 +36,6 @@ pub(crate) use process_table::timer_queue::{
 };
 pub(crate) use process_table::*;
 pub(crate) use processor::*;
-
-const INIT_PROC_NAME: &[u8] = b"/bin/init";
 
 /// 在任何启动期 external/software trap 前构造 membarrier per-CPU state。
 ///
@@ -70,7 +69,8 @@ pub(in crate::task) fn run_kernel_thread() -> ! {
     // SAFETY: 内核线程只由 `spawn_kernel_thread` 在 trap vector 与 platform interrupt controller
     // 初始化完成后创建，满足 scheduler interrupt 的初始化顺序。
     unsafe { crate::arch::interrupt::enable_scheduler_interrupts() };
-    body()
+    body();
+    process_table::exit_current_kernel_thread()
 }
 
 /// 初始化 processor topology 与全部 scheduler wait adapter，使内核线程可以入队。
@@ -90,44 +90,86 @@ pub(crate) fn initialize() {
     install_advisory_lock_notifier();
 }
 
-/// 从已挂载的根文件系统加载 `/bin/init` 并发布唯一 init process。
-///
-/// # Panics
-///
-/// `/bin/init` 缺失或 init task 分配失败时 fail-stop。
-pub(crate) fn spawn_init(
-    kernel_trap_handler: crate::arch::trap::UserTrapEntry,
-    kernel_trap_return: crate::arch::context::KernelResume,
-) {
-    let mut path = Vec::new();
-    path.try_reserve_exact(INIT_PROC_NAME.len())
-        .expect("failed to allocate init pathname");
-    path.extend_from_slice(INIT_PROC_NAME);
-    let mut argv0 = Vec::new();
-    argv0
-        .try_reserve_exact(INIT_PROC_NAME.len())
-        .expect("failed to allocate init argv[0]");
-    argv0.extend_from_slice(INIT_PROC_NAME);
-    let argument_bytes = 3 * core::mem::size_of::<usize>() + argv0.len() + 1;
-    let mut arguments = Vec::new();
-    arguments
-        .try_reserve_exact(1)
-        .expect("failed to allocate init argv");
-    arguments.push(argv0);
-    let root = vfs().open_file(b"/").expect("mounted root must resolve");
-    let loaded = load_executable(
+/// 未指定 `init=` 时依次尝试的程序（Linux `kernel_init`）。
+const DEFAULT_INIT_PROGRAMS: [&[u8]; 4] = [b"/sbin/init", b"/etc/init", b"/bin/init", b"/bin/sh"];
+
+/// 加载一个 init 候选：argv 为 `[path, arguments...]`。
+fn load_init(
+    path: &[u8],
+    arguments: &[Vec<u8>],
+    environment: &[Vec<u8>],
+) -> Result<LoadedExecutable, ProgramLoadError> {
+    let copy = |bytes: &[u8]| -> Result<Vec<u8>, ProgramLoadError> {
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| ProgramLoadError::OutOfMemory)?;
+        owned.extend_from_slice(bytes);
+        Ok(owned)
+    };
+    // argv 与 envp 各有一个结尾 NULL pointer。
+    let mut argument_bytes = 2 * core::mem::size_of::<usize>();
+    let mut argv = Vec::new();
+    argv.try_reserve_exact(arguments.len() + 1)
+        .map_err(|_| ProgramLoadError::OutOfMemory)?;
+    argv.push(copy(path)?);
+    for argument in arguments {
+        argv.push(copy(argument)?);
+    }
+    for entry in argv.iter().chain(environment) {
+        argument_bytes = argument_bytes
+            .checked_add(loader::argument_cost(entry)?)
+            .ok_or(ProgramLoadError::ArgumentListTooLong)?;
+    }
+    let root = vfs()
+        .open_file(b"/")
+        .map_err(ProgramLoadError::FileSystem)?;
+    load_executable(
         root,
-        path,
-        arguments,
+        copy(path)?,
+        argv,
         argument_bytes,
         &AccessIdentity::root(),
     )
-    .expect("failed to load /bin/init");
+}
+
+/// 从已挂载的根文件系统加载并发布唯一 init process（Linux `kernel_init`）。
+///
+/// # Parameters
+///
+/// - `init`: `init=` 指定的程序；`None` 时依次尝试 `/sbin/init`、`/etc/init`、`/bin/init`、
+///   `/bin/sh`。
+/// - `arguments`: command line 转交 init 的 argv（不含 argv[0]）。
+/// - `environment`: command line 转交 init 的环境。
+///
+/// # Panics
+///
+/// 指定的 init 加载失败、没有可用的默认 init 或 init task 分配失败时 fail-stop。
+pub(crate) fn spawn_init(
+    kernel_trap_handler: crate::arch::trap::UserTrapEntry,
+    kernel_trap_return: crate::arch::context::KernelResume,
+    init: Option<&[u8]>,
+    arguments: &[Vec<u8>],
+    environment: &[Vec<u8>],
+) {
+    let loaded = match init {
+        Some(path) => load_init(path, arguments, environment).unwrap_or_else(|error| {
+            panic!(
+                "Requested init {} failed ({error:?})",
+                core::str::from_utf8(path).unwrap_or("<non-utf8>")
+            )
+        }),
+        None => DEFAULT_INIT_PROGRAMS
+            .iter()
+            .find_map(|path| load_init(path, arguments, environment).ok())
+            .expect("No working init found"),
+    };
     let init_proc = TaskControlBlock::new_with_pid(
         &loaded,
         ProcessId::init(),
         kernel_trap_handler,
         kernel_trap_return,
+        environment,
     );
     match init_proc {
         Ok(init_proc) => {

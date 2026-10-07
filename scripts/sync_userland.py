@@ -37,6 +37,7 @@ def managed_path(path: str) -> bool:
         "/bin/shutdown",
         "/bin/terminal-session",
         "/etc/inittab",
+        "/etc/init.d/rcS",
         "/etc/init.d/graphical-session",
         "/etc/profile",
         "/etc/terminfo/l/liteos",

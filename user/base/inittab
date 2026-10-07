@@ -1,3 +1,4 @@
+::sysinit:/etc/init.d/rcS
 ::respawn:/bin/audio-service
 ::once:/etc/init.d/graphical-session /bin/compositor
 ::once:/etc/init.d/graphical-session /bin/desktop

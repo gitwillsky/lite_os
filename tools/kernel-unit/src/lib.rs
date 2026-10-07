@@ -13,6 +13,7 @@ pub(crate) enum InodeType {
     Directory,
     SymLink,
     CharacterDevice,
+    BlockDevice,
     Fifo,
     Socket,
 }
@@ -466,3 +467,11 @@ mod socket_abi_tests;
 #[cfg(test)]
 #[path = "tests/unix_stream_backlog.rs"]
 mod unix_stream_backlog_tests;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/cmdline.rs"]
+mod cmdline;
+
+#[cfg(test)]
+#[path = "tests/cmdline.rs"]
+mod cmdline_tests;

@@ -36,7 +36,12 @@
   （先提交 running，再并入）、staged data 超过 16 MiB、年龄超过 5 秒、`fsync`/`fdatasync`/`sync`。
   每个 ext4 filesystem 在 mount 时创建一个写回内核线程（对应 Linux jbd2）：running transaction
   由空变非空时经 `TaskEvent` 唤醒，睡到开始时刻加 5 秒后在 mutation owner 下提交；没有未提交
-  mutation 时线程无限期阻塞，不产生周期唤醒。
+  mutation 时线程无限期阻塞，不产生周期唤醒。`shutdown` 提交 running transaction 后置位
+  `stopping` 并 signal，线程返回并释放对 filesystem 的引用。
+- `fs::mount` 的 `MOUNT_TRANSACTION` 串行化完整 mount/umount 事务；ext4 实例一经创建即回放 journal，
+  “设备未挂载”检查与发布之间不得并发。VFS `unmount` 在 mounts 锁内判忙：有子挂载，或挂载根
+  `Arc` 引用数超过“挂载记录 + 调用者”（打开文件、cwd、mmap 与更深的打开条目都经 parent 链持有它）
+  即 `Busy`；检查与摘除和 `enter_mount` 串行。
 - `RegularFileWrite` 的 write-sequence 与 operation gates 共同独占一次 syscall 的 position、append placement、storage transaction 和 resident-cache publication 顺序。
 - VFS namespace mutation 与 ext4 live-state transaction 使用 `TaskMutex` 逻辑 owner；其内部
   spin gate 只发布 `Available/Held/Handoff(ticket)` 与预分配 waiter 链，logical guard 可以跨

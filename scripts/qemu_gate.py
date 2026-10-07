@@ -12,6 +12,15 @@ import socket
 import subprocess
 import tempfile
 import threading
+
+# guest 只执行一个自检脚本的 inittab 仍须先运行 rootfs 的 rcS：内核只挂载 / 与 /dev，
+# /proc、/sys、/dev/pts 由 rcS 经 mount(2) 挂载。
+GUEST_MOUNT_SYSINIT = "::sysinit:/etc/init.d/rcS\n"
+
+
+def guest_inittab(command: str) -> str:
+    """返回先挂载伪文件系统、再一次性运行 `command` 的 BusyBox inittab。"""
+    return f"{GUEST_MOUNT_SYSINIT}::sysinit:{command}\n"
 import time
 import json
 from dataclasses import dataclass
@@ -41,7 +50,9 @@ STALL_SECONDS = 60.0
 HARD_DEADLINE_MULTIPLE = 30
 # marker 出现后等 ash 下一条 prompt 再注入命令，替代盲 sleep：宿主慢时 prompt 迟到，盲 sleep
 # 会让命令前缀被切断，导致该命令的 marker 永不出现。等真实 prompt 是标准 pexpect 做法。
-SHELL_PROMPT = "/ # "
+# 内核按 Linux `envp_init` 以 HOME=/ 启动 init，ash 的 `\w` 在 cwd 等于 $HOME 时显示 `~`，
+# 因此 root 在 `/` 下的 prompt 是 `~ # `。
+SHELL_PROMPT = "~ # "
 PROMPT_WAIT_SECONDS = 20.0
 
 
@@ -92,6 +103,7 @@ def _qemu_command(
     smp: int,
     qmp_socket: Path | None = None,
     memory: str | None = None,
+    kernel_arguments: str | None = None,
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -123,6 +135,7 @@ def _qemu_command(
         [
             "-kernel",
             runtime.kernel_boot_artifact,
+            *(("-append", kernel_arguments) if kernel_arguments is not None else ()),
             "-drive",
             f"file={image},if=none,format=raw,id=x0",
             "-device",
@@ -320,7 +333,7 @@ def _wait_for_prompt(stream: BinaryIO, output: bytearray, cursor: int) -> None:
     injected only once the shell is ready to read it (not mid-boot-spew).
 
     Appends any bytes it reads to `output` (the caller re-scans it) and does NOT
-    advance the interaction cursor: a following `/ # `-triggered interaction must
+    advance the interaction cursor: a following prompt-triggered interaction must
     still be able to match this same prompt. Bounded by `PROMPT_WAIT_SECONDS`; on
     timeout it returns anyway and the caller injects (degrading to the old blind
     behavior rather than hanging).
@@ -349,6 +362,7 @@ def boot(
     success_settle_seconds: float = 0.0,
     persistent_writes: bool = False,
     memory: str | None = None,
+    kernel_arguments: str | None = None,
 ) -> None:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
@@ -362,6 +376,7 @@ def boot(
         success_settle_seconds: 成功标记齐备后继续观察 forbidden marker 的时长。
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
         memory: 显式 Guest RAM；None 保留既有 runtime gate 的 QEMU 默认值。
+        kernel_arguments: 经 `-append` 写入 DTB `/chosen/bootargs` 的 kernel command line。
 
     Returns:
         None；全部 marker 出现时返回。
@@ -381,6 +396,7 @@ def boot(
         image,
         smp,
         memory=memory,
+        kernel_arguments=kernel_arguments,
     )
     process = subprocess.Popen(
         command,
@@ -436,7 +452,7 @@ def boot(
                         # marker 通常先于 ash 的下一条 prompt；等 prompt 出现再注入，避免宿主慢时
                         # prompt 迟到导致命令前缀被切断（盲 sleep 会漏掉该命令的 marker）。
                         # 若触发 marker 本身就是 prompt，说明 prompt 已到，直接注入不再等待。
-                        # 不推进 cursor：紧随其后的 `/ # ` 触发型交互仍需匹配同一个 prompt。
+                        # 不推进 cursor：紧随其后的 prompt 触发型交互仍需匹配同一个 prompt。
                         if not marker.endswith(SHELL_PROMPT):
                             _wait_for_prompt(process.stdout, output, interaction_cursor)
                         if _is_echo_paced_shell_command(data):
@@ -538,7 +554,7 @@ def power_cut(
             # BusyBox help banner 先于真正的 prompt；desktop 与 shell 在这段窗口内仍可能
             # 竞争 console input。只有完整 prompt 出现后注入，缺失时 power-cut mutation 命令会
             # 被启动期 reader 吞掉，guest 随后永久停在空 shell。
-            if not command_sent and "/ # " in text:
+            if not command_sent and SHELL_PROMPT in text:
                 time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
                 send_interaction(process.stdin, command)
                 command_sent = True

@@ -12,6 +12,7 @@ mod file;
 mod inode;
 mod mem;
 mod memfd;
+mod mount;
 mod page_cache;
 mod permission;
 mod procfs;
@@ -22,8 +23,8 @@ mod timerfd;
 mod tty;
 mod vfs;
 
-pub(crate) use devfs::DevFileSystem;
-pub(crate) use devpts::DevPtsFileSystem;
+use devfs::DevFileSystem;
+use devpts::DevPtsFileSystem;
 pub(crate) use directory::{
     DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, Dirent64Batch,
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
@@ -37,18 +38,22 @@ pub(crate) use file::{
 use file::{TerminalRead, TerminalReadMode, character_write_chunk};
 pub(crate) use inode::{Inode, InodeMetadata, InodeType, StorageWriter};
 pub(crate) use memfd::MemFile;
+pub(crate) use mount::{
+    FileSystemType, MountEnvironment, install_mount_environment, mount, mount_root, unmount,
+};
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
     sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{AccessIdentity, CreateMetadata, OwnerModeChange};
+use procfs::ProcFileSystem;
 pub(crate) use procfs::{
-    ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcIoSnapshot,
-    ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
+    ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot, ProcNetworkSnapshot,
+    ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
 };
 use pty::{PtyMaster, PtySlave};
 pub(crate) use readiness::{ReadinessSource, ReadinessSources};
-pub(crate) use sysfs::SysFileSystem;
+use sysfs::SysFileSystem;
 pub(crate) use timerfd::{TimerError, TimerFd, TimerFdBackend, TimerFdRead, TimerSetting};
 pub(crate) use tty::{
     JobControl, console as console_terminal, drain_input as drain_terminal_input, init as init_tty,
@@ -130,6 +135,20 @@ fn try_format_bytes(arguments: fmt::Arguments<'_>) -> Result<Vec<u8>, FileSystem
     Ok(bytes.0)
 }
 
+/// 首个动态分配的 filesystem instance id；低值保留给不可挂载的内部文件系统（memfd）。
+const FIRST_DYNAMIC_FILESYSTEM_ID: usize = 0x100;
+
+// OWNER: 下一个 filesystem instance id（Linux `get_anon_bdev`）；只递增，每个挂载实例取得独立
+// st_dev 与 VFS identity。缺失时同类型的两个挂载实例共享 inode identity，第二次 mount 与
+// 第一次的根冲突。
+static NEXT_FILESYSTEM_ID: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(FIRST_DYNAMIC_FILESYSTEM_ID);
+
+/// 为新 filesystem instance 分配唯一 id，用作其 inode 的 `filesystem_id` 与 `st_dev`。
+pub(crate) fn allocate_filesystem_id() -> usize {
+    NEXT_FILESYSTEM_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+}
+
 /// 为 VFS 提供根 inode 的文件系统实例。
 pub(crate) trait FileSystem: Send + Sync {
     /// 加载该文件系统的根 inode。
@@ -153,18 +172,28 @@ pub(crate) trait FileSystem: Send + Sync {
     ///
     /// snapshot 所需的 owner wait metadata 分配失败时返回 `OutOfMemory`。
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
+
+    /// 卸载的最后一步（Linux `kill_sb`）：持久化剩余状态并停止后台工作。调用时 VFS 已摘下挂载、
+    /// page cache 已写回并逐出，此后不再有新访问。
+    ///
+    /// # Errors
+    ///
+    /// 持久化失败返回对应错误；卸载照常完成。
+    fn shutdown(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
 }
 
-/// task 注入的内核线程创建入口：诊断名称与永不返回的主体。
+/// task 注入的内核线程创建入口：诊断名称与主体；主体返回即终止该线程。
 pub(crate) type SpawnKernelThread = fn(
     &'static str,
-    alloc::boxed::Box<dyn FnOnce() -> ! + Send>,
+    alloc::boxed::Box<dyn FnOnce() + Send>,
 ) -> Result<(), crate::memory::MemoryError>;
 
 /// fs 创建后台内核线程所需的 task 能力；fs 不依赖 task，由 composition root 注入。
 #[derive(Clone, Copy)]
 pub(crate) struct KernelThreadSupport {
-    /// 创建并调度一个永不返回的内核线程。
+    /// 创建并调度一个内核线程。
     pub(crate) spawn: SpawnKernelThread,
     /// 阻塞当前 task 到 absolute monotonic deadline。
     pub(crate) sleep_until: fn(u64),
@@ -180,21 +209,31 @@ pub(crate) fn init_vfs() {
     mem::register().expect("mem character device registration failed");
 }
 
-/// 在 `device` 上挂载根文件系统，并启动其后台写回。
-///
-/// 当前唯一支持的持久根是固定 profile 的 ext4（见 standards baseline）；新增磁盘文件系统时
-/// 在这里按 superblock 探测选择，而不是让 composition root 依赖具体类型。
+/// 块设备号 major：Linux 动态分配块 major 的首个值；fs 是块设备命名空间的唯一 owner。
+const BLOCK_MAJOR: u32 = 254;
+/// 每块盘预留的 minor 数（Linux virtio-blk `PART_BITS = 4`）；分区尚未支持。
+const DISK_MINORS: u32 = 16;
+
+/// 发布一个块设备：按发布顺序分配设备号，并创建 `/dev/<disk_name>` 节点（Linux `add_disk`）。
 ///
 /// # Errors
 ///
-/// 设备上不是受支持的 ext4、根已挂载或写回线程创建失败时返回错误。
-pub(crate) fn mount_root(
-    device: Arc<dyn crate::drivers::block::BlockDevice>,
-    threads: KernelThreadSupport,
+/// 名称重复返回 `AlreadyExists`；设备号空间耗尽返回 `NoSpace`；分配失败返回 `OutOfMemory`。
+pub(crate) fn publish_block_device(
+    disk: Arc<dyn crate::drivers::block::BlockDevice>,
 ) -> Result<(), FileSystemError> {
-    let filesystem = ext4::Ext4FileSystem::new(device)?;
-    vfs()
-        .mount_root(b"root", filesystem.clone())
-        .map_err(|_| FileSystemError::AlreadyExists)?;
-    filesystem.start_writeback(threads)
+    let minor = u32::try_from(device::block_count())
+        .ok()
+        .and_then(|index| index.checked_mul(DISK_MINORS))
+        .ok_or(FileSystemError::NoSpace)?;
+    let mut name = Vec::new();
+    name.try_reserve_exact(disk.disk_name().len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    name.extend_from_slice(disk.disk_name());
+    device::register_block(
+        &name,
+        device::DeviceNumber::new(BLOCK_MAJOR, minor),
+        0o660,
+        disk,
+    )
 }

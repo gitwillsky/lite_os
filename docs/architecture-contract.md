@@ -52,8 +52,9 @@
 | `timer` | `arch`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |
 | `log` | `cpu`, `platform`, `sync`, `timer` | 日志策略、有界 record owner 与输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
+| `cmdline` | 无 | 纯 kernel command line 解析：取出内核参数，其余按 Linux 规则转交 init |
 | `lang_item` | `arch`, `cpu`, `platform` | 只使用 typed diagnostic identity 与 architecture/platform fail-stop mechanism |
-| `main` | `arch`, `audio`, `config`, `cpu`, `drivers`, `drm`, `entry`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root；不含 raw firmware/trap ABI |
+| `main` | `arch`, `audio`, `cmdline`, `config`, `cpu`, `drivers`, `drm`, `entry`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root；不含 raw firmware/trap ABI |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 

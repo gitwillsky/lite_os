@@ -184,10 +184,10 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected = "::respawn:/bin/audio-service\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    let expected = "::sysinit:/etc/init.d/rcS\n::respawn:/bin/audio-service\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
-            "user/base/inittab: must supervise the audio service, compositor, React desktop, network and UART recovery exactly once"
+            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise the audio service, compositor, React desktop, network and UART recovery exactly once"
                 .to_owned(),
         );
     }

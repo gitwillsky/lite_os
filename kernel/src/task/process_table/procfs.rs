@@ -116,6 +116,10 @@ pub(crate) struct SystemInfoSnapshot {
 pub(crate) struct KernelProcSource;
 
 impl ProcSource for KernelProcSource {
+    fn kernel_command_line(&self) -> &[u8] {
+        crate::platform::kernel_command_line()
+    }
+
     fn snapshot(&self) -> Result<ProcSnapshot, crate::fs::FileSystemError> {
         process_snapshot()
     }

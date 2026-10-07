@@ -565,6 +565,9 @@ pub(crate) struct Ext4FileSystem {
     // OWNER: running transaction 由空变非空时唤醒写回线程；缺失时空闲期写入不会在 5 秒内持久，
     // 而无条件周期唤醒会在没有脏数据时持续打断空闲 CPU。
     commit_event: TaskEvent,
+    // OWNER: umount 后置位，写回线程醒来后据此返回并释放对本 filesystem 的引用。缺失时卸载后的
+    // 线程永久持有 filesystem，块设备也无法再次挂载。
+    stopping: AtomicBool,
     // OWNER: orphan file 的不可变布局（物理 block 与 checksum seed）；slot 内容只经 journal-aware
     // metadata cache 读取，缺失它会让 unlink/reclaim 无法定位持久 orphan 记录。
     orphan: Mutex<OrphanFile>,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::fs::{FileSystemStatistics, KernelThreadSupport};
+use core::sync::atomic::Ordering;
 
 impl FileSystem for Ext4FileSystem {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -51,6 +52,14 @@ impl FileSystem for Ext4FileSystem {
             flags: 0,
         })
     }
+
+    /// 提交 running transaction（每次提交以 barrier 结束），再让写回线程退出。
+    fn shutdown(&self) -> Result<(), FileSystemError> {
+        let committed = self.sync_journal();
+        self.stopping.store(true, Ordering::Release);
+        self.commit_event.signal();
+        committed
+    }
 }
 
 impl Ext4FileSystem {
@@ -96,9 +105,14 @@ impl Ext4FileSystem {
     /// # Parameters
     ///
     /// - `sleep_until`: composition root 注入的 absolute monotonic deadline 睡眠；fs 不依赖 task。
-    fn run_writeback_daemon(self: Arc<Self>, sleep_until: fn(u64)) -> ! {
+    ///
+    /// umount 置位 `stopping` 并 signal 后返回，内核线程随之终止。
+    fn run_writeback_daemon(self: Arc<Self>, sleep_until: fn(u64)) {
         loop {
             self.commit_event.wait();
+            if self.stopping.load(Ordering::Acquire) {
+                return;
+            }
             let started = self
                 .journal
                 .lock()

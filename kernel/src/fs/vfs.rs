@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
+use super::device::DeviceNumber;
 use super::{AccessIdentity, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeType};
 use crate::sync::TaskMutex;
 
@@ -46,14 +47,18 @@ pub(crate) struct VirtualFileSystem {
 }
 
 struct RootMount {
-    source: &'static [u8],
+    source: Vec<u8>,
     filesystem: Arc<dyn FileSystem>,
     root: Arc<OpenedFile>,
+    /// 承载根文件系统的块设备。
+    device: Option<DeviceNumber>,
 }
 
 struct Mount {
-    source: &'static [u8],
+    source: Vec<u8>,
     filesystem: Arc<dyn FileSystem>,
+    /// 承载该文件系统的块设备；nodev 文件系统为 `None`。同一块设备只能挂载一次。
+    device: Option<DeviceNumber>,
     point_identity: (usize, u64),
     root_identity: (usize, u64),
     point: Arc<OpenedFile>,
@@ -298,21 +303,20 @@ impl VirtualFileSystem {
     ///
     /// # Parameters
     ///
-    /// - `source`: `/proc/mounts` 中的 root source label。
+    /// - `source`: `/proc/mounts` 中的 root source（块设备路径）。
     /// - `fs`: 根文件系统实例。
-    ///
-    /// # Returns
-    ///
-    /// 首次挂载成功时返回 `()`。
+    /// - `device`: 承载根文件系统的块设备号。
     ///
     /// # Errors
     ///
-    /// 根文件系统已挂载时返回 `AlreadyExists`，防止静默替换启动卷。
+    /// 根文件系统已挂载时返回 `AlreadyExists`，防止静默替换启动卷；分配失败返回 `OutOfMemory`。
     pub(crate) fn mount_root(
         &self,
-        source: &'static [u8],
+        source: &[u8],
         fs: Arc<dyn FileSystem>,
+        device: Option<DeviceNumber>,
     ) -> Result<(), FileSystemError> {
+        let source = owned_bytes(source)?;
         let mut root_fs = self.root_fs.lock();
         if root_fs.is_some() {
             return Err(FileSystemError::AlreadyExists);
@@ -322,35 +326,44 @@ impl VirtualFileSystem {
             source,
             filesystem: fs,
             root,
+            device,
         });
         Ok(())
     }
 
-    /// 将一个 filesystem adapter 挂到已存在的 root-namespace 目录。
+    /// `device` 是否已承载一个已挂载的文件系统。
+    pub(crate) fn device_mounted(&self, device: DeviceNumber) -> bool {
+        self.root_fs
+            .lock()
+            .as_ref()
+            .is_some_and(|root| root.device == Some(device))
+            || self
+                .mounts
+                .lock()
+                .iter()
+                .any(|mount| mount.device == Some(device))
+    }
+
+    /// 把一个 filesystem adapter 挂到已解析的目录（Linux `do_new_mount`）。
     ///
     /// # Parameters
     ///
-    /// - `path`: absolute mountpoint pathname；必须解析为尚未挂载的目录。
-    /// - `source`: `/proc/mounts` 中的 mount source label。
+    /// - `point`: 已解析的 mountpoint；必须是目录，且不是已有挂载的根或挂载点。
+    /// - `source`: `/proc/mounts` 中的 mount source。
     /// - `filesystem`: mount 后由 root inode owner 保活的 filesystem adapter。
-    ///
-    /// # Returns
-    ///
-    /// mount publication 完成时成功。
+    /// - `device`: 承载该文件系统的块设备号；nodev 文件系统为 `None`。
     ///
     /// # Errors
     ///
-    /// 路径、类型、重复 mount、adapter root 或内存分配失败时返回明确错误。
-    pub(crate) fn mount_at(
+    /// mountpoint 不是目录返回 `NotDirectory`；mountpoint 已被占用（含堆叠到挂载根或 `/`）或块设备
+    /// 已挂载返回 `Busy`；adapter root 读取或分配失败返回对应错误。
+    pub(crate) fn mount(
         &self,
-        path: &[u8],
-        source: &'static [u8],
+        point: Arc<OpenedFile>,
+        source: &[u8],
         filesystem: Arc<dyn FileSystem>,
+        device: Option<DeviceNumber>,
     ) -> Result<(), FileSystemError> {
-        if path.first() != Some(&b'/') {
-            return Err(FileSystemError::InvalidPath);
-        }
-        let point = self.open_file(path)?;
         if point.inode().inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
@@ -358,18 +371,26 @@ impl VirtualFileSystem {
         if root_inode.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
-        let parent = point.parent().ok_or(FileSystemError::InvalidPath)?;
+        // namespace 根没有 parent，`leave_mount` 无法返回；同一目录的堆叠挂载尚不支持。
+        let parent = point.parent().ok_or(FileSystemError::Busy)?;
         let point_identity = Self::identity(&point.inode())?;
         let root_identity = Self::identity(&root_inode)?;
+        let source = owned_bytes(source)?;
         let point_name = point.location_name()?;
         let root =
             self.opened
                 .register(OpenedFile::child(root_inode, parent.clone(), &point_name)?)?;
+        let root_device = self.root_fs.lock().as_ref().and_then(|root| root.device);
         let mut mounts = self.mounts.lock();
-        if mounts.iter().any(|mount| {
-            mount.point_identity == point_identity || mount.root_identity == root_identity
-        }) {
-            return Err(FileSystemError::AlreadyExists);
+        if device.is_some() && root_device == device
+            || mounts.iter().any(|mount| {
+                mount.point_identity == point_identity
+                    || mount.root_identity == point_identity
+                    || mount.root_identity == root_identity
+                    || device.is_some() && mount.device == device
+            })
+        {
+            return Err(FileSystemError::Busy);
         }
         mounts
             .try_reserve(1)
@@ -377,6 +398,7 @@ impl VirtualFileSystem {
         mounts.push(Mount {
             source,
             filesystem,
+            device,
             point_identity,
             root_identity,
             point,
@@ -384,6 +406,45 @@ impl VirtualFileSystem {
             root,
         });
         Ok(())
+    }
+
+    /// 摘下以 `root` 为根的挂载（Linux `do_umount`）。
+    ///
+    /// 1. `root` 必须是某个挂载的根；namespace 根返回 `Busy`，普通目录返回 `InvalidOperation`；
+    /// 2. 有子挂载返回 `Busy`；
+    /// 3. 挂载记录与调用者各持有一个 `root` 引用。打开文件、cwd、mmap 与任何更深的打开条目都
+    ///    经 parent 链持有 `root`，引用数超过 2 即返回 `Busy`。检查与摘除在 mounts 锁内完成，
+    ///    与 `enter_mount` 串行，因此不会有新访问在检查后进入。
+    ///
+    /// # Returns
+    ///
+    /// 被摘下的 filesystem；调用方负责写回 page cache 并调用 [`FileSystem::shutdown`]。
+    pub(crate) fn unmount(
+        &self,
+        root: &Arc<OpenedFile>,
+    ) -> Result<Arc<dyn FileSystem>, FileSystemError> {
+        let identity = Self::identity(&root.inode())?;
+        let namespace_root = self
+            .root_fs
+            .lock()
+            .as_ref()
+            .is_some_and(|mount| Arc::ptr_eq(&mount.root, root));
+        if namespace_root {
+            return Err(FileSystemError::Busy);
+        }
+        let mut mounts = self.mounts.lock();
+        let index = mounts
+            .iter()
+            .position(|mount| mount.root_identity == identity)
+            .ok_or(FileSystemError::InvalidOperation)?;
+        if mounts
+            .iter()
+            .any(|mount| mount.point_identity.0 == identity.0)
+            || Arc::strong_count(&mounts[index].root) > 2
+        {
+            return Err(FileSystemError::Busy);
+        }
+        Ok(mounts.remove(index).filesystem)
     }
 
     /// 取得 inode 所属 mounted filesystem 的最终 Linux statfs 快照。
@@ -431,46 +492,60 @@ impl VirtualFileSystem {
     ///
     /// mountpoint 反向解析失败或内存不足时返回明确文件系统错误。
     pub(crate) fn mount_table(&self) -> Result<Vec<u8>, FileSystemError> {
-        let root = self
-            .root_fs
-            .lock()
-            .as_ref()
-            .map(|mount| (mount.source, mount.filesystem.clone()))
-            .ok_or(FileSystemError::NotFound)?;
+        let root = {
+            let root = self.root_fs.lock();
+            let root = root.as_ref().ok_or(FileSystemError::NotFound)?;
+            (owned_bytes(&root.source)?, root.filesystem.clone())
+        };
         let mounts = {
             let mounted = self.mounts.lock();
             let mut snapshot = Vec::new();
             snapshot
                 .try_reserve_exact(mounted.len())
                 .map_err(|_| FileSystemError::OutOfMemory)?;
-            snapshot.extend(
-                mounted
-                    .iter()
-                    .map(|mount| (mount.source, mount.point.clone(), mount.filesystem.clone())),
-            );
+            for mount in mounted.iter() {
+                snapshot.push((
+                    owned_bytes(&mount.source)?,
+                    mount.point.clone(),
+                    mount.filesystem.clone(),
+                ));
+            }
             snapshot
         };
         let mut output = Vec::new();
-        write_mount_record(&mut output, root.0, b"/", &root.1.statistics()?)?;
+        write_mount_record(&mut output, &root.0, b"/", &root.1.statistics()?)?;
         for (source, point, filesystem) in mounts {
             let target = self.absolute_path(point)?;
-            write_mount_record(&mut output, source, &target, &filesystem.statistics()?)?;
+            write_mount_record(&mut output, &source, &target, &filesystem.statistics()?)?;
         }
         Ok(output)
     }
 
-    /// 将 persistent root filesystem 的已提交写入同步到 block device stable storage。
-    ///
-    /// # Returns
-    ///
-    /// flush 完成时成功。
+    /// 把 page cache 与全部已挂载文件系统的已提交写入同步到 stable storage（Linux `sync(2)`）。
     ///
     /// # Errors
     ///
-    /// 根文件系统未挂载或 block device flush 失败时返回明确文件系统错误。
+    /// 根文件系统未挂载、分配失败或任一文件系统 flush 失败时返回明确文件系统错误；其余文件系统
+    /// 仍会被同步。
     pub(crate) fn sync(&self) -> Result<(), FileSystemError> {
         super::sync_all()?;
-        self.root_inode()?.sync_storage()
+        let count = self.mounts.lock().len();
+        let mut roots = Vec::new();
+        roots
+            .try_reserve_exact(count + 1)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        roots.push(self.root_inode()?);
+        // 先在锁外预留，再在锁内只做不分配的复制；并发 mount 使数量增加时多出的挂载留给下一次 sync。
+        for mount in self.mounts.lock().iter().take(count) {
+            roots.push(mount.root.inode());
+        }
+        let mut result = Ok(());
+        for root in roots {
+            if let Err(error) = root.sync_storage() {
+                result = result.and(Err(error));
+            }
+        }
+        result
     }
 
     /// 从 root namespace 打开并保留标准 opened-entry identity。
@@ -529,6 +604,24 @@ impl VirtualFileSystem {
             None => self.root_opened()?,
         };
         self.resolve_from(start, path, false, identity)
+    }
+
+    /// 解析 pathname 但不跟随最终 symbolic link，保留最终目录项身份（`UMOUNT_NOFOLLOW`）。
+    ///
+    /// # Errors
+    ///
+    /// traversal 或资源失败时返回明确错误。
+    pub(crate) fn open_file_at_no_follow(
+        &self,
+        start: Option<Arc<OpenedFile>>,
+        path: &[u8],
+        identity: &AccessIdentity,
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
+        let start = match start {
+            Some(start) => start,
+            None => self.root_opened()?,
+        };
+        self.resolve_from(start, path, true, identity)
     }
 
     /// 解析 pathname 但保留最后一个 symbolic-link inode，供 Linux lstat 使用。
@@ -611,4 +704,14 @@ pub(crate) fn init() {
 
 pub(crate) fn vfs() -> &'static VirtualFileSystem {
     VFS_MANAGER.wait()
+}
+
+/// 复制一段 mount source 字节。
+fn owned_bytes(bytes: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    owned.extend_from_slice(bytes);
+    Ok(owned)
 }

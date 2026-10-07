@@ -12,6 +12,7 @@ extern crate alloc;
 
 mod arch;
 mod audio;
+mod cmdline;
 mod config;
 mod cpu;
 mod entry;
@@ -62,12 +63,39 @@ fn kernel_main(context: entry::BootContext) -> ! {
         cpu::boot_id()
     );
     memory::init();
+    let parameters = cmdline::parse(platform::kernel_command_line())
+        .unwrap_or_else(|error| panic!("invalid kernel command line: {error:?}"));
+    if let Some(level) = parameters.log_level {
+        log::apply_console_loglevel(level);
+    }
+    info!(
+        "kernel command line: {}",
+        core::str::from_utf8(platform::kernel_command_line()).unwrap_or("<non-utf8>")
+    );
+    // 只读根需要 remount 才能转为可写，尚未支持；明确拒绝而不是静默以可写挂载。
+    assert!(
+        !parameters.read_only_root,
+        "read-only root (ro) is not supported"
+    );
+    if let Some(console) = &parameters.console {
+        assert!(
+            console.as_slice() == platform::CONSOLE_NAME,
+            "console={} names no console (available: {})",
+            core::str::from_utf8(console).unwrap_or("<non-utf8>"),
+            core::str::from_utf8(platform::CONSOLE_NAME).unwrap_or("<non-utf8>")
+        );
+    }
     timer::init_rtc();
     fs::init_vfs();
     // scheduler topology 与全部 wait adapter（含 Pipe 唤醒出口与 VFS advisory-lock 通知）必须在
     // VFS 之后、任何会创建可等待对象的子系统之前安装。
     task::initialize();
     platform::initialize_devices();
+    let mut disk_index = 0;
+    while let Some(disk) = drivers::block_device(disk_index) {
+        fs::publish_block_device(disk).expect("block device publication failed");
+        disk_index += 1;
+    }
     // ALSA、DRM 与 SPICE port 领域当前各只绑定首个已发现 adapter（card0/pcmC0D0p/唯一 named
     // port）；其余同类 adapter 已注册但不发布节点。
     if let Some(output) = drivers::pcm_output(0) {
@@ -83,8 +111,14 @@ fn kernel_main(context: entry::BootContext) -> ! {
     fs::init_tty(Arc::try_new(PlatformConsole).expect("platform console allocation failed"))
         .expect("TTY initialization failed");
     socket::init();
-    mount_filesystems();
-    task::spawn_init(arch::trap::user_entry(), trap::trap_return);
+    mount_filesystems(&parameters);
+    task::spawn_init(
+        arch::trap::user_entry(),
+        trap::trap_return,
+        parameters.init.as_deref(),
+        &parameters.init_arguments,
+        &parameters.init_environment,
+    );
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);
     for target in cpu::possible().iter() {
@@ -100,51 +134,40 @@ fn kernel_main(context: entry::BootContext) -> ! {
     enter_scheduler()
 }
 
-fn mount_filesystems() {
-    let device =
-        drivers::block_device(0).expect("boot requires a block device for the root filesystem");
-    fs::mount_root(
-        device,
-        fs::KernelThreadSupport {
+fn mount_filesystems(parameters: &cmdline::KernelParameters) {
+    fs::install_mount_environment(fs::MountEnvironment {
+        threads: fs::KernelThreadSupport {
             spawn: task::spawn_kernel_thread,
             sleep_until: |deadline| {
                 task::sleep_until(deadline);
             },
         },
-    )
-    .unwrap_or_else(|error| panic!("root filesystem mount failed: {error:?}"));
-    info!("root filesystem mounted at /");
-    fs::vfs()
-        .mount_at(b"/dev", b"devfs", fs::DevFileSystem::instance())
-        .expect("failed to mount devfs at /dev");
-    info!("devfs mounted at /dev");
-    fs::vfs()
-        .mount_at(
-            b"/dev/pts",
-            b"devpts",
-            fs::DevPtsFileSystem::new().expect("failed to allocate devpts"),
+        proc_source: Arc::try_new(task::KernelProcSource).expect("proc source allocation failed"),
+        cpu_count: cpu::count(),
+    });
+    // 没有 `root=` 时以首块盘为根（Linux 由构建期 ROOT_DEV 给出缺省）。
+    let default_root;
+    let root = match &parameters.root {
+        Some(root) => root.as_slice(),
+        None => {
+            let disk = drivers::block_device(0)
+                .expect("boot requires a block device for the root filesystem");
+            let mut path = alloc::vec::Vec::new();
+            path.try_reserve_exact(b"/dev/".len() + disk.disk_name().len())
+                .expect("root path allocation failed");
+            path.extend_from_slice(b"/dev/");
+            path.extend_from_slice(disk.disk_name());
+            default_root = path;
+            default_root.as_slice()
+        }
+    };
+    fs::mount_root(root, parameters.root_filesystem_type.as_deref()).unwrap_or_else(|error| {
+        panic!(
+            "VFS: unable to mount root fs on {}: {error:?}",
+            core::str::from_utf8(root).unwrap_or("<non-utf8>")
         )
-        .expect("failed to mount devpts at /dev/pts");
-    info!("devpts mounted at /dev/pts");
-    fs::vfs()
-        .mount_at(
-            b"/proc",
-            b"proc",
-            fs::ProcFileSystem::new(
-                Arc::try_new(task::KernelProcSource).expect("proc source allocation failed"),
-            )
-            .expect("failed to allocate procfs"),
-        )
-        .expect("failed to mount procfs at /proc");
-    info!("procfs mounted at /proc");
-    fs::vfs()
-        .mount_at(
-            b"/sys",
-            b"sysfs",
-            fs::SysFileSystem::new(cpu::count()).expect("failed to allocate sysfs"),
-        )
-        .expect("failed to mount sysfs at /sys");
-    info!("sysfs mounted at /sys");
+    });
+    info!("root filesystem mounted at /, devtmpfs at /dev");
 }
 
 struct PlatformConsole;

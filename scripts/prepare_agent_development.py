@@ -25,7 +25,7 @@ from ext4_image import (
     recover_ext4_journal,
     run_debugfs,
 )
-from qemu_gate import boot
+from qemu_gate import boot, guest_inittab
 
 INSTALL_SCRIPT = ROOT / "scripts/fixtures/agent-development/install.sh"
 STAMP_PATH = "/usr/share/liteos/agent-development.json"
@@ -163,9 +163,7 @@ def _stage_installation(
         + "\n"
     )
     bootstrap_inittab = directory / "bootstrap.inittab"
-    bootstrap_inittab.write_text(
-        "::sysinit:/bin/sh /run/liteos-agent/install.sh\n"
-    )
+    bootstrap_inittab.write_text(guest_inittab("/bin/sh /run/liteos-agent/install.sh"))
 
     stale_files = [
         "/run/liteos-agent/install.sh",

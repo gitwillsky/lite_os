@@ -5,7 +5,6 @@ use super::{
     FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
 };
 
-const SYS_FILESYSTEM_ID: usize = 4;
 const SYSFS_MAGIC: u64 = 0x6265_6572;
 
 #[derive(Clone, Copy)]
@@ -52,13 +51,23 @@ impl SysNode {
 }
 
 struct SysInode {
+    filesystem_id: usize,
     cpu_count: usize,
     node: SysNode,
 }
 
 impl SysInode {
-    fn new(cpu_count: usize, node: SysNode) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self { cpu_count, node }).map_err(|_| FileSystemError::OutOfMemory)
+    fn new(
+        filesystem_id: usize,
+        cpu_count: usize,
+        node: SysNode,
+    ) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
+            filesystem_id,
+            cpu_count,
+            node,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     fn decimal(output: &mut [u8], prefix: &[u8], value: usize, suffix: &[u8]) -> usize {
@@ -173,13 +182,13 @@ impl SysInode {
 
 impl Inode for SysInode {
     fn filesystem_id(&self) -> usize {
-        SYS_FILESYSTEM_ID
+        self.filesystem_id
     }
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let kind = self.node.kind();
         Ok(InodeMetadata {
-            filesystem: SYS_FILESYSTEM_ID as u64,
+            filesystem: self.filesystem_id as u64,
             inode: self.node.inode(),
             kind,
             mode: if kind == InodeType::Directory {
@@ -294,7 +303,11 @@ impl Inode for SysInode {
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
-        Ok(Self::new(self.cpu_count, self.child(name)?)?)
+        Ok(Self::new(
+            self.filesystem_id,
+            self.cpu_count,
+            self.child(name)?,
+        )?)
     }
 
     fn create(
@@ -338,7 +351,7 @@ impl SysFileSystem {
     /// 独立 sysfs instance；不复制任何可变 online/hotplug 状态。
     pub(crate) fn new(cpu_count: usize) -> Result<Arc<Self>, FileSystemError> {
         assert_ne!(cpu_count, 0, "sysfs requires non-empty CPU topology");
-        let root = SysInode::new(cpu_count, SysNode::Root)?;
+        let root = SysInode::new(super::allocate_filesystem_id(), cpu_count, SysNode::Root)?;
         Arc::try_new(Self { root }).map_err(|_| FileSystemError::OutOfMemory)
     }
 }
@@ -358,7 +371,7 @@ impl FileSystem for SysFileSystem {
             blocks_available: 0,
             files: 0,
             files_free: 0,
-            fsid: [SYS_FILESYSTEM_ID as u32, 0],
+            fsid: [self.root.filesystem_id as u32, 0],
             name_length: 255,
             fragment_size: 4096,
             flags: 1,

@@ -26,8 +26,6 @@ use super::{
     FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType, OpenedFile, vfs,
 };
 
-const PROC_FILESYSTEM_ID: usize = 3;
-
 pub(super) struct ProcText(Vec<u8>);
 
 impl ProcText {
@@ -67,6 +65,9 @@ pub(crate) trait ProcSource: Send + Sync {
     ///
     /// user process context 返回 TGID；无 current task 返回 None。
     fn current_pid(&self) -> Option<usize>;
+
+    /// firmware 交付的 kernel command line（不含结尾换行），`/proc/cmdline` 的内容来源。
+    fn kernel_command_line(&self) -> &[u8];
 
     /// 按 TGID 从目标 MemorySet argument range 读取实时 argv bytes。
     ///
@@ -114,18 +115,38 @@ pub(crate) trait ProcSource: Send + Sync {
 }
 
 struct ProcInode {
+    filesystem_id: usize,
     source: Arc<dyn ProcSource>,
     node: ProcNode,
 }
 
 impl ProcInode {
-    fn new(source: Arc<dyn ProcSource>, node: ProcNode) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self { source, node }).map_err(|_| FileSystemError::OutOfMemory)
+    fn new(
+        filesystem_id: usize,
+        source: Arc<dyn ProcSource>,
+        node: ProcNode,
+    ) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
+            filesystem_id,
+            source,
+            node,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     fn file_contents(&self) -> Result<Vec<u8>, FileSystemError> {
         if matches!(self.node, ProcNode::Mounts) {
             return vfs().mount_table();
+        }
+        if matches!(self.node, ProcNode::Cmdline) {
+            let line = self.source.kernel_command_line();
+            let mut contents = Vec::new();
+            contents
+                .try_reserve_exact(line.len() + 1)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            contents.extend_from_slice(line);
+            contents.push(b'\n');
+            return Ok(contents);
         }
         if let ProcNode::ProcessCmdline(pid) = self.node {
             return self
@@ -152,7 +173,9 @@ impl ProcInode {
             ProcNode::Uptime => format_uptime(&snapshot),
             ProcNode::NetDev => format_network_devices(snapshot.network),
             ProcNode::NetRoute => format_network_routes(snapshot.network),
-            ProcNode::Mounts => unreachable!("mount table handled before task snapshot"),
+            ProcNode::Mounts | ProcNode::Cmdline => {
+                unreachable!("mount table and command line handled before task snapshot")
+            }
             ProcNode::ProcessStat(pid) => format_process_stat(find_process(&snapshot, pid)?),
             ProcNode::ProcessStatus(pid) => format_process_status(find_process(&snapshot, pid)?),
             ProcNode::ProcessComm(pid) => format_process_comm(find_process(&snapshot, pid)?),
@@ -198,7 +221,7 @@ impl ProcInode {
 
 impl Inode for ProcInode {
     fn filesystem_id(&self) -> usize {
-        PROC_FILESYSTEM_ID
+        self.filesystem_id
     }
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
@@ -209,7 +232,7 @@ impl Inode for ProcInode {
             _ => 0,
         };
         Ok(InodeMetadata {
-            filesystem: PROC_FILESYSTEM_ID as u64,
+            filesystem: self.filesystem_id as u64,
             inode: self.node.inode(),
             kind,
             mode: match kind {
@@ -358,6 +381,7 @@ impl Inode for ProcInode {
                     (4, InodeType::File, &b"loadavg"[..]),
                     (5, InodeType::File, &b"uptime"[..]),
                     (6, InodeType::File, &b"mounts"[..]),
+                    (13, InodeType::File, &b"cmdline"[..]),
                     (7, InodeType::Directory, &b"net"[..]),
                     (10, InodeType::SymLink, &b"self"[..]),
                 ] {
@@ -471,6 +495,7 @@ impl Inode for ProcInode {
                 b"loadavg" => ProcNode::LoadAvg,
                 b"uptime" => ProcNode::Uptime,
                 b"mounts" => ProcNode::Mounts,
+                b"cmdline" => ProcNode::Cmdline,
                 b"net" => ProcNode::NetDir,
                 b"self" => ProcNode::SelfLink,
                 _ => {
@@ -547,7 +572,7 @@ impl Inode for ProcInode {
             },
             _ => return Err(FileSystemError::NotDirectory),
         };
-        Ok(Self::new(self.source.clone(), node)?)
+        Ok(Self::new(self.filesystem_id, self.source.clone(), node)?)
     }
 
     fn create(
@@ -578,7 +603,7 @@ pub(crate) struct ProcFileSystem {
 
 impl ProcFileSystem {
     pub(crate) fn new(source: Arc<dyn ProcSource>) -> Result<Arc<Self>, FileSystemError> {
-        let root = ProcInode::new(source, ProcNode::Root)?;
+        let root = ProcInode::new(super::allocate_filesystem_id(), source, ProcNode::Root)?;
         Arc::try_new(Self { root }).map_err(|_| FileSystemError::OutOfMemory)
     }
 }
@@ -598,7 +623,7 @@ impl FileSystem for ProcFileSystem {
             blocks_available: 0,
             files: 0,
             files_free: 0,
-            fsid: [PROC_FILESYSTEM_ID as u32, 0],
+            fsid: [self.root.filesystem_id as u32, 0],
             name_length: 255,
             fragment_size: 4096,
             flags: 1,

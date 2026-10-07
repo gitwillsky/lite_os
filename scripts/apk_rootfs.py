@@ -11,7 +11,7 @@ from pathlib import Path
 from apk_cache import ALPINE_BRANCH, ALPINE_MIRROR, ApkBootstrapPaths, cached_apk_bootstrap
 from apk_package import ApkPackageMetadata, build_signed_apk, tamper_signed_apk_control
 from build_target import target_from_environment
-from qemu_gate import boot
+from qemu_gate import boot, guest_inittab
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
@@ -338,7 +338,7 @@ def _inject_package_bootstrap(
         "while :; do /bin/sleep 1; done\n"
     )
     bootstrap_inittab = workspace / "bootstrap.inittab"
-    bootstrap_inittab.write_text("::sysinit:/bin/sh /run/apk-bootstrap.sh\n")
+    bootstrap_inittab.write_text(guest_inittab("/bin/sh /run/apk-bootstrap.sh"))
     commands = workspace / "bootstrap.debugfs"
     commands.write_text(
         f"write {package} /run/{package.name}\n"

@@ -28,11 +28,25 @@
 - SBI mask、Sv39、CSR 与汇编都是 backend mechanism，不是通用 kernel contract。
 - RFENCE 使用每 hart 单槽 request/range/ack mailbox；全局 sender lock 串行发布，目标 hart 按 SBI `[start,size)` 逐页 fence 后 ack。whole-address-space 只使用规范定义的两个 sentinel。
 
-- 启动装配顺序：设备初始化 → `task::initialize`（processor topology 与 wait adapter）→
-  `fs::mount_root`（由 fs 选择根文件系统类型并创建其写回内核线程）→ `task::spawn_init`。composition
-  root 只注入 `KernelThreadSupport`，不依赖具体文件系统类型。
+- kernel command line 来自 DTB `/chosen/bootargs`（platform 复制保存，`/proc/cmdline` 原样回显）。
+  `cmdline::parse` 按 Linux `next_arg` 分词与引号规则取出内核参数：`init=`、`root=`（`/dev/<disk>` 或
+  十进制 `MAJ:MIN`）、`rootfstype=`（只接受 ext4）、`ro`/`rw`、`rootwait`、`console=name[,options]`（最后
+  一个生效）、`loglevel=`/`quiet`/`debug`；其余按 Linux `unknown_bootoption` 转交 init：`name=value` 进
+  环境（以 `HOME=/`、`TERM=linux` 开始，同名覆盖），裸词与 `--` 之后的词进 argv，带 `.` 的模块参数忽略，
+  argv/环境各最多 32 项。指定 `init=` 时只尝试它，失败即 panic；否则依次尝试 `/sbin/init`、`/etc/init`、
+  `/bin/init`、`/bin/sh`。
+- 启动装配顺序：设备初始化（逐个 `fs::publish_block_device`）→ `task::initialize`（processor topology 与
+  wait adapter）→ `fs::install_mount_environment` → `fs::mount_root`（由 fs 选择根文件系统类型、创建其
+  写回内核线程并挂载 devtmpfs）→ `task::spawn_init`。composition root 只注入 `MountEnvironment`
+  （内核线程能力、proc source、CPU 数），不依赖具体文件系统类型。
 
 ## Known limits
+
+- `root=` 只支持 `/dev/<disk>` 与 `MAJ:MIN`，没有 `PARTUUID=`/`UUID=`/`LABEL=`；缺省时以首块盘为根。
+  `ro` 需要 remount 才能转为可写，尚未支持，启动明确失败。`console=` 只能选平台唯一 console
+  （aarch64 `ttyAMA0`、riscv64 `ttyS0`），选项忽略；指向不存在的 console 时启动明确失败，而不是像
+  Linux 那样在没有 `/dev/console` 的情况下运行 init。`loglevel=` 映射到全局 severity threshold，
+  同时作用于 kmsg ring，N ≤ 3 按只输出 Error 处理。
 
 - 没有 QEMU `virt` 之外的 machine backend，也没有真实硬件启动声明。
 - 设备发现只覆盖当前 QEMU `virt` 已接入的 modern VirtIO 路径。DTB 解码由 verify-unit 以当前 host QEMU

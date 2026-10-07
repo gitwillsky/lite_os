@@ -40,4 +40,7 @@ Status: Active
   与 `syscall-support/filesystem-io.md`。
 - 步骤 4 落地：`drivers::registry` 统一设备类注册表、`PortDevice`/`EntropySource` seam、`CompletionSource`
   自报与按实例分配的 `IoDevice`。
-- 下一步：步骤 5（F3）。
+- 步骤 5 落地：`mount`/`umount2`、文件系统类型表与挂载环境、伪文件系统实例 id、块设备节点、内核线程退出、
+  ext4 shutdown、mmap pin；init 经 rcS 挂载 `/proc`、`/sys`、`/dev/pts`。
+- 步骤 6 落地：`cmdline` 解析 DTB `/chosen/bootargs`（`init=`、`root=`、`rootfstype=`、`console=`、`loglevel=` 等），其余参数转交 init；`/proc/cmdline`。
+- 下一步：步骤 7（F6/F7）。

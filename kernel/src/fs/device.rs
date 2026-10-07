@@ -11,6 +11,7 @@ use spin::Mutex;
 use syscall_abi::errno;
 
 use super::{AccessIdentity, FileSystemError};
+use crate::drivers::block::BlockDevice;
 use crate::{
     ipc::{Pipe, PipeDirection, PipeWaitCondition},
     memory::DeviceMappingSource,
@@ -280,13 +281,15 @@ pub(super) struct DeviceNode {
     /// 相对 `/dev` 的路径，例如 `input/event0`。
     pub(super) path: Vec<u8>,
     pub(super) number: DeviceNumber,
-    /// 包含 `S_IFCHR` 的完整 mode。
+    /// 包含 `S_IFCHR` 或 `S_IFBLK` 的完整 mode。
     pub(super) mode: u32,
 }
 
-/// 注册表：设备号区间的 driver、devfs 设备节点与节点路径隐含的目录。
+/// 注册表：设备号区间的 driver、块设备、devfs 设备节点与节点路径隐含的目录。
 struct Registry {
     drivers: Vec<DriverRange>,
+    /// 块设备号到 adapter；与字符设备号是独立命名空间（Linux `bdev` 与 `cdev`）。
+    blocks: Vec<(DeviceNumber, Arc<dyn BlockDevice>)>,
     devices: Vec<Arc<DeviceNode>>,
     /// 设备路径中出现过的全部目录（相对 `/dev`，不含根）；只追加。
     directories: Vec<Vec<u8>>,
@@ -296,6 +299,7 @@ struct Registry {
 // 以节点下标作为稳定 inode identity。缺失时 devfs、open 与 stat 只能各自硬编码设备种类。
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
     drivers: Vec::new(),
+    blocks: Vec::new(),
     devices: Vec::new(),
     directories: Vec::new(),
 });
@@ -357,6 +361,58 @@ pub(crate) fn register_node(
     permissions: u32,
 ) -> Result<(), FileSystemError> {
     const S_IFCHR: u32 = 0o020000;
+    publish_node(path, number, S_IFCHR | (permissions & 0o7777), None)
+}
+
+/// 发布一个块设备（Linux `add_disk`）：登记设备号到 adapter 的映射，并在 devfs 发布 `S_IFBLK`
+/// 节点。
+///
+/// # Errors
+///
+/// 路径或设备号已注册返回 `AlreadyExists`；分配失败返回 `OutOfMemory`。
+pub(super) fn register_block(
+    path: &[u8],
+    number: DeviceNumber,
+    permissions: u32,
+    device: Arc<dyn BlockDevice>,
+) -> Result<(), FileSystemError> {
+    const S_IFBLK: u32 = 0o060000;
+    publish_node(path, number, S_IFBLK | (permissions & 0o7777), Some(device))
+}
+
+/// 已发布的块设备数量。
+pub(super) fn block_count() -> usize {
+    REGISTRY.lock().blocks.len()
+}
+
+/// 按 devfs 路径（例如 `vda`）查找块设备号（Linux `name_to_dev_t`）。
+pub(super) fn block_number(path: &[u8]) -> Option<DeviceNumber> {
+    const S_IFMT: u32 = 0o170000;
+    const S_IFBLK: u32 = 0o060000;
+    REGISTRY
+        .lock()
+        .devices
+        .iter()
+        .find(|node| node.path == path && node.mode & S_IFMT == S_IFBLK)
+        .map(|node| node.number)
+}
+
+/// 按块设备号取得 adapter（Linux `blkdev_get_no_open`）。
+pub(super) fn block_device(number: DeviceNumber) -> Option<Arc<dyn BlockDevice>> {
+    REGISTRY
+        .lock()
+        .blocks
+        .iter()
+        .find(|(registered, _)| *registered == number)
+        .map(|(_, device)| device.clone())
+}
+
+fn publish_node(
+    path: &[u8],
+    number: DeviceNumber,
+    mode: u32,
+    block: Option<Arc<dyn BlockDevice>>,
+) -> Result<(), FileSystemError> {
     let mut owned = Vec::new();
     owned
         .try_reserve_exact(path.len())
@@ -365,7 +421,7 @@ pub(crate) fn register_node(
     let node = Arc::try_new(DeviceNode {
         path: owned,
         number,
-        mode: S_IFCHR | (permissions & 0o7777),
+        mode,
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
     let mut registry = REGISTRY.lock();
@@ -373,6 +429,11 @@ pub(crate) fn register_node(
         .devices
         .iter()
         .any(|existing| existing.path == path)
+        || block.is_some()
+            && registry
+                .blocks
+                .iter()
+                .any(|(registered, _)| *registered == number)
     {
         return Err(FileSystemError::AlreadyExists);
     }
@@ -406,9 +467,16 @@ pub(crate) fn register_node(
         .devices
         .try_reserve(1)
         .map_err(|_| FileSystemError::OutOfMemory)?;
+    registry
+        .blocks
+        .try_reserve(usize::from(block.is_some()))
+        .map_err(|_| FileSystemError::OutOfMemory)?;
     // 2. 发布不再分配。
     registry.directories.extend(missing);
     registry.devices.push(node);
+    if let Some(device) = block {
+        registry.blocks.push((number, device));
+    }
     Ok(())
 }
 

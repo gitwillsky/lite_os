@@ -93,6 +93,10 @@ impl CountingImage {
 }
 
 impl BlockDevice for CountingImage {
+    fn disk_name(&self) -> &[u8] {
+        b"vda"
+    }
+
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
         if buf.len() != BLOCK_SIZE {
             return Err(BlockError::InvalidBlock);

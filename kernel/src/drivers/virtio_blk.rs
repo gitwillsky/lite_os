@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 #[path = "virtio_blk/policy.rs"]
@@ -59,9 +60,49 @@ pub(crate) struct VirtIOBlockDevice {
     slots: Box<[RequestSlot]>,
     capacity: u64,
     supports_flush: bool,
+    /// Linux virtio-blk 命名的磁盘名（`vda`、`vdb`、…、`vdaa`）。
+    name: DiskName,
     completion_irq: VirtIOCompletionIrq,
     /// scheduler wait key 中区分本 adapter 实例的 identity。
     io_device: IoDevice,
+}
+
+/// virtio-blk 磁盘名：`vd` 后接 Linux `virtblk_name_format` 的 bijective base-26 后缀。
+struct DiskName {
+    bytes: [u8; 16],
+    length: usize,
+}
+
+// OWNER: 下一个 virtio-blk 磁盘 index；只递增，并发构造各取不同名称。缺失时两块盘可能同名，
+// devfs 节点与 `root=` 解析无法区分。
+static NEXT_DISK_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+impl DiskName {
+    fn allocate() -> Self {
+        Self::format(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// 0→`vda`、25→`vdz`、26→`vdaa`（与 Linux 相同）。
+    fn format(index: usize) -> Self {
+        let mut suffix = [0u8; 13];
+        let mut length = 0;
+        let mut value = index + 1;
+        while value != 0 {
+            value -= 1;
+            suffix[length] = b'a' + (value % 26) as u8;
+            length += 1;
+            value /= 26;
+        }
+        let mut bytes = [0u8; 16];
+        bytes[..2].copy_from_slice(b"vd");
+        for offset in 0..length {
+            bytes[2 + offset] = suffix[length - 1 - offset];
+        }
+        Self {
+            bytes,
+            length: 2 + length,
+        }
+    }
 }
 
 impl VirtIOBlockDevice {
@@ -133,6 +174,7 @@ impl VirtIOBlockDevice {
             slots: slots.into_boxed_slice(),
             capacity,
             supports_flush: driver_features & VIRTIO_BLK_F_FLUSH != 0,
+            name: DiskName::allocate(),
             completion_irq: VirtIOCompletionIrq::new(),
             io_device,
         })
@@ -462,6 +504,10 @@ impl VirtIOBlockDevice {
 }
 
 impl BlockDevice for VirtIOBlockDevice {
+    fn disk_name(&self) -> &[u8] {
+        &self.name.bytes[..self.name.length]
+    }
+
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
         self.validate_block(block_id, buf.len())?;
         self.execute(RequestOperation::Read, block_id, None, Some(buf))?;

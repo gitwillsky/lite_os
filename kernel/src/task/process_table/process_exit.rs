@@ -302,6 +302,47 @@ fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
     status
 }
 
+/// 终止主体已返回的当前内核线程。
+///
+/// 内核线程不在 process graph 中，没有 exit status 或 parent：只撤销调度 ownership、交给
+/// deferred reap 并切到 idle。主体持有的资源已随其返回释放。
+pub(in crate::task) fn exit_current_kernel_thread() -> ! {
+    // 内核线程运行时开着调度中断；撤销 current 后、切换前被抢占会让 scheduler 观察到无 owner 的
+    // Running task。退出 context 永不恢复，因此中断状态无需还原。
+    let _masked = crate::arch::interrupt::disable_local();
+    let (task_cx_ptr, idle_task_cx_ptr) = {
+        let task = take_current_task().expect("exiting kernel thread lost current ownership");
+        assert!(
+            task.is_kernel_thread(),
+            "user task took the kernel-thread exit path"
+        );
+        task.scheduling.policy.lock().finish_runtime(get_time_us());
+        {
+            let mut scheduling = task.scheduling.state.lock();
+            assert!(
+                matches!(scheduling.run_state(), RunState::Running { .. }),
+                "only current running kernel thread can exit"
+            );
+            assert!(
+                scheduling.wait.is_none(),
+                "running kernel thread cannot retain wait membership"
+            );
+            scheduling.replace_non_ready_state(RunState::Exited);
+        }
+        let idle = with_current_processor(Processor::idle_context_ptr);
+        let context = {
+            let mut kernel_cx = task.kernel_context().lock();
+            &mut *kernel_cx as *mut KernelContext
+        };
+        crate::task::processor::defer_task_reap(task);
+        (context, idle)
+    };
+    // SAFETY: 调度 owner 已移交 deferred-reap slot；两个 context 由本 CPU 独占，本 frame 不再持有
+    // 指向退出 task 的 Arc。
+    unsafe { crate::arch::context::switch_kernel_context(task_cx_ptr, idle_task_cx_ptr) };
+    panic!("exited kernel thread context resumed")
+}
+
 fn exit_current(requested: ProcessExitStatus) -> ! {
     let (kernel_context, idle_context) = prepare_current_exit(requested);
     // SAFETY: prepare_current_exit 已把退出 task 的唯一调度 owner 移交 deferred-reap slot；

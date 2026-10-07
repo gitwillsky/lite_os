@@ -335,7 +335,7 @@ fn normalize_arguments(
     Ok(())
 }
 
-fn argument_cost(argument: &[u8]) -> Result<usize, ProgramLoadError> {
+pub(super) fn argument_cost(argument: &[u8]) -> Result<usize, ProgramLoadError> {
     core::mem::size_of::<usize>()
         .checked_add(argument.len())
         .and_then(|bytes| bytes.checked_add(1))

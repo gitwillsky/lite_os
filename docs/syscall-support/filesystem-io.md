@@ -16,6 +16,8 @@
 | 36 | `symlinkat` | Complete | ext4 fast/slow symlink |
 | 37 | `linkat` | Partial | hardlink 与 link-count limit；部分 flags 未开放 |
 | 38 | `renameat` | Complete | 普通原子移动与替换 |
+| 39 | `umount2` | Partial | 挂载根卸载、子挂载/打开文件/cwd/mmap 判忙 `EBUSY`、page cache 写回与 ext4 写回线程停止；`MNT_FORCE` 等同普通卸载，`MNT_DETACH`/`MNT_EXPIRE` 返回 `EINVAL` |
+| 40 | `mount` | Partial | 新挂载 `ext4`（source 为块设备，`lookup_bdev`）、`proc`、`sysfs`、`devpts`、`devtmpfs`；只接受 `MS_SILENT`，不接受挂载选项；remount/bind/move、挂载属性与同一目录堆叠挂载返回 `EINVAL`/`EBUSY` |
 | 43 | `statfs` | Complete | 已挂载 filesystem projection |
 | 44 | `fstatfs` | Complete | OFD-backed filesystem projection |
 | 46 | `ftruncate` | Complete | regular file/memfd、page cache 与 mapping invalidation；memfd seal 精确拒绝 grow/shrink |
@@ -56,6 +58,9 @@
 ## 已知缺口
 
 没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring 或完整 block I/O priority enforcement。
+
+块设备节点 `/dev/vdX`（`S_IFBLK`，major 254，每盘 16 个 minor）只作为 `mount` 的 source 与
+`stat`/`getdents` 对象；以 `open` 做原始块 I/O 返回 `ENXIO`，分区尚未支持。
 
 字符设备读写的范围缩减：`/dev/kmsg` 无新 record 时不阻塞而返回 `EAGAIN`，写入（printk 注入）返回
 `EOPNOTSUPP`；`/dev/random`/`/dev/urandom` 写入（混入 entropy pool）返回 `EOPNOTSUPP`；

@@ -160,7 +160,7 @@ pub(crate) fn sys_mmap(
             {
                 return -errno::EACCES;
             }
-            let mapping = match crate::fs::mapping(inode.clone()) {
+            let mapping = match crate::fs::mapping(inode.clone(), ofd.opened_ref()) {
                 Ok(mapping) => mapping,
                 Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
                 Err(_) => return -errno::EIO,

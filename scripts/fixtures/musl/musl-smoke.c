@@ -137,7 +137,10 @@ int main(int argc, char **argv, char **envp)
 	volatile long double complex_unit = 1.0L;
 	long double _Complex complex_product;
 
-	if (argc != 1 || !argv || !argv[0] || !envp || envp[0]) return 1;
+	/* 内核按 Linux `envp_init` 以 HOME=/、TERM=linux 启动 init，且没有其他 command line 变量。 */
+	if (argc != 1 || !argv || !argv[0] || !envp || !envp[0] || !envp[1] || envp[2]
+	    || strcmp(envp[0], "HOME=/") != 0 || strcmp(envp[1], "TERM=linux") != 0)
+		return 1;
 	if (sysconf(_SC_PAGESIZE) != 4096 || getpid() <= 0) return 2;
 	number = strtod("1.5", &number_end);
 	complex_product = CMPLXL(complex_real, complex_imaginary) * CMPLXL(complex_unit, 0.0L);

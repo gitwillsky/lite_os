@@ -192,8 +192,8 @@ struct ExecutionContext {
     kernel_cx: Mutex<KernelContext>,
 }
 
-/// 内核线程主体；首次调度时由 `run_kernel_thread` 取走并运行一次。
-pub(crate) type KernelThreadBody = alloc::boxed::Box<dyn FnOnce() -> ! + Send>;
+/// 内核线程主体；首次调度时由 `run_kernel_thread` 取走并运行一次，返回即终止该线程。
+pub(crate) type KernelThreadBody = alloc::boxed::Box<dyn FnOnce() + Send>;
 
 /// 只在内核态运行、没有用户地址空间与 Process 的调度实体。
 struct KernelThread {
@@ -322,14 +322,19 @@ impl TaskControlBlock {
         pid: ProcessId,
         kernel_trap_handler: crate::arch::trap::UserTrapEntry,
         kernel_trap_return: crate::arch::context::KernelResume,
+        environment: &[Vec<u8>],
     ) -> Result<Self, ElfLoadError> {
         let resource_limits = ResourceLimits::defaults();
         let cpu_limit_active = resource_limits.cpu_limit_active();
         let stack_limit = resource_limits.get(RLIMIT_STACK).unwrap().soft;
         let address_space_limit = resource_limits.get(RLIMIT_AS).unwrap().soft;
         let data_limit = resource_limits.get(RLIMIT_DATA).unwrap().soft;
-        let (memory_set, user_sp, entry_point) =
-            loaded.build_address_space(&[], stack_limit, address_space_limit, data_limit)?;
+        let (memory_set, user_sp, entry_point) = loaded.build_address_space(
+            environment,
+            stack_limit,
+            address_space_limit,
+            data_limit,
+        )?;
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let context_binding =

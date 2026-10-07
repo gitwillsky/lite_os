@@ -154,3 +154,11 @@ pub(crate) fn synchronize_instruction_cache(
     crate::arch::instruction::broadcast_instruction_cache();
     Ok(())
 }
+
+/// firmware 交付的 kernel command line（DTB `/chosen/bootargs`）。
+pub(crate) fn kernel_command_line() -> &'static [u8] {
+    &discovery::info().bootargs
+}
+
+/// 平台 console 的 Linux 设备名，供 `console=` 匹配。
+pub(crate) const CONSOLE_NAME: &[u8] = b"ttyAMA0";

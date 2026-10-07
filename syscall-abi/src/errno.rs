@@ -28,6 +28,8 @@ pub const ENOMEM: isize = 12;
 pub const EACCES: isize = 13;
 /// 无效用户空间地址。
 pub const EFAULT: isize = 14;
+/// `mount(2)` 的 source 不是块设备。
+pub const ENOTBLK: isize = 15;
 /// 目标是 live mount root/mountpoint 等正在使用的 namespace object。
 pub const EBUSY: isize = 16;
 pub const EEXIST: isize = 17;

@@ -100,7 +100,7 @@ fn bootstrap_wait_factory_ordered(sources: &[SourceFile]) -> bool {
     else {
         return false;
     };
-    let Some(load) = source.text.find("let loaded = load_executable(") else {
+    let Some(load) = source.text.find("fn load_init(") else {
         return false;
     };
     topology < factory && factory < load
