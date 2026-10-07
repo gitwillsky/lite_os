@@ -407,6 +407,7 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
     """串行运行全部 QEMU runtime gate；并发由契约明确禁止。"""
     commands = [
         ["verify_boot.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_shutdown.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_musl.py"],
         ["verify_rust_std.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_busybox.py", "--image", target_paths(environment)["rootfs"]],
@@ -452,6 +453,11 @@ def verify_runtime_frame_timing(environment: Mapping[str, str] | None = None) ->
 def verify_runtime_musl(environment: Mapping[str, str] | None = None) -> None:
     """执行 musl runtime gate，不隐式重建 rootfs。"""
     run(python_script("verify_musl.py"), environment=environment)
+
+
+def verify_runtime_shutdown(environment: Mapping[str, str] | None = None) -> None:
+    """执行 make run topology 的 BusyBox halt/poweroff/reboot，不隐式重建 rootfs。"""
+    run(python_script("verify_shutdown.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
 def verify_runtime_rust_std(environment: Mapping[str, str] | None = None) -> None:
@@ -658,6 +664,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-architecture-release": verify_architecture_release,
         "verify-runtime-gates": verify_runtime_gates,
         "verify-runtime-boot": verify_runtime_boot,
+        "verify-runtime-shutdown": verify_runtime_shutdown,
         "verify-runtime-audio": verify_runtime_audio,
         "verify-runtime-frame-timing": verify_runtime_frame_timing,
         "verify-runtime-musl": verify_runtime_musl,

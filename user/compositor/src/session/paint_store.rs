@@ -157,11 +157,7 @@ impl PaintStore {
 
     /// Publishes one fully validated display list only after all texture
     /// references resolve to immutable resources of the required format.
-    pub(super) fn commit_list(
-        &mut self,
-        owner: Owner,
-        payload: Vec<u8>,
-    ) -> io::Result<(u64, u64)> {
+    pub(super) fn commit_list(&mut self, owner: Owner, payload: Vec<u8>) -> io::Result<(u64, u64)> {
         let commit = DisplayListCommit::parse(&payload)
             .ok_or_else(|| invalid("invalid GPU display list"))?;
         if self
@@ -316,9 +312,7 @@ mod tests {
             .expect("current list discarded");
         assert!(store.list(Owner::App(7)).is_none());
         assert!(
-            store
-                .commit_list(Owner::App(7), display_list(8))
-                .is_err(),
+            store.commit_list(Owner::App(7), display_list(8)).is_err(),
             "discard must not reopen lower revisions"
         );
     }

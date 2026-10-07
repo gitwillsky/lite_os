@@ -44,7 +44,7 @@ WORKFLOW := $(PYTHON) scripts/workflow.py
 	run-gdb clean clean-musl clean-busybox build verify verify-fast \
 	verify-runtime verify-riscv64-secondary verify-unit \
 	verify-architecture-benchmark verify-architecture-release \
-	verify-runtime-gates verify-runtime-boot verify-runtime-audio \
+	verify-runtime-gates verify-runtime-boot verify-runtime-shutdown verify-runtime-audio \
 	verify-runtime-frame-timing verify-runtime-musl verify-runtime-rust-std \
 	verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std \
 	verify-busybox verify-apk-apps gdb addr2line
@@ -55,7 +55,7 @@ run-agent-development build-apk-apps regen-font regen-ui-font regen-icon-font ru
 run-gdb clean clean-musl clean-busybox build verify verify-fast verify-runtime \
 verify-riscv64-secondary verify-unit verify-architecture-benchmark \
 verify-architecture-release verify-runtime-gates verify-runtime-boot \
-verify-runtime-audio verify-runtime-frame-timing verify-runtime-musl \
+verify-runtime-shutdown verify-runtime-audio verify-runtime-frame-timing verify-runtime-musl \
 verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps \
 verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line:
 	$(WORKFLOW) $@

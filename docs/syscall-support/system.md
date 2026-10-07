@@ -9,6 +9,9 @@
 | 258 | `riscv_hwprobe` | Partial | value query、logical CPU mask 与 conservative capability |
 | 278 | `getrandom` | Complete | RANDOM/NONBLOCK/INSECURE flags 与 initialized hardware entropy façade |
 
+`reboot` 按 Linux `int magic1/int magic2/unsigned int cmd` 解码低 32 位，接受 syscall register
+中的零扩展与符号扩展；`RESTART2` 的用户 pointer 仍保留完整 64 位。
+
 ## 已知缺口
 
 `riscv_hwprobe` 的 WHICH_CPUS mode、完整 kernel accounting、hibernate/kexec 与非 RISC-V capability query backend 尚未开放。

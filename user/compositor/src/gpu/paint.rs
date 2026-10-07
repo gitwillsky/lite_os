@@ -489,8 +489,7 @@ impl GpuRenderer {
                             })
                             .collect::<Vec<_>>();
                         self.render(&scratch, &glyph_layers)?;
-                        let gaussian =
-                            self.prepare_gaussian_blur(&scratch, blur_bounds, blur)?;
+                        let gaussian = self.prepare_gaussian_blur(&scratch, blur_bounds, blur)?;
                         self.render_layers(
                             target,
                             &[TextureLayer {
@@ -540,18 +539,10 @@ impl GpuRenderer {
                         continue;
                     };
                     if let Some(owner) = cache_owner {
-                        if let Some(texture) = self.cached_backdrop(
-                            owner,
-                            command_slot,
-                            command_prefix,
-                            rect,
-                        ) {
-                            layers.push(cached_backdrop_layer(
-                                texture,
-                                &clip_stack,
-                                rect,
-                                radii,
-                            )?);
+                        if let Some(texture) =
+                            self.cached_backdrop(owner, command_slot, command_prefix, rect)
+                        {
+                            layers.push(cached_backdrop_layer(texture, &clip_stack, rect, radii)?);
                             continue;
                         }
                     }
@@ -588,23 +579,11 @@ impl GpuRenderer {
                             command_slot,
                             command_prefix,
                         )?;
-                        layers.push(cached_backdrop_layer(
-                            texture,
-                            &clip_stack,
-                            rect,
-                            radii,
-                        )?);
+                        layers.push(cached_backdrop_layer(texture, &clip_stack, rect, radii)?);
                     } else {
                         let scratch =
                             self.snapshot_backdrop_region(target, backdrop, snapshot_rect)?;
-                        self.draw_backdrop(
-                            target,
-                            &scratch,
-                            &clip_stack,
-                            rect,
-                            radii,
-                            radius,
-                        )?;
+                        self.draw_backdrop(target, &scratch, &clip_stack, rect, radii, radius)?;
                         target_initialized = true;
                     }
                 }

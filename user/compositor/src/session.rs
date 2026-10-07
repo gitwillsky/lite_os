@@ -263,23 +263,26 @@ impl Session {
         let (revision, configuration_serial) = self.paint.commit_list(owner, payload)?;
         let current_serial = match owner {
             Owner::Desktop => self.output_serial,
-            Owner::App(surface_id) => self
-                .apps
-                .get(&surface_id)
-                .and_then(|app| app.configure)
-                .ok_or_else(|| invalid("app display list has no configure"))?
-                .serial,
+            Owner::App(surface_id) => {
+                self.apps
+                    .get(&surface_id)
+                    .and_then(|app| app.configure)
+                    .ok_or_else(|| invalid("app display list has no configure"))?
+                    .serial
+            }
         };
         match classify_paint_configuration(configuration_serial, current_serial)? {
             PaintConfiguration::Current => self.queue_paint(owner),
             PaintConfiguration::Superseded => {
                 let stream = match owner {
                     Owner::Desktop => self.desktop_stream()?,
-                    Owner::App(surface_id) => &self
-                        .apps
-                        .get(&surface_id)
-                        .ok_or_else(|| invalid("app disappeared before paint discard"))?
-                        .stream,
+                    Owner::App(surface_id) => {
+                        &self
+                            .apps
+                            .get(&surface_id)
+                            .ok_or_else(|| invalid("app disappeared before paint discard"))?
+                            .stream
+                    }
                 };
                 send_discarded(stream, revision)?;
                 self.paint.discard_list(owner, revision)?;
@@ -776,7 +779,8 @@ impl Session {
         // Arm the enforcement deadline on the first close request only, so a
         // repeated request (the desktop re-committing a close-in-progress) can
         // never keep pushing the deadline out and defeat the timeout.
-        app.close_deadline.get_or_insert_with(|| Instant::now() + CLOSE_TIMEOUT);
+        app.close_deadline
+            .get_or_insert_with(|| Instant::now() + CLOSE_TIMEOUT);
         let mut bytes = [0u8; 24];
         let message = CloseRequest { surface_id }
             .encode(&mut bytes)
@@ -788,7 +792,10 @@ impl Session {
     /// poll wait is bounded by this so a wedged app that ignores `CloseRequest`
     /// is force-removed rather than leaving its window stuck open forever.
     fn next_close_deadline(&self) -> Option<Instant> {
-        self.apps.values().filter_map(|app| app.close_deadline).min()
+        self.apps
+            .values()
+            .filter_map(|app| app.close_deadline)
+            .min()
     }
 
     /// Force-removes every app whose close-enforcement deadline has passed.
@@ -942,16 +949,11 @@ fn connection_closed(events: PollEvents) -> bool {
     events.contains(PollEvents::HANGUP) || events.contains(PollEvents::ERROR)
 }
 
-fn classify_paint_configuration(
-    submitted: u64,
-    current: u64,
-) -> io::Result<PaintConfiguration> {
+fn classify_paint_configuration(submitted: u64, current: u64) -> io::Result<PaintConfiguration> {
     match submitted.cmp(&current) {
         std::cmp::Ordering::Equal => Ok(PaintConfiguration::Current),
         std::cmp::Ordering::Less => Ok(PaintConfiguration::Superseded),
-        std::cmp::Ordering::Greater => {
-            Err(invalid("display list names an unissued configuration"))
-        }
+        std::cmp::Ordering::Greater => Err(invalid("display list names an unissued configuration")),
     }
 }
 

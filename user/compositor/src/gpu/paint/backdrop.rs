@@ -223,14 +223,9 @@ impl GpuRenderer {
             .ok_or_else(|| invalid("retained backdrop clip depth invalid"))?;
         let visible = clipped_rect(stable_clips, rect, source.width(), source.height())
             .ok_or_else(|| invalid("visible backdrop cache unexpectedly empty"))?;
-        let source_region = backdrop_snapshot_rect(
-            stable_clips,
-            rect,
-            radius,
-            source.width(),
-            source.height(),
-        )
-        .ok_or_else(|| invalid("backdrop cache source unexpectedly empty"))?;
+        let source_region =
+            backdrop_snapshot_rect(stable_clips, rect, radius, source.width(), source.height())
+                .ok_or_else(|| invalid("backdrop cache source unexpectedly empty"))?;
         let blur = self.prepare_gaussian_blur(source, source_region, radius)?;
         let local = Rect {
             x: visible.x - rect.x,
@@ -307,14 +302,9 @@ impl GpuRenderer {
             height: target.height(),
         };
         let masks = shape_masks(clips, rect, radii)?;
-        let source_region = backdrop_snapshot_rect(
-            clips,
-            rect,
-            radius,
-            texture.width(),
-            texture.height(),
-        )
-        .ok_or_else(|| invalid("visible backdrop source unexpectedly empty"))?;
+        let source_region =
+            backdrop_snapshot_rect(clips, rect, radius, texture.width(), texture.height())
+                .ok_or_else(|| invalid("visible backdrop source unexpectedly empty"))?;
         let blur = self.prepare_gaussian_blur(texture, source_region, radius)?;
         self.render_layers(
             target,

@@ -98,13 +98,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 cache_owner,
                 |texture_id| session.paint_texture(owner, texture_id),
             )?;
-            session.publish_paint(
-                owner,
-                target,
-                revision,
-                configuration_serial,
-                damage,
-            )?;
+            session.publish_paint(owner, target, revision, configuration_serial, damage)?;
         }
         // A move underlay is needed only after the desktop authorizes an exact
         // pointer-down. Eagerly rendering one full-output texture per window on

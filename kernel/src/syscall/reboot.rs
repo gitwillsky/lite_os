@@ -16,14 +16,19 @@ use crate::{
 ///
 /// reset 成功不返回；CAD 未支持返回 EOPNOTSUPP；非法参数或 platform 错误返回负 errno。
 pub(crate) fn sys_reboot(magic: usize, magic2: usize, command: usize, argument: usize) -> isize {
-    const MAGIC1: usize = 0xfee1_dead;
-    const MAGIC2: [usize; 4] = [0x2812_1969, 0x0512_1996, 0x1604_1998, 0x2011_2000];
-    const CAD_OFF: usize = 0;
-    const CAD_ON: usize = 0x89ab_cdef;
-    const RESTART: usize = 0x0123_4567;
-    const RESTART2: usize = 0xa1b2_c3d4;
-    const HALT: usize = 0xcdef_0123;
-    const POWER_OFF: usize = 0x4321_fedc;
+    // Linux reboot 的 magic 是 int、cmd 是 unsigned int；musl reboot(int) 会把
+    // RB_HALT_SYSTEM 符号扩展到 XLEN。缺少截断会返回 EINVAL，BusyBox init 随后退出。
+    let magic = magic as u32;
+    let magic2 = magic2 as u32;
+    let command = command as u32;
+    const MAGIC1: u32 = 0xfee1_dead;
+    const MAGIC2: [u32; 4] = [0x2812_1969, 0x0512_1996, 0x1604_1998, 0x2011_2000];
+    const CAD_OFF: u32 = 0;
+    const CAD_ON: u32 = 0x89ab_cdef;
+    const RESTART: u32 = 0x0123_4567;
+    const RESTART2: u32 = 0xa1b2_c3d4;
+    const HALT: u32 = 0xcdef_0123;
+    const POWER_OFF: u32 = 0x4321_fedc;
     if magic != MAGIC1 || !MAGIC2.contains(&magic2) {
         return -errno::EINVAL;
     }

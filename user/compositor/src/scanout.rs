@@ -98,7 +98,10 @@ impl Scanout {
     /// Reports whether the platform publishes usable KMS topology and VirGL2.
     pub fn available() -> bool {
         DrmDevice::open("/dev/dri/card0")
-            .and_then(|device| device.query_topology())
+            .and_then(|device| {
+                device.query_topology()?;
+                device.validate_virgl2()
+            })
             .is_ok()
     }
 

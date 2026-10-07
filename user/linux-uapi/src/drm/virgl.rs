@@ -464,13 +464,16 @@ impl VirglResource {
 }
 
 impl DrmDevice {
-    /// Initializes the single compositor VirGL2 context on this DRM OFD.
-    pub fn initialize_virgl(&self, debug_name: &str) -> io::Result<VirglContext> {
-        let name =
-            CString::new(debug_name).map_err(|_| invalid_input("VirGL debug name contains NUL"))?;
-        if name.as_bytes().len() > 64 {
-            return Err(invalid_input("VirGL debug name exceeds 64 bytes"));
-        }
+    /// Checks the DRM 3D feature and VirGL2 capset required by the compositor without creating a context.
+    ///
+    /// # Returns
+    ///
+    /// Unit when both capabilities are available.
+    ///
+    /// # Errors
+    ///
+    /// Returns Unsupported for a 2D-only device or missing VirGL2, or the capability-query I/O error.
+    pub fn validate_virgl2(&self) -> io::Result<()> {
         if self.get_virgl_param(1)? == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -484,6 +487,17 @@ impl DrmDevice {
                 "DRM device does not expose VirGL2",
             ));
         }
+        Ok(())
+    }
+
+    /// Initializes the single compositor VirGL2 context on this DRM OFD.
+    pub fn initialize_virgl(&self, debug_name: &str) -> io::Result<VirglContext> {
+        let name =
+            CString::new(debug_name).map_err(|_| invalid_input("VirGL debug name contains NUL"))?;
+        if name.as_bytes().len() > 64 {
+            return Err(invalid_input("VirGL debug name exceeds 64 bytes"));
+        }
+        self.validate_virgl2()?;
         let mut capabilities = vec![0; CAPSET_BYTES];
         let mut caps = raw::VirtGpuGetCaps {
             capset_id: CAPSET_VIRGL2,

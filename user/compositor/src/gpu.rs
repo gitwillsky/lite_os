@@ -8,11 +8,11 @@ use std::{cell::RefCell, io, rc::Rc};
 use display_proto::{
     ClipMask, ImageRepeat, MAX_DISPLAY_STACK_DEPTH, MAX_NODE_CLIP_MASKS, Rect, TextureRect,
 };
-use shader::{VERTEX_SHADER_SOURCE, fragment_shader};
 use linux_uapi::drm::{
     CommandEncoder, ObjectKind, SamplerFilter, SamplerWrap, ShaderStage, VirglContext,
     VirglResource,
 };
+use shader::{VERTEX_SHADER_SOURCE, fragment_shader};
 
 const VERTEX_ELEMENTS: u32 = 1;
 const VERTEX_SHADER: u32 = 2;
@@ -366,11 +366,7 @@ impl GpuRenderer {
                     target.height(),
                 ),
             );
-            let active_clip_count = rounded_clip_count(
-                layer.clip_masks,
-                layer.clip_offset,
-                bounds,
-            );
+            let active_clip_count = rounded_clip_count(layer.clip_masks, layer.clip_offset, bounds);
             let fragment_shader = if active_clip_count == 0 {
                 FLAT_FRAGMENT_SHADER
             } else {
@@ -383,12 +379,7 @@ impl GpuRenderer {
             let mut fragment = if active_clip_count == 0 {
                 Vec::with_capacity(24)
             } else {
-                clip_constants(
-                    layer.clip_masks,
-                    layer.clip_offset,
-                    bounds,
-                    screen,
-                )
+                clip_constants(layer.clip_masks, layer.clip_offset, bounds, screen)
             };
             fragment.extend(layer.color.map(f32::to_bits));
             let (mode, parameters) = fragment_parameters(layer.mode, layer.texture);
@@ -439,22 +430,22 @@ impl GpuRenderer {
         let mut replacements = Vec::with_capacity(2);
         if let Some(repair) = repair {
             replacements.push(TextureLayer {
-                    texture: base,
-                    source: TextureRect {
-                        x: 0.0,
-                        y: 0.0,
-                        width: base.width() as f32,
-                        height: base.height() as f32,
-                    },
-                    bounds: screen,
-                    clip: repair,
-                    clip_masks: &[],
-                    clip_offset: (0, 0),
-                    color: [1.0; 4],
-                    mode: TextureMode::Color,
-                    sampling: TextureSampling::Nearest,
-                    wrap: TextureWrap::Edge,
-                });
+                texture: base,
+                source: TextureRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: base.width() as f32,
+                    height: base.height() as f32,
+                },
+                bounds: screen,
+                clip: repair,
+                clip_masks: &[],
+                clip_offset: (0, 0),
+                color: [1.0; 4],
+                mode: TextureMode::Color,
+                sampling: TextureSampling::Nearest,
+                wrap: TextureWrap::Edge,
+            });
         }
         if damage.width != 0 && damage.height != 0 {
             replacements.push(TextureLayer {
@@ -481,12 +472,7 @@ impl GpuRenderer {
         // Repair must precede the transparent replacement when the rectangles
         // overlap. One REPLACE batch preserves that order while avoiding a
         // second VirtIO control-queue submission on every retained frame.
-        self.render_layers_with_blend(
-            target,
-            &replacements,
-            false,
-            Some(REPLACE_BLEND),
-        )
+        self.render_layers_with_blend(target, &replacements, false, Some(REPLACE_BLEND))
     }
 
     /// Replaces one target rectangle with transparent pixels before a clipped
@@ -587,12 +573,7 @@ fn background_wrap(repeat: ImageRepeat) -> (SamplerWrap, SamplerWrap) {
     }
 }
 
-fn clip_constants(
-    masks: &[ClipMask],
-    offset: (i32, i32),
-    bounds: Rect,
-    screen: Rect,
-) -> Vec<u32> {
+fn clip_constants(masks: &[ClipMask], offset: (i32, i32), bounds: Rect, screen: Rect) -> Vec<u32> {
     let mut constants = Vec::with_capacity(MAX_GPU_CLIP_MASKS * 24);
     let mut rounded = masks
         .iter()
@@ -647,17 +628,9 @@ fn rounded_mask_affects(mask: ClipMask, offset: (i32, i32), bounds: Rect) -> boo
     let rect = translated(mask.rect, offset);
     let x2 = rect.x.saturating_add_unsigned(rect.width);
     let y2 = rect.y.saturating_add_unsigned(rect.height);
-    let origins = [
-        (rect.x, rect.y),
-        (x2, rect.y),
-        (x2, y2),
-        (rect.x, y2),
-    ];
-    mask.radii
-        .into_iter()
-        .zip(origins)
-        .enumerate()
-        .any(|(corner, (radius, (anchor_x, anchor_y)))| {
+    let origins = [(rect.x, rect.y), (x2, rect.y), (x2, y2), (rect.x, y2)];
+    mask.radii.into_iter().zip(origins).enumerate().any(
+        |(corner, (radius, (anchor_x, anchor_y)))| {
             if radius.x == 0 || radius.y == 0 {
                 return false;
             }
@@ -681,7 +654,8 @@ fn rounded_mask_affects(mask: ClipMask, offset: (i32, i32), bounds: Rect) -> boo
                 },
             )
             .is_some()
-        })
+        },
+    )
 }
 
 fn fragment_parameters(mode: TextureMode, texture: &VirglResource) -> (f32, [u32; 16]) {
@@ -762,11 +736,7 @@ fn translated(rectangle: Rect, offset: (i32, i32)) -> Rect {
     }
 }
 
-fn clipped_layer(
-    bounds: Rect,
-    source: TextureRect,
-    clip: Rect,
-) -> Option<(Rect, TextureRect)> {
+fn clipped_layer(bounds: Rect, source: TextureRect, clip: Rect) -> Option<(Rect, TextureRect)> {
     let clipped = intersect(bounds, clip)?;
     if bounds.width == 0 || bounds.height == 0 {
         return None;
@@ -977,12 +947,7 @@ mod tests {
             width: 10,
             height: 5,
         };
-        let constants = clip_constants(
-            &[square, rounded],
-            (3, -2),
-            corner,
-            Rect::default(),
-        );
+        let constants = clip_constants(&[square, rounded], (3, -2), corner, Rect::default());
         assert_eq!(rounded_clip_count(&[square, rounded], (3, -2), corner), 1);
         assert_eq!(
             rounded_clip_count(

@@ -94,6 +94,8 @@
   Thread；最后一个 Thread 退出再把 direct children 无分配迁移给 init。pdeath count 为零时
   不得访问 child Thread collection；session foreground 与 orphan-group consequence 只冻结
   exact group members，并始终按 SIGHUP 后 SIGCONT 在 graph lock 外投递。
+- 最后一个 global init Thread 退出必须在 graph mutation 前 fail-stop（Linux child-reaper
+  lifetime）；不得先删除 init TID，再向不存在的 replacement 迁移 creator-child edge。
 - consequence 可能 drop Arc、OFD、waiter 或发送 signal 时，必须在 owner lock 外执行。
 - outgoing consequence 不得在 context save 前发布；否则 remote CPU 可恢复仍在执行的 kernel
   stack。context switch 前只发布 per-CPU pending token，restore 后才完成 wait/signal/stop 的

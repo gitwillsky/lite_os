@@ -372,6 +372,12 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
         let process_will_exit = graph.nodes.get(&exiting_pid).is_some_and(
             |node| matches!(&node.state, ProcessState::Live(threads) if threads.len() == 1),
         );
+        // 最后一个 init Thread 是全局 child reaper；Linux 在此 fail-stop，不能先摘除
+        // TID 再把 creator-child edge 迁给已经不存在的 init。其他 init sibling 可正常退出。
+        assert!(
+            exiting_pid != INIT_PID || !process_will_exit,
+            "Attempted to kill init"
+        );
         if process_will_exit {
             // Affected groups are the exiting process group plus its direct children's groups.
             // The owner index freezes their old orphan/stopped state without a graph snapshot.

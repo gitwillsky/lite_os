@@ -103,6 +103,11 @@ make verify
 `make verify` 是提交前完整入口；`verify-fast` 用于日常反馈，`verify-runtime` 用于单独复现 guest
 门禁。所有入口都接受 `ARCH`、`ACCEL`、`PROFILE` 及 QEMU 相关环境变量。
 
+`make verify-runtime-shutdown` 使用 `make run` 的 headless 设备装配，在单 CPU 与宿主默认
+SMP topology 冷启动 private rootfs，执行 BusyBox halt/poweroff/reboot，要求完整 shutdown
+marker 和 QEMU 正常退出；不允许 headless 图形会话重试刷屏。reboot 用 `-no-reboot` 把
+guest reset 转成可裁决的 QEMU 退出，不能用 host 强制终止冒充 reset 成功。
+
 局部 scope 仍可直接调用，但它们不是独立编排入口：
 
 | scope | 用途 |

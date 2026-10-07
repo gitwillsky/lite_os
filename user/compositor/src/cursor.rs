@@ -83,12 +83,7 @@ impl Cursor {
             return Ok(());
         }
         let shape = &self.shapes[self.active_shape];
-        device.update_cursor(
-            topology,
-            Some(&self.buffer),
-            position,
-            shape.hotspot,
-        )
+        device.update_cursor(topology, Some(&self.buffer), position, shape.hotspot)
     }
 }
 

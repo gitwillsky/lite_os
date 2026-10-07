@@ -97,6 +97,8 @@
 
 ## Interface
 
+- `compositor --probe` 同时查询 KMS topology、DRM 3D feature 与 VirGL2 capset，不创建 context。
+  `graphical-session` 只在该探测成功后启动图形进程；2D-only headless 启动不进入重试循环。
 - `display-proto` 是唯一 graphical userspace IPC seam。握手版本必须精确相等并永久选择
   `HELLO_DESKTOP` 或 `HELLO_APP`；不得 capability negotiation、兼容消息或同连接角色切换。
 - display-list frame 上限必须由 `MAX_DISPLAY_COMMANDS` 与单命令 `MAX_GLYPHS_PER_RUN` 的最大 wire
