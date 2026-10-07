@@ -239,6 +239,9 @@ runtime gate 裁决，不用失真的 host wall-clock 阈值掩盖。
 - mmap 的 `MappedFile` 在每次映射建立时分配一次；page fault 是一次 `dyn SharedFileMapping` 调用，进入
   page cache 或 `MemoryFile`（按 `Inode::data_backing` 在建立映射时选定）。
 
+inotify 的变更点不增加 benchmark：没有 watch 时每个 `notify_*` 是一次 Relaxed 原子读取；有 watch 时才做 inode
+身份查询与一次注册表查找，成本归属于被监视的对象，不在无关文件的 read/write 路径上。
+
 内存型文件（tmpfs、memfd）同样不增加 wall-clock benchmark：
 
 - `MemoryFile` 的 read/write 在每次 syscall 取一次 `state` 锁，页查找是 `FallibleMap` 的 O(log n)；

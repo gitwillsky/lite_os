@@ -86,6 +86,11 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             ),
             SYSCALL_GETCWD => sys_get_cwd(args[0] as *mut u8, args[1]),
             SYSCALL_EVENTFD2 => sys_eventfd2(args[0] as u32, args[1] as u32),
+            SYSCALL_INOTIFY_INIT1 => sys_inotify_init1(args[0] as u32),
+            SYSCALL_INOTIFY_ADD_WATCH => {
+                sys_inotify_add_watch(args[0], args[1] as *const u8, args[2] as u32)
+            }
+            SYSCALL_INOTIFY_RM_WATCH => sys_inotify_rm_watch(args[0], args[1] as i32),
             SYSCALL_TIMERFD_CREATE => sys_timerfd_create(args[0] as i32, args[1] as u32),
             SYSCALL_TIMERFD_SETTIME => {
                 sys_timerfd_settime(args[0], args[1] as u32, args[2], args[3])

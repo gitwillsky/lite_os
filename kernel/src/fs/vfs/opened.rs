@@ -86,6 +86,12 @@ impl OpenedFile {
         self.location.lock().parent.clone()
     }
 
+    /// 父目录 inode 与本条目在其中的名字；根没有父目录。inotify 用它把文件事件同时投递给父目录的 watch。
+    pub(crate) fn watch_context(&self) -> Option<(Arc<dyn Inode>, Vec<u8>)> {
+        let parent = self.parent()?;
+        Some((parent.inode(), self.location_name().ok()?))
+    }
+
     pub(super) fn location_name(&self) -> Result<Vec<u8>, FileSystemError> {
         let location = self.location.lock();
         let mut name = Vec::new();

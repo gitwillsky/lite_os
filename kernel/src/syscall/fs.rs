@@ -6,6 +6,7 @@ mod access;
 mod attributes;
 mod fcntl;
 mod flock;
+mod inotify;
 mod io;
 mod links;
 pub(crate) mod mount;
@@ -18,6 +19,7 @@ pub(crate) use access::sys_faccessat;
 pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchown, sys_fchownat};
 pub(crate) use fcntl::sys_fcntl;
 pub(crate) use flock::sys_flock;
+pub(crate) use inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch};
 pub(crate) use io::{
     sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2, sys_read,
     sys_readv, sys_sendfile, sys_write, sys_writev,
@@ -136,10 +138,17 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
             .expect("current ftruncate caller must exist");
         return -errno::EFBIG;
     }
-    ofd.inode_ref()
+    let result = ofd
+        .inode_ref()
         .ok_or(-errno::EINVAL)
         .and_then(|i| crate::fs::truncate(i, size).map_err(ferr))
-        .map_or_else(|e| e, |_| 0)
+        .map_or_else(|e| e, |_| 0);
+    if result == 0
+        && let Some(opened) = ofd.opened_ref()
+    {
+        crate::fs::notify_opened(&opened, crate::fs::IN_MODIFY);
+    }
+    result
 }
 
 /// 实现 Linux fallocate mode=0 的 regular-file space reservation。
@@ -190,7 +199,13 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
             .expect("current fallocate caller must exist");
         return -errno::EFBIG;
     }
-    crate::fs::allocate(inode, offset as u64, length as u64).map_or_else(ferr, |_| 0)
+    let result = crate::fs::allocate(inode, offset as u64, length as u64).map_or_else(ferr, |_| 0);
+    if result == 0
+        && let Some(opened) = ofd.opened_ref()
+    {
+        crate::fs::notify_opened(&opened, crate::fs::IN_MODIFY);
+    }
+    result
 }
 
 pub(super) fn sync_file(fd: usize) -> isize {
@@ -349,7 +364,8 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
                     Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0, 0),
                     Err(error) => ferr(error),
                 },
-                None => -errno::EIO,
+                // 没有路径的设备（inotify）是 anonymous inode。
+                None => copy_stat(&task, pointer, None, 0o100600, 0),
             },
             OpenFileKind::Pipe(endpoint) => {
                 copy_stat(&task, pointer, None, 0o010666, endpoint.pipe().object_id())
@@ -403,15 +419,16 @@ pub(crate) fn sys_utimensat(
         Ok(start) => start,
         Err(error) => return error,
     };
-    let inode = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        vfs().open_at_no_follow(start, &path, &task.access_identity(true))
+    let opened = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        vfs().open_file_at_no_follow(start, &path, &task.access_identity(true))
     } else {
-        vfs().open_at(start, &path, &task.access_identity(true))
+        vfs().open_file_at(start, &path, &task.access_identity(true))
     };
-    let inode = match inode {
-        Ok(inode) => inode,
+    let opened = match opened {
+        Ok(opened) => opened,
         Err(error) => return ferr(error),
     };
+    let inode = opened.inode();
 
     let now = crate::timer::get_realtime_ns() / 1_000_000_000;
     let mut owner_only = false;
@@ -471,9 +488,11 @@ pub(crate) fn sys_utimensat(
     {
         return ferr(error);
     }
-    inode
-        .set_times(values[0], values[1])
-        .map_or_else(ferr, |()| 0)
+    let result = inode.set_times(values[0], values[1]);
+    if result.is_ok() {
+        crate::fs::notify_opened(&opened, crate::fs::IN_ATTRIB);
+    }
+    result.map_or_else(ferr, |()| 0)
 }
 
 pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) -> isize {

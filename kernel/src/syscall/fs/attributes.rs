@@ -1,5 +1,8 @@
 use crate::{
-    fs::{FileSystemError, Inode, OwnerModeChange, vfs},
+    fs::{
+        FileSystemError, IN_ATTRIB, Inode, OpenedFile, OwnerModeChange, notify_opened, notify_self,
+        vfs,
+    },
     syscall::errno,
     task::{TaskControlBlock, current_task},
 };
@@ -14,7 +17,7 @@ fn target(
     dirfd: isize,
     name: *const u8,
     flags: u32,
-) -> Result<alloc::sync::Arc<dyn Inode>, isize> {
+) -> Result<Target, isize> {
     let path = path_allow_empty(task, name)?;
     if path.is_empty() {
         if flags & AT_EMPTY_PATH == 0 {
@@ -26,26 +29,55 @@ fn target(
         return usize::try_from(dirfd)
             .ok()
             .and_then(|fd| task.fd_get(fd))
-            .and_then(|ofd| ofd.inode_ref())
+            .and_then(|ofd| Some(Target::new(ofd.inode_ref()?, ofd.opened_ref())))
             .ok_or(-errno::EBADF);
     }
     let start = base(task, dirfd, &path)?;
     let identity = task.access_identity(true);
     let result = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        vfs().open_at_no_follow(start, &path, &identity)
+        vfs().open_file_at_no_follow(start, &path, &identity)
     } else {
-        vfs().open_at(start, &path, &identity)
+        vfs().open_file_at(start, &path, &identity)
     };
-    result.map_err(ferr)
+    result
+        .map(|opened| Target::new(opened.inode(), Some(opened)))
+        .map_err(ferr)
 }
 
-fn chmod_inode(task: &TaskControlBlock, inode: alloc::sync::Arc<dyn Inode>, mode: u32) -> isize {
-    if let Err(error) = vfs().require_writable(inode.filesystem_id()) {
+/// 属���变更的目标：inode，以及（有路径时）用于向父目录 watch 投递 `IN_ATTRIB` 的 opened entry。
+struct Target {
+    inode: alloc::sync::Arc<dyn Inode>,
+    opened: Option<alloc::sync::Arc<OpenedFile>>,
+}
+
+impl Target {
+    fn new(
+        inode: alloc::sync::Arc<dyn Inode>,
+        opened: Option<alloc::sync::Arc<OpenedFile>>,
+    ) -> Self {
+        Self { inode, opened }
+    }
+
+    /// 变更成功之后通知 inotify：有 opened entry 时同时通知父目录的 watch。
+    fn changed(&self) {
+        match &self.opened {
+            Some(opened) => notify_opened(opened, IN_ATTRIB),
+            None => notify_self(self.inode.as_ref(), IN_ATTRIB),
+        }
+    }
+}
+
+fn chmod_inode(task: &TaskControlBlock, target: Target, mode: u32) -> isize {
+    if let Err(error) = vfs().require_writable(target.inode.filesystem_id()) {
         return ferr(error);
     }
-    inode
-        .change_owner_mode(OwnerModeChange::chmod(task.access_identity(true), mode))
-        .map_or_else(ferr, |()| 0)
+    let result = target
+        .inode
+        .change_owner_mode(OwnerModeChange::chmod(task.access_identity(true), mode));
+    if result.is_ok() {
+        target.changed();
+    }
+    result.map_or_else(ferr, |()| 0)
 }
 
 /// 按 Linux fchmod ABI 修改已打开 inode 的 permission 与 special bits。
@@ -63,11 +95,10 @@ pub(crate) fn sys_fchmod(fd: usize, mode: u32) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    let inode = match ofd.inode_ref() {
-        Some(inode) => inode,
-        None => return -errno::EINVAL,
+    let Some(inode) = ofd.inode_ref() else {
+        return -errno::EINVAL;
     };
-    chmod_inode(&task, inode, mode)
+    chmod_inode(&task, Target::new(inode, ofd.opened_ref()), mode)
 }
 
 /// 按 Linux fchmodat ABI 修改 inode permission 与 special bits。
@@ -83,33 +114,34 @@ pub(crate) fn sys_fchmod(fd: usize, mode: u32) -> isize {
 /// 成功为零，失败返回负 errno。
 pub(crate) fn sys_fchmodat(dirfd: isize, name: *const u8, mode: u32) -> isize {
     let task = current_task().expect("fchmodat requires current task");
-    let inode = match target(&task, dirfd, name, 0) {
-        Ok(inode) => inode,
+    let target = match target(&task, dirfd, name, 0) {
+        Ok(target) => target,
         Err(error) => return error,
     };
-    chmod_inode(&task, inode, mode)
+    chmod_inode(&task, target, mode)
 }
 
-fn chown_inode(
-    task: &TaskControlBlock,
-    inode: alloc::sync::Arc<dyn Inode>,
-    owner: u32,
-    group: u32,
-) -> isize {
+fn chown_inode(task: &TaskControlBlock, target: Target, owner: u32, group: u32) -> isize {
     let uid = (owner != u32::MAX).then_some(owner);
     let gid = (group != u32::MAX).then_some(group);
-    if let Err(error) = vfs().require_writable(inode.filesystem_id()) {
+    if let Err(error) = vfs().require_writable(target.inode.filesystem_id()) {
         return ferr(error);
     }
-    inode
-        .change_owner_mode(OwnerModeChange::chown(task.access_identity(true), uid, gid))
-        .map_or_else(
-            |error| match error {
-                FileSystemError::InvalidOperation => -errno::EOVERFLOW,
-                other => ferr(other),
-            },
-            |()| 0,
-        )
+    let result = target.inode.change_owner_mode(OwnerModeChange::chown(
+        task.access_identity(true),
+        uid,
+        gid,
+    ));
+    if result.is_ok() {
+        target.changed();
+    }
+    result.map_or_else(
+        |error| match error {
+            FileSystemError::InvalidOperation => -errno::EOVERFLOW,
+            other => ferr(other),
+        },
+        |()| 0,
+    )
 }
 
 /// 按 Linux fchown ABI 修改已打开 inode 的 owner/group 并更新 ctime。
@@ -131,7 +163,7 @@ pub(crate) fn sys_fchown(fd: usize, owner: u32, group: u32) -> isize {
     let Some(inode) = ofd.inode_ref() else {
         return -errno::EBADF;
     };
-    chown_inode(&task, inode, owner, group)
+    chown_inode(&task, Target::new(inode, ofd.opened_ref()), owner, group)
 }
 
 /// 按 Linux fchownat ABI 原子修改 inode owner/group 并更新 ctime。
@@ -158,9 +190,9 @@ pub(crate) fn sys_fchownat(
         return -errno::EINVAL;
     }
     let task = current_task().expect("fchownat requires current task");
-    let inode = match target(&task, dirfd, name, flags) {
-        Ok(inode) => inode,
+    let target = match target(&task, dirfd, name, flags) {
+        Ok(target) => target,
         Err(error) => return error,
     };
-    chown_inode(&task, inode, owner, group)
+    chown_inode(&task, target, owner, group)
 }

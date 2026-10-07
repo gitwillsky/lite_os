@@ -126,6 +126,25 @@ pub(crate) struct OpenFileDescription {
     _write_open: Option<WriteOpen>,
 }
 
+impl Drop for OpenFileDescription {
+    /// 最后一个引用消失即“关闭”：向 inotify 投递 `IN_CLOSE_WRITE`/`IN_CLOSE_NOWRITE`（Linux `fput`）。
+    fn drop(&mut self) {
+        if let OpenFileKind::Inode(opened) = &self.kind
+            && crate::fs::watching()
+        {
+            let writable = *self.flags.get_mut() & O_ACCMODE != O_RDONLY;
+            crate::fs::notify_opened(
+                opened,
+                if writable {
+                    crate::fs::IN_CLOSE_WRITE
+                } else {
+                    crate::fs::IN_CLOSE_NOWRITE
+                },
+            );
+        }
+    }
+}
+
 /// 以写方式打开 inode 时的登记，Drop 时撤销：挂载上的写者（Linux `mnt_drop_write` 的 OFD 版本），
 /// 块设备节点还登记 bdev 写者（`BlockNode`），使“被挂载”与“有写者”互斥。
 struct WriteOpen {
@@ -436,6 +455,27 @@ impl OpenFileDescription {
             position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: Some(backing_opened),
+            epoll_memberships: EpollMemberships::new(),
+            descriptor_refs: AtomicUsize::new(0),
+            _write_open: None,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)
+    }
+
+    /// 构造没有路径的设备 OFD（inotify 等 anonymous inode）。
+    ///
+    /// # Errors
+    ///
+    /// OFD 分配失败返回 `OutOfMemory`。
+    pub(crate) fn anonymous_device(
+        file: Arc<dyn crate::fs::device::DeviceFile>,
+        flags: u32,
+    ) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
+            kind: OpenFileKind::Device(file),
+            position: FilePosition::new(),
+            flags: Mutex::new(flags),
+            character_opened: None,
             epoll_memberships: EpollMemberships::new(),
             descriptor_refs: AtomicUsize::new(0),
             _write_open: None,

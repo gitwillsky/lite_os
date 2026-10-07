@@ -200,6 +200,13 @@ pub(crate) mod permission {
     }
 }
 
+#[path = "../../../kernel/src/fs/inotify/queue.rs"]
+pub(crate) mod inotify_queue;
+
+#[cfg(test)]
+#[path = "tests/inotify_queue.rs"]
+mod inotify_queue_tests;
+
 #[path = "../../../kernel/src/fs/block_identity.rs"]
 pub(crate) mod block_identity;
 

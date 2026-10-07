@@ -101,6 +101,7 @@
 | `kernel/src/fs/epoll.rs :: EpollState.ready` | `FallibleMap < InterestKey , () >` |
 | `kernel/src/fs/epoll.rs :: EpollMemberships.entries` | `Mutex < FallibleMap < ReverseKey , ReverseMembership > >` |
 | `kernel/src/fs/epoll.rs :: static SOURCE_INDEX` | `Mutex < FallibleMap < SourceIndexKey , SourceMembership > >` |
+| `kernel/src/fs/inotify.rs :: WatchIndex.by_inode` | `FallibleMap < (usize , u64) , Vec < Arc < Watch > > >` |
 | `kernel/src/fs/vfs/opened_index.rs :: OpenedIndex.entries` | `Mutex < FallibleMap < OpenedIndexKey , Weak < OpenedFile > > >` |
 | `kernel/src/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
 | `kernel/src/fs/ext4/journal.rs :: StagedBlocks.metadata` | `FallibleMap < u64 , Vec < u8 > >` |

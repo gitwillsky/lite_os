@@ -42,7 +42,13 @@ pub(super) fn read_descriptor(
         return 0;
     }
     match &ofd.kind {
-        OpenFileKind::Inode(opened) => read_regular_descriptor(task, ofd, opened.inode(), vectors),
+        OpenFileKind::Inode(opened) => {
+            let result = read_regular_descriptor(task, ofd, opened.inode(), vectors);
+            if result > 0 {
+                crate::fs::notify_opened(opened, crate::fs::IN_ACCESS);
+            }
+            result
+        }
         OpenFileKind::MemFile(file) => read_regular_descriptor(task, ofd, file.clone(), vectors),
         OpenFileKind::Pipe(endpoint) => {
             if endpoint.direction() != PipeDirection::Read {

@@ -2120,6 +2120,7 @@ def main() -> int:
                 "memory-file-probe": build_musl_probe(musl, "memory-file"),
                 "special-file-probe": build_musl_probe(musl, "special-file"),
                 "fs-stress-probe": build_musl_probe(musl, "fs-stress"),
+                "inotify-probe": build_musl_probe(musl, "inotify"),
             },
             runtime_path,
         )
@@ -2205,6 +2206,7 @@ def main() -> int:
                 "LITEOS_BLOCKSYS_62",
                 "LITEOS_MEMFILE_42",
                 "LITEOS_SPECIAL_42",
+                "LITEOS_INOTIFY_42",
                 "LITEOS_LINKS_43",
                 "LITEOS_NAMESPACE_CONCURRENCY_43",
                 "LITEOS_BUSYBOX_CREDENTIALS_44",
@@ -2456,6 +2458,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_SPECIAL_42",
+                    b"/var/tmp/inotify-probe\n",
+                ),
+                (
+                    "LITEOS_INOTIFY_42",
                     b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n",
                 ),
                 (

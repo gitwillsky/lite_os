@@ -31,6 +31,11 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     let mut position = offset as u64;
     let result = read_regular_vectors(&task, &file, &mut position, vectors);
     task.account_read_result(result);
+    if result > 0
+        && let Some(opened) = ofd.opened_ref()
+    {
+        crate::fs::notify_opened(&opened, crate::fs::IN_ACCESS);
+    }
     result
 }
 
@@ -119,6 +124,11 @@ fn positioned_write(
         write_regular_vectors(&task, &writer, &mut position, vectors, append, &mut staging)
     });
     task.account_write_result(result);
+    if result > 0
+        && let Some(opened) = ofd.opened_ref()
+    {
+        crate::fs::notify_opened(&opened, crate::fs::IN_MODIFY);
+    }
     result
 }
 

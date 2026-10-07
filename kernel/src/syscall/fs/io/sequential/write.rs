@@ -53,7 +53,11 @@ pub(super) fn write_descriptor(
     }
     match &ofd.kind {
         OpenFileKind::Inode(opened) => {
-            write_regular_descriptor(task, ofd, opened.inode(), vectors, total_length)
+            let result = write_regular_descriptor(task, ofd, opened.inode(), vectors, total_length);
+            if result > 0 {
+                crate::fs::notify_opened(opened, crate::fs::IN_MODIFY);
+            }
+            result
         }
         OpenFileKind::MemFile(file) => {
             write_regular_descriptor(task, ofd, file.clone(), vectors, total_length)

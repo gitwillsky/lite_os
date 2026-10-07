@@ -49,7 +49,21 @@ impl OpenFileDescription {
                 target.extend_from_slice(b" (deleted)");
                 Ok(target)
             }
-            OpenFileKind::Device(_) | OpenFileKind::Inode(_) => {
+            OpenFileKind::Device(file) => {
+                // 带路径的设备已在上面经 opened_ref 返回；这里只剩 anonymous 设备。
+                let label: &[u8] = if file.inotify().is_some() {
+                    b"anon_inode:inotify"
+                } else {
+                    b"anon_inode:[device]"
+                };
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(label.len())
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                bytes.extend_from_slice(label);
+                Ok(bytes)
+            }
+            OpenFileKind::Inode(_) => {
                 unreachable!("pathname-backed OFD lost opened identity")
             }
         }

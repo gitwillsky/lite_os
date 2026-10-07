@@ -215,6 +215,7 @@ pub(crate) fn unmount(root: &Arc<OpenedFile>) -> Result<(), FileSystemError> {
         .map_err(|_| FileSystemError::OutOfMemory)?;
     let filesystem_id = root.inode().filesystem_id();
     let (filesystem, device) = vfs().unmount(root)?;
+    super::filesystem_unmounted(filesystem_id);
     if let Err(error) = page_cache::evict_filesystem(filesystem_id) {
         crate::warn!("umount page-cache writeback failed: {:?}", error);
     }

@@ -62,6 +62,9 @@
   `Pipe.rendezvous_waiters` 使对端 open 即使不改变 readable/writable 也会走到唤醒路径。
 - 分区节点只经 `PartitionDevice` 把块号平移到整盘的同一 `BlockDevice`，不复制任何状态；`FileSystem::make_writable`
   与 `Ext4FileSystem.writable` 共同保证写前准备（`RECOVER`、orphan 回收）恰好执行一次。
+- inotify 锁序：实例的 watch 列表 → 全局注册表；投递时只在注册表锁内克隆匹配的 `Arc<Watch>`，随后在锁外入队
+  （队列锁）并经合并 readiness Pipe 唤醒 reader，所以注册表锁内不取队列锁或调度器锁。`read_gate` 序列化同一
+  OFD 的并发 reader，事件在交付到用户内存之后才出队。`WATCH_COUNT` 为零时所有变更点立即返回。
 - `BlockNode.claim` 是“已挂载”标志与写者计数的唯一原子字：`begin_writer`（OFD 创建）、`begin_mount`、
   `end_writer`（OFD Drop，不阻塞）、`end_mount` 都对它做 CAS/原子更新；块设备在 page cache 中的身份由
   `Inode::page_cache_id` 给出（与 devtmpfs 实例无关），挂载前经 `page_cache::evict_cached` 写回并逐出。

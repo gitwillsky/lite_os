@@ -1917,6 +1917,7 @@ kernel/src/fs/device.rs :: pub (super) fn register_block (path : & [u8] , number
 kernel/src/fs/device.rs :: pub (super) struct DeviceNode
 kernel/src/fs/device.rs :: trait CharacterDriver :: fn open (& self , request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn backing_pipe (& self) -> Option < Arc < Pipe > >
+kernel/src/fs/device.rs :: trait DeviceFile :: fn inotify (& self) -> Option < & super :: Inotify >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn ioctl (& self , _call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn mmap (& self , _offset : u64 , _length : usize , _request : MapRequest ,) -> Result < DeviceMappingSource , DeviceError >
 kernel/src/fs/device.rs :: trait DeviceFile :: fn poll (& self , events : i16) -> i16
@@ -2284,6 +2285,7 @@ kernel/src/fs/file.rs :: pub (crate) const O_RDONLY : u32 = 0
 kernel/src/fs/file.rs :: pub (crate) const O_RDWR : u32 = 2
 kernel/src/fs/file.rs :: pub (crate) const O_WRONLY : u32 = 1
 kernel/src/fs/file.rs :: pub (crate) enum OpenFileKind
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn anonymous_device (file : Arc < dyn crate :: fs :: device :: DeviceFile > , flags : u32 ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn device (file : Arc < dyn crate :: fs :: device :: DeviceFile > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
@@ -2476,6 +2478,59 @@ kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , rem
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/inotify.rs :: enum InitError :: # [doc = " 实例数已达上限（`EMFILE`）。"] TooManyInstances
+kernel/src/fs/inotify.rs :: enum InitError :: OutOfMemory
+kernel/src/fs/inotify.rs :: enum WatchError :: # [doc = " 事件位为空或含未知位（`EINVAL`）。"] InvalidMask
+kernel/src/fs/inotify.rs :: enum WatchError :: # [doc = " 该实例的 watch 数已达上限（`ENOSPC`）。"] TooManyWatches
+kernel/src/fs/inotify.rs :: enum WatchError :: OutOfMemory
+kernel/src/fs/inotify.rs :: pub (crate) const IN_ACCESS : u32 = 0x0000_0001
+kernel/src/fs/inotify.rs :: pub (crate) const IN_ATTRIB : u32 = 0x0000_0004
+kernel/src/fs/inotify.rs :: pub (crate) const IN_CLOEXEC : u32 = 0o2000000
+kernel/src/fs/inotify.rs :: pub (crate) const IN_CLOSE_NOWRITE : u32 = 0x0000_0010
+kernel/src/fs/inotify.rs :: pub (crate) const IN_CLOSE_WRITE : u32 = 0x0000_0008
+kernel/src/fs/inotify.rs :: pub (crate) const IN_CREATE : u32 = 0x0000_0100
+kernel/src/fs/inotify.rs :: pub (crate) const IN_DELETE : u32 = 0x0000_0200
+kernel/src/fs/inotify.rs :: pub (crate) const IN_DELETE_SELF : u32 = 0x0000_0400
+kernel/src/fs/inotify.rs :: pub (crate) const IN_MODIFY : u32 = 0x0000_0002
+kernel/src/fs/inotify.rs :: pub (crate) const IN_MOVED_FROM : u32 = 0x0000_0040
+kernel/src/fs/inotify.rs :: pub (crate) const IN_MOVED_TO : u32 = 0x0000_0080
+kernel/src/fs/inotify.rs :: pub (crate) const IN_MOVE_SELF : u32 = 0x0000_0800
+kernel/src/fs/inotify.rs :: pub (crate) const IN_NONBLOCK : u32 = 0o4000
+kernel/src/fs/inotify.rs :: pub (crate) const IN_OPEN : u32 = 0x0000_0020
+kernel/src/fs/inotify.rs :: pub (crate) enum InitError
+kernel/src/fs/inotify.rs :: pub (crate) enum WatchError
+kernel/src/fs/inotify.rs :: pub (crate) fn add_watch_flags (mask : u32) -> (bool , bool)
+kernel/src/fs/inotify.rs :: pub (crate) fn filesystem_unmounted (filesystem_id : usize)
+kernel/src/fs/inotify.rs :: pub (crate) fn identity (inode : & dyn Inode) -> Option < (usize , u64) >
+kernel/src/fs/inotify.rs :: pub (crate) fn next_cookie () -> u32
+kernel/src/fs/inotify.rs :: pub (crate) fn notify_entry (parent : & dyn Inode , name : & [u8] , mask : u32 , is_directory : bool , cookie : u32 ,)
+kernel/src/fs/inotify.rs :: pub (crate) fn notify_opened (opened : & Arc < OpenedFile > , mask : u32)
+kernel/src/fs/inotify.rs :: pub (crate) fn notify_removed (identity : (usize , u64) , is_directory : bool)
+kernel/src/fs/inotify.rs :: pub (crate) fn notify_self (inode : & dyn Inode , mask : u32)
+kernel/src/fs/inotify.rs :: pub (crate) fn watching () -> bool
+kernel/src/fs/inotify.rs :: pub (crate) impl Inotify :: fn add_watch (& self , identity : (usize , u64) , flags : u32) -> Result < i32 , WatchError >
+kernel/src/fs/inotify.rs :: pub (crate) impl Inotify :: fn new () -> Result < Arc < Self > , InitError >
+kernel/src/fs/inotify.rs :: pub (crate) impl Inotify :: fn remove_watch (& self , wd : i32) -> bool
+kernel/src/fs/inotify.rs :: pub (crate) struct Inotify
+kernel/src/fs/inotify/queue.rs :: enum Pushed :: # [doc = " 与队尾相同，已合并。"] Coalesced
+kernel/src/fs/inotify/queue.rs :: enum Pushed :: # [doc = " 队列已满或分配失败：事件丢弃，队尾是（或刚追加了）溢出事件。"] Overflowed
+kernel/src/fs/inotify/queue.rs :: enum Pushed :: Queued
+kernel/src/fs/inotify/queue.rs :: pub (super) Event :: cookie : u32
+kernel/src/fs/inotify/queue.rs :: pub (super) Event :: mask : u32
+kernel/src/fs/inotify/queue.rs :: pub (super) Event :: name : Box < [u8] >
+kernel/src/fs/inotify/queue.rs :: pub (super) Event :: wd : i32
+kernel/src/fs/inotify/queue.rs :: pub (super) const IN_Q_OVERFLOW : u32 = 0x4000
+kernel/src/fs/inotify/queue.rs :: pub (super) const MAX_QUEUED_EVENTS : usize = 16384
+kernel/src/fs/inotify/queue.rs :: pub (super) enum Pushed
+kernel/src/fs/inotify/queue.rs :: pub (super) impl Event :: fn wire_len (& self) -> usize
+kernel/src/fs/inotify/queue.rs :: pub (super) impl EventQueue :: const fn new () -> Self
+kernel/src/fs/inotify/queue.rs :: pub (super) impl EventQueue :: fn discard (& mut self , count : usize)
+kernel/src/fs/inotify/queue.rs :: pub (super) impl EventQueue :: fn encode_prefix (& self , capacity : usize) -> Result < (Vec < u8 > , usize) , () >
+kernel/src/fs/inotify/queue.rs :: pub (super) impl EventQueue :: fn is_empty (& self) -> bool
+kernel/src/fs/inotify/queue.rs :: pub (super) impl EventQueue :: fn pending_bytes (& self) -> usize
+kernel/src/fs/inotify/queue.rs :: pub (super) impl EventQueue :: fn push (& mut self , event : Event) -> Pushed
+kernel/src/fs/inotify/queue.rs :: pub (super) struct Event
+kernel/src/fs/inotify/queue.rs :: pub (super) struct EventQueue
 kernel/src/fs/mem.rs :: pub (super) fn register () -> Result < () , FileSystemError >
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn add_seals (& self , seals : u32) -> Result < u32 , FileSystemError >
 kernel/src/fs/memfd.rs :: pub (crate) impl MemFile :: fn name (& self) -> & [u8]
@@ -2585,6 +2640,7 @@ kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollCh
 kernel/src/fs/mod.rs :: pub (crate) use fifo :: { FifoAccess , FifoOpenError , open as open_fifo }
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , Inode , InodeMetadata , InodeType , StorageWriter }
+kernel/src/fs/mod.rs :: pub (crate) use inotify :: { IN_ACCESS , IN_ATTRIB , IN_CLOEXEC , IN_CLOSE_NOWRITE , IN_CLOSE_WRITE , IN_CREATE , IN_DELETE , IN_MODIFY , IN_MOVE_SELF , IN_MOVED_FROM , IN_MOVED_TO , IN_NONBLOCK , IN_OPEN , InitError , Inotify , WatchError , add_watch_flags , filesystem_unmounted , identity as inotify_identity , next_cookie , notify_entry , notify_opened , notify_removed , notify_self , watching , }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 kernel/src/fs/mod.rs :: pub (crate) use memory_file :: { MemoryFile , PageBudget }
 kernel/src/fs/mod.rs :: pub (crate) use mount :: { MountEnvironment , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , }
@@ -3073,6 +3129,7 @@ kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn rename
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn symlink_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , target : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn unlink_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , directory : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn inode (& self) -> Arc < dyn Inode >
+kernel/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn watch_context (& self) -> Option < (Arc < dyn Inode > , Vec < u8 >) >
 kernel/src/fs/vfs/opened.rs :: pub (crate) struct OpenedFile
 kernel/src/fs/vfs/opened.rs :: pub (super) impl FileName :: fn bytes (& self) -> & [u8]
 kernel/src/fs/vfs/opened.rs :: pub (super) impl FileName :: fn new (name : & [u8]) -> Result < Self , FileSystemError >
@@ -4493,6 +4550,7 @@ kernel/src/syscall/fs.rs :: pub (crate) use access :: sys_faccessat
 kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmod , sys_fchmodat , sys_fchown , sys_fchownat }
 kernel/src/syscall/fs.rs :: pub (crate) use fcntl :: sys_fcntl
 kernel/src/syscall/fs.rs :: pub (crate) use flock :: sys_flock
+kernel/src/syscall/fs.rs :: pub (crate) use inotify :: { sys_inotify_add_watch , sys_inotify_init1 , sys_inotify_rm_watch }
 kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , sys_read , sys_readv , sys_sendfile , sys_write , sys_writev , }
 kernel/src/syscall/fs.rs :: pub (crate) use links :: { sys_linkat , sys_symlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_mknodat , sys_renameat2 , sys_unlinkat }
@@ -4507,6 +4565,9 @@ kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchown (fd : usize , o
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchownat (dirfd : isize , name : * const u8 , owner : u32 , group : u32 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/fcntl.rs :: pub (crate) fn sys_fcntl (fd : usize , command : u32 , argument : usize) -> isize
 kernel/src/syscall/fs/flock.rs :: pub (crate) fn sys_flock (fd : usize , operation : usize) -> isize
+kernel/src/syscall/fs/inotify.rs :: pub (crate) fn sys_inotify_add_watch (fd : usize , pathname : * const u8 , mask : u32) -> isize
+kernel/src/syscall/fs/inotify.rs :: pub (crate) fn sys_inotify_init1 (flags : u32) -> isize
+kernel/src/syscall/fs/inotify.rs :: pub (crate) fn sys_inotify_rm_watch (fd : usize , wd : i32) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) use positioned :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , }
 kernel/src/syscall/fs/io.rs :: pub (crate) use sendfile :: sys_sendfile
 kernel/src/syscall/fs/io.rs :: pub (crate) use sequential :: { sys_read , sys_readv , sys_write , sys_writev }

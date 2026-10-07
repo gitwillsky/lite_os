@@ -129,6 +129,13 @@ impl VirtualFileSystem {
             }
             _ => parent_inode.create(&name, kind, metadata)?,
         };
+        crate::fs::notify_entry(
+            parent_inode.as_ref(),
+            &name,
+            crate::fs::IN_CREATE,
+            kind == InodeType::Directory,
+            0,
+        );
         self.opened
             .register(OpenedFile::child(inode, parent, &name)?)
     }
@@ -159,7 +166,7 @@ impl VirtualFileSystem {
         } else {
             identity.gid()
         };
-        parent_inode.symlink(
+        let link = parent_inode.symlink(
             &name,
             target,
             CreateMetadata {
@@ -167,7 +174,9 @@ impl VirtualFileSystem {
                 uid: identity.uid(),
                 gid,
             },
-        )
+        )?;
+        crate::fs::notify_entry(parent_inode.as_ref(), &name, crate::fs::IN_CREATE, false, 0);
+        Ok(link)
     }
 
     /// 执行 protected-hardlink、parent access 与 cross-mount policy。
@@ -201,7 +210,11 @@ impl VirtualFileSystem {
         if parent_inode.filesystem_id() != target.filesystem_id() {
             return Err(FileSystemError::CrossDevice);
         }
-        parent_inode.link(&name, target)
+        parent_inode.link(&name, target.clone())?;
+        crate::fs::notify_entry(parent_inode.as_ref(), &name, crate::fs::IN_CREATE, false, 0);
+        // link count 变化是 inode 自己的属性变化。
+        crate::fs::notify_self(target.as_ref(), crate::fs::IN_ATTRIB);
+        Ok(())
     }
 
     /// 执行 parent access 与 sticky-directory policy 后删除 entry。
@@ -238,6 +251,7 @@ impl VirtualFileSystem {
         ) {
             return Err(FileSystemError::PermissionDenied);
         }
+        let removed = crate::fs::inotify_identity(target_inode.as_ref());
         parent_inode.unlink(&name, directory)?;
         self.opened.mark_unlinked(
             (parent_inode.filesystem_id(), parent_metadata.inode),
@@ -245,6 +259,22 @@ impl VirtualFileSystem {
             (target_inode.filesystem_id(), target.inode),
         );
         super::super::page_cache::evict_if_unlinked(&target_inode, 1);
+        let is_directory = target.kind == InodeType::Directory;
+        crate::fs::notify_entry(
+            parent_inode.as_ref(),
+            &name,
+            crate::fs::IN_DELETE,
+            is_directory,
+            0,
+        );
+        match removed {
+            // 目录 rmdir 或最后一个 link 消失：inode 自身被删除，其上的 watch 随之结束。
+            Some(identity) if is_directory || target.links <= 1 => {
+                crate::fs::notify_removed(identity, is_directory);
+            }
+            // 还有别的 link：只是 link count 变了。
+            _ => crate::fs::notify_self(target_inode.as_ref(), crate::fs::IN_ATTRIB),
+        }
         Ok(())
     }
 
@@ -322,7 +352,35 @@ impl VirtualFileSystem {
             .as_ref()
             .map(|target| Ok((target.filesystem_id(), target.metadata()?.inode)))
             .transpose()?;
+        // 被覆盖的目标只有在没有别的 link 时才算被删除。
+        let replaced_removed = target.as_ref().and_then(|target| {
+            let metadata = target.metadata().ok()?;
+            (metadata.links <= 1 || metadata.kind == InodeType::Directory)
+                .then(|| crate::fs::inotify_identity(target.as_ref()))
+                .flatten()
+        });
         old_parent_inode.rename(&old_name, new_metadata.inode, &new_name, no_replace)?;
+        let is_directory = source.kind == InodeType::Directory;
+        let cookie = crate::fs::next_cookie();
+        crate::fs::notify_entry(
+            old_parent_inode.as_ref(),
+            &old_name,
+            crate::fs::IN_MOVED_FROM,
+            is_directory,
+            cookie,
+        );
+        crate::fs::notify_entry(
+            new_parent_inode.as_ref(),
+            &new_name,
+            crate::fs::IN_MOVED_TO,
+            is_directory,
+            cookie,
+        );
+        crate::fs::notify_self(source_inode.as_ref(), crate::fs::IN_MOVE_SELF);
+        if let Some(identity) = replaced_removed {
+            // 被覆盖的目标失去这个名字；其 inode 若没有别的 link 即被删除。
+            crate::fs::notify_removed(identity, false);
+        }
         if let Some(identity) = replaced_identity {
             self.opened.mark_unlinked(
                 (new_parent_inode.filesystem_id(), new_metadata.inode),

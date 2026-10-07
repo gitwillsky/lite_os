@@ -72,6 +72,10 @@
 - 原始块 I/O 经 page cache 缓冲，但 ext4 直接读写块层，二者不共享缓存，所以一块盘要么被挂载（节点只读、
   不缓冲）要么可写打开：挂载与“以写方式打开”由 `BlockNode` 的原子字互斥，挂载前写回并逐出该盘的缓冲页。
   只读打开并读取已挂载的盘看到的是已提交到块层的数据，不含 ext4 尚在内存 transaction 里的元数据。
+- inotify 实例（`fs::Inotify`）是 anonymous `DeviceFile`：自己的 watch 列表与有界事件队列，阻塞 read、poll/epoll、
+  `FIONREAD` 走设备 seam。全局 watch 注册表按 inode 身份索引；变更点（VFS 的 create/unlink/rename/link，
+  OFD 的 open/read/write/close，属性类 syscall）调用 `fs::notify_*`，没有任何 watch 时只是一次 Relaxed 原子读取。
+  文件事件同时投递给文件自身的 watch 与父目录的 watch（带名字）；事件生成在变更成功之后，不改变变更本身的结果。
 - 块设备枚举（`/proc/partitions`、`/sys/{class,}/block`、`/sys/dev/block`）每次读取都从设备注册表取快照，不缓存；
   注册表只追加，下标即稳定身份（`sysfs_block`）。
 - 只读挂载 ext4 与 Linux 一致：journal 照常重放，但不置 `RECOVER`、不回收 orphan；`remount,rw` 经

@@ -6,6 +6,9 @@
 | 23 | `dup` | Complete | lowest-free fd publication |
 | 24 | `dup3` | Complete | replacement 与 CLOEXEC |
 | 25 | `fcntl` | Partial | fd/status flags、dup、record lock、memfd seals 子集、管道与 FIFO 的 `F_GETPIPE_SZ`/`F_SETPIPE_SZ` |
+| 26 | `inotify_init1` | Complete | `IN_NONBLOCK`/`IN_CLOEXEC`；实例上限 128（`EMFILE`） |
+| 27 | `inotify_add_watch` | Partial | 见下“inotify”；单实例 8192 个 watch（`ENOSPC`） |
+| 28 | `inotify_rm_watch` | Complete | 删除后投递 `IN_IGNORED` |
 | 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback、块设备 `BLK*` 与管道/FIFO 的 `FIONREAD` |
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
@@ -78,6 +81,15 @@ reader 的 FIFO 得到 `EPIPE` 并投递 `SIGPIPE`。
 长度向下取整到 4 KiB。分区可以挂载 ext4 并做原始 I/O，越过分区末尾得到 `ENOSPC`。`BLKRRPART` 重读分区表：
 与已发布的相同为空操作，不同返回 `EBUSY`（设备注册表只追加，不支持热移除或改号节点）。没有 `O_EXCL` 独占语义与
 `BLKDISCARD` 等。
+
+inotify：事件 `IN_ACCESS`/`MODIFY`/`ATTRIB`/`CLOSE_WRITE`/`CLOSE_NOWRITE`/`OPEN`/`MOVED_FROM`/`MOVED_TO`/
+`CREATE`/`DELETE`/`DELETE_SELF`/`MOVE_SELF`，加 `IN_UNMOUNT`、`IN_IGNORED`、`IN_ISDIR`、`IN_Q_OVERFLOW`；
+`IN_ONLYDIR`、`IN_DONT_FOLLOW`、`IN_MASK_ADD`、`IN_ONESHOT`。文件事件同时投递给文件自身的 watch（无名字）和父目录
+的 watch（带名字）；`rename` 的 `MOVED_FROM`/`MOVED_TO` 共用 cookie；相邻相同事件合并；队列上限 16384，满后丢弃并
+保留一个 `IN_Q_OVERFLOW`；读缓冲放不下首个事件为 `EINVAL`；支持阻塞与 `O_NONBLOCK` read、`FIONREAD`、
+poll/epoll。范围缩减：`IN_DELETE_SELF` 在最后一个 link 消失时投递而不是 inode 回收时；mmap 写入、`sendfile`
+与 `splice` 不产生事件；`IN_EXCL_UNLINK`、`IN_MOVE`/`IN_CLOSE` 组合位之外的 fanotify 语义、`/proc/sys/fs/inotify`
+限额文件不支持。
 
 块设备枚举：`/proc/partitions`（`major minor #blocks name`，容量以 1 KiB 计）；sysfs 的 `/sys/class/block`
 （全部设备）、`/sys/block`（整盘，其下是它的分区目录）与 `/sys/dev/block/MAJ:MIN`，每个设备目录有 `dev`、

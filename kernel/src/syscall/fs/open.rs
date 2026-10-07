@@ -132,6 +132,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         }
     };
     let inode = opened.inode();
+    let watch_target = opened.clone();
     let requested = match flags & O_ACCMODE {
         O_RDONLY => 4,
         O_WRONLY => 2,
@@ -216,6 +217,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         }
         ofd
     };
+    crate::fs::notify_opened(&watch_target, crate::fs::IN_OPEN);
     task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
         .map_or_else(super::super::file_descriptor_error, |fd| fd as isize)
 }

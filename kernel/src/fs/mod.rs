@@ -16,6 +16,7 @@ mod ext4_type;
 mod fifo;
 mod file;
 mod inode;
+mod inotify;
 mod mem;
 mod memfd;
 mod memory_file;
@@ -49,6 +50,12 @@ pub(crate) use file::{
 };
 use file::{TerminalRead, TerminalReadMode, character_write_chunk};
 pub(crate) use inode::{DataBacking, Inode, InodeMetadata, InodeType, StorageWriter};
+pub(crate) use inotify::{
+    IN_ACCESS, IN_ATTRIB, IN_CLOEXEC, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE,
+    IN_MODIFY, IN_MOVE_SELF, IN_MOVED_FROM, IN_MOVED_TO, IN_NONBLOCK, IN_OPEN, InitError, Inotify,
+    WatchError, add_watch_flags, filesystem_unmounted, identity as inotify_identity, next_cookie,
+    notify_entry, notify_opened, notify_removed, notify_self, watching,
+};
 pub(crate) use memfd::MemFile;
 pub(crate) use memory_file::{MemoryFile, PageBudget};
 pub(crate) use mount::{

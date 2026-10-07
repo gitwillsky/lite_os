@@ -171,6 +171,11 @@ pub(crate) trait DeviceFile: Send + Sync {
         Err(DeviceError::Errno(errno::ESPIPE))
     }
 
+    /// 该设备若是 inotify 实例则返回它；`inotify_add_watch`/`inotify_rm_watch` 经它作用于 fd。
+    fn inotify(&self) -> Option<&super::Inotify> {
+        None
+    }
+
     /// 该设备背后的内核管道（只有 FIFO 有）；`F_GETPIPE_SZ`/`F_SETPIPE_SZ` 经它作用于同一个环。
     fn backing_pipe(&self) -> Option<Arc<Pipe>> {
         None
