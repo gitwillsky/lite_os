@@ -12,6 +12,7 @@ mod directory;
 mod epoll;
 mod ext4;
 mod ext4_type;
+mod fifo;
 mod file;
 mod inode;
 mod mem;
@@ -36,6 +37,7 @@ pub(crate) use directory::{
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
 };
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent, EpollMemberships};
+pub(crate) use fifo::{FifoOpenError, open as open_fifo};
 pub(crate) use file::{
     CancelledFileReservation, Console, DetachedFileDescriptor, FileDescriptorError,
     FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK,

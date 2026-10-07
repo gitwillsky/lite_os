@@ -18,6 +18,7 @@ use super::{
     CreateMetadata, DataBacking, DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor,
     FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata, InodeType, MemoryFile,
     OwnerModeChange, PageBudget,
+    device::DeviceNumber,
     mount::{FileSystemType, MountRequest},
     permission::OwnerModeState,
 };
@@ -44,6 +45,9 @@ const DOT_COOKIE: u64 = 1;
 const DOT_DOT_COOKIE: u64 = 2;
 
 const S_IFSOCK: u16 = 0o140000;
+const S_IFBLK: u16 = 0o060000;
+const S_IFCHR: u16 = 0o020000;
+const S_IFIFO: u16 = 0o010000;
 const S_IFLNK: u16 = 0o120000;
 const S_IFREG: u16 = 0o100000;
 const S_IFDIR: u16 = 0o040000;
@@ -73,7 +77,8 @@ struct Namespace {
 enum NewKind {
     File,
     Directory,
-    Socket,
+    /// socket、FIFO 或设备节点；设备节点带设备号。
+    Special(InodeType, Option<DeviceNumber>),
     Symlink(Box<[u8]>),
 }
 
@@ -81,7 +86,8 @@ enum Body {
     Directory,
     File(Arc<MemoryFile>),
     Symlink(Box<[u8]>),
-    Socket,
+    /// socket、FIFO 或设备节点：没有数据，只有类型与（设备节点的）设备号。
+    Special(InodeType, Option<DeviceNumber>),
 }
 
 struct State {
@@ -235,7 +241,7 @@ impl TmpInode {
             Body::Directory => InodeType::Directory,
             Body::File(_) => InodeType::File,
             Body::Symlink(_) => InodeType::SymLink,
-            Body::Socket => InodeType::Socket,
+            Body::Special(kind, _) => kind,
         }
     }
 
@@ -247,7 +253,7 @@ impl TmpInode {
         match &self.body {
             Body::File(file) => Ok(file),
             Body::Directory => Err(FileSystemError::IsDirectory),
-            Body::Symlink(_) | Body::Socket => Err(FileSystemError::InvalidOperation),
+            Body::Symlink(_) | Body::Special(..) => Err(FileSystemError::InvalidOperation),
         }
     }
 
@@ -289,7 +295,15 @@ impl TmpInode {
                 S_IFREG,
             ),
             NewKind::Directory => (Body::Directory, S_IFDIR),
-            NewKind::Socket => (Body::Socket, S_IFSOCK),
+            NewKind::Special(kind, device) => (
+                Body::Special(kind, device),
+                match kind {
+                    InodeType::Fifo => S_IFIFO,
+                    InodeType::CharacterDevice => S_IFCHR,
+                    InodeType::BlockDevice => S_IFBLK,
+                    _ => S_IFSOCK,
+                },
+            ),
             NewKind::Symlink(target) => (Body::Symlink(target), S_IFLNK),
         };
         let is_directory = matches!(body, Body::Directory);
@@ -351,7 +365,7 @@ impl Inode for TmpInode {
                 0,
             ),
             Body::Symlink(target) => (target.len() as u64, 0, 0),
-            Body::Socket => (0, 0, 0),
+            Body::Special(..) => (0, 0, 0),
         };
         Ok(InodeMetadata {
             filesystem: self.shared.filesystem_id as u64,
@@ -368,7 +382,7 @@ impl Inode for TmpInode {
             // 文件内容的写入不经 inode，修改时间由存储记录。
             mtime: state.mtime.max(modified),
             ctime: state.ctime.max(modified),
-            device: None,
+            device: self.device_number(),
         })
     }
 
@@ -381,7 +395,7 @@ impl Inode for TmpInode {
         match &self.body {
             Body::File(file) => file.size(),
             Body::Symlink(target) => target.len() as u64,
-            Body::Directory | Body::Socket => 0,
+            Body::Directory | Body::Special(..) => 0,
         }
     }
 
@@ -393,7 +407,7 @@ impl Inode for TmpInode {
     fn data_backing(&self) -> DataBacking {
         match &self.body {
             Body::File(file) => DataBacking::Memory(file.clone()),
-            Body::Directory | Body::Symlink(_) | Body::Socket => DataBacking::PageCache,
+            Body::Directory | Body::Symlink(_) | Body::Special(..) => DataBacking::PageCache,
         }
     }
 
@@ -516,10 +530,32 @@ impl Inode for TmpInode {
         let kind = match kind {
             InodeType::File => NewKind::File,
             InodeType::Directory => NewKind::Directory,
-            InodeType::Socket => NewKind::Socket,
+            InodeType::Socket => NewKind::Special(InodeType::Socket, None),
             _ => return Err(FileSystemError::InvalidOperation),
         };
         self.create_child(name, kind, metadata)
+    }
+
+    fn mknod(
+        &self,
+        name: &[u8],
+        kind: InodeType,
+        metadata: CreateMetadata,
+        device: Option<DeviceNumber>,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        match (kind, device) {
+            (InodeType::Fifo, None)
+            | (InodeType::CharacterDevice | InodeType::BlockDevice, Some(_)) => {}
+            _ => return Err(FileSystemError::InvalidOperation),
+        }
+        self.create_child(name, NewKind::Special(kind, device), metadata)
+    }
+
+    fn device_number(&self) -> Option<DeviceNumber> {
+        match self.body {
+            Body::Special(_, device) => device,
+            _ => None,
+        }
     }
 
     fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {

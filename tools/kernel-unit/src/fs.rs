@@ -51,7 +51,22 @@ pub(crate) struct InodeMetadata {
     pub(crate) atime: u64,
     pub(crate) mtime: u64,
     pub(crate) ctime: u64,
-    pub(crate) device: Option<()>,
+    pub(crate) device: Option<device::DeviceNumber>,
+}
+
+/// 与 kernel `fs::device::DeviceNumber` 相同的形状；host 测试不需要设备注册表。
+pub(crate) mod device {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct DeviceNumber {
+        pub(crate) major: u32,
+        pub(crate) minor: u32,
+    }
+
+    impl DeviceNumber {
+        pub(crate) const fn new(major: u32, minor: u32) -> Self {
+            Self { major, minor }
+        }
+    }
 }
 
 pub(crate) trait StorageWriter {
@@ -64,6 +79,14 @@ pub(crate) trait Inode: Send + Sync {
     fn inode_type(&self) -> InodeType;
     fn size(&self) -> u64;
     fn is_executable(&self) -> bool;
+    fn device_number(&self) -> Option<device::DeviceNumber>;
+    fn mknod(
+        &self,
+        name: &[u8],
+        kind: InodeType,
+        metadata: CreateMetadata,
+        device: Option<device::DeviceNumber>,
+    ) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn read_storage(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError>;
     fn write_storage(&self, offset: u64, bytes: &[u8]) -> Result<usize, FileSystemError>;

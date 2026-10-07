@@ -344,3 +344,82 @@ fn htree_second_index_level_passes_e2fsck() {
     drop(fs);
     e2fsck_clean(&path);
 }
+
+#[test]
+fn fifo_and_device_nodes_persist_and_pass_e2fsck() {
+    use crate::fs::device::DeviceNumber;
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    let path = scratch_copy("ext4-special.img");
+    let fs = mount(&path);
+    let root = fs.root_inode().unwrap();
+    let node = |mode| CreateMetadata {
+        mode,
+        uid: 0,
+        gid: 0,
+    };
+
+    root.mknod(b"pipe", InodeType::Fifo, node(0o600), None)
+        .unwrap();
+    // major、minor 都小于 256 走旧编码；大 minor 走新编码。
+    root.mknod(
+        b"null",
+        InodeType::CharacterDevice,
+        node(0o666),
+        Some(DeviceNumber::new(1, 3)),
+    )
+    .unwrap();
+    root.mknod(
+        b"disk",
+        InodeType::BlockDevice,
+        node(0o660),
+        Some(DeviceNumber::new(8, 300)),
+    )
+    .unwrap();
+    // kind 与 device 不匹配被拒绝，且不留下目录项。
+    assert_eq!(
+        root.mknod(
+            b"bad",
+            InodeType::Fifo,
+            node(0o600),
+            Some(DeviceNumber::new(1, 1))
+        )
+        .err(),
+        Some(FileSystemError::InvalidOperation)
+    );
+    assert_eq!(
+        root.mknod(b"bad", InodeType::CharacterDevice, node(0o600), None)
+            .err(),
+        Some(FileSystemError::InvalidOperation)
+    );
+    assert!(root.find_child(b"bad").is_err());
+    root.sync_storage().unwrap();
+    drop((root, fs));
+
+    // 重新挂载后类型、设备号与权限从磁盘读回。
+    let fs = mount(&path);
+    let root = fs.root_inode().unwrap();
+    let pipe = child(&root, b"pipe");
+    assert_eq!(pipe.inode_type(), InodeType::Fifo);
+    assert_eq!(pipe.metadata().unwrap().mode & 0o7777, 0o600);
+    assert_eq!(pipe.device_number(), None);
+    let null = child(&root, b"null");
+    assert_eq!(null.inode_type(), InodeType::CharacterDevice);
+    assert_eq!(null.device_number(), Some(DeviceNumber::new(1, 3)));
+    let disk = child(&root, b"disk");
+    assert_eq!(disk.inode_type(), InodeType::BlockDevice);
+    assert_eq!(
+        disk.metadata().unwrap().device,
+        Some(DeviceNumber::new(8, 300))
+    );
+
+    // 删除（含 open-unlinked 的最后引用）后 inode 被回收，e2fsck 不报孤儿或位图错误。
+    root.unlink(b"pipe", false).unwrap();
+    root.unlink(b"null", false).unwrap();
+    drop((pipe, null));
+    root.unlink(b"disk", false).unwrap();
+    drop(disk);
+    root.sync_storage().unwrap();
+    drop(root);
+    drop(fs);
+    e2fsck_clean(&path);
+}

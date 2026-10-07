@@ -8,9 +8,10 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{
-    FileSystemError,
+    CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError, Inode,
+    InodeMetadata, InodeType, OwnerModeChange,
     block_range::{self, BlockStore, RangeError},
-    device::DeviceNumber,
+    device::{DeviceError, DeviceNumber, IoctlCall},
 };
 use crate::drivers::block::{BlockDevice, BlockError};
 
@@ -173,5 +174,144 @@ impl BlockNode {
     pub(crate) fn end_mount(&self) {
         let previous = self.claim.swap(0, Ordering::AcqRel);
         assert_eq!(previous, MOUNTED, "mounted block device had writers");
+    }
+}
+
+/// 路径上的块设备节点（任何文件系统里的 `S_IFBLK` inode）在 VFS 里的唯一视图。
+///
+/// 节点本身只记录“这是设备 `N`”，内容在设备上而不在节点里。VFS 在发布 opened entry 时把块设备节点
+/// 包装成它：metadata、权限与 chmod/chown 仍由节点所属文件系统负责，字节 I/O、容量、page cache 身份、
+/// ioctl 与 fsync 则统一落到 [`BlockNode`]。缺失这层时，每个文件系统的块设备节点都得各自实现一遍
+/// 设备 I/O，并且 tmpfs/ext4 上的节点读写会落在节点自己（没有数据）而不是设备上。
+pub(crate) struct BlockSpecial {
+    inner: Arc<dyn Inode>,
+    block: Arc<BlockNode>,
+}
+
+/// 把块设备节点包装成 [`BlockSpecial`]；其他 inode、或节点指向不存在的盘时原样返回。
+pub(super) fn wrap_block_node(inode: Arc<dyn Inode>) -> Result<Arc<dyn Inode>, FileSystemError> {
+    if inode.inode_type() != InodeType::BlockDevice {
+        return Ok(inode);
+    }
+    let Some(block) = inode.device_number().and_then(super::device::block_node) else {
+        return Ok(inode);
+    };
+    Arc::try_new(BlockSpecial {
+        inner: inode,
+        block,
+    })
+    .map(|wrapped| wrapped as Arc<dyn Inode>)
+    .map_err(|_| FileSystemError::OutOfMemory)
+}
+
+impl Inode for BlockSpecial {
+    fn filesystem_id(&self) -> usize {
+        self.inner.filesystem_id()
+    }
+
+    fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
+        self.inner.metadata()
+    }
+
+    fn inode_type(&self) -> InodeType {
+        InodeType::BlockDevice
+    }
+
+    /// 设备容量（`lseek(SEEK_END)` 与 page cache 的 EOF）；`st_size` 仍是节点的 0。
+    fn size(&self) -> u64 {
+        self.block.capacity()
+    }
+
+    fn is_executable(&self) -> bool {
+        false
+    }
+
+    fn device_number(&self) -> Option<DeviceNumber> {
+        Some(self.block.number())
+    }
+
+    /// 写设备不是修改文件系统：只读挂载上的块设备节点仍可按权限打开写入。
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
+    fn page_cache_id(&self) -> Result<crate::memory::SharedFileId, FileSystemError> {
+        Ok(self.block.cache_id())
+    }
+
+    /// 已挂载的块设备由文件系统直接读写块层，节点退化为只读、不缓冲的视图（见 [`BlockNode`]）。
+    fn data_backing(&self) -> DataBacking {
+        if self.block.mounted() {
+            DataBacking::Snapshot
+        } else {
+            DataBacking::PageCache
+        }
+    }
+
+    fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
+        super::block_ioctl::ioctl(&self.block, call)
+    }
+
+    fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
+        self.block.read(offset, buf)
+    }
+
+    fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
+        self.block.write(offset, buf)
+    }
+
+    fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
+
+    fn truncate_storage(&self, _size: u64) -> Result<(), FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
+
+    fn sync_storage(&self) -> Result<(), FileSystemError> {
+        self.block.flush()
+    }
+
+    fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
+        self.inner.set_times(atime, mtime)
+    }
+
+    fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
+        self.inner.change_owner_mode(change)
+    }
+
+    fn read_directory(
+        &self,
+        _cursor: u64,
+        _visitor: &mut dyn DirectoryVisitor,
+    ) -> Result<DirectoryRead, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn find_child(&self, _name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn create(
+        &self,
+        _name: &[u8],
+        _kind: InodeType,
+        _metadata: CreateMetadata,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn unlink(&self, _name: &[u8], _remove_directory: bool) -> Result<(), FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn rename(
+        &self,
+        _old_name: &[u8],
+        _new_parent_inode: u64,
+        _new_name: &[u8],
+        _no_replace: bool,
+    ) -> Result<(), FileSystemError> {
+        Err(FileSystemError::NotDirectory)
     }
 }

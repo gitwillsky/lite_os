@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 
 use super::{AccessIdentity, FileSystemError, Inode, InodeType, OpenedFile, VirtualFileSystem};
 use crate::fs::CreateMetadata;
+use crate::fs::device::DeviceNumber;
 
 impl VirtualFileSystem {
     /// 校验 parent access、umask/setgid inheritance 后创建 inode。
@@ -13,6 +14,19 @@ impl VirtualFileSystem {
         mode: u32,
         identity: &AccessIdentity,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
+        self.mknod_at(start, path, kind, mode, None, identity)
+    }
+
+    /// 同 [`Self::create_at`]，并支持 FIFO 与设备节点（`device` 只用于设备节点）。
+    pub(crate) fn mknod_at(
+        &self,
+        start: Option<Arc<OpenedFile>>,
+        path: &[u8],
+        kind: InodeType,
+        mode: u32,
+        device: Option<DeviceNumber>,
+        identity: &AccessIdentity,
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
         let _namespace = self
             .namespace_mutation
             .lock()
@@ -21,7 +35,7 @@ impl VirtualFileSystem {
             Some(start) => start,
             None => self.root_opened()?,
         };
-        self.create_at_locked(start, path, kind, mode, identity)
+        self.create_at_locked(start, path, kind, mode, device, identity)
     }
 
     /// 在 namespace mutation transaction 中原子打开或创建普通文件。
@@ -64,7 +78,7 @@ impl VirtualFileSystem {
                 Err(FileSystemError::NotDirectory)
             }
             Err(FileSystemError::NotFound) => {
-                self.create_at_locked(start, path, InodeType::File, mode, identity)
+                self.create_at_locked(start, path, InodeType::File, mode, None, identity)
             }
             Err(error) => Err(error),
         }
@@ -77,6 +91,7 @@ impl VirtualFileSystem {
         path: &[u8],
         kind: InodeType,
         mode: u32,
+        device: Option<DeviceNumber>,
         identity: &AccessIdentity,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
         // `/` 是已存在的 namespace entry；若继续交给 parent/name 分割，空末项会被
@@ -103,15 +118,17 @@ impl VirtualFileSystem {
             } else {
                 0
             };
-        let inode = parent_inode.create(
-            &name,
-            kind,
-            CreateMetadata {
-                mode,
-                uid: identity.uid(),
-                gid,
-            },
-        )?;
+        let metadata = CreateMetadata {
+            mode,
+            uid: identity.uid(),
+            gid,
+        };
+        let inode = match kind {
+            InodeType::Fifo | InodeType::CharacterDevice | InodeType::BlockDevice => {
+                parent_inode.mknod(&name, kind, metadata, device)?
+            }
+            _ => parent_inode.create(&name, kind, metadata)?,
+        };
         self.opened
             .register(OpenedFile::child(inode, parent, &name)?)
     }

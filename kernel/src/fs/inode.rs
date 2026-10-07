@@ -258,6 +258,27 @@ pub(crate) trait Inode: Send + Sync {
         metadata: CreateMetadata,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
 
+    /// 在当前目录创建 FIFO 或设备节点（Linux `mknod`）。
+    ///
+    /// # Parameters
+    ///
+    /// - `kind`: [`InodeType::Fifo`]、[`InodeType::CharacterDevice`] 或 [`InodeType::BlockDevice`]。
+    /// - `device`: 设备节点的设备号；FIFO 为 `None`。
+    ///
+    /// # Errors
+    ///
+    /// 默认实现（只读或不支持特殊文件的 filesystem）返回 `ReadOnly`；实现对 `kind` 与 `device` 不匹配
+    /// 返回 `InvalidOperation`，名字重复、空间不足等返回对应错误。
+    fn mknod(
+        &self,
+        _name: &[u8],
+        _kind: InodeType,
+        _metadata: CreateMetadata,
+        _device: Option<super::device::DeviceNumber>,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::ReadOnly)
+    }
+
     /// 在 filesystem mutation owner 内按 live state 原子授权并持久化 chmod/chown。
     ///
     /// # Parameters

@@ -22,8 +22,12 @@ impl Inode for Ext4Inode {
             atime: inode.atime().seconds(),
             mtime: inode.mtime().seconds(),
             ctime: inode.ctime().seconds(),
-            device: None,
+            device: Self::rdev(&inode),
         })
+    }
+
+    fn device_number(&self) -> Option<crate::fs::device::DeviceNumber> {
+        Self::rdev(&self.disk.lock())
     }
 
     fn inode_type(&self) -> InodeType {
@@ -201,49 +205,28 @@ impl Inode for Ext4Inode {
         kind: InodeType,
         metadata: crate::fs::CreateMetadata,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        if self.inode_type() != InodeType::Directory {
-            return Err(FileSystemError::NotDirectory);
-        }
-        Self::validate_name(name)?;
         if !matches!(
             kind,
             InodeType::File | InodeType::Directory | InodeType::Socket
         ) {
             return Err(FileSystemError::InvalidOperation);
         }
-        let mut mutation = self.fs.begin_mutation()?;
-        if self.lookup_entry(name)?.is_some() {
-            return Err(FileSystemError::AlreadyExists);
+        self.create_node(name, kind, metadata, None)
+    }
+
+    fn mknod(
+        &self,
+        name: &[u8],
+        kind: InodeType,
+        metadata: crate::fs::CreateMetadata,
+        device: Option<crate::fs::device::DeviceNumber>,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        match (kind, device) {
+            (InodeType::Fifo, None)
+            | (InodeType::CharacterDevice | InodeType::BlockDevice, Some(_)) => {}
+            _ => return Err(FileSystemError::InvalidOperation),
         }
-        let directory = kind == InodeType::Directory;
-        let parent_links = if directory {
-            Some(
-                link_count::increment_directory(self.disk.lock().i_links_count)
-                    .map_err(link_count_error)?,
-            )
-        } else {
-            None
-        };
-        let group = self.fs.group_index_and_local_inode(self.inode_num)?.0;
-        let number = self.fs.allocate_inode(group, directory)?;
-        mutation.discard_inode_on_abort(number)?;
-        let disk = Self::new_disk(
-            &self.fs,
-            inode_kind::create_mode(kind, metadata.mode),
-            metadata.uid,
-            metadata.gid,
-            if directory { 2 } else { 1 },
-            kind != InodeType::Socket,
-        );
-        self.fs.write_inode_disk(number, &disk)?;
-        let child = Ext4Inode::load(self.fs.clone(), number)?;
-        if directory {
-            child.initialize_directory_locked(&mut mutation, self.inode_num)?;
-        }
-        self.add_dir_entry_locked(&mut mutation, number, name, kind)?;
-        self.touch_parent(&mut mutation, parent_links)?;
-        mutation.commit()?;
-        Ok(child as Arc<dyn Inode>)
+        self.create_node(name, kind, metadata, device)
     }
 
     fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
@@ -327,7 +310,8 @@ impl Inode for Ext4Inode {
 /// unlink 或 mount orphan recovery 已回收的 inode 会在最后一个 Arc drop 时再次进入回收，并因
 /// orphan file 中已无该 inode 而以 `InvalidFileSystem` 失败。
 fn awaits_orphan_reclaim(disk: &Ext4InodeDisk) -> bool {
-    disk.i_links_count == 0 && disk.i_dtime == 0 && matches!(disk.i_mode & 0xF000, 0x8000 | 0xA000)
+    // 目录有独立的 rmdir 回收路径；其余类型（含 socket、FIFO、设备节点）被 open-unlinked 后都由这里回收。
+    disk.i_links_count == 0 && disk.i_dtime == 0 && disk.i_mode & 0xF000 != 0x4000
 }
 
 impl Drop for Ext4Inode {
@@ -381,5 +365,77 @@ impl Ext4Inode {
         mutation.discard_inode_on_abort(self.inode_num)?;
         self.fs.remove_orphan_locked(self.inode_num)?;
         self.reclaim_locked(mutation, false)
+    }
+}
+
+impl Ext4Inode {
+    /// 在 `self` 目录下创建一个新 inode 的唯一实现（Linux `ext4_create`/`ext4_mknod` 共用路径）。
+    ///
+    /// # Parameters
+    ///
+    /// - `kind`: 调用者已校验过的 inode 类型。
+    /// - `device`: 设备节点的设备号，写入 `i_block`；其余类型为 `None`。
+    ///
+    /// # Errors
+    ///
+    /// 非目录、名字无效、已存在、inode 分配或 journal 失败时返回对应错误。
+    fn create_node(
+        &self,
+        name: &[u8],
+        kind: InodeType,
+        metadata: crate::fs::CreateMetadata,
+        device: Option<crate::fs::device::DeviceNumber>,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        if self.inode_type() != InodeType::Directory {
+            return Err(FileSystemError::NotDirectory);
+        }
+        Self::validate_name(name)?;
+        let mut mutation = self.fs.begin_mutation()?;
+        if self.lookup_entry(name)?.is_some() {
+            return Err(FileSystemError::AlreadyExists);
+        }
+        let directory = kind == InodeType::Directory;
+        let parent_links = if directory {
+            Some(
+                link_count::increment_directory(self.disk.lock().i_links_count)
+                    .map_err(link_count_error)?,
+            )
+        } else {
+            None
+        };
+        let group = self.fs.group_index_and_local_inode(self.inode_num)?.0;
+        let number = self.fs.allocate_inode(group, directory)?;
+        mutation.discard_inode_on_abort(number)?;
+        let mut disk = Self::new_disk(
+            &self.fs,
+            inode_kind::create_mode(kind, metadata.mode),
+            metadata.uid,
+            metadata.gid,
+            if directory { 2 } else { 1 },
+            // 没有数据块的节点（socket、FIFO、设备）不带 extent tree。
+            kind == InodeType::File || kind == InodeType::Directory,
+        );
+        if let Some(device) = device {
+            disk.set_block_bytes(&inode_kind::encode_device(device.major, device.minor));
+        }
+        self.fs.write_inode_disk(number, &disk)?;
+        let child = Ext4Inode::load(self.fs.clone(), number)?;
+        if directory {
+            child.initialize_directory_locked(&mut mutation, self.inode_num)?;
+        }
+        self.add_dir_entry_locked(&mut mutation, number, name, kind)?;
+        self.touch_parent(&mut mutation, parent_links)?;
+        mutation.commit()?;
+        Ok(child as Arc<dyn Inode>)
+    }
+
+    /// 设备节点的设备号；非设备 inode 为 `None`。
+    pub(in crate::fs::ext4) fn rdev(
+        disk: &Ext4InodeDisk,
+    ) -> Option<crate::fs::device::DeviceNumber> {
+        matches!(disk.i_mode & 0xF000, 0x2000 | 0x6000).then(|| {
+            let (major, minor) = inode_kind::decode_device(&disk.block_bytes());
+            crate::fs::device::DeviceNumber::new(major, minor)
+        })
     }
 }

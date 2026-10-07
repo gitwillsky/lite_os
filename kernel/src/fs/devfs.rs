@@ -112,17 +112,6 @@ impl DevInode {
         .map_err(|_| FileSystemError::OutOfMemory)
     }
 
-    /// 注册的块设备节点对应的 bdev 状态；其他节点为 `None`。
-    fn block(&self) -> Option<Arc<super::BlockNode>> {
-        match self.node {
-            DevNode::Registered(index) => {
-                let node = registry::device(index)?;
-                registry::block_node(node.number)
-            }
-            _ => None,
-        }
-    }
-
     fn child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
         if let (DevNode::Directory(_), b"." | b"..") = (self.node, name) {
             let node = if name == b"." {
@@ -205,44 +194,13 @@ impl Inode for DevInode {
     }
 
     fn is_read_only(&self) -> bool {
-        // 块设备节点的内容可写（受挂载互斥约束）；其余节点由注册表投影，不可写。
-        self.block().is_none()
+        true
     }
 
     fn size(&self) -> u64 {
         match self.node {
             DevNode::Link(link) => link.target().len() as u64,
-            _ => self.block().map_or(0, |block| block.capacity()),
-        }
-    }
-
-    fn page_cache_id(&self) -> Result<crate::memory::SharedFileId, FileSystemError> {
-        match self.block() {
-            Some(block) => Ok(block.cache_id()),
-            None => Ok(crate::memory::SharedFileId {
-                filesystem: self.filesystem_id,
-                inode: self.node.inode(),
-            }),
-        }
-    }
-
-    /// 已挂载的块设备由文件系统直接读写块层，节点退化为只读、不缓冲的视图（见 [`BlockNode`]）。
-    fn data_backing(&self) -> super::DataBacking {
-        match self.block() {
-            Some(block) if block.mounted() => super::DataBacking::Snapshot,
-            _ => super::DataBacking::PageCache,
-        }
-    }
-
-    fn ioctl(
-        &self,
-        call: &super::device::IoctlCall<'_>,
-    ) -> Result<isize, super::device::DeviceError> {
-        match self.block() {
-            Some(block) => super::block_ioctl::ioctl(&block, call),
-            None => Err(super::device::DeviceError::Errno(
-                syscall_abi::errno::ENOTTY,
-            )),
+            DevNode::Root | DevNode::Pts | DevNode::Directory(_) | DevNode::Registered(_) => 0,
         }
     }
 
@@ -269,16 +227,12 @@ impl Inode for DevInode {
         }
     }
 
-    fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
-        self.block()
-            .ok_or(FileSystemError::InvalidOperation)?
-            .read(offset, buf)
+    fn read_storage(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
     }
 
-    fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
-        self.block()
-            .ok_or(FileSystemError::InvalidOperation)?
-            .write(offset, buf)
+    fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
     }
 
     fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
@@ -290,7 +244,7 @@ impl Inode for DevInode {
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
-        self.block().map_or(Ok(()), |block| block.flush())
+        Ok(())
     }
 
     fn read_directory(

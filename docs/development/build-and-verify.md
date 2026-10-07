@@ -287,6 +287,9 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
 - BusyBox init/ash、TTY、filesystem（含 tmpfs 的 mount 选项、link/rename、`size=`/`nr_inodes=` 配额与
   已删除但仍打开文件的空间归还）、IPC 与 network consumer；
+- 内存型文件（memfd、tmpfs）的真实 guest 验证：`scripts/fixtures/musl/memory-file.c` 只注入一次性 gate 镜像，
+  覆盖共享映射与 read/write 一致性、fork 共享、截断后映射 `SIGBUS` 与内容不复活、seal、`MAP_PRIVATE` COW、
+  unlink 后映射仍可访问且空间在最后引用消失时归还，以及 `size=` 配额下 `ENOSPC`（write）与 `SIGBUS`（映射）；
 - init 把 `/run`、`/tmp`、`/dev/shm` 挂成 tmpfs，所以 gate 经 `debugfs` 写入镜像的安装载荷与脚本只能放在持久的
   `/var/tmp`，不能放在 `/run`（会被 tmpfs 盖住）；
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice；

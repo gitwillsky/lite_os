@@ -47,7 +47,8 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
                 (if state.writable { OUTPUT } else { 0 }) | if state.error { ERROR } else { 0 }
             }
         };
-        if ready == 0 {
+        // 没有 poll 事件时仍要检查命名管道 open 汇合的等待者：对端打开不改变 readable/writable。
+        if ready == 0 && !state.rendezvous {
             continue;
         }
         while let Some(wake) =

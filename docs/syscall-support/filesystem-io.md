@@ -10,7 +10,7 @@
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |
-| 33 | `mknodat` | Partial | 已支持 inode/device types |
+| 33 | `mknodat` | Partial | regular、FIFO、socket、字符/块设备节点（ext4 与 tmpfs）；设备节点需 effective UID 0，目录类型 `EPERM` |
 | 34 | `mkdirat` | Complete | ext4 directory transaction |
 | 35 | `unlinkat` | Complete | file/directory unlink 与 lifecycle |
 | 36 | `symlinkat` | Complete | ext4 fast/slow symlink |
@@ -60,6 +60,10 @@
 tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`；`huge=`、`mpol=` 等返回 `EINVAL`。
 
 没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring 或完整 block I/O priority enforcement。
+
+FIFO：`open` 按 Linux `fifo_open` 汇合（阻塞只读等 writer、阻塞只写等 reader，非阻塞只写无 reader 为
+`ENXIO`），对端打开后立刻关闭也放行等待者；最后一个 endpoint 关闭时未读数据丢弃。`O_RDWR` 打开 FIFO 返回
+`EOPNOTSUPP`（pipe OFD 只有单向 endpoint），所以 shell 的 `exec 3<>fifo` 惯用法不可用。
 
 块设备节点 `/dev/vdX`（`S_IFBLK`，major 254，每盘 16 个 minor）支持原始块 I/O：`read`/`write`/`pread`/
 `pwrite`/`lseek`（`SEEK_END` 为容量）/`fsync`/`mmap`，经 page cache 缓冲，任意字节偏移；写入在设备末尾截断，

@@ -1,4 +1,8 @@
-use crate::{fs::InodeType, fs::vfs, syscall::errno, task::current_task};
+use crate::{
+    fs::{InodeType, device::DeviceNumber, vfs},
+    syscall::errno,
+    task::current_task,
+};
 
 use super::pathname::{base, ferr, path};
 
@@ -6,26 +10,42 @@ const AT_REMOVEDIR: usize = 0x200;
 const RENAME_NOREPLACE: u32 = 1;
 const S_IFMT: u32 = 0o170000;
 const S_IFREG: u32 = 0o100000;
+const S_IFDIR: u32 = 0o040000;
+const S_IFCHR: u32 = 0o020000;
+const S_IFBLK: u32 = 0o060000;
+const S_IFIFO: u32 = 0o010000;
+const S_IFSOCK: u32 = 0o140000;
 
-/// 按 Linux mknodat ABI 创建普通文件 inode。
+/// 按 Linux mknodat ABI 创建 regular file、FIFO、socket 或设备节点。
 ///
 /// # Parameters
 ///
 /// - `dirfd`: 相对 pathname 的目录 fd，或 AT_FDCWD。
 /// - `name`: NUL 结尾且非空的 pathname。
-/// - `mode`: inode type 与 permission/special bits；type 为零或 S_IFREG 时创建普通文件。
-/// - `device`: character/block device 的编码；普通文件不使用该参数。
+/// - `mode`: inode type 与 permission/special bits；type 为零按 `S_IFREG` 处理。
+/// - `device`: 设备节点的 `dev_t`（Linux 64-bit 编码）；其余类型忽略。
 ///
 /// # Returns
 ///
-/// 成功返回零；不支持的 inode type、pathname、权限、空间或 I/O 错误返回负 errno。
-pub(crate) fn sys_mknodat(dirfd: isize, name: *const u8, mode: u32, _device: u64) -> isize {
-    if !matches!(mode & S_IFMT, 0 | S_IFREG) {
-        return -errno::EOPNOTSUPP;
-    }
+/// 成功返回零。创建字符/块设备节点需要 `CAP_MKNOD`（以 effective UID 0 代表），否则 `EPERM`；
+/// 目录类型返回 `EPERM`，未知 type 返回 `EINVAL`；pathname、重复、空间或只读错误返回对应 errno。
+pub(crate) fn sys_mknodat(dirfd: isize, name: *const u8, mode: u32, device: u64) -> isize {
+    let kind = match mode & S_IFMT {
+        0 | S_IFREG => InodeType::File,
+        S_IFIFO => InodeType::Fifo,
+        S_IFSOCK => InodeType::Socket,
+        S_IFCHR => InodeType::CharacterDevice,
+        S_IFBLK => InodeType::BlockDevice,
+        S_IFDIR => return -errno::EPERM,
+        _ => return -errno::EINVAL,
+    };
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
+    let is_device = matches!(kind, InodeType::CharacterDevice | InodeType::BlockDevice);
+    if is_device && task.credential_id(true, true) != 0 {
+        return -errno::EPERM;
+    }
     let path = match path(&task, name) {
         Ok(path) => path,
         Err(error) => return error,
@@ -35,11 +55,12 @@ pub(crate) fn sys_mknodat(dirfd: isize, name: *const u8, mode: u32, _device: u64
         Err(error) => return error,
     };
     vfs()
-        .create_at(
+        .mknod_at(
             start,
             &path,
-            InodeType::File,
+            kind,
             task.creation_mode(mode),
+            is_device.then(|| DeviceNumber::decode(device)),
             &task.access_identity(true),
         )
         .map_or_else(ferr, |_| 0)

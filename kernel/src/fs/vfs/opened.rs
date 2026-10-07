@@ -64,6 +64,8 @@ impl OpenedFile {
         parent: Arc<OpenedFile>,
         name: &[u8],
     ) -> Result<Arc<Self>, FileSystemError> {
+        // 块设备节点在 VFS 里只有一种视图：字节 I/O 落到设备，而不是节点所在的文件系统。
+        let inode = super::super::block_node::wrap_block_node(inode)?;
         Arc::try_new(Self {
             inode,
             location: Mutex::new(OpenedLocation {

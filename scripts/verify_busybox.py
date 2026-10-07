@@ -962,6 +962,70 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
 
 
+def build_musl_probe(musl: MuslCachePaths, name: str) -> Path:
+    """构建只用于 runtime gate 的单文件 musl probe（`scripts/fixtures/musl/<name>.c`）。"""
+    source = ROOT / "scripts/fixtures/musl" / f"{name}.c"
+    payload = {
+        "kind": f"{name}-probe",
+        "recipe_version": 1,
+        "arch": TARGET.arch,
+        "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
+        "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
+        "source_sha256": sha256(source),
+    }
+    binary = f"{name}-probe"
+    entry = WORK / f"{name}-probes" / fingerprint(payload)
+    if manifest_matches(entry, payload, (binary,)):
+        return entry / binary
+    generation = generation_directory(WORK / f"{name}-probe-generations", fingerprint(payload))
+    env = build_environment()
+    env.update({
+        "LITEOS_MUSL_CLANG": str(musl.compiler),
+        "LITEOS_MUSL_LLD": str(musl.linker),
+        "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime),
+        "LITEOS_MUSL_SYSROOT": str(musl.install),
+    })
+    published = False
+    try:
+        run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/musl_clang.py"),
+                str(source),
+                "-std=gnu11",
+                "-D_GNU_SOURCE",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-fPIE",
+                "-pie",
+                "-o",
+                str(generation / binary),
+            ],
+            ROOT,
+            env,
+        )
+        write_manifest(generation, payload)
+        publish_generation(generation, entry)
+        published = True
+    finally:
+        if not published:
+            shutil.rmtree(generation, ignore_errors=True)
+    return entry / binary
+
+
+def install_musl_probes(image: Path, probes: dict[str, Path], workspace: Path) -> None:
+    """只向一次性 runtime-gate 镜像注入 verification-only probe（不进入产品 rootfs）。"""
+    commands = workspace / "musl-probes.debugfs"
+    commands.write_text(
+        "".join(
+            f"write {path} /var/tmp/{name}\nset_inode_field /var/tmp/{name} mode 0100755\n"
+            for name, path in probes.items()
+        )
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+
+
 def install_runtime_execution_fixtures(
     image: Path,
     dynamic_probe: Path,
@@ -2007,6 +2071,14 @@ def main() -> int:
             dynamic_library,
             runtime_path,
         )
+        install_musl_probes(
+            runtime_image,
+            {
+                "memory-file-probe": build_musl_probe(musl, "memory-file"),
+                "special-file-probe": build_musl_probe(musl, "special-file"),
+            },
+            runtime_path,
+        )
         # 裸块设备 gate 的第二块盘：4 MiB，首块写入已知标记，其余为零。
         scratch_disk = runtime_path / "scratch.img"
         with scratch_disk.open("wb") as scratch:
@@ -2088,6 +2160,8 @@ def main() -> int:
                 "LITEOS_BLOCK_58",
                 "LITEOS_BLOCK_59",
                 "LITEOS_BLOCK_60",
+                "LITEOS_MEMFILE_42",
+                "LITEOS_SPECIAL_42",
                 "LITEOS_LINKS_43",
                 "LITEOS_NAMESPACE_CONCURRENCY_43",
                 "LITEOS_BUSYBOX_CREDENTIALS_44",
@@ -2323,6 +2397,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BLOCK_60",
+                    b"/var/tmp/memory-file-probe\n",
+                ),
+                (
+                    "LITEOS_MEMFILE_42",
+                    b"/var/tmp/special-file-probe\n",
+                ),
+                (
+                    "LITEOS_SPECIAL_42",
                     b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n",
                 ),
                 (

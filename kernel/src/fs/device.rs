@@ -30,6 +30,16 @@ impl DeviceNumber {
         Self { major, minor }
     }
 
+    /// 解码 Linux `new_decode_dev` 的 64-bit `dev_t`（[`Self::encode`] 的逆）。
+    pub(crate) const fn decode(value: u64) -> Self {
+        let major = ((value >> 8) & 0xfff) | ((value >> 32) & !0xfff);
+        let minor = (value & 0xff) | ((value >> 12) & !0xff);
+        Self {
+            major: major as u32,
+            minor: minor as u32,
+        }
+    }
+
     /// Linux `new_encode_dev` 的 64-bit `st_rdev` 编码。
     pub(crate) const fn encode(self) -> u64 {
         let major = self.major as u64;

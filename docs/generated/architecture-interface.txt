@@ -1814,6 +1814,8 @@ kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn number (& self) 
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/block_node.rs :: pub (crate) impl BlockNode :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/block_node.rs :: pub (crate) struct BlockNode
+kernel/src/fs/block_node.rs :: pub (crate) struct BlockSpecial
+kernel/src/fs/block_node.rs :: pub (super) fn wrap_block_node (inode : Arc < dyn Inode >) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn new (number : DeviceNumber , device : Arc < dyn BlockDevice > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/block_range.rs :: enum RangeError :: # [doc = " 写入起点已在设备末尾或之后（`ENOSPC`）。"] Full
 kernel/src/fs/block_range.rs :: enum RangeError :: # [doc = " 底层块读写失败。"] Store (E)
@@ -1859,6 +1861,7 @@ kernel/src/fs/device.rs :: pub (crate) fn register_driver (first : DeviceNumber 
 kernel/src/fs/device.rs :: pub (crate) fn register_node (path : & [u8] , number : DeviceNumber , permissions : u32 ,) -> Result < () , FileSystemError >
 kernel/src/fs/device.rs :: pub (crate) fn wait_ready (file : & dyn DeviceFile , events : i16 , nonblocking : bool ,) -> Result < () , DeviceError >
 kernel/src/fs/device.rs :: pub (crate) impl DeviceError :: const fn errno (self) -> isize
+kernel/src/fs/device.rs :: pub (crate) impl DeviceNumber :: const fn decode (value : u64) -> Self
 kernel/src/fs/device.rs :: pub (crate) impl DeviceNumber :: const fn encode (self) -> u64
 kernel/src/fs/device.rs :: pub (crate) impl DeviceNumber :: const fn new (major : u32 , minor : u32) -> Self
 kernel/src/fs/device.rs :: pub (crate) impl DeviceWaitSources :: const fn new () -> Self
@@ -2099,8 +2102,11 @@ kernel/src/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn now () -> Self
 kernel/src/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn seconds (self) -> u64
 kernel/src/fs/ext4/inode.rs :: pub (super) struct Ext4Inode
 kernel/src/fs/ext4/inode.rs :: pub (super) struct Timestamp
+kernel/src/fs/ext4/inode/vfs.rs :: pub (in crate :: fs :: ext4) impl Ext4Inode :: fn rdev (disk : & Ext4InodeDisk ,) -> Option < crate :: fs :: device :: DeviceNumber >
 kernel/src/fs/ext4/inode/vfs.rs :: pub (in crate :: fs :: ext4) impl Ext4Inode :: fn reclaim_dropped_orphan_locked (& self , mutation : & mut MutationGuard < '_ > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn create_mode (kind : InodeType , permissions : u32) -> u16
+kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn decode_device (block : & [u8 ; 60]) -> (u32 , u32)
+kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn encode_device (major : u32 , minor : u32) -> [u8 ; 60]
 kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn file_type (kind : InodeType) -> u8
 kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn from_file_type (file_type : u8) -> InodeType
 kernel/src/fs/ext4/inode_kind.rs :: pub (super) fn from_mode (mode : u16) -> InodeType
@@ -2226,6 +2232,11 @@ kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write
 kernel/src/fs/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/ext4/xattr.rs :: pub (super) impl Ext4FileSystem :: fn release_xattr_block (& self , disk : & mut Ext4InodeDisk ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4_type.rs :: pub (super) struct Ext4FileSystemType
+kernel/src/fs/fifo.rs :: enum FifoOpenError :: # [doc = " 分配失败（`ENOMEM`）。"] OutOfMemory
+kernel/src/fs/fifo.rs :: enum FifoOpenError :: # [doc = " 等待对端期间被 signal 中断（`EINTR`/重启）。"] Interrupted
+kernel/src/fs/fifo.rs :: enum FifoOpenError :: # [doc = " 非阻塞只写打开时没有 reader（`ENXIO`）。"] NoReader
+kernel/src/fs/fifo.rs :: pub (crate) enum FifoOpenError
+kernel/src/fs/fifo.rs :: pub (crate) fn open (identity : (usize , u64) , direction : PipeDirection , nonblocking : bool ,) -> Result < Arc < PipeEnd > , FifoOpenError >
 kernel/src/fs/file.rs :: enum OpenFileKind :: # [doc = " 经字符设备注册表打开、由设备子系统实现的设备文件。"] Device (Arc < dyn crate :: fs :: device :: DeviceFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
@@ -2420,6 +2431,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn is_read_only (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn link (& self , _name : & [u8] , _target : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn mknod (& self , _name : & [u8] , _kind : InodeType , _metadata : CreateMetadata , _device : Option < super :: device :: DeviceNumber > ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn page_cache_id (& self) -> Result < crate :: memory :: SharedFileId , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_directory (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
@@ -2541,6 +2553,7 @@ kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str 
 kernel/src/fs/mod.rs :: pub (crate) use block_node :: BlockNode
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent , EpollMemberships }
+kernel/src/fs/mod.rs :: pub (crate) use fifo :: { FifoOpenError , open as open_fifo }
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , Inode , InodeMetadata , InodeType , StorageWriter }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
@@ -2980,6 +2993,7 @@ kernel/src/fs/vfs/mount_flags.rs :: pub (crate) struct MountFlags
 kernel/src/fs/vfs/mount_table.rs :: pub (super) fn write_mount_record (output : & mut Vec < u8 > , source : & [u8] , target : & [u8] , statistics : & FileSystemStatistics , flags : MountFlags ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , kind : InodeType , mode : u32 , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn link_at (& self , target : Arc < dyn Inode > , new_start : Option < Arc < OpenedFile > > , new_path : & [u8] , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn mknod_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , kind : InodeType , mode : u32 , device : Option < DeviceNumber > , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn open_or_create_file_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , mode : u32 , identity : & AccessIdentity , exclusive : bool ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn rename_at (& self , old_start : Option < Arc < OpenedFile > > , old_path : & [u8] , new_start : Option < Arc < OpenedFile > > , new_path : & [u8] , no_replace : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn symlink_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , target : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
@@ -3095,14 +3109,17 @@ kernel/src/ipc.rs :: enum PipeDirection :: Write
 kernel/src/ipc.rs :: enum PipeRead :: Bytes (usize)
 kernel/src/ipc.rs :: enum PipeRead :: Empty
 kernel/src/ipc.rs :: enum PipeRead :: Eof
+kernel/src/ipc.rs :: enum PipeWaitCondition :: # [doc = " 命名管道 open 汇合：对端自 `since` 之后又打开过一次。`waiter` 是等待者自己的方向。"] PeerOpened { waiter : PipeDirection , since : u64 , }
 kernel/src/ipc.rs :: enum PipeWaitCondition :: Readable
-kernel/src/ipc.rs :: enum PipeWaitCondition :: Writable { minimum : usize }
+kernel/src/ipc.rs :: enum PipeWaitCondition :: Writable { minimum : usize , }
 kernel/src/ipc.rs :: enum PipeWrite :: Broken
 kernel/src/ipc.rs :: enum PipeWrite :: Bytes (usize)
 kernel/src/ipc.rs :: enum PipeWrite :: Full
 kernel/src/ipc.rs :: pub (crate) PipePollState :: error : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: hangup : bool
+kernel/src/ipc.rs :: pub (crate) PipePollState :: peer_opens : u64
 kernel/src/ipc.rs :: pub (crate) PipePollState :: readable : bool
+kernel/src/ipc.rs :: pub (crate) PipePollState :: rendezvous : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: writable : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: write_capacity : usize
 kernel/src/ipc.rs :: pub (crate) const PIPE_BUF : usize = 4096
@@ -3112,12 +3129,16 @@ kernel/src/ipc.rs :: pub (crate) enum PipeWaitCondition
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
 kernel/src/ipc.rs :: pub (crate) fn install_pipe_scheduler (scheduler : & 'static dyn PipeScheduler)
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn new_named () -> Result < Arc < Self > , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn notification_pair () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn object_id (& self) -> u64
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn open_end (self : & Arc < Self > , direction : PipeDirection) -> Result < Arc < PipeEnd > , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn peer_snapshot (& self , waiter : PipeDirection) -> (usize , u64)
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait (self : & Arc < Self > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_for_peer (self : & Arc < Self > , waiter : PipeDirection , since : u64) -> WaitResult
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn discard_buffered (& self) -> usize
@@ -4433,7 +4454,7 @@ kernel/src/syscall/fs/links.rs :: pub (crate) fn sys_symlinkat (target : * const
 kernel/src/syscall/fs/mount.rs :: pub (crate) fn sys_mount (source : * const u8 , target : * const u8 , fstype : * const u8 , flags : usize , data : * const u8 ,) -> isize
 kernel/src/syscall/fs/mount.rs :: pub (crate) fn sys_umount2 (target : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mkdirat (dirfd : isize , name : * const u8 , mode : u32) -> isize
-kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mknodat (dirfd : isize , name : * const u8 , mode : u32 , _device : u64) -> isize
+kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mknodat (dirfd : isize , name : * const u8 , mode : u32 , device : u64) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_renameat2 (old_dirfd : isize , old_name : * const u8 , new_dirfd : isize , new_name : * const u8 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_unlinkat (dirfd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_chdir (name : * const u8) -> isize

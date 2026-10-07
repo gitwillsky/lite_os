@@ -11,10 +11,10 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
         return -errno::EBADF;
     }
-    let OpenFileKind::Inode(opened) = &ofd.kind else {
+    // 路径打开的文件与 memfd 都有 inode 内容；pipe、socket 与字符设备没有可定位的内容。
+    let Some(inode) = ofd.inode_ref() else {
         return -errno::ESPIPE;
     };
-    let inode = opened.inode();
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
@@ -85,10 +85,10 @@ fn positioned_write(
     if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
         return -errno::EBADF;
     }
-    let OpenFileKind::Inode(opened) = &ofd.kind else {
+    // 路径打开的文件与 memfd 都有 inode 内容；pipe、socket 与字符设备没有可定位的内容。
+    let Some(inode) = ofd.inode_ref() else {
         return -errno::ESPIPE;
     };
-    let inode = opened.inode();
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }

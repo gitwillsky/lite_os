@@ -26,7 +26,14 @@ pub(crate) enum PipeDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PipeWaitCondition {
     Readable,
-    Writable { minimum: usize },
+    Writable {
+        minimum: usize,
+    },
+    /// 命名管道 open 汇合：对端自 `since` 之后又打开过一次。`waiter` 是等待者自己的方向。
+    PeerOpened {
+        waiter: PipeDirection,
+        since: u64,
+    },
 }
 
 impl PipeWaitCondition {
@@ -42,6 +49,7 @@ impl PipeWaitCondition {
                 assert!((1..=PIPE_BUF).contains(&minimum));
                 PipeDirection::Write
             }
+            Self::PeerOpened { waiter, .. } => waiter,
         }
     }
 }
@@ -74,6 +82,10 @@ pub(crate) struct PipePollState {
     pub(crate) hangup: bool,
     pub(crate) error: bool,
     pub(crate) write_capacity: usize,
+    /// 对端方向（read 侧看 writer、write 侧看 reader）累计被打开的次数；只有命名管道会增长。
+    pub(crate) peer_opens: u64,
+    /// 有任务正在命名管道 open 汇合里等待对端；唤醒路径据此在没有 poll 事件时仍检查等待者。
+    pub(crate) rendezvous: bool,
 }
 
 impl PipePollState {
@@ -90,6 +102,7 @@ impl PipePollState {
         match condition {
             PipeWaitCondition::Readable => self.readable,
             PipeWaitCondition::Writable { minimum } => self.error || self.write_capacity >= minimum,
+            PipeWaitCondition::PeerOpened { since, .. } => self.peer_opens > since,
         }
     }
 }
@@ -142,6 +155,11 @@ struct PipeState {
     length: usize,
     readers: usize,
     writers: usize,
+    // 命名管道的 reader/writer 累计打开次数。open 汇合等待“自我开始等待之后对端又打开过”，而不是
+    // “此刻对端存在”：对端打开后立即关闭也必须放行等待者（Linux `r_counter`/`w_counter`）。
+    reader_opens: u64,
+    writer_opens: u64,
+    rendezvous_waiters: usize,
     read_generation: u64,
     write_generation: u64,
 }
@@ -214,6 +232,9 @@ impl Pipe {
                 length: 0,
                 readers: 1,
                 writers: 1,
+                reader_opens: 1,
+                writer_opens: 1,
+                rendezvous_waiters: 0,
                 read_generation: crate::sync::next_readiness_generation(),
                 write_generation: crate::sync::next_readiness_generation(),
             }),
@@ -230,6 +251,88 @@ impl Pipe {
         })
         .map_err(|_| ())?;
         Ok((read, write))
+    }
+
+    /// 创建没有任何 endpoint 的命名管道（FIFO）实体；endpoint 由 [`Self::open_end`] 逐个打开。
+    ///
+    /// # Returns
+    ///
+    /// 初始 reader/writer 计数为零的 Pipe；heap 不足返回错误。
+    pub(crate) fn new_named() -> Result<Arc<Self>, ()> {
+        let capacity = PIPE_CAPACITY.get();
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(capacity).map_err(|_| ())?;
+        bytes.resize(capacity, 0);
+        Arc::try_new(Self {
+            object_id: crate::id::next_runtime_object_id(),
+            state: Mutex::new(PipeState {
+                bytes,
+                head: 0,
+                length: 0,
+                readers: 0,
+                writers: 0,
+                reader_opens: 0,
+                writer_opens: 0,
+                rendezvous_waiters: 0,
+                read_generation: crate::sync::next_readiness_generation(),
+                write_generation: crate::sync::next_readiness_generation(),
+            }),
+        })
+        .map_err(|_| ())
+    }
+
+    /// 打开一个新的 endpoint 并计数；已有 endpoint 的 Pipe 上可重复调用（FIFO 的多次 open）。
+    ///
+    /// # Returns
+    ///
+    /// endpoint；Drop 时归还计数。heap 不足返回错误且不改变计数。
+    pub(crate) fn open_end(self: &Arc<Self>, direction: PipeDirection) -> Result<Arc<PipeEnd>, ()> {
+        // 先分配 endpoint：之后的计数与发布不会失败，计数变化因此总有对应的 Drop。
+        let end = Arc::try_new(PipeEnd {
+            pipe: self.clone(),
+            direction,
+        })
+        .map_err(|_| ())?;
+        {
+            let mut state = self.state.lock();
+            match direction {
+                PipeDirection::Read => {
+                    state.readers += 1;
+                    state.reader_opens += 1;
+                    state.write_generation = crate::sync::next_readiness_generation();
+                }
+                PipeDirection::Write => {
+                    state.writers += 1;
+                    state.writer_opens += 1;
+                    state.read_generation = crate::sync::next_readiness_generation();
+                }
+            }
+        }
+        publish_state_change(self);
+        Ok(end)
+    }
+
+    /// 当前对端存在的 endpoint 数与对端累计打开次数（命名管道 open 汇合的起点快照）。
+    ///
+    /// # Parameters
+    ///
+    /// - `waiter`: 调用者自己的方向。
+    pub(crate) fn peer_snapshot(&self, waiter: PipeDirection) -> (usize, u64) {
+        let state = self.state.lock();
+        match waiter {
+            PipeDirection::Read => (state.writers, state.writer_opens),
+            PipeDirection::Write => (state.readers, state.reader_opens),
+        }
+    }
+
+    /// 阻塞到对端自 `since` 之后又打开过一次，或被 signal 中断。
+    ///
+    /// 等待期间登记为汇合等待者，使对端的 open 能走到唤醒路径；返回前一定撤销登记。
+    pub(crate) fn wait_for_peer(self: &Arc<Self>, waiter: PipeDirection, since: u64) -> WaitResult {
+        self.state.lock().rendezvous_waiters += 1;
+        let result = self.wait(PipeWaitCondition::PeerOpened { waiter, since }, None);
+        self.state.lock().rendezvous_waiters -= 1;
+        result
     }
 
     pub(crate) fn identity(pipe: &Arc<Self>) -> usize {
@@ -262,6 +365,8 @@ impl Pipe {
                 hangup: state.writers == 0,
                 error: false,
                 write_capacity: 0,
+                peer_opens: state.writer_opens,
+                rendezvous: state.rendezvous_waiters != 0,
             },
             PipeDirection::Write => PipePollState {
                 readable: false,
@@ -269,6 +374,8 @@ impl Pipe {
                 hangup: false,
                 error: state.readers == 0,
                 write_capacity: state.bytes.len() - state.length,
+                peer_opens: state.reader_opens,
+                rendezvous: state.rendezvous_waiters != 0,
             },
         }
     }

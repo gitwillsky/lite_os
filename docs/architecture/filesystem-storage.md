@@ -64,6 +64,10 @@
 ## Known limits
 
 - 持久存储是固定 ext4/JBD2 profile；附加块设备可经 `mount(2)` 挂载，没有分区表。
+- FIFO、字符/块设备节点由 `Inode::mknod` 创建（ext4 把设备号按 Linux 旧/新编码存入 `i_block`，无 extent tree；
+  tmpfs 存为 `Body::Special`）。FIFO 的内核 Pipe 由 `fs::fifo` 按 `(filesystem, inode)` 绑定，只持 `Weak`，
+  生命周期由 endpoint 决定。VFS 发布 opened entry 时把任何文件系统里的块设备节点包装成 `BlockSpecial`：
+  metadata/权限仍归节点所属文件系统，字节 I/O、容量、缓存身份、ioctl 与 fsync 统一落到 `BlockNode`。
 - 原始块 I/O 经 page cache 缓冲，但 ext4 直接读写块层，二者不共享缓存，所以一块盘要么被挂载（节点只读、
   不缓冲）要么可写打开：挂载与“以写方式打开”由 `BlockNode` 的原子字互斥，挂载前写回并逐出该盘的缓冲页。
   只读打开并读取已挂载的盘看到的是已提交到块层的数据，不含 ext4 尚在内存 transaction 里的元数据。
@@ -71,8 +75,7 @@
   journal，但不做 orphan 清理。
 - tmpfs 没有 swap：数据页只受 `size=` 与物理内存限制，`MAP_SHARED` 触碰超出配额的洞得到 `SIGBUS`
   （与 Linux 一致）；可写映射建立时更新 `st_mtime`，之后的 store 不再经过内核。
-- 不支持 `huge=`、`mpol=`（没有大页与 NUMA 子系统）、xattr/ACL，也不支持 FIFO 与设备节点（只有 `bind`
-  创建的 socket）；`mknod` 对其余类型返回 `EOPNOTSUPP`。bind/move/propagation 挂载、`MS_SYNCHRONOUS`、
+- 不支持 `huge=`、`mpol=`（没有大页与 NUMA 子系统）与 xattr/ACL。bind/move/propagation 挂载、`MS_SYNCHRONOUS`、
   `MS_MANDLOCK`、`MS_NOSYMFOLLOW` 与同目录堆叠挂载返回 `EINVAL`/`EBUSY`。
 - tmpfs 目录树释放（umount 或最后一个引用消失）用常数栈的循环拆除，深度不受限。
 - 已删除文件的 page cache 在 unlink/rename 覆盖或最后一个打开条目释放时随 inode 逐出（Linux `evict_inode`），
