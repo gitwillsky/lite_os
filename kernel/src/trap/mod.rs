@@ -64,7 +64,7 @@ pub(crate) fn handle_user_trap() -> ! {
         }
         TrapEvent::ExternalInterrupt => {
             handle_claimed_interrupt();
-            if drivers::console_input_ready() {
+            if drivers::console::input_ready() {
                 cpu::raise_deferred(DeferredWork::CONSOLE);
             }
         }
@@ -246,7 +246,7 @@ pub(crate) fn handle_kernel_trap() {
             // 内核态同步 I/O 可以被 external IRQ 打断；此处只确认 platform
             // interrupt-controller 状态，不在 hardirq 中调度。
             handle_claimed_interrupt();
-            if drivers::console_input_ready() {
+            if drivers::console::input_ready() {
                 cpu::raise_deferred(DeferredWork::CONSOLE);
             }
         }

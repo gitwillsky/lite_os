@@ -159,6 +159,3 @@ pub(crate) fn synchronize_instruction_cache(
 pub(crate) fn kernel_command_line() -> &'static [u8] {
     &discovery::info().bootargs
 }
-
-/// 平台 console 的 Linux 设备名，供 `console=` 匹配。
-pub(crate) const CONSOLE_NAME: &[u8] = b"ttyAMA0";

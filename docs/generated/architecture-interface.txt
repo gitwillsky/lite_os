@@ -823,11 +823,17 @@ kernel/src/drivers/block.rs :: trait BlockDevice :: fn disk_name (& self) -> & [
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn flush (& self) -> Result < () , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn read_block (& self , block_id : usize , buf : & mut [u8]) -> Result < usize , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn write_block (& self , block_id : usize , buf : & [u8]) -> Result < usize , BlockError >
-kernel/src/drivers/console_input.rs :: pub (super) fn discard_input () -> usize
-kernel/src/drivers/console_input.rs :: pub (super) fn init () -> Result < () , InterruptError >
-kernel/src/drivers/console_input.rs :: pub (super) fn input_ready () -> bool
-kernel/src/drivers/console_input.rs :: pub (super) fn publish_received (bytes : & [u8])
-kernel/src/drivers/console_input.rs :: pub (super) fn read (bytes : & mut [u8]) -> usize
+kernel/src/drivers/console.rs :: pub (crate) fn input_ready () -> bool
+kernel/src/drivers/console.rs :: pub (crate) fn publish_received (bytes : & [u8])
+kernel/src/drivers/console.rs :: pub (crate) fn register_serial (name : & 'static [u8] , output : SerialOutput ,) -> Result < () , InterruptError >
+kernel/src/drivers/console.rs :: pub (crate) struct ConsoleError
+kernel/src/drivers/console.rs :: pub (crate) trait ConsoleDevice
+kernel/src/drivers/console.rs :: pub (crate) type SerialOutput  = fn (u8) -> Result < () , ConsoleError >
+kernel/src/drivers/console.rs :: trait ConsoleDevice :: fn discard_input (& self) -> usize
+kernel/src/drivers/console.rs :: trait ConsoleDevice :: fn input_ready (& self) -> bool
+kernel/src/drivers/console.rs :: trait ConsoleDevice :: fn name (& self) -> & [u8]
+kernel/src/drivers/console.rs :: trait ConsoleDevice :: fn read (& self , bytes : & mut [u8]) -> usize
+kernel/src/drivers/console.rs :: trait ConsoleDevice :: fn write (& self , bytes : & [u8]) -> Result < () , ConsoleError >
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " rectangle 越过当前 scanout。"] InvalidRectangle
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " transport、queue 或 response 损坏。"] Device
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
@@ -1051,12 +1057,8 @@ kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) s
 kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) struct PreparedCapacityWait
 kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) struct RequestIdentity
 kernel/src/drivers/io_completion/request_owner.rs :: pub (in crate :: drivers) struct RequestOwner
-kernel/src/drivers/mod.rs :: pub (crate) fn console_input_ready () -> bool
-kernel/src/drivers/mod.rs :: pub (crate) fn discard_console_input () -> usize
-kernel/src/drivers/mod.rs :: pub (crate) fn initialize_console_input () -> Result < () , InterruptError >
-kernel/src/drivers/mod.rs :: pub (crate) fn publish_console_input (bytes : & [u8])
-kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) mod block
+kernel/src/drivers/mod.rs :: pub (crate) mod console
 kernel/src/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/drivers/mod.rs :: pub (crate) mod network
 kernel/src/drivers/mod.rs :: pub (crate) use audio_output :: { PCM_BUFFER_FRAMES , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmCompletionObserver , PcmOutput , PcmOutputError , }
@@ -1067,7 +1069,7 @@ kernel/src/drivers/mod.rs :: pub (crate) use hal :: PciTransport
 kernel/src/drivers/mod.rs :: pub (crate) use hal :: { InterruptError , InterruptHandler , InterruptVector , MmioBus }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/drivers/mod.rs :: pub (crate) use port :: { PortActivity , PortDevice , PortError }
-kernel/src/drivers/mod.rs :: pub (crate) use registry :: { block_device , dispatch_io_completion_work , display_device , fill_entropy , input_device , input_device_count , network_device , pcm_output , port_device , register_block_device , register_display_device , register_entropy_source , register_input_device , register_network_device , register_pcm_output , register_port_device , }
+kernel/src/drivers/mod.rs :: pub (crate) use registry :: { block_device , console_device , dispatch_io_completion_work , display_device , fill_entropy , input_device , input_device_count , network_device , pcm_output , port_device , register_block_device , register_display_device , register_entropy_source , register_input_device , register_network_device , register_pcm_output , register_port_device , }
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_blk :: VirtIOBlockDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_console :: VirtIOConsoleDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_gpu :: VirtIOGpuDevice
@@ -1117,6 +1119,7 @@ kernel/src/drivers/port.rs :: trait PortDevice :: fn readable (& self) -> bool
 kernel/src/drivers/port.rs :: trait PortDevice :: fn writable (& self) -> bool
 kernel/src/drivers/port.rs :: trait PortDevice :: fn write (& self , input : & [u8]) -> Result < usize , PortError >
 kernel/src/drivers/registry.rs :: pub (crate) fn block_device (index : usize) -> Option < Arc < dyn BlockDevice > >
+kernel/src/drivers/registry.rs :: pub (crate) fn console_device (index : usize) -> Option < Arc < dyn ConsoleDevice > >
 kernel/src/drivers/registry.rs :: pub (crate) fn dispatch_io_completion_work () -> bool
 kernel/src/drivers/registry.rs :: pub (crate) fn display_device (index : usize) -> Option < Arc < dyn GraphicsDevice > >
 kernel/src/drivers/registry.rs :: pub (crate) fn fill_entropy (bytes : & mut [MaybeUninit < u8 >]) -> Result < () , () >
@@ -1133,6 +1136,7 @@ kernel/src/drivers/registry.rs :: pub (crate) fn register_network_device (device
 kernel/src/drivers/registry.rs :: pub (crate) fn register_pcm_output (device : Arc < dyn PcmOutput >) -> Result < usize , Arc < dyn PcmOutput > >
 kernel/src/drivers/registry.rs :: pub (crate) fn register_port_device (device : Arc < dyn PortDevice > ,) -> Result < usize , Arc < dyn PortDevice > >
 kernel/src/drivers/registry.rs :: pub (super) fn register_completion_source (source : Arc < dyn CompletionSource > ,) -> Result < usize , Arc < dyn CompletionSource > >
+kernel/src/drivers/registry.rs :: pub (super) fn register_console_device (device : Arc < dyn ConsoleDevice > ,) -> Result < usize , Arc < dyn ConsoleDevice > >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_blk.rs :: pub (crate) struct VirtIOBlockDevice
@@ -2450,11 +2454,14 @@ kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: sleep_until : fn (u64
 kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: spawn : SpawnKernelThread
 kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
 kernel/src/fs/mod.rs :: pub (crate) fn allocate_filesystem_id () -> usize
-kernel/src/fs/mod.rs :: pub (crate) fn init_vfs ()
+kernel/src/fs/mod.rs :: pub (crate) fn init_vfs () -> VfsReady
 kernel/src/fs/mod.rs :: pub (crate) fn publish_block_device (disk : Arc < dyn crate :: drivers :: block :: BlockDevice > ,) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: pub (crate) mod device
+kernel/src/fs/mod.rs :: pub (crate) struct ConsoleReady
 kernel/src/fs/mod.rs :: pub (crate) struct FileSystemStatistics
 kernel/src/fs/mod.rs :: pub (crate) struct KernelThreadSupport
+kernel/src/fs/mod.rs :: pub (crate) struct RootMounted
+kernel/src/fs/mod.rs :: pub (crate) struct VfsReady
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
 kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str , alloc :: boxed :: Box < dyn FnOnce () + Send > ,) -> Result < () , crate :: memory :: MemoryError >
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
@@ -2462,7 +2469,7 @@ kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollCh
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CancelledFileReservation , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { Inode , InodeMetadata , InodeType , StorageWriter }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
-kernel/src/fs/mod.rs :: pub (crate) use mount :: { FileSystemType , MountEnvironment , install_mount_environment , mount , mount_root , unmount , }
+kernel/src/fs/mod.rs :: pub (crate) use mount :: { FileSystemType , MountEnvironment , mount , mount_root , unmount }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
@@ -2482,9 +2489,8 @@ kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: cpu_count : usize
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: proc_source : Arc < dyn ProcSource >
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: threads : KernelThreadSupport
 kernel/src/fs/mount.rs :: pub (crate) enum FileSystemType
-kernel/src/fs/mount.rs :: pub (crate) fn install_mount_environment (environment : MountEnvironment)
 kernel/src/fs/mount.rs :: pub (crate) fn mount (kind : FileSystemType , source : & [u8] , device : Option < DeviceNumber > , point : Arc < OpenedFile > ,) -> Result < () , FileSystemError >
-kernel/src/fs/mount.rs :: pub (crate) fn mount_root (root : & [u8] , filesystem_type : Option < & [u8] > ,) -> Result < () , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) fn mount_root (environment : MountEnvironment , root : & [u8] , filesystem_type : Option < & [u8] > ,) -> Result < super :: RootMounted , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn unmount (root : & Arc < OpenedFile >) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) impl FileSystemType :: fn from_name (name : & [u8]) -> Option < Self >
 kernel/src/fs/mount.rs :: pub (crate) impl FileSystemType :: fn requires_device (self) -> bool
@@ -2773,7 +2779,7 @@ kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn replace (& self , value_n
 kernel/src/fs/timerfd.rs :: trait TimerFdBackend :: fn setting (& self , now_ns : u64) -> Result < TimerSetting , TimerError >
 kernel/src/fs/tty.rs :: pub (crate) fn console () -> Arc < Terminal >
 kernel/src/fs/tty.rs :: pub (crate) fn drain_input (terminal : & Terminal) -> Result < bool , FileSystemError >
-kernel/src/fs/tty.rs :: pub (crate) fn init (console : Arc < dyn Console >) -> Result < () , FileSystemError >
+kernel/src/fs/tty.rs :: pub (crate) fn init (console : Arc < dyn ConsoleDevice > ,) -> Result < super :: ConsoleReady , FileSystemError >
 kernel/src/fs/tty.rs :: pub (crate) fn install_job_control (control : & 'static dyn JobControl)
 kernel/src/fs/tty.rs :: pub (crate) trait JobControl
 kernel/src/fs/tty.rs :: pub (super) const PTS_MAJOR : u32 = 136
@@ -3512,7 +3518,7 @@ kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " kernel fail-stop。
 kernel/src/platform/mod.rs :: enum ResetReason :: # [doc = " 用户或系统策略主动请求。"] Requested
 kernel/src/platform/mod.rs :: pub (crate) enum ResetKind
 kernel/src/platform/mod.rs :: pub (crate) enum ResetReason
-kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , CONSOLE_NAME , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ClaimedInterrupt , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
@@ -3562,7 +3568,6 @@ kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn notify_self ()
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn register_device (vector : u32 , handler : Arc < dyn InterruptHandler > , affinity : CpuSet ,) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn send_ipi (cpus : CpuSet) -> Result < () , InterruptError >
 kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct GicV3
-kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) const CONSOLE_NAME : & [u8] = b"ttyAMA0"
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn arm_timer (deadline : u64) -> Result < () , TimerArmError >
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn complete_pending_ipi ()
 kernel/src/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn debug_console_write (byte : u8) -> Result < () , console :: ConsoleError >
@@ -3605,7 +3610,7 @@ kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Software (u32)
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Spurious
 kernel/src/platform/qemu_virt/mod.rs :: enum ClaimedInterrupt :: Timer (u32)
 kernel/src/platform/qemu_virt/mod.rs :: pub (crate) enum ClaimedInterrupt
-kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , CONSOLE_NAME , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , debug_console_write , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use selected :: { BootInfo , InstructionFenceError , ResetError , TlbShootdownError , arm_timer , claim_interrupt , complete_interrupt , complete_pending_ipi , console , hardware_cpu_ids , initialize , initialize_devices , kernel_command_line , kernel_mmio_regions , notify_self , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_instruction_cache , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
@@ -3645,7 +3650,6 @@ kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct Instruct
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct ResetError
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct TimerArmError
 kernel/src/platform/qemu_virt/riscv64/firmware.rs :: pub (crate) struct TlbShootdownError
-kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) const CONSOLE_NAME : & [u8] = b"ttyS0"
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn claim_interrupt () -> super :: ClaimedInterrupt
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_interrupt (claim : super :: ClaimedInterrupt)
 kernel/src/platform/qemu_virt/riscv64/mod.rs :: pub (crate) fn complete_pending_ipi ()
@@ -4534,9 +4538,15 @@ kernel/src/task/memory_barrier.rs :: pub (crate) fn complete_pending ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn register_private_memory_barrier ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn synchronize_private_memory () -> bool
 kernel/src/task/memory_barrier.rs :: pub (super) fn initialize ()
-kernel/src/task/mod.rs :: pub (crate) fn initialize ()
+kernel/src/task/mod.rs :: pub (crate) InitProgram :: arguments : & 'a [Vec < u8 >]
+kernel/src/task/mod.rs :: pub (crate) InitProgram :: environment : & 'a [Vec < u8 >]
+kernel/src/task/mod.rs :: pub (crate) InitProgram :: path : Option < & 'a [u8] >
+kernel/src/task/mod.rs :: pub (crate) fn initialize (_vfs : crate :: fs :: VfsReady) -> SchedulerReady
 kernel/src/task/mod.rs :: pub (crate) fn initialize_interrupt_state ()
-kernel/src/task/mod.rs :: pub (crate) fn spawn_init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , init : Option < & [u8] > , arguments : & [Vec < u8 >] , environment : & [Vec < u8 >] ,)
+kernel/src/task/mod.rs :: pub (crate) fn kernel_thread_support (_scheduler : SchedulerReady) -> crate :: fs :: KernelThreadSupport
+kernel/src/task/mod.rs :: pub (crate) fn spawn_init (_scheduler : SchedulerReady , _root : crate :: fs :: RootMounted , _console : crate :: fs :: ConsoleReady , kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , program : InitProgram < '_ > ,)
+kernel/src/task/mod.rs :: pub (crate) struct InitProgram < 'a >
+kernel/src/task/mod.rs :: pub (crate) struct SchedulerReady
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
 kernel/src/task/mod.rs :: pub (crate) use model :: KernelThreadBody

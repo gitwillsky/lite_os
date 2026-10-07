@@ -44,7 +44,11 @@ pub(crate) fn initialize() {
 
 fn initialize_uart() {
     let board = platform_info();
-    crate::drivers::initialize_console_input().expect("console RX ring allocation failed");
+    // Linux 为该 UART 使用的设备名，`console=` 按它选择。
+    crate::drivers::console::register_serial(b"ttyS0", |byte| {
+        super::debug_console_write(byte).map_err(|_| crate::drivers::console::ConsoleError)
+    })
+    .expect("console registration failed");
     let handler = uart::initialize(board.uart.start, board.uart.end - board.uart.start)
         .unwrap_or_else(|error| panic!("16550 UART initialization failed: {error}"));
     register_irq(board.uart_irq, handler, "uart");

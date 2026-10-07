@@ -77,19 +77,10 @@ fn kernel_main(context: entry::BootContext) -> ! {
         !parameters.read_only_root,
         "read-only root (ro) is not supported"
     );
-    if let Some(console) = &parameters.console {
-        assert!(
-            console.as_slice() == platform::CONSOLE_NAME,
-            "console={} names no console (available: {})",
-            core::str::from_utf8(console).unwrap_or("<non-utf8>"),
-            core::str::from_utf8(platform::CONSOLE_NAME).unwrap_or("<non-utf8>")
-        );
-    }
     timer::init_rtc();
-    fs::init_vfs();
-    // scheduler topology 与全部 wait adapter（含 Pipe 唤醒出口与 VFS advisory-lock 通知）必须在
-    // VFS 之后、任何会创建可等待对象的子系统之前安装。
-    task::initialize();
+    let vfs = fs::init_vfs();
+    // 启动顺序由证明 token 约束：每一步只接受前置步骤返回的 token，顺序错误无法编译。
+    let scheduler = task::initialize(vfs);
     platform::initialize_devices();
     let mut disk_index = 0;
     while let Some(disk) = drivers::block_device(disk_index) {
@@ -108,16 +99,21 @@ fn kernel_main(context: entry::BootContext) -> ! {
     if let Some(port) = drivers::port_device(0) {
         virtio_port::init(port).expect("VirtIO port initialization failed");
     }
-    fs::init_tty(Arc::try_new(PlatformConsole).expect("platform console allocation failed"))
+    let console = fs::init_tty(select_console(parameters.console.as_deref()))
         .expect("TTY initialization failed");
     socket::init();
-    mount_filesystems(&parameters);
+    let root = mount_filesystems(scheduler, &parameters);
     task::spawn_init(
+        scheduler,
+        root,
+        console,
         arch::trap::user_entry(),
         trap::trap_return,
-        parameters.init.as_deref(),
-        &parameters.init_arguments,
-        &parameters.init_environment,
+        task::InitProgram {
+            path: parameters.init.as_deref(),
+            arguments: &parameters.init_arguments,
+            environment: &parameters.init_environment,
+        },
     );
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);
@@ -134,17 +130,15 @@ fn kernel_main(context: entry::BootContext) -> ! {
     enter_scheduler()
 }
 
-fn mount_filesystems(parameters: &cmdline::KernelParameters) {
-    fs::install_mount_environment(fs::MountEnvironment {
-        threads: fs::KernelThreadSupport {
-            spawn: task::spawn_kernel_thread,
-            sleep_until: |deadline| {
-                task::sleep_until(deadline);
-            },
-        },
+fn mount_filesystems(
+    scheduler: task::SchedulerReady,
+    parameters: &cmdline::KernelParameters,
+) -> fs::RootMounted {
+    let environment = fs::MountEnvironment {
+        threads: task::kernel_thread_support(scheduler),
         proc_source: Arc::try_new(task::KernelProcSource).expect("proc source allocation failed"),
         cpu_count: cpu::count(),
-    });
+    };
     // 没有 `root=` 时以首块盘为根（Linux 由构建期 ROOT_DEV 给出缺省）。
     let default_root;
     let root = match &parameters.root {
@@ -161,40 +155,39 @@ fn mount_filesystems(parameters: &cmdline::KernelParameters) {
             default_root.as_slice()
         }
     };
-    fs::mount_root(root, parameters.root_filesystem_type.as_deref()).unwrap_or_else(|error| {
+    let mounted = fs::mount_root(
+        environment,
+        root,
+        parameters.root_filesystem_type.as_deref(),
+    )
+    .unwrap_or_else(|error| {
         panic!(
             "VFS: unable to mount root fs on {}: {error:?}",
             core::str::from_utf8(root).unwrap_or("<non-utf8>")
         )
     });
     info!("root filesystem mounted at /, devtmpfs at /dev");
+    mounted
 }
 
-struct PlatformConsole;
-
-impl fs::Console for PlatformConsole {
-    fn read(&self, bytes: &mut [u8]) -> Result<usize, fs::FileSystemError> {
-        Ok(drivers::read_console(bytes))
-    }
-
-    fn input_ready(&self) -> bool {
-        drivers::console_input_ready()
-    }
-
-    fn discard_input(&self) -> usize {
-        drivers::discard_console_input()
-    }
-
-    fn discard_output(&self) -> usize {
-        0
-    }
-
-    fn write(&self, bytes: &[u8]) -> Result<usize, fs::FileSystemError> {
-        for byte in bytes {
-            platform::debug_console_write(*byte).map_err(|_| fs::FileSystemError::IoError)?;
+/// 按 `console=` 名称选择 `/dev/console` 背后的设备；未指定时取首个。
+///
+/// # Panics
+///
+/// 名称不匹配任何已注册 console 时 fail-stop：每个进程都持有一个 terminal，不能像 Linux 那样
+/// 在没有 `/dev/console` 的情况下运行 init。
+fn select_console(name: Option<&[u8]>) -> Arc<dyn drivers::console::ConsoleDevice> {
+    let mut index = 0;
+    while let Some(device) = drivers::console_device(index) {
+        if name.is_none_or(|name| device.name() == name) {
+            return device;
         }
-        Ok(bytes.len())
+        index += 1;
     }
+    panic!(
+        "console={} names no registered console",
+        core::str::from_utf8(name.unwrap_or(b"")).unwrap_or("<non-utf8>")
+    )
 }
 
 fn kernel_secondary_main(context: entry::BootContext) -> ! {

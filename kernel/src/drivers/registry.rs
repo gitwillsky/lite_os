@@ -1,6 +1,6 @@
 //! 设备类注册表：platform 按发现顺序发布同一 seam 的多个 adapter。
 //!
-//! 每个设备类（block、network、display、input、PCM output、entropy、named port）与共享
+//! 每个设备类（block、console、network、display、input、PCM output、entropy、named port）与共享
 //! driver-I/O completion 源各有一个只追加的注册表；index 是 adapter 的稳定 identity。选择哪个
 //! 实例是消费领域的策略，注册表不区分“主设备”。
 
@@ -10,7 +10,7 @@ use spin::Mutex;
 
 use super::{
     EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice, block::BlockDevice,
-    io_completion::CompletionSource, network::NetworkDevice,
+    console::ConsoleDevice, io_completion::CompletionSource, network::NetworkDevice,
 };
 
 /// 一个设备类的全部已发布 adapter，按注册顺序编号，只追加。
@@ -61,6 +61,8 @@ static ENTROPY_SOURCES: DeviceRegistry<dyn EntropySource> = DeviceRegistry::new(
 // OWNER: named byte-stream port 的唯一发布点；缺失时两个 byte-stream owner 可能竞争同一 SPICE
 // channel。
 static PORT_DEVICES: DeviceRegistry<dyn PortDevice> = DeviceRegistry::new();
+// OWNER: console 设备的唯一发布点；TTY 按 `console=` 名称选择其一作为 `/dev/console`。
+static CONSOLE_DEVICES: DeviceRegistry<dyn ConsoleDevice> = DeviceRegistry::new();
 // OWNER: 经共享 `DRIVER_IO` deferred vector 发布 completion 的全部 adapter；adapter 构造成功时
 // 自报。缺失某个源时其 completion 永远不被回收，同步 I/O waiter 永久睡眠。
 static COMPLETION_SOURCES: DeviceRegistry<dyn CompletionSource> = DeviceRegistry::new();
@@ -182,6 +184,22 @@ pub(crate) fn register_port_device(
 /// 第 `index` 个 named byte-stream port。
 pub(crate) fn port_device(index: usize) -> Option<Arc<dyn PortDevice>> {
     PORT_DEVICES.get(index)
+}
+
+/// 发布一个 console 设备。
+///
+/// # Errors
+///
+/// 注册表扩容失败时原样返回 adapter。
+pub(super) fn register_console_device(
+    device: Arc<dyn ConsoleDevice>,
+) -> Result<usize, Arc<dyn ConsoleDevice>> {
+    CONSOLE_DEVICES.register(device)
+}
+
+/// 第 `index` 个 console 设备。
+pub(crate) fn console_device(index: usize) -> Option<Arc<dyn ConsoleDevice>> {
+    CONSOLE_DEVICES.get(index)
 }
 
 /// 登记一个经 `DRIVER_IO` vector 发布 completion 的 adapter。

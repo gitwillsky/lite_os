@@ -43,7 +43,7 @@
 | `input` | `cpu`, `drivers`, `fs`, `ipc`, `sync`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域、`input/eventN` 设备文件与 evdev ioctl UAPI；不感知 VirtIO adapter 或 task |
 | `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
 | `socket` | `drivers`, `fallible_tree`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
-| `fs` | `drivers`, `fallible_tree`, `id`, `ipc`, `log`, `memory`, `random`, `socket`, `sync`, `timer` | 拥有字符设备注册表、devfs/devpts、TTY 与 mem 设备；只经 block、anonymous-id、socket-OFD、shared-page 与 entropy seam 使用对应领域；session/signal 经 task 安装的 `JobControl` |
+| `fs` | `drivers`, `fallible_tree`, `id`, `ipc`, `log`, `memory`, `random`, `socket`, `sync`, `timer` | 拥有字符设备注册表、devfs/devpts、TTY 与 mem 设备；只经 block/console、anonymous-id、socket-OFD、shared-page 与 entropy seam 使用对应领域；session/signal 经 task 安装的 `JobControl` |
 | `task` | `arch`, `cpu`, `drivers`, `fallible_tree`, `fs`, `id`, `ipc`, `memory`, `platform`, `socket`, `sync`, `timer` | 调度只用 logical CPU identity；deferred safe point 处理核心向量，设备类 completion 只经 `cpu` 注册的 handler 投递 |
 | `trap` | `arch`, `cpu`, `drivers`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
 | `syscall` | `fs`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer` | 只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::device::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果 |

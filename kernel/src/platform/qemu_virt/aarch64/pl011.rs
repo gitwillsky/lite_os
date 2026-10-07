@@ -65,7 +65,7 @@ impl InterruptHandler for Pl011InterruptHandler {
             count += 1;
         }
         uart.write(INTERRUPT_CLEAR, RX_INTERRUPT);
-        crate::drivers::publish_console_input(&bytes[..count]);
+        crate::drivers::console::publish_received(&bytes[..count]);
         Ok(())
     }
 }

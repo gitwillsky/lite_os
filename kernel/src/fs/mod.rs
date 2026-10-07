@@ -38,9 +38,7 @@ pub(crate) use file::{
 use file::{TerminalRead, TerminalReadMode, character_write_chunk};
 pub(crate) use inode::{Inode, InodeMetadata, InodeType, StorageWriter};
 pub(crate) use memfd::MemFile;
-pub(crate) use mount::{
-    FileSystemType, MountEnvironment, install_mount_environment, mount, mount_root, unmount,
-};
+pub(crate) use mount::{FileSystemType, MountEnvironment, mount, mount_root, unmount};
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
     sync_all, sync_inode, truncate,
@@ -199,14 +197,24 @@ pub(crate) struct KernelThreadSupport {
     pub(crate) sleep_until: fn(u64),
 }
 
+/// 证明全局 VFS 已创建；只有 [`init_vfs`] 能构造，依赖 VFS 的启动步骤以它为参数。
+pub(crate) struct VfsReady(());
+
+/// 证明根文件系统与 `/dev` 已挂载；只有 [`mount_root`] 能构造。
+pub(crate) struct RootMounted(());
+
+/// 证明系统 console Terminal 与 TTY 设备已就绪；只有 [`init_tty`] 能构造。
+pub(crate) struct ConsoleReady(());
+
 /// 创建全局 VFS 并注册 fs 自有的 mem 字符设备。
 ///
 /// # Panics
 ///
 /// 启动期注册表分配失败时 panic。
-pub(crate) fn init_vfs() {
+pub(crate) fn init_vfs() -> VfsReady {
     vfs::init();
     mem::register().expect("mem character device registration failed");
+    VfsReady(())
 }
 
 /// 块设备号 major：Linux 动态分配块 major 的首个值；fs 是块设备命名空间的唯一 owner。

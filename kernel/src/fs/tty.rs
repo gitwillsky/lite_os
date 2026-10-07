@@ -18,6 +18,7 @@ use super::{
     pty,
 };
 use crate::{
+    drivers::console::ConsoleDevice,
     ipc::{Pipe, PipeDirection, PipeRead, PipeWaitCondition},
     sync::WaitResult,
 };
@@ -107,15 +108,50 @@ fn job_control() -> &'static dyn JobControl {
         .expect("TTY used before task installed job control")
 }
 
-/// 创建系统 console Terminal 并注册全部 TTY 设备。
+/// 把 console 设备投影为 Terminal 的 raw byte 设备。
+struct DeviceConsole(Arc<dyn ConsoleDevice>);
+
+impl Console for DeviceConsole {
+    fn read(&self, bytes: &mut [u8]) -> Result<usize, FileSystemError> {
+        Ok(self.0.read(bytes))
+    }
+
+    fn input_ready(&self) -> bool {
+        self.0.input_ready()
+    }
+
+    fn discard_input(&self) -> usize {
+        self.0.discard_input()
+    }
+
+    fn discard_output(&self) -> usize {
+        0
+    }
+
+    fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError> {
+        self.0
+            .write(bytes)
+            .map(|()| bytes.len())
+            .map_err(|_| FileSystemError::IoError)
+    }
+}
+
+/// 以 `console` 创建系统 console Terminal 并注册全部 TTY 设备。
+///
+/// # Returns
+///
+/// console 就绪的证明；init 的 fd 0/1/2 经 `/dev/console` 打开，需要它。
 ///
 /// # Errors
 ///
 /// 重复初始化返回 `AlreadyExists`；分配失败返回 `OutOfMemory`。
-pub(crate) fn init(console: Arc<dyn Console>) -> Result<(), FileSystemError> {
+pub(crate) fn init(
+    console: Arc<dyn ConsoleDevice>,
+) -> Result<super::ConsoleReady, FileSystemError> {
     if CONSOLE.get().is_some() {
         return Err(FileSystemError::AlreadyExists);
     }
+    let console = Arc::try_new(DeviceConsole(console)).map_err(|_| FileSystemError::OutOfMemory)?;
     let terminal =
         Terminal::new(console, CONSOLE_NUMBER).map_err(|()| FileSystemError::OutOfMemory)?;
     pty::init()?;
@@ -130,7 +166,8 @@ pub(crate) fn init(console: Arc<dyn Console>) -> Result<(), FileSystemError> {
         device::register_node(path, DeviceNumber::new(TTYAUX_MAJOR, minor), permissions)?;
     }
     let slaves = Arc::try_new(PtsDriver).map_err(|_| FileSystemError::OutOfMemory)?;
-    device::register_driver(DeviceNumber::new(PTS_MAJOR, 0), PTS_MINOR_COUNT, slaves)
+    device::register_driver(DeviceNumber::new(PTS_MAJOR, 0), PTS_MINOR_COUNT, slaves)?;
+    Ok(super::ConsoleReady(()))
 }
 
 /// 系统 console 的 Terminal。

@@ -222,12 +222,15 @@ fn check_facade_path(source: &SourceFile, path: &[String], errors: &mut Vec<Stri
     if path.first().is_none_or(|segment| segment != "crate") {
         return;
     }
+    // fs 只经两个 driver seam 使用设备：块设备（文件系统存储）与 console（TTY 的 raw byte 设备）。
     if source.owner == "fs"
         && path.get(1).is_some_and(|segment| segment == "drivers")
-        && path.get(2).is_none_or(|segment| segment != "block")
+        && path
+            .get(2)
+            .is_none_or(|segment| segment != "block" && segment != "console")
     {
         errors.push(format!(
-            "{}: filesystem may depend only on the drivers::block seam",
+            "{}: filesystem may depend only on the drivers::block and drivers::console seams",
             source.relative
         ));
     }

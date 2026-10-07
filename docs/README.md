@@ -48,10 +48,6 @@
 - [构建、测试与验证](development/build-and-verify.md)
 - [生成的 scoped interface baseline](generated/architecture-interface.txt)
 
-## 进行中计划
-
-- [内核可插拔性重构](plans/kernel-pluggability.md)
-
 ## 设计决策与术语
 
 - [首个声音里程碑只支持播放](decisions/audio-output-scope.md)

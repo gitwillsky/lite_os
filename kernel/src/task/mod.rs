@@ -73,21 +73,34 @@ pub(in crate::task) fn run_kernel_thread() -> ! {
     process_table::exit_current_kernel_thread()
 }
 
+/// 证明 processor topology 与全部 scheduler wait adapter 已安装；只有 [`initialize`] 能构造。
+#[derive(Clone, Copy)]
+pub(crate) struct SchedulerReady(());
+
 /// 初始化 processor topology 与全部 scheduler wait adapter，使内核线程可以入队。
 ///
-/// 前置条件：VFS 已初始化（advisory-lock notifier 安装进 VFS）；必须先于任何创建 Pipe 或可等待
-/// 对象的子系统，否则其状态变化无法唤醒 waiter。
-///
-/// 必须先于根文件系统挂载：bootstrap mount 与 executable loading 会在尚无 current task 时
-/// 发出 block I/O，wait-target factory 需要已初始化的 topology 才能安全观察到 `None`；
-/// 颠倒顺序会让 `current_task()` 在未初始化的 topology 上永久等待。
-pub(crate) fn initialize() {
+/// 1. 参数 `VfsReady` 保证 VFS 已存在：advisory-lock notifier 安装进 VFS；
+/// 2. 返回的 `SchedulerReady` 是根挂载（经 [`kernel_thread_support`]）与 init 创建的前提：bootstrap
+///    mount 与 executable loading 会在尚无 current task 时发出 block I/O，wait-target factory 需要
+///    已初始化的 topology 才能安全观察到 `None`，颠倒顺序会让 `current_task()` 永久等待。
+pub(crate) fn initialize(_vfs: crate::fs::VfsReady) -> SchedulerReady {
     processor::init_topology();
     process_table::initialize_driver_io_wait();
     process_table::task_wait::initialize();
     process_table::pipe_wait::install_pipe_scheduler();
     process_table::install_job_control();
     install_advisory_lock_notifier();
+    SchedulerReady(())
+}
+
+/// fs 创建后台内核线程所需的能力；只能在调度器就绪后取得。
+pub(crate) fn kernel_thread_support(_scheduler: SchedulerReady) -> crate::fs::KernelThreadSupport {
+    crate::fs::KernelThreadSupport {
+        spawn: spawn_kernel_thread,
+        sleep_until: |deadline| {
+            sleep_until(deadline);
+        },
+    }
 }
 
 /// 未指定 `init=` 时依次尝试的程序（Linux `kernel_init`）。
@@ -133,25 +146,40 @@ fn load_init(
     )
 }
 
+/// command line 给出的 init 程序描述。
+pub(crate) struct InitProgram<'a> {
+    /// `init=` 指定的程序；`None` 时依次尝试 `/sbin/init`、`/etc/init`、`/bin/init`、`/bin/sh`。
+    pub(crate) path: Option<&'a [u8]>,
+    /// 转交 init 的 argv（不含 argv[0]）。
+    pub(crate) arguments: &'a [Vec<u8>],
+    /// 转交 init 的环境。
+    pub(crate) environment: &'a [Vec<u8>],
+}
+
 /// 从已挂载的根文件系统加载并发布唯一 init process（Linux `kernel_init`）。
+///
+/// 三个证明参数保证调度器、根文件系统与 `/dev/console` 均已就绪。
 ///
 /// # Parameters
 ///
-/// - `init`: `init=` 指定的程序；`None` 时依次尝试 `/sbin/init`、`/etc/init`、`/bin/init`、
-///   `/bin/sh`。
-/// - `arguments`: command line 转交 init 的 argv（不含 argv[0]）。
-/// - `environment`: command line 转交 init 的环境。
+/// - `program`: command line 给出的 init 程序、argv 与环境。
 ///
 /// # Panics
 ///
 /// 指定的 init 加载失败、没有可用的默认 init 或 init task 分配失败时 fail-stop。
 pub(crate) fn spawn_init(
+    _scheduler: SchedulerReady,
+    _root: crate::fs::RootMounted,
+    _console: crate::fs::ConsoleReady,
     kernel_trap_handler: crate::arch::trap::UserTrapEntry,
     kernel_trap_return: crate::arch::context::KernelResume,
-    init: Option<&[u8]>,
-    arguments: &[Vec<u8>],
-    environment: &[Vec<u8>],
+    program: InitProgram<'_>,
 ) {
+    let InitProgram {
+        path: init,
+        arguments,
+        environment,
+    } = program;
     let loaded = match init {
         Some(path) => load_init(path, arguments, environment).unwrap_or_else(|error| {
             panic!(

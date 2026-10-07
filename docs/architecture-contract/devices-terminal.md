@@ -27,6 +27,8 @@
   实例 identity，而非设备种类；同类多实例按种类区分会让 completion 唤醒另一设备的 waiter。block 的 16 个 fixed slots 独占
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
+- `drivers::console` 独占 console RX ring 与通用串口 `ConsoleDevice`（platform 提供设备名与同步输出原语）；
+  fs 只经 `drivers::block` 与 `drivers::console` 两个 seam 使用设备。
 - `drivers::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
   稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。

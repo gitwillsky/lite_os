@@ -21,7 +21,11 @@ pub(crate) fn initialize() {
 
 fn initialize_pl011() {
     let platform = discovery::info();
-    crate::drivers::initialize_console_input().expect("console RX ring allocation failed");
+    // Linux 为该 UART 使用的设备名，`console=` 按它选择。
+    crate::drivers::console::register_serial(b"ttyAMA0", |byte| {
+        super::debug_console_write(byte).map_err(|_| crate::drivers::console::ConsoleError)
+    })
+    .expect("console registration failed");
     let handler = pl011::initialize(platform.uart.base_addr, platform.uart.size)
         .expect("PL011 RX initialization failed");
     register_irq(platform.uart.irq, handler, "pl011");

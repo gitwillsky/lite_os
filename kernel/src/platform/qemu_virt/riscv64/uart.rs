@@ -51,7 +51,7 @@ impl InterruptHandler for UartInterruptHandler {
             bytes[count] = uart.read(RECEIVE_BUFFER);
             count += 1;
         }
-        crate::drivers::publish_console_input(&bytes[..count]);
+        crate::drivers::console::publish_received(&bytes[..count]);
         Ok(())
     }
 }

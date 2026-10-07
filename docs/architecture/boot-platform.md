@@ -35,17 +35,23 @@
   环境（以 `HOME=/`、`TERM=linux` 开始，同名覆盖），裸词与 `--` 之后的词进 argv，带 `.` 的模块参数忽略，
   argv/环境各最多 32 项。指定 `init=` 时只尝试它，失败即 panic；否则依次尝试 `/sbin/init`、`/etc/init`、
   `/bin/init`、`/bin/sh`。
-- 启动装配顺序：设备初始化（逐个 `fs::publish_block_device`）→ `task::initialize`（processor topology 与
-  wait adapter）→ `fs::install_mount_environment` → `fs::mount_root`（由 fs 选择根文件系统类型、创建其
-  写回内核线程并挂载 devtmpfs）→ `task::spawn_init`。composition root 只注入 `MountEnvironment`
-  （内核线程能力、proc source、CPU 数），不依赖具体文件系统类型。
+- 启动顺序由零大小证明 token 在类型上约束，token 只能由完成该步骤的 owner 构造：
+  `fs::init_vfs` → `VfsReady` → `task::initialize(VfsReady)` → `SchedulerReady`；内核线程能力只能由
+  `task::kernel_thread_support(SchedulerReady)` 取得，因此 `MountEnvironment` 与 `fs::mount_root`
+  （选择根文件系统类型、创建写回内核线程、挂载 devtmpfs）只能在调度器就绪后发生，并返回
+  `RootMounted`；`fs::init_tty` 返回 `ConsoleReady`；`task::spawn_init` 同时要求 `SchedulerReady`、
+  `RootMounted` 与 `ConsoleReady`。顺序错误无法编译。composition root 不依赖具体文件系统类型或
+  console adapter。
+- console 设备由 platform 以 Linux 设备名（aarch64 `ttyAMA0`、riscv64 `ttyS0`）与同步单字节输出原语
+  经 `drivers::console::register_serial` 发布；composition root 按 `console=` 名称从 drivers 注册表
+  选择，fs TTY 把它包装为系统 console Terminal。
 
 ## Known limits
 
 - `root=` 只支持 `/dev/<disk>` 与 `MAJ:MIN`，没有 `PARTUUID=`/`UUID=`/`LABEL=`；缺省时以首块盘为根。
-  `ro` 需要 remount 才能转为可写，尚未支持，启动明确失败。`console=` 只能选平台唯一 console
-  （aarch64 `ttyAMA0`、riscv64 `ttyS0`），选项忽略；指向不存在的 console 时启动明确失败，而不是像
-  Linux 那样在没有 `/dev/console` 的情况下运行 init。`loglevel=` 映射到全局 severity threshold，
+  `ro` 需要 remount 才能转为可写，尚未支持，启动明确失败。`console=` 在已注册 console 设备中按名称
+  选择，选项忽略；指向不存在的 console 时启动明确失败，而不是像 Linux 那样在没有 `/dev/console` 的
+  情况下运行 init。`loglevel=` 映射到全局 severity threshold，
   同时作用于 kmsg ring，N ≤ 3 按只输出 Error 处理。
 
 - 没有 QEMU `virt` 之外的 machine backend，也没有真实硬件启动声明。

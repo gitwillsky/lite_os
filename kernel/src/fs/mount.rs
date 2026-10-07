@@ -16,7 +16,7 @@ use crate::sync::TaskMutex;
 
 /// 挂载新文件系统实例所需、由 composition root 注入的能力。
 pub(crate) struct MountEnvironment {
-    /// ext4 写回线程的创建与睡眠。
+    /// ext4 写回线程的创建与睡眠；只能由 `task::kernel_thread_support` 在调度器就绪后取得。
     pub(crate) threads: KernelThreadSupport,
     /// procfs 投影的进程与系统快照来源。
     pub(crate) proc_source: Arc<dyn ProcSource>,
@@ -24,26 +24,13 @@ pub(crate) struct MountEnvironment {
     pub(crate) cpu_count: usize,
 }
 
-// OWNER: 启动期安装一次的挂载环境；缺失时 proc/sysfs/ext4 无法创建实例，只能由 composition root
-// 逐个硬编码挂载。
+// OWNER: 根挂载时安装一次的挂载环境，供之后的 `mount(2)` 使用；缺失时 proc/sysfs/ext4 无法创建
+// 实例，只能由 composition root 逐个硬编码挂载。
 static ENVIRONMENT: Once<MountEnvironment> = Once::new();
 
 // OWNER: 串行化完整的 mount/umount 事务。ext4 实例一经创建即回放 journal，“设备未挂载”检查与
 // 发布之间若可并发，同一块设备会得到两个实例并互相破坏元数据。
 static MOUNT_TRANSACTION: TaskMutex<()> = TaskMutex::new(());
-
-/// 安装挂载环境；必须早于根挂载。
-///
-/// # Panics
-///
-/// 重复安装时 panic。
-pub(crate) fn install_mount_environment(environment: MountEnvironment) {
-    assert!(
-        ENVIRONMENT.get().is_none(),
-        "mount environment installed twice"
-    );
-    ENVIRONMENT.call_once(|| environment);
-}
 
 fn environment() -> &'static MountEnvironment {
     ENVIRONMENT
@@ -175,8 +162,13 @@ fn root_device_number(root: &[u8]) -> Result<DeviceNumber, FileSystemError> {
 ///
 /// # Parameters
 ///
+/// - `environment`: 之后 `mount(2)` 创建实例所需的能力；在此一次性安装。
 /// - `root`: `root=` 的值（`/dev/<disk>` 或 `MAJ:MIN`），同时作为 `/proc/mounts` 的 source。
 /// - `filesystem_type`: `rootfstype=`；当前唯一支持的持久根是固定 profile 的 ext4。
+///
+/// # Returns
+///
+/// 根与 `/dev` 已挂载的证明。
 ///
 /// # Errors
 ///
@@ -184,9 +176,13 @@ fn root_device_number(root: &[u8]) -> Result<DeviceNumber, FileSystemError> {
 /// 返回 `InvalidOperation`；设备上不是受支持的 ext4、根已挂载、写回线程或 `/dev` 挂载失败返回
 /// 对应错误。
 pub(crate) fn mount_root(
+    environment: MountEnvironment,
     root: &[u8],
     filesystem_type: Option<&[u8]>,
-) -> Result<(), FileSystemError> {
+) -> Result<super::RootMounted, FileSystemError> {
+    assert!(ENVIRONMENT.get().is_none(), "root filesystem mounted twice");
+    let threads = environment.threads;
+    ENVIRONMENT.call_once(|| environment);
     if filesystem_type
         .is_some_and(|kind| FileSystemType::from_name(kind) != Some(FileSystemType::Ext4))
     {
@@ -199,11 +195,12 @@ pub(crate) fn mount_root(
     let device = device::block_device(number).ok_or(FileSystemError::NoDevice)?;
     let filesystem = ext4::Ext4FileSystem::new(device)?;
     vfs().mount_root(root, filesystem.clone(), Some(number))?;
-    filesystem.start_writeback(environment().threads)?;
+    filesystem.start_writeback(threads)?;
     vfs().mount(
         vfs().open_file(b"/dev")?,
         b"devtmpfs",
         DevFileSystem::new()?,
         None,
-    )
+    )?;
+    Ok(super::RootMounted(()))
 }
