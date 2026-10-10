@@ -34,7 +34,7 @@ impl<'ast> Visit<'ast> for ConnectOrder {
     }
 }
 
-/// 固定 AF_UNIX stream connect 的 resource-factory ordering contract。
+/// 固定 AF_UNIX 面向连接 socket 的 resource-factory ordering contract。
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let Some(source) = sources
         .iter()
@@ -54,14 +54,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             let ImplItem::Fn(function) = item else {
                 continue;
             };
-            if function.sig.ident == "connect_stream" {
+            if function.sig.ident == "connect_oriented" {
                 connect_functions.push(function);
             }
         }
     }
     let [connect] = connect_functions.as_slice() else {
         errors.push(format!(
-            "{LIFECYCLE_PATH}: expected exactly one connect_stream implementation"
+            "{LIFECYCLE_PATH}: expected exactly one connect_oriented implementation"
         ));
         return;
     };
@@ -69,7 +69,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     order.visit_block(&connect.block);
     let ([begin], [resources]) = (order.begin.as_slice(), order.resources.as_slice()) else {
         errors.push(format!(
-            "{LIFECYCLE_PATH}: connect_stream must call ConnectGuard::begin and resources exactly once"
+            "{LIFECYCLE_PATH}: connect_oriented must call ConnectGuard::begin and resources exactly once"
         ));
         return;
     };
@@ -88,7 +88,7 @@ mod tests {
     fn source(body: &str) -> SourceFile {
         let text = format!(
             "struct UnixSocket; struct ConnectGuard; impl ConnectGuard {{ fn begin() {{}} }} \
-             impl UnixSocket {{ fn connect_stream() {{ {body} }} }}"
+             impl UnixSocket {{ fn connect_oriented() {{ {body} }} }}"
         );
         SourceFile {
             relative: LIFECYCLE_PATH.to_owned(),

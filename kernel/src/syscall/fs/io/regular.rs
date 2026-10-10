@@ -14,10 +14,14 @@ use super::*;
 /// 总读取字节数、EOF 零、首错负 errno 或已有进度后的 partial count。
 pub(super) fn read_vectors(
     task: &TaskControlBlock,
+    ofd: &OpenFileDescription,
     file: &RegularFile,
     position: &mut u64,
     vectors: &[UserIoVec],
 ) -> isize {
+    let _read_access = (file.tracks_access_time()
+        && vectors.iter().any(|vector| vector.length != 0))
+    .then(|| ofd.read_access());
     let mut total = 0usize;
     // PAGE_SIZE 同时匹配 page-cache frame 与 user-copy fault/copy 粒度；保持 512-byte staging
     // 会让满页顺序 I/O 重复八次 facade dispatch、地址计算和 page walk。
@@ -160,14 +164,18 @@ pub(super) fn write_vectors(
         let chunk_length = regular_write_chunk(total_length, total, staging.capacity());
         assert_ne!(chunk_length, 0, "regular write staging made no progress");
         // 1. non-append range 在 copyin 前应用同一 syscall 的累计 limit accounting。
-        let requested = if append {
-            chunk_length
-        } else {
-            match bounded_regular_write(task, *position, chunk_length, total) {
-                Ok(count) => count,
-                Err(result) => return result,
-            }
+        let effective_position = if append { file.size() } else { *position };
+        let requested = match bounded_regular_write(task, effective_position, chunk_length, total) {
+            Ok(count) => count,
+            Err(result) => return result,
         };
+        if let Err(error) = file.prepare_content_write() {
+            return if total == 0 {
+                ferr(error)
+            } else {
+                total as isize
+            };
+        }
         let staged = cursor.stage_from_user_pagewise_into(task, staging, requested);
         if staged.count == 0 {
             return if staged.faulted && total == 0 {

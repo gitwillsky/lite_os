@@ -12,6 +12,8 @@
   预置音乐。各步骤幂等；已存在非固定版本 UTM 时 fail-stop，不覆盖用户应用。缺少 `llvm` 会让
   musl 构建以 `Clang, LLVM archive tools, and the pinned Rust rust-lld are required` 失败。
 - Rust 版本、组件和 target 由 `rust-toolchain.toml` 固定；精确 revision 见 [规范基线](../standards-baseline.md)。
+  kernel ISA baseline 由 target 定义，不使用 host `target-cpu=native`；跨 ISA 编译时 host CPU
+  不属于目标 LLVM backend，native 会造成无效 CPU/codegen，且让同一源码随构建宿主改变指令。
 - `ARCH` 默认 `aarch64`，只接受 `aarch64` 与 `riscv64`；它统一选择 kernel target、Linux userspace target、QEMU、musl loader 与 Alpine repository architecture，未知值在 Make 解析期失败。
 - `ACCEL` 默认 `hvf`，只接受 `hvf` 与 `tcg`。`riscv64 + hvf` 在构建前硬失败；RISC-V 必须显式选择 `ACCEL=tcg`，AArch64 的 TCG 诊断路径也必须显式选择，不能从 HVF 静默回退。
 - `PROFILE` 默认 `release`，只接受 `release` 与 `debug`；提交门禁以 release 产物为准。
@@ -20,7 +22,8 @@
 - `AGENT_QEMU_MEMORY` 默认 `6G`，只控制 `prepare-agent-development` 的原生 CLI smoke 与
   `run-agent-development`；不能用 Agent 的重型内存需求放宽产品 2 GiB runtime contract。
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
-- kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture identity，不允许跨目标命中。
+- kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture
+  identity，不允许跨目标命中。
 - rootfs 基线从 `assets/music/` 安装预置音乐到 `/root/Music`；该资产进入 rootfs 内容指纹并在写入后
   回读校验。`reset-rootfs` 恢复预置副本，`sync-userland` 不拥有该目录，也不会覆盖用户新增音乐。
 - rootfs 基线把同一个 BusyBox `env` inode 发布到 `/bin/env` 与 `/usr/bin/env` 并验证权限/identity，
@@ -68,6 +71,26 @@
   `scripts/verify_rust_std.py` fixture 都使用固定 rust-src。Cargo 直接生成最终 binary，禁用 bundled
   musl CRT，动态链接项目 musl，并静态链接同 revision LLVM libunwind；禁止 staticlib 后手工二次链接。libunwind 是 panic/backtrace
   冷路径且固定 `-O2`；其正确性由双架构 target runtime gate 裁决，不增加失真的 host wall-clock benchmark。
+- BusyBox/OpenSSL 共用 verify_musl 的 `llvm-strip` resolver，从 PATH、Clang 相邻工具及 Homebrew 位置解析；
+  cache fingerprint 记录实际执行文件的绝对路径与内容摘要，构建直接消费该已选路径。
+- musl PID1 fixture 在 fork consumer 前创建 `/tmp` 并挂载 proc、sysfs、devpts，继承同一初始环境。
+  无效 ancillary 指针与只读 msghdr 的故障顺序直接调用标准 syscall，避免 libc 的预复制或写回先崩溃。
+  未屏蔽 SIG_IGN 的 generation 直接使用 rt_sigqueueinfo，避免 musl sigqueue 的临时屏蔽改变条件。
+  `CLONE_THREAD` fixture 使用现有 musl 汇编 trampoline，仅执行 syscall，不加入 pthread 列表。
+- seccomp regression 直接执行生产 BPF verifier/security owner，覆盖 scratch 路径初始化、
+  signed action precedence、newest DATA、全部 seccomp_data words、OOM 不发布与 6554-program
+  小栈析构；musl 双架构 1/2 CPU gate 覆盖 unprivileged NNP 授权、fork/thread/exec 继承、
+  strict/thread/group fatal、SIGSYS siginfo/原寄存器与 RISC-V 私有 syscall interception，及
+  TSYNC 的既存/后续 thread 继承与 divergent TID/ESRCH 零变更失败。host transaction fixture
+  执行生产 graph commit 算法，覆盖 stale prepare、容量增长/OOM、退出排除、group exit 与
+  NNP 并发置位；graph/IRQ adapter 为宿主实现，不能替代实际 clone publisher/退出阻塞交错。
+  TSYNC CPU 诊断在 128..384-program chain 上测得 1/64 targets median 4014.77/12327.13ns，
+  含 host graph adapter，只用于 CPU 成本判断，不能外推 IRQ latency/设备或 native 产品门禁。
+  signal-frame consumer 独立损坏两架构的 extension header，并以不可读 SP 调用 rt_sigreturn；
+  父进程验证 SIGSEGV 默认终止，handler 验证 RV SI_KERNEL、AArch SP/code 与未对齐可读 frame，
+  排除后续 trap 假阳性；query mask/copyout canary 与自定义 restorer 验证 sigaction 架构布局。
+  benchmark 使用生产 owner 测量 disabled/单 filter/八 filter；disabled 不锁 state、不读取 PC，
+  interpreter 无分配，forward branches 保证步数不超过 validated path cost。
 - LiteUI frontend 由 host Node.js、单一 `ui/package-lock.json` 与 `ui/build.mjs` 构建；target rootfs
   只安装 production ESM bundle、CSS、PNG assets 与固定 system runtime，不安装 Node/npm、source map、
   dev server 或 runtime package cache。唯一 frontend build owner 是
@@ -75,6 +98,9 @@
   不建立第二条构建路径。每次 check/build 都验证 system icon manifest、generated PUA mapping 与 checked
   TTF SHA-256 一致；bundle cache fingerprint 同时包含 icon manifest 与 TTF。
 - Make 只负责参数校验和稳定入口；`scripts/workflow.py` 是 build、run、verify 的唯一编排 owner。
+  release 检查复用 `build_kernel`，同时生成 ELF 和 AArch64 raw Image；runtime 缓存与冷启动
+  在执行前逐段验证 Image 与当前 ELF 一致，并将实际启动产物内容纳入成功指纹。
+  只更新 ELF 的运行不能算当前实现的验证，旧 Image 必须 fail-stop。
   推荐入口只有 `setup`、`build`、`run`、`run-gui`、`verify-fast`、`verify-runtime` 和 `verify`；其余目标仅用于
   局部诊断或资源准备，均不得再实现独立的依赖链。workflow 按一次 DAG 顺序准备共享产物，禁止递归
   `make` 重复声明 kernel、bootloader、musl 或 rootfs 前置条件。
@@ -170,6 +196,29 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
   completion-before-arm/arming/sleeping 三种顺序均不得丢 wake。
 - `syscall-abi`：编号唯一性与 ABI 表一致性测试。
 
+kernel-unit 的 ASID 用例直接执行生产 generation owner，用 host local-TLB adapter 保留旧
+root canary，覆盖 8/64/128/256/65536 容量的零号保留/耗尽换代、并发切换、准备 OOM、
+退休拒绝、跨多代 idle CPU、同 mm 多 reservation 续代与 CAS 后迟到 seen 的确定交错。
+local IRQ/fence adapter 不证明硬件 TLB；musl 在各架构 1/2CPU 建立 272 个同时 live 且
+实际 activated 的 private root，在相同 VA 保留不同 canary 并交错 yield。AArch64 TCG
+另以标准 cortex-a72 CPU、128MiB RAM 在 1/2CPU 冷启动同一 kernel，要求实际 probe
+capacity=256 的 boot marker，272 live roots 因而覆盖硬件换代；默认 max/host 的 16-bit
+结果不冒充 8-bit 换代证据。RISC-V 16-bit 的换代边界由同一生产算法 host 回归覆盖。
+热路径另测 token clone/activate/drop 的固定 warmup 与五次 median，不设置宿主阈值。
+registry 用例在独立 child allocator 中重入生产 reclaim，并用 watchdog
+裁决自锁，验证两个 registry 的 OOM 不发布与 dead slot 无分配复用。退出 token 用例
+交错 Process mm replacement，验证旧 backing pin、clear-tid 和 futex key 不触及新映像。
+reboot/prctl 用例直接执行生产 syscall codec，验证权限优先级、严格参数和单向状态。
+这些均为冷路径行为，不添加宿主时序性能阈值。
+
+musl smoke 在 1 CPU 和 2 CPU 各冷启动一次。PID1 fork/wait 实际 consumer，只有
+真实 exit=0 才发布最终 marker，再调用标准 poweroff；不允许 PID1 return 成功后 panic
+依赖宿主 UART chunk 时序蒙混通过。normal/swap 均要求该最终 marker。安全 fixture 通过标准 prctl/clone/fork/exec
+检查 no_new_privs 的线程范围、继承和 set-ID 提权抑制，并验证非 root reboot 不进入 reset。
+exit/exec fixture 的 worker 将 clear-child-tid 指向 ET_EXEC 的非零初始化全局变量，直接
+SYS_exit，主线程不 join 而立即重试 exec；新映像必须保持该变量不被旧退出清零。
+host token 回归不能代替该双架构 SMP runtime 验证。
+
 新增行为先补正常、边界、错误、回滚和并发状态转换用例；重构必须保持同一契约。测试不得复制 production algorithm 来制造自洽结果。
 
 ## 性能测试
@@ -182,7 +231,10 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 - 文档不记录本机测量值；阈值变化必须有实现和环境证据，不能为通过门禁直接放宽。
 
 当前 blocking benchmark 覆盖 timer deadline、AArch64 VA39 index/TLBI operand projection 与
-AArch64 semantic PTE encode/decode，以及 production HAL MMIO window 的检查后 read/write。HAL 用
+AArch64 semantic PTE encode/decode、production HAL MMIO window 的检查后 read/write、
+seccomp disabled/单 filter/八 filter，以及实际 bdev claim owner 的 raw-read cache policy projection
+（一个整盘、一个整盘加八个分区，沿用每项 200 ns/op 上限）。claim gate 只衡量
+无竞争 tree/lock CPU 成本，不声称跨 CPU 竞争、alias eviction 或设备 I/O 延迟。HAL 用
 对齐的 host buffer 隔离边界/对齐检查的 CPU 成本，不宣称设备延迟或 IRQ 时序。target-specific 零成本边界还必须通过 release target
 build、static architecture fence、symbol 与 disassembly 检查；host wall-clock 不能冒充
 target instruction cost。RISC-V 保留 backend 的 PTE 与 trap 性能约束由其 unit、release
@@ -190,6 +242,21 @@ static gate 与 disassembly gate 继续负责。
 
 新增 hot path、lock、allocation、codec 或 indirection 时必须明确：加入 blocking benchmark、加入 target static/disassembly gate，或说明为何只需要 diagnostic measurement。
 whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作诊断，不作窄阈值 blocking gate。
+swap 的 area/slot CPU 成本以生产模块的 release host fixture 单独诊断：
+`cargo test -p kernel-unit --release --test fork_file_eof production_swap_slot_cpu_cost -- --ignored --nocapture`。
+固定 1/32 area、100,000 次预热和五个样本中位数，测 reserve/retire、clone/retire 与 statistics；
+不代表设备 I/O 或竞争，不沿用 syscall 整数投影的纳秒门槛。32 area publication 上限和有界 scan
+由生产结构与功能回归约束。canonical resident pin 与 weak page registry 的成本使用
+`cargo test -p kernel-unit --release --test fork_file_eof canonical_page_pin_and_bounded_registry_cpu_cost -- --ignored --nocapture`
+单独诊断：pin固定10万次预热、五次中位数；registry保留512/4096活页，每批512个新owner，
+物理输入在计时前准备。host TaskMutex/物理分配 seam 不代表 native 调度或设备 I/O；
+每次最多八个 tombstone probes 的结构界限与故障回归约束复杂度，不放宽时序门槛。
+System proc projection 的 resident 遍历从全部页降为零，
+通过 scope guard 保证；不引入并行 RSS cache，guest 压力回归验证统计与回收行为。
+StorageBudget 新锁只用于页/inode 创建、最后释放及 remount/statfs，不进入已有内容的 read/write；
+critical section 仅固定整数运算，无分配/回调。生产 quota 的同类 release fixture 单独测
+`production_storage_quota_cpu_cost`（`--test storage_budget --ignored --nocapture`），其 host IRQ
+adapter 只代表无竞争计数成本，不宣称实际 local IRQ 指令/设备延迟，不新增虚假的窄时序门槛。
 LiteUI window move 的成本主体是 evdev→compositor、VirGL scanout composition/flush 与
 真实 60 Hz 显示链路，host microbenchmark 无法代表它；因此不新增失真的 blocking benchmark。静态门禁
 固定 compositor-side grab；production 状态测试固定 window-move page flip 至多一个在途、burst 只保留一个
@@ -359,3 +426,5 @@ HTTPS origin 的 raw accept 与 TLS handshake 分属 server/connection worker ow
 artifact/static-call gate、全部 runtime gate 与 `git diff --check`。最后还必须以
 `riscv64 + tcg + release` 执行 RISC-V secondary 的 compile、static/artifact 和 boot 门禁；
 该 secondary 保留 backend 可构建与可启动契约，不冒充 AArch64 完整 runtime consumer 覆盖。
+
+内核 consumer 的逐项覆盖见 [运行时回归覆盖](kernel-runtime-coverage.md)。

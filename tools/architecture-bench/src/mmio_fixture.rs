@@ -21,3 +21,7 @@ access!(read_mmio_u32, write_mmio_u32, u32);
 access!(read_mmio_u64, write_mmio_u64, u64);
 
 pub(crate) fn before_mmio_write() {}
+
+pub(crate) mod user {
+    pub(crate) const AUDIT_ARCH: u32 = 0xc000_00b7;
+}

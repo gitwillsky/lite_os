@@ -2,19 +2,23 @@
 
 /// 一个挂载的属性位；位值与 Linux `statfs.f_flags`（`ST_*`）一致，因此可直接并入 statfs 与
 /// `/proc/mounts` 的选项列表，不需要第二套编码。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct MountFlags(u8);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MountFlags(u16);
 
 impl MountFlags {
-    pub(crate) const READ_ONLY: u8 = 1;
-    pub(crate) const NOSUID: u8 = 2;
-    pub(crate) const NODEV: u8 = 4;
-    pub(crate) const NOEXEC: u8 = 8;
-    const ALL: u8 = Self::READ_ONLY | Self::NOSUID | Self::NODEV | Self::NOEXEC;
+    pub(crate) const READ_ONLY: u16 = 1;
+    pub(crate) const NOSUID: u16 = 2;
+    pub(crate) const NODEV: u16 = 4;
+    pub(crate) const NOEXEC: u16 = 8;
+    pub(crate) const NOATIME: u16 = 1024;
+    pub(crate) const NODIRATIME: u16 = 2048;
+    pub(crate) const RELATIME: u16 = 4096;
+    pub(crate) const ATIME_MASK: u16 = Self::NOATIME | Self::NODIRATIME | Self::RELATIME;
+    const ALL: u16 = Self::READ_ONLY | Self::NOSUID | Self::NODEV | Self::NOEXEC | Self::ATIME_MASK;
 
     /// 从 `ST_*` 位构造；高位被丢弃。
     pub(crate) const fn from_bits(bits: u64) -> Self {
-        Self((bits & Self::ALL as u64) as u8)
+        Self((bits & Self::ALL as u64) as u16)
     }
 
     pub(crate) const fn bits(self) -> u64 {
@@ -35,5 +39,22 @@ impl MountFlags {
 
     pub(crate) const fn noexec(self) -> bool {
         self.0 & Self::NOEXEC != 0
+    }
+}
+
+impl Default for MountFlags {
+    fn default() -> Self {
+        Self(Self::RELATIME)
+    }
+}
+impl MountFlags {
+    pub(crate) const fn noatime(self) -> bool {
+        self.0 & Self::NOATIME != 0
+    }
+    pub(crate) const fn nodiratime(self) -> bool {
+        self.0 & Self::NODIRATIME != 0
+    }
+    pub(crate) const fn relatime(self) -> bool {
+        self.0 & Self::RELATIME != 0
     }
 }

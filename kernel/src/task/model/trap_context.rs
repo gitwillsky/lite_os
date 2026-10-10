@@ -1,85 +1,5 @@
 use super::*;
 
-impl AddressSpace {
-    /// 为 Thread owner 解析一次 architecture-selected trap-context backing。
-    ///
-    /// # Parameters
-    ///
-    /// - `binding`: 已在 Thread 创建时分类的 typed address/backing 配对。
-    ///
-    /// # Returns
-    ///
-    /// 与 caller 保活的 KernelStack/AddressSpace 配对的唯一 context owner。
-    pub(super) fn bind_user_context(
-        &self,
-        binding: ContextBinding,
-    ) -> Result<ContextOwner<UserContext>, MemoryError> {
-        let pointer = match binding.backing() {
-            ContextBacking::KernelStack => {
-                core::ptr::NonNull::new(binding.address() as *mut UserContext)
-                    .ok_or(MemoryError::InvalidRange)?
-            }
-            ContextBacking::AddressSpace => self.user_context_pointer(binding.address())?,
-        };
-        // SAFETY: the caller keeps either the containing KernelStack or AddressSpace mapping live
-        // until retire. ContextOwner serializes all mutable access to the selected storage.
-        Ok(unsafe { ContextOwner::bind(binding.address(), pointer, binding.backing()) })
-    }
-
-    /// exec commit 时重绑定 AddressSpace-backed owner；kernel-stack owner 不变。
-    ///
-    /// # Parameters
-    ///
-    /// - `owner`: 当前 Thread 的唯一 context owner。
-    /// - `address`: 新映像中的 canonical trap-context VA。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；mapping 缺失属于 kernel invariant failure。
-    pub(super) fn rebind_user_context(&self, owner: &ContextOwner<UserContext>, address: usize) {
-        if matches!(owner.binding().backing(), ContextBacking::KernelStack) {
-            return;
-        }
-        // exec replacement 尚未对其他 task 发布，故这不是可竞争的 lock acquisition。
-        let memory_set = self
-            .memory_set
-            .try_lock()
-            .expect("unpublished exec address space is contended");
-        let pointer = Self::user_context_pointer_from(&memory_set, address);
-        // SAFETY: exec caller is the sole running Thread, retains old/new AddressSpace owners across
-        // commit, and publishes this binding before old mapping retirement.
-        unsafe { owner.rebind(address, pointer) };
-    }
-
-    fn user_context_pointer(
-        &self,
-        address: usize,
-    ) -> Result<core::ptr::NonNull<UserContext>, MemoryError> {
-        let memory_set = self
-            .memory_set
-            .lock()
-            .map_err(|_| MemoryError::OutOfMemory)?;
-        Ok(Self::user_context_pointer_from(&memory_set, address))
-    }
-
-    fn user_context_pointer_from(
-        memory_set: &MemorySet,
-        address: usize,
-    ) -> core::ptr::NonNull<UserContext> {
-        let ppn = memory_set.trap_context_ppn(address);
-        let offset = VirtualAddress::from(address).page_offset();
-        assert!(offset + core::mem::size_of::<UserContext>() <= crate::memory::PAGE_SIZE);
-        // SAFETY: ppn 来自仍被 memory_set lock 保活的 trap-context mapping，offset 已验证整个
-        // UserContext 位于同一 frame；缺失任一条件都会形成越界或悬空 physical pointer。
-        let pointer = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<UserContext>() };
-        assert!(
-            pointer.is_aligned(),
-            "UserContext physical address is not aligned"
-        );
-        core::ptr::NonNull::new(pointer).expect("UserContext physical pointer must be non-null")
-    }
-}
-
 impl TaskControlBlock {
     /// 取得当前 Thread 的 context-switch 保存区锁。
     ///
@@ -101,17 +21,9 @@ impl TaskControlBlock {
         if !binding.requires_retirement_wait(TRAP_CONTEXT) {
             return;
         }
-        let mut wait = self
-            .thread()
-            .memory_retirement_wait
-            .lock()
-            .take()
-            .expect("thread memory-retirement waiter consumed twice");
-        self.process()
-            .address_space()
-            .memory_set
-            .lock_prepared(&mut wait)
-            .remove_thread_trap_context(binding.address());
+        self.with_cleanup_memory(&self.address_space(), |memory| {
+            memory.remove_thread_trap_context(binding.address());
+        });
     }
 
     pub(super) fn replace_user_context(&self, trap_context: UserContext) {

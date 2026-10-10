@@ -6,6 +6,14 @@
 extern crate alloc;
 
 #[cfg(test)]
+#[path = "namespace_fixture.rs"]
+#[allow(
+    dead_code,
+    reason = "host ext4 composes actual initial namespace; namespace operations are covered by separate integration fixtures"
+)]
+mod namespace;
+
+#[cfg(test)]
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InodeType {
@@ -22,6 +30,7 @@ pub(crate) enum InodeType {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileSystemError {
+    AccessDenied,
     AlreadyExists,
     Busy,
     CrossDevice,
@@ -29,14 +38,18 @@ pub(crate) enum FileSystemError {
     InvalidFileSystem,
     InvalidOperation,
     InvalidPath,
+    NameTooLong,
     IoError,
     IsDirectory,
     NoSpace,
     NotDirectory,
     NotFound,
+    NotSupported,
     OutOfMemory,
     PermissionDenied,
+    ReadOnly,
     TooManyLinks,
+    TextBusy,
 }
 
 // kernel error 诊断在 host 测试中写入被捕获的 stderr；只有失败用例才显示，便于定位 fail-stop 原因。
@@ -124,7 +137,7 @@ mod receive_buffer;
 mod id;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/ipc/mod.rs"]
+#[path = "pipe_fixture.rs"]
 #[allow(dead_code, unused_imports)]
 mod ipc;
 
@@ -206,6 +219,10 @@ mod fallible_tree_tests;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/socket/inet/port_namespace.rs"]
+#[allow(
+    dead_code,
+    reason = "独立 leaf fixture；组合生命周期接口由完整 endpoint 集成用例覆盖"
+)]
 mod inet_port_namespace;
 
 #[cfg(test)]
@@ -315,12 +332,23 @@ mod riscv_fp_instruction;
 mod riscv_page_table_fixture;
 
 #[cfg(test)]
+mod aarch64_page_table_fixture;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/socket/unix/datagram_queue.rs"]
+#[allow(
+    dead_code,
+    reason = "独立 leaf fixture；组合生命周期接口由完整 endpoint 集成用例覆盖"
+)]
 mod unix_datagram_queue;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/socket/unix/stream_backlog.rs"]
-mod unix_stream_backlog;
+#[path = "../../../kernel/src/socket/unix/connection_backlog.rs"]
+#[allow(
+    dead_code,
+    reason = "backlog 的生命周期退休接口由完整 endpoint 回归覆盖"
+)]
+mod unix_connection_backlog;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/syscall/user_iovec.rs"]
@@ -333,10 +361,6 @@ mod user_iovec_tests;
 #[cfg(test)]
 #[path = "../../../kernel/src/socket/message_limits.rs"]
 mod socket_message_limits;
-
-#[cfg(test)]
-#[path = "../../../kernel/src/syscall/socket/receive_publication.rs"]
-mod socket_receive_publication;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/devices/drm/publication_order.rs"]
@@ -453,6 +477,8 @@ mod ext4_link_count;
 
 #[cfg(test)]
 mod file_position_tests;
+#[cfg(test)]
+mod task_mutex_signal_tests;
 
 #[cfg(test)]
 mod regular_write_batch_tests;
@@ -486,8 +512,8 @@ mod task_execution_tests;
 mod socket_abi_tests;
 
 #[cfg(test)]
-#[path = "tests/unix_stream_backlog.rs"]
-mod unix_stream_backlog_tests;
+#[path = "tests/unix_connection_backlog.rs"]
+mod unix_connection_backlog_tests;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/cmdline.rs"]
@@ -496,3 +522,10 @@ mod cmdline;
 #[cfg(test)]
 #[path = "tests/cmdline.rs"]
 mod cmdline_tests;
+
+#[cfg(test)]
+mod allocation_failure;
+
+#[cfg(test)]
+#[path = "tests/pipe_admission.rs"]
+mod pipe_admission_tests;

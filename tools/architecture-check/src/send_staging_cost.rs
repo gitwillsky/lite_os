@@ -21,7 +21,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
             initialized_before_copyin: 0,
         }) => {}
         Ok(cost) => errors.push(format!(
-            "send/write staging must expose only the user-copy initialized prefix; two socket buffers plus one regular buffer measured {cost:?}"
+            "send/write staging must expose only the user-copy initialized prefix; one shared socket buffer plus one regular buffer measured {cost:?}"
         )),
         Err(error) => errors.push(error),
     }
@@ -43,7 +43,10 @@ fn measure(root: &Path) -> Result<SendStagingCost, String> {
         && staging.contains("Vec<MaybeUninit<u8>>")
         && staging.contains("unsafe fn publish")
         && cursor.contains("stage_from_user_into")
-        && sequential.contains("UserInputStaging::try_new")
+        && sequential.contains(
+            "crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length)",
+        )
+        && !sequential.contains("socket.write(")
         && message.contains("UserInputStaging::try_new")
         && regular.contains("as_input_staging")
         && select.contains("input: [UserInputStaging<'static>; 3]")

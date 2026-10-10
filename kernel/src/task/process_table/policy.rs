@@ -1,5 +1,5 @@
 use super::thread_selector::scheduler_thread;
-use super::{PROCESS_TABLE, ProcessState};
+use super::{PROCESS_TABLE, ProcessGraph, ProcessNode, ProcessState};
 use crate::task::{
     TaskControlBlock, current_task, model::RLIMIT_NICE, processor::request_task_reschedule,
 };
@@ -40,12 +40,35 @@ pub(crate) enum SchedulerPolicyError {
 /// Linux get/setpriority 的 task collection selector。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SchedulerNiceSelector {
-    /// 零选择 caller，非零选择全局 TID。
+    /// 零选择 caller，非零选择calling PID namespace 的 TID。
     Process(u32),
     /// 零选择 caller process group，非零选择 PGID。
     Group(u32),
     /// 零选择 caller real UID，非零选择给定 UID。
     User(u32),
+}
+
+// 单次 selector 的实际 graph iterator；group 从 membership owner 迭代，不扫描无关进程。
+enum NiceProcesses<'a> {
+    All(crate::fallible_tree::Iter<'a, usize, ProcessNode>),
+    Group {
+        graph: &'a ProcessGraph,
+        members: crate::fallible_tree::Iter<'a, usize, ()>,
+    },
+}
+impl<'a> Iterator for NiceProcesses<'a> {
+    type Item = &'a ProcessNode;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::All(nodes) => nodes.next().map(|(_, node)| node),
+            Self::Group { graph, members } => members.next().map(|(key, ())| {
+                graph
+                    .nodes
+                    .get(key)
+                    .expect("nice selector group member missing")
+            }),
+        }
+    }
 }
 
 fn nice_targets(
@@ -63,6 +86,16 @@ fn nice_targets(
         targets.push(target);
         return Ok(targets);
     }
+    let view = caller.pid_namespace();
+    let requested_group = match selector {
+        SchedulerNiceSelector::Group(group) if group != 0 => {
+            let Some(key) = caller.resolve_pid(group as usize) else {
+                return Ok(Vec::new());
+            };
+            Some(key)
+        }
+        _ => None,
+    };
     let mut candidates = Vec::new();
     loop {
         let graph = PROCESS_TABLE.graph.lock();
@@ -73,16 +106,29 @@ fn nice_targets(
                 };
                 Some(node.process_group)
             }
-            SchedulerNiceSelector::Group(group) => Some(group as usize),
+            SchedulerNiceSelector::Group(_) => requested_group,
             SchedulerNiceSelector::Process(_) | SchedulerNiceSelector::User(_) => None,
         };
-        let required = graph
-            .nodes
-            .values()
-            .filter(|node| selected_group.is_none_or(|group| node.process_group == group))
+        if selected_group.is_some_and(|key| !graph.groups.contains_key(&key)) {
+            return Ok(Vec::new());
+        }
+        let nodes = || match selected_group {
+            Some(key) => NiceProcesses::Group {
+                graph: &graph,
+                members: graph
+                    .groups
+                    .get(&key)
+                    .expect("caller/validated PGID registration")
+                    .members
+                    .iter(),
+            },
+            None => NiceProcesses::All(graph.nodes.iter()),
+        };
+        let required = nodes()
+            .filter(|node| node.pid.identity().number_in(&view) != 0)
             .try_fold(0usize, |count, node| match &node.state {
                 ProcessState::Live(threads) => count.checked_add(threads.len()).ok_or(()),
-                ProcessState::Exited(_) => Ok(count),
+                ProcessState::Exited(..) => Ok(count),
             })
             .map_err(|()| SchedulerPolicyError::OutOfMemory)?;
         match super::snapshot_staging::snapshot_capacity(candidates.capacity(), required) {
@@ -95,11 +141,7 @@ fn nice_targets(
             }
             super::snapshot_staging::SnapshotCapacity::Capture => {
                 candidates.clear();
-                for node in graph
-                    .nodes
-                    .values()
-                    .filter(|node| selected_group.is_none_or(|group| node.process_group == group))
-                {
+                for node in nodes().filter(|node| node.pid.identity().number_in(&view) != 0) {
                     let ProcessState::Live(threads) = &node.state else {
                         continue;
                     };
@@ -115,7 +157,10 @@ fn nice_targets(
     let uid = if requested_uid == 0 {
         caller.credential_id(true, false)
     } else {
-        requested_uid
+        let Some(uid) = caller.user_namespace().to_kernel(true, requested_uid) else {
+            return Ok(Vec::new());
+        };
+        uid
     };
     candidates.retain(|target| target.credential_id(true, false) == uid);
     Ok(candidates)
@@ -187,7 +232,7 @@ pub(crate) fn scheduler_nice(
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数使用全局 TID selector。
+/// - `tid`: 零选择 calling Thread；正数使用calling PID namespace 的 TID selector。
 /// - `replacement`: None 查询，Some 替换已验证的 encoded priority。
 ///
 /// # Returns
@@ -215,7 +260,7 @@ pub(crate) fn scheduler_io_priority(
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数使用 Linux 全局 TID selector。
+/// - `tid`: 零选择 calling Thread；正数使用 Linux calling PID namespace 的 TID selector。
 /// - `request`: 查询、保留 policy 设置参数，或替换完整 legacy policy。
 ///
 /// # Returns
@@ -282,7 +327,7 @@ pub(crate) fn scheduler_policy(
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数使用 Linux 全局 TID selector。
+/// - `tid`: 零选择 calling Thread；正数使用 Linux calling PID namespace 的 TID selector。
 ///
 /// # Returns
 ///

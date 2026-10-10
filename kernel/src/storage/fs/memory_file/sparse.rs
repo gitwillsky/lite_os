@@ -11,20 +11,27 @@ pub(super) const PAGE_SIZE: usize = 4096;
 
 /// 一个存储页的字节访问。
 pub(super) trait PageBytes {
-    fn read(&self, offset: usize, output: &mut [u8]);
-    fn write(&self, offset: usize, input: &[u8]);
+    type Error;
+    // 换入须在 byte copy 前完成；Err 不能部分修改当前页或目标切片。
+    fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), Self::Error>;
+    fn write(&self, offset: usize, input: &[u8]) -> Result<(), Self::Error>;
     /// 把 `offset` 到页尾清零。
-    fn zero_from(&self, offset: usize);
+    fn zero_from(&self, offset: usize) -> Result<(), Self::Error>;
 }
 
 /// 一次写入停止的原因。
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Stop<E> {
+pub(super) enum Stop<E, AccessError> {
     /// 目录树节点分配失败。
     OutOfMemory,
     /// 页分配失败（配额或物理内存），原因由 `allocate` 给出。
     Allocator(E),
+    /// 已存在页的换入/访问失败；与配额或新页 allocation 独立。
+    Access(AccessError),
 }
+
+/// 单页 lookup/allocation 的结果；外层 Option 在 EOF 外单独表示没有页。
+type PageLookup<P, E> = Result<Arc<P>, Stop<E, <P as PageBytes>::Error>>;
 
 /// 稀疏页映射与文件长度。缺失的页是洞，读为零且不占内存。
 pub(super) struct SparsePages<P> {
@@ -45,12 +52,19 @@ impl<P: PageBytes> SparsePages<P> {
     }
 
     /// 已分配的页数。
-    pub(super) const fn resident_pages(&self) -> usize {
+    pub(super) const fn allocated_pages(&self) -> usize {
         self.pages.len()
     }
 
-    /// 从 `offset` 读入 `output`，洞读为零；返回实际读到的字节数（EOF 截断）。
-    pub(super) fn read(&self, offset: u64, output: &mut [u8]) -> usize {
+    /// Clone one storage owner under the caller's state lock; swap IO occurs after lock release.
+    pub(super) fn next_page_from(&self, index: u64) -> Option<(u64, Arc<P>)> {
+        self.pages
+            .ceiling(&index)
+            .map(|(&index, page)| (index, page.clone()))
+    }
+
+    /// 从 `offset` 读入 `output`，洞读为零；返回已读字节数与停止错误（EOF 截断）。
+    pub(super) fn read(&self, offset: u64, output: &mut [u8]) -> (usize, Option<P::Error>) {
         let count = usize::try_from(self.length.saturating_sub(offset))
             .unwrap_or(usize::MAX)
             .min(output.len());
@@ -61,12 +75,16 @@ impl<P: PageBytes> SparsePages<P> {
             let part = (PAGE_SIZE - page_offset).min(count - done);
             let target = &mut output[done..done + part];
             match self.pages.get(&(position / PAGE_SIZE as u64)) {
-                Some(page) => page.read(page_offset, target),
+                Some(page) => {
+                    if let Err(error) = page.read(page_offset, target) {
+                        return (done, Some(error));
+                    }
+                }
                 None => target.fill(0),
             }
             done += part;
         }
-        count
+        (count, None)
     }
 
     /// 取得（必要时创建）第 `index` 页，不改变文件长度。
@@ -74,7 +92,7 @@ impl<P: PageBytes> SparsePages<P> {
         &mut self,
         index: u64,
         allocate: &mut impl FnMut() -> Result<Arc<P>, E>,
-    ) -> Result<Arc<P>, Stop<E>> {
+    ) -> Result<Arc<P>, Stop<E, P::Error>> {
         if let Some(page) = self.pages.get(&index) {
             return Ok(page.clone());
         }
@@ -96,7 +114,7 @@ impl<P: PageBytes> SparsePages<P> {
         offset: u64,
         input: &[u8],
         mut allocate: impl FnMut() -> Result<Arc<P>, E>,
-    ) -> (usize, Option<Stop<E>>) {
+    ) -> (usize, Option<Stop<E, P::Error>>) {
         let mut done = 0;
         let mut stop = None;
         while done < input.len() {
@@ -104,7 +122,12 @@ impl<P: PageBytes> SparsePages<P> {
             let page_offset = (position % PAGE_SIZE as u64) as usize;
             let part = (PAGE_SIZE - page_offset).min(input.len() - done);
             match self.page_or_allocate(position / PAGE_SIZE as u64, &mut allocate) {
-                Ok(page) => page.write(page_offset, &input[done..done + part]),
+                Ok(page) => {
+                    if let Err(error) = page.write(page_offset, &input[done..done + part]) {
+                        stop = Some(Stop::Access(error));
+                        break;
+                    }
+                }
                 Err(reason) => {
                     stop = Some(reason);
                     break;
@@ -127,7 +150,7 @@ impl<P: PageBytes> SparsePages<P> {
         &mut self,
         index: u64,
         allocate: impl FnMut() -> Result<Arc<P>, E>,
-    ) -> Option<Result<Arc<P>, Stop<E>>> {
+    ) -> Option<PageLookup<P, E>> {
         let mut allocate = allocate;
         (index.checked_mul(PAGE_SIZE as u64)? < self.length)
             .then(|| self.page_or_allocate(index, &mut allocate))
@@ -143,7 +166,7 @@ impl<P: PageBytes> SparsePages<P> {
         offset: u64,
         length: u64,
         mut allocate: impl FnMut() -> Result<Arc<P>, E>,
-    ) -> Result<(), Stop<E>> {
+    ) -> Result<(), Stop<E, P::Error>> {
         let end = offset.checked_add(length).ok_or(Stop::OutOfMemory)?;
         let first = offset / PAGE_SIZE as u64;
         let last = end.div_ceil(PAGE_SIZE as u64);
@@ -155,16 +178,18 @@ impl<P: PageBytes> SparsePages<P> {
     }
 
     /// 把文件长度改为 `size`：缩小时释放整页并清零保留页的尾部，增长只产生洞。
-    pub(super) fn truncate(&mut self, size: u64) {
-        let first_removed = size.div_ceil(PAGE_SIZE as u64);
-        // 被移出的页在此处随 `removed` 释放；仍被 mmap 引用的页由其 `Arc` 延续到解除映射。
-        let removed = self.pages.split_off(&first_removed);
-        drop(removed);
+    pub(super) fn truncate(&mut self, size: u64) -> Result<(), P::Error> {
+        // 1. 唯一 fallible consequence 先发生；失败不能先删除其他完整页或改变长度。
         if !size.is_multiple_of(PAGE_SIZE as u64)
             && let Some(page) = self.pages.get(&(size / PAGE_SIZE as u64))
         {
-            page.zero_from((size % PAGE_SIZE as u64) as usize);
+            page.zero_from((size % PAGE_SIZE as u64) as usize)?;
         }
+        // 2. tail 已可用且清零；节点移交/Drop 和长度发布均不会分配或失败。
+        let first_removed = size.div_ceil(PAGE_SIZE as u64);
+        let removed = self.pages.split_off(&first_removed);
+        drop(removed);
         self.length = size;
+        Ok(())
     }
 }

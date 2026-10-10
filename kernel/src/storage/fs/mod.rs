@@ -1,9 +1,15 @@
+mod write_access;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
+pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};
 
+mod block_claim;
 mod block_ioctl;
 mod block_node;
+mod swap;
+pub(crate) use swap::{SwapSource, prepare_swap_storage};
+mod anonymous;
 mod devfs;
 pub(crate) mod device;
 mod directory;
@@ -12,42 +18,53 @@ mod ext4_identity;
 mod ext4_type;
 mod fifo;
 mod inode;
+mod inode_identity;
+mod inode_times;
 mod inotify;
+pub(crate) use inotify::{InotifyLimit, inotify_watch_limit};
 mod mem;
 mod memfd;
 mod memory_file;
 mod mount;
+mod nsfs;
+pub(crate) mod pidfs;
+mod xattr;
+pub(crate) use nsfs::namespace_opened;
+pub(crate) use xattr::{XattrChange, XattrError};
+mod file_information;
 pub(crate) mod mount_options;
-mod open_flags;
+pub(crate) use file_information::format_file_information;
 mod page_cache;
 mod permission;
 mod procfs;
+mod storage_budget;
 mod sysfs;
 mod sysfs_block;
 mod tmpfs;
 mod vfs;
 
+pub(crate) use anonymous::{anonymous_opened, pipe_opened, socket_opened};
 pub(crate) use block_node::BlockNode;
 pub(crate) use directory::{
     DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, Dirent64Batch,
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
 };
 pub(crate) use fifo::{FifoAccess, FifoOpenError, open as open_fifo};
-pub(crate) use inode::{DataBacking, Inode, InodeMetadata, InodeType, StorageWriter};
+pub(crate) use inode::{
+    DataBacking, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, LinkTarget,
+    StorageWriter,
+};
 pub(crate) use inotify::{
     IN_ACCESS, IN_ATTRIB, IN_CLOEXEC, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE,
     IN_MODIFY, IN_MOVE_SELF, IN_MOVED_FROM, IN_MOVED_TO, IN_NONBLOCK, IN_OPEN, InitError, Inotify,
-    WatchError, add_watch_flags, filesystem_unmounted, identity as inotify_identity, next_cookie,
-    notify_entry, notify_opened, notify_removed, notify_self, watching,
+    WatchError, add_watch_flags, filesystem_unmounted, next_cookie, notify_dentry_reclaimed,
+    notify_entry, notify_opened, notify_self, watching,
 };
 pub(crate) use memfd::MemFile;
-pub(crate) use memory_file::{MemoryFile, PageBudget};
+pub(crate) use memory_file::MemoryFile;
 pub(crate) use mount::{
-    FileSystemType, MountEnvironment, MountRequest, get_filesystem_type, mount, mount_root,
-    register_filesystem, remount, unmount,
-};
-pub(crate) use open_flags::{
-    O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY,
+    CreatedFileSystem, FileSystemType, MountEnvironment, MountRequest, get_filesystem_type, mount,
+    mount_root, register_filesystem, remount, unmount, unmount_root_read_only,
 };
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
@@ -55,13 +72,21 @@ pub(crate) use page_cache::{
 };
 pub(crate) use permission::{AccessIdentity, CreateMetadata, OwnerModeChange};
 pub(crate) use procfs::{
-    ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot, ProcNetworkSnapshot,
-    ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
+    ProcCpuSnapshot, ProcCredentialSnapshot, ProcDirectory, ProcFileDescriptorSnapshot,
+    ProcIoSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot, ProcRouteSnapshot, ProcSnapshot,
+    ProcSnapshotScope, ProcSource, ProcTaskIdentity, ProcThreadSnapshot,
+};
+use storage_budget::StorageBudget;
+pub(crate) use syscall_abi::open::{
+    O_ACCMODE, O_APPEND, O_CLOEXEC, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR,
+    O_WRONLY,
 };
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
-    AdvisoryLockNotifier, LockHolder, MountFlags, OpenedFile, PreparedAdvisoryLock,
-    PreparedLockAttempt, PreparedRecordLock, RecordLockMode, RecordLockRange, vfs,
+    AdvisoryLockNotifier, ContentWrite, LockHolder, LookupOrigin, MountFlags, MountNamespace,
+    MountPropagation, MountTableKind, OpenedFile, PreparedAdvisoryLock, PreparedLockAttempt,
+    PreparedRecordLock, ReadAccess, RecordLockMode, RecordLockOwner, RecordLockRange, UnmountMode,
+    mount_limit, set_mount_limit, vfs,
 };
 
 /// filesystem adapter 向 VFS 投影的容量、inode 与类型快照。
@@ -100,18 +125,24 @@ pub(crate) enum FileSystemError {
     IsDirectory,
     DirectoryNotEmpty,
     InvalidPath,
+    NameTooLong,
     IoError,
     InvalidFileSystem,
     InvalidOperation,
+    NotSupported,
     ReadOnly,
-    SymbolicLink,
+    Loop,
     OutOfMemory,
     NoSpace,
     CrossDevice,
     PermissionDenied,
     AccessDenied,
     Busy,
+    /// Two-pass mount expiry has been armed; caller retries after observing EAGAIN.
+    Retry,
     TooManyLinks,
+    /// Active swap inode rejects writes/truncate/allocation (ETXTBSY).
+    TextBusy,
     /// 设备号没有 driver，或 driver 当前不提供该设备（`ENXIO`）。
     NoDevice,
 }
@@ -147,11 +178,23 @@ static NEXT_FILESYSTEM_ID: core::sync::atomic::AtomicUsize =
 
 /// 为新 filesystem instance 分配唯一 id，用作其 inode 的 `filesystem_id` 与 `st_dev`。
 pub(crate) fn allocate_filesystem_id() -> usize {
-    NEXT_FILESYSTEM_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+    NEXT_FILESYSTEM_ID
+        .try_update(
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+            |next| next.checked_add(1),
+        )
+        .expect("filesystem identity exhausted")
 }
 
 /// 为 VFS 提供根 inode 的文件系统实例。
 pub(crate) trait FileSystem: Send + Sync {
+    /// Linux show_options 的实际 filesystem 配置投影；返回含前导逗号的选项，不缓存 mount 请求字符串。
+    /// 无专属选项返回空序列；OOM/读取失败必须传播。
+    fn show_mount_options(&self) -> Result<Vec<u8>, FileSystemError> {
+        Ok(Vec::new())
+    }
+
     /// 加载该文件系统的根 inode。
     ///
     /// # Returns
@@ -184,26 +227,24 @@ pub(crate) trait FileSystem: Send + Sync {
         Ok(())
     }
 
-    /// 从只读转为可写（`remount,rw`）时，补做只读挂载推迟的写前准备（Linux `ext4_remount` 的 `ro → rw`）。
-    ///
-    /// # Errors
-    ///
-    /// 准备失败返回对应错误；VFS 会还原挂载属性，实例保持只读。
-    fn make_writable(&self) -> Result<(), FileSystemError> {
-        Ok(())
-    }
-
     /// 以 `options` 重新配置运行中的实例（Linux `reconfigure`）；挂载属性（ro/nosuid/…）由 VFS 管理。
     ///
     /// # Parameters
     ///
     /// - `options`: `mount(2)` 的 `data` 字符串；空串表示不改变任何选项。
+    /// - `writable_transition`: 由实际 VFS owner 判断的 ro → rw 转换；后端先完整校验选项，
+    ///   再执行此前只读挂载推迟的写前准备，成功后 VFS 才发布可写属性。
     ///
     /// # Errors
     ///
     /// 默认实现不支持任何选项，非空返回 `InvalidOperation`；实现在值无效或与当前状态冲突时返回
     /// 对应错误，且失败时不得改变任何状态。
-    fn remount(&self, options: &[u8]) -> Result<(), FileSystemError> {
+    fn remount(
+        &self,
+        options: &[u8],
+        _namespace: &crate::namespace::UserNamespace,
+        _writable_transition: bool,
+    ) -> Result<(), FileSystemError> {
         if mount_options::is_empty(options) {
             Ok(())
         } else {
@@ -346,6 +387,7 @@ fn publish_partitions(
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let number = device::DeviceNumber::new(whole.major, whole.minor + partition.number);
         let info = block_node::PartitionInfo {
+            whole: node.clone(),
             start: partition.start,
             uuid: match (partition.guid, signature) {
                 (Some(guid), _) => Some(crate::block::identity::PartUuid::Gpt(guid)),

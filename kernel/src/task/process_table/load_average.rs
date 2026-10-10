@@ -1,8 +1,11 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{sync::IrqMutex, task::RunState};
+use crate::{
+    sync::IrqMutex,
+    task::{model::uninterruptible_task_count, processor::runnable_task_count},
+};
 
-use super::{PROCESS_TABLE, ProcessState};
+use super::PROCESS_TABLE;
 
 const FIXED_ONE: u64 = 1 << 11;
 const INTERVAL_US: u64 = 5_000_000;
@@ -17,7 +20,7 @@ struct SampleClaim {
 /// Linux 1/5/15 minute fixed-point load average 的唯一 cadence 与 value owner。
 pub(super) struct LoadAverage {
     // OWNER: 本 atomic 唯一分配 5-second sample cadence；0 是 in-progress sentinel。
-    // 缺失 claim 会让每个 CPU 重复扫描全部 Task；缺失 sentinel 会允许后一周期先提交，
+    // 缺失 claim 会让每个 CPU 重复采样并提交 EWMA；缺失 sentinel 会允许后一周期先提交，
     // 使不同 active sample 以反向时间顺序更新 EWMA。
     sample_deadline_us: AtomicU64,
     // OWNER: 本锁原子发布同一次 sample 的三个 EWMA value；拆锁会让 procfs/sysinfo
@@ -132,7 +135,7 @@ fn calc_load(load: u64, exp: u64, active: u64) -> u64 {
     u64::try_from(next / FIXED_ONE as u128).expect("load-average EWMA overflow")
 }
 
-/// 在到期 tick 上唯一采样全局 runnable Task 并提交 Linux fixed-point EWMA。
+/// 在到期 tick 上唯一采样全局 runnable 与不可中断 blocked Task 并提交 Linux fixed-point EWMA。
 ///
 /// # Parameters
 ///
@@ -150,54 +153,8 @@ pub(super) fn update(now_us: u64) {
     let Some(claim) = PROCESS_TABLE.load_average.claim(now_us) else {
         return;
     };
-    // 2. 每次在 graph lock 内只取一个 Arc，然后解锁读 SchedulingState。
-    //    缺失 cursor 会需要无界 Task Vec snapshot，timer softirq OOM 时无法返回错误。
-    let mut cursor = None;
-    let mut runnable = 0;
-    loop {
-        let next = {
-            let graph = PROCESS_TABLE.graph.lock();
-            let same_process = cursor.and_then(|(pid, tid)| {
-                let node = graph.nodes.get(&pid)?;
-                let ProcessState::Live(threads) = &node.state else {
-                    return None;
-                };
-                threads
-                    .successor(&tid)
-                    .map(|(&tid, task)| ((pid, tid), task.clone()))
-            });
-            same_process.or_else(|| {
-                let mut nodes = match cursor {
-                    Some((pid, _)) => graph.nodes.iter_after(&pid),
-                    None => graph.nodes.iter(),
-                };
-                nodes.find_map(|(&pid, node)| {
-                    let ProcessState::Live(threads) = &node.state else {
-                        return None;
-                    };
-                    threads
-                        .iter()
-                        .next()
-                        .map(|(&tid, task)| ((pid, tid), task.clone()))
-                })
-            })
-        };
-        let Some((position, task)) = next else {
-            break;
-        };
-        cursor = Some(position);
-        if matches!(
-            task.scheduling.state.lock().run_state(),
-            RunState::New
-                | RunState::Ready { .. }
-                | RunState::Running { .. }
-                | RunState::Preempting { .. }
-                | RunState::WakePending { .. }
-                | RunState::StopPending { .. }
-        ) {
-            runnable += 1;
-        }
-    }
+    // 2. 采样已有 scheduler membership，包括真实 kernel task；成本只随 CPU 数增长。
+    let active = runnable_task_count() + uninterruptible_task_count();
     // 3. missed periods 由 O(log n) fixed power 一次提交。
-    PROCESS_TABLE.load_average.commit(claim, runnable);
+    PROCESS_TABLE.load_average.commit(claim, active);
 }

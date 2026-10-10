@@ -1,20 +1,22 @@
 use super::*;
 
-impl WaitRegistry {
-    pub(in crate::task::process_table) fn requeue_futex(
+impl futex_transaction::FutexTransaction<'_> {
+    pub(in crate::task::process_table) fn requeue(
         &self,
         source: FutexKey,
         target: FutexKey,
         count: usize,
     ) -> usize {
-        if count == 0 || source == target {
+        self.covers(source);
+        self.covers(target);
+        if count == 0 {
             return 0;
         }
         let lower = WaitIndexKey::Futex { key: source, id: 0 };
         let mut cursor = None;
         let mut moved = 0;
         while moved < count {
-            let Some((index, registration)) = self.source_candidate(lower, cursor) else {
+            let Some((index, registration)) = self.registry.source_candidate(lower, cursor) else {
                 break;
             };
             let WaitIndexKey::Futex { key, id } = index else {
@@ -48,10 +50,15 @@ impl WaitRegistry {
             if previous == 0 {
                 continue;
             }
+            if source == target {
+                registration.state.store(previous, Ordering::Release);
+                moved += 1;
+                continue;
+            }
             let target_key = WaitIndexKey::Futex { key: target, id };
             let mut keys = registration.keys.lock();
             let mut shards =
-                LockedWaitShards::lock_with_extra(&self.shards, &keys, Some(target_key));
+                LockedWaitShards::lock_with_extra(&self.registry.shards, &keys, Some(target_key));
             let mut node = shards
                 .shard_mut(index.shard())
                 .index

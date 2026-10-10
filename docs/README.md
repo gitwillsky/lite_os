@@ -72,3 +72,16 @@
 - [术语表](glossary.md)
 
 完成的计划、阶段快照和已被当前文档吸收的设计草案不保留在工作树中；需要追溯时使用 Git 历史。
+
+## 领域所有权细节
+
+- [领域依赖说明](architecture-contract/dependency-owners.md)
+- [文件系统接口、事务与退休契约](architecture-contract/filesystem-transactions.md)
+- [IPv4 与 TCP/UDP 传输契约](architecture-contract/ipv4-transports.md)
+- [有序存储与源码审查](architecture-contract/ordered-storage.md)
+- [Packet 与 Netlink 契约](architecture-contract/packet-netlink.md)
+- [Pipe 与 readiness 契约](architecture-contract/pipe-readiness.md)
+- [进程接口、等待与退休契约](architecture-contract/process-lifecycle.md)
+- [System V IPC 对象与资源契约](architecture-contract/systemv-ipc.md)
+- [UNIX socket 与辅助数据契约](architecture-contract/unix-sockets.md)
+- [内核运行时覆盖](development/kernel-runtime-coverage.md)

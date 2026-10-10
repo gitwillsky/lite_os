@@ -18,8 +18,15 @@ pub(in crate::syscall) struct PollWaitKeys {
 }
 
 enum PollWaitGuard {
-    Epoll { epoll: Arc<Epoll>, generation: u64 },
+    Epoll {
+        epoll: Arc<Epoll>,
+        generation: u64,
+    },
     Socket(SocketWaitGuard),
+    Signal {
+        source: Arc<crate::file::SignalWaitSource>,
+        generation: u64,
+    },
 }
 
 /// wait publication 前捕获的全部 source-snapshot guards。
@@ -83,6 +90,27 @@ impl PollWaitKeys {
         wake_group: Option<usize>,
     ) -> Result<(), ()> {
         match &ofd.kind {
+            OpenFileKind::SignalFd(_) => {
+                use crate::file::FileReadinessContext;
+                if let Some(source) =
+                    crate::task::current_task().and_then(|task| task.signal_source())
+                {
+                    self.guards.try_reserve(1).map_err(|_| ())?;
+                    self.push(PollWaitKey::signal(source.identity(), events))?;
+                    let generation = source.generation();
+                    self.guards
+                        .push(PollWaitGuard::Signal { source, generation });
+                }
+            }
+            OpenFileKind::TimerFd(timer) if events & POLLIN != 0 => {
+                self.push(PollWaitKey::pipe(
+                    &timer.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                    POLLIN,
+                    exclusive,
+                    wake_group,
+                ))?;
+            }
             OpenFileKind::Device(file) => {
                 for source in file.wait_sources(events).iter() {
                     match source {
@@ -119,7 +147,7 @@ impl PollWaitKeys {
                     self.guards.push(PollWaitGuard::Socket(guard));
                 }
                 for source in sources.into_iter().flatten() {
-                    self.add_socket_source(source, events, exclusive, wake_group)?;
+                    self.add_socket_source(source, exclusive, wake_group)?;
                 }
             }
             OpenFileKind::Epoll(epoll) => {
@@ -155,22 +183,16 @@ impl PollWaitKeys {
     pub(super) fn add_socket_source(
         &mut self,
         source: SocketWaitSource,
-        events: i16,
         exclusive: bool,
         wake_group: Option<usize>,
     ) -> Result<(), ()> {
-        self.push(match source {
-            SocketWaitSource::Notification(pipe) => PollWaitKey::pipe(
-                &pipe,
-                crate::ipc::PipeDirection::Read,
-                POLLIN,
-                exclusive,
-                wake_group,
-            ),
-            SocketWaitSource::Data { pipe, direction } => {
-                PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
-            }
-        })
+        self.push(PollWaitKey::pipe(
+            &source.into_notification(),
+            crate::ipc::PipeDirection::Read,
+            POLLIN,
+            exclusive,
+            wake_group,
+        ))
     }
 
     /// 把完成的 key backing 与 snapshot guards 转移给 wait orchestration。
@@ -205,6 +227,7 @@ impl PollWaitGuards {
             changed |= match guard {
                 PollWaitGuard::Epoll { epoll, generation } => epoll.recheck_changed(*generation),
                 PollWaitGuard::Socket(socket) => socket.changed(),
+                PollWaitGuard::Signal { source, generation } => source.generation() != *generation,
             };
         }
         changed

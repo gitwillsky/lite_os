@@ -146,6 +146,10 @@ pub(crate) fn return_to_user(
             .is_some_and(|end| end <= reserved_page + PAGE_SIZE),
         "AArch64 user context exceeds its reserved kernel-stack page"
     );
+    let encoded = address_space.activate(super::startup::current_logical_id());
+    // Noreturn assembly does not unwind Rust frames; release the token Arc before the jump.
+    // The scheduler's current task still pins the same root throughout this IRQ-disabled handoff.
+    drop(address_space);
     // SAFETY: x0/x1 own the live user context/token. The high-half restore entry installs TTBR0
     // while VBAR remains on the permanent TTBR1 vector mapping and never returns.
     unsafe {
@@ -153,7 +157,7 @@ pub(crate) fn return_to_user(
             "br {restore}",
             restore = in(reg) __aarch64_restore as *const () as usize,
             in("x0") context_address,
-            in("x1") address_space.encoded(),
+            in("x1") encoded,
             options(noreturn)
         )
     }

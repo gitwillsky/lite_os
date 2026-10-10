@@ -22,7 +22,7 @@ from build_cache import (
     write_manifest,
 )
 from build_target import target_from_environment
-from verify_musl import MuslCachePaths, compiler_identity, run
+from verify_musl import MuslCachePaths, compiler_identity, find_stripper, run
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target/openssl-runtime"
@@ -130,13 +130,15 @@ def build_openssl(
 ) -> OpenSslPaths:
     source, source_fingerprint = _source()
     ca_bundle = _ca_bundle()
+    stripper = find_stripper(musl.compiler)
     payload = {
         "kind": "openssl-static-libs-dynamic-musl-cli",
-        "recipe_version": 1,
+        "recipe_version": 2,
         "source_fingerprint": source_fingerprint,
         "ca_bundle_sha256": CA_BUNDLE_SHA256,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "compiler": compiler_identity(musl.compiler),
+        "strip": {"path": str(stripper), "sha256": sha256(stripper)},
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
         "configure_target": OPENSSL_CONFIGURE_TARGET,
         "configure_options": list(CONFIGURE_OPTIONS),
@@ -180,7 +182,7 @@ def build_openssl(
             raise RuntimeError("OpenSSL build did not produce apps/openssl")
         run(
             [
-                "/opt/homebrew/opt/llvm/bin/llvm-strip",
+                str(stripper),
                 "-o",
                 str(generation / "openssl"),
                 str(built),

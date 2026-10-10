@@ -44,6 +44,6 @@ pub(crate) fn sys_eventfd2(initial: u32, flags: u32) -> isize {
         Ok(ofd) => ofd,
         Err(()) => return -errno::ENOMEM,
     };
-    task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
+    task.fd_allocate(ofd, 0, flags & O_CLOEXEC != 0)
         .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }

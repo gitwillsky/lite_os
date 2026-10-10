@@ -10,7 +10,7 @@ use crate::{
     task::{
         KernelThreadBody, PendingSignal, Processor, RunState, StopResume, TaskControlBlock,
         WaitMembership,
-        pid::{INIT_PID, PID_MAX, ProcessId},
+        pid::{INIT_PID, PidLinkSlot, PidRegistration, PreparedPid, ProcessId},
         processor::{begin_preempt_running_task, enqueue_new_task},
         with_current_processor,
     },
@@ -19,21 +19,32 @@ use crate::{
 
 pub(in crate::task) mod advisory_lock;
 mod affinity;
+mod capabilities;
 mod console_batch;
 mod console_wait;
+pub(crate) use capabilities::capability_sets;
 pub(super) mod context_switch;
 mod deferred;
+mod exec_drain;
+mod exec_identity;
+pub(in crate::task) use exec_drain::ExecPreparation;
 mod futex;
+mod group_retirement;
 mod io_wait;
 mod load_average;
 mod parent_death;
+mod pid_namespace;
 pub(in crate::task) mod pipe_wait;
 mod policy;
 mod process_exit;
 mod process_group;
+mod process_retirement;
 mod procfs;
 mod resource_limit;
+mod seccomp;
 mod signal;
+pub(in crate::task) use signal::signal_action_for_group;
+pub(in crate::task) mod pidfd;
 mod snapshot_staging;
 pub(in crate::task) mod task_wait;
 mod terminal_access;
@@ -43,6 +54,7 @@ mod thread_selector;
 pub(in crate::task) mod timer_queue;
 pub(in crate::task) mod vfork;
 mod wait_child;
+pub(crate) use pidfd::{PidFdError, open_pidfd, pidfd_get_file, pidfd_identity};
 mod wait_key;
 mod wait_publication;
 mod wait_registry;
@@ -51,8 +63,9 @@ pub(crate) use affinity::{SchedulerAffinityError, scheduler_affinity};
 use console_wait::{process_terminal_input, wake_console_waiters};
 use context_switch::{schedule_with_task_context, switch_from_idle};
 pub(crate) use deferred::dispatch_pending_deferred_work;
+pub(in crate::task) use exec_identity::mark_process_exec;
 pub(in crate::task) use futex::futex_wake_with_key;
-pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
+pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake, futex_wake_op};
 pub(super) use io_wait::initialize_driver_io_wait;
 pub(crate) use parent_death::parent_death_signal;
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
@@ -62,67 +75,104 @@ pub(crate) use policy::{
 use process_exit::ProcessExitStatus;
 pub(super) use process_exit::exit_current_kernel_thread;
 pub(crate) use process_exit::{
-    exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
-    exit_current_thread,
+    exit_current_after_exec_failure, exit_current_group, exit_current_group_by_signal,
+    exit_current_if_group_exiting, exit_current_thread, exit_current_thread_by_signal,
 };
+pub(in crate::task) use process_group::current_process_group_is_orphaned;
 pub(crate) use process_group::{
     ProcessGroupError, SetProcessGroupError, create_session, process_group, session_id,
     set_process_group,
 };
-use process_group::{
-    claim_controlling_terminal, set_terminal_foreground_group, terminal_foreground_group,
-};
-pub(in crate::task) use process_group::{current_process_group_is_orphaned, mark_process_exec};
+use process_group::{claim_controlling_terminal, set_terminal_foreground_group};
 pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
 pub(crate) use resource_limit::process_resource_limit;
-use resource_limit::{ProcessSlotSnapshot, enforce_cpu_limit};
+pub(in crate::task) use resource_limit::with_credential_transition;
+use resource_limit::{ThreadSlotSnapshot, enforce_cpu_limit};
+pub(crate) use seccomp::{enable_strict_seccomp, install_seccomp_filter};
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
-    SignalSendError, send_kernel_thread_signal, send_kernel_thread_signal_info,
-    send_process_signal, send_thread_signal, send_tid_signal, stop_current_process,
+    PidSignalScope, SignalSendError, notify_signal_waiters, send_kernel_thread_signal,
+    send_pid_signal, send_process_signal, send_queued_process_signal, send_queued_thread_signal,
+    send_thread_signal, send_tid_signal, stop_current_process,
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(super) use terminal_access::install_job_control;
 pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
-pub(crate) use thread_selector::{parent_pid, thread_count};
-use vfork::complete_vfork;
-pub(crate) use vfork::{ProcessCloneError, fork_current_process, vfork_current_process};
+pub(crate) use thread_selector::{is_single_threaded, parent_pid, robust_list_head};
+
+pub(crate) use vfork::{ProcessCloneError, clone_current_process};
 use wait_child::take_child_waiters;
 pub(crate) use wait_child::{
-    WaitChildError, consume_child_status, release_child_status, wait_child,
+    ChildWaitClass, ChildWaitFilter, ChildWaitSelector, WaitChildError, child_status_info,
+    child_status_pid, consume_child_status, release_child_status, wait_child, wait_child_events,
 };
 use wait_key::IndexedWaitKind;
 pub(crate) use wait_key::PollWaitKey;
 use wait_registry::{CancelOutcome, WAIT_REGISTRY, arm_current as arm_indexed_wait};
 enum ProcessState {
     Live(FallibleMap<usize, Arc<TaskControlBlock>>),
-    Exited(ProcessExitStatus),
+    Exited(ProcessExitStatus, ExitRetirement),
+}
+
+/// Exit 的唯一回收决定；active wait claim 完成前不得释放其 event owner。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExitRetirement {
+    /// 所有执行体已摘除，但实际 Thread retirement 仍持 MM/vfork 清理 obligation。
+    Retiring,
+    Waitable,
+    AfterClaim,
 }
 
 struct ThreadIndex {
+    pid: PidRegistration,
+    // 非 leader 的 actual PID readiness source；leader 的同一 identity 只归 ProcessNode。
+    pidfd_source: alloc::sync::Weak<crate::fs::pidfs::PidFdSource>,
     tgid: usize,
+    // OWNER: 不可返回的退出已开始，但 cleanup 仍可阻塞；TSYNC 跳过而 scheduler 保留 current。
+    exit_in_progress: bool,
+    // Live map 摘除后移交唯一实际 execution admission，直到 MM/vfork completion 后才释放。
+    // 只在退出清理期间持 TCB；其 MM/files/ns 已退休，PID 查询仍能授权原 Thread，不能借 sibling。
+    retiring_task: Option<Arc<TaskControlBlock>>,
     created_children: FallibleMap<usize, ()>,
+    // OWNER: vfork completion 属于原始 child Thread；sibling 不继承，exit 先移出 token。
+    vfork_parent: Option<Arc<TaskControlBlock>>,
 }
 
 struct ProcessGroupIndex {
+    pgid: PidRegistration,
+    sid: PidRegistration,
     members: FallibleMap<usize, ()>,
     exit_check_pending: bool,
-    exit_check_next: Option<(usize, usize)>,
+    exit_check_next: Option<usize>,
     was_orphaned_stopped: bool,
 }
 
 struct ProcessNode {
+    // OWNER: graph 与 live Thread 共享唯一 Process；zombie 无 TCB/mm/files/ns membership edge。
+    process: Arc<super::model::Process>,
+    pid: PidRegistration,
+    // actual leader PID 的 lazy notification identity；Weak 不延长 inode/OFD/执行体寿命。
+    pidfd_source: alloc::sync::Weak<crate::fs::pidfs::PidFdSource>,
+    namespace_exit: Option<Arc<pid_namespace::NamespaceExit>>,
+    // OWNER: original leader 的同一可重定向 credential handle，保留到 zombie reap；无 TCB/mm/files edge。
+    leader_credentials: super::model::LeaderCredentialsHandle,
     parent: Option<usize>,
     // OWNER: graph 独占 creator Thread；只存 parent TGID 会在错误的 sibling exit 生成 pdeath signal。
     parent_thread: Option<usize>,
+    // native group-leader exit_signal；零仍须等待，reparent/exec 改为 SIGCHLD。
+    exit_signal: u8,
+    // child relation 冻结 real parent 的 exec epoch；父映像改变后 notification 强制 SIGCHLD。
+    parent_exec_generation: u64,
     children: FallibleMap<usize, ()>,
     session: usize,
     process_group: usize,
-    group_slot: Option<NodeSlot<(usize, usize), ProcessGroupIndex>>,
+    group_slot: Option<NodeSlot<usize, ProcessGroupIndex>>,
     // 标记 exec point-of-no-return；缺少它会让 parent 在新映像生效后仍成功 setpgid。
-    has_execed: bool,
+    exec_generation: u64,
     state: ProcessState,
     group_exit: Option<ProcessExitStatus>,
+    // OWNER: 唯一 exec preparation/drain claim；缺少它会让并发 exec 覆盖或漏掉新 sibling。
+    exec: Option<exec_drain::ExecState>,
     job_control: JobControlState,
     exit_effects: u8,
     exit_effect_next: [Option<usize>; 2],
@@ -134,7 +184,6 @@ struct ProcessNode {
     child_events: ChildEvents,
     child_waiters: FallibleMap<usize, Arc<TaskControlBlock>>,
     child_wait_claim: Option<wait_child::ChildWaitClaim>,
-    vfork_parent: Option<Arc<TaskControlBlock>>,
 }
 
 struct ProcessGraph {
@@ -142,10 +191,20 @@ struct ProcessGraph {
     processes_created: u64,
     nodes: FallibleMap<usize, ProcessNode>,
     threads: FallibleMap<usize, ThreadIndex>,
-    groups: FallibleMap<(usize, usize), ProcessGroupIndex>,
-    exit_group_head: Option<(usize, usize)>,
+    // OWNER: 无用户 Process 的实际 kernel TCB membership；PID registration 仍归同一 KernelThread。
+    // 此 index 保活执行体至实际 exit，len 与 user TID index 一起投影系统任务数，不维护计数镜像。
+    kernel_threads: FallibleMap<usize, Arc<TaskControlBlock>>,
+    groups: FallibleMap<usize, ProcessGroupIndex>,
+    exit_group_head: Option<usize>,
     exit_effect_heads: [Option<usize>; 2],
     pdeath_head: Option<usize>,
+}
+
+impl ProcessGraph {
+    /// 系统级任务总数直接来自实际 user/kernel execution memberships；不计 boot idle。
+    fn live_task_count(&self) -> usize {
+        self.threads.len() + self.kernel_threads.len()
+    }
 }
 
 /// parent relation、live task 或最小 exit record 的唯一 process graph owner。
@@ -188,6 +247,7 @@ impl ProcessTable {
                 processes_created: 1,
                 nodes: FallibleMap::new(),
                 threads: FallibleMap::new(),
+                kernel_threads: FallibleMap::new(),
                 groups: FallibleMap::new(),
                 exit_group_head: None,
                 exit_effect_heads: [None; 2],
@@ -199,7 +259,14 @@ impl ProcessTable {
         }
     }
 
-    fn add_init(&self, task: Arc<TaskControlBlock>) {
+    fn add_init(&self, task: Arc<TaskControlBlock>, pid: &mut PreparedPid) {
+        let process_pid = pid.take_registration();
+        let thread_pid =
+            process_pid.clone_in(PidLinkSlot::try_new().expect("init TID link allocation failed"));
+        let pgid =
+            process_pid.clone_in(PidLinkSlot::try_new().expect("init PGID link allocation failed"));
+        let sid =
+            process_pid.clone_in(PidLinkSlot::try_new().expect("init SID link allocation failed"));
         let tgid = task.tgid();
         assert_eq!(tgid, INIT_PID);
         let mut threads = FallibleMap::new();
@@ -211,8 +278,10 @@ impl ProcessTable {
             .try_insert(tgid, ())
             .expect("init process-group member allocation failed");
         let group = FallibleMap::try_prepare(
-            (INIT_PID, INIT_PID),
+            INIT_PID,
             ProcessGroupIndex {
+                pgid,
+                sid,
                 members,
                 exit_check_pending: false,
                 exit_check_next: None,
@@ -223,23 +292,36 @@ impl ProcessTable {
         let thread = FallibleMap::try_prepare(
             task.tid(),
             ThreadIndex {
+                pid: thread_pid,
+                pidfd_source: alloc::sync::Weak::new(),
                 tgid,
+                exit_in_progress: false,
+                retiring_task: None,
                 created_children: FallibleMap::new(),
+                vfork_parent: None,
             },
         )
         .expect("init thread-index node allocation failed");
         let process = FallibleMap::try_prepare(
             tgid,
             ProcessNode {
+                process: task.process().clone(),
+                pid: process_pid,
+                pidfd_source: alloc::sync::Weak::new(),
+                namespace_exit: None,
+                leader_credentials: task.leader_credentials_handle(),
                 parent: None,
                 parent_thread: None,
+                exit_signal: syscall_abi::signal::SIGCHLD as u8,
+                parent_exec_generation: 0,
                 children: FallibleMap::new(),
                 session: INIT_PID,
                 process_group: INIT_PID,
                 group_slot: None,
-                has_execed: true,
+                exec_generation: 1,
                 state: ProcessState::Live(threads),
                 group_exit: None,
+                exec: None,
                 job_control: JobControlState::Running,
                 exit_effects: 0,
                 exit_effect_next: [None; 2],
@@ -250,11 +332,12 @@ impl ProcessTable {
                 child_events: ChildEvents::default(),
                 child_waiters: FallibleMap::new(),
                 child_wait_claim: None,
-                vfork_parent: None,
             },
         )
         .expect("init process node allocation failed");
         let mut graph = self.graph.lock();
+        pid.publish()
+            .expect("boot initial PID namespace remains live");
         graph.nodes.commit_vacant(process);
         graph.threads.commit_vacant(thread);
         graph.groups.commit_vacant(group);
@@ -262,24 +345,39 @@ impl ProcessTable {
         enqueue_new_task(task);
     }
 
-    fn allocate_pid(&self) -> Option<ProcessId> {
+    fn allocate_key(&self) -> Option<usize> {
         let mut graph = self.graph.lock();
-        let pid = graph.next_pid;
-        if pid > PID_MAX {
-            return None;
-        }
-        graph.next_pid = pid + 1;
-        Some(ProcessId::allocated(pid))
+        let key = graph.next_pid;
+        graph.next_pid = key.checked_add(1)?;
+        Some(key)
+    }
+    fn allocate_pid(
+        &self,
+        namespace: Arc<crate::namespace::PidNamespace>,
+        requested: &[i32],
+        authority: &crate::namespace::NamespaceAuthority,
+    ) -> Result<PreparedPid, crate::namespace::PidAllocationError> {
+        let key = self
+            .allocate_key()
+            .ok_or(crate::namespace::PidAllocationError::Exhausted)?;
+        // graph guard 只领取稳定 key；实际 namespace node/ladder/link allocation 均在锁外。
+        PreparedPid::try_new(key, namespace, requested, authority)
     }
 
     fn publish_thread(
         &self,
-        tgid: usize,
+        creator: &TaskControlBlock,
         thread: Arc<TaskControlBlock>,
         prepared: VacantEntry<usize, Arc<TaskControlBlock>>,
         thread_index: VacantEntry<usize, ThreadIndex>,
-    ) {
+        pid: &mut PreparedPid,
+    ) -> Result<super::model::RetiredSecurity, crate::namespace::PidAllocationError> {
         let mut graph = self.graph.lock();
+        pid.publish()?;
+        let tgid = creator.tgid();
+        let retired = thread
+            .security_owner()
+            .inherit_from(creator.security_owner());
         let node = graph
             .nodes
             .get_mut(&tgid)
@@ -287,10 +385,14 @@ impl ProcessTable {
         let ProcessState::Live(threads) = &mut node.state else {
             panic!("cannot publish thread into exited process");
         };
+        creator.thread_retirements().publish_thread();
         debug_assert_eq!(prepared.value().tid(), thread.tid());
         threads.commit_vacant(prepared);
         debug_assert_eq!(thread_index.value().tgid, tgid);
         graph.threads.commit_vacant(thread_index);
+        // Linux total_forks 包含 CLONE_THREAD；只在实际 PID/TCB publication 成功时记录。
+        graph.processes_created = graph.processes_created.saturating_add(1);
+        Ok(retired)
     }
 
     /// best-effort TID store 完成后，把已发布 Thread 从 New 原子转为 Ready/Stopped。
@@ -310,19 +412,17 @@ impl ProcessTable {
         };
         let decision = thread_activation::new_thread_activation(
             activation_state,
-            node.group_exit.is_some(),
+            node.group_exit.is_some()
+                || node
+                    .exec
+                    .as_ref()
+                    .is_some_and(|exec| exec.kills(thread.tid())),
             node.job_control == JobControlState::Running,
         );
         if decision.inherit_group_exit {
             // begin_group_exit 的首轮 SIGKILL snapshot 可能早于 child publication；任何
             // scheduler state 都必须继承该 consequence，parent-visible status 仍由 graph 决定。
-            thread
-                .queue_signal(
-                    core::iter::empty(),
-                    syscall_abi::signal::SIGKILL,
-                    PendingSignal::kernel(),
-                )
-                .expect("kernel SIGKILL must be valid");
+            thread.queue_group_exit_signal();
         }
         match decision.transition {
             thread_activation::ActivationTransition::None => {}
@@ -350,14 +450,16 @@ static PROCESS_TABLE: ProcessTable = ProcessTable::new();
 /// # Parameters
 ///
 /// - `task`: TGID 必须为 INIT_PID 且尚未进入 process graph。
-pub(super) fn add_init_task(task: Arc<TaskControlBlock>) {
-    PROCESS_TABLE.add_init(task);
+pub(super) fn add_init_task(task: Arc<TaskControlBlock>, pid: &mut PreparedPid) {
+    PROCESS_TABLE.add_init(task, pid);
 }
 
 /// 创建并调度一个只在内核态运行的线程。
 ///
-/// 内核线程从 PID allocator 取得 TID（allocator 单调且永不复用，因此不与任何用户 TID/TGID
-/// 冲突），但不进入 process graph：`kill`、`wait`、`/proc` 都看不到它，也没有信号与 rlimit。
+/// 内核线程与用户任务共享实际 initial PID namespace 编号分配与 identity。它没有用户
+/// Process/信号/rlimit；graph 的实际 kernel execution index 拥有 TCB admission，
+/// 系统级 task/fork 统计与 proc/kill 投影包含它；boot worker 忽略信号，无用户 wait child 关系。资源退休
+/// 仍能以真实 current TGID 更新 IPC 元数据。编号在实际 exit 归还，observer Arc 不延长占用。
 ///
 /// # Parameters
 ///
@@ -371,11 +473,30 @@ pub(crate) fn spawn_kernel_thread(
     name: &'static str,
     body: KernelThreadBody,
 ) -> Result<(), MemoryError> {
-    let tid = PROCESS_TABLE
-        .allocate_pid()
-        .ok_or(MemoryError::OutOfMemory)?;
-    let task = Arc::try_new(TaskControlBlock::new_kernel_thread(tid.0, name, body)?)
+    let authority = crate::namespace::NamespaceAuthority {
+        namespace: crate::namespace::initial_user(),
+        effective_uid: 0,
+        effective_gid: 0,
+        // 无 requested PID，分配不做 capability 豁免；这份输入只说明真实 boot owner。
+        effective_capabilities: 0,
+    };
+    let mut pid = PROCESS_TABLE
+        .allocate_pid(crate::namespace::initial_pid(), &[], &authority)
         .map_err(|_| MemoryError::OutOfMemory)?;
+    let registration = pid.take_registration();
+    let task = try_allocate_task(MemoryError::OutOfMemory, || {
+        TaskControlBlock::new_kernel_thread(registration, name, body)
+    })?;
+    let membership =
+        FallibleMap::try_prepare(task.tid(), task.clone()).map_err(|_| MemoryError::OutOfMemory)?;
+    {
+        let mut graph = PROCESS_TABLE.graph.lock();
+        pid.publish().map_err(|_| MemoryError::OutOfMemory)?;
+        graph.kernel_threads.commit_vacant(membership);
+        graph.processes_created = graph.processes_created.saturating_add(1);
+    }
+    // namespace reservation storage 与未发表失败任务均在 graph guard 外析构。
+    drop(pid);
     enqueue_new_task(task);
     Ok(())
 }
@@ -538,6 +659,14 @@ pub(crate) fn take_current_task() -> Option<Arc<TaskControlBlock>> {
 /// 获取当前任务的引用
 pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
     with_current_processor(|processor| processor.current.clone())
+}
+
+/// 实际 current TGID；Processor 无 scheduled Task 时执行的是 boot/idle PID0。
+/// PID0 在 namespace boot 已构造，绝不是失败路径临时制造的 identity。
+pub(in crate::task) fn current_tgid_identity() -> Arc<crate::namespace::PidIdentity> {
+    current_task().map_or_else(crate::namespace::idle_pid_identity, |task| {
+        task.tgid_identity().clone()
+    })
 }
 
 pub(crate) fn run_tasks() -> ! {

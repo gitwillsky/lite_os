@@ -4,6 +4,8 @@ use super::*;
 pub(crate) enum ThreadCloneError {
     Memory(crate::memory::MemoryError),
     ResourceLimit,
+    Pid(crate::namespace::PidAllocationError),
+    PidFd(super::pidfd::PidFdError),
 }
 
 /// 在当前 thread group 内创建共享 Process 资源的新 Thread。
@@ -20,17 +22,24 @@ pub(crate) enum ThreadCloneError {
 ///
 /// 成功返回 child TID；任何验证/分配失败都不发布 graph/runqueue membership。
 pub(crate) fn clone_current_thread(
-    stack: usize,
-    tls: usize,
-    parent_tid: Option<usize>,
-    child_set_tid: Option<usize>,
-    clear_child_tid: Option<usize>,
+    parameters: crate::task::CloneParameters,
+    resources: crate::task::ThreadCloneResources,
 ) -> Result<usize, ThreadCloneError> {
     let parent = current_task().expect("thread clone requires current task");
-    let tid = PROCESS_TABLE
-        .allocate_pid()
-        .ok_or(ThreadCloneError::ResourceLimit)?
-        .0;
+    let namespace = resources.namespaces.pid_for_children();
+    if !Arc::ptr_eq(&parent.pid_namespace(), &namespace) {
+        return Err(ThreadCloneError::Pid(
+            crate::namespace::PidAllocationError::Invalid,
+        ));
+    }
+    let mut pid = PROCESS_TABLE
+        .allocate_pid(
+            namespace,
+            &parameters.requested_pids,
+            &parent.namespace_authority(),
+        )
+        .map_err(ThreadCloneError::Pid)?;
+    let tid = pid.identity().key();
     let graph_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
         .map_err(|_| ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
     let thread_index_slot = FallibleMap::<usize, ThreadIndex>::try_reserve_node()
@@ -39,12 +48,27 @@ pub(crate) fn clone_current_thread(
         ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
         || {
             parent
-                .clone_thread(tid, stack, tls, clear_child_tid)
+                .clone_thread(pid.identity(), &parameters, &resources)
                 .map_err(ThreadCloneError::Memory)
         },
     )?;
+    drop(resources);
+    // 文件表已复制/共享之后才预留 parent pidfd；非 CLONE_FILES 的 child 不继承它。
+    let prepared_pidfd = match parameters
+        .pidfd
+        .map(|address| {
+            super::pidfd::PreparedPidFd::for_clone(pid.identity().clone(), true, &parent, address)
+        })
+        .transpose()
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            child.remove_thread_trap_context();
+            return Err(ThreadCloneError::PidFd(error));
+        }
+    };
     let mut minimum_snapshot_capacity = 0;
-    let mut snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+    let mut snapshot = match ThreadSlotSnapshot::prepare(minimum_snapshot_capacity) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             child.remove_thread_trap_context();
@@ -56,7 +80,7 @@ pub(crate) fn clone_current_thread(
         if let Err(required) = snapshot.capture() {
             drop(creation);
             minimum_snapshot_capacity = required;
-            snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+            snapshot = match ThreadSlotSnapshot::prepare(minimum_snapshot_capacity) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
                     child.remove_thread_trap_context();
@@ -74,16 +98,45 @@ pub(crate) fn clone_current_thread(
         let thread_index = thread_index_slot.fill(
             tid,
             ThreadIndex {
+                pid: pid.take_registration(),
+                pidfd_source: prepared_pidfd
+                    .as_ref()
+                    .map_or_else(alloc::sync::Weak::new, |prepared| prepared.source()),
                 tgid: parent.tgid(),
+                exit_in_progress: false,
+                retiring_task: None,
                 created_children: FallibleMap::new(),
+                vfork_parent: None,
             },
         );
-        PROCESS_TABLE.publish_thread(parent.tgid(), child.clone(), membership, thread_index);
+        let result = PROCESS_TABLE.publish_thread(
+            &parent,
+            child.clone(),
+            membership,
+            thread_index,
+            &mut pid,
+        );
         drop(creation);
+        match result {
+            Ok(retired) => drop(retired),
+            Err(error) => {
+                child.remove_thread_trap_context();
+                return Err(ThreadCloneError::Pid(error));
+            }
+        }
         break;
     }
     drop(snapshot);
-    parent.write_clone_tid_values([parent_tid, child_set_tid], tid as i32);
+    if let Some(prepared) = prepared_pidfd {
+        prepared.publish();
+    }
+    parent.write_clone_tid_values(
+        [parameters.parent_set_tid, None],
+        child.visible_tid() as i32,
+    );
+    child.write_clone_tid_values([parameters.child_set_tid, None], child.visible_tid() as i32);
+    drop(parameters);
+    let visible = child.visible_tid() as usize;
     PROCESS_TABLE.activate_thread(parent.tgid(), child);
-    Ok(tid)
+    Ok(visible)
 }

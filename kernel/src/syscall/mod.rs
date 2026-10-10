@@ -1,3 +1,4 @@
+mod capabilities;
 mod clone_errno;
 mod credentials;
 mod device;
@@ -8,25 +9,32 @@ mod fs;
 mod futex;
 mod getrandom_flags;
 mod ioctl;
+mod ipc;
 mod membarrier;
 mod memfd;
 mod memory;
 mod mmap_flags;
+mod pidfd;
 mod poll;
 mod process;
+mod process_context;
 mod process_control;
 mod random;
 mod reboot;
 mod resource_limit;
 mod riscv_hwprobe;
 mod scheduler;
+mod seccomp;
 mod signal;
+mod signalfd;
 mod socket;
 mod system_identity;
 mod system_info;
 mod timer;
 mod timerfd;
 mod user_iovec;
+
+mod restart;
 
 use crate::syscall::{
     credentials::*, epoll::*, fs::*, futex::*, ioctl::*, memory::*, poll::*, process::*, random::*,
@@ -42,6 +50,10 @@ use syscall_abi::*;
 use timerfd::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
 
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
+// 只用于 dispatcher；不向用户泄漏，不能与 ERESTARTSYS 的 handler 规则合并。
+const INTERNAL_RESTART_NO_HANDLER: isize = isize::MIN + 1;
+// 实际 Thread restart block 已保存冻结输入；无 handler 时只重放标准 restart_syscall。
+const INTERNAL_RESTART_BLOCK: isize = isize::MIN + 2;
 pub(crate) const INTERRUPTED_RESULT: isize = -errno::EINTR;
 
 pub(in crate::syscall) fn file_descriptor_error(error: crate::file::FileDescriptorError) -> isize {
@@ -57,8 +69,10 @@ pub(in crate::syscall) fn file_descriptor_error(error: crate::file::FileDescript
 pub(crate) enum SyscallOutcome {
     /// 将 Linux 返回值或负 errno 写回 architecture syscall return register。
     Return(isize),
+    /// exec 已替换 UserContext，或 seccomp TRAP 保留原 registers；不写 completion 或 arm restart。
+    PreserveRegisters,
     /// 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 syscall instruction。
-    Restart,
+    Restart(crate::task::SyscallRestartPolicy),
 }
 
 /// 解码一个 asm-generic Linux syscall，并隔离不得暴露给用户态的内部重启结果。
@@ -67,13 +81,89 @@ pub(crate) enum SyscallOutcome {
 ///
 /// - `syscall_id`: architecture syscall-number register 中的 asm-generic Linux syscall number。
 /// - `args`: 六个 syscall argument register 的原始值。
+/// - `current`: trap 已持有的 calling Thread；交给 seccomp 消费，任何 handler 前释放。
 ///
 /// # Returns
 ///
 /// 普通返回值/负 errno，或只允许 trap layer 消费的重启控制结果。
-pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
+pub(crate) fn syscall(
+    syscall_id: usize,
+    args: [usize; 6],
+    current: alloc::sync::Arc<crate::task::TaskControlBlock>,
+) -> SyscallOutcome {
+    if let Some(outcome) = seccomp::enforce(current, syscall_id, args) {
+        return outcome;
+    }
     let result = match crate::system::decode_architecture_syscall(syscall_id) {
         None => match syscall_id {
+            SYSCALL_SETXATTR => {
+                fs::xattr::set(-100, args[0], 0, args[1], args[2], args[3], args[4] as u32)
+            }
+            SYSCALL_LSETXATTR => fs::xattr::set(
+                -100,
+                args[0],
+                fs::xattr::NOFOLLOW,
+                args[1],
+                args[2],
+                args[3],
+                args[4] as u32,
+            ),
+            SYSCALL_FSETXATTR => fs::xattr::set(
+                args[0] as i32 as isize,
+                0,
+                fs::xattr::EMPTY_PATH,
+                args[1],
+                args[2],
+                args[3],
+                args[4] as u32,
+            ),
+            SYSCALL_GETXATTR => fs::xattr::get(-100, args[0], 0, args[1], args[2], args[3]),
+            SYSCALL_LGETXATTR => fs::xattr::get(
+                -100,
+                args[0],
+                fs::xattr::NOFOLLOW,
+                args[1],
+                args[2],
+                args[3],
+            ),
+            SYSCALL_FGETXATTR => fs::xattr::get(
+                args[0] as i32 as isize,
+                0,
+                fs::xattr::EMPTY_PATH,
+                args[1],
+                args[2],
+                args[3],
+            ),
+            SYSCALL_LISTXATTR => fs::xattr::list(-100, args[0], 0, args[1], args[2]),
+            SYSCALL_LLISTXATTR => {
+                fs::xattr::list(-100, args[0], fs::xattr::NOFOLLOW, args[1], args[2])
+            }
+            SYSCALL_FLISTXATTR => fs::xattr::list(
+                args[0] as i32 as isize,
+                0,
+                fs::xattr::EMPTY_PATH,
+                args[1],
+                args[2],
+            ),
+            SYSCALL_REMOVEXATTR => fs::xattr::remove(-100, args[0], 0, args[1]),
+            SYSCALL_LREMOVEXATTR => fs::xattr::remove(-100, args[0], fs::xattr::NOFOLLOW, args[1]),
+            SYSCALL_FREMOVEXATTR => {
+                fs::xattr::remove(args[0] as i32 as isize, 0, fs::xattr::EMPTY_PATH, args[1])
+            }
+            SYSCALL_SETXATTRAT => fs::xattr::set_at(args),
+            SYSCALL_GETXATTRAT => fs::xattr::get_at(args),
+            SYSCALL_LISTXATTRAT => fs::xattr::list(
+                args[0] as i32 as isize,
+                args[1],
+                args[2] as u32,
+                args[3],
+                args[4],
+            ),
+            SYSCALL_REMOVEXATTRAT => {
+                fs::xattr::remove(args[0] as i32 as isize, args[1], args[2] as u32, args[3])
+            }
+            SYSCALL_SWAPON => sys_swapon(args[0], args[1] as u32),
+            SYSCALL_SWAPOFF => sys_swapoff(args[0]),
             SYSCALL_EPOLL_CREATE1 => sys_epoll_create1(args[0]),
             SYSCALL_EPOLL_CTL => sys_epoll_ctl(args[0], args[1], args[2], args[3]),
             SYSCALL_EPOLL_PWAIT => sys_epoll_pwait(
@@ -92,6 +182,9 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             }
             SYSCALL_INOTIFY_RM_WATCH => sys_inotify_rm_watch(args[0], args[1] as i32),
             SYSCALL_TIMERFD_CREATE => sys_timerfd_create(args[0] as i32, args[1] as u32),
+            SYSCALL_SIGNALFD4 => {
+                signalfd::sys_signalfd4(args[0] as i32, args[1], args[2], args[3] as u32)
+            }
             SYSCALL_TIMERFD_SETTIME => {
                 sys_timerfd_settime(args[0], args[1] as u32, args[2], args[3])
             }
@@ -148,6 +241,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             SYSCALL_FALLOCATE => sys_fallocate(args[0], args[1], args[2] as i64, args[3] as i64),
             SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
             SYSCALL_FCHDIR => sys_fchdir(args[0]),
+            SYSCALL_CHROOT => sys_chroot(args[0] as *const u8),
             SYSCALL_OPENAT => sys_openat(
                 args[0] as isize,
                 args[1] as *const u8,
@@ -214,6 +308,31 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             SYSCALL_EXIT => sys_exit(args[0] as i32),
             SYSCALL_EXIT_GROUP => sys_exit_group(args[0] as i32),
             SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(args[0]),
+            SYSCALL_SEMGET => ipc::sys_semget(args[0] as i32, args[1] as i32, args[2] as u32),
+            SYSCALL_SHMGET => ipc::sys_shmget(args[0] as i32, args[1], args[2] as u32),
+            SYSCALL_SHMCTL => ipc::sys_shmctl(args[0] as i32, args[1] as i32, args[2]),
+            SYSCALL_SHMAT => ipc::sys_shmat(args[0] as i32, args[1], args[2] as u32),
+            SYSCALL_SHMDT => ipc::sys_shmdt(args[0]),
+            SYSCALL_SEMCTL => {
+                ipc::sys_semctl(args[0] as i32, args[1] as i32, args[2] as i32, args[3])
+            }
+            SYSCALL_SEMOP => ipc::sys_semop(args[0] as i32, args[1], args[2] as u32 as usize),
+            SYSCALL_SEMTIMEDOP => {
+                ipc::sys_semtimedop(args[0] as i32, args[1], args[2] as u32 as usize, args[3])
+            }
+            SYSCALL_MSGGET => ipc::sys_msgget(args[0] as i32, args[1] as u32),
+            SYSCALL_MSGCTL => ipc::sys_msgctl(args[0] as i32, args[1] as i32, args[2]),
+            SYSCALL_MSGRCV => ipc::sys_msgrcv(
+                args[0] as i32,
+                args[1],
+                args[2],
+                args[3] as i64,
+                args[4] as u32,
+            ),
+            SYSCALL_MSGSND => ipc::sys_msgsnd(args[0] as i32, args[1], args[2], args[3] as u32),
+            SYSCALL_UNSHARE => process_context::sys_unshare(args[0]),
+            SYSCALL_SETNS => process_context::sys_setns(args[0], args[1] as u32),
+            SYSCALL_RESTART_SYSCALL => restart::sys_restart_syscall(),
             SYSCALL_FUTEX => sys_futex(
                 args[0],
                 args[1],
@@ -223,6 +342,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
                 args[5] as u32,
             ),
             SYSCALL_SET_ROBUST_LIST => sys_set_robust_list(args[0], args[1]),
+            SYSCALL_GET_ROBUST_LIST => sys_get_robust_list(args[0] as i32, args[1], args[2]),
             SYSCALL_NANOSLEEP => sys_nanosleep(
                 args[0] as *const timer::TimeSpec,
                 args[1] as *mut timer::TimeSpec,
@@ -269,6 +389,11 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             SYSCALL_RT_SIGSUSPEND => sys_rt_sigsuspend(args[0], args[1]),
             SYSCALL_RT_SIGACTION => sys_rt_sigaction(args[0], args[1], args[2], args[3]),
             SYSCALL_RT_SIGPROCMASK => sys_rt_sigprocmask(args[0], args[1], args[2], args[3]),
+            SYSCALL_RT_SIGPENDING => sys_rt_sigpending(args[0], args[1]),
+            SYSCALL_RT_SIGQUEUEINFO => sys_rt_sigqueueinfo(args[0] as i32, args[1], args[2]),
+            SYSCALL_RT_TGSIGQUEUEINFO => {
+                sys_rt_tgsigqueueinfo(args[0] as i32, args[1] as i32, args[2], args[3])
+            }
             SYSCALL_RT_SIGTIMEDWAIT => sys_rt_sigtimedwait(args[0], args[1], args[2], args[3]),
             SYSCALL_RT_SIGRETURN => sys_rt_sigreturn(),
             SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as u32, args[2] as i32),
@@ -284,18 +409,24 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
                 sys_set_res_ids(false, [args[0] as u32, args[1] as u32, args[2] as u32])
             }
             SYSCALL_GETRESGID => sys_get_res_ids(false, [args[0], args[1], args[2]]),
-            SYSCALL_SETPGID => sys_setpgid(args[0], args[1]),
-            SYSCALL_GETPGID => sys_getpgid(args[0]),
-            SYSCALL_GETSID => sys_getsid(args[0]),
+            SYSCALL_SETFSUID => sys_set_fs_id(true, args[0] as u32),
+            SYSCALL_SETFSGID => sys_set_fs_id(false, args[0] as u32),
+            SYSCALL_SETPGID => sys_setpgid(args[0] as i32, args[1] as i32),
+            SYSCALL_GETPGID => sys_getpgid(args[0] as i32),
+            SYSCALL_GETSID => sys_getsid(args[0] as i32),
             SYSCALL_SETSID => sys_setsid(),
             SYSCALL_GETGROUPS => sys_getgroups(args[0], args[1]),
             SYSCALL_SETGROUPS => sys_setgroups(args[0], args[1]),
+            SYSCALL_CAPGET => capabilities::sys_capget(args[0], args[1]),
+            SYSCALL_CAPSET => capabilities::sys_capset(args[0], args[1]),
             SYSCALL_UNAME => sys_uname(args[0]),
+            SYSCALL_SETHOSTNAME => sys_set_uts_name(true, args[0], args[1]),
+            SYSCALL_SETDOMAINNAME => sys_set_uts_name(false, args[0], args[1]),
             SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0], args[1]),
             SYSCALL_GETITIMER => sys_getitimer(args[0], args[1]),
             SYSCALL_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
             SYSCALL_UMASK => sys_umask(args[0] as u32),
-            SYSCALL_PRCTL => sys_prctl(args[0], args[1]),
+            SYSCALL_PRCTL => sys_prctl(args[0], args[1], [args[2], args[3], args[4]]),
             SYSCALL_GETCPU => sys_getcpu(args[0], args[1], args[2]),
             SYSCALL_GETPID => sys_get_pid(),
             SYSCALL_GETPPID => sys_get_ppid(),
@@ -323,6 +454,17 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             SYSCALL_BRK => sys_brk(args[0]),
             SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
             SYSCALL_CLONE => sys_clone(args[0], args[1], args[2], args[3], args[4]),
+            SYSCALL_CLONE3 => sys_clone3(args[0], args[1]),
+            SYSCALL_PIDFD_OPEN => pidfd::sys_pidfd_open(args[0] as i32, args[1] as u32),
+            SYSCALL_PIDFD_GETFD => {
+                pidfd::sys_pidfd_getfd(args[0] as i32, args[1] as i32, args[2] as u32)
+            }
+            SYSCALL_PIDFD_SEND_SIGNAL => pidfd::sys_pidfd_send_signal(
+                args[0] as i32,
+                args[1] as i32,
+                args[2],
+                args[3] as u32,
+            ),
             SYSCALL_EXECVE => sys_execve(
                 args[0] as *const u8,        // path
                 args[1] as *const *const u8, // argv
@@ -340,15 +482,25 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             SYSCALL_MSYNC => sys_msync(args[0], args[1], args[2]),
             SYSCALL_MADVISE => sys_madvise(args[0], args[1], args[2]),
             SYSCALL_GETRANDOM => sys_getrandom(args[0], args[1], args[2]),
+            SYSCALL_SECCOMP => seccomp::sys_seccomp(args[0] as u32, args[1] as u32, args[2]),
             SYSCALL_MEMFD_CREATE => sys_memfd_create(args[0], args[1] as u32),
             SYSCALL_MEMBARRIER => sys_membarrier(args[0], args[1], args[2]),
             SYSCALL_WAIT4 => sys_wait4(
-                args[0] as isize,
+                args[0] as i32 as isize,
                 args[1] as *mut i32,
-                args[2],
+                args[2] as u32,
                 args[3] as *mut u8,
             ),
-            SYSCALL_PRLIMIT64 => sys_prlimit64(args[0], args[1], args[2], args[3]),
+            SYSCALL_WAITID => process::sys_waitid(
+                args[0] as i32,
+                args[1] as i32,
+                args[2],
+                args[3] as u32,
+                args[4],
+            ),
+            SYSCALL_PRLIMIT64 => {
+                sys_prlimit64(args[0] as i32, args[1] as u32 as usize, args[2], args[3])
+            }
             SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
             _ => -errno::ENOSYS,
         },
@@ -358,7 +510,14 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         },
     };
     if result == INTERNAL_RESTART_SYS {
-        SyscallOutcome::Restart
+        SyscallOutcome::Restart(crate::task::SyscallRestartPolicy::WithRestartHandler)
+    } else if result == INTERNAL_RESTART_NO_HANDLER {
+        SyscallOutcome::Restart(crate::task::SyscallRestartPolicy::WithoutHandler)
+    } else if result == INTERNAL_RESTART_BLOCK {
+        SyscallOutcome::Restart(crate::task::SyscallRestartPolicy::RestartBlock)
+    } else if syscall_id == SYSCALL_EXECVE && result == 0 {
+        // 只有实际 handler 成功才代表替换；seccomp ERRNO|0 已在 dispatch 前返回 Return(0)。
+        SyscallOutcome::PreserveRegisters
     } else {
         SyscallOutcome::Return(result)
     }

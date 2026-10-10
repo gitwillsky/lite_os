@@ -5,7 +5,7 @@ const EXIT_EFFECT_HANGUP: u8 = 1 << 0;
 const EXIT_EFFECT_CONTINUE: u8 = 1 << 1;
 
 fn group_is_stopped(graph: &ProcessGraph, group: (usize, usize)) -> bool {
-    graph.groups.get(&group).is_some_and(|group| {
+    graph.groups.get(&group.1).is_some_and(|group| {
         group.members.iter().any(|(&tgid, ())| {
             graph.nodes.get(&tgid).is_some_and(|node| {
                 matches!(node.state, ProcessState::Live(_))
@@ -18,7 +18,7 @@ fn group_is_stopped(graph: &ProcessGraph, group: (usize, usize)) -> bool {
 fn stage_group_exit_check(graph: &mut ProcessGraph, group: (usize, usize)) {
     if graph
         .groups
-        .get(&group)
+        .get(&group.1)
         .is_none_or(|index| index.exit_check_pending)
     {
         return;
@@ -29,12 +29,12 @@ fn stage_group_exit_check(graph: &mut ProcessGraph, group: (usize, usize)) {
     let next = graph.exit_group_head;
     let index = graph
         .groups
-        .get_mut(&group)
+        .get_mut(&group.1)
         .expect("staged process group disappeared");
     index.exit_check_pending = true;
     index.exit_check_next = next;
     index.was_orphaned_stopped = was_orphaned_stopped;
-    graph.exit_group_head = Some(group);
+    graph.exit_group_head = Some(group.1);
 }
 
 fn mark_orphaned_stopped_groups(graph: &mut ProcessGraph, exiting: usize) {
@@ -78,7 +78,7 @@ fn stage_exit_effect(graph: &mut ProcessGraph, tgid: usize, effect: u8) {
 
 fn mark_new_orphaned_stopped_groups(graph: &mut ProcessGraph) {
     while let Some(group) = graph.exit_group_head {
-        let (next, was_orphaned_stopped) = {
+        let (next, was_orphaned_stopped, session) = {
             let index = graph
                 .groups
                 .get_mut(&group)
@@ -87,12 +87,13 @@ fn mark_new_orphaned_stopped_groups(graph: &mut ProcessGraph) {
             (
                 index.exit_check_next.take(),
                 core::mem::take(&mut index.was_orphaned_stopped),
+                index.sid.identity().key(),
             )
         };
         graph.exit_group_head = next;
         let is_orphaned_stopped =
-            super::process_group::process_group_is_orphaned(graph, group.0, group.1)
-                && group_is_stopped(graph, group);
+            super::process_group::process_group_is_orphaned(graph, session, group)
+                && group_is_stopped(graph, (session, group));
         if was_orphaned_stopped || !is_orphaned_stopped {
             continue;
         }
@@ -171,6 +172,15 @@ impl ProcessExitStatus {
     }
 }
 
+fn child_exit_info(pid: usize, status: ProcessExitStatus) -> PendingSignal {
+    match status {
+        ProcessExitStatus::Exited(code) => PendingSignal::child_exited(pid, i32::from(code)),
+        ProcessExitStatus::Signaled(signal) => {
+            PendingSignal::child_killed(pid, usize::from(signal))
+        }
+    }
+}
+
 /// 若当前 Process 已提交 group-exit，则在 calling Thread 上完成退出。
 ///
 /// # Returns
@@ -183,7 +193,14 @@ pub(crate) fn exit_current_if_group_exiting() {
         .lock()
         .nodes
         .get(&task.tgid())
-        .and_then(|node| node.group_exit);
+        .and_then(|node| {
+            node.group_exit.or_else(|| {
+                node.exec
+                    .as_ref()
+                    .filter(|exec| exec.kills(task.tid()))
+                    .map(|_| ProcessExitStatus::Signaled(syscall_abi::signal::SIGKILL as u8))
+            })
+        });
     drop(task);
     if let Some(status) = status {
         exit_current(status);
@@ -203,6 +220,14 @@ pub(crate) fn exit_current_thread(code: i32) -> ! {
     exit_current(ProcessExitStatus::Exited(code as u8))
 }
 
+/// seccomp 的 thread-only fatal consequence；最后一个 Thread 的 wait status 保留 signal。
+///
+/// `signal` 必须在 1..=64；不返回，不向 sibling 发布 group-exit 或 SIGKILL。
+pub(crate) fn exit_current_thread_by_signal(signal: usize) -> ! {
+    assert!((1..=64).contains(&signal), "invalid fatal signal");
+    exit_current(ProcessExitStatus::Signaled(signal as u8))
+}
+
 /// 按 Linux `exit_group` 语义提交正常退出原因并终止整个 Thread Group。
 ///
 /// # Parameters
@@ -213,7 +238,7 @@ pub(crate) fn exit_current_thread(code: i32) -> ! {
 ///
 /// 此函数不返回。
 pub(crate) fn exit_current_group(code: i32) -> ! {
-    let status = begin_group_exit(ProcessExitStatus::Exited(code as u8));
+    let status = begin_group_exit(ProcessExitStatus::Exited(code as u8), false);
     exit_current(status)
 }
 
@@ -228,25 +253,51 @@ pub(crate) fn exit_current_group(code: i32) -> ! {
 /// 此函数不返回。
 pub(crate) fn exit_current_group_by_signal(signal: usize) -> ! {
     assert!((1..=64).contains(&signal), "invalid fatal signal");
-    let status = begin_group_exit(ProcessExitStatus::Signaled(signal as u8));
+    let status = begin_group_exit(ProcessExitStatus::Signaled(signal as u8), false);
     exit_current(status)
 }
 
-fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
+/// exec 越过 PONR 后的唯一失败 consequence；已有 SIGKILL 或已提交 group status 优先。
+/// syscall 必须先退休新映像/参数/TCB Arc，再调用此不返回入口。
+pub(crate) fn exit_current_after_exec_failure() -> ! {
+    let status = begin_group_exit(
+        ProcessExitStatus::Signaled(syscall_abi::signal::SIGSEGV as u8),
+        true,
+    );
+    exit_current(status)
+}
+
+fn begin_group_exit(
+    requested: ProcessExitStatus,
+    preserve_pending_fatal: bool,
+) -> ProcessExitStatus {
     let current = current_task().expect("group exit requires current task");
+    request_group_exit(&current, requested, preserve_pending_fatal, false)
+        .expect("current exiting process remains live")
+}
+
+pub(super) fn request_group_exit(
+    current: &TaskControlBlock,
+    requested: ProcessExitStatus,
+    preserve_pending_fatal: bool,
+    include_initiator: bool,
+) -> Option<ProcessExitStatus> {
     let current_tid = current.tid();
     let (status, initiated) = {
         let mut graph = PROCESS_TABLE.graph.lock();
-        let node = graph
-            .nodes
-            .get_mut(&current.tgid())
-            .expect("group exit process missing from graph");
+        let node = graph.nodes.get_mut(&current.tgid())?;
         let ProcessState::Live(threads) = &node.state else {
-            panic!("exited process began group exit");
+            return None;
         };
         if let Some(status) = node.group_exit {
             (status, false)
         } else {
+            // 与 signal publication 共用 graph 边界；PONR OOM 不覆盖先到达的 SIGKILL。
+            let requested = if preserve_pending_fatal && current.has_fatal_signal() {
+                ProcessExitStatus::Signaled(syscall_abi::signal::SIGKILL as u8)
+            } else {
+                requested
+            };
             // 首个发起者唯一决定 parent-visible status；缺少该 owner 会让并发 fatal signal
             // 与 exit_group 互相覆盖，最终 wait4 结果取决于竞态。
             node.group_exit = Some(requested);
@@ -255,22 +306,16 @@ fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
             // publication；因此无需为 exit 这条不可失败路径分配 Arc snapshot。
             for thread in threads
                 .values()
-                .filter(|thread| thread.tid() != current_tid)
+                .filter(|thread| include_initiator || thread.tid() != current_tid)
             {
-                thread
-                    .queue_signal(
-                        core::iter::empty(),
-                        syscall_abi::signal::SIGKILL,
-                        PendingSignal::kernel(),
-                    )
-                    .expect("kernel SIGKILL must be valid");
+                thread.queue_group_exit_signal();
             }
             (requested, true)
         }
     };
 
     if !initiated {
-        return status;
+        return Some(status);
     }
 
     // 1. group_exit 禁止新增 sibling；按 TID cursor 每次只 clone 一个 Arc，锁外进入
@@ -286,9 +331,9 @@ fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
                 .and_then(|node| match &node.state {
                     ProcessState::Live(threads) => threads
                         .iter_after(&cursor)
-                        .find(|(tid, _)| **tid != current_tid)
+                        .find(|(tid, _)| include_initiator || **tid != current_tid)
                         .map(|(&tid, thread)| (tid, thread.clone())),
-                    ProcessState::Exited(_) => None,
+                    ProcessState::Exited(..) => None,
                 })
         };
         let Some((tid, thread)) = next else {
@@ -299,14 +344,34 @@ fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
         super::signal::interrupt_waiting_task(&thread);
         crate::task::processor::request_task_reschedule(&thread);
     }
-    status
+    Some(status)
 }
 
 /// 终止主体已返回的当前内核线程。
 ///
-/// 内核线程不在 process graph 中，没有 exit status 或 parent：只撤销调度 ownership、交给
+/// 内核线程没有用户 Process、exit status 或 parent：撤销实际 kernel execution membership 与调度 ownership、交给
 /// deferred reap 并切到 idle。主体持有的资源已随其返回释放。
 pub(in crate::task) fn exit_current_kernel_thread() -> ! {
+    // 主体返回已完成所有 mm/IPC 退休；实际 PID membership 不得跟随 deferred TCB observer。
+    let current = current_task().expect("exiting kernel thread lost current ownership");
+    let source = current.kernel_pidfd_source(None).0;
+    let retired = {
+        let mut graph = PROCESS_TABLE.graph.lock();
+        if let Some(source) = &source {
+            source.record_exit(0);
+        }
+        graph
+            .kernel_threads
+            .take_entry(&current.tid())
+            .expect("exiting kernel thread lost execution membership")
+    };
+    current.retire_kernel_pid();
+    if let Some(source) = source {
+        source.notify();
+    }
+    // 历史 observer 仍能 pin TCB；实际 graph/namespace admission 已退休，node/TCB Drop 不持 graph。
+    drop(retired);
+    drop(current);
     // 内核线程运行时开着调度中断；撤销 current 后、切换前被抢占会让 scheduler 观察到无 owner 的
     // Running task。退出 context 永不恢复，因此中断状态无需还原。
     let _masked = crate::arch::interrupt::disable_local();
@@ -351,6 +416,68 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
     panic!("exited task context resumed")
 }
 
+/// 最后一个真实 Thread retirement 完成后的唯一 process-exit publication。
+/// cleanup 期间 child 保持 Retiring；parent 的 wait/pending 与 autoreap 在这里同锁决定，
+/// 避免父进程在 clear-child-tid/vfork completion 前 reap，或漏掉较早摘图但较晚清理的 sibling。
+fn complete_process_exit(pid: usize) {
+    let (waiters, wake, source, retired) = {
+        let (mut records, mut graph) = super::signal::lock_child_notifications(
+            pid,
+            super::signal::ChildNotificationScope::Exit,
+        )
+        .expect("Retiring process must retain its exit owner");
+        let node = graph.nodes.get_mut(&pid).expect("Retiring process missing");
+        let ProcessState::Exited(status, ExitRetirement::Retiring) = node.state else {
+            panic!("process exit published without actual retirement completion");
+        };
+        node.state = ProcessState::Exited(status, ExitRetirement::Waitable);
+        let parent = node.parent;
+        let source = node.pidfd_source.upgrade();
+        let publication = super::signal::stage_child_signal(
+            &graph,
+            pid,
+            child_exit_info(pid, status),
+            super::super::model::ChildSignalKind::Exit,
+            &mut records,
+        );
+        let wake = parent
+            .filter(|_| {
+                publication
+                    .as_ref()
+                    .is_some_and(|publication| publication.queued)
+            })
+            .map(|parent| {
+                let signal = super::signal::exit_notification_signal(&graph, &graph.nodes[&pid]);
+                super::signal::prepare_parent_signal_wake(&graph, parent, signal)
+            });
+        let waiters = parent
+            .and_then(|parent| graph.nodes.get_mut(&parent))
+            .map(take_child_waiters)
+            .unwrap_or_default();
+        let mut retired = super::process_retirement::RetiredProcesses::default();
+        if publication.is_some_and(|publication| publication.autoreap) {
+            let node = graph
+                .nodes
+                .get_mut(&pid)
+                .expect("completed exit owner missing");
+            if node.child_wait_claim.is_some() {
+                node.state = ProcessState::Exited(status, ExitRetirement::AfterClaim);
+            } else {
+                retired.retire(&mut graph, pid);
+            }
+        }
+        (waiters, wake, source, retired)
+    };
+    drop(retired);
+    if let Some(source) = source {
+        source.notify();
+    }
+    drain_staged_child_waiters(waiters);
+    if let Some(wake) = wake {
+        wake.publish();
+    }
+}
+
 /// 完成退出副作用，并在仍可正常展开 Rust frame 时释放所有 task Arc。
 ///
 /// # Parameters
@@ -365,10 +492,26 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
     // current until every blocking consequence completes; removing it earlier leaves no scheduler
     // wait target and turns ordinary same-mm contention into a kernel panic.
     let task = current_task().expect("No current task to exit");
-    task.cleanup_robust_list();
-    let (removed, process_status, parent_waiters, init_waiters, parent_signal_pid) = {
-        let mut graph = PROCESS_TABLE.graph.lock();
+    let namespace = task.pid_namespace();
+    if let Some(event) = super::pid_namespace::mark_reaper_exit(&task, &namespace) {
+        super::pid_namespace::shutdown(&task, &namespace, &event);
+    }
+    let exit_memory = task.prepare_user_exit_memory();
+    // graph removal 领取持续 lifecycle owner；先于 exec drain 的退出也必须完成清理。
+    let thread_retirement;
+    let thread_status;
+    let mut retired_terminal_control = None;
+    let mut retired_process_timers = None;
+    let (removed, process_status, init_waiters, init_signal_wake, retired, vfork_completion) = {
         let exiting_pid = task.tgid();
+        let (mut child_records, mut graph) = super::signal::lock_child_notifications(
+            exiting_pid,
+            super::signal::ChildNotificationScope::ExitAdoption,
+        )
+        .expect("exiting Process missing during SIGCHLD preparation");
+        let mut retired = super::process_retirement::RetiredProcesses::default();
+        let reaper = super::pid_namespace::nearest_reaper(&graph, exiting_pid);
+        let vfork_completion = super::vfork::take_vfork_completion(&mut graph, task.tid());
         let process_will_exit = graph.nodes.get(&exiting_pid).is_some_and(
             |node| matches!(&node.state, ProcessState::Live(threads) if threads.len() == 1),
         );
@@ -383,7 +526,23 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
             // The owner index freezes their old orphan/stopped state without a graph snapshot.
             mark_orphaned_stopped_groups(&mut graph, exiting_pid);
         }
-        let (removed, process_status, parent, session_leader, replacement_parent_tid) = {
+        // 已领取 PF_EXITING 的 sibling 仍可能阻塞在 cleanup，不能继续接收 creator-child
+        // relation；没有可运行 sibling 时由实际祖先 reaper 接管，而非先后退出的临时次序。
+        let replacement_parent_tid = match &graph.nodes.get(&exiting_pid).unwrap().state {
+            ProcessState::Live(threads) => threads
+                .iter()
+                .find_map(|(&tid, _)| {
+                    (!graph
+                        .threads
+                        .get(&tid)
+                        .expect("live Thread is indexed")
+                        .exit_in_progress)
+                        .then_some(tid)
+                })
+                .unwrap_or(reaper.1),
+            _ => unreachable!(),
+        };
+        let (removed, process_status, session_leader, replacement_parent_tid) = {
             let node = graph
                 .nodes
                 .get_mut(&exiting_pid)
@@ -391,6 +550,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
             let ProcessState::Live(threads) = &mut node.state else {
                 panic!("process exited twice");
             };
+            thread_retirement = task.thread_retirements().retirement();
             let removed = threads
                 .remove(&task.tid())
                 .expect("exiting thread missing from process graph");
@@ -400,40 +560,45 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
             let process_status = threads
                 .is_empty()
                 .then(|| node.group_exit.take().unwrap_or(requested));
-            let replacement_parent_tid =
-                threads.first_key_value().map_or(INIT_PID, |(&tid, _)| tid);
-            let parent = node.parent;
+            thread_status = process_status.unwrap_or_else(|| node.group_exit.unwrap_or(requested));
             let session_leader = node.session == exiting_pid;
             if let Some(status) = process_status {
                 assert!(node.child_waiters.is_empty());
-                node.state = ProcessState::Exited(status);
+                node.state = ProcessState::Exited(status, ExitRetirement::Retiring);
             }
             (
                 removed,
                 process_status,
-                parent,
                 session_leader,
                 replacement_parent_tid,
             )
         };
         assert!(Arc::ptr_eq(&removed, &task));
-        super::parent_death::mark_parent_exit(
-            &mut graph,
-            exiting_pid,
-            task.tid(),
-            replacement_parent_tid,
-        );
+        let index = graph
+            .threads
+            .get_mut(&task.tid())
+            .expect("exiting Thread remains indexed");
+        assert!(index.retiring_task.replace(removed.clone()).is_none());
+        super::parent_death::mark_parent_exit(&mut graph, &task, replacement_parent_tid);
         if process_status.is_some() {
             // graph → timer 与 set/get 共用唯一锁序；持 graph 期间删除使 exit 后不存在 stale timer。
-            PROCESS_TABLE.timers.lock().remove_process(exiting_pid);
+            retired_process_timers = Some(PROCESS_TABLE.timers.lock().remove_process(exiting_pid));
         }
 
         match process_status {
-            None => (removed, None, FallibleMap::new(), FallibleMap::new(), None),
+            None => (
+                removed,
+                None,
+                FallibleMap::new(),
+                None,
+                retired,
+                vfork_completion,
+            ),
             Some(status) => {
                 // orphan membership nodes move to init in the same owner transaction. No
                 // allocation can fail after the first edge has moved.
                 let mut adopted_exited = false;
+                let mut init_signal_wake = None;
                 if exiting_pid != INIT_PID {
                     loop {
                         let membership = {
@@ -455,31 +620,62 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                             .get_mut(&child)
                             .expect("child index references missing process");
                         debug_assert_eq!(node.parent, Some(exiting_pid));
-                        node.parent = Some(INIT_PID);
-                        adopted_exited |= matches!(node.state, ProcessState::Exited(_));
+                        node.parent = Some(reaper.0);
+                        // real parent 换成另一个 process：native orphan 一律成为普通 SIGCHLD child。
+                        node.exit_signal = syscall_abi::signal::SIGCHLD as u8;
+                        let child_status = match node.state {
+                            ProcessState::Exited(_, ExitRetirement::Retiring) => None,
+                            ProcessState::Exited(status, _) => Some(status),
+                            _ => None,
+                        };
+                        let exited = child_status.is_some();
+                        let unclaimed = node.child_wait_claim.is_none();
+                        adopted_exited |= exited;
                         graph
                             .nodes
-                            .get_mut(&INIT_PID)
-                            .expect("init missing during orphan reparent")
+                            .get_mut(&reaper.0)
+                            .expect("namespace reaper missing during orphan reparent")
                             .children
                             .commit_vacant(membership);
+                        let init_publication = child_status.and_then(|status| {
+                            super::signal::stage_child_signal(
+                                &graph,
+                                child,
+                                child_exit_info(child, status),
+                                super::super::model::ChildSignalKind::Exit,
+                                &mut child_records,
+                            )
+                        });
+                        if init_publication
+                            .as_ref()
+                            .is_some_and(|publication| publication.queued)
+                            && init_signal_wake.is_none()
+                        {
+                            init_signal_wake = Some(super::signal::prepare_parent_signal_wake(
+                                &graph,
+                                reaper.0,
+                                syscall_abi::signal::SIGCHLD,
+                            ));
+                        }
+                        if init_publication.is_some_and(|publication| publication.autoreap) {
+                            if unclaimed {
+                                retired.retire(&mut graph, child);
+                            } else {
+                                let node =
+                                    graph.nodes.get_mut(&child).expect("adopted child missing");
+                                let ProcessState::Exited(status, _) = node.state else {
+                                    unreachable!();
+                                };
+                                node.state =
+                                    ProcessState::Exited(status, ExitRetirement::AfterClaim);
+                            }
+                        }
                     }
                 }
-                // 2. 取走 waiter owner 后释放 graph lock，再进入 scheduler seam，避免锁序反转。
-                let parent_waiters = parent
-                    .and_then(|pid| graph.nodes.get_mut(&pid))
-                    .map(take_child_waiters)
-                    .unwrap_or_default();
-                let parent_signal_pid = parent.filter(|pid| {
-                    graph
-                        .nodes
-                        .get(pid)
-                        .is_some_and(|node| matches!(node.state, ProcessState::Live(_)))
-                });
                 let init_waiters = if adopted_exited {
                     graph
                         .nodes
-                        .get_mut(&INIT_PID)
+                        .get_mut(&reaper.0)
                         .map(take_child_waiters)
                         .unwrap_or_default()
                 } else {
@@ -491,34 +687,49 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                 //    否则 session exit 与 TIOCSPGRP 并发时可能形成锁环或错发给后加入成员。
                 // 3. signal 在锁外发布，避免 generation 再次进入 process graph 造成自锁。
                 if session_leader
-                    && let Some(foreground) = task.terminal().release_session(exiting_pid)
+                    && let Some(terminal) = task.terminal()
+                    && let Some(control) = terminal.release_session(exiting_pid)
                 {
-                    let group = (exiting_pid, foreground);
-                    let mut cursor = 0;
-                    loop {
-                        let member = graph
-                            .groups
-                            .get(&group)
-                            .and_then(|group| group.members.successor(&cursor))
-                            .map(|(&tgid, ())| tgid);
-                        let Some(tgid) = member else {
-                            break;
-                        };
-                        cursor = tgid;
-                        stage_exit_effect(&mut graph, tgid, EXIT_EFFECT_HANGUP);
+                    super::process_group::clear_terminal_session(&graph, exiting_pid, &terminal);
+                    let foreground = control.foreground_group();
+                    retired_terminal_control = Some(control);
+                    if let Some(foreground) = foreground {
+                        let group = (exiting_pid, foreground);
+                        let mut cursor = 0;
+                        loop {
+                            let member = graph
+                                .groups
+                                .get(&group.1)
+                                .and_then(|group| group.members.successor(&cursor))
+                                .map(|(&tgid, ())| tgid);
+                            let Some(tgid) = member else {
+                                break;
+                            };
+                            cursor = tgid;
+                            stage_exit_effect(&mut graph, tgid, EXIT_EFFECT_HANGUP);
+                        }
                     }
                 }
                 mark_new_orphaned_stopped_groups(&mut graph);
                 (
                     removed,
                     Some(status),
-                    parent_waiters,
                     init_waiters,
-                    parent_signal_pid,
+                    init_signal_wake,
+                    retired,
+                    vfork_completion,
                 )
             }
         }
     };
+
+    drop(retired_process_timers);
+    task.retire_thread_signals();
+    drop(retired_terminal_control);
+    drop(retired);
+    if process_status.is_some() {
+        task.retire_signal_handlers();
+    }
 
     // pdeath generation 已在 graph mutation 内冻结；锁外先投递，保证 creator exit
     // consequence 不晚于 orphan/session 与 SIGCHLD observer。
@@ -531,33 +742,42 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
     // 1. process graph 先注销 Thread owner，再发布 clear-child-tid completion。
     // 2. 若顺序相反，pthread_join 可在 graph 仍计数已退出 sibling 时返回，使紧随的
     //    single-thread-only fork/exec 错误观察到 EAGAIN。
-    if let Some(address) = task.take_clear_child_tid()
-        && task.copy_to_user(address, &0u32.to_ne_bytes()).is_ok()
-    {
-        let _ = futex_wake(&task, address, false, 1, u32::MAX);
-    }
-    if process_status.is_some() {
-        task.close_all_files();
-    }
+    exit_memory.complete();
     drop(removed);
-    task.remove_thread_trap_context();
     // vfork child exit 只有在 RISC-V 临时 trap VMA 删除（AArch64 kernel-stack backing retire）
     // 后才能恢复 parent；否则 parent 可与仍持有 shared-mm mapping 的 child cleanup 并发。
-    complete_vfork(task.tgid());
-    // 两个来源分别 staged，按 parent 后 init 的既有来源优先级各 drain 一次；waiter
-    // identity 不依赖跨来源 TID 排序，合并反而会制造没有领域意义的 AVL interface。
-    drain_staged_child_waiters(parent_waiters);
+    if let Some(completion) = vfork_completion {
+        completion.complete();
+    }
+    // live execution 已摘下且 clear-child-tid 已完成；实际 PID association 至此才退休。
+    // 保留原 ThreadIndex 至此，使 pidfd 不在可阻塞的 MM/vfork cleanup 中提前报告 HUP。
+    let (retired_thread_index, thread_pidfd_notification) = {
+        let mut graph = PROCESS_TABLE.graph.lock();
+        let source = graph
+            .threads
+            .get(&task.tid())
+            .and_then(|index| index.pidfd_source.upgrade());
+        let retired = graph
+            .threads
+            .take_entry(&task.tid())
+            .expect("exiting Thread retains actual PID association until cleanup");
+        (retired, source)
+    };
+    if let Some(source) = &thread_pidfd_notification {
+        source.record_exit(thread_status.wait_status());
+    }
+    drop(retired_thread_index);
+    let process_completed = thread_retirement.complete();
+    if let Some(source) = thread_pidfd_notification {
+        source.notify();
+    }
+    if process_completed {
+        complete_process_exit(task.tgid());
+    }
+    // 已完成的 orphan 通知仍由实际 adoption transaction 领取，不重新从最终 parent 推断。
     drain_staged_child_waiters(init_waiters);
-    if let (Some(parent), Some(status)) = (parent_signal_pid, process_status) {
-        let info = match status {
-            ProcessExitStatus::Exited(code) => {
-                PendingSignal::child_exited(task.tgid(), i32::from(code))
-            }
-            ProcessExitStatus::Signaled(signal) => {
-                PendingSignal::child_killed(task.tgid(), usize::from(signal))
-            }
-        };
-        send_kernel_process_signal(parent, syscall_abi::signal::SIGCHLD, info);
+    if let Some(wake) = init_signal_wake {
+        wake.publish();
     }
     let current = take_current_task().expect("exiting task lost current ownership");
     assert!(Arc::ptr_eq(&current, &task));

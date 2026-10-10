@@ -125,6 +125,17 @@ impl PageTable {
         Ok(())
     }
 
+    /// 保留原 table path 的 leaf revoke；仅供持锁的物理页替换 transaction。
+    pub(in crate::memory) fn revoke_leaf(
+        &mut self,
+        vpn: VirtualPageNumber,
+        commit: &mut TranslationCommit,
+    ) -> Result<(), PageTableError> {
+        self.0.revoke_leaf(vpn.as_usize())?;
+        commit.record(vpn.as_usize(), TranslationTransition::Revoke);
+        Ok(())
+    }
+
     pub(in crate::memory) fn set_flags(
         &mut self,
         vpn: VirtualPageNumber,

@@ -18,7 +18,7 @@ from typing import Mapping, Sequence
 
 from build_target import acceleration_from_environment, target_from_environment
 from host_topology import default_guest_cpu_count
-from ext4_image import find_e2fsck
+from ext4_image import find_debugfs, find_e2fsck, find_tune2fs
 from utm_runtime import run_gui as run_utm_gui
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -378,6 +378,8 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             LITEOS_EXT4_FIXTURE=str(fixture),
             # conformance 测试用 make setup 安装的 e2fsprogs 裁决 kernel 写出的 ext4 结构。
             LITEOS_E2FSCK=str(find_e2fsck()),
+            LITEOS_DEBUGFS=str(find_debugfs()),
+            LITEOS_TUNE2FS=str(find_tune2fs()),
             **dtb_fixtures,
         ),
     )
@@ -393,14 +395,23 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
 def verify_architecture_benchmark(environment: Mapping[str, str] | None = None) -> None:
     """执行 blocking architecture benchmark。"""
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "unix-rights-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "unix-packet-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "futex-transactions-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "tcp-lifecycle-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "inotify-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "blocked-load-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "shared-page-stats-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "realtime-signals-bench"], environment=environment)
 
 
 def verify_architecture_release(environment: Mapping[str, str] | None = None) -> None:
     """构建 release kernel 并执行静态 façade/trap gate。"""
-    target = target_from_environment(environment)
-    run(["cargo", "build", "--target", target.kernel_triple, "--release"], cwd=ROOT / "kernel", environment=environment)
-    run(python_script("verify_architecture_release.py"), environment=environment)
-    run(python_script("check_trap_cost.py"), environment=environment)
+    release = _env_with(environment, PROFILE="release")
+    # 同一 build owner 同步 ELF 与启动产物；AArch64 QEMU 消费 Image，不能只刷新 ELF。
+    build_kernel(release)
+    run(python_script("verify_architecture_release.py"), environment=release)
+    run(python_script("check_trap_cost.py"), environment=release)
 
 
 def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
@@ -522,6 +533,7 @@ def regenerate_icon_font(environment: Mapping[str, str] | None = None) -> None:
 
 def verify_host(environment: Mapping[str, str] | None = None) -> None:
     """执行 full verify 与 fast verify 共用的 host 检查。"""
+    run(python_script("verify_smoltcp.py"), environment=environment)
     run(["cargo", "fmt", "--all", "--", "--check"], environment=environment)
     run(
         [

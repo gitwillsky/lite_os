@@ -18,6 +18,7 @@ pub(crate) const MSG_CMSG_CLOEXEC: c_int = 0x4000_0000;
 pub(crate) const MSG_CTRUNC: c_int = 0x8;
 pub(crate) const PR_SET_PDEATHSIG: c_int = 1;
 pub(crate) const ECHILD: c_int = 10;
+pub(crate) const ESRCH: c_int = 3;
 pub(crate) const SIGKILL: c_int = 9;
 pub(crate) const SIGTERM: c_int = 15;
 
@@ -447,7 +448,7 @@ unsafe extern "C" {
     #[cfg(target_os = "linux")]
     pub(crate) fn fcntl(fd: c_int, command: c_int, argument: c_int) -> c_int;
     #[cfg(target_os = "linux")]
-    pub(crate) fn syscall(number: isize, ...) -> isize;
+    pub(crate) fn memfd_create(name: *const c_char, flags: std::ffi::c_uint) -> c_int;
     pub(crate) fn poll(descriptors: *mut PollFd, count: usize, timeout: c_int) -> c_int;
     pub(crate) fn sendmsg(fd: c_int, message: *const MsgHdr, flags: c_int) -> isize;
     pub(crate) fn recvmsg(fd: c_int, message: *mut MsgHdr, flags: c_int) -> isize;

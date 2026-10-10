@@ -6,7 +6,7 @@ impl Ext4FileSystem {
         &self,
         fs_block_id: u64,
     ) -> Result<Arc<Vec<u8>>, FileSystemError> {
-        let generation = {
+        let mut generation = {
             // Staged writes publish cache replacement/invalidation before releasing journal state;
             // a cloned old Arc therefore linearizes before the write, while a miss rechecks the
             // unique Ready/Committing journal owner in read_fs_block.
@@ -22,14 +22,24 @@ impl Ext4FileSystem {
         record_test_allocation_attempt();
         let mut bytes =
             Arc::try_new(try_zeroed(self.block_size)?).map_err(|_| FileSystemError::OutOfMemory)?;
-        self.read_fs_block(
-            fs_block_id,
-            Arc::get_mut(&mut bytes).expect("new metadata block has one owner"),
-        )?;
-        self.metadata_cache
-            .lock()
-            .insert_if_unchanged(generation, fs_block_id, bytes.clone());
-        Ok(bytes)
+        loop {
+            self.read_fs_block(
+                fs_block_id,
+                Arc::get_mut(&mut bytes).expect("unpublished metadata image must be unique"),
+            )?;
+            let mut cache = self.metadata_cache.lock();
+            if cache.generation() != generation {
+                // journal miss 与 home I/O 之间允许 task 切换；该期间开始的 checkpoint
+                // 可让扇区读取得撕裂 image。拒绝 admission 还不够，禁止把它返回给 caller。
+                if let Some(current) = cache.get(fs_block_id) {
+                    return Ok(current);
+                }
+                generation = cache.generation();
+                continue;
+            }
+            cache.insert_if_unchanged(generation, fs_block_id, bytes.clone());
+            return Ok(bytes);
+        }
     }
 
     pub(super) fn read_fs_block(
@@ -40,10 +50,19 @@ impl Ext4FileSystem {
         if fs_block_id >= self.superblock.lock().blocks_count() {
             return Err(FileSystemError::InvalidFileSystem);
         }
-        if self.journal.lock().copy_staged(fs_block_id, buf) {
-            return Ok(());
+        loop {
+            // 全部 logical block caller 共用 journal → home 的一致 snapshot seam；
+            // staged hit 在 journal guard 内线性化，miss 的扇区 I/O 可跨 task 切换。
+            let generation = self.metadata_cache.lock().generation();
+            if self.journal.lock().copy_staged(fs_block_id, buf) {
+                return Ok(());
+            }
+            self.read_fs_block_home(fs_block_id, buf)?;
+            if self.metadata_cache.lock().generation() == generation {
+                return Ok(());
+            }
+            // mutation/checkpoint 可已结束；复用 caller buffer 重读，绝不返回撕裂旧/新块。
         }
-        self.read_fs_block_home(fs_block_id, buf)
     }
 
     pub(super) fn read_fs_block_home(
@@ -122,7 +141,7 @@ impl Ext4FileSystem {
         self.stage_block(fs_block_id, buf, BlockKind::Data)
     }
 
-    fn stage_block(
+    pub(super) fn stage_block(
         &self,
         fs_block_id: u64,
         buf: &[u8],
@@ -177,9 +196,9 @@ impl Ext4FileSystem {
                 .write_block(device_block, &device_buf)
                 .map_err(block_error)?;
         }
-        self.metadata_cache
-            .lock()
-            .update_if_present(fs_block_id, buf);
+        // checkpoint 只持久化 running preimage；stage/abort 才拥有逻辑 cache publication。
+        // 这里重写 cache 会覆盖仍在 active overlay 中的较新 image。mount/recovery
+        // 在发布 journal/root 之前统一 reload 并清除缓存。
         Ok(())
     }
 }

@@ -1,6 +1,7 @@
 use crate::{
     syscall::errno,
     system::{self, ResetKind},
+    task::current_task,
 };
 
 /// 验证 Linux reboot magic/command 并映射到 platform whole-system reset。
@@ -14,8 +15,16 @@ use crate::{
 ///
 /// # Returns
 ///
-/// reset 成功不返回；CAD 未支持返回 EOPNOTSUPP；非法参数或 platform 错误返回负 errno。
+/// reset 成功不返回；缺失 CAP_SYS_BOOT 返回 EPERM；CAD 未支持返回 EOPNOTSUPP；
+/// 非法参数或 platform 错误返回负 errno。
 pub(crate) fn sys_reboot(magic: usize, magic2: usize, command: usize, argument: usize) -> isize {
+    // 标准 CAP_SYS_BOOT 先于参数解析，禁止只用 UID 0 绕过已撤销的 capability。
+    if !current_task()
+        .expect("reboot requires a current task")
+        .has_initial_capability(syscall_abi::capability::Capability::SYS_BOOT)
+    {
+        return -errno::EPERM;
+    }
     // Linux reboot 的 magic 是 int、cmd 是 unsigned int；musl reboot(int) 会把
     // RB_HALT_SYSTEM 符号扩展到 XLEN。缺少截断会返回 EINVAL，BusyBox init 随后退出。
     let magic = magic as u32;

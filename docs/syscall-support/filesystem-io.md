@@ -2,37 +2,50 @@
 
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
-| 17 | `getcwd` | Complete | VFS opened-directory identity |
+| 5 | `setxattr` | Partial | 当前源码tmpfs/ext4/memfd user/trusted/security属性及file-cap rootid转换；整批集中验证待执行 |
+| 6 | `lsetxattr` | Partial | 同一mutation路径，最终symlink不跟随；user属性类型约束 |
+| 7 | `fsetxattr` | Partial | 实际OFD path writer，按当前caller授权，不使用opener凭据 |
+| 8 | `getxattr` | Partial | 属性快照与security.capability当前namespace rootid投影 |
+| 9 | `lgetxattr` | Partial | get路径最终symlink不跟随 |
+| 10 | `fgetxattr` | Partial | 当前caller权限，零size查询，非零size的ERANGE/E2BIG边界 |
+| 11 | `listxattr` | Partial | NUL分隔名称，trusted按initial UserNS SYS_ADMIN过滤 |
+| 12 | `llistxattr` | Partial | list路径最终symlink不跟随 |
+| 13 | `flistxattr` | Partial | 实际inode名称快照，不要求read内容权限 |
+| 14 | `removexattr` | Partial | 存在检查、同一inode变更gate及ctime/IN_ATTRIB |
+| 15 | `lremovexattr` | Partial | remove路径最终symlink不跟随 |
+| 16 | `fremovexattr` | Partial | 当前caller与实际SB namespace权限 |
+| 17 | `getcwd` | Complete | 同锁 fs root/cwd opened identity；root-relative 路径、raw unreachable 前缀、删除 cwd 为 ENOENT |
 | 23 | `dup` | Complete | lowest-free fd publication |
 | 24 | `dup3` | Complete | replacement 与 CLOEXEC |
-| 25 | `fcntl` | Partial | fd/status flags、dup、record lock、memfd seals 子集、管道与 FIFO 的 `F_GETPIPE_SZ`/`F_SETPIPE_SZ` |
-| 26 | `inotify_init1` | Complete | `IN_NONBLOCK`/`IN_CLOEXEC`；实例上限 128（`EMFILE`） |
-| 27 | `inotify_add_watch` | Partial | 见下“inotify”；单实例 8192 个 watch（`ENOSPC`） |
+| 25 | `fcntl` | Partial | fd/status flags、dup、record lock、MemoryFile seals 子集（RO memfd F_ADD_SEALS 先返回 EPERM）、管道与 FIFO 的 `F_GETPIPE_SZ`/`F_SETPIPE_SZ` |
+| 26 | `inotify_init1` | Complete | `IN_NONBLOCK`/`IN_CLOEXEC`；默认每 real UID/UserNS 128 个实例、受祖先配额限制（`EMFILE`） |
+| 27 | `inotify_add_watch` | Partial | 见下“inotify”；按实例原创建者 real UID/UserNS/祖先共享 watch 配额（`ENOSPC`） |
 | 28 | `inotify_rm_watch` | Complete | 删除后投递 `IN_IGNORED` |
 | 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback、块设备 `BLK*` 与管道/FIFO 的 `FIONREAD` |
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |
-| 33 | `mknodat` | Partial | regular、FIFO、socket、字符/块设备节点（ext4 与 tmpfs）；设备节点需 effective UID 0，目录类型 `EPERM` |
+| 33 | `mknodat` | Partial | regular、FIFO、socket、字符/块设备节点（ext4 与 tmpfs）；设备节点需 CAP_MKNOD，目录类型 `EPERM` |
 | 34 | `mkdirat` | Complete | ext4 directory transaction |
 | 35 | `unlinkat` | Complete | file/directory unlink 与 lifecycle |
 | 36 | `symlinkat` | Complete | ext4 fast/slow symlink |
 | 37 | `linkat` | Partial | hardlink 与 link-count limit；部分 flags 未开放 |
 | 38 | `renameat` | Complete | 普通原子移动与替换 |
-| 39 | `umount2` | Partial | 挂载根卸载、子挂载/打开文件/cwd/mmap 判忙 `EBUSY`、page cache 写回与 ext4 写回线程停止；`MNT_FORCE` 等同普通卸载，`MNT_DETACH`/`MNT_EXPIRE` 返回 `EINVAL` |
-| 40 | `mount` | Partial | 新挂载 `ext4`、`proc`、`sysfs`、`devpts`、`devtmpfs`、`tmpfs`；`ro`/`nosuid`/`nodev`/`noexec`/`remount` 与 atime 策略；`data` 由类型解析，未知选项 `EINVAL`；bind/move/propagation/堆叠 `EINVAL`/`EBUSY` |
-| 43 | `statfs` | Complete | 已挂载 filesystem projection |
-| 44 | `fstatfs` | Complete | OFD-backed filesystem projection |
-| 46 | `ftruncate` | Complete | regular file/memfd、page cache 与 mapping invalidation；memfd seal 精确拒绝 grow/shrink |
+| 39 | `umount2` | Partial | 普通卸载判忙与实际资源退休；caller root 转 superblock RO；lazy detach、两阶段 expire、nofollow；`MNT_FORCE` 不增加强制中止 I/O 能力 |
+| 40 | `mount` | Partial | 已登记文件系统、挂载安全/atime 属性、remount、bind/move/propagation 与堆叠；类型解析 `data`，ext4 接受实际 `data=ordered`；未知选项/flags `EINVAL` |
+| 43 | `statfs` | Complete | mounted/pseudo filesystem 同 inode projection |
+| 44 | `fstatfs` | Complete | 所有 OFD 的真实 inode filesystem projection（pipefs/sockfs/anon_inodefs/shmem 区分） |
+| 46 | `ftruncate` | Complete | 实际 regular inode 与各 filesystem 截断策略；page cache/mapping invalidation、memfd seal；proc 更新时间且保留固定 size/control value |
 | 47 | `fallocate` | Partial | mode 0 space reservation |
 | 48 | `faccessat` | Partial | current credential 与已声明 flags |
 | 49 | `chdir` | Complete | opened directory publication |
 | 50 | `fchdir` | Complete | directory OFD |
+| 51 | `chroot` | Complete | pathname/directory/search 后检查 CAP_SYS_CHROOT；共享 fs root 替换，cwd/旧 dirfd 保留，exec 与绝对 symlink 使用 caller root |
 | 52 | `fchmod` | Complete | inode mode mutation |
 | 53 | `fchmodat` | Partial | pathname mode 与已声明 flags |
 | 54 | `fchownat` | Partial | owner mutation 与已声明 flags |
 | 55 | `fchown` | Complete | OFD inode owner mutation |
-| 56 | `openat` | Partial | ext4/devfs/devpts/procfs/sysfs objects；`O_CREAT` lookup/create 在 VFS namespace transaction 内原子提交，非 `O_EXCL` 并发创建打开 winner |
+| 56 | `openat` | Partial | ext4/devfs/devpts/procfs/sysfs objects；fd admission 先于 lookup/create/device/truncate；`O_CREAT` 在 VFS transaction 原子选择 winner |
 | 57 | `close` | Complete | detach 后锁外 consequence |
 | 61 | `getdents64` | Complete | opaque directory `d_off` cursor、64 KiB bounded batch 与 copyout 后 publication |
 | 62 | `lseek` | Partial | seekable OFD types |
@@ -51,18 +64,27 @@
 | 81 | `sync` | Complete | 提交 ext4 running transaction；返回时全部已返回写入 durable |
 | 82 | `fsync` | Complete | 提交包含该文件的 running transaction；提交失败返回 `EIO` 且 journal fail-stop |
 | 83 | `fdatasync` | Complete | data durability boundary |
-| 88 | `utimensat` | Partial | inode timestamps 与已声明 flags |
-| 166 | `umask` | Complete | Process-owned mask |
+| 88 | `utimensat` | Partial | pathname/futimens(NULL fd)/AT_EMPTY_PATH；双 UTIME_OMIT 不访问 fd/path/flags；volatile 时间单 owner，显式过去/未来 mtime 不抬高 ctime；当前秒精度/非负范围 |
+| 166 | `umask` | Complete | Thread fs-context-owned mask |
 | 276 | `renameat2` | Partial | rename、NOREPLACE、EXCHANGE；其余 flags 拒绝 |
-| 279 | `memfd_create` | Partial | anonymous shared file、`MFD_CLOEXEC`/`MFD_ALLOW_SEALING`、`ftruncate`、`MAP_SHARED` 与 grow/shrink/seal seals；hugetlb、write seals 未开放 |
+| 279 | `memfd_create` | Partial | 真实 creator FSIDs 的 regular inode，proc FD 重开独立 OFD/offset/status、共享 content/seals；anonymous shared file、`MFD_CLOEXEC`/`MFD_ALLOW_SEALING`、`ftruncate`、`MAP_SHARED` 与 grow/shrink/seal seals；hugetlb、write seals 未开放 |
 | 286 | `preadv2` | Partial | positioned vector I/O 与已声明 flags |
 | 287 | `pwritev2` | Partial | positioned vector I/O 与已声明 flags |
+| 463 | `setxattrat` | Partial | AT_EMPTY_PATH/AT_SYMLINK_NOFOLLOW，标准16-byte xattr_args与零扩展校验 |
+| 464 | `getxattrat` | Partial | 同一get路径，xattr_args.flags必须零 |
+| 465 | `listxattrat` | Partial | 同一list路径及标准at flags |
+| 466 | `removexattrat` | Partial | 同一remove路径及标准at flags |
 
 ## 已知缺口
 
 tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`；`huge=`、`mpol=` 等返回 `EINVAL`。
 
-没有通用 mount namespace、xattr/ACL、inotify、splice family、io_uring 或完整 block I/O priority enforcement。
+未支持ACL、splice family、io_uring 或完整 block I/O priority enforcement；
+xattr目前接入tmpfs/ext4/memfd源码，其余filesystem返回EOPNOTSUPP；新 ext4 镜像启用原生 EA_INODE，
+值 inode/extents/hash/refcount 与父属性同 journal owner。旧卷未启用该 feature 时按其实际容量返回ENOSPC；
+名称区域、磁盘空间及 journal 暂存仍有限，ABI单值上限64KiB不代表filesystem保证容量。
+file-cap磁盘revision1/2/3可供exec解析，非空set只接受标准revision2/3。
+inotify 的已实现范围与限制见下文。
 
 FIFO：`open` 按 Linux `fifo_open` 汇合（阻塞只读等 writer、阻塞只写等 reader，非阻塞只写无 reader 为
 `ENXIO`），`O_RDWR` 不阻塞（`exec 3<>fifo` 可用）；对端打开后立刻关闭也放行等待者；最后一个 endpoint 关闭时
@@ -84,12 +106,13 @@ reader 的 FIFO 得到 `EPIPE` 并投递 `SIGPIPE`。
 
 inotify：事件 `IN_ACCESS`/`MODIFY`/`ATTRIB`/`CLOSE_WRITE`/`CLOSE_NOWRITE`/`OPEN`/`MOVED_FROM`/`MOVED_TO`/
 `CREATE`/`DELETE`/`DELETE_SELF`/`MOVE_SELF`，加 `IN_UNMOUNT`、`IN_IGNORED`、`IN_ISDIR`、`IN_Q_OVERFLOW`；
-`IN_ONLYDIR`、`IN_DONT_FOLLOW`、`IN_MASK_ADD`、`IN_ONESHOT`。文件事件同时投递给文件自身的 watch（无名字）和父目录
-的 watch（带名字）；`rename` 的 `MOVED_FROM`/`MOVED_TO` 共用 cookie；相邻相同事件合并；队列上限 16384，满后丢弃并
+`IN_ONLYDIR`、`IN_DONT_FOLLOW`、`IN_MASK_ADD`、`IN_MASK_CREATE`、`IN_EXCL_UNLINK`、`IN_ONESHOT`。文件事件同时投递给文件自身的 watch（无名字）和父目录
+的 watch（带名字）；`rename` 的 `MOVED_FROM`/`MOVED_TO` 共用 cookie；相邻相同事件合并；队列默认上限 16384（创建时快照），满后丢弃并
 保留一个 `IN_Q_OVERFLOW`；读缓冲放不下首个事件为 `EINVAL`；支持阻塞与 `O_NONBLOCK` read、`FIONREAD`、
-poll/epoll。范围缩减：`IN_DELETE_SELF` 在最后一个 link 消失时投递而不是 inode 回收时；mmap 写入、`sendfile`
-与 `splice` 不产生事件；`IN_EXCL_UNLINK`、`IN_MOVE`/`IN_CLOSE` 组合位之外的 fanotify 语义、`/proc/sys/fs/inotify`
-限额文件不支持。
+poll/epoll。read 逐条在 copy 前出队，copy fault 为 EFAULT 且当前记录不重放。
+`/proc/sys/fs/inotify/{max_user_instances,max_user_watches,max_queued_events}` 与 `/proc/sys/user/max_inotify_*` 支持标准配额修改。
+`IN_DELETE_SELF`/`IN_IGNORED` 在 inode 已无 hard link 且 actual canonical dentry 最后一次 dput 时生成，
+打开的 OFD/cwd 延迟这一步；self move/delete 不携带 ISDIR。范围缩减：mmap 写入、`sendfile` 与 `splice` 不产生事件；fanotify 语义不支持。
 
 块设备枚举：`/proc/partitions`（`major minor #blocks name`，容量以 1 KiB 计）；sysfs 的 `/sys/class/block`
 （全部设备）、`/sys/block`（整盘，其下是它的分区目录）与 `/sys/dev/block/MAJ:MIN`，每个设备目录有 `dev`、

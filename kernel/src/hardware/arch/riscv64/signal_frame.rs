@@ -1,17 +1,22 @@
 //! Linux/riscv64 `rt_sigframe` 的 architecture-owned byte-exact codec。
 
-pub(crate) const SIGNAL_FRAME_SIZE: usize = 1080;
+pub(crate) const SIGNAL_FRAME_SIZE: usize = 1088;
 /// 保持既有 Linux/riscv64 `MINSIGSTKSZ` ABI。
 pub(crate) const MIN_SIGNAL_STACK_SIZE: usize = 2048;
 const SIGINFO_SIZE: usize = 128;
 const UCONTEXT_OFFSET: usize = SIGINFO_SIZE;
 const STACK_OFFSET: usize = UCONTEXT_OFFSET + 16;
 const SIGNAL_MASK_OFFSET: usize = UCONTEXT_OFFSET + 40;
-const MACHINE_OFFSET: usize = UCONTEXT_OFFSET + 168;
+// Linux 的 Q/extension union 按 16 bytes 对齐，使 uc_mcontext 前有八个 padding bytes。
+// 缺失该 padding 会让 musl ucontext_t 读取下一寄存器并在 sigreturn 恢复错误上下文。
+const MACHINE_OFFSET: usize = UCONTEXT_OFFSET + 176;
 const REGISTERS_OFFSET: usize = MACHINE_OFFSET;
 const FLOATING_POINT_OFFSET: usize = REGISTERS_OFFSET + 32 * 8;
 
-const _: () = assert!(FLOATING_POINT_OFFSET + 528 == SIGNAL_FRAME_SIZE);
+const _: () = {
+    assert!(MACHINE_OFFSET.is_multiple_of(16));
+    assert!(FLOATING_POINT_OFFSET + 528 == SIGNAL_FRAME_SIZE);
+};
 
 /// Linux `stack_t` 中 signal frame 必须保存的 architecture-neutral 值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,14 +62,32 @@ pub(super) struct DecodedSignalFrame {
     pub(super) signal_stack: SignalStack,
 }
 
-/// 固定 1080-byte、与旧 ABI byte-for-byte 相同的 Linux/riscv64 frame。
-#[repr(C, align(8))]
+/// Linux/riscv64 的 1088-byte base rt_sigframe，包含标准 16-byte 对齐 padding。
+#[repr(C, align(16))]
 pub(crate) struct SignalFrame {
     bytes: [u8; SIGNAL_FRAME_SIZE],
 }
 
 impl SignalFrame {
-    /// 编码旧 RISC-V frame layout，不增加 extension 或 padding。
+    /// Linux/RISC-V 在 rt_sigreturn 中没有单独的用户 SP alignment 拒绝条件。
+    pub(crate) fn valid_user_address(_address: usize) -> bool {
+        true
+    }
+
+    /// Linux/RISC-V badframe 使用无 fault address 的 SI_KERNEL SIGSEGV。
+    pub(crate) fn fault_address(_address: usize) -> Option<usize> {
+        None
+    }
+
+    /// 任意 machine restore 失败仍使用 SI_KERNEL，而不暴露 frame/saved SP。
+    pub(crate) fn restore_fault_address(&self) -> Option<usize> {
+        None
+    }
+    /// 投影已完整 copyin 的 saved mask；不要求 machine/extension validation 成功。
+    pub(crate) fn signal_mask(&self) -> u64 {
+        get_u64(&self.bytes, SIGNAL_MASK_OFFSET)
+    }
+    /// 编码标准 RISC-V base frame；扩展 header 与 alignment padding 保持为零。
     pub(super) fn encode(
         info: [u8; SIGINFO_SIZE],
         signal_stack: SignalStack,
@@ -113,7 +136,7 @@ impl SignalFrame {
         &mut self.bytes
     }
 
-    /// 解码旧 RISC-V frame；extension validation 由 UserContext restore 完成。
+    /// 解码标准 RISC-V base frame；extension validation 由 UserContext restore 完成。
     pub(super) fn decode(&self) -> DecodedSignalFrame {
         let mut registers = [0usize; 32];
         for (index, register) in registers.iter_mut().enumerate() {
@@ -165,7 +188,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codec_preserves_the_legacy_1080_byte_offsets() {
+    fn codec_matches_linux_riscv64_ucontext_alignment() {
         let mut floating_point = [0u8; 528];
         floating_point[0] = 0xa5;
         floating_point[527] = 0x5a;
@@ -179,18 +202,20 @@ mod tests {
             0x55aa,
             &machine,
         );
-        assert_eq!(frame.as_bytes().len(), 1080);
+        assert_eq!(frame.as_bytes().len(), 1088);
+        assert_eq!(core::mem::align_of::<SignalFrame>(), 16);
         assert_eq!(MIN_SIGNAL_STACK_SIZE, 2048);
         assert_eq!(UCONTEXT_OFFSET, 128);
         assert_eq!(STACK_OFFSET, 144);
         assert_eq!(SIGNAL_MASK_OFFSET, 168);
-        assert_eq!(MACHINE_OFFSET, 296);
-        assert_eq!(REGISTERS_OFFSET, 296);
-        assert_eq!(FLOATING_POINT_OFFSET, 552);
+        assert_eq!(MACHINE_OFFSET, 304);
+        assert_eq!(REGISTERS_OFFSET, 304);
+        assert_eq!(FLOATING_POINT_OFFSET, 560);
+        assert_eq!(&frame.as_bytes()[296..304], &[0; 8]);
         assert_eq!(get_u64(frame.as_bytes(), SIGNAL_MASK_OFFSET), 0x55aa);
         assert_eq!(get_u64(frame.as_bytes(), REGISTERS_OFFSET), 0x100);
         assert_eq!(frame.as_bytes()[FLOATING_POINT_OFFSET], 0xa5);
-        assert_eq!(frame.as_bytes()[1079], 0x5a);
+        assert_eq!(frame.as_bytes()[1087], 0x5a);
         let decoded = frame.decode();
         assert_eq!(decoded.machine.registers, machine.registers);
         assert_eq!(decoded.machine.floating_point, machine.floating_point);

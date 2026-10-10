@@ -20,9 +20,9 @@
   指令必须先由 architecture backend 激活并原 PC 重试，只有未被该机制消费的指令生成 SIGILL。
 - 用户态 breakpoint 生成可捕获的 forced `SIGTRAP/TRAP_BRKPT`，而不是由 trap layer 直接终止；
   signal handler 可按标准 machine context 决定恢复位置。
-- Process 的 `ProcessPaths` 在同一锁下保存 cwd 与最终 main ELF 的 VFS opened-entry
-  identity；fork/vfork child 复制 path owner，exec 原子替换 executable。`/proc/<pid>/exe`
-  因此可跟随 rename/unlink 并作为标准 magic link 再打开当前 executable。
+- Thread 的共享 fs context 保存 cwd/umask，CLONE_FS 决定共享或复制，unshare 仅脱离 caller；
+  fork/vfork child 复制 context。Process 独立保存最终 main ELF 的 opened-entry identity，
+  exec 原子替换；`/proc/<pid>/exe` 可跟随 rename/unlink 并作为 magic link 再打开当前映像。
 - timerfd 是标准匿名 OFD：`TimerQueue` 独占 clock/setting/deadline index，`TimerFd` 独占未读
   expiration counter 与 poll/epoll readiness；最后一个 fd/OFD 引用释放时同步撤销 timer record。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、普通 Rust `std`

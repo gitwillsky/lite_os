@@ -225,16 +225,24 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         .find(|source| source.relative == "kernel/src/socket/inet.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
+    let protocol_poll = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/socket/inet/poll.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
     if !virtqueue.contains("Result<u16, VirtQueueError>")
         || virtqueue.contains("failed to translate buffer address")
         || !ethernet_device.contains("pending_error: Cell<Option<NetworkError>>")
         || ethernet_device.contains("Ethernet adapter failed")
         || ethernet_device.contains("unhandled error")
-        || !inet.contains("stack.lock()?.device.take_error()")
+        || !protocol_poll.contains("interface.device.take_error()")
+        || !protocol_poll.contains("device_failures")
+        || inet.contains("take_device_error()")
+        || inet.contains("if let Ok(poll) = poll")
         || !socket_syscall.contains("SocketError::Device => errno::EIO")
     {
         errors.push(
-            "recoverable VirtIO translation and Ethernet adapter failures must follow typed errors through the socket EIO seam"
+            "VirtIO translation errors remain typed; Ethernet failures belong to actual device diagnostics without poisoning unrelated socket errors or losing successful poll edges"
                 .to_owned(),
         );
     }

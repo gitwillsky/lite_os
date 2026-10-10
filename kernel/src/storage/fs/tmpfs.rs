@@ -7,17 +7,21 @@
 //! inode 状态锁；只读操作（lookup、readdir、stat）只取单个 inode 状态锁。因此多锁路径被
 //! `namespace` 串行化，不会互相死锁。
 
+mod content_mutation;
+#[path = "tmpfs/filesystem.rs"]
+mod filesystem;
+
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::{
     CreateMetadata, DataBacking, DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor,
     FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata, InodeType, MemoryFile,
-    OwnerModeChange, PageBudget,
+    OwnerModeChange, StorageBudget,
     device::DeviceNumber,
     mount::{FileSystemType, MountRequest},
     permission::OwnerModeState,
@@ -55,15 +59,10 @@ const S_IFDIR: u16 = 0o040000;
 /// 一个 tmpfs 实例内全部 inode 共享的状态。
 struct Shared {
     filesystem_id: usize,
-    budget: Arc<PageBudget>,
-    // `nr_inodes=`，`u64::MAX` 为不限；`remount` 可调整，所以是原子量。
-    inode_limit: AtomicU64,
+    budget: Arc<StorageBudget>,
     // inode 编号只增不复用；缺失单调性会让已删除 inode 的 `(st_dev, st_ino)` 被新文件复用，
     // advisory lock 等按 inode 身份判断的机制会串到别的文件。
     next_inode: AtomicU64,
-    // 存活 inode 数（含已 unlink 但仍被打开的）；在 `TmpInode` 构造时预留、Drop 时归还，用来执行
-    // `nr_inodes=` 并供 statfs 使用。缺失时 inode 耗尽无法被限制。
-    live_inodes: AtomicU64,
     // OWNER: 串行化目录结构变更并拥有 inode 表；锁顺序见模块文档。
     namespace: TaskMutex<Namespace>,
 }
@@ -91,24 +90,24 @@ enum Body {
 }
 
 struct State {
+    xattrs: super::xattr::Xattrs,
     /// 文件类型位加权限位，与 `st_mode` 一致。
     mode: u16,
     uid: u32,
     gid: u32,
-    links: u32,
-    atime: u64,
-    mtime: u64,
-    ctime: u64,
+    times: super::inode_times::TimeOwner,
     entries: Directory<Arc<TmpInode>>,
-    /// 目录已被 rmdir：仍可能被 cwd 或打开的 fd 持有，但不能再接收新项。
-    dead: bool,
 }
 
 /// tmpfs inode。
 pub(crate) struct TmpInode {
     shared: Arc<Shared>,
     inode: u64,
+    // OWNER: 唯一 link count；namespace/state guard 串行所有 writer，最终 dput 可无分配读取。
+    // 不在 State 保存第二份值；metadata 仍在 state guard 内读取，与 owner/ctime mutation 同步。
+    links: AtomicU32,
     body: Body,
+    write_access: super::InodeWriteAccess,
     // 目录的父目录编号（根指向自己）。只在持有 `Shared::namespace` 时改变，原子类型仅为了让
     // 只读路径（`..` 的 readdir）无需取锁；rename 的“不得移入自己的子树”检查沿它向上走。
     parent: AtomicU64,
@@ -124,7 +123,7 @@ impl Drop for TmpInode {
     /// 这里把“只剩父目录这一个引用的子目录”串到 `next_reap` 链上，用循环逐个拆除：栈深为常数，
     /// 也不分配内存。链上的目录不可达（它们的父目录正在被释放），所以拆除不与任何操作竞争。
     fn drop(&mut self) {
-        self.shared.live_inodes.fetch_sub(1, Ordering::AcqRel);
+        self.shared.budget.release_inode();
         let mut pending = None;
         self.detach_children(&mut pending);
         while let Some(node) = pending.take() {
@@ -143,12 +142,10 @@ fn lock_error<T>(_: T) -> FileSystemError {
 }
 
 fn validate_name(name: &[u8]) -> Result<(), FileSystemError> {
-    if name.is_empty()
-        || name.len() > NAME_MAX
-        || name == b"."
-        || name == b".."
-        || name.contains(&b'/')
-        || name.contains(&0)
+    if name.len() > NAME_MAX {
+        return Err(FileSystemError::NameTooLong);
+    }
+    if name.is_empty() || name == b"." || name == b".." || name.contains(&b'/') || name.contains(&0)
     {
         return Err(FileSystemError::InvalidPath);
     }
@@ -162,12 +159,11 @@ impl Shared {
 
     /// 预留一个 inode 名额；成功后必须立即构造 [`TmpInode`]，由它的 Drop 归还。
     fn reserve_inode(&self) -> Result<(), FileSystemError> {
-        self.live_inodes
-            .try_update(Ordering::AcqRel, Ordering::Relaxed, |live| {
-                (live < self.inode_limit.load(Ordering::Acquire)).then(|| live + 1)
-            })
-            .map(|_| ())
-            .map_err(|_| FileSystemError::NoSpace)
+        if self.budget.reserve_inode() {
+            Ok(())
+        } else {
+            Err(FileSystemError::NoSpace)
+        }
     }
 
     fn namespace(&self) -> Result<TaskMutexGuard<'_, Namespace>, FileSystemError> {
@@ -198,24 +194,26 @@ impl TmpInode {
         parent: u64,
     ) -> Result<Arc<Self>, FileSystemError> {
         shared.reserve_inode()?;
-        let now = now_seconds();
+        let times = match &body {
+            Body::File(file) => super::inode_times::TimeOwner::Memory(file.times()),
+            _ => super::inode_times::TimeOwner::new(),
+        };
         // `Self` 一旦构造，任何后续失败都由它的 Drop 归还名额。
         let value = Self {
             shared: shared.clone(),
             inode,
+            links: AtomicU32::new(links),
             body,
+            write_access: super::InodeWriteAccess::new(),
             parent: AtomicU64::new(parent),
             next_reap: spin::Mutex::new(None),
             state: TaskMutex::new(State {
+                xattrs: super::xattr::Xattrs::new(),
                 mode,
                 uid: owner.0,
                 gid: owner.1,
-                links,
-                atime: now,
-                mtime: now,
-                ctime: now,
+                times,
                 entries: Directory::new(),
-                dead: false,
             }),
         };
         Arc::try_new(value).map_err(|_| FileSystemError::OutOfMemory)
@@ -249,20 +247,12 @@ impl TmpInode {
         self.state.lock().map_err(lock_error)
     }
 
-    fn file(&self) -> Result<&Arc<MemoryFile>, FileSystemError> {
-        match &self.body {
-            Body::File(file) => Ok(file),
-            Body::Directory => Err(FileSystemError::IsDirectory),
-            Body::Symlink(_) | Body::Special(..) => Err(FileSystemError::InvalidOperation),
-        }
-    }
-
     /// 校验 `self` 是存活的目录。
-    fn require_live_directory(&self, state: &State) -> Result<(), FileSystemError> {
+    fn require_live_directory(&self) -> Result<(), FileSystemError> {
         if !matches!(self.body, Body::Directory) {
             return Err(FileSystemError::NotDirectory);
         }
-        if state.dead {
+        if self.links.load(Ordering::Relaxed) == 0 {
             return Err(FileSystemError::NotFound);
         }
         Ok(())
@@ -322,21 +312,22 @@ impl TmpInode {
             .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut namespace = shared.namespace()?;
         let mut state = self.state()?;
-        self.require_live_directory(&state)?;
+        self.require_live_directory()?;
         if state.entries.get(name).is_some() {
             return Err(FileSystemError::AlreadyExists);
         }
         if is_directory {
-            state.links = state
+            let links = self
                 .links
+                .load(Ordering::Relaxed)
                 .checked_add(1)
                 .ok_or(FileSystemError::TooManyLinks)?;
+            self.links.store(links, Ordering::Relaxed);
         }
         state.entries.insert(reserved);
         namespace.inodes.commit_vacant(table);
         let now = now_seconds();
-        state.mtime = now;
-        state.ctime = now;
+        state.times.touch_at(now);
         Ok(child)
     }
 
@@ -347,41 +338,74 @@ impl TmpInode {
 }
 
 impl Inode for TmpInode {
+    fn read_xattr(&self, name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+        self.state()?.xattrs.get(name)
+    }
+    fn list_xattrs(&self, identity: &super::AccessIdentity) -> Result<Vec<u8>, FileSystemError> {
+        let trusted = identity.namespace_capable(
+            &crate::namespace::initial_user(),
+            syscall_abi::capability::Capability::SYS_ADMIN,
+        );
+        self.state()?
+            .xattrs
+            .list(|name| trusted || !name.starts_with(b"trusted."))
+    }
+    fn change_xattr(&self, mut change: super::XattrChange<'_>) -> Result<(), FileSystemError> {
+        let _sequence = match &self.body {
+            Body::File(file) => Some(file.begin_write()?),
+            _ => None,
+        };
+        let mut state = self.state()?;
+        change.prepare(
+            &super::permission::OwnerModeState::new(self.kind(), state.mode, state.uid, state.gid),
+            Ok(()),
+        )?;
+        let retired = state
+            .xattrs
+            .change(change.name, change.value, change.flags)?;
+        state.times.change_at(now_seconds());
+        drop(state);
+        drop(retired);
+        Ok(())
+    }
+    fn write_access(&self) -> Option<&super::InodeWriteAccess> {
+        matches!(self.body, Body::File(_)).then_some(&self.write_access)
+    }
+
     fn filesystem_id(&self) -> usize {
         self.shared.filesystem_id
     }
 
+    fn notification_link_state(&self) -> Option<(u64, u32)> {
+        Some((self.inode, self.links.load(Ordering::Relaxed)))
+    }
+
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let state = self.state()?;
-        let (size, blocks, modified) = match &self.body {
+        let times = state.times.snapshot();
+        let (size, blocks) = match &self.body {
             Body::File(file) => (
                 file.size(),
-                file.resident_pages()? as u64 * (BLOCK_SIZE / 512),
-                file.modified_seconds(),
+                file.allocated_pages()? as u64 * (BLOCK_SIZE / 512),
             ),
-            Body::Directory => (
-                (state.entries.len() as u64 + 2) * DIRECTORY_ENTRY_SIZE,
-                0,
-                0,
-            ),
-            Body::Symlink(target) => (target.len() as u64, 0, 0),
-            Body::Special(..) => (0, 0, 0),
+            Body::Directory => ((state.entries.len() as u64 + 2) * DIRECTORY_ENTRY_SIZE, 0),
+            Body::Symlink(target) => (target.len() as u64, 0),
+            Body::Special(..) => (0, 0),
         };
         Ok(InodeMetadata {
             filesystem: self.shared.filesystem_id as u64,
             inode: self.inode,
             kind: self.kind(),
             mode: u32::from(state.mode),
-            links: state.links,
+            links: self.links.load(Ordering::Relaxed),
             uid: state.uid,
             gid: state.gid,
             size,
             blocks,
             block_size: BLOCK_SIZE as u32,
-            atime: state.atime,
-            // 文件内容的写入不经 inode，修改时间由存储记录。
-            mtime: state.mtime.max(modified),
-            ctime: state.ctime.max(modified),
+            atime: times.atime,
+            mtime: times.mtime,
+            ctime: times.ctime,
             device: self.device_number(),
         })
     }
@@ -427,35 +451,87 @@ impl Inode for TmpInode {
         Ok(bytes)
     }
 
-    fn write_storage(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
-        self.file()?.begin_write()?.write(offset, input)
+    fn write_storage(
+        &self,
+        offset: u64,
+        input: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
+        let file = self.file()?;
+        let write = file.begin_write()?;
+        if !input.is_empty() {
+            self.prepare_memory_write(&write, identity)?;
+        }
+        write.write(offset, input)
     }
 
-    fn append_storage(&self, input: &[u8]) -> Result<(u64, usize), FileSystemError> {
-        self.file()?.begin_write()?.append(input, u64::MAX)
+    fn prepare_memory_write(
+        &self,
+        writer: &super::memory_file::MemoryWrite<'_>,
+        identity: Option<&super::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        if !writer.belongs_to(self.file()?) {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        self.remove_write_privileges(identity)
     }
 
-    fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError> {
-        self.file()?.truncate(size)
+    fn append_storage(
+        &self,
+        input: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
+        let file = self.file()?;
+        let write = file.begin_write()?;
+        if !input.is_empty() {
+            self.prepare_memory_write(&write, identity)?;
+        }
+        write.append(input, u64::MAX)
     }
 
-    fn allocate_storage(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
-        self.file()?.allocate(offset, length)
+    fn truncate_storage(
+        &self,
+        size: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        self.file()?.truncate_with_metadata(
+            size,
+            || self.state(),
+            |state| {
+                if let Some(identity) = identity {
+                    self.clear_write_privileges(state, identity);
+                }
+            },
+        )
+    }
+
+    fn allocate_storage(
+        &self,
+        offset: u64,
+        length: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        // Success has already published pages/length: reserve the metadata waiter before mutation.
+        let mut wait = crate::sync::TaskMutexWaitPreparation::prepare().map_err(lock_error)?;
+        self.file()?.allocate_with_metadata(offset, length, || {
+            self.remove_write_privileges_prepared(identity, &mut wait)
+        })
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
 
+    fn touch_access(&self, now: u64, relatime: bool) -> Result<(), FileSystemError> {
+        self.state()?.times.access_at(now, relatime);
+        Ok(())
+    }
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
-        let mut state = self.state()?;
-        if let Some(atime) = atime {
-            state.atime = atime;
-        }
-        if let Some(mtime) = mtime {
-            state.mtime = mtime;
-        }
-        state.ctime = now_seconds();
+        let _writer = match &self.body {
+            Body::File(file) => Some(file.begin_write()?),
+            _ => None,
+        };
+        self.state()?.times.set(atime, mtime);
         Ok(())
     }
 
@@ -472,6 +548,7 @@ impl Inode for TmpInode {
             return Err(FileSystemError::NotDirectory);
         }
         let state = self.state()?;
+        self.require_live_directory()?;
         let mut cursor = cursor;
         let fixed = [
             (DOT_COOKIE, self.inode, &b"."[..]),
@@ -495,7 +572,8 @@ impl Inode for TmpInode {
             }
             cursor = cookie;
         }
-        debug_assert!(cursor < FIRST_ENTRY_COOKIE);
+        // 连续 getdents 的 cursor 可已位于真实项；固定前缀只保证当前位置不低于 `..`。
+        debug_assert!(cursor >= FIRST_ENTRY_COOKIE - 1);
         for (cookie, name, child) in state.entries.entries_after(cursor) {
             let entry = DirectoryEntry {
                 inode: child.inode,
@@ -559,18 +637,7 @@ impl Inode for TmpInode {
     }
 
     fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
-        let mut state = self.state()?;
-        let updated = change.authorize(OwnerModeState::new(
-            self.kind(),
-            state.mode,
-            state.uid,
-            state.gid,
-        ))?;
-        state.mode = updated.mode();
-        state.uid = updated.uid();
-        state.gid = updated.gid();
-        state.ctime = now_seconds();
-        Ok(())
+        self.update_owner_mode(change)
     }
 
     fn symlink(
@@ -599,27 +666,28 @@ impl Inode for TmpInode {
         let reserved =
             Directory::reserve(name, target.clone()).map_err(|_| FileSystemError::OutOfMemory)?;
         let mut state = self.state()?;
-        self.require_live_directory(&state)?;
+        self.require_live_directory()?;
         if state.entries.get(name).is_some() {
             return Err(FileSystemError::AlreadyExists);
         }
         let mut target_state = target.state()?;
-        target_state.links = target_state
+        let links = target
             .links
+            .load(Ordering::Relaxed)
             .checked_add(1)
             .ok_or(FileSystemError::TooManyLinks)?;
+        target.links.store(links, Ordering::Relaxed);
         let now = now_seconds();
-        target_state.ctime = now;
+        target_state.times.change_at(now);
         state.entries.insert(reserved);
-        state.mtime = now;
-        state.ctime = now;
+        state.times.touch_at(now);
         Ok(())
     }
 
     fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError> {
         let mut namespace = self.shared.namespace()?;
         let mut state = self.state()?;
-        self.require_live_directory(&state)?;
+        self.require_live_directory()?;
         let child = state
             .entries
             .get(name)
@@ -637,20 +705,18 @@ impl Inode for TmpInode {
             if child_state.entries.len() != 0 {
                 return Err(FileSystemError::DirectoryNotEmpty);
             }
-            child_state.dead = true;
-            child_state.links = 0;
-            state.links -= 1;
+            child.links.store(0, Ordering::Relaxed);
+            self.links.fetch_sub(1, Ordering::Relaxed);
         } else {
-            child_state.links -= 1;
+            child.links.fetch_sub(1, Ordering::Relaxed);
         }
         let now = now_seconds();
-        child_state.ctime = now;
-        if child_state.links == 0 {
+        child_state.times.change_at(now);
+        if child.links.load(Ordering::Relaxed) == 0 {
             namespace.inodes.remove(&child.inode);
         }
         state.entries.remove(name);
-        state.mtime = now;
-        state.ctime = now;
+        state.times.touch_at(now);
         // 最后一个引用在锁释放后才被丢弃：内容页的释放不需要在 namespace 锁内完成。
         drop(child_state);
         drop(state);
@@ -682,7 +748,7 @@ impl Inode for TmpInode {
         }
         let child = {
             let state = self.state()?;
-            self.require_live_directory(&state)?;
+            self.require_live_directory()?;
             state
                 .entries
                 .get(old_name)
@@ -710,10 +776,16 @@ impl Inode for TmpInode {
             .map_err(|_| FileSystemError::OutOfMemory)?;
 
         let mut parents = Parents::lock(self, &new_parent)?;
-        new_parent.require_live_directory(parents.destination())?;
+        new_parent.require_live_directory()?;
         let replaced = parents.destination().entries.get(new_name).cloned();
         let replaced_directory =
             Self::check_replacement(replaced.as_ref(), moves_directory, no_replace)?;
+        if replaced
+            .as_ref()
+            .is_some_and(|target| target.inode == child.inode)
+        {
+            return Ok(());
+        }
         if replaced
             .as_ref()
             .is_some_and(|target| target.inode == self.inode)
@@ -732,20 +804,30 @@ impl Inode for TmpInode {
         {
             return Err(FileSystemError::DirectoryNotEmpty);
         }
-        // 先完成全部可能失败的检查，再修改。
-        if moves_directory && !parents.same_directory() {
-            let links = parents
-                .destination()
-                .links
-                .checked_add(1)
-                .ok_or(FileSystemError::TooManyLinks)?;
-            parents.destination().links = links;
-            parents.source().links -= 1;
+        // 先取得全部 metadata guards 并验证最终计数；commit 后不再等锁或分配。
+        let mut child_state = child.state()?;
+        let crosses_parent = !parents.same_directory();
+        let destination_links = if moves_directory && crosses_parent && !replaced_directory {
+            Some(
+                new_parent
+                    .links
+                    .load(Ordering::Relaxed)
+                    .checked_add(1)
+                    .ok_or(FileSystemError::TooManyLinks)?,
+            )
+        } else {
+            None
+        };
+        if moves_directory && crosses_parent {
+            if let Some(links) = destination_links {
+                new_parent.links.store(links, Ordering::Relaxed);
+            }
+            self.links.fetch_sub(1, Ordering::Relaxed);
         }
         let now = now_seconds();
         if let (Some(target), Some(target_state)) = (&replaced, replaced_state.as_mut()) {
-            if replaced_directory {
-                parents.destination().links -= 1;
+            if replaced_directory && !crosses_parent {
+                new_parent.links.fetch_sub(1, Ordering::Relaxed);
             }
             Self::retire(&mut namespace, target, target_state, now);
             parents.destination().entries.remove(new_name);
@@ -757,7 +839,13 @@ impl Inode for TmpInode {
         }
         Self::stamp(parents.source(), now);
         Self::stamp(parents.destination(), now);
-        child.state()?.ctime = now;
+        child_state.times.change_at(now);
+        // 覆盖 victim 的最后 Arc 不得在 namespace/parent guards 内释放 backing。
+        drop(child_state);
+        drop(replaced_state);
+        drop(parents);
+        drop(namespace);
+        drop(replaced);
         Ok(())
     }
 }
@@ -813,8 +901,7 @@ impl<'a> Parents<'a> {
 
 impl TmpInode {
     fn stamp(state: &mut State, now: u64) {
-        state.mtime = now;
-        state.ctime = now;
+        state.times.touch_at(now);
     }
 
     /// rename 的目标存在时的类型规则。
@@ -843,13 +930,12 @@ impl TmpInode {
     /// 被 rename 覆盖的 inode 失去这个 link；最后一个 link 消失时移出 inode 表。
     fn retire(namespace: &mut Namespace, target: &Arc<Self>, state: &mut State, now: u64) {
         if matches!(target.body, Body::Directory) {
-            state.dead = true;
-            state.links = 0;
+            target.links.store(0, Ordering::Relaxed);
         } else {
-            state.links -= 1;
+            target.links.fetch_sub(1, Ordering::Relaxed);
         }
-        state.ctime = now;
-        if state.links == 0 {
+        state.times.change_at(now);
+        if target.links.load(Ordering::Relaxed) == 0 {
             namespace.inodes.remove(&target.inode);
         }
     }
@@ -860,6 +946,8 @@ pub(crate) struct TmpFileSystem {
     shared: Arc<Shared>,
     root: Arc<TmpInode>,
     /// 物理页总数，`remount` 的 `size=N%` 基数。
+    // OWNER: shmem sbinfo 的创建时 root 选项，区别于 root inode 后续 chmod/chown 的 live attrs。
+    root_options: (u32, u32, u32),
     ram_pages: u64,
 }
 
@@ -867,10 +955,8 @@ impl TmpFileSystem {
     fn new(options: &options::Options, ram_pages: u64) -> Result<Arc<Self>, FileSystemError> {
         let shared = Arc::try_new(Shared {
             filesystem_id: super::allocate_filesystem_id(),
-            budget: PageBudget::new(options.blocks)?,
-            inode_limit: AtomicU64::new(options.inodes.unwrap_or(u64::MAX)),
+            budget: StorageBudget::new(options.blocks, options.inodes)?,
             next_inode: AtomicU64::new(ROOT_INODE + 1),
-            live_inodes: AtomicU64::new(0),
             namespace: TaskMutex::new(Namespace {
                 inodes: FallibleMap::new(),
             }),
@@ -892,74 +978,9 @@ impl TmpFileSystem {
             shared,
             root,
             ram_pages,
+            root_options: (options.mode, options.uid, options.gid),
         })
         .map_err(|_| FileSystemError::OutOfMemory)
-    }
-}
-
-impl FileSystem for TmpFileSystem {
-    fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
-        Ok(self.root.clone())
-    }
-
-    /// 重新配置 `size=`、`nr_blocks=`、`nr_inodes=` 与根目录 `mode=`/`uid=`/`gid=`。
-    ///
-    /// 未在 `options` 中出现的参数保持当前值；新的页数或 inode 上限小于当前占用返回
-    /// `InvalidOperation`（Linux：`Cannot retroactively limit size`），失败时不改变任何状态。
-    fn remount(&self, requested: &[u8]) -> Result<(), FileSystemError> {
-        let shared = &self.shared;
-        let mut root = self.root.state()?;
-        let current = options::Options {
-            blocks: shared.budget.limit(),
-            inodes: Some(shared.inode_limit.load(Ordering::Relaxed)).filter(|l| *l != u64::MAX),
-            mode: u32::from(root.mode & 0o7777),
-            uid: root.uid,
-            gid: root.gid,
-        };
-        let wanted = options::parse(requested, self.ram_pages, current)
-            .map_err(|_| FileSystemError::InvalidOperation)?;
-        let live = shared.live_inodes.load(Ordering::Acquire);
-        if wanted.inodes.is_some_and(|limit| limit < live) {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        shared.budget.set_limit(wanted.blocks)?;
-        shared
-            .inode_limit
-            .store(wanted.inodes.unwrap_or(u64::MAX), Ordering::Release);
-        root.mode = root.mode & !0o7777 | wanted.mode as u16;
-        root.uid = wanted.uid;
-        root.gid = wanted.gid;
-        root.ctime = now_seconds();
-        Ok(())
-    }
-
-    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
-        let shared = &self.shared;
-        let (blocks, free) = match shared.budget.limit() {
-            Some(limit) => (limit, limit.saturating_sub(shared.budget.used())),
-            None => (0, 0),
-        };
-        let (files, files_free) = match shared.inode_limit.load(Ordering::Relaxed) {
-            u64::MAX => (0, 0),
-            limit => (
-                limit,
-                limit.saturating_sub(shared.live_inodes.load(Ordering::Relaxed)),
-            ),
-        };
-        Ok(FileSystemStatistics {
-            type_name: "tmpfs",
-            magic: TMPFS_MAGIC,
-            block_size: BLOCK_SIZE,
-            blocks,
-            blocks_free: free,
-            blocks_available: free,
-            files,
-            files_free,
-            fsid: [shared.filesystem_id as u32, 0],
-            name_length: NAME_MAX as u64,
-            fragment_size: BLOCK_SIZE,
-            flags: 0,
-        })
     }
 }
 
@@ -967,15 +988,36 @@ impl FileSystem for TmpFileSystem {
 pub(super) struct TmpFileSystemType;
 
 impl FileSystemType for TmpFileSystemType {
+    fn user_namespace_mount(&self) -> bool {
+        true
+    }
     fn name(&self) -> &'static str {
         "tmpfs"
     }
 
-    fn create(&self, request: &MountRequest<'_>) -> Result<Arc<dyn FileSystem>, FileSystemError> {
-        let ram_pages = request.environment.proc_source.snapshot()?.total_pages as u64;
-        let options = options::parse(request.options, ram_pages, options::defaults(ram_pages))
-            .map_err(|_| FileSystemError::InvalidOperation)?;
+    fn create(
+        &self,
+        request: &MountRequest<'_>,
+    ) -> Result<super::mount::CreatedFileSystem, FileSystemError> {
+        let ram_pages = request
+            .environment
+            .proc_source
+            .snapshot(
+                super::ProcSnapshotScope::System,
+                &request.environment.proc_source.current_pid_namespace(),
+            )?
+            .total_pages as u64;
+        let options = options::parse(
+            request.options,
+            ram_pages,
+            options::defaults(ram_pages, request.identity.uid(), request.identity.gid()),
+            &request.identity.user_namespace(),
+        )
+        .map_err(|_| FileSystemError::InvalidOperation)?;
         let filesystem = TmpFileSystem::new(&options, ram_pages)?;
-        Ok(filesystem)
+        Ok(super::mount::CreatedFileSystem {
+            filesystem,
+            user_namespace: request.identity.user_namespace(),
+        })
     }
 }

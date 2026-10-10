@@ -1,5 +1,3 @@
-use core::net::Ipv4Addr;
-
 use super::*;
 
 /// Socket 的只读 address/readiness projection。
@@ -9,7 +7,12 @@ use super::*;
 impl Socket {
     pub(crate) fn address(&self) -> Result<Option<SocketAddress>, SocketError> {
         match &self.backend {
-            SocketBackend::Unix(socket) => Ok(socket.address().map(SocketAddress::Unix)),
+            // name query 的未绑定 UNIX socket 仍有 family-only 地址；receive 的 None 则无 source。
+            SocketBackend::Unix(socket) => {
+                Ok(Some(SocketAddress::Unix(socket.address().unwrap_or_else(
+                    || UnixAddress::new(&[]).expect("empty Unix address is bounded"),
+                ))))
+            }
             SocketBackend::Inet(socket) => socket
                 .address()
                 .map(|value| Some(SocketAddress::Inet(value))),
@@ -17,22 +20,20 @@ impl Socket {
                 .address()
                 .map(|value| Some(SocketAddress::Packet(value))),
             SocketBackend::Kobject(socket) => Ok(Some(SocketAddress::Netlink(socket.address()))),
-            SocketBackend::InterfaceControl => Ok(Some(SocketAddress::Inet(InetAddress {
-                address: Ipv4Addr::UNSPECIFIED,
-                port: 0,
-            }))),
         }
     }
 
     pub(crate) fn peer_address(&self) -> Result<Option<SocketAddress>, SocketError> {
         match &self.backend {
-            SocketBackend::Unix(socket) => Ok(socket.peer_address().map(SocketAddress::Unix)),
+            SocketBackend::Unix(socket) => socket.peer_address().map(|peer| {
+                Some(SocketAddress::Unix(peer.unwrap_or_else(|| {
+                    UnixAddress::new(&[]).expect("empty Unix address is bounded")
+                })))
+            }),
             SocketBackend::Inet(socket) => socket
                 .peer_address()
                 .map(|value| Some(SocketAddress::Inet(value))),
-            SocketBackend::Packet(_)
-            | SocketBackend::Kobject(_)
-            | SocketBackend::InterfaceControl => Err(SocketError::NotConnected),
+            SocketBackend::Packet(_) | SocketBackend::Kobject(_) => Err(SocketError::NotConnected),
         }
     }
 
@@ -42,12 +43,6 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.poll_state(),
             SocketBackend::Packet(socket) => socket.poll_state(),
             SocketBackend::Kobject(socket) => socket.poll_state(),
-            SocketBackend::InterfaceControl => SocketPollState {
-                readable: false,
-                writable: true,
-                hangup: false,
-                error: false,
-            },
         }
     }
 
@@ -64,14 +59,8 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => Some(socket.poll_state()),
             SocketBackend::Inet(socket) => socket.try_poll_state(),
-            SocketBackend::Packet(socket) => Some(socket.poll_state()),
-            SocketBackend::Kobject(socket) => Some(socket.poll_state()),
-            SocketBackend::InterfaceControl => Some(SocketPollState {
-                readable: false,
-                writable: true,
-                hangup: false,
-                error: false,
-            }),
+            SocketBackend::Packet(socket) => socket.try_poll_state(),
+            SocketBackend::Kobject(socket) => socket.try_poll_state(),
         }
     }
 
@@ -81,7 +70,6 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.readiness_generation(),
             SocketBackend::Packet(socket) => socket.readiness_generation(),
             SocketBackend::Kobject(socket) => socket.readiness_generation(),
-            SocketBackend::InterfaceControl => 0,
         }
     }
 
@@ -89,7 +77,7 @@ impl Socket {
     ///
     /// # Returns
     ///
-    /// 当前 backend 的 source 列表；interface-control socket 没有可等待 source。
+    /// 当前 backend 的实际 source 列表。
     pub(crate) fn wait_sources(&self, events: i16) -> (SocketWaitSources, Option<SocketWaitGuard>) {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.wait_sources(events),
@@ -97,12 +85,12 @@ impl Socket {
             SocketBackend::Packet(socket) => (socket.wait_sources(), None),
             SocketBackend::Kobject(socket) => (
                 [
-                    Some(SocketWaitSource::Notification(socket.wait_source())),
+                    Some(SocketWaitSource::notification(socket.wait_source())),
+                    None,
                     None,
                 ],
                 None,
             ),
-            SocketBackend::InterfaceControl => ([None, None], None),
         }
     }
 
@@ -110,14 +98,13 @@ impl Socket {
     ///
     /// # Returns
     ///
-    /// 无返回值；AF_UNIX stream 保留真实 data Pipe 内容。
+    /// 无返回值；AF_UNIX stream notifications 不拥有 payload，真实 chunks 不被 drain。
     pub(crate) fn prepare_wait(&self) {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.consume_wait_notifications(),
             SocketBackend::Inet(socket) => socket.consume_wait_notifications(),
             SocketBackend::Packet(socket) => socket.consume_wait_notifications(),
             SocketBackend::Kobject(socket) => socket.consume_wait_notification(),
-            SocketBackend::InterfaceControl => {}
         }
     }
 }

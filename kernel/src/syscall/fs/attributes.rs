@@ -1,8 +1,5 @@
 use crate::{
-    fs::{
-        FileSystemError, IN_ATTRIB, Inode, OpenedFile, OwnerModeChange, notify_opened, notify_self,
-        vfs,
-    },
+    fs::{FileSystemError, IN_ATTRIB, OpenedFile, OwnerModeChange, notify_opened, vfs},
     syscall::errno,
     task::{TaskControlBlock, current_task},
 };
@@ -23,13 +20,10 @@ fn target(
         if flags & AT_EMPTY_PATH == 0 {
             return Err(-errno::ENOENT);
         }
-        if task.access_identity(true).uid() != 0 {
-            return Err(-errno::EPERM);
-        }
         return usize::try_from(dirfd)
             .ok()
-            .and_then(|fd| task.fd_get(fd))
-            .and_then(|ofd| Some(Target::new(ofd.inode_ref()?, ofd.opened_ref())))
+            .and_then(|fd| task.fd_get_raw(fd))
+            .map(|ofd| Target::new(ofd.opened_ref()))
             .ok_or(-errno::EBADF);
     }
     let start = base(task, dirfd, &path)?;
@@ -39,40 +33,30 @@ fn target(
     } else {
         vfs().open_file_at(start, &path, &identity)
     };
-    result
-        .map(|opened| Target::new(opened.inode(), Some(opened)))
-        .map_err(ferr)
+    result.map(Target::new).map_err(ferr)
 }
 
-/// 属性变更的目标：inode，以及（有路径时）用于向父目录 watch 投递 `IN_ATTRIB` 的 opened entry。
+/// 每个属性变更保留实际 path，用它取得 writer lease 与通知 parent watch。
 struct Target {
-    inode: alloc::sync::Arc<dyn Inode>,
-    opened: Option<alloc::sync::Arc<OpenedFile>>,
+    opened: alloc::sync::Arc<OpenedFile>,
 }
-
 impl Target {
-    fn new(
-        inode: alloc::sync::Arc<dyn Inode>,
-        opened: Option<alloc::sync::Arc<OpenedFile>>,
-    ) -> Self {
-        Self { inode, opened }
+    fn new(opened: alloc::sync::Arc<OpenedFile>) -> Self {
+        Self { opened }
     }
-
-    /// 变更成功之后通知 inotify：有 opened entry 时同时通知父目录的 watch。
     fn changed(&self) {
-        match &self.opened {
-            Some(opened) => notify_opened(opened, IN_ATTRIB),
-            None => notify_self(self.inode.as_ref(), IN_ATTRIB),
-        }
+        notify_opened(&self.opened, IN_ATTRIB);
     }
 }
 
 fn chmod_inode(task: &TaskControlBlock, target: Target, mode: u32) -> isize {
-    if let Err(error) = vfs().require_writable(target.inode.filesystem_id()) {
-        return ferr(error);
-    }
+    let _writer = match target.opened.begin_write() {
+        Ok(writer) => writer,
+        Err(error) => return ferr(error),
+    };
     let result = target
-        .inode
+        .opened
+        .inode()
         .change_owner_mode(OwnerModeChange::chmod(task.access_identity(true), mode));
     if result.is_ok() {
         target.changed();
@@ -95,10 +79,7 @@ pub(crate) fn sys_fchmod(fd: usize, mode: u32) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    let Some(inode) = ofd.inode_ref() else {
-        return -errno::EINVAL;
-    };
-    chmod_inode(&task, Target::new(inode, ofd.opened_ref()), mode)
+    chmod_inode(&task, Target::new(ofd.opened_ref()), mode)
 }
 
 /// 按 Linux fchmodat ABI 修改 inode permission 与 special bits。
@@ -122,16 +103,31 @@ pub(crate) fn sys_fchmodat(dirfd: isize, name: *const u8, mode: u32) -> isize {
 }
 
 fn chown_inode(task: &TaskControlBlock, target: Target, owner: u32, group: u32) -> isize {
-    let uid = (owner != u32::MAX).then_some(owner);
-    let gid = (group != u32::MAX).then_some(group);
-    if let Err(error) = vfs().require_writable(target.inode.filesystem_id()) {
-        return ferr(error);
-    }
-    let result = target.inode.change_owner_mode(OwnerModeChange::chown(
-        task.access_identity(true),
-        uid,
-        gid,
-    ));
+    let namespace = task.user_namespace();
+    let uid = if owner == u32::MAX {
+        None
+    } else {
+        let Some(uid) = namespace.to_kernel(true, owner) else {
+            return -errno::EINVAL;
+        };
+        Some(uid)
+    };
+    let gid = if group == u32::MAX {
+        None
+    } else {
+        let Some(gid) = namespace.to_kernel(false, group) else {
+            return -errno::EINVAL;
+        };
+        Some(gid)
+    };
+    let _writer = match target.opened.begin_write() {
+        Ok(writer) => writer,
+        Err(error) => return ferr(error),
+    };
+    let result = target
+        .opened
+        .inode()
+        .change_owner_mode(OwnerModeChange::chown(task.access_identity(true), uid, gid));
     if result.is_ok() {
         target.changed();
     }
@@ -160,10 +156,7 @@ pub(crate) fn sys_fchown(fd: usize, owner: u32, group: u32) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    let Some(inode) = ofd.inode_ref() else {
-        return -errno::EBADF;
-    };
-    chown_inode(&task, Target::new(inode, ofd.opened_ref()), owner, group)
+    chown_inode(&task, Target::new(ofd.opened_ref()), owner, group)
 }
 
 /// 按 Linux fchownat ABI 原子修改 inode owner/group 并更新 ctime。

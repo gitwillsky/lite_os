@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import io
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,132 @@ def argument_after(command: list[str], option: str) -> str:
 
 
 class QemuRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        validator = patch("qemu_gate.validate_kernel_boot_artifact")
+        self.validate_artifact = validator.start()
+        self.addCleanup(validator.stop)
+
+    @patch("qemu_gate.shutil.which", return_value="/opt/qemu")
+    def test_second_disk_keeps_root_first_in_each_machine_probe_order(self, _: Mock) -> None:
+        for arch, expected in (
+            ("aarch64", ["virtio-blk-device,drive=x1", "virtio-blk-device,drive=x0"]),
+            ("riscv64", ["virtio-blk-device,drive=x0", "virtio-blk-device,drive=x1"]),
+        ):
+            with self.subTest(arch=arch), patch.dict(
+                os.environ, {"ARCH": arch, "ACCEL": "tcg"}, clear=True
+            ):
+                command = qemu_gate._qemu_command(
+                    Path("root.img"), 1, scratch_disk=Path("swap.img")
+                )
+                self.assertEqual(
+                    [argument for argument in command if argument.startswith("virtio-blk-device")],
+                    expected,
+                )
+                self.assertIn("file=root.img,if=none,format=raw,id=x0", command)
+                self.assertIn("file=swap.img,if=none,format=raw,id=x1", command)
+
+    def test_boot_consumes_markers_already_read_by_echo_pacing(self) -> None:
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"READY")
+        os.close(write_fd)
+        with os.fdopen(read_fd, "rb") as output_stream:
+            process = Mock(stdout=output_stream, stdin=io.BytesIO())
+            process.poll.return_value = None
+            sent = []
+
+            def inject(_input, _stream, output, _cursor, data):
+                sent.append(data.data)
+                # This output was consumed by echo pacing, so the next select
+                # cannot observe it. Both the next interaction and success need it.
+                output.extend(b"AFTER_ECHO" if len(sent) == 1 else b"SUCCESS")
+
+            with (
+                patch("qemu_gate.validate_kernel_boot_artifact"),
+                patch("qemu_gate._qemu_command", return_value=[]),
+                patch("qemu_gate.subprocess.Popen", return_value=process),
+                patch("qemu_gate.send_triggered_interaction", side_effect=inject),
+                patch("qemu_gate.terminate"),
+            ):
+                qemu_gate.boot(
+                    Path("unused.img"), 1, ("SUCCESS",),
+                    interactions=(("READY", qemu_gate.ShellCommand(b"first\n")), ("AFTER_ECHO", qemu_gate.ShellCommand(b"second\n"))),
+                    persistent_writes=True,
+                )
+            self.assertEqual(sent, [b"first\n", b"second\n"])
+
+    def test_foreground_control_keys_do_not_wait_for_a_shell_prompt(self) -> None:
+        for key in (b"\x03", b"\x1a", b"q", b"GoOK\x1b:wq\n"):
+            with self.subTest(key=key), patch(
+                "qemu_gate._wait_for_prompt", side_effect=AssertionError("foreground has no prompt")
+            ):
+                input_stream = io.BytesIO()
+                qemu_gate.send_triggered_interaction(
+                    input_stream, io.BytesIO(), bytearray(b"APP_READY"), 9, qemu_gate.TerminalInput(key)
+                )
+                self.assertEqual(input_stream.getvalue(), key)
+
+    def test_foreground_newline_is_explicit_terminal_input(self) -> None:
+        with patch("qemu_gate._wait_for_prompt", side_effect=AssertionError("foreground has no shell prompt")):
+            stream = io.BytesIO()
+            qemu_gate.send_triggered_interaction(stream, io.BytesIO(), bytearray(), 0,
+                qemu_gate.TerminalInput(b"ttyinput\n"))
+            self.assertEqual(stream.getvalue(), b"ttyinput\n")
+
+    def test_untyped_interaction_is_rejected_before_qemu_launch(self) -> None:
+        with patch("qemu_gate.subprocess.Popen", side_effect=AssertionError("invalid input launched QEMU")):
+            with self.assertRaisesRegex(TypeError, "declare ShellCommand or TerminalInput"):
+                qemu_gate.boot(Path("unused.img"), 1, (), interactions=(("READY", b"command\n"),))
+
+    def test_missing_actual_prompt_fails_instead_of_blind_submission(self) -> None:
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        with os.fdopen(read_fd, "rb") as stream:
+            with self.assertRaisesRegex(RuntimeError, "shell prompt missing"):
+                qemu_gate._wait_for_prompt(stream, bytearray(b"~ # old command"), 4)
+
+    def test_background_readiness_after_actual_prompt_keeps_submission_boundary(self) -> None:
+        input_read, input_write = os.pipe()
+        output_read, output_write = os.pipe()
+        commands = [b"launch background\n", b"consume result\n"]
+        received = bytearray()
+
+        def guest_shell() -> None:
+            os.write(output_write, b"~ # ")
+            for index, command in enumerate(commands):
+                for _ in command:
+                    byte = os.read(input_read, 1)
+                    if not byte:
+                        return
+                    received.extend(byte)
+                    if byte != b"\n":
+                        os.write(output_write, byte)
+                # 后台事件确实在新 prompt 后出现，不制造第二个 prompt。
+                os.write(output_write, b"\n~ # BG_READY\n" if index == 0 else b"\nSUCCESS\n")
+
+        guest = threading.Thread(target=guest_shell, daemon=True)
+        guest.start()
+        try:
+            with os.fdopen(input_write, "wb", closefd=False) as input_stream, os.fdopen(
+                output_read, "rb", closefd=False
+            ) as output_stream:
+                process = Mock(stdout=output_stream, stdin=input_stream)
+                process.poll.return_value = None
+                with (
+                    patch("qemu_gate._qemu_command", return_value=[]),
+                    patch("qemu_gate.subprocess.Popen", return_value=process),
+                    patch("qemu_gate.terminate"),
+                    patch("qemu_gate.PROMPT_WAIT_SECONDS", 0.5),
+                ):
+                    qemu_gate.boot(Path("unused.img"), 1, ("SUCCESS",),
+                        interactions=(("~ # ", qemu_gate.ShellCommand(commands[0])), ("BG_READY", qemu_gate.ShellCommand(commands[1]))),
+                        persistent_writes=True)
+            guest.join(timeout=1)
+            self.assertFalse(guest.is_alive())
+            self.assertEqual(received, b"".join(commands))
+        finally:
+            for descriptor in (input_read, input_write, output_read, output_write):
+                os.close(descriptor)
+
     def test_shell_interaction_waits_for_each_guest_echo(self) -> None:
         input_read, input_write = os.pipe()
         output_read, output_write = os.pipe()
@@ -57,9 +185,48 @@ class QemuRoutingTests(unittest.TestCase):
             os.close(output_write)
 
         self.assertEqual(received, command)
-        self.assertEqual(output, command)
+        self.assertEqual(output, command[:-1])
+
+    def test_column_boundary_submits_newline_without_waiting_for_echo(self) -> None:
+        input_read, input_write = os.pipe()
+        output_read, output_write = os.pipe()
+        # 4-column prompt 加 316 glyph 恰好落在 80-column 边界，lineedit 不回显 LF。
+        command = b"echo " + b"x" * 311 + b"\n"
+        received = bytearray()
+        def guest_line_editor() -> None:
+            while len(received) < len(command):
+                byte = os.read(input_read, 1)
+                if not byte:
+                    return
+                received.extend(byte)
+                if byte != b"\n":
+                    os.write(output_write, byte)
+                else:
+                    os.write(output_write, b"~ # ")
+        guest = threading.Thread(target=guest_line_editor)
+        guest.start()
+        try:
+            with (
+                os.fdopen(input_write, "wb", closefd=False) as input_stream,
+                os.fdopen(output_read, "rb", closefd=False) as output_stream,
+            ):
+                output = bytearray()
+                qemu_gate.send_shell_interaction(input_stream, output_stream, output, command)
+                guest.join()
+                self.assertEqual(received, command)
+                self.assertEqual(output, command[:-1])
+                self.assertEqual(os.read(output_read, 4), b"~ # ")
+        finally:
+            os.close(input_write)
+            guest.join()
+            os.close(input_read)
+            os.close(output_read)
+            os.close(output_write)
 
     def test_echo_pacing_rejects_raw_terminal_input(self) -> None:
+        self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"first\nsecond\n"))
+        with self.assertRaises(ValueError):
+            qemu_gate.ShellCommand(b"first\nsecond\n")
         self.assertTrue(qemu_gate._is_echo_paced_shell_command(b"echo ok\n"))
         self.assertTrue(
             qemu_gate._is_echo_paced_shell_command("echo 标准回显\n".encode())
@@ -193,6 +360,7 @@ class QemuRoutingTests(unittest.TestCase):
                     return_value="/opt/qemu-system-aarch64",
                 ),
                 patch("build_cache.subprocess.run", return_value=version),
+                patch("build_cache.validate_kernel_boot_artifact", return_value=input_path),
             ):
                 payload = build_cache.runtime_gate_payload("boot", 4, (input_path,))
 
@@ -211,6 +379,7 @@ class QemuRoutingTests(unittest.TestCase):
                 "kernel_boot_artifact": (
                     "target/aarch64-unknown-none-softfloat/release/Image"
                 ),
+                "kernel_boot_sha256": hashlib.sha256(b"kernel").hexdigest(),
             },
         )
 

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-use super::{FileSystemError, ProcNetworkSnapshot, ProcSnapshot, ProcText, proc_text};
+use super::{FileSystemError, ProcSnapshot, ProcText, proc_text};
 
 const CLOCK_TICKS_PER_SECOND: u64 = 100;
 
@@ -55,11 +55,14 @@ pub(super) fn format_meminfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSys
         .saturating_add(snapshot.reclaimable_cached_pages)
         .min(snapshot.total_pages);
     proc_text(format_args!(
-        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           {} kB\n",
+        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     {} kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      {} kB\nSwapFree:       {} kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           {} kB\n",
         snapshot.total_pages * 4,
         snapshot.free_pages * 4,
         available_pages * 4,
         snapshot.cached_pages * 4,
+        snapshot.swap_cached_pages * 4,
+        snapshot.swap_total_pages * 4,
+        snapshot.swap_free_pages * 4,
         snapshot.dirty_pages * 4,
         snapshot.heap_pages * 4,
     ))
@@ -82,10 +85,12 @@ pub(super) fn format_buddyinfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileS
 
 pub(super) fn format_vmstat(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSystemError> {
     proc_text(format_args!(
-        "allocstall {}\npgscan_direct {}\npgsteal_direct {}\n",
+        "allocstall {}\npgscan_direct {}\npgsteal_direct {}\npgscan_kswapd {}\npgsteal_kswapd {}\n",
         snapshot.direct_reclaim_attempts,
         snapshot.direct_reclaim_scanned_pages,
         snapshot.direct_reclaim_reclaimed_pages,
+        snapshot.background_reclaim_scanned_pages,
+        snapshot.background_reclaim_reclaimed_pages,
     ))
 }
 
@@ -104,7 +109,10 @@ pub(super) fn format_loadavg(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSys
     ))
 }
 
-pub(super) fn format_uptime(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSystemError> {
+pub(super) fn format_uptime(
+    snapshot: &ProcSnapshot,
+    offsets: crate::namespace::TimeOffsets,
+) -> Result<Vec<u8>, FileSystemError> {
     let idle_us: u64 = snapshot
         .cpus
         .iter()
@@ -114,72 +122,15 @@ pub(super) fn format_uptime(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSyst
                 .saturating_sub(cpu.busy_us.min(snapshot.uptime_us))
         })
         .sum();
+    let uptime_ns = offsets.project(
+        crate::namespace::TimeClock::Boottime,
+        snapshot.uptime_us.saturating_mul(1_000),
+    );
     proc_text(format_args!(
         "{}.{:02} {}.{:02}\n",
-        snapshot.uptime_us / 1_000_000,
-        snapshot.uptime_us / 10_000 % 100,
+        uptime_ns / 1_000_000_000,
+        uptime_ns / 10_000_000 % 100,
         idle_us / 1_000_000,
         idle_us / 10_000 % 100
     ))
-}
-
-pub(super) fn format_network_devices(
-    network: Option<ProcNetworkSnapshot>,
-) -> Result<Vec<u8>, FileSystemError> {
-    let mut output = ProcText::new();
-    output.write_str(
-        "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n",
-    ).map_err(|_| FileSystemError::OutOfMemory)?;
-    if let Some(network) = network {
-        writeln!(
-            output,
-            "  eth0: {:8} {:7}    0    0    0     0          0         0 {:8} {:7}    0    0    0     0       0          0",
-            network.received_bytes,
-            network.received_packets,
-            network.transmitted_bytes,
-            network.transmitted_packets,
-        )
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    }
-    Ok(output.finish())
-}
-
-pub(super) fn format_network_routes(
-    network: Option<ProcNetworkSnapshot>,
-) -> Result<Vec<u8>, FileSystemError> {
-    let mut output = ProcText::new();
-    output
-        .write_str(
-            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
-        )
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    let Some(network) = network else {
-        return Ok(output.finish());
-    };
-    let mask = if network.prefix_length == 0 {
-        0
-    } else {
-        u32::MAX << (32 - network.prefix_length)
-    };
-    if let Some(address) = network.address {
-        let destination = u32::from_be_bytes(address) & mask;
-        writeln!(
-            output,
-            "eth0\t{:08X}\t00000000\t{:04X}\t0\t0\t0\t{:08X}\t0\t0\t0",
-            destination.swap_bytes(),
-            if network.up { 1 } else { 0 },
-            mask.swap_bytes(),
-        )
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    }
-    if let Some(gateway) = network.gateway {
-        writeln!(
-            output,
-            "eth0\t00000000\t{:08X}\t{:04X}\t0\t0\t0\t00000000\t0\t0\t0",
-            u32::from_be_bytes(gateway).swap_bytes(),
-            if network.up { 3 } else { 2 },
-        )
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    }
-    Ok(output.finish())
 }

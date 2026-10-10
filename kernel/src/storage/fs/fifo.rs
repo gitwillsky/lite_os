@@ -3,8 +3,8 @@
 //! FIFO inode 本身不保存数据；第一个 open 创建 Pipe，最后一个 endpoint 关闭时 Pipe 随之消失（未读数据
 //! 丢弃）。同一 inode 的所有 open 通过 `(filesystem, inode)` 找到同一个 Pipe。
 
+use crate::sync::TaskMutex;
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
-use spin::Mutex;
 
 use syscall_abi::errno;
 
@@ -14,8 +14,8 @@ use super::device::{
 };
 use crate::{
     ipc::{
-        PIPE_BUF, Pipe, PipeDirection, PipeEnd, PipeRead, PipeWaitCondition, PipeWrite,
-        ReceiveBuffer,
+        PIPE_BUF, Pipe, PipeDirection, PipeEnd, PipeOpenAccess, PipeOpenError, PipeRead,
+        PipeWaitCondition, PipeWrite, ReceiveBuffer,
     },
     sync::WaitResult,
 };
@@ -38,13 +38,16 @@ struct Slot {
 
 // OWNER: FIFO inode identity → 内核 Pipe 的唯一映射；只持 `Weak`，Pipe 的生命周期由 endpoint 决定。
 // 缺失时同一 FIFO 的两次 open 会各自得到独立 Pipe，reader 与 writer 永远看不到彼此。
-static FIFOS: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
+// logical owner 可跨 heap allocation；其内部 spin gate 不随 guard 保留。
+// registry 只持 Weak<Pipe>，Pipe/reclaimer/endpoint Drop 不反入此 owner，不存在 OOM 重入路径。
+static FIFOS: TaskMutex<Vec<Slot>> = TaskMutex::new(Vec::new());
 
 /// 取得（必要时创建）`identity` 对应的 Pipe。
 fn pipe_for(identity: (usize, u64)) -> Result<Arc<Pipe>, FifoOpenError> {
-    let mut slots = FIFOS.lock();
+    let mut slots = FIFOS.lock().map_err(|_| FifoOpenError::OutOfMemory)?;
     if let Some(slot) = slots.iter().find(|slot| slot.identity == identity)
         && let Some(pipe) = slot.pipe.upgrade()
+        && !pipe.retired()
     {
         return Ok(pipe);
     }
@@ -72,7 +75,7 @@ pub(crate) struct FifoFile {
     // 本次 open 时 writer 的累计打开次数。只读端仅在“曾经有 writer 来过又全部离开”之后才报 `POLLHUP`
     // （Linux `fifo_open` 的 `f_version`）；缺失时刚以 `O_NONBLOCK` 打开、writer 尚未到来的 reader 会被
     // 事件循环当成对端已挂断而空转。
-    writer_baseline: u64,
+    writer_baseline: Option<u64>,
 }
 
 const POLLIN: i16 = 0x001;
@@ -96,6 +99,15 @@ fn wait_error(result: WaitResult) -> Result<(), DeviceError> {
 }
 
 impl DeviceFile for FifoFile {
+    fn release(&self) {
+        if let Some(reader) = &self.reader {
+            reader.close();
+        }
+        if let Some(writer) = &self.writer {
+            writer.close();
+        }
+    }
+
     fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
         let reader = self
             .reader
@@ -154,7 +166,11 @@ impl DeviceFile for FifoFile {
             if state.has_data {
                 ready |= events & POLLIN;
             }
-            if state.hangup && state.peer_opens > self.writer_baseline {
+            if state.hangup
+                && self
+                    .writer_baseline
+                    .is_none_or(|baseline| state.peer_opens > baseline)
+            {
                 ready |= POLLHUP;
             }
         }
@@ -249,40 +265,85 @@ pub(crate) fn open(
     access: FifoAccess,
     nonblocking: bool,
 ) -> Result<Arc<dyn DeviceFile>, FifoOpenError> {
-    let pipe = pipe_for(identity)?;
-    // 两个方向的快照都取在登记自己的 endpoint 之前：之后别人的打开才算“对端到来”。
-    let (readers, reader_opens) = pipe.peer_snapshot(PipeDirection::Write);
-    let (writers, writer_opens) = pipe.peer_snapshot(PipeDirection::Read);
-    if access == FifoAccess::Write && readers == 0 && nonblocking {
-        return Err(FifoOpenError::NoReader);
+    loop {
+        let pipe = pipe_for(identity)?;
+        match open_session(pipe, access, nonblocking, PipeOpenKind::Named) {
+            Ok(file) => return Ok(file),
+            Err(SessionOpenError::Retired) => continue,
+            Err(SessionOpenError::Failure(error)) => return Err(error),
+        }
     }
-    let open_end = |direction| {
-        pipe.open_end(direction)
-            .map_err(|()| FifoOpenError::OutOfMemory)
+}
+
+/// Linux pipeanon_fops 不等对端，也不抑制首次 writer 之前的 HUP；named FIFO 相反。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PipeOpenKind {
+    Named,
+    Anonymous,
+}
+
+/// session 在锁外端点准备期间退休时，inode owner 必须换新 session 重试。
+pub(super) enum SessionOpenError {
+    Retired,
+    Failure(FifoOpenError),
+}
+impl From<FifoOpenError> for SessionOpenError {
+    fn from(error: FifoOpenError) -> Self {
+        Self::Failure(error)
+    }
+}
+
+/// 两类 pipe 共用实际端点、I/O 和 poll owner；调用者只提供规范 open-kind。
+pub(super) fn open_session(
+    pipe: Arc<Pipe>,
+    access: FifoAccess,
+    nonblocking: bool,
+    kind: PipeOpenKind,
+) -> Result<Arc<dyn DeviceFile>, SessionOpenError> {
+    // 1. 所有 file 分配先于 admission；peer/counter 只使用同 state transaction 的快照。
+    let mut allocated =
+        Arc::<FifoFile>::try_new_uninit().map_err(|_| FifoOpenError::OutOfMemory)?;
+    let request = match access {
+        FifoAccess::Read => PipeOpenAccess::Read,
+        FifoAccess::Write => PipeOpenAccess::Write {
+            require_reader: kind == PipeOpenKind::Named && nonblocking,
+        },
+        FifoAccess::ReadWrite => PipeOpenAccess::ReadWrite,
     };
-    let reader = (access != FifoAccess::Write)
-        .then(|| open_end(PipeDirection::Read))
-        .transpose()?;
-    let writer = (access != FifoAccess::Read)
-        .then(|| open_end(PipeDirection::Write))
-        .transpose()?;
-    match (access, nonblocking) {
-        (FifoAccess::Read, false) if writers == 0 => {
-            wait_open(pipe.wait_for_peer(PipeDirection::Read, writer_opens))?;
+    let opened = pipe.open(request).map_err(|error| match error {
+        PipeOpenError::NoReader => FifoOpenError::NoReader.into(),
+        PipeOpenError::Retired => SessionOpenError::Retired,
+        PipeOpenError::OutOfMemory => FifoOpenError::OutOfMemory.into(),
+    })?;
+    let (reader, writer) = (opened.reader, opened.writer);
+    let prior = opened.prior;
+    // 2. anonymous reopen 直接完成；只有 named FIFO 执行 peer rendezvous。
+    if kind == PipeOpenKind::Named {
+        match (access, nonblocking) {
+            (FifoAccess::Read, false) if prior.writers == 0 => {
+                wait_open(pipe.wait_for_peer(PipeDirection::Read, prior.writer_opens))?;
+            }
+            (FifoAccess::Write, false) if prior.readers == 0 => {
+                wait_open(pipe.wait_for_peer(PipeDirection::Write, prior.reader_opens))?;
+            }
+            _ => {}
         }
-        (FifoAccess::Write, false) if readers == 0 => {
-            wait_open(pipe.wait_for_peer(PipeDirection::Write, reader_opens))?;
-        }
-        _ => {}
     }
-    Arc::try_new(FifoFile {
-        pipe,
-        reader,
-        writer,
-        writer_baseline: writer_opens,
-    })
-    .map(|file| file as Arc<dyn DeviceFile>)
-    .map_err(|_| FifoOpenError::OutOfMemory)
+    Arc::get_mut(&mut allocated)
+        .expect("unpublished FIFO file is unique")
+        .write(FifoFile {
+            pipe,
+            reader,
+            writer,
+            writer_baseline: (kind == PipeOpenKind::Named
+                && access == FifoAccess::Read
+                && nonblocking
+                && prior.writers == 0)
+                .then_some(prior.writer_opens),
+        });
+    // SAFETY: unique MaybeUninit owner 在上面完整初始化；所有失败发生在 write 之前，
+    // locals 负责回滚 admitted endpoints，未初始化 Arc 不执行 FifoFile destructor。
+    Ok(unsafe { allocated.assume_init() } as Arc<dyn DeviceFile>)
 }
 
 fn wait_open(result: WaitResult) -> Result<(), FifoOpenError> {

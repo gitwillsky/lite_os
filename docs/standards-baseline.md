@@ -67,7 +67,35 @@
 
 - crate `0.13.1`；source commit `e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897`。
 - 来源：[release 文档](https://docs.rs/crate/smoltcp/0.13.1)、[固定源码](https://github.com/smoltcp-rs/smoltcp/tree/e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897)。
-- 只启用 alloc、Ethernet、IPv4、UDP、TCP 与 Reno；Linux socket UAPI 不由 smoltcp 定义。
+- kernel/host/benchmark 的唯一编译来源是 `vendor/smoltcp`；原 release 每个文件的 SHA-256
+  记录于 `UPSTREAM.sha256.json`，保留原许可证与 upstream commit。Cargo 不保留 registry 备选路径。
+- 本地变化限定UDP/TCP/raw transport、UDP ingress及interface dispatch与IPv4地址mechanism九个文件：connected peer 在 ingress admission 前匹配，canonical local
+  endpoint 修改保留已有 queue，bind/rehash order 选择单播目标，广播/组播交付实际匹配集合，
+  TX packet 在 enqueue 时冻结source port/address/TTL/oif；TCP实际MSS cache约束广告及分段。
+  bound device在ingress准入前筛选，kernel唯一route selector在dispatch前选设备；IPv4
+  weak-host tuple不因当前iface source列表而reset。Linux bind/shutdown/rlimit/netns UAPI仍归kernel owner。
+- 只启用alloc、Ethernet、IP-medium实际loopback、IPv4、raw、UDP、TCP与Reno；Linux socket UAPI不由smoltcp定义，IPv6仍延期。
+
+原生IPv4地址/proc NET归属补充依据同一固定Linux commit的
+[`devinet_ioctl/inet_abc_len`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/devinet.c)、
+[`get_proc_task_net/seq_open_net`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/proc/proc_net.c)、
+[`dev_seq_show`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/core/net-procfs.c)
+及kernel/nsproxy.c、kernel/kthread.c的真实引用创建/退出；不引入第二个规范版本。
+
+NETLINK_KOBJECT_UEVENT的域、端口和过载以同一固定Linux commit的
+[`netlink_bind/autobind/broadcast_deliver/overrun`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/netlink/af_netlink.c)
+与[`uevent_net_init`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/lib/kobject_uevent.c)为依据。
+端口按NET/协议独立，0首先使用调用者可见TGID，碰撞在[-2147483648,-4097]选择空位；
+group0及同port重bind合法，protocol group数以外的mask被截断。
+无tag内核事件发往所有owning initial UserNS的NET；非initial UserNS的NET不订阅该全局广播。
+actual allocation收费覆盖每个receiver FIFO节点；overrun一次发表ENOBUFS，已有记录不替换，
+SO_ERROR消费不解除拥塞，实际queue排空后恢复。
+
+接口MTU继续使用上述固定dev_ioctl.c的dev_set_mtu调用与devinet.c的
+inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备允许68..1500
+（本驱动frame storage上限1514）。低于IPv4最低68时销毁地址成员；仅恢复MTU不还原旧
+地址，lo再次DOWN→UP才发表127.0.0.1/8。smoltcp interface caps只是该实际设备配置的
+分段mechanism投影，同一NET事务同步刷新，不作为第二份可配置状态。
 
 ### musl 与 BusyBox
 
@@ -80,7 +108,7 @@
 ### ext4/JBD2
 
 - on-disk 与 transaction 语义固定到 Linux `v7.1` 同一 commit；feature profile 固定为 e2fsprogs
-  `1.47.4` `mke2fs -t ext4` 默认值，crc32c、half_md4 dirhash 与 checksum 公式以该版本
+  `1.47.4` `mke2fs -t ext4` 默认值加原生 `ea_inode`，crc32c、half_md4 dirhash 与 checksum 公式以该版本
   `lib/ext2fs` 为交叉校验对象。
 - 来源：[ext4 disk layout](https://github.com/torvalds/linux/tree/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/filesystems/ext4)、
   [固定 ext4 实现](https://github.com/torvalds/linux/tree/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/ext4)、
@@ -185,3 +213,95 @@
 6. 虚拟设备：固定 VirtIO normative requirements。
 
 升级时必须固定新旧不可变 revision，并审计 number、UAPI layout/flags、ELF/TLS、trap/MMU、SBI extension、VirtIO state machine、consumer wrapper 与全部相关测试。
+
+IPv4 FIB接入的源码依据同一固定Linux v7.1 commit的
+[`rtentry_to_fib_config/fib_add_ifaddr`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/fib_frontend.c)、
+[`ip_route_output_key_hash_rcu`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/route.c)、
+[`fib_table_insert/delete/route_seq_show`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/fib_trie.c)。
+Kernel拥有唯一33前缀bucket FIB及地址/路由事务，库只借用当前dispatch的next-hop/logical iif/
+broadcast和当前ingress的LOCAL/broadcast/spec_dst事实，结束即清除。src/iface/mod.rs只导出
+这些机制类型；src/phy/mod.rs的PacketMeta.interface_index是actual lo queue逻辑入口，
+不定义用户ABI。原inventory保持固定，允许变化的准确范围是src/socket/{udp,tcp,raw}.rs、
+src/iface/interface/{mod,ipv4,udp,tcp}.rs、src/iface/mod.rs、src/phy/mod.rs。
+IP replies复用原Packet codec，以有预算的唯一kernel队列经相同FIB/neighbor dispatch；ARP
+仍归当前link。没有为kernel维护per-interface library route mirror。
+
+TCP parser实际匹配socket后冻结bound device，SYN握手使用同一FIB的反向出口MTU；仅
+unbound或与logical iif相同的bound socket能匹配，所以当前RX只需要这两个实际route结论，
+不建立每socket另一张FIB。无反向route的listener SYN不创建半连接。即时reply queue按该
+实际bound oif重查同一FIB。ARP target LOCAL与on-link neighbor也来自同一FIB；依据
+[`arp_process/arp_ignore`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/arp.c)
+原生默认weak-host及RFC2131 probe，0源仅回复，不缓存0，logical iif不改变物理ARP link。
+
+IPv4 route metrics与TCP纯时间phase已补源码：actual FIB保存原生ADVMSS、WINDOW、
+RTT，ioctl的MTU转换为ADVMSS而不修改设备MTU；proc从同records显示三个metrics。
+IpRouteContext只在本次active-open/egress/RX guard有效，reverse route提供被动握手事实，
+结束清除。接收广告默认下限256/上限65495，发送MSS受实际MTU/peer/握手user cap约束；
+两者不能合并，否则小MTU会错误增大发送段或降低原生SYN广告。窗口clamp限制真实SYN/RX，
+route RTT只在握手完成seed首个data RTO，不伪造srtt采样。pure maintain先于route/NIC筛选，
+无route/设备DOWN不阻止timeout与60秒TIMEWAIT退休；真实FailureReason产生一次ETIMEDOUT，
+退休保留queued RX/FIN。无新锁/global/unsafe/分配；沿用实际TCP每slot成本门禁。
+规范依据同一固定Linux commit的
+[`rtentry_to_fib_config`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/fib_frontend.c)、
+[`ip_metrics_convert`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/metrics.c)、
+[`tcp_connect_init/tcp_advertise_mss`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/tcp_output.c)、
+[`tcp_init_metrics`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/tcp_metrics.c)
+及include/net/tcp.h的TCP_RTO_MIN/MAX/TCP_TIMEWAIT_LEN。source/wire/nativeguest/negative围栏
+未声明的高级 TCP 选项与通用 PMTU/fragmentation 不支持。
+
+TCP_SYNCNT/TCP_USER_TIMEOUT/TCP_LINGER2及reset退休已补源码。唯一transport纯时间
+phase拥有实际pending sequence起点、RTO事件次数、前4次active SYN线性RTO及native模型预算；
+无route/设备DOWN不冻结重试。USER_TIMEOUT仅约束未完成sequence，idle不会被强制关闭，
+keepalive配置该值时仍须至少成功发出一个probe。数据orphan重试使用native默认安全预算8。
+TCP_LINGER2默认getter60s、负值归一化-1、正值最多120s，期限仅在最后application fput后
+生效；实际FIN ACK冻结FIN_WAIT2起点，最短3.5*RTO；正常期限静默退休，负值发一次reset。
+RST原表示只由实际TCP构造，standalone dispatch和kernel RouteReplies均复用原Packet codec。
+队列保留payload/bound oif，绝不持有TCP/port/endpoint；OOM、预算满和无route均不恢复身份，
+符合tcp_send_active_reset的best-effort单次发布。删去reset专用orphan/node与retain_transport。
+准入仍有64报文/256KiB实际预算，正常FIN/TIME_WAIT继续由真实transport持lease。
+固定依据：[tcp.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/tcp.c)
+的__tcp_close/tcp_done/TCP_LINGER2，[tcp_timer.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/tcp_timer.c)
+的tcp_write_timeout/tcp_orphan_retries/tcp_keepalive_timer，以及
+[tcp_output.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/net/ipv4/tcp_output.c)
+的tcp_send_active_reset/tcp_acceptable_seq及include/net/tcp.h的tcp_fin_time。
+实际wire回归已补reset一次校验和/窗口0/端口提前复用、OOM/no-route释放，以及live SHUT_WR
+无FIN期限、orphan -1/1/默认60/120s及IF DOWN退休；nativeguest option范围与负围栏已写。
+zero-window budgets 由唯一 transport clock 管理；通用 PMTU/fragmentation 与其他未声明扩展不支持。
+
+NET 链路硬件 fault 由实际设备 owner 记录；单物理 NIC 与 lo 共用一套 outcome。NetworkPoll唯一完整outcome同时持backlog、
+8项actual-link TX-ready及8项actual-link首个typed诊断；没有“一个device错误覆盖整个Result”
+分支。退出NET guard后同轮所有成功link的AF_PACKET writer edges仍交付，RX/cleanup/通知
+backlog全部保留。删去stack入口任意设备take_error、全域pending_device_error与各socket
+readiness上的global EIO。设备RX/TX callback错误只属于actual PHY counter/diagnostic；
+Socket SO_ERROR必须来自实际协议事件。AF_PACKET直接发送依然获得所选device同步错误。
+Ethernet错误/oversize-drop/submit-failure counter沿实际NET mutex独占的Cell写入，与底层
+成功RX/TX counter一起投影标准/proc/net/dev；oversize未交付帧不计成功RX，不双计drop。
+无新锁/global/unsafe；NetworkPoll栈上固定array，事件扫描仍沿8-interface批次。
+依据同一固定Linuxcommit的
+[virtio_net.c](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/drivers/net/virtio_net.c)
+receive_buf/start_xmit：丢帧与FIFO故障计device stats，TX失败best-effort drop，不给任意socket
+制造sk_err。实际host源码补A RX fault同时B completion/RX65budget、一次诊断/独立counter/
+不污染UDP或TCP/SO_ERROR，proc标准16栏实际errors/drop；新增negative fence拒绝丢backlog/
+固定零counter/不消费诊断。完整actual NET poll1024-slot每handle成本沿既有200ns门禁，不
+更改阈值；设备terminal recovery/限频诊断和
+后续完整multiNIC原生地址/rtnetlink/veth/迁移仍须继续审查。
+
+PROBE0/USER_TIMEOUT继续补了源根修，全部未编译/未测试。实际Timer::ZeroWindowProbe拥有
+可选实际deadline、退避delay与一次pending intent；send无clock时不拿uptime ZERO冒充起点。
+纯clock定首次期限并推进真实probe事件，无route仍按native负route错误退避；资源拥塞500ms
+重试且不增加退避。发送复用原TcpRepr/Packet，实际snd_una-1空ACK，不发送或确认stream字节。
+实际PROBE0 count和第一probe_since只属于transport；有效窗口0应答清count并刷新下一probe，
+不重置USER_TIMEOUT起点。只有真实ACK推进SND.UNA才重置未完成sequence epoch。活socket
+默认15次无人应答probe预算；orphan依native alive使用8/0。USER只在probe真正开始后计期，
+原生持续零窗口回复在未配置USER时不因总尝试次数被误杀。实际host源码补空probe wire、
+USER1000ms与非进展ACK、无route+IFDOWN探测预算、持续零窗口应答；负围栏已写。依据同一
+固定Linux tcp_input.c tcp_ack_probe/tcp_ack以及tcp_timer.c tcp_probe_timer和tcp_output.c
+的tcp_send_probe0/tcp_xmit_probe_skb。九文件vendor profile未扩大，无新lock/global/unsafe；
+字段受actual transport/NET guard独占；沿用实际每slot clock/完整poll200ns benchmark门禁。
+**该阶段仍需审阅原vendor旧probe单字节测试并按native空ACK/ACK刷新时刻维护；不能删测试。**
+**进一步发现ACK准入上界使用tx_buffer queued长度，而非真正已发表SND.NXT，可能确认尚未
+发送字节。重传cursor remote_last_seq会回退，不能直接拿它作SND.NXT上界；必须由真实TCP
+owner区分发送high-water与retransmit cursor，接到SYN/FIN/数据/ACK/RTO，再补真实wire回归。**
+keepalive无route时仍由FIBfilter跳过尝试，native负route错误实际消耗probe count；尚需把
+actual route failure送进同一probe mechanism，不能另造route selector或按成功wire count掩盖。
+zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 TCP 扩展不支持。

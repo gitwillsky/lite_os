@@ -1,72 +1,77 @@
-#[cfg(not(test))]
-use alloc::vec::Vec;
-use alloc::{collections::VecDeque, sync::Weak};
+use crate::fallible_tree::{FallibleMap, VacantEntry};
+use alloc::sync::Weak;
 
-#[cfg(not(test))]
-use crate::socket::{SocketError, SocketSendBlocker, SocketSendError, SocketWaitSource};
+// Native max_dgram_qlen=10 在 qlen > limit 时阻塞，允许实际第十一条 admission。
+pub(super) const MAX_DATAGRAMS: usize = 11;
 
-#[cfg(not(test))]
-use super::{Datagram, SocketState, UnixAddress, UnixSocket};
-
-pub(super) const MAX_DATAGRAMS: usize = 10;
-
-pub(super) enum PushError<T> {
-    Full(T),
-    NoMemory(T),
+/// 一条已在 transport guard 外完整预留的 datagram admission。
+pub(super) struct PreparedDatagram<T>(VacantEntry<u64, T>);
+impl<T> PreparedDatagram<T> {
+    pub(super) fn new(item: T) -> Result<Self, T> {
+        // reserve 不消费 payload，OOM 时 caller 可保持其 rights capability 并重试。
+        match FallibleMap::try_reserve_node() {
+            Ok(node) => Ok(Self(node.fill(0, item))),
+            Err(_) => Err(item),
+        }
+    }
+    pub(super) fn value_mut(&mut self) -> &mut T {
+        self.0.value_mut()
+    }
+    pub(super) fn into_value(self) -> T {
+        self.0.into_value()
+    }
 }
-
-/// 固定消息数上限的 AF_UNIX datagram receive queue owner。
+/// 由实际调用方提供 native peer policy 上限的 FIFO；AVL nodes 同时是 admission 与锁外 retirement token。
 pub(super) struct DatagramQueue<T> {
-    entries: VecDeque<T>,
+    entries: FallibleMap<u64, T>,
+    next_sequence: u64,
 }
-
 impl<T> DatagramQueue<T> {
     pub(super) const fn new() -> Self {
         Self {
-            entries: VecDeque::new(),
+            entries: FallibleMap::new(),
+            next_sequence: 0,
         }
     }
-
-    /// # Returns
-    ///
-    /// 成功提交，或携带未消费 item 的 full/allocation failure。
-    pub(super) fn push(&mut self, item: T) -> Result<(), PushError<T>> {
-        if self.is_full() {
-            return Err(PushError::Full(item));
+    /// 只进行无分配 capacity/publication；full 保留完整 prepared capability。
+    pub(super) fn push(
+        &mut self,
+        mut prepared: PreparedDatagram<T>,
+        maximum: usize,
+    ) -> Result<(), PreparedDatagram<T>> {
+        if self.is_full(maximum) {
+            return Err(prepared);
         }
-        if self.entries.try_reserve(1).is_err() {
-            return Err(PushError::NoMemory(item));
-        }
-        self.entries.push_back(item);
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("AF_UNIX datagram sequence exhausted");
+        prepared.0.set_key(self.next_sequence);
+        self.entries.commit_vacant(prepared.0);
         Ok(())
     }
-
-    /// # Returns
-    ///
-    /// FIFO item，以及本次 pop 是否完成 full -> non-full transition。
-    pub(super) fn pop(&mut self) -> Option<(T, bool)> {
-        let was_full = self.is_full();
-        self.entries.pop_front().map(|item| (item, was_full))
+    /// 返回退休节点和 full→non-full 变化；caller 在 guard 外 into_value/析构。
+    pub(super) fn pop(&mut self, maximum: usize) -> Option<(PreparedDatagram<T>, bool)> {
+        let became_non_full = self.len() == maximum;
+        let (&key, _) = self.entries.first_key_value()?;
+        self.entries
+            .take_entry(&key)
+            .map(|node| (PreparedDatagram(node), became_non_full))
     }
-
+    /// 借用当前实际首消息；caller 必须持有该队列的唯一 transport guard。
+    pub(super) fn front(&self) -> Option<&T> {
+        self.entries.first_key_value().map(|(_, item)| item)
+    }
     pub(super) fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.entries.is_empty()
     }
-
-    pub(super) fn is_full(&self) -> bool {
-        self.len() == MAX_DATAGRAMS
+    pub(super) fn is_full(&self, maximum: usize) -> bool {
+        self.len() >= maximum
     }
-
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
-
-    /// 无分配摘除全部 queued messages，供 cycle GC 在 owner lock 外析构 rights。
-    ///
-    /// # Returns
-    ///
-    /// 原 queue backing 与全部 entries；self 立即变为空 queue。
-    pub(super) fn take_all(&mut self) -> VecDeque<T> {
+    pub(super) fn take_all(&mut self) -> FallibleMap<u64, T> {
         core::mem::take(&mut self.entries)
     }
 }
@@ -79,117 +84,5 @@ pub(super) fn peer_identity_changed<T>(
         (Some(current), Some(expected)) => !Weak::ptr_eq(current, expected),
         (None, None) => false,
         _ => true,
-    }
-}
-
-#[cfg(not(test))]
-impl UnixSocket {
-    pub(super) fn enqueue_datagram(
-        self: &alloc::sync::Arc<Self>,
-        input: &[u8],
-        source: Option<UnixAddress>,
-        rights: &mut Option<super::rights::UnixRights>,
-    ) -> Result<usize, SocketSendError> {
-        if input.len() > crate::socket::message_limits::MAX_UNIX_DATAGRAM_BYTES {
-            return Err(SocketError::MessageTooLarge.into());
-        }
-        {
-            let state = self.state.lock();
-            let SocketState::Datagram { messages, .. } = &*state else {
-                return Err(SocketError::WrongType.into());
-            };
-            if messages.is_full() {
-                return Err(SocketSendError::PeerFull(SocketSendBlocker::new(
-                    self.clone(),
-                )));
-            }
-        }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(input.len())
-            .map_err(|_| SocketSendError::Error(SocketError::NoMemory))?;
-        bytes.extend_from_slice(input);
-        loop {
-            let mut state = self.state.lock();
-            let SocketState::Datagram { messages, .. } = &mut *state else {
-                return Err(SocketError::WrongType.into());
-            };
-            if messages.is_full() {
-                return Err(SocketSendError::PeerFull(SocketSendBlocker::new(
-                    self.clone(),
-                )));
-            }
-            if let Some(message_rights) = rights.as_mut() {
-                match message_rights.try_attach(self) {
-                    Ok(()) => {}
-                    Err(super::rights_graph::AttachError::NeedsCollection) => {
-                        drop(state);
-                        message_rights.collect().map_err(SocketSendError::from)?;
-                        continue;
-                    }
-                    Err(super::rights_graph::AttachError::Socket(error)) => {
-                        return Err(error.into());
-                    }
-                }
-            }
-            let result = messages.push(Datagram {
-                bytes,
-                source,
-                rights: rights.take(),
-            });
-            drop(state);
-            return match result {
-                Ok(()) => {
-                    self.notify();
-                    Ok(input.len())
-                }
-                Err(PushError::Full(mut message)) => {
-                    let mut restored = message.rights.take();
-                    if let Some(restored) = restored.as_mut() {
-                        restored.detach();
-                    }
-                    *rights = restored;
-                    drop(message);
-                    Err(SocketSendError::PeerFull(SocketSendBlocker::new(
-                        self.clone(),
-                    )))
-                }
-                Err(PushError::NoMemory(mut message)) => {
-                    let mut restored = message.rights.take();
-                    if let Some(restored) = restored.as_mut() {
-                        restored.detach();
-                    }
-                    *rights = restored;
-                    drop(message);
-                    Err(SocketSendError::Error(SocketError::NoMemory))
-                }
-            };
-        }
-    }
-
-    pub(in crate::socket) fn capacity_wait_source(&self) -> SocketWaitSource {
-        SocketWaitSource::Notification(self.notify_read.pipe())
-    }
-
-    pub(in crate::socket) fn prepare_capacity_wait(&self) {
-        self.notify_read.drain_readiness();
-    }
-
-    pub(in crate::socket) fn datagram_capacity_available(&self) -> bool {
-        matches!(
-            &*self.state.lock(),
-            SocketState::Datagram { messages, .. } if !messages.is_full()
-        )
-    }
-
-    pub(in crate::socket) fn datagram_peer_changed(
-        &self,
-        expected: &Option<alloc::sync::Weak<UnixSocket>>,
-    ) -> bool {
-        let state = self.state.lock();
-        let SocketState::Datagram { peer, .. } = &*state else {
-            return true;
-        };
-        peer_identity_changed(peer, expected)
     }
 }

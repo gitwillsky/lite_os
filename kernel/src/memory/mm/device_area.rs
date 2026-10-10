@@ -13,6 +13,8 @@ pub(super) struct DeviceArea {
     pub(super) backing: Arc<DeviceBacking>,
     /// 当前 VMA 首页在完整 extent 内的页偏移。
     pub(super) page_offset: usize,
+    // 与 backing 独立保留实际 file object；VMA split/fork 不提前关闭设备 backend。
+    pub(super) owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
 }
 
 impl DeviceArea {
@@ -45,11 +47,13 @@ impl DeviceArea {
                 identity: area.identity,
                 backing: area.backing.clone(),
                 page_offset: middle_offset,
+                owner: area.owner.clone(),
             }),
             Some(Self {
                 identity: area.identity,
                 backing: area.backing,
                 page_offset: right_offset,
+                owner: area.owner,
             }),
         )
     }
@@ -80,6 +84,7 @@ impl MapArea {
             identity: source.identity,
             backing: source.backing,
             page_offset: source.page_offset,
+            owner: source.owner,
         });
         area
     }

@@ -4,7 +4,9 @@ mod advice;
 mod anonymous_shared;
 mod device;
 mod fault;
+mod installation;
 mod protection;
+mod shared_write;
 
 /// 一次用户页访问 fault 的领域结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,30 +20,6 @@ pub(crate) enum PageFaultOutcome {
 }
 
 impl MemorySet {
-    /// 使用 ordered neighbors 判断 `[start,end)` 是否与任意 live VMA 相交。
-    ///
-    /// # Parameters
-    ///
-    /// - `start`: inclusive 起始 VPN。
-    /// - `end`: exclusive 结束 VPN。
-    ///
-    /// # Returns
-    ///
-    /// 区间非空且 floor/ceiling 均不相交时为 true。
-    pub(super) fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
-        if start >= end
-            || self
-                .areas
-                .floor(&start)
-                .is_some_and(|(_, area)| start < area.vpn_range.end)
-        {
-            return false;
-        }
-        self.areas
-            .ceiling(&start)
-            .is_none_or(|(key, _)| *key >= end)
-    }
-
     fn find_free_user_range(
         &self,
         first: VirtualPageNumber,
@@ -204,6 +182,14 @@ impl MemorySet {
         {
             return Err(MemoryError::InvalidRange);
         }
+        if permission.contains(MapPermission::W) {
+            if !mapping.may_write() {
+                return Err(MemoryError::PermissionDenied);
+            }
+            if !mapping.writable() {
+                return Err(MemoryError::TextBusy);
+            }
+        }
         let page_count = usize::try_from(pages.count()).map_err(|_| MemoryError::InvalidRange)?;
         self.ensure_resource_capacity(
             page_count as u64 * config::PAGE_SIZE as u64,
@@ -343,12 +329,14 @@ impl MemorySet {
         end: VirtualPageNumber,
     ) -> Result<Vec<VirtualPageNumber>, MemoryError> {
         let mut keys = Vec::new();
-        for (key, area) in &self.areas {
-            if start < area.vpn_range.end && area.vpn_range.start < end {
-                if !matches!(
-                    area.kind,
-                    VmaKind::Anonymous | VmaKind::File | VmaKind::Device
-                ) {
+        let first = self.areas.floor(&start).map_or(start, |(key, _)| *key);
+        for (key, area) in self
+            .areas
+            .iter_from(&first)
+            .take_while(|(key, _)| **key < end)
+        {
+            if start < area.vpn_range.end {
+                if area.kind == VmaKind::System {
                     return Err(MemoryError::PermissionDenied);
                 }
                 keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
@@ -399,7 +387,7 @@ impl MemorySet {
         self.commit_area(left);
     }
 
-    /// 解除 anonymous 或 file-backed private 页；未映射洞按 Linux 语义忽略。
+    /// 解除任意用户 VMA（包括 ELF 与 grow-down stack）；未映射洞按 Linux 语义忽略。
     ///
     /// # Parameters
     ///
@@ -408,12 +396,13 @@ impl MemorySet {
     ///
     /// # Returns
     ///
-    /// 成功返回空值；若触及非 anonymous VMA 则保持全部映射不变并拒绝。
-    pub(crate) fn unmap_user_mapping(
+    /// 成功返回尚未完成 fence 的 retirement；caller 释放 MM lock 后必须同步并释放。
+    /// 内部 System VMA 或 preparation 错误保持全部映射不变。
+    pub(crate) fn prepare_user_unmap(
         &mut self,
         address: usize,
         length: usize,
-    ) -> Result<(), MemoryError> {
+    ) -> Result<PreparedAreaRetirement, MemoryError> {
         let range = Self::checked_page_range(address, length)?;
         let keys = self.overlapping_mmap_keys(range.start, range.end)?;
         // 1. 只计算真正保留的 left/right segment，避免完整删除也临时占用两枚节点。
@@ -472,14 +461,10 @@ impl MemorySet {
             self.range_is_free(range.start, range.end),
             "preflighted munmap range remained published"
         );
-        let retired_areas = revoke_and_commit(retired_areas, |areas, commit| {
-            for area in areas {
-                area.unmap(&mut self.page_table, commit);
-            }
-        })
-        .expect("platform TLB synchronization failed after munmap page-table update");
-        drop(retired_areas);
-        Ok(())
+        Ok(PreparedAreaRetirement::batch(
+            retired_areas,
+            &mut self.page_table,
+        ))
     }
 
     fn checked_page_range(

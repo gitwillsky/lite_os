@@ -2,7 +2,13 @@
 
 ## Owner
 
-- `ipc::Pipe` 独占 byte ring、endpoint count、atomicity 与 readiness generation。
+- `ipc::Pipe` 独占 byte ring、endpoint count、atomicity 与 readiness generation。Fresh/Live/Retired 与 endpoint counts 在同 state 锁线性化；端点锁外预分配，typed open
+  一次冻结 prior counts/counters、判 nonblock writer peer requirement，并登记完整方向集合。
+  每个 PipeEnd 的 registered AtomicBool 是唯一一次 open capability：未发布 unique Arc 在
+  admission guard 内置 true；close/shutdown/fallback Drop 以 AcqRel swap 消费为 false，再在
+  Pipe guard 内归还 count。Acquire read/write 拒绝已关闭端点，观察者 Arc 不延长打开阶段。
+  最后 close 同锁退休、锁外销毁 ring；增加的 atomic load 纳入既有 Pipe CPU benchmark，阈值不变。
+- named/anonymous pipe 共用 FifoFile 实际 I/O 与 poll；只 named 执行 peer rendezvous，只“named+nonblock+read+prior 无writer”保存 HUP suppression baseline，其余读端按真实 writer EOF/HUP。FifoFile allocation 发生在 endpoint admission 前；OOM 不留下半次 RW open。
 - 全部 Pipe 共用 task 在 `task::initialize` 安装的唯一 `PipeScheduler`（唤醒与阻塞）；任何领域都
   直接调用 `Pipe::pair`/`Pipe::notification_pair` 创建 endpoint，并只经 `Pipe::wait` 阻塞，禁止恢复
   composition root 注入的 pipe 工厂或领域直接调用 task 的 pipe wait。安装前不存在任何 task，因此
@@ -26,6 +32,9 @@
 
 ## Interface
 
+- 地址投影区分不存在的 source 与未命名 UNIX 地址：recvmsg/recvfrom EOF 的 name 长度为零；
+  UNIX getsockname/getpeername/accept 则由实际 backend 投影 family-only 地址，通用编码器不猜 domain。
+
 - notification pipe 只承载 edge；epoll_ctl ADD 在发布 interest 前预分配
   ready/source/reverse 节点，wake 只回收并重用节点。epoll_wait 只消费
   ready index 并等待单个 epoll notification，禁止每次 wake clone/poll 全部 interests
@@ -39,7 +48,8 @@
   不推进 readiness generation，Tokio task 可已入队但所有 worker 仍睡眠。
 - syscall socket 层只处理 sockaddr/iovec/msghdr/cmsg/option codec、user-copy 与 errno；不得匹配或泄漏 concrete protocol adapter。
 - protocol message limit 与 stream/atomic classification 由 `socket::message_limits` 唯一提供。
-- pipe 与所有 socket backend 只向 `ipc::ReceiveBuffer` 追加实际取得的 bytes；64KiB heap staging 只 reserve、不预清零，stream control barrier 通过 bounded append 保持，syscall 只 scatter initialized prefix。不得取得未初始化 capacity 的 Rust slice，也不保留 slice/zeroed 双轨。
+- pipe 与所有 socket backend 只向 `ipc::ReceiveBuffer` 追加实际取得的 bytes；64KiB heap staging 只 reserve、不预清零，stream control barrier 通过 bounded append 保持，syscall 只 scatter initialized prefix。不得取得未初始化 capacity 的 Rust slice，
+  也不保留 slice/zeroed 双轨。
 - smoltcp、VirtIO-net 与 Linux socket ABI 通过 network-device 和 socket façade 分隔，任何一层不得复制另一层状态。
 - 每个 `InetSocket` 独占自己的 operation membership；send/receive 通过
   `NetworkStackOwner::with_payload_loan` 在两个短 `TaskMutex` transaction 中用同类型 closed
@@ -48,43 +58,41 @@
   loan count 为零时取得一次必要的 exclusive owner，否则 O(1) 回投。禁止恢复全局 data-plane
   mutex、reader/writer spin gate、staging 协议副本或旧的锁内 fallback。
 - AF_PACKET RX tap 对一个 Ethernet frame 只构造一个不可变 `SharedPacket` owner；匹配 endpoint
-  queue 只克隆 Arc membership。queue capacity/OOM 仍按 endpoint 独立丢包，禁止恢复逐 endpoint
-  payload 分配与复制。
+  queue 只克隆 Arc membership。每个 endpoint 的 64-slot capacity 在 constructor 锁外一次准备，
+  payload Vec/Arc 在 packet registry spin guard 外准备，重新取得 guard 后只重验绑定/容量并发布。
+  队列满独立丢包；payload OOM 丢弃该 frame；RX publication 和 receive 均不增配 queue。
+  receive 取得实际 Arc 后锁外复制和退休，禁止恢复逐 endpoint payload 分配与复制。
 - local tuple 冲突必须区分 wildcard 与 exact IPv4：不同 exact address 可共用
   port，重叠 tuple 只有双方 `SO_REUSEADDR` 时可 bind。未实现 `SO_REUSEPORT`，
   因此 wildcard/同 exact address 的第二个 TCP listener 始终拒绝；accepted 与 active
   connect 必须持有 smoltcp 权威 local endpoint 的 exact lease，不得长期保留 listener/bind wildcard。
 
+- 实际 Socket facade fput 统一撤销 AF_PACKET、KOBJECT_UEVENT 与 Inet 的注册；backend Arc
+  observer 不延长绑定或接收队列。packet/netlink backend Drop 不反入 registry，避免 broadcaster
+  在 guard 内丢弃最后观察 Arc 时自锁。Kobject bind/receive/poll 在同一 registry admission 上判断
+  closed；端口立即可由新 OFD 使用，旧 observer 不得重新绑定或继续等待空队列。
+
 ## Failure and cleanup
 
-- send/receive publication 在 payload、control、fd reservation 与 queue capacity 全部验证后提交；partial stream progress 与 atomic message 失败必须区分。
-- receive 失败或短读只能保留已 append 的 prefix；未初始化 capacity 永不成为 slice，也不得因错误路径或错误 byte count 被 copyout。
-- epoll_ctl ADD 的任一节点预分配失败都返回 ENOMEM 且不留半发布
-  membership；copyout 失败不消费 ET/ONESHOT。dup/fork 共享 OFD identity，
-  最后 descriptor close 只消费该 OFD 的 reverse memberships，禁止扫描全局
-  epoll registry。
-- AF_UNIX stream listener 以 pending queue 与 RAII connect reservation 共同计入唯一 backlog
-  capacity；backlog-full 必须在 transport factory 前返回，queue node、双向 Pipe 与 accepted endpoint
-  全部在 listener/client lock 外准备，OOM 或并发失败由 reservation capability 自动回滚。
-  `listen(2)` 的 signed 32-bit backlog 按 Linux unsigned comparison 截到 kernel-wide 4096 上限；
-  因而 Rust `UnixListener` 使用的 `-1` 表示该上限，不得先归零。各 protocol backend 可继续收紧
-  自身容量（当前 TCP 为 16），但不能改变 syscall 层的 ABI 归一化语义。
-- hardirq 不分配且只确认设备并发布 Network bit；deferred 网络处理有 batch 上限，并且只从
-  user-return/idle safe point 调用 `try_poll`。owner 竞争或存在 payload loan 时不得等待/自旋，必须
-  O(1) 回投 Network bit；SocketSet 完整时 poll 持唯一可睡眠 owner 进入 VirtIO ordinary lock，其他
-  task 竞争者由 `TaskMutex` handoff 唤醒，kernel SSIP 不得直接 poll 网络。readiness pending state
-  在 poll owner 内提取为最多 64 个 endpoint Arc，释放 owner 后才进入 wait owner；满批次必须回投。
-  final `InetSocket` drop 只能 `try_lock`：失败时把唯一 endpoint identity 发布到与生产 SocketSet
-  capacity 同为 1024 的 fixed pending-cleanup ring；下一轮 poll 在协议推进前 O(1) pop 最多 64 项，
-  有余项则回投 Network bit。同一 endpoint 的 final Drop 唯一且 poll 持 owner 时不能创建/复用 slot，
-  因此 publish 不扫描查重，ring 不需要 heap 或 overflow fallback。
-  close/drop 不得在 registry/graph lock 内反向调用 socket state。
-- network-device receive seam 只消费 adapter 已完成 ownership transition 的 frame；VirtIO-net
-  adapter 独占 RX slot/head mapping，畸形 completion 不得把 driver-owned slot 泄漏给协议层。
-- smoltcp `Device` callback 无法直接返回 adapter error；`EthernetDevice` 因而独占首个 pending
-  error latch，deferred poll 只发布 error readiness，socket façade 统一投影 typed `Device` error。
-  `WouldBlock` 不得进入 latch；TX reservation 只在 descriptor 成功发布后解除 RAII rollback。
-- port membership 所需 outer/exact AVL node 必须在发布前预留；accept 在 replacement
-  socket 进入 `SocketSet` 前预留 exact-address token，active connect 在 SYN 发布前预留
-  wildcard→exact 迁移 token。OOM 保留原 membership 且不留孤儿 socket；FIN/reset
-  orphan 只在 egress 观察完成后同 endpoint 一起释放 lease。
+- MSG_COPY 在 ID/permission lookup 前预留并从用户 buf 起点读取 min(bufsz,msgmax) 的实际
+  storage，保留至 completion；实际 queue selection 仍只读不可变 Message Arc。NOERROR
+  跳过 E2BIG 后仍由 copy capacity 检查返回 EINVAL，不截断副本，不改计数/时间/历史 PID。
+  普通 receive 不受随后降低 msgmax 影响；copy fault 前的普通 dequeue 按 Linux 消费消息。
+  send/receive 等待中断输出 ERESTARTNOHAND typed policy，捕获 handler 即返回 EINTR。
+
+FD receive admission 的 bookkeeping/backing OOM 按固定 scm_detach_fds 语义截断 controls；已成功 copyout 的 FD prefix 立即安装到实际文件表，MSG_CTRUNC 标记剩余未发表 capabilities，在锁外释放。不会因后续 FD 扩容失败把已消费的 payload
+变为 ENOMEM；当前 scalar copy fault 只撤销当前单 FD reservation。
+
+connect 前的 stream SHUT_WR 只终止自身后续 writer admission，不向尚不存在的新 peer 重放 EOF；DirectionState.write_disabled 属于真实 writer permission，而 DirectionState.writer_closed 拥有 peer 可观察 EOF。显式 connected shutdown 消费真实 writer
+capability；两个事实不能用同一关闭动作合并，否则 connect 前关闭写侧会错误地令 accepted peer 立即 EOF。该控制状态在真实 direction guard 下读取，未增加第二套 transport 或兼容分支。
+
+新增热路径 Mutex/capacity 比较的 benchmark 沿用现有 hot 200ns 门禁；packet 的 native 逐消息 node/payload allocation 作为 cold roundtrip 独立报告，不降低阈值。host 回归已补 >11 SeqPacket、sender watermark/refund、100000-byte deferred staging、
+peek/OOM 不退款、不互连第十二条拒绝和 self-send；native guest 与实际 packet benchmark 纳入集中门禁。
+
+## 具体 owner 契约
+
+- [IPv4 与 TCP/UDP 传输契约](ipv4-transports.md)
+- [Packet 与 Netlink 契约](packet-netlink.md)
+- [UNIX socket 与辅助数据契约](unix-sockets.md)
+- [System V IPC 对象与资源契约](systemv-ipc.md)
+- [Pipe 与 readiness 契约](pipe-readiness.md)

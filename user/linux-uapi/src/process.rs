@@ -222,11 +222,17 @@ impl SessionChild {
     /// standard blocking `wait` error.
     pub fn terminate(&mut self) -> io::Result<()> {
         let pid = self.id().0;
-        let signal_result = unsafe { raw::kill(-pid, raw::SIGKILL) };
+        // Capture errno before wait: libc calls during reaping may overwrite the signal error.
+        // SAFETY: pid is the checked leader identity of this owned session; kill takes no pointers.
+        let signal_error = if unsafe { raw::kill(-pid, raw::SIGKILL) } < 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
         let wait_result = self.child.wait().map(|_| ());
-        if signal_result < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::NotFound {
+        if let Some(error) = signal_error {
+            // ESRCH denotes an absent process group; ErrorKind mapping varies between host OSes.
+            if error.raw_os_error() != Some(raw::ESRCH) {
                 return Err(error);
             }
         }
@@ -444,8 +450,20 @@ mod tests {
         let mut session = SessionChild { child };
         session.terminate().unwrap();
         assert_eq!(
-            signal(pid, Signal::Kill).unwrap_err().kind(),
-            io::ErrorKind::NotFound
+            signal(pid, Signal::Kill).unwrap_err().raw_os_error(),
+            Some(raw::ESRCH)
         );
+    }
+
+    #[test]
+    fn terminate_reaps_successfully_when_the_group_already_exited() {
+        let mut child = Command::new("setsid")
+            .args(["/bin/sh", "-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let mut session = SessionChild { child };
+        session.terminate().unwrap();
+        assert!(session.try_wait().unwrap().is_some());
     }
 }

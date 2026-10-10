@@ -38,9 +38,13 @@
 
 - generic callers 只能使用 typed `BootContext`、`UserContext`、`KernelContext`、`TrapEvent`、`CpuId`、`CpuSet` 与 semantic MMU permissions。
 - `trap` 只做事件投递和 user-return orchestration；不得读取 CSR、计算 interrupt-controller context 或拥有 syscall state。
-- 普通 user return 不得执行 `fence.i` 或 full `sfence.vma`；instruction publication 属于 executable mapping transaction，translation reuse 属于 ASID retirement。
+- steady user return/trampoline 不得执行 `fence.i` 或 full `sfence.vma`；instruction publication 属于 executable mapping transaction，translation reuse 属于 ASID generation owner。换代后首次 activation 的 full local fence 只由该 owner 的 pending consequence 触发。
 - syscall trap 只通过窄 transaction 读取 `a7/a0..a5/sepc`、写 completion `a0`，并在最终
   user-return 唯一发布 CPU-local metadata；禁止恢复 `load/set_user_context` 全量复制路径。
+- user-return 先完成可 fault/等待 mm 的 signal preparation，再通过唯一
+  `disable_for_transfer` 建立 root/context snapshot 到 hardware installation 的最终窗口；
+  preparation 的 TaskMutex handoff 可恢复另一 outgoing task 的 IRQ，不能沿用之前的 mask。
+  最终窗口只能进行非阻塞 owner transaction、ASID local activation 和 noreturn transfer。
 - local IRQ guard 不可跨 CPU 移动。interrupt-safe lock 内禁止阻塞、调度、可失败分配或等待 remote
   completion；无锁 scheduler idle 是唯一允许持有纯 local IRQ guard 进入 guarded WFI 的路径。
 - boot CPU 必须在设备初始化前建立 membarrier per-CPU state；否则启动期 SSIP handler

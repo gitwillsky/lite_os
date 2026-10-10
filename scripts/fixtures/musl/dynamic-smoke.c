@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
 #include <sys/mman.h>
@@ -162,20 +163,38 @@ static int verify_unix_epoll(void)
         || memcmp(prefix, "mn", 2) != 0 || memcmp(large_datagram_tail, "opqr", 4) != 0
         || (message.msg_flags & MSG_TRUNC)) return 83;
 
-    static char oversized[65536];
-    struct iovec oversized_vector = { .iov_base = oversized, .iov_len = sizeof(oversized) };
+    /* AF_UNIX 的 packet 上限来自实际 SO_SNDBUF，不继承 IPv4 的 16-bit 长度限制。 */
+    static unsigned char wide_packet[65536];
+    static unsigned char wide_received[65536];
+    for (size_t index = 0; index < sizeof wide_packet; ++index)
+        wide_packet[index] = (unsigned char)(index * 29u + 7u);
+    if (send(datagram[0], wide_packet, sizeof wide_packet, 0) != sizeof wide_packet
+        || recv(datagram[1], wide_received, sizeof wide_received, 0) != sizeof wide_received
+        || memcmp(wide_packet, wide_received, sizeof wide_packet)) return 76;
+    int send_buffer;
+    socklen_t option_length = sizeof send_buffer;
+    if (getsockopt(datagram[0], SOL_SOCKET, SO_SNDBUF, &send_buffer, &option_length)
+        || option_length != sizeof send_buffer || send_buffer <= 32) return 76;
+    size_t oversized_length = (size_t)send_buffer - 31;
+    char *oversized = calloc(1, oversized_length);
+    if (!oversized) return 76;
+    struct iovec oversized_vector = { .iov_base = oversized, .iov_len = oversized_length };
     struct msghdr oversized_message = { .msg_iov = &oversized_vector, .msg_iovlen = 1 };
     errno = 0;
-    if (write(datagram[0], oversized, sizeof(oversized)) != -1 || errno != EMSGSIZE) return 76;
+    if (write(datagram[0], oversized, oversized_length) != -1 || errno != EMSGSIZE) return 76;
     errno = 0;
-    if (sendto(datagram[0], oversized, sizeof(oversized), 0, NULL, 0) != -1
+    if (sendto(datagram[0], oversized, oversized_length, 0, NULL, 0) != -1
         || errno != EMSGSIZE) return 77;
     errno = 0;
     if (sendmsg(datagram[0], &oversized_message, 0) != -1 || errno != EMSGSIZE) return 78;
+    free(oversized);
     struct pollfd oversized_readable = { .fd = datagram[1], .events = POLLIN };
     if (poll(&oversized_readable, 1, 0) != 0) return 90;
 
-    if (fcntl(datagram[0], F_SETFL, O_NONBLOCK) != 0) return 71;
+    /* 请求实际小 sndbuf，把 bounded backpressure 检查与实现的默认容量解耦。 */
+    int small_buffer = 0;
+    if (setsockopt(datagram[0], SOL_SOCKET, SO_SNDBUF, &small_buffer, sizeof small_buffer)
+        || fcntl(datagram[0], F_SETFL, O_NONBLOCK) != 0) return 71;
     int queued = 0;
     while (queued < 64 && send(datagram[0], "q", 1, 0) == 1) ++queued;
     if (queued == 0 || queued == 64 || errno != EAGAIN) return 72;
@@ -184,12 +203,22 @@ static int verify_unix_epoll(void)
     interest.data.u64 = 49;
     if (poll(&writable, 1, 0) != 0 || (writable.revents & POLLOUT)
         || epoll_ctl(epoll, EPOLL_CTL_ADD, datagram[0], &interest) != 0
-        || epoll_wait(epoll, &event, 1, 0) != 0
-        || recv(datagram[1], bytes, 1, 0) != 1
+        || epoll_wait(epoll, &event, 1, 0) != 0) return 73;
+    int drained = 0;
+    while (drained < queued && poll(&writable, 1, 0) == 0) {
+        if (recv(datagram[1], bytes, 1, 0) != 1 || bytes[0] != 'q') return 73;
+        ++drained;
+    }
+    /* POLLOUT 使用原生 quarter-watermark；必须真实退款到可写再观察 epoll edge。 */
+    if (!drained || !(writable.revents & POLLOUT)
         || epoll_wait(epoll, &event, 1, 1000) != 1
         || event.data.u64 != 49 || !(event.events & EPOLLOUT)
-        || send(datagram[0], "r", 1, 0) != 1
         || epoll_ctl(epoll, EPOLL_CTL_DEL, datagram[0], NULL) != 0) return 73;
+    while (drained++ < queued)
+        if (recv(datagram[1], bytes, 1, 0) != 1 || bytes[0] != 'q') return 73;
+    queued = 0;
+    while (queued < 64 && send(datagram[0], "q", 1, 0) == 1) ++queued;
+    if (!queued || queued == 64 || errno != EAGAIN) return 74;
 
     int ready_pipe[2], done_pipe[2];
     if (fcntl(datagram[0], F_SETFL, 0) != 0
@@ -205,8 +234,18 @@ static int verify_unix_epoll(void)
     close(ready_pipe[1]); close(done_pipe[1]);
     struct pollfd done = { .fd = done_pipe[0], .events = POLLIN };
     int blocked_status;
-    if (blocked <= 0 || read(ready_pipe[0], bytes, 1) != 1
-        || poll(&done, 1, 20) != 0 || recv(datagram[1], bytes, 1, 0) != 1
+    int blocked_ready = blocked > 0 && read(ready_pipe[0], bytes, 1) == 1
+        && poll(&done, 1, 20) == 0;
+    // 原生 socket 写等待以 watermark 唤醒；归还全部已知 packet，不能假定一条退款即唤醒。
+    if (blocked_ready) {
+        for (int index = 0; index < queued; ++index) {
+            if (recv(datagram[1], bytes, 1, 0) != 1 || bytes[0] != 'q') {
+                blocked_ready = 0;
+                break;
+            }
+        }
+    }
+    if (!blocked_ready
         || poll(&done, 1, 1000) != 1 || read(done_pipe[0], bytes, 1) != 1
         || waitpid(blocked, &blocked_status, 0) != blocked
         || !WIFEXITED(blocked_status) || WEXITSTATUS(blocked_status) != 0) {
@@ -310,9 +349,16 @@ static int verify_unix_epoll(void)
     ssize_t stream_sent = sendmsg(message_stream[0], &stream_send_message, 0);
     struct pollfd stream_readable = { .fd = message_stream[1], .events = POLLIN };
     if (stream_sent <= 0 || (size_t)stream_sent > sizeof(stream_payload)
-        || poll(&stream_readable, 1, 1000) != 1 || !(stream_readable.revents & POLLIN)
-        || recv(message_stream[1], stream_received, (size_t)stream_sent, 0) != stream_sent
-        || memcmp(stream_received, stream_payload, (size_t)stream_sent) != 0) return 86;
+        || poll(&stream_readable, 1, 1000) != 1 || !(stream_readable.revents & POLLIN)) return 86;
+    // SOCK_STREAM 可按 packet/frame 边界短读；检查全部已接受 bytes，不能把单次填满当作 ABI。
+    size_t stream_done = 0;
+    while (stream_done < (size_t)stream_sent) {
+        ssize_t count = recv(message_stream[1], stream_received + stream_done,
+            (size_t)stream_sent - stream_done, MSG_DONTWAIT);
+        if (count <= 0 || (size_t)count > (size_t)stream_sent - stream_done) return 86;
+        stream_done += (size_t)count;
+    }
+    if (memcmp(stream_received, stream_payload, (size_t)stream_sent)) return 86;
     close(message_stream[0]); close(message_stream[1]);
 
     int broken_stream[2];
@@ -408,8 +454,36 @@ static int verify_credentials(const char *program)
     return 0;
 }
 
+/* job-control probe 的单一异步事实：SIGCONT 已交付；只有实际 tty foreground group 才发 ready。 */
+static volatile sig_atomic_t job_resumed;
+static void record_job_continue(int signal_number)
+{
+    (void)signal_number;
+    job_resumed = 1;
+}
+static int verify_job_control(void)
+{
+    struct sigaction action = { .sa_handler = record_job_continue };
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGCONT, &action, NULL) || tcgetpgrp(STDIN_FILENO) != getpgrp()) return 1;
+    puts("LITEOS_JOB_START_42");
+    fflush(stdout);
+    for (;;) {
+        pid_t foreground = tcgetpgrp(STDIN_FILENO);
+        if (foreground < 0) return 2;
+        if (job_resumed && foreground == getpgrp()) {
+            puts("LITEOS_FG_START_42");
+            fflush(stdout);
+            for (;;) pause();
+        }
+        const struct timespec delay = { .tv_nsec = 1000000 };
+        nanosleep(&delay, NULL);
+    }
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "job-control") == 0) return verify_job_control();
     if (argc == 2 && strcmp(argv[1], "shared-crash") == 0) return shared_crash_loop();
     if (argc == 2 && strcmp(argv[1], "spawn") == 0) return verify_process_spawn();
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) return resolve_host(argv[2]);
@@ -530,7 +604,10 @@ int main(int argc, char **argv)
     int shared_result = verify_shared_mapping();
     if (shared_result != 0) return shared_result;
     int socket_result = verify_unix_epoll();
-    if (socket_result != 0) return socket_result;
+    if (socket_result != 0) {
+        fprintf(stderr, "dynamic UNIX/epoll check failed: step=%d errno=%d\n", socket_result, errno);
+        return socket_result;
+    }
     puts("LITEOS_DLOPEN_42");
     return 0;
 }

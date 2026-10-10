@@ -77,6 +77,23 @@ impl WaitTicket {
         )
     }
 
+    pub(in crate::task::process_table) fn prepare_task_event(
+        self,
+        key: crate::sync::TaskWaitKey,
+        task: Arc<TaskControlBlock>,
+    ) -> Result<PreparedWait, ()> {
+        let (owner, ticket) = key.event_identity();
+        let mut keys = Self::keys(3)?;
+        keys.push(WaitIndexKey::TaskEvent { owner, ticket });
+        self.prepare(
+            task,
+            IndexedWaitKind::TaskEvent(key),
+            key.deadline(),
+            None,
+            keys,
+        )
+    }
+
     pub(in crate::task::process_table) fn prepare_futex(
         self,
         key: FutexKey,
@@ -173,6 +190,10 @@ impl WaitTicket {
         let mut indexes = Self::keys(capacity)?;
         for key in &keys {
             let index = match *key {
+                PollWaitKey::Signal { identity, .. } => WaitIndexKey::SignalSource {
+                    identity,
+                    id: self.id,
+                },
                 PollWaitKey::Console { exclusive, .. } => WaitIndexKey::Console {
                     exclusive,
                     id: self.id,

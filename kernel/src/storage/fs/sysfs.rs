@@ -276,15 +276,28 @@ impl Inode for SysInode {
         Ok(count)
     }
 
-    fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_storage(
+        &self,
+        _offset: u64,
+        _buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
 
-    fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    fn append_storage(
+        &self,
+        _buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
 
-    fn truncate_storage(&self, _size: u64) -> Result<(), FileSystemError> {
+    fn truncate_storage(
+        &self,
+        _size: u64,
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
 
@@ -447,10 +460,13 @@ impl super::mount::FileSystemType for SysFileSystemType {
     fn create(
         &self,
         request: &super::mount::MountRequest<'_>,
-    ) -> Result<Arc<dyn super::FileSystem>, FileSystemError> {
+    ) -> Result<super::mount::CreatedFileSystem, FileSystemError> {
         if !super::mount_options::is_empty(request.options) {
             return Err(FileSystemError::InvalidOperation);
         }
-        Ok(SysFileSystem::new(request.environment.cpu_count)?)
+        Ok(super::mount::CreatedFileSystem {
+            filesystem: SysFileSystem::new(request.environment.cpu_count)?,
+            user_namespace: request.identity.user_namespace(),
+        })
     }
 }

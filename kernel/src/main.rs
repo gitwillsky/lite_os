@@ -50,6 +50,7 @@ mod id;
 mod input;
 mod ipc;
 mod memory;
+mod namespace;
 mod random;
 mod socket;
 mod sync;
@@ -80,6 +81,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     platform::initialize(context.platform());
     platform::verify_firmware();
     cpu::initialize(platform::hardware_cpu_ids(), context.hardware_cpu());
+    arch::mmu::initialize_asid_allocator(cpu::count());
     deferred::initialize(cpu::count());
     task::initialize_interrupt_state();
     info!(
@@ -98,6 +100,28 @@ fn kernel_main(context: entry::BootContext) -> ! {
         core::str::from_utf8(platform::kernel_command_line()).unwrap_or("<non-utf8>")
     );
     timer::init_rtc();
+    let namespace_limit = namespace::initial_namespace_limit(
+        memory::frame_statistics()
+            .capacity_pages
+            .saturating_mul(memory::PAGE_SIZE),
+        memory::KERNEL_STACK_SIZE,
+    );
+    namespace::initialize(
+        namespace_limit,
+        fs::inotify_watch_limit(
+            memory::frame_statistics()
+                .capacity_pages
+                .saturating_mul(memory::PAGE_SIZE),
+        ),
+    )
+    .expect("initial user namespace allocation failed");
+    let identity = system::identity();
+    namespace::initialize_uts(identity[1].as_bytes(), identity[5].as_bytes())
+        .expect("initial UTS namespace allocation failed");
+    namespace::initialize_pid(cpu::count()).expect("initial PID namespace allocation failed");
+    namespace::initialize_time().expect("initial time namespace allocation failed");
+    ipc::initialize_namespaces().expect("initial IPC namespace allocation failed");
+    socket::initialize_net().expect("initial NET namespace allocation failed");
     let vfs = fs::init_vfs();
     // 启动顺序由证明 token 约束：每一步只接受前置步骤返回的 token，顺序错误无法编译。
     let scheduler = task::initialize(vfs);
@@ -124,6 +148,32 @@ fn kernel_main(context: entry::BootContext) -> ! {
         .expect("TTY initialization failed");
     socket::init();
     let root = mount_filesystems(scheduler, &parameters);
+    let mut reclaim_wait =
+        task::KernelDeadlineWait::new().expect("background reclaim deadline reservation failed");
+    let reclaim_body = alloc::boxed::Box::try_new(move || {
+        memory::run_background_reclaim(timer::get_time_ns, |deadline| {
+            reclaim_wait.sleep_until(deadline);
+        })
+    })
+    .expect("background reclaim body allocation failed");
+    task::spawn_kernel_thread("memory-reclaim", reclaim_body)
+        .expect("background reclaim thread initialization failed");
+    let mut unix_gc_wait =
+        task::KernelDeadlineWait::new().expect("UNIX collector deadline reservation failed");
+    let unix_gc_gate =
+        sync::TaskMutexWaitPreparation::prepare().expect("UNIX collector gate reservation failed");
+    let unix_gc_body = alloc::boxed::Box::try_new(move || {
+        socket::run_unix_rights_collector(
+            timer::get_time_ns,
+            |deadline| {
+                unix_gc_wait.sleep_until(deadline);
+            },
+            unix_gc_gate,
+        );
+    })
+    .expect("UNIX collector body allocation failed");
+    task::spawn_kernel_thread("unix-rights-gc", unix_gc_body)
+        .expect("UNIX collector thread initialization failed");
     task::spawn_init(
         scheduler,
         root,
@@ -180,11 +230,14 @@ fn mount_filesystems(
         environment,
         root,
         parameters.root_filesystem_type.as_deref(),
-        if parameters.read_only_root {
-            fs::MountFlags::from_bits(u64::from(fs::MountFlags::READ_ONLY))
-        } else {
-            fs::MountFlags::default()
-        },
+        fs::MountFlags::from_bits(
+            fs::MountFlags::default().bits()
+                | if parameters.read_only_root {
+                    u64::from(fs::MountFlags::READ_ONLY)
+                } else {
+                    0
+                },
+        ),
     )
     .unwrap_or_else(|error| {
         panic!(

@@ -20,6 +20,7 @@ pub(in crate::task) fn install_job_control() {
 
 fn process_group_error(error: ProcessGroupError) -> DeviceError {
     DeviceError::Errno(match error {
+        ProcessGroupError::OutOfMemory => errno::ENOMEM,
         ProcessGroupError::NotFound => errno::ESRCH,
         ProcessGroupError::Permission => errno::EPERM,
         ProcessGroupError::NotTerminal => errno::ENOTTY,
@@ -33,7 +34,13 @@ impl JobControl for TaskJobControl {
     ///    否则向 caller group 投递 signal 并要求 syscall 重启。
     fn check_access(&self, terminal: &Terminal, access: TerminalAccess) -> Result<(), DeviceError> {
         let task = current_task().expect("TTY access requires current task");
-        let (session, process_group, orphaned) = {
+        if !task
+            .terminal()
+            .is_some_and(|current| core::ptr::eq(current.as_ref(), terminal))
+        {
+            return Ok(());
+        }
+        let (process_group, orphaned) = {
             let graph = PROCESS_TABLE.graph.lock();
             let node = graph
                 .nodes
@@ -41,19 +48,11 @@ impl JobControl for TaskJobControl {
                 .expect("TTY caller missing from process graph");
             let session = node.session;
             let process_group = node.process_group;
-            let orphaned = !graph.nodes.values().any(|member| {
-                member.session == session
-                    && member.process_group == process_group
-                    && matches!(member.state, ProcessState::Live(_))
-                    && member.parent.is_some_and(|parent| {
-                        graph.nodes.get(&parent).is_some_and(|parent| {
-                            parent.session == session && parent.process_group != process_group
-                        })
-                    })
-            });
-            (session, process_group, orphaned)
+            let orphaned =
+                super::process_group::process_group_is_orphaned(&graph, session, process_group);
+            (process_group, orphaned)
         };
-        let Some(signal) = terminal.background_signal(session, process_group, access) else {
+        let Some(signal) = terminal.background_signal(process_group, access) else {
             return Ok(());
         };
         let mask = task
@@ -94,18 +93,54 @@ impl JobControl for TaskJobControl {
     }
 
     fn controlling_terminal(&self) -> Option<Arc<Terminal>> {
-        let task = current_task()?;
-        let session = session_id(0).ok()?;
-        let terminal = task.terminal();
-        (terminal.controlling_session() == Some(session)).then_some(terminal)
+        current_task()?.terminal()
     }
 
-    fn claim_controlling(&self, terminal: &Arc<Terminal>, force: usize) -> Result<(), DeviceError> {
-        claim_controlling_terminal(terminal, force).map_err(process_group_error)
+    fn hangup_terminal(&self, terminal: &Terminal) {
+        let graph = PROCESS_TABLE.graph.lock();
+        let retired = terminal.hangup();
+        if let Some(session) = retired.previous_session() {
+            super::process_group::clear_terminal_session(&graph, session, terminal);
+        }
+        drop(graph);
+        if let Some(group) = retired.foreground_group() {
+            send_process_group_signal(group, syscall_abi::signal::SIGHUP);
+            send_process_group_signal(group, syscall_abi::signal::SIGCONT);
+        }
+        drop(retired);
     }
 
-    fn foreground_group(&self, terminal: &Terminal) -> Result<usize, DeviceError> {
-        terminal_foreground_group(terminal).map_err(process_group_error)
+    fn claim_controlling(
+        &self,
+        terminal: &Arc<Terminal>,
+        force: usize,
+        readable: bool,
+    ) -> Result<(), DeviceError> {
+        claim_controlling_terminal(
+            terminal,
+            super::process_group::TerminalClaim::Ioctl { force, readable },
+        )
+        .map_err(process_group_error)
+    }
+
+    fn open_controlling(&self, terminal: &Arc<Terminal>, readable: bool) {
+        claim_controlling_terminal(
+            terminal,
+            super::process_group::TerminalClaim::Open { readable },
+        )
+        .expect("TTY open caller must be present in process graph");
+    }
+
+    fn detach_controlling(&self, terminal: &Terminal) -> Result<(), DeviceError> {
+        super::process_group::detach_controlling_terminal(terminal).map_err(process_group_error)
+    }
+
+    fn control_ids(&self, terminal: &Terminal) -> (Option<i32>, i32) {
+        terminal.control_ids(
+            &current_task()
+                .expect("TTY query requires current task")
+                .pid_namespace(),
+        )
     }
 
     fn set_foreground_group(&self, terminal: &Terminal, pgid: usize) -> Result<(), DeviceError> {

@@ -1,77 +1,79 @@
 use super::*;
 
-impl TaskControlBlock {
-    /// 以 COW 用户页构造 fork child；多线程 parent 只复制 calling Thread。
-    ///
-    /// # Parameters
-    ///
-    /// - `pid`: ProcessTable 已唯一分配、尚未发布的 child TGID/TID。
-    ///
-    /// # Returns
-    ///
-    /// 成功返回尚处于 New 状态的 child；OOM 时 parent 完全不变。
-    pub(in crate::task) fn fork_process(&self, pid: ProcessId) -> Result<Self, MemoryError> {
-        self.clone_process(pid, false, 0)
-    }
+/// clone/clone3 解码后共享的执行参数；raw flag 和 user ABI layout 不进入 task。
+pub(crate) struct CloneParameters {
+    pub(crate) stack: usize,
+    pub(crate) tls: Option<usize>,
+    pub(crate) parent_set_tid: Option<usize>,
+    /// CLONE_PIDFD 的独立 copyout；必须成功后才发布 child，不能沿用 best-effort TID copy。
+    pub(crate) pidfd: Option<usize>,
+    pub(crate) child_set_tid: Option<usize>,
+    pub(crate) clear_child_tid: Option<usize>,
+    /// checkpoint restore 的 leaf→ancestor 精确编号；空序列使用正常 cyclic allocation。
+    pub(crate) requested_pids: Vec<i32>,
+}
 
-    /// 以同一 AddressSpace 构造尚未发布的 vfork child。
+/// Process clone 的语义资源选择；syscall 拥有 raw Linux flag 校验。
+pub(crate) struct ProcessCloneResources {
+    /// CLONE_PARENT 在最终 graph transaction 选择 caller 的实际 real parent。
+    pub(crate) inherit_parent: bool,
+    /// 独立进程的 native exit notification；零不发信号，仍保留可等待 zombie。
+    pub(crate) exit_signal: u8,
+    pub(crate) share_memory: bool,
+    pub(crate) share_fs: bool,
+    pub(crate) share_files: bool,
+    pub(crate) share_sem_undo: bool,
+    pub(crate) share_handlers: bool,
+    pub(crate) clear_handlers: bool,
+    pub(crate) wait_for_child: bool,
+    pub(crate) namespaces: super::namespaces::PreparedCloneNamespaces,
+}
+
+impl TaskControlBlock {
+    /// 根据 Linux clone resource bits 准备尚未发布的独立 Process。
     ///
     /// # Parameters
     ///
-    /// - `pid`: ProcessTable 已唯一分配的 child TGID/TID。
-    /// - `child_stack`: 非零时覆盖 child SP；零值继承 parent SP。
-    ///
-    /// # Returns
-    ///
-    /// 成功返回 New child；parent 必须在发布后阻塞到 child exec/exit。
+    /// - `pid`: graph 唯一分配、尚未发布的 TGID/TID。
+    /// - `child_stack`: 非零时覆盖 child SP；零值继承 caller SP。
+    /// - `resources`: VM/FS/FILES/SIGHAND 共享与 VFORK 完成等待选择。
     ///
     /// # Errors
     ///
-    /// 地址空间或 Process 资源分配失败时返回 MemoryError。
-    pub(in crate::task) fn vfork_process(
+    /// 任一 preparation OOM 不发布 graph；共享 mm 的 trap VMA 在所有前置分配之后准备。
+    pub(in crate::task) fn clone_process(
         &self,
         pid: ProcessId,
-        child_stack: usize,
+        parameters: &CloneParameters,
+        resources: &ProcessCloneResources,
     ) -> Result<Self, MemoryError> {
-        self.clone_process(pid, true, child_stack)
-    }
-
-    fn clone_process(
-        &self,
-        pid: ProcessId,
-        share_user_memory: bool,
-        child_stack: usize,
-    ) -> Result<Self, MemoryError> {
-        // share_user_memory 只区分 fork COW 与 vfork CLONE_VM contract；缺失该选择会让
-        // posix_spawn child 的 stack/errno-pipe 操作脱离 parent mm，破坏标准 handoff。
-        let tid = pid.0;
+        let identity = pid.identity().clone();
         // 1. 先构造地址空间和所有可能失败的 process-owned 资源，发布前不修改 process graph。
-        let parent_address_space = self.process().address_space();
-        let address_space = if share_user_memory {
+        let parent_address_space = self.address_space();
+        let address_space = if resources.share_memory {
             parent_address_space.clone()
         } else {
-            let memory_set = parent_address_space
-                .memory_set
-                .lock()
-                .map_err(|_| MemoryError::OutOfMemory)?
-                .try_clone_for_fork()?;
-            AddressSpace::new(memory_set)?
+            parent_address_space.try_clone_for_fork()?
         };
-        let paths = {
-            let parent_paths = self.process().paths.lock();
-            ProcessPaths {
-                cwd: parent_paths.cwd.clone(),
-                executable: parent_paths.executable.clone(),
-            }
-        };
-        let files = self
-            .process()
-            .files
-            .lock()
-            .try_clone()
+        let mm = try_mm_handle(address_space.clone())?;
+        let fs_context = resources.namespaces.fs_context(self, resources.share_fs)?;
+        let namespaces = resources
+            .namespaces
+            .handle(fs_context, resources.share_memory)?;
+        let files = self.clone_file_table(resources.share_files)?;
+        let file_wait =
+            TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?;
+        let sem_undo = self
+            .prepare_semaphore_undo(resources.share_sem_undo)
             .map_err(|_| MemoryError::OutOfMemory)?;
-        let signal_actions = self.process().signal_state.lock().actions;
-        let credentials = self.process().credentials.lock().clone();
+        let signal_handlers =
+            self.clone_signal_handlers(resources.share_handlers, resources.clear_handlers)?;
+        let mut inherited_credentials = self.thread().credentials.lock().clone();
+        if let Some(user) = resources.namespaces.user() {
+            inherited_credentials.cloned_namespace(user);
+        }
+        let credentials = Arc::try_new(Mutex::new(inherited_credentials))
+            .map_err(|_| MemoryError::OutOfMemory)?;
         let resource_limits = self.process().resource_limits.lock().forked();
         let cpu_limit_active = resource_limits.cpu_limit_active();
         let kernel_stack = KernelStack::try_new()?;
@@ -86,78 +88,97 @@ impl TaskControlBlock {
             .last_cpu
             .load(core::sync::atomic::Ordering::Relaxed);
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
-        let alternate_signal_stack = *self.thread().alternate_signal_stack.lock();
-        let start_time_us = get_time_us();
-        let parent_comm = self.process().comm.lock();
-        let mut comm = Vec::new();
-        comm.try_reserve_exact(parent_comm.len())
+        let scheduling = SchedulingEntity::try_new(child_policy, cpu_affinity, last_cpu)
             .map_err(|_| MemoryError::OutOfMemory)?;
-        comm.extend_from_slice(&parent_comm);
-        drop(parent_comm);
+        let alternate_signal_stack = if resources.share_memory && !resources.wait_for_child {
+            AlternateSignalStack::disabled()
+        } else {
+            *self.thread().alternate_signal_stack.lock()
+        };
+        let start_time_us = get_time_us();
+        let comm = self.process().comm_snapshot()?;
+        let thread_io =
+            Arc::try_new(IoAccounting::default()).map_err(|_| MemoryError::OutOfMemory)?;
+        let leader_credentials =
+            Arc::try_new(Mutex::new(credentials.clone())).map_err(|_| MemoryError::OutOfMemory)?;
+        let signal_mask = Arc::try_new(Mutex::new(*self.thread().signal_mask.lock()))
+            .map_err(|_| MemoryError::OutOfMemory)?;
         let process = Arc::try_new(Process {
             tgid: pid,
             comm: Mutex::new(comm),
             start_time_us,
-            address_space: Mutex::new(address_space.clone()),
-            paths: Mutex::new(paths),
-            files: Mutex::new(files),
-            credentials: Mutex::new(credentials),
-            resource_limits: Mutex::new(resource_limits),
+            leader_mm: Mutex::new(mm.clone()),
+            leader_scheduler: Mutex::new(scheduling.clone()),
+            leader_io: Mutex::new(thread_io.clone()),
+            leader_files: Mutex::new(files.clone()),
+            leader_credentials,
+            leader_signal_mask: Mutex::new(signal_mask.clone()),
+            leader_fs_namespaces: Mutex::new(namespaces.clone()),
+            credential_guard: TaskMutex::new(()),
+            retirements: Arc::try_new(ThreadRetirements::new())
+                .map_err(|_| MemoryError::OutOfMemory)?,
+            resource_limits: Arc::try_new(Mutex::new(resource_limits))
+                .map_err(|_| MemoryError::OutOfMemory)?,
             cpu_limit_active: core::sync::atomic::AtomicBool::new(cpu_limit_active),
             cpu_runtime_us: cpu_runtime_us.clone(),
             io_accounting: io_accounting.clone(),
-            terminal: Mutex::new(self.process().terminal.lock().clone()),
-            signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
+            // controlling TTY 在 graph publication 与 force/setsid 同锁捕获，不能继承准备期旧值。
+            terminal: Mutex::new(None),
+            signal_state: Mutex::new(ProcessSignalState::new(signal_handlers)),
         })
         .map_err(|_| MemoryError::OutOfMemory)?;
-        // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
+        // 2. CLONE_VM child 在共享 mm 中使用实际 MM 空闲位分配的 supervisor trap page；若复用
         // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
         // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
-        let context_binding = if let Some(address) = kernel_stack.user_context_address() {
-            ContextBinding::kernel_stack(address)
-        } else if share_user_memory {
-            ContextBinding::address_space(
-                address_space
-                    .memory_set
-                    .lock()
-                    .map_err(|_| MemoryError::OutOfMemory)?
-                    .allocate_thread_trap_context(tid)?,
-            )
+        let kernel_context_address = kernel_stack.user_context_address();
+        let memory_cleanup_wait =
+            Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?);
+        let user_context = if resources.share_memory && kernel_context_address.is_none() {
+            address_space.allocate_thread_context()?
         } else {
-            ContextBinding::address_space(TRAP_CONTEXT)
-        };
-        let user_context = address_space.bind_user_context(context_binding)?;
-        let memory_retirement_wait = if context_binding.requires_retirement_wait(TRAP_CONTEXT) {
-            Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?)
-        } else {
-            None
+            address_space.bind_user_context(ContextBinding::for_placement(
+                kernel_context_address,
+                TRAP_CONTEXT,
+            ))?
         };
 
         // 3. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
         let mut child_trap = self.snapshot_user_context_for_clone();
-        child_trap
-            .prepare_process_clone((child_stack != 0).then_some(child_stack), kernel_stack_top);
+        child_trap.prepare_clone(
+            (parameters.stack != 0).then_some(parameters.stack),
+            parameters.tls,
+            kernel_stack_top,
+        );
         let child = Self {
             kind: TaskKind::User {
                 process,
                 thread: ThreadContext {
+                    mm,
                     user_context,
                     kernel_trap_handler: self.thread().kernel_trap_handler,
                     kernel_trap_return: self.thread().kernel_trap_return,
-                    memory_retirement_wait: Mutex::new(memory_retirement_wait),
-                    clear_child_tid: Mutex::new(None),
+                    memory_cleanup_wait: Mutex::new(memory_cleanup_wait),
+                    clear_child_tid: Mutex::new(parameters.clear_child_tid),
                     robust_list: Mutex::new(None),
-                    signal_mask: Mutex::new(*self.thread().signal_mask.lock()),
+                    sem_undo: Mutex::new(Some(sem_undo)),
+                    shm_creator: Mutex::new(None),
+                    signal_mask,
                     pending_signals: Mutex::new(PendingSignals::new()),
                     suspend_restore_mask: Mutex::new(None),
-                    syscall_restart: Mutex::new(None),
+                    syscall_restart: Mutex::new(SyscallRestartState::default()),
                     parent_death: Mutex::new(ParentDeathState::default()),
+                    // security 只在 graph 原子 publication 时继承真实 creator 的最新状态。
+                    security: ThreadSecurityOwner::default(),
+                    credentials,
+                    fs_namespaces: namespaces,
+                    files,
+                    file_wait: Mutex::new(Some(file_wait)),
                     alternate_signal_stack: Mutex::new(alternate_signal_stack),
-                    io_accounting: IoAccounting::default(),
+                    io_accounting: thread_io,
                 },
             },
             execution: ExecutionContext {
-                tid,
+                identity: Mutex::new(identity),
                 start_time_us,
                 kernel_stack,
                 kernel_cx: Mutex::new(KernelContext::clone_for_trap_return(
@@ -165,11 +186,7 @@ impl TaskControlBlock {
                     crate::task::resume_new_task,
                 )),
             },
-            scheduling: SchedulingEntity {
-                state: IrqMutex::new(SchedulingState::new(cpu_affinity)),
-                policy: Mutex::new(child_policy),
-                last_cpu: AtomicUsize::new(last_cpu),
-            },
+            scheduling,
         };
         child.replace_user_context(child_trap);
         Ok(child)

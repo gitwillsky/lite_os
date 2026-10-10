@@ -6,7 +6,7 @@
 
 use alloc::sync::Arc;
 use spin::Once;
-use syscall_abi::{errno, signal};
+use syscall_abi::errno;
 
 use crate::{
     fs::{
@@ -74,15 +74,25 @@ pub(crate) trait JobControl: Sync {
     ///
     /// # Errors
     ///
-    /// 非 session leader、`force` 非零或 terminal 属于其他 session 返回 `EPERM`。
-    fn claim_controlling(&self, terminal: &Arc<Terminal>, force: usize) -> Result<(), DeviceError>;
+    /// 非 session leader、已有另一 TTY、未授权接管或只写 fd 无 global SYS_ADMIN 返回 EPERM。
+    fn claim_controlling(
+        &self,
+        terminal: &Arc<Terminal>,
+        force: usize,
+        readable: bool,
+    ) -> Result<(), DeviceError>;
 
-    /// `TIOCGPGRP`。
-    ///
-    /// # Errors
-    ///
-    /// terminal 不是调用者 session 的 controlling TTY 返回 `ENOTTY`。
-    fn foreground_group(&self, terminal: &Terminal) -> Result<usize, DeviceError>;
+    /// master 最后关闭：在同一 graph/control 事务释放身份和实际 session handles，锁外投递信号。
+    fn hangup_terminal(&self, terminal: &Terminal);
+
+    /// 打开可自动取得的 TTY；非 session leader、已有 TTY 或目标已被占用时无副作用。
+    fn open_controlling(&self, terminal: &Arc<Terminal>, readable: bool);
+
+    /// TIOCNOTTY；不是实际 controlling TTY 返回 ENOTTY。
+    fn detach_controlling(&self, terminal: &Terminal) -> Result<(), DeviceError>;
+
+    /// 把同一实际 control 快照的 SID/PGID 投影到 caller PID namespace。
+    fn control_ids(&self, terminal: &Terminal) -> (Option<i32>, i32);
 
     /// `TIOCSPGRP`。
     ///
@@ -221,10 +231,7 @@ pub(super) fn deliver_input_signals(terminal: &Terminal, signals: u64) {
 
 /// PTY master 关闭的 controlling-terminal hangup：脱离 session 并投递 SIGHUP/SIGCONT。
 pub(super) fn hangup(terminal: &Terminal) {
-    if let Some(pgid) = terminal.hangup() {
-        job_control().signal_group(pgid, signal::SIGHUP);
-        job_control().signal_group(pgid, signal::SIGCONT);
-    }
+    job_control().hangup_terminal(terminal);
 }
 
 fn fault(_: UserFault) -> DeviceError {
@@ -278,7 +285,14 @@ struct PtsDriver;
 
 impl CharacterDriver for PtsDriver {
     fn open(&self, request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-        open_terminal(request.number, true)
+        let file = open_terminal_file(request.number, true)?;
+        if request.flags & crate::fs::O_NOCTTY == 0 {
+            job_control().open_controlling(
+                &file.terminal,
+                request.flags & crate::fs::O_ACCMODE != crate::fs::O_WRONLY,
+            );
+        }
+        Ok(file)
     }
 }
 
@@ -290,6 +304,14 @@ fn open_terminal(
     number: DeviceNumber,
     job_control: bool,
 ) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
+    open_terminal_file(number, job_control).map(|file| file as Arc<dyn DeviceFile>)
+}
+
+/// 在自动取得前完成可失败的文件壳分配，避免打开 OOM 留下 controlling-TTY 副作用。
+fn open_terminal_file(
+    number: DeviceNumber,
+    job_control: bool,
+) -> Result<Arc<TerminalFile>, FileSystemError> {
     let file = if number == CONSOLE_NUMBER {
         TerminalFile {
             terminal: console(),
@@ -306,9 +328,7 @@ fn open_terminal(
     } else {
         return Err(FileSystemError::NoDevice);
     };
-    Arc::try_new(file)
-        .map(|file| file as Arc<dyn DeviceFile>)
-        .map_err(|_| FileSystemError::OutOfMemory)
+    Arc::try_new(file).map_err(|_| FileSystemError::OutOfMemory)
 }
 
 /// 一个打开的 console 或 pts。
@@ -331,11 +351,22 @@ impl TerminalFile {
 }
 
 impl DeviceFile for TerminalFile {
+    fn release(&self) {
+        if let Some(slave) = &self.pty {
+            slave.close();
+        }
+    }
+
     /// 按 termios 的 canonical/VMIN/VTIME 读取 line discipline 输入。
     fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
         let terminal = &self.terminal;
         let mut input = [0u8; TERMINAL_READ_BYTES];
         let capacity = output.remaining().min(input.len());
+        // Native n_tty_read 先校验 job control，零 iterator 不读取 canonical EOF 或等待输入。
+        if capacity == 0 {
+            self.check_access(TerminalAccess::Input)?;
+            return Ok(());
+        }
         let mode = terminal.read_mode(capacity);
         let mut read = 0;
         // VTIME 在 MIN=0 时从 read 开始计时，在 MIN>0 时从首字节开始并按后续每批输入重置；
@@ -523,6 +554,10 @@ impl DeviceFile for TerminalFile {
 struct PtyMasterFile(Arc<PtyMaster>);
 
 impl DeviceFile for PtyMasterFile {
+    fn release(&self) {
+        self.0.close();
+    }
+
     /// 读取 slave 输出字节流；slave 全部关闭后返回 `EIO`（Linux pty master 语义）。
     fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
         let master = &self.0;

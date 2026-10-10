@@ -24,16 +24,11 @@ pub(crate) enum TimerError {
 
 /// fs 持有 timerfd OFD 时使用的 task-domain backend seam。
 ///
-/// fs 只消费 counter 与 readiness，不反向依赖 task timer queue。最后一个 backend `Arc`
-/// 析构时由实现方同步移除 timer record；缺失该 seam 会让 fs → task 形成反向依赖。
+/// fs 只消费 counter/readiness 与实际 close seam，不反向依赖 task timer queue。
+/// actual OFD fput 同步撤销 timer record；backend observer Arc 不延长 schedule membership。
 pub(crate) trait TimerFdBackend: Send + Sync {
-    /// 取得 anonymous inode 使用的稳定 runtime identity。
-    ///
-    /// # Returns
-    ///
-    /// backend 生命周期内唯一 object id。
-    fn object_id(&self) -> u64;
-
+    /// 撤销实际 schedule/record/readiness endpoint；重复关闭无副作用。
+    fn close(&self);
     /// 原子替换 setting，并清除旧 setting 的未读 expiration。
     ///
     /// # Parameters
@@ -42,6 +37,7 @@ pub(crate) trait TimerFdBackend: Send + Sync {
     /// - `interval_ns`: 周期；零表示 one-shot。
     /// - `absolute`: value 是否属于 timer clock 的绝对时间域。
     /// - `now_ns`: 本次 syscall 的固定 monotonic snapshot。
+    /// - `offsets`: replacement 调用者的时间 namespace 快照，relative/disarm 不使用 offset。
     ///
     /// # Returns
     ///
@@ -56,6 +52,7 @@ pub(crate) trait TimerFdBackend: Send + Sync {
         interval_ns: u64,
         absolute: bool,
         now_ns: u64,
+        offsets: crate::namespace::TimeOffsets,
     ) -> Result<TimerSetting, TimerError>;
 
     /// 查询当前相对 setting。
@@ -106,7 +103,8 @@ pub(crate) trait TimerFdBackend: Send + Sync {
     /// # Parameters
     ///
     /// - `elapsed`: 本次 deadline 跨过的周期数，至少为一。
-    fn expire(&self, elapsed: u64);
+    /// - `generation`: 实际 queue schedule 的历史版本；backend 必须向 owner 复查，不能污染新 setting。
+    fn expire(&self, elapsed: u64, generation: u64);
 }
 
 /// 在通用 OFD 中保持 thin Arc layout 的 timerfd façade。
@@ -118,6 +116,10 @@ pub(crate) struct TimerFd {
 }
 
 impl TimerFd {
+    /// actual fput 消费同一 backend lifecycle，observer 只 pin facade allocation。
+    pub(crate) fn close(&self) {
+        self.backend.close();
+    }
     /// 为 task-domain backend 构造 fs-owned thin façade。
     ///
     /// # Parameters
@@ -135,19 +137,16 @@ impl TimerFd {
         Arc::try_new(Self { backend }).map_err(|_| ())
     }
 
-    pub(crate) fn object_id(&self) -> u64 {
-        self.backend.object_id()
-    }
-
     pub(crate) fn replace(
         &self,
         value_ns: u64,
         interval_ns: u64,
         absolute: bool,
         now_ns: u64,
+        offsets: crate::namespace::TimeOffsets,
     ) -> Result<TimerSetting, TimerError> {
         self.backend
-            .replace(value_ns, interval_ns, absolute, now_ns)
+            .replace(value_ns, interval_ns, absolute, now_ns, offsets)
     }
 
     pub(crate) fn setting(&self, now_ns: u64) -> Result<TimerSetting, TimerError> {

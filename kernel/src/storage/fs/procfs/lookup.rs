@@ -20,7 +20,7 @@ pub(super) fn find_process(
     snapshot
         .processes
         .iter()
-        .find(|process| process.pid == pid)
+        .find(|process| process.pid.key() == pid)
         .ok_or(FileSystemError::NotFound)
 }
 
@@ -31,7 +31,7 @@ pub(super) fn find_thread(
     process
         .threads
         .iter()
-        .find(|thread| thread.tid == tid)
+        .find(|thread| thread.tid.key() == tid)
         .ok_or(FileSystemError::NotFound)
 }
 

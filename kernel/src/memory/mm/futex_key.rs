@@ -1,5 +1,17 @@
 use super::*;
 
+/// 两地址 futex access 的语义错误；保留 source fault 与随后 target alignment 的原生先后顺序。
+#[derive(Debug)]
+pub(crate) enum FutexAccessError {
+    Unaligned,
+    Memory(UserAccessError),
+}
+impl From<UserAccessError> for FutexAccessError {
+    fn from(error: UserAccessError) -> Self {
+        Self::Memory(error)
+    }
+}
+
 /// ProcessTable 使用的不透明 futex wait identity；memory owner 负责把用户地址
 /// 归一化为 address-space、匿名共享 backing 或 shared-file offset。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -15,6 +27,23 @@ pub(crate) enum FutexKey {
     SharedFile { file: SharedFileId, offset: u64 },
     /// Device VMA 以不复用 backing identity 与 byte offset 跨 fork 匹配。
     SharedDevice { backing: u64, offset: usize },
+}
+
+impl FutexKey {
+    /// private key 的 native access_ok；无需读取 VMA 或 fault-in，也允许合法范围内的零地址。
+    pub(crate) fn private(address: usize, address_space: usize) -> Result<Self, UserAccessError> {
+        if address & 3 != 0
+            || address
+                .checked_add(4)
+                .is_none_or(|end| end > config::USER_ADDRESS_END)
+        {
+            return Err(UserAccessError::Fault);
+        }
+        Ok(Self::Private {
+            address_space,
+            address,
+        })
+    }
 }
 
 impl MemorySet {
@@ -37,16 +66,14 @@ impl MemorySet {
         private: bool,
         limits: UserFaultLimits,
     ) -> Result<FutexKey, UserAccessError> {
-        if address == 0 || address & 3 != 0 {
+        if private {
+            // native private key 只需 access_ok，不 fault-in VMA；WAIT/比较/写操作另行验证实际 word。
+            return FutexKey::private(address, address_space);
+        }
+        if address & 3 != 0 {
             return Err(UserAccessError::Fault);
         }
         self.prepare_user_read(address, core::mem::size_of::<u32>(), limits)?;
-        if private {
-            return Ok(FutexKey::Private {
-                address_space,
-                address,
-            });
-        }
         let vpn = VirtualAddress::from(address).floor();
         let (_, area) = self
             .areas

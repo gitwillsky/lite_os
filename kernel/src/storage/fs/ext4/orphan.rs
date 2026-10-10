@@ -208,6 +208,10 @@ impl Ext4FileSystem {
             return Err(FileSystemError::InvalidFileSystem);
         }
         disk.i_links_count = 0;
+        // Linux ext4_rmdir/rename 清空 deleted directory 的逻辑长度；extent 留到最后 iput。
+        if inode_kind::from_mode(disk.i_mode) == InodeType::Directory {
+            disk.set_size(0);
+        }
         disk.set_ctime(Timestamp::now());
         self.write_inode_disk(inode.inode_num, &disk)?;
         drop(disk);
@@ -269,7 +273,7 @@ impl Ext4FileSystem {
             if links == 0 {
                 inode.reclaim_locked(&mut mutation, directory)?;
             } else if !directory {
-                inode.truncate_locked(&mut mutation, size)?;
+                inode.truncate_locked(&mut mutation, size, None)?;
             }
             mutation.commit()?;
         }

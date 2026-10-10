@@ -1,5 +1,5 @@
 use crate::{
-    file::OpenFileDescription,
+    file::PreparedFileDescription,
     fs::{MemFile, O_RDWR},
     memory::UserAccessError,
     task::current_task,
@@ -31,14 +31,25 @@ pub(crate) fn sys_memfd_create(name: usize, flags: u32) -> isize {
         Err(UserAccessError::OutOfMemory) => return -errno::ENOMEM,
         Err(UserAccessError::Fault | UserAccessError::Overflow) => return -errno::EFAULT,
     };
-    let file = match MemFile::new(name, flags & MFD_ALLOW_SEALING != 0) {
+    let reservation = match task.fd_prepare_open(flags & MFD_CLOEXEC != 0) {
+        Ok(reservation) => reservation,
+        Err(error) => return super::file_descriptor_error(error),
+    };
+    let prepared = match PreparedFileDescription::try_new() {
+        Ok(prepared) => prepared,
+        Err(error) => return super::fs::ferr(error),
+    };
+    let file = match MemFile::create_opened(
+        name,
+        flags & MFD_ALLOW_SEALING != 0,
+        &task.access_identity(true),
+    ) {
         Ok(file) => file,
         Err(_) => return -errno::ENOMEM,
     };
-    let ofd = match OpenFileDescription::mem_file(file, O_RDWR) {
-        Ok(ofd) => ofd,
-        Err(()) => return -errno::ENOMEM,
+    let ofd = match prepared.prepare_named(file, O_RDWR) {
+        Ok(prepared) => prepared.finish(crate::fs::InodeOpen::Storage),
+        Err(error) => return super::fs::ferr(error),
     };
-    task.fd_allocate(ofd, flags & MFD_CLOEXEC != 0)
-        .map_or_else(super::file_descriptor_error, |fd| fd as isize)
+    reservation.publish(ofd) as isize
 }

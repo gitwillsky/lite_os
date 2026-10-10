@@ -6,7 +6,11 @@ use syn::{Expr, ExprMethodCall, ImplItem, Item, ItemFn, visit::Visit};
 const INET: &str = "kernel/src/socket/inet.rs";
 const UDP: &str = "kernel/src/socket/inet/udp.rs";
 const RAW: &str = "kernel/src/socket/inet/raw.rs";
+const TCP: &str = "kernel/src/socket/inet/tcp.rs";
+const TCP_ACCEPT: &str = "kernel/src/socket/inet/tcp/accept.rs";
 const TCP_IO: &str = "kernel/src/socket/inet/tcp/io.rs";
+const TCP_LIFECYCLE: &str = "kernel/src/socket/inet/tcp/lifecycle.rs";
+const READINESS: &str = "kernel/src/socket/inet/readiness.rs";
 const OWNER: &str = "kernel/src/socket/inet/protocol_owner.rs";
 const ENDPOINTS: usize = 64;
 const BYTES_PER_ENDPOINT: usize = 64 * 1024;
@@ -55,6 +59,12 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
 }
 
 fn measure(root: &Path) -> Result<DataPlaneCost, String> {
+    let readiness = parse(READINESS, &read(root, READINESS)?)?;
+    if !readiness_walks_are_linear(&readiness)? {
+        return Err(format!(
+            "{READINESS}: full readiness snapshots must visit each endpoint AVL once without successor/relookup"
+        ));
+    }
     let inet_text = read(root, INET)?;
     let owner_text = read(root, OWNER)?;
     let inet = parse(INET, &inet_text)?;
@@ -107,12 +117,20 @@ fn measure(root: &Path) -> Result<DataPlaneCost, String> {
     let drain_cleanup = method(&owner, "drain_cleanup")?;
     let mut cleanup_calls = CallFacts::default();
     cleanup_calls.visit_block(&drain_cleanup.block);
-    let cleanup_capacity =
-        if cleanup_type.contains("PendingCleanup < InetEndpoint , SOCKET_STORAGE_CAPACITY >") {
-            const_usize(&inet, "SOCKET_STORAGE_CAPACITY")?
-        } else {
-            0
-        };
+    let slot_proof = cleanup_slots_are_owned(
+        &inet_text,
+        &read(root, TCP)?,
+        &read(root, TCP_ACCEPT)?,
+        &read(root, TCP_IO)?,
+        &read(root, TCP_LIFECYCLE)?,
+    );
+    let cleanup_capacity = if slot_proof
+        && cleanup_type.contains("PendingCleanup < InetEndpoint , SOCKET_STORAGE_CAPACITY >")
+    {
+        const_usize(&inet, "SOCKET_STORAGE_CAPACITY")?
+    } else {
+        0
+    };
     let cleanup_budget = if cleanup_calls.methods.contains(&"pop".to_owned())
         && cleanup_calls.methods.contains(&"has_pending".to_owned())
         && inet_text.contains("cleanup_backlog")
@@ -148,19 +166,98 @@ fn measure(root: &Path) -> Result<DataPlaneCost, String> {
     })
 }
 
+// 完整 poll 阶段不能套用有界 notification drain 的逐项 O(log N) 后继查询。
+fn readiness_walks_are_linear(syntax: &syn::File) -> Result<bool, String> {
+    for name in ["snapshot_readiness", "capture_readiness_transitions"] {
+        let function = method(syntax, name)?;
+        let mut facts = CallFacts::default();
+        facts.visit_block(&function.block);
+        let text = function.block.to_token_stream().to_string();
+        if facts.loops != 0
+            || facts
+                .methods
+                .iter()
+                .filter(|name| *name == "for_each_mut")
+                .count()
+                != 3
+            || facts
+                .methods
+                .iter()
+                .any(|name| matches!(name.as_str(), "successor" | "iter_after" | "get_mut"))
+            || facts.functions.contains(&"find_endpoint_after".to_owned())
+            || ["endpoints", "raw_endpoints", "tcp_endpoints"]
+                .into_iter()
+                .any(|map| {
+                    text.matches(&format!("self . {map} . for_each_mut"))
+                        .count()
+                        != 1
+                })
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+// 固定 ring 容量必须由真实 slot admission 证明，不能仅比较两个数字或 facade Arc 数量。
+fn cleanup_slots_are_owned(inet: &str, tcp: &str, accept: &str, io: &str, lifecycle: &str) -> bool {
+    let inet: String = inet.split_whitespace().collect();
+    let tcp: String = tcp.split_whitespace().collect();
+    let accept: String = accept.split_whitespace().collect();
+    let io: String = io.split_whitespace().collect();
+    let lifecycle: String = lifecycle.split_whitespace().collect();
+    // Closed 初始 endpoint 有一个真实 handle，listener 保留 first 并 clamp backlog>=1；accept 先加 replacement 再移交。
+    let fresh = tcp
+        .split("fncreate_endpoint(")
+        .nth(1)
+        .unwrap_or("")
+        .split("fnset_no_delay(")
+        .next()
+        .unwrap_or("");
+    let allocate = fresh.find("lethandle=add_socket(network)?;");
+    let retain = fresh.find("handles.push(TcpHandle::new(handle));");
+    let publish = fresh.find("network.tcp_endpoints.commit_vacant(");
+    let transfer = accept.find(".handles.remove(position)");
+    let replacement = accept.find("letreplacement=add_socket(&mutnetwork)?;");
+    inet.contains("self.sockets.iter().count()>=SOCKET_STORAGE_CAPACITY")
+        && matches!((allocate, retain, publish), (Some(a), Some(b), Some(c)) if a < b && b < c)
+        && tcp.contains("letbacklog=backlog.clamp(1,TCP_BACKLOG_MAX);")
+        && tcp.contains("letfirst=network.tcp_endpoints[&id].handles[0].handle;")
+        && matches!((replacement, transfer), (Some(a), Some(b)) if a < b)
+        && accept.contains("accepted_handles.push(entry);")
+        && io.contains("if!state.orphaned||")
+        && io.contains("tcp_endpoints.retain(|_,state|")
+        && lifecycle.contains("elseif!retained{")
+        && lifecycle.contains("*tcp=placeholder_socket();")
+        && lifecycle.contains("tcp.set_send_mss(send_mss);retained=true;true")
+        && lifecycle.contains("state.handles.retain_mut(|entry|")
+        && lifecycle.contains("sockets.remove(entry.handle);false")
+}
+
 fn endpoint_lifetime_is_single_path(inet: &syn::File) -> Result<bool, String> {
     let send_wrapper = method(inet, "send_to")?;
     let receive_wrapper = method(inet, "receive")?;
     let drop_wrapper = method(inet, "drop")?;
+    let close_wrapper = method(inet, "close_description")?;
+    let operation = method(inet, "open_operation")?;
     let mut send_calls = CallFacts::default();
     send_calls.visit_block(&send_wrapper.block);
     let mut receive_calls = CallFacts::default();
     receive_calls.visit_block(&receive_wrapper.block);
     let mut drop_calls = CallFacts::default();
     drop_calls.visit_block(&drop_wrapper.block);
-    Ok(send_calls.methods.contains(&"lock".to_owned())
-        && receive_calls.methods.contains(&"lock".to_owned())
-        && drop_calls.methods.contains(&"cleanup_or_defer".to_owned()))
+    let mut close_calls = CallFacts::default();
+    close_calls.visit_block(&close_wrapper.block);
+    let token = close_wrapper.block.to_token_stream().to_string();
+    let open = operation.block.to_token_stream().to_string();
+    Ok(send_calls.methods.contains(&"open_operation".to_owned())
+        && receive_calls.methods.contains(&"open_operation".to_owned())
+        && drop_calls.methods.contains(&"close_description".to_owned())
+        && close_calls.methods.contains(&"cleanup_or_defer".to_owned())
+        && token.contains("self . operation . lock () . take ()")
+        && open.contains("operation . is_none ()")
+        && struct_field_type(inet, "InetSocket", "operation")?
+            == "Mutex < Option < InetEndpoint > >")
 }
 
 fn payload_loan(
@@ -344,10 +441,63 @@ mod tests {
     }
 
     #[test]
+    fn full_readiness_walk_rejects_per_endpoint_tree_relookup() {
+        let root = super::super::repository_root();
+        let text = read(&root, READINESS).unwrap();
+        assert!(readiness_walks_are_linear(&parse(READINESS, &text).unwrap()).unwrap());
+        let mutated = text.replacen(
+            "self.tcp_endpoints.for_each_mut(|_, state| {",
+            "let _ = self.tcp_endpoints.successor(&0); self.tcp_endpoints.for_each_mut(|_, state| {",
+            1,
+        );
+        assert_ne!(mutated, text);
+        assert!(!readiness_walks_are_linear(&parse(READINESS, &mutated).unwrap()).unwrap());
+        let missing = text.replacen(
+            "self.raw_endpoints.for_each_mut",
+            "self.endpoints.for_each_mut",
+            1,
+        );
+        assert!(!readiness_walks_are_linear(&parse(READINESS, &missing).unwrap()).unwrap());
+    }
+
+    #[test]
     fn final_drop_is_separate_from_live_endpoint_operations() {
         let root = super::super::repository_root();
         let text = read(&root, INET).unwrap();
         let inet = parse(INET, &text).unwrap();
         assert!(endpoint_lifetime_is_single_path(&inet).unwrap());
+    }
+    #[test]
+    fn cleanup_capacity_rejects_fresh_metadata_without_an_actual_socket_slot() {
+        let root = super::super::repository_root();
+        let inet = read(&root, INET).unwrap();
+        let tcp = read(&root, TCP).unwrap();
+        let accept = read(&root, TCP_ACCEPT).unwrap();
+        let io = read(&root, TCP_IO).unwrap();
+        let lifecycle = read(&root, TCP_LIFECYCLE).unwrap();
+        assert!(cleanup_slots_are_owned(
+            &inet, &tcp, &accept, &io, &lifecycle
+        ));
+        assert!(!cleanup_slots_are_owned(
+            &inet,
+            &tcp.replace("handles.push(TcpHandle::new(handle));", "let _ = handle;"),
+            &accept,
+            &io,
+            &lifecycle
+        ));
+        assert!(!cleanup_slots_are_owned(
+            &inet,
+            &tcp,
+            &accept,
+            &io.replace("!state.orphaned", "false"),
+            &lifecycle
+        ));
+        assert!(!cleanup_slots_are_owned(
+            &inet,
+            &tcp,
+            &accept,
+            &io,
+            &lifecycle.replace("*tcp = placeholder_socket();", "tcp.abort();")
+        ));
     }
 }

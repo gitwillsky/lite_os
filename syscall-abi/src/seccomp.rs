@@ -1,0 +1,36 @@
+//! Linux seccomp UAPI 的 operation、mode 与 filter return action。
+
+pub const SET_MODE_STRICT: u32 = 0;
+pub const SET_MODE_FILTER: u32 = 1;
+pub const GET_ACTION_AVAIL: u32 = 2;
+pub const GET_NOTIF_SIZES: u32 = 3;
+pub const FILTER_FLAG_TSYNC: u32 = 1;
+pub const FILTER_FLAG_LOG: u32 = 1 << 1;
+pub const FILTER_FLAG_SPEC_ALLOW: u32 = 1 << 2;
+pub const FILTER_FLAG_NEW_LISTENER: u32 = 1 << 3;
+pub const FILTER_FLAG_TSYNC_ESRCH: u32 = 1 << 4;
+pub const FILTER_FLAG_WAIT_KILLABLE_RECV: u32 = 1 << 5;
+pub const FILTER_FLAG_MASK: u32 = (1 << 6) - 1;
+pub const USER_NOTIF_FLAG_CONTINUE: u32 = 1;
+pub const USER_NOTIF_FD_SYNC_WAKE_UP: usize = 1;
+pub const ADDFD_FLAG_SETFD: u32 = 1;
+pub const ADDFD_FLAG_SEND: u32 = 2;
+pub const IOCTL_NOTIF_RECV: usize = 0xc050_2100;
+pub const IOCTL_NOTIF_SEND: usize = 0xc018_2101;
+pub const IOCTL_NOTIF_ID_VALID: usize = 0x4008_2102;
+pub const IOCTL_NOTIF_ID_VALID_WRONG_DIR: usize = 0x8008_2102;
+pub const IOCTL_NOTIF_ADDFD: usize = 0x4018_2103;
+pub const IOCTL_NOTIF_SET_FLAGS: usize = 0x4008_2104;
+pub const MODE_DISABLED: u32 = 0;
+pub const MODE_STRICT: u32 = 1;
+pub const MODE_FILTER: u32 = 2;
+pub const RET_KILL_PROCESS: u32 = 0x8000_0000;
+pub const RET_KILL_THREAD: u32 = 0;
+pub const RET_TRAP: u32 = 0x0003_0000;
+pub const RET_ERRNO: u32 = 0x0005_0000;
+pub const RET_USER_NOTIF: u32 = 0x7fc0_0000;
+pub const RET_TRACE: u32 = 0x7ff0_0000;
+pub const RET_LOG: u32 = 0x7ffc_0000;
+pub const RET_ALLOW: u32 = 0x7fff_0000;
+pub const RET_ACTION_FULL: u32 = 0xffff_0000;
+pub const RET_DATA: u32 = 0xffff;

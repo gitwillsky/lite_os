@@ -2,8 +2,31 @@ use super::extent::{ExtentTree, Mapping, empty_root};
 use super::layout::INODE_BLOCK_BYTES;
 use super::*;
 
+#[path = "inode/swap.rs"]
+mod swap;
 #[path = "inode/vfs.rs"]
 mod vfs;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SwapFilePhase {
+    Free,
+    Preparing,
+    Active,
+}
+
+#[derive(Debug)]
+pub(super) struct LiveInode {
+    pub(super) disk: Ext4InodeDisk,
+    // OWNER: lease phase and extent image share the canonical inode lock; hard links cannot bypass it.
+    pub(super) swap: SwapFilePhase,
+}
+
+impl core::ops::Deref for LiveInode {
+    type Target = Ext4InodeDisk;
+    fn deref(&self) -> &Self::Target {
+        &self.disk
+    }
+}
 
 /// ext4 纳秒时间戳：磁盘上为低 32 位秒加 `extra`（2-bit epoch + 30-bit 纳秒）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +75,8 @@ impl Timestamp {
 pub(super) struct Ext4Inode {
     pub(super) fs: Arc<Ext4FileSystem>,
     pub(super) inode_num: u32,
-    pub(super) disk: Mutex<Ext4InodeDisk>,
+    pub(super) disk: Mutex<LiveInode>,
+    pub(super) write_access: crate::fs::InodeWriteAccess,
 }
 
 impl Ext4Inode {
@@ -69,12 +93,20 @@ impl Ext4Inode {
             return Ok(inode);
         }
         let disk = fs.read_inode_disk(inode_num)?;
+        // EA value 只能由 xattr disk owner 访问，目录损坏不得将隐藏值 inode 发布为普通 VFS file。
+        if disk.i_flags & super::xattr_inode::EA_INODE_FLAG != 0 {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
         let cache_slot = FallibleMap::<u32, Weak<Ext4Inode>>::try_reserve_node()
             .map_err(|_| FileSystemError::OutOfMemory)?;
         let inode = Arc::try_new(Self {
             fs,
             inode_num,
-            disk: Mutex::new(disk),
+            write_access: crate::fs::InodeWriteAccess::new(),
+            disk: Mutex::new(LiveInode {
+                disk,
+                swap: SwapFilePhase::Free,
+            }),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut cache = inode.fs.inode_cache.lock();
@@ -124,8 +156,10 @@ impl Ext4Inode {
     }
 
     pub(super) fn validate_name(name: &[u8]) -> Result<(), FileSystemError> {
+        if name.len() > 255 {
+            return Err(FileSystemError::NameTooLong);
+        }
         if name.is_empty()
-            || name.len() > 255
             || name == b"."
             || name == b".."
             || name.contains(&b'/')
@@ -144,7 +178,7 @@ impl Ext4Inode {
 
     /// 返回 logical block 的已初始化物理 block；hole 与 unwritten 返回 None（读为零）。
     pub(super) fn map_block_sparse(&self, file_block: u32) -> Result<Option<u64>, FileSystemError> {
-        let disk = *self.disk.lock();
+        let disk = self.disk.lock().disk;
         let tree = ExtentTree::new(&self.fs, self.inode_num, &disk)?;
         Ok(match tree.lookup(file_block)? {
             Mapping::Mapped(extent) if !extent.unwritten => {
@@ -180,10 +214,13 @@ impl Ext4Inode {
         &self,
         mutation: &mut MutationGuard<'_>,
         size: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
     ) -> Result<(), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
+        self.check_swap_mutation(false)?;
+        self.remove_write_privileges_locked(mutation, identity)?;
         let now = Timestamp::now();
         let mut inode = mutation.inode(self)?;
         if Self::is_fast_symlink(&inode) {
@@ -245,7 +282,7 @@ impl Ext4Inode {
             tree.remove_from(0)?;
             Self::apply_tree(&mut disk, tree.root(), tree.sector_delta())?;
         }
-        self.fs.release_xattr_block(&mut disk)?;
+        self.fs.release_xattrs(self.inode_num, &mut disk)?;
         // Linux `ext4_free_inode` 保留 mode/generation 并记录 dtime；bitmap 清位后 e2fsck 视其为空闲。
         disk.i_links_count = 0;
         disk.set_size(0);

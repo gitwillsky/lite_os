@@ -21,13 +21,24 @@ use super::{
 use crate::{
     block::{BLOCK_SIZE, BlockDevice, BlockError},
     fallible_tree::FallibleMap,
-    sync::{TaskEvent, TaskMutex},
+    sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation},
 };
 
 fn block_error(error: BlockError) -> FileSystemError {
     match error {
         BlockError::OutOfMemory => FileSystemError::OutOfMemory,
         _ => FileSystemError::IoError,
+    }
+}
+
+/// 首次挂载与 remount 共用固定 ordered profile；未知 key 或其他 data 模式返回 EINVAL。
+pub(in crate::fs) fn validate_mount_options(options: &[u8]) -> Result<(), FileSystemError> {
+    if super::mount_options::parse(options)
+        .all(|option| option.key == b"data" && option.value == Some(b"ordered".as_slice()))
+    {
+        Ok(())
+    } else {
+        Err(FileSystemError::InvalidOperation)
     }
 }
 
@@ -84,13 +95,16 @@ mod orphan;
 mod storage_mutation;
 #[path = "ext4/xattr.rs"]
 mod xattr;
+#[path = "ext4/xattr_inode.rs"]
+mod xattr_inode;
 #[cfg(test)]
 pub(crate) use cost_test_support::{
     TestMappedInode, arm_test_orphan_drop, clear_test_metadata_cache,
     fail_next_test_metadata_owner, release_test_orphan_drop, reset_test_allocation_attempts,
     reset_test_stage_capacity, reset_test_write_costs, set_test_stage_capacity,
     test_allocation_attempts, test_mount_allocation_state, test_orphan_drop_admitted,
-    test_write_costs, wait_test_orphan_drop_admission, with_test_mutation_lock,
+    test_read_logical_block, test_read_metadata, test_stage_metadata, test_write_costs,
+    wait_test_orphan_drop_admission, with_test_mutation_lock,
 };
 #[cfg(test)]
 use cost_test_support::{
@@ -101,6 +115,8 @@ use cost_test_support::{
 };
 use directory_cursor::{DirectoryCursor, RecordPosition};
 use dirhash::HashSignedness;
+#[cfg(test)]
+pub(crate) use filesystem::test_run_writeback_daemon;
 use inode::Ext4Inode;
 use journal::{BlockKind, Journal, JournalOwner, MutationGuard};
 use metadata_cache::MetadataBlockCache;
@@ -213,6 +229,8 @@ const EXT4_FEATURE_INCOMPAT_EXTENTS: u32 = 0x0040;
 const EXT4_FEATURE_INCOMPAT_64BIT: u32 = 0x0080;
 const EXT4_FEATURE_INCOMPAT_FLEX_BG: u32 = 0x0200;
 const EXT4_FEATURE_INCOMPAT_CSUM_SEED: u32 = 0x2000;
+/// 大属性值的原生 inode owner；实际 superblock 决定是否可用，不自动升级已有磁盘。
+const EXT4_FEATURE_INCOMPAT_EA_INODE: u32 = 0x0400;
 const EXT4_FEATURE_INCOMPAT_PROFILE: u32 = EXT4_FEATURE_INCOMPAT_FILETYPE
     | EXT4_FEATURE_INCOMPAT_EXTENTS
     | EXT4_FEATURE_INCOMPAT_64BIT
@@ -539,6 +557,8 @@ struct Ext4DirEntry2Header {
 /// 单一根挂载的同步读写 ext4 文件系统。
 pub(crate) struct Ext4FileSystem {
     device: Arc<dyn BlockDevice>,
+    // OWNER: 挂载生产者传入实际块设备 dev_t；不能把 internal cache identity 或常量当 st_dev。
+    device_number: crate::fs::device::DeviceNumber,
     superblock: Mutex<Ext4SuperBlock>,
     block_size: usize,
     inode_size: usize,
@@ -568,6 +588,9 @@ pub(crate) struct Ext4FileSystem {
     // OWNER: umount 后置位，写回线程醒来后据此返回并释放对本 filesystem 的引用。缺失时卸载后的
     // 线程永久持有 filesystem，块设备也无法再次挂载。
     stopping: AtomicBool,
+    // OWNER: 单次 mount lifecycle 的 shutdown waiter 在 mount 发布前准备；shutdown 将其
+    // 取出后无分配取得 mutation owner。否则 waiter OOM 可让卸载释放租约而旧 daemon 仍在 I/O。
+    shutdown_waiter: Mutex<Option<TaskMutexWaitPreparation>>,
     // OWNER: orphan file 的不可变布局（物理 block 与 checksum seed）；slot 内容只经 journal-aware
     // metadata cache 读取，缺失它会让 unlink/reclaim 无法定位持久 orphan 记录。
     orphan: Mutex<OrphanFile>,

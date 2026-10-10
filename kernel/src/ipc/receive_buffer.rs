@@ -16,6 +16,16 @@ pub(crate) struct ReceiveBuffer<'a> {
 }
 
 impl ReceiveBuffer<'static> {
+    /// 为原生 packet receive 保留用户上限，storage 只按实际首消息在 owner guard 外准备。
+    /// 不因用户巨大 capacity 在空队列上分配内存，也不把初始 staging 大小当作消息截断上限。
+    pub(crate) fn deferred(limit: usize) -> Self {
+        Self {
+            storage: ReceiveStorage::Vector(Vec::new()),
+            limit,
+            initialized: 0,
+        }
+    }
+
     /// 分配不预先清零的 heap receive staging。
     ///
     /// # Parameters
@@ -63,6 +73,27 @@ impl<'a> ReceiveBuffer<'a> {
         self.limit - self.initialized
     }
 
+    /// 已预留且可直接 append 的真实剩余容量；与用户声明上限是不同事实。
+    pub(crate) fn prepared_remaining(&self) -> usize {
+        let capacity = match &self.storage {
+            ReceiveStorage::Vector(bytes) => bytes.capacity(),
+            ReceiveStorage::Slice(bytes) => bytes.len(),
+        };
+        capacity
+            .saturating_sub(self.initialized)
+            .min(self.remaining())
+    }
+
+    /// 在 transport guard 外为将要 append 的实际 bytes 准备 storage，不超过用户剩余上限。
+    /// OOM 保持 initialized prefix 及原逻辑上限；borrowed scratch 已有完整用户容量。
+    pub(crate) fn prepare_append(&mut self, requested: usize) -> Result<(), ()> {
+        let needed = requested.min(self.remaining());
+        if let ReceiveStorage::Vector(bytes) = &mut self.storage {
+            bytes.try_reserve_exact(needed).map_err(|_| ())?;
+        }
+        Ok(())
+    }
+
     /// 返回已经由 backend 完整初始化的 prefix 长度。
     pub(crate) fn len(&self) -> usize {
         self.initialized
@@ -80,12 +111,15 @@ impl<'a> ReceiveBuffer<'a> {
     ///
     /// # Errors
     ///
-    /// 无错误；heap constructor 已预留完整 limit，append 不再分配。
+    /// 无错误；caller 已通过 constructor/prepare_append 预留实际 prefix，append 不再分配。
     pub(crate) fn append(&mut self, source: &[u8]) -> usize {
         let count = source.len().min(self.remaining());
         match &mut self.storage {
             ReceiveStorage::Vector(bytes) => {
-                debug_assert!(bytes.capacity() - bytes.len() >= count);
+                assert!(
+                    bytes.capacity() - bytes.len() >= count,
+                    "receive append without prepared capacity"
+                );
                 bytes.extend_from_slice(&source[..count]);
             }
             ReceiveStorage::Slice(bytes) => {

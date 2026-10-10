@@ -200,6 +200,24 @@ pub(crate) fn cpu_runtime_snapshot() -> Result<Vec<(usize, u64)>, ()> {
     Ok(snapshot)
 }
 
+/// 从现有 per-CPU Ready/Running membership 投影全局可运行任务数。
+///
+/// # Returns
+///
+/// 包含内核执行体、排除 idle 与未激活 New task 的瞬时数量。跨 CPU 采样与 Linux
+/// nr_running 一样不承诺全局 linearization；不读取物理队列长度或 stale token。
+pub(crate) fn runnable_task_count() -> usize {
+    PROCESSOR_TOPOLOGY
+        .wait()
+        .slots
+        .iter()
+        .map(|slot| {
+            slot.processor.ready_entries.load(Ordering::Relaxed)
+                + slot.processor.running_entries.load(Ordering::Relaxed)
+        })
+        .sum()
+}
+
 // SAFETY: `local` 只能由 ID 等于所属 ProcessorSlot 的执行流访问；远端 CPU 只能触及
 // Ready/Running 投影和 inbound Mutex。trap 入口保持 local interrupt 关闭，因此同 CPU 不会重入 local 可变借用。
 unsafe impl Sync for PerCpuProcessor {}
@@ -549,6 +567,24 @@ pub(in crate::task) fn wake_waiting_task(
     expected: WaitMembership,
     result: Option<WaitResult>,
 ) -> bool {
+    wake_waiting_task_with_placement(task, expected, result, false)
+}
+
+/// 同步通知的 CPU 局部性提示；只在 active/affinity 允许时采用，不拥有第二份 Ready 状态。
+pub(in crate::task) fn wake_waiting_task_on_current_cpu(
+    task: Arc<TaskControlBlock>,
+    expected: WaitMembership,
+    result: Option<WaitResult>,
+) -> bool {
+    wake_waiting_task_with_placement(task, expected, result, true)
+}
+
+fn wake_waiting_task_with_placement(
+    task: Arc<TaskControlBlock>,
+    expected: WaitMembership,
+    result: Option<WaitResult>,
+    current_cpu: bool,
+) -> bool {
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
         if scheduling.wait != Some(expected) {
@@ -563,7 +599,15 @@ pub(in crate::task) fn wake_waiting_task(
                 None
             }
             RunState::Blocked => {
-                let target_cpu = select_cpu(&task, scheduling.cpu_affinity);
+                let local = cpu::current_id();
+                let target_cpu = if current_cpu
+                    && cpu::is_active(local)
+                    && scheduling.cpu_affinity.allows(local)
+                {
+                    local
+                } else {
+                    select_cpu(&task, scheduling.cpu_affinity)
+                };
                 let generation =
                     commit_ready_transition(scheduling.transition_to_ready(target_cpu));
                 Some((target_cpu, generation))

@@ -25,7 +25,7 @@ from build_cache import (
 )
 from build_target import target_from_environment
 from ext4_image import find_debugfs
-from qemu_gate import boot, cpu_topology_markers
+from qemu_gate import boot, cpu_topology_markers, ShellCommand
 from verify_busybox import start_http_gate, verify_elf
 from verify_musl import (
     MuslCachePaths,
@@ -385,7 +385,7 @@ def main() -> int:
                 interactions=(
                     (
                         "Enter 'help' for a list of built-in commands.",
-                        f"/bin/rust-std-smoke {http_port}\n".encode(),
+                        ShellCommand(f"/bin/rust-std-smoke {http_port}\n".encode()),
                     ),
                 ),
                 persistent_writes=True,

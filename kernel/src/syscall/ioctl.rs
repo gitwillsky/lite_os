@@ -40,8 +40,8 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
             super::device::ioctl_device(&task, &ofd, file.as_ref(), request, argument)
         }
         OpenFileKind::Pipe(endpoint) => pipe_ioctl(&task, &endpoint.pipe(), request, argument),
-        OpenFileKind::Inode(opened) => {
-            super::device::ioctl_inode(&task, &ofd, opened.inode().as_ref(), request, argument)
+        OpenFileKind::Inode => {
+            super::device::ioctl_inode(&task, &ofd, ofd.inode_ref().as_ref(), request, argument)
         }
         OpenFileKind::Socket(socket) => socket_ioctl(&task, socket, request, argument),
         _ => -errno::ENOTTY,

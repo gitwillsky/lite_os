@@ -3,20 +3,31 @@
 mod mmu {
     #[derive(Clone, Copy)]
     pub(crate) struct AddressSpaceToken;
-    pub(crate) type KernelTrapToken = AddressSpaceToken;
-
-    impl AddressSpaceToken {
-        pub(crate) fn from_root_page(_root_page: usize, _address_space_id: usize) -> Self {
+    #[derive(Clone, Copy)]
+    pub(crate) struct KernelTrapToken;
+    impl KernelTrapToken {
+        pub(crate) fn from_root_page(_: usize) -> Self {
             Self
         }
     }
 
-    pub(crate) fn allocate_address_space_id() -> Option<usize> {
-        Some(1)
+    impl AddressSpaceToken {
+        pub(crate) fn from_root_page(
+            _root_page: usize,
+            _context: std::sync::Arc<AddressSpaceContext>,
+        ) -> Self {
+            Self
+        }
     }
 
-    pub(crate) fn release_address_space_id_after_global_fence(_address_space_id: usize) {}
-    pub(crate) fn activate_kernel(_token: AddressSpaceToken) {}
+    pub(crate) struct AddressSpaceContext;
+    impl AddressSpaceContext {
+        pub(crate) fn try_new() -> Result<std::sync::Arc<Self>, ()> {
+            Ok(std::sync::Arc::new(Self))
+        }
+        pub(crate) fn retire_after_global_fence(&self) {}
+    }
+    pub(crate) fn activate_kernel(_token: KernelTrapToken) {}
 }
 
 #[path = "../../../kernel/src/hardware/arch/riscv64/page_table.rs"]
@@ -68,6 +79,34 @@ mod tests {
             unsafe { dealloc(self.0, layout) };
             LIVE_TABLE_PAGES.fetch_sub(1, Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn replacement_revoke_keeps_the_leaf_path_and_rejects_huge_leaves() {
+        let _serial = PAGE_TABLE_TEST.lock().unwrap();
+        let mut table = PageTable::<HostTablePage>::try_new(AddressSpaceKind::User).unwrap();
+        let vpn = 0x4_0201;
+        table.map(vpn, 0xabc, PagePermissions::READ).unwrap();
+        table.revoke_leaf(vpn).unwrap();
+        assert!(table.translate(vpn).is_none());
+        assert_eq!(table.table_page_count(), 3);
+        assert_eq!(LIVE_TABLE_PAGES.load(Ordering::Relaxed), 3);
+        table.map(vpn, 0xdef, PagePermissions::READ).unwrap();
+        assert_eq!(table.translate(vpn).unwrap().physical_page(), 0xdef);
+        assert_eq!(table.table_page_count(), 3);
+        assert!(matches!(
+            table.revoke_leaf(vpn + 1),
+            Err(super::page_table::PageTableError::NotMapped)
+        ));
+        let huge = 0x10_0000;
+        table
+            .map_contiguous_range(huge, huge, 512, PagePermissions::READ)
+            .unwrap();
+        assert!(matches!(
+            table.revoke_leaf(huge),
+            Err(super::page_table::PageTableError::NotMapped)
+        ));
+        assert!(table.translate(huge).is_some());
     }
 
     #[test]

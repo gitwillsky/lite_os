@@ -10,7 +10,7 @@
 //! 列表 → 注册表；任何路径都不在持有注册表锁时再取实例的 watch 列表。
 
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use spin::Mutex;
 use syscall_abi::errno;
 
@@ -18,12 +18,20 @@ use super::{
     Inode, InodeType, OpenedFile,
     device::{self, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, UserFault, UserOutput},
 };
+use crate::namespace::{UserNamespace, UserResource, UserResourceCharge};
 use crate::{
     fallible_tree::FallibleMap,
     ipc::{Pipe, PipeEnd},
-    sync::TaskMutex,
 };
 use queue::{Event, EventQueue};
+#[path = "inotify/instance.rs"]
+mod instance;
+use instance::WatchMembership;
+
+type WatchKey = (u64, i32);
+struct InodeWatches {
+    watches: FallibleMap<WatchKey, Arc<Watch>>,
+}
 
 #[path = "inotify/queue.rs"]
 mod queue;
@@ -47,6 +55,8 @@ const IN_DONT_FOLLOW: u32 = 0x0200_0000;
 const IN_MASK_ADD: u32 = 0x2000_0000;
 const IN_ISDIR: u32 = 0x4000_0000;
 const IN_ONESHOT: u32 = 0x8000_0000;
+const IN_MASK_CREATE: u32 = 0x1000_0000;
+const IN_EXCL_UNLINK: u32 = 0x0400_0000;
 /// 可订阅的事件位。
 const ALL_EVENTS: u32 = IN_ACCESS
     | IN_MODIFY
@@ -60,32 +70,47 @@ const ALL_EVENTS: u32 = IN_ACCESS
     | IN_DELETE
     | IN_DELETE_SELF
     | IN_MOVE_SELF;
-const ADD_WATCH_FLAGS: u32 = IN_ONLYDIR | IN_DONT_FOLLOW | IN_MASK_ADD | IN_ONESHOT;
+const ADD_WATCH_FLAGS: u32 =
+    IN_ONLYDIR | IN_DONT_FOLLOW | IN_MASK_ADD | IN_ONESHOT | IN_MASK_CREATE | IN_EXCL_UNLINK;
+// Linux ALL_INOTIFY_BITS 同时接受只包含标准 control/diagnostic bits 的订阅；忽略非事件 mask。
+const ALL_INOTIFY_BITS: u32 =
+    ALL_EVENTS | ADD_WATCH_FLAGS | IN_UNMOUNT | queue::IN_Q_OVERFLOW | IN_IGNORED | IN_ISDIR;
 
 /// `inotify_init1` 接受的 flags：`O_NONBLOCK` 与 `O_CLOEXEC`。
 pub(crate) const IN_NONBLOCK: u32 = 0o4000;
 pub(crate) const IN_CLOEXEC: u32 = 0o2000000;
 
-/// 同时存在的 inotify 实例上限（Linux `max_user_instances` 缺省）；没有用户资源模型，全局计。
-const MAX_INSTANCES: usize = 128;
-/// 单个实例的 watch 上限；超过返回 `ENOSPC`（Linux `max_user_watches`）。
-const MAX_WATCHES: usize = 8192;
-/// 单次 read 编码的字节上限；更大的用户缓冲分多次读取。
-const READ_BATCH: usize = 64 * 1024;
+/// Linux 同一 1% addressable-RAM policy；用实际 mark 与 inode storage 成本估计，boot 显式注入。
+pub(crate) fn inotify_watch_limit(total_bytes: usize) -> u32 {
+    let watch_cost =
+        core::mem::size_of::<Watch>() + 2 * core::mem::size_of::<super::tmpfs::TmpInode>();
+    (total_bytes / 100 / watch_cost).clamp(8192, 1_048_576) as u32
+}
+
 const POLLIN: i16 = 0x001;
+// Linux read readiness 同时投影 EPOLLIN 与 EPOLLRDNORM。
+const READ_EVENTS: i16 = POLLIN | 0x040;
+
+#[path = "inotify/limits.rs"]
+mod limits;
+pub(crate) use limits::InotifyLimit;
+use limits::QUEUED_EVENT_LIMIT;
 
 /// 一个 inode 上的一个 watch。
 struct Watch {
+    key: WatchKey,
     identity: (usize, u64),
     instance: Weak<Inotify>,
     wd: i32,
     mask: AtomicU32,
+    // OWNER: actual mark 的原创建者 ucounts；unregister 消费，observer Arc 不保留收费。
+    admission: Mutex<Option<UserResourceCharge>>,
 }
 
 /// inode 身份 → 其上全部 watch 的唯一索引，只在 watch 创建/删除时修改；缺失时每个变更点都得扫描所有
 /// 实例的 watch 列表。
 struct WatchIndex {
-    by_inode: FallibleMap<(usize, u64), Vec<Arc<Watch>>>,
+    by_inode: FallibleMap<(usize, u64), InodeWatches>,
 }
 
 // OWNER: 全局 watch 索引的唯一实例。
@@ -94,15 +119,16 @@ static REGISTRY: Mutex<WatchIndex> = Mutex::new(WatchIndex {
 });
 // OWNER: 全局 watch 总数。它是所有 `notify_*` 的快速路径：为零时变更点只付出一次 Relaxed 读取。
 static WATCH_COUNT: AtomicUsize = AtomicUsize::new(0);
-// OWNER: 存活的 inotify 实例数，执行 `MAX_INSTANCES`；在 `Inotify::new` 预留、Drop 归还。
-static INSTANCES: AtomicUsize = AtomicUsize::new(0);
-
 /// `add_watch` 的失败原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WatchError {
-    /// 事件位为空或含未知位（`EINVAL`）。
+    /// 没有标准 inotify bit 或包含未知位（`EINVAL`）。
     InvalidMask,
-    /// 该实例的 watch 数已达上限（`ENOSPC`）。
+    /// 实际 open membership 已退休（`EBADF`）。
+    Closed,
+    /// IN_MASK_CREATE 请求已有 inode watch（`EEXIST`）。
+    AlreadyExists,
+    /// instance 原 real UID/UserNS 或祖先 watch 配额已达上限（`ENOSPC`）。
     TooManyWatches,
     OutOfMemory,
 }
@@ -117,180 +143,127 @@ pub(crate) enum InitError {
 
 /// 一个 inotify 实例（一个 inotify fd 背后的对象）。
 pub(crate) struct Inotify {
-    queue: Mutex<EventQueue>,
-    watches: Mutex<Vec<Arc<Watch>>>,
-    next_wd: AtomicI32,
+    id: u64,
+    // OWNER: queue 的实际 lifetime；None 拒绝由旧 Watch Arc 发来的迟到事件。
+    // event node 与 codec buffer 在锁外准备，短 guard 内不进入 allocator。
+    queue: Mutex<Option<EventQueue>>,
+    // OWNER: 实际实例 admission 与两种 watch 查找投影；短 guard 内只有已准备的 AVL 更新。
+    watches: Mutex<Option<WatchMembership>>,
     // 合并的读就绪 edge：入队后 signal，阻塞的 reader 与 poll/epoll 经它唤醒。
     notification: (Arc<PipeEnd>, Arc<PipeEnd>),
-    // OWNER: 序列化同一个 OFD（dup/fork 共享）的并发 reader。编码后的字节要写到用户内存并可能缺页，
-    // 事件在交付成功之后才出队；缺失时两个 reader 会各拿到同一批事件。
-    read_gate: TaskMutex<()>,
     // 实例自己的弱引用，供 watch 回指；`DeviceFile` 方法只拿到 `&self`，没有 `Arc`。构造后立即设置一次。
     this: Mutex<Weak<Inotify>>,
 }
 
 impl Inotify {
-    /// 创建一个空实例。
-    pub(crate) fn new() -> Result<Arc<Self>, InitError> {
-        INSTANCES
-            .try_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
-                (count < MAX_INSTANCES).then(|| count + 1)
-            })
-            .map_err(|_| InitError::TooManyInstances)?;
-        // 此后任何失败都要归还实例名额；成功构造后由 Drop 归还。
-        let release = |error| {
-            INSTANCES.fetch_sub(1, Ordering::AcqRel);
-            error
-        };
-        let notification =
-            Pipe::notification_pair().map_err(|()| release(InitError::OutOfMemory))?;
-        let instance = Arc::try_new(Self {
-            queue: Mutex::new(EventQueue::new()),
-            watches: Mutex::new(Vec::new()),
-            next_wd: AtomicI32::new(1),
-            notification,
-            read_gate: TaskMutex::new(()),
-            this: Mutex::new(Weak::new()),
-        })
-        .map_err(|_| release(InitError::OutOfMemory))?;
-        *instance.this.lock() = Arc::downgrade(&instance);
-        Ok(instance)
-    }
-
     /// 入队一个事件并唤醒 reader。
-    fn enqueue(&self, wd: i32, mask: u32, cookie: u32, name: &[u8]) {
+    fn enqueue(&self, wd: i32, mask: u32, cookie: u32, name: &[u8], expected: Option<&Arc<Watch>>) {
+        // 固定 Linux ABI：self move/delete 从不携带 IN_ISDIR，目录 entry events 仍保留。
+        let mask = if mask & (IN_MOVE_SELF | IN_DELETE_SELF) != 0 {
+            mask & !IN_ISDIR
+        } else {
+            mask
+        };
         let mut owned = Vec::new();
-        let queued = if owned.try_reserve_exact(name.len()).is_ok() {
+        let prepared = if owned.try_reserve_exact(name.len()).is_ok() {
             owned.extend_from_slice(name);
-            self.queue.lock().push(Event {
+            EventQueue::prepare(Event {
                 wd,
                 mask,
                 cookie,
                 name: owned.into_boxed_slice(),
             })
+            .ok()
         } else {
-            // 名字分配失败按溢出处理：用户至少会收到“丢了事件”的信号。
-            self.queue.lock().push(Event {
-                wd: -1,
-                mask: queue::IN_Q_OVERFLOW,
-                cookie: 0,
-                name: Default::default(),
-            })
+            None
         };
+        let allocated = prepared.is_some();
+        // actual mark 与 queue publish 共用 membership→queue 顺序；旧 Arc 不再生成迟到事件。
+        let mut membership = expected.map(|_| self.watches.lock());
+        if expected.is_some_and(|watch| {
+            !membership
+                .as_ref()
+                .and_then(|guard| guard.as_ref())
+                .is_some_and(|owner| owner.contains(watch))
+        }) {
+            drop(membership);
+            drop(prepared);
+            return;
+        }
+        let (queued, rejected) = {
+            let mut queue = self.queue.lock();
+            let Some(queue) = queue.as_mut() else {
+                drop(queue);
+                drop(membership);
+                drop(prepared);
+                return;
+            };
+            queue.push(prepared)
+        };
+        let oneshot = expected.and_then(|watch| {
+            // Linux 在 event allocation OOM 的早退分支只报告 overflow，不销毁 ONESHOT mark。
+            if !allocated || watch.mask.load(Ordering::Relaxed) & IN_ONESHOT == 0 {
+                return None;
+            }
+            membership
+                .as_mut()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .take(wd, Some(watch))
+        });
+        drop(membership);
+        drop(rejected);
+        if let Some(watch) = oneshot {
+            unregister(&watch);
+            self.enqueue(wd, IN_IGNORED, 0, b"", None);
+        }
         // 队列锁已释放；合并掉的事件没有新的可读内容，不需要唤醒。
         if queued != queue::Pushed::Coalesced {
             self.notification.1.signal_readiness();
         }
     }
 
-    /// 在 `identity` 上添加或更新 watch。
-    ///
-    /// 同一实例对同一 inode 的 watch 只有一个：重复添加更新掩码（`IN_MASK_ADD` 为合并）并返回原 wd。
-    ///
-    /// # Errors
-    ///
-    /// 见 [`WatchError`]。
-    pub(crate) fn add_watch(&self, identity: (usize, u64), flags: u32) -> Result<i32, WatchError> {
-        let events = flags & (ALL_EVENTS | IN_ONESHOT);
-        if flags & ALL_EVENTS == 0 || flags & !(ALL_EVENTS | ADD_WATCH_FLAGS) != 0 {
-            return Err(WatchError::InvalidMask);
-        }
-        let mut watches = self.watches.lock();
-        if let Some(existing) = watches.iter().find(|watch| watch.identity == identity) {
-            let merged = if flags & IN_MASK_ADD != 0 {
-                existing.mask.load(Ordering::Relaxed) | events
-            } else {
-                events
-            };
-            existing.mask.store(merged, Ordering::Relaxed);
-            return Ok(existing.wd);
-        }
-        if watches.len() >= MAX_WATCHES {
-            return Err(WatchError::TooManyWatches);
-        }
-        watches
-            .try_reserve(1)
-            .map_err(|_| WatchError::OutOfMemory)?;
-        let watch = Arc::try_new(Watch {
-            identity,
-            instance: self.this.lock().clone(),
-            wd: self.next_wd.fetch_add(1, Ordering::Relaxed),
-            mask: AtomicU32::new(events),
-        })
-        .map_err(|_| WatchError::OutOfMemory)?;
-        {
-            let mut registry = REGISTRY.lock();
-            match registry.by_inode.get_mut(&identity) {
-                Some(list) => {
-                    list.try_reserve(1).map_err(|_| WatchError::OutOfMemory)?;
-                    list.push(watch.clone());
-                }
-                None => {
-                    let mut list = Vec::new();
-                    list.try_reserve_exact(1)
-                        .map_err(|_| WatchError::OutOfMemory)?;
-                    list.push(watch.clone());
-                    registry
-                        .by_inode
-                        .try_insert(identity, list)
-                        .map_err(|_| WatchError::OutOfMemory)?;
-                }
-            }
-        }
-        let wd = watch.wd;
-        watches.push(watch);
-        WATCH_COUNT.fetch_add(1, Ordering::AcqRel);
-        Ok(wd)
-    }
-
-    /// 删除 `wd` 并投递 `IN_IGNORED`（`inotify_rm_watch`）。
-    ///
-    /// # Returns
-    ///
-    /// wd 不属于本实例返回 `false`。
-    pub(crate) fn remove_watch(&self, wd: i32) -> bool {
-        let watch = {
-            let mut watches = self.watches.lock();
-            match watches.iter().position(|watch| watch.wd == wd) {
-                Some(index) => watches.swap_remove(index),
-                None => return false,
-            }
-        };
-        unregister(&watch);
-        self.enqueue(wd, IN_IGNORED, 0, b"");
-        true
-    }
-
     /// 内核自己撤销 watch（inode 已删除、文件系统卸载、`IN_ONESHOT`）：与 [`Self::remove_watch`] 相同，
     /// 但先按需投递 `extra`。
-    fn revoke(&self, wd: i32, extra: u32) {
+    fn revoke(&self, watch: &Arc<Watch>, extra: u32) {
         if extra != 0 {
-            self.enqueue(wd, extra, 0, b"");
+            self.enqueue(watch.wd, extra, 0, b"", Some(watch));
         }
-        self.remove_watch(wd);
+        self.remove_watch_exact(watch.wd, Some(watch));
     }
 }
 
 impl Drop for Inotify {
     fn drop(&mut self) {
-        for watch in self.watches.get_mut().drain(..) {
-            unregister(&watch);
-        }
-        INSTANCES.fetch_sub(1, Ordering::AcqRel);
+        self.release_instance();
     }
 }
 
 /// 把 `watch` 从全局注册表移除。
 fn unregister(watch: &Arc<Watch>) {
-    let mut registry = REGISTRY.lock();
-    if let Some(list) = registry.by_inode.get_mut(&watch.identity) {
-        list.retain(|candidate| !Arc::ptr_eq(candidate, watch));
-        if list.is_empty() {
-            registry.by_inode.remove(&watch.identity);
-        }
+    let (removed, retired_inode) = {
+        let mut registry = REGISTRY.lock();
+        let removed = registry
+            .by_inode
+            .get_mut(&watch.identity)
+            .and_then(|list| list.watches.remove(&watch.key));
+        let retired_inode = registry
+            .by_inode
+            .get(&watch.identity)
+            .is_some_and(|list| list.watches.is_empty())
+            .then(|| registry.by_inode.remove(&watch.identity));
+        (removed, retired_inode)
+    };
+    if removed.is_some() {
+        let previous = WATCH_COUNT.fetch_sub(1, Ordering::AcqRel);
+        assert_ne!(previous, 0, "inotify watch admission underflow");
     }
-    drop(registry);
-    WATCH_COUNT.fetch_sub(1, Ordering::AcqRel);
+    // actual quota 与全部 Arc/AVL node 退休不保留全局 registry guard。
+    let admission = watch.admission.lock().take();
+    drop(admission);
+    drop(removed);
+    drop(retired_inode);
 }
 
 fn fault(_: UserFault) -> DeviceError {
@@ -298,40 +271,51 @@ fn fault(_: UserFault) -> DeviceError {
 }
 
 impl DeviceFile for Inotify {
+    fn supports_write(&self) -> bool {
+        false
+    }
+    fn release(&self) {
+        self.release_instance();
+    }
+    fn anonymous_name(&self) -> &'static [u8] {
+        Self::ANONYMOUS_NAME
+    }
     fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
-        let _gate = self
-            .read_gate
-            .lock()
-            .map_err(|_| DeviceError::Errno(errno::ENOMEM))?;
+        let initial_capacity = output.remaining();
         loop {
-            let encoded = self
-                .queue
-                .lock()
-                .encode_prefix(output.remaining().min(READ_BATCH));
-            match encoded {
-                // 第一个事件就放不下用户缓冲（Linux：`EINVAL`）。
-                Err(()) => return Err(DeviceError::Errno(errno::EINVAL)),
-                Ok((_, 0)) => device::wait_ready(self, POLLIN, nonblocking)?,
-                Ok((bytes, count)) => {
-                    output.write(&bytes).map_err(fault)?;
-                    // 交付成功才出队：写用户内存失败的事件留在队列里。
-                    self.queue.lock().discard(count);
-                    return Ok(());
+            let record = {
+                let mut queue = self.queue.lock();
+                queue
+                    .as_mut()
+                    .ok_or(DeviceError::Errno(errno::EBADF))?
+                    .pop(output.remaining())
+                    .map_err(|_| DeviceError::Errno(errno::EINVAL))?
+            };
+            match record {
+                Some(record) => {
+                    // get_one_event 已退休实际 membership；header/name/padding 均在 guard 外 copy。
+                    // Linux inotify_read 的 EFAULT 覆盖先前进度，当前记录不会重放。
+                    record
+                        .copy_with(|bytes| output.write(bytes))
+                        .map_err(|_| DeviceError::ReadFault)?;
                 }
+                None if output.remaining() != initial_capacity => return Ok(()),
+                None => device::wait_ready(self, POLLIN, nonblocking)?,
             }
         }
     }
 
     fn poll(&self, events: i16) -> i16 {
-        if !self.queue.lock().is_empty() {
-            events & POLLIN
-        } else {
-            0
+        let queue = self.queue.lock();
+        match queue.as_ref() {
+            Some(queue) if !queue.is_empty() => events & READ_EVENTS,
+            Some(_) => 0,
+            None => 0x010,
         }
     }
 
     fn wait_sources(&self, events: i16) -> DeviceWaitSources {
-        if events & POLLIN != 0 {
+        if events & READ_EVENTS != 0 {
             DeviceWaitSources::pipe(self.notification.0.pipe(), POLLIN)
         } else {
             DeviceWaitSources::new()
@@ -360,7 +344,11 @@ impl DeviceFile for Inotify {
         if call.request != FIONREAD {
             return Err(DeviceError::Errno(errno::ENOTTY));
         }
-        let pending = i32::try_from(self.queue.lock().pending_bytes()).unwrap_or(i32::MAX);
+        let pending = {
+            let queue = self.queue.lock();
+            let queue = queue.as_ref().ok_or(DeviceError::Errno(errno::EBADF))?;
+            i32::try_from(queue.pending_bytes()).unwrap_or(i32::MAX)
+        };
         call.user
             .write(call.argument, &pending.to_ne_bytes())
             .map_err(fault)?;
@@ -381,35 +369,44 @@ pub(crate) fn watching() -> bool {
 }
 
 fn identity_of(inode: &dyn Inode) -> Option<(usize, u64)> {
-    Some((inode.filesystem_id(), inode.metadata().ok()?.inode))
+    if !inode.allows_notifications() {
+        return None;
+    }
+    Some((inode.filesystem_id(), inode.notification_link_state()?.0))
 }
 
 /// 把事件投递给 `identity` 上订阅了 `mask` 的全部 watch。
-fn deliver(identity: (usize, u64), mask: u32, cookie: u32, name: &[u8]) {
-    let targets = {
-        let registry = REGISTRY.lock();
-        let Some(list) = registry.by_inode.get(&identity) else {
-            return;
+fn deliver(identity: (usize, u64), mask: u32, cookie: u32, name: &[u8], unlinked: bool) {
+    let mut cursor = None;
+    loop {
+        let next = {
+            let registry = REGISTRY.lock();
+            registry.by_inode.get(&identity).and_then(|list| {
+                let mut entries = match cursor {
+                    Some(key) => list.watches.iter_after(&key),
+                    None => list.watches.iter(),
+                };
+                entries.next().map(|(&key, watch)| (key, watch.clone()))
+            })
         };
-        let mut targets = Vec::new();
-        if targets.try_reserve_exact(list.len()).is_err() {
-            return;
-        }
-        targets.extend(list.iter().cloned());
-        targets
-    };
-    for watch in targets {
+        let Some((key, watch)) = next else {
+            break;
+        };
+        cursor = Some(key);
         let subscribed = watch.mask.load(Ordering::Relaxed);
-        if subscribed & mask & ALL_EVENTS == 0 {
+        if subscribed & mask & ALL_EVENTS == 0 || (unlinked && subscribed & IN_EXCL_UNLINK != 0) {
             continue;
         }
         let Some(instance) = watch.instance.upgrade() else {
             continue;
         };
-        instance.enqueue(watch.wd, mask & (ALL_EVENTS | IN_ISDIR), cookie, name);
-        if subscribed & IN_ONESHOT != 0 {
-            instance.revoke(watch.wd, 0);
-        }
+        instance.enqueue(
+            watch.wd,
+            mask & (ALL_EVENTS | IN_ISDIR),
+            cookie,
+            name,
+            Some(&watch),
+        );
     }
 }
 
@@ -428,11 +425,15 @@ pub(crate) fn notify_opened(opened: &Arc<OpenedFile>, mask: u32) {
     } else {
         mask
     };
-    deliver(identity, mask, 0, b"");
-    if let Some((parent, name)) = opened.watch_context()
+    let context = opened.watch_context();
+    let unlinked = context
+        .as_ref()
+        .map_or_else(|| opened.is_unlinked(), |(_, _, unlinked)| *unlinked);
+    deliver(identity, mask, 0, b"", unlinked);
+    if let Some((parent, name, _)) = context
         && let Some(parent_identity) = identity_of(parent.as_ref())
     {
-        deliver(parent_identity, mask, 0, &name);
+        deliver(parent_identity, mask, 0, &name, unlinked);
     }
 }
 
@@ -449,7 +450,7 @@ pub(crate) fn notify_entry(
     }
     if let Some(identity) = identity_of(parent) {
         let mask = if is_directory { mask | IN_ISDIR } else { mask };
-        deliver(identity, mask, cookie, name);
+        deliver(identity, mask, cookie, name, false);
     }
 }
 
@@ -464,22 +465,12 @@ pub(crate) fn notify_self(inode: &dyn Inode, mask: u32) {
         } else {
             mask
         };
-        deliver(identity, mask, 0, b"");
+        deliver(identity, mask, 0, b"", false);
     }
 }
 
-/// inode 身份（unlink/rename 之前取得：之后 inode 可能已被回收，metadata 不再可靠）。
-///
-/// 没有任何 watch 时返回 `None`，调用者的 inotify 工作随之全部跳过。
-pub(crate) fn identity(inode: &dyn Inode) -> Option<(usize, u64)> {
-    if watching() { identity_of(inode) } else { None }
-}
-
-/// inode 的最后一个 link 已删除：投递 `IN_DELETE_SELF` 并撤销其上全部 watch（各得 `IN_IGNORED`）。
-///
-/// 与 Linux 的差别：Linux 在 inode 真正被回收（最后一个打开引用消失）时才投递 `IN_DELETE_SELF`；
-/// 这里在最后一个 link 消失时投递。
-pub(crate) fn notify_removed(identity: (usize, u64), is_directory: bool) {
+/// 已失去最后 hard link 的实际 dentry 被回收：投递 DELETE_SELF，然后撤销 marks 并投递 IGNORED。
+fn notify_removed(identity: (usize, u64), is_directory: bool) {
     if !watching() {
         return;
     }
@@ -488,8 +479,26 @@ pub(crate) fn notify_removed(identity: (usize, u64), is_directory: bool) {
         IN_DELETE_SELF | if is_directory { IN_ISDIR } else { 0 },
         0,
         b"",
+        false,
     );
     revoke_all(|candidate| candidate == identity, 0);
+}
+
+/// Linux dentry_unlink_inode 的实际 last-dput 通知；仍有其他 hard link 时保留 inode watch。
+/// 匿名 dentry 不调用此路径。identity/link count 从实际 storage owner 无分配取得，不取全量 stat 或 page statistics。
+pub(crate) fn notify_dentry_reclaimed(inode: &dyn Inode) {
+    if !watching() || !inode.allows_notifications() {
+        return;
+    }
+    let Some((number, links)) = inode.notification_link_state() else {
+        return;
+    };
+    if links == 0 {
+        notify_removed(
+            (inode.filesystem_id(), number),
+            inode.inode_type() == InodeType::Directory,
+        );
+    }
 }
 
 /// 为一对 `IN_MOVED_FROM`/`IN_MOVED_TO` 分配相同的 cookie。
@@ -508,22 +517,33 @@ pub(crate) fn filesystem_unmounted(filesystem_id: usize) {
 
 /// 撤销身份满足 `matches` 的全部 watch，先对每个投递 `extra`（非零时）。
 fn revoke_all(matches: impl Fn((usize, u64)) -> bool, extra: u32) {
-    let doomed = {
-        let registry = REGISTRY.lock();
-        let mut doomed = Vec::new();
-        for (identity, list) in registry.by_inode.iter() {
-            if matches(*identity) {
-                if doomed.try_reserve(list.len()).is_err() {
-                    break;
+    let mut cursor = None;
+    loop {
+        let next = {
+            let registry = REGISTRY.lock();
+            let mut entries = match cursor {
+                Some((identity, _)) => registry.by_inode.iter_from(&identity),
+                None => registry.by_inode.iter(),
+            };
+            entries.find_map(|(&identity, list)| {
+                if !matches(identity) {
+                    return None;
                 }
-                doomed.extend(list.iter().cloned());
-            }
-        }
-        doomed
-    };
-    for watch in doomed {
+                let mut watches = match cursor {
+                    Some((previous, key)) if previous == identity => list.watches.iter_after(&key),
+                    _ => list.watches.iter(),
+                };
+                watches
+                    .next()
+                    .map(|(&key, watch)| ((identity, key), watch.clone()))
+            })
+        };
+        let Some((position, watch)) = next else {
+            break;
+        };
+        cursor = Some(position);
         if let Some(instance) = watch.instance.upgrade() {
-            instance.revoke(watch.wd, extra);
+            instance.revoke(&watch, extra);
         }
     }
 }

@@ -4,9 +4,13 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::{
-    WaitCompletion,
-    task_wait::{TaskWaitKey, TaskWaitTarget, current_wait_target},
+    WaitCompletion, WaitResult,
+    task_wait::{TaskWaitKey, TaskWaitMode, TaskWaitTarget, current_wait_target},
 };
+
+// OWNER: event cancellation 可以比已提取的 wake 先返回，旧 event 随后可能在同地址重建。
+// 全局不复用 ticket 封闭跨对象生命周期 ABA；只在阻塞登记时领取，不分配、不承载内容 ordering。
+static EVENT_TICKETS: AtomicU64 = AtomicU64::new(0);
 
 /// 一个固定 owner（例如内核线程）等待、任意 task/IRQ 上下文 signal 的事件。
 ///
@@ -20,8 +24,6 @@ pub(crate) struct TaskEvent {
     waiter: spin::Mutex<Option<(Arc<dyn TaskWaitTarget>, TaskWaitKey)>>,
     // OWNER: 唯一 waiter 的 arming 握手；事件只允许单等待者，因此可以内嵌而无需分配。
     completion: WaitCompletion,
-    // OWNER: 区分同一事件上每次等待的 membership ticket；缺失时迟到的 wake 可能命中下一次等待。
-    ticket: AtomicU64,
 }
 
 impl TaskEvent {
@@ -30,7 +32,6 @@ impl TaskEvent {
             pending: AtomicBool::new(false),
             waiter: spin::Mutex::new(None),
             completion: WaitCompletion::new(),
-            ticket: AtomicU64::new(0),
         }
     }
 
@@ -40,14 +41,53 @@ impl TaskEvent {
     ///
     /// 不在 task context 调用，或同一事件出现第二个并发 waiter 时 panic。
     pub(crate) fn wait(&self) {
+        assert_eq!(
+            self.wait_mode(TaskWaitMode::Uninterruptible, None),
+            WaitResult::Woken
+        );
+    }
+
+    /// 无待处理工作时的 kernel daemon 空闲等待；保持不可中断 handshake，但不计入 load。
+    pub(crate) fn wait_idle(&self) {
+        assert_eq!(self.wait_mode(TaskWaitMode::Idle, None), WaitResult::Woken);
+    }
+
+    /// 等待事件或可交付信号；不分配 waiter，Interrupted 后事件及 owner 继续有效。
+    pub(crate) fn wait_interruptible(&self) -> WaitResult {
+        self.wait_mode(TaskWaitMode::Interruptible, None)
+    }
+
+    /// PONR cleanup 仅允许致命 signal 取消；普通捕获信号继续等待。
+    pub(crate) fn wait_killable(&self) -> WaitResult {
+        self.wait_mode(TaskWaitMode::Killable, None)
+    }
+
+    /// 复用实际 event/arming owner 与 scheduler deadline index；到期或 OOM 取消时不消费未来 event。
+    pub(crate) fn wait_interruptible_until(&self, deadline_ns: u64) -> WaitResult {
+        self.wait_mode(TaskWaitMode::Interruptible, Some(deadline_ns))
+    }
+    fn wait_mode(&self, mode: TaskWaitMode, deadline_ns: Option<u64>) -> WaitResult {
         loop {
             if self.pending.swap(false, Ordering::AcqRel) {
-                return;
+                return WaitResult::Woken;
             }
             let target = current_wait_target().expect("TaskEvent::wait requires task context");
+            if match mode {
+                TaskWaitMode::Uninterruptible | TaskWaitMode::Idle => false,
+                TaskWaitMode::Interruptible => target.interrupted(),
+                TaskWaitMode::Killable => target.fatal_interrupted(),
+            } {
+                return WaitResult::Interrupted;
+            }
             let key = TaskWaitKey {
                 owner: self as *const Self as usize,
-                ticket: self.ticket.fetch_add(1, Ordering::Relaxed),
+                ticket: EVENT_TICKETS
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |ticket| {
+                        ticket.checked_add(1)
+                    })
+                    .expect("task event ticket exhausted"),
+                mode,
+                deadline_ns,
             };
             self.completion.reset();
             {
@@ -56,22 +96,60 @@ impl TaskEvent {
                 *waiter = Some((target.clone(), key));
             }
             // 登记后复查：signal 若在登记前发布了 pending 且未看到 waiter，由这里收回等待。
-            if self.pending.load(Ordering::Acquire) && self.waiter.lock().take().is_some() {
-                self.completion.complete();
+            let completed = {
+                let mut waiter = self.waiter.lock();
+                if self.pending.load(Ordering::Acquire) && waiter.take().is_some() {
+                    self.completion.complete();
+                    true
+                } else {
+                    false
+                }
+            };
+            if completed {
                 continue;
             }
-            target.sleep(&self.completion, key);
+            let result = target.sleep(&self.completion, key);
+            // cancellation 与 signal 的 completion 都在 waiter lock 内完成。
+            // 否则旧 signal 摘除 waiter 后延迟 complete，会污染下一 ticket 的 token。
+            {
+                let mut waiter = self.waiter.lock();
+                waiter.take();
+                self.completion.complete();
+            }
+            if matches!(
+                result,
+                WaitResult::Interrupted | WaitResult::TimedOut | WaitResult::OutOfMemory
+            ) {
+                return result;
+            }
+            assert_eq!(result, WaitResult::Woken);
         }
     }
 
     /// 发布一次 signal；waiter 已阻塞时将其唤醒。重复 signal 合并为一次。
     pub(crate) fn signal(&self) {
+        self.signal_with_placement(false);
+    }
+
+    /// 发布同步通知，向 scheduler 传递当前 CPU 局部性提示；completion 与 cancellation 协议不变。
+    pub(crate) fn signal_on_current_cpu(&self) {
+        self.signal_with_placement(true);
+    }
+
+    fn signal_with_placement(&self, current_cpu: bool) {
         self.pending.store(true, Ordering::Release);
-        let Some((target, key)) = self.waiter.lock().take() else {
-            return;
+        let wake = {
+            let mut waiter = self.waiter.lock();
+            waiter
+                .take()
+                .and_then(|target| self.completion.complete().then_some(target))
         };
-        if self.completion.complete() {
-            target.wake(key);
+        if let Some((target, key)) = wake {
+            if current_cpu {
+                target.wake_on_current_cpu(key);
+            } else {
+                target.wake(key);
+            }
         }
     }
 }

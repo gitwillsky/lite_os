@@ -3,6 +3,15 @@ use crate::fs::{FileSystemStatistics, KernelThreadSupport};
 use core::sync::atomic::Ordering;
 
 impl FileSystem for Ext4FileSystem {
+    fn show_mount_options(&self) -> Result<alloc::vec::Vec<u8>, FileSystemError> {
+        let mut options = alloc::vec::Vec::new();
+        options
+            .try_reserve_exact(b",data=ordered".len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        options.extend_from_slice(b",data=ordered");
+        Ok(options)
+    }
+
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
         let fs_arc = self
             .self_ref
@@ -53,14 +62,31 @@ impl FileSystem for Ext4FileSystem {
         })
     }
 
-    /// 提交 running transaction（每次提交以 barrier 结束），再让写回线程退出。
-    fn make_writable(&self) -> Result<(), FileSystemError> {
-        Ext4FileSystem::make_writable(self)
+    fn remount(
+        &self,
+        options: &[u8],
+        _namespace: &crate::namespace::UserNamespace,
+        writable_transition: bool,
+    ) -> Result<(), FileSystemError> {
+        validate_mount_options(options)?;
+        if writable_transition {
+            self.make_writable()?;
+        }
+        Ok(())
     }
 
     fn shutdown(&self) -> Result<(), FileSystemError> {
-        let committed = self.sync_journal();
+        // mount lifecycle 的 shutdown 由 MOUNT_TRANSACTION 串行，恰好一次。
+        // 先无分配等待所有旧 mutation/I/O 离开，再在同一 owner 内停止 daemon 和最终 drain；
+        // 即使 commit Arc 准备 OOM，返回后 daemon 也不再碰已释放的物理租约。
+        let mut waiter = self
+            .shutdown_waiter
+            .lock()
+            .take()
+            .expect("filesystem shutdown repeated outside its mount lifecycle");
+        let _mutation = self.mutation.lock_prepared(&mut waiter);
         self.stopping.store(true, Ordering::Release);
+        let committed = self.commit_running_transaction();
         self.commit_event.signal();
         committed
     }
@@ -80,6 +106,9 @@ impl Ext4FileSystem {
             .mutation
             .lock()
             .map_err(|_| FileSystemError::OutOfMemory)?;
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(FileSystemError::InvalidOperation);
+        }
         self.commit_running_transaction()
     }
 
@@ -138,6 +167,15 @@ impl Ext4FileSystem {
             .mutation
             .lock()
             .map_err(|_| FileSystemError::OutOfMemory)?;
+        if self.stopping.load(Ordering::Acquire) {
+            return Ok(());
+        }
         self.commit_running_transaction()
     }
+}
+
+/// Host 只替换 deadline/scheduler adapter，执行原始 daemon 循环。
+#[cfg(test)]
+pub(crate) fn test_run_writeback_daemon(fs: Arc<Ext4FileSystem>, sleep_until: fn(u64)) {
+    fs.run_writeback_daemon(sleep_until);
 }

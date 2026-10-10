@@ -2,6 +2,7 @@ use crate::{
     file::OpenFileKind,
     fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
     memory::{FileMappingError, FileMappingSource, MapPermission, MemoryAdvice, MemoryError},
+    memory::{MappingPlacement, UserMappingRequest, UserMappingSource},
     task::current_task,
 };
 
@@ -42,6 +43,7 @@ fn memory_errno(error: MemoryError) -> isize {
     match error {
         MemoryError::AddressInUse => errno::EEXIST,
         MemoryError::PermissionDenied => errno::EACCES,
+        MemoryError::TextBusy => errno::ETXTBSY,
         MemoryError::Io => errno::EIO,
         MemoryError::InvalidRange | MemoryError::PageTableError(_) | MemoryError::OutOfMemory => {
             errno::EINVAL
@@ -107,14 +109,6 @@ pub(crate) fn sys_mmap(
     }
     let task = current_task().expect("mmap requires a current task");
 
-    enum PreparedMapping {
-        Anonymous,
-        SharedAnonymous,
-        Device(crate::memory::DeviceMappingSource),
-        PrivateFile(FileMappingSource),
-        SharedFile(FileMappingSource),
-    }
-
     // Resolve every remaining ABI/backing error before destructive MAP_FIXED replacement.
     // The prepared value only retains the canonical immutable backing owner.
     let prepared = if flags & MAP_ANONYMOUS != 0 {
@@ -122,9 +116,9 @@ pub(crate) fn sys_mmap(
             return -errno::EINVAL;
         }
         if sharing == MAP_SHARED {
-            PreparedMapping::SharedAnonymous
+            UserMappingSource::SharedAnonymous
         } else {
-            PreparedMapping::Anonymous
+            UserMappingSource::PrivateAnonymous
         }
     } else {
         if fd < 0 || !offset.is_multiple_of(crate::memory::PAGE_SIZE) {
@@ -145,13 +139,17 @@ pub(crate) fn sys_mmap(
                 access_mode != O_RDONLY,
             );
             match file.mmap(offset as u64, length, request) {
-                Ok(source) => PreparedMapping::Device(source),
+                Ok(mut source) => {
+                    source.retain_file(ofd.clone());
+                    UserMappingSource::Device(source)
+                }
                 Err(error) => return super::device::device_error(error),
             }
         } else {
-            let Some(inode) = ofd.inode_ref() else {
+            if !matches!(ofd.kind, OpenFileKind::Inode) {
                 return -errno::ENODEV;
-            };
+            }
+            let inode = ofd.inode_ref();
             if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
                 return -errno::ENODEV;
             }
@@ -162,54 +160,51 @@ pub(crate) fn sys_mmap(
                 return -errno::EACCES;
             }
             // Linux `mmap_region`：noexec 挂载上的文件不可映射为可执行。
-            if permission.contains(MapPermission::X)
-                && crate::fs::vfs().mount_flags(inode.filesystem_id()).noexec()
-            {
+            if permission.contains(MapPermission::X) && ofd.opened_ref().mount_flags().noexec() {
                 return -errno::EPERM;
             }
-            let mapping = match crate::fs::mapping(inode.clone(), ofd.opened_ref()) {
-                Ok(mapping) => mapping,
-                Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
-                Err(_) => return -errno::EIO,
-            };
+            // Linux rejects an already-active swapfile before MAP_FIXED replacement begins.
+            if sharing == MAP_SHARED
+                && permission.contains(MapPermission::W)
+                && inode.is_swap_file()
+            {
+                return -errno::ETXTBSY;
+            }
+            ofd.opened_ref().touch_access();
+            let mapping =
+                match crate::fs::mapping(inode.clone(), Some(ofd.clone()), access_mode != O_RDONLY)
+                {
+                    Ok(mapping) => mapping,
+                    Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
+                    Err(_) => return -errno::EIO,
+                };
             let source = match FileMappingSource::new(mapping, offset as u64, length) {
                 Ok(source) => source,
                 Err(FileMappingError::Invalid) => return -errno::EINVAL,
                 Err(FileMappingError::Overflow) => return -errno::EOVERFLOW,
             };
             if sharing == MAP_SHARED {
-                PreparedMapping::SharedFile(source)
+                UserMappingSource::SharedFile(source)
             } else {
-                PreparedMapping::PrivateFile(source)
+                UserMappingSource::PrivateFile(source)
             }
         }
     };
 
-    if fixed {
-        // This begins the replacement stage. A later VMA installation error does not restore
-        // the removed mapping, matching the deliberately limited Linux-compatible contract.
-        if let Err(error) = task.unmap_user_mapping(address, length) {
-            return -memory_errno(error);
-        }
-    }
-    let exact_address = fixed || flags & MAP_FIXED_NOREPLACE != 0;
-    let result = match prepared {
-        PreparedMapping::Anonymous => {
-            task.map_anonymous(address, length, permission, exact_address)
-        }
-        PreparedMapping::SharedAnonymous => {
-            task.map_shared_anonymous(address, length, permission, exact_address)
-        }
-        PreparedMapping::Device(source) => {
-            task.map_device(address, length, permission, exact_address, source)
-        }
-        PreparedMapping::PrivateFile(source) => {
-            task.map_private_file(address, permission, exact_address, source)
-        }
-        PreparedMapping::SharedFile(source) => {
-            task.map_shared_file(address, permission, exact_address, source)
-        }
+    let placement = if fixed {
+        MappingPlacement::Fixed
+    } else if flags & MAP_FIXED_NOREPLACE != 0 {
+        MappingPlacement::FixedNoReplace
+    } else {
+        MappingPlacement::Hint
     };
+    let result = task.install_user_mapping(UserMappingRequest {
+        address,
+        length,
+        permission,
+        placement,
+        source: prepared,
+    });
     result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
 }
 

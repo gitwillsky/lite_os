@@ -223,3 +223,34 @@ impl TestMappedInode {
         Ok(block)
     }
 }
+
+/// 经生产 mutation/stage/commit 路径提交测试镜像，用于暂停真实 running checkpoint。
+#[cfg(test)]
+pub(crate) fn test_stage_metadata(
+    fs: &Ext4FileSystem,
+    images: &[(u64, &[u8])],
+) -> Result<(), FileSystemError> {
+    let guard = MutationGuard::begin(fs)?;
+    for &(block, bytes) in images {
+        fs.write_fs_block(block, bytes)?;
+    }
+    guard.commit()
+}
+
+/// 只投影生产 metadata seam 的结果，不替代 staged view 或 cache 算法。
+#[cfg(test)]
+pub(crate) fn test_read_metadata(
+    fs: &Ext4FileSystem,
+    block: u64,
+) -> Result<Arc<Vec<u8>>, FileSystemError> {
+    fs.read_metadata_block(block)
+}
+
+#[cfg(test)]
+pub(crate) fn test_read_logical_block(
+    fs: &Ext4FileSystem,
+    block: u64,
+    output: &mut [u8],
+) -> Result<(), FileSystemError> {
+    fs.read_fs_block(block, output)
+}

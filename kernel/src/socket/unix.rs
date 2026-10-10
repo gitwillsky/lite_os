@@ -1,85 +1,146 @@
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-use crate::ipc::ReceiveBuffer;
-use crate::ipc::{PipeDirection, PipeEnd, PipeRead, PipeWrite};
+use crate::ipc::PipeEnd;
 
-use super::{
-    SocketError, SocketPollState, SocketSendError, SocketType, SocketWaitGuard, SocketWaitSource,
-    UnixCredentials,
-};
+use super::{SocketError, SocketSendError, SocketType, UnixCredentials, UnixSendCredentials};
 
+#[path = "unix/capacity.rs"]
+mod capacity;
+#[path = "unix/datagram_connect.rs"]
+mod datagram_connect;
+#[path = "unix/datagram_disconnect.rs"]
+mod datagram_disconnect;
 #[path = "unix/datagram_queue.rs"]
 mod datagram_queue;
+#[path = "unix/packet_send.rs"]
+mod packet_send;
+#[path = "unix/send_memory.rs"]
+mod send_memory;
+#[path = "unix/send_preflight.rs"]
+mod send_preflight;
+use send_memory::{SendMemoryState, SenderCharge};
+#[path = "unix/readiness.rs"]
+mod readiness;
+#[path = "unix/receive.rs"]
+mod receive;
+#[path = "unix/shutdown.rs"]
+mod shutdown;
 use datagram_queue::DatagramQueue;
 #[path = "unix/lifecycle.rs"]
 mod lifecycle;
 #[path = "unix/namespace.rs"]
 mod namespace;
-use namespace::NamespaceKey;
+use namespace::{BindingRequest, NamespaceKey};
 pub(crate) use namespace::{UnixAddress, UnixPathIdentity};
 #[path = "unix/rights.rs"]
 mod rights;
-pub(crate) use rights::{UnixNode, UnixPassedFile, UnixRights};
+pub(crate) use rights::{UnixFileLimit, UnixNode, UnixPassedFile, UnixReceivedRights, UnixRights};
+#[path = "unix/retirement.rs"]
+mod retirement;
 #[path = "unix/rights_graph.rs"]
 mod rights_graph;
+#[path = "unix/rights_owner.rs"]
+mod rights_owner;
 #[path = "unix/stream.rs"]
 mod stream;
 use stream::{StreamReceive, StreamTransmit};
-#[path = "unix/stream_backlog.rs"]
-mod stream_backlog;
-use stream_backlog::StreamBacklog;
+#[path = "unix/connection_backlog.rs"]
+mod connection_backlog;
+use connection_backlog::ConnectionBacklog;
 
 pub(crate) const SCM_MAX_FD: usize = 253;
 
-const POLLIN: i16 = 0x001;
+/// native TCP_SKB_MIN_TRUESIZE 公式采用当前真实 packet/frame 元数据 footprint。
+pub(super) fn minimum_buffer(direction: super::SocketIoDirection) -> usize {
+    let overhead = crate::fallible_tree::VacantEntry::<u64, Datagram>::allocation_size()
+        .max(stream::frame_allocation_size());
+    let floor = 2048 + overhead;
+    match direction {
+        super::SocketIoDirection::Send => floor * 2,
+        super::SocketIoDirection::Receive => floor,
+    }
+}
+
 const POLLOUT: i16 = 0x004;
+
+#[path = "unix/receive_mode.rs"]
+mod receive_mode;
+pub(super) use receive_mode::ReceiveMode;
 
 struct Datagram {
     bytes: Vec<u8>,
-    source: Option<UnixAddress>,
+    // 实际 sender endpoint observer；不保活 OFD，支持发送后 bind/close 的 native 地址查询。
+    source: SenderCharge,
     rights: Option<UnixRights>,
+    credentials: Option<UnixCredentials>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct BoundAddress {
     visible: UnixAddress,
     binding: Option<NamespaceKey>,
+    // 仅保留由 VFS caller 提供的实际 inode lifetime；不开放 inode 操作，不保活 OFD/Task。
+    path_owner: Option<Arc<dyn Send + Sync>>,
+}
+
+/// Native packet 半关闭状态；只属于实际 endpoint state guard，不复制到 facade 或 poll。
+#[derive(Clone, Copy, Default)]
+struct PacketShutdown {
+    read: bool,
+    write: bool,
+}
+impl PacketShutdown {
+    fn apply(&mut self, how: usize) {
+        self.read |= matches!(how, 0 | 2);
+        self.write |= matches!(how, 1 | 2);
+    }
 }
 
 enum SocketState {
-    Initial,
-    // Connecting 只在 ConnectGuard capability 存活期间存在；Drop 必须回滚到 Initial。
-    // 缺失该 transaction state 会让同一 client 的并发 connect 重复分配两套 128 KiB transport。
-    Connecting,
+    /// 实际最后 OFD close 后的 terminal state；Arc 观察者不再保活 transport 或 namespace。
+    Closed,
+    Initial {
+        shutdown: PacketShutdown,
+    },
     Listening {
-        backlog: StreamBacklog<Arc<UnixSocket>>,
+        backlog: ConnectionBacklog<Arc<UnixSocket>>,
+        // OWNER: 每次成功 listen 捕获 caller 凭据；connect 在 listener commit guard 内冻结。
+        credentials: UnixCredentials,
+        shutdown: PacketShutdown,
     },
     Stream {
         receive: Option<Arc<StreamReceive>>,
         transmit: Option<Arc<StreamTransmit>>,
-        peer: Option<UnixAddress>,
+        peer: Arc<UnixSocket>,
+        pending_error: Option<SocketError>,
         peer_credentials: Option<UnixCredentials>,
     },
     Datagram {
         messages: DatagramQueue<Datagram>,
-        peer: Option<Weak<UnixSocket>>,
+        // Native peer 关系保留实际 endpoint；最后 OFD close 消费 state 并断开 Arc cycle。
+        peer: Option<Arc<UnixSocket>>,
         peer_credentials: Option<UnixCredentials>,
+        shutdown: PacketShutdown,
+        pending_error: Option<SocketError>,
     },
 }
 
 /// AF_UNIX endpoint 的连接、监听队列、datagram 边界与地址 owner。
 pub(crate) struct UnixSocket {
+    // 创建/被动连接固定同一实际NET对象；只读引用不随当前Task setns而变化。
+    net_namespace: Arc<super::NetNamespace>,
     // OWNER: node_id 在 backend 构造时唯一分配，pathname/accept/socketpair 都只传递 capability；
     // 缺失稳定 identity 会迫使 SCM graph 以可复用地址或 Arc 指针猜测 node。
     node_id: u64,
+    // OWNER: 唯一 SO_PASSCRED policy；发送决定是否保存实际凭据，接收决定输出及 stream 边界。
+    // 缺失该 flag 会把创建时 peer 身份误作每条消息的发送者，并丢失接收 option 的时序语义。
+    pass_credentials: AtomicBool,
     socket_type: SocketType,
-    // 创建 AF_UNIX endpoint 时捕获 immutable effective credentials；accepted endpoint
-    // 继承 listener identity。缺失该 owner 会迫使 SO_PEERCRED 回调 task 或猜测当前调用者。
-    credentials: UnixCredentials,
+    // OWNER: 实际 sender memory 及 buffer limits；message charge 存活即实际 queued/prepared memory。
+    // 全部 token retirement 在 endpoint/GRAPH guards 外退款并通知，不复制 queue 费用。
+    send_memory: Mutex<SendMemoryState>,
     // OWNER: state lock uniquely serializes connection/queue/shutdown transitions. Splitting
     // listener queue or stream endpoints would publish readiness inconsistent with I/O state.
     state: Mutex<SocketState>,
@@ -88,41 +149,65 @@ pub(crate) struct UnixSocket {
     address: Mutex<Option<BoundAddress>>,
     // OWNER: OFD constructor 只发布一次 Weak root probe。Weak 避免 Socket↔OFD cycle；若缺失，
     // GC 会把 live descriptor 误判为只有 inflight references 并回收其 receive queue。
-    rights_owner: Mutex<Option<Weak<dyn UnixPassedFile>>>,
+    rights_owner: Mutex<rights_owner::RightsOwner>,
     notify_read: Arc<PipeEnd>,
     notify_write: Arc<PipeEnd>,
 }
 
 impl UnixSocket {
+    pub(super) fn network_namespace_id(&self) -> u64 {
+        self.net_namespace.id()
+    }
     pub(crate) fn new(
         socket_type: SocketType,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
-        credentials: UnixCredentials,
         node_id: u64,
+        net_namespace: Arc<super::NetNamespace>,
     ) -> Result<Arc<Self>, SocketError> {
         Arc::try_new(Self {
+            net_namespace,
             node_id,
+            pass_credentials: AtomicBool::new(false),
             socket_type,
-            credentials,
+            send_memory: Mutex::new(SendMemoryState::new()),
             state: Mutex::new(match socket_type {
-                SocketType::Stream => SocketState::Initial,
+                SocketType::Stream => SocketState::Initial {
+                    shutdown: PacketShutdown::default(),
+                },
                 SocketType::Datagram | SocketType::SeqPacket => SocketState::Datagram {
                     messages: DatagramQueue::new(),
                     peer: None,
                     peer_credentials: None,
+                    shutdown: PacketShutdown::default(),
+                    pending_error: None,
                 },
                 SocketType::Raw => unreachable!("AF_UNIX raw type crossed Socket facade"),
             }),
             address: Mutex::new(None),
-            rights_owner: Mutex::new(None),
+            rights_owner: Mutex::new(rights_owner::RightsOwner::Creator),
             notify_read: notify.0,
             notify_write: notify.1,
         })
         .map_err(|_| SocketError::NoMemory)
     }
 
-    pub(crate) fn socket_type(&self) -> SocketType {
-        self.socket_type
+    pub(crate) fn set_pass_credentials(&self, enabled: bool) {
+        self.pass_credentials.store(enabled, Ordering::Relaxed);
+    }
+    pub(crate) fn pass_credentials(&self) -> bool {
+        self.pass_credentials.load(Ordering::Relaxed)
+    }
+    /// connect 和 datagram send 的 native autobind 触发点；stream send 不自动绑定。
+    pub(crate) fn autobind_if_credentials(self: &Arc<Self>) -> Result<(), SocketError> {
+        if self.pass_credentials() {
+            namespace::register(
+                self,
+                BindingRequest::Automatic {
+                    seed: self.node_id as u32,
+                },
+            )?;
+        }
+        Ok(())
     }
 
     pub(super) fn node_id(&self) -> u64 {
@@ -136,51 +221,23 @@ impl UnixSocket {
         }
     }
 
-    pub(super) fn bind_rights_owner(&self, owner: Weak<dyn UnixPassedFile>) {
-        let mut current = self.rights_owner.lock();
-        assert!(
-            current.is_none(),
-            "AF_UNIX socket acquired a second OFD owner"
-        );
-        *current = Some(owner);
-    }
-
-    pub(super) fn externally_rooted(&self, inflight: usize) -> bool {
-        self.rights_owner
-            .lock()
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .is_none_or(|owner| owner.externally_referenced(inflight))
-    }
-
-    /// 清理 GC 已证明不可达 endpoint 中的全部 inflight rights。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；bytes 可保留，但所有 control capability 在 socket lock 外释放。
-    pub(super) fn revoke_rights(&self) {
-        let mut state = self.state.lock();
-        let receive = match &mut *state {
-            SocketState::Stream { receive, .. } => receive.clone(),
-            SocketState::Datagram { messages, .. } => {
-                let messages = messages.take_all();
-                drop(state);
-                drop(messages);
-                return;
-            }
-            _ => None,
-        };
-        drop(state);
-        if let Some(receive) = receive {
-            receive.revoke_rights();
-        }
-    }
-
     pub(crate) fn bind(self: &Arc<Self>, address: UnixAddress) -> Result<(), SocketError> {
+        if address.is_unnamed() {
+            return namespace::register(
+                self,
+                BindingRequest::Automatic {
+                    seed: self.node_id as u32,
+                },
+            );
+        }
         if !address.is_abstract() {
             return Err(SocketError::Invalid);
         }
-        self.bind_key(address, NamespaceKey::Abstract(address))
+        self.bind_key(
+            address,
+            NamespaceKey::Abstract(self.network_namespace_id(), address, self.socket_type),
+            None,
+        )
     }
 
     /// 将已由 VFS 创建并授权的 pathname inode 绑定到 endpoint。
@@ -201,110 +258,118 @@ impl UnixSocket {
         self: &Arc<Self>,
         address: UnixAddress,
         identity: UnixPathIdentity,
+        owner: Arc<dyn Send + Sync>,
     ) -> Result<(), SocketError> {
-        if address.is_abstract() {
+        if address.is_abstract() || address.is_unnamed() {
             return Err(SocketError::Invalid);
         }
-        self.bind_key(address, NamespaceKey::Path(identity))
+        self.bind_key(address, NamespaceKey::Path(identity), Some(owner))
     }
 
     fn bind_key(
         self: &Arc<Self>,
         address: UnixAddress,
         key: NamespaceKey,
+        path_owner: Option<Arc<dyn Send + Sync>>,
     ) -> Result<(), SocketError> {
-        let mut bound = self.address.lock();
-        if bound.is_some() {
-            return Err(SocketError::Invalid);
-        }
-        namespace::register(self, key)?;
-        *bound = Some(BoundAddress {
-            visible: address,
-            binding: Some(key),
-        });
-        Ok(())
+        namespace::register(
+            self,
+            BindingRequest::Named {
+                key,
+                address,
+                path_owner,
+            },
+        )
     }
 
     pub(crate) fn address(&self) -> Option<UnixAddress> {
-        self.address.lock().map(|address| address.visible)
+        self.address.lock().as_ref().map(|address| address.visible)
     }
 
-    pub(crate) fn peer_address(&self) -> Option<UnixAddress> {
-        match &*self.state.lock() {
-            SocketState::Stream { peer, .. } => *peer,
+    pub(crate) fn peer_address(&self) -> Result<Option<UnixAddress>, SocketError> {
+        let peer = match &*self.state.lock() {
+            SocketState::Stream { peer, .. } => Some(peer.clone()),
+            SocketState::Datagram { peer, .. } => peer.clone(),
             _ => None,
-        }
+        };
+        peer.map(|peer| peer.address())
+            .ok_or(SocketError::NotConnected)
     }
 
-    pub(crate) fn lookup(address: &UnixAddress) -> Result<Arc<Self>, SocketError> {
-        namespace::lookup(&NamespaceKey::Abstract(*address))
+    pub(crate) fn lookup(
+        address: &UnixAddress,
+        socket_type: SocketType,
+        net_namespace: &super::NetNamespace,
+    ) -> Result<Arc<Self>, SocketError> {
+        namespace::lookup(&NamespaceKey::Abstract(
+            net_namespace.id(),
+            *address,
+            socket_type,
+        ))
     }
 
     pub(crate) fn lookup_path(identity: UnixPathIdentity) -> Result<Arc<Self>, SocketError> {
         namespace::lookup(&NamespaceKey::Path(identity))
     }
 
-    pub(crate) fn listen(&self, backlog: usize) -> Result<(), SocketError> {
-        if self.socket_type != SocketType::Stream || self.address.lock().is_none() {
+    pub(crate) fn listen(
+        &self,
+        limit: usize,
+        captured: UnixCredentials,
+    ) -> Result<(), SocketError> {
+        if !matches!(self.socket_type, SocketType::Stream | SocketType::SeqPacket)
+            || self.address.lock().is_none()
+        {
             return Err(SocketError::Invalid);
         }
-        let backlog = StreamBacklog::new(backlog);
         let mut state = self.state.lock();
-        match &*state {
-            SocketState::Initial => {
-                *state = SocketState::Listening { backlog };
-                Ok(())
+        let retired = match &mut *state {
+            SocketState::Initial { shutdown } => {
+                let shutdown = *shutdown;
+                *state = SocketState::Listening {
+                    backlog: ConnectionBacklog::new(limit),
+                    credentials: captured,
+                    shutdown,
+                };
+                None
             }
-            SocketState::Listening { .. } => Ok(()),
-            _ => Err(SocketError::Invalid),
-        }
+            SocketState::Datagram {
+                messages,
+                peer,
+                shutdown,
+                ..
+            } if self.socket_type == SocketType::SeqPacket
+                && peer.is_none()
+                && messages.is_empty() =>
+            {
+                let shutdown = *shutdown;
+                *state = SocketState::Listening {
+                    backlog: ConnectionBacklog::new(limit),
+                    credentials: captured,
+                    shutdown,
+                };
+                None
+            }
+            SocketState::Listening {
+                backlog,
+                credentials,
+                ..
+            } => {
+                backlog.set_limit(limit);
+                Some(core::mem::replace(credentials, captured))
+            }
+            _ => return Err(SocketError::Invalid),
+        };
+        drop(state);
+        drop(retired);
+        Ok(())
     }
 
-    pub(crate) fn receive(
-        &self,
-        output: &mut ReceiveBuffer<'_>,
-        receive_rights: bool,
-    ) -> Result<(usize, usize, Option<UnixAddress>, Option<UnixRights>), SocketError> {
-        let mut state = self.state.lock();
-        match &mut *state {
-            SocketState::Stream { receive, .. } => {
-                let receive = receive.clone();
-                drop(state);
-                let Some(receive) = receive else {
-                    return Ok((0, 0, None, None));
-                };
-                match receive.read(output, receive_rights) {
-                    (PipeRead::Bytes(count), rights) => Ok((count, count, None, rights)),
-                    (PipeRead::Eof, _) => Ok((0, 0, None, None)),
-                    (PipeRead::Empty, _) => Err(SocketError::Again),
-                }
-            }
-            SocketState::Datagram { messages, peer, .. } => {
-                let Some((message, became_non_full)) = messages.pop() else {
-                    if self.socket_type == SocketType::SeqPacket
-                        && peer.as_ref().is_some_and(|peer| peer.upgrade().is_none())
-                    {
-                        return Ok((0, 0, None, None));
-                    }
-                    return Err(SocketError::Again);
-                };
-                drop(state);
-                self.consume_notify();
-                if became_non_full {
-                    self.notify();
-                }
-                let full_length = message.bytes.len();
-                let count = output.append(&message.bytes);
-                Ok((count, full_length, message.source, message.rights))
-            }
-            _ => Err(SocketError::NotConnected),
-        }
-    }
-
-    pub(crate) fn write_with_rights(
-        &self,
+    pub(crate) fn write_with_ancillary(
+        self: &Arc<Self>,
         input: &[u8],
         rights: &mut Option<UnixRights>,
+        credentials: &UnixSendCredentials,
     ) -> Result<usize, SocketSendError> {
         let state = self.state.lock();
         match &*state {
@@ -315,33 +380,28 @@ impl UnixSocket {
                     return Err(SocketError::BrokenPipe.into());
                 };
                 match transmit
-                    .write(input, rights)
+                    .write(
+                        self,
+                        input,
+                        rights,
+                        credentials.for_recipient(
+                            self.pass_credentials() || transmit.needs_message_credentials(),
+                        ),
+                    )
                     .map_err(SocketSendError::from)?
                 {
-                    PipeWrite::Bytes(count) => Ok(count),
-                    PipeWrite::Full => Err(SocketSendError::WouldBlock),
-                    PipeWrite::Broken => Err(SocketError::BrokenPipe.into()),
+                    stream::StreamWrite::Bytes(count) => Ok(count),
+                    stream::StreamWrite::Broken => Err(SocketError::BrokenPipe.into()),
+                    stream::StreamWrite::MemoryFull => Err(SocketSendError::Capacity(
+                        crate::socket::SocketCapacityWait::new(
+                            self.clone(),
+                            crate::socket::capacity::CapacityKind::SendMemory,
+                        ),
+                    )),
                 }
-            }
-            SocketState::Datagram { peer, .. } => {
-                let target = peer
-                    .as_ref()
-                    .and_then(Weak::upgrade)
-                    .ok_or(if self.socket_type == SocketType::SeqPacket {
-                        SocketError::BrokenPipe
-                    } else {
-                        SocketError::NotConnected
-                    })
-                    .map_err(SocketSendError::from)?;
-                drop(state);
-                target.enqueue_datagram(input, self.address(), rights)
             }
             _ => Err(SocketError::NotConnected.into()),
         }
-    }
-
-    pub(crate) fn write(&self, input: &[u8]) -> Result<usize, SocketSendError> {
-        self.write_with_rights(input, &mut None)
     }
 
     /// 发送 bytes，并在 AF_UNIX message/stream barrier 上附着可选 rights。
@@ -355,180 +415,67 @@ impl UnixSocket {
     /// # Returns
     ///
     /// 实际 byte count；失败时 rights 保持归 caller 所有。
-    pub(crate) fn send_to_with_rights(
-        &self,
+    pub(crate) fn send_to_with_ancillary(
+        self: &Arc<Self>,
         input: &[u8],
         target: Option<&Arc<Self>>,
         rights: &mut Option<UnixRights>,
+        credentials: &UnixSendCredentials,
     ) -> Result<usize, SocketSendError> {
         if self.socket_type == SocketType::Stream {
-            return self.write_with_rights(input, rights);
+            return self.write_with_ancillary(input, rights, credentials);
         }
-        let target = target
-            .cloned()
-            .or_else(|| {
+        {
+            let state = self.state.lock();
+            let SocketState::Datagram { peer, shutdown, .. } = &*state else {
+                return Err(SocketError::NotConnected.into());
+            };
+            if self.socket_type == SocketType::SeqPacket && peer.is_none() {
+                return Err(SocketError::NotConnected.into());
+            }
+            if shutdown.write {
+                return Err(SocketError::BrokenPipe.into());
+            }
+        }
+        self.autobind_if_credentials()?;
+        let target = if self.socket_type == SocketType::SeqPacket {
+            None
+        } else {
+            target
+        };
+        let explicit = target.is_some();
+        let target = match target {
+            Some(target) => target.clone(),
+            None => {
                 let state = self.state.lock();
                 let SocketState::Datagram { peer, .. } = &*state else {
-                    return None;
+                    return Err(SocketError::NotConnected.into());
                 };
-                peer.as_ref().and_then(Weak::upgrade)
-            })
-            .ok_or(SocketError::NotConnected)
-            .map_err(SocketSendError::from)?;
-        target.enqueue_datagram(input, self.address(), rights)
+                self.connected_datagram_peer(peer)
+                    .map_err(SocketSendError::from)?
+            }
+        };
+        let result = target.enqueue_datagram(
+            input,
+            self,
+            rights,
+            credentials
+                .for_recipient(self.pass_credentials() || target.needs_message_credentials()),
+        );
+        if matches!(
+            result,
+            Err(SocketSendError::Error(SocketError::ConnectionRefused))
+        ) && target.is_closed()
+        {
+            return Err(self.retire_dead_datagram_peer(&target, explicit));
+        }
+        result
     }
 
-    pub(crate) fn poll_state(&self) -> SocketPollState {
-        let state = self.state.lock();
-        match &*state {
-            SocketState::Initial | SocketState::Connecting => SocketPollState {
-                readable: false,
-                writable: false,
-                hangup: false,
-                error: false,
-            },
-            SocketState::Listening { backlog } => SocketPollState {
-                readable: !backlog.is_empty(),
-                writable: false,
-                hangup: false,
-                error: false,
-            },
-            SocketState::Stream {
-                receive, transmit, ..
-            } => {
-                let receive = receive.clone();
-                let transmit = transmit.clone();
-                drop(state);
-                let read = receive.as_ref().map(|end| end.poll_state());
-                let write = transmit.as_ref().map(|end| end.poll_state());
-                SocketPollState {
-                    readable: read.is_none_or(|state| state.readable),
-                    writable: write.is_some_and(|state| state.writable),
-                    hangup: read.is_some_and(|state| state.hangup),
-                    error: write.is_some_and(|state| state.error),
-                }
-            }
-            SocketState::Datagram { messages, peer, .. } => {
-                let readable = !messages.is_empty();
-                let peer = peer.clone();
-                drop(state);
-                let peer = peer.and_then(|peer| peer.upgrade());
-                let closed = self.socket_type == SocketType::SeqPacket && peer.is_none();
-                SocketPollState {
-                    readable: readable || closed,
-                    writable: !closed && peer.is_none_or(|peer| peer.datagram_capacity_available()),
-                    hangup: closed,
-                    error: false,
-                }
-            }
-        }
-    }
-
-    /// 投影 socket 所有可能无条件返回或被请求的 poll 状态变化 generation。
-    ///
-    /// # Parameters
-    ///
-    /// - `events`: poll interest；stream 的 HUP/ERR 无条件返回，因此仍观察收发两侧。
-    ///
-    /// # Returns
-    ///
-    /// 跨 I/O source 可比较的 generation。
-    pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
-        let state = self.state.lock();
-        match &*state {
-            SocketState::Stream {
-                receive, transmit, ..
-            } => {
-                let receive = receive.clone();
-                let transmit = transmit.clone();
-                drop(state);
-                // HUP/ERR 不受 requested mask 限制，因此两侧 generation 都必须参与；否则只关注
-                // EPOLLIN 的 ET watcher 会在 peer write-close 时因 generation 未变化而漏掉 HUP。
-                let read = receive.as_ref().map_or(0, |end| end.readiness_generation());
-                let write = transmit
-                    .as_ref()
-                    .map_or(0, |end| end.readiness_generation());
-                read.max(write)
-            }
-            SocketState::Datagram { peer, .. } => {
-                let peer = (events & POLLOUT != 0).then(|| peer.clone()).flatten();
-                drop(state);
-                let own = if events & (POLLIN | POLLOUT) != 0 {
-                    self.notify_read
-                        .pipe()
-                        .readiness_generation(PipeDirection::Read)
-                } else {
-                    0
-                };
-                peer.and_then(|peer| peer.upgrade()).map_or(own, |peer| {
-                    own.max(
-                        peer.notify_read
-                            .pipe()
-                            .readiness_generation(PipeDirection::Read),
-                    )
-                })
-            }
-            _ => self
-                .notify_read
-                .pipe()
-                .readiness_generation(PipeDirection::Read),
-        }
-    }
-
-    /// 投影 AF_UNIX wait sources；stream 暴露真实 data Pipe，其余类型暴露内部 edge notification。
-    ///
-    /// # Returns
-    ///
-    /// 与当前 socket 类型和 endpoint lifecycle 一致的 source 列表。
-    pub(in crate::socket) fn wait_sources(
-        self: &Arc<Self>,
-        events: i16,
-    ) -> (super::SocketWaitSources, Option<SocketWaitGuard>) {
-        let state = self.state.lock();
-        match &*state {
-            SocketState::Stream {
-                receive, transmit, ..
-            } => {
-                let receive = receive.clone();
-                let transmit = transmit.clone();
-                drop(state);
-                (
-                    [
-                        receive.map(|end| SocketWaitSource::Data {
-                            pipe: end.pipe(),
-                            direction: PipeDirection::Read,
-                        }),
-                        transmit.map(|end| SocketWaitSource::Data {
-                            pipe: end.pipe(),
-                            direction: PipeDirection::Write,
-                        }),
-                    ],
-                    None,
-                )
-            }
-            SocketState::Datagram { peer, .. } => {
-                let watches_peer = events & POLLOUT != 0;
-                let peer = watches_peer.then(|| peer.clone()).flatten();
-                let guard = watches_peer.then(|| SocketWaitGuard::new(self.clone(), peer.clone()));
-                drop(state);
-                (
-                    [
-                        (events & (POLLIN | POLLOUT) != 0)
-                            .then(|| SocketWaitSource::Notification(self.notify_read.pipe())),
-                        peer.and_then(|peer| peer.upgrade())
-                            .map(|peer| SocketWaitSource::Notification(peer.notify_read.pipe())),
-                    ],
-                    guard,
-                )
-            }
-            _ => (
-                [
-                    Some(SocketWaitSource::Notification(self.notify_read.pipe())),
-                    None,
-                ],
-                None,
-            ),
-        }
+    /// 唯一 connected datagram peer resolution；未连接与历史 peer 已关闭的错误不能混用。
+    /// Arc 仅保留端点身份；最后 OFD close 仍将其置为 terminal，enqueue 必须复查。
+    fn connected_datagram_peer(&self, peer: &Option<Arc<Self>>) -> Result<Arc<Self>, SocketError> {
+        peer.clone().ok_or(SocketError::NotConnected)
     }
 
     fn notify(&self) {
@@ -538,56 +485,13 @@ impl UnixSocket {
     fn consume_notify(&self) {
         self.notify_read.drain_readiness();
     }
-
-    /// 排空 listener/datagram 的内部 readiness edge；stream 的 wait source 是真实 data Pipe，禁止从此消费。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；实际 socket readiness 由随后的 level recheck 决定。
-    pub(in crate::socket) fn consume_wait_notifications(&self) {
-        let peer = match &*self.state.lock() {
-            SocketState::Stream { .. } => return,
-            SocketState::Datagram { peer, .. } => peer.clone(),
-            _ => None,
-        };
-        self.notify_read.drain_readiness();
-        if let Some(peer) = peer.and_then(|peer| peer.upgrade()) {
-            peer.notify_read.drain_readiness();
-        }
-    }
-
-    pub(crate) fn shutdown(&self, how: usize) -> Result<(), SocketError> {
-        let mut state = self.state.lock();
-        let SocketState::Stream {
-            receive, transmit, ..
-        } = &mut *state
-        else {
-            return Err(SocketError::NotConnected);
-        };
-        let closed_receive = if matches!(how, 0 | 2) {
-            receive.take()
-        } else {
-            None
-        };
-        let closed_transmit = if matches!(how, 1 | 2) {
-            transmit.take()
-        } else {
-            None
-        };
-        drop(state);
-        drop(closed_receive);
-        drop(closed_transmit);
-        Ok(())
-    }
 }
 
-impl Drop for UnixSocket {
-    fn drop(&mut self) {
-        let Some(address) = self.address.get_mut().take() else {
-            return;
-        };
-        if let Some(binding) = address.binding {
-            namespace::remove_closed(&binding);
-        }
-    }
+/// 为 composition root 创建的独占 worker 运行实际 SCM collector。
+pub(super) fn run_rights_collector(
+    clock: impl Fn() -> u64,
+    sleep_until: impl FnMut(u64),
+    gate: crate::sync::TaskMutexWaitPreparation,
+) -> ! {
+    rights_graph::run_collector(clock, sleep_until, gate)
 }

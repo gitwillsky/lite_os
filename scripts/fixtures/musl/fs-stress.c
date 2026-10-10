@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -272,11 +273,87 @@ static void make(const char *suffix)
 	CHECK(3, mkdir(path, 0700) == 0);
 }
 
+/* directory rename 的最终 link delta 与 same-inode no-op，覆盖两个 storage backend。 */
+static void rename_final_link_counts(int step)
+{
+    char old_parent[128], new_parent[128], source[160], target[160], alias[160];
+    snprintf(old_parent, sizeof old_parent, "%s/rename-old", root);
+    snprintf(new_parent, sizeof new_parent, "%s/rename-new", root);
+    CHECK(step + 1, mkdir(old_parent, 0700) == 0 && mkdir(new_parent, 0700) == 0);
+    snprintf(source, sizeof source, "%s/source", old_parent);
+    snprintf(target, sizeof target, "%s/target", new_parent);
+    CHECK(step + 2, mkdir(source, 0700) == 0 && mkdir(target, 0700) == 0);
+    int victim = open(target, O_RDONLY | O_DIRECTORY);
+    CHECK(step + 3, victim >= 0);
+    struct stat old, next, removed;
+    CHECK(step + 4, stat(old_parent, &old) == 0 && old.st_nlink == 3
+          && stat(new_parent, &next) == 0 && next.st_nlink == 3);
+    CHECK(step + 5, rename(source, target) == 0);
+    CHECK(step + 6, stat(old_parent, &old) == 0 && old.st_nlink == 2
+          && stat(new_parent, &next) == 0 && next.st_nlink == 3
+          && fstat(victim, &removed) == 0 && removed.st_nlink == 0);
+    CHECK(step + 7, close(victim) == 0);
+    snprintf(source, sizeof source, "%s/source", new_parent);
+    CHECK(step + 8, mkdir(source, 0700) == 0 && stat(new_parent, &next) == 0 && next.st_nlink == 4);
+    CHECK(step + 9, rename(source, target) == 0 && stat(new_parent, &next) == 0 && next.st_nlink == 3);
+    CHECK(step + 10, rmdir(target) == 0 && stat(new_parent, &next) == 0 && next.st_nlink == 2);
+    int file = open(source, O_CREAT | O_RDWR | O_EXCL, 0600);
+    snprintf(alias, sizeof alias, "%s/alias", new_parent);
+    CHECK(step + 11, file >= 0 && link(source, alias) == 0);
+    CHECK(step + 12, rename(source, alias) == 0 && stat(source, &old) == 0
+          && stat(alias, &next) == 0 && old.st_ino == next.st_ino && old.st_nlink == 2 && next.st_nlink == 2);
+    CHECK(step + 13, rename(source, source) == 0 && fstat(file, &old) == 0 && old.st_nlink == 2);
+    CHECK(step + 14, syscall(SYS_renameat2, AT_FDCWD, source, AT_FDCWD, alias, 1) == -1 && errno == EEXIST);
+    CHECK(step + 15, stat(source, &old) == 0 && old.st_nlink == 2 && stat(alias, &next) == 0 && next.st_nlink == 2);
+    CHECK(step + 16, close(file) == 0 && unlink(source) == 0 && unlink(alias) == 0);
+    CHECK(step + 17, rmdir(old_parent) == 0 && rmdir(new_parent) == 0);
+}
+
+/* 每次只容纳一条 native dirent，连续跨过 dot-prefix 与真实项，必须不重复、不漏项。 */
+static void paged_directory_cursor(int step)
+{
+    char directory[128], path[160];
+    snprintf(directory, sizeof directory, "%s/paged-cursor", root);
+    CHECK(step + 1, mkdir(directory, 0700) == 0);
+    for (int index = 0; index < 6; index++) {
+        snprintf(path, sizeof path, "%s/f%d", directory, index);
+        int file = open(path, O_CREAT | O_WRONLY | O_EXCL, 0600);
+        CHECK(step + 2, file >= 0 && close(file) == 0);
+    }
+    int fd = open(directory, O_RDONLY | O_DIRECTORY);
+    CHECK(step + 3, fd >= 0);
+    unsigned seen = 0;
+    for (int call = 0; call < 10; call++) {
+        unsigned char record[32];
+        long length = syscall(SYS_getdents64, fd, record, sizeof record);
+        CHECK(step + 4, length >= 0 && length <= (long)sizeof record);
+        if (!length) break;
+        unsigned short record_length;
+        memcpy(&record_length, record + 16, sizeof record_length);
+        CHECK(step + 5, record_length == length && length >= 24 && memchr(record + 19, 0, length - 19) != 0);
+        const char *name = (const char *)record + 19;
+        int index = !strcmp(name, ".") ? 6 : !strcmp(name, "..") ? 7
+                    : name[0] == 'f' && name[1] >= '0' && name[1] <= '5' && name[2] == 0 ? name[1] - '0' : -1;
+        CHECK(step + 6, index >= 0 && !(seen & (1u << index)));
+        seen |= 1u << index;
+    }
+    CHECK(step + 7, seen == 255 && close(fd) == 0);
+    for (int index = 0; index < 6; index++) {
+        snprintf(path, sizeof path, "%s/f%d", directory, index);
+        CHECK(step + 8, unlink(path) == 0);
+    }
+    CHECK(step + 9, rmdir(directory) == 0);
+}
+
 static void one_filesystem(const char *base, int offset)
 {
 	snprintf(root, sizeof root, "%s/stress", base);
 	rmdir(root);
 	CHECK(offset + 1, mkdir(root, 0700) == 0);
+    stage("rename-link-counts");
+    rename_final_link_counts(offset + 22);
+    stage("paged-directory-cursor");
+    paged_directory_cursor(offset + 40);
 
 	make("a");
 	stage("churn");

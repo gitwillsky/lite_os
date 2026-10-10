@@ -36,15 +36,24 @@ pub(crate) fn parent_death_signal(replacement: Option<usize>) -> Result<usize, (
     Ok(previous)
 }
 
-fn mark_child_parent_death(graph: &ProcessGraph, child_pid: usize, parent_tgid: usize) {
+fn mark_child_parent_death(graph: &ProcessGraph, child_pid: usize, parent: &TaskControlBlock) {
     let Some(child) = graph.nodes.get(&child_pid) else {
         return;
     };
     let ProcessState::Live(threads) = &child.state else {
         return;
     };
+    // creator 已从 live index 摘除；借 exiting Task 的实际 immutable identity/凭据，不反查 retired index。
+    let uid = parent.credential_id(true, false);
     for thread in threads.values() {
-        thread.mark_parent_death(parent_tgid);
+        let number = parent.tgid_identity().number_in(&thread.pid_namespace());
+        thread.mark_parent_death(
+            PendingSignal::process_directed(number as usize).with_identity(
+                number,
+                thread.user_namespace().display_id(true, uid),
+                number == 0,
+            ),
+        );
     }
 }
 
@@ -53,8 +62,7 @@ fn mark_child_parent_death(graph: &ProcessGraph, child_pid: usize, parent_tgid: 
 /// # Parameters
 ///
 /// - `graph`: process relation 与 live Thread 的唯一 owner。
-/// - `parent_tgid`: 退出 Thread 所属 TGID，用作 signal `si_pid`。
-/// - `parent_tid`: 正在退出的 creator Thread ID。
+/// - `parent`: 正在退出的实际 creator Thread；其 identity/real UID 冻结 siginfo。
 /// - `replacement_tid`: 同 Process 的 live reaper Thread，或全局 init TID。
 ///
 /// # Returns
@@ -62,14 +70,16 @@ fn mark_child_parent_death(graph: &ProcessGraph, child_pid: usize, parent_tgid: 
 /// 无返回值；signal generation 只写 Thread-owned pending slot，不执行调度操作。
 pub(super) fn mark_parent_exit(
     graph: &mut ProcessGraph,
-    parent_tgid: usize,
-    parent_tid: usize,
+    parent: &TaskControlBlock,
     replacement_tid: usize,
 ) {
-    let Some(index) = graph.threads.take_entry(&parent_tid) else {
-        return;
-    };
-    let mut created_children = index.into_value().created_children;
+    let parent_tid = parent.tid();
+    let index = graph
+        .threads
+        .get_mut(&parent_tid)
+        .expect("exiting creator remains indexed until cleanup completion");
+    assert!(index.exit_in_progress);
+    let mut created_children = core::mem::take(&mut index.created_children);
     while let Some((&child_pid, _)) = created_children.first_key_value() {
         let membership = created_children
             .take_entry(&child_pid)
@@ -80,7 +90,7 @@ pub(super) fn mark_parent_exit(
             .get(&child_pid)
             .is_some_and(|child| child.pdeath_enabled_threads != 0);
         if pdeath_enabled {
-            mark_child_parent_death(graph, child_pid, parent_tgid);
+            mark_child_parent_death(graph, child_pid, parent);
         }
         if let Some(child) = graph.nodes.get_mut(&child_pid) {
             debug_assert_eq!(child.parent_thread, Some(parent_tid));
@@ -144,19 +154,19 @@ pub(super) fn drain_parent_death_signals() {
                 .nodes
                 .get_mut(&tgid)
                 .expect("queued pdeath process disappeared after lookup");
-            if let Some((tid, (signal, parent))) = event {
+            if let Some((tid, (signal, info))) = event {
                 node.pdeath_cursor = tid;
                 node.pdeath_next = head;
                 graph.pdeath_head = Some(tgid);
-                Some((tgid, signal, parent))
+                Some((tgid, signal, info))
             } else {
                 node.pdeath_pending = false;
                 node.pdeath_cursor = 0;
                 None
             }
         };
-        if let Some((tgid, signal, parent)) = pending {
-            send_kernel_process_signal(tgid, signal, PendingSignal::process_directed(parent));
+        if let Some((tgid, signal, info)) = pending {
+            send_kernel_process_signal(tgid, signal, info);
         }
     }
 }

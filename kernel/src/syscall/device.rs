@@ -10,8 +10,8 @@ use crate::{
     fs::{
         O_NONBLOCK,
         device::{
-            DeviceError, DeviceFile, IoctlCall, MapRequest, UserFault, UserInput, UserMemory,
-            UserOutput,
+            DeviceError, DeviceFile, IoctlCall, MapRequest, PositionedFile, UserFault, UserInput,
+            UserMemory, UserOutput,
         },
     },
     task::TaskControlBlock,
@@ -26,6 +26,49 @@ use super::{
 struct TaskUserMemory<'a>(&'a TaskControlBlock);
 
 impl UserMemory for TaskUserMemory<'_> {
+    fn pid_namespace(&self) -> alloc::sync::Arc<crate::namespace::PidNamespace> {
+        self.0.pid_namespace()
+    }
+    fn install_namespace(
+        &self,
+        namespace: crate::namespace::NamespaceReference,
+    ) -> Result<isize, DeviceError> {
+        let reservation = self
+            .0
+            .fd_prepare_open(true)
+            .map_err(|error| DeviceError::Errno(-super::file_descriptor_error(error)))?;
+        let prepared = crate::file::PreparedFileDescription::try_new()
+            .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
+        let opened = crate::fs::namespace_opened(namespace)
+            .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
+        let prepared = prepared
+            .prepare_named(opened.clone(), crate::fs::O_RDONLY)
+            .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
+        let backend = opened
+            .inode()
+            .open_backend(
+                crate::fs::O_RDONLY,
+                &self.0.access_identity(true),
+                &self.0.namespace_authority(),
+            )
+            .map_err(|error| match error {
+                crate::fs::InodeOpenError::Filesystem(error) => {
+                    DeviceError::Errno(-super::fs::filesystem_error(error))
+                }
+                crate::fs::InodeOpenError::Interrupted => DeviceError::Restart,
+            })?;
+        let ofd = match backend {
+            crate::fs::InodeOpen::Device(file) => {
+                prepared.finish(crate::fs::InodeOpen::Device(file))
+            }
+            crate::fs::InodeOpen::Storage => {
+                return Err(DeviceError::Errno(syscall_abi::errno::EINVAL));
+            }
+        };
+        ofd.notify(crate::fs::IN_OPEN);
+        Ok(reservation.publish(ofd) as isize)
+    }
+
     fn read(&self, address: usize, bytes: &mut [u8]) -> Result<(), UserFault> {
         if address == 0 {
             return Err(UserFault);
@@ -63,13 +106,16 @@ impl UserMemory for TaskUserMemory<'_> {
 pub(super) fn device_error(error: DeviceError) -> isize {
     match error {
         DeviceError::Restart => INTERNAL_RESTART_SYS,
-        DeviceError::WouldBlock | DeviceError::BrokenPipe | DeviceError::Errno(_) => -error.errno(),
+        DeviceError::WouldBlock
+        | DeviceError::BrokenPipe
+        | DeviceError::ReadFault
+        | DeviceError::Errno(_) => -error.errno(),
     }
 }
 
 fn progress_or(completed: usize, result: Result<(), DeviceError>) -> isize {
     match result {
-        Err(error) if completed == 0 => device_error(error),
+        Err(error) if completed == 0 || error == DeviceError::ReadFault => device_error(error),
         _ => completed as isize,
     }
 }
@@ -148,6 +194,16 @@ pub(super) fn read_device(
         cursor: UserIoCursor::new(vectors),
         total_length,
     };
+    if let Some(file) = file.positioned() {
+        return ofd
+            .with_position(|offset| {
+                let result = file.read_at(&mut output, *offset);
+                let completed = output.cursor.completed();
+                *offset += completed as u64;
+                progress_or(completed, result)
+            })
+            .unwrap_or_else(super::fs::position_error);
+    }
     let result = file.read(&mut output, ofd.status_flags() & O_NONBLOCK != 0);
     progress_or(output.cursor.completed(), result)
 }
@@ -165,12 +221,55 @@ pub(super) fn write_device(
         cursor: UserIoCursor::new(vectors),
         total_length,
     };
+    if let Some(file) = file.positioned() {
+        let writer = task.namespace_authority();
+        return ofd
+            .with_position(|offset| {
+                let result = file.write_at(&mut input, *offset, &writer);
+                let completed = input.cursor.completed();
+                *offset += completed as u64;
+                progress_or(completed, result)
+            })
+            .unwrap_or_else(super::fs::position_error);
+    }
     let result = file.write(&mut input, ofd.status_flags() & O_NONBLOCK != 0);
     if result == Err(DeviceError::BrokenPipe) {
         // 无论是否已有进度，peer 关闭都投递 SIGPIPE；已有进度时返回值仍是已写字节数。
         crate::task::send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
             .expect("current device writer must exist");
     }
+    progress_or(input.cursor.completed(), result)
+}
+
+/// pread/pwrite 消费同一绑定 backend，显式 offset 不修改 OFD position。
+pub(super) fn read_positioned_file(
+    task: &TaskControlBlock,
+    file: &dyn PositionedFile,
+    vectors: &[UserIoVec],
+    total_length: usize,
+    offset: u64,
+) -> isize {
+    let mut output = TaskUserOutput {
+        task,
+        cursor: UserIoCursor::new(vectors),
+        total_length,
+    };
+    let result = file.read_at(&mut output, offset);
+    progress_or(output.cursor.completed(), result)
+}
+pub(super) fn write_positioned_file(
+    task: &TaskControlBlock,
+    file: &dyn PositionedFile,
+    vectors: &[UserIoVec],
+    total_length: usize,
+    offset: u64,
+) -> isize {
+    let mut input = TaskUserInput {
+        task,
+        cursor: UserIoCursor::new(vectors),
+        total_length,
+    };
+    let result = file.write_at(&mut input, offset, &task.namespace_authority());
     progress_or(input.cursor.completed(), result)
 }
 
@@ -212,8 +311,10 @@ fn ioctl_call<'a>(
         request,
         argument,
         user: memory,
+        fd_readable: ofd.status_flags() & crate::fs::O_ACCMODE != crate::fs::O_WRONLY,
         nonblocking: ofd.status_flags() & O_NONBLOCK != 0,
-        privileged: task.credential_id(true, true) == 0,
+        privileged: task.has_initial_capability(syscall_abi::capability::Capability::SYS_ADMIN),
+        authority: task.namespace_authority(),
     }
 }
 

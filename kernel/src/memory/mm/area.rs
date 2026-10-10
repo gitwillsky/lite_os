@@ -12,7 +12,7 @@ pub(crate) enum MapType {
 pub(super) enum VmaKind {
     System,
     Anonymous,
-    Stack { top: usize },
+    Stack,
     Elf,
     File,
     Device,
@@ -93,8 +93,6 @@ impl MapArea {
     /// 由当前 range/kind/permission/backing 计算的完整 contribution。
     pub(super) fn index_contribution(&self) -> VmaContribution {
         VmaContribution {
-            start: self.vpn_range.start.as_usize(),
-            stack: matches!(self.kind, VmaKind::Stack { .. }),
             virtual_bytes: self.virtual_accounted_bytes(),
             data_bytes: self.data_accounted_bytes(),
         }
@@ -188,7 +186,7 @@ impl MapArea {
             MapType::Framed,
             MapPermission::R | MapPermission::W | MapPermission::U,
         );
-        area.kind = VmaKind::Stack { top };
+        area.kind = VmaKind::Stack;
         area.lazy_private = true;
         area
     }
@@ -218,19 +216,17 @@ impl MapArea {
 
         let mut copied = 0usize;
         let mut index = 0usize;
-        self.data_frames.for_each_mut(|_, frame| {
+        self.data_frames.try_for_each_mut(|_, frame| {
             if copied == data.len() {
-                return;
+                return Ok(());
             }
             let page_offset = if index == 0 { self.data_page_offset } else { 0 };
             let count = (config::PAGE_SIZE - page_offset).min(data.len() - copied);
-            Arc::get_mut(frame)
-                .expect("new mapping frame must be uniquely owned")
-                .bytes_mut()[page_offset..page_offset + count]
-                .copy_from_slice(&data[copied..copied + count]);
+            frame.initialize(page_offset, &data[copied..copied + count])?;
             copied += count;
             index += 1;
-        });
+            Ok::<(), MemoryError>(())
+        })?;
         (copied == data.len())
             .then_some(())
             .ok_or(MemoryError::InvalidRange)
@@ -294,17 +290,20 @@ impl MapArea {
     ) -> Result<(), MemoryError> {
         let (ppn, frame) = match self.map_type {
             MapType::Framed => {
-                let frame = try_memory_arc(alloc().ok_or(MemoryError::OutOfMemory)?)?;
-                (frame.ppn, Some(frame))
+                let frame = alloc().ok_or(MemoryError::OutOfMemory)?;
+                let ppn = frame.ppn;
+                let resident = if self.map_permission.contains(MapPermission::U) {
+                    PrivateResident::user(frame)?
+                } else {
+                    PrivateResident::pinned(try_memory_arc(frame)?)
+                };
+                (ppn, Some(resident))
             }
             MapType::KernelMapped => unreachable!("kernel-mapped areas use range leaf selection"),
         };
 
         let resident = frame
-            .map(|frame| {
-                self.data_frames
-                    .try_prepare_vacant(vpn, PrivateResident::new(frame))
-            })
+            .map(|resident| self.data_frames.try_prepare_vacant(vpn, resident))
             .transpose()
             .map_err(|_| MemoryError::OutOfMemory)?;
 
@@ -337,7 +336,7 @@ impl MapArea {
     ) -> (Option<Self>, Self, Option<Self>) {
         debug_assert!(matches!(
             self.kind,
-            VmaKind::Anonymous | VmaKind::Elf | VmaKind::File | VmaKind::Device
+            VmaKind::Anonymous | VmaKind::Stack | VmaKind::Elf | VmaKind::File | VmaKind::Device
         ));
         debug_assert!(self.vpn_range.start <= start && end <= self.vpn_range.end);
         let original_start = self.vpn_range.start;
@@ -346,8 +345,12 @@ impl MapArea {
         let middle_frames = self.data_frames.split_off(&start);
         let (left_shared, middle_shared, right_shared) =
             SharedFileArea::partition(self.shared_file, original_start..original_end, start..end);
-        let (left_anonymous, middle_anonymous, right_anonymous) =
-            SharedAnonymousArea::partition(self.shared_anonymous, original_start, start, end);
+        let (left_anonymous, middle_anonymous, right_anonymous) = SharedAnonymousArea::partition(
+            self.shared_anonymous,
+            original_start..original_end,
+            start,
+            end,
+        );
         let (left_device, middle_device, right_device) =
             DeviceArea::partition(self.device, original_start, start, end);
         let kind = self.kind;

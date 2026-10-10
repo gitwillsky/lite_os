@@ -57,6 +57,10 @@ impl Ext4Inode {
         name: &[u8],
         kind: InodeType,
     ) -> Result<(), FileSystemError> {
+        // 实际 parent 已 rmdir 时，cwd/open-directory 只能保活历史对象，不得复活 namespace。
+        if self.disk.lock().i_links_count == 0 {
+            return Err(FileSystemError::NotFound);
+        }
         let file_type = inode_kind::file_type(kind);
         if self.is_indexed() {
             return self.dx_add(mutation, child, name, file_type);
@@ -325,6 +329,9 @@ impl Ext4Inode {
             return Err(FileSystemError::NotDirectory);
         }
         let child = self.find_child(old_name)?;
+        if child.is_swap_file() {
+            return Err(FileSystemError::PermissionDenied);
+        }
         if self.inode_num == new_parent.inode_num && old_name == new_name {
             return Ok(());
         }
@@ -356,6 +363,9 @@ impl Ext4Inode {
             Err(error) => return Err(error),
         };
         let existing_metadata = if let Some(existing) = existing.as_ref() {
+            if existing.is_swap_file() {
+                return Err(FileSystemError::PermissionDenied);
+            }
             if no_replace {
                 return Err(FileSystemError::AlreadyExists);
             }
@@ -405,7 +415,7 @@ impl Ext4Inode {
                     link_count::decrement_file(disk.i_links_count).map_err(link_count_error)?;
                 disk.set_ctime(Timestamp::now());
                 self.fs.write_inode_disk(existing.inode_num, &disk)?;
-            } else if existing_meta.kind != InodeType::Directory && externally_held {
+            } else if externally_held {
                 drop(disk);
                 self.fs.defer_reclaim_locked(&mut mutation, &existing)?;
             } else {

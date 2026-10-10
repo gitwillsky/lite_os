@@ -6,6 +6,8 @@ use super::{
     signal_frame::{InvalidSignalFrame, SignalFrame, SignalStack},
 };
 pub(crate) const MACHINE_NAME: &str = "aarch64";
+/// Linux AUDIT_ARCH_AARCH64：64-bit、little-endian、ELF machine 183。
+pub(crate) const AUDIT_ARCH: u32 = 0xc000_00b7;
 /// Decode an AArch64-private Linux syscall number.
 ///
 /// AArch64 currently owns no private syscall numbers; the compile-time façade lets release builds
@@ -105,20 +107,17 @@ impl UserContext {
         self.sp
     }
 
-    pub(crate) fn prepare_thread_clone(
+    pub(crate) fn prepare_clone(
         &mut self,
-        user_stack: usize,
-        thread_pointer: usize,
+        user_stack: Option<usize>,
+        thread_pointer: Option<usize>,
         kernel_stack: usize,
     ) {
-        self.sp = user_stack;
-        self.thread_pointer = thread_pointer;
-        self.prepare_child_return(kernel_stack);
-    }
-
-    pub(crate) fn prepare_process_clone(&mut self, user_stack: Option<usize>, kernel_stack: usize) {
         if let Some(stack) = user_stack {
             self.sp = stack;
+        }
+        if let Some(tls) = thread_pointer {
+            self.thread_pointer = tls;
         }
         self.prepare_child_return(kernel_stack);
     }
@@ -199,8 +198,15 @@ impl UserContext {
         frame: usize,
         signal: usize,
         handler: usize,
+        flags: usize,
+        restorer: usize,
     ) {
-        self.x[30] = trampoline;
+        const SA_RESTORER: usize = 0x0400_0000;
+        self.x[30] = if flags & SA_RESTORER != 0 {
+            restorer
+        } else {
+            trampoline
+        };
         self.sp = frame;
         self.x[0] = signal;
         self.x[1] = frame;

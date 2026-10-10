@@ -37,6 +37,19 @@ fn within_exact_index_budget(cost: VfsOpenedCost) -> bool {
 pub(super) fn measure(root: &Path) -> Result<VfsOpenedCost, String> {
     let vfs = read(root, VFS_SOURCE)?;
     let opened = read(root, OPENED_SOURCE)?;
+    let dentry = read(root, "kernel/src/storage/fs/vfs/dentry.rs")?;
+    let dentry_index = read(root, "kernel/src/storage/fs/vfs/dentry_index.rs")?;
+    if canonical_dentry_index(&vfs, &opened, &dentry, &dentry_index) {
+        // Ordinary path hits take one exact index transaction per component. Miss preparation
+        // allocates outside the owner and revalidates once; mutation/final-drop remain logarithmic.
+        let height = LIVE_OPENED_FILES.ilog2() as usize;
+        return Ok(VfsOpenedCost {
+            register_registry_visits: PATH_COMPONENTS * height * 3,
+            register_lock_acquisitions: PATH_COMPONENTS,
+            namespace_registry_visits: MATCHING_NAMESPACE_ENTRIES * height * 2,
+            final_drop_index_visits: FINAL_DROPS * height * 3,
+        });
+    }
     let index = read(root, OPENED_INDEX_SOURCE).unwrap_or_default();
     let exact_register = function_body(&index, "pub(super) fn register(", OPENED_INDEX_SOURCE).ok();
     let exact_unregister =
@@ -90,6 +103,28 @@ pub(super) fn measure(root: &Path) -> Result<VfsOpenedCost, String> {
     ))
 }
 
+fn canonical_dentry_index(vfs: &str, opened: &str, dentry: &str, index: &str) -> bool {
+    let compact = |text: &str| text.split_whitespace().collect::<String>();
+    let vfs = compact(vfs);
+    let opened = compact(opened);
+    let dentry = compact(dentry);
+    let index = compact(index);
+    vfs.contains("dentries:DentryIndex")
+        && opened.contains("dentry:Arc<Dentry>")
+        && !opened.contains("registration:")
+        && index.contains("DentryIndex(Mutex<FallibleMap<DentryKey,Weak<Dentry>>>)")
+        && index.contains("letobserved={self.0.lock().get(&key).and_then(Weak::upgrade)}")
+        && index.contains("FallibleMap::try_prepare(key,Arc::downgrade(&candidate))")
+        && index.contains("entries.commit_vacant(prepared);candidate.publish_registration(key)")
+        && index.contains("core::ptr::eq(entry.as_ptr(),owner)")
+        && index.contains("entries.take_entry(&key)")
+        && index.contains("node.set_key(next);entries.commit_vacant(node)")
+        && index.contains("drop(retired_parent);drop(entry)")
+        && dentry.contains("super::vfs().dentries.unregister(key,self)")
+        && !index.contains(".iter(")
+        && !index.contains(".retain(")
+}
+
 fn read(root: &Path, path: &str) -> Result<String, String> {
     fs::read_to_string(root.join(path)).map_err(|error| format!("{path}: {error}"))
 }
@@ -131,5 +166,28 @@ mod tests {
             within_exact_index_budget(cost),
             "D={PATH_COMPONENTS}, R={LIVE_OPENED_FILES}, K={MATCHING_NAMESPACE_ENTRIES}, N={FINAL_DROPS}, measured {cost:?}"
         );
+    }
+    #[test]
+    fn canonical_dentry_cost_rejects_registration_identity_and_retirement_regressions() {
+        let root = super::super::repository_root();
+        let vfs = read(&root, VFS_SOURCE).unwrap();
+        let opened = read(&root, OPENED_SOURCE).unwrap();
+        let dentry = read(&root, "kernel/src/storage/fs/vfs/dentry.rs").unwrap();
+        let index = read(&root, "kernel/src/storage/fs/vfs/dentry_index.rs").unwrap();
+        assert!(canonical_dentry_index(&vfs, &opened, &dentry, &index));
+        for (before, after) in [
+            ("core::ptr::eq(entry.as_ptr(), owner)", "true"),
+            ("candidate.publish_registration(key)", "drop(key)"),
+            ("drop(retired_parent);", "forget(retired_parent);"),
+        ] {
+            assert!(
+                index.contains(before),
+                "negative fixture must mutate the actual owner"
+            );
+            let changed = index.replace(before, after);
+            assert!(!canonical_dentry_index(&vfs, &opened, &dentry, &changed));
+        }
+        let linear = format!("{index}\nfn regression() {{ entries.iter(); }}");
+        assert!(!canonical_dentry_index(&vfs, &opened, &dentry, &linear));
     }
 }

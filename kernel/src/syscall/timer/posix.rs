@@ -1,6 +1,6 @@
 use super::{
-    CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_THREAD_CPUTIME_ID,
-    TIMER_ABSTIME, TimeSpec, decode_timespec, encode_timespec,
+    CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME,
+    CLOCK_THREAD_CPUTIME_ID, TIMER_ABSTIME, TimeSpec, decode_timespec, encode_timespec,
 };
 use crate::{
     file::{TimerError, TimerSetting},
@@ -15,14 +15,9 @@ const SIGEV_THREAD_ID: i32 = 4;
 const SIGEVENT_BYTES: usize = 64;
 
 fn decode_duration(bytes: &[u8]) -> Result<u64, isize> {
-    let value = decode_timespec(bytes.try_into().expect("timespec ABI width"));
-    if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
-        return Err(-EINVAL);
-    }
-    (value.tv_sec as u64)
-        .checked_mul(1_000_000_000)
-        .and_then(|seconds| seconds.checked_add(value.tv_nsec as u64))
-        .ok_or(-EINVAL)
+    super::timespec_ns(decode_timespec(
+        bytes.try_into().expect("timespec ABI width"),
+    ))
 }
 
 fn encode_setting(setting: TimerSetting) -> [u8; 32] {
@@ -51,7 +46,7 @@ fn timer_error(error: TimerError, create: bool) -> isize {
 
 fn validate_clock(clock_id: i32) -> Result<(), isize> {
     match clock_id {
-        CLOCK_REALTIME | CLOCK_MONOTONIC => Ok(()),
+        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME => Ok(()),
         CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => Err(-EOPNOTSUPP),
         _ => Err(-EINVAL),
     }
@@ -100,10 +95,10 @@ pub(crate) fn sys_timer_create(clock_id: i32, event: usize, output: usize) -> is
             _ => return -EINVAL,
         }
     };
-    let clock = if clock_id == CLOCK_REALTIME {
-        PosixTimerClock::Realtime
-    } else {
-        PosixTimerClock::Monotonic
+    let clock = match clock_id {
+        CLOCK_REALTIME => PosixTimerClock::Realtime,
+        CLOCK_BOOTTIME => PosixTimerClock::Boottime,
+        _ => PosixTimerClock::Monotonic,
     };
     let id = match crate::task::create_posix_timer(task.tgid(), clock, notification) {
         Ok(id) => id,
@@ -168,6 +163,7 @@ pub(crate) fn sys_timer_settime(id: i32, flags: i32, replacement: usize, previou
         interval_ns,
         flags & TIMER_ABSTIME != 0,
         now_ns,
+        task.time_offsets(),
     ) {
         Ok(setting) => setting,
         Err(error) => return timer_error(error, false),

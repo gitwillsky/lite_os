@@ -62,6 +62,54 @@ pub(super) fn measure(root: &Path) -> Result<TimerTransactionCost, String> {
             "{TRANSACTION_SOURCE}: prepare must run after the planning timer lock is dropped and before final graph→timer commit locks"
         ));
     }
+    if !transaction.contains("&mut Prepared")
+        || !transaction.contains("let outcome = {")
+        || !transaction.contains("None => TimerTransactionCommit::Retry(Some(prepared))")
+        || !transaction.contains("}?;\n            Ok(match outcome")
+    {
+        return Err(format!(
+            "{TRANSACTION_SOURCE}: final commit must only borrow storage; retry and Drop belong outside guards"
+        ));
+    }
+    let posix_schedule = read(
+        root,
+        "kernel/src/task/process_table/timer_queue/posix_schedule.rs",
+    )?;
+    let timer_file = read(
+        root,
+        "kernel/src/task/process_table/timer_queue/timer_file.rs",
+    )?;
+    let kernel_wait = read(
+        root,
+        "kernel/src/task/process_table/timer_queue/kernel_wait.rs",
+    )?;
+    for (path, body) in [
+        (QUEUE_SOURCE, queue.as_str()),
+        ("timer_file", timer_file.as_str()),
+        ("kernel_wait", kernel_wait.as_str()),
+        ("posix_schedule", posix_schedule.as_str()),
+    ] {
+        if body.contains(".remove(") {
+            return Err(format!(
+                "{path}: timer mutation/expiry must retire actual AVL nodes outside owner, not only removed values"
+            ));
+        }
+    }
+    if !queue.contains("retired.real.commit_vacant")
+        || !queue.contains("retired.posix.commit_vacant")
+        || !queue.contains("Some((previous, retired))")
+        || !posix_schedule.contains("Ok(Some((previous, retired)))")
+        || !posix_schedule
+            .contains("PosixSchedule::Notification { deadline, .. } => Some(deadline)")
+        || !posix_schedule.contains("drop(retired);")
+        || !timer_file.contains("&mut deadline_node")
+        || !timer_file.contains("drop(expirations);\n            drop(retired);")
+        || !kernel_wait.contains("TimerExpirationRetirement::from_deadline(Some(entry))")
+    {
+        return Err(format!(
+            "{QUEUE_SOURCE}: all actual record/deadline nodes need owned lock-outside retirement, including stale and silent expiry"
+        ));
+    }
     Ok(TimerTransactionCost {
         duplicated_skeletons,
         executor_seams,
@@ -77,8 +125,11 @@ fn safe_publication_order(transaction: &str, transaction_loop: &str) -> bool {
         "final_commit(prepared)",
     ]
     .map(|needle| transaction_loop.find(needle));
-    let adapter_positions = ["policy.validate(&graph)", "commit(&mut timers, prepared)"]
-        .map(|needle| transaction.find(needle));
+    let adapter_positions = [
+        "policy.validate(&graph)",
+        "commit(&mut timers, &mut prepared)",
+    ]
+    .map(|needle| transaction.find(needle));
     matches!(loop_positions, [Some(plan), Some(prepare), Some(commit)]
         if plan < prepare && prepare < commit)
         && matches!(adapter_positions, [Some(validate), Some(commit)] if validate < commit)
@@ -122,5 +173,20 @@ mod tests {
         let root = super::super::repository_root();
         let cost = measure(&root).expect("timer transaction cost must be measurable");
         assert!(within_budget(cost), "measured {cost:?}");
+    }
+    #[test]
+    fn owner_proof_covers_borrowed_preparation_and_lock_outside_node_retirement() {
+        let root = super::super::repository_root();
+        let transaction = read(&root, TRANSACTION_SOURCE).unwrap();
+        let loop_source = read(&root, LOOP_SOURCE).unwrap();
+        assert!(safe_publication_order(&transaction, &loop_source));
+        assert!(!safe_publication_order(
+            &transaction.replace(
+                "commit(&mut timers, &mut prepared)",
+                "consume_storage_under_owner(prepared)"
+            ),
+            &loop_source
+        ));
+        assert!(transaction.contains("None => TimerTransactionCommit::Retry(Some(prepared))"));
     }
 }

@@ -133,7 +133,6 @@ pub(crate) fn return_to_user(
     address_space: AddressSpaceToken,
     trampoline_address: usize,
 ) -> ! {
-    super::mmu::prepare_user_activation(address_space, super::startup::current_logical_id());
     // SAFETY: trap.S defines both symbols in one trampoline section with a stable relative offset.
     unsafe extern "C" {
         fn __restore();
@@ -147,6 +146,10 @@ pub(crate) fn return_to_user(
     // SAFETY: trampoline is aligned executable memory shared by every live user address space.
     unsafe { stvec::write(value) };
 
+    let encoded = address_space.activate(super::startup::current_logical_id());
+    // Noreturn assembly does not unwind Rust frames; release the token Arc before the jump.
+    // The scheduler's current task still pins the same root throughout this IRQ-disabled handoff.
+    drop(address_space);
     // SAFETY: restore points into the linked trampoline; context and address-space token belong to
     // the current live task. The assembly switches address spaces and never returns to this frame.
     unsafe {
@@ -154,7 +157,7 @@ pub(crate) fn return_to_user(
             "jr {restore}",
             restore = in(reg) restore,
             in("x10") context_address,
-            in("x11") address_space.encoded(),
+            in("x11") encoded,
             options(noreturn)
         )
     }

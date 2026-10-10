@@ -16,6 +16,7 @@ const TIOCGPGRP: usize = 0x540f;
 const TIOCSPGRP: usize = 0x5410;
 const TIOCGWINSZ: usize = 0x5413;
 const TIOCSWINSZ: usize = 0x5414;
+const TIOCNOTTY: usize = 0x5422;
 const TIOCGSID: usize = 0x5429;
 const TIOCGPTN: usize = 0x8004_5430;
 const TIOCSPTLCK: usize = 0x4004_5431;
@@ -38,7 +39,7 @@ pub(super) fn pty_master(master: &PtyMaster, call: &IoctlCall<'_>) -> Result<isi
             master.set_locked(i32::from_ne_bytes(bytes) != 0);
             Ok(0)
         }
-        _ => terminal(master.terminal(), call),
+        _ => terminal_request(master.terminal(), call, true),
     }
 }
 
@@ -55,6 +56,26 @@ pub(super) fn terminal(
     terminal: &Arc<Terminal>,
     call: &IoctlCall<'_>,
 ) -> Result<isize, DeviceError> {
+    terminal_request(terminal, call, false)
+}
+
+/// PTY master 只在查询控制身份时豁免 caller TTY 比较；不放宽 set/claim/detach。
+fn terminal_request(
+    terminal: &Arc<Terminal>,
+    call: &IoctlCall<'_>,
+    master: bool,
+) -> Result<isize, DeviceError> {
+    let require_controlling = || {
+        if master
+            || job_control()
+                .controlling_terminal()
+                .is_some_and(|current| Arc::ptr_eq(&current, terminal))
+        {
+            Ok(())
+        } else {
+            Err(DeviceError::Errno(errno::ENOTTY))
+        }
+    };
     let (user, argument) = (call.user, call.argument);
     let check_change = || job_control().check_access(terminal, TerminalAccess::StateChange);
     match call.request {
@@ -79,18 +100,21 @@ pub(super) fn terminal(
             };
             terminal.flush(input, output);
         }
-        TIOCSCTTY => job_control().claim_controlling(terminal, argument)?,
+        TIOCSCTTY => job_control().claim_controlling(terminal, argument, call.fd_readable)?,
         TIOCGPGRP => {
-            let pgid = job_control().foreground_group(terminal)?;
-            user.write(argument, &(pgid as i32).to_ne_bytes())
-                .map_err(fault)?;
+            require_controlling()?;
+            let (_, pgid) = job_control().control_ids(terminal);
+            user.write(argument, &pgid.to_ne_bytes()).map_err(fault)?;
         }
         TIOCSPGRP => {
-            check_change()?;
+            check_change().map_err(|error| match error {
+                DeviceError::Errno(errno::EIO) => DeviceError::Errno(errno::ENOTTY),
+                error => error,
+            })?;
             let mut bytes = [0u8; 4];
             user.read(argument, &mut bytes).map_err(fault)?;
             let pgid = i32::from_ne_bytes(bytes);
-            if pgid <= 0 {
+            if pgid < 0 {
                 return Err(DeviceError::Errno(errno::EINVAL));
             }
             job_control().set_foreground_group(terminal, pgid as usize)?;
@@ -106,11 +130,17 @@ pub(super) fn terminal(
                 job_control().signal_group(pgid, signal::SIGWINCH);
             }
         }
+        TIOCNOTTY => {
+            if master {
+                return Err(DeviceError::Errno(errno::ENOTTY));
+            }
+            job_control().detach_controlling(terminal)?;
+        }
         TIOCGSID => {
-            let session = terminal
-                .controlling_session()
-                .ok_or(DeviceError::Errno(errno::ENOTTY))?;
-            user.write(argument, &(session as i32).to_ne_bytes())
+            require_controlling()?;
+            let (session, _) = job_control().control_ids(terminal);
+            let session = session.ok_or(DeviceError::Errno(errno::ENOTTY))?;
+            user.write(argument, &session.to_ne_bytes())
                 .map_err(fault)?;
         }
         _ => return Err(DeviceError::Errno(errno::ENOTTY)),

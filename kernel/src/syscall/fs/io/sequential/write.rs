@@ -12,6 +12,9 @@ fn write_regular_descriptor(
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
+    if total_length == 0 {
+        return 0;
+    }
     let file = match RegularFile::from_inode(inode) {
         Ok(file) => file,
         Err(error) => return ferr(error),
@@ -21,12 +24,13 @@ fn write_regular_descriptor(
     with_prepared_staging(staging, |staging| {
         let mut staging = staging.as_input_staging();
         ofd.with_position(|offset| {
-            let writer = match file.begin_write() {
+            let writer = match file.begin_write(task.access_identity(true)) {
                 Ok(writer) => writer,
                 Err(error) => return ferr(error),
             };
             write_regular_vectors(task, &writer, offset, vectors, append, &mut staging)
         })
+        .unwrap_or_else(crate::syscall::fs::position_error)
     })
 }
 
@@ -48,19 +52,9 @@ pub(super) fn write_descriptor(
     vectors: &[UserIoVec],
     total_length: usize,
 ) -> isize {
-    if total_length == 0 {
-        return 0;
-    }
     match &ofd.kind {
-        OpenFileKind::Inode(opened) => {
-            let result = write_regular_descriptor(task, ofd, opened.inode(), vectors, total_length);
-            if result > 0 {
-                crate::fs::notify_opened(opened, crate::fs::IN_MODIFY);
-            }
-            result
-        }
-        OpenFileKind::MemFile(file) => {
-            write_regular_descriptor(task, ofd, file.clone(), vectors, total_length)
+        OpenFileKind::Inode => {
+            write_regular_descriptor(task, ofd, ofd.inode_ref(), vectors, total_length)
         }
         OpenFileKind::Pipe(endpoint) => {
             if endpoint.direction() != PipeDirection::Write {
@@ -126,98 +120,12 @@ pub(super) fn write_descriptor(
             written as isize
         }
         OpenFileKind::Socket(socket) => {
-            if let Err(error) = socket.validate_send_length(total_length) {
-                return crate::syscall::socket::socket_error(error);
-            }
-            // 1. stream 使用 facade 选择的 bounded staging；atomic protocol 仍一次 gather
-            // 完整消息，避免拆成多个数据报。
-            let capacity = socket
-                .stream_send_staging_capacity(total_length, 64 * 1024)
-                .unwrap_or(total_length);
-            let mut input = match UserInputStaging::try_new(capacity) {
-                Ok(input) => input,
-                Err(()) => return -errno::ENOMEM,
-            };
-            let mut cursor = UserIoCursor::new(vectors);
-            let mut written = 0usize;
-            while written < total_length {
-                // 2. stream 复用 bounded buffer，并在首次短写/阻塞后返回标准 partial count。
-                let requested = (total_length - written).min(input.capacity());
-                match cursor.copy_from_user_into(task, &mut input, requested) {
-                    Ok(copied) => {
-                        assert_eq!(copied, requested, "socket gather ended early")
-                    }
-                    Err(()) => {
-                        return if written == 0 {
-                            -errno::EFAULT
-                        } else {
-                            written as isize
-                        };
-                    }
-                }
-                loop {
-                    match socket.write(input.initialized()) {
-                        Ok(count) => {
-                            written += count;
-                            if count < requested {
-                                return written as isize;
-                            }
-                            break;
-                        }
-                        Err(crate::socket::SocketSendError::WouldBlock) if written != 0 => {
-                            return written as isize;
-                        }
-                        Err(
-                            crate::socket::SocketSendError::WouldBlock
-                            | crate::socket::SocketSendError::PeerFull(_),
-                        ) if ofd.status_flags() & O_NONBLOCK != 0 => {
-                            return -errno::EAGAIN;
-                        }
-                        Err(crate::socket::SocketSendError::WouldBlock) => {
-                            match crate::syscall::poll::wait_for_ofd(ofd, 4) {
-                                WaitResult::Woken => {}
-                                WaitResult::Interrupted => return -errno::EINTR,
-                                WaitResult::TimedOut => unreachable!(),
-                                WaitResult::OutOfMemory => return -errno::ENOMEM,
-                            }
-                        }
-                        Err(crate::socket::SocketSendError::PeerFull(blocker)) => {
-                            match crate::syscall::poll::wait_for_socket_send(&blocker) {
-                                WaitResult::Woken => {}
-                                WaitResult::Interrupted => return -errno::EINTR,
-                                WaitResult::TimedOut => unreachable!(),
-                                WaitResult::OutOfMemory => return -errno::ENOMEM,
-                            }
-                        }
-                        Err(crate::socket::SocketSendError::Error(
-                            crate::socket::SocketError::BrokenPipe,
-                        )) => {
-                            // 3. 即使已有进度，peer close 仍投递 SIGPIPE，但返回值保留已写 byte count。
-                            send_thread_signal(
-                                task.tgid(),
-                                task.tid(),
-                                syscall_abi::signal::SIGPIPE,
-                            )
-                            .expect("current sequential socket writer must exist");
-                            return if written == 0 {
-                                -errno::EPIPE
-                            } else {
-                                written as isize
-                            };
-                        }
-                        Err(crate::socket::SocketSendError::Error(error)) => {
-                            return if written == 0 {
-                                crate::syscall::socket::socket_error(error)
-                            } else {
-                                written as isize
-                            };
-                        }
-                    }
-                }
-            }
-            written as isize
+            crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length)
         }
         OpenFileKind::EventFd(event) => {
+            if total_length == 0 {
+                return -errno::EINVAL;
+            }
             let mut written = 0usize;
             // Linux eventfd 只实现 scalar write；统一 engine 中 scalar 是一个 vector，
             // writev fallback 则逐个非空 iovec 调用 write，不能合并跨 iovec 的八字节前缀。
@@ -262,7 +170,7 @@ pub(super) fn write_descriptor(
                             };
                         }
                         crate::ipc::EventFdWrite::Full => {
-                            match crate::syscall::poll::wait_for_ofd(ofd, 4) {
+                            match crate::syscall::poll::wait_for_ofd(ofd, 4, None) {
                                 WaitResult::Woken => {}
                                 WaitResult::Interrupted => {
                                     return if written == 0 {
@@ -286,7 +194,7 @@ pub(super) fn write_descriptor(
             }
             written as isize
         }
-        OpenFileKind::TimerFd(_) => -errno::EINVAL,
+        OpenFileKind::TimerFd(_) | OpenFileKind::SignalFd(_) => -errno::EINVAL,
         OpenFileKind::Epoll(_) => unreachable!("epoll write rejected before descriptor dispatch"),
         OpenFileKind::Device(file) => {
             crate::syscall::device::write_device(task, ofd, file.as_ref(), vectors, total_length)

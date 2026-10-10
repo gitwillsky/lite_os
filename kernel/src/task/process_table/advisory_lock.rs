@@ -3,7 +3,7 @@ use crate::file::OpenFileDescription;
 use crate::fs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
     AdvisoryLockNotifier, PreparedAdvisoryLock, PreparedLockAttempt, PreparedRecordLock,
-    RecordLockMode, RecordLockRange, vfs,
+    RecordLockMode, RecordLockOwner, RecordLockRange, vfs,
 };
 
 struct TaskAdvisoryLockNotifier;
@@ -221,12 +221,12 @@ pub(crate) fn wait_for_advisory_lock(
     )
 }
 
-/// 无丢失唤醒地阻塞到 calling Process 取得 POSIX byte-range lock。
+/// 无丢失唤醒地阻塞到 calling FileTable 取得 POSIX byte-range lock。
 ///
 /// # Parameters
 ///
 /// - `ofd`: pathname-backed OFD。
-/// - `owner`: calling Process TGID。
+/// - `owner`: calling FileTable identity 与独立报告 TGID。
 /// - `mode`: read/write lock mode。
 /// - `range`: 已归一化的半开 byte range。
 ///
@@ -235,7 +235,7 @@ pub(crate) fn wait_for_advisory_lock(
 /// 成功时 lock 已提交；signal、容量、backend 或 metadata 错误明确返回。
 pub(crate) fn wait_for_record_lock(
     ofd: &Arc<OpenFileDescription>,
-    owner: usize,
+    owner: RecordLockOwner,
     mode: RecordLockMode,
     range: RecordLockRange,
 ) -> Result<(), AdvisoryLockWaitError> {

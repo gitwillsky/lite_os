@@ -1,4 +1,4 @@
-use super::mmu::AddressSpaceToken;
+use super::mmu::KernelTrapToken;
 use super::trap::UserTrapEntry;
 use crate::arch::{IllegalInstructionFault, IllegalInstructionProbe, IllegalInstructionRetry};
 use riscv::register::sstatus::{self, SPP, Sstatus};
@@ -73,7 +73,7 @@ impl UserContext {
     pub(crate) fn app_init_context(
         entry: usize,
         sp: usize,
-        kernel_satp: AddressSpaceToken,
+        kernel_satp: KernelTrapToken,
         kernel_sp: usize,
         trap_handler: UserTrapEntry,
     ) -> Self {

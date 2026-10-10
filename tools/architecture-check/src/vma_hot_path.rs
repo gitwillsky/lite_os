@@ -4,6 +4,7 @@ use syn::{ImplItem, Item};
 use super::SourceFile;
 
 const MM_PATH: &str = "kernel/src/memory/mm.rs";
+const PUBLICATION_PATH: &str = "kernel/src/memory/mm/area_publication.rs";
 const MMAP_PATH: &str = "kernel/src/memory/mm/mmap.rs";
 const FAULT_PATH: &str = "kernel/src/memory/mm/mmap/fault.rs";
 const INDEX_STATE_PATH: &str = "kernel/src/memory/mm/vma_index_state.rs";
@@ -17,6 +18,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let Some(mmap) = source(sources, MMAP_PATH, errors) else {
         return;
     };
+    let Some(publication) = source(sources, PUBLICATION_PATH, errors) else {
+        return;
+    };
     let Some(fault) = source(sources, FAULT_PATH, errors) else {
         return;
     };
@@ -28,20 +32,23 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             MODEL_VMAS * FIRST_TOUCH_PAGES
         ));
     }
-    if !stack_body.contains("vma_index_state . stack_start") {
+    if !stack_body.contains("areas . ceiling (& target)")
+        || !stack_body.contains("area . kind != VmaKind :: Stack")
+        || stack_body.contains("stack_start")
+    {
         errors.push(format!(
-            "{FAULT_PATH}: grow_stack_for_fault must resolve the unique stack through VmaIndexState"
+            "{FAULT_PATH}: grow_stack_for_fault must resolve the nearest actual grow-down VMA through ordered ceiling without a unique-stack cache"
         ));
     }
 
     let scans = [
         (MM_PATH, "virtual_bytes", method_body(mm, "virtual_bytes")),
         (MM_PATH, "data_bytes", method_body(mm, "data_bytes")),
-        (MM_PATH, "push", method_body(mm, "push")),
+        (PUBLICATION_PATH, "push", method_body(publication, "push")),
         (
-            MMAP_PATH,
+            PUBLICATION_PATH,
             "range_is_free",
-            method_body(mmap, "range_is_free"),
+            method_body(publication, "range_is_free"),
         ),
         (
             MMAP_PATH,
@@ -67,30 +74,36 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .all(|source| source.relative != INDEX_STATE_PATH)
     {
         errors.push(format!(
-            "{INDEX_STATE_PATH}: missing authoritative stack-key/RLIMIT projection owner"
+            "{INDEX_STATE_PATH}: missing authoritative RLIMIT projection owner"
         ));
     }
 
     for (method, required) in [
-        ("commit_area", ["account_area", "areas . commit_vacant"]),
-        ("take_area_entry", ["areas . take_entry", "unaccount_area"]),
         (
-            "account_area",
-            ["vma_index_state . publish", "index_contribution"],
+            "commit_area",
+            [
+                "vma_index_state . publish",
+                "index_contribution",
+                "areas . commit_vacant",
+            ],
         ),
         (
-            "unaccount_area",
-            ["vma_index_state . retire", "index_contribution"],
+            "take_area_entry",
+            [
+                "areas . take_entry",
+                "vma_index_state . retire",
+                "index_contribution",
+            ],
         ),
     ] {
-        let body = method_body(mm, method).unwrap_or_default();
+        let body = method_body(publication, method).unwrap_or_default();
         let missing = required
             .into_iter()
             .filter(|pattern| !body.contains(pattern))
             .collect::<Vec<_>>();
         if !missing.is_empty() {
             errors.push(format!(
-                "{MM_PATH}::{method} must atomically maintain VmaIndexState and the ordered node; missing {}",
+                "{PUBLICATION_PATH}::{method} must atomically maintain VmaIndexState and the ordered node; missing {}",
                 missing.join(", ")
             ));
         }
@@ -99,8 +112,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let bypasses = sources
         .iter()
         .filter(|source| {
-            source.relative.starts_with("kernel/src/memory/mm/")
+            (source.relative.starts_with("kernel/src/memory/mm/") || source.relative == MM_PATH)
                 && source.relative != INDEX_STATE_PATH
+                && source.relative != PUBLICATION_PATH
         })
         .filter_map(|source| {
             let tokens = source.syntax.to_token_stream().to_string();
@@ -167,6 +181,28 @@ mod tests {
         let mut errors = Vec::new();
         check(&sources, &mut errors);
         assert!(errors.is_empty(), "{}", errors.join("\n"));
+    }
+
+    #[test]
+    fn rejects_restoring_unique_stack_cache_instead_of_nearest_fragment_lookup() {
+        let root = super::super::repository_root();
+        let mut sources = super::super::load_sources(&root).unwrap();
+        let fault = sources
+            .iter_mut()
+            .find(|source| source.relative == FAULT_PATH)
+            .unwrap();
+        let old = "self.areas.ceiling(&target)";
+        assert!(fault.text.contains(old));
+        fault.text = fault.text.replace(old, "self.areas.first_key_value()");
+        fault.syntax = syn::parse_file(&fault.text).unwrap();
+        let mut errors = Vec::new();
+        check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("nearest actual grow-down")),
+            "{errors:?}"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 
 use crate::{
-    fs::{FileSystemError, InodeType, OpenedFile},
+    fs::{FileSystemError, InodeType, LookupOrigin},
     memory::UserAccessError,
     syscall::errno,
     task::TaskControlBlock,
@@ -14,6 +14,7 @@ pub(in crate::syscall) fn ferr(error: FileSystemError) -> isize {
         FileSystemError::NotFound => errno::ENOENT,
         FileSystemError::AlreadyExists => errno::EEXIST,
         FileSystemError::NotDirectory => errno::ENOTDIR,
+        FileSystemError::NameTooLong => errno::ENAMETOOLONG,
         FileSystemError::IsDirectory => errno::EISDIR,
         FileSystemError::DirectoryNotEmpty => errno::ENOTEMPTY,
         FileSystemError::NoSpace => errno::ENOSPC,
@@ -21,11 +22,14 @@ pub(in crate::syscall) fn ferr(error: FileSystemError) -> isize {
         FileSystemError::PermissionDenied => errno::EPERM,
         FileSystemError::AccessDenied => errno::EACCES,
         FileSystemError::Busy => errno::EBUSY,
+        FileSystemError::Retry => errno::EAGAIN,
+        FileSystemError::TextBusy => errno::ETXTBSY,
         FileSystemError::TooManyLinks => errno::EMLINK,
         FileSystemError::NoDevice => errno::ENXIO,
+        FileSystemError::NotSupported => errno::EOPNOTSUPP,
         FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
         FileSystemError::ReadOnly => errno::EROFS,
-        FileSystemError::SymbolicLink => errno::ELOOP,
+        FileSystemError::Loop => errno::ELOOP,
         FileSystemError::OutOfMemory => errno::ENOMEM,
         FileSystemError::IoError | FileSystemError::InvalidFileSystem => errno::EIO,
     })
@@ -56,22 +60,16 @@ pub(super) fn path_allow_empty(
     Ok(path)
 }
 
-pub(super) fn base(
-    task: &TaskControlBlock,
-    fd: isize,
-    path: &[u8],
-) -> Result<Option<Arc<OpenedFile>>, isize> {
-    if path.first() == Some(&b'/') {
-        return Ok(None);
+pub(super) fn base(task: &TaskControlBlock, fd: isize, path: &[u8]) -> Result<LookupOrigin, isize> {
+    let origin = task.lookup_origin();
+    if path.first() == Some(&b'/') || fd == AT_FDCWD {
+        return Ok(origin);
     }
-    if fd == AT_FDCWD {
-        return Ok(Some(task.working_directory()));
-    }
-    let ofd = task.fd_get(fd as usize).ok_or(-errno::EBADF)?;
-    let opened = ofd.opened_ref().ok_or(-errno::ENOTDIR)?;
+    let ofd = task.fd_get_raw(fd as usize).ok_or(-errno::EBADF)?;
+    let opened = ofd.opened_ref();
     let inode = opened.inode();
     if inode.inode_type() != InodeType::Directory {
         return Err(-errno::ENOTDIR);
     }
-    Ok(Some(opened))
+    Ok(origin.with_start(opened))
 }

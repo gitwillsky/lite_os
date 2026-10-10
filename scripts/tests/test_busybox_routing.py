@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,8 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 import verify_busybox  # noqa: E402
+import openssl_cache  # noqa: E402
+from build_cache import CACHE_MANIFEST  # noqa: E402
 
 
 def reload_busybox(arch: str, accel: str) -> object:
@@ -21,6 +24,141 @@ def reload_busybox(arch: str, accel: str) -> object:
 
 
 class BusyBoxRoutingTests(unittest.TestCase):
+    def test_probe_binary_change_invalidates_runtime_success_before_cache_lookup(self) -> None:
+        module = reload_busybox("aarch64", "tcg")
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            libc = work / "usr/lib/libc.so"
+            libc.parent.mkdir(parents=True)
+            libc.write_bytes(b"libc")
+            names = ("memory-file", "special-file", "fs-stress", "inotify")
+            probes = {name: work / f"{name}-probe" for name in names}
+            for path in probes.values(): path.write_bytes(b"probe-v1")
+            artifact = work / "kernel"
+            artifact.write_bytes(b"kernel")
+            payloads = []
+
+            def hit(_stamp, payload, _artifacts):
+                payloads.append(payload)
+                return True
+
+            with (
+                patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "tcg"}),
+                patch.object(module.sys, "argv", ["verify_busybox.py"]),
+                patch.object(module, "WORK", work),
+                patch.object(module, "find_compiler", return_value=artifact),
+                patch.object(module, "obtain_source", return_value=work),
+                patch.object(module, "build_busybox", return_value=artifact),
+                patch.object(module, "verify_elf"),
+                patch.object(module, "cached_musl_paths", return_value=Mock(install=work)),
+                patch.object(module, "build_openssl", return_value=Mock(binary=artifact)),
+                patch.object(module, "build_dynamic_probe", return_value=(artifact, artifact)),
+                patch.object(module, "build_musl_probe", side_effect=lambda _musl, name: probes[name]),
+                patch.object(module, "target_runtime_artifacts", return_value=(artifact,)),
+                patch.object(module, "runtime_gate_hit", side_effect=hit),
+                patch("build_cache.validate_kernel_boot_artifact", return_value=artifact),
+                patch("build_cache.shutil.which", return_value="/tmp/qemu"),
+                patch("build_cache.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "QEMU fixture\n")),
+            ):
+                self.assertEqual(module.main(), 0)
+                probes["memory-file"].write_bytes(b"probe-v2")
+                self.assertEqual(module.main(), 0)
+            self.assertNotEqual(payloads[0]["inputs"], payloads[1]["inputs"])
+            for path in probes.values(): self.assertIn(str(path), payloads[0]["inputs"])
+            self.assertEqual(payloads[0]["qemu"], payloads[1]["qemu"])
+
+    def test_openssl_strip_cache_identity_matches_executed_symlink(self) -> None:
+        with patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "tcg"}, clear=True):
+            module = importlib.reload(openssl_cache)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiler = root / "clang"
+            compiler.write_text("clang")
+            executable = root / "llvm-objcopy"
+            executable.write_text("strip-v1")
+            executable.chmod(0o755)
+            stripper = root / "llvm-strip"
+            stripper.symlink_to(executable)
+            ca = root / "ca.pem"
+            ca.write_text("trust")
+            musl = Mock(
+                sysroot_fingerprint="musl", compiler=compiler,
+                linker=root / "lld", compiler_runtime=root / "runtime.a",
+                install=root / "sysroot", archiver=root / "llvm-ar",
+            )
+
+            def build(arguments: list[str], cwd: Path, _environment=None) -> None:
+                if "build_programs" in arguments:
+                    (cwd / "apps").mkdir()
+                    (cwd / "apps/openssl").write_text("ELF")
+                elif arguments[0] == str(stripper):
+                    Path(arguments[2]).write_text("stripped ELF")
+
+            with (
+                patch.object(module, "WORK", root / "cache"),
+                patch.object(module, "_source", return_value=(root / "source", "source")),
+                patch.object(module, "_ca_bundle", return_value=ca),
+                patch.object(module, "compiler_identity", return_value={}),
+                patch.object(module.shutil, "which", return_value=None),
+                patch.object(module, "run", side_effect=build) as run_mock,
+            ):
+                initial = module.build_openssl(musl, 1)
+                executable.write_text("strip-v2")
+                changed = module.build_openssl(musl, 1)
+                self.assertNotEqual(initial.fingerprint, changed.fingerprint)
+                manifest = json.loads((changed.binary.parent / CACHE_MANIFEST).read_text())
+                self.assertEqual(manifest["recipe"]["strip"]["path"], str(stripper))
+                self.assertEqual(run_mock.call_args.args[0][0], str(stripper))
+
+    def test_busybox_strip_identity_matches_executed_tool(self) -> None:
+        module = reload_busybox("aarch64", "tcg")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiler = root / "clang"
+            stripper = root / "llvm-strip"
+            strip_executable = root / "llvm-objcopy"
+            compiler.write_text("clang")
+            strip_executable.write_text("strip-v1")
+            strip_executable.chmod(0o755)
+            stripper.symlink_to(strip_executable)
+            config = root / "config"
+            config.write_text("config")
+            musl = Mock(
+                sysroot_fingerprint="musl",
+                compiler=compiler,
+                linker=root / "lld",
+                compiler_runtime=root / "runtime.a",
+                install=root / "sysroot",
+                archiver=root / "llvm-ar",
+            )
+
+            def configure(_source: Path, build: Path, _env: dict) -> None:
+                (build / "busybox").write_text("ELF")
+                (build / "busybox_unstripped").write_text("ELF with symbols")
+
+            with (
+                patch.object(module, "WORK", root / "cache"),
+                patch.object(module, "CONFIG_FRAGMENT", config),
+                patch.object(module, "source_payload", return_value={}),
+                patch.object(module, "compiler_identity", return_value={}),
+                patch.object(module.shutil, "which", return_value=None),
+                patch.object(module, "cached_musl_paths", return_value=musl),
+                patch.object(module, "configure", side_effect=configure),
+                patch.object(module, "run") as run_mock,
+            ):
+                initial = module.binary_payload(compiler, musl)
+                stripper.write_text("strip-v2")
+                changed = module.binary_payload(compiler, musl)
+                binary = module.build_busybox(root / "source", compiler, 1)
+                cache = root / "cache/binaries" / module.fingerprint(changed)
+                self.assertEqual(binary, (cache / "busybox").resolve())
+                self.assertTrue(
+                    module.manifest_matches(cache, changed, ("busybox", "busybox_unstripped"))
+                )
+                self.assertEqual(changed["strip"]["path"], str(stripper))
+                self.assertIn(f"STRIP={stripper}", run_mock.call_args.args[0])
+            self.assertNotEqual(module.fingerprint(initial), module.fingerprint(changed))
+
     def test_aarch64_build_and_runtime_identity(self) -> None:
         module = reload_busybox("aarch64", "hvf")
 

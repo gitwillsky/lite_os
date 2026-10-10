@@ -22,6 +22,10 @@ pub const SIGURG: usize = 23;
 pub const SIGXCPU: usize = 24;
 pub const SIGXFSZ: usize = 25;
 pub const SIGWINCH: usize = 28;
+pub const SIGSYS: usize = 31;
+
+/// kernel 主动产生且没有 userspace sender 的 signal 来源。
+pub const SI_KERNEL: i32 = 128;
 
 /// `SIGILL`：非法 opcode。
 pub const ILL_ILLOPC: i32 = 1;

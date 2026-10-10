@@ -13,6 +13,22 @@ import workflow  # noqa: E402
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_release_check_builds_matching_boot_artifact_before_static_gates(self) -> None:
+        for arch in ("aarch64", "riscv64"):
+            with self.subTest(arch=arch), patch.object(workflow, "run") as run:
+                workflow.verify_architecture_release(
+                    {"ARCH": arch, "ACCEL": "tcg", "PROFILE": "dev"}
+                )
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual(commands[0][:2], ["cargo", "build"])
+                self.assertIn("--release", commands[0])
+                self.assertEqual(Path(commands[1][1]).name, "verify_artifacts.py")
+                self.assertEqual(commands[1][2:], ["--build-boot-artifact", "--profile", "release"])
+                self.assertEqual(Path(commands[2][1]).name, "verify_architecture_release.py")
+                self.assertEqual(Path(commands[3][1]).name, "check_trap_cost.py")
+                for call in run.call_args_list:
+                    self.assertEqual(call.kwargs["environment"]["PROFILE"], "release")
+
     def test_runtime_gates_are_one_serial_ordered_scope(self) -> None:
         with patch.object(workflow, "run") as run:
             workflow.verify_runtime_gates({"ARCH": "aarch64", "ACCEL": "hvf"})
@@ -22,6 +38,7 @@ class WorkflowTests(unittest.TestCase):
             scripts,
             [
                 "verify_boot.py",
+                "verify_shutdown.py",
                 "verify_musl.py",
                 "verify_rust_std.py",
                 "verify_busybox.py",

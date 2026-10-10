@@ -7,6 +7,7 @@ use crate::memory::FutexKey;
 #[derive(Clone, Copy)]
 pub(super) enum IndexedWaitKind {
     Deadline,
+    TaskEvent(crate::sync::TaskWaitKey),
     Futex {
         key: FutexKey,
         bitset: u32,
@@ -28,6 +29,12 @@ pub(super) enum IndexedWaitKind {
 /// 当成多个 target callback，破坏 Linux 每个 eventpoll instance 只唤醒一个 waiter 的层次。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PollWaitKey {
+    Signal {
+        identity: usize,
+        events: i16,
+        exclusive: bool,
+        wake_group: Option<usize>,
+    },
     Console {
         events: i16,
         exclusive: bool,
@@ -43,6 +50,16 @@ pub(crate) enum PollWaitKey {
 }
 
 impl PollWaitKey {
+    /// 注册调用者实际 sighand；source Arc 由 wait snapshot guard 保活。
+    pub(crate) fn signal(identity: usize, events: i16) -> Self {
+        Self::Signal {
+            identity,
+            events,
+            exclusive: false,
+            wake_group: None,
+        }
+    }
+
     /// 构造 console source registration。
     ///
     /// # Parameters
@@ -98,13 +115,21 @@ impl PollWaitKey {
     /// exclusive registration 返回 true。
     pub(super) fn exclusive(self) -> bool {
         match self {
-            Self::Console { exclusive, .. } | Self::Pipe { exclusive, .. } => exclusive,
+            Self::Console { exclusive, .. }
+            | Self::Pipe { exclusive, .. }
+            | Self::Signal { exclusive, .. } => exclusive,
         }
     }
 
     fn same_source(self, other: Self) -> bool {
         match (self, other) {
             (Self::Console { .. }, Self::Console { .. }) => true,
+            (
+                Self::Signal { identity: left, .. },
+                Self::Signal {
+                    identity: right, ..
+                },
+            ) => left == right,
             (
                 Self::Pipe {
                     identity: left_identity,
@@ -123,6 +148,17 @@ impl PollWaitKey {
 
     fn with_exclusive(self, exclusive: bool) -> Self {
         match self {
+            Self::Signal {
+                identity,
+                events,
+                wake_group,
+                ..
+            } => Self::Signal {
+                identity,
+                events,
+                exclusive,
+                wake_group,
+            },
             Self::Console {
                 events, wake_group, ..
             } => Self::Console {
@@ -148,12 +184,25 @@ impl PollWaitKey {
 
     fn events(self) -> i16 {
         match self {
-            Self::Console { events, .. } | Self::Pipe { events, .. } => events,
+            Self::Console { events, .. }
+            | Self::Pipe { events, .. }
+            | Self::Signal { events, .. } => events,
         }
     }
 
     fn with_events(self, events: i16) -> Self {
         match self {
+            Self::Signal {
+                identity,
+                exclusive,
+                wake_group,
+                ..
+            } => Self::Signal {
+                identity,
+                events,
+                exclusive,
+                wake_group,
+            },
             Self::Console {
                 exclusive,
                 wake_group,
@@ -187,7 +236,9 @@ impl PollWaitKey {
     /// 返回用于同一 source wake 去重 epoll_wait thread 的 instance identity。
     pub(super) fn wake_group(self) -> Option<usize> {
         match self {
-            Self::Console { wake_group, .. } | Self::Pipe { wake_group, .. } => wake_group,
+            Self::Console { wake_group, .. }
+            | Self::Pipe { wake_group, .. }
+            | Self::Signal { wake_group, .. } => wake_group,
         }
     }
 

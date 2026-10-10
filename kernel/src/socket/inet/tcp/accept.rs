@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use smoltcp::socket::tcp::{self, State};
+use smoltcp::socket::tcp;
 
 use crate::{fallible_tree::FallibleMap, ipc::PipeEnd};
 
@@ -12,6 +12,7 @@ use super::*;
 ///
 /// - `socket`: listener identity。
 /// - `notify`: accepted endpoint 拥有的 notification Pipe。
+/// - `timeouts`: 在取连接前准备的 policy allocation；成功后安装该 child 的握手快照。
 ///
 /// # Returns
 ///
@@ -23,6 +24,8 @@ use super::*;
 pub(in crate::socket::inet) fn accept(
     socket: &InetSocket,
     notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+    timeouts: Arc<SocketTimeouts>,
+    memory: Arc<crate::socket::SocketMemory>,
 ) -> Result<Arc<InetSocket>, SocketError> {
     let mut accepted_slot =
         Arc::<InetSocket>::try_new_uninit().map_err(|_| SocketError::NoMemory)?;
@@ -33,24 +36,22 @@ pub(in crate::socket::inet) fn accept(
     let endpoint_slot = FallibleMap::<usize, TcpEndpointState>::try_reserve_node()
         .map_err(|_| SocketError::NoMemory)?;
     let listener_id = endpoint_id(socket);
-    let mut network = stack()?.lock()?;
+    let mut network = socket.stack()?.lock()?;
     let (position, endpoint, backlog, port_lease) = {
         let state = network
             .tcp_endpoints
             .get(&listener_id)
             .ok_or(SocketError::NotConnected)?;
-        let TcpMode::Listening { endpoint, backlog } = state.mode else {
+        let TcpMode::Listening {
+            endpoint, backlog, ..
+        } = state.mode
+        else {
             return Err(SocketError::Invalid);
         };
         let position = state
             .handles
             .iter()
-            .position(|handle| {
-                matches!(
-                    network.sockets.get::<tcp::Socket<'static>>(*handle).state(),
-                    State::Established | State::CloseWait
-                )
-            })
+            .position(|handle| handle.passive.is_some())
             .ok_or(SocketError::Again)?;
         (
             position,
@@ -61,13 +62,13 @@ pub(in crate::socket::inet) fn accept(
                 .expect("TCP listener lost local port lease"),
         )
     };
-    let established_handle = network.tcp_endpoints[&listener_id].handles[position];
-    let local_address = network
-        .sockets
-        .get::<tcp::Socket<'static>>(established_handle)
-        .local_endpoint()
-        .map(|local| from_ip(local.addr))
-        .expect("established TCP listener child lost local endpoint");
+    let local_address = network.tcp_endpoints[&listener_id].handles[position]
+        .passive
+        .as_ref()
+        .expect("pending TCP child lost connection")
+        .connection
+        .local
+        .address;
     // exact-address node 在 replacement 加入 SocketSet 前预留；之后的 commit/handle transfer 均不分配。
     let prepared_lease = network
         .tcp_ports
@@ -75,6 +76,8 @@ pub(in crate::socket::inet) fn accept(
         .map_err(port_error)?;
     let id = allocate_endpoint_id(&mut network)?;
     let replacement = add_socket(&mut network)?;
+    let listener_options = network.tcp_endpoints[&listener_id].options;
+    listener_options.apply_tcp(network.sockets.get_mut::<tcp::Socket<'static>>(replacement));
     if network
         .sockets
         .get_mut::<tcp::Socket<'static>>(replacement)
@@ -85,7 +88,7 @@ pub(in crate::socket::inet) fn accept(
         return Err(SocketError::AddressNotAvailable);
     }
     let accepted_lease = network.tcp_ports.commit_retained(prepared_lease);
-    let handle = network
+    let mut entry = network
         .tcp_endpoints
         .get_mut(&listener_id)
         .expect("TCP listener disappeared while stack lock is held")
@@ -97,30 +100,28 @@ pub(in crate::socket::inet) fn accept(
             .get_mut(&listener_id)
             .expect("TCP listener disappeared while replenishing backlog")
             .handles
-            .push(replacement);
+            .push(TcpHandle::new(replacement));
     } else {
         network.sockets.remove(replacement);
     }
-    let peer_closed = matches!(
-        network.sockets.get::<tcp::Socket<'static>>(handle).state(),
-        State::CloseWait
-    );
-    let options = network.tcp_endpoints[&listener_id].options;
-    network
-        .sockets
-        .get_mut::<tcp::Socket<'static>>(handle)
-        .set_nagle_enabled(!options.no_delay);
-    accepted_handles.push(handle);
+    let policy = entry
+        .passive
+        .take()
+        .expect("accepted child must have handshake policy");
+    let options = policy.options;
+    timeouts.initialize(policy.timeouts);
+    let accepted_lease = network
+        .tcp_ports
+        .set_reuse(accepted_lease, options.reuse_address);
+    accepted_handles.push(entry);
     network.tcp_endpoints.commit_vacant(endpoint_slot.fill(
         id,
         TcpEndpointState {
             endpoint: Weak::new(),
             handles: accepted_handles,
-            mode: TcpMode::Connected {
-                peer_closed,
-                shutdown_read: false,
-            },
-            pending_error: None,
+            timeouts: timeouts.clone(),
+            mode: TcpMode::Connected(policy.connection),
+            pending_error: policy.pending_error,
             port_lease: Some(accepted_lease),
             orphaned: false,
             options,
@@ -131,10 +132,12 @@ pub(in crate::socket::inet) fn accept(
     Arc::get_mut(&mut accepted_slot)
         .expect("new accepted endpoint Arc must be uniquely owned")
         .write(InetSocket {
+            memory,
             endpoint: InetEndpoint::Tcp(id),
-            operation: spin::Mutex::new(()),
+            operation: spin::Mutex::new(Some(InetEndpoint::Tcp(id))),
             notify_read: notify.0,
             notify_write: notify.1,
+            timeouts,
         });
     // SAFETY: accepted_slot 尚未克隆，且上一行已完整初始化 InetSocket storage。
     let accepted = unsafe { accepted_slot.assume_init() };

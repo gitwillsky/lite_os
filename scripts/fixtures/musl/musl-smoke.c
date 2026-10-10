@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -16,6 +17,8 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
+#include <sys/reboot.h>
+#include <sys/mount.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -31,6 +34,36 @@ static volatile sig_atomic_t signal_count;
 enum { FUTEX_WAIT_PRIVATE = 128, FUTEX_WAKE_PRIVATE = 129 };
 
 int verify_shared_sync(void);
+int verify_process_security(void);
+int verify_file_table(void);
+int verify_file_table_exec_image(int shared);
+int verify_thread_mm(void);
+int verify_capabilities(void);
+int verify_user_namespaces(void);
+int verify_time_namespace_image(void);
+int verify_fs_root(void);
+int verify_fs_credentials(void);
+int verify_anonymous_files(void);
+int verify_udp_native(void);
+int verify_fs_credentials_exec(int expected, int chain);
+int verify_fs_root_exec(void);
+int verify_sighand(void);
+int verify_sighand_exec_image(void);
+int verify_capabilities_image(const char *mode);
+int verify_file_capability_image(const char *mode);
+int verify_thread_mm_exec_image(void);
+int verify_thread_mm_promoted_image(pid_t old_tid, long long original_start);
+int verify_exec_security_image(int no_new_privs);
+int verify_thread_exit_exec(void);
+int verify_thread_exit_image(void);
+int verify_thread_live_exec(void);
+int verify_thread_live_image(pid_t expected_pid);
+int verify_seccomp(void);
+int verify_seccomp_exec_image(void);
+int verify_signal_frame_errors(void);
+int verify_memory_pressure(void);
+int verify_address_space_rollover(void);
+int verify_mapping_placement(void);
 
 static void signal_handler(int signal)
 {
@@ -124,8 +157,52 @@ static int verify_exec_file_status(void)
 	return 0;
 }
 
-int main(int argc, char **argv, char **envp)
+extern int verify_swap(void);
+int verify_clone_parent_exec_image(pid_t child, int release);
+
+static int run_smoke(int argc, char **argv, char **envp)
 {
+    if (argc == 2 && argv && argv[1] && strcmp(argv[1], "clone-exit-image") == 0) return 31;
+    if (argc == 4 && argv && argv[1] && strcmp(argv[1], "clone-parent-exec-image") == 0)
+        return verify_clone_parent_exec_image((pid_t)strtol(argv[2], 0, 10), (int)strtol(argv[3], 0, 10));
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "asid-smoke") == 0) return verify_address_space_rollover();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "swap-smoke") == 0) return verify_swap();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "process-security-smoke") == 0) return verify_process_security();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "file-table-smoke") == 0) return verify_file_table();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "thread-mm-smoke") == 0) return verify_thread_mm();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "namespace-user-smoke") == 0) return verify_user_namespaces();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "time-namespace-image") == 0) return verify_time_namespace_image();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "capabilities-smoke") == 0) return verify_capabilities();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "anonymous-files-smoke") == 0) return verify_anonymous_files();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "udp-smoke") == 0) return verify_udp_native();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "fs-credentials-smoke") == 0) return verify_fs_credentials();
+	if (argc == 4 && argv && argv[1] && strcmp(argv[1], "fs-credentials-exec") == 0) return verify_fs_credentials_exec(atoi(argv[2]), atoi(argv[3]));
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "fs-root-smoke") == 0) return verify_fs_root();
+	if (argc >= 2 && argv && argv[1] && strcmp(argv[1], "fs-root-exec") == 0) return verify_fs_root_exec();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "sighand-smoke") == 0) return verify_sighand();
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "sighand-exec") == 0) return verify_sighand_exec_image();
+	if (argc == 3 && argv && argv[1] && strcmp(argv[1], "capabilities-image") == 0) return verify_capabilities_image(argv[2]);
+	if (argc == 3 && argv && argv[1] && strcmp(argv[1], "file-capability-image") == 0) return verify_file_capability_image(argv[2]);
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "thread-mm-exec") == 0) return verify_thread_mm_exec_image();
+	if (argc == 4 && argv && argv[1] && strcmp(argv[1], "thread-mm-promoted") == 0)
+		return verify_thread_mm_promoted_image(strtol(argv[2], 0, 10), strtoll(argv[3], 0, 10));
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "file-table-exec-shared") == 0) return verify_file_table_exec_image(1);
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "file-table-exec-unique") == 0) return verify_file_table_exec_image(0);
+
+    if (argc == 2 && argv && argv[1] && strcmp(argv[1], "seccomp-exec-image") == 0) {
+        return verify_seccomp_exec_image();
+    }
+    if (argc == 2 && argv && argv[1] && strcmp(argv[1], "thread-live-smoke") == 0) return verify_thread_live_exec();
+    if (argc == 3 && argv && argv[1] && strcmp(argv[1], "thread-live-image") == 0) return verify_thread_live_image(atoi(argv[2]));
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "thread-exit-image") == 0) {
+		return verify_thread_exit_image();
+	}
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "no-new-privs-child") == 0) {
+		return verify_exec_security_image(1);
+	}
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "set-id-child") == 0) {
+		return verify_exec_security_image(0);
+	}
 	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "setpgid-child") == 0) {
 		if (write(10, "E", 1) != 1) _exit(90);
 		for (;;) pause();
@@ -193,6 +270,59 @@ int main(int argc, char **argv, char **envp)
 	    || strcmp(envp[0], "HOME=/") != 0 || strcmp(envp[1], "TERM=linux") != 0)
 		return 1;
 	if (sysconf(_SC_PAGESIZE) != 4096 || getpid() <= 0) return 2;
+	static const char security_started[] = "LiteOS musl process security start\n";
+	write(1, security_started, sizeof security_started - 1);
+	int file_table_result = verify_file_table();
+	if (file_table_result != 0) return file_table_result;
+	int thread_mm_result = verify_thread_mm();
+	if (thread_mm_result != 0) return thread_mm_result;
+	int capabilities_result = verify_capabilities();
+	if (capabilities_result != 0) return capabilities_result;
+	int namespace_result = verify_user_namespaces();
+	if (namespace_result != 0) return namespace_result;
+	int anonymous_files_result = verify_anonymous_files();
+	if (anonymous_files_result != 0) return anonymous_files_result;
+	int udp_result = verify_udp_native();
+	if (udp_result != 0) return udp_result;
+	int fs_credentials_result = verify_fs_credentials();
+	if (fs_credentials_result != 0) return fs_credentials_result;
+	int fs_root_result = verify_fs_root();
+	if (fs_root_result != 0) return fs_root_result;
+	int sighand_result = verify_sighand();
+	if (sighand_result != 0) return sighand_result;
+	int security_result = verify_process_security();
+	if (security_result != 0) {
+		static const char failed[] = "LiteOS musl process security failed step=";
+		char step[] = { (char)('0' + security_result), '\n' };
+		write(STDOUT_FILENO, failed, sizeof failed - 1);
+		write(STDOUT_FILENO, step, sizeof step);
+		return 16;
+	}
+	static const char thread_exit_started[] = "LiteOS musl thread exit/exec start\n";
+	write(1, thread_exit_started, sizeof thread_exit_started - 1);
+	if (verify_thread_exit_exec() != 0) {
+		static const char failed[] = "LiteOS musl thread exit/exec failed\n";
+		write(2, failed, sizeof(failed) - 1);
+		return 17;
+	}
+	if (verify_thread_live_exec() != 0) return 17;
+	static const char seccomp_started[] = "LiteOS musl seccomp start\n";
+	write(1, seccomp_started, sizeof seccomp_started - 1);
+	int seccomp_result = verify_seccomp();
+	if (seccomp_result != 0) {
+		static const char failed[] = "LiteOS musl seccomp failed step=";
+		char step[] = { (char)('0' + seccomp_result / 10), (char)('0' + seccomp_result % 10), '\n' };
+		write(2, failed, sizeof failed - 1);
+		write(2, step, sizeof step);
+		return 18;
+	}
+	static const char seccomp_done[] = "LiteOS musl seccomp ok\n";
+	write(1, seccomp_done, sizeof seccomp_done - 1);
+	if (verify_signal_frame_errors() != 0) {
+		static const char failed[] = "LiteOS musl bad signal frame failed\n";
+		write(2, failed, sizeof failed - 1);
+		return 19;
+	}
 	int exec_file_status_result = verify_exec_file_status();
 	if (exec_file_status_result != 0) {
 		static const char failed[] = "LiteOS musl exec/OFD/CAD failed step=";
@@ -519,6 +649,34 @@ int main(int argc, char **argv, char **envp)
 		write(STDOUT_FILENO, result_code, sizeof result_code);
 		return 13;
 	}
+	if (verify_mapping_placement() != 0) return 22;
+	if (verify_address_space_rollover() != 0) return 21;
+	if (verify_memory_pressure() != 0) return 20;
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 14;
 	return 0;
+}
+
+/* PID1 supervises the actual consumer. Returning from PID1 is a kernel panic even on success;
+ * the gate must observe the consumer's real wait status, independent of UART chunk timing. */
+int main(int argc, char **argv, char **envp)
+{
+    if (getpid() != 1) return run_smoke(argc, argv, envp);
+    /* kernel 只装配 / 与 /dev；此处由唯一 PID1 准备临时目录及 proc/sysfs/devpts。
+     * exec 子镜像继承同一 mount namespace，不重复执行该初始化。 */
+    pid_t consumer = -1;
+    if (mkdir("/tmp", 01777) == 0 && chmod("/tmp", 01777) == 0
+        && mount("proc", "/proc", "proc", 0, NULL) == 0
+        && mount("sysfs", "/sys", "sysfs", 0, NULL) == 0
+        && mount("devpts", "/dev/pts", "devpts", 0, NULL) == 0) consumer = fork();
+    if (consumer == 0) return run_smoke(argc, argv, envp);
+    int status = -1;
+    if (consumer > 0 && waitpid(consumer, &status, 0) == consumer
+        && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        puts("LiteOS musl consumer exit=0");
+    } else {
+        printf("LiteOS musl consumer failed status=%d\n", status);
+    }
+    fflush(stdout);
+    if (reboot(RB_POWER_OFF) != 0) puts("LiteOS musl consumer failed poweroff");
+    for (;;) pause();
 }

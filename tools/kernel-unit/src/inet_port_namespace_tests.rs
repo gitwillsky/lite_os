@@ -6,6 +6,22 @@ const LOCAL_A: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 15);
 const LOCAL_B: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 16);
 
 #[test]
+fn stopped_listener_releases_claim_and_terminal_transport_releases_binding() {
+    let mut ports = PortNamespace::new();
+    let bound = ports.acquire(8_090, None, false).unwrap();
+    let listening = ports.claim_listener(bound).unwrap();
+    let bound = ports.stop_listener(listening);
+    let listening = ports.claim_listener(bound).unwrap();
+    assert_eq!(
+        ports.acquire(8_090, None, false),
+        Err(PortError::AddressInUse)
+    );
+    ports.release(listening);
+    let rebound = ports.acquire(8_090, None, false).unwrap();
+    ports.release(rebound);
+}
+
+#[test]
 fn exact_addresses_share_a_port_but_same_address_conflicts() {
     let mut ports = PortNamespace::new();
     let first = ports.acquire(8_080, Some(LOCAL_A), false).unwrap();

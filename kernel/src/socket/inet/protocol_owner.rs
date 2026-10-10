@@ -1,6 +1,6 @@
 use core::ops::{Deref, DerefMut};
 
-use spin::{Mutex, Once};
+use spin::Mutex;
 
 use super::{InetEndpoint, NetworkStack, SOCKET_STORAGE_CAPACITY};
 use crate::{
@@ -58,7 +58,7 @@ impl NetworkStackGuard<'_> {
 /// 普通 task 竞争时通过 `TaskMutex` 睡眠；deferred poll 只尝试取得 owner，竞争或存在
 /// payload loan 时立即回投。payload loan 只在短 owner transaction 中用同类型 placeholder
 /// 取出/归还一个 socket；大块 copy 不持全局互斥 guard，只保留 O(1) loan-count 完整性证明。
-pub(super) struct NetworkStackOwner {
+pub(in crate::socket) struct NetworkStackOwner {
     // OWNER: 唯一 protocol state；TaskMutex 只允许 task waiter 睡眠，deferred 只能 try。
     state: TaskMutex<NetworkStackState>,
     // OWNER: final Drop 的 exactly-once commands。spin 临界区只有 O(1) publish/pop，绝不
@@ -100,13 +100,21 @@ impl NetworkStackOwner {
     ///
     /// waiter metadata 分配失败时返回 `NoMemory`。
     pub(super) fn lock(&self) -> Result<NetworkStackGuard<'_>, SocketError> {
-        self.state
-            .lock()
-            .map(|state| NetworkStackGuard {
-                state,
-                cleanup_backlog: false,
-            })
-            .map_err(|_| SocketError::NoMemory)
+        let mut state = self.state.lock().map_err(|_| SocketError::NoMemory)?;
+        // 新 task transaction 必须先消费已完成 fput 的 commands；否则 close 返回后的
+        // bind/new/read 会仍看到旧 port lease，或误用尚未清理的 retired slot。
+        // state guard 阻止新 endpoint admission；每个已存在 registration 只发布一次 command。
+        loop {
+            let endpoint = self.pending_cleanup.lock().pop();
+            let Some(endpoint) = endpoint else {
+                break;
+            };
+            super::cleanup_endpoint(&mut state.stack, endpoint);
+        }
+        Ok(NetworkStackGuard {
+            state,
+            cleanup_backlog: false,
+        })
     }
 
     /// deferred poll 无等待地取得完整协议状态。
@@ -120,8 +128,8 @@ impl NetworkStackOwner {
     /// 无错误且不分配 waiter；竞争只返回 `None`。
     pub(super) fn try_poll(&self) -> Option<NetworkStackGuard<'_>> {
         let mut state = self.state.try_lock()?;
-        // cleanup 可以先处理其他 endpoint；同一 endpoint 的 final Drop 不可能与 active loan
-        // 并存，因为 payload caller 的 live InetSocket 引用与 operation guard 覆盖完整 loan。
+        // cleanup 可以先处理其他 endpoint；actual close 消费 operation 内的 registration，
+        // 同一 guard 已等待全部 payload loan 恢复，observer Arc 不发布第二份 cleanup。
         let cleanup_backlog = self.drain_cleanup(&mut state.stack);
         if state.payload_loans != 0 {
             return None;
@@ -238,6 +246,3 @@ impl NetworkStackOwner {
         self.pending_cleanup.lock().has_pending()
     }
 }
-
-// OWNER: protocol_owner uniquely owns the one IPv4 stack and pending final-cleanup commands.
-pub(super) static NETWORK_STACK: Once<NetworkStackOwner> = Once::new();

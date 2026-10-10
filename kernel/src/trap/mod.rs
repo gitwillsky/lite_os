@@ -1,5 +1,4 @@
 use core::panic;
-use syscall_abi::SYSCALL_EXECVE;
 
 use syscall_abi::signal::{
     BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL, SIGKILL, SIGSEGV,
@@ -89,24 +88,23 @@ pub(crate) fn handle_user_trap() -> ! {
                 // 1. transaction 只读取 syscall number/argument register 与 syscall PC 并原地推进 PC；不允许 context
                 // 引用跨 syscall，因为 execve 会把同一 owner rebind 到新 AddressSpace。
                 let (syscall_id, args, syscall_pc) = current.take_syscall_request();
-                // sys_exit 不返回；若保留该 Arc，它会永久留在即将释放的 task stack 上。
-                drop(current);
-                let result = syscall::syscall(syscall_id, args);
+                // 把已有 Arc 转交 seccomp，避免 disabled 路径重复 current lookup/Arc clone；
+                // dispatcher 在任何不返回的 handler 前释放它，不能留在退休 task stack 上。
+                let result = syscall::syscall(syscall_id, args, current);
                 let current =
                     task::current_task().expect("returning syscall must still have a current task");
 
                 // 2. execve 成功时，新 UserContext 已包含新程序入口；覆盖它会让 PC 回到旧映像。
                 match result {
+                    SyscallOutcome::PreserveRegisters => {}
                     SyscallOutcome::Return(result) => {
-                        if syscall_id != SYSCALL_EXECVE || result != 0 {
-                            current.complete_syscall(SyscallCompletion::Return(result));
-                        }
+                        current.complete_syscall(SyscallCompletion::Return(result));
                     }
-                    SyscallOutcome::Restart => {
+                    SyscallOutcome::Restart(policy) => {
                         current.complete_syscall(SyscallCompletion::Interrupted(
                             crate::syscall::INTERRUPTED_RESULT,
                         ));
-                        current.arm_syscall_restart(syscall_id, args, syscall_pc);
+                        current.arm_syscall_restart(syscall_id, args, syscall_pc, policy);
                     }
                 }
             } else {
@@ -199,11 +197,9 @@ fn handle_user_page_fault(address: usize, access: PageFaultAccess) {
 }
 
 pub(crate) fn trap_return() -> ! {
-    // 1. 后续 address-space/context snapshot 必须不被 local scheduling 打断；该路径 noreturn，
-    // 因此 previous interrupt state 不得由 Rust frame 恢复。
-    arch::interrupt::disable_for_transfer();
-
-    // 2. signal preparation 每轮只保活当前 TCB，stop/terminate 会释放它再进入 scheduler。
+    // 1. signal preparation 可 fault 或等待 mm；每轮只保活当前 TCB，stop/terminate
+    // 释放它再进入 scheduler。当前 Thread 的 scheduler owner 保证 context 不被并发执行；
+    // kernel hardirq 只发布 deferred/ack，不修改 UserContext 或调度。
     loop {
         task::exit_current_if_group_exiting();
         let delivery_task = crate::task::current_task().expect("No current task in trap_return");
@@ -224,6 +220,10 @@ pub(crate) fn trap_return() -> ! {
             }
         }
     }
+    // 2. 在全部可阻塞 preparation 之后建立最终 transfer window。TaskMutex wait 的
+    // context-switch handoff 可恢复 outgoing task 的 IRQ 状态，不能沿用 loop 之前的屏蔽。
+    // 下面只做非阻塞 snapshot/ASID activation，noreturn frame 不得恢复 previous IRQ state。
+    arch::interrupt::disable_for_transfer();
     let current_task = crate::task::current_task().expect("signal delivery lost current task");
     let user_address_space = current_task.user_token();
     let user_context_va = current_task.prepare_user_return(crate::cpu::current_id().index());

@@ -17,22 +17,24 @@ pub(crate) use memory_barrier::{
     complete_pending as complete_pending_memory_barrier, register_private_memory_barrier,
     synchronize_private_memory,
 };
-pub(crate) use model::KernelThreadBody;
-pub(in crate::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
 pub(crate) use model::{
-    CredentialUpdateError, IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC,
-    ReceivedFdTransaction, ResourceLimit, ResourceLimitError, RunState, SignalAction,
-    SignalDelivery, SignalStack, SignalStackError, StopResume, StopTransition, TaskControlBlock,
-    WaitMembership,
+    CapabilityError, CloneParameters, CredentialUpdateError, IoStatistics, MessageIdentityError,
+    PendingSignal, ProcessCloneResources, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit,
+    ResourceLimitError, RunState, SignalAction, SignalDelivery, SignalFrameRestoreError,
+    SignalStack, SignalStackError, StopResume, StopTransition, TaskControlBlock,
+    ThreadCloneResources, WaitMembership,
 };
+pub(in crate::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
+pub(crate) use model::{ExecError, RobustListError, SeccompDecision, SeccompError};
+pub(crate) use model::{KernelThreadBody, SyscallRestartBlock, SyscallRestartPolicy};
 pub(crate) use process_table::advisory_lock::{
     AdvisoryLockWaitError, install_advisory_lock_notifier, wait_for_advisory_lock,
     wait_for_record_lock,
 };
 pub(crate) use process_table::timer_queue::{
-    PosixTimerClock, PosixTimerNotification, TimerFileClock, create_posix_timer, create_timer_fd,
-    delete_posix_timer, posix_timer, posix_timer_overrun, real_timer, remove_posix_timers_for_exec,
-    set_posix_timer, set_real_timer,
+    KernelDeadlineWait, PosixTimerClock, PosixTimerNotification, TimerFileClock,
+    create_posix_timer, create_timer_fd, delete_posix_timer, posix_timer, posix_timer_overrun,
+    real_timer, remove_posix_timers_for_exec, set_posix_timer, set_real_timer,
 };
 pub(crate) use process_table::*;
 pub(crate) use processor::*;
@@ -135,10 +137,11 @@ fn load_init(
             .ok_or(ProgramLoadError::ArgumentListTooLong)?;
     }
     let root = vfs()
-        .open_file(b"/")
+        .initial_origin()
         .map_err(ProgramLoadError::FileSystem)?;
     load_executable(
         root,
+        &vfs().initial_namespace(),
         copy(path)?,
         argv,
         argument_bytes,
@@ -192,9 +195,10 @@ pub(crate) fn spawn_init(
             .find_map(|path| load_init(path, arguments, environment).ok())
             .expect("No working init found"),
     };
+    let mut pid = pid::PreparedPid::initial().expect("init PID identity allocation failed");
     let init_proc = TaskControlBlock::new_with_pid(
         &loaded,
-        ProcessId::init(),
+        ProcessId::from_identity(pid.identity()),
         kernel_trap_handler,
         kernel_trap_return,
         environment,
@@ -203,7 +207,7 @@ pub(crate) fn spawn_init(
         Ok(init_proc) => {
             let init_task = Arc::try_new(init_proc).expect("init task Arc allocation failed");
             // 添加到全局 PID 索引和唯一生效的 CFS runqueue。
-            add_init_task(init_task);
+            add_init_task(init_task, &mut pid);
             debug!("init task created and queued");
         }
         Err(e) => {

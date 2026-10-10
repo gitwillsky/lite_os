@@ -123,7 +123,7 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 - 当前重心不在 UI：桌面全局快捷键表与命令中心启动面板的 bundle 测试已移除，后续回到 UI 时需按当时的交互设计重建。
 - architecture-check 仍有 1000 行 review 提示（非失败）：`compositor/src/gpu.rs`、`gpu/paint.rs`、
   `display-proto/src/paint.rs`、`lite-runtime/src/renderer/gpu_paint.rs`，继续扩展前应先审视其 owner/interface 拆分。
-- `scripts/tests` 中两个既有失败：`test_release_gates` 的 AArch64 trap-cost 合成用例期望与检查器不一致；
-  `test_audio_analysis` 使用 `from scripts...` 导入，在 `scripts/` 下运行时失败。
-- 主要能力缺口（详见 ABI 矩阵）：IPv6、namespace/seccomp 等隔离机制（因此 Agent 镜像无 sandbox）、
-  futex PI、queued realtime signal、swap/后台回写、inotify、io_uring、System V IPC。
+- 本轮目标是学习型内核的核心正确性：使用现有 buddy/slab、VMA AVL、有序调度/deadline 队列和 FIFO，保持唯一状态 owner、可回滚 OOM 与明确的资源退休顺序。
+- 网络目标为一张物理 NIC 加 lo 的 IPv4 TCP/UDP，继续使用 smoltcp；IPv6、多网卡不在当前目标内。
+- 已接入 inotify、queued realtime signal、System V IPC 及有限 namespace/seccomp/swap 路径，精确支持范围以 ABI 矩阵为准。
+- 暂不扩展完整 namespace/seccomp 隔离、futex PI、复杂内存回收策略、io_uring 等子系统；Agent 镜像仍无完整 sandbox。

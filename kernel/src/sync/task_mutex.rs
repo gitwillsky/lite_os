@@ -1,3 +1,5 @@
+#[path = "task_mutex/signal_acquisition.rs"]
+mod signal_acquisition;
 use alloc::sync::Arc;
 use core::{
     cell::UnsafeCell,
@@ -5,10 +7,11 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU64, Ordering},
 };
+pub(crate) use signal_acquisition::TaskMutexLockError;
 
 use super::{
     WaitCompletion,
-    task_wait::{TaskWaitKey, TaskWaitTarget, current_wait_target},
+    task_wait::{TaskWaitKey, TaskWaitMode, TaskWaitTarget, current_wait_target},
 };
 
 /// task mutex waiter metadata 分配失败。
@@ -32,6 +35,8 @@ impl Waiter {
             key: TaskWaitKey {
                 owner: 0,
                 ticket: 0,
+                deadline_ns: None,
+                mode: TaskWaitMode::Uninterruptible,
             },
             completion,
             target: None,
@@ -41,11 +46,13 @@ impl Waiter {
     }
 
     fn wait(self: &Arc<Self>) {
-        self.target
+        let result = self
+            .target
             .as_ref()
             .cloned()
             .expect("task mutex waiter target disappeared before sleep")
             .sleep(self.completion.as_ref(), self.key);
+        assert_eq!(result, super::WaitResult::Woken);
     }
 
     fn retire(self: Arc<Self>) -> (Arc<WaitCompletion>, Wake) {
@@ -98,6 +105,9 @@ impl TaskMutexWaitPreparation {
     }
 
     fn arm<T: ?Sized>(&mut self, mutex: &TaskMutex<T>) -> Arc<Waiter> {
+        self.arm_mode(mutex, TaskWaitMode::Uninterruptible)
+    }
+    fn arm_mode<T: ?Sized>(&mut self, mutex: &TaskMutex<T>, mode: TaskWaitMode) -> Arc<Waiter> {
         let waiter = Arc::get_mut(&mut self.waiter)
             .expect("task mutex wait preparation reused before acquisition");
         let ticket = mutex
@@ -109,6 +119,8 @@ impl TaskMutexWaitPreparation {
         waiter.key = TaskWaitKey {
             owner: core::ptr::from_ref(mutex).cast::<()>() as usize,
             ticket,
+            deadline_ns: None,
+            mode,
         };
         waiter.target =
             Some(current_wait_target().expect("contended task mutex outside task context"));

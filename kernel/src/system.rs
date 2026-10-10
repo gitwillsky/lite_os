@@ -1,6 +1,7 @@
+pub(crate) use crate::arch::user::SignalActionBytes;
 pub(crate) use crate::platform::ResetKind;
 
-/// 返回唯一的 immutable system/build identity，供标准 utsname ABI 投影。
+/// 返回 immutable build facts 与启动默认 UTS 名字；live hostname/domainname 由 UTS owner 提供。
 ///
 /// # Returns
 ///
@@ -28,6 +29,11 @@ pub(crate) fn identity() -> [&'static str; 6] {
 #[inline(always)]
 pub(crate) fn decode_architecture_syscall(syscall_id: usize) -> Option<usize> {
     crate::arch::user::decode_private_syscall(syscall_id)
+}
+
+/// 返回标准 seccomp/siginfo 使用的 Linux AUDIT_ARCH architecture identity。
+pub(crate) const fn audit_architecture() -> u32 {
+    crate::arch::user::AUDIT_ARCH
 }
 
 /// 返回 platform monotonic counter 的固定频率。

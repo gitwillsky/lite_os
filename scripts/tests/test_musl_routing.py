@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,74 @@ def reload_verify_musl(arch: str, accel: str) -> object:
 
 
 class MuslRoutingTests(unittest.TestCase):
+    def test_runtime_success_requires_both_cpu_topologies_and_real_swap_disk(self) -> None:
+        module = reload_verify_musl("aarch64", "tcg")
+        for fail_swap in (False, True):
+            with self.subTest(fail_swap=fail_swap), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                calls = []
+
+                def boot(image, cpu_count, markers, **options):
+                    calls.append(cpu_count)
+                    self.assertIn("LiteOS musl consumer exit=0", markers)
+                    self.assertIn("LiteOS musl consumer failed", options["forbidden_markers"])
+                    if "scratch_disk" not in options:
+                        self.assertIn("LiteOS musl pthread signal ok", markers)
+                        self.assertIn("LiteOS musl ASID ok", markers)
+                        return
+                    self.assertIn("LiteOS musl swap ok", markers)
+                    self.assertEqual(options["kernel_arguments"], "init=/bin/init -- swap-smoke")
+                    self.assertEqual(options["memory"], "128M")
+                    disk = options["scratch_disk"]
+                    self.assertEqual(disk.stat().st_size, 64 * 1024 * 1024)
+                    with disk.open("rb") as source:
+                        header = source.read(4096)
+                    self.assertEqual(header[4086:], b"SWAPSPACE2")
+                    self.assertEqual(struct.unpack_from("<III", header, 1024), (1, 16383, 0))
+                    if fail_swap and cpu_count == 2:
+                        raise RuntimeError("swap regression")
+
+                with (
+                    patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "tcg"}),
+                    patch.object(module, "WORK", work),
+                    patch.object(module.sys, "argv", ["verify_musl.py"]),
+                    patch.object(module, "find_compiler", return_value=work / "clang"),
+                    patch.object(module, "obtain_source", return_value=work / "source"),
+                    patch.object(module, "obtain_linux_source", return_value=work / "linux"),
+                    patch.object(module, "build_musl", return_value=(work / "sysroot", "fixture")),
+                    patch.object(module, "link_smoke", return_value=work / "smoke"),
+                    patch.object(module, "verify_elf"),
+                    patch.object(module, "runtime_gate_payload", return_value={}),
+                    patch.object(module, "runtime_gate_hit", return_value=False),
+                    patch.object(module, "create_image", return_value=work / "root.img"),
+                    patch.object(module, "boot", side_effect=boot),
+                    patch.object(module, "publish_runtime_gate") as publish,
+                ):
+                    self.assertEqual(module.main(), int(fail_swap))
+                    self.assertEqual(calls, [1, 2, 1, 2])
+                    self.assertEqual(publish.call_count, 0 if fail_swap else 1)
+
+    def test_dynamic_probe_requires_target_interpreter_and_only_bundled_libc(self) -> None:
+        module = reload_verify_musl("aarch64", "tcg")
+        static = "ELF64 AArch64 EXEC\n LOAD 0x000000 0x10000 0x10000 0x2000 0x2000 R E 0x1000\n GNU_STACK 0x0 0x0 0x0 0x0 0x0 RW 0x10"
+        valid = "ELF64 AArch64 EXEC\n [Requesting program interpreter: /lib/ld-musl-aarch64.so.1]\n 0x1 (NEEDED) Shared library: [libc.so]"
+        for dynamic, accepted in ((valid, True), (valid.replace("aarch64.so.1", "riscv64.so.1"), False), (valid.replace("[libc.so]", "[/host/libc.so]"), False), (valid + "\n 0x1 (NEEDED) Shared library: [extra.so]", False)):
+            with self.subTest(accepted=accepted), patch.object(Path, "is_file", return_value=True), patch.object(module, "run", side_effect=(static, dynamic)):
+                if accepted:
+                    module.verify_elf(Path("/fixture/musl-smoke"), Path("/tool/target-gcc"))
+                else:
+                    with self.assertRaises(RuntimeError):
+                        module.verify_elf(Path("/fixture/musl-smoke"), Path("/tool/target-gcc"))
+
+    def test_smoke_bundle_cache_requires_dynamic_probe_and_matching_libc(self) -> None:
+        module = reload_verify_musl("aarch64", "tcg")
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            with patch.object(module, "WORK", work), patch.object(module, "smoke_payload", return_value={"kind": "test"}), patch.object(module, "manifest_matches", return_value=True) as matches:
+                binary = module.link_smoke(work / "sysroot", work / "clang", "sysroot-id")
+                self.assertEqual(matches.call_args.args[2], ("musl-smoke", "fs-root-dynamic", "libc.so"))
+                self.assertEqual(binary.name, "musl-smoke")
+
     def test_musl_download_falls_back_to_verified_release_source(self) -> None:
         module = reload_verify_musl("aarch64", "hvf")
         with tempfile.TemporaryDirectory() as directory:
@@ -80,8 +149,8 @@ class MuslRoutingTests(unittest.TestCase):
         self.assertEqual(module.ELF_MACHINE, "RISC-V")
         self.assertIn("-march=rv64gc", module.SMOKE_LINK_ARGUMENTS)
         self.assertIn("-mabi=lp64d", module.SMOKE_LINK_ARGUMENTS)
-        self.assertIn("-Wl,-Ttext-segment=0x10000", module.SMOKE_LINK_ARGUMENTS)
-        self.assertNotIn("-Wl,--image-base=0x10000", module.SMOKE_LINK_ARGUMENTS)
+        self.assertIn("-Wl,--image-base=0x10000", module.SMOKE_LINK_ARGUMENTS)
+        self.assertNotIn("-Wl,-Ttext-segment=0x10000", module.SMOKE_LINK_ARGUMENTS)
         self.assertEqual(module.WORK.name, "riscv64")
         self.assertEqual(module.TARGET.musl_loader, "/lib/ld-musl-riscv64.so.1")
 
@@ -124,7 +193,7 @@ class MuslRoutingTests(unittest.TestCase):
             with patch.object(module, "run", return_value=directory) as run:
                 with self.assertRaisesRegex(
                     RuntimeError,
-                    "aarch64-unknown-none hard-float compiler_builtins runtime",
+                    "pinned Rust aarch64-unknown-none compiler_builtins runtime",
                 ):
                     module.obtain_compiler_runtime(Path("/usr/bin/clang"))
 
@@ -146,19 +215,19 @@ class MuslRoutingTests(unittest.TestCase):
 
         self.assertEqual(environment, {"KEEP_ME": "yes"})
 
-    def test_riscv64_compiler_runtime_remains_gcc_libgcc(self) -> None:
+    def test_riscv64_compiler_runtime_uses_its_pinned_rust_builtins(self) -> None:
         module = reload_verify_musl("riscv64", "tcg")
         with tempfile.TemporaryDirectory() as directory:
-            runtime = Path(directory) / "libgcc.a"
+            runtime = Path(directory) / "lib/rustlib/riscv64gc-unknown-none-elf/lib/libcompiler_builtins-test.rlib"
+            runtime.parent.mkdir(parents=True)
             runtime.touch()
-            compiler = Path("/tool/riscv64-unknown-elf-gcc")
-            with patch.object(module, "run", return_value=str(runtime)) as run:
-                selected = module.obtain_compiler_runtime(compiler)
+            with patch.object(module, "run", return_value=directory) as run:
+                selected = module.pinned_compiler_builtins()
 
         self.assertEqual(selected, runtime.resolve())
         self.assertEqual(
             run.call_args.args[0],
-            [str(compiler), "-print-libgcc-file-name"],
+            ["rustc", "--print", "sysroot"],
         )
 
     def test_pinned_aarch64_compiler_runtime_links_elf_machine_183(self) -> None:

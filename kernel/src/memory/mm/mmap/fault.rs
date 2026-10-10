@@ -68,33 +68,31 @@ impl MemorySet {
         address_space_limit: u64,
     ) -> Result<(), MemoryError> {
         let target = VirtualAddress::from(address).floor();
-        let Some(key) = self
-            .vma_index_state
-            .stack_start()
-            .map(VirtualPageNumber::from_vpn)
-        else {
+        // 与 Linux find_vma/expand_downwards 相同，只考虑地址上方最近的 VMA。
+        // split 可留下多个 VM_GROWSDOWN fragments；不存在“唯一原始 stack”的另一路 cache。
+        let Some((&key, area)) = self.areas.ceiling(&target) else {
             return Ok(());
         };
-        let top = match self
-            .areas
-            .get(&key)
-            .expect("stack VMA key must reference a live area")
-            .kind
-        {
-            VmaKind::Stack { top } => top,
-            _ => panic!("stack VMA key referenced a non-stack area"),
-        };
-        if target >= key {
+        if area.kind != VmaKind::Stack || target >= key {
             return Ok(());
         }
+        let top = usize::from(VirtualAddress::from(area.vpn_range.end));
         let target_address = target.as_usize() * config::PAGE_SIZE;
         let stack_limit = usize::try_from(stack_limit).unwrap_or(usize::MAX);
         if target_address < top.saturating_sub(stack_limit) {
             return Ok(());
         }
-        if self.areas.predecessor(&key).is_some_and(|(_, previous)| {
-            previous.vpn_range.end.as_usize().saturating_add(1) > target.as_usize()
-        }) {
+        if target.as_usize() == 0
+            || self.areas.predecessor(&key).is_some_and(|(_, previous)| {
+                let previous_end = previous.vpn_range.end.as_usize();
+                // Linux stack_guard_gap 默认 256 pages；两个 grow-down fragments 之间无需该 gap。
+                // 已映射地址绝不通过 growth 覆盖，PROT_NONE 邻居也仍拥有其真实 range。
+                previous_end > target.as_usize()
+                    || previous.kind != VmaKind::Stack
+                        && MapArea::has_leaf_permission(previous.map_permission)
+                        && target.as_usize() - previous_end < 256
+            })
+        {
             return Ok(());
         }
         let additional = (key.as_usize() - target.as_usize()) as u64 * config::PAGE_SIZE as u64;
@@ -186,10 +184,11 @@ impl MemorySet {
                         .as_usize()
                         .saturating_sub(area.vpn_range.start.as_usize());
                 let frame = shared.backing.page(index)?;
-                let ppn = frame.ppn;
+                let pin = frame.pin()?;
+                let ppn = pin.ppn();
                 let resident = area
                     .data_frames
-                    .try_prepare_vacant(vpn, PrivateResident::new(frame))
+                    .try_prepare_vacant(vpn, PrivateResident::shared(&frame, &pin, false))
                     .map_err(|_| MemoryError::OutOfMemory)?;
                 let mut commit = TranslationCommit::new();
                 self.page_table
@@ -200,33 +199,32 @@ impl MemorySet {
                     .expect("local translation fence failed after shared anonymous page fault");
                 return Ok(PageFaultOutcome::Handled);
             }
+            let resident = area
+                .data_frames
+                .get_mut(&vpn)
+                .expect("resident shared page");
+            let page = resident
+                .mapping()
+                .expect("shared anonymous canonical mapping")
+                .page()
+                .clone();
+            let pin = page.pin()?;
             if self.page_table.translate(vpn).is_none() {
-                let frame = area.data_frames.get(&vpn).expect("resident shared page");
                 let mut commit = TranslationCommit::new();
                 self.page_table
-                    .map(vpn, frame.ppn, area.map_permission.into(), &mut commit)?;
+                    .map(vpn, pin.ppn(), area.map_permission.into(), &mut commit)?;
                 commit.synchronize().expect(
                     "local translation fence failed after shared anonymous permission fault",
                 );
             } else {
                 Self::complete_stale_translation_fault(vpn);
             }
+            if let PrivateBacking::User(mapping) = &mut resident.backing {
+                mapping.mark_installed(&pin);
+            }
             return Ok(PageFaultOutcome::Handled);
         }
         if area.shared_file.is_none() {
-            if access == PageFaultAccess::Write
-                && area
-                    .data_frames
-                    .get_mut(&vpn)
-                    .is_some_and(|resident| core::mem::take(&mut resident.discardable))
-            {
-                return match self.handle_cow_fault(address)? {
-                    true => Ok(PageFaultOutcome::Handled),
-                    false => Ok(PageFaultOutcome::SegmentationFault(
-                        SegmentationCause::AccessDenied,
-                    )),
-                };
-            }
             if area.lazy_private && !area.data_frames.contains_key(&vpn) {
                 let mut frame = prepared_private_frame
                     .take()
@@ -238,8 +236,7 @@ impl MemorySet {
                     backing.fill(vpn, &mut frame, prepared)?;
                 }
                 let ppn = frame.ppn;
-                let frame = try_memory_arc(frame)?;
-                let mut resident = PrivateResident::new(frame);
+                let mut resident = PrivateResident::user(frame)?;
                 let mut flags: PagePermissions = area.map_permission.into();
                 if area.private_file.is_some() && area.map_permission.contains(MapPermission::W) {
                     // 首次 read 保持只读，后续 store fault 是标记 MAP_PRIVATE dirty 的唯一入口。
@@ -261,26 +258,19 @@ impl MemorySet {
                     .expect("local translation fence failed after private page fault");
                 return Ok(PageFaultOutcome::Handled);
             }
-            if access == PageFaultAccess::Write && area.private_file.is_some() {
-                area.data_frames
-                    .get_mut(&vpn)
-                    .expect("private file page fault lost resident page")
-                    .dirty = true;
-            }
-            return match access {
-                PageFaultAccess::Write if self.handle_cow_fault(address)? => {
-                    Ok(PageFaultOutcome::Handled)
-                }
-                _ if self.page_table.translate(vpn).is_some() => {
-                    Self::complete_stale_translation_fault(vpn);
-                    Ok(PageFaultOutcome::Handled)
-                }
-                _ => Ok(PageFaultOutcome::SegmentationFault(
-                    SegmentationCause::AccessDenied,
-                )),
-            };
+            // 回收达到 target 后可保留 resident 而撤销 PTE；read/execute/write
+            // 都从同一 owner 重建，并保持 COW、MADV_FREE 与 private-file dirty 语义。
+            return Ok(if self.handle_private_resident_fault(address, access)? {
+                PageFaultOutcome::Handled
+            } else {
+                PageFaultOutcome::SegmentationFault(SegmentationCause::AccessDenied)
+            });
         }
         let shared = area.shared_file.as_mut().unwrap();
+        let permission = shared.leaf_permission(area.map_permission);
+        if access == PageFaultAccess::Write && !permission.contains(MapPermission::W) {
+            return Ok(PageFaultOutcome::BusError);
+        }
         let page = shared
             .page(area.vpn_range.start, vpn)
             .ok_or(MemoryError::InvalidRange)?;
@@ -290,33 +280,37 @@ impl MemorySet {
             Err(SharedFileError::OutOfMemory) => return Err(MemoryError::OutOfMemory),
             Err(SharedFileError::Io) => return Err(MemoryError::Io),
         };
-        if let Some(resident) = shared.resident.get(&vpn) {
-            if self.page_table.translate(vpn).is_none() {
-                let mut commit = TranslationCommit::new();
-                self.page_table.map(
-                    vpn,
-                    resident.page.frame().ppn(),
-                    area.map_permission.into(),
-                    &mut commit,
-                )?;
-                commit
-                    .synchronize()
-                    .expect("local translation fence failed after shared file permission fault");
-            } else {
-                Self::complete_stale_translation_fault(vpn);
+        if let Some(resident) = shared.resident.get_mut(&vpn) {
+            let page = resident.page.clone();
+            let pin = page.pin()?;
+            let writer = permission.contains(MapPermission::W);
+            if writer && !resident.writer {
+                resident.page.acquire_writer();
+                resident.writer = true;
             }
+            let mut commit = TranslationCommit::new();
+            if self.page_table.translate(vpn).is_none() {
+                self.page_table
+                    .map(vpn, pin.ppn(), permission.into(), &mut commit)?;
+            } else {
+                self.page_table
+                    .set_flags(vpn, permission.into(), &mut commit)?;
+            }
+            commit
+                .synchronize()
+                .expect("local translation fence failed after shared file permission fault");
+            resident.mark_installed(&pin);
             return Ok(PageFaultOutcome::Handled);
         }
-        let resident = SharedResident::new(
-            prepared_page,
-            area.map_permission.contains(MapPermission::W),
-        );
-        let ppn = resident.page.frame().ppn();
+        let pin = prepared_page.pin()?;
+        let resident =
+            SharedResident::new(&prepared_page, permission.contains(MapPermission::W), &pin);
+        let ppn = pin.ppn();
         let resident = shared
             .resident
             .try_prepare_vacant(vpn, resident)
             .map_err(|_| MemoryError::OutOfMemory)?;
-        let flags = area.map_permission.into();
+        let flags = permission.into();
         let mut commit = TranslationCommit::new();
         self.page_table.map(vpn, ppn, flags, &mut commit)?;
         shared.resident.commit_vacant(resident);
@@ -324,15 +318,5 @@ impl MemorySet {
             .synchronize()
             .expect("local translation fence failed after shared page fault");
         Ok(PageFaultOutcome::Handled)
-    }
-
-    fn allocate_private_frame(&mut self) -> Result<FrameTracker, MemoryError> {
-        if let Some(frame) = alloc() {
-            return Ok(frame);
-        }
-        // 1. 当前 mm 在已持有 AddressSpace lock 下直接回收；registry 会通过 try_lock 跳过它。
-        let _ = self.reclaim_private_pages(ReclaimRequest::for_target(64));
-        // 2. alloc 的统一慢路径会在需要时再请求其他 resident owner，最后只重试一次。
-        alloc().ok_or(MemoryError::OutOfMemory)
     }
 }

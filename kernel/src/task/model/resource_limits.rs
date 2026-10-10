@@ -10,7 +10,7 @@ pub(super) const RLIMIT_NOFILE: usize = 7;
 pub(crate) const RLIMIT_MEMLOCK: usize = 8;
 pub(crate) const RLIMIT_AS: usize = 9;
 const RLIMIT_LOCKS: usize = 10;
-const RLIMIT_SIGPENDING: usize = 11;
+pub(in crate::task) const RLIMIT_SIGPENDING: usize = 11;
 const RLIMIT_MSGQUEUE: usize = 12;
 pub(in crate::task) const RLIMIT_NICE: usize = 13;
 const RLIMIT_RTPRIO: usize = 14;
@@ -150,7 +150,15 @@ pub(crate) enum ResourceLimitError {
     InvalidLimit,
 }
 
+mod unix_file_limit;
+
 impl TaskControlBlock {
+    /// SCM 只借实际 Process limits allocation；fork 已复制、Thread 共享、exec 保留。
+    /// Arc clone/type erasure 不分配，排队 control 不保活 Process/MM/PID quota。
+    pub(crate) fn unix_file_limit(&self) -> alloc::sync::Arc<dyn crate::socket::UnixFileLimit> {
+        self.process().resource_limits.clone()
+    }
+
     pub(crate) fn file_descriptor_limit(&self) -> usize {
         usize::try_from(
             self.resource_limit(RLIMIT_NOFILE)
@@ -168,58 +176,44 @@ impl TaskControlBlock {
     }
 
     pub(in crate::task) fn process_cpu_runtime_us(&self) -> u64 {
-        self.process()
-            .cpu_runtime_us
-            .load(core::sync::atomic::Ordering::Relaxed)
+        self.process().process_cpu_runtime_us()
     }
 
-    /// 快照当前 Process 的 stack/address-space fault 边界，供 trap 与 user-copy 共用。
-    pub(super) fn user_fault_limits(&self) -> crate::memory::UserFaultLimits {
+    /// NEWUSER 的全部已使用 rlimit maxima 由同一实际 Process limits 快照捕获。
+    pub(super) fn namespace_rlimits(&self) -> crate::namespace::NamespaceRlimits {
+        let limits = self.process().resource_limits.lock();
+        crate::namespace::NamespaceRlimits {
+            locked_memory: limits
+                .get(RLIMIT_MEMLOCK)
+                .expect("RLIMIT_MEMLOCK exists")
+                .soft,
+            pending_signals: limits
+                .get(RLIMIT_SIGPENDING)
+                .expect("RLIMIT_SIGPENDING exists")
+                .soft,
+        }
+    }
+
+    /// 同一 actual limits guard 捕获完整 MM admission tuple，不能将并发 prlimit 的两次读取拼接。
+    pub(super) fn mapping_resource_limits(&self) -> crate::memory::MappingResourceLimits {
+        let limits = self.process().resource_limits.lock();
+        crate::memory::MappingResourceLimits::new(
+            limits.get(RLIMIT_AS).expect("RLIMIT_AS exists").soft,
+            limits.get(RLIMIT_DATA).expect("RLIMIT_DATA exists").soft,
+        )
+    }
+
+    /// 同一 actual limits guard 捕获 fault 的 stack/address-space 边界。
+    pub(in crate::task) fn user_fault_limits(&self) -> crate::memory::UserFaultLimits {
+        let limits = self.process().resource_limits.lock();
         crate::memory::UserFaultLimits::new(
-            self.resource_limit(RLIMIT_STACK)
-                .expect("RLIMIT_STACK must exist")
-                .soft,
-            self.resource_limit(RLIMIT_AS)
-                .expect("RLIMIT_AS must exist")
-                .soft,
+            limits.get(RLIMIT_STACK).expect("RLIMIT_STACK exists").soft,
+            limits.get(RLIMIT_AS).expect("RLIMIT_AS exists").soft,
         )
     }
 
     pub(crate) fn resource_limit(&self, resource: usize) -> Option<ResourceLimit> {
-        self.process().resource_limits.lock().get(resource)
-    }
-
-    pub(in crate::task) fn replace_resource_limit(
-        &self,
-        resource: usize,
-        replacement: ResourceLimit,
-        privileged: bool,
-    ) -> Result<ResourceLimit, ResourceLimitError> {
-        use core::sync::atomic::Ordering;
-
-        let mut limits = self.process().resource_limits.lock();
-        let previous_cpu_active = limits.cpu_limit_active();
-        let replacement_cpu_active =
-            replacement.soft != RLIM_INFINITY || replacement.hard != RLIM_INFINITY;
-        if resource == RLIMIT_CPU && replacement_cpu_active {
-            // Publish the conservative true state before the finite limit becomes visible. A
-            // concurrent switch may take one harmless extra lock, but cannot skip enforcement.
-            self.process()
-                .cpu_limit_active
-                .store(true, Ordering::Release);
-        }
-        let result = limits.replace(resource, replacement, privileged);
-        if resource == RLIMIT_CPU {
-            let active = if result.is_ok() {
-                replacement_cpu_active
-            } else {
-                previous_cpu_active
-            };
-            self.process()
-                .cpu_limit_active
-                .store(active, Ordering::Release);
-        }
-        result
+        self.process().resource_limit(resource)
     }
 
     pub(in crate::task) fn resource_cpu_signal(&self, runtime_us: u64) -> Option<usize> {
@@ -229,5 +223,45 @@ impl TaskControlBlock {
             return None;
         }
         self.process().resource_limits.lock().cpu_signal(runtime_us)
+    }
+}
+
+// Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
+impl super::Process {
+    pub(in crate::task) fn process_cpu_runtime_us(&self) -> u64 {
+        self.cpu_runtime_us
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(in crate::task) fn resource_limit(&self, resource: usize) -> Option<ResourceLimit> {
+        self.resource_limits.lock().get(resource)
+    }
+    pub(in crate::task) fn replace_resource_limit(
+        &self,
+        resource: usize,
+        replacement: ResourceLimit,
+        privileged: bool,
+    ) -> Result<ResourceLimit, ResourceLimitError> {
+        use core::sync::atomic::Ordering;
+
+        let mut limits = self.resource_limits.lock();
+        let previous_cpu_active = limits.cpu_limit_active();
+        let replacement_cpu_active =
+            replacement.soft != RLIM_INFINITY || replacement.hard != RLIM_INFINITY;
+        if resource == RLIMIT_CPU && replacement_cpu_active {
+            // Publish the conservative true state before the finite limit becomes visible. A
+            // concurrent switch may take one harmless extra lock, but cannot skip enforcement.
+            self.cpu_limit_active.store(true, Ordering::Release);
+        }
+        let result = limits.replace(resource, replacement, privileged);
+        if resource == RLIMIT_CPU {
+            let active = if result.is_ok() {
+                replacement_cpu_active
+            } else {
+                previous_cpu_active
+            };
+            self.cpu_limit_active.store(active, Ordering::Release);
+        }
+        result
     }
 }

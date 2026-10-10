@@ -51,7 +51,8 @@
 - `root=` 支持 `/dev/<name>`、`MAJ:MIN`、`PARTUUID=`、`UUID=`、`LABEL=`；后三者扫描已发布块设备（`PARTUUID` 取自
   GPT 项 GUID 或 MBR `签名-分区号`，`UUID`/`LABEL` 读 ext4 超级块），同一标识匹配多个设备取发布顺序第一个；
   不支持 `PARTUUID=…/PARTNROFF=`。`/proc/mounts` 的 source 是解析出的 `/dev/<name>`。缺省时以首块盘为根。
-  `ro` 需要 remount 才能转为可写，尚未支持，启动明确失败。`console=` 在已注册 console 设备中按名称
+  `ro` 以只读根启动，init 可通过 `mount -o remount,rw /` 提交 ext4 写前准备并转为可写。
+  `console=` 在已注册 console 设备中按名称
   选择，选项忽略；指向不存在的 console 时启动明确失败，而不是像 Linux 那样在没有 `/dev/console` 的
   情况下运行 init。`loglevel=` 映射到全局 severity threshold，
   同时作用于 kmsg ring，N ≤ 3 按只输出 Error 处理。

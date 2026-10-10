@@ -2,100 +2,8 @@ use super::*;
 
 const MAX_RW_COUNT: usize = 0x7fff_f000;
 
-/// 将一次 regular-file 到 regular-file 的 kernel-owned copy 提交给 page cache。
-///
-/// # Parameters
-///
-/// - `task`: 当前 caller，提供 RLIMIT_FSIZE 与 SIGXFSZ target。
-/// - `input`: 已解析的输入 page-cache facade。
-/// - `output`: 已解析的输出 page-cache facade。
-/// - `input_position`: 本次操作唯一输入 offset owner。
-/// - `output_position`: 本次操作唯一输出 OFD offset owner。
-/// - `count`: Linux MAX_RW_COUNT 截断后的最大传输长度。
-///
-/// # Returns
-///
-/// 已传输字节数、EOF 零、首错负 errno 或已有进度后的 partial count。
-///
-/// # Errors
-///
-/// - 同一文件的实际传输区间重叠返回 `EINVAL`。
-/// - 输出越过 RLIMIT_FSIZE 时返回 `EFBIG` 并投递 SIGXFSZ。
-fn copy_regular_file(
-    task: &TaskControlBlock,
-    input: &RegularFile,
-    output: &RegularFile,
-    input_position: &mut u64,
-    output_position: &mut u64,
-    count: usize,
-) -> isize {
-    let available = usize::try_from(input.size().saturating_sub(*input_position))
-        .unwrap_or(usize::MAX)
-        .min(count);
-    if available == 0 {
-        return 0;
-    }
-    let transferable = match bounded_regular_write(task, *output_position, available, 0) {
-        Ok(count) => count,
-        Err(error) => return error,
-    };
-    if let (Some(input_id), Some(output_id)) = (input.id(), output.id())
-        && input_id == output_id
-    {
-        let input_end = u128::from(*input_position) + transferable as u128;
-        let output_end = u128::from(*output_position) + transferable as u128;
-        if output_end > u128::from(*input_position) && u128::from(*output_position) < input_end {
-            return -errno::EINVAL;
-        }
-    }
-
-    let writer = match output.begin_write() {
-        Ok(writer) => writer,
-        Err(error) => return ferr(error),
-    };
-    let mut chunk = [0u8; crate::memory::PAGE_SIZE];
-    let mut total = 0usize;
-    while total < transferable {
-        let requested = chunk.len().min(transferable - total);
-        let read = match input.read(*input_position, &mut chunk[..requested]) {
-            Ok(read) => read,
-            Err(error) => {
-                return if total == 0 {
-                    ferr(error)
-                } else {
-                    total as isize
-                };
-            }
-        };
-        task.account_read_storage(read.storage_bytes);
-        let read = read.bytes;
-        if read == 0 {
-            break;
-        }
-        let written = match writer.write(*output_position, &chunk[..read]) {
-            Ok(written) => written,
-            Err(error) => {
-                return if total == 0 {
-                    ferr(error)
-                } else {
-                    total as isize
-                };
-            }
-        };
-        task.account_write_storage(written);
-        *input_position = input_position
-            .checked_add(written as u64)
-            .expect("sendfile input position overflow");
-        *output_position = output_position
-            .checked_add(written as u64)
-            .expect("sendfile output position overflow");
-        total += written;
-        if written < read {
-            break;
-        }
-    }
-    total as isize
-}
+mod regular_transfer;
+use regular_transfer::copy_regular_file;
 
 /// 按全局 OFD identity 顺序取得两个共享 offset，避免反向 sendfile 形成 ABBA。
 ///
@@ -118,7 +26,10 @@ fn copy_from_shared_offset(
     count: usize,
 ) -> isize {
     if Arc::ptr_eq(input_ofd, output_ofd) {
-        let position = input_ofd.position_snapshot();
+        let position = match input_ofd.position_snapshot() {
+            Ok(position) => position,
+            Err(error) => return crate::syscall::fs::position_error(error),
+        };
         return if count == 0 || position >= input.size() {
             0
         } else {
@@ -128,7 +39,7 @@ fn copy_from_shared_offset(
     OpenFileDescription::with_positions(input_ofd, output_ofd, |input_position, output_position| {
         copy_regular_file(task, input, output, input_position, output_position, count)
     })
-    .expect("distinct OFDs must own distinct file positions")
+    .unwrap_or_else(crate::syscall::fs::position_error)
 }
 
 /// 完成 descriptor 校验并执行 regular-file 到 regular-file copy。
@@ -170,18 +81,18 @@ fn do_sendfile(
     if output_ofd.status_flags() & O_APPEND != 0 {
         return -errno::EINVAL;
     }
-    let OpenFileKind::Inode(input_opened) = &input_ofd.kind else {
+    let OpenFileKind::Inode = &input_ofd.kind else {
         return if input_position.is_none() {
             -errno::EINVAL
         } else {
             -errno::ESPIPE
         };
     };
-    let OpenFileKind::Inode(output_opened) = &output_ofd.kind else {
+    let OpenFileKind::Inode = &output_ofd.kind else {
         return -errno::EINVAL;
     };
-    let input_inode = input_opened.inode();
-    let output_inode = output_opened.inode();
+    let input_inode = input_ofd.inode_ref();
+    let output_inode = output_ofd.inode_ref();
     if input_inode.inode_type() != InodeType::File || output_inode.inode_type() != InodeType::File {
         return -errno::EINVAL;
     }
@@ -195,19 +106,28 @@ fn do_sendfile(
     };
     let count = count.min(MAX_RW_COUNT);
 
-    let Some(input_position) = input_position else {
-        return copy_from_shared_offset(task, &input_ofd, &output_ofd, &input, &output, count);
+    let result = if let Some(input_position) = input_position {
+        output_ofd
+            .with_position(|output_position| {
+                copy_regular_file(
+                    task,
+                    &input,
+                    &output,
+                    input_position,
+                    output_position,
+                    count,
+                )
+            })
+            .unwrap_or_else(crate::syscall::fs::position_error)
+    } else {
+        copy_from_shared_offset(task, &input_ofd, &output_ofd, &input, &output, count)
     };
-    output_ofd.with_position(|output_position| {
-        copy_regular_file(
-            task,
-            &input,
-            &output,
-            input_position,
-            output_position,
-            count,
-        )
-    })
+    if result > 0 {
+        input_ofd.touch_access();
+        input_ofd.notify(crate::fs::IN_ACCESS);
+        output_ofd.notify(crate::fs::IN_MODIFY);
+    }
+    result
 }
 
 /// 实现 Linux 64-bit `sendfile` 的 regular-file 到 regular-file 数据路径。

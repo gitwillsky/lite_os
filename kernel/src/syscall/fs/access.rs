@@ -37,11 +37,7 @@ pub(crate) fn sys_faccessat(dirfd: isize, name: *const u8, mode: usize) -> isize
     if mode & 2 != 0 && inode.is_read_only() {
         return -errno::EROFS;
     }
-    let metadata = match inode.metadata() {
-        Ok(metadata) => metadata,
-        Err(error) => return ferr(error),
-    };
-    identity
-        .require(metadata, mode as u8)
+    inode
+        .require_access(&identity, mode as u8)
         .map_or_else(ferr, |()| 0)
 }

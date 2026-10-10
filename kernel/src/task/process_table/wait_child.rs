@@ -45,39 +45,94 @@ pub(crate) enum WaitChildError {
     OutOfMemory,
 }
 
-fn matching_child(
-    graph: &ProcessGraph,
-    parent: usize,
-    child: usize,
-    node: &ProcessNode,
-    selector: isize,
-) -> Result<bool, WaitChildError> {
-    match selector {
-        -1 => Ok(true),
-        value if value > 0 => Ok(child == value as usize),
-        0 => Ok(node.process_group == graph.nodes[&parent].process_group),
-        value => value
-            .checked_neg()
-            .map(|group| node.process_group == group as usize)
-            .ok_or(WaitChildError::InvalidSelector),
+/// Linux child class 按实际 exit_signal 分类，__WALL 覆盖 __WCLONE。
+#[derive(Clone, Copy)]
+pub(crate) enum ChildWaitClass {
+    Ordinary,
+    Clone,
+    All,
+}
+
+/// 已解码的等待选择；不保存副本 child relation 或 raw syscall flags。
+#[derive(Clone, Copy)]
+pub(crate) struct ChildWaitFilter {
+    pub(crate) class: ChildWaitClass,
+    pub(crate) creator_only: bool,
+}
+
+impl ChildWaitFilter {
+    fn eligible(self, node: &ProcessNode, claimant: usize) -> bool {
+        (!self.creator_only || node.parent_thread == Some(claimant))
+            && match self.class {
+                ChildWaitClass::Ordinary => node.exit_signal == syscall_abi::signal::SIGCHLD as u8,
+                ChildWaitClass::Clone => node.exit_signal != syscall_abi::signal::SIGCHLD as u8,
+                ChildWaitClass::All => true,
+            }
     }
 }
 
+/// 调用 view 中的选择或实际 PIDFD identity；解析后等待只持不可复用 graph key。
+pub(crate) enum ChildWaitSelector {
+    All,
+    Process(usize),
+    Group(usize),
+    Pid(Arc<crate::namespace::PidIdentity>),
+}
+#[derive(Clone, Copy)]
+enum ResolvedChildSelector {
+    All,
+    Process(usize),
+    Group(usize),
+}
+impl ResolvedChildSelector {
+    fn resolve(
+        selector: ChildWaitSelector,
+        task: &TaskControlBlock,
+    ) -> Result<Self, WaitChildError> {
+        Ok(match selector {
+            ChildWaitSelector::All => Self::All,
+            ChildWaitSelector::Process(number) => {
+                Self::Process(task.resolve_pid(number).ok_or(WaitChildError::NoChild)?)
+            }
+            ChildWaitSelector::Group(0) => {
+                Self::Group(PROCESS_TABLE.graph.lock().nodes[&task.tgid()].process_group)
+            }
+            ChildWaitSelector::Group(number) => {
+                Self::Group(task.resolve_pid(number).ok_or(WaitChildError::NoChild)?)
+            }
+            ChildWaitSelector::Pid(identity) => Self::Process(identity.key()),
+        })
+    }
+    fn matches(self, child: usize, node: &ProcessNode) -> bool {
+        match self {
+            Self::All => true,
+            Self::Process(pid) => child == pid,
+            Self::Group(group) => node.process_group == group,
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "同一次原子 publication 的独立领域输入，参数语义与所有权已逐项说明"
+)]
 fn find_waitable_child(
     graph: &mut ProcessGraph,
     parent: usize,
     claimant: usize,
-    selector: isize,
+    selector: ResolvedChildSelector,
+    include_exited: bool,
     include_stopped: bool,
     include_continued: bool,
+    filter: ChildWaitFilter,
 ) -> Result<Option<ChildExit>, WaitChildError> {
     let mut has_child = false;
     let mut selected = None;
     let mut cursor = 0;
     loop {
         let pid = match selector {
-            value if value > 0 && cursor == 0 => Some(value as usize),
-            value if value > 0 => break,
+            ResolvedChildSelector::Process(pid) if cursor == 0 => Some(pid),
+            ResolvedChildSelector::Process(_) => break,
             _ => graph
                 .nodes
                 .get(&parent)
@@ -92,22 +147,35 @@ fn find_waitable_child(
             // Positive waitpid selector is a caller-supplied PID, not a parent-index node. A
             // competing parent Thread may already have consumed that child's unique exit claim;
             // Linux requires the loser to observe ECHILD, not an index-corruption panic.
-            if selector > 0 {
+            if matches!(selector, ResolvedChildSelector::Process(_)) {
                 break;
             }
             panic!("parent child index references missing process");
         };
-        if node.parent != Some(parent) || !matching_child(graph, parent, pid, node, selector)? {
-            if selector > 0 {
+        if node.parent != Some(parent)
+            || !filter.eligible(node, claimant)
+            || !selector.matches(pid, node)
+        {
+            if matches!(selector, ResolvedChildSelector::Process(_)) {
                 break;
             }
+            continue;
+        }
+        // 已完成退出的 zombie 不能再产生 stop/continue；native WEXITED 缺失时不计作可等待 child。
+        if !include_exited
+            && matches!(
+                node.state,
+                ProcessState::Exited(_, ExitRetirement::Waitable | ExitRetirement::AfterClaim)
+            )
+        {
             continue;
         }
         has_child = true;
         if node.child_wait_claim.is_some() {
             continue;
         }
-        if let ProcessState::Exited(status) = node.state {
+        if include_exited && let ProcessState::Exited(status, ExitRetirement::Waitable) = node.state
+        {
             selected = Some(ChildExit {
                 pid,
                 status: status.wait_status(),
@@ -166,6 +234,7 @@ fn find_waitable_child(
 /// - `nohang`: 无可消费 record 时是否立即返回。
 /// - `include_stopped`: 是否消费尚未报告的 job-control stop。
 /// - `include_continued`: 是否消费尚未报告的 continue。
+/// - `filter`: native clone class 与仅 calling Thread 的 child 选择。
 ///
 /// # Returns
 ///
@@ -175,8 +244,57 @@ pub(crate) fn wait_child(
     nohang: bool,
     include_stopped: bool,
     include_continued: bool,
+    filter: ChildWaitFilter,
 ) -> Result<Option<ChildExit>, WaitChildError> {
-    let task = current_task().expect("wait4 requires current task");
+    let selector = match selector {
+        -1 => ChildWaitSelector::All,
+        value if value > 0 => ChildWaitSelector::Process(value as usize),
+        value => ChildWaitSelector::Group(
+            value.checked_neg().ok_or(WaitChildError::InvalidSelector)? as usize,
+        ),
+    };
+    wait_child_events(
+        selector,
+        nohang,
+        true,
+        include_stopped,
+        include_continued,
+        filter,
+    )
+}
+
+/// waitid 和 legacy wait 使用同一实际 child-claim publication；PIDFD 直接传稳定 identity。
+/// process group 在调用时冻结，阻塞期间 parent setpgid 不会改变此次等待的 selection。
+pub(crate) fn wait_child_events(
+    selector: ChildWaitSelector,
+    nohang: bool,
+    include_exited: bool,
+    include_stopped: bool,
+    include_continued: bool,
+    filter: ChildWaitFilter,
+) -> Result<Option<ChildExit>, WaitChildError> {
+    let task = current_task().expect("wait requires current Thread");
+    let selector = ResolvedChildSelector::resolve(selector, &task)?;
+    wait_selected_child(
+        &task,
+        selector,
+        nohang,
+        include_exited,
+        include_stopped,
+        include_continued,
+        filter,
+    )
+}
+
+fn wait_selected_child(
+    task: &Arc<TaskControlBlock>,
+    selector: ResolvedChildSelector,
+    nohang: bool,
+    include_exited: bool,
+    include_stopped: bool,
+    include_continued: bool,
+    filter: ChildWaitFilter,
+) -> Result<Option<ChildExit>, WaitChildError> {
     let parent = task.tgid();
     loop {
         // Storage is prepared outside the graph owner. Event/nohang/signal decisions remain
@@ -188,8 +306,10 @@ pub(crate) fn wait_child(
             parent,
             task.tid(),
             selector,
+            include_exited,
             include_stopped,
             include_continued,
+            filter,
         )?;
         match super::wait_publication::child_wait_publication(
             record.is_some(),
@@ -213,7 +333,7 @@ pub(crate) fn wait_child(
             .expect("publication decision requires prepared child waiter")
             .fill(task.tid(), task.clone());
         let prepared =
-            super::context_switch::prepare_current_block(&task, graph, move |graph, _| {
+            super::context_switch::prepare_current_block(task, graph, move |graph, _| {
                 let parent_node = graph
                     .nodes
                     .get_mut(&parent)
@@ -230,120 +350,48 @@ pub(crate) fn wait_child(
     }
 }
 
-fn wake_rechecking_waiters(mut waiters: FallibleMap<usize, Arc<TaskControlBlock>>) {
-    while let Some((&tid, _)) = waiters.first_key_value() {
-        let waiter = waiters.remove(&tid).expect("staged child waiter");
-        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
-    }
-}
-
-/// copyout 失败时释放唯一 child-event claim，使其他 Thread 可重新观察该事件。
-///
-/// # Parameters
-///
-/// - `record`: `wait_child` 返回且尚未消费的 claim token。
-///
-/// # Returns
-///
-/// 无返回值；claim 不匹配表示 wait transaction 被重复结束并 fail-stop。
-pub(crate) fn release_child_status(record: ChildExit) {
-    let waiters = {
-        let mut graph = PROCESS_TABLE.graph.lock();
-        let parent = {
-            let node = graph
-                .nodes
-                .get_mut(&record.pid)
-                .expect("released child event disappeared from process graph");
-            assert_eq!(
-                node.child_wait_claim.take(),
-                Some(ChildWaitClaim {
-                    waiter: record.claimant,
-                    kind: record.kind,
-                }),
-                "child event release does not own claim"
-            );
-            node.parent
-        };
-        parent
-            .and_then(|pid| graph.nodes.get_mut(&pid))
-            .map(take_child_waiters)
-            .unwrap_or_default()
-    };
-    wake_rechecking_waiters(waiters);
-}
-
-/// status copyout 成功后消费唯一 child event 或 exit record。
-///
-/// # Parameters
-///
-/// - `record`: `wait_child` 返回且仍属于当前 parent 的 record。
-///
-/// # Returns
-///
-/// 无返回值；record 变化表示 process graph 不变量损坏。
-pub(crate) fn consume_child_status(record: ChildExit) {
-    let waiters = {
-        let mut graph = PROCESS_TABLE.graph.lock();
-        let (parent, parent_thread, session, process_group) = {
-            let node = graph
-                .nodes
-                .get_mut(&record.pid)
-                .expect("reaped child missing from process graph");
-            assert_eq!(
-                node.child_wait_claim.take(),
-                Some(ChildWaitClaim {
-                    waiter: record.claimant,
-                    kind: record.kind,
-                }),
-                "child event consume does not own claim"
-            );
-            match record.kind {
-                ChildStatusKind::Exited => {
-                    assert!(matches!(node.state, ProcessState::Exited(_)));
-                    assert!(node.child_waiters.is_empty());
-                }
-                ChildStatusKind::Stopped => {
-                    assert!(node.child_events.stopped.take().is_some());
-                }
-                ChildStatusKind::Continued => {
-                    assert!(core::mem::take(&mut node.child_events.continued));
-                }
+/// Active claim 下捕获 native waitid 字段；消费/保留 claim 后不再借已可回收的 Node。
+pub(crate) fn child_status_info(record: &ChildExit) -> (u32, u32, i32, i32) {
+    let task = current_task().expect("child info requires current waiter");
+    let graph = PROCESS_TABLE.graph.lock();
+    let node = graph
+        .nodes
+        .get(&record.pid)
+        .expect("active claim owns child status");
+    let pid = node.pid.identity().number_in(&task.pid_namespace());
+    let uid = task.user_namespace().display_id(
+        true,
+        super::super::model::leader_signal_uid(&node.leader_credentials),
+    );
+    let (code, status) = match record.kind {
+        ChildStatusKind::Exited => {
+            if record.status & 0x7f == 0 {
+                (1, record.status >> 8)
+            } else {
+                (2, record.status & 0x7f)
             }
-            (
-                node.parent,
-                node.parent_thread,
-                node.session,
-                node.process_group,
-            )
-        };
-        if record.kind == ChildStatusKind::Exited {
-            graph.nodes.remove(&record.pid);
-            if let Some(parent) = parent {
-                graph
-                    .nodes
-                    .get_mut(&parent)
-                    .expect("reaped child parent missing from graph")
-                    .children
-                    .remove(&record.pid)
-                    .expect("reaped child missing from parent index");
-            }
-            if let Some(parent_thread) = parent_thread
-                && let Some(index) = graph.threads.get_mut(&parent_thread)
-            {
-                index.created_children.remove(&record.pid);
-            }
-            graph
-                .groups
-                .get_mut(&(session, process_group))
-                .expect("reaped child process group missing from graph")
-                .members
-                .remove(&record.pid)
-                .expect("reaped child missing from group index");
         }
-        parent
-            .and_then(|pid| graph.nodes.get_mut(&pid))
-            .map(take_child_waiters)
-            .unwrap_or_default()
+        ChildStatusKind::Stopped => (5, (record.status >> 8) & 0xff),
+        ChildStatusKind::Continued => (6, syscall_abi::signal::SIGCONT as i32),
     };
-    wake_rechecking_waiters(waiters);
+    (pid, uid, code, status)
+}
+
+#[path = "wait_child/claim.rs"]
+mod claim;
+pub(crate) use claim::{consume_child_status, release_child_status};
+
+/// Active claim pin 保证 child Node 尚未 reap；copyout 前捕获 calling view 的标准 PID。
+pub(crate) fn child_status_pid(record: &ChildExit) -> usize {
+    let namespace = current_task()
+        .expect("child status requires current waiter")
+        .pid_namespace();
+    let graph = PROCESS_TABLE.graph.lock();
+    graph
+        .nodes
+        .get(&record.pid)
+        .expect("active child claim owns exit record")
+        .pid
+        .identity()
+        .number_in(&namespace) as usize
 }

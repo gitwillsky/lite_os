@@ -1,11 +1,10 @@
 use super::{
-    mmu::{
-        AddressSpaceToken, allocate_address_space_id, release_address_space_id_after_global_fence,
-    },
+    mmu::{AddressSpaceContext, AddressSpaceToken},
     pte::{self, PagePermissions, RiscvPteFlags},
     sv39,
 };
 use crate::fallible_tree::{FallibleMap, VacantEntry};
+use alloc::sync::Arc;
 
 const PTE_FLAGS_WIDTH: usize = 10;
 const PAGE_SHIFT: usize = 12;
@@ -82,7 +81,6 @@ pub(crate) enum PageTableError {
     OutOfMemory,
     InvalidFlags,
     InvalidPageTable,
-    AddressSpaceIdentifiersExhausted,
 }
 
 impl core::fmt::Display for PageTableError {
@@ -93,9 +91,6 @@ impl core::fmt::Display for PageTableError {
             Self::OutOfMemory => write!(formatter, "page-table allocation failed"),
             Self::InvalidFlags => write!(formatter, "invalid RISC-V PTE flags"),
             Self::InvalidPageTable => write!(formatter, "invalid Sv39 page-table structure"),
-            Self::AddressSpaceIdentifiersExhausted => {
-                write!(formatter, "RISC-V address-space identifiers exhausted")
-            }
         }
     }
 }
@@ -152,7 +147,7 @@ impl PageTableEntry {
 pub(crate) struct PageTable<Page: TablePage> {
     root_page: usize,
     table_pages: FallibleMap<usize, Page>,
-    address_space_id: usize,
+    address_space_context: Option<Arc<AddressSpaceContext>>,
     kind: AddressSpaceKind,
 }
 
@@ -168,37 +163,52 @@ impl<Page: TablePage> PageTable<Page> {
                 .is_none(),
             "root page-table frame identity collided"
         );
-        let address_space_id =
-            allocate_address_space_id().ok_or(PageTableError::AddressSpaceIdentifiersExhausted)?;
+        let address_space_context = match kind {
+            AddressSpaceKind::Kernel => None,
+            AddressSpaceKind::User => {
+                Some(AddressSpaceContext::try_new().map_err(|_| PageTableError::OutOfMemory)?)
+            }
+        };
         Ok(Self {
             root_page,
             table_pages,
-            address_space_id,
+            address_space_context,
             kind,
         })
     }
 
     pub(crate) fn token(&self) -> AddressSpaceToken {
-        AddressSpaceToken::from_root_page(self.root_page, self.address_space_id)
+        AddressSpaceToken::from_root_page(
+            self.root_page,
+            self.address_space_context
+                .as_ref()
+                .expect("kernel root has no user token")
+                .clone(),
+        )
     }
 
     /// 激活 RISC-V kernel Sv39 root；该 backend 保持单 root 契约。
     pub(crate) fn activate_kernel(&self) {
         assert_eq!(self.kind, AddressSpaceKind::Kernel);
-        super::mmu::activate_kernel(self.token());
+        super::mmu::activate_kernel(self.kernel_trap_token());
     }
 
     /// 返回 RISC-V user trap 切回 kernel root 所需 token。
     pub(crate) fn kernel_trap_token(&self) -> super::mmu::KernelTrapToken {
         assert_eq!(self.kind, AddressSpaceKind::Kernel);
-        self.token()
+        super::mmu::KernelTrapToken::from_root_page(self.root_page)
     }
 
     /// 在 generic owner 已完成 local/remote 全量 fence 后退休 ASID。
     pub(crate) fn release_address_space_id_after_global_fence(&mut self) {
-        assert_ne!(self.address_space_id, 0, "page-table ASID retired twice");
-        release_address_space_id_after_global_fence(self.address_space_id);
-        self.address_space_id = 0;
+        if self.kind == AddressSpaceKind::Kernel {
+            return;
+        }
+        let context = self
+            .address_space_context
+            .take()
+            .expect("page-table ASID retired twice");
+        context.retire_after_global_fence();
     }
 
     fn allocate_table(&mut self) -> Result<usize, PageTableError> {
@@ -408,6 +418,26 @@ impl<Page: TablePage> PageTable<Page> {
             tables[level + 1] = entry.physical_page();
         }
         Err(PageTableError::InvalidPageTable)
+    }
+
+    /// 撤销一个 4KiB leaf，但保留全部 table owners，供同一独占 transaction 无分配重建。
+    /// caller 必须在重新发布 physical identity 前完成 revoke fence；期间不得修改其他 leaf。
+    pub(crate) fn revoke_leaf(&mut self, virtual_page: usize) -> Result<(), PageTableError> {
+        let indexes = sv39::indexes(virtual_page);
+        let mut table = self.root_page;
+        for index in &indexes[..2] {
+            let entry = Self::read_entry(table, *index);
+            if !entry.is_next_table() {
+                return Err(PageTableError::NotMapped);
+            }
+            table = entry.physical_page();
+        }
+        let old = Self::read_entry(table, indexes[2]);
+        if !old.is_leaf() {
+            return Err(PageTableError::NotMapped);
+        }
+        Self::write_entry(table, indexes[2], PageTableEntry::empty());
+        Ok(())
     }
 
     pub(crate) fn set_flags(

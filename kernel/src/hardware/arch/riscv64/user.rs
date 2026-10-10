@@ -6,6 +6,8 @@ use super::{
 };
 /// Linux utsname 使用的 architecture machine identity。
 pub(crate) const MACHINE_NAME: &str = "riscv64";
+/// Linux AUDIT_ARCH_RISCV64：64-bit、little-endian、ELF machine 243。
+pub(crate) const AUDIT_ARCH: u32 = 0xc000_00f3;
 /// 解码当前 RISC-V backend 独占的 Linux syscall number。
 ///
 /// # Parameters
@@ -138,21 +140,17 @@ impl UserContext {
     }
 
     /// 为 clone 创建的 child 准备首次 user return。
-    pub(crate) fn prepare_thread_clone(
+    pub(crate) fn prepare_clone(
         &mut self,
-        user_stack: usize,
-        thread_pointer: usize,
+        user_stack: Option<usize>,
+        thread_pointer: Option<usize>,
         kernel_stack: usize,
     ) {
-        self.x[2] = user_stack;
-        self.x[4] = thread_pointer;
-        self.prepare_child_return(kernel_stack);
-    }
-
-    /// 为 fork/vfork child 准备首次 user return。
-    pub(crate) fn prepare_process_clone(&mut self, user_stack: Option<usize>, kernel_stack: usize) {
-        if let Some(user_stack) = user_stack {
-            self.x[2] = user_stack;
+        if let Some(stack) = user_stack {
+            self.x[2] = stack;
+        }
+        if let Some(tls) = thread_pointer {
+            self.x[4] = tls;
         }
         self.prepare_child_return(kernel_stack);
     }
@@ -186,7 +184,7 @@ impl UserContext {
     ///
     /// # Returns
     ///
-    /// architecture-owned 1080-byte frame。
+    /// architecture-owned 1088-byte Linux frame。
     pub(crate) fn capture_signal_frame(
         &self,
         info: [u8; 128],
@@ -285,6 +283,8 @@ impl UserContext {
         frame: usize,
         signal: usize,
         handler: usize,
+        _flags: usize,
+        _restorer: usize,
     ) {
         self.x[1] = trampoline;
         self.x[2] = frame;

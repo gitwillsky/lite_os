@@ -1,15 +1,12 @@
-//! 一块磁盘的 bdev 状态（Linux `block_device`）：字节寻址 I/O 与“已挂载/有写者”的互斥。
-//!
-//! 裸块设备经 page cache 缓冲（与 Linux bdev 一致），而 ext4 直接读写块层。两者同时修改同一块盘会
-//! 互相覆盖，所以一块盘要么被某个文件系统挂载（此时节点只读、不经缓存），要么可以被打开写入，不能两者
-//! 同时存在。
+//! bdev 的字节寻址 I/O 与物理 extent claim；整盘和分区共享唯一 claim owner。
+//! 挂载/写打开先拒绝重叠 writer/mount，并在锁外写回/逐出对应 bdev alias cache。
 
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{
     CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError, Inode,
     InodeMetadata, InodeType, OwnerModeChange,
+    block_claim::BlockClaim,
     device::{DeviceError, DeviceNumber, IoctlCall},
 };
 use crate::block::{
@@ -18,12 +15,10 @@ use crate::block::{
     range::{self, BlockStore, RangeError},
 };
 
-/// `claim` 的最高位：设备已被文件系统挂载。其余位是以写方式打开的 OFD 数。
-const MOUNTED: usize = 1 << (usize::BITS - 1);
-
 /// 分区在整盘中的位置与标识。
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct PartitionInfo {
+    pub(super) whole: Arc<BlockNode>,
     pub(super) start: u64,
     pub(super) uuid: Option<PartUuid>,
 }
@@ -36,10 +31,12 @@ pub(crate) struct BlockNode {
     partitions: spin::Mutex<Vec<crate::block::partition_table::Partition>>,
     /// 分区的位置与 `PARTUUID`；整盘为 `None`。
     partition: Option<PartitionInfo>,
-    // OWNER: 挂载标志与写者计数的唯一原子字：`begin_writer` 与 `begin_mount` 对同一个字做 CAS，
-    // 因此“挂载时还有写者”与“挂载后又出现写者”都不可能发生。放在原子里而不是锁里，是因为
-    // `end_writer` 由 OFD 的 Drop 调用，不能阻塞。缺失时 mkfs 式写入与 ext4 会同时改同一块盘。
-    claim: AtomicUsize,
+    /// physical extent 的唯一盘 claim owner 与稳定节点 key。
+    claim: BlockClaim,
+}
+
+fn device_key(number: DeviceNumber) -> u64 {
+    u64::from(number.major) << 32 | u64::from(number.minor)
 }
 
 fn block_error(error: BlockError) -> FileSystemError {
@@ -75,12 +72,27 @@ impl BlockNode {
         device: Arc<dyn BlockDevice>,
         partition: Option<PartitionInfo>,
     ) -> Result<Arc<Self>, FileSystemError> {
+        let bytes = device
+            .block_count()
+            .checked_mul(device.block_size() as u64)
+            .ok_or(FileSystemError::InvalidOperation)?;
+        let claim = match &partition {
+            Some(partition) => partition.whole.claim.partition(
+                device_key(number),
+                partition
+                    .start
+                    .checked_mul(512)
+                    .ok_or(FileSystemError::InvalidOperation)?,
+                bytes,
+            )?,
+            None => BlockClaim::whole(device_key(number), bytes)?,
+        };
         Arc::try_new(Self {
             number,
             device,
             partitions: spin::Mutex::new(Vec::new()),
             partition,
-            claim: AtomicUsize::new(0),
+            claim,
         })
         .map_err(|_| FileSystemError::OutOfMemory)
     }
@@ -91,12 +103,12 @@ impl BlockNode {
 
     /// 分区的 `PARTUUID`；整盘与没有可用标识的分区为 `None`。
     pub(crate) fn partuuid(&self) -> Option<PartUuid> {
-        self.partition.and_then(|partition| partition.uuid)
+        self.partition.as_ref().and_then(|partition| partition.uuid)
     }
 
     /// 分区在整盘中的起始扇区（512 字节）；整盘为 `None`。
     pub(crate) fn partition_start(&self) -> Option<u64> {
-        self.partition.map(|partition| partition.start)
+        self.partition.as_ref().map(|partition| partition.start)
     }
 
     /// `/dev` 下的节点名（`vda`、`vda1`）。
@@ -139,16 +151,16 @@ impl BlockNode {
             .saturating_mul(self.device.block_size() as u64)
     }
 
-    /// 设备是否已被文件系统挂载。
-    pub(crate) fn mounted(&self) -> bool {
-        self.claim.load(Ordering::Acquire) & MOUNTED != 0
+    /// 物理 claim owner 投影：挂载或其他重叠 alias writer 时禁止新建独立 cache。
+    pub(crate) fn bypass_cache(&self) -> bool {
+        self.claim.bypass_cache()
     }
 
     /// page cache 中这块盘的唯一身份：与 devtmpfs 实例无关，所以多个 devtmpfs 挂载共享同一份缓存。
     pub(crate) fn cache_id(&self) -> crate::memory::SharedFileId {
         crate::memory::SharedFileId {
             filesystem: super::BDEV_FILESYSTEM_ID,
-            inode: u64::from(self.number.major) << 32 | u64::from(self.number.minor),
+            inode: device_key(self.number),
         }
     }
 
@@ -182,54 +194,64 @@ impl BlockNode {
         self.device.flush().map_err(block_error)
     }
 
-    /// 登记一个以写方式打开的 OFD。
-    ///
-    /// # Errors
-    ///
-    /// 设备已被挂载返回 `Busy`。
-    pub(crate) fn begin_writer(&self) -> Result<(), FileSystemError> {
-        self.claim
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |claim| {
-                (claim & MOUNTED == 0).then(|| claim + 1)
-            })
-            .map(|_| ())
-            .map_err(|_| FileSystemError::Busy)
+    /// 逐出重叠 bdev alias 的缓存；claim 已先发布，所有 I/O 都在 claim lock 外。
+    fn evict_aliases(&self, include_self: bool) -> Result<(), FileSystemError> {
+        let mut after = None;
+        while let Some(key) = self.claim.next_alias(after) {
+            after = Some(key);
+            if include_self || key != device_key(self.number) {
+                super::page_cache::evict_cached(crate::memory::SharedFileId {
+                    filesystem: super::BDEV_FILESYSTEM_ID,
+                    inode: key,
+                })?;
+            }
+        }
+        Ok(())
     }
 
-    /// 撤销一次 [`Self::begin_writer`]；由 OFD 的 Drop 调用，不阻塞。
-    pub(crate) fn end_writer(&self) {
-        let previous = self.claim.fetch_sub(1, Ordering::AcqRel);
-        assert_ne!(
-            previous & !MOUNTED,
-            0,
-            "block writer released without acquire"
-        );
-    }
-
-    /// 在文件系统读取这块盘之前声明挂载。
-    ///
-    /// 1. 没有写者时原子地置位挂载标志，此后新的写者被拒绝；
-    /// 2. 写回并逐出 page cache 中这块盘的缓冲页，使文件系统直接读块层看到此前的裸写入；
-    ///    仍被映射或使用的缓存无法安全逐出，撤销标志并返回 `Busy`。
-    ///
-    /// # Errors
-    ///
-    /// 已有写者、已挂载或缓存仍被使用返回 `Busy`；写回失败返回对应错误。
-    pub(crate) fn begin_mount(&self) -> Result<(), FileSystemError> {
-        self.claim
-            .compare_exchange(0, MOUNTED, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| FileSystemError::Busy)?;
-        if let Err(error) = super::page_cache::evict_cached(self.cache_id()) {
-            self.claim.store(0, Ordering::Release);
+    /// Swap 与 mount/raw writer 共用排他物理 extent owner；alias cache retirement 失败回滚。
+    pub(super) fn begin_swap(&self) -> Result<(), FileSystemError> {
+        self.claim.begin_swap()?;
+        if let Err(error) = self.evict_aliases(true) {
+            self.claim.end_swap();
             return Err(error);
         }
         Ok(())
     }
 
-    /// 撤销挂载标志（卸载，或挂载在发布前失败）。
+    pub(super) fn end_swap(&self) {
+        self.claim.end_swap();
+    }
+
+    /// 登记写 OFD，拒绝任何重叠 mount 或其他 bdev writer；不能安全逐出 alias cache 时回滚。
+    pub(crate) fn begin_writer(&self) -> Result<(), FileSystemError> {
+        self.claim.begin_writer()?;
+        if let Err(error) = self.evict_aliases(false) {
+            self.claim.end_writer();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// OFD Drop 撤销一次写打开，不分配、不 I/O。
+    pub(crate) fn end_writer(&self) {
+        self.claim.end_writer();
+    }
+
+    /// 先领取物理 extent，再写回/逐出整盘和所有重叠分区的缓存，最后才允许 filesystem I/O。
+    /// 任一 alias 仍被映射或写回失败时回滚 claim 并返回原错误。
+    pub(crate) fn begin_mount(&self) -> Result<(), FileSystemError> {
+        self.claim.begin_mount()?;
+        if let Err(error) = self.evict_aliases(true) {
+            self.claim.end_mount();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// 撤销挂载 claim（卸载，或挂载在发布前失败）。
     pub(crate) fn end_mount(&self) {
-        let previous = self.claim.swap(0, Ordering::AcqRel);
-        assert_eq!(previous, MOUNTED, "mounted block device had writers");
+        self.claim.end_mount();
     }
 }
 
@@ -265,6 +287,10 @@ impl Inode for BlockSpecial {
         self.inner.filesystem_id()
     }
 
+    fn notification_link_state(&self) -> Option<(u64, u32)> {
+        self.inner.notification_link_state()
+    }
+
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         self.inner.metadata()
     }
@@ -297,7 +323,7 @@ impl Inode for BlockSpecial {
 
     /// 已挂载的块设备由文件系统直接读写块层，节点退化为只读、不缓冲的视图（见 [`BlockNode`]）。
     fn data_backing(&self) -> DataBacking {
-        if self.block.mounted() {
+        if self.block.bypass_cache() {
             DataBacking::Snapshot
         } else {
             DataBacking::PageCache
@@ -312,15 +338,28 @@ impl Inode for BlockSpecial {
         self.block.read(offset, buf)
     }
 
-    fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_storage(
+        &self,
+        offset: u64,
+        buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
         self.block.write(offset, buf)
     }
 
-    fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    fn append_storage(
+        &self,
+        _buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn truncate_storage(&self, _size: u64) -> Result<(), FileSystemError> {
+    fn truncate_storage(
+        &self,
+        _size: u64,
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
@@ -328,6 +367,12 @@ impl Inode for BlockSpecial {
         self.block.flush()
     }
 
+    fn write_access(&self) -> Option<&super::InodeWriteAccess> {
+        self.inner.write_access()
+    }
+    fn touch_access(&self, now: u64, relatime: bool) -> Result<(), FileSystemError> {
+        self.inner.touch_access(now, relatime)
+    }
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
         self.inner.set_times(atime, mtime)
     }

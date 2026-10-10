@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import math
 import struct
+import sys
 import tempfile
 import unittest
 import wave
 from pathlib import Path
 
-from scripts.audio_analysis import read_qemu_wav
+SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
+
+from audio_analysis import read_qemu_wav  # noqa: E402
 
 
 class AudioAnalysisTests(unittest.TestCase):

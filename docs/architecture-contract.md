@@ -17,84 +17,53 @@
 | 图形会话与 LiteUI | [lite-runtime](architecture-contract/lite-runtime.md) |
 | 用户态与 ABI | [userspace-abi](architecture-contract/userspace-abi.md) |
 
-## Crate contract
-
-- `bootloader` 是独立 firmware domain，不依赖 kernel 或 userspace。
-- `syscall-abi` 只保存 dispatcher 接入的 Linux 64-bit asm-generic 编号与明确的 architecture extension，不依赖实现 crate。
-- `kernel/src/main.rs` 是唯一 composition root；初始化顺序和 adapter 装配不得下沉到 driver、filesystem 或 task。
-- binary crate 的跨 module interface 默认使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；扩大范围必须说明 production caller。
-
 ## 2. Kernel dependency contract
 
-源码目录按领域分组，module 树保持扁平：
-
-- `kernel/src/hardware/`：`arch`、`platform`、`hal`、`cpu`、`deferred`、`entry`。
-- `kernel/src/storage/`：`block`、`fs`。
-- `kernel/src/devices/`：`drivers`、`virtio`、`virtio_port`、`audio`、`drm`、`input`、`tty`。
-- 其余 module 直接位于 `kernel/src/`。分组目录经 `main.rs` 的 `#[path]` 声明，因此 module 路径（`crate::fs`）和下表 owner 名不含分组。
-- 领域 module 的根文件是 `<module>/mod.rs`；子文件用 `<name>.rs` 加同名目录，并显式 `#[path]` 声明。
+领域依赖理由见 [依赖说明](architecture-contract/dependency-owners.md)。
 
 | Module | 允许依赖（机器读取） | 说明 |
 |---|---|---|
-| `arch` | `config`, `fallible_tree` | 编译期选择的 ISA mechanism；page-table frame owners 使用 fallible ordered storage 保持精确 physical identity，不消费 platform 或上层领域状态 |
-| `entry` | `cpu`, `platform`, `trap` | raw boot/trap callback ABI 的唯一 codec；boot 只构造 typed `BootContext`，trap 只投递 generic semantic handler |
-| `config` | 无 | 只保存无运行时依赖的常量 |
-| `cpu` | `arch` | logical `CpuId`/`CpuSet`、hardware identity 映射与 online/active lifecycle 的唯一 owner；不感知 platform，hardware identity 只在 platform/firmware 边界出现 |
-| `hal` | `arch`, `sync` | 硬件抽象与 platform/driver 共用的最小 seam；唯一的设备寄存器访问路径 `MmioBus`（platform 与 virtio 共用）、设备中断接口、串口 console seam 与只追加设备注册表；位于 `platform` 与 `drivers` 之下，platform 不依赖设备类或 DMA 内存 |
-| `deferred` | `arch`, `cpu` | per-CPU merged deferred-work bitmap 与设备类 handler 注册表的唯一 owner；空→非空 transition 经 `arch::interrupt::raise_software` 发布 local edge，发布者不认识消费者；独立于 `cpu` 以免 CPU topology 依赖 platform |
-| `platform` | `arch`, `cpu`, `fallible_tree`, `hal`, `sync` | 编译期选择的 machine/firmware adapter；拥有 DTB、PSCI/SBI、GIC/PLIC、UART 与 TLB shootdown，并向 `virtio` 暴露 transport 表、PCI host、地址映射与 interrupt 注册；不认识设备类，也不依赖 `memory` |
-| `fallible_tree` | 无 | 无状态的确定性 AVL mechanism；提供显式 OOM publication、结构化 split 与 ordered-disjoint join，不拥有领域数据 |
-| `sync` | `arch`, `cpu` | 锁与 IRQ transfer 只依赖本地中断 mechanism 和 logical `CpuId`；transfer token 在错误 CPU restore 时 fail-stop，禁止把 hardware identity 引入同步领域 |
-| `memory` | `arch`, `config`, `cpu`, `fallible_tree`, `id`, `platform`, `sync` | VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding；初始栈只接收 exec 准备的 strings/AT_RANDOM，不访问 entropy device |
-| `drivers` | `deferred`, `fallible_tree`, `hal`, `memory`, `sync` | 设备类 seam（display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `virtio`，MMIO/中断/console 属于 `hal` |
-| `block` | `hal` | 块设备 trait 与只追加注册表、分区表（MBR/EBR/GPT）解析、分区视图、字节范围 I/O 与 `PARTUUID` 文本；驱动实现 trait，`fs` 只消费；分区表与范围 I/O 是可在 host 上单测的纯函数 |
-| `virtio` | `block`, `deferred`, `drivers`, `hal`, `memory`, `platform` | VirtIO transport（MMIO/PCI）、virtqueue/DMA、各设备类 adapter 与设备装配表 `binding`；只实现 `drivers`/`block` 的 seam，消费 platform 的设备发现事实，不依赖 `arch` |
-| `virtio_port` | `deferred`, `drivers`, `fs`, `ipc` | 拥有唯一 named byte-stream 的 task readiness、blocking/poll projection，并经 fs 字符设备注册表发布 `virtio-ports/*` 节点；不解析 SPICE message 或感知 platform/QEMU |
-| `audio` | `drivers`, `fs`, `id`, `ipc`, `memory` | 拥有 Linux ALSA PCM playback 领域状态、position、poll/xrun、`snd/pcmC0D0p` 设备文件与 PCM ioctl UAPI；只经通用 PCM output seam 使用 device adapter |
-| `drm` | `deferred`, `drivers`, `fallible_tree`, `fs`, `ipc`, `memory`, `socket`, `sync` | 只消费通用 display seam；拥有 `dri/card0` 设备文件与 DRM/virtio-gpu ioctl UAPI；GEM handle 用 fallible ordered publication；mode 变化只经 socket 发布 uevent；不感知 VirtIO adapter 或 task |
-| `input` | `deferred`, `drivers`, `fs`, `ipc`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域、`input/eventN` 设备文件与 evdev ioctl UAPI；不感知 VirtIO adapter 或 task |
-| `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
-| `socket` | `drivers`, `fallible_tree`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
-| `fs` | `block`, `deferred`, `fallible_tree`, `id`, `ipc`, `log`, `memory`, `random`, `sync`, `timer` | VFS、具体文件系统、字符设备注册表、inotify 与 mem/kmsg 设备（kmsg 经 `deferred` 唤醒）；OFD 归 `file`、终端归 `tty`，advisory lock 经 `LockHolder` 识别持锁者 |
-| `file` | `fallible_tree`, `fs`, `ipc`, `socket` | open file description、fd table、epoll/timerfd/readiness 与 inode/设备/pipe/socket/eventfd 后端的统一投影；fd 层位于 `fs` 与 `socket` 之上，是 VFS 之外唯一同时认识两者的 module |
-| `tty` | `fs`, `hal`, `ipc`, `sync`, `timer` | Terminal line discipline、`/dev/tty`/`console`/`ptmx`、Unix98 pty 与 devpts 文件系统；session、process group 与 signal 归 task，经 `install_job_control` 注入；经 `fs::device` 注册设备文件 |
-| `task` | `arch`, `cpu`, `deferred`, `drivers`, `fallible_tree`, `file`, `fs`, `id`, `ipc`, `memory`, `platform`, `random`, `socket`, `sync`, `timer`, `tty` | 调度只用 logical CPU identity；exec 获取 AT_RANDOM；deferred safe point 处理核心向量，completion 经注册 handler 投递 |
-| `trap` | `arch`, `cpu`, `deferred`, `hal`, `memory`, `platform`, `syscall`, `task`, `timer` | 只处理 `arch::trap::TrapEvent`、领域投递和用户返回 orchestration，不读取 CSR |
-| `syscall` | `file`, `fs`, `ipc`, `memory`, `random`, `socket`, `sync`, `system`, `task`, `timer` | 只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::device::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果 |
-| `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
-| `system` | `arch`, `cpu`, `platform` | whole-system policy；ISA 用户事实只经 `arch::user`，CPU/firmware 只经各自 facade |
-| `timer` | `arch`, `cpu`, `drivers`, `platform`, `sync` | RTC 与 per-CPU deadline 由 timer 唯一拥有 |
-| `log` | `cpu`, `deferred`, `platform`, `sync`, `timer` | 日志策略、有界 record owner 与输出在本 module 内闭合 |
-| `id` | 无 | 纯 ID allocation mechanism |
-| `cmdline` | 无 | 纯 kernel command line 解析：取出内核参数，其余按 Linux 规则转交 init |
-| `lang_item` | `arch`, `cpu`, `platform` | 只使用 typed diagnostic identity 与 architecture/platform fail-stop mechanism |
-| `main` | `arch`, `audio`, `block`, `cmdline`, `config`, `cpu`, `deferred`, `drivers`, `drm`, `entry`, `fallible_tree`, `file`, `fs`, `hal`, `id`, `input`, `ipc`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap`, `tty`, `virtio`, `virtio_port` | 装配 |
+| `arch` | `config`,`fallible_tree` | 领域规则见依赖说明 |
+| `entry` | `cpu`,`platform`,`trap` | 领域规则见依赖说明 |
+| `config` | 无 | 领域规则见依赖说明 |
+| `cpu` | `arch` | 领域规则见依赖说明 |
+| `hal` | `arch`,`sync` | 领域规则见依赖说明 |
+| `deferred` | `arch`,`cpu` | 领域规则见依赖说明 |
+| `platform` | `arch`,`cpu`,`fallible_tree`,`hal`,`sync` | 领域规则见依赖说明 |
+| `fallible_tree` | 无 | 领域规则见依赖说明 |
+| `sync` | `arch`,`cpu` | 领域规则见依赖说明 |
+| `memory` | `arch`,`config`,`cpu`,`fallible_tree`,`id`,`platform`,`sync` | 领域规则见依赖说明 |
+| `drivers` | `deferred`,`fallible_tree`,`hal`,`memory`,`sync` | 领域规则见依赖说明 |
+| `block` | `hal` | 领域规则见依赖说明 |
+| `virtio` | `block`,`deferred`,`drivers`,`hal`,`memory`,`platform` | 领域规则见依赖说明 |
+| `virtio_port` | `deferred`,`drivers`,`fs`,`ipc` | 领域规则见依赖说明 |
+| `audio` | `drivers`,`fs`,`id`,`ipc`,`memory` | 领域规则见依赖说明 |
+| `drm` | `deferred`,`drivers`,`fallible_tree`,`fs`,`ipc`,`memory`,`socket`,`sync` | 领域规则见依赖说明 |
+| `input` | `deferred`,`drivers`,`fs`,`ipc`,`timer` | 领域规则见依赖说明 |
+| `ipc` | `fallible_tree`,`id`,`memory`,`namespace`,`sync` | 领域规则见依赖说明 |
+| `socket` | `drivers`,`fallible_tree`,`id`,`ipc`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
+| `fs` | `block`,`deferred`,`fallible_tree`,`id`,`ipc`,`log`,`memory`,`namespace`,`random`,`socket`,`sync`,`timer` | 领域规则见依赖说明 |
+| `file` | `fallible_tree`,`fs`,`ipc`,`memory`,`namespace`,`socket`,`sync` | 领域规则见依赖说明 |
+| `tty` | `fallible_tree`,`fs`,`hal`,`ipc`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
+| `namespace` | `fallible_tree` | 领域规则见依赖说明 |
+| `task` | `arch`,`cpu`,`deferred`,`drivers`,`fallible_tree`,`file`,`fs`,`id`,`ipc`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`timer`,`tty` | 领域规则见依赖说明 |
+| `trap` | `arch`,`cpu`,`deferred`,`hal`,`memory`,`platform`,`syscall`,`task`,`timer` | 领域规则见依赖说明 |
+| `syscall` | `file`,`fs`,`ipc`,`memory`,`namespace`,`random`,`socket`,`sync`,`system`,`task`,`timer` | 领域规则见依赖说明 |
+| `random` | `drivers` | 领域规则见依赖说明 |
+| `system` | `arch`,`cpu`,`platform` | 领域规则见依赖说明 |
+| `timer` | `arch`,`cpu`,`drivers`,`platform`,`sync` | 领域规则见依赖说明 |
+| `log` | `cpu`,`deferred`,`platform`,`sync`,`timer` | 领域规则见依赖说明 |
+| `id` | 无 | 领域规则见依赖说明 |
+| `cmdline` | 无 | 领域规则见依赖说明 |
+| `lang_item` | `arch`,`cpu`,`platform` | 领域规则见依赖说明 |
+| `main` | `arch`,`audio`,`block`,`cmdline`,`config`,`cpu`,`deferred`,`drivers`,`drm`,`entry`,`fallible_tree`,`file`,`fs`,`hal`,`id`,`input`,`ipc`,`log`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`syscall`,`system`,`task`,`timer`,`trap`,`tty`,`virtio_port`,`virtio` | 领域规则见依赖说明 |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 正向 dependency matrix 必须无环；围栏检查 AST 与 macro token 路径（含 `$crate`、分组/别名 import），禁止 crate-root alias 绕过 owner。
 
-### Fallible ordered-storage contract
-
-- 每个 AVL node 的 `next` 是唯一 in-order successor link；所有 structural mutation 在独占
-  map borrow 内同步维护它，split 清除跨 map link、join 恢复 boundary link、retain 重建全部
-  links。`Iter` 的 immutable map lifetime 保证 raw successor target 在解引用期间存活，iterator
-  因而只有一个 pointer（RV64 ≤ 16 bytes）且不清零 path stack；遗漏任一 mutation 的 link 更新
-  会造成漏项或悬垂指针，必须由 topology/link invariant test fail-stop。production 单邻居查询使用
-  floor/ceiling/predecessor/successor，禁止用 `iter_from/iter_after(...).next()` 重建 iterator。
-  map 的 unsafe Send/Sync 只恢复 `K/V: Send/Sync` 的结构 auto-trait：跨线程移动不会移动 Box
-  pointee，共享访问不能改变 links；`VacantEntry` 发布前/摘除后恒为 `next=None`，`NodeSlot`
-  尚未初始化，二者只按 K/V 恢复 Send/Sync。缺失这些证明会把内部 NonNull 错误泄漏为非
-  Send owner，放宽到不满足 K/V bound 则会跨线程移动领域数据。
-- `split_off` 只沿 AVL root-to-leaf path 比较并重组现有节点，再对移出的 subtree 做一次无 key comparison 的精确 cardinality 遍历；不为所有节点增加永久 subtree-size 字段，复杂度为 `O(log n + k)`。
-- bulk join 只接受 `left.max < right.min` 的 ordered-disjoint 输入，边界检查必须在 mutation 前完成；重复或逆序表示 caller contract 损坏并 fail-stop，两表保持不变。join 只改动 AVL spine，复杂度为 `O(log n)`。
-- `retain` 消费原 topology 后只执行一次 node ownership filter 与一次 sorted-list balanced rebuild；每个节点访问常数次、无分配、保留节点 identity，禁止逐节点 `join_*` 双轨。
-- regression 的 primary metric 是 AVL order/height/length/successor-link/model 不变量、RV64 iterator ≤ 16 bytes、完整有序扫描至多一次 key comparison，以及 split 不超过原树高的 key comparison、join 一次边界 comparison 和 cardinality 每个移出节点一次 structural visit。
-  host wall time 会混入建树 allocation 与 runner 调度，不作为稳定 gate；只有新增持续调用该 bulk interface 的 production 热路径时才增加 wall-clock benchmark。
-
-
 ## State-owner registry
 
-每个复合状态只能由一个领域 owner 持有。精确 owner 在对应子契约维护；下表由 checker 读取，必须与 production source 双向一致。
+AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-contract/ordered-storage.md)。
 
 ### Persistent FallibleMap registry
 
@@ -102,9 +71,12 @@
 
 | Location | Type |
 |---|---|
+| `kernel/src/memory/shared_file.rs :: MappingRegistry.slots` | `FallibleMap < usize , Weak < dyn MemoryMappingOwner > >` |
+| `kernel/src/memory/shared_file.rs :: ReclaimerRegistry.slots` | `FallibleMap < usize , Weak < dyn MemoryReclaimer > >` |
 | `kernel/src/hardware/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
 | `kernel/src/hardware/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
 | `kernel/src/hardware/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
+| `kernel/src/devices/tty/pty.rs :: PtyRegistry.slots` | `FallibleMap < u32 , Weak < PtyPair > >` |
 | `kernel/src/devices/drm/mod.rs :: DrmDeviceState.graphics_cleanups` | `FallibleMap < u32 , graphics :: VirglCleanup >` |
 | `kernel/src/devices/drm/mod.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
 | `kernel/src/devices/drm/mod.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
@@ -116,46 +88,68 @@
 | `kernel/src/file/epoll.rs :: EpollState.ready` | `FallibleMap < InterestKey , () >` |
 | `kernel/src/file/epoll.rs :: EpollMemberships.entries` | `Mutex < FallibleMap < ReverseKey , ReverseMembership > >` |
 | `kernel/src/file/epoll.rs :: static SOURCE_INDEX` | `Mutex < FallibleMap < SourceIndexKey , SourceMembership > >` |
-| `kernel/src/storage/fs/inotify.rs :: WatchIndex.by_inode` | `FallibleMap < (usize , u64) , Vec < Arc < Watch > > >` |
-| `kernel/src/storage/fs/vfs/opened_index.rs :: OpenedIndex.entries` | `Mutex < FallibleMap < OpenedIndexKey , Weak < OpenedFile > > >` |
+| `kernel/src/storage/fs/inode_identity.rs :: LiveInodes[0]` | `Mutex < FallibleMap < K , Weak < T > > >` |
+| `kernel/src/namespace/quota.rs :: QuotaState.users` | `FallibleMap < u32 , [u32 ; UserResource :: COUNT] >` |
+| `kernel/src/storage/fs/inotify.rs :: WatchIndex.by_inode` | `FallibleMap < (usize , u64) , InodeWatches >` |
+| `kernel/src/storage/fs/inotify.rs :: InodeWatches.watches` | `FallibleMap < WatchKey , Arc < Watch > >` |
+| `kernel/src/storage/fs/inotify/instance.rs :: WatchMembership.watches` | `FallibleMap < i32 , Arc < Watch > >` |
+| `kernel/src/storage/fs/inotify/instance.rs :: WatchMembership.identities` | `FallibleMap < (usize , u64) , i32 >` |
+| `kernel/src/storage/fs/inotify/queue.rs :: EventQueue.events` | `FallibleMap < u64 , Event >` |
+| `kernel/src/storage/fs/vfs/dentry_index.rs :: DentryIndex[0]` | `Mutex < FallibleMap < DentryKey , Weak < Dentry > > >` |
+| `kernel/src/storage/fs/vfs/mount_index.rs :: static ATTACHMENTS` | `Mutex < FallibleMap < AttachmentKey , Weak < MountView > > >` |
+| `kernel/src/storage/fs/vfs/mounted_filesystem.rs :: static FILESYSTEMS` | `Mutex < FallibleMap < usize , Weak < MountedFilesystem > > >` |
 | `kernel/src/storage/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
-| `kernel/src/storage/fs/ext4/journal.rs :: StagedBlocks.metadata` | `FallibleMap < u64 , Vec < u8 > >` |
+| `kernel/src/storage/fs/ext4/journal/staged_blocks.rs :: StagedBlocks.entries` | `FallibleMap < u64 , StagedBlock >` |
 | `kernel/src/storage/fs/memory_file/sparse.rs :: SparsePages.pages` | `FallibleMap < u64 , Arc < P > >` |
 | `kernel/src/storage/fs/tmpfs.rs :: Namespace.inodes` | `FallibleMap < u64 , Weak < TmpInode > >` |
+| `kernel/src/storage/fs/xattr.rs :: Xattrs.entries` | `FallibleMap < Vec < u8 > , Vec < u8 > >` |
 | `kernel/src/storage/fs/tmpfs/directory.rs :: Directory.names` | `FallibleMap < Key , Slot < T > >` |
 | `kernel/src/storage/fs/tmpfs/directory.rs :: Directory.order` | `FallibleMap < u64 , Key >` |
-| `kernel/src/storage/fs/ext4/journal.rs :: StagedBlocks.data` | `FallibleMap < u64 , Vec < u8 > >` |
+| `kernel/src/storage/fs/block_claim.rs :: DiskClaims.extents` | `spin :: Mutex < FallibleMap < u64 , Extent > >` |
 | `kernel/src/storage/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
 | `kernel/src/storage/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |
-| `kernel/src/storage/fs/page_cache.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
+| `kernel/src/storage/fs/page_cache/registry.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
 | `kernel/src/storage/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
 | `kernel/src/hardware/arch/riscv64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
 | `kernel/src/hardware/arch/aarch64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
 | `kernel/src/memory/mm/area.rs :: MapArea.data_frames` | `FallibleMap < VirtualPageNumber , PrivateResident >` |
+| `kernel/src/memory/swappable_page/registry.rs :: Registry.slots` | `FallibleMap < usize , Weak < SwappablePage > >` |
 | `kernel/src/memory/mm.rs :: MemorySet.areas` | `FallibleMap < VirtualPageNumber , MapArea >` |
-| `kernel/src/memory/mm/shared_area.rs :: AnonymousSharedBacking.frames` | `Mutex < FallibleMap < usize , Arc < FrameTracker > > >` |
+| `kernel/src/memory/mm/shared_area.rs :: AnonymousSharedPages.frames` | `FallibleMap < usize , Arc < SwappablePage > >` |
+| `kernel/src/ipc/shared_memory_creator.rs :: SharedMemoryCreatorList.state` | `Mutex < Option < FallibleMap < CreatorKey , CreatorRegistration > > >` |
 | `kernel/src/memory/mm/shared_area.rs :: SharedFileArea.resident` | `FallibleMap < VirtualPageNumber , SharedResident >` |
 | `kernel/src/memory/mm/shootdown.rs :: TranslationCommit.retired_table_pages` | `FallibleMap < usize , FrameTracker >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.endpoints` | `FallibleMap < SocketHandle , EndpointState >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.raw_endpoints` | `FallibleMap < SocketHandle , raw_endpoint :: RawEndpointState >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.tcp_endpoints` | `FallibleMap < usize , TcpEndpointState >` |
+| `kernel/src/task/process_table/group_retirement.rs :: RetiredGroups.nodes` | `FallibleMap < usize , ProcessGroupIndex >` |
+| `kernel/src/namespace/pid.rs :: State.numbers` | `FallibleMap < u32 , Option < PidAssociation > >` |
 | `kernel/src/socket/inet/port_namespace.rs :: Occupancy.specific` | `FallibleMap < Ipv4Addr , AddressOccupancy >` |
 | `kernel/src/socket/inet/port_namespace.rs :: PortNamespace.entries` | `FallibleMap < u16 , Occupancy >` |
 | `kernel/src/socket/packet.rs :: PacketRegistry.endpoints` | `FallibleMap < usize , EndpointState >` |
 | `kernel/src/socket/kobject.rs :: KobjectRegistry.endpoints` | `FallibleMap < u64 , Weak < KobjectSocket > >` |
 | `kernel/src/socket/unix/namespace.rs :: static NAMESPACE` | `Once < Mutex < FallibleMap < NamespaceKey , Weak < UnixSocket > > > >` |
+| `kernel/src/socket/unix/rights_graph.rs :: NodeState.edges` | `FallibleMap < EdgeKey , GraphEdge >` |
+| `kernel/src/socket/unix/rights_graph.rs :: RetiredGraph.edges` | `FallibleMap < EdgeKey , GraphEdge >` |
+| `kernel/src/socket/unix/rights_graph.rs :: RetiredGraph.nodes` | `FallibleMap < u64 , Arc < GraphNode > >` |
+| `kernel/src/socket/unix/datagram_queue.rs :: DatagramQueue.entries` | `FallibleMap < u64 , T >` |
 | `kernel/src/socket/unix/rights_graph.rs :: RightsGraph.nodes` | `FallibleMap < u64 , Arc < GraphNode > >` |
 | `kernel/src/socket/unix/rights_graph.rs :: RightsGraph.uid_inflight` | `FallibleMap < u32 , usize >` |
-| `kernel/src/socket/unix/stream_backlog.rs :: StreamBacklog.pending` | `FallibleMap < u64 , T >` |
+| `kernel/src/socket/unix/connection_backlog.rs :: ConnectionBacklog.pending` | `FallibleMap < u64 , T >` |
+| `kernel/src/task/process_table/process_retirement.rs :: RetiredProcesses.nodes` | `FallibleMap < usize , ProcessNode >` |
+| `kernel/src/task/process_table/process_retirement.rs :: RetiredProcesses.parents` | `FallibleMap < usize , () >` |
+| `kernel/src/task/process_table/process_retirement.rs :: RetiredProcesses.creators` | `FallibleMap < usize , () >` |
+| `kernel/src/task/process_table/process_retirement.rs :: RetiredProcesses.groups` | `FallibleMap < usize , () >` |
 | `kernel/src/task/process_table.rs :: ProcessGraph.nodes` | `FallibleMap < usize , ProcessNode >` |
-| `kernel/src/task/process_table.rs :: ProcessGraph.groups` | `FallibleMap < (usize , usize) , ProcessGroupIndex >` |
+| `kernel/src/task/process_table.rs :: ProcessGraph.groups` | `FallibleMap < usize , ProcessGroupIndex >` |
+| `kernel/src/task/process_table.rs :: ProcessGraph.kernel_threads` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
 | `kernel/src/task/process_table.rs :: ProcessGraph.threads` | `FallibleMap < usize , ThreadIndex >` |
 | `kernel/src/task/process_table.rs :: ProcessNode.children` | `FallibleMap < usize , () >` |
 | `kernel/src/task/process_table.rs :: ProcessNode.child_waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
 | `kernel/src/task/process_table.rs :: ProcessState::Live[0]` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
 | `kernel/src/task/process_table.rs :: ProcessGroupIndex.members` | `FallibleMap < usize , () >` |
 | `kernel/src/task/process_table.rs :: ThreadIndex.created_children` | `FallibleMap < usize , () >` |
-| `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.deadline_index` | `FallibleMap < (u64 , TimerIdentity) , () >` |
+| `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.deadline_index` | `FallibleMap < (u64 , TimerIdentity) , Option < Weak < KernelTimer > > >` |
 | `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.posix_timers` | `FallibleMap < (usize , i32) , PosixTimer >` |
 | `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.real_timers` | `FallibleMap < usize , RealTimer >` |
 | `kernel/src/task/process_table/timer_queue.rs :: TimerQueue.timer_files` | `FallibleMap < u64 , TimerFile >` |
@@ -163,33 +157,37 @@
 | `kernel/src/task/process_table/wait_registry/batch.rs :: ClaimedBatch.entries` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
 | `kernel/src/task/process_table/wait_registry/shard.rs :: WaitShard.index` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
 
+| `kernel/src/ipc/ids.rs :: IpcIds.keys` | `FallibleMap < i32 , u16 >` |
+| `kernel/src/ipc/ids.rs :: IpcIds.objects` | `FallibleMap < u16 , Arc < T > >` |
+| `kernel/src/ipc/message_queue.rs :: QueueState.messages` | `FallibleMap < u64 , Arc < Message > >` |
+| `kernel/src/ipc/message_queue.rs :: QueueState.waiters` | `FallibleMap < u64 , Arc < QueueWaiter > >` |
+| `kernel/src/ipc/message_queue.rs :: RetiredMessages.messages` | `FallibleMap < u64 , Arc < Message > >` |
+| `kernel/src/ipc/message_queue.rs :: RetiredMessages.waiters` | `FallibleMap < u64 , Arc < QueueWaiter > >` |
+| `kernel/src/ipc/sem_undo.rs :: UndoListState.entries` | `FallibleMap < UndoKey , Arc < SemaphoreUndoEntry > >` |
+| `kernel/src/ipc/semaphore.rs :: RetiredSemaphores.undo` | `FallibleMap < usize , UndoRegistration >` |
+| `kernel/src/ipc/semaphore.rs :: RetiredSemaphores.waiters` | `FallibleMap < u64 , Arc < PendingOperation > >` |
+| `kernel/src/ipc/semaphore.rs :: SemaphoreState.undo` | `FallibleMap < usize , UndoRegistration >` |
+| `kernel/src/ipc/semaphore.rs :: SemaphoreState.waiters` | `FallibleMap < u64 , Arc < PendingOperation > >` |
+| `kernel/src/namespace/rlimit_counts.rs :: RlimitCounters.users` | `Mutex < FallibleMap < (RlimitResource , u32) , u64 > >` |
+| `kernel/src/socket/inet/route.rs :: RoutingTable.prefixes` | `[FallibleMap < Key , Record > ; 33]` |
+| `kernel/src/socket/inet/route_reply.rs :: RouteReplies.packets` | `FallibleMap < u64 , Reply >` |
+| `kernel/src/socket/kobject.rs :: KobjectRegistry.ports` | `FallibleMap < (u64 , u32) , u64 >` |
+| `kernel/src/socket/kobject.rs :: KobjectSocketState.queue` | `FallibleMap < u64 , Uevent >` |
+| `kernel/src/socket/net_namespace.rs :: NetworkNamespaceDirectory.entries` | `crate :: fallible_tree :: FallibleMap < u64 , Weak < NetNamespace > >` |
+| `kernel/src/storage/fs/procfs/lookup_cache.rs :: ProcLookupCache[0]` | `Mutex < FallibleMap < (ProcNode , u64) , Arc < ProcInode > > >` |
+| `kernel/src/storage/fs/vfs/mount_unmount.rs :: Selection.index` | `FallibleMap < usize , usize >` |
+| `kernel/src/task/process_table/timer_queue/retirement.rs :: RetiredTimers.deadlines` | `FallibleMap < (u64 , TimerIdentity) , Option < Weak < KernelTimer > > >` |
+| `kernel/src/task/process_table/timer_queue/retirement.rs :: RetiredTimers.files` | `FallibleMap < u64 , TimerFile >` |
+| `kernel/src/task/process_table/timer_queue/retirement.rs :: RetiredTimers.posix` | `FallibleMap < (usize , i32) , PosixTimer >` |
+| `kernel/src/task/process_table/timer_queue/retirement.rs :: RetiredTimers.real` | `FallibleMap < usize , RealTimer >` |
+
 ## 4. Source size contract
-
-生产 kernel/bootloader Rust 源文件，`tools/kernel-unit/src`、`tools/scheduler-unit/src` 下的
-host unit-test Rust 源文件，以及 `tools/architecture-check/src` 中以 `_tests.rs` 命名的
-unit-test module 采用两级围栏：超过 1000 行触发 architecture review notice，但不单独导致
-验证失败；超过 1500 行默认拒绝。architecture-check 的 unit-test module 必须使用
-`_tests.rs` 后缀，禁止把测试正文重新塞回 production `main.rs` 绕过围栏。
-reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam。生产 source 可以拆成深
-module，或在下表登记精确审查额度；登记必须给出 owner、暂不拆分的原因与消除条件。
-额度是硬上限，只能随重构下降，不得为功能开发上调；文件缩短时 checker 强制同步下调。
-行数只是退化信号，禁止按行数机械切片或建立 pass-through module。
-
-host unit-test 入口只装配 production path module 与领域测试 module；测试正文按
-filesystem/storage、memory、platform/execution、socket/ABI 等真实 seam 放入独立文件。
-unit-test source 的 review notice 不允许把新测试继续堆进入口文件；必须先检查测试所属
-owner 并迁移到对应领域 module，或新增有领域含义的 module。
-
-`user/` 下项目自有 Rust/C/header/JS/TypeScript/CSS source 采用相同的 1000 行 review、1500 行
-默认拒绝两级围栏。review 必须检查状态 owner/interface，不能仅为降行数建立 pass-through module；
-checker 递归扫描实际文件集，避免新 crate、应用或 native bridge 绕过围栏。唯一排除目录是
-`user/quickjs-runtime/vendor/quickjs/`：它必须保持
-standards baseline 固定官方 tarball 的原始文件，不能承载项目 patch；项目 C adapter 仍在 `src/`
-接受 1000/1500 两级围栏。缺少该精确排除会把不可拆分的上游实现误判成项目 module，扩大到其他 vendor
-目录则会形成逃逸围栏。
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
+| `kernel/src/storage/fs/procfs.rs` | 1468 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
+| `kernel/src/storage/fs/tmpfs.rs` | 1023 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
+| `kernel/src/task/process_table/signal.rs` | 1270 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
 
 ## Change contract
 

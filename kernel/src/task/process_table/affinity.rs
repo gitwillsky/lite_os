@@ -17,7 +17,7 @@ pub(crate) enum SchedulerAffinityError {
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数使用 Linux 全局 TID selector。
+/// - `tid`: 零选择 calling Thread；正数使用 Linux calling PID namespace 的 TID selector。
 /// - `replacement`: `None` 只查询；`Some` 提交 userspace logical CPU bitmap。
 ///
 /// # Returns

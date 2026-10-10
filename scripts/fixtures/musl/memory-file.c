@@ -136,7 +136,7 @@ static void quota_semantics(void)
 	/* size=16k 的 tmpfs：写入超出配额得到 ENOSPC，而映射触碰超出配额的页得到 SIGBUS。 */
 	CHECK(50, mkdir("/mnt", 0755) == 0 || errno == EEXIST);
 	CHECK(51, mkdir("/mnt/quota", 0755) == 0 || errno == EEXIST);
-	CHECK(52, mount("tmpfs", "/mnt/quota", "tmpfs", 0, "size=16k") == 0);
+	CHECK(52, mount("tmpfs", "/mnt/quota", "tmpfs", 0, "size=16k,nr_inodes=8") == 0);
 	int fd = open("/mnt/quota/file", O_RDWR | O_CREAT, 0600);
 	CHECK(53, fd >= 0 && ftruncate(fd, 8 * PAGE) == 0);
 	char *map = mmap(0, 8 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -144,9 +144,21 @@ static void quota_semantics(void)
 	for (int page = 0; page < 4; page++) map[page * PAGE] = 1;
 	CHECK(55, touch_in_child(map + 4 * PAGE, 1) == 1);
 	CHECK(56, pwrite(fd, "x", 1, 6 * PAGE) == -1 && errno == ENOSPC);
+	/* 两类配额一起提交；一类不够时不能改变另一类上限。 */
+	struct statfs quota;
+	CHECK(60, mount("tmpfs", "/mnt/quota", "tmpfs", MS_REMOUNT, "size=8k,nr_inodes=10") == -1 && errno == EINVAL);
+	CHECK(61, statfs("/mnt/quota", &quota) == 0 && quota.f_blocks == 4 && quota.f_files == 8);
+	CHECK(62, mount("tmpfs", "/mnt/quota", "tmpfs", MS_REMOUNT, "size=32k,nr_inodes=2") == 0);
+	CHECK(63, open("/mnt/quota/extra", O_CREAT | O_WRONLY, 0600) == -1 && errno == ENOSPC);
+	CHECK(64, mount("tmpfs", "/mnt/quota", "tmpfs", MS_REMOUNT, "size=64k,nr_inodes=1") == -1 && errno == EINVAL);
+	CHECK(65, statfs("/mnt/quota", &quota) == 0 && quota.f_blocks == 8 && quota.f_files == 2);
 	CHECK(57, munmap(map, 8 * PAGE) == 0 && close(fd) == 0);
 	CHECK(58, unlink("/mnt/quota/file") == 0);
 	CHECK(59, umount("/mnt/quota") == 0);
+	CHECK(66, mount("tmpfs", "/mnt/quota", "tmpfs", 0, "size=0,nr_inodes=0") == 0);
+	CHECK(67, mount("tmpfs", "/mnt/quota", "tmpfs", MS_REMOUNT, "size=16k") == -1 && errno == EINVAL);
+	CHECK(68, mount("tmpfs", "/mnt/quota", "tmpfs", MS_REMOUNT, "nr_inodes=8") == -1 && errno == EINVAL);
+	CHECK(69, umount("/mnt/quota") == 0);
 }
 
 int main(void)

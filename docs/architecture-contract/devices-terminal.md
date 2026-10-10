@@ -44,6 +44,13 @@
   `DumbBuffer`、`InputDevice`、`PtySession` 与 `SessionChild` 独占对应资源 cleanup。应用不得复制
   layout、constant、extern block 或裸 owner。
 
+- 实际 OFD 最后 fput 通过 `DeviceFile::release` 消费 PTY/FIFO admission；backend Arc 观察者
+  只保活已退休 allocation，不推迟 peer EOF/HUP、PTY hangup 或索引复用。master 与独立 slave
+  的失败构造和最终 Drop 消费同一 close 路径，不另设回滚 owner。
+- `PtyRegistry.slots` 是唯一 weak AVL index；Terminal/pair/node allocation 和 devpts capacity
+  准备在 registry spin guard 外，发布重验可复用索引，loser/旧 weak storage 锁外释放。
+  Pair 的实际 `master_open/slave_opens` 决定可复用性；不得以 Weak 是否还能 upgrade 代替 admission。
+
 ## Interface
 
 - 设备类 deferred vector 由消费领域（drm、input、virtio_port）以 `deferred::register` 分配并经
@@ -217,3 +224,7 @@
   position，立即返回。两者都不得修改 active framebuffer、生成 page-flip event 或排到 VirGL controlq
   后面。
 - DRM close/RMFB/disable、evdev revoke、PTY master close 与 session exit 必须沿唯一 owner seam 清理并在锁外发布 consequence。
+
+- 设备 OpenRequest 保留原始 status flags；PTS 的 O_NOCTTY 禁止自动接管。文件壳和 slave
+  lifetime pin 在接管之前完成分配；open 失败不会留下控制权。PTY master 的控制身份查询
+  使用 slave Terminal 的同一实际 control owner，但 TIOCNOTTY 不适用于 master。

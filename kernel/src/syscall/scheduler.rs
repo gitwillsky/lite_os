@@ -57,7 +57,7 @@ fn nice_selector(which: i32, who: u32) -> Result<SchedulerNiceSelector, isize> {
 /// # Parameters
 ///
 /// - `which`: 当前实现支持 `IOPRIO_WHO_PROCESS`。
-/// - `who`: 零选择 caller，正数选择全局 TID。
+/// - `who`: 零选择 caller，正数选择calling PID namespace 的 TID。
 /// - `priority`: encoded class/data；支持 NONE/RT/BE/IDLE 与 data 0..7。
 ///
 /// # Returns
@@ -87,7 +87,7 @@ pub(crate) fn sys_ioprio_set(which: i32, who: i32, priority: i32) -> isize {
 /// # Parameters
 ///
 /// - `which`: 当前实现支持 `IOPRIO_WHO_PROCESS`。
-/// - `who`: 零选择 caller，正数选择全局 TID。
+/// - `who`: 零选择 caller，正数选择calling PID namespace 的 TID。
 ///
 /// # Returns
 ///
@@ -169,7 +169,7 @@ fn read_sched_priority(tid: i32, address: usize) -> Result<i32, isize> {
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数选择全局 TID，负数非法。
+/// - `tid`: 零选择 calling Thread；正数选择calling PID namespace 的 TID，负数非法。
 /// - `parameter`: 用户态 4-byte `struct sched_param` 地址。
 ///
 /// # Returns
@@ -196,7 +196,7 @@ pub(crate) fn sys_sched_setparam(tid: i32, parameter: usize) -> isize {
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数选择全局 TID，负数非法。
+/// - `tid`: 零选择 calling Thread；正数选择calling PID namespace 的 TID，负数非法。
 /// - `policy`: Linux scheduler policy 与可选 `SCHED_RESET_ON_FORK` bit。
 /// - `parameter`: 用户态 4-byte `struct sched_param` 地址。
 ///
@@ -227,7 +227,7 @@ pub(crate) fn sys_sched_setscheduler(tid: i32, policy: i32, parameter: usize) ->
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数选择全局 TID，负数非法。
+/// - `tid`: 零选择 calling Thread；正数选择calling PID namespace 的 TID，负数非法。
 ///
 /// # Returns
 ///
@@ -249,7 +249,7 @@ pub(crate) fn sys_sched_getscheduler(tid: i32) -> isize {
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数选择全局 TID，负数非法。
+/// - `tid`: 零选择 calling Thread；正数选择calling PID namespace 的 TID，负数非法。
 /// - `parameter`: 用户态 4-byte `struct sched_param` 输出地址。
 ///
 /// # Returns
@@ -317,7 +317,7 @@ pub(crate) fn sys_sched_get_priority_min(policy: i32) -> isize {
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数选择全局 TID，负数非法。
+/// - `tid`: 零选择 calling Thread；正数选择calling PID namespace 的 TID，负数非法。
 /// - `interval`: 用户态 16-byte `__kernel_timespec` 输出地址。
 ///
 /// # Returns
@@ -347,7 +347,7 @@ pub(crate) fn sys_sched_rr_get_interval(tid: i32, interval: usize) -> isize {
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数选择全局 TID。
+/// - `tid`: 零选择 calling Thread；正数选择calling PID namespace 的 TID。
 /// - `length`: userspace mask 字节数；短 mask 高位补零，长 mask 截断到 kernel 宽度。
 /// - `input`: 用户态 CPU mask 地址。
 ///
@@ -377,7 +377,7 @@ pub(crate) fn sys_sched_setaffinity(tid: i32, length: u32, input: usize) -> isiz
 ///
 /// # Parameters
 ///
-/// - `tid`: 零选择 calling Thread；正数选择全局 TID。
+/// - `tid`: 零选择 calling Thread；正数选择calling PID namespace 的 TID。
 /// - `length`: 用户缓冲区字节数，必须足够且按 LP64 `unsigned long` 对齐。
 /// - `output`: 用户态 CPU mask 输出地址。
 ///

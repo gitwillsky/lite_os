@@ -16,9 +16,8 @@ pub(in crate::task::process_table) struct ChildEvents {
 }
 
 pub(super) struct JobNotification {
-    parent: usize,
     waiters: FallibleMap<usize, Arc<TaskControlBlock>>,
-    info: PendingSignal,
+    signal_wake: Option<ParentSignalWake>,
 }
 
 #[derive(Clone, Copy)]
@@ -68,7 +67,11 @@ pub(crate) fn stop_current_process(signal: usize) {
 /// stop 尚未完成或已通知时不执行操作。
 pub(in crate::task::process_table) fn complete_process_stop(tgid: usize) {
     let notification = {
-        let mut graph = PROCESS_TABLE.graph.lock();
+        let Some((mut child_records, mut graph)) =
+            lock_child_notifications(tgid, ChildNotificationScope::Parent)
+        else {
+            return;
+        };
         let completed_signal = {
             let Some(node) = graph.nodes.get(&tgid) else {
                 return;
@@ -98,7 +101,12 @@ pub(in crate::task::process_table) fn complete_process_stop(tgid: usize) {
             .expect("completed stop process disappeared");
         node.job_control = JobControlState::Stopped;
         node.child_events.stopped = Some(signal);
-        take_parent_notification(&mut graph, tgid, PendingSignal::child_stopped(tgid, signal))
+        take_parent_notification(
+            &mut graph,
+            tgid,
+            PendingSignal::child_stopped(tgid, signal),
+            &mut child_records,
+        )
     };
     publish_job_notification(notification);
 }
@@ -106,6 +114,7 @@ pub(in crate::task::process_table) fn complete_process_stop(tgid: usize) {
 pub(super) fn continue_process_locked(
     graph: &mut ProcessGraph,
     tgid: usize,
+    child_records: &mut PreparedChildNotifications,
 ) -> Option<JobNotification> {
     let event = {
         let node = graph.nodes.get_mut(&tgid)?;
@@ -141,7 +150,7 @@ pub(super) fn continue_process_locked(
             JobEvent::Stopped(signal) => PendingSignal::child_stopped(tgid, signal),
             JobEvent::Continued => PendingSignal::child_continued(tgid),
         };
-        take_parent_notification(graph, tgid, info)
+        take_parent_notification(graph, tgid, info, child_records)
     })
 }
 
@@ -171,16 +180,23 @@ fn take_parent_notification(
     graph: &mut ProcessGraph,
     child: usize,
     info: PendingSignal,
+    child_records: &mut PreparedChildNotifications,
 ) -> Option<JobNotification> {
     let parent = graph.nodes.get(&child)?.parent?;
-    let node = graph.nodes.get_mut(&parent)?;
-    if !matches!(node.state, ProcessState::Live(_)) {
-        return None;
-    }
-    Some(JobNotification {
-        parent,
-        waiters: take_child_waiters(node),
+    let publication = stage_child_signal(
+        graph,
+        child,
         info,
+        super::super::super::model::ChildSignalKind::Job,
+        child_records,
+    )?;
+    let signal_wake = publication
+        .queued
+        .then(|| prepare_parent_signal_wake(graph, parent, syscall_abi::signal::SIGCHLD));
+    let node = graph.nodes.get_mut(&parent)?;
+    Some(JobNotification {
+        waiters: take_child_waiters(node),
+        signal_wake,
     })
 }
 
@@ -193,9 +209,7 @@ pub(super) fn publish_job_notification(notification: Option<JobNotification>) {
         let waiter = waiters.remove(&tid).expect("staged child waiter");
         crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
-    send_kernel_process_signal(
-        notification.parent,
-        syscall_abi::signal::SIGCHLD,
-        notification.info,
-    );
+    if let Some(wake) = notification.signal_wake {
+        wake.publish();
+    }
 }

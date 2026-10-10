@@ -1,21 +1,31 @@
 mod area;
+mod area_publication;
+mod background_reclaim;
 mod cow;
 mod device_area;
 mod error;
 mod executable_load;
 mod fault_preflight;
 mod file_page_range;
+mod futex_atomic;
 mod futex_key;
 mod initial_stack;
 mod mapping_request;
 mod mmap;
 mod private_area;
+mod private_fault;
+mod private_reclaim;
 mod process;
 mod resident;
 mod retire;
+use retire::PreparedAreaRetirement;
 mod shared_area;
+mod shared_swap;
 pub(super) mod shootdown;
 mod statistics;
+pub(crate) use statistics::UserPageStatistics;
+mod swap;
+mod thread_context;
 mod user_access;
 mod vma_index_state;
 use super::config;
@@ -26,13 +36,14 @@ use crate::fallible_tree::{FallibleMap, VacantEntry};
 use crate::memory::{
     ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
-    frame_allocator::{FrameTracker, alloc, alloc_copy},
+    frame_allocator::{FrameTracker, alloc},
     page_table::{PagePermissions, PageTableEntry},
     strampoline,
 };
 use alloc::{sync::Arc, vec::Vec};
 use area::VmaKind;
 pub(crate) use area::{MapArea, MapType};
+pub(crate) use background_reclaim::reclaim_address_space;
 use core::ops::Range;
 use device_area::DeviceArea;
 use error::try_memory_arc;
@@ -41,7 +52,8 @@ use fault_preflight::{
 };
 use file_page_range::{FilePageRange, FilePageRangeError};
 use private_area::{PrivateFaultPreparation, PrivateFileArea};
-use resident::PrivateResident;
+use resident::{PrivateBacking, PrivateResident};
+pub(crate) use shared_area::AnonymousSharedBacking as SharedMemoryBacking;
 use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, SharedResident};
 use shootdown::{
     TranslationCommit, TranslationSynchronizationError, revoke_and_commit,
@@ -51,11 +63,12 @@ use vma_index_state::{VmaContribution, VmaIndexState};
 pub(crate) use {
     error::{ElfLoadError, MemoryError, UserAccessError},
     fault_preflight::{FaultAccess as PageFaultAccess, SegmentationCause},
-    futex_key::FutexKey,
-    initial_stack::InitialStack,
+    futex_atomic::{UserAtomicU32, UserAtomicU32Op},
+    futex_key::{FutexAccessError, FutexKey},
+    initial_stack::{InitialStack, InitialStackCredentials},
     mapping_request::{
-        DeviceMappingSource, FileMappingError, FileMappingSource, MappingResourceLimits,
-        MemoryAdvice,
+        DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement,
+        MappingResourceLimits, MemoryAdvice, UserMappingRequest, UserMappingSource,
     },
     mmap::PageFaultOutcome,
     user_access::UserFaultLimits,
@@ -75,14 +88,23 @@ struct ProgramBreak {
 pub(crate) struct MemorySet {
     page_table: PageTable,
     areas: FallibleMap<VirtualPageNumber, MapArea>,
+    // OWNER: main executable open survives munmap; last mm releases actual deny-write after translation fence.
+    executable_owner: Option<Arc<dyn super::MappedFileOwner>>,
     // OWNER: 与 areas structural publication 同一事务维护；缺失会让每次 fault/mmap 为
-    // stack identity 和 RLIMIT totals 全表扫描。所有 structural mutation 必须经
+    // RLIMIT totals 全表扫描。stack identity 直接由有序 VMA 查询，structural mutation 必须经
     // commit_area/take_area_entry/remove_area，禁止旁路更新或从表重算第二份真相。
     vma_index_state: VmaIndexState,
     // OWNER: cursor 与 VMA residency 由同一 MemorySet lock 拥有，只表示下次
     // private direct reclaim 的起始 VPN。缺失它会让大 mm 中的 dirty/
     // non-discardable 前缀在每次 OOM 时重复被扫描，饿死后续 clean page。
     private_reclaim_cursor: VirtualPageNumber,
+    // OWNER: context placement hint 只决定搜索起点；每次仍验证实际 areas，不复制占用状态。
+    // 成功 publication 才推进，temporary context retirement 回指刚释放页，防止 lifetime TID 耗尽 VA。
+    thread_context_hint: Option<usize>,
+    // OWNER: 完整 user-copy preparation 的临时保护区间；自身 reclaim 必须跳过它，
+    // 否则后页 fault 可撤销已准备的前页，使有效 buffer 错误 EFAULT。仅在同一 mm 独占
+    // borrow 内设置/恢复，不拥有第二份 residency，不跨 task 阻塞之外的操作传播。
+    private_reclaim_exclusion: Option<Range<VirtualPageNumber>>,
     /// OWNER: Linux mm 的主 ELF start_code/end_code；若从 VMA 权限反推，JIT 映射会被误计为 statm text。
     code_range: Range<usize>,
     /// OWNER: program break 与 VMA 表同属 `MemorySet`；实际 heap 页必须是普通 anonymous
@@ -93,94 +115,65 @@ pub(crate) struct MemorySet {
 }
 
 impl MemorySet {
+    /// 投影 Linux find_vma 的 existence：包含 address 或位于其后的首个用户 VMA。
+    ///
+    /// 仅用于坏 signal frame 的冷错误路径；不 fault-in、不改变 VMA/PTE。
+    pub(crate) fn has_user_vma_at_or_after(&self, address: usize) -> bool {
+        if address >= config::USER_ADDRESS_END {
+            return false;
+        }
+        let vpn = VirtualAddress::from(address).floor();
+        if let Some((_, area)) = self.areas.floor(&vpn)
+            && area.map_permission.contains(MapPermission::U)
+            && area.vpn_range.end > vpn
+        {
+            return true;
+        }
+        self.areas.iter_from(&vpn).any(|(_, area)| {
+            area.map_permission.contains(MapPermission::U) && area.vpn_range.end > vpn
+        })
+    }
     const MMAP_BASE: usize = 0x4000_0000;
     pub(crate) fn new_kernel() -> Self {
         Self {
             page_table: PageTable::new(crate::arch::mmu::AddressSpaceKind::Kernel),
             areas: FallibleMap::new(),
+            executable_owner: None,
             vma_index_state: VmaIndexState::new(),
             private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
+            thread_context_hint: None,
+            private_reclaim_exclusion: None,
             code_range: 0..0,
             program_break: None,
             argument_range: 0..0,
         }
     }
 
-    fn try_new() -> Result<Self, MemoryError> {
+    /// 创建未激活的空用户页表；task 在 fork 首次继承 backing 前登记完整 AddressSpace owner。
+    /// root/ASID 的生命周期保持不变，任何 allocation 失败均不发布半个 owner。
+    pub(crate) fn try_new() -> Result<Self, MemoryError> {
         Ok(Self {
             page_table: PageTable::try_new(crate::arch::mmu::AddressSpaceKind::User)?,
             areas: FallibleMap::new(),
+            executable_owner: None,
             vma_index_state: VmaIndexState::new(),
             private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
+            thread_context_hint: None,
+            private_reclaim_exclusion: None,
             code_range: 0..0,
             program_break: None,
             argument_range: 0..0,
         })
     }
 
-    pub(crate) fn push(
-        &mut self,
-        map_area: MapArea,
-        data: Option<&[u8]>,
-    ) -> Result<(), MemoryError> {
-        let start = map_area.vpn_range.start;
-        let end = map_area.vpn_range.end;
-        if !self.range_is_free(start, end) {
-            return Err(MemoryError::AddressInUse);
-        }
-        // VMA node 必须先于 PTE publication 分配；缺少该 preflight 会在页表已经
-        // 可见后因 ordered-index node OOM 无法记录其唯一 owner。
-        let mut prepared = self
-            .areas
-            .try_prepare_vacant(start, map_area)
-            .map_err(|_| MemoryError::OutOfMemory)?;
-        let mut publication = TranslationCommit::new();
-        if let Err(e) = prepared
-            .value_mut()
-            .map(&mut self.page_table, &mut publication)
-        {
-            // VMA node 尚未发布，但 live shared mm 的 hardware walker 已可观察 partial PTE；
-            // rollback 仍须保留 prepared area owner 直到所有 CPU 完成 fence。
-            let prepared = revoke_and_commit(prepared, |prepared, rollback| {
-                prepared.value_mut().unmap(&mut self.page_table, rollback);
-            })
-            .expect("platform TLB synchronization failed during VMA map rollback");
-            drop(prepared);
-            return Err(e);
-        }
-        if let Some(data) = data
-            && let Err(error) = prepared.value_mut().copy_data(data)
-        {
-            let prepared = revoke_and_commit(prepared, |prepared, rollback| {
-                prepared.value_mut().unmap(&mut self.page_table, rollback);
-            })
-            .expect("platform TLB synchronization failed during VMA data rollback");
-            drop(prepared);
-            return Err(error);
-        }
-        publication
-            .synchronize()
-            .expect("local translation fence failed during VMA publication");
-        self.commit_area(prepared);
-        Ok(())
-    }
-
-    pub(crate) fn insert_framed_area(
-        &mut self,
-        start_va: VirtualAddress,
-        end_va: VirtualAddress,
-        permission: MapPermission,
-    ) -> Result<(), MemoryError> {
-        self.push(
-            MapArea::new(start_va, end_va, MapType::Framed, permission),
-            None,
-        )
-    }
-
     pub(crate) fn token(&self) -> crate::arch::mmu::AddressSpaceToken {
         self.page_table.token()
     }
 
+    /// 主程序生命周期的实际 owner；上层可检查同一 Arc 类型，不重建 inode/path 或延长已退出 Thread 的 mm。
+    pub(crate) fn executable_owner(&self) -> Option<Arc<dyn super::MappedFileOwner>> {
+        self.executable_owner.clone()
+    }
     pub(crate) fn kernel_trap_token(&self) -> crate::arch::mmu::KernelTrapToken {
         self.page_table.kernel_trap_token()
     }
@@ -191,32 +184,6 @@ impl MemorySet {
 
     fn data_bytes(&self) -> u64 {
         self.vma_index_state.data_bytes()
-    }
-
-    fn account_area(&mut self, area: &MapArea) {
-        self.vma_index_state.publish(area.index_contribution());
-    }
-
-    fn unaccount_area(&mut self, area: &MapArea) {
-        self.vma_index_state.retire(area.index_contribution());
-    }
-
-    fn commit_area(&mut self, entry: VacantEntry<VirtualPageNumber, MapArea>) {
-        self.account_area(entry.value());
-        self.areas.commit_vacant(entry);
-    }
-
-    fn take_area_entry(
-        &mut self,
-        key: &VirtualPageNumber,
-    ) -> Option<VacantEntry<VirtualPageNumber, MapArea>> {
-        let entry = self.areas.take_entry(key)?;
-        self.unaccount_area(entry.value());
-        Some(entry)
-    }
-
-    fn remove_area(&mut self, key: &VirtualPageNumber) -> Option<MapArea> {
-        self.take_area_entry(key).map(VacantEntry::into_value)
     }
 
     fn ensure_resource_capacity(
@@ -309,22 +276,24 @@ impl MemorySet {
     ///
     /// # Returns
     ///
-    /// 成功返回当前或已提交的新 break；失败保持精确 break 与全部 VMA 不变。
+    /// 成功返回 break 与可选的 detached retirement；caller 在 MM lock 外消费 token。
+    /// 失败保持精确 break 与全部 VMA 不变。
     pub(crate) fn set_program_break(
         &mut self,
         new_break: usize,
         address_space_limit: u64,
         data_limit: u64,
-    ) -> Result<usize, MemoryError> {
+    ) -> Result<(usize, Option<PreparedAreaRetirement>), MemoryError> {
         let state = self.program_break.ok_or(MemoryError::InvalidRange)?;
         if new_break == 0 {
-            return Ok(state.current);
+            return Ok((state.current, None));
         }
         if new_break < state.base || new_break > state.limit {
             return Err(MemoryError::InvalidRange);
         }
         let old_page_end = VirtualAddress::from(state.current).ceil();
         let new_page_end = VirtualAddress::from(new_break).ceil();
+        let mut retirement = None;
         if new_page_end > old_page_end {
             let start = usize::from(VirtualAddress::from(old_page_end));
             let length = (new_page_end.as_usize() - old_page_end.as_usize()) * config::PAGE_SIZE;
@@ -339,54 +308,13 @@ impl MemorySet {
         } else if new_page_end < old_page_end {
             let start = usize::from(VirtualAddress::from(new_page_end));
             let length = (old_page_end.as_usize() - new_page_end.as_usize()) * config::PAGE_SIZE;
-            self.unmap_user_mapping(start, length)?;
+            retirement = Some(self.prepare_user_unmap(start, length)?);
         }
         self.program_break
             .as_mut()
             .expect("validated program break state must remain installed")
             .current = new_break;
-        Ok(new_break)
-    }
-
-    /// 为 RISC-V 共享地址空间中的新 Thread 分配独立 supervisor trap-context 页。
-    ///
-    /// # Parameters
-    ///
-    /// - `tid`: 全局唯一且大于 init TID 的线程标识；只参与 RISC-V 临时 VA 投影。
-    ///
-    /// # Returns
-    ///
-    /// 成功返回该线程唯一 trap-context VA；冲突或溢出返回错误。
-    pub(crate) fn allocate_thread_trap_context(
-        &mut self,
-        tid: usize,
-    ) -> Result<usize, MemoryError> {
-        let offset = tid
-            .checked_mul(config::PAGE_SIZE)
-            .ok_or(MemoryError::InvalidRange)?;
-        let address = config::TRAP_CONTEXT
-            .checked_sub(offset)
-            .ok_or(MemoryError::InvalidRange)?;
-        self.insert_framed_area(
-            address.into(),
-            (address + config::PAGE_SIZE).into(),
-            MapPermission::R | MapPermission::W,
-        )?;
-        Ok(address)
-    }
-
-    /// 解除已退出 RISC-V Thread 的唯一 supervisor trap-context 页。
-    ///
-    /// # Parameters
-    ///
-    /// - `address`: `allocate_thread_trap_context` 返回的页对齐地址。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；缺失映射表示退出清理重复并 fail-stop。
-    pub(crate) fn remove_thread_trap_context(&mut self, address: usize) {
-        let vpn = VirtualAddress::from(address).floor();
-        self.remove_area_with_start_vpn(vpn);
+        Ok((new_break, retirement))
     }
 
     /// 获取给定UserContext虚拟地址的物理页号

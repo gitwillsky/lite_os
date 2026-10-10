@@ -1,14 +1,14 @@
 use alloc::sync::Arc;
 
 use crate::{
-    fs::{FileSystemError, Inode, InodeMetadata, InodeType, OpenedFile, vfs},
+    fs::{FileSystemError, Inode, InodeMetadata, InodeType, LookupOrigin, vfs},
     socket::{Socket, UnixAddress, UnixPathIdentity},
     syscall::errno,
     task::{TaskControlBlock, current_task},
 };
 
-fn start(task: &TaskControlBlock, path: &[u8]) -> Option<Arc<OpenedFile>> {
-    (path.first() != Some(&b'/')).then(|| task.working_directory())
+fn start(task: &TaskControlBlock) -> LookupOrigin {
+    task.lookup_origin()
 }
 
 fn identity(metadata: InodeMetadata) -> UnixPathIdentity {
@@ -39,7 +39,7 @@ pub(super) fn resolve(
     let task = current_task().expect("AF_UNIX pathname lookup requires current task");
     let access = task.access_identity(true);
     let inode = vfs()
-        .open_at(start(&task, address.bytes()), address.bytes(), &access)
+        .open_at(start(&task), address.bytes(), &access)
         .map_err(super::super::fs::filesystem_error)?;
     let metadata = inode
         .metadata()
@@ -69,7 +69,7 @@ pub(super) fn bind(socket: &Arc<Socket>, address: UnixAddress) -> isize {
     let task = current_task().expect("AF_UNIX pathname bind requires current task");
     let access = task.access_identity(true);
     let path = address.bytes();
-    let start = start(&task, path);
+    let start = start(&task);
     let opened = match vfs().create_at(
         start.clone(),
         path,
@@ -92,7 +92,7 @@ pub(super) fn bind(socket: &Arc<Socket>, address: UnixAddress) -> isize {
             };
         }
     };
-    if let Err(error) = socket.bind_unix_path(address, socket_identity) {
+    if let Err(error) = socket.bind_unix_path(address, socket_identity, opened.inode()) {
         // 1. VFS entry 尚未向 bind caller 发布成功，失败必须删除它。
         // 2. rollback 失败意味着 pathname 与 registry 已不可证明一致，只能返回 EIO。
         if vfs().unlink_at(start, path, false, &access).is_err() {

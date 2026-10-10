@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod batch;
+mod futex_transaction;
 mod key;
 mod preparation;
 mod publication;
@@ -94,6 +95,8 @@ pub(super) struct WaitRegistry {
     // OWNER: 每个 source key 只进入唯一 shard；registration keys 是跨 shard transaction
     // 的唯一反向 metadata。缺失固定升序会让 poll cancel 与 futex requeue 形成 ABBA。
     shards: [IrqMutex<WaitShard>; WAIT_SHARD_COUNT],
+    // 复合 futex 操作的唯一排他域；共享同一 source hash，不另建队列或复制等待状态。
+    futex_operations: [crate::sync::TaskMutex<()>; WAIT_SHARD_COUNT],
 }
 
 impl WaitRegistry {
@@ -101,6 +104,7 @@ impl WaitRegistry {
         Self {
             next_id: AtomicU64::new(0),
             shards: [const { IrqMutex::new(WaitShard::new()) }; WAIT_SHARD_COUNT],
+            futex_operations: [const { crate::sync::TaskMutex::new(()) }; WAIT_SHARD_COUNT],
         }
     }
 
@@ -279,7 +283,7 @@ impl WaitRegistry {
         }
     }
 
-    pub(super) fn wake_futex_one(&self, key: FutexKey, bitset: u32) -> Option<SourceWake> {
+    fn wake_futex_one(&self, key: FutexKey, bitset: u32) -> Option<SourceWake> {
         let lower = WaitIndexKey::Futex { key, id: 0 };
         let mut cursor = None;
         loop {

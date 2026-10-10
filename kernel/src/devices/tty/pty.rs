@@ -1,7 +1,9 @@
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::{Mutex, Once};
 
 use super::terminal::{Console, Terminal, clear_terminal_raw_input};
+use crate::fallible_tree::FallibleMap;
 use crate::fs::FileSystemError;
 use crate::ipc::{Pipe, PipeEnd, PipeRead, PipeWrite};
 
@@ -117,6 +119,8 @@ pub(crate) struct PtyMaster {
 /// 一个已成功打开的 `/dev/pts/N` slave OFD 生命周期引用。
 pub(crate) struct PtySlave {
     pair: Arc<PtyPair>,
+    // OWNER: 此独立 slave open 的唯一 admission；close 与失败/最终 Drop 消费同一 token。
+    registered: AtomicBool,
 }
 
 impl PtyMaster {
@@ -203,8 +207,9 @@ impl PtyMaster {
     }
 }
 
-impl Drop for PtyMaster {
-    fn drop(&mut self) {
+impl PtyMaster {
+    /// actual master fput 发布终态、关闭输出 reader，再在 pair guard 外交付 hangup。
+    pub(crate) fn close(&self) {
         let notify_hangup = {
             let mut state = self.pair.state.lock();
             if !state.master_open {
@@ -215,6 +220,7 @@ impl Drop for PtyMaster {
             }
         };
         if notify_hangup {
+            self.output.close();
             // 1. 先发布两端 readiness，确保 read/poll 不会永久睡眠。
             // 2. 再脱离 controlling session 并投递 SIGHUP/SIGCONT；缺失该顺序会让前台
             //    shell 在 master 关闭后仍持有一个永远不会产生输入的 controlling TTY。
@@ -222,6 +228,12 @@ impl Drop for PtyMaster {
             self.pair.master_notification_write.signal_readiness();
             super::hangup(&self.pair.terminal);
         }
+    }
+}
+
+impl Drop for PtyMaster {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -299,8 +311,12 @@ impl PtySlave {
     }
 }
 
-impl Drop for PtySlave {
-    fn drop(&mut self) {
+impl PtySlave {
+    /// actual slave fput 归还此 open；observer 与重复 Drop 不再次扣减 pair membership。
+    pub(crate) fn close(&self) {
+        if !self.registered.swap(false, Ordering::AcqRel) {
+            return;
+        }
         let mut state = self.pair.state.lock();
         assert_ne!(state.slave_opens, 0, "PTY slave open count underflow");
         state.slave_opens -= 1;
@@ -308,9 +324,22 @@ impl Drop for PtySlave {
         self.pair.master_notification_write.signal_readiness();
     }
 }
+impl Drop for PtySlave {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
 
 struct PtyRegistry {
-    slots: Vec<Weak<PtyPair>>,
+    slots: FallibleMap<u32, Weak<PtyPair>>,
+}
+
+/// weak allocation 观察者不占用索引；实际 master/slave admission 全部归还才允许复用。
+fn reusable(slot: &Weak<PtyPair>) -> bool {
+    slot.upgrade().is_none_or(|pair| {
+        let state = pair.state.lock();
+        !state.master_open && state.slave_opens == 0
+    })
 }
 
 // OWNER: pty module 唯一拥有 Unix98 index namespace 与生命周期。weak
@@ -326,7 +355,11 @@ pub(super) fn init() -> Result<(), FileSystemError> {
     if PTYS.get().is_some() {
         return Err(FileSystemError::AlreadyExists);
     }
-    PTYS.call_once(|| Mutex::new(PtyRegistry { slots: Vec::new() }));
+    PTYS.call_once(|| {
+        Mutex::new(PtyRegistry {
+            slots: FallibleMap::new(),
+        })
+    });
     Ok(())
 }
 
@@ -344,6 +377,8 @@ pub(super) fn open_master(
     owner_uid: u32,
     owner_gid: u32,
 ) -> Result<Arc<PtyMaster>, FileSystemError> {
+    let mut allocated =
+        Arc::<PtyMaster>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
     let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
     let (output_read, output_write) =
         crate::ipc::Pipe::pair().map_err(|()| FileSystemError::OutOfMemory)?;
@@ -361,56 +396,72 @@ pub(super) fn open_master(
         }),
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
-    let mut registry = registry.lock();
-    let index = if let Some(index) = registry
-        .slots
-        .iter()
-        .position(|slot| slot.upgrade().is_none())
-    {
-        u32::try_from(index).map_err(|_| FileSystemError::NoSpace)?
-    } else {
-        registry
-            .slots
-            .try_reserve(1)
+    // 1. 实际索引只有 registry 拥有；读取候选后在锁外准备完整 pair 与 AVL node。
+    // 2. 发布时重验该候选。并发 opener 已占用则退休未发布对象并重试，不泄漏设备号。
+    let pair = loop {
+        let index = {
+            let registry = registry.lock();
+            let mut candidate = 0;
+            for (&index, slot) in registry.slots.iter() {
+                if index != candidate || reusable(slot) {
+                    break;
+                }
+                candidate += 1;
+            }
+            if candidate >= super::PTS_MINOR_COUNT {
+                return Err(FileSystemError::NoSpace);
+            }
+            candidate
+        };
+        let terminal = Terminal::new(
+            console.clone(),
+            crate::fs::device::DeviceNumber::new(super::PTS_MAJOR, index),
+        )
+        .map_err(|()| FileSystemError::OutOfMemory)?;
+        let pair = Arc::try_new(PtyPair {
+            index,
+            owner_uid,
+            owner_gid,
+            console: console.clone(),
+            terminal,
+            slave_notification_read: slave_notification_read.clone(),
+            slave_notification_write: slave_notification_write.clone(),
+            master_notification_read: master_notification_read.clone(),
+            master_notification_write: master_notification_write.clone(),
+            state: Mutex::new(PtyState {
+                locked: true,
+                master_open: true,
+                slave_opens: 0,
+            }),
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        let prepared = FallibleMap::try_prepare(index, Arc::downgrade(&pair))
             .map_err(|_| FileSystemError::OutOfMemory)?;
-        u32::try_from(registry.slots.len()).map_err(|_| FileSystemError::NoSpace)?
+        let mut registry = registry.lock();
+        if registry
+            .slots
+            .get(&index)
+            .is_some_and(|slot| !reusable(slot))
+        {
+            drop(registry);
+            drop(prepared);
+            drop(pair);
+            continue;
+        }
+        let retired = registry.slots.take_entry(&index);
+        registry.slots.commit_vacant(prepared);
+        drop(registry);
+        drop(retired);
+        break pair;
     };
-    if index >= super::PTS_MINOR_COUNT {
-        return Err(FileSystemError::NoSpace);
-    }
-    let terminal = Terminal::new(
-        console.clone(),
-        crate::fs::device::DeviceNumber::new(super::PTS_MAJOR, index),
-    )
-    .map_err(|()| FileSystemError::OutOfMemory)?;
-    let pair = Arc::try_new(PtyPair {
-        index,
-        owner_uid,
-        owner_gid,
-        console,
-        terminal,
-        slave_notification_read,
-        slave_notification_write,
-        master_notification_read,
-        master_notification_write,
-        state: Mutex::new(PtyState {
-            locked: true,
-            master_open: true,
-            slave_opens: 0,
-        }),
-    })
-    .map_err(|_| FileSystemError::OutOfMemory)?;
-    if index as usize == registry.slots.len() {
-        registry.slots.push(Arc::downgrade(&pair));
-    } else {
-        registry.slots[index as usize] = Arc::downgrade(&pair);
-    }
-    drop(registry);
-    Arc::try_new(PtyMaster {
-        pair,
-        output: output_read,
-    })
-    .map_err(|_| FileSystemError::OutOfMemory)
+    Arc::get_mut(&mut allocated)
+        .expect("unpublished PTY master is unique")
+        .write(PtyMaster {
+            pair,
+            output: output_read,
+        });
+    // SAFETY: 唯一 Arc storage 已完整初始化；publication 后没有 fallible allocation。
+    Ok(unsafe { allocated.assume_init() })
 }
 
 /// 打开 live 且已 unlock 的 `/dev/pts/N` slave。
@@ -423,12 +474,14 @@ pub(super) fn open_master(
 ///
 /// 独立 slave open 引用；不存在返回 NotFound，锁定或 master 已关闭返回 IoError。
 pub(super) fn open_slave(index: u32) -> Result<Arc<PtySlave>, FileSystemError> {
+    let mut allocated =
+        Arc::<PtySlave>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
     let pair = PTYS
         .get()
         .ok_or(FileSystemError::InvalidOperation)?
         .lock()
         .slots
-        .get(index as usize)
+        .get(&index)
         .and_then(Weak::upgrade)
         .ok_or(FileSystemError::NotFound)?;
     {
@@ -441,10 +494,14 @@ pub(super) fn open_slave(index: u32) -> Result<Arc<PtySlave>, FileSystemError> {
             .checked_add(1)
             .ok_or(FileSystemError::NoSpace)?;
     }
-    let slave = Arc::try_new(PtySlave { pair: pair.clone() }).map_err(|_| {
-        pair.state.lock().slave_opens -= 1;
-        FileSystemError::OutOfMemory
-    })?;
+    Arc::get_mut(&mut allocated)
+        .expect("unpublished PTY slave is unique")
+        .write(PtySlave {
+            pair: pair.clone(),
+            registered: AtomicBool::new(true),
+        });
+    // SAFETY: 完整初始化的唯一 storage；所有失败均发生在 slave admission 前。
+    let slave = unsafe { allocated.assume_init() };
     pair.master_notification_write.signal_readiness();
     Ok(slave)
 }
@@ -454,7 +511,7 @@ pub(crate) fn slave_exists(index: u32) -> bool {
         registry
             .lock()
             .slots
-            .get(index as usize)
+            .get(&index)
             .and_then(Weak::upgrade)
             .is_some_and(|pair| pair.state.lock().master_open)
     })
@@ -474,7 +531,7 @@ pub(crate) fn slave_owner(index: u32) -> Option<(u32, u32)> {
         registry
             .lock()
             .slots
-            .get(index as usize)
+            .get(&index)
             .and_then(Weak::upgrade)
             .filter(|pair| pair.state.lock().master_open)
             .map(|pair| (pair.owner_uid, pair.owner_gid))
@@ -487,18 +544,26 @@ pub(crate) fn slave_owner(index: u32) -> Option<(u32, u32)> {
 ///
 /// 升序 index；快照 storage OOM 返回错误。
 pub(crate) fn slave_indices() -> Result<Vec<u32>, FileSystemError> {
-    let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?.lock();
+    let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
     let mut indices = Vec::new();
-    indices
-        .try_reserve_exact(registry.slots.len())
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    for (index, slot) in registry.slots.iter().enumerate() {
-        if slot
-            .upgrade()
-            .is_some_and(|pair| pair.state.lock().master_open)
-        {
-            indices.push(u32::try_from(index).map_err(|_| FileSystemError::NoSpace)?);
+    loop {
+        let count = registry.lock().slots.len();
+        indices
+            .try_reserve_exact(count)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let registry = registry.lock();
+        if indices.capacity() < registry.slots.len() {
+            drop(registry);
+            continue;
         }
+        for (&index, slot) in registry.slots.iter() {
+            if slot
+                .upgrade()
+                .is_some_and(|pair| pair.state.lock().master_open)
+            {
+                indices.push(index);
+            }
+        }
+        return Ok(indices);
     }
-    Ok(indices)
 }

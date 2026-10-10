@@ -6,7 +6,10 @@ use super::{Ext4FileSystem, FileSystemError, Journal, RunningTransaction, Staged
 pub(in crate::fs::ext4) enum JournalOwner {
     Unavailable,
     Ready(Journal),
-    Committing(Arc<StagedBlocks>),
+    Committing {
+        running: Arc<StagedBlocks>,
+        active: Option<Arc<StagedBlocks>>,
+    },
 }
 
 impl JournalOwner {
@@ -22,14 +25,14 @@ impl JournalOwner {
     pub(in crate::fs::ext4) fn ready_mut_ref(&self) -> Result<&Journal, FileSystemError> {
         match self {
             Self::Ready(journal) => Ok(journal),
-            Self::Unavailable | Self::Committing(_) => Err(FileSystemError::InvalidOperation),
+            Self::Unavailable | Self::Committing { .. } => Err(FileSystemError::InvalidOperation),
         }
     }
 
     pub(in crate::fs::ext4) fn ready_mut(&mut self) -> Result<&mut Journal, FileSystemError> {
         match self {
             Self::Ready(journal) => Ok(journal),
-            Self::Unavailable | Self::Committing(_) => Err(FileSystemError::InvalidOperation),
+            Self::Unavailable | Self::Committing { .. } => Err(FileSystemError::InvalidOperation),
         }
     }
 
@@ -38,7 +41,10 @@ impl JournalOwner {
             Self::Ready(journal) => {
                 return journal.copy_staged(block, output);
             }
-            Self::Committing(staged) => staged.get(block),
+            Self::Committing { running, active } => active
+                .as_ref()
+                .and_then(|overlay| overlay.get(block))
+                .or_else(|| running.get(block)),
             Self::Unavailable => None,
         };
         let Some(bytes) = bytes else {
@@ -54,6 +60,7 @@ pub(super) struct JournalCommit<'a> {
     fs: &'a Ext4FileSystem,
     journal: Option<Journal>,
     writes: Arc<StagedBlocks>,
+    active: Option<Arc<StagedBlocks>>,
 }
 
 impl<'a> JournalCommit<'a> {
@@ -62,6 +69,13 @@ impl<'a> JournalCommit<'a> {
         // 不留下 Committing 空洞。
         let mut writes =
             Arc::<StagedBlocks>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?;
+        // caller 持有唯一 FS mutation owner；此快照在锁外 allocation 期间不会改变。
+        let has_active = fs.journal.lock().ready_mut_ref()?.active.is_some();
+        let mut active_storage = if has_active {
+            Some(Arc::<StagedBlocks>::try_new_uninit().map_err(|_| FileSystemError::OutOfMemory)?)
+        } else {
+            None
+        };
         let mut owner = fs.journal.lock();
         let current = core::mem::replace(&mut *owner, JournalOwner::Unavailable);
         let mut journal = match current {
@@ -78,12 +92,26 @@ impl<'a> JournalCommit<'a> {
             .write(staged);
         // SAFETY: unique Arc storage was initialized exactly once above.
         let writes = unsafe { writes.assume_init() };
-        *owner = JournalOwner::Committing(writes.clone());
+        let active = journal.active.as_mut().map(|handle| {
+            let mut storage = active_storage
+                .take()
+                .expect("mutation owner changed active journal handle");
+            Arc::get_mut(&mut storage)
+                .expect("unpublished active view must be unique")
+                .write(core::mem::take(&mut handle.staged));
+            // SAFETY: unique Arc storage was initialized exactly once; no copy of node/image owners.
+            unsafe { storage.assume_init() }
+        });
+        *owner = JournalOwner::Committing {
+            running: writes.clone(),
+            active: active.clone(),
+        };
         drop(owner);
         Ok(Self {
             fs,
             journal: Some(journal),
             writes,
+            active,
         })
     }
 
@@ -102,12 +130,33 @@ impl<'a> JournalCommit<'a> {
     }
 
     fn restore(&mut self) {
-        let journal = self.journal.take().expect("commit journal restored twice");
+        let mut journal = self.journal.take().expect("commit journal restored twice");
         let mut owner = self.fs.journal.lock();
+        let current = core::mem::replace(&mut *owner, JournalOwner::Unavailable);
+        let JournalOwner::Committing { running, active } = current else {
+            panic!("journal commit view changed owner");
+        };
         assert!(
-            matches!(&*owner, JournalOwner::Committing(current) if Arc::ptr_eq(current, &self.writes)),
-            "journal commit view changed owner"
+            Arc::ptr_eq(&running, &self.writes),
+            "journal running view changed owner"
         );
+        assert!(
+            match (&active, &self.active) {
+                (Some(current), Some(expected)) => Arc::ptr_eq(current, expected),
+                (None, None) => true,
+                _ => false,
+            },
+            "journal active view changed owner"
+        );
+        drop(active);
+        if let Some(active) = self.active.take() {
+            journal
+                .active
+                .as_mut()
+                .expect("commit lost active handle")
+                .staged = Arc::try_unwrap(active)
+                .unwrap_or_else(|_| panic!("active commit view escaped journal read lock"));
+        }
         *owner = JournalOwner::Ready(journal);
     }
 }

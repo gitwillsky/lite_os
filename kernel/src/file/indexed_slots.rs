@@ -508,10 +508,6 @@ impl<T> IndexedSlots<T> {
         None
     }
 
-    pub(super) fn take_all(&mut self) -> Self {
-        core::mem::replace(self, Self::new())
-    }
-
     fn prune_empty_path(&mut self, fd: usize) {
         let (root_index, chunk_index, _) = coordinates(fd);
         let Some(root) = self.root.as_deref_mut() else {

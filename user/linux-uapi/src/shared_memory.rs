@@ -10,9 +10,9 @@ use std::{
 use crate::raw;
 
 #[cfg(target_os = "linux")]
-const MFD_CLOEXEC: usize = 0x0001;
+const MFD_CLOEXEC: u32 = 0x0001;
 #[cfg(target_os = "linux")]
-const MFD_ALLOW_SEALING: usize = 0x0002;
+const MFD_ALLOW_SEALING: u32 = 0x0002;
 #[cfg(target_os = "linux")]
 const F_ADD_SEALS: i32 = 1033;
 #[cfg(target_os = "linux")]
@@ -21,8 +21,6 @@ const F_SEAL_SEAL: i32 = 0x0001;
 const F_SEAL_SHRINK: i32 = 0x0002;
 #[cfg(target_os = "linux")]
 const F_SEAL_GROW: i32 = 0x0004;
-#[cfg(target_os = "linux")]
-const SYS_MEMFD_CREATE: isize = 279;
 
 /// A sized anonymous shared-memory file.
 pub struct MemFd {
@@ -85,17 +83,14 @@ impl AsFd for MemFd {
 
 #[cfg(target_os = "linux")]
 fn create_owned_fd(name: &CString) -> io::Result<OwnedFd> {
-    let result = unsafe {
-        raw::syscall(
-            SYS_MEMFD_CREATE,
-            name.as_ptr(),
-            MFD_CLOEXEC | MFD_ALLOW_SEALING,
-        )
-    };
+    // SAFETY: CString 保活完整 NUL-terminated 名称；只传标准 memfd flags，返回 fd 由本函数接管。
+    // syscall number 属于目标 libc；固定 asm-generic 编号会在 x86 host 调用 move_pages。
+    let result = unsafe { raw::memfd_create(name.as_ptr(), MFD_CLOEXEC | MFD_ALLOW_SEALING) };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(unsafe { OwnedFd::from_raw_fd(result as i32) })
+        // SAFETY: 非负返回值是新创建、尚未转交其他 owner 的唯一 fd。
+        Ok(unsafe { OwnedFd::from_raw_fd(result) })
     }
 }
 

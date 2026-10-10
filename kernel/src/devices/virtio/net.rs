@@ -239,13 +239,8 @@ impl NetworkDevice for VirtIONetworkDevice {
                     queues.statistics.received_packets.saturating_add(1);
                 Ok(length)
             }
-            ReceiveOutcome::FrameTooLarge { length } => {
-                queues.statistics.received_bytes = queues
-                    .statistics
-                    .received_bytes
-                    .saturating_add(length as u64);
-                queues.statistics.received_packets =
-                    queues.statistics.received_packets.saturating_add(1);
+            ReceiveOutcome::FrameTooLarge { .. } => {
+                // 未交付的oversize帧不能计入成功RX；PHY同一错误返回计errs/drop，避免双计。
                 Err(NetworkError::FrameTooLarge)
             }
             ReceiveOutcome::DeviceError => {

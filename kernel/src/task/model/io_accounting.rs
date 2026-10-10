@@ -129,13 +129,15 @@ impl TaskControlBlock {
     pub(in crate::task) fn thread_io_statistics(&self) -> IoStatistics {
         self.thread().io_accounting.snapshot()
     }
+}
 
-    /// 取得当前 Process 全生命周期聚合 I/O counter 快照。
-    ///
-    /// # Returns
-    ///
-    /// `/proc/<tgid>/io` 使用的当前值，包含已退出 Thread。
+// Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
+impl super::Process {
+    /// 原 leader 的实际 I/O counter projection，不累加 sibling、不保活已退出 TCB。
+    pub(in crate::task) fn leader_io_statistics(&self) -> IoStatistics {
+        self.leader_io.lock().snapshot()
+    }
     pub(in crate::task) fn process_io_statistics(&self) -> IoStatistics {
-        self.process().io_accounting.snapshot()
+        self.io_accounting.snapshot()
     }
 }

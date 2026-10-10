@@ -2,21 +2,14 @@ use crate::sync::WaitResult;
 use crate::{
     syscall::errno,
     task::{
-        SignalAction, SignalSendError, SignalStack, SignalStackError, SignalWaitError,
-        current_task, send_process_signal, send_thread_signal, send_tid_signal, wait_for_signal,
+        PendingSignal, SignalAction, SignalSendError, SignalStack, SignalStackError,
+        SignalWaitError, current_task, send_process_signal, send_queued_process_signal,
+        send_queued_thread_signal, send_thread_signal, send_tid_signal, wait_for_signal,
         wait_for_signal_delivery,
     },
 };
 
-use super::timer::{TimeSpec, decode_timespec};
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct UserSigAction {
-    handler: usize,
-    flags: usize,
-    mask: u64,
-}
+use super::timer::{TimeSpec, decode_timespec, timespec_ns};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -48,6 +41,7 @@ pub(crate) fn sys_kill(pid: i32, signal: usize) -> isize {
         Err(SignalSendError::InvalidSignal) => -errno::EINVAL,
         Err(SignalSendError::NotFound) => -errno::ESRCH,
         Err(SignalSendError::Permission) => -errno::EPERM,
+        Err(SignalSendError::Again) => -errno::EAGAIN,
     }
 }
 
@@ -56,8 +50,8 @@ pub(crate) fn sys_kill(pid: i32, signal: usize) -> isize {
 /// # Parameters
 ///
 /// - `signal`: Linux signal number。
-/// - `action`: 新 24-byte action 地址；零表示仅查询。
-/// - `old_action`: 旧 action 输出地址；零表示不输出。
+/// - `action`: architecture-owned action 地址；零表示仅查询。
+/// - `old_action`: 同一标准布局的旧 action 输出地址；零表示不输出。
 /// - `signal_set_size`: userspace sigset 大小，必须为 8。
 ///
 /// # Returns
@@ -76,16 +70,16 @@ pub(crate) fn sys_rt_sigaction(
     let replacement = if action == 0 {
         None
     } else {
-        let mut bytes = [0u8; core::mem::size_of::<UserSigAction>()];
-        if task.copy_from_user(action, &mut bytes).is_err() {
+        let mut bytes = crate::system::SignalActionBytes::zeroed();
+        if task.copy_from_user(action, bytes.as_bytes_mut()).is_err() {
             return -errno::EFAULT;
         }
-        // SAFETY: bytes has the exact ABI size; read_unaligned yields an owned value.
-        let action = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<UserSigAction>()) };
+        let (handler, flags, restorer, mask) = bytes.decode();
         Some(SignalAction {
-            handler: action.handler,
-            flags: action.flags,
-            mask: action.mask,
+            handler,
+            flags,
+            restorer,
+            mask,
         })
     };
     let old = match task.signal_action(signal, replacement) {
@@ -93,19 +87,13 @@ pub(crate) fn sys_rt_sigaction(
         Err(()) => return -errno::EINVAL,
     };
     if old_action != 0 {
-        let old = UserSigAction {
-            handler: old.handler,
-            flags: old.flags,
-            mask: old.mask,
-        };
-        // SAFETY: UserSigAction is repr(C), fully initialized, and copied only for this call.
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                (&old as *const UserSigAction).cast::<u8>(),
-                core::mem::size_of::<UserSigAction>(),
-            )
-        };
-        if task.copy_to_user(old_action, bytes).is_err() {
+        let bytes = crate::system::SignalActionBytes::encode(
+            old.handler,
+            old.flags,
+            old.restorer,
+            old.mask,
+        );
+        if task.copy_to_user(old_action, bytes.as_bytes()).is_err() {
             return -errno::EFAULT;
         }
     }
@@ -168,9 +156,16 @@ pub(crate) fn sys_tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
     if signal > 64 {
         return -errno::EINVAL;
     }
-    if signal == 0 {
-        return send_thread_signal(tgid, tid, 0).map_or_else(signal_send_errno, |()| 0);
+    if tgid as i32 <= 0 || tid as i32 <= 0 {
+        return -errno::EINVAL;
     }
+    let task = current_task().expect("tgkill requires current task");
+    let Some(tgid) = task.resolve_pid(tgid as u32 as usize) else {
+        return -errno::ESRCH;
+    };
+    let Some(tid) = task.resolve_pid(tid as u32 as usize) else {
+        return -errno::ESRCH;
+    };
     send_thread_signal(tgid, tid, signal).map_or_else(signal_send_errno, |()| 0)
 }
 
@@ -188,6 +183,13 @@ pub(crate) fn sys_tkill(tid: usize, signal: usize) -> isize {
     if signal > 64 {
         return -errno::EINVAL;
     }
+    if tid as i32 <= 0 {
+        return -errno::EINVAL;
+    }
+    let task = current_task().expect("tkill requires current task");
+    let Some(tid) = task.resolve_pid(tid as u32 as usize) else {
+        return -errno::ESRCH;
+    };
     send_tid_signal(tid, signal).map_or_else(signal_send_errno, |()| 0)
 }
 
@@ -245,11 +247,12 @@ pub(crate) fn sys_sigaltstack(new_stack: usize, old_stack: usize) -> isize {
     0
 }
 
-fn signal_send_errno(error: SignalSendError) -> isize {
+pub(in crate::syscall) fn signal_send_errno(error: SignalSendError) -> isize {
     match error {
         SignalSendError::InvalidSignal => -errno::EINVAL,
         SignalSendError::NotFound => -errno::ESRCH,
         SignalSendError::Permission => -errno::EPERM,
+        SignalSendError::Again => -errno::EAGAIN,
     }
 }
 
@@ -293,7 +296,7 @@ pub(crate) fn sys_rt_sigsuspend(mask: usize, signal_set_size: usize) -> isize {
     }
 }
 
-/// 实现 Linux LP64 `rt_sigtimedwait` 的 standard-signal 消费与可选 timeout。
+/// 实现 Linux LP64 `rt_sigtimedwait` 的唯一 pending 消费与可选 timeout。
 ///
 /// # Parameters
 ///
@@ -331,22 +334,15 @@ pub(crate) fn sys_rt_sigtimedwait(
         if task.copy_from_user(timeout, &mut bytes).is_err() {
             return -errno::EFAULT;
         }
-        let timeout = decode_timespec(&bytes);
-        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
-            return -errno::EINVAL;
-        }
-        let Some(relative) = timeout
-            .tv_sec
-            .checked_mul(1_000_000_000)
-            .and_then(|seconds| seconds.checked_add(timeout.tv_nsec))
-            .and_then(|value| u64::try_from(value).ok())
-        else {
-            return -errno::EINVAL;
+        let relative = match timespec_ns(decode_timespec(&bytes)) {
+            Ok(relative) => relative,
+            Err(error) => return error,
         };
-        let Some(deadline) = crate::timer::get_time_ns().checked_add(relative) else {
-            return -errno::EINVAL;
-        };
-        Some(deadline)
+        Some(
+            crate::timer::get_time_ns()
+                .saturating_add(relative)
+                .min(i64::MAX as u64),
+        )
     };
     drop(task);
 
@@ -369,13 +365,83 @@ pub(crate) fn sys_rt_sigtimedwait(
 ///
 /// # Returns
 ///
-/// 成功时返回恢复后的用户 a0，坏 frame 返回 `-EFAULT`。
+/// 成功时返回恢复后的用户 return register；坏 frame 按架构标准来源强制投递 SIGSEGV 并返回零。
+/// 该错误不能作为普通 EFAULT 返回 restorer，否则会继续执行 syscall 后的用户指令。
 pub(crate) fn sys_rt_sigreturn() -> isize {
-    match current_task()
-        .expect("rt_sigreturn requires current task")
-        .restore_signal_frame()
-    {
+    let task = current_task().expect("rt_sigreturn requires current task");
+    task.clear_syscall_restart();
+    match task.restore_signal_frame() {
         Ok(result) => result as isize,
-        Err(_) => -errno::EFAULT,
+        Err(crate::task::SignalFrameRestoreError::OutOfMemory) => {
+            drop(task);
+            crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
+        }
+        Err(crate::task::SignalFrameRestoreError::Invalid { address }) => {
+            let info = match task.signal_frame_fault(address) {
+                Ok(info) => info,
+                Err(_) => {
+                    drop(task);
+                    crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
+                }
+            };
+            task.queue_synchronous_fault(syscall_abi::signal::SIGSEGV, info)
+                .expect("bad signal frame must force SIGSEGV");
+            0
+        }
     }
+}
+
+/// Linux __copy_siginfo_from_user：只复制 native prefix；未知 layout 追加检查 expansion 为零。
+pub(in crate::syscall) fn queued_signal_info(
+    address: usize,
+) -> Result<(i32, PendingSignal), isize> {
+    let task = current_task().ok_or(-errno::ESRCH)?;
+    let mut native = [0u8; 48];
+    task.copy_from_user(address, &mut native)
+        .map_err(|_| -errno::EFAULT)?;
+    let info = PendingSignal::from_user_native(&native);
+    let signo = i32::from_ne_bytes(native[..4].try_into().expect("si_signo width"));
+    if !info.known_user_layout(signo as usize) {
+        let mut expansion = [0u8; 80];
+        let address = address.checked_add(48).ok_or(-errno::EFAULT)?;
+        task.copy_from_user(address, &mut expansion)
+            .map_err(|_| -errno::EFAULT)?;
+        if expansion.iter().any(|byte| *byte != 0) {
+            return Err(-errno::E2BIG);
+        }
+    }
+    Ok((
+        i32::from_ne_bytes(native[..4].try_into().expect("si_signo width")),
+        info,
+    ))
+}
+/// 标准 rt_sigqueueinfo 的 user-copy/errno seam；来源授权与 publication 归唯一 signal owner。
+pub(crate) fn sys_rt_sigqueueinfo(pid: i32, signal: usize, address: usize) -> isize {
+    let info = match queued_signal_info(address) {
+        Ok((_, info)) => info,
+        Err(error) => return error,
+    };
+    send_queued_process_signal(pid, signal, info).map_or_else(signal_send_errno, |()| 0)
+}
+/// 标准 rt_tgsigqueueinfo；不存在兼容队列或 caller 伪装 kernel 的入口。
+pub(crate) fn sys_rt_tgsigqueueinfo(tgid: i32, tid: i32, signal: usize, address: usize) -> isize {
+    let info = match queued_signal_info(address) {
+        Ok((_, info)) => info,
+        Err(error) => return error,
+    };
+    send_queued_thread_signal(tgid, tid, signal, info).map_or_else(signal_send_errno, |()| 0)
+}
+
+/// 标准 rt_sigpending；size 允许 0..=8，大小为零时不访问用户 pointer。
+pub(crate) fn sys_rt_sigpending(address: usize, size: usize) -> isize {
+    if size > 8 {
+        return -errno::EINVAL;
+    }
+    let task = current_task().expect("rt_sigpending requires current task");
+    let bytes = task.pending_signal_set().to_ne_bytes();
+    if size == 0 {
+        return 0;
+    }
+    task.copy_to_user(address, &bytes[..size])
+        .map_or(-errno::EFAULT, |()| 0)
 }

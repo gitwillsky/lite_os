@@ -31,20 +31,6 @@ pub(super) fn force_synchronous_fault(
     }
 }
 
-/// 合并 standard signal coalescing 中不可丢失的 forced consequence。
-///
-/// # Parameters
-///
-/// - `existing`: 当前首个可见 siginfo 携带的 forced 标记。
-/// - `incoming`: 同号后续 generation 的 forced 标记。
-///
-/// # Returns
-///
-/// 无返回值；除 forced 标记外的首个 siginfo 由 caller 原样保留。
-pub(super) fn merge_forced(existing: &mut bool, incoming: bool) {
-    *existing |= incoming;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,14 +62,5 @@ mod tests {
         let policy = force_synchronous_fault(4, 0, 0);
         assert!(!policy.reset_to_default);
         assert_eq!(policy.signal_mask, 0);
-    }
-
-    #[test]
-    fn later_forced_generation_preserves_first_visible_siginfo() {
-        let mut first = (-6i32, 42i32, false);
-        let incoming = (1i32, 0i32, true);
-        merge_forced(&mut first.2, incoming.2);
-        assert_eq!((first.0, first.1), (-6, 42));
-        assert!(first.2);
     }
 }

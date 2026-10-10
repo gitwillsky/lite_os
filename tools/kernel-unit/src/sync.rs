@@ -1,5 +1,9 @@
 #[path = "../../../kernel/src/sync/wait_completion.rs"]
 mod wait_completion;
+#[allow(
+    unused_imports,
+    reason = "共享 scheduler fixture 只导出当前用例需要的实际 owner 接口"
+)]
 pub(crate) use wait_completion::WaitCompletion;
 
 #[path = "../../../kernel/src/sync/task_wait.rs"]
@@ -8,14 +12,32 @@ pub(crate) use wait_completion::WaitCompletion;
     reason = "host tests never construct scheduler wait outcomes"
 )]
 mod task_wait;
-pub(crate) use task_wait::WaitResult;
+#[allow(
+    unused_imports,
+    reason = "共享 scheduler fixture 只导出当前用例需要的实际 owner 接口"
+)]
+pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
 
 #[path = "../../../kernel/src/sync/task_mutex.rs"]
 mod task_mutex;
-pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard};
+#[allow(
+    unused_imports,
+    reason = "共享 scheduler fixture 只导出当前用例需要的实际 owner 接口"
+)]
+pub(crate) use task_mutex::{
+    TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
+};
 
 #[path = "../../../kernel/src/sync/task_event.rs"]
+#[allow(
+    dead_code,
+    reason = "interruptible events are exercised by separate production-owner integration fixtures"
+)]
 mod task_event;
+#[allow(
+    unused_imports,
+    reason = "共享 scheduler fixture 只导出当前用例需要的实际 owner 接口"
+)]
 pub(crate) use task_event::TaskEvent;
 
 use core::sync::atomic::{AtomicU64, Ordering};

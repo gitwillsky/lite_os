@@ -2,6 +2,42 @@
 name = "architecture-bench"
 version = "0.1.0"
 edition = "2024"
+default-run = "architecture-bench"
+
+[[bin]]
+name = "tcp-lifecycle-bench"
+path = "src/tcp_lifecycle.rs"
+
+[[bin]]
+name = "futex-transactions-bench"
+path = "src/futex_transactions.rs"
+
+[[bin]]
+name = "unix-packet-bench"
+path = "src/unix_packet.rs"
+
+[[bin]]
+name = "unix-rights-bench"
+path = "src/unix_rights.rs"
+
+[[bin]]
+name = "inotify-bench"
+path = "src/inotify.rs"
+
+[[bin]]
+name = "blocked-load-bench"
+path = "src/blocked_load.rs"
+
+[[bin]]
+name = "shared-page-stats-bench"
+path = "src/shared_page_statistics.rs"
+
+[[bin]]
+name = "realtime-signals-bench"
+path = "src/realtime_signals.rs"
 
 [dependencies]
 bitflags = "2.4"
+spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
+syscall-abi = { path = "../../syscall-abi" }
+smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"] }

@@ -6,10 +6,7 @@ use alloc::{
 use spin::{Mutex, Once};
 
 use crate::{
-    drivers::{
-        network::{NetworkDevice, NetworkError, NetworkTransmit},
-        network_device,
-    },
+    drivers::network::{NetworkError, NetworkTransmit},
     fallible_tree::FallibleMap,
     ipc::ReceiveBuffer,
     ipc::{PipeDirection, PipeEnd},
@@ -18,22 +15,25 @@ use crate::{
 use super::{PacketAddress, SocketError, SocketPollState, SocketWaitSource};
 
 const ETH_HEADER_LENGTH: usize = 14;
-const ETH_P_IP: u16 = 0x0800;
 const ARPHRD_ETHER: u16 = 1;
-const INTERFACE_INDEX: i32 = 1;
+const ETH_P_ALL: u16 = 0x0003;
 const PACKET_HOST: u8 = 0;
 const PACKET_BROADCAST: u8 = 1;
 const PACKET_MULTICAST: u8 = 2;
 const PACKET_OTHERHOST: u8 = 3;
+const PACKET_OUTGOING: u8 = 4;
 const RECEIVE_QUEUE_LIMIT: usize = 64;
 
 struct SharedPacket {
+    link_header: [u8; ETH_HEADER_LENGTH],
     payload: Vec<u8>,
     source: PacketAddress,
 }
 
 struct EndpointState {
     endpoint: Weak<PacketSocket>,
+    net_id: u64,
+    pending_error: Option<SocketError>,
     protocol: u16,
     interface_index: i32,
     queue: VecDeque<Arc<SharedPacket>>,
@@ -43,45 +43,42 @@ struct EndpointState {
 }
 
 struct PacketRegistry {
-    device: Arc<dyn NetworkDevice>,
     endpoints: FallibleMap<usize, EndpointState>,
     next_id: usize,
 }
 
-// OWNER: PacketRegistry uniquely owns AF_PACKET endpoint bindings and receive queues. Ethernet
-// frames are mirrored here once before smoltcp consumes them; duplicating these queues in the IPv4
-// stack would make packet-socket delivery depend on L3 acceptance and lose Linux layer semantics.
+// OWNER: 目录唯一持实际AF_PACKET binding/queue与Weak endpoint；不持NIC或强NET引用。
+// 每endpoint捕获同一SocketMemory.NET，目录net_id仅为不可复用membership key。实际设备tap
+// 在L3接受之前发布；不能把队列复制进INET或从当前Task/initial域重建归属。
 static PACKET_REGISTRY: Once<Mutex<PacketRegistry>> = Once::new();
 
 fn registry() -> Result<&'static Mutex<PacketRegistry>, SocketError> {
     PACKET_REGISTRY.get().ok_or(SocketError::NetworkUnreachable)
 }
 
-/// 初始化唯一 AF_PACKET registry，并共享 DTB 选中的 Ethernet device seam。
+/// 初始化唯一AF_PACKET membership目录；设备只属于捕获NET的实际interface owner。
 ///
 /// # Returns
 ///
-/// device 已发现时发布 registry；无网络设备时保持未初始化。
+/// 与物理设备发现无关，新NET只有lo也可创建packet socket。
 ///
 /// # Errors
 ///
 /// 无返回错误；重复调用由 Once 保持幂等。
 pub(super) fn init() {
-    let Some(device) = network_device(0) else {
-        return;
-    };
     PACKET_REGISTRY.call_once(|| {
         Mutex::new(PacketRegistry {
-            device,
             endpoints: FallibleMap::new(),
             next_id: 1,
         })
     });
 }
 
-/// Linux AF_PACKET/SOCK_DGRAM endpoint；只暴露去除 Ethernet header 的 L3 packet。
+/// 原生AF_PACKET RAW/DGRAM endpoint，共用同一实际packet/链路事实。
 pub(super) struct PacketSocket {
     id: usize,
+    socket_type: super::SocketType,
+    memory: Arc<super::SocketMemory>,
     notify_read: Arc<PipeEnd>,
     notify_write: Arc<PipeEnd>,
 }
@@ -100,43 +97,58 @@ impl PacketSocket {
     ///
     /// # Errors
     ///
-    /// protocol 不是 IPv4、registry 未初始化或 id 耗尽时返回错误。
+    /// protocol不能表示为EtherType、registry未初始化、准备OOM或id耗尽时返回错误。
     pub(super) fn new(
+        socket_type: super::SocketType,
         protocol: usize,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+        memory: Arc<super::SocketMemory>,
     ) -> Result<Arc<Self>, SocketError> {
         let protocol = u16::try_from(protocol).map_err(|_| SocketError::ProtocolNotSupported)?;
-        if u16::from_be(protocol) != ETH_P_IP {
-            return Err(SocketError::ProtocolNotSupported);
-        }
-        let mut registry = registry()?.lock();
-        let id = registry.next_id;
-        registry.next_id = registry
-            .next_id
-            .checked_add(1)
-            .ok_or(SocketError::NoMemory)?;
-        let endpoint = Arc::try_new(Self {
-            id,
-            notify_read: notify.0,
-            notify_write: notify.1,
-        })
-        .map_err(|_| SocketError::NoMemory)?;
-        let prepared = FallibleMap::try_prepare(
+        let owner = registry()?;
+        // 固定 admission 队列容量在 spin guard 外一次准备，RX publication 不再分配。
+        let mut queue = VecDeque::new();
+        queue
+            .try_reserve_exact(RECEIVE_QUEUE_LIMIT)
+            .map_err(|_| SocketError::NoMemory)?;
+        // 1. Arc 与 registry node storage 在取得 registry guard 前准备；OOM 不执行伪 close。
+        let mut allocation = Arc::<Self>::try_new_uninit().map_err(|_| SocketError::NoMemory)?;
+        let node = FallibleMap::<usize, EndpointState>::try_reserve_node()
+            .map_err(|_| SocketError::NoMemory)?;
+        let id = {
+            let mut registry = owner.lock();
+            let id = registry.next_id;
+            registry.next_id = id.checked_add(1).ok_or(SocketError::NoMemory)?;
+            id
+        };
+        Arc::get_mut(&mut allocation)
+            .expect("unpublished packet endpoint is unique")
+            .write(Self {
+                id,
+                socket_type,
+                memory: memory.clone(),
+                notify_read: notify.0,
+                notify_write: notify.1,
+            });
+        // SAFETY: 尚未 clone/Weak 的唯一 storage 已完整写入 Self；之后 admission 不分配、不失败。
+        let endpoint = unsafe { allocation.assume_init() };
+        let prepared = node.fill(
             id,
             EndpointState {
                 endpoint: Arc::downgrade(&endpoint),
+                net_id: memory.namespace_ref().id(),
+                pending_error: None,
                 protocol,
                 interface_index: 0,
-                queue: VecDeque::new(),
+                queue,
                 notification_pending: false,
             },
-        )
-        .map_err(|_| SocketError::NoMemory)?;
-        registry.endpoints.commit_vacant(prepared);
+        );
+        owner.lock().endpoints.commit_vacant(prepared);
         Ok(endpoint)
     }
 
-    /// 将 endpoint 绑定到唯一 Ethernet interface 与 IPv4 EtherType。
+    /// 原生packet_do_bind：实际NET的设备或ifindex0，非零protocol更新、允许重新绑定。
     ///
     /// # Parameters
     ///
@@ -144,30 +156,44 @@ impl PacketSocket {
     ///
     /// # Returns
     ///
-    /// 首次有效绑定返回 unit。
+    /// 实际binding已发表，设备DOWN仍成功并保存一次ENETDOWN。
     ///
     /// # Errors
     ///
-    /// interface、protocol、hardware address 形状或重复绑定无效时返回错误。
+    /// 未找到实际接口为ENODEV；已关闭endpoint为NotConnected。
     pub(super) fn bind(&self, address: PacketAddress) -> Result<(), SocketError> {
-        if address.interface_index != INTERFACE_INDEX
-            || u16::from_be(address.protocol) != ETH_P_IP
-            || address.address_length > 8
-        {
-            return Err(SocketError::AddressNotAvailable);
-        }
+        // 实际OFD scope查名字/index；设备查找在packet spin guard外，避免stack→tap反向锁序。
+        let up = if address.interface_index != 0 {
+            if address.interface_index < 0 {
+                return Err(SocketError::NoDevice);
+            }
+            Some(
+                super::inet::packet_interface(
+                    self.memory.namespace_ref(),
+                    address.interface_index as u32,
+                )?
+                .0
+                .up,
+            )
+        } else {
+            None
+        };
         let mut registry = registry()?.lock();
         let state = registry
             .endpoints
             .get_mut(&self.id)
             .ok_or(SocketError::NotConnected)?;
-        if state.interface_index != 0 {
-            return Err(SocketError::Invalid);
-        }
-        if state.protocol != address.protocol {
-            return Err(SocketError::ProtocolNotSupported);
+        if address.protocol != 0 {
+            state.protocol = address.protocol;
         }
         state.interface_index = address.interface_index;
+        if up == Some(false) {
+            state.pending_error = Some(SocketError::NetworkDown);
+        }
+        drop(registry);
+        if up == Some(false) {
+            self.notify();
+        }
         Ok(())
     }
 
@@ -181,27 +207,45 @@ impl PacketSocket {
     ///
     /// registry 或 endpoint 已消失时返回错误。
     pub(super) fn address(&self) -> Result<PacketAddress, SocketError> {
-        let registry = registry()?.lock();
-        let state = registry
-            .endpoints
-            .get(&self.id)
-            .ok_or(SocketError::NotConnected)?;
+        let (protocol, interface_index) = {
+            let registry = registry()?.lock();
+            let state = registry
+                .endpoints
+                .get(&self.id)
+                .ok_or(SocketError::NotConnected)?;
+            (state.protocol, state.interface_index)
+        };
+        let (hardware_type, address_length, address) = if interface_index != 0 {
+            let (interface, _) =
+                super::inet::packet_interface(self.memory.namespace_ref(), interface_index as u32)?;
+            (
+                if interface.loopback {
+                    772
+                } else {
+                    ARPHRD_ETHER
+                },
+                6,
+                padded_address(interface.mac),
+            )
+        } else {
+            (0, 0, [0; 8])
+        };
         Ok(PacketAddress {
-            protocol: state.protocol,
-            interface_index: state.interface_index,
-            hardware_type: ARPHRD_ETHER,
+            protocol,
+            interface_index,
+            hardware_type,
             packet_type: PACKET_HOST,
-            address_length: 6,
-            address: padded_address(registry.device.mac_address()),
+            address_length,
+            address,
         })
     }
 
-    /// 以 SOCK_DGRAM 语义发送一个无 Ethernet header 的 L3 packet。
+    /// 按实际RAW/DGRAM角色提交link packet，不改变endpoint binding。
     ///
     /// # Parameters
     ///
-    /// - `input`: 完整 IPv4 packet。
-    /// - `target`: 必须包含唯一 interface 与六字节 destination MAC。
+    /// - `input`: RAW为完整link frame，DGRAM为link payload。
+    /// - `target`: 显式实际NET出口/protocol/address；RAW或lo可使用现有binding。
     ///
     /// # Returns
     ///
@@ -215,45 +259,95 @@ impl PacketSocket {
         input: &[u8],
         target: Option<PacketAddress>,
     ) -> Result<usize, SocketError> {
-        if input.len() > crate::socket::message_limits::MAX_IPV4_PACKET_BYTES {
+        let binding = {
+            let registry = registry()?.lock();
+            let state = registry
+                .endpoints
+                .get(&self.id)
+                .ok_or(SocketError::NotConnected)?;
+            (state.interface_index, state.protocol)
+        };
+        let explicit = target.is_some();
+        let target = target.unwrap_or(PacketAddress {
+            protocol: binding.1,
+            interface_index: binding.0,
+            hardware_type: 0,
+            packet_type: 0,
+            address_length: 6,
+            address: [0; 8],
+        });
+        if target.interface_index <= 0 {
+            return Err(SocketError::DeviceNotAvailable);
+        }
+        let (interface, device) = super::inet::packet_interface(
+            self.memory.namespace_ref(),
+            target.interface_index as u32,
+        )
+        .map_err(|error| {
+            if error == SocketError::NoDevice {
+                SocketError::DeviceNotAvailable
+            } else {
+                error
+            }
+        })?;
+        if !interface.up {
+            return Err(SocketError::NetworkDown);
+        }
+        let raw = self.socket_type == super::SocketType::Raw;
+        if input.len() > interface.mtu as usize + if raw { ETH_HEADER_LENGTH } else { 0 } {
             return Err(SocketError::MessageTooLarge);
         }
-        let target = target.ok_or(SocketError::DestinationRequired)?;
-        if target.interface_index != INTERFACE_INDEX
-            || target.address_length != 6
-            || u16::from_be(target.protocol) != ETH_P_IP
-        {
-            return Err(SocketError::AddressNotAvailable);
+        if raw && input.len() < ETH_HEADER_LENGTH {
+            return Err(SocketError::Invalid);
         }
-        let registry = registry()?.lock();
-        let state = registry
-            .endpoints
-            .get(&self.id)
-            .ok_or(SocketError::NotConnected)?;
-        if state.interface_index != 0 && state.interface_index != target.interface_index {
-            return Err(SocketError::AddressNotAvailable);
+        if target.address_length > 8 {
+            return Err(SocketError::Invalid);
         }
-        if state.protocol != target.protocol {
-            return Err(SocketError::ProtocolNotSupported);
+        // Linuxpacket_snd的显式sockaddr可覆盖bound device/protocol；不重新绑定endpoint。
+        let mut link_header = [0u8; ETH_HEADER_LENGTH];
+        let payload = if raw {
+            link_header.copy_from_slice(&input[..ETH_HEADER_LENGTH]);
+            &input[ETH_HEADER_LENGTH..]
+        } else {
+            link_header[..6].copy_from_slice(&target.address[..6]);
+            link_header[6..12].copy_from_slice(&interface.mac);
+            link_header[12..14].copy_from_slice(&u16::from_be(target.protocol).to_be_bytes());
+            input
+        };
+        if interface.loopback {
+            return super::inet::inject_loopback(
+                self.memory.namespace_ref(),
+                link_header,
+                payload,
+                self.id,
+            )
+            .map(|()| input.len());
         }
-        let device = registry.device.clone();
-        let source_mac = device.mac_address();
-        drop(registry);
+        if !raw && !explicit {
+            return Err(SocketError::Invalid);
+        }
+        let device = device.expect("Ethernet interface owns its NIC");
         let transmit = NetworkTransmit::reserve(device).map_err(network_error)?;
         let mut frame = Vec::new();
         frame
-            .try_reserve_exact(ETH_HEADER_LENGTH + input.len())
+            .try_reserve_exact(ETH_HEADER_LENGTH + payload.len())
             .map_err(|_| SocketError::NoMemory)?;
-        frame.resize(ETH_HEADER_LENGTH + input.len(), 0);
-        frame[..6].copy_from_slice(&target.address[..6]);
-        frame[6..12].copy_from_slice(&source_mac);
-        frame[12..14].copy_from_slice(&ETH_P_IP.to_be_bytes());
-        frame[ETH_HEADER_LENGTH..].copy_from_slice(input);
+        frame.extend_from_slice(&link_header);
+        frame.extend_from_slice(payload);
+        deliver_outgoing(
+            self.memory.namespace_ref().id(),
+            interface.index,
+            ARPHRD_ETHER,
+            link_header,
+            payload,
+            u16::from_be(target.protocol),
+            Some(self.id),
+        );
         transmit.submit(&frame).map_err(network_error)?;
         Ok(input.len())
     }
 
-    /// 接收或窥视一个无 Ethernet header 的 packet，并保留原始 packet 长度。
+    /// RAW保留实际link header，DGRAM剥除header；peek与原始长度沿同一queue。
     ///
     /// # Parameters
     ///
@@ -277,15 +371,23 @@ impl PacketSocket {
             .endpoints
             .get_mut(&self.id)
             .ok_or(SocketError::NotConnected)?;
-        let packet = state.queue.front().ok_or(SocketError::Again)?;
-        let full_length = packet.payload.len();
-        let count = output.append(&packet.payload);
-        let source = packet.source;
-        if !peek {
-            state.queue.pop_front();
-        }
+        let packet = if peek {
+            state.queue.front().ok_or(SocketError::Again)?.clone()
+        } else {
+            state.queue.pop_front().ok_or(SocketError::Again)?
+        };
         let drained = !peek && state.queue.is_empty();
         drop(registry);
+        // 不在 registry guard 内复制 payload 或退休最后一个 SharedPacket owner。
+        let include_header = self.socket_type == super::SocketType::Raw;
+        let full_length = packet.payload.len() + if include_header { ETH_HEADER_LENGTH } else { 0 };
+        let mut count = if include_header {
+            output.append(&packet.link_header)
+        } else {
+            0
+        };
+        count += output.append(&packet.payload);
+        let source = packet.source;
         if drained {
             self.consume_notify();
         }
@@ -302,19 +404,38 @@ impl PacketSocket {
     ///
     /// registry 消失投影为 not-readable；发送时再返回具体错误。
     pub(super) fn poll_state(&self) -> SocketPollState {
-        let readable = registry().is_ok_and(|registry| {
-            registry
-                .lock()
-                .endpoints
-                .get(&self.id)
-                .is_some_and(|state| !state.queue.is_empty())
-        });
-        SocketPollState {
+        self.try_poll_state().unwrap_or_else(SocketPollState::error)
+    }
+    /// deferred观察不得在packet spin guard下等待protocol owner。
+    pub(super) fn try_poll_state(&self) -> Option<SocketPollState> {
+        let owner = registry().ok()?;
+        let registry = owner.try_lock()?;
+        let Some(state) = registry.endpoints.get(&self.id) else {
+            return Some(SocketPollState::closed());
+        };
+        let (readable, index, error) = (
+            !state.queue.is_empty(),
+            state.interface_index,
+            state.pending_error.is_some(),
+        );
+        drop(registry);
+        Some(SocketPollState {
             readable,
-            writable: registry().is_ok_and(|registry| registry.lock().device.transmit_available()),
+            writable: super::inet::packet_transmit_available(self.memory.namespace_ref(), index)?,
             hangup: false,
-            error: false,
-        }
+            read_closed: false,
+            error,
+        })
+    }
+    /// 唯一packet pending error，SO_ERROR读取后消费一次。
+    pub(super) fn take_error(&self) -> Option<SocketError> {
+        registry()
+            .ok()?
+            .lock()
+            .endpoints
+            .get_mut(&self.id)?
+            .pending_error
+            .take()
     }
 
     /// 读取 packet endpoint notification source 的 readiness generation。
@@ -335,7 +456,8 @@ impl PacketSocket {
     /// 单一 read-direction wait source。
     pub(super) fn wait_sources(&self) -> super::SocketWaitSources {
         [
-            Some(SocketWaitSource::Notification(self.notify_read.pipe())),
+            Some(SocketWaitSource::notification(self.notify_read.pipe())),
+            None,
             None,
         ]
     }
@@ -361,13 +483,15 @@ impl PacketSocket {
     pub(super) fn consume_wait_notifications(&self) {
         self.notify_read.drain_readiness();
     }
-}
 
-impl Drop for PacketSocket {
-    fn drop(&mut self) {
-        if let Some(registry) = PACKET_REGISTRY.get() {
-            registry.lock().endpoints.remove(&self.id);
-        }
+    /// actual registry membership 是唯一 admission；队列及 Weak node 在 guard 外退休。
+    pub(super) fn close_description(&self) {
+        let retired = PACKET_REGISTRY
+            .get()
+            .and_then(|registry| registry.lock().endpoints.remove(&self.id));
+        drop(retired);
+        self.notify_read.close();
+        self.notify_write.close();
     }
 }
 
@@ -383,64 +507,119 @@ impl Drop for PacketSocket {
 ///
 /// # Errors
 ///
-/// 损坏、非 IPv4、未绑定或队列已满的 frame 被丢弃，不改变 L3 ingress。
-pub(super) fn deliver(frame: &[u8]) {
-    if frame.len() < ETH_HEADER_LENGTH || u16::from_be_bytes([frame[12], frame[13]]) != ETH_P_IP {
+/// 无匹配NET/interface/protocol或队列已满时跳过，不改变L3 ingress。
+pub(super) fn deliver(net_id: u64, index: u32, mac: [u8; 6], frame: &[u8]) {
+    if frame.len() < ETH_HEADER_LENGTH {
         return;
     }
-    let Some(registry) = PACKET_REGISTRY.get() else {
-        return;
-    };
-    let mut registry = registry.lock();
-    let own_mac = registry.device.mac_address();
-    let packet_type = packet_type(&frame[..6], own_mac);
+    let protocol = u16::from_be_bytes([frame[12], frame[13]]);
     let source = PacketAddress {
-        protocol: u16::to_be(ETH_P_IP),
-        interface_index: INTERFACE_INDEX,
+        protocol: protocol.to_be(),
+        interface_index: index as i32,
         hardware_type: ARPHRD_ETHER,
-        packet_type,
+        packet_type: packet_type(&frame[..6], mac),
         address_length: 6,
         address: padded_address(frame[6..12].try_into().unwrap()),
     };
-    let has_receiver = registry.endpoints.values().any(|state| {
-        state.interface_index == INTERFACE_INDEX
-            && u16::from_be(state.protocol) == ETH_P_IP
-            && state.queue.len() < RECEIVE_QUEUE_LIMIT
-    });
-    if !has_receiver {
+    deliver_packet(
+        net_id,
+        source,
+        frame[..ETH_HEADER_LENGTH].try_into().unwrap(),
+        &frame[ETH_HEADER_LENGTH..],
+        None,
+    );
+}
+/// 实际IP-medium lo tap沿原生sockaddr_ll发布，不伪造Ethernet/ARP协议设备。
+pub(super) fn deliver_loopback(net_id: u64, header: [u8; ETH_HEADER_LENGTH], packet: &[u8]) {
+    deliver_packet(
+        net_id,
+        PacketAddress {
+            protocol: u16::from_be_bytes([header[12], header[13]]).to_be(),
+            interface_index: 1,
+            hardware_type: 772,
+            packet_type: packet_type(&header[..6], [0; 6]),
+            address_length: 6,
+            address: padded_address(header[6..12].try_into().unwrap()),
+        },
+        header,
+        packet,
+        None,
+    );
+}
+/// 实际NIC提交的L2报文；排除发起该packet socket，其他同域binding按原生OUTGOING收取。
+pub(super) fn deliver_outgoing(
+    net_id: u64,
+    index: u32,
+    hardware_type: u16,
+    header: [u8; ETH_HEADER_LENGTH],
+    payload: &[u8],
+    protocol: u16,
+    sender: Option<usize>,
+) {
+    let source = PacketAddress {
+        protocol: protocol.to_be(),
+        interface_index: index as i32,
+        hardware_type,
+        packet_type: PACKET_OUTGOING,
+        address_length: 6,
+        address: padded_address(header[6..12].try_into().unwrap()),
+    };
+    deliver_packet(net_id, source, header, payload, sender);
+}
+
+fn matches(state: &EndpointState, net_id: u64, source: PacketAddress) -> bool {
+    state.net_id == net_id
+        && (state.interface_index == 0 || state.interface_index == source.interface_index)
+        && state.protocol != 0
+        && (u16::from_be(state.protocol) == ETH_P_ALL || state.protocol == source.protocol)
+        && state.queue.len() < RECEIVE_QUEUE_LIMIT
+}
+fn deliver_packet(
+    net_id: u64,
+    source: PacketAddress,
+    header: [u8; ETH_HEADER_LENGTH],
+    packet: &[u8],
+    sender: Option<usize>,
+) {
+    let Some(registry) = PACKET_REGISTRY.get() else {
         return;
-    }
-    let mut bytes = Vec::new();
-    if bytes
-        .try_reserve_exact(frame.len() - ETH_HEADER_LENGTH)
-        .is_err()
+    };
+    if !registry
+        .lock()
+        .endpoints
+        .iter()
+        .any(|(&id, state)| sender != Some(id) && matches(state, net_id, source))
     {
         return;
     }
-    bytes.extend_from_slice(&frame[ETH_HEADER_LENGTH..]);
+    let mut bytes = Vec::new();
+    if bytes.try_reserve_exact(packet.len()).is_err() {
+        return;
+    }
+    bytes.extend_from_slice(packet);
     let Ok(payload) = Arc::try_new(SharedPacket {
+        link_header: header,
         payload: bytes,
         source,
     }) else {
         return;
     };
-    registry.endpoints.for_each_mut(|_, state| {
-        if state.interface_index != INTERFACE_INDEX
-            || u16::from_be(state.protocol) != ETH_P_IP
-            || state.queue.len() >= RECEIVE_QUEUE_LIMIT
-        {
+    let mut registry = registry.lock();
+    registry.endpoints.for_each_mut(|&id, state| {
+        if sender == Some(id) || !matches(state, net_id, source) {
             return;
         }
         let was_empty = state.queue.is_empty();
-        if state.queue.try_reserve(1).is_err() {
-            return;
-        }
+        assert!(
+            state.queue.capacity() >= RECEIVE_QUEUE_LIMIT,
+            "packet queue admission lost capacity"
+        );
         state.queue.push_back(payload.clone());
         state.notification_pending |= was_empty;
     });
 }
 
-/// 在 TX capacity 从零转为非零时向全部 packet endpoint 发布 writable edge。
+/// TX capacity从零转为非零，只向同一NET/实际interface的packet bindings发表edge。
 ///
 /// # Returns
 ///
@@ -449,14 +628,17 @@ pub(super) fn deliver(frame: &[u8]) {
 /// # Errors
 ///
 /// 不分配；实际 Pipe notification 由 NetworkStack lock 外的统一 drain 完成。
-pub(super) fn publish_transmit_ready() {
+pub(super) fn publish_transmit_ready(net_id: u64, index: u32) {
     let Some(registry) = PACKET_REGISTRY.get() else {
         return;
     };
-    registry
-        .lock()
-        .endpoints
-        .for_each_mut(|_, state| state.notification_pending = true);
+    registry.lock().endpoints.for_each_mut(|_, state| {
+        if state.net_id == net_id
+            && (state.interface_index == 0 || state.interface_index == index as i32)
+        {
+            state.notification_pending = true;
+        }
+    });
 }
 
 /// 按 endpoint ID 取出下一个待发布的 packet readable edge。

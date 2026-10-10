@@ -32,6 +32,7 @@ const KERNEL_MODULES: &[&str] = &[
     "log",
     "main",
     "memory",
+    "namespace",
     "platform",
     "random",
     "socket",

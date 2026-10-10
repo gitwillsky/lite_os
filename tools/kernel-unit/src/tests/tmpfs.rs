@@ -30,7 +30,12 @@ fn option_items_split_on_commas_and_skip_empty_items() {
 #[test]
 fn tmpfs_defaults_follow_linux_and_options_override_them() {
     assert_eq!(
-        parse(b"", RAM_PAGES, defaults(RAM_PAGES)),
+        parse(
+            b"",
+            RAM_PAGES,
+            defaults(RAM_PAGES, 0, 0),
+            &crate::namespace::initial_user()
+        ),
         Ok(Options {
             blocks: Some(RAM_PAGES / 2),
             inodes: Some(RAM_PAGES),
@@ -42,7 +47,8 @@ fn tmpfs_defaults_follow_linux_and_options_override_them() {
     let options = parse(
         b"size=64k,nr_inodes=10,mode=755,uid=1000,gid=100",
         RAM_PAGES,
-        defaults(RAM_PAGES),
+        defaults(RAM_PAGES, 0, 0),
+        &crate::namespace::initial_user(),
     )
     .unwrap();
     assert_eq!(options.blocks, Some(16));
@@ -50,19 +56,35 @@ fn tmpfs_defaults_follow_linux_and_options_override_them() {
     assert_eq!((options.mode, options.uid, options.gid), (0o755, 1000, 100));
     // size 向上取整到页；百分比以物理内存为基数；0 表示不限。
     assert_eq!(
-        parse(b"size=1", RAM_PAGES, defaults(RAM_PAGES))
-            .unwrap()
-            .blocks,
+        parse(
+            b"size=1",
+            RAM_PAGES,
+            defaults(RAM_PAGES, 0, 0),
+            &crate::namespace::initial_user()
+        )
+        .unwrap()
+        .blocks,
         Some(1)
     );
     assert_eq!(
-        parse(b"size=25%", RAM_PAGES, defaults(RAM_PAGES))
-            .unwrap()
-            .blocks,
+        parse(
+            b"size=25%",
+            RAM_PAGES,
+            defaults(RAM_PAGES, 0, 0),
+            &crate::namespace::initial_user()
+        )
+        .unwrap()
+        .blocks,
         Some(RAM_PAGES / 4)
     );
     assert_eq!(
-        parse(b"size=0,nr_inodes=0", RAM_PAGES, defaults(RAM_PAGES)).map(|o| (o.blocks, o.inodes)),
+        parse(
+            b"size=0,nr_inodes=0",
+            RAM_PAGES,
+            defaults(RAM_PAGES, 0, 0),
+            &crate::namespace::initial_user()
+        )
+        .map(|o| (o.blocks, o.inodes)),
         Ok((None, None))
     );
 }
@@ -78,7 +100,12 @@ fn tmpfs_rejects_unknown_or_malformed_options_instead_of_ignoring_them() {
         b"unknown=1",
     ] {
         assert_eq!(
-            parse(bad, RAM_PAGES, defaults(RAM_PAGES)),
+            parse(
+                bad,
+                RAM_PAGES,
+                defaults(RAM_PAGES, 0, 0),
+                &crate::namespace::initial_user()
+            ),
             Err(InvalidOptions),
             "{bad:?}"
         );
@@ -143,10 +170,17 @@ fn remount_options_keep_unmentioned_parameters() {
     let current = parse(
         b"size=64k,nr_inodes=10,mode=755,uid=7",
         RAM_PAGES,
-        defaults(RAM_PAGES),
+        defaults(RAM_PAGES, 0, 0),
+        &crate::namespace::initial_user(),
     )
     .unwrap();
-    let changed = parse(b"size=128k", RAM_PAGES, current).unwrap();
+    let changed = parse(
+        b"size=128k",
+        RAM_PAGES,
+        current,
+        &crate::namespace::initial_user(),
+    )
+    .unwrap();
     assert_eq!(changed.blocks, Some(32));
     assert_eq!(
         (changed.inodes, changed.mode, changed.uid),

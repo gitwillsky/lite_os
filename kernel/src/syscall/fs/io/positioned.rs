@@ -11,10 +11,28 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     if ofd.status_flags() & O_ACCMODE == O_WRONLY {
         return -errno::EBADF;
     }
+    if let OpenFileKind::Device(file) = &ofd.kind
+        && let Some(file) = file.positioned()
+    {
+        let total_length = vectors.iter().map(|vector| vector.length).sum();
+        let result = crate::syscall::device::read_positioned_file(
+            &task,
+            file,
+            vectors,
+            total_length,
+            offset as u64,
+        );
+        task.account_read_result(result);
+        if result > 0 {
+            ofd.notify(crate::fs::IN_ACCESS);
+        }
+        return result;
+    }
     // 路径打开的文件与 memfd 都有 inode 内容；pipe、socket 与字符设备没有可定位的内容。
-    let Some(inode) = ofd.inode_ref() else {
+    if !matches!(ofd.kind, OpenFileKind::Inode) {
         return -errno::ESPIPE;
-    };
+    }
+    let inode = ofd.inode_ref();
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
@@ -29,12 +47,10 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
         Err(error) => return ferr(error),
     };
     let mut position = offset as u64;
-    let result = read_regular_vectors(&task, &file, &mut position, vectors);
+    let result = read_regular_vectors(&task, &ofd, &file, &mut position, vectors);
     task.account_read_result(result);
-    if result > 0
-        && let Some(opened) = ofd.opened_ref()
-    {
-        crate::fs::notify_opened(&opened, crate::fs::IN_ACCESS);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_ACCESS);
     }
     result
 }
@@ -90,10 +106,31 @@ fn positioned_write(
     if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return -errno::EBADF;
     }
+    if let OpenFileKind::Device(file) = &ofd.kind
+        && let Some(file) = file.positioned()
+    {
+        if append_override.is_some() {
+            return -errno::EOPNOTSUPP;
+        }
+        let total_length = vectors.iter().map(|vector| vector.length).sum();
+        let result = crate::syscall::device::write_positioned_file(
+            &task,
+            file,
+            vectors,
+            total_length,
+            offset as u64,
+        );
+        task.account_write_result(result);
+        if result > 0 {
+            ofd.notify(crate::fs::IN_MODIFY);
+        }
+        return result;
+    }
     // 路径打开的文件与 memfd 都有 inode 内容；pipe、socket 与字符设备没有可定位的内容。
-    let Some(inode) = ofd.inode_ref() else {
+    if !matches!(ofd.kind, OpenFileKind::Inode) {
         return -errno::ESPIPE;
-    };
+    }
+    let inode = ofd.inode_ref();
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
@@ -117,17 +154,15 @@ fn positioned_write(
     let result = with_prepared_staging(staging, |staging| {
         let mut staging = staging.as_input_staging();
         let mut position = offset as u64;
-        let writer = match file.begin_write() {
+        let writer = match file.begin_write(task.access_identity(true)) {
             Ok(writer) => writer,
             Err(error) => return ferr(error),
         };
         write_regular_vectors(&task, &writer, &mut position, vectors, append, &mut staging)
     });
     task.account_write_result(result);
-    if result > 0
-        && let Some(opened) = ofd.opened_ref()
-    {
-        crate::fs::notify_opened(&opened, crate::fs::IN_MODIFY);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_MODIFY);
     }
     result
 }

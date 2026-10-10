@@ -4,7 +4,10 @@ use alloc::{
 };
 use spin::{Mutex, Once};
 
-use super::{OpenFileDescription, OpenFileKind, ReadinessSource, ReadinessSources};
+use super::{
+    FileReadinessContext, OpenFileDescription, OpenFileKind, ReadinessSource, ReadinessSources,
+    SignalWaitSource,
+};
 use crate::{
     fallible_tree::{FallibleMap, VacantEntry},
     ipc::{Pipe, PipeEnd},
@@ -79,7 +82,8 @@ struct Interest {
     revision: u64,
     disabled: bool,
     sources: ReadinessSources,
-    source_nodes: [Option<SourceNode>; 2],
+    signal_source: Option<Arc<SignalWaitSource>>,
+    source_nodes: [Option<SourceNode>; 3],
     ready_node: Option<ReadyNode>,
 }
 
@@ -176,18 +180,25 @@ impl Epoll {
         fd: usize,
         ofd: Arc<OpenFileDescription>,
         event: Option<EpollEvent>,
+        context: &impl FileReadinessContext,
     ) -> Result<(), EpollChangeError> {
         let _graph = EPOLL_GRAPH.lock();
         let key = InterestKey::new(fd, &ofd);
         match operation {
-            EpollChange::Add => self.add(key, fd, ofd, event.ok_or(EpollChangeError::Invalid)?)?,
+            EpollChange::Add => self.add(
+                key,
+                fd,
+                ofd,
+                event.ok_or(EpollChangeError::Invalid)?,
+                context,
+            )?,
             EpollChange::Delete => {
                 if !self.detach(key, &ofd) {
                     return Err(EpollChangeError::NotFound);
                 }
             }
             EpollChange::Modify => {
-                self.modify(key, &ofd, event.ok_or(EpollChangeError::Invalid)?)?
+                self.modify(key, &ofd, event.ok_or(EpollChangeError::Invalid)?, context)?
             }
         }
         drop(_graph);
@@ -201,6 +212,7 @@ impl Epoll {
         fd: usize,
         ofd: Arc<OpenFileDescription>,
         event: EpollEvent,
+        context: &impl FileReadinessContext,
     ) -> Result<(), EpollChangeError> {
         if !ofd.epoll_pollable() {
             return Err(EpollChangeError::Permission);
@@ -218,7 +230,7 @@ impl Epoll {
             }
             state.next_revision
         };
-        // interest、ready、两个 source 和 reverse 节点在发布前一次预分配。
+        // interest、ready、三个 source（data read/write 与 lifecycle）和 reverse 节点在发布前一次预分配。
         // 任一分配失败都返回 ENOMEM，不留半发布 membership。
         let ready_node =
             FallibleMap::try_prepare(key, ()).map_err(|_| EpollChangeError::NoMemory)?;
@@ -240,6 +252,7 @@ impl Epoll {
         let source_nodes = [
             Some(prepare_source().map_err(|_| EpollChangeError::NoMemory)?),
             Some(prepare_source().map_err(|_| EpollChangeError::NoMemory)?),
+            Some(prepare_source().map_err(|_| EpollChangeError::NoMemory)?),
         ];
         let reverse = FallibleMap::try_prepare(
             ReverseKey {
@@ -252,7 +265,7 @@ impl Epoll {
             },
         )
         .map_err(|_| EpollChangeError::NoMemory)?;
-        let sources = ofd.readiness_sources(event.events as i16);
+        let sources = ofd.readiness_sources(event.events as i16, context);
         let prepared = FallibleMap::try_prepare(
             key,
             Interest {
@@ -262,6 +275,9 @@ impl Epoll {
                 revision,
                 disabled: false,
                 sources,
+                signal_source: matches!(&ofd.kind, OpenFileKind::SignalFd(_))
+                    .then(|| context.signal_source())
+                    .flatten(),
                 source_nodes,
                 ready_node: Some(ready_node),
             },
@@ -272,7 +288,7 @@ impl Epoll {
         state.interests.commit_vacant(prepared);
         ofd.epoll_memberships.entries.lock().commit_vacant(reverse);
         Self::publish_sources(self, key, state.interests.get_mut(&key).unwrap());
-        Self::refresh_locked(&mut state, key);
+        Self::refresh_locked(&mut state, key, context);
         Ok(())
     }
 
@@ -281,6 +297,7 @@ impl Epoll {
         key: InterestKey,
         ofd: &Arc<OpenFileDescription>,
         event: EpollEvent,
+        context: &impl FileReadinessContext,
     ) -> Result<(), EpollChangeError> {
         let mut state = self.state.lock();
         let revision = state.next_revision;
@@ -298,9 +315,12 @@ impl Epoll {
         interest.last_generation = None;
         interest.revision = revision;
         interest.disabled = false;
-        interest.sources = interest.ofd.readiness_sources(event.events as i16);
+        if !matches!(&interest.ofd.kind, OpenFileKind::SignalFd(_)) {
+            interest.sources = interest.ofd.readiness_sources(event.events as i16, context);
+        }
+        // EPOLL_CTL_MOD 的 poll_table 不注册新 wait queue；signalfd 保留 ADD 的实际 sighand。
         Self::publish_sources(self, key, interest);
-        Self::refresh_locked(&mut state, key);
+        Self::refresh_locked(&mut state, key, context);
         Ok(())
     }
 
@@ -405,6 +425,13 @@ impl Epoll {
         Self::notify_source(ReadinessSource::Console);
     }
 
+    /// 真实 sighand publication/mask change 后精确通知其 epoll memberships。
+    pub(crate) fn notify_signal_source(source: &SignalWaitSource) {
+        Self::notify_source(ReadinessSource::Signal {
+            identity: source.identity(),
+        });
+    }
+
     fn notify_source(source: ReadinessSource) {
         let mut cursor: Option<SourceIndexKey> = None;
         let mut exclusive_selected = false;
@@ -459,9 +486,15 @@ impl Epoll {
         if interest.revision != revision {
             return false;
         }
-        Self::unpublish_sources(Self::identity(self), key, interest);
-        interest.sources = interest.ofd.readiness_sources(interest.event.events as i16);
-        Self::publish_sources(self, key, interest);
+        // Native signalfd 的 epoll wait queue 在 ctl 时绑定；fork 后不能重绑到 notifier。
+        if !matches!(&interest.ofd.kind, OpenFileKind::SignalFd(_)) {
+            Self::unpublish_sources(Self::identity(self), key, interest);
+            interest.sources = interest.ofd.readiness_sources(
+                interest.event.events as i16,
+                &super::readiness::SourceNotificationContext,
+            );
+            Self::publish_sources(self, key, interest);
+        }
         let definitely_ready = Self::refresh_source_locked(&mut state, key);
         let now_ready = state.ready.contains_key(&key);
         let changed_ready = was_ready || now_ready;

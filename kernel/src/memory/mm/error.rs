@@ -23,12 +23,23 @@ pub(crate) enum MemoryError {
     InvalidRange,
     AddressInUse,
     PermissionDenied,
+    TextBusy,
     Io,
 }
 
 impl From<PageTableError> for MemoryError {
     fn from(error: PageTableError) -> Self {
         Self::PageTableError(error)
+    }
+}
+
+impl From<super::SharedFileError> for MemoryError {
+    fn from(error: super::SharedFileError) -> Self {
+        match error {
+            super::SharedFileError::OutOfMemory => Self::OutOfMemory,
+            super::SharedFileError::Io => Self::Io,
+            super::SharedFileError::BeyondEof => Self::InvalidRange,
+        }
     }
 }
 
@@ -40,6 +51,7 @@ impl core::fmt::Display for MemoryError {
             Self::InvalidRange => write!(formatter, "Invalid virtual memory range"),
             Self::AddressInUse => write!(formatter, "Virtual memory range is already mapped"),
             Self::PermissionDenied => write!(formatter, "Virtual memory operation is not allowed"),
+            Self::TextBusy => write!(formatter, "File is active swap storage"),
             Self::Io => write!(formatter, "File-backed memory I/O failed"),
         }
     }
@@ -56,10 +68,7 @@ impl MemoryError {
     pub(crate) fn is_out_of_memory(self) -> bool {
         matches!(
             self,
-            Self::OutOfMemory
-                | Self::PageTableError(
-                    PageTableError::OutOfMemory | PageTableError::AddressSpaceIdentifiersExhausted
-                )
+            Self::OutOfMemory | Self::PageTableError(PageTableError::OutOfMemory)
         )
     }
 }
@@ -104,14 +113,14 @@ pub(crate) enum ElfLoadError {
 impl From<MemoryError> for ElfLoadError {
     fn from(error: MemoryError) -> Self {
         match error {
-            MemoryError::OutOfMemory
-            | MemoryError::PageTableError(
-                PageTableError::OutOfMemory | PageTableError::AddressSpaceIdentifiersExhausted,
-            ) => Self::OutOfMemory,
+            MemoryError::OutOfMemory | MemoryError::PageTableError(PageTableError::OutOfMemory) => {
+                Self::OutOfMemory
+            }
             MemoryError::PageTableError(_)
             | MemoryError::InvalidRange
             | MemoryError::AddressInUse
-            | MemoryError::PermissionDenied => Self::InvalidElf,
+            | MemoryError::PermissionDenied
+            | MemoryError::TextBusy => Self::InvalidElf,
             MemoryError::Io => Self::Io,
         }
     }

@@ -85,11 +85,26 @@ pub(crate) enum TerminalReadMode {
     },
 }
 
+/// 已摘下的控制身份；calling graph transaction 完成后才释放历史 PID pins。
+pub(crate) struct RetiredTerminalControl {
+    session: Option<Arc<crate::namespace::PidIdentity>>,
+    foreground: Option<Arc<crate::namespace::PidIdentity>>,
+}
+impl RetiredTerminalControl {
+    pub(crate) fn previous_session(&self) -> Option<usize> {
+        self.session.as_ref().map(|session| session.key())
+    }
+    pub(crate) fn foreground_group(&self) -> Option<usize> {
+        self.foreground.as_ref().map(|group| group.key())
+    }
+}
+
 struct TerminalState {
     termios: [u8; KERNEL_TERMIOS_SIZE],
     window_size: [u8; 8],
-    controlling_session: Option<usize>,
-    foreground_pgid: Option<usize>,
+    // OWNER: terminal control 的实际 immutable PID pins；observer 不占用 graph namespace 编号。
+    controlling_session: Option<Arc<crate::namespace::PidIdentity>>,
+    foreground_pgid: Option<Arc<crate::namespace::PidIdentity>>,
     input: [u8; TERMINAL_INPUT_CAPACITY],
     input_head: usize,
     input_len: usize,
@@ -203,20 +218,20 @@ impl Terminal {
     ///
     /// # Parameters
     ///
-    /// - `session`: 目标 Process 的 process-graph session ID。
+    /// - `view`: proc mount 的实际 PID namespace；Process handle 决定是否拥有 controlling TTY。
     ///
     /// # Returns
     ///
     /// `(tty_nr, tpgid)`；无 controlling terminal 时固定为 `(0, -1)`。
-    pub(crate) fn proc_identity(&self, session: usize) -> (u32, isize) {
+    pub(crate) fn proc_identity(&self, view: &crate::namespace::PidNamespace) -> (u32, isize) {
         let state = self.state.lock();
-        if state.controlling_session != Some(session) {
-            return (0, -1);
-        }
         // proc stat `tty_nr` 是 Linux new_encode_dev 的 32-bit 投影。
         (
             self.device.encode() as u32,
-            state.foreground_pgid.map_or(-1, |pgid| pgid as isize),
+            state
+                .foreground_pgid
+                .as_ref()
+                .map_or(0, |pgid| pgid.number_in(view) as isize),
         )
     }
 
@@ -480,11 +495,10 @@ impl Terminal {
         })
     }
 
-    /// 根据 controlling session、foreground group 与 TOSTOP 决定后台访问 signal。
+    /// caller 已确认实际 controlling TTY；根据 foreground group 与 TOSTOP 决定后台访问 signal。
     ///
     /// # Parameters
     ///
-    /// - `session`: caller 的 session ID。
     /// - `process_group`: caller 的 process group ID。
     /// - `access`: 输入、输出或 TTY 状态修改。
     ///
@@ -493,16 +507,15 @@ impl Terminal {
     /// 非 controlling/background 豁免返回 `None`，否则返回 SIGTTIN/SIGTTOU。
     pub(crate) fn background_signal(
         &self,
-        session: usize,
         process_group: usize,
         access: TerminalAccess,
     ) -> Option<usize> {
         const TOSTOP: u32 = 0x100;
         let state = self.state.lock();
-        if state.controlling_session != Some(session)
-            || state
-                .foreground_pgid
-                .is_none_or(|group| group == process_group)
+        if state
+            .foreground_pgid
+            .as_ref()
+            .is_none_or(|group| group.key() == process_group)
         {
             return None;
         }
@@ -517,7 +530,11 @@ impl Terminal {
     }
 
     pub(crate) fn signal_target_group(&self) -> Option<usize> {
-        self.state.lock().foreground_pgid
+        self.state
+            .lock()
+            .foreground_pgid
+            .as_ref()
+            .map(|group| group.key())
     }
 
     pub(crate) fn termios(&self) -> [u8; KERNEL_TERMIOS_SIZE] {
@@ -628,69 +645,95 @@ impl Terminal {
             return None;
         }
         state.window_size = window_size;
-        state.foreground_pgid
+        state.foreground_pgid.as_ref().map(|group| group.key())
     }
 
     pub(crate) fn controlling_session(&self) -> Option<usize> {
-        self.state.lock().controlling_session
-    }
-
-    pub(crate) fn claim_session(&self, session: usize, foreground_pgid: usize) -> Result<(), ()> {
-        let mut state = self.state.lock();
-        if state
+        self.state
+            .lock()
             .controlling_session
-            .is_some_and(|owner| owner != session)
-        {
-            return Err(());
-        }
-        state.controlling_session = Some(session);
-        state.foreground_pgid = Some(foreground_pgid);
-        Ok(())
+            .as_ref()
+            .map(|session| session.key())
     }
 
-    /// 原子释放 controlling session 并取走退出时应接收 SIGHUP 的 foreground PGID。
-    ///
-    /// # Parameters
-    ///
-    /// - `session`: 正在退出的 session leader ID。
-    ///
-    /// # Returns
-    ///
-    /// session 匹配时返回原 foreground PGID，否则返回 None。
-    pub(crate) fn release_session(&self, session: usize) -> Option<usize> {
+    /// 接收 graph 冻结的实际 SID/PGID identity；旧 pins 交由 caller 在 graph/terminal guard 外退休。
+    pub(crate) fn claim_session(
+        &self,
+        session: Arc<crate::namespace::PidIdentity>,
+        foreground_pgid: Arc<crate::namespace::PidIdentity>,
+        steal: bool,
+    ) -> Result<RetiredTerminalControl, ()> {
+        let retired = {
+            let mut state = self.state.lock();
+            if let Some(owner) = &state.controlling_session {
+                if owner.key() == session.key() {
+                    // 重复 TIOCSCTTY 不得把已有 foreground PGID 重置成 session leader 的 group。
+                    return Ok(RetiredTerminalControl {
+                        session: None,
+                        foreground: None,
+                    });
+                }
+                if !steal {
+                    return Err(());
+                }
+            }
+            RetiredTerminalControl {
+                session: state.controlling_session.replace(session),
+                foreground: state.foreground_pgid.replace(foreground_pgid),
+            }
+        };
+        Ok(retired)
+    }
+
+    /// 清除实际控制身份；calling graph transaction 在 guard 外释放返回的历史 PID pins。
+    pub(crate) fn release_session(&self, session: usize) -> Option<RetiredTerminalControl> {
         let mut state = self.state.lock();
-        if state.controlling_session == Some(session) {
-            state.controlling_session = None;
-            return state.foreground_pgid.take();
+        if state.controlling_session.as_ref().map(|owner| owner.key()) != Some(session) {
+            return None;
         }
-        None
+        Some(RetiredTerminalControl {
+            session: state.controlling_session.take(),
+            foreground: state.foreground_pgid.take(),
+        })
     }
 
-    /// 原子执行 PTY vhangup，清除 controlling session 与 foreground owner。
-    ///
-    /// # Returns
-    ///
-    /// 原 foreground PGID；task owner 用它投递 SIGHUP/SIGCONT。
-    pub(crate) fn hangup(&self) -> Option<usize> {
+    /// PTY vhangup 原子摘下控制身份；caller 先清 session members，再在锁外退休。
+    pub(crate) fn hangup(&self) -> RetiredTerminalControl {
         let mut state = self.state.lock();
-        state.controlling_session = None;
-        state.foreground_pgid.take()
+        RetiredTerminalControl {
+            session: state.controlling_session.take(),
+            foreground: state.foreground_pgid.take(),
+        }
     }
 
-    pub(crate) fn foreground_pgid(&self, session: usize) -> Result<usize, ()> {
+    /// 同一 control owner 快照投影实际 SID/PGID 到 viewer；无 foreground 为 0，无 session 为 None。
+    pub(crate) fn control_ids(&self, view: &crate::namespace::PidNamespace) -> (Option<i32>, i32) {
         let state = self.state.lock();
-        if state.controlling_session != Some(session) {
-            return Err(());
-        }
-        state.foreground_pgid.ok_or(())
+        (
+            state
+                .controlling_session
+                .as_ref()
+                .map(|sid| sid.number_in(view) as i32),
+            state
+                .foreground_pgid
+                .as_ref()
+                .map_or(0, |pgid| pgid.number_in(view) as i32),
+        )
     }
 
-    pub(crate) fn set_foreground_pgid(&self, session: usize, pgid: usize) -> Result<(), ()> {
-        let mut state = self.state.lock();
-        if state.controlling_session != Some(session) {
-            return Err(());
-        }
-        state.foreground_pgid = Some(pgid);
+    pub(crate) fn set_foreground_pgid(
+        &self,
+        session: usize,
+        pgid: Arc<crate::namespace::PidIdentity>,
+    ) -> Result<(), ()> {
+        let retired = {
+            let mut state = self.state.lock();
+            if state.controlling_session.as_ref().map(|owner| owner.key()) != Some(session) {
+                return Err(());
+            }
+            state.foreground_pgid.replace(pgid)
+        };
+        drop(retired);
         Ok(())
     }
 }

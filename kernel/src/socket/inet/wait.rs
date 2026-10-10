@@ -7,17 +7,19 @@ use super::{InetEndpoint, InetSocket, raw_endpoint, tcp, udp_endpoint};
 
 impl InetSocket {
     pub(in crate::socket) fn poll_state(&self) -> SocketPollState {
-        let _operation = self.operation.lock();
+        let Ok(_operation) = self.open_operation() else {
+            return SocketPollState::closed();
+        };
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::poll_state(self);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::poll_state(handle);
+            return raw_endpoint::poll_state(self, handle);
         }
         let Ok(handle) = self.udp_handle() else {
             return SocketPollState::error();
         };
-        udp_endpoint::poll_state(handle)
+        udp_endpoint::poll_state(self, handle)
     }
 
     /// 在 deferred epoll source 通知中无等待地投影 readiness。
@@ -31,14 +33,17 @@ impl InetSocket {
     /// 不分配、不睡眠，也不消费 adapter error。
     pub(in crate::socket) fn try_poll_state(&self) -> Option<SocketPollState> {
         let _operation = self.operation.try_lock()?;
+        if _operation.is_none() {
+            return Some(SocketPollState::closed());
+        }
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::try_poll_state(self);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::try_poll_state(handle);
+            return raw_endpoint::try_poll_state(self, handle);
         }
         let handle = self.udp_handle().ok()?;
-        udp_endpoint::try_poll_state(handle)
+        udp_endpoint::try_poll_state(self, handle)
     }
 
     pub(in crate::socket) fn readiness_generation(&self) -> u64 {
@@ -54,7 +59,8 @@ impl InetSocket {
     /// 单一 source-native read notification source。
     pub(in crate::socket) fn wait_sources(&self) -> crate::socket::SocketWaitSources {
         [
-            Some(SocketWaitSource::Notification(self.notify_read.pipe())),
+            Some(SocketWaitSource::notification(self.notify_read.pipe())),
+            None,
             None,
         ]
     }

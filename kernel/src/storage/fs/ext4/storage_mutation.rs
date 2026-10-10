@@ -56,6 +56,13 @@ impl Ext4Inode {
         if initial_contents.is_some_and(|contents| contents.len() != self.fs.block_size) {
             return Err(FileSystemError::IoError);
         }
+        // 目录/htree block 从首次初始化起就是 journal metadata；先登记为 ordered
+        // data 会在 metadata checkpoint 前把零 image 写回并污染 readonly cache。
+        let kind = if self.inode_type() == InodeType::Directory {
+            BlockKind::Metadata
+        } else {
+            BlockKind::Data
+        };
         let mut inode = mutation.inode(self)?;
         let mut tree = ExtentTree::new(&self.fs, self.inode_num, &inode)?;
         let zeroed;
@@ -73,7 +80,7 @@ impl Ext4Inode {
                     return Ok((block, false));
                 }
                 // unwritten block 先 staged 完整新内容，再把映射转为 initialized。
-                self.fs.write_data_block(block, contents)?;
+                self.fs.stage_block(block, contents, kind)?;
                 tree.mark_written(file_block)?;
                 block
             }
@@ -81,7 +88,7 @@ impl Ext4Inode {
                 let goal = left.map_or(tree.default_goal(), |left| {
                     left.physical + u64::from(file_block - left.logical)
                 });
-                let block = self.fs.allocate_block(goal, contents, BlockKind::Data)?;
+                let block = self.fs.allocate_block(goal, contents, kind)?;
                 tree.insert(Extent {
                     logical: file_block,
                     length: 1,
@@ -97,7 +104,12 @@ impl Ext4Inode {
         Ok((block, true))
     }
 
-    pub(super) fn write_bytes(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
+    pub(super) fn write_bytes(
+        &self,
+        offset: u64,
+        buf: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
@@ -106,11 +118,36 @@ impl Ext4Inode {
             return Ok(0);
         }
         let mut written = 0;
-        self.write_batch(&mut |writer| {
+        self.write_batch(false, identity, &mut |writer| {
             written = writer.write(offset as u64, buf)?;
             Ok(())
         })?;
         Ok(written)
+    }
+
+    /// Caller policy is applied under the same MutationGuard as data; internal/writeback pass None.
+    pub(super) fn remove_write_privileges_locked(
+        &self,
+        mutation: &mut MutationGuard<'_>,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        let Some(identity) = identity else {
+            return Ok(());
+        };
+        let mut inode = mutation.inode(self)?;
+        let kill = identity.write_kill_mask(
+            inode_kind::from_mode(inode.i_mode),
+            inode.i_mode,
+            inode.gid(),
+        );
+        // FSETID仅影响set-ID mode；非空file capability始终由实际inode同事务清除。
+        let capability_removed = self.kill_capability(&mut inode)?;
+        if kill != 0 || capability_removed {
+            inode.i_mode &= !kill;
+            inode.set_ctime(Timestamp::now());
+            self.fs.write_inode_disk(self.inode_num, &inode)?;
+        }
+        Ok(())
     }
 
     fn write_data_locked(
@@ -181,17 +218,21 @@ impl Ext4Inode {
 
     pub(super) fn write_batch(
         &self,
+        writeback: bool,
+        identity: Option<&crate::fs::AccessIdentity>,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
         let mutation = self.fs.begin_mutation()?;
-        self.write_batch_with_mutation(mutation, batch)
+        self.write_batch_with_mutation(mutation, writeback, identity, batch)
     }
 
     pub(super) fn try_write_batch(
         &self,
+        writeback: bool,
+        identity: Option<&crate::fs::AccessIdentity>,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
@@ -200,14 +241,18 @@ impl Ext4Inode {
         let Some(mutation) = MutationGuard::try_begin(&self.fs)? else {
             return Err(FileSystemError::Busy);
         };
-        self.write_batch_with_mutation(mutation, batch)
+        self.write_batch_with_mutation(mutation, writeback, identity, batch)
     }
 
     fn write_batch_with_mutation(
         &self,
         mut mutation: MutationGuard<'_>,
+        writeback: bool,
+        identity: Option<&crate::fs::AccessIdentity>,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
+        self.check_swap_mutation(writeback)?;
+        self.remove_write_privileges_locked(&mut mutation, identity)?;
         let maximum_end = {
             let mut writer = Ext4StorageWriter {
                 inode: self,
@@ -223,25 +268,41 @@ impl Ext4Inode {
         mutation.commit()
     }
 
-    pub(super) fn append_bytes(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    pub(super) fn append_bytes(
+        &self,
+        buf: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
         let mut mutation = self.fs.begin_mutation()?;
+        self.check_swap_mutation(false)?;
         let offset = self.size();
         let offset_usize = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
+        if !buf.is_empty() {
+            self.remove_write_privileges_locked(&mut mutation, identity)?;
+        }
         let written = self.write_at_locked(&mut mutation, offset_usize, buf)?;
         mutation.commit()?;
         Ok((offset, written))
     }
 
     /// 为 range 中的 hole 分配清零 blocks，并在完成后提交新 i_size。
-    pub(super) fn allocate_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
+    pub(super) fn allocate_range(
+        &self,
+        offset: u64,
+        length: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
         const BLOCKS_PER_TRANSACTION: u64 = 64;
         if self.inode_type() != InodeType::File {
             return Err(FileSystemError::InvalidOperation);
         }
         let end = offset.checked_add(length).ok_or(FileSystemError::NoSpace)?;
+        if let Some(identity) = identity {
+            self.prepare_cached_write(identity)?;
+        }
         let block_size = self.fs.block_size as u64;
         let first = offset / block_size;
         let last = end.div_ceil(block_size);
@@ -249,6 +310,8 @@ impl Ext4Inode {
         while begin < last {
             let finish = (begin + BLOCKS_PER_TRANSACTION).min(last);
             let mut mutation = self.fs.begin_mutation()?;
+            self.check_swap_mutation(false)?;
+            self.remove_write_privileges_locked(&mut mutation, identity)?;
             for index in begin..finish {
                 let index = u32::try_from(index).map_err(|_| FileSystemError::NoSpace)?;
                 self.ensure_block_mapped(&mut mutation, index)?;
@@ -257,6 +320,8 @@ impl Ext4Inode {
             begin = finish;
         }
         let mut mutation = self.fs.begin_mutation()?;
+        self.check_swap_mutation(false)?;
+        self.remove_write_privileges_locked(&mut mutation, identity)?;
         let mut inode = mutation.inode(self)?;
         if end > inode.size() {
             inode.set_size(end);

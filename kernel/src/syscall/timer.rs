@@ -1,6 +1,6 @@
 use crate::sync::WaitResult;
 use crate::{
-    syscall::errno::{EFAULT, EINTR, EINVAL, ENOMEM, EOPNOTSUPP},
+    syscall::errno::{EFAULT, EINVAL, ENOMEM, EOPNOTSUPP},
     task::current_task,
 };
 
@@ -56,16 +56,16 @@ pub(crate) fn sys_gettimeofday(timeval: usize, timezone: usize) -> isize {
     0
 }
 
-fn decode_timeval(bytes: &[u8]) -> Result<u64, isize> {
+fn decode_timeval_ns(bytes: &[u8]) -> Result<u64, isize> {
     let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
     let microseconds = i64::from_ne_bytes(bytes[8..16].try_into().unwrap());
     if seconds < 0 || !(0..1_000_000).contains(&microseconds) {
         return Err(-EINVAL);
     }
-    (seconds as u64)
-        .checked_mul(1_000_000)
-        .and_then(|value| value.checked_add(microseconds as u64))
-        .ok_or(-EINVAL)
+    Ok(
+        (i128::from(seconds) * 1_000_000_000 + i128::from(microseconds) * 1_000)
+            .min(i128::from(i64::MAX)) as u64,
+    )
 }
 
 fn encode_itimerval(interval_us: u64, value_us: u64) -> [u8; 32] {
@@ -133,18 +133,18 @@ pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -
     if task.copy_from_user(replacement, &mut bytes).is_err() {
         return -EFAULT;
     }
-    let interval_us = match decode_timeval(&bytes[..16]) {
+    let interval_ns = match decode_timeval_ns(&bytes[..16]) {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let value_us = match decode_timeval(&bytes[16..]) {
+    let value_ns = match decode_timeval_ns(&bytes[16..]) {
         Ok(value) => value,
         Err(error) => return error,
     };
     let old = match crate::task::set_real_timer(
         task.tgid(),
-        value_us.saturating_mul(1_000),
-        interval_us.saturating_mul(1_000),
+        value_ns,
+        interval_ns,
         crate::timer::get_time_ns(),
     ) {
         Ok(value) => value,
@@ -170,31 +170,53 @@ pub(super) fn timespec_ns(value: TimeSpec) -> Result<u64, isize> {
     if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
         return Err(-EINVAL);
     }
-    (value.tv_sec as u64)
-        .checked_mul(1_000_000_000)
-        .and_then(|seconds| seconds.checked_add(value.tv_nsec as u64))
-        .ok_or(-EINVAL)
+    // Linux timespec64_to_ktime 接受所有合法非负 timespec，并在 KTIME_MAX 饱和。
+    Ok(
+        (i128::from(value.tv_sec) * 1_000_000_000 + i128::from(value.tv_nsec))
+            .min(i128::from(i64::MAX)) as u64,
+    )
 }
 
-fn finish_sleep(result: WaitResult, deadline_ns: u64, remaining: *mut TimeSpec) -> isize {
+fn finish_sleep(result: WaitResult, deadline_ns: u64, remaining: usize, relative: bool) -> isize {
     match result {
         WaitResult::TimedOut => 0,
-        WaitResult::Interrupted if remaining.is_null() => -EINTR,
+        WaitResult::Interrupted if !relative => super::INTERNAL_RESTART_NO_HANDLER,
         WaitResult::Interrupted => {
-            let nanoseconds = deadline_ns.saturating_sub(crate::timer::get_time_ns());
-            let value = TimeSpec {
-                tv_sec: (nanoseconds / 1_000_000_000) as i64,
-                tv_nsec: (nanoseconds % 1_000_000_000) as i64,
-            };
             let Some(task) = current_task() else {
                 return -EFAULT;
             };
-            task.copy_to_user(remaining as usize, &encode_timespec(value))
-                .map_or(-EFAULT, |()| -EINTR)
+            if remaining != 0 {
+                let nanoseconds = deadline_ns.saturating_sub(crate::timer::get_time_ns());
+                let value = TimeSpec {
+                    tv_sec: (nanoseconds / 1_000_000_000) as i64,
+                    tv_nsec: (nanoseconds % 1_000_000_000) as i64,
+                };
+                if task
+                    .copy_to_user(remaining, &encode_timespec(value))
+                    .is_err()
+                {
+                    return -EFAULT;
+                }
+            }
+            task.set_syscall_restart_block(crate::task::SyscallRestartBlock::Sleep {
+                deadline: deadline_ns,
+                remaining,
+            });
+            super::INTERNAL_RESTART_BLOCK
         }
         WaitResult::Woken => panic!("deadline wait completed without timeout or signal"),
         WaitResult::OutOfMemory => -ENOMEM,
     }
+}
+
+/// 相对 nanosleep 与标准 restart_syscall 执行同一个 host deadline；stop 时间不会重新计入。
+pub(super) fn sleep_with_deadline(deadline: u64, remaining: usize) -> isize {
+    finish_sleep(
+        crate::task::sleep_until(deadline),
+        deadline,
+        remaining,
+        true,
+    )
 }
 
 /// 按相对单调时间挂起当前任务。
@@ -227,17 +249,15 @@ pub(crate) fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
 
     drop(task);
     let start = crate::timer::get_time_ns();
-    let Some(deadline) = start.checked_add(total_ns) else {
-        return -EINVAL;
-    };
-    finish_sleep(crate::task::sleep_until(deadline), deadline, rem)
+    let deadline = start.saturating_add(total_ns).min(i64::MAX as u64);
+    sleep_with_deadline(deadline, rem as usize)
 }
 
 /// 按 Linux clock selector 执行 relative 或 absolute interruptible sleep。
 ///
 /// # Parameters
 ///
-/// - `clock_id`: 当前支持 `CLOCK_REALTIME` 与 `CLOCK_MONOTONIC`。
+/// - `clock_id`: 当前支持 REALTIME、MONOTONIC 与 BOOTTIME。
 /// - `flags`: `TIMER_ABSTIME` 选择 absolute deadline；Linux 对其他位不赋予语义。
 /// - `req`: 用户态 64-bit timespec 请求地址。
 /// - `rem`: relative sleep 被 signal 中断时的可选剩余时间输出；absolute 模式不修改。
@@ -252,7 +272,7 @@ pub(crate) fn sys_clock_nanosleep(
     rem: *mut TimeSpec,
 ) -> isize {
     // 1. selector capability 在 user-copy 前确定；否则坏指针会掩盖 invalid/unsupported clock。
-    if !matches!(clock_id, CLOCK_REALTIME | CLOCK_MONOTONIC) {
+    if !matches!(clock_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME) {
         return if matches!(clock_id, CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID) {
             -EOPNOTSUPP
         } else {
@@ -270,28 +290,31 @@ pub(crate) fn sys_clock_nanosleep(
         Ok(value) => value,
         Err(error) => return error,
     };
+    let offsets = task.time_offsets();
     drop(task);
 
     // 2. absolute 值是所选 clock 的 timestamp；若当作 duration，realtime 会多睡一个 epoch。
     let absolute = flags & TIMER_ABSTIME != 0;
     let deadline = if absolute {
-        if clock_id == CLOCK_MONOTONIC {
-            requested_ns
-        } else {
-            crate::timer::realtime_deadline_to_monotonic_ns(requested_ns)
+        match clock_id {
+            CLOCK_MONOTONIC => {
+                offsets.to_host(crate::namespace::TimeClock::Monotonic, requested_ns)
+            }
+            CLOCK_BOOTTIME => offsets.to_host(crate::namespace::TimeClock::Boottime, requested_ns),
+            _ => crate::timer::realtime_deadline_to_monotonic_ns(requested_ns),
         }
     } else {
-        match crate::timer::get_time_ns().checked_add(requested_ns) {
-            Some(value) => value,
-            None => return -EINVAL,
-        }
+        crate::timer::get_time_ns()
+            .saturating_add(requested_ns)
+            .min(i64::MAX as u64)
     };
     // 3. Linux absolute sleep 被中断时不写 remaining；保留用户 buffer 原值。
     let remaining_output = if absolute { core::ptr::null_mut() } else { rem };
     finish_sleep(
         crate::task::sleep_until(deadline),
         deadline,
-        remaining_output,
+        remaining_output as usize,
+        !absolute,
     )
 }
 
@@ -313,12 +336,20 @@ pub(crate) fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
         | CLOCK_REALTIME_COARSE
         | CLOCK_MONOTONIC_COARSE
         | CLOCK_BOOTTIME => {
-            // LiteOS 没有 NTP 调频或 suspend domain，因此 RAW/BOOTTIME 与 MONOTONIC 同源；
-            // COARSE 使用同一硬件 counter 的真实精度。若伪造独立 offset，跨 clock 比较会倒退。
+            // host 没有 NTP 调频或 suspend，因此 RAW/BOOTTIME 同源；namespace 的两个 offset 独立。
             let nanoseconds = if matches!(clock_id, CLOCK_REALTIME | CLOCK_REALTIME_COARSE) {
                 crate::timer::get_realtime_ns()
             } else {
-                crate::timer::get_time_ns()
+                let Some(task) = current_task() else {
+                    return -EFAULT;
+                };
+                let clock = if clock_id == CLOCK_BOOTTIME {
+                    crate::namespace::TimeClock::Boottime
+                } else {
+                    crate::namespace::TimeClock::Monotonic
+                };
+                task.time_offsets()
+                    .project(clock, crate::timer::get_time_ns())
             };
             TimeSpec {
                 tv_sec: (nanoseconds / 1_000_000_000) as i64,

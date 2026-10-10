@@ -1,18 +1,27 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::{Mutex, Once};
+use spin::Mutex;
 
 use crate::fallible_tree::FallibleMap;
 use crate::memory::{
     MemoryReclaimer, PAGE_SIZE, ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId,
-    SharedFileMapping, SharedFrame, SharedPage, invalidate_shared_file, register_memory_reclaimer,
+    SharedFileMapping, SharedFrame, SharedPage, SharedPagePin, invalidate_shared_file,
+    register_memory_reclaimer,
 };
-use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
+use crate::sync::{TaskEvent, TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
-use super::OpenedFile;
+use super::AccessIdentity;
 use super::memory_file::{MemoryFile, MemoryWrite};
 use super::{DataBacking, FileSystemError, Inode, InodeType};
 
+mod regular_file;
+mod swap;
+pub(crate) use regular_file::RegularFile;
+pub(super) use swap::prepare_swap_file;
+mod registry;
+use registry::cached_file;
+pub(super) use registry::evict_if_unlinked;
+pub(crate) use registry::{evict_cached, evict_filesystem, statistics, sync_all, writeback_cached};
 mod reclaim;
 mod regular_write;
 mod writeback;
@@ -43,12 +52,21 @@ pub(crate) struct PageCacheStatistics {
     pub(crate) reclaimable_pages: usize,
 }
 
-#[derive(Debug)]
 pub(super) struct CachedPage {
     frame: SharedFrame,
     // OWNER: CachedPage 用一个 CAS domain 同时拥有 dirty bit 与 writable-PTE 引用计数。
     // 拆成两个 Atomic 会让 writeback 的 writer==0 / clear-dirty 间隙吞掉并发 writer publication。
     state: AtomicUsize,
+    writer_retired: Arc<TaskEvent>,
+}
+
+impl core::fmt::Debug for CachedPage {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("CachedPage")
+            .field("frame", &self.frame)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CachedPage {
@@ -88,8 +106,8 @@ impl Drop for CachedPage {
 }
 
 impl SharedPage for CachedPage {
-    fn frame(&self) -> &SharedFrame {
-        &self.frame
+    fn pin(&self) -> Result<SharedPagePin<'_>, SharedFileError> {
+        Ok(SharedPagePin::Cached(&self.frame))
     }
 
     fn acquire_writer(&self) {
@@ -124,12 +142,16 @@ impl SharedPage for CachedPage {
     }
 
     fn release_writer(&self) {
-        self.state
+        let previous = self
+            .state
             .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 let writers = state & PAGE_WRITER_MASK;
                 (writers != 0).then_some((state & PAGE_DIRTY) | (writers - 1))
             })
             .expect("shared-page writer release without acquire");
+        if previous & PAGE_WRITER_MASK == 1 {
+            self.writer_retired.signal();
+        }
     }
 }
 
@@ -144,6 +166,9 @@ struct CachedFile {
     // page fault 不获取该 gate，只取内层 operation，因此同文件 mmap buffer fault 不会自死锁。
     write_sequence: TaskMutex<()>,
     pages: Mutex<CachedPages>,
+    // OWNER: one preallocated event for freeze drain; page claims signal their last writer retirement.
+    // Exiting mm may already have lost its Weak identity while its post-fence fields still own writers.
+    writer_retired: Arc<TaskEvent>,
 }
 
 impl core::fmt::Debug for CachedFile {
@@ -192,6 +217,7 @@ impl CachedFile {
         let page = Arc::try_new(CachedPage {
             frame,
             state: AtomicUsize::new(0),
+            writer_retired: self.writer_retired.clone(),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut pages = self.pages.lock();
@@ -255,6 +281,9 @@ impl CachedFile {
 }
 
 impl SharedFileMapping for CachedFile {
+    fn writable(&self) -> bool {
+        !self.inode.is_swap_file()
+    }
     fn id(&self) -> SharedFileId {
         self.id
     }
@@ -286,209 +315,26 @@ impl MemoryReclaimer for CachedFile {
     }
 }
 
-// OWNER: fs page-cache owns every regular inode cached page until clean reclaim. A weak-only map
-// would lose dirty MAP_SHARED pages when the final VMA disappears before sync(2).
-static FILES: Once<Mutex<FallibleMap<SharedFileId, Arc<CachedFile>>>> = Once::new();
-
-fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError> {
-    if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice)
-        || !matches!(inode.data_backing(), DataBacking::PageCache)
-    {
-        return Err(FileSystemError::InvalidOperation);
-    }
-    let id = inode.page_cache_id()?;
-    let mut files = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
-    if let Some(file) = files.get(&id) {
-        return Ok(file.clone());
-    }
-    // reclaimer 注册成功后会持有 Arc；必须先预留 FILES node，避免注册完成却无法发布
-    // 唯一 cache owner，形成不可回滚的孤儿 reclaimer。
-    let file_slot = FallibleMap::<SharedFileId, Arc<CachedFile>>::try_reserve_node()
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    let file = Arc::try_new(CachedFile {
-        id,
-        inode,
-        operation: TaskMutex::new(()),
-        write_sequence: TaskMutex::new(()),
-        pages: Mutex::new(CachedPages::new()),
-    })
-    .map_err(|_| FileSystemError::OutOfMemory)?;
-    register_memory_reclaimer(file.clone()).map_err(shared_error)?;
-    files.commit_vacant(file_slot.fill(id, file.clone()));
-    Ok(file)
-}
-
-/// 持久 page-cache 与只读动态快照共用的 regular-file I/O facade。
-///
-/// syscall 在一次 read/write 操作内复用该值，避免每个 user-copy chunk 重复读取 inode
-/// metadata、获取全局 FILES lock 并查找同一个 ordered entry。
-pub(crate) struct RegularFile(RegularFileBackend);
-
-enum RegularFileBackend {
-    Cached(Arc<CachedFile>),
-    Snapshot(Arc<dyn Inode>),
-    Memory(Arc<MemoryFile>),
-}
-
-/// 一次 regular-file cache read 的 logical 与实际 storage 结果。
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RegularFileRead {
-    /// 复制到 kernel output 的 logical file bytes。
-    pub(crate) bytes: usize,
-    /// 本次调用因 cache miss 从 filesystem storage 成功填充的 bytes。
-    pub(crate) storage_bytes: usize,
-}
-
 /// 持有单 inode write-sequence ownership 的一次 regular-file mutation。
 ///
 /// Drop 无条件释放 gate；error、signal 或 partial user-copy 都不会遗留 transaction owner。
 pub(crate) enum RegularFileWrite<'a> {
     Cached(CachedWrite<'a>),
-    Memory(MemoryWrite<'a>),
+    Memory(MemoryInodeWrite<'a>),
 }
 
 /// page-cache 文件的一次 write 序列化权。
 pub(crate) struct CachedWrite<'a> {
     file: &'a CachedFile,
+    identity: AccessIdentity,
     _sequence: TaskMutexGuard<'a, ()>,
 }
 
-impl RegularFile {
-    /// 将 regular inode 解析为持久 page-cache owner 或只读动态快照。
-    ///
-    /// # Parameters
-    ///
-    /// - `inode`: 目标 regular inode。
-    ///
-    /// # Returns
-    ///
-    /// 可在本次 I/O 内复用的 facade；volatile inode 不注册全局 cache entry。
-    ///
-    /// # Errors
-    ///
-    /// - `InvalidOperation` 表示 inode 不是 regular file。
-    /// - inode metadata 读取失败时透传 filesystem error。
-    /// - 首次注册 memory reclaimer 失败时返回 `OutOfMemory`。
-    pub(crate) fn from_inode(inode: Arc<dyn Inode>) -> Result<Self, FileSystemError> {
-        if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        match inode.data_backing() {
-            DataBacking::PageCache => {
-                cached_file(inode).map(|file| Self(RegularFileBackend::Cached(file)))
-            }
-            DataBacking::Snapshot => Ok(Self(RegularFileBackend::Snapshot(inode))),
-            DataBacking::Memory(file) => Ok(Self(RegularFileBackend::Memory(file))),
-        }
-    }
-
-    /// 返回持久文件的唯一 page-cache backing identity。
-    ///
-    /// # Returns
-    ///
-    /// 持久文件返回 filesystem/inode identity；动态快照没有 cache identity，返回 None。
-    pub(crate) fn id(&self) -> Option<SharedFileId> {
-        match &self.0 {
-            RegularFileBackend::Cached(file) => Some(file.id),
-            RegularFileBackend::Memory(file) => Some(file.id()),
-            RegularFileBackend::Snapshot(_) => None,
-        }
-    }
-
-    /// 返回当前 regular-file byte size。
-    ///
-    /// # Returns
-    ///
-    /// filesystem metadata owner 的当前 i_size 投影。
-    pub(crate) fn size(&self) -> u64 {
-        match &self.0 {
-            RegularFileBackend::Cached(file) => file.inode.size(),
-            RegularFileBackend::Memory(file) => file.size(),
-            RegularFileBackend::Snapshot(inode) => inode.size(),
-        }
-    }
-
-    /// 从持久 page cache 或只读动态 inode 读取 regular-file bytes。
-    ///
-    /// # Parameters
-    ///
-    /// - `offset`: 文件 byte offset。
-    /// - `output`: kernel-owned 输出缓冲区。
-    ///
-    /// # Returns
-    ///
-    /// 实际读取字节数；EOF 返回零。
-    ///
-    /// # Errors
-    ///
-    /// - cache fill 分配失败时返回 `OutOfMemory`。
-    /// - size snapshot 后并发 truncate 越过当前 page 时返回 `InvalidOperation`。
-    /// - storage read 失败或短读时返回对应 filesystem error。
-    pub(crate) fn read(
-        &self,
-        offset: u64,
-        output: &mut [u8],
-    ) -> Result<RegularFileRead, FileSystemError> {
-        let file = match &self.0 {
-            RegularFileBackend::Cached(file) => file,
-            RegularFileBackend::Snapshot(inode) => {
-                return inode
-                    .read_storage(offset, output)
-                    .map(|bytes| RegularFileRead {
-                        bytes,
-                        storage_bytes: 0,
-                    });
-            }
-            RegularFileBackend::Memory(file) => {
-                return file.read(offset, output).map(|bytes| RegularFileRead {
-                    bytes,
-                    storage_bytes: 0,
-                });
-            }
-        };
-        let size = file.inode.size();
-        let count = usize::try_from(size.saturating_sub(offset))
-            .unwrap_or(usize::MAX)
-            .min(output.len());
-        let mut done = 0;
-        let mut storage_bytes = 0;
-        while done < count {
-            let current = offset + done as u64;
-            let (page, filled) = file.page_with_storage(current / PAGE_SIZE as u64)?;
-            storage_bytes += filled;
-            let page_offset = current as usize % PAGE_SIZE;
-            let part = (PAGE_SIZE - page_offset).min(count - done);
-            page.frame.read(page_offset, &mut output[done..done + part]);
-            done += part;
-        }
-        Ok(RegularFileRead {
-            bytes: done,
-            storage_bytes,
-        })
-    }
-
-    /// 开始一次不可被其他 regular-file mutation 穿插的 write operation。
-    ///
-    /// # Returns
-    ///
-    /// 持有 per-inode write-sequence gate 的 mutation facade；Drop 自动释放。
-    ///
-    /// # Errors
-    ///
-    /// 只读动态 inode 返回 `ReadOnly`。
-    pub(crate) fn begin_write(&self) -> Result<RegularFileWrite<'_>, FileSystemError> {
-        match &self.0 {
-            RegularFileBackend::Cached(file) => Ok(RegularFileWrite::Cached(CachedWrite {
-                file,
-                _sequence: file
-                    .write_sequence
-                    .lock()
-                    .map_err(|_| FileSystemError::OutOfMemory)?,
-            })),
-            RegularFileBackend::Memory(file) => Ok(RegularFileWrite::Memory(file.begin_write()?)),
-            RegularFileBackend::Snapshot(_) => Err(FileSystemError::ReadOnly),
-        }
-    }
+/// 同一 write sequence 下保持 inode metadata owner 与 MemoryFile 内容 owner。
+pub(crate) struct MemoryInodeWrite<'a> {
+    write: MemoryWrite<'a>,
+    inode: &'a Arc<dyn Inode>,
+    identity: AccessIdentity,
 }
 
 /// 建立 file-backed mmap 的共享映射。
@@ -496,36 +342,39 @@ impl RegularFile {
 /// # Parameters
 ///
 /// - `inode`: 被映射的 regular file。
-/// - `opened`: 映射来源 fd 的打开条目（Linux `vma->vm_file`）；映射存续期间 pin 住它，使所在挂载
-///   保持忙而不能被卸载。不属于任何挂载的 memfd 为 `None`。
+/// - `owner`: 映射来源的实际 file object（Linux `vma->vm_file`）；保留其所有 lease 与 close
+///   lifecycle。只有真实的内部无 fd backing 使用 None，memfd 的用户映射也必须保留 OFD。
 ///
 /// # Errors
 ///
 /// 非 regular file 返回 `InvalidOperation`；分配失败返回 `OutOfMemory`。
 pub(crate) fn mapping(
     inode: Arc<dyn Inode>,
-    opened: Option<Arc<OpenedFile>>,
+    owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
+    may_write: bool,
 ) -> Result<Arc<dyn SharedFileMapping>, FileSystemError> {
     if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return Err(FileSystemError::InvalidOperation);
     }
     let inner: Arc<dyn SharedFileMapping> = match inode.data_backing() {
-        DataBacking::PageCache => cached_file(inode)?,
+        DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
         DataBacking::Memory(file) => file.mapping()?,
         DataBacking::Snapshot => return Err(FileSystemError::InvalidOperation),
     };
     Arc::try_new(MappedFile {
         inner,
-        _opened: opened,
+        _owner: owner,
+        may_write,
     })
     .map(|mapping| mapping as Arc<dyn SharedFileMapping>)
     .map_err(|_| FileSystemError::OutOfMemory)
 }
 
-/// 一个 mmap 映射的数据视图（page cache 或内存型文件），同时 pin 住来源打开条目。
+/// 一个 mmap 数据视图，同时 pin 住实际 file object；不能只保留 dentry 而丢失 writer/backend。
 struct MappedFile {
     inner: Arc<dyn SharedFileMapping>,
-    _opened: Option<Arc<OpenedFile>>,
+    _owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
+    may_write: bool,
 }
 
 impl core::fmt::Debug for MappedFile {
@@ -538,6 +387,12 @@ impl core::fmt::Debug for MappedFile {
 }
 
 impl SharedFileMapping for MappedFile {
+    fn writable(&self) -> bool {
+        self.inner.writable()
+    }
+    fn may_write(&self) -> bool {
+        self.may_write
+    }
     fn id(&self) -> SharedFileId {
         self.inner.id()
     }
@@ -555,103 +410,18 @@ impl SharedFileMapping for MappedFile {
     }
 }
 
-/// 写回并逐出一个 filesystem instance 的全部 cached file（umount 的 `sync_filesystem` +
-/// `evict_inodes`）。
-///
-/// 写回失败不阻止逐出：卸载已提交，与 Linux 相同只报告错误。
-///
-/// # Errors
-///
-/// 返回第一个写回错误。
-pub(crate) fn evict_filesystem(filesystem_id: usize) -> Result<(), FileSystemError> {
-    let files = {
-        let registry = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
-        let mut files = Vec::new();
-        files
-            .try_reserve_exact(registry.len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        files.extend(
-            registry
-                .values()
-                .filter(|file| file.id.filesystem == filesystem_id)
-                .cloned(),
-        );
-        files
-    };
-    let mut result = Ok(());
-    for file in files {
-        let written = file
-            .write_sequence
-            .lock()
-            .map_err(|_| FileSystemError::OutOfMemory)
-            .and_then(|_sequence| {
-                let _operation = file
-                    .operation
-                    .lock()
-                    .map_err(|_| FileSystemError::OutOfMemory)?;
-                file.writeback_range(0, u64::MAX)
-            });
-        if let Err(error) = written {
-            result = result.and(Err(error));
-        }
-    }
-    FILES
-        .wait()
-        .lock()
-        .retain(|id, _| id.filesystem != filesystem_id);
-    result
-}
-
-/// 逐出一个已失去全部 link 的 inode 的 page cache（Linux `evict_inode` 对 `i_nlink == 0` 的路径）。
-///
-/// 全局 registry 持有 `CachedFile`，而 `CachedFile` 强持有 inode；没有这一步，已删除文件的 inode
-/// 与内容会一直活到下一次 `sync`，ext4 的 orphan 回收（释放数据块）也被推迟到那时。已删除文件的脏页
-/// 没有任何持久化意义，直接丢弃。
-///
-/// # Parameters
-///
-/// - `inode`: 刚被删除链接或刚失去最后一个打开条目的 inode。
-/// - `holders`: 调用者自己持有的 `inode` 强引用数；除 cache 与这些引用外还有别的持有者（打开的
-///   文件、mmap 映射）时 inode 仍然存活，什么也不做，由最后一个持有者的释放再触发。
-///
-/// # Returns
-///
-/// 无；非 page-cache 文件、仍有 link、仍被引用或没有 cache 时为空操作。
-pub(crate) fn evict_if_unlinked(inode: &Arc<dyn Inode>, holders: usize) {
-    if inode.inode_type() != InodeType::File
-        || !matches!(inode.data_backing(), DataBacking::PageCache)
-    {
-        return;
-    }
-    let Ok(metadata) = inode.metadata() else {
-        return;
-    };
-    if metadata.links != 0 {
-        return;
-    }
-    let id = SharedFileId {
-        filesystem: inode.filesystem_id(),
-        inode: metadata.inode,
-    };
-    let evicted = {
-        let mut files = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
-        let removable = files.get(&id).is_some_and(|file| {
-            Arc::strong_count(file) == 1 && Arc::strong_count(&file.inode) == 1 + holders
-        });
-        if removable { files.remove(&id) } else { None }
-    };
-    // 最后一个引用在 registry 锁之外释放：页释放与 inode 的最终回收都可能进入 filesystem。
-    drop(evicted);
-}
-
-pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSystemError> {
+pub(crate) fn truncate(
+    inode: Arc<dyn Inode>,
+    size: u64,
+    identity: &AccessIdentity,
+) -> Result<(), FileSystemError> {
     if inode.inode_type() != InodeType::File {
-        return inode.truncate_storage(size);
+        return inode.truncate_storage(size, Some(identity));
     }
     let file = match inode.data_backing() {
-        DataBacking::PageCache => cached_file(inode)?,
-        DataBacking::Memory(file) => return file.truncate(size),
-        DataBacking::Snapshot => return Err(FileSystemError::ReadOnly),
+        DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
+        DataBacking::Memory(_) => return inode.truncate_storage(size, Some(identity)),
+        DataBacking::Snapshot => return inode.truncate_storage(size, Some(identity)),
     };
     // Post-storage PTE invalidation 不可回滚；在修改 inode/cache 前预分配唯一 waiter，
     // 使遍历 live AddressSpace 时只阻塞、不再产生 OOM failure window。
@@ -665,7 +435,7 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSyste
         .operation
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    file.inode.truncate_storage(size)?;
+    file.inode.truncate_storage(size, Some(identity))?;
     let first_removed = size.div_ceil(PAGE_SIZE as u64);
     let mut pages = file.pages.lock();
     pages.entries.retain(|index, _| *index < first_removed);
@@ -695,13 +465,14 @@ pub(crate) fn allocate(
     inode: Arc<dyn Inode>,
     offset: u64,
     length: u64,
+    identity: &AccessIdentity,
 ) -> Result<(), FileSystemError> {
     if inode.inode_type() != InodeType::File {
-        return inode.allocate_storage(offset, length);
+        return inode.allocate_storage(offset, length, Some(identity));
     }
     let file = match inode.data_backing() {
-        DataBacking::PageCache => cached_file(inode)?,
-        DataBacking::Memory(file) => return file.allocate(offset, length),
+        DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
+        DataBacking::Memory(_) => return inode.allocate_storage(offset, length, Some(identity)),
         DataBacking::Snapshot => return Err(FileSystemError::ReadOnly),
     };
     let _sequence = file
@@ -712,7 +483,7 @@ pub(crate) fn allocate(
         .operation
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    file.inode.allocate_storage(offset, length)
+    file.inode.allocate_storage(offset, length, Some(identity))
 }
 
 pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
@@ -721,7 +492,7 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
     }
     let block_device = inode.inode_type() == InodeType::BlockDevice;
     let file = match inode.data_backing() {
-        DataBacking::PageCache => cached_file(inode)?,
+        DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
         // 内存型文件没有 backing storage，也不在 page cache 里，无事可同步。
         DataBacking::Memory(_) | DataBacking::Snapshot => return Ok(()),
     };
@@ -739,104 +510,6 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
         file.inode.sync_storage()?;
     }
     Ok(())
-}
-
-/// 取得 `id` 的缓存文件；没有缓存时为 `None`。
-fn lookup_cached(id: SharedFileId) -> Option<Arc<CachedFile>> {
-    FILES
-        .call_once(|| Mutex::new(FallibleMap::new()))
-        .lock()
-        .get(&id)
-        .cloned()
-}
-
-/// 写回 `id` 的全部脏页；没有缓存时为空操作。
-///
-/// # Errors
-///
-/// 写回失败透传 filesystem error。
-pub(crate) fn writeback_cached(id: SharedFileId) -> Result<(), FileSystemError> {
-    let Some(file) = lookup_cached(id) else {
-        return Ok(());
-    };
-    let _sequence = file
-        .write_sequence
-        .lock()
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    let _operation = file
-        .operation
-        .lock()
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    file.writeback_range(0, u64::MAX)
-}
-
-/// 写回并逐出一个缓存文件（块设备在被文件系统挂载前使用）。
-///
-/// # Errors
-///
-/// 缓存仍被映射或有进行中的 I/O 返回 `Busy`；写回失败透传 filesystem error。没有缓存时为空操作。
-pub(crate) fn evict_cached(id: SharedFileId) -> Result<(), FileSystemError> {
-    writeback_cached(id)?;
-    let Some(file) = lookup_cached(id) else {
-        return Ok(());
-    };
-    let mut files = FILES.wait().lock();
-    // registry 与本函数各持一个引用；更多说明有映射或进行中的 I/O，此时逐出会让它们读到过期数据。
-    if Arc::strong_count(&file) > 2 {
-        return Err(FileSystemError::Busy);
-    }
-    files.remove(&id);
-    Ok(())
-}
-
-pub(crate) fn sync_all() -> Result<(), FileSystemError> {
-    let registry = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
-    let mut files = Vec::new();
-    files
-        .try_reserve_exact(registry.len())
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    files.extend(registry.values().cloned());
-    drop(registry);
-    for file in files {
-        let _sequence = file
-            .write_sequence
-            .lock()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        let _operation = file
-            .operation
-            .lock()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        file.writeback_range(0, u64::MAX)?;
-    }
-    FILES
-        .wait()
-        .lock()
-        .retain(|_, file| Arc::strong_count(file) != 1 || !file.pages.lock().entries.is_empty());
-    Ok(())
-}
-
-/// 从唯一 CachedFile page maps 汇总一次全局 resident/dirty/reclaimable 快照。
-///
-/// # Returns
-///
-/// 只读统计；不触发 fill、writeback 或 reclaim。
-pub(crate) fn statistics() -> PageCacheStatistics {
-    let files = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
-    let mut statistics = PageCacheStatistics {
-        resident_pages: 0,
-        dirty_pages: 0,
-        reclaimable_pages: 0,
-    };
-    for file in files.values() {
-        let pages = file.pages.lock();
-        statistics.resident_pages += pages.entries.len();
-        for page in pages.entries.values() {
-            statistics.dirty_pages += usize::from(page.dirty());
-            statistics.reclaimable_pages +=
-                usize::from(page.reclaimable() && Arc::strong_count(page) == 1);
-        }
-    }
-    statistics
 }
 
 fn fs_error(error: FileSystemError) -> SharedFileError {

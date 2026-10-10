@@ -28,11 +28,15 @@ mod socket_message_limit_tests {
     fn stream_and_atomic_protocols_select_distinct_message_limits() {
         assert!(validate_send_length(MessageProtocol::Stream, 3 * 1024 * 1024).is_ok());
         assert!(validate_send_length(MessageProtocol::UnixDatagram, 65_535).is_ok());
-        assert!(validate_send_length(MessageProtocol::UnixDatagram, 65_536).is_err());
+        assert!(validate_send_length(MessageProtocol::UnixDatagram, 65_536).is_ok());
         assert!(validate_send_length(MessageProtocol::Ipv4Udp, 65_507).is_ok());
         assert!(validate_send_length(MessageProtocol::Ipv4Udp, 65_508).is_err());
-        assert!(validate_send_length(MessageProtocol::Ipv4Raw, 65_515).is_ok());
-        assert!(validate_send_length(MessageProtocol::Ipv4Packet, 1_501).is_err());
+        assert!(validate_send_length(MessageProtocol::Ipv4Raw, 65_535).is_ok());
+        assert!(validate_send_length(MessageProtocol::Ipv4Raw, 65_536).is_err());
+        // 设备MTU属于实际link owner，通用gather不把lo/RAW截成1500字节。
+        assert!(validate_send_length(MessageProtocol::Packet, 1_501).is_ok());
+        assert!(validate_send_length(MessageProtocol::Packet, 65_550).is_ok());
+        assert!(validate_send_length(MessageProtocol::Packet, 65_551).is_err());
         assert!(validate_send_length(MessageProtocol::NetlinkUevent, 65_535).is_ok());
         assert!(validate_send_length(MessageProtocol::NetlinkUevent, 65_536).is_err());
         assert!(validate_send_length(MessageProtocol::Unsupported, 1).is_err());
@@ -46,15 +50,15 @@ mod socket_message_limit_tests {
         );
         assert_eq!(
             receive_capacity(MessageProtocol::UnixDatagram, 1_000_000, 65_536),
-            65_535
+            1_000_000
         );
         assert_eq!(
             receive_capacity(MessageProtocol::Ipv4Raw, 1_000_000, 65_536),
             65_535
         );
         assert_eq!(
-            receive_capacity(MessageProtocol::Ipv4Packet, 1_000_000, 65_536),
-            1_500
+            receive_capacity(MessageProtocol::Packet, 1_000_000, 65_536),
+            65_550
         );
         assert_eq!(
             receive_capacity(MessageProtocol::Unsupported, 1_000_000, 65_536),
@@ -320,19 +324,26 @@ mod unix_datagram_queue_tests {
     use alloc::{sync::Arc, vec};
 
     use super::unix_datagram_queue::{
-        DatagramQueue, MAX_DATAGRAMS, PushError, peer_identity_changed,
+        DatagramQueue, MAX_DATAGRAMS, PreparedDatagram, peer_identity_changed,
     };
 
     #[test]
-    fn unix_datagram_queue_rejects_the_eleventh_message_without_consuming_it() {
+    fn unix_datagram_queue_rejects_the_twelfth_message_without_consuming_it() {
         let mut queue = DatagramQueue::new();
         for value in 0..MAX_DATAGRAMS {
-            assert!(queue.push(value).is_ok());
+            assert!(
+                queue
+                    .push(PreparedDatagram::new(value).ok().unwrap(), MAX_DATAGRAMS)
+                    .is_ok()
+            );
         }
 
-        match queue.push(MAX_DATAGRAMS) {
-            Err(PushError::Full(value)) => assert_eq!(value, MAX_DATAGRAMS),
-            _ => panic!("the bounded queue accepted or lost its eleventh message"),
+        match queue.push(
+            PreparedDatagram::new(MAX_DATAGRAMS).ok().unwrap(),
+            MAX_DATAGRAMS,
+        ) {
+            Err(value) => assert_eq!(value.into_value(), MAX_DATAGRAMS),
+            _ => panic!("the bounded queue accepted or lost its twelfth message"),
         }
         assert_eq!(queue.len(), MAX_DATAGRAMS);
     }
@@ -341,27 +352,51 @@ mod unix_datagram_queue_tests {
     fn unix_datagram_queue_preserves_fifo_and_wakes_only_when_leaving_full() {
         let mut queue = DatagramQueue::new();
         for value in 0..MAX_DATAGRAMS {
-            assert!(queue.push(value).is_ok());
+            assert!(
+                queue
+                    .push(PreparedDatagram::new(value).ok().unwrap(), MAX_DATAGRAMS)
+                    .is_ok()
+            );
         }
 
         for expected in 0..MAX_DATAGRAMS {
-            let (value, capacity_wake) = queue.pop().unwrap();
+            let (value, capacity_wake) = queue.pop(MAX_DATAGRAMS).unwrap();
+            let value = value.into_value();
             assert_eq!(value, expected);
             assert_eq!(capacity_wake, expected == 0);
         }
         assert!(queue.is_empty());
-        assert!(queue.pop().is_none());
+        assert!(queue.pop(MAX_DATAGRAMS).is_none());
     }
 
     #[test]
     fn unix_datagram_payload_size_does_not_change_slot_accounting() {
         let mut queue = DatagramQueue::new();
-        queue.push(vec![]).ok().unwrap();
-        queue.push(vec![0; 65_535]).ok().unwrap();
+        queue
+            .push(PreparedDatagram::new(vec![]).ok().unwrap(), MAX_DATAGRAMS)
+            .ok()
+            .unwrap();
+        queue
+            .push(
+                PreparedDatagram::new(vec![0; 65_535]).ok().unwrap(),
+                MAX_DATAGRAMS,
+            )
+            .ok()
+            .unwrap();
 
         assert_eq!(queue.len(), 2);
-        assert_eq!(queue.pop().map(|(bytes, _)| bytes.len()), Some(0));
-        assert_eq!(queue.pop().map(|(bytes, _)| bytes.len()), Some(65_535));
+        assert_eq!(
+            queue
+                .pop(MAX_DATAGRAMS)
+                .map(|(bytes, _)| bytes.into_value().len()),
+            Some(0)
+        );
+        assert_eq!(
+            queue
+                .pop(MAX_DATAGRAMS)
+                .map(|(bytes, _)| bytes.into_value().len()),
+            Some(65_535)
+        );
     }
 
     #[test]
@@ -369,15 +404,25 @@ mod unix_datagram_queue_tests {
         let mut queue = DatagramQueue::new();
         for cycle in 0..64 {
             for offset in 0..MAX_DATAGRAMS {
-                queue.push(cycle * MAX_DATAGRAMS + offset).ok().unwrap();
+                queue
+                    .push(
+                        PreparedDatagram::new(cycle * MAX_DATAGRAMS + offset)
+                            .ok()
+                            .unwrap(),
+                        MAX_DATAGRAMS,
+                    )
+                    .ok()
+                    .unwrap();
             }
-            assert!(queue.is_full());
-            assert!(matches!(
-                queue.push(usize::MAX),
-                Err(PushError::Full(usize::MAX))
-            ));
+            assert!(queue.is_full(MAX_DATAGRAMS));
+            let rejected = queue.push(
+                PreparedDatagram::new(usize::MAX).ok().unwrap(),
+                MAX_DATAGRAMS,
+            );
+            assert_eq!(rejected.err().unwrap().into_value(), usize::MAX);
             for offset in 0..MAX_DATAGRAMS {
-                let (value, capacity_wake) = queue.pop().unwrap();
+                let (value, capacity_wake) = queue.pop(MAX_DATAGRAMS).unwrap();
+                let value = value.into_value();
                 assert_eq!(value, cycle * MAX_DATAGRAMS + offset);
                 assert_eq!(capacity_wake, offset == 0);
             }
@@ -389,14 +434,20 @@ mod unix_datagram_queue_tests {
     fn unix_datagram_take_all_detaches_the_complete_fifo() {
         let mut queue = DatagramQueue::new();
         for value in 0..MAX_DATAGRAMS {
-            queue.push(value).ok().unwrap();
+            queue
+                .push(PreparedDatagram::new(value).ok().unwrap(), MAX_DATAGRAMS)
+                .ok()
+                .unwrap();
         }
 
         let detached = queue.take_all();
 
         assert!(queue.is_empty());
         assert_eq!(
-            detached.into_iter().collect::<vec::Vec<_>>(),
+            detached
+                .into_iter()
+                .map(|(_, value)| *value)
+                .collect::<vec::Vec<_>>(),
             (0..MAX_DATAGRAMS).collect::<vec::Vec<_>>()
         );
     }

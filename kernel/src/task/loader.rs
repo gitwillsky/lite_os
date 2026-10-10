@@ -1,13 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{
-        AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, OpenedFile, RegularFile,
-        vfs,
-    },
+    fs::{AccessIdentity, FileSystemError, InodeMetadata, InodeType, OpenedFile, RegularFile, vfs},
     memory::{
         ElfLoadError, ExecutableImage, ExecutableParseError, ExecutableSource, InitialStack,
-        MemorySet, parse_interpreter_elf, parse_main_elf,
+        InitialStackCredentials, MemorySet, parse_interpreter_elf, parse_main_elf,
     },
 };
 
@@ -17,10 +14,13 @@ pub(crate) const EXEC_ARGUMENT_BYTES_LIMIT: usize = 128 * 1024;
 /// pathname、script rewrite、权限检查与 ELF mapping plan 的完整加载结果。
 pub(crate) struct LoadedExecutable {
     image: ExecutableImage,
-    executable: Arc<OpenedFile>,
     arguments: Vec<Vec<u8>>,
     execfn: Vec<u8>,
     credentials: InodeMetadata,
+    file_capability: Option<syscall_abi::file_capability::FileCapabilityData>,
+    readable: bool,
+    // interpreter deny-write 持续到 image 构造完成；其 VMA 不延长这份加载期租约。
+    _interpreter_access: Option<Arc<ExecutableOpenLease>>,
 }
 
 impl LoadedExecutable {
@@ -40,6 +40,7 @@ impl LoadedExecutable {
     pub(super) fn build_address_space(
         &self,
         environments: &[Vec<u8>],
+        credentials: InitialStackCredentials,
         stack_limit: u64,
         address_space_limit: u64,
         data_limit: u64,
@@ -54,6 +55,7 @@ impl LoadedExecutable {
         MemorySet::from_elf(
             &self.image,
             InitialStack {
+                credentials,
                 arguments: &self.arguments,
                 environments,
                 execfn: &self.execfn,
@@ -74,17 +76,20 @@ impl LoadedExecutable {
         &self.execfn
     }
 
-    /// 返回最终 ELF 的稳定 opened-entry identity，供 `/proc/<pid>/exe` 投影。
-    ///
-    /// # Returns
-    ///
-    /// main ELF 对应的 VFS opened entry；script rewrite 已解析到实际 interpreter。
-    pub(super) fn executable(&self) -> Arc<OpenedFile> {
-        self.executable.clone()
+    /// main ELF 与实际 PT_INTERP 的 MAY_READ 结果，供 exec mm dumpability使用。
+    pub(super) fn readable(&self) -> bool {
+        self.readable
     }
 
     pub(super) fn credential_metadata(&self) -> InodeMetadata {
         self.credentials
+    }
+
+    /// 最终main ELF实际path上的immutable file-cap快照；script与PT_INTERP不提供exec凭据。
+    pub(super) fn file_capability(
+        &self,
+    ) -> Option<syscall_abi::file_capability::FileCapabilityData> {
+        self.file_capability
     }
 }
 
@@ -107,9 +112,30 @@ pub(crate) enum ProgramLoadError {
     ArgumentListTooLong,
 }
 
+/// Actual executable-open lease；与随机读取 source 分离，只有 main mm 长期持有 deny-write。
+pub(super) struct ExecutableOpenLease {
+    _denial: crate::fs::InodeAccessLease,
+    _opened: Arc<crate::fs::OpenedFile>,
+}
+impl ExecutableOpenLease {
+    pub(super) fn opened(&self) -> Arc<OpenedFile> {
+        self._opened.clone()
+    }
+}
+impl core::fmt::Debug for ExecutableOpenLease {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ExecutableOpenLease")
+            .finish_non_exhaustive()
+    }
+}
+impl crate::memory::MappedFileOwner for ExecutableOpenLease {}
+
 struct InodeExecutableSource {
+    // Storage inode/cache pins retire before the actual path releases its filesystem/view lease.
     file: RegularFile,
     length: usize,
+    _opened: Arc<crate::fs::OpenedFile>,
 }
 
 impl ExecutableSource for InodeExecutableSource {
@@ -142,7 +168,7 @@ struct ScriptRewrite {
 ///
 /// # Parameters
 ///
-/// - `working_directory`: relative pathname 与 relative script interpreter 的解析起点。
+/// - `origin`: relative pathname 与 relative script interpreter 的解析起点。
 /// - `path`: 用户传入且不含 NUL 的原始 exec pathname；成功后成为 AT_EXECFN。
 /// - `arguments`: 已从 userspace 完整复制的 argv。
 /// - `argument_bytes`: 当前 argv/envp 的受限 byte accounting。
@@ -155,7 +181,8 @@ struct ScriptRewrite {
 ///
 /// 返回 pathname、权限、资源、argument limit、interpreter loop 或格式错误。
 pub(crate) fn load_executable(
-    working_directory: Arc<OpenedFile>,
+    origin: crate::fs::LookupOrigin,
+    namespace: &Arc<crate::fs::MountNamespace>,
     path: Vec<u8>,
     mut arguments: Vec<Vec<u8>>,
     mut argument_bytes: usize,
@@ -168,18 +195,22 @@ pub(crate) fn load_executable(
     let mut current_path = path;
     for rewrite_count in 0..=MAX_SCRIPT_REWRITES {
         let executable = vfs()
-            .open_file_at(Some(working_directory.clone()), &current_path, identity)
+            .open_file_at(origin.clone(), &current_path, identity)
             .map_err(ProgramLoadError::FileSystem)?;
         let inode = executable.inode();
+        // may_open 的初次 DAC 检查先于 deny-write；身份授权 tuple 只能在实际 execution lease 后捕获。
+        identity
+            .require(inode.metadata().map_err(ProgramLoadError::FileSystem)?, 1)
+            .map_err(ProgramLoadError::FileSystem)?;
+        let (executable_source, execution_owner) = source(&executable)?;
+        // Writer 在初次检查后仍可能清除 set-ID 并关闭；此处重取同一 canonical owner 的 live tuple。
         let mut metadata = inode.metadata().map_err(ProgramLoadError::FileSystem)?;
-        if vfs().mount_flags(inode.filesystem_id()).nosuid() {
-            // nosuid 挂载上的 set-id 位在 exec 时被忽略（Linux `bprm_fill_uid`）。
-            metadata.mode &= !0o6000;
-        }
         identity
             .require(metadata, 1)
             .map_err(ProgramLoadError::FileSystem)?;
-        let executable_source = source(inode)?;
+        if !executable.may_suid(namespace, &identity.user_namespace()) {
+            metadata.mode &= !0o6000;
+        }
         if let Some(header) = parse_script_header(executable_source.as_ref())? {
             if rewrite_count == MAX_SCRIPT_REWRITES {
                 return Err(ProgramLoadError::InterpreterLoop);
@@ -191,30 +222,51 @@ pub(crate) fn load_executable(
             continue;
         }
         let (main, interpreter_path) = parse_main_elf(executable_source).map_err(parse_error)?;
+        let file_capability = executable
+            .executable_capability(namespace, &identity.user_namespace())
+            .map_err(ProgramLoadError::FileSystem)?;
+        let mut readable = identity.permits(metadata, 4);
+        let mut interpreter_access = None;
         let interpreter = interpreter_path
             .map(|path| {
-                let inode = vfs()
-                    .open_file_at(Some(working_directory.clone()), &path, identity)
-                    .map_err(ProgramLoadError::FileSystem)?
-                    .inode();
-                identity
-                    .require(inode.metadata().map_err(ProgramLoadError::FileSystem)?, 1)
+                let opened = vfs()
+                    .open_file_at(origin.clone(), &path, identity)
                     .map_err(ProgramLoadError::FileSystem)?;
-                parse_interpreter_elf(source(inode)?).map_err(parse_error)
+                let inode = opened.inode();
+                let interpreter_metadata =
+                    inode.metadata().map_err(ProgramLoadError::FileSystem)?;
+                identity
+                    .require(interpreter_metadata, 1)
+                    .map_err(ProgramLoadError::FileSystem)?;
+                let (source, access) = source(&opened)?;
+                let interpreter_metadata =
+                    inode.metadata().map_err(ProgramLoadError::FileSystem)?;
+                identity
+                    .require(interpreter_metadata, 1)
+                    .map_err(ProgramLoadError::FileSystem)?;
+                readable &= identity.permits(interpreter_metadata, 4);
+                let interpreter = parse_interpreter_elf(source).map_err(parse_error)?;
+                interpreter_access = Some(access);
+                Ok(interpreter)
             })
             .transpose()?;
         return Ok(LoadedExecutable {
-            image: ExecutableImage::new(main, interpreter),
-            executable,
+            image: ExecutableImage::new(main, interpreter, execution_owner),
+            _interpreter_access: interpreter_access,
             arguments,
             execfn,
             credentials: metadata,
+            file_capability,
+            readable,
         });
     }
     unreachable!("script rewrite loop exits through success or explicit limit")
 }
 
-fn source(inode: Arc<dyn Inode>) -> Result<Arc<dyn ExecutableSource>, ProgramLoadError> {
+fn source(
+    opened: &Arc<crate::fs::OpenedFile>,
+) -> Result<(Arc<dyn ExecutableSource>, Arc<ExecutableOpenLease>), ProgramLoadError> {
+    let inode = opened.inode();
     if inode.inode_type() != InodeType::File {
         return Err(ProgramLoadError::NotRegularFile);
     }
@@ -222,15 +274,27 @@ fn source(inode: Arc<dyn Inode>) -> Result<Arc<dyn ExecutableSource>, ProgramLoa
         return Err(ProgramLoadError::NotExecutable);
     }
     // Linux `may_open` 对 exec 的检查：noexec 挂载上的文件（含解释器）一律拒绝。
-    if vfs().mount_flags(inode.filesystem_id()).noexec() {
+    if opened.mount_flags().noexec() {
         return Err(ProgramLoadError::FileSystem(FileSystemError::AccessDenied));
     }
+    let denial = crate::fs::InodeAccessLease::execute(inode.clone())
+        .map_err(ProgramLoadError::FileSystem)?;
+    let owner = Arc::try_new(ExecutableOpenLease {
+        _denial: denial,
+        _opened: opened.clone(),
+    })
+    .map_err(|_| ProgramLoadError::OutOfMemory)?;
+    opened.touch_access();
     let length = usize::try_from(inode.size())
         .map_err(|_| ProgramLoadError::FileSystem(FileSystemError::IoError))?;
     let file = RegularFile::from_inode(inode).map_err(ProgramLoadError::FileSystem)?;
-    let source = Arc::try_new(InodeExecutableSource { file, length })
-        .map_err(|_| ProgramLoadError::OutOfMemory)?;
-    Ok(source)
+    let source = Arc::try_new(InodeExecutableSource {
+        file,
+        length,
+        _opened: opened.clone(),
+    })
+    .map_err(|_| ProgramLoadError::OutOfMemory)?;
+    Ok((source, owner))
 }
 
 fn parse_script_header(

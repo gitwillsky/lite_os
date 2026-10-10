@@ -22,6 +22,44 @@ impl MemorySet {
         fixed_noreplace: bool,
         address_space_limit: u64,
     ) -> Result<usize, MemoryError> {
+        self.map_anonymous_shared_source(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            address_space_limit,
+            None,
+        )
+    }
+
+    /// 使用 IPC 已授权的实际共享 backing；计数只由新 MapArea 持有。
+    pub(crate) fn map_system_v_shared_memory(
+        &mut self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        source: crate::memory::SharedMemoryMappingSource,
+        address_space_limit: u64,
+    ) -> Result<usize, MemoryError> {
+        self.map_anonymous_shared_source(
+            address,
+            length,
+            permission,
+            address != 0,
+            address_space_limit,
+            Some(source),
+        )
+    }
+
+    fn map_anonymous_shared_source(
+        &mut self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+        address_space_limit: u64,
+        source: Option<crate::memory::SharedMemoryMappingSource>,
+    ) -> Result<usize, MemoryError> {
         if length == 0
             || !permission.contains(MapPermission::U)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
@@ -58,13 +96,83 @@ impl MemorySet {
             self.find_free_user_range(VirtualAddress::from(Self::MMAP_BASE).floor(), page_count)
                 .ok_or(MemoryError::OutOfMemory)?
         };
-        let backing = AnonymousSharedBacking::allocate(page_count)?;
+        let shared = if let Some(source) = source {
+            if source.backing.page_count != page_count
+                || permission.contains(MapPermission::W) && !source.may_write
+            {
+                return Err(MemoryError::PermissionDenied);
+            }
+            SharedAnonymousArea {
+                backing: source.backing.clone(),
+                page_offset: 0,
+                sysv: Some(crate::memory::shared_memory::SharedMemoryVmaMembership::new(source)),
+            }
+        } else {
+            SharedAnonymousArea {
+                backing: AnonymousSharedBacking::allocate(page_count)?,
+                page_offset: 0,
+                sysv: None,
+            }
+        };
         let start = usize::from(VirtualAddress::from(range.start));
         let end = usize::from(VirtualAddress::from(range.end));
         self.push(
-            MapArea::shared_anonymous(start.into(), end.into(), permission, backing),
+            MapArea::shared_anonymous(start.into(), end.into(), permission, shared),
             None,
         )?;
         Ok(start)
+    }
+
+    /// shmdt 只摘除同一次 shmat 的实际 VMA fragments，保留期间覆盖的其他映射。
+    /// 原起点的一部分已 munmap 时仍可由 page_offset 找到余下 fragments。
+    pub(crate) fn prepare_shared_memory_detach(
+        &mut self,
+        address: usize,
+    ) -> Result<PreparedAreaRetirement, MemoryError> {
+        if !VirtualAddress::from(address).is_aligned() || address >= config::USER_ADDRESS_END {
+            return Err(MemoryError::InvalidRange);
+        }
+        let start = VirtualAddress::from(address).floor();
+        let (lifetime, page_count) = self
+            .areas
+            .iter_from(&start)
+            .find_map(|(_, area)| {
+                let shared = area.shared_anonymous.as_ref()?;
+                let membership = shared.sysv.as_ref()?;
+                (area
+                    .vpn_range
+                    .start
+                    .as_usize()
+                    .checked_sub(start.as_usize())
+                    == Some(shared.page_offset))
+                .then(|| (membership.lifetime.clone(), shared.backing.page_count))
+            })
+            .ok_or(MemoryError::InvalidRange)?;
+        let end = start
+            .as_usize()
+            .checked_add(page_count)
+            .ok_or(MemoryError::InvalidRange)?;
+        let mut keys = Vec::new();
+        for (key, area) in self.areas.iter_from(&start) {
+            if area.vpn_range.end.as_usize() > end {
+                break;
+            }
+            if let Some(shared) = &area.shared_anonymous
+                && let Some(membership) = &shared.sysv
+                && Arc::ptr_eq(&membership.lifetime, &lifetime)
+                && key.as_usize().checked_sub(start.as_usize()) == Some(shared.page_offset)
+            {
+                keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
+                keys.push(*key);
+            }
+        }
+        let mut retired = Vec::new();
+        retired
+            .try_reserve_exact(keys.len())
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        for key in keys {
+            retired.push(self.remove_area(&key).expect("preflighted shm fragment"));
+        }
+        Ok(PreparedAreaRetirement::batch(retired, &mut self.page_table))
     }
 }

@@ -17,7 +17,8 @@ fn read_regular_descriptor(
     };
     // 单个 sequential read 唯一持有 OFD offset；缺失该 ownership 会让共享 OFD
     // 的并发 reader 在 chunks 之间穿插，使一次 operation 返回不连续的文件区间。
-    ofd.with_position(|offset| read_regular_vectors(task, &file, offset, vectors))
+    ofd.with_position(|offset| read_regular_vectors(task, ofd, &file, offset, vectors))
+        .unwrap_or_else(crate::syscall::fs::position_error)
 }
 
 /// 执行 scalar/readv 共用的唯一 sequential read descriptor dispatch。
@@ -38,21 +39,15 @@ pub(super) fn read_descriptor(
     vectors: &[UserIoVec],
     total_length: usize,
 ) -> isize {
-    if total_length == 0 {
-        return 0;
-    }
     match &ofd.kind {
-        OpenFileKind::Inode(opened) => {
-            let result = read_regular_descriptor(task, ofd, opened.inode(), vectors);
-            if result > 0 {
-                crate::fs::notify_opened(opened, crate::fs::IN_ACCESS);
-            }
-            result
-        }
-        OpenFileKind::MemFile(file) => read_regular_descriptor(task, ofd, file.clone(), vectors),
+        OpenFileKind::Inode => read_regular_descriptor(task, ofd, ofd.inode_ref(), vectors),
         OpenFileKind::Pipe(endpoint) => {
             if endpoint.direction() != PipeDirection::Read {
                 return -errno::EBADF;
+            }
+            // Native pipe_read 空 iterator 不观察队列或进入等待；最小记录文件由各自 owner 校验。
+            if total_length == 0 {
+                return 0;
             }
             let mut input = match ReceiveBuffer::try_new(total_length.min(64 * 1024)) {
                 Ok(input) => input,
@@ -80,27 +75,30 @@ pub(super) fn read_descriptor(
             scatter_result(&cursor, result)
         }
         OpenFileKind::Socket(socket) => {
+            let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
             // 1. Socket facade 从唯一 protocol policy 投影 bounded useful capacity。
-            let capacity = socket.receive_staging_capacity(total_length, 64 * 1024);
-            let mut input = match ReceiveBuffer::try_new(capacity) {
+            let mut input = match socket.prepare_receive(total_length, 64 * 1024) {
                 Ok(input) => input,
-                Err(()) => return -errno::ENOMEM,
+                Err(error) => return crate::syscall::socket::socket_error(error),
             };
             // 2. 一个 sequential read 只消费一次 socket receive operation；逐 chunk 调用
             // backend 会让 datagram 丢失消息边界，并让 stream 的 blocking 语义分裂。
+            let deadline = socket
+                .timeout(crate::socket::SocketIoDirection::Receive)
+                .deadline(crate::timer::get_time_ns());
             let read = loop {
-                match socket.read(&mut input) {
+                match socket.read(&mut input, nonblocking) {
                     Ok(read) => break read,
-                    Err(crate::socket::SocketError::Again)
-                        if ofd.status_flags() & O_NONBLOCK != 0 =>
-                    {
+                    Err(crate::socket::SocketError::Again) if nonblocking => {
                         return -errno::EAGAIN;
                     }
                     Err(crate::socket::SocketError::Again) => {
-                        match crate::syscall::poll::wait_for_ofd(ofd, 1) {
+                        match crate::syscall::poll::wait_for_ofd(ofd, 1, deadline) {
                             WaitResult::Woken => {}
-                            WaitResult::Interrupted => return -errno::EINTR,
-                            WaitResult::TimedOut => unreachable!(),
+                            WaitResult::Interrupted => {
+                                return crate::syscall::socket::interrupted_wait(deadline);
+                            }
+                            WaitResult::TimedOut => return -errno::EAGAIN,
                             WaitResult::OutOfMemory => return -errno::ENOMEM,
                         }
                     }
@@ -132,7 +130,7 @@ pub(super) fn read_descriptor(
                         return -errno::EAGAIN;
                     }
                     crate::ipc::EventFdRead::Empty => {
-                        match crate::syscall::poll::wait_for_ofd(ofd, 1) {
+                        match crate::syscall::poll::wait_for_ofd(ofd, 1, None) {
                             WaitResult::Woken => {}
                             WaitResult::Interrupted => return -errno::EINTR,
                             WaitResult::TimedOut => unreachable!(),
@@ -146,6 +144,42 @@ pub(super) fn read_descriptor(
                 return -errno::EFAULT;
             }
             size as isize
+        }
+        OpenFileKind::SignalFd(signal) => {
+            if total_length < 128 {
+                return -errno::EINVAL;
+            }
+            let mut cursor = UserIoCursor::new(vectors);
+            for _ in 0..total_length / 128 {
+                let notification = loop {
+                    if let Some(notification) = task.read_signal_notification(signal.mask()) {
+                        break notification;
+                    }
+                    if cursor.completed() != 0 || ofd.status_flags() & O_NONBLOCK != 0 {
+                        return if cursor.completed() != 0 {
+                            cursor.completed() as isize
+                        } else {
+                            -errno::EAGAIN
+                        };
+                    }
+                    match crate::syscall::poll::wait_for_ofd(ofd, 1, None) {
+                        WaitResult::Woken => {}
+                        WaitResult::Interrupted => return -errno::EINTR,
+                        WaitResult::TimedOut => unreachable!(),
+                        WaitResult::OutOfMemory => return -errno::ENOMEM,
+                    }
+                };
+                // Native dequeue 先于 copyout；EFAULT 消费当前 signal，但只报告已完成的整条记录。
+                let completed = cursor.completed();
+                if cursor.copy_to_user(task, &notification).is_err() {
+                    return if completed != 0 {
+                        completed as isize
+                    } else {
+                        -errno::EFAULT
+                    };
+                }
+            }
+            cursor.completed() as isize
         }
         OpenFileKind::TimerFd(timer) => {
             let size = mem::size_of::<u64>();
@@ -163,7 +197,7 @@ pub(super) fn read_descriptor(
                         return -errno::EAGAIN;
                     }
                     crate::file::TimerFdRead::Empty => {
-                        match crate::syscall::poll::wait_for_ofd(ofd, 1) {
+                        match crate::syscall::poll::wait_for_ofd(ofd, 1, None) {
                             WaitResult::Woken => {}
                             WaitResult::Interrupted => return -errno::EINTR,
                             WaitResult::TimedOut => unreachable!(),

@@ -67,6 +67,13 @@
   `/dev/tty` 按调用者 controlling terminal 的设备号重开底层设备。PTY registry、pair 与 Terminal
   session/foreground/winsize 各守自己的 seam；job control 只经 task 安装的 `JobControl`；控制面使用标准
   PTY、termios、ANSI/ECMA-48。
+- PTY index registry 使用单一 AVL owner；pair、Terminal、Pipe 和索引 node 都在自旋锁外准备，
+  发布只重验候选索引并原子替换退休 weak slot；devpts 枚举也先在锁外准备容量再重验。
+  actual master fput 发布 master closed、关闭输出 reader、唤醒两端并锁外交付一次 hangup；
+  每个独立 slave open 的 admission 在 actual fput 归还一次。观察 backend 的 Arc 不延迟 hangup，
+  也不阻止两端全部关闭后的 index 复用。失败准备不发布任何 slot 或 slave admission。
+  此变更只影响 cold open/getdents，不增加 byte-stream 热路径成本；不新增独立性能阈值，
+  由实际 owner 的 OOM、观察者、重开和重复 close 回归用例验证。
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
   [图形会话与 LiteUI](lite-runtime.md) 唯一维护；本文件只拥有 kernel device 与 PTY 事实。
 

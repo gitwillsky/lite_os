@@ -1,36 +1,15 @@
 use super::*;
 use core::sync::atomic::Ordering;
 
-impl Process {
-    /// 取得当前 Process 唯一 AddressSpace handle 的保活引用。
-    pub(in crate::task::model) fn address_space(&self) -> Arc<AddressSpace> {
-        self.address_space.lock().clone()
-    }
-
-    /// 在 exec commit point 原子替换 AddressSpace handle。
-    ///
-    /// # Returns
-    ///
-    /// 替换前的 owner。
-    pub(in crate::task::model) fn replace_address_space(
-        &self,
-        replacement: Arc<AddressSpace>,
-    ) -> Arc<AddressSpace> {
-        core::mem::replace(&mut *self.address_space.lock(), replacement)
-    }
-}
-
 impl TaskControlBlock {
     pub(in crate::task) fn register_private_memory_barrier(&self) {
-        self.process()
-            .address_space()
+        self.address_space()
             .private_memory_barrier_registered
             .store(true, Ordering::Release);
     }
 
     pub(in crate::task) fn private_memory_barrier_registered(&self) -> bool {
-        self.process()
-            .address_space()
+        self.address_space()
             .private_memory_barrier_registered
             .load(Ordering::Acquire)
     }
@@ -40,11 +19,8 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [u8],
     ) -> Result<(), UserAccessError> {
-        self.process().address_space().copy_from_user(
-            user_address,
-            destination,
-            self.user_fault_limits(),
-        )
+        self.address_space()
+            .copy_from_user(user_address, destination, self.user_fault_limits())
     }
 
     /// 直接初始化 syscall-owned staging；成功前 caller 不得读取 destination。
@@ -53,7 +29,7 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [core::mem::MaybeUninit<u8>],
     ) -> Result<(), UserAccessError> {
-        self.process().address_space().copy_from_user_uninit(
+        self.address_space().copy_from_user_uninit(
             user_address,
             destination,
             self.user_fault_limits(),
@@ -65,7 +41,7 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [u8; 2],
     ) -> Result<(), UserAccessError> {
-        self.process().address_space().copy_instruction_halfword(
+        self.address_space().copy_instruction_halfword(
             user_address,
             destination,
             self.user_fault_limits(),
@@ -77,8 +53,7 @@ impl TaskControlBlock {
         user_address: usize,
         source: &[u8],
     ) -> Result<(), UserAccessError> {
-        self.process()
-            .address_space()
+        self.address_space()
             .copy_to_user(user_address, source, self.user_fault_limits())
     }
 
@@ -87,8 +62,7 @@ impl TaskControlBlock {
         user_address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.process()
-            .address_space()
+        self.address_space()
             .zero_user(user_address, length, self.user_fault_limits())
     }
 
@@ -97,19 +71,19 @@ impl TaskControlBlock {
         user_address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.process().address_space().validate_user_write(
-            user_address,
-            length,
-            self.user_fault_limits(),
-        )
+        self.address_space()
+            .validate_user_write(user_address, length, self.user_fault_limits())
+    }
+
+    /// proc cmdline 从此实际 Thread 的 MM 读取；leader 退出不能让 sibling 借已退休 leader 的 MM。
+    pub(in crate::task) fn proc_arguments(&self) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
+        self.mm_snapshot()
+            .map_or_else(|| Ok(alloc::vec::Vec::new()), |mm| mm.process_arguments())
     }
 
     pub(in crate::task) fn write_clone_tid_values(&self, addresses: [Option<usize>; 2], tid: i32) {
-        self.process().address_space().write_clone_tid_values(
-            addresses,
-            tid,
-            self.user_fault_limits(),
-        )
+        self.address_space()
+            .write_clone_tid_values(addresses, tid, self.user_fault_limits())
     }
 
     pub(crate) fn copy_user_c_string(
@@ -117,16 +91,13 @@ impl TaskControlBlock {
         user_address: usize,
         max_len: usize,
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.process().address_space().copy_user_c_string(
-            user_address,
-            max_len,
-            self.user_fault_limits(),
-        )
+        self.address_space()
+            .copy_user_c_string(user_address, max_len, self.user_fault_limits())
     }
 
     /// 返回当前 AddressSpace 生命周期内不变的 arch token。
     pub(crate) fn user_token(&self) -> crate::arch::mmu::AddressSpaceToken {
-        self.process().address_space().token
+        self.address_space().token.clone()
     }
 
     pub(crate) fn with_futex_key<R>(
@@ -135,12 +106,8 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process().address_space().with_futex_key(
-            address,
-            private,
-            self.user_fault_limits(),
-            consume,
-        )
+        self.address_space()
+            .with_futex_key(address, private, self.user_fault_limits(), consume)
     }
 
     pub(crate) fn with_futex_word<R>(
@@ -149,12 +116,8 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process().address_space().with_futex_word(
-            address,
-            private,
-            self.user_fault_limits(),
-            consume,
-        )
+        self.address_space()
+            .with_futex_word(address, private, self.user_fault_limits(), consume)
     }
 
     pub(crate) fn with_futex_requeue<R>(
@@ -162,9 +125,28 @@ impl TaskControlBlock {
         source: usize,
         target: usize,
         private: bool,
-        consume: impl FnOnce(FutexKey, FutexKey, u32) -> R,
-    ) -> Result<R, UserAccessError> {
-        self.process().address_space().with_futex_requeue(
+        read_source: bool,
+        consume: impl FnOnce(FutexKey, FutexKey, Option<u32>) -> R,
+    ) -> Result<R, crate::memory::FutexAccessError> {
+        self.address_space().with_futex_requeue(
+            source,
+            target,
+            private,
+            self.user_fault_limits(),
+            read_source,
+            consume,
+        )
+    }
+
+    /// task futex owner 的 scoped MM transaction；不向 syscall 暴露 MemorySet guard。
+    pub(in crate::task) fn with_futex_wake_op<R>(
+        &self,
+        source: usize,
+        target: usize,
+        private: bool,
+        consume: impl FnOnce(FutexKey, FutexKey, &mut MemorySet) -> R,
+    ) -> Result<R, crate::memory::FutexAccessError> {
+        self.address_space().with_futex_wake_op(
             source,
             target,
             private,
@@ -172,39 +154,36 @@ impl TaskControlBlock {
             consume,
         )
     }
+}
 
-    pub(in crate::task) fn process_arguments(
+// Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
+impl super::Process {
+    pub(in crate::task) fn process_statistics(
         &self,
-    ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.process().address_space().process_arguments()
-    }
-
-    /// 从 Process 与 AddressSpace owner 取得一次 procfs 统计快照。
-    ///
-    /// # Errors
-    ///
-    /// comm 或 task-mutex waiter storage OOM 时返回错误。
-    pub(in crate::task) fn process_statistics(&self) -> Result<ProcessStatistics, ()> {
-        let (virtual_pages, resident_pages, shared_pages, text_pages, data_pages) = self
-            .process()
-            .address_space()
-            .page_statistics()
-            .map_err(|_| ())?;
-        let comm = self.process().comm.lock();
-        let mut comm_snapshot = alloc::vec::Vec::new();
-        comm_snapshot
-            .try_reserve_exact(comm.len())
-            .map_err(|_| ())?;
-        comm_snapshot.extend_from_slice(&comm);
+        threads: &[Arc<TaskControlBlock>],
+    ) -> Result<ProcessStatistics, ()> {
+        let leader_mm = self.process_address_space();
+        let has_mm = leader_mm.is_some();
+        // THREAD 必须共享 VM；group common projection 只扫描一次，leader None 时 worker 仍可有 mm。
+        let mm = leader_mm.or_else(|| threads.iter().find_map(|thread| thread.mm_snapshot()));
+        let pages = match mm {
+            Some(mm) => mm.page_statistics().map_err(|_| ())?,
+            None => crate::memory::UserPageStatistics::default(),
+        };
+        let comm_snapshot = self.comm_snapshot().map_err(|_| ())?;
         Ok(ProcessStatistics {
             comm: comm_snapshot,
-            start_time_us: self.process().start_time_us,
-            virtual_pages,
-            resident_pages,
-            shared_pages,
-            text_pages,
-            data_pages,
-            fd_size: self.process().files.lock().slot_capacity(),
+            has_mm,
+            start_time_us: self.start_time_us,
+            virtual_pages: pages.virtual_pages,
+            resident_pages: pages.resident_pages,
+            shared_pages: pages.shared_pages,
+            text_pages: pages.text_pages,
+            data_pages: pages.data_pages,
+            swapped_pages: pages.swapped_pages,
+            fd_size: self
+                .with_process_files(|files| files.slot_capacity())
+                .unwrap_or(0),
         })
     }
 }

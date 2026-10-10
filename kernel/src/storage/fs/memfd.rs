@@ -1,101 +1,145 @@
-//! Linux memfd anonymous file：一个只有名字和 seal 语义的 [`MemoryFile`] inode。
+//! Linux memfd 的真实 regular inode；诊断名字属于 opened dentry，内容和 seals 属于 MemoryFile。
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 use super::{
-    CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError, Inode,
-    InodeMetadata, InodeType, MemoryFile, OpenedFile, OwnerModeChange, PageBudget,
+    AccessIdentity, CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError,
+    FileSystemStatistics, Inode, InodeMetadata, InodeType, MemoryFile, OpenedFile, OwnerModeChange,
+    StorageBudget, anonymous::PseudoFileSystem, permission::OwnerModeState, xattr::Xattrs,
 };
 use crate::memory::SharedFileId;
+use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
-const MEMFD_FILESYSTEM_ID: usize = 6;
+/// 实际memfd inode的唯一attribute owner。沿MemoryFile write sequence→state→times锁序；
+/// 属性分配/namespace授权只在task mutex内进行，不在旧pseudo metadata spin临界区执行。
+struct MemFileState {
+    owner: OwnerModeState,
+    xattrs: Xattrs,
+    times: super::inode_times::TimeOwner,
+}
 
 /// `memfd_create` 产生的 anonymous regular inode。
 pub(crate) struct MemFile {
     inode: u64,
-    name: Box<[u8]>,
+    state: TaskMutex<MemFileState>,
     file: Arc<MemoryFile>,
+    write_access: super::InodeWriteAccess,
 }
 
 impl MemFile {
-    /// 创建空 anonymous file。
+    fn state(&self) -> Result<TaskMutexGuard<'_, MemFileState>, FileSystemError> {
+        self.state.lock().map_err(|_| FileSystemError::OutOfMemory)
+    }
+    fn kill_write_privileges(state: &mut MemFileState, identity: &AccessIdentity) {
+        let kill = identity.write_kill_mask(InodeType::File, state.owner.mode(), state.owner.gid());
+        let capability_removed = state.xattrs.kill_capability().is_some();
+        if kill != 0 || capability_removed {
+            state.owner = OwnerModeState::new(
+                InodeType::File,
+                state.owner.mode() & !kill,
+                state.owner.uid(),
+                state.owner.gid(),
+            );
+            state
+                .times
+                .change_at(crate::timer::get_realtime_ns() / 1_000_000_000);
+        }
+    }
+    /// 用 creator FSCREDS 创建空 regular inode 及唯一 diagnostic dentry。
     ///
-    /// # Parameters
-    ///
-    /// - `name`: `/proc/<pid>/fd` 使用的 Linux memfd diagnostic name。
-    /// - `allow_sealing`: 未设置 `MFD_ALLOW_SEALING` 时初始带 `F_SEAL_SEAL`。
-    ///
-    /// # Returns
-    ///
-    /// 新 memfd inode owner；内容只受物理内存限制。
-    pub(crate) fn new(name: Vec<u8>, allow_sealing: bool) -> Result<Arc<Self>, FileSystemError> {
+    /// `allow_sealing` 决定初始 F_SEAL_SEAL；名字不进入 namespace 索引。
+    /// 分配失败返回 OutOfMemory，未发布的 content/inode 由 Arc 回收。
+    pub(crate) fn create_opened(
+        name: Vec<u8>,
+        allow_sealing: bool,
+        creator: &AccessIdentity,
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
         let inode = crate::id::next_runtime_object_id();
         let file = MemoryFile::new(
             SharedFileId {
-                filesystem: MEMFD_FILESYSTEM_ID,
+                filesystem: PseudoFileSystem::Memory.id(),
                 inode,
             },
-            PageBudget::new(None)?,
+            StorageBudget::new(None, None)?,
             allow_sealing,
         )?;
-        Arc::try_new(Self {
+        let mut label = Vec::new();
+        label
+            .try_reserve_exact(7 + name.len() + 10)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        label.extend_from_slice(b"/memfd:");
+        label.extend_from_slice(&name);
+        label.extend_from_slice(b" (deleted)");
+        let inode = Arc::try_new(Self {
             inode,
-            name: name.into_boxed_slice(),
+            state: TaskMutex::new(MemFileState {
+                owner: OwnerModeState::new(InodeType::File, 0o100777, creator.uid(), creator.gid()),
+                xattrs: Xattrs::new(),
+                times: super::inode_times::TimeOwner::Memory(file.times()),
+            }),
             file,
+            write_access: super::InodeWriteAccess::new(),
         })
-        .map_err(|_| FileSystemError::OutOfMemory)
-    }
-
-    /// 原子追加受支持 seal。
-    ///
-    /// # Parameters
-    ///
-    /// - `seals`: `F_SEAL_SEAL|SHRINK|GROW` 子集。
-    ///
-    /// # Returns
-    ///
-    /// 新 seal mask。
-    ///
-    /// # Errors
-    ///
-    /// 已 sealed 或要求 WRITE/FUTURE_WRITE 等未实现语义时返回明确错误。
-    pub(crate) fn add_seals(&self, seals: u32) -> Result<u32, FileSystemError> {
-        self.file.add_seals(seals)
-    }
-
-    pub(crate) fn seals(&self) -> Result<u32, FileSystemError> {
-        self.file.seals()
-    }
-
-    pub(crate) fn name(&self) -> &[u8] {
-        &self.name
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        OpenedFile::anonymous(PseudoFileSystem::Memory, inode, label)
     }
 }
 
 impl Inode for MemFile {
+    fn read_xattr(&self, name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+        self.state()?.xattrs.get(name)
+    }
+    fn list_xattrs(&self, identity: &AccessIdentity) -> Result<Vec<u8>, FileSystemError> {
+        let trusted = identity.has_capability(syscall_abi::capability::Capability::SYS_ADMIN);
+        self.state()?
+            .xattrs
+            .list(|name| trusted || !name.starts_with(b"trusted."))
+    }
+    fn change_xattr(&self, mut change: super::XattrChange<'_>) -> Result<(), FileSystemError> {
+        let _writer = self.file.begin_write()?;
+        let mut state = self.state()?;
+        change.prepare(&state.owner, Ok(()))?;
+        let retired = state
+            .xattrs
+            .change(change.name, change.value, change.flags)?;
+        state
+            .times
+            .change_at(crate::timer::get_realtime_ns() / 1_000_000_000);
+        drop(state);
+        drop(retired);
+        Ok(())
+    }
+    fn write_access(&self) -> Option<&super::InodeWriteAccess> {
+        Some(&self.write_access)
+    }
+
     fn filesystem_id(&self) -> usize {
-        MEMFD_FILESYSTEM_ID
+        PseudoFileSystem::Memory.id()
     }
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
-        let size = self.size();
+        let state = self.state()?;
+        let times = state.times.snapshot();
         Ok(InodeMetadata {
-            filesystem: MEMFD_FILESYSTEM_ID as u64,
+            filesystem: PseudoFileSystem::Memory.id() as u64,
             inode: self.inode,
             kind: InodeType::File,
-            mode: 0o100777,
+            mode: u32::from(state.owner.mode()),
             links: 0,
-            uid: 0,
-            gid: 0,
-            size,
-            // 512-byte 单位的已分配块：稀疏文件的洞不占用。
-            blocks: self.file.resident_pages()? as u64 * 8,
+            uid: state.owner.uid(),
+            gid: state.owner.gid(),
+            size: self.size(),
+            blocks: self.file.allocated_pages()? as u64 * 8,
             block_size: 4096,
-            atime: 0,
-            mtime: self.file.modified_seconds(),
-            ctime: self.file.modified_seconds(),
+            atime: times.atime,
+            mtime: times.mtime,
+            ctime: times.ctime,
             device: None,
         })
+    }
+
+    fn pseudo_statistics(&self) -> Option<FileSystemStatistics> {
+        Some(PseudoFileSystem::Memory.statistics())
     }
 
     fn inode_type(&self) -> InodeType {
@@ -107,7 +151,8 @@ impl Inode for MemFile {
     }
 
     fn is_executable(&self) -> bool {
-        false
+        self.state()
+            .is_ok_and(|state| state.owner.mode() & 0o111 != 0)
     }
 
     fn data_backing(&self) -> DataBacking {
@@ -118,20 +163,84 @@ impl Inode for MemFile {
         self.file.read(offset, output)
     }
 
-    fn write_storage(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
-        self.file.begin_write()?.write(offset, input)
+    fn write_storage(
+        &self,
+        offset: u64,
+        input: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
+        let writer = self.file.begin_write()?;
+        if !input.is_empty() {
+            self.prepare_memory_write(&writer, identity)?;
+        }
+        writer.write(offset, input)
     }
 
-    fn append_storage(&self, input: &[u8]) -> Result<(u64, usize), FileSystemError> {
-        self.file.begin_write()?.append(input, u64::MAX)
+    fn prepare_memory_write(
+        &self,
+        writer: &super::memory_file::MemoryWrite<'_>,
+        identity: Option<&super::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        if !writer.belongs_to(&self.file) {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        if let Some(identity) = identity {
+            let mut state = self.state()?;
+            Self::kill_write_privileges(&mut state, identity);
+        }
+        Ok(())
     }
 
-    fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError> {
-        self.file.truncate(size)
+    fn append_storage(
+        &self,
+        input: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
+        let writer = self.file.begin_write()?;
+        if !input.is_empty() {
+            self.prepare_memory_write(&writer, identity)?;
+        }
+        writer.append(input, u64::MAX)
     }
 
-    fn allocate_storage(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
-        self.file.allocate(offset, length)
+    fn truncate_storage(
+        &self,
+        size: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        self.file.truncate_with_metadata(
+            size,
+            || {
+                if identity.is_some() {
+                    self.state().map(Some)
+                } else {
+                    Ok(None)
+                }
+            },
+            |state| {
+                if let (Some(state), Some(identity)) = (state.as_mut(), identity) {
+                    Self::kill_write_privileges(state, identity);
+                }
+            },
+        )
+    }
+
+    fn allocate_storage(
+        &self,
+        offset: u64,
+        length: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        // 页发布后不能再因metadata waiter分配失败保留capability，预留等待节点只供caller路径。
+        let mut wait = identity
+            .map(|_| TaskMutexWaitPreparation::prepare())
+            .transpose()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        self.file.allocate_with_metadata(offset, length, || {
+            if let (Some(identity), Some(wait)) = (identity, wait.as_mut()) {
+                Self::kill_write_privileges(&mut self.state.lock_prepared(wait), identity);
+            }
+        })
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
@@ -159,8 +268,42 @@ impl Inode for MemFile {
         Err(FileSystemError::NotDirectory)
     }
 
-    fn change_owner_mode(&self, _change: OwnerModeChange) -> Result<(), FileSystemError> {
-        Err(FileSystemError::PermissionDenied)
+    fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
+        let _writer = self.file.begin_write()?;
+        let mut state = self.state()?;
+        let owner = &state.owner;
+        let updated = change.authorize(OwnerModeState::new(
+            InodeType::File,
+            owner.mode(),
+            owner.uid(),
+            owner.gid(),
+        ))?;
+        state.owner = updated;
+        let retired = if change.kills_privileges(InodeType::File) {
+            state.xattrs.kill_capability()
+        } else {
+            None
+        };
+        state
+            .times
+            .change_at(crate::timer::get_realtime_ns() / 1_000_000_000);
+        drop(state);
+        drop(retired);
+        Ok(())
+    }
+
+    fn touch_access(&self, now: u64, relatime: bool) -> Result<(), FileSystemError> {
+        self.state()?.times.access_at(now, relatime);
+        Ok(())
+    }
+    fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
+        let _writer = self.file.begin_write()?;
+        self.state()?.times.set_at(
+            crate::timer::get_realtime_ns() / 1_000_000_000,
+            atime,
+            mtime,
+        );
+        Ok(())
     }
 
     fn unlink(&self, _name: &[u8], _remove_directory: bool) -> Result<(), FileSystemError> {
@@ -175,9 +318,5 @@ impl Inode for MemFile {
         _no_replace: bool,
     ) -> Result<(), FileSystemError> {
         Err(FileSystemError::NotDirectory)
-    }
-
-    fn follow_link(&self) -> Option<Arc<OpenedFile>> {
-        None
     }
 }

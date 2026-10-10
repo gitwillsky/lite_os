@@ -1,11 +1,20 @@
-use spin::Mutex;
+use crate::sync::TaskMutex;
+
+/// position acquisition 在任何 I/O 之前失败；invalid seek 与 same owner 不改变 offset。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PositionError {
+    OutOfMemory,
+    InvalidSeek,
+    SameOwner,
+}
 
 /// Linux open file description 的共享 file position owner。
 ///
 /// 所有依赖并推进同一 position 的操作都必须通过 `with` 保持一个临界区；只做
-/// snapshot 再另行写回会让 fork/dup 后的并发 I/O 丢失进度。双 OFD 操作使用
+/// snapshot 再另行写回会让 fork/dup 后的并发 I/O 丢失进度。owner 使用 TaskMutex，
+/// 因 operation 可等待用户 fault/文件系统锁；spin 会阻止同 CPU 的持锁任务恢复。双 OFD 操作使用
 /// `with_pair` 的地址全序，缺失该顺序会让反向 sendfile 形成 ABBA。
-pub(super) struct FilePosition(Mutex<u64>);
+pub(super) struct FilePosition(TaskMutex<u64>);
 
 impl FilePosition {
     /// 创建从零开始的 OFD position。
@@ -14,7 +23,7 @@ impl FilePosition {
     ///
     /// 不分配、初值为零的 position owner。
     pub(super) const fn new() -> Self {
-        Self(Mutex::new(0))
+        Self(TaskMutex::new(0))
     }
 
     /// 在该 OFD position 的唯一临界区内执行一次完整操作。
@@ -29,17 +38,21 @@ impl FilePosition {
     /// # Returns
     ///
     /// operation 的原始返回值。
-    pub(super) fn with<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> R {
-        operation(&mut self.0.lock())
+    pub(super) fn with<R>(
+        &self,
+        operation: impl FnOnce(&mut u64) -> R,
+    ) -> Result<R, PositionError> {
+        let mut guard = self.0.lock().map_err(|_| PositionError::OutOfMemory)?;
+        Ok(operation(&mut guard))
     }
 
-    /// 返回不推进 position 的瞬时快照。
+    /// 返回不推进 position 的瞬时快照；等待元数据 OOM 时不返回伪造 offset。
     ///
     /// # Returns
     ///
     /// 当前共享 position。
-    pub(super) fn snapshot(&self) -> u64 {
-        *self.0.lock()
+    pub(super) fn snapshot(&self) -> Result<u64, PositionError> {
+        self.with(|position| *position)
     }
 
     /// 原子计算并发布一个 Linux signed file position。
@@ -59,21 +72,25 @@ impl FilePosition {
     /// # Errors
     ///
     /// 结果为负或超出 `i64::MAX` 时返回错误。
-    pub(super) fn seek(&self, offset: i64, base: impl FnOnce(u64) -> u64) -> Result<u64, ()> {
+    pub(super) fn seek(
+        &self,
+        offset: i64,
+        base: impl FnOnce(u64) -> u64,
+    ) -> Result<u64, PositionError> {
         self.with(|position| {
             let value = i128::from(base(*position)) + i128::from(offset);
             if !(0..=i128::from(i64::MAX)).contains(&value) {
-                return Err(());
+                return Err(PositionError::InvalidSeek);
             }
             *position = value as u64;
             Ok(*position)
-        })
+        })?
     }
 
     /// 按稳定地址全序锁定两个不同的 OFD positions。
     ///
     /// closure 参数顺序始终与 `first`、`second` 一致，而非实际加锁顺序。两个参数
-    /// 指向同一 owner 时返回 `None`，避免递归获取同一 non-reentrant mutex。
+    /// 指向同一 owner 时返回 `SameOwner`，避免递归获取同一 non-reentrant mutex。
     ///
     /// # Parameters
     ///
@@ -83,23 +100,24 @@ impl FilePosition {
     ///
     /// # Returns
     ///
-    /// 两个 owner 不同时返回 operation 结果；相同时返回 `None`。
+    /// 两个 owner 不同时返回 operation 结果；相同时返回 SameOwner。第二次 acquisition
+    /// OOM 自动释放第一个 guard，callback 从未执行，不会发布一半 offset 或内容。
     pub(super) fn with_pair<R>(
         first: &Self,
         second: &Self,
         operation: impl FnOnce(&mut u64, &mut u64) -> R,
-    ) -> Option<R> {
+    ) -> Result<R, PositionError> {
         if core::ptr::eq(first, second) {
-            return None;
+            return Err(PositionError::SameOwner);
         }
         if (first as *const Self as usize) < (second as *const Self as usize) {
-            let mut first = first.0.lock();
-            let mut second = second.0.lock();
-            Some(operation(&mut first, &mut second))
+            let mut first = first.0.lock().map_err(|_| PositionError::OutOfMemory)?;
+            let mut second = second.0.lock().map_err(|_| PositionError::OutOfMemory)?;
+            Ok(operation(&mut first, &mut second))
         } else {
-            let mut second = second.0.lock();
-            let mut first = first.0.lock();
-            Some(operation(&mut first, &mut second))
+            let mut second = second.0.lock().map_err(|_| PositionError::OutOfMemory)?;
+            let mut first = first.0.lock().map_err(|_| PositionError::OutOfMemory)?;
+            Ok(operation(&mut first, &mut second))
         }
     }
 }

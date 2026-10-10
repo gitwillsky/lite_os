@@ -7,6 +7,9 @@ name = "architecture-bench"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
+ "smoltcp",
+ "spin",
+ "syscall-abi",
 ]
 
 [[package]]
@@ -137,6 +140,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
  "dtb-walker",
+ "smoltcp",
  "spin",
  "syscall-abi",
 ]
@@ -208,8 +212,6 @@ version = "0.1.0"
 [[package]]
 name = "smoltcp"
 version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f73d40463bba65efc9adc6370b56df76d563cc46e2482bba58351b4afb7535e"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",

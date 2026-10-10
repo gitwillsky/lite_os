@@ -231,15 +231,28 @@ impl Inode for DevInode {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_storage(
+        &self,
+        _offset: u64,
+        _buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    fn append_storage(
+        &self,
+        _buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn truncate_storage(&self, _size: u64) -> Result<(), FileSystemError> {
+    fn truncate_storage(
+        &self,
+        _size: u64,
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
@@ -387,10 +400,13 @@ impl super::mount::FileSystemType for DevFileSystemType {
     fn create(
         &self,
         request: &super::mount::MountRequest<'_>,
-    ) -> Result<Arc<dyn super::FileSystem>, FileSystemError> {
+    ) -> Result<super::mount::CreatedFileSystem, FileSystemError> {
         if !super::mount_options::is_empty(request.options) {
             return Err(FileSystemError::InvalidOperation);
         }
-        Ok(DevFileSystem::new()?)
+        Ok(super::mount::CreatedFileSystem {
+            filesystem: DevFileSystem::new()?,
+            user_namespace: request.identity.user_namespace(),
+        })
     }
 }

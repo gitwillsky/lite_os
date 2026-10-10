@@ -48,6 +48,9 @@ fn readable_descriptor(
     if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {
         return Err(-errno::EINVAL);
     }
+    if matches!(&ofd.kind, OpenFileKind::Device(file) if !file.supports_read()) {
+        return Err(-errno::EINVAL);
+    }
     Ok((task, ofd))
 }
 
@@ -72,7 +75,13 @@ fn writable_descriptor(
     if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return Err(-errno::EBADF);
     }
-    if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {
+    if matches!(
+        &ofd.kind,
+        OpenFileKind::Epoll(_) | OpenFileKind::TimerFd(_) | OpenFileKind::SignalFd(_)
+    ) {
+        return Err(-errno::EINVAL);
+    }
+    if matches!(&ofd.kind, OpenFileKind::Device(file) if !file.supports_write()) {
         return Err(-errno::EINVAL);
     }
     Ok((task, ofd))
@@ -122,6 +131,9 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
         length,
     );
     task.account_read_result(result);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_ACCESS);
+    }
     result
 }
 
@@ -145,8 +157,15 @@ pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
+    if total_length == 0 {
+        task.account_read_result(0);
+        return 0;
+    }
     let result = read_descriptor(&task, &ofd, &vectors, total_length);
     task.account_read_result(result);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_ACCESS);
+    }
     result
 }
 
@@ -176,6 +195,9 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         length,
     );
     task.account_write_result(result);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_MODIFY);
+    }
     result
 }
 
@@ -199,7 +221,14 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
+    if total_length == 0 {
+        task.account_write_result(0);
+        return 0;
+    }
     let result = write_descriptor(&task, &ofd, &vectors, total_length);
     task.account_write_result(result);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_MODIFY);
+    }
     result
 }

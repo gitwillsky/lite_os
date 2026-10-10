@@ -5,12 +5,14 @@ use super::SourceFile;
 
 const EXT4: &str = "kernel/src/storage/fs/ext4.rs";
 const JOURNAL: &str = "kernel/src/storage/fs/ext4/journal.rs";
+const INODE: &str = "kernel/src/storage/fs/ext4/inode.rs";
 const INODE_MUTATION: &str = "kernel/src/storage/fs/ext4/journal/inode_mutation.rs";
 const MOUNT: &str = "kernel/src/storage/fs/ext4/mount.rs";
 const PAGE_CACHE: &str = "kernel/src/storage/fs/page_cache.rs";
 const VFS: &str = "kernel/src/storage/fs/vfs.rs";
 const MUTEX: &str = "kernel/src/sync/task_mutex.rs";
 const ADAPTER: &str = "kernel/src/task/process_table/task_wait.rs";
+const EVENT: &str = "kernel/src/sync/task_event.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require_field(
@@ -56,6 +58,18 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors,
     );
 
+    if let Some(position) = source(sources, "kernel/src/file/position.rs", errors)
+        && (!position
+            .text
+            .contains("struct FilePosition(TaskMutex<u64>)")
+            || !position.text.contains("Result<R, PositionError>")
+            || position.text.contains("spin::Mutex"))
+    {
+        errors.push(
+            "OFD position must use fallible sleeping transaction ownership across I/O".into(),
+        );
+    }
+
     let Some(mutex) = source(sources, MUTEX, errors) else {
         return;
     };
@@ -80,16 +94,35 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let Some(adapter) = source(sources, ADAPTER, errors) else {
         return;
     };
-    for required in [
-        "prepare_current_block",
-        "WaitMembership::TaskWait(key)",
-        "assert!(crate::task::processor::wake_waiting_task",
-    ] {
+    for required in ["prepare_current_block", "WaitMembership::TaskWait(key)"] {
         if !adapter.text.contains(required) {
             errors.push(format!(
                 "{ADAPTER}: task wait scheduler adapter lost `{required}`"
             ));
         }
+    }
+    let compact: String = adapter.text.split_whitespace().collect();
+    // 可中断 event 的迟到 wake 可以合法失败；mutex 的 exact wake 仍必须 fail-stop。
+    // 围栏跟随显式 policy 及 publication 后的信号复查，不能继续要求无条件 assert。
+    for required in [
+        "letwoken=crate::task::processor::wake_waiting_task(",
+        "assert!(woken||key.interruptible(),",
+        "elseifkey.signal_pending(self.as_ref())",
+    ] {
+        if !compact.contains(required) {
+            errors.push(format!(
+                "{ADAPTER}: task wait cancellation lost `{required}`"
+            ));
+        }
+    }
+    let Some(event) = source(sources, EVENT, errors) else {
+        return;
+    };
+    let compact: String = event.text.split_whitespace().collect();
+    if !compact.contains("staticEVENT_TICKETS:AtomicU64=AtomicU64::new(0);")
+        || !compact.contains("ticket:EVENT_TICKETS.try_update(Ordering::Relaxed,Ordering::Relaxed,|ticket|{ticket.checked_add(1)})")
+    {
+        errors.push(format!("{EVENT}: event wait ticket must not repeat across same-address object lifetimes"));
     }
 }
 
@@ -132,6 +165,23 @@ fn require_inode_working_copy(sources: &[SourceFile], errors: &mut Vec<String>) 
         ));
     }
 
+    // Working-copy and abort publish only disk bytes: the live swap lease shares the lock,
+    // but must never be overwritten by an older journal preimage.
+    require_field(
+        sources,
+        INODE,
+        "Ext4Inode",
+        "disk",
+        "Mutex < LiveInode >",
+        errors,
+    );
+    require_field(sources, INODE, "LiveInode", "disk", "Ext4InodeDisk", errors);
+    require_field(sources, INODE, "LiveInode", "swap", "SwapFilePhase", errors);
+    if !journal.text.contains("inode.disk.lock().disk = *disk;") {
+        errors.push(format!(
+            "{JOURNAL}: abort must restore only disk image, preserving live inode lease"
+        ));
+    }
     let Some(working_copy) = source(sources, INODE_MUTATION, errors) else {
         return;
     };
@@ -140,7 +190,7 @@ fn require_inode_working_copy(sources: &[SourceFile], errors: &mut Vec<String>) 
         "disk: Ext4InodeDisk",
         "transaction: PhantomData<&'mutation mut ()>",
         "impl Drop for InodeMutation",
-        "*self.inode.disk.lock() = self.disk",
+        "self.inode.disk.lock().disk = self.disk",
     ] {
         if !working_copy.text.contains(required) {
             errors.push(format!(
@@ -193,11 +243,72 @@ fn require_field(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn rejects_unconditional_stale_wake_success_and_reused_event_ticket() {
+        for (path, old, replacement) in [
+            (
+                super::ADAPTER,
+                "woken || key.interruptible()",
+                "woken || true",
+            ),
+            (
+                super::ADAPTER,
+                "key.signal_pending(self.as_ref())",
+                "self.has_deliverable_signal()",
+            ),
+            (super::EVENT, "ticket: EVENT_TICKETS", "ticket: self.ticket"),
+        ] {
+            let root = super::super::repository_root();
+            let mut sources = super::super::load_sources(&root).expect("repository sources");
+            let source = sources
+                .iter_mut()
+                .find(|source| source.relative == path)
+                .unwrap();
+            assert!(source.text.contains(old));
+            source.text = source.text.replace(old, replacement);
+            let mut errors = Vec::new();
+            super::check(&sources, &mut errors);
+            assert!(
+                !errors.is_empty(),
+                "invalid event cancellation escaped fence: {path}"
+            );
+        }
+    }
+    #[test]
     fn repository_blocks_filesystem_transaction_waiters_without_spinning() {
         let root = super::super::repository_root();
         let sources = super::super::load_sources(&root).expect("repository sources");
         let mut errors = Vec::new();
         super::check(&sources, &mut errors);
         assert!(errors.is_empty(), "{errors:#?}");
+    }
+    #[test]
+    fn working_copy_and_abort_cannot_replace_live_inode_lease() {
+        for (path, old, replacement) in [
+            (
+                super::INODE_MUTATION,
+                "self.inode.disk.lock().disk = self.disk",
+                "*self.inode.disk.lock() = self.disk",
+            ),
+            (
+                super::JOURNAL,
+                "inode.disk.lock().disk = *disk;",
+                "*inode.disk.lock() = *disk;",
+            ),
+        ] {
+            let root = super::super::repository_root();
+            let mut sources = super::super::load_sources(&root).expect("repository sources");
+            let source = sources
+                .iter_mut()
+                .find(|source| source.relative == path)
+                .unwrap();
+            assert!(source.text.contains(old));
+            source.text = source.text.replace(old, replacement);
+            let mut errors = Vec::new();
+            super::check(&sources, &mut errors);
+            assert!(
+                !errors.is_empty(),
+                "lease-overwriting publication escaped the fence: {path}"
+            );
+        }
     }
 }

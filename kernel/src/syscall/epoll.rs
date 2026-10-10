@@ -105,7 +105,7 @@ pub(crate) fn sys_epoll_create1(flags: usize) -> isize {
     };
     current_task()
         .unwrap()
-        .fd_allocate(ofd, flags & EPOLL_CLOEXEC != 0)
+        .fd_allocate(ofd, 0, flags & EPOLL_CLOEXEC != 0)
         .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }
 
@@ -140,16 +140,15 @@ pub(crate) fn sys_epoll_ctl(
         ),
         _ => return -errno::EINVAL,
     };
-    let changed = current_task().unwrap().with_file_descriptions(
-        epoll_fd_number,
-        fd,
-        |epoll_ofd, watched| match &epoll_ofd.kind {
+    let task = current_task().unwrap();
+    let changed = task.with_file_descriptions(epoll_fd_number, fd, |epoll_ofd, watched| {
+        match &epoll_ofd.kind {
             OpenFileKind::Epoll(current) if Arc::ptr_eq(current, &epoll) => {
-                current.change(change, fd, watched, event)
+                current.change(change, fd, watched, event, task.as_ref())
             }
             _ => Err(crate::file::EpollChangeError::Invalid),
-        },
-    );
+        }
+    });
     let Some(changed) = changed else {
         return -errno::EBADF;
     };
@@ -170,7 +169,14 @@ fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
     let mut keys = PollWaitKeys::new();
     keys.add_epoll_change_source(epoll)
         .map_err(|()| -errno::ENOMEM)?;
-    let snapshot = epoll.ready_snapshot(maximum).map_err(|_| -errno::ENOMEM)?;
+    let snapshot = epoll
+        .ready_snapshot(
+            maximum,
+            current_task()
+                .expect("epoll evaluation requires current task")
+                .as_ref(),
+        )
+        .map_err(|_| -errno::ENOMEM)?;
     let mut ready = Vec::new();
     ready
         .try_reserve_exact(maximum.min(snapshot.len()))
@@ -286,6 +292,7 @@ pub(crate) fn sys_epoll_pwait(
                     ready.generation,
                     ready.edge,
                     ready.oneshot,
+                    task.as_ref(),
                 );
             }
             restore_mask_after_error(temporary_mask);
@@ -296,7 +303,7 @@ pub(crate) fn sys_epoll_pwait(
             return 0;
         }
         match wait_for_poll(evaluation.keys, deadline, || {
-            evaluation.guards.changed() || epoll.has_ready()
+            evaluation.guards.changed() || epoll.has_ready(task.as_ref())
         }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {

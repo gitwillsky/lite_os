@@ -1,5 +1,5 @@
 use super::{
-    CachedWrite, FileSystemError, PAGE_SIZE, RegularFileWrite,
+    CachedWrite, FileSystemError, MemoryInodeWrite, PAGE_SIZE, RegularFileWrite,
     writeback_batch::{REGULAR_WRITE_BATCH_PAGES, commit_contiguous_prefix_with_backoff},
 };
 
@@ -9,6 +9,22 @@ impl RegularFileWrite<'_> {
     /// 256 个 logical pages 让一次 1 MiB syscall 只进入一个 storage transaction；
     /// 非对齐 byte range 可能触及 257 个 filesystem blocks，并由 storage capacity error 退避。
     pub(crate) const MAX_STAGING_BYTES: usize = REGULAR_WRITE_BATCH_PAGES * PAGE_SIZE;
+
+    /// 正常 range/limit 检查后、user-copy 前发布 killpriv；两阶段消费同一 caller facts。
+    pub(crate) fn prepare_content_write(&self) -> Result<(), FileSystemError> {
+        match self {
+            Self::Cached(write) => write.file.inode.prepare_cached_write(&write.identity),
+            Self::Memory(write) => write
+                .inode
+                .prepare_memory_write(&write.write, Some(&write.identity)),
+        }
+    }
+    pub(crate) fn size(&self) -> u64 {
+        match self {
+            Self::Cached(write) => write.file.inode.size(),
+            Self::Memory(write) => write.write.size(),
+        }
+    }
 
     /// 向文件写入 `input`；见 [`CachedWrite::write`] 与 [`MemoryWrite::write`](super::MemoryWrite)。
     pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
@@ -81,7 +97,7 @@ impl CachedWrite<'_> {
                 .ok_or(FileSystemError::NoSpace)?;
             self.file
                 .inode
-                .write_storage(offset, bytes)
+                .write_storage(offset, bytes, Some(&self.identity))
                 .map(|written| (offset, written))
         })
         .map(|(_, written)| written)
@@ -115,12 +131,29 @@ impl CachedWrite<'_> {
             return Ok((offset, 0));
         }
         let committed = self.write_batched(&input[..allowed], |_, bytes| {
-            self.file.inode.append_storage(bytes)
+            self.file.inode.append_storage(bytes, Some(&self.identity))
         })?;
         assert_eq!(
             committed.0, offset,
             "operation-locked append changed placement before first transaction"
         );
         Ok(committed)
+    }
+}
+
+impl MemoryInodeWrite<'_> {
+    fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
+        if !input.is_empty() {
+            self.inode
+                .prepare_memory_write(&self.write, Some(&self.identity))?;
+        }
+        self.write.write(offset, input)
+    }
+    fn append(&self, input: &[u8], limit: u64) -> Result<(u64, usize), FileSystemError> {
+        if !input.is_empty() && self.write.size() < limit {
+            self.inode
+                .prepare_memory_write(&self.write, Some(&self.identity))?;
+        }
+        self.write.append(input, limit)
     }
 }

@@ -27,7 +27,8 @@ impl Ext4FileSystem {
             return reject("geometry");
         }
         if sb.s_feature_compat != EXT4_FEATURE_COMPAT_PROFILE
-            || sb.s_feature_incompat & !EXT4_FEATURE_INCOMPAT_RECOVER
+            || sb.s_feature_incompat
+                & !(EXT4_FEATURE_INCOMPAT_RECOVER | EXT4_FEATURE_INCOMPAT_EA_INODE)
                 != EXT4_FEATURE_INCOMPAT_PROFILE
             || sb.s_feature_ro_compat & !EXT4_FEATURE_RO_COMPAT_ORPHAN_PRESENT
                 != EXT4_FEATURE_RO_COMPAT_PROFILE
@@ -211,6 +212,7 @@ impl Ext4FileSystem {
     /// # Parameters
     ///
     /// - `device`: 存放 ext4 卷的块设备。
+    /// - `device_number`: 此设备注册的实际 dev_t，用于所有 inode 的 st_dev。
     /// - `read_only`: 以只读挂载。
     ///
     /// # Returns
@@ -222,6 +224,7 @@ impl Ext4FileSystem {
     /// 设备 I/O 失败、checksum 不符、profile 之外的 feature 或元数据不一致时返回错误。
     pub(crate) fn new(
         device: Arc<dyn BlockDevice>,
+        device_number: crate::fs::device::DeviceNumber,
         read_only: bool,
     ) -> Result<Arc<Self>, FileSystemError> {
         let device_block_size = device.block_size();
@@ -250,6 +253,7 @@ impl Ext4FileSystem {
         };
         let fs = Arc::try_new(Self {
             device,
+            device_number,
             superblock: Mutex::new(superblock),
             block_size: EXT4_BLOCK_SIZE,
             inode_size: EXT4_INODE_SIZE,
@@ -267,6 +271,9 @@ impl Ext4FileSystem {
             journal: Mutex::new(JournalOwner::unavailable()),
             commit_event: TaskEvent::new(),
             stopping: AtomicBool::new(false),
+            shutdown_waiter: Mutex::new(Some(
+                TaskMutexWaitPreparation::prepare().map_err(|_| FileSystemError::OutOfMemory)?,
+            )),
             orphan: Mutex::new(OrphanFile::unavailable()),
             metadata_cache: Mutex::new(MetadataBlockCache::new()),
             inode_cache: Mutex::new(FallibleMap::new()),
@@ -304,16 +311,18 @@ impl Ext4FileSystem {
     ///
     /// 超级块写回、orphan 回收或一致性检查失败时返回错误。
     pub(super) fn make_writable(&self) -> Result<(), FileSystemError> {
-        if self
-            .writable
-            .swap(true, core::sync::atomic::Ordering::AcqRel)
-        {
+        // 初次构造尚未发布；remount 由 VFS admission 串行。完成位只在全部写前准备成功后发布，
+        // 否则一次 flush/I/O 失败会使重试直接跳过 orphan 回收并伪造可写成功。
+        if self.writable.load(core::sync::atomic::Ordering::Acquire) {
             return Ok(());
         }
         self.superblock.lock().s_feature_incompat |= EXT4_FEATURE_INCOMPAT_RECOVER;
         self.write_primary_superblock_home()?;
         self.device.flush().map_err(block_error)?;
         self.recover_orphans()?;
-        self.check_filesystem_consistency()
+        self.check_filesystem_consistency()?;
+        self.writable
+            .store(true, core::sync::atomic::Ordering::Release);
+        Ok(())
     }
 }

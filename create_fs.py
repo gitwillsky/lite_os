@@ -9,7 +9,7 @@ from scripts.ext4_image import MKE2FS_CONFIG, find_debugfs, find_mke2fs
 
 BOOT_DIRECTORIES = ("/bin", "/dev", "/proc", "/sys")
 
-def create_ext4_filesystem(filename, init_elf, size_mb=128):
+def create_ext4_filesystem(filename, init_elf, size_mb=128, *, ea_inode=True):
     """创建固定 ext4 profile（4K block、256-byte inode、4 MiB JBD2 journal）的文件系统。"""
 
     if not os.path.isfile(init_elf):
@@ -33,7 +33,7 @@ def create_ext4_filesystem(filename, init_elf, size_mb=128):
         # 固定 MKE2FS_CONFIG 屏蔽 host mke2fs.conf，使 feature 集合只由 EXT4_PROFILE 决定；
         # 缺失时不同 host 的默认 feature 会产生 kernel mount 拒绝的镜像。
         with tempfile.NamedTemporaryFile('w', suffix='.conf') as config:
-            config.write(MKE2FS_CONFIG)
+            config.write(MKE2FS_CONFIG if ea_inode else MKE2FS_CONFIG.replace(",ea_inode", ""))
             config.flush()
             subprocess.run([str(mke2fs), '-t', 'ext4', '-J', 'size=4',
                             '-L', 'LITEOS', filename],
@@ -111,10 +111,12 @@ def main():
     parser.add_argument('--init', required=True,
                        help='写入 /bin/init 的静态 ELF（默认 rootfs 由 make build 传入 BusyBox）')
 
+    parser.add_argument("--without-ea-inode", action="store_true",
+                        help="创建原生旧卷 feature 集合，用于验证小容量 xattr 行为")
     args = parser.parse_args()
 
     print(f"创建 LiteOS 文件系统(ext4): {args.file} ({args.size}MB)")
-    if create_ext4_filesystem(args.file, args.init, args.size):
+    if create_ext4_filesystem(args.file, args.init, args.size, ea_inode=not args.without_ea_inode):
         print("\n🎉 文件系统创建成功!")
     else:
         print("\n❌ 文件系统创建失败!")

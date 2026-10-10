@@ -1,8 +1,12 @@
+pub(super) use crate::arch::address_space_id::Context as AddressSpaceContext;
+use crate::arch::address_space_id::{Allocator, Flush};
+use alloc::sync::Arc;
 use core::{
     arch::asm,
     ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use spin::Once;
 
 const PHYSICAL_ADDRESS_WIDTH: usize = 56;
 const VIRTUAL_ADDRESS_WIDTH: usize = 39;
@@ -10,21 +14,10 @@ const PAGE_SHIFT: usize = 12;
 const SATP_ASID_SHIFT: usize = 44;
 const SATP_ASID_BITS: usize = 16;
 const SATP_ASID_MASK: usize = ((1usize << SATP_ASID_BITS) - 1) << SATP_ASID_SHIFT;
-const MAX_ADDRESS_SPACE_IDS: usize = 1 << SATP_ASID_BITS;
-const ASID_BITMAP_WORDS: usize = MAX_ADDRESS_SPACE_IDS / usize::BITS as usize;
-
-// OWNER: this bitmap is the sole global ASID lifecycle owner. A set bit cannot be cleared until
-// MemorySet has synchronously invalidated every online CPU; without that ordering, a reused ASID
-// could select a stale translation belonging to a freed page-table root.
+// OWNER: hardware capacity is an immutable probe fact, not an allocation bitmap.
 static ADDRESS_SPACE_ID_CAPACITY: AtomicUsize = AtomicUsize::new(0);
-static ADDRESS_SPACE_IDS: [AtomicUsize; ASID_BITMAP_WORDS] =
-    [const { AtomicUsize::new(0) }; ASID_BITMAP_WORDS];
-// OWNER: one native CPU-seen bitmap per ASID. First activation on each CPU executes an ASID-scoped
-// fence that orders page-table publication before implicit reads. Retirement clears all CPU TLBs
-// before the allocator resets this word; omitting it would skip the ordering fence on a CPU that
-// has never observed the page-table writes.
-static ADDRESS_SPACE_ID_CPUS: [AtomicUsize; MAX_ADDRESS_SPACE_IDS] =
-    [const { AtomicUsize::new(0) }; MAX_ADDRESS_SPACE_IDS];
+// OWNER: one generation allocator owns all user hardware IDs, reservations and local flush debt.
+static ADDRESS_SPACE_IDS: Once<Allocator> = Once::new();
 
 pub(crate) const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 pub(crate) const DIRECT_MAP_BASE: usize = 0;
@@ -32,6 +25,10 @@ pub(crate) const USER_ADDRESS_END: usize = 1 << (VIRTUAL_ADDRESS_WIDTH - 1);
 pub(crate) const TRAMPOLINE_ADDRESS: usize = usize::MAX - PAGE_SIZE + 1;
 pub(crate) const TRAP_CONTEXT_ADDRESS: usize = TRAMPOLINE_ADDRESS - PAGE_SIZE;
 pub(crate) const SIGNAL_TRAMPOLINE_ADDRESS: usize = TRAP_CONTEXT_ADDRESS - PAGE_SIZE;
+/// user page table 中专供 Thread supervisor context 的 canonical high-half 区间；不含 trampoline。
+pub(crate) const THREAD_TRAP_CONTEXT_RANGE: Option<core::ops::Range<usize>> =
+    Some((usize::MAX - USER_ADDRESS_END + 1)..SIGNAL_TRAMPOLINE_ADDRESS);
+
 /// 保留既有 Sv39 kernel-stack virtual layout。
 pub(crate) const KERNEL_STACK_REGION_START: usize = 0;
 pub(crate) const KERNEL_STACK_REGION_TOP: usize = TRAP_CONTEXT_ADDRESS;
@@ -151,31 +148,52 @@ pub(crate) fn virtual_to_physical(address: usize) -> Option<usize> {
     (normalized == address).then_some(normalized)
 }
 
-/// RISC-V Sv39 address-space token；raw `satp` encoding 不跨越 arch seam。
+/// Stable Sv39 user root/context capability; raw satp stays inside the backend.
+#[derive(Debug, Clone)]
+pub(crate) struct AddressSpaceToken {
+    root_page: usize,
+    context: Arc<AddressSpaceContext>,
+}
+
+/// Kernel root uses reserved ASID zero and never participates in user rollover.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AddressSpaceToken(usize);
+pub(crate) struct KernelTrapToken(usize);
 
-/// RISC-V user trap 仍需切换回包含 kernel mapping 的 Sv39 root。
-pub(crate) type KernelTrapToken = AddressSpaceToken;
-
-impl AddressSpaceToken {
-    /// 从 Sv39 root physical page number 构造 address-space token。
-    pub(crate) fn from_root_page(root_page: usize, address_space_id: usize) -> Self {
+impl KernelTrapToken {
+    pub(super) fn from_root_page(root_page: usize) -> Self {
         assert!(
             root_page < 1usize << 44,
             "Sv39 root PPN exceeds satp encoding"
         );
-        assert!(
-            address_space_id > 0
-                && address_space_id < ADDRESS_SPACE_ID_CAPACITY.load(Ordering::Acquire),
-            "Sv39 address-space identifier is not allocated"
-        );
-        Self(root_page | address_space_id << SATP_ASID_SHIFT | 8usize << 60)
+        Self(root_page | 8usize << 60)
     }
-
     pub(super) fn encoded(self) -> usize {
         self.0
+    }
+}
+
+impl AddressSpaceToken {
+    pub(super) fn from_root_page(root_page: usize, context: Arc<AddressSpaceContext>) -> Self {
+        assert!(
+            root_page < 1usize << 44,
+            "Sv39 root PPN exceeds satp encoding"
+        );
+        Self { root_page, context }
+    }
+
+    pub(super) fn activate(&self, logical_cpu: usize) -> usize {
+        let identifier = ADDRESS_SPACE_IDS.wait().activate(&self.context, logical_cpu, |flush| {
+            match flush {
+                Flush::All => flush_local(),
+                Flush::Identifier(identifier) => {
+                    // SAFETY: rs1=x0 selects all addresses of this nonzero local ASID. The fence
+                    // completes before satp installation and publication of its CPU footprint.
+                    unsafe { asm!("sfence.vma x0, {asid}", asid = in(reg) identifier, options(nostack)) };
+                }
+            }
+        });
+        self.root_page | identifier << SATP_ASID_SHIFT | 8usize << 60
     }
 }
 
@@ -217,85 +235,26 @@ pub(crate) fn initialize_address_space_identifiers() {
     }
 }
 
-/// 分配一个跨全部 CPU 保持同一 address-space identity 的非零 ASID。
-///
-/// # Returns
-///
-/// 可用 ASID；容量耗尽时返回 None。
-pub(super) fn allocate_address_space_id() -> Option<usize> {
+/// Publish the generation owner after logical CPU topology and before any user root.
+pub(crate) fn initialize_asid_allocator(cpu_count: usize) {
+    assert!(
+        ADDRESS_SPACE_IDS.get().is_none(),
+        "ASID allocator initialized twice"
+    );
     let capacity = ADDRESS_SPACE_ID_CAPACITY.load(Ordering::Acquire);
-    assert_ne!(capacity, 0, "ASID allocator used before CPU initialization");
-    for identifier in 1..capacity {
-        let word = &ADDRESS_SPACE_IDS[identifier / usize::BITS as usize];
-        let bit = 1usize << (identifier % usize::BITS as usize);
-        let mut current = word.load(Ordering::Acquire);
-        while current & bit == 0 {
-            match word.compare_exchange_weak(
-                current,
-                current | bit,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    ADDRESS_SPACE_ID_CPUS[identifier].store(0, Ordering::Release);
-                    return Some(identifier);
-                }
-                Err(observed) => current = observed,
-            }
-        }
-    }
-    None
+    let allocator =
+        Allocator::try_new(capacity, cpu_count).expect("ASID storage allocation failed");
+    ADDRESS_SPACE_IDS.call_once(|| allocator);
+    crate::info!("ASID generation allocator initialized: capacity={capacity} cpus={cpu_count}");
 }
 
-fn prepare_local_activation(token: AddressSpaceToken, logical_cpu: usize) {
-    let identifier = (token.encoded() & SATP_ASID_MASK) >> SATP_ASID_SHIFT;
-    let cpu_bit = 1usize
-        .checked_shl(logical_cpu as u32)
-        .expect("logical CPU exceeds ASID activation bitmap");
-    let seen = &ADDRESS_SPACE_ID_CPUS[identifier];
-    if seen.load(Ordering::Acquire) & cpu_bit != 0 {
-        return;
-    }
-    // SAFETY: rs1=x0 selects every virtual address for this nonzero ASID; the current CPU owns its
-    // activation bit and executes the fence before publishing that the ASID has been observed.
-    unsafe { asm!("sfence.vma x0, {asid}", asid = in(reg) identifier, options(nostack)) };
-    seen.fetch_or(cpu_bit, Ordering::Release);
-}
-
-/// 为 trampoline 的下一次 user `satp` 切换准备 CPU-local ASID state。
-pub(crate) fn prepare_user_activation(token: AddressSpaceToken, logical_cpu: usize) {
-    prepare_local_activation(token, logical_cpu);
-}
-
-/// 在 caller 已完成全 CPU translation invalidation 后释放 ASID。
-///
-/// # Parameters
-///
-/// - `identifier`: 待复用的非零、当前已分配 ID。
-pub(super) fn release_address_space_id_after_global_fence(identifier: usize) {
-    let word = &ADDRESS_SPACE_IDS[identifier / usize::BITS as usize];
-    let bit = 1usize << (identifier % usize::BITS as usize);
-    let previous = word.fetch_and(!bit, Ordering::Release);
-    assert_ne!(previous & bit, 0, "address-space identifier released twice");
-}
-
-/// 激活当前 CPU 的 tagged Sv39 address space。
-///
-/// # Parameters
-///
-/// - `token`: 由 live page-table root 构造的 token。
-pub(crate) fn activate(token: AddressSpaceToken) {
-    prepare_local_activation(token, super::startup::current_logical_id());
-    // SAFETY: token encodes a live Sv39 root and globally unique ASID. Page-table mutation and
-    // ASID retirement owners execute the required fences, so an address-space switch needs none.
+/// Install the permanent kernel root at reserved ASID zero and publish its page-table writes.
+pub(crate) fn activate_kernel(token: KernelTrapToken) {
+    // SAFETY: token belongs to the kernel-lifetime root; initial local fence publishes it before use.
     unsafe {
         riscv::register::satp::write(riscv::register::satp::Satp::from_bits(token.encoded()));
     }
-}
-
-/// RISC-V kernel/user 共享同一 Sv39 root，激活 kernel root 等价于普通激活。
-pub(crate) fn activate_kernel(token: AddressSpaceToken) {
-    activate(token);
+    flush_local();
 }
 
 /// 失效当前 CPU 的全部 S-stage translations。

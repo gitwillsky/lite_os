@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 import check_trap_cost  # noqa: E402
 import verify_architecture_release  # noqa: E402
 import verify_artifacts  # noqa: E402
+import qemu_gate  # noqa: E402
 from build_target import target_from_environment  # noqa: E402
 
 
@@ -53,7 +55,6 @@ class TrapCostTests(unittest.TestCase):
             "msr tpidrro_el0, xzr",
             "msr ttbr0_el1, x1",
             "isb",
-            "msr vbar_el1, x2",
             "add x11, sp, #0x30",
         ]
 
@@ -326,6 +327,31 @@ class AArch64ImageHeaderTests(unittest.TestCase):
             self.assertEqual(image[:0x80], elf_bytes[0x200:0x280])
             self.assertEqual(image[0x80:0x1000], bytes(0xF80))
             self.assertEqual(image[0x1000:0x1080], elf_bytes[0x300:0x380])
+
+    def test_runtime_rejects_old_image_after_elf_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            elf, raw = Path(directory) / "kernel", Path(directory) / "Image"
+            self.make_elf(elf)
+            layout = verify_artifacts.aarch64_elf_layout(elf)
+            raw.write_bytes(verify_artifacts.expected_aarch64_raw_image(elf, layout))
+            runtime = replace(
+                qemu_gate.qemu_runtime({"ARCH": "aarch64", "ACCEL": "tcg"}),
+                kernel_elf=str(elf), kernel_boot_artifact=str(raw),
+            )
+            self.assertEqual(qemu_gate.validate_kernel_boot_artifact(runtime), raw)
+            changed = bytearray(elf.read_bytes())
+            changed[0x300] ^= 1
+            elf.write_bytes(changed)
+            with self.assertRaisesRegex(RuntimeError, "differs from ELF"):
+                qemu_gate.validate_kernel_boot_artifact(runtime)
+            with (
+                patch.object(qemu_gate, "qemu_runtime", return_value=runtime),
+                patch.object(qemu_gate.shutil, "which", return_value="/opt/qemu"),
+                patch.object(qemu_gate.subprocess, "Popen") as launch,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "differs from ELF"):
+                    qemu_gate.power_cut(Path("root.img"), 1, b"", "ACTIVE", 0.1)
+                launch.assert_not_called()
 
     def test_header_rejects_wrong_offset_magic_and_physical_placement(self) -> None:
         cases = (

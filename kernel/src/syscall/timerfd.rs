@@ -80,7 +80,7 @@ pub(crate) fn sys_timerfd_create(clock_id: i32, flags: u32) -> isize {
         Err(()) => return -errno::ENOMEM,
     };
     let task = current_task().expect("timerfd_create requires current task");
-    task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
+    task.fd_allocate(ofd, 0, flags & O_CLOEXEC != 0)
         .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }
 
@@ -125,6 +125,7 @@ pub(crate) fn sys_timerfd_settime(
         interval_ns,
         flags & TFD_TIMER_ABSTIME != 0,
         crate::timer::get_time_ns(),
+        task.time_offsets(),
     ) {
         Ok(setting) => setting,
         Err(error) => return timer_error(error),

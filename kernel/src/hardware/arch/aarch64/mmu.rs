@@ -1,3 +1,6 @@
+pub(super) use crate::arch::address_space_id::Context as AddressSpaceContext;
+use crate::arch::address_space_id::{Allocator, Flush};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::{
     arch::asm,
@@ -10,14 +13,10 @@ const PHYSICAL_ADDRESS_WIDTH: usize = 48;
 const VIRTUAL_ADDRESS_WIDTH: usize = 39;
 const PAGE_SHIFT: usize = 12;
 const ASID_BITS_MAX: usize = 16;
-const MAX_ADDRESS_SPACE_IDS: usize = 1 << ASID_BITS_MAX;
-const ASID_BITMAP_WORDS: usize = MAX_ADDRESS_SPACE_IDS / usize::BITS as usize;
-
-// OWNER: this bitmap is the sole ASID lifecycle owner. An ID is released only after the memory
-// owner has completed the all-CPU invalidation; earlier reuse can expose a retired translation.
+// OWNER: hardware capacity is an immutable probe fact, not an allocation bitmap.
 static ADDRESS_SPACE_ID_CAPACITY: AtomicUsize = AtomicUsize::new(0);
-static ADDRESS_SPACE_IDS: [AtomicUsize; ASID_BITMAP_WORDS] =
-    [const { AtomicUsize::new(0) }; ASID_BITMAP_WORDS];
+// OWNER: one generation allocator owns all user hardware IDs, reservations and local flush debt.
+static ADDRESS_SPACE_IDS: Once<Allocator> = Once::new();
 
 pub(crate) const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 /// TTBR1 管理的 39-bit 高半区；低侧保持连续物理 RAM direct-map。
@@ -38,6 +37,9 @@ pub(crate) const USER_ADDRESS_END: usize = 1 << (VIRTUAL_ADDRESS_WIDTH - 1);
 pub(crate) const TRAMPOLINE_ADDRESS: usize = USER_ADDRESS_END - PAGE_SIZE;
 pub(crate) const TRAP_CONTEXT_ADDRESS: usize = TRAMPOLINE_ADDRESS - PAGE_SIZE;
 pub(crate) const SIGNAL_TRAMPOLINE_ADDRESS: usize = TRAP_CONTEXT_ADDRESS - PAGE_SIZE;
+/// AArch64 user context 归 kernel stack，不占用 user address space 的 supervisor context VMA。
+pub(crate) const THREAD_TRAP_CONTEXT_RANGE: Option<core::ops::Range<usize>> = None;
+
 /// signal trampoline 下方保留一页 guard 后的初始用户栈 exclusive top。
 pub(crate) const USER_STACK_TOP: usize = SIGNAL_TRAMPOLINE_ADDRESS - PAGE_SIZE;
 
@@ -258,32 +260,43 @@ pub(crate) fn virtual_to_physical(address: usize) -> Option<usize> {
     })
 }
 
-/// Opaque AArch64 TTBR address-space token.
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AddressSpaceToken(u64);
+/// Stable user root/context capability; hardware encoding is resolved on activation.
+#[derive(Debug, Clone)]
+pub(crate) struct AddressSpaceToken {
+    root_page: usize,
+    context: Arc<AddressSpaceContext>,
+}
 
-/// TTBR1 常驻后，user trap 不再携带或切换 kernel TTBR0 root。
+/// TTBR1 remains installed across user traps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct KernelTrapToken;
 
 impl AddressSpaceToken {
-    /// Construct a token from an aligned root physical page and allocated nonzero ASID.
-    pub(crate) fn from_root_page(root_page: usize, address_space_id: usize) -> Self {
-        let capacity = ADDRESS_SPACE_ID_CAPACITY.load(Ordering::Acquire);
+    pub(super) fn from_root_page(root_page: usize, context: Arc<AddressSpaceContext>) -> Self {
         assert!(
             root_page < 1usize << 36,
             "AArch64 root page exceeds 48-bit TTBR encoding"
         );
-        assert!(
-            address_space_id > 0 && address_space_id < capacity,
-            "AArch64 ASID is not allocated"
-        );
-        Self(((address_space_id as u64) << 48) | ((root_page as u64) << PAGE_SHIFT))
+        Self { root_page, context }
     }
 
-    pub(super) fn encoded(self) -> u64 {
-        self.0
+    pub(super) fn activate(&self, logical_cpu: usize) -> u64 {
+        let identifier = ADDRESS_SPACE_IDS
+            .wait()
+            .activate(&self.context, logical_cpu, |flush| {
+                match flush {
+                    Flush::All => flush_local(),
+                    Flush::Identifier(identifier) => {
+                        // SAFETY: local EL1 invalidation selects this nonzero user ASID. Barriers
+                        // publish root writes before TTBR0 activation and prevent stale reuse.
+                        unsafe {
+                            asm!("dsb ishst", "tlbi aside1, {asid}", "dsb ish", "isb",
+                        asid = in(reg) (identifier as u64) << 48, options(nostack))
+                        };
+                    }
+                }
+            });
+        ((identifier as u64) << 48) | ((self.root_page as u64) << PAGE_SHIFT)
     }
 }
 
@@ -315,33 +328,17 @@ pub(crate) fn initialize_address_space_identifiers() -> bool {
     bits == ASID_BITS_MAX
 }
 
-pub(super) fn allocate_address_space_id() -> Option<usize> {
+/// Publish the generation owner after logical CPU topology and before any user root.
+pub(crate) fn initialize_asid_allocator(cpu_count: usize) {
+    assert!(
+        ADDRESS_SPACE_IDS.get().is_none(),
+        "ASID allocator initialized twice"
+    );
     let capacity = ADDRESS_SPACE_ID_CAPACITY.load(Ordering::Acquire);
-    assert_ne!(capacity, 0, "ASID allocator used before CPU initialization");
-    for identifier in 1..capacity {
-        let word = &ADDRESS_SPACE_IDS[identifier / usize::BITS as usize];
-        let bit = 1usize << (identifier % usize::BITS as usize);
-        let mut current = word.load(Ordering::Acquire);
-        while current & bit == 0 {
-            match word.compare_exchange_weak(
-                current,
-                current | bit,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return Some(identifier),
-                Err(observed) => current = observed,
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn release_address_space_id_after_global_fence(identifier: usize) {
-    let word = &ADDRESS_SPACE_IDS[identifier / usize::BITS as usize];
-    let bit = 1usize << (identifier % usize::BITS as usize);
-    let previous = word.fetch_and(!bit, Ordering::Release);
-    assert_ne!(previous & bit, 0, "address-space identifier released twice");
+    let allocator =
+        Allocator::try_new(capacity, cpu_count).expect("ASID storage allocation failed");
+    ADDRESS_SPACE_IDS.call_once(|| allocator);
+    crate::info!("ASID generation allocator initialized: capacity={capacity} cpus={cpu_count}");
 }
 
 /// 激活全局 TTBR1 kernel page-table root，不修改当前 TTBR0 user root。

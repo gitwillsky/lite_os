@@ -38,7 +38,7 @@ from build_cache import (
     temporary_directory,
     write_manifest,
 )
-from qemu_gate import SHELL_PROMPT, boot, cpu_topology_markers, guest_inittab, power_cut
+from qemu_gate import SHELL_PROMPT, boot, cpu_topology_markers, guest_inittab, power_cut, ShellCommand, TerminalInput
 from openssl_cache import OpenSslPaths, build_openssl
 from ext4_image import MKE2FS_CONFIG, find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
@@ -47,6 +47,7 @@ from verify_musl import (
     cached_musl_paths,
     compiler_identity,
     find_compiler,
+    find_stripper,
     run,
 )
 
@@ -70,7 +71,7 @@ BUSYBOX_URLS = (
 )
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 SOURCE_RECIPE_VERSION = 1
-BINARY_RECIPE_VERSION = 6
+BINARY_RECIPE_VERSION = 7
 # OWNER: verify_busybox 唯一发布 content-addressed rootfs image cache。
 # PROOF: 单一文件锁串行化 writer；create_image 完成全部 ownership 断言后才写 manifest，并把
 # 完整 fingerprint directory 原子发布为不可变 generation。
@@ -740,6 +741,7 @@ def binary_payload(
     compiler: Path,
     musl: MuslCachePaths,
 ) -> dict[str, object]:
+    stripper = find_stripper(compiler)
     return {
         "kind": "busybox-dynamic-pie",
         "recipe_version": BINARY_RECIPE_VERSION,
@@ -755,8 +757,8 @@ def binary_payload(
             "linker_sha256": sha256(ROOT / "scripts/musl_ld.py"),
         },
         "strip": {
-            "path": "/opt/homebrew/opt/llvm/bin/llvm-strip",
-            "sha256": sha256(Path("/opt/homebrew/opt/llvm/bin/llvm-strip")),
+            "path": str(stripper),
+            "sha256": sha256(stripper),
         },
         "environment": {
             "LC_ALL": "C",
@@ -825,7 +827,7 @@ def build_busybox(
                 f"CC={BUSYBOX_CC}",
                 f"LD={BUSYBOX_LD}",
                 f"AR={musl.archiver}",
-                "STRIP=/opt/homebrew/opt/llvm/bin/llvm-strip",
+                f"STRIP={payload['strip']['path']}",
             ],
             ROOT,
             env,
@@ -2062,6 +2064,13 @@ def main() -> int:
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
         dynamic_probe, dynamic_library = build_dynamic_probe(musl)
+        # 启动前的成功指纹必须包含实际执行的每个 probe，不能先命中旧 stamp 再漏掉新 consumer。
+        probes = {
+            "memory-file-probe": build_musl_probe(musl, "memory-file"),
+            "special-file-probe": build_musl_probe(musl, "special-file"),
+            "fs-stress-probe": build_musl_probe(musl, "fs-stress"),
+            "inotify-probe": build_musl_probe(musl, "inotify"),
+        }
         stamp = ROOT / f"target/verify-gates/busybox-{TARGET.arch}.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
@@ -2072,6 +2081,7 @@ def main() -> int:
                 musl.install / "usr/lib/libc.so",
                 dynamic_probe,
                 dynamic_library,
+                *probes.values(),
                 openssl.binary,
                 ROOT / "user/base/passwd",
                 ROOT / "user/base/group",
@@ -2116,12 +2126,7 @@ def main() -> int:
         )
         install_musl_probes(
             runtime_image,
-            {
-                "memory-file-probe": build_musl_probe(musl, "memory-file"),
-                "special-file-probe": build_musl_probe(musl, "special-file"),
-                "fs-stress-probe": build_musl_probe(musl, "fs-stress"),
-                "inotify-probe": build_musl_probe(musl, "inotify"),
-            },
+            probes,
             runtime_path,
         )
         scratch_disk = runtime_path / "scratch.img"
@@ -2194,6 +2199,7 @@ def main() -> int:
                 "LITEOS_TMPFS_DEEP_52",
                 "LITEOS_UNLINK_RELEASE_50",
                 "LITEOS_UNLINK_RELEASE_51",
+                "LITEOS_CACHE_RETIREMENT_61",
                 "LITEOS_MOUNTFLAGS_53",
                 "LITEOS_MOUNTFLAGS_54",
                 "LITEOS_MOUNTFLAGS_55",
@@ -2238,466 +2244,480 @@ def main() -> int:
                 "LITEOS_ORPHAN_HUP_42",
                 "LITEOS_ORPHAN_CONT_42",
                 "LITEOS_SESSION_HUP_42",
+                "LITEOS_ROOT_REMOUNT_60",
             ),
             interactions=(
                 (
                     "Enter 'help' for a list of built-in commands.",
-                    b"echo LITEOS_BUSYBOX_SHELL_$((6*7))\n",
+                    ShellCommand(b"echo LITEOS_BUSYBOX_SHELL_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
-                    (
+                    ShellCommand((
                         "value='标准，循环直至达成。任务转译示例：加校验修 bug 重构 X "
                         "多步任务必须先给计划强成功标准让你独立闭环弱标准会反复返工'; "
                         "[ \"$value\" = '标准，循环直至达成。任务转译示例：加校验修 bug 重构 X "
                         "多步任务必须先给计划强成功标准让你独立闭环弱标准会反复返工' ] && "
                         "echo LITEOS_BUSYBOX_UNICODE_$((6*7))\n"
-                    ).encode(),
+                    ).encode()),
                 ),
                 (
                     "LITEOS_BUSYBOX_UNICODE_42",
-                    b"/bin/sh /var/tmp/dhcp-gate.sh\n",
+                    ShellCommand(b"/bin/sh /var/tmp/dhcp-gate.sh\n"),
                 ),
                 (
                     "LITEOS_DHCP_51",
-                    b"count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$count\" -eq 1 ] && echo LITEOS_DHCP_SINGLE_$((7*7+2))\n",
+                    ShellCommand(b"count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$count\" -eq 1 ] && echo LITEOS_DHCP_SINGLE_$((7*7+2))\n"),
                 ),
                 (
                     "LITEOS_DHCP_SINGLE_51",
                     # PID publication precedes DHCP lease/route commit. Poll the complete final
                     # state for the same bounded 20 seconds as dhcp-gate.sh; a fixed sleep makes
                     # normal host-network scheduling jitter look like a kernel regression.
-                    b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n",
+                    ShellCommand(b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n"),
                 ),
                 (
                     "LITEOS_DHCP_RESPAWN_51",
-                    b"/bin/ping -c 3 -W 3 10.0.2.2 | /bin/grep -q '3 packets received' && echo LITEOS_PING_$((7*7+3))\n",
+                    ShellCommand(b"/bin/ping -c 3 -W 3 10.0.2.2 | /bin/grep -q '3 packets received' && echo LITEOS_PING_$((7*7+3))\n"),
                 ),
                 (
                     "LITEOS_PING_52",
-                    b"/bin/dynamic-smoke resolve example.com\n",
+                    ShellCommand(b"/bin/dynamic-smoke resolve example.com\n"),
                 ),
                 (
                     "LITEOS_DNS_51",
-                    f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode(),
+                    ShellCommand(f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode()),
                 ),
                 (
                     "LITEOS_HTTP_51",
-                    f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/user/base/udhcpc.script; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode(),
+                    ShellCommand(f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/user/base/udhcpc.script; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode()),
                 ),
                 (
                     "LITEOS_TLS_REJECT_52",
-                    f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode(),
+                    ShellCommand(f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode()),
                 ),
                 (
                     "LITEOS_HTTPS_52",
-                    b"mkdir -p /phase53/src /phase53/out /phase53/zip; name=long-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; printf payload53 > /phase53/src/$name; chmod 640 /phase53/src/$name; ln /phase53/src/$name /phase53/src/hard; ln -s $name /phase53/src/soft; tar -czf /phase53/bundle.tar.gz -C /phase53/src . && tar -xzf /phase53/bundle.tar.gz -C /phase53/out; first=$(ls -i /phase53/out/hard | awk '{print $1}'); second=$(ls -i /phase53/out/$name | awk '{print $1}'); mode=$(ls -l /phase53/out/$name | awk '{print $1}'); cmp /phase53/src/$name /phase53/out/$name && [ \"$first\" = \"$second\" ] && [ \"$mode\" = -rw-r----- ] && [ \"$(readlink /phase53/out/soft)\" = \"$name\" ] && [ \"$(realpath /phase53/out/soft)\" = /phase53/out/$name ] && echo LITEOS_TAR_$((7*7+4))\n",
+                    ShellCommand(b"mkdir -p /phase53/src /phase53/out /phase53/zip; name=long-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; printf payload53 > /phase53/src/$name; chmod 640 /phase53/src/$name; ln /phase53/src/$name /phase53/src/hard; ln -s $name /phase53/src/soft; tar -czf /phase53/bundle.tar.gz -C /phase53/src . && tar -xzf /phase53/bundle.tar.gz -C /phase53/out; first=$(ls -i /phase53/out/hard | awk '{print $1}'); second=$(ls -i /phase53/out/$name | awk '{print $1}'); mode=$(ls -l /phase53/out/$name | awk '{print $1}'); cmp /phase53/src/$name /phase53/out/$name && [ \"$first\" = \"$second\" ] && [ \"$mode\" = -rw-r----- ] && [ \"$(readlink /phase53/out/soft)\" = \"$name\" ] && [ \"$(realpath /phase53/out/soft)\" = /phase53/out/$name ] && echo LITEOS_TAR_$((7*7+4))\n"),
                 ),
                 (
                     "LITEOS_TAR_53",
-                    b"printf bzip-phase-53 > /phase53/bzip.txt; bzip2 -c /phase53/bzip.txt > /phase53/bzip.txt.bz2; bzcat /phase53/bzip.txt.bz2 | cmp - /phase53/bzip.txt && xzcat /var/tmp/phase53.xz | grep -q '^xz-phase-53$' && unzip -q /var/tmp/phase53.zip -d /phase53/zip && grep -q '^zip-phase-53$' /phase53/zip/nested/zip.txt && echo LITEOS_COMPRESSION_$((7*7+4))\n",
+                    ShellCommand(b"printf bzip-phase-53 > /phase53/bzip.txt; bzip2 -c /phase53/bzip.txt > /phase53/bzip.txt.bz2; bzcat /phase53/bzip.txt.bz2 | cmp - /phase53/bzip.txt && xzcat /var/tmp/phase53.xz | grep -q '^xz-phase-53$' && unzip -q /var/tmp/phase53.zip -d /phase53/zip && grep -q '^zip-phase-53$' /phase53/zip/nested/zip.txt && echo LITEOS_COMPRESSION_$((7*7+4))\n"),
                 ),
                 (
                     "LITEOS_COMPRESSION_53",
-                    b"env PHASE=53 sh -c 'printf %s \"$PHASE\"' | grep -q '^53$' && printf 'one\\ntwo\\n' | xargs printf '%s-' | grep -q 'one-two-' && [ \"$(which tar)\" = /bin/tar ] && du -k /phase53/out >/phase53/du.out && echo LITEOS_TOOLS_$((7*7+4))\n",
+                    ShellCommand(b"env PHASE=53 sh -c 'printf %s \"$PHASE\"' | grep -q '^53$' && printf 'one\\ntwo\\n' | xargs printf '%s-' | grep -q 'one-two-' && [ \"$(which tar)\" = /bin/tar ] && du -k /phase53/out >/phase53/du.out && echo LITEOS_TOOLS_$((7*7+4))\n"),
                 ),
                 (
                     "LITEOS_TOOLS_53",
-                    b"tar -xf /var/tmp/phase53-traversal.tar -C /phase53/out 2>/dev/null || true; [ ! -e /phase53-escape ] && [ ! -e /phase53/phase53-escape ] && echo LITEOS_ARCHIVE_$((7*7+4))\n",
+                    ShellCommand(b"tar -xf /var/tmp/phase53-traversal.tar -C /phase53/out 2>/dev/null || true; [ ! -e /phase53-escape ] && [ ! -e /phase53/phase53-escape ] && echo LITEOS_ARCHIVE_$((7*7+4))\n"),
                 ),
                 (
                     "LITEOS_ARCHIVE_53",
-                    b"printf 'alpha\\nbeta\\n' >/vi54; vi /vi54; [ \"$(tail -n1 /vi54)\" = OK ] && stty -a | grep -q echo && echo LITEOS_VI_$((9*6))\n",
+                    ShellCommand(b"printf 'alpha\\nbeta\\n' >/vi54; vi /vi54; [ \"$(tail -n1 /vi54)\" = OK ] && stty -a | grep -q echo && echo LITEOS_VI_$((9*6))\n"),
                 ),
                 (
                     "- /vi54 1/2 50%",
-                    b"GoOK",
+                    TerminalInput(b"GoOK"),
                 ),
                 (
                     "I /vi54 [Modified] 3/3 100%",
-                    b"\x1b",
+                    TerminalInput(b"\x1b"),
                 ),
                 (
                     "- /vi54 [Modified] 3/3 100%",
-                    b":wq\n",
+                    TerminalInput(b":wq\n"),
                 ),
                 (
                     "LITEOS_VI_54",
-                    b"seq 1 40 >/less54; less /less54; stty -a | grep -q echo && echo LITEOS_LESS_$((9*6))\n",
+                    ShellCommand(b"seq 1 40 >/less54; less /less54; stty -a | grep -q echo && echo LITEOS_LESS_$((9*6))\n"),
                 ),
                 (
                     "\x1b[24;0H\x1b[K/less54",
-                    b"q",
+                    TerminalInput(b"q"),
                 ),
                 (
                     "LITEOS_LESS_54",
-                    b"printf 'old\\n' >/patch54; printf 'new\\n' >/expected54; diff -u /patch54 /expected54 >/update54.patch; status=$?; [ \"$status\" -eq 1 ] && patch /patch54 </update54.patch && cmp /patch54 /expected54 && hexdump -C /patch54 | grep -q '6e 65 77' && od -An -tx1 /patch54 | grep -q '6e 65 77' && strings /bin/busybox | grep -q BusyBox && more /patch54 | grep -q new && clear; reset; stty -a | grep -q echo && echo LITEOS_TEXT_DIAG_$((9*6))\n",
+                    ShellCommand(b"printf 'old\\n' >/patch54; printf 'new\\n' >/expected54; diff -u /patch54 /expected54 >/update54.patch; status=$?; [ \"$status\" -eq 1 ] && patch /patch54 </update54.patch && cmp /patch54 /expected54 && hexdump -C /patch54 | grep -q '6e 65 77' && od -An -tx1 /patch54 | grep -q '6e 65 77' && strings /bin/busybox | grep -q BusyBox && more /patch54 | grep -q new && clear; reset; stty -a | grep -q echo && echo LITEOS_TEXT_DIAG_$((9*6))\n"),
                 ),
                 (
                     "LITEOS_TEXT_DIAG_54",
-                    b"/bin/ls /; echo LITEOS_LS_$((6*7))\n",
+                    ShellCommand(b"/bin/ls /; echo LITEOS_LS_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_LS_42",
-                    b"/bin/ls /dev; echo HIDDEN >/dev/null; echo LITEOS_NULL_$((6*7)); /bin/dd if=/dev/zero of=/zero bs=4 count=1 2>/dev/null; set -- $(/bin/wc -c /zero); echo LITEOS_ZERO_$1; echo LITEOS_TTYDEV_$((6*7)) >/dev/tty; echo LITEOS_CONSOLEDEV_$((6*7)) >/dev/console; cd /dev; set -- $(/bin/pwd); [ \"$1\" = /dev ] && echo LITEOS_DEVCWD_$((6*7)); cd /\n",
+                    ShellCommand(b"/bin/ls /dev; echo HIDDEN >/dev/null; echo LITEOS_NULL_$((6*7)); /bin/dd if=/dev/zero of=/zero bs=4 count=1 2>/dev/null; set -- $(/bin/wc -c /zero); echo LITEOS_ZERO_$1; echo LITEOS_TTYDEV_$((6*7)) >/dev/tty; echo LITEOS_CONSOLEDEV_$((6*7)) >/dev/console; cd /dev; set -- $(/bin/pwd); [ \"$1\" = /dev ] && echo LITEOS_DEVCWD_$((6*7)); cd /\n"),
                 ),
                 (
                     "LITEOS_DEVCWD_42",
-                    b"/bin/printf 'pear\\napple\\napple\\n' > /words; set -- $(/bin/sort /words | /bin/uniq | /bin/wc -l); [ \"$1\" = 2 ] && echo LITEOS_TEXT_$((6*7))\n",
+                    ShellCommand(b"/bin/printf 'pear\\napple\\napple\\n' > /words; set -- $(/bin/sort /words | /bin/uniq | /bin/wc -l); [ \"$1\" = 2 ] && echo LITEOS_TEXT_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_TEXT_42",
-                    b"/bin/printf 'a:1\\nb:2\\nc:3\\n' | /bin/tee /data >/dev/null; a=$(/bin/sed -n '2p' /data | /bin/cut -d: -f2 | /bin/tr 2 7); b=$(/bin/awk -F: '{s+=$2} END {print s}' /data); c=$(/bin/head -n1 /data); d=$(/bin/tail -n1 /data); [ \"$a:$b:$c:$d\" = '7:6:a:1:c:3' ] && echo LITEOS_FILTERS_$((6*7))\n",
+                    ShellCommand(b"/bin/printf 'a:1\\nb:2\\nc:3\\n' | /bin/tee /data >/dev/null; a=$(/bin/sed -n '2p' /data | /bin/cut -d: -f2 | /bin/tr 2 7); b=$(/bin/awk -F: '{s+=$2} END {print s}' /data); c=$(/bin/head -n1 /data); d=$(/bin/tail -n1 /data); [ \"$a:$b:$c:$d\" = '7:6:a:1:c:3' ] && echo LITEOS_FILTERS_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_FILTERS_42",
-                    b"/bin/mkdir /tools; /bin/touch /tools/a; n=$(/bin/find /tools -name a | /bin/wc -l); base=$(/bin/basename /a/b); dir=$(/bin/dirname /a/b); [ \"$n:$base:$dir\" = '1:b:/a' ] && echo LITEOS_FIND_$((6*7))\n",
+                    ShellCommand(b"/bin/mkdir /tools; /bin/touch /tools/a; n=$(/bin/find /tools -name a | /bin/wc -l); base=$(/bin/basename /a/b); dir=$(/bin/dirname /a/b); [ \"$n:$base:$dir\" = '1:b:/a' ] && echo LITEOS_FIND_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_FIND_42",
-                    b"e=$(/bin/expr 6 \\* 7); last=$(/bin/seq 41 42 | /bin/tail -n1); [ \"$e:$last\" = '42:42' ] && echo LITEOS_MATH_$((6*7))\n",
+                    ShellCommand(b"e=$(/bin/expr 6 \\* 7); last=$(/bin/seq 41 42 | /bin/tail -n1); [ \"$e:$last\" = '42:42' ] && echo LITEOS_MATH_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_MATH_42",
-                    b"/bin/sleep 0; echo LITEOS_TOOLS_$((6*7))\n",
+                    ShellCommand(b"/bin/sleep 0; echo LITEOS_TOOLS_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_TOOLS_42",
-                    b"/bin/ps > /ps.out; proc_total=$(/bin/awk '/^MemTotal:/ {print $2}' /proc/meminfo); free_total=$(/bin/free | /bin/awk '/^Mem:/ {print $2}'); /bin/grep -q init /ps.out && /bin/grep -q sh /ps.out && [ \"$proc_total\" = \"$free_total\" ] && /bin/uptime | /bin/grep -q 'load average:' && echo LITEOS_OBSERVABILITY_$((6*7))\n",
+                    ShellCommand(b"/bin/ps > /ps.out; proc_total=$(/bin/awk '/^MemTotal:/ {print $2}' /proc/meminfo); free_total=$(/bin/free | /bin/awk '/^Mem:/ {print $2}'); /bin/grep -q init /ps.out && /bin/grep -q sh /ps.out && [ \"$proc_total\" = \"$free_total\" ] && /bin/uptime | /bin/grep -q 'load average:' && echo LITEOS_OBSERVABILITY_$((6*7))\n"),
                 ),
+                # 完整记录应包含实际 relatime 和 ext4 data=ordered；proc 可写策略由节点权限约束。
                 (
                     "LITEOS_OBSERVABILITY_42",
-                    b"/bin/grep -q '^/dev/vda / ext4 rw 0 0$' /proc/mounts && /bin/grep -q '^devtmpfs /dev devtmpfs ro 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc ro 0 0$' /proc/mounts && /bin/grep -q '^sysfs /sys sysfs ro 0 0$' /proc/mounts && /bin/grep -q '^devpts /dev/pts devpts rw 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n",
+                    ShellCommand(b"/bin/grep -q '^/dev/vda / ext4 rw,relatime,data=ordered 0 0$' /proc/mounts && /bin/grep -q '^devtmpfs /dev devtmpfs ro,relatime 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc rw,relatime 0 0$' /proc/mounts && /bin/grep -q '^sysfs /sys sysfs ro,relatime 0 0$' /proc/mounts && /bin/grep -q '^devpts /dev/pts devpts rw,relatime 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_FILESYSTEM_CAPACITY_42",
-                    b"/bin/mkdir -p /mnt/proc2 && /bin/mount -t proc proc /mnt/proc2 && [ -r /mnt/proc2/meminfo ] && [ \"$(/bin/stat -c %d /mnt/proc2)\" != \"$(/bin/stat -c %d /proc)\" ] && cd /mnt/proc2 && ! /bin/umount /mnt/proc2 2>/dev/null && cd / && /bin/umount /mnt/proc2 && [ ! -e /mnt/proc2/meminfo ] && ! /bin/mount -t nosuchfs none /mnt/proc2 2>/dev/null && ! /bin/mount -t ext4 /dev/vda /mnt/proc2 2>/dev/null && ! /bin/umount / 2>/dev/null && /bin/ls -l /dev/vda | /bin/grep -q '^b' && echo LITEOS_MOUNT_$((6*7+2))\n",
+                    ShellCommand(b'/bin/mkdir -p /mnt/proc2 && /bin/mount -t proc proc /mnt/proc2 && [ -r /mnt/proc2/meminfo ] && [ "$(/bin/stat -c %d /mnt/proc2)" != "$(/bin/stat -c %d /proc)" ] && cd /mnt/proc2 && ! /bin/umount /mnt/proc2 2>/dev/null && cd / && /bin/umount /mnt/proc2 && [ ! -e /mnt/proc2/meminfo ] && ! /bin/mount -t nosuchfs none /mnt/proc2 2>/dev/null && /bin/mount -t ext4 /dev/vda /mnt/proc2 && [ "$(/bin/stat -c \'%d:%i\' /mnt/proc2)" = "$(/bin/stat -c \'%d:%i\' /)" ] && echo shared-owner >/mnt/proc2/mount-owner && [ "$(/bin/cat /mount-owner)" = shared-owner ] && /bin/umount /mnt/proc2 && /bin/rm /mount-owner && { exec 9>/root-umount-writer; ! /bin/umount / 2>/dev/null; busy=$?; exec 9>&-; /bin/rm /root-umount-writer; [ "$busy" -eq 0 ]; } && /bin/ls -l /dev/vda | /bin/grep -q \'^b\' && echo LITEOS_MOUNT_$((6*7+2))\n'),
                 ),
                 (
                     "LITEOS_MOUNT_44",
-                    (
+                    ShellCommand((
                         f"[ \"$(/bin/cat /proc/cmdline)\" = '{BUSYBOX_KERNEL_ARGUMENTS}' ] && "
                         "[ \"$LITEOS_BOOT_ENV\" = 42 ] && echo LITEOS_CMDLINE_$((6*7+3))\n"
-                    ).encode(),
+                    ).encode()),
                 ),
                 (
                     "LITEOS_CMDLINE_45",
-                    b"/bin/mkdir -p /mnt/t && /bin/mount -t tmpfs -o size=1m,nr_inodes=24,mode=0700 tmpfs /mnt/t && [ \"$(/bin/stat -f -c %T /mnt/t)\" = tmpfs ] && [ \"$(/bin/stat -c %a /mnt/t)\" = 700 ] && [ \"$(/bin/stat -c %d /mnt/t)\" != \"$(/bin/stat -c %d /)\" ] && [ \"$(/bin/stat -f -c %T /run)\" = tmpfs ] && [ \"$(/bin/stat -f -c %T /tmp)\" = tmpfs ] && [ \"$(/bin/stat -f -c %T /dev/shm)\" = tmpfs ] && [ \"$(/bin/stat -c %a /tmp)\" = 1777 ] && ! /bin/mount -t tmpfs -o huge=always tmpfs /mnt/t 2>/dev/null && echo LITEOS_TMPFS_$((6*7+4))\n",
+                    ShellCommand(b"/bin/mkdir -p /mnt/t && /bin/mount -t tmpfs -o size=1m,nr_inodes=24,mode=0700 tmpfs /mnt/t && [ \"$(/bin/stat -f -c %T /mnt/t)\" = tmpfs ] && [ \"$(/bin/stat -c %a /mnt/t)\" = 700 ] && [ \"$(/bin/stat -c %d /mnt/t)\" != \"$(/bin/stat -c %d /)\" ] && [ \"$(/bin/stat -f -c %T /run)\" = tmpfs ] && [ \"$(/bin/stat -f -c %T /tmp)\" = tmpfs ] && [ \"$(/bin/stat -f -c %T /dev/shm)\" = tmpfs ] && [ \"$(/bin/stat -c %a /tmp)\" = 1777 ] && ! /bin/mount -t tmpfs -o huge=always tmpfs /mnt/t 2>/dev/null && echo LITEOS_TMPFS_$((6*7+4))\n"),
                 ),
                 (
                     "LITEOS_TMPFS_46",
-                    b"echo hello >/mnt/t/a && /bin/ln /mnt/t/a /mnt/t/b && /bin/mkdir /mnt/t/d && /bin/mv /mnt/t/b /mnt/t/d/c && [ \"$(/bin/cat /mnt/t/d/c)\" = hello ] && [ \"$(/bin/stat -c %h /mnt/t/a)\" = 2 ] && /bin/ln -s a /mnt/t/s && [ \"$(/bin/readlink /mnt/t/s)\" = a ] && ! /bin/mv /mnt/t/d /mnt/t/d/sub 2>/dev/null && [ \"$(/bin/ls /mnt/t | /bin/wc -l)\" = 3 ] && echo LITEOS_TMPFS_$((6*7+5))\n",
+                    ShellCommand(b"echo hello >/mnt/t/a && /bin/ln /mnt/t/a /mnt/t/b && /bin/mkdir /mnt/t/d && /bin/mv /mnt/t/b /mnt/t/d/c && [ \"$(/bin/cat /mnt/t/d/c)\" = hello ] && [ \"$(/bin/stat -c %h /mnt/t/a)\" = 2 ] && /bin/ln -s a /mnt/t/s && [ \"$(/bin/readlink /mnt/t/s)\" = a ] && ! /bin/mv /mnt/t/d /mnt/t/d/sub 2>/dev/null && [ \"$(/bin/ls /mnt/t | /bin/wc -l)\" = 3 ] && echo LITEOS_TMPFS_$((6*7+5))\n"),
                 ),
                 (
                     "LITEOS_TMPFS_47",
-                    b"! /bin/dd if=/dev/zero of=/mnt/t/big bs=64k count=32 2>/dev/null && /bin/rm /mnt/t/big && /bin/dd if=/dev/zero of=/mnt/t/ok bs=64k count=8 2>/dev/null && [ \"$(/bin/stat -c %s /mnt/t/ok)\" = 524288 ] && /bin/rm /mnt/t/ok && exec 3>/mnt/t/held && /bin/dd if=/dev/zero bs=64k count=12 >&3 2>/dev/null && /bin/rm /mnt/t/held && ! /bin/dd if=/dev/zero of=/mnt/t/more bs=64k count=8 2>/dev/null && exec 3>&- && /bin/rm -f /mnt/t/more && /bin/dd if=/dev/zero of=/mnt/t/after bs=64k count=8 2>/dev/null && /bin/rm /mnt/t/after && echo LITEOS_TMPFS_$((6*7+6))\n",
+                    ShellCommand(b"! /bin/dd if=/dev/zero of=/mnt/t/big bs=64k count=32 2>/dev/null && /bin/rm /mnt/t/big && /bin/dd if=/dev/zero of=/mnt/t/ok bs=64k count=8 2>/dev/null && [ \"$(/bin/stat -c %s /mnt/t/ok)\" = 524288 ] && /bin/rm /mnt/t/ok && exec 3>/mnt/t/held && /bin/dd if=/dev/zero bs=64k count=12 >&3 2>/dev/null && /bin/rm /mnt/t/held && ! /bin/dd if=/dev/zero of=/mnt/t/more bs=64k count=8 2>/dev/null && exec 3>&- && /bin/rm -f /mnt/t/more && /bin/dd if=/dev/zero of=/mnt/t/after bs=64k count=8 2>/dev/null && /bin/rm /mnt/t/after && echo LITEOS_TMPFS_$((6*7+6))\n"),
                 ),
                 (
                     "LITEOS_TMPFS_48",
-                    b"n=0; while /bin/touch /mnt/t/f$n 2>/dev/null; do n=$((n+1)); done; [ $n -gt 0 ] && [ $n -lt 24 ] && /bin/rm /mnt/t/f0 && /bin/touch /mnt/t/again && cd /mnt/t && ! /bin/umount /mnt/t 2>/dev/null && cd / && /bin/umount /mnt/t && [ ! -e /mnt/t/a ] && echo LITEOS_TMPFS_$((6*7+7))\n",
+                    ShellCommand(b"n=0; while /bin/touch /mnt/t/f$n 2>/dev/null; do n=$((n+1)); done; [ $n -gt 0 ] && [ $n -lt 24 ] && /bin/rm /mnt/t/f0 && /bin/touch /mnt/t/again && cd /mnt/t && ! /bin/umount /mnt/t 2>/dev/null && cd / && /bin/umount /mnt/t && [ ! -e /mnt/t/a ] && echo LITEOS_TMPFS_$((6*7+7))\n"),
                 ),
                 (
                     "LITEOS_TMPFS_49",
-                    b"/bin/mkdir -p /mnt/t2 && /bin/mount -t tmpfs tmpfs /mnt/t2 && cd /mnt/t2 && i=0; while [ $i -lt 600 ] && /bin/mkdir d 2>/dev/null && cd d; do i=$((i+1)); done; cd /; /bin/umount /mnt/t2 && [ $i -eq 600 ] && echo LITEOS_TMPFS_DEEP_$((6*7+10))\n",
+                    ShellCommand(b"/bin/mkdir -p /mnt/t2 && /bin/mount -t tmpfs tmpfs /mnt/t2 && cd /mnt/t2 && i=0; while [ $i -lt 600 ] && /bin/mkdir d 2>/dev/null && cd d; do i=$((i+1)); done; cd /; /bin/umount /mnt/t2 && [ $i -eq 600 ] && echo LITEOS_TMPFS_DEEP_$((6*7+10))\n"),
                 ),
                 (
                     "LITEOS_TMPFS_DEEP_52",
-                    b"free() { /bin/df -kP / | /bin/tail -n 1 | { read _ _ _ a _; echo $a; }; }; b=$(free); /bin/dd if=/dev/zero of=/rel bs=64k count=64 2>/dev/null; /bin/cat /rel >/dev/null; m=$(free); /bin/rm /rel; a=$(free); [ $((b-m)) -ge 3000 ] && [ $((a-b)) -le 256 ] && [ $((b-a)) -le 256 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+8))\n",
+                    ShellCommand(b"free() { /bin/df -kP / | /bin/tail -n 1 | { read _ _ _ a _; echo $a; }; }; b=$(free); /bin/dd if=/dev/zero of=/rel bs=64k count=64 2>/dev/null; /bin/cat /rel >/dev/null; m=$(free); /bin/rm /rel; a=$(free); [ $((b-m)) -ge 3000 ] && [ $((a-b)) -le 256 ] && [ $((b-a)) -le 256 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+8))\n"),
                 ),
                 (
                     "LITEOS_UNLINK_RELEASE_50",
-                    b"/bin/dd if=/dev/zero of=/rel2 bs=64k count=64 2>/dev/null; /bin/cat /rel2 >/dev/null; exec 5</rel2; c=$(free); /bin/rm /rel2; d=$(free); [ $((d-c)) -le 256 ] && exec 5<&- && e=$(free) && [ $((e-d)) -ge 3000 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+9))\n",
+                    ShellCommand(b"/bin/dd if=/dev/zero of=/rel2 bs=64k count=64 2>/dev/null; /bin/cat /rel2 >/dev/null; exec 5</rel2; c=$(free); /bin/rm /rel2; d=$(free); [ $((d-c)) -le 256 ] && exec 5<&- && e=$(free) && [ $((e-d)) -ge 3000 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+9))\n"),
                 ),
                 (
                     "LITEOS_UNLINK_RELEASE_51",
-                    b"/bin/mkdir -p /mnt/r && /bin/mount -t tmpfs -o size=1m tmpfs /mnt/r && echo data >/mnt/r/f && printf '#!/bin/sh\\necho ran\\n' >/mnt/r/x && /bin/chmod 755 /mnt/r/x && [ \"$(/mnt/r/x)\" = ran ] && /bin/mount -t tmpfs -o remount,noexec tmpfs /mnt/r && ! /mnt/r/x 2>/dev/null && /bin/grep -q ' /mnt/r tmpfs rw,noexec ' /proc/mounts && /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r && /bin/grep -q ' /mnt/r tmpfs ro ' /proc/mounts && ! echo y >/mnt/r/g 2>/dev/null && ! /bin/rm /mnt/r/f 2>/dev/null && ! /bin/mv /mnt/r/f /mnt/r/h 2>/dev/null && ! /bin/chmod 600 /mnt/r/f 2>/dev/null && ! /bin/touch /mnt/r/f 2>/dev/null && [ \"$(/bin/cat /mnt/r/f)\" = data ] && echo LITEOS_MOUNTFLAGS_$((6*7+11))\n",
+                    ShellCommand(b'echo retained >/rel3 && /bin/dd if=/dev/zero bs=64k count=64 >>/rel3 2>/dev/null && /bin/cat /rel3 >/dev/null && exec 6<>/rel3 && c=$(free) && /bin/rm /rel3 && d=$(free) && [ $((d-c)) -le 256 ] && [ "$(/bin/dd bs=8 count=1 <&6 2>/dev/null)" = retained ] && exec 6>&- && e=$(free) && [ $((e-d)) -ge 3000 ] && /bin/dd if=/dev/zero of=/rename-victim bs=64k count=64 2>/dev/null && /bin/cat /rename-victim >/dev/null && echo replacement >/rename-source && c=$(free) && /bin/mv /rename-source /rename-victim && e=$(free) && [ $((e-c)) -ge 3000 ] && [ "$(/bin/cat /rename-victim)" = replacement ] && /bin/rm /rename-victim && echo LITEOS_CACHE_RETIREMENT_$((6*10+1))\n'),
+                ),
+                (
+                    "LITEOS_CACHE_RETIREMENT_61",
+                    ShellCommand(b"/bin/mkdir -p /mnt/r && /bin/mount -t tmpfs -o size=1m tmpfs /mnt/r && echo data >/mnt/r/f && printf '#!/bin/sh\\necho ran\\n' >/mnt/r/x && /bin/chmod 755 /mnt/r/x && [ \"$(/mnt/r/x)\" = ran ] && /bin/mount -t tmpfs -o remount,noexec tmpfs /mnt/r && ! /mnt/r/x 2>/dev/null && /bin/grep -q ' /mnt/r tmpfs rw,noexec,relatime,size=1024k ' /proc/mounts && /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r && /bin/grep -q ' /mnt/r tmpfs ro,relatime,size=1024k ' /proc/mounts && ! echo y >/mnt/r/g 2>/dev/null && ! /bin/rm /mnt/r/f 2>/dev/null && ! /bin/mv /mnt/r/f /mnt/r/h 2>/dev/null && ! /bin/chmod 600 /mnt/r/f 2>/dev/null && ! /bin/touch /mnt/r/f 2>/dev/null && [ \"$(/bin/cat /mnt/r/f)\" = data ] && echo LITEOS_MOUNTFLAGS_$((6*7+11))\n"),
                 ),
                 (
                     "LITEOS_MOUNTFLAGS_53",
-                    b"/bin/mount -t tmpfs -o remount,rw tmpfs /mnt/r && echo ok >/mnt/r/g && exec 3>/mnt/r/h && ! /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r 2>/dev/null && exec 3>&- && /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r && [ \"$(/bin/cat /mnt/r/g)\" = ok ] && echo LITEOS_MOUNTFLAGS_$((6*7+12))\n",
+                    ShellCommand(b"/bin/mount -t tmpfs -o remount,rw tmpfs /mnt/r && echo ok >/mnt/r/g && exec 3>/mnt/r/h && ! /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r 2>/dev/null && exec 3>&- && /bin/mount -t tmpfs -o remount,ro tmpfs /mnt/r && [ \"$(/bin/cat /mnt/r/g)\" = ok ] && echo LITEOS_MOUNTFLAGS_$((6*7+12))\n"),
                 ),
                 (
                     "LITEOS_MOUNTFLAGS_54",
-                    b"/bin/mount -t tmpfs -o remount,rw,size=2m tmpfs /mnt/r && /bin/dd if=/dev/zero of=/mnt/r/big bs=64k count=24 2>/dev/null && ! /bin/mount -t tmpfs -o remount,size=64k tmpfs /mnt/r 2>/dev/null && [ \"$(/bin/stat -f -c %b /mnt/r)\" = 512 ] && /bin/rm /mnt/r/big && /bin/mount -t tmpfs -o remount,size=64k tmpfs /mnt/r && [ \"$(/bin/stat -f -c %b /mnt/r)\" = 16 ] && /bin/umount /mnt/r && echo LITEOS_MOUNTFLAGS_$((6*7+13))\n",
+                    ShellCommand(b"/bin/mount -t tmpfs -o remount,rw,size=2m tmpfs /mnt/r && /bin/dd if=/dev/zero of=/mnt/r/big bs=64k count=24 2>/dev/null && ! /bin/mount -t tmpfs -o remount,size=64k tmpfs /mnt/r 2>/dev/null && [ \"$(/bin/stat -f -c %b /mnt/r)\" = 512 ] && /bin/rm /mnt/r/big && /bin/mount -t tmpfs -o remount,size=64k tmpfs /mnt/r && [ \"$(/bin/stat -f -c %b /mnt/r)\" = 16 ] && /bin/umount /mnt/r && echo LITEOS_MOUNTFLAGS_$((6*7+13))\n"),
                 ),
                 (
                     "LITEOS_MOUNTFLAGS_55",
-                    b"exec 3</dev/kmsg && echo '<5>liteos-kmsg-probe' >/dev/kmsg && i=0 && while [ $i -lt 400 ]; do /bin/dd bs=4096 count=1 <&3 >/var/tmp/k 2>/dev/null; /bin/grep -q liteos-kmsg-probe /var/tmp/k && break; i=$((i+1)); done; /bin/grep -q '^13,[0-9]*,[0-9]*,-;liteos-kmsg-probe$' /var/tmp/k && echo LITEOS_KMSG_$((6*7+14))\n",
+                    ShellCommand(b"exec 3</dev/kmsg && echo '<5>liteos-kmsg-probe' >/dev/kmsg && i=0 && while [ $i -lt 400 ]; do /bin/dd bs=4096 count=1 <&3 >/var/tmp/k 2>/dev/null; /bin/grep -q liteos-kmsg-probe /var/tmp/k && break; i=$((i+1)); done; /bin/grep -q '^13,[0-9]*,[0-9]*,-;liteos-kmsg-probe$' /var/tmp/k && echo LITEOS_KMSG_$((6*7+14))\n"),
                 ),
                 (
                     "LITEOS_KMSG_56",
-                    b"(/bin/sleep 1; echo '<6>liteos-kmsg-wake' >/dev/kmsg) & i=0; while [ $i -lt 400 ]; do /bin/dd bs=4096 count=1 <&3 >/var/tmp/k3 2>/dev/null; /bin/grep -q 'liteos-kmsg-wake$' /var/tmp/k3 && break; i=$((i+1)); done; wait; exec 3<&-; /bin/grep -q '^14,[0-9]*,[0-9]*,-;liteos-kmsg-wake$' /var/tmp/k3 && echo LITEOS_KMSG_$((6*7+15))\n",
+                    ShellCommand(b"(/bin/sleep 1; echo '<6>liteos-kmsg-wake' >/dev/kmsg) & i=0; while [ $i -lt 400 ]; do /bin/dd bs=4096 count=1 <&3 >/var/tmp/k3 2>/dev/null; /bin/grep -q 'liteos-kmsg-wake$' /var/tmp/k3 && break; i=$((i+1)); done; wait; exec 3<&-; /bin/grep -q '^14,[0-9]*,[0-9]*,-;liteos-kmsg-wake$' /var/tmp/k3 && echo LITEOS_KMSG_$((6*7+15))\n"),
                 ),
                 (
                     "LITEOS_KMSG_57",
-                    b"[ \"$(/bin/dd if=/dev/vdb bs=1 count=26 2>/dev/null)\" = LITEOS-SCRATCH-DISK-HEADER ] && [ \"$(/bin/stat -c %t:%T /dev/vdb)\" = fe:10 ] && printf ABCDEFGHIJ | /bin/dd of=/dev/vdb bs=1 seek=4093 2>/dev/null && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=4093 count=10 2>/dev/null)\" = ABCDEFGHIJ ] && [ \"$(/bin/dd if=/dev/vdb bs=1 count=26 2>/dev/null)\" = LITEOS-SCRATCH-DISK-HEADER ] && echo LITEOS_BLOCK_$((6*7+16))\n",
+                    ShellCommand(b"[ \"$(/bin/dd if=/dev/vdb bs=1 count=26 2>/dev/null)\" = LITEOS-SCRATCH-DISK-HEADER ] && [ \"$(/bin/stat -c %t:%T /dev/vdb)\" = fe:10 ] && printf ABCDEFGHIJ | /bin/dd of=/dev/vdb bs=1 seek=4093 2>/dev/null && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=4093 count=10 2>/dev/null)\" = ABCDEFGHIJ ] && [ \"$(/bin/dd if=/dev/vdb bs=1 count=26 2>/dev/null)\" = LITEOS-SCRATCH-DISK-HEADER ] && echo LITEOS_BLOCK_$((6*7+16))\n"),
                 ),
                 (
                     "LITEOS_BLOCK_58",
-                    b"echo marker-at-tail | /bin/dd of=/dev/vdb bs=1 seek=16777202 2>/dev/null; ! /bin/dd if=/dev/zero of=/dev/vdb bs=4096 seek=4096 count=1 2>/dev/null && /bin/sync && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=16777202 count=11 2>/dev/null)\" = marker-at-t ] && echo LITEOS_BLOCK_$((6*7+17))\n",
+                    ShellCommand(b"echo marker-at-tail | /bin/dd of=/dev/vdb bs=1 seek=16777202 2>/dev/null; ! /bin/dd if=/dev/zero of=/dev/vdb bs=4096 seek=4096 count=1 2>/dev/null && /bin/sync && [ \"$(/bin/dd if=/dev/vdb bs=1 skip=16777202 count=11 2>/dev/null)\" = marker-at-t ] && echo LITEOS_BLOCK_$((6*7+17))\n"),
                 ),
                 (
                     "LITEOS_BLOCK_59",
-                    b"/bin/dd if=/dev/zero of=/dev/vdb bs=64k count=64 2>/dev/null && [ \"$(/bin/dd if=/dev/vdb bs=64k count=64 2>/dev/null | /bin/tr -d '\\000' | /bin/wc -c)\" -eq 0 ] && /bin/mkdir -p /mnt/b && exec 4>>/dev/vdb && ! /bin/mount -t ext4 /dev/vdb /mnt/b 2>/dev/null && exec 4>&- && ! /bin/dd if=/dev/zero of=/dev/vda bs=512 count=1 2>/dev/null && [ \"$(/bin/dd if=/dev/vda bs=1 skip=1080 count=2 2>/dev/null | /bin/tr '\\123\\357' 'SE')\" = SE ] && echo LITEOS_BLOCK_$((6*7+18))\n",
+                    ShellCommand(b"/bin/dd if=/dev/zero of=/dev/vdb bs=64k count=64 2>/dev/null && [ \"$(/bin/dd if=/dev/vdb bs=64k count=64 2>/dev/null | /bin/tr -d '\\000' | /bin/wc -c)\" -eq 0 ] && /bin/mkdir -p /mnt/b && exec 4>>/dev/vdb && ! /bin/mount -t ext4 /dev/vdb /mnt/b 2>/dev/null && exec 4>&- && ! /bin/dd if=/dev/zero of=/dev/vda bs=512 count=1 2>/dev/null && [ \"$(/bin/dd if=/dev/vda bs=1 skip=1080 count=2 2>/dev/null | /bin/tr '\\123\\357' 'SE')\" = SE ] && echo LITEOS_BLOCK_$((6*7+18))\n"),
                 ),
                 (
                     "LITEOS_BLOCK_60",
-                    b"[ \"$(/bin/stat -c %t:%T /dev/vdb1)\" = fe:11 ] && [ \"$(/bin/stat -c %t:%T /dev/vdb2)\" = fe:12 ] && /bin/mkdir -p /mnt/p && /bin/mount -t ext4 /dev/vdb2 /mnt/p && echo on-partition >/mnt/p/f && [ \"$(/bin/cat /mnt/p/f)\" = on-partition ] && ! /bin/dd if=/dev/zero of=/dev/vdb2 bs=512 count=1 2>/dev/null && /bin/umount /mnt/p && /bin/mount -t ext4 /dev/vdb2 /mnt/p && [ \"$(/bin/cat /mnt/p/f)\" = on-partition ] && /bin/umount /mnt/p && echo LITEOS_PARTITION_$((6*7+19))\n",
+                    ShellCommand(b"[ \"$(/bin/stat -c %t:%T /dev/vdb1)\" = fe:11 ] && [ \"$(/bin/stat -c %t:%T /dev/vdb2)\" = fe:12 ] && /bin/mkdir -p /mnt/p && /bin/mount -t ext4 /dev/vdb2 /mnt/p && echo on-partition >/mnt/p/f && [ \"$(/bin/cat /mnt/p/f)\" = on-partition ] && ! /bin/dd if=/dev/zero of=/dev/vdb2 bs=512 count=1 2>/dev/null && /bin/umount /mnt/p && /bin/mount -t ext4 /dev/vdb2 /mnt/p && [ \"$(/bin/cat /mnt/p/f)\" = on-partition ] && /bin/umount /mnt/p && echo LITEOS_PARTITION_$((6*7+19))\n"),
                 ),
                 (
                     "LITEOS_PARTITION_61",
-                    b"/bin/grep -q ' 10240 vdb2$' /proc/partitions && /bin/grep -q ' 4096 vdb1$' /proc/partitions && [ \"$(/bin/grep -c ' vd' /proc/partitions)\" = 4 ] && [ \"$(/bin/cat /sys/class/block/vdb2/dev)\" = 254:18 ] && [ \"$(/bin/cat /sys/class/block/vdb2/size)\" = 20480 ] && [ \"$(/bin/cat /sys/class/block/vdb2/start)\" = 10240 ] && [ \"$(/bin/cat /sys/class/block/vdb2/partition)\" = 2 ] && [ \"$(/bin/cat /sys/block/vdb/vdb2/start)\" = 10240 ] && [ -e /sys/block/vdb/size ] && [ ! -e /sys/block/vdb2 ] && [ \"$(/bin/grep DEVTYPE /sys/dev/block/254:18/uevent)\" = DEVTYPE=partition ] && /bin/grep -q '^PARTUUID=[0-9a-f]\\{8\\}-02$' /sys/block/vdb/vdb2/uevent && [ \"$(/bin/ls /sys/block | /bin/wc -l)\" = 2 ] && [ \"$(/bin/ls /sys/class/block | /bin/wc -l)\" = 4 ] && echo LITEOS_BLOCKSYS_$((6*7+20))\n",
+                    ShellCommand(b"/bin/grep -q ' 10240 vdb2$' /proc/partitions && /bin/grep -q ' 4096 vdb1$' /proc/partitions && [ \"$(/bin/grep -c ' vd' /proc/partitions)\" = 4 ] && [ \"$(/bin/cat /sys/class/block/vdb2/dev)\" = 254:18 ] && [ \"$(/bin/cat /sys/class/block/vdb2/size)\" = 20480 ] && [ \"$(/bin/cat /sys/class/block/vdb2/start)\" = 10240 ] && [ \"$(/bin/cat /sys/class/block/vdb2/partition)\" = 2 ] && [ \"$(/bin/cat /sys/block/vdb/vdb2/start)\" = 10240 ] && [ -e /sys/block/vdb/size ] && [ ! -e /sys/block/vdb2 ] && [ \"$(/bin/grep DEVTYPE /sys/dev/block/254:18/uevent)\" = DEVTYPE=partition ] && /bin/grep -q '^PARTUUID=[0-9a-f]\\{8\\}-02$' /sys/block/vdb/vdb2/uevent && [ \"$(/bin/ls /sys/block | /bin/wc -l)\" = 2 ] && [ \"$(/bin/ls /sys/class/block | /bin/wc -l)\" = 4 ] && echo LITEOS_BLOCKSYS_$((6*7+20))\n"),
                 ),
                 (
                     "LITEOS_BLOCKSYS_62",
-                    b"/var/tmp/memory-file-probe\n",
+                    ShellCommand(b"/var/tmp/memory-file-probe\n"),
                 ),
                 (
                     "LITEOS_MEMFILE_42",
-                    b"/var/tmp/special-file-probe\n",
+                    ShellCommand(b"/var/tmp/special-file-probe\n"),
                 ),
                 (
                     "LITEOS_SPECIAL_42",
-                    b"/var/tmp/inotify-probe\n",
+                    ShellCommand(b"/var/tmp/inotify-probe\n"),
                 ),
                 (
                     "LITEOS_INOTIFY_42",
-                    b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n",
+                    ShellCommand(b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n"),
                 ),
                 (
                     "LITEOS_LINKS_43",
-                    b"/bin/rm -rf /race; /bin/mkdir /race; workers=''; i=0; while [ $i -lt 8 ]; do (/bin/mkdir /race/d$i; j=0; while [ $j -lt 4 ]; do echo payload >/race/d$i/source$j && /bin/cp /race/d$i/source$j /race/d$i/copy$j && /bin/ln /race/d$i/copy$j /race/d$i/hard$j && /bin/ln -s hard$j /race/d$i/sym$j && /bin/mv /race/d$i/copy$j /race/d$i/moved$j && [ \"$(/bin/cat /race/d$i/sym$j)\" = payload ] && /bin/rm /race/d$i/sym$j /race/d$i/hard$j /race/d$i/moved$j /race/d$i/source$j || exit 1; j=$((j+1)); done; /bin/rmdir /race/d$i; echo done >>/race/completed) & workers=\"$workers $!\"; i=$((i+1)); done; ok=1; for worker in $workers; do wait $worker || ok=0; done; count=$(/bin/wc -l </race/completed); [ \"$ok:$count\" = 1:8 ] && echo LITEOS_NAMESPACE_CONCURRENCY_$((6*7+1))\n",
+                    ShellCommand(b"/bin/rm -rf /race; /bin/mkdir /race; workers=''; i=0; while [ $i -lt 8 ]; do (/bin/mkdir /race/d$i; j=0; while [ $j -lt 4 ]; do echo payload >/race/d$i/source$j && /bin/cp /race/d$i/source$j /race/d$i/copy$j && /bin/ln /race/d$i/copy$j /race/d$i/hard$j && /bin/ln -s hard$j /race/d$i/sym$j && /bin/mv /race/d$i/copy$j /race/d$i/moved$j && [ \"$(/bin/cat /race/d$i/sym$j)\" = payload ] && /bin/rm /race/d$i/sym$j /race/d$i/hard$j /race/d$i/moved$j /race/d$i/source$j || exit 1; j=$((j+1)); done; /bin/rmdir /race/d$i; echo done >>/race/completed) & workers=\"$workers $!\"; i=$((i+1)); done; ok=1; for worker in $workers; do wait $worker || ok=0; done; count=$(/bin/wc -l </race/completed); [ \"$ok:$count\" = 1:8 ] && echo LITEOS_NAMESPACE_CONCURRENCY_$((6*7+1))\n"),
                 ),
                 (
                     "LITEOS_NAMESPACE_CONCURRENCY_43",
-                    b"[ \"$(/bin/id -u):$(/bin/id -g)\" = 0:0 ] && /bin/touch /busybox-credential && /bin/chmod 640 /busybox-credential && /bin/chown 1000:1000 /busybox-credential && set -- $(/bin/ls -ln /busybox-credential); [ \"$1:$3:$4\" = '-rw-r-----:1000:1000' ] && echo LITEOS_BUSYBOX_CREDENTIALS_$((6*7+2))\n",
+                    ShellCommand(b"[ \"$(/bin/id -u):$(/bin/id -g)\" = 0:0 ] && /bin/touch /busybox-credential && /bin/chmod 640 /busybox-credential && /bin/chown 1000:1000 /busybox-credential && set -- $(/bin/ls -ln /busybox-credential); [ \"$1:$3:$4\" = '-rw-r-----:1000:1000' ] && echo LITEOS_BUSYBOX_CREDENTIALS_$((6*7+2))\n"),
                 ),
                 (
                     "LITEOS_BUSYBOX_CREDENTIALS_44",
-                    (
+                    ShellCommand((
                         "[ \"$(/bin/uname -s)\" = LiteOS ] && "
                         "[ \"$(/bin/uname -n)\" = liteos ] && "
                         f"[ \"$(/bin/uname -m)\" = {TARGET.arch} ] && "
                         "[ \"$(/bin/uname -o)\" = LiteOS ] && "
                         f"[ \"$(/bin/arch)\" = {TARGET.arch} ] && "
                         "echo LITEOS_SYSTEM_IDENTITY_$((6*7))\n"
-                    ).encode(),
+                    ).encode()),
                 ),
                 (
                     "LITEOS_SYSTEM_IDENTITY_42",
-                    b"epoch=$(/bin/date -u +%s); year=$(/bin/date -u +%Y); [ \"$epoch\" -ge 1704067200 ] && [ \"$year\" -ge 2024 ] && echo LITEOS_WALLCLOCK_$((6*7))\n",
+                    ShellCommand(b"epoch=$(/bin/date -u +%s); year=$(/bin/date -u +%Y); [ \"$epoch\" -ge 1704067200 ] && [ \"$year\" -ge 2024 ] && echo LITEOS_WALLCLOCK_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_WALLCLOCK_42",
-                    b"{ read _; read _ free_before _; } </proc/meminfo; i=0; while [ $i -lt 64 ] && /bin/true; do i=$((i+1)); done; { read _; read _ free_after _; } </proc/meminfo; loss=$((free_before-free_after)); [ \"$i\" -eq 64 ] && [ \"$loss\" -le 4096 ] && echo LITEOS_EXEC_RECLAIM_$((6*7))\n",
+                    ShellCommand(b"{ read _; read _ free_before _; } </proc/meminfo; i=0; while [ $i -lt 64 ] && /bin/true; do i=$((i+1)); done; { read _; read _ free_after _; } </proc/meminfo; loss=$((free_before-free_after)); [ \"$i\" -eq 64 ] && [ \"$loss\" -le 4096 ] && echo LITEOS_EXEC_RECLAIM_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_EXEC_RECLAIM_42",
-                    b"/bin/top -bn1 | /bin/grep -q init && echo LITEOS_TOP_$((6*7))\n",
+                    ShellCommand(b"/bin/top -bn1 | /bin/grep -q init && echo LITEOS_TOP_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_TOP_42",
-                    (
+                    ShellCommand((
                         f"/bin/ls -l /lib | /bin/grep -q "
                         f"'{Path(TARGET.musl_loader).name} -> /usr/lib/libc.so' && "
                         "echo LITEOS_READLINK_$((6*7))\n"
-                    ).encode(),
+                    ).encode()),
                 ),
                 (
                     "LITEOS_READLINK_42",
-                    b"/bin/dynamic-smoke\n",
+                    ShellCommand(b"/bin/dynamic-smoke\n"),
                 ),
                 (
                     "LITEOS_UNIX_EPOLL_46",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     "LITEOS_DLOPEN_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/dynamic-smoke spawn\n",
+                    ShellCommand(b"/bin/dynamic-smoke spawn\n"),
                 ),
                 (
                     "LITEOS_POSIX_SPAWN_59",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/liteos-script 'alpha beta' omega\n",
+                    ShellCommand(b"/bin/liteos-script 'alpha beta' omega\n"),
                 ),
                 (
                     "LITEOS_SCRIPT_EXEC_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/rm -f /kill.pid; /bin/setsid /bin/sh -c 'echo $$ >/kill.pid; trap \"echo LITEOS_KILL_GROUP_$((6*7)); exit 0\" TERM; echo LITEOS_KILL_\"READY\"; while :; do /bin/sleep 1; done' &\n",
+                    ShellCommand(b"/bin/rm -f /kill.pid; /bin/setsid /bin/sh -c 'echo $$ >/kill.pid; trap \"echo LITEOS_KILL_GROUP_$((6*7)); exit 0\" TERM; echo LITEOS_KILL_\"READY\"; while :; do /bin/sleep 1; done' &\n"),
                 ),
                 (
                     "LITEOS_KILL_READY",
-                    b"read kill_pid < /kill.pid; /bin/kill -0 $kill_pid && /bin/kill -TERM -$kill_pid\n",
+                    ShellCommand(b"read kill_pid < /kill.pid; /bin/kill -0 $kill_pid && /bin/kill -TERM -$kill_pid\n"),
                 ),
                 (
                     "LITEOS_KILL_GROUP_42",
-                    b"/bin/echo payload > /plain; /bin/gzip -c /plain > /plain.gz; a=$(/bin/zcat /plain.gz); b=$(/bin/gunzip -c /plain.gz); h=$(/bin/sha256sum /plain | /bin/cut -d' ' -f1); [ \"$a:$b:$h\" = 'payload:payload:d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b' ] && echo LITEOS_ARCHIVE_$((6*7))\n",
+                    ShellCommand(b"/bin/echo payload > /plain; /bin/gzip -c /plain > /plain.gz; a=$(/bin/zcat /plain.gz); b=$(/bin/gunzip -c /plain.gz); h=$(/bin/sha256sum /plain | /bin/cut -d' ' -f1); [ \"$a:$b:$h\" = 'payload:payload:d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b' ] && echo LITEOS_ARCHIVE_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_ARCHIVE_42",
-                    b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg; echo LITEOS_PERSIST_$((6*7)) > /persist; sync; echo LITEOS_PERSIST_WRITTEN_$((6*7))\n",
+                    ShellCommand(b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg; echo LITEOS_PERSIST_$((6*7)) > /persist; sync; echo LITEOS_PERSIST_WRITTEN_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_PERSIST_WRITTEN_42",
-                    b"echo LITEOS_JOB_START_$((6*7)); /bin/sh -c 'while :; do :; done'\n",
+                    ShellCommand(b"/bin/dynamic-smoke job-control\n"),
                 ),
                 (
                     "LITEOS_JOB_START_42",
-                    b"\x1a",
+                    TerminalInput(b"\x1a"),
                 ),
                 (
                     "Stopped",
-                    b"jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_JOBS_STOPPED_$((6*7))\n",
+                    ShellCommand(b"jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_JOBS_STOPPED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_JOBS_STOPPED_42",
-                    b"bg; jobs > /jobs; /bin/grep -q Running /jobs && echo LITEOS_BG_CONTINUED_$((6*7))\n",
+                    ShellCommand(b"bg; jobs > /jobs; /bin/grep -q Running /jobs && echo LITEOS_BG_CONTINUED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BG_CONTINUED_42",
-                    b"echo LITEOS_FG_START_$((6*7)); fg\n",
+                    ShellCommand(b"fg\n"),
                 ),
                 (
                     "LITEOS_FG_START_42",
-                    b"\x03",
+                    TerminalInput(b"\x03"),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n",
+                    ShellCommand(b"echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_TTY_CTRL_C_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/dd if=/dev/tty of=/bgread bs=16 count=1 2>/dev/null & echo LITEOS_BG_READ_LAUNCHED_$((6*7))\n",
+                    ShellCommand(b"/bin/dd if=/dev/tty of=/bgread bs=16 count=1 2>/dev/null & echo LITEOS_BG_READ_LAUNCHED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BG_READ_LAUNCHED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_READ_STOPPED_$((6*7))\n",
+                    ShellCommand(b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_READ_STOPPED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BG_READ_STOPPED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"fg\n",
+                    ShellCommand(b"fg\n"),
                 ),
                 (
                     "/bin/dd if=/dev/tty",
-                    b"ttyinput\n",
+                    TerminalInput(b"ttyinput\n"),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/grep -q '^ttyinput$' /bgread && echo LITEOS_BG_READ_OK_$((6*7))\n",
+                    ShellCommand(b"/bin/grep -q '^ttyinput$' /bgread && echo LITEOS_BG_READ_OK_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BG_READ_OK_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/sh -c 'trap \"\" 21; exec /bin/dd if=/dev/tty of=/ignored-read bs=1 count=1 2>/dev/null' & wait; [ ! -s /ignored-read ] && echo LITEOS_BG_READ_IGNORED_EIO_$((6*7))\n",
+                    ShellCommand(b"/bin/sh -c 'trap \"\" 21; exec /bin/dd if=/dev/tty of=/ignored-read bs=1 count=1 2>/dev/null' & wait; [ ! -s /ignored-read ] && echo LITEOS_BG_READ_IGNORED_EIO_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BG_READ_IGNORED_EIO_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/stty tostop </dev/tty; /bin/echo LITEOS_BG_WRITE_OK_$((6*7)) >/dev/tty & echo LITEOS_BG_WRITE_LAUNCHED_$((6*7))\n",
+                    ShellCommand(b"/bin/stty tostop </dev/tty; /bin/echo LITEOS_BG_WRITE_OK_$((6*7)) >/dev/tty & echo LITEOS_BG_WRITE_LAUNCHED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BG_WRITE_LAUNCHED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_WRITE_STOPPED_$((6*7))\n",
+                    ShellCommand(b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_WRITE_STOPPED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_BG_WRITE_STOPPED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"fg\n",
+                    ShellCommand(b"fg\n"),
                 ),
                 (
                     "LITEOS_BG_WRITE_OK_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/sh -c 'trap \"\" 22; echo LITEOS_BG_WRITE_IGNORED_$((6*7)) >/dev/tty' & wait; /bin/stty -tostop </dev/tty\n",
+                    ShellCommand(b"/bin/sh -c 'trap \"\" 22; echo LITEOS_BG_WRITE_IGNORED_$((6*7)) >/dev/tty' & wait; /bin/stty -tostop </dev/tty\n"),
                 ),
                 (
                     "LITEOS_BG_WRITE_IGNORED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/kill -KILL 1; /bin/sleep 1; /bin/kill -0 1 && echo LITEOS_INIT_SURVIVED_$((6*7))\n",
+                    ShellCommand(b"/bin/kill -KILL 1; /bin/sleep 1; /bin/kill -0 1 && echo LITEOS_INIT_SURVIVED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_INIT_SURVIVED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/rm -f /orphan-result; /bin/sh -c 'trap \"echo LITEOS_ORPHAN_HUP_42 >/orphan-result\" 1; /bin/kill -STOP $$; echo LITEOS_ORPHAN_CONT_42 >>/orphan-result' & echo LITEOS_ORPHAN_LAUNCHED_$((6*7))\n",
+                    ShellCommand(b"/bin/rm -f /orphan-result; /bin/sh -c 'trap \"echo LITEOS_ORPHAN_HUP_42 >/orphan-result\" 1; /bin/kill -STOP $$; echo LITEOS_ORPHAN_CONT_42 >>/orphan-result' & echo LITEOS_ORPHAN_LAUNCHED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_ORPHAN_LAUNCHED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_ORPHAN_STOPPED_$((6*7))\n",
+                    ShellCommand(b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_ORPHAN_STOPPED_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_ORPHAN_STOPPED_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"exit\n",
+                    ShellCommand(b"exit\n"),
                 ),
                 (
                     "You have stopped jobs.",
-                    b"exit\n",
+                    ShellCommand(b"exit\n"),
                 ),
                 (
                     "Enter 'help' for a list of built-in commands.",
-                    b"while [ ! -s /orphan-result ]; do /bin/sleep 1; done; /bin/cat /orphan-result\n",
+                    ShellCommand(b"while [ ! -s /orphan-result ]; do /bin/sleep 1; done; /bin/cat /orphan-result\n"),
                 ),
                 (
                     "LITEOS_ORPHAN_CONT_42",
-                    b"",
+                    TerminalInput(b""),
                 ),
                 (
                     SHELL_PROMPT,
-                    b"/bin/rm -f /session-hup; /bin/sh -c 'trap \"echo LITEOS_SESSION_HUP_42 >/session-hup; exit 0\" 1; /bin/kill -KILL $PPID; while :; do /bin/sleep 1; done'\n",
+                    ShellCommand(b"/bin/rm -f /session-hup; /bin/sh -c 'trap \"echo LITEOS_SESSION_HUP_42 >/session-hup; exit 0\" 1; /bin/kill -KILL $PPID; while :; do /bin/sleep 1; done'\n"),
                 ),
                 (
                     "Enter 'help' for a list of built-in commands.",
-                    b"while [ ! -s /session-hup ]; do /bin/sleep 1; done; /bin/cat /session-hup\n",
+                    ShellCommand(b"while [ ! -s /session-hup ]; do /bin/sleep 1; done; /bin/cat /session-hup\n"),
+                ),
+                (
+                    "LITEOS_SESSION_HUP_42",
+                    TerminalInput(b""),
+                ),
+                (
+                    SHELL_PROMPT,
+                    ShellCommand(b'echo preserved >/root-umount-canary && /bin/umount / && /bin/grep -q \'^/dev/vda / ext4 ro,relatime,data=ordered 0 0$\' /proc/mounts && /bin/awk \'$5=="/" && $6=="rw,relatime" && $NF=="ro,data=ordered" {ok=1} END {exit !ok}\' /proc/self/mountinfo && ! echo changed >/root-umount-canary 2>/dev/null && [ "$(/bin/cat /root-umount-canary)" = preserved ] && /bin/mount -o remount,rw / && /bin/grep -q \'^/dev/vda / ext4 rw,relatime,data=ordered 0 0$\' /proc/mounts && /bin/rm /root-umount-canary && echo LITEOS_ROOT_REMOUNT_$((6*10))\n'),
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
@@ -2767,35 +2787,35 @@ def main() -> int:
             interactions=(
                 (
                     "Enter 'help' for a list of built-in commands.",
-                    b"/bin/cat /persist\n",
+                    ShellCommand(b"/bin/cat /persist\n"),
                 ),
                 (
                     "LITEOS_PERSIST_42",
-                    b"/bin/cat /shared-persist\n",
+                    ShellCommand(b"/bin/cat /shared-persist\n"),
                 ),
                 (
                     "LITEOS_SHARED_PERSIST_45",
-                    b"set -- $(/bin/ls -ln /busybox-credential); [ \"$1:$3:$4\" = '-rw-r-----:1000:1000' ] && echo LITEOS_CREDENTIAL_PERSIST_$((6*7+2))\n",
+                    ShellCommand(b"set -- $(/bin/ls -ln /busybox-credential); [ \"$1:$3:$4\" = '-rw-r-----:1000:1000' ] && echo LITEOS_CREDENTIAL_PERSIST_$((6*7+2))\n"),
                 ),
                 (
                     "LITEOS_CREDENTIAL_PERSIST_44",
-                    b"x=parent; (x=child; [ \"$x\" = child ]) & wait; [ \"$x\" = parent ] && echo LITEOS_COW_ISOLATION_$((6*7))\n",
+                    ShellCommand(b"x=parent; (x=child; [ \"$x\" = child ]) & wait; [ \"$x\" = parent ] && echo LITEOS_COW_ISOLATION_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_COW_ISOLATION_42",
-                    b"pids=''; i=0; while [ $i -lt 8 ]; do (while :; do :; done) & pids=\"$pids $!\"; i=$((i+1)); done; echo LITEOS_SCHED_\"STARTED\"\n",
+                    ShellCommand(b"pids=''; i=0; while [ $i -lt 8 ]; do (while :; do :; done) & pids=\"$pids $!\"; i=$((i+1)); done; echo LITEOS_SCHED_\"STARTED\"\n"),
                 ),
                 (
                     "LITEOS_SCHED_STARTED",
-                    b"/bin/sleep 2; n=$(/bin/awk '$1 ~ /^cpu[0-9]+$/ && $2 > 0 {n++} END {print n+0}' /proc/stat); echo LITEOS_SCHED_CPUS_$n; [ \"$n\" -eq 8 ] && echo LITEOS_SCHED_8_HARTS_$((6*7))\n",
+                    ShellCommand(b"/bin/sleep 2; n=$(/bin/awk '$1 ~ /^cpu[0-9]+$/ && $2 > 0 {n++} END {print n+0}' /proc/stat); echo LITEOS_SCHED_CPUS_$n; [ \"$n\" -eq 8 ] && echo LITEOS_SCHED_8_HARTS_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_SCHED_8_HARTS_42",
-                    b"n=$(for p in $pids; do /bin/awk '{print $1}' /proc/$p/stat; done | /bin/sort -n | /bin/wc -l); [ \"$n\" -eq 8 ] && echo LITEOS_STREAMING_EXEC_$((6*7))\n",
+                    ShellCommand(b"n=$(for p in $pids; do /bin/awk '{print $1}' /proc/$p/stat; done | /bin/sort -n | /bin/wc -l); [ \"$n\" -eq 8 ] && echo LITEOS_STREAMING_EXEC_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_STREAMING_EXEC_42",
-                    b"kill $pids; wait; /var/tmp/fs-stress-probe\n",
+                    ShellCommand(b"kill $pids; wait; /var/tmp/fs-stress-probe\n"),
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
@@ -2827,12 +2847,12 @@ def main() -> int:
             interactions=(
                 (
                     "Enter 'help' for a list of built-in commands.",
-                    (
+                    ShellCommand((
                         f"/sbin/apk --no-network add --upgrade /var/tmp/{apk_crash_v3}; "
                         "[ \"$(/bin/dd if=/usr/share/liteos-apk/crash bs=8 count=1 2>/dev/null)\" = crash-v3 ] && "
                         "/sbin/apk info -e liteos-apk-crash && "
                         "echo LITEOS_APK_CRASH_RECOVERY_$((6*9+4))\n"
-                    ).encode(),
+                    ).encode()),
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
@@ -2882,7 +2902,7 @@ def main() -> int:
             interactions=(
                 (
                     "Enter 'help' for a list of built-in commands.",
-                    b"/bin/rm -rf /crash; /bin/mkdir /crash; echo recovered >/crash/state; sync; [ \"$(/bin/cat /crash/state)\" = recovered ] && echo LITEOS_JOURNAL_RECOVERY_$((6*7+1))\n",
+                    ShellCommand(b"/bin/rm -rf /crash; /bin/mkdir /crash; echo recovered >/crash/state; sync; [ \"$(/bin/cat /crash/state)\" = recovered ] && echo LITEOS_JOURNAL_RECOVERY_$((6*7+1))\n"),
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,

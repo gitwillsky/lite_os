@@ -105,53 +105,57 @@ impl MemorySet {
         length: usize,
         limits: UserFaultLimits,
     ) -> Result<usize, UserAccessError> {
-        let end = Self::checked_user_end(address, length)?;
-        let mut current = address;
-        while current < end {
-            if self.user_page(current, PagePermissions::READ).is_err() {
-                self.fault_in_user_page(current, PageFaultAccess::Read, limits)?;
-            }
-            current = (current | (config::PAGE_SIZE - 1))
-                .saturating_add(1)
-                .min(end);
-        }
-        Ok(end)
+        self.prepare_user_range(address, length, PageFaultAccess::Read, limits)
     }
 
     /// 完成 COW/dirty 转换并验证完整用户写入范围，不复制内容。
-    ///
-    /// # Parameters
-    ///
-    /// - `address`: 用户范围首地址。
-    /// - `length`: 用户范围字节数。
-    /// - `limits`: lazy fault 可消耗的资源上限。
-    ///
-    /// # Returns
-    ///
-    /// 完整范围已驻留且具备 `U|W` 权限时返回 exclusive end。
-    ///
-    /// # Errors
-    ///
-    /// 地址、权限、fault 或资源失败返回 `UserAccessError`。
     fn prepare_user_write(
         &mut self,
         address: usize,
         length: usize,
         limits: UserFaultLimits,
     ) -> Result<usize, UserAccessError> {
+        self.prepare_user_range(address, length, PageFaultAccess::Write, limits)
+    }
+
+    /// 在唯一 mm owner 内排除整个准备范围，防止后续 fault 的自身回收逐出先前页。
+    fn prepare_user_range(
+        &mut self,
+        address: usize,
+        length: usize,
+        access: PageFaultAccess,
+        limits: UserFaultLimits,
+    ) -> Result<usize, UserAccessError> {
         let end = Self::checked_user_end(address, length)?;
-        let mut current = address;
-        while current < end {
-            // 1. write fault domain 唯一提交 COW、MADV_FREE 取消和 private-file dirty；
-            // 绕过它直接按 PTE copy 会让共享 frame 被覆盖或让已写页仍可被回收。
-            self.fault_in_user_page(current, PageFaultAccess::Write, limits)?;
-            // 2. Handled 的领域 postcondition 已证明 U|W leaf 可重试；再次查询只会让每个
-            // copyout 页多走一遍 architecture page table，不提供新的失败原子性或状态证明。
-            current = (current | (config::PAGE_SIZE - 1))
-                .saturating_add(1)
-                .min(end);
+        if length == 0 {
+            return Ok(end);
         }
-        Ok(end)
+        let range = VirtualAddress::from(address).floor()..VirtualAddress::from(end).ceil();
+        let previous = self.private_reclaim_exclusion.replace(range);
+        assert!(
+            previous.is_none(),
+            "user-copy preparation must not reenter the same mm"
+        );
+        let prepared = (|| {
+            let mut current = address;
+            while current < end {
+                // write 必须经过 fault owner 取消 MADV_FREE/提交 private-file dirty；
+                // read 的现存可读 leaf 无需再次 fault 或增加 translation fence。
+                if access == PageFaultAccess::Write
+                    || self.user_page(current, PagePermissions::READ).is_err()
+                {
+                    self.fault_in_user_page(current, access, limits)?;
+                }
+                current = (current | (config::PAGE_SIZE - 1))
+                    .saturating_add(1)
+                    .min(end);
+            }
+            Ok(end)
+        })();
+        // 成功/错误均恢复；后续 copy 无 allocation/fault，且同一 AddressSpace lock
+        // 持续阻止外部 reclaim，所以 preparation 的 residency 证明保持到复制结束。
+        self.private_reclaim_exclusion = previous;
+        prepared
     }
 
     /// 完整 fault/校验后，从用户页复制到 kernel-owned 缓冲区。
@@ -324,18 +328,41 @@ impl MemorySet {
         new: u32,
         limits: UserFaultLimits,
     ) -> Result<Result<u32, u32>, UserAccessError> {
+        Ok(self
+            .futex_atomic_word(address, limits)?
+            .compare_exchange(current, new))
+    }
+
+    /// native get_user(u32) 的单次 aligned load；不能逐 byte copy 出撕裂的 futex value。
+    pub(crate) fn load_user_u32(
+        &mut self,
+        address: usize,
+        limits: UserFaultLimits,
+    ) -> Result<u32, UserAccessError> {
+        if address & 3 != 0 {
+            return Err(UserAccessError::Fault);
+        }
+        self.prepare_user_read(address, 4, limits)?;
+        let (ppn, offset) = self.user_page(address, PagePermissions::READ)?;
+        // SAFETY: 已验证 live U|R、alignment 与完整页内范围；MM guard 保持映射和物理页存活。
+        Ok(unsafe { &*ppn.as_page_ptr().add(offset).cast::<AtomicU32>() }.load(Ordering::Acquire))
+    }
+
+    /// 为 WAKE_OP 借用实际可写原子 word；MM guard 保持映射与物理页存活。
+    pub(crate) fn futex_atomic_word(
+        &mut self,
+        address: usize,
+        limits: UserFaultLimits,
+    ) -> Result<UserAtomicU32<'_>, UserAccessError> {
         if address & 3 != 0 {
             return Err(UserAccessError::Fault);
         }
         self.prepare_user_write(address, 4, limits)?;
-        let (ppn, offset) =
-            self.user_page(address, PagePermissions::READ | PagePermissions::WRITE)?;
-        if offset + 4 > config::PAGE_SIZE {
-            return Err(UserAccessError::Fault);
-        }
-        // SAFETY: live U|R|W page、alignment 与页内边界均已验证，AddressSpace lock 保持映射稳定。
-        let atomic = unsafe { &*ppn.as_page_ptr().add(offset).cast::<AtomicU32>() };
-        Ok(atomic.compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire))
+        let (ppn, offset) = self.user_page(address, PagePermissions::WRITE)?;
+        // SAFETY: 已验证 U|W、4-byte alignment 和整段页内范围；返回借用不得越过 MM owner。
+        Ok(UserAtomicU32(unsafe {
+            &*ppn.as_page_ptr().add(offset).cast::<AtomicU32>()
+        }))
     }
 
     /// 从用户空间复制有上限的 NUL 结尾字节串。

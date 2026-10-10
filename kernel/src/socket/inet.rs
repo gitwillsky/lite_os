@@ -5,10 +5,10 @@ use alloc::{
 use core::net::Ipv4Addr;
 
 use smoltcp::{
-    iface::{Config, Interface, SocketHandle, SocketSet},
+    iface::{SocketHandle, SocketSet},
     socket::AnySocket,
     time::Instant,
-    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr},
+    wire::IpAddress,
 };
 use spin::Mutex;
 
@@ -17,12 +17,17 @@ use crate::{
     timer::get_time_us,
 };
 
-use self::device::EthernetDevice;
+use self::interface::NetworkInterface;
 use self::options::InetSocketOptions;
+pub(crate) use self::options::InternetOption;
 use self::port_namespace::{PortError, PortLease, PortNamespace};
-use self::protocol_owner::{NETWORK_STACK, NetworkStackGuard, NetworkStackOwner};
+use self::protocol_owner::NetworkStackGuard;
+pub(super) use self::protocol_owner::NetworkStackOwner;
 use self::tcp::TcpEndpointState;
-use super::{InetAddress, SocketError, SocketPollState, packet};
+use super::{
+    InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState,
+    SocketTimeouts, packet,
+};
 
 #[path = "inet/configuration.rs"]
 mod configuration;
@@ -30,6 +35,8 @@ mod configuration;
 mod device;
 #[path = "device_error.rs"]
 mod device_error;
+#[path = "inet/interface.rs"]
+mod interface;
 #[path = "inet/options.rs"]
 mod options;
 #[path = "inet/poll.rs"]
@@ -42,6 +49,10 @@ mod protocol_owner;
 mod raw_endpoint;
 #[path = "inet/readiness.rs"]
 mod readiness;
+#[path = "inet/route.rs"]
+mod route;
+#[path = "inet/route_reply.rs"]
+mod route_reply;
 #[path = "inet/tcp.rs"]
 mod tcp;
 #[path = "inet/timing.rs"]
@@ -51,14 +62,21 @@ mod udp_endpoint;
 #[path = "inet/wait.rs"]
 mod wait;
 pub(crate) use configuration::{
-    configure_address, configure_gateway, configure_netmask, configure_up, interface_snapshot,
-    network_snapshot,
+    configure_address, configure_broadcast, configure_mtu, configure_netmask, configure_route,
+    configure_up, interface_index, interface_snapshot, interface_snapshots, network_snapshot,
+    route_snapshot,
 };
+pub(in crate::socket) use configuration::{
+    inject_loopback, packet_interface, packet_transmit_available,
+};
+pub(crate) use route::{Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest};
 pub(crate) use timing::network_work_due;
 
 // 每轮最多消费 64 个 frame，避免持续 RX 流量让当前 CPU 永久停留在 softirq context；
 // 若没有此上限，user task 和其他 deferred work 在高包速下可能饥饿。
 const NETWORK_RX_BUDGET: usize = 64;
+// IPv4 的当前默认 TTL；NETNS IPv4 sysctl 接入时从实际 namespace policy 取得。
+const DEFAULT_IPV4_HOP_LIMIT: u8 = 64;
 // TX completion 与 RX 使用同一 softirq fairness 约束；缺失上限时大量完成的
 // sender 可以在一次 user-return 前无界占用 deferred context。
 const NETWORK_TX_COMPLETION_BUDGET: usize = 64;
@@ -74,16 +92,17 @@ const SOCKET_STORAGE_CAPACITY: usize = 1024;
 struct InterfaceState {
     address: Option<Ipv4Addr>,
     prefix_length: u8,
-    gateway: Option<Ipv4Addr>,
+    // OWNER: native ifa_broadcast，允许明确配置非默认地址；不能由每次getter按mask重建。
+    broadcast: Ipv4Addr,
     up: bool,
 }
 
 struct EndpointState {
     endpoint: Weak<InetSocket>,
-    peer: Option<InetAddress>,
-    // IP_PKTINFO controls whether recvmsg publishes destination-address ancillary data. Keeping
-    // it outside this endpoint owner would let setsockopt and packet delivery observe different flags.
-    packet_info: bool,
+    // OWNER: Linux sk_userlocks 的实际 bind policy；地址/端口 tuple 仍只属于协议 socket。
+    user_bind_locks: u8,
+    // OWNER: native sk_shutdown 的唯一位集合；disconnect/connect 不清除，不作为库状态副本。
+    shutdown: u8,
     options: InetSocketOptions,
     port_lease: Option<PortLease>,
     // 协议 poll 前的唯一 edge 快照；缺失时无法区分长期 writable 与新 writable transition。
@@ -108,48 +127,39 @@ fn try_allocate_endpoint(
     Ok(unsafe { slot.assume_init() })
 }
 
+/// 已由 socket request 验证的 IPv4 endpoint 类型；RAW 也拥有实际协议队列。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum InetProtocol {
+    Udp,
+    Tcp,
+    Icmp,
+    Raw,
+}
+
 struct NetworkStack {
-    interface: Interface,
-    device: EthernetDevice,
+    interfaces: Vec<NetworkInterface>,
+    // OWNER: 本NET唯一IPv4 FIB，自动地址route和用户route共享配置/查找/退休事务。
+    routing: route::RoutingTable,
+    // OWNER: protocol即时IP回复只有此有预算queue，ARP仍是实际link内响应。
+    route_replies: route_reply::RouteReplies,
+    // OWNER: 本 NET 的非零 IPv4 packet ID；HDRINCL 的零 ID 在发送准入时分配，不另建全局计数。
+    raw_packet_id: u16,
+    // OWNER: 本轮egress route plan的预留scratch；每轮clear，无跨轮policy/ready cache。
+    egress_routes: Vec<Option<route::RouteSelection>>,
+    // OWNER: 8-interface批次与完整轮次后的起点轮换，防止持续lo/单NIC流量饿死其他设备。
+    interface_cursor: usize,
+    interface_rotation: usize,
     sockets: SocketSet<'static>,
     endpoints: FallibleMap<SocketHandle, EndpointState>,
     raw_endpoints: FallibleMap<SocketHandle, raw_endpoint::RawEndpointState>,
     tcp_endpoints: FallibleMap<usize, TcpEndpointState>,
     udp_ports: PortNamespace,
     tcp_ports: PortNamespace,
-    interface_state: InterfaceState,
     next_tcp_id: usize,
 }
 
-fn stack() -> Result<&'static NetworkStackOwner, SocketError> {
-    let stack = NETWORK_STACK.get().ok_or(SocketError::NetworkUnreachable)?;
-    // Device callback 不能通过 smoltcp trait 返回错误；由下一次 syscall seam 精确消费
-    // 一次后恢复正常服务。只读取不清除会让单个畸形 completion 永久毒化整个网络栈。
-    if let Some(error) = stack.lock()?.device.take_error() {
-        return Err(network_error(error));
-    }
-    Ok(stack)
-}
-
-/// epoll source 通知路径无等待地取得完整 IPv4 协议状态。
-///
-/// # Returns
-///
-/// stack 未初始化、owner 竞争或 payload loan 存在时返回 `None`。
-///
-/// # Errors
-///
-/// 不消费 adapter error，也不分配或注册 task waiter。
-fn try_observe_stack() -> Option<NetworkStackGuard<'static>> {
-    NETWORK_STACK.get()?.try_observe()
-}
-
-fn network_error(error: crate::drivers::network::NetworkError) -> SocketError {
-    match error {
-        crate::drivers::network::NetworkError::WouldBlock => SocketError::Again,
-        crate::drivers::network::NetworkError::FrameTooLarge => SocketError::MessageTooLarge,
-        crate::drivers::network::NetworkError::Device => SocketError::Device,
-    }
+fn stack(scope: &super::NetNamespace) -> Result<&NetworkStackOwner, SocketError> {
+    scope.protocol().ok_or(SocketError::NetworkUnreachable)
 }
 
 fn port_error(error: PortError) -> SocketError {
@@ -185,85 +195,113 @@ impl NetworkStack {
         // add 要么复用 remove 留下的空洞，要么在已预留 capacity 内 push。
         Ok(self.sockets.add(socket))
     }
-
-    fn apply_interface_state(&mut self) {
-        let state = self.interface_state;
-        self.interface.update_ip_addrs(|addresses| {
-            addresses.clear();
-            if state.up
-                && let Some(address) = state.address
-            {
-                addresses
-                    .push(IpCidr::new(ipv4(address), state.prefix_length))
-                    .expect("one IPv4 address must fit smoltcp interface storage");
-            }
-        });
-        self.interface.routes_mut().remove_default_ipv4_route();
-        if state.up
-            && let Some(gateway) = state.gateway
-        {
-            self.interface
-                .routes_mut()
-                .add_default_ipv4_route(gateway)
-                .expect("one default IPv4 route must fit smoltcp route storage");
-        }
-    }
 }
 
-/// 由 composition root 在 device discovery 后创建唯一 IPv4 stack。
-pub(crate) fn init() {
-    // 单接口协议栈绑定首个 Ethernet 设备；AF_PACKET 使用同一接口。
-    let Some(network_device) = network_device(0) else {
-        return;
-    };
-    let mac = network_device.mac_address();
-    let mut device = EthernetDevice::new(network_device);
-    let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
-    config.random_seed =
-        get_time_us() ^ u64::from_be_bytes([0, 0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]]);
-    let interface = Interface::new(config, &mut device, now());
+/// 在publication前准备一个实际IPv4 owner；全部fallible allocation不留下注册/端口副作用。
+fn prepare_network(
+    scope: &super::NetNamespace,
+    devices: &[Arc<dyn crate::drivers::network::NetworkDevice>],
+    loopback_up: bool,
+) -> Result<Arc<NetworkStackOwner>, SocketError> {
+    let mut interfaces = Vec::new();
+    interfaces
+        .try_reserve_exact(devices.len().checked_add(1).ok_or(SocketError::NoMemory)?)
+        .map_err(|_| SocketError::NoMemory)?;
+    interfaces.push(NetworkInterface::loopback(scope.id(), loopback_up)?);
+    for (ordinal, device) in devices.iter().enumerate() {
+        interfaces.push(NetworkInterface::ethernet(
+            scope.id(),
+            u32::try_from(ordinal).map_err(|_| SocketError::NoSpace)?,
+            device.clone(),
+        )?);
+    }
     let mut socket_storage = Vec::new();
-    if socket_storage
+    socket_storage
         .try_reserve_exact(SOCKET_STORAGE_CAPACITY)
-        .is_err()
-    {
-        error!("network socket storage allocation failed");
-        return;
+        .map_err(|_| SocketError::NoMemory)?;
+    let mut routing = route::RoutingTable::new();
+    for interface in &interfaces {
+        routing.replace_interface(
+            interface.index,
+            route::RoutingTable::prepare_interface(interface.index, interface.state)?,
+        );
     }
-    NETWORK_STACK.call_once(|| {
-        NetworkStackOwner::new(NetworkStack {
-            interface,
-            device,
-            sockets: SocketSet::new(socket_storage),
-            endpoints: FallibleMap::new(),
-            raw_endpoints: FallibleMap::new(),
-            tcp_endpoints: FallibleMap::new(),
-            udp_ports: PortNamespace::new(),
-            tcp_ports: PortNamespace::new(),
-            interface_state: InterfaceState {
-                address: None,
-                prefix_length: 0,
-                gateway: None,
-                up: false,
-            },
-            next_tcp_id: 1,
-        })
-    });
+    let mut egress_routes = Vec::new();
+    egress_routes
+        .try_reserve_exact(SOCKET_STORAGE_CAPACITY)
+        .map_err(|_| SocketError::NoMemory)?;
+    Arc::try_new(NetworkStackOwner::new(NetworkStack {
+        interfaces,
+        routing,
+        route_replies: route_reply::RouteReplies::new(),
+        raw_packet_id: 1,
+        egress_routes,
+        interface_cursor: 0,
+        interface_rotation: 0,
+        sockets: SocketSet::new(socket_storage),
+        endpoints: FallibleMap::new(),
+        raw_endpoints: FallibleMap::new(),
+        tcp_endpoints: FallibleMap::new(),
+        udp_ports: PortNamespace::new(),
+        tcp_ports: PortNamespace::new(),
+        next_tcp_id: 1,
+    }))
+    .map_err(|_| SocketError::NoMemory)
 }
 
-/// 在 softirq context 有界推进 RX/TX、ARP、IPv4 与 UDP 状态。
+/// 标准NEWNET的完整准备：独立SocketSet/ports、实际DOWN且无地址的lo，没有旧域设备或配置。
+/// 任一OOM释放未发表到Task的域及ucounts；所有消费者只在成功返回后移交membership。
+pub(crate) fn create_net_namespace(
+    user: Arc<crate::namespace::UserNamespace>,
+    creator_uid: u32,
+) -> Result<Arc<super::NetNamespace>, crate::namespace::NamespaceError> {
+    let namespace = super::NetNamespace::create(user, creator_uid)?;
+    let owner = prepare_network(&namespace, &[], false).map_err(|error| match error {
+        SocketError::NoMemory => crate::namespace::NamespaceError::OutOfMemory,
+        _ => crate::namespace::NamespaceError::Invalid,
+    })?;
+    namespace.install_protocol(owner);
+    Ok(namespace)
+}
+
+/// 由composition root在device discovery后移交完整准备的初始IPv4 owner。
+pub(crate) fn init() {
+    let scope = super::net_namespace::initial_net_ref();
+    if scope.protocol().is_some() {
+        return;
+    }
+    // 学习型内核装配首张物理网卡和 lo；设备容器服务共同路径，不扩展多网卡支持目标。
+    // 栈上 Option slice 避免额外 discovery allocation；没有 NIC 仍有真实回环协议。
+    let device = network_device(0);
+    let owner = prepare_network(scope, device.as_slice(), true);
+    match owner {
+        Ok(owner) => scope.install_protocol(owner),
+        Err(_) => error!("network protocol owner allocation failed"),
+    }
+}
+
+/// 在softirq context每批最多8个实际NET owner，有界推进RX/TX/cleanup与readiness。
 ///
 /// # Returns
 ///
-/// RX budget 用尽且调用者必须重新投递 network softirq 时返回 `true`。
+/// 域遍历、RX/cleanup/通知有backlog或owner竞争时返回true，caller回投下一批。
 ///
 /// # Errors
 ///
-/// stack 尚未初始化时返回 `false`，不产生错误。
+/// 不分配/等待；尚未装配protocol的准备域跳过，不影响其他实际域。
 pub(crate) fn dispatch_network_work() -> bool {
-    if let Some(stack) = NETWORK_STACK.get() {
+    use super::net_namespace::{NetworkNamespaceScan, take_network_namespaces};
+    let Some(batch) = take_network_namespaces(NetworkNamespaceScan::Deferred) else {
+        return true;
+    };
+    let mut backlog = batch.backlog;
+    for namespace in batch.namespaces.into_iter().flatten() {
+        let Some(stack) = namespace.protocol() else {
+            continue;
+        };
         let Some(mut network) = stack.try_poll() else {
-            return true;
+            backlog = true;
+            continue;
         };
         let cleanup_backlog = network.cleanup_backlog();
         let poll = network.poll();
@@ -271,17 +309,21 @@ pub(crate) fn dispatch_network_work() -> bool {
         let notification_backlog = notifications.backlog();
         drop(network);
         readiness::notify_pending(notifications);
-        if let Ok(poll) = poll {
-            if poll.transmit_became_available {
-                packet::publish_transmit_ready();
-            }
-            poll.backlog || notification_backlog || cleanup_backlog
-        } else {
-            notification_backlog || cleanup_backlog
+        for index in poll.packet_transmit_ready.into_iter().flatten() {
+            packet::publish_transmit_ready(namespace.id(), index);
         }
-    } else {
-        false
+        for (index, failure) in poll.device_failures.into_iter().flatten() {
+            error!(
+                "network namespace {} interface {} adapter error: {:?}",
+                namespace.id(),
+                index,
+                failure
+            );
+        }
+        backlog |= poll.backlog || notification_backlog || cleanup_backlog;
     }
+    backlog |= readiness::notify_packet_pending();
+    backlog
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -293,21 +335,33 @@ enum InetEndpoint {
 
 /// AF_INET UDP/TCP endpoint facade；协议状态和地址均保存在唯一 NetworkStack。
 pub(super) struct InetSocket {
+    // 与OFD facade共享实际memory/NET对象；operation/cleanup/loan不得按当前Task或initial域重解析。
+    memory: Arc<super::SocketMemory>,
+    // immutable dispatch key 不是 registration owner；closed observer 不能据此重新取得 slot。
     endpoint: InetEndpoint,
-    // OWNER: only this endpoint operation lock prevents two callers from borrowing the same
-    // smoltcp socket. Making it global would restore cross-socket serialization.
-    operation: Mutex<()>,
+    // OWNER: operation guard 既串行化 payload loan，也独占唯一 protocol registration token。
+    // None 是实际 closed phase；只有 take 能向 cleanup owner 交付 identity，Arc 不拥有打开阶段。
+    operation: Mutex<Option<InetEndpoint>>,
     notify_read: Arc<PipeEnd>,
     notify_write: Arc<PipeEnd>,
+    // 同一个实际 policy 的引用；stack registry 与 OFD 不保存需要人工同步的值。
+    timeouts: Arc<SocketTimeouts>,
 }
 
 impl InetSocket {
-    /// 创建 UDP 或 TCP endpoint，并把协议状态注册到唯一 NetworkStack。
+    fn stack(&self) -> Result<&NetworkStackOwner, SocketError> {
+        stack(self.memory.namespace_ref())
+    }
+    fn try_observe_stack(&self) -> Option<NetworkStackGuard<'_>> {
+        self.memory.namespace_ref().protocol()?.try_observe()
+    }
+    /// 创建已验证的 UDP、TCP 或 RAW endpoint，并把协议状态注册到唯一 NetworkStack。
     ///
     /// # Parameters
     ///
-    /// - `socket_type`: AF_INET datagram 或 stream 类型。
+    /// - `protocol`: request 已验证的 IPv4 endpoint 类型。
     /// - `notify`: endpoint 独占的 readiness notification Pipe。
+    /// - `timeouts`: facade 预留的实际 policy，必须在注册 endpoint 前准备完成。
     ///
     /// # Returns
     ///
@@ -317,18 +371,22 @@ impl InetSocket {
     ///
     /// stack 不可用或协议 buffer 分配失败时返回错误。
     pub(super) fn new(
-        socket_type: super::SocketType,
+        protocol: InetProtocol,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+        timeouts: Arc<SocketTimeouts>,
+        memory: Arc<super::SocketMemory>,
     ) -> Result<Arc<Self>, SocketError> {
-        if socket_type == super::SocketType::Stream {
-            let mut network = stack()?.lock()?;
+        if protocol == InetProtocol::Tcp {
+            let mut network = stack(memory.namespace_ref())?.lock()?;
             let endpoint = try_allocate_endpoint(|| {
-                let id = tcp::create_endpoint(&mut network, Weak::new())?;
+                let id = tcp::create_endpoint(&mut network, Weak::new(), timeouts.clone())?;
                 Ok(Self {
+                    memory: memory.clone(),
                     endpoint: InetEndpoint::Tcp(id),
-                    operation: Mutex::new(()),
+                    operation: Mutex::new(Some(InetEndpoint::Tcp(id))),
                     notify_read: notify.0,
                     notify_write: notify.1,
+                    timeouts,
                 })
             });
             let endpoint = endpoint?;
@@ -342,17 +400,28 @@ impl InetSocket {
                 .endpoint = Arc::downgrade(&endpoint);
             return Ok(endpoint);
         }
-        if socket_type == super::SocketType::Raw {
-            return raw_endpoint::new(notify);
+        if matches!(protocol, InetProtocol::Icmp | InetProtocol::Raw) {
+            return raw_endpoint::new(
+                if protocol == InetProtocol::Icmp {
+                    1
+                } else {
+                    255
+                },
+                notify,
+                timeouts,
+                memory,
+            );
         }
-        let mut network = stack()?.lock()?;
+        let mut network = stack(memory.namespace_ref())?.lock()?;
         let endpoint = try_allocate_endpoint(|| {
             let handle = udp_endpoint::create_endpoint(&mut network, Weak::new())?;
             Ok(Self {
+                memory: memory.clone(),
                 endpoint: InetEndpoint::Udp(handle),
-                operation: Mutex::new(()),
+                operation: Mutex::new(Some(InetEndpoint::Udp(handle))),
                 notify_read: notify.0,
                 notify_write: notify.1,
+                timeouts,
             })
         });
         let endpoint = endpoint?;
@@ -367,6 +436,28 @@ impl InetSocket {
         Ok(endpoint)
     }
 
+    fn open_operation(&self) -> Result<spin::MutexGuard<'_, Option<InetEndpoint>>, SocketError> {
+        let operation = self.operation.lock();
+        if operation.is_none() {
+            return Err(SocketError::NotConnected);
+        }
+        Ok(operation)
+    }
+
+    /// actual fput 或未发布 endpoint rollback 消费同一 token；不由 observer Arc 决定时机。
+    pub(super) fn close_description(&self) {
+        let retired = self.operation.lock().take();
+        let Some(endpoint) = retired else {
+            return;
+        };
+        // operation guard 覆盖全部 payload loan；take 后无新 loan，cleanup 不与真实 loan 并存。
+        if let Some(stack) = self.memory.namespace_ref().protocol() {
+            stack.cleanup_or_defer(endpoint);
+        }
+        self.notify_read.close();
+        self.notify_write.close();
+    }
+
     fn udp_handle(&self) -> Result<SocketHandle, SocketError> {
         match self.endpoint {
             InetEndpoint::Udp(handle) => Ok(handle),
@@ -375,19 +466,19 @@ impl InetSocket {
     }
 
     pub(super) fn bind(&self, address: InetAddress) -> Result<(), SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::bind(self, address);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::bind(handle, address);
+            return raw_endpoint::bind(self, handle, address);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::bind(handle, address)
+        udp_endpoint::bind(self, handle, address)
     }
 
     pub(super) fn connect(&self, peer: InetAddress) -> Result<(), SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::connect(self, peer);
         }
@@ -395,23 +486,38 @@ impl InetSocket {
             return Err(SocketError::OperationNotSupported);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::connect(handle, peer)
+        udp_endpoint::connect(self, handle, peer)
+    }
+
+    /// AF_UNSPEC 取消 TCP 协议生命周期；在 operation/stack owner 释放后通知所有 waiter。
+    pub(super) fn disconnect(&self) -> Result<(), SocketError> {
+        let operation = self.open_operation()?;
+        let result = if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            tcp::disconnect(self)
+        } else if let InetEndpoint::Udp(handle) = self.endpoint {
+            udp_endpoint::disconnect(self, handle)
+        } else {
+            Err(SocketError::OperationNotSupported)
+        };
+        drop(operation);
+        self.notify();
+        result
     }
 
     pub(super) fn address(&self) -> Result<InetAddress, SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::address(self);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::address(handle);
+            return raw_endpoint::address(self, handle);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::address(handle)
+        udp_endpoint::address(self, handle)
     }
 
     pub(super) fn peer_address(&self) -> Result<InetAddress, SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::peer_address(self);
         }
@@ -419,57 +525,57 @@ impl InetSocket {
             return Err(SocketError::NotConnected);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::peer_address(handle)
+        udp_endpoint::peer_address(self, handle)
     }
 
     pub(super) fn send_to(
         &self,
         input: &[u8],
         target: Option<InetAddress>,
+        packet_info: Option<InternetSendPacketInfo>,
     ) -> Result<usize, SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
-            if target.is_some() {
-                return Err(SocketError::AlreadyConnected);
-            }
+            // native TCP sendmsg 忽略已导入的 msg_name；连接身份只由实际握手确定。
             return tcp::send(self, input);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::send(handle, input, target);
+            return raw_endpoint::send(self, handle, input, target, packet_info);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::send(handle, input, target)
+        udp_endpoint::send(self, handle, input, target, packet_info)
     }
 
     pub(super) fn receive(
         &self,
         output: &mut ReceiveBuffer<'_>,
         peek: bool,
-    ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
-        let _operation = self.operation.lock();
+    ) -> Result<
+        (
+            usize,
+            usize,
+            Option<InetAddress>,
+            Option<InternetPacketInfo>,
+        ),
+        SocketError,
+    > {
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
-            return tcp::receive(self, output, peek);
+            return tcp::receive(self, output, peek)
+                .map(|(count, full, _, _)| (count, full, None, None));
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            let (count, full_length, source) = raw_endpoint::receive(self, handle, output, peek)?;
-            return Ok((count, full_length, source, None));
+            let (count, full_length, source, local) =
+                raw_endpoint::receive(self, handle, output, peek)?;
+            return Ok((count, full_length, Some(source), Some(local)));
         }
         let handle = self.udp_handle()?;
         udp_endpoint::receive(self, handle, output, peek)
     }
 
-    pub(super) fn set_packet_info(&self, enabled: bool) -> Result<(), SocketError> {
-        let _operation = self.operation.lock();
-        let handle = self.udp_handle()?;
-        udp_endpoint::set_packet_info(handle, enabled)
-    }
-
     pub(super) fn packet_info(&self) -> bool {
-        let _operation = self.operation.lock();
-        let Ok(handle) = self.udp_handle() else {
-            return false;
-        };
-        udp_endpoint::packet_info(handle)
+        self.option(InternetOption::PacketInfo)
+            .is_ok_and(|value| value != 0)
     }
 
     /// 把 TCP endpoint 转换为 passive listener。
@@ -486,7 +592,7 @@ impl InetSocket {
     ///
     /// UDP、无效状态、地址或分配失败时返回错误。
     pub(super) fn listen(&self, backlog: usize) -> Result<(), SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             tcp::listen(self, backlog)
         } else {
@@ -510,10 +616,12 @@ impl InetSocket {
     pub(super) fn accept(
         &self,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+        timeouts: Arc<SocketTimeouts>,
+        memory: Arc<super::SocketMemory>,
     ) -> Result<Arc<Self>, SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
-            tcp::accept(self, notify)
+            tcp::accept(self, notify, timeouts, memory)
         } else {
             Err(SocketError::OperationNotSupported)
         }
@@ -529,7 +637,7 @@ impl InetSocket {
     ///
     /// TCP 仍在进行、被拒绝或未连接时返回错误。
     pub(super) fn connection_result(&self) -> Result<(), SocketError> {
-        let _operation = self.operation.lock();
+        let _operation = self.open_operation()?;
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             let result = tcp::connection_result(self);
             if !matches!(result, Err(SocketError::InProgress)) {
@@ -547,13 +655,7 @@ impl InetSocket {
     ///
     /// TCP pending error；UDP 或无错误时为 None。
     pub(super) fn take_error(&self) -> Option<SocketError> {
-        let _operation = self.operation.lock();
-        if let Some(stack) = NETWORK_STACK.get()
-            && let Ok(network) = stack.lock()
-            && let Some(error) = network.device.take_error()
-        {
-            return Some(network_error(error));
-        }
+        let _operation = self.open_operation().ok()?;
         matches!(self.endpoint, InetEndpoint::Tcp(_))
             .then(|| tcp::take_error(self))
             .flatten()
@@ -571,22 +673,26 @@ impl InetSocket {
     ///
     /// # Errors
     ///
-    /// UDP 或未连接 TCP 返回错误。
+    /// 未连接 UDP 与 closed TCP 返回 NotConnected，但仍提交实际 shutdown 并唤醒。
     pub(super) fn shutdown(&self, how: usize) -> Result<(), SocketError> {
-        let _operation = self.operation.lock();
-        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+        let operation = self.open_operation()?;
+        let result = if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             tcp::shutdown(self, how)
+        } else if let InetEndpoint::Udp(handle) = self.endpoint {
+            udp_endpoint::shutdown(self, handle, how)
         } else {
             Err(SocketError::OperationNotSupported)
-        }
+        };
+        drop(operation);
+        // SHUT_RD 没有协议 egress；必须直接唤醒已经睡眠的 recv/epoll waiter。
+        self.notify();
+        result
     }
 }
 
 impl Drop for InetSocket {
     fn drop(&mut self) {
-        if let Some(stack) = NETWORK_STACK.get() {
-            stack.cleanup_or_defer(self.endpoint);
-        }
+        self.close_description();
     }
 }
 

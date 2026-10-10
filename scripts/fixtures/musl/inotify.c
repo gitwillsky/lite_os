@@ -11,7 +11,9 @@
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/uio.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -259,6 +261,104 @@ static void unmount_events(void)
 	CHECK(307, close(fd) == 0);
 }
 
+/* 固定 native control bits、last dput 与 record EFAULT；两种真实 filesystem 都进入相同 owner。 */
+static void native_boundaries(const char *base, int step)
+{
+    char file[128];
+    snprintf(file, sizeof file, "%s/inotify-native", base);
+    CHECK(step + 1, touch_file(file, "x") == 0);
+    int fd = inotify_init1(IN_NONBLOCK);
+    CHECK(step + 2, fd >= 0);
+    int wd = inotify_add_watch(fd, file, IN_MODIFY | IN_MASK_CREATE);
+    CHECK(step + 3, wd > 0);
+    CHECK(step + 4, inotify_add_watch(fd, file, IN_MODIFY | IN_MASK_CREATE) == -1 && errno == EEXIST);
+    CHECK(step + 5, inotify_add_watch(fd, file, IN_MASK_CREATE | IN_MASK_ADD | IN_MODIFY) == -1 && errno == EINVAL);
+    CHECK(step + 6, inotify_add_watch(fd, file, IN_Q_OVERFLOW) == wd);
+    CHECK(step + 7, inotify_add_watch(fd, file, IN_DELETE_SELF | IN_ATTRIB | IN_MODIFY | IN_CLOSE_WRITE) == wd);
+    int writer = open(file, O_WRONLY);
+    CHECK(step + 8, writer >= 0 && unlink(file) == 0);
+    struct seen events[16];
+    int count = drain(fd, events, 16);
+    CHECK(step + 9, has(events, count, IN_ATTRIB, "") && !has(events, count, IN_DELETE_SELF, "")
+          && !has(events, count, IN_IGNORED, ""));
+    CHECK(step + 10, write(writer, "y", 1) == 1);
+    count = drain(fd, events, 16);
+    CHECK(step + 11, has(events, count, IN_MODIFY, ""));
+    CHECK(step + 12, close(writer) == 0);
+    count = drain(fd, events, 16);
+    CHECK(step + 13, count == 3 && events[0].mask == IN_CLOSE_WRITE
+          && events[1].mask == IN_DELETE_SELF && events[2].mask == IN_IGNORED);
+    CHECK(step + 14, touch_file(file, "x") == 0);
+    wd = inotify_add_watch(fd, file, IN_OPEN | IN_MODIFY);
+    CHECK(step + 15, wd > 0);
+    writer = open(file, O_WRONLY);
+    CHECK(step + 16, writer >= 0 && write(writer, "z", 1) == 1);
+    char header[16];
+    struct iovec vectors[] = { { header, sizeof header }, { (void *)1, 16 } };
+    CHECK(step + 17, readv(fd, vectors, 2) == -1 && errno == EFAULT);
+    int pending = -1;
+    CHECK(step + 18, ioctl(fd, FIONREAD, &pending) == 0 && pending == 0);
+    CHECK(step + 19, read(fd, header, sizeof header) == -1 && errno == EAGAIN);
+    CHECK(step + 20, close(writer) == 0 && unlink(file) == 0 && close(fd) == 0);
+}
+
+static void excluded_unlinked_children(const char *base, int step)
+{
+    char directory[128], file[160];
+    snprintf(directory, sizeof directory, "%s/inotify-excluded", base);
+    snprintf(file, sizeof file, "%s/file", directory);
+    CHECK(step + 1, mkdir(directory, 0755) == 0);
+    int normal = inotify_init1(IN_NONBLOCK), excluded = inotify_init1(IN_NONBLOCK);
+    CHECK(step + 2, normal >= 0 && excluded >= 0);
+    CHECK(step + 3, inotify_add_watch(normal, directory, IN_MODIFY) > 0
+          && inotify_add_watch(excluded, directory, IN_MODIFY | IN_EXCL_UNLINK) > 0);
+    int writer = open(file, O_CREAT | O_WRONLY, 0600);
+    CHECK(step + 4, writer >= 0 && unlink(file) == 0 && write(writer, "x", 1) == 1);
+    struct seen events[8];
+    CHECK(step + 5, has(events, drain(normal, events, 8), IN_MODIFY, "file"));
+    CHECK(step + 6, drain(excluded, events, 8) == 0);
+    CHECK(step + 7, close(writer) == 0 && close(normal) == 0 && close(excluded) == 0 && rmdir(directory) == 0);
+}
+
+/* 打开的 deleted directory 保留旧 inode/watch；同名重建必须取得不同身份。 */
+static void deleted_open_directory(const char *base, int step)
+{
+    char path[128];
+    snprintf(path, sizeof path, "%s/inotify-deleted-directory", base);
+    CHECK(step + 1, mkdir(path, 0755) == 0);
+    int fd = inotify_init1(IN_NONBLOCK);
+    CHECK(step + 2, fd >= 0);
+    int wd = inotify_add_watch(fd, path, IN_ATTRIB | IN_DELETE_SELF);
+    CHECK(step + 3, wd > 0);
+    int directory = open(path, O_RDONLY | O_DIRECTORY);
+    CHECK(step + 4, directory >= 0);
+    int alias = dup(directory);
+    CHECK(step + 5, alias >= 0 && rmdir(path) == 0);
+    struct seen events[16];
+    int count = drain(fd, events, 16);
+    CHECK(step + 6, !has(events, count, IN_DELETE_SELF, "") && !has(events, count, IN_IGNORED, ""));
+    struct stat old;
+    CHECK(step + 7, fstat(directory, &old) == 0 && old.st_nlink == 0);
+    CHECK(step + 8, openat(directory, "resurrect", O_CREAT | O_WRONLY, 0600) == -1 && errno == ENOENT);
+    char dentries[256];
+    CHECK(step + 18, syscall(SYS_getdents64, directory, dentries, sizeof dentries) == -1 && errno == ENOENT);
+    CHECK(step + 9, mkdir(path, 0755) == 0);
+    struct stat replacement;
+    CHECK(step + 10, stat(path, &replacement) == 0 && replacement.st_ino != old.st_ino);
+    int replacement_wd = inotify_add_watch(fd, path, IN_DELETE_SELF);
+    CHECK(step + 11, replacement_wd > 0 && replacement_wd != wd);
+    CHECK(step + 12, close(directory) == 0 && drain(fd, events, 16) == 0);
+    CHECK(step + 13, close(alias) == 0);
+    count = drain(fd, events, 16);
+    CHECK(step + 14, count == 2 && events[0].wd == wd && events[0].mask == IN_DELETE_SELF
+          && events[1].wd == wd && events[1].mask == IN_IGNORED);
+    CHECK(step + 15, rmdir(path) == 0);
+    count = drain(fd, events, 16);
+    CHECK(step + 16, count == 2 && events[0].wd == replacement_wd && events[0].mask == IN_DELETE_SELF
+          && events[1].wd == replacement_wd && events[1].mask == IN_IGNORED);
+    CHECK(step + 17, close(fd) == 0);
+}
+
 int main(void)
 {
 	directory_events("/tmp", 0);
@@ -268,6 +368,12 @@ int main(void)
 	file_events("/var/tmp", 140);
 	waiting("/var/tmp", 180);
 	unmount_events();
+	native_boundaries("/tmp", 350);
+	native_boundaries("/var/tmp", 380);
+	excluded_unlinked_children("/tmp", 420);
+	excluded_unlinked_children("/var/tmp", 440);
+	deleted_open_directory("/tmp", 470);
+	deleted_open_directory("/var/tmp", 500);
 	puts("LITEOS_INOTIFY_42");
 	return 0;
 }

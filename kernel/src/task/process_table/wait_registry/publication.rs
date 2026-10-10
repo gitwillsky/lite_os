@@ -69,6 +69,7 @@ impl PublishedWait {
                     self.registration.take();
                     return Err(result);
                 }
+                REQUEUEING | CLAIMING => spin_loop(),
                 state => panic!("cannot arm wait registration in state {state}"),
             }
         }

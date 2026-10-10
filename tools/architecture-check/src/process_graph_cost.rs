@@ -8,6 +8,8 @@ const PARENT_DEATH: &str = "kernel/src/task/process_table/parent_death.rs";
 const PROCESS_GROUP: &str = "kernel/src/task/process_table/process_group.rs";
 const WAIT_CHILD: &str = "kernel/src/task/process_table/wait_child.rs";
 const THREAD_SELECTOR: &str = "kernel/src/task/process_table/thread_selector.rs";
+const PROCFS: &str = "kernel/src/task/process_table/procfs.rs";
+const LOAD_AVERAGE: &str = "kernel/src/task/process_table/load_average.rs";
 
 const PROCESSES: usize = 1024;
 const THREADS_PER_PROCESS: usize = 8;
@@ -20,6 +22,8 @@ pub(super) struct ProcessGraphCost {
     pub(super) wait_process_visits: usize,
     pub(super) wait_graph_transactions: usize,
     pub(super) tid_lookup_process_visits: usize,
+    pub(super) proc_process_visits: usize,
+    pub(super) load_sample_thread_visits: usize,
 }
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
@@ -30,6 +34,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             wait_process_visits: 0,
             wait_graph_transactions: 1,
             tid_lookup_process_visits: 0,
+            proc_process_visits: 0,
+            load_sample_thread_visits: 0,
         }) => {}
         Ok(cost) => errors.push(format!(
             "ProcessGraph hot paths must use owner-maintained affected-set indexes and one wait transaction; fixed P={PROCESSES}, T={THREADS_PER_PROCESS}, K={STOPPED_GROUPS} measured {cost:?}"
@@ -41,11 +47,141 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             if function
                 .to_token_stream()
                 .to_string()
-                .contains("if selector > 0 { break ; }") => {}
+                .contains("if matches ! (selector , ResolvedChildSelector :: Process (_)) { break ; }") => {}
         Ok(_) => errors.push(format!(
             "{WAIT_CHILD}: a consumed exact waitpid selector must return ECHILD, not fail-stop as a stale parent index"
         )),
         Err(error) => errors.push(error),
+    }
+    match source(sources, "kernel/src/task/process_table.rs") {
+        Ok(owner) => {
+            let compact: String = owner.text.split_whitespace().collect();
+            let exit: String = source(sources, PROCESS_EXIT)
+                .unwrap()
+                .text
+                .split_whitespace()
+                .collect();
+            let procfs: String = source(sources, PROCFS)
+                .unwrap()
+                .text
+                .split_whitespace()
+                .collect();
+            if !compact.contains("self.threads.len()+self.kernel_threads.len()")
+                || !compact
+                    .contains("letmembership=FallibleMap::try_prepare(task.tid(),task.clone())")
+                || !compact.contains("graph.kernel_threads.commit_vacant(membership);")
+                || !exit.contains(".kernel_threads.take_entry(&current.tid())")
+                || !exit.contains("current.retire_kernel_pid();")
+                || procfs.matches(".live_task_count()").count() != 2
+                || compact
+                    .matches("graph.processes_created=graph.processes_created.saturating_add(1)")
+                    .count()
+                    != 2
+            {
+                errors.push("ProcessGraph statistics must count actual user/kernel memberships and all successful thread publications, retiring kernel admission before observer drops".into());
+            }
+        }
+        Err(error) => errors.push(error),
+    }
+    let scheduling: String = source(sources, "kernel/src/task/model/scheduling.rs")
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    let admission: String = source(sources, "kernel/src/task/model/scheduling/blocked_load.rs")
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    let wait: String = source(sources, "kernel/src/sync/task_wait.rs")
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    let load: String = source(sources, LOAD_AVERAGE)
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    let procfs: String = source(sources, PROCFS)
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    let daemon: String = source(
+        sources,
+        "kernel/src/task/process_table/timer_queue/kernel_wait.rs",
+    )
+    .unwrap()
+    .text
+    .split_whitespace()
+    .collect();
+    if !scheduling.contains("blocked_load:Option<BlockedLoad>")
+        || !scheduling.contains("matches!(state,RunState::Blocked)&&self.wait.is_some_and(WaitMembership::contributes_to_load)")
+        || scheduling.matches("self.blocked_load.take();").count() != 2
+        || !scheduling.contains("Self::DriverIo(_)|Self::Vfork(_)=>true")
+        || !scheduling.contains("Self::TaskWait(key)=>key.contributes_to_load()")
+        || !admission.contains("implDropforBlockedLoad")
+        || admission.matches("BLOCKED.fetch_add(").count() != 1
+        || admission.matches("BLOCKED.fetch_sub(").count() != 1
+        || !wait.contains("matches!(self.mode,TaskWaitMode::Uninterruptible|TaskWaitMode::Killable)")
+        || !load.contains("runnable_task_count()+uninterruptible_task_count()")
+        || !daemon.contains("self.timer.event.wait_idle();")
+        || !procfs.contains("scheduling.is_uninterruptible()")
+        || !procfs.contains("elseifuninterruptible{b'D'}")
+    {
+        errors.push("scheduler load must include actual noncopy blocked admissions through deschedule/wake/stop/exit and native D state, excluding idle/interruptible waits".into());
+    }
+    let kernel: String = source(sources, "kernel/src/task/model/kernel_thread.rs")
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    let selector: String = source(sources, THREAD_SELECTOR)
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    let credentials: String = source(sources, "kernel/src/task/model/credentials.rs")
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    if !procfs.contains("graph.kernel_threads.get(&key).cloned()")
+        || !procfs.contains("graph.kernel_threads.get(&key.identity())")
+        || !procfs.contains("kernel_thread:true")
+        || !procfs.contains("task.kernel_thread_name().as_bytes()")
+        || !procfs.contains("task.thread_statistics(active)")
+        || !selector.contains(".or_else(||graph.kernel_threads.get(&tid).cloned())")
+        || !kernel.contains("credentials:Credentials")
+        || !kernel.contains("credentials:Credentials::root()")
+        || !credentials.contains("super::TaskKind::Kernel(thread)=>thread.credentials.snapshot()")
+        || !procfs.contains("_ifidle=>b'I'")
+    {
+        errors.push("kernel proc must use actual kernel execution/PID/credential/scheduler owners without a fake user Process or a global task scan".into());
+    }
+    let signal: String = source(sources, "kernel/src/task/process_table/signal.rs")
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    if !signal.contains("ifletSome(kernel)=graph.kernel_threads.get(&tid)")
+        || !signal.contains("expected_tgid.is_some_and(|tgid|tgid!=tid)")
+        || !signal.contains(".may_signal_thread(kernel)")
+        || !signal.contains("graph.kernel_threads.contains_key(&pid)")
+        || !signal.contains("graph.kernel_threads.iter_after(&after)")
+        || !signal.contains("ifletSome(kernel)=graph.kernel_threads.get(&tgid)")
+    {
+        errors.push("kernel signal selection must use actual PID memberships and immutable credentials, preserve ignore-signals worker policy and reject mismatched tgkill groups".into());
+    }
+    for (path, name) in [(PROCFS, "process_snapshot"), (LOAD_AVERAGE, "update")] {
+        match source(sources, path).and_then(|source| function(source, name)) {
+            Ok(function) if named_calls(function, "runnable_task_count") == 1 => {}
+            Ok(_) => errors.push(format!(
+                "{path}: {name} must sample actual per-CPU scheduler membership, including kernel tasks, rather than reconstructing runnable state from user ProcessGraph"
+            )),
+            Err(error) => errors.push(error),
+        }
     }
 }
 
@@ -55,6 +191,8 @@ fn measure(sources: &[SourceFile]) -> Result<ProcessGraphCost, String> {
     let groups = source(sources, PROCESS_GROUP)?;
     let wait = source(sources, WAIT_CHILD)?;
     let selector = source(sources, THREAD_SELECTOR)?;
+    let procfs = source(sources, PROCFS)?;
+    let load_average = source(sources, LOAD_AVERAGE)?;
 
     let exit_candidate_scans = scans(exit, "mark_orphaned_stopped_groups")?;
     let new_orphan_scans = scans(exit, "mark_new_orphaned_stopped_groups")?;
@@ -74,17 +212,23 @@ fn measure(sources: &[SourceFile]) -> Result<ProcessGraphCost, String> {
         pdeath_scans.thread_collections * PROCESSES * THREADS_PER_PROCESS;
 
     let wait_find = scans(wait, "find_waitable_child")?;
-    let wait_body = function(wait, "wait_child")?;
+    let wait_body = function(wait, "wait_selected_child")?;
     let wait_calls = named_calls(wait_body, "find_waitable_child");
     let wait_process_visits = wait_find.process_collections * wait_calls * PROCESSES;
 
     let tid_lookup = scans(selector, "thread_by_tid")?;
+    let proc_rows = scans(procfs, "graph_snapshot_rows")?;
+    let sysinfo = scans(procfs, "system_info_snapshot")?;
+    let load_sample = scans(load_average, "update")?;
     Ok(ProcessGraphCost {
         exit_process_visits,
         zero_pdeath_thread_visits,
         wait_process_visits,
         wait_graph_transactions: wait_calls,
         tid_lookup_process_visits: tid_lookup.process_collections * PROCESSES,
+        proc_process_visits: (proc_rows.process_collections + sysinfo.process_collections)
+            * PROCESSES,
+        load_sample_thread_visits: load_sample.thread_collections * PROCESSES * THREADS_PER_PROCESS,
     })
 }
 
@@ -340,12 +484,113 @@ mod tests {
     }
 
     #[test]
+    fn rejects_system_count_omitting_kernel_execution_membership() {
+        let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
+        let source = sources
+            .iter_mut()
+            .find(|source| source.relative == "kernel/src/task/process_table.rs")
+            .unwrap();
+        let original = "self.threads.len() + self.kernel_threads.len()";
+        assert!(source.text.contains(original));
+        source.text = source.text.replace(original, "self.threads.len()");
+        source.syntax = syn::parse_file(&source.text).unwrap();
+        let mut errors = Vec::new();
+        super::check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("actual user/kernel memberships")),
+            "{errors:?}"
+        );
+    }
+    #[test]
+    fn rejects_load_sample_omitting_uninterruptible_tasks() {
+        let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
+        let source = sources
+            .iter_mut()
+            .find(|source| source.relative == super::LOAD_AVERAGE)
+            .unwrap();
+        let original = " + uninterruptible_task_count()";
+        assert!(source.text.contains(original));
+        source.text = source.text.replace(original, "");
+        source.syntax = syn::parse_file(&source.text).unwrap();
+        let mut errors = Vec::new();
+        super::check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("noncopy blocked admissions")),
+            "{errors:?}"
+        );
+    }
+    #[test]
+    fn rejects_wake_retaining_blocked_admission() {
+        let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
+        let source = sources
+            .iter_mut()
+            .find(|source| source.relative == "kernel/src/task/model/scheduling.rs")
+            .unwrap();
+        source.text = source.text.replace("self.blocked_load.take();", "");
+        source.syntax = syn::parse_file(&source.text).unwrap();
+        let mut errors = Vec::new();
+        super::check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("noncopy blocked admissions")),
+            "{errors:?}"
+        );
+    }
+    #[test]
     fn repository_process_graph_cost_is_bounded() {
         let root = super::super::repository_root();
         let sources = super::super::load_sources(&root).expect("repository sources");
         let mut errors = Vec::new();
         check(&sources, &mut errors);
         assert!(errors.is_empty(), "{}", errors.join("\n"));
+    }
+
+    #[test]
+    fn proc_global_scan_regression_is_rejected() {
+        let root = super::super::repository_root();
+        let mut sources = super::super::load_sources(&root).expect("repository sources");
+        let source = sources
+            .iter_mut()
+            .find(|source| source.relative == PROCFS)
+            .unwrap();
+        source.text = source.text.replace(
+            "let graph = PROCESS_TABLE.graph.lock();\n        let node = match scope",
+            "let graph = PROCESS_TABLE.graph.lock();\n        let _ = graph.nodes.values().count();\n        let node = match scope",
+        );
+        source.syntax = syn::parse_file(&source.text).unwrap();
+        let mut errors = Vec::new();
+        check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("proc_process_visits: 1024"))
+        );
+    }
+
+    #[test]
+    fn user_graph_runnable_projection_is_rejected() {
+        let root = super::super::repository_root();
+        let mut sources = super::super::load_sources(&root).expect("repository sources");
+        let source = sources
+            .iter_mut()
+            .find(|source| source.relative == LOAD_AVERAGE)
+            .unwrap();
+        source.text = source
+            .text
+            .replace("runnable_task_count()", "user_graph_runnable_count()");
+        source.syntax = syn::parse_file(&source.text).unwrap();
+        let mut errors = Vec::new();
+        check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("update must sample actual"))
+        );
     }
 
     #[test]
@@ -399,5 +644,49 @@ mod tests {
             }
             model.assert_indexes();
         }
+    }
+    #[test]
+    fn rejects_background_deadline_sleep_charging_load() {
+        let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
+        let source = sources
+            .iter_mut()
+            .find(|source| {
+                source.relative == "kernel/src/task/process_table/timer_queue/kernel_wait.rs"
+            })
+            .unwrap();
+        assert!(source.text.contains("self.timer.event.wait_idle();"));
+        source.text = source
+            .text
+            .replace("self.timer.event.wait_idle();", "self.timer.event.wait();");
+        source.syntax = syn::parse_file(&source.text).unwrap();
+        let mut errors = Vec::new();
+        super::check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("excluding idle/interruptible waits")),
+            "{errors:?}"
+        );
+    }
+    #[test]
+    fn rejects_kernel_proc_using_a_fabricated_credential_snapshot() {
+        let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
+        let source = sources
+            .iter_mut()
+            .find(|source| source.relative == "kernel/src/task/model/credentials.rs")
+            .unwrap();
+        assert!(source.text.contains("thread.credentials.snapshot()"));
+        source.text = source
+            .text
+            .replace("thread.credentials.snapshot()", "unreachable!()");
+        source.syntax = syn::parse_file(&source.text).unwrap();
+        let mut errors = Vec::new();
+        super::check(&sources, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("actual kernel execution/PID/credential/scheduler")),
+            "{errors:?}"
+        );
     }
 }

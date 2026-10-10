@@ -9,10 +9,7 @@ use crate::{
 
 use super::{
     PROCESS_TABLE, load_average, process_terminal_input, send_kernel_process_signal,
-    send_kernel_thread_signal_info,
-    timer_queue::{ExpiredTimer, PosixTimerNotification},
-    wait_key::IndexedWaitKind,
-    wait_registry::WAIT_REGISTRY,
+    timer_queue::ExpiredTimer, wait_key::IndexedWaitKind, wait_registry::WAIT_REGISTRY,
     wake_console_waiters,
 };
 
@@ -35,37 +32,26 @@ fn expire_timers(now_ns: u64) {
     // 2. signal seam 会获取 process graph，必须在释放 timer lock 后调用，避免 timer → graph 反向锁序。
     for expired in targets.into_iter().flatten() {
         match expired {
-            ExpiredTimer::Real(tgid) => {
+            ExpiredTimer::Real { tgid, retired } => {
+                drop(retired);
                 let _ = send_kernel_process_signal(
                     tgid,
                     syscall_abi::signal::SIGALRM,
                     PendingSignal::kernel(),
                 );
             }
-            ExpiredTimer::Posix(timer) => {
-                let info = PendingSignal::timer(
-                    timer.id,
-                    timer.overrun,
-                    match timer.notification {
-                        PosixTimerNotification::Process { value, .. }
-                        | PosixTimerNotification::Thread { value, .. } => value,
-                        PosixTimerNotification::Default | PosixTimerNotification::None => 0,
-                    },
-                );
-                match timer.notification {
-                    PosixTimerNotification::Process { signal, .. } => {
-                        let _ = send_kernel_process_signal(timer.tgid, signal, info);
-                    }
-                    PosixTimerNotification::Thread { tid, signal, .. } => {
-                        let _ = send_kernel_thread_signal_info(timer.tgid, tid, signal, info);
-                    }
-                    PosixTimerNotification::Default | PosixTimerNotification::None => {
-                        unreachable!("timer owner normalizes silent/default notifications")
-                    }
-                }
+            ExpiredTimer::Posix(timer) => super::signal::publish_posix_timer_signal(timer),
+            ExpiredTimer::File {
+                target,
+                elapsed,
+                generation,
+                retired,
+            } => {
+                drop(retired);
+                target.expire(elapsed, generation);
             }
-            ExpiredTimer::File { target, elapsed } => target.expire(elapsed),
-            ExpiredTimer::Silent => {}
+            ExpiredTimer::Kernel(expired) => expired.complete(),
+            ExpiredTimer::Silent(retired) => drop(retired),
         }
     }
     // 3. 超出 batch 的到期项仅合并发布一个 bit；无界循环会饿死 I/O 与 user return。
@@ -99,6 +85,11 @@ fn wake_expired_tasks(now_ns: u64) {
     // 2. wake 会获取 scheduling/runqueue owner，必须在释放 registry lock 后执行。
     for (wait_id, task, kind) in batch.into_iter().flatten() {
         let woke = match kind {
+            IndexedWaitKind::TaskEvent(key) => crate::task::processor::wake_waiting_task(
+                task,
+                super::WaitMembership::TaskWait(key),
+                Some(WaitResult::TimedOut),
+            ),
             IndexedWaitKind::Deadline => {
                 crate::task::processor::wake_deadline_task(task, wait_id, WaitResult::TimedOut)
             }

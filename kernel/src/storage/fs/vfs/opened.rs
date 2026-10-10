@@ -1,194 +1,256 @@
-use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
-
+//! 实际路径是 mount view + canonical filesystem dentry；不复制目录关系或按 inode 猜挂载。
 use super::{
-    FileSystemError, Inode,
-    opened_index::{OpenedIndexKey, OpenedPathKey},
+    FileSystemError, Inode, MountFlags, WriteOpen,
+    dentry::{Dentry, FileName},
+    mount_view::MountView,
 };
+use alloc::{sync::Arc, vec::Vec};
 
-struct OpenedLocation {
-    parent: Option<Arc<OpenedFile>>,
-    name: FileName,
-    deleted: bool,
-    registration: Option<OpenedIndexKey>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct FileName {
-    length: u8,
-    bytes: [u8; 255],
-}
-
-impl FileName {
-    pub(super) fn new(name: &[u8]) -> Result<Self, FileSystemError> {
-        if name.len() > 255 {
-            return Err(FileSystemError::InvalidPath);
-        }
-        let mut value = Self {
-            length: name.len() as u8,
-            bytes: [0; 255],
-        };
-        value.bytes[..name.len()].copy_from_slice(name);
-        Ok(value)
-    }
-
-    pub(super) fn bytes(&self) -> &[u8] {
-        &self.bytes[..usize::from(self.length)]
-    }
-}
-
-/// VFS namespace 中一次 pathname lookup 得到的稳定 opened-entry identity。
+/// OFD/cwd/root 保活的真实 Linux path identity；namespace membership 独立于旧路径生命周期。
 pub(crate) struct OpenedFile {
-    inode: Arc<dyn Inode>,
-    // OWNER: VFS 唯一更新打开目录项的 parent/name/deleted 关系；若 OFD 自行缓存路径，
-    // rename、hardlink 与 unlink 后 `/proc/<pid>/fd` 会出现彼此矛盾的路径。
-    location: Mutex<OpenedLocation>,
+    // 所有路径（包括 allocation 失败）都先 dput 再 mntput；不能先关闭 inode 所属 filesystem。
+    pub(super) dentry: Arc<Dentry>,
+    pub(super) mount: Option<Arc<MountView>>,
+    clear_expiry: bool,
 }
-
+#[derive(Clone, Copy)]
+enum ProjectionRoot<'a> {
+    Namespace(&'a OpenedFile),
+    Filesystem(&'a Dentry),
+}
 impl OpenedFile {
-    pub(super) fn root(inode: Arc<dyn Inode>) -> Result<Arc<Self>, FileSystemError> {
+    pub(super) fn at(
+        mount: Arc<MountView>,
+        dentry: Arc<Dentry>,
+    ) -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
-            inode,
-            location: Mutex::new(OpenedLocation {
-                parent: None,
-                name: FileName::new(&[])?,
-                deleted: false,
-                registration: None,
-            }),
+            mount: Some(mount),
+            dentry,
+            clear_expiry: true,
         })
         .map_err(|_| FileSystemError::OutOfMemory)
     }
-
     pub(super) fn child(
         inode: Arc<dyn Inode>,
-        parent: Arc<OpenedFile>,
+        parent: Arc<Self>,
         name: &[u8],
     ) -> Result<Arc<Self>, FileSystemError> {
-        // 块设备节点在 VFS 里只有一种视图：字节 I/O 落到设备，而不是节点所在的文件系统。
-        let inode = super::super::block_node::wrap_block_node(inode)?;
-        Arc::try_new(Self {
+        let mount = parent
+            .mount
+            .as_ref()
+            .ok_or(FileSystemError::InvalidOperation)?
+            .clone();
+        let dentry = super::vfs().dentries.admit(Dentry::named(
             inode,
-            location: Mutex::new(OpenedLocation {
-                parent: Some(parent),
-                name: FileName::new(name)?,
-                deleted: false,
-                registration: None,
-            }),
-        })
-        .map_err(|_| FileSystemError::OutOfMemory)
+            Some(parent.dentry.clone()),
+            name,
+        )?)?;
+        Self::at(mount, dentry)
     }
-
+    pub(in crate::fs) fn anonymous(
+        filesystem: crate::fs::anonymous::PseudoFileSystem,
+        inode: Arc<dyn Inode>,
+        label: Vec<u8>,
+    ) -> Result<Arc<Self>, FileSystemError> {
+        let dentry = Dentry::anonymous(inode, label)?;
+        filesystem.open(dentry)
+    }
+    /// pseudo magic dentry借同一实际internal mount；每次open只创建path shell。
+    /// 分配失败不改变dentry identity、filesystem owner或namespace membership。
+    pub(in crate::fs) fn with_dentry(
+        &self,
+        dentry: Arc<Dentry>,
+    ) -> Result<Arc<Self>, FileSystemError> {
+        Self::at(
+            self.mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?
+                .clone(),
+            dentry,
+        )
+    }
+    /// path_umount 消费调用者独有 path，mntput_no_expire 不清除刚设定的 expiry mark。
+    pub(in crate::fs) fn preserve_mount_expiry(&mut self) {
+        self.clear_expiry = false;
+    }
     pub(crate) fn inode(&self) -> Arc<dyn Inode> {
-        self.inode.clone()
+        self.dentry.inode()
     }
-
-    pub(super) fn parent(&self) -> Option<Arc<OpenedFile>> {
-        self.location.lock().parent.clone()
+    pub(crate) fn mount_flags(&self) -> MountFlags {
+        self.mount
+            .as_ref()
+            .map_or(MountFlags::default(), |view| view.flags())
     }
-
-    /// 父目录 inode 与本条目在其中的名字；根没有父目录。inotify 用它把文件事件同时投递给父目录的 watch。
-    pub(crate) fn watch_context(&self) -> Option<(Arc<dyn Inode>, Vec<u8>)> {
-        let parent = self.parent()?;
-        Some((parent.inode(), self.location_name().ok()?))
+    /// fdinfo 使用实际 vfsmount 的稳定 identity，包括所有内部 pseudo 路径。
+    pub(in crate::fs) fn mount_id(&self) -> u64 {
+        self.mount.as_ref().map_or(0, |view| view.id)
     }
-
-    pub(super) fn location_name(&self) -> Result<Vec<u8>, FileSystemError> {
-        let location = self.location.lock();
-        let mut name = Vec::new();
-        name.try_reserve_exact(location.name.bytes().len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        name.extend_from_slice(location.name.bytes());
-        Ok(name)
+    /// mnt_may_suid：只有 caller namespace 的实际 mount 且 caller 在 superblock owning userNS 内才可信。
+    /// 旧 namespace FD/proc magic path 与匿名 hidden mount 一律不授予 set-ID/file capabilities。
+    pub(crate) fn may_suid(
+        &self,
+        namespace: &super::MountNamespace,
+        user: &Arc<crate::namespace::UserNamespace>,
+    ) -> bool {
+        self.mount.as_ref().is_some_and(|view| {
+            !view.flags().nosuid()
+                && namespace.contains(view)
+                && user.is_within(&view.filesystem.user)
+        })
     }
-
-    pub(super) fn index_path(&self) -> Result<Option<OpenedPathKey>, FileSystemError> {
-        let location = self.location.lock();
-        let Some(parent) = location.parent.clone() else {
+    /// 已进入实际非零 regular read transaction 的锁外资源副作用，无新分配；EOF/EFAULT 同样触碰 atime。
+    pub(crate) fn read_access(&self) -> ReadAccess<'_> {
+        ReadAccess(self)
+    }
+    /// 根据本路径所属 mount 更新 inode atime；cache hit 与 miss 使用同一事实，失败不改变读取结果。
+    pub(crate) fn touch_access(&self) {
+        let flags = self.mount_flags();
+        let inode = self.inode();
+        if flags.noatime()
+            || flags.nodiratime() && inode.inode_type() == super::InodeType::Directory
+        {
+            return;
+        }
+        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        if let Some(view) = &self.mount {
+            let Some(_writer) = view.try_access_writer() else {
+                return;
+            };
+            let _ = inode.touch_access(now, flags.relatime());
+        } else {
+            let _ = inode.touch_access(now, flags.relatime());
+        }
+    }
+    /// 内容写入需同时持 actual mount writer 与 inode write-access，不能经别名写正在执行的文件。
+    pub(crate) fn begin_content_write(&self) -> Result<ContentWrite, FileSystemError> {
+        let mount = self.begin_write()?;
+        let inode = super::super::InodeAccessLease::write(self.inode())?;
+        Ok(ContentWrite {
+            _inode: Some(inode),
+            _mount: mount,
+        })
+    }
+    pub(crate) fn begin_write(&self) -> Result<WriteOpen, FileSystemError> {
+        self.mount
+            .as_ref()
+            .map_or(Ok(WriteOpen::unmounted()), |view| view.acquire_writer())
+    }
+    pub(in crate::fs) fn is_unlinked(&self) -> bool {
+        self.dentry.is_unlinked()
+    }
+    pub(super) fn same_path(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.dentry, &other.dentry)
+            && match (&self.mount, &other.mount) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+    pub(crate) fn same_mount(&self, other: &Self) -> bool {
+        match (&self.mount, &other.mount) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn inode_identity(&self) -> Result<(usize, u64), FileSystemError> {
+        self.dentry.inode_identity()
+    }
+    /// `..` 在 mount root 从实际 attachment 回到 mountpoint 的父目录；inode 相同并不代表同一路径。
+    pub(super) fn parent(&self, stop: &Arc<Self>) -> Result<Option<Arc<Self>>, FileSystemError> {
+        let Some(view) = &self.mount else {
             return Ok(None);
         };
-        let name = location.name;
-        drop(location);
-        Ok(Some(OpenedPathKey {
-            parent: parent.inode_identity()?,
-            name,
-            inode: self.inode_identity()?,
-        }))
+        let mut view = view.clone();
+        let mut dentry = self.dentry.clone();
+        loop {
+            if stop
+                .mount
+                .as_ref()
+                .is_some_and(|root| Arc::ptr_eq(root, &view))
+                && Arc::ptr_eq(&stop.dentry, &dentry)
+            {
+                return Ok(Some(stop.clone()));
+            }
+            if Arc::ptr_eq(&view.root, &dentry) {
+                let Some(attachment) = view.attachment() else {
+                    return Ok(None);
+                };
+                let Some(parent) = attachment.parent.upgrade() else {
+                    return Ok(None);
+                };
+                view = parent;
+                dentry = attachment.point;
+                // 叠加 mount root 可以先跨越多层 view，最后才到达 filesystem 内的父目录。
+                // 每次 follow-up 都先检查 caller root，不能越过下层 chroot root 再取父目录。
+                continue;
+            }
+            let parent = dentry.snapshot().and_then(|(parent, _, _)| parent);
+            return parent.map(|parent| Self::at(view, parent)).transpose();
+        }
     }
-
-    pub(super) fn publish_registration(&self, key: OpenedIndexKey) {
-        let mut location = self.location.lock();
-        assert!(
-            location.registration.is_none(),
-            "opened entry registered twice"
-        );
-        location.registration = Some(key);
+    /// inotify 的 parent 是同一 filesystem 内的 canonical dentry；mount root 不制造跨 superblock 父节点。
+    pub(crate) fn watch_context(&self) -> Option<(Arc<dyn Inode>, Vec<u8>, bool)> {
+        let (parent, name, unlinked) = self.dentry.snapshot()?;
+        Some((parent?.inode(), copy_bytes(name.bytes()).ok()?, unlinked))
     }
-
-    pub(super) fn mark_deleted(&self, key: OpenedIndexKey) {
-        let mut location = self.location.lock();
-        assert_eq!(location.registration, Some(key));
-        location.deleted = true;
-    }
-
-    pub(super) fn move_to(
+    /// 在 caller root 中投影 canonical dentry 与实际 mount attachment；visited 仅检测损坏环。
+    /// OOM/环/超出 Linux PATH_MAX 返回明确错误，不从保存的字符串重新解析路径。
+    pub(super) fn path(
         &self,
-        key: OpenedIndexKey,
-        parent: Arc<OpenedFile>,
-        name: FileName,
-        new_key: OpenedIndexKey,
-    ) -> Option<Arc<OpenedFile>> {
-        let mut location = self.location.lock();
-        assert_eq!(location.registration, Some(key));
-        if location.deleted {
-            return None;
+        root: &Arc<Self>,
+        deleted_suffix: bool,
+    ) -> Result<Vec<u8>, FileSystemError> {
+        self.project_path(root, deleted_suffix)
+            .map(|(path, _)| path)
+    }
+    /// seq_path_root 的可达性与 pathname 来自同一次遍历；不可用字符串前缀猜 chroot 可见性。
+    pub(super) fn project_path(
+        &self,
+        root: &Arc<Self>,
+        deleted_suffix: bool,
+    ) -> Result<(Vec<u8>, bool), FileSystemError> {
+        self.walk_path(ProjectionRoot::Namespace(root), deleted_suffix)
+    }
+    /// mountinfo 的 root 是 filesystem 内 dentry 路径，不能沿 namespace attachment 展开。
+    pub(super) fn filesystem_path(&self, root: &Dentry) -> Result<Vec<u8>, FileSystemError> {
+        self.walk_path(ProjectionRoot::Filesystem(root), false)
+            .map(|(path, _)| path)
+    }
+    fn walk_path(
+        &self,
+        root: ProjectionRoot<'_>,
+        deleted_suffix: bool,
+    ) -> Result<(Vec<u8>, bool), FileSystemError> {
+        if let Some(label) = self.dentry.diagnostic_label() {
+            return copy_bytes(label).map(|path| (path, false));
         }
-        let retired_parent = location
-            .parent
-            .replace(parent)
-            .expect("registered opened entry lost its parent");
-        location.name = name;
-        location.registration = Some(new_key);
-        Some(retired_parent)
-    }
-
-    pub(super) fn same_inode(&self, other: &Arc<OpenedFile>) -> bool {
-        self.inode_identity().ok() == other.inode_identity().ok()
-    }
-
-    pub(super) fn inode_identity(&self) -> Result<(usize, u64), FileSystemError> {
-        Ok((self.inode.filesystem_id(), self.inode.metadata()?.inode))
-    }
-
-    /// 从稳定 opened-entry 链投影当前 namespace pathname。
-    ///
-    /// # Parameters
-    ///
-    /// - `deleted_suffix`: 为 true 时按 procfs 规则为已删除链追加 ` (deleted)`；
-    ///   false 时已删除链返回 `NotFound`，供 getcwd 使用。
-    ///
-    /// # Returns
-    ///
-    /// 当前绝对路径。
-    ///
-    /// # Errors
-    ///
-    /// opened-entry 链损坏、形成环或内存不足时返回明确错误。
-    pub(super) fn path(&self, deleted_suffix: bool) -> Result<Vec<u8>, FileSystemError> {
-        let mut components = Vec::new();
-        let mut current = self.location.lock().parent.clone();
-        let own = self.location.lock();
-        let mut deleted = own.deleted;
-        if own.parent.is_some() {
-            components
-                .try_reserve(1)
-                .map_err(|_| FileSystemError::OutOfMemory)?;
-            components.push(own.name);
-        }
-        drop(own);
-
+        let mut mount = self.mount.clone();
+        let mut dentry = self.dentry.clone();
+        let mut components: Vec<FileName> = Vec::new();
         let mut visited = Vec::new();
-        while let Some(entry) = current {
-            let identity = Arc::as_ptr(&entry) as usize;
+        let mut deleted = false;
+        let mut bytes = 0usize;
+        let reached_root = loop {
+            let at_root = match root {
+                ProjectionRoot::Namespace(root) => {
+                    let same_mount = match (&mount, &root.mount) {
+                        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    same_mount && Arc::ptr_eq(&dentry, &root.dentry)
+                }
+                ProjectionRoot::Filesystem(root) => core::ptr::eq(dentry.as_ref(), root),
+            };
+            if at_root {
+                break true;
+            }
+            let identity = (
+                mount.as_ref().map_or(0, |view| Arc::as_ptr(view) as usize),
+                Arc::as_ptr(&dentry) as usize,
+            );
             if visited.contains(&identity) {
                 return Err(FileSystemError::InvalidFileSystem);
             }
@@ -196,57 +258,119 @@ impl OpenedFile {
                 .try_reserve(1)
                 .map_err(|_| FileSystemError::OutOfMemory)?;
             visited.push(identity);
-            let location = entry.location.lock();
-            deleted |= location.deleted;
-            if location.parent.is_some() {
-                components
-                    .try_reserve(1)
-                    .map_err(|_| FileSystemError::OutOfMemory)?;
-                components.push(location.name);
+            if matches!(root, ProjectionRoot::Namespace(_))
+                && let Some(view) = &mount
+                && Arc::ptr_eq(&view.root, &dentry)
+            {
+                let Some(attachment) = view.attachment() else {
+                    break false;
+                };
+                let Some(parent) = attachment.parent.upgrade() else {
+                    break false;
+                };
+                mount = Some(parent);
+                dentry = attachment.point;
+                continue;
             }
-            current = location.parent.clone();
-        }
+            let Some((parent, name, unlinked)) = dentry.snapshot() else {
+                return Err(FileSystemError::InvalidOperation);
+            };
+            deleted |= unlinked;
+            let Some(parent) = parent else {
+                break false;
+            };
+            bytes = bytes
+                .checked_add(name.bytes().len() + 1)
+                .ok_or(FileSystemError::NameTooLong)?;
+            if bytes >= 4096 {
+                return Err(FileSystemError::NameTooLong);
+            }
+            components
+                .try_reserve(1)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            components.push(name);
+            dentry = parent;
+        };
+        deleted |= dentry.is_unlinked();
         if deleted && !deleted_suffix {
             return Err(FileSystemError::NotFound);
         }
-
-        let component_bytes = components
-            .iter()
-            .try_fold(0usize, |total, name| total.checked_add(name.bytes().len()));
-        let suffix = usize::from(deleted) * b" (deleted)".len();
-        let capacity = component_bytes
-            .and_then(|total| total.checked_add(components.len().max(1)))
-            .and_then(|total| total.checked_add(suffix))
-            .ok_or(FileSystemError::InvalidFileSystem)?;
-        let mut path = Vec::new();
-        path.try_reserve_exact(capacity)
+        let unreachable = !reached_root && !deleted_suffix;
+        let prefix = if unreachable {
+            &b"(unreachable)"[..]
+        } else {
+            &b""[..]
+        };
+        let suffix = if deleted {
+            &b" (deleted)"[..]
+        } else {
+            &b""[..]
+        };
+        let capacity = bytes
+            .max(1)
+            .checked_add(prefix.len())
+            .and_then(|n| n.checked_add(suffix.len()))
+            .ok_or(FileSystemError::NameTooLong)?;
+        if capacity >= 4096 {
+            return Err(FileSystemError::NameTooLong);
+        }
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(capacity)
             .map_err(|_| FileSystemError::OutOfMemory)?;
-        path.push(b'/');
+        output.extend_from_slice(prefix);
+        output.push(b'/');
         for component in components.iter().rev() {
-            if path.len() > 1 {
-                path.push(b'/');
+            if output.len() > prefix.len() + 1 {
+                output.push(b'/');
             }
-            path.extend_from_slice(component.bytes());
+            output.extend_from_slice(component.bytes());
         }
-        if deleted {
-            path.extend_from_slice(b" (deleted)");
-        }
-        Ok(path)
+        output.extend_from_slice(suffix);
+        Ok((output, reached_root))
     }
+}
+fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    output.extend_from_slice(bytes);
+    Ok(output)
 }
 
 impl Drop for OpenedFile {
     fn drop(&mut self) {
-        let location = self.location.get_mut();
-        let deleted = location.deleted;
-        if let Some(key) = location.registration.take() {
-            // Drop 在 Arc storage 解配前精确撤销 intrusive membership；缺失该步骤会
-            // 留下可被 pointer reuse 命中的悬垂 index entry。
-            super::vfs().opened.unregister(key);
+        if self.clear_expiry
+            && let Some(view) = &self.mount
+        {
+            view.state.lock().expiry_mark = false;
         }
-        if deleted {
-            // 已删除条目的最后一个引用：若 inode 也没有其他 link，其 page cache 不应再拖住它。
-            super::super::page_cache::evict_if_unlinked(&self.inode, 1);
-        }
+    }
+}
+
+/// 实际内容写访问：先归还 inode/可能最后 inode Drop，再归还 filesystem/view writer lease。
+pub(crate) struct ContentWrite {
+    // OWNER: 唯一 inode access capability；fput 可先 take 归还它，mount writer 必须
+    // 保留到最后 path/inode 回收之后。None 只表示该 capability 已实际消费，无镜像 flag。
+    _inode: Option<super::super::InodeAccessLease>,
+    _mount: WriteOpen,
+}
+impl ContentWrite {
+    /// 在实际 file object 的 final fput 中先归还 inode access，保留 mount writer。
+    ///
+    /// # Returns
+    ///
+    /// capability 恰好消费一次；后续 Drop 仅归还仍拥有的实际 lease。
+    pub(crate) fn release_inode_access(&mut self) {
+        drop(self._inode.take());
+    }
+}
+
+/// Borrowed actual path consequence；只有实际 I/O producer 准入后创建，所有提前返回都执行一次触碰。
+pub(crate) struct ReadAccess<'a>(&'a OpenedFile);
+impl Drop for ReadAccess<'_> {
+    fn drop(&mut self) {
+        self.0.touch_access();
     }
 }

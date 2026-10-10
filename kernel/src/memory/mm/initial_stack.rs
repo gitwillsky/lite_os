@@ -6,6 +6,8 @@ use super::{ElfLoadError, MemorySet, UserFaultLimits};
 
 /// exec 装载流程提供的 Linux 初始栈输入；memory 只负责布局与复制，不访问 entropy device。
 pub(crate) struct InitialStack<'a> {
+    /// exec 已准备的最终身份与 secureexec，不在 memory 内重算权限。
+    pub(crate) credentials: InitialStackCredentials,
     /// script rewrite 后且不含 NUL 的 argv strings。
     pub(crate) arguments: &'a [Vec<u8>],
     /// 不含 NUL 的 envp strings。
@@ -14,6 +16,16 @@ pub(crate) struct InitialStack<'a> {
     pub(crate) execfn: &'a [u8],
     /// 已由 entropy source 完整初始化的 16-byte AT_RANDOM payload。
     pub(crate) random: &'a [u8; 16],
+}
+
+/// Linux auxv 身份 facts；只包含已确定的 scalar，不持有 credential owner。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InitialStackCredentials {
+    pub(crate) uid: u32,
+    pub(crate) euid: u32,
+    pub(crate) gid: u32,
+    pub(crate) egid: u32,
+    pub(crate) secure: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,12 +95,13 @@ impl MemorySet {
         const AT_HWCAP: usize = 16;
         const AT_RANDOM: usize = 25;
         const AT_EXECFN: usize = 31;
-        const AUX_WORDS: usize = 20;
+        const AUX_WORDS: usize = 30;
         let InitialStack {
             arguments: args,
             environments: envs,
             execfn,
             random,
+            credentials,
         } = input;
 
         let total_string_size = args
@@ -194,6 +207,11 @@ impl MemorySet {
             (AT_BASE, aux.base),
             (AT_ENTRY, aux.entry),
             (AT_HWCAP, crate::arch::user::ELF_HWCAP),
+            (11, credentials.uid as usize),
+            (12, credentials.euid as usize),
+            (13, credentials.gid as usize),
+            (14, credentials.egid as usize),
+            (23, usize::from(credentials.secure)),
             (AT_RANDOM, random_ptr),
             (AT_EXECFN, execfn_ptr),
             (AT_NULL, 0),

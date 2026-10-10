@@ -26,6 +26,7 @@ pub const EAGAIN: isize = 11;
 pub const ENOMEM: isize = 12;
 /// 权限不足。
 pub const EACCES: isize = 13;
+pub const EUSERS: isize = 87;
 /// 无效用户空间地址。
 pub const EFAULT: isize = 14;
 /// `mount(2)` 的 source 不是块设备。
@@ -42,6 +43,8 @@ pub const ENOTDIR: isize = 20;
 pub const EISDIR: isize = 21;
 /// 无效参数。
 pub const EINVAL: isize = 22;
+/// 正在用作交换存储的文件拒绝写入或新共享可写映射。
+pub const ETXTBSY: isize = 26;
 pub const EMFILE: isize = 24;
 /// fd 不是 TTY 或 TTY 不属于 caller session。
 pub const ENOTTY: isize = 25;
@@ -59,6 +62,10 @@ pub const EPIPE: isize = 32;
 pub const ESPIPE: isize = 29;
 /// 结果超出支持范围。
 pub const ERANGE: isize = 34;
+/// Numeric argument out of domain.
+pub const EDOM: isize = 33;
+/// xattr不存在；与pathname的ENOENT区分。
+pub const ENODATA: isize = 61;
 /// 路径或参数字符串过长。
 pub const ENAMETOOLONG: isize = 36;
 pub const ENOTEMPTY: isize = 39;
@@ -77,6 +84,7 @@ pub const EADDRINUSE: isize = 98;
 /// 请求的本地或远端地址在当前 interface 上不可用。
 pub const EADDRNOTAVAIL: isize = 99;
 /// 当前 interface/route 无法到达目标网络。
+pub const ENETDOWN: isize = 100;
 pub const ENETUNREACH: isize = 101;
 /// nonblocking connect 已经在进行。
 pub const EALREADY: isize = 114;
@@ -87,6 +95,8 @@ pub const EISCONN: isize = 106;
 /// real-UID SCM_RIGHTS inflight 已达到 RLIMIT_NOFILE resource bound。
 pub const ETOOMANYREFS: isize = 109;
 /// 已建立连接被 peer reset。
+/// 连接完成前协议已经关闭，且 pending error 已被其他观察者消费。
+pub const ECONNABORTED: isize = 103;
 pub const ECONNRESET: isize = 104;
 pub const ECONNREFUSED: isize = 111;
 pub const EPROTONOSUPPORT: isize = 93;
@@ -98,3 +108,15 @@ pub const EOVERFLOW: isize = 75;
 pub const EBADFD: isize = 77;
 /// 等待在 deadline 前未完成。
 pub const ETIMEDOUT: isize = 110;
+
+/// System V 队列中没有匹配类型。
+pub const ENOMSG: isize = 42;
+/// 等待的 System V IPC 对象已删除。
+pub const EIDRM: isize = 43;
+/// PIDFD 的目标不在 caller PID namespace 的祖先可见范围中。
+pub const EREMOTE: isize = 66;
+
+/// 网络缓冲区或 socket 控制内存预算耗尽。
+pub const ENOBUFS: isize = 105;
+/// 路由明确拒绝或相邻主机不可达。
+pub const EHOSTUNREACH: isize = 113;

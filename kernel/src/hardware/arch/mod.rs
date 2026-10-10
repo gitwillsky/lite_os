@@ -1,3 +1,5 @@
+mod address_space_id;
+
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
 #[cfg(target_arch = "aarch64")]
@@ -129,12 +131,13 @@ pub(crate) mod mmu {
     pub(crate) use super::selected::{
         AddressSpaceKind, AddressSpaceToken, ArchitecturePageTable, ArchitecturePageTableEntry,
         KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken, PAGE_SIZE,
-        PagePermissions, PageTableError, SIGNAL_TRAMPOLINE_ADDRESS, TRAMPOLINE_ADDRESS,
-        TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END, USER_STACK_TOP,
+        PagePermissions, PageTableError, SIGNAL_TRAMPOLINE_ADDRESS, THREAD_TRAP_CONTEXT_RANGE,
+        TRAMPOLINE_ADDRESS, TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END, USER_STACK_TOP,
         canonicalize_virtual_address, flush_local_tlb as flush_local,
-        flush_local_tlb_range as flush_local_range, initialize_kernel_mmio,
-        normalize_physical_address, normalize_physical_page, normalize_virtual_page,
-        physical_range_to_virtual, physical_to_virtual, virtual_to_physical,
+        flush_local_tlb_range as flush_local_range, initialize_asid_allocator,
+        initialize_kernel_mmio, normalize_physical_address, normalize_physical_page,
+        normalize_virtual_page, physical_range_to_virtual, physical_to_virtual,
+        virtual_to_physical,
     };
     #[cfg(target_arch = "aarch64")]
     pub(crate) use super::selected::{acknowledge_broadcast_tlb, broadcast_tlb};
@@ -158,6 +161,7 @@ pub(crate) mod instruction {
 /// User-visible architecture conventions selected at compile time.
 pub(crate) mod user {
     pub(crate) use super::selected::{
-        ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, decode_private_syscall, valid_elf_flags,
+        AUDIT_ARCH, ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SignalActionBytes,
+        decode_private_syscall, valid_elf_flags,
     };
 }

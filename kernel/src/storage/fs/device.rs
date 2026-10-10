@@ -18,35 +18,8 @@ use crate::{
     sync::WaitResult,
 };
 
-/// Linux character-device 号（`dev_t` 的 major/minor）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DeviceNumber {
-    pub(crate) major: u32,
-    pub(crate) minor: u32,
-}
-
-impl DeviceNumber {
-    pub(crate) const fn new(major: u32, minor: u32) -> Self {
-        Self { major, minor }
-    }
-
-    /// 解码 Linux `new_decode_dev` 的 64-bit `dev_t`（[`Self::encode`] 的逆）。
-    pub(crate) const fn decode(value: u64) -> Self {
-        let major = ((value >> 8) & 0xfff) | ((value >> 32) & !0xfff);
-        let minor = (value & 0xff) | ((value >> 12) & !0xff);
-        Self {
-            major: major as u32,
-            minor: minor as u32,
-        }
-    }
-
-    /// Linux `new_encode_dev` 的 64-bit `st_rdev` 编码。
-    pub(crate) const fn encode(self) -> u64 {
-        let major = self.major as u64;
-        let minor = self.minor as u64;
-        (minor & 0xff) | ((major & 0xfff) << 8) | ((minor & !0xff) << 12) | ((major & !0xfff) << 32)
-    }
-}
+mod number;
+pub(crate) use number::DeviceNumber;
 
 /// 设备文件操作的失败；errno 为 Linux 正值编号，由 syscall 取负返回。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +30,8 @@ pub(crate) enum DeviceError {
     Restart,
     /// 写入没有 reader 的管道（`EPIPE`）；syscall 层在返回前向写者投递 `SIGPIPE`（Linux `pipe_write`）。
     BrokenPipe,
+    /// Linux record read 的复制失败；即使先前记录已有进度也必须返回 EFAULT（如 inotify）。
+    ReadFault,
     /// 其他 Linux errno。
     Errno(isize),
 }
@@ -68,6 +43,7 @@ impl DeviceError {
             Self::WouldBlock => errno::EAGAIN,
             Self::Restart => errno::EINTR,
             Self::BrokenPipe => errno::EPIPE,
+            Self::ReadFault => errno::EFAULT,
             Self::Errno(value) => value,
         }
     }
@@ -78,10 +54,14 @@ pub(crate) struct IoctlCall<'a> {
     pub(crate) request: usize,
     pub(crate) argument: usize,
     pub(crate) user: &'a dyn UserMemory,
+    /// 实际 OFD 可读 mode；TTY 控制权获取消费 FMODE_READ，不能由 fd 是否可写推断。
+    pub(crate) fd_readable: bool,
     /// OFD 带 `O_NONBLOCK`。
     pub(crate) nonblocking: bool,
-    /// 调用者 effective UID 为 0；DRM master 等特权操作以此裁决。
+    /// calling credential 的 initial CAP_SYS_ADMIN；DRM master 等全局操作消费此快照。
     pub(crate) privileged: bool,
+    /// 同一次调用的实际 user namespace/capability 快照；nsfs 不以全局 privileged 代替 scoped policy。
+    pub(crate) authority: crate::namespace::NamespaceAuthority,
 }
 
 /// 调用者用户内存访问失败（`EFAULT`）。
@@ -90,6 +70,13 @@ pub(crate) struct UserFault;
 
 /// 设备 ioctl 访问调用者用户内存的唯一 seam；页表遍历与 fault 处理归 syscall 实现。
 pub(crate) trait UserMemory {
+    /// nsfs PID parent visibility 的 calling active namespace；不从 user namespace 推测 PID view。
+    fn pid_namespace(&self) -> alloc::sync::Arc<crate::namespace::PidNamespace>;
+    /// 按 syscall fd transaction 发布一个具体 namespace fd；领域 owner 决定相关 namespace 与权限。
+    fn install_namespace(
+        &self,
+        namespace: crate::namespace::NamespaceReference,
+    ) -> Result<isize, DeviceError>;
     /// 从用户地址 `address` 读取 `bytes.len()` 字节。
     fn read(&self, address: usize, bytes: &mut [u8]) -> Result<(), UserFault>;
     /// 向用户地址 `address` 写入 `bytes`。
@@ -103,7 +90,7 @@ pub(crate) trait UserMemory {
 
 /// 设备 read 的用户目标游标（Linux `iov_iter` destination 子集）：按序追加并累计进度。
 ///
-/// syscall 以累计进度作为 read 结果；设备出错时已有进度优先返回进度，因此设备只需传播错误。
+/// syscall 以累计进度作为 read 结果；普通错误保留进度，ReadFault 按标准 record ABI 覆盖进度。
 pub(crate) trait UserOutput {
     /// 本次 read 尚可交付的字节数。
     fn remaining(&self) -> usize;
@@ -143,11 +130,51 @@ pub(crate) struct MapRequest {
     pub(crate) fd_writable: bool,
 }
 
+/// 具有标准 file position 的 per-open 操作；OFD 独占 position，backend 不复制 offset。
+/// proc 绑定 f_cred 与 namespace owner 后使用此协议，不能用当前 reader 身份重新打开。
+pub(crate) trait PositionedFile: Send + Sync {
+    fn read_at(&self, output: &mut dyn UserOutput, offset: u64) -> Result<(), DeviceError>;
+    fn write_at(
+        &self,
+        input: &mut dyn UserInput,
+        offset: u64,
+        writer: &crate::namespace::NamespaceAuthority,
+    ) -> Result<(), DeviceError>;
+    fn seek(&self, current: u64, offset: i64, whence: u32) -> Result<u64, DeviceError>;
+}
+
 /// 打开的字符设备文件；由设备子系统实现（Linux `file_operations` 子集）。
 ///
 /// 读写自行负责记录边界与阻塞语义：只在尚未交付任何字节且 `nonblocking` 为 false 时等待
 /// （见 [`wait_ready`]），被可交付 signal 中断时返回 `EINTR`。
 pub(crate) trait DeviceFile: Send + Sync {
+    /// native file operations 的 read/write capability；缺失操作先于零长度与用户 iovec copy。
+    /// 默认设备提供两者，只有实际不提供对应 operation 的文件覆写为 false。
+    fn supports_read(&self) -> bool {
+        true
+    }
+    fn supports_write(&self) -> bool {
+        true
+    }
+    /// 标准 pidfs file operations 的稳定 PID observer；O_PATH/普通 inode 无此操作身份。
+    fn pid_reference(&self) -> Option<&Arc<crate::namespace::PidIdentity>> {
+        None
+    }
+    /// 实际最后 OFD fput 释放 per-open membership；backend Arc observer 不延长打开阶段。
+    ///
+    /// 无 per-open admission 的设备保持空实现。实现必须幂等；构造失败的 backend Drop
+    /// 可消费同一 release 路径，不能再次扣减 endpoint、quota 或发布 hangup。
+    fn release(&self) {}
+
+    /// 匿名打开的 proc fd diagnostic label；不承担文件身份、操作分派或路径查找。
+    fn anonymous_name(&self) -> &'static [u8] {
+        b"anon_inode:[device]"
+    }
+
+    /// per-open storage 操作的唯一投影；普通不可定位设备保持 None。
+    fn positioned(&self) -> Option<&dyn PositionedFile> {
+        None
+    }
     /// 读入 `output`；`output.remaining()` 至少为 1。
     fn read(&self, _output: &mut dyn UserOutput, _nonblocking: bool) -> Result<(), DeviceError> {
         Err(DeviceError::Errno(errno::EINVAL))
@@ -179,6 +206,16 @@ pub(crate) trait DeviceFile: Send + Sync {
     /// 该设备背后的内核管道（只有 FIFO 有）；`F_GETPIPE_SZ`/`F_SETPIPE_SZ` 经它作用于同一个环。
     fn backing_pipe(&self) -> Option<Arc<Pipe>> {
         None
+    }
+
+    /// 标准 proc fdinfo 的设备专属字段；view 是 proc mount 的 PID namespace，不能用 caller 替代。
+    /// 默认无额外字段；formatter OOM 返回 fmt::Error，设备不保存另一份 live 状态。
+    fn write_file_information(
+        &self,
+        _view: &crate::namespace::PidNamespace,
+        _output: &mut dyn core::fmt::Write,
+    ) -> core::fmt::Result {
+        Ok(())
     }
 
     /// 返回 `events` 中当前已就绪的 poll 位。
@@ -257,7 +294,7 @@ impl DeviceWaitSources {
     ///
     /// # Panics
     ///
-    /// 超过两个源时 panic；poll/epoll 的 source projection 只有两个固定槽位。
+    /// 超过两个源时 panic；设备 seam 最多提供两个源，OFD 的三槽投影同时容纳 socket lifecycle。
     pub(crate) fn push(&mut self, source: DeviceWaitSource) {
         let entry = self
             .entries
@@ -279,6 +316,8 @@ impl DeviceWaitSources {
 /// 打开设备时 driver 可见的调用者上下文。
 pub(crate) struct OpenRequest<'a> {
     pub(crate) number: DeviceNumber,
+    /// 本次打开的原始 status flags；TTY 从 O_NOCTTY 与 O_ACCMODE 决定自动取得。
+    pub(crate) flags: u32,
     pub(crate) identity: &'a AccessIdentity,
 }
 

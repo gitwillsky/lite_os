@@ -213,7 +213,7 @@ impl PrivateFileArea {
     ) -> Result<(), MemoryError> {
         match (&self.source, prepared) {
             (PrivateSource::CachedFile { .. }, PrivateFaultPreparation::Cached(cached)) => {
-                cached.frame().read(0, frame.bytes_mut());
+                cached.pin()?.read(0, frame.bytes_mut());
                 Ok(())
             }
             (

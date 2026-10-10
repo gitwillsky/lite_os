@@ -48,7 +48,7 @@ struct DirectStorageWriter<'inode, T: Inode + ?Sized>(&'inode T);
 
 impl<T: Inode + ?Sized> StorageWriter for DirectStorageWriter<'_, T> {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<usize, FileSystemError> {
-        self.0.write_storage(offset, bytes)
+        self.0.write_storage(offset, bytes, None)
     }
 }
 
@@ -62,17 +62,183 @@ pub(crate) enum DataBacking {
     Memory(alloc::sync::Arc<super::memory_file::MemoryFile>),
 }
 
+/// 一次 inode-owned symlink lookup 的完整结果；不重试目标类型或身份。
+///
+/// 文本目标由 VFS 在当前 root 下展开；magic 目标直接保留 opened-entry 身份。
+pub(crate) enum LinkTarget {
+    Text(Vec<u8>),
+    Opened(Arc<OpenedFile>),
+}
+
+/// inode owner 决定真实打开操作；storage 和专属 file operations 不按 pathname 分流。
+pub(crate) enum InodeOpen {
+    Storage,
+    Device(Arc<dyn super::device::DeviceFile>),
+}
+
+/// 打开 storage 的错误与可重启的 peer rendezvous 中断，保留各自领域语义。
+pub(crate) enum InodeOpenError {
+    Filesystem(FileSystemError),
+    Interrupted,
+}
+impl From<FileSystemError> for InodeOpenError {
+    fn from(error: FileSystemError) -> Self {
+        Self::Filesystem(error)
+    }
+}
+impl InodeOpenError {
+    pub(super) fn from_fifo(error: super::FifoOpenError) -> Self {
+        match error {
+            super::FifoOpenError::NoReader => FileSystemError::NoDevice.into(),
+            super::FifoOpenError::OutOfMemory => FileSystemError::OutOfMemory.into(),
+            super::FifoOpenError::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
 /// 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
 pub(crate) trait Inode: Send + Sync {
+    /// 原生 proc TGID directory operations 的实际 PID observer；普通 inode/PIDFS/O_PATH 不借标签识别。
+    fn process_directory_identity(
+        &self,
+    ) -> Option<&alloc::sync::Arc<crate::namespace::PidIdentity>> {
+        None
+    }
+    /// 读取实际filesystem-owned xattr；NotFound在xattr ABI边界对应ENODATA。
+    fn read_xattr(&self, _name: &[u8]) -> Result<Vec<u8>, super::FileSystemError> {
+        Err(super::FileSystemError::NotSupported)
+    }
+    /// filesystem immutable/append-only事实；只读mount准入由实际path writer lease负责。
+    fn check_xattr_write(&self) -> Result<(), super::FileSystemError> {
+        Ok(())
+    }
+    /// NUL分隔的可见attribute名称；trusted属性按实际caller权限过滤。
+    fn list_xattrs(
+        &self,
+        _identity: &super::AccessIdentity,
+    ) -> Result<Vec<u8>, super::FileSystemError> {
+        Err(super::FileSystemError::NotSupported)
+    }
+    /// 修改同一实际inode属性；backend在实际mutation gate内按live tuple授权并转换rootid。
+    /// None删除、Some(empty)保存空值；失败不改变旧值，成功后ctime归实际inode owner。
+    fn change_xattr(
+        &self,
+        mut change: super::XattrChange<'_>,
+    ) -> Result<(), super::FileSystemError> {
+        let metadata = self.metadata()?;
+        change.prepare(
+            &super::permission::OwnerModeState::new(
+                metadata.kind,
+                metadata.mode as u16,
+                metadata.uid,
+                metadata.gid,
+            ),
+            self.check_xattr_write(),
+        )?;
+        Err(super::FileSystemError::NotSupported)
+    }
+    /// 真实可写 regular inode 的 canonical access owner；只读 snapshot/特殊 inode 无写访问状态。
+    fn write_access(&self) -> Option<&super::InodeWriteAccess> {
+        None
+    }
+
     fn filesystem_id(&self) -> usize;
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError>;
+
+    /// inode 实际 permission operation；默认 DAC，proc sysctl 等 owner 可提供自己的 scoped policy。
+    fn require_access(
+        &self,
+        identity: &super::AccessIdentity,
+        requested: u8,
+    ) -> Result<(), FileSystemError> {
+        identity.require(self.metadata()?, requested)
+    }
 
     fn inode_type(&self) -> InodeType;
 
     fn size(&self) -> u64;
 
+    /// nsfs inode 的实际 owner；普通 inode 不可用于 setns。
+    fn namespace_reference(&self) -> Option<crate::namespace::NamespaceReference> {
+        None
+    }
+
+    /// Live inode swap lease projection; shared writable admission and normal writes consult it.
+    fn is_swap_file(&self) -> bool {
+        false
+    }
+
+    /// Freeze this regular inode before mapped-writer retirement and cache/journal drain.
+    /// Unsupported backing returns InvalidOperation; lease cleanup is infallible and allocation-free.
+    fn pin_swap_file(
+        self: Arc<Self>,
+    ) -> Result<alloc::boxed::Box<dyn super::swap::SwapFileLease>, FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
+
     fn is_executable(&self) -> bool;
+
+    /// 在通用 permission 检查之后打开实际操作后端。
+    ///
+    /// 普通数据 inode 返回 Storage；FIFO/字符设备返回其领域操作。匿名 inode 可以
+    /// 显式拒绝 reopen，magic link 仍保留真实 metadata identity，不降级为 label lookup。
+    fn open_backend(
+        &self,
+        flags: u32,
+        identity: &super::AccessIdentity,
+        _authority: &crate::namespace::NamespaceAuthority,
+    ) -> Result<InodeOpen, InodeOpenError> {
+        match self.inode_type() {
+            InodeType::Fifo => {
+                let access = match flags & super::O_ACCMODE {
+                    super::O_RDONLY => super::FifoAccess::Read,
+                    super::O_WRONLY => super::FifoAccess::Write,
+                    _ => super::FifoAccess::ReadWrite,
+                };
+                let inode = self.metadata()?.inode;
+                super::open_fifo(
+                    (self.filesystem_id(), inode),
+                    access,
+                    flags & super::O_NONBLOCK != 0,
+                )
+                .map(InodeOpen::Device)
+                .map_err(InodeOpenError::from_fifo)
+            }
+            InodeType::CharacterDevice => super::device::open(&super::device::OpenRequest {
+                number: self.device_number().ok_or(FileSystemError::NoDevice)?,
+                flags,
+                identity,
+            })
+            .map(InodeOpen::Device)
+            .map_err(InodeOpenError::Filesystem),
+            InodeType::Socket | InodeType::SymLink => Err(FileSystemError::NoDevice.into()),
+            InodeType::File | InodeType::Directory | InodeType::BlockDevice => {
+                Ok(InodeOpen::Storage)
+            }
+        }
+    }
+
+    /// 不进入 mount namespace 的 pseudo-filesystem 事实；path/fd statfs 共用此 projection。
+    fn pseudo_statistics(&self) -> Option<super::FileSystemStatistics> {
+        None
+    }
+
+    /// MemoryFile 的唯一 seal owner；其他 storage 不支持 seal 操作。
+    fn seals(&self) -> Result<u32, FileSystemError> {
+        match self.data_backing() {
+            DataBacking::Memory(file) => file.seals(),
+            _ => Err(FileSystemError::InvalidOperation),
+        }
+    }
+
+    /// OFD 写访问已由通用 fcntl 校验，本方法只修改 inode content owner 的 seal state。
+    fn add_seals(&self, seals: u32) -> Result<u32, FileSystemError> {
+        match self.data_backing() {
+            DataBacking::Memory(file) => file.add_seals(seals),
+            _ => Err(FileSystemError::InvalidOperation),
+        }
+    }
 
     /// 该 inode 的内容在 page cache 中的身份。
     ///
@@ -111,11 +277,24 @@ pub(crate) trait Inode: Send + Sync {
         DataBacking::PageCache
     }
 
+    /// notification/last-dput 的最小 inode/link 事实；可变 storage backend 必须无分配、无失败投影。
+    /// 默认只供 immutable pseudo inode，普通 tmpfs/ext4 与 block wrapper 从 actual owner 读取。
+    fn notification_link_state(&self) -> Option<(u64, u32)> {
+        self.metadata()
+            .ok()
+            .map(|metadata| (metadata.inode, metadata.links))
+    }
+
+    /// Linux S_PRIVATE 的 anonymous singleton 抑制 fsnotify；普通 inode/pipe/socket 默认参与。
+    fn allows_notifications(&self) -> bool {
+        true
+    }
+
     /// 返回 inode 所属 filesystem adapter 是否拒绝持久 mutation。
     ///
     /// # Returns
     ///
-    /// ext4 root 为 false；只读 devfs/procfs 为 true。
+    /// 持久只读 adapter 返回 true；proc controls 由实际 inode permission/backend 分别授权。
     fn is_read_only(&self) -> bool {
         false
     }
@@ -136,16 +315,20 @@ pub(crate) trait Inode: Send + Sync {
         Err(FileSystemError::InvalidOperation)
     }
 
-    /// 解析 procfs 等 kernel-owned magic link 的 live opened-entry target。
+    /// 在一次读取中冻结 symbolic-link target，错误直接传播。
     ///
-    /// # Returns
-    ///
-    /// magic link 返回目标；persistent/devfs 普通 symlink 返回 None 并使用 raw bytes。
-    fn follow_link(&self) -> Option<Arc<OpenedFile>> {
-        None
+    /// 普通 symlink 使用 raw bytes；proc magic link 返回 live opened-entry，
+    /// 避免 descriptor 重用或 OOM 后重试改变目标类别并递归获取 namespace。
+    fn link_target(&self) -> Result<LinkTarget, FileSystemError> {
+        self.read_link().map(LinkTarget::Text)
     }
 
-    fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError>;
+    fn write_storage(
+        &self,
+        offset: u64,
+        buf: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError>;
 
     /// 让 filesystem adapter 在一次 owner-defined storage batch 中消费写入。
     ///
@@ -159,7 +342,19 @@ pub(crate) trait Inode: Send + Sync {
     /// # Returns
     ///
     /// producer 与 adapter 全部成功后返回；失败时 caller 不得把 batch 标 clean。
-    fn write_storage_batch(
+    /// 非零 regular write 检查完成后、user-copy 前的 killpriv commit；实际内容提交仍复查 live mode。
+    fn prepare_cached_write(
+        &self,
+        _identity: &crate::fs::AccessIdentity,
+    ) -> Result<(), FileSystemError> {
+        if self.inode_type() == crate::fs::InodeType::File {
+            Err(FileSystemError::ReadOnly)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn writeback_storage_batch(
         &self,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
@@ -180,16 +375,33 @@ pub(crate) trait Inode: Send + Sync {
     /// # Errors
     ///
     /// owner 正忙时返回 Busy 且 batch 未执行；其他 journal、存储或容量错误原样返回。
-    fn try_write_storage_batch(
+    fn try_writeback_storage_batch(
         &self,
         _batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
         Err(FileSystemError::Busy)
     }
 
-    fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError>;
+    /// Memory facade 已持有该 MemoryFile 的 write sequence；这里只更新 canonical inode mode。
+    fn prepare_memory_write(
+        &self,
+        _writer: &super::memory_file::MemoryWrite<'_>,
+        _identity: Option<&super::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
 
-    fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError>;
+    fn append_storage(
+        &self,
+        buf: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError>;
+
+    fn truncate_storage(
+        &self,
+        size: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError>;
 
     /// 为 byte range 预分配 backing blocks，不修改已有文件内容。
     ///
@@ -205,11 +417,22 @@ pub(crate) trait Inode: Send + Sync {
     /// # Errors
     ///
     /// 非 regular inode、空间不足、只读或底层 I/O 错误。
-    fn allocate_storage(&self, _offset: u64, _length: u64) -> Result<(), FileSystemError> {
+    fn allocate_storage(
+        &self,
+        _offset: u64,
+        _length: u64,
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError>;
+
+    /// 普通访问的 best-effort 时间更新；实际路径已完成 mount policy/write admission。
+    /// 实现只更新 atime；失败不影响已完成的读取。不可变 inode 缺省无时间更新。
+    fn touch_access(&self, _now: u64, _relatime: bool) -> Result<(), FileSystemError> {
+        Ok(())
+    }
 
     /// 原子更新 inode 的 atime/mtime，并由 filesystem 更新 ctime。
     ///

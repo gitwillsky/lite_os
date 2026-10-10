@@ -7,7 +7,7 @@ use crate::{
     ipc::{Pipe, PipeEnd},
 };
 
-use super::{TimerIdentity, TimerQueue};
+use super::{RetiredTimers, TimerExpirationRetirement, TimerIdentity, TimerQueue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimerFileClock {
@@ -21,6 +21,8 @@ pub(super) struct TimerFile {
     clock: TimerFileClock,
     next_expiration_ns: Option<u64>,
     interval_ns: u64,
+    // OWNER: schedule publication 的唯一版本；锁外 expiry 携带历史 scalar，不在 backend 镜像此字段。
+    generation: u64,
 }
 
 impl TimerFile {
@@ -55,24 +57,20 @@ impl TimerFd {
 }
 
 impl TimerFdBackend for TimerFd {
-    fn object_id(&self) -> u64 {
-        self.object_id
+    fn close(&self) {
+        remove_timer_file(self.object_id);
+        self.read_notify.close();
+        self.read_signal.close();
     }
-
     fn replace(
         &self,
         value_ns: u64,
         interval_ns: u64,
         absolute: bool,
         now_ns: u64,
+        offsets: crate::namespace::TimeOffsets,
     ) -> Result<TimerSetting, TimerError> {
-        // 单锁把 queue replacement 与 counter reset 排成一个 operation；缺失该锁时 concurrent
-        // expiry 可在新 schedule 提交后被旧 reset 擦除，或把旧 schedule 的 tick 泄漏给新 setting。
-        let mut expirations = self.expirations.lock();
-        let previous = set_timer_file(self.object_id, value_ns, interval_ns, absolute, now_ns)?;
-        *expirations = 0;
-        self.read_notify.drain_readiness();
-        Ok(previous)
+        set_timer_file(self, value_ns, interval_ns, absolute, now_ns, offsets)
     }
 
     fn setting(&self, now_ns: u64) -> Result<TimerSetting, TimerError> {
@@ -104,9 +102,20 @@ impl TimerFdBackend for TimerFd {
             .readiness_generation(crate::ipc::PipeDirection::Read)
     }
 
-    fn expire(&self, elapsed: u64) {
+    fn expire(&self, elapsed: u64, generation: u64) {
         let became_readable = {
             let mut expirations = self.expirations.lock();
+            // counter→queue 与 replacement 同锁序；队列摘下旧 event 后的 rearm 必须使其失效。
+            // queue 只读复查实际 owner 的 generation，不缓存或复制当前版本到 counter owner。
+            if !super::super::PROCESS_TABLE
+                .timers
+                .lock()
+                .timer_files
+                .get(&self.object_id)
+                .is_some_and(|timer| timer.generation == generation)
+            {
+                return;
+            }
             let became_readable = *expirations == 0;
             *expirations = expirations.saturating_add(elapsed);
             became_readable
@@ -119,7 +128,7 @@ impl TimerFdBackend for TimerFd {
 
 impl Drop for TimerFd {
     fn drop(&mut self) {
-        remove_timer_file(self.object_id);
+        self.close();
     }
 }
 
@@ -128,44 +137,64 @@ impl TimerQueue {
         &mut self,
         id: u64,
         expiration: u64,
-        mut deadline: crate::fallible_tree::VacantEntry<(u64, TimerIdentity), ()>,
+        deadline: super::DeadlineEntry,
         now_ns: u64,
     ) -> super::ExpiredTimer {
+        let mut deadline = Some(deadline);
         let timer = self
             .timer_files
             .get_mut(&id)
             .expect("timerfd deadline lost record");
         assert_eq!(timer.next_expiration_ns, Some(expiration));
         let target = timer.target.upgrade();
+        let generation = timer.generation;
         let (next, elapsed) = super::next_period(expiration, timer.interval_ns, now_ns);
         timer.next_expiration_ns = next;
         if target.is_some()
             && let Some(next) = next
         {
-            deadline.set_key((next, TimerIdentity::File(id)));
-            self.deadline_index.commit_vacant(deadline);
+            let mut entry = deadline.take().expect("actual expired file deadline");
+            entry.set_key((next, TimerIdentity::File(id)));
+            self.deadline_index.commit_vacant(entry);
         }
+        let mut retired = TimerExpirationRetirement::from_deadline(deadline);
         match target {
-            Some(target) => super::ExpiredTimer::File { target, elapsed },
+            Some(target) => super::ExpiredTimer::File {
+                target,
+                elapsed,
+                generation,
+                retired,
+            },
             None => {
-                self.timer_files.remove(&id);
-                super::ExpiredTimer::Silent
+                retired.file = Some(
+                    self.timer_files
+                        .take_entry(&id)
+                        .expect("actual retired file timer"),
+                );
+                super::ExpiredTimer::Silent(retired)
             }
         }
     }
 
-    fn take_timer_file(&mut self, id: u64) -> Option<TimerFile> {
-        let timer = self.timer_files.remove(&id)?;
-        if let Some(expiration) = timer.next_expiration_ns {
-            assert!(
-                self.deadline_index
-                    .remove(&(expiration, TimerIdentity::File(id)))
-                    .is_some()
-            );
+    fn take_timer_file(&mut self, id: u64) -> RetiredTimers {
+        let mut retired = RetiredTimers::default();
+        if let Some(timer) = self.timer_files.take_entry(&id) {
+            if let Some(expiration) = timer.value().next_expiration_ns {
+                retired.deadlines.commit_vacant(
+                    self.deadline_index
+                        .take_entry(&(expiration, TimerIdentity::File(id)))
+                        .expect("actual retired file deadline"),
+                );
+            }
+            retired.files.commit_vacant(timer);
         }
-        Some(timer)
+        retired
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "同一次原子 publication 的独立领域输入，参数语义与所有权已逐项说明"
+    )]
     fn replace_timer_file(
         &mut self,
         id: u64,
@@ -173,22 +202,35 @@ impl TimerQueue {
         interval_ns: u64,
         absolute: bool,
         now_ns: u64,
-        deadline_node: Option<crate::fallible_tree::VacantEntry<(u64, TimerIdentity), ()>>,
-    ) -> Result<Option<TimerSetting>, TimerError> {
+        offsets: crate::namespace::TimeOffsets,
+        deadline_node: &mut Option<super::DeadlineEntry>,
+    ) -> Result<Option<(TimerSetting, RetiredTimers)>, TimerError> {
         let current = self.timer_files.get(&id).ok_or(TimerError::NotFound)?;
         let previous = current.snapshot(now_ns);
         let next = (value_ns != 0).then(|| {
             if !absolute {
-                now_ns.saturating_add(value_ns)
-            } else if current.clock == TimerFileClock::Realtime {
-                crate::timer::realtime_deadline_to_monotonic_ns(value_ns)
+                now_ns.saturating_add(value_ns).min(i64::MAX as u64)
             } else {
-                value_ns
+                match current.clock {
+                    TimerFileClock::Realtime => {
+                        crate::timer::realtime_deadline_to_monotonic_ns(value_ns)
+                    }
+                    TimerFileClock::Monotonic => {
+                        offsets.to_host(crate::namespace::TimeClock::Monotonic, value_ns)
+                    }
+                    TimerFileClock::Boottime => {
+                        offsets.to_host(crate::namespace::TimeClock::Boottime, value_ns)
+                    }
+                }
             }
         });
         if current.next_expiration_ns.is_none() && next.is_some() && deadline_node.is_none() {
             return Ok(None);
         }
+        let generation = current
+            .generation
+            .checked_add(1)
+            .ok_or(TimerError::Exhausted)?;
         let identity = TimerIdentity::File(id);
         let mut deadline = current.next_expiration_ns.map(|expiration| {
             self.deadline_index
@@ -200,16 +242,21 @@ impl TimerQueue {
             .get_mut(&id)
             .expect("timerfd disappeared under owner lock");
         timer.next_expiration_ns = next;
+        timer.generation = generation;
         timer.interval_ns = if next.is_some() { interval_ns } else { 0 };
         if let Some(expiration) = next {
             let mut entry = deadline
                 .take()
-                .or(deadline_node)
+                .or_else(|| deadline_node.take())
                 .expect("armed timerfd deadline node was not prepared");
             entry.set_key((expiration, identity));
             self.deadline_index.commit_vacant(entry);
         }
-        Ok(Some(previous))
+        let mut retired = RetiredTimers::default();
+        if let Some(deadline) = deadline {
+            retired.deadlines.commit_vacant(deadline);
+        }
+        Ok(Some((previous, retired)))
     }
 
     fn timer_file(&self, id: u64, now_ns: u64) -> Result<TimerSetting, TimerError> {
@@ -258,6 +305,7 @@ pub(crate) fn create_timer_fd(
             clock,
             next_expiration_ns: None,
             interval_ns: 0,
+            generation: 0,
         },
     )
     .map_err(|_| TimerError::OutOfMemory)?;
@@ -271,12 +319,14 @@ pub(crate) fn create_timer_fd(
 }
 
 fn set_timer_file(
-    id: u64,
+    timer: &TimerFd,
     value_ns: u64,
     interval_ns: u64,
     absolute: bool,
     now_ns: u64,
+    offsets: crate::namespace::TimeOffsets,
 ) -> Result<TimerSetting, TimerError> {
+    let id = timer.object_id;
     let mut deadline_node = None;
     loop {
         let needed = super::super::PROCESS_TABLE
@@ -285,22 +335,30 @@ fn set_timer_file(
             .timer_file_deadline_needed(id, value_ns != 0)?;
         if needed && deadline_node.is_none() {
             deadline_node = Some(
-                FallibleMap::try_prepare((0, TimerIdentity::File(id)), ())
+                FallibleMap::try_prepare((0, TimerIdentity::File(id)), None)
                     .map_err(|_| TimerError::OutOfMemory)?,
             );
         }
-        if let Some(previous) = super::super::PROCESS_TABLE
-            .timers
-            .lock()
-            .replace_timer_file(
+        // 1. deadline allocation 完成后才取得 counter；2. 同锁序提交实际 queue 和 counter reset。
+        // 并发 expiry 使计划过期时，先释放两锁，再准备 node/retry；不能在 spin guard 内分配。
+        let mut expirations = timer.expirations.lock();
+        let previous = {
+            let mut timers = super::super::PROCESS_TABLE.timers.lock();
+            timers.replace_timer_file(
                 id,
                 value_ns,
                 interval_ns,
                 absolute,
                 now_ns,
-                deadline_node.take(),
+                offsets,
+                &mut deadline_node,
             )?
-        {
+        };
+        if let Some((previous, retired)) = previous {
+            *expirations = 0;
+            timer.read_notify.drain_readiness();
+            drop(expirations);
+            drop(retired);
             return Ok(previous);
         }
     }
@@ -314,8 +372,9 @@ fn timer_file(id: u64, now_ns: u64) -> Result<TimerSetting, TimerError> {
 }
 
 fn remove_timer_file(id: u64) {
-    super::super::PROCESS_TABLE
+    let retired = super::super::PROCESS_TABLE
         .timers
         .lock()
         .take_timer_file(id);
+    drop(retired);
 }

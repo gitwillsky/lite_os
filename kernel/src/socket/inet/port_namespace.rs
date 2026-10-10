@@ -466,6 +466,44 @@ impl PortNamespace {
         lease
     }
 
+    /// 失败 connect 完成恢复原始 bind；wildcard 直接转计数，explicit address 始终未改变。
+    /// 当前 source 精确化的 inverse，不重新准入，也不分配或释放 port capability。
+    pub(super) fn restore_bound_address(
+        &mut self,
+        lease: PortLease,
+        address: Option<Ipv4Addr>,
+    ) -> PortLease {
+        assert!(
+            !lease.listener,
+            "connected endpoint cannot retain listener claim"
+        );
+        if address == lease.address {
+            return lease;
+        }
+        assert!(
+            address.is_none(),
+            "explicit TCP bind cannot select a different source"
+        );
+        let restored = PortLease { address, ..lease };
+        let occupancy = self
+            .entries
+            .get_mut(&lease.port)
+            .expect("restored binding lost port owner");
+        occupancy.decrement(lease);
+        occupancy.increment(restored);
+        restored
+    }
+
+    /// 将已经停止的 listener claim 降回原 bind membership，不释放本地端口。
+    pub(super) fn stop_listener(&mut self, lease: PortLease) -> PortLease {
+        assert!(lease.listener, "stopped endpoint lost listener claim");
+        self.release_listener_claim(lease);
+        PortLease {
+            listener: false,
+            ..lease
+        }
+    }
+
     /// 把 bound TCP membership 原子提升为唯一的重叠 listener claim。
     ///
     /// # Parameters

@@ -6,10 +6,12 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::{Mutex, Once};
 
+use super::vfs::{MountDeviceClaim, MountedFilesystem};
 use super::{
-    FileSystem, FileSystemError, KernelThreadSupport, MountFlags, OpenedFile, ProcSource,
+    AccessIdentity, FileSystem, FileSystemError, KernelThreadSupport, MountFlags, MountNamespace,
+    OpenedFile, ProcSource, UnmountMode,
     device::{self, DeviceNumber},
-    page_cache, vfs,
+    vfs,
 };
 use crate::sync::TaskMutex;
 
@@ -41,12 +43,22 @@ fn environment() -> &'static MountEnvironment {
 pub(crate) struct MountRequest<'a> {
     /// 由 composition root 注入的能力。
     pub(crate) environment: &'a MountEnvironment,
+    /// 创建者实际 FSUID/GID 与 user namespace；root inode 与 superblock 权限各消费其事实。
+    pub(crate) identity: &'a AccessIdentity,
     /// 块设备类型的 source 设备号；nodev 类型为 `None`。
     pub(crate) device: Option<DeviceNumber>,
-    /// 以只读挂载（`MS_RDONLY`）：类型据此推迟写前准备，见 [`FileSystem::make_writable`]。
+    /// 以只读挂载（`MS_RDONLY`）：类型据此推迟写前准备，见 [`FileSystem::remount`]。
     pub(crate) read_only: bool,
     /// `mount(2)` 的 `data` 选项字符串；由类型自己解析。
     pub(crate) options: &'a [u8],
+}
+
+/// 类型创建的实际 adapter 与 owning user namespace，作为同一次创建结果交给 VFS。
+///
+/// proc 的归属来自捕获的 PID namespace；VFS 不得按 caller identity 再次推断超级块归属。
+pub(crate) struct CreatedFileSystem {
+    pub(crate) filesystem: Arc<dyn FileSystem>,
+    pub(crate) user_namespace: Arc<crate::namespace::UserNamespace>,
 }
 
 /// 可按名称挂载的文件系统类型（Linux `file_system_type`）。
@@ -55,9 +67,23 @@ pub(crate) trait FileSystemType: Sync {
     fn name(&self) -> &'static str;
 
     /// `source` 是否必须是块设备（Linux `FS_REQUIRES_DEV`）；为真时 `MountRequest::device` 非空，
-    /// 且 VFS 已保证该设备没有被其他实例挂载。
+    /// 新建 adapter 时 VFS 已独占设备；已有同类型 superblock 则共享真实 owner。
     fn requires_device(&self) -> bool {
         false
+    }
+
+    /// 对照 Linux FS_USERNS_MOUNT；只由支持 user namespace 隔离的具体 filesystem type 开启。
+    fn user_namespace_mount(&self) -> bool {
+        false
+    }
+
+    /// 在复用已存在 superblock 前同样校验类型选项；不能通过第二次 mount 绕过解析。
+    fn validate_mount_options(&self, options: &[u8]) -> Result<(), FileSystemError> {
+        if super::mount_options::is_empty(options) {
+            Ok(())
+        } else {
+            Err(FileSystemError::InvalidOperation)
+        }
     }
 
     /// 创建并启动一个独立实例（Linux `fill_super`）。
@@ -66,7 +92,7 @@ pub(crate) trait FileSystemType: Sync {
     ///
     /// 选项无效返回 `InvalidOperation`；超级块无效、分配或 I/O 失败返回对应错误。实例一旦发布失败，
     /// VFS 会调用 [`FileSystem::shutdown`] 让其停止已启动的后台工作。
-    fn create(&self, request: &MountRequest<'_>) -> Result<Arc<dyn FileSystem>, FileSystemError>;
+    fn create(&self, request: &MountRequest<'_>) -> Result<CreatedFileSystem, FileSystemError>;
 }
 
 // OWNER: 全部可挂载文件系统类型的唯一集合；只追加、`init_vfs` 启动期发布。缺失时 `mount(2)`、
@@ -103,7 +129,7 @@ pub(crate) fn get_filesystem_type(name: &[u8]) -> Option<&'static dyn FileSystem
 
 /// 创建并发布一个新文件系统实例（Linux `do_new_mount`）。
 ///
-/// 1. 块设备类型先确认该设备没有被挂载；
+/// 1. 块设备类型复用同类型、相同 RO 与 owning user 的实际 superblock，否则先独占设备；
 /// 2. 由类型创建实例（可能回放 journal、启动后台线程）；
 /// 3. VFS 发布挂载；发布失败时 [`FileSystem::shutdown`] 让实例停止已启动的后台工作。
 ///
@@ -118,9 +144,15 @@ pub(crate) fn get_filesystem_type(name: &[u8]) -> Option<&'static dyn FileSystem
 ///
 /// # Errors
 ///
-/// 块设备已挂载或 mountpoint 已占用返回 `Busy`；设备号没有块设备返回 `NoDevice`；选项无效返回
+/// 同设备已有不同类型/RO superblock 或 mountpoint 已占用返回 `Busy`；设备号没有块设备返回 `NoDevice`；选项无效返回
 /// `InvalidOperation`；超级块无效、分配或 I/O 失败返回对应错误。
+#[allow(
+    clippy::too_many_arguments,
+    reason = "同一次原子 publication 的独立领域输入，参数语义与所有权已逐项说明"
+)]
 pub(crate) fn mount(
+    namespace: &Arc<MountNamespace>,
+    identity: &AccessIdentity,
     kind: &'static dyn FileSystemType,
     source: &[u8],
     device: Option<DeviceNumber>,
@@ -131,102 +163,105 @@ pub(crate) fn mount(
     let _transaction = MOUNT_TRANSACTION
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    // 块设备类型先占用设备：没有写者才能挂载，之后节点的写入被拒绝（见 `BlockNode`）。
-    let claimed = if kind.requires_device() {
+    let source = prepare_source(source)?;
+    if kind.requires_device() {
         let number = device.ok_or(FileSystemError::InvalidOperation)?;
-        if vfs().device_mounted(number) {
-            return Err(FileSystemError::Busy);
+        kind.validate_mount_options(options)?;
+        if let Some(owner) = MountedFilesystem::for_device(number) {
+            let root =
+                owner.reuse_root(kind.name(), flags.read_only(), &identity.user_namespace())?;
+            return vfs().mount(namespace, point, owner, source, root, flags);
         }
-        let block = device::block_node(number).ok_or(FileSystemError::NoDevice)?;
-        block.begin_mount()?;
-        Some(block)
+    }
+    let claim = if kind.requires_device() {
+        Some(MountDeviceClaim::acquire(
+            device.ok_or(FileSystemError::InvalidOperation)?,
+        )?)
     } else {
         None
     };
-    let published = kind
-        .create(&MountRequest {
-            environment: environment(),
-            device,
-            read_only: flags.read_only(),
-            options,
-        })
-        .and_then(|filesystem| {
-            vfs()
-                .mount(point, source, filesystem.clone(), device, flags)
-                .inspect_err(|_| {
-                    let _ = filesystem.shutdown();
-                })
-        });
-    if let (Err(_), Some(block)) = (&published, &claimed) {
-        block.end_mount();
-    }
-    published
+    let filesystem = kind.create(&MountRequest {
+        environment: environment(),
+        identity,
+        device,
+        read_only: flags.read_only(),
+        options,
+    })?;
+    let (filesystem, root) = MountedFilesystem::new(
+        filesystem.filesystem,
+        claim,
+        flags.read_only(),
+        filesystem.user_namespace,
+    )?;
+    vfs().mount(namespace, point, filesystem, source, root, flags)
 }
 
 /// 重新配置以 `root` 为根的挂载（Linux `do_remount`）。
 ///
-/// 1. VFS 在同一把锁内检查并替换挂载属性：转为 read-only 时仍有可写打开的文件返回 `Busy`；
-/// 2. filesystem 应用 `options`；失败则还原属性，调用者看到的状态与调用前一致；
-/// 3. 转为 read-only 时同步 page cache 与 filesystem，使“已 ro”意味着“已落盘”。
+/// 1. 在实际 filesystem admission gate 内检查所有相关 view 的写者；
+/// 2. 在旧属性仍有效时完成后端恢复、同步和选项重配置；
+/// 3. 成功后发表最终 mount/superblock 属性；bind remount 仅修改实际 view。
 ///
 /// # Errors
 ///
 /// `root` 不是挂载根返回 `InvalidOperation`；有可写打开文件返回 `Busy`；选项无效返回
 /// `InvalidOperation`。
 pub(crate) fn remount(
+    namespace: &Arc<MountNamespace>,
+    identity: &AccessIdentity,
     root: &Arc<OpenedFile>,
     flags: MountFlags,
     options: &[u8],
+    bind: bool,
 ) -> Result<(), FileSystemError> {
     let _transaction = MOUNT_TRANSACTION
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    let filesystem_id = root.inode().filesystem_id();
-    let (filesystem, previous) = vfs().replace_mount_flags(root, flags)?;
-    let prepared = if previous.read_only() && !flags.read_only() {
-        filesystem.make_writable()
-    } else {
-        Ok(())
-    };
-    if let Err(error) = prepared.and_then(|()| filesystem.remount(options)) {
-        vfs().restore_mount_flags(filesystem_id, previous);
-        return Err(error);
+    vfs().remount(namespace, identity, root, flags, options, bind)
+}
+
+/// 摘除 caller namespace 的实际 view；最后实际 filesystem owner 才 shutdown 并归还物理 claim。
+/// 其他 namespace/旧路径仍持 view 时不能提前停止共享 adapter 或释放其设备占用。
+pub(crate) fn unmount(
+    namespace: &Arc<MountNamespace>,
+    mut root: Arc<OpenedFile>,
+    mode: UnmountMode,
+) -> Result<(), FileSystemError> {
+    let _transaction = MOUNT_TRANSACTION
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    if let Some(path) = Arc::get_mut(&mut root) {
+        path.preserve_mount_expiry();
     }
-    if flags.read_only() && !previous.read_only() {
-        vfs().sync()?;
+    let completions = vfs().unmount(namespace, &root, mode)?;
+    drop(root);
+    // 等待所有已证明没有external path pin的实际退休view；传播cognate可合法保留FD租约，
+    // 不能因此等待用户关闭FD。最后filesystem owner释放才归还物理claim；lazy集合为空。
+    for complete in completions {
+        complete.wait();
     }
     Ok(())
 }
 
-/// 卸载以 `root` 为根的挂载（Linux `do_umount` + `deactivate_super`）。
-///
-/// 1. VFS 判忙并摘下挂载；
-/// 2. 写回并逐出该实例的 page cache；
-/// 3. 调用 [`FileSystem::shutdown`] 持久化剩余状态并停止后台工作。
-///
-/// 第 2、3 步的写回错误只记录：挂载已摘下，与 Linux 相同不回滚。
-///
-/// # Errors
-///
-/// `root` 不是挂载根返回 `InvalidOperation`；挂载忙或为 namespace 根返回 `Busy`。
-pub(crate) fn unmount(root: &Arc<OpenedFile>) -> Result<(), FileSystemError> {
+/// Caller 的当前 fs root umount 只重配置实际 superblock；同样串行化完整 backend transaction。
+pub(crate) fn unmount_root_read_only(
+    namespace: &Arc<MountNamespace>,
+    root: &Arc<OpenedFile>,
+    identity: &AccessIdentity,
+) -> Result<(), FileSystemError> {
     let _transaction = MOUNT_TRANSACTION
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    let filesystem_id = root.inode().filesystem_id();
-    let (filesystem, device) = vfs().unmount(root)?;
-    super::filesystem_unmounted(filesystem_id);
-    if let Err(error) = page_cache::evict_filesystem(filesystem_id) {
-        crate::warn!("umount page-cache writeback failed: {:?}", error);
-    }
-    if let Err(error) = filesystem.shutdown() {
-        crate::warn!("umount filesystem shutdown failed: {:?}", error);
-    }
-    // 文件系统已写回并停止：设备重新可被打开写入。
-    if let Some(block) = device.and_then(device::block_node) {
-        block.end_mount();
-    }
-    Ok(())
+    vfs().unmount_root_read_only(namespace, root, identity)
+}
+
+fn prepare_source(bytes: &[u8]) -> Result<Arc<Vec<u8>>, FileSystemError> {
+    let mut source = Vec::new();
+    source
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    source.extend_from_slice(bytes);
+    Arc::try_new(source).map_err(|_| FileSystemError::OutOfMemory)
 }
 
 /// 按 Linux `name_to_dev_t` 解析 `root=`：`/dev/<disk>`、十进制 `MAJ:MIN`，或 `PARTUUID=`/`UUID=`/
@@ -304,6 +339,7 @@ pub(crate) fn mount_root(
 ) -> Result<super::RootMounted, FileSystemError> {
     assert!(ENVIRONMENT.get().is_none(), "root filesystem mounted twice");
     let environment = ENVIRONMENT.call_once(|| environment);
+    vfs().start_mount_retirement(environment.threads)?;
     let _transaction = MOUNT_TRANSACTION
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
@@ -321,12 +357,21 @@ pub(crate) fn mount_root(
         }
         None => block_types()?,
     };
+    let identity = AccessIdentity::root();
     let mut last_error = FileSystemError::InvalidOperation;
     let block = device::block_node(number).ok_or(FileSystemError::NoDevice)?;
-    block.begin_mount()?;
+    let mut label = Vec::new();
+    label
+        .try_reserve_exact(b"/dev/".len() + block.name().len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    label.extend_from_slice(b"/dev/");
+    label.extend_from_slice(block.name());
+    let source = prepare_source(&label)?;
+    let mut claim = Some(MountDeviceClaim::acquire(number)?);
     for kind in candidates {
         let filesystem = match kind.create(&MountRequest {
             environment,
+            identity: &identity,
             device: Some(number),
             read_only: flags.read_only(),
             options: b"",
@@ -337,35 +382,34 @@ pub(crate) fn mount_root(
                 continue;
             }
         };
-        // `/proc/mounts` 的 source 是解析出的设备路径，而不是 `root=` 的标识形式（Linux 显示 `/dev/root`）。
-        let mut source = Vec::new();
-        source
-            .try_reserve_exact(b"/dev/".len() + block.name().len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        source.extend_from_slice(b"/dev/");
-        source.extend_from_slice(block.name());
-        if let Err(error) = vfs().mount_root(&source, filesystem.clone(), Some(number), flags) {
-            let _ = filesystem.shutdown();
-            block.end_mount();
-            return Err(error);
-        }
+        let (owner, root_inode) = MountedFilesystem::new(
+            filesystem.filesystem,
+            claim.take(),
+            flags.read_only(),
+            filesystem.user_namespace,
+        )?;
+        vfs().mount_root(owner, source, root_inode, flags)?;
         let devtmpfs = get_filesystem_type(b"devtmpfs").ok_or(FileSystemError::NoDevice)?;
+        let source = prepare_source(b"devtmpfs")?;
         let devices = devtmpfs.create(&MountRequest {
             environment,
+            identity: &identity,
             device: None,
             read_only: false,
             options: b"",
         })?;
+        let (devices, root) =
+            MountedFilesystem::new(devices.filesystem, None, false, devices.user_namespace)?;
         vfs().mount(
+            &vfs().initial_namespace(),
             vfs().open_file(b"/dev")?,
-            b"devtmpfs",
             devices,
-            None,
+            source,
+            root,
             MountFlags::default(),
         )?;
         return Ok(super::RootMounted(()));
     }
-    block.end_mount();
     Err(last_error)
 }
 

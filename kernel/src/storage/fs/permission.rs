@@ -1,13 +1,19 @@
 use alloc::{sync::Arc, vec::Vec};
 
+use syscall_abi::capability::{Capability, VALID_MASK};
+
 use super::{FileSystemError, InodeMetadata, InodeType};
 
-/// VFS permission evaluator 消费的不可变调用身份；状态仍由 Process 独占。
+/// VFS permission evaluator 消费的不可变调用身份；凭据状态由 calling Thread 独占。
 #[derive(Clone)]
 pub(crate) struct AccessIdentity {
     uid: u32,
     gid: u32,
     groups: Option<Arc<Vec<u32>>>,
+    capabilities: u64,
+    user_namespace: Arc<crate::namespace::UserNamespace>,
+    // SNAPSHOT: capability ancestry 用 EUID；inode DAC 则用 FSUID/real UID，二者不能混用。
+    capability_uid: u32,
 }
 
 impl AccessIdentity {
@@ -17,33 +23,105 @@ impl AccessIdentity {
     ///
     /// - `uid`: 用于本次检查的用户 ID。
     /// - `gid`: 用于本次检查的主组 ID。
-    /// - `groups`: Process 不可变 supplementary group snapshot；空集合不分配。
+    /// - `capability_uid`: namespace capability ancestry 使用的 calling EUID；不得以 FSUID 替代。
+    /// - `groups`: calling Thread 的不可变、有序 supplementary groups；唯一 credential producer
+    ///   在发布前排序，空集合不分配。此快照不执行分配或再次排序。
     ///
     /// # Returns
     ///
-    /// 不持有 Process lock 的权限输入。
-    pub(crate) fn new(uid: u32, gid: u32, groups: Option<Arc<Vec<u32>>>) -> Self {
-        Self { uid, gid, groups }
+    /// 不持有 Thread credential lock 的权限输入。
+    pub(crate) fn new(
+        uid: u32,
+        gid: u32,
+        groups: Option<Arc<Vec<u32>>>,
+        user_namespace: Arc<crate::namespace::UserNamespace>,
+        capabilities: u64,
+        capability_uid: u32,
+    ) -> Self {
+        Self {
+            uid,
+            gid,
+            groups,
+            capabilities,
+            user_namespace,
+            capability_uid,
+        }
     }
 
     pub(crate) fn root() -> Self {
-        Self::new(0, 0, None)
+        Self::new(0, 0, None, crate::namespace::initial_user(), VALID_MASK, 0)
+    }
+
+    /// 创建 filesystem 的 immutable user namespace；FSUID/GID 默认 owner 单独读取。
+    pub(crate) fn user_namespace(&self) -> Arc<crate::namespace::UserNamespace> {
+        self.user_namespace.clone()
+    }
+
+    /// scoped resource capability 不借 FSUID 的 owner 特例；始终用捕获的 calling EUID。
+    pub(crate) fn namespace_capable(
+        &self,
+        namespace: &Arc<crate::namespace::UserNamespace>,
+        capability: Capability,
+    ) -> bool {
+        crate::namespace::NamespaceAuthority {
+            namespace: self.user_namespace.clone(),
+            effective_uid: self.capability_uid,
+            effective_gid: self.gid,
+            effective_capabilities: self.capabilities,
+        }
+        .capable(namespace, capability)
+    }
+    /// capable() 的全局 scope，例如内容写入的 CAP_FSETID；child user namespace 不授权它。
+    pub(crate) fn has_capability(&self, capability: Capability) -> bool {
+        self.user_namespace.is_initial() && self.capabilities & capability.mask() != 0
+    }
+
+    /// 固定 capable_wrt_inode_uidgid：两个 inode owner IDs 都映射进 calling user namespace。
+    pub(crate) fn inode_capability(&self, uid: u32, gid: u32, capability: Capability) -> bool {
+        self.capabilities & capability.mask() != 0
+            && self.user_namespace.map_kernel_id(true, uid).is_some()
+            && self.user_namespace.map_kernel_id(false, gid).is_some()
+    }
+
+    /// 固定 inode_owner_or_capable：owner 相等，或 CAP_FOWNER 与 inode UID 映射成立。
+    pub(crate) fn owns_inode(&self, uid: u32) -> bool {
+        self.uid == uid
+            || (self.capabilities & Capability::FOWNER.mask() != 0
+                && self.user_namespace.map_kernel_id(true, uid).is_some())
+    }
+
+    /// 已授权的内容 mutation 要清除的 set-ID 位；ATTR_FORCE 不要求 writer 是 inode owner。
+    pub(crate) fn write_kill_mask(&self, kind: InodeType, mode: u16, gid: u32) -> u16 {
+        if kind != InodeType::File || self.has_capability(Capability::FSETID) {
+            return 0;
+        }
+        let suid = mode & 0o4000;
+        let sgid = if mode & 0o0010 != 0 || !self.in_group(gid) {
+            mode & 0o2000
+        } else {
+            0
+        };
+        suid | sgid
     }
 
     /// 返回本次检查使用的 UID。
     ///
     /// # Returns
     ///
-    /// real 或 effective UID，由 Process snapshot 构造者决定。
+    /// real 或 effective UID，由 calling Thread snapshot 构造者决定。
     pub(crate) fn uid(&self) -> u32 {
         self.uid
+    }
+    /// 调用者实际EUID；全局proc sysctl使用此权限身份，不能借FSUID或inode DAC capability。
+    pub(crate) fn effective_uid(&self) -> u32 {
+        self.capability_uid
     }
 
     /// 返回本次检查使用的 primary GID。
     ///
     /// # Returns
     ///
-    /// real 或 effective GID，由 Process snapshot 构造者决定。
+    /// real 或 effective GID，由 calling Thread snapshot 构造者决定。
     pub(crate) fn gid(&self) -> u32 {
         self.gid
     }
@@ -62,10 +140,23 @@ impl AccessIdentity {
             || self
                 .groups
                 .as_ref()
-                .is_some_and(|groups| groups.contains(&gid))
+                .is_some_and(|groups| groups.binary_search(&gid).is_ok())
     }
 
-    /// 按 owner/group/other 与 root execute 规则判断 inode access。
+    /// sticky directory 的 entry owner policy；UID 0 本身不授予 FOWNER。
+    pub(crate) fn may_remove_entry(
+        &self,
+        directory: InodeMetadata,
+        target_uid: u32,
+        target_gid: u32,
+    ) -> bool {
+        directory.mode & 0o1000 == 0
+            || self.uid == directory.uid
+            || self.uid == target_uid
+            || self.inode_capability(target_uid, target_gid, Capability::FOWNER)
+    }
+
+    /// 按 owner/group/other 与 DAC capability execute 规则判断 inode access。
     ///
     /// # Parameters
     ///
@@ -76,17 +167,50 @@ impl AccessIdentity {
     ///
     /// 所有请求 bit 均允许时为 true。
     pub(crate) fn permits(&self, metadata: InodeMetadata, requested: u8) -> bool {
-        if self.uid == 0 {
-            return requested & 1 == 0 || metadata.mode & 0o111 != 0;
-        }
-        let granted = if self.uid == metadata.uid {
-            (metadata.mode >> 6) & 7
-        } else if self.in_group(metadata.gid) {
-            (metadata.mode >> 3) & 7
+        self.permits_owner(
+            &OwnerModeState::new(
+                metadata.kind,
+                metadata.mode as u16,
+                metadata.uid,
+                metadata.gid,
+            ),
+            requested,
+        )
+    }
+
+    fn permits_owner(&self, owner: &OwnerModeState, requested: u8) -> bool {
+        let granted = if self.uid == owner.uid {
+            (owner.mode >> 6) & 7
+        } else if self.in_group(owner.gid) {
+            (owner.mode >> 3) & 7
         } else {
-            metadata.mode & 7
+            owner.mode & 7
         } as u8;
-        granted & requested == requested
+        if granted & requested == requested {
+            return true;
+        }
+        if self.inode_capability(owner.uid, owner.gid, Capability::DAC_OVERRIDE)
+            && (owner.kind == InodeType::Directory || requested & 1 == 0 || owner.mode & 0o111 != 0)
+        {
+            return true;
+        }
+        self.inode_capability(owner.uid, owner.gid, Capability::DAC_READ_SEARCH)
+            && if owner.kind == InodeType::Directory {
+                requested & 2 == 0
+            } else {
+                requested == 4
+            }
+    }
+
+    /// inode mutation gate内的同一live owner facts使用既有DAC算法，不递归取得inode lock。
+    pub(super) fn require_owner(
+        &self,
+        owner: &OwnerModeState,
+        requested: u8,
+    ) -> Result<(), FileSystemError> {
+        self.permits_owner(owner, requested)
+            .then_some(())
+            .ok_or(FileSystemError::AccessDenied)
     }
 
     /// 将 permission predicate 转换为 VFS AccessDenied。
@@ -116,6 +240,7 @@ pub(crate) struct OwnerModeChange {
     operation: OwnerModeOperation,
 }
 
+#[derive(Clone, Copy)]
 enum OwnerModeOperation {
     Chmod { mode: u32 },
     Chown { uid: Option<u32>, gid: Option<u32> },
@@ -130,6 +255,9 @@ pub(super) struct OwnerModeState {
 }
 
 impl OwnerModeState {
+    pub(super) const fn kind(&self) -> InodeType {
+        self.kind
+    }
     pub(super) const fn new(kind: InodeType, mode: u16, uid: u32, gid: u32) -> Self {
         Self {
             kind,
@@ -153,6 +281,15 @@ impl OwnerModeState {
 }
 
 impl OwnerModeChange {
+    /// 固定chown_common给所有非directory设置ATTR_KILL_PRIV，UID/GID均为-1也不能绕过。
+    pub(super) fn kills_privileges(&self, kind: InodeType) -> bool {
+        kind != InodeType::Directory && matches!(self.operation, OwnerModeOperation::Chown { .. })
+    }
+    /// proc 的 setattr policy 拒绝 ATTR_MODE；chown 的授权仍由同一 evaluator 负责。
+    pub(super) fn changes_mode(&self) -> bool {
+        matches!(self.operation, OwnerModeOperation::Chmod { .. })
+    }
+
     /// 构造已脱离 Process lock 的 chmod 请求；授权延迟到 filesystem live-state lock 内。
     pub(crate) fn chmod(identity: AccessIdentity, mode: u32) -> Self {
         Self {
@@ -191,26 +328,27 @@ impl OwnerModeChange {
     ///
     /// 已授权的完整 replacement state；无权限返回 PermissionDenied。
     pub(super) fn authorize(
-        self,
+        &self,
         mut current: OwnerModeState,
     ) -> Result<OwnerModeState, FileSystemError> {
-        let Self {
-            identity,
-            operation,
-        } = self;
+        // 借用 snapshot；它可能是已退休 credential groups 的最后一个 Arc，
+        // 只能由调用者在 live-state guard 释放后析构，不能在此消费它。
+        let identity = &self.identity;
+        let operation = self.operation;
         match operation {
             OwnerModeOperation::Chmod { mode } => {
-                if identity.uid() != 0 && identity.uid() != current.uid {
+                if !identity.owns_inode(current.uid) {
                     return Err(FileSystemError::PermissionDenied);
                 }
                 let mut mode = mode as u16 & 0o7777;
-                if identity.uid() != 0 && !identity.in_group(current.gid) {
+                if !identity.has_capability(Capability::FSETID) && !identity.in_group(current.gid) {
                     mode &= !0o2000;
                 }
                 current.mode = current.mode & !0o7777 | mode;
             }
             OwnerModeOperation::Chown { uid, gid } => {
-                let privileged = identity.uid() == 0;
+                let privileged =
+                    identity.inode_capability(current.uid, current.gid, Capability::CHOWN);
                 if let Some(uid) = uid
                     && !privileged
                     && (identity.uid() != current.uid || uid != current.uid)
@@ -233,15 +371,15 @@ impl OwnerModeChange {
                     let original_mode = current.mode;
                     current.mode &= !0o4000;
                     if current.mode & 0o2010 == 0o2010
-                        || (!privileged && !identity.in_group(current.gid))
+                        || (!identity.has_capability(Capability::FSETID)
+                            && !identity.in_group(current.gid))
                     {
                         current.mode &= !0o2000;
                     }
                     // notify_change materializes an actual set-ID drop as
                     // ATTR_MODE, so ext4 setattr_prepare requires owner/root
                     // even when both UID/GID arguments were sentinels.
-                    if current.mode != original_mode && !privileged && identity.uid() != current.uid
-                    {
+                    if current.mode != original_mode && !identity.owns_inode(current.uid) {
                         return Err(FileSystemError::PermissionDenied);
                     }
                 }

@@ -4,7 +4,14 @@ use crate::{
     cpu::{self, CpuId, CpuSet},
     task::processor::account_current_cpu_runtime,
 };
-use core::{num::NonZeroU64, sync::atomic::Ordering};
+use core::{
+    num::NonZeroU64,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+mod blocked_load;
+use blocked_load::BlockedLoad;
+pub(in crate::task) use blocked_load::uninterruptible_task_count;
 
 const NICE_0_LOAD_SHIFT: u32 = 10;
 const VRUNTIME_FRACTION_BITS: u32 = 10;
@@ -104,6 +111,17 @@ pub(crate) enum WaitMembership {
     TaskWait(crate::sync::TaskWaitKey),
 }
 
+impl WaitMembership {
+    /// Driver DMA、vfork completion 与不可中断/killable task wait 的实际 native sleep policy。
+    fn contributes_to_load(self) -> bool {
+        match self {
+            Self::DriverIo(_) | Self::Vfork(_) => true,
+            Self::TaskWait(key) => key.contributes_to_load(),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Sched {
     /// OWNER: SchedulingEntity policy lock 唯一拥有 active CPU slice 起点；None 表示未运行。
@@ -137,6 +155,25 @@ pub(crate) struct SchedulingEntity {
     pub(crate) last_cpu: AtomicUsize,
 }
 
+impl SchedulingEntity {
+    /// 为 Thread 准备唯一 scheduling owner；Process 的只读 leader alias 不持有 TCB/mm。
+    ///
+    /// # Errors
+    ///
+    /// Arc allocation OOM；caller 必须在共享 trap VMA publication 前完成。
+    pub(super) fn try_new(
+        policy: Sched,
+        cpu_affinity: CpuAffinity,
+        last_cpu: usize,
+    ) -> Result<Arc<Self>, alloc::alloc::AllocError> {
+        Arc::try_new(Self {
+            state: IrqMutex::new(SchedulingState::new(cpu_affinity)),
+            policy: Mutex::new(policy),
+            last_cpu: AtomicUsize::new(last_cpu),
+        })
+    }
+}
+
 /// run state、enqueue generation 与 wait membership 的唯一权威。
 #[derive(Debug)]
 pub(crate) struct SchedulingState {
@@ -144,6 +181,8 @@ pub(crate) struct SchedulingState {
     next_generation: u64,
     pub(crate) wait: Option<WaitMembership>,
     pub(crate) wait_result: Option<WaitResult>,
+    // OWNER: 只在实际 context 已停止且不可中断等待时准入；early wake/stop/exit 自动归还。
+    blocked_load: Option<BlockedLoad>,
     /// OWNER: SchedulingState 与 run state 同锁拥有 Thread affinity；拆锁会让 Ready migration
     /// 与并发 wake 各自发布到不同 CPU，使旧 mask 下的 entry 再次运行。
     pub(in crate::task) cpu_affinity: CpuAffinity,
@@ -220,6 +259,7 @@ impl SchedulingState {
             next_generation: 0,
             wait: None,
             wait_result: None,
+            blocked_load: None,
             cpu_affinity,
         }
     }
@@ -241,7 +281,32 @@ impl SchedulingState {
                 && !matches!(state, RunState::Ready { .. }),
             "Ready membership requires a linear transition token"
         );
+        if matches!(state, RunState::Blocked)
+            && self.wait.is_some_and(WaitMembership::contributes_to_load)
+        {
+            if self.blocked_load.is_none() {
+                self.blocked_load = Some(BlockedLoad::register());
+            }
+        } else {
+            self.blocked_load.take();
+        }
         self.run_state = state;
+    }
+
+    /// native D-state 投影使用实际 wait policy；Blocking 尚有 current CPU ownership，不提前计 load。
+    pub(in crate::task) fn is_uninterruptible(&self) -> bool {
+        matches!(
+            self.run_state,
+            RunState::Blocking { .. } | RunState::Blocked
+        ) && self.wait.is_some_and(WaitMembership::contributes_to_load)
+    }
+
+    /// Linux proc I-state；实际 Blocked/Blocking 且 wait policy 为 TASK_IDLE。
+    pub(in crate::task) fn is_idle_wait(&self) -> bool {
+        matches!(
+            self.run_state,
+            RunState::Blocking { .. } | RunState::Blocked
+        ) && matches!(self.wait, Some(WaitMembership::TaskWait(key)) if key.idle())
     }
 
     /// 创建新的唯一 Ready generation，并使此前所有 queue entry 失效。
@@ -265,6 +330,7 @@ impl SchedulingState {
         self.next_generation = self.next_generation.wrapping_add(1);
         assert_ne!(self.next_generation, 0, "runqueue generation wrapped");
         let generation = self.next_generation;
+        self.blocked_load.take();
         self.run_state = RunState::Ready { cpu, generation };
         ReadyTransition {
             previous_cpu,
@@ -582,7 +648,11 @@ impl TaskControlBlock {
         let active_runtime_us =
             active_now_us.map_or(0, |now_us| policy.active_runtime_delta(now_us));
         (
-            self.execution.start_time_us,
+            if !self.is_kernel_thread() && self.tid() == self.tgid() {
+                self.process().start_time_us
+            } else {
+                self.execution.start_time_us
+            },
             policy.nice,
             policy.get_dynamic_priority(),
             policy.total_runtime_us.saturating_add(active_runtime_us),
@@ -612,5 +682,19 @@ impl TaskControlBlock {
             .load(Ordering::Relaxed)
             .saturating_add(active_runtime_us);
         (process_runtime_us, thread_runtime_us)
+    }
+}
+
+// Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
+impl super::Process {
+    pub(in crate::task) fn process_scheduler_snapshot(&self) -> (i32, i32, usize, u64) {
+        let scheduler = self.leader_scheduler.lock().clone();
+        let policy = scheduler.policy.lock();
+        (
+            policy.nice,
+            policy.get_dynamic_priority(),
+            scheduler.last_cpu.load(Ordering::Relaxed),
+            policy.total_runtime_us,
+        )
     }
 }

@@ -31,7 +31,7 @@ impl RecordLockRange {
 /// `F_GETLK` 投影的第一个冲突 lock。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RecordLockConflict {
-    pub(crate) owner: usize,
+    pub(crate) pid: usize,
     pub(crate) mode: RecordLockMode,
     pub(crate) range: RecordLockRange,
 }
@@ -40,6 +40,7 @@ pub(crate) struct RecordLockConflict {
 pub(super) struct RecordLock {
     key: AdvisoryLockKey,
     owner: usize,
+    pid: usize,
     mode: RecordLockMode,
     range: RecordLockRange,
 }
@@ -51,10 +52,26 @@ pub(super) struct RecordLock {
 pub(crate) struct PreparedRecordLock {
     key: AdvisoryLockKey,
     owner: usize,
+    pid: usize,
     requested: Option<RecordLockMode>,
     range: RecordLockRange,
     next: Vec<RecordLock>,
     normalized: Vec<RecordLock>,
+}
+
+/// POSIX lock 的 files_struct identity 与独立的 Linux l_pid 投影。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RecordLockOwner {
+    identity: usize,
+    pid: usize,
+}
+impl RecordLockOwner {
+    pub(crate) const fn new(identity: usize, pid: usize) -> Self {
+        Self { identity, pid }
+    }
+    pub(crate) fn identity(self) -> usize {
+        self.identity
+    }
 }
 
 fn compatible(first: RecordLockMode, second: RecordLockMode) -> bool {
@@ -95,7 +112,7 @@ impl VirtualFileSystem {
     /// # Parameters
     ///
     /// - `holder`: pathname-backed OFD。
-    /// - `owner`: calling Process TGID。
+    /// - `owner`: calling FileTable identity 与请求 TGID。
     /// - `requested`: read/write acquisition 或 unlock。
     /// - `range`: 已规范化的半开 byte range。
     ///
@@ -109,13 +126,14 @@ impl VirtualFileSystem {
     pub(crate) fn prepare_record_lock(
         &self,
         holder: &LockHolder,
-        owner: usize,
+        owner: RecordLockOwner,
         requested: Option<RecordLockMode>,
         range: RecordLockRange,
     ) -> Result<PreparedRecordLock, AdvisoryLockError> {
         Ok(PreparedRecordLock {
             key: Self::record_lock_key(holder)?,
-            owner,
+            owner: owner.identity,
+            pid: owner.pid,
             requested,
             range,
             next: Vec::new(),
@@ -209,6 +227,19 @@ impl VirtualFileSystem {
 
         prepared.next.clear();
         prepared.normalized.clear();
+        // Linux 同类型扩展复用第一个既有 lock 的 l_pid；table identity 与报告 PID 分开。
+        // 先捕获它，不能先剪掉被覆盖的旧 range 后误把整段改成最新请求者 TGID。
+        let requested_pid = locks
+            .iter()
+            .filter(|lock| {
+                lock.key == prepared.key
+                    && lock.owner == prepared.owner
+                    && Some(lock.mode) == prepared.requested
+                    && lock.range.end_value() >= u128::from(prepared.range.start)
+                    && prepared.range.end_value() >= u128::from(lock.range.start)
+            })
+            .min_by_key(|lock| lock.range.start)
+            .map_or(prepared.pid, |lock| lock.pid);
         for lock in locks.iter().copied() {
             if lock.key != prepared.key
                 || lock.owner != prepared.owner
@@ -242,6 +273,7 @@ impl VirtualFileSystem {
             prepared.next.push(RecordLock {
                 key: prepared.key,
                 owner: prepared.owner,
+                pid: requested_pid,
                 mode,
                 range: prepared.range,
             });
@@ -275,7 +307,7 @@ impl VirtualFileSystem {
     /// # Parameters
     ///
     /// - `holder`: pathname-backed OFD。
-    /// - `owner`: calling Process TGID。
+    /// - `owner`: calling FileTable identity 与请求 TGID。
     /// - `mode`: read/write requested mode。
     /// - `range`: 已按 whence 归一化的半开 byte range。
     ///
@@ -289,7 +321,7 @@ impl VirtualFileSystem {
     pub(crate) fn record_lock_conflict(
         &self,
         holder: &LockHolder,
-        owner: usize,
+        owner: RecordLockOwner,
         mode: RecordLockMode,
         range: RecordLockRange,
     ) -> Result<Option<RecordLockConflict>, AdvisoryLockError> {
@@ -300,24 +332,24 @@ impl VirtualFileSystem {
             .iter()
             .filter(|lock| {
                 lock.key == key
-                    && lock.owner != owner
+                    && lock.owner != owner.identity
                     && lock.range.overlaps(range)
                     && !compatible(lock.mode, mode)
             })
             .min_by_key(|lock| lock.range.start)
             .map(|lock| RecordLockConflict {
-                owner: lock.owner,
+                pid: lock.pid,
                 mode: lock.mode,
                 range: lock.range,
             }))
     }
 
-    /// 原子取得、转换或释放一个 Process 的 POSIX byte-range lock。
+    /// 原子取得、转换或释放一个 FileTable 的 POSIX byte-range lock。
     ///
     /// # Parameters
     ///
     /// - `holder`: pathname-backed OFD。
-    /// - `owner`: calling Process TGID。
+    /// - `owner`: calling FileTable identity 与请求 TGID。
     /// - `requested`: Some(read/write) 取得或转换；None 解锁。
     /// - `range`: 已按 whence 归一化的半开 byte range。
     ///
@@ -331,7 +363,7 @@ impl VirtualFileSystem {
     pub(crate) fn try_record_lock(
         &self,
         holder: &LockHolder,
-        owner: usize,
+        owner: RecordLockOwner,
         requested: Option<RecordLockMode>,
         range: RecordLockRange,
     ) -> Result<AdvisoryLockAttempt, AdvisoryLockError> {
@@ -346,11 +378,11 @@ impl VirtualFileSystem {
         }
     }
 
-    /// 任一 descriptor close 时释放该 Process 在同一 inode 上的全部 POSIX locks。
+    /// 任一 descriptor close 时释放该 FileTable owner 在同一 inode 上的全部 POSIX locks。
     ///
     /// # Parameters
     ///
-    /// - `owner`: closing Process TGID。
+    /// - `owner`: closing FileTable identity。
     /// - `holder`: 被关闭 descriptor 的 OFD。
     ///
     /// # Returns
@@ -371,16 +403,16 @@ impl VirtualFileSystem {
         }
     }
 
-    /// Process exit 时释放其跨全部 inode 的 POSIX locks。
+    /// FileTable 最终退休时释放其跨全部 inode 的 POSIX locks。
     ///
     /// # Parameters
     ///
-    /// - `owner`: exiting Process TGID。
+    /// - `owner`: retiring FileTable identity。
     ///
     /// # Returns
     ///
     /// 无返回值；每个受影响 inode 的 waiter 都会被唤醒。
-    pub(crate) fn release_process_record_locks(&self, owner: usize) {
+    pub(crate) fn release_file_table_record_locks(&self, owner: usize) {
         loop {
             let key = {
                 let mut locks = self.record_locks.lock();

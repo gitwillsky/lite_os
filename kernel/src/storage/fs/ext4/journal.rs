@@ -12,7 +12,11 @@ mod codec;
 use codec::*;
 #[path = "journal/commit_owner.rs"]
 mod commit_owner;
+#[path = "journal/staged_blocks.rs"]
+mod staged_blocks;
 pub(super) use commit_owner::JournalOwner;
+pub(super) use staged_blocks::BlockKind;
+use staged_blocks::StagedBlocks;
 #[path = "journal/inode_mutation.rs"]
 mod inode_mutation;
 use inode_mutation::InodeMutation;
@@ -59,35 +63,6 @@ pub(super) struct Journal {
 
 /// 已提交事务按日志顺序的 (home block, image) 列表。
 type ReplaySet = Vec<(u64, Vec<u8>)>;
-
-/// 同一 transaction 层暂存的完整 home-block image。
-///
-/// 一个 block 在同一层只属于一种：未提交事务释放的 block 不得重新分配（见
-/// [`Journal::is_uncommitted_free`]），因此 metadata 与 data 不会在同层交换身份。
-#[derive(Default)]
-pub(super) struct StagedBlocks {
-    /// 经 journal 原子提交的 metadata。
-    metadata: FallibleMap<u64, Vec<u8>>,
-    /// Linux `data=ordered` 文件数据：不进 journal，在 commit record 之前直接写回 home。
-    data: FallibleMap<u64, Vec<u8>>,
-}
-
-impl StagedBlocks {
-    pub(super) fn get(&self, block: u64) -> Option<&Vec<u8>> {
-        self.metadata.get(&block).or_else(|| self.data.get(&block))
-    }
-
-    fn is_empty(&self) -> bool {
-        self.metadata.is_empty() && self.data.is_empty()
-    }
-}
-
-/// 暂存 image 的提交方式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BlockKind {
-    Metadata,
-    Data,
-}
 
 /// 单个 mutation 的 handle overlay；abort 直接丢弃，commit 时整体并入 running transaction。
 struct ActiveTransaction {
@@ -255,26 +230,7 @@ impl Journal {
             .as_mut()
             .ok_or(FileSystemError::InvalidOperation)?
             .staged;
-        let writes = match kind {
-            BlockKind::Metadata => &mut staged.metadata,
-            BlockKind::Data => &mut staged.data,
-        };
-        if let Some(image) = writes.get_mut(&block) {
-            image.copy_from_slice(bytes);
-            return Ok(());
-        }
-        if kind == BlockKind::Metadata && writes.len() >= capacity {
-            return Err(FileSystemError::NoSpace);
-        }
-        let mut image = Vec::new();
-        image
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        image.extend_from_slice(bytes);
-        let entry =
-            FallibleMap::try_prepare(block, image).map_err(|_| FileSystemError::OutOfMemory)?;
-        writes.commit_vacant(entry);
-        Ok(())
+        staged.stage(block, bytes, kind, capacity)
     }
 
     /// 在当前 handle 记录一段释放的 block range。
@@ -345,12 +301,7 @@ impl Journal {
     fn abort(&mut self, fs: &Ext4FileSystem) {
         if let Some(active) = &self.active {
             let mut cache = fs.metadata_cache.lock();
-            for (block, _) in active
-                .staged
-                .metadata
-                .iter()
-                .chain(active.staged.data.iter())
-            {
+            for (block, _) in active.staged.all() {
                 cache.invalidate(*block);
             }
         }
@@ -362,13 +313,8 @@ impl Journal {
         let Some(active) = &self.active else {
             return true;
         };
-        let added = active
-            .staged
-            .metadata
-            .iter()
-            .filter(|(block, _)| !self.running.staged.metadata.contains_key(block))
-            .count();
-        self.running.staged.metadata.len() + added <= self.layout.write_capacity()
+        self.running.staged.combined_metadata_count(&active.staged)
+            <= test_stage_capacity(self.layout.write_capacity())
     }
 
     /// 把 handle overlay 原子并入 running transaction。
@@ -385,11 +331,7 @@ impl Journal {
         };
         debug_assert!(active.allocation_dirty.is_empty());
         let was_empty = self.running.is_empty();
-        move_entries(
-            &mut active.staged.metadata,
-            &mut self.running.staged.metadata,
-        );
-        move_entries(&mut active.staged.data, &mut self.running.staged.data);
+        self.running.staged.merge(active.staged);
         move_entries(&mut active.freed, &mut self.running.freed);
         if was_empty && !self.running.is_empty() {
             self.running.started_ns = now_ns;
@@ -402,7 +344,7 @@ impl Journal {
     fn running_commit_due(&self, now_ns: u64, block_size: usize) -> bool {
         !self.running.is_empty()
             && (now_ns.saturating_sub(self.running.started_ns) >= COMMIT_INTERVAL_NS
-                || self.running.staged.data.len() * block_size >= RUNNING_DATA_LIMIT_BYTES)
+                || self.running.staged.data_count() * block_size >= RUNNING_DATA_LIMIT_BYTES)
     }
 
     /// 非空 running transaction 的开始时刻。
@@ -560,26 +502,26 @@ impl Journal {
         if staged.is_empty() {
             return Ok(());
         }
-        let writes = &staged.metadata;
-        if writes.is_empty() {
+        let metadata_count = staged.metadata_count();
+        if metadata_count == 0 {
             // 纯覆盖已映射 block 的数据没有需要排序的 metadata：写回 home 后单次 barrier 即持久。
-            for (block, bytes) in &staged.data {
+            for (block, bytes) in staged.data() {
                 fs.write_fs_block_home(*block, bytes)?;
             }
             return fs.device.flush().map_err(block_error);
         }
         record_test_transaction();
         let tag_capacity = self.layout.tags_per_descriptor();
-        let descriptor_count = writes.len().div_ceil(tag_capacity);
+        let descriptor_count = metadata_count.div_ceil(tag_capacity);
         assert!(
-            1 + writes.len() + descriptor_count < self.blocks.len(),
+            1 + metadata_count + descriptor_count < self.blocks.len(),
             "staged transaction exceeded validated journal layout"
         );
         let sequence = self.sequence;
         self.write_state(fs, 1, sequence)?;
         // ordered data 与 descriptor/metadata image 共用 commit record 前的 durability barrier；
         // 缺失它时崩溃可留下 durable commit 与旧 data，replay 后 metadata 指向未写入的 block。
-        for (block, bytes) in &staged.data {
+        for (block, bytes) in staged.data() {
             fs.write_fs_block_home(*block, bytes)?;
         }
         let uuid = fs.superblock.lock().s_uuid;
@@ -589,15 +531,15 @@ impl Journal {
         // 若在 durable state publication 后才尝试 heap allocation，OOM 会留下无法安全重试的半事务。
         let mut scratch_storage = [0u8; PAGE_SIZE];
         let scratch = &mut scratch_storage[..fs.block_size];
-        let mut next_block = writes.first_key_value().map(|(&block, _)| block);
+        let mut next_block = staged.metadata_from(0).next().map(|(&block, _)| block);
         while let Some(first_block) = next_block {
             scratch.fill(0);
             put_header(&mut *scratch, JBD2_DESCRIPTOR_BLOCK, sequence)?;
             let mut offset = 12;
-            let count = writes.iter_from(&first_block).take(tag_capacity).count();
+            let count = staged.metadata_from(first_block).take(tag_capacity).count();
             let mut last_block = first_block;
-            for (index, (block, bytes)) in writes
-                .iter_from(&first_block)
+            for (index, (block, bytes)) in staged
+                .metadata_from(first_block)
                 .take(tag_capacity)
                 .enumerate()
             {
@@ -632,7 +574,7 @@ impl Journal {
             put_be32(&mut *scratch, tail, descriptor_checksum)?;
             self.journal_write(fs, cursor, scratch)?;
             cursor += 1;
-            for (_, bytes) in writes.iter_from(&first_block).take(count) {
+            for (_, bytes) in staged.metadata_from(first_block).take(count) {
                 let journal_bytes: &[u8] = if bytes[..4] == JBD2_MAGIC.to_be_bytes() {
                     scratch.copy_from_slice(bytes);
                     scratch[..4].fill(0);
@@ -643,7 +585,10 @@ impl Journal {
                 self.journal_write(fs, cursor, journal_bytes)?;
                 cursor += 1;
             }
-            next_block = writes.successor(&last_block).map(|(&block, _)| block);
+            next_block = staged
+                .metadata_from(last_block.checked_add(1).expect("metadata block overflow"))
+                .next()
+                .map(|(&block, _)| block);
         }
         // Descriptor 和全部 data image 必须先于 commit record 到达稳定存储。否则断电可留下
         // durable commit 与旧 journal slot data 的组合，recovery 会把旧 image 当成新事务 replay。
@@ -672,7 +617,7 @@ impl Journal {
         put_be32(&mut *scratch, JBD2_COMMIT_CHECKSUM_OFFSET, commit_checksum)?;
         self.journal_write(fs, cursor, scratch)?;
         fs.device.flush().map_err(block_error)?;
-        for (block, bytes) in writes {
+        for (block, bytes) in staged.metadata_from(0) {
             fs.write_fs_block_home(*block, bytes)?;
         }
         fs.device.flush().map_err(block_error)?;
@@ -772,6 +717,9 @@ impl<'a> MutationGuard<'a> {
         lock: TaskMutexGuard<'a, ()>,
         prepare: impl FnOnce() -> Result<T, FileSystemError>,
     ) -> Result<(Self, T), FileSystemError> {
+        if fs.stopping.load(Ordering::Acquire) {
+            return Err(FileSystemError::InvalidOperation);
+        }
         let prepared = prepare()?;
         let superblock = *fs.superblock.lock();
         // 1. The topology-wide allocator snapshot precedes the active transaction. Live inode
@@ -824,7 +772,7 @@ impl<'a> MutationGuard<'a> {
         // mutation mutex 是 live inode 的唯一 writer owner；短锁只取得完整 snapshot，绝不
         // 穿过后续 journal 或 block I/O。否则单核 waiter 会在关中断 spin loop 中永久饿死
         // 正在 DriverIo 中睡眠的 owner。
-        let disk = *inode.disk.lock();
+        let disk = inode.disk.lock().disk;
         let discarded_on_abort = self.discarded_inode == Some(number);
         let captured = self
             .inodes
@@ -934,7 +882,7 @@ impl Drop for MutationGuard<'_> {
         *self.fs.superblock.lock() = self.superblock;
         *self.fs.groups.lock() = core::mem::take(&mut self.groups);
         for (inode, disk) in self.inodes.iter().take(self.inode_count).flatten() {
-            *inode.disk.lock() = *disk;
+            inode.disk.lock().disk = *disk;
         }
         if let Some(number) = self.discarded_inode {
             self.fs.inode_cache.lock().remove(&number);

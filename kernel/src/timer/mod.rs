@@ -9,6 +9,8 @@ mod deadline;
 
 /// scheduler tick 频率（Linux `HZ`）；每个 CPU 以 timebase / HZ 的固定间隔编程 local timer。
 const TICKS_PER_SEC: u64 = 100;
+/// Socket timeval 与实际 scheduler cadence 共用的 tick 时长；禁止在协议层复制 HZ。
+pub(crate) const SCHEDULER_TICK_NS: u64 = 1_000_000_000 / TICKS_PER_SEC;
 const _: () = assert!(TICKS_PER_SEC != 0);
 
 // OWNER: timer module owns the calibrated scheduler tick interval.

@@ -9,7 +9,9 @@ pub(super) fn next_period(expiration: u64, interval_ns: u64, now_ns: u64) -> (Op
     };
     let elapsed = elapsed_periods.saturating_add(1);
     (
-        expiration.checked_add(elapsed.saturating_mul(interval_ns)),
+        expiration
+            .checked_add(elapsed.saturating_mul(interval_ns))
+            .filter(|deadline| *deadline <= i64::MAX as u64),
         elapsed,
     )
 }

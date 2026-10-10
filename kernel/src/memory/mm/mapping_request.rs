@@ -15,6 +15,7 @@ pub(crate) enum MemoryAdvice {
 }
 
 /// file-backed VMA 的稳定 backing 与 page-aligned 文件偏移。
+#[derive(Clone)]
 pub(crate) struct FileMappingSource {
     pub(super) mapping: Arc<dyn SharedFileMapping>,
     pub(super) pages: FilePageRange,
@@ -33,6 +34,7 @@ pub(crate) struct DeviceMappingSource {
     pub(super) identity: u64,
     pub(super) backing: Arc<DeviceBacking>,
     pub(super) page_offset: usize,
+    pub(super) owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
 }
 
 impl DeviceMappingSource {
@@ -51,7 +53,14 @@ impl DeviceMappingSource {
             identity,
             backing,
             page_offset: 0,
+            owner: None,
         }
+    }
+
+    /// mmap ABI 已获得实际 OFD；kernel-only backing template 无需制造 dummy owner。
+    pub(crate) fn retain_file(&mut self, owner: Arc<dyn crate::memory::MappedFileOwner>) {
+        assert!(self.owner.is_none(), "device mapping file owner replaced");
+        self.owner = Some(owner);
     }
 }
 
@@ -104,4 +113,30 @@ impl MappingResourceLimits {
             data,
         }
     }
+}
+
+/// mmap/shmat 的地址选择语义；raw Linux flags 只存在于 syscall codec。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MappingPlacement {
+    Hint,
+    Fixed,
+    FixedNoReplace,
+}
+/// 已授权的实际 mapping backing 输入；clone 只保活准备资源，不产生 VMA membership。
+#[derive(Clone)]
+pub(crate) enum UserMappingSource {
+    PrivateAnonymous,
+    SharedAnonymous,
+    PrivateFile(FileMappingSource),
+    SharedFile(FileMappingSource),
+    Device(DeviceMappingSource),
+    SystemV(crate::memory::SharedMemoryMappingSource),
+}
+/// 一次 user mapping transaction 的完整不可变输入。
+pub(crate) struct UserMappingRequest {
+    pub(crate) address: usize,
+    pub(crate) length: usize,
+    pub(crate) permission: crate::memory::MapPermission,
+    pub(crate) placement: MappingPlacement,
+    pub(crate) source: UserMappingSource,
 }

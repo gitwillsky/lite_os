@@ -8,6 +8,7 @@ mod kernel_context;
 mod mmu;
 mod page_table;
 mod pte;
+mod signal_action;
 mod signal_frame;
 mod start;
 mod startup;
@@ -25,9 +26,10 @@ pub(crate) use io::{
 pub(crate) use kernel_context::{KernelContext, KernelResume, switch_kernel_context};
 pub(crate) use mmu::{
     AddressSpaceToken, KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken,
-    PAGE_SIZE, SIGNAL_TRAMPOLINE_ADDRESS, TRAMPOLINE_ADDRESS, TRAP_CONTEXT_ADDRESS,
-    USER_ADDRESS_END, USER_STACK_TOP, canonicalize_virtual_address, flush_local as flush_local_tlb,
-    flush_local_range as flush_local_tlb_range, initialize_kernel_mmio, normalize_physical_address,
+    PAGE_SIZE, SIGNAL_TRAMPOLINE_ADDRESS, THREAD_TRAP_CONTEXT_RANGE, TRAMPOLINE_ADDRESS,
+    TRAP_CONTEXT_ADDRESS, USER_ADDRESS_END, USER_STACK_TOP, canonicalize_virtual_address,
+    flush_local as flush_local_tlb, flush_local_range as flush_local_tlb_range,
+    initialize_asid_allocator, initialize_kernel_mmio, normalize_physical_address,
     normalize_physical_page, normalize_virtual_page, physical_range_to_virtual,
     physical_to_virtual, virtual_to_physical,
 };
@@ -36,6 +38,7 @@ pub(crate) use page_table::{
     PageTableEntry as ArchitecturePageTableEntry, PageTableError, TablePage,
 };
 pub(crate) use pte::PagePermissions;
+pub(crate) use signal_action::SignalActionBytes;
 pub(crate) use signal_frame::{MIN_SIGNAL_STACK_SIZE, SIGNAL_FRAME_SIZE, SignalFrame, SignalStack};
 pub(crate) use start::entry_address as secondary_entry;
 pub(crate) use startup::{
@@ -48,7 +51,7 @@ pub(crate) use trap::{
     return_to_user, user_entry,
 };
 pub(crate) use user::{
-    ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SyscallCompletion, decode_private_syscall,
+    AUDIT_ARCH, ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SyscallCompletion, decode_private_syscall,
     valid_elf_flags,
 };
 pub(crate) use user_context::{

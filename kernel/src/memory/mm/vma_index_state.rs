@@ -3,20 +3,15 @@
 /// 单个 VMA 对 index metadata 的完整贡献。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct VmaContribution {
-    /// VMA 当前 ordered-index key。
-    pub(super) start: usize,
-    /// 是否是 MemorySet 唯一 grow-down stack。
-    pub(super) stack: bool,
     /// 对 RLIMIT_AS current usage 的贡献。
     pub(super) virtual_bytes: u64,
     /// 对 RLIMIT_DATA current usage 的贡献。
     pub(super) data_bytes: u64,
 }
 
-/// `MemorySet::areas` 的 O(1) identity/resource projection owner。
+/// `MemorySet::areas` 的 O(1) resource projection owner。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct VmaIndexState {
-    stack_start: Option<usize>,
     virtual_bytes: u64,
     data_bytes: u64,
 }
@@ -25,15 +20,9 @@ impl VmaIndexState {
     /// 构造尚未发布 VMA node 的空 index state。
     pub(super) const fn new() -> Self {
         Self {
-            stack_start: None,
             virtual_bytes: 0,
             data_bytes: 0,
         }
-    }
-
-    /// 返回唯一 stack VMA 当前起始 VPN。
-    pub(super) const fn stack_start(self) -> Option<usize> {
-        self.stack_start
     }
 
     /// 返回 live user VMA 的精确 RLIMIT_AS usage。
@@ -52,13 +41,6 @@ impl VmaIndexState {
     ///
     /// - `contribution`: 与即将 commit 的唯一 node 完全对应。
     pub(super) fn publish(&mut self, contribution: VmaContribution) {
-        if contribution.stack {
-            assert!(
-                self.stack_start.is_none(),
-                "MemorySet published more than one stack VMA"
-            );
-            self.stack_start = Some(contribution.start);
-        }
         self.virtual_bytes = self
             .virtual_bytes
             .checked_add(contribution.virtual_bytes)
@@ -75,14 +57,6 @@ impl VmaIndexState {
     ///
     /// - `contribution`: 与刚由 index 取出的唯一 node 完全对应。
     pub(super) fn retire(&mut self, contribution: VmaContribution) {
-        if contribution.stack {
-            assert_eq!(
-                self.stack_start,
-                Some(contribution.start),
-                "MemorySet stack VMA key diverged from ordered index"
-            );
-            self.stack_start = None;
-        }
         self.virtual_bytes = self
             .virtual_bytes
             .checked_sub(contribution.virtual_bytes)
@@ -98,37 +72,34 @@ impl VmaIndexState {
 mod tests {
     use super::*;
 
-    fn contribution(start: usize, pages: u64, stack: bool, writable_data: bool) -> VmaContribution {
+    fn contribution(pages: u64, writable_data: bool) -> VmaContribution {
         VmaContribution {
-            start,
-            stack,
             virtual_bytes: pages * 4096,
             data_bytes: if writable_data { pages * 4096 } else { 0 },
         }
     }
 
     #[test]
-    fn stack_rekey_grow_updates_key_and_virtual_total_atomically() {
+    fn stack_growth_updates_virtual_total_atomically() {
         let mut state = VmaIndexState::new();
-        let old = contribution(99, 1, true, false);
-        let grown = contribution(92, 8, true, false);
+        let old = contribution(1, false);
+        let grown = contribution(8, false);
         state.publish(old);
         state.retire(old);
         state.publish(grown);
-        assert_eq!(state.stack_start(), Some(92));
         assert_eq!(state.virtual_bytes(), 8 * 4096);
     }
 
     #[test]
     fn split_merge_and_permission_change_preserve_exact_totals() {
         let mut state = VmaIndexState::new();
-        let original = contribution(10, 6, false, true);
+        let original = contribution(6, true);
         state.publish(original);
         state.retire(original);
         let parts = [
-            contribution(10, 2, false, true),
-            contribution(12, 2, false, false),
-            contribution(14, 2, false, true),
+            contribution(2, true),
+            contribution(2, false),
+            contribution(2, true),
         ];
         for part in parts {
             state.publish(part);
@@ -139,7 +110,7 @@ mod tests {
         for part in parts {
             state.retire(part);
         }
-        let merged = contribution(10, 6, false, true);
+        let merged = contribution(6, true);
         state.publish(merged);
         assert_eq!(state.virtual_bytes(), 6 * 4096);
         assert_eq!(state.data_bytes(), 6 * 4096);
@@ -149,28 +120,30 @@ mod tests {
 
     #[test]
     fn fork_exec_and_unpublished_rollback_have_independent_state() {
-        let mappings = [
-            contribution(4, 3, false, true),
-            contribution(100, 1, true, false),
-        ];
+        let mappings = [contribution(3, true), contribution(1, false)];
         let mut parent = VmaIndexState::new();
         let mut child = VmaIndexState::new();
         for mapping in mappings {
             parent.publish(mapping);
             child.publish(mapping);
         }
-        let _prepared_but_unpublished = contribution(200, 8, false, true);
+        let _prepared_but_unpublished = contribution(8, true);
         assert_eq!(parent, child);
-        assert_eq!(child.stack_start(), Some(100));
         assert_eq!(child.virtual_bytes(), 4 * 4096);
         assert_eq!(child.data_bytes(), 3 * 4096);
     }
 
     #[test]
-    #[should_panic(expected = "more than one stack VMA")]
-    fn duplicate_stack_publication_fail_stops() {
+    fn multiple_grow_down_fragments_have_independent_resource_contributions() {
         let mut state = VmaIndexState::new();
-        state.publish(contribution(100, 1, true, false));
-        state.publish(contribution(200, 1, true, false));
+        let left = contribution(2, false);
+        let right = contribution(3, false);
+        state.publish(left);
+        state.publish(right);
+        assert_eq!(state.virtual_bytes(), 5 * 4096);
+        state.retire(left);
+        assert_eq!(state.virtual_bytes(), 3 * 4096);
+        state.retire(right);
+        assert_eq!(state, VmaIndexState::new());
     }
 }

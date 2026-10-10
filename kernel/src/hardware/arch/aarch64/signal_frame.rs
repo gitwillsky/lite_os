@@ -90,6 +90,25 @@ pub(crate) struct SignalFrame {
 }
 
 impl SignalFrame {
+    /// Linux/arm64 rt_sigreturn 在任何 copyin 前要求用户 SP 按 16 bytes 对齐。
+    pub(crate) fn valid_user_address(address: usize) -> bool {
+        address.is_multiple_of(16)
+    }
+
+    /// arm64_notify_segfault 按用户 SP 与 find_vma 结果生成 address-bearing SIGSEGV。
+    pub(crate) fn fault_address(address: usize) -> Option<usize> {
+        Some(address)
+    }
+
+    /// 完整 frame 的 machine/extension restore 失败时 Linux 已读取 saved SP。
+    /// 只投影 fault metadata，不要求不安全的部分 machine context 成为 live state。
+    pub(crate) fn restore_fault_address(&self) -> Option<usize> {
+        Some(get_u64(&self.bytes, SP_OFFSET) as usize)
+    }
+    /// 投影已完整 copyin 的 saved mask；不要求 machine/extension validation 成功。
+    pub(crate) fn signal_mask(&self) -> u64 {
+        get_u64(&self.bytes, SIGNAL_MASK_OFFSET)
+    }
     /// 构造包含唯一 FPSIMD record 与 terminator 的 signal frame。
     ///
     /// # Parameters

@@ -1,7 +1,7 @@
 //! Linux `inotify_init1`、`inotify_add_watch` 与 `inotify_rm_watch`。
 
 use crate::{
-    file::{OpenFileDescription, OpenFileKind},
+    file::{OpenFileKind, PreparedDeviceDescription},
     fs::{
         IN_CLOEXEC, IN_NONBLOCK, InitError, InodeType, Inotify, WatchError, add_watch_flags, vfs,
     },
@@ -24,19 +24,23 @@ pub(crate) fn sys_inotify_init1(flags: u32) -> isize {
     if flags & !(IN_NONBLOCK | IN_CLOEXEC) != 0 {
         return -errno::EINVAL;
     }
-    let instance = match Inotify::new() {
+    let task = current_task().expect("inotify_init1 requires current task");
+    let reservation = match task.fd_prepare_open(flags & IN_CLOEXEC != 0) {
+        Ok(reservation) => reservation,
+        Err(error) => return crate::syscall::file_descriptor_error(error),
+    };
+    let prepared =
+        match PreparedDeviceDescription::try_new(Inotify::ANONYMOUS_NAME, flags & IN_NONBLOCK) {
+            Ok(prepared) => prepared,
+            Err(error) => return ferr(error),
+        };
+    let (namespace, uid) = task.user_resource_owner();
+    let instance = match Inotify::new(namespace, uid) {
         Ok(instance) => instance,
         Err(InitError::TooManyInstances) => return -errno::EMFILE,
         Err(InitError::OutOfMemory) => return -errno::ENOMEM,
     };
-    let ofd = match OpenFileDescription::anonymous_device(instance, flags & IN_NONBLOCK) {
-        Ok(ofd) => ofd,
-        Err(error) => return ferr(error),
-    };
-    current_task()
-        .expect("inotify_init1 requires current task")
-        .fd_allocate(ofd, flags & IN_CLOEXEC != 0)
-        .map_or_else(crate::syscall::file_descriptor_error, |fd| fd as isize)
+    reservation.publish(prepared.finish(instance)) as isize
 }
 
 /// 在 `fd` 指向的 inotify 实例上为 `path` 添加或更新 watch。
@@ -62,7 +66,7 @@ pub(crate) fn sys_inotify_add_watch(fd: usize, pathname: *const u8, mask: u32) -
     };
     let (no_follow, only_directory) = add_watch_flags(mask);
     let identity = task.access_identity(true);
-    let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
+    let start = task.lookup_origin();
     let opened = if no_follow {
         vfs().open_file_at_no_follow(start, &path, &identity)
     } else {
@@ -80,12 +84,14 @@ pub(crate) fn sys_inotify_add_watch(fd: usize, pathname: *const u8, mask: u32) -
         Ok(metadata) => metadata,
         Err(error) => return ferr(error),
     };
-    if let Err(error) = identity.require(metadata, 4) {
+    if let Err(error) = inode.require_access(&identity, 4) {
         return ferr(error);
     }
     match instance.add_watch((inode.filesystem_id(), metadata.inode), mask) {
         Ok(wd) => wd as isize,
         Err(WatchError::InvalidMask) => -errno::EINVAL,
+        Err(WatchError::Closed) => -errno::EBADF,
+        Err(WatchError::AlreadyExists) => -errno::EEXIST,
         Err(WatchError::TooManyWatches) => -errno::ENOSPC,
         Err(WatchError::OutOfMemory) => -errno::ENOMEM,
     }

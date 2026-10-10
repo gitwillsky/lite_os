@@ -1,6 +1,6 @@
 //! 内存型 regular file 的唯一存储：页即内容，单份，生命周期跟随持有它的 inode。
 //!
-//! tmpfs 与 memfd 共用。与磁盘文件不同，这里没有 backing storage，因此不经全局 page cache：
+//! tmpfs 与 memfd 共用；canonical 内容页可迁移到 swap，但没有第二份文件镜像，不经磁盘 page cache：
 //! 页缓存的 registry 会让已删除文件的 inode（连同内容）一直存活到下一次 `sync`，并让热数据
 //! 占两份内存。读写、mmap 与 truncate 都直接作用于这些页；页只在文件被删除且没有 open/mmap
 //! 引用时随 `Arc` 释放，并立即归还配额。
@@ -8,10 +8,11 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::FileSystemError;
+use super::{FileSystemError, StorageBudget};
 use crate::memory::{
-    PAGE_SIZE, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedPage,
-    invalidate_shared_file,
+    MemoryReclaimer, PAGE_SIZE, ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId,
+    SharedFileMapping, SharedPage, SharedPagePin, SwappablePage, invalidate_shared_file,
+    register_memory_reclaimer,
 };
 use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
@@ -24,94 +25,17 @@ use sparse::{PageBytes, SparsePages, Stop};
 
 const _: () = assert!(sparse::PAGE_SIZE == PAGE_SIZE);
 
-fn touch(modified_ns: &AtomicU64) {
-    modified_ns.store(crate::timer::get_realtime_ns(), Ordering::Relaxed);
-}
-
-/// [`PageBudget`] 的“不限”哨兵。
-const UNLIMITED: u64 = u64::MAX;
-
-/// 一个 filesystem 实例可用的页配额；所有属于它的 [`MemoryFile`] 共享同一个。
-pub(crate) struct PageBudget {
-    // 页数上限，`UNLIMITED` 表示只受物理内存限制（memfd）。可经 tmpfs `remount` 调整，所以是原子量；
-    // 预留与调整的竞争由 `try_reserve` 的 CAS 与 `set_limit` 的 CAS 共同裁决。
-    limit: AtomicU64,
-    // OWNER: 已被该配额下的存储页占用的页数；页在创建时预留、在最后一个 `Arc` 释放时归还。
-    // 缺失原子预留会让并发写入一起越过 `size=` 上限。
-    used: AtomicU64,
-}
-
-impl PageBudget {
-    pub(crate) fn new(limit: Option<u64>) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self {
-            limit: AtomicU64::new(limit.unwrap_or(UNLIMITED)),
-            used: AtomicU64::new(0),
-        })
-        .map_err(|_| FileSystemError::OutOfMemory)
-    }
-
-    pub(crate) fn limit(&self) -> Option<u64> {
-        Some(self.limit.load(Ordering::Relaxed)).filter(|limit| *limit != UNLIMITED)
-    }
-
-    /// 调整页数上限（tmpfs `remount` 的 `size=`）。
-    ///
-    /// # Errors
-    ///
-    /// 新上限小于已占用页数返回 `InvalidOperation`（Linux：`Cannot retroactively limit size`）。
-    pub(crate) fn set_limit(&self, limit: Option<u64>) -> Result<(), FileSystemError> {
-        let limit = limit.unwrap_or(UNLIMITED);
-        // 先把上限抬到新值再校验占用会让并发预留越界；因此校验与写入必须是同一个 CAS 序列：
-        // 当前 `used` 不超过新上限时才发布，发布后并发的 `try_reserve` 会按新上限判定。
-        loop {
-            let current = self.limit.load(Ordering::Relaxed);
-            if self.used.load(Ordering::Acquire) > limit {
-                return Err(FileSystemError::InvalidOperation);
-            }
-            if self
-                .limit
-                .compare_exchange(current, limit, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                // 发布之后可能有预留在旧上限下完成；若它们使 used 越过新上限，回滚发布。
-                if self.used.load(Ordering::Acquire) > limit {
-                    self.limit.store(current, Ordering::Release);
-                    return Err(FileSystemError::InvalidOperation);
-                }
-                return Ok(());
-            }
-        }
-    }
-
-    pub(crate) fn used(&self) -> u64 {
-        self.used.load(Ordering::Relaxed)
-    }
-
-    fn try_reserve(&self) -> bool {
-        self.used
-            .try_update(Ordering::AcqRel, Ordering::Relaxed, |used| {
-                (used < self.limit.load(Ordering::Acquire)).then(|| used + 1)
-            })
-            .is_ok()
-    }
-
-    fn release(&self) {
-        let previous = self.used.fetch_sub(1, Ordering::AcqRel);
-        assert_ne!(previous, 0, "page budget released more pages than reserved");
-    }
-}
-
-/// 一个存储页：物理页加它占用的配额。
+/// 一个存储页：唯一可换出内容 owner 加它持续占用的配额。
 struct ResidentPage {
-    frame: SharedFrame,
-    budget: Arc<PageBudget>,
+    page: Arc<SwappablePage>,
+    budget: Arc<StorageBudget>,
     /// 所属文件的修改时间；writable 映射建立时更新（Linux `page_mkwrite` 的 `file_update_time`）。
-    modified_ns: Arc<AtomicU64>,
+    times: Arc<super::inode_times::InodeTimes>,
 }
 
 impl Drop for ResidentPage {
     fn drop(&mut self) {
-        self.budget.release();
+        self.budget.release_page();
     }
 }
 
@@ -124,28 +48,36 @@ impl core::fmt::Debug for ResidentPage {
 }
 
 impl PageBytes for ResidentPage {
-    fn read(&self, offset: usize, output: &mut [u8]) {
-        self.frame.read(offset, output);
+    type Error = SharedFileError;
+    fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), Self::Error> {
+        self.page.pin()?.read(offset, output);
+        Ok(())
     }
 
-    fn write(&self, offset: usize, input: &[u8]) {
-        self.frame.write(offset, input);
+    fn write(&self, offset: usize, input: &[u8]) -> Result<(), Self::Error> {
+        self.page.pin()?.write(offset, input);
+        Ok(())
     }
 
-    fn zero_from(&self, offset: usize) {
-        self.frame.zero_from(offset);
+    fn zero_from(&self, offset: usize) -> Result<(), Self::Error> {
+        self.page.pin()?.zero_from(offset);
+        Ok(())
     }
 }
 
 impl SharedPage for ResidentPage {
-    fn frame(&self) -> &SharedFrame {
-        &self.frame
+    fn pin(&self) -> Result<SharedPagePin<'_>, SharedFileError> {
+        self.page.pin().map(SharedPagePin::Swappable)
     }
 
-    // 存储页永远不会被写回或回收，没有 dirty 状态，writer 计数没有消费者。但 writable 映射的首次
+    fn swappable(&self) -> Option<&Arc<SwappablePage>> {
+        Some(&self.page)
+    }
+
+    // 存储页没有独立 writeback dirty 状态，writer 计数没有消费者。但 writable 映射的首次
     // 建立意味着文件内容即将被 store 修改，必须在此刻推进 mtime：之后的 store 不再经过内核。
     fn acquire_writer(&self) {
-        touch(&self.modified_ns);
+        self.times.touch();
     }
 
     fn release_writer(&self) {}
@@ -164,12 +96,14 @@ enum PageShortage {
 struct State {
     pages: SparsePages<ResidentPage>,
     seals: Seals,
+    /// 只为粗粒度 reclaimer 提供轮转索引，不保存另一份页内容或页集合。
+    reclaim_cursor: u64,
 }
 
 /// 内存型 regular file。
 pub(crate) struct MemoryFile {
     id: SharedFileId,
-    budget: Arc<PageBudget>,
+    budget: Arc<StorageBudget>,
     // OWNER: 序列化整次 regular write、append、truncate 与 fallocate；caller 在持有期间会做用户态
     // 拷贝并进入 AddressSpace lock，所以它必须在 `state` 之外，page fault 只取内层 `state`。
     write_sequence: TaskMutex<()>,
@@ -179,10 +113,9 @@ pub(crate) struct MemoryFile {
     // 文件长度的无锁只读投影，只在持有 `state` 时由 mutation 更新；权威仍是 `state`。
     // `Inode::size` 不能失败也不能睡眠，缺失该投影只能在锁获取失败时回答错误的长度。
     published_length: AtomicU64,
-    // 最近一次内容修改的 realtime（ns）。写入与 mmap 直接作用于这里而不经 inode，所以修改时间只能由
-    // 存储自己记录；缺失时 tmpfs/memfd 的 `st_mtime` 永远停在创建时刻，`make` 之类按 mtime 判断的
-    // 工具会漏掉改动。
-    modified_ns: Arc<AtomicU64>,
+    // OWNER: inode 与所有 writable resident-page 共用同一 atime/mtime/ctime tuple；
+    // mmap touch 不调用 inode metadata，也不以 mtime 的最大值伪造 ctime。
+    times: Arc<super::inode_times::InodeTimes>,
 }
 
 /// 持有整次 regular write 的序列化权；Drop 释放。
@@ -191,10 +124,18 @@ pub(crate) struct MemoryWrite<'a> {
     _sequence: TaskMutexGuard<'a, ()>,
 }
 
-fn shortage_error(stop: Stop<PageShortage>) -> FileSystemError {
+fn shortage_error(stop: Stop<PageShortage, SharedFileError>) -> FileSystemError {
     match stop {
+        Stop::Access(error) => page_access_error(error),
         Stop::Allocator(PageShortage::Quota) => FileSystemError::NoSpace,
         Stop::OutOfMemory | Stop::Allocator(PageShortage::Memory) => FileSystemError::OutOfMemory,
+    }
+}
+
+fn page_access_error(error: SharedFileError) -> FileSystemError {
+    match error {
+        SharedFileError::OutOfMemory => FileSystemError::OutOfMemory,
+        SharedFileError::Io | SharedFileError::BeyondEof => FileSystemError::IoError,
     }
 }
 
@@ -213,24 +154,26 @@ impl MemoryFile {
     /// - `id`: 文件所属 filesystem 实例与 inode，用于 mmap 失效广播。
     /// - `budget`: 页配额。
     /// - `allow_sealing`: memfd 的 `MFD_ALLOW_SEALING`；普通 tmpfs 文件为 false。
-    pub(crate) fn new(
+    pub(super) fn new(
         id: SharedFileId,
-        budget: Arc<PageBudget>,
+        budget: Arc<StorageBudget>,
         allow_sealing: bool,
     ) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self {
+        let file = Arc::try_new(Self {
             id,
             budget,
             write_sequence: TaskMutex::new(()),
             state: TaskMutex::new(State {
                 pages: SparsePages::new(),
                 seals: Seals::new(allow_sealing),
+                reclaim_cursor: 0,
             }),
             published_length: AtomicU64::new(0),
-            modified_ns: Arc::try_new(AtomicU64::new(0))
-                .map_err(|_| FileSystemError::OutOfMemory)?,
+            times: super::inode_times::InodeTimes::new()?,
         })
-        .map_err(|_| FileSystemError::OutOfMemory)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        register_memory_reclaimer(file.clone()).map_err(page_access_error)?;
+        Ok(file)
     }
 
     fn state(&self) -> Result<TaskMutexGuard<'_, State>, FileSystemError> {
@@ -239,18 +182,18 @@ impl MemoryFile {
 
     /// 分配一个已预留配额的零页。
     fn allocate_page(&self) -> Result<Arc<ResidentPage>, PageShortage> {
-        if !self.budget.try_reserve() {
+        if !self.budget.reserve_page() {
             return Err(PageShortage::Quota);
         }
         // `page` 一旦构造，任何后续失败都由它的 Drop 归还配额。
-        let page = SharedFrame::allocate()
-            .map(|frame| ResidentPage {
-                frame,
+        let page = SwappablePage::allocate_shared()
+            .map(|page| ResidentPage {
+                page,
                 budget: self.budget.clone(),
-                modified_ns: self.modified_ns.clone(),
+                times: self.times.clone(),
             })
             .map_err(|_| {
-                self.budget.release();
+                self.budget.release_page();
                 PageShortage::Memory
             })?;
         Arc::try_new(page).map_err(|_| PageShortage::Memory)
@@ -266,13 +209,13 @@ impl MemoryFile {
         self.published_length.load(Ordering::Acquire)
     }
 
-    /// 最近一次内容修改的 realtime 秒数；从未修改为 0。
-    pub(crate) fn modified_seconds(&self) -> u64 {
-        self.modified_ns.load(Ordering::Relaxed) / 1_000_000_000
+    /// inode metadata 与 mmap writer 共用的时间 owner；不复制 scalar 时间。
+    pub(super) fn times(&self) -> Arc<super::inode_times::InodeTimes> {
+        self.times.clone()
     }
 
     fn touch(&self) {
-        touch(&self.modified_ns);
+        self.times.touch();
     }
 
     /// 在持有 `state` 时发布新的文件长度。
@@ -282,8 +225,8 @@ impl MemoryFile {
     }
 
     /// 已分配的页数（不含稀疏文件的洞）。
-    pub(crate) fn resident_pages(&self) -> Result<usize, FileSystemError> {
-        Ok(self.state()?.pages.resident_pages())
+    pub(crate) fn allocated_pages(&self) -> Result<usize, FileSystemError> {
+        Ok(self.state()?.pages.allocated_pages())
     }
 
     pub(crate) fn seals(&self) -> Result<u32, FileSystemError> {
@@ -292,12 +235,21 @@ impl MemoryFile {
 
     /// 追加 seal；见 [`Seals::add`]。
     pub(crate) fn add_seals(&self, seals: u32) -> Result<u32, FileSystemError> {
+        // seals 与写入/resize 共用 sequence；truncate 的提前检查直到提交都有效。
+        let _sequence = self
+            .write_sequence
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         self.state()?.seals.add(seals).map_err(seal_error)
     }
 
     /// 读取；洞读为零，EOF 返回零字节。
     pub(crate) fn read(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
-        Ok(self.state()?.pages.read(offset, output))
+        let (read, error) = self.state()?.pages.read(offset, output);
+        match (read, error) {
+            (0, Some(error)) => Err(page_access_error(error)),
+            (read, _) => Ok(read),
+        }
     }
 
     /// 开始一次不可被其他 mutation 穿插的 regular write。
@@ -333,12 +285,15 @@ impl MemoryFile {
         }
     }
 
-    /// 截断（或增长为稀疏文件）并撤销所有 mmap 对被截掉页的映射。
+    /// 同 write sequence 先判 seal，再准备 metadata guard；成功 resize 后无失败提交属性。
     ///
-    /// # Errors
-    ///
-    /// seal 禁止、分配等待元数据失败返回对应错误。
-    pub(crate) fn truncate(&self, size: u64) -> Result<(), FileSystemError> {
+    /// `prepare` 可失败但不改变属性；`commit` 不分配、不失败。广播发生在 pages/metadata guards 外。
+    pub(super) fn truncate_with_metadata<G>(
+        &self,
+        size: u64,
+        prepare: impl FnOnce() -> Result<G, FileSystemError>,
+        commit: impl FnOnce(&mut G),
+    ) -> Result<(), FileSystemError> {
         // 失效广播发生在不可回滚的页释放之后；预先分配 waiter，使该阶段不会失败。
         let mut invalidation =
             TaskMutexWaitPreparation::prepare().map_err(|_| FileSystemError::OutOfMemory)?;
@@ -347,22 +302,32 @@ impl MemoryFile {
             .lock()
             .map_err(|_| FileSystemError::OutOfMemory)?;
         {
-            let mut state = self.state()?;
-            let length = state.pages.len();
+            let state = self.state()?;
             state
                 .seals
-                .check_truncate(length, size)
+                .check_truncate(state.pages.len(), size)
                 .map_err(seal_error)?;
-            state.pages.truncate(size);
+        }
+        let mut metadata = prepare()?;
+        {
+            let mut state = self.state()?;
+            state.pages.truncate(size).map_err(page_access_error)?;
             self.publish_length(&state);
         }
+        commit(&mut metadata);
         self.touch();
+        drop(metadata);
         invalidate_shared_file(self.id, size, &mut invalidation);
         Ok(())
     }
 
-    /// 预分配 `[offset, offset + length)`，并把文件长度提升到范围末端。
-    pub(crate) fn allocate(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
+    /// 成功 allocation 的同一 write sequence 内更新 inode metadata，不跨 metadata guard 访问页。
+    pub(super) fn allocate_with_metadata(
+        &self,
+        offset: u64,
+        length: u64,
+        modified: impl FnOnce(),
+    ) -> Result<(), FileSystemError> {
         let _sequence = self
             .write_sequence
             .lock()
@@ -378,7 +343,9 @@ impl MemoryFile {
             .allocate_range(offset, length, || self.allocate_page())
             .map_err(shortage_error);
         self.publish_length(&state);
+        drop(state);
         if result.is_ok() {
+            modified();
             self.touch();
         }
         result
@@ -393,6 +360,13 @@ impl MemoryFile {
 }
 
 impl MemoryWrite<'_> {
+    pub(super) fn belongs_to(&self, file: &MemoryFile) -> bool {
+        core::ptr::eq(self.file, file)
+    }
+    pub(super) fn size(&self) -> u64 {
+        self.file.size()
+    }
+
     /// 在 `offset` 写入；返回实际写入的字节数（页配额或内存耗尽时为短写）。
     pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
         self.file.write_locked(offset, input)
@@ -420,6 +394,45 @@ impl MemoryWrite<'_> {
         self.file
             .write_locked(offset, &input[..allowed])
             .map(|written| (offset, written))
+    }
+}
+
+impl MemoryReclaimer for MemoryFile {
+    fn reclaim_pages(&self, request: ReclaimRequest) -> ReclaimResult {
+        if !request.allows_swap_io() {
+            return ReclaimResult::default();
+        }
+        let mut scanned = 0;
+        let mut reclaimed = 0;
+        let mut wrapped = false;
+        let mut initial_cursor = None;
+        while scanned < request.scan_pages() && reclaimed < request.target_pages() {
+            let candidate = {
+                let Some(mut state) = self.state.try_lock() else {
+                    break;
+                };
+                let mut next = state.pages.next_page_from(state.reclaim_cursor);
+                let initial = *initial_cursor.get_or_insert(state.reclaim_cursor);
+                if next.is_none() && !wrapped {
+                    wrapped = true;
+                    next = state.pages.next_page_from(0);
+                }
+                let Some((index, page)) = next else {
+                    break;
+                };
+                if wrapped && index >= initial {
+                    break;
+                }
+                state.reclaim_cursor = index
+                    .checked_add(1)
+                    .expect("memory-file page index overflow");
+                page.page.clone()
+            };
+            scanned += 1;
+            // PageOp -> try-MM only; never enter this IO with file State or write_sequence held.
+            reclaimed += usize::from(candidate.swap_out());
+        }
+        ReclaimResult::new(reclaimed, scanned)
     }
 }
 
@@ -454,7 +467,10 @@ impl SharedFileMapping for MemoryMapping {
             Some(Ok(page)) => Ok(page as Arc<dyn SharedPage>),
             // 配额耗尽时 mmap 访问以 SIGBUS 报告，与 Linux tmpfs 超出 `size=` 的行为一致。
             Some(Err(Stop::Allocator(PageShortage::Quota))) => Err(SharedFileError::Io),
-            Some(Err(_)) => Err(SharedFileError::OutOfMemory),
+            Some(Err(Stop::Access(error))) => Err(error),
+            Some(Err(Stop::OutOfMemory | Stop::Allocator(PageShortage::Memory))) => {
+                Err(SharedFileError::OutOfMemory)
+            }
         }
     }
 

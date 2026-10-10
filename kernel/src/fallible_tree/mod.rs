@@ -8,7 +8,8 @@ mod iter;
 mod test_support;
 #[path = "topology.rs"]
 mod topology;
-use iter::Iter;
+// Iter 已是 iter/iter_from/iter_after 的返回类型；具名 re-export 供领域枚举组合，无新增状态/分配。
+pub(crate) use iter::Iter;
 use topology::{
     count_nodes, insert_absent, join_ordered, last_key, remove_node, retain_linear, split,
 };
@@ -92,6 +93,15 @@ impl<K, V> NodeSlot<K, V> {
 }
 
 impl<K, V> VacantEntry<K, V> {
+    /// 实际 node allocation 的布局大小；领域预算计入真实 storage，不猜测 tree 内部字段。
+    pub(crate) const fn allocation_size() -> usize {
+        core::mem::size_of::<Node<K, V>>()
+    }
+
+    /// 借用尚未发表的实际key，供多节点transaction在修改现有索引前检查冲突。
+    pub(crate) fn key(&self) -> &K {
+        &self.0.key
+    }
     /// 返回 token 中尚未发布 value 的共享引用。
     pub(crate) fn value(&self) -> &V {
         &self.0.value
@@ -115,6 +125,22 @@ impl<K, V> VacantEntry<K, V> {
     pub(crate) fn into_value(self) -> V {
         let Node { value, .. } = *self.0;
         value
+    }
+
+    /// 回收已摘除 node 的实际 storage，同时转交完整旧 key/value 的析构责任。
+    /// 不分配、不释放；IRQ owner 可复用 slot，把有资源边的旧 value 移给锁外 retirement。
+    pub(crate) fn into_slot(self) -> (NodeSlot<K, V>, K, V) {
+        assert!(self.0.left.is_none() && self.0.right.is_none() && self.0.next.is_none());
+        let pointer = Box::into_raw(self.0);
+        // SAFETY: VacantEntry 独占摘除后的完整 Node，无 topology edges 或外部 iterator。
+        // key/value 各 read 一次并转交 caller；其余字段无拥有的资源。相同 layout 的
+        // MaybeUninit storage 不再析构旧值，未来 fill 完整 write 后才重新 assume_init。
+        unsafe {
+            let key = core::ptr::read(&raw const (*pointer).key);
+            let value = core::ptr::read(&raw const (*pointer).value);
+            let slot = NodeSlot(Box::from_raw(pointer.cast::<MaybeUninit<Node<K, V>>>()));
+            (slot, key, value)
+        }
     }
 }
 

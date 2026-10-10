@@ -161,15 +161,28 @@ impl Inode for DevPtsInode {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_storage(
+        &self,
+        _offset: u64,
+        _buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    fn append_storage(
+        &self,
+        _buf: &[u8],
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn truncate_storage(&self, _size: u64) -> Result<(), FileSystemError> {
+    fn truncate_storage(
+        &self,
+        _size: u64,
+        _identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
@@ -302,10 +315,13 @@ impl crate::fs::FileSystemType for DevPtsFileSystemType {
     fn create(
         &self,
         request: &crate::fs::MountRequest<'_>,
-    ) -> Result<Arc<dyn crate::fs::FileSystem>, FileSystemError> {
+    ) -> Result<crate::fs::CreatedFileSystem, FileSystemError> {
         if !crate::fs::mount_options::is_empty(request.options) {
             return Err(FileSystemError::InvalidOperation);
         }
-        Ok(DevPtsFileSystem::new()?)
+        Ok(crate::fs::CreatedFileSystem {
+            filesystem: DevPtsFileSystem::new()?,
+            user_namespace: request.identity.user_namespace(),
+        })
     }
 }

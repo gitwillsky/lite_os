@@ -1,15 +1,32 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{EPOLL_EDGE, Epoll, EpollInterest, EpollState, InterestKey, OpenFileDescription};
+use super::{
+    EPOLL_EDGE, Epoll, EpollInterest, EpollState, FileReadinessContext, InterestKey,
+    OpenFileDescription,
+};
+
+impl super::Interest {
+    fn generation(&self, context: &impl FileReadinessContext) -> u64 {
+        self.signal_source.as_ref().map_or_else(
+            || {
+                self.ofd
+                    .readiness_generation(self.event.events as i16, context)
+            },
+            |source| source.generation(),
+        )
+    }
+}
 
 impl Epoll {
-    fn refresh_with_events(state: &mut EpollState, key: InterestKey, current: Option<u32>) -> bool {
+    fn refresh_with_events(
+        state: &mut EpollState,
+        key: InterestKey,
+        current: Option<u32>,
+        generation: u64,
+    ) -> bool {
         let Some(interest) = state.interests.get(&key) else {
             return false;
         };
-        let generation = interest
-            .ofd
-            .readiness_generation(interest.event.events as i16);
         let should_be_ready = !interest.disabled
             && current.is_none_or(|events| events != 0)
             && (interest.event.events & EPOLL_EDGE == 0
@@ -36,12 +53,19 @@ impl Epoll {
         should_be_ready && current.is_some()
     }
 
-    pub(super) fn refresh_locked(state: &mut EpollState, key: InterestKey) {
+    pub(super) fn refresh_locked(
+        state: &mut EpollState,
+        key: InterestKey,
+        context: &impl FileReadinessContext,
+    ) {
         let Some(interest) = state.interests.get(&key) else {
             return;
         };
-        let current = interest.ofd.poll_events(interest.event.events as i16) as u32;
-        Self::refresh_with_events(state, key, Some(current));
+        let current = interest
+            .ofd
+            .poll_events(interest.event.events as i16, context) as u32;
+        let generation = interest.generation(context);
+        Self::refresh_with_events(state, key, Some(current), generation);
     }
 
     /// source notifier 持 epoll owner 时无等待地刷新单个 ready membership。
@@ -66,11 +90,17 @@ impl Epoll {
             .ofd
             .try_poll_events(interest.event.events as i16)
             .map(|events| events as u32);
-        Self::refresh_with_events(state, key, current)
+        let generation = interest.generation(&super::super::readiness::SourceNotificationContext);
+        // signalfd callback 的 current=None 表示候选，不能用 notifier 的 pending 作过滤。
+        Self::refresh_with_events(state, key, current, generation)
     }
 
     /// 只复制当前 ready memberships，不扫描全部 interests。
-    pub(crate) fn ready_snapshot(&self, maximum: usize) -> Result<Vec<EpollInterest>, ()> {
+    pub(crate) fn ready_snapshot(
+        &self,
+        maximum: usize,
+        context: &impl FileReadinessContext,
+    ) -> Result<Vec<EpollInterest>, ()> {
         let mut state = self.state.lock();
         let mut snapshot = Vec::new();
         snapshot
@@ -95,7 +125,10 @@ impl Epoll {
             }
             cursor = Some(key);
             let interest = state.interests.get(&key).unwrap();
-            let ready_events = interest.ofd.poll_events(interest.event.events as i16) as u32;
+            let ready_events = interest
+                .ofd
+                .poll_events(interest.event.events as i16, context)
+                as u32;
             if ready_events == 0 {
                 let node = state.ready.take_entry(&key).unwrap();
                 state.interests.get_mut(&key).unwrap().ready_node = Some(node);
@@ -106,9 +139,7 @@ impl Epoll {
                 ofd: interest.ofd.clone(),
                 event: interest.event,
                 ready_events,
-                generation: interest
-                    .ofd
-                    .readiness_generation(interest.event.events as i16),
+                generation: interest.generation(context),
                 revision: interest.revision,
             });
             if snapshot.len() == maximum {
@@ -118,6 +149,10 @@ impl Epoll {
         Ok(snapshot)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "同一次原子 publication 的独立领域输入，参数语义与所有权已逐项说明"
+    )]
     pub(crate) fn commit_delivery(
         &self,
         fd: usize,
@@ -126,6 +161,7 @@ impl Epoll {
         generation: u64,
         edge: bool,
         oneshot: bool,
+        context: &impl FileReadinessContext,
     ) {
         let mut state = self.state.lock();
         let key = InterestKey::new(fd, ofd);
@@ -147,12 +183,19 @@ impl Epoll {
             interest.disabled = true;
         }
         if !edge && !oneshot {
-            Self::refresh_locked(&mut state, key);
+            Self::refresh_locked(&mut state, key, context);
         }
     }
 
-    pub(crate) fn has_ready(&self) -> bool {
-        !self.state.lock().ready.is_empty()
+    pub(crate) fn has_ready(&self, context: &impl FileReadinessContext) -> bool {
+        let mut state = self.state.lock();
+        while let Some((&key, _)) = state.ready.first_key_value() {
+            Self::refresh_locked(&mut state, key, context);
+            if state.ready.contains_key(&key) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn readiness_generation(&self) -> u64 {

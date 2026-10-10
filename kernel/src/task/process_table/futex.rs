@@ -1,5 +1,6 @@
 use super::*;
 use crate::memory::{FutexKey, UserAccessError};
+use crate::sync::TaskMutexWaitPreparation;
 
 /// futex WAIT 在 task layer 的精确结果分类。
 #[derive(Debug, Clone, Copy)]
@@ -16,6 +17,15 @@ pub(crate) enum FutexWaitError {
     Interrupted,
     /// wait registry 无法在 publication 前预留完整 membership。
     OutOfMemory,
+    /// 原生 WAKE_OP 不支持的 operation/comparison。
+    Unsupported,
+}
+
+fn pair_error(error: crate::memory::FutexAccessError) -> FutexWaitError {
+    match error {
+        crate::memory::FutexAccessError::Unaligned => FutexWaitError::Invalid,
+        crate::memory::FutexAccessError::Memory(_error) => FutexWaitError::Fault,
+    }
 }
 
 /// 按 memory-domain key 等待用户 u32 改变；先发布 Arming membership，
@@ -41,7 +51,7 @@ pub(crate) fn futex_wait(
     deadline: Option<u64>,
     bitset: u32,
 ) -> Result<(), FutexWaitError> {
-    if address == 0 || address & 3 != 0 || bitset == 0 {
+    if address & 3 != 0 || bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
     loop {
@@ -62,6 +72,9 @@ pub(crate) fn futex_wait(
         let ticket = WAIT_REGISTRY.allocate_ticket();
         let wait = ticket
             .prepare_futex(key, bitset, deadline, task.clone())
+            .map_err(|()| FutexWaitError::OutOfMemory)?;
+        let transaction = WAIT_REGISTRY
+            .futex_transaction(&[key], None)
             .map_err(|()| FutexWaitError::OutOfMemory)?;
         // Arming source node 先于第二次 value/key 复查发布。wake 若命中只记录
         // Notified，不会唤醒仍为 Running 的 task；因此 memory callback 不再嵌套 registry lock。
@@ -96,6 +109,7 @@ pub(crate) fn futex_wait(
                 CancelOutcome::Notified(result) => return futex_notification(result),
             },
             Ok(true) => {
+                drop(transaction);
                 let arm = match published.prepare_arm() {
                     Ok(arm) => arm,
                     Err(result) => return futex_notification(result),
@@ -125,7 +139,8 @@ fn futex_notification(result: WaitResult) -> Result<(), FutexWaitError> {
 ///
 /// - `count`: 最大唤醒数。
 /// - `bitset`: wake 与 waiter mask 的非零交集条件。
-/// - `with_key`: 在 AddressSpace lock 内把稳定 FutexKey 交给 consume。
+/// - `preparation`: Thread 已预留的 cleanup waiter；同一次清理复用 MM 与 operation acquisition。
+/// - `with_key`: 使用传入 preparation 解析稳定 key；归还 MM guard 后才取得 operation guard。
 ///
 /// # Returns
 ///
@@ -133,24 +148,26 @@ fn futex_notification(result: WaitResult) -> Result<(), FutexWaitError> {
 pub(in crate::task) fn futex_wake_with_key(
     count: usize,
     bitset: u32,
-    with_key: impl FnOnce(&mut dyn FnMut(FutexKey)) -> Result<(), UserAccessError>,
+    preparation: &mut TaskMutexWaitPreparation,
+    with_key: impl FnOnce(
+        &mut TaskMutexWaitPreparation,
+        &mut dyn FnMut(FutexKey),
+    ) -> Result<(), UserAccessError>,
 ) -> Result<usize, FutexWaitError> {
     if bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
     let mut key = None;
-    with_key(&mut |resolved| key = Some(resolved)).map_err(|_| FutexWaitError::Fault)?;
+    with_key(preparation, &mut |resolved| key = Some(resolved))
+        .map_err(|_| FutexWaitError::Fault)?;
     let key = key.expect("futex key resolver did not publish an identity");
-    let mut consumed = 0;
-    for _ in 0..count {
-        let Some(wake) = WAIT_REGISTRY.wake_futex_one(key, bitset) else {
-            break;
-        };
-        consumed += 1;
-        if let Some(waiter) = wake.claimed {
-            crate::task::processor::wake_futex_task(waiter.task, waiter.id, WaitResult::Woken);
-        }
-    }
+    let transaction = WAIT_REGISTRY
+        .futex_transaction(&[key], Some(preparation))
+        .expect("prepared mandatory futex acquisition cannot allocate");
+    let mut claimed = wait_registry::ClaimedBatch::new();
+    let consumed = transaction.wake(key, count, bitset, &mut claimed);
+    drop(transaction);
+    wake_claimed(&mut claimed);
     Ok(consumed)
 }
 
@@ -174,12 +191,20 @@ pub(crate) fn futex_wake(
     count: usize,
     bitset: u32,
 ) -> Result<usize, FutexWaitError> {
-    if address == 0 || address & 3 != 0 || bitset == 0 {
+    if address & 3 != 0 || bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
-    futex_wake_with_key(count, bitset, |consume| {
-        task.with_futex_key(address, private, consume)
-    })
+    let key = task
+        .with_futex_key(address, private, |key| key)
+        .map_err(|_| FutexWaitError::Fault)?;
+    let transaction = WAIT_REGISTRY
+        .futex_transaction(&[key], None)
+        .map_err(|()| FutexWaitError::OutOfMemory)?;
+    let mut claimed = wait_registry::ClaimedBatch::new();
+    let consumed = transaction.wake(key, count, bitset, &mut claimed);
+    drop(transaction);
+    wake_claimed(&mut claimed);
+    Ok(consumed)
 }
 
 /// 原子比较 source word，唤醒一部分 waiter，并把其余 waiter 改挂到 target key。
@@ -206,36 +231,102 @@ pub(crate) fn futex_requeue(
     requeue_count: usize,
     compare: Option<u32>,
 ) -> Result<usize, FutexWaitError> {
-    if source == 0 || source & 3 != 0 || target == 0 || target & 3 != 0 {
+    if source & 3 != 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let mut waiters = wait_registry::ClaimedBatch::new();
-    let (woken, moved) = task
-        .with_futex_requeue(
-            source,
-            target,
-            private,
-            |source_key, target_key, current| {
-                if compare.is_some_and(|expected| expected != current) {
-                    return Err(FutexWaitError::Again);
-                }
-                let mut woken = 0;
-                for _ in 0..wake_count {
-                    let Some(wake) = WAIT_REGISTRY.wake_futex_one(source_key, u32::MAX) else {
-                        break;
-                    };
-                    woken += 1;
-                    if let Some(waiter) = wake.claimed {
-                        waiters.push(waiter);
+    loop {
+        let keys = task
+            .with_futex_requeue(source, target, private, false, |source, target, _| {
+                [source, target]
+            })
+            .map_err(pair_error)?;
+        let transaction = WAIT_REGISTRY
+            .futex_transaction(&keys, None)
+            .map_err(|()| FutexWaitError::OutOfMemory)?;
+        let mut waiters = wait_registry::ClaimedBatch::new();
+        let result = task
+            .with_futex_requeue(
+                source,
+                target,
+                private,
+                compare.is_some(),
+                |source_key, target_key, current| {
+                    if [source_key, target_key] != keys {
+                        return Ok(None);
                     }
-                }
-                let moved = WAIT_REGISTRY.requeue_futex(source_key, target_key, requeue_count);
-                Ok((woken, moved))
-            },
-        )
-        .map_err(|_| FutexWaitError::Fault)??;
+                    if compare.is_some_and(|expected| Some(expected) != current) {
+                        return Err(FutexWaitError::Again);
+                    }
+                    let woken = transaction.wake(source_key, wake_count, u32::MAX, &mut waiters);
+                    let moved = transaction.requeue(source_key, target_key, requeue_count);
+                    Ok(Some(woken + moved))
+                },
+            )
+            .map_err(pair_error)?;
+        drop(transaction);
+        wake_claimed(&mut waiters);
+        if let Some(count) = result? {
+            return Ok(count);
+        }
+    }
+}
+
+fn wake_claimed(waiters: &mut wait_registry::ClaimedBatch) {
     while let Some(entry) = waiters.pop() {
         crate::task::processor::wake_futex_task(entry.task, entry.id, WaitResult::Woken);
     }
-    Ok(woken + moved)
+}
+
+/// 在同一个实际 source transaction 内更新 target，并按旧值比较唤醒两个队列。
+/// 不支持的 comparison 在更新之后返回 ENOSYS；任一 fault 不消费 waiter。
+pub(crate) fn futex_wake_op(
+    task: &TaskControlBlock,
+    source: usize,
+    target: usize,
+    private: bool,
+    counts: [usize; 2],
+    update: Option<crate::memory::UserAtomicU32Op>,
+    compare: impl FnOnce(u32) -> Result<bool, FutexWaitError>,
+) -> Result<usize, FutexWaitError> {
+    if source & 3 != 0 {
+        return Err(FutexWaitError::Invalid);
+    }
+    let limits = task.user_fault_limits();
+    loop {
+        let keys = task
+            .with_futex_wake_op(source, target, private, |source, target, _| {
+                [source, target]
+            })
+            .map_err(pair_error)?;
+        let transaction = WAIT_REGISTRY
+            .futex_transaction(&keys, None)
+            .map_err(|()| FutexWaitError::OutOfMemory)?;
+        let mut claimed = wait_registry::ClaimedBatch::new();
+        // FnOnce comparison 只在 key 已复查、actual RMW 已成功后消费。
+        let result = task
+            .with_futex_wake_op(source, target, private, |source_key, target_key, memory| {
+                if [source_key, target_key] != keys {
+                    return Ok(None);
+                }
+                let update = update.ok_or(FutexWaitError::Unsupported)?;
+                let word: crate::memory::UserAtomicU32<'_> = memory
+                    .futex_atomic_word(target, limits)
+                    .map_err(|_| FutexWaitError::Fault)?;
+                let old = word.update(update);
+                Ok(Some(old))
+            })
+            .map_err(pair_error)??;
+        let Some(old) = result else {
+            drop(transaction);
+            continue;
+        };
+        let second = compare(old)?;
+        let mut count = transaction.wake(keys[0], counts[0], u32::MAX, &mut claimed);
+        if second {
+            count += transaction.wake(keys[1], counts[1], u32::MAX, &mut claimed);
+        }
+        drop(transaction);
+        wake_claimed(&mut claimed);
+        return Ok(count);
+    }
 }

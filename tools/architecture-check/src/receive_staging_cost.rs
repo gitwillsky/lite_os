@@ -26,6 +26,8 @@ fn measure(root: &Path) -> Result<StagingCost, String> {
     let sequential = read(root, SEQUENTIAL)?;
     let sequential_read = read(root, SEQUENTIAL_READ)?;
     let message = read(root, MESSAGE)?;
+    let socket = read(root, "kernel/src/socket/mod.rs")?;
+    let buffer = read(root, "kernel/src/ipc/receive_buffer.rs")?;
     let legacy = usize::from(
         sequential.contains("bytes.resize(length, 0)")
             && sequential.contains("fn buffer(length: usize)"),
@@ -39,7 +41,12 @@ fn measure(root: &Path) -> Result<StagingCost, String> {
         });
     }
     if sequential_read.contains("ReceiveBuffer::try_new")
-        && message.contains("ReceiveBuffer::try_new")
+        && message.contains("socket.prepare_receive(")
+        && socket.contains("ReceiveBuffer::try_new(capacity)")
+        && socket.contains("ReceiveBuffer::deferred(requested)")
+        && buffer.contains("bytes.try_reserve_exact(limit)")
+        && buffer.contains("pub(crate) fn prepare_append(")
+        && !buffer.contains(".resize(")
         && !sequential.contains("fn buffer(length: usize)")
         && !message.contains("fn message_buffer(length: usize)")
     {

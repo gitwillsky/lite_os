@@ -10,15 +10,13 @@ impl TimerQueue {
         Ok(id)
     }
 
-    pub(super) fn commit_posix_create(
-        &mut self,
-        prepared: PreparedPosixCreate,
-    ) -> Result<(), PreparedPosixCreate> {
+    pub(super) fn commit_posix_create(&mut self, prepared: &mut PreparedPosixCreate) -> bool {
         match posix_create_action(self.posix_timers.contains_key(&prepared.key)) {
-            PosixCreateAction::RetargetPreparedNode => return Err(prepared),
+            PosixCreateAction::RetargetPreparedNode => return false,
             PosixCreateAction::Commit => {}
         }
-        self.posix_timers.commit_vacant(prepared.timer_node);
-        Ok(())
+        self.posix_timers
+            .commit_vacant(prepared.timer_node.take().expect("prepared POSIX node"));
+        true
     }
 }

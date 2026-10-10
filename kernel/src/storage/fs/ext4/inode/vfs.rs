@@ -2,14 +2,44 @@ use super::super::inode::Timestamp;
 use super::*;
 
 impl Inode for Ext4Inode {
+    fn check_xattr_write(&self) -> Result<(), FileSystemError> {
+        Self::xattr_write_allowed(&self.disk.lock())
+    }
+
+    fn read_xattr(&self, name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+        self.read_attribute(name)
+    }
+
+    fn list_xattrs(
+        &self,
+        identity: &crate::fs::AccessIdentity,
+    ) -> Result<Vec<u8>, FileSystemError> {
+        self.list_attributes(identity)
+    }
+
+    fn change_xattr(&self, change: crate::fs::XattrChange<'_>) -> Result<(), FileSystemError> {
+        self.change_attribute(change)
+    }
+
+    fn write_access(&self) -> Option<&crate::fs::InodeWriteAccess> {
+        (self.inode_type() == InodeType::File).then_some(&self.write_access)
+    }
+
     fn filesystem_id(&self) -> usize {
         Arc::as_ptr(&self.fs) as usize
+    }
+
+    fn notification_link_state(&self) -> Option<(u64, u32)> {
+        Some((
+            u64::from(self.inode_num),
+            u32::from(self.disk.lock().i_links_count),
+        ))
     }
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let inode = self.disk.lock();
         Ok(InodeMetadata {
-            filesystem: 1,
+            filesystem: self.fs.device_number.encode(),
             inode: self.inode_num as u64,
             kind: inode_kind::from_mode(inode.i_mode),
             mode: inode.i_mode as u32,
@@ -79,30 +109,34 @@ impl Inode for Ext4Inode {
             done += n;
             cur_off += n;
         }
-        // 1. Linux relatime avoids a journal transaction on every page-cache miss.
-        let now = Timestamp::now();
-        let inode = self.disk.lock();
-        let atime = inode.atime().seconds();
-        let update_atime = atime <= inode.mtime().seconds()
-            || atime <= inode.ctime().seconds()
-            || now.seconds() >= atime.saturating_add(86_400);
-        drop(inode);
-        // 2. max prevents the lock-free precheck from rolling back a concurrent explicit update.
-        if update_atime {
-            let mut mutation = self.fs.begin_mutation()?;
-            let mut inode = mutation.inode(self)?;
-            if now.seconds() > inode.atime().seconds() {
-                inode.set_atime(now);
-            }
-            self.fs.write_inode_disk(self.inode_num, &inode)?;
-            drop(inode);
-            mutation.commit()?;
-        }
         Ok(done)
     }
 
+    fn touch_access(&self, now: u64, relatime: bool) -> Result<(), FileSystemError> {
+        let needs_update = |inode: &Ext4InodeDisk| {
+            crate::fs::inode_times::needs_access_update(
+                inode.atime().seconds(),
+                inode.mtime().seconds(),
+                inode.ctime().seconds(),
+                now,
+                relatime,
+            )
+        };
+        if !needs_update(&self.disk.lock()) {
+            return Ok(());
+        }
+        let mut mutation = self.fs.begin_mutation()?;
+        let mut inode = mutation.inode(self)?;
+        if needs_update(&inode) {
+            inode.set_atime(Timestamp::from_seconds(now)?);
+            self.fs.write_inode_disk(self.inode_num, &inode)?;
+        }
+        drop(inode);
+        mutation.commit()
+    }
+
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
-        let inode = *self.disk.lock();
+        let inode = self.disk.lock().disk;
         if inode_kind::from_mode(inode.i_mode) != InodeType::SymLink {
             return Err(FileSystemError::InvalidOperation);
         }
@@ -122,36 +156,74 @@ impl Inode for Ext4Inode {
         Ok(target)
     }
 
-    fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
-        self.write_bytes(offset, buf)
-    }
-
-    fn write_storage_batch(
+    fn write_storage(
         &self,
-        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
-    ) -> Result<(), FileSystemError> {
-        self.write_batch(batch)
+        offset: u64,
+        buf: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError> {
+        self.write_bytes(offset, buf, identity)
     }
 
-    fn try_write_storage_batch(
+    fn prepare_cached_write(
         &self,
-        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+        identity: &crate::fs::AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        self.try_write_batch(batch)
-    }
-
-    fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
-        self.append_bytes(buf)
-    }
-
-    fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError> {
         let mut mutation = self.fs.begin_mutation()?;
-        self.truncate_locked(&mut mutation, size)?;
+        self.check_swap_mutation(false)?;
+        self.remove_write_privileges_locked(&mut mutation, Some(identity))?;
         mutation.commit()
     }
 
-    fn allocate_storage(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
-        self.allocate_range(offset, length)
+    fn writeback_storage_batch(
+        &self,
+        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        self.write_batch(true, None, batch)
+    }
+
+    fn try_writeback_storage_batch(
+        &self,
+        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        self.try_write_batch(true, None, batch)
+    }
+
+    fn append_storage(
+        &self,
+        buf: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError> {
+        self.append_bytes(buf, identity)
+    }
+
+    fn truncate_storage(
+        &self,
+        size: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        let mut mutation = self.fs.begin_mutation()?;
+        self.truncate_locked(&mut mutation, size, identity)?;
+        mutation.commit()
+    }
+
+    fn allocate_storage(
+        &self,
+        offset: u64,
+        length: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        self.allocate_range(offset, length, identity)
+    }
+
+    fn is_swap_file(&self) -> bool {
+        self.disk.lock().swap != super::SwapFilePhase::Free
+    }
+
+    fn pin_swap_file(
+        self: Arc<Self>,
+    ) -> Result<alloc::boxed::Box<dyn crate::fs::swap::SwapFileLease>, FileSystemError> {
+        self.freeze_swap_file()
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
@@ -169,6 +241,10 @@ impl Inode for Ext4Inode {
     ) -> Result<DirectoryRead, FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
+        }
+        // Linux iterate_dir 在 dead directory 上返回 ENOENT；实际 zero-link fact 拥有该阶段。
+        if self.disk.lock().i_links_count == 0 {
+            return Err(FileSystemError::NotFound);
         }
         let mut visit = |next_cursor: u64, inode: u32, file_type: u8, name: &[u8]| {
             visitor.visit(
@@ -254,6 +330,9 @@ impl Inode for Ext4Inode {
         Self::validate_name(name)?;
         let mut mutation = self.fs.begin_mutation()?;
         let child = self.find_child(name)?;
+        if child.is_swap_file() {
+            return Err(FileSystemError::PermissionDenied);
+        }
         let metadata = child.metadata()?;
         if metadata.kind == InodeType::Directory {
             if !remove_directory {
@@ -282,7 +361,7 @@ impl Inode for Ext4Inode {
             disk.set_ctime(Timestamp::now());
             self.fs.write_inode_disk(child.inode_num, &disk)?;
             drop(disk);
-        } else if metadata.kind != InodeType::Directory && externally_held {
+        } else if externally_held {
             drop(disk);
             self.fs.defer_reclaim_locked(&mut mutation, &child)?;
         } else {
@@ -304,14 +383,14 @@ impl Inode for Ext4Inode {
     }
 }
 
-/// 判断 inode 是否是仍待最终回收的 open-unlinked regular file 或 symlink。
+/// 判断所有 inode 类型是否仍等待 open-unlinked 最终回收。
 ///
 /// `reclaim_locked` 按 Linux `ext4_free_inode` 保留 mode 并写入非零 `i_dtime`；缺少 dtime 条件时，
 /// unlink 或 mount orphan recovery 已回收的 inode 会在最后一个 Arc drop 时再次进入回收，并因
 /// orphan file 中已无该 inode 而以 `InvalidFileSystem` 失败。
 fn awaits_orphan_reclaim(disk: &Ext4InodeDisk) -> bool {
-    // 目录有独立的 rmdir 回收路径；其余类型（含 socket、FIFO、设备节点）被 open-unlinked 后都由这里回收。
-    disk.i_links_count == 0 && disk.i_dtime == 0 && disk.i_mode & 0xF000 != 0x4000
+    // Linux ext4_evict_inode 对所有零链接 inode 回收；目录的 open/cwd 引用也保留 inode number。
+    disk.i_links_count == 0 && disk.i_dtime == 0
 }
 
 impl Drop for Ext4Inode {
@@ -364,7 +443,10 @@ impl Ext4Inode {
         }
         mutation.discard_inode_on_abort(self.inode_num)?;
         self.fs.remove_orphan_locked(self.inode_num)?;
-        self.reclaim_locked(mutation, false)
+        self.reclaim_locked(
+            mutation,
+            inode_kind::from_mode(disk.i_mode) == InodeType::Directory,
+        )
     }
 }
 

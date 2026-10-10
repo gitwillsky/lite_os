@@ -42,6 +42,6 @@ impl DerefMut for InodeMutation<'_, '_> {
 
 impl Drop for InodeMutation<'_, '_> {
     fn drop(&mut self) {
-        *self.inode.disk.lock() = self.disk;
+        self.inode.disk.lock().disk = self.disk;
     }
 }

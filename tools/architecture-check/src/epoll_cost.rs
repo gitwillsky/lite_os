@@ -67,7 +67,7 @@ fn check_source_refresh_is_nonblocking(root: &Path) -> Result<(), String> {
         && !source_changed.contains("refresh_locked(&mut state, key)")
         && refresh.contains(".try_poll_events(")
         && !refresh.contains(".poll_events(")
-        && refresh.contains("refresh_with_events(state, key, current)")
+        && refresh.contains("refresh_with_events(state, key, current, generation)")
     {
         Ok(())
     } else {
@@ -118,9 +118,11 @@ pub(super) fn measure(root: &Path) -> Result<EpollCost, String> {
     }
 
     let incremental_wait = owner.contains("ready: FallibleMap<InterestKey, ()>")
-        && owner.contains("source_nodes: [Option<SourceNode>; 2]")
+        && owner.contains("source_nodes: [Option<SourceNode>; 3]")
         && owner.contains("ready_node: Option<ReadyNode>")
-        && syscall.contains(".ready_snapshot(maximum)")
+        && syscall.contains(".ready_snapshot(")
+        && syscall.contains("current_task()")
+        && syscall.contains(".as_ref(),")
         && !evaluate.contains("keys.add_interest(")
         && !evaluate.contains("poll_events(")
         && pipe_notify.contains("Epoll::notify_pipe_source(pipe)")

@@ -30,7 +30,8 @@
   deferred software interrupt 作为已确认 device edge 的耐久 wake token。IRQ 命中
   enable-to-WFI 窗口时，kernel trap entry 将 RISC-V `sepc` 或 AArch64 `ELR_EL1`
   精确推进到 resume PC；不使用 flag、轮询或下一次周期 tick 兜底。
-- RISC-V 用户 FP context 仍由 `sstatus.FS` 单一状态机拥有：新任务为 Off，确认 F/D 指令或 FP CSR 首用后转 Initial；trap 只在 Dirty 时保存并发布 Clean，restore 对 Initial 清零、对 Clean/Dirty 恢复。user trap 固化用户 image 后才把 live FS 交给 LP64D kernel owner。
+- RISC-V 用户 FP context 仍由 `sstatus.FS` 单一状态机拥有：新任务为 Off，确认 F/D 指令或 FP CSR 首用后转 Initial；trap 只在 Dirty 时保存并发布 Clean，restore 对 Initial 清零、对 Clean/Dirty 恢复。user trap 固化用户 image 后才把 live
+  FS 交给 LP64D kernel owner。
 - AArch64 用户 FP/ASIMD 为 eager task state；普通 trap 只关闭 kernel 对 FP 的访问，不复制
   q0-q31。`KernelContext` switch 是调度切换的唯一 vector owner，只有 signal
   capture/restore、clone inheritance 与 exec reset 允许经过固定 architecture assembly
@@ -41,7 +42,10 @@
   `TPIDRRO_EL0` 在每次 user return 固定为零。
 - AArch64 timer 使用 CNTV，external/timer/software interrupt 统一经过 GICv3 linear claim/EOI token；timer 在 EOI 前重新 arm，software SGI 在 EOI 后完成 memory-barrier rendezvous。
 - release 反汇编门禁分别固定 RISC-V integer trap 的 `satp`/fence/FP 成本与 AArch64 ordinary trap 的零 q/FP load-store，并限制 vector 指令只能出现在明确的 context/signal/clone/exec symbols。
-- 热路径 benchmark 决策使用 release ELF 的确定性事件计数而不是易受宿主噪声影响的 wall-clock：steady return 只增加一次 ASID CPU-seen atomic load，命中后没有 fence、锁、分配或间接调用；首次跨 CPU activation 的 ASID-scoped fence 不计入 steady trap。
+- 热路径 benchmark 决策使用 release ELF 的确定性事件计数：steady return 执行
+  Context/generation/active 检查、一次 active CAS 和 seen load，命中后没有 fence、锁、
+  分配或间接调用；首次跨 CPU 的 scoped fence、换代 pending 的 full local fence 不计入
+  steady trampoline。token clone/drop 的实际 CPU 成本另以诊断 median 记录。
 
 ## Known limits
 

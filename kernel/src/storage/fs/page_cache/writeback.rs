@@ -34,13 +34,13 @@ impl CachedFile {
         }
 
         // 2. 固定 batch 与单页 scratch 不依赖当前空闲页数；filesystem mutation 忙时
-        //    try_write_storage_batch 立即返回，已提交 prefix 之外的页继续保持 dirty。
+        //    try_writeback_storage_batch 立即返回，已提交 prefix 之外的页继续保持 dirty。
         let size = self.inode.size();
         let mut data = [0u8; PAGE_SIZE];
         let _ = commit_with_backoff(
             &writeback[..writeback_pages],
             |chunk| {
-                self.inode.try_write_storage_batch(&mut |writer| {
+                self.inode.try_writeback_storage_batch(&mut |writer| {
                     for entry in chunk {
                         let (index, page) = entry.as_ref().expect("dirty reclaim slot must exist");
                         let page_start = index * PAGE_SIZE as u64;
@@ -137,7 +137,7 @@ impl CachedFile {
                 &batch[..dirty],
                 |chunk| {
                     self.inode
-                        .write_storage_batch(&mut |writer: &mut dyn StorageWriter| {
+                        .writeback_storage_batch(&mut |writer: &mut dyn StorageWriter| {
                             for entry in chunk {
                                 let (index, page) =
                                     entry.as_ref().expect("dirty writeback slot must exist");

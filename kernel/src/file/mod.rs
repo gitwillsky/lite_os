@@ -1,19 +1,22 @@
+mod description_preparation;
 #[path = "descriptor_table.rs"]
 mod descriptor_table;
+pub(crate) use description_preparation::{PreparedDeviceDescription, PreparedFileDescription};
+mod socket_preparation;
+pub(crate) use socket_preparation::PreparedSocketDescription;
 mod epoll;
 #[path = "position.rs"]
 mod position;
-#[path = "proc.rs"]
-mod proc;
 mod readiness;
+mod signalfd;
 mod timerfd;
 
 pub(crate) use descriptor_table::{
-    CancelledFileReservation, DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable,
-    MAX_FILE_DESCRIPTORS,
+    DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable, MAX_FILE_DESCRIPTORS,
 };
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent, EpollMemberships};
 pub(crate) use readiness::{ReadinessSource, ReadinessSources};
+pub(crate) use signalfd::{FileReadinessContext, SignalFd, SignalWaitSource};
 pub(crate) use timerfd::{TimerError, TimerFd, TimerFdBackend, TimerFdRead, TimerSetting};
 
 use alloc::sync::Arc;
@@ -21,35 +24,18 @@ use core::sync::atomic::AtomicUsize;
 use spin::Mutex;
 
 use position::FilePosition;
+pub(crate) use position::PositionError;
 
 use crate::fs::{
-    BlockNode, FileSystemError, FileSystemStatistics, Inode, InodeType, LockHolder, O_ACCMODE,
-    O_APPEND, O_NONBLOCK, O_RDONLY, O_RDWR, OpenedFile, vfs,
+    BlockNode, FileSystemError, FileSystemStatistics, Inode, LockHolder, O_ACCMODE, O_APPEND,
+    O_NONBLOCK, O_RDONLY, O_RDWR, OpenedFile, vfs,
 };
 use crate::{
     ipc::{EventFd, PipeEnd},
-    socket::{Socket, UnixNode, UnixPassedFile},
+    socket::Socket,
 };
 
-impl UnixPassedFile for OpenFileDescription {
-    fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
-        self
-    }
-
-    fn unix_node(&self) -> Option<UnixNode> {
-        match &self.kind {
-            OpenFileKind::Socket(socket) => socket.unix_node(),
-            _ => None,
-        }
-    }
-
-    fn externally_referenced(self: Arc<Self>, inflight: usize) -> bool {
-        // 1. graph 每条 outgoing edge 持有一个 OFD Arc。
-        // 2. Weak::upgrade 为本次 probe 临时增加一个 Arc。
-        // 3. 超过两者的引用才是 descriptor/active syscall 等外部 root；漏掉 +1 会误保活 cycle。
-        Arc::strong_count(&self) > inflight.saturating_add(1)
-    }
-}
+mod unix_passed;
 
 /// OFD 后端；character device、pipe 和 inode 共享同一 fd 表。
 pub(crate) enum OpenFileKind {
@@ -60,8 +46,8 @@ pub(crate) enum OpenFileKind {
     Epoll(Arc<Epoll>),
     EventFd(Arc<EventFd>),
     TimerFd(Arc<TimerFd>),
-    Inode(Arc<OpenedFile>),
-    MemFile(Arc<crate::fs::MemFile>),
+    SignalFd(Arc<SignalFd>),
+    Inode,
 }
 
 /// Linux open file description，共享偏移和状态标志。
@@ -69,44 +55,60 @@ pub(crate) struct OpenFileDescription {
     pub(crate) kind: OpenFileKind,
     position: FilePosition,
     flags: Mutex<u32>,
-    character_opened: Option<Arc<OpenedFile>>,
+    opened: Arc<OpenedFile>,
     pub(super) epoll_memberships: EpollMemberships,
     // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
     // epoll 的 Linux close cleanup，缺失时会留下 fd reuse 可命中的旧 interest。
     descriptor_refs: AtomicUsize,
     // 以写方式打开 inode 时登记的挂载写者；Drop 时归还。缺失则 `remount,ro` 看不到仍在写的 fd。
-    _write_open: Option<WriteOpen>,
+    _write_open: Option<WritableInodeLease>,
 }
 
 impl Drop for OpenFileDescription {
     /// 最后一个引用消失即“关闭”：向 inotify 投递 `IN_CLOSE_WRITE`/`IN_CLOSE_NOWRITE`（Linux `fput`）。
     fn drop(&mut self) {
-        if let OpenFileKind::Inode(opened) = &self.kind
-            && crate::fs::watching()
-        {
-            let writable = *self.flags.get_mut() & O_ACCMODE != O_RDONLY;
-            crate::fs::notify_opened(
-                opened,
-                if writable {
-                    crate::fs::IN_CLOSE_WRITE
-                } else {
-                    crate::fs::IN_CLOSE_NOWRITE
-                },
-            );
+        if *self.flags.get_mut() & crate::fs::O_PATH != 0 {
+            return;
+        }
+        match &self.kind {
+            OpenFileKind::Socket(socket) => socket.close_description(),
+            OpenFileKind::Pipe(endpoint) => endpoint.close(),
+            OpenFileKind::Device(device) => device.release(),
+            OpenFileKind::TimerFd(timer) => timer.close(),
+            _ => {}
+        }
+        let writable = *self.flags.get_mut() & O_ACCMODE != O_RDONLY;
+        self.notify(if writable {
+            crate::fs::IN_CLOSE_WRITE
+        } else {
+            crate::fs::IN_CLOSE_NOWRITE
+        });
+        // fput 的 access→dput→mnt_drop_write 顺序：提前归还 inode pin 才能让最后
+        // dentry 独占逐出 unlinked cache；mount writer 仍由末字段持有到全部 inode 清理结束。
+        if let Some(write) = &mut self._write_open {
+            write._content.release_inode_access();
         }
     }
 }
 
+// Debug 不能反入 metadata、position 或 backend 的锁；VMA 只显示 opaque file lifetime。
+impl core::fmt::Debug for OpenFileDescription {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("OpenFileDescription")
+            .finish_non_exhaustive()
+    }
+}
+impl crate::memory::MappedFileOwner for OpenFileDescription {}
+
 /// 以写方式打开 inode 时的登记，Drop 时撤销：挂载上的写者（Linux `mnt_drop_write` 的 OFD 版本），
 /// 块设备节点还登记 bdev 写者（`BlockNode`），使“被挂载”与“有写者”互斥。
-struct WriteOpen {
-    filesystem: usize,
+struct WritableInodeLease {
+    _content: crate::fs::ContentWrite,
     block: Option<Arc<BlockNode>>,
 }
-
-impl Drop for WriteOpen {
+impl Drop for WritableInodeLease {
     fn drop(&mut self) {
-        crate::fs::vfs().end_write_open(self.filesystem);
         if let Some(block) = &self.block {
             block.end_writer();
         }
@@ -114,6 +116,49 @@ impl Drop for WriteOpen {
 }
 
 impl OpenFileDescription {
+    /// 从唯一 status flags 投影原生 FMODE_PATH；不保存第二份 backend-access 状态。
+    pub(crate) fn is_path(&self) -> bool {
+        self.status_flags() & crate::fs::O_PATH != 0
+    }
+    /// fdinfo 在实际 descriptor/OFD capture 后冻结共享 position/status；不按 pathname 重开。
+    /// # Errors
+    /// position acquisition/formatter OOM 或 inode metadata 错误。
+    pub(crate) fn file_information(
+        &self,
+        descriptor_flags: u32,
+        view: &crate::namespace::PidNamespace,
+    ) -> Result<alloc::vec::Vec<u8>, FileSystemError> {
+        let position = self
+            .position_snapshot()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let flags = self.status_flags()
+            | if descriptor_flags & 1 != 0 {
+                crate::fs::O_CLOEXEC
+            } else {
+                0
+            };
+        let backend = match &self.kind {
+            OpenFileKind::Device(file) => Some(file.as_ref()),
+            _ => None,
+        };
+        crate::fs::format_file_information(&self.opened, position, flags, backend, view)
+    }
+    /// 按真实 inode 投递通用 I/O/close 通知；没有 watch 时不 clone Arc、不查 metadata。
+    pub(crate) fn notify(&self, event: u32) {
+        if crate::fs::watching() {
+            crate::fs::notify_opened(&self.opened, event);
+        }
+    }
+
+    /// 实际路径 atime consequence，与成功读取的 IN_ACCESS 独立。
+    pub(crate) fn touch_access(&self) {
+        self.opened.touch_access();
+    }
+    /// 不 pin 新 Arc 的 regular read consequence；caller 已验证请求与 backend。
+    pub(crate) fn read_access(&self) -> crate::fs::ReadAccess<'_> {
+        self.opened.read_access()
+    }
+
     /// 返回 OFD 共享状态标志的瞬时快照，不包含 fd-table 的 descriptor flags。
     ///
     /// # Returns
@@ -174,9 +219,9 @@ impl OpenFileDescription {
         }
         if state.hangup {
             result |= HANGUP;
-            if events & READ_HANGUP != 0 {
-                result |= READ_HANGUP;
-            }
+        }
+        if events & READ_HANGUP != 0 && state.read_closed {
+            result |= READ_HANGUP;
         }
         result
     }
@@ -190,7 +235,10 @@ impl OpenFileDescription {
     /// # Returns
     ///
     /// operation 的原始返回值。
-    pub(crate) fn with_position<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> R {
+    pub(crate) fn with_position<R>(
+        &self,
+        operation: impl FnOnce(&mut u64) -> R,
+    ) -> Result<R, PositionError> {
         self.position.with(operation)
     }
 
@@ -199,7 +247,7 @@ impl OpenFileDescription {
     /// # Returns
     ///
     /// 当前共享 position。
-    pub(crate) fn position_snapshot(&self) -> u64 {
+    pub(crate) fn position_snapshot(&self) -> Result<u64, PositionError> {
         self.position.snapshot()
     }
 
@@ -221,13 +269,13 @@ impl OpenFileDescription {
         &self,
         offset: i64,
         base: impl FnOnce(u64) -> u64,
-    ) -> Result<u64, ()> {
+    ) -> Result<u64, PositionError> {
         self.position.seek(offset, base)
     }
 
     /// 按全局地址顺序锁定两个不同 OFD 的 positions，并保持 caller 参数顺序。
     ///
-    /// 同一 OFD 返回 `None`，caller 必须单独定义单 position 的操作语义。
+    /// 同一 OFD 返回 SameOwner；acquisition OOM 在 callback/I/O 开始前返回。
     ///
     /// # Parameters
     ///
@@ -237,24 +285,24 @@ impl OpenFileDescription {
     ///
     /// # Returns
     ///
-    /// OFD 不同时返回 operation 结果；相同时返回 `None`。
+    /// OFD 不同时返回 operation 结果；同一 owner 或等待元数据 OOM 返回 PositionError。
     pub(crate) fn with_positions<R>(
         first: &Self,
         second: &Self,
         operation: impl FnOnce(&mut u64, &mut u64) -> R,
-    ) -> Option<R> {
+    ) -> Result<R, PositionError> {
         FilePosition::with_pair(&first.position, &second.position, operation)
     }
 
     /// 从唯一 OFD backend 投影 poll/epoll readiness，不注册 waiter。
-    pub(crate) fn poll_events(&self, events: i16) -> i16 {
+    pub(crate) fn poll_events(&self, events: i16, context: &impl FileReadinessContext) -> i16 {
         const INPUT: i16 = 0x001;
         const OUTPUT: i16 = 0x004;
         const ERROR: i16 = 0x008;
         const HANGUP: i16 = 0x010;
         let mut result = 0;
         match &self.kind {
-            OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => result = events & (INPUT | OUTPUT),
+            OpenFileKind::Inode => result = events & (INPUT | OUTPUT),
             OpenFileKind::Device(file) => result = file.poll(events),
             OpenFileKind::Pipe(endpoint) => {
                 let state = endpoint.pipe().poll_state(endpoint.direction());
@@ -275,7 +323,7 @@ impl OpenFileDescription {
                 result = Self::socket_poll_events(events, socket.poll_state());
             }
             OpenFileKind::Epoll(epoll) => {
-                if events & INPUT != 0 && epoll.has_ready() {
+                if events & INPUT != 0 && epoll.has_ready(context) {
                     result |= INPUT;
                 }
             }
@@ -289,6 +337,11 @@ impl OpenFileDescription {
             }
             OpenFileKind::TimerFd(timer) => {
                 if events & INPUT != 0 && timer.readable() {
+                    result |= INPUT;
+                }
+            }
+            OpenFileKind::SignalFd(signal) => {
+                if events & INPUT != 0 && context.signal_pending(signal.mask()) {
                     result |= INPUT;
                 }
             }
@@ -314,7 +367,9 @@ impl OpenFileDescription {
             OpenFileKind::Socket(socket) => socket
                 .try_poll_state()
                 .map(|state| Self::socket_poll_events(events, state)),
-            _ => Some(self.poll_events(events)),
+            // signalfd 的 deferred callback 只标记候选；精确 readiness 属于 epoll_wait caller。
+            OpenFileKind::SignalFd(_) | OpenFileKind::Epoll(_) => None,
+            _ => Some(self.poll_events(events, &readiness::SourceNotificationContext)),
         }
     }
 
@@ -327,7 +382,11 @@ impl OpenFileDescription {
     /// # Returns
     ///
     /// 跨 source 可比较的 generation；不支持 epoll 的 inode/device 返回零。
-    pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
+    pub(crate) fn readiness_generation(
+        &self,
+        events: i16,
+        context: &impl FileReadinessContext,
+    ) -> u64 {
         match &self.kind {
             OpenFileKind::Device(file) => file.readiness_generation(),
             OpenFileKind::Pipe(endpoint) => {
@@ -337,7 +396,10 @@ impl OpenFileDescription {
             OpenFileKind::Epoll(epoll) => epoll.readiness_generation(),
             OpenFileKind::EventFd(event) => event.readiness_generation(events),
             OpenFileKind::TimerFd(timer) => timer.readiness_generation(),
-            OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => 0,
+            OpenFileKind::SignalFd(_) => context
+                .signal_source()
+                .map_or(0, |source| source.generation()),
+            OpenFileKind::Inode => 0,
         }
     }
 
@@ -353,8 +415,9 @@ impl OpenFileDescription {
             | OpenFileKind::Socket(_)
             | OpenFileKind::Epoll(_)
             | OpenFileKind::EventFd(_)
-            | OpenFileKind::TimerFd(_) => true,
-            OpenFileKind::Inode(_) | OpenFileKind::MemFile(_) => false,
+            | OpenFileKind::TimerFd(_)
+            | OpenFileKind::SignalFd(_) => true,
+            OpenFileKind::Inode => false,
         }
     }
 
@@ -366,8 +429,12 @@ impl OpenFileDescription {
     ///
     /// # Returns
     ///
-    /// 最多两个稳定 source identity；无异步 source 返回空集合。
-    pub(crate) fn readiness_sources(&self, events: i16) -> ReadinessSources {
+    /// 最多三个稳定 source identity；无异步 source 返回空集合。
+    pub(crate) fn readiness_sources(
+        &self,
+        events: i16,
+        context: &impl FileReadinessContext,
+    ) -> ReadinessSources {
         const INPUT: i16 = 0x001;
         const OUTPUT: i16 = 0x004;
         let mut sources = ReadinessSources::new();
@@ -389,14 +456,10 @@ impl OpenFileDescription {
             OpenFileKind::Socket(socket) => {
                 let (socket_sources, _) = socket.wait_sources(events);
                 for source in socket_sources.into_iter().flatten() {
-                    match source {
-                        crate::socket::SocketWaitSource::Notification(pipe) => sources.push(
-                            ReadinessSource::pipe(&pipe, crate::ipc::PipeDirection::Read),
-                        ),
-                        crate::socket::SocketWaitSource::Data { pipe, direction } => {
-                            sources.push(ReadinessSource::pipe(&pipe, direction));
-                        }
-                    }
+                    sources.push(ReadinessSource::pipe(
+                        &source.into_notification(),
+                        crate::ipc::PipeDirection::Read,
+                    ));
                 }
             }
             OpenFileKind::Epoll(epoll) => sources.push(ReadinessSource::pipe(
@@ -423,276 +486,78 @@ impl OpenFileDescription {
                     crate::ipc::PipeDirection::Read,
                 ));
             }
+            OpenFileKind::SignalFd(_) => {
+                if let Some(source) = context.signal_source() {
+                    sources.push(ReadinessSource::Signal {
+                        identity: source.identity(),
+                    });
+                }
+            }
             _ => {}
         }
         sources
     }
 
-    /// 构造经字符设备注册表打开的设备 OFD。
-    ///
-    /// # Parameters
-    ///
-    /// - `file`: driver 返回的打开设备文件。
-    /// - `flags`: OFD status flags。
-    /// - `backing_opened`: 打开时的 devfs opened entry，用于 metadata、fstatfs 与 procfs。
-    ///
-    /// # Errors
-    ///
-    /// OFD 分配失败返回 `OutOfMemory`。
-    pub(crate) fn device(
-        file: Arc<dyn crate::fs::device::DeviceFile>,
+    pub(crate) fn pipe(
+        endpoint: Arc<PipeEnd>,
         flags: u32,
-        backing_opened: Arc<OpenedFile>,
-    ) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::Device(file),
-            position: FilePosition::new(),
-            flags: Mutex::new(flags),
-            character_opened: Some(backing_opened),
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| FileSystemError::OutOfMemory)
-    }
-
-    /// 构造没有路径的设备 OFD（inotify 等 anonymous inode）。
-    ///
-    /// # Errors
-    ///
-    /// OFD 分配失败返回 `OutOfMemory`。
-    pub(crate) fn anonymous_device(
-        file: Arc<dyn crate::fs::device::DeviceFile>,
-        flags: u32,
-    ) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::Device(file),
-            position: FilePosition::new(),
-            flags: Mutex::new(flags),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| FileSystemError::OutOfMemory)
-    }
-
-    /// 构造 pathname-backed regular/directory OFD。
-    ///
-    /// 以写方式打开（`O_WRONLY`/`O_RDWR`）时在挂载上登记一个写者，OFD 释放时撤销。
-    ///
-    /// # Errors
-    ///
-    /// 挂载为 read-only 返回 `ReadOnly`；分配失败返回 `OutOfMemory`。
-    pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Result<Arc<Self>, FileSystemError> {
-        let write_open = if flags & O_ACCMODE != O_RDONLY {
-            let inode = opened.inode();
-            let filesystem = inode.filesystem_id();
-            crate::fs::vfs().begin_write_open(filesystem)?;
-            // 先构造 guard：后面的 bdev 登记失败时，它的 Drop 撤销已完成的挂载写者登记。
-            let mut guard = WriteOpen {
-                filesystem,
-                block: None,
-            };
-            if inode.inode_type() == InodeType::BlockDevice {
-                let block = inode
-                    .device_number()
-                    .and_then(crate::fs::device::block_node)
-                    .ok_or(FileSystemError::NoDevice)?;
-                block.begin_writer()?;
-                guard.block = Some(block);
-            }
-            Some(guard)
-        } else {
-            None
-        };
-        Arc::try_new(Self {
-            kind: OpenFileKind::Inode(opened),
-            position: FilePosition::new(),
-            flags: Mutex::new(flags),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: write_open,
-        })
-        .map_err(|_| FileSystemError::OutOfMemory)
-    }
-
-    /// 构造 pathname-less memfd OFD。
-    pub(crate) fn mem_file(file: Arc<crate::fs::MemFile>, flags: u32) -> Result<Arc<Self>, ()> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::MemFile(file),
-            position: FilePosition::new(),
-            flags: Mutex::new(flags),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| ())
-    }
-
-    pub(crate) fn pipe(endpoint: Arc<PipeEnd>, flags: u32) -> Result<Arc<Self>, ()> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::Pipe(endpoint),
-            position: FilePosition::new(),
-            flags: Mutex::new(flags),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| ())
+        opened: Arc<OpenedFile>,
+    ) -> Result<Arc<Self>, ()> {
+        let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
+        Ok(prepared.initialize(OpenFileKind::Pipe(endpoint), opened, flags, None))
     }
 
     /// 把 OFD 投影为 VFS advisory lock（flock/fcntl）使用的持锁者视图。
     ///
     /// # Returns
     ///
-    /// pathname-backed OFD 携带所锁的 opened file；anonymous OFD 的 `opened` 为 `None`。
+    /// 所有 OFD 携带其实际 opened inode；匿名标签不改变锁身份。
     /// `identity` 是 OFD 的 pointer identity，dup/fork 出的 descriptor 共享它。
     pub(crate) fn lock_holder(self: &Arc<Self>) -> LockHolder {
         LockHolder {
-            opened: self.opened_ref(),
+            opened: Some(self.opened_ref()),
             identity: Arc::as_ptr(self) as usize,
         }
     }
 
-    pub(crate) fn socket(socket: Arc<Socket>, flags: u32) -> Result<Arc<Self>, ()> {
-        let ofd = Arc::try_new(Self {
-            kind: OpenFileKind::Socket(socket.clone()),
-            position: FilePosition::new(),
-            flags: Mutex::new(flags),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| ())?;
-        let owner: Arc<dyn UnixPassedFile> = ofd.clone();
-        socket.bind_unix_rights_owner(Arc::downgrade(&owner));
-        Ok(ofd)
-    }
-
     pub(crate) fn epoll(epoll: Arc<Epoll>) -> Result<Arc<Self>, ()> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::Epoll(epoll),
-            position: FilePosition::new(),
-            flags: Mutex::new(O_RDWR),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| ())
+        let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
+        let opened = crate::fs::anonymous_opened(b"anon_inode:[eventpoll]").map_err(|_| ())?;
+        Ok(prepared.initialize(OpenFileKind::Epoll(epoll), opened, O_RDWR, None))
     }
 
     pub(crate) fn event_fd(event: Arc<EventFd>, flags: u32) -> Result<Arc<Self>, ()> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::EventFd(event),
-            position: FilePosition::new(),
-            flags: Mutex::new(O_RDWR | flags),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| ())
+        let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
+        let opened = crate::fs::anonymous_opened(b"anon_inode:[eventfd]").map_err(|_| ())?;
+        Ok(prepared.initialize(OpenFileKind::EventFd(event), opened, O_RDWR | flags, None))
     }
 
     pub(crate) fn timer_fd(timer: Arc<TimerFd>, flags: u32) -> Result<Arc<Self>, ()> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::TimerFd(timer),
-            position: FilePosition::new(),
-            flags: Mutex::new(O_RDWR | flags),
-            character_opened: None,
-            epoll_memberships: EpollMemberships::new(),
-            descriptor_refs: AtomicUsize::new(0),
-            _write_open: None,
-        })
-        .map_err(|_| ())
+        let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
+        let opened = crate::fs::anonymous_opened(b"anon_inode:[timerfd]").map_err(|_| ())?;
+        Ok(prepared.initialize(OpenFileKind::TimerFd(timer), opened, O_RDWR | flags, None))
     }
 
-    pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
-        match &self.kind {
-            OpenFileKind::Inode(opened) => Some(opened.inode()),
-            OpenFileKind::MemFile(file) => Some(file.clone()),
-            OpenFileKind::Device(_) => None,
-            OpenFileKind::Pipe(_)
-            | OpenFileKind::Socket(_)
-            | OpenFileKind::Epoll(_)
-            | OpenFileKind::EventFd(_)
-            | OpenFileKind::TimerFd(_) => None,
-        }
+    /// 在 backend 发布前准备完整 signalfd OFD；没有创建者的 Task 引用。
+    pub(crate) fn signal_fd(mask: u64, flags: u32) -> Result<Arc<Self>, ()> {
+        let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
+        let opened = crate::fs::anonymous_opened(b"anon_inode:[signalfd]").map_err(|_| ())?;
+        let signal = SignalFd::try_new(mask)?;
+        Ok(prepared.initialize(OpenFileKind::SignalFd(signal), opened, O_RDWR | flags, None))
     }
 
-    /// 返回 pathname-backed OFD 的稳定 opened-entry identity。
-    ///
-    /// # Returns
-    ///
-    /// regular/directory/character OFD 返回 opened entry；anonymous OFD 返回 None。
-    pub(crate) fn opened_ref(&self) -> Option<Arc<OpenedFile>> {
-        match &self.kind {
-            OpenFileKind::Inode(opened) => Some(opened.clone()),
-            OpenFileKind::MemFile(_) => None,
-            OpenFileKind::Device(_) => self.character_opened.clone(),
-            OpenFileKind::Pipe(_)
-            | OpenFileKind::Socket(_)
-            | OpenFileKind::Epoll(_)
-            | OpenFileKind::EventFd(_)
-            | OpenFileKind::TimerFd(_) => None,
-        }
+    /// 返回每个 OFD 唯一的 inode identity；是否支持 I/O 由 backend 决定。
+    pub(crate) fn inode_ref(&self) -> Arc<dyn Inode> {
+        self.opened.inode()
     }
 
-    /// 取得该 OFD backing filesystem 的统计；anonymous pipe 使用 pipefs 语义。
-    ///
-    /// # Returns
-    ///
-    /// mounted inode 的 VFS 快照，或 Linux simple_statfs 形状的 pipefs 快照。
-    ///
-    /// # Errors
-    ///
-    /// 无 backing filesystem 的 OFD 返回 `InvalidFileSystem`。
+    /// 冻结真实 opened identity，不按 anonymous diagnostic label 查找路径。
+    pub(crate) fn opened_ref(&self) -> Arc<OpenedFile> {
+        self.opened.clone()
+    }
+
+    /// pathname/fd statfs 共用 inode 的实际 mounted/pseudo filesystem 事实。
     pub(crate) fn filesystem_statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
-        match &self.kind {
-            OpenFileKind::Inode(opened) => vfs().statistics(opened.inode()),
-            OpenFileKind::MemFile(_) => Ok(FileSystemStatistics {
-                type_name: "tmpfs",
-                magic: 0x0102_1994,
-                block_size: 4096,
-                blocks: 0,
-                blocks_free: 0,
-                blocks_available: 0,
-                files: 1,
-                files_free: 0,
-                fsid: [0x4d45_4d46, 0],
-                name_length: 255,
-                fragment_size: 4096,
-                flags: 0x20,
-            }),
-            OpenFileKind::Device(_) => vfs().statistics(
-                self.character_opened
-                    .clone()
-                    .ok_or(FileSystemError::InvalidFileSystem)?
-                    .inode(),
-            ),
-            OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) => Ok(FileSystemStatistics {
-                type_name: "pipefs",
-                magic: 0x5049_5045,
-                block_size: 4096,
-                blocks: 0,
-                blocks_free: 0,
-                blocks_available: 0,
-                files: 0,
-                files_free: 0,
-                fsid: [0x5049_5045, 0],
-                name_length: 255,
-                fragment_size: 4096,
-                flags: 0x20,
-            }),
-            OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) | OpenFileKind::TimerFd(_) => {
-                Err(FileSystemError::InvalidFileSystem)
-            }
-        }
+        vfs().statistics(&self.opened)
     }
 }

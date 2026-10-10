@@ -35,6 +35,7 @@ impl MemorySet {
         data_limit: u64,
     ) -> Result<(Self, usize, usize), ElfLoadError> {
         let mut memory_set = MemorySet::try_new().map_err(ElfLoadError::from)?;
+        memory_set.executable_owner = Some(image.owner.clone());
         memory_set.map_trampoline().map_err(ElfLoadError::from)?;
         const MAIN_PIE_BASE: usize = 0x1_0000;
         const INTERPRETER_BASE: usize = 0x2000_0000;

@@ -43,7 +43,7 @@ pub(crate) fn sys_mknodat(dirfd: isize, name: *const u8, mode: u32, device: u64)
         return -errno::ESRCH;
     };
     let is_device = matches!(kind, InodeType::CharacterDevice | InodeType::BlockDevice);
-    if is_device && task.credential_id(true, true) != 0 {
+    if is_device && !task.has_initial_capability(syscall_abi::capability::Capability::MKNOD) {
         return -errno::EPERM;
     }
     let path = match path(&task, name) {

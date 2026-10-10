@@ -3,21 +3,62 @@
 ## Owner
 
 - `syscall-abi` 独占已接入 Linux 64-bit asm-generic number 与 RISC-V 扩展编号；dispatcher 独占 number-to-handler mapping。
+- `syscall-abi::open` 独占 native open/fcntl flag 编码，在编译期选择 arm64 或
+  asm-generic UAPI 的 DIRECTORY/NOFOLLOW/DIRECT/LARGEFILE 位。VFS/OFD 直接使用同一
+  编码并保留实际 status；不能把 AArch64 musl 隐式加入的 LARGEFILE 当成 NOFOLLOW，
+  也不屏蔽该位来绕过错误。guest 验证普通跟随、NOFOLLOW、目录约束及 O_PATH 链接 identity。
 - 编译期选中的 `arch::user` backend 独占 raw syscall register codec、signal machine context、
   ELF machine/flags/HWCAP 与 architecture-private syscall number decode；generic syscall、process
   与 memory 不得解释这些 layout。decoder 通过编译期选中的普通后端函数调用，禁止 capability bool、
   单次使用的 trait 或零大小 dispatch type。
 - syscall module 独占 raw UAPI codec、user-copy 和 errno translation；领域 module 独占行为与状态。
+- `arch::user::AUDIT_ARCH` 独占目标 audit architecture 编码。dispatcher 在 architecture decode
+  与任意 handler 前调用唯一 seccomp seam；不能让私有 syscall、未知 number 或 restart 绕过。
+  TRAP 返回 `SyscallOutcome::PreserveRegisters`，trap 不写 x0/a0、不创建 restart record；
+  SIGSYS 的 si_errno/code/call_addr/syscall/arch 由 typed siginfo codec 编码，PC 为 syscall 后地址。
+  syscall 通过 `system::audit_architecture` 投影 identity，不直接依赖 architecture backend。
+  trap 把已有 TCB Arc 转交 dispatcher，seccomp 消费后在任意 handler 前释放；disabled 路径
+  不增加 current lookup、Arc clone 或 state lock。USER_NOTIF 仅带实际 queue 和 fixed seccomp_data；
+  filtered task 自行等待通知，listener DeviceFile 拥有通知 ioctl codec，通用 syscall 不辨认 listener。
+  FD/OFD/listener 完整准备在 graph publication 前，成功后才无分配发布 CLOEXEC descriptor。
+  GET_NOTIF_SIZES 使用六字节固定 codec，无 allocation。
+  仅实际 exec handler 成功归一成 PreserveRegisters；filter ERRNO|0 是普通 Return(0)，
+  trap 必须写回零，不能从 syscall number/result 推断新映像已提交。
+- RISC-V base rt_sigframe 为 1088 bytes、16-byte 对齐；siginfo 后的 ucontext_t 为
+  960 bytes，其 uc_mcontext 在 offset 176，因 FP/extension union 对齐保留八字节 padding。
+  codec 与 musl consumer offsetof/size 静态断言及 SIGSYS context 修改/rt_sigreturn runtime
+  必须一致，不保留原先省略 padding 的非标准 frame。
+- rt_sigreturn 的不可读 frame 与不支持的 extension 由现有 forced signal owner 投递
+  SIGSEGV；RISC-V 来源是 SI_KERNEL，AArch64 携带 SP 并按 find_vma existence 选择
+  SEGV_ACCERR/SEGV_MAPERR；禁止把 EFAULT 返回 restorer。SignalFrame 静态 backend
+  独占 valid_user_address/fault_address 投影，AArch64 在 copyin 前拒绝未按 16 bytes 对齐的 SP。
+  runtime 验证损坏 header、不可读/未对齐 SP、默认终止与 caught handler 的 code/address。
+  memory 的 has_user_vma_at_or_after 只在 AArch64 坏帧错误路径投影既有 VMA，
+  从 floor/iter_from 跳过 supervisor VMA，不 fault-in、不增加缓存；lookup waiter OOM 以 SIGKILL 终止。
+  SignalFrameRestoreError 唯一携带 OOM 或失败阶段 fault address：早期 copy/alignment 使用
+  frame SP，完整 copy 后 machine/extension failure 通过 restore_fault_address 使用 AArch
+  saved SP。syscall 必须先区分 copyin OOM，释放 TCB Arc 后终止，不能误发 SIGSEGV。
+- `arch::user::SignalActionBytes` 由 system 静态投影给 syscall，独占 rt_sigaction 的
+  copyin/copyout 布局：AArch64 为 handler/flags/restorer/mask 共 32 bytes，RISC-V 无
+  restorer 字段共 24 bytes。Process signal disposition 唯一保存 restorer；Thread context
+  的 enter_signal_handler 接收 flags/restorer，由 AArch64 backend 按 SA_RESTORER 选择
+  用户 restorer，否则使用内核 trampoline；RISC-V 始终使用 trampoline。
+  该控制路径 codec 不分配、不增加锁，runtime 验证标准 mask、旧 action copyout canary
+  与 AArch64 自定义 restorer，故不增加热路径 benchmark。
+- SignalFrame::signal_mask 只在完整 copyin 后投影 saved mask；mask 在 machine restore 前
+  发布，坏 extension 中 blocked SIGSEGV 因而按 Linux forced policy 恢复默认终止。
 - `syscall::user_iovec::UserInputStaging` 独占 write/send copyin 的 initialized prefix；stack 与 heap storage 都以 `MaybeUninit<u8>` 准备，只有成功 user-copy 的 prefix 可投影为 backend `&[u8]`。
 - task loader 独占 pathname/script rewrite；memory ELF loader 独占 ELF plan、mapping、initial stack
-  与 rollback。Process 的 `ProcessPaths` 在同一锁下唯一拥有 cwd 与最终 main ELF
-  opened-entry identity：fork 复制两个 identity，vfork child 取得独立 path owner，exec 只原子
-  替换 executable。procfs 只投影 `/proc/<pid>/exe` magic link，不缓存第二份 pathname。
+  与 rollback。Thread 的 fs context 唯一拥有 cwd/umask，CLONE_FS 共享，unshare
+  可脱离；fork/vfork child 取得独立 context。Process 独占最终 main ELF opened-entry，
+  exec 只替换此映像 identity，不改变共享/脱离的 cwd/umask。procfs 只投影 `/proc/<pid>/exe` magic link，不缓存第二份 pathname。
 - `ProcessTable::TimerQueue` 独占 timerfd immutable clock、setting 与 active deadline membership；
   task-domain `TimerFd` backend 独占未读 expiration counter 和 notification endpoint。fs 只通过
   `TimerFdBackend` OFD seam 消费 counter/readiness，不反向依赖 task；deadline 到期在 timer lock
   外发布 readiness，最后一个 backend Arc 析构必须移除 record，禁止 per-tick 扫描全部 descriptor。
 - userspace builder 独占 target-native compiler/linker/compiler runtime 与固定 package/key/cache 输入：
+  compiler-rt freestanding supplement 只消费 Clang builtin headers（`-nostdlibinc`），不查 host
+  libc include 路径；缺失时 Debian Clang 的 musl search order 会把 host glibc header 混入 target。
   两个架构都使用 Clang、固定 `rust-lld` 与固定 Rust bare-metal `compiler_builtins`（AArch64 为
   hard-float AAPCS64 `aarch64-unknown-none`，RISC-V 为 lp64d medany `riscv64gc-unknown-none-elf`），
   并合并同版本 LLVM compiler-rt 的 C ABI `__multc3` 为单一 runtime archive；softfloat builtins 只属于
@@ -82,6 +123,8 @@
   musl/CRT 或 LiteOS std fork。验证 fixture 只允许进入 disposable gate image，产品 rootfs 必须拒绝。
 - 应用优先使用 `std`；稳定 `std` 缺失的 Linux 专有机制只能通过
   `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 的安全 typed interface。
+  shared-memory 的 memfd creation 通过标准 libc `memfd_create` 选择目标 syscall number，
+  不在通用 library 固定 asm-generic 编号；该编号在 x86 Linux host 对应另一个 syscall。
   `audio-proto`/`display-proto` 分别独占音频/显示 wire 与 SCM_RIGHTS 帧语义，但 fd ancillary
   mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、裸 fd/device owner 和并行兼容路径均禁止。
 - 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error
@@ -91,6 +134,8 @@
   与调用时的 fd/credential/signal-action snapshot 发布；parent sibling 不进入 child graph。
   child 在 exec 前只能依赖 POSIX async-signal-safe 路径，kernel 不复制用户态锁状态。
 - 多线程图形进程只能通过 `SessionChild` 的固定 `/bin/session-launch` 单轨启动 session child。
+  owned group termination 必须在 wait 前冻结 kill errno，以 `ESRCH` 判断 group 已消失，
+  不使用 host-dependent `ErrorKind::NotFound`；无论 group 是否已消失都必须回收 leader。
   parent 的标准 `Command` 不得安装 `pre_exec`；单线程 trampoline 依次设置 parent-death signal、
   复检 parent identity、`setsid` 并同 PID `exec`。parent 独占 exec-status 读端，trampoline
   独占 CLOEXEC 写端；固定 frame 发布所有确定性 setup/exec 错误，空 EOF 表示没有这类已发布错误，
@@ -117,8 +162,9 @@
 ## Failure and cleanup
 
 - exec 在 point of no return 前完成 source、ELF、stack 与 owner allocation；失败保持旧 image，提交后只允许新 image 或进程退出。
-- ABI copyout 失败不得发布不可回收的 fd、timer、mapping、socket control 或 process identity；
-  `recvmsg` 收到的 fd 必须等 name、control 和 msghdr metadata 全部 copyout 成功后整批发布。
+- ABI publication 遵循各 native owner：普通 open、clone PIDFD 等严格输出在 publish 前完成；
+  `recvmsg` 的 SCM_RIGHTS 每个 FD 编号 copyout 成功后立即安装，后续 control/name/msghdr fault
+  保留已安装 prefix，只撤销尚未发布的当前 reservation。不得以整批 rollback 改写 native 行为。
 - copyin fault 只允许发布已完成的 initialized prefix；atomic socket message 丢弃该 prefix，regular write 可按既有 partial-write policy 提交它，任何路径都不得读取未发布 suffix。
 - compiler、linker、compiler runtime、ELF machine 或 APK name/version/arch/摘要不匹配时，必须在 sysroot、rootfs 或 cache generation 发布前 fail-stop；临时下载和未发布 generation 必须清理，其他架构 cache 不得作为回退。
 - rust-src、LLVM libunwind input、build-std feature、target linker 或唯一动态 dependency 不匹配时，
@@ -128,3 +174,15 @@
   完成后才按 process job-control 原子转为 Ready/Stopped。并发 `exit_group` 已提交时，新
   child 在变为 Ready 前继承 kernel SIGKILL，parent-visible exit status 仍由首次
   group-exit owner 决定。
+
+- `syscall_abi::capability` 独占41个固定Linux capability编号及v1/v2/v3的12/24-byte数据codec，
+  decode屏蔽未定义高位。capget NULL data只读version、unknown version写回V3后成功；
+  capset先version/PID权限后data copy，foreign target EPERM不变更任何credential。
+  InitialStackCredentials只投影已准备的UID/EUID/GID/EGID/secureexec；memory不重算权限。
+- `syscall_abi::file_capability`只编解码标准security.capability的12/20/24-byte little-endian
+  revision1/2/3。disk reader按固定commoncap保留未知非revision标志和全部64-bit capability bits；
+  setxattr header只接受revision2/3与EFFECTIVE标志，两者不能共用更严格的read validator。
+  encode拒绝不能由较旧revision表示的rootid/high words；不静默丢权限数据。inode xattr、
+  rootid的superblock/user namespace映射、授权与exec credential转移仍归各实际kernel owner。
+  该codec固定最多24字节、无分配/锁；用固定disk vectors、截断/扩展/旧格式损失用例验证，
+  不新增wall-time benchmark。

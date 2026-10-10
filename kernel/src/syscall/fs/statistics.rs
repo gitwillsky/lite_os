@@ -24,12 +24,12 @@ pub(crate) fn sys_statfs(name: *const u8, address: usize) -> isize {
         Ok(path) => path,
         Err(error) => return error,
     };
-    let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
-    let inode = match vfs().open_at(start, &path, &task.access_identity(true)) {
+    let start = task.lookup_origin();
+    let opened = match vfs().open_file_at(start, &path, &task.access_identity(true)) {
         Ok(inode) => inode,
         Err(error) => return ferr(error),
     };
-    let statistics = match vfs().statistics(inode) {
+    let statistics = match vfs().statistics(&opened) {
         Ok(statistics) => statistics,
         Err(error) => return ferr(error),
     };
@@ -48,7 +48,7 @@ pub(crate) fn sys_statfs(name: *const u8, address: usize) -> isize {
 /// 成功返回零；无效 descriptor、filesystem 或 copyout 失败返回负 errno。
 pub(crate) fn sys_fstatfs(fd: usize, address: usize) -> isize {
     let task = current_task().expect("fstatfs requires a current task");
-    let Some(ofd) = task.fd_get(fd) else {
+    let Some(ofd) = task.fd_get_raw(fd) else {
         return -errno::EBADF;
     };
     let statistics = match ofd.filesystem_statistics() {

@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # kernel ext4 只挂载 e2fsprogs 1.47.4 `mke2fs -t ext4` 的固定默认 profile。
-# base_features 与 ext4 features 合起来恰为 kernel profile 的 16 个 feature。
+# 新镜像启用原生 ea_inode；旧镜像 feature 未启用时由同一 xattr owner 保留磁盘容量约束。
 MKE2FS_CONFIG = """[defaults]
 \tbase_features = sparse_super,large_file,filetype,resize_inode,dir_index,ext_attr
 \tblocksize = 4096
@@ -20,7 +20,7 @@ MKE2FS_CONFIG = """[defaults]
 
 [fs_types]
 \text4 = {
-\t\tfeatures = has_journal,extent,huge_file,flex_bg,metadata_csum,metadata_csum_seed,64bit,dir_nlink,extra_isize,orphan_file
+\t\tfeatures = has_journal,extent,huge_file,flex_bg,metadata_csum,metadata_csum_seed,64bit,dir_nlink,extra_isize,orphan_file,ea_inode
 \t}
 """
 
@@ -65,6 +65,20 @@ def find_e2fsck() -> Path:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
     raise RuntimeError("e2fsck from e2fsprogs is required")
+
+
+def find_tune2fs() -> Path:
+    """定位与 profile producer 相同的 e2fsprogs 离线 feature 工具。"""
+    candidates = (
+        "/opt/homebrew/opt/e2fsprogs/sbin/tune2fs",
+        "/usr/local/opt/e2fsprogs/sbin/tune2fs",
+        shutil.which("tune2fs"),
+        "/usr/sbin/tune2fs",
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    raise RuntimeError("tune2fs from e2fsprogs is required")
 
 
 def find_resize2fs() -> Path:

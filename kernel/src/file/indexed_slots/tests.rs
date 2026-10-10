@@ -289,7 +289,7 @@ fn sparse_clone_copies_only_materialized_chunks_and_oom_rolls_back_values() {
 }
 
 #[test]
-fn pair_replace_take_if_and_take_all_share_one_occupancy_owner() {
+fn pair_replace_take_if_and_drop_share_one_occupancy_owner() {
     let mut slots = IndexedSlots::new();
     assert_eq!(slots.insert_pair_with(8, || (10, 11)), Ok((0, 1)));
     assert_eq!(slots.take(0), Some(10));
@@ -299,7 +299,7 @@ fn pair_replace_take_if_and_take_all_share_one_occupancy_owner() {
     assert_eq!(slots.take_if(1, |value| *value == 40), Some(40));
 
     let live: Vec<_> = slots.iter().map(|(fd, value)| (fd, *value)).collect();
-    let taken = slots.take_all();
+    let taken = core::mem::replace(&mut slots, IndexedSlots::new());
     assert_eq!(slots.len(), 0);
     assert_eq!(
         taken

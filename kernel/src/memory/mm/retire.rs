@@ -39,44 +39,81 @@ impl MapArea {
     }
 }
 
-/// 已从唯一 MemorySet owner 摘除、但 backing 仍等待 remote TLB completion 的 VMA。
+/// 已从唯一 MemorySet 摘除、等待 remote TLB completion 的 backing 集合。
+/// single 不分配；batch 使用 munmap 在修改页表前预留的容量。
+enum RetiredAreas {
+    Single(MapArea),
+    Batch(Vec<MapArea>),
+}
+
+/// VMA backing 与 translation fence 的唯一 retirement owner。
+/// caller 必须先释放 MemorySet lock，再同步并析构文件与设备资源。
 pub(crate) struct PreparedAreaRetirement {
-    area: Option<MapArea>,
+    areas: Option<RetiredAreas>,
     commit: TranslationCommit,
 }
 
 impl PreparedAreaRetirement {
-    /// 同步完成 detached VMA 的 translation fence，再释放全部 backing owner。
+    pub(super) fn batch(mut areas: Vec<MapArea>, page_table: &mut PageTable) -> Self {
+        let mut commit = TranslationCommit::new();
+        for area in &mut areas {
+            area.unmap(page_table, &mut commit);
+        }
+        Self {
+            areas: Some(RetiredAreas::Batch(areas)),
+            commit,
+        }
+    }
+
+    /// 在 MM lock 外完成 fence，随后释放实际 file/backend/frame owner。
     ///
     /// # Errors
     ///
-    /// platform shootdown 失败时保留 owner 并 fail-stop。
+    /// platform shootdown 失败时保留 backing 与 detached table owners 并 fail-stop。
     pub(crate) fn synchronize(mut self) {
-        self.commit
-            .synchronize()
-            .expect("platform TLB synchronization failed while retiring VMA");
-        let mut area = self
-            .area
-            .take()
-            .expect("detached VMA retirement completed twice");
+        if self.commit.synchronize().is_err() {
+            self.preserve_unfenced();
+            panic!("platform TLB synchronization failed while retiring VMA");
+        }
+        let areas = self.areas.take().expect("VMA retirement completed twice");
+        match areas {
+            RetiredAreas::Single(area) => Self::release(area),
+            RetiredAreas::Batch(areas) => {
+                for area in areas {
+                    Self::release(area);
+                }
+            }
+        }
+    }
+
+    fn release(mut area: MapArea) {
+        // shared_file 的 mapping 字段先于 resident；必须先归还页写者，再运行最后 vm_file Drop。
+        // 否则 close/shutdown 可以在页仍持 writer claim 时冻结或退休 backing。
         area.data_frames.clear();
         if let Some(shared) = &mut area.shared_file {
             shared.resident.clear();
         }
+        drop(area);
+    }
+
+    fn preserve_unfenced(&mut self) -> bool {
+        let Some(areas) = self.areas.take() else {
+            return false;
+        };
+        core::mem::forget(areas);
+        let commit = core::mem::replace(&mut self.commit, TranslationCommit::new());
+        core::mem::forget(commit);
+        true
     }
 }
 
 impl Drop for PreparedAreaRetirement {
     fn drop(&mut self) {
-        let Some(area) = self.area.take() else {
-            return;
-        };
-        // 未完成 fence 时必须泄漏 backing 与 detached table owners；正常路径由 synchronize
-        // 先清空 area。若直接 Drop，释放 frame 会让 stale translation 访问复用内存。
-        core::mem::forget(area);
-        let commit = core::mem::replace(&mut self.commit, TranslationCommit::new());
-        core::mem::forget(commit);
-        debug_assert!(false, "detached VMA retired without TLB synchronization");
+        // 未完成 fence 的 token 不能释放 backing：stale translation 仍可能访问这些页。
+        // synchronize 成功取出 areas；遗漏调用与 fence 失败都保留完整资源并 fail-stop。
+        if self.preserve_unfenced() {
+            panic!("detached VMA retired without TLB synchronization");
+        }
     }
 }
 
@@ -104,7 +141,7 @@ impl MemorySet {
         let mut commit = TranslationCommit::new();
         area.unmap(&mut self.page_table, &mut commit);
         PreparedAreaRetirement {
-            area: Some(area),
+            areas: Some(RetiredAreas::Single(area)),
             commit,
         }
     }

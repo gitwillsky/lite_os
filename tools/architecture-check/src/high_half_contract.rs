@@ -20,11 +20,12 @@ const VIRTIO_QUEUE: &str = "kernel/src/devices/virtio/queue.rs";
 const KERNEL_STACK: &str = "kernel/src/memory/kernel_stack.rs";
 const AARCH64_CONTEXT: &str = "kernel/src/hardware/arch/aarch64/user_context.rs";
 const RISCV64_CONTEXT: &str = "kernel/src/hardware/arch/riscv64/user_context.rs";
-const TASK_TRAP_CONTEXT: &str = "kernel/src/task/model/trap_context.rs";
+const CONTEXT_STORAGE: &str = "kernel/src/task/model/context_storage.rs";
 const TASK_USER_CONTEXT: &str = "kernel/src/task/model/user_context.rs";
 const TASK_MODEL: &str = "kernel/src/task/model.rs";
 const PROCESS_CLONE: &str = "kernel/src/task/model/process_clone.rs";
 const PROCESS_EXEC: &str = "kernel/src/task/model/process_exec.rs";
+const TASK_TRAP_CONTEXT: &str = "kernel/src/task/model/trap_context.rs";
 
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     let Ok(linker) = read(root, LINKER, errors) else {
@@ -87,7 +88,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     let Ok(riscv64_context) = read(root, RISCV64_CONTEXT, errors) else {
         return;
     };
-    let Ok(task_trap_context) = read(root, TASK_TRAP_CONTEXT, errors) else {
+    let Ok(context_storage) = read(root, CONTEXT_STORAGE, errors) else {
         return;
     };
     let Ok(task_user_context) = read(root, TASK_USER_CONTEXT, errors) else {
@@ -100,6 +101,9 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         return;
     };
     let Ok(process_exec) = read(root, PROCESS_EXEC, errors) else {
+        return;
+    };
+    let Ok(task_trap_context) = read(root, TASK_TRAP_CONTEXT, errors) else {
         return;
     };
 
@@ -228,23 +232,23 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         && task_user_context.contains("backing: ContextBacking")
         && task_user_context.contains("for_placement(kernel_stack: Option<usize>")
         && task_user_context.contains("requires_retirement_wait")
-        && task_trap_context.contains("match binding.backing()")
-        && task_trap_context.contains("ContextBacking::KernelStack")
-        && task_trap_context.contains("ContextBacking::AddressSpace")
-        && !task_trap_context.contains("is_kernel_stack_user_context")
+        && context_storage.contains("match binding.backing()")
+        && context_storage.contains("ContextBacking::KernelStack")
+        && context_storage.contains("ContextBacking::AddressSpace")
+        && !context_storage.contains("is_kernel_stack_user_context")
         && task_model.contains("ContextBinding::for_placement(")
-        && task_model.contains("match kernel_stack.user_context_address()")
-        && task_model.contains("allocate_thread_trap_context(tid)?")
-        && task_model.matches("requires_retirement_wait(TRAP_CONTEXT)").count() == 2
+        && task_model.contains("let kernel_context_address = kernel_stack.user_context_address()")
+        && task_model.contains("address_space.allocate_thread_context()?")
+        && task_trap_context.matches("requires_retirement_wait(TRAP_CONTEXT)").count() == 1
         && task_model
-            .matches("memory_retirement_wait: Mutex::new(memory_retirement_wait)")
+            .matches("memory_cleanup_wait: Mutex::new(memory_cleanup_wait)")
             .count()
             == 2
-        && process_clone.contains("if let Some(address) = kernel_stack.user_context_address()")
-        && process_clone.contains("allocate_thread_trap_context(tid)?")
-        && process_clone.contains("requires_retirement_wait(TRAP_CONTEXT)")
+        && process_clone.contains("let kernel_context_address = kernel_stack.user_context_address()")
+        && process_clone.contains("address_space.allocate_thread_context()?")
+        && process_clone.contains("resources.share_memory && kernel_context_address.is_none()")
         && process_clone
-            .contains("memory_retirement_wait: Mutex::new(memory_retirement_wait)")
+            .contains("memory_cleanup_wait: Mutex::new(memory_cleanup_wait)")
         && process_exec.contains("old_context_binding.requires_retirement_wait(TRAP_CONTEXT)"))
     {
         errors.push(

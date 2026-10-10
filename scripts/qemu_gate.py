@@ -110,6 +110,7 @@ def _qemu_command(
     qemu = shutil.which(runtime.binary)
     if qemu is None:
         raise RuntimeError(f"{runtime.binary} is required")
+    validate_kernel_boot_artifact(runtime)
     command = [
         qemu,
         "-machine",
@@ -132,27 +133,26 @@ def _qemu_command(
         command.extend(("-m", memory))
     if runtime.bootloader is not None:
         command.extend(["-bios", runtime.bootloader])
+    root_device = (
+        "-drive", f"file={image},if=none,format=raw,id=x0",
+        "-device", "virtio-blk-device,drive=x0",
+    )
+    scratch_device = (
+        "-drive", f"file={scratch_disk},if=none,format=raw,id=x1",
+        "-device", "virtio-blk-device,drive=x1",
+    ) if scratch_disk is not None else ()
+    # guest 按 DTB transport 顺序装配；两个 virt machine 的节点顺序不同。
+    # AArch64 先遇到后声明设备，RISC-V 先遇到先声明设备；都保证 root=vda、scratch=vdb。
+    block_devices = (
+        (*scratch_device, *root_device) if runtime.arch == "aarch64"
+        else (*root_device, *scratch_device)
+    )
     command.extend(
         [
             "-kernel",
             runtime.kernel_boot_artifact,
             *(("-append", kernel_arguments) if kernel_arguments is not None else ()),
-            # QEMU virt 为后声明的 virtio-mmio 设备分配更低的地址，guest 先探测到它；所以第二块盘
-            # （guest 内为 vdb，只用于裸块设备 I/O gate）必须先声明，root 盘才是 vda。
-            *(
-                (
-                    "-drive",
-                    f"file={scratch_disk},if=none,format=raw,id=x1",
-                    "-device",
-                    "virtio-blk-device,drive=x1",
-                )
-                if scratch_disk is not None
-                else ()
-            ),
-            "-drive",
-            f"file={image},if=none,format=raw,id=x0",
-            "-device",
-            "virtio-blk-device,drive=x0",
+            *block_devices,
             "-object",
             "rng-random,filename=/dev/urandom,id=rng0",
             "-device",
@@ -179,6 +179,20 @@ def _qemu_command(
         ]
     )
     return command
+
+
+def validate_kernel_boot_artifact(runtime: QemuRuntime | None = None) -> Path:
+    """验证实际启动比特与当前 ELF 对应；返回可用于内容寻址的启动产物。"""
+    runtime = runtime or qemu_runtime()
+    artifact = ROOT / runtime.kernel_boot_artifact
+    if runtime.arch == "aarch64":
+        # 延迟 import，artifact 工具的 userland recipe 也使用此 gate。
+        from verify_artifacts import require_aarch64_raw_image
+
+        require_aarch64_raw_image(ROOT / runtime.kernel_elf, artifact)
+    elif not artifact.is_file():
+        raise RuntimeError(f"missing kernel boot artifact: {artifact}")
+    return artifact
 
 
 def cpu_topology_markers(cpu_count: int) -> tuple[str, str]:
@@ -229,7 +243,7 @@ def send_interaction(stream: BinaryIO, data: bytes) -> None:
 
 def _is_echo_paced_shell_command(data: bytes) -> bool:
     """Returns whether `data` is one complete printable UTF-8 shell command."""
-    if not data.endswith(b"\n") or not data:
+    if not data.endswith(b"\n") or data.count(b"\n") != 1:
         return False
     try:
         text = data.decode("utf-8")
@@ -239,6 +253,22 @@ def _is_echo_paced_shell_command(data: bytes) -> bool:
         character == "\n" or (ord(character) >= 0x20 and character != "\x7f")
         for character in text
     )
+
+
+@dataclass(frozen=True)
+class ShellCommand:
+    """调用方声明的单条 shell 命令；UTF-8 printable 内容与最终 LF 在构造时校验。"""
+    data: bytes
+
+    def __post_init__(self) -> None:
+        if not _is_echo_paced_shell_command(self.data):
+            raise ValueError("shell command requires printable UTF-8 and final newline")
+
+
+@dataclass(frozen=True)
+class TerminalInput:
+    """前台应用/终端控制输入；按实际 bytes 发送，不猜测 shell 或等待其 prompt。"""
+    data: bytes
 
 
 def send_shell_interaction(
@@ -256,7 +286,7 @@ def send_shell_interaction(
         data: One printable newline-terminated shell command.
 
     Returns:
-        None after every byte has been observed through the guest terminal.
+        None after all printable bytes are echoed and the final newline is submitted.
 
     Raises:
         ValueError: `data` is not a complete printable shell command.
@@ -268,6 +298,10 @@ def send_shell_interaction(
         encoded = character.encode("utf-8")
         echo_cursor = len(output)
         send_interaction(input_stream, encoded)
+        # 换行是提交 delimiter，不是可保证回显的 glyph。BusyBox lineedit 在列边界
+        # goto_new_line 不再输出 LF；命令结果仍由 boot 的真实 marker/deadline 验证。
+        if character == "\n":
+            return
         deadline = time.monotonic() + SERIAL_ECHO_TIMEOUT_SECONDS
         while encoded not in output[echo_cursor:]:
             remaining = deadline - time.monotonic()
@@ -342,14 +376,10 @@ def drain_fatal_line(stream: BinaryIO, output: bytearray) -> None:
 
 
 def _wait_for_prompt(stream: BinaryIO, output: bytearray, cursor: int) -> None:
-    """Waits until the ash prompt appears at/after `cursor`, so a command is
-    injected only once the shell is ready to read it (not mid-boot-spew).
+    """等待最近 shell command 提交后的真实 prompt；cursor 是去 ANSI 的字符位置。
 
-    Appends any bytes it reads to `output` (the caller re-scans it) and does NOT
-    advance the interaction cursor: a following prompt-triggered interaction must
-    still be able to match this same prompt. Bounded by `PROMPT_WAIT_SECONDS`; on
-    timeout it returns anyway and the caller injects (degrading to the old blind
-    behavior rather than hanging).
+    后台 readiness 可晚于 prompt，不能把其位置当作 prompt 搜索起点。
+    超时/EOF 明确失败；不退回盲发，也不消费 boot 的 readiness marker cursor。
     """
     deadline = time.monotonic() + PROMPT_WAIT_SECONDS
     while time.monotonic() < deadline:
@@ -364,13 +394,34 @@ def _wait_for_prompt(stream: BinaryIO, output: bytearray, cursor: int) -> None:
             break
         output.extend(chunk)
 
+    raise RuntimeError("guest shell prompt missing after latest command submission")
+
+
+def send_triggered_interaction(
+    input_stream: BinaryIO,
+    output_stream: BinaryIO,
+    output: bytearray,
+    shell_cursor: int,
+    data: ShellCommand | TerminalInput,
+) -> None:
+    """readiness 匹配后按实际 shell submission 等 prompt；控制键直接交给前台应用。"""
+    if isinstance(data, ShellCommand):
+        # 新 shell command 需要 prompt/echo flow control；Ctrl-C/Z 和编辑器输入的
+        # readiness 来自前台应用 marker，等待 shell prompt 会阻止触发该 prompt 的操作。
+        _wait_for_prompt(output_stream, output, shell_cursor)
+        send_shell_interaction(input_stream, output_stream, output, data.data)
+    elif isinstance(data, TerminalInput):
+        send_interaction(input_stream, data.data)
+    else:
+        raise TypeError("serial interaction must declare ShellCommand or TerminalInput")
+
 
 def boot(
     image: Path,
     smp: int,
     markers: tuple[str, ...],
     timeout_seconds: int = 30,
-    interactions: tuple[tuple[str, bytes], ...] = (),
+    interactions: tuple[tuple[str, ShellCommand | TerminalInput], ...] = (),
     forbidden_markers: tuple[str, ...] = (),
     success_settle_seconds: float = 0.0,
     persistent_writes: bool = False,
@@ -399,6 +450,8 @@ def boot(
     Raises:
         RuntimeError: QEMU 缺失、异常退出、超时或命中禁止标记。
     """
+    if any(not isinstance(data, (ShellCommand, TerminalInput)) for _, data in interactions):
+        raise TypeError("serial interaction must declare ShellCommand or TerminalInput")
     private_directory: tempfile.TemporaryDirectory[str] | None = None
     if not persistent_writes:
         # QEMU snapshot 仍会申请 backing image 锁；私有副本才能与开发实例确定性隔离。
@@ -426,6 +479,9 @@ def boot(
     output = bytearray()
     pending_interactions = list(interactions)
     interaction_cursor = 0
+    # 独立事实：readiness cursor 消费 marker；shell cursor 标记最近 command 提交。
+    # 后台输出顺序不决定 shell 是否已有 prompt，缺失该边界会重复等待或重用旧 prompt。
+    shell_cursor = 0
     success_seen_at: float | None = None
     # 进度看门狗：last_progress 每次读到新字节就刷新；只有连续 STALL_SECONDS 无新输出才判死。
     # hard_deadline 是失控兜底，正常路径永远够用。
@@ -464,24 +520,29 @@ def boot(
                     # Stopped 文本会立即触发未来输入，使 gate 绕过 guest 的真实状态转换。
                     interaction_cursor = marker_offset + len(marker)
                     assert process.stdin is not None
-                    if data:
-                        # marker 通常先于 ash 的下一条 prompt；等 prompt 出现再注入，避免宿主慢时
-                        # prompt 迟到导致命令前缀被切断（盲 sleep 会漏掉该命令的 marker）。
-                        # 若触发 marker 本身就是 prompt，说明 prompt 已到，直接注入不再等待。
-                        # 不推进 cursor：紧随其后的 prompt 触发型交互仍需匹配同一个 prompt。
-                        if not marker.endswith(SHELL_PROMPT):
-                            _wait_for_prompt(process.stdout, output, interaction_cursor)
-                        if _is_echo_paced_shell_command(data):
-                            send_shell_interaction(
-                                process.stdin,
-                                process.stdout,
-                                output,
-                                data,
-                            )
-                        else:
-                            send_interaction(process.stdin, data)
+                    if data.data:
+                        send_triggered_interaction(
+                            process.stdin,
+                            process.stdout,
+                            output,
+                            shell_cursor,
+                            data,
+                        )
                         # 等 prompt/注入期间读到的字节也是进度，刷新看门狗防误判 stall。
                         last_progress = time.monotonic()
+                        # echo/prompt pacing 同样消费 stdout；必须立即解析它已经读入的
+                        # marker，否则 guest 停在 prompt 时再无新字节唤醒外层 select。
+                        text = ANSI.sub("", output.decode(errors="replace"))
+                        if isinstance(data, ShellCommand):
+                            shell_cursor = len(text)
+                        found = [item for item in forbidden_markers if item in text]
+                        if found:
+                            drain_fatal_line(process.stdout, output)
+                            tail = "\n".join(output.decode(errors="replace").splitlines()[-40:])
+                            raise RuntimeError(
+                                f"QEMU -smp {smp} reached forbidden markers: {found!r}"
+                                f"\n--- output tail ---\n{tail}"
+                            )
                 if all(marker in text for marker in markers):
                     if "panicked at" in text or "[ERROR]" in text:
                         tail = "\n".join(text.splitlines()[-40:])

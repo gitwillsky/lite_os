@@ -8,6 +8,7 @@ members = [
     "tools/scheduler-unit",
 ]
 exclude = [
+    "vendor/smoltcp",
     "bootloader",
     "user/audio-proto",
     "user/audio-service",

@@ -4,7 +4,7 @@ use super::errno;
 
 /// 实现 Linux 64-bit prlimit64 的 Process owner、权限与 copyout 顺序。
 pub(crate) fn sys_prlimit64(
-    pid: usize,
+    pid: i32,
     resource: usize,
     replacement: usize,
     previous: usize,
@@ -22,7 +22,7 @@ pub(crate) fn sys_prlimit64(
             hard: u64::from_ne_bytes(bytes[8..].try_into().unwrap()),
         })
     };
-    let old = match process_resource_limit(pid, resource, replacement) {
+    let old = match process_resource_limit(pid as u32 as usize, resource, replacement) {
         Ok(limit) => limit,
         Err(ResourceLimitError::NotFound) => return -errno::ESRCH,
         Err(ResourceLimitError::PermissionDenied) => return -errno::EPERM,

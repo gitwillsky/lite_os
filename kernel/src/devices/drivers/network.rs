@@ -16,8 +16,13 @@ pub(crate) enum NetworkError {
 pub(crate) struct NetworkStatistics {
     pub(crate) received_bytes: u64,
     pub(crate) received_packets: u64,
+    pub(crate) received_errors: u64,
+    pub(crate) received_dropped: u64,
     pub(crate) transmitted_bytes: u64,
     pub(crate) transmitted_packets: u64,
+    pub(crate) transmitted_errors: u64,
+    /// 软件/设备TX拥塞丢包，与成功提交计数分开。
+    pub(crate) transmitted_dropped: u64,
 }
 
 /// 一次有界 device completion drain 的结果。

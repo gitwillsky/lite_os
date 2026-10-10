@@ -4,7 +4,8 @@ use crate::{
     task::current_task,
 };
 
-use super::{base, ferr, path};
+use super::pathname::path_allow_empty;
+use super::{base, ferr};
 
 /// 按 Linux readlinkat ABI 读取末项 symbolic-link 的原始 target bytes。
 ///
@@ -25,18 +26,30 @@ pub(crate) fn sys_readlinkat(fd: isize, name: *const u8, buffer: *mut u8, size: 
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
-    let path = match path(&task, name) {
+    let path = match path_allow_empty(&task, name) {
         Ok(path) => path,
         Err(error) => return error,
     };
-    let start = match base(&task, fd, &path) {
-        Ok(start) => start,
-        Err(error) => return error,
+    let opened = if path.is_empty() {
+        if fd == super::AT_FDCWD {
+            task.lookup_origin().into_parts().1
+        } else {
+            match usize::try_from(fd).ok().and_then(|fd| task.fd_get_raw(fd)) {
+                Some(file) => file.opened_ref(),
+                None => return -errno::EBADF,
+            }
+        }
+    } else {
+        let start = match base(&task, fd, &path) {
+            Ok(start) => start,
+            Err(error) => return error,
+        };
+        match vfs().open_file_at_no_follow(start, &path, &task.access_identity(true)) {
+            Ok(opened) => opened,
+            Err(error) => return ferr(error),
+        }
     };
-    let inode = match vfs().open_at_no_follow(start, &path, &task.access_identity(true)) {
-        Ok(inode) => inode,
-        Err(error) => return ferr(error),
-    };
+    let inode = opened.inode();
     if inode.inode_type() != InodeType::SymLink {
         return -errno::EINVAL;
     }
@@ -44,6 +57,7 @@ pub(crate) fn sys_readlinkat(fd: isize, name: *const u8, buffer: *mut u8, size: 
         Ok(target) => target,
         Err(error) => return ferr(error),
     };
+    opened.touch_access();
     let count = size.min(target.len());
     if task
         .copy_to_user(buffer as usize, &target[..count])

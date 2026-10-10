@@ -1,8 +1,6 @@
 use super::*;
 use crate::{
-    fs::{
-        AdvisoryLockAttempt, AdvisoryLockError, FileSystemError, RecordLockMode, RecordLockRange,
-    },
+    fs::{AdvisoryLockAttempt, AdvisoryLockError, RecordLockMode, RecordLockRange},
     syscall::INTERNAL_RESTART_SYS,
     task::{AdvisoryLockWaitError, wait_for_record_lock},
 };
@@ -70,8 +68,8 @@ fn normalize_range(
 ) -> Result<RecordLockRange, isize> {
     let base = match lock.whence {
         SEEK_SET => 0i128,
-        SEEK_CUR => i128::from(ofd.position_snapshot()),
-        SEEK_END => i128::from(ofd.inode_ref().ok_or(-errno::EBADF)?.size()),
+        SEEK_CUR => i128::from(ofd.position_snapshot().map_err(super::position_error)?),
+        SEEK_END => i128::from(ofd.inode_ref().size()),
         _ => return Err(-errno::EINVAL),
     };
     let anchor = base
@@ -147,7 +145,7 @@ fn get_lock(task: &TaskControlBlock, ofd: &Arc<OpenFileDescription>, pointer: us
         Ok(range) => range,
         Err(error) => return error,
     };
-    match vfs().record_lock_conflict(&ofd.lock_holder(), task.tgid(), requested, range) {
+    match vfs().record_lock_conflict(&ofd.lock_holder(), task.file_lock_owner(), requested, range) {
         Ok(Some(conflict)) => {
             user.lock_type = match conflict.mode {
                 RecordLockMode::Read => F_RDLCK,
@@ -159,7 +157,7 @@ fn get_lock(task: &TaskControlBlock, ofd: &Arc<OpenFileDescription>, pointer: us
                 .range
                 .end
                 .map_or(0, |end| (end - conflict.range.start) as i64);
-            user.pid = match i32::try_from(conflict.owner) {
+            user.pid = match i32::try_from(conflict.pid) {
                 Ok(pid) => pid,
                 Err(_) => return -errno::EOVERFLOW,
             };
@@ -172,6 +170,7 @@ fn get_lock(task: &TaskControlBlock, ofd: &Arc<OpenFileDescription>, pointer: us
 
 fn set_lock(
     task: &TaskControlBlock,
+    fd: usize,
     ofd: &Arc<OpenFileDescription>,
     pointer: usize,
     blocking: bool,
@@ -196,27 +195,34 @@ fn set_lock(
     if let Some(requested) = requested
         && blocking
     {
-        return match wait_for_record_lock(ofd, task.tgid(), requested, range) {
-            Ok(()) => 0,
+        return match wait_for_record_lock(ofd, task.file_lock_owner(), requested, range) {
+            Ok(()) => task
+                .finish_record_lock(fd, ofd)
+                .map_or(-errno::EBADF, |()| 0),
             Err(AdvisoryLockWaitError::Interrupted) => INTERNAL_RESTART_SYS,
             Err(AdvisoryLockWaitError::Unsupported) => -errno::EBADF,
             Err(AdvisoryLockWaitError::NoLocks) => -errno::ENOLCK,
             Err(AdvisoryLockWaitError::FileSystem(error)) => ferr(error),
         };
     }
-    match vfs().try_record_lock(&ofd.lock_holder(), task.tgid(), requested, range) {
+    match vfs().try_record_lock(&ofd.lock_holder(), task.file_lock_owner(), requested, range) {
         Ok(AdvisoryLockAttempt::Acquired { key, wake_waiters }) => {
             if wake_waiters {
                 vfs().notify_advisory_lock(key);
             }
-            0
+            if requested.is_some() {
+                task.finish_record_lock(fd, ofd)
+                    .map_or(-errno::EBADF, |()| 0)
+            } else {
+                0
+            }
         }
         Ok(AdvisoryLockAttempt::Blocked { .. }) => -errno::EAGAIN,
         Err(error) => lock_error(error),
     }
 }
 
-/// 实现 descriptor flags/status、dup 与 POSIX process-associated record locks。
+/// 实现 descriptor flags/status、dup 与 POSIX file-table-associated record locks。
 ///
 /// # Parameters
 ///
@@ -229,54 +235,46 @@ fn set_lock(
 /// command result 或负 errno/internal restart sentinel。
 pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
     let task = current_task().expect("fcntl requires current task");
+    let Some(file) = task.fd_get_raw(fd) else {
+        return -errno::EBADF;
+    };
+    if file.is_path()
+        && !matches!(
+            command,
+            F_DUPFD | F_DUPFD_CLOEXEC | F_GETFD | F_SETFD | F_GETFL
+        )
+    {
+        return -errno::EBADF;
+    }
     match command {
-        F_DUPFD if argument < task.file_descriptor_limit() => {
-            if task.fd_get(fd).is_none() {
-                -errno::EBADF
-            } else {
-                task.fd_duplicate(fd, argument, false)
-                    .map_or_else(super::super::file_descriptor_error, |value| value as isize)
-            }
-        }
+        F_DUPFD if argument < task.file_descriptor_limit() => task
+            .fd_allocate(file.clone(), argument, false)
+            .map_or_else(super::super::file_descriptor_error, |value| value as isize),
         F_GETFD => task
             .fd_flags(fd)
             .map_or(-errno::EBADF, |value| value as isize),
         F_SETFD => task
             .fd_set_flags(fd, argument as u32)
             .map_or(-errno::EBADF, |()| 0),
-        F_GETFL => task
-            .fd_get(fd)
-            .map_or(-errno::EBADF, |ofd| ofd.status_flags() as isize),
-        F_SETFL => task.fd_get(fd).map_or(-errno::EBADF, |ofd| {
-            ofd.set_status_flags(argument as u32);
+        F_GETFL => file.status_flags() as isize,
+        F_SETFL => {
+            file.set_status_flags(argument as u32);
             0
-        }),
+        }
         F_GETLK | F_SETLK | F_SETLKW => {
-            let Some(ofd) = task.fd_get(fd) else {
-                return -errno::EBADF;
-            };
-            if ofd.inode_ref().is_none() {
-                return -errno::EBADF;
-            }
+            let ofd = &file;
             match command {
-                F_GETLK => get_lock(&task, &ofd, argument),
-                F_SETLK => set_lock(&task, &ofd, argument, false),
-                F_SETLKW => set_lock(&task, &ofd, argument, true),
+                F_GETLK => get_lock(&task, ofd, argument),
+                F_SETLK => set_lock(&task, fd, ofd, argument, false),
+                F_SETLKW => set_lock(&task, fd, ofd, argument, true),
                 _ => unreachable!(),
             }
         }
-        F_DUPFD_CLOEXEC if argument < task.file_descriptor_limit() => {
-            if task.fd_get(fd).is_none() {
-                -errno::EBADF
-            } else {
-                task.fd_duplicate(fd, argument, true)
-                    .map_or_else(super::super::file_descriptor_error, |value| value as isize)
-            }
-        }
+        F_DUPFD_CLOEXEC if argument < task.file_descriptor_limit() => task
+            .fd_allocate(file.clone(), argument, true)
+            .map_or_else(super::super::file_descriptor_error, |value| value as isize),
         F_SETPIPE_SZ | F_GETPIPE_SZ => {
-            let Some(ofd) = task.fd_get(fd) else {
-                return -errno::EBADF;
-            };
+            let ofd = &file;
             let pipe = match &ofd.kind {
                 OpenFileKind::Pipe(endpoint) => Some(endpoint.pipe()),
                 OpenFileKind::Device(file) => file.backing_pipe(),
@@ -296,28 +294,25 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
             }
         }
         F_ADD_SEALS | F_GET_SEALS => {
-            let Some(ofd) = task.fd_get(fd) else {
-                return -errno::EBADF;
-            };
-            let OpenFileKind::MemFile(file) = &ofd.kind else {
+            let ofd = &file;
+            let file = ofd.inode_ref();
+            if !matches!(file.data_backing(), crate::fs::DataBacking::Memory(_)) {
                 return -errno::EINVAL;
-            };
+            }
+            // Linux memfd_add_seals 的 writable 检查先于 seal mask 校验。
+            if command == F_ADD_SEALS && ofd.status_flags() & O_ACCMODE == O_RDONLY {
+                return -errno::EPERM;
+            }
             if command == F_GET_SEALS {
                 match file.seals() {
                     Ok(seals) => seals as isize,
-                    Err(_) => -errno::ENOMEM,
+                    Err(error) => ferr(error),
                 }
             } else {
                 let Ok(seals) = u32::try_from(argument) else {
                     return -errno::EINVAL;
                 };
-                match file.add_seals(seals) {
-                    Ok(_) => 0,
-                    Err(FileSystemError::PermissionDenied) => -errno::EPERM,
-                    Err(FileSystemError::InvalidOperation) => -errno::EINVAL,
-                    Err(FileSystemError::OutOfMemory) => -errno::ENOMEM,
-                    Err(_) => -errno::EIO,
-                }
+                file.add_seals(seals).map_or_else(ferr, |_| 0)
             }
         }
         _ => -errno::EINVAL,

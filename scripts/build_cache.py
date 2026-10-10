@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from qemu_gate import qemu_runtime
+from qemu_gate import qemu_runtime, validate_kernel_boot_artifact
 
 CACHE_MANIFEST = ".liteos-cache.json"
 
@@ -160,6 +160,7 @@ def runtime_gate_payload(
 ) -> dict[str, object]:
     """构造只由实际执行比特、gate recipe 与 QEMU identity 决定的成功缓存键。"""
     runtime = qemu_runtime()
+    boot_artifact = validate_kernel_boot_artifact(runtime)
     qemu = shutil.which(runtime.binary)
     if qemu is None:
         raise RuntimeError(f"{runtime.binary} is required")
@@ -182,6 +183,7 @@ def runtime_gate_payload(
             "cpu": runtime.cpu,
             "machine": runtime.machine,
             "kernel_boot_artifact": runtime.kernel_boot_artifact,
+            "kernel_boot_sha256": sha256(boot_artifact),
         },
     }
 

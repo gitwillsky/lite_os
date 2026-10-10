@@ -8,6 +8,10 @@ use super::WAIT_SHARD_COUNT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum WaitIndexKey {
+    SignalSource {
+        identity: usize,
+        id: u64,
+    },
     AdvisoryLock {
         key: AdvisoryLockKey,
         id: u64,
@@ -30,6 +34,10 @@ pub(super) enum WaitIndexKey {
         exclusive: bool,
         id: u64,
     },
+    TaskEvent {
+        owner: usize,
+        ticket: u64,
+    },
     Task {
         tid: usize,
         id: u64,
@@ -39,6 +47,7 @@ pub(super) enum WaitIndexKey {
 impl WaitIndexKey {
     pub(super) fn shard(self) -> usize {
         let source = match self {
+            Self::SignalSource { identity, .. } => mix(0x5349_474e_414c, identity as u64),
             Self::AdvisoryLock { key, .. } => {
                 let (filesystem, inode) = key.wait_identity();
                 mix(filesystem as u64, inode)
@@ -51,6 +60,7 @@ impl WaitIndexKey {
                 direction,
                 ..
             } => mix(identity as u64, u64::from(direction)),
+            Self::TaskEvent { owner, ticket } => mix(owner as u64, ticket),
             Self::Task { tid, .. } => mix(0x5441_534b, tid as u64),
         };
         source as usize & (WAIT_SHARD_COUNT - 1)

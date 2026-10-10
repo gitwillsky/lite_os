@@ -54,19 +54,11 @@ pub(crate) struct InodeMetadata {
     pub(crate) device: Option<device::DeviceNumber>,
 }
 
-/// 与 kernel `fs::device::DeviceNumber` 相同的形状；host 测试不需要设备注册表。
+// 加载实际 dev_t codec；块设备注册表是 host storage adapter，不复制编号算法。
+#[path = "../../../kernel/src/storage/fs/device/number.rs"]
+mod device_number;
 pub(crate) mod device {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct DeviceNumber {
-        pub(crate) major: u32,
-        pub(crate) minor: u32,
-    }
-
-    impl DeviceNumber {
-        pub(crate) const fn new(major: u32, minor: u32) -> Self {
-            Self { major, minor }
-        }
-    }
+    pub(crate) use super::device_number::DeviceNumber;
 }
 
 pub(crate) trait StorageWriter {
@@ -74,10 +66,42 @@ pub(crate) trait StorageWriter {
 }
 
 pub(crate) trait Inode: Send + Sync {
+    fn notification_link_state(&self) -> Option<(u64, u32)> {
+        self.metadata()
+            .ok()
+            .map(|metadata| (metadata.inode, metadata.links))
+    }
+
+    fn check_xattr_write(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+    fn read_xattr(&self, _name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+        Err(FileSystemError::NotSupported)
+    }
+    fn list_xattrs(&self, _identity: &AccessIdentity) -> Result<Vec<u8>, FileSystemError> {
+        Err(FileSystemError::NotSupported)
+    }
+    fn change_xattr(&self, _change: XattrChange<'_>) -> Result<(), FileSystemError> {
+        Err(FileSystemError::NotSupported)
+    }
+    fn write_access(&self) -> Option<&InodeWriteAccess> {
+        None
+    }
+    fn touch_access(&self, _now: u64, _relatime: bool) -> Result<(), FileSystemError> {
+        Ok(())
+    }
     fn filesystem_id(&self) -> usize;
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError>;
     fn inode_type(&self) -> InodeType;
     fn size(&self) -> u64;
+    fn is_swap_file(&self) -> bool {
+        false
+    }
+    fn pin_swap_file(
+        self: Arc<Self>,
+    ) -> Result<alloc::boxed::Box<dyn swap::SwapFileLease>, FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
     fn is_executable(&self) -> bool;
     fn device_number(&self) -> Option<device::DeviceNumber>;
     fn mknod(
@@ -89,18 +113,55 @@ pub(crate) trait Inode: Send + Sync {
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn read_storage(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError>;
-    fn write_storage(&self, offset: u64, bytes: &[u8]) -> Result<usize, FileSystemError>;
-    fn write_storage_batch(
+    fn write_storage(
+        &self,
+        offset: u64,
+        bytes: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<usize, FileSystemError>;
+    /// 非零 regular write 检查完成后、user-copy 前的 killpriv commit；实际内容提交仍复查 live mode。
+    fn prepare_cached_write(
+        &self,
+        _identity: &crate::fs::AccessIdentity,
+    ) -> Result<(), FileSystemError> {
+        if self.inode_type() == crate::fs::InodeType::File {
+            Err(FileSystemError::ReadOnly)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn writeback_storage_batch(
         &self,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError>;
-    fn try_write_storage_batch(
+    fn try_writeback_storage_batch(
         &self,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError>;
-    fn append_storage(&self, bytes: &[u8]) -> Result<(u64, usize), FileSystemError>;
-    fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError>;
-    fn allocate_storage(&self, offset: u64, length: u64) -> Result<(), FileSystemError>;
+    fn prepare_memory_write(
+        &self,
+        _writer: &memory_file::MemoryWrite<'_>,
+        _identity: Option<&AccessIdentity>,
+    ) -> Result<(), FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
+    fn append_storage(
+        &self,
+        bytes: &[u8],
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(u64, usize), FileSystemError>;
+    fn truncate_storage(
+        &self,
+        size: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError>;
+    fn allocate_storage(
+        &self,
+        offset: u64,
+        length: u64,
+        identity: Option<&crate::fs::AccessIdentity>,
+    ) -> Result<(), FileSystemError>;
     fn sync_storage(&self) -> Result<(), FileSystemError>;
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError>;
     fn read_directory(
@@ -134,10 +195,22 @@ pub(crate) trait Inode: Send + Sync {
 }
 
 pub(crate) trait FileSystem: Send + Sync {
+    fn show_mount_options(&self) -> Result<Vec<u8>, FileSystemError> {
+        Ok(Vec::new())
+    }
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
-    fn make_writable(&self) -> Result<(), FileSystemError> {
-        Ok(())
+    fn remount(
+        &self,
+        options: &[u8],
+        _namespace: &crate::namespace::UserNamespace,
+        _writable_transition: bool,
+    ) -> Result<(), FileSystemError> {
+        if mount_options::is_empty(options) {
+            Ok(())
+        } else {
+            Err(FileSystemError::InvalidOperation)
+        }
     }
     fn shutdown(&self) -> Result<(), FileSystemError> {
         Ok(())
@@ -159,45 +232,15 @@ pub(crate) struct FileSystemStatistics {
     pub(crate) flags: u64,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct OwnerModeChange;
-
-impl OwnerModeChange {
-    pub(crate) fn authorize(
-        self,
-        state: permission::OwnerModeState,
-    ) -> Result<permission::OwnerModeState, FileSystemError> {
-        Ok(state)
-    }
-}
-
-pub(crate) mod permission {
-    use super::InodeType;
-
-    #[derive(Clone, Copy)]
-    pub(crate) struct OwnerModeState {
-        mode: u16,
-        uid: u32,
-        gid: u32,
-    }
-
-    impl OwnerModeState {
-        pub(crate) const fn new(_: InodeType, mode: u16, uid: u32, gid: u32) -> Self {
-            Self { mode, uid, gid }
-        }
-
-        pub(crate) const fn mode(self) -> u16 {
-            self.mode
-        }
-
-        pub(crate) const fn uid(self) -> u32 {
-            self.uid
-        }
-
-        pub(crate) const fn gid(self) -> u32 {
-            self.gid
-        }
-    }
+#[path = "../../../kernel/src/storage/fs/permission.rs"]
+pub(crate) mod permission;
+pub(crate) use permission::{AccessIdentity, OwnerModeChange};
+#[path = "../../../kernel/src/storage/fs/xattr.rs"]
+mod xattr;
+pub(crate) use xattr::XattrChange;
+// Host ext4 never consumes a memory-backed write token; volatile data owner is tested separately.
+pub(crate) mod memory_file {
+    pub(crate) struct MemoryWrite<'a>(core::marker::PhantomData<&'a ()>);
 }
 
 #[path = "../../../kernel/src/storage/fs/inotify/queue.rs"]
@@ -242,3 +285,20 @@ pub(crate) struct KernelThreadSupport {
     pub(crate) spawn: SpawnKernelThread,
     pub(crate) sleep_until: fn(u64),
 }
+
+#[path = "../../../kernel/src/storage/fs/swap/file_lease.rs"]
+pub(crate) mod swap;
+
+#[path = "tests/ext4_swap.rs"]
+mod swap_tests;
+
+#[allow(
+    dead_code,
+    reason = "host storage loads actual atime policy; volatile tuple owners have separate integration fixtures"
+)]
+#[path = "../../../kernel/src/storage/fs/inode_times.rs"]
+pub(crate) mod inode_times;
+
+#[path = "../../../kernel/src/storage/fs/write_access.rs"]
+mod write_access;
+pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};

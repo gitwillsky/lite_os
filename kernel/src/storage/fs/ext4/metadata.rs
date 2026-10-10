@@ -77,19 +77,26 @@ impl Ext4Inode {
 
     pub(super) fn update_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
         // mutation lock 先冻结 live owner/mode；拒绝路径不得为全 inode rollback snapshot 分配。
-        let (mut mutation, update) = MutationGuard::begin_after(&self.fs, || {
-            let disk = self.disk.lock();
-            change.authorize(OwnerModeState::new(
-                inode_kind::from_mode(disk.i_mode),
-                disk.i_mode,
-                disk.uid(),
-                disk.gid(),
-            ))
-        })?;
+        let (mut mutation, (update, kill_privileges)) =
+            MutationGuard::begin_after(&self.fs, || {
+                let disk = self.disk.lock();
+                let kind = inode_kind::from_mode(disk.i_mode);
+                let kill_privileges = change.kills_privileges(kind);
+                let update = change.authorize(OwnerModeState::new(
+                    kind,
+                    disk.i_mode,
+                    disk.uid(),
+                    disk.gid(),
+                ))?;
+                Ok((update, kill_privileges))
+            })?;
         let mut disk = mutation.inode(self)?;
         disk.i_mode = update.mode();
         disk.set_uid(update.uid());
         disk.set_gid(update.gid());
+        if kill_privileges {
+            self.kill_capability(&mut disk)?;
+        }
         disk.set_ctime(Timestamp::now());
         self.fs.write_inode_disk(self.inode_num, &disk)?;
         drop(disk);

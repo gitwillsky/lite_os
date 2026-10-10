@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     file::{OpenFileDescription, OpenFileKind},
-    socket::SocketSendBlocker,
+    socket::SocketCapacityWait,
     syscall::errno,
     task::{PollWaitKey, TaskControlBlock, current_task, wait_for_poll},
 };
@@ -28,14 +28,14 @@ struct PollDescriptor {
     ofd: Option<Arc<OpenFileDescription>>,
 }
 
-fn descriptor_revents(descriptor: &PollDescriptor) -> i16 {
+fn descriptor_revents(descriptor: &PollDescriptor, task: &TaskControlBlock) -> i16 {
     if descriptor.fd < 0 {
         return 0;
     }
     let Some(ofd) = &descriptor.ofd else {
         return POLLNVAL;
     };
-    ofd.poll_events(descriptor.events)
+    ofd.poll_events(descriptor.events, task)
 }
 
 fn collect_wait_keys(
@@ -50,10 +50,10 @@ fn collect_wait_keys(
     Ok(keys.finish())
 }
 
-fn evaluate(descriptors: &mut [PollDescriptor]) -> usize {
+fn evaluate(descriptors: &mut [PollDescriptor], task: &TaskControlBlock) -> usize {
     let mut count = 0;
     for descriptor in descriptors {
-        descriptor.revents = descriptor_revents(descriptor);
+        descriptor.revents = descriptor_revents(descriptor, task);
         if descriptor.revents != 0 {
             count += 1;
         }
@@ -61,10 +61,10 @@ fn evaluate(descriptors: &mut [PollDescriptor]) -> usize {
     count
 }
 
-fn any_ready(descriptors: &[PollDescriptor]) -> bool {
+fn any_ready(descriptors: &[PollDescriptor], task: &TaskControlBlock) -> bool {
     descriptors
         .iter()
-        .any(|descriptor| descriptor_revents(descriptor) != 0)
+        .any(|descriptor| descriptor_revents(descriptor, task) != 0)
 }
 
 fn copy_revents(
@@ -121,19 +121,32 @@ pub(super) fn prepare_wait_sources(ofd: &Arc<OpenFileDescription>) {
 ///
 /// - `ofd`: 要等待的唯一 open-file description。
 /// - `events`: Linux poll event mask。
+/// - `deadline`: 上层已冻结的 host-monotonic deadline；None 表示无限等待。
 ///
 /// # Returns
 ///
-/// source wake、signal interruption；无 deadline，因此不会 timeout。
-pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitResult {
+/// source wake、signal interruption、deadline timeout 或等待节点 OOM。
+pub(super) fn wait_for_ofd(
+    ofd: &Arc<OpenFileDescription>,
+    events: i16,
+    deadline: Option<u64>,
+) -> WaitResult {
+    let task = current_task().expect("OFD wait requires current task");
+    if deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
+        return if ofd.poll_events(events, task.as_ref()) != 0 {
+            WaitResult::Woken
+        } else {
+            WaitResult::TimedOut
+        };
+    }
     let mut keys = PollWaitKeys::new();
     if keys.add_interest(ofd, i16::MAX, false, None).is_err() {
         return WaitResult::OutOfMemory;
     }
     let (keys, guards) = keys.finish();
     prepare_wait_sources(ofd);
-    wait_for_poll(keys, None, || {
-        guards.changed() || ofd.poll_events(events) != 0
+    wait_for_poll(keys, deadline, || {
+        guards.changed() || ofd.poll_events(events, task.as_ref()) != 0
     })
 }
 
@@ -142,21 +155,32 @@ pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitR
 /// # Parameters
 ///
 /// - `blocker`: socket facade 持有的 opaque target projection。
+/// - `deadline`: 同一 send 操作的已冻结期限，容量 wake 不重置它。
 ///
 /// # Returns
 ///
 /// source wake、signal interruption或 wait-key allocation failure。
-pub(super) fn wait_for_socket_send(blocker: &SocketSendBlocker) -> WaitResult {
+pub(super) fn wait_for_socket_capacity(
+    blocker: &SocketCapacityWait,
+    deadline: Option<u64>,
+) -> WaitResult {
+    if deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
+        return if blocker.is_ready() {
+            WaitResult::Woken
+        } else {
+            WaitResult::TimedOut
+        };
+    }
     let mut keys = PollWaitKeys::new();
     if keys
-        .add_socket_source(blocker.wait_source(), POLLOUT, false, None)
+        .add_socket_source(blocker.wait_source(), false, None)
         .is_err()
     {
         return WaitResult::OutOfMemory;
     }
     let (keys, guards) = keys.finish();
     blocker.prepare_wait();
-    wait_for_poll(keys, None, || guards.changed() || blocker.is_ready())
+    wait_for_poll(keys, deadline, || guards.changed() || blocker.is_ready())
 }
 
 /// 实现 Linux LP64 ppoll 的 fd readiness、timeout 与临时 signal mask。
@@ -254,7 +278,7 @@ pub(crate) fn sys_ppoll(
     };
     loop {
         prepare_descriptors(&descriptors);
-        let ready = evaluate(&mut descriptors);
+        let ready = evaluate(&mut descriptors, &task);
         if ready != 0 || deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
             if temporary_mask {
                 task.restore_temporary_signal_mask()
@@ -279,11 +303,11 @@ pub(crate) fn sys_ppoll(
         // stale because the registry-lock guard will detect the change.
         prepare_descriptors(&descriptors);
         match wait_for_poll(keys, deadline, || {
-            guards.changed() || any_ready(&descriptors)
+            guards.changed() || any_ready(&descriptors, &task)
         }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {
-                evaluate(&mut descriptors);
+                evaluate(&mut descriptors, &task);
                 if temporary_mask {
                     task.restore_temporary_signal_mask()
                         .expect("ppoll temporary mask disappeared");
@@ -362,7 +386,7 @@ pub(crate) fn sys_pselect6(
     };
     loop {
         prepare_descriptors(&descriptors);
-        evaluate(&mut descriptors);
+        evaluate(&mut descriptors, &task);
         if descriptors.iter().any(|descriptor| descriptor.revents != 0)
             || deadline.is_some_and(|value| value <= crate::timer::get_time_ns())
         {
@@ -394,11 +418,11 @@ pub(crate) fn sys_pselect6(
         let (keys, guards) = keys;
         prepare_descriptors(&descriptors);
         match wait_for_poll(keys, deadline, || {
-            guards.changed() || any_ready(&descriptors)
+            guards.changed() || any_ready(&descriptors, &task)
         }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {
-                evaluate(&mut descriptors);
+                evaluate(&mut descriptors, &task);
                 if temporary_mask {
                     task.restore_temporary_signal_mask()
                         .expect("pselect6 temporary mask disappeared");

@@ -22,13 +22,13 @@ pub(super) struct InvalidOptions;
 const PAGE_SIZE: u64 = 4096;
 
 /// 新挂载的缺省参数（Linux：数据页上限为物理内存的一半，inode 数等于物理页数，根目录 `1777`）。
-pub(super) fn defaults(ram_pages: u64) -> Options {
+pub(super) fn defaults(ram_pages: u64, uid: u32, gid: u32) -> Options {
     Options {
         blocks: Some(ram_pages / 2),
         inodes: Some(ram_pages),
         mode: 0o1777,
-        uid: 0,
-        gid: 0,
+        uid,
+        gid,
     }
 }
 
@@ -50,6 +50,7 @@ pub(super) fn parse(
     options: &[u8],
     ram_pages: u64,
     base: Options,
+    namespace: &crate::namespace::UserNamespace,
 ) -> Result<Options, InvalidOptions> {
     let mut parsed = base;
     for option in mount_options::parse(options) {
@@ -84,8 +85,16 @@ pub(super) fn parse(
                     .ok_or(InvalidOptions)?;
                 parsed.mode = mode & 0o7777;
             }
-            b"uid" => parsed.uid = id(value)?,
-            b"gid" => parsed.gid = id(value)?,
+            b"uid" => {
+                parsed.uid = namespace
+                    .to_kernel(true, id(value)?)
+                    .ok_or(InvalidOptions)?
+            }
+            b"gid" => {
+                parsed.gid = namespace
+                    .to_kernel(false, id(value)?)
+                    .ok_or(InvalidOptions)?
+            }
             _ => return Err(InvalidOptions),
         }
     }

@@ -7,10 +7,9 @@ use super::{
 };
 use crate::{
     file::OpenFileDescription,
-    ipc::ReceiveBuffer,
-    socket::{Socket, SocketSendError},
+    socket::{Socket, SocketIoDirection, SocketSendError},
     syscall::{
-        poll::wait_for_socket_send,
+        poll::wait_for_socket_capacity,
         user_iovec::{
             BufferError, ImportError, UserInputStaging, UserIoCursor, UserIoVec,
             bounded_staging_capacity, import_iovecs, project_total_length, validate_user_buffers,
@@ -39,9 +38,18 @@ fn read_header(task: &TaskControlBlock, pointer: usize) -> Result<MessageHeader,
     let mut bytes = [0u8; MESSAGE_HEADER_SIZE];
     task.copy_from_user(pointer, &mut bytes)
         .map_err(|_| -errno::EFAULT)?;
+    let name = usize::from_ne_bytes(bytes[..8].try_into().unwrap());
+    let name_length = if name == 0 {
+        0
+    } else {
+        i32::from_ne_bytes(bytes[8..12].try_into().unwrap())
+    };
+    if name_length < 0 {
+        return Err(-errno::EINVAL);
+    }
     Ok(MessageHeader {
-        name: usize::from_ne_bytes(bytes[..core::mem::size_of::<usize>()].try_into().unwrap()),
-        name_length: u32::from_ne_bytes(bytes[8..12].try_into().unwrap()) as usize,
+        name,
+        name_length: (name_length as usize).min(128),
         iovecs: usize::from_ne_bytes(bytes[16..24].try_into().unwrap()),
         iovec_count: usize::from_ne_bytes(bytes[24..32].try_into().unwrap()),
         control: usize::from_ne_bytes(bytes[32..40].try_into().unwrap()),
@@ -55,7 +63,8 @@ fn import_message_iovecs(
 ) -> Result<(Vec<UserIoVec>, usize), isize> {
     let mut vectors =
         import_iovecs(task, header.iovecs, header.iovec_count).map_err(|error| match error {
-            ImportError::TooMany | ImportError::NullArray => -errno::EINVAL,
+            ImportError::TooMany => -errno::EMSGSIZE,
+            ImportError::NullArray => -errno::EINVAL,
             ImportError::AddressOverflow | ImportError::CopyFault => -errno::EFAULT,
             ImportError::NoMemory => -errno::ENOMEM,
         })?;
@@ -78,11 +87,17 @@ fn import_message_iovecs(
 
 fn send_error(
     task: &TaskControlBlock,
+    socket: &Socket,
     flags: usize,
     error: SocketError,
     completed: usize,
 ) -> isize {
-    if error == SocketError::BrokenPipe && completed == 0 && flags & MSG_NOSIGNAL == 0 {
+    // Linux 仅 TCP/unix stream 的 out_pipe 生成 SIGPIPE；UDP/unix packet 的分配 EPIPE 不发信号。
+    if error == SocketError::BrokenPipe
+        && completed == 0
+        && flags & MSG_NOSIGNAL == 0
+        && socket.socket_type() == crate::socket::SocketType::Stream
+    {
         send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
             .expect("current socket sender must remain live");
     }
@@ -93,17 +108,86 @@ fn send_error(
     }
 }
 
+/// 已 copyin 的目的输入；Unix stream 只关心非空 name 是否存在，不解析其 family。
+enum SendTarget {
+    Address(SocketAddress),
+    StreamName,
+}
+
+type ResolvedSendDestination = (
+    Option<crate::socket::SocketSendDestination>,
+    Option<Arc<dyn crate::fs::Inode>>,
+);
+
 struct SendContext<'a> {
     task: &'a TaskControlBlock,
     ofd: &'a Arc<OpenFileDescription>,
     socket: &'a Arc<Socket>,
-    target: Option<SocketAddress>,
+    target: Option<SendTarget>,
     flags: usize,
+    nonblocking: bool,
+    deadline: Option<u64>,
+    credentials: crate::socket::UnixSendCredentials,
+    packet_info: Option<crate::socket::InternetSendPacketInfo>,
+}
+
+/// Native move_addr_to_kernel 先校验/copy 通用 sockaddr；SeqPacket/TCP 随后忽略目的地址。
+fn read_target(
+    socket: &Socket,
+    task: &TaskControlBlock,
+    pointer: usize,
+    length: usize,
+) -> Result<Option<SendTarget>, isize> {
+    if pointer == 0 || length == 0 {
+        return Ok(None);
+    }
+    if (socket.domain() == crate::socket::SocketDomain::Unix
+        && matches!(
+            socket.socket_type(),
+            crate::socket::SocketType::Stream | crate::socket::SocketType::SeqPacket
+        ))
+        || (socket.domain() == crate::socket::SocketDomain::Inet
+            && socket.socket_type() == crate::socket::SocketType::Stream)
+    {
+        if length > 128 {
+            return Err(-errno::EINVAL);
+        }
+        let mut ignored = [0u8; 128];
+        if length != 0 {
+            task.copy_from_user(pointer, &mut ignored[..length])
+                .map_err(|_| -errno::EFAULT)?;
+        }
+        return Ok((socket.domain() == crate::socket::SocketDomain::Unix
+            && socket.socket_type() == crate::socket::SocketType::Stream)
+            .then_some(SendTarget::StreamName));
+    }
+    read_address(pointer, length, false).map(|address| Some(SendTarget::Address(address)))
 }
 
 impl SendContext<'_> {
     fn nonblocking(&self) -> bool {
-        self.flags & MSG_DONTWAIT != 0 || self.ofd.status_flags() & O_NONBLOCK != 0
+        self.nonblocking
+    }
+    // 真实 VFS inode pin 活到一次 backend lookup/commit；capacity 重试重新解析实际 caller namespace。
+    fn destination(&self) -> Result<ResolvedSendDestination, isize> {
+        if let Some(SendTarget::Address(SocketAddress::Unix(address))) = &self.target
+            && !address.is_abstract()
+        {
+            let (inode, identity) = super::unix_path::resolve(address, true)?;
+            return Ok((
+                Some(crate::socket::SocketSendDestination::UnixPath(identity)),
+                Some(inode),
+            ));
+        }
+        Ok((
+            self.target.as_ref().and_then(|target| match target {
+                SendTarget::Address(address) => Some(
+                    crate::socket::SocketSendDestination::Address(address.clone()),
+                ),
+                SendTarget::StreamName => None,
+            }),
+            None,
+        ))
     }
 }
 
@@ -113,33 +197,64 @@ fn send_one_message(
     rights: &mut Option<crate::socket::UnixRights>,
 ) -> isize {
     loop {
-        match context
-            .socket
-            .send_to_with_rights(bytes, context.target.clone(), rights)
-        {
+        let (target, _inode) = match context.destination() {
+            Ok(target) => target,
+            Err(error) => return error,
+        };
+        match context.socket.send_to_with_ancillary(
+            bytes,
+            target,
+            rights,
+            &context.credentials,
+            context.packet_info,
+        ) {
             Ok(count) => return count as isize,
-            Err(SocketSendError::WouldBlock | SocketSendError::PeerFull(_))
+            Err(SocketSendError::DestinationChanged) => continue,
+            Err(SocketSendError::WouldBlock | SocketSendError::Capacity(_))
                 if context.nonblocking() =>
             {
                 return -errno::EAGAIN;
             }
-            Err(SocketSendError::WouldBlock) => match wait_for_ofd(context.ofd, 4) {
-                WaitResult::Woken => {}
-                WaitResult::Interrupted => return -errno::EINTR,
-                WaitResult::TimedOut => unreachable!(),
-                WaitResult::OutOfMemory => return -errno::ENOMEM,
-            },
-            Err(SocketSendError::PeerFull(blocker)) => match wait_for_socket_send(&blocker) {
-                WaitResult::Woken => {}
-                WaitResult::Interrupted => return -errno::EINTR,
-                WaitResult::TimedOut => unreachable!(),
-                WaitResult::OutOfMemory => return -errno::ENOMEM,
-            },
+            Err(SocketSendError::WouldBlock) => {
+                match wait_for_ofd(context.ofd, 4, context.deadline) {
+                    WaitResult::Woken => {}
+                    WaitResult::Interrupted => return super::interrupted_wait(context.deadline),
+                    WaitResult::TimedOut => return -errno::EAGAIN,
+                    WaitResult::OutOfMemory => return -errno::ENOMEM,
+                }
+            }
+            Err(SocketSendError::Capacity(blocker)) => {
+                match wait_for_socket_capacity(&blocker, context.deadline) {
+                    WaitResult::Woken => {}
+                    WaitResult::Interrupted => return super::interrupted_wait(context.deadline),
+                    WaitResult::TimedOut => return -errno::EAGAIN,
+                    WaitResult::OutOfMemory => return -errno::ENOMEM,
+                }
+            }
             Err(SocketSendError::Error(error)) => {
-                return send_error(context.task, context.flags, error, 0);
+                return send_error(context.task, context.socket, context.flags, error, 0);
             }
         }
     }
+}
+
+/// 阻塞 stream 继续等待未发送 suffix；signal/timeout/OOM 只有没有进度时才暴露错误。
+fn stream_send_wait(
+    context: &SendContext<'_>,
+    result: WaitResult,
+    completed: usize,
+) -> Option<isize> {
+    let error = match result {
+        WaitResult::Woken => return None,
+        WaitResult::Interrupted => super::interrupted_wait(context.deadline),
+        WaitResult::TimedOut => -errno::EAGAIN,
+        WaitResult::OutOfMemory => -errno::ENOMEM,
+    };
+    Some(if completed == 0 {
+        error
+    } else {
+        completed as isize
+    })
 }
 
 fn send_stream_message(
@@ -149,11 +264,8 @@ fn send_stream_message(
     mut rights: Option<crate::socket::UnixRights>,
 ) -> isize {
     if total_length == 0 {
-        return if rights.is_some() {
-            -errno::EINVAL
-        } else {
-            send_one_message(context, &[], &mut rights)
-        };
+        // Native stream 零长度 send 不发布 skb/rights，仍已在入口完整校验 cmsg。
+        return send_one_message(context, &[], &mut rights);
     }
     let staging_capacity = context
         .socket
@@ -183,43 +295,67 @@ fn send_stream_message(
             };
         }
         loop {
-            match context.socket.send_to_with_rights(
+            let (target, _inode) = match context.destination() {
+                Ok(target) => target,
+                Err(error) => {
+                    return if cursor.completed() == 0 {
+                        error
+                    } else {
+                        cursor.completed() as isize
+                    };
+                }
+            };
+            match context.socket.send_to_with_ancillary(
                 staging.initialized(),
-                context.target.clone(),
+                target,
                 &mut rights,
+                &context.credentials,
+                context.packet_info,
             ) {
                 Ok(sent) => {
                     assert!(sent <= staged.count, "socket consumed beyond staged prefix");
                     cursor.advance(sent);
-                    if sent < staged.count || sent == 0 {
+                    if sent == 0 {
                         return cursor.completed() as isize;
                     }
                     break;
                 }
-                Err(SocketSendError::WouldBlock | SocketSendError::PeerFull(_))
-                    if cursor.completed() != 0 =>
-                {
-                    return cursor.completed() as isize;
-                }
-                Err(SocketSendError::WouldBlock | SocketSendError::PeerFull(_))
+                Err(SocketSendError::DestinationChanged) => continue,
+                Err(SocketSendError::WouldBlock | SocketSendError::Capacity(_))
                     if context.nonblocking() =>
                 {
-                    return -errno::EAGAIN;
+                    return if cursor.completed() == 0 {
+                        -errno::EAGAIN
+                    } else {
+                        cursor.completed() as isize
+                    };
                 }
-                Err(SocketSendError::WouldBlock) => match wait_for_ofd(context.ofd, 4) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => unreachable!(),
-                    WaitResult::OutOfMemory => return -errno::ENOMEM,
-                },
-                Err(SocketSendError::PeerFull(blocker)) => match wait_for_socket_send(&blocker) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => unreachable!(),
-                    WaitResult::OutOfMemory => return -errno::ENOMEM,
-                },
+                Err(SocketSendError::WouldBlock) => {
+                    if let Some(result) = stream_send_wait(
+                        context,
+                        wait_for_ofd(context.ofd, 4, context.deadline),
+                        cursor.completed(),
+                    ) {
+                        return result;
+                    }
+                }
+                Err(SocketSendError::Capacity(blocker)) => {
+                    if let Some(result) = stream_send_wait(
+                        context,
+                        wait_for_socket_capacity(&blocker, context.deadline),
+                        cursor.completed(),
+                    ) {
+                        return result;
+                    }
+                }
                 Err(SocketSendError::Error(error)) => {
-                    return send_error(context.task, context.flags, error, cursor.completed());
+                    return send_error(
+                        context.task,
+                        context.socket,
+                        context.flags,
+                        error,
+                        cursor.completed(),
+                    );
                 }
             }
         }
@@ -233,6 +369,12 @@ fn send_message(
     total_length: usize,
     rights: Option<crate::socket::UnixRights>,
 ) -> isize {
+    if let Err(error) = context
+        .socket
+        .check_stream_send(matches!(context.target, Some(SendTarget::StreamName)))
+    {
+        return send_error(context.task, context.socket, context.flags, error, 0);
+    }
     if let Err(error) = context.socket.validate_send_length(total_length) {
         return socket_error(error);
     }
@@ -259,6 +401,37 @@ fn send_message(
     send_one_message(&context, bytes.initialized(), &mut rights)
 }
 
+/// scalar/writev 的 socket 分支只装配无 name/control 的原生 request，和 sendmsg 共用 byte/progress/wait owner。
+pub(in crate::syscall) fn write_vectors(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    socket: &Arc<Socket>,
+    vectors: &[UserIoVec],
+    total_length: usize,
+) -> isize {
+    if let Err(error) = socket.check_seqpacket_send() {
+        return socket_error(error);
+    }
+    send_message(
+        SendContext {
+            task,
+            ofd,
+            socket,
+            target: None,
+            flags: 0,
+            nonblocking: ofd.status_flags() & O_NONBLOCK != 0,
+            deadline: socket
+                .timeout(SocketIoDirection::Send)
+                .deadline(crate::timer::get_time_ns()),
+            credentials: super::credentials::sender(task),
+            packet_info: None,
+        },
+        vectors,
+        total_length,
+        None,
+    )
+}
+
 /// Linux sendmsg scatter/gather ABI，复用唯一 socket send path。
 pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
     if flags & !(MSG_DONTWAIT | MSG_NOSIGNAL) != 0 {
@@ -277,31 +450,48 @@ pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let rights =
-        match super::control::parse_send(&task, &socket, header.control, header.control_length) {
-            Ok(rights) => rights,
-            Err(error) => return error,
-        };
-    let target = if header.name == 0 {
-        None
-    } else {
-        match read_address(header.name, header.name_length) {
-            Ok(value) => Some(value),
-            Err(error) => return error,
-        }
+    let target = match read_target(&socket, &task, header.name, header.name_length) {
+        Ok(target) => target,
+        Err(error) => return error,
     };
-    send_message(
+    let snapshot = match super::control_list::ControlSnapshot::import(
+        &task,
+        &socket,
+        header.control,
+        header.control_length,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(super::control_list::ImportError::NoBuffer) => return -errno::ENOBUFS,
+        Err(super::control_list::ImportError::CopyFault) => return -errno::EFAULT,
+    };
+    if let Err(error) = socket.check_seqpacket_send() {
+        return socket_error(error);
+    }
+    let ancillary = match super::control::parse_send(&task, &socket, &snapshot) {
+        Ok(ancillary) => ancillary,
+        Err(error) => return error,
+    };
+    let result = send_message(
         SendContext {
             task: &task,
+            credentials: ancillary.credentials,
+            packet_info: ancillary.packet_info,
             ofd: &ofd,
             socket: &socket,
             target,
             flags,
+            nonblocking: flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0,
+            deadline: socket
+                .timeout(SocketIoDirection::Send)
+                .deadline(crate::timer::get_time_ns()),
         },
         &iovecs,
         total_length,
-        rights,
-    )
+        ancillary.rights,
+    );
+    // 原生 socket.c 在协议 send 返回后才 kfree control；阻塞期间与所有 failure 保持同一费用。
+    drop(snapshot);
+    result
 }
 
 pub(crate) fn sys_sendto(
@@ -328,21 +518,26 @@ pub(crate) fn sys_sendto(
     if validate_user_buffers(&vectors).is_err() {
         return -errno::EFAULT;
     }
-    let target = if address == 0 {
-        None
-    } else {
-        match read_address(address, address_length) {
-            Ok(value) => Some(value),
-            Err(error) => return error,
-        }
+    let target = match read_target(&socket, &task, address, address_length) {
+        Ok(target) => target,
+        Err(error) => return error,
     };
+    if let Err(error) = socket.check_seqpacket_send() {
+        return socket_error(error);
+    }
     send_message(
         SendContext {
             task: &task,
+            credentials: super::credentials::sender(&task),
+            packet_info: None,
             ofd: &ofd,
             socket: &socket,
             target,
             flags,
+            nonblocking: flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0,
+            deadline: socket
+                .timeout(SocketIoDirection::Send)
+                .deadline(crate::timer::get_time_ns()),
         },
         &vectors,
         length,
@@ -374,13 +569,16 @@ pub(crate) fn sys_recvfrom(
     if validate_user_buffers(&vectors).is_err() {
         return -errno::EFAULT;
     }
-    let capacity = socket.receive_staging_capacity(length, STREAM_STAGING_BYTES);
-    let mut output = match ReceiveBuffer::try_new(capacity) {
+    let mut output = match socket.prepare_receive(length, STREAM_STAGING_BYTES) {
         Ok(output) => output,
-        Err(()) => return -errno::ENOMEM,
+        Err(error) => return socket_error(error),
     };
+    let deadline = socket
+        .timeout(SocketIoDirection::Receive)
+        .deadline(crate::timer::get_time_ns());
+    let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     loop {
-        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, false) {
+        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, false, nonblocking) {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&vectors);
                 if cursor.copy_to_user(&task, output.initialized()).is_err() {
@@ -395,15 +593,13 @@ pub(crate) fn sys_recvfrom(
                     received.count as isize
                 };
             }
-            Err(SocketError::Again)
-                if flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0 =>
-            {
+            Err(SocketError::Again) if nonblocking => {
                 return -errno::EAGAIN;
             }
-            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1) {
+            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1, deadline) {
                 WaitResult::Woken => {}
-                WaitResult::Interrupted => return -errno::EINTR,
-                WaitResult::TimedOut => unreachable!(),
+                WaitResult::Interrupted => return super::interrupted_wait(deadline),
+                WaitResult::TimedOut => return -errno::EAGAIN,
                 WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
             Err(error) => return socket_error(error),
@@ -429,14 +625,16 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let capacity = socket.receive_staging_capacity(total_length, STREAM_STAGING_BYTES);
-    let mut output = match ReceiveBuffer::try_new(capacity) {
+    let mut output = match socket.prepare_receive(total_length, STREAM_STAGING_BYTES) {
         Ok(output) => output,
-        Err(()) => return -errno::ENOMEM,
+        Err(error) => return socket_error(error),
     };
     let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
+    let deadline = socket
+        .timeout(SocketIoDirection::Receive)
+        .deadline(crate::timer::get_time_ns());
     loop {
-        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true) {
+        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true, nonblocking) {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&iovecs);
                 if cursor.copy_to_user(&task, output.initialized()).is_err()
@@ -447,14 +645,16 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                 let target = super::control::ReceiveTarget {
                     task: &task,
                     message,
-                    name: (header.name, header.name_length),
+                    name: header.name,
                     control: (header.control, header.control_length),
                 };
                 let content = super::control::ReceiveContent {
                     source: received.source,
-                    local: received.local_address,
+                    internet_packet_info: received.internet_packet_info,
                     packet_info: socket.ipv4_packet_info(),
                     rights: received.rights,
+                    credentials: received.credentials,
+                    pass_credentials: socket.pass_credentials(),
                     cloexec: flags & super::control::MSG_CMSG_CLOEXEC != 0,
                     truncated: received.full_length > received.count,
                 };
@@ -468,10 +668,10 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                 };
             }
             Err(SocketError::Again) if nonblocking => return -errno::EAGAIN,
-            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1) {
+            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1, deadline) {
                 WaitResult::Woken => {}
-                WaitResult::Interrupted => return -errno::EINTR,
-                WaitResult::TimedOut => unreachable!(),
+                WaitResult::Interrupted => return super::interrupted_wait(deadline),
+                WaitResult::TimedOut => return -errno::EAGAIN,
                 WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
             Err(error) => return socket_error(error),

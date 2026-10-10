@@ -14,7 +14,11 @@ pub(in crate::task) fn install_pipe_scheduler() {
 impl PipeScheduler for TaskPipeScheduler {
     fn notify(&self, pipe: &Arc<Pipe>) {
         crate::file::Epoll::notify_pipe_source(pipe);
-        wake_pipe_waiters(pipe);
+        wake_pipe_waiters(pipe, false);
+    }
+    fn notify_on_current_cpu(&self, pipe: &Arc<Pipe>) {
+        crate::file::Epoll::notify_pipe_source(pipe);
+        wake_pipe_waiters(pipe, true);
     }
 
     fn wait(
@@ -27,7 +31,7 @@ impl PipeScheduler for TaskPipeScheduler {
     }
 }
 
-fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
+fn wake_pipe_waiters(pipe: &Arc<Pipe>, current_cpu: bool) -> usize {
     const INPUT: i16 = 0x001;
     const OUTPUT: i16 = 0x004;
     const ERROR: i16 = 0x008;
@@ -58,7 +62,7 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
                 .group
                 .is_some_and(|group| wake_groups.try_insert(group, ()).is_err());
             count += 1;
-            wake_claimed_pipe(wake.claimed);
+            wake_claimed_pipe(wake.claimed, current_cpu);
             if group_error {
                 break 'sources;
             }
@@ -70,7 +74,7 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
                 .group
                 .is_some_and(|group| wake_groups.try_insert(group, ()).is_err());
             count += 1;
-            wake_claimed_pipe(wake.claimed);
+            wake_claimed_pipe(wake.claimed, current_cpu);
             if group_error {
                 break 'sources;
             }
@@ -79,8 +83,21 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
     count
 }
 
-fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>) {
+fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>, current_cpu: bool) {
     if let Some(claimed) = claimed {
+        if current_cpu {
+            let expected = match claimed.kind {
+                IndexedWaitKind::Pipe { .. } => WaitMembership::Pipe(claimed.id),
+                IndexedWaitKind::Poll => WaitMembership::Poll(claimed.id),
+                _ => panic!("pipe index contains non-pipe wait"),
+            };
+            crate::task::processor::wake_waiting_task_on_current_cpu(
+                claimed.task,
+                expected,
+                Some(WaitResult::Woken),
+            );
+            return;
+        }
         match claimed.kind {
             IndexedWaitKind::Pipe { .. } => {
                 crate::task::processor::wake_pipe_task(claimed.task, claimed.id, WaitResult::Woken);
