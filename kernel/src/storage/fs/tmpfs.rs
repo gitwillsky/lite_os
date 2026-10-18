@@ -406,6 +406,7 @@ impl Inode for TmpInode {
             atime: times.atime,
             mtime: times.mtime,
             ctime: times.ctime,
+            fine_times: Default::default(),
             device: self.device_number(),
         })
     }

@@ -95,6 +95,14 @@ mod fs {
     }
     pub(crate) struct DirectoryRead;
     pub(crate) trait DirectoryVisitor {}
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct FineTimes {
+        pub(crate) atime_nsec: u32,
+        pub(crate) mtime_nsec: u32,
+        pub(crate) ctime_nsec: u32,
+        pub(crate) birth: Option<(u64, u32)>,
+    }
+
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub(crate) enum InodeType {
         File,
@@ -115,6 +123,7 @@ mod fs {
         pub(crate) atime: u64,
         pub(crate) mtime: u64,
         pub(crate) ctime: u64,
+        pub(crate) fine_times: FineTimes,
         pub(crate) device: Option<()>,
     }
     pub(crate) struct FileSystemStatistics {
@@ -1226,6 +1235,7 @@ mod fs {
                 atime: 0,
                 mtime: 0,
                 ctime: 0,
+                fine_times: Default::default(),
                 device: None,
             }
         }

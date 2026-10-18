@@ -185,8 +185,8 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `kernel/src/storage/fs/procfs.rs` | 1468 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
-| `kernel/src/storage/fs/tmpfs.rs` | 1023 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
+| `kernel/src/storage/fs/procfs.rs` | 1469 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
+| `kernel/src/storage/fs/tmpfs.rs` | 1024 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
 | `kernel/src/task/process_table/signal.rs` | 1270 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
 
 ## Change contract

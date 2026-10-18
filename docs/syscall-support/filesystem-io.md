@@ -58,8 +58,10 @@
 | 69 | `preadv` | Complete | positioned vector regular-file read |
 | 70 | `pwritev` | Complete | positioned vector regular-file write |
 | 71 | `sendfile` | Partial | regular-file to regular-file |
+| 285 | `copy_file_range` | Partial | regular-file to regular-file，两侧各自显式或共享 offset；flags 必须为零；目录 EISDIR，其他类型 EINVAL |
 | 78 | `readlinkat` | Complete | symlink与 procfs fd projection |
 | 79 | `newfstatat` | Partial | supported objects 与 flags |
+| 291 | `statx` | Partial | 基本字段、ext4 `BTIME` 与纳秒、`MNT_ID`、设备号；`stx_attributes_mask` 为 0，不报告 `DIOALIGN`/`MOUNT_ROOT` |
 | 80 | `fstat` | Complete | supported OFD objects |
 | 81 | `sync` | Complete | 提交 ext4 running transaction；返回时全部已返回写入 durable |
 | 82 | `fsync` | Complete | 提交包含该文件的 running transaction；提交失败返回 `EIO` 且 journal fail-stop |
@@ -129,3 +131,10 @@ poll/epoll 可用。record 没有 Linux 的 dictionary 续行，也不做 printk
 字符设备读写的范围缩减：`/dev/random`/`/dev/urandom` 写入（混入 entropy pool）返回 `EOPNOTSUPP`；
 `/dev/snd/pcmC0D0p` 的 `read`/`write` 返回 `EOPNOTSUPP`，PCM 数据只经 `SNDRV_PCM_IOCTL_WRITEI_FRAMES`
 或 mmap ring 传输；`/dev/dri/card0` 的 `write` 返回 `EOPNOTSUPP`。
+
+`statx` 的时间戳精度取决于 filesystem 实际记录的内容：ext4 保存纳秒与创建时间并如实报告；其余 filesystem 的
+`Inode::set_times`/`touch_access` 以秒为单位，纳秒恒为 0、不报告 `BTIME`（Linux 对不记录创建时间的 filesystem 同样不设该位）。
+`stx_attributes_mask` 为 0，因为 immutable/append/nodump/compressed/encrypted 在本内核没有对应语义，不能声称支持。
+
+`copy_file_range` 与 `sendfile` 共用同一条 regular-file 数据路径（逐页读写、同文件重叠 EINVAL、RLIMIT_FSIZE），数据经内核缓冲复制，
+不做 reflink/服务端拷贝；跨 filesystem 复制按普通读写完成，与 Linux 5.19 之后的回退行为一致。

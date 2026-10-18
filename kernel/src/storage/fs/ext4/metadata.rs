@@ -33,6 +33,13 @@ impl Ext4InodeDisk {
         Timestamp::decode(self.i_ctime, self.i_ctime_extra)
     }
 
+    /// 创建时间；只有 inode 的扩展区覆盖 `i_crtime_extra` 时才存在（Linux `EXT4_FITS_IN_INODE`）。
+    pub(super) fn birth_time(&self) -> Option<Timestamp> {
+        // i_crtime_extra 位于 0x94，结束于 0x98；扩展区从 0x80 开始。
+        (usize::from(self.i_extra_isize) >= 0x98 - 0x80)
+            .then(|| Timestamp::decode(self.i_crtime, self.i_crtime_extra))
+    }
+
     pub(super) fn set_atime(&mut self, time: Timestamp) {
         (self.i_atime, self.i_atime_extra) = time.encode();
     }

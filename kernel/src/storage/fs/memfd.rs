@@ -134,6 +134,7 @@ impl Inode for MemFile {
             atime: times.atime,
             mtime: times.mtime,
             ctime: times.ctime,
+            fine_times: Default::default(),
             device: None,
         })
     }

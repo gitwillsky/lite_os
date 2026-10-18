@@ -112,6 +112,7 @@ impl Inode for RootInode {
             atime: self.created,
             mtime: self.created,
             ctime: self.created,
+            fine_times: Default::default(),
             device: None,
         })
     }

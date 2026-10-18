@@ -66,6 +66,8 @@ int verify_address_space_rollover(void);
 int verify_mapping_placement(void);
 int verify_resource_usage(void);
 int verify_mremap(void);
+int verify_statx(void);
+int verify_copy_file_range(void);
 
 static void signal_handler(int signal)
 {
@@ -659,6 +661,10 @@ static int run_smoke(int argc, char **argv, char **envp)
 	if (resource_usage_result != 0) return 128 + resource_usage_result;
 	int mremap_result = verify_mremap();
 	if (mremap_result != 0) return 192 + mremap_result;
+	int statx_result = verify_statx();
+	if (statx_result != 0) return 64 + statx_result;
+	int copy_result = verify_copy_file_range();
+	if (copy_result != 0) return 32 + copy_result;
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 14;
 	return 0;
 }

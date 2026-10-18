@@ -36,6 +36,14 @@ mod fs {
         pub(crate) uid: u32,
         pub(crate) gid: u32,
     }
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct FineTimes {
+        pub(crate) atime_nsec: u32,
+        pub(crate) mtime_nsec: u32,
+        pub(crate) ctime_nsec: u32,
+        pub(crate) birth: Option<(u64, u32)>,
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct InodeMetadata {
         pub(crate) filesystem: u64,
@@ -51,6 +59,7 @@ mod fs {
         pub(crate) atime: u64,
         pub(crate) mtime: u64,
         pub(crate) ctime: u64,
+        pub(crate) fine_times: FineTimes,
         pub(crate) device: Option<()>,
     }
     mod inode_times;

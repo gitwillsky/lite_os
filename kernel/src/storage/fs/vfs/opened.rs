@@ -81,8 +81,8 @@ impl OpenedFile {
             .as_ref()
             .map_or(MountFlags::default(), |view| view.flags())
     }
-    /// fdinfo 使用实际 vfsmount 的稳定 identity，包括所有内部 pseudo 路径。
-    pub(in crate::fs) fn mount_id(&self) -> u64 {
+    /// fdinfo 与 `statx` 使用实际 vfsmount 的稳定 identity，包括所有内部 pseudo 路径。
+    pub(crate) fn mount_id(&self) -> u64 {
         self.mount.as_ref().map_or(0, |view| view.id)
     }
     /// mnt_may_suid：只有 caller namespace 的实际 mount 且 caller 在 superblock owning userNS 内才可信。

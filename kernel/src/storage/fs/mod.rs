@@ -51,7 +51,7 @@ pub(crate) use directory::{
 };
 pub(crate) use fifo::{FifoAccess, FifoOpenError, open as open_fifo};
 pub(crate) use inode::{
-    DataBacking, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, LinkTarget,
+    DataBacking, FineTimes, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, LinkTarget,
     StorageWriter,
 };
 pub(crate) use inotify::{

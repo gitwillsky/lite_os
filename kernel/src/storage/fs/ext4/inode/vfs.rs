@@ -52,6 +52,14 @@ impl Inode for Ext4Inode {
             atime: inode.atime().seconds(),
             mtime: inode.mtime().seconds(),
             ctime: inode.ctime().seconds(),
+            fine_times: crate::fs::FineTimes {
+                atime_nsec: inode.atime().nanoseconds(),
+                mtime_nsec: inode.mtime().nanoseconds(),
+                ctime_nsec: inode.ctime().nanoseconds(),
+                birth: inode
+                    .birth_time()
+                    .map(|time| (time.seconds(), time.nanoseconds())),
+            },
             device: Self::rdev(&inode),
         })
     }

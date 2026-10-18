@@ -264,6 +264,9 @@ pub(crate) fn syscall(
             SYSCALL_PREADV => sys_preadv(args[0], args[1], args[2], args[3] as i64),
             SYSCALL_PWRITEV => sys_pwritev(args[0], args[1], args[2], args[3] as i64),
             SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[2], args[3]),
+            SYSCALL_COPY_FILE_RANGE => {
+                sys_copy_file_range(args[0], args[1], args[2], args[3], args[4], args[5])
+            }
             SYSCALL_PPOLL => sys_ppoll(args[0], args[1], args[2], args[3], args[4]),
             SYSCALL_PSELECT6 => sys_pselect6(args[0], args[1], args[2], args[3], args[4], args[5]),
             SYSCALL_READLINKAT => sys_readlinkat(
@@ -279,6 +282,13 @@ pub(crate) fn syscall(
                 args[3] as u32,
             ),
             SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut u8),
+            SYSCALL_STATX => fs::statx::sys_statx(
+                args[0] as isize,
+                args[1] as *const u8,
+                args[2] as u32,
+                args[3] as u32,
+                args[4],
+            ),
             SYSCALL_SYNC => sys_sync(),
             SYSCALL_FSYNC => sys_fsync(args[0]),
             SYSCALL_FDATASYNC => sys_fdatasync(args[0]),

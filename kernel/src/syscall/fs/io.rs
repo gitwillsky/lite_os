@@ -9,7 +9,7 @@ pub(crate) use positioned::{
 };
 
 mod sendfile;
-pub(crate) use sendfile::sys_sendfile;
+pub(crate) use sendfile::{sys_copy_file_range, sys_sendfile};
 
 mod regular;
 use regular::{

@@ -5074,6 +5074,7 @@ kernel/src/storage/fs/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn validate
 kernel/src/storage/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn decode (low : u32 , extra : u32) -> Self
 kernel/src/storage/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn encode (self) -> (u32 , u32)
 kernel/src/storage/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn from_seconds (seconds : u64) -> Result < Self , FileSystemError >
+kernel/src/storage/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn nanoseconds (self) -> u32
 kernel/src/storage/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn now () -> Self
 kernel/src/storage/fs/ext4/inode.rs :: pub (super) impl Timestamp :: fn seconds (self) -> u64
 kernel/src/storage/fs/ext4/inode.rs :: pub (super) struct Ext4Inode
@@ -5171,6 +5172,7 @@ kernel/src/storage/fs/ext4/link_count.rs :: pub (super) fn plan_rename_parent_li
 kernel/src/storage/fs/ext4/metadata.rs :: pub (super) impl Ext4Inode :: fn update_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/storage/fs/ext4/metadata.rs :: pub (super) impl Ext4Inode :: fn update_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
 kernel/src/storage/fs/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn atime (& self) -> Timestamp
+kernel/src/storage/fs/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn birth_time (& self) -> Option < Timestamp >
 kernel/src/storage/fs/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn ctime (& self) -> Timestamp
 kernel/src/storage/fs/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn gid (& self) -> u32
 kernel/src/storage/fs/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn mtime (& self) -> Timestamp
@@ -5270,12 +5272,17 @@ kernel/src/storage/fs/inode.rs :: enum InodeType :: Socket = 5
 kernel/src/storage/fs/inode.rs :: enum InodeType :: SymLink = 2
 kernel/src/storage/fs/inode.rs :: enum LinkTarget :: Opened (Arc < OpenedFile >)
 kernel/src/storage/fs/inode.rs :: enum LinkTarget :: Text (Vec < u8 >)
+kernel/src/storage/fs/inode.rs :: pub (crate) FineTimes :: atime_nsec : u32
+kernel/src/storage/fs/inode.rs :: pub (crate) FineTimes :: birth : Option < (u64 , u32) >
+kernel/src/storage/fs/inode.rs :: pub (crate) FineTimes :: ctime_nsec : u32
+kernel/src/storage/fs/inode.rs :: pub (crate) FineTimes :: mtime_nsec : u32
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: atime : u64
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: block_size : u32
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: blocks : u64
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: ctime : u64
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: device : Option < crate :: fs :: device :: DeviceNumber >
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: filesystem : u64
+kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: fine_times : FineTimes
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: gid : u32
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: inode : u64
 kernel/src/storage/fs/inode.rs :: pub (crate) InodeMetadata :: kind : InodeType
@@ -5289,6 +5296,7 @@ kernel/src/storage/fs/inode.rs :: pub (crate) enum InodeOpen
 kernel/src/storage/fs/inode.rs :: pub (crate) enum InodeOpenError
 kernel/src/storage/fs/inode.rs :: pub (crate) enum InodeType
 kernel/src/storage/fs/inode.rs :: pub (crate) enum LinkTarget
+kernel/src/storage/fs/inode.rs :: pub (crate) struct FineTimes
 kernel/src/storage/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/storage/fs/inode.rs :: pub (crate) trait Inode
 kernel/src/storage/fs/inode.rs :: pub (crate) trait StorageWriter
@@ -5551,7 +5559,7 @@ kernel/src/storage/fs/mod.rs :: pub (crate) use block_node :: BlockNode
 kernel/src/storage/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/storage/fs/mod.rs :: pub (crate) use fifo :: { FifoAccess , FifoOpenError , open as open_fifo }
 kernel/src/storage/fs/mod.rs :: pub (crate) use file_information :: format_file_information
-kernel/src/storage/fs/mod.rs :: pub (crate) use inode :: { DataBacking , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageWriter , }
+kernel/src/storage/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageWriter , }
 kernel/src/storage/fs/mod.rs :: pub (crate) use inotify :: { IN_ACCESS , IN_ATTRIB , IN_CLOEXEC , IN_CLOSE_NOWRITE , IN_CLOSE_WRITE , IN_CREATE , IN_DELETE , IN_MODIFY , IN_MOVE_SELF , IN_MOVED_FROM , IN_MOVED_TO , IN_NONBLOCK , IN_OPEN , InitError , Inotify , WatchError , add_watch_flags , filesystem_unmounted , next_cookie , notify_dentry_reclaimed , notify_entry , notify_opened , notify_self , watching , }
 kernel/src/storage/fs/mod.rs :: pub (crate) use inotify :: { InotifyLimit , inotify_watch_limit }
 kernel/src/storage/fs/mod.rs :: pub (crate) use memfd :: MemFile
@@ -6398,6 +6406,7 @@ kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn begin_w
 kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn inode (& self) -> Arc < dyn Inode >
 kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn may_suid (& self , namespace : & super :: MountNamespace , user : & Arc < crate :: namespace :: UserNamespace > ,) -> bool
 kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn mount_flags (& self) -> MountFlags
+kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn mount_id (& self) -> u64
 kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn read_access (& self) -> ReadAccess < '_ >
 kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn same_mount (& self , other : & Self) -> bool
 kernel/src/storage/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn touch_access (& self)
@@ -6407,7 +6416,6 @@ kernel/src/storage/fs/vfs/opened.rs :: pub (crate) struct OpenedFile
 kernel/src/storage/fs/vfs/opened.rs :: pub (crate) struct ReadAccess < 'a >
 kernel/src/storage/fs/vfs/opened.rs :: pub (in crate :: fs) impl OpenedFile :: fn anonymous (filesystem : crate :: fs :: anonymous :: PseudoFileSystem , inode : Arc < dyn Inode > , label : Vec < u8 > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/storage/fs/vfs/opened.rs :: pub (in crate :: fs) impl OpenedFile :: fn is_unlinked (& self) -> bool
-kernel/src/storage/fs/vfs/opened.rs :: pub (in crate :: fs) impl OpenedFile :: fn mount_id (& self) -> u64
 kernel/src/storage/fs/vfs/opened.rs :: pub (in crate :: fs) impl OpenedFile :: fn preserve_mount_expiry (& mut self)
 kernel/src/storage/fs/vfs/opened.rs :: pub (in crate :: fs) impl OpenedFile :: fn with_dentry (& self , dentry : Arc < Dentry > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/storage/fs/vfs/opened.rs :: pub (super) OpenedFile :: dentry : Arc < Dentry >
@@ -6608,13 +6616,14 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) mod mount
 kernel/src/syscall/fs.rs :: pub (crate) mod statistics
+kernel/src/syscall/fs.rs :: pub (crate) mod statx
 kernel/src/syscall/fs.rs :: pub (crate) mod xattr
 kernel/src/syscall/fs.rs :: pub (crate) use access :: sys_faccessat
 kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmod , sys_fchmodat , sys_fchown , sys_fchownat }
 kernel/src/syscall/fs.rs :: pub (crate) use fcntl :: sys_fcntl
 kernel/src/syscall/fs.rs :: pub (crate) use flock :: sys_flock
 kernel/src/syscall/fs.rs :: pub (crate) use inotify :: { sys_inotify_add_watch , sys_inotify_init1 , sys_inotify_rm_watch }
-kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , sys_read , sys_readv , sys_sendfile , sys_write , sys_writev , }
+kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_copy_file_range , sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , sys_read , sys_readv , sys_sendfile , sys_write , sys_writev , }
 kernel/src/syscall/fs.rs :: pub (crate) use links :: { sys_linkat , sys_symlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_mknodat , sys_renameat2 , sys_unlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_chroot , sys_fchdir , sys_openat }
@@ -6623,6 +6632,7 @@ kernel/src/syscall/fs.rs :: pub (crate) use swap :: { sys_swapoff , sys_swapon }
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) fn position_error (error : crate :: file :: PositionError) -> isize
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr as filesystem_error
+kernel/src/syscall/fs.rs :: pub (super) fn resolve_stat_target (task : & TaskControlBlock , fd : isize , name : * const u8 , nofollow : bool , empty_path : bool ,) -> Result < (InodeMetadata , u64) , isize >
 kernel/src/syscall/fs.rs :: pub (super) fn sync_file (fd : usize) -> isize
 kernel/src/syscall/fs/access.rs :: pub (crate) fn sys_faccessat (dirfd : isize , name : * const u8 , mode : usize) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmod (fd : usize , mode : u32) -> isize
@@ -6635,7 +6645,7 @@ kernel/src/syscall/fs/inotify.rs :: pub (crate) fn sys_inotify_add_watch (fd : u
 kernel/src/syscall/fs/inotify.rs :: pub (crate) fn sys_inotify_init1 (flags : u32) -> isize
 kernel/src/syscall/fs/inotify.rs :: pub (crate) fn sys_inotify_rm_watch (fd : usize , wd : i32) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) use positioned :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , }
-kernel/src/syscall/fs/io.rs :: pub (crate) use sendfile :: sys_sendfile
+kernel/src/syscall/fs/io.rs :: pub (crate) use sendfile :: { sys_copy_file_range , sys_sendfile }
 kernel/src/syscall/fs/io.rs :: pub (crate) use sequential :: { sys_read , sys_readv , sys_write , sys_writev }
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pread64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
@@ -6648,6 +6658,7 @@ kernel/src/syscall/fs/io/regular.rs :: pub (super) fn write_vectors (task : & Ta
 kernel/src/syscall/fs/io/regular.rs :: pub (super) impl PreparedRegularWriteStaging :: fn as_input_staging (& mut self) -> UserInputStaging < '_ >
 kernel/src/syscall/fs/io/regular.rs :: pub (super) impl PreparedRegularWriteStaging :: fn prepare (total_length : usize) -> Self
 kernel/src/syscall/fs/io/regular.rs :: pub (super) struct PreparedRegularWriteStaging
+kernel/src/syscall/fs/io/sendfile.rs :: pub (crate) fn sys_copy_file_range (input_fd : usize , input_offset : usize , output_fd : usize , output_offset : usize , count : usize , flags : usize ,) -> isize
 kernel/src/syscall/fs/io/sendfile.rs :: pub (crate) fn sys_sendfile (output_fd : usize , input_fd : usize , offset : usize , count : usize ,) -> isize
 kernel/src/syscall/fs/io/sendfile/regular_transfer.rs :: pub (super) fn copy_regular_file (task : & TaskControlBlock , input : & RegularFile , output : & RegularFile , input_position : & mut u64 , output_position : & mut u64 , count : usize ,) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
@@ -6679,6 +6690,7 @@ kernel/src/syscall/fs/pathname.rs :: pub (super) fn path_allow_empty (task : & T
 kernel/src/syscall/fs/readlink.rs :: pub (crate) fn sys_readlinkat (fd : isize , name : * const u8 , buffer : * mut u8 , size : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_fstatfs (fd : usize , address : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_statfs (name : * const u8 , address : usize) -> isize
+kernel/src/syscall/fs/statx.rs :: pub (crate) fn sys_statx (fd : isize , name : * const u8 , flags : u32 , mask : u32 , buffer : usize) -> isize
 kernel/src/syscall/fs/swap.rs :: pub (crate) fn sys_swapoff (address : usize) -> isize
 kernel/src/syscall/fs/swap.rs :: pub (crate) fn sys_swapon (address : usize , flags : u32) -> isize
 kernel/src/syscall/fs/xattr.rs :: pub (crate) const EMPTY_PATH : u32 = 0x1000

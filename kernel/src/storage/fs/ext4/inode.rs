@@ -65,6 +65,10 @@ impl Timestamp {
         }
     }
 
+    pub(super) fn nanoseconds(self) -> u32 {
+        self.nanoseconds
+    }
+
     /// VFS 只承载非负秒数；1970 之前的时间投影为 0。
     pub(super) fn seconds(self) -> u64 {
         self.seconds.max(0) as u64

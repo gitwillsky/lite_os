@@ -24,6 +24,8 @@
   GET_NOTIF_SIZES 使用六字节固定 codec，无 allocation。
   仅实际 exec handler 成功归一成 PreserveRegisters；filter ERRNO|0 是普通 Return(0)，
   trap 必须写回零，不能从 syscall number/result 推断新映像已提交。
+- `syscall::fs::statx` 独占 `struct statx` codec 与 flags/mask 校验；路径解析与 `stat`/`newfstatat` 共用 `resolve_stat_target`，
+  时间精度与创建时间只来自 `InodeMetadata::fine_times`，filesystem 不记录时取 `Default`，不得由 syscall 层伪造。
 - `syscall::unimplemented_report` 独占去重位图；dispatcher 的 ENOSYS 兜底分支对每个编号至多记一行 warn，编号名称由宿主按 ABI 表解析；不得逐调用打印。
 - RISC-V base rt_sigframe 为 1088 bytes、16-byte 对齐；siginfo 后的 ucontext_t 为
   960 bytes，其 uc_mcontext 在 offset 176，因 FP/extension union 对齐保留八字节 padding。

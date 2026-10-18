@@ -16,6 +16,18 @@ pub(crate) enum InodeType {
     Socket = 5,
 }
 
+/// atime/mtime/ctime 的纳秒部分与创建时间。
+///
+/// `Default` 表示 filesystem 只有秒精度且不记录创建时间；`statx` 据此不报告 `STATX_BTIME`。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FineTimes {
+    pub(crate) atime_nsec: u32,
+    pub(crate) mtime_nsec: u32,
+    pub(crate) ctime_nsec: u32,
+    /// 创建时间（秒，纳秒）。
+    pub(crate) birth: Option<(u64, u32)>,
+}
+
 /// VFS 与 Linux stat/getdents 共享的稳定 inode 元数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InodeMetadata {
@@ -32,6 +44,8 @@ pub(crate) struct InodeMetadata {
     pub(crate) atime: u64,
     pub(crate) mtime: u64,
     pub(crate) ctime: u64,
+    /// 秒以下精度与创建时间；只有秒精度、不记录创建时间的 filesystem 取 `Default`。
+    pub(crate) fine_times: FineTimes,
     /// 字符设备的 `st_rdev`；普通 inode 为 `None`。
     pub(crate) device: Option<crate::fs::device::DeviceNumber>,
 }

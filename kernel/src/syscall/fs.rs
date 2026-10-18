@@ -18,14 +18,15 @@ pub(crate) mod xattr;
 pub(crate) use swap::{sys_swapoff, sys_swapon};
 mod readlink;
 pub(crate) mod statistics;
+pub(crate) mod statx;
 pub(crate) use access::sys_faccessat;
 pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchown, sys_fchownat};
 pub(crate) use fcntl::sys_fcntl;
 pub(crate) use flock::sys_flock;
 pub(crate) use inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch};
 pub(crate) use io::{
-    sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2, sys_read,
-    sys_readv, sys_sendfile, sys_write, sys_writev,
+    sys_copy_file_range, sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev,
+    sys_pwritev2, sys_read, sys_readv, sys_sendfile, sys_write, sys_writev,
 };
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_mknodat, sys_renameat2, sys_unlinkat};
@@ -340,11 +341,11 @@ fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: InodeMetadata)
         pad2: 0,
         st_blocks: metadata.blocks as i64,
         st_atime: metadata.atime as i64,
-        st_atime_nsec: 0,
+        st_atime_nsec: u64::from(metadata.fine_times.atime_nsec),
         st_mtime: metadata.mtime as i64,
-        st_mtime_nsec: 0,
+        st_mtime_nsec: u64::from(metadata.fine_times.mtime_nsec),
         st_ctime: metadata.ctime as i64,
-        st_ctime_nsec: 0,
+        st_ctime_nsec: u64::from(metadata.fine_times.ctime_nsec),
         unused: [0; 2],
     };
     // SAFETY: `UserStat` 是固定的 Linux/asm-generic C ABI POD，且切片不逃逸本函数。
@@ -516,6 +517,56 @@ pub(crate) fn sys_utimensat(
     result.map_or_else(ferr, |()| 0)
 }
 
+/// stat 与 statx 共用的目标解析：返回目标 inode 的 metadata 与所在 mount 的 identity。
+///
+/// # Parameters
+///
+/// - `fd` / `name`: `*at` 语义的目录 fd 与 pathname；`name` 为 NULL 且 `empty_path` 时直接操作 `fd`。
+/// - `nofollow`: 不跟随最终 symbolic link。
+/// - `empty_path`: 允许空 pathname（`AT_EMPTY_PATH`）。
+///
+/// # Returns
+///
+/// 成功返回 `(metadata, mount_id)`；失败返回负 errno。
+pub(super) fn resolve_stat_target(
+    task: &TaskControlBlock,
+    fd: isize,
+    name: *const u8,
+    nofollow: bool,
+    empty_path: bool,
+) -> Result<(InodeMetadata, u64), isize> {
+    let path = if name.is_null() && empty_path {
+        Vec::new()
+    } else {
+        pathname::path_allow_empty(task, name)?
+    };
+    let opened = if path.is_empty() {
+        if !empty_path {
+            return Err(-errno::ENOENT);
+        }
+        if fd == AT_FDCWD {
+            task.lookup_origin().into_parts().1
+        } else {
+            usize::try_from(fd)
+                .ok()
+                .and_then(|fd| task.fd_get_raw(fd))
+                .ok_or(-errno::EBADF)?
+                .opened_ref()
+        }
+    } else {
+        let start = base(task, fd, &path)?;
+        let identity = task.access_identity(true);
+        if nofollow {
+            vfs().open_file_at_no_follow(start, &path, &identity)
+        } else {
+            vfs().open_file_at(start, &path, &identity)
+        }
+        .map_err(ferr)?
+    };
+    let metadata = opened.inode().metadata().map_err(ferr)?;
+    Ok((metadata, opened.mount_id()))
+}
+
 pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) -> isize {
     const AT_EMPTY_PATH: u32 = 0x1000;
     if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
@@ -524,43 +575,15 @@ pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
-    let path = if name.is_null() && flags & AT_EMPTY_PATH != 0 {
-        Vec::new()
-    } else {
-        match pathname::path_allow_empty(&task, name) {
-            Ok(path) => path,
-            Err(error) => return error,
-        }
-    };
-    if path.is_empty() {
-        if flags & AT_EMPTY_PATH == 0 {
-            return -errno::ENOENT;
-        }
-        let opened = if fd == AT_FDCWD {
-            task.lookup_origin().into_parts().1
-        } else {
-            match usize::try_from(fd).ok().and_then(|fd| task.fd_get_raw(fd)) {
-                Some(file) => file.opened_ref(),
-                None => return -errno::EBADF,
-            }
-        };
-        return match opened.inode().metadata() {
-            Ok(metadata) => copy_stat(&task, pointer, metadata),
-            Err(error) => ferr(error),
-        };
-    }
-    let start = match base(&task, fd, &path) {
-        Ok(start) => start,
-        Err(error) => return error,
-    };
-    let inode = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        vfs().open_at_no_follow(start, &path, &task.access_identity(true))
-    } else {
-        vfs().open_at(start, &path, &task.access_identity(true))
-    };
-    match inode.and_then(|inode| inode.metadata()) {
-        Ok(metadata) => copy_stat(&task, pointer, metadata),
-        Err(error) => ferr(error),
+    match resolve_stat_target(
+        &task,
+        fd,
+        name,
+        flags & AT_SYMLINK_NOFOLLOW != 0,
+        flags & AT_EMPTY_PATH != 0,
+    ) {
+        Ok((metadata, _)) => copy_stat(&task, pointer, metadata),
+        Err(error) => error,
     }
 }
 

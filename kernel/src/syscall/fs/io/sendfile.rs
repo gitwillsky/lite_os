@@ -188,3 +188,197 @@ pub(crate) fn sys_sendfile(
     }
     result
 }
+
+/// 完成 `copy_file_range` 的 descriptor 校验并执行 regular-file 到 regular-file copy。
+///
+/// 与 `sendfile` 共用同一条数据路径；两侧 offset 各自独立地选择显式值或 OFD 共享 offset。
+///
+/// # Parameters
+///
+/// - `task`: 当前 caller 与 fd-table owner。
+/// - `input_fd` / `output_fd`: 以 read / write access 打开的 descriptor。
+/// - `input_position` / `output_position`: 显式 offset；为空时使用并更新对应 OFD offset。
+/// - `count`: 最大传输长度；按 Linux MAX_RW_COUNT 截断。
+///
+/// # Returns
+///
+/// 已传输字节数、EOF 零、partial count 或负 errno。
+///
+/// # Errors
+///
+/// - descriptor 缺失、access 不符或输出带 O_APPEND 返回 `EBADF`。
+/// - 目录返回 `EISDIR`，其他非 regular file 返回 `EINVAL`。
+/// - 同一文件的传输区间重叠返回 `EINVAL`；storage、内存与 RLIMIT 错误透传对应 errno。
+fn do_copy_file_range(
+    task: &TaskControlBlock,
+    input_fd: usize,
+    input_position: Option<&mut u64>,
+    output_fd: usize,
+    output_position: Option<&mut u64>,
+    count: usize,
+) -> isize {
+    let Some((input_ofd, output_ofd)) =
+        task.with_file_descriptions(input_fd, output_fd, |input, output| (input, output))
+    else {
+        return -errno::EBADF;
+    };
+    if input_ofd.status_flags() & O_ACCMODE == O_WRONLY
+        || output_ofd.status_flags() & O_ACCMODE == O_RDONLY
+        || output_ofd.status_flags() & O_APPEND != 0
+    {
+        return -errno::EBADF;
+    }
+    let (OpenFileKind::Inode, OpenFileKind::Inode) = (&input_ofd.kind, &output_ofd.kind) else {
+        return -errno::EINVAL;
+    };
+    let input_inode = input_ofd.inode_ref();
+    let output_inode = output_ofd.inode_ref();
+    for inode_type in [input_inode.inode_type(), output_inode.inode_type()] {
+        match inode_type {
+            InodeType::File => {}
+            InodeType::Directory => return -errno::EISDIR,
+            _ => return -errno::EINVAL,
+        }
+    }
+    let input = match RegularFile::from_inode(input_inode) {
+        Ok(file) => file,
+        Err(error) => return ferr(error),
+    };
+    let output = match RegularFile::from_inode(output_inode) {
+        Ok(file) => file,
+        Err(error) => return ferr(error),
+    };
+    let count = count.min(MAX_RW_COUNT);
+    let result = match (input_position, output_position) {
+        (Some(input_position), Some(output_position)) => copy_regular_file(
+            task,
+            &input,
+            &output,
+            input_position,
+            output_position,
+            count,
+        ),
+        (Some(input_position), None) => output_ofd
+            .with_position(|output_position| {
+                copy_regular_file(
+                    task,
+                    &input,
+                    &output,
+                    input_position,
+                    output_position,
+                    count,
+                )
+            })
+            .unwrap_or_else(crate::syscall::fs::position_error),
+        (None, Some(output_position)) => input_ofd
+            .with_position(|input_position| {
+                copy_regular_file(
+                    task,
+                    &input,
+                    &output,
+                    input_position,
+                    output_position,
+                    count,
+                )
+            })
+            .unwrap_or_else(crate::syscall::fs::position_error),
+        (None, None) => {
+            copy_from_shared_offset(task, &input_ofd, &output_ofd, &input, &output, count)
+        }
+    };
+    if result > 0 {
+        input_ofd.touch_access();
+        input_ofd.notify(crate::fs::IN_ACCESS);
+        output_ofd.notify(crate::fs::IN_MODIFY);
+    }
+    result
+}
+
+/// 读取可空的 `loff_t *` 偏移；负值非法。
+fn read_file_offset(task: &TaskControlBlock, pointer: usize) -> Result<Option<u64>, isize> {
+    if pointer == 0 {
+        return Ok(None);
+    }
+    let mut bytes = [0u8; core::mem::size_of::<i64>()];
+    task.copy_from_user(pointer, &mut bytes)
+        .map_err(|_| -errno::EFAULT)?;
+    u64::try_from(i64::from_ne_bytes(bytes))
+        .map(Some)
+        .map_err(|_| -errno::EINVAL)
+}
+
+/// 实现 Linux 64-bit `copy_file_range` 的 regular-file 到 regular-file 数据路径。
+///
+/// # Parameters
+///
+/// - `input_fd` / `input_offset`: 输入 descriptor 与可空 `loff_t *`；非空时不修改输入 OFD offset。
+/// - `output_fd` / `output_offset`: 输出 descriptor 与可空 `loff_t *`；语义同上。
+/// - `count`: 最大传输长度；按 Linux MAX_RW_COUNT 截断。
+/// - `flags`: 必须为零。
+///
+/// # Returns
+///
+/// 已传输字节数、EOF 零、partial count 或负 errno；只有传输了数据时才写回显式 offset。
+///
+/// # Errors
+///
+/// - 非零 flags、负 offset 或 offset 加长度溢出返回 `EINVAL`/`EOVERFLOW`；坏指针返回 `EFAULT`。
+/// - descriptor 与数据路径错误见 [`do_copy_file_range`]。
+pub(crate) fn sys_copy_file_range(
+    input_fd: usize,
+    input_offset: usize,
+    output_fd: usize,
+    output_offset: usize,
+    count: usize,
+    flags: usize,
+) -> isize {
+    if flags != 0 {
+        return -errno::EINVAL;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    // Linux 先复制两个 offset（EFAULT 优先），再取 descriptor。
+    let mut input_position = match read_file_offset(&task, input_offset) {
+        Ok(position) => position,
+        Err(error) => return error,
+    };
+    let mut output_position = match read_file_offset(&task, output_offset) {
+        Ok(position) => position,
+        Err(error) => return error,
+    };
+    let bounded = count.min(MAX_RW_COUNT) as u64;
+    for position in [input_position, output_position].into_iter().flatten() {
+        if position
+            .checked_add(bounded)
+            .is_none_or(|end| end > i64::MAX as u64)
+        {
+            return -errno::EOVERFLOW;
+        }
+    }
+    let result = do_copy_file_range(
+        &task,
+        input_fd,
+        input_position.as_mut(),
+        output_fd,
+        output_position.as_mut(),
+        count,
+    );
+    task.account_read_result(result);
+    task.account_write_result(result);
+    if result > 0 {
+        for (pointer, position) in [
+            (input_offset, input_position),
+            (output_offset, output_position),
+        ] {
+            if let Some(position) = position
+                && task
+                    .copy_to_user(pointer, &(position as i64).to_ne_bytes())
+                    .is_err()
+            {
+                return -errno::EFAULT;
+            }
+        }
+    }
+    result
+}

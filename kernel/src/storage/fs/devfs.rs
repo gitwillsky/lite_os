@@ -177,6 +177,7 @@ impl Inode for DevInode {
             atime: 0,
             mtime: 0,
             ctime: 0,
+            fine_times: Default::default(),
             device,
         })
     }
