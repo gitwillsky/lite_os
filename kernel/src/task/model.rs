@@ -244,6 +244,10 @@ pub(in crate::task) struct Process {
     // OWNER: Process 的全部 Thread 只累计到这一份 CPU runtime；缺失时 RLIMIT_CPU 会被
     // 每个 Thread 单独计算，使多线程程序实际获得 limit 的倍数时间。
     cpu_runtime_us: Arc<AtomicU64>,
+    // OWNER: wait4 回收 child 时把其 Process 与其已回收后代的 CPU runtime 累加到 parent 的这一份；
+    // 自动回收（SIGCHLD 忽略）不累加，与 Linux 一致。缺失时 RUSAGE_CHILDREN 恒为 0，`time` 这类
+    // 外壳无法报告子命令耗时。
+    children_runtime_us: AtomicU64,
     // OWNER: Process 的全部 Thread 同步累计到这一份 I/O counters；若只在 live Thread
     // snapshot 时求和，已退出 worker 的读写历史会从 `/proc/<tgid>/io` 倒退消失。
     io_accounting: Arc<IoAccounting>,
@@ -516,6 +520,7 @@ impl TaskControlBlock {
             resource_limits: try_elf_arc(Mutex::new(resource_limits))?,
             cpu_limit_active: AtomicBool::new(cpu_limit_active),
             cpu_runtime_us: cpu_runtime_us.clone(),
+            children_runtime_us: AtomicU64::new(0),
             io_accounting: io_accounting.clone(),
             terminal: Mutex::new(None),
             signal_state: Mutex::new(ProcessSignalState::new(signal_handlers)),

@@ -93,6 +93,16 @@ pub(crate) fn consume_child_status(record: ChildExit) {
             }
             node.parent
         };
+        if record.kind == ChildStatusKind::Exited {
+            // RUSAGE_CHILDREN：child 退出后其 runtime 不再变化，回收时一次性并入 parent。
+            let child = &graph.nodes[&record.pid].process;
+            let runtime_us = child
+                .process_cpu_runtime_us()
+                .saturating_add(child.children_runtime_us());
+            if let Some(parent) = parent.and_then(|pid| graph.nodes.get(&pid)) {
+                parent.process.add_reaped_child_runtime_us(runtime_us);
+            }
+        }
         let mut retired = super::super::process_retirement::RetiredProcesses::default();
         if record.kind == ChildStatusKind::Exited
             || graph.nodes.get(&record.pid).is_some_and(|node| {

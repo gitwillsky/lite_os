@@ -155,6 +155,7 @@ pub const SYSCALL_SETDOMAINNAME: usize = 162;
 pub const SYSCALL_GETTIMEOFDAY: usize = 169;
 pub const SYSCALL_GETITIMER: usize = 102;
 pub const SYSCALL_SETITIMER: usize = 103;
+pub const SYSCALL_GETRUSAGE: usize = 165;
 pub const SYSCALL_UMASK: usize = 166;
 pub const SYSCALL_PRCTL: usize = 167;
 pub const SYSCALL_GETCPU: usize = 168;

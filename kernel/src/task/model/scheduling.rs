@@ -659,6 +659,11 @@ impl TaskControlBlock {
         )
     }
 
+    /// 已被 wait 回收的 child 及其后代累计的 CPU runtime（微秒），供 `RUSAGE_CHILDREN`。
+    pub(crate) fn reaped_children_runtime_us(&self) -> u64 {
+        self.process().children_runtime_us()
+    }
+
     /// 快照 calling Thread 与所属 Process 的 scheduler CPU runtime。
     ///
     /// # Parameters

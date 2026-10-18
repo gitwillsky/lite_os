@@ -22,6 +22,7 @@ mod process_control;
 mod random;
 mod reboot;
 mod resource_limit;
+mod resource_usage;
 mod riscv_hwprobe;
 mod scheduler;
 mod seccomp;
@@ -46,6 +47,7 @@ use membarrier::sys_membarrier;
 use memfd::sys_memfd_create;
 use process_control::sys_prctl;
 use resource_limit::sys_prlimit64;
+use resource_usage::sys_getrusage;
 use riscv_hwprobe::sys_riscv_hwprobe;
 use syscall_abi::*;
 use timerfd::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
@@ -502,6 +504,7 @@ pub(crate) fn syscall(
             SYSCALL_PRLIMIT64 => {
                 sys_prlimit64(args[0] as i32, args[1] as u32 as usize, args[2], args[3])
             }
+            SYSCALL_GETRUSAGE => sys_getrusage(args[0] as i32, args[1]),
             SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
             _ => {
                 unimplemented_report::report(syscall_id);

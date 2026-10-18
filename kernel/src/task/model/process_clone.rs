@@ -121,6 +121,7 @@ impl TaskControlBlock {
                 .map_err(|_| MemoryError::OutOfMemory)?,
             cpu_limit_active: core::sync::atomic::AtomicBool::new(cpu_limit_active),
             cpu_runtime_us: cpu_runtime_us.clone(),
+            children_runtime_us: core::sync::atomic::AtomicU64::new(0),
             io_accounting: io_accounting.clone(),
             // controlling TTY 在 graph publication 与 force/setsid 同锁捕获，不能继承准备期旧值。
             terminal: Mutex::new(None),

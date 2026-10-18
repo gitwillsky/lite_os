@@ -6,6 +6,7 @@
 | 160 | `uname` | Complete | immutable build fields 与 calling Thread 的 actual UTS hostname/domainname |
 | 161 | `sethostname` | Complete | 标准最大64 bytes、namespace-owning user scope CAP_SYS_ADMIN、原子 name publication |
 | 162 | `setdomainname` | Complete | 与 sethostname 同一 UTS owner，支持 raw bytes 与空名字 |
+| 165 | `getrusage` | Partial | RUSAGE_SELF/THREAD/CHILDREN 的 CPU 时间；无 user/system 拆分（全计入 `ru_utime`），其余计数字段恒为 0；wait4 的 rusage 参数仍须为空 |
 | 168 | `getcpu` | Complete | current logical `CpuId` |
 | 179 | `sysinfo` | Partial | uptime、memory、process 与 runnable load scope |
 | 258 | `riscv_hwprobe` | Partial | value query、logical CPU mask 与 conservative capability |

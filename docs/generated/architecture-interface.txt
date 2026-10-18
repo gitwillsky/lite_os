@@ -6757,6 +6757,7 @@ kernel/src/syscall/process_control.rs :: pub (crate) fn sys_prctl (option : usiz
 kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
 kernel/src/syscall/resource_limit.rs :: pub (crate) fn sys_prlimit64 (pid : i32 , resource : usize , replacement : usize , previous : usize ,) -> isize
+kernel/src/syscall/resource_usage.rs :: pub (crate) fn sys_getrusage (who : i32 , usage : usize) -> isize
 kernel/src/syscall/restart.rs :: pub (super) fn sys_restart_syscall () -> isize
 kernel/src/syscall/riscv_hwprobe.rs :: pub (crate) fn sys_riscv_hwprobe (pairs : usize , pair_count : usize , cpusetsize : usize , cpus : usize , flags : usize ,) -> isize
 kernel/src/syscall/scheduler.rs :: pub (crate) fn sys_getpriority (which : i32 , who : u32) -> isize
@@ -7429,6 +7430,8 @@ kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) const RLIMIT_
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn process_cpu_runtime_us (& self) -> u64
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn resource_cpu_signal (& self , runtime_us : u64) -> Option < usize >
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn user_fault_limits (& self) -> crate :: memory :: UserFaultLimits
+kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn add_reaped_child_runtime_us (& self , runtime_us : u64)
+kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn children_runtime_us (& self) -> u64
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn process_cpu_runtime_us (& self) -> u64
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn replace_resource_limit (& self , resource : usize , replacement : ResourceLimit , privileged : bool ,) -> Result < ResourceLimit , ResourceLimitError >
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn resource_limit (& self , resource : usize) -> Option < ResourceLimit >
@@ -7475,6 +7478,7 @@ kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait_resul
 kernel/src/task/model/scheduling.rs :: pub (crate) enum WaitMembership
 kernel/src/task/model/scheduling.rs :: pub (crate) impl Sched :: fn get_dynamic_priority (& self) -> i32
 kernel/src/task/model/scheduling.rs :: pub (crate) impl TaskControlBlock :: fn cpu_runtime_snapshot (& self , now_us : u64) -> (u64 , u64)
+kernel/src/task/model/scheduling.rs :: pub (crate) impl TaskControlBlock :: fn reaped_children_runtime_us (& self) -> u64
 kernel/src/task/model/scheduling.rs :: pub (crate) struct Sched
 kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingEntity
 kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingState
