@@ -6887,6 +6887,7 @@ kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_settime (id : i32 
 kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_create (clock_id : i32 , flags : u32) -> isize
 kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_gettime (fd : usize , output : usize) -> isize
 kernel/src/syscall/timerfd.rs :: pub (crate) fn sys_timerfd_settime (fd : usize , flags : u32 , replacement : usize , previous : usize ,) -> isize
+kernel/src/syscall/unimplemented_report.rs :: pub (super) fn report (syscall_id : usize)
 kernel/src/syscall/user_iovec.rs :: enum BufferError :: AddressOverflow
 kernel/src/syscall/user_iovec.rs :: enum BufferError :: NullBase
 kernel/src/syscall/user_iovec.rs :: enum ImportError :: AddressOverflow

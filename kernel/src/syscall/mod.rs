@@ -32,6 +32,7 @@ mod system_identity;
 mod system_info;
 mod timer;
 mod timerfd;
+mod unimplemented_report;
 mod user_iovec;
 
 mod restart;
@@ -502,7 +503,10 @@ pub(crate) fn syscall(
                 sys_prlimit64(args[0] as i32, args[1] as u32 as usize, args[2], args[3])
             }
             SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
-            _ => -errno::ENOSYS,
+            _ => {
+                unimplemented_report::report(syscall_id);
+                -errno::ENOSYS
+            }
         },
         Some(syscall) => match syscall {
             SYSCALL_RISCV_HWPROBE => sys_riscv_hwprobe(args[0], args[1], args[2], args[3], args[4]),
