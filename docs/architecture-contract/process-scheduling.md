@@ -387,6 +387,9 @@
   ucounts 和 POSIX lifetime 共用实际 owner，接口、并发 producer 与运行时行为均需验证，
   仅声明 ABI 矩阵已开放的 signal 能力。
 - SchedulingState 独占 run membership；ProcessorTopology 独占 per-CPU runqueue/current/mailbox projection。
+- `scheduler::placement_policy` 独占选核的纯决策与轮转节拍；`PerCpuProcessor::preemptions_since_rotation` 只由所属 CPU 读写。
+  缺失轮转时，N+1 个任务在 N 个 CPU 上的分布会因并列保留 last-CPU 而永久锁死。轮转只发生在被抢占任务重新入队的选核，
+  且只在本 CPU 还有别的可运行任务时放宽；不新增锁、分配或跨 CPU 访问 runqueue。
 - `processor::runnable_task_count` 只按 possible logical CPU 扫描现有 Ready/Running
   membership；proc 全局统计和到期 load-average 共用该实际 producer，不获取任何 TCB 或
   ProcessGraph，也不按物理 runqueue/mailbox 的 stale token 计数。跨 CPU 瞬时采样与 Linux

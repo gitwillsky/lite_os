@@ -14,7 +14,7 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 mod handoff;
@@ -30,7 +30,7 @@ pub(super) use job_control::{
     begin_preempt_running_task, continue_stopped_task, request_task_reschedule, request_task_stop,
 };
 pub(crate) use placement::enqueue_new_task;
-use placement::{ready_entry, select_cpu};
+use placement::{ready_entry, select_cpu, select_cpu_after_preemption};
 use ready_membership::{commit_ready_retirement, commit_ready_transition};
 
 /// context switch 异常返回时的 fail-stop 目标。
@@ -150,6 +150,10 @@ struct PerCpuProcessor {
     placement_vruntime: AtomicU64,
     // OWNER: processor slot 累计当前 CPU 已提交的 task runtime；缺失会使 /proc/stat 无法区分 busy/idle。
     busy_us: AtomicU64,
+    // OWNER: 只有本 CPU 在选核路径上读写，记录自上次放宽 last-CPU 亲和偏置以来的抢占次数。缺失它，
+    // N+1 个 CPU 密集任务跑在 N 个 CPU 上时，并列负载会永远把任务留在原 CPU，分布锁死为
+    // 100% / 50% / 50%。Relaxed 足够：没有第二个写者，也不发布其他内存。
+    preemptions_since_rotation: AtomicU32,
     // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断当前 CPU drain 后再入。
     inbound: IrqMutex<VecDeque<RunQueueEntry>>,
     queue_capacity: usize,
@@ -175,6 +179,7 @@ impl PerCpuProcessor {
             reschedule_requested: AtomicBool::new(false),
             placement_vruntime: AtomicU64::new(0),
             busy_us: AtomicU64::new(0),
+            preemptions_since_rotation: AtomicU32::new(0),
             inbound: IrqMutex::new(inbound),
             queue_capacity,
         }
@@ -672,7 +677,7 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
             }
             RunState::Preempting { cpu: owner } => {
                 assert_eq!(owner, cpu, "preempting task returned on another CPU");
-                let target_cpu = select_cpu(task, scheduling.cpu_affinity);
+                let target_cpu = select_cpu_after_preemption(task, scheduling.cpu_affinity);
                 let generation =
                     commit_ready_transition(scheduling.transition_to_ready(target_cpu));
                 Some((target_cpu, generation))

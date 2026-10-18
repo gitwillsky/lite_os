@@ -277,6 +277,10 @@ idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 w
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP
 拓扑的多窗口 host CPU 采样作诊断；secondary idle→IPI→task 与 timeout runtime gate 负责活性语义。
 
+选核轮转不新增 benchmark：每次抢占只多一次本 CPU 私有计数的 Relaxed 读写和一次 Ready/Running 计数读取，选核仍是
+O(CPU 数) 的单趟扫描，没有新增锁、分配或跨 CPU 访问；收益是公平性而非延迟，由 `verify-runtime-scheduler` 与
+`scheduler-unit` 的策略单测裁决，host 微基准无法代表多 CPU 时间片轮转。
+
 TLB shootdown 不增加 host wall-clock benchmark：成本主要来自 target firmware/IPI，宿主计时不能稳定代表它。
 blocking gate 使用 production `TranslationCommit` 派生的确定性计数：
 lazy mmap 为 `0 local / 0 remote`；1 MiB、256 页 first-touch 为 `256 local / 0 remote target`；
@@ -354,6 +358,8 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
   首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用隐藏的
   disposable 一 CPU UTM 产品实例；无窗口 plain QEMU 不再承担图形通过判定，真实 11-CPU 全拓扑由
   headless SMP gate 与同一静态路径覆盖；
+- 多 CPU 调度公平性：2 CPU 上 3 个、4 CPU 上 5 个忙循环，要求每个配置里最少者的 utime 至少达到最多者的 70%；
+  任务被锁死在 100% / 50% / 50% 的分布比值约为 50%，公平分布接近 100%。计时取自 guest 内核的 `/proc/<pid>/stat`；
 - AArch64/HVF 内核显示/GPU（不依赖 UI，见性能测试段）：VirGL2 能力、host GPU 清屏的像素读回，以及连续
   page-flip 的 vblank 间隔与丢帧；
 - musl ELF/TLS/thread/signal/process consumer；process phase 在 sibling pthread 保持 runnable

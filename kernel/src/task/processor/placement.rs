@@ -1,6 +1,7 @@
 use super::*;
+use crate::task::scheduler::placement_policy;
 
-/// 在 active CPU 中选择近似负载最低者。
+/// 在 active CPU 中选择近似负载最低者；负载并列时保留 last-CPU 亲和。
 ///
 /// # Parameters
 ///
@@ -11,39 +12,64 @@ use super::*;
 ///
 /// 被选中的 CPU ID。
 pub(super) fn select_cpu(task: &TaskControlBlock, affinity: CpuAffinity) -> CpuId {
+    select_cpu_with(task, affinity, false)
+}
+
+/// 被抢占的 task 重新进入 Ready 时选核；每隔固定次数的抢占放宽 last-CPU 亲和偏置。
+///
+/// 放宽只在本 CPU 上还有别的可运行任务时才生效：此时负载并列意味着两个 CPU 的竞争程度相同，
+/// 轮转才能让 N+1 个 CPU 密集任务在 N 个 CPU 上长期公平；缺少排队任务时放宽只会让单个 yield 的
+/// task 无谓地来回迁移。策略见 `scheduler::placement_policy`。
+///
+/// # Parameters
+///
+/// - `task`: 刚被抢占、尚未重新入队的 task。
+/// - `affinity`: 调用方从同一 SchedulingState transaction 取得的 CPU 集合。
+///
+/// # Returns
+///
+/// 被选中的 CPU ID。
+pub(super) fn select_cpu_after_preemption(task: &TaskControlBlock, affinity: CpuAffinity) -> CpuId {
+    let slot = current_per_cpu();
+    // OWNER 见 `PerCpuProcessor::preemptions_since_rotation`：只有本 CPU 读写。
+    let (due, next) =
+        placement_policy::advance_rotation(slot.preemptions_since_rotation.load(Ordering::Relaxed));
+    slot.preemptions_since_rotation
+        .store(next, Ordering::Relaxed);
+    // 此刻被抢占的 task 已离开 Running，而它的继任者已从 Ready 变成 Running，所以“还有别的任务在
+    // 本 CPU 上竞争”要看 Ready 与 Running 之和，只看 Ready 在两个任务轮流跑时恒为零。
+    let contended = slot
+        .ready_entries
+        .load(Ordering::Relaxed)
+        .saturating_add(slot.running_entries.load(Ordering::Relaxed))
+        != 0;
+    select_cpu_with(task, affinity, due && contended)
+}
+
+fn select_cpu_with(task: &TaskControlBlock, affinity: CpuAffinity, rotate: bool) -> CpuId {
     // Relaxed 只用于分散扫描起点，不承担任何状态发布。
     let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % cpu::count();
     let current = cpu::current_id();
     // last_cpu 仅提供缓存亲和性提示；过期值只影响候选顺序，不影响任务所有权或可见性。
-    let last = cpu::id_at(task.scheduling.last_cpu.load(Ordering::Relaxed));
-    let mut best_cpu = None;
-    let mut best_load = usize::MAX;
-    let mut last_load = None;
-
-    for offset in 0..cpu::count() {
-        let cpu_index = (start + offset) % cpu::count();
-        let cpu_id = cpu::id_at(cpu_index).expect("logical CPU disappeared from topology");
+    let last = task.scheduling.last_cpu.load(Ordering::Relaxed);
+    let candidates = (0..cpu::count()).filter_map(|offset| {
+        let index = (start + offset) % cpu::count();
+        let cpu_id = cpu::id_at(index).expect("logical CPU disappeared from topology");
         if !cpu::is_active(cpu_id) || !affinity.allows(cpu_id) {
-            continue;
+            return None;
         }
-        let slot = processor_at(cpu_index);
+        let slot = processor_at(index);
         let load = slot
             .ready_entries
             .load(Ordering::Relaxed)
             .saturating_add(slot.running_entries.load(Ordering::Relaxed));
-        if load < best_load {
-            best_load = load;
-            best_cpu = Some(cpu_id);
-        }
-        if Some(cpu_id) == last {
-            last_load = Some(load);
-        }
-    }
-
-    match last_load {
-        // 仅在同为最小负载时保留缓存亲和性；允许多一个 runnable 会把两个 CPU-bound task 永久压在同一 CPU。
-        Some(load) if load == best_load => last.expect("last CPU load requires an identity"),
-        _ => best_cpu.unwrap_or_else(|| {
+        Some((index, load))
+    });
+    // 并列时保留 last 的理由：允许多一个 runnable 会把两个 CPU-bound task 永久压在同一 CPU，
+    // 所以只在负载相同（而非 last 多一个）时才留下；rotate 则周期性地打破这个并列。
+    match placement_policy::choose_cpu(candidates, Some(last), rotate) {
+        Some(index) => cpu::id_at(index).expect("logical CPU disappeared from topology"),
+        None => {
             // init 在 boot CPU 发布 active 前已进入本地 runqueue；缺少这一条装配路径会让
             // 首个 New task 因 active set 暂空而 fail-stop。userspace mask 已另行与 active 相交。
             if affinity.allows(current) {
@@ -54,7 +80,7 @@ pub(super) fn select_cpu(task: &TaskControlBlock, affinity: CpuAffinity) -> CpuI
                     affinity.effective_bits()
                 )
             }
-        }),
+        }
     }
 }
 

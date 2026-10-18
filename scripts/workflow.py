@@ -430,6 +430,7 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
         ["verify_busybox.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_apk_apps.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_gpu.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_scheduler_fairness.py", "--image", target_paths(environment)["rootfs"]],
     ]
     for script, *arguments in commands:
         run(python_script(script, *arguments), environment=environment)
@@ -438,6 +439,14 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
 def verify_runtime_gpu(environment: Mapping[str, str] | None = None) -> None:
     """执行不依赖 UI 的内核显示/GPU gate，不隐式重建 rootfs。"""
     run(python_script("verify_gpu.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
+
+
+def verify_runtime_scheduler(environment: Mapping[str, str] | None = None) -> None:
+    """执行多 CPU 调度公平性 gate，不隐式重建 rootfs。"""
+    run(
+        python_script("verify_scheduler_fairness.py", "--image", target_paths(environment)["rootfs"]),
+        environment=environment,
+    )
 
 
 def verify_runtime_boot(environment: Mapping[str, str] | None = None) -> None:
@@ -662,6 +671,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-boot": verify_runtime_boot,
         "verify-runtime-shutdown": verify_runtime_shutdown,
         "verify-runtime-gpu": verify_runtime_gpu,
+        "verify-runtime-scheduler": verify_runtime_scheduler,
         "verify-runtime-musl": verify_runtime_musl,
         "verify-runtime-rust-std": verify_runtime_rust_std,
         "verify-runtime-busybox": verify_runtime_busybox,

@@ -60,6 +60,7 @@ class WorkflowTests(unittest.TestCase):
                 "verify_busybox.py",
                 "verify_apk_apps.py",
                 "verify_gpu.py",
+                "verify_scheduler_fairness.py",
             ],
         )
 

@@ -89,6 +89,7 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 ## 文档导航
 
 - 所有文档的唯一索引与事实 owner：[docs/README.md](docs/README.md)
+- 想通过阅读学习这个内核：从 [读码地图](docs/reading-guide.md) 开始
 - 当前设计：[docs/architecture.md](docs/architecture.md)
 - module、接口、依赖与状态 owner：[docs/architecture-contract.md](docs/architecture-contract.md)
 - Linux 用户态 ABI 支持矩阵与已知缺口：[docs/syscall-support.md](docs/syscall-support.md)

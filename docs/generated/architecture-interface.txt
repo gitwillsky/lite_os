@@ -8463,6 +8463,7 @@ kernel/src/task/processor/job_control.rs :: pub (super) fn request_reschedule_on
 kernel/src/task/processor/placement.rs :: pub (crate) fn enqueue_new_task (task : Arc < TaskControlBlock >) -> CpuId
 kernel/src/task/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < TaskControlBlock > , generation : u64) -> RunQueueEntry
 kernel/src/task/processor/placement.rs :: pub (super) fn select_cpu (task : & TaskControlBlock , affinity : CpuAffinity) -> CpuId
+kernel/src/task/processor/placement.rs :: pub (super) fn select_cpu_after_preemption (task : & TaskControlBlock , affinity : CpuAffinity) -> CpuId
 kernel/src/task/processor/ready_membership.rs :: pub (super) fn commit_ready_retirement (retirement : ReadyRetirement < '_ >)
 kernel/src/task/processor/ready_membership.rs :: pub (super) fn commit_ready_transition (transition : ReadyTransition < '_ >) -> u64
 kernel/src/task/processor/ready_queue.rs :: pub (super) fn add_ready_entry (processor : & mut Processor , entry : RunQueueEntry) -> bool
@@ -8480,8 +8481,12 @@ kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct CfsRunQueue
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct RunQueueEntry
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (in crate :: task) impl CfsRunQueue :: fn minimum_vruntime (& self) -> Option < u64 >
+kernel/src/task/scheduler/mod.rs :: pub (crate) mod placement_policy
 kernel/src/task/scheduler/mod.rs :: pub (crate) mod preemption_policy
 kernel/src/task/scheduler/mod.rs :: pub (super) mod cfs_scheduler
+kernel/src/task/scheduler/placement_policy.rs :: pub (crate) const ROTATION_INTERVAL_PREEMPTIONS : u32 = 10
+kernel/src/task/scheduler/placement_policy.rs :: pub (crate) const fn advance_rotation (since_rotation : u32) -> (bool , u32)
+kernel/src/task/scheduler/placement_policy.rs :: pub (crate) fn choose_cpu (candidates : impl Iterator < Item = (usize , usize) > , last : Option < usize > , rotate : bool ,) -> Option < usize >
 kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn capacity (& self) -> usize
 kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn discard_invalid_roots (& mut self , mut keep : impl FnMut (& T) -> bool) -> usize
 kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn len (& self) -> usize

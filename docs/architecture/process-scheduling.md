@@ -54,6 +54,10 @@
   唯一 survivor exec 在同一 graph transaction 取得 TGID、迁移 creator-child 索引且不生成
   父死亡事件，沿用原 leader birthdate；robust 先按旧 TID 清理，旧 clearTid 只在旧 mm 释放。
 - `ProcessorTopology` 拥有 per-CPU current、runqueue、mailbox 与 load projection。远端 runnable 只经 logical target mailbox 和 platform IPI 交付。
+- 任务被抢占后重新入队时，按各 CPU 的 ready+running 计数选核，负载并列时保留 last-CPU 亲和。为避免 N+1 个 CPU 密集任务在
+  N 个 CPU 上被永久锁成 100% / 50% / 50%，每个 CPU 每发生 10 次抢占（约 100 ms），有一次在本 CPU 上还有别的可运行任务时
+  放宽该亲和偏置，并列时轮转到另一个 CPU。被迁移的总是刚跑完一个时间片的任务。纯决策在 `scheduler::placement_policy`，
+  `scheduler-unit` 单测；多 CPU 公平性由 `verify-runtime-scheduler` 裁决。
 - 普通 yield/block 的 scheduler handoff 直接在 outgoing task 上选择 next Ready owner，并执行一次
   `task -> task` kernel context switch。被保存的 outgoing owner 与 IRQ restore consequence 暂存在
   per-CPU pending slot，由 next task 的 continuation 唯一提交；next 首次运行也先经过同一
@@ -106,10 +110,9 @@
 ## Known limits
 
 - scheduler 当前提供 Linux `SCHED_OTHER`/nice 语义子集，不包含实时调度 class。
-- CPU 选择只发生在新建、唤醒、affinity 变更与 job-control 恢复的 Ready 发布点，按目标 CPU 的
-  ready+running 计数取最小值，同为最小时保留 last-CPU 亲和性。没有周期性 load balance，空闲 CPU
-  也不从其他 runqueue 拉取任务：已经 Ready 排队或持续运行、不经过上述发布点的 Thread 不会被
-  迁移，扎堆在同一 CPU 的 CPU 密集 Thread 会长期共享它，而其他 CPU 空闲。
+- 负载均衡只有抢占时的重新选核：没有跨 CPU 拉取或推送 Ready 任务，空闲 CPU 不会主动从别的 runqueue 取任务。
+  Ready 任务只有在所在 CPU 的 current 被抢占或阻塞时才有机会迁走，内核态长时间不返回用户态的 current 会延迟这一点。
+  迁移不重新归一化 vruntime，沿用既有的跨核放置语义；公平性只验证了等权重的 CPU 密集任务，nice 混合负载未验证。
 - futex PI、PI requeue 与完整 clone flags 尚未开放；WAKE_OP 使用实际原子更新与双 source transaction。
 - 实时信号已接入实际 FIFO/recipient rlimit token、标准 rt_sigqueueinfo/tgsigqueueinfo；
   handler 与 sigwait 共享唯一 pending owner；普通也用实际 charged record，SIGKILL/低内存

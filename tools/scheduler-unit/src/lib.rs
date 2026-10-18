@@ -10,6 +10,10 @@ mod preallocated_heap;
 mod preemption_policy;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/task/scheduler/placement_policy.rs"]
+mod placement_policy;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/task/process_table/signal/selection_result.rs"]
 mod signal_selection_result;
 
@@ -192,5 +196,85 @@ mod preemption_policy_tests {
     fn stale_or_idle_delivery_does_not_fabricate_policy_preemption() {
         assert!(!local_ready_preempts(Some(20_000), None));
         assert!(!local_ready_preempts(None, Some(1_000)));
+    }
+}
+
+#[cfg(test)]
+mod placement_policy_tests {
+    use super::placement_policy::{ROTATION_INTERVAL_PREEMPTIONS, advance_rotation, choose_cpu};
+
+    fn choose(candidates: &[(usize, usize)], last: Option<usize>, rotate: bool) -> Option<usize> {
+        choose_cpu(candidates.iter().copied(), last, rotate)
+    }
+
+    #[test]
+    fn no_candidate_means_no_choice() {
+        assert_eq!(choose(&[], Some(0), true), None);
+        assert_eq!(choose(&[], None, false), None);
+    }
+
+    #[test]
+    fn strictly_lower_load_always_wins_over_affinity() {
+        for rotate in [false, true] {
+            assert_eq!(choose(&[(0, 3), (1, 1)], Some(0), rotate), Some(1));
+        }
+    }
+
+    #[test]
+    fn a_tie_keeps_the_last_cpu_unless_rotation_is_due() {
+        assert_eq!(choose(&[(0, 1), (1, 1)], Some(0), false), Some(0));
+        assert_eq!(choose(&[(0, 1), (1, 1)], Some(0), true), Some(1));
+    }
+
+    #[test]
+    fn rotation_with_no_other_minimum_stays_put() {
+        assert_eq!(choose(&[(0, 1), (1, 2)], Some(0), true), Some(0));
+    }
+
+    #[test]
+    fn rotation_is_irrelevant_when_last_is_not_a_minimum() {
+        assert_eq!(choose(&[(0, 2), (1, 1), (2, 1)], Some(0), true), Some(1));
+        assert_eq!(choose(&[(0, 2), (1, 1), (2, 1)], Some(0), false), Some(1));
+    }
+
+    #[test]
+    fn a_lower_load_found_later_discards_earlier_tied_candidates() {
+        // 前两个与 last 并列于负载 2，但 CPU 2 的负载更低：last 已不是最小者。
+        assert_eq!(choose(&[(1, 2), (0, 2), (2, 1)], Some(0), true), Some(2));
+    }
+
+    #[test]
+    fn the_scan_order_breaks_ties_among_equal_candidates() {
+        assert_eq!(choose(&[(2, 0), (1, 0)], None, false), Some(2));
+        assert_eq!(choose(&[(0, 1), (2, 1), (1, 1)], Some(0), true), Some(2));
+    }
+
+    #[test]
+    fn a_last_cpu_outside_the_candidates_falls_back_to_the_first_minimum() {
+        assert_eq!(choose(&[(1, 1), (2, 1)], Some(0), true), Some(1));
+    }
+
+    #[test]
+    fn three_tasks_on_two_cpus_alternate_between_the_cpus() {
+        // CPU0 上 A 被抢占，B 在排队；CPU1 上 C 在运行：A 离开后两边各一个。
+        let after_a_leaves = [(0, 1), (1, 1)];
+        assert_eq!(choose(&after_a_leaves, Some(0), false), Some(0));
+        assert_eq!(choose(&after_a_leaves, Some(0), true), Some(1));
+    }
+
+    #[test]
+    fn rotation_fires_once_per_interval_and_restarts() {
+        let mut since = 0;
+        let mut fired = alloc::vec::Vec::new();
+        for preemption in 1..=3 * ROTATION_INTERVAL_PREEMPTIONS {
+            let (rotate, next) = advance_rotation(since);
+            since = next;
+            if rotate {
+                fired.push(preemption);
+            }
+        }
+        let interval = ROTATION_INTERVAL_PREEMPTIONS;
+        assert_eq!(fired, [interval, 2 * interval, 3 * interval]);
+        assert_eq!(since, 0);
     }
 }

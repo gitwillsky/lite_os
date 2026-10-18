@@ -1,3 +1,60 @@
+//! 等待注册表：所有“阻塞等待”的唯一登记处。
+//!
+//! # 它解决什么问题
+//!
+//! futex、管道、poll、信号、定时器、控制台、文件锁……任务阻塞的原因各不相同，但都要回答同一个问题：
+//! 事件发生时，**谁在等它**？而且必须做到两件事：
+//!
+//! - **不丢唤醒**：事件恰好发生在“检查条件”和“真正睡下去”之间，等待者不能因此睡死。
+//! - **只唤醒一次**：poll 这类多来源等待会同时挂在好几个来源上，超时、信号、数据到达可能同时命中，
+//!   最终只能有一个赢家。
+//!
+//! # 结构
+//!
+//! - 一次等待是一个 `WaitRegistration`，它在每个来源下各登记一个索引节点（`WaitIndexKey`：来源标识
+//!   加等待者 id）。每次等待还有一个按线程 id 的 `Task` 节点；带超时的再多一个按到期时间排序的
+//!   `Deadline` 节点。
+//! - 索引节点存放在 16 个分片里，每片是 `IrqMutex<FallibleMap<..>>`。分片由来源标识的哈希决定，所以
+//!   同一个来源（例如同一个 futex 地址）的等待者落在同一片，且在有序表里相邻，“找出某来源的全部
+//!   等待者”就是一次范围扫描。
+//! - registration 保存自己完整的 key 列表，是跨分片摘除的反向索引。需要同时锁多片时总是按分片编号
+//!   升序加锁，否则 poll 的取消与 futex 的 requeue 会形成 ABBA 死锁。
+//!
+//! # 一次等待的生命周期
+//!
+//! 1. **准备**（可失败，不持锁）：分配 registration 和每个索引节点（`FallibleMap::try_prepare`）。
+//!    内存不足在这里返回，注册表还没有任何改动。状态 `PREPARED`。
+//! 2. **发布**：升序锁住涉及的分片，把节点逐个提交（不会失败）。状态 `PREPARED → ARMING`。从此事件
+//!    来源就能找到这次等待。
+//! 3. **复查**：发布之后**再**检查一次等待条件（数据是否已到、futex 值是否变了、有没有待处理信号）。
+//!    发布前发生的事件会被复查看到，发布后发生的事件会找到已登记的节点，“检查与睡眠之间”的窗口
+//!    因此被关闭。条件已满足就取消：`ARMING → CANCELLED`；若这时已有事件方写入了结果，就采用该结果。
+//! 4. **武装**：`ARMING → ARMING_LOCKED`，短暂持有分片锁，在调度器把任务标记为阻塞的发布点内把状态
+//!    置为 `ARMED`，随后任务睡眠。
+//! 5. **唤醒**（事件方调用 `notify`），以 `state` 上的一次 CAS 决出唯一赢家：
+//!    - `ARMING`：等待者还没睡下，写入 `NOTIFIED_*` 并摘除节点；等待者在取消或武装时看到结果，不再睡眠。
+//!    - `ARMED`：`ARMED → CLAIMING`，摘除全部节点，置 `CLAIMED`，返回 `ClaimedWait`，调用方随后经
+//!      调度器唤醒该任务。
+//!    - `ARMING_LOCKED` / `REQUEUEING` / `CLAIMING`：别人正在短暂改状态，自旋等它落定后重试。
+//!    - 已是 `NOTIFIED_*` / `CANCELLED` / `CLAIMED`：已有赢家，本次唤醒作废（`Stale`）。
+//!
+//! ```text
+//! PREPARED ──发布──▶ ARMING ──武装──▶ ARMING_LOCKED ──▶ ARMED ──notify──▶ CLAIMING ──▶ CLAIMED
+//!                      │  └──notify──▶ NOTIFIED_{WOKEN,TIMEOUT,INTERRUPTED}
+//!                      └──cancel──▶ CANCELLED          （REQUEUEING：futex 把等待者搬到另一个 key 的瞬态）
+//! ```
+//!
+//! # 已知局限
+//!
+//! 上面的自旋只发生在持有方正在短暂改状态的瞬态里，但目前没有上界，也没有超时诊断；持有方若被
+//! 意外卡住，其他 CPU 会静默等待。
+//!
+//! # 阅读顺序
+//!
+//! `wait_registry/registration.rs`（状态常量）→ `preparation.rs`（准备）→ 本文件的 `publish` 与
+//! `notify` → `publication.rs`（取消与武装）→ `arm_current`（把以上几步串起来，文件末尾）→
+//! `requeue.rs`（futex requeue）。
+
 use crate::sync::WaitResult;
 use alloc::sync::Arc;
 use core::{
