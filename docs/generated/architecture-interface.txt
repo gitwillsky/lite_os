@@ -2203,7 +2203,7 @@ kernel/src/hardware/hal/console.rs :: pub (crate) fn publish_received (bytes : &
 kernel/src/hardware/hal/console.rs :: pub (crate) fn register_serial (name : & 'static [u8] , output : SerialOutput ,) -> Result < () , InterruptError >
 kernel/src/hardware/hal/console.rs :: pub (crate) struct ConsoleError
 kernel/src/hardware/hal/console.rs :: pub (crate) trait ConsoleDevice
-kernel/src/hardware/hal/console.rs :: pub (crate) type SerialOutput  = fn (u8) -> Result < () , ConsoleError >
+kernel/src/hardware/hal/console.rs :: pub (crate) type SerialOutput  = fn (& [u8]) -> Result < () , ConsoleError >
 kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn discard_input (& self) -> usize
 kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn input_ready (& self) -> bool
 kernel/src/hardware/hal/console.rs :: trait ConsoleDevice :: fn name (& self) -> & [u8]
@@ -2238,6 +2238,7 @@ kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn _pri
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_print_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn panic_println_fmt (arguments : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn write_byte (byte : u8) -> Result < () , ConsoleError >
+kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) fn write_bytes (bytes : & [u8]) -> Result < () , ConsoleError >
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (crate) struct ConsoleError
 kernel/src/hardware/platform/qemu_virt/aarch64/console.rs :: pub (super) fn validate_discovered_base ()
 kernel/src/hardware/platform/qemu_virt/aarch64/device_tree.rs :: pub (crate) GicV3Info :: distributor : RangeValue
@@ -2284,7 +2285,6 @@ kernel/src/hardware/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) fn send_i
 kernel/src/hardware/platform/qemu_virt/aarch64/gicv3.rs :: pub (crate) struct GicV3
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn arm_timer (deadline : u64) -> Result < () , TimerArmError >
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn complete_pending_ipi ()
-kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn debug_console_write (byte : u8) -> Result < () , console :: ConsoleError >
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn initialize (boot : BootInfo)
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn initialize_devices ()
 kernel/src/hardware/platform/qemu_virt/aarch64/mod.rs :: pub (crate) fn kernel_command_line () -> & 'static [u8]
@@ -2331,6 +2331,7 @@ kernel/src/hardware/platform/qemu_virt/pci_host.rs :: pub (crate) struct PciHost
 kernel/src/hardware/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/hardware/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
+kernel/src/hardware/platform/qemu_virt/riscv64/console.rs :: pub (crate) fn write_bytes (bytes : & [u8]) -> Result < () , FirmwareError >
 kernel/src/hardware/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: bootargs : Vec < u8 >
 kernel/src/hardware/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
 kernel/src/hardware/platform/qemu_virt/riscv64/device_tree.rs :: pub (crate) PlatformInfo :: hardware_cpu_ids : Vec < usize >

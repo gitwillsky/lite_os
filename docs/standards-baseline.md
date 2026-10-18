@@ -298,10 +298,5 @@ USER1000ms与非进展ACK、无route+IFDOWN探测预算、持续零窗口应答�
 固定Linux tcp_input.c tcp_ack_probe/tcp_ack以及tcp_timer.c tcp_probe_timer和tcp_output.c
 的tcp_send_probe0/tcp_xmit_probe_skb。九文件vendor profile未扩大，无新lock/global/unsafe；
 字段受actual transport/NET guard独占；沿用实际每slot clock/完整poll200ns benchmark门禁。
-**该阶段仍需审阅原vendor旧probe单字节测试并按native空ACK/ACK刷新时刻维护；不能删测试。**
-**进一步发现ACK准入上界使用tx_buffer queued长度，而非真正已发表SND.NXT，可能确认尚未
-发送字节。重传cursor remote_last_seq会回退，不能直接拿它作SND.NXT上界；必须由真实TCP
-owner区分发送high-water与retransmit cursor，接到SYN/FIN/数据/ACK/RTO，再补真实wire回归。**
-keepalive无route时仍由FIBfilter跳过尝试，native负route错误实际消耗probe count；尚需把
-actual route failure送进同一probe mechanism，不能另造route selector或按成功wire count掩盖。
+ACK 准入上界是发送 high-water `send_seq_no`，与可回退的重传游标 `remote_last_seq` 分离；未发送的数据、SYN 与 FIN 不能被确认。keepalive 遇 route 失败时消耗一次 probe count，并安排后续 deadline，不伪造成功的 wire 发送。
 zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 TCP 扩展不支持。

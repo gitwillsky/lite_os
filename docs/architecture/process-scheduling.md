@@ -106,6 +106,10 @@
 ## Known limits
 
 - scheduler 当前提供 Linux `SCHED_OTHER`/nice 语义子集，不包含实时调度 class。
+- CPU 选择只发生在新建、唤醒、affinity 变更与 job-control 恢复的 Ready 发布点，按目标 CPU 的
+  ready+running 计数取最小值，同为最小时保留 last-CPU 亲和性。没有周期性 load balance，空闲 CPU
+  也不从其他 runqueue 拉取任务：已经 Ready 排队或持续运行、不经过上述发布点的 Thread 不会被
+  迁移，扎堆在同一 CPU 的 CPU 密集 Thread 会长期共享它，而其他 CPU 空闲。
 - futex PI、PI requeue 与完整 clone flags 尚未开放；WAKE_OP 使用实际原子更新与双 source transaction。
 - 实时信号已接入实际 FIFO/recipient rlimit token、标准 rt_sigqueueinfo/tgsigqueueinfo；
   handler 与 sigwait 共享唯一 pending owner；普通也用实际 charged record，SIGKILL/低内存

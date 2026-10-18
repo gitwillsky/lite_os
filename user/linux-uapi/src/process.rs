@@ -455,6 +455,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn terminate_reaps_successfully_when_the_group_already_exited() {
         let mut child = Command::new("setsid")

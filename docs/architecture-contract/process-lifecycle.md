@@ -98,16 +98,16 @@ node；已经摘除但无法 upgrade 的 orphan 走 Silent。state 的 IrqMutex 
 Thread mm 与 scheduling owner 的 CPU 决策：同一 SchedulingEntity Arc 保留退出 leader 的
 proc 视图，避免重复 scalar snapshot 或保留整个 TCB；每 Thread 一次冷 allocation 在 shared
 VMA mapping 前预备，热路径只增加一次 pointer load，不 clone Arc。生产 Sched/Entity 的
-host fixture 比较旧 inline/新 Arc policy lock median 12.03/11.70ns，readonly proc view 34.20ns；
-生产 Thread mmget/drop 22.35ns。每项 warmup 10k、5×100k median，IRQ/topology 为 host seam，
+host fixture 比较旧 inline 与新 Arc policy lock、readonly proc view 和生产 Thread mmget/drop；
+每项 warmup 10k、5×100k median，IRQ/topology 为 host seam，
 仅诊断 CPU 成本，不外推 native 调度/设备延迟；既有 context-switch/trap 成本围栏继续生效。
 
 Capability 热路径决策：复用credential短锁，无新增授权锁/分配；生产getter host warmup100k、
-5×1M median UID9.79ns、capability10.15ns；write kill-mask0.68ns（root FSETID快速拒绝clear）。
+5×1M median，覆盖 UID、capability 与 write kill-mask（root FSETID快速拒绝clear）。
 仅诊断锁/branch成本，不外推native runtime；metadata prepared等待复用已有TaskMutex协议。
 
-SignalHandlers query 的 x86_64 host warm CPU benchmark：100k warmup、5×1M 中位数
-18.86ns（group 与 table 两个生产锁）。此锁是跨 Process disposition serialization 的必要
+SignalHandlers query 的 host warm CPU benchmark：100k warmup、5×1M 中位数，
+路径含 group 与 table 两个生产锁。此锁是跨 Process disposition serialization 的必要
 owner；delivery 不分配、不 clone Arc，exec/fork copy 只在冷 preparation 分配。不是 native guest 性能结论。
 
 - `Process` 的只读 projection seam 只对 task 领域开放；ProcessNode/proc/prlimit 共享同一 Arc，

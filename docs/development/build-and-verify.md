@@ -84,8 +84,8 @@
   TSYNC 的既存/后续 thread 继承与 divergent TID/ESRCH 零变更失败。host transaction fixture
   执行生产 graph commit 算法，覆盖 stale prepare、容量增长/OOM、退出排除、group exit 与
   NNP 并发置位；graph/IRQ adapter 为宿主实现，不能替代实际 clone publisher/退出阻塞交错。
-  TSYNC CPU 诊断在 128..384-program chain 上测得 1/64 targets median 4014.77/12327.13ns，
-  含 host graph adapter，只用于 CPU 成本判断，不能外推 IRQ latency/设备或 native 产品门禁。
+  TSYNC CPU 诊断在 128..384-program chain 上测量 1 与 64 个 target，含 host graph adapter，
+  只用于 CPU 成本判断，不能外推 IRQ latency/设备或 native 产品门禁。
   signal-frame consumer 独立损坏两架构的 extension header，并以不可读 SP 调用 rt_sigreturn；
   父进程验证 SIGSEGV 默认终止，handler 验证 RV SI_KERNEL、AArch SP/code 与未对齐可读 frame，
   排除后续 trap 假阳性；query mask/copyout canary 与自定义 restorer 验证 sigaction 架构布局。

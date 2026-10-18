@@ -40,8 +40,8 @@ pub(crate) fn initialize() {
 fn initialize_uart() {
     let board = platform_info();
     // Linux 为该 UART 使用的设备名，`console=` 按它选择。
-    crate::hal::console::register_serial(b"ttyS0", |byte| {
-        super::debug_console_write(byte).map_err(|_| crate::hal::console::ConsoleError)
+    crate::hal::console::register_serial(b"ttyS0", |bytes| {
+        super::console::write_bytes(bytes).map_err(|_| crate::hal::console::ConsoleError)
     })
     .expect("console registration failed");
     let handler = uart::initialize(board.uart.start, board.uart.end - board.uart.start)

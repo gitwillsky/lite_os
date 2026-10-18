@@ -66,10 +66,6 @@ pub(crate) fn verify_firmware() {
     psci::verify();
 }
 
-pub(crate) fn debug_console_write(byte: u8) -> Result<(), console::ConsoleError> {
-    console::write_byte(byte)
-}
-
 pub(crate) fn physical_memory_end() -> usize {
     discovery::info().memory.end
 }

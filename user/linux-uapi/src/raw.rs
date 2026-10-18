@@ -1,6 +1,7 @@
 use std::ffi::{c_char, c_int, c_void};
 
 pub(crate) const O_RDWR: c_int = 2;
+pub(crate) const O_NOCTTY: c_int = 0o400;
 pub(crate) const O_NONBLOCK: c_int = 0x800;
 pub(crate) const O_CLOEXEC: c_int = 0x80000;
 pub(crate) const PROT_READ: c_int = 1;

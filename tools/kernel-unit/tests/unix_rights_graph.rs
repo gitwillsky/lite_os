@@ -24,6 +24,10 @@ mod id {
 mod file;
 use alloc::{sync::Arc, vec};
 use socket::{SocketError, UnixPassedFile, UnixRights, UnixSocket};
+// OWNER: 本文件所有测试共用的串行锁。它们操作同一套进程级 SCM 权限图、collector 与 quota 状态；
+// 并行执行时一个测试的 collect/in-flight 引用会让另一个测试的 `weak.upgrade().is_none()` 等断言
+// 概率性失败（单线程 0/600，并行约 1%）。
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn endpoint() -> (Arc<UnixSocket>, Arc<file::OpenFileDescription>) {
     let socket = UnixSocket::new();
     let file = Arc::new(file::OpenFileDescription {
@@ -44,6 +48,7 @@ fn rights(files: &[Arc<file::OpenFileDescription>], uid: u32) -> UnixRights {
 }
 #[test]
 fn prepared_duplicate_edges_publish_without_allocations_and_detach_one_actual_batch() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let mut rights = rights(&[file.clone(), file.clone(), file.clone()], 8101);
     UnixSocket::prepare(&mut rights, &target).unwrap();
@@ -55,6 +60,7 @@ fn prepared_duplicate_edges_publish_without_allocations_and_detach_one_actual_ba
 }
 #[test]
 fn preparation_oom_preserves_rights_and_does_not_consume_uid_quota() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     for fault in 0..3 {
         let mut pending = rights(core::slice::from_ref(&file), 8102);
@@ -74,6 +80,7 @@ fn preparation_oom_preserves_rights_and_does_not_consume_uid_quota() {
 }
 #[test]
 fn self_cycle_collects_without_nested_node_lock_or_ofd_drop_under_graph_guard() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let weak = Arc::downgrade(&file);
     target.enqueue(rights(core::slice::from_ref(&file), 8103));
@@ -84,6 +91,7 @@ fn self_cycle_collects_without_nested_node_lock_or_ofd_drop_under_graph_guard() 
 }
 #[test]
 fn live_receiver_root_propagates_to_cycle_then_both_files_retire_after_last_root_closes() {
+    let _serial = SERIAL.lock().unwrap();
     let (a, file_a) = endpoint();
     let (b, file_b) = endpoint();
     let weak_a = Arc::downgrade(&file_a);
@@ -104,6 +112,7 @@ fn live_receiver_root_propagates_to_cycle_then_both_files_retire_after_last_root
 
 #[test]
 fn normal_worker_reclaims_below_limit_cycles_without_quota_recovery_or_new_allocations() {
+    let _serial = SERIAL.lock().unwrap();
     let (dead, file_dead) = endpoint();
     let (live, file_live) = endpoint();
     let weak = Arc::downgrade(&file_dead);
@@ -132,6 +141,7 @@ fn normal_worker_reclaims_below_limit_cycles_without_quota_recovery_or_new_alloc
 }
 #[test]
 fn inflight_limit_checks_existing_usage_and_privileged_none_bypasses_the_limit() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let mut first = UnixRights::new(
         vec![file.clone(), file.clone(), file.clone()],
@@ -161,6 +171,7 @@ mod interruptible_target;
 
 #[test]
 fn stream_reads_complete_carrying_write_and_delivers_each_barrier_once() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     let mut first = Some(rights(core::slice::from_ref(&file), 8107));
@@ -188,6 +199,7 @@ fn stream_reads_complete_carrying_write_and_delivers_each_barrier_once() {
 }
 #[test]
 fn short_stream_read_consumes_rights_once_and_ordinary_read_retires_them_outside_direction_guard() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     let mut message = Some(rights(core::slice::from_ref(&file), 8108));
@@ -211,6 +223,7 @@ fn short_stream_read_consumes_rights_once_and_ordinary_read_retires_them_outside
 
 #[test]
 fn stream_peek_copies_actual_rights_without_consuming_bytes_quota_or_edges() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     let limit = socket::ProducedLimit::new(0);
@@ -270,6 +283,7 @@ fn file_for(socket: &Arc<UnixSocket>) -> Arc<file::OpenFileDescription> {
 
 #[test]
 fn pending_connection_listener_cycle_has_no_conservative_creator_root() {
+    let _serial = SERIAL.lock().unwrap();
     let listener = UnixSocket::listener();
     let listener_file = file_for(&listener);
     let weak = Arc::downgrade(&listener_file);
@@ -288,6 +302,7 @@ fn pending_connection_listener_cycle_has_no_conservative_creator_root() {
 
 #[test]
 fn actual_listener_pin_prevents_collection_during_connect_preparation() {
+    let _serial = SERIAL.lock().unwrap();
     let listener = UnixSocket::listener();
     let listener_file = file_for(&listener);
     let weak = Arc::downgrade(&listener_file);
@@ -313,6 +328,7 @@ fn actual_listener_pin_prevents_collection_during_connect_preparation() {
 
 #[test]
 fn accepted_connection_root_replaces_backlog_edge_and_survives_listener_close() {
+    let _serial = SERIAL.lock().unwrap();
     let listener = UnixSocket::listener();
     let listener_file = file_for(&listener);
     let server = UnixSocket::new();
@@ -340,6 +356,7 @@ fn accepted_connection_root_replaces_backlog_edge_and_survives_listener_close() 
 
 #[test]
 fn last_file_close_retires_stream_controls_while_transport_observers_remain() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, target_file) = endpoint();
     let stream = UnixSocket::stream_channel(&target);
     let (_passed, passed_file) = endpoint();
@@ -366,6 +383,7 @@ fn last_file_close_retires_stream_controls_while_transport_observers_remain() {
 
 #[test]
 fn read_shutdown_retires_controls_and_closes_reader_with_cached_receive_arc() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, _target_file) = endpoint();
     let stream = UnixSocket::stream_channel(&target);
     let (_passed, passed_file) = endpoint();
@@ -389,6 +407,7 @@ fn read_shutdown_retires_controls_and_closes_reader_with_cached_receive_arc() {
 
 #[test]
 fn prepared_scm_commit_reads_current_limit_instead_of_preparation_snapshot() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let quota = socket::ProducedLimit::new(0);
     let mut first = UnixRights::new(vec![file.clone()], 8115, Some(quota.clone())).unwrap();
@@ -432,6 +451,7 @@ fn credential(key: usize, uid: u32) -> (socket::UnixCredentials, namespace::PidR
 
 #[test]
 fn stream_actual_chunks_coalesce_reads_without_allocation_and_preserve_native_boundaries() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, _file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     let (first, _first_registration) = credential(72300, 1000);
@@ -489,6 +509,7 @@ fn stream_actual_chunks_coalesce_reads_without_allocation_and_preserve_native_bo
 
 #[test]
 fn stream_plain_prefix_peek_does_not_allocate_or_borrow_later_controls() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, _target_file) = endpoint();
     let (_, passed) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
@@ -543,6 +564,7 @@ fn stream_plain_prefix_peek_does_not_allocate_or_borrow_later_controls() {
 
 #[test]
 fn stream_zero_length_recvmsg_peeks_rights_then_detaches_once_without_consuming_bytes() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, _target_file) = endpoint();
     let (_, passed) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
@@ -593,6 +615,7 @@ fn stream_zero_length_recvmsg_peeks_rights_then_detaches_once_without_consuming_
 
 #[test]
 fn stream_ordinary_read_crosses_credentials_and_retains_partial_span_identity() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, _target_file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     let (first, _first_registration) = credential(72304, 1000);
@@ -623,6 +646,7 @@ fn stream_ordinary_read_crosses_credentials_and_retains_partial_span_identity() 
 
 #[test]
 fn stream_fifo_preserves_many_chunks_and_reuses_empty_tail_after_oom() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, _file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     for round in 0..3u8 {
@@ -663,6 +687,7 @@ fn stream_fifo_preserves_many_chunks_and_reuses_empty_tail_after_oom() {
 
 #[test]
 fn stream_control_and_frame_oom_preserve_caller_rights_before_publication() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     let mut control = rights(core::slice::from_ref(&file), 8191);
@@ -695,6 +720,7 @@ fn stream_control_and_frame_oom_preserve_caller_rights_before_publication() {
 
 #[test]
 fn partial_stream_control_detach_keeps_charged_storage_until_chunk_retirement() {
+    let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
     let mut control = Some(rights(core::slice::from_ref(&file), 8192));

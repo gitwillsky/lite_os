@@ -92,8 +92,11 @@ pub(crate) trait ConsoleDevice: Send + Sync {
     fn write(&self, bytes: &[u8]) -> Result<(), ConsoleError>;
 }
 
-/// platform UART 的同步单字节输出原语。
-pub(crate) type SerialOutput = fn(u8) -> Result<(), ConsoleError>;
+/// platform UART 的同步输出原语：整段 `bytes` 是对内核日志不可分割的一次输出。
+///
+/// 实现必须在同一个 console 序列化锁内写完整段；逐字节输出会让 tty 数据插进一条内核日志
+/// 的中间，日志行被撕裂，shell 提示符也会被日志切开。
+pub(crate) type SerialOutput = fn(&[u8]) -> Result<(), ConsoleError>;
 
 /// 唯一 RX ring 加 platform 输出原语组成的串口 console。
 struct SerialConsole {
@@ -119,7 +122,7 @@ impl ConsoleDevice for SerialConsole {
     }
 
     fn write(&self, bytes: &[u8]) -> Result<(), ConsoleError> {
-        bytes.iter().try_for_each(|byte| (self.output)(*byte))
+        (self.output)(bytes)
     }
 }
 

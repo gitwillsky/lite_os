@@ -236,6 +236,11 @@ mod task {
                 clears: HostMutex::new(Vec::with_capacity(16)),
                 keys: HostMutex::new(Vec::with_capacity(16)),
             });
+            // 1. macOS 的 std Mutex 基于 pthread，首次 lock 才堆分配 64 字节（Linux futex 版本不分配）。
+            // 2. 测试在 FAIL_NEXT 武装窗口内断言被测内核路径不分配；若观察用 Mutex 在窗口内首次
+            //    加锁，host 脚手架自己的分配会消耗注入的失败并 abort，掩盖真正的断言。
+            drop(observations.clears.lock().unwrap());
+            drop(observations.keys.lock().unwrap());
             (
                 Arc::new(AddressSpace {
                     dumpability: dumpability::Dumpability::new(true),

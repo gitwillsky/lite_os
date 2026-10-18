@@ -89,6 +89,12 @@ pub(crate) fn signal_trampoline_entry() -> usize {
         + (__signal_trampoline as *const () as usize - strampoline as *const () as usize)
 }
 
+// Deferred safe-point waiters spin here with local IRQs masked and cannot acknowledge a TLB
+// shootdown IPI, so the holder must not wait for a remote translation fence while holding this
+// lock; retire the area first and fence after unlocking, as `KernelStack::drop` does. Missing
+// this ordering lets a holder and a masked waiter on another CPU wait for each other forever.
+// Known exception: the OOM rollback in `KernelStack::try_new` (via `insert_framed_area`) still
+// fences remotely under this lock.
 // OWNER: memory module owns the canonical kernel address space after initialization. VirtIO
 // descriptor translation may take this ordinary lock only from task or deferred safe-point context;
 // hardirq/kernel-SSIP paths must never traverse the page table, or same-CPU reentry will deadlock.

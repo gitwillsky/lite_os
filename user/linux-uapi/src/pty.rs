@@ -75,7 +75,17 @@ impl PtySession {
         )?;
         let slave_path = CString::new(format!("/dev/pts/{index}"))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid PTY path"))?;
-        let slave_raw = unsafe { raw::open(slave_path.as_ptr(), raw::O_RDWR | raw::O_CLOEXEC) };
+        // 1. 调用者可能是 session leader（经 session trampoline 启动）；没有 O_NOCTTY 时，
+        //    打开 slave 会把它变成调用者自己的 controlling terminal。
+        // 2. 随后子进程 setsid 后的 TIOCSCTTY 因 tty 已属于另一个 session 而失败，spawn 返回
+        //    错误并丢弃 master；PTY hangup 向前台组（即调用者自己）投递 SIGHUP，调用者在
+        //    报告错误前被杀死，终端窗口只剩空白。
+        let slave_raw = unsafe {
+            raw::open(
+                slave_path.as_ptr(),
+                raw::O_RDWR | raw::O_NOCTTY | raw::O_CLOEXEC,
+            )
+        };
         if slave_raw < 0 {
             return Err(io::Error::last_os_error());
         }

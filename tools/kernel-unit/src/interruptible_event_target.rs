@@ -32,12 +32,19 @@ impl Drop for Binding {
 }
 impl Target {
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
+        let target = Self {
             pending: false.into(),
             fatal: false.into(),
             state: Mutex::new((None, None)),
             changed: Condvar::new(),
-        })
+        };
+        // 1. macOS 的 std Mutex/Condvar 基于 pthread，首次使用才堆分配。
+        // 2. 许多测试在 fail_next 武装后断言被测路径不分配；若 `sleep` 在窗口内第一次加锁，
+        //    host 脚手架自己的分配会消耗注入的失败，std 无法容忍而 abort。是否走到 `sleep`
+        //    取决于线程竞争，所以表现为概率性崩溃。构造时预热即可与注入窗口隔离。
+        drop(target.state.lock().unwrap());
+        target.changed.notify_all();
+        Arc::new(target)
     }
     pub(crate) fn bind(self: &Arc<Self>) -> Binding {
         INSTALL.call_once(|| {

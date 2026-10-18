@@ -28,7 +28,13 @@
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
 - `hal::console` 独占 console RX ring 与通用串口 `ConsoleDevice`（platform 提供设备名与同步输出原语）；
-  `tty` 经它读写 raw 字节；块设备 seam 属于 `block`，`fs` 不依赖 `drivers`。
+  `tty` 经它读写 raw 字节。输出原语接收整段字节，platform 必须在与内核日志相同的 console 序列化锁内
+  写完整段（aarch64/riscv64 各自的 `CONSOLE`）；逐字节输出会让 tty 数据插进一条内核日志的中间，
+  日志行被撕裂，依赖串口提示符的 runtime gate 在多核下概率性失败。单次写入至多 512 字节，所以
+  锁内的本地中断屏蔽时间与一条内核日志同量级；原语不得记录日志，否则会重入同一把 `IrqMutex`。
+  Benchmark 决策：不新增 benchmark。每次 tty write 只多一次无竞争取锁，被其后逐字节的 UART MMIO
+  轮询淹没；riscv64 的 SBI 调用数反而从逐字节降为 `ceil(n/256)`，日志批量成本由既有 `log_cost` 围栏继续约束。
+  块设备 seam 属于 `block`，`fs` 不依赖 `drivers`。
 - `drivers::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
   稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型；具体 adapter 位于 `virtio`，块设备注册表归 `block`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。

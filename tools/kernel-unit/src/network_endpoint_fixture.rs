@@ -175,6 +175,11 @@ pub(crate) mod drivers {
 #[path = "../../../kernel/src/socket"]
 pub(crate) mod socket {
     use alloc::sync::Arc;
+    // OWNER: 本 fixture 内所有 socket 测试共用的串行锁。这些测试都会重置同一套进程级全局状态
+    // （namespace::boot、initialize_net、packet/inet registry）；若每个测试模块各持私有锁，模块
+    // 内部串行而模块之间并行，会互相覆盖全局状态，表现为随机的 poll/bind/queue 断言失败。
+    #[cfg(test)]
+    pub(crate) static NETWORK_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     #[path = "net_namespace.rs"]
     mod net_namespace;
     pub(crate) use inet::{InternetOption, create_net_namespace};
@@ -585,7 +590,7 @@ pub(crate) mod socket {
     mod tests {
         use super::*;
         use crate::ipc::{Pipe, ReceiveBuffer};
-        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        use super::NETWORK_TEST_SERIAL as SERIAL;
         fn address() -> PacketAddress {
             PacketAddress {
                 protocol: 0x0800u16.to_be(),

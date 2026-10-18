@@ -1,3 +1,5 @@
+use super::firmware::FirmwareError;
+
 const CONSOLE_BATCH_BYTES: usize = 256;
 
 #[macro_export]
@@ -23,7 +25,26 @@ pub(crate) fn _print_fmt(args: core::fmt::Arguments) {
     use core::fmt::Write;
     let mut writer = CONSOLE.lock();
     let _ = writer.write_fmt(args);
-    writer.flush();
+    let _ = writer.flush();
+}
+
+/// 在 console 序列化锁内把整段 tty 输出经批量缓冲写到 SBI DBCN。
+///
+/// 与 `_print_fmt` 共用 `CONSOLE`：缺少这把锁时，tty 字节会插进内核日志行的中间。
+/// 经 BSS 批量缓冲而非直接传 `bytes`，因为 DBCN 要求 identity-mapped 物理地址，而调用者的
+/// 缓冲可能在 kernel stack 上。本函数不得记录日志，否则会在持锁状态下重入同一把 `IrqMutex`。
+///
+/// # Parameters
+///
+/// - `bytes`: 一次 tty write 的输出；上界由 tty 层的单次写块（至多 512 字节）决定。
+///
+/// # Errors
+///
+/// 任一批 SBI DBCN 写失败时返回首个 firmware error；其余批次仍会尝试写出。
+pub(crate) fn write_bytes(bytes: &[u8]) -> Result<(), FirmwareError> {
+    let mut writer = CONSOLE.lock();
+    let pushed = writer.push(bytes);
+    pushed.and(writer.flush())
 }
 
 struct ConsoleWriter {
@@ -39,29 +60,39 @@ impl ConsoleWriter {
         }
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> Result<(), FirmwareError> {
         if self.length == 0 {
-            return;
+            return Ok(());
         }
         // OWNER: CONSOLE guard uniquely owns this BSS buffer. Kernel image mappings are identity
         // mapped, satisfying SBI DBCN's physical-address contract for the synchronous call.
-        let _ = super::debug_console_write_bytes(&self.bytes[..self.length]);
+        let result = super::debug_console_write_bytes(&self.bytes[..self.length]);
         self.length = 0;
+        result
     }
-}
 
-impl core::fmt::Write for ConsoleWriter {
-    fn write_str(&mut self, text: &str) -> core::fmt::Result {
-        let mut bytes = text.as_bytes();
+    /// Copies `bytes` through the batch buffer, flushing whenever it fills.
+    ///
+    /// A failed flush drops that batch but the copy continues, so best-effort logging keeps its
+    /// existing behavior; the first error is returned for callers that must report it.
+    fn push(&mut self, mut bytes: &[u8]) -> Result<(), FirmwareError> {
+        let mut result = Ok(());
         while !bytes.is_empty() {
             let count = bytes.len().min(CONSOLE_BATCH_BYTES - self.length);
             self.bytes[self.length..self.length + count].copy_from_slice(&bytes[..count]);
             self.length += count;
             bytes = &bytes[count..];
             if self.length == CONSOLE_BATCH_BYTES {
-                self.flush();
+                result = result.and(self.flush());
             }
         }
+        result
+    }
+}
+
+impl core::fmt::Write for ConsoleWriter {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        let _ = self.push(text.as_bytes());
         Ok(())
     }
 }

@@ -78,7 +78,12 @@ fn riscv64_qemu_virt_dtb_decodes_every_boot_fact() {
 fn riscv64_device_identity_does_not_depend_on_node_names() {
     let mut bytes = fixture("LITEOS_RISCV64_DTB");
     // 固定 QEMU virt 的 PLIC 节点名只用于变异 fixture；生产 decoder 只能按 compatible 识别。
-    replace_all(&mut bytes, b"plic@c000000", b"xctl@c000000");
+    // 替换名与原名必须等长（见 `replace_all`）。
+    replace_all(
+        &mut bytes,
+        b"interrupt-controller@c000000",
+        b"unrelated-nodename-x@c000000",
+    );
     replace_all(&mut bytes, b"serial@10000000", b"tty000@10000000");
     replace_all(&mut bytes, b"virtio_mmio@", b"transport-x@");
     replace_all(&mut bytes, b"rtc@101000", b"clk@101000");

@@ -23,8 +23,8 @@ pub(crate) fn initialize() {
 fn initialize_pl011() {
     let platform = discovery::info();
     // Linux 为该 UART 使用的设备名，`console=` 按它选择。
-    crate::hal::console::register_serial(b"ttyAMA0", |byte| {
-        super::debug_console_write(byte).map_err(|_| crate::hal::console::ConsoleError)
+    crate::hal::console::register_serial(b"ttyAMA0", |bytes| {
+        super::console::write_bytes(bytes).map_err(|_| crate::hal::console::ConsoleError)
     })
     .expect("console registration failed");
     let handler = pl011::initialize(platform.uart.base_addr, platform.uart.size)

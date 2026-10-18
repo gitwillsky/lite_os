@@ -1,5 +1,5 @@
 // 实际 InetSocket、smoltcp SocketSet、port leases 与 deferred cleanup；只有 NIC/时钟/唤醒为边界。
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use crate::socket::NETWORK_TEST_SERIAL as SERIAL;
 #[test]
 fn passive_child_freezes_final_ack_policy_and_failed_accept_keeps_the_same_child() {
     use super::super::{SocketIoDirection::Receive, SocketTimeout};
