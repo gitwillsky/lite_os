@@ -51,9 +51,9 @@
   与 GUI 参数入口均不存在。
 - UTM 产品路径固定 AArch64 `host` CPU、HVF、SPICE `gl=on`、`virtio-gpu-gl-device`、native Retina
   dynamic resolution，以及 UTM 自带的唯一 PCI `com.redhat.spice.0` port。kernel/rootfs 以同卷
-  hard link 发布到 UTM app group，QEMU drive 显式 `format=raw`。产品 graphics boot、frame timing 与
-  audio gate 都创建同一 UTM/VirGL 配置的 disposable 实例：gate 先备份开发 VM 的 plist 与已发布 artifact
-  inode，使用预监听 TCP client serial 捕获最早 boot marker，按需在 app group 建立 QMP/WAV endpoint，
+  hard link 发布到 UTM app group，QEMU drive 显式 `format=raw`。产品 graphics boot 与 gpu gate
+  都创建同一 UTM/VirGL 配置的 disposable 实例：gate 先备份开发 VM 的 plist 与已发布 artifact
+  inode，使用预监听 TCP client serial 捕获最早 boot marker，
   结束后精确恢复原配置与 inode。`run`/`run-gdb` 只保留无窗口 QEMU/MMIO 拓扑作为非图形验证与调试
   入口，不是第二个 GUI 产品实现；两条设备 transport 在同一个
   transport-neutral VirtIO Console adapter 汇合。
@@ -108,8 +108,6 @@
   组合两者并追加 release、artifact、架构与 RISC-V secondary 门禁。runtime QEMU 必须保持串行，即使
   外层使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
   workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。
-- frame-timing 只在 `desktop startup motion settled`（Splash 的 `display:none` terminal frame 已被 PRESENTED）
-  后注入 resize，不能用 React mount、首 scene marker 或 host sleep 近似该视觉状态。
 - BusyBox 主组合 gate 的 90 秒是 50+ 次 UART interaction、TLS、archive、editor、并发 VFS 与
   job-control 共用的 host liveness bound，不作为 guest 性能阈值；全部 marker/workload 必须完成。
   trap/context/MMU 等性能只由 release ELF 确定性指令/事件计数门禁裁决，禁止用 wall-clock 代替。
@@ -264,18 +262,16 @@ latest transform，并固定每个 evdev `SYN_REPORT` 的纯 cursor motion 只�
 `MOVE_CURSOR`、slot 忙时覆盖 latest position、不触发 VirGL draw/page flip；最终延迟按 LiteUI 契约的
 AArch64+HVF 真实多窗口场景诊断。
 
-LiteUI 60 Hz frame gate 是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量宿主墙钟：
-帧间隔取自 guest 内核单调 vblank 时钟。compositor 在唯一 present 收敛点（`user/compositor/src/lib.rs`
-的 `present_scene`/`presented`）读取 DRM page-flip 事件的 `seconds`/`microseconds` 与 `sequence`；
-该时间戳由内核在 deferred display 完成路径以 `get_time_ns()`（DTB timebase 单调计数）写入，与 Python
-宿主时钟、HVF/TCG 调度抖动完全无关。`user/compositor/src/frame_stats.rs` 在 steady 帧路径零分配地累积
-相邻 vblank 间隔，每 512 帧发一行 `compositor: frame-stats` marker（微秒整数 p50/p95/p99 与
-dropped=sequence 间隙）。`scripts/verify_frame_timing.py` 在固定 UTM VirGL 产品实例中用 QMP
-`input-send-event` 合成 virtio 输入，驱动真实 input→compositor→scanout 链路产生帧流，解析该 marker，并按“宽但真实的绝对上限”设阈值、不在文档
-记录本机测量值。驱动持续 30 秒且必须收集至少两个完整 512 帧窗口；第一个覆盖启动/聚焦尾部并固定丢弃，
-第二个起才进入稳态裁决，禁止把仅有的 warmup 窗口冒充稳态。dropped==0 基于设备 vblank sequence，
-与宿主计时无关，是最强的真实信号并严格 gate。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 依 LiteUI
-契约不承担 60 Hz gate，脚本在该目标自跳过。
+内核显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
+宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
+`get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），与 Python
+宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，其 `/etc/inittab` 只运行
+`drm-flip-probe`（`user/linux-uapi/src/bin/drm-flip-probe.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
+探针走产品同一内核路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
+（功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
+为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
+不对应都使 gate 变红。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 没有 VirGL 显示路径，脚本在该目标自跳过。
+统计与判定逻辑由探针内的 host 单测和 `scripts/tests/test_verify_gpu.py` 约束。
 
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP
@@ -358,6 +354,8 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
   首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用隐藏的
   disposable 一 CPU UTM 产品实例；无窗口 plain QEMU 不再承担图形通过判定，真实 11-CPU 全拓扑由
   headless SMP gate 与同一静态路径覆盖；
+- AArch64/HVF 内核显示/GPU（不依赖 UI，见性能测试段）：VirGL2 能力、host GPU 清屏的像素读回，以及连续
+  page-flip 的 vblank 间隔与丢帧；
 - musl ELF/TLS/thread/signal/process consumer；process phase 在 sibling pthread 保持 runnable
   时执行普通 fork，并继续覆盖 wait、posix_spawn file actions 与并发 child waiter；
 - 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
@@ -371,29 +369,12 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice；
   curl timeout 后连续 64 次 fork 分别改写 parent/child shell state，再成功跨过下一次
   fork/exec，专门约束四 CPU migration 下的 COW remote TLB completion。
-- AArch64/HVF production Music Player 的 13 个固定 codec/container 文件：gate 用 `debugfs`
-  注入相互隔离的 rootfs 副本，经真实 Command Center 启动 Music 并点击文件行，只经 `lite:fs.open()` 返回的 `File`、
-  `URL.createObjectURL()` 与公开 `<audio>` 播放；串口逐文件要求 `source-opened`、
-  `loadedmetadata` 和 `playing`。同一 production element UA controls 覆盖 pause、seek、volume 与
-  mute，production custom control 覆盖 loop，并以 public `loop` property 的 production worker
-  marker 和真实 EOF `seeking`/`seeked`/`playing` generation 共同裁决；desktop System Center 另行覆盖 system master
-  mute/unmute 和 10% volume step，并要求 audio-service 权威状态 marker、静音 WAV 区间及符合 cubic
-  curve 的相对增益。私有镜像最终恢复为 70%/unmuted，不污染任何 baseline。UTM 管理的 QEMU WAV backend 必须
-  给出 48 kHz stereo S16、非静音、左右声道 identity 正确且含 440/660 Hz 的实际设备输出。开机至首次 play 禁止 device START 和 WAV
-  payload；最终每一组 service metrics 都要求 `xrun=0`、`steady_allocations=0`、
-  `idle_periodic_wakes=0`、`mix_p99_us<=2670`，每个 decoder prefill marker 也必须声明 steady
-  allocation 为零。同一 run 在逐格式矩阵结束后把首进程经真实文件行切到额外的 48 kHz stereo
-  高电平 PCM fixture，再经 Command Center 公开启动 7 个 production Music Player 进程；该 fixture 不计入
-  13 格式矩阵，只以 phase-independent 正电平让 8 个进程确定越过 limiter threshold。要求 8 个
-  stream identity 在同一窗口都产生 progress 后再裁决 metrics，并要求 limiter 实际 activation
-  与非零 reduction；该窗口临时使用 100% master，裁决后仍经 System Center 恢复 70%/unmuted。
-  单进程 8-stream quota 由
-  audio-proto/audio-service host test 裁决，runtime 不冒充 production UI 没有的多元素页面。
-  此门禁没有隐藏测试 API、私有播放入口或模拟 device；RISC-V secondary 与
-  AArch64/TCG 诊断路径不运行、也不冒充这项真实 AArch64/HVF consumer 覆盖。
+- 音频没有端到端 runtime gate：原 AArch64/HVF Music Player gate 经 UI 点击驱动，已随 UI 交互类 gate 移除（见 ADR）。
+  当前裁决只有 host/unit（audio-proto、audio-service、kernel-unit 的 ALSA 测试）与 boot/compile/static；
+  kernel ALSA PCM 与 VirtIO-Sound 的真实设备输出路径暂无 runtime 覆盖。
 
 `verify-runtime` 与 `verify` 共用 `verify-runtime-gates`；它是 runtime 编排的唯一 owner，并串行运行各顶层门禁。
-非图形门禁只走 headless QEMU；graphics boot、frame 与 audio 只走 disposable UTM VirGL，禁止同一能力
+非图形门禁只走 headless QEMU；graphics boot 与 gpu 只走 disposable UTM VirGL，禁止同一能力
 再由 plain QEMU 复制一套设备拓扑或通过判定。
 每项仍使用独立镜像、success stamp 和 host port domain。APK 内部同样保持单一 QEMU owner：curl/Git 的
 TLS/HTTP 竖切共用一台 4-CPU guest，SQLite 独占持久化/断电恢复镜像。guest 内被测的 SQLite
@@ -409,10 +390,9 @@ assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
 LiteUI 的 host gate 覆盖 manifest/CSS/bundle validation、display codec、layout/paint/scroll、
-terminal model、标准 Retina viewport/resize event 与 session/buffer/input 状态转换。AArch64 boot gate 只证明空桌面首帧及“不自动启动
-Terminal”；60 Hz gate 通过真实桌面双击显式启动 Terminal 与 File Manager，再驱动 resize 输入并裁决
-guest vblank marker。当前没有“Terminal 执行命令、关闭窗口、资源回收”的 GUI runtime gate，不得把
-host 单元测试或 resize workload 虚报为该覆盖。RISC-V secondary 只承担 compile、static/artifact、
+terminal model、标准 Retina viewport/resize event 与 session/buffer/input 状态转换。AArch64 boot gate 证明桌面首帧，以及固定启动的 Files 与 Terminal 应用完成连接和首帧。当前没有任何驱动 UI 交互的
+runtime gate（窗口 resize、scroll、拖动，Terminal 执行命令、关闭窗口、资源回收，音频播放控件）；这类 gate 在 UI
+重构前移除（见 ADR），不得把 host 单元测试虚报为该覆盖。RISC-V secondary 只承担 compile、static/artifact、
 CPU topology boot 与 Rust std smoke。自动门禁不生成 screenshot、preview 或视觉 Golden。
 
 HTTPS origin 的 raw accept 与 TLS handshake 分属 server/connection worker owner；启动时持有

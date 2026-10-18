@@ -235,35 +235,6 @@ class QemuRoutingTests(unittest.TestCase):
         self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"echo \xff\n"))
         self.assertFalse(qemu_gate._is_echo_paced_shell_command(b"q"))
 
-    def test_qmp_quit_requests_graceful_shutdown(self) -> None:
-        client = object.__new__(qemu_gate.QmpClient)
-        client._execute = Mock()
-
-        client.quit()
-
-        client._execute.assert_called_once_with("quit")
-
-    def test_qmp_stop_and_unrealize_orders_backend_cleanup(self) -> None:
-        client = object.__new__(qemu_gate.QmpClient)
-        client._execute = Mock()
-
-        client.stop_and_unrealize("audio-device")
-
-        self.assertEqual(
-            client._execute.call_args_list,
-            [
-                unittest.mock.call("stop"),
-                unittest.mock.call(
-                    "qom-set",
-                    {
-                        "path": "/machine/peripheral/audio-device",
-                        "property": "realized",
-                        "value": False,
-                    },
-                ),
-            ],
-        )
-
     def test_fatal_line_drain_collects_the_rest_of_the_current_line(self) -> None:
         read_fd, write_fd = os.pipe()
         try:

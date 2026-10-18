@@ -107,8 +107,11 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 changed = module.build_openssl(musl, 1)
                 self.assertNotEqual(initial.fingerprint, changed.fingerprint)
                 manifest = json.loads((changed.binary.parent / CACHE_MANIFEST).read_text())
-                self.assertEqual(manifest["recipe"]["strip"]["path"], str(stripper))
-                self.assertEqual(run_mock.call_args.args[0][0], str(stripper))
+                # 身份与实际执行共用同一路径：只解析目录别名（macOS /var -> /private/var），
+                # 文件名必须保持被执行的符号链接。
+                executed = str(stripper.parent.resolve() / stripper.name)
+                self.assertEqual(manifest["recipe"]["strip"]["path"], executed)
+                self.assertEqual(run_mock.call_args.args[0][0], executed)
 
     def test_busybox_strip_identity_matches_executed_tool(self) -> None:
         module = reload_busybox("aarch64", "tcg")
@@ -155,8 +158,10 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 self.assertTrue(
                     module.manifest_matches(cache, changed, ("busybox", "busybox_unstripped"))
                 )
-                self.assertEqual(changed["strip"]["path"], str(stripper))
-                self.assertIn(f"STRIP={stripper}", run_mock.call_args.args[0])
+                # 身份与实际执行共用同一路径：只解析目录别名（macOS /var -> /private/var）。
+                executed = str(stripper.parent.resolve() / stripper.name)
+                self.assertEqual(changed["strip"]["path"], executed)
+                self.assertIn(f"STRIP={executed}", run_mock.call_args.args[0])
             self.assertNotEqual(module.fingerprint(initial), module.fingerprint(changed))
 
     def test_aarch64_build_and_runtime_identity(self) -> None:

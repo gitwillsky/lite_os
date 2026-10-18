@@ -118,8 +118,8 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 
 ### 待处理
 
-- `make verify` 中除 UI 交互门禁外均已通过（含 RISC-V 次级门禁）。`verify_audio` 依赖固定屏幕坐标点击
-  Command Center/System Center，Dock 与布局调整后不稳定；`verify_frame_timing` 尚未执行。重心回到 UI 前先暂缓。
+- UI 交互类 runtime 门禁（audio、frame-timing）已移除，UI 重构后按新的交互设计重建；内核显示/GPU 由不依赖 UI 的
+  `verify_gpu` 裁决。音频目前没有端到端 runtime 覆盖，见 [ADR](docs/decisions/ui-interaction-gates-deferred.md)。
 - 当前重心不在 UI：桌面全局快捷键表与命令中心启动面板的 bundle 测试已移除，后续回到 UI 时需按当时的交互设计重建。
 - architecture-check 仍有 1000 行 review 提示（非失败）：`compositor/src/gpu.rs`、`gpu/paint.rs`、
   `display-proto/src/paint.rs`、`lite-runtime/src/renderer/gpu_paint.rs`，继续扩展前应先审视其 owner/interface 拆分。

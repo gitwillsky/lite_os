@@ -29,6 +29,22 @@ class WorkflowTests(unittest.TestCase):
                 for call in run.call_args_list:
                     self.assertEqual(call.kwargs["environment"]["PROFILE"], "release")
 
+    def test_unit_scope_runs_the_gate_script_tests(self) -> None:
+        fixture = Path("fixture")
+        with (
+            patch.object(workflow, "run", return_value="assets") as run,
+            patch.object(workflow, "kernel_unit_ext4_fixture", return_value=fixture),
+            patch.object(workflow, "kernel_unit_dtb_fixtures", return_value={}),
+            patch.object(workflow, "find_e2fsck", return_value=fixture),
+            patch.object(workflow, "find_debugfs", return_value=fixture),
+            patch.object(workflow, "find_tune2fs", return_value=fixture),
+        ):
+            workflow.verify_unit({"ARCH": "aarch64", "ACCEL": "hvf"})
+
+        command = run.call_args_list[-1].args[0]
+        self.assertEqual(command[1:], ["-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"])
+        self.assertEqual(run.call_args_list[-1].kwargs["environment"]["PYTHONPATH"], str(SCRIPTS))
+
     def test_runtime_gates_are_one_serial_ordered_scope(self) -> None:
         with patch.object(workflow, "run") as run:
             workflow.verify_runtime_gates({"ARCH": "aarch64", "ACCEL": "hvf"})
@@ -43,15 +59,9 @@ class WorkflowTests(unittest.TestCase):
                 "verify_rust_std.py",
                 "verify_busybox.py",
                 "verify_apk_apps.py",
-                "verify_audio.py",
-                "verify_frame_timing.py",
+                "verify_gpu.py",
             ],
         )
-
-    def test_audio_scope_skips_without_launching_a_qemu_gate(self) -> None:
-        with patch.object(workflow, "run") as run:
-            workflow.verify_runtime_audio({"ARCH": "riscv64", "ACCEL": "tcg"})
-        run.assert_not_called()
 
     @patch("workflow.subprocess.Popen")
     @patch("workflow.shutil.which", return_value="/opt/qemu-system-aarch64")

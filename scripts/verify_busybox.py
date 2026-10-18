@@ -1369,6 +1369,17 @@ def build_session_launch(musl: MuslCachePaths) -> Path:
     )
 
 
+def build_drm_flip_probe(musl: MuslCachePaths) -> Path:
+    """构建内核显示/GPU 门禁使用的 DRM page-flip 探针；它不进入产品 rootfs。"""
+    return build_rust_user_program(
+        musl,
+        "linux-uapi",
+        "drm-flip-probe",
+        "drm-flip-probe",
+        1,
+    )
+
+
 def build_audio_service(musl: MuslCachePaths) -> Path:
     """构建唯一 physical PCM 与 system mixer owner。"""
     return build_rust_user_program(

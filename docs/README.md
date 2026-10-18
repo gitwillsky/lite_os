@@ -66,6 +66,7 @@
 - [系统音量由 mixer 独占并只向 desktop 开放控制](decisions/system-audio-controls.md)
 - [playback stream 使用 per-app 与 session 固定配额](decisions/audio-resource-limits.md)
 - [声音能力以可分析输出和真实全链路 gate 完成](decisions/audio-verification-gates.md)
+- [UI 交互类 runtime gate 在 UI 重构前移除](decisions/ui-interaction-gates-deferred.md)
 - [音频使用独立 kernel 与 userspace owner 链](decisions/audio-domain-owners.md)
 - [每个 LiteUI 进程复用一条 audio control connection](decisions/audio-client-protocol.md)
 - [首期交付只使用公开能力的 Music Player](decisions/music-player-acceptance-app.md)

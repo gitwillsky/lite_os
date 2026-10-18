@@ -59,7 +59,7 @@ class ApkRoutingTests(unittest.TestCase):
             apps_cache.fingerprint(
                 {"packages": dict(apps_cache.fixed_application_packages())}
             ),
-            "54f514de0c84095fef333f6fb77eb5701000ec0156f50651ca3b7690544dc6dd",
+            "b57f1187039ac27b1c86b8f1340e4b15055e8ffc2151ad34730a4c49fa0e1a10",
         )
 
     def test_aarch64_application_digests_are_complete(self) -> None:
@@ -73,7 +73,7 @@ class ApkRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             apps_cache.fingerprint({"packages": dict(packages)}),
-            "208386750f628d8994d1408e2ad08d916af490cead4136ba40d74969db89ddbb",
+            "537afa6785ab250e1a0503750345909feb043cf44a5bec19b17e2d31c832d679",
         )
 
     def test_only_fixed_data_packages_accept_noarch_metadata(self) -> None:

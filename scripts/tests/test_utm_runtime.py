@@ -78,13 +78,11 @@ class UtmRuntimeTests(unittest.TestCase):
             self.assertIn(str(artifacts / "rootfs.img"), arguments)
             self.assertIn(str(artifacts / "kernel"), arguments)
 
-    def test_gate_configuration_uses_tcp_serial_qmp_and_wav_capture(self) -> None:
+    def test_gate_configuration_uses_tcp_serial(self) -> None:
         config = utm_runtime._configuration(
             memory_mib=2048,
             cpu_count=1,
             serial_tcp_port=4567,
-            qmp_socket=Path("/tmp/liteos-qmp.sock"),
-            audio_output=Path("/tmp/liteos-audio.wav"),
         )
 
         self.assertEqual(
@@ -99,14 +97,9 @@ class UtmRuntimeTests(unittest.TestCase):
             ],
         )
         arguments = config["QEMU"]["AdditionalArguments"]
-        self.assertIn('"unix:/tmp/liteos-qmp.sock,server=on,wait=off"', arguments)
+        self.assertNotIn("-qmp", arguments)
         self.assertIn(
-            '"wav,id=gate-audio,path=/tmp/liteos-audio.wav,'
-            'out.frequency=48000,out.channels=2,out.format=s16"',
-            arguments,
-        )
-        self.assertIn(
-            "virtio-sound-device,id=audio-device,audiodev=gate-audio,streams=1",
+            "virtio-sound-device,id=audio-device,audiodev=audio0,streams=1",
             arguments,
         )
 

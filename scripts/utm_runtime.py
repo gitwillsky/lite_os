@@ -87,8 +87,6 @@ def _configuration(
     kernel: Path | None = None,
     rootfs: Path | None = None,
     serial_tcp_port: int | None = None,
-    qmp_socket: Path | None = None,
-    audio_output: Path | None = None,
 ) -> dict[str, object]:
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
@@ -128,22 +126,6 @@ def _configuration(
         "-device",
         "virtio-tablet-device",
     ]
-    if qmp_socket is not None:
-        additional.extend(
-            (
-                "-qmp",
-                f'"unix:{_qemu_path(qmp_socket)},server=on,wait=off"',
-            )
-        )
-    if audio_output is not None:
-        audio_id = "gate-audio"
-        additional.extend(
-            (
-                "-audiodev",
-                f'"wav,id={audio_id},path={_qemu_path(audio_output)},'
-                'out.frequency=48000,out.channels=2,out.format=s16"',
-            )
-        )
     additional.extend(
         (
             "-device",
@@ -243,8 +225,6 @@ def prepare(
     memory: str,
     cpu_count: int,
     serial_tcp_port: int | None = None,
-    qmp_socket: Path | None = None,
-    audio_output: Path | None = None,
 ) -> Path:
     """Publish current artifacts and an exact UTM v4 configuration."""
     _installed_version()
@@ -262,8 +242,6 @@ def prepare(
         kernel=published_kernel,
         rootfs=published_rootfs,
         serial_tcp_port=serial_tcp_port,
-        qmp_socket=qmp_socket,
-        audio_output=audio_output,
     )
     with (VM_PACKAGE / "config.plist").open("wb") as stream:
         plistlib.dump(config, stream, fmt=plistlib.FMT_XML, sort_keys=False)
@@ -409,7 +387,7 @@ def _open_serial_listener() -> tuple[socket.socket, int]:
 
 
 class GateRuntime:
-    """One disposable UTM VirGL runtime with observable serial and optional QMP."""
+    """One disposable UTM VirGL runtime with observable serial."""
 
     def __init__(
         self,
@@ -419,8 +397,6 @@ class GateRuntime:
         rootfs: Path,
         memory: str,
         cpu_count: int,
-        qmp_socket: Path | None,
-        audio_output: Path | None,
         restore: tuple[bytes | None, Path | None, Path | None],
     ) -> None:
         self._serial_socket = serial_socket
@@ -429,8 +405,6 @@ class GateRuntime:
         self.rootfs = rootfs
         self.memory = memory
         self.cpu_count = cpu_count
-        self.qmp_socket = qmp_socket
-        self.audio_output = audio_output
         self._restore = restore
         self._closed = False
 
@@ -465,8 +439,6 @@ class GateRuntime:
             cpu_count=self.cpu_count,
         )
         _ensure_registered()
-        if self.qmp_socket is not None:
-            self.qmp_socket.unlink(missing_ok=True)
 
 
 def _backup_for_gate() -> tuple[bytes | None, Path | None, Path | None]:
@@ -524,21 +496,12 @@ def start_gate(
     rootfs: Path,
     memory: str = "2G",
     cpu_count: int = 1,
-    qmp: bool = False,
-    capture_audio: bool = False,
 ) -> GateRuntime:
     """Start the sole product VirGL path as a hidden disposable UTM runtime."""
     _installed_version()
     kernel = kernel.resolve(strict=True)
     rootfs = rootfs.resolve(strict=True)
     serial_listener, serial_port = _open_serial_listener()
-    qmp_socket = (
-        UTM_ARTIFACTS / f"gate-qmp-{os.getpid()}.sock" if qmp else None
-    )
-    audio_output = UTM_ARTIFACTS / "gate-audio.wav" if capture_audio else None
-    for path in (qmp_socket, audio_output):
-        if path is not None:
-            path.unlink(missing_ok=True)
     restore = _backup_for_gate()
     _remove_registered()
     try:
@@ -548,15 +511,6 @@ def start_gate(
             memory=memory,
             cpu_count=cpu_count,
             serial_tcp_port=serial_port,
-            # QEMUHelper is sandboxed to UTM's app group and starts with that
-            # directory as cwd. A short relative path satisfies both the sandbox
-            # and macOS's 104-byte AF_UNIX limit; an absolute app-group path does not.
-            qmp_socket=(
-                qmp_socket.relative_to(UTM_ARTIFACTS.parent)
-                if qmp_socket
-                else None
-            ),
-            audio_output=audio_output,
         )
         _ensure_registered()
         if _status() != "stopped":
@@ -574,8 +528,6 @@ def start_gate(
             rootfs=rootfs,
             memory=memory,
             cpu_count=cpu_count,
-            qmp_socket=qmp_socket,
-            audio_output=audio_output,
             restore=restore,
         )
     except BaseException:

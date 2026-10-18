@@ -390,6 +390,12 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
     ).strip()
     user_environment = _env_with(environment, LITE_UI_TEST_ASSETS=assets)
     run(["cargo", "test", "--manifest-path", "user/Cargo.toml", "--workspace"], environment=user_environment)
+    # 门禁脚本自身的判定逻辑与固定值（APK digest、gate 阈值、cache 身份）由这些测试守住；
+    # 缺少这一步它们会在无人运行时悄悄过期。
+    run(
+        [PYTHON, "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"],
+        environment=_env_with(environment, PYTHONPATH=str(ROOT / "scripts")),
+    )
 
 
 def verify_architecture_benchmark(environment: Mapping[str, str] | None = None) -> None:
@@ -423,42 +429,20 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
         ["verify_rust_std.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_busybox.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_apk_apps.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_gpu.py", "--image", target_paths(environment)["rootfs"]],
     ]
     for script, *arguments in commands:
         run(python_script(script, *arguments), environment=environment)
-    target = target_from_environment(environment)
-    acceleration = acceleration_from_environment(environment)
-    if target.arch == "aarch64" and acceleration == "hvf":
-        run(python_script("verify_audio.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
-    else:
-        print(f"audio runtime gate skipped: {target.arch}/{acceleration} retains compile/static/boot coverage only")
-    run(
-        python_script("verify_frame_timing.py", "--image", target_paths(environment)["rootfs"]),
-        environment=environment,
-    )
 
 
-def verify_runtime_audio(environment: Mapping[str, str] | None = None) -> None:
-    """按架构/加速器契约执行 audio gate 或明确报告跳过。"""
-    target = target_from_environment(environment)
-    acceleration = acceleration_from_environment(environment)
-    if target.arch == "aarch64" and acceleration == "hvf":
-        run(python_script("verify_audio.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
-    else:
-        print(f"audio runtime gate skipped: {target.arch}/{acceleration} retains compile/static/boot coverage only")
+def verify_runtime_gpu(environment: Mapping[str, str] | None = None) -> None:
+    """执行不依赖 UI 的内核显示/GPU gate，不隐式重建 rootfs。"""
+    run(python_script("verify_gpu.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
 def verify_runtime_boot(environment: Mapping[str, str] | None = None) -> None:
     """执行 boot runtime gate，不隐式重建 rootfs。"""
     run(python_script("verify_boot.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
-
-
-def verify_runtime_frame_timing(environment: Mapping[str, str] | None = None) -> None:
-    """执行真实 guest vblank frame-timing gate。"""
-    run(
-        python_script("verify_frame_timing.py", "--image", target_paths(environment)["rootfs"]),
-        environment=environment,
-    )
 
 
 def verify_runtime_musl(environment: Mapping[str, str] | None = None) -> None:
@@ -677,8 +661,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-gates": verify_runtime_gates,
         "verify-runtime-boot": verify_runtime_boot,
         "verify-runtime-shutdown": verify_runtime_shutdown,
-        "verify-runtime-audio": verify_runtime_audio,
-        "verify-runtime-frame-timing": verify_runtime_frame_timing,
+        "verify-runtime-gpu": verify_runtime_gpu,
         "verify-runtime-musl": verify_runtime_musl,
         "verify-runtime-rust-std": verify_runtime_rust_std,
         "verify-runtime-busybox": verify_runtime_busybox,

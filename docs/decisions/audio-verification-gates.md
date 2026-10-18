@@ -1,6 +1,6 @@
 # ADR: 声音能力以可分析输出和真实全链路 gate 完成
 
-- 状态：已接受
+- 状态：已接受；端到端 gate 条目暂缓，见 [UI 交互类 runtime gate 在 UI 重构前移除](ui-interaction-gates-deferred.md)
 - 日期：2026-07-26
 
 ## 背景

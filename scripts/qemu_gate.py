@@ -8,10 +8,8 @@ import re
 import select
 import shutil
 import signal
-import socket
 import subprocess
 import tempfile
-import threading
 
 # guest 只执行一个自检脚本的 inittab 仍须先运行 rootfs 的 rcS：内核只挂载 / 与 /dev，
 # /proc、/sys、/dev/pts 由 rcS 经 mount(2) 挂载。
@@ -22,10 +20,9 @@ def guest_inittab(command: str) -> str:
     """返回先挂载伪文件系统、再一次性运行 `command` 的 BusyBox inittab。"""
     return f"{GUEST_MOUNT_SYSINIT}::sysinit:{command}\n"
 import time
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Callable, Mapping
+from typing import BinaryIO, Mapping
 
 from build_target import (
     Acceleration,
@@ -101,7 +98,6 @@ def qemu_runtime(
 def _qemu_command(
     image: Path,
     smp: int,
-    qmp_socket: Path | None = None,
     memory: str | None = None,
     kernel_arguments: str | None = None,
     scratch_disk: Path | None = None,
@@ -165,11 +161,6 @@ def _qemu_command(
             "virtserialport,bus=virtio-serial0.0,chardev=vdagent,name=com.redhat.spice.0",
         ]
     )
-    if qmp_socket is not None:
-        # QMP channel for the frame-timing gate's synthetic input driver. Idle
-        # desktops emit no frames, so the gate drives real virtio input through
-        # this socket to produce a measurable present stream.
-        command.extend(["-qmp", f"unix:{qmp_socket},server=on,wait=off"])
     command.extend(
         [
             "-netdev",
@@ -648,231 +639,3 @@ def power_cut(
     text = ANSI.sub("", output.decode(errors="replace"))
     tail = "\n".join(text.splitlines()[-40:])
     raise RuntimeError(f"power-cut gate missed {active_marker!r}\n--- output tail ---\n{tail}")
-
-
-# Absolute virtio-tablet axes are normalized to [0, 0x7FFF] across the display,
-# per QEMU's `qemu_input_scale_axis`. The gate reasons in fractions of the
-# 3008x1692 GUI and converts here.
-QMP_ABS_MAX = 0x7FFF
-FRAME_STATS_RE = re.compile(
-    r"compositor: frame-stats window=(\d+) frames=(\d+) dropped=(\d+) "
-    r"p50_us=(\d+) p95_us=(\d+) p99_us=(\d+)"
-)
-
-
-class QmpClient:
-    """Minimal QMP client for synthetic input and deterministic shutdown."""
-
-    def __init__(self, path: Path, connect_timeout_s: float = 10.0) -> None:
-        deadline = time.monotonic() + connect_timeout_s
-        last_error: OSError | None = None
-        # QEMU creates the server socket asynchronously after launch; retry the
-        # connect until it appears or the deadline passes.
-        while time.monotonic() < deadline:
-            try:
-                self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self._sock.connect(str(path))
-                break
-            except OSError as error:
-                last_error = error
-                time.sleep(0.1)
-        else:
-            raise RuntimeError(f"QMP socket never became connectable: {last_error}")
-        self._sock.settimeout(5.0)
-        self._buffer = b""
-        self._read_message()  # greeting
-        self._execute("qmp_capabilities")
-
-    def _read_message(self) -> dict:
-        while b"\n" not in self._buffer:
-            chunk = self._sock.recv(4096)
-            if not chunk:
-                raise RuntimeError("QMP socket closed mid-message")
-            self._buffer += chunk
-        line, self._buffer = self._buffer.split(b"\n", 1)
-        return json.loads(line)
-
-    def _execute(self, command: str, arguments: dict | None = None) -> None:
-        request: dict = {"execute": command}
-        if arguments is not None:
-            request["arguments"] = arguments
-        self._sock.sendall((json.dumps(request) + "\r\n").encode())
-        # Drain until the matching return/error, skipping asynchronous events.
-        while True:
-            message = self._read_message()
-            if "error" in message:
-                raise RuntimeError(f"QMP {command} failed: {message['error']}")
-            if "return" in message:
-                return
-
-    def _send_events(self, events: list[dict]) -> None:
-        self._execute("input-send-event", {"events": events})
-
-    def move_abs(self, x_fraction: float, y_fraction: float) -> None:
-        """Moves the absolute pointer to a fraction of the display extent."""
-
-        def axis(fraction: float) -> int:
-            return round(max(0.0, min(1.0, fraction)) * QMP_ABS_MAX)
-
-        self._send_events(
-            [
-                {"type": "abs", "data": {"axis": "x", "value": axis(x_fraction)}},
-                {"type": "abs", "data": {"axis": "y", "value": axis(y_fraction)}},
-            ]
-        )
-
-    def button(self, name: str, down: bool) -> None:
-        self._send_events([{"type": "btn", "data": {"button": name, "down": down}}])
-
-    def wheel(self, name: str) -> None:
-        """Sends one complete QEMU wheel-button detent."""
-        if name not in ("wheel-up", "wheel-down"):
-            raise ValueError(f"unsupported vertical wheel button: {name}")
-        self.button(name, True)
-        self.button(name, False)
-
-    def key(self, qcode: str, down: bool) -> None:
-        """Presses or releases one key by QMP qcode (e.g. "esc", "ret")."""
-        self._send_events(
-            [{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}]
-        )
-
-    def quit(self) -> None:
-        """Requests graceful QEMU shutdown.
-
-        Returns:
-            After QMP accepts the request. The caller still owns waiting for
-            the QEMU process to exit.
-
-        Raises:
-            RuntimeError: QMP rejects the request or closes before replying.
-        """
-        self._execute("quit")
-
-    def stop_and_unrealize(self, device_id: str) -> None:
-        """Stops the VM and completes one device's backend cleanup.
-
-        Args:
-            device_id: QOM identity assigned by the matching ``-device id=``.
-
-        Returns:
-            After QMP accepts ``stop`` and QOM finishes unrealizing the device.
-            Stopping first prevents the guest from racing device teardown; a
-            successful unrealize means the device backend cleanup has completed.
-
-        Raises:
-            RuntimeError: QMP rejects either lifecycle transition or closes
-            before replying.
-        """
-        self._execute("stop")
-        self._execute(
-            "qom-set",
-            {
-                "path": f"/machine/peripheral/{device_id}",
-                "property": "realized",
-                "value": False,
-            },
-        )
-
-    def close(self) -> None:
-        try:
-            self._sock.close()
-        except OSError:
-            pass
-
-
-def start_frame_workload(
-    qmp: QmpClient,
-    duration_s: float,
-    stop: "threading.Event",
-    phase_finished: Callable[[str], None] | None = None,
-) -> None:
-    """Drives resize, scroll, and move through their production input paths.
-
-    Resize exercises the React-owned fixed preview, wheel detents exercise a
-    known-overflowing System Center scrollport, and move exercises the
-    compositor's temporary-transform path. Move runs last because its
-    completion is a desktop/compositor transaction; later pointer phases must
-    not depend on that asynchronous lifecycle having retired already.
-    """
-    phase_s = max(0.0, duration_s / 3.0)
-
-    # 1. React-owned bottom-right resize preview. The southeast grip is only
-    # 10x10 logical pixels; stay two pixels inside both edges so absolute-tablet
-    # rounding cannot land on the half-open outer boundary.
-    # `.window` uses the CSS content-box default, so its 1px borders extend the
-    # declared 460x250 frame to the outer edge at (1420, 666).
-    start_x, start_y = 1417.0, 663.0
-    qmp.move_abs(start_x / 1504, start_y / 846)
-    qmp.button("left", True)
-    deadline = time.monotonic() + phase_s
-    step = 0
-    try:
-        while time.monotonic() < deadline and not stop.is_set():
-            phase = (step % 120) / 120.0
-            triangle = phase if phase <= 0.5 else 1.0 - phase
-            qmp.move_abs(
-                (start_x + triangle * 120.0) / 1504,
-                (start_y + triangle * 160.0) / 846,
-            )
-            step += 1
-            time.sleep(0.016)
-    finally:
-        qmp.move_abs(start_x / 1504, start_y / 846)
-        time.sleep(0.1)
-        qmp.button("left", False)
-    if phase_finished is not None:
-        phase_finished("resize")
-
-    time.sleep(0.75)
-
-    # 2. Open System Center, whose 748px viewport deterministically overflows,
-    # then drive its native CSS scroll path. Files depends on rootfs contents
-    # and can legitimately have no scroll range in a freshly built image.
-    qmp.move_abs(1430.0 / 1504, 30.0 / 846)
-    qmp.button("left", True)
-    qmp.button("left", False)
-    time.sleep(0.75)
-    qmp.move_abs(1300.0 / 1504, 400.0 / 846)
-    deadline = time.monotonic() + phase_s
-    step = 0
-    while time.monotonic() < deadline and not stop.is_set():
-        qmp.wheel("wheel-down" if step % 4 < 2 else "wheel-up")
-        step += 1
-        time.sleep(0.016)
-    # Close through the same button that opened the panel. Mixing Escape and a
-    # later scrim click made the final state depend on asynchronous desktop
-    # commits; a late scrim could still own the following titlebar press and
-    # invalidate the compositor's exact pointer-down authorization.
-    qmp.move_abs(1430.0 / 1504, 30.0 / 846)
-    qmp.button("left", True)
-    qmp.button("left", False)
-    time.sleep(1.5)
-    if phase_finished is not None:
-        phase_finished("scroll")
-
-    # 3. Compositor-owned temporary window transform. Files has a fixed frame
-    # at (76, 124, 834, 540), untouched by the preceding Terminal resize.
-    start_x, start_y = 500.0, 145.0
-    qmp.move_abs(start_x / 1504, start_y / 846)
-    qmp.button("left", True)
-    # MOVE_BEGIN crosses compositor -> desktop -> compositor and renders one
-    # full-output underlay. Moving before that transaction owns the capture can
-    # race the button-up and turn the workload into rejected, unmeasured input.
-    time.sleep(0.75)
-    deadline = time.monotonic() + phase_s
-    step = 0
-    try:
-        while time.monotonic() < deadline and not stop.is_set():
-            phase = (step % 120) / 120.0
-            triangle = phase if phase <= 0.5 else 1.0 - phase
-            x = start_x + triangle * 500.0
-            qmp.move_abs(x / 1504, start_y / 846)
-            step += 1
-            # Input may run ahead of the one-flip-in-flight owner; compositor
-            # coalescing retains the newest transform and vblank paces presents.
-            time.sleep(0.016)
-    finally:
-        qmp.button("left", False)
-    if phase_finished is not None:
-        phase_finished("move")

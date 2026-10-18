@@ -312,8 +312,8 @@
 - first-class gate 是 AArch64+HVF、3008x1692、2 GiB、60 Hz，场景为 desktop、terminal 与第二窗口。
   window drag、菜单、scroll、terminal output、text input 与 background timer 的 frame p95 不超过
   16.67 ms、p99 不超过 33.3 ms，input-to-visible p95 不超过 33.3 ms。
-  该 frame 预算由 `scripts/verify_frame_timing.py` 经 compositor 的 guest-vblank `compositor: frame-stats`
-  marker 强制（见 build-and-verify 性能测试段），不再仅由契约文本维护。
+  该 frame 预算目前没有端到端门禁：驱动 UI 交互的 frame-timing gate 在 UI 重构前移除（见 ADR），契约文本是
+  唯一来源；内核 page-flip 节奏由 `scripts/verify_gpu.py` 裁决（见 build-and-verify 性能测试段）。
 - idle 不允许 render/commit/periodic wake；steady renderer/compositor frame 不允许 allocation。
   compositor+desktop+两个 app 总 RSS 不超过 256 MiB。RISC-V TCG 只承担正确性，不承担 60 Hz gate。
 - scroll wheel hot path 只更新稳定 node id 对应的 offset；scroll region、scrollbar 与 active-id collection
