@@ -45,6 +45,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(command[1:], ["-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"])
         self.assertEqual(run.call_args_list[-1].kwargs["environment"]["PYTHONPATH"], str(SCRIPTS))
 
+    def test_scheduler_latency_diagnosis_is_not_part_of_any_gate(self) -> None:
+        with patch.object(workflow, "run") as run:
+            workflow.verify_runtime_gates({"ARCH": "aarch64", "ACCEL": "hvf"})
+        scripts = [Path(call.args[0][1]).name for call in run.call_args_list]
+        self.assertNotIn("diagnose_scheduler_latency.py", scripts)
+
+        with patch.object(workflow, "run") as run:
+            workflow.diagnose_scheduler_latency({"ARCH": "aarch64", "ACCEL": "hvf"})
+        self.assertEqual(Path(run.call_args.args[0][1]).name, "diagnose_scheduler_latency.py")
+
     def test_runtime_gates_are_one_serial_ordered_scope(self) -> None:
         with patch.object(workflow, "run") as run:
             workflow.verify_runtime_gates({"ARCH": "aarch64", "ACCEL": "hvf"})

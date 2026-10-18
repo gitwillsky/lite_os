@@ -132,6 +132,18 @@ SMP topology 冷启动 private rootfs，执行 BusyBox halt/poweroff/reboot，�
 marker 和 QEMU 正常退出；不允许 headless 图形会话重试刷屏。reboot 用 `-no-reboot` 把
 guest reset 转成可裁决的 QEMU 退出，不能用 host 强制终止冒充 reset 成功。
 
+`make diagnose-scheduler-latency` 回答“调度器没有空闲 CPU 主动拉取或推送 Ready 任务，这个缺口有多大”。它不隐式
+重建 kernel 或 rootfs，在 HVF 之外的结果不具代表性。它在无窗口 QEMU 里运行一个 guest 程序
+（`scripts/fixtures/diagnostics/scheduler-latency.c`），报告两个指标：
+
+- 空闲 CPU 等到排队任务的延迟：一个任务排队在 CPU0 上，CPU1 刚变空闲，直接测量它多久后才出现在 CPU1。
+- 突发 CPU 密集任务集的总耗时相对**理想处理器共享**的额外百分比。理想值是零迁移延迟、永远工作守恒的公平调度；
+  时间片轮转本身就达不到理论下界，不能与下界直接比较。同一任务集由相同种子在 guest 与宿主两边生成，工具每次运行前
+  先让 guest 打印任务长度并与宿主比较，两边漂移时直接失败。逐次配对计算，所以尾部分位数有意义。
+
+额外耗时包含 fork、唤醒、tick 粒度等全部开销，因此是均衡延迟损失的上限。结果受宿主 QEMU 线程调度影响，应重复运行
+并关注分布而不是单次数值。
+
 局部 scope 仍可直接调用，但它们不是独立编排入口：
 
 | scope | 用途 |
@@ -141,6 +153,7 @@ guest reset 转成可裁决的 QEMU 退出，不能用 host 强制终止冒充 r
 | `verify-unit`、`verify-architecture-benchmark` | 定位 host/static/unit 问题 |
 | `verify-runtime-*`、`verify-runtime-gates` | 定位单个 guest 门禁；由 `verify-runtime` 统一串行调用 |
 | `regen-font`、`regen-ui-font`、`regen-icon-font`、`clean*`、`gdb`、`addr2line` | 维护和调试工具 |
+| `diagnose-scheduler-latency` | 量化多 CPU 调度的均衡延迟；诊断工具，不判定通过与否，也不属于任何门禁 |
 
 ## Agent 开发镜像
 

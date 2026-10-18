@@ -1,3 +1,45 @@
+//! 可睡眠的 task 级互斥锁：FIFO 排队，释放时把所有权直接交给队首等待者。
+//!
+//! # 它解决什么问题
+//!
+//! 自旋锁的临界区内不能睡眠，也不能做可能阻塞的 I/O。但内核里有些状态必须在 I/O 期间一直被独占，例如
+//! 缺页等待磁盘时的地址空间。`TaskMutex` 允许持有者在持锁期间睡眠，竞争者也是睡眠而不是自旋。它只能在
+//! task 上下文里发生竞争（竞争时需要当前任务的等待目标）；中断也会访问的数据要用 `IrqMutex`，见 `sync/mod.rs`。
+//!
+//! # 状态机
+//!
+//! 内部的 `state` 是一把很短的自旋锁，只保护所有权和等待队列；**guard 不持有它**，所以持有 `TaskMutex` 时
+//! 可以睡眠。所有权有三种状态：
+//!
+//! ```text
+//! Available ──取锁──▶ Held ──释放，队列非空──▶ Handoff(ticket) ──被选中的等待者醒来取走──▶ Held
+//!      ▲                 │
+//!      └─释放，队列为空──┘
+//! ```
+//!
+//! # 取锁（`lock_prepared`）
+//!
+//! 1. 快路径 `try_lock`：`Available → Held`，不排队，不分配。
+//! 2. 慢路径：取一个预分配的 waiter，用这把锁自己递增的 ticket 作身份；在 `state` 自旋锁里再确认一次
+//!    （期间持有者可能刚好释放），仍被占用就把 waiter 排到 FIFO 队尾，放开自旋锁，然后睡眠。
+//! 3. 被唤醒后断言所有权已经是 `Handoff(自己的 ticket)`，改成 `Held`，返回 guard。
+//!
+//! # 释放：交接，而不是“放开再抢”
+//!
+//! 释放时在 `state` 锁内弹出队首等待者，把所有权设成 `Handoff(队首的 ticket)`——**不是** `Available`——
+//! 然后在锁外唤醒它。如果设成 `Available` 再唤醒，恰好此刻到达的新调用者就能抢先拿走锁，被唤醒的等待者
+//! 醒来发现锁没了，只能重新排队，先来先得的顺序无法保证。`Handoff` 让 `try_lock` 在被选中的等待者自己
+//! 取走之前一直失败，新来的只能排队。唤醒放在 `state` 自旋锁之外，避免持着自旋锁进入调度器。
+//!
+//! # 预分配 waiter
+//!
+//! 排队需要一个堆分配的 waiter，`lock()` 因此可能在 OOM 时失败。对“提交尾部不能回滚”的事务，调用者先用
+//! `TaskMutexWaitPreparation::prepare()` 预分配，再调用 `lock_prepared`，这一步不会再分配。同一份
+//! preparation 可以依次等待多个锁。这又是“准备（可失败）与提交（不会失败）分离”。
+//!
+//! # 阅读顺序
+//!
+//! `Ownership` → `lock_prepared` → `unlock` → `TaskMutexWaitPreparation`。
 #[path = "task_mutex/signal_acquisition.rs"]
 mod signal_acquisition;
 use alloc::sync::Arc;

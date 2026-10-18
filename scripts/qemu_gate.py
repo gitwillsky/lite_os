@@ -419,7 +419,7 @@ def boot(
     memory: str | None = None,
     kernel_arguments: str | None = None,
     scratch_disk: Path | None = None,
-) -> None:
+) -> str:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
     Args:
@@ -436,7 +436,8 @@ def boot(
         scratch_disk: 作为第二块 virtio 盘（guest 内 `vdb`）附加的裸镜像；None 表示只有 root 盘。
 
     Returns:
-        None；全部 marker 出现时返回。
+        全部 marker 出现时返回去除 ANSI 后的完整串口文本；需要解析 guest 输出的诊断工具使用它，
+        门禁调用者可以忽略。
 
     Raises:
         RuntimeError: QEMU 缺失、异常退出、超时或命中禁止标记。
@@ -546,7 +547,7 @@ def boot(
             if success_seen_at is not None and (
                 time.monotonic() - success_seen_at >= success_settle_seconds
             ):
-                return
+                return ANSI.sub("", output.decode(errors="replace"))
             if process.poll() is not None:
                 break
     finally:

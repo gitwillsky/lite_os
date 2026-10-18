@@ -113,6 +113,9 @@
 - 负载均衡只有抢占时的重新选核：没有跨 CPU 拉取或推送 Ready 任务，空闲 CPU 不会主动从别的 runqueue 取任务。
   Ready 任务只有在所在 CPU 的 current 被抢占或阻塞时才有机会迁走，内核态长时间不返回用户态的 current 会延迟这一点。
   迁移不重新归一化 vruntime，沿用既有的跨核放置语义；公平性只验证了等权重的 CPU 密集任务，nice 混合负载未验证。
+- 一个 CPU 刚变空闲时，排队在别处的任务要等到它所在 CPU 的下一次抢占才会被重新放置，延迟以 tick（10 ms）为量级，
+  尾部可达数个 tick。`make diagnose-scheduler-latency` 量化该延迟及其在突发 CPU 密集负载下相对理想公平调度的
+  额外耗时；是否补“空闲 CPU 请求推送”应以该数据为依据。
 - futex PI、PI requeue 与完整 clone flags 尚未开放；WAKE_OP 使用实际原子更新与双 source transaction。
 - 实时信号已接入实际 FIFO/recipient rlimit token、标准 rt_sigqueueinfo/tgsigqueueinfo；
   handler 与 sigwait 共享唯一 pending owner；普通也用实际 charged record，SIGKILL/低内存

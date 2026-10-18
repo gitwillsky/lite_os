@@ -1,3 +1,54 @@
+//! 用户地址空间的建立、拆分与回收：`mmap`、`munmap`、`mprotect` 的 VMA 层。
+//!
+//! # VMA 表
+//!
+//! 进程的用户地址空间是一组 VMA：连续、权限与后备都相同的页区间。它们存放在以**起始页号**为键的有序表
+//! （`FallibleMap`）里，所以“某个地址落在哪个 VMA”是一次 `floor` 查找，“按地址顺序走一遍”是一次有序遍历。
+//!
+//! # 按需分配
+//!
+//! 私有匿名映射和共享文件映射只在表里登记一个 VMA，不分配物理页，也不碰页表（`MapArea::map` 对
+//! `lazy_private` 与 `shared_file` 直接返回）。页在第一次被访问、触发缺页时才出现（见 `cow.rs` 与
+//! `mmap/fault.rs`）。设备映射与共享匿名映射则在登记时就建立页表。
+//!
+//! # 选址：首次适应
+//!
+//! `find_free_user_range` 从 `MMAP_BASE` 起沿 VMA 有序表走一遍，维护一个候选起点 `start`：遇到一个 VMA，
+//! 如果 `[start, start + n)` 完全放得进它前面的空洞就用；否则把 `start` 移到这个 VMA 的末尾继续。代价与
+//! VMA 个数成正比。调用者给了地址提示时先试提示地址，空闲就用；`fixed_noreplace` 冲突时返回
+//! `AddressInUse`，绝不替换既有映射。
+//!
+//! # 合并与拆分
+//!
+//! - **合并**：新建的匿名映射会和权限相同的相邻匿名 VMA 合并（`merge_anonymous_neighbors`），避免大量小
+//!   映射把 VMA 表撑大。
+//! - **拆分**：`munmap` 与 `mprotect` 的范围常常落在某个 VMA 中间，于是一个 VMA 被切成
+//!   left / middle / right 三段，只有 middle 受影响。
+//!
+//! # 原则：先预留，再修改
+//!
+//! 拆分意味着要新建 VMA 节点，而分配可能失败。`prepare_user_unmap` 与 `protect_user_mapping` 都按同一个
+//! 顺序做事：
+//!
+//! 1. 校验范围，收集受影响的 VMA。
+//! 2. 数出会**真正保留**多少 left/right 段（整段删除不需要新节点），用 `try_reserve_node` 把这些节点和回收
+//!    用的 `Vec` 全部预留好。
+//! 3. 做所有可能失败或要等待的事：共享文件映射的写回、pin 住常驻页、为将发布的页预留页表路径。
+//! 4. 最后才修改：此后只剩不分配的指针操作。
+//!
+//! 因此任何失败路径都保证 VMA 表和页表原封不动，不会留下“拆了一半”的地址空间。这就是
+//! `fallible_tree` 的“准备/提交分离”在大模块里的样子。
+//!
+//! # munmap 为什么不直接释放
+//!
+//! `prepare_user_unmap` 摘下 VMA 后返回 `PreparedAreaRetirement`，由调用者在**释放 MM 锁之后**完成 fence 并
+//! 释放物理页（原因见 `shootdown.rs`：必须先让所有 CPU 忘掉旧翻译）。
+//!
+//! # 阅读顺序
+//!
+//! `find_free_user_range` → `map_anonymous` → `merge_anonymous_neighbors` → `prepare_user_unmap` →
+//! `mmap/protection.rs`（同样的拆分，改的是权限）。
+
 use super::*;
 
 mod advice;

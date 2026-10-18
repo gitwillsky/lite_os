@@ -343,6 +343,48 @@ def rustc_probe_environment() -> dict[str, str]:
     return environment
 
 
+def compile_static_guest_program(
+    compiler: Path,
+    musl: "MuslCachePaths",
+    sources: list[Path],
+    output: Path,
+) -> None:
+    """用与 musl smoke 相同的 freestanding 静态链接配方编译 guest 程序。
+
+    Args:
+        compiler: ``find_compiler`` 返回的 Clang driver。
+        musl: 已构建的 musl sysroot。
+        sources: 按链接顺序给出的 C 源文件。
+        output: 输出 ELF 路径。
+
+    Raises:
+        RuntimeError: 编译或链接失败。
+    """
+    install = musl.install
+    run(
+        [
+            str(compiler),
+            f"--target={TARGET.linux_triple}",
+            f"--ld-path={install / 'toolchain/ld.lld'}",
+            *SMOKE_LINK_ARGUMENTS,
+            f"-I{install / 'usr/include'}",
+            "-O1",
+            "-o",
+            str(output),
+            str(install / "usr/lib" / "crt1.o"),
+            str(install / "usr/lib" / "crti.o"),
+            *(str(source) for source in sources),
+            f"-L{install / 'usr/lib'}",
+            "-Wl,--start-group",
+            str(install / "usr/lib/libc.a"),
+            str(obtain_compiler_runtime(compiler)),
+            "-Wl,--end-group",
+            str(install / "usr/lib" / "crtn.o"),
+        ],
+        ROOT,
+    )
+
+
 def obtain_compiler_runtime(compiler: Path) -> Path:
     """返回目标 compiler runtime archive。
 

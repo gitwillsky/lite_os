@@ -65,6 +65,7 @@ trap ───────▶ syscall      memory        task
 
 核心想法：fork 时只共享并去掉写权限，第一次写才复制；“是否独占”由真实的映射记录决定。
 
+- 读 `memory/mm/mmap.rs` 头部：VMA 如何建立、拆分与回收，以及为什么“先预留、再修改”。
 - 读 `memory/mm/cow.rs` 头部，再读 `memory/mm/resident.rs` 与 `memory/mm/private_fault.rs`。
 
 练习：fork 之后父进程先写一页，再由子进程写同一页，分别走写缺页的哪一种情况？
@@ -85,6 +86,7 @@ trap ───────▶ syscall      memory        task
 
 - 读 `task/scheduler/cfs_scheduler.rs` 头部，然后读 `task/model/scheduling.rs` 里的 `transition_to_ready`。
 - 再读 `task/scheduler/placement_policy.rs`：为什么 N+1 个任务需要周期性轮转，而 N 个任务不需要。
+- 想知道“没有空闲 CPU 主动拉取”的缺口有多大，运行 `make diagnose-scheduler-latency`，它给出可重复的数据。
 
 练习：当前任务的 vruntime 是 250，队首是 200，会抢占吗？队首也是 250 呢？
 答案：前者会，后者不会（`local_ready_preempts` 要求严格小于）。
@@ -103,6 +105,7 @@ trap ───────▶ syscall      memory        task
 核心想法：执行上下文决定了能做什么——硬中断里不分配、不睡眠，任务上下文里才能睡。
 
 - 读 `sync/mod.rs`：`IrqMutex` 与 `TaskMutex` 各自适用于什么。
+- 读 `sync/task_mutex.rs` 头部：可睡眠的锁为什么要用 `Handoff` 交接而不是“放开再抢”。
 - 读 `hardware/deferred.rs`：中断如何把工作留给安全点。
 - 再回头读 `memory/mod.rs` 里 `KERNEL_SPACE` 的注释，看一个真实的“持锁时不能等 fence”的例子。
 

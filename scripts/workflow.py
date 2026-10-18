@@ -449,6 +449,14 @@ def verify_runtime_scheduler(environment: Mapping[str, str] | None = None) -> No
     )
 
 
+def diagnose_scheduler_latency(environment: Mapping[str, str] | None = None) -> None:
+    """量化多 CPU 调度的均衡延迟；诊断工具，不属于任何门禁，也不隐式重建 rootfs。"""
+    run(
+        python_script("diagnose_scheduler_latency.py", "--image", target_paths(environment)["rootfs"]),
+        environment=environment,
+    )
+
+
 def verify_runtime_boot(environment: Mapping[str, str] | None = None) -> None:
     """执行 boot runtime gate，不隐式重建 rootfs。"""
     run(python_script("verify_boot.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
@@ -672,6 +680,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-shutdown": verify_runtime_shutdown,
         "verify-runtime-gpu": verify_runtime_gpu,
         "verify-runtime-scheduler": verify_runtime_scheduler,
+        "diagnose-scheduler-latency": diagnose_scheduler_latency,
         "verify-runtime-musl": verify_runtime_musl,
         "verify-runtime-rust-std": verify_runtime_rust_std,
         "verify-runtime-busybox": verify_runtime_busybox,
