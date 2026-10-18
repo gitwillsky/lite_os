@@ -95,6 +95,11 @@ def start_https_gate(
         "keyUsage=digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n"
         f"subjectAltName=DNS:{GATE_HOSTNAME}\n"
+        # Python 3.13+ 的 create_default_context() 默认 VERIFY_X509_STRICT，非自签证书必须带
+        # AKI；`x509 -req -extfile` 只写文件里列出的扩展，缺少这两行会让 host 侧握手以
+        # "Missing Authority Key Identifier" 失败。
+        "subjectKeyIdentifier=hash\n"
+        "authorityKeyIdentifier=keyid,issuer\n"
     )
     _run(
         [
@@ -113,6 +118,10 @@ def start_https_gate(
             "basicConstraints=critical,CA:TRUE",
             "-addext",
             "keyUsage=critical,keyCertSign,cRLSign",
+            # server 证书的 authorityKeyIdentifier=keyid 引用 CA 的 SKI；显式声明而不依赖
+            # openssl 版本的默认行为。
+            "-addext",
+            "subjectKeyIdentifier=hash",
             "-keyout",
             str(ca_key),
             "-out",

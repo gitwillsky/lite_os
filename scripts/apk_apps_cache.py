@@ -28,7 +28,7 @@ _RISCV64_APPLICATION_PACKAGES = (
     ("pcre2-10.46-r0.apk", "110db96f56a91a4513ed67c511d4aec173915c2a4d2ba169f0cfe9305278a619"),
     ("readline-8.2.13-r1.apk", "4b6c7e5fd085d21aa6c2f527aec4a782111dc462615213953d9c44753e7e05fa"),
     ("sqlite-3.49.2-r1.apk", "0eebce26283fb9d6254d37ecce0b20964f6746bda1518dfd9ae0391923bbd054"),
-    ("zlib-1.3.2-r0.apk", "9a2761a457312f4aa1312c94d3ca8789c2f1dd51d34d992e400851c8181a6887"),
+    ("zlib-1.3.2-r1.apk", "9dfa50a52957f9d04b90b70c9fdfb08e1adca326fc57a3552d6e41047434e02c"),
     ("zstd-libs-1.5.7-r0.apk", "28bb837f617870a996009130c938ad12075f942738cfcd1390251720c78f0b8d"),
 )
 _APPLICATION_PACKAGES_BY_ARCH: dict[str, tuple[tuple[str, str], ...]] = {
@@ -52,7 +52,7 @@ _APPLICATION_PACKAGES_BY_ARCH: dict[str, tuple[tuple[str, str], ...]] = {
         ("pcre2-10.46-r0.apk", "62fdc4a3d6b48ca211cf6480c5da55664b489ec2b192ca8942e5b1d60ebe9496"),
         ("readline-8.2.13-r1.apk", "334af29dbf6b5a71a87af4d6a58e2967a8f711a51d00093de0e1498daf83ceb2"),
         ("sqlite-3.49.2-r1.apk", "23cc7ebfee1170d2e6be5740ef5eae1c522691e164e399629f9147705370e8c9"),
-        ("zlib-1.3.2-r0.apk", "7a39a917e4dab3c7a45537210ee5b5f17bf75f5e7777809a20cddd0afe074187"),
+        ("zlib-1.3.2-r1.apk", "2d274cb1b2a36d0e8347d802e6dea8648cab952ea5fae1989ab72e725842a2c3"),
         ("zstd-libs-1.5.7-r0.apk", "a0e92d2225941a514eb0b2325b137fe6444ef9171627aae8129b74a6ad934ac4"),
     ),
 }
