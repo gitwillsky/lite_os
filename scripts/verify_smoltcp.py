@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_SHA256 = "e9f524442024f3f36ed3e3c6cd60a412a4d7b8d7879c2f7a31763940496f18f8"
 # 本地 transport owner 修改范围；新变化必须有固定规范与实际回归证明，不允许其他文件漂移。
 TRANSPORT_FILES = {"src/socket/udp.rs", "src/iface/interface/udp.rs", "src/socket/tcp.rs",
-                   "src/socket/raw.rs", "src/iface/interface/mod.rs", "src/iface/interface/ipv4.rs", "src/iface/mod.rs", "src/phy/mod.rs", "src/iface/interface/tcp.rs"}
+                   "src/socket/raw.rs", "src/iface/interface/mod.rs", "src/iface/interface/ipv4.rs", "src/iface/mod.rs", "src/phy/mod.rs", "src/iface/interface/tcp.rs",
+                   "src/wire/udp.rs"}
 LOCAL_FILES = {"UPSTREAM.sha256.json", "LITEOS.md"}
 
 

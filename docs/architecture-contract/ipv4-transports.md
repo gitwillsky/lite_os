@@ -29,7 +29,7 @@ default gateway；绑定保存真实设备index。UDP/raw准入metadata固定出
 completion预算，持续lo/eth0流量不饿死其他设备。配置/IFCONF/GETNAME/INDEX/MTU/
 SO_BINDTODEVICE getter查询实际设备，删除syscall eth0/index常量。raw创建按实际NET
 owning UserNS NET_RAW授权，普通NETLINK RAW不能按INET raw类型误授权。
-固定 smoltcp 的九个明确修改文件及三个相同consumer加入medium-ip，
+固定 smoltcp 的十个明确修改文件及三个相同consumer加入medium-ip，
 原inventory不变，其余upstream文件仍禁止漂移。真实无NIC LO UDP/TCP握手/数据、独立
 双NIC frozen-oif/bound ingress/LOCAL source/weak-host SYN回归源码已写。
 route selector 使用同一 FIB 的 33 个 prefix AVL roots，查找不扫描全部 route records。

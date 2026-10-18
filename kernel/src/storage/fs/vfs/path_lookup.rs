@@ -83,31 +83,6 @@ impl VirtualFileSystem {
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
         self.namespace()?.resolve_from(origin, path, true, identity)
     }
-
-    /// 解析 pathname 但保留最后一个 symbolic-link inode，供 Linux lstat 使用。
-    ///
-    /// # Parameters
-    ///
-    /// - `origin`: caller fs root 与相对路径起始目录。
-    /// - `path`: raw pathname；中间 symbolic link 正常跟随，只保留未尾随的最终 link。
-    ///
-    /// # Returns
-    ///
-    /// 普通路径返回目标 inode，末项 symbolic link 返回 link inode 本身。
-    ///
-    /// # Errors
-    ///
-    /// 路径不存在、symlink loop 或底层文件系统失败时返回错误。
-    pub(crate) fn open_at_no_follow(
-        &self,
-        origin: LookupOrigin,
-        path: &[u8],
-        identity: &AccessIdentity,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        self.namespace()?
-            .resolve_from(origin, path, true, identity)
-            .map(|opened| opened.inode())
-    }
 }
 
 impl NamespaceAccess<'_> {

@@ -6437,7 +6437,6 @@ kernel/src/storage/fs/vfs/path_lookup.rs :: enum PathLookup :: Missing { parent 
 kernel/src/storage/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn current_directory_path (& self , origin : LookupOrigin ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/storage/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn initial_origin (& self) -> Result < LookupOrigin , FileSystemError >
 kernel/src/storage/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
-kernel/src/storage/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_at_no_follow (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/storage/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_file (& self , path : & [u8]) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/storage/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/storage/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at_no_follow (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >

@@ -272,6 +272,10 @@ impl Repr {
     /// This never calculates the checksum, and is intended for internal-use only,
     /// not for packets that are going to be actually sent over the network. For
     /// example, when decompressing 6lowpan.
+    ///
+    /// Its only caller is the 6LoWPAN decompressor, so it follows that feature;
+    /// without the gate this build (6LoWPAN disabled) reports it as dead code.
+    #[cfg(feature = "proto-sixlowpan")]
     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
     where
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,

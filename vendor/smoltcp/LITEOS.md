@@ -5,10 +5,12 @@
 原样保留的 [0BSD](LICENSE-0BSD.txt)。`UPSTREAM.sha256.json` 固定逐文件原始内容，
 `scripts/verify_smoltcp.py` 拒绝原 inventory、未授权文件或第二个 registry consumer 的漂移。
 四个不可变 upstream 文件自带行尾空白或末尾空行；根 `.gitattributes` 仅对这些确切文件
-保留对应原始格式，SHA 校验仍逐字节裁决。本地九个 transport 文件不豁免空白检查。
+保留对应原始格式，SHA 校验仍逐字节裁决。本地十个 transport 文件不豁免空白检查。
 
 允许变化的准确范围是 `src/socket/{udp,tcp,raw}.rs`、
-`src/iface/interface/{mod,ipv4,udp,tcp}.rs`、`src/iface/mod.rs`、`src/phy/mod.rs`。
+`src/iface/interface/{mod,ipv4,udp,tcp}.rs`、`src/iface/mod.rs`、`src/phy/mod.rs`、`src/wire/udp.rs`。
+`src/wire/udp.rs` 只给 `Repr::emit_header` 加上与其唯一调用方（6LoWPAN）相同的 `proto-sixlowpan` 门控，
+消除未启用该 feature 时的 dead-code 警告，不改变任何运行代码。
 三个 consumer 使用相同 IPv4/TCP/UDP/raw、Ethernet/IP-medium feature profile；不启用 IPv6。
 
 ## Mechanism 与 policy owner
