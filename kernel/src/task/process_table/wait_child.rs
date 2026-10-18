@@ -381,6 +381,30 @@ pub(crate) fn child_status_info(record: &ChildExit) -> (u32, u32, i32, i32) {
 mod claim;
 pub(crate) use claim::{consume_child_status, release_child_status};
 
+/// `RUSAGE_CHILDREN`：被 wait 回收的 child 退出后使用量不再变化，回收时一次性并入 parent。
+///
+/// 只在 `consume_child_status` 的 graph 锁内调用；自动回收与 `WNOWAIT` 不经过这里。
+fn absorb_reaped_usage(graph: &ProcessGraph, child: usize, parent: Option<usize>) {
+    let usage = graph.nodes[&child].process.final_resource_usage();
+    if let Some(parent) = parent.and_then(|pid| graph.nodes.get(&pid)) {
+        parent.process.absorb_reaped_child(&usage);
+    }
+}
+
+/// `wait4`/`waitid` 的 rusage：child 自身加上它已回收的后代（Linux `RUSAGE_BOTH`）。
+///
+/// Active claim pin 保证 child Node 尚未 reap；必须在 `consume_child_status` 之前读取。
+pub(crate) fn child_resource_usage(record: &ChildExit) -> crate::task::ResourceUsage {
+    PROCESS_TABLE
+        .graph
+        .lock()
+        .nodes
+        .get(&record.pid)
+        .expect("active child claim owns exit record")
+        .process
+        .final_resource_usage()
+}
+
 /// Active claim pin 保证 child Node 尚未 reap；copyout 前捕获 calling view 的标准 PID。
 pub(crate) fn child_status_pid(record: &ChildExit) -> usize {
     let namespace = current_task()

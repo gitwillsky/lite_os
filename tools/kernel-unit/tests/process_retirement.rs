@@ -198,6 +198,8 @@ mod task {
                 pub(super) kind: ChildStatusKind,
                 pub(super) claimant: usize,
             }
+            // 真实实现把 child 的使用量并入 parent；夹具的图节点没有 Process，退休语义不依赖它。
+            fn absorb_reaped_usage(_: &ProcessGraph, _: usize, _: Option<usize>) {}
             #[path = "claim.rs"]
             mod claim;
             pub(crate) use claim::{consume_child_status, release_child_status};

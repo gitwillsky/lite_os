@@ -131,6 +131,7 @@ pub(crate) fn dispatch_pending_deferred_work() {
         let now_us = crate::timer::get_time_us();
         if let Some(task) = current_task() {
             task.scheduling.policy.lock().checkpoint_runtime(now_us);
+            task.charge_timer_tick(work.contains(DeferredWork::TIMER_FROM_USER));
         }
         wake_expired_tasks(get_time_ns());
         load_average::update(now_us);

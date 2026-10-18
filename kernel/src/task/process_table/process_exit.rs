@@ -172,13 +172,23 @@ impl ProcessExitStatus {
     }
 }
 
-fn child_exit_info(pid: usize, status: ProcessExitStatus) -> PendingSignal {
+fn child_exit_info(
+    pid: usize,
+    status: ProcessExitStatus,
+    usage: &crate::task::ResourceUsage,
+) -> PendingSignal {
+    // si_utime/si_stime 是 USER_HZ（100）的 clock_t，包含 child 已回收的后代。
+    const MICROSECONDS_PER_CLOCK_TICK: u64 = 10_000;
     match status {
         ProcessExitStatus::Exited(code) => PendingSignal::child_exited(pid, i32::from(code)),
         ProcessExitStatus::Signaled(signal) => {
             PendingSignal::child_killed(pid, usize::from(signal))
         }
     }
+    .with_child_cpu_times(
+        usage.user_us / MICROSECONDS_PER_CLOCK_TICK,
+        usage.system_us / MICROSECONDS_PER_CLOCK_TICK,
+    )
 }
 
 /// 若当前 Process 已提交 group-exit，则在 calling Thread 上完成退出。
@@ -433,10 +443,11 @@ fn complete_process_exit(pid: usize) {
         node.state = ProcessState::Exited(status, ExitRetirement::Waitable);
         let parent = node.parent;
         let source = node.pidfd_source.upgrade();
+        let usage = node.process.final_resource_usage();
         let publication = super::signal::stage_child_signal(
             &graph,
             pid,
-            child_exit_info(pid, status),
+            child_exit_info(pid, status, &usage),
             super::super::model::ChildSignalKind::Exit,
             &mut records,
         );
@@ -492,6 +503,12 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
     // current until every blocking consequence completes; removing it earlier leaves no scheduler
     // wait target and turns ordinary same-mm contention into a kernel panic.
     let task = current_task().expect("No current task to exit");
+    // 提交当前时间片：SIGCHLD 的 si_utime/si_stime 与 wait4 的 rusage 在 process exit 发布时读取最终
+    // runtime，缺失这一步会漏掉最后一个不足 tick 的时间片。
+    task.scheduling
+        .policy
+        .lock()
+        .checkpoint_runtime(crate::timer::get_time_us());
     let namespace = task.pid_namespace();
     if let Some(event) = super::pid_namespace::mark_reaper_exit(&task, &namespace) {
         super::pid_namespace::shutdown(&task, &namespace, &event);
@@ -629,6 +646,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                             _ => None,
                         };
                         let exited = child_status.is_some();
+                        let child_usage = node.process.final_resource_usage();
                         let unclaimed = node.child_wait_claim.is_none();
                         adopted_exited |= exited;
                         graph
@@ -641,7 +659,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                             super::signal::stage_child_signal(
                                 &graph,
                                 child,
-                                child_exit_info(child, status),
+                                child_exit_info(child, status, &child_usage),
                                 super::super::model::ChildSignalKind::Exit,
                                 &mut child_records,
                             )

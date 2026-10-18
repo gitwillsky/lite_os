@@ -36,6 +36,8 @@ impl TaskControlBlock {
         self.retire_shared_memory_creator();
         self.retire_namespaces();
         self.retire_seccomp();
+        // 最后一个 user 离开前采样 RSS 峰值；之后映像被拆除，峰值再也无法重建。
+        self.record_exit_peak_rss();
         UserExitMemory {
             address_space: self.take_address_space(),
             fault_limits,
@@ -52,6 +54,8 @@ pub(super) fn release_exec_mm(
     clear_child_tid: Option<usize>,
     fault_limits: UserFaultLimits,
 ) {
+    // exec 丢弃旧映像：它的峰值并入 Process，新映像从零开始。
+    task.record_peak_rss(&address_space);
     let wait = UserExitMemory {
         address_space,
         clear_child_tid,

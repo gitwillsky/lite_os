@@ -154,7 +154,12 @@
   Thread 同时唯一拥有单向 `no_new_privileges`：初始 false，clone/fork/vfork 继承 caller 的值，
   exec 保留，其他 live sibling 不随 caller 的 PR_SET_NO_NEW_PRIVS 改变。exec set-ID credential
   transition 读取 calling Thread 的值，启用后忽略 setuid/setgid mode，并照常刷新 saved IDs。
-- `Process.children_runtime_us` 独占已 wait 回收 child 的累计 CPU runtime（含其已回收后代）；只在 `consume_child_status` 的 graph 锁内、retire 之前并入 parent，自动回收不并入，`getrusage(RUSAGE_CHILDREN)` 只读它。
+- `UsageAccounting`（Thread 与 Process 各一份）独占 tick、缺页、上下文切换与 RSS 峰值 counters，
+  事件同步记给当前 Thread 与所属 Process。`ReapedChildrenUsage` 独占已 wait 回收 child 的累计，
+  只在 `consume_child_status` 的 graph 锁内、retire 之前并入 parent，自动回收不并入。
+  user/system 拆分由纯函数 `cputime_split` 从精确 runtime 与 tick 比例得出，并用已报告的最大 system 钳制单调；
+  timer 的 `last_user_return` 区分“用户态 tick”与“内核态到期、返回用户态才响应的 tick”。
+  `getrusage`/`wait4`/`SIGCHLD` 只读这些 owner。
 - Thread 的独立 `MmHandle = Arc<Mutex<MmMembership>>` 唯一持有其映射 user；
   Live 拥有 root，Retired 只保存退出时的原生 user_dumpable。Process `leader_mm` 仅别名保活原 leader
   的同一 outer handle。exit retire 按值移交 root 后，外部

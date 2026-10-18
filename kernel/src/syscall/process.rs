@@ -443,7 +443,7 @@ pub(crate) fn sys_get_robust_list(pid: i32, head_pointer: usize, length_pointer:
 /// - `pid`: `-1` 表示任一 child，正数表示指定 child。
 /// - `status`: 可为空；非空时写入 Linux wait status word。
 /// - `options`: native WNOHANG/WUNTRACED/WCONTINUED 与 __WCLONE/__WALL/__WNOTHREAD。
-/// - `rusage`: 当前必须为空，避免返回未实现的资源统计。
+/// - `rusage`: 可为空；非空时写入 child（含其已回收后代）的资源使用。
 ///
 /// # Returns
 ///
@@ -456,9 +456,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: u32, rusage: *mut
     const WNOTHREAD: usize = 0x2000_0000;
     const WALL: usize = 0x4000_0000;
     const WCLONE: usize = 0x8000_0000;
-    if options & !(WNOHANG | WUNTRACED | WCONTINUED | WNOTHREAD | WALL | WCLONE) != 0
-        || !rusage.is_null()
-    {
+    if options & !(WNOHANG | WUNTRACED | WCONTINUED | WNOTHREAD | WALL | WCLONE) != 0 {
         return -errno::EINVAL;
     }
     let record = match wait_child(
@@ -487,15 +485,26 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: u32, rusage: *mut
     let visible_pid = child_status_pid(&record);
     // native kernel_wait4 先消费退出/作业事件，再返回 user-copy；EFAULT 不恢复已回收的 child。
     let wait_status = record.status;
+    // 回收后 child 的 Process 不再可达，所以必须先读取 rusage。
+    let child_usage = crate::task::child_resource_usage(&record);
     consume_child_status(record);
-    if !status.is_null() {
-        let task = current_task().expect("wait4 copyout requires current task");
-        if task
+    let task = current_task().expect("wait4 copyout requires current task");
+    if !status.is_null()
+        && task
             .copy_to_user(status as usize, &wait_status.to_ne_bytes())
             .is_err()
-        {
-            return -errno::EFAULT;
-        }
+    {
+        return -errno::EFAULT;
+    }
+    if !rusage.is_null()
+        && task
+            .copy_to_user(
+                rusage as usize,
+                &super::resource_usage::encode_rusage(&child_usage),
+            )
+            .is_err()
+    {
+        return -errno::EFAULT;
     }
     visible_pid as isize
 }
@@ -519,7 +528,6 @@ pub(crate) fn sys_waitid(
     const CLONE: u32 = 0x8000_0000;
     if options & !(NOHANG | STOPPED | EXITED | CONTINUED | NOWAIT | NOTHREAD | ALL | CLONE) != 0
         || options & (STOPPED | EXITED | CONTINUED) == 0
-        || rusage != 0
     {
         return -errno::EINVAL;
     }
@@ -564,8 +572,10 @@ pub(crate) fn sys_waitid(
         },
     );
     let mut info = [0u8; 28];
+    let mut child_usage = crate::task::ResourceUsage::default();
     let result = match record {
         Ok(Some(record)) => {
+            child_usage = crate::task::child_resource_usage(&record);
             let (pid, uid, code, status) = crate::task::child_status_info(&record);
             info[0..4].copy_from_slice(&(syscall_abi::signal::SIGCHLD as i32).to_ne_bytes());
             info[8..12].copy_from_slice(&code.to_ne_bytes());
@@ -596,6 +606,15 @@ pub(crate) fn sys_waitid(
         && (task.validate_user_write(information, 128).is_err()
             || task.copy_to_user(information, &info[..12]).is_err()
             || task.copy_to_user(information + 16, &info[16..]).is_err())
+    {
+        return -errno::EFAULT;
+    }
+    // Linux 在事件处理成功后才写 rusage；没有事件时写入全零。
+    if result == 0
+        && rusage != 0
+        && task
+            .copy_to_user(rusage, &super::resource_usage::encode_rusage(&child_usage))
+            .is_err()
     {
         return -errno::EFAULT;
     }

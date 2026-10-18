@@ -103,8 +103,9 @@ pub(crate) use thread_selector::{is_single_threaded, parent_pid, robust_list_hea
 pub(crate) use vfork::{ProcessCloneError, clone_current_process};
 use wait_child::take_child_waiters;
 pub(crate) use wait_child::{
-    ChildWaitClass, ChildWaitFilter, ChildWaitSelector, WaitChildError, child_status_info,
-    child_status_pid, consume_child_status, release_child_status, wait_child, wait_child_events,
+    ChildWaitClass, ChildWaitFilter, ChildWaitSelector, WaitChildError, child_resource_usage,
+    child_status_info, child_status_pid, consume_child_status, release_child_status, wait_child,
+    wait_child_events,
 };
 use wait_key::IndexedWaitKind;
 pub(crate) use wait_key::PollWaitKey;

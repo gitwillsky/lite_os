@@ -52,6 +52,11 @@ impl IoAccounting {
         self.write_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
+    /// 已完成的存储读取字节数；缺页路径用前后差值判断这次缺页是否真的等了存储 I/O。
+    pub(super) fn storage_read_bytes(&self) -> u64 {
+        self.read_bytes.load(Ordering::Relaxed)
+    }
+
     pub(super) fn snapshot(&self) -> IoStatistics {
         IoStatistics {
             read_characters: self.read_characters.load(Ordering::Relaxed),

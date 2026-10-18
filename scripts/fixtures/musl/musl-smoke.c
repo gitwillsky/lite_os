@@ -654,8 +654,11 @@ static int run_smoke(int argc, char **argv, char **envp)
 	if (verify_mapping_placement() != 0) return 22;
 	if (verify_address_space_rollover() != 0) return 21;
 	if (verify_memory_pressure() != 0) return 20;
-	if (verify_resource_usage() != 0) return 23;
-	if (verify_mremap() != 0) return 24;
+	/* 这两个用例有几十个检查点：失败时把检查点编号放进退出码（128 + 编号），不然只能看到“失败”。 */
+	int resource_usage_result = verify_resource_usage();
+	if (resource_usage_result != 0) return 128 + resource_usage_result;
+	int mremap_result = verify_mremap();
+	if (mremap_result != 0) return 192 + mremap_result;
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 14;
 	return 0;
 }

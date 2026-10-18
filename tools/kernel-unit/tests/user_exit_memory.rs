@@ -181,6 +181,12 @@ mod task {
             fn retire_shared_memory_creator(&self) {
                 // 此 MM 用例没有 shm clist；实际 creator membership 在 ipc_shared_memory 验证。
             }
+            fn record_peak_rss(&self, _: &AddressSpace) {
+                // 同上：exec 释放旧映像时的峰值并入不属于此用例。
+            }
+            fn record_exit_peak_rss(&self) {
+                // 此 MM-retirement 用例不关心 rusage 峰值；采样语义由 musl smoke 的 resource-usage 用例覆盖。
+            }
             fn retire_seccomp(&self) {
                 // Explicit seam: real listener task membership is covered by seccomp_notifications.
             }

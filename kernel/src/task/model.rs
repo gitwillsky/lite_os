@@ -6,11 +6,13 @@ mod context_storage;
 mod credentials;
 mod message_identity;
 pub(crate) use message_identity::{MessageIdentity, MessageIdentityError};
+mod cputime_split;
 mod debug;
 mod file_descriptions;
 mod file_table;
 mod io_accounting;
 mod kernel_thread;
+mod usage_accounting;
 use kernel_thread::KernelThread;
 mod namespaces;
 mod process_clone;
@@ -106,6 +108,8 @@ use syscall_restart::{SyscallRestart, SyscallRestartState};
 pub(crate) use syscall_restart::{SyscallRestartBlock, SyscallRestartPolicy};
 use thread_mm::{MmHandle, try_mm_handle};
 use thread_retirement::ThreadRetirements;
+pub(crate) use usage_accounting::ResourceUsage;
+use usage_accounting::{ReapedChildrenUsage, UsageAccounting};
 use user_context::{ContextBacking, ContextBinding, ContextOwner};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -200,6 +204,8 @@ struct ThreadContext {
     // OWNER: ThreadContext 独占当前 Thread 的 Linux I/O counters；Process 聚合只保存
     // group 口径，不能替代 thread `/proc/<tgid>/task/<tid>/io`。
     io_accounting: Arc<IoAccounting>,
+    // OWNER: ThreadContext 独占当前 Thread 的使用量 counters（`RUSAGE_THREAD`）；Process 份额只保存 group 口径。
+    usage: UsageAccounting,
 }
 
 #[derive(Debug, Default)]
@@ -244,10 +250,11 @@ pub(in crate::task) struct Process {
     // OWNER: Process 的全部 Thread 只累计到这一份 CPU runtime；缺失时 RLIMIT_CPU 会被
     // 每个 Thread 单独计算，使多线程程序实际获得 limit 的倍数时间。
     cpu_runtime_us: Arc<AtomicU64>,
-    // OWNER: wait4 回收 child 时把其 Process 与其已回收后代的 CPU runtime 累加到 parent 的这一份；
-    // 自动回收（SIGCHLD 忽略）不累加，与 Linux 一致。缺失时 RUSAGE_CHILDREN 恒为 0，`time` 这类
-    // 外壳无法报告子命令耗时。
-    children_runtime_us: AtomicU64,
+    // OWNER: Process 的全部 Thread 同步累计到这一份使用量 counters（`RUSAGE_SELF`）；
+    // 缺失时已退出 worker 的 fault/切换历史会从进程口径消失。
+    usage: UsageAccounting,
+    // OWNER: wait 回收的 child 累计使用量（`RUSAGE_CHILDREN`），见 `ReapedChildrenUsage`。
+    reaped_children: ReapedChildrenUsage,
     // OWNER: Process 的全部 Thread 同步累计到这一份 I/O counters；若只在 live Thread
     // snapshot 时求和，已退出 worker 的读写历史会从 `/proc/<tgid>/io` 倒退消失。
     io_accounting: Arc<IoAccounting>,
@@ -520,7 +527,8 @@ impl TaskControlBlock {
             resource_limits: try_elf_arc(Mutex::new(resource_limits))?,
             cpu_limit_active: AtomicBool::new(cpu_limit_active),
             cpu_runtime_us: cpu_runtime_us.clone(),
-            children_runtime_us: AtomicU64::new(0),
+            usage: UsageAccounting::default(),
+            reaped_children: ReapedChildrenUsage::default(),
             io_accounting: io_accounting.clone(),
             terminal: Mutex::new(None),
             signal_state: Mutex::new(ProcessSignalState::new(signal_handlers)),
@@ -550,6 +558,7 @@ impl TaskControlBlock {
                     file_wait: Mutex::new(Some(file_wait)),
                     alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
                     io_accounting: thread_io,
+                    usage: UsageAccounting::default(),
                 },
             },
             execution: ExecutionContext {
@@ -669,6 +678,7 @@ impl TaskControlBlock {
                     file_wait: Mutex::new(Some(file_wait)),
                     alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
                     io_accounting: thread_io,
+                    usage: UsageAccounting::default(),
                 },
             },
             execution: ExecutionContext {

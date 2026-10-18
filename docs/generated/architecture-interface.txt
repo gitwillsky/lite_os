@@ -2173,6 +2173,7 @@ kernel/src/hardware/deferred.rs :: pub (crate) fn initialize (cpu_count : usize)
 kernel/src/hardware/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
 kernel/src/hardware/deferred.rs :: pub (crate) fn register (handler : DeferredHandler) -> Result < DeferredWork , () >
 kernel/src/hardware/deferred.rs :: pub (crate) fn take () -> DeferredWorkSet
+kernel/src/hardware/deferred.rs :: pub (crate) impl DeferredWork :: const fn with (self , other : Self) -> Self
 kernel/src/hardware/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn contains (self , work : DeferredWork) -> bool
 kernel/src/hardware/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn is_empty (self) -> bool
 kernel/src/hardware/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn run_registered (self , now_ns : u64)
@@ -6787,6 +6788,8 @@ kernel/src/syscall/process_control.rs :: pub (crate) fn sys_prctl (option : usiz
 kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
 kernel/src/syscall/resource_limit.rs :: pub (crate) fn sys_prlimit64 (pid : i32 , resource : usize , replacement : usize , previous : usize ,) -> isize
+kernel/src/syscall/resource_usage.rs :: pub (crate) const RUSAGE_BYTES : usize = 144
+kernel/src/syscall/resource_usage.rs :: pub (crate) fn encode_rusage (usage : & ResourceUsage) -> [u8 ; RUSAGE_BYTES]
 kernel/src/syscall/resource_usage.rs :: pub (crate) fn sys_getrusage (who : i32 , usage : usize) -> isize
 kernel/src/syscall/restart.rs :: pub (super) fn sys_restart_syscall () -> isize
 kernel/src/syscall/riscv_hwprobe.rs :: pub (crate) fn sys_riscv_hwprobe (pairs : usize , pair_count : usize , cpusetsize : usize , cpus : usize , flags : usize ,) -> isize
@@ -7012,7 +7015,7 @@ kernel/src/task/mod.rs :: pub (crate) struct SchedulerReady
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
 kernel/src/task/mod.rs :: pub (crate) use model :: { CapabilityError , CloneParameters , CredentialUpdateError , IoStatistics , MessageIdentityError , PendingSignal , ProcessCloneResources , RLIM_INFINITY , RLIMIT_NPROC , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalFrameRestoreError , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , ThreadCloneResources , WaitMembership , }
-kernel/src/task/mod.rs :: pub (crate) use model :: { ExecError , RobustListError , SeccompDecision , SeccompError }
+kernel/src/task/mod.rs :: pub (crate) use model :: { ExecError , ResourceUsage , RobustListError , SeccompDecision , SeccompError }
 kernel/src/task/mod.rs :: pub (crate) use model :: { KernelThreadBody , SyscallRestartBlock , SyscallRestartPolicy }
 kernel/src/task/mod.rs :: pub (crate) use process_table :: *
 kernel/src/task/mod.rs :: pub (crate) use process_table :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
@@ -7069,6 +7072,7 @@ kernel/src/task/model.rs :: pub (crate) use signal_handlers :: SignalAction
 kernel/src/task/model.rs :: pub (crate) use signal_info :: PendingSignal
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { SignalDelivery , SignalFrameRestoreError }
 kernel/src/task/model.rs :: pub (crate) use syscall_restart :: { SyscallRestartBlock , SyscallRestartPolicy }
+kernel/src/task/model.rs :: pub (crate) use usage_accounting :: ResourceUsage
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn is_kernel_thread (& self) -> bool
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn kernel_pidfd_source (& self , replacement : Option < & Arc < crate :: fs :: pidfs :: PidFdSource > > ,) -> (Option < Arc < crate :: fs :: pidfs :: PidFdSource > > , Option < alloc :: sync :: Weak < crate :: fs :: pidfs :: PidFdSource > > ,)
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn kernel_thread_name (& self) -> & 'static str
@@ -7208,6 +7212,8 @@ kernel/src/task/model/context_storage.rs :: pub (super) impl AddressSpace :: fn 
 kernel/src/task/model/context_storage.rs :: pub (super) impl AddressSpace :: fn prepare_context_rebind (self : & Arc < Self > , owner : & ContextOwner < UserContext > , address : usize ,) -> Result < Option < PreparedContextRebind > , MemoryError >
 kernel/src/task/model/context_storage.rs :: pub (super) impl PreparedContextRebind :: fn apply (self , owner : & ContextOwner < UserContext >)
 kernel/src/task/model/context_storage.rs :: pub (super) struct PreparedContextRebind
+kernel/src/task/model/cputime_split.rs :: pub (crate) fn clamp_system_us (estimate_us : u64 , previously_reported_us : u64 , runtime_us : u64 ,) -> u64
+kernel/src/task/model/cputime_split.rs :: pub (crate) fn estimate_system_us (runtime_us : u64 , user_ticks : u64 , system_ticks : u64) -> u64
 kernel/src/task/model/credentials.rs :: enum CredentialUpdateError :: Invalid
 kernel/src/task/model/credentials.rs :: enum CredentialUpdateError :: OutOfMemory
 kernel/src/task/model/credentials.rs :: enum CredentialUpdateError :: Permission
@@ -7324,6 +7330,7 @@ kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn ac
 kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn account_write_result (& self , result : isize)
 kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn account_write_storage (& self , bytes : usize)
 kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn snapshot (& self) -> IoStatistics
+kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn storage_read_bytes (& self) -> u64
 kernel/src/task/model/io_accounting.rs :: pub (super) struct IoAccounting
 kernel/src/task/model/kernel_thread.rs :: pub (in crate :: task) KernelThread :: pidfd_source : Mutex < alloc :: sync :: Weak < crate :: fs :: pidfs :: PidFdSource > >
 kernel/src/task/model/kernel_thread.rs :: pub (super) KernelThread :: credentials : Credentials
@@ -7461,8 +7468,6 @@ kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) const RLIMIT_
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn process_cpu_runtime_us (& self) -> u64
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn resource_cpu_signal (& self , runtime_us : u64) -> Option < usize >
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn user_fault_limits (& self) -> crate :: memory :: UserFaultLimits
-kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn add_reaped_child_runtime_us (& self , runtime_us : u64)
-kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn children_runtime_us (& self) -> u64
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn process_cpu_runtime_us (& self) -> u64
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn replace_resource_limit (& self , resource : usize , replacement : ResourceLimit , privileged : bool ,) -> Result < ResourceLimit , ResourceLimitError >
 kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl super :: Process :: fn resource_limit (& self , resource : usize) -> Option < ResourceLimit >
@@ -7509,7 +7514,6 @@ kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait_resul
 kernel/src/task/model/scheduling.rs :: pub (crate) enum WaitMembership
 kernel/src/task/model/scheduling.rs :: pub (crate) impl Sched :: fn get_dynamic_priority (& self) -> i32
 kernel/src/task/model/scheduling.rs :: pub (crate) impl TaskControlBlock :: fn cpu_runtime_snapshot (& self , now_us : u64) -> (u64 , u64)
-kernel/src/task/model/scheduling.rs :: pub (crate) impl TaskControlBlock :: fn reaped_children_runtime_us (& self) -> u64
 kernel/src/task/model/scheduling.rs :: pub (crate) struct Sched
 kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingEntity
 kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingState
@@ -7675,6 +7679,7 @@ kernel/src/task/model/signal_info.rs :: pub (crate) impl PendingSignal :: fn syn
 kernel/src/task/model/signal_info.rs :: pub (crate) impl PendingSignal :: fn thread_directed (pid : usize) -> Self
 kernel/src/task/model/signal_info.rs :: pub (crate) impl PendingSignal :: fn timer (id : i32 , overrun : i32 , value : u64) -> Self
 kernel/src/task/model/signal_info.rs :: pub (crate) impl PendingSignal :: fn user_sender_uid (self , signal : usize) -> Option < u32 >
+kernel/src/task/model/signal_info.rs :: pub (crate) impl PendingSignal :: fn with_child_cpu_times (mut self , user_ticks : u64 , system_ticks : u64) -> Self
 kernel/src/task/model/signal_info.rs :: pub (crate) impl PendingSignal :: fn with_identity (mut self , number : u32 , displayed_uid : u32 , force : bool) -> Self
 kernel/src/task/model/signal_info.rs :: pub (crate) struct PendingSignal
 kernel/src/task/model/signal_info.rs :: pub (super) impl PendingSignal :: fn allows_queue_fallback (self) -> bool
@@ -7814,6 +7819,36 @@ kernel/src/task/model/trap_context.rs :: pub (in crate :: task) impl TaskControl
 kernel/src/task/model/trap_context.rs :: pub (in crate :: task) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model/trap_context.rs :: pub (super) impl TaskControlBlock :: fn replace_user_context (& self , trap_context : UserContext)
 kernel/src/task/model/trap_context.rs :: pub (super) impl TaskControlBlock :: fn snapshot_user_context_for_clone (& self) -> UserContext
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: input_blocks : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: involuntary_switches : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: major_faults : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: max_rss_kib : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: minor_faults : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: output_blocks : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: system_us : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: user_us : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) ResourceUsage :: voluntary_switches : u64
+kernel/src/task/model/usage_accounting.rs :: pub (crate) impl ResourceUsage :: fn merge (& mut self , other : & Self)
+kernel/src/task/model/usage_accounting.rs :: pub (crate) impl TaskControlBlock :: fn charge_context_switch (& self , voluntary : bool)
+kernel/src/task/model/usage_accounting.rs :: pub (crate) impl TaskControlBlock :: fn charge_page_fault (& self , major : bool)
+kernel/src/task/model/usage_accounting.rs :: pub (crate) impl TaskControlBlock :: fn charge_timer_tick (& self , user : bool)
+kernel/src/task/model/usage_accounting.rs :: pub (crate) impl TaskControlBlock :: fn process_resource_usage (& self) -> ResourceUsage
+kernel/src/task/model/usage_accounting.rs :: pub (crate) impl TaskControlBlock :: fn reaped_children_usage (& self) -> ResourceUsage
+kernel/src/task/model/usage_accounting.rs :: pub (crate) impl TaskControlBlock :: fn thread_resource_usage (& self) -> ResourceUsage
+kernel/src/task/model/usage_accounting.rs :: pub (crate) struct ResourceUsage
+kernel/src/task/model/usage_accounting.rs :: pub (in crate :: task) impl TaskControlBlock :: fn record_exit_peak_rss (& self)
+kernel/src/task/model/usage_accounting.rs :: pub (in crate :: task) impl TaskControlBlock :: fn record_peak_rss (& self , address_space : & AddressSpace)
+kernel/src/task/model/usage_accounting.rs :: pub (in crate :: task) impl super :: Process :: fn absorb_reaped_child (& self , child : & ResourceUsage)
+kernel/src/task/model/usage_accounting.rs :: pub (in crate :: task) impl super :: Process :: fn final_resource_usage (& self) -> ResourceUsage
+kernel/src/task/model/usage_accounting.rs :: pub (super) impl ReapedChildrenUsage :: fn absorb (& self , child : & ResourceUsage)
+kernel/src/task/model/usage_accounting.rs :: pub (super) impl ReapedChildrenUsage :: fn snapshot (& self) -> ResourceUsage
+kernel/src/task/model/usage_accounting.rs :: pub (super) impl UsageAccounting :: fn charge_fault (& self , major : bool)
+kernel/src/task/model/usage_accounting.rs :: pub (super) impl UsageAccounting :: fn charge_switch (& self , voluntary : bool)
+kernel/src/task/model/usage_accounting.rs :: pub (super) impl UsageAccounting :: fn charge_tick (& self , user : bool)
+kernel/src/task/model/usage_accounting.rs :: pub (super) impl UsageAccounting :: fn observe_rss (& self , pages : u64)
+kernel/src/task/model/usage_accounting.rs :: pub (super) impl UsageAccounting :: fn snapshot (& self , runtime_us : u64 , io : IoStatistics , current_rss_pages : u64 ,) -> ResourceUsage
+kernel/src/task/model/usage_accounting.rs :: pub (super) struct ReapedChildrenUsage
+kernel/src/task/model/usage_accounting.rs :: pub (super) struct UsageAccounting
 kernel/src/task/model/user_context.rs :: enum ContextBacking :: # [doc = " The containing Thread kernel stack owns the storage lifetime."] KernelStack
 kernel/src/task/model/user_context.rs :: enum ContextBacking :: # [doc = " The process address space owns the mapped frame lifetime."] AddressSpace
 kernel/src/task/model/user_context.rs :: pub (super) enum ContextBacking
@@ -7869,7 +7904,7 @@ kernel/src/task/process_table.rs :: pub (crate) use signal :: { PidSignalScope ,
 kernel/src/task/process_table.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
 kernel/src/task/process_table.rs :: pub (crate) use thread_selector :: { is_single_threaded , parent_pid , robust_list_head }
 kernel/src/task/process_table.rs :: pub (crate) use vfork :: { ProcessCloneError , clone_current_process }
-kernel/src/task/process_table.rs :: pub (crate) use wait_child :: { ChildWaitClass , ChildWaitFilter , ChildWaitSelector , WaitChildError , child_status_info , child_status_pid , consume_child_status , release_child_status , wait_child , wait_child_events , }
+kernel/src/task/process_table.rs :: pub (crate) use wait_child :: { ChildWaitClass , ChildWaitFilter , ChildWaitSelector , WaitChildError , child_resource_usage , child_status_info , child_status_pid , consume_child_status , release_child_status , wait_child , wait_child_events , }
 kernel/src/task/process_table.rs :: pub (crate) use wait_key :: PollWaitKey
 kernel/src/task/process_table.rs :: pub (in crate :: task) fn current_tgid_identity () -> Arc < crate :: namespace :: PidIdentity >
 kernel/src/task/process_table.rs :: pub (in crate :: task) mod advisory_lock
@@ -8314,6 +8349,7 @@ kernel/src/task/process_table/wait_child.rs :: pub (crate) ChildWaitFilter :: cr
 kernel/src/task/process_table/wait_child.rs :: pub (crate) enum ChildWaitClass
 kernel/src/task/process_table/wait_child.rs :: pub (crate) enum ChildWaitSelector
 kernel/src/task/process_table/wait_child.rs :: pub (crate) enum WaitChildError
+kernel/src/task/process_table/wait_child.rs :: pub (crate) fn child_resource_usage (record : & ChildExit) -> crate :: task :: ResourceUsage
 kernel/src/task/process_table/wait_child.rs :: pub (crate) fn child_status_info (record : & ChildExit) -> (u32 , u32 , i32 , i32)
 kernel/src/task/process_table/wait_child.rs :: pub (crate) fn child_status_pid (record : & ChildExit) -> usize
 kernel/src/task/process_table/wait_child.rs :: pub (crate) fn wait_child (selector : isize , nohang : bool , include_stopped : bool , include_continued : bool , filter : ChildWaitFilter ,) -> Result < Option < ChildExit > , WaitChildError >
@@ -8542,11 +8578,13 @@ kernel/src/timer/mod.rs :: pub (crate) fn get_time_ns () -> u64
 kernel/src/timer/mod.rs :: pub (crate) fn get_time_us () -> u64
 kernel/src/timer/mod.rs :: pub (crate) fn init_rtc ()
 kernel/src/timer/mod.rs :: pub (crate) fn monotonic_resolution_ns () -> u64
+kernel/src/timer/mod.rs :: pub (crate) fn note_return_to_user ()
 kernel/src/timer/mod.rs :: pub (crate) fn realtime_deadline_to_monotonic_ns (realtime_ns : u64) -> u64
 kernel/src/timer/mod.rs :: pub (crate) fn resume_local_idle_tick ()
 kernel/src/timer/mod.rs :: pub (crate) fn scheduler_quantum_ns () -> u64
-kernel/src/timer/mod.rs :: pub (crate) fn set_next_timer_interrupt ()
+kernel/src/timer/mod.rs :: pub (crate) fn set_next_timer_interrupt () -> u64
 kernel/src/timer/mod.rs :: pub (crate) fn suspend_local_idle_tick ()
+kernel/src/timer/mod.rs :: pub (crate) fn tick_interrupted_user (fired_deadline : u64) -> bool
 kernel/src/trap/mod.rs :: pub (crate) fn handle_kernel_trap ()
 kernel/src/trap/mod.rs :: pub (crate) fn handle_user_trap () -> !
 kernel/src/trap/mod.rs :: pub (crate) fn init ()

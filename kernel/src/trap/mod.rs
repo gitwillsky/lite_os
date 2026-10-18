@@ -62,15 +62,26 @@ fn handle_supervisor_soft_interrupt() {
     crate::task::complete_pending_memory_barrier();
 }
 
+/// timer tick 的 deferred work；`user_trap` 表示在用户态 trap 入口响应，`fired` 是该 tick 的计划时刻。
+/// 用户态 trap 里响应的 tick 也可能是内核态期间到期、返回用户态才响应的，由 timer 区分，供 user/system 拆分。
 #[inline(always)]
-fn handle_claimed_interrupt() {
+fn timer_work(user_trap: bool, fired: u64) -> DeferredWork {
+    if user_trap && timer::tick_interrupted_user(fired) {
+        DeferredWork::TIMER.with(DeferredWork::TIMER_FROM_USER)
+    } else {
+        DeferredWork::TIMER
+    }
+}
+
+#[inline(always)]
+fn handle_claimed_interrupt(user_trap: bool) {
     let claimed = crate::platform::claim_interrupt();
     let software = matches!(&claimed, crate::platform::ClaimedInterrupt::Software(_));
     match &claimed {
         crate::platform::ClaimedInterrupt::Timer(_) => {
             // 先重置 level timer source，再 EOI；反序会让 GIC 立即重投同一 PPI。
-            timer::set_next_timer_interrupt();
-            deferred::raise(DeferredWork::TIMER);
+            let fired = timer::set_next_timer_interrupt();
+            deferred::raise(timer_work(user_trap, fired));
         }
         crate::platform::ClaimedInterrupt::Device(_) => {}
         crate::platform::ClaimedInterrupt::Software(_) => {}
@@ -97,11 +108,11 @@ pub(crate) fn handle_user_trap() -> ! {
     match arch::trap::event() {
         TrapEvent::TimerInterrupt => {
             // 仅重置下一次中断并发布 per-CPU deferred work，不在 hardirq 调度。
-            timer::set_next_timer_interrupt();
-            deferred::raise(DeferredWork::TIMER);
+            let fired = timer::set_next_timer_interrupt();
+            deferred::raise(timer_work(true, fired));
         }
         TrapEvent::ExternalInterrupt => {
-            handle_claimed_interrupt();
+            handle_claimed_interrupt(true);
             if crate::hal::console::input_ready() {
                 deferred::raise(DeferredWork::CONSOLE);
             }
@@ -271,20 +282,21 @@ pub(crate) fn trap_return() -> ! {
     // 每次 syscall 都会把一个 TCB Arc 永久遗留在随后被覆盖的 task kernel stack 上。
     drop(current_task);
 
+    timer::note_return_to_user();
     arch::trap::return_to_user(user_context_va, user_address_space, TRAMPOLINE)
 }
 
 pub(crate) fn handle_kernel_trap() {
     match arch::trap::event() {
         TrapEvent::TimerInterrupt => {
-            timer::set_next_timer_interrupt();
+            let fired = timer::set_next_timer_interrupt();
             // kernel/user timer 使用同一 per-CPU softirq；hardirq 不扫描任务表或分配。
-            deferred::raise(DeferredWork::TIMER);
+            deferred::raise(timer_work(false, fired));
         }
         TrapEvent::ExternalInterrupt => {
             // 内核态同步 I/O 可以被 external IRQ 打断；此处只确认 platform
             // interrupt-controller 状态，不在 hardirq 中调度。
-            handle_claimed_interrupt();
+            handle_claimed_interrupt(false);
             if crate::hal::console::input_ready() {
                 deferred::raise(DeferredWork::CONSOLE);
             }

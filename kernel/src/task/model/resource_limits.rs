@@ -233,17 +233,6 @@ impl super::Process {
             .load(core::sync::atomic::Ordering::Relaxed)
     }
 
-    /// 已被 wait 回收的 child 及其后代累计的 CPU runtime。
-    pub(in crate::task) fn children_runtime_us(&self) -> u64 {
-        self.children_runtime_us
-            .load(core::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(in crate::task) fn add_reaped_child_runtime_us(&self, runtime_us: u64) {
-        self.children_runtime_us
-            .fetch_add(runtime_us, core::sync::atomic::Ordering::Relaxed);
-    }
-
     pub(in crate::task) fn resource_limit(&self, resource: usize) -> Option<ResourceLimit> {
         self.resource_limits.lock().get(resource)
     }

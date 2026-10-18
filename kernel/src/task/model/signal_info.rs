@@ -13,6 +13,9 @@ enum SignalPayload {
         pid: i32,
         uid: u32,
         status: i32,
+        // 仅 SIGCHLD 使用：child 的 user/system CPU 时间，单位 USER_HZ clock_t；其余来源恒为零。
+        utime: u64,
+        stime: u64,
     },
     Fault {
         address: u64,
@@ -85,6 +88,8 @@ impl PendingSignal {
                 pid: pid as i32,
                 uid: 0,
                 status,
+                utime: 0,
+                stime: 0,
             },
         }
     }
@@ -179,6 +184,16 @@ impl PendingSignal {
     /// 构造 CLD_EXITED，status 为 child exit code。
     pub(crate) fn child_exited(pid: usize, status: i32) -> Self {
         Self::identity(1, pid, status)
+    }
+
+    /// 记录 SIGCHLD 的 `si_utime/si_stime`（USER_HZ clock_t）。
+    pub(crate) fn with_child_cpu_times(mut self, user_ticks: u64, system_ticks: u64) -> Self {
+        let SignalPayload::Identity { utime, stime, .. } = &mut self.payload else {
+            panic!("child CPU times require identity siginfo");
+        };
+        *utime = user_ticks;
+        *stime = system_ticks;
+        self
     }
 
     /// 构造 CLD_KILLED，status 为终止 child 的 signal。
@@ -278,10 +293,18 @@ impl PendingSignal {
                 bytes[12..16].copy_from_slice(&padding);
                 bytes[16..48].copy_from_slice(&body);
             }
-            SignalPayload::Identity { pid, uid, status } => {
+            SignalPayload::Identity {
+                pid,
+                uid,
+                status,
+                utime,
+                stime,
+            } => {
                 bytes[16..20].copy_from_slice(&pid.to_ne_bytes());
                 bytes[20..24].copy_from_slice(&uid.to_ne_bytes());
                 bytes[24..28].copy_from_slice(&status.to_ne_bytes());
+                bytes[32..40].copy_from_slice(&utime.to_ne_bytes());
+                bytes[40..48].copy_from_slice(&stime.to_ne_bytes());
             }
             SignalPayload::Fault { address } => {
                 bytes[16..24].copy_from_slice(&address.to_ne_bytes());

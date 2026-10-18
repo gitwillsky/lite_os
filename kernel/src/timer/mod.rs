@@ -16,9 +16,17 @@ const _: () = assert!(TICKS_PER_SEC != 0);
 // OWNER: timer module owns the calibrated scheduler tick interval.
 static TICK_INTERVAL_VALUE: AtomicU64 = AtomicU64::new(0);
 
-// OWNER: timer module 的每个 slot 仅由对应 logical CPU 推进；Atomic 只为静态共享 table
-// 提供 interior mutability。若从 handler 完成时刻重算，延迟会累积并使 scheduler tick 漂移。
-static CPU_DEADLINES: Once<Box<[AtomicU64]>> = Once::new();
+/// 一个 logical CPU 的 timer 状态。
+struct CpuTimerState {
+    // OWNER: 仅由对应 logical CPU 推进；若从 handler 完成时刻重算，延迟会累积并使 scheduler tick 漂移。
+    deadline: AtomicU64,
+    // OWNER: 仅由对应 logical CPU 在返回用户态前写入。内核态 IRQ 被屏蔽，到期的 tick 要到返回用户态才被
+    // 响应；缺失这个时刻时所有 tick 都像发生在用户态，`getrusage` 的 system 时间恒为零。
+    last_user_return: AtomicU64,
+}
+
+// OWNER: timer module 的每个 slot 仅由对应 logical CPU 访问；Atomic 只为静态共享 table 提供 interior mutability。
+static CPU_DEADLINES: Once<Box<[CpuTimerState]>> = Once::new();
 
 const USEC_PER_SEC: u64 = 1_000_000;
 const NSEC_PER_SEC: u64 = 1_000_000_000;
@@ -131,20 +139,47 @@ pub(crate) fn scheduler_quantum_ns() -> u64 {
 }
 
 #[inline(always)]
-pub(crate) fn set_next_timer_interrupt() {
+/// 重新编程下一次 tick，返回刚刚到期的那次 tick 的计划时刻。
+pub(crate) fn set_next_timer_interrupt() -> u64 {
     let current_mtime = arch::time::counter();
     let interval = TICK_INTERVAL_VALUE.load(Ordering::Acquire);
     assert!(
         interval != 0,
         "timer interval used before per-CPU initialization"
     );
-    let state = &CPU_DEADLINES.wait()[cpu::current_id().index()];
+    let state = &CPU_DEADLINES.wait()[cpu::current_id().index()].deadline;
     let previous = state.load(Ordering::Relaxed);
     let next_mtime = deadline::next(previous, current_mtime, interval)
         .expect("timer deadline exhausted the time counter");
     state.store(next_mtime, Ordering::Relaxed);
 
     platform::arm_timer(next_mtime).expect("platform timer programming failed");
+    previous
+}
+
+/// 记录 calling CPU 即将返回用户态；必须是 trap 返回前的最后一步之一。
+#[inline(always)]
+pub(crate) fn note_return_to_user() {
+    CPU_DEADLINES.wait()[cpu::current_id().index()]
+        .last_user_return
+        .store(arch::time::counter(), Ordering::Relaxed);
+}
+
+/// 判断一次在用户态 trap 里响应的 tick 是否真的发生在用户态。
+///
+/// # Parameters
+///
+/// - `fired_deadline`: 该 tick 的计划到期时刻，即 [`set_next_timer_interrupt`] 的返回值。
+///
+/// # Returns
+///
+/// 计划时刻晚于上次返回用户态的时刻为 true（tick 打断的是用户态）；否则它在内核态期间到期，
+/// 只是被屏蔽到返回用户态才响应，应计为 system 时间。
+pub(crate) fn tick_interrupted_user(fired_deadline: u64) -> bool {
+    fired_deadline
+        > CPU_DEADLINES.wait()[cpu::current_id().index()]
+            .last_user_return
+            .load(Ordering::Relaxed)
 }
 
 pub(crate) fn enable_timer_interrupt() {
@@ -210,7 +245,10 @@ pub(crate) fn init_rtc() {
     deadlines
         .try_reserve_exact(cpu::count())
         .expect("timer CPU state allocation failed");
-    deadlines.extend((0..cpu::count()).map(|_| AtomicU64::new(0)));
+    deadlines.extend((0..cpu::count()).map(|_| CpuTimerState {
+        deadline: AtomicU64::new(0),
+        last_user_return: AtomicU64::new(0),
+    }));
     CPU_DEADLINES.call_once(|| deadlines.into_boxed_slice());
 
     if let Some(current_unix_ns) = platform::read_realtime_ns() {

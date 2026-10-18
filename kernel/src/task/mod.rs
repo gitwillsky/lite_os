@@ -25,7 +25,7 @@ pub(crate) use model::{
     ThreadCloneResources, WaitMembership,
 };
 pub(in crate::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
-pub(crate) use model::{ExecError, RobustListError, SeccompDecision, SeccompError};
+pub(crate) use model::{ExecError, ResourceUsage, RobustListError, SeccompDecision, SeccompError};
 pub(crate) use model::{KernelThreadBody, SyscallRestartBlock, SyscallRestartPolicy};
 pub(crate) use process_table::advisory_lock::{
     AdvisoryLockWaitError, install_advisory_lock_notifier, wait_for_advisory_lock,

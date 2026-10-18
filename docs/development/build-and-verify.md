@@ -290,6 +290,11 @@ idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 w
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP
 拓扑的多窗口 host CPU 采样作诊断；secondary idle→IPI→task 与 timeout runtime gate 负责活性语义。
 
+资源使用记账（`getrusage`）不新增 benchmark：用户态 trap 返回多一次 counter 读和一次本 CPU 私有 Relaxed 存储，
+缺页多一次 Relaxed 读和一次原子加，上下文切换多两次原子加，tick 多一次原子加，都没有新增锁或分配。
+guest 里 `write(/dev/null)` 紧循环 0.4 秒完成 441k 与 446k 次（改动前后），在噪声内；host 微基准无法代表 trap 往返，
+user/system 拆分的纯算术由 `scheduler-unit` 单测，端到端由 musl smoke 的 `resource-usage.c` 裁决。
+
 选核轮转不新增 benchmark：每次抢占只多一次本 CPU 私有计数的 Relaxed 读写和一次 Ready/Running 计数读取，选核仍是
 O(CPU 数) 的单趟扫描，没有新增锁、分配或跨 CPU 访问；收益是公平性而非延迟，由 `verify-runtime-scheduler` 与
 `scheduler-unit` 的策略单测裁决，host 微基准无法代表多 CPU 时间片轮转。

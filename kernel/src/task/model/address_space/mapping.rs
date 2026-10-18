@@ -47,8 +47,16 @@ impl TaskControlBlock {
         address: usize,
         access: PageFaultAccess,
     ) -> Result<PageFaultOutcome, MemoryError> {
-        self.address_space()
-            .handle_page_fault(address, access, self.user_fault_limits())
+        // 缺页期间 calling Thread 完成了存储读取（文件页读入）即为 major fault，否则是 minor。
+        let storage_before = self.thread().io_accounting.storage_read_bytes();
+        let outcome =
+            self.address_space()
+                .handle_page_fault(address, access, self.user_fault_limits())?;
+        if matches!(outcome, PageFaultOutcome::Handled) {
+            let major = self.thread().io_accounting.storage_read_bytes() != storage_before;
+            self.charge_page_fault(major);
+        }
+        Ok(outcome)
     }
 
     pub(crate) fn unmap_user_mapping(

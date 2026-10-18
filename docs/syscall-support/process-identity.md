@@ -6,7 +6,7 @@
 | 91 | `capset` | Partial | calling Thread P/E/I 与 bounding/ambient 约束、原子失败；实际 user namespace owner |
 | 93 | `exit` | Complete | Thread exit、robust cleanup 与 clear-child-tid |
 | 94 | `exit_group` | Complete | group status 唯一提交与 sibling 退出 |
-| 95 | `waitid` | Partial | native ALL/PID/PGID/PIDFD、exit/stop/continue、NOWAIT/NOHANG/clone class；复用唯一 claim，消费先于 copyout；rusage 当前须为空 |
+| 95 | `waitid` | Partial | native ALL/PID/PGID/PIDFD、exit/stop/continue、NOWAIT/NOHANG/clone class；复用唯一 claim，消费先于 copyout；rusage 为 child 含其已回收后代的使用量 |
 | 96 | `set_tid_address` | Complete | calling Thread clear-child-tid |
 | 97 | `unshare` | Partial | 零、CLONE_FS/CLONE_FILES/CLONE_NEWUSER/CLONE_NEWUTS/CLONE_NEWNS/CLONE_NEWTIME；全部锁外准备、复合 OOM 保留、calling Thread 脱离；NEWTIME 只改 for_children |
 | 144 | `setgid` | Partial | 当前 credential model 的标准 permission 范围 |

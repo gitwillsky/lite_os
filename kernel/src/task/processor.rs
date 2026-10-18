@@ -662,11 +662,14 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
         match scheduling.run_state() {
             RunState::Blocking { cpu: owner } => {
                 assert_eq!(owner, cpu, "blocking task returned on another CPU");
+                task.charge_context_switch(true);
                 scheduling.replace_non_ready_state(RunState::Blocked);
                 None
             }
             RunState::WakePending { cpu: owner } => {
                 assert_eq!(owner, cpu, "wake-pending task returned on another CPU");
+                // 任务已决定阻塞，只是唤醒抢在 deschedule 前到达：仍是自愿让出。
+                task.charge_context_switch(true);
                 let target = if scheduling.cpu_affinity.allows(cpu) {
                     cpu
                 } else {
@@ -677,6 +680,7 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
             }
             RunState::Preempting { cpu: owner } => {
                 assert_eq!(owner, cpu, "preempting task returned on another CPU");
+                task.charge_context_switch(false);
                 let target_cpu = select_cpu_after_preemption(task, scheduling.cpu_affinity);
                 let generation =
                     commit_ready_transition(scheduling.transition_to_ready(target_cpu));
@@ -687,6 +691,7 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
                 transition,
             } => {
                 assert_eq!(owner, cpu, "stopping task returned on another CPU");
+                task.charge_context_switch(transition != StopTransition::Preempting);
                 scheduling.replace_non_ready_state(RunState::Stopped {
                     resume: match transition {
                         StopTransition::Blocking => StopResume::Blocked,
