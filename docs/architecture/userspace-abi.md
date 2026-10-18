@@ -54,6 +54,9 @@
   user/shell discovery 的原生 CLI 不得依赖被 `env_clear` 移除的宿主环境。
   BusyBox 同时提供 `add-shell`/`remove-shell`，使 Bash 等 stable APK 的 maintainer script
   通过标准 `/etc/shells` owner 完成安装。
+  `liteos-base` 同时携带源码构建的 musl 头文件、`crt*.o` 与静态库，并声明 `musl-dev=1.2.6`；
+  依赖 `musl-dev` 的 Alpine 包（rust、gcc）因此解析到本包，不会拉入与其 file/`so:libc.musl`
+  ownership 冲突的 Alpine musl。固定 musl 比 stable 分支的 1.2.5 新，所以不能改用 Alpine 的 musl 包。
   应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
 - 固定产品 rootfs 不安装 Codex/Claude。AArch64 持久开发实例通过显式
   `prepare-agent-development` 离线安装固定 Node/npm APK closure，再由 Guest npm 从

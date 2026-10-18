@@ -77,7 +77,7 @@ BINARY_RECIPE_VERSION = 7
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext4 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 14
+ROOTFS_RECIPE_VERSION = 15
 # APK assembly temporarily holds both the installed tree and its signed base
 # package. The bundled FLAC makes the old 128 MiB image fail with ENOSPC during
 # that transaction, so the product baseline reserves 512 MiB to keep package
@@ -1557,6 +1557,38 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
     return tuple(artifacts)
 
 
+def musl_development_commands(install: Path) -> list[str]:
+    """Returns debugfs commands installing the musl headers, startup objects and static archives.
+
+    `liteos-base` provides `musl-dev` with these files, so Alpine packages that depend on `musl-dev`
+    (rust, gcc) resolve against the musl actually shipped here instead of pulling Alpine's own musl,
+    which would conflict with the file and `so:libc.musl` ownership of `liteos-base`.
+    """
+    commands: list[str] = []
+    include = install / "usr/include"
+    directories = sorted({Path("/usr/include"), *(
+        Path("/usr/include") / path.relative_to(include)
+        for path in include.rglob("*")
+        if path.is_dir()
+    )})
+    commands.extend(f"mkdir {directory}" for directory in directories)
+    files = [
+        (path, Path("/usr/include") / path.relative_to(include))
+        for path in sorted(include.rglob("*"))
+        if path.is_file()
+    ]
+    library = install / "usr/lib"
+    files.extend(
+        (path, Path("/usr/lib") / path.name)
+        for path in sorted(library.iterdir())
+        if path.suffix in (".a", ".o")
+    )
+    for source, destination in files:
+        commands.append(f"write {source} {destination}")
+        commands.append(f"set_inode_field {destination} mode 0100644")
+    return commands
+
+
 def build_stress_tools(musl: MuslCachePaths) -> Path:
     """构建 rootfs 单一 CPU/memory/page-cache 诊断程序。"""
     source = ROOT / "user/diagnostics/liteos-stress.c"
@@ -1699,6 +1731,7 @@ def create_image(
         "ln /bin/liteos-stress /bin/cachetest",
         f"set_inode_field /bin/liteos-stress links_count {len(STRESS_LINKS) + 1}",
         f"symlink {TARGET.musl_loader} /usr/lib/libc.so",
+        *musl_development_commands(musl.install),
     ]
     # compositor 只消费 boot/cursor；Aurora presentation 与 app 资产由同一清单独占。
     for artifact in graphical_userland:

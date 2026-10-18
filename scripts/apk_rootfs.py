@@ -138,6 +138,7 @@ def _build_base_package(
                 "cmd:apk",
                 "cmd:busybox",
                 f"so:libc.musl-{TARGET.alpine_arch}.so.1=1.2.6",
+                "musl-dev=1.2.6",
             ),
         ),
         private_key,

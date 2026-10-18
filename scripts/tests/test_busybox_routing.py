@@ -410,5 +410,25 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 module.verify_elf(binary, compiler)
 
 
+class MuslDevelopmentCommandsTests(unittest.TestCase):
+    def test_installs_headers_startup_objects_and_archives_but_not_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            install = Path(directory)
+            (install / "usr/include/sys").mkdir(parents=True)
+            (install / "usr/lib").mkdir(parents=True)
+            (install / "usr/include/stdio.h").write_text("")
+            (install / "usr/include/sys/mman.h").write_text("")
+            for name in ("crt1.o", "libc.a", "libc.so"):
+                (install / "usr/lib" / name).write_text("")
+
+            commands = verify_busybox.musl_development_commands(install)
+
+        self.assertLess(commands.index("mkdir /usr/include"), commands.index("mkdir /usr/include/sys"))
+        self.assertIn(f"write {install}/usr/include/sys/mman.h /usr/include/sys/mman.h", commands)
+        self.assertIn(f"write {install}/usr/lib/crt1.o /usr/lib/crt1.o", commands)
+        self.assertIn(f"write {install}/usr/lib/libc.a /usr/lib/libc.a", commands)
+        self.assertFalse(any("libc.so" in command for command in commands))
+
+
 if __name__ == "__main__":
     unittest.main()
