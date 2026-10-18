@@ -65,6 +65,7 @@ int verify_memory_pressure(void);
 int verify_address_space_rollover(void);
 int verify_mapping_placement(void);
 int verify_resource_usage(void);
+int verify_mremap(void);
 
 static void signal_handler(int signal)
 {
@@ -654,6 +655,7 @@ static int run_smoke(int argc, char **argv, char **envp)
 	if (verify_address_space_rollover() != 0) return 21;
 	if (verify_memory_pressure() != 0) return 20;
 	if (verify_resource_usage() != 0) return 23;
+	if (verify_mremap() != 0) return 24;
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 14;
 	return 0;
 }

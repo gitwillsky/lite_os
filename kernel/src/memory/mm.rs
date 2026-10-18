@@ -51,6 +51,7 @@ use fault_preflight::{
     FaultPermissions, FaultPreflight, FaultResidency, FileFaultState, preflight_fault,
 };
 use file_page_range::{FilePageRange, FilePageRangeError};
+pub(crate) use mmap::{RemapError, RemapPlacement, RemapRequest};
 use private_area::{PrivateFaultPreparation, PrivateFileArea};
 use resident::{PrivateBacking, PrivateResident};
 pub(crate) use shared_area::AnonymousSharedBacking as SharedMemoryBacking;

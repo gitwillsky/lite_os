@@ -4,6 +4,7 @@
 |---:|---|---|---|
 | 214 | `brk` | Complete | program break 与 anonymous VMA 统一 owner |
 | 215 | `munmap` | Complete | VMA split、shared writeback 与 TLB cleanup |
+| 216 | `mremap` | Partial | 私有/共享匿名、私有/共享文件与 device 映射的缩小、增长、`MAYMOVE`/`FIXED`/`DONTUNMAP` 搬迁和共享映射别名（`old_size == 0`）；stack 与 loader System VMA 返回 EFAULT |
 | 222 | `mmap` | Partial | anonymous/regular-file/memfd/ALSA PCM、private/shared、fixed，以及 noreserve/stack advisory；ALSA 只接受 writable `MAP_SHARED` playback buffer |
 | 224 | `swapon` | Partial | SWAPSPACE2 v1 block/file swap、priority flags、统一 private/sharedAnon/tmpfs/COW 页 owner；共享页双架构1/2CPU阶段验证通过，完整产品门禁待执行 |
 | 225 | `swapoff` | Partial | 预备 waiter、禁止新槽、恢复物理 backing 与已登记 mm 的逻辑 epoch，失败保留 lease；page/MM work unit 之间及最终槽退休等待支持 EINTR 重试 |
@@ -12,6 +13,10 @@
 | 233 | `madvise` | Partial | 已声明 advice、discard/reclaim 与 residency 语义 |
 
 ## 已知缺口
+
+`mremap` 搬迁转移 VMA 的全部 owner（resident 页、共享 backing、文件范围）并整体换到新地址，不复制页；旧地址的翻译由同步 fence 封闭，新地址在首次访问时按已有 owner 重新安装。
+共享匿名与共享文件映射增长出的页没有 backing，访问得到 SIGBUS，与 Linux 一致；device 映射不可增长（EFAULT）。
+源范围必须被单个 VMA 完整覆盖，否则 EFAULT；stack 的大小由 stack owner 管理，不可 remap。
 
 swapon(224)/swapoff(225) 已接入标准 Linux v1 block/file swap，用户 private、共享 COW、
 共享匿名与 tmpfs/memfd 统一迁移；共享页路径已通过双架构各1/2CPU TCG阶段验证；完整产品门禁待全部范围完成后执行。没有 commit accounting、huge page、NUMA 或 `userfaultfd`。通用后台压力回收已实现，

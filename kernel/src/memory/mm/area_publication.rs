@@ -26,6 +26,45 @@ impl MemorySet {
             .is_none_or(|(key, _)| *key >= end)
     }
 
+    /// 统计 `range` 与现有 VMA 相交部分对 RLIMIT_AS/RLIMIT_DATA 的贡献，即替换它们会释放的 usage。
+    ///
+    /// 从 ordered floor 开始，只遍历实际相交节点；不扫描不相关 VMA。
+    ///
+    /// # Returns
+    ///
+    /// `(virtual_bytes, data_bytes)`。
+    pub(super) fn replaced_usage(&self, range: &Range<VirtualPageNumber>) -> (u64, u64) {
+        let first = self
+            .areas
+            .floor(&range.start)
+            .map_or(range.start, |(key, _)| *key);
+        self.areas
+            .iter_from(&first)
+            .take_while(|(key, _)| **key < range.end)
+            .filter(|(_, area)| range.start < area.vpn_range.end)
+            .fold((0u64, 0u64), |(virtual_bytes, data_bytes), (_, area)| {
+                let overlap = (range.end.min(area.vpn_range.end).as_usize()
+                    - range.start.max(area.vpn_range.start).as_usize())
+                    as u64
+                    * config::PAGE_SIZE as u64;
+                let contribution = area.index_contribution();
+                (
+                    virtual_bytes
+                        + if contribution.virtual_bytes != 0 {
+                            overlap
+                        } else {
+                            0
+                        },
+                    data_bytes
+                        + if contribution.data_bytes != 0 {
+                            overlap
+                        } else {
+                            0
+                        },
+                )
+            })
+    }
+
     pub(crate) fn push(
         &mut self,
         map_area: MapArea,

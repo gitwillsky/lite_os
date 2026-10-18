@@ -326,6 +326,56 @@ impl MapArea {
         Ok(())
     }
 
+    /// 把整个 VMA 平移到 `new_start`，转移而不复制任何 owner，也不分配。
+    ///
+    /// 页索引以绝对 VPN 为键，所以 `data_frames` 与 shared-file `resident` 必须同步换键；
+    /// shared anonymous/device 的 `page_offset` 与 shared-file 的页范围都相对 VMA 起点，保持不变。
+    /// caller 已撤销旧 PTE；缺页路径按新地址重新安装，缺失这一步旧地址的 stale 翻译会继续可访问。
+    pub(super) fn rebase(&mut self, new_start: VirtualPageNumber) {
+        let old_start = self.vpn_range.start;
+        let pages = self.vpn_range.end.as_usize() - old_start.as_usize();
+        shift_vpns(&mut self.data_frames, old_start, new_start);
+        if let Some(shared) = &mut self.shared_file {
+            shift_vpns(&mut shared.resident, old_start, new_start);
+        }
+        if let Some(private) = &mut self.private_file {
+            private.rebased(old_start, new_start);
+        }
+        self.vpn_range = new_start..VirtualPageNumber::from_vpn(new_start.as_usize() + pages);
+    }
+
+    /// 判断能否在末尾追加 `extra` 页。device 与 stack 的大小由各自 owner 决定，不可增长。
+    pub(super) fn can_extend_tail(&self, extra: usize) -> bool {
+        let extra = extra as u64;
+        self.device.is_none()
+            && !matches!(self.kind, VmaKind::System | VmaKind::Stack)
+            && self
+                .shared_file
+                .as_ref()
+                .is_none_or(|shared| shared.pages.extended(extra).is_some())
+            && self
+                .private_file
+                .as_ref()
+                .is_none_or(|private| private.can_extend(extra))
+    }
+
+    /// 在末尾追加 `extra` 页；caller 已用 `can_extend_tail` 与资源检查验证。
+    ///
+    /// 新页没有 resident owner，首次访问才物化；共享匿名越过 backing 的页缺页时 SIGBUS。
+    pub(super) fn extend_tail(&mut self, extra: usize) {
+        debug_assert!(self.can_extend_tail(extra));
+        if let Some(shared) = &mut self.shared_file {
+            shared.pages = shared
+                .pages
+                .extended(extra as u64)
+                .expect("extension was validated");
+        }
+        if let Some(private) = &mut self.private_file {
+            private.extend(extra as u64);
+        }
+        self.vpn_range.end = VirtualPageNumber::from_vpn(self.vpn_range.end.as_usize() + extra);
+    }
+
     /// 按 `[start, end)` 将可保护 VMA 分成 left/middle/right，转移而不复制 resident owner。
     ///
     /// caller 已验证区间完全包含于当前 area；返回的 middle 始终存在。
@@ -412,4 +462,23 @@ impl MapArea {
         self.data_frames
             .append_ordered_disjoint(&mut right.data_frames);
     }
+}
+
+/// 把以绝对 VPN 为键的索引整体平移，复用原节点，不分配。
+///
+/// 平移保持键的相对顺序，所以逐个摘出、换键、再提交就得到合法的有序表。
+fn shift_vpns<V>(
+    map: &mut FallibleMap<VirtualPageNumber, V>,
+    old_start: VirtualPageNumber,
+    new_start: VirtualPageNumber,
+) {
+    let mut shifted = FallibleMap::new();
+    while let Some(key) = map.first_key_value().map(|(key, _)| *key) {
+        let mut entry = map.take_entry(&key).expect("first key must be present");
+        entry.set_key(VirtualPageNumber::from_vpn(
+            key.as_usize() - old_start.as_usize() + new_start.as_usize(),
+        ));
+        shifted.commit_vacant(entry);
+    }
+    *map = shifted;
 }

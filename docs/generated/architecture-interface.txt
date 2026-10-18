@@ -2941,6 +2941,7 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn try_new () -> Result
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mm.rs :: pub (crate) use area :: { MapArea , MapType }
 kernel/src/memory/mm.rs :: pub (crate) use background_reclaim :: reclaim_address_space
+kernel/src/memory/mm.rs :: pub (crate) use mmap :: { RemapError , RemapPlacement , RemapRequest }
 kernel/src/memory/mm.rs :: pub (crate) use shared_area :: AnonymousSharedBacking as SharedMemoryBacking
 kernel/src/memory/mm.rs :: pub (crate) use statistics :: UserPageStatistics
 kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_atomic :: { UserAtomicU32 , UserAtomicU32Op } , futex_key :: { FutexAccessError , FutexKey } , initial_stack :: { InitialStack , InitialStackCredentials } , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingPlacement , MappingResourceLimits , MemoryAdvice , UserMappingRequest , UserMappingSource , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
@@ -2972,19 +2973,23 @@ kernel/src/memory/mm/area.rs :: pub (super) MapArea :: shared_file : Option < Sh
 kernel/src/memory/mm/area.rs :: pub (super) MapArea :: vpn_range : Range < VirtualPageNumber >
 kernel/src/memory/mm/area.rs :: pub (super) enum VmaKind
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn anonymous (start_va : VirtualAddress , end_va : VirtualAddress , permissions : MapPermission ,) -> Self
+kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn can_extend_tail (& self , extra : usize) -> bool
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn copy_data (& mut self , data : & [u8]) -> Result < () , MemoryError >
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn elf (start_va : VirtualAddress , end_va : VirtualAddress , permissions : MapPermission , backing : PrivateFileArea ,) -> Self
+kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn extend_tail (& mut self , extra : usize)
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn file (start_va : VirtualAddress , end_va : VirtualAddress , permissions : MapPermission , backing : PrivateFileArea ,) -> Self
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn has_leaf_permission (permission : MapPermission) -> bool
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn index_contribution (& self) -> VmaContribution
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn merge_anonymous (& mut self , mut right : Self)
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn partition_protectable (mut self , start : VirtualPageNumber , end : VirtualPageNumber ,) -> (Option < Self > , Self , Option < Self >)
+kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn rebase (& mut self , new_start : VirtualPageNumber)
 kernel/src/memory/mm/area.rs :: pub (super) impl MapArea :: fn stack (top : usize) -> Self
 kernel/src/memory/mm/area_publication.rs :: pub (crate) impl MemorySet :: fn insert_framed_area (& mut self , start_va : VirtualAddress , end_va : VirtualAddress , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/area_publication.rs :: pub (crate) impl MemorySet :: fn push (& mut self , map_area : MapArea , data : Option < & [u8] > ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/area_publication.rs :: pub (super) impl MemorySet :: fn commit_area (& mut self , entry : VacantEntry < VirtualPageNumber , MapArea >)
 kernel/src/memory/mm/area_publication.rs :: pub (super) impl MemorySet :: fn range_is_free (& self , start : VirtualPageNumber , end : VirtualPageNumber) -> bool
 kernel/src/memory/mm/area_publication.rs :: pub (super) impl MemorySet :: fn remove_area (& mut self , key : & VirtualPageNumber) -> Option < MapArea >
+kernel/src/memory/mm/area_publication.rs :: pub (super) impl MemorySet :: fn replaced_usage (& self , range : & Range < VirtualPageNumber >) -> (u64 , u64)
 kernel/src/memory/mm/area_publication.rs :: pub (super) impl MemorySet :: fn take_area_entry (& mut self , key : & VirtualPageNumber ,) -> Option < VacantEntry < VirtualPageNumber , MapArea > >
 kernel/src/memory/mm/background_reclaim.rs :: enum BackgroundReclaimCandidate :: Clean (bool)
 kernel/src/memory/mm/background_reclaim.rs :: enum BackgroundReclaimCandidate :: Skip
@@ -3061,6 +3066,7 @@ kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: con
 kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: fn byte_offset (self , relative : u64) -> Option < u64 >
 kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: fn byte_range (self) -> Option < (u64 , u64) >
 kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: fn byte_within (self , relative : u64 , within_page : usize) -> Option < u64 >
+kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: fn extended (self , extra : u64) -> Option < Self >
 kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: fn has_file_bytes (self , relative : u64 , file_size : u64) -> Option < bool >
 kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: fn new (offset : u64 , length : usize) -> Result < Self , FilePageRangeError >
 kernel/src/memory/mm/file_page_range.rs :: pub (super) impl FilePageRange :: fn page (self , relative : u64) -> Option < u64 >
@@ -3155,6 +3161,7 @@ kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_private_fil
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_shared_file (& mut self , address : usize , permission : MapPermission , fixed_noreplace : bool , file : FileMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn prepare_user_unmap (& mut self , address : usize , length : usize ,) -> Result < PreparedAreaRetirement , MemoryError >
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/mmap.rs :: pub (crate) use remap :: { RemapError , RemapPlacement , RemapRequest }
 kernel/src/memory/mm/mmap/advice.rs :: pub (crate) impl MemorySet :: fn advise_user_mapping (& mut self , address : usize , length : usize , advice : MemoryAdvice ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn map_shared_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn map_system_v_shared_memory (& mut self , address : usize , length : usize , permission : MapPermission , source : crate :: memory :: SharedMemoryMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
@@ -3166,6 +3173,24 @@ kernel/src/memory/mm/mmap/installation.rs :: pub (crate) impl MemorySet :: fn pr
 kernel/src/memory/mm/mmap/installation.rs :: pub (crate) impl PreparedUserMapping :: fn synchronize (self) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap/installation.rs :: pub (crate) struct PreparedUserMapping
 kernel/src/memory/mm/mmap/protection.rs :: pub (crate) impl MemorySet :: fn protect_user_mapping (& mut self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/mmap/remap.rs :: enum RemapError :: # [doc = " 原地放不下且不允许搬迁，或资源上限不足（ENOMEM）。"] NoMemory
+kernel/src/memory/mm/mmap/remap.rs :: enum RemapError :: # [doc = " 参数组合非法（EINVAL）。"] Invalid
+kernel/src/memory/mm/mmap/remap.rs :: enum RemapError :: # [doc = " 源范围没有被单个可重映射的 VMA 完整覆盖（EFAULT）。"] Unmapped
+kernel/src/memory/mm/mmap/remap.rs :: enum RemapError :: Memory (MemoryError)
+kernel/src/memory/mm/mmap/remap.rs :: enum RemapPlacement :: # [doc = " 原地放不下时由内核选址搬迁（`MREMAP_MAYMOVE`）。"] MayMove
+kernel/src/memory/mm/mmap/remap.rs :: enum RemapPlacement :: # [doc = " 只能原地调整（没有 `MREMAP_MAYMOVE`）。"] InPlace
+kernel/src/memory/mm/mmap/remap.rs :: enum RemapPlacement :: # [doc = " 搬到指定的 page-aligned 地址，先解除该处既有映射（`MREMAP_MAYMOVE | MREMAP_FIXED`）。"] Fixed (usize)
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) RemapRequest :: address : usize
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) RemapRequest :: dont_unmap : bool
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) RemapRequest :: new_length : usize
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) RemapRequest :: old_length : usize
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) RemapRequest :: placement : RemapPlacement
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) enum RemapError
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) enum RemapPlacement
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) impl MemorySet :: fn prepare_user_remap (& mut self , request : RemapRequest , limits : MappingResourceLimits ,) -> PreparedUserRemap
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) impl PreparedUserRemap :: fn synchronize (self) -> Result < usize , RemapError >
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) struct PreparedUserRemap
+kernel/src/memory/mm/mmap/remap.rs :: pub (crate) struct RemapRequest
 kernel/src/memory/mm/mmap/shared_write.rs :: pub (crate) impl MemorySet :: fn revoke_shared_file_writers (& mut self , id : SharedFileId)
 kernel/src/memory/mm/mmap/shared_write.rs :: pub (super) impl MemorySet :: fn release_restricted_shared_writers (& mut self , start : VirtualPageNumber , end : VirtualPageNumber ,)
 kernel/src/memory/mm/private_area.rs :: enum PrivateFaultPreparation :: BeyondEof
@@ -3173,12 +3198,15 @@ kernel/src/memory/mm/private_area.rs :: enum PrivateFaultPreparation :: Cached (
 kernel/src/memory/mm/private_area.rs :: enum PrivateFaultPreparation :: Executable
 kernel/src/memory/mm/private_area.rs :: pub (super) enum PrivateFaultPreparation
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn cached_file (source : Arc < dyn SharedFileMapping > , data_start : usize , pages : FilePageRange ,) -> Self
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn can_extend (& self , extra : u64) -> bool
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn executable (source : Arc < dyn ExecutableSource > , data_start : usize , source_offset : usize , file_size : usize ,) -> Self
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn extend (& mut self , extra : u64)
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn faultable (& self , vpn : VirtualPageNumber) -> Result < bool , MemoryError >
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn fill (& self , vpn : VirtualPageNumber , frame : & mut FrameTracker , prepared : & PrivateFaultPreparation ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn first_stale_page (& self , vma_start : VirtualPageNumber , mapping_id : crate :: memory :: SharedFileId , file_size : u64 ,) -> Option < VirtualPageNumber >
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn has_file_bytes (& self , vpn : VirtualPageNumber) -> bool
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn prepare_fault (& self , vpn : VirtualPageNumber ,) -> Result < PrivateFaultPreparation , MemoryError >
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn rebased (& mut self , from : VirtualPageNumber , to : VirtualPageNumber)
 kernel/src/memory/mm/private_area.rs :: pub (super) struct PrivateFileArea
 kernel/src/memory/mm/private_fault.rs :: pub (super) impl MemorySet :: fn handle_private_resident_fault (& mut self , address : usize , access : PageFaultAccess ,) -> Result < bool , MemoryError >
 kernel/src/memory/mm/private_reclaim.rs :: pub (crate) impl MemorySet :: fn reclaim_private_pages (& mut self , request : ReclaimRequest) -> ReclaimResult
@@ -3215,6 +3243,7 @@ kernel/src/memory/mm/retire.rs :: pub (crate) impl PreparedAreaRetirement :: fn 
 kernel/src/memory/mm/retire.rs :: pub (crate) struct PreparedAreaRetirement
 kernel/src/memory/mm/retire.rs :: pub (in crate :: memory) impl MapArea :: fn unmap (& mut self , page_table : & mut PageTable , commit : & mut TranslationCommit ,)
 kernel/src/memory/mm/retire.rs :: pub (super) impl PreparedAreaRetirement :: fn batch (mut areas : Vec < MapArea > , page_table : & mut PageTable) -> Self
+kernel/src/memory/mm/retire.rs :: pub (super) impl PreparedAreaRetirement :: fn rehoming (areas : Vec < MapArea > , commit : TranslationCommit) -> Self
 kernel/src/memory/mm/shared_area.rs :: pub (crate) impl AnonymousSharedBacking :: fn allocate (page_count : usize) -> Result < Arc < Self > , MemoryError >
 kernel/src/memory/mm/shared_area.rs :: pub (crate) impl AnonymousSharedBacking :: fn freeze_swap_policy (& self ,) -> Result < crate :: memory :: shared_memory :: SharedMemorySwapPolicyGuard < '_ > , MemoryError >
 kernel/src/memory/mm/shared_area.rs :: pub (crate) impl AnonymousSharedBacking :: fn locked (& self) -> bool
@@ -3336,7 +3365,7 @@ kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocation
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
 kernel/src/memory/mod.rs :: pub (crate) use mm :: SharedMemoryBacking
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexAccessError , FutexKey , InitialStack , InitialStackCredentials , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , SegmentationCause , UserAccessError , UserAtomicU32 , UserAtomicU32Op , UserFaultLimits , UserMappingRequest , UserMappingSource , UserPageStatistics , reclaim_address_space , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexAccessError , FutexKey , InitialStack , InitialStackCredentials , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserAccessError , UserAtomicU32 , UserAtomicU32Op , UserFaultLimits , UserMappingRequest , UserMappingSource , UserPageStatistics , reclaim_address_space , }
 kernel/src/memory/mod.rs :: pub (crate) use permissions :: MapPermission
 kernel/src/memory/mod.rs :: pub (crate) use pressure :: run_background_reclaim
 kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , SharedPagePin , complete_memory_mapping_owner_initialization , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , revoke_shared_file_writers , }
@@ -6691,6 +6720,7 @@ kernel/src/syscall/memory.rs :: pub (crate) fn sys_brk (new_brk : usize) -> isiz
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_madvise (address : usize , length : usize , advice : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mmap (address : usize , length : usize , prot : usize , flags : usize , fd : isize , offset : usize ,) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mprotect (address : usize , length : usize , prot : usize) -> isize
+kernel/src/syscall/memory.rs :: pub (crate) fn sys_mremap (old_address : usize , old_size : usize , new_size : usize , flags : usize , new_address : usize ,) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_msync (address : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_munmap (address : usize , length : usize) -> isize
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_ANONYMOUS : usize = 0x20
@@ -7113,6 +7143,7 @@ kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBl
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn handle_page_fault (& self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn install_user_mapping (& self , request : crate :: memory :: UserMappingRequest ,) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn remap_user_mapping (& self , request : crate :: memory :: RemapRequest ,) -> Result < usize , crate :: memory :: RemapError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >

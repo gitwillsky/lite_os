@@ -183,6 +183,10 @@ impl MemorySet {
                     + vpn
                         .as_usize()
                         .saturating_sub(area.vpn_range.start.as_usize());
+                // mremap 增长出来的页没有 backing：Linux 的 shmem 文件没有同步扩容，访问返回 SIGBUS。
+                if index >= shared.backing.page_count {
+                    return Ok(PageFaultOutcome::BusError);
+                }
                 let frame = shared.backing.page(index)?;
                 let pin = frame.pin()?;
                 let ppn = pin.ppn();

@@ -184,6 +184,7 @@ pub const SYSCALL_SHUTDOWN: usize = 210;
 pub const SYSCALL_SYSINFO: usize = 179;
 pub const SYSCALL_BRK: usize = 214;
 pub const SYSCALL_MUNMAP: usize = 215;
+pub const SYSCALL_MREMAP: usize = 216;
 pub const SYSCALL_CLONE: usize = 220;
 pub const SYSCALL_CLONE3: usize = 435;
 pub const SYSCALL_PIDFD_OPEN: usize = 434;

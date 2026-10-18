@@ -46,9 +46,10 @@ pub(crate) use mm::SharedMemoryBacking;
 pub(crate) use mm::{
     DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexAccessError,
     FutexKey, InitialStack, InitialStackCredentials, MappingPlacement, MappingResourceLimits,
-    MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome, SegmentationCause,
-    UserAccessError, UserAtomicU32, UserAtomicU32Op, UserFaultLimits, UserMappingRequest,
-    UserMappingSource, UserPageStatistics, reclaim_address_space,
+    MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError,
+    RemapPlacement, RemapRequest, SegmentationCause, UserAccessError, UserAtomicU32,
+    UserAtomicU32Op, UserFaultLimits, UserMappingRequest, UserMappingSource, UserPageStatistics,
+    reclaim_address_space,
 };
 pub(crate) use permissions::MapPermission;
 pub(crate) use pressure::run_background_reclaim;

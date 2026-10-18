@@ -65,6 +65,16 @@ impl PreparedAreaRetirement {
         }
     }
 
+    /// 构造 remap 的 source fence：`areas` 是被丢弃的尾部，`commit` 已包含搬迁页的旧翻译撤销。
+    ///
+    /// 被搬迁的 VMA 不在 `areas` 里，它已经带着全部 owner 重新发布到新地址。
+    pub(super) fn rehoming(areas: Vec<MapArea>, commit: TranslationCommit) -> Self {
+        Self {
+            areas: Some(RetiredAreas::Batch(areas)),
+            commit,
+        }
+    }
+
     /// 在 MM lock 外完成 fence，随后释放实际 file/backend/frame owner。
     ///
     /// # Errors

@@ -260,6 +260,61 @@ pub(crate) fn sys_munmap(address: usize, length: usize) -> isize {
         .map_or_else(|error| -memory_errno(error), |()| 0)
 }
 
+/// 缩小、增长或搬迁一段映射。
+///
+/// # Parameters
+///
+/// - `old_address`: page-aligned 源起始地址。
+/// - `old_size`: 源长度，向上取整到整页；仅共享映射允许为零（创建别名，需要 `MREMAP_MAYMOVE`）。
+/// - `new_size`: 目标长度，必须非零，向上取整到整页。
+/// - `flags`: `MREMAP_MAYMOVE`、`MREMAP_FIXED`（需要 MAYMOVE）、`MREMAP_DONTUNMAP`（需要 MAYMOVE 且
+///   长度不变，仅私有匿名映射）的任意合法组合。
+/// - `new_address`: 仅 `MREMAP_FIXED` 使用的 page-aligned 目标地址。
+///
+/// # Returns
+///
+/// 成功返回调整后的起始地址；源未被单个 VMA 覆盖返回 `-EFAULT`，原地放不下且不允许搬迁或资源不足返回
+/// `-ENOMEM`，非法参数组合返回 `-EINVAL`。
+pub(crate) fn sys_mremap(
+    old_address: usize,
+    old_size: usize,
+    new_size: usize,
+    flags: usize,
+    new_address: usize,
+) -> isize {
+    const MREMAP_MAYMOVE: usize = 1;
+    const MREMAP_FIXED: usize = 2;
+    const MREMAP_DONTUNMAP: usize = 4;
+    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
+        || flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 && flags & MREMAP_MAYMOVE == 0
+    {
+        return -errno::EINVAL;
+    }
+    let placement = if flags & MREMAP_FIXED != 0 {
+        crate::memory::RemapPlacement::Fixed(new_address)
+    } else if flags & MREMAP_MAYMOVE != 0 {
+        crate::memory::RemapPlacement::MayMove
+    } else {
+        crate::memory::RemapPlacement::InPlace
+    };
+    let result = current_task()
+        .expect("mremap requires a current task")
+        .remap_user_mapping(crate::memory::RemapRequest {
+            address: old_address,
+            old_length: old_size,
+            new_length: new_size,
+            placement,
+            dont_unmap: flags & MREMAP_DONTUNMAP != 0,
+        });
+    match result {
+        Ok(address) => address as isize,
+        Err(crate::memory::RemapError::Unmapped) => -errno::EFAULT,
+        Err(crate::memory::RemapError::Invalid) => -errno::EINVAL,
+        Err(crate::memory::RemapError::NoMemory) => -errno::ENOMEM,
+        Err(crate::memory::RemapError::Memory(error)) => -memory_errno(error),
+    }
+}
+
 /// 修改完整用户 VMA 区间的页权限，保留 Linux 对合法 `PROT_*` 组合的语义。
 ///
 /// # Parameters

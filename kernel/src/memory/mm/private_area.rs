@@ -94,6 +94,37 @@ impl PrivateFileArea {
         }
     }
 
+    /// VMA 平移后，把以绝对地址记录的 data 起点同步平移；backing 内容本身不变。
+    pub(super) fn rebased(&mut self, from: VirtualPageNumber, to: VirtualPageNumber) {
+        // 模 2^64 算术：data_start 可以落在 VMA 起点之前（首页内偏移），逐步 checked 会误报溢出。
+        let delta = to
+            .as_usize()
+            .wrapping_sub(from.as_usize())
+            .wrapping_mul(PAGE_SIZE);
+        match &mut self.source {
+            PrivateSource::Executable { data_start, .. }
+            | PrivateSource::CachedFile { data_start, .. } => {
+                *data_start = data_start.wrapping_add(delta);
+            }
+        }
+    }
+
+    /// 判断 VMA 末尾追加 `extra` 页后，文件页范围是否仍合法。
+    pub(super) fn can_extend(&self, extra: u64) -> bool {
+        match &self.source {
+            // ELF 超出文件尾的部分按零页填充，不需要扩展范围。
+            PrivateSource::Executable { .. } => true,
+            PrivateSource::CachedFile { pages, .. } => pages.extended(extra).is_some(),
+        }
+    }
+
+    /// 在 `can_extend` 成功后真正扩展；追加的页越过文件尾时缺页返回 SIGBUS。
+    pub(super) fn extend(&mut self, extra: u64) {
+        if let PrivateSource::CachedFile { pages, .. } = &mut self.source {
+            *pages = pages.extended(extra).expect("extension was validated");
+        }
+    }
+
     fn cached_relative_page(data_start: usize, vpn: VirtualPageNumber) -> Option<u64> {
         let start = data_start / PAGE_SIZE;
         let delta = vpn.as_usize().checked_sub(start)?;

@@ -203,6 +203,11 @@
 - 主程序 executable_owner 是 actual open/deny-write 的无回调 MappedFileOwner Arc，from_elf 准备，
   fork 继承，最后 mm 在 translation fence 后释放；解除全部 VMA 不清除它。Any 只允许 task 地址空间
   对同一 Arc 做显式类型检查并取得 path，memory 不回调 FS/task，也不拥有另一份 executable path。
+- `mremap` 由 `MemorySet::prepare_user_remap` 在一次 MM lock 内完成，返回 `PreparedUserRemap`（结果加 fence token）；
+  先校验与预留（最多四个 VMA 节点和一个退休 Vec），`FIXED` 目标解除是唯一破坏性前置步骤，之后只剩不分配的操作。
+  搬迁沿用 munmap 的 left/middle/right 切分，把 middle 连同全部 resident owner 用 `MapArea::rebase` 换到新地址，
+  不复制页、不预建 PTE；旧翻译随 fence 在 lock 外同步。`DONTUNMAP` 在旧范围发布新的空匿名 VMA。
+  共享匿名的 `page_offset` 与共享文件页范围相对 VMA 起点，rebase 不改它们；增长出的页越过 backing 时缺页返回 BusError。
 - munmap 与 brk 收缩使用同一 `PreparedAreaRetirement` owner：MM lock 内完成全部预分配、
   writeback、VMA/PTE 摘除，锁外同步 fence 并析构 file/backend/frame。single token 不分配，
   batch 使用首个 mutation 前预留的 Vec；漏消费或 fence 失败保留全部 backing 并 fail-stop。

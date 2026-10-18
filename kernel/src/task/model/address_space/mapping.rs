@@ -1,6 +1,15 @@
 use super::*;
 
 impl TaskControlBlock {
+    /// `mremap`：一次 MM 事务完成缩小、增长或搬迁，fence 在释放 MM lock 后同步。
+    pub(crate) fn remap_user_mapping(
+        &self,
+        request: crate::memory::RemapRequest,
+    ) -> Result<usize, crate::memory::RemapError> {
+        self.address_space()
+            .remap_user_mapping(request, self.mapping_resource_limits())
+    }
+
     pub(crate) fn set_program_break(&self, new_break: usize) -> Result<usize, MemoryError> {
         let address_space_limit = self
             .resource_limit(RLIMIT_AS)
@@ -72,6 +81,21 @@ impl TaskControlBlock {
 }
 
 impl AddressSpace {
+    fn remap_user_mapping(
+        &self,
+        request: crate::memory::RemapRequest,
+        limits: MappingResourceLimits,
+    ) -> Result<usize, crate::memory::RemapError> {
+        let prepared = {
+            let mut memory = self
+                .memory_set
+                .lock()
+                .map_err(|_| crate::memory::RemapError::Memory(MemoryError::OutOfMemory))?;
+            memory.prepare_user_remap(request, limits)
+        };
+        prepared.synchronize()
+    }
+
     fn set_program_break(
         &self,
         new_break: usize,

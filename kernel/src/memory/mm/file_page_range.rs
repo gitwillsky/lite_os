@@ -60,6 +60,21 @@ impl FilePageRange {
         })
     }
 
+    /// Extend the interval by `extra` pages, keeping the Linux signed file-position range valid.
+    ///
+    /// Pages past the current file EOF stay in the interval; touching them raises SIGBUS.
+    pub(super) fn extended(self, extra: u64) -> Option<Self> {
+        let count = self.count.checked_add(extra)?;
+        let end = self
+            .start
+            .checked_add(count)?
+            .checked_mul(crate::memory::PAGE_SIZE as u64)?;
+        (end <= i64::MAX as u64).then_some(Self {
+            start: self.start,
+            count,
+        })
+    }
+
     /// Project one relative VMA page to its regular-file page index.
     pub(super) fn page(self, relative: u64) -> Option<u64> {
         (relative < self.count)

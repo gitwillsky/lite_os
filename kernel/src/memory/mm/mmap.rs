@@ -57,6 +57,8 @@ mod device;
 mod fault;
 mod installation;
 mod protection;
+mod remap;
+pub(crate) use remap::{RemapError, RemapPlacement, RemapRequest};
 mod shared_write;
 
 /// 一次用户页访问 fault 的领域结果。

@@ -456,6 +456,7 @@ pub(crate) fn syscall(
             SYSCALL_SYSINFO => sys_sysinfo(args[0]),
             SYSCALL_BRK => sys_brk(args[0]),
             SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
+            SYSCALL_MREMAP => sys_mremap(args[0], args[1], args[2], args[3], args[4]),
             SYSCALL_CLONE => sys_clone(args[0], args[1], args[2], args[3], args[4]),
             SYSCALL_CLONE3 => sys_clone3(args[0], args[1]),
             SYSCALL_PIDFD_OPEN => pidfd::sys_pidfd_open(args[0] as i32, args[1] as u32),
