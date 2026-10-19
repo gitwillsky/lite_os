@@ -193,13 +193,20 @@ USER1000ms与非进展ACK、无route+IFDOWN探测预算、持续零窗口应答�
 ACK 准入上界是发送 high-water `send_seq_no`，与可回退的重传游标 `remote_last_seq` 分离；未发送的数据、SYN 与 FIN 不能被确认。keepalive 遇 route 失败时消耗一次 probe count，并安排后续 deadline，不伪造成功的 wire 发送。
 zero-window 使用下述有界原生 timer；不声明完整 Linux TCP 扩展、PMTU/fragment 支持。
 
-## NETLINK_ROUTE（只读）
+## NETLINK_ROUTE
 
-`socket(AF_NETLINK, SOCK_RAW|SOCK_DGRAM, NETLINK_ROUTE)` 支持查询，足以让 `getifaddrs`（musl/libuv/Node `os.networkInterfaces`）与
-`ip link/addr/route show` 工作：`RTM_GETLINK`（dump，以及按 `ifi_index` 或 `IFLA_IFNAME` 的单设备查询）、IPv4 的 `RTM_GETADDR`
-与 `RTM_GETROUTE` dump。dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓冲容量逐包生成，最后以 `NLMSG_DONE` 结束；
-被截断的数据报余下部分丢失（`MSG_TRUNC`）。首次发送自动 bind；port 空间按（协议，NET）隔离。
+`socket(AF_NETLINK, SOCK_RAW|SOCK_DGRAM, NETLINK_ROUTE)` 让 `getifaddrs`（musl/libuv/Node `os.networkInterfaces`）与 iproute2 的
+`ip link/addr/route` 工作。
 
-明确不支持，均返回 `EOPNOTSUPP` 而不伪造成功：`RTM_NEW*/DEL*/SET*` 修改请求、非 dump 的 `RTM_GETADDR/GETROUTE`（含 `ip route get`）、
-多播订阅（bind 的 `nl_groups` 非零）与 IPv6 地址族（dump 为空）。`ip addr add`、`ip route add`、`ip monitor` 因此不可用；
-这些操作仍可通过 `SIOCSIF*`/`SIOCADDRT` ioctl 完成。
+**查询**：`RTM_GETLINK`（dump，以及按 `ifi_index` 或 `IFLA_IFNAME` 的单设备查询）、IPv4 的 `RTM_GETADDR` 与 `RTM_GETROUTE` dump。
+dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓冲容量逐包生成，最后以 `NLMSG_DONE` 结束；被截断的数据报余下部分丢失（`MSG_TRUNC`）。
+首次发送自动 bind；port 空间按（协议，NET）隔离。
+
+**修改**（需要 socket 所属 NET 的 owning UserNS 里的 `CAP_NET_ADMIN`，否则 `EPERM`，检查先于分发）：
+`RTM_NEWLINK`/`RTM_SETLINK` 修改 MTU 与 UP/DOWN（`ifi_flags/ifi_change` 按 Linux 语义，`NLM_F_EXCL` 得 `EEXIST`）；
+`RTM_NEWADDR`/`RTM_DELADDR` 设置或删除 IPv4 地址、前缀与广播地址；`RTM_NEWROUTE`/`RTM_DELROUTE` 直接进入同一 NET 的 FIB，
+`NLM_F_CREATE/EXCL/REPLACE/APPEND` 原样交给 FIB，`RTN_UNSPEC` 删除匹配任意类型。`NLM_F_ACK` 返回 `error = 0` 确认。
+
+**明确不支持，返回 `EOPNOTSUPP` 而不伪造成功**：一个接口的第二个 IPv4 地址、点对点 peer、`eth0:1` 式别名 label；设备创建、删除、重命名、
+改 MAC/txqlen 等其他链路属性与混杂/全组播等标志位；blackhole/prohibit/anycast/multicast 路由类型、多路径、源地址/TOS 路由、`RTAX_MTU` 等其他度量；
+邻居、规则、qdisc 等其他对象；非 dump 的 `RTM_GETADDR/GETROUTE`（含 `ip route get`）；多播订阅（bind 的 `nl_groups` 非零，`ip monitor`）；IPv6 地址族（dump 为空，修改 `EAFNOSUPPORT`）。

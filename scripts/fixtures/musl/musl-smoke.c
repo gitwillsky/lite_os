@@ -656,6 +656,9 @@ static int run_smoke(int argc, char **argv, char **envp)
 	}
 	if (verify_mapping_placement() != 0) return 22;
 	if (verify_address_space_rollover() != 0) return 21;
+	/* 新建 NET 需要一整套网络栈缓冲，必须排在吃光内存的压力用例之前。 */
+	int route_result = verify_netlink_route();
+	if (route_result != 0) return 100 + route_result;
 	if (verify_memory_pressure() != 0) return 20;
 	/* 这两个用例有几十个检查点：失败时把检查点编号放进退出码（128 + 编号），不然只能看到“失败”。 */
 	int resource_usage_result = verify_resource_usage();
@@ -666,8 +669,6 @@ static int run_smoke(int argc, char **argv, char **envp)
 	if (statx_result != 0) return 64 + statx_result;
 	int copy_result = verify_copy_file_range();
 	if (copy_result != 0) return 32 + copy_result;
-	int route_result = verify_netlink_route();
-	if (route_result != 0) return 100 + route_result;
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 14;
 	return 0;
 }

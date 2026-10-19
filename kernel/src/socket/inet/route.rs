@@ -66,6 +66,22 @@ pub(crate) enum Ipv4RouteError {
     NotFound,
     Missing,
 }
+
+impl Ipv4RouteError {
+    /// 对应的 Linux errno（正值）；ioctl 与 rtnetlink 共用，保证两条配置路径报告同一错误。
+    pub(crate) const fn errno(self) -> i32 {
+        match self {
+            Self::Invalid => 22,             // EINVAL
+            Self::NoDevice => 19,            // ENODEV
+            Self::NetworkDown => 100,        // ENETDOWN
+            Self::NetworkUnreachable => 101, // ENETUNREACH
+            Self::NoMemory => 12,            // ENOMEM
+            Self::Exists => 17,              // EEXIST
+            Self::NotFound => 3,             // ESRCH
+            Self::Missing => 2,              // ENOENT
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
     Interface(u32),

@@ -165,6 +165,16 @@ fn read_target(
 }
 
 impl SendContext<'_> {
+    /// 发送者在 socket 所属 NET 的 owning UserNS 里是否有 CAP_NET_ADMIN（Linux `netlink_net_capable`）。
+    /// 只有 netlink socket 需要，其他 domain 不查询 capability。
+    fn net_admin(&self) -> bool {
+        self.socket.domain() == crate::socket::SocketDomain::Netlink
+            && self.task.has_namespace_capability(
+                &self.socket.net_namespace().user_namespace(),
+                syscall_abi::capability::Capability::NET_ADMIN,
+            )
+    }
+
     fn nonblocking(&self) -> bool {
         self.nonblocking
     }
@@ -214,6 +224,7 @@ fn send_one_message(
             rights,
             &context.credentials,
             context.packet_info,
+            context.net_admin(),
         ) {
             Ok(count) => return count as isize,
             Err(SocketSendError::DestinationChanged) => continue,
@@ -318,6 +329,7 @@ fn send_stream_message(
                 &mut rights,
                 &context.credentials,
                 context.packet_info,
+                context.net_admin(),
             ) {
                 Ok(sent) => {
                     assert!(sent <= staged.count, "socket consumed beyond staged prefix");

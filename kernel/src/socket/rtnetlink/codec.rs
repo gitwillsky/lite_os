@@ -10,10 +10,14 @@ pub(super) const NLMSG_ERROR: u16 = 2;
 pub(super) const NLMSG_DONE: u16 = 3;
 pub(super) const NLMSG_MIN_TYPE: u16 = 0x10;
 pub(super) const RTM_NEWLINK: u16 = 16;
+pub(super) const RTM_DELLINK: u16 = 17;
 pub(super) const RTM_GETLINK: u16 = 18;
+pub(super) const RTM_SETLINK: u16 = 19;
 pub(super) const RTM_NEWADDR: u16 = 20;
+pub(super) const RTM_DELADDR: u16 = 21;
 pub(super) const RTM_GETADDR: u16 = 22;
 pub(super) const RTM_NEWROUTE: u16 = 24;
+pub(super) const RTM_DELROUTE: u16 = 25;
 pub(super) const RTM_GETROUTE: u16 = 26;
 /// 最大合法 rtnetlink 消息类型（RTM_GETTFILTER 之后）。
 pub(super) const RTM_MAX: u16 = 0x6f;
@@ -21,6 +25,10 @@ pub(super) const RTM_MAX: u16 = 0x6f;
 pub(super) const NLM_F_REQUEST: u16 = 0x1;
 pub(super) const NLM_F_MULTI: u16 = 0x2;
 pub(super) const NLM_F_ACK: u16 = 0x4;
+pub(super) const NLM_F_REPLACE: u16 = 0x100;
+pub(super) const NLM_F_EXCL: u16 = 0x200;
+pub(super) const NLM_F_CREATE: u16 = 0x400;
+pub(super) const NLM_F_APPEND: u16 = 0x800;
 /// `NLM_F_ROOT | NLM_F_MATCH`：请求整张表。
 pub(super) const NLM_F_DUMP: u16 = 0x300;
 
@@ -382,23 +390,29 @@ pub(super) fn next_offset(length: usize) -> usize {
     align4(length)
 }
 
-/// 在 `payload` 的属性区里找 `kind` 属性的负载；`skip` 是固定头长度（对齐后）。
-pub(super) fn find_attribute(payload: &[u8], skip: usize, kind: u16) -> Option<&[u8]> {
+/// 遍历 `payload` 的属性区；`skip` 是固定头长度（对齐后跳过）。属性头越界时迭代提前结束。
+///
+/// 每项是 `(属性类型, 负载)`；类型已去掉 `NLA_F_NESTED`/`NLA_F_NET_BYTEORDER` 位。
+pub(super) fn attributes(payload: &[u8], skip: usize) -> impl Iterator<Item = (u16, &[u8])> {
     let mut offset = align4(skip);
-    while offset + 4 <= payload.len() {
-        let length = usize::from(u16::from_ne_bytes(
-            payload[offset..offset + 2].try_into().ok()?,
-        ));
-        let found = u16::from_ne_bytes(payload[offset + 2..offset + 4].try_into().ok()?) & 0x3fff;
+    core::iter::from_fn(move || {
+        if offset + 4 > payload.len() {
+            return None;
+        }
+        let length = usize::from(u16::from_ne_bytes([payload[offset], payload[offset + 1]]));
+        let kind = u16::from_ne_bytes([payload[offset + 2], payload[offset + 3]]) & 0x3fff;
         if length < 4 || offset + length > payload.len() {
             return None;
         }
-        if found == kind {
-            return Some(&payload[offset + 4..offset + length]);
-        }
+        let data = &payload[offset + 4..offset + length];
         offset += align4(length);
-    }
-    None
+        Some((kind, data))
+    })
+}
+
+/// 找 `kind` 属性的负载。
+pub(super) fn find_attribute(payload: &[u8], skip: usize, kind: u16) -> Option<&[u8]> {
+    attributes(payload, skip).find_map(|(found, data)| (found == kind).then_some(data))
 }
 
 /// 请求里用于按名字查询设备的属性类型。

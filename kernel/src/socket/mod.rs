@@ -584,6 +584,7 @@ impl Socket {
     /// - `input`: 本次 byte payload。
     /// - `target`: 可选显式 socket address。
     /// - `rights`: 尚未提交的 passed-file capability 集合。
+    /// - `net_admin`: 发送者在该 NET 的 owning UserNS 里是否有 CAP_NET_ADMIN；只有 rtnetlink 修改请求用它。
     ///
     /// # Returns
     ///
@@ -595,6 +596,7 @@ impl Socket {
         rights: &mut Option<UnixRights>,
         credentials: &UnixSendCredentials,
         packet_info: Option<InternetSendPacketInfo>,
+        net_admin: bool,
     ) -> Result<usize, SocketSendError> {
         self.validate_send_length(input.len())
             .map_err(SocketSendError::from)?;
@@ -637,8 +639,12 @@ impl Socket {
             (
                 SocketBackend::Route(socket),
                 Some(SocketSendDestination::Address(SocketAddress::Netlink(address))),
-            ) => socket.send(input, Some(address)).map_err(Into::into),
-            (SocketBackend::Route(socket), None) => socket.send(input, None).map_err(Into::into),
+            ) => socket
+                .send(input, Some(address), net_admin)
+                .map_err(Into::into),
+            (SocketBackend::Route(socket), None) => {
+                socket.send(input, None, net_admin).map_err(Into::into)
+            }
             (SocketBackend::Kobject(_), _) => Err(SocketError::OperationNotSupported.into()),
             _ => Err(SocketError::Invalid.into()),
         }

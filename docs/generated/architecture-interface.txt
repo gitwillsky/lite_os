@@ -4118,6 +4118,7 @@ kernel/src/socket/inet/route.rs :: pub (crate) Ipv4RouteRequest :: scope : u8
 kernel/src/socket/inet/route.rs :: pub (crate) Ipv4RouteRequest :: table : u32
 kernel/src/socket/inet/route.rs :: pub (crate) enum Ipv4RouteError
 kernel/src/socket/inet/route.rs :: pub (crate) enum Ipv4RouteKind
+kernel/src/socket/inet/route.rs :: pub (crate) impl Ipv4RouteError :: const fn errno (self) -> i32
 kernel/src/socket/inet/route.rs :: pub (crate) struct Ipv4RouteMetrics
 kernel/src/socket/inet/route.rs :: pub (crate) struct Ipv4RouteRequest
 kernel/src/socket/inet/route.rs :: pub (super) InterfaceFacts :: address : Option < Ipv4Addr >
@@ -4343,7 +4344,7 @@ kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn pair (first : & Arc < 
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn prepare_receive (& self , requested : usize , stream_max : usize ,) -> Result < ReceiveBuffer < 'static > , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn read (& self , output : & mut ReceiveBuffer < '_ > , nonblocking : bool ,) -> Result < usize , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn receive_message (& self , output : & mut ReceiveBuffer < '_ > , peek : bool , receive_rights : bool , nonblocking : bool ,) -> Result < ReceivedMessage , SocketError >
-kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn send_to_with_ancillary (& self , input : & [u8] , target : Option < SocketSendDestination > , rights : & mut Option < UnixRights > , credentials : & UnixSendCredentials , packet_info : Option < InternetSendPacketInfo > ,) -> Result < usize , SocketSendError >
+kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn send_to_with_ancillary (& self , input : & [u8] , target : Option < SocketSendDestination > , rights : & mut Option < UnixRights > , credentials : & UnixSendCredentials , packet_info : Option < InternetSendPacketInfo > , net_admin : bool ,) -> Result < usize , SocketSendError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn socket_type (& self) -> SocketType
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn stream_send_staging_capacity (& self , requested : usize , stream_max : usize ,) -> Option < usize >
@@ -4460,12 +4461,18 @@ kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn new (notify
 kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn poll_state (& self) -> SocketPollState
 kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn readiness_generation (& self) -> u64
 kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn receive (& self , output : & mut ReceiveBuffer < '_ > , peek : bool ,) -> Result < ReceivedMessage , SocketError >
-kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn send (& self , input : & [u8] , destination : Option < NetlinkAddress > ,) -> Result < usize , SocketError >
+kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn send (& self , input : & [u8] , destination : Option < NetlinkAddress > , net_admin : bool ,) -> Result < usize , SocketError >
 kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn set_buffer_limit (& self , direction : SocketIoDirection , value : i32 , forced : bool ,) -> Result < () , SocketError >
 kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn take_error (& self) -> Option < SocketError >
 kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn try_poll_state (& self) -> Option < SocketPollState >
 kernel/src/socket/rtnetlink.rs :: pub (super) impl RouteSocket :: fn wait_source (& self) -> Arc < Pipe >
 kernel/src/socket/rtnetlink.rs :: pub (super) struct RouteSocket
+kernel/src/socket/rtnetlink/change.rs :: pub (super) const EOPNOTSUPP : i32 = 95
+kernel/src/socket/rtnetlink/change.rs :: pub (super) const EPERM : i32 = 1
+kernel/src/socket/rtnetlink/change.rs :: pub (super) fn address_delete (scope : & NetNamespace , payload : & [u8]) -> Result < () , i32 >
+kernel/src/socket/rtnetlink/change.rs :: pub (super) fn address_new (scope : & NetNamespace , request_flags : u16 , payload : & [u8] ,) -> Result < () , i32 >
+kernel/src/socket/rtnetlink/change.rs :: pub (super) fn link (scope : & NetNamespace , request_flags : u16 , payload : & [u8]) -> Result < () , i32 >
+kernel/src/socket/rtnetlink/change.rs :: pub (super) fn route (scope : & NetNamespace , delete : bool , request_flags : u16 , payload : & [u8] ,) -> Result < () , i32 >
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) RequestHeader :: flags : u16
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) RequestHeader :: kind : u16
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) RequestHeader :: length : usize
@@ -4476,9 +4483,16 @@ kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLMSG_DONE : u16 = 3
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLMSG_ERROR : u16 = 2
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLMSG_MIN_TYPE : u16 = 0x10
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_ACK : u16 = 0x4
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_APPEND : u16 = 0x800
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_CREATE : u16 = 0x400
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_DUMP : u16 = 0x300
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_EXCL : u16 = 0x200
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_MULTI : u16 = 0x2
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_REPLACE : u16 = 0x100
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const NLM_F_REQUEST : u16 = 0x1
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_DELADDR : u16 = 21
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_DELLINK : u16 = 17
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_DELROUTE : u16 = 25
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_GETADDR : u16 = 22
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_GETLINK : u16 = 18
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_GETROUTE : u16 = 26
@@ -4486,7 +4500,9 @@ kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_MAX : u16 = 0x6f
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_NEWADDR : u16 = 20
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_NEWLINK : u16 = 16
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_NEWROUTE : u16 = 24
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) const RTM_SETLINK : u16 = 19
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) fn address (snapshot : & InterfaceSnapshot , sequence : u32 , port : u32 ,) -> Option < ([u8 ; MESSAGE_CAPACITY] , usize) >
+kernel/src/socket/rtnetlink/codec.rs :: pub (super) fn attributes (payload : & [u8] , skip : usize) -> impl Iterator < Item = (u16 , & [u8]) >
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) fn done (sequence : u32 , port : u32) -> ([u8 ; MESSAGE_CAPACITY] , usize)
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) fn error (error : i32 , request : & [u8] , sequence : u32 , port : u32 , out : & mut alloc :: vec :: Vec < u8 > ,) -> Result < () , () >
 kernel/src/socket/rtnetlink/codec.rs :: pub (super) fn find_attribute (payload : & [u8] , skip : usize , kind : u16) -> Option < & [u8] >

@@ -17,17 +17,7 @@ const RTF_IRTT: u16 = 0x100;
 const RTF_REJECT: u16 = 0x200;
 
 fn route_error(error: crate::socket::Ipv4RouteError) -> isize {
-    use crate::socket::Ipv4RouteError as E;
-    -match error {
-        E::Invalid => errno::EINVAL,
-        E::NoDevice => errno::ENODEV,
-        E::NetworkDown => errno::ENETDOWN,
-        E::NetworkUnreachable => errno::ENETUNREACH,
-        E::NoMemory => errno::ENOMEM,
-        E::Exists => errno::EEXIST,
-        E::NotFound => errno::ESRCH,
-        E::Missing => errno::ENOENT,
-    }
+    -(error.errno() as isize)
 }
 fn configure_route(
     task: &TaskControlBlock,

@@ -86,4 +86,8 @@ rtnetlink/veth/设备迁移、多地址、组播、通用 raw protocol 与复杂
 加锁顺序固定为 endpoint state -> 端口表，close 不在持有端口表时取 state。报文 codec 全部在 `socket/rtnetlink/codec.rs`，
 不读内核状态；快照只来自 `interface_snapshots`/`network_snapshot`/`route_snapshot`，不保存第二份接口或 FIB，
 `ifi_flags` 与 `SIOCGIFFLAGS` 共用 `InterfaceSnapshot::flags`。dump 不预先排队：endpoint 只持有冻结快照与游标，回复内存有界。
-范围见 `docs/syscall-support/socket.md`；修改请求与多播订阅不实现。
+
+修改请求在 `socket/rtnetlink/change.rs`：先完整解析校验、再调用既有 `configure_address/netmask/broadcast/mtu/up/route`，
+校验失败不改变状态；路由进入同一 FIB 的 create/exclusive/replace/append 事务，`Ipv4RouteError::errno` 与 ioctl 共用。
+socket 层不依赖 task：发送者是否有 CAP_NET_ADMIN 由 syscall 层在每次发送时按 socket 所属 NET 的 owning UserNS 判定并作为
+`net_admin` 传入，旧 socket、SCM 传递或 setns 都不会保留配置权。范围见 `docs/syscall-support/socket.md`；多播订阅不实现。

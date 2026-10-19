@@ -26,6 +26,8 @@ use super::{
     interface_snapshots, kobject, network_snapshot, route_snapshot,
 };
 
+#[path = "rtnetlink/change.rs"]
+mod change;
 #[path = "rtnetlink/codec.rs"]
 mod codec;
 
@@ -200,6 +202,7 @@ impl RouteSocket {
         &self,
         input: &[u8],
         destination: Option<NetlinkAddress>,
+        net_admin: bool,
     ) -> Result<usize, SocketError> {
         if let Some(destination) = destination {
             if destination.groups != 0 {
@@ -223,7 +226,7 @@ impl RouteSocket {
         while let Some(header) = codec::parse_header(&input[offset..]) {
             let message = &input[offset..offset + header.length];
             let dump_before = dump.is_some();
-            let reply = self.handle_request(&header, message, port, &mut dump);
+            let reply = self.handle_request(&header, message, port, net_admin, &mut dump);
             let errored = matches!(reply, Reply::Error(_));
             match reply {
                 Reply::None => {}
@@ -263,6 +266,7 @@ impl RouteSocket {
         header: &codec::RequestHeader,
         message: &[u8],
         port: u32,
+        net_admin: bool,
         dump: &mut Option<Dump>,
     ) -> Reply {
         // 不是请求或属于控制类型的消息只可能要求 ACK，没有其他语义。
@@ -333,7 +337,26 @@ impl RouteSocket {
                     Err(error) => Reply::Error(-errno_for(error)),
                 }
             }
-            // 非 dump 的 GETADDR/GETROUTE，以及所有 NEW/DEL/SET 请求：本实现不支持。
+            // 修改请求：先检查 CAP_NET_ADMIN（Linux rtnetlink_rcv_msg 的顺序），再分发。
+            codec::RTM_NEWLINK
+            | codec::RTM_DELLINK
+            | codec::RTM_SETLINK
+            | codec::RTM_NEWADDR
+            | codec::RTM_DELADDR
+            | codec::RTM_NEWROUTE
+            | codec::RTM_DELROUTE
+                if !net_admin =>
+            {
+                Reply::Error(-change::EPERM)
+            }
+            codec::RTM_NEWLINK | codec::RTM_SETLINK => {
+                changed(change::link(scope, header.flags, payload))
+            }
+            codec::RTM_NEWADDR => changed(change::address_new(scope, header.flags, payload)),
+            codec::RTM_DELADDR => changed(change::address_delete(scope, payload)),
+            codec::RTM_NEWROUTE => changed(change::route(scope, false, header.flags, payload)),
+            codec::RTM_DELROUTE => changed(change::route(scope, true, header.flags, payload)),
+            // 非 dump 的 GETADDR/GETROUTE，以及删除设备、规则、邻居等其他类型：本实现不支持。
             _ => Reply::Error(-EOPNOTSUPP),
         }
     }
@@ -566,6 +589,14 @@ enum Reply {
     Error(i32),
 }
 
+/// 修改请求的结果：成功没有回复数据（需要时由 `NLM_F_ACK` 补确认），失败是负 errno。
+fn changed(result: Result<(), i32>) -> Reply {
+    match result {
+        Ok(()) => Reply::None,
+        Err(errno) => Reply::Error(-errno),
+    }
+}
+
 fn new_dump(rows: Rows, sequence: u32) -> Dump {
     Dump {
         rows,
@@ -609,7 +640,7 @@ fn fill_chunk(dump: &mut Dump, port: u32, limit: usize, chunk: &mut Vec<u8>, pee
     let mut next = dump.next;
     let total = dump.rows.len();
     // 第一条消息总是写入，哪怕比接收缓冲大（被截断）；其后的消息必须整条放得下。
-    let mut push = |encoded: ([u8; 1024], usize), chunk: &mut Vec<u8>| -> bool {
+    let push = |encoded: ([u8; 1024], usize), chunk: &mut Vec<u8>| -> bool {
         let (bytes, length) = encoded;
         if !chunk.is_empty() && chunk.len() + length > limit {
             return false;

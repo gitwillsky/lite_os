@@ -1,6 +1,10 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <linux/capability.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <net/if_arp.h>
@@ -204,6 +208,236 @@ static int request_link(int fd, int index, const char *name, uint32_t sequence, 
 	return reply->nlmsg_type;
 }
 
+
+/* ---- 修改请求：在全新的 NET 里配置 lo，不触碰 smoke 自身的网络 ---- */
+struct builder {
+	struct nlmsghdr header;
+	char body[256];
+};
+
+static void begin(struct builder *b, uint16_t type, uint16_t flags, uint32_t sequence, const void *fixed, size_t fixed_length)
+{
+	memset(b, 0, sizeof *b);
+	b->header.nlmsg_type = type;
+	b->header.nlmsg_flags = NLM_F_REQUEST | flags;
+	b->header.nlmsg_seq = sequence;
+	memcpy(b->body, fixed, fixed_length);
+	b->header.nlmsg_len = NLMSG_LENGTH(fixed_length);
+}
+
+static void attribute(struct builder *b, uint16_t type, const void *data, size_t size)
+{
+	struct rtattr *attr = (struct rtattr *)((char *)b + NLMSG_ALIGN(b->header.nlmsg_len));
+	attr->rta_type = type;
+	attr->rta_len = RTA_LENGTH(size);
+	memcpy(RTA_DATA(attr), data, size);
+	b->header.nlmsg_len = NLMSG_ALIGN(b->header.nlmsg_len) + RTA_ALIGN(attr->rta_len);
+}
+
+/* 发送一个修改请求并读取回复；返回 NLMSG_ERROR 里的 error（0 为 ACK），传输失败返回 1。 */
+static int change(int fd, struct builder *b)
+{
+	if (send(fd, b, b->header.nlmsg_len, 0) != (ssize_t)b->header.nlmsg_len) return 1;
+	char buffer[512];
+	ssize_t bytes = recv(fd, buffer, sizeof buffer, 0);
+	struct nlmsghdr *reply = (struct nlmsghdr *)buffer;
+	if (bytes < (ssize_t)(sizeof *reply + sizeof(struct nlmsgerr)) || reply->nlmsg_type != NLMSG_ERROR) return 1;
+	return ((struct nlmsgerr *)NLMSG_DATA(reply))->error;
+}
+
+struct snapshot {
+	unsigned link_flags;
+	uint32_t mtu;
+	int address_count;
+	uint32_t local;
+	unsigned char prefix;
+	int route_seen;
+};
+
+static int visit_snapshot_link(const struct nlmsghdr *header, void *context)
+{
+	struct snapshot *snapshot = context;
+	const struct ifinfomsg *info = NLMSG_DATA(header);
+	snapshot->link_flags = info->ifi_flags;
+	int length = (int)IFLA_PAYLOAD(header);
+	for (const struct rtattr *attr = IFLA_RTA(info); RTA_OK(attr, length); attr = RTA_NEXT(attr, length))
+		if (attr->rta_type == IFLA_MTU) memcpy(&snapshot->mtu, RTA_DATA(attr), 4);
+	return 0;
+}
+
+static int visit_snapshot_address(const struct nlmsghdr *header, void *context)
+{
+	struct snapshot *snapshot = context;
+	const struct ifaddrmsg *info = NLMSG_DATA(header);
+	snapshot->address_count++;
+	snapshot->prefix = info->ifa_prefixlen;
+	int length = (int)IFA_PAYLOAD(header);
+	for (const struct rtattr *attr = IFA_RTA(info); RTA_OK(attr, length); attr = RTA_NEXT(attr, length))
+		if (attr->rta_type == IFA_LOCAL) memcpy(&snapshot->local, RTA_DATA(attr), 4);
+	return 0;
+}
+
+static int visit_snapshot_route(const struct nlmsghdr *header, void *context)
+{
+	struct snapshot *snapshot = context;
+	const struct rtmsg *info = NLMSG_DATA(header);
+	int length = (int)RTM_PAYLOAD(header);
+	uint32_t destination = 0;
+	int oif = 0;
+	for (const struct rtattr *attr = RTM_RTA(info); RTA_OK(attr, length); attr = RTA_NEXT(attr, length)) {
+		if (attr->rta_type == RTA_DST) memcpy(&destination, RTA_DATA(attr), 4);
+		if (attr->rta_type == RTA_OIF) memcpy(&oif, RTA_DATA(attr), 4);
+	}
+	if (destination == inet_addr("10.77.0.0") && info->rtm_dst_len == 16 && oif == 1) snapshot->route_seen = 1;
+	return 0;
+}
+
+static void take_snapshot(int fd, struct snapshot *snapshot, uint32_t sequence)
+{
+	memset(snapshot, 0, sizeof *snapshot);
+	send_dump(fd, RTM_GETLINK, sequence);
+	drain(fd, sequence, visit_snapshot_link, snapshot);
+	send_dump(fd, RTM_GETADDR, sequence + 1);
+	drain(fd, sequence + 1, visit_snapshot_address, snapshot);
+	send_dump(fd, RTM_GETROUTE, sequence + 2);
+	drain(fd, sequence + 2, visit_snapshot_route, snapshot);
+}
+
+static int link_change(int fd, uint32_t sequence, unsigned flags, unsigned mask, int mtu, const char *rename, uint16_t type, uint16_t nl_flags)
+{
+	struct ifinfomsg info;
+	memset(&info, 0, sizeof info);
+	info.ifi_index = 1;
+	info.ifi_flags = flags;
+	info.ifi_change = mask;
+	struct builder b;
+	begin(&b, type, nl_flags, sequence, &info, sizeof info);
+	if (mtu) { uint32_t value = (uint32_t)mtu; attribute(&b, IFLA_MTU, &value, 4); }
+	if (rename) attribute(&b, IFLA_IFNAME, rename, strlen(rename) + 1);
+	return change(fd, &b);
+}
+
+static int address_change(int fd, uint32_t sequence, uint16_t type, uint16_t nl_flags, const char *address, int prefix)
+{
+	struct ifaddrmsg info;
+	memset(&info, 0, sizeof info);
+	info.ifa_family = AF_INET;
+	info.ifa_prefixlen = (unsigned char)prefix;
+	info.ifa_index = 1;
+	struct builder b;
+	begin(&b, type, nl_flags, sequence, &info, sizeof info);
+	uint32_t local = inet_addr(address);
+	attribute(&b, IFA_LOCAL, &local, 4);
+	attribute(&b, IFA_ADDRESS, &local, 4);
+	return change(fd, &b);
+}
+
+static int route_change(int fd, uint32_t sequence, uint16_t type, uint16_t nl_flags, unsigned char route_type)
+{
+	struct rtmsg info;
+	memset(&info, 0, sizeof info);
+	info.rtm_family = AF_INET;
+	info.rtm_dst_len = 16;
+	info.rtm_table = RT_TABLE_MAIN;
+	info.rtm_protocol = RTPROT_BOOT;
+	info.rtm_scope = RT_SCOPE_LINK;
+	info.rtm_type = route_type;
+	struct builder b;
+	begin(&b, type, nl_flags, sequence, &info, sizeof info);
+	uint32_t destination = inet_addr("10.77.0.0");
+	uint32_t oif = 1;
+	attribute(&b, RTA_DST, &destination, 4);
+	attribute(&b, RTA_OIF, &oif, 4);
+	return change(fd, &b);
+}
+
+static int modify_in_new_namespace(void)
+{
+	/* 先降为普通用户，再同时创建 user 与 net namespace：新 userns 里拥有对这个 NET 的全部 capability，
+	 * 与起始进程在 smoke 里剩下什么权限无关。 */
+	if (setgid(1000) != 0 || setuid(1000) != 0) return 90;
+	/* 失败时把 errno 编进退出码（40 + errno）：smoke 里这一步取决于进程当时的状态。 */
+	if (unshare(CLONE_NEWUSER | CLONE_NEWNET) != 0) return 40 + errno;
+	int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if (fd < 0) return 2;
+	struct snapshot snapshot;
+	take_snapshot(fd, &snapshot, 100);
+	if (snapshot.link_flags & IFF_UP || snapshot.address_count != 0) return 3;
+
+	/* 链路：UP 之后内核发表 127.0.0.1/8（原生 NETDEV_UP）。 */
+	if (link_change(fd, 110, IFF_UP, IFF_UP, 0, NULL, RTM_NEWLINK, NLM_F_ACK) != 0) return 4;
+	take_snapshot(fd, &snapshot, 120);
+	if (!(snapshot.link_flags & IFF_UP) || snapshot.address_count != 1 || snapshot.local != inet_addr("127.0.0.1") || snapshot.prefix != 8) return 5;
+
+	/* 地址：删除、新增、重复新增、不同地址（多地址不支持）、不匹配删除。 */
+	if (address_change(fd, 130, RTM_DELADDR, NLM_F_ACK, "127.0.0.1", 8) != 0) return 6;
+	take_snapshot(fd, &snapshot, 140);
+	if (snapshot.address_count != 0) return 7;
+	if (address_change(fd, 150, RTM_NEWADDR, NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK, "10.20.30.1", 24) != 0) return 8;
+	take_snapshot(fd, &snapshot, 160);
+	if (snapshot.address_count != 1 || snapshot.local != inet_addr("10.20.30.1") || snapshot.prefix != 24) return 9;
+	if (address_change(fd, 170, RTM_NEWADDR, NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK, "10.20.30.1", 24) != -EEXIST) return 10;
+	if (address_change(fd, 171, RTM_NEWADDR, NLM_F_CREATE | NLM_F_ACK, "10.20.30.2", 24) != -EOPNOTSUPP) return 11;
+	if (address_change(fd, 172, RTM_DELADDR, NLM_F_ACK, "10.20.30.9", 24) != -EADDRNOTAVAIL) return 12;
+	if (address_change(fd, 173, RTM_DELADDR, NLM_F_ACK, "10.20.30.1", 16) != -EADDRNOTAVAIL) return 13;
+	/* ioctl 看到同一个地址。 */
+	int inet = socket(AF_INET, SOCK_DGRAM, 0);
+	struct ifreq request;
+	memset(&request, 0, sizeof request);
+	strcpy(request.ifr_name, "lo");
+	if (ioctl(inet, SIOCGIFADDR, &request) != 0 ||
+	    ((struct sockaddr_in *)&request.ifr_addr)->sin_addr.s_addr != inet_addr("10.20.30.1")) return 14;
+	close(inet);
+
+	/* 路由：新增、重复新增、dump 可见、RTN_UNSPEC 删除、重复删除。 */
+	if (route_change(fd, 180, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK, RTN_UNICAST) != 0) return 15;
+	take_snapshot(fd, &snapshot, 190);
+	if (!snapshot.route_seen) return 16;
+	if (route_change(fd, 200, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK, RTN_UNICAST) != -EEXIST) return 17;
+	if (route_change(fd, 201, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_ACK, RTN_BLACKHOLE) != -EOPNOTSUPP) return 18;
+	if (route_change(fd, 210, RTM_DELROUTE, NLM_F_ACK, RTN_UNSPEC) != 0) return 19;
+	take_snapshot(fd, &snapshot, 220);
+	if (snapshot.route_seen) return 20;
+	if (route_change(fd, 230, RTM_DELROUTE, NLM_F_ACK, RTN_UNSPEC) != -ESRCH) return 21;
+
+	/* MTU 与不支持的链路修改。 */
+	if (link_change(fd, 240, 0, 0, 4000, NULL, RTM_NEWLINK, NLM_F_ACK) != 0) return 22;
+	take_snapshot(fd, &snapshot, 250);
+	if (snapshot.mtu != 4000) return 23;
+	if (link_change(fd, 260, 0, 0, 0, "renamed0", RTM_NEWLINK, NLM_F_ACK) != -EOPNOTSUPP) return 24;
+	if (link_change(fd, 261, IFF_PROMISC, IFF_PROMISC, 0, NULL, RTM_NEWLINK, NLM_F_ACK) != -EOPNOTSUPP) return 25;
+	if (link_change(fd, 262, 0, 0, 0, NULL, RTM_NEWLINK, NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK) != -EEXIST) return 26;
+	if (link_change(fd, 263, 0, 0, 0, NULL, RTM_DELLINK, NLM_F_ACK) != -EOPNOTSUPP) return 27;
+	if (link_change(fd, 270, 0, IFF_UP, 0, NULL, RTM_SETLINK, NLM_F_ACK) != 0) return 28; /* flags=0 change=UP：DOWN */
+	take_snapshot(fd, &snapshot, 280);
+	if (snapshot.link_flags & IFF_UP) return 29;
+
+	/* 去掉有效集里的 CAP_NET_ADMIN：发送者得到 EPERM，查询仍然可用。 */
+	struct __user_cap_header_struct capability_header = {.version = _LINUX_CAPABILITY_VERSION_3, .pid = 0};
+	struct __user_cap_data_struct capability_data[2];
+	if (syscall(SYS_capget, &capability_header, capability_data) != 0) return 30;
+	capability_data[0].effective &= ~(1u << CAP_NET_ADMIN);
+	if (syscall(SYS_capset, &capability_header, capability_data) != 0) return 30;
+	if (link_change(fd, 290, IFF_UP, IFF_UP, 0, NULL, RTM_NEWLINK, NLM_F_ACK) != -EPERM) return 31;
+	if (address_change(fd, 291, RTM_NEWADDR, NLM_F_CREATE | NLM_F_ACK, "10.1.1.1", 24) != -EPERM) return 32;
+	if (route_change(fd, 292, RTM_NEWROUTE, NLM_F_CREATE | NLM_F_ACK, RTN_UNICAST) != -EPERM) return 33;
+	take_snapshot(fd, &snapshot, 300);
+	if (snapshot.address_count != 1) return 34;
+	close(fd);
+	return 0;
+}
+
+static int verify_netlink_modify(void)
+{
+	pid_t child = fork();
+	if (child < 0) return 80;
+	if (child == 0) _exit(modify_in_new_namespace());
+	int status;
+	if (waitpid(child, &status, 0) != child) return 81;
+	if (!WIFEXITED(status)) return 82;
+	return WEXITSTATUS(status);
+}
+
 int verify_netlink_route(void)
 {
 	/* getifaddrs 走的就是 RTM_GETLINK + RTM_GETADDR 两次 dump。 */
@@ -266,11 +500,13 @@ int verify_netlink_route(void)
 	if (request_link(fd, 9999, NULL, 18, &error, &found) != NLMSG_ERROR || error != -ENODEV) return 21;
 	if (request_link(fd, 0, NULL, 19, &error, &found) != NLMSG_ERROR || error != -EINVAL) return 22;
 
-	/* 修改请求明确不支持；ACK 标志对未知控制消息返回 error = 0。 */
+	/* ACK 标志对未知控制消息返回 error = 0。 */
 	struct ifaddrmsg add;
 	memset(&add, 0, sizeof add);
 	add.ifa_family = AF_INET;
-	if (expect_error(fd, RTM_NEWADDR, NLM_F_REQUEST | NLM_F_ACK, &add, sizeof add, -EOPNOTSUPP) != 0) return 24;
+	/* 修改请求已支持：缺少 IFA_LOCAL 是 EINVAL；邻居表等其他对象仍不支持。 */
+	if (expect_error(fd, RTM_NEWADDR, NLM_F_REQUEST | NLM_F_ACK, &add, sizeof add, -EINVAL) != 0) return 24;
+	if (expect_error(fd, RTM_NEWNEIGH, NLM_F_REQUEST | NLM_F_ACK, &add, sizeof add, -EOPNOTSUPP) != 0) return 42;
 	if (expect_error(fd, RTM_GETADDR, NLM_F_REQUEST, &add, sizeof add, -EOPNOTSUPP) != 0) return 25;
 	if (expect_error(fd, NLMSG_NOOP, NLM_F_REQUEST | NLM_F_ACK, &add, sizeof add, 0) != 0) return 26;
 
@@ -319,5 +555,9 @@ int verify_netlink_route(void)
 	close(third);
 	close(fourth);
 	close(fd);
-	return 0;
+
+	/* 修改请求在子进程的新 NET 里验证。 */
+	int modify_result = verify_netlink_modify();
+	/* 子进程的检查点编号加 60，与上面的编号区分。 */
+	return modify_result == 0 ? 0 : 60 + modify_result;
 }
