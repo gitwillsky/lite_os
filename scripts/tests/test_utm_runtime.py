@@ -14,6 +14,16 @@ import utm_runtime  # noqa: E402
 
 
 class UtmRuntimeTests(unittest.TestCase):
+    def test_kernel_arguments_become_one_quoted_append_pair(self) -> None:
+        plain = utm_runtime._configuration(memory_mib=2048, cpu_count=1)
+        self.assertNotIn("-append", plain["QEMU"]["AdditionalArguments"])
+
+        config = utm_runtime._configuration(
+            memory_mib=2048, cpu_count=1, kernel_arguments="liteos.target=desktop"
+        )
+        arguments = config["QEMU"]["AdditionalArguments"]
+        self.assertEqual(arguments[arguments.index("-append") + 1], '"liteos.target=desktop"')
+
     def test_configuration_is_one_metal_virtio_gpu_path(self) -> None:
         config = utm_runtime._configuration(memory_mib=2048, cpu_count=6)
 

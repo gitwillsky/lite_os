@@ -9,10 +9,20 @@ mod frame_stats;
 mod gpu;
 mod input;
 mod scanout;
+mod seat;
 mod session;
 mod spice_agent;
 
 use std::{io, thread, time::Duration};
+
+use seat_proto::{ClientFrame, ServerFrame};
+
+/// 运行时门禁依赖串口 marker：多个进程同时写 UART 时，分段写入会把一行拆开。整行一次 write 保证
+/// marker 子串完整。
+fn mark(line: String) {
+    use std::io::Write;
+    let _ = std::io::stderr().write_all(format!("{line}\n").as_bytes());
+}
 
 fn main() {
     std::panic::set_hook(Box::new(|info| {
@@ -34,8 +44,18 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // GPU 与 display socket 先就绪（不需要 DRM master），desktop 可以提前连接；真正占用显示器和键盘
+    // 要等 seatd 授予座位。文本控制台是默认座位时，这里会一直阻塞到用户切到桌面。
     let mut scanout = scanout::Scanout::open()?;
     let mut session = session::Session::open(scanout.device(), scanout.graphics(), scanout.size())?;
+    let mut seat = seat::SeatClient::connect()?;
+    mark("compositor: seat registered".to_owned());
+    seat.wait_acquire()?;
+    scanout.take_display()?;
+    // marker 计数只用于运行时门禁区分第几次交接。
+    let mut seat_acquisitions = 1u32;
+    let mut seat_releases = 0u32;
+    mark(format!("compositor: seat acquired {seat_acquisitions}"));
     let size = scanout.size();
     let mut input = input::Input::open(size.width as i32, size.height as i32);
     // Accumulates guest-vblank present intervals once the desktop reaches steady
@@ -46,8 +66,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // 1. Wait once on display sockets and evdev together. The wake borrow is
         //    scoped so `input` is free for mutable pumping below.
         let activity = {
-            let wake = input.wake_fds();
-            session.poll(&wake)?
+            let [keyboard, pointer] = input.wake_fds();
+            session.poll(&[keyboard, pointer, Some(seat.fd())])?
         };
         // Only compositor-owned window dragging uses asynchronous page flips now;
         // ordinary pointer motion runs on the independent hardware cursor queue.
@@ -215,7 +235,65 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         {
             scanout.set_cursor_shape(shape, input.position())?;
         }
+        // 5. Seat traffic is handled last so a scene accepted by this iteration's poll is still
+        //    presented before the display is handed over. A lost seatd connection is re-registered
+        //    in place; tearing the whole session down for it would drop every client.
+        if let Some(role) = input.take_switch_request()
+            && seat.send(ClientFrame::Switch(role)).is_err()
+        {
+            seat = seat::SeatClient::connect()?;
+        }
+        match seat.try_frame() {
+            Ok(Some(ServerFrame::Release)) => {
+                seat_releases += 1;
+                hand_over_seat(
+                    &mut scanout,
+                    &session,
+                    &mut input,
+                    &mut frame_stats,
+                    &mut seat,
+                    seat_releases,
+                )?;
+                seat_acquisitions += 1;
+                mark(format!("compositor: seat acquired {seat_acquisitions}"));
+            }
+            // Re-registration after a seatd restart: already the master, re-asserting is harmless.
+            Ok(Some(ServerFrame::Acquire)) => scanout.take_display()?,
+            Ok(Some(ServerFrame::Switched(_)) | None) => {}
+            Err(_) => seat = seat::SeatClient::connect()?,
+        }
     }
+}
+
+/// Gives the display and keyboard to the next seat session and blocks until they come back.
+///
+/// 1. Retire any move flip so the next master's `set_crtc` cannot hit `EBUSY`.
+/// 2. Close evdev (drops the keyboard grab), then drop DRM master and hide the cursor.
+/// 3. Only then reply `Released`; seatd grants the next session after that reply.
+/// 4. Block until `Acquire`, retake master, put the front target back and reopen input.
+///
+/// While blocked the compositor serves no client, exactly like a stopped X server; every GPU
+/// resource and presented scene survives, so the desktop resumes where it left off.
+fn hand_over_seat(
+    scanout: &mut scanout::Scanout,
+    session: &session::Session,
+    input: &mut input::Input,
+    frame_stats: &mut frame_stats::FrameStats,
+    seat: &mut seat::SeatClient,
+    release_count: u32,
+) -> io::Result<()> {
+    if scanout.move_frame_in_flight() {
+        let _ = finish_move_frame(scanout, session, frame_stats)?;
+    }
+    input.close_devices();
+    scanout.give_up_display()?;
+    seat.send(ClientFrame::Released)?;
+    mark(format!("compositor: seat released {release_count}"));
+    seat.wait_acquire()?;
+    scanout.take_display()?;
+    input.open_devices();
+    frame_stats.reset();
+    Ok(())
 }
 
 /// Retires one compositor-owned move flip through the same timing owner as a scene flip.

@@ -1,0 +1,18 @@
+[package]
+name = "seatd"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+autolib = false
+
+[[bin]]
+name = "seatd"
+path = "src/main.rs"
+
+[[bin]]
+name = "seatctl"
+path = "src/seatctl.rs"
+
+[dependencies]
+linux-uapi.workspace = true
+seat-proto.workspace = true

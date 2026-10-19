@@ -8,6 +8,7 @@ use std::{
 
 use display_proto::PointerPhase;
 use linux_uapi::input::{AbsoluteAxis, InputDevice, InputEvent};
+use seat_proto::Role;
 
 use crate::session::Session;
 
@@ -50,25 +51,18 @@ pub struct Input {
     /// Alt keys share one mask bit, and the grab must outlive either release).
     modifier_keys: Vec<u16>,
     serial: u64,
+    /// Ctrl+Alt+Fn pressed while this compositor holds the seat; the main loop forwards it to
+    /// seatd. The compositor grabs the keyboard exclusively, so seatd could never see it.
+    switch_request: Option<Role>,
 }
 
 impl Input {
     pub fn open(width: i32, height: i32) -> Self {
-        let keyboard = open_matching("keyboard");
-        let pointer = open_matching("tablet").or_else(|| open_matching("mouse"));
-        let x_range = pointer
-            .as_ref()
-            .and_then(|device| device.absolute_range(AbsoluteAxis::X).ok())
-            .map_or((0, 0), |range| (range.minimum, range.maximum));
-        let y_range = pointer
-            .as_ref()
-            .and_then(|device| device.absolute_range(AbsoluteAxis::Y).ok())
-            .map_or((0, 0), |range| (range.minimum, range.maximum));
-        Self {
-            keyboard,
-            pointer,
-            x_range,
-            y_range,
+        let mut input = Self {
+            keyboard: None,
+            pointer: None,
+            x_range: (0, 0),
+            y_range: (0, 0),
             width,
             height,
             x: width / 2,
@@ -81,7 +75,46 @@ impl Input {
             modifiers: 0,
             modifier_keys: Vec::new(),
             serial: 1,
-        }
+            switch_request: None,
+        };
+        input.open_devices();
+        input
+    }
+
+    /// Opens (and grabs) the keyboard and pointer. Called at construction and after every seat
+    /// `Acquire`; the previous descriptors were closed by [`Input::close_devices`].
+    pub fn open_devices(&mut self) {
+        self.keyboard = open_matching("keyboard");
+        self.pointer = open_matching("tablet").or_else(|| open_matching("mouse"));
+        self.x_range = self
+            .pointer
+            .as_ref()
+            .and_then(|device| device.absolute_range(AbsoluteAxis::X).ok())
+            .map_or((0, 0), |range| (range.minimum, range.maximum));
+        self.y_range = self
+            .pointer
+            .as_ref()
+            .and_then(|device| device.absolute_range(AbsoluteAxis::Y).ok())
+            .map_or((0, 0), |range| (range.minimum, range.maximum));
+    }
+
+    /// Closes the evdev descriptors, which also releases the exclusive keyboard grab.
+    ///
+    /// Must happen before replying `Released`: the next session reads the same keyboard, and a
+    /// grab that outlives the reply would swallow its keystrokes. Held-button and modifier state
+    /// is dropped because the matching release events will go to the next session.
+    pub fn close_devices(&mut self) {
+        self.keyboard = None;
+        self.pointer = None;
+        self.buttons = 0;
+        self.modifiers = 0;
+        self.modifier_keys.clear();
+        self.switch_request = None;
+    }
+
+    /// Takes the pending seat-switch request recorded by the keyboard path.
+    pub fn take_switch_request(&mut self) -> Option<Role> {
+        self.switch_request.take()
     }
 
     pub fn poll(
@@ -136,6 +169,16 @@ impl Input {
                 event.code(),
                 event.value(),
             );
+            // Ctrl (bit 2) + Alt (bit 4) + F1: leave the desktop for the text console. The chord is
+            // consumed here so the focused app never sees a half-typed accelerator.
+            if event.value() == 1
+                && self.modifiers & 0b110 == 0b110
+                && let Some(role) = Role::from_function_key(event.code())
+                && role != Role::Desktop
+            {
+                self.switch_request = Some(role);
+                continue;
+            }
             session.route_key(
                 u32::from(event.code()),
                 event.value(),

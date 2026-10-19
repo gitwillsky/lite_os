@@ -150,6 +150,21 @@
   的同步 console seam drain（RISC-V SBI DBCN、AArch64 PL011）；panic 保留无锁单字节 fail-stop 通道。全局 severity 由 logging Atomic owner
   在 format arguments 构造前判断，被过滤日志不得取得 logger/console lock。
 
+### Seat 切换
+
+- `seat-proto` 独占切换协议帧与 `Seat` 状态机；`seatd` 独占 `/run/seat.sock`、启动/释放超时与对无响应 session 的驱逐。
+  `console` 与 `compositor` 只实现各自的 `Acquire`/`Release` 动作，不得自行判断自己是否 active。
+- `Release` 的处理顺序固定：先结束在途 page flip，再关闭 evdev（解除 grab），再 `drop_master`，最后回复 `Released`。
+  乱序会让下一个 session 的 `set_master` 返回 `EBUSY` 或读不到键盘。
+- compositor 必须在 GPU 初始化后 `drop_master`，因为内核让首个打开 DRM 的 OFD 隐式成为 master；缺少该步骤文本控制台
+  作为首个座位持有者时永远 `EBUSY`。`set_crtc` 必须先于光标更新，CRTC 未 active 时光标更新返回 `EINVAL`。
+- 持有者断线时 `seatd` 立即把座位回退给 `Text`（其次另一个已注册 session）；`Release` 超过期限无回复则终止该进程，
+  由 init respawn。该回退保证显示器不会落入无人持有的黑屏。
+- `liteos.target` 由 `seatd` 读取 `/proc/cmdline`；点号参数被内核按模块参数忽略，不进入 init 环境。非法值回退文本控制台。
+- `console` 不依赖 DRM 之外的内核接口，不新增 syscall、ioctl 或 lock；终端状态由 `terminal-model` 独占，字形图集由
+  `terminal-font` 独占，键码与 PTY 字节编码由 `keyboard` 独占，`lite-runtime` 与 `console` 不得各持一份。
+- 串口 marker（`seatd: active`、`console: acquired N`、`compositor: seat released N` 等）是运行时门禁的观测面，必须整行一次写入。
+
 ## Failure and cleanup
 
 - PTY master→slave line discipline 与 UART console 共用 256-byte input batch；UART 批末 raw backlog

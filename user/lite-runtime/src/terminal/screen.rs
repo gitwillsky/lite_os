@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::{APPLICATION_CURSOR_KEYS, cursor_appearance, invalid, read_u16, read_u32};
 
-// Cell attribute bits mirror `terminal-session/src/model.rs`; underline, dim
+// Cell attribute bits mirror `terminal-model/src/lib.rs`; underline, dim
 // and blink have no raster in the fixed-cell atlas and are rendered as normal
 // text.
 pub(super) const ATTR_BOLD: u16 = 1 << 0;

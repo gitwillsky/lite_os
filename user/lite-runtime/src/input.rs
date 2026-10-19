@@ -24,7 +24,6 @@ use crate::{
     display::{Display, Event},
     font::CursorMove,
     host::State,
-    keymap,
     renderer::{self, Renderer},
 };
 
@@ -327,7 +326,7 @@ fn dispatch_key(
                 return Ok(());
             }
         }
-        if let Some(edit) = keymap::text_edit(key.code, key.value, interactions.modifiers) {
+        if let Some(edit) = keyboard::text_edit(key.code, key.value, interactions.modifiers) {
             renderer.reset_text_caret(node_id);
             state.invalidate_scene();
             if let Some(on_input) = editable.on_input {

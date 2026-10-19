@@ -43,6 +43,9 @@
   compilation cache，最终 ELF 仍按完整源码内容发布不可变 generation；源码变化只重编受影响的
   crate，不重复构建 `std` 和未变化依赖。React bundle 按 Node/npm、`ui/` 输入与引用的 presentation
   assets 指纹复用不可变产物。`reset-rootfs` 只用于首次初始化、系统级 rootfs 变化或显式恢复干净环境。
+- `run-gui` 默认进入显示器上的文本控制台，`LITEOS_TARGET=desktop make run-gui` 直接进入桌面；两者都能在运行时用
+  Ctrl+Alt+F1/F2 或 `seatctl text|desktop` 切换。该变量转成内核命令行 `liteos.target=`；`run-agent-development` 固定桌面。
+  `verify-runtime-boot` 的桌面门禁带 `liteos.target=desktop`，另有文本→桌面→文本的座位切换门禁。
 - macOS 的 `run-gui` 是唯一交互图形产品入口：要求固定 `/Applications/UTM.app` v4.7.5，生成确定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
   display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入

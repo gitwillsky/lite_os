@@ -151,6 +151,11 @@ impl PtySession {
         set_window_size(self.master.as_fd(), size)
     }
 
+    /// Reports whether the session leader has exited (reaping it on the first positive answer).
+    pub fn has_exited(&mut self) -> io::Result<bool> {
+        Ok(self.child.try_wait()?.is_some())
+    }
+
     pub fn terminate(&mut self) -> io::Result<()> {
         let signal = unsafe { raw::kill(-(self.child.id() as i32), raw::SIGKILL) };
         let wait = self.child.wait().map(|_| ());

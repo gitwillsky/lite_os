@@ -77,7 +77,29 @@
 - graphical userspace 的进程、显示协议、renderer 与 terminal helper 由
   [图形会话与 LiteUI](lite-runtime.md) 唯一维护；本文件只拥有 kernel device 与 PTY 事实。
 
+### 文本控制台与桌面的座位切换
+
+显示器和键盘同一时刻只属于一个 session：显示器上的文本控制台（`console`）或图形桌面（`compositor`）。
+内核没有 VT 层，座位由用户态仲裁，类似 Linux 的 VT_PROCESS 交接但不提供 `/dev/ttyN`：
+
+1. `seatd` 持有 `/run/seat.sock`，两个 session 以 `Text`/`Desktop` 注册；状态机在 `seat-proto`，
+   无 IO，规则可在 host 上单测。启动目标来自内核命令行 `liteos.target=text|desktop`，缺省文本控制台。
+2. 切换分两步：`seatd` 先向持有者发 `Release`，持有者关闭 DRM 与 evdev 后回复 `Released`，`seatd` 才向目标发
+   `Acquire`。因此后一个 session 的 `set_master` 不会撞上前一个 master。
+3. 快捷键 Ctrl+Alt+F1（文本）/F2（桌面）由持有座位的 session 自己识别并发 `Switch`：compositor 独占 grab 键盘，
+   `seatd` 看不到按键。shell 里用 `seatctl text|desktop`。
+4. compositor 释放时只 `drop_master` 并关闭 evdev，GPU context、client 缓冲和已呈现 scene 都保留，主循环阻塞到下一次
+   `Acquire`，桌面状态跨切换保持；文本控制台释放时关闭 DRM（内核随之禁用 scanout），shell 与屏幕内容继续存活。
+5. 内核让第一个打开 DRM 的 OFD 隐式成为 master，compositor 在 GPU 初始化后立即 `drop_master`，座位只由 `seatd` 分配。
+6. `console` 用 DRM dumb buffer 加 `set_crtc` 与 damage `dirty` 绘制，复用 `terminal-model` 的 VT 网格、`terminal-font`
+   的 16x32 图集和 `keyboard` 的键码到 PTY 字节编码，与桌面里的 Terminal 应用共享同一份实现。
+7. 没有 `/dev/dri/card0`（如 `make run`）时 `console` 不注册，只保留串口 shell。
+
 ## Known limits
+
+- 座位只有文本与桌面两个 session：没有 `/dev/tty1..N`、`VT_*`/`KD_*` ioctl、多个文本 VT 或 getty/login 流程。
+- 文本控制台的字符网格在每次 `Acquire` 时按当前 mode 计算，持有期间连接器 mode 变化不会重排。
+- 切换快捷键对桌面应用不可见，但 Ctrl、Alt 的按下事件在切走前已经送达，切回后修饰键状态重新从零开始。
 
 - GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
   64×64 hardware cursor 与

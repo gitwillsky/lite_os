@@ -20,8 +20,14 @@ exclude = [
     "user/apps/my-computer",
     "user/apps/terminal",
     "user/apps/music-player",
+    "user/console",
+    "user/keyboard",
     "user/linux-uapi",
     "user/quickjs-runtime",
+    "user/seat-proto",
+    "user/seatd",
+    "user/terminal-font",
+    "user/terminal-model",
     "user/terminal-session",
 ]
 default-members = ["kernel"]

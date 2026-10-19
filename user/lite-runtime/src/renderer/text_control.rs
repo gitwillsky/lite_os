@@ -3,7 +3,9 @@
 use std::time::{Duration, Instant};
 
 use super::{Editable, Renderer};
-use crate::{font::CursorMove, keymap::TextEdit, style::Computed};
+use keyboard::TextEdit;
+
+use crate::{font::CursorMove, style::Computed};
 
 const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 

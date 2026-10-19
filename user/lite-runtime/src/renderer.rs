@@ -29,7 +29,6 @@ use crate::{
     display::{ForeignLayer, Overlay, WindowFrame},
     font::{Font, GlyphAtlas},
     style::{Computed, PseudoState, Sheet, Timeline},
-    terminal_font::TerminalFont,
     tree::Node,
 };
 use cursor::shape as cursor_shape;
@@ -38,6 +37,7 @@ use image::{Image, decode_png};
 use layout::{TextMeasure, text_content, to_taffy};
 pub(crate) use range::RangeInput;
 use scroll::{LogicalRect, ScrollDrag, ScrollOffset, ScrollRegion, Scrollbar};
+use terminal_font::TerminalFont;
 use transform::translation as transform_translation;
 
 pub(crate) const SCALE: f32 = display_proto::DEVICE_SCALE_FACTOR as f32;

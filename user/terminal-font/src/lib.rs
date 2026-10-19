@@ -8,23 +8,15 @@
 
 use std::{fs, io};
 
-use unicode_width::UnicodeWidthChar;
-
-use crate::{
-    font::{AtlasKey, GlyphAtlas},
-    renderer::PhysicalRect,
-    style::Computed,
-};
-
 const PATH: &str = "/usr/share/liteos/liteos-terminal.a8";
 const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x03";
-const GLYPH_COUNT: usize = 4470;
-const FACE_COUNT: usize = 2;
+pub const GLYPH_COUNT: usize = 4470;
+pub const FACE_COUNT: usize = 2;
 /// Physical cell extent; one cell is one terminal grid column/row.
-pub(crate) const CELL_WIDTH: usize = 16;
-pub(crate) const CELL_HEIGHT: usize = 32;
-const BITMAP_WIDTH: usize = 32;
-const GLYPH_BYTES: usize = BITMAP_WIDTH * CELL_HEIGHT;
+pub const CELL_WIDTH: usize = 16;
+pub const CELL_HEIGHT: usize = 32;
+pub const BITMAP_WIDTH: usize = 32;
+pub const GLYPH_BYTES: usize = BITMAP_WIDTH * CELL_HEIGHT;
 
 /// Fully validated fixed-cell terminal atlas.
 pub struct TerminalFont {
@@ -40,7 +32,8 @@ impl TerminalFont {
         Self::parse(fs::read(PATH)?)
     }
 
-    fn parse(bytes: Vec<u8>) -> io::Result<Self> {
+    /// Validates an in-memory atlas; used by [`TerminalFont::open`] and by tests.
+    pub fn parse(bytes: Vec<u8>) -> io::Result<Self> {
         if bytes.get(..8) != Some(MAGIC) {
             return Err(invalid("terminal atlas header is invalid"));
         }
@@ -81,96 +74,19 @@ impl TerminalFont {
         })
     }
 
-    /// Appends fixed-cell glyph coverage to the frame-local GPU atlas.
-    pub(crate) fn gpu_text(
-        &self,
-        atlas: &mut GlyphAtlas,
-        bounds: PhysicalRect,
-        overflow_clip: Option<PhysicalRect>,
-        style: &Computed,
-        text: &str,
-    ) -> Vec<display_proto::Glyph> {
-        let clip = overflow_clip.map_or(bounds, |clip| bounds.intersect(clip));
-        let bold = style.get("font-weight") == Some("bold")
-            || style
-                .get("font-weight")
-                .and_then(|value| value.parse::<u32>().ok())
-                .is_some_and(|weight| weight >= 600);
-        let face = self.faces + usize::from(bold) * GLYPH_COUNT * GLYPH_BYTES;
-        let mut column = 0usize;
-        let mut output = Vec::new();
-        for character in text.chars() {
-            let destination_x = bounds.x1 + column * CELL_WIDTH;
-            if destination_x >= bounds.x2 {
-                break;
-            }
-            let glyph = self
-                .codepoints
-                .binary_search(&(character as u32))
-                .unwrap_or(self.fallback);
-            let bitmap = face + glyph * GLYPH_BYTES;
-            let Some(source) = atlas.insert(
-                AtlasKey::Terminal {
-                    bold,
-                    glyph: glyph as u32,
-                },
-                BITMAP_WIDTH,
-                CELL_HEIGHT,
-                &self.bytes[bitmap..bitmap + GLYPH_BYTES],
-            ) else {
-                break;
-            };
-            let destination = display_proto::Rect {
-                x: destination_x as i32,
-                y: bounds.y1 as i32,
-                width: BITMAP_WIDTH as u32,
-                height: CELL_HEIGHT as u32,
-            };
-            if let Some((source, destination)) = crop_glyph(source, destination, clip) {
-                output.push(display_proto::Glyph {
-                    source,
-                    destination,
-                });
-            }
-            column += UnicodeWidthChar::width(character).unwrap_or(1).clamp(1, 2);
-        }
-        output
+    /// Glyph index for `character`; unknown codepoints use the `U+FFFD` fallback.
+    pub fn glyph(&self, character: char) -> usize {
+        self.codepoints
+            .binary_search(&(character as u32))
+            .unwrap_or(self.fallback)
     }
-}
 
-fn crop_glyph(
-    source: display_proto::Rect,
-    destination: display_proto::Rect,
-    clip: PhysicalRect,
-) -> Option<(display_proto::Rect, display_proto::Rect)> {
-    let x1 = destination.x.max(clip.x1 as i32);
-    let y1 = destination.y.max(clip.y1 as i32);
-    let x2 = destination
-        .x
-        .saturating_add_unsigned(destination.width)
-        .min(clip.x2 as i32);
-    let y2 = destination
-        .y
-        .saturating_add_unsigned(destination.height)
-        .min(clip.y2 as i32);
-    (x2 > x1 && y2 > y1).then(|| {
-        let width = (x2 - x1) as u32;
-        let height = (y2 - y1) as u32;
-        (
-            display_proto::Rect {
-                x: source.x + x1 - destination.x,
-                y: source.y + y1 - destination.y,
-                width,
-                height,
-            },
-            display_proto::Rect {
-                x: x1,
-                y: y1,
-                width,
-                height,
-            },
-        )
-    })
+    /// One `BITMAP_WIDTH x CELL_HEIGHT` A8 coverage bitmap; a narrow glyph uses the first
+    /// `CELL_WIDTH` columns of each row, a wide glyph all `BITMAP_WIDTH`.
+    pub fn bitmap(&self, glyph: usize, bold: bool) -> &[u8] {
+        let start = self.faces + (usize::from(bold) * GLYPH_COUNT + glyph) * GLYPH_BYTES;
+        &self.bytes[start..start + GLYPH_BYTES]
+    }
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {

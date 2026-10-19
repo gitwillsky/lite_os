@@ -42,11 +42,17 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "apps",
         "base",
         "compositor",
+        "console",
         "diagnostics",
         "display-proto",
+        "keyboard",
         "linux-uapi",
         "lite-runtime",
         "quickjs-runtime",
+        "seat-proto",
+        "seatd",
+        "terminal-font",
+        "terminal-model",
         "terminal-session",
     ])
     .into_iter()
@@ -100,8 +106,11 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "apps/music-player/src/main.rs",
         "quickjs-runtime/src/raw.rs",
         "quickjs-runtime/vendor/quickjs/quickjs.c",
+        "console/src/main.rs",
+        "seat-proto/src/lib.rs",
+        "seatd/src/main.rs",
         "terminal-session/src/lib.rs",
-        "terminal-session/src/model.rs",
+        "terminal-model/src/lib.rs",
     ] {
         if !root.join("user").join(required).is_file() {
             errors.push(format!(
@@ -117,7 +126,9 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "\"audio-proto\"",
         "\"audio-service\"",
         "\"compositor\"",
+        "\"console\"",
         "\"display-proto\"",
+        "\"keyboard\"",
         "\"linux-uapi\"",
         "\"lite-runtime\"",
         "\"apps/desktop\"",
@@ -126,6 +137,10 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "\"apps/terminal\"",
         "\"apps/music-player\"",
         "\"quickjs-runtime\"",
+        "\"seat-proto\"",
+        "\"seatd\"",
+        "\"terminal-font\"",
+        "\"terminal-model\"",
         "\"terminal-session\"",
         "audio-proto = { path = \"audio-proto\" }",
         "quickjs-runtime = { path = \"quickjs-runtime\" }",
@@ -144,12 +159,18 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "\"user/audio-proto\"",
         "\"user/audio-service\"",
         "\"user/compositor\"",
+        "\"user/console\"",
         "\"user/display-proto\"",
+        "\"user/keyboard\"",
         "\"user/linux-uapi\"",
         "\"user/lite-runtime\"",
         "\"user/apps/desktop\"",
         "\"user/apps/music-player\"",
         "\"user/quickjs-runtime\"",
+        "\"user/seat-proto\"",
+        "\"user/seatd\"",
+        "\"user/terminal-font\"",
+        "\"user/terminal-model\"",
         "\"user/terminal-session\"",
     ] {
         if !root_workspace.contains(excluded) {
@@ -184,10 +205,10 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected = "::sysinit:/etc/init.d/rcS\n::respawn:/bin/audio-service\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    let expected = "::sysinit:/etc/init.d/rcS\n::respawn:/bin/audio-service\n::respawn:/bin/seatd\n::respawn:/bin/console\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
-            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise the audio service, compositor, React desktop, network and UART recovery exactly once"
+            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise the audio service, seat arbiter, text console, compositor, React desktop, network and UART recovery exactly once"
                 .to_owned(),
         );
     }
@@ -204,6 +225,9 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
         "def build_audio_service(",
         "def build_app_binary(",
         "def build_terminal_session(",
+        "def build_console(",
+        "def build_seatd(",
+        "def build_seatctl(",
         "def build_ui_assets(",
         "/bin/audio-service",
         "/bin/compositor",

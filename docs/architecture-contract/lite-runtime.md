@@ -85,7 +85,8 @@
   父模块持有的 session、renderer、display 或 host state。
 - `quickjs-runtime` 是 QuickJS raw C ABI、unsafe、runtime/context、module loader、job queue 与 interrupt
   callback 的唯一 owner；其他 crate 不得声明 QuickJS extern、raw pointer 或复制 exception cleanup。
-- `terminal-session` 独占 PTY child、VT state、scrollback、selection 与 dirty rows；React terminal 不得
+- `terminal-model` 独占 VT parser、screen、scrollback、selection 与 dirty rows（无 IO、无 unsafe 外部依赖），
+  `terminal-session`（React terminal 的 PTY helper）与文本控制台 `console` 共用它；`terminal-session` 独占 PTY child。React terminal 不得
   复制 parser/screen state。`ui/design-system` 独占 Aurora token、assets 与系统组件；应用不得复制窗口
   chrome、shell、菜单、表单、Sidebar、Toolbar、Dialog 或结构/状态图标样式。结构/状态图标只能经 typed
   `SystemIcon` 使用 `assets/fonts/liteos-icons.json` 生成的 PUA 映射与 checked `liteos-icons` face；普通

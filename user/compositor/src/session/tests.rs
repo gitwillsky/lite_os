@@ -60,7 +60,11 @@ fn close_deadline_arms_once_and_never_pushes_out() {
     let mut deadline: Option<Instant> = None;
     assert_eq!(*deadline.get_or_insert_with(|| first), first);
     let later = Instant::now() + CLOSE_TIMEOUT + Duration::from_secs(60);
-    assert_eq!(*deadline.get_or_insert_with(|| later), first, "must not push out");
+    assert_eq!(
+        *deadline.get_or_insert_with(|| later),
+        first,
+        "must not push out"
+    );
 }
 
 #[test]

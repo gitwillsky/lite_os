@@ -28,6 +28,9 @@ def managed_path(path: str) -> bool:
     return path in {
         "/bin/audio-service",
         "/bin/compositor",
+        "/bin/console",
+        "/bin/seatd",
+        "/bin/seatctl",
         "/bin/desktop",
         "/bin/file-manager",
         "/bin/my-computer",

@@ -6,7 +6,8 @@
 use super::CONSTANTS_PER_CLIP_MASK;
 
 pub(super) const GAUSSIAN_PAIR_OFFSETS: [f32; 3] = [1.407_333_4, 3.294_215, 5.201_813];
-pub(super) const GAUSSIAN_WEIGHTS: [f32; 4] = [0.297_322_5, 0.091_848_34, 0.010_991_33, 0.199_675_63];
+pub(super) const GAUSSIAN_WEIGHTS: [f32; 4] =
+    [0.297_322_5, 0.091_848_34, 0.010_991_33, 0.199_675_63];
 
 pub(super) const VERTEX_SHADER_SOURCE: &str = "VERT\n\
 DCL IN[0]\n\

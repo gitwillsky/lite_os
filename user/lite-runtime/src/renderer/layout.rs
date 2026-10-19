@@ -8,7 +8,9 @@ use taffy::prelude::{
     LengthPercentage, LengthPercentageAuto, Position, Rect as TaffyRect, Size, Style,
 };
 
-use crate::{style::Computed, terminal_font::CELL_WIDTH, tree::Node};
+use terminal_font::CELL_WIDTH;
+
+use crate::{style::Computed, tree::Node};
 
 use super::SCALE;
 pub(crate) use overflow::{OverflowMode, overflow_modes};

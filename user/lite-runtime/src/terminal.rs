@@ -16,7 +16,7 @@ use linux_uapi::process::{SessionChild, SessionCommand, SessionIo};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::keymap::{Modifiers, character};
+use keyboard::{Modifiers, terminal_bytes};
 use screen::ScreenState;
 #[cfg(test)]
 use screen::{ATTR_BOLD, ATTR_HIDDEN, ATTR_INVERSE, Run, WIDE_CONTINUATION, runs};
@@ -139,9 +139,10 @@ impl Terminal {
     pub fn input(&mut self, payload: &[u8]) -> io::Result<()> {
         let event: KeyEvent = serde_json::from_slice(payload)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        if let Some(bytes) = translate_key(
+        if let Some(bytes) = terminal_bytes(
             &mut self.modifiers,
-            event,
+            event.code,
+            event.value,
             self.screen.application_cursor_keys,
         ) {
             write_frame(&mut self.input, INPUT, &bytes)?;
@@ -188,76 +189,6 @@ fn write_frame(output: &mut impl Write, kind: u32, payload: &[u8]) -> io::Result
     output.write_all(&kind.to_le_bytes())?;
     output.write_all(payload)?;
     output.flush()
-}
-
-fn translate_key(
-    state: &mut Modifiers,
-    event: KeyEvent,
-    application_cursor_keys: bool,
-) -> Option<Vec<u8>> {
-    let pressed = event.value != 0;
-    // 修饰键折叠交给共享 keymap，避免与 UI 文本输入各持一份键码表。
-    if state.apply(event.code, event.value) || !pressed {
-        return None;
-    }
-    let special: Option<&[u8]> = match event.code {
-        1 => Some(b"\x1b"),
-        14 => Some(b"\x7f"),
-        15 => Some(if state.shift { b"\x1b[Z" } else { b"\t" }),
-        28 => Some(b"\r"),
-        102 => Some(if application_cursor_keys {
-            b"\x1bOH"
-        } else {
-            b"\x1b[1~"
-        }),
-        103 => Some(if application_cursor_keys {
-            b"\x1bOA"
-        } else {
-            b"\x1b[A"
-        }),
-        104 => Some(b"\x1b[5~"),
-        105 => Some(if application_cursor_keys {
-            b"\x1bOD"
-        } else {
-            b"\x1b[D"
-        }),
-        106 => Some(if application_cursor_keys {
-            b"\x1bOC"
-        } else {
-            b"\x1b[C"
-        }),
-        107 => Some(if application_cursor_keys {
-            b"\x1bOF"
-        } else {
-            b"\x1b[4~"
-        }),
-        108 => Some(if application_cursor_keys {
-            b"\x1bOB"
-        } else {
-            b"\x1b[B"
-        }),
-        109 => Some(b"\x1b[6~"),
-        110 => Some(b"\x1b[2~"),
-        111 => Some(b"\x1b[3~"),
-        _ => None,
-    };
-    if let Some(bytes) = special {
-        return Some(bytes.to_vec());
-    }
-    // 共享 keymap 出字符（含 shift/caps），终端再叠加 control/alt 的 PTY 转义。
-    let mut character = character(event.code as u16, *state)? as u8;
-    if state.control {
-        character = character
-            .to_ascii_lowercase()
-            .wrapping_sub(b'a')
-            .wrapping_add(1);
-    }
-    let mut bytes = Vec::with_capacity(2);
-    if state.alt {
-        bytes.push(0x1b);
-    }
-    bytes.push(character);
-    Some(bytes)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> io::Result<u16> {
@@ -365,30 +296,11 @@ mod tests {
             (108, b"\x1bOB".as_slice()),
         ] {
             assert_eq!(
-                translate_key(
+                terminal_bytes(
                     &mut Modifiers::default(),
-                    KeyEvent { code, value: 1 },
+                    code,
+                    1,
                     screen.application_cursor_keys,
-                )
-                .as_deref(),
-                Some(expected),
-            );
-        }
-    }
-
-    #[test]
-    fn normal_cursor_mode_keeps_csi_navigation_encoding() {
-        for (code, expected) in [
-            (103, b"\x1b[A".as_slice()),
-            (105, b"\x1b[D".as_slice()),
-            (106, b"\x1b[C".as_slice()),
-            (108, b"\x1b[B".as_slice()),
-        ] {
-            assert_eq!(
-                translate_key(
-                    &mut Modifiers::default(),
-                    KeyEvent { code, value: 1 },
-                    false,
                 )
                 .as_deref(),
                 Some(expected),

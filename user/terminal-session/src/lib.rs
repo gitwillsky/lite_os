@@ -1,7 +1,5 @@
 //! Pure PTY/VT helper for the React terminal application.
 
-mod model;
-
 use std::{
     ffi::OsString,
     fs::File,
@@ -14,7 +12,7 @@ use linux_uapi::{
     pty::{PtySession, WindowSize},
     unix::{self, PollEvents, PollFd},
 };
-use model::{Grid, Model};
+use terminal_model::{Grid, Model};
 
 const INPUT: u32 = 1;
 const RESIZE: u32 = 2;
@@ -411,8 +409,8 @@ mod tests {
         let mut model = Model::new(4, 2).unwrap();
         let default_colors = model.default_colors();
         model.feed(b"\x1b[31;46mX", |_| {});
-        assert_ne!(model.cell(0, 0).foreground, default_colors.0);
-        assert_ne!(model.cell(0, 0).background, default_colors.1);
+        assert_ne!(model.projected_cell(0, 0).foreground, default_colors.0);
+        assert_ne!(model.projected_cell(0, 0).background, default_colors.1);
 
         let mut output = Vec::new();
         let mut frame = Vec::new();

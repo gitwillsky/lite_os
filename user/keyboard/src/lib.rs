@@ -1,6 +1,6 @@
-//! Shared evdev keycode translation. Owns the single keycode→character table
-//! so the terminal (which turns keys into PTY bytes) and the UI text-input
-//! primitive (which turns keys into editing intents) never carry rival maps.
+//! Shared evdev keycode translation. Owns the single keycode→character table so the terminal
+//! (PTY bytes, used by the React terminal helper and the text console) and the UI text-input
+//! primitive (editing intents) never carry rival maps.
 
 /// Latched modifier state accumulated from key press/release events.
 #[derive(Clone, Copy, Default)]
@@ -108,6 +108,79 @@ pub fn text_edit(code: u32, value: i32, modifiers: Modifiers) -> Option<TextEdit
     }
 }
 
+/// Translates one key event into the PTY byte sequence a terminal receives (`None` for modifier,
+/// release and unmapped keys). `application_cursor_keys` selects DECCKM `ESC O x` navigation.
+pub fn terminal_bytes(
+    state: &mut Modifiers,
+    code: u32,
+    value: i32,
+    application_cursor_keys: bool,
+) -> Option<Vec<u8>> {
+    let pressed = value != 0;
+    // 修饰键折叠交给本 crate 的 keymap，避免与 UI 文本输入各持一份键码表。
+    if state.apply(code, value) || !pressed {
+        return None;
+    }
+    let special: Option<&[u8]> = match code {
+        1 => Some(b"\x1b"),
+        14 => Some(b"\x7f"),
+        15 => Some(if state.shift { b"\x1b[Z" } else { b"\t" }),
+        28 => Some(b"\r"),
+        102 => Some(if application_cursor_keys {
+            b"\x1bOH"
+        } else {
+            b"\x1b[1~"
+        }),
+        103 => Some(if application_cursor_keys {
+            b"\x1bOA"
+        } else {
+            b"\x1b[A"
+        }),
+        104 => Some(b"\x1b[5~"),
+        105 => Some(if application_cursor_keys {
+            b"\x1bOD"
+        } else {
+            b"\x1b[D"
+        }),
+        106 => Some(if application_cursor_keys {
+            b"\x1bOC"
+        } else {
+            b"\x1b[C"
+        }),
+        107 => Some(if application_cursor_keys {
+            b"\x1bOF"
+        } else {
+            b"\x1b[4~"
+        }),
+        108 => Some(if application_cursor_keys {
+            b"\x1bOB"
+        } else {
+            b"\x1b[B"
+        }),
+        109 => Some(b"\x1b[6~"),
+        110 => Some(b"\x1b[2~"),
+        111 => Some(b"\x1b[3~"),
+        _ => None,
+    };
+    if let Some(bytes) = special {
+        return Some(bytes.to_vec());
+    }
+    // 共享 keymap 出字符（含 shift/caps），终端再叠加 control/alt 的 PTY 转义。
+    let mut character = character(code as u16, *state)? as u8;
+    if state.control {
+        character = character
+            .to_ascii_lowercase()
+            .wrapping_sub(b'a')
+            .wrapping_add(1);
+    }
+    let mut bytes = Vec::with_capacity(2);
+    if state.alt {
+        bytes.push(0x1b);
+    }
+    bytes.push(character);
+    Some(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Modifiers, TextEdit, character, text_edit};
@@ -162,5 +235,38 @@ mod tests {
         assert!(modifiers.super_key);
         assert!(modifiers.apply(125, 0));
         assert!(!modifiers.super_key);
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::{Modifiers, terminal_bytes};
+
+    #[test]
+    fn normal_cursor_mode_keeps_csi_navigation_encoding() {
+        for (code, expected) in [
+            (103, b"\x1b[A".as_slice()),
+            (105, b"\x1b[D".as_slice()),
+            (106, b"\x1b[C".as_slice()),
+            (108, b"\x1b[B".as_slice()),
+        ] {
+            assert_eq!(
+                terminal_bytes(&mut Modifiers::default(), code, 1, false).as_deref(),
+                Some(expected),
+            );
+        }
+    }
+
+    #[test]
+    fn control_letters_and_alt_prefix_follow_pty_conventions() {
+        let mut modifiers = Modifiers::default();
+        assert!(terminal_bytes(&mut modifiers, 29, 1, false).is_none()); // left control down
+        assert_eq!(terminal_bytes(&mut modifiers, 46, 1, false), Some(vec![3])); // Ctrl-C
+        terminal_bytes(&mut modifiers, 29, 0, false);
+        terminal_bytes(&mut modifiers, 56, 1, false); // left alt down
+        assert_eq!(
+            terminal_bytes(&mut modifiers, 30, 1, false),
+            Some(vec![0x1b, b'a'])
+        );
     }
 }

@@ -1358,6 +1358,21 @@ def build_terminal_session(musl: MuslCachePaths) -> Path:
     )
 
 
+def build_console(musl: MuslCachePaths) -> Path:
+    """构建显示器上的文本控制台（seat 的 Text session）。"""
+    return build_rust_user_program(musl, "console", "console", "console", 1)
+
+
+def build_seatd(musl: MuslCachePaths) -> Path:
+    """构建显示器/键盘座位仲裁进程。"""
+    return build_rust_user_program(musl, "seatd", "seatd", "seatd", 1)
+
+
+def build_seatctl(musl: MuslCachePaths) -> Path:
+    """构建从 shell 切换座位的命令行工具。"""
+    return build_rust_user_program(musl, "seatd", "seatctl", "seatctl", 1)
+
+
 def build_session_launch(musl: MuslCachePaths) -> Path:
     """构建唯一的单线程 session/exec trampoline。"""
     return build_rust_user_program(
@@ -1470,6 +1485,9 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
     artifacts = [
         UserlandArtifact(build_audio_service(musl), "/bin/audio-service", 0o755),
         UserlandArtifact(build_compositor(musl), "/bin/compositor", 0o755),
+        UserlandArtifact(build_console(musl), "/bin/console", 0o755),
+        UserlandArtifact(build_seatd(musl), "/bin/seatd", 0o755),
+        UserlandArtifact(build_seatctl(musl), "/bin/seatctl", 0o755),
         # Each GUI app is its own binary (`/bin/<id>`) linking the lite-runtime
         # library; the desktop shell spawns them by that path.
         UserlandArtifact(build_app_binary(musl, "desktop"), "/bin/desktop", 0o755),
@@ -1859,6 +1877,9 @@ def create_image(
     for session_binary in (
         "/bin/audio-service",
         "/bin/compositor",
+        "/bin/console",
+        "/bin/seatd",
+        "/bin/seatctl",
         "/bin/desktop",
         "/bin/file-manager",
         "/bin/my-computer",

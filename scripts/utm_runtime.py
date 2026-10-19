@@ -87,6 +87,7 @@ def _configuration(
     kernel: Path | None = None,
     rootfs: Path | None = None,
     serial_tcp_port: int | None = None,
+    kernel_arguments: str | None = None,
 ) -> dict[str, object]:
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
@@ -126,6 +127,9 @@ def _configuration(
         "-device",
         "virtio-tablet-device",
     ]
+    if kernel_arguments:
+        # 经 DTB /chosen/bootargs 进入 /proc/cmdline；seatd 读取其中的 liteos.target。
+        additional.extend(("-append", f'"{kernel_arguments}"'))
     additional.extend(
         (
             "-device",
@@ -225,6 +229,7 @@ def prepare(
     memory: str,
     cpu_count: int,
     serial_tcp_port: int | None = None,
+    kernel_arguments: str | None = None,
 ) -> Path:
     """Publish current artifacts and an exact UTM v4 configuration."""
     _installed_version()
@@ -242,6 +247,7 @@ def prepare(
         kernel=published_kernel,
         rootfs=published_rootfs,
         serial_tcp_port=serial_tcp_port,
+        kernel_arguments=kernel_arguments,
     )
     with (VM_PACKAGE / "config.plist").open("wb") as stream:
         plistlib.dump(config, stream, fmt=plistlib.FMT_XML, sort_keys=False)
@@ -408,6 +414,10 @@ class GateRuntime:
         self._restore = restore
         self._closed = False
 
+    def write(self, data: bytes) -> None:
+        """Send bytes to the guest UART (the serial shell reads them as typed input)."""
+        self._serial_socket.sendall(data)
+
     def poll(self) -> int | None:
         """Return `None` while UTM owns a running QEMU process, otherwise zero."""
         return None if _status() in ("starting", "started") else 0
@@ -496,6 +506,7 @@ def start_gate(
     rootfs: Path,
     memory: str = "2G",
     cpu_count: int = 1,
+    kernel_arguments: str | None = None,
 ) -> GateRuntime:
     """Start the sole product VirGL path as a hidden disposable UTM runtime."""
     _installed_version()
@@ -511,6 +522,7 @@ def start_gate(
             memory=memory,
             cpu_count=cpu_count,
             serial_tcp_port=serial_port,
+            kernel_arguments=kernel_arguments,
         )
         _ensure_registered()
         if _status() != "stopped":
@@ -553,6 +565,7 @@ def run_gui(
     memory: str,
     cpu_count: int,
     serial_log: Path,
+    kernel_arguments: str | None = None,
 ) -> None:
     """Start the generated VM while persistently capturing its complete serial stream."""
     _installed_version()
@@ -569,6 +582,7 @@ def run_gui(
             memory=memory,
             cpu_count=cpu_count,
             serial_tcp_port=serial_port,
+            kernel_arguments=kernel_arguments,
         )
         _ensure_registered()
         status = _status()

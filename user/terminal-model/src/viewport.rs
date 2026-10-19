@@ -9,7 +9,7 @@ impl Model {
     /// the live screen. The offset is clamped to retained primary-screen history.
     ///
     /// Returns `true` when the projected viewport changed.
-    pub(crate) fn scroll_viewport(&mut self, lines: i32) -> bool {
+    pub fn scroll_viewport(&mut self, lines: i32) -> bool {
         if self.alternate_active {
             return false;
         }
@@ -31,12 +31,12 @@ impl Model {
     }
 
     /// Returns the number of retained lines above the live bottom.
-    pub(crate) fn viewport_offset(&self) -> usize {
+    pub fn viewport_offset(&self) -> usize {
         self.viewport_offset
     }
 
     /// Returns the number of retained primary-screen history rows.
-    pub(crate) fn history_rows(&self) -> usize {
+    pub fn history_rows(&self) -> usize {
         if self.alternate_active {
             0
         } else {
@@ -45,7 +45,7 @@ impl Model {
     }
 
     /// Returns one cell from the currently projected viewport.
-    pub(crate) fn projected_cell(&self, row: usize, column: usize) -> Cell {
+    pub fn projected_cell(&self, row: usize, column: usize) -> Cell {
         if self.alternate_active || self.viewport_offset == 0 {
             return self.cell_at(row, column);
         }

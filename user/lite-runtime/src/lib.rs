@@ -10,13 +10,12 @@ mod display;
 mod font;
 mod host;
 mod input;
-mod keymap;
 #[cfg(test)]
 mod pointer_capture_tests;
 mod renderer;
 mod style;
 mod terminal;
-mod terminal_font;
+mod terminal_glyphs;
 mod tree;
 
 pub use host::{Action, ExtensionCx, ExtensionEvents, HostExtension};
@@ -78,7 +77,7 @@ struct Interactions {
     native_scroll_pointer: bool,
     /// Latched keyboard modifiers for the focused text field's key→char mapping.
     /// Terminal keeps its own modifiers; this only serves UI `<input>` focus.
-    modifiers: keymap::Modifiers,
+    modifiers: keyboard::Modifiers,
     /// One native text-field paste awaiting its exact compositor response.
     ///
     /// Without the node identity, an asynchronous reply could paste into a

@@ -6,6 +6,7 @@ mod parser;
 mod reflow;
 mod screen;
 mod selection;
+pub use selection::{CellPosition, SelectionProjection};
 mod style;
 mod viewport;
 #[cfg(test)]
@@ -106,6 +107,12 @@ impl Cell {
             attributes: 0,
             reserved,
         }
+    }
+
+    /// Whether this cell is the right half of a double-width character drawn from the previous
+    /// cell; a renderer must not paint a glyph for it.
+    pub const fn is_wide_continuation(self) -> bool {
+        self.reserved & WIDE_CONTINUATION != 0
     }
 
     /// Encodes one fixed 16-byte helper-protocol cell.
@@ -355,7 +362,7 @@ impl Model {
     }
 
     #[cfg(test)]
-    pub(crate) fn cell(&self, row: usize, column: usize) -> Cell {
+    pub fn cell(&self, row: usize, column: usize) -> Cell {
         self.cell_at(row, column)
     }
 

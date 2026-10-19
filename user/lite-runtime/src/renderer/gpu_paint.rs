@@ -26,6 +26,7 @@ use crate::{
     display::{ForeignLayer, Overlay, WindowFrame},
     font::GlyphAtlas,
     style::PseudoState,
+    terminal_glyphs,
     tree::Node,
 };
 
@@ -459,7 +460,8 @@ impl Renderer {
         if node.source.is_text_leaf() {
             let text = text_content(&node.source);
             if node.computed.get("font-family") == Some("monospace") {
-                let glyphs = self.terminal_font.gpu_text(
+                let glyphs = terminal_glyphs::gpu_text(
+                    &self.terminal_font,
                     glyph_atlas,
                     bounds,
                     walk.clip,

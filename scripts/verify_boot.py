@@ -104,6 +104,40 @@ def boot_product_graphics(image: Path, kernel: Path) -> None:
             "compositor: app 2 connected",
             "lite-ui: app file-manager ready",
         ),
+        kernel_arguments="liteos.target=desktop",
+    )
+
+
+def boot_product_seat_switch(image: Path, kernel: Path) -> None:
+    """默认文本控制台启动，经 seatctl 切到桌面再切回，验证座位交接的两个方向。
+
+    串口 marker 证明：文本控制台完成首帧；切到桌面时控制台先释放、compositor 随后取得座位并呈现
+    桌面首帧；切回时 compositor 先释放、控制台重新取得座位。缺少先释放后取得的顺序，后一个
+    session 的 `set_master` 会因 EBUSY 失败，对应 marker 永远不会出现。
+    """
+    boot_graphics(
+        image,
+        kernel,
+        (
+            "VirtIO GPU",
+            "seatd: ready target=text",
+            "seatd: active text",
+            "console: acquired 1",
+            "console: first frame presented",
+            "console: shell spawned",
+            "compositor: GPU mode",
+            "compositor: seat registered",
+            "console: released 1",
+            "compositor: seat acquired 1",
+            "seatd: active desktop",
+            "compositor: desktop first scene presented",
+            "compositor: seat released 1",
+            "console: acquired 2",
+        ),
+        interactions=(
+            ("compositor: seat registered", b"seatctl desktop\n"),
+            ("compositor: desktop first scene presented", b"seatctl text\n"),
+        ),
     )
 
 
@@ -127,7 +161,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / f"boot-{target.arch}.json"
         payload = runtime_gate_payload(
             "boot-topology",
-            7,
+            8,
             gate_inputs(target, image, busybox, musl.install),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
@@ -142,6 +176,8 @@ def main() -> int:
         ):
             boot_product_graphics(image, ROOT / target.kernel_boot_artifact())
             print("UTM AArch64 VirGL product graphics boot verification passed")
+            boot_product_seat_switch(image, ROOT / target.kernel_boot_artifact())
+            print("UTM AArch64 text console and desktop seat switch verification passed")
         elif target.arch == "aarch64":
             print("UTM VirGL boot gate skipped outside the AArch64/HVF product runtime")
         publish_runtime_gate(stamp, payload)

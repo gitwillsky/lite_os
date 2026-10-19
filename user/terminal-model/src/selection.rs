@@ -3,9 +3,9 @@
 use super::{ATTR_HIDDEN, Model, SOFT_WRAPPED_ROW, WIDE_CONTINUATION};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct CellPosition {
-    pub(crate) row: usize,
-    pub(crate) column: usize,
+pub struct CellPosition {
+    pub row: usize,
+    pub column: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,10 +15,10 @@ pub(super) struct Selection {
 }
 
 /// One normalized inclusive selection projected into the terminal update protocol.
-pub(crate) struct SelectionProjection {
-    pub(crate) start: CellPosition,
-    pub(crate) end: CellPosition,
-    pub(crate) text: String,
+pub struct SelectionProjection {
+    pub start: CellPosition,
+    pub end: CellPosition,
+    pub text: String,
 }
 
 impl Selection {
@@ -40,7 +40,7 @@ impl Model {
     /// resolve to their leading cell.
     ///
     /// Returns `true` when the selection projection changed.
-    pub(crate) fn set_selection(
+    pub fn set_selection(
         &mut self,
         anchor_column: usize,
         anchor_row: usize,
@@ -60,7 +60,7 @@ impl Model {
     }
 
     /// Clears the current selection and returns whether a projection changed.
-    pub(crate) fn clear_selection(&mut self) -> bool {
+    pub fn clear_selection(&mut self) -> bool {
         if self.selection.take().is_none() {
             return false;
         }
@@ -69,17 +69,17 @@ impl Model {
     }
 
     /// Returns whether selection state changed after the last published update.
-    pub(crate) fn selection_dirty(&self) -> bool {
+    pub fn selection_dirty(&self) -> bool {
         self.selection_dirty
     }
 
     /// Marks the current selection projection as published.
-    pub(crate) fn clear_selection_dirty(&mut self) {
+    pub fn clear_selection_dirty(&mut self) {
         self.selection_dirty = false;
     }
 
     /// Builds the normalized visible selection and its exact UTF-8 text.
-    pub(crate) fn selection_projection(&self) -> Option<SelectionProjection> {
+    pub fn selection_projection(&self) -> Option<SelectionProjection> {
         let (start, end) = self.selection?.normalized();
         let mut text = String::new();
         for row in start.row..=end.row {

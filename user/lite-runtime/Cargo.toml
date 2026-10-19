@@ -28,4 +28,6 @@ serde_json.workspace = true
 taffy.workspace = true
 symphonia.workspace = true
 audio-proto.workspace = true
+keyboard.workspace = true
+terminal-font.workspace = true
 unicode-width.workspace = true

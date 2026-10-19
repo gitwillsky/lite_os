@@ -112,7 +112,6 @@ impl Scanout {
         let graphics = device.initialize_virgl("liteos-compositor")?;
         let renderer = GpuRenderer::new(&graphics)?;
         let cursor = Cursor::open(&device)?;
-        take_master(&device)?;
         let width = u32::from(topology.mode.width());
         let height = u32::from(topology.mode.height());
         let targets = [
@@ -135,14 +134,37 @@ impl Scanout {
         scanout.draw_boot(1);
         scanout.upload_boot(0)?;
         scanout.upload_boot(1)?;
-        scanout
-            .device
-            .set_crtc(&scanout.topology, scanout.targets[0].framebuffer_id)?;
-        scanout
-            .device
-            .update_cursor(&scanout.topology, None, (0, 0), (0, 0))?;
         eprintln!("compositor: GPU mode {width}x{height}");
+        // 内核让第一个打开 DRM 的 OFD 隐式成为 master（device.rs 的 open 路径）。GPU 初始化都已
+        // 完成，立即交还；缺少这一步，文本控制台作为首个座位持有者时 set_master 永远 EBUSY。
+        scanout.device.drop_master()?;
         Ok(scanout)
+    }
+
+    /// Becomes DRM master and puts the front target (boot image on first use, the last presented
+    /// frame after a seat switch) back on the CRTC with the hardware cursor hidden.
+    ///
+    /// Without this call after every seat `Acquire`, the console's framebuffer stays on screen.
+    pub fn take_display(&mut self) -> io::Result<()> {
+        take_master(&self.device)?;
+        // 光标更新要求 CRTC 已 active（否则 EINVAL），所以必须先 set_crtc 再隐藏光标。
+        self.device
+            .set_crtc(&self.topology, self.targets[self.front].framebuffer_id)?;
+        self.device
+            .update_cursor(&self.topology, None, (0, 0), (0, 0))?;
+        self.cursor_published = false;
+        Ok(())
+    }
+
+    /// Hides the hardware cursor and drops DRM master so another session can take the display.
+    ///
+    /// The caller must already have retired any in-flight page flip: a pending flip would make the
+    /// next master's `set_crtc` fail with `EBUSY`. All GPU resources stay alive.
+    pub fn give_up_display(&mut self) -> io::Result<()> {
+        self.device
+            .update_cursor(&self.topology, None, (0, 0), (0, 0))?;
+        self.cursor_published = false;
+        self.device.drop_master()
     }
 
     fn target(
@@ -521,11 +543,19 @@ impl Scanout {
                 width: underlay.width(),
                 height: underlay.height(),
             };
-            layers.push(texture_layer(underlay, screen, damage.unwrap_or(screen), &[], (0, 0)));
+            layers.push(texture_layer(
+                underlay,
+                screen,
+                damage.unwrap_or(screen),
+                &[],
+                (0, 0),
+            ));
             let last_moving = nodes
                 .iter()
                 .rposition(|node| node.window_group == moving_group)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "move group disappeared"))?;
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "move group disappeared")
+                })?;
             for (index, node) in nodes.iter().enumerate() {
                 let source = move_node_source(index, last_moving, node, moving_group);
                 let Some(source) = source else {
@@ -640,13 +670,15 @@ fn scene_layer<'a>(
     texture_layer(
         texture,
         translated(node.bounds, offset),
-        damage.and_then(|damage| intersect(clip, damage)).unwrap_or_else(|| {
-            if damage.is_some() {
-                Rect::default()
-            } else {
-                clip
-            }
-        }),
+        damage
+            .and_then(|damage| intersect(clip, damage))
+            .unwrap_or_else(|| {
+                if damage.is_some() {
+                    Rect::default()
+                } else {
+                    clip
+                }
+            }),
         &node.clip_masks,
         offset,
     )

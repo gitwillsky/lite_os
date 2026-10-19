@@ -21,9 +21,17 @@ def boot_graphics(
     kernel: Path,
     markers: tuple[str, ...],
     timeout_seconds: float = 180.0,
+    kernel_arguments: str | None = None,
+    interactions: tuple[tuple[str, bytes], ...] = (),
 ) -> str:
-    """Cold-boot the sole UTM VirGL path until all markers are visible; return the serial text."""
-    runtime = start_gate(kernel=kernel, rootfs=image)
+    """Cold-boot the sole UTM VirGL path until all markers are visible; return the serial text.
+
+    `kernel_arguments` is the guest kernel command line (e.g. `liteos.target=desktop`).
+    Each `(marker, data)` in `interactions` is typed into the serial shell once, the first time
+    `marker` appears in the output, in order.
+    """
+    runtime = start_gate(kernel=kernel, rootfs=image, kernel_arguments=kernel_arguments)
+    pending = list(interactions)
     output = bytearray()
     deadline = time.monotonic() + timeout_seconds
     try:
@@ -41,7 +49,9 @@ def boot_graphics(
                     "UTM graphics gate reached a fatal path"
                     f"\n--- output tail ---\n{_tail(text)}"
                 )
-            if all(marker in text for marker in markers):
+            while pending and pending[0][0] in text:
+                runtime.write(pending.pop(0)[1])
+            if not pending and all(marker in text for marker in markers):
                 return text
     finally:
         runtime.close()

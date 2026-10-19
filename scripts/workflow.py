@@ -25,6 +25,14 @@ ROOT = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
 
 
+def _boot_target_arguments(source: Mapping[str, str]) -> str:
+    """`LITEOS_TARGET=text|desktop` 转成内核命令行；默认文本控制台，seatd 读取 liteos.target。"""
+    value = source.get("LITEOS_TARGET", "text")
+    if value not in {"text", "desktop"}:
+        raise RuntimeError("LITEOS_TARGET must be text or desktop")
+    return f"liteos.target={value}"
+
+
 def _profile(environment: Mapping[str, str] | None = None) -> str:
     """返回经过白名单校验的 Cargo profile。"""
     source = os.environ if environment is None else environment
@@ -722,6 +730,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             memory=source.get("QEMU_MEMORY", "2G"),
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-gui-serial.log",
+            kernel_arguments=_boot_target_arguments(source),
         )
         return
     if scope == "run-gdb":
@@ -737,6 +746,8 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             memory=source.get("AGENT_QEMU_MEMORY", "6G"),
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-agent-development-serial.log",
+            # agent 开发直接验收桌面 UI，不经过文本控制台。
+            kernel_arguments="liteos.target=desktop",
         )
         return
     if scope == "gdb":
