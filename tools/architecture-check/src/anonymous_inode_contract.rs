@@ -20,8 +20,8 @@ fn ordered(body: &str, facts: &[&str]) -> bool {
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let ofd = text(sources, "kernel/src/file/mod.rs");
-    let snapshot = text(sources, "kernel/src/storage/fs/procfs/snapshot.rs");
-    let link = text(sources, "kernel/src/storage/fs/procfs/link.rs");
+    let snapshot = text(sources, "kernel/src/fs/procfs/snapshot.rs");
+    let link = text(sources, "kernel/src/fs/procfs/link.rs");
     let producer = text(sources, "kernel/src/task/model/file_table.rs");
     if !ofd.contains("opened: Arc<OpenedFile>")
         || ofd.contains("character_opened")
@@ -34,8 +34,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: every OFD/proc target must retain one actual opened identity without label fallback".into());
     }
-    let opened = text(sources, "kernel/src/storage/fs/vfs/opened.rs");
-    let dentry = text(sources, "kernel/src/storage/fs/vfs/dentry.rs");
+    let opened = text(sources, "kernel/src/fs/vfs/opened.rs");
+    let dentry = text(sources, "kernel/src/fs/vfs/dentry.rs");
     if !dentry.contains("Anonymous(Vec<u8>)")
         || !ordered(
             opened,
@@ -60,10 +60,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: display/location must bypass namespace registration projection and deletion cleanup".into());
     }
-    let anonymous = text(sources, "kernel/src/storage/fs/anonymous.rs");
+    let anonymous = text(sources, "kernel/src/fs/anonymous.rs");
     let fields = sources
         .iter()
-        .find(|s| s.relative == "kernel/src/storage/fs/anonymous.rs")
+        .find(|s| s.relative == "kernel/src/fs/anonymous.rs")
         .unwrap()
         .syntax
         .items
@@ -86,7 +86,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("anonymous-inode: pseudo inode must not pin endpoints, reopen singleton or invent normal type/private notification facts".into());
     }
     let ipc = text(sources, "kernel/src/ipc/pipe.rs");
-    let admission = text(sources, "kernel/src/ipc/pipe_open.rs");
+    let admission = text(sources, "kernel/src/ipc/pipe/pipe_open.rs");
     if !ordered(
         admission,
         &[
@@ -110,7 +110,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: endpoint admission peer facts and last-close retirement must share one state transaction".into());
     }
-    let fifo = text(sources, "kernel/src/storage/fs/fifo.rs");
+    let fifo = text(sources, "kernel/src/fs/fifo.rs");
     if !fifo.contains("static FIFOS: TaskMutex<Vec<Slot>>")
         || !ordered(
             fifo,
@@ -128,7 +128,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: FIFO must prepare outside spin locks and restrict HUP suppression to no-writer nonblocking named readers".into());
     }
-    let memory = text(sources, "kernel/src/storage/fs/memory_file.rs");
+    let memory = text(sources, "kernel/src/fs/memory_file.rs");
     let resize = memory
         .split("pub(super) fn truncate_with_metadata")
         .nth(1)
@@ -164,9 +164,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: seal rejection/data failure must precede metadata commit and all guards must retire before MM invalidation".into());
     }
-    let times = text(sources, "kernel/src/storage/fs/inode_times.rs");
-    let metadata = text(sources, "kernel/src/storage/fs/anonymous/metadata.rs");
-    let tmp = text(sources, "kernel/src/storage/fs/tmpfs.rs");
+    let times = text(sources, "kernel/src/fs/inode_times.rs");
+    let metadata = text(sources, "kernel/src/fs/anonymous/metadata.rs");
+    let tmp = text(sources, "kernel/src/fs/tmpfs.rs");
     if !memory.contains("times: Arc<super::inode_times::InodeTimes>")
         || memory.contains("modified_ns")
         || memory.contains("modified_seconds:")
@@ -210,8 +210,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             .matches("ofd.notify(crate::fs::IN_MODIFY)")
             .count()
             != 2
-        || !text(sources, "kernel/src/storage/fs/inotify.rs")
-            .contains("!inode.allows_notifications()")
+        || !text(sources, "kernel/src/fs/inotify.rs").contains("!inode.allows_notifications()")
     {
         errors.push("anonymous-inode: generic successful I/O and final close must notify actual non-private inode identities".into());
     }

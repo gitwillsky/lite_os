@@ -1,7 +1,7 @@
 //! IPC registry 用例的页 owner 输入 seam；不执行页 fault、swap 或 VMA 算法。
 //! 实际共享页/VMA 行为由 fork_file_eof 装配生产 memory 源码验证。
 use alloc::sync::Arc;
-#[path = "../../../kernel/src/memory/shared_memory.rs"]
+#[path = "../../../tools/kernel-view/memory/shared_memory/shared_memory/shared_memory.rs"]
 #[allow(
     unused_imports,
     reason = "本 fixture 使用实际 shared VMA owner；页 residency 账本由 swap_page 回归覆盖"

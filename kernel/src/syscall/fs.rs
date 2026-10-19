@@ -332,9 +332,7 @@ fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: InodeMetadata)
         st_nlink: metadata.links,
         st_uid: task.user_namespace().display_id(true, metadata.uid),
         st_gid: task.user_namespace().display_id(false, metadata.gid),
-        st_rdev: metadata
-            .device
-            .map_or(0, crate::fs::device::DeviceNumber::encode),
+        st_rdev: metadata.device.map_or(0, crate::fs::DeviceNumber::encode),
         pad1: 0,
         st_size: metadata.size as i64,
         st_blksize: metadata.block_size as i32,

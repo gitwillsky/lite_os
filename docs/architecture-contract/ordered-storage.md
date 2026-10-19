@@ -51,8 +51,8 @@ ReceiveBuffer 的用户 limit/真实 capacity 由原 buffer owner 保持，defer
 
 ## 当前源码大小审查
 
-- `kernel/src/storage/fs/procfs.rs`：owner 为 procfs inode/source 投影。开放文件操作已拆入 opened_operations，仍集中维护 ProcNode 的 Exhaustive 匹配以避免重复目录事实；新增独立目录 family 时移入对应 source adapter，达到 1500 行前必须拆分。
-- `kernel/src/storage/fs/tmpfs.rs`：owner 为单个 tmpfs inode 与 namespace 生命周期，数据块由 TmpFile 独立持有。现有 inode trait 实现保持同一权限/通知事务；新增独立 metadata family 时拆分，达到 1500 行前必须拆分。
+- `kernel/src/fs/procfs.rs`：owner 为 procfs inode/source 投影。开放文件操作已拆入 opened_operations，仍集中维护 ProcNode 的 Exhaustive 匹配以避免重复目录事实；新增独立目录 family 时移入对应 source adapter，达到 1500 行前必须拆分。
+- `kernel/src/fs/tmpfs.rs`：owner 为单个 tmpfs inode 与 namespace 生命周期，数据块由 TmpFile 独立持有。现有 inode trait 实现保持同一权限/通知事务；新增独立 metadata family 时拆分，达到 1500 行前必须拆分。
 - `kernel/src/task/process_table/signal.rs`：owner 为 graph 下的信号生成与子进程通知事务，凭据/queue codec 已分属其他 owner。退出通知与 pending admission 必须同锁裁决；新增独立 signal producer 时拆分，达到 1500 行前必须拆分。
 
 上述为当前 seam 复核记录，源码仍受原 1000 行复核与 1500 行拒绝门禁约束。

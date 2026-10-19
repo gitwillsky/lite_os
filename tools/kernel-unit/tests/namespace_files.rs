@@ -31,7 +31,7 @@ mod ipc {
     pub(crate) struct Pipe;
 }
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     #[path = "inotify/limits.rs"]
     mod inotify_limits;
@@ -141,7 +141,7 @@ mod fs {
         pub(crate) flags: u64,
     }
     pub(crate) enum InodeOpen {
-        Device(Arc<dyn device::DeviceFile>),
+        Device(Arc<dyn chardev::DeviceFile>),
     }
     pub(crate) struct InodeOpenError;
     impl From<FileSystemError> for InodeOpenError {
@@ -180,8 +180,8 @@ mod fs {
         fn pseudo_statistics(&self) -> Option<FileSystemStatistics> {
             None
         }
-        fn ioctl(&self, _: &device::IoctlCall<'_>) -> Result<isize, device::DeviceError> {
-            Err(device::DeviceError::Errno(syscall_abi::errno::ENOTTY))
+        fn ioctl(&self, _: &chardev::IoctlCall<'_>) -> Result<isize, chardev::DeviceError> {
+            Err(chardev::DeviceError::Errno(syscall_abi::errno::ENOTTY))
         }
         fn read_storage(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
         fn write_storage(
@@ -303,7 +303,7 @@ mod fs {
     ) -> Result<Vec<u8>, FileSystemError> {
         procfs::format_bytes(args)
     }
-    pub(crate) mod device {
+    pub(crate) mod chardev {
         use crate::namespace::{NamespaceAuthority, NamespaceReference};
         use alloc::sync::Arc;
         #[derive(Debug, PartialEq, Eq)]
@@ -390,7 +390,7 @@ mod fs {
     use nsfs::namespace_opened;
     mod procfs {
         use super::*;
-        use crate::fs::device::DeviceError;
+        use crate::fs::chardev::DeviceError;
         use crate::namespace::{NamespaceAuthority, UserNamespace, UserNamespaceMap};
         pub(super) mod text;
         use text::ProcText;
@@ -505,11 +505,11 @@ mod fs {
             }
         }
         struct Output(Vec<u8>);
-        impl device::UserOutput for Output {
+        impl chardev::UserOutput for Output {
             fn remaining(&self) -> usize {
                 4096 - self.0.len()
             }
-            fn write(&mut self, bytes: &[u8]) -> Result<(), device::UserFault> {
+            fn write(&mut self, bytes: &[u8]) -> Result<(), chardev::UserFault> {
                 self.0.extend_from_slice(bytes);
                 Ok(())
             }
@@ -519,13 +519,13 @@ mod fs {
             consumed: usize,
             fault: bool,
         }
-        impl device::UserInput for Input<'_> {
+        impl chardev::UserInput for Input<'_> {
             fn remaining(&self) -> usize {
                 self.bytes.len() - self.consumed
             }
-            fn copy(&self, bytes: &mut [u8]) -> Result<(), device::UserFault> {
+            fn copy(&self, bytes: &mut [u8]) -> Result<(), chardev::UserFault> {
                 if self.fault {
-                    return Err(device::UserFault);
+                    return Err(chardev::UserFault);
                 }
                 bytes.copy_from_slice(&self.bytes[self.consumed..self.consumed + bytes.len()]);
                 Ok(())
@@ -560,7 +560,7 @@ mod fs {
                 user_namespace: None,
             }
         }
-        fn read(file: &dyn device::DeviceFile) -> String {
+        fn read(file: &dyn chardev::DeviceFile) -> String {
             let mut output = Output(Vec::new());
             file.positioned().unwrap().read_at(&mut output, 0).unwrap();
             String::from_utf8(output.0).unwrap()
@@ -572,15 +572,15 @@ mod fs {
                 capacity: usize,
                 fault_after: Option<usize>,
             }
-            impl device::UserOutput for Limited {
+            impl chardev::UserOutput for Limited {
                 fn remaining(&self) -> usize {
                     self.capacity - self.bytes.len()
                 }
-                fn write(&mut self, bytes: &[u8]) -> Result<(), device::UserFault> {
+                fn write(&mut self, bytes: &[u8]) -> Result<(), chardev::UserFault> {
                     let count = self.fault_after.unwrap_or(bytes.len()).min(bytes.len());
                     self.bytes.extend_from_slice(&bytes[..count]);
                     if self.fault_after.is_some() {
-                        Err(device::UserFault)
+                        Err(chardev::UserFault)
                     } else {
                         Ok(())
                     }
@@ -611,7 +611,7 @@ mod fs {
             };
             assert_eq!(
                 opened.positioned().unwrap().read_at(&mut fault, 0),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
             );
             assert_eq!(fault.bytes, expected[..3]);
             let header = expected.iter().position(|byte| *byte == b'\n').unwrap() + 1;
@@ -646,11 +646,11 @@ mod fs {
                 bytes: [u8; 7],
                 used: usize,
             }
-            impl device::UserOutput for Fragment {
+            impl chardev::UserOutput for Fragment {
                 fn remaining(&self) -> usize {
                     self.bytes.len() - self.used
                 }
-                fn write(&mut self, bytes: &[u8]) -> Result<(), device::UserFault> {
+                fn write(&mut self, bytes: &[u8]) -> Result<(), chardev::UserFault> {
                     self.bytes[self.used..self.used + bytes.len()].copy_from_slice(bytes);
                     self.used += bytes.len();
                     Ok(())
@@ -813,7 +813,7 @@ mod fs {
                 };
                 assert_eq!(
                     operations.write_at(&mut input, offset, &caller),
-                    Err(device::DeviceError::Errno(error))
+                    Err(chardev::DeviceError::Errno(error))
                 );
                 assert_eq!(input.consumed, 0);
                 assert_eq!(time.snapshot(), old);
@@ -826,7 +826,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut input, 0, &caller),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EACCES))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EACCES))
             );
             let replacement = initial.copy_for(caller.namespace.clone(), 0).unwrap();
             *inode.source.1.lock() = Some(replacement.clone());
@@ -844,12 +844,12 @@ mod fs {
                     .positioned()
                     .unwrap()
                     .write_at(&mut input, 0, &caller),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
             );
             *inode.source.1.lock() = None;
             assert_eq!(
                 operations.write_at(&mut input, 0, &caller),
-                Err(device::DeviceError::Errno(syscall_abi::errno::ESRCH))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::ESRCH))
             );
         }
         #[test]
@@ -880,7 +880,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut fault, 0, &denied),
-                    Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
                 );
                 assert_eq!(fault.consumed, 0);
                 let mut output = Output(Vec::new());
@@ -946,11 +946,11 @@ mod fs {
             };
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut fault, 0, &denied),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
             );
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut fault, 0, &root),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
             );
             assert_eq!(target.optmem_max(), 64);
             let mut invalid = Input {
@@ -960,7 +960,7 @@ mod fs {
             };
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut invalid, 0, &root),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
             );
             assert_eq!(target.optmem_max(), 64);
             let mut zero = Input {
@@ -1122,7 +1122,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut value, 0, &root),
-                    Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
                 );
             }
         }
@@ -1156,7 +1156,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut bad, 0, &caller),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
             );
             assert_eq!(mount_limit(), 32);
             let mut ignored = Input {
@@ -1197,7 +1197,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut value, 0, &denied),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
             );
             denied.namespace = UserNamespace::child(
                 &caller,
@@ -1210,7 +1210,7 @@ mod fs {
             .unwrap();
             assert_eq!(
                 operations.write_at(&mut value, 0, &denied),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
             );
             assert_eq!(value.consumed, 0);
             assert_eq!(mount_limit(), 32);
@@ -1577,7 +1577,7 @@ mod fs {
                 };
                 assert_eq!(
                     operations.write_at(&mut value, 0, &writer),
-                    Err(device::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
                 );
                 assert_eq!(target.limit(), initial);
                 assert_eq!(value.consumed, 0);
@@ -1589,7 +1589,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut value, 0, &denied),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
             );
             assert_eq!(value.consumed, 0);
             let mut root_without_capability = writer.clone();
@@ -1616,7 +1616,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut fault, 0, &writer),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
             );
             assert_eq!(target.limit(), 301);
         }
@@ -1725,7 +1725,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut value, 0, &denied),
-                    Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
                 );
                 assert_eq!(value.consumed, 0);
                 node.node = ProcNode::InotifyLimit(global);
@@ -1747,7 +1747,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut value, 0, &dropped),
-                    Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
                 ));
                 assert_eq!(value.consumed, 0);
             }
@@ -1856,7 +1856,7 @@ mod fs {
                 file.positioned()
                     .unwrap()
                     .write_at(&mut denied, 0, &foreign),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
             ));
             assert_eq!(denied.consumed, 0);
             let mut fault = Input {
@@ -1866,7 +1866,7 @@ mod fs {
             };
             assert!(matches!(
                 file.positioned().unwrap().write_at(&mut fault, 0, &current),
-                Err(device::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
             ));
             assert_eq!(child.resource_limit(UserResource::User), 2);
             let mut large = vec![b'x'; 5000];
@@ -1915,7 +1915,7 @@ mod fs {
                 };
                 assert!(matches!(
                     file.positioned().unwrap().write_at(&mut input, 0, &current),
-                    Err(device::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
                 ));
                 assert_eq!(input.consumed, 0);
                 assert_eq!(child.resource_limit(UserResource::User), 2);
@@ -2004,7 +2004,7 @@ mod fs {
             assert_eq!(file.positioned().unwrap().seek(7, -3, 1), Ok(4));
             assert_eq!(
                 file.positioned().unwrap().seek(0, 0, 2),
-                Err(device::DeviceError::Errno(22))
+                Err(chardev::DeviceError::Errno(22))
             );
         }
         #[test]
@@ -2029,12 +2029,12 @@ mod fs {
             };
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut input, 0, &parent),
-                Err(device::DeviceError::Errno(14))
+                Err(chardev::DeviceError::Errno(14))
             );
             input.fault = false;
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut input, 1, &parent),
-                Err(device::DeviceError::Errno(22))
+                Err(chardev::DeviceError::Errno(22))
             );
             assert_eq!(input.consumed, 0);
             assert_eq!(child.to_kernel(true, 0), None);
@@ -2256,18 +2256,18 @@ mod fs {
     fn nsfs_owner_ioctl_returns_concrete_parent_and_device_has_no_positioned_operations() {
         use crate::namespace::{NamespaceAuthority, NamespaceReference, UserNamespace};
         struct Memory(core::cell::RefCell<Option<NamespaceReference>>);
-        impl device::UserMemory for Memory {
+        impl chardev::UserMemory for Memory {
             fn pid_namespace(&self) -> Arc<crate::namespace::PidNamespace> {
                 crate::namespace::initial_pid()
             }
             fn install_namespace(
                 &self,
                 value: NamespaceReference,
-            ) -> Result<isize, device::DeviceError> {
+            ) -> Result<isize, chardev::DeviceError> {
                 *self.0.borrow_mut() = Some(value);
                 Ok(23)
             }
-            fn write(&self, _: usize, _: &[u8]) -> Result<(), device::UserFault> {
+            fn write(&self, _: usize, _: &[u8]) -> Result<(), chardev::UserFault> {
                 Ok(())
             }
         }
@@ -2296,7 +2296,7 @@ mod fs {
         assert!(file.positioned().is_none());
         let user = Memory(core::cell::RefCell::new(None));
         assert_eq!(
-            file.ioctl(&device::IoctlCall {
+            file.ioctl(&chardev::IoctlCall {
                 fd_readable: true,
                 request: 0xb701,
                 argument: 0,
@@ -2318,14 +2318,14 @@ mod fs {
             ..authority
         };
         assert_eq!(
-            file.ioctl(&device::IoctlCall {
+            file.ioctl(&chardev::IoctlCall {
                 fd_readable: true,
                 request: 0xb702,
                 argument: 0,
                 user: &user,
                 authority: confined
             }),
-            Err(device::DeviceError::Errno(1))
+            Err(chardev::DeviceError::Errno(1))
         );
         assert!(user.0.borrow().is_none());
         assert_eq!(

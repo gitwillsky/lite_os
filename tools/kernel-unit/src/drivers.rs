@@ -1,7 +1,7 @@
-#[path = "../../../kernel/src/devices/drivers/io_completion.rs"]
+#[path = "../../../tools/kernel-view/drivers/io_completion/io_completion/io_completion.rs"]
 pub(crate) mod io_completion;
 
-#[path = "../../../kernel/src/devices/drivers/audio_output.rs"]
+#[path = "../../../kernel/src/drivers/audio_output.rs"]
 pub(crate) mod audio_output;
 pub(crate) use audio_output::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES};
 

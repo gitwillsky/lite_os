@@ -8,14 +8,14 @@ pub(crate) use rights::{UnixFileLimit, UnixNode, UnixPassedFile, UnixReceivedRig
 mod connection_backlog;
 #[path = "../../../../kernel/src/socket/unix/retirement.rs"]
 mod retirement;
-#[path = "../../../../kernel/src/socket/unix/rights_graph.rs"]
+#[path = "../../../../tools/kernel-view/socket/unix/rights_graph/rights_graph/rights_graph.rs"]
 mod rights_graph;
 #[path = "../../../../kernel/src/socket/unix/rights_owner.rs"]
 mod rights_owner;
 #[path = "../../../../kernel/src/socket/unix/send_memory.rs"]
 mod send_memory;
 use send_memory::SenderCharge;
-#[path = "../../../../kernel/src/socket/unix/stream.rs"]
+#[path = "../../../../tools/kernel-view/socket/unix/stream/stream/stream.rs"]
 mod stream;
 const SCM_MAX_FD: usize = 253;
 #[path = "../../../../kernel/src/socket/unix/receive_mode.rs"]

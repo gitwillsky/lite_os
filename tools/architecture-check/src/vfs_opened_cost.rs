@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
-const VFS_SOURCE: &str = "kernel/src/storage/fs/vfs.rs";
-const OPENED_SOURCE: &str = "kernel/src/storage/fs/vfs/opened.rs";
-const OPENED_INDEX_SOURCE: &str = "kernel/src/storage/fs/vfs/opened_index.rs";
+const VFS_SOURCE: &str = "kernel/src/fs/vfs.rs";
+const OPENED_SOURCE: &str = "kernel/src/fs/vfs/opened.rs";
+const OPENED_INDEX_SOURCE: &str = "kernel/src/fs/vfs/opened_index.rs";
 const PATH_COMPONENTS: usize = 32;
 const LIVE_OPENED_FILES: usize = 4_096;
 const MATCHING_NAMESPACE_ENTRIES: usize = 8;
@@ -37,8 +37,8 @@ fn within_exact_index_budget(cost: VfsOpenedCost) -> bool {
 pub(super) fn measure(root: &Path) -> Result<VfsOpenedCost, String> {
     let vfs = read(root, VFS_SOURCE)?;
     let opened = read(root, OPENED_SOURCE)?;
-    let dentry = read(root, "kernel/src/storage/fs/vfs/dentry.rs")?;
-    let dentry_index = read(root, "kernel/src/storage/fs/vfs/dentry_index.rs")?;
+    let dentry = read(root, "kernel/src/fs/vfs/dentry.rs")?;
+    let dentry_index = read(root, "kernel/src/fs/vfs/dentry_index.rs")?;
     if canonical_dentry_index(&vfs, &opened, &dentry, &dentry_index) {
         // Ordinary path hits take one exact index transaction per component. Miss preparation
         // allocates outside the owner and revalidates once; mutation/final-drop remain logarithmic.
@@ -172,8 +172,8 @@ mod tests {
         let root = super::super::repository_root();
         let vfs = read(&root, VFS_SOURCE).unwrap();
         let opened = read(&root, OPENED_SOURCE).unwrap();
-        let dentry = read(&root, "kernel/src/storage/fs/vfs/dentry.rs").unwrap();
-        let index = read(&root, "kernel/src/storage/fs/vfs/dentry_index.rs").unwrap();
+        let dentry = read(&root, "kernel/src/fs/vfs/dentry.rs").unwrap();
+        let index = read(&root, "kernel/src/fs/vfs/dentry_index.rs").unwrap();
         assert!(canonical_dentry_index(&vfs, &opened, &dentry, &index));
         for (before, after) in [
             ("core::ptr::eq(entry.as_ptr(), owner)", "true"),

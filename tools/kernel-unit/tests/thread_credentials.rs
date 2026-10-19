@@ -49,9 +49,9 @@ unsafe impl GlobalAlloc for FaultAllocator {
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
-    pub(crate) mod device {
+    pub(crate) mod chardev {
         pub(crate) enum DeviceError {
             Errno(isize),
         }

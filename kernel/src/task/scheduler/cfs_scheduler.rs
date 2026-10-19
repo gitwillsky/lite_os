@@ -56,10 +56,7 @@ use alloc::sync::Arc;
 
 use crate::task::TaskControlBlock;
 
-#[path = "preallocated_heap.rs"]
-mod preallocated_heap;
-
-use preallocated_heap::PreallocatedHeap;
+use super::preallocated_heap::PreallocatedHeap;
 
 /// 唯一生效的 cooperative vruntime runqueue。
 pub(crate) struct CfsRunQueue {

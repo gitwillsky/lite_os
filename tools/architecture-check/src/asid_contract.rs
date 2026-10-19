@@ -2,7 +2,7 @@
 use super::SourceFile;
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let owner = "kernel/src/hardware/arch/address_space_id.rs";
+    let owner = "kernel/src/arch/address_space_id.rs";
     require(
         sources,
         owner,
@@ -17,7 +17,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors,
     );
     for backend in ["aarch64", "riscv64"] {
-        let mmu = format!("kernel/src/hardware/arch/{backend}/mmu.rs");
+        let mmu = format!("kernel/src/arch/{backend}/mmu.rs");
         require(
             sources,
             &mmu,
@@ -29,7 +29,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             ],
             errors,
         );
-        let page_table = format!("kernel/src/hardware/arch/{backend}/page_table.rs");
+        let page_table = format!("kernel/src/arch/{backend}/page_table.rs");
         require(
             sources,
             &page_table,
@@ -40,7 +40,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             ],
             errors,
         );
-        let trap = format!("kernel/src/hardware/arch/{backend}/trap.rs");
+        let trap = format!("kernel/src/arch/{backend}/trap.rs");
         let Some(source) = sources.iter().find(|source| source.relative == trap) else {
             errors.push(format!("{trap}: ASID activation caller missing"));
             continue;
@@ -68,7 +68,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     for source in sources
         .iter()
-        .filter(|source| source.relative.starts_with("kernel/src/hardware/arch/"))
+        .filter(|source| source.relative.starts_with("kernel/src/arch/"))
     {
         if source.text.contains("allocate_address_space_id")
             || source.text.contains("AddressSpaceIdentifiersExhausted")
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn rejects_token_arc_leak_and_raw_encoding_reread() {
         for backend in ["aarch64", "riscv64"] {
-            let path = format!("kernel/src/hardware/arch/{backend}/trap.rs");
+            let path = format!("kernel/src/arch/{backend}/trap.rs");
             let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
             let trap = sources
                 .iter_mut()
@@ -234,7 +234,7 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let page_table = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/hardware/arch/riscv64/page_table.rs")
+            .find(|source| source.relative == "kernel/src/arch/riscv64/page_table.rs")
             .unwrap();
         page_table
             .text

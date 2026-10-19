@@ -51,7 +51,7 @@ mod fs {
     }
     pub(crate) enum InodeOpen {
         Storage,
-        Device(Arc<dyn device::DeviceFile>),
+        Device(Arc<dyn chardev::DeviceFile>),
     }
     std::thread_local! {
         static WRITABLE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
@@ -88,8 +88,10 @@ mod fs {
     pub(crate) fn vfs() -> &'static Vfs {
         &Vfs
     }
-    pub(crate) mod device {
+    pub(crate) mod chardev {
         pub(crate) trait DeviceFile {}
+    }
+    pub(crate) mod devnode {
         pub(crate) fn block_node(_: u64) -> Option<alloc::sync::Arc<super::BlockNode>> {
             None
         }
@@ -114,7 +116,7 @@ mod file {
     }
     pub(crate) enum OpenFileKind {
         Inode,
-        Device(Arc<dyn crate::fs::device::DeviceFile>),
+        Device(Arc<dyn crate::fs::chardev::DeviceFile>),
     }
     pub(crate) struct WritableInodeLease {
         pub(crate) _content: crate::fs::ContentWrite,
@@ -209,7 +211,7 @@ fn actual_named_abort_returns_writer_without_constructing_close_lifecycle() {
 fn actual_regular_device_operations_hold_the_same_mount_writer_as_storage() {
     use core::sync::atomic::Ordering;
     struct ProcOperations;
-    impl fs::device::DeviceFile for ProcOperations {}
+    impl fs::chardev::DeviceFile for ProcOperations {}
     fs::allow_writes(true);
     let opened = opened();
     let prepared = file::PreparedFileDescription::try_new()

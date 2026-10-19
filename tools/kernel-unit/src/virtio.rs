@@ -9,8 +9,8 @@ pub(crate) mod transport {
     }
 }
 
-#[path = "../../../kernel/src/devices/virtio/queue.rs"]
+#[path = "../../../tools/kernel-view/virtio/queue/queue/queue.rs"]
 pub(crate) mod queue;
 
-#[path = "../../../kernel/src/devices/virtio/queue/dma.rs"]
+#[path = "../../../kernel/src/virtio/queue/dma.rs"]
 pub(crate) mod dma;

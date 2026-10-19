@@ -6,6 +6,17 @@ use quote::ToTokens;
 use super::SourceFile;
 
 // 检查标识符而非文本子串：覆盖分组/别名导入、指针方法和宏体，忽略注释与字符串。
+/// 设备相关 module（驱动、virtio、音频、DRM、输入、tty）：它们的寄存器访问必须经 `hal::MmioBus`。
+const DEVICE_MODULES: &[&str] = &[
+    "audio",
+    "drivers",
+    "drm",
+    "input",
+    "tty",
+    "virtio",
+    "virtio_port",
+];
+
 fn contains_identifier(tokens: TokenStream, forbidden: impl Fn(&str) -> bool + Copy) -> bool {
     tokens.into_iter().any(|token| match token {
         TokenTree::Ident(ident) => forbidden(&ident.to_string()),
@@ -60,7 +71,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
                 source.relative
             ));
         }
-        if (source.owner == "platform" || source.relative.starts_with("kernel/src/devices/"))
+        if (source.owner == "platform" || DEVICE_MODULES.contains(&source.owner.as_str()))
             && contains_identifier(source.syntax.to_token_stream(), |name| {
                 matches!(name, "read_volatile" | "write_volatile")
             })
@@ -152,11 +163,11 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     }
 
     for retired in [
-        "kernel/src/hardware/arch/riscv64/hart.rs",
-        "kernel/src/hardware/arch/aarch64/fp_instruction.rs",
+        "kernel/src/arch/riscv64/hart.rs",
+        "kernel/src/arch/aarch64/fp_instruction.rs",
         "kernel/src/task/context.rs",
         "kernel/src/task/trap_context.rs",
-        "kernel/src/devices/drivers/platform.rs",
+        "kernel/src/drivers/platform.rs",
     ] {
         if root.join(retired).exists() {
             errors.push(format!(
@@ -212,8 +223,8 @@ mod tests {
             .collect()
     }
 
-    const PLATFORM: &str = "kernel/src/hardware/platform/qemu_virt/x.rs";
-    const DEVICE: &str = "kernel/src/devices/virtio/x.rs";
+    const PLATFORM: &str = "kernel/src/platform/qemu_virt/x.rs";
+    const DEVICE: &str = "kernel/src/virtio/x.rs";
 
     #[test]
     fn register_access_through_hal_and_documentation_are_accepted() {
@@ -228,7 +239,7 @@ mod tests {
         assert!(
             violations(
                 "hal",
-                "kernel/src/hardware/hal/bus.rs",
+                "kernel/src/hal/bus.rs",
                 "fn f() { unsafe { crate::arch::read_mmio_u32(0) }; }"
             )
             .is_empty()

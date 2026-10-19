@@ -41,7 +41,7 @@ pub(crate) mod drivers {
     pub(crate) mod network {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../kernel/src/devices/drivers/network.rs"
+            "/../../kernel/src/drivers/network.rs"
         ));
         // deferred delivery 为边界；真实 protocol cleanup/ring 仍由 production owner 执行。
         pub(crate) static POLL_REQUESTS: core::sync::atomic::AtomicUsize =
@@ -201,7 +201,7 @@ pub(crate) mod socket {
     pub(crate) mod inet {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../kernel/src/socket/inet.rs"
+            "/../../tools/kernel-view/socket/inet/inet/inet.rs"
         ));
         // fixture composition的显式initial入口，不存在于production IO/deferred代码。
         fn initial_stack() -> Option<&'static NetworkStackOwner> {

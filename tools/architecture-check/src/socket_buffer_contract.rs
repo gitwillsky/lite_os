@@ -13,10 +13,7 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let owner = normalized(source(sources, "kernel/src/socket/core_buffers.rs"));
     let ledger = normalized(source(sources, "kernel/src/socket/unix/send_memory.rs"));
-    let proc = normalized(source(
-        sources,
-        "kernel/src/storage/fs/procfs/opened_operations.rs",
-    ));
+    let proc = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
     let abi = normalized(source(sources, "kernel/src/syscall/socket/options.rs"));
     if !owner.contains("staticLIMITS:[AtomicU32;4]")
         || owner.matches("AtomicU32::new(212_992)").count() != 2
@@ -69,7 +66,7 @@ mod tests {
                 ".min(212_992)",
             ),
             (
-                "kernel/src/storage/fs/procfs/opened_operations.rs",
+                "kernel/src/fs/procfs/opened_operations.rs",
                 "if !may_set_core_buffers(target, writer)",
                 "if false",
             ),

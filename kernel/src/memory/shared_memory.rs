@@ -1,5 +1,4 @@
 //! System V 共享映射的实际 VMA membership；backing Arc 本身不表示挂接。
-#[path = "shared_memory/statistics.rs"]
 mod statistics;
 pub(in crate::memory) use statistics::{SharedPageResidency, SharedPageStatistics};
 

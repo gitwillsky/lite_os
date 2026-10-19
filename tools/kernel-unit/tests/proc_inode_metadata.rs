@@ -15,7 +15,7 @@ mod ipc;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     #[path = "inotify/limits.rs"]
     mod inotify_limits;
@@ -32,7 +32,7 @@ enum InodeType {
     Directory,
     SymLink,
 }
-#[path = "../../../kernel/src/storage/fs/procfs/node.rs"]
+#[path = "../../../kernel/src/fs/procfs/node.rs"]
 mod node;
 #[test]
 fn actual_proc_metadata_preserves_fixed_linux_link_sizes() {

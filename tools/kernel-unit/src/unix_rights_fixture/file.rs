@@ -17,6 +17,6 @@ impl Drop for OpenFileDescription {
     }
 }
 
-#[path = "../../../../kernel/src/file/indexed_slots.rs"]
+#[path = "../../../../tools/kernel-view/file/descriptor_table/indexed_slots/indexed_slots/indexed_slots.rs"]
 mod indexed_slots;
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = indexed_slots::MAX_FILE_DESCRIPTORS;

@@ -28,11 +28,11 @@ mod mmu {
     }
 }
 
-#[path = "../../../kernel/src/hardware/arch/aarch64/page_table.rs"]
+#[path = "../../../kernel/src/arch/aarch64/page_table.rs"]
 mod page_table;
-#[path = "../../../kernel/src/hardware/arch/aarch64/pte.rs"]
+#[path = "../../../kernel/src/arch/aarch64/pte.rs"]
 mod pte;
-#[path = "../../../kernel/src/hardware/arch/aarch64/va39.rs"]
+#[path = "../../../kernel/src/arch/aarch64/va39.rs"]
 mod va39;
 
 #[cfg(test)]

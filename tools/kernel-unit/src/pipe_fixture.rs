@@ -3,7 +3,7 @@
 mod receive_buffer;
 #[allow(unused_imports, reason = "host 用例只使用共享 owner 的部分导出")]
 pub(crate) use receive_buffer::ReceiveBuffer;
-#[path = "../../../kernel/src/ipc/pipe.rs"]
+#[path = "../../../tools/kernel-view/ipc/pipe/pipe/pipe.rs"]
 mod pipe;
 #[allow(unused_imports, reason = "host 用例只使用共享 owner 的部分导出")]
 pub(crate) use pipe::{

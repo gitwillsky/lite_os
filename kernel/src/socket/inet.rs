@@ -29,37 +29,21 @@ use super::{
     SocketTimeouts, packet,
 };
 
-#[path = "inet/configuration.rs"]
 mod configuration;
-#[path = "device.rs"]
 mod device;
-#[path = "device_error.rs"]
 mod device_error;
-#[path = "inet/interface.rs"]
 mod interface;
-#[path = "inet/options.rs"]
 mod options;
-#[path = "inet/poll.rs"]
 mod poll;
-#[path = "inet/port_namespace.rs"]
 mod port_namespace;
-#[path = "inet/protocol_owner.rs"]
 mod protocol_owner;
-#[path = "inet/raw.rs"]
-mod raw_endpoint;
-#[path = "inet/readiness.rs"]
+mod raw;
 mod readiness;
-#[path = "inet/route.rs"]
 mod route;
-#[path = "inet/route_reply.rs"]
 mod route_reply;
-#[path = "inet/tcp.rs"]
 mod tcp;
-#[path = "inet/timing.rs"]
 mod timing;
-#[path = "inet/udp.rs"]
-mod udp_endpoint;
-#[path = "inet/wait.rs"]
+mod udp;
 mod wait;
 pub(crate) use configuration::{
     InterfaceSnapshot, RouteSnapshot, configure_address, configure_broadcast, configure_mtu,
@@ -151,7 +135,7 @@ struct NetworkStack {
     interface_rotation: usize,
     sockets: SocketSet<'static>,
     endpoints: FallibleMap<SocketHandle, EndpointState>,
-    raw_endpoints: FallibleMap<SocketHandle, raw_endpoint::RawEndpointState>,
+    raw_endpoints: FallibleMap<SocketHandle, raw::RawEndpointState>,
     tcp_endpoints: FallibleMap<usize, TcpEndpointState>,
     udp_ports: PortNamespace,
     tcp_ports: PortNamespace,
@@ -401,7 +385,7 @@ impl InetSocket {
             return Ok(endpoint);
         }
         if matches!(protocol, InetProtocol::Icmp | InetProtocol::Raw) {
-            return raw_endpoint::new(
+            return raw::new(
                 if protocol == InetProtocol::Icmp {
                     1
                 } else {
@@ -414,7 +398,7 @@ impl InetSocket {
         }
         let mut network = stack(memory.namespace_ref())?.lock()?;
         let endpoint = try_allocate_endpoint(|| {
-            let handle = udp_endpoint::create_endpoint(&mut network, Weak::new())?;
+            let handle = udp::create_endpoint(&mut network, Weak::new())?;
             Ok(Self {
                 memory: memory.clone(),
                 endpoint: InetEndpoint::Udp(handle),
@@ -471,10 +455,10 @@ impl InetSocket {
             return tcp::bind(self, address);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::bind(self, handle, address);
+            return raw::bind(self, handle, address);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::bind(self, handle, address)
+        udp::bind(self, handle, address)
     }
 
     pub(super) fn connect(&self, peer: InetAddress) -> Result<(), SocketError> {
@@ -486,7 +470,7 @@ impl InetSocket {
             return Err(SocketError::OperationNotSupported);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::connect(self, handle, peer)
+        udp::connect(self, handle, peer)
     }
 
     /// AF_UNSPEC 取消 TCP 协议生命周期；在 operation/stack owner 释放后通知所有 waiter。
@@ -495,7 +479,7 @@ impl InetSocket {
         let result = if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             tcp::disconnect(self)
         } else if let InetEndpoint::Udp(handle) = self.endpoint {
-            udp_endpoint::disconnect(self, handle)
+            udp::disconnect(self, handle)
         } else {
             Err(SocketError::OperationNotSupported)
         };
@@ -510,10 +494,10 @@ impl InetSocket {
             return tcp::address(self);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::address(self, handle);
+            return raw::address(self, handle);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::address(self, handle)
+        udp::address(self, handle)
     }
 
     pub(super) fn peer_address(&self) -> Result<InetAddress, SocketError> {
@@ -525,7 +509,7 @@ impl InetSocket {
             return Err(SocketError::NotConnected);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::peer_address(self, handle)
+        udp::peer_address(self, handle)
     }
 
     pub(super) fn send_to(
@@ -540,10 +524,10 @@ impl InetSocket {
             return tcp::send(self, input);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::send(self, handle, input, target, packet_info);
+            return raw::send(self, handle, input, target, packet_info);
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::send(self, handle, input, target, packet_info)
+        udp::send(self, handle, input, target, packet_info)
     }
 
     pub(super) fn receive(
@@ -565,12 +549,11 @@ impl InetSocket {
                 .map(|(count, full, _, _)| (count, full, None, None));
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            let (count, full_length, source, local) =
-                raw_endpoint::receive(self, handle, output, peek)?;
+            let (count, full_length, source, local) = raw::receive(self, handle, output, peek)?;
             return Ok((count, full_length, Some(source), Some(local)));
         }
         let handle = self.udp_handle()?;
-        udp_endpoint::receive(self, handle, output, peek)
+        udp::receive(self, handle, output, peek)
     }
 
     pub(super) fn packet_info(&self) -> bool {
@@ -679,7 +662,7 @@ impl InetSocket {
         let result = if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             tcp::shutdown(self, how)
         } else if let InetEndpoint::Udp(handle) = self.endpoint {
-            udp_endpoint::shutdown(self, handle, how)
+            udp::shutdown(self, handle, how)
         } else {
             Err(SocketError::OperationNotSupported)
         };
@@ -700,7 +683,7 @@ impl Drop for InetSocket {
 fn cleanup_endpoint(network: &mut NetworkStack, endpoint: InetEndpoint) {
     match endpoint {
         InetEndpoint::Tcp(id) => tcp::drop_endpoint(network, id),
-        InetEndpoint::Raw(handle) => raw_endpoint::drop_endpoint(network, handle),
-        InetEndpoint::Udp(handle) => udp_endpoint::drop_endpoint(network, handle),
+        InetEndpoint::Raw(handle) => raw::drop_endpoint(network, handle),
+        InetEndpoint::Udp(handle) => udp::drop_endpoint(network, handle),
     }
 }

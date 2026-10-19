@@ -38,12 +38,9 @@
 use alloc::boxed::Box;
 use core::{borrow::Borrow, cmp::Ordering, fmt, mem::MaybeUninit, ops::Index, ptr::NonNull};
 
-#[path = "iter.rs"]
 mod iter;
 #[cfg(test)]
-#[path = "test_support.rs"]
 mod test_support;
-#[path = "topology.rs"]
 mod topology;
 // Iter 已是 iter/iter_from/iter_after 的返回类型；具名 re-export 供领域枚举组合，无新增状态/分配。
 pub(crate) use iter::Iter;

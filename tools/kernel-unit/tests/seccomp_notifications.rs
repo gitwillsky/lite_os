@@ -32,7 +32,7 @@ mod arch {
 }
 #[path = "seccomp/notifications.rs"]
 mod model;
-use fs::device::{DeviceError, DeviceFile, IoctlCall, UserFault, UserMemory};
+use fs::chardev::{DeviceError, DeviceFile, IoctlCall, UserFault, UserMemory};
 use model::seccomp::{SeccompDecision, SeccompError, ThreadSecurityOwner, ValidatedFilter};
 
 #[path = "seccomp/notification_copyout.rs"]

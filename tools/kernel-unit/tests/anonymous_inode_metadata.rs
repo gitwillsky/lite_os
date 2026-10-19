@@ -13,7 +13,7 @@ mod timer {
         5_000_000_000
     }
 }
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     use alloc::sync::Arc;
     #[derive(Debug, PartialEq, Eq)]

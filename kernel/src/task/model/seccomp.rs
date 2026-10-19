@@ -1,8 +1,6 @@
 //! Thread 独占的 Linux no_new_privs 与 seccomp 状态。
 
-#[path = "seccomp/filter.rs"]
 mod filter;
-#[path = "seccomp/notification.rs"]
 mod notification;
 use notification::{ListenerFile, NotificationQueue};
 
@@ -312,13 +310,13 @@ impl ValidatedFilter {
     }
     pub(in super::super) fn listener(
         &self,
-    ) -> Result<Option<Arc<dyn crate::fs::device::DeviceFile>>, SeccompError> {
+    ) -> Result<Option<Arc<dyn crate::fs::chardev::DeviceFile>>, SeccompError> {
         self.0
             .notifications
             .as_ref()
             .map(|queue| {
                 Arc::try_new(ListenerFile::new(queue.clone()))
-                    .map(|file| file as Arc<dyn crate::fs::device::DeviceFile>)
+                    .map(|file| file as Arc<dyn crate::fs::chardev::DeviceFile>)
                     .map_err(|_| SeccompError::OutOfMemory)
             })
             .transpose()

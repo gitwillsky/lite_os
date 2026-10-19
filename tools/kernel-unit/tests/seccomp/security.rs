@@ -2,7 +2,7 @@
 pub(crate) use super::TaskControlBlock;
 // 每个 focused fixture 只消费部分 seam；完整 transaction 在 seccomp_tsync fixture 执行。
 #[allow(dead_code)]
-#[path = "../../../../kernel/src/task/model/seccomp.rs"]
+#[path = "../../../../tools/kernel-view/task/model/seccomp/seccomp/seccomp.rs"]
 pub(crate) mod seccomp;
 
 impl Clone for seccomp::ThreadSecurityOwner {

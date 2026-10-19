@@ -16,7 +16,7 @@ mod sync {
     }
 }
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     #[derive(Debug, PartialEq, Eq)]
     enum FileSystemError {

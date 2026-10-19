@@ -20,12 +20,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let registry = normalized(source(sources, "kernel/src/socket/unix/namespace.rs"));
     let unix = normalized(source(sources, "kernel/src/socket/unix.rs"));
     let lifecycle = normalized(source(sources, "kernel/src/socket/unix/lifecycle.rs"));
-    let proc = normalized(source(sources, "kernel/src/storage/fs/procfs.rs"));
-    let opened = normalized(source(
-        sources,
-        "kernel/src/storage/fs/procfs/opened_operations.rs",
-    ));
-    let nodes = normalized(source(sources, "kernel/src/storage/fs/procfs/node.rs"));
+    let proc = normalized(source(sources, "kernel/src/fs/procfs.rs"));
+    let opened = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
+    let nodes = normalized(source(sources, "kernel/src/fs/procfs/node.rs"));
     let generic = nodes
         .split("fngeneric_entries()")
         .nth(1)
@@ -136,7 +133,7 @@ mod tests {
                 "_charge: None",
             ),
             (
-                "kernel/src/storage/fs/procfs/opened_operations.rs",
+                "kernel/src/fs/procfs/opened_operations.rs",
                 "target.is_initial() && target.may_set_limits(authority)",
                 "target.may_set_limits(authority)",
             ),

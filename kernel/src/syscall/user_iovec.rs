@@ -1,7 +1,6 @@
 use alloc::vec::Vec;
 use core::mem::{self, MaybeUninit};
 
-#[path = "user_iovec/input_staging.rs"]
 mod input_staging;
 #[cfg(not(test))]
 pub(super) use input_staging::UserInputStaging;

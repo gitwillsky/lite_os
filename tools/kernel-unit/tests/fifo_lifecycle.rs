@@ -10,10 +10,10 @@ mod id;
 mod ipc;
 #[path = "../src/sync.rs"]
 mod sync;
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     pub(crate) mod fifo;
-    pub(crate) mod device {
+    pub(crate) mod chardev {
         use alloc::sync::Arc;
         #[derive(Debug, PartialEq, Eq)]
         pub(crate) enum DeviceError {
@@ -74,7 +74,7 @@ mod fs {
     }
 }
 use fs::{
-    device::*,
+    chardev::*,
     fifo::{self, FifoAccess},
 };
 struct Output {

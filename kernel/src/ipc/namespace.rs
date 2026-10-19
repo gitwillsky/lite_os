@@ -1,7 +1,5 @@
 //! IPC namespace 是实际 System V 对象、IDs/key 索引和限制的唯一 owner；不拥有 Task membership。
-#[path = "namespace/description.rs"]
 mod description;
-#[path = "namespace/shared_memory.rs"]
 mod shared_memory;
 use super::ids::{IPC_ID_SLOTS, IpcIds, PreparedIpcObject};
 use super::semaphore::PreparedSemaphores;

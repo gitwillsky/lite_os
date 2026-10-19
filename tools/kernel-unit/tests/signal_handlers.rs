@@ -30,7 +30,7 @@ static ALLOCATOR: FaultAllocator = FaultAllocator;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/hardware/arch/riscv64/signal_action.rs"]
+#[path = "../../../kernel/src/arch/riscv64/signal_action.rs"]
 mod signal_action;
 mod arch {
     pub(crate) mod user {

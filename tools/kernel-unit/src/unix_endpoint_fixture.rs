@@ -88,7 +88,7 @@ mod capacity;
 pub(crate) use capacity::{SocketCapacityWait, SocketSendError, SocketWaitGuard};
 #[path = "../../../kernel/src/socket/message_limits.rs"]
 mod message_limits;
-#[path = "../../../kernel/src/socket/unix.rs"]
+#[path = "../../../tools/kernel-view/socket/unix/unix/unix.rs"]
 mod unix;
 pub(crate) use unix::{
     UnixAddress, UnixFileLimit, UnixNode, UnixPassedFile, UnixPathIdentity, UnixRights, UnixSocket,

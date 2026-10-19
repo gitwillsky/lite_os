@@ -668,8 +668,8 @@ impl TaskControlBlock {
         &self,
         caller: &TaskControlBlock,
         selector: Option<crate::namespace::NamespaceSelector>,
-    ) -> Result<crate::namespace::NamespaceReference, crate::fs::device::DeviceError> {
-        use crate::fs::device::DeviceError;
+    ) -> Result<crate::namespace::NamespaceReference, crate::fs::chardev::DeviceError> {
+        use crate::fs::chardev::DeviceError;
         use syscall_abi::errno;
         // 固定 Linux pidfd_get_namespace 在 task_lock 下捕获一次 nsproxy，再释放锁授权。
         // cred/PID 引用先在各自 owner 下提升，随后与实际 nsproxy 是否存活一起线性化。

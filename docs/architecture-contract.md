@@ -73,45 +73,45 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 |---|---|
 | `kernel/src/memory/shared_file.rs :: MappingRegistry.slots` | `FallibleMap < usize , Weak < dyn MemoryMappingOwner > >` |
 | `kernel/src/memory/shared_file.rs :: ReclaimerRegistry.slots` | `FallibleMap < usize , Weak < dyn MemoryReclaimer > >` |
-| `kernel/src/hardware/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
-| `kernel/src/hardware/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
-| `kernel/src/hardware/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
-| `kernel/src/devices/tty/pty.rs :: PtyRegistry.slots` | `FallibleMap < u32 , Weak < PtyPair > >` |
-| `kernel/src/devices/drm/mod.rs :: DrmDeviceState.graphics_cleanups` | `FallibleMap < u32 , graphics :: VirglCleanup >` |
-| `kernel/src/devices/drm/mod.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
-| `kernel/src/devices/drm/mod.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
-| `kernel/src/devices/drm/mod.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
-| `kernel/src/devices/drm/graphics.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
-| `kernel/src/devices/drm/publication_order.rs :: PublicationIdAllocator.reusable` | `FallibleMap < T , () >` |
-| `kernel/src/devices/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
+| `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.affinities` | `FallibleMap < InterruptVector , CpuSet >` |
+| `kernel/src/platform/qemu_virt/riscv64/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
+| `kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
+| `kernel/src/tty/pty.rs :: PtyRegistry.slots` | `FallibleMap < u32 , Weak < PtyPair > >` |
+| `kernel/src/drm/mod.rs :: DrmDeviceState.graphics_cleanups` | `FallibleMap < u32 , graphics :: VirglCleanup >` |
+| `kernel/src/drm/mod.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
+| `kernel/src/drm/mod.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
+| `kernel/src/drm/mod.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
+| `kernel/src/drm/graphics.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
+| `kernel/src/drm/publication_order.rs :: PublicationIdAllocator.reusable` | `FallibleMap < T , () >` |
+| `kernel/src/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
 | `kernel/src/file/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |
 | `kernel/src/file/epoll.rs :: EpollState.ready` | `FallibleMap < InterestKey , () >` |
 | `kernel/src/file/epoll.rs :: EpollMemberships.entries` | `Mutex < FallibleMap < ReverseKey , ReverseMembership > >` |
 | `kernel/src/file/epoll.rs :: static SOURCE_INDEX` | `Mutex < FallibleMap < SourceIndexKey , SourceMembership > >` |
-| `kernel/src/storage/fs/inode_identity.rs :: LiveInodes[0]` | `Mutex < FallibleMap < K , Weak < T > > >` |
+| `kernel/src/fs/inode_identity.rs :: LiveInodes[0]` | `Mutex < FallibleMap < K , Weak < T > > >` |
 | `kernel/src/namespace/quota.rs :: QuotaState.users` | `FallibleMap < u32 , [u32 ; UserResource :: COUNT] >` |
-| `kernel/src/storage/fs/inotify.rs :: WatchIndex.by_inode` | `FallibleMap < (usize , u64) , InodeWatches >` |
-| `kernel/src/storage/fs/inotify.rs :: InodeWatches.watches` | `FallibleMap < WatchKey , Arc < Watch > >` |
-| `kernel/src/storage/fs/inotify/instance.rs :: WatchMembership.watches` | `FallibleMap < i32 , Arc < Watch > >` |
-| `kernel/src/storage/fs/inotify/instance.rs :: WatchMembership.identities` | `FallibleMap < (usize , u64) , i32 >` |
-| `kernel/src/storage/fs/inotify/queue.rs :: EventQueue.events` | `FallibleMap < u64 , Event >` |
-| `kernel/src/storage/fs/vfs/dentry_index.rs :: DentryIndex[0]` | `Mutex < FallibleMap < DentryKey , Weak < Dentry > > >` |
-| `kernel/src/storage/fs/vfs/mount_index.rs :: static ATTACHMENTS` | `Mutex < FallibleMap < AttachmentKey , Weak < MountView > > >` |
-| `kernel/src/storage/fs/vfs/mounted_filesystem.rs :: static FILESYSTEMS` | `Mutex < FallibleMap < usize , Weak < MountedFilesystem > > >` |
-| `kernel/src/storage/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
-| `kernel/src/storage/fs/ext4/journal/staged_blocks.rs :: StagedBlocks.entries` | `FallibleMap < u64 , StagedBlock >` |
-| `kernel/src/storage/fs/memory_file/sparse.rs :: SparsePages.pages` | `FallibleMap < u64 , Arc < P > >` |
-| `kernel/src/storage/fs/tmpfs.rs :: Namespace.inodes` | `FallibleMap < u64 , Weak < TmpInode > >` |
-| `kernel/src/storage/fs/xattr.rs :: Xattrs.entries` | `FallibleMap < Vec < u8 > , Vec < u8 > >` |
-| `kernel/src/storage/fs/tmpfs/directory.rs :: Directory.names` | `FallibleMap < Key , Slot < T > >` |
-| `kernel/src/storage/fs/tmpfs/directory.rs :: Directory.order` | `FallibleMap < u64 , Key >` |
-| `kernel/src/storage/fs/block_claim.rs :: DiskClaims.extents` | `spin :: Mutex < FallibleMap < u64 , Extent > >` |
-| `kernel/src/storage/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
-| `kernel/src/storage/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |
-| `kernel/src/storage/fs/page_cache/registry.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
-| `kernel/src/storage/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
-| `kernel/src/hardware/arch/riscv64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
-| `kernel/src/hardware/arch/aarch64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
+| `kernel/src/fs/inotify.rs :: WatchIndex.by_inode` | `FallibleMap < (usize , u64) , InodeWatches >` |
+| `kernel/src/fs/inotify.rs :: InodeWatches.watches` | `FallibleMap < WatchKey , Arc < Watch > >` |
+| `kernel/src/fs/inotify/instance.rs :: WatchMembership.watches` | `FallibleMap < i32 , Arc < Watch > >` |
+| `kernel/src/fs/inotify/instance.rs :: WatchMembership.identities` | `FallibleMap < (usize , u64) , i32 >` |
+| `kernel/src/fs/inotify/queue.rs :: EventQueue.events` | `FallibleMap < u64 , Event >` |
+| `kernel/src/fs/vfs/dentry_index.rs :: DentryIndex[0]` | `Mutex < FallibleMap < DentryKey , Weak < Dentry > > >` |
+| `kernel/src/fs/vfs/mount_index.rs :: static ATTACHMENTS` | `Mutex < FallibleMap < AttachmentKey , Weak < MountView > > >` |
+| `kernel/src/fs/vfs/mounted_filesystem.rs :: static FILESYSTEMS` | `Mutex < FallibleMap < usize , Weak < MountedFilesystem > > >` |
+| `kernel/src/fs/ext4.rs :: Ext4FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext4Inode > > >` |
+| `kernel/src/fs/ext4/journal/staged_blocks.rs :: StagedBlocks.entries` | `FallibleMap < u64 , StagedBlock >` |
+| `kernel/src/fs/memory_file/sparse.rs :: SparsePages.pages` | `FallibleMap < u64 , Arc < P > >` |
+| `kernel/src/fs/tmpfs.rs :: Namespace.inodes` | `FallibleMap < u64 , Weak < TmpInode > >` |
+| `kernel/src/fs/xattr.rs :: Xattrs.entries` | `FallibleMap < Vec < u8 > , Vec < u8 > >` |
+| `kernel/src/fs/tmpfs/directory.rs :: Directory.names` | `FallibleMap < Key , Slot < T > >` |
+| `kernel/src/fs/tmpfs/directory.rs :: Directory.order` | `FallibleMap < u64 , Key >` |
+| `kernel/src/fs/block_claim.rs :: DiskClaims.extents` | `spin :: Mutex < FallibleMap < u64 , Extent > >` |
+| `kernel/src/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
+| `kernel/src/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |
+| `kernel/src/fs/page_cache/registry.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
+| `kernel/src/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
+| `kernel/src/arch/riscv64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
+| `kernel/src/arch/aarch64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
 | `kernel/src/memory/mm/area.rs :: MapArea.data_frames` | `FallibleMap < VirtualPageNumber , PrivateResident >` |
 | `kernel/src/memory/swappable_page/registry.rs :: Registry.slots` | `FallibleMap < usize , Weak < SwappablePage > >` |
 | `kernel/src/memory/mm.rs :: MemorySet.areas` | `FallibleMap < VirtualPageNumber , MapArea >` |
@@ -120,7 +120,7 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/memory/mm/shared_area.rs :: SharedFileArea.resident` | `FallibleMap < VirtualPageNumber , SharedResident >` |
 | `kernel/src/memory/mm/shootdown.rs :: TranslationCommit.retired_table_pages` | `FallibleMap < usize , FrameTracker >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.endpoints` | `FallibleMap < SocketHandle , EndpointState >` |
-| `kernel/src/socket/inet.rs :: NetworkStack.raw_endpoints` | `FallibleMap < SocketHandle , raw_endpoint :: RawEndpointState >` |
+| `kernel/src/socket/inet.rs :: NetworkStack.raw_endpoints` | `FallibleMap < SocketHandle , raw :: RawEndpointState >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.tcp_endpoints` | `FallibleMap < usize , TcpEndpointState >` |
 | `kernel/src/task/process_table/group_retirement.rs :: RetiredGroups.nodes` | `FallibleMap < usize , ProcessGroupIndex >` |
 | `kernel/src/namespace/pid.rs :: State.numbers` | `FallibleMap < u32 , Option < PidAssociation > >` |
@@ -174,8 +174,8 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/socket/kobject.rs :: KobjectRegistry.ports` | `FallibleMap < (u8 , u64 , u32) , u64 >` |
 | `kernel/src/socket/kobject.rs :: KobjectSocketState.queue` | `FallibleMap < u64 , Uevent >` |
 | `kernel/src/socket/net_namespace.rs :: NetworkNamespaceDirectory.entries` | `crate :: fallible_tree :: FallibleMap < u64 , Weak < NetNamespace > >` |
-| `kernel/src/storage/fs/procfs/lookup_cache.rs :: ProcLookupCache[0]` | `Mutex < FallibleMap < (ProcNode , u64) , Arc < ProcInode > > >` |
-| `kernel/src/storage/fs/vfs/mount_unmount.rs :: Selection.index` | `FallibleMap < usize , usize >` |
+| `kernel/src/fs/procfs/lookup_cache.rs :: ProcLookupCache[0]` | `Mutex < FallibleMap < (ProcNode , u64) , Arc < ProcInode > > >` |
+| `kernel/src/fs/vfs/mount_unmount.rs :: Selection.index` | `FallibleMap < usize , usize >` |
 | `kernel/src/task/process_table/timer_queue/retirement.rs :: RetiredTimers.deadlines` | `FallibleMap < (u64 , TimerIdentity) , Option < Weak < KernelTimer > > >` |
 | `kernel/src/task/process_table/timer_queue/retirement.rs :: RetiredTimers.files` | `FallibleMap < u64 , TimerFile >` |
 | `kernel/src/task/process_table/timer_queue/retirement.rs :: RetiredTimers.posix` | `FallibleMap < (usize , i32) , PosixTimer >` |
@@ -185,8 +185,8 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `kernel/src/storage/fs/procfs.rs` | 1469 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
-| `kernel/src/storage/fs/tmpfs.rs` | 1024 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
+| `kernel/src/fs/procfs.rs` | 1469 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
+| `kernel/src/fs/tmpfs.rs` | 1020 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
 | `kernel/src/task/process_table/signal.rs` | 1270 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
 
 ## Change contract

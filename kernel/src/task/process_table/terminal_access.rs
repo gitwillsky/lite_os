@@ -1,5 +1,5 @@
 use crate::{
-    fs::device::DeviceError,
+    fs::chardev::DeviceError,
     tty::{JobControl, Terminal, TerminalAccess},
 };
 use syscall_abi::errno;

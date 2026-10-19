@@ -101,7 +101,7 @@ mod sync {
         }
     }
 }
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     // notification 子系统边界只记录 actual last-dput 的调用事实，不复制判断 links/投递算法。
     static RECLAIMED_DENTRY_COUNT: core::sync::atomic::AtomicU64 =
@@ -241,13 +241,15 @@ mod fs {
             Ok(())
         }
         fn end_mount(&self) {}
-        fn number(&self) -> device::DeviceNumber {
-            device::DeviceNumber::new(0, 0)
+        fn number(&self) -> DeviceNumber {
+            DeviceNumber::new(0, 0)
         }
     }
-    mod device {
-        mod number;
-        pub(crate) use number::DeviceNumber;
+    #[path = "../../../kernel/src/fs/devnum.rs"]
+    mod devnum;
+    pub(crate) use devnum::DeviceNumber;
+    mod devnode {
+        use super::DeviceNumber;
         pub(crate) fn block_node(_: DeviceNumber) -> Option<alloc::sync::Arc<super::BlockNode>> {
             None
         }
@@ -1100,9 +1102,9 @@ mod fs {
             );
             assert_eq!(path, b"/after");
         }
-        #[path = "../../../../../tools/kernel-unit/tests/fs_root_lookup/mounts.rs"]
+        #[path = "../../../../tools/kernel-unit/tests/fs_root_lookup/mounts.rs"]
         mod mount_tests;
-        #[path = "../../../../../tools/kernel-unit/tests/fs_root_lookup/propagation.rs"]
+        #[path = "../../../../tools/kernel-unit/tests/fs_root_lookup/propagation.rs"]
         mod propagation_tests;
         #[test]
         #[ignore = "diagnostic host benchmark; run alone in release"]

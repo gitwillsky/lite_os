@@ -9,7 +9,7 @@ use crate::{
     file::OpenFileDescription,
     fs::{
         O_NONBLOCK,
-        device::{
+        chardev::{
             DeviceError, DeviceFile, IoctlCall, MapRequest, PositionedFile, UserFault, UserInput,
             UserMemory, UserOutput,
         },

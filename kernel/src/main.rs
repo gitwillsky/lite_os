@@ -10,43 +10,31 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 extern crate alloc;
 
-// 模块树是扁平的（`crate::fs`、`crate::virtio` …），目录按领域分组：`hardware/`（ISA、machine、
-// CPU 与 boot ABI）、`storage/`（块层与文件系统）、`devices/`（设备模型、驱动与设备子系统）。
-// 依赖方向见 docs/architecture-contract.md；`#[path]` 只决定文件位置，不引入新的 module 层级。
-#[path = "hardware/arch/mod.rs"]
+// 模块树是扁平的，目录结构就是 module 路径：`crate::fs` 是 `fs/mod.rs`，`crate::virtio` 是
+// `virtio/mod.rs`，没有 `#[path]`。领域分组（hardware / storage / devices）与依赖方向见
+// docs/architecture-contract/dependency-owners.md 和 docs/architecture-contract.md。
 mod arch;
-#[path = "devices/audio/mod.rs"]
 mod audio;
-#[path = "storage/block/mod.rs"]
 mod block;
 mod cmdline;
 mod config;
-#[path = "hardware/cpu/mod.rs"]
 mod cpu;
-#[path = "hardware/deferred.rs"]
 mod deferred;
-#[path = "hardware/entry.rs"]
 mod entry;
-#[path = "hardware/hal/mod.rs"]
 mod hal;
 #[macro_use]
-#[path = "hardware/platform/mod.rs"]
 mod platform;
 #[macro_use]
 mod log;
 
-#[path = "devices/drivers/mod.rs"]
 mod drivers;
-#[path = "devices/drm/mod.rs"]
 mod drm;
 mod fallible_tree;
 mod file;
-#[path = "storage/fs/mod.rs"]
 mod fs;
 mod lang_item;
 
 mod id;
-#[path = "devices/input/mod.rs"]
 mod input;
 mod ipc;
 mod memory;
@@ -59,11 +47,8 @@ mod system;
 mod task;
 mod timer;
 mod trap;
-#[path = "devices/tty/mod.rs"]
 mod tty;
-#[path = "devices/virtio/mod.rs"]
 mod virtio;
-#[path = "devices/virtio_port.rs"]
 mod virtio_port;
 
 /// 标记全局内核设施已完成初始化。

@@ -2,7 +2,6 @@ use core::net::Ipv4Addr;
 
 use crate::fallible_tree::FallibleMap;
 
-#[path = "port_namespace/bitmap.rs"]
 mod bitmap;
 use bitmap::EphemeralPorts;
 #[cfg(test)]

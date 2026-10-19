@@ -2,9 +2,9 @@
 use super::SourceFile;
 use quote::ToTokens;
 use syn::Item;
-const LOOKUP: &str = "kernel/src/storage/fs/vfs/path_lookup.rs";
+const LOOKUP: &str = "kernel/src/fs/vfs/path_lookup.rs";
 const CONTEXT: &str = "kernel/src/task/model/process_resources.rs";
-const OPENED: &str = "kernel/src/storage/fs/vfs/opened.rs";
+const OPENED: &str = "kernel/src/fs/vfs/opened.rs";
 fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a SourceFile {
     sources
         .iter()
@@ -12,8 +12,8 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a SourceFile {
         .expect("fs root source")
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let vfs = source(sources, "kernel/src/storage/fs/vfs.rs");
-    let namespace = source(sources, "kernel/src/storage/fs/vfs/mount_namespace.rs");
+    let vfs = source(sources, "kernel/src/fs/vfs.rs");
+    let namespace = source(sources, "kernel/src/fs/vfs/mount_namespace.rs");
     let vfs_text: String = vfs.text.split_whitespace().collect();
     let namespace_text: String = namespace.text.split_whitespace().collect();
     if ![
@@ -59,8 +59,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     for path in [
         LOOKUP,
-        "kernel/src/storage/fs/vfs/mutation.rs",
-        "kernel/src/storage/fs/vfs.rs",
+        "kernel/src/fs/vfs/mutation.rs",
+        "kernel/src/fs/vfs.rs",
     ] {
         let source = source(sources, path);
         for item in &source.syntax.items {
@@ -130,21 +130,21 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fs-root: magic suffix preserves trailing slash and outside cwd emits one preallocated prefix".into());
     }
-    let namespace = source(sources, "kernel/src/storage/fs/vfs/namespace_access.rs");
+    let namespace = source(sources, "kernel/src/fs/vfs/namespace_access.rs");
     if !namespace.text.contains("_guard: TaskMutexGuard<'a, ()>")
         || !lookup.text.contains("impl NamespaceAccess<'_>")
         || !lookup.text.contains("self.namespace()?")
-        || !source(sources, "kernel/src/storage/fs/vfs/mutation.rs")
+        || !source(sources, "kernel/src/fs/vfs/mutation.rs")
             .text
             .contains("namespace.create_entry(")
-        || !source(sources, "kernel/src/storage/fs/procfs.rs")
+        || !source(sources, "kernel/src/fs/procfs.rs")
             .text
             .contains("size: node.metadata_size(),")
     {
         errors.push("fs-root: admission/projection need one namespace capability; proc metadata must not reacquire it".into());
     }
-    let inode = source(sources, "kernel/src/storage/fs/inode.rs");
-    let proc_inode = source(sources, "kernel/src/storage/fs/procfs/link.rs");
+    let inode = source(sources, "kernel/src/fs/inode.rs");
+    let proc_inode = source(sources, "kernel/src/fs/procfs/link.rs");
     let fd_producer = source(sources, "kernel/src/task/model/file_table.rs");
     if !inode.text.contains("pub(crate) enum LinkTarget")
         || !lookup.text.contains("match opened.inode().link_target()?")
@@ -211,10 +211,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .collect::<String>()
         .contains("super::thread_selector::execution_by_tid(&graph,tid)")
         || !proc.text.contains("caller.may_inspect_thread(&target)")
-        || !source(sources, "kernel/src/storage/fs/procfs/snapshot.rs")
+        || !source(sources, "kernel/src/fs/procfs/snapshot.rs")
             .text
             .contains("pub(crate) target: Arc<super::super::OpenedFile>")
-        || !source(sources, "kernel/src/storage/fs/procfs/link.rs")
+        || !source(sources, "kernel/src/fs/procfs/link.rs")
             .syntax
             .to_token_stream()
             .to_string()
@@ -327,13 +327,13 @@ mod tests {
     #[test]
     fn rejects_initial_mount_membership_waiting_for_root_mount() {
         reject(
-            "kernel/src/storage/fs/vfs.rs",
+            "kernel/src/fs/vfs.rs",
             "initial: Arc<MountNamespace>",
             "initial: Once<Arc<MountNamespace>>",
             "before worker creation",
         );
         reject(
-            "kernel/src/storage/fs/vfs.rs",
+            "kernel/src/fs/vfs.rs",
             "self.initial.install_root(view)",
             "let _ = view; Ok(())",
             "before worker creation",
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn rejects_projection_without_namespace_guard() {
         reject(
-            "kernel/src/storage/fs/vfs/namespace_access.rs",
+            "kernel/src/fs/vfs/namespace_access.rs",
             "_guard: TaskMutexGuard<'a, ()>",
             "_guard: ()",
             "namespace capability",
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn rejects_proc_metadata_recursive_projection() {
         reject(
-            "kernel/src/storage/fs/procfs.rs",
+            "kernel/src/fs/procfs.rs",
             "size: node.metadata_size(),",
             "size: self.read_link()?.len() as u64,",
             "metadata must not reacquire",

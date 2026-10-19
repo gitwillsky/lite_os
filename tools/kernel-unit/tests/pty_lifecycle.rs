@@ -4,7 +4,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/storage/fs/device/number.rs"]
+#[path = "../../../kernel/src/fs/devnum.rs"]
 mod device_number;
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
@@ -26,11 +26,9 @@ mod fs {
         NoSpace,
         NotFound,
     }
-    pub(crate) mod device {
-        pub(crate) use crate::device_number::DeviceNumber;
-    }
+    pub(crate) use crate::device_number::DeviceNumber;
 }
-#[path = "../../../kernel/src/devices/tty"]
+#[path = "../../../kernel/src/tty"]
 mod tty {
     pub(crate) mod pty;
     #[allow(

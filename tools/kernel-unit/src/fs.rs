@@ -60,15 +60,13 @@ pub(crate) struct InodeMetadata {
     pub(crate) mtime: u64,
     pub(crate) ctime: u64,
     pub(crate) fine_times: FineTimes,
-    pub(crate) device: Option<device::DeviceNumber>,
+    pub(crate) device: Option<DeviceNumber>,
 }
 
 // 加载实际 dev_t codec；块设备注册表是 host storage adapter，不复制编号算法。
-#[path = "../../../kernel/src/storage/fs/device/number.rs"]
+#[path = "../../../kernel/src/fs/devnum.rs"]
 mod device_number;
-pub(crate) mod device {
-    pub(crate) use super::device_number::DeviceNumber;
-}
+pub(crate) use device_number::DeviceNumber;
 
 pub(crate) trait StorageWriter {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<usize, FileSystemError>;
@@ -112,13 +110,13 @@ pub(crate) trait Inode: Send + Sync {
         Err(FileSystemError::InvalidOperation)
     }
     fn is_executable(&self) -> bool;
-    fn device_number(&self) -> Option<device::DeviceNumber>;
+    fn device_number(&self) -> Option<DeviceNumber>;
     fn mknod(
         &self,
         name: &[u8],
         kind: InodeType,
         metadata: CreateMetadata,
-        device: Option<device::DeviceNumber>,
+        device: Option<DeviceNumber>,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn read_storage(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError>;
@@ -241,10 +239,10 @@ pub(crate) struct FileSystemStatistics {
     pub(crate) flags: u64,
 }
 
-#[path = "../../../kernel/src/storage/fs/permission.rs"]
+#[path = "../../../kernel/src/fs/permission.rs"]
 pub(crate) mod permission;
 pub(crate) use permission::{AccessIdentity, OwnerModeChange};
-#[path = "../../../kernel/src/storage/fs/xattr.rs"]
+#[path = "../../../kernel/src/fs/xattr.rs"]
 mod xattr;
 pub(crate) use xattr::XattrChange;
 // Host ext4 never consumes a memory-backed write token; volatile data owner is tested separately.
@@ -252,34 +250,34 @@ pub(crate) mod memory_file {
     pub(crate) struct MemoryWrite<'a>(core::marker::PhantomData<&'a ()>);
 }
 
-#[path = "../../../kernel/src/storage/fs/inotify/queue.rs"]
+#[path = "../../../kernel/src/fs/inotify/queue.rs"]
 pub(crate) mod inotify_queue;
 
 #[cfg(test)]
 #[path = "tests/inotify_queue.rs"]
 mod inotify_queue_tests;
 
-#[path = "../../../kernel/src/storage/fs/ext4_identity.rs"]
+#[path = "../../../kernel/src/fs/ext4_identity.rs"]
 pub(crate) mod ext4_identity;
 
 #[cfg(test)]
 #[path = "tests/ext4_identity.rs"]
 mod ext4_identity_tests;
 
-#[path = "../../../kernel/src/storage/fs/mount_options.rs"]
+#[path = "../../../kernel/src/fs/mount_options.rs"]
 pub(crate) mod mount_options;
 
-#[path = "../../../kernel/src/storage/fs/tmpfs/options.rs"]
+#[path = "../../../kernel/src/fs/tmpfs/options.rs"]
 pub(crate) mod tmpfs_options;
 
-#[path = "../../../kernel/src/storage/fs/tmpfs/directory.rs"]
+#[path = "../../../kernel/src/fs/tmpfs/directory.rs"]
 pub(crate) mod tmpfs_directory;
 
 #[cfg(test)]
 #[path = "tests/tmpfs.rs"]
 mod tmpfs_tests;
 
-#[path = "../../../kernel/src/storage/fs/ext4.rs"]
+#[path = "../../../tools/kernel-view/fs/ext4/ext4/ext4.rs"]
 pub(crate) mod ext4;
 
 /// 与 kernel `fs::SpawnKernelThread` 相同的注入签名；host 测试不创建内核线程。
@@ -295,7 +293,7 @@ pub(crate) struct KernelThreadSupport {
     pub(crate) sleep_until: fn(u64),
 }
 
-#[path = "../../../kernel/src/storage/fs/swap/file_lease.rs"]
+#[path = "../../../kernel/src/fs/swap/file_lease.rs"]
 pub(crate) mod swap;
 
 #[path = "tests/ext4_swap.rs"]
@@ -305,9 +303,9 @@ mod swap_tests;
     dead_code,
     reason = "host storage loads actual atime policy; volatile tuple owners have separate integration fixtures"
 )]
-#[path = "../../../kernel/src/storage/fs/inode_times.rs"]
+#[path = "../../../kernel/src/fs/inode_times.rs"]
 pub(crate) mod inode_times;
 
-#[path = "../../../kernel/src/storage/fs/write_access.rs"]
+#[path = "../../../kernel/src/fs/write_access.rs"]
 mod write_access;
 pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};

@@ -11,8 +11,8 @@ fn source(sources: &[SourceFile], path: &str) -> String {
 }
 pub(super) fn check(root: &std::path::Path, sources: &[SourceFile], errors: &mut Vec<String>) {
     let config = source(sources, "kernel/src/socket/inet/configuration.rs");
-    let device = source(sources, "kernel/src/socket/device.rs");
-    let loopback = source(sources, "kernel/src/socket/device/loopback.rs");
+    let device = source(sources, "kernel/src/socket/inet/device.rs");
+    let loopback = source(sources, "kernel/src/socket/inet/device/loopback.rs");
     let ioctl = source(sources, "kernel/src/syscall/socket/interface.rs");
     let packet = source(sources, "kernel/src/socket/packet.rs");
     let mechanism = std::fs::read_to_string(root.join("vendor/smoltcp/src/iface/interface/mod.rs"))

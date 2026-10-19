@@ -232,12 +232,8 @@ impl BlockDevice for CountingImage {
 
 pub(crate) fn mounted() -> (Arc<CountingImage>, Arc<Ext4FileSystem>) {
     let image = CountingImage::open();
-    let fs = Ext4FileSystem::new(
-        image.clone(),
-        crate::fs::device::DeviceNumber::new(8, 0),
-        false,
-    )
-    .expect("mount ext4 fixture image");
+    let fs = Ext4FileSystem::new(image.clone(), crate::fs::DeviceNumber::new(8, 0), false)
+        .expect("mount ext4 fixture image");
     (image, fs)
 }
 
@@ -782,7 +778,7 @@ fn failed_commit_fails_stop_and_recovery_ignores_it() {
     drop(fs);
 
     // 未写出 commit record 的事务在 replay 时整体丢弃。
-    let recovered = Ext4FileSystem::new(image, crate::fs::device::DeviceNumber::new(8, 0), false)
+    let recovered = Ext4FileSystem::new(image, crate::fs::DeviceNumber::new(8, 0), false)
         .expect("remount after failed commit");
     assert!(matches!(
         recovered

@@ -64,8 +64,8 @@ impl PidFdTarget for PidTarget {
         &self,
         selector: Option<crate::namespace::NamespaceSelector>,
         has_argument: bool,
-    ) -> Result<crate::namespace::NamespaceReference, fs::device::DeviceError> {
-        use fs::device::DeviceError;
+    ) -> Result<crate::namespace::NamespaceReference, fs::chardev::DeviceError> {
+        use fs::chardev::DeviceError;
         use syscall_abi::errno;
         let target = {
             let graph = PROCESS_TABLE.graph.lock();

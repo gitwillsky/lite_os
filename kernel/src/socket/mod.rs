@@ -4,19 +4,13 @@ use core::net::Ipv4Addr;
 use crate::ipc::PipeEnd;
 use crate::ipc::ReceiveBuffer;
 
-#[path = "inet.rs"]
 mod inet;
-#[path = "kobject.rs"]
 mod kobject;
-#[path = "message_limits.rs"]
 mod message_limits;
-#[path = "observation.rs"]
 mod observation;
 mod preparation;
-#[path = "rtnetlink.rs"]
 mod rtnetlink;
 pub(crate) use preparation::{PreparedSocket, SocketRequest};
-#[path = "options.rs"]
 mod options;
 mod timeouts;
 use timeouts::SocketTimeouts;
@@ -31,13 +25,9 @@ pub(crate) use net_namespace::{NetNamespace, initial_net, initialize_net};
 mod credentials;
 pub(crate) use core_buffer_limit::CoreBufferLimit;
 pub(crate) use credentials::{UnixCredentials, UnixSendCredentials};
-#[path = "packet.rs"]
 mod packet;
-#[path = "retirement.rs"]
 mod retirement;
-#[path = "rights.rs"]
 mod rights;
-#[path = "unix.rs"]
 mod unix;
 
 pub(crate) use capacity::{

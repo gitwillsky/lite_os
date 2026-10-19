@@ -26,9 +26,7 @@ use super::{
     interface_snapshots, kobject, network_snapshot, route_snapshot,
 };
 
-#[path = "rtnetlink/change.rs"]
 mod change;
-#[path = "rtnetlink/codec.rs"]
 mod codec;
 
 /// `NETLINK_ROUTE` 的协议号，作为 port 空间 key。

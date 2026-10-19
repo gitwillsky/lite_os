@@ -19,13 +19,9 @@ use super::{
 use crate::socket::InetAddress;
 use crate::socket::{SocketTimeouts, timeouts::TimeoutValues};
 
-#[path = "tcp/accept.rs"]
 mod accept;
-#[path = "tcp/io.rs"]
 mod io;
-#[path = "tcp/lifecycle.rs"]
 mod lifecycle;
-#[path = "tcp/storage.rs"]
 mod storage;
 pub(super) use accept::accept;
 pub(super) use io::{

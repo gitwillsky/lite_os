@@ -10,7 +10,6 @@ use alloc::{
 };
 use spin::Mutex;
 
-#[path = "stream/queue.rs"]
 mod queue;
 use queue::FrameQueue;
 
@@ -293,7 +292,6 @@ impl Drop for StreamReceive {
         self.close();
     }
 }
-#[path = "stream/write.rs"]
 mod write;
 pub(super) enum StreamRead {
     Bytes(usize),

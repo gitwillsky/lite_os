@@ -8,7 +8,7 @@
 - 每一章只有一个核心想法。先读指向的 `//!` 模块头部，它们用同一结构写成：解决什么问题、核心想法、机制、阅读顺序。
 - 遇到不认识的词先查 [术语表](glossary.md) 的“架构与内核”一节。owner、seam、publication、fence 这几个词贯穿全书。
 - 每章末尾有一道练习，答案紧跟其后。先自己想，再对照代码核实，不要只信答案。
-- 第一遍不要读 `namespace/`、`socket/`、`storage/fs/ext4/`、`devices/drm/`，也不要读 `syscall/` 的细节。它们是为兼容 Linux 而来的必要复杂度，不是核心思想。
+- 第一遍不要读 `namespace/`、`socket/`、`fs/ext4/`、`drm/`，也不要读 `syscall/` 的细节。它们是为兼容 Linux 而来的必要复杂度，不是核心思想。
 
 ## 全景
 
@@ -29,8 +29,8 @@ trap ───────▶ syscall      memory        task
 核心想法：用类型而不是约定来保证启动顺序，用编译期选择而不是运行时分派来隔离硬件。
 
 - 读 `main.rs` 的 `kernel_main`：每一步只接受前一步返回的令牌，顺序错了无法编译。
-- 读 `hardware/arch/mod.rs`：同一份通用代码如何在 AArch64 与 RISC-V 之间切换。
-- 读 `hardware/hal/console.rs`：一个很小的接缝（`SerialOutput`）长什么样。
+- 读 `arch/mod.rs`：同一份通用代码如何在 AArch64 与 RISC-V 之间切换。
+- 读 `hal/console.rs`：一个很小的接缝（`SerialOutput`）长什么样。
 
 练习：为什么“启动顺序用令牌表达”比“在注释里写顺序”更可靠？提示：想想一个新人把两行调用换了位置会发生什么。
 
@@ -111,5 +111,5 @@ trap ───────▶ syscall      memory        task
 
 ## 之后再读
 
-文件系统（`storage/`）、网络（`socket/`）、图形（`devices/drm/`）、进程隔离（`namespace/`）都建立在以上九章的思想之上。
+文件系统（`fs/`、`block/`）、网络（`socket/`）、图形（`drm/`）、进程隔离（`namespace/`）都建立在以上九章的思想之上。
 读它们时先看对应的 `docs/architecture/*.md`，再看 `docs/architecture-contract/*.md` 里的接口约定。

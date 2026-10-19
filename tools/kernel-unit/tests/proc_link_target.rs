@@ -6,7 +6,7 @@ extern crate alloc;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     use alloc::{sync::Arc, vec::Vec};
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

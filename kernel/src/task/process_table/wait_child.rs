@@ -377,7 +377,6 @@ pub(crate) fn child_status_info(record: &ChildExit) -> (u32, u32, i32, i32) {
     (pid, uid, code, status)
 }
 
-#[path = "wait_child/claim.rs"]
 mod claim;
 pub(crate) use claim::{consume_child_status, release_child_status};
 

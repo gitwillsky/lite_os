@@ -5,14 +5,14 @@ extern crate alloc;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-#[path = "../../../kernel/src/hardware/arch/aarch64/pte.rs"]
+#[path = "../../../kernel/src/arch/aarch64/pte.rs"]
 mod aarch64_pte;
 #[allow(dead_code)]
 #[path = "../../../kernel/src/task/model/syscall_restart.rs"]
 mod syscall_restart;
 #[path = "../../../kernel/src/timer/deadline.rs"]
 mod timer_deadline;
-#[path = "../../../kernel/src/hardware/arch/aarch64/va39.rs"]
+#[path = "../../../kernel/src/arch/aarch64/va39.rs"]
 mod va39;
 
 #[allow(dead_code)]
@@ -22,7 +22,7 @@ mod namespace;
 #[path = "mmio_fixture.rs"]
 mod arch;
 #[allow(dead_code)]
-#[path = "../../../kernel/src/hardware/hal/bus.rs"]
+#[path = "../../../kernel/src/hal/bus.rs"]
 mod mmio_bus;
 
 macro_rules! info { ($($args:tt)*) => { let _ = format_args!($($args)*); }; }
@@ -76,10 +76,10 @@ impl TaskControlBlock {
 mod fallible_tree;
 
 #[allow(dead_code)]
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
-    pub(crate) mod device {
-        pub(crate) use crate::seccomp_environment::device::*;
+    pub(crate) mod chardev {
+        pub(crate) use crate::seccomp_environment::chardev::*;
         pub(crate) trait UserOutput {
             fn remaining(&self) -> usize;
             fn write(&mut self, bytes: &[u8]) -> Result<(), UserFault>;
@@ -101,11 +101,11 @@ mod fs {
     pub(super) fn benchmark_sysvipc() {
         use crate::ipc::{IpcAccess, IpcNamespace, IpcTable};
         struct Sink(usize);
-        impl device::UserOutput for Sink {
+        impl chardev::UserOutput for Sink {
             fn remaining(&self) -> usize {
                 self.0
             }
-            fn write(&mut self, bytes: &[u8]) -> Result<(), device::UserFault> {
+            fn write(&mut self, bytes: &[u8]) -> Result<(), chardev::UserFault> {
                 std::hint::black_box(bytes);
                 self.0 -= bytes.len();
                 Ok(())

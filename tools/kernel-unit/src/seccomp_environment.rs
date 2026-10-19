@@ -16,7 +16,7 @@ pub(crate) mod file {
     }
     pub(crate) struct OpenFileDescription {
         pub(crate) identity: usize,
-        pub(crate) device: Option<Arc<dyn super::device::DeviceFile>>,
+        pub(crate) device: Option<Arc<dyn super::chardev::DeviceFile>>,
     }
     pub(crate) struct PreparedDeviceDescription;
     impl PreparedDeviceDescription {
@@ -25,7 +25,7 @@ pub(crate) mod file {
         }
         pub(crate) fn finish(
             self,
-            file: Arc<dyn super::device::DeviceFile>,
+            file: Arc<dyn super::chardev::DeviceFile>,
         ) -> Arc<OpenFileDescription> {
             Arc::new(OpenFileDescription {
                 identity: 0,
@@ -41,7 +41,7 @@ pub(crate) mod file {
     }
 }
 pub(crate) mod fs {
-    pub(crate) use super::device;
+    pub(crate) use super::chardev;
     pub(crate) const O_RDWR: u32 = 2;
     pub(crate) const O_CLOEXEC: u32 = 0o2000000;
     #[derive(Debug)]
@@ -49,7 +49,7 @@ pub(crate) mod fs {
         OutOfMemory,
     }
 }
-pub(crate) mod device {
+pub(crate) mod chardev {
     use super::ipc::Pipe;
     use alloc::sync::Arc;
     #[derive(Debug, PartialEq, Eq)]
@@ -95,7 +95,7 @@ pub(crate) mod device {
         fn prepare_wait(&self, events: i16) -> Option<Arc<Pipe>>;
         fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError>;
     }
-    // Scheduler adapter: real Pipe wait; production device::wait_ready errno routing is covered in guest.
+    // Scheduler adapter: real Pipe wait; production chardev::wait_ready errno routing is covered in guest.
     pub(crate) fn wait_ready(
         file: &dyn DeviceFile,
         events: i16,

@@ -8,7 +8,6 @@ use crate::{
     sync::{IrqMutex, TaskMutex},
 };
 
-#[path = "kmsg_wire.rs"]
 mod kmsg_wire;
 
 /// 按严重程度递增排列的 kernel log level。

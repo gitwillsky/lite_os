@@ -114,7 +114,7 @@ impl PollWaitKeys {
             OpenFileKind::Device(file) => {
                 for source in file.wait_sources(events).iter() {
                     match source {
-                        crate::fs::device::DeviceWaitSource::Pipe {
+                        crate::fs::chardev::DeviceWaitSource::Pipe {
                             pipe,
                             direction,
                             events: wake_events,
@@ -125,7 +125,7 @@ impl PollWaitKeys {
                             exclusive,
                             wake_group,
                         ))?,
-                        crate::fs::device::DeviceWaitSource::Console => {
+                        crate::fs::chardev::DeviceWaitSource::Console => {
                             self.push(PollWaitKey::console(events, exclusive, wake_group))?
                         }
                     }

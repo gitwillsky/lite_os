@@ -7,7 +7,7 @@
 | 术语 | 定义 |
 |---|---|
 | Owner（所有者） | 某份复合状态的唯一维护者：只有它能修改这份状态，其他模块只能经它的接口读写。全局状态必须在声明旁写 `OWNER:` 说明归属，缺失会被 architecture-check 拒绝。例：`memory/mod.rs` 的 `KERNEL_SPACE`。 |
-| Façade（门面） | `crate::arch` 与 `crate::platform`：编译期按目标架构选定后端并统一导出的模块。通用内核只经它们访问硬件，没有 trait 对象和运行时分派。见 `hardware/arch/mod.rs`。 |
+| Façade（门面） | `crate::arch` 与 `crate::platform`：编译期按目标架构选定后端并统一导出的模块。通用内核只经它们访问硬件，没有 trait 对象和运行时分派。见 `arch/mod.rs`。 |
 | Seam（接缝） | 两层之间刻意保持很窄的接口，后端在这里插入。例：`hal::console::SerialOutput`，platform 提供输出函数，tty 只依赖这个接口。 |
 | Adapter | 实现某个 seam 的具体设备或后端，例如 VirtIO 网卡、PL011 串口。通用代码不得依赖具体 adapter 的类型。 |
 | Publication（发布） | 让一份新状态对其他 CPU、线程或其他 owner 可见的那一刻：插入注册表、挂进进程图、写入页表、放入就绪队列。发布之前的失败可以直接丢弃；发布之后只能按协议回滚。 |

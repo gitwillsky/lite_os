@@ -8,7 +8,6 @@ use crate::{
     sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation},
 };
 
-#[path = "protocol_owner/pending_cleanup.rs"]
 mod pending_cleanup;
 use pending_cleanup::PendingCleanup;
 

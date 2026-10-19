@@ -252,8 +252,7 @@ fn allocated_unwritten_extents_are_exported_without_changing_logical_zero_reads(
     }
     let disk = CountingImage::open_path(&image);
     let filesystem =
-        super::ext4::Ext4FileSystem::new(disk, crate::fs::device::DeviceNumber::new(8, 0), false)
-            .unwrap();
+        super::ext4::Ext4FileSystem::new(disk, crate::fs::DeviceNumber::new(8, 0), false).unwrap();
     let inode = filesystem
         .root_inode()
         .unwrap()

@@ -378,7 +378,6 @@ pub(crate) fn clone_current_process(
     Ok(visible_pid)
 }
 
-#[path = "vfork/completion.rs"]
 mod completion;
 pub(in crate::task) use completion::complete_vfork_exec;
 pub(super) use completion::take_vfork_completion;

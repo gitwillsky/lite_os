@@ -54,7 +54,7 @@ fn ordered(source: &SourceFile, function: &str, clauses: &[&str], errors: &mut V
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
-        "kernel/src/storage/fs/pidfs.rs",
+        "kernel/src/fs/pidfs.rs",
         &[
             "exit_status: spin::Mutex<Option<i32>>",
             "static INODES: LiveInodes<PidInode, usize>",
@@ -70,7 +70,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/storage/fs/pidfs/ioctl.rs",
+        "kernel/src/fs/pidfs/ioctl.rs",
         &[
             "target.namespace(selector, call.argument != 0)?",
             "target.source().exit_status()",

@@ -2,7 +2,7 @@ use super::*;
 
 fn violations(text: &str) -> Vec<String> {
     let source = SourceFile {
-        relative: "kernel/src/devices/drivers/probe.rs".to_owned(),
+        relative: "kernel/src/drivers/probe.rs".to_owned(),
         owner: "drivers".to_owned(),
         lines: text.lines().map(str::to_owned).collect(),
         syntax: syn::parse_file(text).unwrap(),

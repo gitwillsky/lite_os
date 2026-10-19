@@ -89,7 +89,7 @@ open file description、fd table、epoll/timerfd/readiness 与 inode/设备/pipe
 
 ## `tty`
 
-Terminal line discipline、`/dev/tty`/`console`/`ptmx`、Unix98 pty 与 devpts 文件系统；session、process group 与 signal 归 task，经 `install_job_control` 注入；经 `fs::device` 注册设备文件
+Terminal line discipline、`/dev/tty`/`console`/`ptmx`、Unix98 pty 与 devpts 文件系统；session、process group 与 signal 归 task，经 `install_job_control` 注入；经 `fs::chardev`/`fs::devnode` 注册设备文件
 
 ## `namespace`
 
@@ -106,7 +106,7 @@ User namespace 的 immutable ancestry、ID maps 与 setgroups publication；UTS 
 
 ## `syscall`
 
-只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::device::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果
+只编解码通用 UAPI、user-copy 游标与 errno；设备专属 UAPI 经 `fs::chardev::DeviceFile` 由设备子系统拥有；只经 `sync::WaitResult` 消费阻塞结果
 
 ## `random`
 
@@ -150,9 +150,14 @@ RTC 与 per-CPU deadline 由 timer 唯一拥有
 - binary crate 的跨 module interface 默认使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；扩大范围必须说明 production caller。
 
 
-源码目录按领域分组，module 树保持扁平：
-- `kernel/src/hardware/`：`arch`、`platform`、`hal`、`cpu`、`deferred`、`entry`。
-- `kernel/src/storage/`：`block`、`fs`。
-- `kernel/src/devices/`：`drivers`、`virtio`、`virtio_port`、`audio`、`drm`、`input`、`tty`。
-- 其余 module 直接位于 `kernel/src/`。分组目录经 `main.rs` 的 `#[path]` 声明，因此 module 路径（`crate::fs`）和下表 owner 名不含分组。
-- 领域 module 的根文件是 `<module>/mod.rs`；子文件用 `<name>.rs` 加同名目录，并显式 `#[path]` 声明。
+module 树保持扁平，目录结构就是 module 路径，全项目没有 `#[path]`：`kernel/src/<module>/mod.rs`（或单文件 `<module>.rs`）声明
+`crate::<module>`，`crate::fs` 就是 `fs/mod.rs`。子 module 用 `<name>.rs` 加同名目录 `<name>/`（标准布局，不用 `mod.rs` 充当子 module）。
+领域分组只是阅读上的归类，不对应目录：
+- 硬件与启动：`arch`、`platform`、`hal`、`cpu`、`deferred`、`entry`。
+- 存储：`block`、`fs`。
+- 设备：`drivers`、`virtio`、`virtio_port`、`audio`、`drm`、`input`、`tty`。
+- 其余是内核领域 module：`task`、`memory`、`socket`、`ipc`、`file`、`sync`、`syscall` 等。
+
+host 夹具把内核文件编译进测试 crate 时，rustc 把被包含的文件当作 mod-rs 文件，到它所在目录找子模块，与标准布局不同。
+内核布局不为此让步：`tools/kernel-view/` 为被夹具包含且带子模块的内核文件生成只含符号链接的“平铺视图”，
+夹具改为包含视图里的文件；`scripts/kernel_fixture_view.py --write` 生成，`make verify-unit` 校验。

@@ -500,7 +500,6 @@ fn graph() -> &'static Mutex<RightsGraph> {
     GRAPH.call_once(|| Mutex::new(RightsGraph::new()))
 }
 
-#[path = "rights_graph/preparation.rs"]
 mod preparation;
 use preparation::GraphScratch;
 pub(super) use preparation::PreparedAttach;

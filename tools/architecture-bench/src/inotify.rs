@@ -9,7 +9,7 @@ mod cost_policy;
 mod fallible_tree;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/storage/fs/inotify/queue.rs"]
+#[path = "../../../kernel/src/fs/inotify/queue.rs"]
 mod queue;
 use alloc::{boxed::Box, vec::Vec};
 use namespace::{UserResource, UserResourceCharge};

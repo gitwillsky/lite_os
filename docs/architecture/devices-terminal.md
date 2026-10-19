@@ -59,7 +59,7 @@
   坐标，并继承 cursorq 当前 resource 可见性；shape update 才等待 exact completion，因此 pointer motion
   不受 scene render、vblank 或旧坐标 completion 排队影响。
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke，并经 `input/eventN` 设备文件拥有 evdev UAPI；VirtIO input adapter 只提供 raw event/config。
-- 字符设备采用 Linux cdev/devtmpfs 模型：设备子系统向 `fs::device` 注册 minor 区间 driver 与 devfs 节点，
+- 字符设备采用 Linux cdev/devtmpfs 模型：设备子系统向 `fs::chardev`/`fs::devnode` 注册 minor 区间 driver 与 devfs 节点，
   open 按 inode 设备号找到 driver，返回的 `DeviceFile` 拥有读写、poll、ioctl 与 mmap；fs、devfs 与 syscall
   不认识具体设备。mem（`null`/`zero`/`random`/`urandom`/`kmsg`）与 TTY（`tty`/`console`/`ptmx`/`pts/N`）
   分别由 fs 与 `tty` 自身注册；pts 设备号为 Linux `(136, index)`。

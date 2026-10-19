@@ -4,24 +4,24 @@ use syn::{Arm, Expr, ExprCall, ExprMatch, ImplItem, ImplItemFn, Item, ItemFn, Pa
 use super::SourceFile;
 
 const TRAP_SOURCE: &str = "kernel/src/trap/mod.rs";
-const CPU_DEFERRED_SOURCE: &str = "kernel/src/hardware/deferred.rs";
+const CPU_DEFERRED_SOURCE: &str = "kernel/src/deferred.rs";
 const PROCESS_TABLE_SOURCE: &str = "kernel/src/task/process_table.rs";
 const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/task/process_table/context_switch.rs";
 const VIRTIO_LOCKS: &[(&str, &str, &str, &str)] = &[
     (
-        "kernel/src/devices/virtio/net.rs",
+        "kernel/src/virtio/net.rs",
         "VirtIONetworkDevice",
         "queues",
         "Mutex < QueueState >",
     ),
     (
-        "kernel/src/devices/virtio/input.rs",
+        "kernel/src/virtio/input.rs",
         "VirtIOInputDevice",
         "events",
         "Mutex < EventQueueState >",
     ),
     (
-        "kernel/src/devices/virtio/gpu.rs",
+        "kernel/src/virtio/gpu.rs",
         "VirtIOGpuDevice",
         "control",
         "Mutex < ControlQueue >",
@@ -56,7 +56,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_driver_io_dispatch_lock_free(sources, errors);
 }
 
-const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/devices/drivers/registry.rs";
+const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/drivers/registry.rs";
 
 /// 方法调用名称计数器。
 #[derive(Default)]
@@ -741,7 +741,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/devices/virtio/net.rs",
+            "kernel/src/virtio/net.rs",
             "        let status = self",
             "        self.queues.lock();\n        let status = self",
         );
@@ -757,7 +757,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/devices/virtio/input.rs",
+            "kernel/src/virtio/input.rs",
             "events: Mutex<EventQueueState>",
             "events: IrqMutex<EventQueueState>",
         );

@@ -124,8 +124,8 @@ fn mount_table_formats_use_actual_mount_parent_root_and_escaped_fields() {
             "{} {} {}:{} /jail /jail/inner rw,relatime - fixture  rw\n",
             view.id,
             view.attachment().unwrap().parent.upgrade().unwrap().id,
-            device::DeviceNumber::decode(view.root.inode().metadata().unwrap().filesystem).major,
-            device::DeviceNumber::decode(view.root.inode().metadata().unwrap().filesystem).minor
+            DeviceNumber::decode(view.root.inode().metadata().unwrap().filesystem).major,
+            DeviceNumber::decode(view.root.inode().metadata().unwrap().filesystem).minor
         )
     );
     let mut output = Vec::new();

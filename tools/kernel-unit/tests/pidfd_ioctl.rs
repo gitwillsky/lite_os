@@ -9,9 +9,9 @@ mod namespace;
 use alloc::sync::Arc;
 use std::cell::RefCell;
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
-    pub(crate) mod device {
+    pub(crate) mod chardev {
         #[derive(Debug, PartialEq, Eq)]
         pub(crate) enum DeviceError {
             Errno(isize),
@@ -45,14 +45,14 @@ mod fs {
         mod ioctl;
         pub(crate) fn invoke(
             target: &dyn PidFdTarget,
-            call: &super::device::IoctlCall<'_>,
-        ) -> Result<isize, super::device::DeviceError> {
+            call: &super::chardev::IoctlCall<'_>,
+        ) -> Result<isize, super::chardev::DeviceError> {
             ioctl::ioctl(target, call)
         }
     }
 }
 use fs::{
-    device::{DeviceError, IoctlCall, UserMemory},
+    chardev::{DeviceError, IoctlCall, UserMemory},
     pidfs::{PidFdPoll, PidFdSource, PidFdTarget},
 };
 struct Memory {

@@ -4,7 +4,6 @@ use core::sync::atomic::{Ordering, fence};
 use super::{Epoll, OpenFileDescription, PreparedFileDescription};
 use crate::fs::{AccessIdentity, FileSystemError, O_RDONLY, O_WRONLY, vfs};
 
-#[path = "indexed_slots.rs"]
 mod indexed_slots;
 
 use indexed_slots::{IndexedSlots, SlotInsertError};
@@ -170,7 +169,7 @@ impl FileDescriptorTable {
         let open = |flags| {
             let prepared = PreparedFileDescription::try_new()?;
             let prepared = prepared.prepare_named(backing_opened.clone(), flags)?;
-            crate::fs::device::open(&crate::fs::device::OpenRequest {
+            crate::fs::chardev::open(&crate::fs::chardev::OpenRequest {
                 number,
                 flags,
                 identity: &identity,

@@ -30,11 +30,11 @@ mod mmu {
     pub(crate) fn activate_kernel(_token: KernelTrapToken) {}
 }
 
-#[path = "../../../kernel/src/hardware/arch/riscv64/page_table.rs"]
+#[path = "../../../kernel/src/arch/riscv64/page_table.rs"]
 mod page_table;
-#[path = "../../../kernel/src/hardware/arch/riscv64/pte.rs"]
+#[path = "../../../kernel/src/arch/riscv64/pte.rs"]
 mod pte;
-#[path = "../../../kernel/src/hardware/arch/riscv64/sv39.rs"]
+#[path = "../../../kernel/src/arch/riscv64/sv39.rs"]
 mod sv39;
 
 #[cfg(test)]

@@ -15,9 +15,9 @@ fn before(text: &str, first: &str, second: &str) -> bool {
     matches!((text.find(first), text.find(second)), (Some(a), Some(b)) if a < b)
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let value = normalized(source(sources, "kernel/src/storage/fs/ext4/xattr_inode.rs"));
-    let xattr = normalized(source(sources, "kernel/src/storage/fs/ext4/xattr.rs"));
-    let inode = normalized(source(sources, "kernel/src/storage/fs/ext4/inode.rs"));
+    let value = normalized(source(sources, "kernel/src/fs/ext4/xattr_inode.rs"));
+    let xattr = normalized(source(sources, "kernel/src/fs/ext4/xattr.rs"));
+    let inode = normalized(source(sources, "kernel/src/fs/ext4/inode.rs"));
     if !value.contains("u64::from(disk.i_ctime)<<32")
         || !value.contains("u64::from(disk.i_version_lo)")
         || !value.contains("crc32c(self.checksum_seed,&value)")
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn rejects_ordered_value_data() {
         reject(
-            "kernel/src/storage/fs/ext4/xattr_inode.rs",
+            "kernel/src/fs/ext4/xattr_inode.rs",
             "BlockKind::Metadata",
             "BlockKind::Data",
             "metadata journal",
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn rejects_freeing_values_still_owned_by_shared_block() {
         reject(
-            "kernel/src/storage/fs/ext4/xattr.rs",
+            "kernel/src/fs/ext4/xattr.rs",
             "REFCOUNT_OFFSET) == 1",
             "REFCOUNT_OFFSET) >= 1",
             "physical body/block",
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn rejects_decrement_before_new_physical_holder() {
         reject(
-            "kernel/src/storage/fs/ext4/xattr.rs",
+            "kernel/src/fs/ext4/xattr.rs",
             "filter(|(_, delta)| *delta > 0)",
             "filter(|(_, delta)| *delta < 0)",
             "COW deltas",
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn rejects_publishing_hidden_ea_inode() {
         reject(
-            "kernel/src/storage/fs/ext4/inode.rs",
+            "kernel/src/fs/ext4/inode.rs",
             "disk.i_flags & super::xattr_inode::EA_INODE_FLAG != 0",
             "false",
             "ordinary VFS",
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn rejects_missing_parent_value_charge() {
         reject(
-            "kernel/src/storage/fs/ext4/xattr.rs",
+            "kernel/src/fs/ext4/xattr.rs",
             "sectors.checked_add(new_value_sectors)",
             "Some(sectors)",
             "parent i_blocks",
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn rejects_missing_parent_value_refund() {
         reject(
-            "kernel/src/storage/fs/ext4/xattr.rs",
+            "kernel/src/fs/ext4/xattr.rs",
             ".checked_sub(old_value_sectors)",
             ".checked_sub(0)",
             "parent i_blocks",

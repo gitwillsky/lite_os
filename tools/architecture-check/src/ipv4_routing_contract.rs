@@ -20,10 +20,10 @@ pub(super) fn check(root: &std::path::Path, sources: &[SourceFile], errors: &mut
     let udp = source(sources, "kernel/src/socket/inet/udp.rs");
     let raw = source(sources, "kernel/src/socket/inet/raw.rs");
     let tcp = source(sources, "kernel/src/socket/inet/tcp.rs");
-    let loopback = source(sources, "kernel/src/socket/device/loopback.rs");
+    let loopback = source(sources, "kernel/src/socket/inet/device/loopback.rs");
     let ioctl = source(sources, "kernel/src/syscall/socket/interface.rs");
-    let opened = source(sources, "kernel/src/storage/fs/procfs/opened_operations.rs");
-    let formatter = source(sources, "kernel/src/storage/fs/procfs/networking.rs");
+    let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
+    let formatter = source(sources, "kernel/src/fs/procfs/networking.rs");
     let mechanism = std::fs::read_to_string(root.join("vendor/smoltcp/src/iface/interface/mod.rs"))
         .unwrap()
         .split_whitespace()
@@ -146,7 +146,7 @@ mod tests {
                 "Some(reply.origin),",
             ),
             (
-                "kernel/src/storage/fs/procfs/opened_operations.rs",
+                "kernel/src/fs/procfs/opened_operations.rs",
                 "source.route_snapshot(target)?",
                 "source.route_snapshot(&crate::socket::initial_net())?",
             ),

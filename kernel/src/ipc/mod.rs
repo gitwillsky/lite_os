@@ -24,15 +24,12 @@ pub(crate) use permissions::{IpcAccess, IpcPermission};
 mod error;
 pub(crate) use error::IpcError;
 
-#[path = "receive_buffer.rs"]
 mod receive_buffer;
 pub(crate) use receive_buffer::ReceiveBuffer;
 
-#[path = "eventfd.rs"]
 mod eventfd;
 pub(crate) use eventfd::{EventFd, EventFdRead, EventFdWrite};
 
-#[path = "pipe.rs"]
 mod pipe;
 pub(crate) use pipe::{
     PIPE_BUF, Pipe, PipeDirection, PipeEnd, PipeOpenAccess, PipeOpenError, PipePollState, PipeRead,

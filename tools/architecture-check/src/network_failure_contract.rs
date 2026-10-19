@@ -14,8 +14,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let inet = source(sources, "kernel/src/socket/inet.rs");
     let poll = source(sources, "kernel/src/socket/inet/poll.rs");
     let readiness = source(sources, "kernel/src/socket/inet/readiness.rs");
-    let device = source(sources, "kernel/src/socket/device.rs");
-    let proc = source(sources, "kernel/src/storage/fs/procfs/networking.rs");
+    let device = source(sources, "kernel/src/socket/inet/device.rs");
+    let proc = source(sources, "kernel/src/fs/procfs/networking.rs");
     if inet.contains("take_device_error(")
         || readiness.contains("pending_device_error(")
         || inet.contains("ifletOk(poll)=poll")
@@ -58,7 +58,7 @@ mod tests {
                 "notification_backlog || cleanup_backlog",
             ),
             (
-                "kernel/src/storage/fs/procfs/networking.rs",
+                "kernel/src/fs/procfs/networking.rs",
                 "interface.received_errors,",
                 "0,",
             ),

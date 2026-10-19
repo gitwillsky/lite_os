@@ -15,7 +15,7 @@ mod namespace;
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     use alloc::{sync::Arc, vec::Vec};
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,7 +62,7 @@ mod fs {
             self.unlinked
         }
     }
-    pub(crate) mod device {
+    pub(crate) mod chardev {
         use super::*;
         #[derive(Debug, PartialEq, Eq)]
         pub(crate) enum DeviceError {
@@ -126,7 +126,7 @@ mod fs {
         }
     }
     mod inotify;
-    use device::{DeviceError, DeviceFile, UserFault, UserOutput};
+    use chardev::{DeviceError, DeviceFile, UserFault, UserOutput};
     use inotify::{InitError, Inotify, WatchError};
     fn new() -> Result<Arc<Inotify>, InitError> {
         Inotify::new(crate::namespace::boot(), 0)

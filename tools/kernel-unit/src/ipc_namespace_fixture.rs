@@ -54,7 +54,7 @@ mod message_queue;
 pub(crate) use message_queue::{
     MessageQueue, MessageQueueSnapshot, MessageQueueWait, MessageReceive, PreparedMessage,
 };
-#[path = "../../../kernel/src/ipc/namespace.rs"]
+#[path = "../../../tools/kernel-view/ipc/namespace/namespace/namespace.rs"]
 mod namespace;
 #[allow(
     unused_imports,

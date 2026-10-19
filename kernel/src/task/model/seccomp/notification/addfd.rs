@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     file::{FileDescriptorError, OpenFileDescription},
-    fs::device::{DeviceError, IoctlCall},
+    fs::chardev::{DeviceError, IoctlCall},
 };
 
 #[derive(Clone, Copy)]

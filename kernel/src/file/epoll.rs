@@ -13,7 +13,6 @@ use crate::{
     ipc::{Pipe, PipeEnd},
 };
 
-#[path = "epoll/ready.rs"]
 mod ready;
 
 const MAX_NESTING_DEPTH: usize = 5;

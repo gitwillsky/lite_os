@@ -219,12 +219,7 @@ fn ext4_remount_roundtrips_reported_options_and_retries_failed_writable_preparat
         flushes: AtomicUsize::new(0),
         fail_flush: AtomicBool::new(false),
     });
-    let fs = Ext4FileSystem::new(
-        disk.clone(),
-        crate::fs::device::DeviceNumber::new(8, 0),
-        true,
-    )
-    .unwrap();
+    let fs = Ext4FileSystem::new(disk.clone(), crate::fs::DeviceNumber::new(8, 0), true).unwrap();
     let namespace = crate::namespace::boot();
     let writes = disk.writes.load(Ordering::Relaxed);
     let flushes = disk.flushes.load(Ordering::Relaxed);
@@ -346,7 +341,7 @@ fn mount(path: &PathBuf) -> Arc<Ext4FileSystem> {
         .expect("open writable ext4 image");
     Ext4FileSystem::new(
         Arc::new(WritableImage(Mutex::new(file))),
-        crate::fs::device::DeviceNumber::new(8, 0),
+        crate::fs::DeviceNumber::new(8, 0),
         false,
     )
     .expect("mount ext4 image")
@@ -575,7 +570,7 @@ fn htree_second_index_level_passes_e2fsck() {
 
 #[test]
 fn fifo_and_device_nodes_persist_and_pass_e2fsck() {
-    use crate::fs::device::DeviceNumber;
+    use crate::fs::DeviceNumber;
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let path = scratch_copy("ext4-special.img");
     let fs = mount(&path);
@@ -656,13 +651,13 @@ fn fifo_and_device_nodes_persist_and_pass_e2fsck() {
 fn inode_stat_device_is_explicit_disk_identity_not_cache_key() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let (image, _) = crate::ext4_cost_tests::mounted();
-    let number = crate::fs::device::DeviceNumber::new(0x1234, 0x56789);
+    let number = crate::fs::DeviceNumber::new(0x1234, 0x56789);
     let filesystem =
         Ext4FileSystem::new(image, number, true).expect("mount fixture with explicit device");
     let root = filesystem.root_inode().expect("root inode");
     assert_eq!(root.metadata().unwrap().filesystem, number.encode());
     assert_eq!(
-        crate::fs::device::DeviceNumber::decode(root.metadata().unwrap().filesystem),
+        crate::fs::DeviceNumber::decode(root.metadata().unwrap().filesystem),
         number
     );
 }

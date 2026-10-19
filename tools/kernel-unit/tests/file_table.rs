@@ -94,7 +94,7 @@ mod tty {
     }
 }
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     pub(crate) use crate::mount_membership_fixture::MountNamespace;
     use alloc::{sync::Arc, vec::Vec};
@@ -160,7 +160,7 @@ mod fs {
             true
         }
     }
-    pub(crate) mod device {
+    pub(crate) mod chardev {
         pub(crate) enum DeviceError {
             Errno(isize),
         }

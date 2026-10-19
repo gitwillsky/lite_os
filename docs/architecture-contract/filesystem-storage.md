@@ -290,7 +290,7 @@
   recursive bind 整组准备再发表，非 recursive bind 不得剥离 locked child。Source 使用实际 mounted
   view，允许其他 namespace 的已有 path；target 必须属于 caller namespace。
   Ext4 构造显式接收实际 block dev_t，所有 inode st_dev/mountinfo 共用它；internal cache/filesystem
-  identity 独立于 dev_t，禁止恢复固定 st_dev=1。DeviceNumber codec 属于 fs/device/number，host 加载实际 codec。
+  identity 独立于 dev_t，禁止恢复固定 st_dev=1。DeviceNumber codec 属于 `fs::devnum`，host 加载实际 codec。
 - `RegularFileWrite` 的 write-sequence 与 operation gates 共同独占一次 syscall 的 position、append placement、storage transaction 和 resident-cache publication 顺序。
 - VFS namespace read/mutation 与 ext4 live-state transaction 使用 `TaskMutex` 逻辑 owner；其内部
   spin gate 只发布 `Available/Held/Handoff(ticket)` 与预分配 waiter 链，logical guard 可以跨
@@ -369,7 +369,7 @@
   逐出重叠 alias 的缓存（writer 保留自身缓存）；失败先回滚 claim。任何重叠 alias 已挂载，或其他 key 有 writer 时 raw read
   绕过独立 page cache；自身 writer 保留自有 cache。cache admission 在 FILES lock 内
   重查该投影，claim guard 不跨 FILES；缓存身份仍由 `Inode::page_cache_id` 给出，与 devtmpfs 实例无关。
-- `/dev/kmsg` 的唤醒经 logger 发布 `deferred` vector → `fs::mem` 的合并 readiness Pipe；logger 在任何
+- `/dev/kmsg` 的唤醒经 logger 发布 `deferred` vector → `fs::mem_device` 的合并 readiness Pipe；logger 在任何
   上下文（含 hardirq）都只做原子发布，不取 scheduler 锁。`KmsgReader.gate` 序列化同一 OFD 的 reader，
   `cursor` 只在整条 record 交给用户后推进。
 - `fs::FileSystemType` 注册表只追加、在 `init_vfs` 发布；`MOUNT_TRANSACTION` 串行化 mount/umount 事务。

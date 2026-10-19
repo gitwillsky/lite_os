@@ -1,11 +1,9 @@
 mod description_preparation;
-#[path = "descriptor_table.rs"]
 mod descriptor_table;
 pub(crate) use description_preparation::{PreparedDeviceDescription, PreparedFileDescription};
 mod socket_preparation;
 pub(crate) use socket_preparation::PreparedSocketDescription;
 mod epoll;
-#[path = "position.rs"]
 mod position;
 mod readiness;
 mod signalfd;
@@ -40,7 +38,7 @@ mod unix_passed;
 /// OFD 后端；character device、pipe 和 inode 共享同一 fd 表。
 pub(crate) enum OpenFileKind {
     /// 经字符设备注册表打开、由设备子系统实现的设备文件。
-    Device(Arc<dyn crate::fs::device::DeviceFile>),
+    Device(Arc<dyn crate::fs::chardev::DeviceFile>),
     Pipe(Arc<PipeEnd>),
     Socket(Arc<Socket>),
     Epoll(Arc<Epoll>),
@@ -442,10 +440,10 @@ impl OpenFileDescription {
             OpenFileKind::Device(file) => {
                 for source in file.wait_sources(events).iter() {
                     sources.push(match source {
-                        crate::fs::device::DeviceWaitSource::Pipe {
+                        crate::fs::chardev::DeviceWaitSource::Pipe {
                             pipe, direction, ..
                         } => ReadinessSource::pipe(pipe, *direction),
-                        crate::fs::device::DeviceWaitSource::Console => ReadinessSource::Console,
+                        crate::fs::chardev::DeviceWaitSource::Console => ReadinessSource::Console,
                     });
                 }
             }

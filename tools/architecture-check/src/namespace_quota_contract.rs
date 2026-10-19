@@ -34,10 +34,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("namespace-quota: concrete namespace lifetime must own one creator/ancestor charge and rollback exact successful prefix".into());
     }
-    let proc = source(sources, "kernel/src/storage/fs/procfs.rs");
-    let opened = source(sources, "kernel/src/storage/fs/procfs/opened_operations.rs");
-    let node = source(sources, "kernel/src/storage/fs/procfs/node.rs");
-    let identity = source(sources, "kernel/src/storage/fs/permission.rs");
+    let proc = source(sources, "kernel/src/fs/procfs.rs");
+    let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
+    let node = source(sources, "kernel/src/fs/procfs/node.rs");
+    let identity = source(sources, "kernel/src/fs/permission.rs");
     let credentials = source(sources, "kernel/src/task/model/credentials.rs");
     let proc_tokens: String = proc.split_whitespace().collect();
     let opened_tokens: String = opened.split_whitespace().collect();
@@ -53,7 +53,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("namespace-quota: sysctl fd must pin lookup namespace and scoped permission use EUID ancestry independently of FSUID and stat mode".into());
     }
-    let inode = source(sources, "kernel/src/storage/fs/inode.rs");
+    let inode = source(sources, "kernel/src/fs/inode.rs");
     let open = source(sources, "kernel/src/syscall/fs/open.rs");
     let access = source(sources, "kernel/src/syscall/fs/access.rs");
     if !inode.contains("fn require_access(")
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn rejects_fsuid_substitution_for_namespace_capability_owner() {
         reject(
-            "kernel/src/storage/fs/permission.rs",
+            "kernel/src/fs/permission.rs",
             "effective_uid: self.capability_uid",
             "effective_uid: self.uid",
             "EUID ancestry",

@@ -93,7 +93,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "zombie credential owner must retire outside the IRQ graph guard",
         errors,
     );
-    let permission = source(sources, "kernel/src/storage/fs/permission.rs");
+    let permission = source(sources, "kernel/src/fs/permission.rs");
     require(
         permission,
         &[
@@ -121,7 +121,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("sendfile must read a positive input prefix before output killpriv".into());
     }
-    let tmp = source(sources, "kernel/src/storage/fs/tmpfs/content_mutation.rs");
+    let tmp = source(sources, "kernel/src/fs/tmpfs/content_mutation.rs");
     require(
         tmp,
         &[
@@ -131,7 +131,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "tmpfs post-allocation mode commit needs prepared metadata waiting and shared write sequence",
         errors,
     );
-    let mm = source(sources, "kernel/src/storage/fs/memory_file.rs");
+    let mm = source(sources, "kernel/src/fs/memory_file.rs");
     require(
         mm,
         &["modified: impl FnOnce()", "drop(state);", "modified();"],
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn rejects_uid_zero_dac_grant() {
         reject(
-            "kernel/src/storage/fs/permission.rs",
+            "kernel/src/fs/permission.rs",
             "self.capabilities & capability.mask() != 0",
             "self.uid == 0 || self.capabilities & capability.mask() != 0",
             "solely from UID zero",
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn rejects_post_allocation_metadata_waiter_oom() {
         reject(
-            "kernel/src/storage/fs/tmpfs/content_mutation.rs",
+            "kernel/src/fs/tmpfs/content_mutation.rs",
             "self.state.lock_prepared(wait)",
             "self.state.lock().unwrap()",
             "prepared metadata",

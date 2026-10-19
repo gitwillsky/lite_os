@@ -15,8 +15,8 @@ fn before(source: &str, first: &str, second: &str) -> bool {
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let packet = normalized(source(sources, "kernel/src/socket/packet.rs"));
-    let phy = normalized(source(sources, "kernel/src/socket/device.rs"));
-    let lo = normalized(source(sources, "kernel/src/socket/device/loopback.rs"));
+    let phy = normalized(source(sources, "kernel/src/socket/inet/device.rs"));
+    let lo = normalized(source(sources, "kernel/src/socket/inet/device/loopback.rs"));
     let inet = normalized(source(sources, "kernel/src/socket/inet.rs"));
     let poll = normalized(source(sources, "kernel/src/socket/inet/poll.rs"));
     let config = normalized(source(sources, "kernel/src/socket/inet/configuration.rs"));
@@ -106,7 +106,7 @@ mod tests {
                 "packet::publish_transmit_ready(6, index)",
             ),
             (
-                "kernel/src/socket/device.rs",
+                "kernel/src/socket/inet/device.rs",
                 "self.net_id, self.interface_index, self.mac, frame",
                 "6, 1, self.mac, frame",
             ),
@@ -116,7 +116,7 @@ mod tests {
                 "let _registry_is_still_held = &registry;",
             ),
             (
-                "kernel/src/socket/device.rs",
+                "kernel/src/socket/inet/device.rs",
                 "Ok(reservation) => reservation,",
                 "Ok(reservation) => reservation?,",
             ),

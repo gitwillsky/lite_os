@@ -6,47 +6,29 @@ use crate::ipc::PipeEnd;
 
 use super::{SocketError, SocketSendError, SocketType, UnixCredentials, UnixSendCredentials};
 
-#[path = "unix/capacity.rs"]
 mod capacity;
-#[path = "unix/datagram_connect.rs"]
 mod datagram_connect;
-#[path = "unix/datagram_disconnect.rs"]
 mod datagram_disconnect;
-#[path = "unix/datagram_queue.rs"]
 mod datagram_queue;
-#[path = "unix/packet_send.rs"]
 mod packet_send;
-#[path = "unix/send_memory.rs"]
 mod send_memory;
-#[path = "unix/send_preflight.rs"]
 mod send_preflight;
 use send_memory::{SendMemoryState, SenderCharge};
-#[path = "unix/readiness.rs"]
 mod readiness;
-#[path = "unix/receive.rs"]
 mod receive;
-#[path = "unix/shutdown.rs"]
 mod shutdown;
 use datagram_queue::DatagramQueue;
-#[path = "unix/lifecycle.rs"]
 mod lifecycle;
-#[path = "unix/namespace.rs"]
 mod namespace;
 use namespace::{BindingRequest, NamespaceKey};
 pub(crate) use namespace::{UnixAddress, UnixPathIdentity};
-#[path = "unix/rights.rs"]
 mod rights;
 pub(crate) use rights::{UnixFileLimit, UnixNode, UnixPassedFile, UnixReceivedRights, UnixRights};
-#[path = "unix/retirement.rs"]
 mod retirement;
-#[path = "unix/rights_graph.rs"]
 mod rights_graph;
-#[path = "unix/rights_owner.rs"]
 mod rights_owner;
-#[path = "unix/stream.rs"]
 mod stream;
 use stream::{StreamReceive, StreamTransmit};
-#[path = "unix/connection_backlog.rs"]
 mod connection_backlog;
 use connection_backlog::ConnectionBacklog;
 
@@ -65,7 +47,6 @@ pub(super) fn minimum_buffer(direction: super::SocketIoDirection) -> usize {
 
 const POLLOUT: i16 = 0x004;
 
-#[path = "unix/receive_mode.rs"]
 mod receive_mode;
 pub(super) use receive_mode::ReceiveMode;
 

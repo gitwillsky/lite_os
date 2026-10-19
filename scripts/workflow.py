@@ -358,6 +358,8 @@ def kernel_unit_dtb_fixtures(environment: Mapping[str, str] | None = None) -> di
 
 def verify_unit(environment: Mapping[str, str] | None = None) -> None:
     """执行 kernel/architecture/syscall 与 user workspace 单元测试。"""
+    # host 夹具包含内核文件的“平铺视图”必须与内核布局一致，否则夹具可能静默缺失子模块。
+    run([sys.executable, "scripts/kernel_fixture_view.py", "--check"], environment=environment)
     fixture = kernel_unit_ext4_fixture(environment)
     dtb_fixtures = kernel_unit_dtb_fixtures(environment)
     run(

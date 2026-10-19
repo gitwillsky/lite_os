@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-#[path = "../../../kernel/src/hardware/arch/aarch64/signal_action.rs"]
+#[path = "../../../kernel/src/arch/aarch64/signal_action.rs"]
 mod signal_action;
 #[path = "../../../kernel/src/task/model/signal_info.rs"]
 mod signal_info;

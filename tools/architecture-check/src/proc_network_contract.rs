@@ -10,16 +10,16 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let proc = source(sources, "kernel/src/storage/fs/procfs.rs");
-    let node = source(sources, "kernel/src/storage/fs/procfs/node.rs");
-    let link = source(sources, "kernel/src/storage/fs/procfs/link.rs");
-    let opened = source(sources, "kernel/src/storage/fs/procfs/opened_operations.rs");
+    let proc = source(sources, "kernel/src/fs/procfs.rs");
+    let node = source(sources, "kernel/src/fs/procfs/node.rs");
+    let link = source(sources, "kernel/src/fs/procfs/link.rs");
+    let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
     let provider = source(sources, "kernel/src/task/process_table/procfs.rs");
-    let snapshot = source(sources, "kernel/src/storage/fs/procfs/snapshot.rs");
+    let snapshot = source(sources, "kernel/src/fs/procfs/snapshot.rs");
     let config = source(sources, "kernel/src/socket/inet/configuration.rs");
     let task = source(sources, "kernel/src/task/model/namespaces.rs");
     let kernel = source(sources, "kernel/src/task/model/kernel_thread.rs");
-    let table = source(sources, "kernel/src/storage/fs/procfs/networking.rs");
+    let table = source(sources, "kernel/src/fs/procfs/networking.rs");
     let generic = node
         .split("fngeneric_entries()")
         .nth(1)
@@ -92,7 +92,7 @@ mod tests {
                 "Some(crate::socket::initial_net())",
             ),
             (
-                "kernel/src/storage/fs/procfs/opened_operations.rs",
+                "kernel/src/fs/procfs/opened_operations.rs",
                 "source.network_snapshot(target)?",
                 "source.network_snapshot(&crate::socket::initial_net())?",
             ),

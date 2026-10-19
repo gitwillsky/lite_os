@@ -21,7 +21,7 @@ fn accepts_single_identity_and_transaction_owners() {
 #[test]
 fn rejects_label_proc_target() {
     reject(
-        "kernel/src/storage/fs/procfs/snapshot.rs",
+        "kernel/src/fs/procfs/snapshot.rs",
         "target: Arc<super::super::OpenedFile>",
         "target: Vec<u8>",
         "without label fallback",
@@ -30,7 +30,7 @@ fn rejects_label_proc_target() {
 #[test]
 fn rejects_pipe_endpoint_pin_in_inode() {
     reject(
-        "kernel/src/storage/fs/anonymous.rs",
+        "kernel/src/fs/anonymous.rs",
         "Mutex<Weak<Pipe>>",
         "Mutex<Arc<Pipe>>",
         "must not pin endpoints",
@@ -39,7 +39,7 @@ fn rejects_pipe_endpoint_pin_in_inode() {
 #[test]
 fn rejects_retired_session_readmission() {
     reject(
-        "kernel/src/ipc/pipe_open.rs",
+        "kernel/src/ipc/pipe/pipe_open.rs",
         "state.session == PipeSession::Retired",
         "state.session == PipeSession::Fresh",
         "one state transaction",
@@ -48,7 +48,7 @@ fn rejects_retired_session_readmission() {
 #[test]
 fn rejects_named_fifo_hup_suppression_with_existing_writer() {
     reject(
-        "kernel/src/storage/fs/fifo.rs",
+        "kernel/src/fs/fifo.rs",
         "&& prior.writers == 0",
         "&& prior.writers != 0",
         "HUP suppression",
@@ -57,7 +57,7 @@ fn rejects_named_fifo_hup_suppression_with_existing_writer() {
 #[test]
 fn rejects_seal_race_outside_write_sequence() {
     reject(
-        "kernel/src/storage/fs/memory_file.rs",
+        "kernel/src/fs/memory_file.rs",
         "let _sequence = self\n            .write_sequence\n            .lock()\n            .map_err(|_| FileSystemError::OutOfMemory)?;\n        self.state()?.seals.add(seals)",
         "let _sequence = ();\n        self.state()?.seals.add(seals)",
         "seal rejection/data failure",
@@ -66,7 +66,7 @@ fn rejects_seal_race_outside_write_sequence() {
 #[test]
 fn rejects_metadata_commit_before_resize_failure() {
     reject(
-        "kernel/src/storage/fs/memory_file.rs",
+        "kernel/src/fs/memory_file.rs",
         "let mut metadata = prepare()?;",
         "let mut metadata = prepare()?; commit(&mut metadata);",
         "data failure",
@@ -75,7 +75,7 @@ fn rejects_metadata_commit_before_resize_failure() {
 #[test]
 fn rejects_future_mtime_becoming_ctime() {
     reject(
-        "kernel/src/storage/fs/inode_times.rs",
+        "kernel/src/fs/inode_times.rs",
         "times.ctime = now;",
         "times.ctime = times.mtime;",
         "explicit mtime distinct",
@@ -84,7 +84,7 @@ fn rejects_future_mtime_becoming_ctime() {
 #[test]
 fn rejects_private_anon_fsnotify() {
     reject(
-        "kernel/src/storage/fs/inotify.rs",
+        "kernel/src/fs/inotify.rs",
         "!inode.allows_notifications()",
         "false",
         "non-private inode",

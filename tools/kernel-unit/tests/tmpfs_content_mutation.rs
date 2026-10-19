@@ -53,7 +53,7 @@ mod sync {
 }
 #[path = "../src/interruptible_event_target.rs"]
 mod target;
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     use crate::sync::{TaskMutex, TaskMutexGuard};
     use alloc::sync::Arc;

@@ -119,25 +119,17 @@ pub(super) fn load_sources(root: &Path) -> Result<Vec<SourceFile>, String> {
     Ok(sources)
 }
 
-/// 目录分组（不是 module 层级）：`kernel/src/<group>/<module>/…` 的 owner 是 `<module>`。
-const MODULE_GROUPS: &[&str] = &["devices", "hardware", "storage"];
-
 fn module_owner(relative: &Path, source_root: &str) -> String {
     let inside = relative
         .strip_prefix(source_root)
         .expect("source path must be below its source root");
-    let mut components = inside.components();
-    let mut first = components
+    // 目录结构就是 module 路径：owner 是 `<source_root>/` 下第一级目录或文件名。
+    let first = inside
+        .components()
         .next()
         .expect("Rust source path is not empty")
         .as_os_str()
         .to_string_lossy()
         .into_owned();
-    if source_root == "kernel/src"
-        && MODULE_GROUPS.contains(&first.as_str())
-        && let Some(second) = components.next()
-    {
-        first = second.as_os_str().to_string_lossy().into_owned();
-    }
     first.strip_suffix(".rs").unwrap_or(&first).to_owned()
 }

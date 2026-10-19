@@ -1,6 +1,6 @@
 //! seccomp notify file_operations 与固定 Linux UAPI；syscall 只提供标准 UserMemory。
 use super::*;
-use crate::fs::device::{DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, wait_ready};
+use crate::fs::chardev::{DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, wait_ready};
 
 pub(in super::super) struct ListenerFile {
     queue: Arc<NotificationQueue>,

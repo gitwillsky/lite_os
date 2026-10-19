@@ -38,7 +38,7 @@
 - `drivers::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
   稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型；具体 adapter 位于 `virtio`，块设备注册表归 `block`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
-- `fs::device` 独占字符设备注册表：driver 按单 major 内的 minor 区间登记（Linux `cdev_add`），
+- `fs::chardev` 独占字符设备 driver 注册表，`fs::devnode` 独占 devfs 节点与块设备注册表：driver 按单 major 内的 minor 区间登记（Linux `cdev_add`），
   devfs 节点按路径登记（devtmpfs）；devpts 等动态节点只登记 driver 区间。设备子系统以
   `DeviceFile` 拥有记录边界、阻塞、poll 唤醒源、ioctl UAPI 与 mmap 裁决，fs/devfs/syscall 不认识
   具体设备种类。

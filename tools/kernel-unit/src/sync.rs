@@ -18,7 +18,7 @@ mod task_wait;
 )]
 pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
 
-#[path = "../../../kernel/src/sync/task_mutex.rs"]
+#[path = "../../../tools/kernel-view/sync/task_mutex/task_mutex/task_mutex.rs"]
 mod task_mutex;
 #[allow(
     unused_imports,

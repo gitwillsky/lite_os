@@ -40,7 +40,6 @@
 //! # 阅读顺序
 //!
 //! `Ownership` → `lock_prepared` → `unlock` → `TaskMutexWaitPreparation`。
-#[path = "task_mutex/signal_acquisition.rs"]
 mod signal_acquisition;
 use alloc::sync::Arc;
 use core::{

@@ -38,7 +38,7 @@ static ALLOCATOR: FaultAllocator = FaultAllocator;
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     use crate::fallible_tree::FallibleMap;
     use alloc::sync::Arc;

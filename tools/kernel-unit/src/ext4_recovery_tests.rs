@@ -161,12 +161,8 @@ impl BlockDevice for RecoveryImage {
 
 fn mounted() -> (Arc<RecoveryImage>, Arc<Ext4FileSystem>) {
     let image = RecoveryImage::open();
-    let fs = Ext4FileSystem::new(
-        image.clone(),
-        crate::fs::device::DeviceNumber::new(8, 0),
-        false,
-    )
-    .expect("mount repository ext image");
+    let fs = Ext4FileSystem::new(image.clone(), crate::fs::DeviceNumber::new(8, 0), false)
+        .expect("mount repository ext image");
     (image, fs)
 }
 
@@ -217,7 +213,7 @@ fn recovery_reloads_allocation_metadata_owners_after_replay() {
     drop(fs);
     image.restore_crash_snapshot();
 
-    let recovered = Ext4FileSystem::new(image, crate::fs::device::DeviceNumber::new(8, 0), false)
+    let recovered = Ext4FileSystem::new(image, crate::fs::DeviceNumber::new(8, 0), false)
         .expect("mount committed journal crash snapshot");
     recovered
         .root_inode()
@@ -272,7 +268,7 @@ fn ea_inode_value_reference_and_bitmap_recover_as_one_transaction() {
             root.sync_storage().unwrap();
             let recovered = Ext4FileSystem::new(
                 image.crash_clone(),
-                crate::fs::device::DeviceNumber::new(8, 0),
+                crate::fs::DeviceNumber::new(8, 0),
                 false,
             )
             .expect("recover EA inode crash snapshot");
@@ -357,7 +353,7 @@ fn recovery_publishes_replayed_orphan_head_before_reclaim() {
     root.sync_storage().unwrap();
     let recovered = Ext4FileSystem::new(
         image.crash_clone(),
-        crate::fs::device::DeviceNumber::new(8, 0),
+        crate::fs::DeviceNumber::new(8, 0),
         false,
     )
     .expect("mount replayed orphan transaction");
@@ -523,7 +519,7 @@ fn torn_uncommitted_transaction_is_discarded_instead_of_failing_mount() {
             .expect("descriptor reached the crash snapshot");
         overlay.insert(descriptor + 1, vec![0; BLOCK_SIZE]);
     }
-    let recovered = Ext4FileSystem::new(crashed, crate::fs::device::DeviceNumber::new(8, 0), false)
+    let recovered = Ext4FileSystem::new(crashed, crate::fs::DeviceNumber::new(8, 0), false)
         .expect("uncommitted torn transaction must be discarded");
     assert!(matches!(
         recovered
@@ -614,12 +610,9 @@ fn crash_at_every_commit_barrier_recovers_old_or_new_state() {
         drop((keep, directory, root));
         drop(fs);
 
-        let recovered = Ext4FileSystem::new(
-            crashed.clone(),
-            crate::fs::device::DeviceNumber::new(8, 0),
-            false,
-        )
-        .unwrap_or_else(|error| panic!("crash point {crash_after_flush}: mount {error:?}"));
+        let recovered =
+            Ext4FileSystem::new(crashed.clone(), crate::fs::DeviceNumber::new(8, 0), false)
+                .unwrap_or_else(|error| panic!("crash point {crash_after_flush}: mount {error:?}"));
         let root = recovered.root_inode().unwrap();
         let committed = crash_after_flush >= 2;
         if committed {
@@ -684,12 +677,8 @@ fn read_only_mount_defers_orphan_reclaim_until_remount_writable() {
     root.sync_storage().unwrap();
 
     let crashed = image.crash_clone();
-    let recovered = Ext4FileSystem::new(
-        crashed.clone(),
-        crate::fs::device::DeviceNumber::new(8, 0),
-        true,
-    )
-    .expect("read-only mount");
+    let recovered = Ext4FileSystem::new(crashed.clone(), crate::fs::DeviceNumber::new(8, 0), true)
+        .expect("read-only mount");
     // 只读：journal 已重放（目录项消失），但 orphan 的 inode 与数据块没有被回收。
     assert!(matches!(
         recovered
@@ -862,7 +851,7 @@ fn mount_recovery_reclaims_crashed_open_directory_orphan() {
     root.sync_storage().unwrap();
     let crashed = image.crash_clone();
     let recovered =
-        Ext4FileSystem::new(crashed, crate::fs::device::DeviceNumber::new(8, 0), false).unwrap();
+        Ext4FileSystem::new(crashed, crate::fs::DeviceNumber::new(8, 0), false).unwrap();
     assert!(matches!(
         recovered
             .root_inode()

@@ -62,10 +62,10 @@ impl NetworkStack {
         let sockets = &self.sockets;
         self.endpoints.for_each_mut(|handle, state| {
             let socket = sockets.get::<udp::Socket<'static>>(*handle);
-            state.readiness = udp_endpoint::poll_state_locked(socket, state);
+            state.readiness = super::udp::poll_state_locked(socket, state);
         });
         self.raw_endpoints.for_each_mut(|handle, state| {
-            state.readiness = raw_endpoint::poll_state_locked(sockets, *handle);
+            state.readiness = raw::poll_state_locked(sockets, *handle);
         });
         self.tcp_endpoints.for_each_mut(|_, state| {
             state.readiness = state.poll_state(sockets);
@@ -77,12 +77,12 @@ impl NetworkStack {
         let sockets = &self.sockets;
         self.endpoints.for_each_mut(|handle, state| {
             let socket = sockets.get::<udp::Socket<'static>>(*handle);
-            let after = udp_endpoint::poll_state_locked(socket, state);
+            let after = super::udp::poll_state_locked(socket, state);
             state.notification_pending |= became_ready(state.readiness, after);
             state.readiness = after;
         });
         self.raw_endpoints.for_each_mut(|handle, state| {
-            let after = raw_endpoint::poll_state_locked(sockets, *handle);
+            let after = raw::poll_state_locked(sockets, *handle);
             state.notification_pending |= became_ready(state.readiness, after);
             state.readiness = after;
         });

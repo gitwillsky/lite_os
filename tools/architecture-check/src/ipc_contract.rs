@@ -413,7 +413,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/storage/fs/procfs/opened_operations.rs",
+        "kernel/src/fs/procfs/opened_operations.rs",
         &[
             "ProcOpenFile::IpcTable",
             "target: inode.source.current_ipc_namespace()?",
@@ -425,7 +425,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/storage/fs/procfs/ipc_description.rs",
+        "kernel/src/fs/procfs/ipc_description.rs",
         &[
             "const RECORD_BYTES: usize = 512",
             "bytes: [u8; RECORD_BYTES]",
@@ -438,11 +438,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "sysvipc sequential reads must retain one fixed record and actual slot cursor without whole-table rerendering",
         errors,
     );
-    if let Some(text) = source(
-        sources,
-        "kernel/src/storage/fs/procfs/ipc_description.rs",
-        errors,
-    ) && (text.contains("Vec<") || text.contains("ProcText") || text.contains("try_reserve"))
+    if let Some(text) = source(sources, "kernel/src/fs/procfs/ipc_description.rs", errors)
+        && (text.contains("Vec<") || text.contains("ProcText") || text.contains("try_reserve"))
     {
         errors.push(
             "ipc-owner: sysvipc codec must not allocate a table-sized snapshot or output buffer"
@@ -1161,7 +1158,7 @@ mod tests {
     #[test]
     fn rejects_sysvipc_pid_view_from_proc_mount_instead_of_opener() {
         reject(
-            "kernel/src/storage/fs/procfs/opened_operations.rs",
+            "kernel/src/fs/procfs/opened_operations.rs",
             "pid: inode.source.current_pid_namespace()",
             "pid: inode.pid_namespace.clone()",
             "sysvipc open must pin actual IPC/PID namespace",
@@ -1386,7 +1383,7 @@ mod tests {
     #[test]
     fn rejects_sysvipc_continuations_discarding_the_cached_record_suffix() {
         reject(
-            "kernel/src/storage/fs/procfs/ipc_description.rs",
+            "kernel/src/fs/procfs/ipc_description.rs",
             "if self.consumed < self.length",
             "if false",
             "sysvipc sequential reads",

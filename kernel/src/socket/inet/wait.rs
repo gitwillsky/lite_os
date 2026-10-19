@@ -3,7 +3,7 @@ use crate::{
     socket::{SocketPollState, SocketWaitSource},
 };
 
-use super::{InetEndpoint, InetSocket, raw_endpoint, tcp, udp_endpoint};
+use super::{InetEndpoint, InetSocket, raw, tcp, udp};
 
 impl InetSocket {
     pub(in crate::socket) fn poll_state(&self) -> SocketPollState {
@@ -14,12 +14,12 @@ impl InetSocket {
             return tcp::poll_state(self);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::poll_state(self, handle);
+            return raw::poll_state(self, handle);
         }
         let Ok(handle) = self.udp_handle() else {
             return SocketPollState::error();
         };
-        udp_endpoint::poll_state(self, handle)
+        udp::poll_state(self, handle)
     }
 
     /// 在 deferred epoll source 通知中无等待地投影 readiness。
@@ -40,10 +40,10 @@ impl InetSocket {
             return tcp::try_poll_state(self);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            return raw_endpoint::try_poll_state(self, handle);
+            return raw::try_poll_state(self, handle);
         }
         let handle = self.udp_handle().ok()?;
-        udp_endpoint::try_poll_state(self, handle)
+        udp::try_poll_state(self, handle)
     }
 
     pub(in crate::socket) fn readiness_generation(&self) -> u64 {

@@ -3,7 +3,7 @@
 //! 实际 Terminal control/foreground/retirement owner；物理 Console 是显式无输入 adapter seam。
 extern crate alloc;
 use alloc::sync::Arc;
-#[path = "../../../kernel/src/storage/fs/device/number.rs"]
+#[path = "../../../kernel/src/fs/devnum.rs"]
 mod device_number;
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
@@ -16,11 +16,9 @@ mod fs {
     pub(crate) enum FileSystemError {
         IoError,
     }
-    pub(crate) mod device {
-        pub(crate) use crate::device_number::DeviceNumber;
-    }
+    pub(crate) use crate::device_number::DeviceNumber;
 }
-#[path = "../../../kernel/src/devices/tty"]
+#[path = "../../../kernel/src/tty"]
 mod tty {
     #[allow(
         unused_imports,
@@ -70,8 +68,7 @@ fn identities() -> (
 #[test]
 fn repeat_claim_preserves_foreground_and_failed_claim_leaves_control_unchanged() {
     let (pids, _registrations) = identities();
-    let tty =
-        terminal::Terminal::new(Arc::new(Console), fs::device::DeviceNumber::new(136, 3)).unwrap();
+    let tty = terminal::Terminal::new(Arc::new(Console), fs::DeviceNumber::new(136, 3)).unwrap();
     let retired = tty
         .claim_session(pids[0].clone(), pids[0].clone(), false)
         .unwrap();
@@ -103,14 +100,13 @@ fn repeat_claim_preserves_foreground_and_failed_claim_leaves_control_unchanged()
     assert!(tty.controlling_session().is_none());
     assert_eq!(
         tty.proc_identity(&pids[0].namespace()),
-        (fs::device::DeviceNumber::new(136, 3).encode() as u32, 0)
+        (fs::DeviceNumber::new(136, 3).encode() as u32, 0)
     );
 }
 #[test]
 fn retired_control_keeps_historical_pid_alive_only_until_caller_retires_it() {
     let (mut pids, mut registrations) = identities();
-    let tty =
-        terminal::Terminal::new(Arc::new(Console), fs::device::DeviceNumber::new(5, 1)).unwrap();
+    let tty = terminal::Terminal::new(Arc::new(Console), fs::DeviceNumber::new(5, 1)).unwrap();
     let observer = Arc::downgrade(&pids[0]);
     drop(
         tty.claim_session(pids[0].clone(), pids[0].clone(), false)

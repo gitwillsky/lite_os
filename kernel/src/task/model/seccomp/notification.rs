@@ -1,8 +1,6 @@
 //! 实际 seccomp listener、活动请求与线程 membership；临时 policy Arc 不计 users。
 
-#[path = "notification/addfd.rs"]
 mod addfd;
-#[path = "notification/listener.rs"]
 mod listener;
 pub(super) use listener::ListenerFile;
 

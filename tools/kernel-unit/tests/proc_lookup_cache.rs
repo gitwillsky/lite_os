@@ -16,7 +16,7 @@ mod ipc;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     #[path = "inotify/limits.rs"]
     mod inotify_limits;

@@ -16,7 +16,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let owner = source(sources, "kernel/src/socket/net_namespace.rs");
     let clone = source(sources, "kernel/src/syscall/process.rs");
     let unshare = source(sources, "kernel/src/syscall/process_context.rs");
-    let pidfd = source(sources, "kernel/src/storage/fs/pidfs/ioctl.rs");
+    let pidfd = source(sources, "kernel/src/fs/pidfs/ioctl.rs");
     let factory = inet
         .split("fncreate_net_namespace(")
         .nth(1)
@@ -72,7 +72,7 @@ mod tests {
                 "NamespaceReference::new(crate::socket::initial_net())",
             ),
             (
-                "kernel/src/storage/fs/pidfs/ioctl.rs",
+                "kernel/src/fs/pidfs/ioctl.rs",
                 "0xff04 => Some(Selector::Namespace(Kind::Net))",
                 "0xff04 => None",
             ),

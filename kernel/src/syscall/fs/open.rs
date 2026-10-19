@@ -207,7 +207,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         || kind == InodeType::BlockDevice
             && inode
                 .device_number()
-                .and_then(crate::fs::device::block_node)
+                .and_then(crate::fs::devnode::block_node)
                 .is_none()
     {
         return -errno::ENXIO;

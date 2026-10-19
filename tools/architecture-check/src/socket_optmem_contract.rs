@@ -55,10 +55,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let prepare = normalized(source(sources, "kernel/src/socket/preparation.rs"));
     let abi = normalized(source(sources, "kernel/src/syscall/socket.rs"));
-    let proc = normalized(source(
-        sources,
-        "kernel/src/storage/fs/procfs/opened_operations.rs",
-    ));
+    let proc = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
     if !prepare.contains("letmemory=super::SocketMemory::try_new(namespace)?")
         || !prepare.contains("memory:self.memory")
         || !abi.contains("task.net_namespace()")

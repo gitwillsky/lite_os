@@ -47,7 +47,7 @@ mod sync {
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
 
-#[path = "../../../kernel/src/hardware/arch/riscv64"]
+#[path = "../../../kernel/src/arch/riscv64"]
 mod arch {
     mod page_table;
     mod pte;
@@ -597,7 +597,7 @@ mod timer {
     }
 }
 
-#[path = "../../../kernel/src/storage/fs"]
+#[path = "../../../kernel/src/fs"]
 mod fs {
     #[derive(Debug, PartialEq, Eq)]
     pub(crate) enum FileSystemError {

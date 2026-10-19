@@ -13,8 +13,8 @@ fn tokens(sources: &[SourceFile], path: &str) -> String {
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let file = tokens(sources, "kernel/src/file/mod.rs");
-    let owner = tokens(sources, "kernel/src/storage/fs/inotify.rs");
-    let instance = tokens(sources, "kernel/src/storage/fs/inotify/instance.rs");
+    let owner = tokens(sources, "kernel/src/fs/inotify.rs");
+    let instance = tokens(sources, "kernel/src/fs/inotify/instance.rs");
     let quota = tokens(sources, "kernel/src/namespace/quota.rs");
     let syscall = tokens(sources, "kernel/src/syscall/fs/inotify.rs");
     if !file.contains("OpenFileKind::Device(device)=>device.release()")
@@ -39,8 +39,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("inotify-owner: one real-UID/UserNS ancestor ledger must charge the original instance creator, without a global/per-instance substitute".into());
     }
-    let dentry = tokens(sources, "kernel/src/storage/fs/vfs/dentry.rs");
-    let mutation = tokens(sources, "kernel/src/storage/fs/vfs/mutation.rs");
+    let dentry = tokens(sources, "kernel/src/fs/vfs/dentry.rs");
+    let mutation = tokens(sources, "kernel/src/fs/vfs/mutation.rs");
     if !dentry.contains("crate::fs::notify_dentry_reclaimed(self.inode.as_ref())")
         || !owner.contains("iflinks==0{")
         || !mutation.contains(
@@ -50,9 +50,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("inotify-dput: actual canonical path must survive unlink and defer DELETE_SELF to last deleted dentry with zero links".into());
     }
-    let tmpfs = tokens(sources, "kernel/src/storage/fs/tmpfs.rs");
-    let ext4 = tokens(sources, "kernel/src/storage/fs/ext4/inode/vfs.rs");
-    let cache = tokens(sources, "kernel/src/storage/fs/page_cache/registry.rs");
+    let tmpfs = tokens(sources, "kernel/src/fs/tmpfs.rs");
+    let ext4 = tokens(sources, "kernel/src/fs/ext4/inode/vfs.rs");
+    let cache = tokens(sources, "kernel/src/fs/page_cache/registry.rs");
     if !owner.contains("inode.notification_link_state()")
         || !cache.contains("inode.notification_link_state()")
         || !tmpfs.contains("links:AtomicU32")
@@ -71,7 +71,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .next()
         .unwrap();
     let device = tokens(sources, "kernel/src/syscall/device.rs");
-    let queue = tokens(sources, "kernel/src/storage/fs/inotify/queue.rs");
+    let queue = tokens(sources, "kernel/src/fs/inotify/queue.rs");
     if !read.contains(".pop(output.remaining())")
         || !read.contains("record.copy_with(|bytes|output.write(bytes))")
         || !read.contains("DeviceError::ReadFault")
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn rejects_watches_using_a_different_resource_pool() {
         reject(
-            "kernel/src/storage/fs/inotify/instance.rs",
+            "kernel/src/fs/inotify/instance.rs",
             "UserResource::InotifyWatches",
             "UserResource::InotifyInstances",
             "one real-UID/UserNS",
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn rejects_dentry_final_close_without_inode_notifications() {
         reject(
-            "kernel/src/storage/fs/vfs/dentry.rs",
+            "kernel/src/fs/vfs/dentry.rs",
             "crate::fs::notify_dentry_reclaimed(self.inode.as_ref());",
             "",
             "inotify-dput",
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn rejects_oom_destroying_oneshot_mark() {
         reject(
-            "kernel/src/storage/fs/inotify.rs",
+            "kernel/src/fs/inotify.rs",
             "!allocated || ",
             "",
             "native overflow/oneshot",
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn rejects_full_metadata_dependency_during_dentry_retirement() {
         reject(
-            "kernel/src/storage/fs/inotify.rs",
+            "kernel/src/fs/inotify.rs",
             "inode.notification_link_state()",
             "inode.metadata().ok().map(|metadata| (metadata.inode, metadata.links))",
             "must not allocate",
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn rejects_page_cache_retirement_requiring_full_metadata() {
         reject(
-            "kernel/src/storage/fs/page_cache/registry.rs",
+            "kernel/src/fs/page_cache/registry.rs",
             "inode.notification_link_state()",
             "inode.metadata().ok().map(|metadata| (metadata.inode, metadata.links))",
             "must not allocate",

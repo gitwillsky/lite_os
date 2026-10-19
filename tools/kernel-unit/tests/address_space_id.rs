@@ -52,7 +52,7 @@ fn preparation_oom_does_not_publish_partial_allocator_or_claim_a_hardware_id() {
     assert_eq!(allocator.activate(&context, 0, |_| {}), 1);
 }
 
-#[path = "../../../kernel/src/hardware/arch/address_space_id.rs"]
+#[path = "../../../kernel/src/arch/address_space_id.rs"]
 mod address_space_id;
 use address_space_id::{Allocator, Context, Flush};
 

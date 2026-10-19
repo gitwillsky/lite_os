@@ -27,7 +27,7 @@ impl PreparedDeviceDescription {
     /// 消费成功创建的唯一 per-open backend，无分配建立标准 OFD。
     pub(crate) fn finish(
         self,
-        device: Arc<dyn crate::fs::device::DeviceFile>,
+        device: Arc<dyn crate::fs::chardev::DeviceFile>,
     ) -> Arc<OpenFileDescription> {
         self.description
             .initialize(OpenFileKind::Device(device), self.opened, self.flags, None)
@@ -55,7 +55,7 @@ impl PreparedFileDescription {
     pub(crate) fn finish_backend(
         self,
         opened: Arc<OpenedFile>,
-        backend: Arc<dyn crate::fs::device::DeviceFile>,
+        backend: Arc<dyn crate::fs::chardev::DeviceFile>,
         flags: u32,
     ) -> Arc<OpenFileDescription> {
         self.initialize(OpenFileKind::Device(backend), opened, flags, None)
@@ -114,7 +114,7 @@ impl PreparedFileDescription {
             if inode.inode_type() == InodeType::BlockDevice {
                 let block = inode
                     .device_number()
-                    .and_then(crate::fs::device::block_node)
+                    .and_then(crate::fs::devnode::block_node)
                     .ok_or(FileSystemError::NoDevice)?;
                 block.begin_writer()?;
                 guard.block = Some(block);
