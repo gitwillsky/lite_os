@@ -72,6 +72,9 @@
 | 279 | `memfd_create` | Partial | 真实 creator FSIDs 的 regular inode，proc FD 重开独立 OFD/offset/status、共享 content/seals；anonymous shared file、`MFD_CLOEXEC`/`MFD_ALLOW_SEALING`、`ftruncate`、`MAP_SHARED` 与 grow/shrink/seal seals；hugetlb、write seals 未开放 |
 | 286 | `preadv2` | Partial | positioned vector I/O 与已声明 flags |
 | 287 | `pwritev2` | Partial | positioned vector I/O 与已声明 flags |
+| 425 | `io_uring_setup` | Partial | 返回恒带 `O_CLOEXEC` 的 ring fd；`IORING_SETUP_CQSIZE`/`CLAMP` 与 Linux 一致，SQ 上限 4096（Linux 32768）；其余 flags、非零保留字段返回 `EINVAL`；features：`SINGLE_MMAP`/`NODROP`/`SUBMIT_STABLE`/`RW_CUR_POS`/`CUR_PERSONALITY`/`FAST_POLL`/`EXT_ARG` |
+| 426 | `io_uring_enter` | Partial | 提交与 `IORING_ENTER_GETEVENTS`，`EXT_ARG` 超时（`ETIME`）与临时 sigmask；`min_wait_usec` 非零、`SQ_WAKEUP`/`SQ_WAIT`/`REGISTERED_RING` 等其余 flags 返回 `EINVAL`；非 ring fd 返回 `EOPNOTSUPP` |
+| 427 | `io_uring_register` | Partial | 仅 `IORING_REGISTER_PROBE`；其余 opcode 返回 `EINVAL` |
 | 463 | `setxattrat` | Partial | AT_EMPTY_PATH/AT_SYMLINK_NOFOLLOW，标准16-byte xattr_args与零扩展校验 |
 | 464 | `getxattrat` | Partial | 同一get路径，xattr_args.flags必须零 |
 | 465 | `listxattrat` | Partial | 同一list路径及标准at flags |
@@ -81,7 +84,20 @@
 
 tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`；`huge=`、`mpol=` 等返回 `EINVAL`。
 
-未支持ACL、splice family、io_uring 或完整 block I/O priority enforcement；
+io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`；
+其余 opcode 的 SQE 完成为 `-EOPNOTSUPP` 并在 probe 中标为不支持。
+读写：`off == -1` 用并推进当前 position，`off >= 0` 对 regular/可定位文件是 pread/pwrite 语义，对 pipe/socket 等流式文件忽略；`ioprio`、`rw_flags`、
+`personality` 非零分别返回 `EINVAL`/`EOPNOTSUPP`/`EINVAL`，请求使用提交者提交时刻的凭据。会阻塞的 pipe/socket/eventfd/timerfd/tty 请求不占用提交线程：
+先做一次 NOWAIT 尝试，仍会阻塞则由 `io_uring` 内核线程等待就绪后在提交线程的地址空间中完成，用户态自己设置了 `O_NONBLOCK` 的 fd 如实返回 `-EAGAIN`；
+signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记信号等待）。regular 文件的读写在 `io_uring_enter` 内联完成，磁盘 I/O 会使 `enter` 睡眠。
+`POLL_ADD`：一次性语义，提交时先 poll 一次，已就绪同步完成，否则挂起；res 是 revents，`ERR`/`HUP` 总是报告；`IORING_POLL_ADD_MULTI` 返回 `-EOPNOTSUPP`。
+`TIMEOUT`：相对或绝对（`CLOCK_MONOTONIC`，`BOOTTIME` 视同单调），到期 `-ETIME`（`ETIME_SUCCESS` 为 0）；`off` 非零时等“除 timeout 自身外又发布 N 个 CQE”，满足则以 0 完成；
+`len` 必须为 1；`MULTISHOT`/`REALTIME` 返回 `-EOPNOTSUPP`（`MULTISHOT|ABS` 为 `-EINVAL`）。`TIMEOUT_REMOVE`、`POLL_REMOVE` 只取消各自种类，更新类 flags 返回 `-EOPNOTSUPP`。
+`ASYNC_CANCEL`：按 user_data 匹配（`ALL` 取消全部并返回个数，`ANY` 匹配该 ring 的任意请求），目标得到 `-ECANCELED`，找不到为 `-ENOENT`；按 fd/opcode 匹配（`FD`/`OP`）返回 `-EOPNOTSUPP`。
+ring 关闭（含进程退出关闭 fd）取消该 ring 的全部挂起请求，释放它们持有的目标 fd；提交线程已退出而 ring 仍被共享时，挂起请求以 `-ECANCELED` 结束。
+`IOSQE_IO_DRAIN`、`IO_LINK`/`IO_HARDLINK`、`BUFFER_SELECT` 返回 `-EOPNOTSUPP`；`IOSQE_ASYNC` 被接受但只是调度提示；`FIXED_FILE` 因没有注册文件表返回 `-EBADF`。
+固定文件/缓冲区注册、其余 opcode、SQPOLL/IOPOLL、SQE128/CQE32 未开放。CQ 溢出链表上限为 CQ 容量的 8 倍，超出后丢弃并经 `EBADR` 通知。
+未支持ACL、splice family 或完整 block I/O priority enforcement；
 xattr目前接入tmpfs/ext4/memfd源码，其余filesystem返回EOPNOTSUPP；新 ext4 镜像启用原生 EA_INODE，
 值 inode/extents/hash/refcount 与父属性同 journal owner。旧卷未启用该 feature 时按其实际容量返回ENOSPC；
 名称区域、磁盘空间及 journal 暂存仍有限，ABI单值上限64KiB不代表filesystem保证容量。

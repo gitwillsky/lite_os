@@ -1,6 +1,6 @@
 use crate::mmap_flags::{
-    MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_PRIVATE, MAP_SHARED, MAP_STACK,
-    mmap_flags_supported,
+    MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_POPULATE, MAP_PRIVATE, MAP_SHARED,
+    MAP_STACK, mmap_flags_supported,
 };
 
 #[test]
@@ -24,4 +24,10 @@ fn fixed_replacement_modes_remain_mutually_exclusive() {
     assert!(!mmap_flags_supported(
         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_FIXED_NOREPLACE
     ));
+}
+
+#[test]
+fn populate_is_an_accepted_advisory_variant_but_still_needs_a_sharing_mode() {
+    assert!(mmap_flags_supported(MAP_SHARED | MAP_POPULATE));
+    assert!(!mmap_flags_supported(MAP_POPULATE));
 }

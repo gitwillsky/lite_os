@@ -298,6 +298,13 @@ host unit loop 无法代表它。改动必须通过双 architecture compile/stat
 guest 里 `write(/dev/null)` 紧循环 0.4 秒完成 441k 与 446k 次（改动前后），在噪声内；host 微基准无法代表 trap 往返，
 user/system 拆分的纯算术由 `scheduler-unit` 单测，端到端由 musl smoke 的 `resource-usage.c` 裁决。
 
+io_uring 当前切片不新增 blocking benchmark：同步路径是对共享页的有界内存循环加一次无竞争的 `TaskMutex` 快路径，CQE 发布是一次 `spin::Mutex` 内的
+16 字节写与一次 release 存储，稳态没有分配（溢出链表只在 CQ 满时增长，且有硬上限）。读写类 opcode 的成本由已有的 `read(2)`/`write(2)` 核心决定，新增部分只有
+一次 NOWAIT 尝试。阻塞路径每次唤醒重新登记一次 `wait_for_poll`（O(挂起请求数) 个 key），挂起数量大时这是线性成本，但它只在请求真的阻塞时发生，
+host 微基准测到的只是 key 构造，不代表 io_uring 的真实价值——批量提交摊薄 syscall 往返、阻塞请求不占线程。这两项要等 `POLL_ADD`/`TIMEOUT` 与块层异步落地、
+有可比较的基线后再加入 blocking benchmark。
+每个挂起请求是一个 `Box`ed future（fallible 分配），其成本在请求真的阻塞时才产生。正确性由 `io-uring.c` 烟测（提交/完成顺序、溢出、阻塞唤醒、取消、读写、epoll 通知）与 `abi.rs` 单测裁决，本次没有测得吞吐数字。
+
 选核轮转不新增 benchmark：每次抢占只多一次本 CPU 私有计数的 Relaxed 读写和一次 Ready/Running 计数读取，选核仍是
 O(CPU 数) 的单趟扫描，没有新增锁、分配或跨 CPU 访问；收益是公平性而非延迟，由 `verify-runtime-scheduler` 与
 `scheduler-unit` 的策略单测裁决，host 微基准无法代表多 CPU 时间片轮转。

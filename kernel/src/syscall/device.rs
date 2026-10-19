@@ -188,6 +188,7 @@ pub(super) fn read_device(
     file: &dyn DeviceFile,
     vectors: &[UserIoVec],
     total_length: usize,
+    nonblocking: bool,
 ) -> isize {
     let mut output = TaskUserOutput {
         task,
@@ -204,7 +205,7 @@ pub(super) fn read_device(
             })
             .unwrap_or_else(super::fs::position_error);
     }
-    let result = file.read(&mut output, ofd.status_flags() & O_NONBLOCK != 0);
+    let result = file.read(&mut output, nonblocking);
     progress_or(output.cursor.completed(), result)
 }
 
@@ -215,6 +216,7 @@ pub(super) fn write_device(
     file: &dyn DeviceFile,
     vectors: &[UserIoVec],
     total_length: usize,
+    nonblocking: bool,
 ) -> isize {
     let mut input = TaskUserInput {
         task,
@@ -232,7 +234,7 @@ pub(super) fn write_device(
             })
             .unwrap_or_else(super::fs::position_error);
     }
-    let result = file.write(&mut input, ofd.status_flags() & O_NONBLOCK != 0);
+    let result = file.write(&mut input, nonblocking);
     if result == Err(DeviceError::BrokenPipe) {
         // 无论是否已有进度，peer 关闭都投递 SIGPIPE；已有进度时返回值仍是已写字节数。
         crate::task::send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)

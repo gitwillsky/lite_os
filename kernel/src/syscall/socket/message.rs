@@ -427,6 +427,7 @@ pub(in crate::syscall) fn write_vectors(
     socket: &Arc<Socket>,
     vectors: &[UserIoVec],
     total_length: usize,
+    nonblocking: bool,
 ) -> isize {
     if let Err(error) = socket.check_seqpacket_send() {
         return socket_error(error);
@@ -438,7 +439,7 @@ pub(in crate::syscall) fn write_vectors(
             socket,
             target: None,
             flags: 0,
-            nonblocking: ofd.status_flags() & O_NONBLOCK != 0,
+            nonblocking: nonblocking || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
                 .deadline(crate::timer::get_time_ns()),

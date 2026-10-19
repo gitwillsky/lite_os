@@ -36,6 +36,7 @@ mod lang_item;
 
 mod id;
 mod input;
+mod io_uring;
 mod ipc;
 mod memory;
 mod namespace;
@@ -159,6 +160,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     .expect("UNIX collector body allocation failed");
     task::spawn_kernel_thread("unix-rights-gc", unix_gc_body)
         .expect("UNIX collector thread initialization failed");
+    syscall::start_io_uring_worker().expect("io_uring worker initialization failed");
     task::spawn_init(
         scheduler,
         root,

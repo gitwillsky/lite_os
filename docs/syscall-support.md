@@ -1,7 +1,7 @@
 # Linux 64-bit syscall 支持
 
 LiteOS 共享 ABI 表维护 Linux 64-bit asm-generic syscall 子集以及 RISC-V architecture
-extension；其中 RISC-V backend 的矩阵包含 211 个 Linux/riscv64 syscall。AArch64 backend
+extension；其中 RISC-V backend 的矩阵包含 214 个 Linux/riscv64 syscall。AArch64 backend
 复用 asm-generic 领域矩阵，但不接入 RISC-V 专用编号 258。该数量只由
 `syscall-abi/src/lib.rs` 和本页维护；每个入口的状态、对象范围与缺口只在一个领域矩阵中出现。
 
@@ -32,5 +32,5 @@ extension；其中 RISC-V backend 的矩阵包含 211 个 Linux/riscv64 syscall�
 当前矩阵不声明 futex PI/PI-requeue、完整 clone flags、所有 syscall restart、IPv6、多网卡、完整容器网络、完整 DRM/evdev UAPI 或完整 Linux reclaim/zone policy。普通 futex WAKE_OP、queued realtime signal、有限 network namespace 和 block/file swap
 已补源码，范围由各领域矩阵定义。
 
-本轮以学习型内核的基础正确性为目标：不新增 POSIX mqueue、cgroup、io_uring、splice、文件系统配额或实时调度。未开放 syscall 返回 ENOSYS，已支持调用的未开放选项按领域矩阵明确拒绝，不伪造成功。
+本轮以学习型内核的基础正确性为目标：不新增 POSIX mqueue、cgroup、splice、文件系统配额或实时调度。未开放 syscall 返回 ENOSYS，已支持调用的未开放选项按领域矩阵明确拒绝，不伪造成功。
 按架构原生构建的固定 musl、BusyBox 与 APK consumer gate 证明的是矩阵列出的 vertical slice，不是完整 Linux、POSIX 或任意 musl compatibility；architecture-specific 行只对其声明的 backend 生效。

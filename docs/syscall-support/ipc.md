@@ -34,4 +34,4 @@
 
 标准 semaphore 限额由 `/proc/sys/kernel/sem` 接入；
 
-System V shared memory 包括 SHM_LOCK/UNLOCK，范围见下述 owner 契约。POSIX message queue、splice family 与 io_uring 尚未开放。
+System V shared memory 包括 SHM_LOCK/UNLOCK，范围见下述 owner 契约。POSIX message queue 与 splice family 尚未开放。

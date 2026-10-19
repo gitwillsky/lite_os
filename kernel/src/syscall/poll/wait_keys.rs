@@ -75,6 +75,23 @@ impl PollWaitKeys {
         Ok(())
     }
 
+    /// 加入一个内核通知 Pipe 的读端（只承载合并 readiness token）。
+    ///
+    /// 调用者负责在构造 keys 之前排空 token、并在 wait 的复查闭包里检查真实状态；否则 token 会让
+    /// 等待立即返回，或在排空与登记之间丢失唤醒。
+    pub(in crate::syscall) fn add_notification(
+        &mut self,
+        pipe: &Arc<crate::ipc::Pipe>,
+    ) -> Result<(), ()> {
+        self.push(PollWaitKey::pipe(
+            pipe,
+            crate::ipc::PipeDirection::Read,
+            POLLIN,
+            false,
+            None,
+        ))
+    }
+
     /// 把一个 OFD interest 递归展开为 source-native wait keys。
     ///
     /// # Parameters

@@ -5,7 +5,7 @@
 | 214 | `brk` | Complete | program break 与 anonymous VMA 统一 owner |
 | 215 | `munmap` | Complete | VMA split、shared writeback 与 TLB cleanup |
 | 216 | `mremap` | Partial | 私有/共享匿名、私有/共享文件与 device 映射的缩小、增长、`MAYMOVE`/`FIXED`/`DONTUNMAP` 搬迁和共享映射别名（`old_size == 0`）；stack 与 loader System VMA 返回 EFAULT |
-| 222 | `mmap` | Partial | anonymous/regular-file/memfd/ALSA PCM、private/shared、fixed，以及 noreserve/stack advisory；ALSA 只接受 writable `MAP_SHARED` playback buffer |
+| 222 | `mmap` | Partial | anonymous/regular-file/memfd/ALSA PCM、private/shared、fixed，以及 noreserve/stack/populate advisory（populate 不预取，按需缺页）；ALSA 只接受 writable `MAP_SHARED` playback buffer |
 | 224 | `swapon` | Partial | SWAPSPACE2 v1 block/file swap、priority flags、统一 private/sharedAnon/tmpfs/COW 页 owner；共享页双架构1/2CPU阶段验证通过，完整产品门禁待执行 |
 | 225 | `swapoff` | Partial | 预备 waiter、禁止新槽、恢复物理 backing 与已登记 mm 的逻辑 epoch，失败保留 lease；page/MM work unit 之间及最终槽退休等待支持 EINTR 重试 |
 | 226 | `mprotect` | Complete | Linux protection combinations 与 VMA split |

@@ -1,0 +1,35 @@
+# io_uring
+
+## 当前设计
+
+io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把请求写进提交队列（SQ），内核把结果投到完成队列（CQ），
+双方只通过共享内存里的 head/tail 交接，不必为每个请求进内核。已实现骨架、`NOP`、读写类 opcode、`FSYNC`、`CLOSE` 以及阻塞请求的异步完成，
+其余 opcode 的接入按 [io_uring 契约](../architecture-contract/io-uring.md)分期进行。
+
+1. `io_uring_setup` 分配两块清零的 `DeviceBacking`：ring 区域（头部、CQE 数组、SQ array）与 SQE 数组，返回恒带
+   `O_CLOEXEC` 的匿名 ring fd。三个魔数 mmap 偏移（`IORING_OFF_SQ_RING/CQ_RING/SQES`）只在 ring fd 的 `DeviceFile::mmap`
+   里解释；映射持有 backing，因此关闭 fd 后已映射的页仍然有效。
+2. 内存序遵循 Linux 约定：SQ 的 tail 由用户态 release 写、内核 acquire 读，head 反向；CQ 同理。内核先写 CQE 再 release
+   写 tail，用户态 acquire 读 tail 后才读 CQE；head/tail/flags 全部经 `AtomicU32` 访问。
+3. `io_uring_enter` 先提交再等待。提交在 `submit_lock` 下批量消费 SQE：下标越界的条目记入 `sq_dropped`，init/prep 失败的 SQE
+   产生错误 CQE 并停止本次提交（Linux 在没有 `SUBMIT_ALL` 时同样如此），整批处理完后一次 release 写 head。
+4. CQ 环满时 CQE 按序进入内核溢出链表并置 `IORING_SQ_CQ_OVERFLOW`，用户态下次 `GETEVENTS` 时搬回环；链表有 8 倍 CQ 容量
+   的上限，超出后丢弃并以一次 `EBADR` 通知。链表非空时新 CQE 必须排在其后，保持完成顺序。
+5. 等待用合并 readiness Pipe：先排空再复查条件再睡眠，发布 CQE 的一方重新置位，因此不会丢唤醒。同一个 Pipe 也是 poll/epoll 的
+   唤醒源，ring fd 在 CQ 有完成时可读、SQ 有空位时可写。
+6. `fs` 不依赖 `io_uring`：`syscall` 从 `Arc<dyn DeviceFile>` 经 `Any` 向下转型取回 ring。
+7. 读写请求在 `io_uring_enter` 内先做一次 NOWAIT 尝试，复用 `read(2)`/`write(2)` 的同一个核心（多一个 `nowait`，不改共享 OFD 的 `O_NONBLOCK`）。
+   完成就发布 CQE；仍会等待（空 pipe、尚未触发的 poll/timeout 等）就写成一个 `async fn` future 交给 `io_uring` 内核线程：读写是“尝试一次，`EAGAIN` 就 `await` 就绪”，
+   `POLL_ADD` 是“探测 revents，没有就 `await`”，`TIMEOUT` 是“计数或 deadline 到了就返回，否则 `await`”。一个多路复用线程而不是线程池：N 个阻塞读都在等同一个后续写时，固定大小的池会死锁。
+8. readiness 来源没有回调（是 task 睡眠/唤醒式的），所以该线程是 reactor 而不是 waker 驱动的执行器：future 在 `await` 时把等待条件登记到自己的 interest 槽
+   （目标 OFD 的事件、deadline、CQE 计数），线程据此构造 `wait_for_poll` 的 key，条件满足后才重新 `poll`，`Context` 使用 `Waker::noop()`。
+9. 取消就是 `drop` future，它捕获的目标 OFD 和 iovec 随之释放。`POLL_REMOVE`/`TIMEOUT_REMOVE`/`ASYNC_CANCEL` 经命令队列交给该线程执行，因为目标的所有权在那里；
+   ring fd 的最后一个引用释放时 `DeviceFile::release` 置关闭标志并唤醒该线程，它丢弃这个 ring 的全部请求（例如 pipe 读端被释放，使写者得到 `EPIPE`）。
+
+## Known limits
+
+- 未开放：multishot 的 poll/timeout、按 fd/opcode 取消、其余 opcode、`IO_DRAIN`、链接（`IO_LINK`）、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
+- regular 文件的读写在 `io_uring_enter` 内联完成，磁盘 I/O 会让 `enter` 睡眠（块层异步见路线图 P4）。
+- signalfd 读无信号时返回 `-EAGAIN`，不挂起。
+- SQ 上限 4096（Linux 32768）：没有按用户的 ring 内存计费，缺少上限时一个进程创建多个 ring 即可耗尽物理内存。
+- `io_uring_enter` 的 `min_wait_usec` 与 `REGISTERED_RING` 未实现，返回 `EINVAL`。

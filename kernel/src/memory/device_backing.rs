@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::ptr;
+use core::{ptr, sync::atomic::AtomicU32};
 
 use super::{FrameAllocationClass, FrameTracker, address::PhysicalPageNumber, alloc_contiguous};
 
@@ -158,6 +158,75 @@ impl DeviceBacking {
             copied += count;
         }
         Ok(())
+    }
+}
+
+impl DeviceBacking {
+    /// 把 kernel buffer 复制进 backing 的逻辑 byte range。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: backing 内 byte offset。
+    /// - `input`: kernel-owned 源数据。
+    ///
+    /// # Errors
+    ///
+    /// range 越界或算术溢出返回 unit。
+    pub(crate) fn write(&self, offset: usize, input: &[u8]) -> Result<(), ()> {
+        let capacity = self.pages.checked_mul(super::PAGE_SIZE).ok_or(())?;
+        let end = offset.checked_add(input.len()).ok_or(())?;
+        if end > capacity {
+            return Err(());
+        }
+        let mut copied = 0usize;
+        while copied < input.len() {
+            let logical = offset + copied;
+            let page_offset = logical % super::PAGE_SIZE;
+            let count = (input.len() - copied).min(super::PAGE_SIZE - page_offset);
+            let page = self.page(logical / super::PAGE_SIZE).ok_or(())?;
+            // SAFETY: page() 证明 backing 在 self 生命周期内拥有该 frame；范围限制在单页。user
+            // mapping 可并发读写同一页，逐 byte 中间状态与 Linux shared-memory 语义一致。
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    input.as_ptr().add(copied),
+                    page.as_page_mut_ptr().add(page_offset),
+                    count,
+                )
+            };
+            copied += count;
+        }
+        Ok(())
+    }
+
+    /// 返回 backing 内一个 4 字节对齐 `u32` 的 atomic 视图。
+    ///
+    /// 与 user mapping 共享的 ring 头（head/tail/flags）必须经 atomic 访问：普通读写会与用户态
+    /// 的并发 store 构成 data race，且没有 acquire/release 就无法保证 SQE/CQE 内容先于 tail 可见。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 4 字节对齐的 byte offset。
+    ///
+    /// # Returns
+    ///
+    /// offset 对齐且 4 字节完整落在 backing 内时返回 atomic；否则 None。
+    pub(crate) fn atomic_u32(&self, offset: usize) -> Option<&AtomicU32> {
+        if !offset.is_multiple_of(core::mem::align_of::<AtomicU32>()) {
+            return None;
+        }
+        let capacity = self.pages.checked_mul(super::PAGE_SIZE)?;
+        if offset.checked_add(4)? > capacity {
+            return None;
+        }
+        let page = self.page(offset / super::PAGE_SIZE)?;
+        // SAFETY: 偏移 4 字节对齐且页大小是 4 的倍数，所以这 4 字节在同一页内；frame 由 self 拥有，
+        // 返回引用的生命周期受 &self 约束；AtomicU32 与 u32 布局相同，并发访问全部经 atomic。
+        Some(unsafe {
+            &*page
+                .as_page_mut_ptr()
+                .add(offset % super::PAGE_SIZE)
+                .cast::<AtomicU32>()
+        })
     }
 }
 

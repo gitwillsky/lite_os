@@ -24,6 +24,10 @@ pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchown, sys_fchownat};
 pub(crate) use fcntl::sys_fcntl;
 pub(crate) use flock::sys_flock;
 pub(crate) use inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch};
+pub(in crate::syscall) use io::{
+    check_readable, check_writable, import_iovecs, perform_read, perform_write, positioned_read,
+    positioned_write,
+};
 pub(crate) use io::{
     sys_copy_file_range, sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev,
     sys_pwritev2, sys_read, sys_readv, sys_sendfile, sys_write, sys_writev,

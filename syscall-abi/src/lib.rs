@@ -25,6 +25,9 @@ pub const SYSCALL_LREMOVEXATTR: usize = 15;
 pub const SYSCALL_FREMOVEXATTR: usize = 16;
 pub const SYSCALL_SETXATTRAT: usize = 463;
 pub const SYSCALL_GETXATTRAT: usize = 464;
+pub const SYSCALL_IO_URING_SETUP: usize = 425;
+pub const SYSCALL_IO_URING_ENTER: usize = 426;
+pub const SYSCALL_IO_URING_REGISTER: usize = 427;
 pub const SYSCALL_LISTXATTRAT: usize = 465;
 pub const SYSCALL_REMOVEXATTRAT: usize = 466;
 

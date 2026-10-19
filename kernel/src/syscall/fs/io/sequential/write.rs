@@ -51,7 +51,10 @@ pub(super) fn write_descriptor(
     ofd: &Arc<OpenFileDescription>,
     vectors: &[UserIoVec],
     total_length: usize,
+    nowait: bool,
 ) -> isize {
+    // 语义见 `read_descriptor`：io_uring 的 per-IO NOWAIT，不修改共享 OFD 的 O_NONBLOCK。
+    let nonblocking = nowait || ofd.status_flags() & O_NONBLOCK != 0;
     match &ofd.kind {
         OpenFileKind::Inode => {
             write_regular_descriptor(task, ofd, ofd.inode_ref(), vectors, total_length)
@@ -89,7 +92,7 @@ pub(super) fn write_descriptor(
                             break;
                         }
                         PipeWrite::Full if written != 0 => return written as isize,
-                        PipeWrite::Full if ofd.status_flags() & O_NONBLOCK != 0 => {
+                        PipeWrite::Full if nonblocking => {
                             return -errno::EAGAIN;
                         }
                         PipeWrite::Full => {
@@ -119,9 +122,14 @@ pub(super) fn write_descriptor(
             }
             written as isize
         }
-        OpenFileKind::Socket(socket) => {
-            crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length)
-        }
+        OpenFileKind::Socket(socket) => crate::syscall::socket::write_vectors(
+            task,
+            ofd,
+            socket,
+            vectors,
+            total_length,
+            nonblocking,
+        ),
         OpenFileKind::EventFd(event) => {
             if total_length == 0 {
                 return -errno::EINVAL;
@@ -162,7 +170,7 @@ pub(super) fn write_descriptor(
                             written += mem::size_of::<u64>();
                             break;
                         }
-                        crate::ipc::EventFdWrite::Full if ofd.status_flags() & O_NONBLOCK != 0 => {
+                        crate::ipc::EventFdWrite::Full if nonblocking => {
                             return if written == 0 {
                                 -errno::EAGAIN
                             } else {
@@ -196,8 +204,13 @@ pub(super) fn write_descriptor(
         }
         OpenFileKind::TimerFd(_) | OpenFileKind::SignalFd(_) => -errno::EINVAL,
         OpenFileKind::Epoll(_) => unreachable!("epoll write rejected before descriptor dispatch"),
-        OpenFileKind::Device(file) => {
-            crate::syscall::device::write_device(task, ofd, file.as_ref(), vectors, total_length)
-        }
+        OpenFileKind::Device(file) => crate::syscall::device::write_device(
+            task,
+            ofd,
+            file.as_ref(),
+            vectors,
+            total_length,
+            nonblocking,
+        ),
     }
 }

@@ -7,6 +7,9 @@ pub(super) const MAP_NORESERVE: usize = 0x4000;
 /// Linux advisory：mapping 预期作为 Thread stack；LiteOS 不需要保存该 VMA hint。
 /// 缺失时 Rust std 在进入 `main` 前建立 stack-overflow guard 会收到 `EINVAL`。
 pub(super) const MAP_STACK: usize = 0x2_0000;
+/// Linux advisory：请求预取页。LiteOS 按需缺页，映射语义不变；io_uring 的 liburing/libuv 用
+/// `MAP_SHARED | MAP_POPULATE` 映射 ring，缺失时它们得到 `EINVAL`。
+pub(super) const MAP_POPULATE: usize = 0x8000;
 pub(super) const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 
 const SUPPORTED_FLAGS: usize = MAP_PRIVATE
@@ -14,6 +17,7 @@ const SUPPORTED_FLAGS: usize = MAP_PRIVATE
     | MAP_FIXED
     | MAP_ANONYMOUS
     | MAP_NORESERVE
+    | MAP_POPULATE
     | MAP_STACK
     | MAP_FIXED_NOREPLACE;
 

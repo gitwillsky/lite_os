@@ -82,7 +82,7 @@ COMPILER_RT_SOURCES = {
 COMPILER_RT_SUPPLEMENT_SYMBOL = "__multc3"
 SOURCE_RECIPE_VERSION = 1
 SYSROOT_RECIPE_VERSION = 4
-SMOKE_RECIPE_VERSION = 13
+SMOKE_RECIPE_VERSION = 16
 CONFIGURE_ARGUMENTS = (f"--target={TARGET.arch}", "--prefix=/usr", "--syslibdir=/lib")
 COMMON_SMOKE_LINK_ARGUMENTS = (
     "-static",
@@ -730,6 +730,7 @@ def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> di
         "address_space_sha256": sha256(ROOT / "scripts/fixtures/musl/address-space.c"),
         "netlink_route_sha256": sha256(ROOT / "scripts/fixtures/musl/netlink-route.c"),
         "copy_file_range_sha256": sha256(ROOT / "scripts/fixtures/musl/copy-file-range.c"),
+        "io_uring_sha256": sha256(ROOT / "scripts/fixtures/musl/io-uring.c"),
         "statx_sha256": sha256(ROOT / "scripts/fixtures/musl/statx.c"),
         "mremap_sha256": sha256(ROOT / "scripts/fixtures/musl/mremap.c"),
         "resource_usage_sha256": sha256(ROOT / "scripts/fixtures/musl/resource-usage.c"),
@@ -804,6 +805,7 @@ def link_smoke(
                 str(ROOT / "scripts/fixtures/musl/mremap.c"),
                 str(ROOT / "scripts/fixtures/musl/statx.c"),
                 str(ROOT / "scripts/fixtures/musl/copy-file-range.c"),
+                str(ROOT / "scripts/fixtures/musl/io-uring.c"),
                 str(ROOT / "scripts/fixtures/musl/netlink-route.c"),
                 str(ROOT / "scripts/fixtures/musl/swap.c"),
                 f"-L{install / 'usr/lib'}",

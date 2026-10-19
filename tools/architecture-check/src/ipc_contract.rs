@@ -16,9 +16,11 @@ fn require(
 ) {
     if let Some(text) = source(sources, path, errors) {
         for clause in clauses {
+            // rustfmt 把长调用拆成多行时会补尾逗号；比较前去掉空白和 `,)`，使规则不依赖排版。
             if !text
                 .split_whitespace()
                 .collect::<String>()
+                .replace(",)", ")")
                 .contains(&clause.split_whitespace().collect::<String>())
             {
                 errors.push(format!("ipc-owner: {path}: {error}; missing {clause}"));
@@ -394,7 +396,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
         "kernel/src/syscall/fs/io/sequential/write.rs",
-        &["crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length)"],
+        &[
+            "crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length, nonblocking)",
+        ],
         "sequential socket write must delegate to the sole send engine owning frozen timeout and progress",
         errors,
     );

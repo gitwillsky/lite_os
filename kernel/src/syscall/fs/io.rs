@@ -4,6 +4,7 @@ mod write_limit;
 use write_limit::{bounded_regular_write, file_size_exceeded, regular_write_chunk};
 
 mod positioned;
+pub(in crate::syscall) use positioned::{positioned_read, positioned_write};
 pub(crate) use positioned::{
     sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2,
 };
@@ -23,7 +24,7 @@ use crate::syscall::user_iovec::{
 };
 
 /// fs vector I/O policy wrapper；raw ABI import 与 SSIZE_MAX owner 保持分离。
-fn import_iovecs(
+pub(in crate::syscall) fn import_iovecs(
     task: &TaskControlBlock,
     iovector: usize,
     count: usize,
@@ -43,4 +44,7 @@ fn import_iovecs(
 }
 
 mod sequential;
+pub(in crate::syscall) use sequential::{
+    check_readable, check_writable, perform_read, perform_write,
+};
 pub(crate) use sequential::{sys_read, sys_readv, sys_write, sys_writev};

@@ -43,9 +43,13 @@ fn measure(root: &Path) -> Result<SendStagingCost, String> {
         && staging.contains("Vec<MaybeUninit<u8>>")
         && staging.contains("unsafe fn publish")
         && cursor.contains("stage_from_user_into")
-        && sequential.contains(
-            "crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length)",
-        )
+        && sequential
+            .split_whitespace()
+            .collect::<String>()
+            .replace(",)", ")")
+            .contains(
+                "crate::syscall::socket::write_vectors(task,ofd,socket,vectors,total_length,nonblocking)",
+            )
         && !sequential.contains("socket.write(")
         && message.contains("UserInputStaging::try_new")
         && regular.contains("as_input_staging")

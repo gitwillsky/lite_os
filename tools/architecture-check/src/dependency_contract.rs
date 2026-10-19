@@ -27,6 +27,7 @@ const KERNEL_MODULES: &[&str] = &[
     "hal",
     "id",
     "input",
+    "io_uring",
     "ipc",
     "lang_item",
     "log",

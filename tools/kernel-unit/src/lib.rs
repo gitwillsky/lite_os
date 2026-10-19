@@ -279,6 +279,10 @@ mod frame_metadata_layout;
 #[cfg(test)]
 #[path = "../../../kernel/src/memory/mm/file_page_range.rs"]
 mod file_page_range;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../kernel/src/io_uring/abi.rs"]
+mod io_uring_abi;
 
 #[cfg(test)]
 #[path = "../../../kernel/src/memory/mm/fault_preflight.rs"]

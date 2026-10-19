@@ -14,6 +14,7 @@
 | IPC 与网络 | [ipc-network](architecture-contract/ipc-network.md) |
 | 设备与终端 | [devices-terminal](architecture-contract/devices-terminal.md) |
 | 音频 | [audio](architecture-contract/audio.md) |
+| 异步 I/O | [io-uring](architecture-contract/io-uring.md) |
 | 图形会话与 LiteUI | [lite-runtime](architecture-contract/lite-runtime.md) |
 | 用户态与 ABI | [userspace-abi](architecture-contract/userspace-abi.md) |
 
@@ -40,6 +41,7 @@
 | `audio` | `drivers`,`fs`,`id`,`ipc`,`memory` | 领域规则见依赖说明 |
 | `drm` | `deferred`,`drivers`,`fallible_tree`,`fs`,`ipc`,`memory`,`socket`,`sync` | 领域规则见依赖说明 |
 | `input` | `deferred`,`drivers`,`fs`,`ipc`,`timer` | 领域规则见依赖说明 |
+| `io_uring` | `fs`,`id`,`ipc`,`memory`,`sync`,`timer` | 领域规则见依赖说明 |
 | `ipc` | `fallible_tree`,`id`,`memory`,`namespace`,`sync` | 领域规则见依赖说明 |
 | `socket` | `drivers`,`fallible_tree`,`id`,`ipc`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
 | `fs` | `block`,`deferred`,`fallible_tree`,`id`,`ipc`,`log`,`memory`,`namespace`,`random`,`socket`,`sync`,`timer` | 领域规则见依赖说明 |
@@ -48,7 +50,7 @@
 | `namespace` | `fallible_tree` | 领域规则见依赖说明 |
 | `task` | `arch`,`cpu`,`deferred`,`drivers`,`fallible_tree`,`file`,`fs`,`id`,`ipc`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`timer`,`tty` | 领域规则见依赖说明 |
 | `trap` | `arch`,`cpu`,`deferred`,`hal`,`memory`,`platform`,`syscall`,`task`,`timer` | 领域规则见依赖说明 |
-| `syscall` | `file`,`fs`,`ipc`,`memory`,`namespace`,`random`,`socket`,`sync`,`system`,`task`,`timer` | 领域规则见依赖说明 |
+| `syscall` | `file`,`fs`,`io_uring`,`ipc`,`memory`,`namespace`,`random`,`socket`,`sync`,`system`,`task`,`timer` | 领域规则见依赖说明 |
 | `random` | `drivers` | 领域规则见依赖说明 |
 | `system` | `arch`,`cpu`,`platform` | 领域规则见依赖说明 |
 | `timer` | `arch`,`cpu`,`drivers`,`platform`,`sync` | 领域规则见依赖说明 |

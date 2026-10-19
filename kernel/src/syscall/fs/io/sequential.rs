@@ -42,6 +42,16 @@ fn readable_descriptor(
 ) -> Result<(Arc<TaskControlBlock>, Arc<OpenFileDescription>), isize> {
     let task = current_task().ok_or(-errno::ESRCH)?;
     let ofd = task.fd_get(fd).ok_or(-errno::EBADF)?;
+    check_readable(&ofd)?;
+    Ok((task, ofd))
+}
+
+/// 校验 OFD 可读且 backend 提供 read file operation；io_uring 与 `read(2)` 共用。
+///
+/// # Errors
+///
+/// OFD 只写 `EBADF`；epoll 或不提供 read 的 backend `EINVAL`。
+pub(in crate::syscall) fn check_readable(ofd: &OpenFileDescription) -> Result<(), isize> {
     if ofd.status_flags() & O_ACCMODE == O_WRONLY {
         return Err(-errno::EBADF);
     }
@@ -51,7 +61,7 @@ fn readable_descriptor(
     if matches!(&ofd.kind, OpenFileKind::Device(file) if !file.supports_read()) {
         return Err(-errno::EINVAL);
     }
-    Ok((task, ofd))
+    Ok(())
 }
 
 /// 取得已证明可写且实现 write file operation 的 OFD。
@@ -72,6 +82,16 @@ fn writable_descriptor(
 ) -> Result<(Arc<TaskControlBlock>, Arc<OpenFileDescription>), isize> {
     let task = current_task().ok_or(-errno::ESRCH)?;
     let ofd = task.fd_get(fd).ok_or(-errno::EBADF)?;
+    check_writable(&ofd)?;
+    Ok((task, ofd))
+}
+
+/// 校验 OFD 可写且 backend 提供 write file operation；io_uring 与 `write(2)` 共用。
+///
+/// # Errors
+///
+/// OFD 只读 `EBADF`；epoll/timerfd/signalfd 或不提供 write 的 backend `EINVAL`。
+pub(in crate::syscall) fn check_writable(ofd: &OpenFileDescription) -> Result<(), isize> {
     if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return Err(-errno::EBADF);
     }
@@ -84,7 +104,7 @@ fn writable_descriptor(
     if matches!(&ofd.kind, OpenFileKind::Device(file) if !file.supports_write()) {
         return Err(-errno::EINVAL);
     }
-    Ok((task, ofd))
+    Ok(())
 }
 
 /// 将 scatter copy 结果翻译为 Linux partial-count/EFAULT 语义。
@@ -105,6 +125,49 @@ fn scatter_result(cursor: &UserIoCursor<'_>, result: Result<usize, ()>) -> isize
     }
 }
 
+/// 一次已通过 access 检查的 sequential read：核心 dispatch、资源记账与 inotify 通知。
+///
+/// `read(2)`、`readv(2)` 与 io_uring 共用，保证三者的记账和事件完全一致。
+///
+/// # Parameters
+///
+/// - `task`: userspace address owner；io_uring worker 传入提交线程，不是当前 task。
+/// - `nowait`: 为 true 时会睡眠的路径改返回 `EAGAIN`（io_uring 的 per-IO NOWAIT）。
+///
+/// # Returns
+///
+/// byte count、EOF 零或负 errno。
+pub(in crate::syscall) fn perform_read(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    vectors: &[UserIoVec],
+    total_length: usize,
+    nowait: bool,
+) -> isize {
+    let result = read_descriptor(task, ofd, vectors, total_length, nowait);
+    task.account_read_result(result);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_ACCESS);
+    }
+    result
+}
+
+/// 一次已通过 access 检查的 sequential write；语义同 [`perform_read`]。
+pub(in crate::syscall) fn perform_write(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    vectors: &[UserIoVec],
+    total_length: usize,
+    nowait: bool,
+) -> isize {
+    let result = write_descriptor(task, ofd, vectors, total_length, nowait);
+    task.account_write_result(result);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_MODIFY);
+    }
+    result
+}
+
 /// 从 descriptor 读取至单一 userspace buffer。
 ///
 /// # Parameters
@@ -121,7 +184,7 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
         Ok(context) => context,
         Err(error) => return error,
     };
-    let result = read_descriptor(
+    perform_read(
         &task,
         &ofd,
         &[UserIoVec {
@@ -129,12 +192,8 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
             length,
         }],
         length,
-    );
-    task.account_read_result(result);
-    if result > 0 {
-        ofd.notify(crate::fs::IN_ACCESS);
-    }
-    result
+        false,
+    )
 }
 
 /// 按 Linux LP64 `struct iovec` 顺序从同一个 OFD scatter read。
@@ -161,12 +220,7 @@ pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
         task.account_read_result(0);
         return 0;
     }
-    let result = read_descriptor(&task, &ofd, &vectors, total_length);
-    task.account_read_result(result);
-    if result > 0 {
-        ofd.notify(crate::fs::IN_ACCESS);
-    }
-    result
+    perform_read(&task, &ofd, &vectors, total_length, false)
 }
 
 /// 将单一 userspace buffer 写入 descriptor。
@@ -185,7 +239,7 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         Ok(context) => context,
         Err(error) => return error,
     };
-    let result = write_descriptor(
+    perform_write(
         &task,
         &ofd,
         &[UserIoVec {
@@ -193,12 +247,8 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
             length,
         }],
         length,
-    );
-    task.account_write_result(result);
-    if result > 0 {
-        ofd.notify(crate::fs::IN_MODIFY);
-    }
-    result
+        false,
+    )
 }
 
 /// 按 Linux LP64 `struct iovec` 顺序写入同一个 open file description。
@@ -225,10 +275,5 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
         task.account_write_result(0);
         return 0;
     }
-    let result = write_descriptor(&task, &ofd, &vectors, total_length);
-    task.account_write_result(result);
-    if result > 0 {
-        ofd.notify(crate::fs::IN_MODIFY);
-    }
-    result
+    perform_write(&task, &ofd, &vectors, total_length, false)
 }

@@ -38,7 +38,11 @@ pub(super) fn read_descriptor(
     ofd: &Arc<OpenFileDescription>,
     vectors: &[UserIoVec],
     total_length: usize,
+    nowait: bool,
 ) -> isize {
+    // `nowait` 是 io_uring 的 per-IO NOWAIT（Linux `IOCB_NOWAIT`）：不修改共享 OFD 的 O_NONBLOCK，
+    // 但让会睡眠的路径改返回 EAGAIN。缺少它，io_uring 只能阻塞提交线程或篡改 OFD 状态。
+    let nonblocking = nowait || ofd.status_flags() & O_NONBLOCK != 0;
     match &ofd.kind {
         OpenFileKind::Inode => read_regular_descriptor(task, ofd, ofd.inode_ref(), vectors),
         OpenFileKind::Pipe(endpoint) => {
@@ -57,7 +61,7 @@ pub(super) fn read_descriptor(
                 match endpoint.read(&mut input) {
                     PipeRead::Bytes(read) => break read,
                     PipeRead::Eof => return 0,
-                    PipeRead::Empty if ofd.status_flags() & O_NONBLOCK != 0 => {
+                    PipeRead::Empty if nonblocking => {
                         return -errno::EAGAIN;
                     }
                     PipeRead::Empty => {
@@ -75,7 +79,6 @@ pub(super) fn read_descriptor(
             scatter_result(&cursor, result)
         }
         OpenFileKind::Socket(socket) => {
-            let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
             // 1. Socket facade 从唯一 protocol policy 投影 bounded useful capacity。
             let mut input = match socket.prepare_receive(total_length, 64 * 1024) {
                 Ok(input) => input,
@@ -126,7 +129,7 @@ pub(super) fn read_descriptor(
             let value = loop {
                 match event.read() {
                     crate::ipc::EventFdRead::Value(value) => break value,
-                    crate::ipc::EventFdRead::Empty if ofd.status_flags() & O_NONBLOCK != 0 => {
+                    crate::ipc::EventFdRead::Empty if nonblocking => {
                         return -errno::EAGAIN;
                     }
                     crate::ipc::EventFdRead::Empty => {
@@ -155,7 +158,7 @@ pub(super) fn read_descriptor(
                     if let Some(notification) = task.read_signal_notification(signal.mask()) {
                         break notification;
                     }
-                    if cursor.completed() != 0 || ofd.status_flags() & O_NONBLOCK != 0 {
+                    if cursor.completed() != 0 || nonblocking {
                         return if cursor.completed() != 0 {
                             cursor.completed() as isize
                         } else {
@@ -193,7 +196,7 @@ pub(super) fn read_descriptor(
             let expirations = loop {
                 match timer.read() {
                     crate::file::TimerFdRead::Expirations(value) => break value,
-                    crate::file::TimerFdRead::Empty if ofd.status_flags() & O_NONBLOCK != 0 => {
+                    crate::file::TimerFdRead::Empty if nonblocking => {
                         return -errno::EAGAIN;
                     }
                     crate::file::TimerFdRead::Empty => {
@@ -215,8 +218,13 @@ pub(super) fn read_descriptor(
             size as isize
         }
         OpenFileKind::Epoll(_) => unreachable!("epoll read rejected before descriptor dispatch"),
-        OpenFileKind::Device(file) => {
-            crate::syscall::device::read_device(task, ofd, file.as_ref(), vectors, total_length)
-        }
+        OpenFileKind::Device(file) => crate::syscall::device::read_device(
+            task,
+            ofd,
+            file.as_ref(),
+            vectors,
+            total_length,
+            nonblocking,
+        ),
     }
 }

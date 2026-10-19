@@ -143,7 +143,7 @@ pub(crate) trait PositionedFile: Send + Sync {
 ///
 /// 读写自行负责记录边界与阻塞语义：只在尚未交付任何字节且 `nonblocking` 为 false 时等待
 /// （见 [`wait_ready`]），被可交付 signal 中断时返回 `EINTR`。
-pub(crate) trait DeviceFile: Send + Sync {
+pub(crate) trait DeviceFile: Send + Sync + core::any::Any {
     /// native file operations 的 read/write capability；缺失操作先于零长度与用户 iovec copy。
     /// 默认设备提供两者，只有实际不提供对应 operation 的文件覆写为 false。
     fn supports_read(&self) -> bool {

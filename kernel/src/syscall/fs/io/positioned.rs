@@ -1,6 +1,6 @@
 use super::*;
 
-fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
+pub(in crate::syscall) fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     if offset < 0 {
         return -errno::EINVAL;
     }
@@ -90,7 +90,7 @@ pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64)
 /// # Returns
 ///
 /// byte count、partial count 或负 errno。
-fn positioned_write(
+pub(in crate::syscall) fn positioned_write(
     fd: usize,
     vectors: &[UserIoVec],
     offset: i64,

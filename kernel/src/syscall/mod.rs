@@ -8,6 +8,7 @@ mod eventfd;
 mod fs;
 mod futex;
 mod getrandom_flags;
+mod io_uring;
 mod ioctl;
 mod ipc;
 mod membarrier;
@@ -43,6 +44,8 @@ use crate::syscall::{
     reboot::*, scheduler::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
 };
 use eventfd::sys_eventfd2;
+pub(crate) use io_uring::start_worker as start_io_uring_worker;
+use io_uring::{sys_io_uring_enter, sys_io_uring_register, sys_io_uring_setup};
 use membarrier::sys_membarrier;
 use memfd::sys_memfd_create;
 use process_control::sys_prctl;
@@ -179,6 +182,18 @@ pub(crate) fn syscall(
             ),
             SYSCALL_GETCWD => sys_get_cwd(args[0] as *mut u8, args[1]),
             SYSCALL_EVENTFD2 => sys_eventfd2(args[0] as u32, args[1] as u32),
+            SYSCALL_IO_URING_SETUP => sys_io_uring_setup(args[0] as u32, args[1]),
+            SYSCALL_IO_URING_ENTER => sys_io_uring_enter(
+                args[0],
+                args[1] as u32,
+                args[2] as u32,
+                args[3] as u32,
+                args[4],
+                args[5],
+            ),
+            SYSCALL_IO_URING_REGISTER => {
+                sys_io_uring_register(args[0], args[1] as u32, args[2], args[3] as u32)
+            }
             SYSCALL_INOTIFY_INIT1 => sys_inotify_init1(args[0] as u32),
             SYSCALL_INOTIFY_ADD_WATCH => {
                 sys_inotify_add_watch(args[0], args[1] as *const u8, args[2] as u32)

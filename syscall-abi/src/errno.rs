@@ -108,6 +108,12 @@ pub const EOVERFLOW: isize = 75;
 pub const EBADFD: isize = 77;
 /// 等待在 deadline 前未完成。
 pub const ETIMEDOUT: isize = 110;
+/// Linux `ECANCELED`：io_uring 请求因提交线程退出而被取消。
+pub const ECANCELED: isize = 125;
+/// Linux `ETIME`：`io_uring_enter` 的等待在 EXT_ARG 超时前未收满 CQE。
+pub const ETIME: isize = 62;
+/// Linux `EBADR`：`io_uring_enter` 通知至少一个 CQE 因溢出上限被丢弃。
+pub const EBADR: isize = 53;
 
 /// System V 队列中没有匹配类型。
 pub const ENOMSG: isize = 42;

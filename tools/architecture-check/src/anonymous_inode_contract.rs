@@ -200,16 +200,20 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: actual inode operations and writable seal admission must precede generic memory/mask handling".into());
     }
+    // 通知收敛在 `perform_read`/`perform_write` 各一处；read/readv/write/writev 与 io_uring 都经它们，
+    // 所以这里要求：通知各出现一次，且四个 syscall 入口加 helper 本身共调用三次（定义 + 两个入口）。
     let sequential = text(sources, "kernel/src/syscall/fs/io/sequential.rs");
     if !ofd.contains("self.notify(if writable")
         || sequential
             .matches("ofd.notify(crate::fs::IN_ACCESS)")
             .count()
-            != 2
+            != 1
         || sequential
             .matches("ofd.notify(crate::fs::IN_MODIFY)")
             .count()
-            != 2
+            != 1
+        || sequential.matches("perform_read(").count() != 3
+        || sequential.matches("perform_write(").count() != 3
         || !text(sources, "kernel/src/fs/inotify.rs").contains("!inode.allows_notifications()")
     {
         errors.push("anonymous-inode: generic successful I/O and final close must notify actual non-private inode identities".into());

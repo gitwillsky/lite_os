@@ -68,6 +68,10 @@ VirtIO transport（MMIO/PCI）、virtqueue/DMA、各设备类 adapter 与设备�
 
 只消费通用 input seam，并拥有 evdev 事件域、`input/eventN` 设备文件与 evdev ioctl UAPI；不感知 VirtIO adapter 或 task
 
+## `io_uring`
+
+拥有 io_uring ring 的共享内存布局、SQE 校验、CQE 发布与溢出顺序，以及 ring fd 的 poll/mmap 文件操作；经 `fs::chardev::DeviceFile` 发布并以 `Any` 取回 ring，`fs` 不反向依赖；不感知 fd 表、task 或 syscall，fd 查询经 `FdExists` 注入
+
 ## `ipc`
 
 Pipe byte/endpoint、eventfd 与实际 IPC namespace/System V message queue、semaphore、shared-memory segment、atomic operation 与 SEM_UNDO membership 的对象、权限、IDs/key 和 waiter owner；`memory` 仅供实际共享页 backing，不反向导入 IPC；不感知 fd、task

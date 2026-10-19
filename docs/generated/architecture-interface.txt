@@ -3459,6 +3459,152 @@ kernel/src/input/mod.rs :: pub (crate) impl InputFile :: fn set_grab (file : & A
 kernel/src/input/mod.rs :: pub (crate) struct AbsoluteInfo
 kernel/src/input/mod.rs :: pub (crate) struct InputEvent
 kernel/src/input/mod.rs :: pub (crate) struct InputFile
+kernel/src/io_uring/abi.rs :: pub (crate) Cqe :: flags : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Cqe :: res : i32
+kernel/src/io_uring/abi.rs :: pub (crate) Cqe :: user_data : u64
+kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: array_offset : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: cq_entries : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: ring_bytes : usize
+kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: sq_entries : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: sqes_bytes : usize
+kernel/src/io_uring/abi.rs :: pub (crate) SetupParams :: cq_entries : u32
+kernel/src/io_uring/abi.rs :: pub (crate) SetupParams :: flags : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: addr : u64
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: addr3 : u64
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: buf_index : u16
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: fd : i32
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: flags : u8
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: ioprio : u16
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: len : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: off : u64
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: op_flags : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: opcode : u8
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: pad2 : u64
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: personality : u16
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: splice_fd_in : i32
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: user_data : u64
+kernel/src/io_uring/abi.rs :: pub (crate) const CQES_OFFSET : u32 = 320
+kernel/src/io_uring/abi.rs :: pub (crate) const CQE_BYTES : usize = 16
+kernel/src/io_uring/abi.rs :: pub (crate) const CQ_FLAGS : u32 = 280
+kernel/src/io_uring/abi.rs :: pub (crate) const CQ_HEAD : u32 = 128
+kernel/src/io_uring/abi.rs :: pub (crate) const CQ_OVERFLOW : u32 = 284
+kernel/src/io_uring/abi.rs :: pub (crate) const CQ_RING_ENTRIES : u32 = 268
+kernel/src/io_uring/abi.rs :: pub (crate) const CQ_RING_MASK : u32 = 260
+kernel/src/io_uring/abi.rs :: pub (crate) const CQ_TAIL : u32 = 192
+kernel/src/io_uring/abi.rs :: pub (crate) const ENTER_EXT_ARG : u32 = 1 << 3
+kernel/src/io_uring/abi.rs :: pub (crate) const ENTER_GETEVENTS : u32 = 1 << 0
+kernel/src/io_uring/abi.rs :: pub (crate) const FEATURES : u32 = FEAT_SINGLE_MMAP | FEAT_NODROP | FEAT_SUBMIT_STABLE | FEAT_RW_CUR_POS | FEAT_CUR_PERSONALITY | FEAT_FAST_POLL | FEAT_EXT_ARG
+kernel/src/io_uring/abi.rs :: pub (crate) const FEAT_CUR_PERSONALITY : u32 = 1 << 4
+kernel/src/io_uring/abi.rs :: pub (crate) const FEAT_EXT_ARG : u32 = 1 << 8
+kernel/src/io_uring/abi.rs :: pub (crate) const FEAT_FAST_POLL : u32 = 1 << 5
+kernel/src/io_uring/abi.rs :: pub (crate) const FEAT_NODROP : u32 = 1 << 1
+kernel/src/io_uring/abi.rs :: pub (crate) const FEAT_RW_CUR_POS : u32 = 1 << 3
+kernel/src/io_uring/abi.rs :: pub (crate) const FEAT_SINGLE_MMAP : u32 = 1 << 0
+kernel/src/io_uring/abi.rs :: pub (crate) const FEAT_SUBMIT_STABLE : u32 = 1 << 2
+kernel/src/io_uring/abi.rs :: pub (crate) const GETEVENTS_ARG_BYTES : usize = 24
+kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_ASYNC : u8 = 1 << 4
+kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_BUFFER_SELECT : u8 = 1 << 5
+kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_CQE_SKIP_SUCCESS : u8 = 1 << 6
+kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_FIXED_FILE : u8 = 1 << 0
+kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_IO_DRAIN : u8 = 1 << 1
+kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_IO_HARDLINK : u8 = 1 << 3
+kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_IO_LINK : u8 = 1 << 2
+kernel/src/io_uring/abi.rs :: pub (crate) const MAX_CQ_ENTRIES : u32 = 2 * MAX_ENTRIES
+kernel/src/io_uring/abi.rs :: pub (crate) const MAX_ENTRIES : u32 = 4096
+kernel/src/io_uring/abi.rs :: pub (crate) const NOP_INJECT_RESULT : u32 = 1 << 0
+kernel/src/io_uring/abi.rs :: pub (crate) const OFF_CQ_RING : u64 = 0x800_0000
+kernel/src/io_uring/abi.rs :: pub (crate) const OFF_SQES : u64 = 0x1000_0000
+kernel/src/io_uring/abi.rs :: pub (crate) const OFF_SQ_RING : u64 = 0
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_ASYNC_CANCEL : u8 = 14
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_CLOSE : u8 = 19
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_FSYNC : u8 = 3
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_LAST : u8 = 65
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_NOP : u8 = 0
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_ADD : u8 = 6
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_REMOVE : u8 = 7
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_READ : u8 = 22
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_READV : u8 = 1
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT : u8 = 11
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT_REMOVE : u8 = 12
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_WRITE : u8 = 23
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_WRITEV : u8 = 2
+kernel/src/io_uring/abi.rs :: pub (crate) const PARAMS_BYTES : usize = 120
+kernel/src/io_uring/abi.rs :: pub (crate) const PROBE_HEADER_BYTES : usize = 16
+kernel/src/io_uring/abi.rs :: pub (crate) const PROBE_OP_BYTES : usize = 8
+kernel/src/io_uring/abi.rs :: pub (crate) const PROBE_OP_SUPPORTED : u16 = 1 << 0
+kernel/src/io_uring/abi.rs :: pub (crate) const REGISTER_PROBE : u32 = 8
+kernel/src/io_uring/abi.rs :: pub (crate) const SETUP_CLAMP : u32 = 1 << 4
+kernel/src/io_uring/abi.rs :: pub (crate) const SETUP_CQSIZE : u32 = 1 << 3
+kernel/src/io_uring/abi.rs :: pub (crate) const SQE_BYTES : usize = 64
+kernel/src/io_uring/abi.rs :: pub (crate) const SQE_VALID_FLAGS : u8 = IOSQE_FIXED_FILE | IOSQE_IO_DRAIN | IOSQE_IO_LINK | IOSQE_IO_HARDLINK | IOSQE_ASYNC | IOSQE_BUFFER_SELECT | IOSQE_CQE_SKIP_SUCCESS
+kernel/src/io_uring/abi.rs :: pub (crate) const SQ_CQ_OVERFLOW : u32 = 1 << 1
+kernel/src/io_uring/abi.rs :: pub (crate) const SQ_DROPPED : u32 = 272
+kernel/src/io_uring/abi.rs :: pub (crate) const SQ_FLAGS : u32 = 276
+kernel/src/io_uring/abi.rs :: pub (crate) const SQ_HEAD : u32 = 0
+kernel/src/io_uring/abi.rs :: pub (crate) const SQ_RING_ENTRIES : u32 = 264
+kernel/src/io_uring/abi.rs :: pub (crate) const SQ_RING_MASK : u32 = 256
+kernel/src/io_uring/abi.rs :: pub (crate) const SQ_TAIL : u32 = 64
+kernel/src/io_uring/abi.rs :: pub (crate) const SUPPORTED_ENTER_FLAGS : u32 = ENTER_GETEVENTS | ENTER_EXT_ARG
+kernel/src/io_uring/abi.rs :: pub (crate) const SUPPORTED_SETUP_FLAGS : u32 = SETUP_CQSIZE | SETUP_CLAMP
+kernel/src/io_uring/abi.rs :: pub (crate) const fn op_supported (opcode : u8) -> bool
+kernel/src/io_uring/abi.rs :: pub (crate) fn encode_probe (ops : usize , output : & mut [u8])
+kernel/src/io_uring/abi.rs :: pub (crate) fn probe_ops (nr_args : u32) -> usize
+kernel/src/io_uring/abi.rs :: pub (crate) impl Cqe :: fn encode (self) -> [u8 ; CQE_BYTES]
+kernel/src/io_uring/abi.rs :: pub (crate) impl Geometry :: fn encode_params (& self , flags : u32) -> [u8 ; PARAMS_BYTES]
+kernel/src/io_uring/abi.rs :: pub (crate) impl Geometry :: fn new (entries : u32 , params : SetupParams) -> Result < Self , InvalidSetup >
+kernel/src/io_uring/abi.rs :: pub (crate) impl SetupParams :: fn decode (bytes : & [u8 ; PARAMS_BYTES]) -> Result < Self , InvalidSetup >
+kernel/src/io_uring/abi.rs :: pub (crate) impl Sqe :: fn decode (bytes : & [u8 ; SQE_BYTES]) -> Self
+kernel/src/io_uring/abi.rs :: pub (crate) struct Cqe
+kernel/src/io_uring/abi.rs :: pub (crate) struct Geometry
+kernel/src/io_uring/abi.rs :: pub (crate) struct InvalidSetup
+kernel/src/io_uring/abi.rs :: pub (crate) struct SetupParams
+kernel/src/io_uring/abi.rs :: pub (crate) struct Sqe
+kernel/src/io_uring/mod.rs :: enum SetupFailure :: Invalid
+kernel/src/io_uring/mod.rs :: enum SetupFailure :: OutOfMemory
+kernel/src/io_uring/mod.rs :: pub (crate) const ANONYMOUS_NAME : & [u8] = b"anon_inode:[io_uring]"
+kernel/src/io_uring/mod.rs :: pub (crate) enum SetupFailure
+kernel/src/io_uring/mod.rs :: pub (crate) fn create (entries : u32 , params : & [u8 ; PARAMS_BYTES] ,) -> Result < (Arc < Ring > , [u8 ; PARAMS_BYTES]) , SetupFailure >
+kernel/src/io_uring/mod.rs :: pub (crate) fn ring_arc_of (file : & Arc < dyn crate :: fs :: chardev :: DeviceFile >) -> Option < Arc < Ring > >
+kernel/src/io_uring/mod.rs :: pub (crate) fn submit (ring : & Arc < Ring > , to_submit : u32 , submitter : & dyn Submitter ,) -> Result < u32 , RingError >
+kernel/src/io_uring/mod.rs :: pub (crate) mod abi
+kernel/src/io_uring/mod.rs :: pub (crate) use ops :: { Submitter , fail_init }
+kernel/src/io_uring/mod.rs :: pub (crate) use ring :: { CqWait , Flow , Ring , RingError }
+kernel/src/io_uring/ops.rs :: pub (crate) fn fail_init (ring : & Ring , sqe : & Sqe , error : isize) -> Flow
+kernel/src/io_uring/ops.rs :: pub (crate) fn issue (ring : & Arc < Ring > , sqe : Sqe , submitter : & dyn Submitter) -> Flow
+kernel/src/io_uring/ops.rs :: pub (crate) trait Submitter
+kernel/src/io_uring/ops.rs :: trait Submitter :: fn fd_exists (& self , fd : i32) -> bool
+kernel/src/io_uring/ops.rs :: trait Submitter :: fn issue_op (& self , ring : & Arc < Ring > , sqe : Sqe) -> Flow
+kernel/src/io_uring/ring.rs :: enum CqWait :: # [doc = " 有 CQE 因溢出链表上限被丢弃，且等待条件尚未满足（Linux 返回 `EBADR`）。"] Dropped
+kernel/src/io_uring/ring.rs :: enum CqWait :: Interrupted
+kernel/src/io_uring/ring.rs :: enum CqWait :: OutOfMemory
+kernel/src/io_uring/ring.rs :: enum CqWait :: Satisfied
+kernel/src/io_uring/ring.rs :: enum CqWait :: TimedOut
+kernel/src/io_uring/ring.rs :: enum Flow :: # [doc = " 该 SQE 在 init/prep 阶段失败：Linux 在没有 `IORING_SETUP_SUBMIT_ALL` 时不再提交后续 SQE。"] Stop
+kernel/src/io_uring/ring.rs :: enum Flow :: Continue
+kernel/src/io_uring/ring.rs :: enum RingError :: OutOfMemory
+kernel/src/io_uring/ring.rs :: pub (crate) enum CqWait
+kernel/src/io_uring/ring.rs :: pub (crate) enum Flow
+kernel/src/io_uring/ring.rs :: pub (crate) enum RingError
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn close (& self)
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn complete (& self , user_data : u64 , skip_success : bool , res : i32)
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn complete_timeout (& self , user_data : u64 , skip_success : bool , res : i32)
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn cq_ready (& self) -> u32
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn events_posted (& self) -> u32
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn flush_overflow (& self)
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn has_completions (& self) -> bool
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn is_closed (& self) -> bool
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn post (& self , cqe : Cqe)
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn readiness_generation (& self) -> u64
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn readiness_key (& self) -> & Arc < PipeEnd >
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn readiness_read (& self) -> & Arc < PipeEnd >
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn region (& self , offset : u64) -> Option < (Arc < DeviceBacking > , u64) >
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn sq_has_space (& self) -> bool
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn sq_pending (& self) -> u32
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn submit (& self , to_submit : u32 , mut execute : impl FnMut (Sqe) -> Flow ,) -> Result < u32 , RingError >
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn take_dropped (& self) -> bool
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn try_new (geometry : Geometry) -> Result < Arc < Self > , RingError >
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn wait_for (& self , minimum : u32 , deadline : Option < u64 >) -> CqWait
+kernel/src/io_uring/ring.rs :: pub (crate) struct Ring
 kernel/src/ipc/error.rs :: enum IpcError :: Access
 kernel/src/ipc/error.rs :: enum IpcError :: Again
 kernel/src/ipc/error.rs :: enum IpcError :: Exists
@@ -3889,12 +4035,14 @@ kernel/src/memory/config.rs :: pub (crate) const TRAMPOLINE : usize = crate :: a
 kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = crate :: arch :: mmu :: TRAP_CONTEXT_ADDRESS
 kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8 * 1024 * 1024
 kernel/src/memory/config.rs :: pub (crate) use crate :: arch :: mmu :: { PAGE_SIZE , USER_ADDRESS_END , USER_STACK_TOP }
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn atomic_u32 (& self , offset : usize) -> Option < & AtomicU32 >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent (& self , index : usize) -> Option < (PhysicalPageNumber , usize) >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent_count (& self) -> usize
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn page (& self , index : usize) -> Option < PhysicalPageNumber >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn pages (& self) -> usize
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn read (& self , offset : usize , output : & mut [u8]) -> Result < () , () >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn try_allocate (pages : usize , class : FrameAllocationClass) -> Option < Self >
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn write (& self , offset : usize , input : & [u8]) -> Result < () , () >
 kernel/src/memory/device_backing.rs :: pub (crate) struct DeviceBacking
 kernel/src/memory/executable.rs :: enum ElfKind :: Executable
 kernel/src/memory/executable.rs :: enum ElfKind :: SharedObject
@@ -6089,9 +6237,9 @@ kernel/src/syscall/device.rs :: pub (super) fn device_error (error : DeviceError
 kernel/src/syscall/device.rs :: pub (super) fn ioctl_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn ioctl_inode (task : & TaskControlBlock , ofd : & OpenFileDescription , inode : & dyn crate :: fs :: Inode , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn map_request (shared : bool , writable : bool , executable : bool , fd_writable : bool ,) -> MapRequest
-kernel/src/syscall/device.rs :: pub (super) fn read_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize ,) -> isize
+kernel/src/syscall/device.rs :: pub (super) fn read_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize , nonblocking : bool ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn read_positioned_file (task : & TaskControlBlock , file : & dyn PositionedFile , vectors : & [UserIoVec] , total_length : usize , offset : u64 ,) -> isize
-kernel/src/syscall/device.rs :: pub (super) fn write_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize ,) -> isize
+kernel/src/syscall/device.rs :: pub (super) fn write_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize , nonblocking : bool ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn write_positioned_file (task : & TaskControlBlock , file : & dyn PositionedFile , vectors : & [UserIoVec] , total_length : usize , offset : u64 ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
@@ -6128,6 +6276,7 @@ kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_chroot , s
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
 kernel/src/syscall/fs.rs :: pub (crate) use swap :: { sys_swapoff , sys_swapon }
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) fn position_error (error : crate :: file :: PositionError) -> isize
+kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use io :: { check_readable , check_writable , import_iovecs , perform_read , perform_write , positioned_read , positioned_write , }
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr as filesystem_error
 kernel/src/syscall/fs.rs :: pub (super) fn resolve_stat_target (task : & TaskControlBlock , fd : isize , name : * const u8 , nofollow : bool , empty_path : bool ,) -> Result < (InodeMetadata , u64) , isize >
@@ -6145,12 +6294,17 @@ kernel/src/syscall/fs/inotify.rs :: pub (crate) fn sys_inotify_rm_watch (fd : us
 kernel/src/syscall/fs/io.rs :: pub (crate) use positioned :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , }
 kernel/src/syscall/fs/io.rs :: pub (crate) use sendfile :: { sys_copy_file_range , sys_sendfile }
 kernel/src/syscall/fs/io.rs :: pub (crate) use sequential :: { sys_read , sys_readv , sys_write , sys_writev }
+kernel/src/syscall/fs/io.rs :: pub (in crate :: syscall) fn import_iovecs (task : & TaskControlBlock , iovector : usize , count : usize ,) -> Result < (Vec < UserIoVec > , usize) , isize >
+kernel/src/syscall/fs/io.rs :: pub (in crate :: syscall) use positioned :: { positioned_read , positioned_write }
+kernel/src/syscall/fs/io.rs :: pub (in crate :: syscall) use sequential :: { check_readable , check_writable , perform_read , perform_write , }
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pread64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwrite64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_read (fd : usize , vectors : & [UserIoVec] , offset : i64) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_write (fd : usize , vectors : & [UserIoVec] , offset : i64 , append_override : Option < bool > ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn read_vectors (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & RegularFile , position : & mut u64 , vectors : & [UserIoVec] ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn write_vectors (task : & TaskControlBlock , file : & RegularFileWrite < '_ > , position : & mut u64 , vectors : & [UserIoVec] , append : bool , staging : & mut UserInputStaging < '_ > ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) impl PreparedRegularWriteStaging :: fn as_input_staging (& mut self) -> UserInputStaging < '_ >
@@ -6163,8 +6317,12 @@ kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_read (fd : usize , 
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
-kernel/src/syscall/fs/io/sequential/read.rs :: pub (super) fn read_descriptor (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize ,) -> isize
-kernel/src/syscall/fs/io/sequential/write.rs :: pub (super) fn write_descriptor (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize ,) -> isize
+kernel/src/syscall/fs/io/sequential.rs :: pub (in crate :: syscall) fn check_readable (ofd : & OpenFileDescription) -> Result < () , isize >
+kernel/src/syscall/fs/io/sequential.rs :: pub (in crate :: syscall) fn check_writable (ofd : & OpenFileDescription) -> Result < () , isize >
+kernel/src/syscall/fs/io/sequential.rs :: pub (in crate :: syscall) fn perform_read (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize , nowait : bool ,) -> isize
+kernel/src/syscall/fs/io/sequential.rs :: pub (in crate :: syscall) fn perform_write (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize , nowait : bool ,) -> isize
+kernel/src/syscall/fs/io/sequential/read.rs :: pub (super) fn read_descriptor (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize , nowait : bool ,) -> isize
+kernel/src/syscall/fs/io/sequential/write.rs :: pub (super) fn write_descriptor (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize , nowait : bool ,) -> isize
 kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn bounded_regular_write (task : & TaskControlBlock , offset : u64 , requested : usize , completed : usize ,) -> Result < usize , isize >
 kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn file_size_exceeded (task : & TaskControlBlock) -> isize
 kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn regular_write_allowance (offset : u64 , size_limit : u64 , requested : usize) -> usize
@@ -6209,6 +6367,41 @@ kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_INSECURE : usize
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_NONBLOCK : usize = 0x1
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_RANDOM : usize = 0x2
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const fn getrandom_flags_supported (flags : usize) -> bool
+kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_enter (fd : usize , to_submit : u32 , min_complete : u32 , flags : u32 , argp : usize , argsz : usize ,) -> isize
+kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_register (fd : usize , opcode : u32 , arg : usize , nr_args : u32) -> isize
+kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_setup (entries : u32 , params : usize) -> isize
+kernel/src/syscall/io_uring/mod.rs :: pub (crate) use worker :: start as start_worker
+kernel/src/syscall/io_uring/ops.rs :: pub (super) TaskSubmitter :: task : Arc < TaskControlBlock >
+kernel/src/syscall/io_uring/ops.rs :: pub (super) struct TaskSubmitter
+kernel/src/syscall/io_uring/worker.rs :: enum Kind :: Io
+kernel/src/syscall/io_uring/worker.rs :: enum Kind :: Poll
+kernel/src/syscall/io_uring/worker.rs :: enum Kind :: Timeout
+kernel/src/syscall/io_uring/worker.rs :: enum Only :: Any
+kernel/src/syscall/io_uring/worker.rs :: enum Only :: Poll
+kernel/src/syscall/io_uring/worker.rs :: enum Only :: Timeout
+kernel/src/syscall/io_uring/worker.rs :: enum Target :: # [doc = " `IORING_ASYNC_CANCEL_ANY`：匹配该 ring 的任意请求。"] Any
+kernel/src/syscall/io_uring/worker.rs :: enum Target :: # [doc = " 匹配 user_data，并限定请求种类（`POLL_REMOVE`/`TIMEOUT_REMOVE` 只能取消各自种类）。"] UserData (u64 , Only)
+kernel/src/syscall/io_uring/worker.rs :: pub (crate) fn start () -> Result < () , () >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: all : bool
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: ring : Arc < Ring >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: skip_success : bool
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: target : Target
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: user_data : u64
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: ring : Arc < Ring >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: skip_success : bool
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: task : Weak < TaskControlBlock >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: user_data : u64
+kernel/src/syscall/io_uring/worker.rs :: pub (super) enum Kind
+kernel/src/syscall/io_uring/worker.rs :: pub (super) enum Only
+kernel/src/syscall/io_uring/worker.rs :: pub (super) enum Target
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn cancel (command : Cancel) -> Result < () , () >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn park (request : Request) -> Result < () , () >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn poll_request (origin : & Origin , ofd : Arc < OpenFileDescription > , mask : i16 ,) -> Result < Request , () >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn read_write_request (origin : & Origin , ofd : Arc < OpenFileDescription > , vectors : Vec < UserIoVec > , total : usize , write : bool ,) -> Result < Request , () >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn timeout_request (origin : & Origin , deadline : u64 , target_events : Option < u32 > , etime_success : bool ,) -> Result < Request , () >
+kernel/src/syscall/io_uring/worker.rs :: pub (super) struct Cancel
+kernel/src/syscall/io_uring/worker.rs :: pub (super) struct Origin
+kernel/src/syscall/io_uring/worker.rs :: pub (super) struct Request
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/ipc.rs :: pub (super) fn ipc_error (error : IpcError) -> isize
 kernel/src/syscall/ipc.rs :: pub (super) fn sys_msgctl (id : i32 , command : i32 , address : usize) -> isize
@@ -6238,6 +6431,7 @@ kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_ANONYMOUS : usize = 0x
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_FIXED : usize = 0x10
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_FIXED_NOREPLACE : usize = 0x10_0000
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_NORESERVE : usize = 0x4000
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_POPULATE : usize = 0x8000
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_PRIVATE : usize = 0x02
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_SHARED : usize = 0x01
 kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_STACK : usize = 0x2_0000
@@ -6248,6 +6442,7 @@ kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 暂存为 `EINTR`
 kernel/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize = - errno :: EINTR
 kernel/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6] , current : alloc :: sync :: Arc < crate :: task :: TaskControlBlock > ,) -> SyscallOutcome
+kernel/src/syscall/mod.rs :: pub (crate) use io_uring :: start_worker as start_io_uring_worker
 kernel/src/syscall/mod.rs :: pub (in crate :: syscall) fn file_descriptor_error (error : crate :: file :: FileDescriptorError) -> isize
 kernel/src/syscall/pidfd.rs :: pub (crate) fn sys_pidfd_getfd (pidfd : i32 , descriptor : i32 , flags : u32) -> isize
 kernel/src/syscall/pidfd.rs :: pub (crate) fn sys_pidfd_open (pid : i32 , flags : u32) -> isize
@@ -6269,6 +6464,7 @@ kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitG
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: const fn new () -> Self
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_epoll_change_source (& mut self , epoll : & Arc < Epoll > ,) -> Result < () , () >
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_interest (& mut self , ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Result < () , () >
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_notification (& mut self , pipe : & Arc < crate :: ipc :: Pipe > ,) -> Result < () , () >
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn finish (self) -> (Vec < PollWaitKey > , PollWaitGuards)
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) struct PollWaitGuards
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) struct PollWaitKeys
@@ -6397,7 +6593,7 @@ kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_recvfrom (fd : usize 
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_recvmsg (fd : usize , message : usize , flags : usize) -> isize
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_sendmsg (fd : usize , message : usize , flags : usize) -> isize
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_sendto (fd : usize , buffer : usize , length : usize , flags : usize , address : usize , address_length : usize ,) -> isize
-kernel/src/syscall/socket/message.rs :: pub (in crate :: syscall) fn write_vectors (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , socket : & Arc < Socket > , vectors : & [UserIoVec] , total_length : usize ,) -> isize
+kernel/src/syscall/socket/message.rs :: pub (in crate :: syscall) fn write_vectors (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , socket : & Arc < Socket > , vectors : & [UserIoVec] , total_length : usize , nonblocking : bool ,) -> isize
 kernel/src/syscall/socket/options.rs :: pub (crate) fn sys_getsockopt (fd : usize , level : usize , option : usize , value : usize , length : usize ,) -> isize
 kernel/src/syscall/socket/options.rs :: pub (crate) fn sys_setsockopt (fd : usize , level : usize , option : usize , value : usize , length : usize ,) -> isize
 kernel/src/syscall/socket/timeout.rs :: pub (super) fn decode (bytes : [u8 ; 16]) -> Result < SocketTimeout , isize >
