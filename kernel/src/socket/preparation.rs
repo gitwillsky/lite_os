@@ -2,7 +2,7 @@
 use alloc::sync::Arc;
 use core::mem::MaybeUninit;
 
-use super::{InetProtocol, InetSocket, KobjectSocket, PacketSocket, UnixSocket};
+use super::{InetProtocol, InetSocket, KobjectSocket, PacketSocket, RouteSocket, UnixSocket};
 use super::{Socket, SocketBackend, SocketDomain, SocketError, SocketTimeouts, SocketType};
 use crate::ipc::PipeEnd;
 
@@ -13,6 +13,7 @@ enum BackendRequest {
     Ipv4(InetProtocol),
     Packet(SocketType, usize),
     Uevent(SocketType),
+    Route(SocketType),
 }
 /// 经 decode 唯一构造的请求；private backend value 防止 caller 绕过协议验证。
 #[derive(Clone, Copy)]
@@ -48,6 +49,9 @@ impl SocketRequest {
             (SocketDomain::Netlink, SocketType::Datagram | SocketType::Raw, 15) => {
                 Ok(BackendRequest::Uevent(kind))
             }
+            (SocketDomain::Netlink, SocketType::Datagram | SocketType::Raw, 0) => {
+                Ok(BackendRequest::Route(kind))
+            }
             _ => Err(SocketError::ProtocolNotSupported),
         }
         .map(Self)
@@ -56,7 +60,7 @@ impl SocketRequest {
         match self.0 {
             BackendRequest::Unix(_) => SocketDomain::Unix,
             BackendRequest::Packet(_, _) => SocketDomain::Packet,
-            BackendRequest::Uevent(_) => SocketDomain::Netlink,
+            BackendRequest::Uevent(_) | BackendRequest::Route(_) => SocketDomain::Netlink,
             _ => SocketDomain::Inet,
         }
     }
@@ -64,7 +68,8 @@ impl SocketRequest {
         match self.0 {
             BackendRequest::Unix(kind)
             | BackendRequest::Packet(kind, _)
-            | BackendRequest::Uevent(kind) => kind,
+            | BackendRequest::Uevent(kind)
+            | BackendRequest::Route(kind) => kind,
             BackendRequest::Ipv4(InetProtocol::Tcp) => SocketType::Stream,
             BackendRequest::Ipv4(InetProtocol::Icmp | InetProtocol::Raw) => SocketType::Raw,
             _ => SocketType::Datagram,
@@ -126,6 +131,9 @@ impl PreparedSocket {
             )?),
             BackendRequest::Uevent(_) => {
                 SocketBackend::Kobject(KobjectSocket::new(notify, self.memory.clone())?)
+            }
+            BackendRequest::Route(_) => {
+                SocketBackend::Route(RouteSocket::new(notify, self.memory.clone())?)
             }
         };
         Ok(self.initialize(request.domain(), request.kind(), backend))

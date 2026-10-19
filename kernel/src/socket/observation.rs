@@ -20,6 +20,7 @@ impl Socket {
                 .address()
                 .map(|value| Some(SocketAddress::Packet(value))),
             SocketBackend::Kobject(socket) => Ok(Some(SocketAddress::Netlink(socket.address()))),
+            SocketBackend::Route(socket) => Ok(Some(SocketAddress::Netlink(socket.address()))),
         }
     }
 
@@ -33,7 +34,9 @@ impl Socket {
             SocketBackend::Inet(socket) => socket
                 .peer_address()
                 .map(|value| Some(SocketAddress::Inet(value))),
-            SocketBackend::Packet(_) | SocketBackend::Kobject(_) => Err(SocketError::NotConnected),
+            SocketBackend::Packet(_) | SocketBackend::Kobject(_) | SocketBackend::Route(_) => {
+                Err(SocketError::NotConnected)
+            }
         }
     }
 
@@ -43,6 +46,7 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.poll_state(),
             SocketBackend::Packet(socket) => socket.poll_state(),
             SocketBackend::Kobject(socket) => socket.poll_state(),
+            SocketBackend::Route(socket) => socket.poll_state(),
         }
     }
 
@@ -61,6 +65,7 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.try_poll_state(),
             SocketBackend::Packet(socket) => socket.try_poll_state(),
             SocketBackend::Kobject(socket) => socket.try_poll_state(),
+            SocketBackend::Route(socket) => socket.try_poll_state(),
         }
     }
 
@@ -70,6 +75,7 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.readiness_generation(),
             SocketBackend::Packet(socket) => socket.readiness_generation(),
             SocketBackend::Kobject(socket) => socket.readiness_generation(),
+            SocketBackend::Route(socket) => socket.readiness_generation(),
         }
     }
 
@@ -91,6 +97,14 @@ impl Socket {
                 ],
                 None,
             ),
+            SocketBackend::Route(socket) => (
+                [
+                    Some(SocketWaitSource::notification(socket.wait_source())),
+                    None,
+                    None,
+                ],
+                None,
+            ),
         }
     }
 
@@ -105,6 +119,7 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.consume_wait_notifications(),
             SocketBackend::Packet(socket) => socket.consume_wait_notifications(),
             SocketBackend::Kobject(socket) => socket.consume_wait_notification(),
+            SocketBackend::Route(socket) => socket.consume_wait_notification(),
         }
     }
 }

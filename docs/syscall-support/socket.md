@@ -2,7 +2,7 @@
 
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
-| 198 | `socket` | Partial | AF_UNIX、AF_INET、AF_PACKET、有限 AF_NETLINK |
+| 198 | `socket` | Partial | AF_UNIX、AF_INET、AF_PACKET、有限 AF_NETLINK（`NETLINK_KOBJECT_UEVENT` 与只读的 `NETLINK_ROUTE`） |
 | 199 | `socketpair` | Complete | AF_UNIX stream/datagram/seqpacket |
 | 200 | `bind` | Partial | 支持 domain 的 address scope |
 | 201 | `listen` | Partial | AF_UNIX/IPv4 TCP backlog；Linux signed-32 ABI 与 4096 kernel cap |
@@ -192,3 +192,14 @@ USER1000ms与非进展ACK、无route+IFDOWN探测预算、持续零窗口应答�
 字段受actual transport/NET guard独占；沿用实际每slot clock/完整poll200ns benchmark门禁。
 ACK 准入上界是发送 high-water `send_seq_no`，与可回退的重传游标 `remote_last_seq` 分离；未发送的数据、SYN 与 FIN 不能被确认。keepalive 遇 route 失败时消耗一次 probe count，并安排后续 deadline，不伪造成功的 wire 发送。
 zero-window 使用下述有界原生 timer；不声明完整 Linux TCP 扩展、PMTU/fragment 支持。
+
+## NETLINK_ROUTE（只读）
+
+`socket(AF_NETLINK, SOCK_RAW|SOCK_DGRAM, NETLINK_ROUTE)` 支持查询，足以让 `getifaddrs`（musl/libuv/Node `os.networkInterfaces`）与
+`ip link/addr/route show` 工作：`RTM_GETLINK`（dump，以及按 `ifi_index` 或 `IFLA_IFNAME` 的单设备查询）、IPv4 的 `RTM_GETADDR`
+与 `RTM_GETROUTE` dump。dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓冲容量逐包生成，最后以 `NLMSG_DONE` 结束；
+被截断的数据报余下部分丢失（`MSG_TRUNC`）。首次发送自动 bind；port 空间按（协议，NET）隔离。
+
+明确不支持，均返回 `EOPNOTSUPP` 而不伪造成功：`RTM_NEW*/DEL*/SET*` 修改请求、非 dump 的 `RTM_GETADDR/GETROUTE`（含 `ip route get`）、
+多播订阅（bind 的 `nl_groups` 非零）与 IPv6 地址族（dump 为空）。`ip addr add`、`ip route add`、`ip monitor` 因此不可用；
+这些操作仍可通过 `SIOCSIF*`/`SIOCADDRT` ioctl 完成。

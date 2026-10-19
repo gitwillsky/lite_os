@@ -25,6 +25,24 @@ pub(crate) struct InterfaceSnapshot {
     pub(crate) up: bool,
 }
 impl InterfaceSnapshot {
+    /// `SIOCGIFFLAGS` 与 rtnetlink `ifi_flags` 共用的 `IFF_*`，保证两条路径报告同一份状态。
+    ///
+    /// # Returns
+    ///
+    /// loopback 为 `IFF_LOOPBACK`，否则 `IFF_BROADCAST|IFF_MULTICAST`；链路 UP 时再加 `IFF_UP|IFF_RUNNING`。
+    pub(crate) fn flags(&self) -> u16 {
+        const IFF_UP: u16 = 0x1;
+        const IFF_BROADCAST: u16 = 0x2;
+        const IFF_LOOPBACK: u16 = 0x8;
+        const IFF_RUNNING: u16 = 0x40;
+        const IFF_MULTICAST: u16 = 0x1000;
+        (if self.loopback {
+            IFF_LOOPBACK
+        } else {
+            IFF_BROADCAST | IFF_MULTICAST
+        }) | if self.up { IFF_UP | IFF_RUNNING } else { 0 }
+    }
+
     fn capture(interface: &NetworkInterface) -> Self {
         Self {
             index: interface.index,

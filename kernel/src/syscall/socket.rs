@@ -64,9 +64,6 @@ const SIOCSIFMTU: usize = 0x8922;
 const SIOCGIFHWADDR: usize = 0x8927;
 const SIOCGIFINDEX: usize = 0x8933;
 const IFF_UP: u16 = 0x1;
-const IFF_BROADCAST: u16 = 0x2;
-const IFF_RUNNING: u16 = 0x40;
-const IFF_MULTICAST: u16 = 0x1000;
 const ARPHRD_ETHER: u16 = 1;
 
 /// Linux socket 等待被 signal 打断时，无限等待允许 SA_RESTART，设置超时则直接 EINTR。

@@ -14,6 +14,8 @@ use super::{
 
 const MESSAGE_CAPACITY: usize = 256;
 const KOBJECT_UEVENT_GROUP: u32 = 1;
+/// `NETLINK_KOBJECT_UEVENT` 的协议号，作为 port 空间 key。
+const PROTOCOL_KOBJECT_UEVENT: u8 = 15;
 
 #[derive(Clone, Copy)]
 struct Uevent {
@@ -85,7 +87,8 @@ struct KobjectRegistry {
     // OWNER: actual endpoint弱目录与NET/port唯一索引在同一guard发表/退休。
     // 索引不拥有endpoint或namespace，端口查找不扫描socket，也不升级临时Arc。
     endpoints: FallibleMap<u64, Weak<KobjectSocket>>,
-    ports: FallibleMap<(u64, u32), u64>,
+    // key = (协议, NET, port)：Linux 每个 netlink 协议拥有独立 port 空间。
+    ports: FallibleMap<(u8, u64, u32), u64>,
     last_endpoint: u64,
 }
 
@@ -103,6 +106,13 @@ pub(super) struct KobjectSocket {
 // broadcaster只在guard内取得一个临时Arc，所有enqueue/notify/最后Arc释放均在guard外。
 static REGISTRY: Once<Mutex<KobjectRegistry>> = Once::new();
 
+/// 在 registry guard 内访问 port 索引；其他 netlink 协议复用同一个 port 空间表。
+pub(super) fn with_ports<R>(
+    operation: impl FnOnce(&mut FallibleMap<(u8, u64, u32), u64>) -> R,
+) -> R {
+    operation(&mut registry().lock().ports)
+}
+
 fn registry() -> &'static Mutex<KobjectRegistry> {
     REGISTRY.call_once(|| {
         Mutex::new(KobjectRegistry {
@@ -112,6 +122,51 @@ fn registry() -> &'static Mutex<KobjectRegistry> {
             last_endpoint: 0,
         })
     })
+}
+
+/// 为 `(协议, NET)` 选择 port：0 请求用调用者的可见 TGID，碰撞时搜索负 port 范围；显式 port 碰撞返回
+/// `AddressInUse`。只读 registry，发表由 caller 在同一 guard 内完成，选择与发表之间没有空窗。
+///
+/// # Parameters
+///
+/// - `ports`: registry 的 port 索引。
+/// - `protocol` / `net`: port 空间。
+/// - `seed`: endpoint identity，让并发 autobind 落在不同起点。
+/// - `requested`: 用户请求的 port，0 表示自动选择。
+/// - `caller_tgid`: 自动选择时优先使用的可见 TGID。
+pub(super) fn choose_port(
+    ports: &FallibleMap<(u8, u64, u32), u64>,
+    protocol: u8,
+    net: u64,
+    seed: u64,
+    requested: u32,
+    caller_tgid: u32,
+) -> Result<u32, SocketError> {
+    let mut port = if requested == 0 {
+        caller_tgid
+    } else {
+        requested
+    };
+    if ports.contains_key(&(protocol, net, port)) {
+        if requested != 0 {
+            return Err(SocketError::AddressInUse);
+        }
+        // 候选数不超过现有port数+1，至少一个空位；port无公开固定选择规则。
+        let range = i32::MAX as u64 - 4095;
+        let mut candidate = -4097i64 - (seed % range) as i64;
+        loop {
+            port = candidate as i32 as u32;
+            if !ports.contains_key(&(protocol, net, port)) {
+                break;
+            }
+            candidate = if candidate == i32::MIN as i64 {
+                -4097
+            } else {
+                candidate - 1
+            };
+        }
+    }
+    Ok(port)
 }
 
 impl KobjectSocket {
@@ -173,39 +228,26 @@ impl KobjectSocket {
                 drop(state_guard);
                 drop(registry);
                 prepared = Some(
-                    FallibleMap::try_prepare((self.memory.namespace_ref().id(), 0), self.id)
-                        .map_err(|_| SocketError::NoMemory)?,
+                    FallibleMap::try_prepare(
+                        (PROTOCOL_KOBJECT_UEVENT, self.memory.namespace_ref().id(), 0),
+                        self.id,
+                    )
+                    .map_err(|_| SocketError::NoMemory)?,
                 );
                 continue;
             }
             let net = self.memory.namespace_ref().id();
-            let mut port = if address.port_id == 0 {
-                caller_tgid
-            } else {
-                address.port_id
-            };
-            if registry.ports.contains_key(&(net, port)) {
-                if address.port_id != 0 {
-                    return Err(SocketError::AddressInUse);
-                }
-                // 候选数不超过现有port数+1，至少一个空位；port无公开固定选择规则。
-                let range = i32::MAX as u64 - 4095;
-                let mut candidate = -4097i64 - (self.id % range) as i64;
-                loop {
-                    port = candidate as i32 as u32;
-                    if !registry.ports.contains_key(&(net, port)) {
-                        break;
-                    }
-                    candidate = if candidate == i32::MIN as i64 {
-                        -4097
-                    } else {
-                        candidate - 1
-                    };
-                }
-            }
+            let port = choose_port(
+                &registry.ports,
+                PROTOCOL_KOBJECT_UEVENT,
+                net,
+                self.id,
+                address.port_id,
+                caller_tgid,
+            )?;
             // 2. 所有准入成功，预分配索引与实际绑定一起无失败发表。
             let mut entry = prepared.take().expect("prepared netlink port node");
-            entry.set_key((net, port));
+            entry.set_key((PROTOCOL_KOBJECT_UEVENT, net, port));
             registry.ports.commit_vacant(entry);
             state.address = Some(NetlinkAddress {
                 port_id: port,
@@ -348,9 +390,11 @@ impl KobjectSocket {
                 .as_ref()
                 .and_then(|state| state.address)
                 .and_then(|address| {
-                    registry
-                        .ports
-                        .take_entry(&(self.memory.namespace_ref().id(), address.port_id))
+                    registry.ports.take_entry(&(
+                        PROTOCOL_KOBJECT_UEVENT,
+                        self.memory.namespace_ref().id(),
+                        address.port_id,
+                    ))
                 });
             (registry.endpoints.take_entry(&self.id), port, state)
         };

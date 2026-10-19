@@ -79,3 +79,11 @@ receive_buf/start_xmit：丢帧与FIFO故障计device stats，TX失败best-effor
 本轮支持目标已收敛为学习型内核、一张物理网卡加 lo 的 IPv4 TCP/UDP。IPv6、多网卡、
 rtnetlink/veth/设备迁移、多地址、组播、通用 raw protocol 与复杂 PMTU 策略不作为本轮
 新增要求。已有入口须符合声明范围并通过集中门禁。
+
+### NETLINK_ROUTE actual 域与 owner
+
+`RouteSocket` 与 `KobjectSocket` 是两个独立 backend，共享同一张 `(协议, NET, port)` 端口表（`kobject::with_ports`/`choose_port`），
+加锁顺序固定为 endpoint state -> 端口表，close 不在持有端口表时取 state。报文 codec 全部在 `socket/rtnetlink/codec.rs`，
+不读内核状态；快照只来自 `interface_snapshots`/`network_snapshot`/`route_snapshot`，不保存第二份接口或 FIB，
+`ifi_flags` 与 `SIOCGIFFLAGS` 共用 `InterfaceSnapshot::flags`。dump 不预先排队：endpoint 只持有冻结快照与游标，回复内存有界。
+范围见 `docs/syscall-support/socket.md`；修改请求与多播订阅不实现。

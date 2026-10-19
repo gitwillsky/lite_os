@@ -62,9 +62,9 @@ mod udp_endpoint;
 #[path = "inet/wait.rs"]
 mod wait;
 pub(crate) use configuration::{
-    configure_address, configure_broadcast, configure_mtu, configure_netmask, configure_route,
-    configure_up, interface_index, interface_snapshot, interface_snapshots, network_snapshot,
-    route_snapshot,
+    InterfaceSnapshot, RouteSnapshot, configure_address, configure_broadcast, configure_mtu,
+    configure_netmask, configure_route, configure_up, interface_index, interface_snapshot,
+    interface_snapshots, network_snapshot, route_snapshot,
 };
 pub(in crate::socket) use configuration::{
     inject_loopback, packet_interface, packet_transmit_available,

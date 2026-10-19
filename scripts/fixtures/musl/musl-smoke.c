@@ -68,6 +68,7 @@ int verify_resource_usage(void);
 int verify_mremap(void);
 int verify_statx(void);
 int verify_copy_file_range(void);
+int verify_netlink_route(void);
 
 static void signal_handler(int signal)
 {
@@ -665,6 +666,8 @@ static int run_smoke(int argc, char **argv, char **envp)
 	if (statx_result != 0) return 64 + statx_result;
 	int copy_result = verify_copy_file_range();
 	if (copy_result != 0) return 32 + copy_result;
+	int route_result = verify_netlink_route();
+	if (route_result != 0) return 100 + route_result;
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 14;
 	return 0;
 }

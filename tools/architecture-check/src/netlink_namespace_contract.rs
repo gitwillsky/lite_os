@@ -15,9 +15,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let bind = source(sources, "kernel/src/syscall/socket.rs");
     let observation = source(sources, "kernel/src/socket/observation.rs");
     if !endpoint.contains("memory:Arc<SocketMemory>")
-        || !endpoint.contains("ports:FallibleMap<(u64,u32),u64>")
+        || !endpoint.contains("ports:FallibleMap<(u8,u64,u32),u64>")
         || !endpoint.contains("letnet=self.memory.namespace_ref().id();")
-        || !endpoint.contains("registry.ports.contains_key(&(net,port))")
+        || !endpoint.contains("ports.contains_key(&(protocol,net,port))")
+        || !endpoint.contains("choose_port(&registry.ports,PROTOCOL_KOBJECT_UEVENT,net,self.id,address.port_id,caller_tgid,)")
         || !endpoint.contains("groups:address.groups&KOBJECT_UEVENT_GROUP")
         || !endpoint.contains("ifaddress.port_id!=bound.port_id{")
         || !endpoint.contains("caller_tgid")

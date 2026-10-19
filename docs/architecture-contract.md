@@ -171,7 +171,7 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/namespace/rlimit_counts.rs :: RlimitCounters.users` | `Mutex < FallibleMap < (RlimitResource , u32) , u64 > >` |
 | `kernel/src/socket/inet/route.rs :: RoutingTable.prefixes` | `[FallibleMap < Key , Record > ; 33]` |
 | `kernel/src/socket/inet/route_reply.rs :: RouteReplies.packets` | `FallibleMap < u64 , Reply >` |
-| `kernel/src/socket/kobject.rs :: KobjectRegistry.ports` | `FallibleMap < (u64 , u32) , u64 >` |
+| `kernel/src/socket/kobject.rs :: KobjectRegistry.ports` | `FallibleMap < (u8 , u64 , u32) , u64 >` |
 | `kernel/src/socket/kobject.rs :: KobjectSocketState.queue` | `FallibleMap < u64 , Uevent >` |
 | `kernel/src/socket/net_namespace.rs :: NetworkNamespaceDirectory.entries` | `crate :: fallible_tree :: FallibleMap < u64 , Weak < NetNamespace > >` |
 | `kernel/src/storage/fs/procfs/lookup_cache.rs :: ProcLookupCache[0]` | `Mutex < FallibleMap < (ProcNode , u64) , Arc < ProcInode > > >` |

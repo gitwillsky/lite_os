@@ -196,6 +196,13 @@ fn send_one_message(
     bytes: &[u8],
     rights: &mut Option<crate::socket::UnixRights>,
 ) -> isize {
+    // Linux 在首次 sendmsg 里 autobind netlink socket；回复要有可投递的 port。
+    if let Err(error) = context
+        .socket
+        .autobind_netlink(current_task().unwrap().visible_tgid())
+    {
+        return socket_error(error);
+    }
     loop {
         let (target, _inode) = match context.destination() {
             Ok(target) => target,

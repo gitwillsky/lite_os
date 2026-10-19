@@ -11,6 +11,7 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.close_description(),
             SocketBackend::Packet(socket) => socket.close_description(),
             SocketBackend::Kobject(socket) => socket.close_description(),
+            SocketBackend::Route(socket) => socket.close_description(),
         }
     }
 }

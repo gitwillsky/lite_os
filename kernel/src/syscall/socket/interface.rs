@@ -1,10 +1,9 @@
 use super::{
-    ARPHRD_ETHER, IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_UP, IFNAMSIZ, IFREQ_SIZE,
-    SIOCADDRT, SIOCDELRT, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFHWADDR,
-    SIOCGIFINDEX, SIOCGIFMTU, SIOCGIFNAME, SIOCGIFNETMASK, SIOCSIFADDR, SIOCSIFBRDADDR,
-    SIOCSIFFLAGS, SIOCSIFMTU, SIOCSIFNETMASK, Socket, SocketDomain, TaskControlBlock,
-    configure_address, configure_broadcast, configure_mtu, configure_netmask,
-    configure_route as configure_ipv4_route, configure_up, decode_inet_sockaddr,
+    ARPHRD_ETHER, IFF_UP, IFNAMSIZ, IFREQ_SIZE, SIOCADDRT, SIOCDELRT, SIOCGIFADDR, SIOCGIFBRDADDR,
+    SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMTU, SIOCGIFNAME,
+    SIOCGIFNETMASK, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFFLAGS, SIOCSIFMTU, SIOCSIFNETMASK, Socket,
+    SocketDomain, TaskControlBlock, configure_address, configure_broadcast, configure_mtu,
+    configure_netmask, configure_route as configure_ipv4_route, configure_up, decode_inet_sockaddr,
     encode_inet_sockaddr, errno, interface_index, interface_snapshot, interface_snapshots, netmask,
     socket_error,
 };
@@ -318,12 +317,7 @@ pub(in crate::syscall) fn socket_ioctl(
     let result: Result<(), isize> = match request {
         SIOCGIFNAME => Ok(()),
         SIOCGIFFLAGS => {
-            let flags = (if snapshot.loopback {
-                0x8
-            } else {
-                IFF_BROADCAST | IFF_MULTICAST
-            }) | if snapshot.up { IFF_UP | IFF_RUNNING } else { 0 };
-            ifreq[16..18].copy_from_slice(&flags.to_ne_bytes());
+            ifreq[16..18].copy_from_slice(&snapshot.flags().to_ne_bytes());
             Ok(())
         }
         SIOCSIFFLAGS => {

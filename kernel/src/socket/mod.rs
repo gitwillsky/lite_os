@@ -13,6 +13,8 @@ mod message_limits;
 #[path = "observation.rs"]
 mod observation;
 mod preparation;
+#[path = "rtnetlink.rs"]
+mod rtnetlink;
 pub(crate) use preparation::{PreparedSocket, SocketRequest};
 #[path = "options.rs"]
 mod options;
@@ -45,6 +47,7 @@ use inet::{InetProtocol, InetSocket};
 use kobject::KobjectSocket;
 pub(crate) use kobject::publish_drm_hotplug;
 use packet::PacketSocket;
+use rtnetlink::RouteSocket;
 use unix::UnixSocket;
 pub(crate) use unix::{
     SCM_MAX_FD, UnixAddress, UnixFileLimit, UnixNode, UnixPassedFile, UnixPathIdentity,
@@ -52,10 +55,10 @@ pub(crate) use unix::{
 };
 
 pub(crate) use inet::{
-    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, configure_address,
-    configure_broadcast, configure_mtu, configure_netmask, configure_route, configure_up,
-    create_net_namespace, dispatch_network_work, interface_index, interface_snapshot,
-    interface_snapshots, network_snapshot, network_work_due, route_snapshot,
+    InterfaceSnapshot, Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest,
+    RouteSnapshot, configure_address, configure_broadcast, configure_mtu, configure_netmask,
+    configure_route, configure_up, create_net_namespace, dispatch_network_work, interface_index,
+    interface_snapshot, interface_snapshots, network_snapshot, network_work_due, route_snapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +220,7 @@ enum SocketBackend {
     Inet(Arc<InetSocket>),
     Packet(Arc<PacketSocket>),
     Kobject(Arc<KobjectSocket>),
+    Route(Arc<RouteSocket>),
 }
 
 /// OFD 唯一 socket backend facade；AF_UNIX/AF_INET adapter 不穿透 fs seam。
@@ -270,6 +274,9 @@ impl Socket {
             (SocketBackend::Kobject(socket), SocketAddress::Netlink(address)) => {
                 socket.bind(address, caller_tgid)
             }
+            (SocketBackend::Route(socket), SocketAddress::Netlink(address)) => {
+                socket.bind(address, caller_tgid)
+            }
             _ => Err(SocketError::Invalid),
         }
     }
@@ -311,7 +318,9 @@ impl Socket {
             }
             SocketBackend::Inet(socket) => socket.listen(backlog),
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
-            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Kobject(_) | SocketBackend::Route(_) => {
+                Err(SocketError::OperationNotSupported)
+            }
         }
     }
 
@@ -372,7 +381,9 @@ impl Socket {
                     Err(error) => Err(error.into()),
                 }
             }
-            (SocketBackend::Kobject(_), _) => Err(SocketError::OperationNotSupported.into()),
+            (SocketBackend::Kobject(_) | SocketBackend::Route(_), _) => {
+                Err(SocketError::OperationNotSupported.into())
+            }
             _ => Err(SocketError::Invalid.into()),
         }
     }
@@ -404,8 +415,9 @@ impl Socket {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.connection_result(),
             SocketBackend::Unix(_) => Ok(()),
-            SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
-            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Packet(_) | SocketBackend::Kobject(_) | SocketBackend::Route(_) => {
+                Err(SocketError::OperationNotSupported)
+            }
         }
     }
 
@@ -420,6 +432,7 @@ impl Socket {
             SocketBackend::Unix(socket) => socket.take_error(),
             SocketBackend::Packet(socket) => socket.take_error(),
             SocketBackend::Kobject(socket) => socket.take_error(),
+            SocketBackend::Route(socket) => socket.take_error(),
         }
     }
 
@@ -493,6 +506,7 @@ impl Socket {
                     })
             }
             SocketBackend::Kobject(socket) => socket.receive(output, peek),
+            SocketBackend::Route(socket) => socket.receive(output, peek),
         }
     }
 
@@ -620,8 +634,25 @@ impl Socket {
             (SocketBackend::Packet(socket), None) => {
                 socket.send_to(input, None).map_err(Into::into)
             }
+            (
+                SocketBackend::Route(socket),
+                Some(SocketSendDestination::Address(SocketAddress::Netlink(address))),
+            ) => socket.send(input, Some(address)).map_err(Into::into),
+            (SocketBackend::Route(socket), None) => socket.send(input, None).map_err(Into::into),
             (SocketBackend::Kobject(_), _) => Err(SocketError::OperationNotSupported.into()),
             _ => Err(SocketError::Invalid.into()),
+        }
+    }
+
+    /// 首次发送前为 `NETLINK_ROUTE` 自动绑定 port（Linux `netlink_autobind`）；其他 backend 无操作。
+    ///
+    /// # Parameters
+    ///
+    /// - `caller_tgid`: 调用者的可见 TGID，优先作为 port。
+    pub(crate) fn autobind_netlink(&self, caller_tgid: u32) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Route(socket) => socket.autobind(caller_tgid),
+            _ => Ok(()),
         }
     }
 
@@ -630,7 +661,9 @@ impl Socket {
             SocketBackend::Unix(socket) => socket.shutdown(how),
             SocketBackend::Inet(socket) => socket.shutdown(how),
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
-            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Kobject(_) | SocketBackend::Route(_) => {
+                Err(SocketError::OperationNotSupported)
+            }
         }
     }
 }

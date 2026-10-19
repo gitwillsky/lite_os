@@ -26,6 +26,7 @@ impl Socket {
                 Ok(())
             }
             SocketBackend::Kobject(socket) => socket.set_buffer_limit(direction, value, forced),
+            SocketBackend::Route(socket) => socket.set_buffer_limit(direction, value, forced),
             _ => Err(SocketError::OperationNotSupported),
         }
     }
@@ -34,6 +35,7 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => Ok(socket.buffer_limit(direction)),
             SocketBackend::Kobject(socket) => socket.buffer_limit(direction),
+            SocketBackend::Route(socket) => socket.buffer_limit(direction),
             _ => Err(SocketError::OperationNotSupported),
         }
     }
