@@ -216,7 +216,7 @@ pub(super) fn link(
     counters[6] = statistics.received_dropped;
     counters[7] = statistics.transmitted_dropped;
     let mut encoded = [0u8; 192];
-    for (chunk, counter) in encoded.chunks_exact_mut(8).zip(counters) {
+    for (chunk, counter) in encoded.as_chunks_mut::<8>().0.iter_mut().zip(counters) {
         chunk.copy_from_slice(&counter.to_ne_bytes());
     }
     message.attribute(IFLA_STATS64, &encoded);

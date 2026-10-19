@@ -671,12 +671,7 @@ fn fill_chunk(dump: &mut Dump, port: u32, limit: usize, chunk: &mut Vec<u8>, pee
         }
         next += 1;
     }
-    let mut finished = false;
-    if next >= total {
-        if push(codec::done(dump.sequence, port), chunk) {
-            finished = true;
-        }
-    }
+    let finished = next >= total && push(codec::done(dump.sequence, port), chunk);
     if !peek {
         dump.next = next;
     }

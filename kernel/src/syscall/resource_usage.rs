@@ -62,7 +62,12 @@ pub(crate) fn encode_rusage(usage: &ResourceUsage) -> [u8; RUSAGE_BYTES] {
         usage.involuntary_switches,
     ];
     let mut bytes = [0u8; RUSAGE_BYTES];
-    for (chunk, field) in bytes.chunks_exact_mut(size_of::<u64>()).zip(fields) {
+    for (chunk, field) in bytes
+        .as_chunks_mut::<{ size_of::<u64>() }>()
+        .0
+        .iter_mut()
+        .zip(fields)
+    {
         chunk.copy_from_slice(&field.to_ne_bytes());
     }
     bytes

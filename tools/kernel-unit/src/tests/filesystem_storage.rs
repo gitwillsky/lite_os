@@ -97,6 +97,19 @@ mod file_page_range_tests {
     }
 
     #[test]
+    fn extension_keeps_start_and_stops_at_the_signed_file_ceiling() {
+        let range = FilePageRange::new(0x2000, 4096).unwrap();
+        let grown = range.extended(2).unwrap();
+
+        assert_eq!(grown.count(), 3);
+        assert_eq!(grown.page(2), Some(4));
+        let last = FilePageRange::new(0x7fff_ffff_ffff_e000, 4096).unwrap();
+        assert_eq!(last.extended(0), Some(last));
+        assert_eq!(last.extended(1), None);
+        assert_eq!(range.extended(u64::MAX), None);
+    }
+
+    #[test]
     fn only_a_page_start_below_eof_contains_file_bytes() {
         let range = FilePageRange::new(0, 2 * 4096).unwrap();
 
