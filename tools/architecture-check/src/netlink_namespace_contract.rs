@@ -23,7 +23,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !endpoint.contains("ifaddress.port_id!=bound.port_id{")
         || !endpoint.contains("caller_tgid")
         || !preparation.contains("KobjectSocket::new(notify,self.memory.clone())")
-        || !bind.contains("letcaller_tgid=current_task().unwrap().visible_tgid();")
+        || !bind.contains("letcaller_tgid=task.visible_tgid();")
         || bind.contains("SocketAddress::Netlink(NetlinkAddress{port_id,groups})")
     {
         errors.push("netlink-domain: same actual SocketMemory NET must own scoped port index/native group rebind; syscall supplies visible TGID without rewriting port0".into());

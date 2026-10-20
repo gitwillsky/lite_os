@@ -261,6 +261,15 @@ pub(super) fn sync_file(fd: usize) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
+    sync_ofd(&ofd)
+}
+
+/// 提交一个 inode-backed OFD 的数据与 metadata；io_uring 的 worker 与 `fsync(2)` 共用。
+///
+/// # Returns
+///
+/// 成功零；非 inode OFD `EINVAL`；底层 I/O 失败返回对应负 errno。
+pub(super) fn sync_ofd(ofd: &OpenFileDescription) -> isize {
     if !matches!(ofd.kind, OpenFileKind::Inode) {
         return -errno::EINVAL;
     }

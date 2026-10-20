@@ -397,7 +397,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         sources,
         "kernel/src/syscall/fs/io/sequential/write.rs",
         &[
-            "crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length, nonblocking)",
+            "crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length, nonblocking, 0)",
         ],
         "sequential socket write must delegate to the sole send engine owning frozen timeout and progress",
         errors,

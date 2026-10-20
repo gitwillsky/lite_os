@@ -1,12 +1,15 @@
-//! SQE 的通用 init 校验与不依赖 fd 表的 opcode（NOP）。
+//! SQE 的通用 init 校验与 prep：把一个 SQE 解码成链的成员（[`Member`]）。
 //!
-//! 带 fd 的 opcode（读写、fsync、close）需要提交者的 fd 表、地址空间和读写核心，它们属于 `syscall`；
-//! 本模块经 [`Submitter`] 把它们交给提交者，自己只保证校验顺序与 Linux 一致。
+//! 带 fd 的 opcode（读写、fsync、close…）需要提交者的 fd 表、地址空间和读写核心，它们的 prep 与执行
+//! 属于 `syscall`；本模块经 [`Submitter`] 把它们交给提交者，自己只保证校验顺序与 Linux 一致，并处理不依赖
+//! fd 表的 NOP。
 //!
-//! 错误分两类，与 Linux 一致：init/prep 阶段失败（flags 非法、opcode 不支持、字段非法）后不再提交
-//! 后续 SQE（[`Flow::Stop`]）；issue 阶段的失败（如注入的负结果、无效 fd）只体现在该 CQE 的 `res`。
+//! init/prep 失败（flags 非法、opcode 不支持、字段非法）的成员是 [`Step::Failed`]：它所在的链不执行，
+//! 且本次提交在链结束处停止（见 `chain`）。issue 阶段的失败（如注入的负结果、无效 fd）只体现在该 CQE 的
+//! `res`，并按链规则取消后继。
 
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
 use syscall_abi::errno;
 
 use super::{
@@ -14,7 +17,8 @@ use super::{
         IOSQE_BUFFER_SELECT, IOSQE_CQE_SKIP_SUCCESS, IOSQE_IO_DRAIN, IOSQE_IO_HARDLINK,
         IOSQE_IO_LINK, NOP_INJECT_RESULT, OP_LAST, OP_NOP, SQE_VALID_FLAGS, Sqe, op_supported,
     },
-    ring::{Flow, Ring},
+    chain::{Chain, Link, Member, Nop, Step},
+    ring::Ring,
 };
 
 const NOP_FILE: u32 = 1 << 1;
@@ -27,84 +31,92 @@ const NOP_FLAGS: u32 =
 
 /// 提交者提供的能力：fd 表、地址空间与读写核心都在 `syscall`，ring 域不依赖它们。
 pub(crate) trait Submitter {
-    /// `fd` 在提交者 fd 表中是否存在（`IORING_NOP_FILE`）。
-    fn fd_exists(&self, fd: i32) -> bool;
+    /// prep 后拥有全部用户数据的 op（读写、fsync、close、poll、timeout、cancel…）。
+    type Op;
 
-    /// 执行需要 fd 表、地址空间或挂起能力的 opcode。实现负责 prep 校验、同步尝试，以及发布 CQE
-    /// 或把请求挂起；init/prep 阶段失败返回 [`Flow::Stop`]。
-    fn issue_op(&self, ring: &Arc<Ring>, sqe: Sqe) -> Flow;
+    /// 校验并解码需要 fd 表、地址空间或挂起能力的 opcode；失败返回正 errno。
+    fn prepare_op(&self, ring: &Ring, sqe: &Sqe) -> Result<Self::Op, isize>;
+
+    /// 开始执行一条已组装、未失败的链：成员按序 issue，直到某个成员需要等待，其余随之挂起。
+    fn launch(&self, ring: &Arc<Ring>, chain: Chain<Self::Op>);
 }
 
-/// 发布 init/prep 失败的 CQE 并停止本次提交。
-pub(crate) fn fail_init(ring: &Ring, sqe: &Sqe, error: isize) -> Flow {
-    ring.complete(sqe.user_data, false, -(error as i32));
-    Flow::Stop
+/// 校验并解码一个 SQE。
+pub(crate) fn prepare<S: Submitter>(
+    ring: &Ring,
+    sqe: &Sqe,
+    submitter: &S,
+) -> Member<S::Op> {
+    let step = match decode(ring, sqe, submitter) {
+        Ok(step) => step,
+        Err(error) => Step::Failed(-(error as i32)),
+    };
+    let link = if sqe.flags & IOSQE_IO_HARDLINK != 0 {
+        Link::Hard
+    } else if sqe.flags & IOSQE_IO_LINK != 0 {
+        Link::Soft
+    } else {
+        Link::None
+    };
+    Member::new(
+        sqe.user_data,
+        sqe.flags & IOSQE_CQE_SKIP_SUCCESS != 0,
+        link,
+        sqe.flags & IOSQE_IO_DRAIN != 0,
+        step,
+    )
 }
 
-/// 校验并执行一个 SQE。
-pub(crate) fn issue(ring: &Arc<Ring>, sqe: Sqe, submitter: &dyn Submitter) -> Flow {
+fn decode<S: Submitter>(ring: &Ring, sqe: &Sqe, submitter: &S) -> Result<Step<S::Op>, isize> {
     if sqe.opcode >= OP_LAST {
-        return fail_init(ring, &sqe, errno::EINVAL);
+        return Err(errno::EINVAL);
     }
     if sqe.flags & !SQE_VALID_FLAGS != 0 {
-        return fail_init(ring, &sqe, errno::EINVAL);
+        return Err(errno::EINVAL);
     }
     // 没有任何已实现的 opcode 支持 buffer-select；Linux 对“已知但该 op 不支持”返回 EOPNOTSUPP。
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 {
-        return fail_init(ring, &sqe, errno::EOPNOTSUPP);
+        return Err(errno::EOPNOTSUPP);
     }
-    // 链式提交尚未实现：静默忽略 LINK 会让“前一个失败则取消后续”的语义丢失，所以显式拒绝。
-    if sqe.flags & (IOSQE_IO_LINK | IOSQE_IO_HARDLINK) != 0 {
-        return fail_init(ring, &sqe, errno::EOPNOTSUPP);
+    // 被跳过的 CQE 使“全部完成”无从由 CQ 观察，所以一旦用过 SKIP_SUCCESS，ring 上的 DRAIN 恒为
+    // EOPNOTSUPP（Linux `IO_RING_F_DRAIN_DISABLED`）。
+    if sqe.flags & IOSQE_CQE_SKIP_SUCCESS != 0 {
+        ring.drain_disabled().store(true, Ordering::Release);
     }
-    // 已有挂起请求（阻塞型读写）而 DRAIN 的排序语义尚未实现：静默忽略会让“等所有在途请求完成后
-    // 再执行”的承诺落空，所以显式拒绝，Linux 在 DRAIN 不可用时同样返回 EOPNOTSUPP。
-    if sqe.flags & IOSQE_IO_DRAIN != 0 {
-        return fail_init(ring, &sqe, errno::EOPNOTSUPP);
+    if sqe.flags & IOSQE_IO_DRAIN != 0 && ring.drain_disabled().load(Ordering::Acquire) {
+        return Err(errno::EOPNOTSUPP);
     }
     if !op_supported(sqe.opcode) {
-        return fail_init(ring, &sqe, errno::EOPNOTSUPP);
+        return Err(errno::EOPNOTSUPP);
     }
     // personality 需要注册表（io_uring_register PERSONALITY），尚未实现；使用提交者的当前凭据。
     if sqe.personality != 0 {
-        return fail_init(ring, &sqe, errno::EINVAL);
+        return Err(errno::EINVAL);
     }
     match sqe.opcode {
-        OP_NOP => nop(ring, sqe, submitter),
-        _ => submitter.issue_op(ring, sqe),
+        OP_NOP => nop(sqe).map(Step::Nop),
+        _ => submitter.prepare_op(ring, sqe).map(Step::Op),
     }
 }
 
-fn nop(ring: &Ring, sqe: Sqe, submitter: &dyn Submitter) -> Flow {
+fn nop(sqe: &Sqe) -> Result<Nop, isize> {
     if sqe.ioprio != 0 || sqe.op_flags & !NOP_FLAGS != 0 {
-        return fail_init(ring, &sqe, errno::EINVAL);
+        return Err(errno::EINVAL);
     }
     // ring 没有 CQE32/CQE_MIXED，所以 NOP_CQE32 与 Linux 一样是 EINVAL。
     if sqe.op_flags & NOP_CQE32 != 0 {
-        return fail_init(ring, &sqe, errno::EINVAL);
-    }
-    let mut result: i32 = if sqe.op_flags & NOP_INJECT_RESULT != 0 {
-        sqe.len as i32
-    } else {
-        0
-    };
-    if sqe.op_flags & NOP_FILE != 0 {
-        let fixed = sqe.op_flags & NOP_FIXED_FILE != 0;
-        // 没有注册文件表，所以 fixed 引用恒为 EBADF。
-        if fixed || !submitter.fd_exists(sqe.fd) {
-            result = -(errno::EBADF as i32);
-        }
-    }
-    // 没有注册缓冲区，所以 fixed buffer 引用恒为 EFAULT（Linux：`io_find_buf_node` 失败）。
-    if sqe.op_flags & NOP_FIXED_BUFFER != 0 && result >= 0 {
-        result = -(errno::EFAULT as i32);
+        return Err(errno::EINVAL);
     }
     // NOP_TW 只改变完成发生在哪个 task context；这里同步完成，结果相同。
     let _ = NOP_TW;
-    ring.complete(
-        sqe.user_data,
-        sqe.flags & IOSQE_CQE_SKIP_SUCCESS != 0,
-        result,
-    );
-    Flow::Continue
+    Ok(Nop {
+        result: if sqe.op_flags & NOP_INJECT_RESULT != 0 {
+            sqe.len as i32
+        } else {
+            0
+        },
+        file: (sqe.op_flags & NOP_FILE != 0)
+            .then_some((sqe.fd, sqe.op_flags & NOP_FIXED_FILE != 0)),
+        fixed_buffer: sqe.op_flags & NOP_FIXED_BUFFER != 0,
+    })
 }

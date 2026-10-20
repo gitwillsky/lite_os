@@ -4,7 +4,7 @@
 //! SQ 的 tail 由用户态写、head 由内核写；CQ 的 tail 由内核写、head 由用户态写。head/tail 一律经
 //! atomic 访问：内核先写 CQE 再 release-store tail，用户态 acquire-load tail 后才读 CQE；SQE 同理。
 
-use alloc::{collections::VecDeque, sync::Arc};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
@@ -79,6 +79,42 @@ pub(crate) struct Ring {
     // 又发布了 N 个 CQE”（Linux `cached_cq_tail - cq_timeouts`）；缺失其一，两个 timeout 会互相计数而提前完成。
     posted: AtomicU32,
     timeouts_posted: AtomicU32,
+    // OWNER: 已接纳、尚未完成的请求链（按接纳顺序，序号单调）及其 DRAIN 标志。DRAIN 链等所有更早的链
+    // 完成才开始，其后的链等它完成才开始；缺失时 DRAIN 与普通请求之间没有顺序保证。
+    units: Mutex<Units>,
+    // OWNER: 曾有请求使用 `IOSQE_CQE_SKIP_SUCCESS`，之后 DRAIN 恒为 `EOPNOTSUPP`（Linux
+    // `IO_RING_F_DRAIN_DISABLED`）：被跳过的 CQE 使“全部完成”无从由 CQ 观察。
+    drain_disabled: AtomicBool,
+    // OWNER: 链中间的成员带 DRAIN 时，链之后的下一条链也要 DRAIN（Linux `IO_RING_F_DRAIN_NEXT`）。
+    drain_next: AtomicBool,
+}
+
+struct Units {
+    next_sequence: u64,
+    live: Vec<(u64, bool)>,
+}
+
+/// 一条已接纳请求链的占位；丢弃它即表示该链已完成（或被取消），并唤醒等待接纳的链。
+pub(crate) struct Unit {
+    ring: Arc<Ring>,
+    sequence: u64,
+}
+
+impl Drop for Unit {
+    fn drop(&mut self) {
+        let mut units = self.ring.units.lock();
+        if let Ok(index) = units.live.binary_search_by_key(&self.sequence, |entry| entry.0) {
+            units.live.remove(index);
+        }
+        drop(units);
+        self.ring.readiness.1.signal_readiness();
+    }
+}
+
+impl Unit {
+    pub(crate) fn sequence(&self) -> u64 {
+        self.sequence
+    }
 }
 
 fn allocate_zeroed(bytes: usize) -> Result<Arc<DeviceBacking>, RingError> {
@@ -123,6 +159,12 @@ impl Ring {
             closed: AtomicBool::new(false),
             posted: AtomicU32::new(0),
             timeouts_posted: AtomicU32::new(0),
+            units: Mutex::new(Units {
+                next_sequence: 0,
+                live: Vec::new(),
+            }),
+            drain_disabled: AtomicBool::new(false),
+            drain_next: AtomicBool::new(false),
         })
         .map_err(|_| RingError::OutOfMemory)?;
         this.word(SQ_RING_MASK)
@@ -153,6 +195,48 @@ impl Ring {
         }
     }
 
+    /// 接纳一条请求链并分配序号；`drain` 链等所有更早的链完成才开始。
+    ///
+    /// # Errors
+    ///
+    /// 记录链的容量分配失败返回 `OutOfMemory`。
+    pub(crate) fn admit(self: &Arc<Self>, drain: bool) -> Result<Unit, RingError> {
+        let mut units = self.units.lock();
+        units
+            .live
+            .try_reserve(1)
+            .map_err(|_| RingError::OutOfMemory)?;
+        let sequence = units.next_sequence;
+        units.next_sequence = sequence.wrapping_add(1);
+        units.live.push((sequence, drain));
+        Ok(Unit {
+            ring: self.clone(),
+            sequence,
+        })
+    }
+
+    /// 序号为 `sequence` 的链现在是否可以开始：DRAIN 链要求自己是最早的未完成链，普通链要求
+    /// 它之前没有未完成的 DRAIN 链。
+    pub(crate) fn may_start(&self, sequence: u64) -> bool {
+        let units = self.units.lock();
+        let Ok(index) = units.live.binary_search_by_key(&sequence, |entry| entry.0) else {
+            return true;
+        };
+        if units.live[index].1 {
+            index == 0
+        } else {
+            !units.live[..index].iter().any(|entry| entry.1)
+        }
+    }
+
+    pub(crate) fn drain_disabled(&self) -> &AtomicBool {
+        &self.drain_disabled
+    }
+
+    pub(crate) fn drain_next(&self) -> &AtomicBool {
+        &self.drain_next
+    }
+
     /// 标记 ring 已关闭并唤醒所有等待者（含挂起请求的执行者）。
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Release);
@@ -164,9 +248,9 @@ impl Ring {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// 发布一个请求的结果；`IOSQE_CQE_SKIP_SUCCESS` 的成功结果不产生 CQE。
-    pub(crate) fn complete(&self, user_data: u64, skip_success: bool, res: i32) {
-        if skip_success && res >= 0 {
+    /// 发布一个请求的结果；`skip` 为真时不产生 CQE（调用者把 `IOSQE_CQE_SKIP_SUCCESS` 与“请求未失败”合成）。
+    pub(crate) fn complete(&self, user_data: u64, skip: bool, res: i32) {
+        if skip {
             return;
         }
         self.post(Cqe {
@@ -177,8 +261,8 @@ impl Ring {
     }
 
     /// 发布 timeout 的完成；它不计入“事件数”，使其他带计数的 timeout 不会被它推进。
-    pub(crate) fn complete_timeout(&self, user_data: u64, skip_success: bool, res: i32) {
-        if skip_success && res >= 0 {
+    pub(crate) fn complete_timeout(&self, user_data: u64, skip: bool, res: i32) {
+        if skip {
             return;
         }
         self.timeouts_posted.fetch_add(1, Ordering::AcqRel);

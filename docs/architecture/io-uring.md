@@ -18,17 +18,18 @@ io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把
 5. 等待用合并 readiness Pipe：先排空再复查条件再睡眠，发布 CQE 的一方重新置位，因此不会丢唤醒。同一个 Pipe 也是 poll/epoll 的
    唤醒源，ring fd 在 CQ 有完成时可读、SQ 有空位时可写。
 6. `fs` 不依赖 `io_uring`：`syscall` 从 `Arc<dyn DeviceFile>` 经 `Any` 向下转型取回 ring。
-7. 读写请求在 `io_uring_enter` 内先做一次 NOWAIT 尝试，复用 `read(2)`/`write(2)` 的同一个核心（多一个 `nowait`，不改共享 OFD 的 `O_NONBLOCK`）。
+7. 请求在 prep 后解码成 `Now`（不会等待，直接执行）或 `Wait`（一个 future，先在 `io_uring_enter` 内 poll 一次，未完成才交给 worker）；读写复用 `read(2)`/`write(2)` 的同一个核心（多一个 `nowait`，不改共享 OFD 的 `O_NONBLOCK`）。
    完成就发布 CQE；仍会等待（空 pipe、尚未触发的 poll/timeout 等）就写成一个 `async fn` future 交给 `io_uring` 内核线程：读写是“尝试一次，`EAGAIN` 就 `await` 就绪”，
    `POLL_ADD` 是“探测 revents，没有就 `await`”，`TIMEOUT` 是“计数或 deadline 到了就返回，否则 `await`”。一个多路复用线程而不是线程池：N 个阻塞读都在等同一个后续写时，固定大小的池会死锁。
 8. readiness 来源没有回调（是 task 睡眠/唤醒式的），所以该线程是 reactor 而不是 waker 驱动的执行器：future 在 `await` 时把等待条件登记到自己的 interest 槽
    （目标 OFD 的事件、deadline、CQE 计数），线程据此构造 `wait_for_poll` 的 key，条件满足后才重新 `poll`，`Context` 使用 `Waker::noop()`。
-9. 取消就是 `drop` future，它捕获的目标 OFD 和 iovec 随之释放。`POLL_REMOVE`/`TIMEOUT_REMOVE`/`ASYNC_CANCEL` 经命令队列交给该线程执行，因为目标的所有权在那里；
-   ring fd 的最后一个引用释放时 `DeviceFile::release` 置关闭标志并唤醒该线程，它丢弃这个 ring 的全部请求（例如 pipe 读端被释放，使写者得到 `EPIPE`）。
+9. 一条请求链（单个 SQE 是长度为 1 的链）同一时刻至多一个成员在等待，所以整条链是一个 future：成员按序 issue，失败的成员取消后继。`IOSQE_IO_DRAIN` 通过 ring 上的接纳序号表达，
+   被延迟的链作为 future 的第一个 `await` 等待被接纳。取消经登记表给正在等待的成员置位取消标记，不经命令队列，因此取消也是普通的链成员，可以出现在链里。
+   丢弃 future（ring 关闭）会释放它捕获的目标 OFD 和 iovec。ring fd 的最后一个引用释放时 `DeviceFile::release` 置关闭标志并唤醒该线程，它丢弃这个 ring 的全部请求（例如 pipe 读端被释放，使写者得到 `EPIPE`）。
 
 ## Known limits
 
-- 未开放：multishot 的 poll/timeout、按 fd/opcode 取消、其余 opcode、`IO_DRAIN`、链接（`IO_LINK`）、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
+- 未开放：multishot 的 poll/timeout、按 fd/opcode 取消、其余 opcode、`LINK_TIMEOUT`、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
 - regular 文件的读写在 `io_uring_enter` 内联完成，磁盘 I/O 会让 `enter` 睡眠（块层异步见路线图 P4）。
 - signalfd 读无信号时返回 `-EAGAIN`，不挂起。
 - SQ 上限 4096（Linux 32768）：没有按用户的 ring 内存计费，缺少上限时一个进程创建多个 ring 即可耗尽物理内存。

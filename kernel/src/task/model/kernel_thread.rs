@@ -1,6 +1,7 @@
 //! 内核执行体的真实 PID membership 与一次性主体；不拥有用户 Process。
 use super::{Credentials, KernelThreadBody, ProcessId};
 use crate::namespace::{PidIdentity, PidRegistration};
+use crate::sync::TaskMutexWaitPreparation;
 use alloc::sync::Arc;
 use spin::Mutex;
 
@@ -17,6 +18,9 @@ pub(super) struct KernelThread {
     pub(in crate::task) pidfd_source: Mutex<alloc::sync::Weak<crate::fs::pidfs::PidFdSource>>,
     // OWNER: 首次调度消费一次，返回即进入实际 exit；不能由 continuation 重入。
     body: Mutex<Option<KernelThreadBody>>,
+    // OWNER: 内核线程代表用户任务访问其 fd 表（io_uring worker）时使用的预置 waiter，语义同
+    // `ThreadContext::file_wait`；缺失时表查找没有可用的 waiter，只能 panic。
+    pub(super) file_wait: Mutex<Option<TaskMutexWaitPreparation>>,
 }
 impl KernelThread {
     pub(super) fn new(
@@ -24,6 +28,7 @@ impl KernelThread {
         name: &'static str,
         body: KernelThreadBody,
         namespaces: super::namespaces::NamespaceMembership,
+        file_wait: TaskMutexWaitPreparation,
     ) -> Self {
         Self {
             credentials: Credentials::root(),
@@ -33,6 +38,7 @@ impl KernelThread {
             pid: Mutex::new(Some(pid)),
             pidfd_source: Mutex::new(alloc::sync::Weak::new()),
             body: Mutex::new(Some(body)),
+            file_wait: Mutex::new(Some(file_wait)),
         }
     }
     pub(super) fn identity(&self) -> &Arc<PidIdentity> {

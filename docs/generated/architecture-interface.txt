@@ -3515,8 +3515,10 @@ kernel/src/io_uring/abi.rs :: pub (crate) const NOP_INJECT_RESULT : u32 = 1 << 0
 kernel/src/io_uring/abi.rs :: pub (crate) const OFF_CQ_RING : u64 = 0x800_0000
 kernel/src/io_uring/abi.rs :: pub (crate) const OFF_SQES : u64 = 0x1000_0000
 kernel/src/io_uring/abi.rs :: pub (crate) const OFF_SQ_RING : u64 = 0
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_ACCEPT : u8 = 13
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_ASYNC_CANCEL : u8 = 14
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_CLOSE : u8 = 19
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_CONNECT : u8 = 16
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_FSYNC : u8 = 3
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_LAST : u8 = 65
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_NOP : u8 = 0
@@ -3524,6 +3526,8 @@ kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_ADD : u8 = 6
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_REMOVE : u8 = 7
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_READ : u8 = 22
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_READV : u8 = 1
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_RECV : u8 = 27
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_SEND : u8 = 26
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT : u8 = 11
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT_REMOVE : u8 = 12
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_WRITE : u8 = 23
@@ -3559,21 +3563,51 @@ kernel/src/io_uring/abi.rs :: pub (crate) struct Geometry
 kernel/src/io_uring/abi.rs :: pub (crate) struct InvalidSetup
 kernel/src/io_uring/abi.rs :: pub (crate) struct SetupParams
 kernel/src/io_uring/abi.rs :: pub (crate) struct Sqe
+kernel/src/io_uring/chain.rs :: enum Link :: # [doc = " `IOSQE_IO_HARDLINK`：本成员失败也继续执行后继。"] Hard
+kernel/src/io_uring/chain.rs :: enum Link :: # [doc = " `IOSQE_IO_LINK`：本成员失败则取消其后全部成员。"] Soft
+kernel/src/io_uring/chain.rs :: enum Link :: # [doc = " 链的最后一个成员，或不在链中。"] None
+kernel/src/io_uring/chain.rs :: enum Step :: # [doc = " init/prep 失败：以该 `res`（负 errno）完成，所在链的其余成员被取消。"] Failed (i32)
+kernel/src/io_uring/chain.rs :: enum Step :: Nop (Nop)
+kernel/src/io_uring/chain.rs :: enum Step :: Op (Op)
+kernel/src/io_uring/chain.rs :: pub (crate) Member :: link : Link
+kernel/src/io_uring/chain.rs :: pub (crate) Member :: skip_success : bool
+kernel/src/io_uring/chain.rs :: pub (crate) Member :: step : Step < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) Member :: user_data : u64
+kernel/src/io_uring/chain.rs :: pub (crate) enum Link
+kernel/src/io_uring/chain.rs :: pub (crate) enum Step < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) fn cancel_rest < Op > (ring : & Ring , rest : impl Iterator < Item = Member < Op > > , skip : bool)
+kernel/src/io_uring/chain.rs :: pub (crate) impl Assembler < Op > :: fn add (& mut self , ring : & Ring , member : Member < Op >) -> (Option < Chain < Op > > , Flow)
+kernel/src/io_uring/chain.rs :: pub (crate) impl Assembler < Op > :: fn end (& mut self , ring : & Ring) -> Option < Chain < Op > >
+kernel/src/io_uring/chain.rs :: pub (crate) impl Assembler < Op > :: fn new () -> Self
+kernel/src/io_uring/chain.rs :: pub (crate) impl Chain < Op > :: fn drain (& self) -> bool
+kernel/src/io_uring/chain.rs :: pub (crate) impl Chain < Op > :: fn into_members (self) -> Members < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) impl Nop :: fn result (& self , fd_exists : impl FnOnce (i32) -> bool) -> i32
+kernel/src/io_uring/chain.rs :: pub (crate) struct Assembler < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) struct Chain < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) struct Member < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) struct Members < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) struct Nop
+kernel/src/io_uring/chain.rs :: pub (super) Member :: drain : bool
+kernel/src/io_uring/chain.rs :: pub (super) Nop :: file : Option < (i32 , bool) >
+kernel/src/io_uring/chain.rs :: pub (super) Nop :: fixed_buffer : bool
+kernel/src/io_uring/chain.rs :: pub (super) Nop :: result : i32
+kernel/src/io_uring/chain.rs :: pub (super) impl Member < Op > :: fn new (user_data : u64 , skip_success : bool , link : Link , drain : bool , step : Step < Op > ,) -> Self
 kernel/src/io_uring/mod.rs :: enum SetupFailure :: Invalid
 kernel/src/io_uring/mod.rs :: enum SetupFailure :: OutOfMemory
 kernel/src/io_uring/mod.rs :: pub (crate) const ANONYMOUS_NAME : & [u8] = b"anon_inode:[io_uring]"
 kernel/src/io_uring/mod.rs :: pub (crate) enum SetupFailure
 kernel/src/io_uring/mod.rs :: pub (crate) fn create (entries : u32 , params : & [u8 ; PARAMS_BYTES] ,) -> Result < (Arc < Ring > , [u8 ; PARAMS_BYTES]) , SetupFailure >
 kernel/src/io_uring/mod.rs :: pub (crate) fn ring_arc_of (file : & Arc < dyn crate :: fs :: chardev :: DeviceFile >) -> Option < Arc < Ring > >
-kernel/src/io_uring/mod.rs :: pub (crate) fn submit (ring : & Arc < Ring > , to_submit : u32 , submitter : & dyn Submitter ,) -> Result < u32 , RingError >
+kernel/src/io_uring/mod.rs :: pub (crate) fn submit < S : Submitter > (ring : & Arc < Ring > , to_submit : u32 , submitter : & S ,) -> Result < u32 , RingError >
 kernel/src/io_uring/mod.rs :: pub (crate) mod abi
-kernel/src/io_uring/mod.rs :: pub (crate) use ops :: { Submitter , fail_init }
-kernel/src/io_uring/mod.rs :: pub (crate) use ring :: { CqWait , Flow , Ring , RingError }
-kernel/src/io_uring/ops.rs :: pub (crate) fn fail_init (ring : & Ring , sqe : & Sqe , error : isize) -> Flow
-kernel/src/io_uring/ops.rs :: pub (crate) fn issue (ring : & Arc < Ring > , sqe : Sqe , submitter : & dyn Submitter) -> Flow
+kernel/src/io_uring/mod.rs :: pub (crate) use chain :: { Chain , Link , Member , Members , Step , cancel_rest }
+kernel/src/io_uring/mod.rs :: pub (crate) use ops :: Submitter
+kernel/src/io_uring/mod.rs :: pub (crate) use ring :: { CqWait , Ring , RingError , Unit }
+kernel/src/io_uring/ops.rs :: pub (crate) fn prepare < S : Submitter > (ring : & Ring , sqe : & Sqe , submitter : & S ,) -> Member < S :: Op >
 kernel/src/io_uring/ops.rs :: pub (crate) trait Submitter
-kernel/src/io_uring/ops.rs :: trait Submitter :: fn fd_exists (& self , fd : i32) -> bool
-kernel/src/io_uring/ops.rs :: trait Submitter :: fn issue_op (& self , ring : & Arc < Ring > , sqe : Sqe) -> Flow
+kernel/src/io_uring/ops.rs :: trait Submitter :: fn launch (& self , ring : & Arc < Ring > , chain : Chain < Self :: Op >)
+kernel/src/io_uring/ops.rs :: trait Submitter :: fn prepare_op (& self , ring : & Ring , sqe : & Sqe) -> Result < Self :: Op , isize >
+kernel/src/io_uring/ops.rs :: trait Submitter :: type Op
 kernel/src/io_uring/ring.rs :: enum CqWait :: # [doc = " 有 CQE 因溢出链表上限被丢弃，且等待条件尚未满足（Linux 返回 `EBADR`）。"] Dropped
 kernel/src/io_uring/ring.rs :: enum CqWait :: Interrupted
 kernel/src/io_uring/ring.rs :: enum CqWait :: OutOfMemory
@@ -3585,14 +3619,18 @@ kernel/src/io_uring/ring.rs :: enum RingError :: OutOfMemory
 kernel/src/io_uring/ring.rs :: pub (crate) enum CqWait
 kernel/src/io_uring/ring.rs :: pub (crate) enum Flow
 kernel/src/io_uring/ring.rs :: pub (crate) enum RingError
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn admit (self : & Arc < Self > , drain : bool) -> Result < Unit , RingError >
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn close (& self)
-kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn complete (& self , user_data : u64 , skip_success : bool , res : i32)
-kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn complete_timeout (& self , user_data : u64 , skip_success : bool , res : i32)
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn complete (& self , user_data : u64 , skip : bool , res : i32)
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn complete_timeout (& self , user_data : u64 , skip : bool , res : i32)
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn cq_ready (& self) -> u32
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn drain_disabled (& self) -> & AtomicBool
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn drain_next (& self) -> & AtomicBool
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn events_posted (& self) -> u32
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn flush_overflow (& self)
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn has_completions (& self) -> bool
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn is_closed (& self) -> bool
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn may_start (& self , sequence : u64) -> bool
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn post (& self , cqe : Cqe)
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn readiness_generation (& self) -> u64
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn readiness_key (& self) -> & Arc < PipeEnd >
@@ -3604,7 +3642,9 @@ kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn submit (& self , to_s
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn take_dropped (& self) -> bool
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn try_new (geometry : Geometry) -> Result < Arc < Self > , RingError >
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn wait_for (& self , minimum : u32 , deadline : Option < u64 >) -> CqWait
+kernel/src/io_uring/ring.rs :: pub (crate) impl Unit :: fn sequence (& self) -> u64
 kernel/src/io_uring/ring.rs :: pub (crate) struct Ring
+kernel/src/io_uring/ring.rs :: pub (crate) struct Unit
 kernel/src/ipc/error.rs :: enum IpcError :: Access
 kernel/src/ipc/error.rs :: enum IpcError :: Again
 kernel/src/ipc/error.rs :: enum IpcError :: Exists
@@ -6281,6 +6321,7 @@ kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr as filesystem_error
 kernel/src/syscall/fs.rs :: pub (super) fn resolve_stat_target (task : & TaskControlBlock , fd : isize , name : * const u8 , nofollow : bool , empty_path : bool ,) -> Result < (InodeMetadata , u64) , isize >
 kernel/src/syscall/fs.rs :: pub (super) fn sync_file (fd : usize) -> isize
+kernel/src/syscall/fs.rs :: pub (super) fn sync_ofd (ofd : & OpenFileDescription) -> isize
 kernel/src/syscall/fs/access.rs :: pub (crate) fn sys_faccessat (dirfd : isize , name : * const u8 , mode : usize) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmod (fd : usize , mode : u32) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmodat (dirfd : isize , name : * const u8 , mode : u32) -> isize
@@ -6303,8 +6344,8 @@ kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv2 (fd : usize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwrite64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
-kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_read (fd : usize , vectors : & [UserIoVec] , offset : i64) -> isize
-kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_write (fd : usize , vectors : & [UserIoVec] , offset : i64 , append_override : Option < bool > ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_read (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , offset : i64 ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_write (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , offset : i64 , append_override : Option < bool > ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn read_vectors (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & RegularFile , position : & mut u64 , vectors : & [UserIoVec] ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn write_vectors (task : & TaskControlBlock , file : & RegularFileWrite < '_ > , position : & mut u64 , vectors : & [UserIoVec] , append : bool , staging : & mut UserInputStaging < '_ > ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) impl PreparedRegularWriteStaging :: fn as_input_staging (& mut self) -> UserInputStaging < '_ >
@@ -6367,41 +6408,74 @@ kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_INSECURE : usize
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_NONBLOCK : usize = 0x1
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_RANDOM : usize = 0x2
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const fn getrandom_flags_supported (flags : usize) -> bool
+kernel/src/syscall/io_uring/chain.rs :: pub (super) fn launch (task : & Arc < TaskControlBlock > , ring : & Arc < Ring > , chain : Chain < Op >)
+kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Done (Outcome)
+kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Wait (Wait)
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_SEND`/`IORING_OP_RECV`：只对 socket，`MSG_NOSIGNAL` 恒开（SIGPIPE 不发给提交线程）。"] Socket { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " `MSG_DONTWAIT`：会阻塞时直接返回 `-EAGAIN`。"] dontwait : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Accept { fd : Option < usize > , address : usize , length : usize , flags : usize , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Cancel { target : Target , # [doc = " `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。"] all : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Close { fd : Option < usize > , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Connect { fd : Option < usize > , address : usize , length : usize , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Fsync { fd : Option < usize > , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Poll { fd : Option < usize > , mask : i16 , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: ReadWrite { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , vectored : bool , # [doc = " `sqe->off`：`-1` 使用并推进当前 position，其他负值非法。"] offset : i64 , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Timeout { nanoseconds : u64 , absolute : bool , # [doc = " 非零：除 timeout 外又发布这么多 CQE 时完成。"] count : u32 , etime_success : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " pipe/socket/eventfd 等流式读写：`EAGAIN` 时等目标 OFD 就绪再试。"] Stream { ofd : Arc < OpenFileDescription > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " 经 socket 发送并强制 `MSG_NOSIGNAL`（`IORING_OP_SEND`）。"] no_signal : bool , # [doc = " 会阻塞时返回 `-EAGAIN` 而不是等待（`MSG_DONTWAIT`）。"] dontwait : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 一次性 poll：目标 OFD 出现 `mask` 中任一事件时以 revents 完成。"] Poll { ofd : Arc < OpenFileDescription > , mask : i16 }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 握手已发起：等 socket 可写或出错，再读连接结果。"] Connect { ofd : Arc < OpenFileDescription > }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 绝对 monotonic deadline，或“除 timeout 外又发布 N 个 CQE”（`target_events`）。"] Timeout { deadline : u64 , target_events : Option < u32 > , etime_success : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: Accept { ofd : Arc < OpenFileDescription > , flags : usize , address : usize , length : usize , }
+kernel/src/syscall/io_uring/exec.rs :: pub (super) Outcome :: fail : bool
+kernel/src/syscall/io_uring/exec.rs :: pub (super) Outcome :: res : i32
+kernel/src/syscall/io_uring/exec.rs :: pub (super) async fn drive (op : Wait , ring : Arc < Ring > , task : Weak < TaskControlBlock > , waiter : Waiter ,) -> Outcome
+kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Issue
+kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Op
+kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Wait
+kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Op :: fn issue (self , task : & TaskControlBlock , ring : & Arc < Ring >) -> Issue
+kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn canceled () -> Self
+kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn of (res : isize) -> Self
+kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Wait :: fn kind (& self) -> Kind
+kernel/src/syscall/io_uring/exec.rs :: pub (super) struct Outcome
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_enter (fd : usize , to_submit : u32 , min_complete : u32 , flags : u32 , argp : usize , argsz : usize ,) -> isize
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_register (fd : usize , opcode : u32 , arg : usize , nr_args : u32) -> isize
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_setup (entries : u32 , params : usize) -> isize
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) use worker :: start as start_worker
 kernel/src/syscall/io_uring/ops.rs :: pub (super) TaskSubmitter :: task : Arc < TaskControlBlock >
 kernel/src/syscall/io_uring/ops.rs :: pub (super) struct TaskSubmitter
-kernel/src/syscall/io_uring/worker.rs :: enum Kind :: Io
-kernel/src/syscall/io_uring/worker.rs :: enum Kind :: Poll
-kernel/src/syscall/io_uring/worker.rs :: enum Kind :: Timeout
-kernel/src/syscall/io_uring/worker.rs :: enum Only :: Any
-kernel/src/syscall/io_uring/worker.rs :: enum Only :: Poll
-kernel/src/syscall/io_uring/worker.rs :: enum Only :: Timeout
-kernel/src/syscall/io_uring/worker.rs :: enum Target :: # [doc = " `IORING_ASYNC_CANCEL_ANY`：匹配该 ring 的任意请求。"] Any
-kernel/src/syscall/io_uring/worker.rs :: enum Target :: # [doc = " 匹配 user_data，并限定请求种类（`POLL_REMOVE`/`TIMEOUT_REMOVE` 只能取消各自种类）。"] UserData (u64 , Only)
+kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " deadline 到期，或 ring 上又发布了 `target` 个事件。"] Timer { deadline : u64 , target_events : Option < u32 > , ring : Arc < Ring > , }
+kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 刚创建，提交者正在首次 poll 它：worker 不得抢先 poll。"] Starting
+kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 正在被 poll，没有等待条件。"] None
+kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 目标 OFD 出现 `mask` 中的事件；`task` 用于以提交线程的上下文判定就绪。"] Ofd { ofd : Arc < OpenFileDescription > , mask : i16 , task : Weak < TaskControlBlock > , }
+kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 等待链被接纳（DRAIN 顺序）：序号为 `sequence` 的链可以开始。"] Admission { ring : Arc < Ring > , sequence : u64 }
+kernel/src/syscall/io_uring/wait.rs :: enum Kind :: Io
+kernel/src/syscall/io_uring/wait.rs :: enum Kind :: Poll
+kernel/src/syscall/io_uring/wait.rs :: enum Kind :: Timeout
+kernel/src/syscall/io_uring/wait.rs :: enum Only :: Any
+kernel/src/syscall/io_uring/wait.rs :: enum Only :: Poll
+kernel/src/syscall/io_uring/wait.rs :: enum Only :: Timeout
+kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " `IORING_ASYNC_CANCEL_ANY`：匹配该 ring 的任意请求。"] Any
+kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " 匹配 user_data，并限定请求种类（`POLL_REMOVE`/`TIMEOUT_REMOVE` 只能取消各自种类）。"] UserData (u64 , Only)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Interest
+kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Kind
+kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Only
+kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Target
+kernel/src/syscall/io_uring/wait.rs :: pub (super) fn event_count_reached (ring : & Ring , target : u32) -> bool
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn admission (& self , sequence : u64) -> Suspend
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn attention (& self) -> bool
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn begin (& self , user_data : u64 , kind : Kind)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn cancel (& self , target : & Target) -> bool
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn end (& self)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn new (ring : & Arc < Ring >) -> Result < Self , () >
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn ofd_ready (& self , ofd : & Arc < OpenFileDescription > , mask : i16 , task : & Weak < TaskControlBlock > ,) -> Suspend
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn ring (& self) -> & Arc < Ring >
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn take_canceled (& self) -> bool
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn timer (& self , deadline : u64 , target_events : Option < u32 > , ring : & Arc < Ring > ,) -> Suspend
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn with_interest < T > (& self , read : impl FnOnce (& Interest) -> T) -> T
+kernel/src/syscall/io_uring/wait.rs :: pub (super) struct Suspend
+kernel/src/syscall/io_uring/wait.rs :: pub (super) struct Waiter
 kernel/src/syscall/io_uring/worker.rs :: pub (crate) fn start () -> Result < () , () >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: all : bool
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: ring : Arc < Ring >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: skip_success : bool
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: target : Target
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Cancel :: user_data : u64
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: ring : Arc < Ring >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: skip_success : bool
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: task : Weak < TaskControlBlock >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) Origin :: user_data : u64
-kernel/src/syscall/io_uring/worker.rs :: pub (super) enum Kind
-kernel/src/syscall/io_uring/worker.rs :: pub (super) enum Only
-kernel/src/syscall/io_uring/worker.rs :: pub (super) enum Target
-kernel/src/syscall/io_uring/worker.rs :: pub (super) fn cancel (command : Cancel) -> Result < () , () >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) fn park (request : Request) -> Result < () , () >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) fn poll_request (origin : & Origin , ofd : Arc < OpenFileDescription > , mask : i16 ,) -> Result < Request , () >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) fn read_write_request (origin : & Origin , ofd : Arc < OpenFileDescription > , vectors : Vec < UserIoVec > , total : usize , write : bool ,) -> Result < Request , () >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) fn timeout_request (origin : & Origin , deadline : u64 , target_events : Option < u32 > , etime_success : bool ,) -> Result < Request , () >
-kernel/src/syscall/io_uring/worker.rs :: pub (super) struct Cancel
-kernel/src/syscall/io_uring/worker.rs :: pub (super) struct Origin
-kernel/src/syscall/io_uring/worker.rs :: pub (super) struct Request
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn cancel (ring : & Arc < Ring > , target : & Target , all : bool) -> i32
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn spawn < F > (waiter : Waiter , build : impl FnOnce () -> F) -> Result < () , () > where F : Future < Output = () > + Send + 'static ,
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/ipc.rs :: pub (super) fn ipc_error (error : IpcError) -> isize
 kernel/src/syscall/ipc.rs :: pub (super) fn sys_msgctl (id : i32 , command : i32 , address : usize) -> isize
@@ -6532,6 +6606,9 @@ kernel/src/syscall/signal.rs :: pub (crate) fn sys_tkill (tid : usize , signal :
 kernel/src/syscall/signal.rs :: pub (in crate :: syscall) fn queued_signal_info (address : usize ,) -> Result < (i32 , PendingSignal) , isize >
 kernel/src/syscall/signal.rs :: pub (in crate :: syscall) fn signal_send_errno (error : SignalSendError) -> isize
 kernel/src/syscall/signalfd.rs :: pub (crate) fn sys_signalfd4 (fd : i32 , pointer : usize , size : usize , flags : u32) -> isize
+kernel/src/syscall/socket.rs :: enum ConnectBegin :: # [doc = " Unix 目标的 backlog 已满：可等待的容量句柄。"] BacklogFull (crate :: socket :: SocketCapacityWait)
+kernel/src/syscall/socket.rs :: enum ConnectBegin :: # [doc = " 握手进行中：等待 socket 可写或出错，再读 [`Socket::connection_result`]。"] InProgress
+kernel/src/syscall/socket.rs :: enum ConnectBegin :: Connected
 kernel/src/syscall/socket.rs :: pub (crate) fn sys_accept (fd : usize , address : usize , length : usize) -> isize
 kernel/src/syscall/socket.rs :: pub (crate) fn sys_accept4 (fd : usize , address : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/socket.rs :: pub (crate) fn sys_bind (fd : usize , address : usize , length : usize) -> isize
@@ -6544,7 +6621,16 @@ kernel/src/syscall/socket.rs :: pub (crate) fn sys_socket (domain : usize , kind
 kernel/src/syscall/socket.rs :: pub (crate) fn sys_socketpair (domain : usize , kind : usize , protocol : usize , output : usize) -> isize
 kernel/src/syscall/socket.rs :: pub (crate) use message :: { sys_recvfrom , sys_recvmsg , sys_sendmsg , sys_sendto }
 kernel/src/syscall/socket.rs :: pub (crate) use options :: { sys_getsockopt , sys_setsockopt }
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) const MSG_DONTWAIT : usize = 0x40
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) const MSG_NOSIGNAL : usize = 0x4000
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) const SOCK_CLOEXEC : usize = O_CLOEXEC as usize
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) const SOCK_NONBLOCK : usize = O_NONBLOCK as usize
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) enum ConnectBegin
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) fn accept_once (task : & TaskControlBlock , listener : & Arc < Socket > , flags : usize , address : usize , length : usize ,) -> isize
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) fn connect_begin (task : & TaskControlBlock , client : & Arc < Socket > , address : usize , length : usize ,) -> Result < ConnectBegin , isize >
 kernel/src/syscall/socket.rs :: pub (in crate :: syscall) fn interrupted_wait (deadline : Option < u64 >) -> isize
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) fn socket_of (ofd : & OpenFileDescription) -> Result < Arc < Socket > , isize >
+kernel/src/syscall/socket.rs :: pub (in crate :: syscall) fn write_address (task : & TaskControlBlock , address : Option < SocketAddress > , pointer : usize , length_pointer : usize ,) -> Result < () , isize >
 kernel/src/syscall/socket.rs :: pub (in crate :: syscall) use message :: write_vectors
 kernel/src/syscall/socket.rs :: pub (super) fn socket_error (error : SocketError) -> isize
 kernel/src/syscall/socket.rs :: pub (super) use interface :: socket_ioctl
@@ -6593,13 +6679,13 @@ kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_recvfrom (fd : usize 
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_recvmsg (fd : usize , message : usize , flags : usize) -> isize
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_sendmsg (fd : usize , message : usize , flags : usize) -> isize
 kernel/src/syscall/socket/message.rs :: pub (crate) fn sys_sendto (fd : usize , buffer : usize , length : usize , flags : usize , address : usize , address_length : usize ,) -> isize
-kernel/src/syscall/socket/message.rs :: pub (in crate :: syscall) fn write_vectors (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , socket : & Arc < Socket > , vectors : & [UserIoVec] , total_length : usize , nonblocking : bool ,) -> isize
+kernel/src/syscall/socket/message.rs :: pub (in crate :: syscall) fn write_vectors (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , socket : & Arc < Socket > , vectors : & [UserIoVec] , total_length : usize , nonblocking : bool , flags : usize ,) -> isize
 kernel/src/syscall/socket/options.rs :: pub (crate) fn sys_getsockopt (fd : usize , level : usize , option : usize , value : usize , length : usize ,) -> isize
 kernel/src/syscall/socket/options.rs :: pub (crate) fn sys_setsockopt (fd : usize , level : usize , option : usize , value : usize , length : usize ,) -> isize
 kernel/src/syscall/socket/timeout.rs :: pub (super) fn decode (bytes : [u8 ; 16]) -> Result < SocketTimeout , isize >
 kernel/src/syscall/socket/timeout.rs :: pub (super) fn encode (timeout : SocketTimeout) -> [u8 ; 16]
 kernel/src/syscall/socket/unix_path.rs :: pub (super) fn bind (socket : & Arc < Socket > , address : UnixAddress) -> isize
-kernel/src/syscall/socket/unix_path.rs :: pub (super) fn resolve (address : & UnixAddress , require_write : bool ,) -> Result < (Arc < dyn Inode > , UnixPathIdentity) , isize >
+kernel/src/syscall/socket/unix_path.rs :: pub (super) fn resolve (task : & TaskControlBlock , address : & UnixAddress , require_write : bool ,) -> Result < (Arc < dyn Inode > , UnixPathIdentity) , isize >
 kernel/src/syscall/system_identity.rs :: pub (crate) fn sys_set_uts_name (hostname : bool , address : usize , length : usize) -> isize
 kernel/src/syscall/system_identity.rs :: pub (crate) fn sys_uname (address : usize) -> isize
 kernel/src/syscall/system_info.rs :: pub (crate) fn sys_getcpu (cpu : usize , node : usize , cache : usize) -> isize
@@ -7040,10 +7126,11 @@ kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn st
 kernel/src/task/model/io_accounting.rs :: pub (super) struct IoAccounting
 kernel/src/task/model/kernel_thread.rs :: pub (in crate :: task) KernelThread :: pidfd_source : Mutex < alloc :: sync :: Weak < crate :: fs :: pidfs :: PidFdSource > >
 kernel/src/task/model/kernel_thread.rs :: pub (super) KernelThread :: credentials : Credentials
+kernel/src/task/model/kernel_thread.rs :: pub (super) KernelThread :: file_wait : Mutex < Option < TaskMutexWaitPreparation > >
 kernel/src/task/model/kernel_thread.rs :: pub (super) KernelThread :: name : & 'static str
 kernel/src/task/model/kernel_thread.rs :: pub (super) KernelThread :: namespaces : Mutex < Option < super :: namespaces :: NamespaceMembership > >
 kernel/src/task/model/kernel_thread.rs :: pub (super) impl KernelThread :: fn identity (& self) -> & Arc < PidIdentity >
-kernel/src/task/model/kernel_thread.rs :: pub (super) impl KernelThread :: fn new (pid : PidRegistration , name : & 'static str , body : KernelThreadBody , namespaces : super :: namespaces :: NamespaceMembership ,) -> Self
+kernel/src/task/model/kernel_thread.rs :: pub (super) impl KernelThread :: fn new (pid : PidRegistration , name : & 'static str , body : KernelThreadBody , namespaces : super :: namespaces :: NamespaceMembership , file_wait : TaskMutexWaitPreparation ,) -> Self
 kernel/src/task/model/kernel_thread.rs :: pub (super) impl KernelThread :: fn retire_pid (& self)
 kernel/src/task/model/kernel_thread.rs :: pub (super) impl KernelThread :: fn take_body (& self) -> KernelThreadBody
 kernel/src/task/model/kernel_thread.rs :: pub (super) struct KernelThread

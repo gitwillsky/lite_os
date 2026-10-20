@@ -10,6 +10,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/uio.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -228,12 +229,10 @@ int verify_io_uring_core(void)
 	CHECK(28, uring_enter(ring.fd, 1, 1, IORING_ENTER_GETEVENTS, NULL, 0) == 1);
 	CHECK(29, reap(&ring, &cqe) == 1 && cqe.user_data == 8 && cqe.res == 0);
 
-	/* 逐类 prep 错误：已知但未实现的 opcode / 链接 / buffer-select 是 EOPNOTSUPP，未知位与非零 ioprio 是 EINVAL。 */
+	/* 逐类 prep 错误：已知但未实现的 opcode / buffer-select 是 EOPNOTSUPP，未知位与非零 ioprio 是 EINVAL。 */
 	static const struct { uint8_t opcode, flags; uint16_t ioprio; uint32_t nop_flags; int expected; } cases[] = {
 		{ IORING_OP_READ_FIXED, 0, 0, 0, -EOPNOTSUPP },
-		{ IORING_OP_NOP, IOSQE_IO_LINK, 0, 0, -EOPNOTSUPP },
 		{ IORING_OP_NOP, IOSQE_BUFFER_SELECT, 0, 0, -EOPNOTSUPP },
-		{ IORING_OP_NOP, IOSQE_IO_DRAIN, 0, 0, -EOPNOTSUPP },
 		{ IORING_OP_NOP, 0x80, 0, 0, -EINVAL },
 		{ IORING_OP_NOP, 0, 1, 0, -EINVAL },
 		{ IORING_OP_NOP, 0, 0, 0x8000, -EINVAL },
@@ -703,6 +702,19 @@ static int submit_one(struct ring *ring)
 	return (int)uring_enter(ring->fd, 1, 0, 0, NULL, 0);
 }
 
+/* 取消是异步的：取消请求的 CQE 与目标的 -ECANCELED 谁先到不确定（Linux 同），按 user_data 配对。 */
+static int expect_pair(struct ring *ring, uint64_t first, int first_res, uint64_t second, int second_res)
+{
+	struct io_uring_cqe cqe;
+	int seen_first = 0, seen_second = 0;
+	for (int i = 0; i < 2; i++) {
+		if (wait_cqe(ring, &cqe) != 1) return 0;
+		if (cqe.user_data == first && cqe.res == first_res) seen_first++;
+		else if (cqe.user_data == second && cqe.res == second_res) seen_second++;
+	}
+	return seen_first == 1 && seen_second == 1;
+}
+
 int verify_io_uring_events(void)
 {
 	struct ring ring;
@@ -762,10 +774,10 @@ int verify_io_uring_events(void)
 	CHECK(16, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 10 && cqe.res == -ETIME);
 	CHECK(17, elapsed_ms(&started) >= 45);
 
-	/* ETIME_SUCCESS：到期也以 0 完成。 */
+	/* ETIME_SUCCESS：到期的 CQE 仍是 -ETIME（Linux `io_timeout_fn`），只是不使链断开。 */
 	sqe = next_sqe(&ring);
 	fill_timeout(sqe, &fifty_ms, 0, IORING_TIMEOUT_ETIME_SUCCESS, 11);
-	CHECK(18, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 0);
+	CHECK(18, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -ETIME);
 
 	/* 绝对时间（CLOCK_MONOTONIC）。 */
 	struct timespec now;
@@ -827,8 +839,7 @@ int verify_io_uring_events(void)
 	sqe = next_sqe(&ring);
 	fill_cancel(sqe, IORING_OP_TIMEOUT_REMOVE, 40, 0, 41);
 	CHECK(32, submit_one(&ring) == 1);
-	CHECK(33, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 40 && cqe.res == -ECANCELED);
-	CHECK(34, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 41 && cqe.res == 0);
+	CHECK(33, expect_pair(&ring, 40, -ECANCELED, 41, 0));
 	sqe = next_sqe(&ring);
 	fill_cancel(sqe, IORING_OP_TIMEOUT_REMOVE, 40, 0, 42);
 	CHECK(35, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -ENOENT);
@@ -841,8 +852,7 @@ int verify_io_uring_events(void)
 	sqe = next_sqe(&ring);
 	fill_cancel(sqe, IORING_OP_POLL_REMOVE, 50, 0, 51);
 	CHECK(38, submit_one(&ring) == 1);
-	CHECK(39, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 50 && cqe.res == -ECANCELED);
-	CHECK(40, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 51 && cqe.res == 0);
+	CHECK(39, expect_pair(&ring, 50, -ECANCELED, 51, 0));
 
 	/* ASYNC_CANCEL 取消阻塞读：读 CQE 是 -ECANCELED，并且没有消费随后写入的数据。 */
 	char buffer[16];
@@ -852,8 +862,7 @@ int verify_io_uring_events(void)
 	sqe = next_sqe(&ring);
 	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 60, 0, 61);
 	CHECK(42, submit_one(&ring) == 1);
-	CHECK(43, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 60 && cqe.res == -ECANCELED);
-	CHECK(44, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 61 && cqe.res == 0);
+	CHECK(43, expect_pair(&ring, 60, -ECANCELED, 61, 0));
 	CHECK(45, write(pipes[1], "z", 1) == 1 && read(pipes[0], buffer, sizeof buffer) == 1 && buffer[0] == 'z');
 
 	/* 取消不存在或已完成的请求：-ENOENT。 */
@@ -913,6 +922,370 @@ int verify_io_uring_events(void)
 	return 0;
 }
 
+/* ---- 链接（IO_LINK / IO_HARDLINK）与 IO_DRAIN ------------------------------------------------- */
+
+static void fill_nop(struct io_uring_sqe *sqe, uint8_t flags, int inject, uint64_t user_data)
+{
+	sqe->opcode = IORING_OP_NOP;
+	sqe->flags = flags;
+	if (inject != 0) {
+		sqe->nop_flags = IORING_NOP_INJECT_RESULT;
+		sqe->len = (uint32_t)inject;
+	}
+	sqe->user_data = user_data;
+}
+
+/* 按序取出 n 个 CQE 并比对 (user_data, res)；`exp` 为 NULL 项表示只检查 user_data 与 res 的顺序对。 */
+struct expect { uint64_t user_data; int res; };
+
+static int expect_cqes(struct ring *ring, const struct expect *want, unsigned count)
+{
+	struct io_uring_cqe cqe;
+	for (unsigned i = 0; i < count; i++) {
+		if (wait_cqe(ring, &cqe) != 1 || cqe.user_data != want[i].user_data || cqe.res != want[i].res) return 0;
+	}
+	return 1;
+}
+
+int verify_io_uring_chains(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqe;
+	struct io_uring_sqe *sqe;
+	int pipes[2];
+	char buffer[16];
+	CHECK(1, map_ring(&ring, 16, 0, 0) == 0);
+
+	/* 成功的链按序执行。 */
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 1);
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 2);
+	fill_nop(next_sqe(&ring), 0, 0, 3);
+	publish(&ring);
+	CHECK(2, uring_enter(ring.fd, 3, 3, IORING_ENTER_GETEVENTS, NULL, 0) == 3);
+	CHECK(3, expect_cqes(&ring, (const struct expect[]){ {1, 0}, {2, 0}, {3, 0} }, 3));
+
+	/* 中间成员失败：其后的非 hardlink 成员以 -ECANCELED 完成。 */
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 10);
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, -5, 11);
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 12);
+	fill_nop(next_sqe(&ring), 0, 0, 13);
+	publish(&ring);
+	CHECK(4, uring_enter(ring.fd, 4, 4, IORING_ENTER_GETEVENTS, NULL, 0) == 4);
+	CHECK(5, expect_cqes(&ring, (const struct expect[]){ {10, 0}, {11, -5}, {12, -ECANCELED}, {13, -ECANCELED} }, 4));
+
+	/* HARDLINK：失败不断开链。 */
+	fill_nop(next_sqe(&ring), IOSQE_IO_HARDLINK, -5, 20);
+	fill_nop(next_sqe(&ring), IOSQE_IO_HARDLINK, 0, 21);
+	fill_nop(next_sqe(&ring), 0, 0, 22);
+	publish(&ring);
+	CHECK(6, uring_enter(ring.fd, 3, 3, IORING_ENTER_GETEVENTS, NULL, 0) == 3);
+	CHECK(7, expect_cqes(&ring, (const struct expect[]){ {20, -5}, {21, 0}, {22, 0} }, 3));
+
+	/* 批末未结束的链按现状结束，仍会执行。 */
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 30);
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 31);
+	publish(&ring);
+	CHECK(8, uring_enter(ring.fd, 2, 2, IORING_ENTER_GETEVENTS, NULL, 0) == 2);
+	CHECK(9, expect_cqes(&ring, (const struct expect[]){ {30, 0}, {31, 0} }, 2));
+
+	/* prep 失败发生在链中间：整条链不执行，失败成员保留自己的错误，其余 -ECANCELED；提交继续消费。 */
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 40);
+	sqe = next_sqe(&ring);
+	fill_nop(sqe, IOSQE_IO_LINK, 0, 41);
+	sqe->ioprio = 1;
+	fill_nop(next_sqe(&ring), 0, 0, 42);
+	fill_nop(next_sqe(&ring), 0, 0, 43);
+	publish(&ring);
+	CHECK(10, uring_enter(ring.fd, 4, 4, IORING_ENTER_GETEVENTS, NULL, 0) == 4);
+	CHECK(11, expect_cqes(&ring, (const struct expect[]){ {40, -ECANCELED}, {41, -EINVAL}, {42, -ECANCELED}, {43, 0} }, 4));
+
+	/* 结束链的成员 prep 失败：本次提交在此停止，其后的 SQE 留给下一次。 */
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK, 0, 50);
+	sqe = next_sqe(&ring);
+	fill_nop(sqe, 0, 0, 51);
+	sqe->ioprio = 1;
+	fill_nop(next_sqe(&ring), 0, 0, 52);
+	publish(&ring);
+	CHECK(12, uring_enter(ring.fd, 3, 0, 0, NULL, 0) == 2);
+	CHECK(13, expect_cqes(&ring, (const struct expect[]){ {50, -ECANCELED}, {51, -EINVAL} }, 2));
+	CHECK(14, uring_enter(ring.fd, 1, 1, IORING_ENTER_GETEVENTS, NULL, 0) == 1);
+	CHECK(15, expect_cqes(&ring, (const struct expect[]){ {52, 0} }, 1));
+
+	/* 链头是阻塞读（读满请求长度才算成功）：后继等它被写唤醒完成后才执行。 */
+	CHECK(16, pipe(pipes) == 0);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, 1, 60);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 61);
+	publish(&ring);
+	CHECK(17, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2 && ready(&ring) == 0);
+	CHECK(18, write(pipes[1], "x", 1) == 1);
+	CHECK(19, expect_cqes(&ring, (const struct expect[]){ {60, 1}, {61, 0} }, 2));
+
+	/* 短读使链断开（Linux 以 res != 请求长度判定失败）。 */
+	CHECK(20, write(pipes[1], "y", 1) == 1);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, 4, 70);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 71);
+	publish(&ring);
+	CHECK(21, uring_enter(ring.fd, 2, 2, IORING_ENTER_GETEVENTS, NULL, 0) == 2);
+	CHECK(22, expect_cqes(&ring, (const struct expect[]){ {70, 1}, {71, -ECANCELED} }, 2));
+
+	/* 链头是 TIMEOUT：到期的 -ETIME 使链断开；ETIME_SUCCESS 则不断开（CQE 仍是 -ETIME）。 */
+	struct __kernel_timespec twenty_ms = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 };
+	sqe = next_sqe(&ring);
+	fill_timeout(sqe, &twenty_ms, 0, 0, 80);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 81);
+	publish(&ring);
+	CHECK(23, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2);
+	CHECK(24, expect_cqes(&ring, (const struct expect[]){ {80, -ETIME}, {81, -ECANCELED} }, 2));
+	sqe = next_sqe(&ring);
+	fill_timeout(sqe, &twenty_ms, 0, IORING_TIMEOUT_ETIME_SUCCESS, 82);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 83);
+	publish(&ring);
+	CHECK(25, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2);
+	CHECK(26, expect_cqes(&ring, (const struct expect[]){ {82, -ETIME}, {83, 0} }, 2));
+
+	/* 取消正在等待的链头：它得到 -ECANCELED，后继随之取消。 */
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, sizeof buffer, 90);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 91);
+	publish(&ring);
+	CHECK(27, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2 && ready(&ring) == 0);
+	fill_cancel(next_sqe(&ring), IORING_OP_ASYNC_CANCEL, 90, 0, 92);
+	CHECK(28, submit_one(&ring) == 1);
+	int saw_cancel = 0, saw_head = 0, saw_tail = 0;
+	for (int i = 0; i < 3; i++) {
+		CHECK(29, wait_cqe(&ring, &cqe) == 1);
+		if (cqe.user_data == 92 && cqe.res == 0) saw_cancel = 1;
+		else if (cqe.user_data == 90 && cqe.res == -ECANCELED) saw_head = 1;
+		else if (cqe.user_data == 91 && cqe.res == -ECANCELED) saw_tail = saw_head;
+	}
+	CHECK(30, saw_cancel && saw_head && saw_tail);
+
+	/* fd 在 issue 时解析：链里先 close 再读，后者看到的是新的 fd 表（-EBADF）。 */
+	int duplicate = dup(pipes[0]);
+	CHECK(31, duplicate >= 0);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_CLOSE;
+	sqe->fd = duplicate;
+	sqe->flags = IOSQE_IO_LINK;
+	sqe->user_data = 100;
+	fill_read(next_sqe(&ring), duplicate, buffer, sizeof buffer, 101);
+	publish(&ring);
+	CHECK(32, uring_enter(ring.fd, 2, 2, IORING_ENTER_GETEVENTS, NULL, 0) == 2);
+	CHECK(33, expect_cqes(&ring, (const struct expect[]){ {100, 0}, {101, -EBADF} }, 2));
+
+	/* DRAIN：等所有更早的请求完成才开始，其后的请求等它完成。 */
+	fill_read(next_sqe(&ring), pipes[0], buffer, sizeof buffer, 120);
+	fill_nop(next_sqe(&ring), IOSQE_IO_DRAIN, 0, 121);
+	fill_nop(next_sqe(&ring), 0, 0, 122);
+	publish(&ring);
+	CHECK(37, uring_enter(ring.fd, 3, 0, 0, NULL, 0) == 3);
+	CHECK(38, ready(&ring) == 0);
+	CHECK(39, write(pipes[1], "d", 1) == 1);
+	CHECK(40, expect_cqes(&ring, (const struct expect[]){ {120, 1}, {121, 0}, {122, 0} }, 3));
+
+	/* DRAIN 与链混用：DRAIN 链等先前的链完成，且在 SKIP_SUCCESS 之后 DRAIN 被拒绝。 */
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, 1, 130);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 131);
+	fill_nop(next_sqe(&ring), IOSQE_IO_DRAIN, 0, 132);
+	publish(&ring);
+	CHECK(41, uring_enter(ring.fd, 3, 0, 0, NULL, 0) == 3 && ready(&ring) == 0);
+	CHECK(42, write(pipes[1], "e", 1) == 1);
+	CHECK(43, expect_cqes(&ring, (const struct expect[]){ {130, 1}, {131, 0}, {132, 0} }, 3));
+	/* 后继在 worker 线程上执行并访问提交者的 fd 表：阻塞读完成后 close 一个 fd。 */
+	int extra = dup(pipes[0]);
+	CHECK(46, extra >= 0);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, 1, 105);
+	sqe->flags = IOSQE_IO_LINK;
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_CLOSE;
+	sqe->fd = extra;
+	sqe->user_data = 106;
+	publish(&ring);
+	CHECK(47, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2 && ready(&ring) == 0);
+	CHECK(48, write(pipes[1], "w", 1) == 1);
+	CHECK(49, expect_cqes(&ring, (const struct expect[]){ {105, 1}, {106, 0} }, 2));
+	CHECK(50, fcntl(extra, F_GETFD) == -1 && errno == EBADF);
+
+	/* SKIP_SUCCESS：成功成员不产生 CQE；失败成员自己可见，其后被取消的成员也不产生 CQE。 */
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK | IOSQE_CQE_SKIP_SUCCESS, 0, 110);
+	fill_nop(next_sqe(&ring), 0, 0, 111);
+	fill_nop(next_sqe(&ring), IOSQE_IO_LINK | IOSQE_CQE_SKIP_SUCCESS, -5, 112);
+	fill_nop(next_sqe(&ring), 0, 0, 113);
+	publish(&ring);
+	CHECK(34, uring_enter(ring.fd, 4, 2, IORING_ENTER_GETEVENTS, NULL, 0) == 4);
+	CHECK(35, expect_cqes(&ring, (const struct expect[]){ {111, 0}, {112, -5} }, 2));
+	CHECK(36, ready(&ring) == 0);
+
+	fill_nop(next_sqe(&ring), IOSQE_CQE_SKIP_SUCCESS, 0, 140);
+	fill_nop(next_sqe(&ring), IOSQE_IO_DRAIN, 0, 141);
+	publish(&ring);
+	CHECK(44, uring_enter(ring.fd, 2, 1, IORING_ENTER_GETEVENTS, NULL, 0) == 2);
+	CHECK(45, expect_cqes(&ring, (const struct expect[]){ {141, -EOPNOTSUPP} }, 1));
+	close(pipes[0]);
+	close(pipes[1]);
+	unmap_ring(&ring);
+	return 0;
+}
+
+/* ---- socket：ACCEPT / CONNECT / SEND / RECV ---------------------------------------------------- */
+
+static volatile sig_atomic_t sigpipe_seen;
+static void on_sigpipe(int signal) { (void)signal; sigpipe_seen = 1; }
+
+int verify_io_uring_sockets(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqe;
+	struct io_uring_sqe *sqe;
+	struct sockaddr_un path = { .sun_family = AF_UNIX };
+	char buffer[16];
+	strcpy(path.sun_path, "/tmp/uring-socket");
+	unlink(path.sun_path);
+	CHECK(1, map_ring(&ring, 16, 0, 0) == 0);
+	int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(2, listener >= 0 && bind(listener, (struct sockaddr *)&path, sizeof path) == 0 && listen(listener, 4) == 0);
+
+	/* ACCEPT 先于连接提交：挂起，连接到来后以新 fd 完成，并写回对端地址长度。 */
+	struct sockaddr_un peer;
+	socklen_t peer_length = sizeof peer;
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_ACCEPT;
+	sqe->fd = listener;
+	sqe->addr = (uintptr_t)&peer;
+	sqe->addr2 = (uintptr_t)&peer_length;
+	sqe->user_data = 1;
+	CHECK(3, submit_one(&ring) == 1 && ready(&ring) == 0);
+	int client = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(4, client >= 0 && connect(client, (struct sockaddr *)&path, sizeof path) == 0);
+	CHECK(5, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 1 && cqe.res >= 0);
+	int served = cqe.res;
+	CHECK(6, peer_length >= sizeof(sa_family_t) && fcntl(served, F_GETFD) >= 0);
+
+	/* RECV 先挂起，SEND 到来后唤醒；数据完整。 */
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_RECV;
+	sqe->fd = served;
+	sqe->addr = (uintptr_t)buffer;
+	sqe->len = sizeof buffer;
+	sqe->user_data = 2;
+	CHECK(7, submit_one(&ring) == 1 && ready(&ring) == 0);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_SEND;
+	sqe->fd = client;
+	sqe->addr = (uintptr_t)"hello";
+	sqe->len = 5;
+	sqe->user_data = 3;
+	CHECK(8, submit_one(&ring) == 1);
+	int saw_send = 0, saw_recv = 0;
+	for (int i = 0; i < 2; i++) {
+		CHECK(9, wait_cqe(&ring, &cqe) == 1);
+		if (cqe.user_data == 3 && cqe.res == 5) saw_send = 1;
+		else if (cqe.user_data == 2 && cqe.res == 5 && memcmp(buffer, "hello", 5) == 0) saw_recv = 1;
+	}
+	CHECK(10, saw_send && saw_recv);
+
+	/* CONNECT 经 io_uring：成功为 0，之后可 accept；不存在的路径是 -ENOENT。 */
+	int second = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(11, second >= 0);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_CONNECT;
+	sqe->fd = second;
+	sqe->addr = (uintptr_t)&path;
+	sqe->off = sizeof path;
+	sqe->user_data = 4;
+	CHECK(12, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 4 && cqe.res == 0);
+	int accepted = accept(listener, NULL, NULL);
+	CHECK(13, accepted >= 0);
+	struct sockaddr_un missing = { .sun_family = AF_UNIX };
+	strcpy(missing.sun_path, "/tmp/uring-missing");
+	int third = socket(AF_UNIX, SOCK_STREAM, 0);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_CONNECT;
+	sqe->fd = third;
+	sqe->addr = (uintptr_t)&missing;
+	sqe->off = sizeof missing;
+	sqe->user_data = 5;
+	CHECK(14, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -ENOENT);
+
+	/* SEND 到已关闭的对端：-EPIPE，且不向提交线程投递 SIGPIPE。 */
+	struct sigaction action = { .sa_handler = on_sigpipe };
+	struct sigaction previous;
+	CHECK(15, sigaction(SIGPIPE, &action, &previous) == 0);
+	close(accepted);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_SEND;
+	sqe->fd = second;
+	sqe->addr = (uintptr_t)"x";
+	sqe->len = 1;
+	sqe->user_data = 6;
+	CHECK(16, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EPIPE);
+	CHECK(17, sigpipe_seen == 0);
+	sigaction(SIGPIPE, &previous, NULL);
+
+	/* prep：非 socket 的 SEND 是 -ENOTSOCK；未支持的 msg_flags 与目的地址是 -EOPNOTSUPP。 */
+	int plain[2];
+	CHECK(18, pipe(plain) == 0);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_SEND;
+	sqe->fd = plain[1];
+	sqe->addr = (uintptr_t)"x";
+	sqe->len = 1;
+	sqe->user_data = 7;
+	CHECK(19, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -ENOTSOCK);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_RECV;
+	sqe->fd = served;
+	sqe->addr = (uintptr_t)buffer;
+	sqe->len = 1;
+	sqe->msg_flags = MSG_PEEK;
+	sqe->user_data = 8;
+	CHECK(20, submit_one(&ring) == 1 && reap(&ring, &cqe) == 1 && cqe.res == -EOPNOTSUPP);
+
+	/* MSG_DONTWAIT 的 RECV 在没有数据时立即 -EAGAIN，不挂起。 */
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_RECV;
+	sqe->fd = served;
+	sqe->addr = (uintptr_t)buffer;
+	sqe->len = 1;
+	sqe->msg_flags = MSG_DONTWAIT;
+	sqe->user_data = 9;
+	CHECK(21, submit_one(&ring) == 1 && reap(&ring, &cqe) == 1 && cqe.res == -EAGAIN);
+
+	/* 取消挂起的 ACCEPT 后监听 fd 的引用被释放：close 之后 connect 得到 ECONNREFUSED。 */
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_ACCEPT;
+	sqe->fd = listener;
+	sqe->user_data = 10;
+	CHECK(22, submit_one(&ring) == 1 && ready(&ring) == 0);
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 10, 0, 11);
+	CHECK(23, submit_one(&ring) == 1 && expect_pair(&ring, 10, -ECANCELED, 11, 0));
+	close(listener);
+	int late = socket(AF_UNIX, SOCK_STREAM, 0);
+	errno = 0;
+	CHECK(24, connect(late, (struct sockaddr *)&path, sizeof path) == -1 && errno == ECONNREFUSED);
+	close(late);
+	close(second);
+	close(third);
+	close(client);
+	close(served);
+	close(plain[0]);
+	close(plain[1]);
+	unlink(path.sun_path);
+	unmap_ring(&ring);
+	return 0;
+}
+
 int verify_io_uring(void)
 {
 	int core = verify_io_uring_core();
@@ -920,5 +1293,9 @@ int verify_io_uring(void)
 	int io = verify_io_uring_io();
 	if (io != 0) return 100 + io;
 	int events = verify_io_uring_events();
-	return events != 0 ? 150 + events : 0;
+	if (events != 0) return 150 + events;
+	int chains = verify_io_uring_chains();
+	if (chains != 0) return 200 + chains;
+	int sockets = verify_io_uring_sockets();
+	return sockets != 0 ? 300 + sockets : 0;
 }

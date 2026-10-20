@@ -48,7 +48,7 @@ fn measure(root: &Path) -> Result<SendStagingCost, String> {
             .collect::<String>()
             .replace(",)", ")")
             .contains(
-                "crate::syscall::socket::write_vectors(task,ofd,socket,vectors,total_length,nonblocking)",
+                "crate::syscall::socket::write_vectors(task,ofd,socket,vectors,total_length,nonblocking,0)",
             )
         && !sequential.contains("socket.write(")
         && message.contains("UserInputStaging::try_new")

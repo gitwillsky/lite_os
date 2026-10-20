@@ -431,6 +431,9 @@ mod task {
             fn thread(&self) -> &Thread {
                 &self.thread
             }
+            fn file_wait(&self) -> &Mutex<Option<crate::sync::TaskMutexWaitPreparation>> {
+                &self.thread.file_wait
+            }
             fn is_kernel_thread(&self) -> bool {
                 matches!(self.kind, TaskKind::Kernel(_))
             }

@@ -33,13 +33,13 @@ fn identity(metadata: InodeMetadata) -> UnixPathIdentity {
 ///
 /// pathname、类型、权限或 I/O 失败返回标准 errno。
 pub(super) fn resolve(
+    task: &TaskControlBlock,
     address: &UnixAddress,
     require_write: bool,
 ) -> Result<(Arc<dyn Inode>, UnixPathIdentity), isize> {
-    let task = current_task().expect("AF_UNIX pathname lookup requires current task");
     let access = task.access_identity(true);
     let inode = vfs()
-        .open_at(start(&task), address.bytes(), &access)
+        .open_at(start(task), address.bytes(), &access)
         .map_err(super::super::fs::filesystem_error)?;
     let metadata = inode
         .metadata()

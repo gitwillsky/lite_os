@@ -5,14 +5,16 @@
 //! 能力见 `docs/syscall-support/` 与 `docs/architecture-contract/io-uring.md`。
 
 pub(crate) mod abi;
+mod chain;
 mod file;
 mod ops;
 mod ring;
 
 use alloc::sync::Arc;
 
-pub(crate) use ops::{Submitter, fail_init};
-pub(crate) use ring::{CqWait, Flow, Ring, RingError};
+pub(crate) use chain::{Chain, Link, Member, Members, Step, cancel_rest};
+pub(crate) use ops::Submitter;
+pub(crate) use ring::{CqWait, Ring, RingError, Unit};
 
 use abi::{Geometry, PARAMS_BYTES, SetupParams};
 
@@ -41,17 +43,29 @@ pub(crate) fn create(
     Ok((ring, geometry.encode_params(params.flags)))
 }
 
-/// 消费并执行至多 `to_submit` 个 SQE，返回被提交的条目数。
+/// 消费至多 `to_submit` 个 SQE，把它们组装成链并交给 `submitter` 执行，返回被提交的条目数。
 ///
 /// # Errors
 ///
 /// 等待 `submit_lock` 的元数据分配失败返回 `OutOfMemory`。
-pub(crate) fn submit(
+pub(crate) fn submit<S: Submitter>(
     ring: &Arc<Ring>,
     to_submit: u32,
-    submitter: &dyn Submitter,
+    submitter: &S,
 ) -> Result<u32, RingError> {
-    ring.submit(to_submit, |sqe| ops::issue(ring, sqe, submitter))
+    let mut assembler = chain::Assembler::new();
+    let consumed = ring.submit(to_submit, |sqe| {
+        let member = ops::prepare(ring, &sqe, submitter);
+        let (ready, flow) = assembler.add(ring, member);
+        if let Some(chain) = ready {
+            submitter.launch(ring, chain);
+        }
+        flow
+    })?;
+    if let Some(chain) = assembler.end(ring) {
+        submitter.launch(ring, chain);
+    }
+    Ok(consumed)
 }
 
 /// 若 `file` 是 io_uring ring，取回它的所有权句柄；挂起请求需要在提交返回后继续持有它。

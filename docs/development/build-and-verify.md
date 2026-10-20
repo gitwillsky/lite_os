@@ -303,7 +303,10 @@ io_uring 当前切片不新增 blocking benchmark：同步路径是对共享页�
 一次 NOWAIT 尝试。阻塞路径每次唤醒重新登记一次 `wait_for_poll`（O(挂起请求数) 个 key），挂起数量大时这是线性成本，但它只在请求真的阻塞时发生，
 host 微基准测到的只是 key 构造，不代表 io_uring 的真实价值——批量提交摊薄 syscall 往返、阻塞请求不占线程。这两项要等 `POLL_ADD`/`TIMEOUT` 与块层异步落地、
 有可比较的基线后再加入 blocking benchmark。
-每个挂起请求是一个 `Box`ed future（fallible 分配），其成本在请求真的阻塞时才产生。正确性由 `io-uring.c` 烟测（提交/完成顺序、溢出、阻塞唤醒、取消、读写、epoll 通知）与 `abi.rs` 单测裁决，本次没有测得吞吐数字。
+每条挂起的链是一个 `Box`ed future（fallible 分配）：不会等待的 op（普通文件、显式偏移、fsync、close、cancel、NOP）直接同步完成、不分配；
+会等待的 op（pipe/socket 流式读写、poll、timeout）无论是否真的阻塞都分配一次 future，因为 future 必须在首次 poll 之前就位于堆上（poll 过的 future 不能搬动）。
+链新增的热路径成本是每个 SQE 一次 `Member` 构造与每条链一次 `Ring::admit`（`spin::Mutex` 内的有序 `Vec` 追加，链完成时 `binary_search` 加 `remove`），
+批内 SQE 不分配；这些在 `io_uring_enter` 的 syscall 开销面前可忽略，本次没有新增 benchmark，原因同上。正确性由 `io-uring.c` 烟测（提交/完成顺序、溢出、阻塞唤醒、取消、读写、epoll 通知）与 `abi.rs` 单测裁决，本次没有测得吞吐数字。
 
 选核轮转不新增 benchmark：每次抢占只多一次本 CPU 私有计数的 Relaxed 读写和一次 Ready/Running 计数读取，选核仍是
 O(CPU 数) 的单趟扫描，没有新增锁、分配或跨 CPU 访问；收益是公平性而非延迟，由 `verify-runtime-scheduler` 与

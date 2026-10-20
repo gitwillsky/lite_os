@@ -327,6 +327,8 @@ impl TaskControlBlock {
         body: KernelThreadBody,
     ) -> Result<Self, MemoryError> {
         let identity = pid.identity().clone();
+        let file_wait =
+            TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?;
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let cpu_runtime_us =
@@ -343,6 +345,7 @@ impl TaskControlBlock {
                 name,
                 body,
                 namespaces::initial_membership(),
+                file_wait,
             )),
             execution: ExecutionContext {
                 identity: Mutex::new(identity),
@@ -423,6 +426,14 @@ impl TaskControlBlock {
             TaskKind::Kernel(thread) => {
                 panic!("kernel thread {} has no user process", thread.name)
             }
+        }
+    }
+
+    /// 访问文件表用的预置 waiter：用户线程与内核线程各自独占一份。
+    fn file_wait(&self) -> &Mutex<Option<TaskMutexWaitPreparation>> {
+        match &self.kind {
+            TaskKind::User { thread, .. } => &thread.file_wait,
+            TaskKind::Kernel(thread) => &thread.file_wait,
         }
     }
 

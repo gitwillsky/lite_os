@@ -160,10 +160,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let socket = source(sources, "kernel/src/syscall/socket.rs");
     let accept = socket
-        .split("pub(crate) fn sys_accept4")
+        .split("pub(in crate::syscall) fn accept_once")
         .nth(1)
         .unwrap_or("")
-        .split("pub(crate) fn sys_accept(")
+        .split("pub(crate) fn sys_accept4")
         .next()
         .unwrap();
     let socket_prepared = source(sources, "kernel/src/socket/preparation.rs");
@@ -176,7 +176,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         )
         || !before(
             accept,
-            "write_address(peer",
+            "write_address(task, peer",
             "reservation.publish(accepted)",
         )
         || !socket_prepared.contains("allocation: Arc<MaybeUninit<Socket>>")

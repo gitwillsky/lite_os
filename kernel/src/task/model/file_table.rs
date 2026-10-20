@@ -107,13 +107,12 @@ impl FileTableOwner {
     fn with_table<R>(&self, operation: impl FnOnce(&mut FileDescriptorTable) -> R) -> R {
         let caller = crate::task::current_task().expect("file table requires current Thread");
         let mut preparation = caller
-            .thread()
-            .file_wait
+            .file_wait()
             .lock()
             .take()
             .expect("nested file table waiter acquisition");
         let mut table = self.table.lock_prepared(&mut preparation);
-        let previous = caller.thread().file_wait.lock().replace(preparation);
+        let previous = caller.file_wait().lock().replace(preparation);
         assert!(
             previous.is_none(),
             "file table waiter owner replaced during acquisition"

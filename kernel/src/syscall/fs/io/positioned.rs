@@ -1,6 +1,7 @@
 use super::*;
 
-pub(in crate::syscall) fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
+/// `pread64`/`preadv` 的入口：按当前 task 的 fd 表取得 OFD 后进入 [`positioned_read`]。
+fn positioned_read_fd(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     if offset < 0 {
         return -errno::EINVAL;
     }
@@ -8,6 +9,25 @@ pub(in crate::syscall) fn positioned_read(fd: usize, vectors: &[UserIoVec], offs
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
+    positioned_read(&task, &ofd, vectors, offset)
+}
+
+/// 从显式 offset 读取已取得的 OFD，不修改共享 OFD offset。
+///
+/// 显式接收 task 与 OFD，使 io_uring 的 worker 能以提交线程的地址空间执行它。
+///
+/// # Returns
+///
+/// byte count、EOF 零或负 errno。
+pub(in crate::syscall) fn positioned_read(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    vectors: &[UserIoVec],
+    offset: i64,
+) -> isize {
+    if offset < 0 {
+        return -errno::EINVAL;
+    }
     if ofd.status_flags() & O_ACCMODE == O_WRONLY {
         return -errno::EBADF;
     }
@@ -16,7 +36,7 @@ pub(in crate::syscall) fn positioned_read(fd: usize, vectors: &[UserIoVec], offs
     {
         let total_length = vectors.iter().map(|vector| vector.length).sum();
         let result = crate::syscall::device::read_positioned_file(
-            &task,
+            task,
             file,
             vectors,
             total_length,
@@ -47,7 +67,7 @@ pub(in crate::syscall) fn positioned_read(fd: usize, vectors: &[UserIoVec], offs
         Err(error) => return ferr(error),
     };
     let mut position = offset as u64;
-    let result = read_regular_vectors(&task, &ofd, &file, &mut position, vectors);
+    let result = read_regular_vectors(task, ofd, &file, &mut position, vectors);
     task.account_read_result(result);
     if result > 0 {
         ofd.notify(crate::fs::IN_ACCESS);
@@ -68,7 +88,7 @@ pub(in crate::syscall) fn positioned_read(fd: usize, vectors: &[UserIoVec], offs
 ///
 /// byte count、EOF 零或负 errno。
 pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64) -> isize {
-    positioned_read(
+    positioned_read_fd(
         fd,
         &[UserIoVec {
             base: pointer,
@@ -90,7 +110,7 @@ pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64)
 /// # Returns
 ///
 /// byte count、partial count 或负 errno。
-pub(in crate::syscall) fn positioned_write(
+fn positioned_write_fd(
     fd: usize,
     vectors: &[UserIoVec],
     offset: i64,
@@ -103,6 +123,19 @@ pub(in crate::syscall) fn positioned_write(
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
+    positioned_write(&task, &ofd, vectors, offset, append_override)
+}
+
+pub(in crate::syscall) fn positioned_write(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    vectors: &[UserIoVec],
+    offset: i64,
+    append_override: Option<bool>,
+) -> isize {
+    if offset < 0 {
+        return -errno::EINVAL;
+    }
     if ofd.status_flags() & O_ACCMODE == O_RDONLY {
         return -errno::EBADF;
     }
@@ -114,7 +147,7 @@ pub(in crate::syscall) fn positioned_write(
         }
         let total_length = vectors.iter().map(|vector| vector.length).sum();
         let result = crate::syscall::device::write_positioned_file(
-            &task,
+            task,
             file,
             vectors,
             total_length,
@@ -158,7 +191,7 @@ pub(in crate::syscall) fn positioned_write(
             Ok(writer) => writer,
             Err(error) => return ferr(error),
         };
-        write_regular_vectors(&task, &writer, &mut position, vectors, append, &mut staging)
+        write_regular_vectors(task, &writer, &mut position, vectors, append, &mut staging)
     });
     task.account_write_result(result);
     if result > 0 {
@@ -180,7 +213,7 @@ pub(in crate::syscall) fn positioned_write(
 ///
 /// byte count、partial count 或负 errno。
 pub(crate) fn sys_pwrite64(fd: usize, pointer: usize, length: usize, offset: i64) -> isize {
-    positioned_write(
+    positioned_write_fd(
         fd,
         &[UserIoVec {
             base: pointer,
@@ -197,7 +230,7 @@ fn positioned_readv(fd: usize, iovector: usize, count: usize, offset: i64) -> is
         Ok(value) => value,
         Err(error) => return error,
     };
-    positioned_read(fd, &vectors, offset)
+    positioned_read_fd(fd, &vectors, offset)
 }
 
 fn positioned_writev(
@@ -212,7 +245,7 @@ fn positioned_writev(
         Ok(value) => value,
         Err(error) => return error,
     };
-    positioned_write(fd, &vectors, offset, append_override)
+    positioned_write_fd(fd, &vectors, offset, append_override)
 }
 
 /// 按 Linux preadv ABI 从显式 offset scatter read，不修改共享 OFD offset。

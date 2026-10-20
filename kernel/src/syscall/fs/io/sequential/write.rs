@@ -129,6 +129,7 @@ pub(super) fn write_descriptor(
             vectors,
             total_length,
             nonblocking,
+            0,
         ),
         OpenFileKind::EventFd(event) => {
             if total_length == 0 {

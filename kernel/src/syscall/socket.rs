@@ -39,12 +39,12 @@ const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
 const SOCK_RAW: usize = 3;
 const SOCK_SEQPACKET: usize = 5;
-const SOCK_CLOEXEC: usize = O_CLOEXEC as usize;
-const SOCK_NONBLOCK: usize = O_NONBLOCK as usize;
+pub(in crate::syscall) const SOCK_CLOEXEC: usize = O_CLOEXEC as usize;
+pub(in crate::syscall) const SOCK_NONBLOCK: usize = O_NONBLOCK as usize;
 const MSG_PEEK: usize = 0x2;
 const MSG_TRUNC: usize = 0x20;
-const MSG_DONTWAIT: usize = 0x40;
-const MSG_NOSIGNAL: usize = 0x4000;
+pub(in crate::syscall) const MSG_DONTWAIT: usize = 0x40;
+pub(in crate::syscall) const MSG_NOSIGNAL: usize = 0x4000;
 const IFNAMSIZ: usize = 16;
 const IFREQ_SIZE: usize = 40;
 const SIOCADDRT: usize = 0x890b;
@@ -139,8 +139,7 @@ fn decode_type(raw: usize) -> Result<SocketType, isize> {
     }
 }
 
-fn current_unix_credentials() -> UnixCredentials {
-    let task = current_task().expect("AF_UNIX operation requires current task");
+fn unix_credentials(task: &TaskControlBlock) -> UnixCredentials {
     let [uid, gid] = task.message_identity().ids(true);
     UnixCredentials {
         pid: task.tgid_identity().clone(),
@@ -149,34 +148,39 @@ fn current_unix_credentials() -> UnixCredentials {
     }
 }
 
+/// 取 OFD 背后的 socket；不是 socket 返回 `ENOTSOCK`。
+pub(in crate::syscall) fn socket_of(ofd: &OpenFileDescription) -> Result<Arc<Socket>, isize> {
+    match &ofd.kind {
+        OpenFileKind::Socket(socket) => Ok(socket.clone()),
+        _ => Err(-errno::ENOTSOCK),
+    }
+}
+
 fn socket_ofd(fd: usize) -> Result<(Arc<OpenFileDescription>, Arc<Socket>), isize> {
     let task = current_task().expect("socket syscall requires current task");
     let ofd = task.fd_get(fd).ok_or(-errno::EBADF)?;
-    let OpenFileKind::Socket(socket) = &ofd.kind else {
-        return Err(-errno::ENOTSOCK);
-    };
-    Ok((ofd.clone(), socket.clone()))
+    let socket = socket_of(&ofd)?;
+    Ok((ofd, socket))
 }
 
 // 仅 bind 接受 family-only 地址；connect/send 的未命名目的地址按 Linux 返回 EINVAL。
-fn copy_address(pointer: usize, length: usize) -> Result<[u8; 128], isize> {
+fn copy_address(task: &TaskControlBlock, pointer: usize, length: usize) -> Result<[u8; 128], isize> {
     if !(2..=128).contains(&length) {
         return Err(-errno::EINVAL);
     }
     let mut bytes = [0u8; 128];
-    current_task()
-        .unwrap()
-        .copy_from_user(pointer, &mut bytes[..length])
+    task.copy_from_user(pointer, &mut bytes[..length])
         .map_err(|_| -errno::EFAULT)?;
     Ok(bytes)
 }
 
 fn read_address(
+    task: &TaskControlBlock,
     pointer: usize,
     length: usize,
     allow_unnamed: bool,
 ) -> Result<SocketAddress, isize> {
-    let bytes = copy_address(pointer, length)?;
+    let bytes = copy_address(task, pointer, length)?;
     decode_address(&bytes[..length], allow_unnamed)
 }
 
@@ -219,7 +223,8 @@ fn decode_address(bytes: &[u8], allow_unnamed: bool) -> Result<SocketAddress, is
     }
 }
 
-fn write_address(
+pub(in crate::syscall) fn write_address(
+    task: &TaskControlBlock,
     address: Option<SocketAddress>,
     pointer: usize,
     length_pointer: usize,
@@ -230,7 +235,6 @@ fn write_address(
     if length_pointer == 0 {
         return Err(-errno::EFAULT);
     }
-    let task = current_task().unwrap();
     let mut length_bytes = [0u8; 4];
     task.copy_from_user(length_pointer, &mut length_bytes)
         .map_err(|_| -errno::EFAULT)?;
@@ -414,7 +418,7 @@ pub(crate) fn sys_socketpair(domain: usize, kind: usize, protocol: usize, output
         Ok(data) => data,
         Err(error) => return socket_error(error),
     };
-    if let Err(error) = Socket::pair(first, second, data, current_unix_credentials()) {
+    if let Err(error) = Socket::pair(first, second, data, unix_credentials(&task)) {
         return socket_error(error);
     }
     reservation.publish_many([first_ofd, second_ofd]);
@@ -426,12 +430,13 @@ pub(crate) fn sys_bind(fd: usize, address: usize, length: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let address = match read_address(address, length, true) {
+    let task = current_task().unwrap();
+    let address = match read_address(&task, address, length, true) {
         Ok(value) => value,
         Err(error) => return error,
     };
     // 自身PID namespace的可见TGID只是autobind输入；actual NET owner决定碰撞与最终port。
-    let caller_tgid = current_task().unwrap().visible_tgid();
+    let caller_tgid = task.visible_tgid();
     let SocketAddress::Unix(unix) = &address else {
         return socket
             .bind(address, caller_tgid)
@@ -453,28 +458,41 @@ pub(crate) fn sys_listen(fd: usize, backlog: isize) -> isize {
     socket
         .listen(
             listen::normalize_backlog(backlog),
-            (socket.domain() == SocketDomain::Unix).then(current_unix_credentials),
+            (socket.domain() == SocketDomain::Unix)
+                .then(|| unix_credentials(&current_task().unwrap())),
         )
         .map_or_else(socket_error, |()| 0)
 }
 
-pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
-    let (ofd, client) = match socket_ofd(fd) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    let bytes = match copy_address(address, length) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
+/// 一次 connect 尝试的结果。
+pub(in crate::syscall) enum ConnectBegin {
+    Connected,
+    /// 握手进行中：等待 socket 可写或出错，再读 [`Socket::connection_result`]。
+    InProgress,
+    /// Unix 目标的 backlog 已满：可等待的容量句柄。
+    BacklogFull(crate::socket::SocketCapacityWait),
+}
+
+/// 发起 connect（不等待）：解码地址、解析 Unix pathname、提交到后端。
+///
+/// # Returns
+///
+/// 已连接、握手进行中或 backlog 已满；地址、权限或后端错误返回负 errno。
+pub(in crate::syscall) fn connect_begin(
+    task: &TaskControlBlock,
+    client: &Arc<Socket>,
+    address: usize,
+    length: usize,
+) -> Result<ConnectBegin, isize> {
+    let bytes = copy_address(task, address, length)?;
     if u16::from_ne_bytes(bytes[..2].try_into().unwrap()) == 0 {
-        return client.disconnect().map_or_else(socket_error, |_| 0);
+        return client
+            .disconnect()
+            .map(|_| ConnectBegin::Connected)
+            .map_err(socket_error);
     }
-    let address = match decode_address(&bytes[..length], false) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    let credentials = (client.domain() == SocketDomain::Unix).then(current_unix_credentials);
+    let address = decode_address(&bytes[..length], false)?;
+    let credentials = (client.domain() == SocketDomain::Unix).then(|| unix_credentials(task));
     let resources = || {
         let server_notify = match crate::ipc::Pipe::notification_pair() {
             Ok(value) => value,
@@ -485,17 +503,10 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
             data: unix_connection_data(client.socket_type())?,
         })
     };
-    let deadline = client
-        .timeout(SocketIoDirection::Send)
-        .deadline(crate::timer::get_time_ns());
-    let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         let unix_path = match &address {
             SocketAddress::Unix(unix) if !unix.is_abstract() => {
-                match unix_path::resolve(unix, true) {
-                    Ok(resolved) => Some(resolved),
-                    Err(error) => return error,
-                }
+                Some(unix_path::resolve(task, unix, true)?)
             }
             _ => None,
         };
@@ -506,10 +517,35 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
             unix_identity,
             resources,
         ) {
-            Ok(()) => return 0,
+            Ok(()) => return Ok(ConnectBegin::Connected),
             Err(SocketConnectError::DestinationChanged) => continue,
-            Err(SocketConnectError::BacklogFull(_)) if nonblocking => return -errno::EAGAIN,
             Err(SocketConnectError::BacklogFull(capacity)) => {
+                return Ok(ConnectBegin::BacklogFull(capacity));
+            }
+            Err(SocketConnectError::Error(SocketError::InProgress)) => {
+                return Ok(ConnectBegin::InProgress);
+            }
+            Err(SocketConnectError::Error(error)) => return Err(socket_error(error)),
+        }
+    }
+}
+
+pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
+    let (ofd, client) = match socket_ofd(fd) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    let task = current_task().unwrap();
+    let deadline = client
+        .timeout(SocketIoDirection::Send)
+        .deadline(crate::timer::get_time_ns());
+    let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
+    loop {
+        match connect_begin(&task, &client, address, length) {
+            Ok(ConnectBegin::Connected) => return 0,
+            Err(error) => return error,
+            Ok(ConnectBegin::BacklogFull(_)) if nonblocking => return -errno::EAGAIN,
+            Ok(ConnectBegin::BacklogFull(capacity)) => {
                 match super::poll::wait_for_socket_capacity(&capacity, deadline) {
                     WaitResult::Woken => {}
                     WaitResult::Interrupted => return interrupted_wait(deadline),
@@ -517,10 +553,8 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
                     WaitResult::OutOfMemory => return -errno::ENOMEM,
                 }
             }
-            Err(SocketConnectError::Error(SocketError::InProgress)) if nonblocking => {
-                return -errno::EINPROGRESS;
-            }
-            Err(SocketConnectError::Error(SocketError::InProgress)) => loop {
+            Ok(ConnectBegin::InProgress) if nonblocking => return -errno::EINPROGRESS,
+            Ok(ConnectBegin::InProgress) => loop {
                 match wait_for_ofd(&ofd, 4 | 8, deadline) {
                     WaitResult::Woken => match client.connection_result() {
                         Ok(()) => return 0,
@@ -532,25 +566,26 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
                     WaitResult::OutOfMemory => return -errno::ENOMEM,
                 }
             },
-            Err(SocketConnectError::Error(error)) => return socket_error(error),
         }
     }
 }
 
-pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize) -> isize {
-    if flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
-        return -errno::EINVAL;
-    }
-    let (ofd, listener) = match socket_ofd(fd) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    let task = current_task().unwrap();
+/// 尝试接受一个连接（不等待）：没有待接受的连接返回 `-EAGAIN`。
+///
+/// 每次尝试都重新预留 fd 槽与 socket 描述，所以重试之间不持有 task 的 fd 表状态；
+/// 成功时把新 fd 发布到 `task` 的 fd 表并写回对端地址。
+pub(in crate::syscall) fn accept_once(
+    task: &TaskControlBlock,
+    listener: &Arc<Socket>,
+    flags: usize,
+    address: usize,
+    length: usize,
+) -> isize {
     let reservation = match task.fd_prepare_open(flags & SOCK_CLOEXEC != 0) {
         Ok(reservation) => reservation,
         Err(error) => return super::file_descriptor_error(error),
     };
-    let mut prepared = match PreparedSocketDescription::try_new(
+    let prepared = match PreparedSocketDescription::try_new(
         O_RDWR | (flags as u32 & O_NONBLOCK),
         &task.access_identity(true),
         listener.net_namespace(),
@@ -566,40 +601,47 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
     } else {
         None
     };
+    match prepared.accept(listener, accept_notify) {
+        Ok(accepted) => {
+            let OpenFileKind::Socket(socket) = &accepted.kind else {
+                unreachable!()
+            };
+            if let Err(error) = socket
+                .peer_address()
+                .map_err(socket_error)
+                .and_then(|peer| write_address(task, peer, address, length))
+            {
+                return error;
+            }
+            reservation.publish(accepted) as isize
+        }
+        Err((error, _)) => socket_error(error),
+    }
+}
+
+pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize) -> isize {
+    if flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 {
+        return -errno::EINVAL;
+    }
+    let (ofd, listener) = match socket_ofd(fd) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    let task = current_task().unwrap();
     let deadline = listener
         .timeout(SocketIoDirection::Receive)
         .deadline(crate::timer::get_time_ns());
     let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
     loop {
-        match prepared.accept(&listener, accept_notify.clone()) {
-            Ok(accepted) => {
-                let OpenFileKind::Socket(socket) = &accepted.kind else {
-                    unreachable!()
-                };
-                if let Err(error) = socket
-                    .peer_address()
-                    .map_err(socket_error)
-                    .and_then(|peer| write_address(peer, address, length))
-                {
-                    return error;
-                }
-                return reservation.publish(accepted) as isize;
-            }
-            Err((error, returned)) => {
-                prepared = returned;
-                if error != SocketError::Again {
-                    return socket_error(error);
-                }
-                if nonblocking {
-                    return -errno::EAGAIN;
-                }
-                match wait_for_ofd(&ofd, 1, deadline) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return interrupted_wait(deadline),
-                    WaitResult::TimedOut => return -errno::EAGAIN,
-                    WaitResult::OutOfMemory => return -errno::ENOMEM,
-                }
-            }
+        let result = accept_once(&task, &listener, flags, address, length);
+        if result != -errno::EAGAIN || nonblocking {
+            return result;
+        }
+        match wait_for_ofd(&ofd, 1, deadline) {
+            WaitResult::Woken => {}
+            WaitResult::Interrupted => return interrupted_wait(deadline),
+            WaitResult::TimedOut => return -errno::EAGAIN,
+            WaitResult::OutOfMemory => return -errno::ENOMEM,
         }
     }
 }
@@ -616,7 +658,7 @@ pub(crate) fn sys_getsockname(fd: usize, address: usize, length: usize) -> isize
     socket
         .address()
         .map_err(socket_error)
-        .and_then(|value| write_address(value, address, length))
+        .and_then(|value| write_address(&current_task().unwrap(), value, address, length))
         .map_or_else(|error| error, |()| 0)
 }
 
@@ -628,7 +670,7 @@ pub(crate) fn sys_getpeername(fd: usize, address: usize, length: usize) -> isize
     socket
         .peer_address()
         .map_err(socket_error)
-        .and_then(|value| write_address(value, address, length))
+        .and_then(|value| write_address(&current_task().unwrap(), value, address, length))
         .map_or_else(|error| error, |()| 0)
 }
 

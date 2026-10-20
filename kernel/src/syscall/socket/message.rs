@@ -161,7 +161,7 @@ fn read_target(
             && socket.socket_type() == crate::socket::SocketType::Stream)
             .then_some(SendTarget::StreamName));
     }
-    read_address(pointer, length, false).map(|address| Some(SendTarget::Address(address)))
+    read_address(task, pointer, length, false).map(|address| Some(SendTarget::Address(address)))
 }
 
 impl SendContext<'_> {
@@ -183,7 +183,7 @@ impl SendContext<'_> {
         if let Some(SendTarget::Address(SocketAddress::Unix(address))) = &self.target
             && !address.is_abstract()
         {
-            let (inode, identity) = super::unix_path::resolve(address, true)?;
+            let (inode, identity) = super::unix_path::resolve(self.task, address, true)?;
             return Ok((
                 Some(crate::socket::SocketSendDestination::UnixPath(identity)),
                 Some(inode),
@@ -428,6 +428,7 @@ pub(in crate::syscall) fn write_vectors(
     vectors: &[UserIoVec],
     total_length: usize,
     nonblocking: bool,
+    flags: usize,
 ) -> isize {
     if let Err(error) = socket.check_seqpacket_send() {
         return socket_error(error);
@@ -438,7 +439,7 @@ pub(in crate::syscall) fn write_vectors(
             ofd,
             socket,
             target: None,
-            flags: 0,
+            flags,
             nonblocking: nonblocking || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
@@ -604,7 +605,7 @@ pub(crate) fn sys_recvfrom(
                 if cursor.copy_to_user(&task, output.initialized()).is_err() {
                     return -errno::EFAULT;
                 }
-                if let Err(error) = write_address(received.source, address, address_length) {
+                if let Err(error) = write_address(&task, received.source, address, address_length) {
                     return error;
                 }
                 return if flags & MSG_TRUNC != 0 {

@@ -8,6 +8,15 @@ mod allocation_failure;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
+// 本 fixture 只装配未调度的执行体输入，不获取文件表；KernelThread 仅持有这个预置 waiter 的所有权。
+mod sync {
+    pub(crate) struct TaskMutexWaitPreparation;
+    impl TaskMutexWaitPreparation {
+        pub(crate) fn prepare() -> Result<Self, ()> {
+            Ok(Self)
+        }
+    }
+}
 mod fs {
     pub(crate) mod pidfs {
         #[derive(Default)]
@@ -92,6 +101,7 @@ mod task {
                 "retire-mm",
                 alloc::boxed::Box::new(|| {}),
                 root.clone(),
+                crate::sync::TaskMutexWaitPreparation::prepare().unwrap(),
             );
             let task = Arc::new(TaskControlBlock {
                 kind: TaskKind::Kernel(kernel),
@@ -144,6 +154,7 @@ mod task {
                 "unpublished",
                 alloc::boxed::Box::new(|| {}),
                 root.clone(),
+                crate::sync::TaskMutexWaitPreparation::prepare().unwrap(),
             );
             assert_eq!(root.lookup(observer.number_in(&root)), None);
             drop(kernel);

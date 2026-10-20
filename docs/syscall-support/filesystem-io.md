@@ -84,18 +84,25 @@
 
 tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`；`huge=`、`mpol=` 等返回 `EINVAL`。
 
-io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`；
+io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`；
+`ACCEPT`/`CONNECT`/`SEND`/`RECV`：`ACCEPT` 的 multishot 与直接描述符、`SEND`/`RECV` 的目的地址、`ioprio` recvsend flags、除 `MSG_DONTWAIT`/`MSG_NOSIGNAL` 外的 `msg_flags` 返回 `-EOPNOTSUPP`；`SEND` 恒带 `MSG_NOSIGNAL`（`SIGPIPE` 不投递给提交线程）；
+`CONNECT` 对 Unix 目标 backlog 已满以 `-EAGAIN` 完成（Linux 在 io-wq 里等待容量）；AF_INET 路径与 AF_UNIX 共用同一核心，烟测只覆盖 AF_UNIX。
 其余 opcode 的 SQE 完成为 `-EOPNOTSUPP` 并在 probe 中标为不支持。
 读写：`off == -1` 用并推进当前 position，`off >= 0` 对 regular/可定位文件是 pread/pwrite 语义，对 pipe/socket 等流式文件忽略；`ioprio`、`rw_flags`、
 `personality` 非零分别返回 `EINVAL`/`EOPNOTSUPP`/`EINVAL`，请求使用提交者提交时刻的凭据。会阻塞的 pipe/socket/eventfd/timerfd/tty 请求不占用提交线程：
 先做一次 NOWAIT 尝试，仍会阻塞则由 `io_uring` 内核线程等待就绪后在提交线程的地址空间中完成，用户态自己设置了 `O_NONBLOCK` 的 fd 如实返回 `-EAGAIN`；
 signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记信号等待）。regular 文件的读写在 `io_uring_enter` 内联完成，磁盘 I/O 会使 `enter` 睡眠。
 `POLL_ADD`：一次性语义，提交时先 poll 一次，已就绪同步完成，否则挂起；res 是 revents，`ERR`/`HUP` 总是报告；`IORING_POLL_ADD_MULTI` 返回 `-EOPNOTSUPP`。
-`TIMEOUT`：相对或绝对（`CLOCK_MONOTONIC`，`BOOTTIME` 视同单调），到期 `-ETIME`（`ETIME_SUCCESS` 为 0）；`off` 非零时等“除 timeout 自身外又发布 N 个 CQE”，满足则以 0 完成；
+`TIMEOUT`：相对或绝对（`CLOCK_MONOTONIC`，`BOOTTIME` 视同单调），到期 `-ETIME`（`ETIME_SUCCESS` 的 CQE 仍是 `-ETIME`，只是不使链断开）；`off` 非零时等“除 timeout 自身外又发布 N 个 CQE”，满足则以 0 完成；
 `len` 必须为 1；`MULTISHOT`/`REALTIME` 返回 `-EOPNOTSUPP`（`MULTISHOT|ABS` 为 `-EINVAL`）。`TIMEOUT_REMOVE`、`POLL_REMOVE` 只取消各自种类，更新类 flags 返回 `-EOPNOTSUPP`。
-`ASYNC_CANCEL`：按 user_data 匹配（`ALL` 取消全部并返回个数，`ANY` 匹配该 ring 的任意请求），目标得到 `-ECANCELED`，找不到为 `-ENOENT`；按 fd/opcode 匹配（`FD`/`OP`）返回 `-EOPNOTSUPP`。
+`ASYNC_CANCEL`：按 user_data 匹配（`ALL` 取消全部并返回个数，`ANY` 匹配该 ring 的任意请求），只匹配“正在等待”的成员：取消请求同步得到 0 或 `-ENOENT`，目标稍后异步得到 `-ECANCELED`（两个 CQE 的先后不保证，与 Linux 相同）；
+按 fd/opcode 匹配（`FD`/`OP`）返回 `-EOPNOTSUPP`。
 ring 关闭（含进程退出关闭 fd）取消该 ring 的全部挂起请求，释放它们持有的目标 fd；提交线程已退出而 ring 仍被共享时，挂起请求以 `-ECANCELED` 结束。
-`IOSQE_IO_DRAIN`、`IO_LINK`/`IO_HARDLINK`、`BUFFER_SELECT` 返回 `-EOPNOTSUPP`；`IOSQE_ASYNC` 被接受但只是调度提示；`FIXED_FILE` 因没有注册文件表返回 `-EBADF`。
+`IOSQE_IO_LINK`/`IO_HARDLINK`：链在一次提交批内组装，头先执行，成员失败（`res < 0`、读写短传输、非 `ETIME_SUCCESS` 的 `-ETIME`）取消其后非 hardlink 链的成员（`-ECANCELED`），prep 失败按 Linux 取消整条链，批末未结束的链按现状结束；
+后继的 fd 在其 issue 时才解析。
+已知偏差：对尚未开始的链成员发 `ASYNC_CANCEL` 返回 `-ENOENT`；`IORING_OP_LINK_TIMEOUT` 仍返回 `-EOPNOTSUPP`。
+`IOSQE_IO_DRAIN`：等所有更早的请求链完成才开始，其后的链等它完成；链中间的 DRAIN 使链头 DRAIN 且其后的下一条链也 DRAIN；ring 上用过 `CQE_SKIP_SUCCESS` 之后 DRAIN 返回 `-EOPNOTSUPP`（同 Linux）。
+`BUFFER_SELECT` 返回 `-EOPNOTSUPP`；`IOSQE_ASYNC` 被接受但只是调度提示；`FIXED_FILE` 因没有注册文件表返回 `-EBADF`。
 固定文件/缓冲区注册、其余 opcode、SQPOLL/IOPOLL、SQE128/CQE32 未开放。CQ 溢出链表上限为 CQ 容量的 8 倍，超出后丢弃并经 `EBADR` 通知。
 未支持ACL、splice family 或完整 block I/O priority enforcement；
 xattr目前接入tmpfs/ext4/memfd源码，其余filesystem返回EOPNOTSUPP；新 ext4 镜像启用原生 EA_INODE，
