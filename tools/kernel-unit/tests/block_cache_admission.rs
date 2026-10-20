@@ -213,7 +213,16 @@ mod fs {
         operation: TaskMutex<()>,
         write_sequence: TaskMutex<()>,
         pages: Mutex<CachedPages>,
+        storage_epoch: StorageEpoch,
         writer_retired: Arc<TaskEvent>,
+    }
+    // 本 fixture 只覆盖 registry admission 与同步读；不阻塞读的协议由 page_cache_nowait fixture 覆盖。
+    trait CompletionNotify: Send + Sync {}
+    struct NowaitRead;
+    impl NowaitRead {
+        fn new(_: Arc<CachedFile>, _: u64, _: usize, _: Arc<dyn CompletionNotify>) -> Self {
+            unreachable!("registry admission fixture never starts a non-blocking read")
+        }
     }
     impl CachedFile {
         fn page_with_storage(
@@ -288,6 +297,9 @@ mod fs {
         Ok(())
     }
 
+    #[path = "page_cache/storage_epoch.rs"]
+    mod storage_epoch;
+    use storage_epoch::StorageEpoch;
     #[path = "page_cache/registry.rs"]
     mod registry;
     use registry::cached_file;

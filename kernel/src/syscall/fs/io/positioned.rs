@@ -75,6 +75,211 @@ pub(in crate::syscall) fn positioned_read(
     result
 }
 
+/// io_uring 的显式偏移 regular-file 读：不阻塞调用线程的状态机，语义与 [`positioned_read`] 相同。
+///
+/// 每一块从 page cache 同步复制，或开始一次异步填页并让出；块读完成后继续。被丢弃即取消，
+/// 已交付给用户的部分不回滚（与同步读被信号打断后的 partial read 相同）。
+pub(in crate::syscall) struct AsyncPositionedRead {
+    ofd: Arc<OpenFileDescription>,
+    file: RegularFile,
+    /// `Some(start)`：这是 `off == -1` 的当前位置读，起点是发起时的共享 position，完成时发布 `start + 读到的字节`。
+    /// 缺失时当前位置读不推进 position，下一次读会重复读同一区间。
+    shared_start: Option<u64>,
+    position: u64,
+    progress: ReadProgress,
+    chunk: Vec<u8>,
+    current: Option<(crate::fs::NowaitRead, usize)>,
+}
+
+/// [`AsyncPositionedRead::step`] 的进展。
+pub(in crate::syscall) enum AsyncReadStep {
+    /// 读完，值同 [`positioned_read`]。
+    Done(isize),
+    /// 有块读在途；完成通知触发后再次调用。
+    Wait,
+    /// 无法继续不阻塞地读：调用 [`AsyncPositionedRead::finish_blocking`]。
+    Fallback,
+}
+
+/// 判断一次显式偏移读能否走不阻塞路径并开始它。
+///
+/// 只覆盖 [`positioned_read`] 里“持久 page-cache 的 regular 文件”这一支；其余情形（设备文件、
+/// 目录、写专用 OFD、全零长度、非 page-cache 后端）返回 `None`，调用者用同步的 [`positioned_read`]
+/// 得到相同的错误或结果。
+///
+/// # Errors
+///
+/// 暂存缓冲区内存不足返回 `-ENOMEM`。
+pub(in crate::syscall) fn begin_positioned_read(
+    ofd: &Arc<OpenFileDescription>,
+    vectors: &[UserIoVec],
+    offset: i64,
+) -> Result<Option<AsyncPositionedRead>, isize> {
+    if offset < 0
+        || ofd.status_flags() & O_ACCMODE == O_WRONLY
+        || !matches!(ofd.kind, OpenFileKind::Inode)
+        || vectors.iter().all(|vector| vector.length == 0)
+    {
+        return Ok(None);
+    }
+    let inode = ofd.inode_ref();
+    if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
+        return Ok(None);
+    }
+    let Ok(file) = RegularFile::from_inode(inode) else {
+        return Ok(None);
+    };
+    if !file.supports_nowait() {
+        return Ok(None);
+    }
+    let mut chunk = Vec::new();
+    chunk
+        .try_reserve_exact(crate::memory::PAGE_SIZE)
+        .map_err(|_| -errno::ENOMEM)?;
+    chunk.resize(crate::memory::PAGE_SIZE, 0);
+    Ok(Some(AsyncPositionedRead {
+        ofd: ofd.clone(),
+        file,
+        shared_start: None,
+        position: offset as u64,
+        progress: ReadProgress::default(),
+        chunk,
+        current: None,
+    }))
+}
+
+/// `off == -1` 的 regular-file 读：以发起时的共享 position 为起点开始不阻塞读，完成时发布新 position。
+///
+/// 与 Linux io_uring 一致，不在读期间持有 position（同步 `read(2)` 才持有）：并发的两个当前位置读
+/// 可能读到同一区间，完成时各自把 position 写成 `start + 读到的字节`。
+///
+/// # Returns
+///
+/// 与 [`begin_positioned_read`] 相同；position 正被同步读写占用时也返回 `None`（调用者改走阻塞车道，
+/// 因为 reactor 不能等待它）。
+pub(in crate::syscall) fn begin_current_position_read(
+    ofd: &Arc<OpenFileDescription>,
+    vectors: &[UserIoVec],
+) -> Result<Option<AsyncPositionedRead>, isize> {
+    let Some(start) = ofd.try_with_position(|position| *position) else {
+        return Ok(None);
+    };
+    let Ok(offset) = i64::try_from(start) else {
+        return Ok(None);
+    };
+    let read = begin_positioned_read(ofd, vectors, offset)?;
+    Ok(read.map(|mut read| {
+        read.shared_start = Some(start);
+        read
+    }))
+}
+
+impl AsyncPositionedRead {
+    /// 发布当前位置读的新 position；非当前位置读或读到 0 字节时无事可做。
+    ///
+    /// # Returns
+    ///
+    /// `false` 表示 position 被占用、需要在可睡眠的线程里用 [`AsyncPositionedRead::publish_position_blocking`] 发布。
+    pub(in crate::syscall) fn publish_position(&self, result: isize) -> bool {
+        match self.shared_start {
+            Some(start) if result > 0 => self
+                .ofd
+                .try_with_position(|position| *position = start + result as u64)
+                .is_some(),
+            _ => true,
+        }
+    }
+
+    /// 可睡眠版本的 [`AsyncPositionedRead::publish_position`]。
+    pub(in crate::syscall) fn publish_position_blocking(&self, result: isize) {
+        if let Some(start) = self.shared_start
+            && result > 0
+        {
+            let _ = self
+                .ofd
+                .with_position(|position| *position = start + result as u64);
+        }
+    }
+
+    /// 与同步 [`positioned_read`] 相同的收尾：统计、`IN_ACCESS` 与 atime。
+    fn complete(&self, task: &TaskControlBlock, result: isize) -> isize {
+        if self.file.tracks_access_time() {
+            drop(self.ofd.read_access());
+        }
+        task.account_read_result(result);
+        if result > 0 {
+            self.ofd.notify(crate::fs::IN_ACCESS);
+        }
+        result
+    }
+
+    /// 推进读取；`notify` 在块读完成时被调用。
+    pub(in crate::syscall) fn step(
+        &mut self,
+        task: &TaskControlBlock,
+        vectors: &[UserIoVec],
+        notify: &Arc<dyn crate::fs::CompletionNotify>,
+    ) -> AsyncReadStep {
+        loop {
+            if self.current.is_none() {
+                let Some(count) = self.progress.next_count(vectors) else {
+                    let total = self.progress.total();
+                    return AsyncReadStep::Done(self.complete(task, total));
+                };
+                let Some(read) = self
+                    .file
+                    .begin_read_nowait(self.position, count, notify.clone())
+                else {
+                    return AsyncReadStep::Fallback;
+                };
+                self.current = Some((read, count));
+            }
+            let (read, count) = self.current.as_mut().expect("set above");
+            let count = *count;
+            match read.step(&mut self.chunk[..count]) {
+                Err(error) => {
+                    let result = self.progress.failed(error);
+                    return AsyncReadStep::Done(self.complete(task, result));
+                }
+                Ok(crate::fs::ReadStep::Wait) => return AsyncReadStep::Wait,
+                Ok(crate::fs::ReadStep::Fallback) => return AsyncReadStep::Fallback,
+                Ok(crate::fs::ReadStep::Done(read)) => {
+                    task.account_read_storage(read.storage_bytes);
+                    self.current = None;
+                    if let Some(result) = self.progress.deliver(
+                        task,
+                        vectors,
+                        &mut self.position,
+                        &self.chunk,
+                        read.bytes,
+                        count,
+                    ) {
+                        return AsyncReadStep::Done(self.complete(task, result));
+                    }
+                }
+            }
+        }
+    }
+
+    /// 在可以睡眠的线程里用阻塞读完成剩余部分（阻塞车道）。
+    pub(in crate::syscall) fn finish_blocking(
+        mut self,
+        task: &TaskControlBlock,
+        vectors: &[UserIoVec],
+    ) -> isize {
+        let result = read_vectors_from(
+            task,
+            &self.file,
+            &mut self.position,
+            vectors,
+            core::mem::take(&mut self.progress),
+        );
+        let result = self.complete(task, result);
+        self.publish_position_blocking(result);
+        result
+    }
+}
+
 /// 从 regular-file OFD 的显式 offset 读取，不修改共享 OFD offset。
 ///
 /// # Parameters

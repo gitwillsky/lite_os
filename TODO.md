@@ -15,6 +15,10 @@
 - **当前判断（未证实）**：目录叶子块的读取路径与写入路径（`write_leaf` 暂存 tail/checksum）之间缺少应有的互斥或快照一致性，
   读者可能看到写者尚未完成的块。io_uring 一轮新增的 `io_uring` 内核线程与读写核心重构只改变了 8 核下的时序，更容易碰到它；
   没有证据表明它在此之前就不存在，也没有证据表明它被这些改动放大。
+- **静态阅读的新线索（未证实，2026-10-20）**：`read_leaf` 先经 `read_metadata_block` 取块，再用本目录 inode 的 `i_generation` 派生 seed 校验；
+  `lookup_entry` 等读者逐块 `map_block` → `read_leaf`，两步之间不持目录锁。若该目录同时被 rmdir，块被释放并重新分配给另一个目录，
+  读到的块带有合法 tail 但 seed 不同，表现正好是 “tail/checksum mismatch”。这与“写者暂存未完成”是两种不同的竞态，
+  复现后需先区分：失败时 `directory 203` 是否已被 unlink（`i_links_count == 0`）、`leaf 2447` 是否在失败前被释放过。
 - **下一步**：
   1. 写一个只跑 fsstress（`scan` + `dir_race` + `link_race`）的小循环，`-smp 8` 下反复跑并统计复现率，作为修复前后的度量。
   2. 沿 `read_leaf` 的调用链确认目录读者是否持有目录锁、读到的块来自 journal 暂存还是已提交盘面，以及 `write_leaf` 暂存的可见性边界。

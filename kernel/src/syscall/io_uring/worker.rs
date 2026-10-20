@@ -90,6 +90,11 @@ pub(crate) fn start() -> Result<(), ()> {
     spawn_kernel_thread("io_uring", body).map_err(|_| ())
 }
 
+/// 唤醒 worker 重新扫描（块读与车道作业完成时调用）。
+pub(super) fn wake() {
+    shared().wake.1.signal_readiness();
+}
+
 fn shared() -> &'static Shared {
     SHARED
         .get()
@@ -216,7 +221,7 @@ fn wait(shared: &Shared) {
             Interest::Timer { deadline: due, .. } => {
                 deadline = Some(deadline.map_or(*due, |current| current.min(*due)));
             }
-            Interest::Starting | Interest::None | Interest::Admission { .. } => {}
+            Interest::Starting | Interest::None | Interest::Admission { .. } | Interest::Block => {}
         });
     }
     if !built {

@@ -240,6 +240,11 @@ impl OpenFileDescription {
         self.position.with(operation)
     }
 
+    /// 不等待的 [`OpenFileDescription::with_position`]：position 被占用时返回 `None`。
+    pub(crate) fn try_with_position<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> Option<R> {
+        self.position.try_with(operation)
+    }
+
     /// 返回该 OFD 共享 position 的瞬时快照，不推进 position。
     ///
     /// # Returns

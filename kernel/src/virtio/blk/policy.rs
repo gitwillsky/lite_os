@@ -41,6 +41,36 @@ pub(super) const fn completion_length_is_valid(
     used_length == expected
 }
 
+/// 请求完成时对该槽的处置：句柄仍在等结果则发布，已被放弃（detached）则由完成路径自己释放槽。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletionAction {
+    Publish,
+    ReleaseSlot,
+}
+
+pub(super) const fn on_completion(detached: bool) -> CompletionAction {
+    if detached {
+        CompletionAction::ReleaseSlot
+    } else {
+        CompletionAction::Publish
+    }
+}
+
+/// 句柄被丢弃时对该槽的处置：结果已发布则丢弃者释放槽；请求仍在设备里则标记 detached，交给完成路径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AbandonAction {
+    ReleaseNow,
+    Detach,
+}
+
+pub(super) const fn on_abandon(result_published: bool) -> AbandonAction {
+    if result_published {
+        AbandonAction::ReleaseNow
+    } else {
+        AbandonAction::Detach
+    }
+}
+
 pub(super) fn valid_block(capacity_sectors: u64, block: usize, length: usize) -> bool {
     length == 4096
         && u64::try_from(block).is_ok_and(|block| block < capacity_sectors / (4096 / 512))
@@ -74,6 +104,16 @@ mod tests {
         assert!(!completion_length_is_valid(RequestOperation::Read, 1));
         assert!(!completion_length_is_valid(RequestOperation::Read, 4096));
         assert!(!completion_length_is_valid(RequestOperation::Read, 4098));
+    }
+
+    #[test]
+    fn abandoned_request_slot_is_released_exactly_once() {
+        // 放弃发生在完成之前：标记 detached，完成路径释放；放弃之后不会再有第二次释放。
+        assert_eq!(on_abandon(false), AbandonAction::Detach);
+        assert_eq!(on_completion(true), CompletionAction::ReleaseSlot);
+        // 放弃发生在完成之后：丢弃者释放；完成路径当时看到 detached == false，只发布结果。
+        assert_eq!(on_completion(false), CompletionAction::Publish);
+        assert_eq!(on_abandon(true), AbandonAction::ReleaseNow);
     }
 
     #[test]

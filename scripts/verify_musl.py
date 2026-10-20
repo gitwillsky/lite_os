@@ -82,7 +82,7 @@ COMPILER_RT_SOURCES = {
 COMPILER_RT_SUPPLEMENT_SYMBOL = "__multc3"
 SOURCE_RECIPE_VERSION = 1
 SYSROOT_RECIPE_VERSION = 4
-SMOKE_RECIPE_VERSION = 20
+SMOKE_RECIPE_VERSION = 21
 CONFIGURE_ARGUMENTS = (f"--target={TARGET.arch}", "--prefix=/usr", "--syslibdir=/lib")
 COMMON_SMOKE_LINK_ARGUMENTS = (
     "-static",
@@ -902,6 +902,17 @@ def create_image(binary: Path) -> Path:
         run_debugfs(image, f"write {source} {destination}", writable=True)
         run_debugfs(image, f"set_inode_field {destination} mode 0100755", writable=True)
     run_debugfs(image, f"symlink {TARGET.musl_loader} /usr/lib/libc.so", writable=True)
+    # io_uring 的冷读用例需要“本次启动里从未被读过”的 ext4 文件，才能走 page cache 未命中的异步填页；
+    # 内容公式与 io-uring.c 的 cold_byte 一致，其中一整页为零（hole）。
+    for name, size, hole in (("a", 5 * 4096 + 1234, 2), ("b", 8 * 4096, None),
+                             ("c", 3 * 4096, None), ("d", 2 * 4096, None),
+                             ("e", 3 * 4096, None)):
+        data = bytearray(((i * 131) + (i >> 12) * 17 + 7) & 0xFF for i in range(size))
+        if hole is not None:
+            data[hole * 4096:(hole + 1) * 4096] = bytes(4096)
+        source = WORK / f"uring-cold-{name}.bin"
+        source.write_bytes(data)
+        run_debugfs(image, f"write {source} /usr/lib/uring-cold-{name}.bin", writable=True)
     return image
 
 

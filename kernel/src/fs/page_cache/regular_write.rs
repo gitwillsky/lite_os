@@ -91,6 +91,7 @@ impl CachedWrite<'_> {
             .operation
             .lock()
             .map_err(|_| FileSystemError::OutOfMemory)?;
+        let _epoch = self.file.begin_mutation();
         self.write_batched(input, |start, bytes| {
             let offset = offset
                 .checked_add(start as u64)
@@ -123,6 +124,7 @@ impl CachedWrite<'_> {
             .operation
             .lock()
             .map_err(|_| FileSystemError::OutOfMemory)?;
+        let _epoch = self.file.begin_mutation();
         let offset = self.file.inode.size();
         let allowed = usize::try_from(size_limit.saturating_sub(offset))
             .unwrap_or(usize::MAX)

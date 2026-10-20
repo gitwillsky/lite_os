@@ -15,8 +15,8 @@ use crate::{
     io_uring::{
         Chain, Ring, Submitter,
         abi::{
-            IOSQE_FIXED_FILE, OP_ASYNC_CANCEL, OP_CLOSE, OP_FSYNC, OP_POLL_ADD, OP_POLL_REMOVE,
-            OP_ACCEPT, OP_CONNECT, OP_READ, OP_READV, OP_RECV, OP_SEND, OP_TIMEOUT,
+            IOSQE_FIXED_FILE, OP_ACCEPT, OP_ASYNC_CANCEL, OP_CLOSE, OP_CONNECT, OP_FSYNC,
+            OP_POLL_ADD, OP_POLL_REMOVE, OP_READ, OP_READV, OP_RECV, OP_SEND, OP_TIMEOUT,
             OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
         },
     },
@@ -104,7 +104,8 @@ impl TaskSubmitter {
             return Err(errno::EOPNOTSUPP);
         }
         let (vectors, total) = if vectored {
-            import_iovecs(&self.task, sqe.addr as usize, sqe.len as usize).map_err(|error| -error)?
+            import_iovecs(&self.task, sqe.addr as usize, sqe.len as usize)
+                .map_err(|error| -error)?
         } else {
             let length = sqe.len as usize;
             if (sqe.addr as usize).checked_add(length).is_none() {

@@ -25,6 +25,7 @@ pub(crate) use fcntl::sys_fcntl;
 pub(crate) use flock::sys_flock;
 pub(crate) use inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch};
 pub(in crate::syscall) use io::{
+    AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
     check_readable, check_writable, import_iovecs, perform_read, perform_write, positioned_read,
     positioned_write,
 };

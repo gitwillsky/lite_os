@@ -1,5 +1,81 @@
 use super::*;
 
+/// 一次 regular-file read 跨 vector 的进度：同步循环与 io_uring 的异步读共用同一套“每块交付与收尾”规则。
+///
+/// chunk 取 `PAGE_SIZE`，同时匹配 page-cache frame 与 user-copy fault/copy 粒度；保持 512-byte staging
+/// 会让满页顺序 I/O 重复八次 facade dispatch、地址计算和 page walk。
+#[derive(Default)]
+pub(in crate::syscall) struct ReadProgress {
+    index: usize,
+    done: usize,
+    total: usize,
+}
+
+impl ReadProgress {
+    /// 下一块要读的字节数（不超过一页）；全部 vector 读完返回 `None`。
+    pub(in crate::syscall) fn next_count(&mut self, vectors: &[UserIoVec]) -> Option<usize> {
+        while self.index < vectors.len() && self.done >= vectors[self.index].length {
+            self.index += 1;
+            self.done = 0;
+        }
+        vectors
+            .get(self.index)
+            .map(|vector| crate::memory::PAGE_SIZE.min(vector.length - self.done))
+    }
+
+    /// 读取失败：已有进度则返回 partial count，否则返回错误。
+    pub(in crate::syscall) fn failed(&self, error: crate::fs::FileSystemError) -> isize {
+        if self.total == 0 {
+            ferr(error)
+        } else {
+            self.total as isize
+        }
+    }
+
+    /// 把读到的 `chunk[..bytes]`（请求了 `count` 字节）交付给用户。
+    ///
+    /// offset 只在完整 copyout 后推进，坏 user range 不得消费未交付的文件 bytes；regular cache 仅会在
+    /// EOF 产生 short read，所以 short read 之后不得跳到后续 vector 越过 EOF。
+    ///
+    /// # Returns
+    ///
+    /// `Some(result)` 表示读取到此结束，`None` 表示继续下一块。
+    pub(in crate::syscall) fn deliver(
+        &mut self,
+        task: &TaskControlBlock,
+        vectors: &[UserIoVec],
+        position: &mut u64,
+        chunk: &[u8],
+        bytes: usize,
+        count: usize,
+    ) -> Option<isize> {
+        if bytes == 0 {
+            return Some(self.total as isize);
+        }
+        let partial = |total: usize| {
+            Some(if total == 0 {
+                -errno::EFAULT
+            } else {
+                total as isize
+            })
+        };
+        let Some(address) = vectors[self.index].base.checked_add(self.done) else {
+            return partial(self.total);
+        };
+        if task.copy_to_user(address, &chunk[..bytes]).is_err() {
+            return partial(self.total);
+        }
+        *position += bytes as u64;
+        self.done += bytes;
+        self.total += bytes;
+        (bytes < count).then_some(self.total as isize)
+    }
+
+    pub(in crate::syscall) fn total(&self) -> isize {
+        self.total as isize
+    }
+}
+
 /// 将一个或多个 userspace vector 作为一次 contiguous regular-file read 执行。
 ///
 /// # Parameters
@@ -22,55 +98,29 @@ pub(super) fn read_vectors(
     let _read_access = (file.tracks_access_time()
         && vectors.iter().any(|vector| vector.length != 0))
     .then(|| ofd.read_access());
-    let mut total = 0usize;
-    // PAGE_SIZE 同时匹配 page-cache frame 与 user-copy fault/copy 粒度；保持 512-byte staging
-    // 会让满页顺序 I/O 重复八次 facade dispatch、地址计算和 page walk。
+    read_vectors_from(task, file, position, vectors, ReadProgress::default())
+}
+
+/// [`read_vectors`] 的阻塞循环，可从已有进度继续（io_uring 的异步读退回阻塞车道时使用）。
+pub(in crate::syscall) fn read_vectors_from(
+    task: &TaskControlBlock,
+    file: &RegularFile,
+    position: &mut u64,
+    vectors: &[UserIoVec],
+    mut progress: ReadProgress,
+) -> isize {
     let mut chunk = [0u8; crate::memory::PAGE_SIZE];
-    for vector in vectors {
-        let mut done = 0usize;
-        while done < vector.length {
-            let count = chunk.len().min(vector.length - done);
-            // 1. 每个 chunk 复用同一 file/position；vector 之间不重新解析 fd 或 cache identity。
-            let read = match file.read(*position, &mut chunk[..count]) {
-                Ok(read) => read,
-                Err(error) => {
-                    return if total == 0 {
-                        ferr(error)
-                    } else {
-                        total as isize
-                    };
-                }
-            };
-            task.account_read_storage(read.storage_bytes);
-            let read = read.bytes;
-            if read == 0 {
-                return total as isize;
-            }
-            // 2. offset 只在完整 copyout 后提交；坏 user range 不得消费未交付的文件 bytes。
-            let Some(address) = vector.base.checked_add(done) else {
-                return if total == 0 {
-                    -errno::EFAULT
-                } else {
-                    total as isize
-                };
-            };
-            if task.copy_to_user(address, &chunk[..read]).is_err() {
-                return if total == 0 {
-                    -errno::EFAULT
-                } else {
-                    total as isize
-                };
-            }
-            *position += read as u64;
-            done += read;
-            total += read;
-            // 3. regular cache 仅会在 EOF 产生 short read；不得跳到后续 vector 越过 EOF。
-            if read < count {
-                return total as isize;
-            }
+    while let Some(count) = progress.next_count(vectors) {
+        let read = match file.read(*position, &mut chunk[..count]) {
+            Ok(read) => read,
+            Err(error) => return progress.failed(error),
+        };
+        task.account_read_storage(read.storage_bytes);
+        if let Some(result) = progress.deliver(task, vectors, position, &chunk, read.bytes, count) {
+            return result;
         }
     }
-    total as isize
+    progress.total()
 }
 
 /// regular write 的 syscall-local transient staging owner。

@@ -48,6 +48,7 @@ mod network_namespace_contract;
 mod network_stack_cost;
 mod packet_cost;
 mod packet_namespace_contract;
+mod page_cache_epoch_contract;
 mod page_table_cost;
 mod pidfd_contract;
 mod port_namespace_cost;
@@ -149,6 +150,7 @@ fn main() -> ExitCode {
     network_namespace_contract::check(&sources, &mut errors);
     netns_publication_contract::check(&sources, &mut errors);
     netlink_namespace_contract::check(&sources, &mut errors);
+    page_cache_epoch_contract::check(&sources, &mut errors);
     proc_network_contract::check(&sources, &mut errors);
     ext4_xattr_inode_contract::check(&sources, &mut errors);
     fs_credentials_contract::check(&sources, &mut errors);

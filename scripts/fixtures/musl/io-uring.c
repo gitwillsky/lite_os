@@ -1286,6 +1286,194 @@ int verify_io_uring_sockets(void)
 	return 0;
 }
 
+/* ---- 冷读：page cache 未命中走异步填页 ------------------------------------------------------- */
+
+/* 与 scripts/verify_musl.py 生成冷文件的公式一致；hole_page 整页为零。 */
+static uint8_t cold_byte(size_t offset, long hole_page)
+{
+	if (hole_page >= 0 && offset / 4096 == (size_t)hole_page) return 0;
+	return (uint8_t)((offset * 131) + (offset >> 12) * 17 + 7);
+}
+
+static int cold_matches(const uint8_t *data, size_t offset, size_t length, long hole_page)
+{
+	for (size_t i = 0; i < length; i++)
+		if (data[i] != cold_byte(offset + i, hole_page)) return 0;
+	return 1;
+}
+
+int verify_io_uring_cold(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqe;
+	struct io_uring_sqe *sqe;
+	static uint8_t buffer[8 * 4096];
+	const size_t a_size = 5 * 4096 + 1234;
+	CHECK(1, map_ring(&ring, 16, 0, 0) == 0);
+
+	/* 冷文件 a：多页、含一整页 hole、不对齐的尾部。第一次读未命中，第二次读命中且在 enter 返回前完成。 */
+	int a = open("/usr/lib/uring-cold-a.bin", O_RDONLY);
+	CHECK(2, a >= 0);
+	memset(buffer, 0xee, sizeof buffer);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, a, buffer, a_size, 1);
+	sqe->off = 0;
+	CHECK(3, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1);
+	CHECK(4, cqe.user_data == 1 && cqe.res == (int)a_size && cold_matches(buffer, 0, a_size, 2));
+	memset(buffer, 0xee, sizeof buffer);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, a, buffer, a_size, 2);
+	sqe->off = 0;
+	CHECK(5, submit_one(&ring) == 1 && ready(&ring) == 1 && reap(&ring, &cqe) == 1);
+	CHECK(6, cqe.res == (int)a_size && cold_matches(buffer, 0, a_size, 2));
+
+	/* EOF：尾部短读与越过 EOF 的读。 */
+	sqe = next_sqe(&ring);
+	fill_read(sqe, a, buffer, 4096, 3);
+	sqe->off = a_size - 100;
+	CHECK(7, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 100);
+	CHECK(8, cold_matches(buffer, a_size - 100, 100, 2));
+	sqe = next_sqe(&ring);
+	fill_read(sqe, a, buffer, 4096, 4);
+	sqe->off = a_size + 4096;
+	CHECK(9, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 0);
+
+	/* 冷文件 b：一次提交 8 个单页读，全部在途，各自得到正确内容。 */
+	int b = open("/usr/lib/uring-cold-b.bin", O_RDONLY);
+	CHECK(10, b >= 0);
+	memset(buffer, 0xee, sizeof buffer);
+	for (unsigned page = 0; page < 8; page++) {
+		sqe = next_sqe(&ring);
+		fill_read(sqe, b, buffer + page * 4096, 4096, 100 + page);
+		sqe->off = page * 4096;
+	}
+	publish(&ring);
+	CHECK(11, uring_enter(ring.fd, 8, 0, 0, NULL, 0) == 8);
+	unsigned seen = 0;
+	for (unsigned i = 0; i < 8; i++) {
+		CHECK(12, wait_cqe(&ring, &cqe) == 1 && cqe.res == 4096);
+		seen |= 1u << (cqe.user_data - 100);
+	}
+	CHECK(13, seen == 0xff && cold_matches(buffer, 0, sizeof buffer, -1));
+
+	/* 读在途时关闭 ring：不崩溃、不泄漏请求槽；之后同一个文件仍能正确读出（cache 没有被毒化）。 */
+	int c = open("/usr/lib/uring-cold-c.bin", O_RDONLY);
+	CHECK(14, c >= 0);
+	struct ring doomed;
+	CHECK(15, map_ring(&doomed, 4, 0, 0) == 0);
+	sqe = next_sqe(&doomed);
+	fill_read(sqe, c, buffer, 3 * 4096, 1);
+	sqe->off = 0;
+	CHECK(16, submit_one(&doomed) == 1);
+	unmap_ring(&doomed);
+	CHECK(17, pread(c, buffer, 3 * 4096, 0) == 3 * 4096 && cold_matches(buffer, 0, 3 * 4096, -1));
+
+	/* 读在途时提交线程退出：请求被取消，父进程之后读到完整正确的内容。 */
+	int d = open("/usr/lib/uring-cold-d.bin", O_RDONLY);
+	CHECK(18, d >= 0);
+	pid_t child = fork();
+	CHECK(19, child >= 0);
+	if (child == 0) {
+		struct ring theirs;
+		static uint8_t scratch[2 * 4096];
+		if (map_ring(&theirs, 4, 0, 0) != 0) _exit(2);
+		struct io_uring_sqe *queued = next_sqe(&theirs);
+		fill_read(queued, d, scratch, sizeof scratch, 1);
+		queued->off = 0;
+		publish(&theirs);
+		_exit(uring_enter(theirs.fd, 1, 0, 0, NULL, 0) == 1 ? 0 : 1);
+	}
+	int status = -1;
+	CHECK(20, waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	CHECK(21, pread(d, buffer, 2 * 4096, 0) == 2 * 4096 && cold_matches(buffer, 0, 2 * 4096, -1));
+
+	/* 写后读一致：写走阻塞车道，随后的读（命中）看到刚写入的内容。 */
+	int w = open("/tmp/uring-cold-write", O_RDWR | O_CREAT | O_TRUNC, 0600);
+	CHECK(22, w >= 0);
+	static uint8_t pattern[3 * 4096];
+	for (size_t i = 0; i < sizeof pattern; i++) pattern[i] = (uint8_t)(i * 7 + 1);
+	sqe = next_sqe(&ring);
+	fill_write(sqe, w, pattern, sizeof pattern, 200);
+	sqe->off = 0;
+	sqe->flags = IOSQE_IO_LINK;
+	sqe = next_sqe(&ring);
+	fill_read(sqe, w, buffer, sizeof pattern, 201);
+	sqe->off = 0;
+	publish(&ring);
+	CHECK(23, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2);
+	CHECK(24, expect_cqes(&ring, (const struct expect[]){ {200, (int)sizeof pattern}, {201, (int)sizeof pattern} }, 2));
+	CHECK(25, memcmp(buffer, pattern, sizeof pattern) == 0);
+	close(w);
+	unlink("/tmp/uring-cold-write");
+
+	/* 当前位置读（off == -1）的冷读：异步填页，完成时推进共享 position；之后同步 read(2) 从推进后的位置继续。 */
+	int e = open("/usr/lib/uring-cold-e.bin", O_RDONLY);
+	CHECK(26, e >= 0);
+	memset(buffer, 0xee, sizeof buffer);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, e, buffer, 4096, 300);
+	CHECK(27, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 4096);
+	CHECK(28, cold_matches(buffer, 0, 4096, -1) && lseek(e, 0, SEEK_CUR) == 4096);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, e, buffer, 4096, 301);
+	CHECK(29, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 4096);
+	CHECK(30, cold_matches(buffer, 4096, 4096, -1) && lseek(e, 0, SEEK_CUR) == 8192);
+	CHECK(31, read(e, buffer, 4096) == 4096 && cold_matches(buffer, 8192, 4096, -1));
+	sqe = next_sqe(&ring);
+	fill_read(sqe, e, buffer, 4096, 302);
+	CHECK(32, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 0 && lseek(e, 0, SEEK_CUR) == 12288);
+	close(e);
+
+	/* 阻塞车道是 worker 池：超过池上限的写+fsync 链同时在途，全部完成且数据落盘可读。 */
+	enum { LANE_FILES = 12 };
+	struct ring wide;
+	CHECK(33, map_ring(&wide, 64, 0, 0) == 0);
+	static uint8_t block[LANE_FILES][4096];
+	int lane_fd[LANE_FILES];
+	for (int i = 0; i < LANE_FILES; i++) {
+		char name[48];
+		snprintf(name, sizeof name, "/tmp/uring-lane-%d", i);
+		lane_fd[i] = open(name, O_RDWR | O_CREAT | O_TRUNC, 0600);
+		CHECK(34, lane_fd[i] >= 0);
+		for (size_t j = 0; j < sizeof block[i]; j++) block[i][j] = (uint8_t)(j * 3 + i);
+		sqe = next_sqe(&wide);
+		fill_write(sqe, lane_fd[i], block[i], sizeof block[i], 400 + i);
+		sqe->off = 0;
+		sqe->flags = IOSQE_IO_LINK;
+		sqe = next_sqe(&wide);
+		sqe->opcode = IORING_OP_FSYNC;
+		sqe->fd = lane_fd[i];
+		sqe->user_data = 500 + i;
+	}
+	publish(&wide);
+	CHECK(35, uring_enter(wide.fd, 2 * LANE_FILES, 0, 0, NULL, 0) == 2 * LANE_FILES);
+	unsigned long long done = 0;
+	for (int i = 0; i < 2 * LANE_FILES; i++) {
+		CHECK(36, wait_cqe(&wide, &cqe) == 1);
+		int index = cqe.user_data >= 500 ? (int)cqe.user_data - 500 : (int)cqe.user_data - 400;
+		CHECK(37, index >= 0 && index < LANE_FILES);
+		CHECK(38, cqe.res == (cqe.user_data >= 500 ? 0 : 4096));
+		done |= 1ull << (cqe.user_data >= 500 ? LANE_FILES + index : index);
+	}
+	CHECK(39, done == (1ull << (2 * LANE_FILES)) - 1);
+	for (int i = 0; i < LANE_FILES; i++) {
+		char name[48];
+		uint8_t readback[4096];
+		CHECK(40, pread(lane_fd[i], readback, sizeof readback, 0) == (ssize_t)sizeof readback &&
+			  memcmp(readback, block[i], sizeof readback) == 0);
+		close(lane_fd[i]);
+		snprintf(name, sizeof name, "/tmp/uring-lane-%d", i);
+		unlink(name);
+	}
+	unmap_ring(&wide);
+	close(a);
+	close(b);
+	close(c);
+	close(d);
+	unmap_ring(&ring);
+	return 0;
+}
+
 int verify_io_uring(void)
 {
 	int core = verify_io_uring_core();
@@ -1297,5 +1485,7 @@ int verify_io_uring(void)
 	int chains = verify_io_uring_chains();
 	if (chains != 0) return 200 + chains;
 	int sockets = verify_io_uring_sockets();
-	return sockets != 0 ? 300 + sockets : 0;
+	if (sockets != 0) return 300 + sockets;
+	int cold = verify_io_uring_cold();
+	return cold != 0 ? 400 + cold : 0;
 }

@@ -4,10 +4,11 @@ use spin::Mutex;
 
 mod policy;
 use policy::{
-    CompletionStatus, RequestOperation, completion_length_is_valid, decode_status, valid_block,
+    AbandonAction, CompletionAction, CompletionStatus, RequestOperation,
+    completion_length_is_valid, decode_status, on_abandon, on_completion, valid_block,
 };
 
-use crate::block::{BLOCK_SIZE, BlockDevice, BlockError};
+use crate::block::{BLOCK_SIZE, BlockDevice, BlockError, CompletionNotify, PendingRead};
 
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VirtIODevice,
@@ -16,8 +17,8 @@ use super::{
 };
 use crate::drivers::{
     io_completion::request_owner::{
-        CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner, RequestOwnerError,
-        ReserveOrWait,
+        CapacityWake, CommitOrWait, PreparedCapacityWait, RequestIdentity, RequestOwner,
+        RequestOwnerError, ReserveOrWait,
     },
     io_completion::{self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
 };
@@ -32,6 +33,28 @@ const DESCRIPTORS_PER_REQUEST: usize = 5;
 const COMPLETION_BATCH: usize = 32;
 const CAPACITY_FAILURE_BATCH: usize = 32;
 
+/// 谁在等这个请求完成：睡眠在 scheduler 上的 task，或只需要被通知的异步读句柄。
+#[derive(Clone)]
+enum Waiter {
+    Task(Arc<dyn IoWaitTarget>),
+    Notify(Arc<dyn CompletionNotify>),
+}
+
+impl Waiter {
+    /// 完成发布后是否要唤醒：睡眠中的 task 只在 `armed`（完成时它已经挂起）时才需要；通知型 waiter 没有睡眠
+    /// 握手，必须无条件通知，否则异步读的完成会被吞掉。
+    fn needs_wake(&self, armed: bool) -> bool {
+        matches!(self, Waiter::Notify(_)) || armed
+    }
+
+    fn wake(self, request: IoWaitKey) {
+        match self {
+            Waiter::Task(target) => target.wake(request),
+            Waiter::Notify(notify) => notify.notify(),
+        }
+    }
+}
+
 struct RequestData {
     request: DmaBuffer<16>,
     data: DmaBuffer<BLOCK_SIZE>,
@@ -41,7 +64,10 @@ struct RequestData {
     // completion 误用 status 后的 stale 4 KiB data。
     operation: RequestOperation,
     result: Option<Result<(), BlockError>>,
-    waiter: Option<Arc<dyn IoWaitTarget>>,
+    waiter: Option<Waiter>,
+    // OWNER: 异步读句柄在完成前被丢弃：设备仍会完成该请求，完成路径看到此标志就自己释放槽。
+    // 缺失时被取消的读永久占用请求槽，16 个槽耗尽后所有块 I/O 卡死。
+    detached: bool,
 }
 
 struct RequestSlot {
@@ -158,6 +184,7 @@ impl VirtIOBlockDevice {
                     operation: RequestOperation::Flush,
                     result: None,
                     waiter: None,
+                    detached: false,
                 }),
             });
         }
@@ -238,7 +265,35 @@ impl VirtIOBlockDevice {
         write: Option<&[u8]>,
     ) -> Result<RequestIdentity, BlockError> {
         let identity = self.wait_for_capacity()?;
-        let waiter = io_completion::current_wait_target();
+        let waiter = io_completion::current_wait_target().map(Waiter::Task);
+        self.submit_reserved(identity, operation, block_id, write, waiter)
+    }
+
+    /// 无等待地预留请求槽并提交；没有空闲槽返回 `WouldBlock`。
+    fn submit_nowait(
+        &self,
+        operation: RequestOperation,
+        block_id: usize,
+        waiter: Waiter,
+    ) -> Result<RequestIdentity, BlockError> {
+        let identity = {
+            let mut owner = self.queue.lock();
+            if owner.failed {
+                return Err(BlockError::DeviceError);
+            }
+            owner.requests.try_reserve().ok_or(BlockError::WouldBlock)?
+        };
+        self.submit_reserved(identity, operation, block_id, None, Some(waiter))
+    }
+
+    fn submit_reserved(
+        &self,
+        identity: RequestIdentity,
+        operation: RequestOperation,
+        block_id: usize,
+        write: Option<&[u8]>,
+        waiter: Option<Waiter>,
+    ) -> Result<RequestIdentity, BlockError> {
         let mut owner = self.queue.lock();
         if owner.failed {
             owner.requests.release_without_handoff(identity);
@@ -267,6 +322,7 @@ impl VirtIOBlockDevice {
         data.operation = operation;
         data.result = None;
         data.waiter = waiter;
+        data.detached = false;
 
         let request = data.request.readable_all();
         let status = data.status.writable_all();
@@ -307,7 +363,7 @@ impl VirtIOBlockDevice {
     fn wait(&self, identity: RequestIdentity) {
         let slot = &self.slots[identity.slot as usize];
         let waiter = slot.data.lock().waiter.clone();
-        if let Some(waiter) = waiter {
+        if let Some(Waiter::Task(waiter)) = waiter {
             waiter.sleep(&slot.completion, self.request_id(identity));
         } else {
             while !slot.completion.is_complete() {
@@ -353,6 +409,35 @@ impl VirtIOBlockDevice {
         result
     }
 
+    /// 异步读句柄被丢弃：结果已发布就由这里释放槽；否则标记 detached，交给完成路径。
+    fn abandon(&self, identity: RequestIdentity) {
+        let mut owner = self.queue.lock();
+        let mut data = self.slots[identity.slot as usize].data.lock();
+        assert_eq!(data.generation, identity.generation);
+        let waiter = data.waiter.take();
+        let wake = match on_abandon(data.result.is_some()) {
+            AbandonAction::Detach => {
+                data.detached = true;
+                None
+            }
+            AbandonAction::ReleaseNow => {
+                data.result = None;
+                if owner.failed {
+                    owner.requests.release_without_handoff(identity);
+                    None
+                } else {
+                    owner.requests.release_and_handoff(identity)
+                }
+            }
+        };
+        drop(data);
+        drop(owner);
+        drop(waiter);
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+    }
+
     fn request_id(&self, identity: RequestIdentity) -> IoWaitKey {
         IoWaitKey::request(self.io_device, identity.slot, identity.generation)
     }
@@ -374,15 +459,23 @@ impl VirtIOBlockDevice {
             self.fail_device();
             return false;
         }
-        let mut wakes: [Option<(Arc<dyn IoWaitTarget>, IoWaitKey)>; COMPLETION_BATCH] =
+        let mut wakes: [Option<(Waiter, IoWaitKey)>; COMPLETION_BATCH] =
             core::array::from_fn(|_| None);
+        // 被放弃的异步读由完成路径释放槽；交给 capacity waiter 的 wake 要在 owner 锁外执行。
+        let mut releases: [Option<CapacityWake>; COMPLETION_BATCH] = core::array::from_fn(|_| None);
+        // 被放弃的读的 waiter 可能是最后一个引用，析构要在 queue 锁之外。
+        let mut dropped: [Option<Waiter>; COMPLETION_BATCH] = core::array::from_fn(|_| None);
         let mut corrupt = false;
         let backlog = {
             let mut owner = self.queue.lock();
             if owner.failed {
                 None
             } else {
-                for wake in &mut wakes {
+                for ((wake, release), dropped) in wakes
+                    .iter_mut()
+                    .zip(releases.iter_mut())
+                    .zip(dropped.iter_mut())
+                {
                     let completion = match owner.queue.used() {
                         Ok(Some(completion)) => completion,
                         Ok(None) => break,
@@ -417,10 +510,17 @@ impl VirtIOBlockDevice {
                         break;
                     }
                     let identity = owner.requests.accept_completion(claim);
+                    if on_completion(data.detached) == CompletionAction::ReleaseSlot {
+                        // 槽复用前 token 必须回到 completed，否则下一次 `reset` fail-stop。
+                        slot.completion.complete();
+                        *dropped = data.waiter.take();
+                        *release = owner.requests.release_and_handoff(identity);
+                        continue;
+                    }
                     data.result = Some(Self::decode_status(data.status.as_slice()[0]));
-                    let waiter = data.waiter.take();
-                    if slot.completion.complete()
-                        && let Some(waiter) = waiter
+                    let armed = slot.completion.complete();
+                    if let Some(waiter) = data.waiter.take()
+                        && waiter.needs_wake(armed)
                     {
                         *wake = Some((waiter, self.request_id(identity)));
                     }
@@ -434,6 +534,10 @@ impl VirtIOBlockDevice {
         for (waiter, request) in wakes.into_iter().flatten() {
             waiter.wake(request);
         }
+        for release in releases.into_iter().flatten() {
+            release.wake();
+        }
+        drop(dropped);
         if corrupt {
             self.fail_device();
             false
@@ -456,7 +560,9 @@ impl VirtIOBlockDevice {
     }
 
     fn fail_device(&self) {
-        let mut wakes: [Option<(Arc<dyn IoWaitTarget>, IoWaitKey)>; BLOCK_REQUEST_SLOTS] =
+        let mut wakes: [Option<(Waiter, IoWaitKey)>; BLOCK_REQUEST_SLOTS] =
+            core::array::from_fn(|_| None);
+        let mut dropped_waiters: [Option<Waiter>; BLOCK_REQUEST_SLOTS] =
             core::array::from_fn(|_| None);
         let first_failure = {
             let mut owner = self.queue.lock();
@@ -475,10 +581,17 @@ impl VirtIOBlockDevice {
                         data.result.is_none(),
                         "block outstanding request already has result"
                     );
+                    if data.detached {
+                        // 句柄已放弃且设备不会再完成它：没有人会取结果，直接归还槽。
+                        slot.completion.complete();
+                        dropped_waiters[identity.slot as usize] = data.waiter.take();
+                        owner.requests.release_without_handoff(identity);
+                        continue;
+                    }
                     data.result = Some(Err(BlockError::DeviceError));
-                    let waiter = data.waiter.take();
-                    if slot.completion.complete()
-                        && let Some(waiter) = waiter
+                    let armed = slot.completion.complete();
+                    if let Some(waiter) = data.waiter.take()
+                        && waiter.needs_wake(armed)
                     {
                         wakes[identity.slot as usize] = Some((waiter, self.request_id(identity)));
                     }
@@ -492,6 +605,7 @@ impl VirtIOBlockDevice {
                 waiter.wake(request);
             }
         }
+        drop(dropped_waiters);
         if self.drain_failed_capacity_waiters() {
             crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
         }
@@ -516,6 +630,25 @@ impl BlockDevice for VirtIOBlockDevice {
         Ok(buf.len())
     }
 
+    fn begin_read(
+        self: Arc<Self>,
+        block_id: usize,
+        notify: Arc<dyn CompletionNotify>,
+    ) -> Result<Box<dyn PendingRead>, BlockError> {
+        self.validate_block(block_id, BLOCK_SIZE)?;
+        let identity =
+            self.submit_nowait(RequestOperation::Read, block_id, Waiter::Notify(notify))?;
+        // 分配失败时 `VirtIOAsyncRead` 随之被丢弃，其 Drop 归还槽。
+        let read = VirtIOAsyncRead {
+            device: self,
+            identity,
+            finished: false,
+        };
+        let boxed: Box<dyn PendingRead> =
+            Box::try_new(read).map_err(|_| BlockError::OutOfMemory)?;
+        Ok(boxed)
+    }
+
     fn block_size(&self) -> usize {
         BLOCK_SIZE
     }
@@ -535,6 +668,34 @@ impl BlockDevice for VirtIOBlockDevice {
             self.execute(RequestOperation::Flush, 0, None, None)
         } else {
             Ok(())
+        }
+    }
+}
+
+/// 一个已提交的异步读；独占对应请求槽直到 `finish` 或被丢弃。
+struct VirtIOAsyncRead {
+    device: Arc<VirtIOBlockDevice>,
+    identity: RequestIdentity,
+    finished: bool,
+}
+
+impl PendingRead for VirtIOAsyncRead {
+    fn is_complete(&self) -> bool {
+        self.device.slots[self.identity.slot as usize]
+            .completion
+            .is_complete()
+    }
+
+    fn finish(mut self: Box<Self>, output: &mut [u8]) -> Result<(), BlockError> {
+        self.finished = true;
+        self.device.finish(self.identity, Some(output))
+    }
+}
+
+impl Drop for VirtIOAsyncRead {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.device.abandon(self.identity);
         }
     }
 }

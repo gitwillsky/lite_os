@@ -7,20 +7,22 @@
 //! issue 的结果分两种：同步得出的 [`Outcome`]（普通文件、显式偏移、fsync、close、cancel…，不分配 future），
 //! 或需要等待就绪的 [`Wait`]（管道/socket 的流式读写、poll、timeout），后者由 [`drive`] 驱动。
 
-use alloc::{sync::Arc, sync::Weak, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, sync::Weak, vec::Vec};
 use syscall_abi::errno;
 
 use super::{
+    lane,
     wait::{Kind, Target, Waiter, event_count_reached},
     worker,
 };
 use crate::{
     file::{OpenFileDescription, OpenFileKind},
-    socket::SocketError,
     fs::O_NONBLOCK,
     io_uring::Ring,
+    socket::SocketError,
     syscall::{
         fs::{
+            AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
             check_readable, check_writable, perform_read, perform_write, positioned_read,
             positioned_write, sync_ofd,
         },
@@ -122,12 +124,20 @@ pub(super) enum Op {
 }
 
 /// issue 的结果。
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Issue is a transient return value moved once into the chain future; boxing Wait would add an allocation per waiting request"
+)]
 pub(super) enum Issue {
     Done(Outcome),
     Wait(Wait),
 }
 
 /// 可能等待就绪的 op，已解析出目标 OFD。
+#[allow(
+    clippy::large_enum_variant,
+    reason = "each Wait lives inside one boxed chain future; boxing a variant would add a second allocation per request"
+)]
 pub(super) enum Wait {
     /// pipe/socket/eventfd 等流式读写：`EAGAIN` 时等目标 OFD 就绪再试。
     Stream {
@@ -148,8 +158,23 @@ pub(super) enum Wait {
     },
     /// 握手已发起：等 socket 可写或出错，再读连接结果。
     Connect { ofd: Arc<OpenFileDescription> },
+    /// regular-file 读（显式偏移或当前位置）：cache 未命中时开始异步填页并让出，不占用任何线程。
+    FileRead {
+        read: AsyncPositionedRead,
+        vectors: Vec<UserIoVec>,
+        total: usize,
+    },
+    /// 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。
+    Lane {
+        work: lane::Work,
+        /// 读写作业传输量不等于请求量即失败；fsync 为 `None`。
+        total: Option<usize>,
+    },
     /// 一次性 poll：目标 OFD 出现 `mask` 中任一事件时以 revents 完成。
-    Poll { ofd: Arc<OpenFileDescription>, mask: i16 },
+    Poll {
+        ofd: Arc<OpenFileDescription>,
+        mask: i16,
+    },
     /// 绝对 monotonic deadline，或“除 timeout 外又发布 N 个 CQE”（`target_events`）。
     Timeout {
         deadline: u64,
@@ -161,7 +186,11 @@ pub(super) enum Wait {
 impl Wait {
     pub(super) fn kind(&self) -> Kind {
         match self {
-            Wait::Stream { .. } | Wait::Accept { .. } | Wait::Connect { .. } => Kind::Io,
+            Wait::Stream { .. }
+            | Wait::Accept { .. }
+            | Wait::Connect { .. }
+            | Wait::FileRead { .. }
+            | Wait::Lane { .. } => Kind::Io,
             Wait::Poll { .. } => Kind::Poll,
             Wait::Timeout { .. } => Kind::Timeout,
         }
@@ -203,14 +232,13 @@ impl Op {
                 vectored,
                 offset,
             } => issue_read_write(task, fd, vectors, total, write, vectored, offset),
-            Op::Fsync { fd } => Issue::Done(Outcome::of(
-                ofd_of(task, fd).map_or(-errno::EBADF, |ofd| sync_ofd(&ofd)),
-            )),
-            Op::Close { fd } => Issue::Done(Outcome::of(
-                fd.map_or(-errno::EBADF, |fd| {
-                    task.fd_close(fd).map_or(-errno::EBADF, |_| 0)
-                }),
-            )),
+            Op::Fsync { fd } => match ofd_of(task, fd) {
+                None => Issue::Done(Outcome::of(-errno::EBADF)),
+                Some(ofd) => lane_issue(move |_| sync_ofd(&ofd), None),
+            },
+            Op::Close { fd } => Issue::Done(Outcome::of(fd.map_or(-errno::EBADF, |fd| {
+                task.fd_close(fd).map_or(-errno::EBADF, |_| 0)
+            }))),
             Op::Poll { fd, mask } => match ofd_of(task, fd) {
                 Some(ofd) => Issue::Wait(Wait::Poll { ofd, mask }),
                 None => Issue::Done(Outcome::of(-errno::EBADF)),
@@ -289,6 +317,8 @@ fn issue_read_write(
     offset: i64,
 ) -> Issue {
     let done = |res: isize| Issue::Done(Outcome::transfer(res, total));
+    // 持久文件（OpenFileKind::Inode）的读写可能睡眠在磁盘上，不能在提交线程或 reactor 上执行。
+    let disk_backed = |ofd: &OpenFileDescription| matches!(ofd.kind, OpenFileKind::Inode);
     let Some(ofd) = ofd_of(task, fd) else {
         return Issue::Done(Outcome::of(-errno::EBADF));
     };
@@ -305,6 +335,31 @@ fn issue_read_write(
     }
     if offset >= 0 && positionable(&ofd) {
         // 显式偏移：pread/pwrite 语义，不触碰共享 OFD position。
+        if disk_backed(&ofd) {
+            if !write {
+                match begin_positioned_read(&ofd, &vectors, offset) {
+                    Ok(Some(read)) => {
+                        return Issue::Wait(Wait::FileRead {
+                            read,
+                            vectors,
+                            total,
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Issue::Done(Outcome::of(error)),
+                }
+            }
+            return lane_issue(
+                move |task| {
+                    if write {
+                        positioned_write(task, &ofd, &vectors, offset, None)
+                    } else {
+                        positioned_read(task, &ofd, &vectors, offset)
+                    }
+                },
+                Some(total),
+            );
+        }
         return done(if write {
             positioned_write(task, &ofd, &vectors, offset, None)
         } else {
@@ -330,6 +385,31 @@ fn issue_read_write(
             dontwait: false,
         });
     }
+    if disk_backed(&ofd) {
+        if !write {
+            match begin_current_position_read(&ofd, &vectors) {
+                Ok(Some(read)) => {
+                    return Issue::Wait(Wait::FileRead {
+                        read,
+                        vectors,
+                        total,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => return Issue::Done(Outcome::of(error)),
+            }
+        }
+        return lane_issue(
+            move |task| {
+                if write {
+                    perform_write(task, &ofd, &vectors, total, true)
+                } else {
+                    perform_read(task, &ofd, &vectors, total, true)
+                }
+            },
+            Some(total),
+        );
+    }
     done(if write {
         perform_write(task, &ofd, &vectors, total, true)
     } else {
@@ -337,9 +417,58 @@ fn issue_read_write(
     })
 }
 
+/// 把会睡眠的作业包成 [`Wait::Lane`]。
+fn lane_issue(
+    work: impl FnOnce(&TaskControlBlock) -> isize + Send + 'static,
+    total: Option<usize>,
+) -> Issue {
+    match Box::try_new(work) {
+        Ok(work) => {
+            let work: lane::Work = work;
+            Issue::Wait(Wait::Lane { work, total })
+        }
+        Err(_) => Issue::Done(Outcome::of(-errno::ENOMEM)),
+    }
+}
+
+fn lane_outcome(result: isize, total: Option<usize>) -> Outcome {
+    match total {
+        Some(total) => Outcome::transfer(result, total),
+        None => Outcome::of(result),
+    }
+}
+
+/// 在阻塞车道上执行作业并等它完成。
+async fn run_lane(
+    work: lane::Work,
+    total: Option<usize>,
+    task: &Weak<TaskControlBlock>,
+    waiter: &Waiter,
+) -> Outcome {
+    let Ok(ticket) = lane::submit(work, task.clone(), waiter.notifier()) else {
+        return Outcome::of(-errno::ENOMEM);
+    };
+    loop {
+        if waiter.take_canceled() {
+            return Outcome::canceled();
+        }
+        // 先清通知再取结果：作业在两者之间完成会重新置位，`block` 立即被重新 poll。
+        waiter.clear_notified();
+        if let Some(result) = ticket.take() {
+            return lane_outcome(result, total);
+        }
+        waiter.block().await;
+    }
+}
+
 /// connect 只发起一次：已连接或出错同步完成，握手进行中才等待；Unix 目标 backlog 已满以
 /// `-EAGAIN` 完成（已知偏差：Linux 会在 io-wq 里等容量）。
-fn issue_connect(task: &TaskControlBlock, fd: Option<usize>, address: usize, length: usize) -> Issue {
+fn issue_connect(
+    task: &TaskControlBlock,
+    fd: Option<usize>,
+    address: usize,
+    length: usize,
+) -> Issue {
     let Some(ofd) = ofd_of(task, fd) else {
         return Issue::Done(Outcome::of(-errno::EBADF));
     };
@@ -395,15 +524,57 @@ pub(super) async fn drive(
                 };
                 drop(strong);
                 // 用户自己设置了 O_NONBLOCK（或本次 MSG_DONTWAIT）时如实返回 EAGAIN，不挂起。
-                if result != -errno::EAGAIN
-                    || dontwait
-                    || ofd.status_flags() & O_NONBLOCK != 0
-                {
+                if result != -errno::EAGAIN || dontwait || ofd.status_flags() & O_NONBLOCK != 0 {
                     return Outcome::transfer(result, total);
                 }
                 waiter.ofd_ready(&ofd, mask, &task).await;
             }
         }
+        Wait::FileRead {
+            mut read,
+            vectors,
+            total,
+        } => {
+            let notify = waiter.notifier();
+            loop {
+                if waiter.take_canceled() {
+                    return Outcome::canceled();
+                }
+                let Some(strong) = task.upgrade() else {
+                    return Outcome::canceled();
+                };
+                waiter.clear_notified();
+                let step = read.step(&strong, &vectors, &notify);
+                drop(strong);
+                match step {
+                    AsyncReadStep::Done(result) => {
+                        if read.publish_position(result) {
+                            return Outcome::transfer(result, total);
+                        }
+                        // position 正被同步读写占用：reactor 不能等它，交给车道发布。
+                        let work: lane::Work = match Box::try_new(move |_: &TaskControlBlock| {
+                            read.publish_position_blocking(result);
+                            result
+                        }) {
+                            Ok(work) => work,
+                            Err(_) => return Outcome::of(-errno::ENOMEM),
+                        };
+                        return run_lane(work, Some(total), &task, &waiter).await;
+                    }
+                    AsyncReadStep::Wait => waiter.block().await,
+                    AsyncReadStep::Fallback => {
+                        let work: lane::Work = match Box::try_new(move |task: &TaskControlBlock| {
+                            read.finish_blocking(task, &vectors)
+                        }) {
+                            Ok(work) => work,
+                            Err(_) => return Outcome::of(-errno::ENOMEM),
+                        };
+                        return run_lane(work, Some(total), &task, &waiter).await;
+                    }
+                }
+            }
+        }
+        Wait::Lane { work, total } => run_lane(work, total, &task, &waiter).await,
         Wait::Accept {
             ofd,
             flags,
@@ -424,7 +595,9 @@ pub(super) async fn drive(
             if result != -errno::EAGAIN || ofd.status_flags() & O_NONBLOCK != 0 {
                 return Outcome::of(result);
             }
-            waiter.ofd_ready(&ofd, POLLIN | POLLERR | POLLHUP, &task).await;
+            waiter
+                .ofd_ready(&ofd, POLLIN | POLLERR | POLLHUP, &task)
+                .await;
         },
         Wait::Connect { ofd } => loop {
             if waiter.take_canceled() {

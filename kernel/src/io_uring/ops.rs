@@ -42,11 +42,7 @@ pub(crate) trait Submitter {
 }
 
 /// 校验并解码一个 SQE。
-pub(crate) fn prepare<S: Submitter>(
-    ring: &Ring,
-    sqe: &Sqe,
-    submitter: &S,
-) -> Member<S::Op> {
+pub(crate) fn prepare<S: Submitter>(ring: &Ring, sqe: &Sqe, submitter: &S) -> Member<S::Op> {
     let step = match decode(ring, sqe, submitter) {
         Ok(step) => step,
         Err(error) => Step::Failed(-(error as i32)),

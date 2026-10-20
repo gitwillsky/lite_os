@@ -164,7 +164,11 @@ fn socket_ofd(fd: usize) -> Result<(Arc<OpenFileDescription>, Arc<Socket>), isiz
 }
 
 // 仅 bind 接受 family-only 地址；connect/send 的未命名目的地址按 Linux 返回 EINVAL。
-fn copy_address(task: &TaskControlBlock, pointer: usize, length: usize) -> Result<[u8; 128], isize> {
+fn copy_address(
+    task: &TaskControlBlock,
+    pointer: usize,
+    length: usize,
+) -> Result<[u8; 128], isize> {
     if !(2..=128).contains(&length) {
         return Err(-errno::EINVAL);
     }

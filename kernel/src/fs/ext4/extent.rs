@@ -241,6 +241,13 @@ fn validate(
     Ok(())
 }
 
+/// [`ExtentTree::lookup_cached`] 的结果。
+pub(super) enum Walk {
+    Found(Mapping),
+    /// 路径上这个 block 还不在 metadata cache 里，需要先读入。
+    Missing(u64),
+}
+
 /// 一个 inode 的 extent tree 视图；mutation 修改 root 副本并 staged 非 root block。
 pub(super) struct ExtentTree<'a> {
     fs: &'a Ext4FileSystem,
@@ -385,6 +392,25 @@ impl<'a> ExtentTree<'a> {
     ///
     /// tree 结构、checksum 或 I/O 无效时返回错误。
     pub(super) fn lookup(&self, logical: u32) -> Result<Mapping, FileSystemError> {
+        match self.walk(logical, |block| {
+            self.fs.read_metadata_block(block).map(Some)
+        })? {
+            Walk::Found(mapping) => Ok(mapping),
+            Walk::Missing(_) => unreachable!("a blocking metadata fetch always yields a block"),
+        }
+    }
+
+    /// 只使用已在 metadata cache 里的节点查找；遇到未缓存的节点返回 `Walk::Missing(block)`，不做 I/O。
+    pub(super) fn lookup_cached(&self, logical: u32) -> Result<Walk, FileSystemError> {
+        self.walk(logical, |block| Ok(self.fs.metadata_cached(block)))
+    }
+
+    /// root 到 leaf 的只读遍历；`fetch` 决定缺失的节点是读入还是上报。
+    fn walk(
+        &self,
+        logical: u32,
+        fetch: impl Fn(u64) -> Result<Option<Arc<Vec<u8>>>, FileSystemError>,
+    ) -> Result<Walk, FileSystemError> {
         let mut depth = le16(&self.root, 6);
         let mut child = None::<Arc<Vec<u8>>>;
         loop {
@@ -395,22 +421,24 @@ impl<'a> ExtentTree<'a> {
                 .find(|index| le32(bytes, HEADER_SIZE + index * ENTRY_SIZE) <= logical);
             if depth == 0 {
                 let Some(position) = position else {
-                    return Ok(Mapping::Hole { left: None });
+                    return Ok(Walk::Found(Mapping::Hole { left: None }));
                 };
                 let start = HEADER_SIZE + position * ENTRY_SIZE;
                 let extent = Extent::decode(&bytes[start..start + ENTRY_SIZE]);
-                return Ok(if extent.contains(logical) {
+                return Ok(Walk::Found(if extent.contains(logical) {
                     Mapping::Mapped(extent)
                 } else {
                     Mapping::Hole { left: Some(extent) }
-                });
+                }));
             }
             let Some(position) = position else {
-                return Ok(Mapping::Hole { left: None });
+                return Ok(Walk::Found(Mapping::Hole { left: None }));
             };
             let start = HEADER_SIZE + position * ENTRY_SIZE;
             let index = Index::decode(&bytes[start..start + ENTRY_SIZE]);
-            let next = self.fs.read_metadata_block(index.child)?;
+            let Some(next) = fetch(index.child)? else {
+                return Ok(Walk::Missing(index.child));
+            };
             depth -= 1;
             Self::verify_block(self.fs, self.seed, &next, depth)?;
             child = Some(next);

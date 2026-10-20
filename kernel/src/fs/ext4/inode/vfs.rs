@@ -120,6 +120,26 @@ impl Inode for Ext4Inode {
         Ok(done)
     }
 
+    fn begin_storage_read(
+        &self,
+        offset: u64,
+        length: usize,
+        notify: Arc<dyn crate::block::CompletionNotify>,
+    ) -> Result<Option<alloc::boxed::Box<dyn crate::fs::StorageRead>>, FileSystemError> {
+        let disk = self.disk.lock().disk;
+        let read = super::super::async_read::Ext4Read::new(
+            &self.fs,
+            self.inode_num,
+            disk,
+            offset,
+            length,
+            notify,
+        )?;
+        let boxed: alloc::boxed::Box<dyn crate::fs::StorageRead> =
+            alloc::boxed::Box::try_new(read).map_err(|_| FileSystemError::OutOfMemory)?;
+        Ok(Some(boxed))
+    }
+
     fn touch_access(&self, now: u64, relatime: bool) -> Result<(), FileSystemError> {
         let needs_update = |inode: &Ext4InodeDisk| {
             crate::fs::inode_times::needs_access_update(

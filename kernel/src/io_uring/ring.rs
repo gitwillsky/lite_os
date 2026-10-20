@@ -103,7 +103,10 @@ pub(crate) struct Unit {
 impl Drop for Unit {
     fn drop(&mut self) {
         let mut units = self.ring.units.lock();
-        if let Ok(index) = units.live.binary_search_by_key(&self.sequence, |entry| entry.0) {
+        if let Ok(index) = units
+            .live
+            .binary_search_by_key(&self.sequence, |entry| entry.0)
+        {
             units.live.remove(index);
         }
         drop(units);

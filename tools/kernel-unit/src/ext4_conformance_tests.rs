@@ -36,6 +36,8 @@ const DIRECTORY: CreateMetadata = CreateMetadata {
 };
 const FS_BLOCK: usize = 4096;
 
+#[path = "tests/ext4_async_read.rs"]
+mod async_read;
 #[path = "tests/ext4_xattr.rs"]
 mod xattr;
 
@@ -331,6 +333,12 @@ fn scratch_copy(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("{}-{name}", std::process::id()));
     std::fs::copy(ext4_fixture_path(), &path).expect("copy ext4 fixture");
     path
+}
+
+/// 以任意块设备挂载（异步读测试用手动完成的设备）。
+fn mount_with(device: Arc<dyn BlockDevice>) -> Arc<Ext4FileSystem> {
+    Ext4FileSystem::new(device, crate::fs::DeviceNumber::new(8, 0), false)
+        .expect("mount ext4 image")
 }
 
 fn mount(path: &PathBuf) -> Arc<Ext4FileSystem> {

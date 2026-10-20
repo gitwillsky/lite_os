@@ -91,7 +91,9 @@ io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`
 读写：`off == -1` 用并推进当前 position，`off >= 0` 对 regular/可定位文件是 pread/pwrite 语义，对 pipe/socket 等流式文件忽略；`ioprio`、`rw_flags`、
 `personality` 非零分别返回 `EINVAL`/`EOPNOTSUPP`/`EINVAL`，请求使用提交者提交时刻的凭据。会阻塞的 pipe/socket/eventfd/timerfd/tty 请求不占用提交线程：
 先做一次 NOWAIT 尝试，仍会阻塞则由 `io_uring` 内核线程等待就绪后在提交线程的地址空间中完成，用户态自己设置了 `O_NONBLOCK` 的 fd 如实返回 `-EAGAIN`；
-signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记信号等待）。regular 文件的读写在 `io_uring_enter` 内联完成，磁盘 I/O 会使 `enter` 睡眠。
+signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记信号等待）。regular 文件的读写不在 `io_uring_enter` 内睡眠：读（显式偏移与 `off == -1` 的当前位置）在 page cache 未命中时异步填页（ext4）；
+当前位置读完成时发布新 position，发起时 position 被占用则回退车道。
+写、fsync 与回退的读交给阻塞车道的 worker 池（最多 8 个线程，共享 FIFO，写与 fsync 可以重叠；Linux 同样由 io-wq 执行 ext4 缓冲写与 fsync）。
 `POLL_ADD`：一次性语义，提交时先 poll 一次，已就绪同步完成，否则挂起；res 是 revents，`ERR`/`HUP` 总是报告；`IORING_POLL_ADD_MULTI` 返回 `-EOPNOTSUPP`。
 `TIMEOUT`：相对或绝对（`CLOCK_MONOTONIC`，`BOOTTIME` 视同单调），到期 `-ETIME`（`ETIME_SUCCESS` 的 CQE 仍是 `-ETIME`，只是不使链断开）；`off` 非零时等“除 timeout 自身外又发布 N 个 CQE”，满足则以 0 完成；
 `len` 必须为 1；`MULTISHOT`/`REALTIME` 返回 `-EOPNOTSUPP`（`MULTISHOT|ABS` 为 `-EINVAL`）。`TIMEOUT_REMOVE`、`POLL_REMOVE` 只取消各自种类，更新类 flags 返回 `-EOPNOTSUPP`。

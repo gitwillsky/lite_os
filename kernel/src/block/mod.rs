@@ -14,7 +14,7 @@ pub(crate) mod partition_device;
 pub(crate) mod partition_table;
 pub(crate) mod range;
 
-pub(crate) use device::{BLOCK_SIZE, BlockDevice, BlockError};
+pub(crate) use device::{BLOCK_SIZE, BlockDevice, BlockError, CompletionNotify, PendingRead};
 
 // OWNER: 块设备 adapter 的唯一发布点，只追加；index 是 adapter 的稳定 identity，根文件系统与 `fs`
 // 的 `/dev` 发布都按它选择。缺失时第二块盘只能 panic 或被丢弃。

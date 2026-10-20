@@ -3,6 +3,18 @@ use alloc::sync::Arc;
 use crate::file_position::{FilePosition, PositionError};
 
 #[test]
+fn try_with_does_not_wait_for_an_occupied_position() {
+    let position = FilePosition::new();
+    position.with(|value| *value = 7).unwrap();
+    assert_eq!(position.try_with(|value| *value), Some(7));
+    // 占用期间（同步读持有 position 做 I/O）不能等待：io_uring reactor 依赖它立即得到 `None`。
+    position
+        .with(|_| assert_eq!(position.try_with(|value| *value), None))
+        .unwrap();
+    assert_eq!(position.try_with(|value| *value), Some(7));
+}
+
+#[test]
 fn shared_position_updates_do_not_lose_concurrent_progress() {
     const THREADS: usize = 4;
     const UPDATES: usize = 10_000;

@@ -161,7 +161,8 @@ impl<Op> Assembler<Op> {
                 if member.drain {
                     // 链中间的 DRAIN：链头 DRAIN，且链之后的下一条链也 DRAIN。
                     chain.drain = true;
-                    ring.drain_next().store(true, core::sync::atomic::Ordering::Release);
+                    ring.drain_next()
+                        .store(true, core::sync::atomic::Ordering::Release);
                 }
                 if chain.rest.try_reserve(1).is_err() {
                     // 无法记录该成员：放弃整条链，成员得到 ENOMEM，并停止提交以免剩余成员被错组成新链。

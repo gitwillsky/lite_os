@@ -62,6 +62,7 @@ mod sysfs_block;
 mod tmpfs;
 mod vfs;
 
+pub(crate) use crate::block::CompletionNotify;
 pub(crate) use anonymous::{anonymous_opened, pipe_opened, socket_opened};
 pub(crate) use block_node::BlockNode;
 pub(crate) use directory::{
@@ -71,7 +72,7 @@ pub(crate) use directory::{
 pub(crate) use fifo::{FifoAccess, FifoOpenError, open as open_fifo};
 pub(crate) use inode::{
     DataBacking, FineTimes, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, LinkTarget,
-    StorageWriter,
+    StorageRead, StorageStep, StorageWriter,
 };
 pub(crate) use inotify::{
     IN_ACCESS, IN_ATTRIB, IN_CLOEXEC, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE,
@@ -86,8 +87,8 @@ pub(crate) use mount::{
     mount_root, register_filesystem, remount, unmount, unmount_root_read_only,
 };
 pub(crate) use page_cache::{
-    RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
-    sync_all, sync_inode, truncate,
+    NowaitRead, ReadStep, RegularFile, RegularFileWrite, allocate, mapping,
+    statistics as page_cache_statistics, sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{AccessIdentity, CreateMetadata, OwnerModeChange};
 pub(crate) use procfs::{

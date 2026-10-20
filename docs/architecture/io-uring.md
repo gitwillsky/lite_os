@@ -23,14 +23,22 @@ io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把
    `POLL_ADD` 是“探测 revents，没有就 `await`”，`TIMEOUT` 是“计数或 deadline 到了就返回，否则 `await`”。一个多路复用线程而不是线程池：N 个阻塞读都在等同一个后续写时，固定大小的池会死锁。
 8. readiness 来源没有回调（是 task 睡眠/唤醒式的），所以该线程是 reactor 而不是 waker 驱动的执行器：future 在 `await` 时把等待条件登记到自己的 interest 槽
    （目标 OFD 的事件、deadline、CQE 计数），线程据此构造 `wait_for_poll` 的 key，条件满足后才重新 `poll`，`Context` 使用 `Waker::noop()`。
-9. 一条请求链（单个 SQE 是长度为 1 的链）同一时刻至多一个成员在等待，所以整条链是一个 future：成员按序 issue，失败的成员取消后继。`IOSQE_IO_DRAIN` 通过 ring 上的接纳序号表达，
+9. 持久文件（`OpenFileKind::Inode`）的读写可能睡眠在磁盘上，不在提交线程或 reactor 上执行：读（显式偏移或 `off == -1` 的当前位置）走 `Wait::FileRead`——cache 命中同步复制，
+   未命中开始异步填页（块层 `begin_read` + page-cache 版本协议）并以 `Interest::Block` 让出，块读完成时通知该链的 `Waiter`；写、fsync 与回退的读走 `Wait::Lane`，
+   交给 `io_uring_lane` worker 池：共享一个 FIFO，没有空闲 worker 且未达上限 `MAX_WORKERS` 时新建内核线程，所以一个慢作业只占一个 worker，写与 fsync 可以重叠
+   （Linux 的 ext4 缓冲写与 fsync 同样由 io-wq 执行）。reactor 因此从不睡眠。
+   当前位置读不在读期间持有 OFD position（同步 `read(2)` 才持有，reactor 不能睡眠在它上面）：发起时快照 position，完成时发布 `起点 + 读到的字节`，与 Linux io_uring 相同；
+   position 此刻被同步读写占用时，发起与发布都改走车道。
+10. 一条请求链（单个 SQE 是长度为 1 的链）同一时刻至多一个成员在等待，所以整条链是一个 future：成员按序 issue，失败的成员取消后继。`IOSQE_IO_DRAIN` 通过 ring 上的接纳序号表达，
    被延迟的链作为 future 的第一个 `await` 等待被接纳。取消经登记表给正在等待的成员置位取消标记，不经命令队列，因此取消也是普通的链成员，可以出现在链里。
    丢弃 future（ring 关闭）会释放它捕获的目标 OFD 和 iovec。ring fd 的最后一个引用释放时 `DeviceFile::release` 置关闭标志并唤醒该线程，它丢弃这个 ring 的全部请求（例如 pipe 读端被释放，使写者得到 `EPIPE`）。
 
 ## Known limits
 
 - 未开放：multishot 的 poll/timeout、按 fd/opcode 取消、其余 opcode、`LINK_TIMEOUT`、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
-- regular 文件的读写在 `io_uring_enter` 内联完成，磁盘 I/O 会让 `enter` 睡眠（块层异步见路线图 P4）。
+- 阻塞车道最多 `MAX_WORKERS`（8）个线程：超过后作业在共享 FIFO 里排队（有界并发），空闲 worker 不退出。regular 文件的写与 fsync 在 worker 上同步执行，不是真异步（Linux io-wq 同样）。
+- regular 文件读只在 page cache 未命中且后端支持异步读（ext4；其固定 4 KiB profile 保证文件系统块恒等于设备块）时不占线程，其余后端与请求槽暂满时回退车道。
+- 同时发起的两个当前位置读读取同一区间（Linux 相同）：需要顺序语义的用户应使用链。
 - signalfd 读无信号时返回 `-EAGAIN`，不挂起。
 - SQ 上限 4096（Linux 32768）：没有按用户的 ring 内存计费，缺少上限时一个进程创建多个 ring 即可耗尽物理内存。
 - `io_uring_enter` 的 `min_wait_usec` 与 `REGISTERED_RING` 未实现，返回 `EINVAL`。

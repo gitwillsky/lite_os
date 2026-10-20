@@ -11,11 +11,16 @@ use crate::memory::{
 use crate::sync::{TaskEvent, TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
 use super::AccessIdentity;
+use super::CompletionNotify;
 use super::memory_file::{MemoryFile, MemoryWrite};
 use super::{DataBacking, FileSystemError, Inode, InodeType};
 
+mod nowait_read;
+mod storage_epoch;
+use storage_epoch::StorageEpoch;
 mod regular_file;
 mod swap;
+pub(crate) use nowait_read::{NowaitRead, ReadStep};
 pub(crate) use regular_file::RegularFile;
 pub(super) use swap::prepare_swap_file;
 mod registry;
@@ -166,6 +171,10 @@ struct CachedFile {
     // page fault 不获取该 gate，只取内层 operation，因此同文件 mmap buffer fault 不会自死锁。
     write_sequence: TaskMutex<()>,
     pages: Mutex<CachedPages>,
+    // OWNER: seqlock 式的存储版本：每次改变文件内容或 EOF 的 operation（write/append、truncate、allocate）
+    // 在持有 `operation` 期间使其为奇数，结束后再加一变回偶数。不持 `operation` 的异步填页据此丢弃
+    // 读期间被改写的数据；缺失时它会把截断/改写之前读到的旧块插入 cache，之后一直被当作文件内容。
+    storage_epoch: StorageEpoch,
     // OWNER: one preallocated event for freeze drain; page claims signal their last writer retirement.
     // Exiting mm may already have lost its Weak identity while its post-fence fields still own writers.
     writer_retired: Arc<TaskEvent>,
@@ -221,7 +230,11 @@ impl CachedFile {
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut pages = self.pages.lock();
-        assert!(!pages.entries.contains_key(&index));
+        // 不持 `operation` 的异步填页可能已经发布了同一页；它读到的是同一份未被改写的数据（改写者
+        // 都在 `operation` 里，而我们现在持有它），所以直接用已发布的页。
+        if let Some(existing) = pages.entries.get(&index).cloned() {
+            return Ok((existing, 0));
+        }
         pages
             .entries
             .commit_vacant(page_slot.fill(index, page.clone()));
@@ -435,6 +448,7 @@ pub(crate) fn truncate(
         .operation
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
+    let _epoch = file.begin_mutation();
     file.inode.truncate_storage(size, Some(identity))?;
     let first_removed = size.div_ceil(PAGE_SIZE as u64);
     let mut pages = file.pages.lock();
@@ -445,6 +459,7 @@ pub(crate) fn truncate(
         page.frame.zero_from(size as usize % PAGE_SIZE);
     }
     drop(pages);
+    drop(_epoch);
     drop(_operation);
     invalidate_shared_file(file.id, size, &mut invalidation_wait);
     Ok(())
@@ -483,6 +498,7 @@ pub(crate) fn allocate(
         .operation
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
+    let _epoch = file.begin_mutation();
     file.inode.allocate_storage(offset, length, Some(identity))
 }
 

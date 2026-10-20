@@ -305,6 +305,9 @@ host 微基准测到的只是 key 构造，不代表 io_uring 的真实价值—
 有可比较的基线后再加入 blocking benchmark。
 每条挂起的链是一个 `Box`ed future（fallible 分配）：不会等待的 op（普通文件、显式偏移、fsync、close、cancel、NOP）直接同步完成、不分配；
 会等待的 op（pipe/socket 流式读写、poll、timeout）无论是否真的阻塞都分配一次 future，因为 future 必须在首次 poll 之前就位于堆上（poll 过的 future 不能搬动）。
+持久文件读的新增成本：page cache 命中路径只多一次 `storage_epoch` 读取与一次 `NowaitRead` 状态构造（无分配）；
+未命中每页多一个 `Box`ed `StorageRead`、一个 `PendingRead` 与预留的 cache 节点和页，这些原本也要分配。阻塞车道每个作业一次 `Box` 与一个结果槽 `Arc`。
+host 微基准测不到块层真实重叠的收益（需要真实设备延迟），本次没有新增 benchmark，正确性由 host 单测与 guest 冷读检查点裁决。
 链新增的热路径成本是每个 SQE 一次 `Member` 构造与每条链一次 `Ring::admit`（`spin::Mutex` 内的有序 `Vec` 追加，链完成时 `binary_search` 加 `remove`），
 批内 SQE 不分配；这些在 `io_uring_enter` 的 syscall 开销面前可忽略，本次没有新增 benchmark，原因同上。正确性由 `io-uring.c` 烟测（提交/完成顺序、溢出、阻塞唤醒、取消、读写、epoll 通知）与 `abi.rs` 单测裁决，本次没有测得吞吐数字。
 

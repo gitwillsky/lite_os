@@ -394,6 +394,23 @@
   同一 parent mutation owner 拒绝向 zero-link 目录插入 entry，open/cwd 不复活 namespace。
 
 
+## 不阻塞的 page-cache 填页
+
+io_uring 的 reactor 线程多路复用全部挂起请求，不能睡眠，所以持久文件读有第二条填页路径：`NowaitRead`（`fs/page_cache/nowait_read.rs`）。
+它与持有 `operation` 的同步填页共存，共享同一个 cache 与同一套一致性规则，不是双轨实现：
+
+- **版本协议**：`CachedFile::storage_epoch`（`StorageEpoch`，seqlock）。每个改变文件内容或 EOF 的 operation（write、append、truncate、allocate）
+  在持有 `operation` 之后、第一次存储改动之前 `begin_mutation()`，在释放 `operation` 之前结束。异步填页取偶数快照、读存储、在 `pages` 锁内确认版本未变才发布；
+  快照为奇数（有改写者在运行）、版本变了且重试用尽、inode 不支持异步读都退回阻塞车道。新增任何改变文件内容的入口都必须 `begin_mutation`，
+  否则异步填页会把改写之前读到的旧块当作文件内容发布；围栏 `page-cache-epoch` 固定这一点。
+- **锁序**：异步填页从不获取 `operation`；读存储时不持有任何锁；`pages` 锁内只做版本校验和发布，不 I/O、不分配（cache 节点与页在读之前预留）。
+  同步填页发布时若发现同页已被异步填页发布，直接使用已发布的页（两者读到的是同一份未被改写的数据）。
+- **ext4 读**：`Inode::begin_storage_read` 返回可恢复的 `StorageRead`。映射只使用已在 metadata cache 的 extent 节点，未缓存的节点先异步读并经
+  `insert_if_unchanged` 进入 cache；每个 fs 块先查 journal 暂存（命中同步），否则异步读 home，完成后再校验 `metadata_cache.generation()`，变了就重读
+  （与同步 `read_fs_block` 同一规则）。`Ext4FileSystem::new` 只接受 4 KiB 文件系统块与 4 KiB 设备块，所以一个 fs 块恒为一次设备块读。请求槽暂满、元数据反复失效返回 `Fallback`。
+- **块层**：`BlockDevice::begin_read` 提交整块读但不等待，返回 `PendingRead`；丢弃未完成的句柄表示取消，请求槽由完成路径自己归还
+  （`detached`）。没有异步能力的设备使用默认实现（同步读完再返回已完成的句柄）。
+
 补充契约见 [文件系统接口、事务与退休契约](filesystem-transactions.md)。
 
 VFS 初始化即创建唯一 initial MountNamespace，

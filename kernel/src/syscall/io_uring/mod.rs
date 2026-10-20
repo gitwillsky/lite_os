@@ -4,6 +4,7 @@
 
 mod chain;
 mod exec;
+mod lane;
 mod ops;
 mod wait;
 mod worker;
@@ -11,7 +12,11 @@ mod worker;
 use alloc::{sync::Arc, vec::Vec};
 use syscall_abi::errno;
 
-pub(crate) use worker::start as start_worker;
+/// 启动 io_uring 的两个内核线程：reactor（多路复用挂起的链）与阻塞车道（可能睡眠在磁盘上的作业）。
+pub(crate) fn start_worker() -> Result<(), ()> {
+    worker::start()?;
+    lane::start()
+}
 
 use crate::{
     file::OpenFileKind,

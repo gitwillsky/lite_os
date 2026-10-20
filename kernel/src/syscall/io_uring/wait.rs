@@ -8,11 +8,14 @@ use alloc::sync::{Arc, Weak};
 use core::{
     future::Future,
     pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
 use spin::Mutex;
 
-use crate::{file::OpenFileDescription, io_uring::Ring, task::TaskControlBlock};
+use crate::{
+    file::OpenFileDescription, fs::CompletionNotify, io_uring::Ring, task::TaskControlBlock,
+};
 
 /// 请求种类：只用于取消匹配和决定 CQE 的发布方式（timeout 的完成不计入事件数）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,6 +81,8 @@ pub(super) enum Interest {
     },
     /// 等待链被接纳（DRAIN 顺序）：序号为 `sequence` 的链可以开始。
     Admission { ring: Arc<Ring>, sequence: u64 },
+    /// 等块层或阻塞车道的完成通知（[`Waiter::notifier`]）。
+    Block,
 }
 
 impl Interest {
@@ -95,6 +100,8 @@ impl Interest {
                 ring,
             } => timeout_due(ring, *deadline, *target_events),
             Interest::Admission { ring, sequence } => ring.may_start(*sequence),
+            // 由 `Waiter::attention` 结合通知标志判定。
+            Interest::Block => false,
         }
     }
 }
@@ -113,6 +120,10 @@ pub(super) struct Waiter(Arc<WaiterInner>);
 
 struct WaiterInner {
     ring: Arc<Ring>,
+    // OWNER: 块读/车道作业完成时置位（可在 deferred completion 上下文里无锁调用），future 在 `step`
+    // 之前清除。置位发生在清除之后即不会丢：下一次 attention 看到它。缺失时 `Interest::Block` 的
+    // future 要么永不被重新 poll，要么让 reactor 空转。
+    notified: AtomicBool,
     // OWNER: 等待条件、正在运行的成员与取消标记。只在 worker、创建它的提交者与取消者之间短暂持有，
     // 且从不跨 `.await`；缺失时 worker 不知道该等什么、取消者无从找到目标。
     state: Mutex<State>,
@@ -145,6 +156,7 @@ impl Waiter {
     pub(super) fn new(ring: &Arc<Ring>) -> Result<Self, ()> {
         Arc::try_new(WaiterInner {
             ring: ring.clone(),
+            notified: AtomicBool::new(false),
             state: Mutex::new(State {
                 interest: Interest::Starting,
                 running: None,
@@ -199,6 +211,20 @@ impl Waiter {
         })
     }
 
+    /// 块层与车道完成时调用的通知；持有它会保活这条链的登记。
+    pub(super) fn notifier(&self) -> Arc<dyn CompletionNotify> {
+        self.0.clone()
+    }
+
+    /// 在每次 `step` 之前调用：之后的通知都会让 [`Waiter::block`] 立即被重新 poll。
+    pub(super) fn clear_notified(&self) {
+        self.0.notified.store(false, Ordering::Release);
+    }
+
+    pub(super) fn block(&self) -> Suspend {
+        self.suspend(Interest::Block)
+    }
+
     /// 一个会等待的成员开始运行；清除上一个成员遗留的取消标记。
     pub(super) fn begin(&self, user_data: u64, kind: Kind) {
         let mut state = self.0.state.lock();
@@ -213,7 +239,11 @@ impl Waiter {
     /// 正在等待的成员匹配 `target` 时标记取消并返回 true。
     pub(super) fn cancel(&self, target: &Target) -> bool {
         let mut state = self.0.state.lock();
-        if state.running.as_ref().is_some_and(|running| running.matches(target)) {
+        if state
+            .running
+            .as_ref()
+            .is_some_and(|running| running.matches(target))
+        {
             state.canceled = true;
             true
         } else {
@@ -228,12 +258,22 @@ impl Waiter {
     /// 是否该重新 poll 这条链：被取消，或登记的等待条件可能已满足。
     pub(super) fn attention(&self) -> bool {
         let state = self.0.state.lock();
-        state.canceled || state.interest.attention()
+        state.canceled
+            || state.interest.attention()
+            || (matches!(state.interest, Interest::Block)
+                && self.0.notified.load(Ordering::Acquire))
     }
 
     /// 在持有状态锁时读取当前等待条件。
     pub(super) fn with_interest<T>(&self, read: impl FnOnce(&Interest) -> T) -> T {
         read(&self.0.state.lock().interest)
+    }
+}
+
+impl CompletionNotify for WaiterInner {
+    fn notify(&self) {
+        self.notified.store(true, Ordering::Release);
+        super::worker::wake();
     }
 }
 

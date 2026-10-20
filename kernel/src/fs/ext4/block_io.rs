@@ -1,6 +1,11 @@
 use super::*;
 
 impl Ext4FileSystem {
+    /// metadata cache 里已有的 block；不做 I/O。
+    pub(super) fn metadata_cached(&self, fs_block_id: u64) -> Option<Arc<Vec<u8>>> {
+        self.metadata_cache.lock().get(fs_block_id)
+    }
+
     /// Return one immutable directory/extent metadata block under the filesystem-wide identity.
     pub(super) fn read_metadata_block(
         &self,

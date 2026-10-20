@@ -1,8 +1,8 @@
 //! 分区的块设备视图：整盘 `BlockDevice` 的一段连续块区间。
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use super::{BlockDevice, BlockError};
+use super::{BlockDevice, BlockError, CompletionNotify, PendingRead};
 
 /// 整盘中 `[first_block, first_block + blocks)` 的视图；块号在分区内从零起算。
 ///
@@ -49,6 +49,16 @@ impl BlockDevice for PartitionDevice {
 
     fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
         self.parent.write_block(self.translate(block_id)?, buf)
+    }
+
+    fn begin_read(
+        self: Arc<Self>,
+        block_id: usize,
+        notify: Arc<dyn CompletionNotify>,
+    ) -> Result<Box<dyn PendingRead>, BlockError> {
+        self.parent
+            .clone()
+            .begin_read(self.translate(block_id)?, notify)
     }
 
     fn flush(&self) -> Result<(), BlockError> {

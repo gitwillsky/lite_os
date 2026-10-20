@@ -45,6 +45,7 @@ pub(in crate::fs) fn validate_mount_options(options: &[u8]) -> Result<(), FileSy
 mod allocation;
 mod allocation_dirty;
 mod allocation_metadata;
+mod async_read;
 mod block_io;
 mod checksum;
 #[cfg(test)]

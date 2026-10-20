@@ -72,6 +72,27 @@ impl RegularFile {
         }
     }
 
+    /// 是否有可能不阻塞地读（持久 page-cache 文件）；其余后端从不等待磁盘。
+    pub(crate) fn supports_nowait(&self) -> bool {
+        matches!(self.0, RegularFileBackend::Cached(_))
+    }
+
+    /// 开始一段不阻塞的读；只有持久 page-cache 文件才可能阻塞，其余后端返回 `None`，调用者直接用
+    /// [`RegularFile::read`]（它们从不等待磁盘）。
+    pub(crate) fn begin_read_nowait(
+        &self,
+        offset: u64,
+        length: usize,
+        notify: Arc<dyn CompletionNotify>,
+    ) -> Option<NowaitRead> {
+        match &self.0 {
+            RegularFileBackend::Cached(file) => {
+                Some(NowaitRead::new(file.clone(), offset, length, notify))
+            }
+            _ => None,
+        }
+    }
+
     /// 返回当前 regular-file byte size。
     ///
     /// # Returns

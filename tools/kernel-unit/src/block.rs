@@ -2,7 +2,7 @@
 
 #[path = "../../../kernel/src/block/device.rs"]
 mod device;
-pub(crate) use device::{BLOCK_SIZE, BlockDevice, BlockError};
+pub(crate) use device::{BLOCK_SIZE, BlockDevice, BlockError, CompletionNotify, PendingRead};
 
 #[path = "../../../kernel/src/block/identity.rs"]
 pub(crate) mod identity;

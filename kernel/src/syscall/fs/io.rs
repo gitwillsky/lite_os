@@ -4,7 +4,10 @@ mod write_limit;
 use write_limit::{bounded_regular_write, file_size_exceeded, regular_write_chunk};
 
 mod positioned;
-pub(in crate::syscall) use positioned::{positioned_read, positioned_write};
+pub(in crate::syscall) use positioned::{
+    AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
+    positioned_read, positioned_write,
+};
 pub(crate) use positioned::{
     sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2,
 };
@@ -14,8 +17,8 @@ pub(crate) use sendfile::{sys_copy_file_range, sys_sendfile};
 
 mod regular;
 use regular::{
-    PreparedRegularWriteStaging, read_vectors as read_regular_vectors,
-    write_vectors as write_regular_vectors,
+    PreparedRegularWriteStaging, ReadProgress, read_vectors as read_regular_vectors,
+    read_vectors_from, write_vectors as write_regular_vectors,
 };
 
 use crate::syscall::user_iovec::{

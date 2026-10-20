@@ -68,6 +68,20 @@ pub(crate) struct InodeMetadata {
 mod device_number;
 pub(crate) use device_number::DeviceNumber;
 
+pub(crate) use crate::block::CompletionNotify;
+
+/// 与 `kernel/src/fs/inode.rs` 的 `StorageStep`/`StorageRead` 同形；ext4 的步进读实现它们。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StorageStep {
+    Done(usize),
+    Wait,
+    Fallback,
+}
+
+pub(crate) trait StorageRead: Send {
+    fn step(&mut self, output: &mut [u8]) -> Result<StorageStep, FileSystemError>;
+}
+
 pub(crate) trait StorageWriter {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<usize, FileSystemError>;
 }
@@ -119,6 +133,14 @@ pub(crate) trait Inode: Send + Sync {
         device: Option<DeviceNumber>,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn read_storage(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
+    fn begin_storage_read(
+        &self,
+        _offset: u64,
+        _length: usize,
+        _notify: Arc<dyn CompletionNotify>,
+    ) -> Result<Option<alloc::boxed::Box<dyn StorageRead>>, FileSystemError> {
+        Ok(None)
+    }
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError>;
     fn write_storage(
         &self,

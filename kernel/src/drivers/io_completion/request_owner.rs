@@ -260,6 +260,19 @@ impl RequestOwner {
         Some(RequestIdentity { slot, generation })
     }
 
+    /// 无等待地预留空闲 slot；没有容量时返回 `None`，不签发 ticket、不进入 FIFO。
+    ///
+    /// # Returns
+    ///
+    /// 有容量时返回唯一 identity。
+    ///
+    /// # Errors
+    ///
+    /// 不返回错误；generation 耗尽时 fail-stop。
+    pub(crate) fn try_reserve(&mut self) -> Option<RequestIdentity> {
+        self.reserve()
+    }
+
     /// 预留空闲 slot，或签发锁外 waiter preparation ticket。
     ///
     /// # Returns

@@ -31,6 +31,9 @@
 - 内核线程可以访问其代表的用户任务的 fd 表：文件表查找使用当前执行体自己预置的 waiter（`TaskControlBlock::file_wait`），用户线程与内核线程各有一份；
   worker 执行链后继时依赖这一点，缺失时 worker 第一次 `fd_get`/`fd_close` 即 panic。
 - socket 的 accept/connect 核心（`accept_once`/`connect_begin`）与地址编解码都显式接收 task，不读取 `current_task()`；新增 socket 相关 opcode 不得绕开它们。
+- reactor 线程从不睡眠：任何可能睡眠在磁盘上的 opcode 路径必须是 `Wait::FileRead`（不阻塞的 page-cache 填页）或 `Wait::Lane`（阻塞车道）。
+  `Interest::Block` 的完成通知（块读、车道作业）必须经 `Waiter::notifier()` 置位 `notified` 并唤醒 reactor；future 在每次 `step` 之前 `clear_notified`，之后才可能等待，
+  否则通知要么丢失要么让 reactor 空转。
 - 读写核心不得在 `nowait` 为真时睡眠；会睡眠的路径改返回 `EAGAIN`。新增一个会阻塞的 OFD 种类时，必须同时决定它在 `can_block` 里的归类，
   并确认 `add_interest` 能为它登记等待；否则它的请求会被挂起却永不唤醒。
 - 挂起请求只持有提交线程的 `Weak<TaskControlBlock>`，强引用会延长其 TCB 寿命；future 只在每次重试的一小段持有强引用、不跨 `.await`，升级失败则以 `-ECANCELED` 结束。
@@ -61,6 +64,11 @@
 - `Waiter`（`wait` 模块，`Arc<WaiterInner>`，内含 `spin::Mutex<State>`）：future 登记等待条件、正在运行的成员与取消标记，每条链一个，只在 worker、创建它的提交者与取消者之间短暂持有且不跨 `.await`。
   缺失时 worker 不知道该等什么，取消者无从标记目标。
 - `Ring::units`（`spin::Mutex<Units>`）：已接纳未完成的链及其 DRAIN 标志，序号单调。缺失时 DRAIN 没有顺序依据。`Ring::drain_disabled`/`drain_next`（`AtomicBool`）：Linux `IO_RING_F_DRAIN_DISABLED`/`DRAIN_NEXT`，只在 `submit_lock` 下被提交路径修改。
+- `lane::Pool`（`spin::Mutex`，`lane::POOL` 经 `spin::Once` 在 boot 发布）：阻塞车道的共享 FIFO 与 worker 登记表（含空闲标志，只在该锁下改变，使“入队”与“worker 置空闲”不会交错成作业在队列里而全部 worker 都在睡）；
+  worker 最多 `MAX_WORKERS` 个、按需创建、不退出，缺失上限时大量慢作业各占一个内核栈；`Worker::wake`（每 worker 一对 notification pipe）只由认领它的提交者置位；`Ticket::result`（`spin::Mutex<Option<isize>>`）是作业结果槽，
+  提交者与车道线程各持一个引用，车道在引用计数为 1（提交者已丢弃票据）时跳过尚未开始的作业。缺失时可能睡眠的作业只能在 reactor 上执行。
+- `WaiterInner::notified`（`AtomicBool`）：见上，块读与车道作业完成时在 deferred 上下文里无锁置位。
+- 车道作业以提交线程的 `Weak<TaskControlBlock>` 执行；文件表查找使用执行体自己预置的 waiter（见上），内核线程因此可以访问被代表任务的 fd 表。
 - `Ring::closed`（`AtomicBool`）：ring fd 最后一个引用已释放。缺失时关闭 ring 不会取消挂起请求。
 - `Ring::generation`（`AtomicU64`）：epoll edge 判定，取 `next_readiness_generation` 的最大值；缺失时 ET epoll 会漏报。
 - `DeviceBacking::atomic_u32` 的 unsafe：偏移 4 字节对齐且在同一页内，frame 由 backing 持有，引用生命周期受 `&self` 约束。

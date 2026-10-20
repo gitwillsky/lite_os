@@ -46,6 +46,14 @@ impl FilePosition {
         Ok(operation(&mut guard))
     }
 
+    /// 与 [`FilePosition::with`] 相同，但 position 正被占用时立即返回 `None` 而不等待。
+    ///
+    /// 给不能睡眠的调用者（io_uring reactor）：缺失它，reactor 会在另一个线程持有 position 做磁盘读时睡眠。
+    pub(super) fn try_with<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> Option<R> {
+        let mut guard = self.0.try_lock()?;
+        Some(operation(&mut guard))
+    }
+
     /// 返回不推进 position 的瞬时快照；等待元数据 OOM 时不返回伪造 offset。
     ///
     /// # Returns

@@ -33,6 +33,10 @@ struct Waiting {
 }
 
 /// 链从哪里开始被 future 驱动。
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Start is moved once into the boxed chain future; boxing a variant would add an allocation per request"
+)]
 enum Start {
     /// 前面的 DRAIN 还没完成：先等待被接纳。
     Deferred(Members<Op>),
@@ -57,7 +61,11 @@ fn finish(ring: &Ring, meta: &Meta, outcome: Outcome, rest: &mut Members<Op>) ->
 }
 
 /// issue 成员直到某个成员需要等待（返回它）或链结束（`None`）。
-fn advance(ring: &Arc<Ring>, task: &Weak<TaskControlBlock>, rest: &mut Members<Op>) -> Option<(Wait, Meta)> {
+fn advance(
+    ring: &Arc<Ring>,
+    task: &Weak<TaskControlBlock>,
+    rest: &mut Members<Op>,
+) -> Option<(Wait, Meta)> {
     while let Some(member) = rest.next() {
         let Member {
             user_data,
@@ -183,7 +191,12 @@ pub(super) fn launch(task: &Arc<TaskControlBlock>, ring: &Arc<Ring>, chain: Chai
         )
     });
     if spawned.is_err() {
-        abandon(ring, start.take().expect("spawn failed before building the future"));
+        abandon(
+            ring,
+            start
+                .take()
+                .expect("spawn failed before building the future"),
+        );
     }
 }
 

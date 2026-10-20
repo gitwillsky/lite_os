@@ -35,6 +35,7 @@ pub(super) fn cached_file(
         operation: TaskMutex::new(()),
         write_sequence: TaskMutex::new(()),
         pages: Mutex::new(CachedPages::new()),
+        storage_epoch: StorageEpoch::new(),
         writer_retired,
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;

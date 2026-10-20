@@ -770,6 +770,7 @@ kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn submit_period 
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn writable (& self) -> bool
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn xrun (& mut self)
 kernel/src/audio/state.rs :: pub (crate) struct PcmStateOwner
+kernel/src/block/device.rs :: enum BlockError :: # [doc = " 异步提交暂时没有空闲请求槽；调用者稍后重试或改走同步路径。"] WouldBlock
 kernel/src/block/device.rs :: enum BlockError :: DeviceError
 kernel/src/block/device.rs :: enum BlockError :: InvalidBlock
 kernel/src/block/device.rs :: enum BlockError :: IoError
@@ -777,12 +778,18 @@ kernel/src/block/device.rs :: enum BlockError :: OutOfMemory
 kernel/src/block/device.rs :: pub (crate) const BLOCK_SIZE : usize = 4096
 kernel/src/block/device.rs :: pub (crate) enum BlockError
 kernel/src/block/device.rs :: pub (crate) trait BlockDevice
+kernel/src/block/device.rs :: pub (crate) trait CompletionNotify
+kernel/src/block/device.rs :: pub (crate) trait PendingRead
+kernel/src/block/device.rs :: trait BlockDevice :: fn begin_read (self : Arc < Self > , block_id : usize , notify : Arc < dyn CompletionNotify > ,) -> Result < Box < dyn PendingRead > , BlockError >
 kernel/src/block/device.rs :: trait BlockDevice :: fn block_count (& self) -> u64
 kernel/src/block/device.rs :: trait BlockDevice :: fn block_size (& self) -> usize
 kernel/src/block/device.rs :: trait BlockDevice :: fn disk_name (& self) -> & [u8]
 kernel/src/block/device.rs :: trait BlockDevice :: fn flush (& self) -> Result < () , BlockError >
 kernel/src/block/device.rs :: trait BlockDevice :: fn read_block (& self , block_id : usize , buf : & mut [u8]) -> Result < usize , BlockError >
 kernel/src/block/device.rs :: trait BlockDevice :: fn write_block (& self , block_id : usize , buf : & [u8]) -> Result < usize , BlockError >
+kernel/src/block/device.rs :: trait CompletionNotify :: fn notify (& self)
+kernel/src/block/device.rs :: trait PendingRead :: fn finish (self : Box < Self > , output : & mut [u8]) -> Result < () , BlockError >
+kernel/src/block/device.rs :: trait PendingRead :: fn is_complete (& self) -> bool
 kernel/src/block/identity.rs :: enum PartUuid :: # [doc = " GPT 分区项的唯一 GUID（磁盘上的混合字节序原样保存）。"] Gpt ([u8 ; 16])
 kernel/src/block/identity.rs :: enum PartUuid :: # [doc = " MBR：32 位磁盘签名与分区号。"] Mbr { signature : u32 , number : u32 }
 kernel/src/block/identity.rs :: pub (crate) enum PartUuid
@@ -798,7 +805,7 @@ kernel/src/block/mod.rs :: pub (crate) mod identity
 kernel/src/block/mod.rs :: pub (crate) mod partition_device
 kernel/src/block/mod.rs :: pub (crate) mod partition_table
 kernel/src/block/mod.rs :: pub (crate) mod range
-kernel/src/block/mod.rs :: pub (crate) use device :: { BLOCK_SIZE , BlockDevice , BlockError }
+kernel/src/block/mod.rs :: pub (crate) use device :: { BLOCK_SIZE , BlockDevice , BlockError , CompletionNotify , PendingRead }
 kernel/src/block/partition_device.rs :: pub (crate) impl PartitionDevice :: fn new (name : Vec < u8 > , parent : Arc < dyn BlockDevice > , first_block : usize , blocks : usize ,) -> Self
 kernel/src/block/partition_device.rs :: pub (crate) struct PartitionDevice
 kernel/src/block/partition_table.rs :: pub (crate) Partition :: guid : Option < [u8 ; 16] >
@@ -1052,6 +1059,7 @@ kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) impl RequestOwn
 kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn release_and_handoff (& mut self , identity : RequestIdentity ,) -> Option < CapacityWake >
 kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn release_without_handoff (& mut self , identity : RequestIdentity)
 kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn reserve_or_wait (& mut self) -> ReserveOrWait
+kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) impl RequestOwner :: fn try_reserve (& mut self) -> Option < RequestIdentity >
 kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) struct CapacityWait
 kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) struct CapacityWake
 kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) struct CompletionClaim
@@ -1537,6 +1545,7 @@ kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn status_flag
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn timer_fd (timer : Arc < TimerFd > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn touch_access (& self)
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn try_poll_events (& self , events : i16) -> Option < i16 >
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn try_with_position < R > (& self , operation : impl FnOnce (& mut u64) -> R) -> Option < R >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn with_position < R > (& self , operation : impl FnOnce (& mut u64) -> R ,) -> Result < R , PositionError >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn with_positions < R > (first : & Self , second : & Self , operation : impl FnOnce (& mut u64 , & mut u64) -> R ,) -> Result < R , PositionError >
 kernel/src/file/mod.rs :: pub (crate) struct OpenFileDescription
@@ -1556,6 +1565,7 @@ kernel/src/file/position.rs :: pub (crate) enum PositionError
 kernel/src/file/position.rs :: pub (super) impl FilePosition :: const fn new () -> Self
 kernel/src/file/position.rs :: pub (super) impl FilePosition :: fn seek (& self , offset : i64 , base : impl FnOnce (u64) -> u64 ,) -> Result < u64 , PositionError >
 kernel/src/file/position.rs :: pub (super) impl FilePosition :: fn snapshot (& self) -> Result < u64 , PositionError >
+kernel/src/file/position.rs :: pub (super) impl FilePosition :: fn try_with < R > (& self , operation : impl FnOnce (& mut u64) -> R) -> Option < R >
 kernel/src/file/position.rs :: pub (super) impl FilePosition :: fn with < R > (& self , operation : impl FnOnce (& mut u64) -> R ,) -> Result < R , PositionError >
 kernel/src/file/position.rs :: pub (super) impl FilePosition :: fn with_pair < R > (first : & Self , second : & Self , operation : impl FnOnce (& mut u64 , & mut u64) -> R ,) -> Result < R , PositionError >
 kernel/src/file/position.rs :: pub (super) struct FilePosition
@@ -1827,6 +1837,9 @@ kernel/src/fs/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: 
 kernel/src/fs/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_dirty_allocation_metadata (& self , dirty : & allocation_dirty :: AllocationDirty ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock (& self) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock_home (& self) -> Result < () , FileSystemError >
+kernel/src/fs/ext4/async_read.rs :: pub (super) impl Ext4Read :: fn new (fs : & Arc < Ext4FileSystem > , inode_num : u32 , disk : Ext4InodeDisk , offset : u64 , length : usize , notify : Arc < dyn CompletionNotify > ,) -> Result < Self , FileSystemError >
+kernel/src/fs/ext4/async_read.rs :: pub (super) struct Ext4Read
+kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn metadata_cached (& self , fs_block_id : u64) -> Option < Arc < Vec < u8 > > >
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_from (device : & Arc < dyn BlockDevice > , fs_block_size : usize , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_home (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
@@ -1880,15 +1893,19 @@ kernel/src/fs/ext4/dirhash.rs :: pub (crate) fn half_md4 (name : & [u8] , seed :
 kernel/src/fs/ext4/dirhash.rs :: pub (crate) struct DirectoryHash
 kernel/src/fs/ext4/extent.rs :: enum Mapping :: Hole { left : Option < Extent > }
 kernel/src/fs/ext4/extent.rs :: enum Mapping :: Mapped (Extent)
+kernel/src/fs/ext4/extent.rs :: enum Walk :: # [doc = " 路径上这个 block 还不在 metadata cache 里，需要先读入。"] Missing (u64)
+kernel/src/fs/ext4/extent.rs :: enum Walk :: Found (Mapping)
 kernel/src/fs/ext4/extent.rs :: pub (super) Extent :: length : u32
 kernel/src/fs/ext4/extent.rs :: pub (super) Extent :: logical : u32
 kernel/src/fs/ext4/extent.rs :: pub (super) Extent :: physical : u64
 kernel/src/fs/ext4/extent.rs :: pub (super) Extent :: unwritten : bool
 kernel/src/fs/ext4/extent.rs :: pub (super) enum Mapping
+kernel/src/fs/ext4/extent.rs :: pub (super) enum Walk
 kernel/src/fs/ext4/extent.rs :: pub (super) fn empty_root () -> [u8 ; INODE_BLOCK_BYTES]
 kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn default_goal (& self) -> u64
 kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn insert (& mut self , extent : Extent) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn lookup (& self , logical : u32) -> Result < Mapping , FileSystemError >
+kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn lookup_cached (& self , logical : u32) -> Result < Walk , FileSystemError >
 kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn mark_written (& mut self , logical : u32) -> Result < () , FileSystemError >
 kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn new (fs : & 'a Ext4FileSystem , inode_num : u32 , disk : & Ext4InodeDisk ,) -> Result < Self , FileSystemError >
 kernel/src/fs/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn remove_from (& mut self , start : u32) -> Result < () , FileSystemError >
@@ -2129,6 +2146,9 @@ kernel/src/fs/inode.rs :: enum InodeType :: Socket = 5
 kernel/src/fs/inode.rs :: enum InodeType :: SymLink = 2
 kernel/src/fs/inode.rs :: enum LinkTarget :: Opened (Arc < OpenedFile >)
 kernel/src/fs/inode.rs :: enum LinkTarget :: Text (Vec < u8 >)
+kernel/src/fs/inode.rs :: enum StorageStep :: # [doc = " 无法继续异步读（请求槽暂满、映射不受支持、元数据反复失效）：丢弃本次读，改走阻塞路径。"] Fallback
+kernel/src/fs/inode.rs :: enum StorageStep :: # [doc = " 有块读在途；完成通知触发后再次调用 `step`。"] Wait
+kernel/src/fs/inode.rs :: enum StorageStep :: # [doc = " 读完，值是写入 `output` 前缀的字节数（到 EOF 为止）。"] Done (usize)
 kernel/src/fs/inode.rs :: pub (crate) FineTimes :: atime_nsec : u32
 kernel/src/fs/inode.rs :: pub (crate) FineTimes :: birth : Option < (u64 , u32) >
 kernel/src/fs/inode.rs :: pub (crate) FineTimes :: ctime_nsec : u32
@@ -2153,15 +2173,18 @@ kernel/src/fs/inode.rs :: pub (crate) enum InodeOpen
 kernel/src/fs/inode.rs :: pub (crate) enum InodeOpenError
 kernel/src/fs/inode.rs :: pub (crate) enum InodeType
 kernel/src/fs/inode.rs :: pub (crate) enum LinkTarget
+kernel/src/fs/inode.rs :: pub (crate) enum StorageStep
 kernel/src/fs/inode.rs :: pub (crate) struct FineTimes
 kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
+kernel/src/fs/inode.rs :: pub (crate) trait StorageRead
 kernel/src/fs/inode.rs :: pub (crate) trait StorageWriter
 kernel/src/fs/inode.rs :: pub (super) impl InodeOpenError :: fn from_fifo (error : super :: FifoOpenError) -> Self
 kernel/src/fs/inode.rs :: trait Inode :: fn add_seals (& self , seals : u32) -> Result < u32 , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn allocate_storage (& self , _offset : u64 , _length : u64 , _identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn allows_notifications (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn append_storage (& self , buf : & [u8] , identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < (u64 , usize) , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn begin_storage_read (& self , offset : u64 , length : usize , notify : Arc < dyn crate :: block :: CompletionNotify > ,) -> Result < Option < alloc :: boxed :: Box < dyn StorageRead > > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn change_xattr (& self , mut change : super :: XattrChange < '_ > ,) -> Result < () , super :: FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn check_xattr_write (& self) -> Result < () , super :: FileSystemError >
@@ -2207,6 +2230,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , rem
 kernel/src/fs/inode.rs :: trait Inode :: fn write_access (& self) -> Option < & super :: InodeWriteAccess >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8] , identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn writeback_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait StorageRead :: fn step (& mut self , output : & mut [u8]) -> Result < StorageStep , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode_identity.rs :: pub (super) impl LiveInodes < T , K > :: const fn new () -> Self
 kernel/src/fs/inode_identity.rs :: pub (super) impl LiveInodes < T , K > :: fn admit (& self , number : K , candidate : & Arc < T >) -> Result < Arc < T > , FileSystemError >
@@ -2414,18 +2438,19 @@ kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
 kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str , alloc :: boxed :: Box < dyn FnOnce () + Send > ,) -> Result < () , crate :: memory :: MemoryError >
 kernel/src/fs/mod.rs :: pub (crate) use anonymous :: { anonymous_opened , pipe_opened , socket_opened }
 kernel/src/fs/mod.rs :: pub (crate) use block_node :: BlockNode
+kernel/src/fs/mod.rs :: pub (crate) use crate :: block :: CompletionNotify
 kernel/src/fs/mod.rs :: pub (crate) use devnum :: DeviceNumber
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use fifo :: { FifoAccess , FifoOpenError , open as open_fifo }
 kernel/src/fs/mod.rs :: pub (crate) use file_information :: format_file_information
-kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageWriter , }
+kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageRead , StorageStep , StorageWriter , }
 kernel/src/fs/mod.rs :: pub (crate) use inotify :: { IN_ACCESS , IN_ATTRIB , IN_CLOEXEC , IN_CLOSE_NOWRITE , IN_CLOSE_WRITE , IN_CREATE , IN_DELETE , IN_MODIFY , IN_MOVE_SELF , IN_MOVED_FROM , IN_MOVED_TO , IN_NONBLOCK , IN_OPEN , InitError , Inotify , WatchError , add_watch_flags , filesystem_unmounted , next_cookie , notify_dentry_reclaimed , notify_entry , notify_opened , notify_self , watching , }
 kernel/src/fs/mod.rs :: pub (crate) use inotify :: { InotifyLimit , inotify_watch_limit }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 kernel/src/fs/mod.rs :: pub (crate) use memory_file :: MemoryFile
 kernel/src/fs/mod.rs :: pub (crate) use mount :: { CreatedFileSystem , FileSystemType , MountEnvironment , MountRequest , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , unmount_root_read_only , }
 kernel/src/fs/mod.rs :: pub (crate) use nsfs :: namespace_opened
-kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
+kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { NowaitRead , ReadStep , RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
 kernel/src/fs/mod.rs :: pub (crate) use swap :: { SwapSource , prepare_swap_storage }
@@ -2485,12 +2510,21 @@ kernel/src/fs/page_cache.rs :: pub (crate) fn truncate (inode : Arc < dyn Inode 
 kernel/src/fs/page_cache.rs :: pub (crate) struct CachedWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) struct MemoryInodeWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) struct PageCacheStatistics
+kernel/src/fs/page_cache.rs :: pub (crate) use nowait_read :: { NowaitRead , ReadStep }
 kernel/src/fs/page_cache.rs :: pub (crate) use registry :: { evict_cached , evict_filesystem , statistics , sync_all , writeback_cached }
 kernel/src/fs/page_cache.rs :: pub (crate) use regular_file :: RegularFile
 kernel/src/fs/page_cache.rs :: pub (super) impl CachedPage :: fn reclaimable (& self) -> bool
 kernel/src/fs/page_cache.rs :: pub (super) struct CachedPage
 kernel/src/fs/page_cache.rs :: pub (super) use registry :: evict_if_unlinked
 kernel/src/fs/page_cache.rs :: pub (super) use swap :: prepare_swap_file
+kernel/src/fs/page_cache/nowait_read.rs :: enum ReadStep :: # [doc = " 无法继续不阻塞地读：丢弃本次读，改走阻塞的 `RegularFile::read`。"] Fallback
+kernel/src/fs/page_cache/nowait_read.rs :: enum ReadStep :: # [doc = " 有块读在途；完成通知触发后再次调用 `step`。"] Wait
+kernel/src/fs/page_cache/nowait_read.rs :: enum ReadStep :: Done (super :: regular_file :: RegularFileRead)
+kernel/src/fs/page_cache/nowait_read.rs :: pub (crate) enum ReadStep
+kernel/src/fs/page_cache/nowait_read.rs :: pub (crate) impl NowaitRead :: fn step (& mut self , output : & mut [u8]) -> Result < ReadStep , FileSystemError >
+kernel/src/fs/page_cache/nowait_read.rs :: pub (crate) struct NowaitRead
+kernel/src/fs/page_cache/nowait_read.rs :: pub (super) impl CachedFile :: fn begin_mutation (& self) -> Mutation < '_ >
+kernel/src/fs/page_cache/nowait_read.rs :: pub (super) impl NowaitRead :: fn new (file : Arc < CachedFile > , offset : u64 , length : usize , notify : Arc < dyn CompletionNotify > ,) -> Self
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) CachedPages :: entries : FallibleMap < u64 , Arc < CachedPage > >
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) PreparedReclaim :: reclaimed_pages : usize
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) PreparedReclaim :: scanned_pages : usize
@@ -2509,11 +2543,13 @@ kernel/src/fs/page_cache/registry.rs :: pub (in crate :: fs) fn evict_if_unlinke
 kernel/src/fs/page_cache/registry.rs :: pub (super) fn cached_file (inode : Arc < dyn Inode > ,) -> Result < Option < Arc < CachedFile > > , FileSystemError >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) RegularFileRead :: bytes : usize
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) RegularFileRead :: storage_bytes : usize
+kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn begin_read_nowait (& self , offset : u64 , length : usize , notify : Arc < dyn CompletionNotify > ,) -> Option < NowaitRead >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn begin_write (& self , identity : AccessIdentity ,) -> Result < RegularFileWrite < '_ > , FileSystemError >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn from_inode (inode : Arc < dyn Inode >) -> Result < Self , FileSystemError >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn id (& self) -> Option < SharedFileId >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn read (& self , offset : u64 , output : & mut [u8] ,) -> Result < RegularFileRead , FileSystemError >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn size (& self) -> u64
+kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn supports_nowait (& self) -> bool
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn tracks_access_time (& self) -> bool
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) struct RegularFile
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) struct RegularFileRead
@@ -2521,6 +2557,12 @@ kernel/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite <
 kernel/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn prepare_content_write (& self) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn size (& self) -> u64
 kernel/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) impl StorageEpoch :: const fn new () -> Self
+kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) impl StorageEpoch :: fn begin_mutation (& self) -> Mutation < '_ >
+kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) impl StorageEpoch :: fn is_current (& self , snapshot : u64) -> bool
+kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) impl StorageEpoch :: fn stable (& self) -> Option < u64 >
+kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) struct Mutation < 'a >
+kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) struct StorageEpoch
 kernel/src/fs/page_cache/swap.rs :: pub (in crate :: fs) fn prepare_swap_file (opened : & Arc < OpenedFile > ,) -> Result < PreparedSwapFile , FileSystemError >
 kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn reclaim_under_pressure (& self , request : ReclaimRequest) -> ReclaimResult
 kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
@@ -3603,7 +3645,7 @@ kernel/src/io_uring/mod.rs :: pub (crate) mod abi
 kernel/src/io_uring/mod.rs :: pub (crate) use chain :: { Chain , Link , Member , Members , Step , cancel_rest }
 kernel/src/io_uring/mod.rs :: pub (crate) use ops :: Submitter
 kernel/src/io_uring/mod.rs :: pub (crate) use ring :: { CqWait , Ring , RingError , Unit }
-kernel/src/io_uring/ops.rs :: pub (crate) fn prepare < S : Submitter > (ring : & Ring , sqe : & Sqe , submitter : & S ,) -> Member < S :: Op >
+kernel/src/io_uring/ops.rs :: pub (crate) fn prepare < S : Submitter > (ring : & Ring , sqe : & Sqe , submitter : & S) -> Member < S :: Op >
 kernel/src/io_uring/ops.rs :: pub (crate) trait Submitter
 kernel/src/io_uring/ops.rs :: trait Submitter :: fn launch (& self , ring : & Arc < Ring > , chain : Chain < Self :: Op >)
 kernel/src/io_uring/ops.rs :: trait Submitter :: fn prepare_op (& self , ring : & Ring , sqe : & Sqe) -> Result < Self :: Op , isize >
@@ -6316,7 +6358,7 @@ kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_chroot , s
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
 kernel/src/syscall/fs.rs :: pub (crate) use swap :: { sys_swapoff , sys_swapon }
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) fn position_error (error : crate :: file :: PositionError) -> isize
-kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use io :: { check_readable , check_writable , import_iovecs , perform_read , perform_write , positioned_read , positioned_write , }
+kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use io :: { AsyncPositionedRead , AsyncReadStep , begin_current_position_read , begin_positioned_read , check_readable , check_writable , import_iovecs , perform_read , perform_write , positioned_read , positioned_write , }
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr as filesystem_error
 kernel/src/syscall/fs.rs :: pub (super) fn resolve_stat_target (task : & TaskControlBlock , fd : isize , name : * const u8 , nofollow : bool , empty_path : bool ,) -> Result < (InodeMetadata , u64) , isize >
@@ -6336,16 +6378,33 @@ kernel/src/syscall/fs/io.rs :: pub (crate) use positioned :: { sys_pread64 , sys
 kernel/src/syscall/fs/io.rs :: pub (crate) use sendfile :: { sys_copy_file_range , sys_sendfile }
 kernel/src/syscall/fs/io.rs :: pub (crate) use sequential :: { sys_read , sys_readv , sys_write , sys_writev }
 kernel/src/syscall/fs/io.rs :: pub (in crate :: syscall) fn import_iovecs (task : & TaskControlBlock , iovector : usize , count : usize ,) -> Result < (Vec < UserIoVec > , usize) , isize >
-kernel/src/syscall/fs/io.rs :: pub (in crate :: syscall) use positioned :: { positioned_read , positioned_write }
+kernel/src/syscall/fs/io.rs :: pub (in crate :: syscall) use positioned :: { AsyncPositionedRead , AsyncReadStep , begin_current_position_read , begin_positioned_read , positioned_read , positioned_write , }
 kernel/src/syscall/fs/io.rs :: pub (in crate :: syscall) use sequential :: { check_readable , check_writable , perform_read , perform_write , }
+kernel/src/syscall/fs/io/positioned.rs :: enum AsyncReadStep :: # [doc = " 无法继续不阻塞地读：调用 [`AsyncPositionedRead::finish_blocking`]。"] Fallback
+kernel/src/syscall/fs/io/positioned.rs :: enum AsyncReadStep :: # [doc = " 有块读在途；完成通知触发后再次调用。"] Wait
+kernel/src/syscall/fs/io/positioned.rs :: enum AsyncReadStep :: # [doc = " 读完，值同 [`positioned_read`]。"] Done (isize)
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pread64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwrite64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) enum AsyncReadStep
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn begin_current_position_read (ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] ,) -> Result < Option < AsyncPositionedRead > , isize >
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn begin_positioned_read (ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , offset : i64 ,) -> Result < Option < AsyncPositionedRead > , isize >
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_read (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , offset : i64 ,) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_write (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , offset : i64 , append_override : Option < bool > ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn finish_blocking (mut self , task : & TaskControlBlock , vectors : & [UserIoVec] ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn publish_position (& self , result : isize) -> bool
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn publish_position_blocking (& self , result : isize)
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn step (& mut self , task : & TaskControlBlock , vectors : & [UserIoVec] , notify : & Arc < dyn crate :: fs :: CompletionNotify > ,) -> AsyncReadStep
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) struct AsyncPositionedRead
+kernel/src/syscall/fs/io/regular.rs :: pub (in crate :: syscall) fn read_vectors_from (task : & TaskControlBlock , file : & RegularFile , position : & mut u64 , vectors : & [UserIoVec] , mut progress : ReadProgress ,) -> isize
+kernel/src/syscall/fs/io/regular.rs :: pub (in crate :: syscall) impl ReadProgress :: fn deliver (& mut self , task : & TaskControlBlock , vectors : & [UserIoVec] , position : & mut u64 , chunk : & [u8] , bytes : usize , count : usize ,) -> Option < isize >
+kernel/src/syscall/fs/io/regular.rs :: pub (in crate :: syscall) impl ReadProgress :: fn failed (& self , error : crate :: fs :: FileSystemError) -> isize
+kernel/src/syscall/fs/io/regular.rs :: pub (in crate :: syscall) impl ReadProgress :: fn next_count (& mut self , vectors : & [UserIoVec]) -> Option < usize >
+kernel/src/syscall/fs/io/regular.rs :: pub (in crate :: syscall) impl ReadProgress :: fn total (& self) -> isize
+kernel/src/syscall/fs/io/regular.rs :: pub (in crate :: syscall) struct ReadProgress
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn read_vectors (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & RegularFile , position : & mut u64 , vectors : & [UserIoVec] ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn write_vectors (task : & TaskControlBlock , file : & RegularFileWrite < '_ > , position : & mut u64 , vectors : & [UserIoVec] , append : bool , staging : & mut UserInputStaging < '_ > ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) impl PreparedRegularWriteStaging :: fn as_input_staging (& mut self) -> UserInputStaging < '_ >
@@ -6421,7 +6480,9 @@ kernel/src/syscall/io_uring/exec.rs :: enum Op :: Poll { fd : Option < usize > ,
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: ReadWrite { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , vectored : bool , # [doc = " `sqe->off`：`-1` 使用并推进当前 position，其他负值非法。"] offset : i64 , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Timeout { nanoseconds : u64 , absolute : bool , # [doc = " 非零：除 timeout 外又发布这么多 CQE 时完成。"] count : u32 , etime_success : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " pipe/socket/eventfd 等流式读写：`EAGAIN` 时等目标 OFD 就绪再试。"] Stream { ofd : Arc < OpenFileDescription > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " 经 socket 发送并强制 `MSG_NOSIGNAL`（`IORING_OP_SEND`）。"] no_signal : bool , # [doc = " 会阻塞时返回 `-EAGAIN` 而不是等待（`MSG_DONTWAIT`）。"] dontwait : bool , }
-kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 一次性 poll：目标 OFD 出现 `mask` 中任一事件时以 revents 完成。"] Poll { ofd : Arc < OpenFileDescription > , mask : i16 }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " regular-file 读（显式偏移或当前位置）：cache 未命中时开始异步填页并让出，不占用任何线程。"] FileRead { read : AsyncPositionedRead , vectors : Vec < UserIoVec > , total : usize , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 一次性 poll：目标 OFD 出现 `mask` 中任一事件时以 revents 完成。"] Poll { ofd : Arc < OpenFileDescription > , mask : i16 , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。"] Lane { work : lane :: Work , # [doc = " 读写作业传输量不等于请求量即失败；fsync 为 `None`。"] total : Option < usize > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 握手已发起：等 socket 可写或出错，再读连接结果。"] Connect { ofd : Arc < OpenFileDescription > }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 绝对 monotonic deadline，或“除 timeout 外又发布 N 个 CQE”（`target_events`）。"] Timeout { deadline : u64 , target_events : Option < u32 > , etime_success : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: Accept { ofd : Arc < OpenFileDescription > , flags : usize , address : usize , length : usize , }
@@ -6436,16 +6497,22 @@ kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn canceled (
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn of (res : isize) -> Self
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Wait :: fn kind (& self) -> Kind
 kernel/src/syscall/io_uring/exec.rs :: pub (super) struct Outcome
+kernel/src/syscall/io_uring/lane.rs :: pub (super) fn start () -> Result < () , () >
+kernel/src/syscall/io_uring/lane.rs :: pub (super) fn submit (work : Work , task : Weak < TaskControlBlock > , notify : Arc < dyn CompletionNotify > ,) -> Result < Arc < Ticket > , () >
+kernel/src/syscall/io_uring/lane.rs :: pub (super) impl Ticket :: fn take (& self) -> Option < isize >
+kernel/src/syscall/io_uring/lane.rs :: pub (super) struct Ticket
+kernel/src/syscall/io_uring/lane.rs :: pub (super) type Work  = Box < dyn FnOnce (& TaskControlBlock) -> isize + Send >
+kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn start_worker () -> Result < () , () >
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_enter (fd : usize , to_submit : u32 , min_complete : u32 , flags : u32 , argp : usize , argsz : usize ,) -> isize
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_register (fd : usize , opcode : u32 , arg : usize , nr_args : u32) -> isize
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_setup (entries : u32 , params : usize) -> isize
-kernel/src/syscall/io_uring/mod.rs :: pub (crate) use worker :: start as start_worker
 kernel/src/syscall/io_uring/ops.rs :: pub (super) TaskSubmitter :: task : Arc < TaskControlBlock >
 kernel/src/syscall/io_uring/ops.rs :: pub (super) struct TaskSubmitter
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " deadline 到期，或 ring 上又发布了 `target` 个事件。"] Timer { deadline : u64 , target_events : Option < u32 > , ring : Arc < Ring > , }
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 刚创建，提交者正在首次 poll 它：worker 不得抢先 poll。"] Starting
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 正在被 poll，没有等待条件。"] None
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 目标 OFD 出现 `mask` 中的事件；`task` 用于以提交线程的上下文判定就绪。"] Ofd { ofd : Arc < OpenFileDescription > , mask : i16 , task : Weak < TaskControlBlock > , }
+kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 等块层或阻塞车道的完成通知（[`Waiter::notifier`]）。"] Block
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 等待链被接纳（DRAIN 顺序）：序号为 `sequence` 的链可以开始。"] Admission { ring : Arc < Ring > , sequence : u64 }
 kernel/src/syscall/io_uring/wait.rs :: enum Kind :: Io
 kernel/src/syscall/io_uring/wait.rs :: enum Kind :: Poll
@@ -6463,9 +6530,12 @@ kernel/src/syscall/io_uring/wait.rs :: pub (super) fn event_count_reached (ring 
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn admission (& self , sequence : u64) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn attention (& self) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn begin (& self , user_data : u64 , kind : Kind)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn block (& self) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn cancel (& self , target : & Target) -> bool
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn clear_notified (& self)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn end (& self)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn new (ring : & Arc < Ring >) -> Result < Self , () >
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn notifier (& self) -> Arc < dyn CompletionNotify >
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn ofd_ready (& self , ofd : & Arc < OpenFileDescription > , mask : i16 , task : & Weak < TaskControlBlock > ,) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn ring (& self) -> & Arc < Ring >
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn take_canceled (& self) -> bool
@@ -6476,6 +6546,7 @@ kernel/src/syscall/io_uring/wait.rs :: pub (super) struct Waiter
 kernel/src/syscall/io_uring/worker.rs :: pub (crate) fn start () -> Result < () , () >
 kernel/src/syscall/io_uring/worker.rs :: pub (super) fn cancel (ring : & Arc < Ring > , target : & Target , all : bool) -> i32
 kernel/src/syscall/io_uring/worker.rs :: pub (super) fn spawn < F > (waiter : Waiter , build : impl FnOnce () -> F) -> Result < () , () > where F : Future < Output = () > + Send + 'static ,
+kernel/src/syscall/io_uring/worker.rs :: pub (super) fn wake ()
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/ipc.rs :: pub (super) fn ipc_error (error : IpcError) -> isize
 kernel/src/syscall/ipc.rs :: pub (super) fn sys_msgctl (id : i32 , command : i32 , address : usize) -> isize
@@ -8504,6 +8575,10 @@ kernel/src/virtio/binding.rs :: pub (crate) fn bind_platform_devices ()
 kernel/src/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/virtio/blk.rs :: pub (crate) struct VirtIOBlockDevice
+kernel/src/virtio/blk/policy.rs :: enum AbandonAction :: Detach
+kernel/src/virtio/blk/policy.rs :: enum AbandonAction :: ReleaseNow
+kernel/src/virtio/blk/policy.rs :: enum CompletionAction :: Publish
+kernel/src/virtio/blk/policy.rs :: enum CompletionAction :: ReleaseSlot
 kernel/src/virtio/blk/policy.rs :: enum CompletionStatus :: DeviceError
 kernel/src/virtio/blk/policy.rs :: enum CompletionStatus :: IoError
 kernel/src/virtio/blk/policy.rs :: enum CompletionStatus :: Ok
@@ -8511,6 +8586,10 @@ kernel/src/virtio/blk/policy.rs :: enum RequestOperation :: Flush
 kernel/src/virtio/blk/policy.rs :: enum RequestOperation :: Read
 kernel/src/virtio/blk/policy.rs :: enum RequestOperation :: Write
 kernel/src/virtio/blk/policy.rs :: pub (super) const fn completion_length_is_valid (operation : RequestOperation , used_length : u32 ,) -> bool
+kernel/src/virtio/blk/policy.rs :: pub (super) const fn on_abandon (result_published : bool) -> AbandonAction
+kernel/src/virtio/blk/policy.rs :: pub (super) const fn on_completion (detached : bool) -> CompletionAction
+kernel/src/virtio/blk/policy.rs :: pub (super) enum AbandonAction
+kernel/src/virtio/blk/policy.rs :: pub (super) enum CompletionAction
 kernel/src/virtio/blk/policy.rs :: pub (super) enum CompletionStatus
 kernel/src/virtio/blk/policy.rs :: pub (super) enum RequestOperation
 kernel/src/virtio/blk/policy.rs :: pub (super) fn decode_status (status : u8) -> CompletionStatus
