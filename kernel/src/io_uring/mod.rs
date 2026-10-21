@@ -32,14 +32,16 @@ pub(crate) enum SetupFailure {
 ///
 /// # Errors
 ///
-/// 参数非法返回 `Invalid`；分配失败返回 `OutOfMemory`，不留下部分状态。
+/// 参数非法返回 `Invalid`；分配失败或超出 `owner`（真实 UID 所在 UserNS 与 UID）的 ring 内存预算
+/// 返回 `OutOfMemory`，不留下部分状态。
 pub(crate) fn create(
     entries: u32,
     params: &[u8; PARAMS_BYTES],
+    owner: (Arc<crate::namespace::UserNamespace>, u32),
 ) -> Result<(Arc<Ring>, [u8; PARAMS_BYTES]), SetupFailure> {
     let params = SetupParams::decode(params).map_err(|_| SetupFailure::Invalid)?;
     let geometry = Geometry::new(entries, params).map_err(|_| SetupFailure::Invalid)?;
-    let ring = Ring::try_new(geometry).map_err(|_| SetupFailure::OutOfMemory)?;
+    let ring = Ring::try_new(geometry, owner).map_err(|_| SetupFailure::OutOfMemory)?;
     Ok((ring, geometry.encode_params(params.flags)))
 }
 

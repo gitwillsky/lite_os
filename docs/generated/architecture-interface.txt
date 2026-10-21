@@ -3552,7 +3552,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_IO_DRAIN : u8 = 1 << 1
 kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_IO_HARDLINK : u8 = 1 << 3
 kernel/src/io_uring/abi.rs :: pub (crate) const IOSQE_IO_LINK : u8 = 1 << 2
 kernel/src/io_uring/abi.rs :: pub (crate) const MAX_CQ_ENTRIES : u32 = 2 * MAX_ENTRIES
-kernel/src/io_uring/abi.rs :: pub (crate) const MAX_ENTRIES : u32 = 4096
+kernel/src/io_uring/abi.rs :: pub (crate) const MAX_ENTRIES : u32 = 32768
 kernel/src/io_uring/abi.rs :: pub (crate) const NOP_INJECT_RESULT : u32 = 1 << 0
 kernel/src/io_uring/abi.rs :: pub (crate) const OFF_CQ_RING : u64 = 0x800_0000
 kernel/src/io_uring/abi.rs :: pub (crate) const OFF_SQES : u64 = 0x1000_0000
@@ -3614,6 +3614,7 @@ kernel/src/io_uring/chain.rs :: enum Step :: # [doc = " init/prep 失败：以�
 kernel/src/io_uring/chain.rs :: enum Step :: Nop (Nop)
 kernel/src/io_uring/chain.rs :: enum Step :: Op (Op)
 kernel/src/io_uring/chain.rs :: pub (crate) Member :: link : Link
+kernel/src/io_uring/chain.rs :: pub (crate) Member :: opcode : u8
 kernel/src/io_uring/chain.rs :: pub (crate) Member :: skip_success : bool
 kernel/src/io_uring/chain.rs :: pub (crate) Member :: step : Step < Op >
 kernel/src/io_uring/chain.rs :: pub (crate) Member :: user_data : u64
@@ -3636,12 +3637,12 @@ kernel/src/io_uring/chain.rs :: pub (super) Member :: drain : bool
 kernel/src/io_uring/chain.rs :: pub (super) Nop :: file : Option < (i32 , bool) >
 kernel/src/io_uring/chain.rs :: pub (super) Nop :: fixed_buffer : bool
 kernel/src/io_uring/chain.rs :: pub (super) Nop :: result : i32
-kernel/src/io_uring/chain.rs :: pub (super) impl Member < Op > :: fn new (user_data : u64 , skip_success : bool , link : Link , drain : bool , step : Step < Op > ,) -> Self
+kernel/src/io_uring/chain.rs :: pub (super) impl Member < Op > :: fn new (user_data : u64 , opcode : u8 , skip_success : bool , link : Link , drain : bool , step : Step < Op > ,) -> Self
 kernel/src/io_uring/mod.rs :: enum SetupFailure :: Invalid
 kernel/src/io_uring/mod.rs :: enum SetupFailure :: OutOfMemory
 kernel/src/io_uring/mod.rs :: pub (crate) const ANONYMOUS_NAME : & [u8] = b"anon_inode:[io_uring]"
 kernel/src/io_uring/mod.rs :: pub (crate) enum SetupFailure
-kernel/src/io_uring/mod.rs :: pub (crate) fn create (entries : u32 , params : & [u8 ; PARAMS_BYTES] ,) -> Result < (Arc < Ring > , [u8 ; PARAMS_BYTES]) , SetupFailure >
+kernel/src/io_uring/mod.rs :: pub (crate) fn create (entries : u32 , params : & [u8 ; PARAMS_BYTES] , owner : (Arc < crate :: namespace :: UserNamespace > , u32) ,) -> Result < (Arc < Ring > , [u8 ; PARAMS_BYTES]) , SetupFailure >
 kernel/src/io_uring/mod.rs :: pub (crate) fn ring_arc_of (file : & Arc < dyn crate :: fs :: chardev :: DeviceFile >) -> Option < Arc < Ring > >
 kernel/src/io_uring/mod.rs :: pub (crate) fn submit < S : Submitter > (ring : & Arc < Ring > , to_submit : u32 , submitter : & S ,) -> Result < u32 , RingError >
 kernel/src/io_uring/mod.rs :: pub (crate) mod abi
@@ -3685,7 +3686,7 @@ kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn sq_has_space (& self)
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn sq_pending (& self) -> u32
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn submit (& self , to_submit : u32 , mut execute : impl FnMut (Sqe) -> Flow ,) -> Result < u32 , RingError >
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn take_dropped (& self) -> bool
-kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn try_new (geometry : Geometry) -> Result < Arc < Self > , RingError >
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn try_new (geometry : Geometry , owner : (Arc < crate :: namespace :: UserNamespace > , u32) ,) -> Result < Arc < Self > , RingError >
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn wait_for (& self , minimum : u32 , deadline : Option < u64 >) -> CqWait
 kernel/src/io_uring/ring.rs :: pub (crate) impl Unit :: fn sequence (& self) -> u64
 kernel/src/io_uring/ring.rs :: pub (crate) struct Ring
@@ -4880,7 +4881,7 @@ kernel/src/namespace/mod.rs :: pub (crate) use pid :: { PidAllocationError , Pid
 kernel/src/namespace/mod.rs :: pub (crate) use pid_identity :: { PidIdentity , PidLinkSlot , PidRegistration , PreparedPid , RetiredPidRegistrations , }
 kernel/src/namespace/mod.rs :: pub (crate) use quota :: { UserResource , UserResourceCharge , initial_namespace_limit , set_initial_inotify_limit , }
 kernel/src/namespace/mod.rs :: pub (crate) use reference :: { NamespaceOwner , NamespaceReference , NamespaceSelector , NamespaceType }
-kernel/src/namespace/mod.rs :: pub (crate) use rlimit_counts :: { NamespaceRlimits , RlimitCharge , RlimitResource }
+kernel/src/namespace/mod.rs :: pub (crate) use rlimit_counts :: { IO_URING_BYTES_PER_UID , NamespaceRlimits , RlimitCharge , RlimitResource , }
 kernel/src/namespace/mod.rs :: pub (crate) use time :: { TimeClock , TimeNamespace , TimeOffset , TimeOffsetError , TimeOffsets }
 kernel/src/namespace/mod.rs :: pub (crate) use user :: { NamespaceAuthority , UserNamespace , UserNamespaceMap }
 kernel/src/namespace/mod.rs :: pub (crate) use uts :: UtsNamespace
@@ -4992,10 +4993,12 @@ kernel/src/namespace/reference.rs :: trait NamespaceOwner :: fn id (& self) -> u
 kernel/src/namespace/reference.rs :: trait NamespaceOwner :: fn kind (& self) -> NamespaceType
 kernel/src/namespace/reference.rs :: trait NamespaceOwner :: fn owning_user (& self) -> Option < Arc < UserNamespace > >
 kernel/src/namespace/reference.rs :: trait NamespaceOwner :: fn parent_reference (& self) -> Result < Option < NamespaceReference > , super :: NamespaceError >
+kernel/src/namespace/rlimit_counts.rs :: enum RlimitResource :: # [doc = " io_uring ring 页占用的字节数（SQE 数组与 ring 区域，按页取整）。"] IoUringBytes
 kernel/src/namespace/rlimit_counts.rs :: enum RlimitResource :: LockedMemory
 kernel/src/namespace/rlimit_counts.rs :: enum RlimitResource :: PendingSignals
 kernel/src/namespace/rlimit_counts.rs :: pub (crate) NamespaceRlimits :: locked_memory : u64
 kernel/src/namespace/rlimit_counts.rs :: pub (crate) NamespaceRlimits :: pending_signals : u64
+kernel/src/namespace/rlimit_counts.rs :: pub (crate) const IO_URING_BYTES_PER_UID : u64 = 64 << 20
 kernel/src/namespace/rlimit_counts.rs :: pub (crate) enum RlimitResource
 kernel/src/namespace/rlimit_counts.rs :: pub (crate) impl RlimitCharge :: fn acquire (namespace : Arc < UserNamespace > , uid : u32 , resource : RlimitResource , amount : u64 , limit : u64 , exempt : bool ,) -> Result < Self , NamespaceError >
 kernel/src/namespace/rlimit_counts.rs :: pub (crate) struct NamespaceRlimits
@@ -6398,6 +6401,7 @@ kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn begin_pos
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_read (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , offset : i64 ,) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) fn positioned_write (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , offset : i64 , append_override : Option < bool > ,) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn finish_blocking (mut self , task : & TaskControlBlock , vectors : & [UserIoVec] ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn ofd (& self) -> & Arc < OpenFileDescription >
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn publish_position (& self , result : isize) -> bool
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn publish_position_blocking (& self , result : isize)
 kernel/src/syscall/fs/io/positioned.rs :: pub (in crate :: syscall) impl AsyncPositionedRead :: fn step (& mut self , task : & TaskControlBlock , vectors : & [UserIoVec] , notify : & Arc < dyn crate :: fs :: CompletionNotify > ,) -> AsyncReadStep
@@ -6476,7 +6480,7 @@ kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Wait (Wait)
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员。前一个成员需要等待时由链执行者摘下它装成定时器"] # [doc = " （[`Op::link_deadline`]）；走到 issue 说明前一个成员已经同步完成，定时器没有对象，以 `-ECANCELED` 结束。"] LinkTimeout { nanoseconds : u64 , absolute : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_SEND`/`IORING_OP_RECV`：只对 socket，`MSG_NOSIGNAL` 恒开（SIGPIPE 不发给提交线程）。"] Socket { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " `MSG_DONTWAIT`：会阻塞时直接返回 `-EAGAIN`。"] dontwait : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Accept { fd : Option < usize > , address : usize , length : usize , flags : usize , }
-kernel/src/syscall/io_uring/exec.rs :: enum Op :: Cancel { target : Target , # [doc = " `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。"] all : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: Cancel { target : Target , # [doc = " `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。"] all : bool , # [doc = " `IORING_ASYNC_CANCEL_FD`：按这个 fd 所指的 OFD 匹配；外层 `Some` 表示给了 FD 条件，内层 `None` 是无效 fd（fixed 或负数）。"] by_fd : Option < Option < usize > > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Close { fd : Option < usize > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Connect { fd : Option < usize > , address : usize , length : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Fsync { fd : Option < usize > , }
@@ -6487,7 +6491,7 @@ kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " Unix 目标 backl
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " pipe/socket/eventfd 等流式读写：`EAGAIN` 时等目标 OFD 就绪再试。"] Stream { ofd : Arc < OpenFileDescription > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " 经 socket 发送并强制 `MSG_NOSIGNAL`（`IORING_OP_SEND`）。"] no_signal : bool , # [doc = " 会阻塞时返回 `-EAGAIN` 而不是等待（`MSG_DONTWAIT`）。"] dontwait : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " regular-file 读（显式偏移或当前位置）：cache 未命中时开始异步填页并让出，不占用任何线程。"] FileRead { read : AsyncPositionedRead , vectors : Vec < UserIoVec > , total : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 一次性 poll：目标 OFD 出现 `mask` 中任一事件时以 revents 完成。"] Poll { ofd : Arc < OpenFileDescription > , mask : i16 , }
-kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。"] Lane { work : lane :: Work , # [doc = " 读写作业传输量不等于请求量即失败；fsync 为 `None`。"] total : Option < usize > , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。"] Lane { work : lane :: Work , # [doc = " 作业操作的 OFD，仅供按 fd 取消匹配；作业本身已捕获它。"] file : Arc < OpenFileDescription > , # [doc = " 读写作业传输量不等于请求量即失败；fsync 为 `None`。"] total : Option < usize > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 握手已发起：等 socket 可写或出错，再读连接结果。"] Connect { ofd : Arc < OpenFileDescription > }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 绝对 monotonic deadline，或“除 timeout 外又发布 N 个 CQE”（`target_events`）。"] Timeout { deadline : u64 , target_events : Option < u32 > , etime_success : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: Accept { ofd : Arc < OpenFileDescription > , flags : usize , address : usize , length : usize , }
@@ -6501,6 +6505,7 @@ kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Op :: fn issue (self , t
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Op :: fn link_deadline (& self , now : u64) -> Option < u64 >
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn canceled () -> Self
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn of (res : isize) -> Self
+kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Wait :: fn file (& self) -> Option < Arc < OpenFileDescription > >
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Wait :: fn kind (& self) -> Kind
 kernel/src/syscall/io_uring/exec.rs :: pub (super) struct Outcome
 kernel/src/syscall/io_uring/lane.rs :: pub (super) fn start () -> Result < () , () >
@@ -6528,6 +6533,7 @@ kernel/src/syscall/io_uring/wait.rs :: enum Only :: Any
 kernel/src/syscall/io_uring/wait.rs :: enum Only :: Poll
 kernel/src/syscall/io_uring/wait.rs :: enum Only :: Timeout
 kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " `IORING_ASYNC_CANCEL_ANY`：匹配该 ring 的任意请求。"] Any
+kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " `IORING_ASYNC_CANCEL_FD`/`_OP`（可与 `_USERDATA` 组合）：给出的条件必须全部满足（Linux `io_cancel_req_match`）。"] # [doc = " `file` 在 issue 时才由 fd 解析成 OFD（链里前面的成员可能改变 fd 表）。"] Match { user_data : Option < u64 > , opcode : Option < u8 > , file : Option < Arc < OpenFileDescription > > , }
 kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " 匹配 user_data，并限定请求种类（`POLL_REMOVE`/`TIMEOUT_REMOVE` 只能取消各自种类）。"] UserData (u64 , Only)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Interest
 kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Kind
@@ -6537,7 +6543,7 @@ kernel/src/syscall/io_uring/wait.rs :: pub (super) fn event_count_reached (ring 
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn admission (& self , sequence : u64) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn arm_link_timeout (& self , deadline : u64)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn attention (& self) -> bool
-kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn begin (& self , user_data : u64 , kind : Kind)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn begin (& self , user_data : u64 , kind : Kind , opcode : u8 , file : Option < Arc < OpenFileDescription > > ,)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn block (& self) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn cancel (& self , target : & Target) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn capacity (& self , capacity : & Arc < SocketCapacityWait >) -> Suspend

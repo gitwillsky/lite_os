@@ -1,7 +1,9 @@
 //! Linux namespace identities；任务 membership、namespace 内容与权限只各有一个 owner。
 mod id_map;
 mod rlimit_counts;
-pub(crate) use rlimit_counts::{NamespaceRlimits, RlimitCharge, RlimitResource};
+pub(crate) use rlimit_counts::{
+    IO_URING_BYTES_PER_UID, NamespaceRlimits, RlimitCharge, RlimitResource,
+};
 mod pid;
 mod pid_identity;
 pub(crate) use pid::{PidAllocationError, PidExitWake, PidKey, PidNamespace, PidReservation};

@@ -39,19 +39,42 @@ pub(super) enum Target {
     UserData(u64, Only),
     /// `IORING_ASYNC_CANCEL_ANY`：匹配该 ring 的任意请求。
     Any,
+    /// `IORING_ASYNC_CANCEL_FD`/`_OP`（可与 `_USERDATA` 组合）：给出的条件必须全部满足（Linux `io_cancel_req_match`）。
+    /// `file` 在 issue 时才由 fd 解析成 OFD（链里前面的成员可能改变 fd 表）。
+    Match {
+        user_data: Option<u64>,
+        opcode: Option<u8>,
+        file: Option<Arc<OpenFileDescription>>,
+    },
 }
 
 /// 链中正在等待的成员。
 struct Running {
     user_data: u64,
     kind: Kind,
+    opcode: u8,
+    /// 成员操作的 OFD（没有 fd 的成员如 timeout 为 `None`）；按 fd 取消时按同一个 OFD 匹配。
+    file: Option<Arc<OpenFileDescription>>,
 }
 
 impl Running {
     fn matches(&self, target: &Target) -> bool {
-        match *target {
+        match target {
             Target::Any => true,
-            Target::UserData(user_data, only) => {
+            Target::Match {
+                user_data,
+                opcode,
+                file,
+            } => {
+                user_data.is_none_or(|expected| self.user_data == expected)
+                    && opcode.is_none_or(|expected| self.opcode == expected)
+                    && file.as_ref().is_none_or(|expected| {
+                        self.file
+                            .as_ref()
+                            .is_some_and(|running| Arc::ptr_eq(running, expected))
+                    })
+            }
+            &Target::UserData(user_data, only) => {
                 self.user_data == user_data
                     && matches!(
                         (only, self.kind),
@@ -241,9 +264,20 @@ impl Waiter {
     }
 
     /// 一个会等待的成员开始运行；清除上一个成员遗留的取消标记。
-    pub(super) fn begin(&self, user_data: u64, kind: Kind) {
+    pub(super) fn begin(
+        &self,
+        user_data: u64,
+        kind: Kind,
+        opcode: u8,
+        file: Option<Arc<OpenFileDescription>>,
+    ) {
         let mut state = self.0.state.lock();
-        state.running = Some(Running { user_data, kind });
+        state.running = Some(Running {
+            user_data,
+            kind,
+            opcode,
+            file,
+        });
         state.canceled = false;
     }
 

@@ -57,6 +57,7 @@ pub(crate) fn prepare<S: Submitter>(ring: &Ring, sqe: &Sqe, submitter: &S) -> Me
     };
     Member::new(
         sqe.user_data,
+        sqe.opcode,
         sqe.flags & IOSQE_CQE_SKIP_SUCCESS != 0,
         link,
         sqe.flags & IOSQE_IO_DRAIN != 0,

@@ -52,7 +52,8 @@ pub(crate) fn sys_io_uring_setup(entries: u32, params: usize) -> isize {
         Ok(prepared) => prepared,
         Err(_) => return -errno::ENOMEM,
     };
-    let (ring, output) = match crate::io_uring::create(entries, &input) {
+    let (ring, output) = match crate::io_uring::create(entries, &input, task.user_resource_owner())
+    {
         Ok(created) => created,
         Err(SetupFailure::Invalid) => return -errno::EINVAL,
         Err(SetupFailure::OutOfMemory) => return -errno::ENOMEM,

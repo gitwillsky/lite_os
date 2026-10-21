@@ -58,6 +58,8 @@ struct CqState {
 
 /// 一个 io_uring 实例的全部内核状态；同时是 ring fd 的 `DeviceFile` backend。
 pub(crate) struct Ring {
+    // OWNER: ring 页占用的每 UID 配额，随 `Ring` 释放时归还；缺失时同一用户创建多个 ring 可耗尽物理内存。
+    _quota: crate::namespace::RlimitCharge,
     geometry: Geometry,
     ring: Arc<DeviceBacking>,
     sqes: Arc<DeviceBacking>,
@@ -142,11 +144,28 @@ impl Ring {
     /// # Errors
     ///
     /// 任一分配失败返回 `OutOfMemory`，不留下部分状态。
-    pub(crate) fn try_new(geometry: Geometry) -> Result<Arc<Self>, RingError> {
+    pub(crate) fn try_new(
+        geometry: Geometry,
+        owner: (Arc<crate::namespace::UserNamespace>, u32),
+    ) -> Result<Arc<Self>, RingError> {
+        // 先收费再分配页：超出预算时不触碰物理内存。收费随 `Ring` 存活；mmap 保活实际 OFD（进而保活 `Ring`），
+        // 所以只要还有映射，配额就不会归还。
+        let pages = |bytes: usize| bytes.div_ceil(PAGE_SIZE).max(1);
+        let charged = (pages(geometry.ring_bytes) + pages(geometry.sqes_bytes)) * PAGE_SIZE;
+        let quota = crate::namespace::RlimitCharge::acquire(
+            owner.0,
+            owner.1,
+            crate::namespace::RlimitResource::IoUringBytes,
+            charged as u64,
+            crate::namespace::IO_URING_BYTES_PER_UID,
+            false,
+        )
+        .map_err(|_| RingError::OutOfMemory)?;
         let ring = allocate_zeroed(geometry.ring_bytes)?;
         let sqes = allocate_zeroed(geometry.sqes_bytes)?;
         let readiness = Pipe::notification_pair().map_err(|()| RingError::OutOfMemory)?;
         let this = Arc::try_new(Self {
+            _quota: quota,
             geometry,
             ring,
             sqes,

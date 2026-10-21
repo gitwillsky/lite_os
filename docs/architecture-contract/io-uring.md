@@ -69,6 +69,7 @@
   提交者与车道线程各持一个引用，车道在引用计数为 1（提交者已丢弃票据）时跳过尚未开始的作业。缺失时可能睡眠的作业只能在 reactor 上执行。
 - `WaiterInner::notified`（`AtomicBool`）：见上，块读与车道作业完成时在 deferred 上下文里无锁置位。
 - 车道作业以提交线程的 `Weak<TaskControlBlock>` 执行；文件表查找使用执行体自己预置的 waiter（见上），内核线程因此可以访问被代表任务的 fd 表。
+- `Ring::_quota`（`RlimitCharge`）：ring 页占用的每 UID 配额，沿 UserNS 祖先链收费，`Ring` 释放时归还；mmap 保活实际 OFD，所以有映射时不归还。缺失时同一用户创建多个 ring 可耗尽物理内存。
 - `Ring::closed`（`AtomicBool`）：ring fd 最后一个引用已释放。缺失时关闭 ring 不会取消挂起请求。
 - `Ring::generation`（`AtomicU64`）：epoll edge 判定，取 `next_readiness_generation` 的最大值；缺失时 ET epoll 会漏报。
 - `DeviceBacking::atomic_u32` 的 unsafe：偏移 4 字节对齐且在同一页内，frame 由 backing 持有，引用生命周期受 `&self` 约束。

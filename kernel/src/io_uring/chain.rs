@@ -60,6 +60,8 @@ pub(crate) enum Step<Op> {
 /// 链中的一个已 prep 的 SQE。
 pub(crate) struct Member<Op> {
     pub(crate) user_data: u64,
+    /// SQE 的 opcode：按 opcode 取消（`IORING_ASYNC_CANCEL_OP`）匹配它；缺失时只能按 user_data 取消。
+    pub(crate) opcode: u8,
     pub(crate) skip_success: bool,
     pub(crate) link: Link,
     pub(super) drain: bool,
@@ -69,6 +71,7 @@ pub(crate) struct Member<Op> {
 impl<Op> Member<Op> {
     pub(super) fn new(
         user_data: u64,
+        opcode: u8,
         skip_success: bool,
         link: Link,
         drain: bool,
@@ -76,6 +79,7 @@ impl<Op> Member<Op> {
     ) -> Self {
         Self {
             user_data,
+            opcode,
             skip_success,
             link,
             drain,

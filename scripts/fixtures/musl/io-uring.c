@@ -909,10 +909,10 @@ int verify_io_uring_events(void)
 	}
 	CHECK(54, canceled == 3 && count == 3);
 
-	/* ASYNC_CANCEL 的 prep：按 fd / opcode 匹配尚未实现。 */
+	/* ASYNC_CANCEL 的 prep：按 fd 匹配时 fd 在 issue 时解析，无效 fd 是 -EBADF；未知 flags 是 -EINVAL。 */
 	sqe = next_sqe(&ring);
 	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 0, IORING_ASYNC_CANCEL_FD, 65);
-	CHECK(55, submit_one(&ring) == 1 && reap(&ring, &cqe) == 1 && cqe.res == -EOPNOTSUPP);
+	CHECK(55, submit_one(&ring) == 1 && reap(&ring, &cqe) == 1 && cqe.res == -EBADF);
 	sqe = next_sqe(&ring);
 	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 0, 0x80, 66);
 	CHECK(56, submit_one(&ring) == 1 && reap(&ring, &cqe) == 1 && cqe.res == -EINVAL);
@@ -1286,6 +1286,191 @@ int verify_io_uring_sockets(void)
 	return 0;
 }
 
+/* 取 n 个 CQE，不要求顺序；返回 user_data 对应的 res（缺失返回 INT32_MIN）。 */
+static int cqe_result(const struct io_uring_cqe *cqes, unsigned count, uint64_t user_data)
+{
+	for (unsigned i = 0; i < count; i++)
+		if (cqes[i].user_data == user_data) return cqes[i].res;
+	return INT32_MIN;
+}
+
+static int collect_cqes(struct ring *ring, struct io_uring_cqe *out, unsigned count)
+{
+	for (unsigned i = 0; i < count; i++)
+		if (wait_cqe(ring, &out[i]) != 1) return 0;
+	return 1;
+}
+
+/* ---- ring 大小上限：与 Linux 相同的 32768 / 65536 --------------------------------------------- */
+
+int verify_io_uring_size_limits(void)
+{
+	struct io_uring_params params;
+	memset(&params, 0, sizeof params);
+	long largest = uring_setup(32768, &params);
+	CHECK(1, largest >= 0 && params.sq_entries == 32768 && params.cq_entries == 65536);
+	close((int)largest);
+	memset(&params, 0, sizeof params);
+	CHECK(2, uring_setup(32769, &params) < 0 && errno == EINVAL);
+	memset(&params, 0, sizeof params);
+	params.flags = IORING_SETUP_CLAMP;
+	long clamped = uring_setup(1u << 20, &params);
+	CHECK(3, clamped >= 0 && params.sq_entries == 32768);
+	close((int)clamped);
+	/* 最大 ring 约 3.2 MB：每 UID 的预算只容得下有限个，超出得到 ENOMEM（不是 EINVAL）。 */
+	enum { MAX_BIG = 64 };
+	static int fds[MAX_BIG];
+	int count = 0;
+	for (;;) {
+		CHECK(4, count < MAX_BIG);
+		memset(&params, 0, sizeof params);
+		long fd = uring_setup(32768, &params);
+		if (fd < 0) {
+			CHECK(5, errno == ENOMEM);
+			break;
+		}
+		fds[count++] = (int)fd;
+	}
+	CHECK(6, count >= 10 && count <= 25);
+	for (int i = 0; i < count; i++) close(fds[i]);
+	memset(&params, 0, sizeof params);
+	long fresh = uring_setup(32768, &params);
+	CHECK(7, fresh >= 0);
+	close((int)fresh);
+	return 0;
+}
+
+/* ---- ring 内存配额：每个真实 UID 有固定预算，超出得到 -ENOMEM ------------------------------------ */
+
+int verify_io_uring_quota(void)
+{
+	enum { MAX_RINGS = 400 };
+	static int fds[MAX_RINGS];
+	int count = 0;
+	/* 4096 条目的 ring 约 400 KiB：不断创建直到预算耗尽。 */
+	for (;;) {
+		CHECK(1, count < MAX_RINGS);
+		struct io_uring_params params;
+		memset(&params, 0, sizeof params);
+		long fd = uring_setup(4096, &params);
+		if (fd < 0) {
+			CHECK(2, errno == ENOMEM);
+			break;
+		}
+		fds[count++] = (int)fd;
+	}
+	CHECK(3, count >= 20);
+
+	/* 关闭一个（没有映射）：配额归还，恰好能再建一个。 */
+	close(fds[0]);
+	struct io_uring_params params;
+	memset(&params, 0, sizeof params);
+	long again = uring_setup(4096, &params);
+	CHECK(4, again >= 0);
+	fds[0] = (int)again;
+	memset(&params, 0, sizeof params);
+	CHECK(5, uring_setup(4096, &params) < 0 && errno == ENOMEM);
+
+	/* 映射保活 ring：mmap 之后关闭 fd 不归还配额（页仍在用户态可见），munmap 之后才归还。 */
+	void *mapped = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fds[1], IORING_OFF_SQ_RING);
+	CHECK(6, mapped != MAP_FAILED);
+	close(fds[1]);
+	memset(&params, 0, sizeof params);
+	CHECK(7, uring_setup(4096, &params) < 0 && errno == ENOMEM);
+	CHECK(8, munmap(mapped, 4096) == 0);
+	memset(&params, 0, sizeof params);
+	long freed = uring_setup(4096, &params);
+	CHECK(9, freed >= 0);
+	close((int)freed);
+
+	for (int i = 0; i < count; i++)
+		if (i != 1) close(fds[i]);
+	/* 全部归还后预算恢复：可以重新创建。 */
+	memset(&params, 0, sizeof params);
+	long fresh = uring_setup(4096, &params);
+	CHECK(10, fresh >= 0);
+	close((int)fresh);
+	return 0;
+}
+
+/* ---- ASYNC_CANCEL 按 fd / opcode / user_data 条件匹配 ------------------------------------------ */
+
+#ifndef IORING_ASYNC_CANCEL_USERDATA
+#define IORING_ASYNC_CANCEL_USERDATA (1U << 4)
+#endif
+#ifndef IORING_ASYNC_CANCEL_OP
+#define IORING_ASYNC_CANCEL_OP (1U << 5)
+#endif
+
+int verify_io_uring_cancel_criteria(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqes[4];
+	struct io_uring_sqe *sqe;
+	char buffer[16];
+	int first[2], second[2];
+	CHECK(1, map_ring(&ring, 16, 0, 0) == 0 && pipe(first) == 0 && pipe(second) == 0);
+
+	/* 两个读分别等在两个管道上；按第一个管道的 fd 取消（FD|ALL）：只取消它。 */
+	fill_read(next_sqe(&ring), first[0], buffer, sizeof buffer, 1);
+	fill_read(next_sqe(&ring), second[0], buffer, sizeof buffer, 2);
+	publish(&ring);
+	CHECK(2, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2 && ready(&ring) == 0);
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 0, IORING_ASYNC_CANCEL_FD | IORING_ASYNC_CANCEL_ALL, 10);
+	sqe->fd = first[0];
+	CHECK(3, submit_one(&ring) == 1);
+	CHECK(4, collect_cqes(&ring, cqes, 2));
+	CHECK(5, cqe_result(cqes, 2, 10) == 1 && cqe_result(cqes, 2, 1) == -ECANCELED);
+	CHECK(6, ready(&ring) == 0);
+
+	/* fd 与 user_data 叠加：fd 匹配但 user_data 不匹配 -> -ENOENT；都匹配才取消。 */
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 999, IORING_ASYNC_CANCEL_FD | IORING_ASYNC_CANCEL_USERDATA, 11);
+	sqe->fd = second[0];
+	CHECK(7, submit_one(&ring) == 1 && wait_cqe(&ring, &cqes[0]) == 1 && cqes[0].user_data == 11 &&
+		 cqes[0].res == -ENOENT);
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 2, IORING_ASYNC_CANCEL_FD | IORING_ASYNC_CANCEL_USERDATA, 12);
+	sqe->fd = second[0];
+	CHECK(8, submit_one(&ring) == 1 && expect_pair(&ring, 12, 0, 2, -ECANCELED));
+
+	/* 按 opcode：IORING_OP_WRITE 的条件不匹配读；IORING_OP_READ|ALL 取消全部读并返回个数。 */
+	fill_read(next_sqe(&ring), first[0], buffer, sizeof buffer, 3);
+	fill_read(next_sqe(&ring), second[0], buffer, sizeof buffer, 4);
+	publish(&ring);
+	CHECK(9, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2 && ready(&ring) == 0);
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 0, IORING_ASYNC_CANCEL_OP, 13);
+	sqe->len = IORING_OP_WRITE;
+	CHECK(10, submit_one(&ring) == 1 && wait_cqe(&ring, &cqes[0]) == 1 && cqes[0].user_data == 13 &&
+		  cqes[0].res == -ENOENT);
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 0, IORING_ASYNC_CANCEL_OP | IORING_ASYNC_CANCEL_ALL, 14);
+	sqe->len = IORING_OP_READ;
+	CHECK(11, submit_one(&ring) == 1);
+	CHECK(12, collect_cqes(&ring, cqes, 3));
+	CHECK(13, cqe_result(cqes, 3, 14) == 2 && cqe_result(cqes, 3, 3) == -ECANCELED &&
+		  cqe_result(cqes, 3, 4) == -ECANCELED);
+
+	/* FD 与 ANY 互斥；fixed fd 没有注册文件表 -> -EBADF。 */
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 0, IORING_ASYNC_CANCEL_FD | IORING_ASYNC_CANCEL_ANY, 15);
+	sqe->fd = first[0];
+	CHECK(14, submit_one(&ring) == 1 && wait_cqe(&ring, &cqes[0]) == 1 && cqes[0].res == -EINVAL);
+	sqe = next_sqe(&ring);
+	fill_cancel(sqe, IORING_OP_ASYNC_CANCEL, 0, IORING_ASYNC_CANCEL_FD | IORING_ASYNC_CANCEL_FD_FIXED, 16);
+	sqe->fd = 0;
+	CHECK(15, submit_one(&ring) == 1 && wait_cqe(&ring, &cqes[0]) == 1 && cqes[0].res == -EBADF);
+
+	close(first[0]);
+	close(first[1]);
+	close(second[0]);
+	close(second[1]);
+	unmap_ring(&ring);
+	return 0;
+}
+
 /* ---- CONNECT 遇到 Unix backlog 已满：挂起等容量，而不是 -EAGAIN -------------------------------- */
 
 int verify_io_uring_connect_backlog(void)
@@ -1560,21 +1745,6 @@ static void fill_link_timeout(struct io_uring_sqe *sqe, const struct __kernel_ti
 	sqe->user_data = user_data;
 }
 
-/* 取 n 个 CQE，不要求顺序；返回 user_data 对应的 res（缺失返回 INT32_MIN）。 */
-static int cqe_result(const struct io_uring_cqe *cqes, unsigned count, uint64_t user_data)
-{
-	for (unsigned i = 0; i < count; i++)
-		if (cqes[i].user_data == user_data) return cqes[i].res;
-	return INT32_MIN;
-}
-
-static int collect_cqes(struct ring *ring, struct io_uring_cqe *out, unsigned count)
-{
-	for (unsigned i = 0; i < count; i++)
-		if (wait_cqe(ring, &out[i]) != 1) return 0;
-	return 1;
-}
-
 int verify_io_uring_link_timeout(void)
 {
 	struct ring ring;
@@ -1659,5 +1829,11 @@ int verify_io_uring(void)
 	int link_timeout = verify_io_uring_link_timeout();
 	if (link_timeout != 0) return 500 + link_timeout;
 	int backlog = verify_io_uring_connect_backlog();
-	return backlog != 0 ? 600 + backlog : 0;
+	if (backlog != 0) return 600 + backlog;
+	int criteria = verify_io_uring_cancel_criteria();
+	if (criteria != 0) return 700 + criteria;
+	int quota = verify_io_uring_quota();
+	if (quota != 0) return 800 + quota;
+	int limits = verify_io_uring_size_limits();
+	return limits != 0 ? 900 + limits : 0;
 }

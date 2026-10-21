@@ -41,7 +41,7 @@
 | `audio` | `drivers`,`fs`,`id`,`ipc`,`memory` | 领域规则见依赖说明 |
 | `drm` | `deferred`,`drivers`,`fallible_tree`,`fs`,`ipc`,`memory`,`socket`,`sync` | 领域规则见依赖说明 |
 | `input` | `deferred`,`drivers`,`fs`,`ipc`,`timer` | 领域规则见依赖说明 |
-| `io_uring` | `fs`,`id`,`ipc`,`memory`,`sync`,`timer` | 领域规则见依赖说明 |
+| `io_uring` | `fs`,`id`,`ipc`,`memory`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
 | `ipc` | `fallible_tree`,`id`,`memory`,`namespace`,`sync` | 领域规则见依赖说明 |
 | `socket` | `drivers`,`fallible_tree`,`id`,`ipc`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
 | `fs` | `block`,`deferred`,`fallible_tree`,`id`,`ipc`,`log`,`memory`,`namespace`,`random`,`socket`,`sync`,`timer` | 领域规则见依赖说明 |

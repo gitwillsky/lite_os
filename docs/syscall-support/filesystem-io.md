@@ -72,7 +72,7 @@
 | 279 | `memfd_create` | Partial | 真实 creator FSIDs 的 regular inode，proc FD 重开独立 OFD/offset/status、共享 content/seals；anonymous shared file、`MFD_CLOEXEC`/`MFD_ALLOW_SEALING`、`ftruncate`、`MAP_SHARED` 与 grow/shrink/seal seals；hugetlb、write seals 未开放 |
 | 286 | `preadv2` | Partial | positioned vector I/O 与已声明 flags |
 | 287 | `pwritev2` | Partial | positioned vector I/O 与已声明 flags |
-| 425 | `io_uring_setup` | Partial | 返回恒带 `O_CLOEXEC` 的 ring fd；`IORING_SETUP_CQSIZE`/`CLAMP` 与 Linux 一致，SQ 上限 4096（Linux 32768）；其余 flags、非零保留字段返回 `EINVAL`；features：`SINGLE_MMAP`/`NODROP`/`SUBMIT_STABLE`/`RW_CUR_POS`/`CUR_PERSONALITY`/`FAST_POLL`/`EXT_ARG` |
+| 425 | `io_uring_setup` | Partial | 返回恒带 `O_CLOEXEC` 的 ring fd；`IORING_SETUP_CQSIZE`/`CLAMP` 与 Linux 一致，SQ 上限 32768；其余 flags、非零保留字段返回 `EINVAL`；features：`SINGLE_MMAP`/`NODROP`/`SUBMIT_STABLE`/`RW_CUR_POS`/`CUR_PERSONALITY`/`FAST_POLL`/`EXT_ARG` |
 | 426 | `io_uring_enter` | Partial | 提交与 `IORING_ENTER_GETEVENTS`，`EXT_ARG` 超时（`ETIME`）与临时 sigmask；`min_wait_usec` 非零、`SQ_WAKEUP`/`SQ_WAIT`/`REGISTERED_RING` 等其余 flags 返回 `EINVAL`；非 ring fd 返回 `EOPNOTSUPP` |
 | 427 | `io_uring_register` | Partial | 仅 `IORING_REGISTER_PROBE`；其余 opcode 返回 `EINVAL` |
 | 463 | `setxattrat` | Partial | AT_EMPTY_PATH/AT_SYMLINK_NOFOLLOW，标准16-byte xattr_args与零扩展校验 |
@@ -88,6 +88,8 @@ io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`
 `ACCEPT`/`CONNECT`/`SEND`/`RECV`：`ACCEPT` 的 multishot 与直接描述符、`SEND`/`RECV` 的目的地址、`ioprio` recvsend flags、除 `MSG_DONTWAIT`/`MSG_NOSIGNAL` 外的 `msg_flags` 返回 `-EOPNOTSUPP`；`SEND` 恒带 `MSG_NOSIGNAL`（`SIGPIPE` 不投递给提交线程）；
 `CONNECT` 对 Unix 目标 backlog 已满：阻塞 socket 挂起等容量后重试，`O_NONBLOCK` socket 以 `-EAGAIN` 完成；AF_INET 路径与 AF_UNIX 共用同一核心，烟测只覆盖 AF_UNIX。
 其余 opcode 的 SQE 完成为 `-EOPNOTSUPP` 并在 probe 中标为不支持。
+`io_uring_setup` 的 ring 页按真实 UID（沿 UserNS 祖先链）计入每 UID 预算（64 MiB，本内核策略值，Linux ≥5.12 用 memcg）；
+超出返回 `ENOMEM`；有 mmap 映射时关闭 fd 不归还，munmap 之后才归还。
 读写：`off == -1` 用并推进当前 position，`off >= 0` 对 regular/可定位文件是 pread/pwrite 语义，对 pipe/socket 等流式文件忽略；`ioprio`、`rw_flags`、
 `personality` 非零分别返回 `EINVAL`/`EOPNOTSUPP`/`EINVAL`，请求使用提交者提交时刻的凭据。会阻塞的 pipe/socket/eventfd/timerfd/tty 请求不占用提交线程：
 先做一次 NOWAIT 尝试，仍会阻塞则由 `io_uring` 内核线程等待就绪后在提交线程的地址空间中完成，用户态自己设置了 `O_NONBLOCK` 的 fd 如实返回 `-EAGAIN`；
@@ -98,7 +100,7 @@ signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记
 `TIMEOUT`：相对或绝对（`CLOCK_MONOTONIC`，`BOOTTIME` 视同单调），到期 `-ETIME`（`ETIME_SUCCESS` 的 CQE 仍是 `-ETIME`，只是不使链断开）；`off` 非零时等“除 timeout 自身外又发布 N 个 CQE”，满足则以 0 完成；
 `len` 必须为 1；`MULTISHOT`/`REALTIME` 返回 `-EOPNOTSUPP`（`MULTISHOT|ABS` 为 `-EINVAL`）。`TIMEOUT_REMOVE`、`POLL_REMOVE` 只取消各自种类，更新类 flags 返回 `-EOPNOTSUPP`。
 `ASYNC_CANCEL`：按 user_data 匹配（`ALL` 取消全部并返回个数，`ANY` 匹配该 ring 的任意请求），只匹配“正在等待”的成员：取消请求同步得到 0 或 `-ENOENT`，目标稍后异步得到 `-ECANCELED`（两个 CQE 的先后不保证，与 Linux 相同）；
-按 fd/opcode 匹配（`FD`/`OP`）返回 `-EOPNOTSUPP`。
+`FD`/`OP`（可叠加 `USERDATA`，条件全部满足才匹配，同 Linux `io_cancel_req_match`）按正在等待成员的 OFD 与 opcode 匹配；fd 在 issue 时解析，无效 fd 与 `FD_FIXED`（无注册文件表）返回 `-EBADF`，`FD`/`OP` 与 `ANY` 互斥返回 `-EINVAL`。
 ring 关闭（含进程退出关闭 fd）取消该 ring 的全部挂起请求，释放它们持有的目标 fd；提交线程已退出而 ring 仍被共享时，挂起请求以 `-ECANCELED` 结束。
 `IOSQE_IO_LINK`/`IO_HARDLINK`：链在一次提交批内组装，头先执行，成员失败（`res < 0`、读写短传输、非 `ETIME_SUCCESS` 的 `-ETIME`）取消其后非 hardlink 链的成员（`-ECANCELED`），prep 失败按 Linux 取消整条链，批末未结束的链按现状结束；
 后继的 fd 在其 issue 时才解析。

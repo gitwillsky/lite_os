@@ -592,3 +592,48 @@ fn actual_domain_namespace_reference_needs_no_reverse_domain_dependency() {
         Err(NamespaceError::Invalid)
     ));
 }
+/// io_uring ring 内存按真实 UID 计费：达到预算后再申请得到 `QuotaLimit`，归还后可再次申请，
+/// 其他 UID 的预算互不影响，子 UserNS 里的收费同时记到祖先上（上限不能靠新建 UserNS 绕过）。
+#[test]
+fn io_uring_ring_bytes_are_charged_per_uid_and_through_ancestor_namespaces() {
+    use namespace::{RlimitCharge, RlimitResource};
+    let _ = authority(0, 0, 0);
+    let budget = namespace::IO_URING_BYTES_PER_UID;
+    let acquire = |ns: Arc<UserNamespace>, uid: u32, bytes: u64| {
+        RlimitCharge::acquire(ns, uid, RlimitResource::IoUringBytes, bytes, budget, false)
+    };
+    let root = namespace::initial_user();
+    let first = acquire(root.clone(), 701_001, budget).unwrap();
+    assert!(matches!(
+        acquire(root.clone(), 701_001, 1),
+        Err(NamespaceError::QuotaLimit)
+    ));
+    // 别的 UID 有自己的预算。
+    let other = acquire(root.clone(), 701_002, budget).unwrap();
+    drop(other);
+    // 归还后可以再申请。
+    drop(first);
+    let again = acquire(root.clone(), 701_001, budget).unwrap();
+    // 子 UserNS（所有者 701_001）里的收费沿祖先链记到所有者 UID 上：预算已满则被拒。
+    let parent = NamespaceAuthority {
+        namespace: root.clone(),
+        effective_uid: 701_001,
+        effective_gid: 701_001,
+        effective_capabilities: 0,
+    };
+    let child = UserNamespace::child(
+        &parent,
+        true,
+        namespace::NamespaceRlimits {
+            locked_memory: u64::MAX,
+            pending_signals: u64::MAX,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        acquire(child.clone(), 0, 1),
+        Err(NamespaceError::QuotaLimit)
+    ));
+    drop(again);
+    drop(acquire(child, 0, 4096).unwrap());
+}

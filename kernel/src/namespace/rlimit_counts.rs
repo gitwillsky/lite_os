@@ -4,12 +4,21 @@ use crate::fallible_tree::FallibleMap;
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-/// 两种已接入的实际 ucounts 资源；计数单位由各领域决定。
+/// 已接入的实际 ucounts 资源；计数单位由各领域决定。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RlimitResource {
     LockedMemory,
     PendingSignals,
+    /// io_uring ring 页占用的字节数（SQE 数组与 ring 区域，按页取整）。
+    IoUringBytes,
 }
+
+/// 每个真实 UID 在每层 UserNS 上可持有的 io_uring ring 内存上限（字节）。
+///
+/// 这是本内核的策略值，不是 Linux ABI：Linux ≥5.12 用 memcg 记账而这里没有 memcg，缺少它时同一用户
+/// 创建多个 ring（每个最大约 400 KiB）即可耗尽物理内存。超限的 `io_uring_setup` 返回 `ENOMEM`，与
+/// memcg 记账失败一致。
+pub(crate) const IO_URING_BYTES_PER_UID: u64 = 64 << 20;
 /// NEWUSER 一次捕获创建者的 soft rlimits；immutable inherited maxima 不随其以后 setrlimit 改变。
 #[derive(Clone, Copy)]
 pub(crate) struct NamespaceRlimits {
@@ -21,6 +30,7 @@ impl NamespaceRlimits {
         match resource {
             RlimitResource::LockedMemory => self.locked_memory,
             RlimitResource::PendingSignals => self.pending_signals,
+            RlimitResource::IoUringBytes => IO_URING_BYTES_PER_UID,
         }
         .min(i64::MAX as u64)
     }

@@ -126,6 +126,8 @@ pub(super) enum Op {
         target: Target,
         /// `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。
         all: bool,
+        /// `IORING_ASYNC_CANCEL_FD`：按这个 fd 所指的 OFD 匹配；外层 `Some` 表示给了 FD 条件，内层 `None` 是无效 fd（fixed 或负数）。
+        by_fd: Option<Option<usize>>,
     },
 }
 
@@ -180,6 +182,8 @@ pub(super) enum Wait {
     /// 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。
     Lane {
         work: lane::Work,
+        /// 作业操作的 OFD，仅供按 fd 取消匹配；作业本身已捕获它。
+        file: Arc<OpenFileDescription>,
         /// 读写作业传输量不等于请求量即失败；fsync 为 `None`。
         total: Option<usize>,
     },
@@ -197,6 +201,20 @@ pub(super) enum Wait {
 }
 
 impl Wait {
+    /// 这个等待所操作的 OFD（按 fd 取消据此匹配）；timeout 没有。
+    pub(super) fn file(&self) -> Option<Arc<OpenFileDescription>> {
+        match self {
+            Wait::Stream { ofd, .. }
+            | Wait::Accept { ofd, .. }
+            | Wait::Connect { ofd }
+            | Wait::ConnectBacklog { ofd, .. }
+            | Wait::Poll { ofd, .. } => Some(ofd.clone()),
+            Wait::FileRead { read, .. } => Some(read.ofd().clone()),
+            Wait::Lane { file, .. } => Some(file.clone()),
+            Wait::Timeout { .. } => None,
+        }
+    }
+
     pub(super) fn kind(&self) -> Kind {
         match self {
             Wait::Stream { .. }
@@ -263,7 +281,7 @@ impl Op {
             } => issue_read_write(task, fd, vectors, total, write, vectored, offset),
             Op::Fsync { fd } => match ofd_of(task, fd) {
                 None => Issue::Done(Outcome::of(-errno::EBADF)),
-                Some(ofd) => lane_issue(move |_| sync_ofd(&ofd), None),
+                Some(ofd) => lane_issue(ofd.clone(), move |_| sync_ofd(&ofd), None),
             },
             Op::Close { fd } => Issue::Done(Outcome::of(fd.map_or(-errno::EBADF, |fd| {
                 task.fd_close(fd).map_or(-errno::EBADF, |_| 0)
@@ -334,7 +352,20 @@ impl Op {
                 // 没有对象可约束不是链失败：Linux 的 link timeout 取消不使其后成员被取消。
                 fail: false,
             }),
-            Op::Cancel { target, all } => {
+            Op::Cancel {
+                mut target,
+                all,
+                by_fd,
+            } => {
+                if let Some(fd) = by_fd {
+                    // fd 在 issue 时解析：无效 fd 是 -EBADF（Linux `io_async_cancel` 的 `io_file_get_normal` 失败）。
+                    let Some(ofd) = ofd_of(task, fd) else {
+                        return Issue::Done(Outcome::of(-errno::EBADF));
+                    };
+                    if let Target::Match { file, .. } = &mut target {
+                        *file = Some(ofd);
+                    }
+                }
                 Issue::Done(Outcome::of(worker::cancel(ring, &target, all) as isize))
             }
         }
@@ -384,6 +415,7 @@ fn issue_read_write(
                 }
             }
             return lane_issue(
+                ofd.clone(),
                 move |task| {
                     if write {
                         positioned_write(task, &ofd, &vectors, offset, None)
@@ -434,6 +466,7 @@ fn issue_read_write(
             }
         }
         return lane_issue(
+            ofd.clone(),
             move |task| {
                 if write {
                     perform_write(task, &ofd, &vectors, total, true)
@@ -453,13 +486,14 @@ fn issue_read_write(
 
 /// 把会睡眠的作业包成 [`Wait::Lane`]。
 fn lane_issue(
+    file: Arc<OpenFileDescription>,
     work: impl FnOnce(&TaskControlBlock) -> isize + Send + 'static,
     total: Option<usize>,
 ) -> Issue {
     match Box::try_new(work) {
         Ok(work) => {
             let work: lane::Work = work;
-            Issue::Wait(Wait::Lane { work, total })
+            Issue::Wait(Wait::Lane { work, file, total })
         }
         Err(_) => Issue::Done(Outcome::of(-errno::ENOMEM)),
     }
@@ -642,7 +676,7 @@ pub(super) async fn drive(
                 }
             }
         }
-        Wait::Lane { work, total } => run_lane(work, total, &task, &waiter).await,
+        Wait::Lane { work, total, .. } => run_lane(work, total, &task, &waiter).await,
         Wait::Accept {
             ofd,
             flags,

@@ -3,9 +3,10 @@
 //! 本文件不接触内存、task 或 fd，因此 host 单测直接加载它。ring 的实际共享内存与同步在 `ring`，
 //! syscall 语义在 `mod`；这里只回答“字节怎么排、哪些值合法”。
 
-/// 单个 ring 的 SQ 条目上限。Linux 是 32768；这里限制为 4096，因为尚无按用户的 ring 内存计费，
-/// 缺少上限时一个进程创建多个 ring 即可耗尽物理内存。超过上限且没有 `IORING_SETUP_CLAMP` 返回 `EINVAL`。
-pub(crate) const MAX_ENTRIES: u32 = 4096;
+/// 单个 ring 的 SQ 条目上限，与 Linux 的 `IORING_MAX_ENTRIES` 相同。跨 ring 的总量由每 UID 的
+/// `IO_URING_BYTES_PER_UID` 预算约束：缺失预算时这个上限会让一个用户用几十个 ring 耗尽物理内存。
+/// 超过上限且没有 `IORING_SETUP_CLAMP` 返回 `EINVAL`。
+pub(crate) const MAX_ENTRIES: u32 = 32768;
 /// CQ 条目上限，与 Linux 一样是 SQ 上限的两倍。
 pub(crate) const MAX_CQ_ENTRIES: u32 = 2 * MAX_ENTRIES;
 

@@ -354,7 +354,7 @@ fn poll_add(sqe: &Sqe) -> Result<Op, isize> {
 
 /// `POLL_REMOVE`、`TIMEOUT_REMOVE` 与 `ASYNC_CANCEL`：目标是 worker 登记表里正在等待的成员。
 fn cancel(sqe: &Sqe) -> Result<Op, isize> {
-    let (target, all) = match sqe.opcode {
+    let (target, all, by_fd) = match sqe.opcode {
         OP_TIMEOUT_REMOVE => {
             // Linux `io_timeout_remove_prep`：除 addr（目标 user_data）外字段为零，更新类 flags 未实现。
             if sqe.flags & IOSQE_FIXED_FILE != 0
@@ -374,7 +374,7 @@ fn cancel(sqe: &Sqe) -> Result<Op, isize> {
             if sqe.op_flags != 0 {
                 return Err(errno::EINVAL);
             }
-            (Target::UserData(sqe.addr, Only::Timeout), false)
+            (Target::UserData(sqe.addr, Only::Timeout), false, None)
         }
         OP_POLL_REMOVE => {
             // Linux `io_poll_remove_prep`。
@@ -396,7 +396,7 @@ fn cancel(sqe: &Sqe) -> Result<Op, isize> {
             if flags != 0 {
                 return Err(errno::EOPNOTSUPP);
             }
-            (Target::UserData(sqe.addr, Only::Poll), false)
+            (Target::UserData(sqe.addr, Only::Poll), false, None)
         }
         OP_ASYNC_CANCEL => {
             // Linux `io_async_cancel_prep`。
@@ -417,18 +417,29 @@ fn cancel(sqe: &Sqe) -> Result<Op, isize> {
             {
                 return Err(errno::EINVAL);
             }
-            // 按 fd / opcode 匹配需要请求记录它们的来源，尚未实现。
-            if flags & (CANCEL_FD | CANCEL_FD_FIXED | CANCEL_OP) != 0 {
-                return Err(errno::EOPNOTSUPP);
-            }
+            // Linux `io_cancel_req_match`：给了 FD/OP 条件就按它们匹配（USERDATA 可再叠加）；
+            // 两者都没给时按 sqe->addr 的 user_data 匹配。
+            let by_criteria = flags & (CANCEL_FD | CANCEL_OP) != 0;
             let target = if flags & CANCEL_ANY != 0 {
                 Target::Any
+            } else if by_criteria {
+                Target::Match {
+                    user_data: (flags & CANCEL_USERDATA != 0).then_some(sqe.addr),
+                    opcode: (flags & CANCEL_OP != 0).then_some(sqe.len as u8),
+                    file: None,
+                }
             } else {
                 Target::UserData(sqe.addr, Only::Any)
             };
-            (target, flags & CANCEL_ALL != 0)
+            // 没有注册文件表：fixed fd 引用与负 fd 一样在 issue 时得到 -EBADF。
+            let by_fd = (flags & CANCEL_FD != 0).then(|| {
+                (flags & CANCEL_FD_FIXED == 0)
+                    .then(|| usize::try_from(sqe.fd).ok())
+                    .flatten()
+            });
+            (target, flags & CANCEL_ALL != 0, by_fd)
         }
         _ => unreachable!("cancel handles exactly the three cancel-style opcodes"),
     };
-    Ok(Op::Cancel { target, all })
+    Ok(Op::Cancel { target, all, by_fd })
 }

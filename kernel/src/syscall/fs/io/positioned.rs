@@ -175,6 +175,11 @@ pub(in crate::syscall) fn begin_current_position_read(
 }
 
 impl AsyncPositionedRead {
+    /// 这次读所属的 OFD；io_uring 按 fd 取消时据此匹配。
+    pub(in crate::syscall) fn ofd(&self) -> &Arc<OpenFileDescription> {
+        &self.ofd
+    }
+
     /// 发布当前位置读的新 position；非当前位置读或读到 0 字节时无事可做。
     ///
     /// # Returns

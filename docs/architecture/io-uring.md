@@ -35,10 +35,12 @@ io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把
 
 ## Known limits
 
-- 未开放：multishot 的 poll/timeout、按 fd/opcode 取消、其余 opcode、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
+- 未开放：multishot 的 poll/timeout、其余 opcode、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
 - 阻塞车道最多 `MAX_WORKERS`（8）个线程：超过后作业在共享 FIFO 里排队（有界并发），空闲 worker 不退出。regular 文件的写与 fsync 在 worker 上同步执行，不是真异步（Linux io-wq 同样）。
 - regular 文件读只在 page cache 未命中且后端支持异步读（ext4；其固定 4 KiB profile 保证文件系统块恒等于设备块）时不占线程，其余后端与请求槽暂满时回退车道。
 - 同时发起的两个当前位置读读取同一区间（Linux 相同）：需要顺序语义的用户应使用链。
 - signalfd 读无信号时返回 `-EAGAIN`，不挂起。
-- SQ 上限 4096（Linux 32768）：没有按用户的 ring 内存计费，缺少上限时一个进程创建多个 ring 即可耗尽物理内存。
+- SQ 上限 32768、CQ 上限 65536，与 Linux 相同（最大的 ring 约 3.2 MB，每 UID 约 20 个）。
+  ring 页按真实 UID（沿 UserNS 祖先链）计入 `RlimitResource::IoUringBytes`，每 UID 预算 `IO_URING_BYTES_PER_UID`（64 MiB，本内核的策略值，不是 Linux ABI；Linux ≥5.12 用 memcg，这里没有）；
+  超出时 `io_uring_setup` 返回 `ENOMEM`。收费随 `Ring` 存活，mmap 保活实际 OFD 进而保活 `Ring`，所以只要还有映射配额就不归还。没有 `CAP_SYS_RESOURCE`/root 豁免。
 - `io_uring_enter` 的 `min_wait_usec` 与 `REGISTERED_RING` 未实现，返回 `EINVAL`。

@@ -20,6 +20,7 @@ use crate::{
 /// 成员完成时需要的元数据；成员的 `Step` 已被消费。
 struct Meta {
     user_data: u64,
+    opcode: u8,
     skip_success: bool,
     link: Link,
     kind: Kind,
@@ -71,6 +72,7 @@ fn advance(
     while let Some(member) = rest.next() {
         let Member {
             user_data,
+            opcode,
             skip_success,
             link,
             step,
@@ -78,6 +80,7 @@ fn advance(
         } = member;
         let mut meta = Meta {
             user_data,
+            opcode,
             skip_success,
             link,
             kind: Kind::Io,
@@ -145,7 +148,7 @@ async fn run(
         }
     };
     loop {
-        waiter.begin(meta.user_data, meta.kind);
+        waiter.begin(meta.user_data, meta.kind, meta.opcode, wait.file());
         if let Some((_, deadline)) = meta.link_timer {
             waiter.arm_link_timeout(deadline);
         }
