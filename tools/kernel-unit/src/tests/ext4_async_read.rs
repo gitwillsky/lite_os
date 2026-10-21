@@ -22,6 +22,10 @@ struct ManualImage {
     dropped: Arc<AtomicUsize>,
     held: StdMutex<Vec<Arc<AtomicBool>>>,
     would_block: AtomicBool,
+    /// 提交成功但完成时报告 I/O 错误（设备在途中失败）。
+    fail_completion: AtomicBool,
+    /// 提交时就报告 I/O 错误。
+    fail_submit: AtomicBool,
 }
 
 impl ManualImage {
@@ -38,6 +42,7 @@ impl ManualImage {
 }
 
 struct ManualRead {
+    fail: bool,
     bytes: Vec<u8>,
     done: Arc<AtomicBool>,
     dropped: Arc<AtomicUsize>,
@@ -50,6 +55,9 @@ impl PendingRead for ManualRead {
 
     fn finish(self: Box<Self>, output: &mut [u8]) -> Result<(), BlockError> {
         assert!(self.is_complete(), "finish before completion");
+        if self.fail {
+            return Err(BlockError::IoError);
+        }
         output.copy_from_slice(&self.bytes);
         Ok(())
     }
@@ -89,12 +97,16 @@ impl BlockDevice for ManualImage {
         if self.would_block.load(Ordering::Relaxed) {
             return Err(BlockError::WouldBlock);
         }
+        if self.fail_submit.load(Ordering::Relaxed) {
+            return Err(BlockError::IoError);
+        }
         let mut bytes = vec![0; BLOCK_SIZE_BYTES];
         self.image.read_block(block_id, &mut bytes)?;
         let done = Arc::new(AtomicBool::new(false));
         self.held.lock().unwrap().push(done.clone());
         self.submitted.fetch_add(1, Ordering::Relaxed);
         Ok(Box::new(ManualRead {
+            fail: self.fail_completion.load(Ordering::Relaxed),
             bytes,
             done,
             dropped: self.dropped.clone(),
@@ -128,6 +140,8 @@ fn manual(path: &std::path::PathBuf) -> Arc<ManualImage> {
         dropped: Arc::new(AtomicUsize::new(0)),
         held: StdMutex::new(Vec::new()),
         would_block: AtomicBool::new(false),
+        fail_completion: AtomicBool::new(false),
+        fail_submit: AtomicBool::new(false),
     })
 }
 
@@ -319,6 +333,62 @@ fn a_full_request_table_falls_back_instead_of_failing() {
     let mut output = vec![0u8; FS_BLOCK];
     assert_eq!(read.step(&mut output).unwrap(), StorageStep::Fallback);
     drop(read);
+    drop(file);
+    drop(root);
+    drop(fs);
+    e2fsck_clean(&path);
+}
+
+/// 设备在提交时或在途中失败：读以错误结束（不 panic、不挂起、不回退到同步路径重试），
+/// 取消后请求槽被归还，之后设备恢复时同一个 inode 仍能读到正确内容（失败没有毒化 cache）。
+#[test]
+fn device_errors_end_the_read_and_do_not_poison_the_cache() {
+    let _case = COST_TEST_LOCK.lock().unwrap();
+    let path = scratch_copy("async-read-fault.img");
+    let device = manual(&path);
+    let fs = mount_with(device.clone());
+    let root = fs.root_inode().unwrap();
+    let file = root.create(b"fault", InodeType::File, FILE).unwrap();
+    file.write_storage(0, &pattern(6, 0), None).unwrap();
+    file.sync_storage().unwrap();
+    clear_test_metadata_cache(&fs);
+    let mut output = vec![0u8; FS_BLOCK];
+
+    // 提交时失败。
+    device.fail_submit.store(true, Ordering::Relaxed);
+    let mut read = file
+        .begin_storage_read(0, FS_BLOCK, Arc::new(Silent))
+        .unwrap()
+        .unwrap();
+    assert!(
+        read.step(&mut output).is_err(),
+        "submit failure must surface"
+    );
+    drop(read);
+    device.fail_submit.store(false, Ordering::Relaxed);
+
+    // 完成时失败：先 Wait，设备完成后 step 返回错误。
+    device.fail_completion.store(true, Ordering::Relaxed);
+    let mut read = file
+        .begin_storage_read(0, FS_BLOCK, Arc::new(Silent))
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.step(&mut output).unwrap(), StorageStep::Wait);
+    assert!(device.release() > 0);
+    assert!(
+        read.step(&mut output).is_err(),
+        "completion failure must surface"
+    );
+    drop(read);
+    device.fail_completion.store(false, Ordering::Relaxed);
+
+    let mut again = file
+        .begin_storage_read(0, FS_BLOCK, Arc::new(Silent))
+        .unwrap()
+        .unwrap();
+    assert_eq!(drive(again.as_mut(), &device, &mut output).0, FS_BLOCK);
+    assert_eq!(&output[..], &pattern(6, 0)[..]);
+    drop(again);
     drop(file);
     drop(root);
     drop(fs);

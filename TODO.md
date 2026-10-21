@@ -19,8 +19,11 @@
   `lookup_entry` 等读者逐块 `map_block` → `read_leaf`，两步之间不持目录锁。若该目录同时被 rmdir，块被释放并重新分配给另一个目录，
   读到的块带有合法 tail 但 seed 不同，表现正好是 “tail/checksum mismatch”。这与“写者暂存未完成”是两种不同的竞态，
   复现后需先区分：失败时 `directory 203` 是否已被 unlink（`i_links_count == 0`）、`leaf 2447` 是否在失败前被释放过。
+- **复现尝试（2026-10-21，修复前基线）**：强制重跑 `make verify-runtime-busybox`（fsstress 所在启动为 `-smp 8`，aarch64/hvf，12 物理核宿主）共 93 次
+  （前 13 次 + 后 80 次），`tail/checksum mismatch` 出现 0 次。期间另有 2 次失败与目录无关：1 次是我留下的孤儿进程占用 18080 端口造成的污染（作废），
+  1 次是 `LITEOS_UNLINK_RELEASE` 的 `df` 空间差值检查超时（另一个未调查的间歇问题）。结论：整门禁循环对该竞态不敏感，0 次不能证明它不存在。
 - **下一步**：
-  1. 写一个只跑 fsstress（`scan` + `dir_race` + `link_race`）的小循环，`-smp 8` 下反复跑并统计复现率，作为修复前后的度量。
+  1. 写一个只跑 fsstress（`scan` + `dir_race` + `link_race`）的小循环（整门禁重跑已证明太不敏感，需要专门加压 `dir_race` 与 `scan`），`-smp 8` 下反复跑并统计复现率，作为修复前后的度量。
   2. 沿 `read_leaf` 的调用链确认目录读者是否持有目录锁、读到的块来自 journal 暂存还是已提交盘面，以及 `write_leaf` 暂存的可见性边界。
   3. 若确认是读写竞态，修复后把复现用例固化进门禁，并在 `docs/architecture-contract/filesystem-storage.md` 记录目录读写的互斥与可见性契约。
 - **不要做的事**：不要用重跑、清缓存或放宽围栏让门禁“通过”来代替定位；也不要在没有复现数据时直接改 ext4 目录锁。
