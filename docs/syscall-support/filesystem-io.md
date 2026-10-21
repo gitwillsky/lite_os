@@ -84,7 +84,9 @@
 
 tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`；`huge=`、`mpol=` 等返回 `EINVAL`。
 
-io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`；
+io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`OPENAT`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`；
+`OPENAT`：路径在 prep 时复制，在阻塞车道上以提交线程的 fd 表、cwd 与凭据执行（与 `openat(2)` 共用同一核心）；直接描述符（`file_index` 非零）返回 `-EOPNOTSUPP`，`IOSQE_FIXED_FILE` 返回 `-EBADF`，`buf_index` 非零返回 `-EINVAL`；
+被信号打断的阻塞 open 以 `-EINTR` 完成。`OPENAT2` 未实现。
 `ACCEPT`/`CONNECT`/`SEND`/`RECV`：`ACCEPT` 的 multishot 与直接描述符、`SEND`/`RECV` 的目的地址、`ioprio` recvsend flags、除 `MSG_DONTWAIT`/`MSG_NOSIGNAL` 外的 `msg_flags` 返回 `-EOPNOTSUPP`；`SEND` 恒带 `MSG_NOSIGNAL`（`SIGPIPE` 不投递给提交线程）；
 `CONNECT` 对 Unix 目标 backlog 已满：阻塞 socket 挂起等容量后重试，`O_NONBLOCK` socket 以 `-EAGAIN` 完成；AF_INET 路径与 AF_UNIX 共用同一核心，烟测只覆盖 AF_UNIX。
 其余 opcode 的 SQE 完成为 `-EOPNOTSUPP` 并在 probe 中标为不支持。
@@ -99,7 +101,8 @@ signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记
 `POLL_ADD`：一次性语义，提交时先 poll 一次，已就绪同步完成，否则挂起；res 是 revents，`ERR`/`HUP` 总是报告；`IORING_POLL_ADD_MULTI` 返回 `-EOPNOTSUPP`。
 `TIMEOUT`：相对或绝对（`CLOCK_MONOTONIC`，`BOOTTIME` 视同单调），到期 `-ETIME`（`ETIME_SUCCESS` 的 CQE 仍是 `-ETIME`，只是不使链断开）；`off` 非零时等“除 timeout 自身外又发布 N 个 CQE”，满足则以 0 完成；
 `len` 必须为 1；`MULTISHOT`/`REALTIME` 返回 `-EOPNOTSUPP`（`MULTISHOT|ABS` 为 `-EINVAL`）。`TIMEOUT_REMOVE`、`POLL_REMOVE` 只取消各自种类，更新类 flags 返回 `-EOPNOTSUPP`。
-`ASYNC_CANCEL`：按 user_data 匹配（`ALL` 取消全部并返回个数，`ANY` 匹配该 ring 的任意请求），只匹配“正在等待”的成员：取消请求同步得到 0 或 `-ENOENT`，目标稍后异步得到 `-ECANCELED`（两个 CQE 的先后不保证，与 Linux 相同）；
+`ASYNC_CANCEL`：按 user_data 匹配（`ALL` 取消全部并返回个数，`ANY` 匹配该 ring 的任意请求），只匹配“正在等待”的成员：取消请求同步得到 0、`-ENOENT` 或 `-EALREADY`
+（目标是已在车道线程上执行的写/fsync/openat，不能取消，会照常完成并返回真实结果），目标稍后异步得到 `-ECANCELED`（两个 CQE 的先后不保证，与 Linux 相同）；
 `FD`/`OP`（可叠加 `USERDATA`，条件全部满足才匹配，同 Linux `io_cancel_req_match`）按正在等待成员的 OFD 与 opcode 匹配；fd 在 issue 时解析，无效 fd 与 `FD_FIXED`（无注册文件表）返回 `-EBADF`，`FD`/`OP` 与 `ANY` 互斥返回 `-EINVAL`。
 ring 关闭（含进程退出关闭 fd）取消该 ring 的全部挂起请求，释放它们持有的目标 fd；提交线程已退出而 ring 仍被共享时，挂起请求以 `-ECANCELED` 结束。
 `IOSQE_IO_LINK`/`IO_HARDLINK`：链在一次提交批内组装，头先执行，成员失败（`res < 0`、读写短传输、非 `ETIME_SUCCESS` 的 `-ETIME`）取消其后非 hardlink 链的成员（`-ECANCELED`），prep 失败按 Linux 取消整条链，批末未结束的链按现状结束；

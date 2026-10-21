@@ -35,7 +35,10 @@ pub(in crate::syscall) fn ferr(error: FileSystemError) -> isize {
     })
 }
 
-pub(super) fn path(task: &TaskControlBlock, pointer: *const u8) -> Result<Vec<u8>, isize> {
+pub(in crate::syscall) fn path(
+    task: &TaskControlBlock,
+    pointer: *const u8,
+) -> Result<Vec<u8>, isize> {
     let path = path_allow_empty(task, pointer)?;
     if path.is_empty() {
         return Err(-errno::ENOENT);

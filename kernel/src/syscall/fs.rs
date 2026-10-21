@@ -35,10 +35,12 @@ pub(crate) use io::{
 };
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_mknodat, sys_renameat2, sys_unlinkat};
+pub(in crate::syscall) use open::open_at;
 pub(crate) use open::{sys_chdir, sys_chroot, sys_fchdir, sys_openat};
 use pathname::base;
 pub(in crate::syscall) use pathname::ferr as filesystem_error;
 pub(in crate::syscall) use pathname::ferr;
+pub(in crate::syscall) use pathname::path as user_path;
 pub(crate) use readlink::sys_readlinkat;
 
 use crate::{

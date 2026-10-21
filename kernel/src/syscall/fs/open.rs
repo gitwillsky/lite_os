@@ -121,15 +121,38 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
+    let path = match path(&task, name) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    open_at(&task, fd, path, flags, mode)
+}
+
+/// 已取得路径字符串的 `openat` 核心：解析、权限、OFD 建立与 fd 发布。
+///
+/// 显式接收 task，使 io_uring 的车道线程能以提交线程的 fd 表、cwd 与凭据执行它。
+///
+/// # Parameters
+///
+/// - `task`: fd 表、cwd/root 与凭据的 owner。
+/// - `fd`: 相对路径的起点目录 fd 或 `AT_FDCWD`。
+/// - `path`: 非空的路径字节（已从用户内存复制，之后用户态修改不影响本次 open）。
+///
+/// # Returns
+///
+/// 新 fd 或负 errno（可能返回内部重启哨兵，由 syscall 入口翻译）。
+pub(in crate::syscall) fn open_at(
+    task: &TaskControlBlock,
+    fd: isize,
+    path: alloc::vec::Vec<u8>,
+    flags: u32,
+    mode: u32,
+) -> isize {
     // legacy open 的 O_PATH 忽略其余 status/create/access bits；CLOEXEC 仍属于 fd-table。
     let flags = if flags & O_PATH != 0 {
         flags & (O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     } else {
         flags
-    };
-    let path = match path(&task, name) {
-        Ok(path) => path,
-        Err(error) => return error,
     };
     if flags & O_ACCMODE == O_ACCMODE || flags & (O_CREAT | O_DIRECTORY) == (O_CREAT | O_DIRECTORY)
     {
@@ -144,7 +167,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         Ok(prepared) => prepared,
         Err(error) => return ferr(error),
     };
-    let start = match base(&task, fd, &path) {
+    let start = match base(task, fd, &path) {
         Ok(start) => start,
         Err(error) => return error,
     };

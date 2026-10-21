@@ -23,7 +23,7 @@ use crate::{
     syscall::{
         fs::{
             AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
-            check_readable, check_writable, perform_read, perform_write, positioned_read,
+            check_readable, check_writable, open_at, perform_read, perform_write, positioned_read,
             positioned_write, sync_ofd,
         },
         socket::{
@@ -81,6 +81,13 @@ pub(super) enum Op {
     },
     Fsync {
         fd: Option<usize>,
+    },
+    /// `IORING_OP_OPENAT`：在阻塞车道上以提交线程的 fd 表、cwd 与凭据打开。
+    OpenAt {
+        dirfd: isize,
+        path: Vec<u8>,
+        flags: u32,
+        mode: u32,
     },
     Close {
         fd: Option<usize>,
@@ -182,8 +189,8 @@ pub(super) enum Wait {
     /// 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。
     Lane {
         work: lane::Work,
-        /// 作业操作的 OFD，仅供按 fd 取消匹配；作业本身已捕获它。
-        file: Arc<OpenFileDescription>,
+        /// 作业操作的 OFD，仅供按 fd 取消匹配（作业本身已捕获它）；openat 之类没有目标 OFD。
+        file: Option<Arc<OpenFileDescription>>,
         /// 读写作业传输量不等于请求量即失败；fsync 为 `None`。
         total: Option<usize>,
     },
@@ -210,7 +217,7 @@ impl Wait {
             | Wait::ConnectBacklog { ofd, .. }
             | Wait::Poll { ofd, .. } => Some(ofd.clone()),
             Wait::FileRead { read, .. } => Some(read.ofd().clone()),
-            Wait::Lane { file, .. } => Some(file.clone()),
+            Wait::Lane { file, .. } => file.clone(),
             Wait::Timeout { .. } => None,
         }
     }
@@ -281,8 +288,26 @@ impl Op {
             } => issue_read_write(task, fd, vectors, total, write, vectored, offset),
             Op::Fsync { fd } => match ofd_of(task, fd) {
                 None => Issue::Done(Outcome::of(-errno::EBADF)),
-                Some(ofd) => lane_issue(ofd.clone(), move |_| sync_ofd(&ofd), None),
+                Some(ofd) => lane_issue(Some(ofd.clone()), move |_| sync_ofd(&ofd), None),
             },
+            Op::OpenAt {
+                dirfd,
+                path,
+                flags,
+                mode,
+            } => lane_issue(
+                None,
+                move |task| {
+                    let result = open_at(task, dirfd, path, flags, mode);
+                    // 车道线程没有信号重启语义：被打断的阻塞 open（如 FIFO）以 EINTR 完成。
+                    if result == crate::syscall::INTERNAL_RESTART_SYS {
+                        -errno::EINTR
+                    } else {
+                        result
+                    }
+                },
+                None,
+            ),
             Op::Close { fd } => Issue::Done(Outcome::of(fd.map_or(-errno::EBADF, |fd| {
                 task.fd_close(fd).map_or(-errno::EBADF, |_| 0)
             }))),
@@ -415,7 +440,7 @@ fn issue_read_write(
                 }
             }
             return lane_issue(
-                ofd.clone(),
+                Some(ofd.clone()),
                 move |task| {
                     if write {
                         positioned_write(task, &ofd, &vectors, offset, None)
@@ -466,7 +491,7 @@ fn issue_read_write(
             }
         }
         return lane_issue(
-            ofd.clone(),
+            Some(ofd.clone()),
             move |task| {
                 if write {
                     perform_write(task, &ofd, &vectors, total, true)
@@ -486,7 +511,7 @@ fn issue_read_write(
 
 /// 把会睡眠的作业包成 [`Wait::Lane`]。
 fn lane_issue(
-    file: Arc<OpenFileDescription>,
+    file: Option<Arc<OpenFileDescription>>,
     work: impl FnOnce(&TaskControlBlock) -> isize + Send + 'static,
     total: Option<usize>,
 ) -> Issue {
@@ -516,8 +541,10 @@ async fn run_lane(
     let Ok(ticket) = lane::submit(work, task.clone(), waiter.notifier()) else {
         return Outcome::of(-errno::ENOMEM);
     };
+    waiter.attach_lane(ticket.clone());
     loop {
-        if waiter.take_canceled() {
+        // 只有尚未开始的作业才能真正取消；已开始的作业副作用会发生，等它完成并报告真实结果。
+        if waiter.take_canceled() && ticket.try_cancel() {
             return Outcome::canceled();
         }
         // 先清通知再取结果：作业在两者之间完成会重新置位，`block` 立即被重新 poll。

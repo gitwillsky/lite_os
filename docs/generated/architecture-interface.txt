@@ -3565,6 +3565,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) const OP_FSYNC : u8 = 3
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_LAST : u8 = 65
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_LINK_TIMEOUT : u8 = 15
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_NOP : u8 = 0
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_OPENAT : u8 = 18
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_ADD : u8 = 6
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_REMOVE : u8 = 7
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_READ : u8 = 22
@@ -6365,8 +6366,10 @@ kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
 kernel/src/syscall/fs.rs :: pub (crate) use swap :: { sys_swapoff , sys_swapon }
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) fn position_error (error : crate :: file :: PositionError) -> isize
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use io :: { AsyncPositionedRead , AsyncReadStep , begin_current_position_read , begin_positioned_read , check_readable , check_writable , import_iovecs , perform_read , perform_write , positioned_read , positioned_write , }
+kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use open :: open_at
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr as filesystem_error
+kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: path as user_path
 kernel/src/syscall/fs.rs :: pub (super) fn resolve_stat_target (task : & TaskControlBlock , fd : isize , name : * const u8 , nofollow : bool , empty_path : bool ,) -> Result < (InodeMetadata , u64) , isize >
 kernel/src/syscall/fs.rs :: pub (super) fn sync_file (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (super) fn sync_ofd (ofd : & OpenFileDescription) -> isize
@@ -6446,9 +6449,10 @@ kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_chdir (name : * const u8) ->
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_chroot (name : * const u8) -> isize
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_fchdir (fd : usize) -> isize
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_openat (fd : isize , name : * const u8 , flags : u32 , mode : u32) -> isize
+kernel/src/syscall/fs/open.rs :: pub (in crate :: syscall) fn open_at (task : & TaskControlBlock , fd : isize , path : alloc :: vec :: Vec < u8 > , flags : u32 , mode : u32 ,) -> isize
 kernel/src/syscall/fs/pathname.rs :: pub (in crate :: syscall) fn ferr (error : FileSystemError) -> isize
+kernel/src/syscall/fs/pathname.rs :: pub (in crate :: syscall) fn path (task : & TaskControlBlock , pointer : * const u8 ,) -> Result < Vec < u8 > , isize >
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn base (task : & TaskControlBlock , fd : isize , path : & [u8]) -> Result < LookupOrigin , isize >
-kernel/src/syscall/fs/pathname.rs :: pub (super) fn path (task : & TaskControlBlock , pointer : * const u8) -> Result < Vec < u8 > , isize >
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn path_allow_empty (task : & TaskControlBlock , pointer : * const u8 ,) -> Result < Vec < u8 > , isize >
 kernel/src/syscall/fs/readlink.rs :: pub (crate) fn sys_readlinkat (fd : isize , name : * const u8 , buffer : * mut u8 , size : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_fstatfs (fd : usize , address : usize) -> isize
@@ -6478,6 +6482,7 @@ kernel/src/syscall/io_uring/chain.rs :: pub (super) fn launch (task : & Arc < Ta
 kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Done (Outcome)
 kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Wait (Wait)
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员。前一个成员需要等待时由链执行者摘下它装成定时器"] # [doc = " （[`Op::link_deadline`]）；走到 issue 说明前一个成员已经同步完成，定时器没有对象，以 `-ECANCELED` 结束。"] LinkTimeout { nanoseconds : u64 , absolute : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_OPENAT`：在阻塞车道上以提交线程的 fd 表、cwd 与凭据打开。"] OpenAt { dirfd : isize , path : Vec < u8 > , flags : u32 , mode : u32 , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_SEND`/`IORING_OP_RECV`：只对 socket，`MSG_NOSIGNAL` 恒开（SIGPIPE 不发给提交线程）。"] Socket { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " `MSG_DONTWAIT`：会阻塞时直接返回 `-EAGAIN`。"] dontwait : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Accept { fd : Option < usize > , address : usize , length : usize , flags : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Cancel { target : Target , # [doc = " `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。"] all : bool , # [doc = " `IORING_ASYNC_CANCEL_FD`：按这个 fd 所指的 OFD 匹配；外层 `Some` 表示给了 FD 条件，内层 `None` 是无效 fd（fixed 或负数）。"] by_fd : Option < Option < usize > > , }
@@ -6491,7 +6496,7 @@ kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " Unix 目标 backl
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " pipe/socket/eventfd 等流式读写：`EAGAIN` 时等目标 OFD 就绪再试。"] Stream { ofd : Arc < OpenFileDescription > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " 经 socket 发送并强制 `MSG_NOSIGNAL`（`IORING_OP_SEND`）。"] no_signal : bool , # [doc = " 会阻塞时返回 `-EAGAIN` 而不是等待（`MSG_DONTWAIT`）。"] dontwait : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " regular-file 读（显式偏移或当前位置）：cache 未命中时开始异步填页并让出，不占用任何线程。"] FileRead { read : AsyncPositionedRead , vectors : Vec < UserIoVec > , total : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 一次性 poll：目标 OFD 出现 `mask` 中任一事件时以 revents 完成。"] Poll { ofd : Arc < OpenFileDescription > , mask : i16 , }
-kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。"] Lane { work : lane :: Work , # [doc = " 作业操作的 OFD，仅供按 fd 取消匹配；作业本身已捕获它。"] file : Arc < OpenFileDescription > , # [doc = " 读写作业传输量不等于请求量即失败；fsync 为 `None`。"] total : Option < usize > , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。"] Lane { work : lane :: Work , # [doc = " 作业操作的 OFD，仅供按 fd 取消匹配（作业本身已捕获它）；openat 之类没有目标 OFD。"] file : Option < Arc < OpenFileDescription > > , # [doc = " 读写作业传输量不等于请求量即失败；fsync 为 `None`。"] total : Option < usize > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 握手已发起：等 socket 可写或出错，再读连接结果。"] Connect { ofd : Arc < OpenFileDescription > }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 绝对 monotonic deadline，或“除 timeout 外又发布 N 个 CQE”（`target_events`）。"] Timeout { deadline : u64 , target_events : Option < u32 > , etime_success : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: Accept { ofd : Arc < OpenFileDescription > , flags : usize , address : usize , length : usize , }
@@ -6511,6 +6516,7 @@ kernel/src/syscall/io_uring/exec.rs :: pub (super) struct Outcome
 kernel/src/syscall/io_uring/lane.rs :: pub (super) fn start () -> Result < () , () >
 kernel/src/syscall/io_uring/lane.rs :: pub (super) fn submit (work : Work , task : Weak < TaskControlBlock > , notify : Arc < dyn CompletionNotify > ,) -> Result < Arc < Ticket > , () >
 kernel/src/syscall/io_uring/lane.rs :: pub (super) impl Ticket :: fn take (& self) -> Option < isize >
+kernel/src/syscall/io_uring/lane.rs :: pub (super) impl Ticket :: fn try_cancel (& self) -> bool
 kernel/src/syscall/io_uring/lane.rs :: pub (super) struct Ticket
 kernel/src/syscall/io_uring/lane.rs :: pub (super) type Work  = Box < dyn FnOnce (& TaskControlBlock) -> isize + Send >
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn start_worker () -> Result < () , () >
@@ -6519,6 +6525,9 @@ kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_register (fd :
 kernel/src/syscall/io_uring/mod.rs :: pub (crate) fn sys_io_uring_setup (entries : u32 , params : usize) -> isize
 kernel/src/syscall/io_uring/ops.rs :: pub (super) TaskSubmitter :: task : Arc < TaskControlBlock >
 kernel/src/syscall/io_uring/ops.rs :: pub (super) struct TaskSubmitter
+kernel/src/syscall/io_uring/wait.rs :: enum Cancel :: # [doc = " 匹配的成员已经在车道线程上执行：不能取消，会照常完成（Linux `-EALREADY`）。"] Running
+kernel/src/syscall/io_uring/wait.rs :: enum Cancel :: Canceled
+kernel/src/syscall/io_uring/wait.rs :: enum Cancel :: NoMatch
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " deadline 到期，或 ring 上又发布了 `target` 个事件。"] Timer { deadline : u64 , target_events : Option < u32 > , ring : Arc < Ring > , }
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 刚创建，提交者正在首次 poll 它：worker 不得抢先 poll。"] Starting
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 正在被 poll，没有等待条件。"] None
@@ -6535,6 +6544,7 @@ kernel/src/syscall/io_uring/wait.rs :: enum Only :: Timeout
 kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " `IORING_ASYNC_CANCEL_ANY`：匹配该 ring 的任意请求。"] Any
 kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " `IORING_ASYNC_CANCEL_FD`/`_OP`（可与 `_USERDATA` 组合）：给出的条件必须全部满足（Linux `io_cancel_req_match`）。"] # [doc = " `file` 在 issue 时才由 fd 解析成 OFD（链里前面的成员可能改变 fd 表）。"] Match { user_data : Option < u64 > , opcode : Option < u8 > , file : Option < Arc < OpenFileDescription > > , }
 kernel/src/syscall/io_uring/wait.rs :: enum Target :: # [doc = " 匹配 user_data，并限定请求种类（`POLL_REMOVE`/`TIMEOUT_REMOVE` 只能取消各自种类）。"] UserData (u64 , Only)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Cancel
 kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Interest
 kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Kind
 kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Only
@@ -6542,10 +6552,11 @@ kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Target
 kernel/src/syscall/io_uring/wait.rs :: pub (super) fn event_count_reached (ring : & Ring , target : u32) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn admission (& self , sequence : u64) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn arm_link_timeout (& self , deadline : u64)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn attach_lane (& self , ticket : Arc < super :: lane :: Ticket >)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn attention (& self) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn begin (& self , user_data : u64 , kind : Kind , opcode : u8 , file : Option < Arc < OpenFileDescription > > ,)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn block (& self) -> Suspend
-kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn cancel (& self , target : & Target) -> bool
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn cancel (& self , target : & Target) -> Cancel
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn capacity (& self , capacity : & Arc < SocketCapacityWait >) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn clear_notified (& self)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn disarm_link_timeout (& self) -> bool

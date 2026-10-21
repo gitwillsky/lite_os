@@ -14,7 +14,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let open = source(sources, "kernel/src/syscall/fs/open.rs");
     let open = open.split("pub(crate) fn sys_openat").nth(1).unwrap_or("");
     if ![
-        "base(&task",
+        "base(task",
         "vfs().open_or_create_file_at",
         "inode.open_backend",
         "crate::fs::truncate",
@@ -28,7 +28,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let prepared = source(sources, "kernel/src/file/description_preparation.rs");
     let ofd = source(sources, "kernel/src/file/mod.rs");
-    if !before(open, "PreparedFileDescription::try_new", "base(&task")
+    if !before(open, "PreparedFileDescription::try_new", "base(task")
         || !before(
             open,
             "ofd.notify(crate::fs::IN_OPEN)",

@@ -10,6 +10,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/uio.h>
 #include <sys/mman.h>
@@ -1301,6 +1302,151 @@ static int collect_cqes(struct ring *ring, struct io_uring_cqe *out, unsigned co
 	return 1;
 }
 
+/* ---- OPENAT ------------------------------------------------------------------------------------ */
+
+static void fill_openat(struct io_uring_sqe *sqe, int dirfd, const char *path, unsigned flags, unsigned mode,
+                        uint64_t user_data)
+{
+	sqe->opcode = IORING_OP_OPENAT;
+	sqe->fd = dirfd;
+	sqe->addr = (uintptr_t)path;
+	sqe->open_flags = flags;
+	sqe->len = mode;
+	sqe->user_data = user_data;
+}
+
+int verify_io_uring_openat(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqe;
+	struct io_uring_sqe *sqe;
+	char path[64];
+	CHECK(1, map_ring(&ring, 8, 0, 0) == 0);
+	unlink("/tmp/uring-openat");
+
+	/* 创建并打开：结果是新 fd，且 O_CLOEXEC 保留在 fd 表里；路径在 prep 时复制，提交后改写缓冲区不影响。 */
+	strcpy(path, "/tmp/uring-openat");
+	fill_openat(next_sqe(&ring), AT_FDCWD, path, O_CREAT | O_RDWR | O_CLOEXEC, 0600, 1);
+	CHECK(2, submit_one(&ring) == 1);
+	memset(path, 'x', sizeof path - 1);
+	CHECK(3, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 1 && cqe.res >= 0);
+	int created = cqe.res;
+	CHECK(4, (fcntl(created, F_GETFD) & FD_CLOEXEC) != 0);
+	CHECK(5, write(created, "uring", 5) == 5);
+
+	/* 相对路径与目录 fd：在 /tmp 下按相对名字打开刚才创建的文件，读到同样的内容。 */
+	int dir = open("/tmp", O_RDONLY | O_DIRECTORY);
+	CHECK(6, dir >= 0);
+	fill_openat(next_sqe(&ring), dir, "uring-openat", O_RDONLY, 0, 2);
+	CHECK(7, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 2 && cqe.res >= 0);
+	int relative = cqe.res;
+	char buffer[8] = { 0 };
+	CHECK(8, pread(relative, buffer, sizeof buffer, 0) == 5 && memcmp(buffer, "uring", 5) == 0);
+
+	/* 错误：不存在的文件 -ENOENT，无效目录 fd -EBADF，O_CREAT|O_EXCL 遇到已存在文件 -EEXIST。 */
+	fill_openat(next_sqe(&ring), AT_FDCWD, "/tmp/uring-openat-missing", O_RDONLY, 0, 3);
+	CHECK(9, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -ENOENT);
+	fill_openat(next_sqe(&ring), 9999, "relative", O_RDONLY, 0, 4);
+	CHECK(10, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EBADF);
+	fill_openat(next_sqe(&ring), AT_FDCWD, "/tmp/uring-openat", O_CREAT | O_EXCL | O_RDWR, 0600, 5);
+	CHECK(11, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EEXIST);
+
+	/* prep 校验：空路径 -ENOENT，直接描述符（file_index）与 FIXED_FILE 分别是 -EOPNOTSUPP / -EBADF。 */
+	fill_openat(next_sqe(&ring), AT_FDCWD, "", O_RDONLY, 0, 6);
+	CHECK(12, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -ENOENT);
+	sqe = next_sqe(&ring);
+	fill_openat(sqe, AT_FDCWD, "/tmp/uring-openat", O_RDONLY, 0, 7);
+	sqe->file_index = 1;
+	CHECK(13, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EOPNOTSUPP);
+	sqe = next_sqe(&ring);
+	fill_openat(sqe, AT_FDCWD, "/tmp/uring-openat", O_RDONLY, 0, 8);
+	sqe->flags = IOSQE_FIXED_FILE;
+	CHECK(14, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EBADF);
+
+	/* 链：openat 失败（短于预期的 -ENOENT）取消其后成员。 */
+	sqe = next_sqe(&ring);
+	fill_openat(sqe, AT_FDCWD, "/tmp/uring-openat-missing", O_RDONLY, 0, 9);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 10);
+	publish(&ring);
+	CHECK(15, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2);
+	CHECK(16, expect_cqes(&ring, (const struct expect[]){ {9, -ENOENT}, {10, -ECANCELED} }, 2));
+
+	close(created);
+	close(relative);
+	close(dir);
+	unlink("/tmp/uring-openat");
+	unmap_ring(&ring);
+	return 0;
+}
+
+/* ---- 车道作业的取消：未开始可取消，已开始不可取消（-EALREADY）且照常完成 ----------------------------- */
+
+int verify_io_uring_lane_cancel(void)
+{
+	/* 车道最多 8 个 worker（lane.rs 的 MAX_WORKERS）：8 个对 FIFO 的阻塞 O_RDONLY openat 在写端出现之前
+	 * 一直阻塞在 worker 上，使它们全部处于“已开始”状态；第 9 个作业因此只能排队，尚未开始。 */
+	enum { WORKERS = 8 };
+	struct ring ring;
+	struct io_uring_cqe cqe;
+	char names[WORKERS][48];
+	CHECK(1, map_ring(&ring, 32, 0, 0) == 0);
+	unlink("/tmp/uring-lane-never");
+	for (int i = 0; i < WORKERS; i++) {
+		snprintf(names[i], sizeof names[i], "/tmp/uring-lane-fifo-%d", i);
+		unlink(names[i]);
+		CHECK(2, mkfifo(names[i], 0600) == 0);
+		fill_openat(next_sqe(&ring), AT_FDCWD, names[i], O_RDONLY, 0, 100 + i);
+	}
+	fill_openat(next_sqe(&ring), AT_FDCWD, "/tmp/uring-lane-never", O_CREAT | O_WRONLY, 0600, 200);
+	publish(&ring);
+	CHECK(3, uring_enter(ring.fd, WORKERS + 1, 0, 0, NULL, 0) == WORKERS + 1);
+	/* 给 worker 时间开始各自的作业（它们的开始延迟远小于这个时间）。 */
+	struct timespec pause = { .tv_nsec = 300 * 1000 * 1000 };
+	nanosleep(&pause, NULL);
+	CHECK(4, ready(&ring) == 0);
+
+	/* 排队中的作业可以取消：取消请求得到 0，目标得到 -ECANCELED，之后绝不会执行（文件不会被创建）。 */
+	fill_cancel(next_sqe(&ring), IORING_OP_ASYNC_CANCEL, 200, 0, 300);
+	CHECK(5, submit_one(&ring) == 1 && expect_pair(&ring, 200, -ECANCELED, 300, 0));
+
+	/* 已开始的作业不能取消：取消请求得到 -EALREADY，目标仍在运行（没有 CQE）。 */
+	fill_cancel(next_sqe(&ring), IORING_OP_ASYNC_CANCEL, 100, 0, 301);
+	CHECK(6, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 301 &&
+		 cqe.res == -EALREADY);
+	CHECK(7, ready(&ring) == 0);
+
+	/* 打开写端：与阻塞在 worker 上的读端会合，8 个作业都以真实结果（新 fd）完成，而不是 -ECANCELED。 */
+	int writers[WORKERS];
+	for (int i = 0; i < WORKERS; i++) {
+		writers[i] = open(names[i], O_WRONLY);
+		CHECK(8, writers[i] >= 0);
+	}
+	unsigned seen = 0;
+	int readers[WORKERS];
+	for (int i = 0; i < WORKERS; i++) {
+		CHECK(9, wait_cqe(&ring, &cqe) == 1);
+		CHECK(10, cqe.user_data >= 100 && cqe.user_data < 100 + WORKERS && cqe.res >= 0);
+		readers[cqe.user_data - 100] = cqe.res;
+		seen |= 1u << (cqe.user_data - 100);
+	}
+	CHECK(11, seen == (1u << WORKERS) - 1);
+
+	/* 被取消的作业在 FIFO 里排在这个之前，worker 取到它时已经跳过：文件从未被创建。 */
+	fill_openat(next_sqe(&ring), AT_FDCWD, "/tmp", O_RDONLY | O_DIRECTORY, 0, 400);
+	CHECK(12, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 400 && cqe.res >= 0);
+	close(cqe.res);
+	CHECK(13, access("/tmp/uring-lane-never", F_OK) == -1 && errno == ENOENT);
+
+	for (int i = 0; i < WORKERS; i++) {
+		close(readers[i]);
+		close(writers[i]);
+		unlink(names[i]);
+	}
+	unmap_ring(&ring);
+	return 0;
+}
+
 /* ---- ring 大小上限：与 Linux 相同的 32768 / 65536 --------------------------------------------- */
 
 int verify_io_uring_size_limits(void)
@@ -1835,5 +1981,9 @@ int verify_io_uring(void)
 	int quota = verify_io_uring_quota();
 	if (quota != 0) return 800 + quota;
 	int limits = verify_io_uring_size_limits();
-	return limits != 0 ? 900 + limits : 0;
+	if (limits != 0) return 900 + limits;
+	int openat_result = verify_io_uring_openat();
+	if (openat_result != 0) return 1000 + openat_result;
+	int lane_cancel = verify_io_uring_lane_cancel();
+	return lane_cancel != 0 ? 1100 + lane_cancel : 0;
 }

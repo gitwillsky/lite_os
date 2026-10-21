@@ -14,6 +14,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use core::sync::atomic::{AtomicU8, Ordering};
 use spin::{Mutex, Once};
 use syscall_abi::errno;
 
@@ -35,9 +36,35 @@ pub(super) struct Ticket {
     // OWNER: 作业结果；车道线程写入后通知提交者。缺失时提交者无法取回结果。
     result: Mutex<Option<isize>>,
     notify: Arc<dyn CompletionNotify>,
+    // OWNER: 作业是否已开始/已取消，由 `begin` 与 `try_cancel` 竞争同一次 compare-exchange 决定。
+    // 缺失时被取消的作业仍会执行（写、openat 的副作用照常发生）却向用户报告 `-ECANCELED`。
+    state: AtomicU8,
 }
 
+const QUEUED: u8 = 0;
+const RUNNING: u8 = 1;
+const CANCELED: u8 = 2;
+
 impl Ticket {
+    /// 取消作业：只有尚未开始的作业才能取消（车道线程随后跳过它）；已开始的作业会照常完成并返回真实结果
+    /// （Linux 对运行中的 io-wq 作业的取消也是 `-EALREADY`）。重复取消已取消的作业返回 true。
+    pub(super) fn try_cancel(&self) -> bool {
+        match self
+            .state
+            .compare_exchange(QUEUED, CANCELED, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => true,
+            Err(state) => state == CANCELED,
+        }
+    }
+
+    /// 车道线程开始执行前调用；作业已被取消返回 false。
+    fn begin(&self) -> bool {
+        self.state
+            .compare_exchange(QUEUED, RUNNING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
     /// 作业已完成时取走结果。
     pub(super) fn take(&self) -> Option<isize> {
         self.result.lock().take()
@@ -97,6 +124,7 @@ pub(super) fn submit(
     let ticket = Arc::try_new(Ticket {
         result: Mutex::new(None),
         notify,
+        state: AtomicU8::new(QUEUED),
     })
     .map_err(|_| ())?;
     let mut pool = pool().lock();
@@ -170,8 +198,8 @@ fn run(worker: &Arc<Worker>) {
 
 fn execute(job: Job) {
     let Job { work, task, ticket } = job;
-    // 提交者已经丢弃了票据：没有人等结果，不必执行。
-    if Arc::strong_count(&ticket) == 1 {
+    // 提交者已经丢弃了票据（没有人等结果），或作业在开始前被取消：不执行。
+    if Arc::strong_count(&ticket) == 1 || !ticket.begin() {
         return;
     }
     let result = match task.upgrade() {

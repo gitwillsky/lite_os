@@ -16,8 +16,8 @@ use crate::{
         Chain, Ring, Submitter,
         abi::{
             IOSQE_FIXED_FILE, OP_ACCEPT, OP_ASYNC_CANCEL, OP_CLOSE, OP_CONNECT, OP_FSYNC,
-            OP_LINK_TIMEOUT, OP_POLL_ADD, OP_POLL_REMOVE, OP_READ, OP_READV, OP_RECV, OP_SEND,
-            OP_TIMEOUT, OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
+            OP_LINK_TIMEOUT, OP_OPENAT, OP_POLL_ADD, OP_POLL_REMOVE, OP_READ, OP_READV, OP_RECV,
+            OP_SEND, OP_TIMEOUT, OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
         },
     },
     syscall::{
@@ -68,6 +68,7 @@ impl Submitter for TaskSubmitter {
             OP_READ | OP_WRITE | OP_READV | OP_WRITEV => self.read_write(sqe),
             OP_FSYNC => fsync(sqe),
             OP_CLOSE => close(sqe),
+            OP_OPENAT => self.openat(sqe),
             OP_POLL_ADD => poll_add(sqe),
             OP_ACCEPT => accept(sqe),
             OP_CONNECT => connect(sqe),
@@ -93,6 +94,28 @@ fn fd_of(sqe: &Sqe) -> Option<usize> {
 }
 
 impl TaskSubmitter {
+    /// `IORING_OP_OPENAT`（Linux `__io_openat_prep`）：路径在 prep 时复制，之后用户态改写缓冲区不影响本次 open。
+    fn openat(&self, sqe: &Sqe) -> Result<Op, isize> {
+        if sqe.buf_index != 0 {
+            return Err(errno::EINVAL);
+        }
+        if sqe.flags & IOSQE_FIXED_FILE != 0 {
+            return Err(errno::EBADF);
+        }
+        // `file_index` 非零是直接描述符（把结果装进注册文件表），本内核没有注册文件表。
+        if sqe.splice_fd_in != 0 {
+            return Err(errno::EOPNOTSUPP);
+        }
+        let path = crate::syscall::fs::user_path(&self.task, sqe.addr as *const u8)
+            .map_err(|error| -error)?;
+        Ok(Op::OpenAt {
+            dirfd: sqe.fd as isize,
+            path,
+            flags: sqe.op_flags,
+            mode: sqe.len,
+        })
+    }
+
     fn read_write(&self, sqe: &Sqe) -> Result<Op, isize> {
         let write = matches!(sqe.opcode, OP_WRITE | OP_WRITEV);
         let vectored = matches!(sqe.opcode, OP_READV | OP_WRITEV);

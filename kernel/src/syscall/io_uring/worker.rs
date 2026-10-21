@@ -22,7 +22,7 @@ use core::{
 use spin::{Mutex, Once};
 use syscall_abi::errno;
 
-use super::wait::{Interest, Target, Waiter};
+use super::wait::{Cancel, Interest, Target, Waiter};
 use crate::{
     io_uring::Ring,
     ipc::{Pipe, PipeEnd},
@@ -147,14 +147,22 @@ where
 pub(super) fn cancel(ring: &Arc<Ring>, target: &Target, all: bool) -> i32 {
     let shared = shared();
     let mut canceled = 0i32;
+    let mut running = false;
     {
         let slots = shared.slots.lock();
         for slot in slots.iter() {
-            if Arc::ptr_eq(slot.waiter.ring(), ring) && slot.waiter.cancel(target) {
-                canceled += 1;
-                if !all {
-                    break;
+            if !Arc::ptr_eq(slot.waiter.ring(), ring) {
+                continue;
+            }
+            match slot.waiter.cancel(target) {
+                Cancel::Canceled => {
+                    canceled += 1;
+                    if !all {
+                        break;
+                    }
                 }
+                Cancel::Running => running = true,
+                Cancel::NoMatch => {}
             }
         }
     }
@@ -162,6 +170,7 @@ pub(super) fn cancel(ring: &Arc<Ring>, target: &Target, all: bool) -> i32 {
         shared.wake.1.signal_readiness();
     }
     match (canceled, all) {
+        (0, _) if running => -(errno::EALREADY as i32),
         (0, _) => -(errno::ENOENT as i32),
         (count, true) => count,
         (_, false) => 0,
@@ -238,7 +247,7 @@ fn wait(shared: &Shared) {
         // 完成），而不是留下永不完成的挂起。
         let mut index = 0;
         while let Some(slot) = slot_at(shared, index) {
-            slot.waiter.cancel(&Target::Any);
+            let _ = slot.waiter.cancel(&Target::Any);
             index += 1;
         }
         core::hint::spin_loop();

@@ -23,7 +23,7 @@ fn rejects_first_side_effect_before_reservation_even_when_normal_open_remains() 
     reject(
         "kernel/src/syscall/fs/open.rs",
         "let reservation = match task.fd_prepare_open",
-        "let _early = base(&task, fd, &path);\n    let reservation = match task.fd_prepare_open",
+        "let _early = base(task, fd, &path);\n    let reservation = match task.fd_prepare_open",
         "before every",
     );
 }

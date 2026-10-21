@@ -26,6 +26,14 @@ pub(super) enum Kind {
     Timeout,
 }
 
+/// 一次取消尝试的结果。
+pub(super) enum Cancel {
+    NoMatch,
+    Canceled,
+    /// 匹配的成员已经在车道线程上执行：不能取消，会照常完成（Linux `-EALREADY`）。
+    Running,
+}
+
 /// 取消的目标范围。
 #[derive(Clone, Copy)]
 pub(super) enum Only {
@@ -139,6 +147,8 @@ struct State {
     running: Option<Running>,
     /// 取消请求：由 [`Waiter::cancel`] 置位，正在等待的成员观察到后以 `-ECANCELED` 结束。
     canceled: bool,
+    /// 正在车道上执行/排队的成员的票据；取消据此区分“尚未开始，可取消”与“已开始，只能等它完成”。
+    lane: Option<Arc<super::lane::Ticket>>,
     /// `LINK_TIMEOUT` 的 deadline：到期后正在等待的成员被当作取消，并记下是定时器造成的。
     /// 缺失时 reactor 不会在 deadline 唤醒这条链，被约束的成员会一直等到自己的就绪条件。
     link_deadline: Option<u64>,
@@ -193,6 +203,7 @@ impl Waiter {
                 interest: Interest::Starting,
                 running: None,
                 canceled: false,
+                lane: None,
                 link_deadline: None,
                 timed_out: false,
             }),
@@ -282,22 +293,36 @@ impl Waiter {
     }
 
     pub(super) fn end(&self) {
-        self.0.state.lock().running = None;
+        let mut state = self.0.state.lock();
+        state.running = None;
+        state.lane = None;
     }
 
-    /// 正在等待的成员匹配 `target` 时标记取消并返回 true。
-    pub(super) fn cancel(&self, target: &Target) -> bool {
+    /// 正在等待的成员是一个车道作业：之后的取消要先问它是否还能取消。
+    pub(super) fn attach_lane(&self, ticket: Arc<super::lane::Ticket>) {
+        self.0.state.lock().lane = Some(ticket);
+    }
+
+    /// 正在等待的成员匹配 `target` 时尝试取消它。
+    pub(super) fn cancel(&self, target: &Target) -> Cancel {
         let mut state = self.0.state.lock();
-        if state
+        if !state
             .running
             .as_ref()
             .is_some_and(|running| running.matches(target))
         {
-            state.canceled = true;
-            true
-        } else {
-            false
+            return Cancel::NoMatch;
         }
+        // 车道作业一旦开始就不能被取消：它的副作用会发生，必须报告真实结果。
+        if state
+            .lane
+            .as_ref()
+            .is_some_and(|ticket| !ticket.try_cancel())
+        {
+            return Cancel::Running;
+        }
+        state.canceled = true;
+        Cancel::Canceled
     }
 
     pub(super) fn take_canceled(&self) -> bool {
